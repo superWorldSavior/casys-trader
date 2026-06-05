@@ -21,7 +21,7 @@ from pathlib import Path
 
 import yaml
 
-from . import codex_client
+from . import codex_client, stats
 from .risk import RiskGate, RiskLimits
 from .tools import market, memory as memory_mod, portfolio, scheduler
 from .tools.execution import Order, SimBroker
@@ -94,6 +94,8 @@ def run_cycle(*, dry_run: bool, now: datetime | None = None) -> dict:
         "prices": {s: round(p, 4) for s, p in prices.items()},
         "portfolio": snap.as_context(),
         "bars": {s: _compact_bars(b) for s, b in bars_by_symbol.items()},
+        # KPI live injectés pour que l'agent décideur pilote sa performance.
+        "kpis": stats.compute_live_kpis(STATE_DIR),
     }
 
     report: dict = {
@@ -152,6 +154,19 @@ def main() -> None:
         report = run_cycle(dry_run=dry_run)
         log.info("cycle: %s", json.dumps(report, ensure_ascii=False))
         (STATE_DIR / "last_report.json").write_text(json.dumps(report, indent=2, ensure_ascii=False))
+
+        # Historique d'équité : une ligne JSON compacte par cycle (append).
+        pf = report.get("portfolio")
+        n_executed = sum(1 for d in report.get("decisions", []) if d.get("executed"))
+        history_row = {
+            "ts": report["ts"],
+            "equity": pf["equity"] if pf is not None else None,
+            "cash": pf["cash"] if pf is not None else None,
+            "n_decisions": len(report.get("decisions", [])),
+            "n_executed": n_executed,
+        }
+        with (STATE_DIR / "history.jsonl").open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(history_row, ensure_ascii=False) + "\n")
 
         if args.once:
             break
