@@ -52,13 +52,32 @@ skills/  skills dispo (dev + runtime)
 docs/specs/                          <- design de référence
 ```
 
+## Backtest maison (`backtest/`)
+
+Rejeu de l'agent sur l'historique (SimBroker + yfinance), **échantillonné** pour
+borner le coût (un appel Codex par pas × symbole).
+
+```bash
+# Plumbing sans Codex (déterministe, gratuit)
+uv run python -m backtest --mock --days 30 --sample-every 5
+
+# Vrai backtest Codex, borné (1 symbole, 1 pas = 1 appel)
+uv run python -m backtest --days 20 --sample-every 5 --max-steps 1 --symbols SPY
+```
+
+⚠️ Le backtest **ne mesure pas** la vraie perf : fills parfaits (SimBroker, pas de
+slippage/frais), data leakage possible (le LLM a pu voir l'historique), rejeu
+échantillonné. Pour un agent adaptatif, le **forward paper** reste l'éval de
+référence. Le rapport complet est écrit dans `state/last_backtest.json`.
+
 ## Appel Codex
 
 Le brain décideur est appelé via **`acpx --format quiet exec`** (codex = agent par
-défaut d'acpx). Décision pure : `--allowed-tools ""` + `--no-terminal` (aucun outil,
-le brain ne fait que raisonner sur le contexte fourni). `exec` = session temporaire
-→ déterministe ; l'état évolutif de l'agent vit dans `mandate/memory.md`, passé dans
-le prompt. Contrat de sortie validé de bout en bout (JSON → `Decision`).
+défaut d'acpx), modèle **`gpt-5.3-codex-spark[xhigh]`** (Spark = faible latence,
+adapté à un agent en veille). Décision pure : `--allowed-tools ""` + `--no-terminal`
+(aucun outil, le brain ne fait que raisonner sur le contexte fourni). `exec` =
+session temporaire → déterministe ; l'état évolutif de l'agent vit dans
+`mandate/memory.md`, passé dans le prompt. Contrat validé de bout en bout (JSON → `Decision`).
 
 ## État actuel
 

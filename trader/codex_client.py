@@ -24,6 +24,10 @@ from typing import Literal
 
 Action = Literal["BUY", "SELL", "HOLD"]
 
+# Modèle du brain runtime : Codex Spark 5.3 (famille rapide) à effort xhigh.
+# Spark = faible latence, adapté à un agent en veille qui décide à chaque réveil.
+DEFAULT_MODEL = "gpt-5.3-codex-spark[xhigh]"
+
 _DECISION_KEYS = {"symbol", "action", "quantity", "confidence", "rationale"}
 
 
@@ -86,7 +90,7 @@ def parse_decision(raw_text: str, symbol: str) -> Decision:
     )
 
 
-def build_command(prompt: str, *, acpx_bin: str, timeout_s: int) -> list[str]:
+def build_command(prompt: str, *, acpx_bin: str, model: str, timeout_s: int) -> list[str]:
     """Commande acpx pour une décision pure (codex, sans outils, sortie texte brute)."""
     return [
         acpx_bin,
@@ -94,6 +98,7 @@ def build_command(prompt: str, *, acpx_bin: str, timeout_s: int) -> list[str]:
         "--allowed-tools", "",          # décision pure : aucun outil
         "--no-terminal",                # pas de capacité terminal (sandboxé)
         "--non-interactive-permissions", "deny",  # pas de TTY dans le daemon
+        "--model", model,               # Codex Spark 5.3 xhigh (rapide)
         "--timeout", str(timeout_s),
         "exec",                         # one-shot, session temporaire -> déterministe
         prompt,
@@ -107,6 +112,7 @@ def decide(
     memory: str,
     context: dict,
     acpx_bin: str = "acpx",
+    model: str = DEFAULT_MODEL,
     timeout_s: int = 120,
 ) -> Decision:
     """Appelle Codex (via acpx) et renvoie une Decision validée. Tout échec -> HOLD."""
@@ -116,7 +122,7 @@ def decide(
     prompt = build_prompt(mandate=mandate, memory=memory, context=context)
     try:
         proc = subprocess.run(
-            build_command(prompt, acpx_bin=acpx_bin, timeout_s=timeout_s),
+            build_command(prompt, acpx_bin=acpx_bin, model=model, timeout_s=timeout_s),
             capture_output=True,
             text=True,
             timeout=timeout_s + 15,  # backstop au-dessus du timeout acpx
