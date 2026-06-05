@@ -2,8 +2,6 @@
 
 > Édité en boucle 1 (Erwan + Claude). L'agent runtime lit ce fichier à chaque
 > réveil. C'est ICI qu'on définit objectif, marchés, contraintes — PAS dans le code.
->
-> ⚠️ PREMIER JET — à valider/ajuster par Erwan. Les `[À VALIDER]` sont tes choix.
 
 ## Objectif
 
@@ -11,9 +9,11 @@ Faire **croître le capital** sur l'univers donné, en **trading court terme
 adaptatif** : l'agent observe, se forge une thèse, prend position, et **apprend de
 ses résultats** (il ajuste sa stratégie selon ses KPI, voir plus bas).
 
-- Horizon de détention : **court terme** (intraday à quelques jours). `[À VALIDER]`
-- Cadence de réveil : **l'agent la choisit** (via `scheduler`). Borne raisonnable
-  suggérée : pas plus souvent que toutes les ~30 min en heures de marché. `[À VALIDER]`
+- Profil : **scalping / intraday**. Le long terme est **hors profil** — on évite
+  les positions longues dans le temps, **sauf opportunité vraiment forte** (rare).
+  Dans ce cadre, l'agent choisit librement sa durée de détention.
+- Cadence de réveil : **entièrement à la main de l'agent**. Il fixe sa propre
+  cadence via le `scheduler`, comme il le souhaite — aucune borne imposée.
 
 ## Marchés autorisés
 
@@ -24,7 +24,7 @@ individuelles). Expansion native (CAC, Euronext, Taïwan) après branchement IB.
 ## Contraintes
 
 - **Paper trading uniquement.**
-- **Long-only** pour démarrer : pas de vente à découvert. `[À VALIDER]`
+- **Long ET short autorisés** : l'agent choisit le sens de ses positions.
 - **Pas de levier** : l'exposition brute ne dépasse pas le capital.
 - Le **risk gate** (`config/risk.yaml`) est une borne dure non négociable
   (fusible anti-bug, pas une règle de stratégie).
