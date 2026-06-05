@@ -8,8 +8,8 @@ mémoire.
 ## Les deux boucles
 
 - **Boucle 1 — Dev/design** : Erwan + Claude, en conversation dans le repo. On
-  fait évoluer le mandat, les outils, le comportement, les marchés. LEAM (`lab/`)
-  sert de labo de backtest.
+  fait évoluer le mandat, les outils, le comportement, les marchés. Le backtest
+  maison (`backtest/`) rejoue l'agent sur l'historique pour itérer.
 - **Boucle 2 — Runtime** : le daemon (`trader/daemon.py`), lancé par `run.sh`.
   Réveil → contexte → Codex → risk gate → exécution paper → log → prochain réveil.
 
@@ -45,9 +45,9 @@ trader/
     portfolio.py     positions / PnL / KPI
     scheduler.py     l'agent fixe son prochain réveil
     memory.py        stratégie + learnings persistants
+backtest/                            <- backtest maison (SimBroker + yfinance)
 config/  universe.yaml  risk.yaml
 mandate/ mandate.md  memory.md      <- définis en boucle 1
-lab/     LEAN (labo backtest)        <- à installer
 skills/  skills dispo (dev + runtime)
 docs/specs/                          <- design de référence
 ```
@@ -63,6 +63,9 @@ le prompt. Contrat de sortie validé de bout en bout (JSON → `Decision`).
 ## État actuel
 
 Infrastructure posée et testée (fusible, SimBroker, câblage du cycle, appel Codex
-réel). **Prochaine étape (boucle 1)** : définir avec l'agent le mandat réel, le
-comportement de Codex, la cadence de réveil — puis brancher IB quand le compte
-paper est prêt. LEAN (`lab/`) reste à installer pour le backtest.
+réel). Backtest maison (`backtest/`) en cours de construction (SimBroker + yfinance,
+rejeu échantillonné pour limiter les appels Codex). LEAN abandonné : son CLI/API
+local est payant (84 $/mois) et son backtest dense ne convient pas à un agent
+LLM-in-the-loop. **Prochaine étape (boucle 1)** : définir avec l'agent le mandat
+réel, le comportement de Codex, la cadence de réveil — puis brancher IB
+(`ib_async`) quand le compte paper est prêt.
