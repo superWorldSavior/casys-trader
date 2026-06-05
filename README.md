@@ -52,11 +52,17 @@ skills/  skills dispo (dev + runtime)
 docs/specs/                          <- design de référence
 ```
 
+## Appel Codex
+
+Le brain décideur est appelé via **`acpx --format quiet exec`** (codex = agent par
+défaut d'acpx). Décision pure : `--allowed-tools ""` + `--no-terminal` (aucun outil,
+le brain ne fait que raisonner sur le contexte fourni). `exec` = session temporaire
+→ déterministe ; l'état évolutif de l'agent vit dans `mandate/memory.md`, passé dans
+le prompt. Contrat de sortie validé de bout en bout (JSON → `Decision`).
+
 ## État actuel
 
-Infrastructure posée. **Prochaine étape (boucle 1)** : définir avec l'agent le
-mandat réel, le comportement de Codex, la cadence de réveil — puis brancher IB
-quand le compte paper est prêt.
-
-> ⚠️ La commande Codex (`codex exec`) dans `codex_client.py` est à valider/ajuster
-> selon le CLI réel (cf. skills `acpx` / `pair-codex`).
+Infrastructure posée et testée (fusible, SimBroker, câblage du cycle, appel Codex
+réel). **Prochaine étape (boucle 1)** : définir avec l'agent le mandat réel, le
+comportement de Codex, la cadence de réveil — puis brancher IB quand le compte
+paper est prêt. LEAN (`lab/`) reste à installer pour le backtest.

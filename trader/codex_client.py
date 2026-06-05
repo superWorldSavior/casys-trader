@@ -1,8 +1,14 @@
 """codex_client — appel programmatique à Codex (le brain décideur).
 
-Invoque `codex exec` en headless, lui passe le contexte + le mandat, et force une
-sortie JSON structurée (le schéma de décision). Aucune stratégie ici : juste le
-transport vers le LLM et la validation stricte de sa réponse.
+Invoque Codex en headless via `acpx --format quiet exec` (codex est l'agent par
+défaut d'acpx). On lui passe le contexte + le mandat, et on force une sortie JSON
+structurée (le schéma de décision). Aucune stratégie ici : juste le transport vers
+le LLM et la validation stricte de sa réponse.
+
+Décision PURE : on coupe les outils (`--allowed-tools ""`) et le terminal
+(`--no-terminal`) — le brain ne fait que raisonner sur le contexte fourni, il ne
+touche ni au FS ni au shell. `exec` = session temporaire (pas d'état partagé) ->
+déterministe. L'état évolutif de l'agent vit dans memory.md, passé dans le prompt.
 
 Fail-safe : toute erreur (timeout, binaire absent, JSON invalide) -> décision
 HOLD. On ne trade JAMAIS sur une réponse douteuse.
@@ -80,26 +86,40 @@ def parse_decision(raw_text: str, symbol: str) -> Decision:
     )
 
 
+def build_command(prompt: str, *, acpx_bin: str, timeout_s: int) -> list[str]:
+    """Commande acpx pour une décision pure (codex, sans outils, sortie texte brute)."""
+    return [
+        acpx_bin,
+        "--format", "quiet",            # texte final de l'assistant uniquement
+        "--allowed-tools", "",          # décision pure : aucun outil
+        "--no-terminal",                # pas de capacité terminal (sandboxé)
+        "--non-interactive-permissions", "deny",  # pas de TTY dans le daemon
+        "--timeout", str(timeout_s),
+        "exec",                         # one-shot, session temporaire -> déterministe
+        prompt,
+    ]
+
+
 def decide(
     *,
     symbol: str,
     mandate: str,
     memory: str,
     context: dict,
-    codex_bin: str = "codex",
+    acpx_bin: str = "acpx",
     timeout_s: int = 120,
 ) -> Decision:
-    """Appelle Codex et renvoie une Decision validée. Tout échec -> HOLD."""
-    if shutil.which(codex_bin) is None:
-        return Decision.hold(symbol, f"codex_unavailable: binaire '{codex_bin}' introuvable")
+    """Appelle Codex (via acpx) et renvoie une Decision validée. Tout échec -> HOLD."""
+    if shutil.which(acpx_bin) is None:
+        return Decision.hold(symbol, f"acpx_unavailable: binaire '{acpx_bin}' introuvable")
 
     prompt = build_prompt(mandate=mandate, memory=memory, context=context)
     try:
         proc = subprocess.run(
-            [codex_bin, "exec", prompt],
+            build_command(prompt, acpx_bin=acpx_bin, timeout_s=timeout_s),
             capture_output=True,
             text=True,
-            timeout=timeout_s,
+            timeout=timeout_s + 15,  # backstop au-dessus du timeout acpx
         )
     except subprocess.TimeoutExpired:
         return Decision.hold(symbol, f"codex_timeout: > {timeout_s}s")
