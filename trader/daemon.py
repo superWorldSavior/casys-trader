@@ -40,6 +40,15 @@ def _kill_switch_active() -> bool:
     return (ROOT / "KILL").exists()
 
 
+def _compact_bars(bars: list, n: int = 48) -> list[dict]:
+    """Compacte les n dernières barres pour le contexte de décision (clés courtes)."""
+    return [
+        {"t": b.ts, "o": round(b.open, 4), "h": round(b.high, 4),
+         "l": round(b.low, 4), "c": round(b.close, 4), "v": round(b.volume, 2)}
+        for b in bars[-n:]
+    ]
+
+
 def run_cycle(*, dry_run: bool, now: datetime | None = None) -> dict:
     """Exécute UN cycle. Retourne un rapport structuré (machine-readable)."""
     now = now or datetime.now(timezone.utc)
@@ -55,33 +64,52 @@ def run_cycle(*, dry_run: bool, now: datetime | None = None) -> dict:
     mem = memory_mod.Memory(ROOT / "mandate" / "mandate.md", ROOT / "mandate" / "memory.md")
 
     if _kill_switch_active():
-        return {"ts": now.isoformat(), "halted": "kill_switch", "decisions": []}
+        return {
+            "ts": now.isoformat(),
+            "halted": "kill_switch",
+            "decisions": [],
+            "portfolio": None,
+            "prices": {},
+        }
 
-    # Prix courants (déterministe pour le snapshot et le gate)
+    # Données marché : barres récentes par symbole (l'agent calcule SES indicateurs dessus).
+    bars_by_symbol: dict[str, list] = {}
     prices: dict[str, float] = {}
     for sym in symbols:
         try:
-            prices[sym] = market.get_quote(sym).price
+            bars = market.get_bars(sym, lookback="5d", interval="1h")
+            bars_by_symbol[sym] = bars
+            prices[sym] = bars[-1].close
         except market.MarketError as e:
-            log.warning("prix indisponible %s: %s", sym, e.code)
+            log.warning("données indisponibles %s: %s", sym, e.code)
 
     snap = portfolio.snapshot(broker, lambda s: prices.get(s, 0.0), starting_equity)
     gross = sum(abs(h.market_value) for h in snap.holdings)
 
-    context = {
+    # Contexte cross-asset partagé : tout l'univers est visible à chaque décision
+    # (l'edge de l'agent = relations entre symboles, pas un graphe isolé).
+    base_context = {
         "now": now.isoformat(),
         "universe": symbols,
         "prices": {s: round(p, 4) for s, p in prices.items()},
         "portfolio": snap.as_context(),
+        "bars": {s: _compact_bars(b) for s, b in bars_by_symbol.items()},
     }
 
-    report = {"ts": now.isoformat(), "dry_run": dry_run, "decisions": []}
+    report: dict = {
+        "ts": now.isoformat(),
+        "dry_run": dry_run,
+        "decisions": [],
+        "portfolio": snap.as_context(),
+        "prices": {s: round(p, 4) for s, p in prices.items()},
+    }
     mandate_txt, memory_txt = mem.read_mandate(), mem.read_memory()
 
     for sym in symbols:
         if sym not in prices:
             continue
-        decision = codex_client.decide(symbol=sym, mandate=mandate_txt, memory=memory_txt, context=context)
+        ctx = {**base_context, "symbol": sym}  # le symbole à décider ce tour
+        decision = codex_client.decide(symbol=sym, mandate=mandate_txt, memory=memory_txt, context=ctx)
         entry = {"symbol": sym, "action": decision.action, "qty": decision.quantity,
                  "confidence": decision.confidence, "rationale": decision.rationale}
 
