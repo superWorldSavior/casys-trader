@@ -1,0 +1,21 @@
+# Univers de trading — édité en boucle 1 (Erwan + Claude).
+# v1 : instruments listés US (data gratuite, démarrage immédiat).
+# Expansion native (CAC future, Euronext Paris, Taïwan) une fois IB Gateway branchée.
+
+starting_cash: 100000
+
+symbols:
+  # Indices (via ETF)
+  - SPY   # S&P 500
+  - QQQ   # Nasdaq 100
+  - DIA   # Dow Jones
+  - EWT   # Taïwan
+  - EWQ   # France
+  # Thématiques
+  - ITA   # Défense US
+  - XLE   # Énergie
+  - USO   # Pétrole
+  - UNG   # Gaz naturel
+  # Nasdaq individuelles
+  - NVDA
+  - AAPL

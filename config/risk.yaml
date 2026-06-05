@@ -1,0 +1,9 @@
+# Risk gate — le FUSIBLE (codé en dur dans trader/risk.py, paramétré ici).
+# Ce ne sont PAS les règles de stratégie de l'agent : ce sont les bornes externes
+# qui empêchent un bug de tout casser. Valeurs prudentes par défaut (paper).
+
+max_position_value: 20000      # $ max par position
+max_gross_exposure: 100000     # $ max exposition brute totale
+max_order_value: 10000         # $ max par ordre unique
+max_orders_per_cycle: 5        # débit max d'ordres par réveil
+min_equity: 50000              # plancher : sous ce seuil, plus aucun ordre
