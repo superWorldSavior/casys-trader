@@ -27,7 +27,7 @@ def _write_runtime_config(root) -> None:
     (root / "mandate" / "memory.md").write_text("# Memoire\n")
 
 
-def test_run_cycle_injecte_un_cockpit_compact_sans_barres(monkeypatch, tmp_path) -> None:
+def test_run_cycle_injecte_un_cockpit_compact_sans_barres(monkeypatch, tmp_path, patch_batch) -> None:
     _write_runtime_config(tmp_path)
     state_dir = tmp_path / "state"
     sched = Scheduler(state_dir / "scheduler.json")
@@ -49,7 +49,7 @@ def test_run_cycle_injecte_un_cockpit_compact_sans_barres(monkeypatch, tmp_path)
     monkeypatch.setattr(daemon, "ROOT", tmp_path)
     monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
     monkeypatch.setattr(daemon.market, "get_bars", bars)
-    monkeypatch.setattr(daemon.codex_client, "decide", decide)
+    patch_batch(decide)
 
     daemon.run_cycle(dry_run=True, now=now, symbols_filter=["SPY"], sched=sched)
 
@@ -65,7 +65,7 @@ def test_run_cycle_injecte_un_cockpit_compact_sans_barres(monkeypatch, tmp_path)
     assert contexts[0]["risk_limits"]["max_order_value"] == 10000
 
 
-def test_run_cycle_resout_une_requete_indicateurs_bornee_avant_decision_finale(monkeypatch, tmp_path) -> None:
+def test_run_cycle_resout_une_requete_indicateurs_bornee_avant_decision_finale(monkeypatch, tmp_path, patch_batch) -> None:
     _write_runtime_config(tmp_path)
     state_dir = tmp_path / "state"
     sched = Scheduler(state_dir / "scheduler.json")
@@ -102,7 +102,7 @@ def test_run_cycle_resout_une_requete_indicateurs_bornee_avant_decision_finale(m
     monkeypatch.setattr(daemon, "ROOT", tmp_path)
     monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
     monkeypatch.setattr(daemon.market, "get_bars", bars)
-    monkeypatch.setattr(daemon.codex_client, "decide", decide)
+    patch_batch(decide)
 
     daemon.run_cycle(
         dry_run=True,

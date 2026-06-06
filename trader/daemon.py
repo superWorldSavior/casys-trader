@@ -435,6 +435,90 @@ def _scan_indicator_watches(
     return triggered
 
 
+def _batch_decide(
+    *,
+    decidable: list[str],
+    mandate: str,
+    memory: str,
+    shared_context: dict,
+    triggers_by_symbol: dict[str, list[dict]],
+    tradable_bars_by_symbol: dict[str, list],
+    tradable_symbols: list[str],
+    runtime_interval: str,
+    runtime_lookback: str,
+    max_context_requests_per_symbol: int,
+    max_indicators_per_request: int,
+    max_model_calls: int,
+) -> tuple[dict[str, codex_client.Decision], int]:
+    """Décide TOUS les symboles dus en UN appel batch (contexte partagé envoyé une
+    seule fois). Gère le round-trip REQUEST_CONTEXT en batch : les symboles qui
+    demandent un complément sont résolus puis re-décidés en un 2e batch. Isolation
+    per-élément assurée par codex_client.parse_batch. `max_model_calls` est le fusible
+    coût (un batch = 1 appel ; le round-trip en ajoute 1). Retourne (décisions, n_appels)."""
+    if not decidable:
+        return {}, 0
+    if max_model_calls < 1:
+        return {sym: codex_client.Decision.hold(sym, "model_call_budget_exhausted") for sym in decidable}, 0
+    per_symbol = {sym: {"indicator_triggers": triggers_by_symbol.get(sym, [])} for sym in decidable}
+    responses = codex_client.decide_batch(
+        symbols=decidable,
+        mandate=mandate,
+        memory=memory,
+        shared_context=shared_context,
+        per_symbol=per_symbol,
+        allow_context_request=True,
+    )
+    calls = 1
+    decisions: dict[str, codex_client.Decision] = {}
+    need: dict[str, codex_client.ContextResearchRequest] = {}
+    for sym, resp in responses.items():
+        if isinstance(resp, codex_client.ContextResearchRequest):
+            need[sym] = resp
+        else:
+            decisions[sym] = resp
+
+    if need and calls >= max_model_calls:
+        # Budget épuisé : pas de 2e batch pour résoudre les demandes de contexte.
+        for sym in need:
+            decisions[sym] = codex_client.Decision.hold(sym, "model_call_budget_exhausted_after_context")
+        need = {}
+
+    if need:
+        per_symbol2: dict[str, dict] = {}
+        for sym, req in need.items():
+            research = resolve_indicator_requests(
+                req.requests,
+                tradable_bars_by_symbol,
+                symbols=tradable_symbols,
+                max_requests=max_context_requests_per_symbol,
+                max_indicators=max_indicators_per_request,
+                cached_interval=runtime_interval,
+                cached_lookback=runtime_lookback,
+            )
+            _append_event("context_resolved", symbol=sym, requested=len(req.requests), resolved=len(research["requests"]))
+            per_symbol2[sym] = {
+                "indicator_triggers": triggers_by_symbol.get(sym, []),
+                "research": research,
+                # Sessions jetables : le 2e batch n'a pas l'historique du 1er ; on
+                # repasse la rationale de la demande pour reprendre le raisonnement.
+                "prior_rationale": req.rationale,
+            }
+        responses2 = codex_client.decide_batch(
+            symbols=list(need),
+            mandate=mandate,
+            memory=memory,
+            shared_context=shared_context,
+            per_symbol=per_symbol2,
+            allow_context_request=False,
+        )
+        calls += 1
+        for sym in need:
+            resp2 = responses2.get(sym)
+            decisions[sym] = resp2 if isinstance(resp2, codex_client.Decision) else codex_client.Decision.hold(sym, "context_loop_blocked")
+
+    return decisions, calls
+
+
 def run_cycle(
     *,
     dry_run: bool,
@@ -675,6 +759,34 @@ def run_cycle(
     if sched is not None:
         _ensure_default_wake(sched, now=now, default_wake_minutes=default_wake_minutes)
 
+    # Batch stateless : UN appel modèle pour tous les symboles dus & frais (le
+    # contexte partagé n'est envoyé qu'une fois, au lieu de N). Les symboles stale
+    # / sans prix ne sont pas décidés (HOLD ci-dessous).
+    decidable = [s for s in symbols_to_decide if s not in stale_market_data and s in prices]
+    _log_cycle_progress("[batch] deciding symbols=%d/%d", len(decidable), len(symbols_to_decide))
+    _write_status(
+        "deciding_batch",
+        current_symbol=None,
+        decisions_done=0,
+        symbols_total=len(symbols_to_decide),
+        batch_size=len(decidable),
+    )
+    decisions_by_symbol, model_calls_used = _batch_decide(
+        decidable=decidable,
+        mandate=mandate_txt,
+        memory=memory_txt,
+        shared_context=base_context,
+        triggers_by_symbol=triggers_by_symbol,
+        tradable_bars_by_symbol=tradable_bars_by_symbol,
+        tradable_symbols=tradable_symbols,
+        runtime_interval=runtime_interval,
+        runtime_lookback=runtime_lookback,
+        max_context_requests_per_symbol=max_context_requests_per_symbol,
+        max_indicators_per_request=max_indicators_per_request,
+        max_model_calls=max_model_calls_per_cycle,
+    )
+    _log_cycle_progress("[batch] decided=%d model_calls=%d", len(decisions_by_symbol), model_calls_used)
+
     for index, sym in enumerate(symbols_to_decide, start=1):
         stale_data = stale_market_data.get(sym)
         if stale_data is not None:
@@ -707,127 +819,10 @@ def run_cycle(
         if sym not in prices:
             _log_cycle_progress("[decision %d/%d] %s skipped no_price", index, len(symbols_to_decide), sym)
             continue
-        ctx = {
-            **base_context,
-            "symbol": sym,
-            "indicator_triggers": triggers_by_symbol.get(sym, []),
-        }  # le symbole à décider ce tour
-        if model_calls_used >= max_model_calls_per_cycle:
-            _log_cycle_progress(
-                "[decision %d/%d] %s skipped model_call_budget_exhausted (%d/%d)",
-                index,
-                len(symbols_to_decide),
-                sym,
-                model_calls_used,
-                max_model_calls_per_cycle,
-            )
-            entry = {
-                "symbol": sym,
-                "action": "HOLD",
-                "qty": 0.0,
-                "confidence": 0.0,
-                "rationale": "model_call_budget_exhausted",
-                "next_wake_in_minutes": None,
-                "intent": "HOLD",
-                "trade_plan_created": False,
-                "executed": False,
-                "reason": "model_call_budget_exhausted",
-            }
-            record_decision(entry)
-            continue
 
+        decision = decisions_by_symbol.get(sym) or codex_client.Decision.hold(sym, "no_decision_in_batch")
         _log_cycle_progress(
-            "[decision %d/%d] %s start price=%s calls=%d/%d",
-            index,
-            len(symbols_to_decide),
-            sym,
-            round(prices[sym], 6),
-            model_calls_used,
-            max_model_calls_per_cycle,
-        )
-        _write_status(
-            "deciding_symbol",
-            current_symbol=sym,
-            decisions_done=len(report["decisions"]),
-            symbols_total=len(symbols_to_decide),
-            model_calls_used=model_calls_used,
-            max_model_calls_per_cycle=max_model_calls_per_cycle,
-        )
-        _append_event("deciding_symbol", symbol=sym)
-        response = codex_client.decide(
-            symbol=sym,
-            mandate=mandate_txt,
-            memory=memory_txt,
-            context=ctx,
-            allow_context_request=True,
-        )
-        model_calls_used += 1
-        if isinstance(response, codex_client.ContextResearchRequest):
-            _log_cycle_progress(
-                "[decision %d/%d] %s requested_context n=%d calls=%d/%d",
-                index,
-                len(symbols_to_decide),
-                sym,
-                len(response.requests),
-                model_calls_used,
-                max_model_calls_per_cycle,
-            )
-            _write_status(
-                "resolving_context",
-                current_symbol=sym,
-                decisions_done=len(report["decisions"]),
-                symbols_total=len(symbols_to_decide),
-                model_calls_used=model_calls_used,
-                requested=len(response.requests),
-            )
-            research = resolve_indicator_requests(
-                response.requests,
-                tradable_bars_by_symbol,
-                symbols=tradable_symbols,
-                max_requests=max_context_requests_per_symbol,
-                max_indicators=max_indicators_per_request,
-                cached_interval=runtime_interval,
-                cached_lookback=runtime_lookback,
-            )
-            _append_event(
-                "context_resolved",
-                symbol=sym,
-                requested=len(response.requests),
-                resolved=len(research["requests"]),
-            )
-            if model_calls_used >= max_model_calls_per_cycle:
-                decision = codex_client.Decision.hold(sym, "model_call_budget_exhausted_after_context")
-            else:
-                ctx = {
-                    **base_context,
-                    "symbol": sym,
-                    "indicator_triggers": triggers_by_symbol.get(sym, []),
-                    "research": research,
-                    # Sessions jetables : le 2e exec n'a pas l'historique du 1er.
-                    # On lui repasse la rationale de la demande pour qu'il reprenne
-                    # son fil de raisonnement au lieu de repartir de zéro.
-                    "prior_rationale": response.rationale,
-                }
-                _log_cycle_progress(
-                    "[decision %d/%d] %s final_call research=%d",
-                    index,
-                    len(symbols_to_decide),
-                    sym,
-                    len(research["requests"]),
-                )
-                response = codex_client.decide(
-                    symbol=sym,
-                    mandate=mandate_txt,
-                    memory=memory_txt,
-                    context=ctx,
-                    allow_context_request=False,
-                )
-                model_calls_used += 1
-                decision = response if isinstance(response, codex_client.Decision) else codex_client.Decision.hold(sym, "context_loop_blocked")
-        else:
-            decision = response
-        _log_cycle_progress(
-            "[decision %d/%d] %s result action=%s qty=%s intent=%s wake=%s confidence=%.2f provider=%s model=%s fallback=%s calls=%d/%d",
+            "[decision %d/%d] %s result action=%s qty=%s intent=%s wake=%s confidence=%.2f provider=%s model=%s fallback=%s",
             index,
             len(symbols_to_decide),
             sym,
@@ -839,8 +834,6 @@ def run_cycle(
             decision.llm_provider,
             decision.llm_model,
             decision.llm_fallback_reason,
-            model_calls_used,
-            max_model_calls_per_cycle,
         )
 
         next_wake_in_minutes = None

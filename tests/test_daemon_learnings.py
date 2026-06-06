@@ -37,7 +37,7 @@ def _bars(symbol: str, lookback: str, interval: str) -> list[Bar]:
     ]
 
 
-def test_run_cycle_ecrit_le_learning_emis_par_lagent(monkeypatch, tmp_path) -> None:
+def test_run_cycle_ecrit_le_learning_emis_par_lagent(monkeypatch, tmp_path, patch_batch) -> None:
     _write_runtime_config(tmp_path)
     state_dir = tmp_path / "state"
     sched = Scheduler(state_dir / "scheduler.json")
@@ -57,7 +57,7 @@ def test_run_cycle_ecrit_le_learning_emis_par_lagent(monkeypatch, tmp_path) -> N
     monkeypatch.setattr(daemon, "ROOT", tmp_path)
     monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
     monkeypatch.setattr(daemon.market, "get_bars", _bars)
-    monkeypatch.setattr(daemon.codex_client, "decide", decide)
+    patch_batch(decide)
 
     daemon.run_cycle(dry_run=True, now=now, symbols_filter=["SPY"], sched=sched)
 
@@ -69,7 +69,7 @@ def test_run_cycle_ecrit_le_learning_emis_par_lagent(monkeypatch, tmp_path) -> N
     assert recent[0]["executed"] is False
 
 
-def test_run_cycle_injecte_lattribution_dans_le_contexte(monkeypatch, tmp_path) -> None:
+def test_run_cycle_injecte_lattribution_dans_le_contexte(monkeypatch, tmp_path, patch_batch) -> None:
     import json as _json
 
     _write_runtime_config(tmp_path)
@@ -95,7 +95,7 @@ def test_run_cycle_injecte_lattribution_dans_le_contexte(monkeypatch, tmp_path) 
     monkeypatch.setattr(daemon, "ROOT", tmp_path)
     monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
     monkeypatch.setattr(daemon.market, "get_bars", _bars)
-    monkeypatch.setattr(daemon.codex_client, "decide", decide)
+    patch_batch(decide)
 
     daemon.run_cycle(dry_run=True, now=now, symbols_filter=["SPY"], sched=sched)
 
@@ -105,7 +105,7 @@ def test_run_cycle_injecte_lattribution_dans_le_contexte(monkeypatch, tmp_path) 
     assert attribution["realized_pnl"] == 100.0
 
 
-def test_run_cycle_reinjecte_les_learnings_recents_dans_le_contexte(monkeypatch, tmp_path) -> None:
+def test_run_cycle_reinjecte_les_learnings_recents_dans_le_contexte(monkeypatch, tmp_path, patch_batch) -> None:
     _write_runtime_config(tmp_path)
     state_dir = tmp_path / "state"
     sched = Scheduler(state_dir / "scheduler.json")
@@ -124,7 +124,7 @@ def test_run_cycle_reinjecte_les_learnings_recents_dans_le_contexte(monkeypatch,
     monkeypatch.setattr(daemon, "ROOT", tmp_path)
     monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
     monkeypatch.setattr(daemon.market, "get_bars", _bars)
-    monkeypatch.setattr(daemon.codex_client, "decide", decide)
+    patch_batch(decide)
 
     daemon.run_cycle(dry_run=True, now=now, symbols_filter=["SPY"], sched=sched)
 

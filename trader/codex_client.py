@@ -147,6 +147,47 @@ _COMPACT_OUTPUT_CONTRACT = (
 )
 
 
+_DECISION_GUIDANCE = (
+    "# Semantic layer\n"
+    "Les indicateurs fiables sont calculés par le code. Le prompt expose "
+    "`context.cockpit` (compact, sans barres brutes). Si ce cockpit ne suffit pas, "
+    "demande un complément borné via REQUEST_CONTEXT ; le daemon injectera "
+    "`context.research` avec les indicateurs calculés, et `context.prior_rationale` "
+    "(ta demande initiale) pour reprendre ton raisonnement sans repartir de zéro.\n\n"
+    "# Plans de sortie\n"
+    "Quand tu ouvres ou reverses une position, fournis autant que possible un "
+    "`exit_plan` structuré : hard_stop, take_profits, trailing_stop, "
+    "profit_protection, exit_watch et/ou max_hold_minutes. `profit_protection` est "
+    "optionnel : utilise-le seulement si le setup justifie une sécurisation "
+    "progressive; sinon le daemon ne l'ajoute pas de lui-même. `exit_watch` "
+    "est une veille d'invalidation attachée au trade : si elle déclenche, "
+    "le daemon te réveille avec le trigger; il ne ferme pas automatiquement. Le daemon "
+    "appliquera ce plan mécaniquement.\n\n"
+    "# Timers et veilles indicateurs\n"
+    "Pour chaque symbole tu peux soit fixer `next_wake_in_minutes`, soit poser "
+    "une `indicator_watch` temporaire multi-timeframe. Une watch est évaluée "
+    "par le daemon jusqu'à `ttl_minutes`; si elle déclenche, le symbole est "
+    "réveillé avec le trigger dans le contexte. Utilise "
+    "`on_trigger=WAKE_WITH_ORDER_INTENT` seulement quand la condition décrit "
+    "déjà précisément l'action prévue; l'ordre repassera par Codex et les "
+    "garde-fous runtime.\n\n"
+    "# Performance & auto-évaluation\n"
+    "Pilote-toi avec tes propres résultats. `context.kpis` donne les KPI live "
+    "(rendement, drawdown, sharpe…). `context.attribution` relie tes trades "
+    "clôturés à tes décisions d'entrée : P&L réalisé, calibration par bucket de "
+    "confidence (`by_confidence`) et coût par raison de sortie (`by_exit_reason`). "
+    "Si tes calls confiants perdent ou si une raison de sortie te coûte cher, "
+    "ajuste ta thèse et écris-le dans `learning`. `context.learnings` te rappelle "
+    "tes notes précédentes avec leur issue.\n\n"
+    "# Contexte compact\n"
+    "Le contexte ne contient PAS les barres brutes. Utilise le cockpit rapide pour "
+    "décider, ou demande un petit complément d'indicateurs si c'est vraiment utile. "
+    "Les requêtes d'indicateurs suivent le cube "
+    "`symbol × indicator × timeframe × lookback × window × as_of`; `4h` est "
+    "supporté comme timeframe sémantique.\n\n"
+)
+
+
 def build_prompt(*, mandate: str, memory: str, context: dict, allow_context_request: bool = False) -> str:
     """Assemble le prompt. Le COMPORTEMENT vit dans `mandate`/`memory` (boucle 1),
     pas en dur ici."""
@@ -155,45 +196,56 @@ def build_prompt(*, mandate: str, memory: str, context: dict, allow_context_requ
         "Tu es l'agent décideur d'un système de trading paper.\n\n"
         f"# Mandat\n{mandate}\n\n"
         f"# Mémoire / stratégie\n{memory}\n\n"
-        "# Semantic layer\n"
-        "Les indicateurs fiables sont calculés par le code. Le prompt initial expose "
-        "`context.cockpit` (compact, sans barres brutes). Si ce cockpit ne suffit pas, "
-        "demande un complément borné via REQUEST_CONTEXT ; le daemon injectera "
-        "`context.research` avec les indicateurs calculés, et `context.prior_rationale` "
-        "(ta demande initiale) pour reprendre ton raisonnement sans repartir de zéro.\n\n"
-        "# Plans de sortie\n"
-        "Quand tu ouvres ou reverses une position, fournis autant que possible un "
-        "`exit_plan` structuré : hard_stop, take_profits, trailing_stop, "
-        "profit_protection, exit_watch et/ou max_hold_minutes. `profit_protection` est "
-        "optionnel : utilise-le seulement si le setup justifie une sécurisation "
-        "progressive; sinon le daemon ne l'ajoute pas de lui-même. `exit_watch` "
-        "est une veille d'invalidation attachée au trade : si elle déclenche, "
-        "le daemon te réveille avec le trigger; il ne ferme pas automatiquement. Le daemon "
-        "appliquera ce plan mécaniquement.\n\n"
-        "# Timers et veilles indicateurs\n"
-        "Pour chaque symbole tu peux soit fixer `next_wake_in_minutes`, soit poser "
-        "une `indicator_watch` temporaire multi-timeframe. Une watch est évaluée "
-        "par le daemon jusqu'à `ttl_minutes`; si elle déclenche, le symbole est "
-        "réveillé avec le trigger dans le contexte. Utilise "
-        "`on_trigger=WAKE_WITH_ORDER_INTENT` seulement quand la condition décrit "
-        "déjà précisément l'action prévue; l'ordre repassera par Codex et les "
-        "garde-fous runtime.\n\n"
-        "# Performance & auto-évaluation\n"
-        "Pilote-toi avec tes propres résultats. `context.kpis` donne les KPI live "
-        "(rendement, drawdown, sharpe…). `context.attribution` relie tes trades "
-        "clôturés à tes décisions d'entrée : P&L réalisé, calibration par bucket de "
-        "confidence (`by_confidence`) et coût par raison de sortie (`by_exit_reason`). "
-        "Si tes calls confiants perdent ou si une raison de sortie te coûte cher, "
-        "ajuste ta thèse et écris-le dans `learning`. `context.learnings` te rappelle "
-        "tes notes précédentes avec leur issue.\n\n"
-        "# Contexte compact\n"
-        "Le contexte initial ne contient PAS les barres brutes. Utilise le cockpit "
-        "rapide pour décider, ou demande un petit complément d'indicateurs si c'est "
-        "vraiment utile. Les requêtes d'indicateurs suivent le cube "
-        "`symbol × indicator × timeframe × lookback × window × as_of`; `4h` est "
-        "supporté comme timeframe sémantique.\n\n"
+        f"{_DECISION_GUIDANCE}"
         f"# Contexte marché et portefeuille (JSON)\n{json.dumps(context, ensure_ascii=False)}\n\n"
         f"# Contrat de sortie\n{output_contract}\n"
+    )
+
+
+_BATCH_FINAL_CONTRACT = (
+    'Réponds UNIQUEMENT par {"decisions": [ <obj>, ... ]} avec EXACTEMENT une entrée '
+    "par symbole listé.\n"
+    'Chaque <obj>: {"symbol":"<SYM>","action":"BUY|SELL|HOLD","quantity":<number>,'
+    '"confidence":<0..1>,"rationale":"<court>","next_wake_in_minutes":<number|null>,'
+    '"intent":"OPEN_LONG|OPEN_SHORT|REDUCE|CLOSE|REVERSE|HOLD","exit_plan":<object|null>,'
+    '"indicator_watch":<object|null>,"learning":<string|null>}\n'
+    "Pour une ouverture, fournis un `exit_plan` (hard_stop, take_profits, trailing_stop, "
+    "profit_protection, exit_watch et/ou max_hold_minutes). `learning` optionnel : note "
+    "à retenir, réinjectée via context.learnings. Si tu n'es pas sûr -> action=HOLD."
+)
+
+_BATCH_COMPACT_CONTRACT = (
+    _BATCH_FINAL_CONTRACT
+    + "\nPour un symbole précis où un indicateur manque, mets à la place "
+    '{"symbol":"<SYM>","action":"REQUEST_CONTEXT","rationale":"<pourquoi>",'
+    '"requests":[{"symbol":"<SYM>","indicators":["z_score"],"timeframe":"15m|30m|1h|4h|1d",'
+    '"lookback":"5d|1mo|3mo|6mo|1y","window":48,"as_of":"latest"}]}. '
+    "Le daemon résoudra puis redemandera la décision finale de CE symbole. "
+    "Ne demande du contexte que si c'est vraiment utile."
+)
+
+
+def build_batch_prompt(
+    *,
+    mandate: str,
+    memory: str,
+    shared_context: dict,
+    symbols_payload: list[dict],
+    allow_context_request: bool = False,
+) -> str:
+    """Prompt batch : contexte PARTAGÉ (cockpit/portefeuille/KPI/attribution/learnings)
+    envoyé UNE fois, puis la liste des symboles à décider -> un seul appel modèle."""
+    contract = _BATCH_COMPACT_CONTRACT if allow_context_request else _BATCH_FINAL_CONTRACT
+    return (
+        "Tu es l'agent décideur d'un système de trading paper. Le contexte PARTAGÉ "
+        "(cockpit de tout l'univers, portefeuille, KPI, attribution, learnings) est "
+        "donné UNE fois ; rends une décision pour CHAQUE symbole de la liste.\n\n"
+        f"# Mandat\n{mandate}\n\n"
+        f"# Mémoire / stratégie\n{memory}\n\n"
+        f"{_DECISION_GUIDANCE}"
+        f"# Contexte partagé (JSON)\n{json.dumps(shared_context, ensure_ascii=False)}\n\n"
+        f"# Symboles à décider (JSON)\n{json.dumps(symbols_payload, ensure_ascii=False)}\n\n"
+        f"# Contrat de sortie\n{contract}\n"
     )
 
 
@@ -206,8 +258,9 @@ def _extract_json(text: str) -> dict:
     return json.loads(text[start : end + 1])
 
 
-def parse_decision(raw_text: str, symbol: str) -> Decision:
-    data = _extract_json(raw_text)
+def _decision_from_dict(data: dict, symbol: str) -> Decision:
+    if not isinstance(data, dict):
+        raise ValueError("élément non-objet")
     missing = _DECISION_KEYS - data.keys()
     if missing:
         raise ValueError(f"clés manquantes: {missing}")
@@ -244,8 +297,13 @@ def parse_decision(raw_text: str, symbol: str) -> Decision:
     )
 
 
-def parse_decision_or_context_request(raw_text: str, symbol: str) -> Decision | ContextResearchRequest:
-    data = _extract_json(raw_text)
+def parse_decision(raw_text: str, symbol: str) -> Decision:
+    return _decision_from_dict(_extract_json(raw_text), symbol)
+
+
+def _response_from_dict(data: dict, symbol: str) -> Decision | ContextResearchRequest:
+    if not isinstance(data, dict):
+        raise ValueError("élément non-objet")
     action = str(data.get("action", "")).upper()
     if action in {"REQUEST_CONTEXT", "NEEDS_CONTEXT"} or data.get("needs_context") is True:
         raw_requests = data.get("requests") or data.get("indicator_requests") or []
@@ -280,7 +338,50 @@ def parse_decision_or_context_request(raw_text: str, symbol: str) -> Decision | 
                 else float(data["next_wake_in_minutes"])
             ),
         )
-    return parse_decision(raw_text, symbol)
+    return _decision_from_dict(data, symbol)
+
+
+def parse_decision_or_context_request(raw_text: str, symbol: str) -> Decision | ContextResearchRequest:
+    return _response_from_dict(_extract_json(raw_text), symbol)
+
+
+def _extract_decisions_array(text: str) -> list:
+    """Récupère la liste `decisions` d'un objet JSON batch (tolère la prose autour)."""
+    data = _extract_json(text)
+    decisions = data.get("decisions")
+    if not isinstance(decisions, list):
+        raise ValueError("clé 'decisions' absente ou non-liste")
+    return decisions
+
+
+def parse_batch(
+    raw_text: str, symbols: list[str], *, allow_context_request: bool
+) -> dict[str, Decision | ContextResearchRequest]:
+    """Décode un tableau de décisions (une par symbole), avec ISOLATION per-élément :
+    un élément invalide -> HOLD pour CE symbole, les autres passent. Un JSON global
+    invalide -> tous HOLD. Tout symbole demandé mais absent de la réponse -> HOLD."""
+    by_symbol: dict[str, Decision | ContextResearchRequest] = {}
+    try:
+        elements = _extract_decisions_array(raw_text)
+    except (ValueError, json.JSONDecodeError):
+        return {sym: Decision.hold(sym, "batch_bad_output") for sym in symbols}
+
+    requested = set(symbols)
+    for element in elements:
+        sym = str(element.get("symbol")) if isinstance(element, dict) else None
+        if sym is None or sym not in requested:
+            continue  # symbole hors périmètre ou élément non-objet -> ignoré
+        try:
+            if allow_context_request:
+                by_symbol[sym] = _response_from_dict(element, sym)
+            else:
+                by_symbol[sym] = _decision_from_dict(element, sym)
+        except Exception as e:  # noqa: BLE001 - isolation per-élément
+            by_symbol[sym] = Decision.hold(sym, f"batch_bad_output: {e}")
+
+    for sym in symbols:
+        by_symbol.setdefault(sym, Decision.hold(sym, "missing_in_batch"))
+    return by_symbol
 
 
 def build_command(prompt: str, *, acpx_bin: str, model: str, timeout_s: int) -> list[str]:
@@ -348,3 +449,37 @@ def decide(
             llm_fallback_reason=completion.fallback_reason,
             llm_error="bad_output",
         )
+
+
+def decide_batch(
+    *,
+    symbols: list[str],
+    mandate: str,
+    memory: str,
+    shared_context: dict,
+    per_symbol: dict[str, dict],
+    acpx_bin: str = "acpx",
+    model: str = DEFAULT_MODEL,
+    timeout_s: int = 180,
+    allow_context_request: bool = False,
+    llm_router: llm.LlmRouter | None = None,
+) -> dict[str, Decision | ContextResearchRequest]:
+    """UN seul appel modèle pour TOUS les symboles dus : le contexte partagé n'est
+    envoyé qu'une fois (vs N fois en mode par-symbole). Isolation per-élément +
+    tout échec -> HOLD. Retourne un dict symbole -> Decision|ContextResearchRequest."""
+    if not symbols:
+        return {}
+    payload = [{"symbol": sym, **(per_symbol.get(sym) or {})} for sym in symbols]
+    prompt = build_batch_prompt(
+        mandate=mandate,
+        memory=memory,
+        shared_context=shared_context,
+        symbols_payload=payload,
+        allow_context_request=allow_context_request,
+    )
+    router = llm_router or llm.build_default_router_from_env(acpx_bin=acpx_bin, spark_model=model)
+    completion = router.complete(prompt, timeout_s=timeout_s)
+    if isinstance(completion, llm.LlmFailure):
+        return {sym: _hold_from_llm_failure(sym, completion) for sym in symbols}
+    results = parse_batch(completion.text, symbols, allow_context_request=allow_context_request)
+    return {sym: _attach_llm_metadata(resp, completion) for sym, resp in results.items()}

@@ -1,5 +1,104 @@
-from trader.codex_client import DEFAULT_MODEL, ContextResearchRequest, parse_decision, parse_decision_or_context_request, decide
-from trader.llm import LlmCompletion
+from trader.codex_client import DEFAULT_MODEL, ContextResearchRequest, Decision, parse_decision, parse_decision_or_context_request, parse_batch, decide, decide_batch
+from trader.llm import LlmCompletion, LlmFailure
+
+
+def test_decide_batch_renvoie_une_decision_par_symbole_avec_metadonnees() -> None:
+    class StubRouter:
+        def complete(self, prompt: str, *, timeout_s: int) -> LlmCompletion:
+            return LlmCompletion(
+                provider="spark",
+                model="gpt-5.3-codex-spark[medium]",
+                text=(
+                    '{"decisions": ['
+                    '{"symbol":"SPY","action":"BUY","quantity":10,"confidence":0.7,"rationale":"x","intent":"OPEN_LONG"},'
+                    '{"symbol":"QQQ","action":"HOLD","quantity":0,"confidence":0.5,"rationale":"y"}'
+                    ']}'
+                ),
+            )
+
+    result = decide_batch(
+        symbols=["SPY", "QQQ"],
+        mandate="# M",
+        memory="# Mem",
+        shared_context={"cockpit": {}},
+        per_symbol={"SPY": {"indicator_triggers": []}},
+        llm_router=StubRouter(),
+    )
+
+    assert result["SPY"].action == "BUY"
+    assert result["SPY"].llm_provider == "spark"
+    assert result["QQQ"].action == "HOLD"
+
+
+def test_decide_batch_echec_llm_met_tout_en_hold() -> None:
+    class FailRouter:
+        def complete(self, prompt: str, *, timeout_s: int) -> LlmFailure:
+            return LlmFailure(provider="spark", model="m", code="timeout", message="boom", retryable=True)
+
+    result = decide_batch(
+        symbols=["SPY", "QQQ"],
+        mandate="",
+        memory="",
+        shared_context={},
+        per_symbol={},
+        llm_router=FailRouter(),
+    )
+
+    assert result["SPY"].action == "HOLD"
+    assert result["QQQ"].action == "HOLD"
+    assert result["SPY"].llm_error == "timeout"
+
+
+def test_parse_batch_decode_un_tableau_par_symbole() -> None:
+    text = (
+        '{"decisions": ['
+        '{"symbol":"SPY","action":"BUY","quantity":10,"confidence":0.7,"rationale":"breakout","intent":"OPEN_LONG"},'
+        '{"symbol":"QQQ","action":"HOLD","quantity":0,"confidence":0.5,"rationale":"range"}'
+        ']}'
+    )
+    result = parse_batch(text, ["SPY", "QQQ"], allow_context_request=False)
+    assert set(result.keys()) == {"SPY", "QQQ"}
+    assert result["SPY"].action == "BUY"
+    assert result["QQQ"].action == "HOLD"
+
+
+def test_parse_batch_isole_un_element_corrompu() -> None:
+    text = (
+        '{"decisions": ['
+        '{"symbol":"SPY","action":"BUY","quantity":10,"confidence":0.7,"rationale":"ok","intent":"OPEN_LONG"},'
+        '{"symbol":"QQQ","action":"WAT","quantity":"x"}'  # action invalide + quantity non-numérique
+        ']}'
+    )
+    result = parse_batch(text, ["SPY", "QQQ"], allow_context_request=False)
+    assert result["SPY"].action == "BUY"
+    assert result["QQQ"].action == "HOLD"  # l'élément pourri retombe en HOLD, l'autre passe
+
+
+def test_parse_batch_symbole_absent_devient_hold() -> None:
+    text = '{"decisions": [{"symbol":"SPY","action":"BUY","quantity":5,"confidence":0.6,"rationale":"x","intent":"OPEN_LONG"}]}'
+    result = parse_batch(text, ["SPY", "QQQ"], allow_context_request=False)
+    assert result["SPY"].action == "BUY"
+    assert result["QQQ"].action == "HOLD"
+    assert "missing" in result["QQQ"].rationale
+
+
+def test_parse_batch_accepte_request_context_par_element() -> None:
+    text = (
+        '{"decisions": ['
+        '{"symbol":"SPY","action":"REQUEST_CONTEXT","rationale":"besoin z","requests":[{"symbol":"SPY","indicators":["z_score"],"timeframe":"1h"}]},'
+        '{"symbol":"QQQ","action":"HOLD","quantity":0,"confidence":0.5,"rationale":"range"}'
+        ']}'
+    )
+    result = parse_batch(text, ["SPY", "QQQ"], allow_context_request=True)
+    assert isinstance(result["SPY"], ContextResearchRequest)
+    assert result["SPY"].requests[0].indicators == ["z_score"]
+    assert result["QQQ"].action == "HOLD"
+
+
+def test_parse_batch_json_global_invalide_tout_en_hold() -> None:
+    result = parse_batch("pas du json", ["SPY", "QQQ"], allow_context_request=False)
+    assert result["SPY"].action == "HOLD"
+    assert result["QQQ"].action == "HOLD"
 
 
 def test_default_model_utilise_reasoning_medium() -> None:

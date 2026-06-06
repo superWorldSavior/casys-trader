@@ -29,7 +29,7 @@ def _write_runtime_config(root) -> None:
     (root / "mandate" / "memory.md").write_text("# Memoire\n")
 
 
-def test_run_cycle_ecrit_un_statut_et_un_rapport_courant(monkeypatch, tmp_path) -> None:
+def test_run_cycle_ecrit_un_statut_et_un_rapport_courant(monkeypatch, tmp_path, patch_batch) -> None:
     _write_runtime_config(tmp_path)
     state_dir = tmp_path / "state"
     now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
@@ -43,11 +43,7 @@ def test_run_cycle_ecrit_un_statut_et_un_rapport_courant(monkeypatch, tmp_path) 
             Bar(ts=now.isoformat(), open=100.0, high=101.0, low=99.0, close=100.0, volume=1000.0)
         ],
     )
-    monkeypatch.setattr(
-        daemon.codex_client,
-        "decide",
-        lambda **kwargs: Decision.hold(kwargs["symbol"], "attente"),
-    )
+    patch_batch(lambda **kwargs: Decision.hold(kwargs["symbol"], "attente"))
 
     daemon.run_cycle(
         dry_run=True,
@@ -69,7 +65,7 @@ def test_run_cycle_ecrit_un_statut_et_un_rapport_courant(monkeypatch, tmp_path) 
     assert any(json.loads(line)["event"] == "decision_recorded" for line in events)
 
 
-def test_run_cycle_loggue_la_progression_console(monkeypatch, tmp_path, caplog) -> None:
+def test_run_cycle_loggue_la_progression_console(monkeypatch, tmp_path, caplog, patch_batch) -> None:
     _write_runtime_config(tmp_path)
     state_dir = tmp_path / "state"
     now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
@@ -84,11 +80,7 @@ def test_run_cycle_loggue_la_progression_console(monkeypatch, tmp_path, caplog) 
             Bar(ts=now.isoformat(), open=100.0, high=101.0, low=99.0, close=100.0, volume=1000.0)
         ],
     )
-    monkeypatch.setattr(
-        daemon.codex_client,
-        "decide",
-        lambda **kwargs: Decision.hold(kwargs["symbol"], "attente"),
-    )
+    patch_batch(lambda **kwargs: Decision.hold(kwargs["symbol"], "attente"))
 
     daemon.run_cycle(
         dry_run=True,
@@ -100,11 +92,12 @@ def test_run_cycle_loggue_la_progression_console(monkeypatch, tmp_path, caplog) 
     messages = "\n".join(record.getMessage() for record in caplog.records)
     assert "[cycle] start" in messages
     assert "[market] loaded" in messages
-    assert "[decision 1/1] SPY start" in messages
+    assert "[batch] deciding" in messages
+    assert "[decision 1/1] SPY result" in messages
     assert "[cycle] completed" in messages
 
 
-def test_run_cycle_historise_la_perf_par_modele_sur_fill(monkeypatch, tmp_path) -> None:
+def test_run_cycle_historise_la_perf_par_modele_sur_fill(monkeypatch, tmp_path, patch_batch) -> None:
     _write_runtime_config(tmp_path)
     state_dir = tmp_path / "state"
     now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
@@ -118,10 +111,7 @@ def test_run_cycle_historise_la_perf_par_modele_sur_fill(monkeypatch, tmp_path) 
             Bar(ts=now.isoformat(), open=100.0, high=101.0, low=99.0, close=100.0, volume=1000.0)
         ],
     )
-    monkeypatch.setattr(
-        daemon.codex_client,
-        "decide",
-        lambda **kwargs: Decision(
+    patch_batch(lambda **kwargs: Decision(
             symbol=kwargs["symbol"],
             action="BUY",
             quantity=10.0,
@@ -130,8 +120,7 @@ def test_run_cycle_historise_la_perf_par_modele_sur_fill(monkeypatch, tmp_path) 
             intent="OPEN_LONG",
             llm_provider="ollama-cloud",
             llm_model="nemotron-3-nano:30b-cloud",
-            llm_fallback_reason="spark:quota_exceeded",
-        ),
+            llm_fallback_reason="spark:quota_exceeded"),
     )
 
     daemon.run_cycle(
@@ -155,7 +144,7 @@ def test_run_cycle_historise_la_perf_par_modele_sur_fill(monkeypatch, tmp_path) 
     assert rows[0]["equity"] == 100000.0
 
 
-def test_run_cycle_bloque_decision_sur_donnees_marche_perimees(monkeypatch, tmp_path) -> None:
+def test_run_cycle_bloque_decision_sur_donnees_marche_perimees(monkeypatch, tmp_path, patch_batch) -> None:
     _write_runtime_config(tmp_path)
     state_dir = tmp_path / "state"
     now = datetime(2026, 6, 5, 16, 0, tzinfo=timezone.utc)
@@ -184,7 +173,7 @@ def test_run_cycle_bloque_decision_sur_donnees_marche_perimees(monkeypatch, tmp_
             intent="OPEN_LONG",
         )
 
-    monkeypatch.setattr(daemon.codex_client, "decide", decide)
+    patch_batch(decide)
 
     report = daemon.run_cycle(
         dry_run=False,

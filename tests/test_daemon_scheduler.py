@@ -27,7 +27,7 @@ def _write_runtime_config(root) -> None:
     (root / "mandate" / "memory.md").write_text("# Memoire\n")
 
 
-def test_run_cycle_planifie_uniquement_les_symboles_traites(monkeypatch, tmp_path) -> None:
+def test_run_cycle_planifie_uniquement_les_symboles_traites(monkeypatch, tmp_path, patch_batch) -> None:
     _write_runtime_config(tmp_path)
     state_dir = tmp_path / "state"
     sched = Scheduler(state_dir / "scheduler.json")
@@ -42,17 +42,13 @@ def test_run_cycle_planifie_uniquement_les_symboles_traites(monkeypatch, tmp_pat
             Bar(ts=now.isoformat(), open=100.0, high=101.0, low=99.0, close=100.0, volume=1000.0)
         ],
     )
-    monkeypatch.setattr(
-        daemon.codex_client,
-        "decide",
-        lambda **kwargs: Decision(
+    patch_batch(lambda **kwargs: Decision(
             symbol=kwargs["symbol"],
             action="HOLD",
             quantity=0.0,
             confidence=0.7,
             rationale="attente",
-            next_wake_in_minutes=12.0,
-        ),
+            next_wake_in_minutes=12.0),
     )
 
     report = daemon.run_cycle(
@@ -71,7 +67,7 @@ def test_run_cycle_planifie_uniquement_les_symboles_traites(monkeypatch, tmp_pat
     assert sched.next_wake("QQQ") == datetime(2026, 6, 5, 12, 30, tzinfo=timezone.utc)
 
 
-def test_run_cycle_utilise_le_timer_global_par_defaut_si_agent_ne_modifie_pas(monkeypatch, tmp_path) -> None:
+def test_run_cycle_utilise_le_timer_global_par_defaut_si_agent_ne_modifie_pas(monkeypatch, tmp_path, patch_batch) -> None:
     _write_runtime_config(tmp_path)
     state_dir = tmp_path / "state"
     sched = Scheduler(state_dir / "scheduler.json")
@@ -86,11 +82,7 @@ def test_run_cycle_utilise_le_timer_global_par_defaut_si_agent_ne_modifie_pas(mo
             Bar(ts=now.isoformat(), open=100.0, high=101.0, low=99.0, close=100.0, volume=1000.0)
         ],
     )
-    monkeypatch.setattr(
-        daemon.codex_client,
-        "decide",
-        lambda **kwargs: Decision.hold(kwargs["symbol"], "attente"),
-    )
+    patch_batch(lambda **kwargs: Decision.hold(kwargs["symbol"], "attente"))
 
     report = daemon.run_cycle(
         dry_run=True,
@@ -107,7 +99,7 @@ def test_run_cycle_utilise_le_timer_global_par_defaut_si_agent_ne_modifie_pas(mo
     assert sched.next_wake("QQQ") == datetime(2026, 6, 5, 12, 30, tzinfo=timezone.utc)
 
 
-def test_run_cycle_retire_un_override_symbole_expire_si_agent_ne_le_renouvelle_pas(monkeypatch, tmp_path) -> None:
+def test_run_cycle_retire_un_override_symbole_expire_si_agent_ne_le_renouvelle_pas(monkeypatch, tmp_path, patch_batch) -> None:
     _write_runtime_config(tmp_path)
     state_dir = tmp_path / "state"
     sched = Scheduler(state_dir / "scheduler.json")
@@ -124,11 +116,7 @@ def test_run_cycle_retire_un_override_symbole_expire_si_agent_ne_le_renouvelle_p
             Bar(ts=now.isoformat(), open=100.0, high=101.0, low=99.0, close=100.0, volume=1000.0)
         ],
     )
-    monkeypatch.setattr(
-        daemon.codex_client,
-        "decide",
-        lambda **kwargs: Decision.hold(kwargs["symbol"], "attente"),
-    )
+    patch_batch(lambda **kwargs: Decision.hold(kwargs["symbol"], "attente"))
 
     daemon.run_cycle(dry_run=True, now=now, symbols_filter=["SPY"], sched=sched)
 
@@ -156,7 +144,7 @@ def test_select_due_symbols_peut_forcer_un_bootstrap_explicitement(tmp_path) -> 
     assert daemon._select_due_symbols(["SPY", "QQQ"], sched=sched, once=False, bootstrap=False, now=now) == []
 
 
-def test_run_cycle_persiste_une_indicator_watch_de_decision(monkeypatch, tmp_path) -> None:
+def test_run_cycle_persiste_une_indicator_watch_de_decision(monkeypatch, tmp_path, patch_batch) -> None:
     _write_runtime_config(tmp_path)
     state_dir = tmp_path / "state"
     sched = Scheduler(state_dir / "scheduler.json")
@@ -171,10 +159,7 @@ def test_run_cycle_persiste_une_indicator_watch_de_decision(monkeypatch, tmp_pat
             Bar(ts=now.isoformat(), open=100.0, high=101.0, low=99.0, close=100.0, volume=1000.0)
         ],
     )
-    monkeypatch.setattr(
-        daemon.codex_client,
-        "decide",
-        lambda **kwargs: Decision(
+    patch_batch(lambda **kwargs: Decision(
             symbol=kwargs["symbol"],
             action="HOLD",
             quantity=0.0,
@@ -188,8 +173,7 @@ def test_run_cycle_persiste_une_indicator_watch_de_decision(monkeypatch, tmp_pat
                     {"indicator": "z_score", "op": ">=", "value": 1.5, "interval": "15m", "window": 32},
                     {"indicator": "return", "op": ">", "value": 0.01, "interval": "1h", "window": 24},
                 ],
-            },
-        ),
+            }),
     )
 
     report = daemon.run_cycle(dry_run=True, now=now, symbols_filter=["SPY"], sched=sched)
@@ -201,7 +185,7 @@ def test_run_cycle_persiste_une_indicator_watch_de_decision(monkeypatch, tmp_pat
     assert [condition["interval"] for condition in watches[0]["conditions"]] == ["15m", "1h"]
 
 
-def test_scan_indicator_watches_reveille_le_symbole_declenche(monkeypatch, tmp_path) -> None:
+def test_scan_indicator_watches_reveille_le_symbole_declenche(monkeypatch, tmp_path, patch_batch) -> None:
     state_dir = tmp_path / "state"
     sched = Scheduler(state_dir / "scheduler.json")
     now = datetime(2026, 6, 5, 12, 10, tzinfo=timezone.utc)
@@ -244,7 +228,7 @@ def test_scan_indicator_watches_reveille_le_symbole_declenche(monkeypatch, tmp_p
     assert sched.next_wake("SPY") == now
 
 
-def test_scan_indicator_watches_charge_les_pairs_cross_asset(monkeypatch, tmp_path) -> None:
+def test_scan_indicator_watches_charge_les_pairs_cross_asset(monkeypatch, tmp_path, patch_batch) -> None:
     state_dir = tmp_path / "state"
     sched = Scheduler(state_dir / "scheduler.json")
     now = datetime(2026, 6, 5, 12, 10, tzinfo=timezone.utc)
@@ -289,7 +273,7 @@ def test_scan_indicator_watches_charge_les_pairs_cross_asset(monkeypatch, tmp_pa
     assert sched.next_wake("SPY") == now
 
 
-def test_run_cycle_injecte_les_indicator_triggers_dans_le_contexte(monkeypatch, tmp_path) -> None:
+def test_run_cycle_injecte_les_indicator_triggers_dans_le_contexte(monkeypatch, tmp_path, patch_batch) -> None:
     _write_runtime_config(tmp_path)
     state_dir = tmp_path / "state"
     sched = Scheduler(state_dir / "scheduler.json")
@@ -310,7 +294,7 @@ def test_run_cycle_injecte_les_indicator_triggers_dans_le_contexte(monkeypatch, 
         captured_context.update(kwargs["context"])
         return Decision.hold(kwargs["symbol"], "trigger inspecte")
 
-    monkeypatch.setattr(daemon.codex_client, "decide", decide)
+    patch_batch(decide)
 
     trigger = {
         "watch_id": "spy-watch",
