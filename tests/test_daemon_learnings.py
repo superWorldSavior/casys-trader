@@ -69,6 +69,42 @@ def test_run_cycle_ecrit_le_learning_emis_par_lagent(monkeypatch, tmp_path) -> N
     assert recent[0]["executed"] is False
 
 
+def test_run_cycle_injecte_lattribution_dans_le_contexte(monkeypatch, tmp_path) -> None:
+    import json as _json
+
+    _write_runtime_config(tmp_path)
+    state_dir = tmp_path / "state"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    sched = Scheduler(state_dir / "scheduler.json")
+    now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
+
+    # Un round-trip clôturé déjà dans l'historique de performance.
+    with (state_dir / "model_performance.jsonl").open("w", encoding="utf-8") as f:
+        f.write(_json.dumps({"ts": "2026-06-05T10:00:00+00:00", "symbol": "SPY", "action": "BUY",
+                             "quantity": 10, "price": 100.0, "confidence": 0.9, "intent": "OPEN_LONG"}) + "\n")
+        f.write(_json.dumps({"ts": "2026-06-05T11:00:00+00:00", "symbol": "SPY", "action": "SELL",
+                             "quantity": 10, "price": 110.0, "confidence": None, "intent": "PLANNED_EXIT",
+                             "exit_reason": "take_profit"}) + "\n")
+
+    contexts: list[dict] = []
+
+    def decide(**kwargs):
+        contexts.append(kwargs["context"])
+        return Decision.hold(kwargs["symbol"], "attente")
+
+    monkeypatch.setattr(daemon, "ROOT", tmp_path)
+    monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+    monkeypatch.setattr(daemon.market, "get_bars", _bars)
+    monkeypatch.setattr(daemon.codex_client, "decide", decide)
+
+    daemon.run_cycle(dry_run=True, now=now, symbols_filter=["SPY"], sched=sched)
+
+    assert contexts
+    attribution = contexts[0]["attribution"]
+    assert attribution["n_closed_trades"] == 1
+    assert attribution["realized_pnl"] == 100.0
+
+
 def test_run_cycle_reinjecte_les_learnings_recents_dans_le_contexte(monkeypatch, tmp_path) -> None:
     _write_runtime_config(tmp_path)
     state_dir = tmp_path / "state"

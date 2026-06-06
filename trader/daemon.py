@@ -23,7 +23,7 @@ from pathlib import Path
 import yaml
 
 from .agent_context import build_market_cockpit, resolve_indicator_requests
-from . import codex_client, stats
+from . import attribution, codex_client, stats
 from .exit_engine import evaluate_plan
 from .features import DEFAULT_INDICATORS
 from .indicator_watch import (
@@ -601,6 +601,10 @@ def run_cycle(
         "stale_market_data": stale_market_data,
         # KPI live injectés pour que l'agent décideur pilote sa performance.
         "kpis": stats.compute_live_kpis(STATE_DIR),
+        # Attribution décision->résultat : P&L réalisé par trade, calibration de la
+        # confidence et coût par raison de sortie. Le signal qui dit à l'agent si
+        # ses choix (surtout ses calls confiants) gagnent vraiment.
+        "attribution": attribution.compute_attribution(STATE_DIR),
         # Boucle de feedback : les learnings que l'agent a écrits aux réveils
         # précédents (store machine-owned, borné), réinjectés pour qu'il s'appuie
         # sur ses propres observations.
