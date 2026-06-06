@@ -207,8 +207,13 @@ def test_run_cycle_bloque_decision_sur_donnees_marche_perimees(monkeypatch, tmp_
             "executed": False,
             "reason": "stale_market_data",
             "last_bar_ts": stale_ts,
+            "stale_reason": "too_old",
             "data_age_minutes": 120.0,
         }
     ]
-    assert report["stale_market_data"]["SPY"] == {"last_bar_ts": stale_ts, "data_age_minutes": 120.0}
+    assert report["stale_market_data"]["SPY"] == {
+        "last_bar_ts": stale_ts,
+        "stale_reason": "too_old",
+        "data_age_minutes": 120.0,
+    }
     assert json.loads((state_dir / "broker.json").read_text())["fills"] == []

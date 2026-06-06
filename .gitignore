@@ -12,3 +12,6 @@ __pycache__/
 
 # OS
 .DS_Store
+
+# Archives d_état runtime (local, jamais versionné)
+state_archive_*/

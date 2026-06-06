@@ -10,7 +10,7 @@ Aucune décision ici — uniquement de la donnée brute.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 
 
 @dataclass(frozen=True)
@@ -28,6 +28,44 @@ class Quote:
     symbol: str
     price: float
     ts: str
+
+
+@dataclass(frozen=True)
+class Freshness:
+    """Verdict de fraîcheur d'une série de barres. `fresh=False` => ne pas trader."""
+
+    fresh: bool
+    reason: str | None        # None si frais ; sinon "no_data"|"unparseable_ts"|"too_old"
+    age_minutes: float | None
+
+
+# Tolérance d'horloge : une barre légèrement « dans le futur » (désync d'horloge
+# entre yfinance et l'hôte) reste acceptable ; au-delà c'est une donnée invalide.
+_CLOCK_SKEW_TOLERANCE_MINUTES = 5.0
+
+
+def assess_freshness(bars: list[Bar], *, now: datetime, max_age_minutes: float) -> Freshness:
+    """La fraîcheur EST le signal « marché live » : si la dernière barre est
+    récente, le marché trade ; sinon (fermé/férié/weekend/halt) la donnée vieillit.
+
+    Tout est comparé en UTC — aucune logique de fuseau/DST à se tromper. Fail-safe :
+    pas de barres / `ts` imparsable / `ts` dans le futur / trop vieux => stale
+    (jamais « frais par défaut »)."""
+    if not bars:
+        return Freshness(False, "no_data", None)
+    ts = _parse_ts(str(bars[-1].ts))
+    if ts is None:
+        return Freshness(False, "unparseable_ts", None)
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    now_utc = now if now.tzinfo is not None else now.replace(tzinfo=timezone.utc)
+    delta_minutes = (now_utc - ts.astimezone(timezone.utc)).total_seconds() / 60.0
+    if delta_minutes < -_CLOCK_SKEW_TOLERANCE_MINUTES:
+        return Freshness(False, "future_ts", None)
+    age_minutes = max(0.0, delta_minutes)
+    if age_minutes > max_age_minutes:
+        return Freshness(False, "too_old", age_minutes)
+    return Freshness(True, None, age_minutes)
 
 
 class MarketError(Exception):

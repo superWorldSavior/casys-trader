@@ -14,6 +14,32 @@ def _bar(index: int, close: float) -> Bar:
     )
 
 
+def test_ne_reutilise_le_cache_que_si_lintervalle_matche() -> None:
+    # Le cache contient des barres 15m. Une requête 1h ne doit PAS les réutiliser :
+    # elle doit refetch en 1h (sinon on lit du 15m en croyant que c'est du 1h).
+    calls: list[tuple[str, str, str]] = []
+
+    def get_bars(symbol: str, lookback: str, interval: str) -> list[Bar]:
+        calls.append((symbol, lookback, interval))
+        return [_bar(index, 100.0 + index) for index in range(12)]
+
+    cached_15m = {"SPY": [_bar(i, 200.0 + i) for i in range(12)]}
+
+    result = resolve_indicator_requests(
+        [IndicatorRequest(symbol="SPY", indicators=["return"], timeframe="1h", lookback="5d", window=24)],
+        cached_15m,
+        symbols=["SPY"],
+        max_requests=2,
+        max_indicators=4,
+        market_get_bars=get_bars,
+        cached_interval="15m",
+        cached_lookback="5d",
+    )
+
+    assert calls == [("SPY", "5d", "1h")]  # a bien refetch en 1h, pas réutilisé le 15m
+    assert result["requests"][0]["timeframe"] == "1h"
+
+
 def test_resolve_indicator_requests_normalise_et_charge_timeframe_4h() -> None:
     calls: list[tuple[str, str, str]] = []
 

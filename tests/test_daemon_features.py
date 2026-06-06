@@ -37,9 +37,9 @@ def test_run_cycle_injecte_un_cockpit_compact_sans_barres(monkeypatch, tmp_path)
     def bars(symbol: str, lookback: str, interval: str) -> list[Bar]:
         base = 100.0 if symbol == "SPY" else 200.0
         return [
-            Bar(ts="t1", open=base, high=base + 1, low=base - 1, close=base, volume=1000.0),
-            Bar(ts="t2", open=base + 1, high=base + 2, low=base, close=base + 2, volume=1000.0),
-            Bar(ts="t3", open=base + 2, high=base + 3, low=base + 1, close=base + 4, volume=1000.0),
+            Bar(ts="2026-06-05T11:30:00+00:00", open=base, high=base + 1, low=base - 1, close=base, volume=1000.0),
+            Bar(ts="2026-06-05T11:45:00+00:00", open=base + 1, high=base + 2, low=base, close=base + 2, volume=1000.0),
+            Bar(ts="2026-06-05T11:55:00+00:00", open=base + 2, high=base + 3, low=base + 1, close=base + 4, volume=1000.0),
         ]
 
     def decide(**kwargs) -> Decision:
@@ -75,9 +75,9 @@ def test_run_cycle_resout_une_requete_indicateurs_bornee_avant_decision_finale(m
     def bars(symbol: str, lookback: str, interval: str) -> list[Bar]:
         base = 100.0 if symbol == "SPY" else 200.0
         return [
-            Bar(ts="t1", open=base, high=base + 1, low=base - 1, close=base, volume=1000.0),
-            Bar(ts="t2", open=base + 1, high=base + 2, low=base, close=base + 2, volume=1000.0),
-            Bar(ts="t3", open=base + 2, high=base + 3, low=base + 1, close=base + 4, volume=1000.0),
+            Bar(ts="2026-06-05T11:30:00+00:00", open=base, high=base + 1, low=base - 1, close=base, volume=1000.0),
+            Bar(ts="2026-06-05T11:45:00+00:00", open=base + 1, high=base + 2, low=base, close=base + 2, volume=1000.0),
+            Bar(ts="2026-06-05T11:55:00+00:00", open=base + 2, high=base + 3, low=base + 1, close=base + 4, volume=1000.0),
         ]
 
     calls = {"n": 0}

@@ -52,7 +52,12 @@ _ACTION_INTENTS = {
     "BUY": {"OPEN_LONG", "REDUCE", "CLOSE", "REVERSE"},
     "SELL": {"OPEN_SHORT", "REDUCE", "CLOSE", "REVERSE"},
 }
-DEFAULT_MAX_MARKET_DATA_AGE_MINUTES = 90.0
+# Barres fines (15m) pour coller à la cadence scalping (réveils 5-30 min) et avoir
+# un prix qui bouge intra-heure. La fraîcheur sur ces barres sert de garde
+# « marché live » (UTC, sans logique de fuseau). ~40 min ≈ tolérance de 2 barres + délai.
+DEFAULT_RUNTIME_INTERVAL = "15m"
+DEFAULT_RUNTIME_LOOKBACK = "5d"
+DEFAULT_MAX_MARKET_DATA_AGE_MINUTES = 40.0
 
 
 def _write_json_state(filename: str, payload: dict) -> None:
@@ -119,26 +124,6 @@ def _kill_switch_active() -> bool:
 
 def _bounded_wake_minutes(value: float, *, minimum: float, maximum: float) -> float:
     return min(max(float(value), minimum), maximum)
-
-
-def _parse_bar_timestamp(value: str) -> datetime | None:
-    try:
-        ts = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    if ts.tzinfo is None:
-        return ts.replace(tzinfo=timezone.utc)
-    return ts.astimezone(timezone.utc)
-
-
-def _market_data_age_minutes(bars: list, *, now: datetime) -> float | None:
-    if not bars:
-        return None
-    ts = _parse_bar_timestamp(str(bars[-1].ts))
-    if ts is None:
-        return None
-    now_utc = now.astimezone(timezone.utc) if now.tzinfo is not None else now.replace(tzinfo=timezone.utc)
-    return max(0.0, (now_utc - ts).total_seconds() / 60.0)
 
 
 def _ensure_default_wake(
@@ -353,6 +338,7 @@ def _scan_exit_watches(
     symbols: list[str],
     now: datetime,
     dry_run: bool,
+    bars_interval: str,
 ) -> list[dict]:
     plans_by_watch_id: dict[str, object] = {}
     watches: list[dict] = []
@@ -370,8 +356,10 @@ def _scan_exit_watches(
     if not watches:
         return []
 
+    # Les barres runtime préchargées sont à `bars_interval` (15m), pas 1h : on les
+    # indexe sous leur vrai intervalle pour qu'une watch ne lise pas le mauvais TF.
     bars_by_key: dict[tuple[str, str], list] = {
-        (symbol, "1h"): bars
+        (symbol, bars_interval): bars
         for symbol, bars in bars_by_symbol.items()
     }
     for symbol, interval, lookback in watch_market_requests(watches, universe_symbols=symbols):
@@ -460,6 +448,8 @@ def run_cycle(
     max_indicators_per_request: int = 4,
     max_model_calls_per_cycle: int = 25,
     max_market_data_age_minutes: float = DEFAULT_MAX_MARKET_DATA_AGE_MINUTES,
+    runtime_interval: str = DEFAULT_RUNTIME_INTERVAL,
+    runtime_lookback: str = DEFAULT_RUNTIME_LOOKBACK,
     max_learnings_in_context: int = 10,
     indicator_triggers: list[dict] | None = None,
 ) -> dict:
@@ -522,20 +512,30 @@ def run_cycle(
     bars_by_symbol: dict[str, list] = {}
     prices: dict[str, float] = {}
     stale_market_data: dict[str, dict] = {}
-    _log_cycle_progress("[market] loading bars symbols=%d", len(symbols))
+    _log_cycle_progress("[market] loading bars symbols=%d interval=%s", len(symbols), runtime_interval)
     for sym in symbols:
         try:
-            bars = market.get_bars(sym, lookback="5d", interval="1h")
-            bars_by_symbol[sym] = bars
-            prices[sym] = bars[-1].close
-            data_age_minutes = _market_data_age_minutes(bars, now=now)
-            if data_age_minutes is not None and data_age_minutes > max_market_data_age_minutes:
-                stale_market_data[sym] = {
-                    "last_bar_ts": str(bars[-1].ts),
-                    "data_age_minutes": round(data_age_minutes, 4),
-                }
+            bars = market.get_bars(sym, lookback=runtime_lookback, interval=runtime_interval)
         except market.MarketError as e:
             log.warning("données indisponibles %s: %s", sym, e.code)
+            continue
+        if not bars:  # défensif : get_bars lève normalement sur vide
+            log.warning("données vides %s", sym)
+            continue
+        bars_by_symbol[sym] = bars
+        prices[sym] = bars[-1].close
+        # La fraîcheur EST le garde « marché live » : une dernière barre trop
+        # vieille / imparsable => stale => exclue du tradable (pas de fill sur
+        # données mortes hors-séance ou gelées).
+        freshness = market.assess_freshness(bars, now=now, max_age_minutes=max_market_data_age_minutes)
+        if not freshness.fresh:
+            stale_market_data[sym] = {
+                "last_bar_ts": str(bars[-1].ts),
+                "stale_reason": freshness.reason,
+                "data_age_minutes": (
+                    None if freshness.age_minutes is None else round(freshness.age_minutes, 4)
+                ),
+            }
     _log_cycle_progress(
         "[market] loaded ok=%d missing=%d",
         len(prices),
@@ -570,6 +570,7 @@ def run_cycle(
         symbols=tradable_symbols,
         now=now,
         dry_run=dry_run,
+        bars_interval=runtime_interval,
     )
     if exit_watch_triggers:
         indicator_triggers = [*indicator_triggers, *exit_watch_triggers]
@@ -678,11 +679,12 @@ def run_cycle(
         stale_data = stale_market_data.get(sym)
         if stale_data is not None:
             _log_cycle_progress(
-                "[decision %d/%d] %s skipped stale_market_data age=%.2fmin",
+                "[decision %d/%d] %s skipped stale_market_data reason=%s age=%s",
                 index,
                 len(symbols_to_decide),
                 sym,
-                stale_data["data_age_minutes"],
+                stale_data.get("stale_reason"),
+                stale_data.get("data_age_minutes"),
             )
             if sched is not None:
                 sched.set_symbol_next_wake_in(sym, minutes=default_wake_minutes, now=now)
@@ -784,6 +786,8 @@ def run_cycle(
                 symbols=tradable_symbols,
                 max_requests=max_context_requests_per_symbol,
                 max_indicators=max_indicators_per_request,
+                cached_interval=runtime_interval,
+                cached_lookback=runtime_lookback,
             )
             _append_event(
                 "context_resolved",

@@ -1,0 +1,76 @@
+from datetime import datetime, timedelta, timezone
+
+from trader.tools.market import Bar, assess_freshness
+
+
+def _bar(ts: str, close: float = 100.0) -> Bar:
+    return Bar(ts=ts, open=close, high=close, low=close, close=close, volume=1.0)
+
+
+def test_barre_recente_est_fraiche() -> None:
+    now = datetime(2026, 6, 5, 16, 0, tzinfo=timezone.utc)
+    bars = [_bar((now - timedelta(minutes=10)).isoformat())]
+    verdict = assess_freshness(bars, now=now, max_age_minutes=40)
+    assert verdict.fresh is True
+    assert verdict.reason is None
+    assert round(verdict.age_minutes, 1) == 10.0
+
+
+def test_barre_trop_vieille_est_stale() -> None:
+    now = datetime(2026, 6, 6, 2, 0, tzinfo=timezone.utc)
+    bars = [_bar((now - timedelta(hours=6)).isoformat())]
+    verdict = assess_freshness(bars, now=now, max_age_minutes=40)
+    assert verdict.fresh is False
+    assert verdict.reason == "too_old"
+    assert round(verdict.age_minutes, 1) == 360.0
+
+
+def test_absence_de_barres_est_stale() -> None:
+    now = datetime(2026, 6, 5, 16, 0, tzinfo=timezone.utc)
+    verdict = assess_freshness([], now=now, max_age_minutes=40)
+    assert verdict.fresh is False
+    assert verdict.reason == "no_data"
+    assert verdict.age_minutes is None
+
+
+def test_ts_imparsable_est_stale_fail_safe() -> None:
+    now = datetime(2026, 6, 5, 16, 0, tzinfo=timezone.utc)
+    verdict = assess_freshness([_bar("t1")], now=now, max_age_minutes=40)
+    assert verdict.fresh is False
+    assert verdict.reason == "unparseable_ts"
+    assert verdict.age_minutes is None
+
+
+def test_ts_naif_traite_comme_utc() -> None:
+    now = datetime(2026, 6, 5, 16, 0, tzinfo=timezone.utc)
+    # ts sans offset -> interprété UTC, age = 5 min
+    bars = [_bar("2026-06-05T15:55:00")]
+    verdict = assess_freshness(bars, now=now, max_age_minutes=40)
+    assert verdict.fresh is True
+    assert round(verdict.age_minutes, 1) == 5.0
+
+
+def test_ts_dans_le_futur_est_stale_fail_safe() -> None:
+    now = datetime(2026, 6, 5, 16, 0, tzinfo=timezone.utc)
+    # barre datée 2h dans le futur => donnée temporellement invalide, ne pas trader
+    bars = [_bar((now + timedelta(hours=2)).isoformat())]
+    verdict = assess_freshness(bars, now=now, max_age_minutes=40)
+    assert verdict.fresh is False
+    assert verdict.reason == "future_ts"
+
+
+def test_petit_skew_horloge_reste_frais() -> None:
+    now = datetime(2026, 6, 5, 16, 0, tzinfo=timezone.utc)
+    # 1 min dans le futur => toléré (skew d'horloge), reste frais
+    bars = [_bar((now + timedelta(minutes=1)).isoformat())]
+    verdict = assess_freshness(bars, now=now, max_age_minutes=40)
+    assert verdict.fresh is True
+
+
+def test_ts_dans_un_autre_fuseau_compare_en_utc() -> None:
+    now = datetime(2026, 6, 5, 20, 5, tzinfo=timezone.utc)
+    # 16:00-04:00 == 20:00 UTC -> age 5 min malgré l'offset
+    bars = [_bar("2026-06-05T16:00:00-04:00")]
+    verdict = assess_freshness(bars, now=now, max_age_minutes=40)
+    assert verdict.fresh is True
+    assert round(verdict.age_minutes, 1) == 5.0

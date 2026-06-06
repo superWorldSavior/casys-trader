@@ -113,6 +113,8 @@ def resolve_indicator_requests(
     max_indicators: int,
     default_window: int = 48,
     market_get_bars=None,
+    cached_interval: str = "1h",
+    cached_lookback: str = "5d",
 ) -> dict:
     """Resolve LLM-requested indicator lookups with hard bounds."""
     known = set(DEFAULT_INDICATORS)
@@ -141,8 +143,8 @@ def resolve_indicator_requests(
         symbol_bars = bars_by_symbol.get(symbol)
         if (
             symbol_bars is None
-            or temporal["timeframe"] != "1h"
-            or temporal["lookback"] != "5d"
+            or temporal["timeframe"] != cached_interval
+            or temporal["lookback"] != cached_lookback
         ):
             try:
                 symbol_bars = get_bars(
@@ -164,8 +166,8 @@ def resolve_indicator_requests(
                 peer_bars = bars_by_symbol.get(peer)
                 if (
                     peer_bars is None
-                    or temporal["timeframe"] != "1h"
-                    or temporal["lookback"] != "5d"
+                    or temporal["timeframe"] != cached_interval
+                    or temporal["lookback"] != cached_lookback
                 ):
                     try:
                         peer_bars = get_bars(
