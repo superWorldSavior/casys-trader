@@ -1,8 +1,8 @@
-"""scheduler — l'agent pilote son propre prochain réveil.
+"""scheduler — l'agent pilote ses prochains réveils.
 
-L'infra ne décide PAS de la cadence. L'agent appelle `set_next_wake(...)` à la fin
-de chaque cycle ; le daemon lit `next_wake()` pour savoir quand se relancer. État
-persisté pour survivre aux redémarrages.
+Le timer global est la cadence par défaut. Chaque symbole peut avoir son propre
+override piloté par l'agent ; sans override, il suit le timer global. État persisté
+pour survivre aux redémarrages.
 
 Le temps est injecté (`now`) pour rester déterministe et testable.
 """
@@ -12,17 +12,47 @@ from __future__ import annotations
 import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Iterable
 
 
 class Scheduler:
     def __init__(self, state_path: str | Path):
         self.state_path = Path(state_path)
 
-    def set_next_wake(self, when_iso: str) -> None:
-        """Fixe le prochain réveil (timestamp ISO 8601, UTC de préférence)."""
-        datetime.fromisoformat(when_iso)  # fail fast si format invalide
+    def _load_state(self) -> dict:
+        if not self.state_path.exists():
+            return {"default_next_wake": None, "symbols": {}, "indicator_watches": {}}
+        raw = json.loads(self.state_path.read_text())
+        if "default_next_wake" not in raw and "next_wake" in raw:
+            raw["default_next_wake"] = raw["next_wake"]
+        raw.setdefault("default_next_wake", None)
+        raw.setdefault("symbols", {})
+        raw.setdefault("indicator_watches", {})
+        return raw
+
+    def _save_state(self, state: dict) -> None:
         self.state_path.parent.mkdir(parents=True, exist_ok=True)
-        self.state_path.write_text(json.dumps({"next_wake": when_iso}))
+        self.state_path.write_text(json.dumps(state, indent=2))
+
+    @staticmethod
+    def _parse(raw: str | None) -> datetime | None:
+        if not raw:
+            return None
+        value = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
+
+    def set_next_wake(self, when_iso: str) -> None:
+        """Fixe le prochain réveil global par défaut."""
+        self.set_default_next_wake(when_iso)
+
+    def set_default_next_wake(self, when_iso: str) -> None:
+        """Fixe le prochain réveil global par défaut."""
+        datetime.fromisoformat(when_iso)  # fail fast si format invalide
+        state = self._load_state()
+        state["default_next_wake"] = when_iso
+        self._save_state(state)
 
     def set_next_wake_in(self, *, minutes: float, now: datetime | None = None) -> str:
         now = now or datetime.now(timezone.utc)
@@ -30,16 +60,99 @@ class Scheduler:
         self.set_next_wake(when)
         return when
 
-    def next_wake(self) -> datetime | None:
-        if not self.state_path.exists():
-            return None
-        raw = json.loads(self.state_path.read_text())
-        return datetime.fromisoformat(raw["next_wake"])
+    def set_symbol_next_wake(self, symbol: str, when_iso: str) -> None:
+        """Fixe le prochain réveil d'un symbole, qui override le défaut global."""
+        datetime.fromisoformat(when_iso)  # fail fast si format invalide
+        state = self._load_state()
+        state["symbols"][symbol] = when_iso
+        self._save_state(state)
 
-    def seconds_until_wake(self, now: datetime | None = None) -> float:
-        """Secondes avant le prochain réveil. 0 si dû/non planifié (réveil immédiat)."""
-        nxt = self.next_wake()
-        if nxt is None:
-            return 0.0
+    def clear_symbol_next_wake(self, symbol: str) -> None:
+        """Retire l'override d'un symbole ; il suit alors le défaut global."""
+        state = self._load_state()
+        state["symbols"].pop(symbol, None)
+        self._save_state(state)
+
+    def set_symbol_next_wake_in(
+        self,
+        symbol: str,
+        *,
+        minutes: float,
+        now: datetime | None = None,
+    ) -> str:
         now = now or datetime.now(timezone.utc)
-        return max(0.0, (nxt - now).total_seconds())
+        when = (now + timedelta(minutes=minutes)).isoformat()
+        self.set_symbol_next_wake(symbol, when)
+        return when
+
+    def next_wake(self, symbol: str | None = None) -> datetime | None:
+        state = self._load_state()
+        if symbol is not None:
+            symbol_wake = state["symbols"].get(symbol)
+            if symbol_wake:
+                return self._parse(symbol_wake)
+        return self._parse(state.get("default_next_wake"))
+
+    def due_symbols(self, symbols: Iterable[str], now: datetime | None = None) -> list[str]:
+        """Symboles dus maintenant. Sans timer, un symbole est dû."""
+        now = now or datetime.now(timezone.utc)
+        due: list[str] = []
+        for symbol in symbols:
+            nxt = self.next_wake(symbol)
+            if nxt is None or nxt <= now:
+                due.append(symbol)
+        return due
+
+    def seconds_until_wake(
+        self,
+        symbols: Iterable[str] | None = None,
+        now: datetime | None = None,
+    ) -> float:
+        """Secondes avant le prochain réveil. 0 si dû/non planifié (réveil immédiat)."""
+        now = now or datetime.now(timezone.utc)
+        if symbols is None:
+            nxt = self.next_wake()
+            return 0.0 if nxt is None else max(0.0, (nxt - now).total_seconds())
+
+        waits: list[float] = []
+        for symbol in symbols:
+            nxt = self.next_wake(symbol)
+            if nxt is None:
+                return 0.0
+            waits.append(max(0.0, (nxt - now).total_seconds()))
+        return min(waits) if waits else 0.0
+
+    def set_symbol_indicator_watch(self, symbol: str, watch: dict) -> None:
+        """Persist one active indicator watch for a symbol."""
+        state = self._load_state()
+        watches = {
+            watch_id: item
+            for watch_id, item in state["indicator_watches"].items()
+            if item.get("symbol") != symbol
+        }
+        watches[watch["id"]] = watch
+        state["indicator_watches"] = watches
+        self._save_state(state)
+
+    def active_indicator_watches(self, now: datetime | None = None) -> list[dict]:
+        """Return non-expired watches and purge stale ones from the state file."""
+        now = now or datetime.now(timezone.utc)
+        state = self._load_state()
+        active: list[dict] = []
+        kept: dict[str, dict] = {}
+        for watch_id, watch in state["indicator_watches"].items():
+            expires_at = self._parse(watch.get("expires_at"))
+            if expires_at is not None and expires_at <= now:
+                continue
+            active.append(watch)
+            kept[watch_id] = watch
+        if kept != state["indicator_watches"]:
+            state["indicator_watches"] = kept
+            self._save_state(state)
+        return active
+
+    def remove_indicator_watch(self, watch_id: str) -> None:
+        state = self._load_state()
+        if watch_id in state["indicator_watches"]:
+            state["indicator_watches"].pop(watch_id, None)
+            self._save_state(state)

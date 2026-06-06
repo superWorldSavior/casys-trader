@@ -1,7 +1,7 @@
 """tui — TUI live pour casys-trader.
 
-Lit `state/last_report.json` toutes les 2 secondes et affiche en temps réel
-l'état du portefeuille, les positions et les dernières décisions.
+Lit `state/current_report.json` puis `state/last_report.json` toutes les 2
+secondes et affiche l'état du portefeuille, les positions et le daemon.
 
 Usage CLI :
     uv run python -m trader.tui
@@ -15,8 +15,8 @@ import json
 import time
 from pathlib import Path
 
-from rich.columns import Columns
 from rich.console import Console, RenderableType
+from rich.console import Group
 from rich.live import Live
 from rich.panel import Panel
 from rich.table import Table
@@ -24,7 +24,9 @@ from rich.text import Text
 
 # Racine du repo (deux niveaux au-dessus de ce fichier)
 _ROOT = Path(__file__).resolve().parent.parent
-_STATE_FILE = _ROOT / "state" / "last_report.json"
+_CURRENT_REPORT_FILE = _ROOT / "state" / "current_report.json"
+_LAST_REPORT_FILE = _ROOT / "state" / "last_report.json"
+_STATUS_FILE = _ROOT / "state" / "daemon_status.json"
 _KILL_FILE = _ROOT / "KILL"
 
 
@@ -44,6 +46,32 @@ def load_state(path: str | Path) -> dict | None:
         return None
 
 
+def load_runtime_state(
+    *,
+    current_report_path: str | Path = _CURRENT_REPORT_FILE,
+    last_report_path: str | Path = _LAST_REPORT_FILE,
+    status_path: str | Path = _STATUS_FILE,
+) -> dict:
+    """Charge le meilleur état affichable sans lever d'exception."""
+    source = "none"
+    raw = load_state(current_report_path)
+    if isinstance(raw, dict):
+        source = "current_report"
+    else:
+        raw = load_state(last_report_path)
+        if isinstance(raw, dict):
+            source = "last_report"
+        else:
+            raw = {}
+
+    status = load_state(status_path)
+    return {
+        **raw,
+        "source": source,
+        "daemon_status": status if isinstance(status, dict) else {},
+    }
+
+
 # ---------------------------------------------------------------------------
 # Construction de la vue (PURE — ne lit aucun fichier)
 # ---------------------------------------------------------------------------
@@ -55,9 +83,9 @@ def build_view(state: dict | None) -> RenderableType:
     Paramètres
     ----------
     state:
-        Dict issu de `last_report.json`. Accepte None ou un dict partiel
-        sans lever d'exception. Le champ optionnel ``kill_switch`` (bool)
-        doit être injecté par l'appelant (non lu depuis le disque ici).
+        Dict issu de `load_runtime_state`. Accepte None ou un dict partiel sans
+        lever d'exception. Le champ optionnel ``kill_switch`` (bool) doit être
+        injecté par l'appelant (non lu depuis le disque ici).
     """
     # Normalisation défensive
     if state is None:
@@ -66,8 +94,10 @@ def build_view(state: dict | None) -> RenderableType:
     portfolio: dict = state.get("portfolio") or {}
     holdings: list[dict] = portfolio.get("holdings", [])
     decisions: list[dict] = state.get("decisions", [])
+    daemon_status: dict = state.get("daemon_status") or {}
     dry_run: bool = state.get("dry_run", True)
     ts: str = state.get("ts", "—")
+    source: str = str(state.get("source", "—"))
     kill_active: bool = state.get("kill_switch", False)
     halted: str | None = state.get("halted")
 
@@ -77,6 +107,16 @@ def build_view(state: dict | None) -> RenderableType:
     cash: float = portfolio.get("cash", 0.0)
     equity: float = portfolio.get("equity", 0.0)
     ret_pct: float = portfolio.get("total_return_pct", 0.0)
+    unrealized_total = sum(float(h.get("unrealized_pnl", 0.0)) for h in holdings)
+    unrealized_style = "green" if unrealized_total >= 0 else "red"
+    phase = str(daemon_status.get("phase", "—"))
+    current_symbol = str(daemon_status.get("current_symbol") or "—")
+    done = daemon_status.get("decisions_done")
+    total = daemon_status.get("symbols_total")
+    progress = f"{done}/{total}" if done is not None and total is not None else "—"
+    used = daemon_status.get("model_calls_used")
+    limit = daemon_status.get("max_model_calls_per_cycle")
+    calls = f"{used}/{limit}" if used is not None and limit is not None else (str(used) if used is not None else "—")
 
     mode_label = Text("LIVE", style="bold red") if not dry_run else Text("DRY-RUN", style="bold yellow")
 
@@ -96,10 +136,17 @@ def build_view(state: dict | None) -> RenderableType:
         ("Equity : ", "bold"), (f"${equity:,.2f}   ", "cyan"),
         ("Cash : ", "bold"), (f"${cash:,.2f}   ", "cyan"),
         ("Rendement : ", "bold"), (f"{ret_pct:+.2f}%   ", ret_style),
+        ("PnL latent total : ", "bold"), (f"{unrealized_total:+,.2f}   ", unrealized_style),
         ("Mode : ", "bold"), mode_label,
         ("   Kill-switch : ", "bold"), kill_label,
         ("   Dernier cycle : ", "bold"), (ts, "dim"),
         halted_label,
+        "\n",
+        ("Daemon : ", "bold"), (phase, "magenta"),
+        ("   Symbole : ", "bold"), (current_symbol, "cyan"),
+        ("   Progrès : ", "bold"), (progress, "cyan"),
+        ("   Appels : ", "bold"), (calls, "cyan"),
+        ("   Source : ", "bold"), (source, "dim"),
     )
 
     header_panel = Panel(header_lines, title="[bold]casys-trader — état live[/bold]", expand=True)
@@ -113,6 +160,7 @@ def build_view(state: dict | None) -> RenderableType:
     pos_table.add_column("Prix moy.", justify="right")
     pos_table.add_column("Dernier prix", justify="right")
     pos_table.add_column("PnL latent", justify="right")
+    pos_table.add_column("PnL %", justify="right")
 
     for h in holdings:
         symbol: str = str(h.get("symbol", "?"))
@@ -120,6 +168,8 @@ def build_view(state: dict | None) -> RenderableType:
         avg: float = float(h.get("avg_price", 0))
         last: float = float(h.get("last_price", 0))
         pnl: float = float(h.get("unrealized_pnl", 0))
+        notional = abs(avg * qty)
+        pnl_pct = (pnl / notional * 100.0) if notional else 0.0
         pnl_style = "green" if pnl >= 0 else "red"
         pos_table.add_row(
             symbol,
@@ -127,10 +177,11 @@ def build_view(state: dict | None) -> RenderableType:
             f"${avg:,.4f}",
             f"${last:,.4f}",
             Text(f"{pnl:+,.2f}", style=pnl_style),
+            Text(f"{pnl_pct:+.2f}%", style=pnl_style),
         )
 
     if not holdings:
-        pos_table.add_row("—", "—", "—", "—", "—")
+        pos_table.add_row("—", "—", "—", "—", "—", "—")
 
     # ------------------------------------------------------------------
     # Table des décisions
@@ -165,8 +216,6 @@ def build_view(state: dict | None) -> RenderableType:
     # ------------------------------------------------------------------
     # Assemblage en un seul renderable via Group
     # ------------------------------------------------------------------
-    from rich.console import Group  # import local pour éviter la confusion avec Columns
-
     return Group(header_panel, pos_table, dec_table)
 
 
@@ -182,13 +231,10 @@ def main() -> None:
     try:
         with Live(console=console, refresh_per_second=1, screen=False) as live:
             while True:
-                raw = load_state(_STATE_FILE)
+                raw = load_runtime_state()
                 # Injection de l'état du kill-switch (lecture fichier dans main, pas dans build_view)
                 kill_active = _KILL_FILE.exists()
-                if isinstance(raw, dict):
-                    raw = {**raw, "kill_switch": kill_active}
-                else:
-                    raw = {"kill_switch": kill_active}
+                raw = {**raw, "kill_switch": kill_active}
                 live.update(build_view(raw))
                 time.sleep(2.0)
     except KeyboardInterrupt:

@@ -15,7 +15,14 @@ from trader.stats import compute_live_kpis
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _setup_state(tmp_path: Path, *, history_rows: list[dict], broker: dict, starting_cash: float = 100_000.0) -> Path:
+def _setup_state(
+    tmp_path: Path,
+    *,
+    history_rows: list[dict],
+    broker: dict,
+    starting_cash: float = 100_000.0,
+    model_performance_rows: list[dict] | None = None,
+) -> Path:
     """Crée l'arborescence attendue par compute_live_kpis dans tmp_path.
 
     Layout : tmp_path/
@@ -42,6 +49,10 @@ def _setup_state(tmp_path: Path, *, history_rows: list[dict], broker: dict, star
                 fh.write(json.dumps(row) + "\n")
 
     (state_dir / "broker.json").write_text(json.dumps(broker), encoding="utf-8")
+    if model_performance_rows:
+        with (state_dir / "model_performance.jsonl").open("w", encoding="utf-8") as fh:
+            for row in model_performance_rows:
+                fh.write(json.dumps(row) + "\n")
 
     return state_dir
 
@@ -64,7 +75,7 @@ def test_compute_live_kpis_retourne_toutes_les_cles_attendues(tmp_path: Path) ->
 
     kpis = compute_live_kpis(state_dir)
 
-    cles_attendues = {"equity", "cash", "total_return", "max_drawdown", "period_win_rate", "volatility", "sharpe", "num_trades", "n_positions", "positions"}
+    cles_attendues = {"equity", "cash", "total_return", "max_drawdown", "period_win_rate", "volatility", "sharpe", "num_trades", "n_positions", "positions", "model_performance"}
     assert set(kpis.keys()) == cles_attendues
 
 
@@ -137,6 +148,54 @@ def test_compute_live_kpis_num_trades_depuis_fills(tmp_path: Path) -> None:
     kpis = compute_live_kpis(state_dir)
 
     assert kpis["num_trades"] == 3
+
+
+def test_compute_live_kpis_agrege_la_perf_par_modele(tmp_path: Path) -> None:
+    state_dir = _setup_state(
+        tmp_path,
+        history_rows=[
+            {"ts": "2026-01-01T10:00:00", "equity": 100_000.0, "cash": 100_000.0, "n_decisions": 0, "n_executed": 0},
+        ],
+        broker={"cash": 98_000.0, "positions": {}, "fills": []},
+        model_performance_rows=[
+            {
+                "ts": "2026-01-01T10:00:00",
+                "symbol": "SPY",
+                "llm_provider": "spark",
+                "llm_model": "gpt-5.3-codex-spark[medium]",
+                "confidence": 0.6,
+                "equity": 100_000.0,
+            },
+            {
+                "ts": "2026-01-01T11:00:00",
+                "symbol": "QQQ",
+                "llm_provider": "spark",
+                "llm_model": "gpt-5.3-codex-spark[medium]",
+                "confidence": 0.8,
+                "equity": 100_200.0,
+            },
+            {
+                "ts": "2026-01-01T12:00:00",
+                "symbol": "SPY",
+                "llm_provider": "ollama-cloud",
+                "llm_model": "nemotron-3-nano:30b-cloud",
+                "llm_fallback_reason": "spark:quota_exceeded",
+                "confidence": 0.7,
+                "equity": 99_900.0,
+            },
+        ],
+    )
+
+    kpis = compute_live_kpis(state_dir)
+
+    spark = next(row for row in kpis["model_performance"] if row["provider"] == "spark")
+    ollama = next(row for row in kpis["model_performance"] if row["provider"] == "ollama-cloud")
+    assert spark["fills"] == 2
+    assert spark["symbols"] == ["QQQ", "SPY"]
+    assert spark["portfolio_equity_delta"] == 200.0
+    assert spark["avg_confidence"] == pytest.approx(0.7)
+    assert ollama["fills"] == 1
+    assert ollama["fallbacks"] == 1
 
 
 # ---------------------------------------------------------------------------

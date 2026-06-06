@@ -12,14 +12,25 @@ ses résultats** (il ajuste sa stratégie selon ses KPI, voir plus bas).
 - Profil : **scalping / intraday**. Le long terme est **hors profil** — on évite
   les positions longues dans le temps, **sauf opportunité vraiment forte** (rare).
   Dans ce cadre, l'agent choisit librement sa durée de détention.
-- Cadence de réveil : **entièrement à la main de l'agent**. Il fixe sa propre
-  cadence via le `scheduler`, comme il le souhaite — aucune borne imposée.
+- Cadence de réveil : le daemon maintient un **timer global par défaut**. À chaque
+  décision, l'agent peut définir un `next_wake_in_minutes` pour **ce symbole** si
+  ce marché demande un suivi plus rapide ou plus lent ; sinon le symbole suit le
+  timer global. L'infra borne seulement les valeurs extrêmes pour éviter une
+  boucle absurde ou un sommeil démesuré.
+- Veille indicateur : si le prochain bon réveil dépend d'une condition de marché
+  plutôt que d'un délai fixe, l'agent peut définir une `indicator_watch`
+  temporaire. Elle décrit une combinaison `all|any` d'indicateurs, sur différentes
+  échelles de temps (`15m`, `30m`, `1h`, `1d`), avec un `ttl_minutes`. Tant qu'elle
+  n'est pas expirée, le daemon la scanne sans appeler le modèle ; si elle déclenche,
+  le symbole est réveillé immédiatement avec le trigger dans son contexte.
 
 ## Marchés autorisés
 
-Univers défini dans `config/universe.yaml` (v1 : ETF + actions listés US — indices
-S&P/Nasdaq/Dow, Taïwan, France, défense, énergie/pétrole/gaz, quelques Nasdaq
-individuelles). Expansion native (CAC, Euronext, Taïwan) après branchement IB.
+Univers défini dans `config/universe.yaml` (v1 : données yfinance — indices/ETF
+liquides, CAC 40 via `^FCHI`, actions Nasdaq liquides, commodities futures
+continus `CL=F`/`BZ=F`/`NG=F`, et majors forex `=X`). Les ETF restent des proxies
+quand il n'y a pas mieux dans la v1 ; pour pétrole/gaz, privilégier les futures
+continus. Expansion native Euronext/Taïwan/FX/futures après branchement IB.
 
 ## Contraintes
 
@@ -44,8 +55,37 @@ L'agent pilote sa stratégie en fonction de :
 > (`memory.md`), confronte ses décisions passées à ces KPI, et écrit ce qu'il en
 > retient. La stratégie n'est PAS fixée ici — elle émerge dans `memory.md`.
 
+## Indicateurs
+
+L'agent ne calcule pas les indicateurs mentalement depuis les barres. Le prompt
+initial expose un cockpit compact (`context.cockpit`) : lignes symboles + colonnes
+mathématiques courtes (`r`, `vol`, `z`, `er`, `ac`, `rs`, `sz`). Si ce cockpit ne
+suffit pas, l'agent demande un complément borné via `REQUEST_CONTEXT`; le daemon
+calcule alors localement les indicateurs demandés et les réinjecte dans
+`context.research`. Les barres OHLCV brutes ne sont pas envoyées par défaut.
+Les indicateurs gouvernés incluent aussi les chandeliers japonais et signaux
+chartistes compacts : `candlestick_signal`, `candle_body_ratio`,
+`candle_wick_skew`, `chart_breakout`, `trend_slope`, `range_position`.
+L'axe temporel est explicite : `timeframe` (`15m`, `30m`, `1h`, `4h`, `1d`),
+`lookback`, `window` et `as_of=latest`. Le `4h` est supporté comme timeframe
+sémantique agrégé depuis des barres source `1h`.
+
+Pour une veille automatique, l'agent utilise `indicator_watch` plutôt que des
+barres brutes : conditions `{symbol, indicator, op, value, interval, lookback,
+window, as_of}` et logique `all|any`. `on_trigger=WAKE` signifie "réveille-moi";
+`on_trigger=WAKE_WITH_ORDER_INTENT` signifie "réveille-moi avec une intention
+d'ordre structurée", qui repasse ensuite par les garde-fous runtime.
+
+## Plan de sortie
+
+Quand l'agent ouvre ou reverse une position, il doit autant que possible fournir
+un `exit_plan` structuré : stop dur, take-profit partiels, stop suiveur éventuel
+et temps maximum de détention. L'agent définit le plan ; le daemon l'applique
+ensuite mécaniquement. Une position ouverte sans plan de sortie doit rester rare
+et explicitement justifiée dans `rationale`.
+
 ## Ce qui n'est PAS dans le mandat (volontairement)
 
-- Les **indicateurs** précis (RSI, moyennes…) → l'agent les choisit.
+- Les **indicateurs précis à consulter** → l'agent les choisit dans la semantic layer.
 - Les **règles d'entrée/sortie** → l'agent les définit et les fait évoluer.
-- Le **calendrier exact** des réveils → l'agent décide.
+- Le **calendrier exact** des réveils par symbole → l'agent décide.

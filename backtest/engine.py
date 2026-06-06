@@ -154,12 +154,23 @@ def run_backtest(
                 order = Order(symbol, side, abs(decision.quantity))
                 current_position = positions.get(symbol)
                 current_position_value = (current_position.quantity * price) if current_position else 0.0
+                current_quantity = current_position.quantity if current_position else 0.0
+                allow_risk_reduction = (
+                    current_quantity > 0
+                    and side == "SELL"
+                    and order.quantity <= abs(current_quantity)
+                ) or (
+                    current_quantity < 0
+                    and side == "BUY"
+                    and order.quantity <= abs(current_quantity)
+                )
                 verdict = gate.check(
                     order,
                     price,
                     current_position_value=current_position_value,
                     gross_exposure=_gross_exposure(positions, position_prices),
                     equity=equity,
+                    allow_risk_reduction=allow_risk_reduction,
                 )
                 if not verdict.approved:
                     continue

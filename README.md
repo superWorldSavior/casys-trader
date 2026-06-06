@@ -11,7 +11,8 @@ mémoire.
   fait évoluer le mandat, les outils, le comportement, les marchés. Le backtest
   maison (`backtest/`) rejoue l'agent sur l'historique pour itérer.
 - **Boucle 2 — Runtime** : le daemon (`trader/daemon.py`), lancé par `run.sh`.
-  Réveil → contexte → Codex → risk gate → exécution paper → log → prochain réveil.
+  Réveil des symboles dus → contexte → Codex → risk gate → exécution paper → log
+  → prochain réveil global, override par symbole ou veille indicateur temporaire.
 
 Le repo est l'interface partagée : `mandate/`, `config/`, `mandate/memory.md` sont
 édités en boucle 1 et lus par le daemon en boucle 2.
@@ -38,12 +39,13 @@ uv sync
 trader/
   daemon.py          boucle runtime
   codex_client.py    appel Codex programmatique (sortie JSON validée)
+  indicator_watch.py veilles indicateurs multi-timeframe
   risk.py            le fusible
   tools/
     market.py        données marché (yfinance v1)
     execution.py     ordres (SimBroker paper -> IB plus tard, même interface)
     portfolio.py     positions / PnL / KPI
-    scheduler.py     l'agent fixe son prochain réveil
+    scheduler.py     cadence globale par défaut + overrides par symbole
     memory.py        stratégie + learnings persistants
 backtest/                            <- backtest maison (SimBroker + yfinance)
 config/  universe.yaml  risk.yaml
@@ -70,21 +72,140 @@ slippage/frais), data leakage possible (le LLM a pu voir l'historique), rejeu
 échantillonné. Pour un agent adaptatif, le **forward paper** reste l'éval de
 référence. Le rapport complet est écrit dans `state/last_backtest.json`.
 
-## Appel Codex
+## Univers courant
 
-Le brain décideur est appelé via **`acpx --format quiet exec`** (codex = agent par
-défaut d'acpx), modèle **`gpt-5.3-codex-spark[xhigh]`** (Spark = faible latence,
-adapté à un agent en veille). Décision pure : `--allowed-tools ""` + `--no-terminal`
-(aucun outil, le brain ne fait que raisonner sur le contexte fourni). `exec` =
-session temporaire → déterministe ; l'état évolutif de l'agent vit dans
-`mandate/memory.md`, passé dans le prompt. Contrat validé de bout en bout (JSON → `Decision`).
+L'univers runtime est dans `config/universe.yaml`. La v1 utilise yfinance :
+indices/ETF/actions US, CAC 40 via `^FCHI`, commodities futures continus
+(`CL=F`, `BZ=F`, `NG=F`) et majors forex via les tickers Yahoo `=X`. Les futures
+et devises restent des proxies paper côté Yahoo ; le mapping broker natif viendra
+avec IB.
+
+## Appel LLM
+
+Le brain décideur passe par une API de transport agnostique. Primaire :
+**`acpx --format quiet exec`** (codex = agent par défaut d'acpx), modèle
+**`gpt-5.3-codex-spark[medium]`**. Fallback optionnel : endpoint
+OpenAI-compatible Ollama Cloud, configuré dans `.env`.
+
+```bash
+TRADER_OLLAMA_API_KEY=...
+TRADER_OLLAMA_BASE_URL=https://ollama.com/v1
+TRADER_OLLAMA_MODEL=nemotron-3-nano:30b-cloud
+```
+
+Le fallback ne sert que sur erreurs retryables fournisseur/quota/rate-limit/
+timeout. Un JSON invalide reste un `HOLD` avec erreur, pour éviter de changer de
+cerveau parce que le contrat de sortie a été cassé. Chaque décision garde
+`llm_provider`, `llm_model` et `llm_fallback_reason`; les fills live alimentent
+`state/model_performance.jsonl` pour comparer les modèles dans le temps.
+
+Décision pure : `--allowed-tools ""` + `--no-terminal` côté acpx (aucun outil, le
+brain ne fait que raisonner sur le contexte fourni). `exec` = session jetable
+→ isolation/idempotence (aucun appel ne contamine le suivant) ; l'état évolutif de
+l'agent est externalisé — `mandate/memory.md` (boucle 1) et
+`state/learnings.jsonl` (boucle 2, machine) — et repassé dans le prompt. Contrat
+validé de bout en bout (JSON → `Decision`, incluant un `next_wake_in_minutes`
+optionnel par symbole, une `indicator_watch` temporaire, et un `learning`
+optionnel réinjecté au réveil suivant).
+
+## Semantic layer / indicateurs
+
+Le LLM ne calcule pas les indicateurs "de tête". Le code expose une semantic
+layer locale (pattern GeoNexus, sans MCP) : catalogue gouverné + calculs
+déterministes + CLI JSON. Le prompt runtime reste compact : le daemon envoie un
+`context.cockpit` sous forme `cols` + `rows` (`r`, `vol`, `z`, `er`, `ac`, `rs`,
+`sz`) et pas les barres brutes. Si le modèle veut creuser, il renvoie
+`REQUEST_CONTEXT`; le daemon calcule les indicateurs bornés localement puis
+ré-appelle Codex une seule fois pour la décision finale.
+
+Le catalogue inclut aussi des signaux de chandeliers japonais et d'analyse
+chartiste sous forme numérique compacte : `candlestick_signal`,
+`candle_body_ratio`, `candle_wick_skew`, `chart_breakout`, `trend_slope`,
+`range_position`.
+
+L'axe temporel est explicite : les requêtes suivent le cube
+`symbol × indicator × timeframe × lookback × window × as_of`. Timeframes
+gouvernés : `15m`, `30m`, `1h`, `4h`, `1d`. Le `4h` est un timeframe sémantique
+agrégé depuis des barres source `1h`.
+
+```bash
+casys-trader semantic describe --json
+casys-trader indicators list --json
+casys-trader indicators get --symbol SPY --timeframe 4h --lookback 1mo --window 48 --names efficiency_ratio,z_score,volatility --json
+casys-trader indicators compare --family energy --timeframe 1h --metrics return,relative_strength,volatility --json
+```
+
+Le daemon importe les mêmes fonctions Python et expose seulement
+`context.semantic.requestable_indicator_ids` dans le prompt initial.
+
+## Réveils par timer ou indicateurs
+
+À chaque décision, l'agent peut choisir un simple `next_wake_in_minutes` ou poser
+une `indicator_watch`. Une watch contient une combinaison `all|any` de conditions
+sur indicateurs déterministes, chacune avec son `symbol`, `indicator`, `op`,
+`value`, `interval` (`15m`, `30m`, `1h`, `4h`, `1d`), `lookback`, `window` et
+`as_of`. Elle a un `ttl_minutes` : après expiration, elle est purgée et le symbole
+retombe sur son timer normal.
+
+Le daemon scanne ces watches au poll sans appeler Codex. Si une combinaison
+déclenche, la watch est retirée, le symbole devient dû immédiatement, et le
+trigger est injecté dans `context.indicator_triggers` pour la décision suivante.
+`on_trigger=WAKE_WITH_ORDER_INTENT` signifie que le trigger transporte une
+intention d'ordre structurée, mais l'ordre repasse par la boucle Codex/risk gate
+au réveil plutôt que d'être soumis directement hors contexte.
+
+## Observabilité live
+
+Pendant `casys-trader --live`, la console loggue les étapes importantes :
+chargement marché, symbole courant (`[decision 4/21]`), appels modèle, demandes
+de contexte, décisions, blocages risk gate, ordres et sommeil scheduler. Les
+mêmes informations sont persistées en cours de cycle :
+
+```bash
+casys-trader status
+casys-trader status --json
+```
+
+Fichiers utiles : `state/daemon_status.json`, `state/current_report.json`,
+`state/events.jsonl`, puis `state/last_report.json` en fin de cycle.
+
+Le lancement live est incremental : si `state/scheduler.json` contient déjà des
+timers futurs, le daemon ne réanalyse pas tout l'univers au démarrage. Il ne
+traite que les symboles dus. Pour forcer un scan complet malgré les timers :
+
+```bash
+casys-trader daemon --live --bootstrap-all
+```
+
+## Plans de sortie
+
+Une entrée peut inclure un `exit_plan`. Codex définit la thèse et les seuils ;
+le daemon applique ensuite le plan de façon déterministe, sans attendre un nouveau
+raisonnement LLM :
+
+- `hard_stop` : stop dur.
+- `take_profits` : TP1/TP2/… avec fraction de position.
+- `after_fill` : action après TP, par exemple `move_stop_to_breakeven`.
+- `trailing_stop` : stop suiveur activable dès l'entrée ou après un TP.
+- `profit_protection` : sécurisation progressive optionnelle demandée par
+  l'agent, par exemple armement à `+0.5R`, déclenchement après giveback,
+  fermeture partielle et stop du reste à break-even. Le daemon ne l'ajoute pas
+  automatiquement.
+- `exit_watch` : veille indicateur attachée au trade. Elle réveille l'agent si
+  des signaux invalident la thèse (`trend_slope`, `relative_strength`,
+  chandeliers, etc.), mais ne ferme pas automatiquement la position.
+- `max_hold_minutes` : sortie temps pour les scalps morts.
+
+Les plans ouverts sont persistés dans `state/trade_plans.json`. En paper trading,
+le moteur simule bracket/OCA/trailing localement ; plus tard, l'adapter IB pourra
+mapper ces plans vers bracket/OCA/trailing natifs quand disponible.
 
 ## État actuel
 
 Infrastructure posée et testée (fusible, SimBroker, câblage du cycle, appel Codex
-réel). Backtest maison (`backtest/`) en cours de construction (SimBroker + yfinance,
-rejeu échantillonné pour limiter les appels Codex). LEAN abandonné : son CLI/API
-local est payant (84 $/mois) et son backtest dense ne convient pas à un agent
-LLM-in-the-loop. **Prochaine étape (boucle 1)** : définir avec l'agent le mandat
-réel, le comportement de Codex, la cadence de réveil — puis brancher IB
-(`ib_async`) quand le compte paper est prêt.
+réel, scheduler global + overrides symbole, semantic layer d'indicateurs). Backtest
+maison (`backtest/`) en cours de construction (SimBroker + yfinance, rejeu
+échantillonné pour limiter les appels Codex). LEAN abandonné : son CLI/API local
+est payant (84 $/mois) et son backtest dense ne convient pas à un agent
+LLM-in-the-loop. **Prochaine étape (boucle 1)** : enrichir le catalogue
+d'indicateurs et brancher IB (`ib_async`) quand le compte paper est prêt.

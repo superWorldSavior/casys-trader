@@ -10,6 +10,7 @@ Aucune décision ici — uniquement de la donnée brute.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 
 
 @dataclass(frozen=True)
@@ -38,6 +39,57 @@ class MarketError(Exception):
         super().__init__(f"{code}: {context}")
 
 
+def _aggregate_sequential_bars(bars: list[Bar], *, group_size: int) -> list[Bar]:
+    aggregated: list[Bar] = []
+    for start in range(0, len(bars), group_size):
+        group = bars[start : start + group_size]
+        if len(group) < group_size:
+            continue
+        aggregated.append(_aggregate_group(group))
+    return aggregated
+
+
+def _parse_ts(value: str) -> datetime | None:
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _aggregate_group(group: list[Bar]) -> Bar:
+    return Bar(
+        ts=group[-1].ts,
+        open=group[0].open,
+        high=max(bar.high for bar in group),
+        low=min(bar.low for bar in group),
+        close=group[-1].close,
+        volume=sum(bar.volume for bar in group),
+    )
+
+
+def aggregate_bars(bars: list[Bar], *, target_interval: str) -> list[Bar]:
+    """Aggregate smaller bars into a governed semantic timeframe."""
+    if target_interval != "4h":
+        return bars
+    group_size = 4
+    parsed = [_parse_ts(bar.ts) for bar in bars]
+    if any(ts is None for ts in parsed):
+        return _aggregate_sequential_bars(bars, group_size=group_size)
+
+    buckets: dict[tuple[object, int], list[Bar]] = {}
+    for bar, ts in zip(bars, parsed, strict=True):
+        assert ts is not None
+        bucket = (ts.date(), ts.hour // group_size)
+        buckets.setdefault(bucket, []).append(bar)
+
+    aggregated: list[Bar] = []
+    for group in buckets.values():
+        if len(group) < group_size:
+            continue
+        aggregated.append(_aggregate_group(group))
+    return aggregated
+
+
 def get_bars(symbol: str, lookback: str = "5d", interval: str = "1h") -> list[Bar]:
     """Barres OHLCV. lookback ex: '1d','5d','1mo'; interval ex: '1h','1d'.
 
@@ -46,8 +98,10 @@ def get_bars(symbol: str, lookback: str = "5d", interval: str = "1h") -> list[Ba
     """
     import yfinance as yf
 
+    source_interval = "1h" if interval == "4h" else interval
+
     try:
-        df = yf.Ticker(symbol).history(period=lookback, interval=interval, auto_adjust=False)
+        df = yf.Ticker(symbol).history(period=lookback, interval=source_interval, auto_adjust=False)
     except Exception as e:  # noqa: BLE001 — frontière externe
         raise MarketError("fetch_failed", f"{symbol}: {e}") from e
 
@@ -66,7 +120,7 @@ def get_bars(symbol: str, lookback: str = "5d", interval: str = "1h") -> list[Ba
                 volume=float(row["Volume"]),
             )
         )
-    return bars
+    return aggregate_bars(bars, target_interval=interval)
 
 
 def get_quote(symbol: str) -> Quote:

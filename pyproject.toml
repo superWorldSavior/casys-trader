@@ -10,7 +10,7 @@ dependencies = [
 ]
 
 [project.scripts]
-casys-trader = "trader.daemon:main"
+casys-trader = "trader.cli:main"
 
 [dependency-groups]
 dev = ["pytest>=8.0"]

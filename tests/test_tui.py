@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from rich.console import RenderableType
 
-from trader.tui import build_view
+from trader.tui import build_view, load_runtime_state
 
 
 # ---------------------------------------------------------------------------
@@ -56,6 +56,15 @@ _FULL_STATE: dict = {
             "reason": "hold",
         },
     ],
+    "daemon_status": {
+        "phase": "deciding_symbol",
+        "current_symbol": "TSLA",
+        "decisions_done": 1,
+        "symbols_total": 2,
+        "model_calls_used": 3,
+        "max_model_calls_per_cycle": 25,
+    },
+    "source": "current_report",
 }
 
 
@@ -79,6 +88,12 @@ def test_build_view_avec_etat_complet_retourne_un_renderable() -> None:
     # L'output doit contenir les données clé
     assert "AAPL" in output
     assert "TSLA" in output
+    assert "PnL latent total" in output
+    assert "-50.00" in output
+    assert "deciding_symbol" in output
+    assert "1/2" in output
+    assert "3/25" in output
+    assert "current_report" in output
     assert "dry" in output.lower() or "DRY" in output or "2.5" in output or "BUY" in output
 
 
@@ -108,3 +123,35 @@ def test_build_view_avec_dict_partiel_sans_portfolio_retourne_un_renderable() ->
     output = capture.get()
     # Pas de positions → doit afficher un placeholder
     assert "—" in output
+
+
+def test_load_runtime_state_prefere_current_report_et_injecte_status(tmp_path) -> None:
+    current = tmp_path / "current_report.json"
+    last = tmp_path / "last_report.json"
+    status = tmp_path / "daemon_status.json"
+    current.write_text('{"ts":"current","portfolio":{"holdings":[]}}', encoding="utf-8")
+    last.write_text('{"ts":"last","portfolio":{"holdings":[{"symbol":"OLD"}]}}', encoding="utf-8")
+    status.write_text(
+        '{"phase":"cycle_completed","decisions_done":5,"symbols_total":5,"model_calls_used":5}',
+        encoding="utf-8",
+    )
+
+    state = load_runtime_state(current_report_path=current, last_report_path=last, status_path=status)
+
+    assert state["ts"] == "current"
+    assert state["source"] == "current_report"
+    assert state["daemon_status"]["phase"] == "cycle_completed"
+
+
+def test_load_runtime_state_retombe_sur_last_report_si_current_absent(tmp_path) -> None:
+    last = tmp_path / "last_report.json"
+    last.write_text('{"ts":"last","portfolio":{"holdings":[]}}', encoding="utf-8")
+
+    state = load_runtime_state(
+        current_report_path=tmp_path / "missing_current.json",
+        last_report_path=last,
+        status_path=tmp_path / "missing_status.json",
+    )
+
+    assert state["ts"] == "last"
+    assert state["source"] == "last_report"

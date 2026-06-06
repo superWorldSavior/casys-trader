@@ -81,10 +81,15 @@ class SimBroker:
 
         signed = order.quantity if order.side == "BUY" else -order.quantity
         pos = self._state.positions.get(order.symbol, {"symbol": order.symbol, "quantity": 0.0, "avg_price": 0.0})
+        old_qty = pos["quantity"]
         new_qty = pos["quantity"] + signed
-        if signed > 0:  # achat -> moyenne le prix d'entrée
-            total = pos["avg_price"] * pos["quantity"] + price * signed
-            pos["avg_price"] = total / new_qty if new_qty else 0.0
+        if new_qty == 0:
+            pos["avg_price"] = 0.0
+        elif old_qty == 0 or old_qty * signed > 0:
+            total = pos["avg_price"] * abs(old_qty) + price * abs(signed)
+            pos["avg_price"] = total / abs(new_qty)
+        elif old_qty * new_qty < 0:
+            pos["avg_price"] = price
         pos["quantity"] = new_qty
         self._state.positions[order.symbol] = pos
         self._state.cash -= signed * price

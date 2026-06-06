@@ -57,9 +57,20 @@ class RiskGate:
         current_position_value: float,
         gross_exposure: float,
         equity: float,
+        allow_risk_reduction: bool = False,
     ) -> Verdict:
         """Valide un ordre contre les bornes. Premier échec = rejet (fail fast)."""
         order_value = abs(order.quantity) * price
+        signed = order_value if order.side == "BUY" else -order_value
+        current_abs_position = abs(current_position_value)
+        projected_position = abs(current_position_value + signed)
+        risk_reducing = (
+            allow_risk_reduction
+            and current_abs_position > 0
+            and current_position_value * signed < 0
+            and abs(signed) <= current_abs_position
+            and projected_position < current_abs_position
+        )
 
         if equity < self.limits.min_equity:
             return Verdict(False, "equity_floor_breached", f"equity={equity:.2f} < {self.limits.min_equity}")
@@ -67,15 +78,13 @@ class RiskGate:
         if self._orders_this_cycle >= self.limits.max_orders_per_cycle:
             return Verdict(False, "order_rate_exceeded", f"déjà {self._orders_this_cycle} ordres ce cycle")
 
-        if order_value > self.limits.max_order_value:
+        if order_value > self.limits.max_order_value and not risk_reducing:
             return Verdict(False, "order_value_exceeded", f"{order_value:.2f} > {self.limits.max_order_value}")
 
-        signed = order_value if order.side == "BUY" else -order_value
-        projected_position = abs(current_position_value + signed)
         if projected_position > self.limits.max_position_value:
             return Verdict(False, "position_value_exceeded", f"{projected_position:.2f} > {self.limits.max_position_value}")
 
-        projected_gross = gross_exposure + order_value
+        projected_gross = gross_exposure - current_abs_position + projected_position
         if projected_gross > self.limits.max_gross_exposure:
             return Verdict(False, "gross_exposure_exceeded", f"{projected_gross:.2f} > {self.limits.max_gross_exposure}")
 

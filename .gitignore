@@ -1,6 +1,7 @@
 # État runtime (broker, scheduler, rapports) — pas versionné
 /state/
 KILL
+.env
 
 # Python
 __pycache__/

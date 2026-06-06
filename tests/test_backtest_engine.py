@@ -95,3 +95,34 @@ def test_run_backtest_ignore_un_ordre_refuse_par_le_fusible() -> None:
     assert result.trades == []
     assert result.equity_curve == [(timeline[0], 1_000.0), (timeline[1], 1_000.0)]
     assert result.final_equity == 1_000.0
+
+
+def test_run_backtest_autorise_sortie_qui_reduit_risque_meme_si_order_value_depasse() -> None:
+    timeline = ["2026-01-01T10:00:00", "2026-01-01T11:00:00"]
+    history = FakeHistory({"AAPL": [_bar(timeline[0], 100.0), _bar(timeline[1], 120.0)]})
+
+    def decision_fn(symbol: str, context: dict) -> Decision:
+        if context["now"] == timeline[0]:
+            return Decision(symbol=symbol, action="BUY", confidence=1.0, quantity=100.0, rationale="open")
+        return Decision(symbol=symbol, action="SELL", confidence=1.0, quantity=100.0, rationale="close")
+
+    result = run_backtest(
+        history=history,
+        timeline=timeline,
+        symbols=["AAPL"],
+        decision_fn=decision_fn,
+        risk_limits={
+            "max_position_value": 20_000.0,
+            "max_gross_exposure": 20_000.0,
+            "max_order_value": 10_000.0,
+            "max_orders_per_cycle": 5,
+            "min_equity": 0.0,
+        },
+        starting_cash=20_000.0,
+    )
+
+    assert result.trades == [
+        {"ts": timeline[0], "symbol": "AAPL", "side": "BUY", "quantity": 100.0, "price": 100.0},
+        {"ts": timeline[1], "symbol": "AAPL", "side": "SELL", "quantity": 100.0, "price": 120.0},
+    ]
+    assert result.final_equity == 22_000.0

@@ -1,6 +1,6 @@
 # Univers de trading — édité en boucle 1 (Erwan + Claude).
-# v1 : instruments listés US (data gratuite, démarrage immédiat).
-# Expansion native (CAC future, Euronext Paris, Taïwan) une fois IB Gateway branchée.
+# v1 : instruments disponibles via yfinance (data gratuite, démarrage immédiat).
+# Expansion native (Euronext Paris, Taïwan, FX broker) une fois IB Gateway branchée.
 
 starting_cash: 100000
 
@@ -11,11 +11,23 @@ symbols:
   - DIA   # Dow Jones
   - EWT   # Taïwan
   - EWQ   # France
+  - ^FCHI # CAC 40
   # Thématiques
   - ITA   # Défense US
   - XLE   # Énergie
-  - USO   # Pétrole
-  - UNG   # Gaz naturel
+  # Commodities futures continus (proxy paper Yahoo Finance)
+  - CL=F  # WTI crude oil
+  - BZ=F  # Brent crude oil
+  - NG=F  # Natural gas
   # Nasdaq individuelles
   - NVDA
   - AAPL
+  # Forex majors (Yahoo Finance FX spot proxy)
+  - EURUSD=X
+  - GBPUSD=X
+  - USDJPY=X
+  - USDCHF=X
+  - USDCAD=X
+  - AUDUSD=X
+  - NZDUSD=X
+  - EURJPY=X

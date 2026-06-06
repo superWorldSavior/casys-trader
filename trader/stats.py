@@ -17,6 +17,87 @@ import yaml
 from backtest.metrics import Metrics, compute_metrics, render_cli
 
 
+def _compute_model_performance(state_dir: Path) -> list[dict]:
+    path = state_dir / "model_performance.jsonl"
+    if not path.exists():
+        return []
+
+    groups: dict[tuple[str, str], dict] = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            row = json.loads(line)
+        except Exception:
+            continue
+        provider = str(row.get("llm_provider") or "unknown")
+        model = str(row.get("llm_model") or "unknown")
+        key = (provider, model)
+        group = groups.setdefault(
+            key,
+            {
+                "provider": provider,
+                "model": model,
+                "fills": 0,
+                "symbols": set(),
+                "fallbacks": 0,
+                "first_equity": None,
+                "last_equity": None,
+                "_confidence_sum": 0.0,
+                "_confidence_n": 0,
+            },
+        )
+        group["fills"] += 1
+        if row.get("symbol"):
+            group["symbols"].add(str(row["symbol"]))
+        if row.get("llm_fallback_reason"):
+            group["fallbacks"] += 1
+        if row.get("confidence") is not None:
+            try:
+                group["_confidence_sum"] += float(row["confidence"])
+                group["_confidence_n"] += 1
+            except Exception:
+                pass
+        if row.get("equity") is not None:
+            try:
+                equity = float(row["equity"])
+                if group["first_equity"] is None:
+                    group["first_equity"] = equity
+                group["last_equity"] = equity
+            except Exception:
+                pass
+
+    rows: list[dict] = []
+    for group in groups.values():
+        first_equity = group["first_equity"]
+        last_equity = group["last_equity"]
+        confidence_n = group["_confidence_n"]
+        rows.append(
+            {
+                "provider": group["provider"],
+                "model": group["model"],
+                "fills": group["fills"],
+                "symbols": sorted(group["symbols"]),
+                "fallbacks": group["fallbacks"],
+                "first_equity": first_equity,
+                "last_equity": last_equity,
+                "portfolio_equity_delta": (
+                    None
+                    if first_equity is None or last_equity is None
+                    else last_equity - first_equity
+                ),
+                "avg_confidence": (
+                    None
+                    if confidence_n == 0
+                    else group["_confidence_sum"] / confidence_n
+                ),
+            }
+        )
+    rows.sort(key=lambda row: (row["provider"], row["model"]))
+    return rows
+
+
 def compute_live_kpis(state_dir: Path) -> dict:
     """Calcule les KPI live depuis l'historique + l'état broker.
 
@@ -97,6 +178,7 @@ def compute_live_kpis(state_dir: Path) -> dict:
         "num_trades": metrics.num_trades,
         "n_positions": len(positions_list),
         "positions": positions_list,
+        "model_performance": _compute_model_performance(state_dir),
     }
 
 
@@ -128,6 +210,15 @@ def _render_text(kpis: dict) -> str:
     ]
     for pos in kpis["positions"]:
         lines.append(f"  {pos['symbol']}: qty={pos['quantity']} avg={pos['avg_price']:.4f}")
+    if kpis["model_performance"]:
+        lines.append("Perf modèles:")
+        for row in kpis["model_performance"]:
+            delta = fmt_float(row["portfolio_equity_delta"])
+            avg_conf = fmt_float(row["avg_confidence"], decimals=3)
+            lines.append(
+                f"  {row['provider']}/{row['model']}: fills={row['fills']} "
+                f"delta_equity={delta} avg_conf={avg_conf} fallbacks={row['fallbacks']}"
+            )
     return "\n".join(lines)
 
 
