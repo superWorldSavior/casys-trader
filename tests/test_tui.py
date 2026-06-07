@@ -136,7 +136,12 @@ def test_load_runtime_state_prefere_current_report_et_injecte_status(tmp_path) -
         encoding="utf-8",
     )
 
-    state = load_runtime_state(current_report_path=current, last_report_path=last, status_path=status)
+    state = load_runtime_state(
+        state_dir=tmp_path,
+        current_report_path=current,
+        last_report_path=last,
+        status_path=status,
+    )
 
     assert state["ts"] == "current"
     assert state["source"] == "current_report"
@@ -148,6 +153,7 @@ def test_load_runtime_state_retombe_sur_last_report_si_current_absent(tmp_path) 
     last.write_text('{"ts":"last","portfolio":{"holdings":[]}}', encoding="utf-8")
 
     state = load_runtime_state(
+        state_dir=tmp_path,
         current_report_path=tmp_path / "missing_current.json",
         last_report_path=last,
         status_path=tmp_path / "missing_status.json",

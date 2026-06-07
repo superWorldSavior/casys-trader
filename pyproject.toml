@@ -7,6 +7,7 @@ dependencies = [
     "yfinance>=0.2.40",
     "pyyaml>=6.0",
     "rich>=13.0",
+    "plotext>=5.2",
 ]
 
 [project.scripts]
