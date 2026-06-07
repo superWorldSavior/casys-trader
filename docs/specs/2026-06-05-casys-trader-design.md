@@ -264,8 +264,14 @@ CAC 40, futures continus et forex spot proxy :
 | Défense | ITA |
 | Énergie | XLE |
 | Pétrole / gaz | CL=F / BZ=F / NG=F |
+| Métaux précieux | GC=F (or) |
+| Crypto (24/7) | BTC-USD |
 | Nasdaq individuelles | NVDA, AAPL… |
 | Forex majors | EURUSD=X, GBPUSD=X, USDJPY=X, USDCHF=X, USDCAD=X, AUDUSD=X, NZDUSD=X, EURJPY=X |
+
+> Crypto trade 24/7 et l'or (future COMEX) ~24/5 : avec le garde de fraîcheur
+> (§4.3 ter), ils sont tradables hors des heures actions/FX — utile pour ne pas
+> rester inactif tout le week-end.
 
 Expansion vers les cotations natives (Euronext Paris, Taïwan, FX/futures broker)
 = lignes ajoutées à l'univers une fois IB Gateway branchée.

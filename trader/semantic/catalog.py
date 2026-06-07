@@ -68,7 +68,9 @@ FAMILIES: dict[str, list[str]] = {
     "defense": ["ITA"],
     "energy": ["XLE"],
     "commodities_futures": ["CL=F", "BZ=F", "NG=F"],
+    "metals": ["GC=F"],
     "nasdaq_single_names": ["NVDA", "AAPL"],
+    "crypto": ["BTC-USD"],
     "forex_majors": [
         "EURUSD=X",
         "GBPUSD=X",

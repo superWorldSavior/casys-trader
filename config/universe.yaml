@@ -19,9 +19,13 @@ symbols:
   - CL=F  # WTI crude oil
   - BZ=F  # Brent crude oil
   - NG=F  # Natural gas
+  # Métaux précieux (future COMEX, ~24/5)
+  - GC=F  # Gold
   # Nasdaq individuelles
   - NVDA
   - AAPL
+  # Crypto (Yahoo Finance, 24/7 — seul actif tradable hors-séance actions/FX)
+  - BTC-USD
   # Forex majors (Yahoo Finance FX spot proxy)
   - EURUSD=X
   - GBPUSD=X

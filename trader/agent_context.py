@@ -36,7 +36,9 @@ _FAMILY_CODES = {
     "defense": "def",
     "energy": "en",
     "commodities_futures": "fut",
+    "metals": "met",
     "nasdaq_single_names": "ndq",
+    "crypto": "cry",
     "forex_majors": "fx",
 }
 
