@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import operator
 from datetime import datetime, timedelta, timezone
-from typing import Callable
+from typing import Callable, NamedTuple
 
 from .features import DEFAULT_INDICATORS, build_indicator_snapshot, compute_indicator_values
 from .semantic.catalog import FAMILIES, family_for_symbol, normalize_temporal_query
@@ -26,12 +27,23 @@ _ON_TRIGGER_ALIASES = {
 _ON_TRIGGERS = {"WAKE", "WAKE_WITH_ORDER_INTENT"}
 _CROSS_ASSET_INDICATORS = {"relative_strength", "spread_zscore"}
 
+WATCH_REJECT_NOT_MAPPING = "not_a_mapping"
+WATCH_REJECT_UNKNOWN_INDICATOR = "unknown_indicator"
+WATCH_REJECT_INVALID_OPERATOR = "invalid_operator"
+WATCH_REJECT_MISSING_THRESHOLD = "missing_threshold"
+WATCH_REJECT_NON_FINITE_THRESHOLD = "non_finite_threshold"
+
 _ABS_OPS: dict[str, Callable[[float, float], bool]] = {
     "abs>": operator.gt,
     "abs>=": operator.ge,
     "abs<": operator.lt,
     "abs<=": operator.le,
 }
+
+
+class IndicatorWatchResult(NamedTuple):
+    watch: dict | None
+    rejections: list[dict]
 
 
 def _parse_dt(raw: str | None) -> datetime | None:
@@ -54,63 +66,124 @@ def _bounded_float(value: object, *, default: float, minimum: float, maximum: fl
     return min(max(parsed, minimum), maximum)
 
 
+def _optional_finite_float(*values: object) -> float | None:
+    for value in values:
+        if value is None:
+            continue
+        try:
+            parsed = float(value)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(parsed):
+            return parsed
+    return None
+
+
+def _json_safe_scalar(value: object) -> object:
+    if value is None or isinstance(value, str | int | bool):
+        return value
+    if isinstance(value, float):
+        return value if math.isfinite(value) else str(value)
+    return str(value)
+
+
 def _normalize_on_trigger(raw: object) -> str:
     on_trigger = str(raw or "WAKE").upper()
     on_trigger = _ON_TRIGGER_ALIASES.get(on_trigger, on_trigger)
     return on_trigger if on_trigger in _ON_TRIGGERS else "WAKE"
 
 
-def _condition_from_raw(raw: object, *, owner_symbol: str) -> dict | None:
+def _condition_from_raw(raw: object, *, owner_symbol: str) -> tuple[dict | None, dict | None]:
     if not isinstance(raw, dict):
-        return None
+        return (
+            None,
+            {"reason": WATCH_REJECT_NOT_MAPPING, "indicator": None, "raw_value": None},
+        )
     indicator = str(raw.get("indicator") or raw.get("name") or "")
     if indicator not in DEFAULT_INDICATORS:
-        return None
+        return (
+            None,
+            {
+                "reason": WATCH_REJECT_UNKNOWN_INDICATOR,
+                "indicator": indicator or None,
+                "raw_value": None,
+            },
+        )
     op = str(raw.get("op") or raw.get("operator") or ">=").lower()
     if op not in _OPS and op not in _ABS_OPS:
-        return None
+        return (
+            None,
+            {
+                "reason": WATCH_REJECT_INVALID_OPERATOR,
+                "indicator": indicator or None,
+                "raw_value": op,
+            },
+        )
     if "value" not in raw and "threshold" not in raw:
-        return None
+        return (
+            None,
+            {
+                "reason": WATCH_REJECT_MISSING_THRESHOLD,
+                "indicator": indicator or None,
+                "raw_value": None,
+            },
+        )
+    threshold = _optional_finite_float(raw.get("value"), raw.get("threshold"))
+    if threshold is None:
+        return (
+            None,
+            {
+                "reason": WATCH_REJECT_NON_FINITE_THRESHOLD,
+                "indicator": indicator or None,
+                "raw_value": _json_safe_scalar(raw.get("value") if "value" in raw else raw.get("threshold")),
+            },
+        )
     temporal = normalize_temporal_query(
         timeframe=str(raw.get("interval") or raw.get("timeframe") or "1h"),
         lookback=None if raw.get("lookback") is None else str(raw["lookback"]),
         window=_bounded_int(raw.get("window"), default=48, minimum=2, maximum=240),
         as_of=None if raw.get("as_of") is None else str(raw["as_of"]),
     )
-    return {
-        "symbol": str(raw.get("symbol") or owner_symbol),
-        "indicator": indicator,
-        "op": op,
-        "value": float(raw.get("value", raw.get("threshold"))),
-        "interval": temporal["timeframe"],
-        "timeframe": temporal["timeframe"],
-        "source_interval": temporal["source_interval"],
-        "lookback": temporal["lookback"],
-        "window": temporal["window"],
-        "as_of": temporal["as_of"],
-    }
+    return (
+        {
+            "symbol": str(raw.get("symbol") or owner_symbol),
+            "indicator": indicator,
+            "op": op,
+            "value": threshold,
+            "interval": temporal["timeframe"],
+            "timeframe": temporal["timeframe"],
+            "source_interval": temporal["source_interval"],
+            "lookback": temporal["lookback"],
+            "window": temporal["window"],
+            "as_of": temporal["as_of"],
+        },
+        None,
+    )
 
 
-def normalize_indicator_watch(
+def build_indicator_watch(
     raw: object,
     *,
     owner_symbol: str,
     now: datetime,
     max_ttl_minutes: float = 24 * 60,
-) -> dict | None:
+) -> IndicatorWatchResult:
     """Normalize an LLM-provided watch into a small persistent JSON shape."""
     if not isinstance(raw, dict):
-        return None
+        return IndicatorWatchResult(None, [])
     raw_conditions = raw.get("conditions") or raw.get("when") or []
     if isinstance(raw_conditions, dict):
         raw_conditions = [raw_conditions]
-    conditions = [
-        condition
-        for item in list(raw_conditions)
-        if (condition := _condition_from_raw(item, owner_symbol=owner_symbol)) is not None
-    ]
+    conditions = []
+    rejections = []
+    for item in list(raw_conditions):
+        condition, rejection = _condition_from_raw(item, owner_symbol=owner_symbol)
+        if condition is not None:
+            conditions.append(condition)
+        elif rejection is not None:
+            rejections.append(rejection)
     if not conditions:
-        return None
+        return IndicatorWatchResult(None, rejections)
 
     ttl = _bounded_float(
         raw.get("ttl_minutes", raw.get("duration_minutes", raw.get("expires_in_minutes"))),
@@ -146,7 +219,18 @@ def normalize_indicator_watch(
         watch["order"] = order
     if raw.get("rationale"):
         watch["rationale"] = str(raw["rationale"])
-    return watch
+    return IndicatorWatchResult(watch, rejections)
+
+
+def normalize_indicator_watch(
+    raw: object,
+    *,
+    owner_symbol: str,
+    now: datetime,
+    max_ttl_minutes: float = 24 * 60,
+) -> dict | None:
+    """Normalize an LLM-provided watch into a small persistent JSON shape."""
+    return build_indicator_watch(raw, owner_symbol=owner_symbol, now=now, max_ttl_minutes=max_ttl_minutes).watch
 
 
 def _same_family_symbols(symbol: str, universe_symbols: list[str] | None) -> list[str]:

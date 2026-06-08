@@ -69,6 +69,20 @@ def test_build_decision_row_normalise_une_decision_pour_audit() -> None:
     assert row["labels"] == {}
 
 
+def test_build_decision_row_propage_les_rejets_indicator_watch() -> None:
+    """La ligne d'audit conserve l'intention indicator_watch et ses rejets."""
+    decision = _decision()
+    rejections = [{"reason": "non_finite_threshold", "indicator": "z_score", "raw_value": None}]
+    decision["indicator_watch_requested"] = True
+    decision["indicator_watch_rejections"] = rejections
+    report = _report([decision])
+
+    row = decision_ledger.build_decision_row(report, decision, sequence=0, source="daemon")
+
+    assert row["runtime"]["indicator_watch_requested"] is True
+    assert row["runtime"]["indicator_watch_rejections"] == rejections
+
+
 def test_decision_ledger_append_est_idempotent(tmp_path) -> None:
     store = decision_ledger.DecisionLedgerStore(tmp_path / "decisions.jsonl")
     row = decision_ledger.build_decision_row(_report([_decision()]), _decision(), sequence=0)

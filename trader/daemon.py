@@ -28,6 +28,7 @@ from . import attribution, code_version, codex_client, consolidator, decision_le
 from .exit_engine import evaluate_plan
 from .features import DEFAULT_INDICATORS
 from .indicator_watch import (
+    build_indicator_watch,
     evaluate_indicator_watches,
     normalize_indicator_watch,
     watch_market_requests,
@@ -976,11 +977,23 @@ def run_cycle(
                  "llm_error": decision.llm_error,
                  "learning": decision.learning,
                  "trade_plan_created": False,
-                 "indicator_watch_created": False}
+                 "indicator_watch_created": False,
+                 "indicator_watch_requested": bool(decision.indicator_watch),
+                 "indicator_watch_rejections": []}
 
         pending_indicator_watch = None
-        if decision.indicator_watch and sched is not None:
-            pending_indicator_watch = normalize_indicator_watch(decision.indicator_watch, owner_symbol=sym, now=now)
+        if decision.indicator_watch:
+            indicator_watch_result = build_indicator_watch(decision.indicator_watch, owner_symbol=sym, now=now)
+            entry["indicator_watch_rejections"] = indicator_watch_result.rejections
+            if indicator_watch_result.rejections:
+                log.warning(
+                    "indicator_watch rejets %s: %d conditions %s",
+                    sym,
+                    len(indicator_watch_result.rejections),
+                    [r["reason"] for r in indicator_watch_result.rejections],
+                )
+            if sched is not None:
+                pending_indicator_watch = indicator_watch_result.watch
 
         def apply_decision_schedule() -> None:
             if sched is None:

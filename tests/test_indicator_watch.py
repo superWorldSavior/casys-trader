@@ -1,6 +1,14 @@
 from datetime import datetime, timezone
 
-from trader.indicator_watch import evaluate_indicator_watches, normalize_indicator_watch
+from trader.indicator_watch import (
+    WATCH_REJECT_INVALID_OPERATOR,
+    WATCH_REJECT_MISSING_THRESHOLD,
+    WATCH_REJECT_NON_FINITE_THRESHOLD,
+    WATCH_REJECT_UNKNOWN_INDICATOR,
+    build_indicator_watch,
+    evaluate_indicator_watches,
+    normalize_indicator_watch,
+)
 from trader.tools.market import Bar
 
 
@@ -49,6 +57,102 @@ def test_normalize_indicator_watch_borne_et_persiste_une_combinaison_multi_timef
     assert watch["conditions"][1]["source_interval"] == "1h"
     assert watch["conditions"][1]["lookback"] == "1mo"
     assert watch["order"]["action"] == "BUY"
+
+
+def test_normalize_indicator_watch_ignore_les_conditions_sans_seuil_numerique() -> None:
+    now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
+
+    empty = normalize_indicator_watch(
+        {"conditions": [{"indicator": "z_score", "op": ">=", "value": None}]},
+        owner_symbol="SPY",
+        now=now,
+    )
+    mixed = normalize_indicator_watch(
+        {
+            "conditions": [
+                {"indicator": "z_score", "op": ">=", "value": None},
+                {"indicator": "return", "op": ">", "value": "not-a-number"},
+                {"indicator": "efficiency_ratio", "op": ">", "value": "NaN"},
+                {"indicator": "trend_slope", "op": "<", "threshold": 0.0},
+                {"indicator": "range_position", "op": ">", "value": None, "threshold": 0.5},
+            ]
+        },
+        owner_symbol="SPY",
+        now=now,
+    )
+
+    assert empty is None
+    assert mixed is not None
+    assert mixed["conditions"] == [
+        {
+            "symbol": "SPY",
+            "indicator": "trend_slope",
+            "op": "<",
+            "value": 0.0,
+            "interval": "1h",
+            "timeframe": "1h",
+            "source_interval": "1h",
+            "lookback": "5d",
+            "window": 48,
+            "as_of": "latest",
+        },
+        {
+            "symbol": "SPY",
+            "indicator": "range_position",
+            "op": ">",
+            "value": 0.5,
+            "interval": "1h",
+            "timeframe": "1h",
+            "source_interval": "1h",
+            "lookback": "5d",
+            "window": 48,
+            "as_of": "latest",
+        }
+    ]
+
+
+def test_build_indicator_watch_remonte_les_rejets_par_condition() -> None:
+    """Les rejets de conditions sont exposés dans l'ordre avec raison et valeur fautive."""
+    now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
+
+    result = build_indicator_watch(
+        {
+            "conditions": [
+                {"indicator": "z_score", "op": ">=", "value": None},
+                {"indicator": "inconnu", "op": ">=", "value": 1.0},
+                {"indicator": "return", "op": "??", "value": 0.01},
+                {"indicator": "trend_slope", "op": "<"},
+                {"indicator": "range_position", "op": ">", "value": 0.5},
+            ]
+        },
+        owner_symbol="SPY",
+        now=now,
+    )
+
+    assert result.watch is not None
+    assert [condition["indicator"] for condition in result.watch["conditions"]] == ["range_position"]
+    assert result.rejections == [
+        {"reason": WATCH_REJECT_NON_FINITE_THRESHOLD, "indicator": "z_score", "raw_value": None},
+        {"reason": WATCH_REJECT_UNKNOWN_INDICATOR, "indicator": "inconnu", "raw_value": None},
+        {"reason": WATCH_REJECT_INVALID_OPERATOR, "indicator": "return", "raw_value": "??"},
+        {"reason": WATCH_REJECT_MISSING_THRESHOLD, "indicator": "trend_slope", "raw_value": None},
+    ]
+
+
+def test_build_indicator_watch_rejet_total_donne_watch_none_avec_raisons() -> None:
+    """Un rejet total ne crée pas de watch mais conserve la raison exploitable."""
+    now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
+
+    result = build_indicator_watch(
+        {"conditions": [{"indicator": "z_score", "op": ">=", "value": "NaN"}]},
+        owner_symbol="SPY",
+        now=now,
+    )
+
+    assert result.watch is None
+    assert result.rejections == [
+        {"reason": WATCH_REJECT_NON_FINITE_THRESHOLD, "indicator": "z_score", "raw_value": "NaN"}
+    ]
 
 
 def test_evaluate_indicator_watches_declenche_quand_combinaison_est_vraie() -> None:

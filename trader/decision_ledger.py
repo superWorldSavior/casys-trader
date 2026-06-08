@@ -116,6 +116,8 @@ def build_decision_row(
             "dry_run": report.get("dry_run"),
             "trade_plan_created": decision.get("trade_plan_created"),
             "indicator_watch_created": decision.get("indicator_watch_created"),
+            "indicator_watch_requested": decision.get("indicator_watch_requested"),
+            "indicator_watch_rejections": decision.get("indicator_watch_rejections"),
         },
         "labels": {},
     }
@@ -294,7 +296,13 @@ def build_legacy_event_row(event: dict, *, sequence: int, source: str) -> dict:
         "decision": decision,
         "market_snapshot": {"price": None, "stale_market_data": None, "symbols_due": [], "model_calls_used": None},
         "portfolio_snapshot": {},
-        "runtime": {"dry_run": None, "trade_plan_created": None, "indicator_watch_created": None},
+        "runtime": {
+            "dry_run": None,
+            "trade_plan_created": None,
+            "indicator_watch_created": None,
+            "indicator_watch_requested": None,
+            "indicator_watch_rejections": None,
+        },
         "labels": {},
     }
 
