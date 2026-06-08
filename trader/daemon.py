@@ -30,7 +30,6 @@ from .features import DEFAULT_INDICATORS
 from .indicator_watch import (
     build_indicator_watch,
     evaluate_indicator_watches,
-    normalize_indicator_watch,
     watch_market_requests,
 )
 from .risk import RiskGate, RiskLimits
@@ -668,6 +667,10 @@ def run_cycle(
     bars_by_symbol: dict[str, list] = {}
     prices: dict[str, float] = {}
     stale_market_data: dict[str, dict] = {}
+    freshness_max_age = max(
+        max_market_data_age_minutes,
+        market.freshness_budget_minutes(runtime_interval),
+    )
     _log_cycle_progress("[market] loading bars symbols=%d interval=%s", len(symbols), runtime_interval)
     for sym in symbols:
         try:
@@ -685,7 +688,7 @@ def run_cycle(
         # La fraîcheur EST le garde « marché live » : une dernière barre trop
         # vieille / imparsable => stale => exclue du tradable (pas de fill sur
         # données mortes hors-séance ou gelées).
-        freshness = market.assess_freshness(bars, now=now, max_age_minutes=max_market_data_age_minutes)
+        freshness = market.assess_freshness(bars, now=now, max_age_minutes=freshness_max_age)
         if not freshness.fresh:
             stale_market_data[sym] = {
                 "last_bar_ts": str(bars[-1].ts),

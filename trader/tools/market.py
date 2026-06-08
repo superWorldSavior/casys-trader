@@ -49,7 +49,21 @@ _INTERVAL_MINUTES = {
     "4h": 4.0 * 60.0,
     "1d": 24.0 * 60.0,
 }
+_FRESHNESS_GRACE_MINUTES = 15.0
 _FALLBACK_GROUP_SIZE_BY_TARGET = {"1h": 4, "4h": 4}
+
+
+def freshness_budget_minutes(
+    interval: str,
+    *,
+    grace_minutes: float = _FRESHNESS_GRACE_MINUTES,
+) -> float:
+    """Budget de fraîcheur = durée d'une barre + marge.
+
+    Un marché live produit une nouvelle barre chaque `interval` ; au-delà de
+    interval+grace, il est figé (fermé/halt). Intervalle inconnu => défaut 1h.
+    """
+    return _INTERVAL_MINUTES.get(interval, 60.0) + grace_minutes
 
 
 def assess_freshness(bars: list[Bar], *, now: datetime, max_age_minutes: float) -> Freshness:

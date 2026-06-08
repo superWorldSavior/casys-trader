@@ -238,3 +238,67 @@ def test_run_cycle_bloque_decision_sur_donnees_marche_perimees(monkeypatch, tmp_
         "data_age_minutes": 120.0,
     }
     assert json.loads((state_dir / "broker.json").read_text())["fills"] == []
+
+
+def test_run_cycle_garde_tradable_une_barre_horaire_de_59_minutes(
+    monkeypatch,
+    tmp_path,
+    patch_batch,
+    make_data_source,
+) -> None:
+    _write_runtime_config(tmp_path)
+    state_dir = tmp_path / "state"
+    now = datetime(2026, 6, 5, 8, 59, tzinfo=timezone.utc)
+    codex_calls = 0
+
+    def bars(symbol: str, lookback: str, interval: str) -> list[Bar]:
+        return [
+            Bar(
+                ts=(now - timedelta(minutes=179)).isoformat(),
+                open=100.0,
+                high=101.0,
+                low=99.0,
+                close=100.0,
+                volume=1000.0,
+            ),
+            Bar(
+                ts=(now - timedelta(minutes=119)).isoformat(),
+                open=101.0,
+                high=102.0,
+                low=100.0,
+                close=101.0,
+                volume=1000.0,
+            ),
+            Bar(
+                ts=(now - timedelta(minutes=59)).isoformat(),
+                open=102.0,
+                high=103.0,
+                low=101.0,
+                close=102.0,
+                volume=1000.0,
+            ),
+        ]
+
+    def decide(**kwargs) -> Decision:
+        nonlocal codex_calls
+        codex_calls += 1
+        return Decision.hold(kwargs["symbol"], "attente")
+
+    monkeypatch.setattr(daemon, "ROOT", tmp_path)
+    monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+    patch_batch(decide)
+    data_source = make_data_source(bars)
+
+    report = daemon.run_cycle(
+        dry_run=True,
+        now=now,
+        symbols_filter=["SPY"],
+        sched=Scheduler(state_dir / "scheduler.json"),
+        data_source=data_source,
+        runtime_interval="1h",
+    )
+
+    assert codex_calls == 1
+    assert report["stale_market_data"] == {}
+    assert [decision["symbol"] for decision in report["decisions"]] == ["SPY"]
+    assert report["decisions"][0]["rationale"] == "attente"

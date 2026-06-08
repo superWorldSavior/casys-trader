@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta, timezone
 
+from trader.tools import market
 from trader.tools.market import Bar, assess_freshness
 
 
@@ -74,3 +75,50 @@ def test_ts_dans_un_autre_fuseau_compare_en_utc() -> None:
     verdict = assess_freshness(bars, now=now, max_age_minutes=40)
     assert verdict.fresh is True
     assert round(verdict.age_minutes, 1) == 5.0
+
+
+def test_freshness_budget_minutes_ajoute_la_marge_a_la_duree_de_barre() -> None:
+    assert hasattr(market, "freshness_budget_minutes")
+    assert market.freshness_budget_minutes("1h") == 75.0
+    assert market.freshness_budget_minutes("15m") == 30.0
+    assert market.freshness_budget_minutes("1d") == 1455.0
+    assert market.freshness_budget_minutes("inconnu") == 75.0
+
+
+def test_budget_horaire_garde_fraiche_une_barre_en_cours_de_59_minutes() -> None:
+    now = datetime(2026, 6, 5, 8, 59, tzinfo=timezone.utc)
+    bars = [
+        _bar((now - timedelta(minutes=179)).isoformat()),
+        _bar((now - timedelta(minutes=119)).isoformat()),
+        _bar((now - timedelta(minutes=59)).isoformat()),
+    ]
+
+    verdict_ancien_budget = assess_freshness(bars, now=now, max_age_minutes=40)
+    verdict_budget_horaire = assess_freshness(
+        bars,
+        now=now,
+        max_age_minutes=market.freshness_budget_minutes("1h"),
+    )
+
+    assert verdict_ancien_budget.fresh is False
+    assert verdict_ancien_budget.reason == "too_old"
+    assert verdict_budget_horaire.fresh is True
+    assert verdict_budget_horaire.reason is None
+
+
+def test_budget_horaire_signale_stale_au_dela_de_75_minutes() -> None:
+    now = datetime(2026, 6, 5, 9, 20, tzinfo=timezone.utc)
+    bars = [
+        _bar((now - timedelta(minutes=200)).isoformat()),
+        _bar((now - timedelta(minutes=140)).isoformat()),
+        _bar((now - timedelta(minutes=80)).isoformat()),
+    ]
+
+    verdict = assess_freshness(
+        bars,
+        now=now,
+        max_age_minutes=market.freshness_budget_minutes("1h"),
+    )
+
+    assert verdict.fresh is False
+    assert verdict.reason == "too_old"
