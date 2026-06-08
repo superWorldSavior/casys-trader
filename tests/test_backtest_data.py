@@ -1,3 +1,5 @@
+from datetime import timedelta
+
 from trader.tools.market import Bar
 
 from backtest.data import HistoryStore
@@ -40,6 +42,33 @@ def test_price_asof_ne_voit_jamais_les_barres_futures() -> None:
     assert store.price_asof("AAPL", "2026-01-01T11:00:00") == 110.0
     assert store.price_asof("AAPL", "2026-01-01T11:59:59") == 110.0
     assert store.price_asof("AAPL", "2026-01-01T13:00:00") == 120.0
+
+
+def test_price_after_retourne_une_barre_posterieure_dans_l_horizon() -> None:
+    store = HistoryStore.from_bars(
+        {
+            "AAPL": [
+                _bar("2026-01-01T10:00:00", 100.0),
+                _bar("2026-01-01T11:00:00", 110.0),
+                _bar("2026-01-01T14:00:00", 140.0),
+            ]
+        }
+    )
+
+    assert store.price_after("AAPL", "2026-01-01T10:30:00", timedelta(hours=4)) == 140.0
+
+
+def test_price_after_est_non_evaluable_sans_barre_nouvelle_dans_l_horizon() -> None:
+    store = HistoryStore.from_bars(
+        {
+            "AAPL": [
+                _bar("2026-01-02T16:00:00", 100.0),
+                _bar("2026-01-05T10:00:00", 110.0),
+            ]
+        }
+    )
+
+    assert store.price_after("AAPL", "2026-01-02T16:00:00", timedelta(days=1)) is None
 
 
 def test_bars_asof_retourne_un_lookback_strictement_historique_en_ordre_croissant() -> None:

@@ -10,6 +10,7 @@ import hashlib
 import json
 from bisect import bisect_right
 from dataclasses import asdict, dataclass
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -83,6 +84,23 @@ class HistoryStore:
         if index is None:
             return None
         return bars[index].close
+
+    def price_after(self, symbol: str, ts: str, horizon: timedelta) -> float | None:
+        """Close as-of à `ts+horizon`, si une barre nouvelle existe dans l'horizon.
+
+        Retourne None quand aucune barre réellement postérieure à `ts` n'apparaît
+        dans `(ts, ts+horizon]`, ce qui rend les gaps/week-ends non évaluables.
+        """
+        bars = self._bars_by_symbol.get(symbol)
+        if not bars:
+            return None
+
+        i0 = _asof_index(bars, ts)
+        target = (datetime.fromisoformat(ts) + horizon).isoformat()
+        ih = _asof_index(bars, target)
+        if i0 is None or ih is None or ih <= i0:
+            return None
+        return bars[ih].close
 
     def bars_asof(self, symbol: str, ts: str, lookback: int) -> list[Bar]:
         """Barres historiques jusqu'à `ts`, ordre croissant, sans fuite future."""
