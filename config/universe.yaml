@@ -33,3 +33,10 @@ symbols:
   - AUDUSD=X
   - NZDUSD=X
   - EURJPY=X
+  # Actions taïwanaises (TWSE, TWD) — data IB confirmée 2026-06-08
+  - 2330.TW   # TSMC (semi)
+  - 2317.TW   # Hon Hai / Foxconn (electronics)
+  - 2454.TW   # MediaTek (semi)
+  - 2412.TW   # Chunghwa Telecom (telecom)
+  - 2882.TW   # Cathay Financial (finance)
+  - 2603.TW   # Evergreen Marine (shipping)

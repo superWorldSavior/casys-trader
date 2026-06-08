@@ -20,6 +20,14 @@
 
 contracts:
 
+  # --- Actions taïwanaises (TWSE, TWD) : data IB confirmée live 2026-06-08 ---
+  "2330.TW": { sec_type: STK, symbol: "2330", exchange: TWSE, currency: TWD }  # TSMC
+  "2317.TW": { sec_type: STK, symbol: "2317", exchange: TWSE, currency: TWD }  # Hon Hai
+  "2454.TW": { sec_type: STK, symbol: "2454", exchange: TWSE, currency: TWD }  # MediaTek
+  "2412.TW": { sec_type: STK, symbol: "2412", exchange: TWSE, currency: TWD }  # Chunghwa Telecom
+  "2882.TW": { sec_type: STK, symbol: "2882", exchange: TWSE, currency: TWD }  # Cathay Financial
+  "2603.TW": { sec_type: STK, symbol: "2603", exchange: TWSE, currency: TWD }  # Evergreen Marine
+
   # --- Indices US via ETF (NYSE Arca, USD) : STK/SMART, trivial ---
   SPY:   { sec_type: STK, symbol: SPY,  exchange: SMART, currency: USD }  # S&P 500
   QQQ:   { sec_type: STK, symbol: QQQ,  exchange: SMART, currency: USD }  # Nasdaq 100
