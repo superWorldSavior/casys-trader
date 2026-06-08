@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from rich.console import RenderableType
-
 from trader.tui import build_view, load_runtime_state
 
 

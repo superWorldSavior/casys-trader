@@ -66,3 +66,36 @@ def test_cli_preserve_top_level_ib_daemon_flags(monkeypatch) -> None:
     main(["--ib-host", "10.0.0.2", "--ib-port", "4003", "--ib-client-id", "44", "--once"])
 
     assert calls == [["--ib-host", "10.0.0.2", "--ib-port", "4003", "--ib-client-id", "44", "--once"]]
+
+
+def test_cli_preserve_top_level_consolidator_daemon_flags(monkeypatch) -> None:
+    calls: list[list[str]] = []
+
+    def fake_daemon(argv):
+        calls.append(argv)
+
+    monkeypatch.setattr("trader.cli.daemon.main", fake_daemon)
+
+    main(
+        [
+            "--consolidator-acpx-agent",
+            "codex",
+            "--consolidator-model",
+            "gpt-5.5[high]",
+            "--learning-consolidation-threshold",
+            "50",
+            "--once",
+        ]
+    )
+
+    assert calls == [
+        [
+            "--consolidator-acpx-agent",
+            "codex",
+            "--consolidator-model",
+            "gpt-5.5[high]",
+            "--learning-consolidation-threshold",
+            "50",
+            "--once",
+        ]
+    ]

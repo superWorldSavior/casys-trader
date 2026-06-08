@@ -1,4 +1,4 @@
-from trader.codex_client import DEFAULT_MODEL, ContextResearchRequest, Decision, parse_decision, parse_decision_or_context_request, parse_batch, decide, decide_batch
+from trader.codex_client import DEFAULT_MODEL, ContextResearchRequest, parse_decision, parse_decision_or_context_request, parse_batch, decide, decide_batch
 from trader.llm import LlmCompletion, LlmFailure
 
 

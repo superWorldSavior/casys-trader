@@ -82,7 +82,15 @@ class LlmRouter:
         )
 
 
-def build_acpx_command(prompt: str, *, acpx_bin: str, model: str, timeout_s: int) -> list[str]:
+def build_acpx_command(
+    prompt: str,
+    *,
+    acpx_bin: str,
+    model: str,
+    timeout_s: int,
+    agent: str | None = None,
+) -> list[str]:
+    agent_part = [] if not agent or agent == "default" else [agent]
     return [
         acpx_bin,
         "--format", "quiet",
@@ -91,6 +99,7 @@ def build_acpx_command(prompt: str, *, acpx_bin: str, model: str, timeout_s: int
         "--non-interactive-permissions", "deny",
         "--model", model,
         "--timeout", str(timeout_s),
+        *agent_part,
         "exec",
         prompt,
     ]
@@ -131,6 +140,7 @@ class AcpxBackend:
     provider: str = "spark"
     model: str = DEFAULT_SPARK_MODEL
     acpx_bin: str = "acpx"
+    agent: str | None = None
 
     def complete(self, prompt: str, *, timeout_s: int) -> LlmCompletion | LlmFailure:
         if shutil.which(self.acpx_bin) is None:
@@ -144,7 +154,13 @@ class AcpxBackend:
 
         try:
             proc = subprocess.run(
-                build_acpx_command(prompt, acpx_bin=self.acpx_bin, model=self.model, timeout_s=timeout_s),
+                build_acpx_command(
+                    prompt,
+                    acpx_bin=self.acpx_bin,
+                    model=self.model,
+                    timeout_s=timeout_s,
+                    agent=self.agent,
+                ),
                 capture_output=True,
                 text=True,
                 timeout=timeout_s + 15,
@@ -299,10 +315,14 @@ def build_default_router_from_env(
     env_path: str | Path | None = DEFAULT_ENV_PATH,
     acpx_bin: str = "acpx",
     spark_model: str = DEFAULT_SPARK_MODEL,
+    acpx_provider: str = "spark",
+    acpx_agent: str | None = None,
 ) -> LlmRouter:
     load_dotenv(env_path)
 
-    backends: list[LlmBackend] = [AcpxBackend(model=spark_model, acpx_bin=acpx_bin)]
+    backends: list[LlmBackend] = [
+        AcpxBackend(provider=acpx_provider, model=spark_model, acpx_bin=acpx_bin, agent=acpx_agent)
+    ]
     api_key = _env("TRADER_OLLAMA_API_KEY", "OLLAMA_API_KEY")
     if api_key:
         backends.append(

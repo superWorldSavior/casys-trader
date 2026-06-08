@@ -109,6 +109,15 @@ cerveau parce que le contrat de sortie a été cassé. Chaque décision garde
 `llm_provider`, `llm_model` et `llm_fallback_reason`; les fills live alimentent
 `state/model_performance.jsonl` pour comparer les modèles dans le temps.
 
+Le consolidateur de learnings utilise une config séparée du brain décideur :
+seuil `50`, agent `codex`, modèle `gpt-5.5[high]`. Overrides :
+`--learning-consolidation-threshold`, `--consolidator-acpx-bin`,
+`--consolidator-acpx-agent`, `--consolidator-model`,
+`--consolidator-timeout-s`, ou les env
+`TRADER_LEARNING_CONSOLIDATION_THRESHOLD`, `TRADER_CONSOLIDATOR_ACPX_BIN`,
+`TRADER_CONSOLIDATOR_ACPX_AGENT`, `TRADER_CONSOLIDATOR_MODEL`,
+`TRADER_CONSOLIDATOR_TIMEOUT_S`.
+
 Décision pure : `--allowed-tools ""` + `--no-terminal` côté acpx (aucun outil, le
 brain ne fait que raisonner sur le contexte fourni). `exec` = session jetable
 → isolation/idempotence (aucun appel ne contamine le suivant) ; l'état évolutif de
@@ -177,7 +186,26 @@ casys-trader status --json
 ```
 
 Fichiers utiles : `state/daemon_status.json`, `state/current_report.json`,
-`state/events.jsonl`, puis `state/last_report.json` en fin de cycle.
+`state/events.jsonl`, `state/decisions.jsonl`, puis `state/last_report.json` en
+fin de cycle.
+
+`state/decisions.jsonl` est le ledger append-only des décisions agent. Il garde
+la décision brute, le prix, le snapshot marché/portfolio minimal, le résultat
+runtime (`executed`, `reason`), la version git qui a produit la décision, et un
+champ `labels` vide pour les verdicts ex-post futurs (`good` / `bad` /
+`neutral` par horizon). L'audit écrit aussi sa propre version git et regroupe
+les verdicts + pourcentages par commit de décision (`summary_by_commit`,
+`metrics_by_commit`) pour comparer les taux avant/après une mise à jour. Pour
+récupérer les décisions déjà présentes dans les rapports live :
+
+```bash
+casys-trader decisions seed-existing
+casys-trader decisions seed-events --include-archives
+casys-trader decisions backfill-code-version
+casys-trader decisions list --json
+casys-trader decisions audit --horizons 1h,4h,1d --threshold-pct 0.5
+casys-trader decisions stats --horizon 1h --min-known 10
+```
 
 Le lancement live est incremental : si `state/scheduler.json` contient déjà des
 timers futurs, le daemon ne réanalyse pas tout l'univers au démarrage. Il ne

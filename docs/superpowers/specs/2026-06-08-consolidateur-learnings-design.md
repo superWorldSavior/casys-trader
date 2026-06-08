@@ -1,7 +1,7 @@
 # Consolidateur de learnings — « boucle 1.5 »
 
 **Date** : 2026-06-08
-**Statut** : design validé, **implémentation différée** (cf. § Timing)
+**Statut** : design validé, **implémenté** (cf. § Timing)
 **Auteurs** : Erwan + Claude
 
 ---
@@ -52,7 +52,7 @@ Séparer les responsabilités (AX #8, Composable Primitives) :
 
 - **L'agent décideur reste bête et rapide** : il crache une note brute, jetable,
   par réveil. Il ne se soucie ni des doublons ni de la portée.
-- **Un agent consolidateur dédié** (Codex, via `acpx exec`, stateless) passe
+- **Un agent consolidateur dédié** (Codex, via `acpx codex exec`, stateless) passe
   périodiquement, lit le pool brut, et écrit *les vrais apprentissages* —
   fusionnés, raffinés, et classés par portée.
 
@@ -74,7 +74,7 @@ learnings.jsonl            learnings_consolidated.json        mandate/memory.md
 |-----|----------|---------------|
 | Sens du doublon | **Récurrence = signal** (gardée), mais exprimée **qualitativement** | Un LLM ne maintient pas un compteur entier de façon fiable ; « confirmé ~10× » suffit |
 | Cible d'écriture | **Nouveau store machine dédié** (`learnings_consolidated.json`) | `memory.md` reste 100 % humain ; trace brute préservée ; séparation nette |
-| Déclencheur | **Seuil de N nouveaux bruts** | Event-driven, déterministe (pas de dépendance au temps mural), colle au modèle daemon |
+| Déclencheur | **Seuil de N nouveaux bruts** (défaut 50) | Event-driven, déterministe (pas de dépendance au temps mural), colle au modèle daemon |
 | Mode de travail | **Stateless : re-synthèse totale** | Idempotent, simple, cohérent avec la philo projet (batch C, sessions jetables) |
 | Modèle de scope | **Binaire : global vs par-symbole** | Résout exactement le défaut observé ; routage trivial ; raffinable plus tard |
 
@@ -119,16 +119,29 @@ Appelé à la fin de chaque cycle daemon. Algorithme :
 
 1. Lire le store consolidé (→ `watermark`, `consolidated`).
 2. Lire les bruts ; sélectionner ceux avec `ts > watermark` → `new_raw`.
-3. **Si `len(new_raw) < N`** (défaut 10) → ne rien faire, retour silencieux.
-4. Sinon → 1 appel Codex **stateless** (`acpx exec`) avec en entrée
+3. **Si `len(new_raw) < N`** (défaut 50) → ne rien faire, retour silencieux.
+4. Sinon → 1 appel Codex **stateless** (`acpx codex exec`) avec en entrée
    `(consolidated, new_raw)` ; réception du **consolidé entier régénéré**
    (structure 5.2).
 5. Parser/valider la sortie (structure `global` / `by_symbol`, bornes).
 6. Écrire atomiquement ; **avancer `watermark`** au `ts` max de `new_raw`.
 
+Config dédiée, indépendante de l'agent décideur :
+
+- seuil : `--learning-consolidation-threshold` /
+  `TRADER_LEARNING_CONSOLIDATION_THRESHOLD`, défaut `50`.
+- binaire ACPX : `--consolidator-acpx-bin` /
+  `TRADER_CONSOLIDATOR_ACPX_BIN`, défaut `acpx`.
+- agent ACPX : `--consolidator-acpx-agent` /
+  `TRADER_CONSOLIDATOR_ACPX_AGENT`, défaut `codex`.
+- modèle : `--consolidator-model` / `TRADER_CONSOLIDATOR_MODEL`, défaut
+  `gpt-5.5[high]`.
+- timeout : `--consolidator-timeout-s` / `TRADER_CONSOLIDATOR_TIMEOUT_S`,
+  défaut `240`.
+
 Fonctions composables (AX #8) : `select_new_raw(raw, watermark)`,
-`consolidate(consolidated, new_raw) -> dict` (l'appel modèle),
-`write_consolidated(store, result, watermark)`.
+`consolidate_payload(consolidated, new_raw) -> dict | None` (l'appel modèle),
+`ConsolidatedLearningsStore.write(result, watermark)`.
 
 ### 5.4 Contrat de l'agent consolidateur *(prompt, dans `codex_client`)*
 
@@ -187,7 +200,7 @@ Le reste se rajoute si le besoin se prouve.
   Deterministic Outputs). Borné par la clause « préserve verbatim les entrées
   stables » du contrat (5.4).
 
-## 9. Invariants à tester (TDD, pour l'implémentation future)
+## 9. Invariants testés (TDD)
 
 1. `select_new_raw` ne retient que les bruts avec `ts > watermark`.
 2. Le consolidateur ne se déclenche **pas** si `len(new_raw) < N`.
@@ -202,23 +215,25 @@ Le reste se rajoute si le besoin se prouve.
 9. Réinjection scope-aware : symbole X reçoit `global` + `by_symbol[X]`, pas
    `by_symbol[Y]`.
 
-## 10. Timing — implémentation différée
+## 10. Timing — implémentation
 
-**Décision (2026-06-08)** : écrire le spec maintenant (frais en tête),
-**implémenter plus tard**, en même temps que le tuning qualité-décision prévu
-« semaine prochaine » sur des données 15m fiables.
+**Décision initiale (2026-06-08)** : écrire le spec maintenant (frais en tête),
+et différer tant que le flux brut n'avait que quelques artefacts stale-data.
 
-**Raison** : le mécanisme naîtrait **dormant et non-validable**. Avec N=10 et
-~3 learnings/jour off-hours (tous artefact stale-data), le consolidateur ne se
-déclencherait quasiment jamais et ne serait pas testable tant qu'il n'y a pas de
-vrai trafic en séance accumulant de vrais learnings — donc de vrais doublons à
-observer. Cohérent avec la note mémoire « ne pas conclure sur le bruit
-pré-garde ».
+**Mise à jour (2026-06-08)** : le buffer brut contient désormais assez de
+learnings multi-symboles pour valider la mécanique. Le consolidateur est
+implémenté en fail-safe :
 
-**Pré-requis avant d'implémenter** : du vrai trafic en séance ayant produit
-assez de learnings non-artefact pour (a) régler `N` et les bornes sur des données
-réelles, (b) valider que le consolidateur produit bien des fusions/promotions
-sensées.
+- `state/learnings.jsonl` reste le buffer brut borné.
+- `state/learnings_consolidated.json` devient le store machine réinjecté.
+- Cold-start : si le consolidé est vide, le contexte garde les bruts récents.
+- Après consolidation : le contexte reçoit `global`, `by_symbol` et quelques
+  bruts récents.
+- Sortie LLM invalide ou échec fournisseur : le consolidé courant reste inchangé.
+
+**Ce que cela ne prouve pas encore** : les learnings restent majoritairement des
+HOLD sans fills ni P&L. La mécanique peut fonctionner; la doctrine de trading ne
+doit pas être durcie tant qu'on n'a pas de résultats d'exécution.
 
 ## 11. Process
 

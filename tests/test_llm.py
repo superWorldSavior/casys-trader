@@ -1,10 +1,12 @@
 import json
 
 from trader.llm import (
+    AcpxBackend,
     LlmCompletion,
     LlmFailure,
     LlmRouter,
     OpenAICompatibleBackend,
+    build_acpx_command,
     build_default_router_from_env,
 )
 
@@ -125,6 +127,54 @@ def test_openai_compatible_backend_classe_429_retryable() -> None:
     assert isinstance(result, LlmFailure)
     assert result.retryable is True
     assert result.code == "rate_limited"
+
+
+def test_build_acpx_command_peut_cibler_un_agent_dedie() -> None:
+    cmd = build_acpx_command(
+        "consolide ces learnings",
+        acpx_bin="acpx",
+        model="gpt-5.5[high]",
+        timeout_s=240,
+        agent="codex",
+    )
+
+    assert cmd == [
+        "acpx",
+        "--format",
+        "quiet",
+        "--allowed-tools",
+        "",
+        "--no-terminal",
+        "--non-interactive-permissions",
+        "deny",
+        "--model",
+        "gpt-5.5[high]",
+        "--timeout",
+        "240",
+        "codex",
+        "exec",
+        "consolide ces learnings",
+    ]
+
+
+def test_build_default_router_from_env_peut_nommer_lagent_acpx(monkeypatch) -> None:
+    monkeypatch.delenv("TRADER_OLLAMA_API_KEY", raising=False)
+    monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
+
+    router = build_default_router_from_env(
+        env_path=None,
+        acpx_bin="acpx-custom",
+        spark_model="gpt-5.5[high]",
+        acpx_provider="consolidator",
+        acpx_agent="codex",
+    )
+
+    backend = router.backends[0]
+    assert isinstance(backend, AcpxBackend)
+    assert backend.provider == "consolidator"
+    assert backend.model == "gpt-5.5[high]"
+    assert backend.acpx_bin == "acpx-custom"
+    assert backend.agent == "codex"
 
 
 def test_build_default_router_from_env_configure_spark_puis_ollama(monkeypatch) -> None:

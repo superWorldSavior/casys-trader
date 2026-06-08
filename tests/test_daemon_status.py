@@ -62,6 +62,50 @@ def test_run_cycle_ecrit_un_statut_et_un_rapport_courant(monkeypatch, tmp_path, 
     assert any(json.loads(line)["event"] == "decision_recorded" for line in events)
 
 
+def test_run_cycle_ecrit_la_decision_dans_le_ledger(monkeypatch, tmp_path, patch_batch, make_data_source) -> None:
+    _write_runtime_config(tmp_path)
+    state_dir = tmp_path / "state"
+    now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
+
+    monkeypatch.setattr(daemon, "ROOT", tmp_path)
+    monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+    data_source = make_data_source(lambda symbol, lookback, interval: [
+        Bar(ts=now.isoformat(), open=100.0, high=101.0, low=99.0, close=100.0, volume=1000.0)
+    ])
+    patch_batch(
+        lambda **kwargs: Decision(
+            symbol=kwargs["symbol"],
+            action="HOLD",
+            quantity=0.0,
+            confidence=0.7,
+            rationale="range sans catalyseur",
+            intent="HOLD",
+            llm_provider="spark",
+            llm_model="gpt-5.3-codex-spark/medium",
+        )
+    )
+
+    daemon.run_cycle(
+        dry_run=True,
+        now=now,
+        symbols_filter=["SPY"],
+        sched=Scheduler(state_dir / "scheduler.json"),
+        data_source=data_source,
+    )
+
+    rows = [
+        json.loads(line)
+        for line in (state_dir / "decisions.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert len(rows) == 1
+    assert rows[0]["decision_id"] == "2026-06-05T12:00:00+00:00|0|SPY"
+    assert rows[0]["action"] == "HOLD"
+    assert rows[0]["confidence"] == 0.7
+    assert rows[0]["price"] == 100.0
+    assert rows[0]["decision"]["rationale"] == "range sans catalyseur"
+    assert rows[0]["labels"] == {}
+
+
 def test_run_cycle_loggue_la_progression_console(monkeypatch, tmp_path, caplog, patch_batch, make_data_source) -> None:
     _write_runtime_config(tmp_path)
     state_dir = tmp_path / "state"

@@ -24,7 +24,7 @@ from pathlib import Path
 import yaml
 
 from .agent_context import build_market_cockpit, resolve_indicator_requests
-from . import attribution, codex_client, stats
+from . import attribution, code_version, codex_client, consolidator, decision_ledger, stats
 from .exit_engine import evaluate_plan
 from .features import DEFAULT_INDICATORS
 from .indicator_watch import (
@@ -66,6 +66,7 @@ COCKPIT_DAILY_MAX_AGE_MINUTES = 48.0 * 60.0
 DEFAULT_IB_HOST = "127.0.0.1"
 DEFAULT_IB_PORT = 4002
 DEFAULT_IB_CLIENT_ID = 17
+DEFAULT_LEARNING_CONSOLIDATION_THRESHOLD = consolidator.DEFAULT_CONSOLIDATION_THRESHOLD
 
 
 def _write_json_state(filename: str, payload: dict) -> None:
@@ -592,6 +593,11 @@ def run_cycle(
     runtime_lookback: str = DEFAULT_RUNTIME_LOOKBACK,
     max_learnings_in_context: int = 10,
     indicator_triggers: list[dict] | None = None,
+    learning_consolidation_threshold: int = DEFAULT_LEARNING_CONSOLIDATION_THRESHOLD,
+    consolidator_acpx_bin: str | None = None,
+    consolidator_acpx_agent: str | None = None,
+    consolidator_model: str | None = None,
+    consolidator_timeout_s: int = consolidator.DEFAULT_CONSOLIDATOR_TIMEOUT_S,
 ) -> dict:
     """Exécute UN cycle. Retourne un rapport structuré (machine-readable)."""
     now = now or datetime.now(timezone.utc)
@@ -631,7 +637,16 @@ def run_cycle(
     gate = RiskGate(RiskLimits.from_dict(risk_cfg))
     gate.start_cycle()
     mem = memory_mod.Memory(ROOT / "mandate" / "mandate.md", ROOT / "mandate" / "memory.md")
-    learnings_store = memory_mod.LearningsStore(STATE_DIR / "learnings.jsonl")
+    learnings_store = memory_mod.LearningsStore(
+        STATE_DIR / "learnings.jsonl",
+        max_entries=consolidator.DEFAULT_RAW_MAX_ENTRIES,
+    )
+    consolidated_learnings_store = consolidator.ConsolidatedLearningsStore(
+        STATE_DIR / "learnings_consolidated.json"
+    )
+    decision_ledger_store = decision_ledger.DecisionLedgerStore(
+        STATE_DIR / decision_ledger.DEFAULT_LEDGER_FILENAME
+    )
 
     if _kill_switch_active():
         _log_cycle_progress("[cycle] halted kill_switch")
@@ -783,15 +798,18 @@ def run_cycle(
         # confidence et coût par raison de sortie. Le signal qui dit à l'agent si
         # ses choix (surtout ses calls confiants) gagnent vraiment.
         "attribution": attribution.compute_attribution(STATE_DIR),
-        # Boucle de feedback : les learnings que l'agent a écrits aux réveils
-        # précédents (store machine-owned, borné), réinjectés pour qu'il s'appuie
-        # sur ses propres observations.
-        "learnings": learnings_store.recent(limit=max_learnings_in_context),
+        # Boucle de feedback : cold-start = bruts récents; dès qu'un consolidé
+        # existe, on injecte global/by_symbol + quelques bruts récents.
+        "learnings": consolidator.build_context_learnings(
+            consolidated_learnings_store.read(),
+            raw_recent=learnings_store.recent(limit=max_learnings_in_context),
+        ),
     }
 
     report: dict = {
         "ts": now.isoformat(),
         "dry_run": dry_run,
+        "code_version": code_version.current_code_version(ROOT),
         "symbols_due": symbols_to_decide,
         "planned_exits": planned_exits,
         "exit_watch_triggers": exit_watch_triggers,
@@ -828,9 +846,18 @@ def run_cycle(
                 reason=decision_entry.get("reason"),
                 dry_run=dry_run,
             )
+        sequence = len(report["decisions"])
         report["decisions"].append(decision_entry)
         report["model_calls_used"] = model_calls_used
         refresh_report_portfolio()
+        decision_ledger_store.append(
+            decision_ledger.build_decision_row(
+                report,
+                decision_entry,
+                sequence=sequence,
+                source="daemon",
+            )
+        )
         _write_current_report(report)
         _write_status(
             "decision_recorded",
@@ -1143,6 +1170,19 @@ def run_cycle(
         last_decision=report["decisions"][-1] if report["decisions"] else None,
     )
     _append_event("cycle_completed", decisions_done=len(report["decisions"]), model_calls_used=model_calls_used)
+    consolidation_result = consolidator.maybe_consolidate(
+        learnings_store,
+        consolidated_learnings_store,
+        threshold=learning_consolidation_threshold,
+        acpx_bin=consolidator_acpx_bin,
+        acpx_agent=consolidator_acpx_agent,
+        model=consolidator_model,
+        timeout_s=consolidator_timeout_s,
+    )
+    if consolidation_result.get("triggered"):
+        report["learning_consolidation"] = consolidation_result
+        _write_current_report(report)
+        _append_event("learning_consolidated", **consolidation_result)
     return report
 
 
@@ -1157,6 +1197,33 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--max-context-requests-per-symbol", type=int, default=2, help="nombre max de requêtes indicateurs par symbole")
     parser.add_argument("--max-indicators-per-request", type=int, default=4, help="nombre max d'indicateurs par requête")
     parser.add_argument("--max-model-calls-per-cycle", type=int, default=25, help="fusible coût: appels LLM max par cycle")
+    parser.add_argument(
+        "--learning-consolidation-threshold",
+        type=int,
+        default=_env_int("TRADER_LEARNING_CONSOLIDATION_THRESHOLD", DEFAULT_LEARNING_CONSOLIDATION_THRESHOLD),
+        help="nombre de nouveaux learnings bruts avant consolidation",
+    )
+    parser.add_argument(
+        "--consolidator-acpx-bin",
+        default=os.getenv("TRADER_CONSOLIDATOR_ACPX_BIN", "acpx"),
+        help="binaire acpx utilisé par le consolidateur",
+    )
+    parser.add_argument(
+        "--consolidator-acpx-agent",
+        default=os.getenv("TRADER_CONSOLIDATOR_ACPX_AGENT", consolidator.DEFAULT_CONSOLIDATOR_ACPX_AGENT),
+        help="agent acpx du consolidateur (ex: codex, claude, default)",
+    )
+    parser.add_argument(
+        "--consolidator-model",
+        default=os.getenv("TRADER_CONSOLIDATOR_MODEL", consolidator.DEFAULT_CONSOLIDATOR_MODEL),
+        help="modèle utilisé par le consolidateur",
+    )
+    parser.add_argument(
+        "--consolidator-timeout-s",
+        type=int,
+        default=_env_int("TRADER_CONSOLIDATOR_TIMEOUT_S", consolidator.DEFAULT_CONSOLIDATOR_TIMEOUT_S),
+        help="timeout LLM du consolidateur",
+    )
     parser.add_argument("--bootstrap-all", action="store_true", help="ignore les timers au démarrage et force tous les symboles")
     parser.add_argument("--ib-host", default=os.getenv("CASYS_IB_HOST", DEFAULT_IB_HOST), help="host IB Gateway/TWS")
     parser.add_argument("--ib-port", type=int, default=_env_int("CASYS_IB_PORT", DEFAULT_IB_PORT), help="port API IB")
@@ -1208,6 +1275,11 @@ def main(argv: list[str] | None = None) -> None:
                         max_indicators_per_request=args.max_indicators_per_request,
                         max_model_calls_per_cycle=args.max_model_calls_per_cycle,
                         indicator_triggers=indicator_triggers,
+                        learning_consolidation_threshold=args.learning_consolidation_threshold,
+                        consolidator_acpx_bin=args.consolidator_acpx_bin,
+                        consolidator_acpx_agent=args.consolidator_acpx_agent,
+                        consolidator_model=args.consolidator_model,
+                        consolidator_timeout_s=args.consolidator_timeout_s,
                     )
                     if report.get("planned_exits") or report.get("decisions") or report.get("exit_watch_triggers"):
                         log.info("cycle actif sans symbole dû: %s", json.dumps(report, ensure_ascii=False))
@@ -1230,6 +1302,11 @@ def main(argv: list[str] | None = None) -> None:
                         max_indicators_per_request=args.max_indicators_per_request,
                         max_model_calls_per_cycle=args.max_model_calls_per_cycle,
                         indicator_triggers=indicator_triggers,
+                        learning_consolidation_threshold=args.learning_consolidation_threshold,
+                        consolidator_acpx_bin=args.consolidator_acpx_bin,
+                        consolidator_acpx_agent=args.consolidator_acpx_agent,
+                        consolidator_model=args.consolidator_model,
+                        consolidator_timeout_s=args.consolidator_timeout_s,
                     )
                     log.info("cycle: %s", json.dumps(report, ensure_ascii=False))
                     STATE_DIR.mkdir(parents=True, exist_ok=True)

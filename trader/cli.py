@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import argparse
 import json
+from datetime import timedelta
 from typing import Sequence
 
 import yaml
 
-from . import daemon
+from . import code_version, daemon, decision_audit, decision_ledger
 from .features import DEFAULT_INDICATORS, build_indicator_snapshot, compute_indicator_values
 from .semantic.catalog import FAMILIES, describe_semantic_layer, find_indicators, list_indicators, normalize_temporal_query
 from .tools import market
@@ -23,6 +24,11 @@ _DAEMON_FLAGS = {
     "--max-context-requests-per-symbol",
     "--max-indicators-per-request",
     "--max-model-calls-per-cycle",
+    "--learning-consolidation-threshold",
+    "--consolidator-acpx-bin",
+    "--consolidator-acpx-agent",
+    "--consolidator-model",
+    "--consolidator-timeout-s",
     "--bootstrap-all",
     "--ib-host",
     "--ib-port",
@@ -74,6 +80,265 @@ def _cmd_status(args: argparse.Namespace) -> int:
     print(f"model_calls: {status.get('model_calls_used', 0)}/{status.get('max_model_calls_per_cycle')}")
     print(f"cash: {broker.get('cash') if isinstance(broker, dict) else None}")
     print("positions:", ", ".join(positions.keys()) if positions else "none")
+    return 0
+
+
+def _cmd_decisions_list(args: argparse.Namespace) -> int:
+    store = decision_ledger.DecisionLedgerStore(daemon.STATE_DIR / decision_ledger.DEFAULT_LEDGER_FILENAME)
+    rows = store.read_all(symbol=args.symbol, limit=args.limit)
+    if args.json:
+        _print_json(rows)
+    else:
+        for row in rows:
+            print(
+                f"{row.get('cycle_ts')} {row.get('symbol')} "
+                f"{row.get('action')} intent={row.get('intent')} "
+                f"reason={row.get('reason')} price={row.get('price')}"
+            )
+    return 0
+
+
+def _cmd_decisions_seed_existing(args: argparse.Namespace) -> int:
+    result = decision_ledger.seed_existing_reports(daemon.STATE_DIR)
+    if args.json:
+        _print_json(result)
+    else:
+        print(
+            "seed-existing: "
+            f"reports={result['reports']} candidates={result['candidates']} "
+            f"appended={result['appended']} skipped={result['skipped']}"
+        )
+    return 0
+
+
+def _cmd_decisions_seed_events(args: argparse.Namespace) -> int:
+    event_paths = [daemon.STATE_DIR / "events.jsonl"]
+    if args.include_archives:
+        event_paths.extend(sorted(daemon.ROOT.glob("state_archive_*/events.jsonl")))
+    result = decision_ledger.seed_existing_events(daemon.STATE_DIR, event_paths=event_paths)
+    if args.json:
+        _print_json(result)
+    else:
+        print(
+            "seed-events: "
+            f"event_files={result['event_files']} candidates={result['candidates']} "
+            f"appended={result['appended']} skipped={result['skipped']}"
+        )
+    return 0
+
+
+def _refresh_decision_audit_from_ledger() -> dict:
+    audit_path = daemon.STATE_DIR / "decision_audit.json"
+    if not audit_path.exists():
+        return {"audit_updated": False}
+    try:
+        payload = json.loads(audit_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {"audit_updated": False, "audit_error": "invalid_json"}
+    if not isinstance(payload, dict):
+        return {"audit_updated": False, "audit_error": "invalid_payload"}
+    store = decision_ledger.DecisionLedgerStore(daemon.STATE_DIR / decision_ledger.DEFAULT_LEDGER_FILENAME)
+    refreshed = decision_audit.refresh_audit_payload(
+        payload,
+        ledger_rows=store.read_all(),
+        audit_code_version=code_version.current_code_version(daemon.ROOT),
+        include_missing_ledger_rows=True,
+    )
+    audit_path.write_text(json.dumps(refreshed, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return {"audit_updated": True, "audit_rows": len(refreshed.get("rows", []))}
+
+
+def _cmd_decisions_backfill_code_version(args: argparse.Namespace) -> int:
+    result = decision_ledger.backfill_code_versions(
+        daemon.STATE_DIR,
+        repo_root=daemon.ROOT,
+        overwrite=args.overwrite,
+        ref=args.ref,
+    )
+    result.update(_refresh_decision_audit_from_ledger())
+    if args.json:
+        _print_json(result)
+    else:
+        print(
+            "backfill-code-version: "
+            f"rows={result['rows']} updated={result['updated']} "
+            f"skipped={result['skipped']} unresolved={result['unresolved']} "
+            f"audit_updated={result.get('audit_updated')}"
+        )
+    return 0
+
+
+def _optional_pct(value: object) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _pct_text(value: object) -> str:
+    parsed = _optional_pct(value)
+    if parsed is None:
+        return "n/a"
+    return f"{parsed:.2f}".rstrip("0").rstrip(".")
+
+
+def _load_decision_audit() -> dict:
+    audit_path = daemon.STATE_DIR / "decision_audit.json"
+    if not audit_path.exists():
+        raise SystemExit("decision audit missing: run `casys-trader decisions audit` first")
+    try:
+        payload = json.loads(audit_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"invalid decision audit: {audit_path}") from exc
+    if not isinstance(payload, dict):
+        raise SystemExit(f"invalid decision audit: {audit_path}")
+    return payload
+
+
+def _short_date(raw: object) -> str | None:
+    if not raw:
+        return None
+    text = str(raw)
+    if len(text) >= 10:
+        return text[:10]
+    return text
+
+
+def _commit_dates_from_rows(rows: object) -> dict[str, str]:
+    dates: dict[str, str] = {}
+    if not isinstance(rows, list):
+        return dates
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        commit_key = row.get("decision_commit_key")
+        version = row.get("code_version")
+        if not commit_key or not isinstance(version, dict):
+            continue
+        raw_date = version.get("git_commit_date")
+        inference = version.get("inference")
+        if raw_date is None and isinstance(inference, dict):
+            raw_date = inference.get("commit_date")
+        date = _short_date(raw_date)
+        if date:
+            dates.setdefault(str(commit_key), date)
+    return dates
+
+
+def _decision_stats_payload(audit: dict, *, horizon: str, min_known: int) -> dict:
+    global_metrics = _as_metrics_dict(audit.get("metrics"), horizon)
+    by_commit = _as_metrics_dict(audit.get("metrics_by_commit"), horizon)
+    dates_by_commit = _commit_dates_from_rows(audit.get("rows"))
+    commits = []
+    for commit, metrics in by_commit.items():
+        if not isinstance(metrics, dict):
+            continue
+        known = int(metrics.get("known") or 0)
+        if known < min_known:
+            continue
+        commits.append(
+            {
+                "commit": str(commit),
+                "date": dates_by_commit.get(str(commit)),
+                "total": int(metrics.get("total") or 0),
+                "known": known,
+                "unknown": int(metrics.get("unknown") or 0),
+                "good": int(metrics.get("good") or 0),
+                "bad": int(metrics.get("bad") or 0),
+                "neutral": int(metrics.get("neutral") or 0),
+                "good_pct": _optional_pct(metrics.get("good_known_pct")),
+                "nonbad_pct": _optional_pct(metrics.get("nonbad_known_pct")),
+                "bad_pct": _optional_pct(metrics.get("bad_known_pct")),
+            }
+        )
+    commits.sort(key=lambda row: (row["known"], row["total"], row["commit"]), reverse=True)
+    return {
+        "horizon": horizon,
+        "min_known": min_known,
+        "global": global_metrics,
+        "commits": commits,
+    }
+
+
+def _as_metrics_dict(payload: object, horizon: str) -> dict:
+    if not isinstance(payload, dict):
+        raise SystemExit(f"decision audit has no metrics for horizon {horizon}")
+    metrics = payload.get(horizon)
+    if not isinstance(metrics, dict):
+        raise SystemExit(f"decision audit has no metrics for horizon {horizon}")
+    return metrics
+
+
+def _cmd_decisions_stats(args: argparse.Namespace) -> int:
+    payload = _decision_stats_payload(
+        _load_decision_audit(),
+        horizon=args.horizon,
+        min_known=args.min_known,
+    )
+    if args.json:
+        _print_json(payload)
+        return 0
+
+    global_metrics = payload["global"]
+    print(
+        f"horizon={payload['horizon']} "
+        f"global total={global_metrics.get('total')} known={global_metrics.get('known')} "
+        f"unknown={global_metrics.get('unknown')} "
+        f"good%={_pct_text(global_metrics.get('good_known_pct'))} "
+        f"nonbad%={_pct_text(global_metrics.get('nonbad_known_pct'))} "
+        f"bad%={_pct_text(global_metrics.get('bad_known_pct'))}"
+    )
+    print("commit           date       total known unknown good% nonbad% bad% good bad neutral")
+    for row in payload["commits"]:
+        print(
+            f"{row['commit']:<16} "
+            f"{row.get('date') or 'n/a':<10} "
+            f"{row['total']:>5} {row['known']:>5} {row['unknown']:>7} "
+            f"{_pct_text(row['good_pct']):>5} {_pct_text(row['nonbad_pct']):>7} {_pct_text(row['bad_pct']):>5} "
+            f"{row['good']:>4} {row['bad']:>3} {row['neutral']:>7}"
+        )
+    return 0
+
+
+def _parse_csv_arg(value: str) -> list[str]:
+    return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def _cmd_decisions_audit(args: argparse.Namespace) -> int:
+    store = decision_ledger.DecisionLedgerStore(daemon.STATE_DIR / decision_ledger.DEFAULT_LEDGER_FILENAME)
+    rows = store.read_all(symbol=args.symbol, limit=args.limit)
+    horizons = _parse_csv_arg(args.horizons)
+    parsed_times = [decision_audit.parse_ts(row.get("cycle_ts")) for row in rows]
+    valid_times = [ts for ts in parsed_times if ts is not None]
+    prices: dict[str, list[dict]] = {}
+    if rows and valid_times:
+        max_horizon = max((decision_audit.parse_horizon(horizon) for horizon in horizons), default=timedelta())
+        start = (min(valid_times) - timedelta(days=1)).date().isoformat()
+        end = (max(valid_times) + max_horizon + timedelta(days=1)).date().isoformat()
+        symbols = sorted({str(row.get("symbol")) for row in rows if row.get("symbol")})
+        prices = decision_audit.load_prices_yfinance(symbols, start=start, end=end, interval=args.interval)
+
+    result = decision_audit.audit_rows(
+        rows,
+        prices,
+        horizons=horizons,
+        threshold_pct=args.threshold_pct,
+        audit_code_version=code_version.current_code_version(daemon.ROOT),
+    )
+    daemon.STATE_DIR.mkdir(parents=True, exist_ok=True)
+    (daemon.STATE_DIR / "decision_audit.json").write_text(json.dumps(result, ensure_ascii=False, indent=2))
+    if args.json:
+        _print_json(result)
+    else:
+        print("Summary:")
+        print(json.dumps(result["summary"], ensure_ascii=False, indent=2))
+        print("Metrics:")
+        print(json.dumps(result["metrics"], ensure_ascii=False, indent=2))
+        print("Metrics by decision commit:")
+        print(json.dumps(result["metrics_by_commit"], ensure_ascii=False, indent=2))
+        print(f"Rapport complet: {daemon.STATE_DIR / 'decision_audit.json'}")
     return 0
 
 
@@ -162,11 +427,65 @@ def build_parser() -> argparse.ArgumentParser:
     daemon_parser.add_argument("--max-context-requests-per-symbol", type=int, default=2)
     daemon_parser.add_argument("--max-indicators-per-request", type=int, default=4)
     daemon_parser.add_argument("--max-model-calls-per-cycle", type=int, default=25)
+    daemon_parser.add_argument(
+        "--learning-consolidation-threshold",
+        type=int,
+        default=daemon.DEFAULT_LEARNING_CONSOLIDATION_THRESHOLD,
+    )
+    daemon_parser.add_argument("--consolidator-acpx-bin", default="acpx")
+    daemon_parser.add_argument("--consolidator-acpx-agent", default=daemon.consolidator.DEFAULT_CONSOLIDATOR_ACPX_AGENT)
+    daemon_parser.add_argument("--consolidator-model", default=daemon.consolidator.DEFAULT_CONSOLIDATOR_MODEL)
+    daemon_parser.add_argument(
+        "--consolidator-timeout-s",
+        type=int,
+        default=daemon.consolidator.DEFAULT_CONSOLIDATOR_TIMEOUT_S,
+    )
     daemon_parser.add_argument("--bootstrap-all", action="store_true")
 
     status = sub.add_parser("status", help="état courant du daemon")
     status.add_argument("--json", action="store_true")
     status.set_defaults(func=_cmd_status)
+
+    decisions = sub.add_parser("decisions", help="journal des décisions agent")
+    decisions_sub = decisions.add_subparsers(dest="decisions_command", required=True)
+    decisions_list = decisions_sub.add_parser("list", help="liste les décisions persistées")
+    decisions_list.add_argument("--symbol")
+    decisions_list.add_argument("--limit", type=int)
+    decisions_list.add_argument("--json", action="store_true")
+    decisions_list.set_defaults(func=_cmd_decisions_list)
+
+    decisions_seed = decisions_sub.add_parser("seed-existing", help="récupère les décisions des rapports existants")
+    decisions_seed.add_argument("--json", action="store_true")
+    decisions_seed.set_defaults(func=_cmd_decisions_seed_existing)
+
+    decisions_seed_events = decisions_sub.add_parser("seed-events", help="récupère les décisions résumées des events")
+    decisions_seed_events.add_argument("--include-archives", action="store_true")
+    decisions_seed_events.add_argument("--json", action="store_true")
+    decisions_seed_events.set_defaults(func=_cmd_decisions_seed_events)
+
+    decisions_backfill_code = decisions_sub.add_parser(
+        "backfill-code-version",
+        help="associe les anciennes décisions au commit git historique le plus proche",
+    )
+    decisions_backfill_code.add_argument("--overwrite", action="store_true")
+    decisions_backfill_code.add_argument("--ref", default="HEAD")
+    decisions_backfill_code.add_argument("--json", action="store_true")
+    decisions_backfill_code.set_defaults(func=_cmd_decisions_backfill_code_version)
+
+    decisions_stats = decisions_sub.add_parser("stats", help="résume le dernier audit par commit")
+    decisions_stats.add_argument("--horizon", default="1h")
+    decisions_stats.add_argument("--min-known", type=int, default=0)
+    decisions_stats.add_argument("--json", action="store_true")
+    decisions_stats.set_defaults(func=_cmd_decisions_stats)
+
+    decisions_audit = decisions_sub.add_parser("audit", help="évalue les décisions contre les prix futurs")
+    decisions_audit.add_argument("--symbol")
+    decisions_audit.add_argument("--limit", type=int)
+    decisions_audit.add_argument("--horizons", default="1h,4h,1d")
+    decisions_audit.add_argument("--threshold-pct", type=float, default=0.5)
+    decisions_audit.add_argument("--interval", default="1h")
+    decisions_audit.add_argument("--json", action="store_true")
+    decisions_audit.set_defaults(func=_cmd_decisions_audit)
 
     semantic = sub.add_parser("semantic", help="semantic layer")
     semantic_sub = semantic.add_subparsers(dest="semantic_command", required=True)

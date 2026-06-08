@@ -13,7 +13,6 @@ from trader.regime import (
     VOL_HIGH_THRESHOLD,
     VOL_LOW_THRESHOLD,
     Z_STRETCHED_THRESHOLD,
-    MarketRegime,
     classify_regime,
     multi_horizon_signals,
 )

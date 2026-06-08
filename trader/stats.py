@@ -14,7 +14,7 @@ from pathlib import Path
 
 import yaml
 
-from backtest.metrics import Metrics, compute_metrics, render_cli
+from backtest.metrics import Metrics, compute_metrics
 
 
 def _compute_model_performance(state_dir: Path) -> list[dict]:

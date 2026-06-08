@@ -25,7 +25,7 @@ class LearningsStore:
     périodiquement ce flux vers `memory.md`.
     """
 
-    def __init__(self, path: str | Path, *, max_entries: int = 50):
+    def __init__(self, path: str | Path, *, max_entries: int = 200):
         self.path = Path(path)
         self.max_entries = max_entries
 
@@ -69,6 +69,10 @@ class LearningsStore:
         if limit <= 0:
             return []
         return self._read_rows()[-limit:]
+
+    def all(self) -> list[dict]:
+        """Toutes les entrées du buffer brut, dans l'ordre chronologique."""
+        return self._read_rows()
 
 
 class Memory:

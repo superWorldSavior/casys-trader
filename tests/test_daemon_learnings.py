@@ -136,3 +136,97 @@ def test_run_cycle_reinjecte_les_learnings_recents_dans_le_contexte(
     assert contexts
     learnings = contexts[0]["learnings"]
     assert [item["note"] for item in learnings] == ["cassure ratee au dernier reveil"]
+
+
+def test_run_cycle_injecte_les_learnings_consolides_scope_aware(
+    monkeypatch,
+    tmp_path,
+    patch_batch,
+    make_data_source,
+) -> None:
+    import json as _json
+
+    _write_runtime_config(tmp_path)
+    state_dir = tmp_path / "state"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    sched = Scheduler(state_dir / "scheduler.json")
+    now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
+    LearningsStore(state_dir / "learnings.jsonl").append(
+        symbol="SPY", note="brut recent", now=now
+    )
+    (state_dir / "learnings_consolidated.json").write_text(
+        _json.dumps(
+            {
+                "watermark": now.isoformat(),
+                "global": [{"note": "z seul ne suffit pas"}],
+                "by_symbol": {"SPY": [{"note": "SPY reste range"}]},
+            },
+            ensure_ascii=False,
+        )
+    )
+
+    contexts: list[dict] = []
+
+    def decide(**kwargs):
+        contexts.append(kwargs["context"])
+        return Decision.hold(kwargs["symbol"], "attente")
+
+    monkeypatch.setattr(daemon, "ROOT", tmp_path)
+    monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+    data_source = make_data_source(_bars)
+    patch_batch(decide)
+
+    daemon.run_cycle(dry_run=True, now=now, symbols_filter=["SPY"], sched=sched, data_source=data_source)
+
+    learnings = contexts[0]["learnings"]
+    assert learnings["global"] == [{"note": "z seul ne suffit pas"}]
+    assert learnings["by_symbol"] == {"SPY": [{"note": "SPY reste range"}]}
+    assert [item["note"] for item in learnings["raw_recent"]] == ["brut recent"]
+
+
+def test_run_cycle_declenche_le_consolidateur_en_fin_de_cycle(
+    monkeypatch,
+    tmp_path,
+    patch_batch,
+    make_data_source,
+) -> None:
+    _write_runtime_config(tmp_path)
+    state_dir = tmp_path / "state"
+    sched = Scheduler(state_dir / "scheduler.json")
+    now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
+    calls: list[tuple] = []
+
+    def decide(**kwargs):
+        return Decision.hold(kwargs["symbol"], "attente")
+
+    def maybe_consolidate(raw_store, consolidated_store, **kwargs):
+        calls.append(
+            (
+                raw_store.path.name,
+                consolidated_store.path.name,
+                kwargs["threshold"],
+                kwargs["acpx_agent"],
+                kwargs["model"],
+                kwargs["timeout_s"],
+            )
+        )
+        return {"triggered": False, "new_raw_count": 0}
+
+    monkeypatch.setattr(daemon, "ROOT", tmp_path)
+    monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+    monkeypatch.setattr(daemon.consolidator, "maybe_consolidate", maybe_consolidate)
+    data_source = make_data_source(_bars)
+    patch_batch(decide)
+
+    daemon.run_cycle(
+        dry_run=True,
+        now=now,
+        symbols_filter=["SPY"],
+        sched=sched,
+        data_source=data_source,
+        consolidator_acpx_agent="codex",
+        consolidator_model="gpt-5.5[high]",
+        consolidator_timeout_s=240,
+    )
+
+    assert calls == [("learnings.jsonl", "learnings_consolidated.json", 50, "codex", "gpt-5.5[high]", 240)]
