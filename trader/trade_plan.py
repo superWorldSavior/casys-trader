@@ -12,6 +12,13 @@ from .indicator_watch import normalize_indicator_watch
 
 PositionSide = Literal["LONG", "SHORT"]
 MoveStopTo = Literal["breakeven", "none"]
+TrailingStopTrailType = Literal["price", "percent", "volatility_multiple"]
+
+TRAILING_STOP_TRAIL_TYPES: tuple[TrailingStopTrailType, ...] = (
+    "price",
+    "percent",
+    "volatility_multiple",
+)
 
 
 class InvalidExitPlanError(ValueError):
@@ -30,7 +37,7 @@ class TakeProfit:
 @dataclass(frozen=True)
 class TrailingStop:
     enabled_after: str | None
-    trail_type: Literal["price", "percent", "volatility_multiple"]
+    trail_type: TrailingStopTrailType
     trail_value: float
 
 
@@ -236,7 +243,7 @@ def validate_exit_plan(raw_exit_plan: dict | None) -> None:
         if not isinstance(trailing, dict):
             raise InvalidExitPlanError("trailing_stop_must_be_object")
         trail_type = str(trailing.get("trail_type", "price"))
-        if trail_type not in {"price", "percent", "volatility_multiple"}:
+        if trail_type not in TRAILING_STOP_TRAIL_TYPES:
             raise InvalidExitPlanError("trailing_stop_type_unsupported")
         if trailing.get("trail_value") is None:
             raise InvalidExitPlanError("trailing_stop_trail_value_required")
@@ -315,7 +322,7 @@ def create_trade_plan(
     trailing_stop = None
     if isinstance(trailing_raw, dict):
         trail_type = str(trailing_raw.get("trail_type", "price"))
-        if trail_type in {"price", "percent", "volatility_multiple"}:
+        if trail_type in TRAILING_STOP_TRAIL_TYPES:
             trailing_stop = TrailingStop(
                 enabled_after=(
                     None

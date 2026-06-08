@@ -23,7 +23,7 @@ import json
 from dataclasses import dataclass, replace
 from typing import Any, Literal
 
-from . import llm
+from . import llm, trade_plan
 from .agent_context import INDICATOR_COLUMNS
 from .features import DEFAULT_INDICATORS
 from .indicator_watch import WATCH_VALID_OPERATORS
@@ -218,20 +218,45 @@ _BATCH_FINAL_CONTRACT = (
     '"confidence":<0..1>,"rationale":"<court>","next_wake_in_minutes":<number|null>,'
     '"intent":"OPEN_LONG|OPEN_SHORT|REDUCE|CLOSE|REVERSE|HOLD","exit_plan":<object|null>,'
     '"indicator_watch":<object|null>,"learning":<string|null>}\n'
-    "Pour une ouverture, fournis un `exit_plan` (hard_stop, take_profits, trailing_stop, "
+    "Pour une ouverture, fournis un `exit_plan` conforme au schéma ci-dessous "
+    "(hard_stop, take_profits, trailing_stop, "
     "profit_protection, exit_watch et/ou max_hold_minutes). `learning` optionnel : note "
     "à retenir, réinjectée via context.learnings. Si tu n'es pas sûr -> action=HOLD."
 )
 
-_BATCH_COMPACT_CONTRACT = (
-    _BATCH_FINAL_CONTRACT
-    + "\nPour un symbole précis où un indicateur manque, mets à la place "
+_BATCH_COMPACT_SUFFIX = (
+    "\nPour un symbole précis où un indicateur manque, mets à la place "
     '{"symbol":"<SYM>","action":"REQUEST_CONTEXT","rationale":"<pourquoi>",'
     f'"requests":[{{"symbol":"<SYM>","indicators":["{_WATCH_INDICATOR_ENUM}"],"timeframe":"15m|30m|1h|4h|1d",'
     '"lookback":"5d|1mo|3mo|6mo|1y","window":48,"as_of":"latest"}]}. '
     "Le daemon résoudra puis redemandera la décision finale de CE symbole. "
     "Ne demande du contexte que si c'est vraiment utile."
 )
+
+
+def _exit_plan_contract() -> str:
+    """Schéma exact accepté par `trade_plan.validate_exit_plan`, dérivé de sa
+    source de vérité pour les `trail_type`."""
+    trail_type_enum = "|".join(trade_plan.TRAILING_STOP_TRAIL_TYPES)
+    return (
+        "# Schéma exit_plan\n"
+        "`exit_plan`: objet|null. Pour OPEN_LONG/OPEN_SHORT/REVERSE, utilise ces "
+        "champs exacts:\n"
+        '`hard_stop`: nombre > 0 OU objet {type:"price", price:<requis, >0>}.\n'
+        "`take_profits`: liste d'OBJETS "
+        "{price:<requis, >0>, fraction:<optionnel, >0>}.\n"
+        f'`trailing_stop`: null OU {{trail_type:"{trail_type_enum}", '
+        "trail_value:<requis, >0>}. "
+        "`trail_type` doit être exactement l'un de cet enum.\n"
+    )
+
+
+def _batch_final_contract() -> str:
+    return f"{_BATCH_FINAL_CONTRACT}\n{_exit_plan_contract()}"
+
+
+def _batch_compact_contract() -> str:
+    return _batch_final_contract() + _BATCH_COMPACT_SUFFIX
 
 
 def _indicator_watch_vocabulary() -> str:
@@ -268,7 +293,7 @@ def build_batch_prompt(
 ) -> str:
     """Prompt batch : contexte PARTAGÉ (cockpit/portefeuille/KPI/attribution/learnings)
     envoyé UNE fois, puis la liste des symboles à décider -> un seul appel modèle."""
-    contract = _BATCH_COMPACT_CONTRACT if allow_context_request else _BATCH_FINAL_CONTRACT
+    contract = _batch_compact_contract() if allow_context_request else _batch_final_contract()
     return (
         "Tu es l'agent décideur d'un système de trading paper. Le contexte PARTAGÉ "
         "(cockpit de tout l'univers, portefeuille, KPI, attribution, learnings) est "
