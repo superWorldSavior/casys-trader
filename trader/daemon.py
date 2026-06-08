@@ -491,6 +491,25 @@ def _scan_indicator_watches(
     return triggered
 
 
+def _context_request_summary(
+    req: codex_client.ContextResearchRequest,
+    *,
+    resolved: int,
+) -> dict:
+    return {
+        "rounds": 1,
+        "requested": [
+            {
+                "symbol": request.symbol,
+                "indicators": list(request.indicators),
+                "timeframe": request.timeframe,
+            }
+            for request in req.requests
+        ],
+        "resolved": resolved,
+    }
+
+
 def _batch_decide(
     *,
     decidable: list[str],
@@ -537,11 +556,15 @@ def _batch_decide(
 
     if need and calls >= max_model_calls:
         # Budget épuisé : pas de 2e batch pour résoudre les demandes de contexte.
-        for sym in need:
-            decisions[sym] = codex_client.Decision.hold(sym, "model_call_budget_exhausted_after_context")
+        for sym, req in need.items():
+            decisions[sym] = replace(
+                codex_client.Decision.hold(sym, "model_call_budget_exhausted_after_context"),
+                context_request=_context_request_summary(req, resolved=0),
+            )
         need = {}
 
     if need:
+        context_requests: dict[str, dict] = {}
         per_symbol2: dict[str, dict] = {}
         for sym, req in need.items():
             research = resolve_indicator_requests(
@@ -554,6 +577,7 @@ def _batch_decide(
                 cached_lookback=runtime_lookback,
             )
             _append_event("context_resolved", symbol=sym, requested=len(req.requests), resolved=len(research["requests"]))
+            context_requests[sym] = _context_request_summary(req, resolved=len(research["requests"]))
             per_symbol2[sym] = {
                 "indicator_triggers": triggers_by_symbol.get(sym, []),
                 "research": research,
@@ -573,7 +597,12 @@ def _batch_decide(
         calls += 1
         for sym in need:
             resp2 = responses2.get(sym)
-            decisions[sym] = resp2 if isinstance(resp2, codex_client.Decision) else codex_client.Decision.hold(sym, "context_loop_blocked")
+            decision = (
+                resp2
+                if isinstance(resp2, codex_client.Decision)
+                else codex_client.Decision.hold(sym, "context_loop_blocked")
+            )
+            decisions[sym] = replace(decision, context_request=context_requests[sym])
 
     return decisions, calls
 
@@ -978,6 +1007,8 @@ def run_cycle(
         entry = {"symbol": sym, "action": decision.action, "qty": effective_quantity,
                  "confidence": decision.confidence, "rationale": decision.rationale,
                  "next_wake_in_minutes": next_wake_in_minutes,
+                 "next_wake_requested": decision.next_wake_in_minutes,
+                 "context_request": decision.context_request,
                  "intent": decision.intent,
                  "llm_provider": decision.llm_provider,
                  "llm_model": decision.llm_model,

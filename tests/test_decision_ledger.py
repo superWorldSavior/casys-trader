@@ -83,6 +83,26 @@ def test_build_decision_row_propage_les_rejets_indicator_watch() -> None:
     assert row["runtime"]["indicator_watch_rejections"] == rejections
 
 
+def test_build_decision_row_propage_context_request_et_next_wake_requested() -> None:
+    """La ligne d'audit garde les primitives de trace sans blob redondant."""
+    decision = _decision()
+    context_request = {
+        "rounds": 1,
+        "requested": [{"symbol": "SPY", "indicators": ["z_score"], "timeframe": "1h"}],
+        "resolved": 1,
+    }
+    decision["context_request"] = context_request
+    decision["next_wake_requested"] = 120.0
+    decision["next_wake_in_minutes"] = 60.0
+    report = _report([decision])
+
+    row = decision_ledger.build_decision_row(report, decision, sequence=0, source="daemon")
+
+    assert row["next_wake_in_minutes"] == 60.0
+    assert row["runtime"]["context_request"] == context_request
+    assert row["runtime"]["next_wake_requested"] == 120.0
+
+
 def test_decision_ledger_append_est_idempotent(tmp_path) -> None:
     store = decision_ledger.DecisionLedgerStore(tmp_path / "decisions.jsonl")
     row = decision_ledger.build_decision_row(_report([_decision()]), _decision(), sequence=0)
@@ -162,6 +182,8 @@ def test_seed_existing_events_recupere_les_decisions_legacy_sans_doublonner(tmp_
     assert rows[1]["quality"] == "legacy_event_summary"
     assert rows[1]["code_version"]["source"] == "unknown"
     assert rows[1]["decision"]["rationale"] == "legacy_event:ok"
+    assert rows[1]["runtime"]["context_request"] is None
+    assert rows[1]["runtime"]["next_wake_requested"] is None
 
 
 def test_decision_ledger_filtre_par_symbole_et_limite(tmp_path) -> None:

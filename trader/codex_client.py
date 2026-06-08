@@ -60,6 +60,7 @@ class Decision:
     intent: Intent | None = None
     exit_plan: dict[str, Any] | None = None
     indicator_watch: dict[str, Any] | None = None
+    context_request: dict | None = None
     learning: str | None = None  # note runtime que l'agent veut retenir (boucle de feedback)
     llm_provider: str | None = None
     llm_model: str | None = None

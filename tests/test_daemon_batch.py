@@ -102,6 +102,42 @@ def test_batch_decide_passe_le_plafond_custom_aux_deux_appels(monkeypatch) -> No
     assert timeouts == [(True, 333), (False, 333)]
 
 
+def test_batch_decide_attache_context_request_apres_round_trip(monkeypatch) -> None:
+    request = IndicatorRequest(symbol="SPY", indicators=["z_score"], timeframe="1h")
+    calls: list[bool] = []
+
+    def fake_batch(*, symbols, allow_context_request, **kwargs):
+        calls.append(allow_context_request)
+        if allow_context_request:
+            return {
+                "SPY": ContextResearchRequest(
+                    symbol="SPY",
+                    rationale="besoin z",
+                    requests=[request],
+                ),
+                "QQQ": Decision.hold("QQQ", "range"),
+            }
+        return {sym: Decision.hold(sym, "attente") for sym in symbols}
+
+    def fake_resolve_indicator_requests(requests, *args, **kwargs):
+        assert list(requests) == [request]
+        return {"requests": [{"symbol": "SPY", "indicators": {"z_score": 1.2}}]}
+
+    monkeypatch.setattr(daemon.codex_client, "decide_batch", fake_batch)
+    monkeypatch.setattr(daemon, "resolve_indicator_requests", fake_resolve_indicator_requests)
+
+    decisions, n = daemon._batch_decide(decidable=["SPY", "QQQ"], max_model_calls=2, **_COMMON)
+
+    assert n == 2
+    assert calls == [True, False]
+    assert decisions["SPY"].context_request == {
+        "rounds": 1,
+        "requested": [{"symbol": "SPY", "indicators": ["z_score"], "timeframe": "1h"}],
+        "resolved": 1,
+    }
+    assert decisions["QQQ"].context_request is None
+
+
 def test_run_cycle_passe_le_plafond_decisionnel_a_batch_decide(monkeypatch, tmp_path, make_data_source) -> None:
     _write_runtime_config(tmp_path)
     state_dir = tmp_path / "state"
@@ -152,4 +188,9 @@ def test_budget_un_fait_un_seul_batch_et_request_context_devient_hold(monkeypatc
     assert n == 1
     assert decisions["SPY"].action == "HOLD"
     assert "budget" in decisions["SPY"].rationale
+    assert decisions["SPY"].context_request == {
+        "rounds": 1,
+        "requested": [{"symbol": "SPY", "indicators": ["z_score"], "timeframe": "1h"}],
+        "resolved": 0,
+    }
     assert decisions["QQQ"].action == "HOLD"

@@ -118,6 +118,8 @@ def build_decision_row(
             "indicator_watch_created": decision.get("indicator_watch_created"),
             "indicator_watch_requested": decision.get("indicator_watch_requested"),
             "indicator_watch_rejections": decision.get("indicator_watch_rejections"),
+            "context_request": decision.get("context_request"),
+            "next_wake_requested": decision.get("next_wake_requested"),
         },
         "labels": {},
     }
@@ -302,6 +304,8 @@ def build_legacy_event_row(event: dict, *, sequence: int, source: str) -> dict:
             "indicator_watch_created": None,
             "indicator_watch_requested": None,
             "indicator_watch_rejections": None,
+            "context_request": None,
+            "next_wake_requested": None,
         },
         "labels": {},
     }
