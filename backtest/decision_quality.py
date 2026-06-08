@@ -91,6 +91,7 @@ def score_decisions(decisions: list[dict], history: HistoryStore, band: float) -
             rendement = forward_return(history, symbol, cycle_ts, horizon)
             rows.append(
                 {
+                    "decision_id": decision.get("decision_id"),
                     "cycle_ts": cycle_ts,
                     "symbol": symbol,
                     "action": action,
@@ -241,6 +242,32 @@ def _load_available_history(
     return HistoryStore.from_bars(bars_by_symbol), unavailable
 
 
+def score_from_ledger(
+    path: Path | str,
+    *,
+    band: float = BAND,
+    days_buffer: int = 1,
+    interval: str = "1h",
+) -> dict:
+    """Score les décisions jugeables d'un ledger avec une clé de jointure stable."""
+    ledger_path = Path(path)
+    decisions = _read_ledger(ledger_path)
+    judgeable, exclusions = _partition_decisions(decisions)
+    symbols = sorted({str(decision["symbol"]) for decision in judgeable})
+    start, end = _date_window(judgeable, days_buffer)
+    history, unavailable = _load_available_history(symbols, start, end, interval)
+    scored_rows = score_decisions(judgeable, history, band)
+    return {
+        "scored_rows": scored_rows,
+        "judgeable": judgeable,
+        "exclusions": exclusions,
+        "window": (start, end),
+        "ledger_rows": decisions,
+        "symbols": symbols,
+        "unavailable_symbols": unavailable,
+    }
+
+
 def _render_cli(report: dict[str, Any]) -> str:
     """Rendu texte déterministe pour lecture humaine."""
     lines = [
@@ -338,12 +365,14 @@ def _format_actions(actions: dict[str, int]) -> str:
 def _build_report(args: argparse.Namespace) -> dict[str, Any]:
     """Orchestre les I/O du CLI autour des fonctions pures."""
     ledger_path = Path(args.ledger)
-    decisions = _read_ledger(ledger_path)
-    judgeable, exclusions = _partition_decisions(decisions)
-    symbols = sorted({str(decision["symbol"]) for decision in judgeable})
-    start, end = _date_window(judgeable, args.days_buffer)
-    history, unavailable = _load_available_history(symbols, start, end, args.interval)
-    rows = score_decisions(judgeable, history, args.band)
+    data = score_from_ledger(
+        ledger_path,
+        band=args.band,
+        days_buffer=args.days_buffer,
+        interval=args.interval,
+    )
+    start, end = data["window"]
+    rows = data["scored_rows"]
     stats = aggregate(rows)
 
     output_path = STATE_DIR / "last_decision_quality.json"
@@ -358,13 +387,13 @@ def _build_report(args: argparse.Namespace) -> dict[str, Any]:
         },
         "ledger": str(ledger_path),
         "counts": {
-            "ledger": len(decisions),
-            "judgeable": len(judgeable),
+            "ledger": len(data["ledger_rows"]),
+            "judgeable": len(data["judgeable"]),
             "rows": len(rows),
         },
-        "symbols": symbols,
-        "unavailable_symbols": unavailable,
-        "exclusions": exclusions,
+        "symbols": data["symbols"],
+        "unavailable_symbols": data["unavailable_symbols"],
+        "exclusions": data["exclusions"],
         "aggregate": stats["aggregate"],
         "by_provider": stats["by_provider"],
         "rows": rows,

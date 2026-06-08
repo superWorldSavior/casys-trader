@@ -6,8 +6,9 @@ import pytest
 
 from trader.tools.market import Bar
 
+import backtest.decision_quality as decision_quality
 from backtest.data import HistoryStore
-from backtest.decision_quality import aggregate, classify, forward_return, score_decisions
+from backtest.decision_quality import aggregate, classify, forward_return, score_decisions, score_from_ledger
 
 
 def _bar(ts: str, close: float) -> Bar:
@@ -65,6 +66,7 @@ def test_forward_return_non_evaluable_si_aucune_barre_nouvelle_dans_horizon() ->
 def test_score_decisions_tagge_le_provider_ou_unknown() -> None:
     decisions = [
         {
+            "decision_id": "2026-01-01T10:00:00|0|SPARK",
             "cycle_ts": "2026-01-01T10:00:00",
             "symbol": "SPARK",
             "action": "BUY",
@@ -91,10 +93,59 @@ def test_score_decisions_tagge_le_provider_ou_unknown() -> None:
 
     spark_row = next(row for row in rows if row["symbol"] == "SPARK" and row["horizon"] == "4h")
     unknown_row = next(row for row in rows if row["symbol"] == "UNKNOWN" and row["horizon"] == "4h")
+    assert spark_row["decision_id"] == "2026-01-01T10:00:00|0|SPARK"
+    assert unknown_row["decision_id"] is None
     assert spark_row["provider"] == "spark"
     assert spark_row["fallback_reason"] is None
     assert unknown_row["provider"] == "unknown"
     assert unknown_row["fallback_reason"] is None
+
+
+def test_score_from_ledger_renvoie_les_rows_scorables_et_la_fenetre(monkeypatch, tmp_path) -> None:
+    ledger = tmp_path / "decisions.jsonl"
+    ledger.write_text(
+        "\n".join(
+            [
+                (
+                    '{"decision_id":"d1","cycle_ts":"2026-01-01T10:00:00",'
+                    '"symbol":"SPY","action":"BUY","reason":"ok"}'
+                ),
+                (
+                    '{"decision_id":"d2","cycle_ts":"2026-01-02T10:00:00",'
+                    '"symbol":"QQQ","action":"HOLD","reason":"stale_market_data"}'
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    def fake_load_available_history(symbols, start, end, interval):
+        assert symbols == ["SPY"]
+        assert start == "2025-12-31"
+        assert end == "2026-01-03"
+        assert interval == "1h"
+        return HistoryStore.from_bars(
+            {
+                "SPY": [
+                    _bar("2026-01-01T10:00:00", 100.0),
+                    _bar("2026-01-01T14:00:00", 102.0),
+                ]
+            }
+        ), []
+
+    monkeypatch.setattr(decision_quality, "_load_available_history", fake_load_available_history)
+
+    result = score_from_ledger(ledger, band=0.005, days_buffer=1)
+
+    assert [row["decision_id"] for row in result["scored_rows"]] == ["d1", "d1"]
+    assert [row["decision_id"] for row in result["judgeable"]] == ["d1"]
+    assert result["exclusions"] == {
+        "stale_market_data": 1,
+        "gates": 0,
+        "by_reason": {"stale_market_data": 1},
+    }
+    assert result["window"] == ("2025-12-31", "2026-01-03")
 
 
 def test_score_decisions_et_aggregate_comptent_buckets_taux_et_non_evaluables() -> None:
