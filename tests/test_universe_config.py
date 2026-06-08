@@ -22,19 +22,24 @@ def test_universe_inclut_forex_majors_et_cac40() -> None:
     cfg = yaml.safe_load(open("config/universe.yaml"))
     symbols = set(cfg["symbols"])
 
+    # Univers resserré 2026-06-08 (28 → 15) : 2 paires FX non redondantes,
+    # CAC40, énergie (WTI + gaz). Cf. en-tête de config/universe.yaml.
     assert {
         "EURUSD=X",
-        "GBPUSD=X",
         "USDJPY=X",
+        "^FCHI",
+        "CL=F",
+        "NG=F",
+    } <= symbols
+    # Doublons corrélés retirés lors du trim — verrouillés absents.
+    assert not symbols & {
+        "GBPUSD=X",
         "USDCHF=X",
         "USDCAD=X",
         "AUDUSD=X",
         "NZDUSD=X",
         "EURJPY=X",
-        "^FCHI",
-        "CL=F",
         "BZ=F",
-        "NG=F",
-    } <= symbols
+    }
     assert "USO" not in symbols
     assert "UNG" not in symbols

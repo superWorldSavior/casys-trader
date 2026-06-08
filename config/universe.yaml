@@ -4,35 +4,26 @@
 
 starting_cash: 100000
 
+# Univers resserré 2026-06-08 : 28 → 15 symboles. On retire les doublons
+# corrélés (un représentant par facteur de risque), on conserve le panier TW.
+# Coupés : DIA, EWT, EWQ, ITA, XLE, BZ=F, AAPL, GBPUSD, USDCHF, USDCAD,
+# AUDUSD, NZDUSD, EURJPY. (Contrats toujours définis dans ib_contracts.yaml
+# pour ré-expansion ultérieure.)
 symbols:
   # Indices (via ETF)
   - SPY   # S&P 500
   - QQQ   # Nasdaq 100
-  - DIA   # Dow Jones
-  - EWT   # Taïwan
-  - EWQ   # France
   - ^FCHI # CAC 40
-  # Thématiques
-  - ITA   # Défense US
-  - XLE   # Énergie
   # Commodities futures continus (proxy paper Yahoo Finance)
   - CL=F  # WTI crude oil
-  - BZ=F  # Brent crude oil
   - NG=F  # Natural gas
   # Métaux précieux (future COMEX, ~24/5)
   - GC=F  # Gold
-  # Nasdaq individuelles
+  # Nasdaq individuelle (pari direct ; tendance tech large déjà via QQQ)
   - NVDA
-  - AAPL
-  # Forex majors (Yahoo Finance FX spot proxy)
+  # Forex majors (Yahoo Finance FX spot proxy) — resserré à 2 paires non redondantes
   - EURUSD=X
-  - GBPUSD=X
   - USDJPY=X
-  - USDCHF=X
-  - USDCAD=X
-  - AUDUSD=X
-  - NZDUSD=X
-  - EURJPY=X
   # Actions taïwanaises (TWSE, TWD) — data IB confirmée 2026-06-08
   - 2330.TW   # TSMC (semi)
   - 2317.TW   # Hon Hai / Foxconn (electronics)
