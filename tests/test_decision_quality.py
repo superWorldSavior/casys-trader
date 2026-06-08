@@ -62,6 +62,41 @@ def test_forward_return_non_evaluable_si_aucune_barre_nouvelle_dans_horizon() ->
     assert forward_return(store, "AAPL", "2026-01-02T16:00:00", timedelta(days=1)) is None
 
 
+def test_score_decisions_tagge_le_provider_ou_unknown() -> None:
+    decisions = [
+        {
+            "cycle_ts": "2026-01-01T10:00:00",
+            "symbol": "SPARK",
+            "action": "BUY",
+            "reason": "ok",
+            "llm_provider": "spark",
+            "llm_fallback_reason": None,
+        },
+        {"cycle_ts": "2026-01-01T10:00:00", "symbol": "UNKNOWN", "action": "HOLD", "reason": "hold"},
+    ]
+    store = HistoryStore.from_bars(
+        {
+            "SPARK": [
+                _bar("2026-01-01T10:00:00", 100.0),
+                _bar("2026-01-01T14:00:00", 102.0),
+            ],
+            "UNKNOWN": [
+                _bar("2026-01-01T10:00:00", 100.0),
+                _bar("2026-01-01T14:00:00", 99.0),
+            ],
+        }
+    )
+
+    rows = score_decisions(decisions, store, band=0.005)
+
+    spark_row = next(row for row in rows if row["symbol"] == "SPARK" and row["horizon"] == "4h")
+    unknown_row = next(row for row in rows if row["symbol"] == "UNKNOWN" and row["horizon"] == "4h")
+    assert spark_row["provider"] == "spark"
+    assert spark_row["fallback_reason"] is None
+    assert unknown_row["provider"] == "unknown"
+    assert unknown_row["fallback_reason"] is None
+
+
 def test_score_decisions_et_aggregate_comptent_buckets_taux_et_non_evaluables() -> None:
     decisions = [
         {"cycle_ts": "2026-01-01T10:00:00", "symbol": "UP", "action": "HOLD", "reason": "hold"},
@@ -78,7 +113,7 @@ def test_score_decisions_et_aggregate_comptent_buckets_taux_et_non_evaluables() 
     )
 
     rows = score_decisions(decisions, store, band=0.005)
-    stats = {(row["action"], row["horizon"]): row for row in aggregate(rows)}
+    stats = {(row["action"], row["horizon"]): row for row in aggregate(rows)["aggregate"]}
 
     hold_4h = stats[("HOLD", "4h")]
     assert hold_4h["n_total"] == 2
@@ -99,3 +134,63 @@ def test_score_decisions_et_aggregate_comptent_buckets_taux_et_non_evaluables() 
     assert sell_4h["mean_forward_return"] is None
     assert sell_4h["buckets"] == {"non_evaluable": 1}
     assert sell_4h["hit_rate"] is None
+
+
+def test_aggregate_croise_les_metriques_par_provider() -> None:
+    decisions = [
+        {
+            "cycle_ts": "2026-01-01T10:00:00",
+            "symbol": "SPARK_BUY",
+            "action": "BUY",
+            "reason": "ok",
+            "llm_provider": "spark",
+        },
+        {
+            "cycle_ts": "2026-01-01T10:00:00",
+            "symbol": "SPARK_HOLD",
+            "action": "HOLD",
+            "reason": "hold",
+            "llm_provider": "spark",
+        },
+        {
+            "cycle_ts": "2026-01-01T10:00:00",
+            "symbol": "OLLAMA_SELL",
+            "action": "SELL",
+            "reason": "ok",
+            "llm_provider": "ollama-cloud",
+        },
+    ]
+    store = HistoryStore.from_bars(
+        {
+            "SPARK_BUY": [
+                _bar("2026-01-01T10:00:00", 100.0),
+                _bar("2026-01-01T14:00:00", 102.0),
+                _bar("2026-01-02T10:00:00", 104.0),
+            ],
+            "SPARK_HOLD": [
+                _bar("2026-01-01T10:00:00", 100.0),
+                _bar("2026-01-01T14:00:00", 99.0),
+                _bar("2026-01-02T10:00:00", 98.0),
+            ],
+            "OLLAMA_SELL": [
+                _bar("2026-01-01T10:00:00", 100.0),
+                _bar("2026-01-01T14:00:00", 95.0),
+                _bar("2026-01-02T10:00:00", 90.0),
+            ],
+        }
+    )
+
+    rows = score_decisions(decisions, store, band=0.005)
+    by_provider = {item["provider"]: item for item in aggregate(rows)["by_provider"]}
+
+    assert by_provider["spark"]["n_total"] == 4
+    assert by_provider["spark"]["n_evaluable"] == 4
+    assert by_provider["spark"]["n_non_evaluable"] == 0
+    assert by_provider["spark"]["mean_forward_return"] == pytest.approx((0.02 + 0.04 - 0.01 - 0.02) / 4)
+    assert by_provider["spark"]["actions"] == {"BUY": 2, "HOLD": 2, "SELL": 0}
+
+    assert by_provider["ollama-cloud"]["n_total"] == 2
+    assert by_provider["ollama-cloud"]["n_evaluable"] == 2
+    assert by_provider["ollama-cloud"]["n_non_evaluable"] == 0
+    assert by_provider["ollama-cloud"]["mean_forward_return"] == pytest.approx((-0.05 - 0.10) / 2)
+    assert by_provider["ollama-cloud"]["actions"] == {"BUY": 0, "HOLD": 0, "SELL": 2}

@@ -24,6 +24,21 @@ CAVEAT = (
 )
 
 
+class AggregateResult(list[dict]):
+    """Liste action×horizon enrichie avec la section provider."""
+
+    def __init__(self, aggregate_rows: list[dict], by_provider: list[dict]):
+        super().__init__(aggregate_rows)
+        self.by_provider = by_provider
+
+    def __getitem__(self, key: int | slice | str) -> Any:
+        if key == "aggregate":
+            return list(self)
+        if key == "by_provider":
+            return self.by_provider
+        return super().__getitem__(key)
+
+
 def classify(action: str, forward_return: float | None, band: float) -> str:
     """Classe une décision selon le rendement forward et la bande significative."""
     if forward_return is None:
@@ -70,6 +85,8 @@ def score_decisions(decisions: list[dict], history: HistoryStore, band: float) -
         action = str(decision["action"]).upper()
         symbol = str(decision["symbol"])
         cycle_ts = str(decision["cycle_ts"])
+        provider = str(decision.get("llm_provider") or "unknown")
+        fallback_reason = decision.get("llm_fallback_reason")
         for horizon_label, horizon in HORIZONS:
             rendement = forward_return(history, symbol, cycle_ts, horizon)
             rows.append(
@@ -77,6 +94,8 @@ def score_decisions(decisions: list[dict], history: HistoryStore, band: float) -
                     "cycle_ts": cycle_ts,
                     "symbol": symbol,
                     "action": action,
+                    "provider": provider,
+                    "fallback_reason": fallback_reason,
                     "horizon": horizon_label,
                     "forward_return": rendement,
                     "evaluable": rendement is not None,
@@ -86,8 +105,8 @@ def score_decisions(decisions: list[dict], history: HistoryStore, band: float) -
     return rows
 
 
-def aggregate(rows: list[dict]) -> list[dict]:
-    """Agrège les verdicts par couple `(action, horizon)`."""
+def aggregate(rows: list[dict]) -> AggregateResult:
+    """Agrège les verdicts par couple `(action, horizon)` et par provider."""
     grouped: dict[tuple[str, str], list[dict]] = {}
     for row in rows:
         key = (str(row["action"]).upper(), str(row["horizon"]))
@@ -120,6 +139,34 @@ def aggregate(rows: list[dict]) -> list[dict]:
                 "buckets": buckets,
                 "hit_rate": hit_rate,
                 "frileux_rate": frileux_rate,
+            }
+        )
+    return AggregateResult(result, _aggregate_by_provider(rows))
+
+
+def _aggregate_by_provider(rows: list[dict]) -> list[dict]:
+    """Agrège les lignes scorées par provider LLM."""
+    grouped: dict[str, list[dict]] = {}
+    for row in rows:
+        provider = str(row.get("provider") or "unknown")
+        grouped.setdefault(provider, []).append(row)
+
+    result: list[dict] = []
+    for provider in sorted(grouped):
+        group = grouped[provider]
+        evaluables = [row for row in group if row["evaluable"]]
+        returns = [float(row["forward_return"]) for row in evaluables]
+        actions = Counter(str(row["action"]).upper() for row in group)
+        n_evaluable = len(evaluables)
+
+        result.append(
+            {
+                "provider": provider,
+                "n_total": len(group),
+                "n_evaluable": n_evaluable,
+                "n_non_evaluable": len(group) - n_evaluable,
+                "mean_forward_return": (sum(returns) / n_evaluable) if n_evaluable else None,
+                "actions": {action: actions.get(action, 0) for action in ("BUY", "HOLD", "SELL")},
             }
         )
     return result
@@ -223,6 +270,22 @@ def _render_cli(report: dict[str, Any]) -> str:
     if not report["aggregate"]:
         lines.append("(aucune décision jugeable)")
 
+    lines.extend(
+        [
+            "",
+            "Par provider",
+            f"{'Provider':<16} {'n':>5} {'Éval':>5} {'Mean fwd':>10}  Mix actions",
+            "-" * 62,
+        ]
+    )
+    for item in report["by_provider"]:
+        lines.append(
+            f"{item['provider']:<16} {item['n_total']:>5} {item['n_evaluable']:>5} "
+            f"{_format_pct(item['mean_forward_return']):>10}  {_format_actions(item['actions'])}"
+        )
+    if not report["by_provider"]:
+        lines.append("(aucun provider)")
+
     exclusions = report["exclusions"]
     lines.extend(
         [
@@ -267,6 +330,11 @@ def _format_buckets(buckets: dict[str, int]) -> str:
     return ", ".join(f"{name}={count}" for name, count in sorted(buckets.items()))
 
 
+def _format_actions(actions: dict[str, int]) -> str:
+    """Formate la ventilation d'actions en ordre stable."""
+    return ", ".join(f"{action}={actions.get(action, 0)}" for action in ("BUY", "HOLD", "SELL"))
+
+
 def _build_report(args: argparse.Namespace) -> dict[str, Any]:
     """Orchestre les I/O du CLI autour des fonctions pures."""
     ledger_path = Path(args.ledger)
@@ -297,7 +365,8 @@ def _build_report(args: argparse.Namespace) -> dict[str, Any]:
         "symbols": symbols,
         "unavailable_symbols": unavailable,
         "exclusions": exclusions,
-        "aggregate": stats,
+        "aggregate": stats["aggregate"],
+        "by_provider": stats["by_provider"],
         "rows": rows,
         "output_path": str(output_path),
     }
