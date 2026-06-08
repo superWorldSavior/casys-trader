@@ -15,7 +15,9 @@ from trader.regime import (
     Z_STRETCHED_THRESHOLD,
     MarketRegime,
     classify_regime,
+    multi_horizon_signals,
 )
+from trader.tools.market import Bar
 
 
 # ---------------------------------------------------------------------------
@@ -26,6 +28,37 @@ from trader.regime import (
 def _ind(**kwargs) -> dict:
     """Construit un dict d'indicateurs minimal. Valeurs absentes = champs manquants."""
     return kwargs
+
+
+def _signal_bar(
+    close: float,
+    *,
+    open_: float | None = None,
+    high: float | None = None,
+    low: float | None = None,
+    ts: str = "2026-06-08T10:00:00+00:00",
+) -> Bar:
+    open_value = close - 0.5 if open_ is None else open_
+    return Bar(
+        ts=ts,
+        open=open_value,
+        high=high if high is not None else max(open_value, close) + 1.0,
+        low=low if low is not None else min(open_value, close) - 1.0,
+        close=close,
+        volume=1000.0,
+    )
+
+
+def _trend_bars(base: float, *, step: float, n: int = 12) -> list[Bar]:
+    return [
+        _signal_bar(
+            base + index * step,
+            high=1000.0,
+            low=0.0,
+            ts=f"2026-06-08T{index:02d}:00:00+00:00",
+        )
+        for index in range(n)
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -429,3 +462,89 @@ def test_candle_signal_labels_couvre_les_valeurs_reelles() -> None:
     for val in [1.0, -1.0, 0.5, -0.5]:
         assert val in CANDLE_SIGNAL_LABELS
         assert CANDLE_SIGNAL_LABELS[val] is not None
+
+
+# ---------------------------------------------------------------------------
+# 11. Signaux pré-calculés multi-horizon
+# ---------------------------------------------------------------------------
+
+
+def test_multi_horizon_htf_prend_le_plus_haut_horizon_fourni() -> None:
+    result = multi_horizon_signals(
+        {
+            "15m": _trend_bars(100.0, step=0.5),
+            "4h": _trend_bars(200.0, step=-0.5),
+            "1d": _trend_bars(300.0, step=0.5),
+        },
+        window=12,
+    )
+
+    assert result["htf"] == "trending_up"
+    assert result["aligned"] is True
+
+
+def test_multi_horizon_retombe_sur_4h_si_1d_est_vide() -> None:
+    result = multi_horizon_signals(
+        {
+            "15m": _trend_bars(100.0, step=-0.5),
+            "4h": _trend_bars(200.0, step=0.5),
+            "1d": [],
+        },
+        window=12,
+    )
+
+    assert result["htf"] == "trending_up"
+    assert result["aligned"] is False
+
+
+def test_multi_horizon_sig_mappe_breakout_bougie_et_stretched() -> None:
+    bull_engulf = [
+        _signal_bar(100.0, open_=102.0, high=103.0, low=99.0),
+        _signal_bar(103.0, open_=99.5, high=104.0, low=99.0),
+    ]
+    stretched_up = [
+        _signal_bar(100.0, open_=100.0, high=200.0, low=50.0, ts=f"t{i}")
+        for i in range(20)
+    ] + [_signal_bar(110.0, open_=110.0, high=200.0, low=50.0, ts="t20")]
+    breakout_down = [
+        _signal_bar(100.0, open_=100.0, high=101.0, low=99.0),
+        _signal_bar(100.5, open_=100.0, high=101.5, low=99.5),
+        _signal_bar(90.0, open_=91.0, high=92.0, low=89.0),
+    ]
+
+    result = multi_horizon_signals(
+        {"15m": bull_engulf, "4h": stretched_up, "1d": breakout_down},
+        window=48,
+    )
+
+    assert result["sig"] == [
+        "1d:breakout_down",
+        "4h:stretched_up",
+        "15m:bull_engulf",
+    ]
+
+
+def test_multi_horizon_omet_sig_quand_aucun_signal_saillant() -> None:
+    result = multi_horizon_signals(
+        {
+            "15m": _trend_bars(100.0, step=0.5),
+            "4h": _trend_bars(200.0, step=0.5),
+        },
+        window=12,
+    )
+
+    assert result["htf"] == "trending_up"
+    assert result["aligned"] is True
+    assert "sig" not in result
+
+
+def test_multi_horizon_fail_safe_sur_horizons_vides_ou_indicateurs_none() -> None:
+    result = multi_horizon_signals(
+        {
+            "15m": [],
+            "4h": [_signal_bar(100.0, open_=100.0, high=100.0, low=100.0)],
+        },
+        window=12,
+    )
+
+    assert result == {"htf": "unknown", "aligned": False}

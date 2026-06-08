@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Iterable
 
 from .features import DEFAULT_INDICATORS, build_indicator_snapshot
-from .regime import classify_regime
+from .regime import classify_regime, multi_horizon_signals
 from .semantic.catalog import family_for_symbol, normalize_temporal_query
 from .tools import market
 
@@ -69,6 +69,7 @@ def build_market_cockpit(
     prices: dict[str, float],
     window: int = 48,
     top_n: int = 5,
+    daily_bars_by_symbol: dict[str, list[object]] | None = None,
 ) -> dict:
     """Build a compact, deterministic market dashboard with no raw bars.
 
@@ -76,6 +77,7 @@ def build_market_cockpit(
         s, f, p : symbole, famille, prix
         r, vol, z, er, ac, rs, sz : indicateurs numériques (COCKPIT_INDICATORS)
         reg, vs, st, cndle : régime de marché (classify_regime)
+        htf, aligned, sig : signaux multi-horizon pré-calculés (cp3)
     """
     # On calcule les indicateurs affichables + ceux nécessaires au classifieur.
     all_snapshot_names = COCKPIT_INDICATORS + _REGIME_EXTRA_INDICATORS
@@ -86,12 +88,29 @@ def build_market_cockpit(
         window=window,
     )
     indicator_cols = [_INDICATOR_COLUMNS[name] for name in COCKPIT_INDICATORS]
-    cols = ["s", "f", "p", *indicator_cols, "reg", "vs", "st", "cndle"]
+    cols = ["s", "f", "p", *indicator_cols, "reg", "vs", "st", "cndle", "htf", "aligned", "sig"]
     rows: list[list] = []
+    daily_bars_by_symbol = daily_bars_by_symbol or {}
     for symbol in symbols:
         item = snapshot.get(symbol, {"family": None, "indicators": {}})
         indicators = item["indicators"]
         regime = classify_regime(indicators)
+        base_bars = bars_by_symbol.get(symbol, [])
+        hourly_bars = market.aggregate_bars(base_bars, target_interval="1h") if base_bars else []
+        four_hour_bars = market.aggregate_bars(hourly_bars, target_interval="4h") if hourly_bars else []
+        bars_by_horizon = {
+            "15m": base_bars,
+            "1h": hourly_bars,
+            "4h": four_hour_bars,
+        }
+        daily_bars = daily_bars_by_symbol.get(symbol)
+        if daily_bars:
+            bars_by_horizon["1d"] = daily_bars
+        htf_signals = multi_horizon_signals(
+            bars_by_horizon,
+            window=window,
+            precomputed_indicators_by_horizon={"15m": indicators},
+        )
         rows.append(
             [
                 symbol,
@@ -102,6 +121,9 @@ def build_market_cockpit(
                 regime.vol_state,
                 regime.stretched,
                 regime.candle,
+                htf_signals["htf"],
+                htf_signals["aligned"],
+                htf_signals.get("sig"),
             ]
         )
 
@@ -115,12 +137,13 @@ def build_market_cockpit(
         return sorted(candidates, key=lambda item: abs(float(item[1])), reverse=True)[:top_n]
 
     return {
-        "v": "cp2",
+        "v": "cp3",
         "window": window,
         "schema": (
             "cols: s=sym,f=family,p=price,"
             "r=ret,vol=stdev_ret,z=price_z,er=Kaufman,ac=lag1_ret_corr,rs=ret-fam_ret,sz=spread_z,"
-            "reg=regime,vs=vol_state,st=stretched,cndle=candle_pattern"
+            "reg=regime,vs=vol_state,st=stretched,cndle=candle_pattern,"
+            "htf=highest_timeframe_regime,aligned=base_htf_trend_aligned,sig=notable_events"
         ),
         "cols": cols,
         "rows": rows,

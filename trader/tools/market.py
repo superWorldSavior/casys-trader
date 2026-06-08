@@ -42,6 +42,14 @@ class Freshness:
 # Tolérance d'horloge : une barre légèrement « dans le futur » (désync d'horloge
 # entre yfinance et l'hôte) reste acceptable ; au-delà c'est une donnée invalide.
 _CLOCK_SKEW_TOLERANCE_MINUTES = 5.0
+_INTERVAL_MINUTES = {
+    "15m": 15.0,
+    "30m": 30.0,
+    "1h": 60.0,
+    "4h": 4.0 * 60.0,
+    "1d": 24.0 * 60.0,
+}
+_FALLBACK_GROUP_SIZE_BY_TARGET = {"1h": 4, "4h": 4}
 
 
 def assess_freshness(bars: list[Bar], *, now: datetime, max_age_minutes: float) -> Freshness:
@@ -87,6 +95,78 @@ def _aggregate_sequential_bars(bars: list[Bar], *, group_size: int) -> list[Bar]
     return aggregated
 
 
+def _bucket_key(ts: datetime, *, target_interval: str) -> tuple[object, int]:
+    target_minutes = _interval_minutes(target_interval)
+    if target_minutes is None:
+        return (ts.date(), ts.hour)
+    if target_minutes >= _INTERVAL_MINUTES["1d"]:
+        return (ts.date(), 0)
+    minutes_since_midnight = ts.hour * 60 + ts.minute
+    return (ts.date(), int(minutes_since_midnight // target_minutes))
+
+
+def _interval_minutes(interval: str | None) -> float | None:
+    if interval is None:
+        return None
+    known = _INTERVAL_MINUTES.get(interval)
+    if known is not None:
+        return known
+    if len(interval) < 2:
+        return None
+    try:
+        amount = float(interval[:-1])
+    except ValueError:
+        return None
+    unit = interval[-1]
+    if unit == "m":
+        return amount
+    if unit == "h":
+        return amount * 60.0
+    if unit == "d":
+        return amount * 24.0 * 60.0
+    return None
+
+
+def _infer_source_minutes(parsed: list[datetime | None]) -> float | None:
+    if any(ts is None for ts in parsed):
+        return None
+    deltas: list[float] = []
+    previous: datetime | None = None
+    for ts in parsed:
+        if previous is not None and ts is not None:
+            try:
+                delta = (ts - previous).total_seconds() / 60.0
+            except TypeError:
+                return None
+            if delta > 0:
+                deltas.append(delta)
+        previous = ts
+    return min(deltas) if deltas else None
+
+
+def _aggregate_group_size(
+    *,
+    parsed: list[datetime | None],
+    target_interval: str,
+    source_interval: str | None,
+) -> int | None:
+    target_minutes = _interval_minutes(target_interval)
+    if target_minutes is None:
+        return None
+    source_minutes = _interval_minutes(source_interval)
+    if source_minutes is None:
+        source_minutes = _infer_source_minutes(parsed)
+    if source_minutes is None:
+        return _FALLBACK_GROUP_SIZE_BY_TARGET.get(target_interval)
+    if source_minutes <= 0 or target_minutes <= source_minutes:
+        return None
+    ratio = target_minutes / source_minutes
+    group_size = round(ratio)
+    if group_size < 1 or abs(ratio - group_size) > 1e-9:
+        return None
+    return int(group_size)
+
+
 def _parse_ts(value: str) -> datetime | None:
     try:
         return datetime.fromisoformat(value.replace("Z", "+00:00"))
@@ -105,19 +185,28 @@ def _aggregate_group(group: list[Bar]) -> Bar:
     )
 
 
-def aggregate_bars(bars: list[Bar], *, target_interval: str) -> list[Bar]:
+def aggregate_bars(
+    bars: list[Bar],
+    *,
+    target_interval: str,
+    source_interval: str | None = None,
+) -> list[Bar]:
     """Aggregate smaller bars into a governed semantic timeframe."""
-    if target_interval != "4h":
-        return bars
-    group_size = 4
     parsed = [_parse_ts(bar.ts) for bar in bars]
+    group_size = _aggregate_group_size(
+        parsed=parsed,
+        target_interval=target_interval,
+        source_interval=source_interval,
+    )
+    if group_size is None:
+        return bars
     if any(ts is None for ts in parsed):
         return _aggregate_sequential_bars(bars, group_size=group_size)
 
     buckets: dict[tuple[object, int], list[Bar]] = {}
     for bar, ts in zip(bars, parsed, strict=True):
         assert ts is not None
-        bucket = (ts.date(), ts.hour // group_size)
+        bucket = _bucket_key(ts, target_interval=target_interval)
         buckets.setdefault(bucket, []).append(bar)
 
     aggregated: list[Bar] = []
@@ -158,7 +247,9 @@ def get_bars(symbol: str, lookback: str = "5d", interval: str = "1h") -> list[Ba
                 volume=float(row["Volume"]),
             )
         )
-    return aggregate_bars(bars, target_interval=interval)
+    if source_interval == interval:
+        return bars
+    return aggregate_bars(bars, target_interval=interval, source_interval=source_interval)
 
 
 def get_quote(symbol: str) -> Quote:

@@ -6,6 +6,8 @@ et que la structure existante (cols numériques, highlights) est préservée.
 
 from __future__ import annotations
 
+import trader.agent_context as agent_context
+import trader.regime as regime
 from trader.agent_context import build_market_cockpit
 from trader.tools.market import Bar
 
@@ -32,6 +34,43 @@ def _choppy_bars(base: float = 100.0, n: int = 12) -> list[Bar]:
     return [_bar(base + math.sin(i) * 0.5) for i in range(n)]
 
 
+def _timed_trending_15m(base: float = 100.0, n: int = 32) -> list[Bar]:
+    """Série 15m trendée, sans breakout artificiel grâce aux mèches larges."""
+    return [
+        Bar(
+            ts=f"2026-06-05T{8 + index // 4:02d}:{(index % 4) * 15:02d}:00+00:00",
+            open=base + index * 0.5 - 0.25,
+            high=1000.0,
+            low=0.0,
+            close=base + index * 0.5,
+            volume=1000.0,
+        )
+        for index in range(n)
+    ]
+
+
+def _daily_breakout_up() -> list[Bar]:
+    return [
+        Bar(ts="2026-06-01T00:00:00+00:00", open=99.5, high=101.0, low=99.0, close=100.0, volume=1000.0),
+        Bar(ts="2026-06-02T00:00:00+00:00", open=100.0, high=101.5, low=99.5, close=100.5, volume=1000.0),
+        Bar(ts="2026-06-03T00:00:00+00:00", open=104.5, high=105.2, low=104.0, close=105.0, volume=1000.0),
+    ]
+
+
+def _daily_trending_neutral(base: float = 200.0, n: int = 12) -> list[Bar]:
+    return [
+        Bar(
+            ts=f"2026-06-{index + 1:02d}T00:00:00+00:00",
+            open=base + index * 0.5,
+            high=base + index * 0.5 + 1.0,
+            low=base + index * 0.5 - 1.0,
+            close=base + index * 0.5,
+            volume=1000.0,
+        )
+        for index in range(n)
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Structure des colonnes
 # ---------------------------------------------------------------------------
@@ -50,6 +89,9 @@ def test_cockpit_contient_les_colonnes_regime() -> None:
     assert "vs" in cols
     assert "st" in cols
     assert "cndle" in cols
+    assert "htf" in cols
+    assert "aligned" in cols
+    assert "sig" in cols
 
 
 def test_cockpit_preserve_les_colonnes_numeriques_existantes() -> None:
@@ -141,8 +183,8 @@ def test_cockpit_highlights_toujours_presents() -> None:
     assert "abs_sz" in result["highlights"]
 
 
-def test_cockpit_version_est_cp2() -> None:
-    """La version du cockpit est mise à jour à cp2 suite à l'ajout du régime."""
+def test_cockpit_version_est_cp3() -> None:
+    """La version du cockpit est mise à jour à cp3 suite aux signaux multi-horizon."""
     bars = {"SPY": _trending_bars()}
     result = build_market_cockpit(
         bars,
@@ -150,7 +192,7 @@ def test_cockpit_version_est_cp2() -> None:
         prices={"SPY": 105.0},
         window=12,
     )
-    assert result["v"] == "cp2"
+    assert result["v"] == "cp3"
 
 
 def test_cockpit_schema_mentionne_regime() -> None:
@@ -165,6 +207,48 @@ def test_cockpit_schema_mentionne_regime() -> None:
     assert "vol_state" in result["schema"]
     assert "stretched" in result["schema"]
     assert "candle_pattern" in result["schema"]
+    assert "htf" in result["schema"]
+    assert "aligned" in result["schema"]
+    assert "sig" in result["schema"]
+
+
+def test_cockpit_cp3_ajoute_signaux_multi_horizon_en_fin_de_ligne() -> None:
+    bars = {"SPY": _timed_trending_15m(), "QQQ": _timed_trending_15m(base=200.0)}
+    result = build_market_cockpit(
+        bars,
+        symbols=["SPY", "QQQ"],
+        prices={"SPY": 116.0, "QQQ": 216.0},
+        window=12,
+        daily_bars_by_symbol={
+            "SPY": _daily_breakout_up(),
+            "QQQ": _daily_trending_neutral(base=200.0, n=12),
+        },
+    )
+    cols = result["cols"]
+    spy_row = next(row for row in result["rows"] if row[0] == "SPY")
+    qqq_row = next(row for row in result["rows"] if row[0] == "QQQ")
+
+    assert cols[-3:] == ["htf", "aligned", "sig"]
+    assert spy_row[cols.index("htf")] == "breakout"
+    assert spy_row[cols.index("aligned")] is False
+    assert spy_row[cols.index("sig")] == ["1d:breakout_up"]
+    assert qqq_row[cols.index("htf")] == "trending_up"
+    assert qqq_row[cols.index("aligned")] is True
+    assert qqq_row[cols.index("sig")] is None
+
+
+def test_cockpit_derive_1h_4h_depuis_15m_et_retombe_sur_4h_sans_daily() -> None:
+    result = build_market_cockpit(
+        {"SPY": _timed_trending_15m()},
+        symbols=["SPY"],
+        prices={"SPY": 116.0},
+        window=12,
+    )
+    cols = result["cols"]
+    spy_row = next(row for row in result["rows"] if row[0] == "SPY")
+
+    assert spy_row[cols.index("htf")] == "trending_up"
+    assert spy_row[cols.index("aligned")] is True
 
 
 # ---------------------------------------------------------------------------
@@ -192,3 +276,53 @@ def test_return_index_toujours_accessible_par_col_name() -> None:
     return_index = result["cols"].index("r")
     spy_row = next(row for row in result["rows"] if row[0] == "SPY")
     assert spy_row[return_index] == 0.04
+
+
+def test_cockpit_reutilise_les_indicateurs_15m_du_snapshot_pour_les_signaux(monkeypatch) -> None:
+    base_bars = _timed_trending_15m(n=16)
+    snapshot_indicators = {
+        "return": 0.075,
+        "volatility": 0.01,
+        "z_score": 0.0,
+        "efficiency_ratio": 1.0,
+        "autocorrelation": None,
+        "relative_strength": None,
+        "spread_zscore": None,
+        "trend_slope": 0.004,
+        "chart_breakout": 0.0,
+        "candlestick_signal": 0.0,
+    }
+    indicator_calls: list[list[Bar]] = []
+
+    def fake_snapshot(bars_by_symbol, *, symbols, names, window):
+        assert bars_by_symbol["SPY"] is base_bars
+        return {
+            "SPY": {
+                "family": None,
+                "window": window,
+                "indicators": {name: snapshot_indicators.get(name) for name in names},
+            }
+        }
+
+    def fake_compute_indicator_values(bars, *, names, window, **kwargs):
+        indicator_calls.append(bars)
+        return {
+            "efficiency_ratio": 1.0,
+            "trend_slope": 0.004,
+            "chart_breakout": 0.0,
+            "volatility": 0.01,
+            "z_score": 0.0,
+            "candlestick_signal": 0.0,
+        }
+
+    monkeypatch.setattr(agent_context, "build_indicator_snapshot", fake_snapshot)
+    monkeypatch.setattr(regime, "compute_indicator_values", fake_compute_indicator_values)
+
+    agent_context.build_market_cockpit(
+        {"SPY": base_bars},
+        symbols=["SPY"],
+        prices={"SPY": 107.5},
+        window=12,
+    )
+
+    assert all(call is not base_bars for call in indicator_calls)

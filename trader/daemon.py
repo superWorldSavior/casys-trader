@@ -58,6 +58,9 @@ _ACTION_INTENTS = {
 DEFAULT_RUNTIME_INTERVAL = "15m"
 DEFAULT_RUNTIME_LOOKBACK = "5d"
 DEFAULT_MAX_MARKET_DATA_AGE_MINUTES = 40.0
+COCKPIT_DAILY_LOOKBACK = "1y"
+COCKPIT_DAILY_INTERVAL = "1d"
+COCKPIT_DAILY_MAX_AGE_MINUTES = 48.0 * 60.0
 
 
 def _write_json_state(filename: str, payload: dict) -> None:
@@ -636,6 +639,37 @@ def run_cycle(
         if symbol not in stale_market_data
     }
 
+    daily_bars_by_symbol: dict[str, list] = {}
+    daily_max_age_minutes = max(max_market_data_age_minutes, COCKPIT_DAILY_MAX_AGE_MINUTES)
+    for sym in tradable_symbols:
+        try:
+            daily_bars = market.get_bars(
+                sym,
+                lookback=COCKPIT_DAILY_LOOKBACK,
+                interval=COCKPIT_DAILY_INTERVAL,
+            )
+        except market.MarketError as exc:
+            log.warning("daily data unavailable %s: %s", sym, exc.code)
+            continue
+        except Exception as exc:  # noqa: BLE001 - daily cockpit data is optional
+            log.warning("daily data failed %s: %s", sym, exc)
+            continue
+        if not daily_bars:
+            continue
+        try:
+            freshness = market.assess_freshness(
+                daily_bars,
+                now=now,
+                max_age_minutes=daily_max_age_minutes,
+            )
+        except Exception as exc:  # noqa: BLE001 - daily cockpit data is optional
+            log.warning("daily freshness failed %s: %s", sym, exc)
+            continue
+        if not freshness.fresh:
+            log.warning("daily data stale %s: %s", sym, freshness.reason)
+            continue
+        daily_bars_by_symbol[sym] = daily_bars
+
     planned_exits = _apply_planned_exits(
         broker=broker,
         plan_store=plan_store,
@@ -674,6 +708,7 @@ def run_cycle(
         symbols=tradable_symbols,
         prices=tradable_prices,
         window=48,
+        daily_bars_by_symbol=daily_bars_by_symbol,
     )
     base_context = {
         "now": now.isoformat(),

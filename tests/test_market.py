@@ -28,6 +28,46 @@ def test_aggregate_bars_4h_regroupe_les_barres_1h_par_paquets_de_quatre() -> Non
     assert aggregated[1].close == 107.0
 
 
+def test_aggregate_bars_1h_regroupe_les_barres_15m_par_paquets_de_quatre() -> None:
+    bars = [_bar(index, 100.0 + index) for index in range(8)]
+
+    aggregated = aggregate_bars(bars, target_interval="1h")
+
+    assert len(aggregated) == 2
+    assert aggregated[0].ts == "t3"
+    assert aggregated[0].open == 99.5
+    assert aggregated[0].high == 104.0
+    assert aggregated[0].low == 99.0
+    assert aggregated[0].close == 103.0
+    assert aggregated[0].volume == 406.0
+    assert aggregated[1].ts == "t7"
+    assert aggregated[1].close == 107.0
+
+
+def test_aggregate_bars_4h_depuis_15m_attend_seize_barres_et_ignore_bucket_incomplet() -> None:
+    bars = [
+        Bar(
+            ts=f"2026-06-05T{8 + index // 4:02d}:{(index % 4) * 15:02d}:00+00:00",
+            open=100.0 + index - 0.5,
+            high=100.0 + index + 1.0,
+            low=100.0 + index - 1.0,
+            close=100.0 + index,
+            volume=100.0 + index,
+        )
+        for index in range(20)
+    ]
+
+    aggregated = aggregate_bars(bars, target_interval="4h")
+
+    assert len(aggregated) == 1
+    assert aggregated[0].ts == "2026-06-05T11:45:00+00:00"
+    assert aggregated[0].open == 99.5
+    assert aggregated[0].high == 116.0
+    assert aggregated[0].low == 99.0
+    assert aggregated[0].close == 115.0
+    assert aggregated[0].volume == 1720.0
+
+
 def test_aggregate_bars_4h_est_ancre_sur_les_bornes_horaires_si_timestamps_iso() -> None:
     bars = [
         Bar(

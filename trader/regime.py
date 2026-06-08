@@ -20,6 +20,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from .features import compute_indicator_values
+
 # ---------------------------------------------------------------------------
 # Seuils (tunables, nommés, documentés)
 # ---------------------------------------------------------------------------
@@ -54,6 +56,24 @@ CANDLE_SIGNAL_LABELS: dict[float, str] = {
     -1.0: "bearish_engulfing",
     0.5: "hammer",
     -0.5: "shooting_star",
+}
+
+_COCKPIT_SIGNAL_INDICATORS = [
+    "efficiency_ratio",
+    "trend_slope",
+    "chart_breakout",
+    "volatility",
+    "z_score",
+    "candlestick_signal",
+]
+
+_HORIZON_PRIORITY = ["1d", "4h", "1h", "15m"]
+
+_COCKPIT_CANDLE_LABELS = {
+    "bullish_engulfing": "bull_engulf",
+    "bearish_engulfing": "bear_engulf",
+    "hammer": "hammer",
+    "shooting_star": "shooting_star",
 }
 
 # ---------------------------------------------------------------------------
@@ -190,3 +210,93 @@ def classify_regime(indicators: dict) -> MarketRegime:
         stretched=_classify_stretched(z),
         candle=_classify_candle(candle_signal),
     )
+
+
+def _horizon_indicators(bars: list[object], *, window: int) -> dict[str, float | None] | None:
+    if not bars:
+        return None
+    try:
+        return compute_indicator_values(
+            bars,
+            names=_COCKPIT_SIGNAL_INDICATORS,
+            window=window,
+        )
+    except Exception:  # noqa: BLE001 - frontière fail-safe du cockpit
+        return None
+
+
+def _same_regime_direction(left: str | None, right: str | None) -> bool:
+    return left in {"trending_up", "trending_down"} and left == right
+
+
+def _event_signals(indicators: dict[str, float | None]) -> list[str]:
+    signals: list[str] = []
+    breakout = _get(indicators, "chart_breakout")
+    if breakout is not None and breakout > 0.0:
+        signals.append("breakout_up")
+    elif breakout is not None and breakout < 0.0:
+        signals.append("breakout_down")
+
+    candle_signal = _get(indicators, "candlestick_signal")
+    candle = CANDLE_SIGNAL_LABELS.get(candle_signal) if candle_signal is not None else None
+    candle_label = _COCKPIT_CANDLE_LABELS.get(candle or "")
+    if candle_label is not None:
+        signals.append(candle_label)
+
+    z_score = _get(indicators, "z_score")
+    if z_score is not None and z_score >= Z_STRETCHED_THRESHOLD:
+        signals.append("stretched_up")
+    elif z_score is not None and z_score <= -Z_STRETCHED_THRESHOLD:
+        signals.append("stretched_down")
+    return signals
+
+
+def multi_horizon_signals(
+    bars_by_horizon: dict[str, list[object]],
+    *,
+    window: int,
+    precomputed_indicators_by_horizon: dict[str, dict[str, float | None]] | None = None,
+) -> dict:
+    """Pré-calcule les signaux cockpit multi-horizon.
+
+    Retourne toujours ``htf`` et ``aligned``. Ajoute ``sig`` seulement si au
+    moins un événement notable est détecté. Fonction pure et fail-safe : horizon
+    manquant, barres vides ou calcul d'indicateur invalide donnent une sortie
+    dégradée, jamais une exception.
+    """
+    states: dict[str, tuple[dict[str, float | None], MarketRegime]] = {}
+    precomputed_indicators_by_horizon = precomputed_indicators_by_horizon or {}
+    for horizon in _HORIZON_PRIORITY:
+        indicators = precomputed_indicators_by_horizon.get(horizon)
+        if indicators is None:
+            indicators = _horizon_indicators(bars_by_horizon.get(horizon, []), window=window)
+        if indicators is None:
+            continue
+        try:
+            states[horizon] = (indicators, classify_regime(indicators))
+        except Exception:  # noqa: BLE001 - frontière fail-safe du cockpit
+            continue
+
+    htf_regime = "unknown"
+    for horizon in _HORIZON_PRIORITY:
+        state = states.get(horizon)
+        if state is not None:
+            htf_regime = state[1].regime or "unknown"
+            break
+
+    base_state = states.get("15m")
+    base_regime = base_state[1].regime if base_state is not None else "unknown"
+    result = {
+        "htf": htf_regime,
+        "aligned": _same_regime_direction(base_regime, htf_regime),
+    }
+
+    sig: list[str] = []
+    for horizon in _HORIZON_PRIORITY:
+        state = states.get(horizon)
+        if state is None:
+            continue
+        sig.extend(f"{horizon}:{label}" for label in _event_signals(state[0]))
+    if sig:
+        result["sig"] = sig
+    return result

@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 
 from trader import daemon
 from trader.codex_client import Decision
-from trader.tools.market import Bar
+from trader.tools.market import Bar, MarketError
 from trader.tools.scheduler import Scheduler
 
 
@@ -122,3 +122,105 @@ def test_run_cycle_resout_une_requete_indicateurs_bornee_avant_decision_finale(m
     assert list(contexts[1]["research"]["requests"][0]["indicators"]) == ["z_score", "spread_zscore"]
     # Le 2e exec (stateless) reçoit la rationale du 1er pour ne pas re-raisonner à zéro.
     assert contexts[1]["prior_rationale"] == "je veux confirmer le spread"
+
+
+def test_run_cycle_daily_bars_echouees_ne_bloquent_pas_le_cockpit(monkeypatch, tmp_path, patch_batch) -> None:
+    _write_runtime_config(tmp_path)
+    state_dir = tmp_path / "state"
+    sched = Scheduler(state_dir / "scheduler.json")
+    now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
+    contexts: list[dict] = []
+    requests: list[tuple[str, str, str]] = []
+
+    def runtime_bars(symbol: str) -> list[Bar]:
+        base = 100.0 if symbol == "SPY" else 200.0
+        return [
+            Bar(
+                ts=f"2026-06-05T{4 + index // 4:02d}:{(index % 4) * 15:02d}:00+00:00",
+                open=base + index * 0.5 - 0.25,
+                high=1000.0,
+                low=0.0,
+                close=base + index * 0.5,
+                volume=1000.0,
+            )
+            for index in range(32)
+        ]
+
+    def bars(symbol: str, lookback: str, interval: str) -> list[Bar]:
+        requests.append((symbol, lookback, interval))
+        if interval == "1d":
+            raise MarketError("fetch_failed", f"{symbol}: daily unavailable")
+        return runtime_bars(symbol)
+
+    def decide(**kwargs) -> Decision:
+        contexts.append(kwargs["context"])
+        return Decision.hold(kwargs["symbol"], "attente")
+
+    monkeypatch.setattr(daemon, "ROOT", tmp_path)
+    monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+    monkeypatch.setattr(daemon.market, "get_bars", bars)
+    patch_batch(decide)
+
+    daemon.run_cycle(dry_run=True, now=now, symbols_filter=["SPY"], sched=sched)
+
+    assert ("SPY", "1y", "1d") in requests
+    cockpit = contexts[0]["cockpit"]
+    cols = cockpit["cols"]
+    spy_row = next(row for row in cockpit["rows"] if row[0] == "SPY")
+    assert spy_row[cols.index("htf")] == "trending_up"
+    assert spy_row[cols.index("aligned")] is True
+
+
+def test_run_cycle_daily_bars_stale_sont_ignorees_pour_le_cockpit(monkeypatch, tmp_path, patch_batch) -> None:
+    _write_runtime_config(tmp_path)
+    state_dir = tmp_path / "state"
+    sched = Scheduler(state_dir / "scheduler.json")
+    now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
+    contexts: list[dict] = []
+    requests: list[tuple[str, str, str]] = []
+
+    def runtime_bars(symbol: str) -> list[Bar]:
+        base = 100.0 if symbol == "SPY" else 200.0
+        return [
+            Bar(
+                ts=f"2026-06-05T{4 + index // 4:02d}:{(index % 4) * 15:02d}:00+00:00",
+                open=base + index * 0.5 - 0.25,
+                high=1000.0,
+                low=0.0,
+                close=base + index * 0.5,
+                volume=1000.0,
+            )
+            for index in range(32)
+        ]
+
+    def stale_daily_bars(symbol: str) -> list[Bar]:
+        base = 100.0 if symbol == "SPY" else 200.0
+        return [
+            Bar(ts="2026-06-01T00:00:00+00:00", open=base - 0.5, high=base + 1.0, low=base - 1.0, close=base, volume=1000.0),
+            Bar(ts="2026-06-02T00:00:00+00:00", open=base, high=base + 1.5, low=base - 0.5, close=base + 0.5, volume=1000.0),
+            Bar(ts="2026-06-03T00:00:00+00:00", open=base + 4.5, high=base + 5.2, low=base + 4.0, close=base + 5.0, volume=1000.0),
+        ]
+
+    def bars(symbol: str, lookback: str, interval: str) -> list[Bar]:
+        requests.append((symbol, lookback, interval))
+        if interval == "1d":
+            return stale_daily_bars(symbol)
+        return runtime_bars(symbol)
+
+    def decide(**kwargs) -> Decision:
+        contexts.append(kwargs["context"])
+        return Decision.hold(kwargs["symbol"], "attente")
+
+    monkeypatch.setattr(daemon, "ROOT", tmp_path)
+    monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+    monkeypatch.setattr(daemon.market, "get_bars", bars)
+    patch_batch(decide)
+
+    daemon.run_cycle(dry_run=True, now=now, symbols_filter=["SPY"], sched=sched)
+
+    assert ("SPY", "1y", "1d") in requests
+    cockpit = contexts[0]["cockpit"]
+    cols = cockpit["cols"]
+    spy_row = next(row for row in cockpit["rows"] if row[0] == "SPY")
+    assert spy_row[cols.index("htf")] == "trending_up"
+    assert spy_row[cols.index("aligned")] is True
