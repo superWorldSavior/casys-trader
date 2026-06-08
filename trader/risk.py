@@ -23,6 +23,7 @@ class RiskLimits:
     max_order_value: float          # $ max par ordre unique
     max_orders_per_cycle: int       # débit max d'ordres par réveil
     min_equity: float               # equity plancher : sous ce seuil, plus aucun ordre
+    max_risk_per_trade_pct: float = 0.01  # % equity risqué si le hard_stop saute
 
     @classmethod
     def from_dict(cls, d: dict) -> "RiskLimits":
@@ -32,6 +33,7 @@ class RiskLimits:
             max_order_value=float(d["max_order_value"]),
             max_orders_per_cycle=int(d["max_orders_per_cycle"]),
             min_equity=float(d["min_equity"]),
+            max_risk_per_trade_pct=float(d.get("max_risk_per_trade_pct", 0.01)),
         )
 
 
@@ -55,6 +57,43 @@ class RiskGate:
             return 0.0
         quantity = self.limits.max_order_value / price
         while quantity > 0.0 and quantity * price > self.limits.max_order_value:
+            quantity = math.nextafter(quantity, 0.0)
+        return quantity
+
+    def max_quantity_at_risk(self, equity: float, entry_price: float, stop_price: float) -> float:
+        """Plus grande qty telle que qty * distance_stop <= pct_risque * equity."""
+        try:
+            equity = float(equity)
+            entry_price = float(entry_price)
+            stop_price = float(stop_price)
+            pct = float(self.limits.max_risk_per_trade_pct)
+        except (TypeError, ValueError):
+            return 0.0
+
+        if (
+            not math.isfinite(equity)
+            or not math.isfinite(entry_price)
+            or not math.isfinite(stop_price)
+            or not math.isfinite(pct)
+            or equity <= 0
+            or pct <= 0
+        ):
+            return 0.0
+
+        distance = abs(entry_price - stop_price)
+        risk_cap = pct * equity
+        if (
+            not math.isfinite(distance)
+            or distance <= 0
+            or not math.isfinite(risk_cap)
+            or risk_cap <= 0
+        ):
+            return 0.0
+
+        quantity = risk_cap / distance
+        if not math.isfinite(quantity) or quantity <= 0:
+            return 0.0
+        while quantity > 0.0 and quantity * distance > risk_cap:
             quantity = math.nextafter(quantity, 0.0)
         return quantity
 

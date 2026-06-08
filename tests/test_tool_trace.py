@@ -147,6 +147,31 @@ def test_order_executed() -> None:
     }
 
 
+def test_order_trace_inclut_les_champs_risque_runtime() -> None:
+    summary = _summary(
+        {
+            "action": "BUY",
+            "intent": "OPEN_LONG",
+            "executed": True,
+            "reason": "ok",
+            "runtime": {
+                "risk_pct": 0.0075,
+                "stop_distance": 5.0,
+                "risk_clamped": True,
+                "risk_unbounded_no_stop": False,
+            },
+        }
+    )
+
+    assert _entry(summary, "order")["detail"] == {
+        "reason": "ok",
+        "risk_pct": 0.0075,
+        "stop_distance": 5.0,
+        "risk_clamped": True,
+        "risk_unbounded_no_stop": False,
+    }
+
+
 def test_order_blocked() -> None:
     summary = _summary(
         {

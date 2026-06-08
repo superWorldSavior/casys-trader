@@ -392,6 +392,220 @@ def test_run_cycle_clamp_order_value_reste_sous_plafond_avec_prix_non_binaire(
     assert SimBroker(state_dir / "broker.json").positions()["SPY"].quantity == decision["qty"]
 
 
+def test_run_cycle_clamp_open_long_quand_risque_depasse_un_pourcent(
+    monkeypatch,
+    tmp_path,
+    patch_batch,
+    make_data_source,
+) -> None:
+    _write_runtime_config(tmp_path, max_order_value=100_000)
+    state_dir = tmp_path / "state"
+    now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
+
+    monkeypatch.setattr(daemon, "ROOT", tmp_path)
+    monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+    data_source = make_data_source(lambda symbol, lookback, interval: [
+        Bar(ts=now.isoformat(), open=100.0, high=101.0, low=99.0, close=100.0, volume=1000.0)
+    ])
+    patch_batch(lambda **kwargs: Decision(
+            symbol="SPY",
+            action="BUY",
+            quantity=300.0,
+            confidence=0.8,
+            rationale="risque trop eleve",
+            intent="OPEN_LONG",
+            exit_plan={"hard_stop": {"type": "price", "price": 95.0}}),
+    )
+
+    report = daemon.run_cycle(
+        dry_run=False,
+        now=now,
+        symbols_filter=["SPY"],
+        sched=Scheduler(state_dir / "scheduler.json"),
+        data_source=data_source,
+    )
+
+    decision = report["decisions"][0]
+    assert decision["executed"] is True
+    assert decision["reason"] == "ok"
+    assert decision["requested_qty"] == 300.0
+    assert decision["risk_clamped"] is True
+    assert decision["qty"] == pytest.approx(200.0)
+    assert decision["stop_distance"] == pytest.approx(5.0)
+    assert decision["risk_pct"] <= 0.01
+    assert SimBroker(state_dir / "broker.json").positions()["SPY"].quantity == pytest.approx(200.0)
+
+
+def test_run_cycle_rejette_open_long_si_hard_stop_est_du_mauvais_cote(
+    monkeypatch,
+    tmp_path,
+    patch_batch,
+    make_data_source,
+) -> None:
+    _write_runtime_config(tmp_path)
+    state_dir = tmp_path / "state"
+    now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
+
+    monkeypatch.setattr(daemon, "ROOT", tmp_path)
+    monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+    data_source = make_data_source(lambda symbol, lookback, interval: [
+        Bar(ts=now.isoformat(), open=100.0, high=101.0, low=99.0, close=100.0, volume=1000.0)
+    ])
+    patch_batch(lambda **kwargs: Decision(
+            symbol="SPY",
+            action="BUY",
+            quantity=10.0,
+            confidence=0.8,
+            rationale="stop du mauvais cote",
+            intent="OPEN_LONG",
+            exit_plan={"hard_stop": {"type": "price", "price": 105.0}}),
+    )
+
+    report = daemon.run_cycle(
+        dry_run=False,
+        now=now,
+        symbols_filter=["SPY"],
+        sched=Scheduler(state_dir / "scheduler.json"),
+        data_source=data_source,
+    )
+
+    decision = report["decisions"][0]
+    assert decision["executed"] is False
+    assert decision["reason"] == "invalid_exit_plan:hard_stop_wrong_side"
+    assert SimBroker(state_dir / "broker.json").positions() == {}
+
+
+def test_run_cycle_accepte_open_long_si_hard_stop_est_du_bon_cote(
+    monkeypatch,
+    tmp_path,
+    patch_batch,
+    make_data_source,
+) -> None:
+    _write_runtime_config(tmp_path)
+    state_dir = tmp_path / "state"
+    now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
+
+    monkeypatch.setattr(daemon, "ROOT", tmp_path)
+    monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+    data_source = make_data_source(lambda symbol, lookback, interval: [
+        Bar(ts=now.isoformat(), open=100.0, high=101.0, low=99.0, close=100.0, volume=1000.0)
+    ])
+    patch_batch(lambda **kwargs: Decision(
+            symbol="SPY",
+            action="BUY",
+            quantity=10.0,
+            confidence=0.8,
+            rationale="stop protecteur",
+            intent="OPEN_LONG",
+            exit_plan={"hard_stop": {"type": "price", "price": 98.0}}),
+    )
+
+    report = daemon.run_cycle(
+        dry_run=False,
+        now=now,
+        symbols_filter=["SPY"],
+        sched=Scheduler(state_dir / "scheduler.json"),
+        data_source=data_source,
+    )
+
+    decision = report["decisions"][0]
+    assert decision["executed"] is True
+    assert decision["reason"] == "ok"
+    assert decision["risk_clamped"] is False
+    assert decision["stop_distance"] == pytest.approx(2.0)
+    assert SimBroker(state_dir / "broker.json").positions()["SPY"].quantity == 10.0
+
+
+def test_run_cycle_open_sans_hard_stop_trace_risque_non_borne_sans_clamp(
+    monkeypatch,
+    tmp_path,
+    patch_batch,
+    make_data_source,
+) -> None:
+    _write_runtime_config(tmp_path, max_order_value=100_000)
+    state_dir = tmp_path / "state"
+    now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
+
+    monkeypatch.setattr(daemon, "ROOT", tmp_path)
+    monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+    data_source = make_data_source(lambda symbol, lookback, interval: [
+        Bar(ts=now.isoformat(), open=100.0, high=101.0, low=99.0, close=100.0, volume=1000.0)
+    ])
+    patch_batch(lambda **kwargs: Decision(
+            symbol="SPY",
+            action="BUY",
+            quantity=120.0,
+            confidence=0.8,
+            rationale="ouverture sans stop dur",
+            intent="OPEN_LONG",
+            exit_plan={"take_profits": [{"name": "tp1", "price": 105.0, "fraction": 1.0}]}),
+    )
+
+    report = daemon.run_cycle(
+        dry_run=False,
+        now=now,
+        symbols_filter=["SPY"],
+        sched=Scheduler(state_dir / "scheduler.json"),
+        data_source=data_source,
+    )
+
+    decision = report["decisions"][0]
+    assert decision["executed"] is True
+    assert decision["reason"] == "ok"
+    assert "requested_qty" not in decision
+    assert decision["qty"] == 120.0
+    assert decision["risk_clamped"] is False
+    assert decision["risk_unbounded_no_stop"] is True
+    assert decision["risk_pct"] is None
+    assert decision["stop_distance"] is None
+    assert SimBroker(state_dir / "broker.json").positions()["SPY"].quantity == 120.0
+
+
+def test_run_cycle_risk_clamp_puis_order_value_clamp_satisfont_les_deux_bornes(
+    monkeypatch,
+    tmp_path,
+    patch_batch,
+    make_data_source,
+) -> None:
+    _write_runtime_config(tmp_path, max_order_value=15_000)
+    state_dir = tmp_path / "state"
+    now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
+
+    monkeypatch.setattr(daemon, "ROOT", tmp_path)
+    monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+    data_source = make_data_source(lambda symbol, lookback, interval: [
+        Bar(ts=now.isoformat(), open=100.0, high=101.0, low=99.0, close=100.0, volume=1000.0)
+    ])
+    patch_batch(lambda **kwargs: Decision(
+            symbol="SPY",
+            action="BUY",
+            quantity=300.0,
+            confidence=0.8,
+            rationale="risque puis notionnel trop eleves",
+            intent="OPEN_LONG",
+            exit_plan={"hard_stop": 95.0}),
+    )
+
+    report = daemon.run_cycle(
+        dry_run=False,
+        now=now,
+        symbols_filter=["SPY"],
+        sched=Scheduler(state_dir / "scheduler.json"),
+        data_source=data_source,
+    )
+
+    decision = report["decisions"][0]
+    assert decision["executed"] is True
+    assert decision["reason"] == "ok"
+    assert decision["requested_qty"] == 300.0
+    assert decision["risk_clamped"] is True
+    assert decision["qty"] == pytest.approx(150.0)
+    assert decision["risk_pct"] == pytest.approx(0.0075)
+    assert decision["qty"] * decision["stop_distance"] <= 0.01 * report["portfolio"]["equity"]
+    assert decision["qty"] * decision["price"] <= 15_000
+    assert SimBroker(state_dir / "broker.json").positions()["SPY"].quantity == pytest.approx(150.0)
+
+
 def test_run_cycle_rejette_si_position_value_depasse_apres_clamp_order_value(
     monkeypatch,
     tmp_path,
@@ -768,7 +982,7 @@ def test_run_cycle_reverse_cree_un_plan_sur_la_position_nette_finale(monkeypatch
             exit_plan={"hard_stop": {"type": "price", "price": 105.0}}),
     )
 
-    daemon.run_cycle(
+    report = daemon.run_cycle(
         dry_run=False,
         now=now,
         symbols_filter=["SPY"],
@@ -782,6 +996,11 @@ def test_run_cycle_reverse_cree_un_plan_sur_la_position_nette_finale(monkeypatch
     assert len(plans) == 1
     assert plans[0].side == "SHORT"
     assert plans[0].quantity == 10.0
+    decision = report["decisions"][0]
+    assert decision["risk_clamped"] is False
+    assert decision["risk_unbounded_no_stop"] is False
+    assert decision["stop_distance"] == pytest.approx(3.0)
+    assert decision["risk_pct"] == pytest.approx(10.0 * 3.0 / report["portfolio"]["equity"])
 
 
 def test_run_cycle_reduce_resynchronise_le_plan_sur_position_restante(monkeypatch, tmp_path, patch_batch, make_data_source) -> None:

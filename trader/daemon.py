@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import math
 import os
 import time
 from dataclasses import replace
@@ -41,6 +42,7 @@ from .trade_plan import (
     TradePlanStore,
     create_trade_plan,
     create_trade_plan_from_order,
+    normalize_exit_plan,
     validate_exit_plan,
 )
 
@@ -217,6 +219,74 @@ def _gross_exposure(broker: SimBroker, prices: dict[str, float]) -> float:
         abs(pos.quantity * prices.get(symbol, 0.0))
         for symbol, pos in broker.positions().items()
     )
+
+
+def _hard_stop_price(raw_exit_plan: dict | None) -> float | None:
+    if raw_exit_plan is None:
+        return None
+    try:
+        normalized = normalize_exit_plan(raw_exit_plan)
+    except InvalidExitPlanError:
+        return None
+    if not normalized:
+        return None
+
+    hard_stop = normalized.get("hard_stop")
+    if isinstance(hard_stop, dict):
+        if hard_stop.get("type", "price") != "price":
+            return None
+        raw_price = hard_stop.get("price")
+    else:
+        raw_price = hard_stop
+    if raw_price is None:
+        return None
+
+    try:
+        price = float(raw_price)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(price) or price <= 0:
+        return None
+    return price
+
+
+def _hard_stop_wrong_side(intent: str | None, entry_price: float, stop_price: float) -> bool:
+    if not math.isfinite(entry_price) or not math.isfinite(stop_price):
+        return False
+    if intent == "OPEN_LONG":
+        return stop_price >= entry_price
+    if intent == "OPEN_SHORT":
+        return stop_price <= entry_price
+    return False
+
+
+def _reverse_open_quantity(*, action: str, quantity: float, position_quantity: float) -> float:
+    signed_order = quantity if action == "BUY" else -quantity
+    if position_quantity != 0 and position_quantity * signed_order < 0:
+        return max(0.0, abs(signed_order) - abs(position_quantity))
+    return quantity
+
+
+def _risk_pct_for_quantity(quantity: float, stop_distance: float | None, equity: float) -> float | None:
+    if stop_distance is None:
+        return None
+    if not math.isfinite(quantity) or not math.isfinite(stop_distance) or stop_distance < 0:
+        return None
+    if not math.isfinite(equity) or equity <= 0:
+        return None
+    risk_pct = quantity * stop_distance / equity
+    return risk_pct if math.isfinite(risk_pct) else None
+
+
+def _set_entry_risk_metrics(
+    entry: dict,
+    *,
+    quantity: float,
+    stop_distance: float | None,
+    equity: float,
+) -> None:
+    entry["stop_distance"] = stop_distance
+    entry["risk_pct"] = _risk_pct_for_quantity(quantity, stop_distance, equity)
 
 
 
@@ -1083,6 +1153,21 @@ def run_cycle(
                 apply_default_schedule_after_blocked()
                 record_decision({**entry, "executed": False, "reason": f"invalid_exit_plan:{exc}"})
                 continue
+            hard_stop_price = _hard_stop_price(decision.exit_plan)
+            if (
+                decision.intent in {"OPEN_LONG", "OPEN_SHORT"}
+                and hard_stop_price is not None
+                and _hard_stop_wrong_side(decision.intent, prices[sym], hard_stop_price)
+            ):
+                _log_cycle_progress(
+                    "[decision %d/%d] %s blocked invalid_exit_plan:hard_stop_wrong_side",
+                    index,
+                    len(symbols_to_decide),
+                    sym,
+                )
+                apply_default_schedule_after_blocked()
+                record_decision({**entry, "executed": False, "reason": "invalid_exit_plan:hard_stop_wrong_side"})
+                continue
 
         pos = broker.positions().get(sym)
         clamped_quantity, exit_block_reason = _clamp_exit_quantity(
@@ -1106,6 +1191,55 @@ def run_cycle(
             record_decision({**entry, "executed": False, "reason": "zero_exit_quantity"})
             continue
 
+        pure_open = decision.intent in {"OPEN_LONG", "OPEN_SHORT"}
+        trace_risk = pure_open or decision.intent == "REVERSE"
+        open_stop_distance: float | None = None
+        if trace_risk:
+            hard_stop_price = _hard_stop_price(decision.exit_plan)
+            risk_quantity = effective_quantity
+            if decision.intent == "REVERSE":
+                # REVERSE est tracé mais PAS clampé au risque (dette connue).
+                risk_quantity = _reverse_open_quantity(
+                    action=decision.action,
+                    quantity=effective_quantity,
+                    position_quantity=0.0 if pos is None else pos.quantity,
+                )
+            entry["risk_clamped"] = False
+            entry["risk_unbounded_no_stop"] = hard_stop_price is None
+            if hard_stop_price is None:
+                _set_entry_risk_metrics(
+                    entry,
+                    quantity=risk_quantity,
+                    stop_distance=None,
+                    equity=snap.equity,
+                )
+            else:
+                open_stop_distance = abs(prices[sym] - hard_stop_price)
+                if pure_open:
+                    max_risk_quantity = gate.max_quantity_at_risk(
+                        snap.equity,
+                        prices[sym],
+                        hard_stop_price,
+                    )
+                    if effective_quantity > max_risk_quantity:
+                        entry.setdefault("requested_qty", effective_quantity)
+                        effective_quantity = max_risk_quantity
+                        entry["qty"] = effective_quantity
+                        entry["risk_clamped"] = True
+                    risk_quantity = effective_quantity
+                _set_entry_risk_metrics(
+                    entry,
+                    quantity=risk_quantity,
+                    stop_distance=open_stop_distance,
+                    equity=snap.equity,
+                )
+
+            if pure_open and effective_quantity == 0:
+                _log_cycle_progress("[decision %d/%d] %s hold zero_risk_quantity", index, len(symbols_to_decide), sym)
+                apply_default_schedule_after_blocked()
+                record_decision({**entry, "executed": False, "reason": "zero_risk_quantity"})
+                continue
+
         order = Order(symbol=sym, side=decision.action, quantity=effective_quantity, rationale=decision.rationale)
         cur_pos_value = (pos.quantity * prices[sym]) if pos else 0.0
         allow_risk_reduction = decision.intent in {"REDUCE", "CLOSE"}
@@ -1124,6 +1258,13 @@ def run_cycle(
                 entry.setdefault("requested_qty", effective_quantity)
                 effective_quantity = clamped_quantity
                 entry["qty"] = effective_quantity
+                if pure_open:
+                    _set_entry_risk_metrics(
+                        entry,
+                        quantity=effective_quantity,
+                        stop_distance=open_stop_distance,
+                        equity=snap.equity,
+                    )
                 order = Order(symbol=sym, side=decision.action, quantity=effective_quantity, rationale=decision.rationale)
                 verdict = gate.check(
                     order,

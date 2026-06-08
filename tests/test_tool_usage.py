@@ -1,14 +1,28 @@
 import pytest
 
-from trader.tool_usage import clamp_count, tool_usage_rates, tool_vs_quality
+from trader.tool_usage import build_report, clamp_count, risk_observability, tool_usage_rates, tool_vs_quality
 
 
-def _trace(tools_used: list[str], *, next_wake_outcome: str | None = None) -> dict:
+def _trace(
+    tools_used: list[str],
+    *,
+    next_wake_outcome: str | None = None,
+    order_outcome: str | None = None,
+    order_intent: str | None = None,
+    order_detail: dict | None = None,
+) -> dict:
     trace = []
     for tool in ["context_request", "indicator_watch", "next_wake", "order", "learning"]:
         item = {"tool": tool, "invoked": tool in tools_used}
         if tool == "next_wake" and next_wake_outcome is not None:
             item["outcome"] = next_wake_outcome
+        if tool == "order":
+            if order_outcome is not None:
+                item["outcome"] = order_outcome
+            if order_intent is not None:
+                item["args"] = {"intent": order_intent}
+            if order_detail is not None:
+                item["detail"] = order_detail
         trace.append(item)
     return {
         "tools_used": tools_used,
@@ -97,3 +111,127 @@ def test_tool_vs_quality_croise_usage_et_score_forward() -> None:
     assert rows[("learning", "used")]["n"] == 0
     assert rows[("learning", "used")]["n_evaluable"] == 0
     assert rows[("learning", "used")]["mean_forward_return"] is None
+
+
+def test_risk_observability_rapporte_les_clamps_aux_ouvertures_pures() -> None:
+    traces = [
+        _trace(
+            ["order"],
+            order_outcome="executed",
+            order_intent="OPEN_LONG",
+            order_detail={
+                "risk_pct": 0.0075,
+                "risk_clamped": True,
+                "risk_unbounded_no_stop": False,
+            },
+        ),
+        _trace(
+            ["order"],
+            order_outcome="executed",
+            order_intent="CLOSE",
+            order_detail={},
+        ),
+    ]
+
+    risk = risk_observability(traces)
+
+    assert risk["executed_trades"] == 2
+    assert risk["executed_trades_with_risk_pct"] == 1
+    assert risk["mean_risk_pct"] == pytest.approx(0.0075)
+    assert risk["risk_clamped_count"] == 1
+    assert risk["risk_clamped_rate"] == pytest.approx(1.0)
+    assert risk["opening_orders"] == 1
+
+
+def test_risk_observability_rapporte_les_ouvertures_sans_stop_aux_ouvertures_tracees() -> None:
+    traces = [
+        _trace(
+            ["order"],
+            order_outcome="executed",
+            order_intent="OPEN_LONG",
+            order_detail={
+                "risk_pct": None,
+                "risk_clamped": False,
+                "risk_unbounded_no_stop": True,
+            },
+        ),
+        _trace(
+            ["order"],
+            order_outcome="executed",
+            order_intent="OPEN_SHORT",
+            order_detail={
+                "risk_pct": 0.0125,
+                "risk_clamped": False,
+                "risk_unbounded_no_stop": False,
+            },
+        ),
+        _trace(
+            ["order"],
+            order_outcome="blocked",
+            order_intent="OPEN_LONG",
+            order_detail={
+                "risk_pct": None,
+                "risk_clamped": None,
+                "risk_unbounded_no_stop": None,
+            },
+        ),
+        _trace(["order"], order_outcome="executed", order_intent="CLOSE", order_detail={}),
+    ]
+
+    risk = risk_observability(traces)
+
+    assert risk == {
+        "executed_trades": 3,
+        "executed_trades_with_risk_pct": 1,
+        "mean_risk_pct": pytest.approx(0.0125),
+        "risk_clamped_count": 0,
+        "risk_clamped_rate": 0.0,
+        "opening_orders": 2,
+        "risk_unbounded_no_stop_count": 1,
+        "risk_unbounded_no_stop_rate": pytest.approx(0.5),
+    }
+
+
+def test_build_report_integre_les_agregats_risque(monkeypatch, tmp_path) -> None:
+    def fake_score_from_ledger(ledger, *, band, days_buffer):
+        return {
+            "judgeable": [
+                {
+                    "decision_id": "d1",
+                    "action": "BUY",
+                    "intent": "OPEN_LONG",
+                    "executed": True,
+                    "reason": "ok",
+                    "runtime": {
+                        "risk_pct": 0.0075,
+                        "risk_clamped": True,
+                        "risk_unbounded_no_stop": False,
+                    },
+                },
+                {
+                    "decision_id": "d2",
+                    "action": "BUY",
+                    "intent": "OPEN_LONG",
+                    "executed": True,
+                    "reason": "ok",
+                    "runtime": {
+                        "risk_pct": None,
+                        "risk_clamped": False,
+                        "risk_unbounded_no_stop": True,
+                    },
+                },
+            ],
+            "scored_rows": [],
+            "ledger_rows": [{"decision_id": "d1"}, {"decision_id": "d2"}],
+            "window": ("2026-06-01", "2026-06-08"),
+            "exclusions": {"stale_market_data": 0, "gates": 0, "by_reason": {}},
+            "unavailable_symbols": [],
+        }
+
+    monkeypatch.setattr("trader.tool_usage.score_from_ledger", fake_score_from_ledger)
+
+    report = build_report(tmp_path / "decisions.jsonl")
+
+    assert report["risk"]["mean_risk_pct"] == pytest.approx(0.0075)
+    assert report["risk"]["risk_clamped_count"] == 1
+    assert report["risk"]["risk_unbounded_no_stop_count"] == 1

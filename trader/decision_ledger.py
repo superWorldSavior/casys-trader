@@ -120,6 +120,10 @@ def build_decision_row(
             "indicator_watch_rejections": decision.get("indicator_watch_rejections"),
             "context_request": decision.get("context_request"),
             "next_wake_requested": decision.get("next_wake_requested"),
+            "risk_pct": decision.get("risk_pct"),
+            "stop_distance": decision.get("stop_distance"),
+            "risk_clamped": decision.get("risk_clamped"),
+            "risk_unbounded_no_stop": decision.get("risk_unbounded_no_stop"),
         },
         "labels": {},
     }

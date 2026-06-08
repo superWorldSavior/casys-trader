@@ -103,6 +103,30 @@ def test_build_decision_row_propage_context_request_et_next_wake_requested() -> 
     assert row["runtime"]["next_wake_requested"] == 120.0
 
 
+def test_build_decision_row_propage_les_champs_risque_runtime() -> None:
+    decision = _decision(action="BUY")
+    decision.update(
+        {
+            "intent": "OPEN_LONG",
+            "qty": 150.0,
+            "executed": True,
+            "reason": "ok",
+            "risk_pct": 0.0075,
+            "stop_distance": 5.0,
+            "risk_clamped": True,
+            "risk_unbounded_no_stop": False,
+        }
+    )
+    report = _report([decision])
+
+    row = decision_ledger.build_decision_row(report, decision, sequence=0, source="daemon")
+
+    assert row["runtime"]["risk_pct"] == 0.0075
+    assert row["runtime"]["stop_distance"] == 5.0
+    assert row["runtime"]["risk_clamped"] is True
+    assert row["runtime"]["risk_unbounded_no_stop"] is False
+
+
 def test_decision_ledger_append_est_idempotent(tmp_path) -> None:
     store = decision_ledger.DecisionLedgerStore(tmp_path / "decisions.jsonl")
     row = decision_ledger.build_decision_row(_report([_decision()]), _decision(), sequence=0)

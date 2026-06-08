@@ -73,12 +73,18 @@ def _order_trace(row: dict) -> dict:
     if action not in {"BUY", "SELL"}:
         return {"tool": "order", "invoked": False}
 
+    runtime = _runtime(row)
+    detail = {"reason": row.get("reason")}
+    for field in ("risk_pct", "stop_distance", "risk_clamped", "risk_unbounded_no_stop"):
+        if field in runtime:
+            detail[field] = runtime.get(field)
+
     return {
         "tool": "order",
         "invoked": True,
         "args": {"action": action, "intent": row.get("intent")},
         "outcome": "executed" if row.get("executed") else "blocked",
-        "detail": {"reason": row.get("reason")},
+        "detail": detail,
     }
 
 
