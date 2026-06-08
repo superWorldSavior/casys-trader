@@ -1,0 +1,93 @@
+# Mapping univers casys-trader (tickers yfinance) -> contrats Interactive Brokers.
+#
+# Consommé par le futur IBDataSource branché derrière `market.get_bars`.
+# L'interface get_bars(symbol, lookback, interval) ne change pas : ce fichier
+# traduit le `symbol` interne (format yfinance, cf. config/universe.yaml) vers
+# un `Contract` IB (sec_type + symbol + exchange + currency [+ expiry]).
+#
+# Conventions :
+#   sec_type      : type IB pour la DATA (STK, IND, CASH, CONTFUT, CRYPTO).
+#   exec_sec_type : type IB pour l'EXÉCUTION quand il diffère (futures : CONTFUT
+#                   pour l'historique continu, FUT daté pour passer un ordre).
+#   verify: true  : contrat à CONFIRMER via le « Contract Search » du Gateway
+#                   avant prod (ambigu : exchange/symbole non garantis).
+#
+# Pièges connus :
+#   - Indices (^FCHI) : data only en IND ; pour TRADER il faut le future ou un CFD.
+#   - Futures : CONTFUT donne une série continue pour la data ; l'exécution exige
+#     un contrat daté (front month) avec `lastTradeDateOrContractMonth` + roll.
+#   - Crypto IBKR : via Paxos, nécessite l'activation du trading crypto sur le compte.
+
+contracts:
+
+  # --- Indices US via ETF (NYSE Arca, USD) : STK/SMART, trivial ---
+  SPY:   { sec_type: STK, symbol: SPY,  exchange: SMART, currency: USD }  # S&P 500
+  QQQ:   { sec_type: STK, symbol: QQQ,  exchange: SMART, currency: USD }  # Nasdaq 100
+  DIA:   { sec_type: STK, symbol: DIA,  exchange: SMART, currency: USD }  # Dow Jones
+  EWT:   { sec_type: STK, symbol: EWT,  exchange: SMART, currency: USD }  # iShares MSCI Taiwan
+  EWQ:   { sec_type: STK, symbol: EWQ,  exchange: SMART, currency: USD }  # iShares MSCI France
+  ITA:   { sec_type: STK, symbol: ITA,  exchange: SMART, currency: USD }  # iShares US Aerospace & Defense
+  XLE:   { sec_type: STK, symbol: XLE,  exchange: SMART, currency: USD }  # Energy Select Sector SPDR
+  NVDA:  { sec_type: STK, symbol: NVDA, exchange: SMART, currency: USD }
+  AAPL:  { sec_type: STK, symbol: AAPL, exchange: SMART, currency: USD }
+
+  # --- Indice direct (data only) ---
+  "^FCHI":
+    sec_type: IND
+    symbol: CAC40
+    exchange: MONEP
+    currency: EUR
+    verify: true
+    note: "CAC 40. IND = data only ; pour trader -> future CAC40 (MONEP) ou CFD."
+
+  # --- Commodities futures ---
+  # CONTFUT pour la data continue ; FUT daté (front month) pour l'exécution.
+  "CL=F":
+    sec_type: CONTFUT
+    exec_sec_type: FUT
+    symbol: CL
+    exchange: NYMEX
+    currency: USD
+    note: "WTI crude. Front month + roll à gérer côté exécution."
+  "BZ=F":
+    sec_type: CONTFUT
+    exec_sec_type: FUT
+    symbol: BZ
+    exchange: NYMEX
+    currency: USD
+    verify: true
+    note: "Brent. Ambigu : NYMEX BZ (financial) vs ICE Brent 'B'/'COIL' (ICEEU). À confirmer."
+  "NG=F":
+    sec_type: CONTFUT
+    exec_sec_type: FUT
+    symbol: NG
+    exchange: NYMEX
+    currency: USD
+    note: "Henry Hub natural gas."
+  "GC=F":
+    sec_type: CONTFUT
+    exec_sec_type: FUT
+    symbol: GC
+    exchange: COMEX
+    currency: USD
+    note: "Gold COMEX, ~24/5."
+
+  # --- Crypto (IBKR via Paxos) ---
+  "BTC-USD":
+    sec_type: CRYPTO
+    symbol: BTC
+    exchange: PAXOS
+    currency: USD
+    verify: true
+    note: "Nécessite activation du trading crypto IBKR (Paxos). Seul actif 24/7."
+
+  # --- Forex majors (CASH / IDEALPRO) ---
+  # Convention IB : symbol = devise de BASE, currency = devise de COTATION.
+  "EURUSD=X": { sec_type: CASH, symbol: EUR, currency: USD, exchange: IDEALPRO }
+  "GBPUSD=X": { sec_type: CASH, symbol: GBP, currency: USD, exchange: IDEALPRO }
+  "USDJPY=X": { sec_type: CASH, symbol: USD, currency: JPY, exchange: IDEALPRO }
+  "USDCHF=X": { sec_type: CASH, symbol: USD, currency: CHF, exchange: IDEALPRO }
+  "USDCAD=X": { sec_type: CASH, symbol: USD, currency: CAD, exchange: IDEALPRO }
+  "AUDUSD=X": { sec_type: CASH, symbol: AUD, currency: USD, exchange: IDEALPRO }
+  "NZDUSD=X": { sec_type: CASH, symbol: NZD, currency: USD, exchange: IDEALPRO }
+  "EURJPY=X": { sec_type: CASH, symbol: EUR, currency: JPY, exchange: IDEALPRO }
