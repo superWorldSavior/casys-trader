@@ -106,6 +106,7 @@ def build_acpx_command(
 
 
 def _looks_retryable_provider_error(text: str) -> bool:
+    """Vrai uniquement quand le fournisseur refuse de servir pour rate-limit/quota."""
     lowered = text.lower()
     needles = (
         "429",
@@ -115,11 +116,6 @@ def _looks_retryable_provider_error(text: str) -> bool:
         "credit",
         "credits",
         "insufficient_quota",
-        "timeout",
-        "timed out",
-        "temporarily unavailable",
-        "overloaded",
-        "provider",
     )
     return any(needle in lowered for needle in needles)
 
@@ -171,7 +167,7 @@ class AcpxBackend:
                 model=self.model,
                 code="timeout",
                 message=f"> {timeout_s}s",
-                retryable=True,
+                retryable=False,
             )
         except Exception as exc:  # noqa: BLE001 - frontière fournisseur
             message = str(exc)
@@ -243,7 +239,7 @@ def _classify_openai_error(exc: Exception) -> tuple[str, bool, str]:
     if http_error.status == 429:
         return "rate_limited", True, http_error.body
     if http_error.status in {408, 500, 502, 503, 504} or http_error.status == 0:
-        return "provider_error", True, http_error.body
+        return "provider_error", False, http_error.body
     if http_error.status in {401, 403}:
         return "auth_failed", False, http_error.body
     if http_error.status == 404:

@@ -67,7 +67,7 @@ def test_main_ouvre_une_connexion_ib_par_cycle_et_la_ferme_en_finally(monkeypatc
         return ib
 
     def run_cycle(**kwargs):
-        events.append(("run_cycle", kwargs["data_source"].ib))
+        events.append(("run_cycle", kwargs["data_source"].ib, kwargs["decision_timeout_s"]))
         assert kwargs["data_source"].reconnect_factory is not None
         assert kwargs["sched"].next_wake("SPY") is None
         return _empty_report(now)
@@ -83,7 +83,7 @@ def test_main_ouvre_une_connexion_ib_par_cycle_et_la_ferme_en_finally(monkeypatc
     assert events == [
         ("connect", "10.0.0.2", 4003, 44),
         ("data_source", ib, True),
-        ("run_cycle", ib),
+        ("run_cycle", ib, 900),
         ("disconnect", ib),
     ]
     assert json.loads((state_dir / "last_report.json").read_text())["symbols_due"] == ["SPY"]
@@ -145,6 +145,42 @@ def test_main_garde_connexion_ib_ouverte_entre_les_pauses(monkeypatch, tmp_path)
         ("sleep", 0.0),
         ("disconnect", ib),
     ]
+
+
+def test_main_transmet_le_plafond_decisionnel_cli(monkeypatch, tmp_path) -> None:
+    _write_runtime_config(tmp_path)
+    state_dir = tmp_path / "state"
+    now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
+    captured: dict[str, int] = {}
+
+    class FakeIB:
+        def disconnect(self) -> None:
+            pass
+
+    class FakeIBDataSource:
+        def __init__(self, ib, *, reconnect_factory=None):
+            self.ib = ib
+            self.reconnect_factory = reconnect_factory
+
+        def disconnect(self) -> None:
+            self.ib.disconnect()
+
+    def connect_ib(host: str, port: int, client_id: int):
+        return FakeIB()
+
+    def run_cycle(**kwargs):
+        captured["decision_timeout_s"] = kwargs["decision_timeout_s"]
+        return _empty_report(now)
+
+    monkeypatch.setattr(daemon, "ROOT", tmp_path)
+    monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+    monkeypatch.setattr(daemon, "connect_ib", connect_ib, raising=False)
+    monkeypatch.setattr(daemon, "IBDataSource", FakeIBDataSource, raising=False)
+    monkeypatch.setattr(daemon, "run_cycle", run_cycle)
+
+    daemon.main(["--once", "--decision-timeout-s", "321"])
+
+    assert captured["decision_timeout_s"] == 321
 
 
 def test_main_saute_le_cycle_si_connexion_ib_echoue_et_reessaie_au_reveil_suivant(monkeypatch, tmp_path) -> None:

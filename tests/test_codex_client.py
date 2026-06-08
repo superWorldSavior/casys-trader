@@ -30,6 +30,61 @@ def test_decide_batch_renvoie_une_decision_par_symbole_avec_metadonnees() -> Non
     assert result["QQQ"].action == "HOLD"
 
 
+def test_decide_utilise_un_plafond_decisionnel_900s_par_defaut() -> None:
+    class StubRouter:
+        def __init__(self) -> None:
+            self.timeout_s = None
+
+        def complete(self, prompt: str, *, timeout_s: int) -> LlmCompletion:
+            self.timeout_s = timeout_s
+            return LlmCompletion(
+                provider="spark",
+                model="gpt-5.3-codex-spark/medium",
+                text='{"symbol":"SPY","action":"HOLD","quantity":0,"confidence":0.5,"rationale":"attente"}',
+            )
+
+    router = StubRouter()
+
+    result = decide(
+        symbol="SPY",
+        mandate="",
+        memory="",
+        context={},
+        llm_router=router,
+    )
+
+    assert result.action == "HOLD"
+    assert router.timeout_s == 900
+
+
+def test_decide_batch_utilise_un_plafond_decisionnel_900s_par_defaut() -> None:
+    class StubRouter:
+        def __init__(self) -> None:
+            self.timeout_s = None
+
+        def complete(self, prompt: str, *, timeout_s: int) -> LlmCompletion:
+            self.timeout_s = timeout_s
+            return LlmCompletion(
+                provider="spark",
+                model="gpt-5.3-codex-spark/medium",
+                text='{"decisions":[{"symbol":"SPY","action":"HOLD","quantity":0,"confidence":0.5,"rationale":"attente"}]}',
+            )
+
+    router = StubRouter()
+
+    result = decide_batch(
+        symbols=["SPY"],
+        mandate="",
+        memory="",
+        shared_context={},
+        per_symbol={},
+        llm_router=router,
+    )
+
+    assert result["SPY"].action == "HOLD"
+    assert router.timeout_s == 900
+
+
 def test_decide_batch_echec_llm_met_tout_en_hold() -> None:
     class FailRouter:
         def complete(self, prompt: str, *, timeout_s: int) -> LlmFailure:

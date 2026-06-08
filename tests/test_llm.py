@@ -1,4 +1,5 @@
 import json
+import subprocess
 
 from trader.llm import (
     AcpxBackend,
@@ -8,6 +9,7 @@ from trader.llm import (
     OpenAICompatibleBackend,
     build_acpx_command,
     build_default_router_from_env,
+    _looks_retryable_provider_error,
 )
 
 
@@ -74,6 +76,57 @@ def test_router_ne_fallback_pas_sur_echec_non_retryable() -> None:
     assert isinstance(result, LlmFailure)
     assert result.code == "bad_output"
     assert fallback.calls == 0
+
+
+def test_router_ne_fallback_pas_sur_timeout_non_retryable() -> None:
+    primary = StubBackend(
+        LlmFailure(
+            provider="spark",
+            model="gpt-5.3-codex-spark/medium",
+            code="timeout",
+            message="> 900s",
+            retryable=False,
+        )
+    )
+    fallback = StubBackend(
+        LlmCompletion(
+            provider="ollama-cloud",
+            model="nemotron-3-nano:30b-cloud",
+            text='{"ok":true}',
+        )
+    )
+
+    result = LlmRouter([primary, fallback]).complete("prompt", timeout_s=900)
+
+    assert isinstance(result, LlmFailure)
+    assert result.code == "timeout"
+    assert fallback.calls == 0
+
+
+def test_retryable_provider_error_se_limite_aux_rate_limits_et_quotas() -> None:
+    assert _looks_retryable_provider_error("HTTP 429")
+    assert _looks_retryable_provider_error("rate limit exceeded")
+    assert _looks_retryable_provider_error("insufficient_quota")
+    assert _looks_retryable_provider_error("quota exhausted")
+    assert not _looks_retryable_provider_error("timeout")
+    assert not _looks_retryable_provider_error("timed out")
+    assert not _looks_retryable_provider_error("overloaded")
+    assert not _looks_retryable_provider_error("erreur fournisseur generique")
+
+
+def test_acpx_backend_timeout_est_un_echec_non_retryable(monkeypatch) -> None:
+    monkeypatch.setattr("trader.llm.shutil.which", lambda _bin: "/usr/local/bin/acpx")
+
+    def run_timeout(*args, **kwargs):
+        raise subprocess.TimeoutExpired(cmd=args[0], timeout=kwargs["timeout"])
+
+    monkeypatch.setattr("trader.llm.subprocess.run", run_timeout)
+
+    result = AcpxBackend().complete("prompt", timeout_s=900)
+
+    assert isinstance(result, LlmFailure)
+    assert result.code == "timeout"
+    assert result.retryable is False
 
 
 def test_openai_compatible_backend_appelle_chat_completions() -> None:

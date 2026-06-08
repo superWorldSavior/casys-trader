@@ -452,7 +452,7 @@ def decide(
     context: dict,
     acpx_bin: str = "acpx",
     model: str = DEFAULT_MODEL,
-    timeout_s: int = 120,
+    timeout_s: int = 900,
     allow_context_request: bool = False,
     llm_router: llm.LlmRouter | None = None,
 ) -> Decision | ContextResearchRequest:
@@ -493,7 +493,7 @@ def decide_batch(
     per_symbol: dict[str, dict],
     acpx_bin: str = "acpx",
     model: str = DEFAULT_MODEL,
-    timeout_s: int = 180,
+    timeout_s: int = 900,
     allow_context_request: bool = False,
     llm_router: llm.LlmRouter | None = None,
 ) -> dict[str, Decision | ContextResearchRequest]:

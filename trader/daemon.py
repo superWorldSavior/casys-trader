@@ -505,6 +505,7 @@ def _batch_decide(
     max_context_requests_per_symbol: int,
     max_indicators_per_request: int,
     max_model_calls: int,
+    decision_timeout_s: int = 900,
 ) -> tuple[dict[str, codex_client.Decision], int]:
     """Décide TOUS les symboles dus en UN appel batch (contexte partagé envoyé une
     seule fois). Gère le round-trip REQUEST_CONTEXT en batch : les symboles qui
@@ -523,6 +524,7 @@ def _batch_decide(
         shared_context=shared_context,
         per_symbol=per_symbol,
         allow_context_request=True,
+        timeout_s=decision_timeout_s,
     )
     calls = 1
     decisions: dict[str, codex_client.Decision] = {}
@@ -566,6 +568,7 @@ def _batch_decide(
             shared_context=shared_context,
             per_symbol=per_symbol2,
             allow_context_request=False,
+            timeout_s=decision_timeout_s,
         )
         calls += 1
         for sym in need:
@@ -598,6 +601,7 @@ def run_cycle(
     consolidator_acpx_agent: str | None = None,
     consolidator_model: str | None = None,
     consolidator_timeout_s: int = consolidator.DEFAULT_CONSOLIDATOR_TIMEOUT_S,
+    decision_timeout_s: int = 900,
 ) -> dict:
     """Exécute UN cycle. Retourne un rapport structuré (machine-readable)."""
     now = now or datetime.now(timezone.utc)
@@ -908,6 +912,7 @@ def run_cycle(
         max_context_requests_per_symbol=max_context_requests_per_symbol,
         max_indicators_per_request=max_indicators_per_request,
         max_model_calls=max_model_calls_per_cycle,
+        decision_timeout_s=decision_timeout_s,
     )
     _log_cycle_progress("[batch] decided=%d model_calls=%d", len(decisions_by_symbol), model_calls_used)
 
@@ -1214,6 +1219,12 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--max-indicators-per-request", type=int, default=4, help="nombre max d'indicateurs par requête")
     parser.add_argument("--max-model-calls-per-cycle", type=int, default=25, help="fusible coût: appels LLM max par cycle")
     parser.add_argument(
+        "--decision-timeout-s",
+        type=int,
+        default=_env_int("CASYS_DECISION_TIMEOUT_S", 900),
+        help="plafond de sécurité du temps de décision LLM (s) ; spark n'est PAS coupé avant, et un timeout ne déclenche PAS de fallback (HOLD fail-safe)",
+    )
+    parser.add_argument(
         "--learning-consolidation-threshold",
         type=int,
         default=_env_int("TRADER_LEARNING_CONSOLIDATION_THRESHOLD", DEFAULT_LEARNING_CONSOLIDATION_THRESHOLD),
@@ -1296,6 +1307,7 @@ def main(argv: list[str] | None = None) -> None:
                         consolidator_acpx_agent=args.consolidator_acpx_agent,
                         consolidator_model=args.consolidator_model,
                         consolidator_timeout_s=args.consolidator_timeout_s,
+                        decision_timeout_s=args.decision_timeout_s,
                     )
                     if report.get("planned_exits") or report.get("decisions") or report.get("exit_watch_triggers"):
                         log.info("cycle actif sans symbole dû: %s", json.dumps(report, ensure_ascii=False))
@@ -1323,6 +1335,7 @@ def main(argv: list[str] | None = None) -> None:
                         consolidator_acpx_agent=args.consolidator_acpx_agent,
                         consolidator_model=args.consolidator_model,
                         consolidator_timeout_s=args.consolidator_timeout_s,
+                        decision_timeout_s=args.decision_timeout_s,
                     )
                     log.info("cycle: %s", json.dumps(report, ensure_ascii=False))
                     STATE_DIR.mkdir(parents=True, exist_ok=True)
