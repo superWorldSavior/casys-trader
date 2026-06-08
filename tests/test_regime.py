@@ -127,6 +127,20 @@ def test_er_haut_slope_none_renvoie_unknown() -> None:
     assert r.regime == "unknown"
 
 
+def test_er_haut_slope_nul_renvoie_range() -> None:
+    """ER trending mais pente plate (0.0 / -0.0) → range : pas de direction inventée."""
+    for slope in (0.0, -0.0):
+        ind = _ind(
+            efficiency_ratio=ER_TREND_THRESHOLD + 0.1,
+            trend_slope=slope,
+            chart_breakout=0.0,
+            volatility=0.01,
+            z_score=0.5,
+            candlestick_signal=0.0,
+        )
+        assert classify_regime(ind).regime == "range"
+
+
 # ---------------------------------------------------------------------------
 # 3. Seuil exact de l'ER (frontière >= vs >)
 # ---------------------------------------------------------------------------

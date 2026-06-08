@@ -120,7 +120,13 @@ def _classify_regime(
         # Direction via trend_slope : si manquant, on ne fabrique pas de direction
         if slope is None:
             return "unknown"
-        return "trending_up" if slope >= 0.0 else "trending_down"
+        # Comparaisons strictes : une pente plate (0.0 ou -0.0 après arrondi) ne
+        # fabrique pas de direction -> range, plutôt qu'un "trending_up" par défaut.
+        if slope > 0.0:
+            return "trending_up"
+        if slope < 0.0:
+            return "trending_down"
+        return "range"
 
     # 4. Sinon : range
     return "range"

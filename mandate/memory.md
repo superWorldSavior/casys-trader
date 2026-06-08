@@ -61,6 +61,10 @@ un complément est vraiment utile :
   `context.cockpit` : `cols` + `rows`, avec colonnes compactes `r`, `vol`, `z`,
   `er`, `ac`, `rs`, `sz`. Si tu as besoin d'un calcul ciblé, demande
   `REQUEST_CONTEXT` sur quelques symboles/indicateurs, pas plus.
+- Le cockpit fournit aussi des **labels de régime pré-mâchés** par le code :
+  `reg` (`trending_up`/`trending_down`/`range`/`breakout`), `vs` (vol
+  `low`/`normal`/`high`), `st` (`stretched`), `cndle` (bougie). Sers-t'en pour
+  l'Edge n°2 (identifier le régime) au lieu de le recalculer de tête.
 - PAS de carnet d'ordres / order-flow → pas de VPIN tick-level fiable. Ton bord
   est le **cross-asset + le régime statistique**, pas la microstructure fine.
 - `context["symbol"]` = le symbole à décider ce tour ; les autres servent de

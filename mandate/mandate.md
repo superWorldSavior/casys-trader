@@ -66,6 +66,11 @@ calcule alors localement les indicateurs demandés et les réinjecte dans
 Les indicateurs gouvernés incluent aussi les chandeliers japonais et signaux
 chartistes compacts : `candlestick_signal`, `candle_body_ratio`,
 `candle_wick_skew`, `chart_breakout`, `trend_slope`, `range_position`.
+Le cockpit fournit en plus des **labels de régime pré-calculés** par le code :
+`reg` (`trending_up`/`trending_down`/`range`/`breakout`), `vs` (volatilité
+`low`/`normal`/`high`), `st` (`stretched` = surextension `z` élevée), `cndle`
+(pattern de bougie). Lis ces labels directement plutôt que de recombiner les
+indicateurs bruts.
 L'axe temporel est explicite : `timeframe` (`15m`, `30m`, `1h`, `4h`, `1d`),
 `lookback`, `window` et `as_of=latest`. Le `4h` est supporté comme timeframe
 sémantique agrégé depuis des barres source `1h`.
