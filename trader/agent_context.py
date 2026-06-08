@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Iterable
 
 from .features import DEFAULT_INDICATORS, build_indicator_snapshot
+from .regime import classify_regime
 from .semantic.catalog import family_for_symbol, normalize_temporal_query
 from .tools import market
 
@@ -16,6 +17,14 @@ COCKPIT_INDICATORS = [
     "autocorrelation",
     "relative_strength",
     "spread_zscore",
+]
+
+# Indicateurs supplémentaires nécessaires au classifieur de régime,
+# calculés dans le snapshot mais non affichés comme colonnes numériques.
+_REGIME_EXTRA_INDICATORS = [
+    "trend_slope",
+    "chart_breakout",
+    "candlestick_signal",
 ]
 
 _INDICATOR_COLUMNS = {
@@ -61,25 +70,38 @@ def build_market_cockpit(
     window: int = 48,
     top_n: int = 5,
 ) -> dict:
-    """Build a compact, deterministic market dashboard with no raw bars."""
+    """Build a compact, deterministic market dashboard with no raw bars.
+
+    Colonnes :
+        s, f, p : symbole, famille, prix
+        r, vol, z, er, ac, rs, sz : indicateurs numériques (COCKPIT_INDICATORS)
+        reg, vs, st, cndle : régime de marché (classify_regime)
+    """
+    # On calcule les indicateurs affichables + ceux nécessaires au classifieur.
+    all_snapshot_names = COCKPIT_INDICATORS + _REGIME_EXTRA_INDICATORS
     snapshot = build_indicator_snapshot(
         bars_by_symbol,
         symbols=symbols,
-        names=COCKPIT_INDICATORS,
+        names=all_snapshot_names,
         window=window,
     )
     indicator_cols = [_INDICATOR_COLUMNS[name] for name in COCKPIT_INDICATORS]
-    cols = ["s", "f", "p", *indicator_cols]
+    cols = ["s", "f", "p", *indicator_cols, "reg", "vs", "st", "cndle"]
     rows: list[list] = []
     for symbol in symbols:
         item = snapshot.get(symbol, {"family": None, "indicators": {}})
         indicators = item["indicators"]
+        regime = classify_regime(indicators)
         rows.append(
             [
                 symbol,
                 _family_code(item["family"]),
                 _compact_price(prices.get(symbol)),
                 *[indicators.get(name) for name in COCKPIT_INDICATORS],
+                regime.regime,
+                regime.vol_state,
+                regime.stretched,
+                regime.candle,
             ]
         )
 
@@ -93,9 +115,13 @@ def build_market_cockpit(
         return sorted(candidates, key=lambda item: abs(float(item[1])), reverse=True)[:top_n]
 
     return {
-        "v": "cp1",
+        "v": "cp2",
         "window": window,
-        "schema": "cols: s=sym,f=family,p=price,r=ret,vol=stdev_ret,z=price_z,er=Kaufman,ac=lag1_ret_corr,rs=ret-fam_ret,sz=spread_z",
+        "schema": (
+            "cols: s=sym,f=family,p=price,"
+            "r=ret,vol=stdev_ret,z=price_z,er=Kaufman,ac=lag1_ret_corr,rs=ret-fam_ret,sz=spread_z,"
+            "reg=regime,vs=vol_state,st=stretched,cndle=candle_pattern"
+        ),
         "cols": cols,
         "rows": rows,
         "highlights": {
