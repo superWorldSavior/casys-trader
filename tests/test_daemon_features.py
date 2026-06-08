@@ -27,7 +27,45 @@ def _write_runtime_config(root) -> None:
     (root / "mandate" / "memory.md").write_text("# Memoire\n")
 
 
-def test_run_cycle_injecte_un_cockpit_compact_sans_barres(monkeypatch, tmp_path, patch_batch) -> None:
+def test_run_cycle_utilise_la_source_injectee_sans_appeler_market_get_bars(
+    monkeypatch,
+    tmp_path,
+    patch_batch,
+    make_data_source,
+) -> None:
+    _write_runtime_config(tmp_path)
+    state_dir = tmp_path / "state"
+    sched = Scheduler(state_dir / "scheduler.json")
+    now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
+
+    def injected_bars(symbol: str, lookback: str, interval: str) -> list[Bar]:
+        return [
+            Bar(ts=now.isoformat(), open=100.0, high=101.0, low=99.0, close=100.0, volume=1000.0)
+        ]
+
+    monkeypatch.setattr(daemon, "ROOT", tmp_path)
+    monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+    monkeypatch.setattr(
+        daemon.market,
+        "get_bars",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("market.get_bars ne doit plus être appelé")),
+    )
+    patch_batch(lambda **kwargs: Decision.hold(kwargs["symbol"], "attente"))
+    data_source = make_data_source(injected_bars)
+
+    report = daemon.run_cycle(
+        dry_run=True,
+        now=now,
+        symbols_filter=["SPY"],
+        sched=sched,
+        data_source=data_source,
+    )
+
+    assert [decision["symbol"] for decision in report["decisions"]] == ["SPY"]
+    assert ("SPY", daemon.DEFAULT_RUNTIME_LOOKBACK, daemon.DEFAULT_RUNTIME_INTERVAL) in data_source.calls
+
+
+def test_run_cycle_injecte_un_cockpit_compact_sans_barres(monkeypatch, tmp_path, patch_batch, make_data_source) -> None:
     _write_runtime_config(tmp_path)
     state_dir = tmp_path / "state"
     sched = Scheduler(state_dir / "scheduler.json")
@@ -48,10 +86,10 @@ def test_run_cycle_injecte_un_cockpit_compact_sans_barres(monkeypatch, tmp_path,
 
     monkeypatch.setattr(daemon, "ROOT", tmp_path)
     monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
-    monkeypatch.setattr(daemon.market, "get_bars", bars)
     patch_batch(decide)
+    data_source = make_data_source(bars)
 
-    daemon.run_cycle(dry_run=True, now=now, symbols_filter=["SPY"], sched=sched)
+    daemon.run_cycle(dry_run=True, now=now, symbols_filter=["SPY"], sched=sched, data_source=data_source)
 
     assert contexts
     semantic = contexts[0]["semantic"]
@@ -65,7 +103,12 @@ def test_run_cycle_injecte_un_cockpit_compact_sans_barres(monkeypatch, tmp_path,
     assert contexts[0]["risk_limits"]["max_order_value"] == 10000
 
 
-def test_run_cycle_resout_une_requete_indicateurs_bornee_avant_decision_finale(monkeypatch, tmp_path, patch_batch) -> None:
+def test_run_cycle_resout_une_requete_indicateurs_bornee_avant_decision_finale(
+    monkeypatch,
+    tmp_path,
+    patch_batch,
+    make_data_source,
+) -> None:
     _write_runtime_config(tmp_path)
     state_dir = tmp_path / "state"
     sched = Scheduler(state_dir / "scheduler.json")
@@ -101,14 +144,15 @@ def test_run_cycle_resout_une_requete_indicateurs_bornee_avant_decision_finale(m
 
     monkeypatch.setattr(daemon, "ROOT", tmp_path)
     monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
-    monkeypatch.setattr(daemon.market, "get_bars", bars)
     patch_batch(decide)
+    data_source = make_data_source(bars)
 
     daemon.run_cycle(
         dry_run=True,
         now=now,
         symbols_filter=["SPY"],
         sched=sched,
+        data_source=data_source,
         max_context_requests_per_symbol=1,
         max_indicators_per_request=2,
     )
@@ -124,7 +168,7 @@ def test_run_cycle_resout_une_requete_indicateurs_bornee_avant_decision_finale(m
     assert contexts[1]["prior_rationale"] == "je veux confirmer le spread"
 
 
-def test_run_cycle_daily_bars_echouees_ne_bloquent_pas_le_cockpit(monkeypatch, tmp_path, patch_batch) -> None:
+def test_run_cycle_daily_bars_echouees_ne_bloquent_pas_le_cockpit(monkeypatch, tmp_path, patch_batch, make_data_source) -> None:
     _write_runtime_config(tmp_path)
     state_dir = tmp_path / "state"
     sched = Scheduler(state_dir / "scheduler.json")
@@ -158,10 +202,10 @@ def test_run_cycle_daily_bars_echouees_ne_bloquent_pas_le_cockpit(monkeypatch, t
 
     monkeypatch.setattr(daemon, "ROOT", tmp_path)
     monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
-    monkeypatch.setattr(daemon.market, "get_bars", bars)
     patch_batch(decide)
+    data_source = make_data_source(bars)
 
-    daemon.run_cycle(dry_run=True, now=now, symbols_filter=["SPY"], sched=sched)
+    daemon.run_cycle(dry_run=True, now=now, symbols_filter=["SPY"], sched=sched, data_source=data_source)
 
     assert ("SPY", "1y", "1d") in requests
     cockpit = contexts[0]["cockpit"]
@@ -171,7 +215,7 @@ def test_run_cycle_daily_bars_echouees_ne_bloquent_pas_le_cockpit(monkeypatch, t
     assert spy_row[cols.index("aligned")] is True
 
 
-def test_run_cycle_daily_bars_stale_sont_ignorees_pour_le_cockpit(monkeypatch, tmp_path, patch_batch) -> None:
+def test_run_cycle_daily_bars_stale_sont_ignorees_pour_le_cockpit(monkeypatch, tmp_path, patch_batch, make_data_source) -> None:
     _write_runtime_config(tmp_path)
     state_dir = tmp_path / "state"
     sched = Scheduler(state_dir / "scheduler.json")
@@ -213,10 +257,10 @@ def test_run_cycle_daily_bars_stale_sont_ignorees_pour_le_cockpit(monkeypatch, t
 
     monkeypatch.setattr(daemon, "ROOT", tmp_path)
     monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
-    monkeypatch.setattr(daemon.market, "get_bars", bars)
     patch_batch(decide)
+    data_source = make_data_source(bars)
 
-    daemon.run_cycle(dry_run=True, now=now, symbols_filter=["SPY"], sched=sched)
+    daemon.run_cycle(dry_run=True, now=now, symbols_filter=["SPY"], sched=sched, data_source=data_source)
 
     assert ("SPY", "1y", "1d") in requests
     cockpit = contexts[0]["cockpit"]

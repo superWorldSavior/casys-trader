@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import time
 from dataclasses import replace
 from datetime import datetime, timezone
@@ -34,6 +35,7 @@ from .indicator_watch import (
 from .risk import RiskGate, RiskLimits
 from .tools import market, memory as memory_mod, portfolio, scheduler
 from .tools.execution import Order, SimBroker
+from .tools.ib_source import IBDataSource, connect_ib
 from .trade_plan import (
     InvalidExitPlanError,
     TradePlanStore,
@@ -61,6 +63,9 @@ DEFAULT_MAX_MARKET_DATA_AGE_MINUTES = 40.0
 COCKPIT_DAILY_LOOKBACK = "1y"
 COCKPIT_DAILY_INTERVAL = "1d"
 COCKPIT_DAILY_MAX_AGE_MINUTES = 48.0 * 60.0
+DEFAULT_IB_HOST = "127.0.0.1"
+DEFAULT_IB_PORT = 4002
+DEFAULT_IB_CLIENT_ID = 17
 
 
 def _write_json_state(filename: str, payload: dict) -> None:
@@ -119,6 +124,47 @@ def _log_cycle_progress(message: str, *args: object) -> None:
 
 def _load_yaml(path: Path) -> dict:
     return yaml.safe_load(path.read_text())
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        log.warning("env %s invalide (%r), défaut=%s", name, raw, default)
+        return default
+
+
+def _disconnect_quietly(resource: object) -> None:
+    disconnect = getattr(resource, "disconnect", None)
+    if disconnect is None:
+        return
+    try:
+        disconnect()
+    except Exception as exc:  # noqa: BLE001 - fermeture best-effort frontière IB
+        log.warning("IB disconnect failed: %s", exc)
+
+
+def _is_connection_market_error(exc: market.MarketError) -> bool:
+    if exc.code == "ib_connect_failed":
+        return True
+    if exc.code not in {"ib_fetch_failed", "ib_qualify_failed"}:
+        return False
+    context = exc.context.lower()
+    markers = (
+        "connection",
+        "connexion",
+        "socket",
+        "disconnect",
+        "closed",
+        "ferm",
+        "reset",
+        "broken pipe",
+        "peer",
+    )
+    return any(marker in context for marker in markers)
 
 
 def _kill_switch_active() -> bool:
@@ -342,6 +388,7 @@ def _scan_exit_watches(
     now: datetime,
     dry_run: bool,
     bars_interval: str,
+    data_source: object,
 ) -> list[dict]:
     plans_by_watch_id: dict[str, object] = {}
     watches: list[dict] = []
@@ -370,8 +417,10 @@ def _scan_exit_watches(
         if key in bars_by_key:
             continue
         try:
-            bars_by_key[key] = market.get_bars(symbol, lookback=lookback, interval=interval)
+            bars_by_key[key] = data_source.get_bars(symbol, lookback=lookback, interval=interval)
         except market.MarketError as exc:
+            if _is_connection_market_error(exc):
+                raise
             log.warning("exit_watch data unavailable %s/%s: %s", symbol, interval, exc.code)
 
     triggered = evaluate_indicator_watches(watches, bars_by_key, now=now)
@@ -407,6 +456,7 @@ def _scan_indicator_watches(
     *,
     sched: scheduler.Scheduler,
     now: datetime,
+    data_source: object,
 ) -> list[dict]:
     watches = [
         watch
@@ -419,8 +469,10 @@ def _scan_indicator_watches(
     bars_by_key: dict[tuple[str, str], list] = {}
     for symbol, interval, lookback in watch_market_requests(watches, universe_symbols=symbols):
         try:
-            bars_by_key[(symbol, interval)] = market.get_bars(symbol, lookback=lookback, interval=interval)
+            bars_by_key[(symbol, interval)] = data_source.get_bars(symbol, lookback=lookback, interval=interval)
         except market.MarketError as exc:
+            if _is_connection_market_error(exc):
+                raise
             log.warning("indicator_watch data unavailable %s/%s: %s", symbol, interval, exc.code)
 
     triggered = evaluate_indicator_watches(watches, bars_by_key, now=now)
@@ -528,6 +580,7 @@ def run_cycle(
     now: datetime | None = None,
     symbols_filter: list[str] | None = None,
     sched: scheduler.Scheduler | None = None,
+    data_source: object,
     default_wake_minutes: float = 30.0,
     min_wake_minutes: float = 5.0,
     max_wake_minutes: float = 240.0,
@@ -602,8 +655,10 @@ def run_cycle(
     _log_cycle_progress("[market] loading bars symbols=%d interval=%s", len(symbols), runtime_interval)
     for sym in symbols:
         try:
-            bars = market.get_bars(sym, lookback=runtime_lookback, interval=runtime_interval)
+            bars = data_source.get_bars(sym, lookback=runtime_lookback, interval=runtime_interval)
         except market.MarketError as e:
+            if _is_connection_market_error(e):
+                raise
             log.warning("données indisponibles %s: %s", sym, e.code)
             continue
         if not bars:  # défensif : get_bars lève normalement sur vide
@@ -643,12 +698,14 @@ def run_cycle(
     daily_max_age_minutes = max(max_market_data_age_minutes, COCKPIT_DAILY_MAX_AGE_MINUTES)
     for sym in tradable_symbols:
         try:
-            daily_bars = market.get_bars(
+            daily_bars = data_source.get_bars(
                 sym,
                 lookback=COCKPIT_DAILY_LOOKBACK,
                 interval=COCKPIT_DAILY_INTERVAL,
             )
         except market.MarketError as exc:
+            if _is_connection_market_error(exc):
+                raise
             log.warning("daily data unavailable %s: %s", sym, exc.code)
             continue
         except Exception as exc:  # noqa: BLE001 - daily cockpit data is optional
@@ -689,6 +746,7 @@ def run_cycle(
         now=now,
         dry_run=dry_run,
         bars_interval=runtime_interval,
+        data_source=data_source,
     )
     if exit_watch_triggers:
         indicator_triggers = [*indicator_triggers, *exit_watch_triggers]
@@ -1100,6 +1158,14 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--max-indicators-per-request", type=int, default=4, help="nombre max d'indicateurs par requête")
     parser.add_argument("--max-model-calls-per-cycle", type=int, default=25, help="fusible coût: appels LLM max par cycle")
     parser.add_argument("--bootstrap-all", action="store_true", help="ignore les timers au démarrage et force tous les symboles")
+    parser.add_argument("--ib-host", default=os.getenv("CASYS_IB_HOST", DEFAULT_IB_HOST), help="host IB Gateway/TWS")
+    parser.add_argument("--ib-port", type=int, default=_env_int("CASYS_IB_PORT", DEFAULT_IB_PORT), help="port API IB")
+    parser.add_argument(
+        "--ib-client-id",
+        type=int,
+        default=_env_int("CASYS_IB_CLIENT_ID", DEFAULT_IB_CLIENT_ID),
+        help="clientId IB utilisé par le daemon",
+    )
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -1108,58 +1174,99 @@ def main(argv: list[str] | None = None) -> None:
     log.info("daemon démarré (dry_run=%s, once=%s)", dry_run, args.once)
     bootstrap = args.bootstrap_all
 
-    while True:
-        loop_now = datetime.now(timezone.utc)
-        symbols = _load_yaml(ROOT / "config" / "universe.yaml")["symbols"]
-        indicator_triggers = [] if args.once or bootstrap else _scan_indicator_watches(symbols, sched=sched, now=loop_now)
-        due_symbols = _select_due_symbols(symbols, sched=sched, once=args.once, bootstrap=bootstrap, now=loop_now)
-        bootstrap = False
-        if not due_symbols:
-            report = run_cycle(
-                dry_run=dry_run,
-                symbols_filter=[],
-                sched=sched,
-                default_wake_minutes=args.default_wake_minutes,
-                min_wake_minutes=args.min_wake_minutes,
-                max_wake_minutes=args.max_wake_minutes,
-                max_context_requests_per_symbol=args.max_context_requests_per_symbol,
-                max_indicators_per_request=args.max_indicators_per_request,
-                max_model_calls_per_cycle=args.max_model_calls_per_cycle,
-                indicator_triggers=indicator_triggers,
-            )
-            if report.get("planned_exits") or report.get("decisions") or report.get("exit_watch_triggers"):
-                log.info("cycle actif sans symbole dû: %s", json.dumps(report, ensure_ascii=False))
-                (STATE_DIR / "last_report.json").write_text(json.dumps(report, indent=2, ensure_ascii=False))
-                _append_cycle_history(report)
-            wait = sched.seconds_until_wake(symbols)
-            log.info("aucun symbole dû — pause %.0fs", min(wait, args.poll))
-            time.sleep(min(wait, args.poll))
-            continue
+    data_source = None
+    try:
+        while True:
+            sleep_seconds: float | None = None
+            stop_after_iteration = False
+            try:
+                if data_source is None:
+                    ib = connect_ib(args.ib_host, args.ib_port, args.ib_client_id)
+                    data_source = IBDataSource(
+                        ib,
+                        reconnect_factory=lambda: connect_ib(args.ib_host, args.ib_port, args.ib_client_id),
+                    )
+                loop_now = datetime.now(timezone.utc)
+                symbols = _load_yaml(ROOT / "config" / "universe.yaml")["symbols"]
+                indicator_triggers = (
+                    []
+                    if args.once or bootstrap
+                    else _scan_indicator_watches(symbols, sched=sched, now=loop_now, data_source=data_source)
+                )
+                due_symbols = _select_due_symbols(symbols, sched=sched, once=args.once, bootstrap=bootstrap, now=loop_now)
+                bootstrap = False
+                if not due_symbols:
+                    report = run_cycle(
+                        dry_run=dry_run,
+                        symbols_filter=[],
+                        sched=sched,
+                        data_source=data_source,
+                        default_wake_minutes=args.default_wake_minutes,
+                        min_wake_minutes=args.min_wake_minutes,
+                        max_wake_minutes=args.max_wake_minutes,
+                        max_context_requests_per_symbol=args.max_context_requests_per_symbol,
+                        max_indicators_per_request=args.max_indicators_per_request,
+                        max_model_calls_per_cycle=args.max_model_calls_per_cycle,
+                        indicator_triggers=indicator_triggers,
+                    )
+                    if report.get("planned_exits") or report.get("decisions") or report.get("exit_watch_triggers"):
+                        log.info("cycle actif sans symbole dû: %s", json.dumps(report, ensure_ascii=False))
+                        STATE_DIR.mkdir(parents=True, exist_ok=True)
+                        (STATE_DIR / "last_report.json").write_text(json.dumps(report, indent=2, ensure_ascii=False))
+                        _append_cycle_history(report)
+                    wait = sched.seconds_until_wake(symbols)
+                    sleep_seconds = min(wait, args.poll)
+                    log.info("aucun symbole dû — pause %.0fs", sleep_seconds)
+                else:
+                    report = run_cycle(
+                        dry_run=dry_run,
+                        symbols_filter=due_symbols,
+                        sched=sched,
+                        data_source=data_source,
+                        default_wake_minutes=args.default_wake_minutes,
+                        min_wake_minutes=args.min_wake_minutes,
+                        max_wake_minutes=args.max_wake_minutes,
+                        max_context_requests_per_symbol=args.max_context_requests_per_symbol,
+                        max_indicators_per_request=args.max_indicators_per_request,
+                        max_model_calls_per_cycle=args.max_model_calls_per_cycle,
+                        indicator_triggers=indicator_triggers,
+                    )
+                    log.info("cycle: %s", json.dumps(report, ensure_ascii=False))
+                    STATE_DIR.mkdir(parents=True, exist_ok=True)
+                    (STATE_DIR / "last_report.json").write_text(json.dumps(report, indent=2, ensure_ascii=False))
 
-        report = run_cycle(
-            dry_run=dry_run,
-            symbols_filter=due_symbols,
-            sched=sched,
-            default_wake_minutes=args.default_wake_minutes,
-            min_wake_minutes=args.min_wake_minutes,
-            max_wake_minutes=args.max_wake_minutes,
-            max_context_requests_per_symbol=args.max_context_requests_per_symbol,
-            max_indicators_per_request=args.max_indicators_per_request,
-            max_model_calls_per_cycle=args.max_model_calls_per_cycle,
-            indicator_triggers=indicator_triggers,
-        )
-        log.info("cycle: %s", json.dumps(report, ensure_ascii=False))
-        (STATE_DIR / "last_report.json").write_text(json.dumps(report, indent=2, ensure_ascii=False))
+                    # Historique d'équité : une ligne JSON compacte par cycle actif (append).
+                    _append_cycle_history(report)
 
-        # Historique d'équité : une ligne JSON compacte par cycle actif (append).
-        _append_cycle_history(report)
+                    if args.once:
+                        stop_after_iteration = True
+                    else:
+                        wait = sched.seconds_until_wake(symbols)
+                        sleep_seconds = min(wait, args.poll)
+                        log.info("[sleep] next_check_in=%.0fs next_due_in=%.0fs", sleep_seconds, wait)
+            except market.MarketError as exc:
+                if data_source is not None:
+                    _disconnect_quietly(data_source)
+                    data_source = None
+                log.warning("IB indisponible, cycle sauté (%s): %s", exc.code, exc.context)
+                _write_status(
+                    "ib_connection_failed",
+                    current_symbol=None,
+                    error_code=exc.code,
+                    error_context=exc.context,
+                )
+                if args.once:
+                    stop_after_iteration = True
+                else:
+                    sleep_seconds = args.poll
 
-        if args.once:
-            break
-
-        wait = sched.seconds_until_wake(symbols)
-        log.info("[sleep] next_check_in=%.0fs next_due_in=%.0fs", min(wait, args.poll), wait)
-        time.sleep(min(wait, args.poll))
+            if stop_after_iteration:
+                break
+            if sleep_seconds is not None:
+                time.sleep(sleep_seconds)
+    finally:
+        if data_source is not None:
+            _disconnect_quietly(data_source)
 
 
 if __name__ == "__main__":

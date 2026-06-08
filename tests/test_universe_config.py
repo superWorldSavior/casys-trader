@@ -4,9 +4,9 @@ from trader.agent_context import _family_code
 from trader.semantic.catalog import family_for_symbol
 
 
-def test_bitcoin_dans_univers_et_famille_crypto() -> None:
+def test_bitcoin_hors_univers_actif_mais_famille_crypto_connue() -> None:
     cfg = yaml.safe_load(open("config/universe.yaml"))
-    assert "BTC-USD" in set(cfg["symbols"])
+    assert "BTC-USD" not in set(cfg["symbols"])
     assert family_for_symbol("BTC-USD") == "crypto"
     assert _family_code("crypto") == "cry"
 

@@ -7,7 +7,7 @@ def test_decide_batch_renvoie_une_decision_par_symbole_avec_metadonnees() -> Non
         def complete(self, prompt: str, *, timeout_s: int) -> LlmCompletion:
             return LlmCompletion(
                 provider="spark",
-                model="gpt-5.3-codex-spark[medium]",
+                model="gpt-5.3-codex-spark/medium",
                 text=(
                     '{"decisions": ['
                     '{"symbol":"SPY","action":"BUY","quantity":10,"confidence":0.7,"rationale":"x","intent":"OPEN_LONG"},'
@@ -102,7 +102,7 @@ def test_parse_batch_json_global_invalide_tout_en_hold() -> None:
 
 
 def test_default_model_utilise_reasoning_medium() -> None:
-    assert DEFAULT_MODEL == "gpt-5.3-codex-spark[medium]"
+    assert DEFAULT_MODEL == "gpt-5.3-codex-spark/medium"
 
 
 def test_parse_decision_accepte_next_wake_in_minutes_optionnel() -> None:

@@ -53,3 +53,16 @@ def test_cli_preserve_bootstrap_all_daemon_flag(monkeypatch) -> None:
     main(["--bootstrap-all"])
 
     assert calls == [["--bootstrap-all"]]
+
+
+def test_cli_preserve_top_level_ib_daemon_flags(monkeypatch) -> None:
+    calls: list[list[str]] = []
+
+    def fake_daemon(argv):
+        calls.append(argv)
+
+    monkeypatch.setattr("trader.cli.daemon.main", fake_daemon)
+
+    main(["--ib-host", "10.0.0.2", "--ib-port", "4003", "--ib-client-id", "44", "--once"])
+
+    assert calls == [["--ib-host", "10.0.0.2", "--ib-port", "4003", "--ib-client-id", "44", "--once"]]

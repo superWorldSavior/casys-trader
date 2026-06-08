@@ -29,20 +29,16 @@ def _write_runtime_config(root) -> None:
     (root / "mandate" / "memory.md").write_text("# Memoire\n")
 
 
-def test_run_cycle_ecrit_un_statut_et_un_rapport_courant(monkeypatch, tmp_path, patch_batch) -> None:
+def test_run_cycle_ecrit_un_statut_et_un_rapport_courant(monkeypatch, tmp_path, patch_batch, make_data_source) -> None:
     _write_runtime_config(tmp_path)
     state_dir = tmp_path / "state"
     now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
 
     monkeypatch.setattr(daemon, "ROOT", tmp_path)
     monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
-    monkeypatch.setattr(
-        daemon.market,
-        "get_bars",
-        lambda symbol, lookback, interval: [
-            Bar(ts=now.isoformat(), open=100.0, high=101.0, low=99.0, close=100.0, volume=1000.0)
-        ],
-    )
+    data_source = make_data_source(lambda symbol, lookback, interval: [
+        Bar(ts=now.isoformat(), open=100.0, high=101.0, low=99.0, close=100.0, volume=1000.0)
+    ])
     patch_batch(lambda **kwargs: Decision.hold(kwargs["symbol"], "attente"))
 
     daemon.run_cycle(
@@ -50,6 +46,7 @@ def test_run_cycle_ecrit_un_statut_et_un_rapport_courant(monkeypatch, tmp_path, 
         now=now,
         symbols_filter=["SPY"],
         sched=Scheduler(state_dir / "scheduler.json"),
+        data_source=data_source,
     )
 
     status = json.loads((state_dir / "daemon_status.json").read_text())
@@ -65,7 +62,7 @@ def test_run_cycle_ecrit_un_statut_et_un_rapport_courant(monkeypatch, tmp_path, 
     assert any(json.loads(line)["event"] == "decision_recorded" for line in events)
 
 
-def test_run_cycle_loggue_la_progression_console(monkeypatch, tmp_path, caplog, patch_batch) -> None:
+def test_run_cycle_loggue_la_progression_console(monkeypatch, tmp_path, caplog, patch_batch, make_data_source) -> None:
     _write_runtime_config(tmp_path)
     state_dir = tmp_path / "state"
     now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
@@ -73,13 +70,9 @@ def test_run_cycle_loggue_la_progression_console(monkeypatch, tmp_path, caplog, 
 
     monkeypatch.setattr(daemon, "ROOT", tmp_path)
     monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
-    monkeypatch.setattr(
-        daemon.market,
-        "get_bars",
-        lambda symbol, lookback, interval: [
-            Bar(ts=now.isoformat(), open=100.0, high=101.0, low=99.0, close=100.0, volume=1000.0)
-        ],
-    )
+    data_source = make_data_source(lambda symbol, lookback, interval: [
+        Bar(ts=now.isoformat(), open=100.0, high=101.0, low=99.0, close=100.0, volume=1000.0)
+    ])
     patch_batch(lambda **kwargs: Decision.hold(kwargs["symbol"], "attente"))
 
     daemon.run_cycle(
@@ -87,6 +80,7 @@ def test_run_cycle_loggue_la_progression_console(monkeypatch, tmp_path, caplog, 
         now=now,
         symbols_filter=["SPY"],
         sched=Scheduler(state_dir / "scheduler.json"),
+        data_source=data_source,
     )
 
     messages = "\n".join(record.getMessage() for record in caplog.records)
@@ -97,20 +91,16 @@ def test_run_cycle_loggue_la_progression_console(monkeypatch, tmp_path, caplog, 
     assert "[cycle] completed" in messages
 
 
-def test_run_cycle_historise_la_perf_par_modele_sur_fill(monkeypatch, tmp_path, patch_batch) -> None:
+def test_run_cycle_historise_la_perf_par_modele_sur_fill(monkeypatch, tmp_path, patch_batch, make_data_source) -> None:
     _write_runtime_config(tmp_path)
     state_dir = tmp_path / "state"
     now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
 
     monkeypatch.setattr(daemon, "ROOT", tmp_path)
     monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
-    monkeypatch.setattr(
-        daemon.market,
-        "get_bars",
-        lambda symbol, lookback, interval: [
-            Bar(ts=now.isoformat(), open=100.0, high=101.0, low=99.0, close=100.0, volume=1000.0)
-        ],
-    )
+    data_source = make_data_source(lambda symbol, lookback, interval: [
+        Bar(ts=now.isoformat(), open=100.0, high=101.0, low=99.0, close=100.0, volume=1000.0)
+    ])
     patch_batch(lambda **kwargs: Decision(
             symbol=kwargs["symbol"],
             action="BUY",
@@ -128,6 +118,7 @@ def test_run_cycle_historise_la_perf_par_modele_sur_fill(monkeypatch, tmp_path, 
         now=now,
         symbols_filter=["SPY"],
         sched=Scheduler(state_dir / "scheduler.json"),
+        data_source=data_source,
     )
 
     rows = [
@@ -144,7 +135,7 @@ def test_run_cycle_historise_la_perf_par_modele_sur_fill(monkeypatch, tmp_path, 
     assert rows[0]["equity"] == 100000.0
 
 
-def test_run_cycle_bloque_decision_sur_donnees_marche_perimees(monkeypatch, tmp_path, patch_batch) -> None:
+def test_run_cycle_bloque_decision_sur_donnees_marche_perimees(monkeypatch, tmp_path, patch_batch, make_data_source) -> None:
     _write_runtime_config(tmp_path)
     state_dir = tmp_path / "state"
     now = datetime(2026, 6, 5, 16, 0, tzinfo=timezone.utc)
@@ -153,13 +144,9 @@ def test_run_cycle_bloque_decision_sur_donnees_marche_perimees(monkeypatch, tmp_
 
     monkeypatch.setattr(daemon, "ROOT", tmp_path)
     monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
-    monkeypatch.setattr(
-        daemon.market,
-        "get_bars",
-        lambda symbol, lookback, interval: [
-            Bar(ts=stale_ts, open=100.0, high=101.0, low=99.0, close=100.0, volume=1000.0)
-        ],
-    )
+    data_source = make_data_source(lambda symbol, lookback, interval: [
+        Bar(ts=stale_ts, open=100.0, high=101.0, low=99.0, close=100.0, volume=1000.0)
+    ])
 
     def decide(**kwargs) -> Decision:
         nonlocal codex_calls
@@ -180,6 +167,7 @@ def test_run_cycle_bloque_decision_sur_donnees_marche_perimees(monkeypatch, tmp_
         now=now,
         symbols_filter=["SPY"],
         sched=Scheduler(state_dir / "scheduler.json"),
+        data_source=data_source,
     )
 
     assert codex_calls == 0

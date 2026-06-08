@@ -24,6 +24,9 @@ _DAEMON_FLAGS = {
     "--max-indicators-per-request",
     "--max-model-calls-per-cycle",
     "--bootstrap-all",
+    "--ib-host",
+    "--ib-port",
+    "--ib-client-id",
 }
 
 

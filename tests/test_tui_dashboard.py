@@ -87,7 +87,7 @@ def test_build_view_affiche_les_learnings_longs_en_entier() -> None:
     state = {
         "learnings": [
             {
-                "ts": "2026-06-07T10:15:00+00:00",
+                "ts": "2026-06-07T10:15:00+02:00",
                 "symbol": "AAPL",
                 "note": note,
             }
@@ -100,6 +100,8 @@ def test_build_view_affiche_les_learnings_longs_en_entier() -> None:
 
     assert compact_note in compact_out
     assert "tantquelevolumeneconfirmepaslasortie" in compact_out
+    assert "2026-06-07 08:15 UTC" in out
+    assert "2026-06-07T10:15:00+02:00" not in out
     assert "..." not in out
 
 

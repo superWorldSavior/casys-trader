@@ -24,8 +24,6 @@ symbols:
   # Nasdaq individuelles
   - NVDA
   - AAPL
-  # Crypto (Yahoo Finance, 24/7 — seul actif tradable hors-séance actions/FX)
-  - BTC-USD
   # Forex majors (Yahoo Finance FX spot proxy)
   - EURUSD=X
   - GBPUSD=X

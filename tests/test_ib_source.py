@@ -297,9 +297,9 @@ class TestWhatToShow:
         call = self._call("^FCHI")
         assert call["whatToShow"] == "TRADES"
 
-    def test_crypto_utilise_trades(self) -> None:
+    def test_crypto_utilise_aggtrades(self) -> None:
         call = self._call("BTC-USD")
-        assert call["whatToShow"] == "TRADES"
+        assert call["whatToShow"] == "AGGTRADES"
 
 
 # ---------------------------------------------------------------------------
@@ -409,6 +409,18 @@ class TestFailSafe:
         assert exc.value.code == "ib_fetch_failed"
         # Jamais une RuntimeError brute
         assert isinstance(exc.value, MarketError)
+
+    def test_socket_morte_retente_une_reconnexion_injectee_avant_abandon(self) -> None:
+        IBDataSource = _get_source()
+        first = FakeIB(raise_on_hist=True)
+        second = FakeIB(bars_result=[_FakeBarData(datetime(2026, 6, 5, 14, 1, tzinfo=timezone.utc), close=103.0)])
+
+        ds = IBDataSource(first, reconnect_factory=lambda: second)
+        bars = ds.get_bars("SPY", lookback="5d", interval="15m")
+
+        assert bars[0].close == 103.0
+        assert len(first.calls["reqHistoricalData"]) == 1
+        assert len(second.calls["reqHistoricalData"]) == 1
 
     def test_unmapped_symbol_leve_market_error(self) -> None:
         IBDataSource = _get_source()
@@ -541,6 +553,77 @@ class TestQualifyException:
 
 class TestConnectIBFailSafe:
     """Finding 3 : exception dans reqMarketDataType après connect → MarketError."""
+
+    def test_connect_retry_avec_backoff_avant_succes(self, monkeypatch) -> None:
+        from trader.tools import ib_source
+
+        created = []
+        sleeps: list[float] = []
+
+        class _FakeIBConn:
+            def __init__(self, *, should_fail: bool) -> None:
+                self.should_fail = should_fail
+                self.disconnects = 0
+
+            def connect(self, *_a, **_kw) -> None:
+                if self.should_fail:
+                    raise RuntimeError("gateway absent")
+
+            def reqMarketDataType(self, _t: int) -> None:
+                pass
+
+            def disconnect(self) -> None:
+                self.disconnects += 1
+
+        def make_ib():
+            ib = _FakeIBConn(should_fail=len(created) < 2)
+            created.append(ib)
+            return ib
+
+        monkeypatch.setattr(ib_source, "_make_ib_instance", make_ib)
+        monkeypatch.setattr(ib_source.time, "sleep", lambda seconds: sleeps.append(seconds))
+
+        ib = ib_source.connect_ib(host="127.0.0.1", port=4002, client_id=99, attempts=3, backoff_seconds=0.25)
+
+        assert ib is created[2]
+        assert len(created) == 3
+        assert [item.disconnects for item in created[:2]] == [1, 1]
+        assert sleeps == [0.25, 0.5]
+
+    def test_connect_echoue_proprement_apres_epuisement_des_retries(self, monkeypatch) -> None:
+        from trader.tools import ib_source
+
+        created = []
+        sleeps: list[float] = []
+
+        class _FakeIBConn:
+            def __init__(self) -> None:
+                self.disconnects = 0
+
+            def connect(self, *_a, **_kw) -> None:
+                raise RuntimeError("gateway absent")
+
+            def reqMarketDataType(self, _t: int) -> None:
+                raise AssertionError("reqMarketDataType ne doit pas être appelé si connect échoue")
+
+            def disconnect(self) -> None:
+                self.disconnects += 1
+
+        def make_ib():
+            ib = _FakeIBConn()
+            created.append(ib)
+            return ib
+
+        monkeypatch.setattr(ib_source, "_make_ib_instance", make_ib)
+        monkeypatch.setattr(ib_source.time, "sleep", lambda seconds: sleeps.append(seconds))
+
+        with pytest.raises(MarketError) as exc:
+            ib_source.connect_ib(host="127.0.0.1", port=4002, client_id=99, attempts=3, backoff_seconds=0.1)
+
+        assert exc.value.code == "ib_connect_failed"
+        assert len(created) == 3
+        assert [item.disconnects for item in created] == [1, 1, 1]
+        assert sleeps == [0.1, 0.2]
 
     def test_req_market_data_type_exception_leve_ib_connect_failed(self, monkeypatch) -> None:
         """Si reqMarketDataType lève après un connect réussi → MarketError("ib_connect_failed")."""

@@ -5,6 +5,23 @@ import pytest
 from trader import daemon
 
 
+class FakeDataSource:
+    """Fake drop-in pour le daemon : même signature que market.get_bars."""
+
+    def __init__(self, get_bars):
+        self._get_bars = get_bars
+        self.calls = []
+
+    def get_bars(self, symbol: str, lookback: str, interval: str):
+        self.calls.append((symbol, lookback, interval))
+        return self._get_bars(symbol, lookback, interval)
+
+
+@pytest.fixture
+def make_data_source():
+    return FakeDataSource
+
+
 @pytest.fixture
 def patch_batch(monkeypatch):
     """Installe un fake `codex_client.decide_batch` à partir d'un fake per-symbole

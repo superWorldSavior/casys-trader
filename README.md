@@ -26,6 +26,16 @@ uv sync
 ./run.sh --live --once   # exécute réellement en paper (SimBroker)
 ```
 
+Le daemon runtime lit ses barres uniquement via Interactive Brokers. IB Gateway
+ou TWS doit être lancé et l'API doit accepter les connexions, sinon le cycle est
+sauté puis retenté au réveil suivant. Connexion par défaut : `127.0.0.1:4002`,
+`clientId=17`.
+
+```bash
+CASYS_IB_HOST=127.0.0.1 CASYS_IB_PORT=4002 CASYS_IB_CLIENT_ID=17 ./run.sh --once
+./run.sh --once --ib-host 127.0.0.1 --ib-port 4002 --ib-client-id 17
+```
+
 ## Sécurité (safe defaults)
 
 - **Dry-run par défaut** : `--live` requis pour exécuter.
@@ -42,7 +52,8 @@ trader/
   indicator_watch.py veilles indicateurs multi-timeframe
   risk.py            le fusible
   tools/
-    market.py        données marché (yfinance v1)
+    ib_source.py     données marché runtime (Interactive Brokers)
+    market.py        données marché yfinance (backtest/cache, hors daemon)
     execution.py     ordres (SimBroker paper -> IB plus tard, même interface)
     portfolio.py     positions / PnL / KPI
     scheduler.py     cadence globale par défaut + overrides par symbole
@@ -74,17 +85,16 @@ référence. Le rapport complet est écrit dans `state/last_backtest.json`.
 
 ## Univers courant
 
-L'univers runtime est dans `config/universe.yaml`. La v1 utilise yfinance :
-indices/ETF/actions US, CAC 40 via `^FCHI`, commodities futures continus
-(`CL=F`, `BZ=F`, `NG=F`) et majors forex via les tickers Yahoo `=X`. Les futures
-et devises restent des proxies paper côté Yahoo ; le mapping broker natif viendra
-avec IB.
+L'univers runtime est dans `config/universe.yaml`. Le daemon résout ses barres
+via IB (`trader/tools/ib_source.py`) et le mapping broker natif
+`config/ib_contracts.yaml`. Les tickers Yahoo restent utiles pour le backtest et
+le cache via `trader/tools/market.py`, mais ne sont plus appelés par le daemon.
 
 ## Appel LLM
 
 Le brain décideur passe par une API de transport agnostique. Primaire :
 **`acpx --format quiet exec`** (codex = agent par défaut d'acpx), modèle
-**`gpt-5.3-codex-spark[medium]`**. Fallback optionnel : endpoint
+**`gpt-5.3-codex-spark/medium`**. Fallback optionnel : endpoint
 OpenAI-compatible Ollama Cloud, configuré dans `.env`.
 
 ```bash
@@ -125,8 +135,8 @@ chartiste sous forme numérique compacte : `candlestick_signal`,
 
 L'axe temporel est explicite : les requêtes suivent le cube
 `symbol × indicator × timeframe × lookback × window × as_of`. Timeframes
-gouvernés : `15m`, `30m`, `1h`, `4h`, `1d`. Le `4h` est un timeframe sémantique
-agrégé depuis des barres source `1h`.
+gouvernés : `15m`, `30m`, `1h`, `4h`, `1d`. En runtime IB, le `4h` est demandé
+nativement (`4 hours`) ; les agrégations internes du cockpit restent inchangées.
 
 ```bash
 casys-trader semantic describe --json
@@ -208,4 +218,4 @@ maison (`backtest/`) en cours de construction (SimBroker + yfinance, rejeu
 échantillonné pour limiter les appels Codex). LEAN abandonné : son CLI/API local
 est payant (84 $/mois) et son backtest dense ne convient pas à un agent
 LLM-in-the-loop. **Prochaine étape (boucle 1)** : enrichir le catalogue
-d'indicateurs et brancher IB (`ib_async`) quand le compte paper est prêt.
+d'indicateurs et durcir l'exploitation paper IB.

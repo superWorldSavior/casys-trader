@@ -28,6 +28,7 @@ Conventions :
 
 from __future__ import annotations
 
+import time
 from datetime import date as _date
 from datetime import datetime, timezone
 from pathlib import Path
@@ -60,12 +61,12 @@ LOOKBACK_MAP: dict[str, str] = {
     "1y":  "1 Y",
 }
 
-#: whatToShow par sec_type (MIDPOINT pour CASH/Forex ; TRADES pour les autres)
+#: whatToShow par sec_type (MIDPOINT pour CASH/Forex ; AGGTRADES pour crypto IBKR/Paxos)
 _WHAT_TO_SHOW: dict[str, str] = {
     "STK":     "TRADES",
     "IND":     "TRADES",
     "CONTFUT": "TRADES",
-    "CRYPTO":  "TRADES",
+    "CRYPTO":  "AGGTRADES",
     "CASH":    "MIDPOINT",
 }
 
@@ -84,9 +85,16 @@ class IBDataSource:
     Utilisez connect_ib() pour créer un vrai client, ou un FakeIB pour les tests.
     """
 
-    def __init__(self, ib: Any, *, contracts_path: str = _DEFAULT_CONTRACTS_PATH) -> None:
+    def __init__(
+        self,
+        ib: Any,
+        *,
+        contracts_path: str = _DEFAULT_CONTRACTS_PATH,
+        reconnect_factory: Any | None = None,
+    ) -> None:
         self._ib = ib
         self._contracts = self._load_contracts(contracts_path)
+        self._reconnect_factory = reconnect_factory
 
     # ------------------------------------------------------------------
     # API publique
@@ -113,6 +121,27 @@ class IBDataSource:
                                   'unsupported_lookback','ib_qualify_failed',
                                   'ib_fetch_failed','ib_no_data'}.
         """
+        try:
+            return self._get_bars_once(symbol, lookback=lookback, interval=interval)
+        except MarketError as exc:
+            if self._reconnect_factory is None or not self._is_retriable_connection_error(exc):
+                raise
+            self._reconnect()
+            return self._get_bars_once(symbol, lookback=lookback, interval=interval)
+
+    def disconnect(self) -> None:
+        self._disconnect_ib(self._ib)
+
+    def _reconnect(self) -> None:
+        self.disconnect()
+        self._ib = self._reconnect_factory()
+
+    def _get_bars_once(
+        self,
+        symbol: str,
+        lookback: str = "5d",
+        interval: str = "15m",
+    ) -> list[Bar]:
         # 1. Mapping unités (fail-fast)
         bar_size = self._resolve_interval(interval)
         duration  = self._resolve_lookback(lookback)
@@ -165,6 +194,34 @@ class IBDataSource:
 
         # 7. Conversion → Bar[]
         return [self._to_bar(b) for b in raw_bars]
+
+    @staticmethod
+    def _disconnect_ib(ib: Any) -> None:
+        disconnect = getattr(ib, "disconnect", None)
+        if disconnect is None:
+            return
+        try:
+            disconnect()
+        except Exception:  # noqa: BLE001 - déconnexion best-effort
+            return
+
+    @staticmethod
+    def _is_retriable_connection_error(exc: MarketError) -> bool:
+        if exc.code not in {"ib_fetch_failed", "ib_qualify_failed"}:
+            return False
+        context = exc.context.lower()
+        markers = (
+            "connection",
+            "connexion",
+            "socket",
+            "disconnect",
+            "closed",
+            "ferm",
+            "reset",
+            "broken pipe",
+            "peer",
+        )
+        return any(marker in context for marker in markers)
 
     # ------------------------------------------------------------------
     # Méthodes internes (utilisées aussi directement dans les tests)
@@ -316,6 +373,8 @@ def connect_ib(
     *,
     market_data_type: int = 3,
     timeout: float = 15.0,
+    attempts: int = 3,
+    backoff_seconds: float = 0.5,
 ) -> Any:
     """Crée et connecte un client ib_async.IB au Gateway/TWS.
 
@@ -325,6 +384,8 @@ def connect_ib(
         client_id:        ID client unique (éviter les conflits multi-process).
         market_data_type: 1=live, 3=delayed, 4=delayed-frozen (défaut: 3).
         timeout:          Timeout de connexion en secondes.
+        attempts:         Nombre de tentatives avant abandon.
+        backoff_seconds:  Délai initial entre tentatives, doublé à chaque retry.
 
     Returns:
         ib_async.IB connecté.
@@ -333,17 +394,25 @@ def connect_ib(
         MarketError("ib_connect_failed"): si la connexion échoue (connect ou
             reqMarketDataType).
     """
-    ib = _make_ib_instance()
-    # Finding 3 : tout le bloc post-instanciation est enveloppé — une exception
-    # dans reqMarketDataType (socket cassée entre connect et la requête) ne doit
-    # pas remonter en brut.
-    try:
-        ib.connect(host, port, clientId=client_id, timeout=timeout)
-        ib.reqMarketDataType(market_data_type)
-    except Exception as exc:  # noqa: BLE001
-        raise MarketError(
-            "ib_connect_failed",
-            f"{host}:{port} clientId={client_id}: {type(exc).__name__}: {exc}",
-        ) from exc
+    attempts = max(1, int(attempts))
+    last_exc: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        ib = _make_ib_instance()
+        # Finding 3 : tout le bloc post-instanciation est enveloppé — une exception
+        # dans reqMarketDataType (socket cassée entre connect et la requête) ne doit
+        # pas remonter en brut.
+        try:
+            ib.connect(host, port, clientId=client_id, timeout=timeout)
+            ib.reqMarketDataType(market_data_type)
+            return ib
+        except Exception as exc:  # noqa: BLE001
+            last_exc = exc
+            IBDataSource._disconnect_ib(ib)
+            if attempt < attempts:
+                time.sleep(backoff_seconds * (2 ** (attempt - 1)))
 
-    return ib
+    assert last_exc is not None
+    raise MarketError(
+        "ib_connect_failed",
+        f"{host}:{port} clientId={client_id}: {type(last_exc).__name__}: {last_exc}",
+    ) from last_exc

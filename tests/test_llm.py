@@ -25,7 +25,7 @@ def test_router_fallback_sur_echec_retryable() -> None:
     primary = StubBackend(
         LlmFailure(
             provider="spark",
-            model="gpt-5.3-codex-spark[medium]",
+            model="gpt-5.3-codex-spark/medium",
             code="rate_limited",
             message="credit exhausted",
             retryable=True,
@@ -53,7 +53,7 @@ def test_router_ne_fallback_pas_sur_echec_non_retryable() -> None:
     primary = StubBackend(
         LlmFailure(
             provider="spark",
-            model="gpt-5.3-codex-spark[medium]",
+            model="gpt-5.3-codex-spark/medium",
             code="bad_output",
             message="invalid JSON",
             retryable=False,

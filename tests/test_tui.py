@@ -97,6 +97,22 @@ def test_build_view_avec_etat_complet_retourne_un_renderable() -> None:
     assert "dry" in output.lower() or "DRY" in output or "2.5" in output or "BUY" in output
 
 
+def test_build_view_normalise_le_timestamp_du_cycle_en_utc() -> None:
+    state = {
+        **_FULL_STATE,
+        "ts": "2026-06-05T12:00:00+02:00",
+    }
+
+    from rich.console import Console
+    console = Console(width=120)
+    with console.capture() as capture:
+        console.print(build_view(state))
+    output = capture.get()
+
+    assert "2026-06-05 10:00 UTC" in output
+    assert "2026-06-05T12:00:00+02:00" not in output
+
+
 def test_build_view_avec_none_retourne_un_renderable() -> None:
     """build_view avec None ne plante pas et retourne quelque chose d'affichable."""
     result = build_view(None)

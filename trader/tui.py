@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import math
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -65,6 +66,20 @@ def _safe_list_of_dicts(value: Any) -> list[dict]:
     if not isinstance(value, list):
         return []
     return [item for item in value if isinstance(item, dict)]
+
+
+def _format_datetime(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return "—"
+    candidate = f"{text[:-1]}+00:00" if text.endswith("Z") else text
+    try:
+        dt = datetime.fromisoformat(candidate)
+    except ValueError:
+        return text
+    if dt.tzinfo is None:
+        return dt.strftime("%Y-%m-%d %H:%M")
+    return dt.astimezone(UTC).strftime("%Y-%m-%d %H:%M UTC")
 
 
 def _load_equity_curve(history_path: Path) -> list[float]:
@@ -421,8 +436,8 @@ def _build_learnings_panel(learnings: list[dict]) -> RenderableType | None:
             lines.append(Text(""))
         note = str(item.get("note") or "")
         symbol = str(item.get("symbol") or "—")
-        ts = str(item.get("ts") or "")
-        lines.append(Text.assemble(("▸ ", "dim"), (symbol, "bold cyan"), ("  ·  ", "dim"), (ts[:16], "dim")))
+        ts = _format_datetime(item.get("ts"))
+        lines.append(Text.assemble(("▸ ", "dim"), (symbol, "bold cyan"), ("  ·  ", "dim"), (ts, "dim")))
         lines.append(Text.assemble(("  ", "dim"), note))
     return Panel(Group(*lines), title="[bold]Derniers apprentissages[/bold]", border_style="blue", expand=True)
 
@@ -451,7 +466,7 @@ def build_view(state: dict | None) -> RenderableType:
     equity_curve = [value for value in equity_curve if value is not None]
     learnings = _safe_list_of_dicts(state.get("learnings"))
     dry_run: bool = state.get("dry_run", True)
-    ts: str = state.get("ts", "—")
+    ts = _format_datetime(state.get("ts"))
     source: str = str(state.get("source", "—"))
     kill_active: bool = state.get("kill_switch", False)
     halted: str | None = state.get("halted")

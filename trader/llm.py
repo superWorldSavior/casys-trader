@@ -17,7 +17,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable, Protocol
 
-DEFAULT_SPARK_MODEL = "gpt-5.3-codex-spark[medium]"
+DEFAULT_SPARK_MODEL = "gpt-5.3-codex-spark/medium"
 DEFAULT_OLLAMA_BASE_URL = "https://ollama.com/v1"
 DEFAULT_OLLAMA_MODEL = "nemotron-3-nano:30b-cloud"
 DEFAULT_ENV_PATH = Path(__file__).resolve().parent.parent / ".env"
