@@ -1108,14 +1108,31 @@ def run_cycle(
 
         order = Order(symbol=sym, side=decision.action, quantity=effective_quantity, rationale=decision.rationale)
         cur_pos_value = (pos.quantity * prices[sym]) if pos else 0.0
+        allow_risk_reduction = decision.intent in {"REDUCE", "CLOSE"}
+        allow_order_value_clamp = decision.intent in {"OPEN_LONG", "OPEN_SHORT"}
         verdict = gate.check(
             order,
             prices[sym],
             current_position_value=cur_pos_value,
             gross_exposure=gross,
             equity=snap.equity,
-            allow_risk_reduction=decision.intent in {"REDUCE", "CLOSE"},
+            allow_risk_reduction=allow_risk_reduction,
         )
+        if not verdict.approved and verdict.code == "order_value_exceeded" and allow_order_value_clamp:
+            clamped_quantity = min(effective_quantity, gate.max_order_quantity_at_price(prices[sym]))
+            if 0 < clamped_quantity < effective_quantity:
+                entry.setdefault("requested_qty", effective_quantity)
+                effective_quantity = clamped_quantity
+                entry["qty"] = effective_quantity
+                order = Order(symbol=sym, side=decision.action, quantity=effective_quantity, rationale=decision.rationale)
+                verdict = gate.check(
+                    order,
+                    prices[sym],
+                    current_position_value=cur_pos_value,
+                    gross_exposure=gross,
+                    equity=snap.equity,
+                    allow_risk_reduction=allow_risk_reduction,
+                )
 
         if not verdict.approved:
             _log_cycle_progress(

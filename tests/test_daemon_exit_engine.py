@@ -11,16 +11,26 @@ from trader.tools.scheduler import Scheduler
 from trader.trade_plan import TradePlanStore, create_trade_plan
 
 
-def _write_runtime_config(root) -> None:
+def _write_runtime_config(
+    root,
+    *,
+    symbols: list[str] | None = None,
+    max_position_value: float = 20_000,
+    max_gross_exposure: float = 100_000,
+    max_order_value: float = 10_000,
+) -> None:
     (root / "config").mkdir()
     (root / "mandate").mkdir()
-    (root / "config" / "universe.yaml").write_text("starting_cash: 100000\nsymbols:\n  - SPY\n")
+    symbols = symbols or ["SPY"]
+    (root / "config" / "universe.yaml").write_text(
+        "starting_cash: 100000\nsymbols:\n" + "".join(f"  - {symbol}\n" for symbol in symbols)
+    )
     (root / "config" / "risk.yaml").write_text(
         "\n".join(
             [
-                "max_position_value: 20000",
-                "max_gross_exposure: 100000",
-                "max_order_value: 10000",
+                f"max_position_value: {max_position_value}",
+                f"max_gross_exposure: {max_gross_exposure}",
+                f"max_order_value: {max_order_value}",
                 "max_orders_per_cycle: 5",
                 "min_equity: 50000",
             ]
@@ -291,6 +301,222 @@ def test_run_cycle_autorise_close_qui_reduit_le_risque_meme_si_ordre_depasse_max
     assert report["decisions"][0]["executed"] is True
     assert report["decisions"][0]["reason"] == "ok"
     assert SimBroker(state_dir / "broker.json").positions() == {}
+
+
+def test_run_cycle_clamp_order_value_et_execute_sans_repasser_par_le_modele(
+    monkeypatch,
+    tmp_path,
+    patch_batch,
+    make_data_source,
+) -> None:
+    _write_runtime_config(tmp_path)
+    state_dir = tmp_path / "state"
+    now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
+    codex_calls = 0
+
+    monkeypatch.setattr(daemon, "ROOT", tmp_path)
+    monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+    data_source = make_data_source(lambda symbol, lookback, interval: [
+        Bar(ts=now.isoformat(), open=100.0, high=101.0, low=99.0, close=100.0, volume=1000.0)
+    ])
+
+    def decide(**kwargs) -> Decision:
+        nonlocal codex_calls
+        codex_calls += 1
+        return Decision(
+            symbol=kwargs["symbol"],
+            action="BUY",
+            quantity=101.0,
+            confidence=0.8,
+            rationale="ordre legerement trop gros",
+            intent="OPEN_LONG",
+        )
+
+    patch_batch(decide)
+
+    report = daemon.run_cycle(
+        dry_run=False,
+        now=now,
+        symbols_filter=["SPY"],
+        sched=Scheduler(state_dir / "scheduler.json"),
+        data_source=data_source,
+    )
+
+    decision = report["decisions"][0]
+    assert codex_calls == 1
+    assert decision["executed"] is True
+    assert decision["reason"] == "ok"
+    assert decision["requested_qty"] == 101.0
+    assert decision["qty"] == 100.0
+    assert decision["qty"] * decision["price"] <= 10_000
+    assert SimBroker(state_dir / "broker.json").positions()["SPY"].quantity == 100.0
+
+
+def test_run_cycle_clamp_order_value_reste_sous_plafond_avec_prix_non_binaire(
+    monkeypatch,
+    tmp_path,
+    patch_batch,
+    make_data_source,
+) -> None:
+    _write_runtime_config(tmp_path)
+    state_dir = tmp_path / "state"
+    now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
+
+    monkeypatch.setattr(daemon, "ROOT", tmp_path)
+    monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+    data_source = make_data_source(lambda symbol, lookback, interval: [
+        Bar(ts=now.isoformat(), open=2.39, high=2.40, low=2.38, close=2.39, volume=1000.0)
+    ])
+    patch_batch(lambda **kwargs: Decision(
+            symbol="SPY",
+            action="BUY",
+            quantity=5_000.0,
+            confidence=0.8,
+            rationale="prix non binaire",
+            intent="OPEN_LONG"),
+    )
+
+    report = daemon.run_cycle(
+        dry_run=False,
+        now=now,
+        symbols_filter=["SPY"],
+        sched=Scheduler(state_dir / "scheduler.json"),
+        data_source=data_source,
+    )
+
+    decision = report["decisions"][0]
+    assert decision["executed"] is True
+    assert decision["reason"] == "ok"
+    assert decision["requested_qty"] == 5_000.0
+    assert decision["qty"] * decision["price"] <= 10_000
+    assert SimBroker(state_dir / "broker.json").positions()["SPY"].quantity == decision["qty"]
+
+
+def test_run_cycle_rejette_si_position_value_depasse_apres_clamp_order_value(
+    monkeypatch,
+    tmp_path,
+    patch_batch,
+    make_data_source,
+) -> None:
+    _write_runtime_config(tmp_path, max_position_value=14_000)
+    state_dir = tmp_path / "state"
+    now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
+    broker = SimBroker(state_dir / "broker.json", starting_cash=100_000)
+    broker.submit(Order("SPY", "BUY", 50.0), 100.0, "2026-06-05T11:00:00+00:00", dry_run=False)
+
+    monkeypatch.setattr(daemon, "ROOT", tmp_path)
+    monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+    data_source = make_data_source(lambda symbol, lookback, interval: [
+        Bar(ts=now.isoformat(), open=100.0, high=101.0, low=99.0, close=100.0, volume=1000.0)
+    ])
+    patch_batch(lambda **kwargs: Decision(
+            symbol="SPY",
+            action="BUY",
+            quantity=120.0,
+            confidence=0.8,
+            rationale="ajout trop gros pour position",
+            intent="OPEN_LONG"),
+    )
+
+    report = daemon.run_cycle(
+        dry_run=False,
+        now=now,
+        symbols_filter=["SPY"],
+        sched=Scheduler(state_dir / "scheduler.json"),
+        data_source=data_source,
+    )
+
+    decision = report["decisions"][0]
+    assert decision["executed"] is False
+    assert decision["reason"] == "risk:position_value_exceeded"
+    assert decision["requested_qty"] == 120.0
+    assert decision["qty"] == 100.0
+    assert SimBroker(state_dir / "broker.json").positions()["SPY"].quantity == 50.0
+
+
+def test_run_cycle_rejette_si_gross_exposure_depasse_apres_clamp_order_value(
+    monkeypatch,
+    tmp_path,
+    patch_batch,
+    make_data_source,
+) -> None:
+    _write_runtime_config(tmp_path, symbols=["SPY", "QQQ"], max_gross_exposure=14_000)
+    state_dir = tmp_path / "state"
+    now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
+    broker = SimBroker(state_dir / "broker.json", starting_cash=100_000)
+    broker.submit(Order("QQQ", "BUY", 50.0), 100.0, "2026-06-05T11:00:00+00:00", dry_run=False)
+
+    monkeypatch.setattr(daemon, "ROOT", tmp_path)
+    monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+    data_source = make_data_source(lambda symbol, lookback, interval: [
+        Bar(ts=now.isoformat(), open=100.0, high=101.0, low=99.0, close=100.0, volume=1000.0)
+    ])
+    patch_batch(lambda **kwargs: Decision(
+            symbol="SPY",
+            action="BUY",
+            quantity=120.0,
+            confidence=0.8,
+            rationale="ajout trop gros pour gross",
+            intent="OPEN_LONG"),
+    )
+
+    report = daemon.run_cycle(
+        dry_run=False,
+        now=now,
+        symbols_filter=["SPY"],
+        sched=Scheduler(state_dir / "scheduler.json"),
+        data_source=data_source,
+    )
+
+    decision = report["decisions"][0]
+    assert decision["executed"] is False
+    assert decision["reason"] == "risk:gross_exposure_exceeded"
+    assert decision["requested_qty"] == 120.0
+    assert decision["qty"] == 100.0
+    assert "SPY" not in SimBroker(state_dir / "broker.json").positions()
+    assert SimBroker(state_dir / "broker.json").positions()["QQQ"].quantity == 50.0
+
+
+def test_run_cycle_ne_clamp_pas_reverse_trop_gros(
+    monkeypatch,
+    tmp_path,
+    patch_batch,
+    make_data_source,
+) -> None:
+    _write_runtime_config(tmp_path)
+    state_dir = tmp_path / "state"
+    now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
+    broker = SimBroker(state_dir / "broker.json", starting_cash=100_000)
+    broker.submit(Order("SPY", "BUY", 150.0), 100.0, "2026-06-05T11:00:00+00:00", dry_run=False)
+
+    monkeypatch.setattr(daemon, "ROOT", tmp_path)
+    monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+    data_source = make_data_source(lambda symbol, lookback, interval: [
+        Bar(ts=now.isoformat(), open=100.0, high=101.0, low=99.0, close=100.0, volume=1000.0)
+    ])
+    patch_batch(lambda **kwargs: Decision(
+            symbol="SPY",
+            action="SELL",
+            quantity=200.0,
+            confidence=0.8,
+            rationale="reverse trop gros",
+            intent="REVERSE"),
+    )
+
+    report = daemon.run_cycle(
+        dry_run=False,
+        now=now,
+        symbols_filter=["SPY"],
+        sched=Scheduler(state_dir / "scheduler.json"),
+        data_source=data_source,
+    )
+
+    decision = report["decisions"][0]
+    assert decision["executed"] is False
+    assert decision["reason"] == "risk:order_value_exceeded"
+    assert "requested_qty" not in decision
+    assert decision["qty"] == 200.0
+    assert SimBroker(state_dir / "broker.json").positions()["SPY"].quantity == 150.0
 
 
 def test_run_cycle_clamp_close_trop_grand_pour_ne_pas_reverser(monkeypatch, tmp_path, patch_batch, make_data_source) -> None:

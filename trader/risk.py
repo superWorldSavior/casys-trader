@@ -10,6 +10,7 @@ machine-readable : approuvé, ou rejeté avec un `code` + `context`.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 from .tools.execution import Order
@@ -48,6 +49,14 @@ class RiskGate:
 
     def start_cycle(self) -> None:
         self._orders_this_cycle = 0
+
+    def max_order_quantity_at_price(self, price: float) -> float:
+        if not math.isfinite(price) or price <= 0:
+            return 0.0
+        quantity = self.limits.max_order_value / price
+        while quantity > 0.0 and quantity * price > self.limits.max_order_value:
+            quantity = math.nextafter(quantity, 0.0)
+        return quantity
 
     def check(
         self,
