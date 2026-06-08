@@ -147,7 +147,7 @@ _COMPACT_OUTPUT_CONTRACT = (
     "Option B, seulement si un indicateur précis manque pour décider, demande un "
     "complément borné:\n"
     '{"symbol": "<SYM>", "action": "REQUEST_CONTEXT", "rationale": "<pourquoi>", '
-    '"requests": [{"symbol": "<SYM>", "indicators": ["z_score"], '
+    f'"requests": [{{"symbol": "<SYM>", "indicators": ["{_WATCH_INDICATOR_ENUM}"], '
     '"timeframe": "15m|30m|1h|4h|1d", "lookback": "5d|1mo|3mo|6mo|1y", '
     '"window": 48, "as_of": "latest"}]}\n'
     "Ne demande jamais de barres brutes. Demande peu d'indicateurs, sur peu de symboles. "
@@ -191,7 +191,7 @@ _DECISION_GUIDANCE = (
     "Le contexte ne contient PAS les barres brutes. Utilise le cockpit rapide pour "
     "décider, ou demande un petit complément d'indicateurs si c'est vraiment utile. "
     "Les requêtes d'indicateurs suivent le cube "
-    "`symbol × indicator × timeframe × lookback × window × as_of`; `4h` est "
+    "`symbol × indicators × timeframe × lookback × window × as_of`; `4h` est "
     "supporté comme timeframe sémantique.\n\n"
 )
 
@@ -226,7 +226,7 @@ _BATCH_COMPACT_CONTRACT = (
     _BATCH_FINAL_CONTRACT
     + "\nPour un symbole précis où un indicateur manque, mets à la place "
     '{"symbol":"<SYM>","action":"REQUEST_CONTEXT","rationale":"<pourquoi>",'
-    '"requests":[{"symbol":"<SYM>","indicators":["z_score"],"timeframe":"15m|30m|1h|4h|1d",'
+    f'"requests":[{{"symbol":"<SYM>","indicators":["{_WATCH_INDICATOR_ENUM}"],"timeframe":"15m|30m|1h|4h|1d",'
     '"lookback":"5d|1mo|3mo|6mo|1y","window":48,"as_of":"latest"}]}. '
     "Le daemon résoudra puis redemandera la décision finale de CE symbole. "
     "Ne demande du contexte que si c'est vraiment utile."
@@ -344,7 +344,7 @@ def _response_from_dict(data: dict, symbol: str) -> Decision | ContextResearchRe
         for item in raw_requests:
             if not isinstance(item, dict):
                 continue
-            indicators = item.get("indicators") or item.get("names") or []
+            indicators = item.get("indicators") or item.get("names") or item.get("indicator") or []
             if isinstance(indicators, str):
                 indicators = [indicators]
             requests.append(

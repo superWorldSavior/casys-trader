@@ -30,6 +30,12 @@ def _single_compact_prompt() -> str:
     )
 
 
+def _request_context_contract(prompt: str) -> str:
+    markers = ('"action": "REQUEST_CONTEXT"', '"action":"REQUEST_CONTEXT"')
+    start = next(index for marker in markers if (index := prompt.find(marker)) != -1)
+    return prompt[start : start + 800]
+
+
 def test_batch_prompt_liste_tous_les_indicateurs_valides_pour_une_watch() -> None:
     prompt = _batch_prompt()
     for indicator in DEFAULT_INDICATORS:
@@ -61,3 +67,21 @@ def test_single_compact_prompt_liste_tous_les_operateurs_valides() -> None:
     prompt = _single_compact_prompt()
     for op in WATCH_VALID_OPERATORS:
         assert op in prompt, f"opérateur watch manquant du contrat single: {op}"
+
+
+def test_single_request_context_contract_liste_les_indicateurs_canoniques_valides() -> None:
+    contract = _request_context_contract(_single_compact_prompt())
+    for indicator in DEFAULT_INDICATORS:
+        assert indicator in contract, f"indicateur REQUEST_CONTEXT single manquant: {indicator}"
+
+
+def test_batch_request_context_contract_liste_les_indicateurs_canoniques_valides() -> None:
+    contract = _request_context_contract(_batch_prompt())
+    for indicator in DEFAULT_INDICATORS:
+        assert indicator in contract, f"indicateur REQUEST_CONTEXT batch manquant: {indicator}"
+
+
+def test_guidance_decrit_request_context_avec_indicators_pluriel() -> None:
+    prompt = _single_compact_prompt()
+    assert "`symbol × indicators × timeframe × lookback × window × as_of`" in prompt
+    assert "`symbol × indicator × timeframe × lookback × window × as_of`" not in prompt

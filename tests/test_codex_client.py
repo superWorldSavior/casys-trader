@@ -216,6 +216,18 @@ def test_parse_decision_or_context_request_accepte_une_requete_indicateurs() -> 
     assert response.requests[0].window == 24
 
 
+def test_parse_decision_or_context_request_accepte_indicator_singulier() -> None:
+    response = parse_decision_or_context_request(
+        '{"symbol":"SPY","action":"REQUEST_CONTEXT","rationale":"besoin de confirmer",'
+        '"requests":[{"symbol":"SPY","indicator":"z_score","timeframe":"1h"}]}',
+        "SPY",
+    )
+
+    assert isinstance(response, ContextResearchRequest)
+    assert response.requests[0].indicators == ["z_score"]
+    assert response.requests[0].timeframe == "1h"
+
+
 def test_decide_attache_les_metadonnees_llm() -> None:
     class StubRouter:
         def complete(self, prompt: str, *, timeout_s: int) -> LlmCompletion:

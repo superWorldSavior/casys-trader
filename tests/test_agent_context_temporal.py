@@ -72,6 +72,21 @@ def test_resolve_indicator_requests_normalise_et_charge_timeframe_4h() -> None:
     assert result["requests"][0]["indicators"]["return"] is not None
 
 
+def test_resolve_indicator_requests_accepte_les_abreviations_du_cockpit() -> None:
+    bars = [_bar(index, close) for index, close in enumerate([100.0, 101.0, 100.0, 102.0, 101.0, 103.0])]
+
+    result = resolve_indicator_requests(
+        [IndicatorRequest(symbol="SPY", indicators=["er", "ac"], timeframe="1h", lookback="5d", window=6)],
+        {"SPY": bars},
+        symbols=["SPY"],
+        max_requests=1,
+        max_indicators=2,
+    )
+
+    resolved_names = set(result["requests"][0]["indicators"])
+    assert resolved_names == {"efficiency_ratio", "autocorrelation"}
+
+
 def test_resolve_indicator_requests_charge_les_pairs_pour_relative_strength_4h() -> None:
     calls: list[tuple[str, str, str]] = []
 

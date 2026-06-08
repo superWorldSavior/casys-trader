@@ -42,6 +42,9 @@ _INDICATOR_COLUMNS = {
 # lever la confusion qui fait rejeter les watches (l'agent écrit l'abréviation
 # `er` vue dans le cockpit au lieu du nom canonique `efficiency_ratio` exigé).
 INDICATOR_COLUMNS = _INDICATOR_COLUMNS
+_INDICATOR_ALIASES = {abbrev: canonical for canonical, abbrev in INDICATOR_COLUMNS.items()}
+if len(_INDICATOR_ALIASES) != len(INDICATOR_COLUMNS):
+    raise ValueError("collision d'abréviations dans INDICATOR_COLUMNS")
 
 _FAMILY_CODES = {
     "indices": "idx",
@@ -183,11 +186,12 @@ def resolve_indicator_requests(
         symbol = str(getattr(request, "symbol", ""))
         if symbol not in symbols:
             continue
-        requested_names = [
-            str(name)
-            for name in getattr(request, "indicators", [])
-            if str(name) in known
-        ][:max_indicators]
+        requested_names = []
+        for name in getattr(request, "indicators", []):
+            canonical_name = _INDICATOR_ALIASES.get(str(name), str(name))
+            if canonical_name in known:
+                requested_names.append(canonical_name)
+        requested_names = requested_names[:max_indicators]
         if not requested_names:
             requested_names = DEFAULT_INDICATORS[:max_indicators]
         temporal = normalize_temporal_query(
