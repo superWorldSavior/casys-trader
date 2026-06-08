@@ -40,6 +40,11 @@ _ABS_OPS: dict[str, Callable[[float, float], bool]] = {
     "abs<=": operator.le,
 }
 
+# Vocabulaire d'opérateurs accepté par le validateur, dérivé des tables ci-dessus
+# (source de vérité unique). Le prompt s'en sert pour ne pas proposer à l'agent
+# une notation qui sera rejetée (cf rejet réel `op="eq"`).
+WATCH_VALID_OPERATORS: tuple[str, ...] = tuple(_OPS) + tuple(_ABS_OPS)
+
 
 class IndicatorWatchResult(NamedTuple):
     watch: dict | None

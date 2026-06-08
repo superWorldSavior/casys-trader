@@ -24,6 +24,9 @@ from dataclasses import dataclass, replace
 from typing import Any, Literal
 
 from . import llm
+from .agent_context import INDICATOR_COLUMNS
+from .features import DEFAULT_INDICATORS
+from .indicator_watch import WATCH_VALID_OPERATORS
 
 Action = Literal["BUY", "SELL", "HOLD"]
 Intent = Literal["OPEN_LONG", "OPEN_SHORT", "REDUCE", "CLOSE", "REVERSE", "HOLD"]
@@ -89,6 +92,11 @@ class ContextResearchRequest:
     llm_fallback_reason: str | None = None
 
 
+# Énumérations `|`-jointes pour les schémas JSON inline des contrats, DÉRIVÉES des
+# sources de vérité (pas tapées à la main : une liste figée diverge en silence).
+_WATCH_INDICATOR_ENUM = "|".join(DEFAULT_INDICATORS)
+_WATCH_OPERATOR_ENUM = "|".join(WATCH_VALID_OPERATORS)
+
 _OUTPUT_CONTRACT = (
     "Réponds UNIQUEMENT par un objet JSON valide, sans texte autour, de la forme:\n"
     '{"symbol": "<SYM>", "action": "BUY|SELL|HOLD", "quantity": <number>, '
@@ -132,7 +140,7 @@ _COMPACT_OUTPUT_CONTRACT = (
     "`indicator_watch`: optionnel. Utilise-le si le bon prochain réveil dépend "
     "d'une combinaison d'indicateurs plutôt que d'un simple timer. Format: "
     '{"ttl_minutes": <number>, "logic": "all|any", "on_trigger": "WAKE|WAKE_WITH_ORDER_INTENT", '
-    '"conditions": [{"symbol":"<SYM>","indicator":"z_score|return|volatility|ohlc_volatility|efficiency_ratio|autocorrelation|candlestick_signal|chart_breakout|trend_slope|range_position","op":">|>=|<|<=|abs>|abs>=",'
+    f'"conditions": [{{"symbol":"<SYM>","indicator":"{_WATCH_INDICATOR_ENUM}","op":"{_WATCH_OPERATOR_ENUM}",'
     '"value": <number>, "interval":"15m|30m|1h|4h|1d", "lookback":"5d|1mo|3mo|6mo|1y", "window": <number>, "as_of":"latest"}], '
     '"order": <object|null>}. '
     "Le daemon évaluera cette veille sans appel modèle jusqu'à expiration.\n"
@@ -225,6 +233,30 @@ _BATCH_COMPACT_CONTRACT = (
 )
 
 
+def _indicator_watch_vocabulary() -> str:
+    """Vocabulaire EXACT accepté par le validateur de watch, dérivé des sources de
+    vérité (`features.DEFAULT_INDICATORS`, `indicator_watch.WATCH_VALID_OPERATORS`,
+    `agent_context.INDICATOR_COLUMNS`) — jamais recopié à la main pour ne pas
+    diverger. But : l'agent emploie les noms canoniques (pas les abréviations du
+    cockpit) et les opérateurs exacts, sinon la condition est rejetée."""
+    indicators = " ".join(DEFAULT_INDICATORS)
+    operators = " ".join(WATCH_VALID_OPERATORS)
+    aliases = ", ".join(
+        f"{abbrev}={canonical}" for canonical, abbrev in INDICATOR_COLUMNS.items()
+    )
+    return (
+        "# Vocabulaire des veilles (indicator_watch / exit_watch)\n"
+        "Dans une condition de watch, `indicator` doit être l'un de ces noms "
+        f"CANONIQUES exacts:\n{indicators}\n"
+        f"`op` doit être l'un de: {operators}\n"
+        "Le cockpit affiche des abréviations courtes ; dans une watch, emploie le "
+        f"nom canonique correspondant: {aliases}.\n"
+        "Une watch minimale = `ttl_minutes` + une condition "
+        '{"symbol","indicator","op","value","interval","window","as_of":"latest"}. '
+        "Toute condition dont l'`indicator` ou l'`op` sort de ces listes est rejetée.\n\n"
+    )
+
+
 def build_batch_prompt(
     *,
     mandate: str,
@@ -243,6 +275,7 @@ def build_batch_prompt(
         f"# Mandat\n{mandate}\n\n"
         f"# Mémoire / stratégie\n{memory}\n\n"
         f"{_DECISION_GUIDANCE}"
+        f"{_indicator_watch_vocabulary()}"
         f"# Contexte partagé (JSON)\n{json.dumps(shared_context, ensure_ascii=False)}\n\n"
         f"# Symboles à décider (JSON)\n{json.dumps(symbols_payload, ensure_ascii=False)}\n\n"
         f"# Contrat de sortie\n{contract}\n"

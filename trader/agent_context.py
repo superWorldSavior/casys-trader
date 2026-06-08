@@ -38,6 +38,11 @@ _INDICATOR_COLUMNS = {
     "spread_zscore": "sz",
 }
 
+# Mapping public nom canonique -> abréviation cockpit. Le prompt s'en sert pour
+# lever la confusion qui fait rejeter les watches (l'agent écrit l'abréviation
+# `er` vue dans le cockpit au lieu du nom canonique `efficiency_ratio` exigé).
+INDICATOR_COLUMNS = _INDICATOR_COLUMNS
+
 _FAMILY_CODES = {
     "indices": "idx",
     "countries": "cty",
