@@ -124,8 +124,206 @@ def test_maybe_consolidate_garde_letat_si_sortie_llm_invalide(tmp_path) -> None:
 
     result = consolidator.maybe_consolidate(raw_store, consolidated_store, threshold=1, llm_router=BadRouter())
 
-    assert result == {"triggered": True, "new_raw_count": 1, "written": False}
+    assert result == {
+        "triggered": True,
+        "new_raw_count": 1,
+        "written": False,
+        "error_code": "invalid_json",
+        "error_message": "Expecting value: line 1 column 1 (char 0)",
+    }
     assert consolidated_store.read()["watermark"] is None
+
+
+def test_maybe_consolidate_ne_retente_pas_un_echec_sans_nouveau_lot(tmp_path) -> None:
+    raw_store = LearningsStore(tmp_path / "learnings.jsonl", max_entries=200)
+    consolidated_store = consolidator.ConsolidatedLearningsStore(tmp_path / "learnings_consolidated.json")
+    status_store = consolidator.ConsolidationStatusStore(tmp_path / "learnings_consolidation_status.json")
+    raw_store.append(symbol="SPY", note="brut 1", now=datetime(2026, 6, 8, 10, tzinfo=timezone.utc))
+    raw_store.append(symbol="SPY", note="brut 2", now=datetime(2026, 6, 8, 10, 1, tzinfo=timezone.utc))
+    calls = 0
+
+    class BadRouter:
+        def complete(self, prompt: str, *, timeout_s: int):
+            nonlocal calls
+            calls += 1
+            return llm.LlmFailure(
+                provider="consolidator",
+                model="gpt-5.5[high]",
+                code="nonzero_exit",
+                message="adapter failed",
+                retryable=False,
+            )
+
+    first = consolidator.maybe_consolidate(
+        raw_store,
+        consolidated_store,
+        threshold=2,
+        llm_router=BadRouter(),
+        status_store=status_store,
+    )
+    second = consolidator.maybe_consolidate(
+        raw_store,
+        consolidated_store,
+        threshold=2,
+        llm_router=BadRouter(),
+        status_store=status_store,
+    )
+
+    assert first == {
+        "triggered": True,
+        "new_raw_count": 2,
+        "written": False,
+        "error_code": "nonzero_exit",
+        "error_message": "adapter failed",
+    }
+    assert second == {
+        "triggered": False,
+        "new_raw_count": 2,
+        "skipped": True,
+        "reason": "previous_failure_backoff",
+        "new_raw_since_failure": 0,
+        "retry_after_new_raw": 2,
+        "last_error_code": "nonzero_exit",
+    }
+    assert calls == 1
+
+
+def test_maybe_consolidate_retente_apres_un_nouveau_lot_depuis_lechec(tmp_path) -> None:
+    raw_store = LearningsStore(tmp_path / "learnings.jsonl", max_entries=200)
+    consolidated_store = consolidator.ConsolidatedLearningsStore(tmp_path / "learnings_consolidated.json")
+    status_store = consolidator.ConsolidationStatusStore(tmp_path / "learnings_consolidation_status.json")
+    raw_store.append(symbol="SPY", note="brut 1", now=datetime(2026, 6, 8, 10, tzinfo=timezone.utc))
+    raw_store.append(symbol="SPY", note="brut 2", now=datetime(2026, 6, 8, 10, 1, tzinfo=timezone.utc))
+    calls = 0
+
+    class BadRouter:
+        def complete(self, prompt: str, *, timeout_s: int):
+            nonlocal calls
+            calls += 1
+            return llm.LlmCompletion(provider="test", model="stub", text="pas du json")
+
+    first = consolidator.maybe_consolidate(
+        raw_store,
+        consolidated_store,
+        threshold=2,
+        llm_router=BadRouter(),
+        status_store=status_store,
+    )
+    raw_store.append(symbol="QQQ", note="brut 3", now=datetime(2026, 6, 8, 10, 2, tzinfo=timezone.utc))
+    skipped = consolidator.maybe_consolidate(
+        raw_store,
+        consolidated_store,
+        threshold=2,
+        llm_router=BadRouter(),
+        status_store=status_store,
+    )
+    raw_store.append(symbol="QQQ", note="brut 4", now=datetime(2026, 6, 8, 10, 3, tzinfo=timezone.utc))
+    retried = consolidator.maybe_consolidate(
+        raw_store,
+        consolidated_store,
+        threshold=2,
+        llm_router=BadRouter(),
+        status_store=status_store,
+    )
+
+    assert first["written"] is False
+    assert skipped["skipped"] is True
+    assert skipped["new_raw_since_failure"] == 1
+    assert retried["triggered"] is True
+    assert retried["written"] is False
+    assert calls == 2
+
+
+def test_maybe_consolidate_nettoie_le_status_apres_succes_suivant_un_echec(tmp_path) -> None:
+    raw_store = LearningsStore(tmp_path / "learnings.jsonl", max_entries=200)
+    consolidated_store = consolidator.ConsolidatedLearningsStore(tmp_path / "learnings_consolidated.json")
+    status_store = consolidator.ConsolidationStatusStore(tmp_path / "learnings_consolidation_status.json")
+    raw_store.append(symbol="SPY", note="brut 1", now=datetime(2026, 6, 8, 10, tzinfo=timezone.utc))
+    raw_store.append(symbol="SPY", note="brut 2", now=datetime(2026, 6, 8, 10, 1, tzinfo=timezone.utc))
+    calls = 0
+
+    class BadRouter:
+        def complete(self, prompt: str, *, timeout_s: int):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                return llm.LlmCompletion(provider="test", model="stub", text="pas du json")
+            return llm.LlmCompletion(
+                provider="test",
+                model="stub",
+                text=json.dumps(
+                    {
+                        "global": [{"note": "Attendre confirmation avant de trader.", "robustness": "observe"}],
+                        "by_symbol": {"SPY": [{"note": "SPY range tant que volume absent."}]},
+                    }
+                ),
+            )
+
+    first = consolidator.maybe_consolidate(
+        raw_store,
+        consolidated_store,
+        threshold=2,
+        llm_router=BadRouter(),
+        status_store=status_store,
+    )
+    raw_store.append(symbol="QQQ", note="brut 3", now=datetime(2026, 6, 8, 10, 2, tzinfo=timezone.utc))
+    raw_store.append(symbol="QQQ", note="brut 4", now=datetime(2026, 6, 8, 10, 3, tzinfo=timezone.utc))
+    second = consolidator.maybe_consolidate(
+        raw_store,
+        consolidated_store,
+        threshold=2,
+        llm_router=BadRouter(),
+        status_store=status_store,
+    )
+
+    assert first["written"] is False
+    assert first["error_code"] == "invalid_json"
+    assert second["written"] is True
+    assert calls == 2
+    assert status_store.path.exists() is False
+
+
+def test_maybe_consolidate_ignore_le_backoff_si_watermark_consolide_avance(tmp_path) -> None:
+    raw_store = LearningsStore(tmp_path / "learnings.jsonl", max_entries=200)
+    consolidated_store = consolidator.ConsolidatedLearningsStore(tmp_path / "learnings_consolidated.json")
+    status_store = consolidator.ConsolidationStatusStore(tmp_path / "learnings_consolidation_status.json")
+    w0 = "2026-06-08T09:00:00+00:00"
+    w1 = "2026-06-08T09:30:00+00:00"
+    consolidated_store.write({"global": [{"note": "ancienne synthese"}], "by_symbol": {}}, watermark=w0)
+    raw_store.append(symbol="SPY", note="brut 1", now=datetime(2026, 6, 8, 10, tzinfo=timezone.utc))
+    raw_store.append(symbol="SPY", note="brut 2", now=datetime(2026, 6, 8, 10, 1, tzinfo=timezone.utc))
+    calls = 0
+
+    class BadRouter:
+        def complete(self, prompt: str, *, timeout_s: int):
+            nonlocal calls
+            calls += 1
+            return llm.LlmCompletion(provider="test", model="stub", text="pas du json")
+
+    first = consolidator.maybe_consolidate(
+        raw_store,
+        consolidated_store,
+        threshold=2,
+        llm_router=BadRouter(),
+        status_store=status_store,
+    )
+    last_failure = status_store.read()["last_failure"]
+    consolidated_store.write({"global": [{"note": "synthese externe"}], "by_symbol": {}}, watermark=w1)
+    second = consolidator.maybe_consolidate(
+        raw_store,
+        consolidated_store,
+        threshold=2,
+        llm_router=BadRouter(),
+        status_store=status_store,
+    )
+
+    assert first["written"] is False
+    assert last_failure["consolidated_watermark"] == w0
+    assert calls == 2
+    assert second["triggered"] is True
+    assert second["written"] is False
+    assert second.get("skipped") is not True
+    assert second.get("reason") != "previous_failure_backoff"
 
 
 def test_build_context_learnings_preserve_le_fallback_froid() -> None:

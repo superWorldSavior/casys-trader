@@ -136,6 +136,50 @@ class ConsolidatedLearningsStore:
         os.replace(tmp, self.path)
 
 
+class ConsolidationStatusStore:
+    def __init__(self, path: str | Path):
+        self.path = Path(path)
+
+    def read(self) -> dict:
+        if not self.path.exists():
+            return {}
+        try:
+            payload = json.loads(self.path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return {}
+        return payload if isinstance(payload, dict) else {}
+
+    def write_failure(
+        self,
+        *,
+        consolidated_watermark: str | None,
+        raw_watermark: str | None,
+        new_raw_count: int,
+        error: dict,
+    ) -> None:
+        payload = {
+            "last_failure": {
+                "consolidated_watermark": consolidated_watermark,
+                "raw_watermark": raw_watermark,
+                "new_raw_count": new_raw_count,
+                "error_code": str(error.get("error_code") or "unknown"),
+                "error_message": str(error.get("error_message") or "")[:500],
+                "provider": error.get("provider"),
+                "model": error.get("model"),
+            }
+        }
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self.path.with_suffix(self.path.suffix + ".tmp")
+        tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(tmp, self.path)
+
+    def clear(self) -> None:
+        try:
+            self.path.unlink()
+        except FileNotFoundError:
+            return
+
+
 def _has_consolidated(payload: dict) -> bool:
     return bool(payload.get("global") or payload.get("by_symbol"))
 
@@ -209,6 +253,51 @@ def build_consolidator_router_from_env(
     )
 
 
+def _default_status_store(consolidated_store: ConsolidatedLearningsStore) -> ConsolidationStatusStore:
+    return ConsolidationStatusStore(consolidated_store.path.with_name("learnings_consolidation_status.json"))
+
+
+def _failure_from_llm(completion: llm.LlmFailure) -> dict:
+    return {
+        "error_code": completion.code,
+        "error_message": completion.message[:500],
+        "provider": completion.provider,
+        "model": completion.model,
+    }
+
+
+def _failure_payload(code: str, message: str) -> dict:
+    return {"error_code": code, "error_message": message[:500]}
+
+
+def _consolidate_payload_with_error(
+    current: dict,
+    new_raw: list[dict],
+    *,
+    llm_router: llm.LlmRouter | None = None,
+    acpx_bin: str | None = None,
+    acpx_agent: str | None = None,
+    model: str | None = None,
+    timeout_s: int = DEFAULT_CONSOLIDATOR_TIMEOUT_S,
+) -> tuple[dict | None, dict | None]:
+    router = llm_router or build_consolidator_router_from_env(
+        acpx_bin=acpx_bin,
+        acpx_agent=acpx_agent,
+        model=model,
+    )
+    completion = router.complete(build_consolidation_prompt(current, new_raw), timeout_s=timeout_s)
+    if isinstance(completion, llm.LlmFailure):
+        return None, _failure_from_llm(completion)
+    try:
+        payload = json.loads(completion.text)
+    except json.JSONDecodeError as exc:
+        return None, _failure_payload("invalid_json", str(exc))
+    normalized = normalize_consolidated(payload, watermark=current.get("watermark"))
+    if normalized is None:
+        return None, _failure_payload("invalid_payload", "consolidateur returned invalid payload")
+    return normalized, None
+
+
 def consolidate_payload(
     current: dict,
     new_raw: list[dict],
@@ -219,19 +308,16 @@ def consolidate_payload(
     model: str | None = None,
     timeout_s: int = DEFAULT_CONSOLIDATOR_TIMEOUT_S,
 ) -> dict | None:
-    router = llm_router or build_consolidator_router_from_env(
+    consolidated, _error = _consolidate_payload_with_error(
+        current,
+        new_raw,
+        llm_router=llm_router,
         acpx_bin=acpx_bin,
         acpx_agent=acpx_agent,
         model=model,
+        timeout_s=timeout_s,
     )
-    completion = router.complete(build_consolidation_prompt(current, new_raw), timeout_s=timeout_s)
-    if isinstance(completion, llm.LlmFailure):
-        return None
-    try:
-        payload = json.loads(completion.text)
-    except json.JSONDecodeError:
-        return None
-    return normalize_consolidated(payload, watermark=current.get("watermark"))
+    return consolidated
 
 
 def maybe_consolidate(
@@ -244,6 +330,7 @@ def maybe_consolidate(
     acpx_agent: str | None = None,
     model: str | None = None,
     timeout_s: int = DEFAULT_CONSOLIDATOR_TIMEOUT_S,
+    status_store: ConsolidationStatusStore | None = None,
 ) -> dict:
     current = consolidated_store.read()
     raw_rows = raw_store.all()
@@ -251,7 +338,24 @@ def maybe_consolidate(
     if len(new_raw) < max(1, threshold):
         return {"triggered": False, "new_raw_count": len(new_raw)}
 
-    consolidated = consolidate_payload(
+    status_store = status_store or _default_status_store(consolidated_store)
+    status = status_store.read()
+    last_failure = status.get("last_failure")
+    if isinstance(last_failure, dict) and last_failure.get("consolidated_watermark") == current.get("watermark"):
+        raw_since_failure = select_new_raw(raw_rows, watermark=last_failure.get("raw_watermark"))
+        retry_after_new_raw = max(1, threshold)
+        if len(raw_since_failure) < retry_after_new_raw:
+            return {
+                "triggered": False,
+                "new_raw_count": len(new_raw),
+                "skipped": True,
+                "reason": "previous_failure_backoff",
+                "new_raw_since_failure": len(raw_since_failure),
+                "retry_after_new_raw": retry_after_new_raw,
+                "last_error_code": last_failure.get("error_code"),
+            }
+
+    consolidated, error = _consolidate_payload_with_error(
         current,
         new_raw,
         llm_router=llm_router,
@@ -261,8 +365,22 @@ def maybe_consolidate(
         timeout_s=timeout_s,
     )
     if consolidated is None:
-        return {"triggered": True, "new_raw_count": len(new_raw), "written": False}
+        error = error or _failure_payload("unknown", "unknown consolidation failure")
+        status_store.write_failure(
+            consolidated_watermark=current.get("watermark"),
+            raw_watermark=_max_ts(new_raw),
+            new_raw_count=len(new_raw),
+            error=error,
+        )
+        return {
+            "triggered": True,
+            "new_raw_count": len(new_raw),
+            "written": False,
+            "error_code": error["error_code"],
+            "error_message": error["error_message"],
+        }
 
     watermark = _max_ts(new_raw)
     consolidated_store.write(consolidated, watermark=watermark)
+    status_store.clear()
     return {"triggered": True, "new_raw_count": len(new_raw), "written": True}
