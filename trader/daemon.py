@@ -1273,6 +1273,9 @@ def run_cycle(
         if stale_data is not None:
             streak = sched.get_stale_streak(sym) if sched is not None else 0
             wake_minutes = _stale_backoff_wake_minutes(streak, default_wake_minutes=default_wake_minutes)
+            # Ne jamais dormir au-delà de la prochaine ouverture : on raccourcit le
+            # backoff pour être réveillé pile avant la cloche (anti-rater-l'open).
+            wake_minutes = market.clamp_wake_to_session_open(wake_minutes, now=now)
             new_streak = streak + 1
             if sched is not None:
                 sched.set_stale_streak(sym, new_streak)

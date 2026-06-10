@@ -10,7 +10,8 @@ Aucune décision ici — uniquement de la donnée brute.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 
 @dataclass(frozen=True)
@@ -89,6 +90,97 @@ def assess_freshness(bars: list[Bar], *, now: datetime, max_age_minutes: float) 
     if age_minutes > max_age_minutes:
         return Freshness(False, "too_old", age_minutes)
     return Freshness(True, None, age_minutes)
+
+
+# --- Anticipation de l'ouverture de session (alignement du réveil) -----------
+# Heure d'ouverture de la session régulière US, en heure LOCALE marché.
+# zoneinfo gère DST (EST/EDT) → conversion UTC correcte toute l'année, sans pytz.
+_MARKET_TZ = ZoneInfo("America/New_York")
+_SESSION_OPEN_HOUR = 9
+_SESSION_OPEN_MINUTE = 30
+# On veut être réveillé un peu AVANT la cloche : fetch + décider pile à l'ouverture.
+PRE_OPEN_LEAD_MINUTES = 5.0
+# Fenêtre de grâce APRÈS la cloche : tant que la donnée est encore stale (latence
+# fournisseur / data IB différée), on continue à poller serré plutôt que de
+# retomber dans le backoff long et rater le début de séance.
+OPEN_GRACE_MINUTES = 20.0
+# Cadence du polling serré pendant lead + grace (le scheduler dort min(wake, poll)).
+_TIGHT_POLL_MINUTES = 1.0
+
+
+def next_regular_session_open(now: datetime) -> datetime:
+    """Prochaine ouverture de session régulière US (strictement > now), en UTC.
+
+    Compromis assumé : ne gère PAS les jours fériés ni les demi-journées — seuls
+    les weekends (samedi=5, dimanche=6) sont sautés. DST géré via zoneinfo.
+    Déterministe : `now` est injecté, aucune dépendance cachée à l'horloge.
+
+    Étapes attendues :
+      1. now en UTC → heure locale marché (.astimezone(_MARKET_TZ)).
+      2. Candidat = ce jour-là à 9h30 locale (.replace(hour=, minute=, second=0,
+         microsecond=0)).
+      3. Tant que le candidat est un weekend OU <= now : avancer d'un jour
+         (timedelta(days=1)), en re-fixant l'heure à 9h30.
+      4. Retourner le candidat reconverti en UTC (.astimezone(timezone.utc)).
+    """
+    now_utc = now if now.tzinfo is not None else now.replace(tzinfo=timezone.utc)
+    local_now = now_utc.astimezone(_MARKET_TZ)
+    candidate = local_now.replace(
+        hour=_SESSION_OPEN_HOUR, minute=_SESSION_OPEN_MINUTE, second=0, microsecond=0
+    )
+    # Strictement après now ET un jour ouvré (weekday 5=sam, 6=dim sautés).
+    while candidate <= local_now or candidate.weekday() >= 5:
+        candidate = (candidate + timedelta(days=1)).replace(
+            hour=_SESSION_OPEN_HOUR, minute=_SESSION_OPEN_MINUTE, second=0, microsecond=0
+        )
+    return candidate.astimezone(timezone.utc)
+
+
+def most_recent_session_open(now: datetime) -> datetime:
+    """Ouverture régulière de la session courante/la plus récente (<= now), UTC.
+
+    Symétrique de `next_regular_session_open` : recule jour par jour en sautant
+    les weekends. Sert à détecter la fenêtre de grâce post-cloche.
+    """
+    now_utc = now if now.tzinfo is not None else now.replace(tzinfo=timezone.utc)
+    local_now = now_utc.astimezone(_MARKET_TZ)
+    candidate = local_now.replace(
+        hour=_SESSION_OPEN_HOUR, minute=_SESSION_OPEN_MINUTE, second=0, microsecond=0
+    )
+    while candidate > local_now or candidate.weekday() >= 5:
+        candidate = (candidate - timedelta(days=1)).replace(
+            hour=_SESSION_OPEN_HOUR, minute=_SESSION_OPEN_MINUTE, second=0, microsecond=0
+        )
+    return candidate.astimezone(timezone.utc)
+
+
+def clamp_wake_to_session_open(
+    wake_minutes: float,
+    *,
+    now: datetime,
+    lead_minutes: float = PRE_OPEN_LEAD_MINUTES,
+    grace_minutes: float = OPEN_GRACE_MINUTES,
+) -> float:
+    """Borne un next-wake pour rester aligné sur l'ouverture de marché.
+
+    Deux garde-fous, dans cet ordre :
+      1. Grâce post-cloche : si on est dans [open, open+grace], on poll serré
+         (la donnée est encore stale → latence fournisseur, on attend les barres).
+      2. Anti-« rater la cloche » : sinon on borne pour se réveiller `lead_minutes`
+         avant la prochaine ouverture ; loin de l'open, `wake_minutes` est intact.
+
+    Plancher à 1min sur tous les chemins : jamais 0/négatif (réveil immédiat).
+    """
+    now_utc = now if now.tzinfo is not None else now.replace(tzinfo=timezone.utc)
+    grace_end = most_recent_session_open(now_utc) + timedelta(minutes=grace_minutes)
+    if now_utc <= grace_end:
+        return max(1.0, min(wake_minutes, _TIGHT_POLL_MINUTES))
+    target = next_regular_session_open(now_utc) - timedelta(minutes=lead_minutes)
+    capped_minutes = (target - now_utc).total_seconds() / 60.0
+    # min() = on garde le plus court entre backoff courant et « avant la cloche ».
+    # max(1.0, ...) plancher sur les DEUX chemins : un wake_minutes <= 0 (ex. CLI
+    # mal validé) ne doit jamais produire un réveil immédiat/négatif.
+    return max(1.0, min(wake_minutes, capped_minutes))
 
 
 class MarketError(Exception):
