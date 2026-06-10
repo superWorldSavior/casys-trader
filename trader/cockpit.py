@@ -7,6 +7,10 @@ Pattern superviseur : le daemon reste un process indépendant qui survit à
 la fermeture du cockpit. Le cockpit peut le démarrer, l'arrêter et toggler
 le kill-switch.
 
+Au lancement, si aucun daemon n'est vivant (never_started ou stopped), le
+cockpit propose de démarrer le moteur live (modal ConfirmStart). Safe default :
+rien n'est lancé sans confirmation explicite — « Plus tard » / Échap n'agit pas.
+
 Écriture autorisée (UNIQUEMENT ces fichiers) :
     state/daemon.pid          — PID du daemon au lancement
     state/daemon_console.log  — stdout/stderr du daemon (append)
@@ -638,6 +642,66 @@ class ConfirmQuit(ModalScreen[bool]):
         self.dismiss(False)
 
 
+class ConfirmStart(ModalScreen[bool]):
+    """Modal proposé au lancement du cockpit quand aucun daemon n'est vivant.
+
+    Retourne :
+        True  → lancer le moteur live (action_start_daemon)
+        False → ne rien lancer (cockpit en lecture seule)
+
+    Échap → False (ne pas lancer).
+    """
+
+    BINDINGS = [
+        Binding("escape", "cancel", "Plus tard", show=False),
+    ]
+
+    DEFAULT_CSS = """
+    ConfirmStart {
+        align: center middle;
+    }
+    ConfirmStart Vertical {
+        background: $surface;
+        border: solid $primary;
+        padding: 1 2;
+        width: 60;
+        height: auto;
+    }
+    ConfirmStart Horizontal {
+        height: auto;
+        align: center middle;
+        margin-top: 1;
+    }
+    ConfirmStart Button {
+        margin: 0 1;
+    }
+    """
+
+    def __init__(self, *, never_started: bool, **kwargs: object) -> None:
+        super().__init__(**kwargs)
+        self._never_started = never_started
+
+    def compose(self) -> ComposeResult:
+        intro = (
+            "Aucun daemon en cours."
+            if self._never_started
+            else "Le daemon est arrêté."
+        )
+        with Vertical():
+            yield Label(
+                f"{intro}\nDémarrer le moteur live (PAPER réel — exécute les ordres simulés) ?"
+            )
+            with Horizontal():
+                yield Button("Démarrer", id="confirm-start-yes", variant="primary")
+                yield Button("Plus tard", id="confirm-start-no", variant="default")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        self.dismiss(event.button.id == "confirm-start-yes")
+
+    def action_cancel(self) -> None:
+        self.dismiss(False)
+
+
 class ConfirmKill(ModalScreen[bool]):
     """Modal de confirmation pour le toggle kill-switch (binding k)."""
 
@@ -739,6 +803,27 @@ class CockpitApp(App):
         self.set_interval(1.0, self._poll_events)
         # Charge l'état immédiatement
         self._schedule_refresh_state()
+        # Propose de démarrer le daemon s'il n'est pas vivant (différé après layout)
+        self.call_after_refresh(self._maybe_propose_start)
+
+    def _maybe_propose_start(self) -> None:
+        """Propose de lancer le daemon au démarrage si aucun n'est vivant.
+
+        Ne propose jamais quand un daemon est déjà vivant. Safe default :
+        la proposition ne lance rien sans confirmation explicite.
+        """
+        vital = daemon_vital_state(_STATE_DIR / "daemon_status.json")
+        if vital.status == "alive":
+            return
+
+        def _on_confirm(confirmed: bool) -> None:
+            if confirmed:
+                self.action_start_daemon()
+
+        self.push_screen(
+            ConfirmStart(never_started=vital.status == "never_started"),
+            _on_confirm,
+        )
 
     def _current_palette(self) -> Palette:
         """Retourne la palette Rich correspondant au thème actif."""

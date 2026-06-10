@@ -108,7 +108,9 @@ async def test_cockpit_theme_defaut_est_casys_salmon(tmp_path, monkeypatch):
 
 async def test_cockpit_binding_d_bascule_theme(tmp_path, monkeypatch):
     """La touche d bascule entre casys-salmon et casys-ink."""
-    _make_minimal_state(tmp_path)
+    # Daemon simulé vivant → pas de ConfirmStart qui intercepterait les touches
+    _make_minimal_state_with_pid(tmp_path, 54321)
+    _patch_daemon_alive(monkeypatch, 54321)
     monkeypatch.setattr(cockpit_module, "_STATE_DIR", tmp_path)
     monkeypatch.setattr(cockpit_module, "_EVENTS_FILE", tmp_path / "events.jsonl")
     monkeypatch.setattr(cockpit_module, "_KILL_FILE", tmp_path / "KILL")
@@ -165,7 +167,9 @@ async def test_cockpit_toggle_theme_propage_palette_dashboard_immediatement(
     from trader.cockpit import LeftPane
     from trader.palette import PALETTE_DARK, PALETTE_LIGHT
 
-    _make_minimal_state(tmp_path)
+    # Daemon simulé vivant → pas de ConfirmStart qui intercepterait les touches
+    _make_minimal_state_with_pid(tmp_path, 54321)
+    _patch_daemon_alive(monkeypatch, 54321)
     monkeypatch.setattr(cockpit_module, "_STATE_DIR", tmp_path)
     monkeypatch.setattr(cockpit_module, "_EVENTS_FILE", tmp_path / "events.jsonl")
     monkeypatch.setattr(cockpit_module, "_KILL_FILE", tmp_path / "KILL")
@@ -327,7 +331,9 @@ async def test_cockpit_binding_k_declare(tmp_path, monkeypatch):
 
 async def test_cockpit_binding_X_monte_modal(tmp_path, monkeypatch):
     """La touche X pousse un écran modal ConfirmStop sur la pile."""
-    _make_minimal_state(tmp_path)
+    # Daemon simulé vivant → pas de ConfirmStart au-dessus de la pile
+    _make_minimal_state_with_pid(tmp_path, 54321)
+    _patch_daemon_alive(monkeypatch, 54321)
     monkeypatch.setattr(cockpit_module, "_STATE_DIR", tmp_path)
     monkeypatch.setattr(cockpit_module, "_EVENTS_FILE", tmp_path / "events.jsonl")
     monkeypatch.setattr(cockpit_module, "_KILL_FILE", tmp_path / "KILL")
@@ -342,7 +348,9 @@ async def test_cockpit_binding_X_monte_modal(tmp_path, monkeypatch):
 
 async def test_cockpit_binding_k_monte_modal(tmp_path, monkeypatch):
     """La touche k pousse un écran modal ConfirmKill sur la pile."""
-    _make_minimal_state(tmp_path)
+    # Daemon simulé vivant → pas de ConfirmStart au-dessus de la pile
+    _make_minimal_state_with_pid(tmp_path, 54321)
+    _patch_daemon_alive(monkeypatch, 54321)
     monkeypatch.setattr(cockpit_module, "_STATE_DIR", tmp_path)
     monkeypatch.setattr(cockpit_module, "_EVENTS_FILE", tmp_path / "events.jsonl")
     monkeypatch.setattr(cockpit_module, "_KILL_FILE", tmp_path / "KILL")
@@ -431,7 +439,9 @@ async def test_cockpit_v2_pane_right_existe(tmp_path, monkeypatch):
 
 async def test_cockpit_v2_toggle_l_masque_right_pane(tmp_path, monkeypatch):
     """Le toggle l masque le pane droit (logs + panneaux compacts)."""
-    _make_minimal_state(tmp_path)
+    # Daemon simulé vivant → pas de ConfirmStart qui intercepterait les touches
+    _make_minimal_state_with_pid(tmp_path, 54321)
+    _patch_daemon_alive(monkeypatch, 54321)
     monkeypatch.setattr(cockpit_module, "_STATE_DIR", tmp_path)
     monkeypatch.setattr(cockpit_module, "_EVENTS_FILE", tmp_path / "events.jsonl")
     monkeypatch.setattr(cockpit_module, "_KILL_FILE", tmp_path / "KILL")
@@ -460,7 +470,9 @@ async def test_cockpit_v2_exit_plans_panel_existe(tmp_path, monkeypatch):
 
 async def test_cockpit_v2_toggle_d_rerender_nouveaux_panneaux(tmp_path, monkeypatch):
     """La touche d bascule le thème sans crash avec les nouveaux panneaux."""
-    _make_minimal_state(tmp_path)
+    # Daemon simulé vivant → pas de ConfirmStart qui intercepterait les touches
+    _make_minimal_state_with_pid(tmp_path, 54321)
+    _patch_daemon_alive(monkeypatch, 54321)
     monkeypatch.setattr(cockpit_module, "_STATE_DIR", tmp_path)
     monkeypatch.setattr(cockpit_module, "_EVENTS_FILE", tmp_path / "events.jsonl")
     monkeypatch.setattr(cockpit_module, "_KILL_FILE", tmp_path / "KILL")
@@ -735,6 +747,103 @@ async def test_cockpit_confirm_quit_echap_reste_ouvert(tmp_path, monkeypatch):
         # L'app est toujours là (on vérifie que le modal est parti et l'app est montée)
         assert not isinstance(app.screen, ConfirmQuit)
         assert app.query_one("#left-pane") is not None
+
+
+# ---------------------------------------------------------------------------
+# ConfirmStart — proposition de démarrage du daemon au lancement
+# ---------------------------------------------------------------------------
+
+
+async def test_cockpit_propose_demarrage_quand_daemon_never_started(
+    tmp_path, monkeypatch
+):
+    """Au lancement sans daemon (never_started) → ConfirmStart sur la pile."""
+    _make_minimal_state(tmp_path)  # daemon_status.json sans pid → never_started
+    monkeypatch.setattr(cockpit_module, "_STATE_DIR", tmp_path)
+    monkeypatch.setattr(cockpit_module, "_EVENTS_FILE", tmp_path / "events.jsonl")
+    monkeypatch.setattr(cockpit_module, "_KILL_FILE", tmp_path / "KILL")
+
+    app = CockpitApp()
+    async with app.run_test(size=(200, 50)) as pilot:
+        await pilot.pause()  # laisse call_after_refresh s'exécuter
+        from trader.cockpit import ConfirmStart
+
+        assert isinstance(app.screen, ConfirmStart)
+
+
+async def test_cockpit_ne_propose_pas_quand_daemon_vivant(tmp_path, monkeypatch):
+    """Au lancement avec daemon vivant → aucune proposition (pas de ConfirmStart)."""
+    FAKE_PID = 54321
+    _make_minimal_state_with_pid(tmp_path, FAKE_PID)
+    _patch_daemon_alive(monkeypatch, FAKE_PID)
+    monkeypatch.setattr(cockpit_module, "_STATE_DIR", tmp_path)
+    monkeypatch.setattr(cockpit_module, "_EVENTS_FILE", tmp_path / "events.jsonl")
+    monkeypatch.setattr(cockpit_module, "_KILL_FILE", tmp_path / "KILL")
+
+    app = CockpitApp()
+    async with app.run_test(size=(200, 50)) as pilot:
+        await pilot.pause()
+        from trader.cockpit import ConfirmStart
+
+        assert not isinstance(app.screen, ConfirmStart)
+
+
+async def test_cockpit_confirm_start_demarrer_appelle_launch_daemon(
+    tmp_path, monkeypatch
+):
+    """ConfirmStart → « Démarrer » → launch_daemon est appelé."""
+    _make_minimal_state(tmp_path)
+    monkeypatch.setattr(cockpit_module, "_STATE_DIR", tmp_path)
+    monkeypatch.setattr(cockpit_module, "_EVENTS_FILE", tmp_path / "events.jsonl")
+    monkeypatch.setattr(cockpit_module, "_KILL_FILE", tmp_path / "KILL")
+
+    launch_calls = []
+
+    import trader.cockpit_supervisor as sup_module
+    from trader.cockpit_supervisor import LaunchResult
+
+    monkeypatch.setattr(
+        sup_module,
+        "launch_daemon",
+        lambda **kw: launch_calls.append(kw) or LaunchResult(
+            launched=True, pid=99999, reason="launched"
+        ),
+    )
+
+    app = CockpitApp()
+    async with app.run_test(size=(200, 50)) as pilot:
+        await pilot.pause()
+        await pilot.click("#confirm-start-yes")
+        await pilot.pause()
+
+    assert len(launch_calls) == 1, "launch_daemon doit être appelé après « Démarrer »"
+
+
+async def test_cockpit_confirm_start_plus_tard_ne_lance_rien(tmp_path, monkeypatch):
+    """ConfirmStart → « Plus tard » → launch_daemon n'est pas appelé."""
+    _make_minimal_state(tmp_path)
+    monkeypatch.setattr(cockpit_module, "_STATE_DIR", tmp_path)
+    monkeypatch.setattr(cockpit_module, "_EVENTS_FILE", tmp_path / "events.jsonl")
+    monkeypatch.setattr(cockpit_module, "_KILL_FILE", tmp_path / "KILL")
+
+    launch_calls = []
+
+    import trader.cockpit_supervisor as sup_module
+    from trader.cockpit_supervisor import LaunchResult
+
+    monkeypatch.setattr(
+        sup_module,
+        "launch_daemon",
+        lambda **kw: launch_calls.append(kw) or LaunchResult(launched=True),
+    )
+
+    app = CockpitApp()
+    async with app.run_test(size=(200, 50)) as pilot:
+        await pilot.pause()
+        await pilot.click("#confirm-start-no")
+        await pilot.pause()
+
+    assert launch_calls == [], "« Plus tard » ne doit rien lancer"
 
 
 async def test_cockpit_footer_affiche_maj_x(tmp_path, monkeypatch):
