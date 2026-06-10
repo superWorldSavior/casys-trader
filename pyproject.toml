@@ -9,6 +9,7 @@ dependencies = [
     "rich>=13.0",
     "plotext>=5.2",
     "ib-async>=2.1.0",
+    "textual>=8.2.7",
 ]
 
 [project.scripts]
@@ -17,12 +18,14 @@ casys-trader = "trader.cli:main"
 [dependency-groups]
 dev = [
     "pytest>=8.0",
+    "pytest-asyncio>=1.4.0",
     "ruff>=0.15.16",
 ]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]
+asyncio_mode = "auto"
 
 [build-system]
 requires = ["hatchling"]
