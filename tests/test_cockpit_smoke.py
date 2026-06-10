@@ -180,3 +180,207 @@ async def test_cockpit_toggle_theme_propage_palette_dashboard_immediatement(
         # Retour → palette LIGHT
         await pilot.press("d")
         assert dashboard._current_palette is PALETTE_LIGHT
+
+
+# ---------------------------------------------------------------------------
+# Indicateur vital
+# ---------------------------------------------------------------------------
+
+
+def test_indicateur_vital_alive_genere_vivant_markup(tmp_path, monkeypatch):
+    """pid vivant + identité trader.daemon → vital.status == "alive", markup VIVANT."""
+    from datetime import UTC, datetime, timedelta
+    import json
+    from trader.cockpit_supervisor import daemon_vital_state
+
+    status_file = tmp_path / "daemon_status.json"
+    now = datetime.now(UTC)
+    ts = (now - timedelta(seconds=30)).isoformat()
+    status_file.write_text(json.dumps({"ts": ts, "phase": "idle", "pid": 42}), encoding="utf-8")
+
+    monkeypatch.setattr("trader.cockpit_supervisor.os.kill", lambda p, s: None)
+    monkeypatch.setattr("trader.cockpit_supervisor._get_cmdline", lambda p: "uv run python -m trader.daemon --live")
+
+    vital = daemon_vital_state(status_file)
+    assert vital.status == "alive"
+    assert vital.battement_old is False
+    # Le markup produit pour ALIVE
+    vital_str = "[bold green]● VIVANT[/bold green]"
+    assert "VIVANT" in vital_str
+
+
+def test_indicateur_vital_sans_pid_genere_never_started_markup(tmp_path):
+    """daemon_status.json sans champ pid → never_started (format pré-migration)."""
+    from datetime import UTC, datetime, timedelta
+    import json
+    from trader.cockpit_supervisor import daemon_vital_state
+
+    status_file = tmp_path / "daemon_status.json"
+    now = datetime.now(UTC)
+    ts = (now - timedelta(minutes=10)).isoformat()
+    # Pas de champ pid → never_started même avec ts vieux
+    status_file.write_text(json.dumps({"ts": ts, "phase": "idle"}), encoding="utf-8")
+
+    vital = daemon_vital_state(status_file)
+    assert vital.status == "never_started"
+
+    vital_str = "[dim]● jamais démarré[/dim]"
+    assert "jamais" in vital_str
+
+
+async def test_cockpit_monte_avec_daemon_status_recent(tmp_path, monkeypatch):
+    """L'app monte sans crash avec un daemon_status.json récent — smoke intégration."""
+    from datetime import UTC, datetime, timedelta
+    import json
+
+    _make_minimal_state(tmp_path)
+    now = datetime.now(UTC)
+    ts = (now - timedelta(seconds=30)).isoformat()
+    status_data = {
+        "ts": ts, "phase": "idle", "decisions_done": 0,
+        "symbols_total": 0, "model_calls_used": 0, "max_model_calls_per_cycle": 25,
+    }
+    (tmp_path / "daemon_status.json").write_text(json.dumps(status_data), encoding="utf-8")
+
+    monkeypatch.setattr(cockpit_module, "_STATE_DIR", tmp_path)
+    monkeypatch.setattr(cockpit_module, "_EVENTS_FILE", tmp_path / "events.jsonl")
+    monkeypatch.setattr(cockpit_module, "_KILL_FILE", tmp_path / "KILL")
+
+    app = CockpitApp()
+    async with app.run_test(size=(200, 50)) as _:
+        # L'app doit monter sans exception
+        assert app.query_one("#cockpit-status") is not None
+
+
+async def test_cockpit_monte_avec_daemon_status_vieux(tmp_path, monkeypatch):
+    """L'app monte sans crash avec un daemon_status.json vieux > 3 min."""
+    from datetime import UTC, datetime, timedelta
+    import json
+
+    _make_minimal_state(tmp_path)
+    now = datetime.now(UTC)
+    ts = (now - timedelta(minutes=10)).isoformat()
+    status_data = {
+        "ts": ts, "phase": "idle", "decisions_done": 0,
+        "symbols_total": 0, "model_calls_used": 0, "max_model_calls_per_cycle": 25,
+    }
+    (tmp_path / "daemon_status.json").write_text(json.dumps(status_data), encoding="utf-8")
+
+    monkeypatch.setattr(cockpit_module, "_STATE_DIR", tmp_path)
+    monkeypatch.setattr(cockpit_module, "_EVENTS_FILE", tmp_path / "events.jsonl")
+    monkeypatch.setattr(cockpit_module, "_KILL_FILE", tmp_path / "KILL")
+
+    app = CockpitApp()
+    async with app.run_test(size=(200, 50)) as _:
+        assert app.query_one("#cockpit-status") is not None
+
+
+# ---------------------------------------------------------------------------
+# Bindings déclarés : s / X / k
+# ---------------------------------------------------------------------------
+
+
+async def test_cockpit_binding_s_declare(tmp_path, monkeypatch):
+    """Le binding 's' doit être déclaré dans BINDINGS."""
+    _make_minimal_state(tmp_path)
+    monkeypatch.setattr(cockpit_module, "_STATE_DIR", tmp_path)
+    monkeypatch.setattr(cockpit_module, "_EVENTS_FILE", tmp_path / "events.jsonl")
+    monkeypatch.setattr(cockpit_module, "_KILL_FILE", tmp_path / "KILL")
+
+    app = CockpitApp()
+    async with app.run_test(size=(200, 50)) as _:
+        keys = [b.key for b in app.BINDINGS]
+        assert "s" in keys
+
+
+async def test_cockpit_binding_X_declare(tmp_path, monkeypatch):
+    """Le binding 'X' (majuscule) doit être déclaré dans BINDINGS."""
+    _make_minimal_state(tmp_path)
+    monkeypatch.setattr(cockpit_module, "_STATE_DIR", tmp_path)
+    monkeypatch.setattr(cockpit_module, "_EVENTS_FILE", tmp_path / "events.jsonl")
+    monkeypatch.setattr(cockpit_module, "_KILL_FILE", tmp_path / "KILL")
+
+    app = CockpitApp()
+    async with app.run_test(size=(200, 50)) as _:
+        keys = [b.key for b in app.BINDINGS]
+        assert "X" in keys
+
+
+async def test_cockpit_binding_k_declare(tmp_path, monkeypatch):
+    """Le binding 'k' doit être déclaré dans BINDINGS."""
+    _make_minimal_state(tmp_path)
+    monkeypatch.setattr(cockpit_module, "_STATE_DIR", tmp_path)
+    monkeypatch.setattr(cockpit_module, "_EVENTS_FILE", tmp_path / "events.jsonl")
+    monkeypatch.setattr(cockpit_module, "_KILL_FILE", tmp_path / "KILL")
+
+    app = CockpitApp()
+    async with app.run_test(size=(200, 50)) as _:
+        keys = [b.key for b in app.BINDINGS]
+        assert "k" in keys
+
+
+# ---------------------------------------------------------------------------
+# Modals : X et k ouvrent des modals
+# ---------------------------------------------------------------------------
+
+
+async def test_cockpit_binding_X_monte_modal(tmp_path, monkeypatch):
+    """La touche X pousse un écran modal ConfirmStop sur la pile."""
+    _make_minimal_state(tmp_path)
+    monkeypatch.setattr(cockpit_module, "_STATE_DIR", tmp_path)
+    monkeypatch.setattr(cockpit_module, "_EVENTS_FILE", tmp_path / "events.jsonl")
+    monkeypatch.setattr(cockpit_module, "_KILL_FILE", tmp_path / "KILL")
+
+    app = CockpitApp()
+    async with app.run_test(size=(200, 50)) as pilot:
+        await pilot.press("X")
+        from trader.cockpit import ConfirmStop
+        # push_screen pousse sur la pile — l'écran actif est le modal
+        assert isinstance(app.screen, ConfirmStop)
+
+
+async def test_cockpit_binding_k_monte_modal(tmp_path, monkeypatch):
+    """La touche k pousse un écran modal ConfirmKill sur la pile."""
+    _make_minimal_state(tmp_path)
+    monkeypatch.setattr(cockpit_module, "_STATE_DIR", tmp_path)
+    monkeypatch.setattr(cockpit_module, "_EVENTS_FILE", tmp_path / "events.jsonl")
+    monkeypatch.setattr(cockpit_module, "_KILL_FILE", tmp_path / "KILL")
+
+    app = CockpitApp()
+    async with app.run_test(size=(200, 50)) as pilot:
+        await pilot.press("k")
+        from trader.cockpit import ConfirmKill
+        assert isinstance(app.screen, ConfirmKill)
+
+
+# ---------------------------------------------------------------------------
+# q ne touche jamais au daemon
+# ---------------------------------------------------------------------------
+
+
+async def test_cockpit_q_ne_signale_pas_le_daemon(tmp_path, monkeypatch):
+    """q quitte sans envoyer aucun signal au daemon — vérifié par monkeypatch os.kill."""
+    _make_minimal_state(tmp_path)
+    monkeypatch.setattr(cockpit_module, "_STATE_DIR", tmp_path)
+    monkeypatch.setattr(cockpit_module, "_EVENTS_FILE", tmp_path / "events.jsonl")
+    monkeypatch.setattr(cockpit_module, "_KILL_FILE", tmp_path / "KILL")
+
+    signals_sent = []
+    import os as _os_real
+    import trader.cockpit_supervisor as sup_module
+
+    class TrackingOS:
+        def kill(self, pid, sig):
+            signals_sent.append((pid, sig))
+            return _os_real.kill(pid, sig)
+
+        def __getattr__(self, name):
+            return getattr(_os_real, name)
+
+    monkeypatch.setattr(sup_module, "os", TrackingOS())
+
+    app = CockpitApp()
+    async with app.run_test(size=(200, 50)) as pilot:
+        await pilot.press("q")
+
+    assert signals_sent == [], f"q a envoyé des signaux inattendus : {signals_sent}"

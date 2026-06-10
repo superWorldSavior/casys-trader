@@ -1,19 +1,13 @@
 # casys-trader — raccourcis. Lance `make` (ou `make help`) pour la liste.
 .DEFAULT_GOAL := help
-.PHONY: help tui demo daemon live once test stats attrib logs cockpit kill unkill
+.PHONY: help watch live once test
 
 help:  ## Affiche cette aide
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
 		| awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-10s\033[0m %s\n", $$1, $$2}'
 
-tui:  ## Dashboard live (lecture seule) — Ctrl+C pour quitter
-	uv run python -m trader.tui
-
-demo:  ## Aperçu du dashboard avec données d'exemple (sans moteur)
-	uv run python scripts/tui_demo.py
-
-daemon:  ## Moteur en DRY-RUN continu (log les ordres, ne mute rien)
-	uv run python -m trader.daemon
+watch:  ## Salle de contrôle — voir et piloter le daemon (dashboard + logs + supervision)
+	uv run python -m trader.cockpit
 
 live:  ## Moteur en PAPER réel (exécute les ordres simulés, écrit l'état)
 	uv run python -m trader.daemon --live
@@ -23,21 +17,3 @@ once:  ## Un seul cycle dry-run (test rapide)
 
 test:  ## Lance toute la suite de tests
 	uv run pytest -q
-
-stats:  ## KPI live (rendement, drawdown, sharpe…)
-	uv run python -m trader.stats
-
-attrib:  ## Attribution décision→résultat (P&L par trade, calibration)
-	uv run python -m trader.attribution
-
-logs:  ## Viewer humain des logs machine (live tail, JSONL joli) — toolong
-	uvx --from toolong tl state/events.jsonl state/decisions.jsonl
-
-cockpit:  ## Cockpit unifié (dashboard + logs live) — Textual
-	uv run python -m trader.cockpit
-
-kill:  ## Stop d'urgence : crée le fichier KILL (zéro ordre)
-	touch KILL
-
-unkill:  ## Retire le kill-switch
-	rm -f KILL

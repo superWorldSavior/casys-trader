@@ -39,7 +39,6 @@ from .tools.execution import Order, SimBroker
 from .tools.data_source import (
     CompositeDataSource,
     YFinanceDataSource,
-    load_composite_from_config,
     parse_data_sources_config,
 )
 from .tools.ib_source import IBDataSource, connect_ib
@@ -95,6 +94,7 @@ def _write_status(phase: str, **payload: object) -> None:
         {
             "ts": datetime.now(timezone.utc).isoformat(),
             "phase": phase,
+            "pid": os.getpid(),
             **payload,
         },
     )
@@ -1769,6 +1769,13 @@ def main(argv: list[str] | None = None) -> None:
     from .logging_setup import setup_logging
     setup_logging(level=logging.INFO)
     dry_run = not args.live
+
+    # Identité daemon : écrire le pid file en premier (atomique, avant tout _write_status)
+    # Le cockpit et cockpit_supervisor lisent ce fichier pour identifier ce process.
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    _pid_file = STATE_DIR / "daemon.pid"
+    _pid_file.write_text(str(os.getpid()), encoding="utf-8")
+
     sched = scheduler.Scheduler(STATE_DIR / "scheduler.json")
     log.info("daemon démarré (dry_run=%s, once=%s)", dry_run, args.once)
     bootstrap = args.bootstrap_all
@@ -1953,6 +1960,11 @@ def main(argv: list[str] | None = None) -> None:
     finally:
         if data_source is not None:
             _disconnect_quietly(data_source)
+        # Suppression du pid file au shutdown propre (SIGINT géré = KeyboardInterrupt)
+        try:
+            _pid_file.unlink(missing_ok=True)
+        except Exception:  # noqa: BLE001 — best-effort, ne jamais bloquer la sortie
+            pass
 
 
 if __name__ == "__main__":

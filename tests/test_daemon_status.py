@@ -304,3 +304,109 @@ def test_run_cycle_garde_tradable_une_barre_horaire_de_59_minutes(
     assert report["stale_market_data"] == {}
     assert [decision["symbol"] for decision in report["decisions"]] == ["SPY"]
     assert report["decisions"][0]["rationale"] == "attente"
+
+
+# ---------------------------------------------------------------------------
+# Identité daemon : pid + started_at dans daemon_status.json
+# ---------------------------------------------------------------------------
+
+
+def test_run_cycle_status_contient_pid(monkeypatch, tmp_path, patch_batch, make_data_source) -> None:
+    """_write_status inclut le champ 'pid' (os.getpid()) dans chaque battement."""
+    import os
+    _write_runtime_config(tmp_path)
+    state_dir = tmp_path / "state"
+    now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
+
+    monkeypatch.setattr(daemon, "ROOT", tmp_path)
+    monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+    data_source = make_data_source(lambda symbol, lookback, interval: [
+        Bar(ts=now.isoformat(), open=100.0, high=101.0, low=99.0, close=100.0, volume=1000.0)
+    ])
+    patch_batch(lambda **kwargs: Decision.hold(kwargs["symbol"], "attente"))
+
+    daemon.run_cycle(
+        dry_run=True,
+        now=now,
+        symbols_filter=["SPY"],
+        sched=Scheduler(state_dir / "scheduler.json"),
+        data_source=data_source,
+    )
+
+    status = json.loads((state_dir / "daemon_status.json").read_text())
+    assert "pid" in status
+    assert status["pid"] == os.getpid()
+
+
+def _fast_main_patches(monkeypatch, tmp_path, state_dir):
+    """Patches communs pour exécuter main() < 1 s.
+
+    - connect_ib → MarketError immédiate (pas de retries réseau IB)
+    - time.sleep → no-op (pas d'attente entre cycles)
+    - ROOT/STATE_DIR → tmp_path
+
+    Avec --once et MarketError sur connect_ib, la boucle fait 1 itération :
+    try → connect_ib → MarketError → except → _write_status → break → finally.
+    """
+    from trader.tools import market
+
+    monkeypatch.setattr(daemon, "ROOT", tmp_path)
+    monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+    monkeypatch.setattr(daemon, "connect_ib", lambda *a, **kw: (_ for _ in ()).throw(
+        market.MarketError("ib_unavailable", "stub test")
+    ))
+    monkeypatch.setattr("trader.daemon.time.sleep", lambda _: None)
+
+
+def test_main_ecrit_pid_file_au_demarrage(monkeypatch, tmp_path) -> None:
+    """main() écrit state/daemon.pid avec son os.getpid() avant le premier _write_status.
+
+    Rapide : connect_ib lève MarketError immédiatement, time.sleep=no-op.
+    """
+    import os
+    _write_runtime_config(tmp_path)
+    state_dir = tmp_path / "state"
+    _fast_main_patches(monkeypatch, tmp_path, state_dir)
+
+    pid_written_before_first_status: list[str] = []
+    original_write_status = daemon._write_status
+
+    def patched_write_status(phase, **kwargs):
+        pid_path = state_dir / "daemon.pid"
+        if pid_path.exists():
+            pid_written_before_first_status.append(
+                pid_path.read_text(encoding="utf-8").strip()
+            )
+        # Laisser _write_status s'exécuter normalement (pas de KeyboardInterrupt ici),
+        # puis stopper la boucle avec KeyboardInterrupt après la première écriture.
+        original_write_status(phase, **kwargs)
+        raise KeyboardInterrupt("stop after first write_status")
+
+    monkeypatch.setattr(daemon, "_write_status", patched_write_status)
+
+    import pytest
+    with pytest.raises((KeyboardInterrupt, SystemExit)):
+        daemon.main(["--once"])
+
+    assert len(pid_written_before_first_status) >= 1, "daemon.pid doit exister avant le premier _write_status"
+    assert pid_written_before_first_status[0] == str(os.getpid())
+
+
+def test_main_supprime_pid_file_au_shutdown_propre(monkeypatch, tmp_path) -> None:
+    """main() supprime state/daemon.pid dans le finally (shutdown propre).
+
+    Rapide : connect_ib lève MarketError → --once → break → finally → pid supprimé.
+    """
+    _write_runtime_config(tmp_path)
+    state_dir = tmp_path / "state"
+    _fast_main_patches(monkeypatch, tmp_path, state_dir)
+
+    # Pas de patch de _write_status — on laisse la boucle --once se terminer
+    # naturellement via MarketError + stop_after_iteration = True.
+    daemon.main(["--once"])
+
+    pid_path = state_dir / "daemon.pid"
+    assert not pid_path.exists(), "daemon.pid doit être supprimé au shutdown"
+
+    pid_path = state_dir / "daemon.pid"
+    assert not pid_path.exists(), "daemon.pid doit être supprimé au shutdown"

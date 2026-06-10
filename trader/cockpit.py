@@ -1,21 +1,30 @@
-"""cockpit — Cockpit console unifié v1 (Textual).
+"""cockpit — Salle de contrôle du daemon casys-trader (Textual).
 
-Fusion COMPLÈTE du dashboard TUI (KPIs, courbe d'équité, positions, attribution,
-décisions, learnings, header daemon) et d'un flux de logs live (events.jsonl),
-en une seule app 100 % console.
+Dashboard complet (KPIs, courbe d'équité, positions, attribution, décisions,
+learnings) + flux de logs live (events.jsonl) + supervision du daemon.
 
-Parité garantie avec tui.py : toutes les fonctions _build_* sont importées et
-réutilisées via Static.update(renderable) — aucune logique n'est dupliquée.
+Pattern superviseur : le daemon reste un process indépendant qui survit à
+la fermeture du cockpit. Le cockpit peut le démarrer, l'arrêter et toggler
+le kill-switch.
+
+Écriture autorisée (UNIQUEMENT ces fichiers) :
+    state/daemon.pid          — PID du daemon au lancement
+    state/daemon_console.log  — stdout/stderr du daemon (append)
+    KILL                      — fichier kill-switch (toggle)
 
 Usage :
     uv run python -m trader.cockpit
-    make cockpit
+    make watch
 
 Raccourcis :
-    q         Quitter
+    q         Quitter (ne touche JAMAIS au daemon)
+    s         Démarrer le daemon (anti-double-lancement)
+    X         Arrêter le daemon (modal de confirmation → SIGINT)
+    k         Toggle kill-switch (modal de confirmation)
     c         Toggle l'affichage des events cycle_started/cycle_completed
     f         Pause/reprise de l'auto-scroll du panneau logs
     l         Toggle visibilité du panneau logs (plein écran dashboard)
+    d         Dark/Light (thèmes casys-salmon / casys-ink)
 """
 
 from __future__ import annotations
@@ -26,8 +35,12 @@ from pathlib import Path
 from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.binding import Binding
+from textual.containers import Horizontal, Vertical
+from textual.screen import ModalScreen
 from textual.theme import Theme
-from textual.widgets import Footer, RichLog, Static
+from textual.widgets import Button, Footer, Label, RichLog, Static
+
+from trader.cockpit_supervisor import daemon_vital_state
 
 from trader.cockpit_events import (
     EventClass,
@@ -187,7 +200,26 @@ class CockpitStatus(Static):
         acc_style = palette["status_accent"]
         phase_style = palette["status_phase"]
 
+        # Indicateur vital — pid+identité (pas de seuil temporel pour vivant/mort)
+        vital = daemon_vital_state(_STATE_DIR / "daemon_status.json")
+        if vital.status == "alive":
+            if vital.battement_old:
+                # Daemon vivant mais battement ancien (batch long en cours)
+                _bat_mins = int(vital.since_seconds) // 60 if vital.since_seconds else 0
+                _bat_secs = int(vital.since_seconds) % 60 if vital.since_seconds else 0
+                vital_str = (
+                    f"[bold yellow]● VIVANT[/bold yellow]"
+                    f" [dim](occupé, battement {_bat_mins:02d}:{_bat_secs:02d})[/dim]"
+                )
+            else:
+                vital_str = "[bold green]● VIVANT[/bold green]"
+        elif vital.status == "stopped":
+            vital_str = "[bold red]● ARRÊTÉ[/bold red]"
+        else:  # never_started
+            vital_str = "[dim]● jamais démarré[/dim]"
+
         text = (
+            f"  {vital_str}"
             f"  Équité [{eq_style}]${equity:,.2f}[/{eq_style}]"
             f"  Cash [{acc_style}]${cash:,.2f}[/{acc_style}]"
             f"  P&L [{ret_style}]{ret_pct:+.2f}%[/{ret_style}]"
@@ -376,6 +408,86 @@ class EventsPane(Static):
 
 
 # ---------------------------------------------------------------------------
+# Modals de confirmation
+# ---------------------------------------------------------------------------
+
+
+class ConfirmStop(ModalScreen[bool]):
+    """Modal de confirmation pour l'arrêt du daemon (binding X)."""
+
+    DEFAULT_CSS = """
+    ConfirmStop {
+        align: center middle;
+    }
+    ConfirmStop Vertical {
+        background: $surface;
+        border: solid $error;
+        padding: 1 2;
+        width: 50;
+        height: auto;
+    }
+    ConfirmStop Horizontal {
+        height: auto;
+        align: center middle;
+        margin-top: 1;
+    }
+    ConfirmStop Button {
+        margin: 0 1;
+    }
+    """
+
+    def compose(self) -> ComposeResult:
+        with Vertical():
+            yield Label("Arrêter le daemon ?\n(SIGINT — arrêt propre)")
+            with Horizontal():
+                yield Button("Oui", id="confirm-stop-yes", variant="error")
+                yield Button("Non", id="confirm-stop-no", variant="default")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        self.dismiss(event.button.id == "confirm-stop-yes")
+
+
+class ConfirmKill(ModalScreen[bool]):
+    """Modal de confirmation pour le toggle kill-switch (binding k)."""
+
+    DEFAULT_CSS = """
+    ConfirmKill {
+        align: center middle;
+    }
+    ConfirmKill Vertical {
+        background: $surface;
+        border: solid $warning;
+        padding: 1 2;
+        width: 50;
+        height: auto;
+    }
+    ConfirmKill Horizontal {
+        height: auto;
+        align: center middle;
+        margin-top: 1;
+    }
+    ConfirmKill Button {
+        margin: 0 1;
+    }
+    """
+
+    def __init__(self, kill_active: bool, **kwargs: object) -> None:
+        super().__init__(**kwargs)
+        self._kill_active = kill_active
+
+    def compose(self) -> ComposeResult:
+        action = "Retirer" if self._kill_active else "Activer"
+        with Vertical():
+            yield Label(f"{action} le kill-switch ?\n(bloque/débloque tous les ordres)")
+            with Horizontal():
+                yield Button("Oui", id="confirm-kill-yes", variant="warning")
+                yield Button("Non", id="confirm-kill-no", variant="default")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        self.dismiss(event.button.id == "confirm-kill-yes")
+
+
+# ---------------------------------------------------------------------------
 # App principale
 # ---------------------------------------------------------------------------
 
@@ -396,6 +508,9 @@ class CockpitApp(App):
 
     BINDINGS = [
         Binding("q", "quit", "Quitter"),
+        Binding("s", "start_daemon", "Démarrer daemon"),
+        Binding("X", "stop_daemon_confirm", "Arrêter daemon"),
+        Binding("k", "toggle_kill", "Kill-switch"),
         Binding("c", "toggle_cycles", "Toggle cycles"),
         Binding("f", "toggle_scroll", "Pause scroll"),
         Binding("l", "toggle_logs", "Toggle logs"),
@@ -532,6 +647,55 @@ class CockpitApp(App):
         # Re-render immédiat avec la nouvelle palette
         if self._last_state is not None:
             self._apply_state(self._last_state, self._last_kill_active)
+
+    def action_start_daemon(self) -> None:
+        """Lance le daemon en process détaché (anti-double-lancement via daemon.pid)."""
+        from trader.cockpit_supervisor import launch_daemon
+
+        result = launch_daemon(
+            pid_file=_STATE_DIR / "daemon.pid",
+            log_file=_STATE_DIR / "daemon_console.log",
+            root=_ROOT,
+            status_file=_STATE_DIR / "daemon_status.json",
+        )
+        if result.launched:
+            self.notify(f"Daemon lancé (PID {result.pid})", severity="information")
+        else:
+            self.notify("Daemon déjà en marche", severity="warning")
+
+    def action_stop_daemon_confirm(self) -> None:
+        """Ouvre le modal de confirmation pour arrêter le daemon."""
+
+        async def _on_confirm(confirmed: bool) -> None:
+            if not confirmed:
+                return
+            from trader.cockpit_supervisor import stop_daemon
+
+            result = stop_daemon(pid_file=_STATE_DIR / "daemon.pid")
+            if result.stopped:
+                self.notify(f"Daemon arrêté (PID {result.pid})", severity="information")
+            else:
+                self.notify("Pas de daemon en cours", severity="warning")
+
+        self.push_screen(ConfirmStop(), _on_confirm)
+
+    def action_toggle_kill(self) -> None:
+        """Ouvre le modal de confirmation pour toggler le kill-switch."""
+        kill_active = _KILL_FILE.exists()
+
+        async def _on_confirm(confirmed: bool) -> None:
+            if not confirmed:
+                return
+            from trader.cockpit_supervisor import toggle_kill_switch
+
+            active = toggle_kill_switch(kill_file=_KILL_FILE)
+            status = "activé" if active else "désactivé"
+            self.notify(
+                f"Kill-switch {status}",
+                severity="warning" if active else "information",
+            )
+
+        self.push_screen(ConfirmKill(kill_active=kill_active), _on_confirm)
 
 
 # ---------------------------------------------------------------------------
