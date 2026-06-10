@@ -4,32 +4,38 @@
 
 starting_cash: 100000
 
-# Univers resserré 2026-06-08 : 28 → 15 symboles. On retire les doublons
-# corrélés (un représentant par facteur de risque), on conserve le panier TW.
-# Coupés : DIA, EWT, EWQ, ITA, XLE, BZ=F, AAPL, GBPUSD, USDCHF, USDCAD,
-# AUDUSD, NZDUSD, EURJPY. (Contrats toujours définis dans ib_contracts.yaml
-# pour ré-expansion ultérieure.)
+# Univers thématique 2026-06-10 (thèses Erwan) : énergie (gaz/pétrole, crise
+# Moyen-Orient), défense européenne (surtout française), IA/semi-conducteurs.
+# Panier TW dégraissé : on garde les deux semis (TSMC, MediaTek — le plus
+# volatil de l'univers, ~6 %/j), on coupe Foxconn/Chunghwa/Cathay/Evergreen
+# (2317.TW, 2412.TW, 2882.TW, 2603.TW).
 #
-# Futures CME retirés 2026-06-10 (CL=F, NG=F, GC=F) : data différée ~10-15 min
-# incompressible sans abonnement → calibration polluée (5 des 6 premiers
-# round-trips étaient dessus, dont le short CL=F de
-# docs/postmortems/2026-06-09-short-clf-hard-stop.md). Retour prévu en prod
-# avec souscription IB temps réel (market_data_type=1). Le FX (temps réel
-# gratuit IB) reprend le rôle de terrain 24h.
+# Énergie via ETF US (USO/UNG) et PAS via futures CME : les futures (CL=F,
+# NG=F, GC=F) restent exclus depuis 2026-06-10 — data différée ~10-15 min
+# incompressible sans abonnement → calibration polluée (cf.
+# docs/postmortems/2026-06-09-short-clf-hard-stop.md). Les ETF ont des barres
+# 15m yfinance fraîches (~10 min), comme SPY. Retour des futures prévu en
+# prod avec souscription IB temps réel (market_data_type=1).
+#
+# Historique : trim 28 → 15 (2026-06-08, un représentant par facteur de
+# risque), retrait CME (2026-06-10). Contrats toujours définis dans
+# ib_contracts.yaml pour ré-expansion ultérieure.
 symbols:
   # Indices (via ETF)
   - SPY   # S&P 500
   - QQQ   # Nasdaq 100
-  - ^FCHI # CAC 40
-  # Nasdaq individuelle (pari direct ; tendance tech large déjà via QQQ)
-  - NVDA
-  # Forex majors (Yahoo Finance FX spot proxy) — resserré à 2 paires non redondantes
+  - ^FCHI # CAC 40 (aussi toile de fond des valeurs FR défense)
+  # IA / semi-conducteurs
+  - NVDA      # Nvidia (US)
+  - 2330.TW   # TSMC (TWSE)
+  - 2454.TW   # MediaTek (TWSE)
+  # Énergie (thèse gaz/pétrole — ETF session US, data 15m fraîche)
+  - USO   # pétrole WTI
+  - UNG   # gaz naturel
+  # Défense européenne (thèse géopolitique)
+  - HO.PA   # Thales
+  - AM.PA   # Dassault Aviation
+  - RHM.DE  # Rheinmetall (bêta défense EU, lead-lag avec les FR)
+  # Forex majors (terrain 24h, temps réel IB IDEALPRO) — vol basse 06/2026
   - EURUSD=X
   - USDJPY=X
-  # Actions taïwanaises (TWSE, TWD) — data IB confirmée 2026-06-08
-  - 2330.TW   # TSMC (semi)
-  - 2317.TW   # Hon Hai / Foxconn (electronics)
-  - 2454.TW   # MediaTek (semi)
-  - 2412.TW   # Chunghwa Telecom (telecom)
-  - 2882.TW   # Cathay Financial (finance)
-  - 2603.TW   # Evergreen Marine (shipping)
