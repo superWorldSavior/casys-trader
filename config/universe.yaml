@@ -9,16 +9,18 @@ starting_cash: 100000
 # Coupés : DIA, EWT, EWQ, ITA, XLE, BZ=F, AAPL, GBPUSD, USDCHF, USDCAD,
 # AUDUSD, NZDUSD, EURJPY. (Contrats toujours définis dans ib_contracts.yaml
 # pour ré-expansion ultérieure.)
+#
+# Futures CME retirés 2026-06-10 (CL=F, NG=F, GC=F) : data différée ~10-15 min
+# incompressible sans abonnement → calibration polluée (5 des 6 premiers
+# round-trips étaient dessus, dont le short CL=F de
+# docs/postmortems/2026-06-09-short-clf-hard-stop.md). Retour prévu en prod
+# avec souscription IB temps réel (market_data_type=1). Le FX (temps réel
+# gratuit IB) reprend le rôle de terrain 24h.
 symbols:
   # Indices (via ETF)
   - SPY   # S&P 500
   - QQQ   # Nasdaq 100
   - ^FCHI # CAC 40
-  # Commodities futures continus (proxy paper Yahoo Finance)
-  - CL=F  # WTI crude oil
-  - NG=F  # Natural gas
-  # Métaux précieux (future COMEX, ~24/5)
-  - GC=F  # Gold
   # Nasdaq individuelle (pari direct ; tendance tech large déjà via QQQ)
   - NVDA
   # Forex majors (Yahoo Finance FX spot proxy) — resserré à 2 paires non redondantes
