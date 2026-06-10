@@ -1,6 +1,6 @@
 # casys-trader — raccourcis. Lance `make` (ou `make help`) pour la liste.
 .DEFAULT_GOAL := help
-.PHONY: help tui demo daemon live once test stats attrib kill unkill
+.PHONY: help tui demo daemon live once test stats attrib logs kill unkill
 
 help:  ## Affiche cette aide
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -29,6 +29,9 @@ stats:  ## KPI live (rendement, drawdown, sharpe…)
 
 attrib:  ## Attribution décision→résultat (P&L par trade, calibration)
 	uv run python -m trader.attribution
+
+logs:  ## Viewer humain des logs machine (live tail, JSONL joli) — toolong
+	uvx --from toolong tl state/events.jsonl state/decisions.jsonl
 
 kill:  ## Stop d'urgence : crée le fichier KILL (zéro ordre)
 	touch KILL
