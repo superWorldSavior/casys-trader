@@ -1428,3 +1428,583 @@ class TestCheminBloqueObservabilite:
         snap = exit_entry["plan_snapshot"]
         assert snap["hard_stop_price"] == pytest.approx(95.0)
         assert snap["side"] == "LONG"
+
+
+class TestExitChecks5mBars:
+    """Checks de sortie affinés sur barres 5m pour les symboles avec plan ouvert."""
+
+    def _setup_state(self, tmp_path, state_dir, *, opened_at: str, symbol: str = "SPY") -> None:
+        from trader.tools.execution import Order, SimBroker
+        from trader.trade_plan import TradePlanStore, create_trade_plan
+        broker = SimBroker(state_dir / "broker.json", starting_cash=100_000)
+        broker.submit(Order(symbol, "BUY", 10.0), 100.0, opened_at, dry_run=False)
+        TradePlanStore(state_dir / "trade_plans.json").upsert(
+            create_trade_plan(
+                symbol=symbol,
+                side="LONG",
+                quantity=10.0,
+                entry_price=100.0,
+                opened_at=opened_at,
+                raw_exit_plan={"hard_stop": 95.0},
+            )
+        )
+
+    def test_5m_fetch_uniquement_sur_symbole_avec_plan(
+        self, monkeypatch, tmp_path, patch_batch, make_data_source
+    ) -> None:
+        """get_bars doit être appelé avec interval='5m' pour le symbole avec plan,
+        et PAS avec interval='5m' pour un symbole sans plan."""
+        _write_runtime_config(tmp_path, symbols=["SPY", "QQQ"])
+        state_dir = tmp_path / "state"
+        now = datetime(2026, 6, 10, 12, 0, tzinfo=timezone.utc)
+        opened_at = "2026-06-10T11:00:00+00:00"
+        self._setup_state(tmp_path, state_dir, opened_at=opened_at, symbol="SPY")
+        # QQQ n'a pas de plan → pas de fetch 5m attendu pour QQQ
+
+        monkeypatch.setattr(daemon, "ROOT", tmp_path)
+        monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+
+        calls: list[tuple[str, str, str]] = []
+
+        def get_bars_spy(symbol, lookback, interval):
+            calls.append((symbol, lookback, interval))
+            return [Bar(ts=now.isoformat(), open=98.0, high=99.0, low=97.5, close=98.0, volume=500.0)]
+
+        data_source = make_data_source(get_bars_spy)
+        patch_batch(lambda **kwargs: Decision.hold(kwargs["symbol"], "hold"))
+
+        daemon.run_cycle(
+            dry_run=True,
+            now=now,
+            symbols_filter=["SPY", "QQQ"],
+            sched=Scheduler(state_dir / "scheduler.json"),
+            data_source=data_source,
+        )
+
+        five_m_calls = [(sym, iv) for sym, _lk, iv in calls if iv == "5m"]
+        assert ("SPY", "5m") in five_m_calls, "SPY (avec plan) doit être fetché en 5m"
+        assert ("QQQ", "5m") not in five_m_calls, "QQQ (sans plan) ne doit PAS être fetché en 5m"
+
+    def test_spike_5m_declenche_le_stop(
+        self, monkeypatch, tmp_path, patch_batch, make_data_source
+    ) -> None:
+        """Un spike visible sur la barre 5m (bar_low <= stop) mais invisible en 15m
+        doit déclencher le stop grâce aux barres 5m."""
+        _write_runtime_config(tmp_path)
+        state_dir = tmp_path / "state"
+        # Plan LONG SPY, stop à 95.0
+        # Barre 15m low=96 → pas de stop
+        # Barre 5m low=94.5 ≤ 95 → stop déclenché
+        opened_at = "2026-06-10T11:00:00+00:00"
+        now = datetime(2026, 6, 10, 12, 0, tzinfo=timezone.utc)
+        self._setup_state(tmp_path, state_dir, opened_at=opened_at)
+
+        monkeypatch.setattr(daemon, "ROOT", tmp_path)
+        monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+
+        bar_15m = Bar(
+            ts="2026-06-10T11:45:00+00:00",
+            open=97.0, high=98.0, low=96.0, close=97.0, volume=1000.0,
+        )
+        bar_5m = Bar(
+            ts="2026-06-10T11:55:00+00:00",
+            open=96.0, high=96.5, low=94.5, close=95.5, volume=300.0,
+        )
+
+        def get_bars(symbol, lookback, interval):
+            if interval == "5m":
+                return [bar_5m]
+            return [bar_15m]
+
+        data_source = make_data_source(get_bars)
+        patch_batch(lambda **kwargs: Decision.hold(kwargs["symbol"], "hold"))
+
+        report = daemon.run_cycle(
+            dry_run=False,
+            now=now,
+            symbols_filter=[],
+            sched=Scheduler(state_dir / "scheduler.json"),
+            data_source=data_source,
+        )
+
+        assert len(report["planned_exits"]) == 1, "Le stop doit être déclenché via la barre 5m"
+        assert report["planned_exits"][0]["reason"] == "hard_stop"
+
+    def test_fallback_15m_si_fetch_5m_echoue(
+        self, monkeypatch, tmp_path, patch_batch, make_data_source
+    ) -> None:
+        """Si le fetch 5m lève une exception, le daemon doit tomber en fallback
+        sur les barres 15m et ne pas bloquer l'évaluation des exits.
+
+        Le 15m fournit low=96 > stop=95 → PAS de stop.
+        Le 5m aurait fourni low=94.5 ≤ 95 → stop déclenché.
+        Mais ici le 5m échoue, donc fallback 15m → PAS de stop (planned_exits vide).
+
+        Ce test vérifie que :
+        1. L'exception 5m est absorbée (pas de crash du daemon).
+        2. Les barres 15m sont utilisées en fallback.
+        3. Le comportement est cohérent avec les barres 15m (pas de stop ici).
+        """
+        _write_runtime_config(tmp_path)
+        state_dir = tmp_path / "state"
+        opened_at = "2026-06-10T11:00:00+00:00"
+        now = datetime(2026, 6, 10, 12, 0, tzinfo=timezone.utc)
+        self._setup_state(tmp_path, state_dir, opened_at=opened_at)
+
+        monkeypatch.setattr(daemon, "ROOT", tmp_path)
+        monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+
+        # 15m : low=96 > stop=95 → pas de stop déclenché
+        bar_15m = Bar(
+            ts="2026-06-10T11:45:00+00:00",
+            open=97.0, high=98.0, low=96.0, close=97.0, volume=1000.0,
+        )
+
+        fetch_5m_attempted = []
+
+        def get_bars(symbol, lookback, interval):
+            if interval == "5m":
+                fetch_5m_attempted.append(symbol)
+                raise RuntimeError("5m indispo simulé — erreur arbitraire")
+            return [bar_15m]
+
+        data_source = make_data_source(get_bars)
+        patch_batch(lambda **kwargs: Decision.hold(kwargs["symbol"], "hold"))
+
+        # Ne doit pas lever d'exception
+        report = daemon.run_cycle(
+            dry_run=False,
+            now=now,
+            symbols_filter=[],
+            sched=Scheduler(state_dir / "scheduler.json"),
+            data_source=data_source,
+        )
+
+        # Le fetch 5m a été tenté pour SPY (symbole avec plan)
+        assert "SPY" in fetch_5m_attempted, "Le fetch 5m doit avoir été tenté"
+        # Fallback 15m : low=96 > stop=95 → pas de stop (comportement 15m)
+        assert report["planned_exits"] == [], "Fallback 15m : low=96 > stop=95, pas de stop"
+
+    def test_bars_interval_dans_rapport_selon_chemin(
+        self, monkeypatch, tmp_path, patch_batch, make_data_source
+    ) -> None:
+        """planned_exits[*].bars_interval = '5m' quand les barres 5m ont servi,
+        '15m' quand le fallback a été pris."""
+        from trader.tools.market import MarketError
+        _write_runtime_config(tmp_path, symbols=["SPY", "QQQ"])
+        state_dir = tmp_path / "state"
+        opened_at = "2026-06-10T11:00:00+00:00"
+        now = datetime(2026, 6, 10, 12, 0, tzinfo=timezone.utc)
+
+        # SPY : plan LONG, stop 95, barre 5m low=94.5 → déclenché, interval='5m'
+        from trader.tools.execution import Order, SimBroker
+        from trader.trade_plan import TradePlanStore, create_trade_plan
+        broker = SimBroker(state_dir / "broker.json", starting_cash=100_000)
+        broker.submit(Order("SPY", "BUY", 10.0), 100.0, opened_at, dry_run=False)
+        broker.submit(Order("QQQ", "BUY", 5.0), 200.0, opened_at, dry_run=False)
+        store = TradePlanStore(state_dir / "trade_plans.json")
+        store.upsert(create_trade_plan(
+            symbol="SPY", side="LONG", quantity=10.0, entry_price=100.0,
+            opened_at=opened_at, raw_exit_plan={"hard_stop": 95.0},
+        ))
+        # QQQ : plan LONG, stop 180, fetch 5m échoue → fallback 15m, barre 15m low=178 → déclenché
+        store.upsert(create_trade_plan(
+            symbol="QQQ", side="LONG", quantity=5.0, entry_price=200.0,
+            opened_at=opened_at, raw_exit_plan={"hard_stop": 180.0},
+        ))
+
+        monkeypatch.setattr(daemon, "ROOT", tmp_path)
+        monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+
+        def get_bars(symbol, lookback, interval):
+            if interval == "5m":
+                if symbol == "SPY":
+                    return [Bar(
+                        ts="2026-06-10T11:55:00+00:00",
+                        open=96.0, high=96.5, low=94.5, close=95.5, volume=300.0,
+                    )]
+                # QQQ : échec 5m
+                raise RuntimeError("QQQ 5m indispo")
+            # 15m
+            if symbol == "SPY":
+                return [Bar(
+                    ts="2026-06-10T11:45:00+00:00",
+                    open=97.0, high=98.0, low=96.0, close=97.0, volume=1000.0,
+                )]
+            if symbol == "QQQ":
+                return [Bar(
+                    ts="2026-06-10T11:45:00+00:00",
+                    open=185.0, high=186.0, low=178.0, close=182.0, volume=800.0,
+                )]
+            return []
+
+        data_source = make_data_source(get_bars)
+        patch_batch(lambda **kwargs: Decision.hold(kwargs["symbol"], "hold"))
+
+        report = daemon.run_cycle(
+            dry_run=False,
+            now=now,
+            symbols_filter=[],
+            sched=Scheduler(state_dir / "scheduler.json"),
+            data_source=data_source,
+        )
+
+        exits_by_symbol = {e["symbol"]: e for e in report["planned_exits"]}
+        assert exits_by_symbol["SPY"]["bars_interval"] == "5m", "SPY : 5m utilisé"
+        assert exits_by_symbol["QQQ"]["bars_interval"] == "15m", "QQQ : fallback 15m"
+
+
+class TestExitChecks5mValidation:
+    """MAJOR 1 — Validation des barres 5m avant substitution."""
+
+    def _setup_long_spy(self, state_dir, *, opened_at: str) -> None:
+        from trader.tools.execution import Order, SimBroker
+        from trader.trade_plan import TradePlanStore, create_trade_plan
+        broker = SimBroker(state_dir / "broker.json", starting_cash=100_000)
+        broker.submit(Order("SPY", "BUY", 10.0), 100.0, opened_at, dry_run=False)
+        TradePlanStore(state_dir / "trade_plans.json").upsert(
+            create_trade_plan(
+                symbol="SPY", side="LONG", quantity=10.0, entry_price=100.0,
+                opened_at=opened_at, raw_exit_plan={"hard_stop": 95.0},
+            )
+        )
+
+    def test_ts_imparsable_5m_utilise_fallback_15m(
+        self, monkeypatch, tmp_path, patch_batch, make_data_source
+    ) -> None:
+        """Une barre 5m avec ts imparsable → fallback sur les barres 15m (bars_interval='15m')."""
+        _write_runtime_config(tmp_path)
+        state_dir = tmp_path / "state"
+        opened_at = "2026-06-10T11:00:00+00:00"
+        now = datetime(2026, 6, 10, 12, 0, tzinfo=timezone.utc)
+        self._setup_long_spy(state_dir, opened_at=opened_at)
+
+        monkeypatch.setattr(daemon, "ROOT", tmp_path)
+        monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+
+        # Barre 5m avec ts invalide ; high/low = valeurs qui déclenche le stop si utilisées
+        bar_5m_invalid_ts = Bar(ts="NOT_A_DATE", open=94.0, high=96.0, low=94.0, close=94.5, volume=100.0)
+        # Barre 15m saine avec low=96 > stop=95 → pas de stop
+        bar_15m = Bar(ts="2026-06-10T11:45:00+00:00", open=97.0, high=98.0, low=96.0, close=97.0, volume=1000.0)
+
+        def get_bars(symbol, lookback, interval):
+            if interval == "5m":
+                return [bar_5m_invalid_ts]
+            return [bar_15m]
+
+        data_source = make_data_source(get_bars)
+        patch_batch(lambda **kwargs: Decision.hold(kwargs["symbol"], "hold"))
+
+        report = daemon.run_cycle(
+            dry_run=False,
+            now=now,
+            symbols_filter=[],
+            sched=Scheduler(state_dir / "scheduler.json"),
+            data_source=data_source,
+        )
+
+        # Pas de stop déclenché (fallback 15m, low=96 > 95)
+        assert report["planned_exits"] == [], "ts imparsable → fallback 15m, pas de stop"
+
+    def test_high_manquant_5m_pas_de_crash_fallback_15m(
+        self, monkeypatch, tmp_path, patch_batch, make_data_source
+    ) -> None:
+        """Une barre 5m avec high non-fini (float('nan')) → fallback 15m, pas de crash."""
+        import math
+        _write_runtime_config(tmp_path)
+        state_dir = tmp_path / "state"
+        opened_at = "2026-06-10T11:00:00+00:00"
+        now = datetime(2026, 6, 10, 12, 0, tzinfo=timezone.utc)
+        self._setup_long_spy(state_dir, opened_at=opened_at)
+
+        monkeypatch.setattr(daemon, "ROOT", tmp_path)
+        monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+
+        # Barre 5m avec high=NaN ; low=94 déclencherait le stop si utilisée
+        bar_5m_nan_high = Bar(
+            ts="2026-06-10T11:55:00+00:00",
+            open=94.0, high=float("nan"), low=94.0, close=94.5, volume=100.0,
+        )
+        # Barre 15m saine low=96 > stop=95 → pas de stop
+        bar_15m = Bar(ts="2026-06-10T11:45:00+00:00", open=97.0, high=98.0, low=96.0, close=97.0, volume=1000.0)
+
+        def get_bars(symbol, lookback, interval):
+            if interval == "5m":
+                return [bar_5m_nan_high]
+            return [bar_15m]
+
+        data_source = make_data_source(get_bars)
+        patch_batch(lambda **kwargs: Decision.hold(kwargs["symbol"], "hold"))
+
+        # Ne doit pas crasher
+        report = daemon.run_cycle(
+            dry_run=False,
+            now=now,
+            symbols_filter=[],
+            sched=Scheduler(state_dir / "scheduler.json"),
+            data_source=data_source,
+        )
+
+        # Fallback 15m : pas de stop
+        assert report["planned_exits"] == [], "high NaN → fallback 15m, pas de stop"
+
+
+class TestExitChecks5mFreshness:
+    """MAJOR 2 — Fraîcheur des barres 5m avant substitution."""
+
+    def _setup_long_spy(self, state_dir, *, opened_at: str) -> None:
+        from trader.tools.execution import Order, SimBroker
+        from trader.trade_plan import TradePlanStore, create_trade_plan
+        broker = SimBroker(state_dir / "broker.json", starting_cash=100_000)
+        broker.submit(Order("SPY", "BUY", 10.0), 100.0, opened_at, dry_run=False)
+        TradePlanStore(state_dir / "trade_plans.json").upsert(
+            create_trade_plan(
+                symbol="SPY", side="LONG", quantity=10.0, entry_price=100.0,
+                opened_at=opened_at, raw_exit_plan={"hard_stop": 95.0},
+            )
+        )
+
+    def test_barres_5m_stale_fallback_vers_15m(
+        self, monkeypatch, tmp_path, patch_batch, make_data_source
+    ) -> None:
+        """Des barres 5m périmées (trop vieilles) doivent déclencher le fallback 15m.
+        bars_interval='15m' dans le rapport ; pas de stop si 15m ne le déclenche pas."""
+        _write_runtime_config(tmp_path)
+        state_dir = tmp_path / "state"
+        opened_at = "2026-06-10T11:00:00+00:00"
+        now = datetime(2026, 6, 10, 12, 0, tzinfo=timezone.utc)
+        self._setup_long_spy(state_dir, opened_at=opened_at)
+
+        monkeypatch.setattr(daemon, "ROOT", tmp_path)
+        monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+
+        # Barre 5m avec ts 35 min avant now (> budget 5m = 5+15=20 min) mais APRÈS l'ouverture
+        # du plan (11:00) → passe la garde temporelle MAIS doit être rejetée par fraîcheur
+        bar_5m_stale = Bar(
+            ts="2026-06-10T11:25:00+00:00",  # 35 min avant now=12:00 → stale pour 5m (budget=20 min)
+            open=94.0, high=96.0, low=94.0, close=94.5, volume=100.0,
+        )
+        # Barre 15m fraîche avec low=96 > stop=95 → pas de stop
+        bar_15m = Bar(ts="2026-06-10T11:45:00+00:00", open=97.0, high=98.0, low=96.0, close=97.0, volume=1000.0)
+
+        def get_bars(symbol, lookback, interval):
+            if interval == "5m":
+                return [bar_5m_stale]
+            return [bar_15m]
+
+        data_source = make_data_source(get_bars)
+        patch_batch(lambda **kwargs: Decision.hold(kwargs["symbol"], "hold"))
+
+        report = daemon.run_cycle(
+            dry_run=False,
+            now=now,
+            symbols_filter=[],
+            sched=Scheduler(state_dir / "scheduler.json"),
+            data_source=data_source,
+        )
+
+        # Fallback 15m : low=96 > stop=95, pas de stop déclenché
+        assert report["planned_exits"] == [], "barres 5m stale → fallback 15m, pas de stop"
+
+    def test_freshness_budget_5m_dans_market(self) -> None:
+        """freshness_budget_minutes('5m') doit retourner 5+grace, pas 60+grace.
+        Vérifie que '5m' est bien dans _INTERVAL_MINUTES de market.py."""
+        from trader.tools.market import freshness_budget_minutes, _FRESHNESS_GRACE_MINUTES
+        budget = freshness_budget_minutes("5m")
+        # 5m + 15 grace = 20 min — si 5m absent du dict, on obtiendrait 75 min (défaut 60+15)
+        assert budget == 5.0 + _FRESHNESS_GRACE_MINUTES, (
+            f"freshness_budget_minutes('5m') = {budget}, attendu {5.0 + _FRESHNESS_GRACE_MINUTES} ; "
+            "'5m' doit être dans _INTERVAL_MINUTES"
+        )
+
+
+class TestExitChecks5mAggregation:
+    """MAJOR 3 — Agrégation high/low sur fenêtre de barres 5m (pas seulement la dernière)."""
+
+    def _setup_long_spy(self, state_dir, *, opened_at: str, stop: float = 95.0) -> None:
+        from trader.tools.execution import Order, SimBroker
+        from trader.trade_plan import TradePlanStore, create_trade_plan
+        broker = SimBroker(state_dir / "broker.json", starting_cash=100_000)
+        broker.submit(Order("SPY", "BUY", 10.0), 100.0, opened_at, dry_run=False)
+        TradePlanStore(state_dir / "trade_plans.json").upsert(
+            create_trade_plan(
+                symbol="SPY", side="LONG", quantity=10.0, entry_price=100.0,
+                opened_at=opened_at, raw_exit_plan={"hard_stop": stop},
+            )
+        )
+
+    def test_spike_dans_avant_derniere_5m_declenche_stop(
+        self, monkeypatch, tmp_path, patch_batch, make_data_source
+    ) -> None:
+        """Un spike (low ≤ stop) dans une barre 5m antérieure à la dernière doit déclencher
+        le stop — couvrir la fenêtre, pas seulement la dernière barre."""
+        _write_runtime_config(tmp_path)
+        state_dir = tmp_path / "state"
+        opened_at = "2026-06-10T11:00:00+00:00"
+        now = datetime(2026, 6, 10, 12, 0, tzinfo=timezone.utc)
+        self._setup_long_spy(state_dir, opened_at=opened_at, stop=95.0)
+
+        monkeypatch.setattr(daemon, "ROOT", tmp_path)
+        monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+
+        # Fenêtre de 3 barres 5m :
+        # - barre 2 (avant-dernière) : low=94.5 ≤ stop=95 → spike DANS la fenêtre
+        # - barre 3 (dernière) : low=96 > stop=95 → spike revenu
+        bar_5m_1 = Bar(ts="2026-06-10T11:45:00+00:00", open=97.0, high=98.0, low=96.5, close=97.0, volume=300.0)
+        bar_5m_2 = Bar(ts="2026-06-10T11:50:00+00:00", open=96.5, high=97.0, low=94.5, close=96.0, volume=300.0)
+        bar_5m_3 = Bar(ts="2026-06-10T11:55:00+00:00", open=96.0, high=97.0, low=96.0, close=96.5, volume=300.0)
+
+        def get_bars(symbol, lookback, interval):
+            if interval == "5m":
+                return [bar_5m_1, bar_5m_2, bar_5m_3]
+            # 15m : low=96 > stop=95 → pas de stop sans agrégation
+            return [Bar(ts="2026-06-10T11:45:00+00:00", open=97.0, high=98.0, low=96.0, close=96.5, volume=900.0)]
+
+        data_source = make_data_source(get_bars)
+        patch_batch(lambda **kwargs: Decision.hold(kwargs["symbol"], "hold"))
+
+        report = daemon.run_cycle(
+            dry_run=False,
+            now=now,
+            symbols_filter=[],
+            sched=Scheduler(state_dir / "scheduler.json"),
+            data_source=data_source,
+        )
+
+        assert len(report["planned_exits"]) == 1, (
+            "spike dans l'avant-dernière barre 5m doit déclencher le stop via agrégation"
+        )
+        assert report["planned_exits"][0]["reason"] == "hard_stop"
+
+    def test_spike_5m_anterieur_ouverture_plan_non_declenche(
+        self, monkeypatch, tmp_path, patch_batch, make_data_source
+    ) -> None:
+        """Un spike (low ≤ stop) dans une barre 5m antérieure à l'ouverture du plan
+        ne doit PAS déclencher le stop — la garde temporelle doit s'appliquer au filtre."""
+        _write_runtime_config(tmp_path)
+        state_dir = tmp_path / "state"
+        # Plan ouvert à 11:52 ; barres 5m à 11:45 et 11:50 sont antérieures
+        opened_at = "2026-06-10T11:52:00+00:00"
+        now = datetime(2026, 6, 10, 12, 0, tzinfo=timezone.utc)
+        self._setup_long_spy(state_dir, opened_at=opened_at, stop=95.0)
+
+        monkeypatch.setattr(daemon, "ROOT", tmp_path)
+        monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+
+        # Barre antérieure au plan avec spike low=94 (ne doit PAS être agrégée)
+        bar_before_plan = Bar(ts="2026-06-10T11:45:00+00:00", open=94.5, high=96.0, low=94.0, close=95.5, volume=300.0)
+        # Barre postérieure au plan sans spike
+        bar_after_plan = Bar(ts="2026-06-10T11:55:00+00:00", open=96.0, high=97.0, low=96.0, close=96.5, volume=300.0)
+
+        def get_bars(symbol, lookback, interval):
+            if interval == "5m":
+                return [bar_before_plan, bar_after_plan]
+            return [Bar(ts="2026-06-10T11:45:00+00:00", open=97.0, high=98.0, low=96.0, close=96.5, volume=900.0)]
+
+        data_source = make_data_source(get_bars)
+        patch_batch(lambda **kwargs: Decision.hold(kwargs["symbol"], "hold"))
+
+        report = daemon.run_cycle(
+            dry_run=False,
+            now=now,
+            symbols_filter=[],
+            sched=Scheduler(state_dir / "scheduler.json"),
+            data_source=data_source,
+        )
+
+        # La barre antérieure est filtrée → pas de stop
+        assert report["planned_exits"] == [], (
+            "barre 5m antérieure à l'ouverture du plan doit être ignorée dans l'agrégation"
+        )
+
+
+class TestExitChecks5mMinor:
+    """MINOR 4 — Tests complémentaires de robustesse des checks 5m."""
+
+    def _setup_long_spy(self, state_dir, *, opened_at: str, stop: float = 95.0) -> None:
+        from trader.tools.execution import Order, SimBroker
+        from trader.trade_plan import TradePlanStore, create_trade_plan
+        broker = SimBroker(state_dir / "broker.json", starting_cash=100_000)
+        broker.submit(Order("SPY", "BUY", 10.0), 100.0, opened_at, dry_run=False)
+        TradePlanStore(state_dir / "trade_plans.json").upsert(
+            create_trade_plan(
+                symbol="SPY", side="LONG", quantity=10.0, entry_price=100.0,
+                opened_at=opened_at, raw_exit_plan={"hard_stop": stop},
+            )
+        )
+
+    def test_liste_5m_vide_sortie_15m_fonctionne(
+        self, monkeypatch, tmp_path, patch_batch, make_data_source
+    ) -> None:
+        """Liste 5m vide (get_bars retourne []) → fallback 15m, sortie basée sur 15m."""
+        _write_runtime_config(tmp_path)
+        state_dir = tmp_path / "state"
+        opened_at = "2026-06-10T11:00:00+00:00"
+        now = datetime(2026, 6, 10, 12, 0, tzinfo=timezone.utc)
+        self._setup_long_spy(state_dir, opened_at=opened_at, stop=95.0)
+
+        monkeypatch.setattr(daemon, "ROOT", tmp_path)
+        monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+
+        # Barre 15m fraîche avec low=94 → stop déclenché
+        bar_15m = Bar(ts="2026-06-10T11:45:00+00:00", open=97.0, high=98.0, low=94.0, close=96.0, volume=1000.0)
+
+        def get_bars(symbol, lookback, interval):
+            if interval == "5m":
+                return []  # vide
+            return [bar_15m]
+
+        data_source = make_data_source(get_bars)
+        patch_batch(lambda **kwargs: Decision.hold(kwargs["symbol"], "hold"))
+
+        report = daemon.run_cycle(
+            dry_run=False,
+            now=now,
+            symbols_filter=[],
+            sched=Scheduler(state_dir / "scheduler.json"),
+            data_source=data_source,
+        )
+
+        # Fallback 15m : low=94 ≤ stop=95 → stop déclenché
+        assert len(report["planned_exits"]) == 1, "fallback 15m doit fonctionner avec liste 5m vide"
+        assert report["planned_exits"][0]["reason"] == "hard_stop"
+        assert report["planned_exits"][0]["bars_interval"] == "15m"
+
+    def test_plan_ouvert_hors_tradable_prices_pas_de_fetch_ni_crash(
+        self, monkeypatch, tmp_path, patch_batch, make_data_source
+    ) -> None:
+        """Un plan ouvert sur un symbole absent de tradable_prices (hors univers/stale)
+        ne doit pas déclencher de fetch 5m ni provoquer de crash."""
+        _write_runtime_config(tmp_path, symbols=["QQQ"])  # univers = QQQ seulement
+        state_dir = tmp_path / "state"
+        opened_at = "2026-06-10T11:00:00+00:00"
+        now = datetime(2026, 6, 10, 12, 0, tzinfo=timezone.utc)
+        # Plan ouvert sur SPY, mais SPY n'est pas dans l'univers QQQ
+        self._setup_long_spy(state_dir, opened_at=opened_at)  # SPY
+
+        monkeypatch.setattr(daemon, "ROOT", tmp_path)
+        monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+
+        calls_5m: list[str] = []
+
+        def get_bars(symbol, lookback, interval):
+            if interval == "5m":
+                calls_5m.append(symbol)
+            return [Bar(ts=now.isoformat(), open=200.0, high=201.0, low=199.0, close=200.0, volume=1000.0)]
+
+        data_source = make_data_source(get_bars)
+        patch_batch(lambda **kwargs: Decision.hold(kwargs["symbol"], "hold"))
+
+        # Ne doit pas crasher
+        report = daemon.run_cycle(
+            dry_run=False,
+            now=now,
+            symbols_filter=[],
+            sched=Scheduler(state_dir / "scheduler.json"),
+            data_source=data_source,
+        )
+
+        # SPY absent de tradable_prices → pas de fetch 5m pour SPY
+        assert "SPY" not in calls_5m, "SPY hors tradable_prices → pas de fetch 5m"
+        # Pas de crash ; le plan SPY n'est pas évalué (pas de prix)
+        assert report["planned_exits"] == []

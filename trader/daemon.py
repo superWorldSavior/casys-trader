@@ -76,6 +76,12 @@ DEFAULT_IB_HOST = "127.0.0.1"
 DEFAULT_IB_PORT = 4002
 DEFAULT_IB_CLIENT_ID = 17
 DEFAULT_LEARNING_CONSOLIDATION_THRESHOLD = consolidator.DEFAULT_CONSOLIDATION_THRESHOLD
+# Intervalle fin pour les checks de sortie (stop/TP/trailing).
+# Fetché uniquement pour les symboles ayant un plan ouvert.
+EXIT_CHECK_INTERVAL = "5m"
+EXIT_CHECK_LOOKBACK = "1d"
+# Nombre de barres 5m agrégées pour les checks de sortie (fenêtre = 3×5m = 15m).
+EXIT_CHECK_WINDOW_BARS = 3
 
 
 def _write_json_state(filename: str, payload: dict) -> None:
@@ -433,6 +439,7 @@ def _apply_planned_exits(
     plan_store: TradePlanStore,
     prices: dict[str, float],
     bars_by_symbol: dict[str, list] | None = None,
+    bars_intervals_by_symbol: dict[str, str] | None = None,
     valuation_prices: dict[str, float] | None = None,
     now: datetime,
     dry_run: bool,
@@ -444,27 +451,36 @@ def _apply_planned_exits(
         if price is None:
             continue
 
-        # Extract bar extremes from the last bar for intra-bar stop/TP detection.
+        # Extract bar extremes for intra-bar stop/TP detection.
         #
-        # Bar extremes serve to detect level crossings, not to compute indicators —
-        # a bar still forming is already useful: its observed high/low are real prices.
-        # (MAJOR 3 — contrat documenté ici, garde temporelle ci-dessous couvre le risque.)
+        # For 15m (runtime interval), we use only the last bar — one bar = one decision window.
+        # For 5m (exit-check interval), we aggregate over EXIT_CHECK_WINDOW_BARS recent bars
+        # (default 3 × 5m = 15m window) so that a spike in any bar within the window is caught,
+        # not just the very last one. Without aggregation a spike in bar N-1 that closes by bar N
+        # would be invisible, whereas the 15m bar would have captured its high/low.
         #
-        # Temporal guard (MAJOR 2): only apply bar extremes when the bar started AFTER
-        # the plan was opened. A bar whose ts < plan.opened_at predates the entry — its
-        # extremes could reflect a pre-entry spike and cause a spurious stop trigger.
-        # Fallback: if opened_at is absent/unparseable on an old plan, extremes are applied
-        # (current behaviour, conservative: we'd rather detect the spike than miss it).
+        # Temporal guard: bars are filtered to ts >= plan.opened_at before aggregation, so
+        # pre-entry spikes in the window are excluded. For unparseable opened_at, all bars pass
+        # (conservative: we'd rather detect a spike than miss it).
         bar_high: float | None = None
         bar_low: float | None = None
+        interval_used = (bars_intervals_by_symbol or {}).get(plan.symbol, DEFAULT_RUNTIME_INTERVAL)
         if bars_by_symbol is not None:
             bars = bars_by_symbol.get(plan.symbol)
             if bars:
-                last_bar = bars[-1]
-                bar_ts_after_open = _bar_ts_after_plan_open(last_bar.ts, plan.opened_at)
-                if bar_ts_after_open:
-                    bar_high = last_bar.high
-                    bar_low = last_bar.low
+                if interval_used == EXIT_CHECK_INTERVAL:
+                    # 5m path: aggregate high/low over the recent window, respecting temporal guard.
+                    window = bars[-EXIT_CHECK_WINDOW_BARS:]
+                    eligible = [b for b in window if _bar_ts_after_plan_open(b.ts, plan.opened_at)]
+                    if eligible:
+                        bar_high = max(b.high for b in eligible)
+                        bar_low = min(b.low for b in eligible)
+                else:
+                    # 15m path: single last bar with temporal guard (existing behaviour).
+                    last_bar = bars[-1]
+                    if _bar_ts_after_plan_open(last_bar.ts, plan.opened_at):
+                        bar_high = last_bar.high
+                        bar_low = last_bar.low
 
         evaluation = evaluate_plan(plan, price=price, bar_high=bar_high, bar_low=bar_low, now=now)
         if evaluation.signal is None:
@@ -496,6 +512,7 @@ def _apply_planned_exits(
                     "price": price,
                     "fill_price": blocked_fill,  # MINOR 5
                     "plan_snapshot": _plan_snapshot(plan),  # MINOR 5
+                    "bars_interval": (bars_intervals_by_symbol or {}).get(plan.symbol, DEFAULT_RUNTIME_INTERVAL),
                     "executed": False,
                     "dry_run": dry_run,
                 }
@@ -554,6 +571,7 @@ def _apply_planned_exits(
                 "price": price,
                 "fill_price": effective_fill_price,  # Chantier B
                 "plan_snapshot": _plan_snapshot(plan),  # Chantier B
+                "bars_interval": (bars_intervals_by_symbol or {}).get(plan.symbol, DEFAULT_RUNTIME_INTERVAL),
                 "executed": fill is not None,
                 "dry_run": dry_run,
             }
@@ -801,6 +819,95 @@ def _batch_decide(
     return decisions, calls
 
 
+def _is_valid_5m_bar(bar: object) -> bool:
+    """Retourne True si la barre est utilisable pour les checks de sortie.
+
+    Critères :
+    - ts parsable en ISO-8601 (garde temporelle en aval exige un ts valide).
+    - high et low sont des flottants finis avec low <= high.
+    """
+    try:
+        ts_str = getattr(bar, "ts", None)
+        if ts_str is None:
+            return False
+        parsed = market._parse_ts(str(ts_str))
+        if parsed is None:
+            return False
+        h = getattr(bar, "high", None)
+        lo = getattr(bar, "low", None)
+        if h is None or lo is None:
+            return False
+        if not (math.isfinite(float(h)) and math.isfinite(float(lo))):
+            return False
+        if float(lo) > float(h):
+            return False
+    except Exception:  # noqa: BLE001
+        return False
+    return True
+
+
+def _fetch_5m_bars_for_open_plans(
+    *,
+    plan_store: TradePlanStore,
+    data_source: object,
+    tradable_bars_by_symbol: dict[str, list],
+    tradable_prices: dict[str, float],
+    now: datetime,
+) -> tuple[dict[str, list], dict[str, str]]:
+    """Fetche et valide des barres 5m pour les symboles ayant un plan ouvert.
+
+    Retourne :
+      - exit_bars_by_symbol : tradable_bars_by_symbol enrichi avec les barres 5m
+        VALIDES et FRAÎCHES pour chaque symbole réussi ; fallback sur les 15m sinon.
+      - intervals_by_symbol : intervalle réellement utilisé par symbole ('5m' ou '15m').
+
+    Validation par barre : ts parsable, high/low finis et cohérents (low ≤ high).
+    Fraîcheur : assess_freshness appliqué avec budget propre à '5m'.
+    Aucun fetch pour les symboles SANS plan ouvert (coût = 0).
+    Toute exception ou résultat invalide/stale → fallback 15m sans jamais bloquer.
+    """
+    open_symbols = {plan.symbol for plan in plan_store.open_plans() if plan.symbol in tradable_prices}
+    exit_bars: dict[str, list] = dict(tradable_bars_by_symbol)
+    intervals: dict[str, str] = {sym: DEFAULT_RUNTIME_INTERVAL for sym in tradable_bars_by_symbol}
+
+    freshness_budget = market.freshness_budget_minutes(EXIT_CHECK_INTERVAL)
+
+    for symbol in open_symbols:
+        try:
+            bars_5m = data_source.get_bars(symbol, lookback=EXIT_CHECK_LOOKBACK, interval=EXIT_CHECK_INTERVAL)
+        except Exception as exc:  # noqa: BLE001 — fallback inconditionnelle, ne jamais bloquer une sortie
+            log.warning(
+                "5m bars fetch failed for %s — falling back to %s (%s)",
+                symbol, DEFAULT_RUNTIME_INTERVAL, exc,
+            )
+            continue
+        if not bars_5m:
+            log.warning("5m bars empty for %s — falling back to %s", symbol, DEFAULT_RUNTIME_INTERVAL)
+            continue
+
+        # Valider chaque barre individuellement — rejeter toute barre malformée.
+        valid_bars = [b for b in bars_5m if _is_valid_5m_bar(b)]
+        if not valid_bars:
+            log.warning(
+                "5m bars all invalid for %s — falling back to %s", symbol, DEFAULT_RUNTIME_INTERVAL
+            )
+            continue
+
+        # Contrôle de fraîcheur sur les barres valides (budget propre à l'intervalle 5m).
+        freshness = market.assess_freshness(valid_bars, now=now, max_age_minutes=freshness_budget)
+        if not freshness.fresh:
+            log.warning(
+                "5m bars stale for %s (%s, age=%.1f min) — falling back to %s",
+                symbol, freshness.reason, freshness.age_minutes or 0.0, DEFAULT_RUNTIME_INTERVAL,
+            )
+            continue
+
+        exit_bars[symbol] = valid_bars
+        intervals[symbol] = EXIT_CHECK_INTERVAL
+
+    return exit_bars, intervals
+
+
 def run_cycle(
     *,
     dry_run: bool,
@@ -986,11 +1093,19 @@ def run_cycle(
             continue
         daily_bars_by_symbol[sym] = daily_bars
 
+    exit_bars_by_symbol, exit_intervals_by_symbol = _fetch_5m_bars_for_open_plans(
+        plan_store=plan_store,
+        data_source=data_source,
+        tradable_bars_by_symbol=tradable_bars_by_symbol,
+        tradable_prices=tradable_prices,
+        now=now,
+    )
     planned_exits = _apply_planned_exits(
         broker=broker,
         plan_store=plan_store,
         prices=tradable_prices,
-        bars_by_symbol=tradable_bars_by_symbol,
+        bars_by_symbol=exit_bars_by_symbol,
+        bars_intervals_by_symbol=exit_intervals_by_symbol,
         valuation_prices=prices,
         now=now,
         dry_run=dry_run,

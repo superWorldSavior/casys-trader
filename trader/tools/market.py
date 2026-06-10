@@ -43,6 +43,7 @@ class Freshness:
 # entre yfinance et l'hôte) reste acceptable ; au-delà c'est une donnée invalide.
 _CLOCK_SKEW_TOLERANCE_MINUTES = 5.0
 _INTERVAL_MINUTES = {
+    "5m": 5.0,
     "15m": 15.0,
     "30m": 30.0,
     "1h": 60.0,
