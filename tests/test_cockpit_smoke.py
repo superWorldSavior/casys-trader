@@ -359,13 +359,14 @@ async def test_cockpit_binding_k_monte_modal(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-async def test_cockpit_q_ne_signale_pas_le_daemon(tmp_path, monkeypatch):
-    """q quitte sans envoyer aucun signal au daemon — vérifié par monkeypatch os.kill."""
+async def test_cockpit_q_sans_daemon_quitte_directement(tmp_path, monkeypatch):
+    """q sans daemon vivant quitte directement — pas de modal, aucun signal."""
     _make_minimal_state(tmp_path)
     monkeypatch.setattr(cockpit_module, "_STATE_DIR", tmp_path)
     monkeypatch.setattr(cockpit_module, "_EVENTS_FILE", tmp_path / "events.jsonl")
     monkeypatch.setattr(cockpit_module, "_KILL_FILE", tmp_path / "KILL")
 
+    # Pas de daemon_status.json avec pid → never_started
     signals_sent = []
     import os as _os_real
     import trader.cockpit_supervisor as sup_module
@@ -515,3 +516,238 @@ async def test_events_pane_backlog_charge_apres_layout(tmp_path, monkeypatch):
         # EventsPane occupe toute la largeur du RightPane (bug MAJEUR v2 : était width:40%)
         # On tolère ±2 colonnes pour les bordures internes
         assert abs(events_pane.size.width - right.size.width) <= 2
+
+
+# ---------------------------------------------------------------------------
+# ConfirmQuit — nouveau flux q avec daemon vivant
+# ---------------------------------------------------------------------------
+
+
+def _make_minimal_state_with_pid(tmp_path: Path, pid: int) -> None:
+    """État minimal + daemon_status.json avec pid pour simuler daemon vivant."""
+    from datetime import UTC, datetime
+
+    _make_minimal_state(tmp_path)
+    ts = datetime.now(UTC).isoformat()
+    (tmp_path / "daemon_status.json").write_text(
+        __import__("json").dumps({"ts": ts, "phase": "idle", "pid": pid}),
+        encoding="utf-8",
+    )
+
+
+def _patch_daemon_alive(monkeypatch, pid: int) -> None:
+    """Patche cockpit_supervisor pour simuler un daemon vivant avec identité OK."""
+    import trader.cockpit_supervisor as sup_module
+
+    monkeypatch.setattr(
+        sup_module, "_is_daemon_pid", lambda p: p == pid
+    )
+
+
+async def test_cockpit_q_avec_daemon_vivant_ouvre_confirm_quit(tmp_path, monkeypatch):
+    """q avec daemon vivant → ConfirmQuit sur la pile (pas de quit immédiat)."""
+    FAKE_PID = 54321
+    _make_minimal_state_with_pid(tmp_path, FAKE_PID)
+    _patch_daemon_alive(monkeypatch, FAKE_PID)
+
+    monkeypatch.setattr(cockpit_module, "_STATE_DIR", tmp_path)
+    monkeypatch.setattr(cockpit_module, "_EVENTS_FILE", tmp_path / "events.jsonl")
+    monkeypatch.setattr(cockpit_module, "_KILL_FILE", tmp_path / "KILL")
+
+    app = CockpitApp()
+    async with app.run_test(size=(200, 50)) as pilot:
+        await pilot.press("q")
+        from trader.cockpit import ConfirmQuit
+
+        assert isinstance(app.screen, ConfirmQuit)
+
+
+async def test_cockpit_confirm_quit_arreter_et_quitter_appelle_stop_daemon_et_exit(
+    tmp_path, monkeypatch
+):
+    """ConfirmQuit → « Arrêter et quitter » → stop_daemon appelé ET app.exit() appelé."""
+    FAKE_PID = 54321
+    _make_minimal_state_with_pid(tmp_path, FAKE_PID)
+    _patch_daemon_alive(monkeypatch, FAKE_PID)
+
+    monkeypatch.setattr(cockpit_module, "_STATE_DIR", tmp_path)
+    monkeypatch.setattr(cockpit_module, "_EVENTS_FILE", tmp_path / "events.jsonl")
+    monkeypatch.setattr(cockpit_module, "_KILL_FILE", tmp_path / "KILL")
+
+    stop_calls = []
+    exit_calls = []
+
+    import trader.cockpit_supervisor as sup_module
+    from trader.cockpit_supervisor import StopResult
+
+    monkeypatch.setattr(
+        sup_module,
+        "stop_daemon",
+        lambda *, pid_file: stop_calls.append(pid_file) or StopResult(
+            stopped=True, pid=FAKE_PID, reason="sigint_sent"
+        ),
+    )
+
+    app = CockpitApp()
+    async with app.run_test(size=(200, 50)) as pilot:
+        # Spy sur app.exit
+        original_exit = app.exit
+        app.exit = lambda *a, **kw: exit_calls.append(True) or original_exit(*a, **kw)  # type: ignore[method-assign]
+
+        await pilot.press("q")
+        await pilot.click("#confirm-quit-stop")
+        await pilot.pause()
+
+    assert len(stop_calls) == 1, "stop_daemon doit être appelé exactement une fois"
+    assert len(exit_calls) >= 1, "app.exit() doit être appelé après confirmation"
+
+
+async def test_cockpit_confirm_quit_stop_daemon_retourne_false_quand_meme_exit(
+    tmp_path, monkeypatch
+):
+    """stop_daemon → stopped=False : notif warning + app.exit() appelé quand même."""
+    FAKE_PID = 54321
+    _make_minimal_state_with_pid(tmp_path, FAKE_PID)
+    _patch_daemon_alive(monkeypatch, FAKE_PID)
+
+    monkeypatch.setattr(cockpit_module, "_STATE_DIR", tmp_path)
+    monkeypatch.setattr(cockpit_module, "_EVENTS_FILE", tmp_path / "events.jsonl")
+    monkeypatch.setattr(cockpit_module, "_KILL_FILE", tmp_path / "KILL")
+
+    exit_calls = []
+
+    import trader.cockpit_supervisor as sup_module
+    from trader.cockpit_supervisor import StopResult
+
+    monkeypatch.setattr(
+        sup_module,
+        "stop_daemon",
+        lambda *, pid_file: StopResult(stopped=False, pid=FAKE_PID, reason="pid_dead"),
+    )
+
+    app = CockpitApp()
+    async with app.run_test(size=(200, 50)) as pilot:
+        original_exit = app.exit
+        app.exit = lambda *a, **kw: exit_calls.append(True) or original_exit(*a, **kw)  # type: ignore[method-assign]
+
+        await pilot.press("q")
+        await pilot.click("#confirm-quit-stop")
+        await pilot.pause()
+
+    assert len(exit_calls) >= 1, (
+        "app.exit() doit être appelé même si stop_daemon retourne stopped=False"
+    )
+
+
+async def test_cockpit_confirm_quit_stop_daemon_leve_exception_quand_meme_exit(
+    tmp_path, monkeypatch
+):
+    """stop_daemon lève PermissionError : notif warning + app.exit() appelé quand même.
+
+    C'est le test du BLOQUANT : sans try/except+finally, l'exception propage
+    hors du callback et self.exit() n'est jamais atteint — q reste coincé.
+    """
+    FAKE_PID = 54321
+    _make_minimal_state_with_pid(tmp_path, FAKE_PID)
+    _patch_daemon_alive(monkeypatch, FAKE_PID)
+
+    monkeypatch.setattr(cockpit_module, "_STATE_DIR", tmp_path)
+    monkeypatch.setattr(cockpit_module, "_EVENTS_FILE", tmp_path / "events.jsonl")
+    monkeypatch.setattr(cockpit_module, "_KILL_FILE", tmp_path / "KILL")
+
+    exit_calls = []
+
+    import trader.cockpit_supervisor as sup_module
+
+    def _raising_stop(*, pid_file):
+        raise PermissionError("OS refuse le signal")
+
+    monkeypatch.setattr(sup_module, "stop_daemon", _raising_stop)
+
+    app = CockpitApp()
+    async with app.run_test(size=(200, 50)) as pilot:
+        original_exit = app.exit
+        app.exit = lambda *a, **kw: exit_calls.append(True) or original_exit(*a, **kw)  # type: ignore[method-assign]
+
+        await pilot.press("q")
+        await pilot.click("#confirm-quit-stop")
+        await pilot.pause()
+
+    assert len(exit_calls) >= 1, (
+        "app.exit() doit être appelé même si stop_daemon lève une exception"
+    )
+
+
+async def test_cockpit_q_avec_daemon_vivant_ne_quitte_pas_sans_confirmation(
+    tmp_path, monkeypatch
+):
+    """q avec daemon vivant ne quitte JAMAIS sans avoir tenté le stop — modal requis."""
+    FAKE_PID = 54321
+    _make_minimal_state_with_pid(tmp_path, FAKE_PID)
+    _patch_daemon_alive(monkeypatch, FAKE_PID)
+
+    monkeypatch.setattr(cockpit_module, "_STATE_DIR", tmp_path)
+    monkeypatch.setattr(cockpit_module, "_EVENTS_FILE", tmp_path / "events.jsonl")
+    monkeypatch.setattr(cockpit_module, "_KILL_FILE", tmp_path / "KILL")
+
+    stop_calls = []
+
+    import trader.cockpit_supervisor as sup_module
+    from trader.cockpit_supervisor import StopResult
+
+    monkeypatch.setattr(
+        sup_module,
+        "stop_daemon",
+        lambda *, pid_file: stop_calls.append(pid_file) or StopResult(
+            stopped=True, pid=FAKE_PID, reason="sigint_sent"
+        ),
+    )
+
+    # On presse q mais on annule avec Échap → app reste ouverte, stop jamais appelé
+    app = CockpitApp()
+    async with app.run_test(size=(200, 50)) as pilot:
+        await pilot.press("q")
+        await pilot.press("escape")
+        # L'app est encore ouverte
+        assert app.query_one("#left-pane") is not None
+
+    assert stop_calls == [], "stop_daemon ne doit pas être appelé si on annule"
+
+
+async def test_cockpit_confirm_quit_echap_reste_ouvert(tmp_path, monkeypatch):
+    """ConfirmQuit → Échap → app reste ouverte (pas de quit, modal fermé)."""
+    FAKE_PID = 54321
+    _make_minimal_state_with_pid(tmp_path, FAKE_PID)
+    _patch_daemon_alive(monkeypatch, FAKE_PID)
+
+    monkeypatch.setattr(cockpit_module, "_STATE_DIR", tmp_path)
+    monkeypatch.setattr(cockpit_module, "_EVENTS_FILE", tmp_path / "events.jsonl")
+    monkeypatch.setattr(cockpit_module, "_KILL_FILE", tmp_path / "KILL")
+
+    app = CockpitApp()
+    async with app.run_test(size=(200, 50)) as pilot:
+        await pilot.press("q")
+        from trader.cockpit import ConfirmQuit
+
+        assert isinstance(app.screen, ConfirmQuit)
+        # Échap ferme le modal sans quitter
+        await pilot.press("escape")
+        # L'app est toujours là (on vérifie que le modal est parti et l'app est montée)
+        assert not isinstance(app.screen, ConfirmQuit)
+        assert app.query_one("#left-pane") is not None
+
+
+async def test_cockpit_footer_affiche_maj_x(tmp_path, monkeypatch):
+    """Le binding X affiche 'Maj+X' dans sa description pour lever l'ambiguïté."""
+    _make_minimal_state(tmp_path)
+    monkeypatch.setattr(cockpit_module, "_STATE_DIR", tmp_path)
+    monkeypatch.setattr(cockpit_module, "_EVENTS_FILE", tmp_path / "events.jsonl")
+    monkeypatch.setattr(cockpit_module, "_KILL_FILE", tmp_path / "KILL")
+
+    app = CockpitApp()
+    async with app.run_test(size=(200, 50)) as _:
+        bindings_x = [b for b in app.BINDINGS if b.key == "X"]
+        assert bindings_x, "Le binding 'X' doit exister"
+        assert "Maj+X" in bindings_x[0].description, (
+            f"La description de X doit contenir 'Maj+X', got: {bindings_x[0].description!r}"
+        )

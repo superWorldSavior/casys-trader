@@ -582,6 +582,62 @@ class ConfirmStop(ModalScreen[bool]):
         self.dismiss(event.button.id == "confirm-stop-yes")
 
 
+class ConfirmQuit(ModalScreen[bool]):
+    """Modal de confirmation à la sortie quand un daemon est vivant.
+
+    Retourne :
+        True  → arrêter le daemon puis quitter
+        False → annuler (rester dans le cockpit)
+
+    Échap → False (annuler).
+    """
+
+    BINDINGS = [
+        Binding("escape", "cancel", "Annuler", show=False),
+    ]
+
+    DEFAULT_CSS = """
+    ConfirmQuit {
+        align: center middle;
+    }
+    ConfirmQuit Vertical {
+        background: $surface;
+        border: solid $warning;
+        padding: 1 2;
+        width: 60;
+        height: auto;
+    }
+    ConfirmQuit Horizontal {
+        height: auto;
+        align: center middle;
+        margin-top: 1;
+    }
+    ConfirmQuit Button {
+        margin: 0 1;
+    }
+    """
+
+    def __init__(self, pid: int | None = None, **kwargs: object) -> None:
+        super().__init__(**kwargs)
+        self._pid = pid
+
+    def compose(self) -> ComposeResult:
+        pid_info = f" (PID {self._pid})" if self._pid else ""
+        with Vertical():
+            yield Label(
+                f"Quitter — le moteur live sera aussi arrêté{pid_info}."
+            )
+            with Horizontal():
+                yield Button("Arrêter et quitter", id="confirm-quit-stop", variant="warning")
+                yield Button("Annuler", id="confirm-quit-cancel", variant="default")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        self.dismiss(event.button.id == "confirm-quit-stop")
+
+    def action_cancel(self) -> None:
+        self.dismiss(False)
+
+
 class ConfirmKill(ModalScreen[bool]):
     """Modal de confirmation pour le toggle kill-switch (binding k)."""
 
@@ -642,9 +698,9 @@ class CockpitApp(App):
     """
 
     BINDINGS = [
-        Binding("q", "quit", "Quitter"),
+        Binding("q", "quit_confirm", "Quitter"),
         Binding("s", "start_daemon", "Démarrer daemon"),
-        Binding("X", "stop_daemon_confirm", "Arrêter daemon"),
+        Binding("X", "stop_daemon_confirm", "Maj+X — Arrêter daemon"),
         Binding("k", "toggle_kill", "Kill-switch"),
         Binding("c", "toggle_cycles", "Toggle cycles"),
         Binding("f", "toggle_scroll", "Pause scroll"),
@@ -804,6 +860,56 @@ class CockpitApp(App):
         # Re-render immédiat avec la nouvelle palette
         if self._last_state is not None:
             self._apply_state(self._last_state, self._last_kill_active)
+
+    def action_quit_confirm(self) -> None:
+        """Quitte avec confirmation si un daemon est vivant.
+
+        Si aucun daemon vivant → quit direct (pas de modal).
+        Si daemon vivant → ConfirmQuit modal :
+            - « Arrêter et quitter » → stop_daemon (SIGINT) puis quit.
+            - « Annuler » / Échap   → rester dans le cockpit.
+        """
+        from trader.cockpit_supervisor import daemon_vital_state, stop_daemon
+
+        vital = daemon_vital_state(_STATE_DIR / "daemon_status.json")
+        if vital.status != "alive":
+            self.exit()
+            return
+
+        # Récupère le PID pour l'afficher dans le modal
+        try:
+            import json as _json
+
+            _data = _json.loads(
+                (_STATE_DIR / "daemon_status.json").read_text(encoding="utf-8")
+            )
+            _pid: int | None = int(_data.get("pid")) if _data.get("pid") else None
+        except Exception:
+            _pid = None
+
+        async def _on_confirm(confirmed: bool) -> None:
+            if not confirmed:
+                return
+            try:
+                result = stop_daemon(pid_file=_STATE_DIR / "daemon.pid")
+                if result.stopped:
+                    self.notify(
+                        f"Daemon arrêté (PID {result.pid})", severity="information"
+                    )
+                else:
+                    self.notify(
+                        "Daemon non arrêté (déjà mort ou identité KO)",
+                        severity="warning",
+                    )
+            except Exception as exc:  # noqa: BLE001
+                self.notify(
+                    f"Erreur arrêt daemon : {exc}",
+                    severity="warning",
+                )
+            finally:
+                self.exit()
+
+        self.push_screen(ConfirmQuit(pid=_pid), _on_confirm)
 
     def action_start_daemon(self) -> None:
         """Lance le daemon en process détaché (anti-double-lancement via daemon.pid)."""
