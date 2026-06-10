@@ -62,7 +62,7 @@ def test_main_ouvre_une_connexion_ib_par_cycle_et_la_ferme_en_finally(monkeypatc
 
     ib = FakeIB()
 
-    def connect_ib(host: str, port: int, client_id: int):
+    def connect_ib(host: str, port: int, client_id: int, **_kw):
         events.append(("connect", host, port, client_id))
         return ib
 
@@ -111,7 +111,7 @@ def test_main_garde_connexion_ib_ouverte_entre_les_pauses(monkeypatch, tmp_path)
     ib = FakeIB()
     sleeps = 0
 
-    def connect_ib(host: str, port: int, client_id: int):
+    def connect_ib(host: str, port: int, client_id: int, **_kw):
         events.append(("connect", host, port, client_id))
         return ib
 
@@ -165,7 +165,7 @@ def test_main_transmet_le_plafond_decisionnel_cli(monkeypatch, tmp_path) -> None
         def disconnect(self) -> None:
             self.ib.disconnect()
 
-    def connect_ib(host: str, port: int, client_id: int):
+    def connect_ib(host: str, port: int, client_id: int, **_kw):
         return FakeIB()
 
     def run_cycle(**kwargs):

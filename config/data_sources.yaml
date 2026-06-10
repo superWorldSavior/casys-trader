@@ -1,0 +1,28 @@
+# config/data_sources.yaml — routage multi-sources casys-trader
+#
+# profile : profil actif par défaut (overridable par --data-profile / TRADER_DATA_PROFILE).
+# profiles : table des profils. Chaque profil = liste ordonnée de routes.
+#   route : première route dont un pattern matche le symbole gagne.
+#   sources : liste ordonnée (primaire → fallbacks).
+#
+# Symboles : format yfinance (ex: EURUSD=X, SPY, 2330.TW).
+# Patterns : exact ou glob fnmatch (*, *.TW).
+# Sources disponibles : ib, yfinance.
+
+profile: paper
+
+profiles:
+  paper:
+    routes:
+      # FX : IDEALPRO IB est temps réel gratuit → priorité IB sur yfinance (différé)
+      - symbols: [EURUSD=X, USDJPY=X]
+        sources: [ib, yfinance]
+      # Tout le reste : yfinance (~10 min), fallback IB (~15 min différé)
+      - symbols: ["*"]
+        sources: [yfinance, ib]
+
+  prod:
+    routes:
+      # Prod : IB uniquement (market_data_type=1 + souscriptions actives)
+      - symbols: ["*"]
+        sources: [ib]

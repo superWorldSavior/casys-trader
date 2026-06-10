@@ -36,6 +36,12 @@ from .indicator_watch import (
 from .risk import RiskGate, RiskLimits
 from .tools import market, memory as memory_mod, portfolio, scheduler
 from .tools.execution import Order, SimBroker
+from .tools.data_source import (
+    CompositeDataSource,
+    YFinanceDataSource,
+    load_composite_from_config,
+    parse_data_sources_config,
+)
 from .tools.ib_source import IBDataSource, connect_ib
 from .trade_plan import (
     InvalidExitPlanError,
@@ -856,6 +862,9 @@ def run_cycle(
     bars_by_symbol: dict[str, list] = {}
     prices: dict[str, float] = {}
     stale_market_data: dict[str, dict] = {}
+    # F5 : capturé immédiatement après le fetch runtime décisionnel, avant tout
+    # fetch secondaire (daily, watches) qui pourrait écraser last_source().
+    runtime_data_source_by_sym: dict[str, str | None] = {}
     freshness_max_age = max(
         max_market_data_age_minutes,
         market.freshness_budget_minutes(runtime_interval),
@@ -874,6 +883,8 @@ def run_cycle(
             continue
         bars_by_symbol[sym] = bars
         prices[sym] = bars[-1].close
+        # F5 : capturer last_source ici, avant tout fetch secondaire (daily, watches).
+        runtime_data_source_by_sym[sym] = getattr(data_source, "last_source", lambda _: None)(sym)
         # La fraîcheur EST le garde « marché live » : une dernière barre trop
         # vieille / imparsable => stale => exclue du tradable (pas de fill sur
         # données mortes hors-séance ou gelées).
@@ -1127,6 +1138,7 @@ def run_cycle(
                     "trade_plan_created": False,
                     "executed": False,
                     "reason": "stale_market_data",
+                    "data_source": runtime_data_source_by_sym.get(sym),
                     **stale_data,
                 }
             )
@@ -1175,7 +1187,8 @@ def run_cycle(
                  "trade_plan_created": False,
                  "indicator_watch_created": False,
                  "indicator_watch_requested": bool(decision.indicator_watch),
-                 "indicator_watch_rejections": []}
+                 "indicator_watch_rejections": [],
+                 "data_source": runtime_data_source_by_sym.get(sym)}
 
         pending_indicator_watch = None
         if decision.indicator_watch:
@@ -1564,6 +1577,11 @@ def main(argv: list[str] | None = None) -> None:
         default=_env_int("CASYS_IB_CLIENT_ID", DEFAULT_IB_CLIENT_ID),
         help="clientId IB utilisé par le daemon",
     )
+    parser.add_argument(
+        "--data-profile",
+        default=os.getenv("TRADER_DATA_PROFILE"),
+        help="profil de routing data (paper|prod). Override config/data_sources.yaml. Env: TRADER_DATA_PROFILE",
+    )
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -1573,17 +1591,86 @@ def main(argv: list[str] | None = None) -> None:
     bootstrap = args.bootstrap_all
 
     data_source = None
+    _data_sources_cfg = ROOT / "config" / "data_sources.yaml"
+    _use_composite = _data_sources_cfg.exists()
+
+    # F3 : valider la config UNE FOIS avant la boucle — fail-fast explicite
+    # si le fichier est malformé, le profil inconnu, ou une source invalide.
+    # Cette étape ne fait aucune connexion réseau ; les MarketError ici
+    # remontent directement (pas avalées par le except interne de la boucle).
+    _composite_routes: list[dict] = []
+    _composite_profile: str = ""
+    if _use_composite:
+        _composite_profile_override = args.data_profile or None
+        _composite_routes, _composite_profile = parse_data_sources_config(
+            _data_sources_cfg,
+            profile_override=_composite_profile_override,
+            known_source_names=frozenset({"yfinance", "ib"}),
+        )
+        log.info("data_source config validée: profil=%s", _composite_profile)
+
     try:
         while True:
             sleep_seconds: float | None = None
             stop_after_iteration = False
             try:
                 if data_source is None:
-                    ib = connect_ib(args.ib_host, args.ib_port, args.ib_client_id)
-                    data_source = IBDataSource(
-                        ib,
-                        reconnect_factory=lambda: connect_ib(args.ib_host, args.ib_port, args.ib_client_id),
-                    )
+                    if _use_composite:
+                        # Config présente : construire composite.
+                        # IB obligatoire en profil prod — si down, cycle sauté.
+                        # IB optionnel en profil paper — si down, on continue sans lui.
+                        _ib_source: IBDataSource | None = None
+                        _ib_required = (_composite_profile == "prod")
+                        # market_data_type : 1 (live) en prod, 3 (delayed) en paper.
+                        # Type 3 = live quand la souscription n'est pas requise (ex. FX
+                        # IDEALPRO), delayed sinon — c'est le comportement IB par défaut.
+                        _mdt = 1 if _composite_profile == "prod" else 3
+                        try:
+                            _ib_obj = connect_ib(
+                                args.ib_host, args.ib_port, args.ib_client_id,
+                                market_data_type=_mdt,
+                            )
+                            _ib_source = IBDataSource(
+                                _ib_obj,
+                                reconnect_factory=lambda: connect_ib(
+                                    args.ib_host, args.ib_port, args.ib_client_id,
+                                    market_data_type=_mdt,
+                                ),
+                            )
+                        except market.MarketError as _ib_exc:
+                            if _ib_required:
+                                # Prod : IB obligatoire — remonter l'erreur pour que
+                                # le cycle soit sauté et réessayé au prochain réveil.
+                                raise
+                            log.warning(
+                                "IB indisponible, profil composite sans IB (%s): %s",
+                                _ib_exc.code, _ib_exc.context,
+                            )
+                        available: dict[str, object] = {"yfinance": YFinanceDataSource()}
+                        if _ib_source is not None:
+                            available["ib"] = _ib_source
+                        data_source = CompositeDataSource(
+                            routes=_composite_routes,
+                            sources=available,
+                        )
+                        log.info(
+                            "data_source=composite profil=%s sources=%s",
+                            _composite_profile, sorted(available),
+                        )
+                    else:
+                        # Comportement actuel inchangé (rétrocompat, config absente).
+                        # market_data_type=3 explicite (delayed, comportement existant).
+                        ib = connect_ib(
+                            args.ib_host, args.ib_port, args.ib_client_id,
+                            market_data_type=3,
+                        )
+                        data_source = IBDataSource(
+                            ib,
+                            reconnect_factory=lambda: connect_ib(
+                                args.ib_host, args.ib_port, args.ib_client_id,
+                                market_data_type=3,
+                            ),
+                        )
                 loop_now = datetime.now(timezone.utc)
                 symbols = _load_yaml(ROOT / "config" / "universe.yaml")["symbols"]
                 indicator_triggers = (
@@ -1658,7 +1745,13 @@ def main(argv: list[str] | None = None) -> None:
                 if data_source is not None:
                     _disconnect_quietly(data_source)
                     data_source = None
-                log.warning("IB indisponible, cycle sauté (%s): %s", exc.code, exc.context)
+                if _use_composite:
+                    # En mode composite la source est déjà construite — une MarketError
+                    # ici vient du cycle lui-même (ex: all_sources_failed). On reset
+                    # pour reconstruire au prochain tour.
+                    log.warning("cycle échoué (%s): %s", exc.code, exc.context)
+                else:
+                    log.warning("IB indisponible, cycle sauté (%s): %s", exc.code, exc.context)
                 _write_status(
                     "ib_connection_failed",
                     current_symbol=None,
