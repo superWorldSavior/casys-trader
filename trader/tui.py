@@ -140,6 +140,157 @@ def _load_learnings_safe(state_dir: Path, *, limit: int = 5) -> list[dict]:
         return []
 
 
+def _load_trade_plans_safe(plans_path: Path) -> list[dict]:
+    """Lit state/trade_plans.json, retourne la liste des plans ouverts.
+
+    Tolérant : retourne [] si fichier absent, corrompu ou sans clé 'plans'.
+    """
+    try:
+        raw = json.loads(plans_path.read_text(encoding="utf-8"))
+        if not isinstance(raw, dict):
+            return []
+        plans = raw.get("plans", [])
+        if not isinstance(plans, list):
+            return []
+        return [p for p in plans if isinstance(p, dict)]
+    except Exception:
+        return []
+
+
+def _load_scheduler_data_safe(scheduler_path: Path) -> tuple[list[dict], dict]:
+    """Lit scheduler.json, retourne (indicator_watches, stale_streaks).
+
+    indicator_watches : liste de dicts (valeurs du dict indicator_watches).
+    stale_streaks     : dict {symbol: int}.
+    Tolérant : retourne ([], {}) si absent/corrompu.
+    """
+    try:
+        raw = json.loads(scheduler_path.read_text(encoding="utf-8"))
+        if not isinstance(raw, dict):
+            return [], {}
+        watches_raw = raw.get("indicator_watches") or {}
+        if isinstance(watches_raw, dict):
+            watches = [v for v in watches_raw.values() if isinstance(v, dict)]
+        elif isinstance(watches_raw, list):
+            watches = [v for v in watches_raw if isinstance(v, dict)]
+        else:
+            watches = []
+        streaks = raw.get("stale_streaks") or {}
+        if not isinstance(streaks, dict):
+            streaks = {}
+        return watches, streaks
+    except Exception:
+        return [], {}
+
+
+def _load_indicator_watches_safe(scheduler_path: Path) -> list[dict]:
+    """Raccourci : ne retourne que les watches."""
+    watches, _ = _load_scheduler_data_safe(scheduler_path)
+    return watches
+
+
+def _tail_decisions_safe(decisions_path: Path, *, n: int = 50) -> list[dict]:
+    """Lit les n dernières lignes de decisions.jsonl sans tout charger.
+
+    Algorithme tail : lit par blocs de 8192 octets depuis la fin, s'arrête
+    quand n lignes valides collectées. Jamais d'exception.
+    """
+    try:
+        if not decisions_path.exists():
+            return []
+        size = decisions_path.stat().st_size
+        if size == 0:
+            return []
+        chunk_size = 8192
+        collected: list[str] = []
+        with decisions_path.open("rb") as fh:
+            pos = size
+            remainder = b""
+            while pos > 0 and len(collected) < n:
+                read_size = min(chunk_size, pos)
+                pos -= read_size
+                fh.seek(pos)
+                chunk = fh.read(read_size) + remainder
+                lines_raw = chunk.split(b"\n")
+                remainder = lines_raw[0]
+                for line_bytes in reversed(lines_raw[1:]):
+                    stripped = line_bytes.strip()
+                    if stripped:
+                        collected.append(stripped.decode("utf-8", errors="replace"))
+                        if len(collected) >= n:
+                            break
+            # Dernier remainder
+            if len(collected) < n and remainder.strip():
+                collected.append(remainder.strip().decode("utf-8", errors="replace"))
+        # collected est en ordre inversé
+        result: list[dict] = []
+        for raw_line in reversed(collected[:n]):
+            try:
+                obj = json.loads(raw_line)
+                if isinstance(obj, dict):
+                    result.append(obj)
+            except Exception:
+                continue
+        return result
+    except Exception:
+        return []
+
+
+def _enrich_decisions_with_data_source(
+    decisions: list[dict], recent_decisions: list[dict]
+) -> list[dict]:
+    """Injecte 'data_source' dans chaque décision du rapport depuis les décisions récentes.
+
+    Pour chaque décision du rapport, cherche la dernière entrée dans
+    recent_decisions ayant le même symbole et injecte runtime.data_source.
+    Retourne toujours une nouvelle liste (pas de mutation).
+    """
+    # Index : symbole → data_source le plus récent (dernier dans la liste = le plus récent)
+    ds_index: dict[str, str | None] = {}
+    for dec in recent_decisions:
+        sym = str(dec.get("symbol") or "")
+        if not sym:
+            continue
+        runtime = dec.get("runtime") if isinstance(dec.get("runtime"), dict) else {}
+        ds = runtime.get("data_source") if isinstance(runtime, dict) else None
+        ds_index[sym] = str(ds) if ds is not None else None
+
+    enriched: list[dict] = []
+    for dec in decisions:
+        sym = str(dec.get("symbol") or "")
+        copy = {**dec}
+        if "data_source" not in copy:
+            copy["data_source"] = ds_index.get(sym)
+        enriched.append(copy)
+    return enriched
+
+
+def _load_consolidation_status_safe(status_path: Path) -> dict | None:
+    """Lit learnings_consolidation_status.json. Retourne None si absent/corrompu."""
+    try:
+        raw = json.loads(status_path.read_text(encoding="utf-8"))
+        return raw if isinstance(raw, dict) else None
+    except Exception:
+        return None
+
+
+def _count_learnings_safe(learnings_path: Path, *, limit: int = 200) -> int:
+    """Compte les lignes non vides de learnings.jsonl sans tout charger (limité)."""
+    try:
+        if not learnings_path.exists():
+            return 0
+        count = 0
+        with learnings_path.open(encoding="utf-8") as fh:
+            for i, line in enumerate(fh):
+                if i >= limit:
+                    return limit  # tronqué
+                if line.strip():
+                    count += 1
+        return count
+    except Exception:
+        return 0
+
+
 def load_runtime_state(
     *,
     state_dir: str | Path = _STATE_DIR,
@@ -181,6 +332,19 @@ def load_runtime_state(
     attribution = _compute_attribution_safe(state_dir_path)
     equity_curve = _load_equity_curve(state_dir_path / "history.jsonl")
     learnings = _load_learnings_safe(state_dir_path)
+    trade_plans = _load_trade_plans_safe(state_dir_path / "trade_plans.json")
+    indicator_watches, stale_streaks = _load_scheduler_data_safe(
+        state_dir_path / "scheduler.json"
+    )
+    recent_decisions = _tail_decisions_safe(
+        state_dir_path / "decisions.jsonl", n=50
+    )
+    consolidation_status = _load_consolidation_status_safe(
+        state_dir_path / "learnings_consolidation_status.json"
+    )
+    learnings_pending_count = _count_learnings_safe(
+        state_dir_path / "learnings.jsonl"
+    )
     return {
         **raw,
         "source": source,
@@ -195,6 +359,12 @@ def load_runtime_state(
         ),
         "equity_curve": equity_curve,
         "learnings": learnings,
+        "trade_plans": trade_plans,
+        "indicator_watches": indicator_watches,
+        "stale_streaks": stale_streaks,
+        "recent_decisions": recent_decisions,
+        "consolidation_status": consolidation_status,
+        "learnings_pending_count": learnings_pending_count,
     }
 
 
@@ -498,6 +668,7 @@ def _build_decisions_table(
     dec_table.add_column("Qté", justify="right")
     dec_table.add_column("Raison", overflow="fold", ratio=4)
     dec_table.add_column("Confiance", justify="right")
+    dec_table.add_column("Source", style=palette["dim"])
 
     for d in decisions:
         action = str(d.get("action", "HOLD"))
@@ -517,10 +688,11 @@ def _build_decisions_table(
             f"{qty_d:,.4f}",
             rationale,
             f"{confidence:.2f}",
+            str(d.get("data_source") or "—"),
         )
 
     if not decisions:
-        dec_table.add_row("—", "—", "—", "—", "—")
+        dec_table.add_row("—", "—", "—", "—", "—", "—")
 
     return dec_table
 
@@ -550,6 +722,301 @@ def _build_learnings_panel(
         Group(*lines),
         title="[bold]Derniers apprentissages[/bold]",
         border_style=palette["border_learnings"],
+        expand=True,
+    )
+
+
+def _build_exit_plans_panel(
+    plans: list[dict], *, palette: Palette = PALETTE_DARK
+) -> Panel:
+    """Plans de sortie ouverts (colonne gauche, sous positions).
+
+    Source : state/trade_plans.json — liste brute de dicts.
+    """
+    if not plans:
+        return Panel(
+            Text("aucun plan ouvert", style=palette["dim"]),
+            title="[bold]Plans sortie[/bold]",
+            border_style=palette["border_plans"],
+            expand=True,
+        )
+
+    lines: list[RenderableType] = []
+    for plan in plans:
+        symbol = str(plan.get("symbol", "?"))
+        side = str(plan.get("side", "?"))
+        entry = _safe_float(plan.get("entry_price"), default=None)
+        stop = _safe_float(plan.get("hard_stop_price"), default=None)
+        remaining = _safe_float(plan.get("remaining_quantity"), default=0.0) or 0.0
+        max_hold = _safe_float(plan.get("max_hold_minutes"), default=None)
+        take_profits = _safe_list_of_dicts(plan.get("take_profits") or [])
+
+        side_style = (
+            palette["action_buy"] if side == "LONG" else palette["action_sell"]
+        )
+
+        # Ligne principale : symbole side  entrée → stop (dist%)
+        if entry is not None and stop is not None and entry > 0:
+            dist_pct = abs(entry - stop) / entry * 100.0
+            stop_str = f"${stop:,.2f} ({dist_pct:.1f}%)"
+        elif stop is not None:
+            stop_str = f"${stop:,.2f}"
+        else:
+            stop_str = "—"
+
+        entry_str = f"${entry:,.2f}" if entry is not None else "—"
+
+        header = Text.assemble(
+            (symbol, f"bold {palette['kpi_default']}"),
+            ("  ", ""),
+            (side, side_style),
+            ("  entrée:", palette["dim"]),
+            (f" {entry_str}", "bold"),
+            ("  stop:", palette["dim"]),
+            (f" {stop_str}", palette["pnl_negative"] if stop else palette["dim"]),
+            ("  qté:", palette["dim"]),
+            (f" {remaining:,.4f}", "bold"),
+        )
+        lines.append(header)
+
+        # Take-profits sur une ligne compacte
+        if take_profits:
+            tp_parts: list[tuple[str, str]] = []
+            for tp in take_profits:
+                tp_price = _safe_float(tp.get("price"), default=None)
+                tp_name = str(tp.get("name") or "tp?")
+                if tp_price is not None:
+                    tp_parts.append((f"{tp_name}@${tp_price:,.2f}", palette["pnl_positive"]))
+                    tp_parts.append(("  ", ""))
+            if tp_parts:
+                tp_line = Text.assemble(("  TPs: ", palette["dim"]), *tp_parts)
+                lines.append(tp_line)
+
+        # max_hold
+        if max_hold is not None:
+            lines.append(
+                Text.assemble(
+                    ("  max hold:", palette["dim"]),
+                    (f" {int(max_hold)}min", "bold"),
+                )
+            )
+
+        lines.append(Text(""))  # séparateur
+
+    # Retire le dernier séparateur vide
+    if lines and isinstance(lines[-1], Text) and lines[-1].plain == "":
+        lines.pop()
+
+    return Panel(
+        Group(*lines),
+        title="[bold]Plans sortie[/bold]",
+        border_style=palette["border_plans"],
+        expand=True,
+    )
+
+
+def _build_watches_panel(
+    watches: list[dict], *, palette: Palette = PALETTE_DARK
+) -> Panel:
+    """Veilles actives (colonne droite, sous logs).
+
+    Source : _load_indicator_watches_safe(state/scheduler.json).
+    """
+    if not watches:
+        return Panel(
+            Text("aucune veille active", style=palette["dim"]),
+            title="[bold]Veilles[/bold]",
+            border_style=palette["border_watches"],
+            expand=True,
+        )
+
+    now_utc = datetime.now(UTC)
+    watch_lines: list[Text] = []
+    for watch in watches:
+        symbol = str(watch.get("symbol", "?"))
+        expires_raw = str(watch.get("expires_at") or "")
+        logic = str(watch.get("logic", "any"))
+        conditions = _safe_list_of_dicts(watch.get("conditions") or [])
+
+        # Expiration relative
+        expire_str = "?"
+        try:
+            candidate = (
+                f"{expires_raw[:-1]}+00:00"
+                if expires_raw.endswith("Z")
+                else expires_raw
+            )
+            exp_dt = datetime.fromisoformat(candidate)
+            if exp_dt.tzinfo is None:
+                from datetime import timezone as _tz
+
+                exp_dt = exp_dt.replace(tzinfo=_tz.utc)
+            delta = exp_dt - now_utc
+            total_secs = int(delta.total_seconds())
+            if total_secs < 0:
+                expire_str = "expiré"
+            else:
+                hours, rem = divmod(total_secs, 3600)
+                minutes = rem // 60
+                expire_str = f"{hours}h{minutes:02d}" if hours > 0 else f"{minutes}min"
+            expire_str = f"dans {expire_str}"
+        except Exception:
+            expire_str = "?"
+
+        # Conditions compactes
+        cond_parts: list[str] = []
+        for cond in conditions[:3]:  # max 3 conditions affichées
+            ind = str(cond.get("indicator") or "?")
+            op = str(cond.get("op") or "?")
+            val = cond.get("value")
+            tf = str(cond.get("timeframe") or cond.get("interval") or "?")
+            val_str = f"{val}" if val is not None else "?"
+            cond_parts.append(f"{ind}{op}{val_str}@{tf}")
+        cond_str = f" [{logic}] ".join(cond_parts) if cond_parts else "?"
+
+        line = Text.assemble(
+            (symbol, f"bold {palette['kpi_default']}"),
+            ("  ", ""),
+            (cond_str, palette["dim"]),
+            ("  ", ""),
+            (expire_str, palette["kpi_vol_warn"]),
+        )
+        watch_lines.append(line)
+
+    return Panel(
+        Group(*watch_lines),
+        title="[bold]Veilles[/bold]",
+        border_style=palette["border_watches"],
+        expand=True,
+    )
+
+
+def _build_data_health_panel(
+    recent_decisions: list[dict],
+    stale_streaks: dict,
+    *,
+    palette: Palette = PALETTE_DARK,
+) -> Panel:
+    """Santé data (droite, compact).
+
+    Par symbole avec streaks > 0 ou data_source non-None dans les décisions
+    récentes : une ligne {symbol} {data_source} [backoff ×N si streak > 0].
+    """
+    # Collecter data_source par symbole depuis les décisions récentes (dernier vu)
+    ds_by_symbol: dict[str, str | None] = {}
+    for dec in recent_decisions:
+        sym = str(dec.get("symbol") or "")
+        if not sym:
+            continue
+        runtime = dec.get("runtime") if isinstance(dec.get("runtime"), dict) else {}
+        ds = runtime.get("data_source") if isinstance(runtime, dict) else None
+        ds_by_symbol[sym] = str(ds) if ds is not None else None
+
+    # Tous les symboles concernés = union(streaks > 0, ds non-None)
+    symbols_concerned: set[str] = set()
+    for sym, streak in (stale_streaks or {}).items():
+        try:
+            if int(streak) > 0:
+                symbols_concerned.add(sym)
+        except (TypeError, ValueError):
+            pass
+    for sym, ds in ds_by_symbol.items():
+        if ds is not None:
+            symbols_concerned.add(sym)
+
+    if not symbols_concerned:
+        return Panel(
+            Text("—", style=palette["dim"]),
+            title="[bold]Santé data[/bold]",
+            border_style=palette["border_default"],
+            expand=True,
+        )
+
+    table = Table(box=None, show_header=False, expand=True, pad_edge=False)
+    table.add_column("sym", style="bold", no_wrap=True)
+    table.add_column("source", no_wrap=True)
+    table.add_column("streak", justify="right", no_wrap=True)
+
+    for sym in sorted(symbols_concerned):
+        ds = ds_by_symbol.get(sym)
+        ds_str = str(ds) if ds is not None else "—"
+        streak = stale_streaks.get(sym, 0)
+        try:
+            streak_int = int(streak)
+        except (TypeError, ValueError):
+            streak_int = 0
+        if streak_int > 0:
+            streak_cell = Text(f"backoff ×{streak_int}", style=palette["kpi_vol_warn"])
+        else:
+            streak_cell = Text("ok", style=palette["pnl_positive"])
+        table.add_row(sym, ds_str, streak_cell)
+
+    return Panel(
+        table,
+        title="[bold]Santé data[/bold]",
+        border_style=palette["border_default"],
+        expand=True,
+    )
+
+
+def _build_llm_activity_panel(
+    daemon_status: dict,
+    learnings_pending: int,
+    consolidation_status: dict | None,
+    *,
+    palette: Palette = PALETTE_DARK,
+) -> Panel:
+    """Activité LLM (droite, compact).
+
+    Affiche : appels modèle du cycle, learnings bruts en attente,
+    dernier état de consolidation.
+    """
+    used = daemon_status.get("model_calls_used")
+    max_calls = daemon_status.get("max_model_calls_per_cycle")
+    calls_str = (
+        f"{used}/{max_calls}"
+        if used is not None and max_calls is not None
+        else (str(used) if used is not None else "—")
+    )
+
+    # Consolidation status
+    if consolidation_status is not None:
+        consol_status = str(consolidation_status.get("status") or "?")
+        consol_ts = _format_datetime(consolidation_status.get("ts"))
+        consol_count = consolidation_status.get("count")
+        consol_str = f"{consol_status}"
+        if consol_count is not None:
+            consol_str += f" ({consol_count} entrées)"
+        consol_style = (
+            palette["pnl_positive"]
+            if "success" in consol_status.lower()
+            else (
+                palette["pnl_negative"]
+                if "fail" in consol_status.lower() or "error" in consol_status.lower()
+                else palette["dim"]
+            )
+        )
+    else:
+        consol_str = "—"
+        consol_ts = "—"
+        consol_style = palette["dim"]
+
+    content = Text.assemble(
+        ("Appels cycle: ", palette["dim"]),
+        (calls_str, f"bold {palette['kpi_default']}"),
+        ("  Learnings bruts: ", palette["dim"]),
+        (str(learnings_pending), f"bold {palette['kpi_default']}"),
+        "\n",
+        ("Consolidation: ", palette["dim"]),
+        (consol_str, consol_style),
+        ("  ", ""),
+        (consol_ts, palette["dim"]),
+    )
+
+    return Panel(
+        content,
+        title="[bold]LLM[/bold]",
+        border_style=palette["border_llm_activity"],
         expand=True,
     )
 

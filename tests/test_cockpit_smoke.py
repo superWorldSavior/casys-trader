@@ -55,16 +55,17 @@ def _make_minimal_state(tmp_path: Path) -> None:
 
 
 async def test_cockpit_app_monte_avec_les_deux_panes(tmp_path, monkeypatch):
-    """L'app Textual monte sans exception et les deux panneaux sont dans le DOM."""
+    """L'app Textual monte sans exception et les panneaux principaux sont dans le DOM."""
     _make_minimal_state(tmp_path)
     monkeypatch.setattr(cockpit_module, "_STATE_DIR", tmp_path)
     monkeypatch.setattr(cockpit_module, "_EVENTS_FILE", tmp_path / "events.jsonl")
     monkeypatch.setattr(cockpit_module, "_KILL_FILE", tmp_path / "KILL")
 
     app = CockpitApp()
-    async with app.run_test(size=(200, 50)) as _:
-        assert app.query_one("#dashboard-pane") is not None
-        assert app.query_one("#events-pane") is not None
+    async with app.run_test(size=(220, 60)) as _:
+        assert app.query_one("#left-pane") is not None
+        assert app.query_one("#center-pane") is not None
+        assert app.query_one("#right-pane") is not None
         assert app.query_one("#cockpit-status") is not None
 
 
@@ -90,7 +91,7 @@ async def test_cockpit_fichiers_absents_ne_crashent_pas(tmp_path, monkeypatch):
     app = CockpitApp()
     async with app.run_test(size=(200, 50)) as _:
         # Doit monter sans lever d'exception
-        assert app.query_one("#dashboard-pane") is not None
+        assert app.query_one("#left-pane") is not None
 
 
 async def test_cockpit_theme_defaut_est_casys_salmon(tmp_path, monkeypatch):
@@ -155,13 +156,13 @@ async def test_cockpit_status_prend_palette_en_compte(tmp_path, monkeypatch):
 async def test_cockpit_toggle_theme_propage_palette_dashboard_immediatement(
     tmp_path, monkeypatch
 ):
-    """Finding 4 : après toggle d, le DashboardPane utilise la nouvelle palette
+    """Finding 4 : après toggle d, LeftPane utilise la nouvelle palette
     dès le prochain update_state — pas besoin d'attendre le poll interval.
 
-    On vérifie que _current_palette du dashboard change immédiatement après
+    On vérifie que _current_palette de LeftPane change immédiatement après
     action_toggle_theme, sans attendre le prochain cycle de refresh.
     """
-    from trader.cockpit import DashboardPane
+    from trader.cockpit import LeftPane
     from trader.palette import PALETTE_DARK, PALETTE_LIGHT
 
     _make_minimal_state(tmp_path)
@@ -170,16 +171,16 @@ async def test_cockpit_toggle_theme_propage_palette_dashboard_immediatement(
     monkeypatch.setattr(cockpit_module, "_KILL_FILE", tmp_path / "KILL")
 
     app = CockpitApp()
-    async with app.run_test(size=(200, 50)) as pilot:
-        dashboard = app.query_one("#dashboard-pane", DashboardPane)
+    async with app.run_test(size=(220, 60)) as pilot:
+        left = app.query_one("#left-pane", LeftPane)
         # Thème saumon → palette LIGHT
-        assert dashboard._current_palette is PALETTE_LIGHT
+        assert left._current_palette is PALETTE_LIGHT
         # Toggle → palette DARK immédiatement
         await pilot.press("d")
-        assert dashboard._current_palette is PALETTE_DARK
+        assert left._current_palette is PALETTE_DARK
         # Retour → palette LIGHT
         await pilot.press("d")
-        assert dashboard._current_palette is PALETTE_LIGHT
+        assert left._current_palette is PALETTE_LIGHT
 
 
 # ---------------------------------------------------------------------------
@@ -384,3 +385,133 @@ async def test_cockpit_q_ne_signale_pas_le_daemon(tmp_path, monkeypatch):
         await pilot.press("q")
 
     assert signals_sent == [], f"q a envoyé des signaux inattendus : {signals_sent}"
+
+
+# ---------------------------------------------------------------------------
+# Layout v2 — 3 colonnes
+# ---------------------------------------------------------------------------
+
+
+async def test_cockpit_v2_pane_left_existe(tmp_path, monkeypatch):
+    """Le layout v2 expose un pane gauche avec le panneau equity."""
+    _make_minimal_state(tmp_path)
+    monkeypatch.setattr(cockpit_module, "_STATE_DIR", tmp_path)
+    monkeypatch.setattr(cockpit_module, "_EVENTS_FILE", tmp_path / "events.jsonl")
+    monkeypatch.setattr(cockpit_module, "_KILL_FILE", tmp_path / "KILL")
+
+    app = CockpitApp()
+    async with app.run_test(size=(220, 60)) as _:
+        assert app.query_one("#left-pane") is not None
+
+
+async def test_cockpit_v2_pane_center_existe(tmp_path, monkeypatch):
+    """Le layout v2 expose un pane central."""
+    _make_minimal_state(tmp_path)
+    monkeypatch.setattr(cockpit_module, "_STATE_DIR", tmp_path)
+    monkeypatch.setattr(cockpit_module, "_EVENTS_FILE", tmp_path / "events.jsonl")
+    monkeypatch.setattr(cockpit_module, "_KILL_FILE", tmp_path / "KILL")
+
+    app = CockpitApp()
+    async with app.run_test(size=(220, 60)) as _:
+        assert app.query_one("#center-pane") is not None
+
+
+async def test_cockpit_v2_pane_right_existe(tmp_path, monkeypatch):
+    """Le layout v2 expose un pane droit."""
+    _make_minimal_state(tmp_path)
+    monkeypatch.setattr(cockpit_module, "_STATE_DIR", tmp_path)
+    monkeypatch.setattr(cockpit_module, "_EVENTS_FILE", tmp_path / "events.jsonl")
+    monkeypatch.setattr(cockpit_module, "_KILL_FILE", tmp_path / "KILL")
+
+    app = CockpitApp()
+    async with app.run_test(size=(220, 60)) as _:
+        assert app.query_one("#right-pane") is not None
+
+
+async def test_cockpit_v2_toggle_l_masque_right_pane(tmp_path, monkeypatch):
+    """Le toggle l masque le pane droit (logs + panneaux compacts)."""
+    _make_minimal_state(tmp_path)
+    monkeypatch.setattr(cockpit_module, "_STATE_DIR", tmp_path)
+    monkeypatch.setattr(cockpit_module, "_EVENTS_FILE", tmp_path / "events.jsonl")
+    monkeypatch.setattr(cockpit_module, "_KILL_FILE", tmp_path / "KILL")
+
+    app = CockpitApp()
+    async with app.run_test(size=(220, 60)) as pilot:
+        right = app.query_one("#right-pane")
+        assert right.display is True
+        await pilot.press("l")
+        assert right.display is False
+        await pilot.press("l")
+        assert right.display is True
+
+
+async def test_cockpit_v2_exit_plans_panel_existe(tmp_path, monkeypatch):
+    """Le panneau #exit-plans-panel est dans le DOM."""
+    _make_minimal_state(tmp_path)
+    monkeypatch.setattr(cockpit_module, "_STATE_DIR", tmp_path)
+    monkeypatch.setattr(cockpit_module, "_EVENTS_FILE", tmp_path / "events.jsonl")
+    monkeypatch.setattr(cockpit_module, "_KILL_FILE", tmp_path / "KILL")
+
+    app = CockpitApp()
+    async with app.run_test(size=(220, 60)) as _:
+        assert app.query_one("#exit-plans-panel") is not None
+
+
+async def test_cockpit_v2_toggle_d_rerender_nouveaux_panneaux(tmp_path, monkeypatch):
+    """La touche d bascule le thème sans crash avec les nouveaux panneaux."""
+    _make_minimal_state(tmp_path)
+    monkeypatch.setattr(cockpit_module, "_STATE_DIR", tmp_path)
+    monkeypatch.setattr(cockpit_module, "_EVENTS_FILE", tmp_path / "events.jsonl")
+    monkeypatch.setattr(cockpit_module, "_KILL_FILE", tmp_path / "KILL")
+
+    app = CockpitApp()
+    async with app.run_test(size=(220, 60)) as pilot:
+        await pilot.press("d")
+        assert app.theme == "casys-ink"
+        await pilot.press("d")
+        assert app.theme == "casys-salmon"
+
+
+# ---------------------------------------------------------------------------
+# Bug visuel : backlog initial RichLog différé post-layout
+# ---------------------------------------------------------------------------
+
+
+async def test_events_pane_backlog_charge_apres_layout(tmp_path, monkeypatch):
+    """Le remplissage initial du RichLog doit être différé jusqu'à on_ready.
+
+    Vérifie que _backlog_loaded passe à True après le premier refresh (ce qui
+    garantit que les lignes sont écrites une fois le widget dimensionné) et que
+    les lignes d'un events.jsonl pré-rempli sont bien présentes dans le log.
+    """
+    import json as _json
+    from trader.cockpit import EventsPane, RightPane
+
+    _make_minimal_state(tmp_path)
+    events_file = tmp_path / "events.jsonl"
+    # Remplir avec quelques lignes de backlog
+    events_file.write_text(
+        "\n".join(
+            _json.dumps({"ts": f"2026-06-10T10:00:0{i}+00:00", "event": "other", "msg": f"ligne {i}"})
+            for i in range(5)
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(cockpit_module, "_STATE_DIR", tmp_path)
+    monkeypatch.setattr(cockpit_module, "_EVENTS_FILE", events_file)
+    monkeypatch.setattr(cockpit_module, "_KILL_FILE", tmp_path / "KILL")
+
+    app = CockpitApp()
+    async with app.run_test(size=(220, 60)) as pilot:
+        # Laisser un cycle supplémentaire pour que call_after_refresh s'exécute
+        await pilot.pause()
+        right: RightPane = app.query_one("#right-pane", RightPane)
+        events_pane: EventsPane = right.query_one("#events-pane", EventsPane)
+        # Le backlog doit avoir été chargé (flag positionné par on_mount + call_after_refresh)
+        assert events_pane._backlog_loaded is True
+        # L'offset doit avoir avancé (les 5 lignes ont été lues)
+        assert events_pane._offset > 0
+        # EventsPane occupe toute la largeur du RightPane (bug MAJEUR v2 : était width:40%)
+        # On tolère ±2 colonnes pour les bordures internes
+        assert abs(events_pane.size.width - right.size.width) <= 2

@@ -23,6 +23,11 @@ class Palette(TypedDict):
     border_attribution: str  # attribution
     border_learnings: str  # learnings
 
+    # Nouveaux panneaux v2
+    border_plans: str  # plans de sortie ouverts
+    border_watches: str  # veilles actives
+    border_llm_activity: str  # activité LLM
+
     # Graphique équité
     equity_line: str  # couleur sparkline / plotext
     equity_dim: str  # texte dim sur graphique
@@ -74,6 +79,9 @@ PALETTE_DARK: Palette = {
     "border_default": "cyan",
     "border_attribution": "magenta",
     "border_learnings": "blue",
+    "border_plans": "cyan",
+    "border_watches": "cyan",
+    "border_llm_activity": "magenta",
     "equity_line": "cyan",
     "equity_dim": "dim",
     "kpi_sharpe_ok": "green",
@@ -115,6 +123,9 @@ PALETTE_LIGHT: Palette = {
     "border_default": "#0D7680",
     "border_attribution": "#0D7680",
     "border_learnings": "#0D7680",
+    "border_plans": "#0D7680",
+    "border_watches": "#0D7680",
+    "border_llm_activity": "#0D7680",
     "equity_line": "#0D7680",
     "equity_dim": "#6B6057 dim",
     "kpi_sharpe_ok": "#1A6B2F",

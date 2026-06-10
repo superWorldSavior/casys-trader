@@ -50,11 +50,16 @@ from trader.cockpit_events import (
 from trader.palette import PALETTE_DARK, PALETTE_LIGHT, Palette
 from trader.tui import (
     _build_attribution_panel,
+    _build_data_health_panel,
     _build_decisions_table,
     _build_equity_panel,
+    _build_exit_plans_panel,
     _build_kpi_band,
     _build_learnings_panel,
+    _build_llm_activity_panel,
     _build_positions_panel,
+    _build_watches_panel,
+    _enrich_decisions_with_data_source,
     _safe_float,
     _safe_list_of_dicts,
     load_runtime_state,
@@ -235,84 +240,187 @@ class CockpitStatus(Static):
 
 
 # ---------------------------------------------------------------------------
-# Widget : panneau gauche — tout le dashboard TUI
+# Widgets v2 — layout 3 colonnes
 # ---------------------------------------------------------------------------
 
 
-class DashboardPane(Static):
-    """Panneau gauche : reprend intégralement le contenu de tui.build_view.
-
-    Utilise les fonctions _build_* importées de tui.py via Static.update().
-    La palette active (LIGHT pour saumon, DARK pour ink) est stockée dans
-    _current_palette et mise à jour par CockpitApp lors du toggle thème.
-    """
+class LeftPane(Static):
+    """Colonne gauche (25%) : équité sparkline, positions+PnL, plans sortie, apprentissages."""
 
     DEFAULT_CSS = """
-    DashboardPane {
-        width: 60%;
+    LeftPane {
+        width: 25%;
         height: 100%;
         border-right: solid $primary;
         overflow-y: auto;
     }
-    DashboardPane Static {
+    LeftPane Static {
         height: auto;
         margin: 0 0 1 0;
     }
     """
 
-    _current_palette: Palette = PALETTE_LIGHT  # défaut saumon (thème par défaut)
+    _current_palette: Palette = PALETTE_LIGHT  # défaut saumon
 
     def compose(self) -> ComposeResult:
-        yield Static(id="kpi-band")
         yield Static(id="equity-panel")
         yield Static(id="positions-panel")
-        yield Static(id="attribution-panel")
-        yield Static(id="decisions-table")
+        yield Static(id="exit-plans-panel")
         yield Static(id="learnings-panel")
 
     def update_state(self, state: dict) -> None:
-        """Recharge tous les sous-panneaux avec le dernier état."""
         palette = self._current_palette
         portfolio = (
             state.get("portfolio") if isinstance(state.get("portfolio"), dict) else {}
         )
-        kpis = state.get("kpis") if isinstance(state.get("kpis"), dict) else {}
-        attribution = (
-            state.get("attribution")
-            if isinstance(state.get("attribution"), dict)
-            else {}
-        )
-        holdings = _safe_list_of_dicts(portfolio.get("holdings"))
-        decisions = _safe_list_of_dicts(state.get("decisions"))
         equity_curve_raw = state.get("equity_curve") or []
         equity_curve = [
             v
             for v in (_safe_float(x, default=None) for x in equity_curve_raw)
             if v is not None
         ]
+        holdings = _safe_list_of_dicts(portfolio.get("holdings"))
         learnings = _safe_list_of_dicts(state.get("learnings"))
-
-        self.query_one("#kpi-band", Static).update(
-            _build_kpi_band(kpis, palette=palette)
+        trade_plans = (
+            state.get("trade_plans")
+            if isinstance(state.get("trade_plans"), list)
+            else []
         )
+
         self.query_one("#equity-panel", Static).update(
             _build_equity_panel(equity_curve, palette=palette)
         )
         self.query_one("#positions-panel", Static).update(
             _build_positions_panel(holdings, palette=palette)
         )
-        self.query_one("#attribution-panel", Static).update(
-            _build_attribution_panel(attribution, palette=palette)
+        self.query_one("#exit-plans-panel", Static).update(
+            _build_exit_plans_panel(trade_plans, palette=palette)
+        )
+        learnings_renderable = _build_learnings_panel(learnings, palette=palette)
+        self.query_one("#learnings-panel", Static).update(
+            learnings_renderable if learnings_renderable is not None else Text("")
+        )
+
+
+class CenterPane(Static):
+    """Colonne centre (40%) : KPI band, décisions récentes (panneau roi), attribution."""
+
+    DEFAULT_CSS = """
+    CenterPane {
+        width: 40%;
+        height: 100%;
+        border-right: solid $primary;
+        overflow-y: auto;
+    }
+    CenterPane Static {
+        height: auto;
+        margin: 0 0 1 0;
+    }
+    """
+
+    _current_palette: Palette = PALETTE_LIGHT  # défaut saumon
+
+    def compose(self) -> ComposeResult:
+        yield Static(id="kpi-band")
+        yield Static(id="decisions-table")
+        yield Static(id="attribution-panel")
+
+    def update_state(self, state: dict) -> None:
+        palette = self._current_palette
+        kpis = state.get("kpis") if isinstance(state.get("kpis"), dict) else {}
+        attribution = (
+            state.get("attribution")
+            if isinstance(state.get("attribution"), dict)
+            else {}
+        )
+        decisions_raw = _safe_list_of_dicts(state.get("decisions"))
+        recent_decisions = (
+            state.get("recent_decisions")
+            if isinstance(state.get("recent_decisions"), list)
+            else []
+        )
+        decisions = _enrich_decisions_with_data_source(decisions_raw, recent_decisions)
+
+        self.query_one("#kpi-band", Static).update(
+            _build_kpi_band(kpis, palette=palette)
         )
         self.query_one("#decisions-table", Static).update(
             _build_decisions_table(decisions, palette=palette)
         )
+        self.query_one("#attribution-panel", Static).update(
+            _build_attribution_panel(attribution, palette=palette)
+        )
 
-        learnings_renderable = _build_learnings_panel(learnings, palette=palette)
-        if learnings_renderable is not None:
-            self.query_one("#learnings-panel", Static).update(learnings_renderable)
-        else:
-            self.query_one("#learnings-panel", Static).update(Text(""))
+
+class RightPane(Static):
+    """Colonne droite (35%) : logs live (≥60%) + panneaux compacts (veilles, santé data, LLM)."""
+
+    DEFAULT_CSS = """
+    RightPane {
+        width: 35%;
+        height: 100%;
+        layout: vertical;
+    }
+    RightPane EventsPane {
+        width: 100%;
+        height: 60%;
+    }
+    RightPane #compact-bottom {
+        height: 40%;
+        overflow-y: auto;
+        layout: vertical;
+    }
+    RightPane #compact-bottom Static {
+        height: auto;
+        margin: 0 0 1 0;
+    }
+    """
+
+    _current_palette: Palette = PALETTE_LIGHT  # défaut saumon
+
+    def compose(self) -> ComposeResult:
+        yield EventsPane(id="events-pane")
+        with Vertical(id="compact-bottom"):
+            yield Static(id="watches-panel")
+            yield Static(id="data-health-panel")
+            yield Static(id="llm-activity-panel")
+
+    def update_state(self, state: dict) -> None:
+        palette = self._current_palette
+        indicator_watches = (
+            state.get("indicator_watches")
+            if isinstance(state.get("indicator_watches"), list)
+            else []
+        )
+        stale_streaks = (
+            state.get("stale_streaks")
+            if isinstance(state.get("stale_streaks"), dict)
+            else {}
+        )
+        recent_decisions = (
+            state.get("recent_decisions")
+            if isinstance(state.get("recent_decisions"), list)
+            else []
+        )
+        daemon_status = (
+            state.get("daemon_status")
+            if isinstance(state.get("daemon_status"), dict)
+            else {}
+        )
+        learnings_pending = state.get("learnings_pending_count") or 0
+        consolidation_status = state.get("consolidation_status")
+
+        self.query_one("#watches-panel", Static).update(
+            _build_watches_panel(indicator_watches, palette=palette)
+        )
+        self.query_one("#data-health-panel", Static).update(
+            _build_data_health_panel(recent_decisions, stale_streaks, palette=palette)
+        )
+        self.query_one("#llm-activity-panel", Static).update(
+            _build_llm_activity_panel(
+                daemon_status, learnings_pending, consolidation_status, palette=palette
+            )
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -330,6 +438,9 @@ class EventsPane(Static):
     # Permet de n'émettre le diagnostic dim qu'une fois par changement d'état.
     _last_file_status: str = "ok"
     _current_palette: Palette = PALETTE_LIGHT  # défaut saumon (thème par défaut)
+    # Garde-fou pour le backlog initial : différé jusqu'au premier on_ready
+    # afin que RichLog ait une largeur réelle avant le premier write().
+    _backlog_loaded: bool = False
 
     DEFAULT_CSS = """
     EventsPane {
@@ -352,6 +463,30 @@ class EventsPane(Static):
             markup=False,
             max_lines=_MAX_EVENT_LINES,
         )
+
+    def on_mount(self) -> None:
+        """Diffère le chargement du backlog initial jusqu'après le premier layout.
+
+        RichLog fige le wrap de chaque ligne au moment du write(). Si on écrit
+        avant que le widget ait sa taille réelle (ce qui arrive lors d'un appel
+        direct dans on_mount parent), les lignes se replient sur une largeur
+        minimale. call_after_refresh garantit qu'au moins un cycle de layout
+        s'est exécuté avant le premier write().
+        """
+        self.call_after_refresh(self._load_initial_backlog)
+
+    def _load_initial_backlog(self) -> None:
+        """Charge le backlog initial une seule fois, largeur déjà connue."""
+        if self._backlog_loaded:
+            return
+        self._backlog_loaded = True
+        try:
+            events_path: Path = self.app._events_file  # type: ignore[attr-defined]
+        except AttributeError:
+            # Fallback : importation directe de la constante module
+            import trader.cockpit as _mod
+            events_path = _mod._EVENTS_FILE
+        self.poll_events(events_path)
 
     def toggle_cycles(self) -> None:
         self._show_cycles = not self._show_cycles
@@ -534,31 +669,41 @@ class CockpitApp(App):
         # Thème saumon par défaut (fond clair FT editorial)
         self.theme = "casys-salmon"
 
+        # Expose le chemin events sur self pour que EventsPane._load_initial_backlog
+        # puisse le résoudre même quand _EVENTS_FILE est monkeypatché en test.
+        self._events_file = _EVENTS_FILE
+
         body = self.query_one("#main-body", Static)
-        body.mount(DashboardPane(id="dashboard-pane"))
-        body.mount(EventsPane(id="events-pane"))
+        body.mount(LeftPane(id="left-pane"))
+        body.mount(CenterPane(id="center-pane"))
+        body.mount(RightPane(id="right-pane"))
         # Polling état toutes les 2 s (via worker thread — I/O hors UI loop)
         self.set_interval(2.0, self._schedule_refresh_state)
-        # Polling events toutes les 1 s
+        # Polling events toutes les 1 s (le backlog initial est chargé par EventsPane.on_ready)
         self.set_interval(1.0, self._poll_events)
-        # Charge immédiatement
+        # Charge l'état immédiatement
         self._schedule_refresh_state()
-        self._poll_events()
 
     def _current_palette(self) -> Palette:
         """Retourne la palette Rich correspondant au thème actif."""
         return _THEME_PALETTE.get(self.theme, PALETTE_DARK)
 
     def _propagate_palette(self) -> None:
-        """Propage la palette courante aux panneaux dashboard et events."""
+        """Propage la palette courante aux 3 panes et à EventsPane."""
         palette = self._current_palette()
+        for pane_id, cls in (
+            ("#left-pane", LeftPane),
+            ("#center-pane", CenterPane),
+            ("#right-pane", RightPane),
+        ):
+            try:
+                pane = self.query_one(pane_id, cls)  # type: ignore[arg-type]
+                pane._current_palette = palette
+            except Exception:
+                pass
         try:
-            dashboard: DashboardPane = self.query_one("#dashboard-pane", DashboardPane)
-            dashboard._current_palette = palette
-        except Exception:
-            pass
-        try:
-            events_pane: EventsPane = self.query_one("#events-pane", EventsPane)
+            right: RightPane = self.query_one("#right-pane", RightPane)
+            events_pane: EventsPane = right.query_one("#events-pane", EventsPane)
             events_pane._current_palette = palette
         except Exception:
             pass
@@ -581,7 +726,7 @@ class CockpitApp(App):
             pass
 
     def _apply_state(self, state: dict, kill_active: bool) -> None:
-        """Met à jour les widgets avec l'état chargé (appelé depuis le thread UI)."""
+        """Met à jour les 3 panes avec l'état chargé (appelé depuis le thread UI)."""
         # Mémoriser pour le re-render immédiat lors du toggle thème
         self._last_state = state
         self._last_kill_active = kill_active
@@ -590,46 +735,58 @@ class CockpitApp(App):
             status: CockpitStatus = self.query_one("#cockpit-status", CockpitStatus)
             status.update_state(state, kill_active, palette=palette)
 
-            dashboard: DashboardPane = self.query_one("#dashboard-pane", DashboardPane)
-            dashboard._current_palette = palette
-            dashboard.update_state(state)
+            left: LeftPane = self.query_one("#left-pane", LeftPane)
+            left._current_palette = palette
+            left.update_state(state)
+
+            center: CenterPane = self.query_one("#center-pane", CenterPane)
+            center._current_palette = palette
+            center.update_state(state)
+
+            right: RightPane = self.query_one("#right-pane", RightPane)
+            right._current_palette = palette
+            right.update_state(state)
         except Exception:
             pass  # tolérant — widgets restent à leur dernier état
 
     def _poll_events(self) -> None:
         """Lit les nouvelles lignes d'events.jsonl."""
         try:
-            events_pane: EventsPane = self.query_one("#events-pane", EventsPane)
+            right: RightPane = self.query_one("#right-pane", RightPane)
+            events_pane: EventsPane = right.query_one("#events-pane", EventsPane)
             events_pane.poll_events(_EVENTS_FILE)
         except Exception:
             pass
 
     def action_toggle_cycles(self) -> None:
         try:
-            events_pane: EventsPane = self.query_one("#events-pane", EventsPane)
-            events_pane.toggle_cycles()
+            right: RightPane = self.query_one("#right-pane", RightPane)
+            right.query_one("#events-pane", EventsPane).toggle_cycles()
         except Exception:
             pass
 
     def action_toggle_scroll(self) -> None:
         try:
-            events_pane: EventsPane = self.query_one("#events-pane", EventsPane)
-            events_pane.toggle_scroll()
+            right: RightPane = self.query_one("#right-pane", RightPane)
+            right.query_one("#events-pane", EventsPane).toggle_scroll()
         except Exception:
             pass
 
     def action_toggle_logs(self) -> None:
-        """Affiche/masque le panneau logs pour maximiser le dashboard."""
+        """Affiche/masque le panneau droit entier (logs + panneaux compacts) pour maximiser."""
         try:
-            events_pane: EventsPane = self.query_one("#events-pane", EventsPane)
-            dashboard: DashboardPane = self.query_one("#dashboard-pane", DashboardPane)
+            right: RightPane = self.query_one("#right-pane", RightPane)
+            left: LeftPane = self.query_one("#left-pane", LeftPane)
+            center: CenterPane = self.query_one("#center-pane", CenterPane)
             self._logs_visible = not self._logs_visible
             if self._logs_visible:
-                events_pane.display = True
-                dashboard.styles.width = "60%"
+                right.display = True
+                left.styles.width = "25%"
+                center.styles.width = "40%"
             else:
-                events_pane.display = False
-                dashboard.styles.width = "100%"
+                right.display = False
+                left.styles.width = "30%"
+                center.styles.width = "70%"
         except Exception:
             pass
 
