@@ -135,7 +135,7 @@ Config dédiée, indépendante de l'agent décideur :
 - agent ACPX : `--consolidator-acpx-agent` /
   `TRADER_CONSOLIDATOR_ACPX_AGENT`, défaut `codex`.
 - modèle : `--consolidator-model` / `TRADER_CONSOLIDATOR_MODEL`, défaut
-  `gpt-5.5[high]`.
+  `gpt-5.5/high`.
 - timeout : `--consolidator-timeout-s` / `TRADER_CONSOLIDATOR_TIMEOUT_S`,
   défaut `240`.
 

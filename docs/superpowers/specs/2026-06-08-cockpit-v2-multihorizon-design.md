@@ -1,7 +1,10 @@
 # Cockpit v2 — signaux pré-calculés multi-horizon
 
 **Date** : 2026-06-08
-**Statut** : design validé, exécution en **pair-codex** (Opus orchestre, Codex tape)
+**Statut** : ✅ **LIVRÉ** (commit `2891262` « Cockpit v2 : signaux pré-calculés
+multi-horizon (cp3) »). Colonnes `htf`/`aligned`/`sig` actives dans
+`build_market_cockpit` (`trader/agent_context.py`), alimentées par
+`regime.multi_horizon_signals`.
 
 ---
 

@@ -22,7 +22,7 @@ DEFAULT_MAX_GLOBAL = 10
 DEFAULT_MAX_BY_SYMBOL = 5
 DEFAULT_CONSOLIDATOR_PROVIDER = "consolidator"
 DEFAULT_CONSOLIDATOR_ACPX_AGENT = "codex"
-DEFAULT_CONSOLIDATOR_MODEL = "gpt-5.5[high]"
+DEFAULT_CONSOLIDATOR_MODEL = "gpt-5.5/high"
 DEFAULT_CONSOLIDATOR_TIMEOUT_S = 240
 
 
@@ -225,6 +225,10 @@ def _clean_optional(value: str | None) -> str | None:
     return cleaned or None
 
 
+def _resolved_consolidator_model(model: str | None) -> str:
+    return _clean_optional(model) or os.environ.get("TRADER_CONSOLIDATOR_MODEL") or DEFAULT_CONSOLIDATOR_MODEL
+
+
 def build_consolidator_router_from_env(
     *,
     env_path: str | Path | None = llm.DEFAULT_ENV_PATH,
@@ -239,11 +243,7 @@ def build_consolidator_router_from_env(
         or os.environ.get("TRADER_CONSOLIDATOR_ACPX_AGENT")
         or DEFAULT_CONSOLIDATOR_ACPX_AGENT
     )
-    resolved_model = (
-        _clean_optional(model)
-        or os.environ.get("TRADER_CONSOLIDATOR_MODEL")
-        or DEFAULT_CONSOLIDATOR_MODEL
-    )
+    resolved_model = _resolved_consolidator_model(model)
     return llm.build_default_router_from_env(
         env_path=None,
         acpx_bin=resolved_bin,
@@ -341,7 +341,12 @@ def maybe_consolidate(
     status_store = status_store or _default_status_store(consolidated_store)
     status = status_store.read()
     last_failure = status.get("last_failure")
-    if isinstance(last_failure, dict) and last_failure.get("consolidated_watermark") == current.get("watermark"):
+    requested_model = _resolved_consolidator_model(model)
+    if (
+        isinstance(last_failure, dict)
+        and last_failure.get("consolidated_watermark") == current.get("watermark")
+        and last_failure.get("model") in (None, requested_model)
+    ):
         raw_since_failure = select_new_raw(raw_rows, watermark=last_failure.get("raw_watermark"))
         retry_after_new_raw = max(1, threshold)
         if len(raw_since_failure) < retry_after_new_raw:

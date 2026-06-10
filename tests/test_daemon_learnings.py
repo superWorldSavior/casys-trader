@@ -225,8 +225,8 @@ def test_run_cycle_declenche_le_consolidateur_en_fin_de_cycle(
         sched=sched,
         data_source=data_source,
         consolidator_acpx_agent="codex",
-        consolidator_model="gpt-5.5[high]",
+        consolidator_model="gpt-5.5/high",
         consolidator_timeout_s=240,
     )
 
-    assert calls == [("learnings.jsonl", "learnings_consolidated.json", 50, "codex", "gpt-5.5[high]", 240)]
+    assert calls == [("learnings.jsonl", "learnings_consolidated.json", 50, "codex", "gpt-5.5/high", 240)]

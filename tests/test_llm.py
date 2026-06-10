@@ -186,7 +186,7 @@ def test_build_acpx_command_peut_cibler_un_agent_dedie() -> None:
     cmd = build_acpx_command(
         "consolide ces learnings",
         acpx_bin="acpx",
-        model="gpt-5.5[high]",
+        model="gpt-5.5/high",
         timeout_s=240,
         agent="codex",
     )
@@ -201,7 +201,7 @@ def test_build_acpx_command_peut_cibler_un_agent_dedie() -> None:
         "--non-interactive-permissions",
         "deny",
         "--model",
-        "gpt-5.5[high]",
+        "gpt-5.5/high",
         "--timeout",
         "240",
         "codex",
@@ -217,7 +217,7 @@ def test_build_default_router_from_env_peut_nommer_lagent_acpx(monkeypatch) -> N
     router = build_default_router_from_env(
         env_path=None,
         acpx_bin="acpx-custom",
-        spark_model="gpt-5.5[high]",
+        spark_model="gpt-5.5/high",
         acpx_provider="consolidator",
         acpx_agent="codex",
     )
@@ -225,7 +225,7 @@ def test_build_default_router_from_env_peut_nommer_lagent_acpx(monkeypatch) -> N
     backend = router.backends[0]
     assert isinstance(backend, AcpxBackend)
     assert backend.provider == "consolidator"
-    assert backend.model == "gpt-5.5[high]"
+    assert backend.model == "gpt-5.5/high"
     assert backend.acpx_bin == "acpx-custom"
     assert backend.agent == "codex"
 

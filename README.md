@@ -110,7 +110,7 @@ cerveau parce que le contrat de sortie a été cassé. Chaque décision garde
 `state/model_performance.jsonl` pour comparer les modèles dans le temps.
 
 Le consolidateur de learnings utilise une config séparée du brain décideur :
-seuil `50`, agent `codex`, modèle `gpt-5.5[high]`. Overrides :
+seuil `50`, agent `codex`, modèle `gpt-5.5/high`. Overrides :
 `--learning-consolidation-threshold`, `--consolidator-acpx-bin`,
 `--consolidator-acpx-agent`, `--consolidator-model`,
 `--consolidator-timeout-s`, ou les env

@@ -71,7 +71,7 @@ def test_maybe_consolidate_attend_50_bruts_par_defaut(tmp_path) -> None:
 def test_build_consolidator_router_depuis_env_dedie(monkeypatch) -> None:
     monkeypatch.setenv("TRADER_CONSOLIDATOR_ACPX_BIN", "acpx-review")
     monkeypatch.setenv("TRADER_CONSOLIDATOR_ACPX_AGENT", "codex")
-    monkeypatch.setenv("TRADER_CONSOLIDATOR_MODEL", "gpt-5.5[high]")
+    monkeypatch.setenv("TRADER_CONSOLIDATOR_MODEL", "gpt-5.5/high")
     monkeypatch.delenv("TRADER_OLLAMA_API_KEY", raising=False)
     monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
 
@@ -81,7 +81,7 @@ def test_build_consolidator_router_depuis_env_dedie(monkeypatch) -> None:
     assert backend.provider == "consolidator"
     assert backend.acpx_bin == "acpx-review"
     assert backend.agent == "codex"
-    assert backend.model == "gpt-5.5[high]"
+    assert backend.model == "gpt-5.5/high"
 
 
 def test_maybe_consolidate_ecrit_le_consolide_et_avance_le_watermark(tmp_path) -> None:
@@ -148,7 +148,7 @@ def test_maybe_consolidate_ne_retente_pas_un_echec_sans_nouveau_lot(tmp_path) ->
             calls += 1
             return llm.LlmFailure(
                 provider="consolidator",
-                model="gpt-5.5[high]",
+                model="gpt-5.5/high",
                 code="nonzero_exit",
                 message="adapter failed",
                 retryable=False,
@@ -229,6 +229,49 @@ def test_maybe_consolidate_retente_apres_un_nouveau_lot_depuis_lechec(tmp_path) 
     assert first["written"] is False
     assert skipped["skipped"] is True
     assert skipped["new_raw_since_failure"] == 1
+    assert retried["triggered"] is True
+    assert retried["written"] is False
+    assert calls == 2
+
+
+def test_maybe_consolidate_retente_si_le_modele_a_change_depuis_lechec(tmp_path) -> None:
+    raw_store = LearningsStore(tmp_path / "learnings.jsonl", max_entries=200)
+    consolidated_store = consolidator.ConsolidatedLearningsStore(tmp_path / "learnings_consolidated.json")
+    status_store = consolidator.ConsolidationStatusStore(tmp_path / "learnings_consolidation_status.json")
+    raw_store.append(symbol="SPY", note="brut 1", now=datetime(2026, 6, 8, 10, tzinfo=timezone.utc))
+    raw_store.append(symbol="SPY", note="brut 2", now=datetime(2026, 6, 8, 10, 1, tzinfo=timezone.utc))
+    calls = 0
+
+    class BadRouter:
+        def complete(self, prompt: str, *, timeout_s: int):
+            nonlocal calls
+            calls += 1
+            return llm.LlmFailure(
+                provider="consolidator",
+                model="gpt-5.5[high]" if calls == 1 else "gpt-5.5/high",
+                code="nonzero_exit",
+                message="adapter failed",
+                retryable=False,
+            )
+
+    first = consolidator.maybe_consolidate(
+        raw_store,
+        consolidated_store,
+        threshold=2,
+        llm_router=BadRouter(),
+        model="gpt-5.5[high]",
+        status_store=status_store,
+    )
+    retried = consolidator.maybe_consolidate(
+        raw_store,
+        consolidated_store,
+        threshold=2,
+        llm_router=BadRouter(),
+        model="gpt-5.5/high",
+        status_store=status_store,
+    )
+
+    assert first["written"] is False
     assert retried["triggered"] is True
     assert retried["written"] is False
     assert calls == 2
