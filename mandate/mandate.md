@@ -41,16 +41,11 @@ continus. Expansion native Euronext/Taïwan/FX/futures après branchement IB.
   (fusible anti-bug, pas une règle de stratégie).
 - L'agent peut rester **HOLD** autant qu'il veut : ne rien faire est une décision
   valide. On ne le pousse PAS à trader pour trader.
-- **Fraîcheur des données** : dans la configuration actuelle (profil paper),
-  les prix actions/indices/futures sont **différés d'environ 10-15 min**
-  (yfinance, fallback IB delayed) ; seul le forex (IB IDEALPRO) est en temps
-  réel. Sur les classes différées, un setup
-  sensible au timing d'entrée à la minute (fade de bord de range, scalp serré)
-  reste autorisé **si** l'horizon, le stop et le take-profit tolèrent
-  explicitement ce retard — vérifie-le dans ta `rationale`. Préfère les setups
-  dont le timing reste valide malgré 15 min de retard. Un `next_wake_in_minutes`
-  court n'améliore pas la fraîcheur réelle des prix, mais reste utile pour
-  suivre l'arrivée de nouvelles barres retardées.
+- **Fraîcheur des données** : chaque symbole expose `data_age_m` (âge réel des
+  derniers prix, en minutes) et `session` (séance de SA place de cotation :
+  `open`/`since_open_m`/`to_close_m`) — calculés par le code, fais-leur
+  confiance. Un setup sensible au timing d'entrée à la minute doit justifier
+  dans `rationale` qu'il tolère ce `data_age_m`.
 
 ## KPI suivis
 

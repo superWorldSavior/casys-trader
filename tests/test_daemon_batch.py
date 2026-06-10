@@ -18,6 +18,8 @@ _COMMON = dict(
     runtime_lookback="5d",
     max_context_requests_per_symbol=2,
     max_indicators_per_request=4,
+    now=datetime(2026, 6, 15, 14, 30, tzinfo=timezone.utc),
+    data_age_by_symbol={},
 )
 
 
@@ -38,6 +40,31 @@ def _write_runtime_config(root) -> None:
     )
     (root / "mandate" / "mandate.md").write_text("# Mandat\n")
     (root / "mandate" / "memory.md").write_text("# Memoire\n")
+
+
+def test_batch_decide_injecte_age_data_et_session_par_symbole(monkeypatch) -> None:
+    # Code over instructions : l'âge des prix et l'état de la séance de la place
+    # du symbole sont des FAITS calculés par le code et injectés dans le payload —
+    # le mandat n'a pas à lister les horaires des marchés ni le délai data.
+    captured: dict = {}
+
+    def fake_batch(*, per_symbol, **kwargs):
+        captured.update(per_symbol)
+        return {sym: Decision.hold(sym, "x") for sym in per_symbol}
+
+    monkeypatch.setattr(daemon.codex_client, "decide_batch", fake_batch)
+    common = {
+        **_COMMON,
+        # Lundi 15/06 14h30 UTC = 10h30 EDT : séance US ouverte depuis 60min.
+        "now": datetime(2026, 6, 15, 14, 30, tzinfo=timezone.utc),
+        "data_age_by_symbol": {"SPY": 9.6},
+    }
+
+    decisions, n = daemon._batch_decide(decidable=["SPY", "QQQ"], max_model_calls=1, **common)
+
+    assert captured["SPY"]["data_age_m"] == 10  # arrondi à la minute entière
+    assert captured["SPY"]["session"] == {"open": True, "since_open_m": 60, "to_close_m": 330}
+    assert captured["QQQ"]["data_age_m"] is None  # âge inconnu = inconnu, pas 0
 
 
 def test_budget_zero_ne_fait_aucun_appel_et_tout_hold(monkeypatch) -> None:

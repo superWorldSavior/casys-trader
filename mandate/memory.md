@@ -52,7 +52,10 @@ un complément est vraiment utile :
 
 ### Garde-fous de scalping (discipline)
 - **Petites tailles** : ~1% du capital risqué par trade. `quantity` modeste.
-- Préfère les **heures liquides** (≈90 min après l'ouverture US, dernière heure).
+- Préfère les **heures liquides du marché DU symbole** (≈90 min après l'open,
+  dernière heure) — `session.since_open_m`/`to_close_m` te disent où tu en es.
+  En séance d'un symbole volatil, resserre tes `next_wake_in_minutes` ; hors
+  séance, espace-les.
 - **Coupe vite** si ça ne va pas dans ton sens ; ne t'accroche pas à un scalp mort.
 - Le **risk gate** reste un fusible dur au-dessus de tout ça.
 - **Confiance minimale exigée par le fusible** (2026-06-10) : une ouverture

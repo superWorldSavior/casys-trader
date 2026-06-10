@@ -736,6 +736,8 @@ def _batch_decide(
     max_context_requests_per_symbol: int,
     max_indicators_per_request: int,
     max_model_calls: int,
+    now: datetime,
+    data_age_by_symbol: dict[str, float],
     decision_timeout_s: int = 900,
 ) -> tuple[dict[str, codex_client.Decision], int]:
     """Décide TOUS les symboles dus en UN appel batch (contexte partagé envoyé une
@@ -747,7 +749,19 @@ def _batch_decide(
         return {}, 0
     if max_model_calls < 1:
         return {sym: codex_client.Decision.hold(sym, "model_call_budget_exhausted") for sym in decidable}, 0
-    per_symbol = {sym: {"indicator_triggers": triggers_by_symbol.get(sym, [])} for sym in decidable}
+    def _symbol_facts(sym: str) -> dict:
+        # Faits calculés par le code (pas des consignes en prose) : âge réel des
+        # prix et état de la séance de la place du symbole. Âge inconnu = None.
+        age = data_age_by_symbol.get(sym)
+        return {
+            "data_age_m": None if age is None else int(round(age)),
+            "session": market.session_snapshot(sym, now=now),
+        }
+
+    per_symbol = {
+        sym: {"indicator_triggers": triggers_by_symbol.get(sym, []), **_symbol_facts(sym)}
+        for sym in decidable
+    }
     responses = codex_client.decide_batch(
         symbols=decidable,
         mandate=mandate,
@@ -792,6 +806,7 @@ def _batch_decide(
             context_requests[sym] = _context_request_summary(req, resolved=len(research["requests"]))
             per_symbol2[sym] = {
                 "indicator_triggers": triggers_by_symbol.get(sym, []),
+                **_symbol_facts(sym),
                 "research": research,
                 # Sessions jetables : le 2e batch n'a pas l'historique du 1er ; on
                 # repasse la rationale de la demande pour reprendre le raisonnement.
@@ -1001,6 +1016,7 @@ def run_cycle(
     bars_by_symbol: dict[str, list] = {}
     prices: dict[str, float] = {}
     stale_market_data: dict[str, dict] = {}
+    data_age_by_symbol: dict[str, float] = {}
     # F5 : capturé immédiatement après le fetch runtime décisionnel, avant tout
     # fetch secondaire (daily, watches) qui pourrait écraser last_source().
     runtime_data_source_by_sym: dict[str, str | None] = {}
@@ -1028,6 +1044,8 @@ def run_cycle(
         # vieille / imparsable => stale => exclue du tradable (pas de fill sur
         # données mortes hors-séance ou gelées).
         freshness = market.assess_freshness(bars, now=now, max_age_minutes=freshness_max_age)
+        if freshness.age_minutes is not None:
+            data_age_by_symbol[sym] = freshness.age_minutes
         if not freshness.fresh:
             stale_market_data[sym] = {
                 "last_bar_ts": str(bars[-1].ts),
@@ -1264,6 +1282,8 @@ def run_cycle(
         max_context_requests_per_symbol=max_context_requests_per_symbol,
         max_indicators_per_request=max_indicators_per_request,
         max_model_calls=max_model_calls_per_cycle,
+        now=now,
+        data_age_by_symbol=data_age_by_symbol,
         decision_timeout_s=decision_timeout_s,
     )
     _log_cycle_progress("[batch] decided=%d model_calls=%d", len(decisions_by_symbol), model_calls_used)
@@ -1274,8 +1294,9 @@ def run_cycle(
             streak = sched.get_stale_streak(sym) if sched is not None else 0
             wake_minutes = _stale_backoff_wake_minutes(streak, default_wake_minutes=default_wake_minutes)
             # Ne jamais dormir au-delà de la prochaine ouverture : on raccourcit le
-            # backoff pour être réveillé pile avant la cloche (anti-rater-l'open).
-            wake_minutes = market.clamp_wake_to_session_open(wake_minutes, now=now)
+            # backoff pour être réveillé pile avant la cloche DU marché du symbole
+            # (TWSE/Euronext/XETRA/US — anti-rater-l'open).
+            wake_minutes = market.clamp_wake_to_session_open(wake_minutes, now=now, symbol=sym)
             new_streak = streak + 1
             if sched is not None:
                 sched.set_stale_streak(sym, new_streak)

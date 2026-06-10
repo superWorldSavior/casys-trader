@@ -93,11 +93,65 @@ def assess_freshness(bars: list[Bar], *, now: datetime, max_age_minutes: float) 
 
 
 # --- Anticipation de l'ouverture de session (alignement du réveil) -----------
-# Heure d'ouverture de la session régulière US, en heure LOCALE marché.
-# zoneinfo gère DST (EST/EDT) → conversion UTC correcte toute l'année, sans pytz.
+# Heure d'ouverture de la session régulière, en heure LOCALE de la place de
+# cotation du symbole. zoneinfo gère DST → conversion UTC correcte toute
+# l'année, sans pytz. Sans symbole (ou symbole non mappé) : défaut US.
 _MARKET_TZ = ZoneInfo("America/New_York")
 _SESSION_OPEN_HOUR = 9
 _SESSION_OPEN_MINUTE = 30
+# Place de cotation par suffixe yfinance → (tz, open_h, open_m, close_h, close_m).
+# Le FX (=X) n'est volontairement PAS mappé : marché ~24h/5, le calendrier US
+# par défaut reste le comportement historique le moins faux pour le réveil.
+_Venue = tuple[ZoneInfo, int, int, int, int]
+_VENUE_US: _Venue = (_MARKET_TZ, _SESSION_OPEN_HOUR, _SESSION_OPEN_MINUTE, 16, 0)
+_VENUE_BY_SUFFIX: dict[str, _Venue] = {
+    ".TW": (ZoneInfo("Asia/Taipei"), 9, 0, 13, 30),     # TWSE (pas de DST)
+    ".PA": (ZoneInfo("Europe/Paris"), 9, 0, 17, 30),    # Euronext Paris
+    ".DE": (ZoneInfo("Europe/Berlin"), 9, 0, 17, 30),   # XETRA
+}
+_VENUE_BY_SYMBOL: dict[str, _Venue] = {
+    "^FCHI": (ZoneInfo("Europe/Paris"), 9, 0, 17, 30),  # CAC 40 — coté à Paris
+}
+
+
+def _venue_for_symbol(symbol: str | None) -> _Venue:
+    if symbol:
+        exact = _VENUE_BY_SYMBOL.get(symbol)
+        if exact is not None:
+            return exact
+        for suffix, venue in _VENUE_BY_SUFFIX.items():
+            if symbol.endswith(suffix):
+                return venue
+    return _VENUE_US
+
+
+def session_snapshot(symbol: str, *, now: datetime) -> dict:
+    """Où en est la session régulière du marché du symbole — fait calculé par le
+    code et injecté dans le contexte LLM (le prompt n'a pas à lister les horaires
+    des places).
+
+    Retour : {"open": bool, "since_open_m": int|None, "to_close_m": int|None}.
+    FX (=X) : ~24h/5 → open=True en semaine sans bornes, fermé le weekend.
+    Compromis assumé (comme le calendrier de réveil) : fériés et demi-journées
+    non gérés ; weekend = samedi/dimanche locaux de la place.
+    """
+    now_utc = now if now.tzinfo is not None else now.replace(tzinfo=timezone.utc)
+    if symbol.endswith("=X"):
+        is_weekend = now_utc.weekday() >= 5
+        return {"open": not is_weekend, "since_open_m": None, "to_close_m": None}
+    tz, open_hour, open_minute, close_hour, close_minute = _venue_for_symbol(symbol)
+    local_now = now_utc.astimezone(tz)
+    if local_now.weekday() >= 5:
+        return {"open": False, "since_open_m": None, "to_close_m": None}
+    open_dt = local_now.replace(hour=open_hour, minute=open_minute, second=0, microsecond=0)
+    close_dt = local_now.replace(hour=close_hour, minute=close_minute, second=0, microsecond=0)
+    if not (open_dt <= local_now < close_dt):
+        return {"open": False, "since_open_m": None, "to_close_m": None}
+    return {
+        "open": True,
+        "since_open_m": int((local_now - open_dt).total_seconds() // 60),
+        "to_close_m": int((close_dt - local_now).total_seconds() // 60),
+    }
 # On veut être réveillé un peu AVANT la cloche : fetch + décider pile à l'ouverture.
 PRE_OPEN_LEAD_MINUTES = 5.0
 # Fenêtre de grâce APRÈS la cloche : tant que la donnée est encore stale (latence
@@ -108,48 +162,44 @@ OPEN_GRACE_MINUTES = 20.0
 _TIGHT_POLL_MINUTES = 1.0
 
 
-def next_regular_session_open(now: datetime) -> datetime:
-    """Prochaine ouverture de session régulière US (strictement > now), en UTC.
+def next_regular_session_open(now: datetime, *, symbol: str | None = None) -> datetime:
+    """Prochaine ouverture de session régulière (strictement > now), en UTC.
 
-    Compromis assumé : ne gère PAS les jours fériés ni les demi-journées — seuls
-    les weekends (samedi=5, dimanche=6) sont sautés. DST géré via zoneinfo.
-    Déterministe : `now` est injecté, aucune dépendance cachée à l'horloge.
-
-    Étapes attendues :
-      1. now en UTC → heure locale marché (.astimezone(_MARKET_TZ)).
-      2. Candidat = ce jour-là à 9h30 locale (.replace(hour=, minute=, second=0,
-         microsecond=0)).
-      3. Tant que le candidat est un weekend OU <= now : avancer d'un jour
-         (timedelta(days=1)), en re-fixant l'heure à 9h30.
-      4. Retourner le candidat reconverti en UTC (.astimezone(timezone.utc)).
+    Le calendrier est celui de la place de cotation du `symbol` (TWSE, Euronext
+    Paris, XETRA) ; sans symbole ou symbole non mappé → US. Compromis assumé :
+    ne gère PAS les jours fériés ni les demi-journées — seuls les weekends
+    (samedi=5, dimanche=6) sont sautés. DST géré via zoneinfo. Déterministe :
+    `now` est injecté, aucune dépendance cachée à l'horloge.
     """
+    tz, open_hour, open_minute, _close_h, _close_m = _venue_for_symbol(symbol)
     now_utc = now if now.tzinfo is not None else now.replace(tzinfo=timezone.utc)
-    local_now = now_utc.astimezone(_MARKET_TZ)
+    local_now = now_utc.astimezone(tz)
     candidate = local_now.replace(
-        hour=_SESSION_OPEN_HOUR, minute=_SESSION_OPEN_MINUTE, second=0, microsecond=0
+        hour=open_hour, minute=open_minute, second=0, microsecond=0
     )
     # Strictement après now ET un jour ouvré (weekday 5=sam, 6=dim sautés).
     while candidate <= local_now or candidate.weekday() >= 5:
         candidate = (candidate + timedelta(days=1)).replace(
-            hour=_SESSION_OPEN_HOUR, minute=_SESSION_OPEN_MINUTE, second=0, microsecond=0
+            hour=open_hour, minute=open_minute, second=0, microsecond=0
         )
     return candidate.astimezone(timezone.utc)
 
 
-def most_recent_session_open(now: datetime) -> datetime:
+def most_recent_session_open(now: datetime, *, symbol: str | None = None) -> datetime:
     """Ouverture régulière de la session courante/la plus récente (<= now), UTC.
 
     Symétrique de `next_regular_session_open` : recule jour par jour en sautant
     les weekends. Sert à détecter la fenêtre de grâce post-cloche.
     """
+    tz, open_hour, open_minute, _close_h, _close_m = _venue_for_symbol(symbol)
     now_utc = now if now.tzinfo is not None else now.replace(tzinfo=timezone.utc)
-    local_now = now_utc.astimezone(_MARKET_TZ)
+    local_now = now_utc.astimezone(tz)
     candidate = local_now.replace(
-        hour=_SESSION_OPEN_HOUR, minute=_SESSION_OPEN_MINUTE, second=0, microsecond=0
+        hour=open_hour, minute=open_minute, second=0, microsecond=0
     )
     while candidate > local_now or candidate.weekday() >= 5:
         candidate = (candidate - timedelta(days=1)).replace(
-            hour=_SESSION_OPEN_HOUR, minute=_SESSION_OPEN_MINUTE, second=0, microsecond=0
+            hour=open_hour, minute=open_minute, second=0, microsecond=0
         )
     return candidate.astimezone(timezone.utc)
 
@@ -158,6 +208,7 @@ def clamp_wake_to_session_open(
     wake_minutes: float,
     *,
     now: datetime,
+    symbol: str | None = None,
     lead_minutes: float = PRE_OPEN_LEAD_MINUTES,
     grace_minutes: float = OPEN_GRACE_MINUTES,
 ) -> float:
@@ -172,10 +223,14 @@ def clamp_wake_to_session_open(
     Plancher à 1min sur tous les chemins : jamais 0/négatif (réveil immédiat).
     """
     now_utc = now if now.tzinfo is not None else now.replace(tzinfo=timezone.utc)
-    grace_end = most_recent_session_open(now_utc) + timedelta(minutes=grace_minutes)
+    grace_end = most_recent_session_open(now_utc, symbol=symbol) + timedelta(
+        minutes=grace_minutes
+    )
     if now_utc <= grace_end:
         return max(1.0, min(wake_minutes, _TIGHT_POLL_MINUTES))
-    target = next_regular_session_open(now_utc) - timedelta(minutes=lead_minutes)
+    target = next_regular_session_open(now_utc, symbol=symbol) - timedelta(
+        minutes=lead_minutes
+    )
     capped_minutes = (target - now_utc).total_seconds() / 60.0
     # min() = on garde le plus court entre backoff courant et « avant la cloche ».
     # max(1.0, ...) plancher sur les DEUX chemins : un wake_minutes <= 0 (ex. CLI

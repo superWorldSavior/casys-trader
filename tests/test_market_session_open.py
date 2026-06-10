@@ -15,6 +15,7 @@ from trader.tools.market import (
     clamp_wake_to_session_open,
     most_recent_session_open,
     next_regular_session_open,
+    session_snapshot,
 )
 
 
@@ -107,3 +108,134 @@ def test_apres_grace_retombe_sur_prochaine_ouverture():
 def test_most_recent_session_open_recule_au_vendredi_le_weekend():
     # Samedi 14/06 12h UTC → dernière ouverture = vendredi 12/06 13h30 UTC (EDT).
     assert most_recent_session_open(_utc(2026, 6, 13, 12)) == _utc(2026, 6, 12, 13, 30)
+
+
+# --- Calendrier par place de cotation (symbol=) -------------------------------
+# Le réveil stale doit viser l'ouverture du marché DU symbole, pas Wall Street :
+# TWSE (.TW) ouvre 09h00 Asia/Taipei = 01h00 UTC (pas de DST à Taïwan),
+# Euronext Paris (.PA, ^FCHI) et XETRA (.DE) ouvrent 09h00 locale = 07h00 UTC
+# l'été (CEST). Sans symbol= (ou symbole inconnu) : comportement US inchangé.
+
+
+def test_next_open_twse_meme_jour():
+    # Mardi 10/06 00h UTC → ouverture TWSE le jour même 01h00 UTC.
+    assert next_regular_session_open(
+        _utc(2026, 6, 10, 0), symbol="2330.TW"
+    ) == _utc(2026, 6, 10, 1, 0)
+
+
+def test_next_open_twse_vendredi_soir_saute_au_lundi():
+    # Vendredi 12/06 23h UTC → lundi 15/06 09h00 Taipei = 01h00 UTC.
+    assert next_regular_session_open(
+        _utc(2026, 6, 12, 23), symbol="2454.TW"
+    ) == _utc(2026, 6, 15, 1, 0)
+
+
+def test_next_open_euronext_paris_ete():
+    # Lundi 15/06 05h UTC → 09h00 Europe/Paris (CEST) = 07h00 UTC.
+    assert next_regular_session_open(
+        _utc(2026, 6, 15, 5), symbol="HO.PA"
+    ) == _utc(2026, 6, 15, 7, 0)
+
+
+def test_next_open_fchi_suit_paris():
+    # ^FCHI est coté à Paris : même calendrier que les .PA.
+    assert next_regular_session_open(
+        _utc(2026, 6, 15, 5), symbol="^FCHI"
+    ) == _utc(2026, 6, 15, 7, 0)
+
+
+def test_next_open_xetra_ete():
+    # Lundi 15/06 05h UTC → 09h00 Europe/Berlin (CEST) = 07h00 UTC.
+    assert next_regular_session_open(
+        _utc(2026, 6, 15, 5), symbol="RHM.DE"
+    ) == _utc(2026, 6, 15, 7, 0)
+
+
+def test_next_open_euronext_hiver_cet():
+    # Vendredi 09/01/2026 23h UTC → lundi 12/01 09h00 CET (UTC+1) = 08h00 UTC.
+    assert next_regular_session_open(
+        _utc(2026, 1, 9, 23), symbol="AM.PA"
+    ) == _utc(2026, 1, 12, 8, 0)
+
+
+def test_next_open_symbole_inconnu_garde_le_defaut_us():
+    # SPY (et tout symbole non mappé) : calendrier US inchangé.
+    assert next_regular_session_open(
+        _utc(2026, 6, 15, 12), symbol="SPY"
+    ) == _utc(2026, 6, 15, 13, 30)
+
+
+def test_clamp_twse_pres_de_louverture_raccourcit():
+    # Lundi 15/06 00h40 UTC, open TWSE 01h00 : wake 120min → 5min avant = 15min.
+    assert clamp_wake_to_session_open(
+        120.0, now=_utc(2026, 6, 15, 0, 40), symbol="2330.TW"
+    ) == 15.0
+
+
+def test_clamp_twse_grace_apres_la_cloche_poll_serre():
+    # 01h05 UTC (5min après l'open TWSE), data encore stale → poll serré 1min.
+    assert clamp_wake_to_session_open(
+        120.0, now=_utc(2026, 6, 15, 1, 5), symbol="2330.TW"
+    ) == 1.0
+
+
+def test_clamp_paris_pres_de_louverture_raccourcit():
+    # Lundi 15/06 06h30 UTC, open Paris 07h00 : wake 120min → 5min avant = 25min.
+    assert clamp_wake_to_session_open(
+        120.0, now=_utc(2026, 6, 15, 6, 30), symbol="HO.PA"
+    ) == 25.0
+
+
+def test_most_recent_open_twse_weekend_recule_au_vendredi():
+    # Samedi 13/06 12h UTC → dernière ouverture TWSE = vendredi 12/06 01h00 UTC.
+    assert most_recent_session_open(
+        _utc(2026, 6, 13, 12), symbol="2330.TW"
+    ) == _utc(2026, 6, 12, 1, 0)
+
+
+# --- session_snapshot : où en est la session du symbole (fait injecté au LLM) --
+# Le code répond à « le marché du symbole est-il ouvert, depuis/pour combien de
+# temps ? » pour que le prompt n'ait pas à lister les horaires des places.
+
+
+def test_session_snapshot_us_en_seance():
+    # Lundi 15/06 14h30 UTC = 10h30 EDT (open 09h30, close 16h00) : en séance,
+    # 60min depuis l'open, 330min avant la cloche de clôture.
+    snap = session_snapshot("SPY", now=_utc(2026, 6, 15, 14, 30))
+    assert snap == {"open": True, "since_open_m": 60, "to_close_m": 330}
+
+
+def test_session_snapshot_twse_en_seance():
+    # Lundi 15/06 02h00 UTC = 10h00 Taipei (open 09h00, close 13h30) : en séance.
+    snap = session_snapshot("2330.TW", now=_utc(2026, 6, 15, 2, 0))
+    assert snap == {"open": True, "since_open_m": 60, "to_close_m": 210}
+
+
+def test_session_snapshot_twse_fermee_l_apres_midi_utc():
+    # Lundi 15/06 14h UTC = 22h00 Taipei : TWSE fermée.
+    snap = session_snapshot("2330.TW", now=_utc(2026, 6, 15, 14, 0))
+    assert snap == {"open": False, "since_open_m": None, "to_close_m": None}
+
+
+def test_session_snapshot_paris_en_seance():
+    # Lundi 15/06 08h00 UTC = 10h00 Paris (open 09h00, close 17h30) : en séance.
+    snap = session_snapshot("HO.PA", now=_utc(2026, 6, 15, 8, 0))
+    assert snap == {"open": True, "since_open_m": 60, "to_close_m": 450}
+
+
+def test_session_snapshot_weekend_fermee():
+    # Samedi 13/06 : tout est fermé, même en heures « de séance ».
+    snap = session_snapshot("SPY", now=_utc(2026, 6, 13, 14, 30))
+    assert snap == {"open": False, "since_open_m": None, "to_close_m": None}
+
+
+def test_session_snapshot_fx_toujours_ouvert_en_semaine():
+    # FX ~24h/5 : pas de calendrier de place — open=True en semaine, sans bornes.
+    snap = session_snapshot("EURUSD=X", now=_utc(2026, 6, 15, 3, 0))
+    assert snap == {"open": True, "since_open_m": None, "to_close_m": None}
+
+
+def test_session_snapshot_fx_ferme_le_weekend():
+    snap = session_snapshot("EURUSD=X", now=_utc(2026, 6, 13, 12, 0))
+    assert snap == {"open": False, "since_open_m": None, "to_close_m": None}
