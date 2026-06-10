@@ -1,7 +1,7 @@
 # Post-mortem — short CL=F du 2026-06-09, −101,20 $ (hard_stop)
 
 **Statut : CORRIGÉ** — gate de confiance×risque livré le 2026-06-10
-(`trader/risk.py`, commit « feat(risk): gate de confiance adapté au risque »).
+(`trader/risk.py`, commit `dffb6d1`).
 **Toute statistique incluant des trades antérieurs au 2026-06-10 mélange deux
 régimes** : avant cette date, aucune confiance minimale n'était exigée pour
 exécuter. Filtrer par `code_version.git_commit` (présent dans chaque entrée de
