@@ -63,10 +63,16 @@ croissant linéairement avec le risque planifié —
 `tests/test_risk.py::test_check_confidence_rejette_le_trade_cl_f_du_9_juin`
 (conf 0.58, risque 0.068 % → requis ≈ 0.71 → rejeté).
 
-## Reste ouvert (cause 2)
+## Suites données (cause 2) — tout est traité au 2026-06-10
 
-- **Données différées** : décision à prendre — souscrire la market data IB
-  temps réel (NYMEX/CME, quelques $/mois) et passer `market_data_type=1`,
-  ou assumer le délai et l'intégrer (stops plus larges, pas de scalp < 30 min).
-- Slippage des stops : évaluer un check des stops contre le high/low de la
-  dernière barre plutôt que le dernier prix seul.
+- **Données différées** : décision Erwan — pas d'abonnement en paper.
+  **Futures CME retirés de l'univers de calibration** (commit `70ad1b9`),
+  retour en prod avec souscription IB temps réel. Spec data multi-sources :
+  `docs/superpowers/specs/2026-06-10-data-source-abstraction-design.md`.
+- **Slippage des stops : CORRIGÉ** (commit `5ce1746`) — stops/TP/trailing
+  détectés sur les extrêmes (high/low) de la dernière barre, fill
+  conservateur jamais meilleur que le niveau, garde temporelle (un extrême
+  antérieur à l'ouverture du plan ne déclenche pas).
+- **Plans persistés** (même commit) : trade plan complet dans la décision à
+  la création + état/fill à chaque exit — le « TPs introuvables » de ce
+  post-mortem ne peut plus se reproduire.
