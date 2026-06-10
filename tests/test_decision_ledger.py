@@ -127,6 +127,18 @@ def test_build_decision_row_propage_les_champs_risque_runtime() -> None:
     assert row["runtime"]["risk_unbounded_no_stop"] is False
 
 
+def test_build_decision_row_propage_data_source_runtime() -> None:
+    # Régression : entry["data_source"] (source composite ayant servi les barres)
+    # était perdu par la whitelist runtime — décisions persistées sans traçabilité.
+    decision = _decision(action="HOLD")
+    decision["data_source"] = "yfinance"
+    report = _report([decision])
+
+    row = decision_ledger.build_decision_row(report, decision, sequence=0, source="daemon")
+
+    assert row["runtime"]["data_source"] == "yfinance"
+
+
 def test_decision_ledger_append_est_idempotent(tmp_path) -> None:
     store = decision_ledger.DecisionLedgerStore(tmp_path / "decisions.jsonl")
     row = decision_ledger.build_decision_row(_report([_decision()]), _decision(), sequence=0)

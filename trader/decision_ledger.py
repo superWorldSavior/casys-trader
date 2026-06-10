@@ -124,6 +124,7 @@ def build_decision_row(
             "stop_distance": decision.get("stop_distance"),
             "risk_clamped": decision.get("risk_clamped"),
             "risk_unbounded_no_stop": decision.get("risk_unbounded_no_stop"),
+            "data_source": decision.get("data_source"),
         },
         "labels": {},
     }
