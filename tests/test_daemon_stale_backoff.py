@@ -1,0 +1,463 @@
+"""Tests chantier 1 : backoff stale et déduplication décisions."""
+import json
+from datetime import datetime, timezone
+
+import pytest
+
+from trader import daemon
+from trader.tools.scheduler import Scheduler, STALE_BACKOFF_MAX_MINUTES, STALE_BACKOFF_MAX_STREAK
+
+
+def test_backoff_wake_premier_stale_est_egal_au_defaut(tmp_path) -> None:
+    """streak=0 → next_wake = default (pas de doublement au premier stale)."""
+    result = daemon._stale_backoff_wake_minutes(streak=0, default_wake_minutes=30.0)
+    assert result == 30.0
+
+
+def test_backoff_wake_doublee_au_second_stale(tmp_path) -> None:
+    """streak=1 → 30 * 2^1 = 60."""
+    result = daemon._stale_backoff_wake_minutes(streak=1, default_wake_minutes=30.0)
+    assert result == 60.0
+
+
+def test_backoff_wake_triple_stale(tmp_path) -> None:
+    """streak=2 → 30 * 2^2 = 120."""
+    result = daemon._stale_backoff_wake_minutes(streak=2, default_wake_minutes=30.0)
+    assert result == 120.0
+
+
+def test_backoff_wake_cap_a_120_minutes(tmp_path) -> None:
+    """streak=10 → capp à STALE_BACKOFF_MAX_MINUTES=120."""
+    result = daemon._stale_backoff_wake_minutes(streak=10, default_wake_minutes=30.0)
+    assert result == STALE_BACKOFF_MAX_MINUTES
+
+
+def test_backoff_wake_cap_avec_defaut_petit(tmp_path) -> None:
+    """Avec default=5min, streak=5 → 5*32=160 → cappé à 120."""
+    result = daemon._stale_backoff_wake_minutes(streak=5, default_wake_minutes=5.0)
+    assert result == STALE_BACKOFF_MAX_MINUTES
+
+
+# ── helpers communs ──────────────────────────────────────────────────────────
+
+def _write_runtime_config(root) -> None:
+    (root / "config").mkdir(exist_ok=True)
+    (root / "mandate").mkdir(exist_ok=True)
+    (root / "config" / "universe.yaml").write_text(
+        "starting_cash: 100000\nsymbols:\n  - SPY\n"
+    )
+    (root / "config" / "risk.yaml").write_text(
+        "\n".join([
+            "max_position_value: 20000",
+            "max_gross_exposure: 100000",
+            "max_order_value: 10000",
+            "max_orders_per_cycle: 5",
+            "min_equity: 50000",
+        ])
+    )
+    (root / "mandate" / "mandate.md").write_text("# Mandat\n")
+    (root / "mandate" / "memory.md").write_text("# Memoire\n")
+
+
+def _make_stale_source(now, age_minutes=90.0):
+    """Retourne une data source dont la barre est trop vieille."""
+    from datetime import timedelta
+    from trader.tools.market import Bar
+
+    class FakeStaleDataSource:
+        def get_bars(self, symbol, lookback, interval):
+            stale_ts = (now - timedelta(minutes=age_minutes)).isoformat()
+            return [Bar(ts=stale_ts, open=100.0, high=101.0, low=99.0, close=100.0, volume=1000.0)]
+
+    return FakeStaleDataSource()
+
+
+# ── tests intégration ────────────────────────────────────────────────────────
+
+def test_stale_premier_cycle_wake_egal_au_defaut(monkeypatch, tmp_path, patch_batch) -> None:
+    """Premier stale (streak=0) → next_wake = default_wake_minutes."""
+    _write_runtime_config(tmp_path)
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    monkeypatch.setattr(daemon, "ROOT", tmp_path)
+    monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+    sched = Scheduler(state_dir / "scheduler.json")
+    now = datetime(2026, 6, 10, 3, 0, tzinfo=timezone.utc)
+    data_source = _make_stale_source(now)
+
+    patch_batch(lambda **kwargs: __import__("trader.codex_client", fromlist=["Decision"]).Decision.hold(kwargs["symbol"], "hold"))
+
+    daemon.run_cycle(
+        dry_run=True, now=now, symbols_filter=["SPY"],
+        sched=sched, data_source=data_source,
+        default_wake_minutes=30.0,
+    )
+
+    # Streak après premier stale = 1 (on vient de staler)
+    assert sched.get_stale_streak("SPY") == 1
+    # Wake = default (30min), pas encore de backoff
+    wake = sched.next_wake("SPY")
+    delta = abs((wake - now).total_seconds())
+    assert abs(delta - 30 * 60) < 2, f"wake delta={delta}s attendu=1800s"
+
+
+def test_stale_deuxieme_cycle_wake_double(monkeypatch, tmp_path, patch_batch) -> None:
+    """Deuxième stale consécutif (streak=1) → next_wake = default * 2."""
+    _write_runtime_config(tmp_path)
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    monkeypatch.setattr(daemon, "ROOT", tmp_path)
+    monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+    sched = Scheduler(state_dir / "scheduler.json")
+    sched.set_stale_streak("SPY", 1)  # simuler: 1er stale déjà arrivé
+    now = datetime(2026, 6, 10, 3, 0, tzinfo=timezone.utc)
+    data_source = _make_stale_source(now)
+
+    patch_batch(lambda **kwargs: __import__("trader.codex_client", fromlist=["Decision"]).Decision.hold(kwargs["symbol"], "hold"))
+
+    daemon.run_cycle(
+        dry_run=True, now=now, symbols_filter=["SPY"],
+        sched=sched, data_source=data_source,
+        default_wake_minutes=30.0,
+    )
+
+    assert sched.get_stale_streak("SPY") == 2
+    wake = sched.next_wake("SPY")
+    delta = abs((wake - now).total_seconds())
+    assert abs(delta - 60 * 60) < 2, f"wake delta={delta}s attendu=3600s (60 min)"
+
+
+def test_stale_streak_cappe_a_120_minutes(monkeypatch, tmp_path, patch_batch) -> None:
+    """Streak=10 → wake cappé à 120min."""
+    _write_runtime_config(tmp_path)
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    monkeypatch.setattr(daemon, "ROOT", tmp_path)
+    monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+    sched = Scheduler(state_dir / "scheduler.json")
+    sched.set_stale_streak("SPY", 10)
+    now = datetime(2026, 6, 10, 3, 0, tzinfo=timezone.utc)
+    data_source = _make_stale_source(now)
+
+    patch_batch(lambda **kwargs: __import__("trader.codex_client", fromlist=["Decision"]).Decision.hold(kwargs["symbol"], "hold"))
+
+    daemon.run_cycle(
+        dry_run=True, now=now, symbols_filter=["SPY"],
+        sched=sched, data_source=data_source,
+        default_wake_minutes=30.0,
+    )
+
+    wake = sched.next_wake("SPY")
+    delta = (wake - now).total_seconds()
+    assert abs(delta - 120 * 60) < 2, f"wake delta={delta}s attendu=7200s (120 min cappé)"
+
+
+def test_stale_streak_reset_quand_data_fraiche(monkeypatch, tmp_path, patch_batch) -> None:
+    """Après une donnée fraîche, le streak est remis à 0."""
+    from trader.tools.market import Bar
+
+    _write_runtime_config(tmp_path)
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    monkeypatch.setattr(daemon, "ROOT", tmp_path)
+    monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+    sched = Scheduler(state_dir / "scheduler.json")
+    sched.set_stale_streak("SPY", 3)  # streak existant
+    now = datetime(2026, 6, 10, 14, 0, tzinfo=timezone.utc)  # heure de marché
+
+    class FreshDataSource:
+        def get_bars(self, symbol, lookback, interval):
+            # barre très récente (1 minute old)
+            from datetime import timedelta
+            fresh_ts = (now - timedelta(minutes=1)).isoformat()
+            return [Bar(ts=fresh_ts, open=100.0, high=101.0, low=99.0, close=100.0, volume=1000.0)]
+
+    patch_batch(lambda **kwargs: __import__("trader.codex_client", fromlist=["Decision"]).Decision.hold(kwargs["symbol"], "hold"))
+
+    daemon.run_cycle(
+        dry_run=True, now=now, symbols_filter=["SPY"],
+        sched=sched, data_source=FreshDataSource(),
+        default_wake_minutes=30.0,
+        max_market_data_age_minutes=5.0,
+    )
+
+    assert sched.get_stale_streak("SPY") == 0
+
+
+def test_stale_premiere_occurrence_enregistre_une_decision(monkeypatch, tmp_path, patch_batch) -> None:
+    """Premier stale (streak=0) → 1 décision HOLD dans report['decisions']."""
+    _write_runtime_config(tmp_path)
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    monkeypatch.setattr(daemon, "ROOT", tmp_path)
+    monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+    sched = Scheduler(state_dir / "scheduler.json")
+    now = datetime(2026, 6, 10, 3, 0, tzinfo=timezone.utc)
+    data_source = _make_stale_source(now)
+
+    patch_batch(lambda **kwargs: __import__("trader.codex_client", fromlist=["Decision"]).Decision.hold(kwargs["symbol"], "hold"))
+
+    report = daemon.run_cycle(
+        dry_run=True, now=now, symbols_filter=["SPY"],
+        sched=sched, data_source=data_source,
+        default_wake_minutes=30.0,
+    )
+
+    decisions = report["decisions"]
+    assert len(decisions) == 1
+    assert decisions[0]["reason"] == "stale_market_data"
+    assert decisions[0]["stale_streak"] == 1
+
+
+def test_stale_occurrences_suivantes_ne_creent_pas_de_decision(monkeypatch, tmp_path, patch_batch) -> None:
+    """Stales suivants (streak>=1) → 0 décision dans report, mais event stale_backoff dans events.jsonl."""
+    _write_runtime_config(tmp_path)
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    monkeypatch.setattr(daemon, "ROOT", tmp_path)
+    monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+    sched = Scheduler(state_dir / "scheduler.json")
+    sched.set_stale_streak("SPY", 2)  # déjà 2 stales, pas le premier
+    now = datetime(2026, 6, 10, 3, 0, tzinfo=timezone.utc)
+    data_source = _make_stale_source(now)
+
+    patch_batch(lambda **kwargs: __import__("trader.codex_client", fromlist=["Decision"]).Decision.hold(kwargs["symbol"], "hold"))
+
+    report = daemon.run_cycle(
+        dry_run=True, now=now, symbols_filter=["SPY"],
+        sched=sched, data_source=data_source,
+        default_wake_minutes=30.0,
+    )
+
+    # Pas de décision enregistrée pour ce cycle
+    assert report["decisions"] == []
+
+    # Event léger dans events.jsonl
+    events_path = state_dir / "events.jsonl"
+    events = [json.loads(line) for line in events_path.read_text().splitlines() if line.strip()]
+    stale_events = [e for e in events if e.get("event") == "stale_backoff"]
+    assert len(stale_events) >= 1
+    ev = stale_events[-1]
+    assert ev["symbol"] == "SPY"
+    assert ev["streak"] == 3
+    assert "next_wake_minutes" in ev
+    assert "stale_reason" in ev
+
+
+def test_stale_sans_scheduler_ne_plante_pas(monkeypatch, tmp_path, patch_batch) -> None:
+    """run_cycle sans sched=None ne doit pas planter sur stale."""
+    _write_runtime_config(tmp_path)
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    monkeypatch.setattr(daemon, "ROOT", tmp_path)
+    monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+    now = datetime(2026, 6, 10, 3, 0, tzinfo=timezone.utc)
+    data_source = _make_stale_source(now)
+
+    patch_batch(lambda **kwargs: __import__("trader.codex_client", fromlist=["Decision"]).Decision.hold(kwargs["symbol"], "hold"))
+
+    # Pas de sched → doit fonctionner sans crash
+    report = daemon.run_cycle(
+        dry_run=True, now=now, symbols_filter=["SPY"],
+        sched=None, data_source=data_source,
+        default_wake_minutes=30.0,
+    )
+
+    # Premier stale sans sched → 1 décision quand même
+    assert len(report["decisions"]) == 1
+    assert report["decisions"][0]["reason"] == "stale_market_data"
+
+
+# ── MAJOR 1 : cap appliqué même sur streak=0 ────────────────────────────────
+
+def test_backoff_wake_default_superieur_au_cap_est_ramene_au_cap(tmp_path) -> None:
+    """streak=0, default=240 → cappé à STALE_BACKOFF_MAX_MINUTES (120), pas 240."""
+    result = daemon._stale_backoff_wake_minutes(streak=0, default_wake_minutes=240.0)
+    assert result == STALE_BACKOFF_MAX_MINUTES, (
+        f"Attendu {STALE_BACKOFF_MAX_MINUTES}, obtenu {result} — le cap doit s'appliquer même à streak=0"
+    )
+
+
+def test_stale_premier_cycle_default_240_wake_cappee_a_120(monkeypatch, tmp_path, patch_batch) -> None:
+    """Intégration : default_wake_minutes=240, premier stale → next_wake = 120min (cap)."""
+    _write_runtime_config(tmp_path)
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    monkeypatch.setattr(daemon, "ROOT", tmp_path)
+    monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+    sched = Scheduler(state_dir / "scheduler.json")
+    now = datetime(2026, 6, 10, 3, 0, tzinfo=timezone.utc)
+    data_source = _make_stale_source(now)
+
+    patch_batch(lambda **kwargs: __import__("trader.codex_client", fromlist=["Decision"]).Decision.hold(kwargs["symbol"], "hold"))
+
+    daemon.run_cycle(
+        dry_run=True, now=now, symbols_filter=["SPY"],
+        sched=sched, data_source=data_source,
+        default_wake_minutes=240.0,
+    )
+
+    wake = sched.next_wake("SPY")
+    delta = (wake - now).total_seconds()
+    assert abs(delta - 120 * 60) < 2, (
+        f"Attendu 7200s (120min cappé), obtenu {delta}s — default=240 doit être cappé à 120"
+    )
+
+
+# ── MAJOR 2 : streak persisté borné, pas d'overflow ─────────────────────────
+
+def test_backoff_streak_max_constant_exported() -> None:
+    """STALE_BACKOFF_MAX_STREAK doit être exporté depuis scheduler."""
+    assert STALE_BACKOFF_MAX_STREAK > 0
+    assert STALE_BACKOFF_MAX_STREAK <= 20  # raisonnable
+
+
+def test_backoff_wake_streak_enorme_pas_overflow() -> None:
+    """Un streak arbitrairement grand (ex. 9999) ne provoque pas d'OverflowError."""
+    # Prouvé au REPL : 30 * 2**9999 → OverflowError sur float
+    result = daemon._stale_backoff_wake_minutes(streak=9999, default_wake_minutes=30.0)
+    assert result == STALE_BACKOFF_MAX_MINUTES
+
+
+def test_streak_persiste_borne_au_max(tmp_path) -> None:
+    """set_stale_streak borne la valeur à STALE_BACKOFF_MAX_STREAK."""
+    sched = Scheduler(tmp_path / "scheduler.json")
+    # Simuler un state corrompu avec un streak astronomique
+    sched.set_stale_streak("SPY", 9999)
+    assert sched.get_stale_streak("SPY") == STALE_BACKOFF_MAX_STREAK
+
+
+def test_streak_persistance_apres_reload_borne(tmp_path) -> None:
+    """Après rechargement depuis disque, le streak est toujours borné."""
+    path = tmp_path / "scheduler.json"
+    sched1 = Scheduler(path)
+    sched1.set_stale_streak("SPY", 9999)
+    sched2 = Scheduler(path)
+    assert sched2.get_stale_streak("SPY") == STALE_BACKOFF_MAX_STREAK
+
+
+def test_streak_vieux_state_corrompu_ne_crashe_pas(tmp_path) -> None:
+    """Un scheduler.json avec un streak énorme (state corrompu) → pas de crash, wake=cap."""
+    path = tmp_path / "scheduler.json"
+    # Écrire directement un state avec streak corrompu
+    path.write_text('{"default_next_wake": null, "symbols": {}, "indicator_watches": {}, "stale_streaks": {"SPY": 9999}}')
+    sched = Scheduler(path)
+    # get_stale_streak doit borner à la lecture
+    streak = sched.get_stale_streak("SPY")
+    assert streak == STALE_BACKOFF_MAX_STREAK
+    # Et le calcul de wake ne doit pas overflow
+    wake = daemon._stale_backoff_wake_minutes(streak=streak, default_wake_minutes=30.0)
+    assert wake == STALE_BACKOFF_MAX_MINUTES
+
+
+# ── MINOR 3 : setup_logging couvre trader.* ─────────────────────────────────
+
+def test_setup_logging_couvre_les_loggers_trader() -> None:
+    """Un log émis par trader.tools.data_source ressort via le handler installé."""
+    import io
+    import logging
+    from trader.logging_setup import setup_logging
+
+    buf = io.StringIO()
+
+    class FakePipe(io.StringIO):
+        def isatty(self):
+            return False
+
+    # Utiliser un StringIO capturant pour le handler
+    out = io.StringIO()
+    out.isatty = lambda: False  # type: ignore[attr-defined]
+    setup_logging(level=logging.DEBUG, stream=out)
+
+    # Émettre un log depuis un module trader.* autre que casys-trader
+    sub_logger = logging.getLogger("trader.tools.data_source")
+    sub_logger.info("source_fallback test_message_unique_xyz")
+
+    output = out.getvalue()
+    assert "test_message_unique_xyz" in output, (
+        f"Le log de trader.tools.data_source doit être capturé. Output: {repr(output)}"
+    )
+
+
+# ── MINOR 4 : tests complémentaires ─────────────────────────────────────────
+
+def test_dedup_apres_restart_nouveau_scheduler(monkeypatch, tmp_path, patch_batch) -> None:
+    """Après redémarrage (nouveau Scheduler sur le même fichier), le streak persiste
+    et le deuxième stale consécutif ne crée PAS de nouvelle décision."""
+    _write_runtime_config(tmp_path)
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    monkeypatch.setattr(daemon, "ROOT", tmp_path)
+    monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+    scheduler_path = state_dir / "scheduler.json"
+    now = datetime(2026, 6, 10, 3, 0, tzinfo=timezone.utc)
+    data_source = _make_stale_source(now)
+
+    patch_batch(lambda **kwargs: __import__("trader.codex_client", fromlist=["Decision"]).Decision.hold(kwargs["symbol"], "hold"))
+
+    # Cycle 1 : premier stale → streak=1, 1 décision enregistrée
+    sched1 = Scheduler(scheduler_path)
+    report1 = daemon.run_cycle(
+        dry_run=True, now=now, symbols_filter=["SPY"],
+        sched=sched1, data_source=data_source,
+        default_wake_minutes=30.0,
+    )
+    assert len(report1["decisions"]) == 1
+    assert sched1.get_stale_streak("SPY") == 1
+
+    # Simuler redémarrage : nouveau Scheduler sur même fichier
+    sched2 = Scheduler(scheduler_path)
+    assert sched2.get_stale_streak("SPY") == 1  # streak persisté
+
+    # Cycle 2 : même data stale → streak=2, 0 décision (event léger seulement)
+    report2 = daemon.run_cycle(
+        dry_run=True, now=now, symbols_filter=["SPY"],
+        sched=sched2, data_source=data_source,
+        default_wake_minutes=30.0,
+    )
+    assert report2["decisions"] == [], "Après redémarrage, le deuxième stale ne doit pas créer de décision"
+    assert sched2.get_stale_streak("SPY") == 2
+
+
+def test_indicator_watch_trigger_reset_streak(monkeypatch, tmp_path, patch_batch) -> None:
+    """Après un backoff stale, un trigger indicator_watch réveille le symbole ;
+    la data fraîche qui suit remet le streak à 0."""
+    from datetime import timedelta
+    from trader.tools.market import Bar
+
+    _write_runtime_config(tmp_path)
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    monkeypatch.setattr(daemon, "ROOT", tmp_path)
+    monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+    sched = Scheduler(state_dir / "scheduler.json")
+    sched.set_stale_streak("SPY", 3)  # streak en cours de backoff
+    now = datetime(2026, 6, 10, 14, 0, tzinfo=timezone.utc)
+
+    class FreshDataSource:
+        def get_bars(self, symbol, lookback, interval):
+            fresh_ts = (now - timedelta(minutes=1)).isoformat()
+            return [Bar(ts=fresh_ts, open=100.0, high=101.0, low=99.0, close=100.0, volume=1000.0)]
+
+    patch_batch(lambda **kwargs: __import__("trader.codex_client", fromlist=["Decision"]).Decision.hold(kwargs["symbol"], "hold"))
+
+    # Simuler un indicator trigger qui a réveillé le symbole
+    trigger = {
+        "watch_id": "spy-watch",
+        "symbol": "SPY",
+        "on_trigger": "WAKE",
+        "matched": [{"indicator": "return", "actual": 0.1, "op": ">", "value": 0.05}],
+    }
+
+    daemon.run_cycle(
+        dry_run=True, now=now, symbols_filter=["SPY"],
+        sched=sched, data_source=FreshDataSource(),
+        default_wake_minutes=30.0,
+        max_market_data_age_minutes=5.0,
+        indicator_triggers=[trigger],
+    )
+
+    # Data fraîche → streak remis à 0
+    assert sched.get_stale_streak("SPY") == 0, (
+        "Après trigger indicator_watch + data fraîche, le streak doit être 0"
+    )

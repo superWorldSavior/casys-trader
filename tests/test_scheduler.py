@@ -99,3 +99,47 @@ def test_indicator_watch_expiree_est_purgee(tmp_path) -> None:
     watches = sched.active_indicator_watches(now=datetime(2026, 6, 5, 12, 2, tzinfo=timezone.utc))
 
     assert watches == []
+
+
+def test_stale_streak_vaut_zero_sur_un_state_sans_champ(tmp_path) -> None:
+    """Vieux scheduler.json sans stale_streaks → pas de crash, streak=0."""
+    state_path = tmp_path / "scheduler.json"
+    # Écrire un state ancien sans le champ stale_streaks
+    state_path.write_text('{"default_next_wake": null, "symbols": {}, "indicator_watches": {}}')
+    sched = Scheduler(state_path)
+    assert sched.get_stale_streak("SPY") == 0
+
+
+def test_stale_streak_monte_et_est_persiste(tmp_path) -> None:
+    sched = Scheduler(tmp_path / "scheduler.json")
+    assert sched.get_stale_streak("SPY") == 0
+    sched.set_stale_streak("SPY", 1)
+    assert sched.get_stale_streak("SPY") == 1
+    sched.set_stale_streak("SPY", 3)
+    assert sched.get_stale_streak("SPY") == 3
+
+
+def test_stale_streak_est_persiste_a_travers_un_reload(tmp_path) -> None:
+    path = tmp_path / "scheduler.json"
+    sched1 = Scheduler(path)
+    sched1.set_stale_streak("SPY", 5)
+    sched2 = Scheduler(path)  # recharge depuis disque
+    assert sched2.get_stale_streak("SPY") == 5
+
+
+def test_stale_streak_reset_passe_a_zero(tmp_path) -> None:
+    sched = Scheduler(tmp_path / "scheduler.json")
+    sched.set_stale_streak("SPY", 3)
+    sched.reset_stale_streak("SPY")
+    assert sched.get_stale_streak("SPY") == 0
+
+
+def test_stale_streak_independant_par_symbole(tmp_path) -> None:
+    sched = Scheduler(tmp_path / "scheduler.json")
+    sched.set_stale_streak("SPY", 4)
+    sched.set_stale_streak("QQQ", 1)
+    assert sched.get_stale_streak("SPY") == 4
+    assert sched.get_stale_streak("QQQ") == 1
+    sched.reset_stale_streak("SPY")
+    assert sched.get_stale_streak("SPY") == 0
+    assert sched.get_stale_streak("QQQ") == 1

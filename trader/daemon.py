@@ -185,6 +185,38 @@ def _bounded_wake_minutes(value: float, *, minimum: float, maximum: float) -> fl
     return min(max(float(value), minimum), maximum)
 
 
+def _stale_backoff_wake_minutes(streak: int, *, default_wake_minutes: float) -> float:
+    """Next-wake pour un symbole stale avec backoff exponentiel.
+
+    Tous les chemins sont cappés à STALE_BACKOFF_MAX_MINUTES, y compris streak=0.
+    Cela évite qu'un --default-wake-minutes élevé (ex. 240) dépasse le cap.
+
+    streak=0 → min(default, cap)
+    streak=N → min(default * 2^N, cap)
+
+    Le streak est borné à STALE_BACKOFF_MAX_STREAK avant appel (voir Scheduler)
+    pour éviter tout OverflowError sur 2**streak.
+
+    Constantes dans trader/tools/scheduler.py :
+      STALE_BACKOFF_BASE_MULTIPLIER = 2
+      STALE_BACKOFF_MAX_MINUTES = 120.0
+      STALE_BACKOFF_MAX_STREAK = 8
+    """
+    from .tools.scheduler import (
+        STALE_BACKOFF_BASE_MULTIPLIER,
+        STALE_BACKOFF_MAX_MINUTES,
+        STALE_BACKOFF_MAX_STREAK,
+    )
+    # Court-circuit défensif : si streak >= MAX_STREAK, le wake est déjà cappé.
+    # Évite aussi OverflowError sur 2**streak pour des valeurs arbitraires.
+    if streak == 0:
+        return min(default_wake_minutes, STALE_BACKOFF_MAX_MINUTES)
+    if streak >= STALE_BACKOFF_MAX_STREAK:
+        return STALE_BACKOFF_MAX_MINUTES
+    raw = default_wake_minutes * (STALE_BACKOFF_BASE_MULTIPLIER ** streak)
+    return min(raw, STALE_BACKOFF_MAX_MINUTES)
+
+
 def _ensure_default_wake(
     sched: scheduler.Scheduler,
     *,
@@ -905,6 +937,14 @@ def run_cycle(
     if stale_market_data:
         _log_cycle_progress("[market] stale symbols=%s", sorted(stale_market_data))
 
+    # Reset streak pour tous les symboles frais (data fraîche reçue)
+    if sched is not None:
+        for sym in symbols:
+            if sym in prices and sym not in stale_market_data:
+                current_streak = sched.get_stale_streak(sym)
+                if current_streak > 0:
+                    sched.reset_stale_streak(sym)
+
     tradable_prices = {symbol: price for symbol, price in prices.items() if symbol not in stale_market_data}
     tradable_symbols = [symbol for symbol in symbols if symbol not in stale_market_data]
     tradable_bars_by_symbol = {
@@ -1116,32 +1156,59 @@ def run_cycle(
     for index, sym in enumerate(symbols_to_decide, start=1):
         stale_data = stale_market_data.get(sym)
         if stale_data is not None:
-            _log_cycle_progress(
-                "[decision %d/%d] %s skipped stale_market_data reason=%s age=%s",
-                index,
-                len(symbols_to_decide),
-                sym,
-                stale_data.get("stale_reason"),
-                stale_data.get("data_age_minutes"),
-            )
+            streak = sched.get_stale_streak(sym) if sched is not None else 0
+            wake_minutes = _stale_backoff_wake_minutes(streak, default_wake_minutes=default_wake_minutes)
+            new_streak = streak + 1
             if sched is not None:
-                sched.set_symbol_next_wake_in(sym, minutes=default_wake_minutes, now=now)
-            record_decision(
-                {
-                    "symbol": sym,
-                    "action": "HOLD",
-                    "qty": 0.0,
-                    "confidence": 0.0,
-                    "rationale": "stale_market_data",
-                    "next_wake_in_minutes": default_wake_minutes,
-                    "intent": "HOLD",
-                    "trade_plan_created": False,
-                    "executed": False,
-                    "reason": "stale_market_data",
-                    "data_source": runtime_data_source_by_sym.get(sym),
-                    **stale_data,
-                }
-            )
+                sched.set_stale_streak(sym, new_streak)
+                sched.set_symbol_next_wake_in(sym, minutes=wake_minutes, now=now)
+
+            is_first_stale = streak == 0  # transition fresh→stale : enregistrer la décision
+            if is_first_stale:
+                _log_cycle_progress(
+                    "[decision %d/%d] %s stale_market_data (streak=1) reason=%s age=%s wake=%.0fmin",
+                    index,
+                    len(symbols_to_decide),
+                    sym,
+                    stale_data.get("stale_reason"),
+                    stale_data.get("data_age_minutes"),
+                    wake_minutes,
+                )
+                record_decision(
+                    {
+                        "symbol": sym,
+                        "action": "HOLD",
+                        "qty": 0.0,
+                        "confidence": 0.0,
+                        "rationale": "stale_market_data",
+                        "next_wake_in_minutes": wake_minutes,
+                        "intent": "HOLD",
+                        "trade_plan_created": False,
+                        "executed": False,
+                        "reason": "stale_market_data",
+                        "stale_streak": new_streak,
+                        "data_source": runtime_data_source_by_sym.get(sym),
+                        **stale_data,
+                    }
+                )
+            else:
+                _log_cycle_progress(
+                    "[decision %d/%d] %s stale_backoff streak=%d wake=%.0fmin reason=%s",
+                    index,
+                    len(symbols_to_decide),
+                    sym,
+                    new_streak,
+                    wake_minutes,
+                    stale_data.get("stale_reason"),
+                )
+                _append_event(
+                    "stale_backoff",
+                    symbol=sym,
+                    streak=new_streak,
+                    next_wake_minutes=wake_minutes,
+                    stale_reason=stale_data.get("stale_reason"),
+                    data_age_minutes=stale_data.get("data_age_minutes"),
+                )
             continue
         if sym not in prices:
             _log_cycle_progress("[decision %d/%d] %s skipped no_price", index, len(symbols_to_decide), sym)
@@ -1584,7 +1651,8 @@ def main(argv: list[str] | None = None) -> None:
     )
     args = parser.parse_args(argv)
 
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    from .logging_setup import setup_logging
+    setup_logging(level=logging.INFO)
     dry_run = not args.live
     sched = scheduler.Scheduler(STATE_DIR / "scheduler.json")
     log.info("daemon démarré (dry_run=%s, once=%s)", dry_run, args.once)

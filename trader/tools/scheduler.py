@@ -14,6 +14,14 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterable
 
+# Backoff stale — constantes explicites (AX : pas de defaults magiques)
+STALE_BACKOFF_BASE_MULTIPLIER: int = 2
+STALE_BACKOFF_MAX_MINUTES: float = 120.0
+# Streak max persisté : au-delà le wake est déjà cappé (2^2 * 30min = 120min).
+# Borne défensive pour éviter OverflowError sur float (2**9999) et garder
+# scheduler.json lisible. Valeur 8 = marge confortable au-delà du cap réel.
+STALE_BACKOFF_MAX_STREAK: int = 8
+
 
 class Scheduler:
     def __init__(self, state_path: str | Path):
@@ -28,6 +36,7 @@ class Scheduler:
         raw.setdefault("default_next_wake", None)
         raw.setdefault("symbols", {})
         raw.setdefault("indicator_watches", {})
+        raw.setdefault("stale_streaks", {})
         return raw
 
     def _save_state(self, state: dict) -> None:
@@ -156,3 +165,25 @@ class Scheduler:
         if watch_id in state["indicator_watches"]:
             state["indicator_watches"].pop(watch_id, None)
             self._save_state(state)
+
+    def get_stale_streak(self, symbol: str) -> int:
+        """Nombre de réveils stale consécutifs pour ce symbole. 0 si inconnu.
+
+        Borné à STALE_BACKOFF_MAX_STREAK même si le fichier contient une valeur
+        supérieure (state corrompu / pré-existant).
+        """
+        state = self._load_state()
+        raw = int(state.get("stale_streaks", {}).get(symbol, 0))
+        return min(raw, STALE_BACKOFF_MAX_STREAK)
+
+    def set_stale_streak(self, symbol: str, streak: int) -> None:
+        """Enregistre le streak stale d'un symbole, borné à STALE_BACKOFF_MAX_STREAK."""
+        state = self._load_state()
+        state.setdefault("stale_streaks", {})[symbol] = min(streak, STALE_BACKOFF_MAX_STREAK)
+        self._save_state(state)
+
+    def reset_stale_streak(self, symbol: str) -> None:
+        """Remet le streak à 0 (appeler dès qu'une donnée fraîche est reçue)."""
+        state = self._load_state()
+        state.setdefault("stale_streaks", {}).pop(symbol, None)
+        self._save_state(state)

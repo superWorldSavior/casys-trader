@@ -1,8 +1,30 @@
 """Helpers de test partagés."""
 
+import logging
+
 import pytest
 
 from trader import daemon
+
+
+@pytest.fixture(autouse=True)
+def _restore_casys_trader_logger():
+    """Restaure l'état du logger 'casys-trader' après chaque test.
+
+    Nécessaire car certains tests appellent daemon.main() qui déclenche
+    setup_logging() (propagate=False, handlers remplacés). Sans cette
+    fixture, le caplog des tests suivants serait silencieux.
+    """
+    logger = logging.getLogger("casys-trader")
+    original_handlers = list(logger.handlers)
+    original_propagate = logger.propagate
+    original_level = logger.level
+    yield
+    logger.handlers.clear()
+    for h in original_handlers:
+        logger.addHandler(h)
+    logger.propagate = original_propagate
+    logger.level = original_level
 
 
 class FakeDataSource:
