@@ -1240,6 +1240,30 @@ def run_cycle(
                 record_decision({**entry, "executed": False, "reason": "zero_risk_quantity"})
                 continue
 
+            if pure_open:
+                # Gate de confiance adapté au risque (ouvertures pures uniquement).
+                # REDUCE/CLOSE/REVERSE : réduire le risque doit toujours rester possible.
+                # Note : le check s'effectue AVANT le clamp max_order_value (plus bas).
+                # Si le clamp réduit ensuite la quantité, le risque réel sera plus faible
+                # que celui utilisé ici. Direction conservatrice (rejet plus fréquent, jamais
+                # plus permissif) — acceptable pour un fusible.
+                conf_verdict = gate.check_confidence(
+                    decision.confidence,
+                    entry.get("risk_pct"),
+                )
+                if not conf_verdict.approved:
+                    _log_cycle_progress(
+                        "[risk] %s rejected code=%s confidence=%s",
+                        sym,
+                        conf_verdict.code,
+                        decision.confidence,
+                    )
+                    apply_default_schedule_after_blocked()
+                    record_decision(
+                        {**entry, "executed": False, "reason": f"risk:{conf_verdict.code}", "context": conf_verdict.context}
+                    )
+                    continue
+
         order = Order(symbol=sym, side=decision.action, quantity=effective_quantity, rationale=decision.rationale)
         cur_pos_value = (pos.quantity * prices[sym]) if pos else 0.0
         allow_risk_reduction = decision.intent in {"REDUCE", "CLOSE"}

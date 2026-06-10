@@ -55,6 +55,12 @@ un complément est vraiment utile :
 - Préfère les **heures liquides** (≈90 min après l'ouverture US, dernière heure).
 - **Coupe vite** si ça ne va pas dans ton sens ; ne t'accroche pas à un scalp mort.
 - Le **risk gate** reste un fusible dur au-dessus de tout ça.
+- **Confiance minimale exigée par le fusible** (2026-06-10) : une ouverture
+  n'est exécutée que si ta `confidence` ≥ 0.7, et le seuil monte vers 0.9
+  quand le risque planifié approche le budget max (rejet
+  `confidence_below_required`). Pas de stop = seuil max. Conséquence : si tu
+  n'es pas convaincu, n'émets pas un ordre « pour voir » — il sera rejeté ;
+  garde tes ouvertures pour les setups où ta confiance est réellement haute.
 
 ### Données disponibles & limites (sois lucide)
 - Le contexte initial ne contient PAS les barres brutes. Il contient

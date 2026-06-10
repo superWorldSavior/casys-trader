@@ -16,6 +16,14 @@ from dataclasses import dataclass
 from .tools.execution import Order
 
 
+def _validate_confidence_threshold(value: float, name: str) -> None:
+    """Lève ValueError si value n'est pas un seuil de confiance valide."""
+    if not math.isfinite(value):
+        raise ValueError(f"{name}={value!r} doit être fini")
+    if value < 0.0 or value > 1.0:
+        raise ValueError(f"{name}={value!r} doit être dans [0, 1]")
+
+
 @dataclass(frozen=True)
 class RiskLimits:
     max_position_value: float       # $ max par position (valeur absolue)
@@ -24,6 +32,21 @@ class RiskLimits:
     max_orders_per_cycle: int       # débit max d'ordres par réveil
     min_equity: float               # equity plancher : sous ce seuil, plus aucun ordre
     max_risk_per_trade_pct: float = 0.01  # % equity risqué si le hard_stop saute
+    # Gate de confiance adapté au risque :
+    #   required = min_trade_confidence + (full_risk_confidence − min_trade_confidence)
+    #              × clamp(planned_risk_pct / max_risk_per_trade_pct, 0, 1)
+    min_trade_confidence: float = 0.7   # seuil plancher (risque nul)
+    full_risk_confidence: float = 0.9   # seuil exigé au budget complet (ou sans stop)
+
+    def __post_init__(self) -> None:
+        # Fail-closed : des seuils invalides rendraient le gate inutilisable.
+        _validate_confidence_threshold(self.min_trade_confidence, "min_trade_confidence")
+        _validate_confidence_threshold(self.full_risk_confidence, "full_risk_confidence")
+        if self.min_trade_confidence > self.full_risk_confidence:
+            raise ValueError(
+                f"min_trade_confidence={self.min_trade_confidence!r} "
+                f"> full_risk_confidence={self.full_risk_confidence!r}"
+            )
 
     @classmethod
     def from_dict(cls, d: dict) -> "RiskLimits":
@@ -34,6 +57,8 @@ class RiskLimits:
             max_orders_per_cycle=int(d["max_orders_per_cycle"]),
             min_equity=float(d["min_equity"]),
             max_risk_per_trade_pct=float(d.get("max_risk_per_trade_pct", 0.01)),
+            min_trade_confidence=float(d.get("min_trade_confidence", 0.7)),
+            full_risk_confidence=float(d.get("full_risk_confidence", 0.9)),
         )
 
 
@@ -96,6 +121,66 @@ class RiskGate:
         while quantity > 0.0 and quantity * distance > risk_cap:
             quantity = math.nextafter(quantity, 0.0)
         return quantity
+
+    def required_confidence(self, planned_risk_pct: float | None) -> float:
+        """Confiance minimale en fonction du risque planifié.
+
+        Risque non borné (None, nan, inf) → on exige full_risk_confidence.
+        """
+        lo = self.limits.min_trade_confidence
+        hi = self.limits.full_risk_confidence
+        budget = self.limits.max_risk_per_trade_pct
+
+        if (
+            planned_risk_pct is None
+            or not math.isfinite(planned_risk_pct)
+            or not math.isfinite(budget)
+            or budget <= 0
+        ):
+            return hi
+
+        ratio = max(0.0, min(1.0, planned_risk_pct / budget))
+        return lo + (hi - lo) * ratio
+
+    def check_confidence(
+        self,
+        confidence: float | None,
+        planned_risk_pct: float | None,
+    ) -> Verdict:
+        """Rejette si la confiance est insuffisante au regard du risque planifié.
+
+        confidence None ou non-finie → rejet fail-safe.
+        confidence hors [0,1] → rejet (out_of_domain).
+        """
+        required = self.required_confidence(planned_risk_pct)
+
+        # Valeur inexploitable : None ou non-finie (nan, inf).
+        if confidence is None or not math.isfinite(confidence):
+            ctx = (
+                f"confidence={confidence}"
+                f" required={required:.4f}"
+                f" planned_risk_pct={planned_risk_pct}"
+            )
+            return Verdict(False, "confidence_below_required", ctx)
+
+        # Valeur hors domaine [0,1] : le LLM a renvoyé quelque chose d'absurde.
+        if confidence < 0.0 or confidence > 1.0:
+            ctx = (
+                f"confidence={confidence} out_of_domain"
+                f" required={required:.4f}"
+                f" planned_risk_pct={planned_risk_pct}"
+            )
+            return Verdict(False, "confidence_below_required", ctx)
+
+        if confidence < required:
+            ctx = (
+                f"confidence={confidence}"
+                f" required={required:.4f}"
+                f" planned_risk_pct={planned_risk_pct}"
+            )
+            return Verdict(False, "confidence_below_required", ctx)
+
+        return Verdict(True)
 
     def check(
         self,

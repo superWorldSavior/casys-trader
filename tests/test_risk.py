@@ -83,3 +83,224 @@ def test_risk_limits_from_dict_defaut_a_un_pourcent() -> None:
     )
 
     assert limits.max_risk_per_trade_pct == 0.01
+
+
+# ---------------------------------------------------------------------------
+# Confidence gate
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("planned_risk_pct", "expected_required"),
+    [
+        (0.0,    0.7),   # risque nul → seuil minimal
+        (0.005,  0.8),   # demi-budget → point médian
+        (0.01,   0.9),   # plein budget → seuil maximal
+        (0.02,   0.9),   # au-delà du budget → clampé à 0.9
+    ],
+)
+def test_required_confidence_lineaire_avec_le_risque_planifie(
+    planned_risk_pct: float,
+    expected_required: float,
+) -> None:
+    gate = _gate()  # max_risk_per_trade_pct=0.01
+
+    assert gate.required_confidence(planned_risk_pct) == pytest.approx(expected_required)
+
+
+@pytest.mark.parametrize(
+    "bad_risk",
+    [None, math.nan, math.inf, -math.inf],
+)
+def test_required_confidence_risque_non_borne_exige_full_confidence(bad_risk) -> None:
+    # Sans hard stop, le risque n'est pas borné → on exige la confiance maximale.
+    gate = _gate()
+
+    assert gate.required_confidence(bad_risk) == pytest.approx(0.9)
+
+
+def test_check_confidence_cas_reel_regression_short_clf_09_juin() -> None:
+    """Régression : short CL=F du 09/06 confidence=0.58, risk_pct=0.00068 → −101 $."""
+    gate = _gate()
+
+    verdict = gate.check_confidence(confidence=0.58, planned_risk_pct=0.00068)
+
+    assert verdict.approved is False
+    assert verdict.code == "confidence_below_required"
+    assert "0.58" in verdict.context
+    assert "0.00068" in verdict.context
+
+
+def test_check_confidence_approuve_quand_suffisante() -> None:
+    gate = _gate()
+
+    verdict = gate.check_confidence(confidence=0.75, planned_risk_pct=0.00068)
+
+    assert verdict.approved is True
+
+
+def test_check_confidence_none_rejet_fail_safe() -> None:
+    gate = _gate()
+
+    verdict = gate.check_confidence(confidence=None, planned_risk_pct=0.005)
+
+    assert verdict.approved is False
+    assert verdict.code == "confidence_below_required"
+
+
+def test_risk_limits_from_dict_defauts_confidence() -> None:
+    """Sans les clés, défauts 0.7/0.9 appliqués (rétrocompatibilité)."""
+    limits = RiskLimits.from_dict(
+        {
+            "max_position_value": 20_000.0,
+            "max_gross_exposure": 100_000.0,
+            "max_order_value": 10_000.0,
+            "max_orders_per_cycle": 5,
+            "min_equity": 50_000.0,
+        }
+    )
+
+    assert limits.min_trade_confidence == 0.7
+    assert limits.full_risk_confidence == 0.9
+
+
+def test_risk_limits_from_dict_overrides_confidence() -> None:
+    """Les clés sont lues si présentes."""
+    limits = RiskLimits.from_dict(
+        {
+            "max_position_value": 20_000.0,
+            "max_gross_exposure": 100_000.0,
+            "max_order_value": 10_000.0,
+            "max_orders_per_cycle": 5,
+            "min_equity": 50_000.0,
+            "min_trade_confidence": 0.65,
+            "full_risk_confidence": 0.85,
+        }
+    )
+
+    assert limits.min_trade_confidence == 0.65
+    assert limits.full_risk_confidence == 0.85
+
+
+# ---------------------------------------------------------------------------
+# Finding MAJOR 1 — validation des seuils de confiance (fail-closed)
+# ---------------------------------------------------------------------------
+
+
+def _base_limits_dict() -> dict:
+    return {
+        "max_position_value": 20_000.0,
+        "max_gross_exposure": 100_000.0,
+        "max_order_value": 10_000.0,
+        "max_orders_per_cycle": 5,
+        "min_equity": 50_000.0,
+    }
+
+
+@pytest.mark.parametrize(
+    ("min_tc", "full_rc"),
+    [
+        (math.nan, 0.9),         # min_trade_confidence nan → ValueError
+        (0.7, math.nan),         # full_risk_confidence nan → ValueError
+        (math.inf, 0.9),         # non-fini
+        (0.7, math.inf),         # non-fini
+    ],
+)
+def test_risk_limits_rejette_seuils_confiance_non_finis(min_tc, full_rc) -> None:
+    """Un seuil non-fini rend le gate inutilisable → ValueError au chargement."""
+    d = {**_base_limits_dict(), "min_trade_confidence": min_tc, "full_risk_confidence": full_rc}
+    with pytest.raises(ValueError):
+        RiskLimits.from_dict(d)
+
+
+def test_risk_limits_rejette_min_superieur_a_full() -> None:
+    """min_trade_confidence > full_risk_confidence est incohérent → ValueError."""
+    d = {**_base_limits_dict(), "min_trade_confidence": 0.9, "full_risk_confidence": 0.7}
+    with pytest.raises(ValueError):
+        RiskLimits.from_dict(d)
+
+
+@pytest.mark.parametrize(
+    ("min_tc", "full_rc"),
+    [
+        (-0.1, 0.9),   # min hors [0,1]
+        (0.7, 1.5),    # full hors [0,1]
+        (-0.1, 1.5),   # les deux hors domaine
+    ],
+)
+def test_risk_limits_rejette_seuils_confiance_hors_domaine(min_tc, full_rc) -> None:
+    """Seuils hors [0,1] → ValueError."""
+    d = {**_base_limits_dict(), "min_trade_confidence": min_tc, "full_risk_confidence": full_rc}
+    with pytest.raises(ValueError):
+        RiskLimits.from_dict(d)
+
+
+@pytest.mark.parametrize(
+    ("min_tc", "full_rc"),
+    [
+        (0.0, 0.0),    # bornes minimales acceptées
+        (1.0, 1.0),    # bornes maximales acceptées (min == full autorisé)
+        (0.0, 1.0),    # plage complète
+    ],
+)
+def test_risk_limits_accepte_seuils_confiance_aux_bornes_valides(min_tc, full_rc) -> None:
+    """Valeurs aux bornes [0,1] avec min <= full → pas d'erreur."""
+    d = {**_base_limits_dict(), "min_trade_confidence": min_tc, "full_risk_confidence": full_rc}
+    limits = RiskLimits.from_dict(d)
+    assert limits.min_trade_confidence == min_tc
+    assert limits.full_risk_confidence == full_rc
+
+
+# ---------------------------------------------------------------------------
+# Finding MAJOR 2 — confidence hors domaine [0,1]
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "bad_conf",
+    [1.2, 999.0, 1.0001],
+)
+def test_check_confidence_rejette_confidence_superieure_a_un(bad_conf) -> None:
+    """Confidence > 1 est hors domaine → rejet même si > required."""
+    gate = _gate()
+
+    verdict = gate.check_confidence(confidence=bad_conf, planned_risk_pct=0.0)
+
+    assert verdict.approved is False
+    assert verdict.code == "confidence_below_required"
+    assert "out_of_domain" in verdict.context
+
+
+@pytest.mark.parametrize(
+    "bad_conf",
+    [-0.1, -1.0, -0.0001],
+)
+def test_check_confidence_rejette_confidence_negative(bad_conf) -> None:
+    """Confidence < 0 est hors domaine → rejet."""
+    gate = _gate()
+
+    verdict = gate.check_confidence(confidence=bad_conf, planned_risk_pct=0.0)
+
+    assert verdict.approved is False
+    assert verdict.code == "confidence_below_required"
+    assert "out_of_domain" in verdict.context
+
+
+def test_check_confidence_accepte_confidence_un_avec_risque_faible() -> None:
+    """Confidence exactement 1.0 est valide et doit être approuvée."""
+    gate = _gate()
+
+    verdict = gate.check_confidence(confidence=1.0, planned_risk_pct=0.0)
+
+    assert verdict.approved is True
+
+
+def test_check_confidence_nan_affiche_nan_dans_contexte() -> None:
+    """NaN en entrée → le context doit afficher 'nan', pas 'None'."""
+    gate = _gate()
+
+    verdict = gate.check_confidence(confidence=math.nan, planned_risk_pct=0.005)
+
+    assert verdict.approved is False
+    assert "nan" in verdict.context
+    assert "None" not in verdict.context
