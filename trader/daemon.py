@@ -39,6 +39,7 @@ from .tools.execution import Order, SimBroker
 from .tools.ib_source import IBDataSource, connect_ib
 from .trade_plan import (
     InvalidExitPlanError,
+    TradePlan,
     TradePlanStore,
     create_trade_plan,
     create_trade_plan_from_order,
@@ -302,10 +303,10 @@ def _create_plan_for_final_position(
     llm_model: str | None = None,
     llm_fallback_reason: str | None = None,
     llm_confidence: float | None = None,
-) -> bool:
+) -> TradePlan | None:
     position = broker.positions().get(symbol)
     if position is None or position.quantity == 0:
-        return False
+        return None
     plan = create_trade_plan(
         symbol=symbol,
         side="LONG" if position.quantity > 0 else "SHORT",
@@ -319,7 +320,7 @@ def _create_plan_for_final_position(
         llm_confidence=llm_confidence,
     )
     plan_store.upsert(plan)
-    return True
+    return plan
 
 
 def _clamp_exit_quantity(
@@ -338,11 +339,62 @@ def _clamp_exit_quantity(
     return min(quantity, abs(position_quantity)), None
 
 
+def _bar_ts_after_plan_open(bar_ts: str, opened_at: str | None) -> bool:
+    """Return True when bar_ts >= opened_at (bar started at or after plan entry).
+
+    Parsing failures on either side are treated as True (extremes applied) so
+    that old plans without a parseable opened_at keep the current behaviour.
+    """
+    if not opened_at:
+        return True
+    try:
+        bar_dt = datetime.fromisoformat(bar_ts)
+        plan_dt = datetime.fromisoformat(opened_at)
+        if bar_dt.tzinfo is None:
+            bar_dt = bar_dt.replace(tzinfo=timezone.utc)
+        if plan_dt.tzinfo is None:
+            plan_dt = plan_dt.replace(tzinfo=timezone.utc)
+        return bar_dt >= plan_dt
+    except (ValueError, TypeError):
+        return True  # conservative: apply extremes on parse error
+
+
+def _plan_snapshot(plan: TradePlan) -> dict:
+    """Minimal JSON-serialisable snapshot of a plan at exit time (Chantier B)."""
+    return {
+        "id": plan.id,
+        "symbol": plan.symbol,
+        "side": plan.side,
+        "entry_price": plan.entry_price,
+        "quantity": plan.quantity,
+        "remaining_quantity": plan.remaining_quantity,
+        "hard_stop_price": plan.hard_stop_price,
+        "take_profits": [
+            {"name": tp.name, "price": tp.price, "fraction": tp.fraction}
+            for tp in plan.take_profits
+        ],
+        "trailing_stop": (
+            {
+                "trail_type": plan.trailing_stop.trail_type,
+                "trail_value": plan.trailing_stop.trail_value,
+                "enabled_after": plan.trailing_stop.enabled_after,
+            }
+            if plan.trailing_stop is not None
+            else None
+        ),
+        "max_hold_minutes": plan.max_hold_minutes,
+        "filled_take_profits": list(plan.filled_take_profits),
+        "high_watermark": plan.high_watermark,
+        "low_watermark": plan.low_watermark,
+    }
+
+
 def _apply_planned_exits(
     *,
     broker: SimBroker,
     plan_store: TradePlanStore,
     prices: dict[str, float],
+    bars_by_symbol: dict[str, list] | None = None,
     valuation_prices: dict[str, float] | None = None,
     now: datetime,
     dry_run: bool,
@@ -353,7 +405,30 @@ def _apply_planned_exits(
         price = prices.get(plan.symbol)
         if price is None:
             continue
-        evaluation = evaluate_plan(plan, price=price, now=now)
+
+        # Extract bar extremes from the last bar for intra-bar stop/TP detection.
+        #
+        # Bar extremes serve to detect level crossings, not to compute indicators —
+        # a bar still forming is already useful: its observed high/low are real prices.
+        # (MAJOR 3 — contrat documenté ici, garde temporelle ci-dessous couvre le risque.)
+        #
+        # Temporal guard (MAJOR 2): only apply bar extremes when the bar started AFTER
+        # the plan was opened. A bar whose ts < plan.opened_at predates the entry — its
+        # extremes could reflect a pre-entry spike and cause a spurious stop trigger.
+        # Fallback: if opened_at is absent/unparseable on an old plan, extremes are applied
+        # (current behaviour, conservative: we'd rather detect the spike than miss it).
+        bar_high: float | None = None
+        bar_low: float | None = None
+        if bars_by_symbol is not None:
+            bars = bars_by_symbol.get(plan.symbol)
+            if bars:
+                last_bar = bars[-1]
+                bar_ts_after_open = _bar_ts_after_plan_open(last_bar.ts, plan.opened_at)
+                if bar_ts_after_open:
+                    bar_high = last_bar.high
+                    bar_low = last_bar.low
+
+        evaluation = evaluate_plan(plan, price=price, bar_high=bar_high, bar_low=bar_low, now=now)
         if evaluation.signal is None:
             if not dry_run:
                 plan_store.upsert(evaluation.updated_plan)
@@ -370,6 +445,9 @@ def _apply_planned_exits(
         if exit_block_reason is not None or clamped_quantity <= 0:
             if not dry_run:
                 plan_store.close(plan.id)
+            blocked_fill = (
+                evaluation.signal.fill_price if evaluation.signal.fill_price is not None else price
+            )
             entries.append(
                 {
                     "symbol": plan.symbol,
@@ -378,11 +456,17 @@ def _apply_planned_exits(
                     "requested_quantity": requested_quantity,
                     "reason": exit_block_reason or "zero_exit_quantity",
                     "price": price,
+                    "fill_price": blocked_fill,  # MINOR 5
+                    "plan_snapshot": _plan_snapshot(plan),  # MINOR 5
                     "executed": False,
                     "dry_run": dry_run,
                 }
             )
             continue
+
+        # Use fill_price from the signal when available (intra-bar stop/TP detection).
+        # fill_price is conservative: never better than the stop/TP level.
+        effective_fill_price = evaluation.signal.fill_price if evaluation.signal.fill_price is not None else price
 
         order = Order(
             symbol=evaluation.signal.symbol,
@@ -390,7 +474,7 @@ def _apply_planned_exits(
             quantity=clamped_quantity,
             rationale=evaluation.signal.reason,
         )
-        fill = broker.submit(order, price, now.isoformat(), dry_run=dry_run)
+        fill = broker.submit(order, effective_fill_price, now.isoformat(), dry_run=dry_run)
         if not dry_run:
             final_position = broker.positions().get(plan.symbol)
             final_quantity = 0.0 if final_position is None else final_position.quantity
@@ -413,7 +497,7 @@ def _apply_planned_exits(
                     exit_reason=evaluation.signal.reason,
                     source_plan_id=plan.id,
                     quantity=clamped_quantity,
-                    price=price,
+                    price=effective_fill_price,
                     confidence=plan.llm_confidence,
                     llm_provider=plan.llm_provider or "unknown",
                     llm_model=plan.llm_model or "unknown",
@@ -430,6 +514,8 @@ def _apply_planned_exits(
                 "requested_quantity": requested_quantity,
                 "reason": evaluation.signal.reason,
                 "price": price,
+                "fill_price": effective_fill_price,  # Chantier B
+                "plan_snapshot": _plan_snapshot(plan),  # Chantier B
                 "executed": fill is not None,
                 "dry_run": dry_run,
             }
@@ -853,6 +939,7 @@ def run_cycle(
         broker=broker,
         plan_store=plan_store,
         prices=tradable_prices,
+        bars_by_symbol=tradable_bars_by_symbol,
         valuation_prices=prices,
         now=now,
         dry_run=dry_run,
@@ -1345,7 +1432,7 @@ def run_cycle(
                 and decision.intent in {"OPEN_LONG", "OPEN_SHORT", "REVERSE"}
             ):
                 if decision.intent == "REVERSE":
-                    entry["trade_plan_created"] = _create_plan_for_final_position(
+                    created_plan = _create_plan_for_final_position(
                         broker=broker,
                         plan_store=plan_store,
                         symbol=sym,
@@ -1357,6 +1444,9 @@ def run_cycle(
                         llm_fallback_reason=decision.llm_fallback_reason,
                         llm_confidence=decision.confidence,
                     )
+                    entry["trade_plan_created"] = created_plan is not None
+                    if created_plan is not None:
+                        entry["trade_plan"] = _plan_snapshot(created_plan)
                 else:
                     plan = create_trade_plan_from_order(
                         symbol=sym,
@@ -1372,6 +1462,7 @@ def run_cycle(
                     )
                     plan_store.upsert(plan)
                     entry["trade_plan_created"] = True
+                    entry["trade_plan"] = _plan_snapshot(plan)
         _log_cycle_progress(
             "[order] %s %s qty=%s price=%s executed=%s plan=%s",
             sym,

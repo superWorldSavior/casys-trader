@@ -1069,3 +1069,362 @@ def test_run_cycle_rejette_un_ordre_non_hold_sans_intent(monkeypatch, tmp_path, 
 
     assert report["decisions"][0]["executed"] is False
     assert report["decisions"][0]["reason"] == "invalid_intent"
+
+
+# ── Chantier B : persistance des trade plans ─────────────────────────────────
+
+
+def test_run_cycle_decision_contient_plan_complet_apres_ouverture(
+    monkeypatch,
+    tmp_path,
+    patch_batch,
+    make_data_source,
+) -> None:
+    """À la création d'un plan, l'entrée decisions.jsonl contient le plan complet."""
+    _write_runtime_config(tmp_path)
+    state_dir = tmp_path / "state"
+    now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
+
+    monkeypatch.setattr(daemon, "ROOT", tmp_path)
+    monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+    data_source = make_data_source(lambda symbol, lookback, interval: [
+        Bar(ts=now.isoformat(), open=100.0, high=101.0, low=99.0, close=100.0, volume=1000.0)
+    ])
+    patch_batch(lambda **kwargs: Decision(
+        symbol="SPY",
+        action="BUY",
+        quantity=10.0,
+        confidence=0.85,
+        rationale="setup",
+        intent="OPEN_LONG",
+        exit_plan={
+            "hard_stop": {"type": "price", "price": 95.0},
+            "take_profits": [{"name": "tp1", "price": 105.0, "fraction": 0.5}],
+        },
+    ))
+
+    report = daemon.run_cycle(
+        dry_run=False,
+        now=now,
+        symbols_filter=["SPY"],
+        sched=Scheduler(state_dir / "scheduler.json"),
+        data_source=data_source,
+    )
+
+    decision = report["decisions"][0]
+    assert decision["executed"] is True
+    assert decision["trade_plan_created"] is True
+    # Le plan complet doit être présent dans la décision
+    assert "trade_plan" in decision
+    trade_plan = decision["trade_plan"]
+    assert trade_plan["hard_stop_price"] == pytest.approx(95.0)
+    assert trade_plan["entry_price"] == pytest.approx(100.0)
+    assert trade_plan["side"] == "LONG"
+    assert trade_plan["quantity"] == pytest.approx(10.0)
+    assert len(trade_plan["take_profits"]) == 1
+    assert trade_plan["take_profits"][0]["price"] == pytest.approx(105.0)
+
+
+def test_run_cycle_planned_exit_hard_stop_contient_niveaux_et_fill(
+    monkeypatch,
+    tmp_path,
+    patch_batch,
+    make_data_source,
+) -> None:
+    """À l'exécution d'un exit hard_stop, planned_exits contient niveaux + fill_price."""
+    _write_runtime_config(tmp_path)
+    state_dir = tmp_path / "state"
+    now = datetime(2026, 6, 9, 16, 48, tzinfo=timezone.utc)
+    broker = SimBroker(state_dir / "broker.json", starting_cash=100_000)
+    # Simulation du short CL=F du post-mortem
+    broker.submit(Order("SPY", "SELL", 10.0), 86.71, "2026-06-09T16:09:45+00:00", dry_run=False)
+    TradePlanStore(state_dir / "trade_plans.json").upsert(
+        create_trade_plan(
+            symbol="SPY",
+            side="SHORT",
+            quantity=10.0,
+            entry_price=86.71,
+            opened_at="2026-06-09T16:09:45+00:00",
+            raw_exit_plan={
+                "hard_stop": 87.30,
+                "take_profits": [{"name": "tp1", "price": 83.0, "fraction": 0.5}],
+            },
+        )
+    )
+
+    monkeypatch.setattr(daemon, "ROOT", tmp_path)
+    monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+    # bar_high = 89.49 > stop 87.30, price close = 87.97 > stop → fill = 87.97
+    data_source = make_data_source(lambda symbol, lookback, interval: [
+        Bar(ts=now.isoformat(), open=86.71, high=89.49, low=86.50, close=87.97, volume=5000.0)
+    ])
+    patch_batch(lambda **kwargs: Decision.hold(kwargs["symbol"], "hold"))
+
+    report = daemon.run_cycle(
+        dry_run=False,
+        now=now,
+        symbols_filter=[],
+        sched=Scheduler(state_dir / "scheduler.json"),
+        data_source=data_source,
+    )
+
+    assert len(report["planned_exits"]) == 1
+    exit_entry = report["planned_exits"][0]
+    assert exit_entry["reason"] == "hard_stop"
+    assert exit_entry["executed"] is True
+    # Le fill_price doit être présent dans le rapport
+    assert "fill_price" in exit_entry
+    assert exit_entry["fill_price"] == pytest.approx(87.97)  # price > stop → fill = price
+    # Les niveaux du plan doivent être présents
+    assert "plan_snapshot" in exit_entry
+    snap = exit_entry["plan_snapshot"]
+    assert snap["hard_stop_price"] == pytest.approx(87.30)
+    assert snap["entry_price"] == pytest.approx(86.71)
+    assert snap["side"] == "SHORT"
+
+
+def test_run_cycle_planned_exit_fill_price_est_stop_quand_spike_revenu(
+    monkeypatch,
+    tmp_path,
+    patch_batch,
+    make_data_source,
+) -> None:
+    """Cas spike-revenu : bar_high traverse le stop mais price close est revenu sous le stop.
+    Fill doit être au stop (conservateur), pas au prix close."""
+    _write_runtime_config(tmp_path)
+    state_dir = tmp_path / "state"
+    now = datetime(2026, 6, 9, 16, 48, tzinfo=timezone.utc)
+    broker = SimBroker(state_dir / "broker.json", starting_cash=100_000)
+    broker.submit(Order("SPY", "SELL", 10.0), 86.71, "2026-06-09T16:09:45+00:00", dry_run=False)
+    TradePlanStore(state_dir / "trade_plans.json").upsert(
+        create_trade_plan(
+            symbol="SPY",
+            side="SHORT",
+            quantity=10.0,
+            entry_price=86.71,
+            opened_at="2026-06-09T16:09:45+00:00",
+            raw_exit_plan={"hard_stop": 87.30},
+        )
+    )
+
+    monkeypatch.setattr(daemon, "ROOT", tmp_path)
+    monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+    # Spike : bar_high 89.49 traverse le stop, mais price close 86.50 revenu sous le stop
+    data_source = make_data_source(lambda symbol, lookback, interval: [
+        Bar(ts=now.isoformat(), open=86.71, high=89.49, low=85.50, close=86.50, volume=5000.0)
+    ])
+    patch_batch(lambda **kwargs: Decision.hold(kwargs["symbol"], "hold"))
+
+    report = daemon.run_cycle(
+        dry_run=False,
+        now=now,
+        symbols_filter=[],
+        sched=Scheduler(state_dir / "scheduler.json"),
+        data_source=data_source,
+    )
+
+    assert len(report["planned_exits"]) == 1
+    exit_entry = report["planned_exits"][0]
+    assert exit_entry["reason"] == "hard_stop"
+    # fill_price = stop (car price < stop → conservateur)
+    assert exit_entry["fill_price"] == pytest.approx(87.30)
+
+
+# ── Review Codex — corrections 2 et 5 ────────────────────────────────────────
+
+
+class TestGardeTemporelleBarre:
+    """MAJOR 2 — les extrêmes d'une barre ne doivent s'appliquer que si la barre
+    a démarré APRÈS l'ouverture du plan (bar.ts >= plan.opened_at).
+    Sinon : un plan ouvert juste après un spike serait stoppé à tort."""
+
+    def test_barre_anterieure_a_ouverture_nexclut_pas_le_stop_au_prix(
+        self, monkeypatch, tmp_path, patch_batch, make_data_source
+    ) -> None:
+        """La barre est antérieure au plan → les extrêmes ne doivent PAS déclencher
+        le stop, mais price seul doit encore fonctionner."""
+        _write_runtime_config(tmp_path)
+        state_dir = tmp_path / "state"
+        now = datetime(2026, 6, 9, 17, 10, tzinfo=timezone.utc)
+        # Plan ouvert à 17:05 ; barre ts 17:00 = antérieure
+        plan_opened_at = "2026-06-09T17:05:00+00:00"
+        broker = SimBroker(state_dir / "broker.json", starting_cash=100_000)
+        broker.submit(Order("SPY", "SELL", 10.0), 86.71, plan_opened_at, dry_run=False)
+        TradePlanStore(state_dir / "trade_plans.json").upsert(
+            create_trade_plan(
+                symbol="SPY",
+                side="SHORT",
+                quantity=10.0,
+                entry_price=86.71,
+                opened_at=plan_opened_at,
+                raw_exit_plan={"hard_stop": 87.30},
+            )
+        )
+
+        monkeypatch.setattr(daemon, "ROOT", tmp_path)
+        monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+        # Barre ts 17:00 (fraîche, 10 min avant now) mais antérieure au plan (17:05).
+        # bar_high 89.49 > stop 87.30 ; price close 86.50 < stop.
+        # Garde temporelle doit empêcher l'application des extrêmes → aucun exit.
+        data_source = make_data_source(lambda symbol, lookback, interval: [
+            Bar(
+                ts="2026-06-09T17:00:00+00:00",  # antérieure à plan_opened_at 17:05
+                open=86.71, high=89.49, low=85.50, close=86.50, volume=5000.0,
+            )
+        ])
+        patch_batch(lambda **kwargs: Decision.hold(kwargs["symbol"], "hold"))
+
+        report = daemon.run_cycle(
+            dry_run=False,
+            now=now,
+            symbols_filter=[],
+            sched=Scheduler(state_dir / "scheduler.json"),
+            data_source=data_source,
+        )
+
+        # Aucun exit : price < stop, et barre antérieure donc extrêmes ignorés
+        assert report["planned_exits"] == []
+
+    def test_barre_anterieure_nexempte_pas_stop_au_prix(
+        self, monkeypatch, tmp_path, patch_batch, make_data_source
+    ) -> None:
+        """Même barre antérieure, mais price seul dépasse le stop → déclenchement normal."""
+        _write_runtime_config(tmp_path)
+        state_dir = tmp_path / "state"
+        now = datetime(2026, 6, 9, 17, 10, tzinfo=timezone.utc)
+        plan_opened_at = "2026-06-09T17:05:00+00:00"
+        broker = SimBroker(state_dir / "broker.json", starting_cash=100_000)
+        broker.submit(Order("SPY", "SELL", 10.0), 86.71, plan_opened_at, dry_run=False)
+        TradePlanStore(state_dir / "trade_plans.json").upsert(
+            create_trade_plan(
+                symbol="SPY",
+                side="SHORT",
+                quantity=10.0,
+                entry_price=86.71,
+                opened_at=plan_opened_at,
+                raw_exit_plan={"hard_stop": 87.30},
+            )
+        )
+
+        monkeypatch.setattr(daemon, "ROOT", tmp_path)
+        monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+        # Même barre antérieure (17:00 < 17:05), mais price close 87.60 > stop 87.30
+        # → déclenchement au prix, fill = price (pas de barre extrêmes)
+        data_source = make_data_source(lambda symbol, lookback, interval: [
+            Bar(
+                ts="2026-06-09T17:00:00+00:00",
+                open=86.71, high=89.49, low=85.50, close=87.60, volume=5000.0,
+            )
+        ])
+        patch_batch(lambda **kwargs: Decision.hold(kwargs["symbol"], "hold"))
+
+        report = daemon.run_cycle(
+            dry_run=False,
+            now=now,
+            symbols_filter=[],
+            sched=Scheduler(state_dir / "scheduler.json"),
+            data_source=data_source,
+        )
+
+        assert len(report["planned_exits"]) == 1
+        assert report["planned_exits"][0]["reason"] == "hard_stop"
+
+    def test_barre_posterieure_declenche_normalement(
+        self, monkeypatch, tmp_path, patch_batch, make_data_source
+    ) -> None:
+        """Barre postérieure au plan → les extrêmes s'appliquent normalement."""
+        _write_runtime_config(tmp_path)
+        state_dir = tmp_path / "state"
+        now = datetime(2026, 6, 9, 17, 10, tzinfo=timezone.utc)
+        plan_opened_at = "2026-06-09T17:00:00+00:00"
+        broker = SimBroker(state_dir / "broker.json", starting_cash=100_000)
+        broker.submit(Order("SPY", "SELL", 10.0), 86.71, plan_opened_at, dry_run=False)
+        TradePlanStore(state_dir / "trade_plans.json").upsert(
+            create_trade_plan(
+                symbol="SPY",
+                side="SHORT",
+                quantity=10.0,
+                entry_price=86.71,
+                opened_at=plan_opened_at,
+                raw_exit_plan={"hard_stop": 87.30},
+            )
+        )
+
+        monkeypatch.setattr(daemon, "ROOT", tmp_path)
+        monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+        # Barre ts 17:05 postérieure au plan (17:00) → extrêmes appliqués
+        # bar_high 89.49 > stop 87.30, price close 86.50 < stop → spike détecté, fill = stop
+        data_source = make_data_source(lambda symbol, lookback, interval: [
+            Bar(
+                ts="2026-06-09T17:05:00+00:00",
+                open=86.71, high=89.49, low=85.50, close=86.50, volume=5000.0,
+            )
+        ])
+        patch_batch(lambda **kwargs: Decision.hold(kwargs["symbol"], "hold"))
+
+        report = daemon.run_cycle(
+            dry_run=False,
+            now=now,
+            symbols_filter=[],
+            sched=Scheduler(state_dir / "scheduler.json"),
+            data_source=data_source,
+        )
+
+        assert len(report["planned_exits"]) == 1
+        assert report["planned_exits"][0]["reason"] == "hard_stop"
+        assert report["planned_exits"][0]["fill_price"] == pytest.approx(87.30)
+
+
+class TestCheminBloqueObservabilite:
+    """MINOR 5 — chemins bloqués (clamp/position manquante) doivent inclure
+    fill_price et plan_snapshot pour l'uniformité de l'observabilité."""
+
+    def test_chemin_bloque_inclut_fill_price_et_plan_snapshot(
+        self, monkeypatch, tmp_path, patch_batch, make_data_source
+    ) -> None:
+        """Exit bloqué (position broker insuffisante) doit tout de même exposer
+        fill_price et plan_snapshot dans l'entrée du rapport."""
+        _write_runtime_config(tmp_path)
+        state_dir = tmp_path / "state"
+        now = datetime(2026, 6, 5, 12, 10, tzinfo=timezone.utc)
+        broker = SimBroker(state_dir / "broker.json", starting_cash=100_000)
+        # Position broker = 0 → _clamp_exit_quantity retourne "no_position_to_reduce"
+        # (pas de submit de position initiale volontairement)
+        TradePlanStore(state_dir / "trade_plans.json").upsert(
+            create_trade_plan(
+                symbol="SPY",
+                side="LONG",
+                quantity=10.0,
+                entry_price=100.0,
+                opened_at="2026-06-05T12:00:00+00:00",
+                raw_exit_plan={
+                    "hard_stop": 95.0,
+                    "take_profits": [{"name": "tp1", "price": 105.0, "fraction": 0.5}],
+                },
+            )
+        )
+
+        monkeypatch.setattr(daemon, "ROOT", tmp_path)
+        monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+        data_source = make_data_source(lambda symbol, lookback, interval: [
+            Bar(ts=now.isoformat(), open=106.0, high=107.0, low=105.0, close=106.0, volume=1000.0)
+        ])
+        patch_batch(lambda **kwargs: Decision.hold(kwargs["symbol"], "hold"))
+
+        report = daemon.run_cycle(
+            dry_run=False,
+            now=now,
+            symbols_filter=[],
+            sched=Scheduler(state_dir / "scheduler.json"),
+            data_source=data_source,
+        )
+
+        assert len(report["planned_exits"]) == 1
+        exit_entry = report["planned_exits"][0]
+        assert exit_entry["executed"] is False
+        # fill_price et plan_snapshot doivent être présents même sur chemin bloqué
+        assert "fill_price" in exit_entry
+        assert "plan_snapshot" in exit_entry
+        snap = exit_entry["plan_snapshot"]
+        assert snap["hard_stop_price"] == pytest.approx(95.0)
+        assert snap["side"] == "LONG"
