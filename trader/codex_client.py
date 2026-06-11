@@ -303,7 +303,7 @@ def _indicator_watch_vocabulary() -> str:
         '"exit_plan":{"hard_stop":{"type":"price","price":<number>},...},"rationale":"..."}. '
         "Contrat strict à l'armement : hard_stop en prix OBLIGATOIRE, qty>0, "
         "confidence explicite — sinon la watch est dégradée en WAKE_WITH_ORDER_INTENT "
-        "(l'ordre repassera par toi). TTL max 60 min (ta confidence périme). Au "
+        "(l'ordre repassera par toi). TTL max 4 h — cale-le sur ton scénario ; tu peux ré-armer à ta prochaine revue. Au "
         "déclenchement le daemon annule et te réveille si le prix a déjà franchi le "
         "stop ou si une position existe ; le gate de risque s'applique comme à tout "
         "ordre. C'est l'outil du planificateur : préfère un plan armé à un réveil "

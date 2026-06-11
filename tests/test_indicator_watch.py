@@ -323,23 +323,26 @@ def test_armed_order_price_coherent() -> None:
     assert armed_order_price_coherent(long_order, price=94.0) is False
 
 
-def test_execute_order_ttl_borne_a_60_minutes() -> None:
-    # la confidence d'armement périme vite : un plan armé ne vit pas 24h
-    # comme une veille simple (review Codex) — cap dédié 60 min.
+def test_execute_order_ttl_borne_a_la_revue_periodique() -> None:
+    # L'expiration de watch est SILENCIEUSE : un TTL court forcerait l'agent à
+    # se réveiller pour ré-armer (coût) ou laisserait le scénario désarmé sans
+    # qu'il le sache. Cap = 240 min, aligné sur la revue périodique garantie du
+    # gate (4 h) : le ré-armement se fait à des réveils qui existent déjà.
+    # La fraîcheur est protégée par les checks au déclenchement, pas par l'horloge.
     from datetime import timedelta
 
     now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
 
     result = build_indicator_watch(
-        _armed_raw(_valid_order(), ttl_minutes=240), owner_symbol="CL=F", now=now
+        _armed_raw(_valid_order(), ttl_minutes=600), owner_symbol="CL=F", now=now
     )
 
     expires = datetime.fromisoformat(result.watch["expires_at"])
-    assert expires - now <= timedelta(minutes=60)
+    assert expires - now == timedelta(minutes=240)  # le cap exact, pas moins
 
-    # une veille simple garde le plafond large
+    # une veille simple garde le plafond large (24 h)
     wake = build_indicator_watch(
-        _armed_raw(None, ttl_minutes=240, on_trigger="WAKE"), owner_symbol="CL=F", now=now
+        _armed_raw(None, ttl_minutes=600, on_trigger="WAKE"), owner_symbol="CL=F", now=now
     )
     expires_wake = datetime.fromisoformat(wake.watch["expires_at"])
-    assert expires_wake - now == timedelta(minutes=240)
+    assert expires_wake - now == timedelta(minutes=600)

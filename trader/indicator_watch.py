@@ -175,9 +175,12 @@ def _condition_from_raw(raw: object, *, owner_symbol: str) -> tuple[dict | None,
 # OPEN_LONG/OPEN_SHORT, qty > 0, confidence 0..1 explicite, hard_stop en prix.
 
 _ARMABLE_INTENTS = {"OPEN_LONG": "BUY", "OPEN_SHORT": "SELL"}
-# La confidence d'armement périme : un plan EXECUTE_ORDER vit au plus 60 min
-# (vs 24h pour une veille simple) — au-delà, re-juger plutôt qu'exécuter.
-ARMED_ORDER_MAX_TTL_MINUTES = 60.0
+# Cap TTL des plans armés = 240 min, aligné sur la revue périodique garantie du
+# gate (4 h) : l'expiration de watch étant SILENCIEUSE, un TTL plus court
+# forcerait des réveils de ré-armement ou laisserait des trous désarmés. La
+# fraîcheur est protégée par les checks au DÉCLENCHEMENT (stop franchi,
+# position existante, stale), pas par l'horloge.
+ARMED_ORDER_MAX_TTL_MINUTES = 240.0
 
 
 def _armed_hard_stop_price(exit_plan: object) -> float | None:
