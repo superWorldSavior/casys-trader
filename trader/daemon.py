@@ -25,7 +25,7 @@ from pathlib import Path
 import yaml
 
 from .agent_context import build_market_cockpit, resolve_indicator_requests
-from . import attribution, code_version, codex_client, consolidator, decision_ledger, family_regime, stats
+from . import attribution, code_version, codex_client, consolidator, decision_ledger, family_regime, relevance_gate, stats
 from .exit_engine import evaluate_plan
 from .features import DEFAULT_INDICATORS
 from .indicator_watch import (
@@ -75,6 +75,10 @@ DEFAULT_IB_HOST = "127.0.0.1"
 DEFAULT_IB_PORT = 4002
 DEFAULT_IB_CLIENT_ID = 17
 DEFAULT_LEARNING_CONSOLIDATION_THRESHOLD = consolidator.DEFAULT_CONSOLIDATION_THRESHOLD
+
+# D7 étage A — dernier passage LLM par (state_dir, symbole), pour la revue
+# périodique garantie du gate de pertinence. Volatile : reset au restart.
+_LAST_LLM_AT: dict[tuple[str, str], object] = {}
 # Intervalle fin pour les checks de sortie (stop/TP/trailing).
 # Fetché uniquement pour les symboles ayant un plan ouvert.
 EXIT_CHECK_INTERVAL = "5m"
@@ -1271,6 +1275,65 @@ def run_cycle(
     # contexte partagé n'est envoyé qu'une fois, au lieu de N). Les symboles stale
     # / sans prix ne sont pas décidés (HOLD ci-dessous).
     decidable = [s for s in symbols_to_decide if s not in stale_market_data and s in prices]
+
+    # Gate de pertinence (D7 étage A) : ne soumettre au LLM que les réveils
+    # demandés par l'agent, les événements, ou la revue périodique garantie.
+    # Le polling par défaut sur symbole calme ne consomme pas d'appel modèle.
+    activity = relevance_gate.cockpit_activity(cockpit)
+    strong_families = {
+        fam
+        for fam, bias in base_context["regime_families"].items()
+        if (bias.get("frac") or 0.0) >= 0.70
+    }
+    family_of = {
+        member: fam
+        for fam, members in family_regime.families_for_universe(tradable_symbols).items()
+        for member in members
+    }
+    held_symbols = {h.symbol for h in snap.holdings if h.quantity}
+    gated_symbols: list[str] = []
+    kept: list[str] = []
+    for sym in decidable:
+        last_seen = _LAST_LLM_AT.get((str(STATE_DIR), sym))
+        hours = None if last_seen is None else (now - last_seen).total_seconds() / 3600.0
+        act = activity.get(sym) or {}
+        needed, gate_reason = relevance_gate.symbol_needs_llm(
+            agent_requested_wake=sched.has_symbol_wake(sym) if sched is not None else False,
+            has_trigger=bool(triggers_by_symbol.get(sym)),
+            has_position=sym in held_symbols,
+            family_regime_strong=family_of.get(sym) in strong_families,
+            stretched=act.get("stretched"),
+            sig=act.get("sig"),
+            hours_since_last_llm=hours,
+        )
+        if needed:
+            kept.append(sym)
+        else:
+            gated_symbols.append(sym)
+    if gated_symbols:
+        _log_cycle_progress("[gate] quiet symbols=%s (pas d'appel LLM)", gated_symbols)
+        for sym in gated_symbols:
+            # Pas de wake par symbole : le gated retombe sur le polling par
+            # défaut (un wake posé ici se ferait passer pour un wake agent).
+            record_decision(
+                {
+                    "symbol": sym,
+                    "action": "HOLD",
+                    "qty": 0.0,
+                    "confidence": 0.0,
+                    "rationale": "quiet_gate",
+                    "next_wake_in_minutes": None,
+                    "intent": "HOLD",
+                    "trade_plan_created": False,
+                    "executed": False,
+                    "reason": "quiet_gate",
+                    "data_source": runtime_data_source_by_sym.get(sym),
+                }
+            )
+    decidable = kept
+    for sym in decidable:
+        _LAST_LLM_AT[(str(STATE_DIR), sym)] = now
+
     _log_cycle_progress("[batch] deciding symbols=%d/%d", len(decidable), len(symbols_to_decide))
     _write_status(
         "deciding_batch",
@@ -1298,7 +1361,12 @@ def run_cycle(
     )
     _log_cycle_progress("[batch] decided=%d model_calls=%d", len(decisions_by_symbol), model_calls_used)
 
+    gated_set = set(gated_symbols)
     for index, sym in enumerate(symbols_to_decide, start=1):
+        if sym in gated_set:
+            # Déjà tracé quiet_gate par le gate de pertinence — ne pas générer
+            # un second HOLD "no_decision_in_batch" (doublon ledger, faux HOLD agent).
+            continue
         stale_data = stale_market_data.get(sym)
         if stale_data is not None:
             streak = sched.get_stale_streak(sym) if sched is not None else 0

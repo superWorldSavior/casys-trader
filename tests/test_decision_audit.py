@@ -126,3 +126,31 @@ def test_audit_rows_groupe_les_verdicts_par_commit_decision() -> None:
     assert metrics["bbbbbbbbbbbb+dirty"]["bad_known_pct"] == 100.0
     assert metrics["unknown"]["known"] == 1
     assert result["rows"][1]["decision_commit_key"] == "bbbbbbbbbbbb+dirty"
+
+
+def test_abstentions_machine_exclues_de_l_audit() -> None:
+    """quiet_gate / stale_market_data ne sont pas des décisions agent :
+    elles ne doivent compter ni en good ni en missed (review Codex D7)."""
+    rows = [
+        {**_row("GATED", "HOLD"), "reason": "quiet_gate"},
+        {**_row("STALE", "HOLD"), "reason": "stale_market_data"},
+        {**_row("AGENT", "HOLD"), "reason": "hold"},
+    ]
+    prices = {
+        sym: [
+            {"ts": "2026-06-08T10:00:00+00:00", "close": 100.0},
+            {"ts": "2026-06-08T11:00:00+00:00", "close": 102.0},  # move > seuil
+        ]
+        for sym in ("GATED", "STALE", "AGENT")
+    }
+
+    result = decision_audit.audit_rows(rows, prices, horizons=["1h"], threshold_pct=0.5)
+
+    verdicts = {r["symbol"]: r["audits"]["1h"]["verdict"] for r in result["rows"]}
+    assert verdicts["GATED"] == "machine"
+    assert verdicts["STALE"] == "machine"
+    assert verdicts["AGENT"] == "missed"  # la vraie décision agent reste jugée
+
+    metrics = result["metrics"]["1h"]
+    assert metrics["known"] == 1  # seule la décision agent compte
+    assert metrics["missed"] == 1

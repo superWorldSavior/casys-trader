@@ -194,3 +194,16 @@ def test_reconcile_universe_ne_reecrit_pas_si_rien_a_purger(tmp_path) -> None:
     sched.reconcile_universe(["SPY"])
 
     assert path.stat().st_mtime_ns == mtime_before
+
+
+def test_has_symbol_wake_distingue_reveil_agent_du_polling(tmp_path) -> None:
+    sched = Scheduler(tmp_path / "scheduler.json")
+    now = datetime(2026, 6, 11, 12, 0, tzinfo=timezone.utc)
+
+    assert sched.has_symbol_wake("SPY") is False  # rien demandé -> polling défaut
+
+    sched.set_symbol_next_wake_in("SPY", minutes=60, now=now)
+    assert sched.has_symbol_wake("SPY") is True  # réveil demandé (agent)
+
+    sched.clear_symbol_next_wake("SPY")
+    assert sched.has_symbol_wake("SPY") is False

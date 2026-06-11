@@ -82,6 +82,16 @@ class Scheduler:
         state["symbols"].pop(symbol, None)
         self._save_state(state)
 
+    def has_symbol_wake(self, symbol: str) -> bool:
+        """True si un override de réveil par symbole est posé (≠ polling par défaut).
+
+        Sert au gate de pertinence (D7) : un tel réveil n'est jamais filtré.
+        Note : vrai pour TOUT override par symbole, y compris ceux posés par le
+        code (backoff stale, watch) — direction conservatrice voulue (un wake
+        posé mérite un passage LLM au réveil, ex. données redevenues fraîches).
+        """
+        return bool(self._load_state()["symbols"].get(symbol))
+
     def set_symbol_next_wake_in(
         self,
         symbol: str,

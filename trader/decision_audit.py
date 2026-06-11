@@ -64,6 +64,11 @@ def _price_at_or_after(prices: list[tuple[datetime, float]], ts: datetime) -> fl
     return None
 
 
+# Abstentions produites par l'infra (gate de pertinence D7, données périmées) :
+# pas des décisions agent — exclues des stats de qualité (verdict "machine").
+_MACHINE_REASONS = {"quiet_gate", "stale_market_data"}
+
+
 def _verdict(action: Any, future_return_pct: float | None, threshold_pct: float) -> str:
     if future_return_pct is None:
         return "unknown"
@@ -106,9 +111,10 @@ def _counter_metrics(counts: Counter) -> dict:
     bad = int(counts.get("bad", 0))
     neutral = int(counts.get("neutral", 0))
     missed = int(counts.get("missed", 0))
+    machine = int(counts.get("machine", 0))
     unknown = int(counts.get("unknown", 0))
     known = good + bad + neutral + missed
-    total = known + unknown
+    total = known + unknown + machine
 
     def pct(value: int, denominator: int) -> float | None:
         if denominator <= 0:
@@ -123,6 +129,7 @@ def _counter_metrics(counts: Counter) -> dict:
         "bad": bad,
         "neutral": neutral,
         "missed": missed,
+        "machine": machine,
         "coverage_pct": pct(known, total),
         "good_known_pct": pct(good, known),
         "bad_known_pct": pct(bad, known),
@@ -258,7 +265,10 @@ def audit_rows(
             future_return_pct = None
             if entry_price not in {None, 0} and future_price is not None:
                 future_return_pct = round(((future_price - entry_price) / entry_price) * 100.0, 6)
-            verdict = _verdict(row.get("action"), future_return_pct, threshold_pct)
+            if str(row.get("reason") or "") in _MACHINE_REASONS:
+                verdict = "machine"
+            else:
+                verdict = _verdict(row.get("action"), future_return_pct, threshold_pct)
             audits[horizon] = {
                 "entry_price": entry_price,
                 "future_price": future_price,
