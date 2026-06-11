@@ -330,6 +330,8 @@ def test_run_cycle_clamp_order_value_et_execute_sans_repasser_par_le_modele(
             confidence=0.95,
             rationale="ordre legerement trop gros",
             intent="OPEN_LONG",
+            # stop serré : risque borné loin du clamp, l'order-value reste la borne testée
+            exit_plan={"hard_stop": {"type": "price", "price": 99.9}},
         )
 
     patch_batch(decide)
@@ -373,7 +375,8 @@ def test_run_cycle_clamp_order_value_reste_sous_plafond_avec_prix_non_binaire(
             quantity=5_000.0,
             confidence=0.95,
             rationale="prix non binaire",
-            intent="OPEN_LONG"),
+            intent="OPEN_LONG",
+            exit_plan={"hard_stop": {"type": "price", "price": 2.29}}),
     )
 
     report = daemon.run_cycle(
@@ -516,12 +519,14 @@ def test_run_cycle_accepte_open_long_si_hard_stop_est_du_bon_cote(
     assert SimBroker(state_dir / "broker.json").positions()["SPY"].quantity == 10.0
 
 
-def test_run_cycle_open_sans_hard_stop_trace_risque_non_borne_sans_clamp(
+def test_run_cycle_rejette_open_sans_hard_stop_meme_confiant(
     monkeypatch,
     tmp_path,
     patch_batch,
     make_data_source,
 ) -> None:
+    """Guardrail D6 déterministe : une ouverture sans hard_stop est rejetée,
+    le risque non borné reste tracé pour l'audit."""
     _write_runtime_config(tmp_path, max_order_value=100_000)
     state_dir = tmp_path / "state"
     now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
@@ -550,15 +555,12 @@ def test_run_cycle_open_sans_hard_stop_trace_risque_non_borne_sans_clamp(
     )
 
     decision = report["decisions"][0]
-    assert decision["executed"] is True
-    assert decision["reason"] == "ok"
-    assert "requested_qty" not in decision
-    assert decision["qty"] == 120.0
-    assert decision["risk_clamped"] is False
+    assert decision["executed"] is False
+    assert decision["reason"] == "risk:missing_hard_stop"
     assert decision["risk_unbounded_no_stop"] is True
     assert decision["risk_pct"] is None
     assert decision["stop_distance"] is None
-    assert SimBroker(state_dir / "broker.json").positions()["SPY"].quantity == 120.0
+    assert "SPY" not in SimBroker(state_dir / "broker.json").positions()
 
 
 def test_run_cycle_risk_clamp_puis_order_value_clamp_satisfont_les_deux_bornes(
@@ -629,7 +631,8 @@ def test_run_cycle_rejette_si_position_value_depasse_apres_clamp_order_value(
             quantity=120.0,
             confidence=0.95,
             rationale="ajout trop gros pour position",
-            intent="OPEN_LONG"),
+            intent="OPEN_LONG",
+            exit_plan={"hard_stop": {"type": "price", "price": 99.9}}),
     )
 
     report = daemon.run_cycle(
@@ -671,7 +674,8 @@ def test_run_cycle_rejette_si_gross_exposure_depasse_apres_clamp_order_value(
             quantity=120.0,
             confidence=0.95,
             rationale="ajout trop gros pour gross",
-            intent="OPEN_LONG"),
+            intent="OPEN_LONG",
+            exit_plan={"hard_stop": {"type": "price", "price": 99.9}}),
     )
 
     report = daemon.run_cycle(
@@ -793,7 +797,10 @@ def test_run_cycle_attribue_les_sorties_planifiees_au_modele_createur(monkeypatc
             confidence=0.95,
             rationale="setup tp",
             intent="OPEN_LONG",
-            exit_plan={"take_profits": [{"name": "tp1", "price": 105.0, "fraction": 0.5}]},
+            exit_plan={
+                "hard_stop": {"type": "price", "price": 95.0},
+                "take_profits": [{"name": "tp1", "price": 105.0, "fraction": 0.5}],
+            },
             llm_provider="spark",
             llm_model="gpt-5.3-codex-spark/medium",
         )

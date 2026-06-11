@@ -119,3 +119,46 @@ def test_run_cycle_approuve_ouverture_confidence_suffisante(
     decision_entry = report["decisions"][0]
     # dry_run=True → executed=False mais reason=ok (gate confiance passé)
     assert decision_entry["reason"] == "ok"
+
+
+def test_run_cycle_rejette_ouverture_sans_hard_stop(
+    monkeypatch, tmp_path, make_data_source
+) -> None:
+    """Guardrail D6 déterministe : ouverture sans hard_stop → rejet, même à confiance max."""
+    _write_runtime_config(tmp_path)
+    state_dir = tmp_path / "state"
+    now = datetime(2026, 6, 10, 12, 0, tzinfo=timezone.utc)
+
+    decision = Decision(
+        symbol="SPY",
+        action="BUY",
+        quantity=10.0,
+        confidence=0.97,  # même très confiant, pas de stop = pas d'ouverture
+        rationale="setup",
+        intent="OPEN_LONG",
+        exit_plan=None,
+    )
+
+    def fake_batch_decide(**kwargs):
+        return {sym: decision if sym == "SPY" else Decision.hold(sym, "hold") for sym in kwargs["decidable"]}, 1
+
+    monkeypatch.setattr(daemon, "ROOT", tmp_path)
+    monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+    monkeypatch.setattr(daemon, "_batch_decide", fake_batch_decide)
+    data_source = make_data_source(
+        lambda symbol, lookback, interval: [
+            Bar(ts=now.isoformat(), open=100.0, high=101.0, low=99.0, close=100.0, volume=1000.0)
+        ]
+    )
+
+    report = daemon.run_cycle(
+        dry_run=True,
+        now=now,
+        symbols_filter=["SPY"],
+        sched=Scheduler(state_dir / "scheduler.json"),
+        data_source=data_source,
+    )
+
+    decision_entry = report["decisions"][0]
+    assert decision_entry["executed"] is False
+    assert decision_entry["reason"] == "risk:missing_hard_stop"

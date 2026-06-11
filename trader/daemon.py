@@ -25,7 +25,7 @@ from pathlib import Path
 import yaml
 
 from .agent_context import build_market_cockpit, resolve_indicator_requests
-from . import attribution, code_version, codex_client, consolidator, decision_ledger, stats
+from . import attribution, code_version, codex_client, consolidator, decision_ledger, family_regime, stats
 from .exit_engine import evaluate_plan
 from .features import DEFAULT_INDICATORS
 from .indicator_watch import (
@@ -1176,11 +1176,21 @@ def run_cycle(
         # confidence et coût par raison de sortie. Le signal qui dit à l'agent si
         # ses choix (surtout ses calls confiants) gagnent vraiment.
         "attribution": attribution.compute_attribution(STATE_DIR),
-        # Boucle de feedback : cold-start = bruts récents; dès qu'un consolidé
-        # existe, on injecte global/by_symbol + quelques bruts récents.
+        # Boucle de feedback (D6) : guardrails humains nommés à part ; dès qu'un
+        # consolidé existe, les bruts ne sont plus réinjectés (anti auto-renforcement).
         "learnings": consolidator.build_context_learnings(
             consolidated_learnings_store.read(),
             raw_recent=learnings_store.recent(limit=max_learnings_in_context),
+            guardrails=consolidator.load_guardrails(ROOT / "mandate" / "guardrails.json"),
+        ),
+        # Biais de régime cross-asset par famille thématique (D2) : le code
+        # calcule la synthèse directionnelle, l'agent juge l'opportunité.
+        "regime_families": family_regime.compute_family_bias(
+            {
+                sym: family_regime.momentum_from_bars(bars)
+                for sym, bars in tradable_bars_by_symbol.items()
+            },
+            family_regime.families_for_universe(tradable_symbols),
         ),
     }
 
@@ -1519,6 +1529,18 @@ def run_cycle(
                     stop_distance=None,
                     equity=snap.equity,
                 )
+                if pure_open:
+                    # Guardrail humain rendu déterministe (mandate/guardrails.json,
+                    # D6 du registre) : pas d'ouverture sans hard_stop, quelle que
+                    # soit la confiance. REVERSE reste tracé non bloqué (dette connue).
+                    _log_cycle_progress(
+                        "[risk] %s rejected code=missing_hard_stop", sym
+                    )
+                    apply_default_schedule_after_blocked()
+                    record_decision(
+                        {**entry, "executed": False, "reason": "risk:missing_hard_stop"}
+                    )
+                    continue
             else:
                 open_stop_distance = abs(prices[sym] - hard_stop_price)
                 if pure_open:
@@ -1887,6 +1909,7 @@ def main(argv: list[str] | None = None) -> None:
                         )
                 loop_now = datetime.now(timezone.utc)
                 symbols = _load_yaml(ROOT / "config" / "universe.yaml")["symbols"]
+                sched.reconcile_universe(symbols)
                 indicator_triggers = (
                     []
                     if args.once or bootstrap

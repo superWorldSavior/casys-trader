@@ -81,7 +81,10 @@ def _verdict(action: Any, future_return_pct: float | None, threshold_pct: float)
             return "bad"
         return "neutral"
     if action_text == "HOLD":
-        return "good" if abs(future_return_pct) < threshold_pct else "bad"
+        # Une abstention ne peut pas être un trade « raté » : si le marché bouge
+        # au-delà du seuil pendant un HOLD, c'est une opportunité laissée passer
+        # (« missed »), pas un échec directionnel comme un BUY qui s'effondre.
+        return "good" if abs(future_return_pct) < threshold_pct else "missed"
     return "unknown"
 
 
@@ -102,8 +105,9 @@ def _counter_metrics(counts: Counter) -> dict:
     good = int(counts.get("good", 0))
     bad = int(counts.get("bad", 0))
     neutral = int(counts.get("neutral", 0))
+    missed = int(counts.get("missed", 0))
     unknown = int(counts.get("unknown", 0))
-    known = good + bad + neutral
+    known = good + bad + neutral + missed
     total = known + unknown
 
     def pct(value: int, denominator: int) -> float | None:
@@ -118,11 +122,13 @@ def _counter_metrics(counts: Counter) -> dict:
         "good": good,
         "bad": bad,
         "neutral": neutral,
+        "missed": missed,
         "coverage_pct": pct(known, total),
         "good_known_pct": pct(good, known),
         "bad_known_pct": pct(bad, known),
         "neutral_known_pct": pct(neutral, known),
-        "nonbad_known_pct": pct(good + neutral, known),
+        "missed_known_pct": pct(missed, known),
+        "nonbad_known_pct": pct(good + neutral + missed, known),
     }
 
 

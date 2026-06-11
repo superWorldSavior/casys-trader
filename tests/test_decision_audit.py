@@ -54,6 +54,28 @@ def test_audit_rows_labelle_buy_sell_hold_sur_rendement_futur() -> None:
     assert result["summary"]["1h"]["bad"] == 1
 
 
+def test_hold_pendant_un_move_est_missed_pas_bad() -> None:
+    rows = [_row("MOVER", "HOLD")]
+    prices = {
+        "MOVER": [
+            {"ts": "2026-06-08T10:00:00+00:00", "close": 100.0},
+            {"ts": "2026-06-08T11:00:00+00:00", "close": 102.0},  # +2% > seuil 0.5
+        ],
+    }
+
+    result = decision_audit.audit_rows(rows, prices, horizons=["1h"], threshold_pct=0.5)
+
+    audit = result["rows"][0]["audits"]["1h"]
+    assert audit["verdict"] == "missed"
+
+    metrics = result["metrics"]["1h"]
+    assert metrics["missed"] == 1
+    assert metrics["bad"] == 0
+    assert metrics["known"] == 1  # un move connu compte dans la couverture
+    assert metrics["missed_known_pct"] == 100.0
+    assert metrics["nonbad_known_pct"] == 100.0  # une abstention n'est pas un trade raté
+
+
 def test_audit_rows_reconstruit_le_prix_initial_pour_legacy() -> None:
     rows = [_row("SPY", "HOLD", price=None)]
     prices = {
@@ -69,7 +91,7 @@ def test_audit_rows_reconstruit_le_prix_initial_pour_legacy() -> None:
     assert audit["entry_price"] == 100.0
     assert audit["future_price"] == 104.0
     assert audit["future_return_pct"] == 4.0
-    assert audit["verdict"] == "bad"
+    assert audit["verdict"] == "missed"  # HOLD pendant un move = opportunité, pas échec
 
 
 def test_audit_rows_groupe_les_verdicts_par_commit_decision() -> None:

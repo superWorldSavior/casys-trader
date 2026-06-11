@@ -248,9 +248,11 @@ def _decision_stats_payload(audit: dict, *, horizon: str, min_known: int) -> dic
                 "good": int(metrics.get("good") or 0),
                 "bad": int(metrics.get("bad") or 0),
                 "neutral": int(metrics.get("neutral") or 0),
+                "missed": int(metrics.get("missed") or 0),
                 "good_pct": _optional_pct(metrics.get("good_known_pct")),
                 "nonbad_pct": _optional_pct(metrics.get("nonbad_known_pct")),
                 "bad_pct": _optional_pct(metrics.get("bad_known_pct")),
+                "missed_pct": _optional_pct(metrics.get("missed_known_pct")),
             }
         )
     commits.sort(key=lambda row: (row["known"], row["total"], row["commit"]), reverse=True)
@@ -288,16 +290,18 @@ def _cmd_decisions_stats(args: argparse.Namespace) -> int:
         f"unknown={global_metrics.get('unknown')} "
         f"good%={_pct_text(global_metrics.get('good_known_pct'))} "
         f"nonbad%={_pct_text(global_metrics.get('nonbad_known_pct'))} "
-        f"bad%={_pct_text(global_metrics.get('bad_known_pct'))}"
+        f"bad%={_pct_text(global_metrics.get('bad_known_pct'))} "
+        f"missed%={_pct_text(global_metrics.get('missed_known_pct'))}"
     )
-    print("commit           date       total known unknown good% nonbad% bad% good bad neutral")
+    print("commit           date       total known unknown good% nonbad% bad% missed% good bad neutral missed")
     for row in payload["commits"]:
         print(
             f"{row['commit']:<16} "
             f"{row.get('date') or 'n/a':<10} "
             f"{row['total']:>5} {row['known']:>5} {row['unknown']:>7} "
             f"{_pct_text(row['good_pct']):>5} {_pct_text(row['nonbad_pct']):>7} {_pct_text(row['bad_pct']):>5} "
-            f"{row['good']:>4} {row['bad']:>3} {row['neutral']:>7}"
+            f"{_pct_text(row['missed_pct']):>7} "
+            f"{row['good']:>4} {row['bad']:>3} {row['neutral']:>7} {row['missed']:>6}"
         )
     return 0
 

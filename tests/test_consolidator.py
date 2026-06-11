@@ -376,7 +376,9 @@ def test_build_context_learnings_preserve_le_fallback_froid() -> None:
     assert consolidator.build_context_learnings(empty, raw_recent=raw_recent) == raw_recent
 
 
-def test_build_context_learnings_injecte_consolide_et_bruts_recents() -> None:
+def test_build_context_learnings_injecte_le_consolide_seul() -> None:
+    # D6 : les bruts ne sont plus réinjectés dès qu'un consolidé existe
+    # (ils répétaient les derniers HOLD et nourrissaient l'auto-renforcement).
     raw_recent = [
         _raw("2026-06-08T10:00:00+00:00", symbol="SPY", note="raw 1"),
         _raw("2026-06-08T10:30:00+00:00", symbol="QQQ", note="raw 2"),
@@ -392,5 +394,64 @@ def test_build_context_learnings_injecte_consolide_et_bruts_recents() -> None:
     assert context == {
         "global": [{"note": "z seul ne suffit pas"}],
         "by_symbol": {"SPY": [{"note": "SPY range"}]},
-        "raw_recent": raw_recent,
     }
+
+
+# --- D6 (registre) : casser la boucle d'auto-renforcement HOLD ---
+
+
+def test_prompt_consolidation_priorise_les_entrees_et_cape_les_abstentions() -> None:
+    prompt = consolidator.build_consolidation_prompt(consolidator.empty_consolidated(), [])
+
+    # priorité explicite aux patterns d'entrée (sous-représentés dans les bruts)
+    assert "entrée" in prompt.lower()
+    # cap explicite sur les règles d'abstention
+    assert "abstention" in prompt.lower()
+    # l'ancienne consigne qui faisait gagner la règle majoritaire (HOLD) disparaît
+    assert "préserve les entrées stables" not in prompt
+
+
+def test_build_context_learnings_sans_bruts_quand_consolide_existe() -> None:
+    consolidated = {
+        "watermark": "2026-06-08T10:30:00+00:00",
+        "global": [{"note": "z seul ne suffit pas"}],
+        "by_symbol": {},
+    }
+
+    context = consolidator.build_context_learnings(
+        consolidated,
+        raw_recent=[_raw("2026-06-08T10:00:00+00:00")],
+    )
+
+    assert "raw_recent" not in context
+
+
+def test_build_context_learnings_injecte_les_guardrails_separes() -> None:
+    guardrails = [{"note": "Toute ouverture s'accompagne d'un exit_plan avec stop."}]
+    consolidated = {
+        "watermark": "2026-06-08T10:30:00+00:00",
+        "global": [{"note": "pattern machine, remettable en question"}],
+        "by_symbol": {},
+    }
+
+    context = consolidator.build_context_learnings(
+        consolidated, raw_recent=[], guardrails=guardrails
+    )
+    assert context["guardrails"] == guardrails
+
+    # cold-start : les guardrails restent présents même sans consolidé
+    cold = consolidator.build_context_learnings(
+        consolidator.empty_consolidated(),
+        raw_recent=[_raw("2026-06-08T10:00:00+00:00")],
+        guardrails=guardrails,
+    )
+    assert cold["guardrails"] == guardrails
+    assert cold["raw_recent"] == [_raw("2026-06-08T10:00:00+00:00")]
+
+
+def test_load_guardrails(tmp_path) -> None:
+    path = tmp_path / "guardrails.json"
+    assert consolidator.load_guardrails(path) == []  # absent -> liste vide
+
+    path.write_text(json.dumps([{"note": "stop obligatoire"}]), encoding="utf-8")
+    assert consolidator.load_guardrails(path) == [{"note": "stop obligatoire"}]

@@ -184,20 +184,43 @@ def _has_consolidated(payload: dict) -> bool:
     return bool(payload.get("global") or payload.get("by_symbol"))
 
 
+def load_guardrails(path: Path) -> list[dict]:
+    """Garde-fous invariants, écrits par l'humain (D6 : séparés des patterns machine)."""
+    try:
+        payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    if not isinstance(payload, list):
+        return []
+    return [entry for entry in payload if isinstance(entry, dict) and entry.get("note")]
+
+
 def build_context_learnings(
     consolidated: dict,
     *,
     raw_recent: list[dict],
-    max_raw_recent: int = 3,
+    guardrails: list[dict] | None = None,
 ) -> list[dict] | dict:
+    """Contexte learnings injecté à l'agent (D6 du registre).
+
+    `guardrails` = invariants humains, toujours présents et nommés à part —
+    l'agent doit pouvoir distinguer « règle qui ne bouge pas » de « pattern
+    appris, remettable en question ». Dès qu'un consolidé existe, les bruts ne
+    sont plus réinjectés : ils répétaient les derniers HOLD et nourrissaient la
+    boucle d'auto-renforcement.
+    """
     normalized = normalize_consolidated(consolidated, watermark=consolidated.get("watermark"))
     if normalized is None or not _has_consolidated(normalized):
+        if guardrails:
+            return {"guardrails": guardrails, "raw_recent": raw_recent}
         return raw_recent
-    return {
+    context: dict = {
         "global": normalized["global"],
         "by_symbol": normalized["by_symbol"],
-        "raw_recent": raw_recent[-max(0, max_raw_recent) :],
     }
+    if guardrails:
+        context["guardrails"] = guardrails
+    return context
 
 
 def build_consolidation_prompt(current: dict, new_raw: list[dict]) -> str:
@@ -212,8 +235,16 @@ def build_consolidation_prompt(current: dict, new_raw: list[dict]) -> str:
     }
     return (
         "Tu es le consolidateur machine de casys-trader.\n"
-        "Fusionne les learnings bruts redondants, promeus au global ce qui est transversal, "
-        "garde par symbole ce qui est spécifique, et préserve les entrées stables existantes.\n"
+        "Objectif : un résumé ÉQUILIBRÉ des patterns appris — ni une liste "
+        "d'interdictions, ni un biais à sur-trader. Critères :\n"
+        "1. PRIORITÉ aux notes liées à des ENTRÉES (réussies ou ratées) : elles sont "
+        "sous-représentées dans les bruts, ne les écrase pas.\n"
+        "2. Fusionne les notes d'abstention (HOLD) redondantes en UNE seule par "
+        "pattern distinct ; au plus 5 règles d'abstention dans global.\n"
+        "3. `robustness` élevée seulement si le pattern s'est vérifié sur au moins "
+        "3 occurrences distinctes.\n"
+        "4. Une note qui répète une entrée déjà présente dans current_consolidated "
+        "n'apporte rien : omets-la.\n"
         "Retourne uniquement un objet JSON avec les clés global et by_symbol. "
         "N'ajoute pas de markdown.\n\n"
         f"{json.dumps(payload, ensure_ascii=False, indent=2)}"

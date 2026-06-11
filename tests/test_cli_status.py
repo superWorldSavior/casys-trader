@@ -306,3 +306,32 @@ def test_cli_decisions_stats_affiche_n_et_pourcentages_par_commit(monkeypatch, t
     assert payload["global"]["known"] == 8
     assert payload["commits"][0]["commit"] == "bigcommit123"
     assert payload["commits"][0]["date"] == "2026-06-08"
+
+
+def test_stats_payload_expose_missed_par_commit() -> None:
+    audit = {
+        "metrics": {
+            "1h": {"total": 1, "known": 1, "unknown": 0, "missed_known_pct": 100.0}
+        },
+        "metrics_by_commit": {
+            "1h": {
+                "c1": {
+                    "total": 1,
+                    "known": 1,
+                    "unknown": 0,
+                    "good": 0,
+                    "bad": 0,
+                    "neutral": 0,
+                    "missed": 1,
+                    "missed_known_pct": 100.0,
+                }
+            }
+        },
+        "rows": [],
+    }
+
+    payload = cli._decision_stats_payload(audit, horizon="1h", min_known=0)
+
+    row = payload["commits"][0]
+    assert row["missed"] == 1
+    assert row["missed_pct"] == 100.0

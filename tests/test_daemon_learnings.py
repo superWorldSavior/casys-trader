@@ -181,7 +181,8 @@ def test_run_cycle_injecte_les_learnings_consolides_scope_aware(
     learnings = contexts[0]["learnings"]
     assert learnings["global"] == [{"note": "z seul ne suffit pas"}]
     assert learnings["by_symbol"] == {"SPY": [{"note": "SPY reste range"}]}
-    assert [item["note"] for item in learnings["raw_recent"]] == ["brut recent"]
+    # D6 : plus de bruts réinjectés quand un consolidé existe
+    assert "raw_recent" not in learnings
 
 
 def test_run_cycle_declenche_le_consolidateur_en_fin_de_cycle(
@@ -230,3 +231,59 @@ def test_run_cycle_declenche_le_consolidateur_en_fin_de_cycle(
     )
 
     assert calls == [("learnings.jsonl", "learnings_consolidated.json", 50, "codex", "gpt-5.5/high", 240)]
+
+
+def test_run_cycle_injecte_guardrails_et_regime_families(
+    monkeypatch,
+    tmp_path,
+    patch_batch,
+    make_data_source,
+) -> None:
+    import json as _json
+
+    _write_runtime_config(tmp_path)
+    (tmp_path / "mandate" / "guardrails.json").write_text(
+        _json.dumps([{"note": "Toute ouverture s'accompagne d'un exit_plan avec stop."}]),
+        encoding="utf-8",
+    )
+    state_dir = tmp_path / "state"
+    sched = Scheduler(state_dir / "scheduler.json")
+    now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
+
+    def rising_bars(symbol: str, lookback: str, interval: str) -> list[Bar]:
+        base = 100.0 if symbol == "SPY" else 200.0
+        closes = [base, base + 1, base + 2, base + 3]  # 4 barres -> momentum calculable
+        return [
+            Bar(
+                ts=f"2026-06-05T11:{15 * i:02d}:00+00:00",
+                open=c, high=c + 1, low=c - 1, close=c, volume=1000.0,
+            )
+            for i, c in enumerate(closes)
+        ]
+
+    contexts: list[dict] = []
+
+    def decide(**kwargs):
+        contexts.append(kwargs["context"])
+        return Decision.hold(kwargs["symbol"], "attente")
+
+    monkeypatch.setattr(daemon, "ROOT", tmp_path)
+    monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+    data_source = make_data_source(rising_bars)
+    patch_batch(decide)
+
+    daemon.run_cycle(
+        dry_run=True, now=now, symbols_filter=["SPY", "QQQ"], sched=sched, data_source=data_source
+    )
+
+    assert contexts
+    # D6 étape 2 : guardrails humains injectés, nommés à part
+    learnings = contexts[0]["learnings"]
+    assert learnings["guardrails"] == [
+        {"note": "Toute ouverture s'accompagne d'un exit_plan avec stop."}
+    ]
+    # D2 : biais de régime par famille (SPY+QQQ = indices, momentum up)
+    regime = contexts[0]["regime_families"]
+    assert regime["indices"]["dir"] == "up"
+    assert regime["indices"]["n"] == 2
+    assert regime["indices"]["frac"] == 1.0
