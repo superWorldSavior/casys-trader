@@ -93,3 +93,15 @@ def test_guidance_decrit_les_plans_armes_execute_order() -> None:
     assert "EXECUTE_ORDER" in prompt
     assert "hard_stop" in prompt  # stop obligatoire à l'armement
     assert "sans re-appel" in prompt.lower()
+
+
+def test_le_prompt_cadre_le_role_de_planificateur() -> None:
+    # D7 (Erwan) : le rôle doit être explicite — concevoir des scénarios que le
+    # daemon exécute, pas opérer le marché en polling.
+    prompt = _batch_prompt()
+    low = prompt.lower()
+    assert "planificateur" in low
+    # l'échelle d'engagement est expliquée (décider / veiller / armer)
+    assert "scénario" in low
+    # l'ancien cadrage « agent décideur » seul ne suffit plus comme rôle
+    assert "tu es le planificateur" in low or "tu es un planificateur" in low

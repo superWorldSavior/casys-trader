@@ -1283,6 +1283,20 @@ def run_cycle(
     # déjà franchi le hard_stop (position instantanément stoppable) ou si stale.
     armed_decisions: dict[str, codex_client.Decision] = {}
     armed_plan_meta: dict[str, dict] = {}
+    # Conflit : plusieurs scénarios armés du MÊME symbole déclenchés au même
+    # cycle = ambiguïté — on n'exécute pas arbitrairement, le planificateur
+    # arbitre (les triggers annotés restent dans son contexte).
+    _armed_by_symbol: dict[str, list[dict]] = {}
+    for trigger in indicator_triggers:
+        if str(trigger.get("on_trigger")) == "EXECUTE_ORDER" and isinstance(trigger.get("order"), dict):
+            _armed_by_symbol.setdefault(str(trigger.get("symbol")), []).append(trigger)
+    _armed_conflicts = {sym for sym, items in _armed_by_symbol.items() if len(items) > 1}
+    for sym in _armed_conflicts:
+        plan_ids = [str(t.get("watch_id") or "") for t in _armed_by_symbol[sym]]
+        _log_cycle_progress("[armed_plan] %s conflit (%d plans déclenchés) — réveil planificateur", sym, len(plan_ids))
+        _append_event("armed_plan_conflict", symbol=sym, plan_ids=plan_ids)
+        for t in _armed_by_symbol[sym]:
+            t["armed_conflict"] = True
     for trigger in indicator_triggers:
         if str(trigger.get("on_trigger")) != "EXECUTE_ORDER":
             continue
@@ -1290,6 +1304,8 @@ def run_cycle(
         sym = str(trigger.get("symbol"))
         if not isinstance(order, dict) or sym not in symbols_to_decide:
             continue
+        if sym in _armed_conflicts:
+            continue  # déjà annoté, le LLM arbitrera ce réveil
         plan_id = str(trigger.get("watch_id") or "")
         position = broker.positions().get(sym)
         cancel_reason = None

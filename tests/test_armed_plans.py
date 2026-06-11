@@ -177,3 +177,41 @@ def test_plan_arme_trace_sa_provenance_dans_le_ledger(
     ]
     executed = [r for r in rows if r.get("executed")]
     assert executed and executed[0]["source"] == "armed_plan"
+
+
+def test_deux_plans_du_meme_symbole_au_meme_cycle_reveillent_le_planificateur(
+    monkeypatch, tmp_path, patch_batch, make_data_source
+) -> None:
+    # scénarios alternatifs qui déclenchent ENSEMBLE = ambiguïté : on n'exécute
+    # pas arbitrairement le dernier, on réveille le planificateur (D7, Erwan).
+    _runtime_config(tmp_path)
+    state_dir = tmp_path / "state"
+    now = datetime(2026, 6, 11, 12, 0, tzinfo=timezone.utc)
+
+    monkeypatch.setattr(daemon, "ROOT", tmp_path)
+    monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+
+    llm_calls: list[str] = []
+
+    def decide(**kwargs):
+        llm_calls.append(kwargs["symbol"])
+        return Decision.hold(kwargs["symbol"], "attente")
+
+    patch_batch(decide)
+    plan_long = _armed_trigger(stop_price=95.0, intent="OPEN_LONG")
+    plan_short = _armed_trigger(stop_price=105.0, intent="OPEN_SHORT")
+    plan_short["watch_id"] = "SPY:def456"
+
+    daemon.run_cycle(
+        dry_run=False,
+        now=now,
+        symbols_filter=["SPY"],
+        sched=Scheduler(state_dir / "scheduler.json"),
+        data_source=make_data_source(_bars_at(now.isoformat())),
+        indicator_triggers=[plan_long, plan_short],
+    )
+
+    assert llm_calls == ["SPY"]  # le planificateur arbitre, pas le hasard
+    assert "SPY" not in SimBroker(state_dir / "broker.json").positions()
+    events = (state_dir / "events.jsonl").read_text(encoding="utf-8")
+    assert "armed_plan_conflict" in events

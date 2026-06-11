@@ -23,6 +23,13 @@ ses résultats** (il ajuste sa stratégie selon ses KPI, voir plus bas).
   échelles de temps (`15m`, `30m`, `1h`, `1d`), avec un `ttl_minutes`. Tant qu'elle
   n'est pas expirée, le daemon la scanne sans appeler le modèle ; si elle déclenche,
   le symbole est réveillé immédiatement avec le trigger dans son contexte.
+- **Posture : planificateur, pas opérateur.** L'agent conçoit des **scénarios** —
+  entrées armées (`EXECUTE_ORDER` : condition + sens + taille + stop, exécutées
+  par le daemon au déclenchement sans re-appel), veilles, plans de sortie — et
+  laisse le daemon les exécuter mécaniquement. Plusieurs scénarios alternatifs
+  peuvent coexister sur un même symbole : un seul se réalisera. Le daemon
+  garantit les réveils sur événement et une revue périodique : pas de réveil
+  court « pour surveiller ».
 
 ## Marchés autorisés
 

@@ -142,12 +142,25 @@ class Scheduler:
         return min(waits) if waits else 0.0
 
     def set_symbol_indicator_watch(self, symbol: str, watch: dict) -> None:
-        """Persist one active indicator watch for a symbol."""
+        """Persiste une watch active pour un symbole.
+
+        Plans armés (EXECUTE_ORDER) : des SCÉNARIOS alternatifs — plusieurs
+        coexistent sur un symbole, un seul se réalisera (D7, décision Erwan).
+        Veilles simples : remplacement par symbole (une question à la fois).
+        Les deux familles ne s'évincent pas mutuellement.
+        """
+
+        def _is_armed(item: dict) -> bool:
+            return str(item.get("on_trigger")) == "EXECUTE_ORDER"
+
         state = self._load_state()
+        incoming_armed = _is_armed(watch)
         watches = {
             watch_id: item
             for watch_id, item in state["indicator_watches"].items()
             if item.get("symbol") != symbol
+            or _is_armed(item) != incoming_armed  # famille différente : on garde
+            or incoming_armed  # plans armés : coexistence
         }
         watches[watch["id"]] = watch
         state["indicator_watches"] = watches

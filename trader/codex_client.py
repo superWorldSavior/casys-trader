@@ -157,6 +157,21 @@ _COMPACT_OUTPUT_CONTRACT = (
 
 
 _DECISION_GUIDANCE = (
+    "# Ton échelle d'engagement (du jugement immédiat au scénario délégué)\n"
+    "À chaque réveil, choisis le bon outil — pas par défaut le premier :\n"
+    "1. DÉCIDER maintenant (BUY/SELL) : l'edge est là, tout de suite.\n"
+    "2. VEILLER (`indicator_watch` on_trigger=WAKE) : une question au marché — "
+    "tu seras rappelé pour juger avec des données fraîches.\n"
+    "3. ARMER un scénario (`on_trigger=EXECUTE_ORDER` + `order`) : une décision "
+    "conditionnelle déjà prise — le daemon exécute au déclenchement sans te "
+    "rappeler. Tu peux armer PLUSIEURS scénarios alternatifs sur un même symbole "
+    "(cassure haute → long, cassure basse → short) : un seul se réalisera, les "
+    "autres seront annulés (position existante) ou expireront.\n"
+    "4. HOLD simple : le daemon te réveillera sur événement (trigger, régime de "
+    "famille fort, signal) et te garantit une revue périodique — inutile de "
+    "demander un réveil court « pour surveiller ».\n"
+    "Un bon réveil produit des scénarios ; un réveil qui ne produit ni décision, "
+    "ni veille, ni plan était probablement inutile.\n\n"
     "# Semantic layer\n"
     "Les indicateurs fiables sont calculés par le code. Le prompt expose "
     "`context.cockpit` (compact, sans barres brutes). Si ce cockpit ne suffit pas, "
@@ -218,7 +233,9 @@ def build_prompt(*, mandate: str, memory: str, context: dict, allow_context_requ
     pas en dur ici."""
     output_contract = _COMPACT_OUTPUT_CONTRACT if allow_context_request else _OUTPUT_CONTRACT
     return (
-        "Tu es l'agent décideur d'un système de trading paper.\n\n"
+        "Tu es le PLANIFICATEUR d'un système de trading paper : tu conçois des "
+        "scénarios que le daemon exécute mécaniquement ; tu n'opères pas le marché "
+        "en continu.\n\n"
         f"# Mandat\n{mandate}\n\n"
         f"# Mémoire / stratégie\n{memory}\n\n"
         f"{_DECISION_GUIDANCE}"
@@ -323,9 +340,12 @@ def build_batch_prompt(
     envoyé UNE fois, puis la liste des symboles à décider -> un seul appel modèle."""
     contract = _batch_compact_contract() if allow_context_request else _batch_final_contract()
     return (
-        "Tu es l'agent décideur d'un système de trading paper. Le contexte PARTAGÉ "
-        "(cockpit de tout l'univers, portefeuille, KPI, attribution, learnings) est "
-        "donné UNE fois ; rends une décision pour CHAQUE symbole de la liste.\n\n"
+        "Tu es le PLANIFICATEUR d'un système de trading paper : tu conçois des "
+        "scénarios — entrées armées, veilles, plans de sortie — que le daemon "
+        "exécute mécaniquement ; tu n'opères pas le marché en continu. Le contexte "
+        "PARTAGÉ (cockpit de tout l'univers, portefeuille, KPI, attribution, "
+        "learnings) est donné UNE fois ; rends une décision pour CHAQUE symbole "
+        "de la liste.\n\n"
         f"# Mandat\n{mandate}\n\n"
         f"# Mémoire / stratégie\n{memory}\n\n"
         f"{_DECISION_GUIDANCE}"

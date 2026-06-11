@@ -207,3 +207,26 @@ def test_has_symbol_wake_distingue_reveil_agent_du_polling(tmp_path) -> None:
 
     sched.clear_symbol_next_wake("SPY")
     assert sched.has_symbol_wake("SPY") is False
+
+
+def test_plans_armes_coexistent_les_veilles_simples_se_remplacent(tmp_path) -> None:
+    """D7 (Erwan) : les plans armés sont des SCÉNARIOS alternatifs — plusieurs
+    peuvent coexister sur un symbole (un seul se réalisera). Les veilles simples
+    gardent le remplacement (une question à la fois), et les deux familles ne
+    s'évincent pas mutuellement."""
+    sched = Scheduler(tmp_path / "scheduler.json")
+
+    plan_haussier = {"id": "CL=F:up", "symbol": "CL=F", "on_trigger": "EXECUTE_ORDER",
+                     "order": {"intent": "OPEN_LONG"}}
+    plan_baissier = {"id": "CL=F:down", "symbol": "CL=F", "on_trigger": "EXECUTE_ORDER",
+                     "order": {"intent": "OPEN_SHORT"}}
+    veille_1 = {"id": "CL=F:w1", "symbol": "CL=F", "on_trigger": "WAKE"}
+    veille_2 = {"id": "CL=F:w2", "symbol": "CL=F", "on_trigger": "WAKE"}
+
+    sched.set_symbol_indicator_watch("CL=F", plan_haussier)
+    sched.set_symbol_indicator_watch("CL=F", plan_baissier)  # coexiste
+    sched.set_symbol_indicator_watch("CL=F", veille_1)
+    sched.set_symbol_indicator_watch("CL=F", veille_2)  # remplace veille_1
+
+    ids = {w["id"] for w in sched.active_indicator_watches()}
+    assert ids == {"CL=F:up", "CL=F:down", "CL=F:w2"}
