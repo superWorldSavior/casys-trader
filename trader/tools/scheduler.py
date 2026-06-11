@@ -82,6 +82,11 @@ class Scheduler:
         state["symbols"].pop(symbol, None)
         self._save_state(state)
 
+    def symbols_with_wake(self) -> set[str]:
+        """Symboles avec un override de réveil — UNE lecture d'état pour tout le cycle
+        (has_symbol_wake par symbole = N relectures de scheduler.json)."""
+        return {sym for sym, when in self._load_state()["symbols"].items() if when}
+
     def has_symbol_wake(self, symbol: str) -> bool:
         """True si un override de réveil par symbole est posé (≠ polling par défaut).
 
@@ -150,16 +155,15 @@ class Scheduler:
         Les deux familles ne s'évincent pas mutuellement.
         """
 
-        def _is_armed(item: dict) -> bool:
-            return str(item.get("on_trigger")) == "EXECUTE_ORDER"
+        from trader.indicator_watch import is_armed_plan
 
         state = self._load_state()
-        incoming_armed = _is_armed(watch)
+        incoming_armed = is_armed_plan(watch)
         watches = {
             watch_id: item
             for watch_id, item in state["indicator_watches"].items()
             if item.get("symbol") != symbol
-            or _is_armed(item) != incoming_armed  # famille différente : on garde
+            or is_armed_plan(item) != incoming_armed  # famille différente : on garde
             or incoming_armed  # plans armés : coexistence
         }
         watches[watch["id"]] = watch

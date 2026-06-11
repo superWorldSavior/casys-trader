@@ -68,18 +68,7 @@ def test_cockpit_activity_tolere_cockpit_degrade() -> None:
 # --- intégration daemon ---
 
 
-def _runtime_config(root) -> None:
-    (root / "config").mkdir()
-    (root / "mandate").mkdir()
-    (root / "config" / "universe.yaml").write_text(
-        "starting_cash: 100000\nsymbols:\n  - SPY\n"
-    )
-    (root / "config" / "risk.yaml").write_text(
-        "max_position_value: 20000\nmax_gross_exposure: 100000\n"
-        "max_order_value: 10000\nmax_orders_per_cycle: 5\nmin_equity: 50000\n"
-    )
-    (root / "mandate" / "mandate.md").write_text("# Mandat\n")
-    (root / "mandate" / "memory.md").write_text("# Memoire\n")
+from conftest import write_runtime_config as _runtime_config  # noqa: E402
 
 
 def _flat_bars_factory(now_iso: str):

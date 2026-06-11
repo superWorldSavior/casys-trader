@@ -184,15 +184,32 @@ def _has_consolidated(payload: dict) -> bool:
     return bool(payload.get("global") or payload.get("by_symbol"))
 
 
+_GUARDRAILS_CACHE: dict[str, tuple[float, list[dict]]] = {}
+
+
 def load_guardrails(path: Path) -> list[dict]:
-    """Garde-fous invariants, écrits par l'humain (D6 : séparés des patterns machine)."""
+    """Garde-fous invariants, écrits par l'humain (D6 : séparés des patterns machine).
+
+    Cache par mtime : le fichier est statique en exécution normale, inutile de le
+    relire à chaque cycle ; une édition humaine est prise en compte au cycle suivant.
+    """
+    path = Path(path)
     try:
-        payload = json.loads(Path(path).read_text(encoding="utf-8"))
+        mtime = path.stat().st_mtime
+    except OSError:
+        return []
+    cached = _GUARDRAILS_CACHE.get(str(path))
+    if cached is not None and cached[0] == mtime:
+        return cached[1]
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return []
     if not isinstance(payload, list):
         return []
-    return [entry for entry in payload if isinstance(entry, dict) and entry.get("note")]
+    guardrails = [entry for entry in payload if isinstance(entry, dict) and entry.get("note")]
+    _GUARDRAILS_CACHE[str(path)] = (mtime, guardrails)
+    return guardrails
 
 
 def build_context_learnings(

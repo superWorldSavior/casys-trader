@@ -175,6 +175,11 @@ def _condition_from_raw(raw: object, *, owner_symbol: str) -> tuple[dict | None,
 # OPEN_LONG/OPEN_SHORT, qty > 0, confidence 0..1 explicite, hard_stop en prix.
 
 _ARMABLE_INTENTS = {"OPEN_LONG": "BUY", "OPEN_SHORT": "SELL"}
+
+
+def is_armed_plan(watch: dict) -> bool:
+    """Prédicat UNIQUE « plan armé » (source de vérité pour daemon/scheduler/tui)."""
+    return str(watch.get("on_trigger")) == "EXECUTE_ORDER" and isinstance(watch.get("order"), dict)
 # Cap TTL des plans armés = 240 min, aligné sur la revue périodique garantie du
 # gate (4 h) : l'expiration de watch étant SILENCIEUSE, un TTL plus court
 # forcerait des réveils de ré-armement ou laisserait des trous désarmés. La
@@ -184,9 +189,19 @@ ARMED_ORDER_MAX_TTL_MINUTES = 240.0
 
 
 def _armed_hard_stop_price(exit_plan: object) -> float | None:
+    """Prix du hard_stop via le normaliseur commun (mêmes alias qu'à l'exécution :
+    stop_loss/stop/sl) — pas de parsing parallèle qui divergerait en silence."""
     if not isinstance(exit_plan, dict):
         return None
-    hard_stop = exit_plan.get("hard_stop")
+    from .trade_plan import InvalidExitPlanError, normalize_exit_plan
+
+    try:
+        normalized = normalize_exit_plan(exit_plan)
+    except InvalidExitPlanError:
+        return None
+    if not normalized:
+        return None
+    hard_stop = normalized.get("hard_stop")
     if isinstance(hard_stop, dict):
         if hard_stop.get("type", "price") != "price":
             return None

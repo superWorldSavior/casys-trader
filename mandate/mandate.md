@@ -90,7 +90,7 @@ sémantique agrégé depuis des barres source `1h`.
 Pour une veille automatique, l'agent utilise `indicator_watch` plutôt que des
 barres brutes : conditions `{symbol, indicator, op, value, interval, lookback,
 window, as_of}` et logique `all|any`. `on_trigger=WAKE` signifie "réveille-moi";
-`on_trigger=WAKE_WITH_ORDER_INTENT` signifie "réveille-moi avec une intention
+`on_trigger=WAKE_WITH_ORDER_INTENT` (ou `EXECUTE_ORDER` pour un plan armé exécuté sans re-appel) signifie "réveille-moi avec une intention
 d'ordre structurée", qui repasse ensuite par les garde-fous runtime.
 
 ## Plan de sortie

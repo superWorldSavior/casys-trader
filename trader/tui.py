@@ -836,9 +836,7 @@ def _build_exit_plans_panel(
     )
 
 
-def _is_armed_plan(watch: dict) -> bool:
-    """Plan armé (D7 étage B) = veille EXECUTE_ORDER portant un ordre complet."""
-    return str(watch.get("on_trigger")) == "EXECUTE_ORDER" and isinstance(watch.get("order"), dict)
+from trader.indicator_watch import is_armed_plan as _is_armed_plan
 
 
 def _expire_relative(expires_raw: str, *, now: datetime) -> str:
@@ -947,30 +945,7 @@ def _build_watches_panel(
         logic = str(watch.get("logic", "any"))
         conditions = _safe_list_of_dicts(watch.get("conditions") or [])
 
-        # Expiration relative
-        expire_str = "?"
-        try:
-            candidate = (
-                f"{expires_raw[:-1]}+00:00"
-                if expires_raw.endswith("Z")
-                else expires_raw
-            )
-            exp_dt = datetime.fromisoformat(candidate)
-            if exp_dt.tzinfo is None:
-                from datetime import timezone as _tz
-
-                exp_dt = exp_dt.replace(tzinfo=_tz.utc)
-            delta = exp_dt - now_utc
-            total_secs = int(delta.total_seconds())
-            if total_secs < 0:
-                expire_str = "expiré"
-            else:
-                hours, rem = divmod(total_secs, 3600)
-                minutes = rem // 60
-                expire_str = f"{hours}h{minutes:02d}" if hours > 0 else f"{minutes}min"
-            expire_str = f"dans {expire_str}"
-        except Exception:
-            expire_str = "?"
+        expire_str = _expire_relative(expires_raw, now=now_utc)
 
         # Conditions compactes
         cond_parts: list[str] = []

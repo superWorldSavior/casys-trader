@@ -1157,6 +1157,7 @@ def run_cycle(
     snap = portfolio.snapshot(broker, lambda s: prices.get(s, 0.0), starting_equity)
     gross = sum(abs(h.market_value) for h in snap.holdings)
 
+    active_families = family_regime.families_for_universe(tradable_symbols)
     # Contexte cross-asset partagé : tout l'univers est visible à chaque décision
     # (l'edge de l'agent = relations entre symboles, pas un graphe isolé).
     cockpit = build_market_cockpit(
@@ -1195,7 +1196,7 @@ def run_cycle(
                 sym: family_regime.momentum_from_bars(bars)
                 for sym, bars in tradable_bars_by_symbol.items()
             },
-            family_regime.families_for_universe(tradable_symbols),
+            active_families,
         ),
     }
 
@@ -1282,7 +1283,7 @@ def run_cycle(
     # reste le fusible à l'exécution. Annulation si le prix au déclenchement a
     # déjà franchi le hard_stop (position instantanément stoppable) ou si stale.
     armed_decisions: dict[str, codex_client.Decision] = {}
-    armed_plan_meta: dict[str, dict] = {}
+    armed_plan_ids: dict[str, str] = {}
     # Conflit : plusieurs scénarios armés du MÊME symbole déclenchés au même
     # cycle = ambiguïté — on n'exécute pas arbitrairement, le planificateur
     # arbitre (les triggers annotés restent dans son contexte).
@@ -1297,17 +1298,14 @@ def run_cycle(
         _append_event("armed_plan_conflict", symbol=sym, plan_ids=plan_ids)
         for t in _armed_by_symbol[sym]:
             t["armed_conflict"] = True
-    for trigger in indicator_triggers:
-        if str(trigger.get("on_trigger")) != "EXECUTE_ORDER":
+    _positions_snapshot = broker.positions() if _armed_by_symbol else {}
+    for sym, sym_triggers in _armed_by_symbol.items():
+        if sym in _armed_conflicts or sym not in symbols_to_decide:
             continue
-        order = trigger.get("order")
-        sym = str(trigger.get("symbol"))
-        if not isinstance(order, dict) or sym not in symbols_to_decide:
-            continue
-        if sym in _armed_conflicts:
-            continue  # déjà annoté, le LLM arbitrera ce réveil
+        trigger = sym_triggers[0]
+        order = trigger["order"]
         plan_id = str(trigger.get("watch_id") or "")
-        position = broker.positions().get(sym)
+        position = _positions_snapshot.get(sym)
         cancel_reason = None
         if sym in stale_market_data or sym not in prices:
             cancel_reason = "armed_plan_cancelled:stale"
@@ -1334,7 +1332,7 @@ def run_cycle(
             intent=str(order["intent"]),
             exit_plan=order.get("exit_plan"),
         )
-        armed_plan_meta[sym] = {"armed_plan_id": plan_id}
+        armed_plan_ids[sym] = plan_id
         _log_cycle_progress("[armed_plan] %s déclenché plan=%s — exécution sans LLM", sym, plan_id)
     # les symboles armés ont déjà leur décision : pas d'appel LLM, pas de gate
     decidable = [s for s in decidable if s not in armed_decisions]
@@ -1349,11 +1347,10 @@ def run_cycle(
         if (bias.get("frac") or 0.0) >= 0.70
     }
     family_of = {
-        member: fam
-        for fam, members in family_regime.families_for_universe(tradable_symbols).items()
-        for member in members
+        member: fam for fam, members in active_families.items() for member in members
     }
     held_symbols = {h.symbol for h in snap.holdings if h.quantity}
+    agent_wakes = sched.symbols_with_wake() if sched is not None else set()
     gated_symbols: list[str] = []
     kept: list[str] = []
     for sym in decidable:
@@ -1361,7 +1358,7 @@ def run_cycle(
         hours = None if last_seen is None else (now - last_seen).total_seconds() / 3600.0
         act = activity.get(sym) or {}
         needed, gate_reason = relevance_gate.symbol_needs_llm(
-            agent_requested_wake=sched.has_symbol_wake(sym) if sched is not None else False,
+            agent_requested_wake=sym in agent_wakes,
             has_trigger=bool(triggers_by_symbol.get(sym)),
             has_position=sym in held_symbols,
             family_regime_strong=family_of.get(sym) in strong_families,
@@ -1432,8 +1429,9 @@ def run_cycle(
     gated_set = set(gated_symbols)
     for index, sym in enumerate(symbols_to_decide, start=1):
         if sym in gated_set:
-            # Déjà tracé (quiet_gate ou armed_plan_cancelled) — ne pas générer
-            # un second HOLD "no_decision_in_batch" (doublon ledger, faux HOLD agent).
+            # Déjà tracé quiet_gate — ne pas générer un second HOLD
+            # "no_decision_in_batch" (doublon ledger, faux HOLD agent).
+            # NB : un plan armé annulé n'est PAS ici — il passe au LLM (voulu).
             continue
         stale_data = stale_market_data.get(sym)
         if stale_data is not None:
@@ -1526,7 +1524,7 @@ def run_cycle(
         effective_quantity = abs(decision.quantity)
 
         entry = {"symbol": sym, "action": decision.action, "qty": effective_quantity,
-                 **armed_plan_meta.get(sym, {}),
+                 **({"armed_plan_id": armed_plan_ids[sym]} if sym in armed_plan_ids else {}),
                  "confidence": decision.confidence, "rationale": decision.rationale,
                  "next_wake_in_minutes": next_wake_in_minutes,
                  "next_wake_requested": decision.next_wake_in_minutes,
