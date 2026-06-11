@@ -29,6 +29,7 @@ from . import attribution, code_version, codex_client, consolidator, decision_le
 from .exit_engine import evaluate_plan
 from .features import DEFAULT_INDICATORS
 from .indicator_watch import (
+    armed_order_price_coherent,
     build_indicator_watch,
     evaluate_indicator_watches,
     watch_market_requests,
@@ -1247,7 +1248,7 @@ def run_cycle(
                 report,
                 decision_entry,
                 sequence=sequence,
-                source="daemon",
+                source="armed_plan" if decision_entry.get("armed_plan_id") else "daemon",
             )
         )
         _write_current_report(report)
@@ -1275,6 +1276,52 @@ def run_cycle(
     # contexte partagé n'est envoyé qu'une fois, au lieu de N). Les symboles stale
     # / sans prix ne sont pas décidés (HOLD ci-dessous).
     decidable = [s for s in symbols_to_decide if s not in stale_market_data and s in prices]
+
+    # Plans armés (D7 étage B) : un trigger EXECUTE_ORDER s'exécute SANS appel
+    # LLM — le scénario a été validé à l'armement, le gate de risque déterministe
+    # reste le fusible à l'exécution. Annulation si le prix au déclenchement a
+    # déjà franchi le hard_stop (position instantanément stoppable) ou si stale.
+    armed_decisions: dict[str, codex_client.Decision] = {}
+    armed_plan_meta: dict[str, dict] = {}
+    for trigger in indicator_triggers:
+        if str(trigger.get("on_trigger")) != "EXECUTE_ORDER":
+            continue
+        order = trigger.get("order")
+        sym = str(trigger.get("symbol"))
+        if not isinstance(order, dict) or sym not in symbols_to_decide:
+            continue
+        plan_id = str(trigger.get("watch_id") or "")
+        position = broker.positions().get(sym)
+        cancel_reason = None
+        if sym in stale_market_data or sym not in prices:
+            cancel_reason = "armed_plan_cancelled:stale"
+        elif position is not None and position.quantity:
+            # position déjà ouverte : un plan d'OUVERTURE armé avant ne doit pas
+            # s'empiler mécaniquement — le planificateur re-décide (review Codex)
+            cancel_reason = "armed_plan_cancelled:position_exists"
+        elif not armed_order_price_coherent(order, price=prices[sym]):
+            cancel_reason = "armed_plan_cancelled:stop_incoherent"
+        if cancel_reason is not None:
+            # Scénario invalidé = événement : on n'exécute pas en aveugle, on
+            # réveille le planificateur AVEC le contexte (trigger annoté), il
+            # re-décide (re-armer autrement, ou laisser).
+            _log_cycle_progress("[armed_plan] %s %s plan=%s — réveil planificateur", sym, cancel_reason, plan_id)
+            _append_event("armed_plan_cancelled", symbol=sym, plan_id=plan_id, reason=cancel_reason)
+            trigger["armed_cancelled"] = cancel_reason
+            continue
+        armed_decisions[sym] = codex_client.Decision(
+            symbol=sym,
+            action=str(order["action"]),
+            quantity=float(order["qty"]),
+            confidence=float(order["confidence"]),
+            rationale=f"armed_plan:{plan_id} — {order.get('rationale') or ''}".strip(" —"),
+            intent=str(order["intent"]),
+            exit_plan=order.get("exit_plan"),
+        )
+        armed_plan_meta[sym] = {"armed_plan_id": plan_id}
+        _log_cycle_progress("[armed_plan] %s déclenché plan=%s — exécution sans LLM", sym, plan_id)
+    # les symboles armés ont déjà leur décision : pas d'appel LLM, pas de gate
+    decidable = [s for s in decidable if s not in armed_decisions]
 
     # Gate de pertinence (D7 étage A) : ne soumettre au LLM que les réveils
     # demandés par l'agent, les événements, ou la revue périodique garantie.
@@ -1331,8 +1378,6 @@ def run_cycle(
                 }
             )
     decidable = kept
-    for sym in decidable:
-        _LAST_LLM_AT[(str(STATE_DIR), sym)] = now
 
     _log_cycle_progress("[batch] deciding symbols=%d/%d", len(decidable), len(symbols_to_decide))
     _write_status(
@@ -1359,12 +1404,19 @@ def run_cycle(
         data_age_by_symbol=data_age_by_symbol,
         decision_timeout_s=decision_timeout_s,
     )
+    # revue effective seulement si le modèle a réellement statué (review Codex :
+    # un échec/budget à 0 ne doit pas compter comme revue périodique)
+    for sym in decidable:
+        if sym in decisions_by_symbol:
+            _LAST_LLM_AT[(str(STATE_DIR), sym)] = now
+    if armed_decisions:
+        decisions_by_symbol = {**decisions_by_symbol, **armed_decisions}
     _log_cycle_progress("[batch] decided=%d model_calls=%d", len(decisions_by_symbol), model_calls_used)
 
     gated_set = set(gated_symbols)
     for index, sym in enumerate(symbols_to_decide, start=1):
         if sym in gated_set:
-            # Déjà tracé quiet_gate par le gate de pertinence — ne pas générer
+            # Déjà tracé (quiet_gate ou armed_plan_cancelled) — ne pas générer
             # un second HOLD "no_decision_in_batch" (doublon ledger, faux HOLD agent).
             continue
         stale_data = stale_market_data.get(sym)
@@ -1458,6 +1510,7 @@ def run_cycle(
         effective_quantity = abs(decision.quantity)
 
         entry = {"symbol": sym, "action": decision.action, "qty": effective_quantity,
+                 **armed_plan_meta.get(sym, {}),
                  "confidence": decision.confidence, "rationale": decision.rationale,
                  "next_wake_in_minutes": next_wake_in_minutes,
                  "next_wake_requested": decision.next_wake_in_minutes,

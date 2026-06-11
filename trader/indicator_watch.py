@@ -24,13 +24,14 @@ _OPS: dict[str, Callable[[float, float], bool]] = {
 _ON_TRIGGER_ALIASES = {
     "ORDER": "WAKE_WITH_ORDER_INTENT",
 }
-_ON_TRIGGERS = {"WAKE", "WAKE_WITH_ORDER_INTENT"}
+_ON_TRIGGERS = {"WAKE", "WAKE_WITH_ORDER_INTENT", "EXECUTE_ORDER"}
 _CROSS_ASSET_INDICATORS = {"relative_strength", "spread_zscore"}
 
 WATCH_REJECT_NOT_MAPPING = "not_a_mapping"
 WATCH_REJECT_UNKNOWN_INDICATOR = "unknown_indicator"
 WATCH_REJECT_INVALID_OPERATOR = "invalid_operator"
 WATCH_REJECT_MISSING_THRESHOLD = "missing_threshold"
+WATCH_REJECT_INVALID_ARMED_ORDER = "invalid_armed_order"
 WATCH_REJECT_NON_FINITE_THRESHOLD = "non_finite_threshold"
 
 _ABS_OPS: dict[str, Callable[[float, float], bool]] = {
@@ -166,6 +167,84 @@ def _condition_from_raw(raw: object, *, owner_symbol: str) -> tuple[dict | None,
     )
 
 
+
+
+# --- D7 étage B : plans armés (EXECUTE_ORDER) -------------------------------
+# Le LLM arme un scénario d'entrée complet ; le daemon exécute au déclenchement
+# SANS re-appel modèle. Contrat strict à l'armement (fast-fail) : intent
+# OPEN_LONG/OPEN_SHORT, qty > 0, confidence 0..1 explicite, hard_stop en prix.
+
+_ARMABLE_INTENTS = {"OPEN_LONG": "BUY", "OPEN_SHORT": "SELL"}
+# La confidence d'armement périme : un plan EXECUTE_ORDER vit au plus 60 min
+# (vs 24h pour une veille simple) — au-delà, re-juger plutôt qu'exécuter.
+ARMED_ORDER_MAX_TTL_MINUTES = 60.0
+
+
+def _armed_hard_stop_price(exit_plan: object) -> float | None:
+    if not isinstance(exit_plan, dict):
+        return None
+    hard_stop = exit_plan.get("hard_stop")
+    if isinstance(hard_stop, dict):
+        if hard_stop.get("type", "price") != "price":
+            return None
+        raw = hard_stop.get("price")
+    else:
+        raw = hard_stop
+    try:
+        price = float(raw)
+    except (TypeError, ValueError):
+        return None
+    return price if math.isfinite(price) and price > 0 else None
+
+
+def normalize_armed_order(raw: object) -> dict | None:
+    """Ordre armable ou None. L'action est DÉRIVÉE de l'intent (pas de mismatch)."""
+    if not isinstance(raw, dict):
+        return None
+    intent = str(raw.get("intent") or "").upper()
+    action = _ARMABLE_INTENTS.get(intent)
+    if action is None:
+        return None
+    try:
+        qty = float(raw.get("qty") if raw.get("qty") is not None else raw.get("quantity"))
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(qty) or qty <= 0:
+        return None
+    exit_plan = raw.get("exit_plan")
+    if _armed_hard_stop_price(exit_plan) is None:
+        return None
+    try:
+        confidence = float(raw.get("confidence"))
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(confidence) or not 0.0 <= confidence <= 1.0:
+        return None
+    order = {
+        "intent": intent,
+        "action": action,
+        "qty": qty,
+        "confidence": confidence,
+        "exit_plan": exit_plan,
+    }
+    if raw.get("rationale"):
+        order["rationale"] = str(raw["rationale"])[:500]
+    return order
+
+
+def armed_order_price_coherent(order: dict, *, price: float) -> bool:
+    """Le prix au déclenchement est-il du bon côté du hard_stop ?
+
+    Un plan armé peut se déclencher loin du prix imaginé à l'armement ; si le
+    prix a déjà franchi le stop, ouvrir = position instantanément stoppable.
+    """
+    stop = _armed_hard_stop_price(order.get("exit_plan"))
+    if stop is None or not math.isfinite(price):
+        return False
+    if order.get("intent") == "OPEN_LONG":
+        return price > stop
+    return price < stop
+
 def build_indicator_watch(
     raw: object,
     *,
@@ -201,6 +280,16 @@ def build_indicator_watch(
         logic = "all"
     on_trigger = _normalize_on_trigger(raw.get("on_trigger") or raw.get("trigger"))
     order = raw.get("order")
+    if on_trigger == "EXECUTE_ORDER":
+        armed = normalize_armed_order(order)
+        if armed is None:
+            # contrat d'armement non rempli -> on garde la veille mais l'ordre
+            # repassera par le LLM (jamais d'exécution directe non validée)
+            rejections.append({"reason": WATCH_REJECT_INVALID_ARMED_ORDER})
+            on_trigger = "WAKE_WITH_ORDER_INTENT"
+        else:
+            order = armed
+            ttl = min(ttl, ARMED_ORDER_MAX_TTL_MINUTES)
     created_at = now.astimezone(timezone.utc).isoformat()
     expires_at = (now + timedelta(minutes=ttl)).astimezone(timezone.utc).isoformat()
     id_payload = {

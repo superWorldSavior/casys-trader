@@ -233,3 +233,113 @@ def test_evaluate_indicator_watches_ignore_les_watches_expirees() -> None:
     )
 
     assert triggered == []
+
+
+# --- D7 étage B : plans armés (EXECUTE_ORDER) ---
+
+
+def _armed_raw(order: dict | None, **overrides) -> dict:
+    raw = {
+        "ttl_minutes": 120,
+        "on_trigger": "EXECUTE_ORDER",
+        "conditions": [
+            {"indicator": "z_score", "op": "abs>", "value": 2.0, "interval": "15m", "window": 32}
+        ],
+        "order": order,
+    }
+    raw.update(overrides)
+    return raw
+
+
+def _valid_order() -> dict:
+    return {
+        "intent": "OPEN_SHORT",
+        "qty": 50,
+        "confidence": 0.85,
+        "exit_plan": {"hard_stop": {"type": "price", "price": 88.1}},
+        "rationale": "cassure énergie",
+    }
+
+
+def test_execute_order_avec_plan_valide_est_arme() -> None:
+    now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
+
+    result = build_indicator_watch(_armed_raw(_valid_order()), owner_symbol="CL=F", now=now)
+
+    watch = result.watch
+    assert watch is not None
+    assert watch["on_trigger"] == "EXECUTE_ORDER"
+    order = watch["order"]
+    assert order["intent"] == "OPEN_SHORT"
+    assert order["action"] == "SELL"  # dérivée de l'intent, pas de mismatch possible
+    assert order["qty"] == 50.0
+    assert order["confidence"] == 0.85
+    assert order["exit_plan"]["hard_stop"]["price"] == 88.1
+
+
+def test_execute_order_sans_hard_stop_degrade_en_wake_with_order_intent() -> None:
+    # guardrail à l'armement (fast-fail) : pas de stop -> pas d'exécution directe
+    now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
+    order = _valid_order()
+    order["exit_plan"] = {"take_profits": [{"name": "tp", "price": 80.0, "fraction": 1.0}]}
+
+    result = build_indicator_watch(_armed_raw(order), owner_symbol="CL=F", now=now)
+
+    assert result.watch is not None
+    assert result.watch["on_trigger"] == "WAKE_WITH_ORDER_INTENT"  # repasse par le LLM
+    assert any(r.get("reason") == "invalid_armed_order" for r in result.rejections)
+
+
+def test_execute_order_qty_ou_intent_invalides_degrade() -> None:
+    now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
+
+    bad_qty = _valid_order()
+    bad_qty["qty"] = 0
+    result = build_indicator_watch(_armed_raw(bad_qty), owner_symbol="CL=F", now=now)
+    assert result.watch["on_trigger"] == "WAKE_WITH_ORDER_INTENT"
+
+    bad_intent = _valid_order()
+    bad_intent["intent"] = "REVERSE"  # seuls OPEN_LONG/OPEN_SHORT sont armables
+    result = build_indicator_watch(_armed_raw(bad_intent), owner_symbol="CL=F", now=now)
+    assert result.watch["on_trigger"] == "WAKE_WITH_ORDER_INTENT"
+
+    no_order = build_indicator_watch(_armed_raw(None), owner_symbol="CL=F", now=now)
+    assert no_order.watch["on_trigger"] == "WAKE_WITH_ORDER_INTENT"
+
+
+def test_armed_order_price_coherent() -> None:
+    from trader.indicator_watch import armed_order_price_coherent
+
+    short = _valid_order()  # stop à 88.1, SHORT
+    assert armed_order_price_coherent(short, price=87.0) is True   # prix sous le stop : ok
+    assert armed_order_price_coherent(short, price=88.5) is False  # prix au-delà du stop : incohérent
+
+    long_order = {
+        "intent": "OPEN_LONG",
+        "qty": 10,
+        "exit_plan": {"hard_stop": {"type": "price", "price": 95.0}},
+    }
+    assert armed_order_price_coherent(long_order, price=100.0) is True
+    assert armed_order_price_coherent(long_order, price=94.0) is False
+
+
+def test_execute_order_ttl_borne_a_60_minutes() -> None:
+    # la confidence d'armement périme vite : un plan armé ne vit pas 24h
+    # comme une veille simple (review Codex) — cap dédié 60 min.
+    from datetime import timedelta
+
+    now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
+
+    result = build_indicator_watch(
+        _armed_raw(_valid_order(), ttl_minutes=240), owner_symbol="CL=F", now=now
+    )
+
+    expires = datetime.fromisoformat(result.watch["expires_at"])
+    assert expires - now <= timedelta(minutes=60)
+
+    # une veille simple garde le plafond large
+    wake = build_indicator_watch(
+        _armed_raw(None, ttl_minutes=240, on_trigger="WAKE"), owner_symbol="CL=F", now=now
+    )
+    expires_wake = datetime.fromisoformat(wake.watch["expires_at"])
+    assert expires_wake - now == timedelta(minutes=240)

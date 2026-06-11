@@ -85,3 +85,11 @@ def test_guidance_decrit_request_context_avec_indicators_pluriel() -> None:
     prompt = _single_compact_prompt()
     assert "`symbol × indicators × timeframe × lookback × window × as_of`" in prompt
     assert "`symbol × indicator × timeframe × lookback × window × as_of`" not in prompt
+
+
+def test_guidance_decrit_les_plans_armes_execute_order() -> None:
+    # D7 étage B : le contrat agent expose EXECUTE_ORDER et ses exigences
+    prompt = _batch_prompt()
+    assert "EXECUTE_ORDER" in prompt
+    assert "hard_stop" in prompt  # stop obligatoire à l'armement
+    assert "sans re-appel" in prompt.lower()
