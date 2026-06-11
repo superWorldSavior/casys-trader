@@ -56,7 +56,7 @@ def classify_event(event: dict[str, Any]) -> EventClass:
 
     if event_type in ("cycle_started", "cycle_completed"):
         return EventClass.CYCLE
-    if event_type == "indicator_watch_triggered":
+    if event_type in ("indicator_watch_triggered", "armed_plan_cancelled"):
         return EventClass.WATCH
     if event_type == "learning_consolidated":
         return EventClass.LEARNING
@@ -127,6 +127,11 @@ def _format_event_line_inner(event: dict[str, Any]) -> EventLine:
         symbol = str(event.get("symbol", "?"))
         trigger = str(event.get("on_trigger", ""))
         text = f"{ts} watch — {symbol} ({trigger})"
+
+    elif event_type == "armed_plan_cancelled":
+        symbol = str(event.get("symbol", "?"))
+        reason = str(event.get("reason", "")).removeprefix("armed_plan_cancelled:")
+        text = f"{ts} plan armé annulé — {symbol} [{reason or '?'}]"
 
     elif event_type == "learning_consolidated":
         n = event.get("new_raw_count", "?")

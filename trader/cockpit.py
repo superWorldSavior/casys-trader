@@ -55,6 +55,7 @@ from trader.cockpit_events import (
 )
 from trader.palette import PALETTE_DARK, PALETTE_LIGHT, Palette
 from trader.tui import (
+    _build_armed_plans_panel,
     _build_attribution_panel,
     _build_data_health_panel,
     _build_decisions_table,
@@ -270,6 +271,7 @@ class LeftPane(Static):
 
     def compose(self) -> ComposeResult:
         yield Static(id="positions-panel")
+        yield Static(id="armed-plans-panel")
         yield Static(id="exit-plans-panel")
         yield Static(id="learnings-panel")
 
@@ -286,8 +288,17 @@ class LeftPane(Static):
             else []
         )
 
+        armed_plans = (
+            state.get("armed_plans")
+            if isinstance(state.get("armed_plans"), list)
+            else []
+        )
+
         self.query_one("#positions-panel", Static).update(
             _build_positions_panel(holdings, palette=palette)
+        )
+        self.query_one("#armed-plans-panel", Static).update(
+            _build_armed_plans_panel(armed_plans, palette=palette)
         )
         self.query_one("#exit-plans-panel", Static).update(
             _build_exit_plans_panel(trade_plans, palette=palette)

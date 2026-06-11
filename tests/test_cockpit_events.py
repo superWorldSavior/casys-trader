@@ -311,3 +311,22 @@ def test_read_new_lines_plusieurs_lignes_dont_partielle(tmp_path):
     # L'offset s'arrête après le dernier \\n, pas à EOF
     expected_consumed = len('{"event":"cycle_started","ts":"2026-06-10T01:00:00+00:00"}\n'.encode())
     assert off == expected_consumed
+
+
+def test_armed_plan_cancelled_formate_dedie() -> None:
+    # review Codex (D7 étage B) : une annulation de plan armé est un signal
+    # opérateur — pas un event générique OTHER.
+    event = {
+        "ts": "2026-06-11T12:04:31+00:00",
+        "event": "armed_plan_cancelled",
+        "symbol": "SPY",
+        "plan_id": "SPY:abc123",
+        "reason": "armed_plan_cancelled:stop_incoherent",
+    }
+
+    line = format_event_line(event)
+
+    assert "plan armé annulé" in line.text
+    assert "SPY" in line.text
+    assert "stop_incoherent" in line.text
+    assert classify_event(event) == EventClass.WATCH  # même famille que les triggers

@@ -716,3 +716,71 @@ def test_load_runtime_state_trade_plans_absent_retourne_vide(tmp_path) -> None:
     assert state.get("recent_decisions") == []
     assert state.get("learnings_pending_count") == 0
     assert state.get("consolidation_status") is None
+
+
+# ---------------------------------------------------------------------------
+# D7 étage B — panneau plans armés
+# ---------------------------------------------------------------------------
+
+
+def _armed_watch(symbol: str = "CL=F") -> dict:
+    return {
+        "id": f"{symbol}:abc123",
+        "symbol": symbol,
+        "on_trigger": "EXECUTE_ORDER",
+        "expires_at": "2026-06-11T16:00:00+00:00",
+        "logic": "all",
+        "conditions": [
+            {"indicator": "z_score", "op": "abs>", "value": 2.0, "interval": "15m"}
+        ],
+        "order": {
+            "intent": "OPEN_SHORT",
+            "action": "SELL",
+            "qty": 50.0,
+            "confidence": 0.85,
+            "exit_plan": {"hard_stop": {"type": "price", "price": 88.1}},
+            "rationale": "cassure énergie",
+        },
+    }
+
+
+def test_build_armed_plans_panel_affiche_sens_qty_stop_et_condition() -> None:
+    from trader.tui import _build_armed_plans_panel
+
+    rendered = _render(_build_armed_plans_panel([_armed_watch()]))
+
+    assert "CL=F" in rendered
+    assert "SHORT" in rendered
+    assert "50" in rendered
+    assert "88.1" in rendered  # le stop : la borne de risque, info clé opérateur
+    assert "z_score" in rendered  # la condition de déclenchement
+
+
+def test_build_armed_plans_panel_vide() -> None:
+    from trader.tui import _build_armed_plans_panel
+
+    rendered = _render(_build_armed_plans_panel([]))
+
+    assert "aucun plan armé" in rendered
+
+
+def test_build_armed_plans_panel_ignore_les_veilles_simples() -> None:
+    from trader.tui import _build_armed_plans_panel
+
+    simple = _armed_watch()
+    simple["on_trigger"] = "WAKE"
+    del simple["order"]
+
+    rendered = _render(_build_armed_plans_panel([simple]))
+
+    assert "aucun plan armé" in rendered
+
+
+def test_build_watches_panel_exclut_les_plans_armes() -> None:
+    # un plan armé n'est PAS une veille simple : il apparaît dans son propre
+    # panneau, pas en double dans les veilles
+    from trader.tui import _build_watches_panel
+
+    rendered = _render(_build_watches_panel([_armed_watch()]))
+
+    assert "aucune veille active" in rendered

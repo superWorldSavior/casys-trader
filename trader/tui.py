@@ -379,6 +379,8 @@ def load_runtime_state(
         "equity_curve": equity_curve,
         "learnings": learnings,
         "trade_plans": trade_plans,
+        # plans armés (D7 étage B) séparés des veilles simples : panneau dédié
+        "armed_plans": [w for w in indicator_watches if _is_armed_plan(w)],
         "indicator_watches": indicator_watches,
         "stale_streaks": stale_streaks,
         "recent_decisions": recent_decisions,
@@ -834,13 +836,101 @@ def _build_exit_plans_panel(
     )
 
 
+def _is_armed_plan(watch: dict) -> bool:
+    """Plan armé (D7 étage B) = veille EXECUTE_ORDER portant un ordre complet."""
+    return str(watch.get("on_trigger")) == "EXECUTE_ORDER" and isinstance(watch.get("order"), dict)
+
+
+def _expire_relative(expires_raw: str, *, now: datetime) -> str:
+    try:
+        candidate = f"{expires_raw[:-1]}+00:00" if expires_raw.endswith("Z") else expires_raw
+        exp_dt = datetime.fromisoformat(candidate)
+        if exp_dt.tzinfo is None:
+            from datetime import timezone as _tz
+
+            exp_dt = exp_dt.replace(tzinfo=_tz.utc)
+        total_secs = int((exp_dt - now).total_seconds())
+        if total_secs < 0:
+            return "expiré"
+        hours, rem = divmod(total_secs, 3600)
+        minutes = rem // 60
+        return f"dans {hours}h{minutes:02d}" if hours > 0 else f"dans {minutes}min"
+    except Exception:
+        return "?"
+
+
+def _build_armed_plans_panel(
+    watches: list[dict], *, palette: Palette = PALETTE_DARK
+) -> Panel:
+    """Plans armés (colonne gauche) : scénarios d'entrée que le daemon exécutera
+    au déclenchement sans appel LLM. Distincts des positions (rien n'est ouvert)
+    et des veilles simples (qui ne portent pas d'ordre).
+    """
+    armed = [w for w in watches if _is_armed_plan(w)]
+    if not armed:
+        return Panel(
+            Text("aucun plan armé", style=palette["dim"]),
+            title="[bold]Plans armés[/bold]",
+            border_style=palette["border_watches"],
+            expand=True,
+        )
+
+    now_utc = datetime.now(UTC)
+    lines: list[Text] = []
+    for watch in armed:
+        symbol = str(watch.get("symbol", "?"))
+        order = watch.get("order") or {}
+        intent = str(order.get("intent") or "?")
+        sens = "▲LONG" if intent == "OPEN_LONG" else "▼SHORT"
+        sens_style = palette["pnl_positive"] if intent == "OPEN_LONG" else palette["pnl_negative"]
+        qty = order.get("qty")
+        stop = None
+        exit_plan = order.get("exit_plan")
+        if isinstance(exit_plan, dict):
+            hard_stop = exit_plan.get("hard_stop")
+            stop = hard_stop.get("price") if isinstance(hard_stop, dict) else hard_stop
+        conditions = _safe_list_of_dicts(watch.get("conditions") or [])
+        cond_parts = [
+            f"{c.get('indicator', '?')}{c.get('op', '?')}{c.get('value', '?')}"
+            f"@{c.get('timeframe') or c.get('interval') or '?'}"
+            for c in conditions[:2]
+        ]
+        cond_str = f" [{watch.get('logic', 'all')}] ".join(cond_parts) if cond_parts else "?"
+        if len(conditions) > 2:
+            cond_str += f" +{len(conditions) - 2}"
+        confidence = order.get("confidence")
+        conf_str = f"  c.{confidence:.2f}".rstrip("0").rstrip(".") if isinstance(confidence, (int, float)) else ""
+        lines.append(
+            Text.assemble(
+                (symbol, f"bold {palette['kpi_default']}"),
+                ("  ", ""),
+                (sens, f"bold {sens_style}"),
+                (f" {qty:g}" if isinstance(qty, (int, float)) else " ?", ""),
+                (f"  stop {stop}" if stop is not None else "  stop ?", palette["kpi_default"]),
+                ("  si ", palette["dim"]),
+                (cond_str, palette["dim"]),
+                ("  ", ""),
+                (_expire_relative(str(watch.get("expires_at") or ""), now=now_utc), palette["dim"]),
+                (conf_str, palette["dim"]),
+            )
+        )
+    return Panel(
+        Group(*lines),
+        title=f"[bold]Plans armés[/bold] ({len(armed)})",
+        border_style=palette["border_watches"],
+        expand=True,
+    )
+
+
 def _build_watches_panel(
     watches: list[dict], *, palette: Palette = PALETTE_DARK
 ) -> Panel:
     """Veilles actives (colonne droite, sous logs).
 
     Source : _load_indicator_watches_safe(state/scheduler.json).
+    Les plans armés (EXECUTE_ORDER + order) ont leur propre panneau : exclus ici.
     """
+    watches = [w for w in watches if not _is_armed_plan(w)]
     if not watches:
         return Panel(
             Text("aucune veille active", style=palette["dim"]),
