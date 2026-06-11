@@ -574,6 +574,30 @@ async def test_cockpit_q_avec_daemon_vivant_ouvre_confirm_quit(tmp_path, monkeyp
         assert isinstance(app.screen, ConfirmQuit)
 
 
+async def test_cockpit_ctrl_c_avec_daemon_vivant_ouvre_confirm_quit(
+    tmp_path, monkeypatch
+):
+    """Ctrl+C doit passer par le même avertissement que q (incontournable).
+
+    Sans ce binding, Textual mappe ctrl+c sur help_quit (notification inerte)
+    et l'utilisateur quitte sans voir que le moteur live va être arrêté.
+    """
+    FAKE_PID = 54321
+    _make_minimal_state_with_pid(tmp_path, FAKE_PID)
+    _patch_daemon_alive(monkeypatch, FAKE_PID)
+
+    monkeypatch.setattr(cockpit_module, "_STATE_DIR", tmp_path)
+    monkeypatch.setattr(cockpit_module, "_EVENTS_FILE", tmp_path / "events.jsonl")
+    monkeypatch.setattr(cockpit_module, "_KILL_FILE", tmp_path / "KILL")
+
+    app = CockpitApp()
+    async with app.run_test(size=(200, 50)) as pilot:
+        await pilot.press("ctrl+c")
+        from trader.cockpit import ConfirmQuit
+
+        assert isinstance(app.screen, ConfirmQuit)
+
+
 async def test_cockpit_confirm_quit_arreter_et_quitter_appelle_stop_daemon_et_exit(
     tmp_path, monkeypatch
 ):

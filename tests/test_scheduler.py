@@ -1,3 +1,4 @@
+import json
 from datetime import datetime, timezone
 
 from trader.tools.scheduler import Scheduler
@@ -143,3 +144,53 @@ def test_stale_streak_independant_par_symbole(tmp_path) -> None:
     sched.reset_stale_streak("SPY")
     assert sched.get_stale_streak("SPY") == 0
     assert sched.get_stale_streak("QQQ") == 1
+
+
+def test_reconcile_universe_purge_les_stale_streaks_hors_univers(tmp_path) -> None:
+    """Quand l'univers rétrécit, les streaks des symboles retirés disparaissent."""
+    sched = Scheduler(tmp_path / "scheduler.json")
+    sched.set_stale_streak("2317.TW", 8)  # retiré de l'univers
+    sched.set_stale_streak("2330.TW", 3)  # gardé
+
+    sched.reconcile_universe(["2330.TW", "SPY"])
+
+    assert sched.get_stale_streak("2317.TW") == 0
+    assert sched.get_stale_streak("2330.TW") == 3
+
+
+def test_reconcile_universe_purge_les_overrides_de_reveil_hors_univers(tmp_path) -> None:
+    sched = Scheduler(tmp_path / "scheduler.json")
+    sched.set_symbol_next_wake("AAPL", "2026-06-10T20:00:00+00:00")  # retiré
+    sched.set_symbol_next_wake("SPY", "2026-06-10T20:00:00+00:00")  # gardé
+
+    sched.reconcile_universe(["SPY"])
+
+    state = json.loads((tmp_path / "scheduler.json").read_text())
+    assert set(state["symbols"]) == {"SPY"}
+
+
+def test_reconcile_universe_purge_les_veilles_hors_univers(tmp_path) -> None:
+    sched = Scheduler(tmp_path / "scheduler.json")
+    sched.set_symbol_indicator_watch(
+        "AAPL", {"id": "w1", "symbol": "AAPL", "expires_at": "2026-06-11T00:00:00+00:00"}
+    )
+    sched.set_symbol_indicator_watch(
+        "SPY", {"id": "w2", "symbol": "SPY", "expires_at": "2026-06-11T00:00:00+00:00"}
+    )
+
+    sched.reconcile_universe(["SPY"])
+
+    state = json.loads((tmp_path / "scheduler.json").read_text())
+    assert {w["symbol"] for w in state["indicator_watches"].values()} == {"SPY"}
+
+
+def test_reconcile_universe_ne_reecrit_pas_si_rien_a_purger(tmp_path) -> None:
+    """Idempotence : pas de réécriture si tout est déjà dans l'univers."""
+    path = tmp_path / "scheduler.json"
+    sched = Scheduler(path)
+    sched.set_stale_streak("SPY", 2)
+    mtime_before = path.stat().st_mtime_ns
+
+    sched.reconcile_universe(["SPY"])
+
+    assert path.stat().st_mtime_ns == mtime_before

@@ -166,6 +166,38 @@ class Scheduler:
             state["indicator_watches"].pop(watch_id, None)
             self._save_state(state)
 
+    def reconcile_universe(self, symbols: Iterable[str]) -> None:
+        """Purge tout état lié à un symbole absent de l'univers courant.
+
+        Quand l'univers rétrécit (cf. trim 28→15→13), les overrides de réveil,
+        streaks stale et veilles des symboles retirés restent gelés dans le
+        fichier et polluent le dashboard. Réconcilie `symbols`, `stale_streaks`
+        et `indicator_watches` avec l'univers. N'écrit que si quelque chose
+        change (idempotent).
+        """
+        universe = set(symbols)
+        state = self._load_state()
+        kept_symbols = {s: v for s, v in state["symbols"].items() if s in universe}
+        kept_streaks = {
+            s: v for s, v in state.get("stale_streaks", {}).items() if s in universe
+        }
+        kept_watches = {
+            watch_id: watch
+            for watch_id, watch in state["indicator_watches"].items()
+            if watch.get("symbol") in universe
+        }
+        changed = (
+            kept_symbols != state["symbols"]
+            or kept_streaks != state.get("stale_streaks", {})
+            or kept_watches != state["indicator_watches"]
+        )
+        if not changed:
+            return
+        state["symbols"] = kept_symbols
+        state["stale_streaks"] = kept_streaks
+        state["indicator_watches"] = kept_watches
+        self._save_state(state)
+
     def get_stale_streak(self, symbol: str) -> int:
         """Nombre de réveils stale consécutifs pour ce symbole. 0 si inconnu.
 

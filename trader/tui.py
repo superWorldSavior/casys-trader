@@ -157,24 +157,43 @@ def _load_trade_plans_safe(plans_path: Path) -> list[dict]:
         return []
 
 
-def _load_scheduler_data_safe(scheduler_path: Path) -> tuple[list[dict], dict]:
+def _watch_is_expired(watch: dict, now: datetime) -> bool:
+    """Vrai si la veille a une échéance passée. Sans échéance parsable : visible."""
+    raw = watch.get("expires_at")
+    if not raw:
+        return False
+    try:
+        expires_at = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=UTC)
+    return expires_at <= now
+
+
+def _load_scheduler_data_safe(
+    scheduler_path: Path, *, now: datetime | None = None
+) -> tuple[list[dict], dict]:
     """Lit scheduler.json, retourne (indicator_watches, stale_streaks).
 
-    indicator_watches : liste de dicts (valeurs du dict indicator_watches).
+    indicator_watches : liste de dicts (valeurs du dict indicator_watches),
+                        veilles expirées exclues (cohérent avec le daemon).
     stale_streaks     : dict {symbol: int}.
     Tolérant : retourne ([], {}) si absent/corrompu.
     """
+    now = now or datetime.now(UTC)
     try:
         raw = json.loads(scheduler_path.read_text(encoding="utf-8"))
         if not isinstance(raw, dict):
             return [], {}
         watches_raw = raw.get("indicator_watches") or {}
         if isinstance(watches_raw, dict):
-            watches = [v for v in watches_raw.values() if isinstance(v, dict)]
+            candidates = [v for v in watches_raw.values() if isinstance(v, dict)]
         elif isinstance(watches_raw, list):
-            watches = [v for v in watches_raw if isinstance(v, dict)]
+            candidates = [v for v in watches_raw if isinstance(v, dict)]
         else:
-            watches = []
+            candidates = []
+        watches = [w for w in candidates if not _watch_is_expired(w, now)]
         streaks = raw.get("stale_streaks") or {}
         if not isinstance(streaks, dict):
             streaks = {}

@@ -211,7 +211,7 @@ def test_load_indicator_watches_safe_retourne_liste_avec_fichier_valide(tmp_path
                 "id": "AAPL:abc123",
                 "symbol": "AAPL",
                 "created_at": "2026-06-10T01:00:00Z",
-                "expires_at": "2026-06-10T05:00:00Z",
+                "expires_at": "2099-01-01T00:00:00Z",
                 "logic": "any",
                 "conditions": [
                     {

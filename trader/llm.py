@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import shutil
 import subprocess
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, replace
@@ -21,6 +23,8 @@ DEFAULT_SPARK_MODEL = "gpt-5.3-codex-spark/medium"
 DEFAULT_OLLAMA_BASE_URL = "https://ollama.com/v1"
 DEFAULT_OLLAMA_MODEL = "nemotron-3-nano:30b-cloud"
 DEFAULT_ENV_PATH = Path(__file__).resolve().parent.parent / ".env"
+DEFAULT_RUNTIME_SESSION_LABEL = "casys-trader:runtime-brain"
+DEFAULT_CONSOLIDATOR_SESSION_LABEL = "casys-trader:learning-consolidator"
 
 
 @dataclass(frozen=True)
@@ -89,8 +93,10 @@ def build_acpx_command(
     model: str,
     timeout_s: int,
     agent: str | None = None,
+    session_label: str | None = None,
 ) -> list[str]:
     agent_part = [] if not agent or agent == "default" else [agent]
+    labeled_prompt = _label_prompt(prompt, session_label=session_label)
     return [
         acpx_bin,
         "--format", "quiet",
@@ -101,8 +107,34 @@ def build_acpx_command(
         "--timeout", str(timeout_s),
         *agent_part,
         "exec",
-        prompt,
+        labeled_prompt,
     ]
+
+
+def _clean_optional(value: str | None) -> str | None:
+    cleaned = str(value or "").strip()
+    return cleaned or None
+
+
+def _label_prompt(prompt: str, *, session_label: str | None) -> str:
+    cleaned = _clean_optional(session_label)
+    if cleaned is None:
+        return prompt
+    return f"[{cleaned}]\n{prompt}"
+
+
+def _default_acpx_session_label(provider: str) -> str | None:
+    if provider == "consolidator":
+        return DEFAULT_CONSOLIDATOR_SESSION_LABEL
+    if provider == "spark":
+        return DEFAULT_RUNTIME_SESSION_LABEL
+    return None
+
+
+def _env_session_label(provider: str) -> str | None:
+    if provider == "consolidator":
+        return _env("TRADER_CONSOLIDATOR_ACPX_SESSION_LABEL", "TRADER_ACPX_SESSION_LABEL")
+    return _env("TRADER_ACPX_SESSION_LABEL")
 
 
 def _looks_retryable_provider_error(text: str) -> bool:
@@ -131,12 +163,67 @@ def _failure_code_from_text(text: str) -> str:
     return "provider_error"
 
 
+def _terminate_process_group(pgid: int, *, grace_s: float = 2.0) -> None:
+    if os.name != "posix":
+        return
+    try:
+        os.killpg(pgid, signal.SIGTERM)
+    except (ProcessLookupError, PermissionError):
+        return
+
+    deadline = time.monotonic() + grace_s
+    while time.monotonic() < deadline:
+        try:
+            os.killpg(pgid, 0)
+        except (ProcessLookupError, PermissionError):
+            return
+        time.sleep(0.05)
+
+    try:
+        os.killpg(pgid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        return
+
+
+def _run_one_shot_command(command: list[str], *, timeout_s: int) -> subprocess.CompletedProcess[str]:
+    proc = subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=os.name == "posix",
+    )
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout_s)
+    except subprocess.TimeoutExpired:
+        _terminate_process_group(proc.pid)
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+        try:
+            proc.communicate(timeout=1)
+        except subprocess.TimeoutExpired:
+            pass
+        raise
+    finally:
+        _terminate_process_group(proc.pid)
+
+    return subprocess.CompletedProcess(
+        args=command,
+        returncode=proc.returncode,
+        stdout=stdout,
+        stderr=stderr,
+    )
+
+
 @dataclass(frozen=True)
 class AcpxBackend:
     provider: str = "spark"
     model: str = DEFAULT_SPARK_MODEL
     acpx_bin: str = "acpx"
     agent: str | None = None
+    session_label: str | None = DEFAULT_RUNTIME_SESSION_LABEL
 
     def complete(self, prompt: str, *, timeout_s: int) -> LlmCompletion | LlmFailure:
         if shutil.which(self.acpx_bin) is None:
@@ -149,17 +236,16 @@ class AcpxBackend:
             )
 
         try:
-            proc = subprocess.run(
+            proc = _run_one_shot_command(
                 build_acpx_command(
                     prompt,
                     acpx_bin=self.acpx_bin,
                     model=self.model,
                     timeout_s=timeout_s,
                     agent=self.agent,
+                    session_label=self.session_label,
                 ),
-                capture_output=True,
-                text=True,
-                timeout=timeout_s + 15,
+                timeout_s=timeout_s + 15,
             )
         except subprocess.TimeoutExpired:
             return LlmFailure(
@@ -313,11 +399,23 @@ def build_default_router_from_env(
     spark_model: str = DEFAULT_SPARK_MODEL,
     acpx_provider: str = "spark",
     acpx_agent: str | None = None,
+    acpx_session_label: str | None = None,
 ) -> LlmRouter:
     load_dotenv(env_path)
+    session_label = (
+        _clean_optional(acpx_session_label)
+        or _env_session_label(acpx_provider)
+        or _default_acpx_session_label(acpx_provider)
+    )
 
     backends: list[LlmBackend] = [
-        AcpxBackend(provider=acpx_provider, model=spark_model, acpx_bin=acpx_bin, agent=acpx_agent)
+        AcpxBackend(
+            provider=acpx_provider,
+            model=spark_model,
+            acpx_bin=acpx_bin,
+            agent=acpx_agent,
+            session_label=session_label,
+        )
     ]
     api_key = _env("TRADER_OLLAMA_API_KEY", "OLLAMA_API_KEY")
     if api_key:

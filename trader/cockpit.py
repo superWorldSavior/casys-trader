@@ -21,7 +21,9 @@ Usage :
     make watch
 
 Raccourcis :
-    q         Quitter (ne touche JAMAIS au daemon)
+    q / Ctrl+C  Quitter — si le daemon est vivant, modal ConfirmQuit avertit
+                que le moteur live sera aussi arrêté (« Arrêter et quitter » /
+                « Annuler »). Aucun daemon vivant → quit direct.
     s         Démarrer le daemon (anti-double-lancement)
     X         Arrêter le daemon (modal de confirmation → SIGINT)
     k         Toggle kill-switch (modal de confirmation)
@@ -249,7 +251,7 @@ class CockpitStatus(Static):
 
 
 class LeftPane(Static):
-    """Colonne gauche (25%) : équité sparkline, positions+PnL, plans sortie, apprentissages."""
+    """Colonne gauche (25%) : positions+PnL, plans sortie, apprentissages."""
 
     DEFAULT_CSS = """
     LeftPane {
@@ -267,7 +269,6 @@ class LeftPane(Static):
     _current_palette: Palette = PALETTE_LIGHT  # défaut saumon
 
     def compose(self) -> ComposeResult:
-        yield Static(id="equity-panel")
         yield Static(id="positions-panel")
         yield Static(id="exit-plans-panel")
         yield Static(id="learnings-panel")
@@ -277,12 +278,6 @@ class LeftPane(Static):
         portfolio = (
             state.get("portfolio") if isinstance(state.get("portfolio"), dict) else {}
         )
-        equity_curve_raw = state.get("equity_curve") or []
-        equity_curve = [
-            v
-            for v in (_safe_float(x, default=None) for x in equity_curve_raw)
-            if v is not None
-        ]
         holdings = _safe_list_of_dicts(portfolio.get("holdings"))
         learnings = _safe_list_of_dicts(state.get("learnings"))
         trade_plans = (
@@ -291,9 +286,6 @@ class LeftPane(Static):
             else []
         )
 
-        self.query_one("#equity-panel", Static).update(
-            _build_equity_panel(equity_curve, palette=palette)
-        )
         self.query_one("#positions-panel", Static).update(
             _build_positions_panel(holdings, palette=palette)
         )
@@ -307,7 +299,7 @@ class LeftPane(Static):
 
 
 class CenterPane(Static):
-    """Colonne centre (40%) : KPI band, décisions récentes (panneau roi), attribution."""
+    """Colonne centre (40%) : KPI band, décisions récentes (panneau roi), attribution, équité."""
 
     DEFAULT_CSS = """
     CenterPane {
@@ -328,6 +320,7 @@ class CenterPane(Static):
         yield Static(id="kpi-band")
         yield Static(id="decisions-table")
         yield Static(id="attribution-panel")
+        yield Static(id="equity-panel")
 
     def update_state(self, state: dict) -> None:
         palette = self._current_palette
@@ -337,6 +330,14 @@ class CenterPane(Static):
             if isinstance(state.get("attribution"), dict)
             else {}
         )
+        equity_curve = [
+            v
+            for v in (
+                _safe_float(x, default=None)
+                for x in (state.get("equity_curve") or [])
+            )
+            if v is not None
+        ]
         decisions_raw = _safe_list_of_dicts(state.get("decisions"))
         recent_decisions = (
             state.get("recent_decisions")
@@ -353,6 +354,9 @@ class CenterPane(Static):
         )
         self.query_one("#attribution-panel", Static).update(
             _build_attribution_panel(attribution, palette=palette)
+        )
+        self.query_one("#equity-panel", Static).update(
+            _build_equity_panel(equity_curve, palette=palette)
         )
 
 
@@ -763,6 +767,11 @@ class CockpitApp(App):
 
     BINDINGS = [
         Binding("q", "quit_confirm", "Quitter"),
+        # Ctrl+C : par défaut Textual le mappe sur help_quit (notification inerte).
+        # On le route vers le même avertissement que q pour qu'on ne puisse jamais
+        # quitter sans voir que le moteur live va être arrêté. priority pour passer
+        # devant le binding système.
+        Binding("ctrl+c", "quit_confirm", "Quitter", show=False, priority=True),
         Binding("s", "start_daemon", "Démarrer daemon"),
         Binding("X", "stop_daemon_confirm", "Maj+X — Arrêter daemon"),
         Binding("k", "toggle_kill", "Kill-switch"),

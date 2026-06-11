@@ -116,17 +116,57 @@ def test_retryable_provider_error_se_limite_aux_rate_limits_et_quotas() -> None:
 
 def test_acpx_backend_timeout_est_un_echec_non_retryable(monkeypatch) -> None:
     monkeypatch.setattr("trader.llm.shutil.which", lambda _bin: "/usr/local/bin/acpx")
+    monkeypatch.setattr("trader.llm._terminate_process_group", lambda _pid: None)
 
-    def run_timeout(*args, **kwargs):
-        raise subprocess.TimeoutExpired(cmd=args[0], timeout=kwargs["timeout"])
+    class TimeoutPopen:
+        pid = 4242
+        returncode = None
 
-    monkeypatch.setattr("trader.llm.subprocess.run", run_timeout)
+        def __init__(self, command, **kwargs):
+            self.command = command
+
+        def communicate(self, timeout=None):
+            raise subprocess.TimeoutExpired(cmd=self.command, timeout=timeout)
+
+        def kill(self):
+            return None
+
+    monkeypatch.setattr("trader.llm.subprocess.Popen", TimeoutPopen)
 
     result = AcpxBackend().complete("prompt", timeout_s=900)
 
     assert isinstance(result, LlmFailure)
     assert result.code == "timeout"
     assert result.retryable is False
+
+
+def test_acpx_backend_isole_et_nettoie_le_process_group(monkeypatch) -> None:
+    monkeypatch.setattr("trader.llm.shutil.which", lambda _bin: "/usr/local/bin/acpx")
+    popen_calls = []
+    cleaned_pids = []
+
+    class FakePopen:
+        pid = 4242
+        returncode = 0
+
+        def __init__(self, command, **kwargs):
+            popen_calls.append((command, kwargs))
+
+        def communicate(self, timeout=None):
+            return "OK", ""
+
+    monkeypatch.setattr("trader.llm.subprocess.Popen", FakePopen)
+    monkeypatch.setattr("trader.llm._terminate_process_group", lambda pid: cleaned_pids.append(pid))
+
+    result = AcpxBackend().complete("prompt", timeout_s=12)
+
+    assert isinstance(result, LlmCompletion)
+    assert result.text == "OK"
+    assert popen_calls[0][1]["stdout"] is subprocess.PIPE
+    assert popen_calls[0][1]["stderr"] is subprocess.PIPE
+    assert popen_calls[0][1]["text"] is True
+    assert popen_calls[0][1]["start_new_session"] is True
+    assert cleaned_pids == [4242]
 
 
 def test_openai_compatible_backend_appelle_chat_completions() -> None:
@@ -210,6 +250,19 @@ def test_build_acpx_command_peut_cibler_un_agent_dedie() -> None:
     ]
 
 
+def test_build_acpx_command_peut_prefixer_un_label_identifiable() -> None:
+    cmd = build_acpx_command(
+        "prompt",
+        acpx_bin="acpx",
+        model="gpt-5.3-codex-spark/medium",
+        timeout_s=12,
+        session_label="casys-trader:runtime-brain",
+    )
+
+    assert cmd[-1].startswith("[casys-trader:runtime-brain]\n")
+    assert cmd[-1].endswith("prompt")
+
+
 def test_build_default_router_from_env_peut_nommer_lagent_acpx(monkeypatch) -> None:
     monkeypatch.delenv("TRADER_OLLAMA_API_KEY", raising=False)
     monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
@@ -228,6 +281,18 @@ def test_build_default_router_from_env_peut_nommer_lagent_acpx(monkeypatch) -> N
     assert backend.model == "gpt-5.5/high"
     assert backend.acpx_bin == "acpx-custom"
     assert backend.agent == "codex"
+    assert backend.session_label == "casys-trader:learning-consolidator"
+
+
+def test_build_default_router_from_env_labelle_le_brain_runtime(monkeypatch) -> None:
+    monkeypatch.delenv("TRADER_OLLAMA_API_KEY", raising=False)
+    monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
+
+    router = build_default_router_from_env(env_path=None)
+
+    backend = router.backends[0]
+    assert isinstance(backend, AcpxBackend)
+    assert backend.session_label == "casys-trader:runtime-brain"
 
 
 def test_build_default_router_from_env_configure_spark_puis_ollama(monkeypatch) -> None:

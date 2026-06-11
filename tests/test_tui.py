@@ -2,7 +2,14 @@
 
 from __future__ import annotations
 
-from trader.tui import build_view, load_runtime_state
+import json
+from datetime import UTC, datetime
+
+from trader.tui import (
+    _load_scheduler_data_safe,
+    build_view,
+    load_runtime_state,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -175,3 +182,58 @@ def test_load_runtime_state_retombe_sur_last_report_si_current_absent(tmp_path) 
 
     assert state["ts"] == "last"
     assert state["source"] == "last_report"
+
+
+def test_load_scheduler_data_safe_filtre_les_veilles_expirees(tmp_path) -> None:
+    """Le dashboard ne doit pas afficher une veille dont l'échéance est passée.
+
+    Cohérent avec Scheduler.active_indicator_watches côté daemon : le TUI lit
+    le fichier en direct, il doit filtrer l'expiration lui-même.
+    """
+    path = tmp_path / "scheduler.json"
+    path.write_text(
+        json.dumps(
+            {
+                "indicator_watches": {
+                    "w1": {
+                        "id": "w1",
+                        "symbol": "EURUSD=X",
+                        "expires_at": "2026-06-10T19:40:00+00:00",
+                    },
+                    "w2": {
+                        "id": "w2",
+                        "symbol": "USDJPY=X",
+                        "expires_at": "2026-06-10T12:00:00+00:00",
+                    },
+                },
+                "stale_streaks": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    now = datetime(2026, 6, 10, 18, 0, tzinfo=UTC)
+    watches, _ = _load_scheduler_data_safe(path, now=now)
+
+    assert {w["symbol"] for w in watches} == {"EURUSD=X"}
+
+
+def test_load_scheduler_data_safe_garde_les_veilles_sans_echeance(tmp_path) -> None:
+    """Une veille sans expires_at (ou non parsable) reste visible."""
+    path = tmp_path / "scheduler.json"
+    path.write_text(
+        json.dumps(
+            {
+                "indicator_watches": {
+                    "w1": {"id": "w1", "symbol": "SPY"},
+                },
+                "stale_streaks": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    now = datetime(2026, 6, 10, 18, 0, tzinfo=UTC)
+    watches, _ = _load_scheduler_data_safe(path, now=now)
+
+    assert {w["symbol"] for w in watches} == {"SPY"}
