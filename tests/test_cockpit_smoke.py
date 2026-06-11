@@ -619,7 +619,7 @@ async def test_cockpit_confirm_quit_arreter_et_quitter_appelle_stop_daemon_et_ex
     monkeypatch.setattr(
         sup_module,
         "stop_daemon",
-        lambda *, pid_file: stop_calls.append(pid_file) or StopResult(
+        lambda *, pid_file, status_file=None: stop_calls.append(pid_file) or StopResult(
             stopped=True, pid=FAKE_PID, reason="sigint_sent"
         ),
     )
@@ -695,7 +695,7 @@ async def test_cockpit_confirm_quit_stop_daemon_leve_exception_quand_meme_exit(
 
     import trader.cockpit_supervisor as sup_module
 
-    def _raising_stop(*, pid_file):
+    def _raising_stop(*, pid_file, status_file=None):
         raise PermissionError("OS refuse le signal")
 
     monkeypatch.setattr(sup_module, "stop_daemon", _raising_stop)
@@ -734,7 +734,7 @@ async def test_cockpit_q_avec_daemon_vivant_ne_quitte_pas_sans_confirmation(
     monkeypatch.setattr(
         sup_module,
         "stop_daemon",
-        lambda *, pid_file: stop_calls.append(pid_file) or StopResult(
+        lambda *, pid_file, status_file=None: stop_calls.append(pid_file) or StopResult(
             stopped=True, pid=FAKE_PID, reason="sigint_sent"
         ),
     )

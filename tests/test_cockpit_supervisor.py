@@ -17,8 +17,10 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from trader.cockpit_supervisor import (
+    claim_pid_file,
     daemon_vital_state,
     launch_daemon,
+    release_pid_file,
     stop_daemon,
     toggle_kill_switch,
 )
@@ -479,3 +481,90 @@ def test_toggle_kill_switch_deux_toggles_etat_initial(tmp_path):
     active = toggle_kill_switch(kill_file=kill_file)
     assert active is False
     assert not kill_file.exists()
+
+
+def test_stop_daemon_fallback_status_quand_pid_file_absent(tmp_path, monkeypatch):
+    """daemon.pid absent mais daemon_status.json a un pid vivant identifié → SIGINT.
+
+    Cas réel : un daemon doublon écrase puis supprime daemon.pid à son arrêt ;
+    le daemon légitime tourne toujours et réécrit son pid dans le status à
+    chaque cycle. Le cockpit doit pouvoir l'arrêter quand même (Maj+X / Q).
+    """
+    import json as _json
+
+    pid_file = tmp_path / "daemon.pid"
+    status_file = tmp_path / "daemon_status.json"
+    target_pid = 88888
+    status_file.write_text(_json.dumps({"pid": target_pid}), encoding="utf-8")
+
+    signals_sent = []
+    monkeypatch.setattr("trader.cockpit_supervisor.os.kill", lambda p, s: signals_sent.append((p, s)))
+    monkeypatch.setattr("trader.cockpit_supervisor._get_cmdline", lambda p: "python -m trader.daemon --live")
+
+    result = stop_daemon(pid_file=pid_file, status_file=status_file)
+
+    assert result.stopped is True
+    assert result.pid == target_pid
+    real_signals = [(p, s) for p, s in signals_sent if s != 0]
+    assert real_signals == [(target_pid, signal.SIGINT)]
+
+
+def test_stop_daemon_fallback_status_identite_etrangere_refuse(tmp_path, monkeypatch):
+    """Fallback status : pid vivant mais cmdline étrangère → aucun signal."""
+    import json as _json
+
+    pid_file = tmp_path / "daemon.pid"
+    status_file = tmp_path / "daemon_status.json"
+    status_file.write_text(_json.dumps({"pid": os.getpid()}), encoding="utf-8")
+
+    signals_sent = []
+    monkeypatch.setattr("trader.cockpit_supervisor.os.kill", lambda p, s: signals_sent.append((p, s)))
+    monkeypatch.setattr("trader.cockpit_supervisor._get_cmdline", lambda p: "/usr/bin/python pytest")
+
+    result = stop_daemon(pid_file=pid_file, status_file=status_file)
+
+    assert result.stopped is False
+    assert result.reason == "identity_mismatch"
+    real_signals = [(p, s) for p, s in signals_sent if s != 0]
+    assert real_signals == []
+
+
+def test_claim_pid_file_refuse_si_daemon_vivant_etranger(tmp_path, monkeypatch):
+    """Un daemon vivant et identifié détient le pid file → claim refusé (anti-doublon)."""
+    pid_file = tmp_path / "daemon.pid"
+    pid_file.write_text("11111", encoding="utf-8")
+
+    monkeypatch.setattr("trader.cockpit_supervisor.os.kill", lambda p, s: None)  # vivant
+    monkeypatch.setattr("trader.cockpit_supervisor._get_cmdline", lambda p: "python -m trader.daemon --live")
+
+    assert claim_pid_file(pid_file=pid_file, pid=22222) is False
+    assert pid_file.read_text(encoding="utf-8") == "11111"  # pas écrasé
+
+
+def test_claim_pid_file_ecrit_si_pid_mort_ou_absent(tmp_path, monkeypatch):
+    pid_file = tmp_path / "daemon.pid"
+
+    def dead_kill(pid, sig):
+        raise ProcessLookupError
+
+    monkeypatch.setattr("trader.cockpit_supervisor.os.kill", dead_kill)
+
+    assert claim_pid_file(pid_file=pid_file, pid=22222) is True  # absent
+    assert pid_file.read_text(encoding="utf-8") == "22222"
+
+    pid_file.write_text("11111", encoding="utf-8")  # pid mort
+    assert claim_pid_file(pid_file=pid_file, pid=33333) is True
+    assert pid_file.read_text(encoding="utf-8") == "33333"
+
+
+def test_release_pid_file_ne_supprime_que_son_propre_pid(tmp_path):
+    """Un daemon ne doit jamais supprimer le pid file d'un successeur (bug Maj+X)."""
+    pid_file = tmp_path / "daemon.pid"
+
+    pid_file.write_text("22222", encoding="utf-8")
+    release_pid_file(pid_file=pid_file, pid=22222)
+    assert not pid_file.exists()  # son propre pid -> supprimé
+
+    pid_file.write_text("11111", encoding="utf-8")
+    release_pid_file(pid_file=pid_file, pid=22222)
+    assert pid_file.read_text(encoding="utf-8") == "11111"  # pid d'un autre -> intact

@@ -985,7 +985,10 @@ class CockpitApp(App):
             if not confirmed:
                 return
             try:
-                result = stop_daemon(pid_file=_STATE_DIR / "daemon.pid")
+                result = stop_daemon(
+                pid_file=_STATE_DIR / "daemon.pid",
+                status_file=_STATE_DIR / "daemon_status.json",
+            )
                 if result.stopped:
                     self.notify(
                         f"Daemon arrêté (PID {result.pid})", severity="information"
@@ -1028,7 +1031,10 @@ class CockpitApp(App):
                 return
             from trader.cockpit_supervisor import stop_daemon
 
-            result = stop_daemon(pid_file=_STATE_DIR / "daemon.pid")
+            result = stop_daemon(
+                pid_file=_STATE_DIR / "daemon.pid",
+                status_file=_STATE_DIR / "daemon_status.json",
+            )
             if result.stopped:
                 self.notify(f"Daemon arrêté (PID {result.pid})", severity="information")
             else:

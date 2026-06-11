@@ -284,28 +284,77 @@ class StopResult:
     reason: str = ""  # "sigint_sent" | "no_daemon" | "pid_dead" | "identity_mismatch"
 
 
-def stop_daemon(*, pid_file: Path) -> StopResult:
+def claim_pid_file(*, pid_file: Path, pid: int) -> bool:
+    """Revendique daemon.pid pour `pid`. Refuse si un daemon vivant le détient.
+
+    Anti-doublon côté daemon : un second daemon ne doit ni démarrer ni écraser
+    le pid file du daemon légitime (sinon, à son arrêt, il le supprime et le
+    cockpit perd Maj+X / Q sur le daemon survivant).
+    """
+    if pid_file.exists():
+        try:
+            existing = int(pid_file.read_text(encoding="utf-8").strip())
+        except (ValueError, OSError):
+            existing = None
+        if existing is not None and existing != pid and _is_daemon_pid(existing):
+            return False
+    pid_file.parent.mkdir(parents=True, exist_ok=True)
+    pid_file.write_text(str(pid), encoding="utf-8")
+    return True
+
+
+def release_pid_file(*, pid_file: Path, pid: int) -> None:
+    """Supprime daemon.pid seulement s'il contient encore `pid` (jamais celui d'un autre)."""
+    try:
+        if pid_file.exists() and int(pid_file.read_text(encoding="utf-8").strip()) == pid:
+            pid_file.unlink(missing_ok=True)
+    except (ValueError, OSError):
+        pass
+
+
+def _pid_from_status(status_file: Path | None) -> int | None:
+    """Pid du daemon depuis daemon_status.json (réécrit à chaque cycle)."""
+    if status_file is None or not status_file.exists():
+        return None
+    try:
+        data = json.loads(status_file.read_text(encoding="utf-8"))
+        raw = data.get("pid")
+        return int(raw) if raw else None
+    except (ValueError, OSError):
+        return None
+
+
+def stop_daemon(*, pid_file: Path, status_file: Path | None = None) -> StopResult:
     """Envoie SIGINT au daemon après vérification d'identité. Jamais SIGKILL.
+
+    Source du pid : daemon.pid, sinon fallback daemon_status.json (le daemon
+    y réécrit son pid à chaque cycle). Le fallback couvre le cas où un daemon
+    doublon a écrasé puis supprimé daemon.pid à son arrêt, laissant le daemon
+    légitime vivant mais inarrêtable depuis le cockpit (Maj+X / Q).
 
     Vérifie que le process cible :
     (a) existe (os.kill(pid, 0))
     (b) contient "trader.daemon" dans sa cmdline (_get_cmdline)
 
-    Si l'identité ne correspond pas → refused de signaler (identity_mismatch).
+    Si l'identité ne correspond pas → refus de signaler (identity_mismatch).
 
     Args:
         pid_file: Chemin vers state/daemon.pid.
+        status_file: Chemin vers state/daemon_status.json (fallback optionnel).
 
     Returns:
         StopResult(stopped=True, reason="sigint_sent") si signal envoyé,
         StopResult(stopped=False) sinon.
     """
-    if not pid_file.exists():
-        return StopResult(stopped=False, reason="no_daemon")
-
-    try:
-        pid = int(pid_file.read_text(encoding="utf-8").strip())
-    except (ValueError, OSError):
+    pid: int | None = None
+    if pid_file.exists():
+        try:
+            pid = int(pid_file.read_text(encoding="utf-8").strip())
+        except (ValueError, OSError):
+            pid = None
+    if pid is None:
+        pid = _pid_from_status(status_file)
+    if pid is None:
         return StopResult(stopped=False, reason="no_daemon")
 
     # Vérifie existence

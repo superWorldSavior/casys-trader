@@ -1816,11 +1816,16 @@ def main(argv: list[str] | None = None) -> None:
     setup_logging(level=logging.INFO)
     dry_run = not args.live
 
-    # Identité daemon : écrire le pid file en premier (atomique, avant tout _write_status)
-    # Le cockpit et cockpit_supervisor lisent ce fichier pour identifier ce process.
+    # Identité daemon : revendiquer le pid file en premier (avant tout _write_status).
+    # Refus si un daemon vivant le détient déjà — un doublon qui écrase puis supprime
+    # daemon.pid à son arrêt rend le daemon légitime inarrêtable depuis le cockpit.
+    from .cockpit_supervisor import claim_pid_file, release_pid_file
+
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     _pid_file = STATE_DIR / "daemon.pid"
-    _pid_file.write_text(str(os.getpid()), encoding="utf-8")
+    if not claim_pid_file(pid_file=_pid_file, pid=os.getpid()):
+        log.error("daemon déjà vivant (pid file %s) — refus de démarrer un doublon", _pid_file)
+        return 1
 
     sched = scheduler.Scheduler(STATE_DIR / "scheduler.json")
     log.info("daemon démarré (dry_run=%s, once=%s)", dry_run, args.once)
@@ -2007,9 +2012,10 @@ def main(argv: list[str] | None = None) -> None:
     finally:
         if data_source is not None:
             _disconnect_quietly(data_source)
-        # Suppression du pid file au shutdown propre (SIGINT géré = KeyboardInterrupt)
+        # Suppression du pid file au shutdown propre — seulement s'il contient
+        # encore NOTRE pid (jamais celui d'un successeur, cf bug Maj+X cockpit).
         try:
-            _pid_file.unlink(missing_ok=True)
+            release_pid_file(pid_file=_pid_file, pid=os.getpid())
         except Exception:  # noqa: BLE001 — best-effort, ne jamais bloquer la sortie
             pass
 
