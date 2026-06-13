@@ -28,8 +28,8 @@ class StubBackend:
 def test_router_fallback_sur_echec_retryable() -> None:
     primary = StubBackend(
         LlmFailure(
-            provider="spark",
-            model="gpt-5.3-codex-spark/medium",
+            provider="acpx",
+            model="gpt-5.5/medium",
             code="rate_limited",
             message="credit exhausted",
             retryable=True,
@@ -48,7 +48,7 @@ def test_router_fallback_sur_echec_retryable() -> None:
     assert isinstance(result, LlmCompletion)
     assert result.provider == "ollama-cloud"
     assert result.model == "nemotron-3-nano:30b-cloud"
-    assert result.fallback_reason == "spark:rate_limited"
+    assert result.fallback_reason == "acpx:rate_limited"
     assert primary.calls == 1
     assert fallback.calls == 1
 
@@ -56,8 +56,8 @@ def test_router_fallback_sur_echec_retryable() -> None:
 def test_router_ne_fallback_pas_sur_echec_non_retryable() -> None:
     primary = StubBackend(
         LlmFailure(
-            provider="spark",
-            model="gpt-5.3-codex-spark/medium",
+            provider="acpx",
+            model="gpt-5.5/medium",
             code="bad_output",
             message="invalid JSON",
             retryable=False,
@@ -81,8 +81,8 @@ def test_router_ne_fallback_pas_sur_echec_non_retryable() -> None:
 def test_router_ne_fallback_pas_sur_timeout_non_retryable() -> None:
     primary = StubBackend(
         LlmFailure(
-            provider="spark",
-            model="gpt-5.3-codex-spark/medium",
+            provider="acpx",
+            model="gpt-5.5/medium",
             code="timeout",
             message="> 900s",
             retryable=False,
@@ -136,8 +136,32 @@ def test_acpx_backend_timeout_est_un_echec_non_retryable(monkeypatch) -> None:
     result = AcpxBackend().complete("prompt", timeout_s=900)
 
     assert isinstance(result, LlmFailure)
+    assert result.provider == "acpx"
     assert result.code == "timeout"
     assert result.retryable is False
+
+
+def test_acpx_backend_consolidateur_traite_internal_error_comme_retryable(monkeypatch) -> None:
+    monkeypatch.setattr("trader.llm.shutil.which", lambda _bin: "/usr/local/bin/acpx")
+    monkeypatch.setattr("trader.llm._terminate_process_group", lambda _pid: None)
+
+    class InternalErrorPopen:
+        pid = 4242
+        returncode = 1
+
+        def __init__(self, command, **kwargs):
+            self.command = command
+
+        def communicate(self, timeout=None):
+            return "", "Internal error\n"
+
+    monkeypatch.setattr("trader.llm.subprocess.Popen", InternalErrorPopen)
+
+    result = AcpxBackend(provider="consolidator", model="gpt-5.5/high").complete("prompt", timeout_s=240)
+
+    assert isinstance(result, LlmFailure)
+    assert result.retryable is True
+    assert result.code == "provider_error"
 
 
 def test_acpx_backend_isole_et_nettoie_le_process_group(monkeypatch) -> None:
@@ -222,6 +246,33 @@ def test_openai_compatible_backend_classe_429_retryable() -> None:
     assert result.code == "rate_limited"
 
 
+def test_openai_compatible_backend_classe_abonnement_ollama() -> None:
+    def post_json(url: str, payload: dict, headers: dict, timeout_s: int) -> dict:
+        raise RuntimeError(
+            json.dumps(
+                {
+                    "status": 403,
+                    "body": '{"error":"this model requires a subscription, upgrade for access"}',
+                }
+            )
+        )
+
+    backend = OpenAICompatibleBackend(
+        provider="ollama-cloud",
+        api_key="secret",
+        base_url="https://ollama.com/v1",
+        model="glm-5.1:cloud",
+        post_json=post_json,
+    )
+
+    result = backend.complete("prompt", timeout_s=12)
+
+    assert isinstance(result, LlmFailure)
+    assert result.retryable is False
+    assert result.code == "subscription_required"
+    assert "requires a subscription" in result.message
+
+
 def test_build_acpx_command_peut_cibler_un_agent_dedie() -> None:
     cmd = build_acpx_command(
         "consolide ces learnings",
@@ -295,14 +346,30 @@ def test_build_default_router_from_env_labelle_le_brain_runtime(monkeypatch) -> 
     assert backend.session_label == "casys-trader:runtime-brain"
 
 
-def test_build_default_router_from_env_configure_spark_puis_ollama(monkeypatch) -> None:
+def test_build_default_router_from_env_configure_acpx_puis_ollama(monkeypatch) -> None:
     monkeypatch.setenv("TRADER_OLLAMA_API_KEY", "secret")
     monkeypatch.setenv("TRADER_OLLAMA_MODEL", "nemotron-3-nano:30b-cloud")
 
     router = build_default_router_from_env()
 
-    assert [backend.provider for backend in router.backends] == ["spark", "ollama-cloud"]
+    assert [backend.provider for backend in router.backends] == ["acpx", "ollama-cloud"]
+    assert router.backends[0].model == "gpt-5.5/medium"
     assert router.backends[1].model == "nemotron-3-nano:30b-cloud"
+
+
+def test_build_default_router_from_env_configure_ollama_dedie_au_consolidateur(monkeypatch) -> None:
+    monkeypatch.setenv("TRADER_OLLAMA_API_KEY", "runtime-secret")
+    monkeypatch.setenv("TRADER_OLLAMA_MODEL", "nemotron-3-nano:30b-cloud")
+    monkeypatch.setenv("TRADER_CONSOLIDATOR_OLLAMA_API_KEY", "consolidator-secret")
+    monkeypatch.setenv("TRADER_CONSOLIDATOR_OLLAMA_BASE_URL", "https://ollama.com/v1")
+    monkeypatch.setenv("TRADER_CONSOLIDATOR_OLLAMA_MODEL", "kimi-k2:cloud")
+
+    router = build_default_router_from_env(env_path=None, acpx_provider="consolidator")
+
+    assert [backend.provider for backend in router.backends] == ["consolidator", "ollama-cloud"]
+    assert router.backends[1].api_key == "consolidator-secret"
+    assert router.backends[1].base_url == "https://ollama.com/v1"
+    assert router.backends[1].model == "kimi-k2:cloud"
 
 
 def test_build_default_router_from_env_charge_un_dotenv_local(monkeypatch, tmp_path) -> None:
@@ -317,5 +384,5 @@ def test_build_default_router_from_env_charge_un_dotenv_local(monkeypatch, tmp_p
 
     router = build_default_router_from_env(env_path=env_path)
 
-    assert [backend.provider for backend in router.backends] == ["spark", "ollama-cloud"]
+    assert [backend.provider for backend in router.backends] == ["acpx", "ollama-cloud"]
     assert router.backends[1].model == "nemotron-3-nano:30b-cloud"

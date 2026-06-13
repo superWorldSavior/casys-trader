@@ -19,9 +19,10 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable, Protocol
 
-DEFAULT_SPARK_MODEL = "gpt-5.3-codex-spark/medium"
+DEFAULT_SPARK_MODEL = "gpt-5.5/medium"
 DEFAULT_OLLAMA_BASE_URL = "https://ollama.com/v1"
 DEFAULT_OLLAMA_MODEL = "nemotron-3-nano:30b-cloud"
+DEFAULT_CONSOLIDATOR_OLLAMA_MODEL = "glm-5.1:cloud"
 DEFAULT_ENV_PATH = Path(__file__).resolve().parent.parent / ".env"
 DEFAULT_RUNTIME_SESSION_LABEL = "casys-trader:runtime-brain"
 DEFAULT_CONSOLIDATOR_SESSION_LABEL = "casys-trader:learning-consolidator"
@@ -126,7 +127,7 @@ def _label_prompt(prompt: str, *, session_label: str | None) -> str:
 def _default_acpx_session_label(provider: str) -> str | None:
     if provider == "consolidator":
         return DEFAULT_CONSOLIDATOR_SESSION_LABEL
-    if provider == "spark":
+    if provider == "acpx":
         return DEFAULT_RUNTIME_SESSION_LABEL
     return None
 
@@ -150,6 +151,14 @@ def _looks_retryable_provider_error(text: str) -> bool:
         "insufficient_quota",
     )
     return any(needle in lowered for needle in needles)
+
+
+def _looks_retryable_acpx_error(*, provider: str, text: str) -> bool:
+    if _looks_retryable_provider_error(text):
+        return True
+    if provider == "consolidator" and "internal error" in text.lower():
+        return True
+    return False
 
 
 def _failure_code_from_text(text: str) -> str:
@@ -219,7 +228,7 @@ def _run_one_shot_command(command: list[str], *, timeout_s: int) -> subprocess.C
 
 @dataclass(frozen=True)
 class AcpxBackend:
-    provider: str = "spark"
+    provider: str = "acpx"
     model: str = DEFAULT_SPARK_MODEL
     acpx_bin: str = "acpx"
     agent: str | None = None
@@ -267,7 +276,7 @@ class AcpxBackend:
 
         if proc.returncode != 0:
             message = (proc.stderr or proc.stdout or "")[:500]
-            retryable = _looks_retryable_provider_error(message)
+            retryable = _looks_retryable_acpx_error(provider=self.provider, text=message)
             return LlmFailure(
                 provider=self.provider,
                 model=self.model,
@@ -322,6 +331,9 @@ def _classify_openai_error(exc: Exception) -> tuple[str, bool, str]:
         message = str(exc)
         return _failure_code_from_text(message), _looks_retryable_provider_error(message), message
 
+    lowered_body = http_error.body.lower()
+    if "requires a subscription" in lowered_body or "upgrade for access" in lowered_body:
+        return "subscription_required", False, http_error.body
     if http_error.status == 429:
         return "rate_limited", True, http_error.body
     if http_error.status in {408, 500, 502, 503, 504} or http_error.status == 0:
@@ -392,12 +404,20 @@ def _env(*names: str, default: str | None = None) -> str | None:
     return default
 
 
+def _ollama_env(provider: str, suffix: str, *fallback_names: str, default: str | None = None) -> str | None:
+    names: list[str] = []
+    if provider == "consolidator":
+        names.append(f"TRADER_CONSOLIDATOR_OLLAMA_{suffix}")
+    names.extend(fallback_names)
+    return _env(*names, default=default)
+
+
 def build_default_router_from_env(
     *,
     env_path: str | Path | None = DEFAULT_ENV_PATH,
     acpx_bin: str = "acpx",
     spark_model: str = DEFAULT_SPARK_MODEL,
-    acpx_provider: str = "spark",
+    acpx_provider: str = "acpx",
     acpx_agent: str | None = None,
     acpx_session_label: str | None = None,
 ) -> LlmRouter:
@@ -417,14 +437,35 @@ def build_default_router_from_env(
             session_label=session_label,
         )
     ]
-    api_key = _env("TRADER_OLLAMA_API_KEY", "OLLAMA_API_KEY")
+    default_ollama_model = (
+        DEFAULT_CONSOLIDATOR_OLLAMA_MODEL
+        if acpx_provider == "consolidator"
+        else DEFAULT_OLLAMA_MODEL
+    )
+    api_key = _ollama_env(acpx_provider, "API_KEY", "TRADER_OLLAMA_API_KEY", "OLLAMA_API_KEY")
     if api_key:
         backends.append(
             OpenAICompatibleBackend(
                 provider="ollama-cloud",
                 api_key=api_key,
-                base_url=_env("TRADER_OLLAMA_BASE_URL", "OLLAMA_CLOUD_BASE_URL", "OLLAMA_BASE_URL", default=DEFAULT_OLLAMA_BASE_URL) or DEFAULT_OLLAMA_BASE_URL,
-                model=_env("TRADER_OLLAMA_MODEL", "OLLAMA_CLOUD_MODEL", "OLLAMA_MODEL", default=DEFAULT_OLLAMA_MODEL) or DEFAULT_OLLAMA_MODEL,
+                base_url=_ollama_env(
+                    acpx_provider,
+                    "BASE_URL",
+                    "TRADER_OLLAMA_BASE_URL",
+                    "OLLAMA_CLOUD_BASE_URL",
+                    "OLLAMA_BASE_URL",
+                    default=DEFAULT_OLLAMA_BASE_URL,
+                )
+                or DEFAULT_OLLAMA_BASE_URL,
+                model=_ollama_env(
+                    acpx_provider,
+                    "MODEL",
+                    "TRADER_OLLAMA_MODEL",
+                    "OLLAMA_CLOUD_MODEL",
+                    "OLLAMA_MODEL",
+                    default=default_ollama_model,
+                )
+                or default_ollama_model,
             )
         )
     return LlmRouter(backends)
