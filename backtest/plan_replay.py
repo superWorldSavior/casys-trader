@@ -23,7 +23,7 @@ from trader.indicator_watch import (
     evaluate_indicator_watches,
     is_armed_plan,
 )
-from trader.trade_plan import create_trade_plan_from_order
+from trader.trade_plan import InvalidExitPlanError, create_trade_plan_from_order
 
 __all__ = ["PlanReplayResult", "replay_armed_plan"]
 
@@ -102,15 +102,24 @@ def replay_armed_plan(watch: dict, bars: list) -> PlanReplayResult:
         )
 
     quantity = float(order["qty"])
-    plan = create_trade_plan_from_order(
-        symbol=symbol,
-        order_side=str(order["action"]),
-        quantity=quantity,
-        entry_price=entry_price,
-        opened_at=str(trigger_bar.ts),
-        raw_exit_plan=order.get("exit_plan"),
-        llm_confidence=order.get("confidence"),
-    )
+    try:
+        plan = create_trade_plan_from_order(
+            symbol=symbol,
+            order_side=str(order["action"]),
+            quantity=quantity,
+            entry_price=entry_price,
+            opened_at=str(trigger_bar.ts),
+            raw_exit_plan=order.get("exit_plan"),
+            llm_confidence=order.get("confidence"),
+        )
+    except InvalidExitPlanError:
+        return PlanReplayResult(
+            plan_id=plan_id,
+            symbol=symbol,
+            status="invalid",
+            triggered_at=str(trigger_bar.ts),
+            entry_price=entry_price,
+        )
     direction = 1.0 if plan.side == "LONG" else -1.0
 
     realized = 0.0  # P&L cumulé des sorties partielles, en unités de prix × qty

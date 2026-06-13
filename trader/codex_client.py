@@ -294,7 +294,11 @@ def _exit_plan_contract() -> str:
         "{price:<requis, >0>, fraction:<optionnel, >0>}.\n"
         f'`trailing_stop`: null OU {{trail_type:"{trail_type_enum}", '
         "trail_value:<requis, >0>}. "
-        "`trail_type` doit être exactement l'un de cet enum.\n"
+        "`trail_type` doit être exactement l'un de cet enum. "
+        "Unités trail_value: percent = fraction (0.004 = 0.4%); "
+        "price = distance absolue en prix; volatility_multiple = multiple de la "
+        "volatilité récente (recommandé 1.5-3). Sans enabled_after, le trail "
+        "ne s'arme qu'une fois en profit au moins égal au trail.\n"
     )
 
 

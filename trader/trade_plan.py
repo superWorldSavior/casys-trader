@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -39,6 +40,7 @@ class TrailingStop:
     enabled_after: str | None
     trail_type: TrailingStopTrailType
     trail_value: float
+    trail_floored: bool = False
 
 
 @dataclass(frozen=True)
@@ -61,6 +63,7 @@ class TradePlan:
     remaining_quantity: float
     entry_price: float
     opened_at: str
+    reference_volatility: float | None = None
     hard_stop_price: float | None = None
     take_profits: list[TakeProfit] = field(default_factory=list)
     trailing_stop: TrailingStop | None = None
@@ -92,6 +95,8 @@ def _positive_float(raw: object, field_name: str) -> float:
         value = float(raw)
     except (TypeError, ValueError) as exc:
         raise InvalidExitPlanError(f"{field_name}_must_be_number") from exc
+    if not math.isfinite(value):
+        raise InvalidExitPlanError(f"{field_name}_must_be_finite")
     if value <= 0:
         raise InvalidExitPlanError(f"{field_name}_must_be_positive")
     return value
@@ -208,7 +213,11 @@ def normalize_exit_plan(raw_exit_plan: dict | None) -> dict | None:
     return raw
 
 
-def validate_exit_plan(raw_exit_plan: dict | None) -> None:
+def validate_exit_plan(
+    raw_exit_plan: dict | None,
+    *,
+    reference_volatility: float | None = None,
+) -> None:
     """Validate that an exit plan can be normalized before any order is filled."""
     raw_exit_plan = normalize_exit_plan(raw_exit_plan)
     if raw_exit_plan is None:
@@ -248,6 +257,10 @@ def validate_exit_plan(raw_exit_plan: dict | None) -> None:
         if trailing.get("trail_value") is None:
             raise InvalidExitPlanError("trailing_stop_trail_value_required")
         _positive_float(trailing["trail_value"], "trailing_stop_trail_value")
+        if trail_type == "volatility_multiple":
+            if reference_volatility is None:
+                raise InvalidExitPlanError("trailing_volatility_unavailable")
+            _positive_float(reference_volatility, "reference_volatility")
 
     if raw_exit_plan.get("max_hold_minutes") is not None:
         _positive_float(raw_exit_plan["max_hold_minutes"], "max_hold_minutes")
@@ -285,6 +298,36 @@ def _plan_id(symbol: str, opened_at: str) -> str:
     return f"{symbol}-{safe_ts}"
 
 
+def _trail_amount_in_price_units(
+    *,
+    entry_price: float,
+    reference_volatility: float | None,
+    trail_type: str,
+    trail_value: float,
+) -> float | None:
+    if trail_type == "price":
+        return trail_value
+    if trail_type == "percent":
+        return entry_price * trail_value
+    if trail_type == "volatility_multiple" and reference_volatility is not None:
+        return reference_volatility * trail_value
+    return None
+
+
+def _trail_value_for_price_amount(
+    *,
+    entry_price: float,
+    reference_volatility: float,
+    trail_type: str,
+    amount: float,
+) -> float:
+    if trail_type == "percent":
+        return amount / entry_price
+    if trail_type == "volatility_multiple":
+        return amount / reference_volatility
+    return amount
+
+
 def create_trade_plan(
     *,
     symbol: str,
@@ -293,13 +336,25 @@ def create_trade_plan(
     entry_price: float,
     opened_at: str,
     raw_exit_plan: dict | None,
+    reference_volatility: float | None = None,
     llm_provider: str | None = None,
     llm_model: str | None = None,
     llm_fallback_reason: str | None = None,
     llm_confidence: float | None = None,
 ) -> TradePlan:
     raw = normalize_exit_plan(raw_exit_plan) or {}
-    validate_exit_plan(raw)
+    try:
+        entry_price_value = float(entry_price)
+    except (TypeError, ValueError) as exc:
+        raise InvalidExitPlanError("entry_price_must_be_number") from exc
+    if not math.isfinite(entry_price_value):
+        raise InvalidExitPlanError("entry_price_must_be_finite")
+    if entry_price_value <= 0:
+        raise InvalidExitPlanError("entry_price_must_be_positive")
+    parsed_reference_volatility = (
+        None if reference_volatility is None else _positive_float(reference_volatility, "reference_volatility")
+    )
+    validate_exit_plan(raw, reference_volatility=parsed_reference_volatility)
     take_profits: list[TakeProfit] = []
     remaining_fraction = 1.0
     for index, item in enumerate(raw.get("take_profits", []) or []):
@@ -323,6 +378,23 @@ def create_trade_plan(
     if isinstance(trailing_raw, dict):
         trail_type = str(trailing_raw.get("trail_type", "price"))
         if trail_type in TRAILING_STOP_TRAIL_TYPES:
+            trail_value = float(trailing_raw["trail_value"])
+            trail_floored = False
+            if parsed_reference_volatility is not None:
+                trail_amount = _trail_amount_in_price_units(
+                    entry_price=entry_price_value,
+                    reference_volatility=parsed_reference_volatility,
+                    trail_type=trail_type,
+                    trail_value=trail_value,
+                )
+                if trail_amount is not None and trail_amount < parsed_reference_volatility:
+                    trail_value = _trail_value_for_price_amount(
+                        entry_price=entry_price_value,
+                        reference_volatility=parsed_reference_volatility,
+                        trail_type=trail_type,
+                        amount=parsed_reference_volatility,
+                    )
+                    trail_floored = True
             trailing_stop = TrailingStop(
                 enabled_after=(
                     None
@@ -330,7 +402,8 @@ def create_trade_plan(
                     else str(trailing_raw["enabled_after"])
                 ),
                 trail_type=trail_type,  # type: ignore[arg-type]
-                trail_value=float(trailing_raw["trail_value"]),
+                trail_value=trail_value,
+                trail_floored=trail_floored,
             )
 
     protection_raw = raw.get("profit_protection")
@@ -348,8 +421,9 @@ def create_trade_plan(
         side=side,
         quantity=float(quantity),
         remaining_quantity=float(quantity),
-        entry_price=float(entry_price),
+        entry_price=entry_price_value,
         opened_at=opened_at,
+        reference_volatility=parsed_reference_volatility,
         hard_stop_price=_parse_price(raw.get("hard_stop")),
         take_profits=take_profits,
         trailing_stop=trailing_stop,
@@ -377,6 +451,7 @@ def create_trade_plan_from_order(
     entry_price: float,
     opened_at: str,
     raw_exit_plan: dict | None,
+    reference_volatility: float | None = None,
     llm_provider: str | None = None,
     llm_model: str | None = None,
     llm_fallback_reason: str | None = None,
@@ -389,6 +464,7 @@ def create_trade_plan_from_order(
         entry_price=entry_price,
         opened_at=opened_at,
         raw_exit_plan=raw_exit_plan,
+        reference_volatility=reference_volatility,
         llm_provider=llm_provider,
         llm_model=llm_model,
         llm_fallback_reason=llm_fallback_reason,
@@ -409,10 +485,17 @@ def _take_profit_from_dict(raw: dict) -> TakeProfit:
 def _trailing_from_dict(raw: dict | None) -> TrailingStop | None:
     if raw is None:
         return None
+    raw_trail_value = raw.get("trail_value")
+    if raw_trail_value is None:
+        return None
+    trail_value = float(raw_trail_value)
+    if not math.isfinite(trail_value):
+        return None
     return TrailingStop(
         enabled_after=raw.get("enabled_after"),
         trail_type=raw["trail_type"],
-        trail_value=float(raw["trail_value"]),
+        trail_value=trail_value,
+        trail_floored=bool(raw.get("trail_floored", False)),
     )
 
 
@@ -474,6 +557,12 @@ def _normalize_exit_watch(
 def trade_plan_from_dict(raw: dict) -> TradePlan:
     trailing_stop = _trailing_from_dict(raw.get("trailing_stop"))
     profit_protection = _profit_protection_from_raw(raw.get("profit_protection"))
+    raw_reference_volatility = raw.get("reference_volatility")
+    reference_volatility = (
+        None if raw_reference_volatility is None else float(raw_reference_volatility)
+    )
+    if reference_volatility is not None and not math.isfinite(reference_volatility):
+        reference_volatility = None
     return TradePlan(
         id=str(raw["id"]),
         symbol=str(raw["symbol"]),
@@ -482,6 +571,7 @@ def trade_plan_from_dict(raw: dict) -> TradePlan:
         remaining_quantity=float(raw["remaining_quantity"]),
         entry_price=float(raw["entry_price"]),
         opened_at=str(raw["opened_at"]),
+        reference_volatility=reference_volatility,
         hard_stop_price=None if raw.get("hard_stop_price") is None else float(raw["hard_stop_price"]),
         take_profits=[_take_profit_from_dict(tp) for tp in raw.get("take_profits", [])],
         trailing_stop=trailing_stop,

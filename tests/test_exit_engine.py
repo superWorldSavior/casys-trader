@@ -2,8 +2,9 @@ from datetime import datetime, timezone
 
 import pytest
 
+import trader.exit_engine as exit_engine
 from trader.exit_engine import evaluate_plan
-from trader.trade_plan import create_trade_plan
+from trader.trade_plan import create_trade_plan, trade_plan_from_dict
 
 
 def _plan():
@@ -171,6 +172,20 @@ def test_create_plan_ne_met_pas_protection_defaut_sans_demande_agent() -> None:
     )
 
     assert plan.profit_protection is None
+
+
+def test_trailing_volatility_multiple_utilise_la_volatilite_reference() -> None:
+    plan = create_trade_plan(
+        symbol="SPY",
+        side="LONG",
+        quantity=10.0,
+        entry_price=100.0,
+        opened_at="2026-06-05T12:00:00+00:00",
+        raw_exit_plan={"trailing_stop": {"trail_type": "volatility_multiple", "trail_value": 2.0}},
+        reference_volatility=1.25,
+    )
+
+    assert exit_engine._trail_amount(plan) == pytest.approx(2.5)
 
 
 # ── Chantier A : stops/TP/trailing évalués sur le high/low de barre ───────────
@@ -346,18 +361,18 @@ class TestWatermarkIntraBar:
                 "trailing_stop": {"trail_type": "price", "trail_value": 2.0},
             },
         )
-        # price close = 101, bar_high = 106 → watermark = 106 → trailing déclenche
-        # si price redescend à 103.5 (< 106 - 2 = 104) dans la même évaluation
-        # On vérifie d'abord que le watermark est bien à 106
-        result_no_trail = evaluate_plan(
+        # price close = 101, bar_high = 106 → watermark = 106.
+        # L'armement par défaut n'a pas le droit de déclencher sur cette même barre.
+        result = evaluate_plan(
             plan,
             price=101.0,
             bar_high=106.0,
             now=datetime(2026, 6, 5, 12, 10, tzinfo=timezone.utc),
         )
-        assert result_no_trail.updated_plan.high_watermark == pytest.approx(106.0)
+        assert result.signal is None
+        assert result.updated_plan.high_watermark == pytest.approx(106.0)
 
-    def test_trailing_stop_declenche_apres_watermark_bar_high(self) -> None:
+    def test_long_trailing_declenche_sur_barre_suivante_apres_watermark_bar_high(self) -> None:
         plan = create_trade_plan(
             symbol="SPY",
             side="LONG",
@@ -368,15 +383,23 @@ class TestWatermarkIntraBar:
                 "trailing_stop": {"trail_type": "price", "trail_value": 2.0},
             },
         )
-        # bar_high 106 → watermark 106. price close 103.5 < 106 - 2 = 104 → trailing déclenche
-        result = evaluate_plan(
+        armed = evaluate_plan(
             plan,
-            price=103.5,
+            price=101.0,
             bar_high=106.0,
             now=datetime(2026, 6, 5, 12, 10, tzinfo=timezone.utc),
         )
+        result = evaluate_plan(
+            armed.updated_plan,
+            price=100.5,
+            bar_low=99.5,
+            now=datetime(2026, 6, 5, 12, 15, tzinfo=timezone.utc),
+        )
+        assert armed.signal is None
         assert result.signal is not None
         assert result.signal.reason == "trailing_stop"
+        assert result.signal.fill_price is not None
+        assert result.signal.fill_price >= plan.entry_price
 
     def test_watermark_low_avance_sur_bar_low_pour_short(self) -> None:
         plan = create_trade_plan(
@@ -389,15 +412,44 @@ class TestWatermarkIntraBar:
                 "trailing_stop": {"trail_type": "price", "trail_value": 2.0},
             },
         )
-        # bar_low 84.0 → watermark_low = 84. price 86.5 > 84 + 2 = 86 → trailing déclenche
+        # bar_low 84.0 → watermark_low = 84, sans déclenchement sur la barre d'armement.
         result = evaluate_plan(
             plan,
             price=86.5,
             bar_low=84.0,
             now=datetime(2026, 6, 9, 17, 0, tzinfo=timezone.utc),
         )
+        assert result.signal is None
+        assert result.updated_plan.low_watermark == pytest.approx(84.0)
+
+    def test_short_trailing_declenche_sur_barre_suivante_apres_watermark_bar_low(self) -> None:
+        plan = create_trade_plan(
+            symbol="CL=F",
+            side="SHORT",
+            quantity=10.0,
+            entry_price=90.0,
+            opened_at="2026-06-09T16:09:45+00:00",
+            raw_exit_plan={
+                "trailing_stop": {"trail_type": "price", "trail_value": 2.0},
+            },
+        )
+        armed = evaluate_plan(
+            plan,
+            price=86.5,
+            bar_low=84.0,
+            now=datetime(2026, 6, 9, 17, 0, tzinfo=timezone.utc),
+        )
+        result = evaluate_plan(
+            armed.updated_plan,
+            price=89.5,
+            bar_high=90.5,
+            now=datetime(2026, 6, 9, 17, 5, tzinfo=timezone.utc),
+        )
+        assert armed.signal is None
         assert result.signal is not None
         assert result.signal.reason == "trailing_stop"
+        assert result.signal.fill_price is not None
+        assert result.signal.fill_price <= plan.entry_price
 
 
 class TestStopPrioriteOnTP:
@@ -458,12 +510,81 @@ class TestFillPriceSurExitsSansBarExtremes:
 class TestTrailingStopIntraBar:
     """MAJOR 1 — trailing stop doit être évalué sur bar_low/bar_high (cohérence avec hard stop)."""
 
+    def test_short_trailing_par_defaut_attend_un_gain_au_moins_egal_au_trail(self) -> None:
+        plan = create_trade_plan(
+            symbol="GC=F",
+            side="SHORT",
+            quantity=10.0,
+            entry_price=100.0,
+            opened_at="2026-06-09T16:09:45+00:00",
+            raw_exit_plan={"trailing_stop": {"trail_type": "price", "trail_value": 2.0}},
+        )
+
+        result = evaluate_plan(
+            plan,
+            price=100.8,
+            bar_high=101.2,
+            bar_low=99.0,
+            now=datetime(2026, 6, 9, 16, 10, tzinfo=timezone.utc),
+        )
+
+        assert result.signal is None
+        assert result.updated_plan.low_watermark == pytest.approx(99.0)
+
+    def test_short_trailing_par_defaut_arme_sans_declencher_sur_la_meme_barre(self) -> None:
+        plan = create_trade_plan(
+            symbol="GC=F",
+            side="SHORT",
+            quantity=10.0,
+            entry_price=100.0,
+            opened_at="2026-06-09T16:09:45+00:00",
+            raw_exit_plan={"trailing_stop": {"trail_type": "price", "trail_value": 2.0}},
+        )
+
+        result = evaluate_plan(
+            plan,
+            price=99.8,
+            bar_high=100.1,
+            bar_low=98.0,
+            now=datetime(2026, 6, 9, 16, 10, tzinfo=timezone.utc),
+        )
+
+        assert result.signal is None
+        assert result.updated_plan.low_watermark == pytest.approx(98.0)
+
+    def test_trailing_enabled_after_tp_reste_declenchable_sans_gain_egal_au_trail(self) -> None:
+        plan = create_trade_plan(
+            symbol="GC=F",
+            side="SHORT",
+            quantity=10.0,
+            entry_price=100.0,
+            opened_at="2026-06-09T16:09:45+00:00",
+            raw_exit_plan={
+                "take_profits": [{"name": "tp1", "price": 99.5, "fraction": 0.5}],
+                "trailing_stop": {"enabled_after": "tp1", "trail_type": "price", "trail_value": 2.0},
+            },
+        )
+        filled = evaluate_plan(
+            plan,
+            price=99.5,
+            now=datetime(2026, 6, 9, 16, 10, tzinfo=timezone.utc),
+        )
+
+        result = evaluate_plan(
+            filled.updated_plan,
+            price=101.2,
+            bar_high=101.6,
+            now=datetime(2026, 6, 9, 16, 15, tzinfo=timezone.utc),
+        )
+
+        assert result.signal is not None
+        assert result.signal.reason == "trailing_stop"
+
     def test_long_trailing_declenche_par_bar_low_price_revenu_au_dessus(self) -> None:
         # LONG, trail = 2.0. Watermark initiale = entry 100.
         # bar_high = 106 → watermark devient 106.
-        # bar_low = 103.5 < 106 - 2 = 104 → trailing déclenché intra-barre.
+        # bar_low = 103.5 < 106 - 2 = 104, mais la même barre ne peut qu'armer.
         # price close = 105 (revenu au-dessus du niveau trailing 104).
-        # Doit déclencher, fill conservateur = min(niveau_trailing, price) = min(104, 105) = 104.
         plan = create_trade_plan(
             symbol="SPY",
             side="LONG",
@@ -479,13 +600,11 @@ class TestTrailingStopIntraBar:
             bar_low=103.5,
             now=datetime(2026, 6, 5, 12, 10, tzinfo=timezone.utc),
         )
-        assert result.signal is not None
-        assert result.signal.reason == "trailing_stop"
-        # fill conservateur : min(niveau trailing 104, price 105) = 104
-        assert result.signal.fill_price == pytest.approx(104.0)
+        assert result.signal is None
+        assert result.updated_plan.high_watermark == pytest.approx(106.0)
 
-    def test_long_trailing_fill_est_price_quand_price_sous_niveau(self) -> None:
-        # price 103.0 < niveau trailing 104 → fill = price (pire pour le long)
+    def test_long_trailing_par_defaut_ne_sort_pas_a_perte_sur_barre_d_armement(self) -> None:
+        # bar_high arme le trailing à breakeven, mais bar_low/price sous le niveau ne sortent pas sur cette barre.
         plan = create_trade_plan(
             symbol="SPY",
             side="LONG",
@@ -501,16 +620,13 @@ class TestTrailingStopIntraBar:
             bar_low=103.0,
             now=datetime(2026, 6, 5, 12, 10, tzinfo=timezone.utc),
         )
-        assert result.signal is not None
-        assert result.signal.reason == "trailing_stop"
-        assert result.signal.fill_price == pytest.approx(103.0)
+        assert result.signal is None
 
     def test_short_trailing_declenche_par_bar_high_price_revenu_dessous(self) -> None:
         # SHORT, trail = 2.0. Watermark_low initiale = entry 90.
         # bar_low = 84 → watermark_low = 84.
-        # bar_high = 86.5 > 84 + 2 = 86 → trailing déclenché intra-barre.
+        # bar_high = 86.5 > 84 + 2 = 86, mais la même barre ne peut qu'armer.
         # price close = 85.5 (revenu sous le niveau trailing 86).
-        # fill conservateur SHORT = max(niveau_trailing, price) = max(86, 85.5) = 86.
         plan = create_trade_plan(
             symbol="CL=F",
             side="SHORT",
@@ -526,10 +642,8 @@ class TestTrailingStopIntraBar:
             bar_low=84.0,
             now=datetime(2026, 6, 9, 17, 0, tzinfo=timezone.utc),
         )
-        assert result.signal is not None
-        assert result.signal.reason == "trailing_stop"
-        # fill conservateur : max(niveau trailing 86, price 85.5) = 86
-        assert result.signal.fill_price == pytest.approx(86.0)
+        assert result.signal is None
+        assert result.updated_plan.low_watermark == pytest.approx(84.0)
 
     def test_trailing_non_declenche_si_bar_low_au_dessus_niveau(self) -> None:
         # bar_high 106 → watermark 106, niveau trailing = 104.
@@ -550,6 +664,72 @@ class TestTrailingStopIntraBar:
             now=datetime(2026, 6, 5, 12, 10, tzinfo=timezone.utc),
         )
         assert result.signal is None
+
+
+class TestTrailingVolatilityLegacy:
+    """Plan legacy volatility_multiple sans reference_volatility : trailing inactif, pas de crash."""
+
+    def _plan(self, **overrides):
+        raw = {
+            "id": "SPY-legacy-vol-trail",
+            "symbol": "SPY",
+            "side": "LONG",
+            "quantity": 10.0,
+            "remaining_quantity": 10.0,
+            "entry_price": 100.0,
+            "opened_at": "2026-06-05T12:00:00+00:00",
+            "reference_volatility": None,
+            "hard_stop_price": None,
+            "take_profits": [],
+            "trailing_stop": {
+                "enabled_after": None,
+                "trail_type": "volatility_multiple",
+                "trail_value": 2.0,
+            },
+            "max_hold_minutes": None,
+            "high_watermark": 105.0,
+            "low_watermark": 100.0,
+            "filled_take_profits": [],
+        }
+        raw.update(overrides)
+        return trade_plan_from_dict(raw)
+
+    def test_volatility_multiple_sans_reference_rechargee_ne_leve_pas(self) -> None:
+        plan = self._plan()
+
+        result = evaluate_plan(
+            plan,
+            price=103.0,
+            bar_low=102.0,
+            now=datetime(2026, 6, 5, 12, 10, tzinfo=timezone.utc),
+        )
+
+        assert result.signal is None
+        assert result.updated_plan.high_watermark == pytest.approx(105.0)
+
+    def test_hard_stop_continue_de_proteger_un_plan_volatility_multiple_legacy(self) -> None:
+        plan = self._plan(hard_stop_price=99.0)
+
+        result = evaluate_plan(
+            plan,
+            price=98.5,
+            now=datetime(2026, 6, 5, 12, 10, tzinfo=timezone.utc),
+        )
+
+        assert result.signal is not None
+        assert result.signal.reason == "hard_stop"
+
+    def test_max_hold_continue_de_proteger_un_plan_volatility_multiple_legacy(self) -> None:
+        plan = self._plan(max_hold_minutes=5.0)
+
+        result = evaluate_plan(
+            plan,
+            price=103.0,
+            now=datetime(2026, 6, 5, 12, 5, tzinfo=timezone.utc),
+        )
+
+        assert result.signal is not None
+        assert result.signal.reason == "max_hold"
 
 
 class TestProfitProtectionFillPrice:

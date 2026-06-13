@@ -27,7 +27,7 @@ import yaml
 from .agent_context import build_market_cockpit, resolve_indicator_requests
 from . import attribution, code_version, codex_client, consolidator, decision_ledger, family_regime, relevance_gate, stats
 from .exit_engine import evaluate_plan
-from .features import DEFAULT_INDICATORS
+from .features import DEFAULT_INDICATORS, build_indicator_snapshot
 from .indicator_watch import (
     armed_order_price_coherent,
     build_indicator_watch,
@@ -354,6 +354,7 @@ def _create_plan_for_final_position(
     price: float,
     opened_at: str,
     raw_exit_plan: dict,
+    reference_volatility: float | None = None,
     llm_provider: str | None = None,
     llm_model: str | None = None,
     llm_fallback_reason: str | None = None,
@@ -369,6 +370,7 @@ def _create_plan_for_final_position(
         entry_price=position.avg_price or price,
         opened_at=opened_at,
         raw_exit_plan=raw_exit_plan,
+        reference_volatility=reference_volatility,
         llm_provider=llm_provider,
         llm_model=llm_model,
         llm_fallback_reason=llm_fallback_reason,
@@ -421,6 +423,7 @@ def _plan_snapshot(plan: TradePlan) -> dict:
         "symbol": plan.symbol,
         "side": plan.side,
         "entry_price": plan.entry_price,
+        "reference_volatility": plan.reference_volatility,
         "quantity": plan.quantity,
         "remaining_quantity": plan.remaining_quantity,
         "hard_stop_price": plan.hard_stop_price,
@@ -433,6 +436,7 @@ def _plan_snapshot(plan: TradePlan) -> dict:
                 "trail_type": plan.trailing_stop.trail_type,
                 "trail_value": plan.trailing_stop.trail_value,
                 "enabled_after": plan.trailing_stop.enabled_after,
+                "trail_floored": plan.trailing_stop.trail_floored,
             }
             if plan.trailing_stop is not None
             else None
@@ -442,6 +446,71 @@ def _plan_snapshot(plan: TradePlan) -> dict:
         "high_watermark": plan.high_watermark,
         "low_watermark": plan.low_watermark,
     }
+
+
+def _positive_finite_float(raw: object) -> float | None:
+    try:
+        value = float(raw)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(value) or value <= 0:
+        return None
+    return value
+
+
+def _cockpit_vol_fraction(cockpit: dict, symbol: str) -> float | None:
+    cols = cockpit.get("cols")
+    rows = cockpit.get("rows")
+    if not isinstance(cols, list) or not isinstance(rows, list):
+        return None
+    try:
+        symbol_index = cols.index("s")
+        vol_index = cols.index("vol")
+    except ValueError:
+        return None
+    for row in rows:
+        if not isinstance(row, list):
+            continue
+        if len(row) <= max(symbol_index, vol_index):
+            continue
+        if row[symbol_index] == symbol:
+            return _positive_finite_float(row[vol_index])
+    return None
+
+
+def _feature_vol_fraction(
+    symbol: str,
+    tradable_bars_by_symbol: dict[str, list],
+) -> float | None:
+    if symbol not in tradable_bars_by_symbol:
+        return None
+    snapshot = build_indicator_snapshot(
+        tradable_bars_by_symbol,
+        symbols=[symbol],
+        names=["volatility"],
+        window=48,
+    )
+    item = snapshot.get(symbol, {})
+    indicators = item.get("indicators") if isinstance(item, dict) else None
+    if not isinstance(indicators, dict):
+        return None
+    return _positive_finite_float(indicators.get("volatility"))
+
+
+def _reference_volatility_for_symbol(
+    symbol: str,
+    *,
+    entry_price: float,
+    cockpit: dict,
+    tradable_bars_by_symbol: dict[str, list],
+) -> float | None:
+    vol_fraction = _cockpit_vol_fraction(cockpit, symbol)
+    if vol_fraction is None:
+        vol_fraction = _feature_vol_fraction(symbol, tradable_bars_by_symbol)
+    price = _positive_finite_float(entry_price)
+    if price is None or vol_fraction is None:
+        return None
+    return price * vol_fraction
 
 
 def _apply_planned_exits(
@@ -1578,6 +1647,7 @@ def run_cycle(
                  "indicator_watch_rejections": [],
                  "data_source": runtime_data_source_by_sym.get(sym)}
 
+        reference_volatility: float | None = None
         pending_indicator_watch = None
         if decision.indicator_watch:
             indicator_watch_result = build_indicator_watch(decision.indicator_watch, owner_symbol=sym, now=now)
@@ -1628,8 +1698,17 @@ def run_cycle(
             continue
 
         if decision.exit_plan and decision.intent in {"OPEN_LONG", "OPEN_SHORT", "REVERSE"}:
+            reference_volatility = _reference_volatility_for_symbol(
+                sym,
+                entry_price=prices[sym],
+                cockpit=cockpit,
+                tradable_bars_by_symbol=tradable_bars_by_symbol,
+            )
             try:
-                validate_exit_plan(decision.exit_plan)
+                validate_exit_plan(
+                    decision.exit_plan,
+                    reference_volatility=reference_volatility,
+                )
             except InvalidExitPlanError as exc:
                 _log_cycle_progress(
                     "[decision %d/%d] %s blocked invalid_exit_plan:%s",
@@ -1858,6 +1937,7 @@ def run_cycle(
                         price=prices[sym],
                         opened_at=fill.ts,
                         raw_exit_plan=decision.exit_plan,
+                        reference_volatility=reference_volatility,
                         llm_provider=decision.llm_provider,
                         llm_model=decision.llm_model,
                         llm_fallback_reason=decision.llm_fallback_reason,
@@ -1874,6 +1954,7 @@ def run_cycle(
                         entry_price=prices[sym],
                         opened_at=fill.ts,
                         raw_exit_plan=decision.exit_plan,
+                        reference_volatility=reference_volatility,
                         llm_provider=decision.llm_provider,
                         llm_model=decision.llm_model,
                         llm_fallback_reason=decision.llm_fallback_reason,

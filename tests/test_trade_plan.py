@@ -1,6 +1,16 @@
 from datetime import datetime, timezone
 
-from trader.trade_plan import TradePlan, TradePlanStore, create_trade_plan, validate_exit_plan
+import pytest
+
+import trader.exit_engine as exit_engine
+from trader.trade_plan import (
+    InvalidExitPlanError,
+    TradePlan,
+    TradePlanStore,
+    create_trade_plan,
+    trade_plan_from_dict,
+    validate_exit_plan,
+)
 
 
 def _exit_plan() -> dict:
@@ -137,6 +147,163 @@ def test_validate_exit_plan_ignore_trailing_stop_inexploitable_si_autres_sorties
             "trailing_stop": {"enabled_after": "tp1"},
         }
     )
+
+
+def test_create_trade_plan_refuse_volatility_multiple_sans_volatilite_reference() -> None:
+    with pytest.raises(InvalidExitPlanError, match="trailing_volatility_unavailable"):
+        create_trade_plan(
+            symbol="SPY",
+            side="LONG",
+            quantity=10.0,
+            entry_price=100.0,
+            opened_at="2026-06-05T12:00:00+00:00",
+            raw_exit_plan={
+                "trailing_stop": {"trail_type": "volatility_multiple", "trail_value": 2.0},
+            },
+        )
+
+
+def test_create_trade_plan_refuse_trailing_stop_non_fini() -> None:
+    with pytest.raises(InvalidExitPlanError, match="trailing_stop_trail_value_must_be_finite"):
+        create_trade_plan(
+            symbol="SPY",
+            side="LONG",
+            quantity=10.0,
+            entry_price=100.0,
+            opened_at="2026-06-05T12:00:00+00:00",
+            raw_exit_plan={
+                "trailing_stop": {"trail_type": "price", "trail_value": float("inf")},
+            },
+        )
+
+
+def test_create_trade_plan_refuse_reference_volatility_non_finie() -> None:
+    with pytest.raises(InvalidExitPlanError, match="reference_volatility_must_be_finite"):
+        create_trade_plan(
+            symbol="SPY",
+            side="LONG",
+            quantity=10.0,
+            entry_price=100.0,
+            opened_at="2026-06-05T12:00:00+00:00",
+            raw_exit_plan={
+                "trailing_stop": {"trail_type": "volatility_multiple", "trail_value": 2.0},
+            },
+            reference_volatility=float("nan"),
+        )
+
+
+def test_trade_plan_from_dict_ignore_les_non_finis_au_reload() -> None:
+    plan = trade_plan_from_dict(
+        {
+            "id": "SPY-nonfinite",
+            "symbol": "SPY",
+            "side": "LONG",
+            "quantity": 10.0,
+            "remaining_quantity": 10.0,
+            "entry_price": 100.0,
+            "opened_at": "2026-06-05T12:00:00+00:00",
+            "reference_volatility": float("nan"),
+            "trailing_stop": {
+                "enabled_after": None,
+                "trail_type": "price",
+                "trail_value": float("inf"),
+            },
+        }
+    )
+
+    assert plan.reference_volatility is None
+    assert plan.trailing_stop is None
+
+
+def test_trade_plan_store_persiste_reference_volatility(tmp_path) -> None:
+    store = TradePlanStore(tmp_path / "plans.json")
+    plan = create_trade_plan(
+        symbol="SPY",
+        side="LONG",
+        quantity=10.0,
+        entry_price=100.0,
+        opened_at="2026-06-05T12:00:00+00:00",
+        raw_exit_plan={
+            "trailing_stop": {"trail_type": "volatility_multiple", "trail_value": 2.0},
+        },
+        reference_volatility=1.25,
+    )
+
+    store.upsert(plan)
+
+    reloaded = TradePlanStore(tmp_path / "plans.json").open_plans()[0]
+    assert reloaded.reference_volatility == pytest.approx(1.25)
+    assert reloaded == plan
+
+
+def test_create_trade_plan_clampe_trailing_percent_sous_plancher_volatilite() -> None:
+    plan = create_trade_plan(
+        symbol="SPY",
+        side="LONG",
+        quantity=10.0,
+        entry_price=100.0,
+        opened_at="2026-06-05T12:00:00+00:00",
+        raw_exit_plan={
+            "trailing_stop": {"trail_type": "percent", "trail_value": 0.005},
+        },
+        reference_volatility=1.0,
+    )
+
+    assert plan.trailing_stop is not None
+    assert plan.trailing_stop.trail_floored is True
+    assert plan.trailing_stop.trail_value == pytest.approx(0.01)
+    assert exit_engine._trail_amount(plan) == pytest.approx(1.0)
+
+
+def test_create_trade_plan_refuse_entry_price_zero_avant_clamp_trailing_percent() -> None:
+    with pytest.raises(InvalidExitPlanError, match="entry_price_must_be_positive"):
+        create_trade_plan(
+            symbol="SPY",
+            side="LONG",
+            quantity=10.0,
+            entry_price=0.0,
+            opened_at="2026-06-05T12:00:00+00:00",
+            raw_exit_plan={
+                "trailing_stop": {"trail_type": "percent", "trail_value": 0.01},
+            },
+            reference_volatility=1.0,
+        )
+
+
+def test_create_trade_plan_ne_clampe_pas_trailing_au_dessus_du_plancher() -> None:
+    plan = create_trade_plan(
+        symbol="SPY",
+        side="LONG",
+        quantity=10.0,
+        entry_price=100.0,
+        opened_at="2026-06-05T12:00:00+00:00",
+        raw_exit_plan={
+            "trailing_stop": {"trail_type": "percent", "trail_value": 0.02},
+        },
+        reference_volatility=1.0,
+    )
+
+    assert plan.trailing_stop is not None
+    assert plan.trailing_stop.trail_floored is False
+    assert plan.trailing_stop.trail_value == pytest.approx(0.02)
+    assert exit_engine._trail_amount(plan) == pytest.approx(2.0)
+
+
+def test_create_trade_plan_ne_clampe_pas_sans_volatilite_reference() -> None:
+    plan = create_trade_plan(
+        symbol="EURUSD=X",
+        side="LONG",
+        quantity=10.0,
+        entry_price=1.10,
+        opened_at="2026-06-05T12:00:00+00:00",
+        raw_exit_plan={
+            "trailing_stop": {"trail_type": "price", "trail_value": 0.0007},
+        },
+    )
+
+    assert plan.trailing_stop is not None
+    assert plan.trailing_stop.trail_floored is False
+    assert plan.trailing_stop.trail_value == pytest.approx(0.0007)
 
 
 def test_trade_plan_store_persiste_les_plans_ouverts(tmp_path) -> None:

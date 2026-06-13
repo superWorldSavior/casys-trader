@@ -139,7 +139,11 @@ def _trail_amount(plan: TradePlan) -> float | None:
         return trailing.trail_value
     if trailing.trail_type == "percent":
         return plan.entry_price * trailing.trail_value
-    return trailing.trail_value
+    if trailing.trail_type == "volatility_multiple":
+        if plan.reference_volatility is None:
+            return None
+        return plan.reference_volatility * trailing.trail_value
+    return None
 
 
 def _check_trailing(
@@ -147,6 +151,7 @@ def _check_trailing(
     price: float,
     bar_high: float | None = None,
     bar_low: float | None = None,
+    guard_plan: TradePlan | None = None,
 ) -> tuple[bool, float | None]:
     """Return (triggered, fill_price) for the trailing stop.
 
@@ -160,6 +165,10 @@ def _check_trailing(
     amount = _trail_amount(plan)
     if amount is None:
         return False, None
+    if plan.trailing_stop is not None and plan.trailing_stop.enabled_after is None:
+        armed_from = plan if guard_plan is None else guard_plan
+        if _best_favorable_move(armed_from) < amount:
+            return False, None
     if plan.side == "LONG":
         watermark = plan.high_watermark if plan.high_watermark is not None else plan.entry_price
         trail_level = watermark - amount
@@ -288,6 +297,7 @@ def evaluate_plan(
     When both stop and TP are crossed in the same bar, the order within the bar
     is unknown — we default to stop-first (conservative / reduces loss).
     """
+    plan_at_eval_start = plan
     plan = _update_watermarks(plan, price, bar_high=bar_high, bar_low=bar_low)
     if plan.remaining_quantity <= 0:
         return ExitEvaluation(updated_plan=plan, close_plan=True)
@@ -326,7 +336,13 @@ def evaluate_plan(
     if protected is not None:
         return protected
 
-    trail_triggered, trail_fill = _check_trailing(plan, price, bar_high=bar_high, bar_low=bar_low)
+    trail_triggered, trail_fill = _check_trailing(
+        plan,
+        price,
+        bar_high=bar_high,
+        bar_low=bar_low,
+        guard_plan=plan_at_eval_start,
+    )
     if trail_triggered:
         return _close(plan, "trailing_stop", fill_price=trail_fill)
 

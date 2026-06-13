@@ -91,6 +91,20 @@ def test_plan_declenche_avec_prix_deja_sous_le_stop_est_annule() -> None:
     assert result.pnl_pct is None
 
 
+def test_plan_declenche_volatility_multiple_sans_reference_est_invalide() -> None:
+    watch = _plan(stop=95.0)
+    watch["order"]["exit_plan"]["trailing_stop"] = {
+        "trail_type": "volatility_multiple",
+        "trail_value": 2.0,
+    }
+    closes = [100.0, 100.2, 100.4, 102.0, 104.0]
+
+    result = replay_armed_plan(watch, _bars(closes))
+
+    assert result.status == "invalid"
+    assert result.pnl_pct is None
+
+
 def test_plan_declenche_puis_stoppe_en_perte() -> None:
     # trigger sur la hausse, puis retournement qui traverse le stop à 101
     closes = [100.0, 100.5, 101.0, 103.0, 104.0, 102.0, 100.5, 99.0]
