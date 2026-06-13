@@ -426,6 +426,24 @@ def _fmt_signed_money(value: Any, *, default: str = "n/a") -> str:
     return default if number is None else f"{number:+,.2f}"
 
 
+def _fmt_fee_cost(value: Any, *, default: str = "n/a") -> str:
+    number = _safe_float(value, default=None)
+    return default if number is None else f"{-abs(number):+,.2f}"
+
+
+def _holding_unrealized_pnl_for_display(holding: dict) -> float:
+    net_pnl = _safe_float(holding.get("unrealized_pnl_net"), default=None)
+    if net_pnl is not None:
+        return net_pnl
+    return _safe_float(holding.get("unrealized_pnl"), default=0.0) or 0.0
+
+
+def _holding_round_trip_fee_for_display(holding: dict) -> float | None:
+    if _safe_float(holding.get("unrealized_pnl_net"), default=None) is None:
+        return None
+    return _safe_float(holding.get("round_trip_fee"), default=None)
+
+
 def _fmt_number(value: Any, decimals: int = 2, *, default: str = "n/a") -> str:
     number = _safe_float(value, default=None)
     return default if number is None else f"{number:.{decimals}f}"
@@ -556,16 +574,26 @@ def _build_positions_panel(
         qty = _safe_float(h.get("quantity"), default=0.0) or 0.0
         avg = _safe_float(h.get("avg_price"), default=0.0) or 0.0
         last = _safe_float(h.get("last_price"), default=0.0) or 0.0
-        pnl = _safe_float(h.get("unrealized_pnl"), default=0.0) or 0.0
+        gross_pnl = _safe_float(h.get("unrealized_pnl"), default=0.0) or 0.0
+        net_pnl = _safe_float(h.get("unrealized_pnl_net"), default=None)
+        round_trip_fee = _safe_float(h.get("round_trip_fee"), default=None)
+        pnl = net_pnl if net_pnl is not None else gross_pnl
         notional = abs(avg * qty)
         pnl_pct = (pnl / notional * 100.0) if notional else 0.0
         pnl_style = palette["pnl_positive"] if pnl >= 0 else palette["pnl_negative"]
+        pnl_text = Text(f"{pnl:+,.2f}", style=pnl_style)
+        if net_pnl is not None and round_trip_fee is not None:
+            pnl_text.append("\n")
+            pnl_text.append(
+                f"brut {gross_pnl:+,.2f} · frais {_fmt_fee_cost(round_trip_fee)}",
+                style=palette["dim"],
+            )
         pos_table.add_row(
             symbol,
             f"{qty:,.4f}",
             f"${avg:,.4f}",
             f"${last:,.4f}",
-            Text(f"{pnl:+,.2f}", style=pnl_style),
+            pnl_text,
             Text(f"{pnl_pct:+.2f}%", style=pnl_style),
         )
 
@@ -597,14 +625,27 @@ def _build_attribution_panel(
     attribution: dict, *, palette: Palette = PALETTE_DARK
 ) -> Panel:
     realized_pnl = _safe_float(attribution.get("realized_pnl"), default=0.0) or 0.0
+    total_commissions = _safe_float(attribution.get("total_commissions"), default=None)
+    realized_gross_pnl = _safe_float(attribution.get("realized_gross_pnl"), default=None)
     pnl_style = (
         palette["pnl_positive"] if realized_pnl >= 0 else palette["pnl_negative"]
+    )
+    realized_detail_parts: list[str] = []
+    if total_commissions is not None:
+        realized_detail_parts.append(f"dont frais {_fmt_fee_cost(total_commissions)}")
+    if realized_gross_pnl is not None:
+        realized_detail_parts.append(f"brut {_fmt_signed_money(realized_gross_pnl)}")
+    realized_detail = (
+        f" ({' · '.join(realized_detail_parts)})"
+        if realized_detail_parts
+        else ""
     )
     summary = Text.assemble(
         ("Trades clôturés : ", "bold"),
         (_fmt_int(attribution.get("n_closed_trades")), palette["kpi_default"]),
         ("   P&L réalisé : ", "bold"),
         (_fmt_signed_money(realized_pnl), pnl_style),
+        (realized_detail, palette["dim"]),
         ("   Win rate : ", "bold"),
         (_fmt_percent(attribution.get("win_rate")), palette["kpi_default"]),
         ("   Détention moy. : ", "bold"),
@@ -1161,9 +1202,13 @@ def build_view(
     if ret_pct is None:
         total_return = _safe_float(kpis.get("total_return"), default=0.0) or 0.0
         ret_pct = total_return * 100.0
-    unrealized_total = sum(
-        _safe_float(h.get("unrealized_pnl"), default=0.0) or 0.0 for h in holdings
-    )
+    unrealized_total = sum(_holding_unrealized_pnl_for_display(h) for h in holdings)
+    unrealized_fees = [
+        fee
+        for h in holdings
+        if (fee := _holding_round_trip_fee_for_display(h)) is not None
+    ]
+    unrealized_fee_total = sum(unrealized_fees)
     phase = str(daemon_status.get("phase", "—"))
     current_symbol = str(daemon_status.get("current_symbol") or "—")
     done = daemon_status.get("decisions_done")
@@ -1208,7 +1253,13 @@ def build_view(
         ("Rendement : ", "bold"),
         (f"{ret_pct:+.2f}%   ", ret_style),
         ("PnL latent total : ", "bold"),
-        (f"{unrealized_total:+,.2f}   ", unrealized_style),
+        (f"{unrealized_total:+,.2f}", unrealized_style),
+        (
+            f" (dont frais {_fmt_fee_cost(unrealized_fee_total)})   "
+            if unrealized_fees
+            else "   ",
+            palette["dim"],
+        ),
         ("Mode : ", "bold"),
         mode_label,
         ("   Kill-switch : ", "bold"),

@@ -21,6 +21,7 @@ import time
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Callable
 
 import yaml
 
@@ -143,6 +144,48 @@ def _append_cycle_history(report: dict) -> None:
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     with (STATE_DIR / "history.jsonl").open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(history_row, ensure_ascii=False) + "\n")
+
+
+def _build_portfolio_fee_estimator(
+    commission_model: CommissionModel | None,
+) -> Callable[[str, float, float, float], float | None] | None:
+    if commission_model is None:
+        return None
+
+    def estimate(
+        symbol: str,
+        quantity: float,
+        avg_price: float,
+        last_price: float,
+    ) -> float | None:
+        if (
+            not math.isfinite(quantity)
+            or quantity == 0.0
+            or not math.isfinite(avg_price)
+            or avg_price <= 0.0
+            or not math.isfinite(last_price)
+            or last_price <= 0.0
+        ):
+            return None
+        abs_quantity = abs(quantity)
+        entry_side = "BUY" if quantity > 0.0 else "SELL"
+        exit_side = "SELL" if quantity > 0.0 else "BUY"
+        entry = commission_model.calculate(
+            Order(symbol=symbol, side=entry_side, quantity=abs_quantity),
+            avg_price,
+        )
+        exit_ = commission_model.calculate(
+            Order(symbol=symbol, side=exit_side, quantity=abs_quantity),
+            last_price,
+        )
+        if {
+            entry.model,
+            exit_.model,
+        } & {"ibkr_unknown", "ibkr_invalid_order"}:
+            return None
+        return entry.amount + exit_.amount
+
+    return estimate
 
 
 def _log_cycle_progress(message: str, *args: object) -> None:
@@ -1253,18 +1296,19 @@ def run_cycle(
 
     snap = portfolio.snapshot(broker, lambda s: prices.get(s, 0.0), starting_equity)
     gross = sum(abs(h.market_value) for h in snap.holdings)
+    portfolio_fee_estimator = _build_portfolio_fee_estimator(commission_model)
 
     active_families = family_regime.families_for_universe(tradable_symbols)
     # Coût de transaction injecté dans le cockpit : break-even (bps) + coût
     # aller-retour par symbole, pour un ordre de référence = plafond par ordre du
     # risk gate. L'agent compare l'amplitude attendue au break-even avant de
     # scalper. Seulement si un modèle de frais est actif (sinon colonnes absentes).
-    fee_estimator = None
+    cockpit_fee_estimator = None
     fee_ref_notional = None
     if commission_model is not None:
         fee_ref_notional = float(risk_cfg.get("max_order_value", 10_000.0))
 
-        def fee_estimator(symbol: str, price: float | None) -> dict | None:
+        def cockpit_fee_estimator(symbol: str, price: float | None) -> dict | None:
             return round_trip_cost(commission_model, symbol, price, fee_ref_notional)
 
     # Contexte cross-asset partagé : tout l'univers est visible à chaque décision
@@ -1275,7 +1319,7 @@ def run_cycle(
         prices=tradable_prices,
         window=48,
         daily_bars_by_symbol=daily_bars_by_symbol,
-        fee_estimator=fee_estimator,
+        fee_estimator=cockpit_fee_estimator,
         fee_ref_notional=fee_ref_notional,
     )
     excluded_attribution_symbols = tuple(regime_cfg.get("exclude_symbols") or [])
@@ -1286,7 +1330,7 @@ def run_cycle(
     )
     base_context = {
         "now": now.isoformat(),
-        "portfolio": snap.as_context(),
+        "portfolio": snap.as_context(fee_estimator=portfolio_fee_estimator),
         "risk_limits": risk_cfg,
         "semantic": {
             "requestable_indicator_ids": DEFAULT_INDICATORS,
@@ -1326,7 +1370,7 @@ def run_cycle(
         "exit_watch_triggers": exit_watch_triggers,
         "indicator_triggers": indicator_triggers,
         "decisions": [],
-        "portfolio": snap.as_context(),
+        "portfolio": snap.as_context(fee_estimator=portfolio_fee_estimator),
         "prices": {s: round(p, 4) for s, p in prices.items()},
         "stale_market_data": stale_market_data,
         "model_calls_used": 0,
@@ -1334,7 +1378,7 @@ def run_cycle(
 
     def refresh_report_portfolio() -> None:
         latest = portfolio.snapshot(broker, lambda s: prices.get(s, 0.0), starting_equity)
-        report["portfolio"] = latest.as_context()
+        report["portfolio"] = latest.as_context(fee_estimator=portfolio_fee_estimator)
 
     _write_current_report(report)
     mandate_txt, memory_txt = mem.read_mandate(), mem.read_memory()

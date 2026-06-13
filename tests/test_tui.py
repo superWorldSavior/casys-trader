@@ -6,10 +6,21 @@ import json
 from datetime import UTC, datetime
 
 from trader.tui import (
+    _build_attribution_panel,
+    _build_positions_panel,
     _load_scheduler_data_safe,
     build_view,
     load_runtime_state,
 )
+
+
+def _render_plain(renderable, *, width: int = 160) -> str:
+    from rich.console import Console
+
+    console = Console(width=width, highlight=False)
+    with console.capture() as capture:
+        console.print(renderable)
+    return capture.get()
 
 
 # ---------------------------------------------------------------------------
@@ -100,6 +111,93 @@ def test_build_view_avec_etat_complet_retourne_un_renderable() -> None:
     assert "3/25" in output
     assert "current_report" in output
     assert "dry" in output.lower() or "DRY" in output or "2.5" in output or "BUY" in output
+
+
+def test_positions_affiche_le_pnl_latent_net_avec_frais_et_brut_secondaires() -> None:
+    holdings = [
+        {
+            "symbol": "AAPL",
+            "quantity": 10.0,
+            "avg_price": 100.0,
+            "last_price": 110.0,
+            "unrealized_pnl": 100.0,
+            "round_trip_fee": 1.75,
+            "unrealized_pnl_net": 98.25,
+        }
+    ]
+
+    output = _render_plain(_build_positions_panel(holdings))
+
+    assert "+98.25" in output
+    assert "brut +100.00" in output
+    assert "frais -1.75" in output
+
+
+def test_positions_sans_pnl_net_garde_l_affichage_brut_historique() -> None:
+    holdings = [
+        {
+            "symbol": "AAPL",
+            "quantity": 10.0,
+            "avg_price": 100.0,
+            "last_price": 110.0,
+            "unrealized_pnl": 100.0,
+        }
+    ]
+
+    output = _render_plain(_build_positions_panel(holdings))
+
+    assert "+100.00" in output
+    assert "brut" not in output
+    assert "frais" not in output
+
+
+def test_build_view_total_latent_utilise_le_net_et_detaille_les_frais() -> None:
+    state = {
+        **_FULL_STATE,
+        "portfolio": {
+            **_FULL_STATE["portfolio"],
+            "holdings": [
+                {
+                    "symbol": "AAPL",
+                    "quantity": 10.0,
+                    "avg_price": 100.0,
+                    "last_price": 110.0,
+                    "unrealized_pnl": 100.0,
+                    "round_trip_fee": 2.0,
+                    "unrealized_pnl_net": 98.0,
+                },
+                {
+                    "symbol": "TSLA",
+                    "quantity": 5.0,
+                    "avg_price": 100.0,
+                    "last_price": 90.0,
+                    "unrealized_pnl": -50.0,
+                    "round_trip_fee": 1.0,
+                    "unrealized_pnl_net": -51.0,
+                },
+            ],
+        },
+    }
+
+    output = _render_plain(build_view(state), width=220)
+
+    assert "PnL latent total" in output
+    assert "+47.00" in output
+    assert "dont frais -3.00" in output
+
+
+def test_attribution_affiche_le_realise_net_avec_frais_et_brut_secondaires() -> None:
+    attribution = {
+        "realized_pnl": 42.50,
+        "total_commissions": 3.75,
+        "realized_gross_pnl": 46.25,
+    }
+
+    output = _render_plain(_build_attribution_panel(attribution))
+
+    assert "+42.50" in output
+    assert "dont frais -3.75" in output
+    assert "brut +46.25" in output
 
 
 def test_build_view_normalise_le_timestamp_du_cycle_en_utc() -> None:
