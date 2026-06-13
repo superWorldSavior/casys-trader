@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import json
 import math
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 
 # En-dessous, une position est considérée comme plate (évite les poussières
@@ -227,13 +227,75 @@ def _aggregate(trips: list[dict]) -> dict:
     }
 
 
-def compute_attribution(state_dir: Path) -> dict:
+def _parse_iso_date(value: str, *, field: str) -> date:
+    raw = value.strip()
+    try:
+        return datetime.fromisoformat(raw.replace("Z", "+00:00")).date()
+    except ValueError as exc:
+        raise ValueError(f"{field} doit être une date/datetime ISO: {value!r}") from exc
+
+
+def _normalize_excluded_symbols(exclude_symbols: tuple[str, ...] | frozenset[str]) -> tuple[str, ...]:
+    raw_symbols = sorted(exclude_symbols) if isinstance(exclude_symbols, frozenset) else exclude_symbols
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for symbol in raw_symbols:
+        parsed = str(symbol)
+        if parsed in seen:
+            continue
+        normalized.append(parsed)
+        seen.add(parsed)
+    return tuple(normalized)
+
+
+def _filter_regime_trips(
+    trips: list[dict],
+    *,
+    since: str | None,
+    exclude_symbols: tuple[str, ...] | frozenset[str],
+) -> tuple[list[dict], dict]:
+    since_date = _parse_iso_date(since, field="since") if since is not None else None
+    excluded_symbols = _normalize_excluded_symbols(exclude_symbols)
+    excluded_symbol_set = set(excluded_symbols)
+    kept: list[dict] = []
+    n_excluded_trades = 0
+
+    for trip in trips:
+        excluded = False
+        if since_date is not None:
+            exit_date = _parse_iso_date(str(trip.get("exit_ts")), field="exit_ts")
+            excluded = exit_date < since_date
+        if str(trip.get("symbol")) in excluded_symbol_set:
+            excluded = True
+        if excluded:
+            n_excluded_trades += 1
+        else:
+            kept.append(trip)
+
+    return kept, {
+        "since": since,
+        "excluded_symbols": list(excluded_symbols),
+        "n_excluded_trades": n_excluded_trades,
+    }
+
+
+def compute_attribution(
+    state_dir: Path,
+    *,
+    since: str | None = None,
+    exclude_symbols: tuple[str, ...] | frozenset[str] = (),
+) -> dict:
     """Round-trips + calibration par bucket de confidence + breakdown raison de sortie.
 
     Sortie machine-readable compacte, injectable dans le contexte de l'agent pour
     qu'il s'auto-corrige (ses calls confiants gagnent-ils ? quelles sorties coûtent ?).
     """
     trips = compute_round_trips(state_dir)
+    trips, regime = _filter_regime_trips(
+        trips,
+        since=since,
+        exclude_symbols=exclude_symbols,
+    )
     overall = _aggregate(trips)
 
     by_confidence: list[dict] = []
@@ -261,6 +323,7 @@ def compute_attribution(state_dir: Path) -> dict:
         "avg_holding_minutes": (sum(holding) / len(holding)) if holding else None,
         "by_confidence": by_confidence,
         "by_exit_reason": by_exit_reason,
+        "regime": regime,
     }
 
 

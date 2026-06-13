@@ -1045,6 +1045,11 @@ def run_cycle(
     now = now or datetime.now(timezone.utc)
     universe_cfg = _load_yaml(ROOT / "config" / "universe.yaml")
     risk_cfg = _load_yaml(ROOT / "config" / "risk.yaml")
+    regime_path = ROOT / "config" / "regime.yaml"
+    regime_cfg = _load_yaml(regime_path) if regime_path.exists() else {}
+    regime_cfg = regime_cfg or {}
+    attribution_since = regime_cfg.get("attribution_since")
+    attribution_since = None if attribution_since is None else str(attribution_since)
 
     symbols: list[str] = universe_cfg["symbols"]
     symbols_to_decide = symbols
@@ -1287,7 +1292,11 @@ def run_cycle(
         # Attribution décision->résultat : P&L réalisé par trade, calibration de la
         # confidence et coût par raison de sortie. Le signal qui dit à l'agent si
         # ses choix (surtout ses calls confiants) gagnent vraiment.
-        "attribution": attribution.compute_attribution(STATE_DIR),
+        "attribution": attribution.compute_attribution(
+            STATE_DIR,
+            since=attribution_since,
+            exclude_symbols=tuple(regime_cfg.get("exclude_symbols") or []),
+        ),
         # Boucle de feedback (D6) : guardrails humains nommés à part ; dès qu'un
         # consolidé existe, les bruts ne sont plus réinjectés (anti auto-renforcement).
         "learnings": consolidator.build_context_learnings(

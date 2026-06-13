@@ -1,0 +1,5 @@
+# Frontière de régime pour l'attribution : on ne compare que ce qui est comparable.
+# Les trades antérieurs à la bascule ou sur des symboles délistés sont d'un autre
+# régime (cf docs/postmortems/2026-06-09-short-clf-hard-stop.md).
+attribution_since: 2026-06-10        # date ISO (incluse) ; trades clôturés avant = exclus
+exclude_symbols: [CL=F, GC=F]        # symboles retirés de l'univers

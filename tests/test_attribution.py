@@ -169,6 +169,102 @@ def test_compute_attribution_calibration_par_confidence_et_raison(tmp_path) -> N
     assert reasons["take_profit"]["total_pnl"] == 100.0
 
 
+def test_compute_attribution_filtre_les_trips_clotures_avant_since(tmp_path) -> None:
+    _write_perf(
+        tmp_path,
+        [
+            # Exclu : sortie avant la frontière incluse.
+            {"ts": "2026-06-09T10:00:00+00:00", "symbol": "SPY", "action": "BUY",
+             "quantity": 1, "price": 100.0, "confidence": 0.9, "intent": "OPEN_LONG"},
+            {"ts": "2026-06-09T11:00:00+00:00", "symbol": "SPY", "action": "SELL",
+             "quantity": 1, "price": 90.0, "confidence": None, "intent": "PLANNED_EXIT",
+             "exit_reason": "hard_stop"},
+            # Gardé : entrée avant la frontière, mais sortie le jour de la frontière.
+            {"ts": "2026-06-09T23:30:00+00:00", "symbol": "QQQ", "action": "BUY",
+             "quantity": 1, "price": 100.0, "confidence": 0.9, "intent": "OPEN_LONG"},
+            {"ts": "2026-06-10T00:30:00+00:00", "symbol": "QQQ", "action": "SELL",
+             "quantity": 1, "price": 110.0, "confidence": None, "intent": "PLANNED_EXIT",
+             "exit_reason": "take_profit"},
+            # Gardé : sortie après la frontière.
+            {"ts": "2026-06-11T10:00:00+00:00", "symbol": "IWM", "action": "BUY",
+             "quantity": 1, "price": 100.0, "confidence": 0.6, "intent": "OPEN_LONG"},
+            {"ts": "2026-06-11T11:00:00+00:00", "symbol": "IWM", "action": "SELL",
+             "quantity": 1, "price": 105.0, "confidence": None, "intent": "PLANNED_EXIT",
+             "exit_reason": "take_profit"},
+        ],
+    )
+
+    attr = compute_attribution(tmp_path, since="2026-06-10")
+
+    assert attr["n_closed_trades"] == 2
+    assert attr["realized_pnl"] == 15.0
+    assert attr["win_rate"] == 1.0
+    assert attr["regime"] == {
+        "since": "2026-06-10",
+        "excluded_symbols": [],
+        "n_excluded_trades": 1,
+    }
+
+
+def test_compute_attribution_exclut_les_symboles_et_recalcule_les_raisons(tmp_path) -> None:
+    _write_perf(
+        tmp_path,
+        [
+            {"ts": "2026-06-10T10:00:00+00:00", "symbol": "CL=F", "action": "BUY",
+             "quantity": 1, "price": 100.0, "confidence": 0.9, "intent": "OPEN_LONG"},
+            {"ts": "2026-06-10T11:00:00+00:00", "symbol": "CL=F", "action": "SELL",
+             "quantity": 1, "price": 50.0, "confidence": None, "intent": "PLANNED_EXIT",
+             "exit_reason": "hard_stop"},
+            {"ts": "2026-06-10T12:00:00+00:00", "symbol": "SPY", "action": "BUY",
+             "quantity": 1, "price": 100.0, "confidence": 0.7, "intent": "OPEN_LONG"},
+            {"ts": "2026-06-10T13:00:00+00:00", "symbol": "SPY", "action": "SELL",
+             "quantity": 1, "price": 112.0, "confidence": None, "intent": "PLANNED_EXIT",
+             "exit_reason": "take_profit"},
+        ],
+    )
+
+    attr = compute_attribution(tmp_path, exclude_symbols=("CL=F",))
+
+    assert attr["n_closed_trades"] == 1
+    assert attr["realized_pnl"] == 12.0
+    reasons = {r["reason"]: r for r in attr["by_exit_reason"]}
+    assert set(reasons) == {"take_profit"}
+    assert reasons["take_profit"]["total_pnl"] == 12.0
+    assert attr["regime"] == {
+        "since": None,
+        "excluded_symbols": ["CL=F"],
+        "n_excluded_trades": 1,
+    }
+
+
+def test_compute_attribution_sans_args_garde_tous_les_trips(tmp_path) -> None:
+    _write_perf(
+        tmp_path,
+        [
+            {"ts": "2026-06-09T10:00:00+00:00", "symbol": "CL=F", "action": "BUY",
+             "quantity": 1, "price": 100.0, "confidence": 0.9, "intent": "OPEN_LONG"},
+            {"ts": "2026-06-09T11:00:00+00:00", "symbol": "CL=F", "action": "SELL",
+             "quantity": 1, "price": 50.0, "confidence": None, "intent": "PLANNED_EXIT",
+             "exit_reason": "hard_stop"},
+            {"ts": "2026-06-10T10:00:00+00:00", "symbol": "SPY", "action": "BUY",
+             "quantity": 1, "price": 100.0, "confidence": 0.7, "intent": "OPEN_LONG"},
+            {"ts": "2026-06-10T11:00:00+00:00", "symbol": "SPY", "action": "SELL",
+             "quantity": 1, "price": 112.0, "confidence": None, "intent": "PLANNED_EXIT",
+             "exit_reason": "take_profit"},
+        ],
+    )
+
+    attr = compute_attribution(tmp_path)
+
+    assert attr["n_closed_trades"] == 2
+    assert attr["realized_pnl"] == -38.0
+    assert attr["regime"] == {
+        "since": None,
+        "excluded_symbols": [],
+        "n_excluded_trades": 0,
+    }
+
+
 def test_compute_attribution_expose_brut_et_frais(tmp_path) -> None:
     """L'agent doit voir le brut ET les frais pour distinguer un scalp neutre
     qui devient perdant une fois les commissions déduites."""

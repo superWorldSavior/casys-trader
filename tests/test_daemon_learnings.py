@@ -105,6 +105,60 @@ def test_run_cycle_injecte_lattribution_dans_le_contexte(monkeypatch, tmp_path, 
     assert attribution["realized_pnl"] == 100.0
 
 
+def test_run_cycle_passe_le_filtre_regime_a_lattribution(
+    monkeypatch,
+    tmp_path,
+    patch_batch,
+    make_data_source,
+) -> None:
+    import json as _json
+
+    _write_runtime_config(tmp_path)
+    (tmp_path / "config" / "regime.yaml").write_text(
+        "attribution_since: 2026-06-10\nexclude_symbols: [CL=F, GC=F]\n",
+        encoding="utf-8",
+    )
+    state_dir = tmp_path / "state"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    sched = Scheduler(state_dir / "scheduler.json")
+    now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
+
+    with (state_dir / "model_performance.jsonl").open("w", encoding="utf-8") as f:
+        f.write(_json.dumps({"ts": "2026-06-09T10:00:00+00:00", "symbol": "CL=F", "action": "BUY",
+                             "quantity": 1, "price": 100.0, "confidence": 0.9, "intent": "OPEN_LONG"}) + "\n")
+        f.write(_json.dumps({"ts": "2026-06-09T11:00:00+00:00", "symbol": "CL=F", "action": "SELL",
+                             "quantity": 1, "price": 50.0, "confidence": None, "intent": "PLANNED_EXIT",
+                             "exit_reason": "hard_stop"}) + "\n")
+        f.write(_json.dumps({"ts": "2026-06-10T10:00:00+00:00", "symbol": "SPY", "action": "BUY",
+                             "quantity": 1, "price": 100.0, "confidence": 0.7, "intent": "OPEN_LONG"}) + "\n")
+        f.write(_json.dumps({"ts": "2026-06-10T11:00:00+00:00", "symbol": "SPY", "action": "SELL",
+                             "quantity": 1, "price": 112.0, "confidence": None, "intent": "PLANNED_EXIT",
+                             "exit_reason": "take_profit"}) + "\n")
+
+    contexts: list[dict] = []
+
+    def decide(**kwargs):
+        contexts.append(kwargs["context"])
+        return Decision.hold(kwargs["symbol"], "attente")
+
+    monkeypatch.setattr(daemon, "ROOT", tmp_path)
+    monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+    data_source = make_data_source(_bars)
+    patch_batch(decide)
+
+    daemon.run_cycle(dry_run=True, now=now, symbols_filter=["SPY"], sched=sched, data_source=data_source)
+
+    attribution = contexts[0]["attribution"]
+    assert attribution["n_closed_trades"] == 1
+    assert attribution["realized_pnl"] == 12.0
+    assert attribution["by_exit_reason"][0]["reason"] == "take_profit"
+    assert attribution["regime"] == {
+        "since": "2026-06-10",
+        "excluded_symbols": ["CL=F", "GC=F"],
+        "n_excluded_trades": 1,
+    }
+
+
 def test_run_cycle_reinjecte_les_learnings_recents_dans_le_contexte(
     monkeypatch,
     tmp_path,
