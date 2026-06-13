@@ -36,7 +36,13 @@ from .indicator_watch import (
 )
 from .risk import RiskGate, RiskLimits
 from .tools import market, memory as memory_mod, portfolio, scheduler
-from .tools.execution import Order, SimBroker
+from .tools.execution import (
+    CommissionModel,
+    Order,
+    SimBroker,
+    commission_model_from_name,
+    round_trip_cost,
+)
 from .tools.data_source import (
     CompositeDataSource,
     YFinanceDataSource,
@@ -558,6 +564,9 @@ def _apply_planned_exits(
                     source_plan_id=plan.id,
                     quantity=clamped_quantity,
                     price=effective_fill_price,
+                    commission=fill.commission,
+                    commission_currency=fill.commission_currency,
+                    commission_model=fill.commission_model,
                     confidence=plan.llm_confidence,
                     llm_provider=plan.llm_provider or "unknown",
                     llm_model=plan.llm_model or "unknown",
@@ -579,6 +588,15 @@ def _apply_planned_exits(
                 "bars_interval": (bars_intervals_by_symbol or {}).get(plan.symbol, DEFAULT_RUNTIME_INTERVAL),
                 "executed": fill is not None,
                 "dry_run": dry_run,
+                **(
+                    {
+                        "commission": fill.commission,
+                        "commission_currency": fill.commission_currency,
+                        "commission_model": fill.commission_model,
+                    }
+                    if fill is not None
+                    else {}
+                ),
             }
         )
     return entries
@@ -952,6 +970,7 @@ def run_cycle(
     consolidator_model: str | None = None,
     consolidator_timeout_s: int = consolidator.DEFAULT_CONSOLIDATOR_TIMEOUT_S,
     decision_timeout_s: int = 900,
+    commission_model: CommissionModel | None = None,
 ) -> dict:
     """Exécute UN cycle. Retourne un rapport structuré (machine-readable)."""
     now = now or datetime.now(timezone.utc)
@@ -986,7 +1005,11 @@ def run_cycle(
     )
     _append_event("cycle_started", symbols_due=symbols_to_decide, dry_run=dry_run)
 
-    broker = SimBroker(STATE_DIR / "broker.json", starting_cash=starting_equity)
+    broker = SimBroker(
+        STATE_DIR / "broker.json",
+        starting_cash=starting_equity,
+        commission_model=commission_model,
+    )
     plan_store = TradePlanStore(STATE_DIR / "trade_plans.json")
     gate = RiskGate(RiskLimits.from_dict(risk_cfg))
     gate.start_cycle()
@@ -1158,6 +1181,18 @@ def run_cycle(
     gross = sum(abs(h.market_value) for h in snap.holdings)
 
     active_families = family_regime.families_for_universe(tradable_symbols)
+    # Coût de transaction injecté dans le cockpit : break-even (bps) + coût
+    # aller-retour par symbole, pour un ordre de référence = plafond par ordre du
+    # risk gate. L'agent compare l'amplitude attendue au break-even avant de
+    # scalper. Seulement si un modèle de frais est actif (sinon colonnes absentes).
+    fee_estimator = None
+    fee_ref_notional = None
+    if commission_model is not None:
+        fee_ref_notional = float(risk_cfg.get("max_order_value", 10_000.0))
+
+        def fee_estimator(symbol: str, price: float | None) -> dict | None:
+            return round_trip_cost(commission_model, symbol, price, fee_ref_notional)
+
     # Contexte cross-asset partagé : tout l'univers est visible à chaque décision
     # (l'edge de l'agent = relations entre symboles, pas un graphe isolé).
     cockpit = build_market_cockpit(
@@ -1166,6 +1201,8 @@ def run_cycle(
         prices=tradable_prices,
         window=48,
         daily_bars_by_symbol=daily_bars_by_symbol,
+        fee_estimator=fee_estimator,
+        fee_ref_notional=fee_ref_notional,
     )
     base_context = {
         "now": now.isoformat(),
@@ -1788,6 +1825,9 @@ def run_cycle(
                     intent=decision.intent,
                     quantity=effective_quantity,
                     price=prices[sym],
+                    commission=fill.commission,
+                    commission_currency=fill.commission_currency,
+                    commission_model=fill.commission_model,
                     confidence=decision.confidence,
                     llm_provider=decision.llm_provider or "unknown",
                     llm_model=decision.llm_model or "unknown",
@@ -1797,6 +1837,9 @@ def run_cycle(
                     position_quantity=0.0 if final_position is None else final_position.quantity,
                 )
                 entry["model_performance_logged"] = True
+                entry["commission"] = fill.commission
+                entry["commission_currency"] = fill.commission_currency
+                entry["commission_model"] = fill.commission_model
             if fill is not None and decision.intent in {"CLOSE", "REVERSE"}:
                 plan_store.close_symbol(sym)
             if fill is not None and decision.intent == "REDUCE":
@@ -1945,11 +1988,18 @@ def main(argv: list[str] | None = None) -> None:
         default=os.getenv("TRADER_DATA_PROFILE"),
         help="profil de routing data (paper|prod). Override config/data_sources.yaml. Env: TRADER_DATA_PROFILE",
     )
+    parser.add_argument(
+        "--commission-model",
+        default=os.getenv("TRADER_COMMISSION_MODEL", "ibkr"),
+        choices=["none", "ibkr"],
+        help="modèle de frais appliqué au SimBroker live (défaut/env TRADER_COMMISSION_MODEL: ibkr)",
+    )
     args = parser.parse_args(argv)
 
     from .logging_setup import setup_logging
     setup_logging(level=logging.INFO)
     dry_run = not args.live
+    commission_model = commission_model_from_name(args.commission_model)
 
     # Identité daemon : revendiquer le pid file en premier (avant tout _write_status).
     # Refus si un daemon vivant le détient déjà — un doublon qui écrase puis supprime
@@ -2076,6 +2126,7 @@ def main(argv: list[str] | None = None) -> None:
                         consolidator_model=args.consolidator_model,
                         consolidator_timeout_s=args.consolidator_timeout_s,
                         decision_timeout_s=args.decision_timeout_s,
+                        commission_model=commission_model,
                     )
                     if report.get("planned_exits") or report.get("decisions") or report.get("exit_watch_triggers"):
                         log.info("cycle actif sans symbole dû: %s", json.dumps(report, ensure_ascii=False))
@@ -2104,6 +2155,7 @@ def main(argv: list[str] | None = None) -> None:
                         consolidator_model=args.consolidator_model,
                         consolidator_timeout_s=args.consolidator_timeout_s,
                         decision_timeout_s=args.decision_timeout_s,
+                        commission_model=commission_model,
                     )
                     log.info("cycle: %s", json.dumps(report, ensure_ascii=False))
                     STATE_DIR.mkdir(parents=True, exist_ok=True)

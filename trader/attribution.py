@@ -62,6 +62,7 @@ class _OpenLeg:
     def __init__(self) -> None:
         self.qty = 0.0           # signé : >0 long, <0 short
         self.avg_price = 0.0
+        self.commission = 0.0
         self.entry_ts: str | None = None
         self._conf_sum = 0.0     # somme pondérée par quantité ajoutée
         self._conf_qty = 0.0
@@ -70,14 +71,24 @@ class _OpenLeg:
     def entry_confidence(self) -> float | None:
         return self._conf_sum / self._conf_qty if self._conf_qty else None
 
-    def open_or_add(self, *, added_qty: float, price: float, ts: str, confidence: float | None) -> None:
+    def open_or_add(
+        self,
+        *,
+        added_qty: float,
+        price: float,
+        ts: str,
+        confidence: float | None,
+        commission: float = 0.0,
+    ) -> None:
         if self.qty == 0.0:
             self.entry_ts = ts
             self._conf_sum = 0.0
             self._conf_qty = 0.0
+            self.commission = 0.0
         new_qty = self.qty + added_qty
         self.avg_price = (self.avg_price * abs(self.qty) + price * abs(added_qty)) / abs(new_qty)
         self.qty = new_qty
+        self.commission += max(commission, 0.0)
         if confidence is not None:
             self._conf_sum += confidence * abs(added_qty)
             self._conf_qty += abs(added_qty)
@@ -88,6 +99,16 @@ class _OpenLeg:
         évite de surpondérer la quantité déjà clôturée lors d'un futur ajout)."""
         self._conf_sum *= factor
         self._conf_qty *= factor
+
+
+def _as_non_negative_float(value: object) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    if not math.isfinite(parsed) or parsed < 0.0:
+        return 0.0
+    return parsed
 
 
 def compute_round_trips(state_dir: Path) -> list[dict]:
@@ -118,18 +139,30 @@ def compute_round_trips(state_dir: Path) -> list[dict]:
         ts = str(row.get("ts"))
         confidence = row.get("confidence")
         confidence = float(confidence) if isinstance(confidence, (int, float)) else None
+        row_commission = _as_non_negative_float(row.get("commission"))
         signed = qty if action == "BUY" else -qty
 
         leg = legs.setdefault(symbol, _OpenLeg())
 
         # Ouverture ou renforcement (même sens, ou depuis flat).
         if abs(leg.qty) <= _FLAT_EPS or (leg.qty > 0) == (signed > 0):
-            leg.open_or_add(added_qty=signed, price=price, ts=ts, confidence=confidence)
+            leg.open_or_add(
+                added_qty=signed,
+                price=price,
+                ts=ts,
+                confidence=confidence,
+                commission=row_commission,
+            )
             continue
 
         # Sens opposé : on clôture tout ou partie de la jambe ouverte.
         closing_qty = min(qty, abs(leg.qty))
         entry_sign = 1.0 if leg.qty > 0 else -1.0
+        old_abs = abs(leg.qty)
+        entry_commission = leg.commission * (closing_qty / old_abs) if old_abs > 0 else 0.0
+        exit_commission = row_commission * (closing_qty / qty) if qty > 0 else 0.0
+        gross_pnl = (price - leg.avg_price) * closing_qty * entry_sign
+        total_commission = entry_commission + exit_commission
         trips.append(
             {
                 "symbol": symbol,
@@ -137,7 +170,9 @@ def compute_round_trips(state_dir: Path) -> list[dict]:
                 "quantity": closing_qty,
                 "entry_price": leg.avg_price,
                 "exit_price": price,
-                "pnl": (price - leg.avg_price) * closing_qty * entry_sign,
+                "gross_pnl": gross_pnl,
+                "commission": total_commission,
+                "pnl": gross_pnl - total_commission,
                 "entry_ts": leg.entry_ts,
                 "exit_ts": ts,
                 "holding_minutes": _holding_minutes(leg.entry_ts or ts, ts),
@@ -146,7 +181,6 @@ def compute_round_trips(state_dir: Path) -> list[dict]:
             }
         )
 
-        old_abs = abs(leg.qty)
         remaining = qty - closing_qty
         leg.qty += signed
         if abs(leg.qty) <= _FLAT_EPS:
@@ -154,11 +188,18 @@ def compute_round_trips(state_dir: Path) -> list[dict]:
         elif remaining > _FLAT_EPS:
             # Reversal : nouvelle jambe dans le sens opposé avec le reliquat.
             fresh = _OpenLeg()
-            fresh.open_or_add(added_qty=entry_sign * -remaining, price=price, ts=ts, confidence=confidence)
+            fresh.open_or_add(
+                added_qty=entry_sign * -remaining,
+                price=price,
+                ts=ts,
+                confidence=confidence,
+                commission=max(row_commission - exit_commission, 0.0),
+            )
             legs[symbol] = fresh
         else:
             # Réduction partielle (même sens) : on garde coût moyen, ts et confidence
             # d'entrée, mais on réduit le poids de la confidence à la quantité restante.
+            leg.commission = max(leg.commission - entry_commission, 0.0)
             leg.scale_entry_weight(abs(leg.qty) / old_abs)
 
     return trips
@@ -178,7 +219,9 @@ def _aggregate(trips: list[dict]) -> dict:
     wins = [p for p in pnls if p > 0]
     return {
         "n": len(trips),
-        "total_pnl": sum(pnls),
+        "total_pnl": round(sum(pnls), 4),
+        "total_gross_pnl": round(sum(t["gross_pnl"] for t in trips), 4),
+        "total_commission": round(sum(t["commission"] for t in trips), 4),
         "win_rate": (len(wins) / len(trips)) if trips else None,
         "avg_pnl": (sum(pnls) / len(trips)) if trips else None,
     }
@@ -209,6 +252,10 @@ def compute_attribution(state_dir: Path) -> dict:
     return {
         "n_closed_trades": overall["n"],
         "realized_pnl": overall["total_pnl"],
+        # Brut et frais séparés : un P&L brut ~nul avec des commissions positives
+        # signale un sur-trading (scalps neutres rendus perdants par les frais).
+        "realized_gross_pnl": overall["total_gross_pnl"],
+        "total_commissions": overall["total_commission"],
         "win_rate": overall["win_rate"],
         "avg_pnl": overall["avg_pnl"],
         "avg_holding_minutes": (sum(holding) / len(holding)) if holding else None,

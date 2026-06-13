@@ -30,6 +30,8 @@ def test_round_trip_long_simple(tmp_path) -> None:
     assert trip["quantity"] == 10
     assert trip["entry_price"] == 100.0
     assert trip["exit_price"] == 110.0
+    assert trip["gross_pnl"] == 100.0
+    assert trip["commission"] == 0.0
     assert trip["pnl"] == 100.0
     assert trip["entry_confidence"] == 0.8
     assert trip["holding_minutes"] == 60.0
@@ -49,8 +51,55 @@ def test_round_trip_short_simple(tmp_path) -> None:
     trips = compute_round_trips(tmp_path)
     assert len(trips) == 1
     assert trips[0]["side"] == "SHORT"
+    assert trips[0]["gross_pnl"] == 50.0
+    assert trips[0]["commission"] == 0.0
     assert trips[0]["pnl"] == 50.0
     assert trips[0]["holding_minutes"] == 30.0
+
+
+def test_round_trip_soustrait_les_commissions_entree_et_sortie(tmp_path) -> None:
+    _write_perf(
+        tmp_path,
+        [
+            {"ts": "2026-06-05T10:00:00+00:00", "symbol": "SPY", "action": "BUY",
+             "quantity": 1, "price": 100.0, "confidence": 0.8, "intent": "OPEN_LONG",
+             "commission": 0.35},
+            {"ts": "2026-06-05T11:00:00+00:00", "symbol": "SPY", "action": "SELL",
+             "quantity": 1, "price": 110.0, "confidence": 0.6, "intent": "CLOSE",
+             "commission": 0.35},
+        ],
+    )
+
+    trips = compute_round_trips(tmp_path)
+
+    assert len(trips) == 1
+    assert trips[0]["gross_pnl"] == 10.0
+    assert trips[0]["commission"] == 0.70
+    assert trips[0]["pnl"] == 9.30
+    assert compute_attribution(tmp_path)["realized_pnl"] == 9.30
+
+
+def test_reduction_partielle_prorate_la_commission_d_entree(tmp_path) -> None:
+    _write_perf(
+        tmp_path,
+        [
+            {"ts": "2026-06-05T10:00:00+00:00", "symbol": "SPY", "action": "BUY",
+             "quantity": 10, "price": 100.0, "confidence": 0.8, "intent": "OPEN_LONG",
+             "commission": 1.0},
+            {"ts": "2026-06-05T11:00:00+00:00", "symbol": "SPY", "action": "SELL",
+             "quantity": 4, "price": 105.0, "confidence": 0.6, "intent": "REDUCE",
+             "commission": 0.4},
+            {"ts": "2026-06-05T12:00:00+00:00", "symbol": "SPY", "action": "SELL",
+             "quantity": 6, "price": 110.0, "confidence": 0.6, "intent": "CLOSE",
+             "commission": 0.6},
+        ],
+    )
+
+    trips = compute_round_trips(tmp_path)
+
+    assert [trip["gross_pnl"] for trip in trips] == [20.0, 60.0]
+    assert [round(trip["commission"], 6) for trip in trips] == [0.8, 1.2]
+    assert [round(trip["pnl"], 6) for trip in trips] == [19.2, 58.8]
 
 
 def test_reduction_partielle_emet_un_round_trip_et_garde_la_position(tmp_path) -> None:
@@ -118,6 +167,38 @@ def test_compute_attribution_calibration_par_confidence_et_raison(tmp_path) -> N
     reasons = {r["reason"]: r for r in attr["by_exit_reason"]}
     assert reasons["hard_stop"]["total_pnl"] == -100.0
     assert reasons["take_profit"]["total_pnl"] == 100.0
+
+
+def test_compute_attribution_expose_brut_et_frais(tmp_path) -> None:
+    """L'agent doit voir le brut ET les frais pour distinguer un scalp neutre
+    qui devient perdant une fois les commissions déduites."""
+    _write_perf(
+        tmp_path,
+        [
+            {"ts": "2026-06-05T10:00:00+00:00", "symbol": "SPY", "action": "BUY",
+             "quantity": 10, "price": 100.0, "confidence": 0.8, "intent": "OPEN_LONG",
+             "commission": 0.35},
+            {"ts": "2026-06-05T10:05:00+00:00", "symbol": "SPY", "action": "SELL",
+             "quantity": 10, "price": 100.5, "intent": "CLOSE", "exit_reason": "scalp",
+             "commission": 0.35},
+        ],
+    )
+
+    attr = compute_attribution(tmp_path)
+    # gross = (100.5-100)*10 = 5.0 ; frais = 0.70 ; net = 4.30
+    assert attr["realized_gross_pnl"] == 5.0
+    assert attr["total_commissions"] == 0.70
+    assert attr["realized_pnl"] == 4.30
+
+    scalp = next(r for r in attr["by_exit_reason"] if r["reason"] == "scalp")
+    assert scalp["total_gross_pnl"] == 5.0
+    assert scalp["total_commission"] == 0.70
+
+
+def test_compute_attribution_brut_frais_neutres_sans_fichier(tmp_path) -> None:
+    attr = compute_attribution(tmp_path)
+    assert attr["realized_gross_pnl"] == 0.0
+    assert attr["total_commissions"] == 0.0
 
 
 def test_compute_attribution_sans_fichier_renvoie_neutre(tmp_path) -> None:

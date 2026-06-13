@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Iterable
+from typing import Callable, Iterable
 
 from .features import DEFAULT_INDICATORS, build_indicator_snapshot
 from .regime import classify_regime, multi_horizon_signals
@@ -78,6 +78,8 @@ def build_market_cockpit(
     window: int = 48,
     top_n: int = 5,
     daily_bars_by_symbol: dict[str, list[object]] | None = None,
+    fee_estimator: Callable[[str, float], dict | None] | None = None,
+    fee_ref_notional: float | None = None,
 ) -> dict:
     """Build a compact, deterministic market dashboard with no raw bars.
 
@@ -86,6 +88,12 @@ def build_market_cockpit(
         r, vol, z, er, ac, rs, sz : indicateurs numériques (COCKPIT_INDICATORS)
         reg, vs, st, cndle : régime de marché (classify_regime)
         htf, aligned, sig : signaux multi-horizon pré-calculés (cp3)
+        be, fee : break-even frais (bps) et coût aller-retour — seulement si
+                  `fee_estimator` est fourni (sinon colonnes absentes)
+
+    `fee_estimator(symbol, price) -> {"be_bps", "fee_rt", "currency"} | None`
+    traduit le coût de transaction au prix courant. Les colonnes frais sont
+    appendées en fin de ligne pour ne pas décaler l'offset de `rank_by_abs`.
     """
     # On calcule les indicateurs affichables + ceux nécessaires au classifieur.
     all_snapshot_names = COCKPIT_INDICATORS + _REGIME_EXTRA_INDICATORS
@@ -97,6 +105,8 @@ def build_market_cockpit(
     )
     indicator_cols = [_INDICATOR_COLUMNS[name] for name in COCKPIT_INDICATORS]
     cols = ["s", "f", "p", *indicator_cols, "reg", "vs", "st", "cndle", "htf", "aligned", "sig"]
+    if fee_estimator is not None:
+        cols = [*cols, "be_ref_bps", "fee", "fee_ccy"]
     rows: list[list] = []
     daily_bars_by_symbol = daily_bars_by_symbol or {}
     for symbol in symbols:
@@ -119,21 +129,28 @@ def build_market_cockpit(
             window=window,
             precomputed_indicators_by_horizon={"15m": indicators},
         )
-        rows.append(
-            [
-                symbol,
-                _family_code(item["family"]),
-                _compact_price(prices.get(symbol)),
-                *[indicators.get(name) for name in COCKPIT_INDICATORS],
-                regime.regime,
-                regime.vol_state,
-                regime.stretched,
-                regime.candle,
-                htf_signals["htf"],
-                htf_signals["aligned"],
-                htf_signals.get("sig"),
-            ]
-        )
+        row = [
+            symbol,
+            _family_code(item["family"]),
+            _compact_price(prices.get(symbol)),
+            *[indicators.get(name) for name in COCKPIT_INDICATORS],
+            regime.regime,
+            regime.vol_state,
+            regime.stretched,
+            regime.candle,
+            htf_signals["htf"],
+            htf_signals["aligned"],
+            htf_signals.get("sig"),
+        ]
+        if fee_estimator is not None:
+            cost = fee_estimator(symbol, prices.get(symbol))
+            if cost is None:
+                row += [None, None, None]
+            else:
+                # Valeurs numériques (parsing agent) + devise séparée. be_ref_bps =
+                # break-even au notionnel de référence, PAS au sizing réel de l'ordre.
+                row += [cost["be_bps"], cost["fee_rt"], cost["currency"]]
+        rows.append(row)
 
     def rank_by_abs(indicator: str) -> list[dict]:
         index = COCKPIT_INDICATORS.index(indicator) + 3
@@ -144,15 +161,16 @@ def build_market_cockpit(
         ]
         return sorted(candidates, key=lambda item: abs(float(item[1])), reverse=True)[:top_n]
 
-    return {
+    schema = (
+        "cols: s=sym,f=family,p=price,"
+        "r=ret,vol=stdev_ret,z=price_z,er=Kaufman,ac=lag1_ret_corr,rs=ret-fam_ret,sz=spread_z,"
+        "reg=regime,vs=vol_state,st=stretched,cndle=candle_pattern,"
+        "htf=highest_timeframe_regime,aligned=base_htf_trend_aligned,sig=notable_events"
+    )
+    result = {
         "v": "cp3",
         "window": window,
-        "schema": (
-            "cols: s=sym,f=family,p=price,"
-            "r=ret,vol=stdev_ret,z=price_z,er=Kaufman,ac=lag1_ret_corr,rs=ret-fam_ret,sz=spread_z,"
-            "reg=regime,vs=vol_state,st=stretched,cndle=candle_pattern,"
-            "htf=highest_timeframe_regime,aligned=base_htf_trend_aligned,sig=notable_events"
-        ),
+        "schema": schema,
         "cols": cols,
         "rows": rows,
         "highlights": {
@@ -161,6 +179,17 @@ def build_market_cockpit(
             "abs_sz": rank_by_abs("spread_zscore"),
         },
     }
+    if fee_estimator is not None:
+        # be_ref_bps=break-even aller-retour en bps POUR UN ORDRE DE fee_ref_notional
+        # (mouvement min du prix pour couvrir les frais); un ordre plus petit coûte
+        # plus. fee=coût aller-retour (numérique), fee_ccy=devise.
+        result["schema"] = (
+            schema
+            + ",be_ref_bps=break-even_roundtrip_bps_at_fee_ref_notional,"
+            "fee=roundtrip_cost,fee_ccy=currency"
+        )
+        result["fee_ref_notional"] = fee_ref_notional
+    return result
 
 
 def resolve_indicator_requests(

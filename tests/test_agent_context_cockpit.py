@@ -278,6 +278,87 @@ def test_return_index_toujours_accessible_par_col_name() -> None:
     assert spy_row[return_index] == 0.04
 
 
+# ---------------------------------------------------------------------------
+# Colonnes frais (conditionnelles : seulement si fee_estimator fourni)
+# ---------------------------------------------------------------------------
+
+
+def test_cockpit_sans_fee_estimator_n_ajoute_pas_de_colonnes_frais() -> None:
+    """Comportement par défaut préservé : pas de fee_estimator → pas de colonnes."""
+    result = build_market_cockpit(
+        {"SPY": _trending_bars()},
+        symbols=["SPY"],
+        prices={"SPY": 105.0},
+        window=12,
+    )
+    assert "be_ref_bps" not in result["cols"]
+    assert "fee" not in result["cols"]
+    assert "fee_ccy" not in result["cols"]
+    assert "fee_ref_notional" not in result
+
+
+def test_cockpit_avec_fee_estimator_ajoute_be_ref_bps_fee_fee_ccy_en_fin_de_ligne() -> None:
+    def estimator(symbol: str, price: float) -> dict:
+        return {"be_bps": 2.0, "fee_rt": 2.0, "currency": "EUR"}
+
+    result = build_market_cockpit(
+        {"SPY": _trending_bars()},
+        symbols=["SPY"],
+        prices={"SPY": 105.0},
+        window=12,
+        fee_estimator=estimator,
+        fee_ref_notional=10_000.0,
+    )
+    cols = result["cols"]
+    assert cols[-3:] == ["be_ref_bps", "fee", "fee_ccy"]
+    assert result["fee_ref_notional"] == 10_000.0
+    assert "be_ref_bps" in result["schema"]
+
+    spy_row = next(row for row in result["rows"] if row[0] == "SPY")
+    # be_ref_bps et fee sont NUMÉRIQUES (parsing agent), devise séparée
+    assert spy_row[cols.index("be_ref_bps")] == 2.0
+    assert spy_row[cols.index("fee")] == 2.0
+    assert spy_row[cols.index("fee_ccy")] == "EUR"
+
+
+def test_cockpit_fee_estimator_renvoyant_none_laisse_colonnes_vides() -> None:
+    def estimator(symbol: str, price: float) -> None:
+        return None
+
+    result = build_market_cockpit(
+        {"SPY": _trending_bars()},
+        symbols=["SPY"],
+        prices={"SPY": 105.0},
+        window=12,
+        fee_estimator=estimator,
+        fee_ref_notional=10_000.0,
+    )
+    cols = result["cols"]
+    spy_row = next(row for row in result["rows"] if row[0] == "SPY")
+    assert spy_row[cols.index("be_ref_bps")] is None
+    assert spy_row[cols.index("fee")] is None
+    assert spy_row[cols.index("fee_ccy")] is None
+
+
+def test_cockpit_highlights_intacts_avec_colonnes_frais() -> None:
+    """rank_by_abs reste correct malgré les colonnes frais appendées."""
+    def estimator(symbol: str, price: float) -> dict:
+        return {"be_bps": 3.0, "fee_rt": 3.0, "currency": "USD"}
+
+    result = build_market_cockpit(
+        {"SPY": _trending_bars(), "QQQ": _choppy_bars(base=200.0)},
+        symbols=["SPY", "QQQ"],
+        prices={"SPY": 105.0, "QQQ": 202.0},
+        window=12,
+        fee_estimator=estimator,
+        fee_ref_notional=10_000.0,
+    )
+    assert "abs_r" in result["highlights"]
+    return_index = result["cols"].index("r")
+    spy_row = next(row for row in result["rows"] if row[0] == "SPY")
+    assert isinstance(spy_row[return_index], float)
+
+
 def test_cockpit_reutilise_les_indicateurs_15m_du_snapshot_pour_les_signaux(monkeypatch) -> None:
     base_bars = _timed_trending_15m(n=16)
     snapshot_indicators = {

@@ -58,10 +58,14 @@ continus. Expansion native Euronext/Taïwan/FX/futures après branchement IB.
 
 L'agent pilote sa stratégie en fonction de :
 
-- **Rendement total** (vs capital de départ)
+- **Rendement total** (vs capital de départ) — **net de frais**
 - **Drawdown max** (perte depuis un pic) — à minimiser
 - **Hit rate** (% de trades gagnants)
 - **Nombre de trades** (éviter le sur-trading : coût + bruit)
+- **Frais payés** : chaque aller-retour a un coût (cockpit `be_ref_bps`/`fee`,
+  attribution `total_commissions`). Un scalp neutre sur le prix est perdant
+  net de frais — l'amplitude attendue doit dépasser le break-even
+  (`be_ref_bps`, plus élevé encore si l'ordre est petit).
 
 > Règle d'apprentissage : à chaque réveil, l'agent relit ses learnings
 > (`memory.md`), confronte ses décisions passées à ces KPI, et écrit ce qu'il en
