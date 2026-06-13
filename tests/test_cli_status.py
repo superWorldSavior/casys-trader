@@ -1,6 +1,12 @@
 import json
 
+from backtest.data import HistoryStore
 from trader import cli, daemon
+from trader.tools.market import Bar
+
+
+def _history_bar(ts: str, close: float) -> Bar:
+    return Bar(ts=ts, open=close, high=close + 1.0, low=close - 1.0, close=close, volume=1000.0)
 
 
 def test_cli_status_json_expose_les_fichiers_runtime(monkeypatch, tmp_path, capsys) -> None:
@@ -335,3 +341,235 @@ def test_stats_payload_expose_missed_par_commit() -> None:
     row = payload["commits"][0]
     assert row["missed"] == 1
     assert row["missed_pct"] == 100.0
+
+
+def test_cli_decisions_bench_dry_run_preview_les_cases(monkeypatch, tmp_path, capsys) -> None:
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+    (state_dir / "decision_audit.json").write_text(
+        json.dumps(
+            {
+                "threshold_pct": 0.5,
+                "horizons": ["4h"],
+                "rows": [
+                    {
+                        "decision_id": "d1",
+                        "cycle_ts": "2026-06-12T01:00:00+00:00",
+                        "symbol": "SPY",
+                        "action": "HOLD",
+                        "intent": "HOLD",
+                        "confidence": 0.9,
+                        "rationale": "range",
+                        "reason": "hold",
+                        "price": 100.0,
+                        "portfolio_snapshot": {"cash": 100000.0, "equity": 100000.0},
+                        "market_snapshot": {"stale_market_data": None},
+                        "runtime": {"data_source": "ib"},
+                        "audits": {
+                            "4h": {
+                                "entry_price": 100.0,
+                                "future_price": 101.0,
+                                "future_return_pct": 1.0,
+                                "verdict": "missed",
+                            }
+                        },
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert (
+        cli.main(
+            [
+                "decisions",
+                "bench",
+                "--horizon",
+                "4h",
+                "--limit",
+                "1",
+                "--models",
+                "spark:m",
+                "--dry-run",
+                "--json",
+            ]
+        )
+        == 0
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["dry_run"] is True
+    assert payload["models"] == [{"provider": "acpx", "model": "m"}]
+    assert payload["cases"][0]["decision_id"] == "d1"
+    assert "future_return_pct" not in json.dumps(payload["prompt"], ensure_ascii=False)
+
+
+def test_cli_decisions_bench_offset_choisit_le_batch_suivant(monkeypatch, tmp_path, capsys) -> None:
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+    rows = []
+    for idx in range(3):
+        rows.append(
+            {
+                "decision_id": f"d{idx + 1}",
+                "cycle_ts": f"2026-06-12T0{idx + 1}:00:00+00:00",
+                "symbol": "SPY",
+                "action": "HOLD",
+                "price": 100.0,
+                "audits": {
+                    "4h": {
+                        "entry_price": 100.0,
+                        "future_price": 101.0,
+                        "future_return_pct": 1.0,
+                        "verdict": "missed",
+                    }
+                },
+            }
+        )
+    (state_dir / "decision_audit.json").write_text(
+        json.dumps({"threshold_pct": 0.5, "horizons": ["4h"], "rows": rows}),
+        encoding="utf-8",
+    )
+
+    assert (
+        cli.main(
+            [
+                "decisions",
+                "bench",
+                "--horizon",
+                "4h",
+                "--limit",
+                "1",
+                "--offset",
+                "1",
+                "--models",
+                "spark:m",
+                "--dry-run",
+                "--json",
+            ]
+        )
+        == 0
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["offset"] == 1
+    assert [case["decision_id"] for case in payload["cases"]] == ["d2"]
+
+
+def test_cli_decisions_bench_dry_run_reconstruit_le_contexte(monkeypatch, tmp_path, capsys) -> None:
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    monkeypatch.setattr(daemon, "ROOT", tmp_path)
+    monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / "universe.yaml").write_text("symbols: [SPY, QQQ, DIA]\n", encoding="utf-8")
+    (state_dir / "decision_audit.json").write_text(
+        json.dumps(
+            {
+                "threshold_pct": 0.5,
+                "horizons": ["4h"],
+                "rows": [
+                    {
+                        "decision_id": "d1",
+                        "cycle_ts": "2026-06-12T01:00:00+00:00",
+                        "symbol": "NG=F",
+                        "action": "HOLD",
+                        "price": 100.0,
+                        "portfolio_snapshot": {"cash": 100000.0, "equity": 100000.0},
+                        "market_snapshot": {"stale_market_data": None},
+                        "runtime": {"data_source": "ib"},
+                        "audits": {
+                            "4h": {
+                                "entry_price": 100.0,
+                                "future_price": 101.0,
+                                "future_return_pct": 1.0,
+                                "verdict": "missed",
+                            }
+                        },
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    store = HistoryStore.from_bars(
+        {
+            "SPY": [
+                _history_bar("2026-06-12T00:00:00+00:00", 100.0),
+                _history_bar("2026-06-12T00:15:00+00:00", 101.0),
+                _history_bar("2026-06-12T00:30:00+00:00", 102.0),
+                _history_bar("2026-06-12T01:00:00+00:00", 103.0),
+            ],
+            "QQQ": [
+                _history_bar("2026-06-12T00:00:00+00:00", 200.0),
+                _history_bar("2026-06-12T00:15:00+00:00", 201.0),
+                _history_bar("2026-06-12T00:30:00+00:00", 202.0),
+                _history_bar("2026-06-12T01:00:00+00:00", 203.0),
+            ],
+            "DIA": [
+                _history_bar("2026-06-12T00:00:00+00:00", 300.0),
+                _history_bar("2026-06-12T00:15:00+00:00", 301.0),
+                _history_bar("2026-06-12T00:30:00+00:00", 302.0),
+                _history_bar("2026-06-12T01:00:00+00:00", 303.0),
+            ],
+            "NG=F": [
+                _history_bar("2026-06-12T00:00:00+00:00", 3.0),
+                _history_bar("2026-06-12T00:15:00+00:00", 3.1),
+                _history_bar("2026-06-12T00:30:00+00:00", 3.2),
+                _history_bar("2026-06-12T01:00:00+00:00", 3.3),
+            ],
+        }
+    )
+
+    def load_history(cases, *, symbols, interval, padding_days):
+        assert [case["decision_id"] for case in cases] == ["d1"]
+        assert symbols == ["SPY", "QQQ", "DIA", "NG=F"]
+        assert interval == "15m"
+        assert padding_days == 10
+        return store, {
+            "enabled": True,
+            "source": "history_asof_reconstruction",
+            "exact_replay": False,
+            "interval": interval,
+            "symbols": symbols,
+            "loaded_symbols": symbols,
+            "unavailable_symbols": [],
+            "window": {"start": "2026-06-02", "end": "2026-06-13", "padding_days": padding_days},
+        }
+
+    monkeypatch.setattr(cli.decision_bench, "load_reconstruction_history", load_history)
+
+    assert (
+        cli.main(
+            [
+                "decisions",
+                "bench",
+                "--horizon",
+                "4h",
+                "--limit",
+                "1",
+                "--models",
+                "spark:m",
+                "--dry-run",
+                "--reconstruct-context",
+                "--context-symbols",
+                "universe",
+                "--context-lookback-bars",
+                "4",
+                "--cockpit-window",
+                "3",
+                "--json",
+            ]
+        )
+        == 0
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    context = payload["cases"][0]["case"]["reconstructed_context"]
+    assert payload["context_reconstruction"]["enabled"] is True
+    assert payload["context_reconstruction"]["exact_replay"] is False
+    assert context["prices"]["NG=F"] == 3.3
+    assert "reconstructed_context" in payload["prompt"]

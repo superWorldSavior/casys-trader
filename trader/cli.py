@@ -9,7 +9,7 @@ from typing import Sequence
 
 import yaml
 
-from . import code_version, daemon, decision_audit, decision_ledger
+from . import code_version, daemon, decision_audit, decision_bench, decision_ledger
 from .features import DEFAULT_INDICATORS, build_indicator_snapshot, compute_indicator_values
 from .semantic.catalog import FAMILIES, describe_semantic_layer, find_indicators, list_indicators, normalize_temporal_query
 from .tools import market
@@ -310,6 +310,27 @@ def _parse_csv_arg(value: str) -> list[str]:
     return [item.strip() for item in value.split(",") if item.strip()]
 
 
+def _unique_symbol_list(symbols: list[str]) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in symbols:
+        symbol = str(raw or "").strip()
+        if symbol and symbol not in seen:
+            out.append(symbol)
+            seen.add(symbol)
+    return out
+
+
+def _bench_context_symbols(raw: str | None, cases: list[dict]) -> list[str]:
+    value = (raw or "universe").strip()
+    case_symbols = [str(case.get("symbol")) for case in cases if case.get("symbol")]
+    if value == "universe":
+        return _unique_symbol_list([*_load_universe_symbols(), *case_symbols])
+    if value == "case":
+        return sorted(set(case_symbols))
+    return _unique_symbol_list([*_parse_csv_arg(value), *case_symbols])
+
+
 def _cmd_decisions_audit(args: argparse.Namespace) -> int:
     store = decision_ledger.DecisionLedgerStore(daemon.STATE_DIR / decision_ledger.DEFAULT_LEDGER_FILENAME)
     rows = store.read_all(symbol=args.symbol, limit=args.limit)
@@ -343,6 +364,87 @@ def _cmd_decisions_audit(args: argparse.Namespace) -> int:
         print("Metrics by decision commit:")
         print(json.dumps(result["metrics_by_commit"], ensure_ascii=False, indent=2))
         print(f"Rapport complet: {daemon.STATE_DIR / 'decision_audit.json'}")
+    return 0
+
+
+def _cmd_decisions_bench(args: argparse.Namespace) -> int:
+    audit = _load_decision_audit()
+    try:
+        models = decision_bench.parse_model_specs(args.models)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    verdicts = decision_bench.parse_verdicts(args.verdicts)
+    include_original = not args.hide_original
+    context_kwargs = {}
+    if args.reconstruct_context:
+        preview_cases = decision_bench.select_cases(
+            audit,
+            horizon=args.horizon,
+            limit=args.limit,
+            offset=args.offset,
+            verdicts=verdicts,
+            symbol=args.symbol,
+            include_original=include_original,
+        )
+        context_symbols = _bench_context_symbols(args.context_symbols, preview_cases)
+        context_history, context_metadata = decision_bench.load_reconstruction_history(
+            preview_cases,
+            symbols=context_symbols,
+            interval=args.context_interval,
+            padding_days=args.context_padding_days,
+        )
+        context_kwargs = {
+            "context_history": context_history,
+            "context_symbols": context_symbols,
+            "context_interval": args.context_interval,
+            "context_lookback_bars": args.context_lookback_bars,
+            "cockpit_window": args.cockpit_window,
+            "context_metadata": context_metadata,
+        }
+
+    if args.dry_run:
+        payload = decision_bench.dry_run_payload(
+            audit,
+            models=models,
+            horizon=args.horizon,
+            limit=args.limit,
+            offset=args.offset,
+            verdicts=verdicts,
+            symbol=args.symbol,
+            include_original=include_original,
+            **context_kwargs,
+        )
+    else:
+        payload = decision_bench.run_bench(
+            audit,
+            models=models,
+            horizon=args.horizon,
+            limit=args.limit,
+            offset=args.offset,
+            verdicts=verdicts,
+            timeout_s=args.timeout_s,
+            symbol=args.symbol,
+            include_original=include_original,
+            **context_kwargs,
+        )
+
+    output_path = daemon.STATE_DIR / args.output
+    daemon.STATE_DIR.mkdir(parents=True, exist_ok=True)
+    payload["output_path"] = str(output_path)
+    output_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+    if args.json:
+        _print_json(payload)
+    elif args.dry_run:
+        print(
+            f"Decision bench dry-run horizon={payload['horizon']} "
+            f"cases={len(payload['cases'])} models={len(payload['models'])}"
+        )
+        print(f"Prompt chars: {len(payload['prompt'])}")
+        print(f"Rapport complet: {output_path}")
+    else:
+        print(decision_bench.render_summary(payload))
+        print(f"Rapport complet: {output_path}")
     return 0
 
 
@@ -490,6 +592,37 @@ def build_parser() -> argparse.ArgumentParser:
     decisions_audit.add_argument("--interval", default="1h")
     decisions_audit.add_argument("--json", action="store_true")
     decisions_audit.set_defaults(func=_cmd_decisions_audit)
+
+    decisions_bench = decisions_sub.add_parser(
+        "bench",
+        help="demande un avis contrefactuel à un petit banc de modèles",
+    )
+    decisions_bench.add_argument("--horizon", default="4h")
+    decisions_bench.add_argument("--limit", type=int, default=10)
+    decisions_bench.add_argument("--offset", type=int, default=0)
+    decisions_bench.add_argument("--symbol")
+    decisions_bench.add_argument(
+        "--models",
+        default=",".join(decision_bench.DEFAULT_BENCH_MODELS),
+        help="CSV provider:model, ex. acpx:gpt-5.5/medium,ollama-cloud:glm-5.1:cloud",
+    )
+    decisions_bench.add_argument("--verdicts", default="good,bad,missed,neutral")
+    decisions_bench.add_argument("--timeout-s", type=int, default=120)
+    decisions_bench.add_argument("--hide-original", action="store_true")
+    decisions_bench.add_argument("--reconstruct-context", action="store_true")
+    decisions_bench.add_argument(
+        "--context-symbols",
+        default="universe",
+        help="'universe', 'case' ou CSV de symboles pour le contexte reconstruit",
+    )
+    decisions_bench.add_argument("--context-interval", default=daemon.DEFAULT_RUNTIME_INTERVAL)
+    decisions_bench.add_argument("--context-lookback-bars", type=int, default=160)
+    decisions_bench.add_argument("--context-padding-days", type=int, default=10)
+    decisions_bench.add_argument("--cockpit-window", type=int, default=48)
+    decisions_bench.add_argument("--dry-run", action="store_true")
+    decisions_bench.add_argument("--output", default="last_decision_bench.json")
+    decisions_bench.add_argument("--json", action="store_true")
+    decisions_bench.set_defaults(func=_cmd_decisions_bench)
 
     semantic = sub.add_parser("semantic", help="semantic layer")
     semantic_sub = semantic.add_subparsers(dest="semantic_command", required=True)
