@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -20,6 +21,7 @@ import yaml
 
 from trader import codex_client
 from trader.tools import memory as memory_mod
+from trader.tools.execution import commission_model_from_name
 
 from .data import DataError, HistoryStore
 from .engine import run_backtest
@@ -33,7 +35,7 @@ _INTRADAY_MAX_DAYS = 729
 
 CAVEAT = (
     "⚠️  Ce que ce backtest NE mesure PAS (à ne pas surinterpréter) :\n"
-    "   - fills parfaits (SimBroker : ni slippage ni frais) → P&L optimiste\n"
+    "   - fills parfaits (SimBroker : pas de slippage ; frais IBKR estimés si activés)\n"
     "   - data leakage possible : le LLM a pu voir cet historique à l'entraînement\n"
     "   - rejeu échantillonné (pas barre par barre)\n"
     "   Pour un agent adaptatif, le forward paper reste l'évaluation de référence."
@@ -83,7 +85,14 @@ def main() -> None:
     parser.add_argument("--lookback", type=int, default=50, help="nb de barres passées fournies à la décision")
     parser.add_argument("--mock", action="store_true", help="décision déterministe sans Codex (test plumbing)")
     parser.add_argument("--model", default=codex_client.DEFAULT_MODEL, help="modèle Codex pour les décisions")
+    parser.add_argument(
+        "--commission-model",
+        default=os.getenv("TRADER_COMMISSION_MODEL", "ibkr"),
+        choices=["none", "ibkr"],
+        help="modèle de frais SimBroker (défaut/env TRADER_COMMISSION_MODEL: ibkr)",
+    )
     args = parser.parse_args()
+    commission_model = commission_model_from_name(args.commission_model)
 
     universe_cfg = yaml.safe_load((ROOT / "config" / "universe.yaml").read_text())
     risk_cfg = yaml.safe_load((ROOT / "config" / "risk.yaml").read_text())
@@ -121,6 +130,7 @@ def main() -> None:
         risk_limits=risk_cfg,
         starting_cash=starting_cash,
         lookback=args.lookback,
+        commission_model=commission_model,
     )
 
     metrics = compute_metrics(result.equity_curve, result.trades, result.starting_equity)
@@ -138,6 +148,7 @@ def main() -> None:
             "symbols": symbols,
             "sampled_steps": len(sampled),
             "mock": args.mock,
+            "commission_model": args.commission_model,
             "metrics": metrics.__dict__,
             "trades": result.trades,
             "equity_curve": result.equity_curve,

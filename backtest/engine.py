@@ -13,7 +13,7 @@ from typing import Callable, Literal, Protocol, cast
 
 from trader.codex_client import Decision
 from trader.risk import RiskGate, RiskLimits
-from trader.tools.execution import Order, Position, SimBroker
+from trader.tools.execution import CommissionModel, Order, Position, SimBroker
 
 
 class HistoryLike(Protocol):
@@ -122,6 +122,7 @@ def run_backtest(
     risk_limits: dict,
     starting_cash: float,
     lookback: int = 50,
+    commission_model: CommissionModel | None = None,
 ) -> BacktestResult:
     """Rejoue l'agent sur une timeline échantillonnée, sans lookahead."""
     limits = RiskLimits.from_dict(risk_limits)
@@ -131,7 +132,11 @@ def run_backtest(
     starting_equity = float(starting_cash)
 
     with tempfile.TemporaryDirectory(prefix="casys-backtest-") as temp_dir:
-        broker = SimBroker(Path(temp_dir) / "broker.json", starting_cash=starting_equity)
+        broker = SimBroker(
+            Path(temp_dir) / "broker.json",
+            starting_cash=starting_equity,
+            commission_model=commission_model,
+        )
 
         for ts in timeline:
             prices = _current_prices(history, symbols, ts)
@@ -179,15 +184,22 @@ def run_backtest(
                 if fill is None:
                     continue
                 gate.record_pass()
-                trades.append(
-                    {
-                        "ts": fill.ts,
-                        "symbol": fill.symbol,
-                        "side": fill.side,
-                        "quantity": fill.quantity,
-                        "price": fill.price,
-                    }
-                )
+                trade = {
+                    "ts": fill.ts,
+                    "symbol": fill.symbol,
+                    "side": fill.side,
+                    "quantity": fill.quantity,
+                    "price": fill.price,
+                }
+                if fill.commission:
+                    trade.update(
+                        {
+                            "commission": fill.commission,
+                            "commission_currency": fill.commission_currency,
+                            "commission_model": fill.commission_model,
+                        }
+                    )
+                trades.append(trade)
 
             _portfolio, _cash, equity, _positions, _position_prices = _portfolio_snapshot(broker, history, ts, prices)
             equity_curve.append((ts, equity))

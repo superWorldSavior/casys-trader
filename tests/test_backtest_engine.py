@@ -1,5 +1,6 @@
 from trader.codex_client import Decision
 from trader.tools.market import Bar
+from trader.tools.execution import IbkrCommissionModel
 
 from backtest.engine import run_backtest
 
@@ -74,6 +75,48 @@ def test_run_backtest_execute_les_decisions_et_trace_l_equity_curve() -> None:
         {"ts": timeline[0], "open": 99.0, "high": 101.0, "low": 98.0, "close": 100.0, "volume": 100.0}
     ]
     assert contexts[0]["portfolio"] == {"positions": {}, "cash": 1_000.0, "equity": 1_000.0}
+
+
+def test_run_backtest_peut_mesurer_le_pnl_net_de_commissions() -> None:
+    timeline = [
+        "2026-01-01T10:00:00",
+        "2026-01-01T11:00:00",
+    ]
+    history = FakeHistory({"USO": [_bar(timeline[0], 100.0), _bar(timeline[1], 110.0)]})
+
+    def decision_fn(symbol: str, context: dict) -> Decision:
+        if context["portfolio"]["positions"]:
+            return Decision.hold(symbol, "déjà en position")
+        return Decision(symbol=symbol, action="BUY", confidence=0.9, quantity=2.0, rationale="entrée scriptée")
+
+    result = run_backtest(
+        history=history,
+        timeline=timeline,
+        symbols=["USO"],
+        decision_fn=decision_fn,
+        risk_limits=_risk_limits(),
+        starting_cash=1_000.0,
+        lookback=2,
+        commission_model=IbkrCommissionModel(),
+    )
+
+    assert result.trades == [
+        {
+            "ts": timeline[0],
+            "symbol": "USO",
+            "side": "BUY",
+            "quantity": 2.0,
+            "price": 100.0,
+            "commission": 0.35,
+            "commission_currency": "USD",
+            "commission_model": "ibkr_us_stock_tiered",
+        }
+    ]
+    assert result.equity_curve == [
+        (timeline[0], 999.65),
+        (timeline[1], 1_019.65),
+    ]
+    assert result.final_equity == 1_019.65
 
 
 def test_run_backtest_ignore_un_ordre_refuse_par_le_fusible() -> None:

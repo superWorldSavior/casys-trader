@@ -76,12 +76,21 @@ uv run python -m backtest --mock --days 30 --sample-every 5
 
 # Vrai backtest Codex, borné (1 symbole, 1 pas = 1 appel)
 uv run python -m backtest --days 20 --sample-every 5 --max-steps 1 --symbols SPY
+
+# Ancien mode brut sans frais, utile pour isoler la stratégie du coût broker
+uv run python -m backtest --mock --days 30 --commission-model none
 ```
 
 ⚠️ Le backtest **ne mesure pas** la vraie perf : fills parfaits (SimBroker, pas de
-slippage/frais), data leakage possible (le LLM a pu voir l'historique), rejeu
-échantillonné. Pour un agent adaptatif, le **forward paper** reste l'éval de
-référence. Le rapport complet est écrit dans `state/last_backtest.json`.
+slippage ; frais IBKR estimés par défaut), data leakage possible (le LLM a pu voir
+l'historique), rejeu échantillonné. Pour un agent adaptatif, le **forward paper**
+reste l'éval de référence. Le rapport complet est écrit dans
+`state/last_backtest.json`.
+
+Le daemon live utilise aussi `TRADER_COMMISSION_MODEL=ibkr` par défaut pour le
+paper. Chaque fill persiste `commission`, `commission_currency` et
+`commission_model`; `TRADER_COMMISSION_MODEL=none` permet de revenir à l'ancien
+mode brut.
 
 ## Univers courant
 
@@ -94,8 +103,10 @@ le cache via `trader/tools/market.py`, mais ne sont plus appelés par le daemon.
 
 Le brain décideur passe par une API de transport agnostique. Primaire :
 **`acpx --format quiet exec`** (codex = agent par défaut d'acpx), modèle
-**`gpt-5.3-codex-spark/medium`**. Fallback optionnel : endpoint
+**`gpt-5.5/medium`**. Fallback optionnel : endpoint
 OpenAI-compatible Ollama Cloud, configuré dans `.env`.
+Les nouvelles décisions logguent donc `llm_provider=acpx` et
+`llm_model=gpt-5.5/medium`.
 
 ```bash
 TRADER_OLLAMA_API_KEY=...
@@ -117,6 +128,18 @@ seuil `50`, agent `codex`, modèle `gpt-5.5/high`. Overrides :
 `TRADER_LEARNING_CONSOLIDATION_THRESHOLD`, `TRADER_CONSOLIDATOR_ACPX_BIN`,
 `TRADER_CONSOLIDATOR_ACPX_AGENT`, `TRADER_CONSOLIDATOR_MODEL`,
 `TRADER_CONSOLIDATOR_TIMEOUT_S`.
+Il peut utiliser un fallback Ollama Cloud dédié au consolidateur avant de
+retomber sur les variables Ollama globales :
+
+```bash
+TRADER_CONSOLIDATOR_OLLAMA_API_KEY=...      # optionnel si TRADER_OLLAMA_API_KEY existe
+TRADER_CONSOLIDATOR_OLLAMA_BASE_URL=https://ollama.com/v1
+TRADER_CONSOLIDATOR_OLLAMA_MODEL=glm-5.1:cloud
+```
+
+Les erreurs ACPX retryables du consolidateur, y compris `Internal error` quand
+le fournisseur primaire n'a plus de crédit, passent sur ce fallback sans muter
+le store consolidé tant qu'aucun JSON valide n'est reçu.
 
 Décision pure : `--allowed-tools ""` + `--no-terminal` côté acpx (aucun outil, le
 brain ne fait que raisonner sur le contexte fourni). `exec` = session jetable
@@ -205,7 +228,22 @@ casys-trader decisions backfill-code-version
 casys-trader decisions list --json
 casys-trader decisions audit --horizons 1h,4h,1d --threshold-pct 0.5
 casys-trader decisions stats --horizon 1h --min-known 10
+casys-trader decisions bench --horizon 4h --limit 10
+casys-trader decisions bench --horizon 4h --limit 10 --verdicts missed,bad --hide-original --reconstruct-context
 ```
+
+`decisions bench` demande un avis contrefactuel à un petit banc de modèles sur
+des décisions déjà auditées, sans exposer le rendement futur dans le prompt. Il
+score ensuite localement les actions proposées (`BUY` / `SELL` / `HOLD`) contre
+l'audit forward et écrit `state/last_decision_bench.json`. Par défaut, le banc
+compare `gpt-5.3-codex-spark/medium`, `gpt-5.3-codex-spark/xhigh`,
+`gpt-5.5/medium`, `gpt-5.5/xhigh`, `nemotron-3-super:cloud` et
+`glm-5.1:cloud`. Utiliser `--dry-run --json` pour inspecter les cas et le
+prompt avant de consommer des appels modèle. `--reconstruct-context` ajoute un
+contexte as-of reconstruit depuis le cache historique (`state/backtest_cache`) :
+cockpit, prix as-of et régime par famille, sans raw bars ni futur. Ce mode n'est
+pas un replay exact des vieux prompts si le snapshot complet n'avait pas été
+persisté à l'époque ; le rapport le marque donc `exact_replay=false`.
 
 Le lancement live est incremental : si `state/scheduler.json` contient déjà des
 timers futurs, le daemon ne réanalyse pas tout l'univers au démarrage. Il ne
