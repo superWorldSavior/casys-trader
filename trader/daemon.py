@@ -1278,6 +1278,12 @@ def run_cycle(
         fee_estimator=fee_estimator,
         fee_ref_notional=fee_ref_notional,
     )
+    excluded_attribution_symbols = tuple(regime_cfg.get("exclude_symbols") or [])
+    attribution_payload = attribution.compute_attribution(
+        STATE_DIR,
+        since=attribution_since,
+        exclude_symbols=excluded_attribution_symbols,
+    )
     base_context = {
         "now": now.isoformat(),
         "portfolio": snap.as_context(),
@@ -1292,11 +1298,7 @@ def run_cycle(
         # Attribution décision->résultat : P&L réalisé par trade, calibration de la
         # confidence et coût par raison de sortie. Le signal qui dit à l'agent si
         # ses choix (surtout ses calls confiants) gagnent vraiment.
-        "attribution": attribution.compute_attribution(
-            STATE_DIR,
-            since=attribution_since,
-            exclude_symbols=tuple(regime_cfg.get("exclude_symbols") or []),
-        ),
+        "attribution": attribution_payload,
         # Boucle de feedback (D6) : guardrails humains nommés à part ; dès qu'un
         # consolidé existe, les bruts ne sont plus réinjectés (anti auto-renforcement).
         "learnings": consolidator.build_context_learnings(
@@ -2012,6 +2014,7 @@ def run_cycle(
         acpx_agent=consolidator_acpx_agent,
         model=consolidator_model,
         timeout_s=consolidator_timeout_s,
+        attribution=attribution_payload,
     )
     if consolidation_result.get("triggered"):
         report["learning_consolidation"] = consolidation_result

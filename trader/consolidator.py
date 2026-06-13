@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from . import llm
+from . import attribution as attribution_mod, llm
 from .tools.memory import LearningsStore
 
 DEFAULT_RAW_MAX_ENTRIES = 200
@@ -240,10 +240,11 @@ def build_context_learnings(
     return context
 
 
-def build_consolidation_prompt(current: dict, new_raw: list[dict]) -> str:
+def build_consolidation_prompt(current: dict, new_raw: list[dict], *, attribution: dict | None = None) -> str:
     payload = {
         "current_consolidated": current,
         "new_raw_learnings": new_raw,
+        "attribution": attribution,
         "schema": {
             "global": [{"note": "string", "robustness": "optional string"}],
             "by_symbol": {"SYMBOL": [{"note": "string", "robustness": "optional string"}]},
@@ -252,18 +253,28 @@ def build_consolidation_prompt(current: dict, new_raw: list[dict]) -> str:
     }
     return (
         "Tu es le consolidateur machine de casys-trader.\n"
-        "Objectif : un résumé ÉQUILIBRÉ des patterns appris — ni une liste "
-        "d'interdictions, ni un biais à sur-trader. Critères :\n"
-        "1. PRIORITÉ aux notes liées à des ENTRÉES (réussies ou ratées) : elles sont "
-        "sous-représentées dans les bruts, ne les écrase pas.\n"
-        "2. Fusionne les notes d'abstention (HOLD) redondantes en UNE seule par "
-        "pattern distinct ; au plus 5 règles d'abstention dans global.\n"
-        "3. `robustness` élevée seulement si le pattern s'est vérifié sur au moins "
-        "3 occurrences distinctes.\n"
-        "4. Une note qui répète une entrée déjà présente dans current_consolidated "
-        "n'apporte rien : omets-la.\n"
-        "Retourne uniquement un objet JSON avec les clés global et by_symbol. "
-        "N'ajoute pas de markdown.\n\n"
+        "Objectif : produire un résumé actionnable, équilibré et non redondant.\n"
+        "Règles strictes :\n"
+        "1. ANCRE dans les RÉSULTATS. Les notes brutes sont du contexte, pas une "
+        "preuve. Mets `robustness:\"high\"` seulement si l'attribution confirme le "
+        "pattern avec au moins 3 occurrences distinctes ET un P&L cohérent.\n"
+        "2. ÉQUILIBRE entrée / sortie / coût. Les patterns d'ENTRÉE POSITIFS disent "
+        "quand AGIR et viennent des trades GAGNANTS de l'attribution "
+        "(CLOSE/take_profit/max_hold). Ajoute des patterns de GESTION DE SORTIE "
+        "quand un `exit_reason` coûte dans `by_exit_reason` (lis `total_pnl` comme "
+        "net et `total_commission` comme commission, ex. trailing_stop). Ajoute des "
+        "patterns de COÛT si `total_commissions` ronge une part notable de "
+        "`realized_gross_pnl`.\n"
+        "3. QUOTA anti-abstention : AU MOINS 3 règles `global` doivent être des "
+        "conditions d'ACTION positives ; AU PLUS 4 règles d'abstention dans "
+        "`global`.\n"
+        "4. ANTI-REDONDANCE : une règle `by_symbol` n'est gardée que si elle dit "
+        "quelque chose de SPÉCIFIQUE au symbole, absent du `global`. Interdit de "
+        "reformuler une règle globale par symbole.\n"
+        "5. Garde les limites : fusionne les abstentions redondantes, omets ce qui "
+        "répète `current_consolidated`, respecte DEFAULT_MAX_GLOBAL et "
+        "DEFAULT_MAX_BY_SYMBOL, et retourne une sortie JSON pure {global, by_symbol} "
+        "sans markdown.\n\n"
         f"{json.dumps(payload, ensure_ascii=False, indent=2)}"
     )
 
@@ -322,20 +333,32 @@ def _consolidate_payload_with_error(
     current: dict,
     new_raw: list[dict],
     *,
+    attribution: dict | None = None,
     llm_router: llm.LlmRouter | None = None,
     acpx_bin: str | None = None,
     acpx_agent: str | None = None,
     model: str | None = None,
     timeout_s: int = DEFAULT_CONSOLIDATOR_TIMEOUT_S,
+    max_attempts: int = 3,
 ) -> tuple[dict | None, dict | None]:
     router = llm_router or build_consolidator_router_from_env(
         acpx_bin=acpx_bin,
         acpx_agent=acpx_agent,
         model=model,
     )
-    completion = router.complete(build_consolidation_prompt(current, new_raw), timeout_s=timeout_s)
+    prompt = build_consolidation_prompt(current, new_raw, attribution=attribution)
+    attempts = max(1, int(max_attempts))
+    completion: llm.LlmCompletion | llm.LlmFailure | None = None
+    for attempt in range(attempts):
+        completion = router.complete(prompt, timeout_s=timeout_s)
+        if not isinstance(completion, llm.LlmFailure):
+            break
+        if not completion.retryable or attempt == attempts - 1:
+            return None, _failure_from_llm(completion)
     if isinstance(completion, llm.LlmFailure):
         return None, _failure_from_llm(completion)
+    if completion is None:
+        return None, _failure_payload("no_attempt", "no consolidation attempt was executed")
     try:
         payload = json.loads(completion.text)
     except json.JSONDecodeError as exc:
@@ -350,20 +373,24 @@ def consolidate_payload(
     current: dict,
     new_raw: list[dict],
     *,
+    attribution: dict | None = None,
     llm_router: llm.LlmRouter | None = None,
     acpx_bin: str | None = None,
     acpx_agent: str | None = None,
     model: str | None = None,
     timeout_s: int = DEFAULT_CONSOLIDATOR_TIMEOUT_S,
+    max_attempts: int = 3,
 ) -> dict | None:
     consolidated, _error = _consolidate_payload_with_error(
         current,
         new_raw,
+        attribution=attribution,
         llm_router=llm_router,
         acpx_bin=acpx_bin,
         acpx_agent=acpx_agent,
         model=model,
         timeout_s=timeout_s,
+        max_attempts=max_attempts,
     )
     return consolidated
 
@@ -373,11 +400,13 @@ def maybe_consolidate(
     consolidated_store: ConsolidatedLearningsStore,
     *,
     threshold: int = DEFAULT_CONSOLIDATION_THRESHOLD,
+    attribution: dict | None = None,
     llm_router: llm.LlmRouter | None = None,
     acpx_bin: str | None = None,
     acpx_agent: str | None = None,
     model: str | None = None,
     timeout_s: int = DEFAULT_CONSOLIDATOR_TIMEOUT_S,
+    max_attempts: int = 3,
     status_store: ConsolidationStatusStore | None = None,
 ) -> dict:
     current = consolidated_store.read()
@@ -411,11 +440,13 @@ def maybe_consolidate(
     consolidated, error = _consolidate_payload_with_error(
         current,
         new_raw,
+        attribution=attribution,
         llm_router=llm_router,
         acpx_bin=acpx_bin,
         acpx_agent=acpx_agent,
         model=model,
         timeout_s=timeout_s,
+        max_attempts=max_attempts,
     )
     if consolidated is None:
         error = error or _failure_payload("unknown", "unknown consolidation failure")
@@ -437,3 +468,71 @@ def maybe_consolidate(
     consolidated_store.write(consolidated, watermark=watermark)
     status_store.clear()
     return {"triggered": True, "new_raw_count": len(new_raw), "written": True}
+
+
+def _default_state_dir() -> Path:
+    return Path(__file__).resolve().parent.parent / "state"
+
+
+def main(argv: list[str] | None = None) -> int:
+    """CLI d'inspection et run cron : python -m trader.consolidator --run."""
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Consolidateur des learnings runtime")
+    parser.add_argument("--run", action="store_true", help="exécute une consolidation si le seuil est atteint")
+    parser.add_argument("--state-dir", type=Path, default=_default_state_dir(), help="répertoire state/ à utiliser")
+    parser.add_argument("--threshold", type=int, default=DEFAULT_CONSOLIDATION_THRESHOLD, help="seuil de bruts nouveaux")
+    parser.add_argument("--max-attempts", type=int, default=3, help="tentatives LLM intra-cycle")
+    parser.add_argument("--acpx-bin", default=None, help="binaire acpx du consolidateur")
+    parser.add_argument("--acpx-agent", default=None, help="agent acpx du consolidateur")
+    parser.add_argument("--model", default=None, help="modèle du consolidateur")
+    parser.add_argument("--timeout-s", type=int, default=DEFAULT_CONSOLIDATOR_TIMEOUT_S, help="timeout LLM en secondes")
+    parser.add_argument("--attribution-since", default=None, help="borne since déjà filtrée au régime")
+    parser.add_argument(
+        "--exclude-symbol",
+        action="append",
+        default=[],
+        help="symbole à exclure de l'attribution ; répétable",
+    )
+    args = parser.parse_args(argv)
+
+    state_dir = Path(args.state_dir)
+    raw_store = LearningsStore(state_dir / "learnings.jsonl", max_entries=DEFAULT_RAW_MAX_ENTRIES)
+    consolidated_store = ConsolidatedLearningsStore(state_dir / "learnings_consolidated.json")
+
+    if args.run:
+        attr = attribution_mod.compute_attribution(
+            state_dir,
+            since=args.attribution_since,
+            exclude_symbols=tuple(args.exclude_symbol),
+        )
+        result = maybe_consolidate(
+            raw_store,
+            consolidated_store,
+            threshold=args.threshold,
+            attribution=attr,
+            acpx_bin=args.acpx_bin,
+            acpx_agent=args.acpx_agent,
+            model=args.model,
+            timeout_s=args.timeout_s,
+            max_attempts=args.max_attempts,
+        )
+        print(json.dumps(result, ensure_ascii=False, separators=(",", ":")))
+        return 0
+
+    current = consolidated_store.read()
+    raw_rows = raw_store.all()
+    payload = {
+        "state_dir": str(state_dir),
+        "raw_count": len(raw_rows),
+        "new_raw_count": len(select_new_raw(raw_rows, watermark=current.get("watermark"))),
+        "consolidated_watermark": current.get("watermark"),
+        "has_consolidated": _has_consolidated(current),
+        "last_failure": _default_status_store(consolidated_store).read().get("last_failure"),
+    }
+    print(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

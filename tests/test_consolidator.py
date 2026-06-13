@@ -134,6 +134,126 @@ def test_maybe_consolidate_garde_letat_si_sortie_llm_invalide(tmp_path) -> None:
     assert consolidated_store.read()["watermark"] is None
 
 
+def test_maybe_consolidate_retente_un_echec_retryable_puis_ecrit_le_consolide(tmp_path) -> None:
+    raw_store = LearningsStore(tmp_path / "learnings.jsonl", max_entries=200)
+    consolidated_store = consolidator.ConsolidatedLearningsStore(tmp_path / "learnings_consolidated.json")
+    raw_store.append(symbol="SPY", note="brut retryable", now=datetime(2026, 6, 8, 10, tzinfo=timezone.utc))
+    calls = 0
+
+    class Router:
+        def complete(self, prompt: str, *, timeout_s: int):
+            nonlocal calls
+            calls += 1
+            if calls < 3:
+                return llm.LlmFailure(
+                    provider="consolidator",
+                    model="gpt-5.5/high",
+                    code="internal_error",
+                    message="Internal error",
+                    retryable=True,
+                )
+            return llm.LlmCompletion(
+                provider="test",
+                model="stub",
+                text=json.dumps({"global": [{"note": "agir sur cassure confirmee"}], "by_symbol": {}}),
+            )
+
+    result = consolidator.maybe_consolidate(
+        raw_store,
+        consolidated_store,
+        threshold=1,
+        llm_router=Router(),
+        max_attempts=3,
+    )
+
+    assert result == {"triggered": True, "new_raw_count": 1, "written": True}
+    assert calls == 3
+    assert consolidated_store.read()["global"] == [{"note": "agir sur cassure confirmee"}]
+
+
+def test_maybe_consolidate_enregistre_un_seul_echec_apres_retries_epuises(tmp_path) -> None:
+    raw_store = LearningsStore(tmp_path / "learnings.jsonl", max_entries=200)
+    consolidated_store = consolidator.ConsolidatedLearningsStore(tmp_path / "learnings_consolidated.json")
+    raw_store.append(symbol="SPY", note="brut retryable", now=datetime(2026, 6, 8, 10, tzinfo=timezone.utc))
+    calls = 0
+
+    class CountingStatusStore(consolidator.ConsolidationStatusStore):
+        writes = 0
+
+        def write_failure(self, **kwargs):
+            self.writes += 1
+            return super().write_failure(**kwargs)
+
+    class Router:
+        def complete(self, prompt: str, *, timeout_s: int):
+            nonlocal calls
+            calls += 1
+            return llm.LlmFailure(
+                provider="consolidator",
+                model="gpt-5.5/high",
+                code="internal_error",
+                message="Internal error",
+                retryable=True,
+            )
+
+    status_store = CountingStatusStore(tmp_path / "learnings_consolidation_status.json")
+    result = consolidator.maybe_consolidate(
+        raw_store,
+        consolidated_store,
+        threshold=1,
+        llm_router=Router(),
+        status_store=status_store,
+        max_attempts=3,
+    )
+
+    assert result["written"] is False
+    assert result["error_code"] == "internal_error"
+    assert calls == 3
+    assert status_store.writes == 1
+    assert status_store.read()["last_failure"]["error_code"] == "internal_error"
+
+
+def test_maybe_consolidate_ne_retente_pas_un_echec_non_retryable(tmp_path) -> None:
+    raw_store = LearningsStore(tmp_path / "learnings.jsonl", max_entries=200)
+    consolidated_store = consolidator.ConsolidatedLearningsStore(tmp_path / "learnings_consolidated.json")
+    raw_store.append(symbol="SPY", note="brut fatal", now=datetime(2026, 6, 8, 10, tzinfo=timezone.utc))
+    calls = 0
+
+    class CountingStatusStore(consolidator.ConsolidationStatusStore):
+        writes = 0
+
+        def write_failure(self, **kwargs):
+            self.writes += 1
+            return super().write_failure(**kwargs)
+
+    class Router:
+        def complete(self, prompt: str, *, timeout_s: int):
+            nonlocal calls
+            calls += 1
+            return llm.LlmFailure(
+                provider="consolidator",
+                model="gpt-5.5/high",
+                code="nonzero_exit",
+                message="adapter failed",
+                retryable=False,
+            )
+
+    status_store = CountingStatusStore(tmp_path / "learnings_consolidation_status.json")
+    result = consolidator.maybe_consolidate(
+        raw_store,
+        consolidated_store,
+        threshold=1,
+        llm_router=Router(),
+        status_store=status_store,
+        max_attempts=3,
+    )
+
+    assert result["written"] is False
+    assert result["error_code"] == "nonzero_exit"
+    assert calls == 1
+    assert status_store.writes == 1
+
+
 def test_maybe_consolidate_ne_retente_pas_un_echec_sans_nouveau_lot(tmp_path) -> None:
     raw_store = LearningsStore(tmp_path / "learnings.jsonl", max_entries=200)
     consolidated_store = consolidator.ConsolidatedLearningsStore(tmp_path / "learnings_consolidated.json")
@@ -409,6 +529,110 @@ def test_prompt_consolidation_priorise_les_entrees_et_cape_les_abstentions() -> 
     assert "abstention" in prompt.lower()
     # l'ancienne consigne qui faisait gagner la règle majoritaire (HOLD) disparaît
     assert "préserve les entrées stables" not in prompt
+
+
+def test_prompt_consolidation_injecte_lattribution_et_les_consigne_qualite() -> None:
+    attribution = {
+        "n_closed_trades": 5,
+        "realized_pnl": -12.5,
+        "realized_gross_pnl": 4.0,
+        "total_commissions": 16.5,
+        "win_rate": 0.4,
+        "by_exit_reason": [
+            {"reason": "trailing_stop", "n": 3, "total_pnl": -18.0, "total_commission": 6.0}
+        ],
+        "by_confidence": [{"bucket": "high", "n": 3, "total_pnl": 22.0}],
+        "regime": {"since": "2026-06-10", "excluded_symbols": ["CL=F"]},
+    }
+
+    prompt = consolidator.build_consolidation_prompt(
+        consolidator.empty_consolidated(),
+        [_raw("2026-06-10T10:00:00+00:00", note="HOLD range")],
+        attribution=attribution,
+    )
+    payload = json.loads(prompt.rsplit("\n\n", 1)[1])
+
+    assert payload["attribution"] == attribution
+    assert "robustness" in prompt
+    assert "3 occurrences" in prompt
+    assert "P&L cohérent" in prompt
+    assert "AU MOINS 3 règles `global`" in prompt
+    assert "conditions d'ACTION positives" in prompt
+    assert "AU PLUS 4 règles d'abstention" in prompt
+    assert "GESTION DE SORTIE" in prompt
+    assert "trailing_stop" in prompt
+    assert "total_commissions" in prompt
+    assert "by_symbol" in prompt
+    assert "SPÉCIFIQUE au symbole" in prompt
+    assert "Interdit de reformuler une règle globale par symbole" in prompt
+
+
+def test_maybe_consolidate_transmet_lattribution_au_prompt_llm(tmp_path) -> None:
+    raw_store = LearningsStore(tmp_path / "learnings.jsonl", max_entries=200)
+    consolidated_store = consolidator.ConsolidatedLearningsStore(tmp_path / "learnings_consolidated.json")
+    raw_store.append(symbol="SPY", note="brut avec attribution", now=datetime(2026, 6, 8, 10, tzinfo=timezone.utc))
+    attribution = {
+        "n_closed_trades": 1,
+        "realized_pnl": 42.0,
+        "realized_gross_pnl": 45.0,
+        "total_commissions": 3.0,
+        "win_rate": 1.0,
+        "by_exit_reason": [{"reason": "take_profit", "n": 1, "total_pnl": 42.0, "total_commission": 3.0}],
+        "by_confidence": [{"bucket": "high", "n": 1, "total_pnl": 42.0}],
+        "regime": {"since": "2026-06-01", "excluded_symbols": []},
+    }
+    prompts: list[str] = []
+
+    class Router:
+        def complete(self, prompt: str, *, timeout_s: int):
+            prompts.append(prompt)
+            return llm.LlmCompletion(
+                provider="test",
+                model="stub",
+                text=json.dumps({"global": [{"note": "agir quand la cassure confirme"}], "by_symbol": {}}),
+            )
+
+    result = consolidator.maybe_consolidate(
+        raw_store,
+        consolidated_store,
+        threshold=1,
+        llm_router=Router(),
+        attribution=attribution,
+    )
+    payload = json.loads(prompts[0].rsplit("\n\n", 1)[1])
+
+    assert result["written"] is True
+    assert payload["attribution"] == attribution
+
+
+def test_main_run_declenche_la_consolidation_sur_un_state_tmp(monkeypatch, tmp_path, capsys) -> None:
+    state_dir = tmp_path / "state"
+    raw_store = LearningsStore(state_dir / "learnings.jsonl", max_entries=200)
+    raw_store.append(symbol="SPY", note="brut 1", now=datetime(2026, 6, 8, 10, tzinfo=timezone.utc))
+    raw_store.append(symbol="QQQ", note="brut 2", now=datetime(2026, 6, 8, 10, 1, tzinfo=timezone.utc))
+
+    class Router:
+        def complete(self, prompt: str, *, timeout_s: int):
+            assert '"attribution"' in prompt
+            return llm.LlmCompletion(
+                provider="test",
+                model="stub",
+                text=json.dumps({"global": [{"note": "agir quand le signal confirme"}], "by_symbol": {}}),
+            )
+
+    monkeypatch.setattr(
+        consolidator,
+        "build_consolidator_router_from_env",
+        lambda **kwargs: Router(),
+    )
+
+    exit_code = consolidator.main(["--run", "--state-dir", str(state_dir), "--threshold", "2"])
+    output = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 0
+    assert output == {"triggered": True, "new_raw_count": 2, "written": True}
+    saved = consolidator.ConsolidatedLearningsStore(state_dir / "learnings_consolidated.json").read()
+    assert saved["global"] == [{"note": "agir quand le signal confirme"}]
 
 
 def test_build_context_learnings_sans_bruts_quand_consolide_existe() -> None:

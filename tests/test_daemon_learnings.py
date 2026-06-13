@@ -250,9 +250,26 @@ def test_run_cycle_declenche_le_consolidateur_en_fin_de_cycle(
     sched = Scheduler(state_dir / "scheduler.json")
     now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
     calls: list[tuple] = []
+    contexts: list[dict] = []
+    attribution_payload = {
+        "n_closed_trades": 1,
+        "realized_pnl": -7.0,
+        "realized_gross_pnl": 1.0,
+        "total_commissions": 8.0,
+        "win_rate": 0.0,
+        "by_exit_reason": [{"reason": "trailing_stop", "n": 1, "total_pnl": -7.0, "total_commission": 8.0}],
+        "by_confidence": [{"bucket": "high", "n": 1, "total_pnl": -7.0}],
+        "regime": {"since": None, "excluded_symbols": []},
+    }
+    attribution_calls: list[tuple] = []
 
     def decide(**kwargs):
+        contexts.append(kwargs["context"])
         return Decision.hold(kwargs["symbol"], "attente")
+
+    def compute_attribution(state_dir_arg, *, since=None, exclude_symbols=()):
+        attribution_calls.append((state_dir_arg, since, exclude_symbols))
+        return attribution_payload
 
     def maybe_consolidate(raw_store, consolidated_store, **kwargs):
         calls.append(
@@ -263,12 +280,14 @@ def test_run_cycle_declenche_le_consolidateur_en_fin_de_cycle(
                 kwargs["acpx_agent"],
                 kwargs["model"],
                 kwargs["timeout_s"],
+                kwargs["attribution"],
             )
         )
         return {"triggered": False, "new_raw_count": 0}
 
     monkeypatch.setattr(daemon, "ROOT", tmp_path)
     monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+    monkeypatch.setattr(daemon.attribution, "compute_attribution", compute_attribution)
     monkeypatch.setattr(daemon.consolidator, "maybe_consolidate", maybe_consolidate)
     data_source = make_data_source(_bars)
     patch_batch(decide)
@@ -284,7 +303,11 @@ def test_run_cycle_declenche_le_consolidateur_en_fin_de_cycle(
         consolidator_timeout_s=240,
     )
 
-    assert calls == [("learnings.jsonl", "learnings_consolidated.json", 50, "codex", "gpt-5.5/high", 240)]
+    assert contexts[0]["attribution"] is attribution_payload
+    assert calls == [
+        ("learnings.jsonl", "learnings_consolidated.json", 50, "codex", "gpt-5.5/high", 240, attribution_payload)
+    ]
+    assert attribution_calls == [(state_dir, None, ())]
 
 
 def test_run_cycle_injecte_guardrails_et_regime_families(
