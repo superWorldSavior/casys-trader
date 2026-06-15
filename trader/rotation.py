@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import tempfile
 from pathlib import Path
@@ -387,7 +388,7 @@ def run(
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Point d'entrée CLI — squelette Phase 3.
+    """Point d'entrée CLI — rotation EOD complète.
 
     Usage:
       rotation.py --run --config-dir CONFIG --state-dir STATE
@@ -402,7 +403,11 @@ def main(argv: list[str] | None = None) -> int:
         parser.print_help()
         return 0
 
-    raise SystemExit("câblage prod assemblé en Phase 4")
+    from .rotation_wiring import run_cli
+
+    result = run_cli(args.config_dir, args.state_dir)
+    print(json.dumps(result, ensure_ascii=False))
+    return 0
 
 
 if __name__ == "__main__":
