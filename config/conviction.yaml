@@ -1,0 +1,4 @@
+# Tilt de conviction par famille (cf registre D9). Vide par defaut = 100 %
+# systematique. score_final = score * (1 + tilt_famille).
+# Famille = cle de trader/semantic/catalog.py FAMILIES. tilt > -1 obligatoire.
+# Exemple : energy: 0.30

@@ -33,3 +33,27 @@ def load_radar_params(config_dir: Path) -> RadarParams:
     known = RadarParams().__dict__
     kwargs = {key: cfg[key] for key in known if key in cfg}
     return RadarParams(**kwargs)
+
+
+class ConvictionError(ValueError):
+    pass
+
+
+def load_conviction(config_dir: Path, known_families: set[str]) -> dict[str, float]:
+    """Charge les tilts par famille ; fichier absent = pas de tilt."""
+    path = config_dir / "conviction.yaml"
+    if not path.exists():
+        return {}
+    cfg = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    out: dict[str, float] = {}
+    for family, raw in cfg.items():
+        if family not in known_families:
+            raise ConvictionError(f"unknown_family: {family}")
+        try:
+            tilt = float(raw)
+        except (TypeError, ValueError) as exc:
+            raise ConvictionError(f"non_numeric_tilt: {family}={raw!r}") from exc
+        if tilt <= -1.0:
+            raise ConvictionError(f"tilt_le_minus_one: {family}={tilt}")
+        out[family] = tilt
+    return out
