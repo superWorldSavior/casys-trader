@@ -107,7 +107,10 @@ def _normalize_threshold(
         try:
             parsed = float(value)  # type: ignore[arg-type]
             if math.isfinite(parsed):
-                return (parsed, "", None)
+                # Ops abs* comparent abs(actual) au seuil : un seuil négatif rendrait
+                # le prédicat permissif (abs>= -0.5 toujours vrai). On prend la magnitude,
+                # comme pour les labels négatifs, pour rester cohérent et non-permissif.
+                return (abs(parsed) if op in _ABS_OPS else parsed, "", None)
         except (TypeError, ValueError):
             pass
         if isinstance(value, str):

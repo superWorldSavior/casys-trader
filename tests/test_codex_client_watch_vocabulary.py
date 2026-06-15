@@ -114,8 +114,9 @@ def test_batch_prompt_indique_value_toujours_numerique() -> None:
     # La mention doit apparaître dans la section vocabulaire des veilles
     assert "value" in prompt
     assert "nombre" in prompt.lower() or "number" in prompt.lower()
-    # Formulation spécifique issue de la phase 4
-    assert "TOUJOURS un nombre fini" in prompt or "toujours un nombre fini" in prompt.lower()
+    # value est numérique ; un label connu est toléré/converti, un label inconnu rejeté
+    assert "doit être un nombre fini" in prompt
+    assert "toléré" in prompt.lower() and "rejeté" in prompt.lower()
 
 
 def test_batch_prompt_contient_mapping_labels_derive_de_indicator_label_values() -> None:

@@ -398,6 +398,23 @@ def test_label_candlestick_shooting_star_abs_op_resolu_positif() -> None:
     assert result.watch["conditions"][0]["value"] == 0.5
 
 
+def test_seuil_numerique_negatif_abs_op_pris_en_magnitude() -> None:
+    """Un seuil NUMÉRIQUE négatif avec un op abs* devient sa magnitude, sinon
+    `abs(actual) >= -0.5` serait toujours vrai (prédicat permissif → réveil-fantôme)."""
+    now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
+    result = build_indicator_watch(
+        {
+            "conditions": [
+                {"indicator": "candlestick_signal", "op": "abs>=", "value": -0.5}
+            ]
+        },
+        owner_symbol="SPY",
+        now=now,
+    )
+    assert result.watch is not None
+    assert result.watch["conditions"][0]["value"] == 0.5
+
+
 def test_label_inconnu_rejet_avec_valid_labels() -> None:
     """Label "shooting_starr" inconnu -> rejet unknown_indicator_label + valid_labels."""
     now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
