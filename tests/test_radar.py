@@ -1,6 +1,8 @@
 import pytest
 
-from trader.radar import is_eligible, score_symbol
+from trader.radar import daily_components, is_eligible, score_symbol
+from trader.radar_config import RadarParams
+from trader.tools.market import Bar
 
 
 def test_excluded_symbol_not_eligible() -> None:
@@ -92,3 +94,24 @@ def test_sign_follows_direction() -> None:
     down = score_symbol(**{**_base_score_inputs(), "ret": -0.03})
 
     assert up > 0 > down
+
+
+def test_daily_components_adapte_compute_indicator_values_sur_de_vraies_barres() -> None:
+    bars = [
+        Bar(
+            ts=f"2026-06-{day:02d}T00:00:00+00:00",
+            open=100.0 + day * 2.0,
+            high=110.0 + day * 2.0,
+            low=96.0 + day * 2.0,
+            close=101.0 + day * 2.5,
+            volume=1_000.0 + day,
+        )
+        for day in range(1, 8)
+    ]
+
+    components = daily_components("SPY", bars, RadarParams())
+
+    assert set(components) == {"efficiency_ratio", "ret", "amplitude"}
+    assert components["efficiency_ratio"] is not None
+    assert components["ret"] > 0
+    assert components["amplitude"] > 0
