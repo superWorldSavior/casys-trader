@@ -16,3 +16,24 @@ def is_eligible(
     if amplitude is None:
         return False
     return amplitude >= atr_floor
+
+
+def score_symbol(
+    *,
+    efficiency_ratio: float,
+    ret: float,
+    benchmark_ret: float,
+    amplitude: float,
+    tilt: float,
+    amplitude_cap: float,
+    w_trend: float,
+    w_rs: float,
+    w_amp: float,
+) -> float:
+    """Score composite signé : magnitude = attractivité, signe = biais."""
+    direction = 1.0 if ret >= 0 else -1.0
+    trend = efficiency_ratio * direction
+    relative_strength = (ret - benchmark_ret) * direction
+    amplitude_reward = min(amplitude, amplitude_cap)
+    raw = w_trend * trend + w_rs * relative_strength
+    return raw * (1.0 + w_amp * amplitude_reward) * (1.0 + tilt)
