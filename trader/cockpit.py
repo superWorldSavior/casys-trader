@@ -47,6 +47,8 @@ from textual.theme import Theme
 from textual.widgets import Button, Footer, Label, RichLog, Static
 
 from trader.cockpit_supervisor import daemon_vital_state
+from trader.rotation_venues import load_venue_state
+from trader.rotation_schedule import load_sessions, open_venues as _open_venues
 
 from trader.cockpit_events import (
     EventClass,
@@ -69,6 +71,8 @@ from trader.tui import (
     _enrich_decisions_with_data_source,
     _safe_float,
     _safe_list_of_dicts,
+    build_selection_panel,
+    build_trades_table,
     load_runtime_state,
 )
 
@@ -117,6 +121,7 @@ _THEME_PALETTE: dict[str, Palette] = {
 # ---------------------------------------------------------------------------
 _ROOT = Path(__file__).resolve().parent.parent
 _STATE_DIR = _ROOT / "state"
+_CONFIG_DIR = str(_ROOT)
 _EVENTS_FILE = _STATE_DIR / "events.jsonl"
 _KILL_FILE = _ROOT / "KILL"
 
@@ -400,6 +405,8 @@ class RightPane(Static):
     def compose(self) -> ComposeResult:
         yield EventsPane(id="events-pane")
         with Vertical(id="compact-bottom"):
+            yield Static(id="selection-panel")
+            yield Static(id="trades-panel")
             yield Static(id="watches-panel")
             yield Static(id="data-health-panel")
             yield Static(id="llm-activity-panel")
@@ -428,6 +435,19 @@ class RightPane(Static):
         )
         learnings_pending = state.get("learnings_pending_count") or 0
         consolidation_status = state.get("consolidation_status")
+
+        # Panneau sélection par marché (venue_state + sessions)
+        venue_state = state.get("venue_state") if isinstance(state.get("venue_state"), dict) else {}
+        open_venues_list = state.get("open_venues_list") if isinstance(state.get("open_venues_list"), list) else []
+        self.query_one("#selection-panel", Static).update(
+            build_selection_panel(venue_state, open_venues_list, palette=palette)
+        )
+
+        # Panneau derniers trades (fills depuis broker.json)
+        fills = state.get("fills") if isinstance(state.get("fills"), list) else []
+        self.query_one("#trades-panel", Static).update(
+            build_trades_table(fills, palette=palette)
+        )
 
         self.query_one("#watches-panel", Static).update(
             _build_watches_panel(indicator_watches, palette=palette)
@@ -879,7 +899,7 @@ class CockpitApp(App):
         Poste le résultat à l'UI via call_from_thread pour éviter tout blocage.
         """
         try:
-            state = load_runtime_state(state_dir=_STATE_DIR)
+            state = load_runtime_state(state_dir=_STATE_DIR, config_dir=_CONFIG_DIR)
             kill_active = _KILL_FILE.exists()
             state["kill_switch"] = kill_active
             self.call_from_thread(self._apply_state, state, kill_active)

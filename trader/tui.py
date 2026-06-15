@@ -293,6 +293,38 @@ def _load_consolidation_status_safe(status_path: Path) -> dict | None:
         return None
 
 
+def _load_fills_safe(broker_path: Path, *, limit: int = 100) -> list[dict]:
+    """Lit les fills depuis state/broker.json. Retourne [] si absent/corrompu."""
+    try:
+        raw = json.loads(broker_path.read_text(encoding="utf-8"))
+        if not isinstance(raw, dict):
+            return []
+        fills = raw.get("fills", [])
+        if not isinstance(fills, list):
+            return []
+        return _safe_list_of_dicts(fills[-limit:])
+    except Exception:
+        return []
+
+
+def _load_venue_open_state_safe(
+    state_dir: Path, config_dir: str
+) -> tuple[dict, list[str]]:
+    """Charge venue_state et open_venues. Retourne ({}, []) si indisponible."""
+    try:
+        from trader.rotation_venues import load_venue_state as _lvs
+        from trader.rotation_schedule import load_sessions as _ls, open_venues as _ov
+        from datetime import UTC, datetime
+
+        venue_state = _lvs(state_dir)
+        sessions = _ls(config_dir)
+        now_iso = datetime.now(UTC).isoformat()
+        ov_list = _ov(now_iso, sessions)
+        return venue_state, ov_list
+    except Exception:
+        return {}, []
+
+
 def _count_learnings_safe(learnings_path: Path, *, limit: int = 200) -> int:
     """Compte les lignes non vides de learnings.jsonl sans tout charger (limité)."""
     try:
@@ -316,6 +348,7 @@ def load_runtime_state(
     current_report_path: str | Path | None = None,
     last_report_path: str | Path | None = None,
     status_path: str | Path | None = None,
+    config_dir: str | None = None,
 ) -> dict:
     """Charge le meilleur état affichable sans lever d'exception."""
     state_dir_path = Path(state_dir)
@@ -364,6 +397,9 @@ def load_runtime_state(
     learnings_pending_count = _count_learnings_safe(
         state_dir_path / "learnings.jsonl"
     )
+    fills = _load_fills_safe(state_dir_path / "broker.json")
+    _effective_config_dir = config_dir if config_dir is not None else str(state_dir_path.parent)
+    venue_state, open_venues_list = _load_venue_open_state_safe(state_dir_path, _effective_config_dir)
     return {
         **raw,
         "source": source,
@@ -386,6 +422,9 @@ def load_runtime_state(
         "recent_decisions": recent_decisions,
         "consolidation_status": consolidation_status,
         "learnings_pending_count": learnings_pending_count,
+        "fills": fills,
+        "venue_state": venue_state,
+        "open_venues_list": open_venues_list,
     }
 
 
@@ -1144,6 +1183,135 @@ def _build_llm_activity_panel(
         border_style=palette["border_llm_activity"],
         expand=True,
     )
+
+
+_ACTION_VENUES = ("TW", "EU", "US")
+_MAX_HOTLIST_DISPLAY = 12
+
+
+def build_selection_panel(
+    venue_state: dict,
+    open_venues_list: list[str],
+    *,
+    palette: Palette = PALETTE_DARK,
+) -> "RenderableType":
+    """Panneau « Sélection par marché » (PURE — ne lit aucun fichier).
+
+    Pour chaque venue d'actions TW/EU/US :
+    - badge OUVERT / fermé
+    - hotlist triée par attractivité (scores) décroissante, tronquée à 12
+    Tolère un état vide ou venue absente.
+    """
+    venues = venue_state.get("venues") if isinstance(venue_state.get("venues"), dict) else {}
+    blocks: list["RenderableType"] = []
+
+    for venue in _ACTION_VENUES:
+        is_open = venue in open_venues_list
+        badge_style = palette["pnl_positive"] if is_open else palette["dim"]
+        badge_text = "OUVERT" if is_open else "fermé"
+
+        venue_data = venues.get(venue) if isinstance(venues.get(venue), dict) else {}
+        hotlist: list[str] = venue_data.get("hotlist") if isinstance(venue_data.get("hotlist"), list) else []  # type: ignore[assignment]
+        scores: dict[str, float] = venue_data.get("scores") if isinstance(venue_data.get("scores"), dict) else {}  # type: ignore[assignment]
+
+        # Tri par attractivité décroissante
+        def _attractivity(sym: str) -> float:
+            v = scores.get(sym)
+            try:
+                return -float(v)  # type: ignore[arg-type]
+            except (TypeError, ValueError):
+                return 0.0
+
+        sorted_hotlist = sorted(hotlist, key=_attractivity)[: _MAX_HOTLIST_DISPLAY]
+
+        table = Table(box=None, show_header=True, expand=True, pad_edge=False)
+        table.add_column("Symbole", style="bold", no_wrap=True)
+        table.add_column("Attractivité", justify="right", no_wrap=True)
+
+        if sorted_hotlist:
+            for sym in sorted_hotlist:
+                score_val = scores.get(sym)
+                try:
+                    score_str = f"{float(score_val):.4f}"  # type: ignore[arg-type]
+                except (TypeError, ValueError):
+                    score_str = "—"
+                table.add_row(sym, score_str)
+        else:
+            table.add_row("—", "—")
+
+        title_text = Text.assemble(
+            (venue, f"bold {palette['kpi_default']}"),
+            ("  ", ""),
+            (f"[{badge_text}]", badge_style),
+        )
+        blocks.append(Panel(table, title=title_text, border_style=palette["border_default"], expand=True))
+
+    return Group(*blocks)
+
+
+def build_trades_table(
+    fills: list[dict],
+    *,
+    limit: int = 20,
+    palette: Palette = PALETTE_DARK,
+) -> Table:
+    """Tableau « Derniers trades » (PURE — ne lit aucun fichier).
+
+    Colonnes : heure, symbole, sens (BUY/SELL depuis Fill.side), quantité,
+    prix, commission. Les ``limit`` DERNIERS fills sont affichés.
+
+    Champs réels de Fill : symbol, side (Side="BUY"|"SELL"), quantity, price,
+    ts, commission, commission_currency, commission_model.
+    """
+    table = Table(title="Derniers trades", show_lines=False, expand=True)
+    table.add_column("Heure", no_wrap=True, style=palette["dim"])
+    table.add_column("Symbole", style="bold")
+    table.add_column("Sens")
+    table.add_column("Qté", justify="right")
+    table.add_column("Prix", justify="right")
+    table.add_column("Commission", justify="right")
+
+    recent = fills[-limit:] if len(fills) > limit else fills
+    for fill in reversed(recent):
+        ts_raw = str(fill.get("ts") or "")
+        # Affiche HH:MM:SS si possible, sinon la chaîne brute tronquée
+        try:
+            candidate = f"{ts_raw[:-1]}+00:00" if ts_raw.endswith("Z") else ts_raw
+            dt = datetime.fromisoformat(candidate)
+            ts_str = dt.astimezone(UTC).strftime("%H:%M:%S")
+        except (ValueError, AttributeError):
+            ts_str = ts_raw[:8] if ts_raw else "—"
+
+        symbol = str(fill.get("symbol") or "?")
+        side = str(fill.get("side") or "")
+        side_style = (
+            palette["action_buy"] if side == "BUY" else (
+                palette["action_sell"] if side == "SELL" else palette["dim"]
+            )
+        )
+        qty_val = _safe_float(fill.get("quantity"), default=0.0) or 0.0
+        price_val = _safe_float(fill.get("price"), default=None)
+        price_str = f"${price_val:,.4f}" if price_val is not None else "—"
+        commission_val = _safe_float(fill.get("commission"), default=None)
+        if commission_val is not None:
+            comm_currency = str(fill.get("commission_currency") or "USD")
+            comm_str = f"{_fmt_fee_cost(commission_val)} {comm_currency}"
+        else:
+            comm_str = "—"
+
+        table.add_row(
+            ts_str,
+            symbol,
+            Text(side, style=side_style),
+            f"{qty_val:,.4f}",
+            price_str,
+            comm_str,
+        )
+
+    if not recent:
+        table.add_row("—", "—", "—", "—", "—", "—")
+
+    return table
 
 
 def build_view(
