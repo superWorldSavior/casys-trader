@@ -5,6 +5,7 @@ from __future__ import annotations
 from copy import deepcopy
 
 from trader.rotation_venues import (
+    compose_active_universe,
     empty_venue_state,
     load_venue_state,
     save_venue_state,
@@ -173,3 +174,45 @@ def test_update_venue_ranking_increments_stayers_and_sets_entrant_dwell_to_one()
 
     assert result["venues"]["US"]["hotlist"] == ["AAPL", "MSFT"]
     assert result["venues"]["US"]["dwell"] == {"AAPL": 5, "MSFT": 1}
+
+
+def test_compose_active_universe_adds_open_action_hotlist_and_fx_cap():
+    state = {
+        "venues": {
+            "TW": {"hotlist": ["a", "b"]},
+            "FX": {"hotlist": ["f1", "f2", "f3", "f4"]},
+        }
+    }
+
+    result = compose_active_universe(state, ["FX", "TW"], sticky=set(), fx_cap=3)
+
+    assert result == ["a", "b", "f1", "f2", "f3"]
+
+
+def test_compose_active_universe_keeps_sticky_from_closed_market_at_front():
+    state = {"venues": {"TW": {"hotlist": ["a"]}}}
+
+    result = compose_active_universe(state, [], sticky={"z"})
+
+    assert result == ["z"]
+
+
+def test_compose_active_universe_interleaves_open_action_venues():
+    state = {
+        "venues": {
+            "EU": {"hotlist": ["e1", "e2"]},
+            "US": {"hotlist": ["u1", "u2"]},
+        }
+    }
+
+    result = compose_active_universe(state, ["EU", "US"], sticky=set())
+
+    assert result == ["e1", "u1", "e2", "u2"]
+
+
+def test_compose_active_universe_empty_without_open_venues_or_sticky():
+    assert compose_active_universe({"venues": {}}, [], sticky=set()) == []
+
+
+def test_compose_active_universe_returns_sticky_when_no_venues_are_open():
+    assert compose_active_universe({"venues": {}}, [], sticky={"z"}) == ["z"]

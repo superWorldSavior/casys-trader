@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+from itertools import zip_longest
 from pathlib import Path
 
 from trader.rotation import apply_hysteresis, emergency_exits
@@ -48,6 +49,32 @@ def save_venue_state(state_dir, state) -> None:
         except OSError:
             pass
         raise
+
+
+def compose_active_universe(state, open_venues, *, sticky, fx_cap=3) -> list[str]:
+    """Compose the currently tradable universe from open venues and sticky symbols."""
+    venues = state.get("venues", {})
+    action_venues = [venue for venue in open_venues if venue != "FX"]
+    action_hotlists = [
+        venues.get(venue, {}).get("hotlist", [])
+        for venue in action_venues
+    ]
+    action_candidates = [
+        symbol
+        for row in zip_longest(*action_hotlists)
+        for symbol in row
+        if symbol is not None
+    ]
+    fx = venues.get("FX", {}).get("hotlist", [])[:fx_cap] if "FX" in open_venues else []
+
+    result: list[str] = []
+    for symbol in sorted(sticky):
+        if symbol not in result:
+            result.append(symbol)
+    for symbol in action_candidates + fx:
+        if symbol not in sticky and symbol not in result:
+            result.append(symbol)
+    return result
 
 
 def update_venue_ranking(
