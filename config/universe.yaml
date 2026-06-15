@@ -1,39 +1,26 @@
-# Univers de trading — édité en boucle 1 (Erwan + Claude).
-# v1 : instruments disponibles via yfinance (data gratuite, démarrage immédiat).
-# Expansion native (Euronext Paris, Taïwan, FX broker) une fois IB Gateway branchée.
-
-# Univers thématique 2026-06-10 (thèses Erwan) : énergie (gaz/pétrole, crise
-# Moyen-Orient), défense européenne (surtout française), IA/semi-conducteurs.
-# Panier TW dégraissé : on garde les deux semis (TSMC, MediaTek — le plus
-# volatil de l'univers, ~6 %/j), on coupe Foxconn/Chunghwa/Cathay/Evergreen
-# (2317.TW, 2412.TW, 2882.TW, 2603.TW).
-#
-# Énergie via ETF US (USO/UNG) et PAS via futures CME : les futures (CL=F,
-# NG=F, GC=F) restent exclus depuis 2026-06-10 — data différée ~10-15 min
-# incompressible sans abonnement → calibration polluée (cf.
-# docs/postmortems/2026-06-09-short-clf-hard-stop.md). Les ETF ont des barres
-# 15m yfinance fraîches (~10 min), comme SPY. Retour des futures prévu en
-# prod avec souscription IB temps réel (market_data_type=1).
-#
-# Historique : trim 28 → 15 (2026-06-08, un représentant par facteur de
-# risque), retrait CME (2026-06-10). Contrats toujours définis dans
-# ib_contracts.yaml pour ré-expansion ultérieure.
 symbols:
-  # Indices (via ETF)
-  - SPY   # S&P 500
-  - QQQ   # Nasdaq 100
-  - ^FCHI # CAC 40 (aussi toile de fond des valeurs FR défense)
-  # IA / semi-conducteurs
-  - NVDA      # Nvidia (US)
-  - 2330.TW   # TSMC (TWSE)
-  - 2454.TW   # MediaTek (TWSE)
-  # Énergie (thèse gaz/pétrole — ETF session US, data 15m fraîche)
-  - USO   # pétrole WTI
-  - UNG   # gaz naturel
-  # Défense européenne (thèse géopolitique)
-  - HO.PA   # Thales
-  - AM.PA   # Dassault Aviation
-  - RHM.DE  # Rheinmetall (bêta défense EU, lead-lag avec les FR)
-  # Forex majors (terrain 24h, temps réel IB IDEALPRO) — vol basse 06/2026
-  - EURUSD=X
-  - USDJPY=X
+- OR.PA
+- MC.PA
+- ABBN.SW
+- ACA.PA
+- AI.PA
+- AIR.PA
+- AKE.PA
+- AM.PA
+- AMS.MC
+- ASML.AS
+- AZN.L
+- BAS.DE
+- BMW.DE
+- BN.PA
+- BNP.PA
+- BP.L
+- BRBY.L
+- CAP.PA
+- CARL-B.CO
+- CFR.SW
+- COLO-B.CO
+- DBK.DE
+- DGE.L
+- DSY.PA
+- DTE.DE
