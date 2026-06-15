@@ -8,6 +8,7 @@ import yaml
 
 from trader.rotation_venues import (
     compose_active_universe,
+    due_venues,
     empty_venue_state,
     load_venue_state,
     run_venue_close,
@@ -24,6 +25,13 @@ def _item(symbol: str, attractiveness: float) -> dict:
         "bias": "long",
         "directional_score": attractiveness,
     }
+
+
+_SESSIONS = {
+    "TW": {"open": "01:00", "close": "05:30"},
+    "EU": {"open": "07:00", "close": "15:30"},
+    "US": {"open": "13:30", "close": "20:00"},
+}
 
 
 def test_empty_venue_state_returns_empty_venues():
@@ -343,3 +351,92 @@ def test_write_universe_if_changed_skips_empty_symbols(tmp_path):
 
     assert changed is False
     assert path.read_text(encoding="utf-8") == original
+
+
+def test_due_venues_empty_state_bootstraps_all_venues_on_weekday():
+    result = due_venues(
+        "2026-06-15T12:00:00+00:00",
+        empty_venue_state(),
+        _SESSIONS,
+    )
+
+    assert result == ["EU", "FX", "TW", "US"]
+
+
+def test_due_venues_empty_state_bootstraps_actions_but_not_fx_on_saturday():
+    result = due_venues(
+        "2026-06-20T12:00:00+00:00",
+        empty_venue_state(),
+        _SESSIONS,
+    )
+
+    assert result == ["EU", "TW", "US"]
+
+
+def test_due_venues_skips_venue_already_closed_today():
+    state = {
+        "venues": {
+            "TW": {"last_close_at": "2026-06-15T05:30:00+00:00"},
+            "EU": {"last_close_at": "2026-06-15T15:30:00+00:00"},
+            "US": {"last_close_at": "2026-06-15T20:00:00+00:00"},
+            "FX": {"last_close_at": "2026-06-15T22:00:00+00:00"},
+        }
+    }
+
+    result = due_venues(
+        "2026-06-15T16:00:00+00:00",
+        state,
+        _SESSIONS,
+    )
+
+    assert result == []
+
+
+def test_due_venues_marks_eu_due_after_close_since_yesterday():
+    state = {
+        "venues": {
+            "TW": {"last_close_at": "2026-06-15T05:30:00+00:00"},
+            "EU": {"last_close_at": "2026-06-14T15:30:00+00:00"},
+            "US": {"last_close_at": "2026-06-14T20:00:00+00:00"},
+            "FX": {"last_close_at": "2026-06-15T22:00:00+00:00"},
+        }
+    }
+
+    result = due_venues(
+        "2026-06-15T16:00:00+00:00",
+        state,
+        _SESSIONS,
+    )
+
+    assert result == ["EU"]
+
+
+def test_due_venues_marks_fx_due_after_refresh_on_weekday():
+    state = {
+        "venues": {
+            "TW": {"last_close_at": "2026-06-15T05:30:00+00:00"},
+            "EU": {"last_close_at": "2026-06-15T15:30:00+00:00"},
+            "US": {"last_close_at": "2026-06-15T20:00:00+00:00"},
+            "FX": {"last_close_at": "2026-06-14T22:00:00+00:00"},
+        }
+    }
+
+    result = due_venues(
+        "2026-06-15T22:01:00+00:00",
+        state,
+        _SESSIONS,
+    )
+
+    assert result == ["FX"]
+
+
+def test_due_venues_does_not_mark_fx_due_on_saturday():
+    state = {"venues": {"FX": {"last_close_at": "2026-06-19T22:00:00+00:00"}}}
+
+    result = due_venues(
+        "2026-06-20T22:01:00+00:00",
+        state,
+        {},
+    )
+
+    assert result == []

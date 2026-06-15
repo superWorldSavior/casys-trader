@@ -5,12 +5,14 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+from datetime import datetime, timezone
 from itertools import zip_longest
 from pathlib import Path
 
 import yaml
 
 from trader.rotation import apply_hysteresis, emergency_exits, write_universe_atomic
+from trader.rotation_schedule import closed_sessions_since
 from trader.rotation_wiring import venue_of
 
 
@@ -135,6 +137,35 @@ def run_venue_close(
         gap_adverse=gap_venue,
         as_of=as_of,
     )
+
+
+def due_venues(now_iso, state, sessions, *, fx_refresh="22:00") -> list[str]:
+    """Return venues whose sleeve should be recalculated at now_iso."""
+    now = datetime.fromisoformat(now_iso).astimezone(timezone.utc)
+    is_weekday = now.weekday() < 5
+    venues_state = state.get("venues", {})
+    due: set[str] = set()
+
+    for venue in ("TW", "EU", "US"):
+        if venue not in sessions:
+            continue
+        if venue not in venues_state:
+            due.add(venue)
+            continue
+        last = venues_state.get(venue, {}).get("last_close_at", "")
+        if closed_sessions_since(now_iso, last, {venue: sessions[venue]}):
+            due.add(venue)
+
+    if is_weekday:
+        if "FX" not in venues_state:
+            due.add("FX")
+        else:
+            last_fx = venues_state.get("FX", {}).get("last_close_at", "")
+            fx_session = {"FX": {"open": "00:00", "close": fx_refresh}}
+            if closed_sessions_since(now_iso, last_fx, fx_session):
+                due.add("FX")
+
+    return sorted(due)
 
 
 def update_venue_ranking(
