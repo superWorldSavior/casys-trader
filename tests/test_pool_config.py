@@ -37,7 +37,8 @@ def test_pool_config_portes_les_invariants_de_composition() -> None:
     pool = load_pool(Path("config"))
     symbols = set(pool.symbols)
 
-    assert {"EURUSD=X", "USDJPY=X", "^FCHI"} <= symbols
+    # Forex retiré (full actions) ; ^FCHI conservé comme benchmark EU (force relative).
+    assert {"^FCHI"} <= symbols
     assert {"CL=F", "NG=F", "GC=F"} <= pool.hard_exclusions
     assert not symbols & {"CL=F", "NG=F", "GC=F"}
     # Pool ÉLARGI (D9) : on ne dégraisse plus les doublons corrélés ici (c'est le

@@ -318,8 +318,6 @@ symbols:
   - EXR
   - AVB
   - EQR
-  - EURUSD=X
-  - USDJPY=X
 hard_exclusions:
   - CL=F
   - NG=F
