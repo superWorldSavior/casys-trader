@@ -167,6 +167,18 @@ FAMILIES: dict[str, list[str]] = {
         "GOOGL",  # Alphabet (Google)
         "META",   # Meta Platforms
         "AMD",    # Advanced Micro Devices
+        # AAPL et NVDA sont dans nasdaq_single_names — pas de doublon ici
+        "AVGO",   # Broadcom
+        "CRM",    # Salesforce
+        "ORCL",   # Oracle
+        "ADBE",   # Adobe
+        "QCOM",   # Qualcomm
+        "TXN",    # Texas Instruments
+        "INTC",   # Intel
+        "NOW",    # ServiceNow
+        "INTU",   # Intuit
+        "MU",     # Micron Technology
+        "AMAT",   # Applied Materials
     ],
     # Communication Services
     "us_communication": [
@@ -174,6 +186,14 @@ FAMILIES: dict[str, list[str]] = {
         "DIS",    # Walt Disney
         "T",      # AT&T
         "VZ",     # Verizon Communications
+        "CMCSA",  # Comcast
+        "CHTR",   # Charter Communications
+        "EA",     # Electronic Arts
+        "TTWO",   # Take-Two Interactive
+        "PARA",   # Paramount Global
+        "WBD",    # Warner Bros. Discovery
+        "TMUS",   # T-Mobile US
+        "FOXA",   # Fox Corporation
     ],
     # Financials
     "us_financials": [
@@ -181,6 +201,17 @@ FAMILIES: dict[str, list[str]] = {
         "BAC",    # Bank of America
         "GS",     # Goldman Sachs
         "BLK",    # BlackRock
+        "WFC",    # Wells Fargo
+        "MS",     # Morgan Stanley
+        "C",      # Citigroup
+        "AXP",    # American Express
+        "SCHW",   # Charles Schwab
+        "CB",     # Chubb
+        "PGR",    # Progressive
+        "USB",    # U.S. Bancorp
+        "COF",    # Capital One Financial
+        "MMC",    # Marsh & McLennan
+        "AON",    # Aon
     ],
     # Healthcare
     "us_healthcare": [
@@ -188,6 +219,17 @@ FAMILIES: dict[str, list[str]] = {
         "UNH",    # UnitedHealth Group
         "PFE",    # Pfizer
         "ABBV",   # AbbVie
+        "MRK",    # Merck
+        "LLY",    # Eli Lilly
+        "TMO",    # Thermo Fisher Scientific
+        "ABT",    # Abbott Laboratories
+        "AMGN",   # Amgen
+        "MDT",    # Medtronic
+        "CVS",    # CVS Health
+        "BMY",    # Bristol-Myers Squibb
+        "ISRG",   # Intuitive Surgical
+        "DHR",    # Danaher
+        "HCA",    # HCA Healthcare
     ],
     # Energy
     "us_energy": [
@@ -195,6 +237,14 @@ FAMILIES: dict[str, list[str]] = {
         "CVX",    # Chevron
         "COP",    # ConocoPhillips
         "SLB",    # Schlumberger (SLB)
+        "EOG",    # EOG Resources
+        "MPC",    # Marathon Petroleum
+        "PSX",    # Phillips 66
+        "VLO",    # Valero Energy
+        "OXY",    # Occidental Petroleum
+        "HAL",    # Halliburton
+        "BKR",    # Baker Hughes
+        "DVN",    # Devon Energy
     ],
     # Consumer Discretionary
     "us_consumer_disc": [
@@ -202,6 +252,17 @@ FAMILIES: dict[str, list[str]] = {
         "TSLA",   # Tesla
         "HD",     # Home Depot
         "MCD",    # McDonald's
+        "NKE",    # Nike
+        "LOW",    # Lowe's Companies
+        "SBUX",   # Starbucks
+        "TGT",    # Target
+        "BKNG",   # Booking Holdings
+        "GM",     # General Motors
+        "F",      # Ford Motor
+        "ROST",   # Ross Stores
+        "TJX",    # TJX Companies
+        "YUM",    # Yum! Brands
+        "MAR",    # Marriott International
     ],
     # Consumer Staples
     "us_consumer_staples": [
@@ -209,6 +270,14 @@ FAMILIES: dict[str, list[str]] = {
         "KO",     # Coca-Cola
         "WMT",    # Walmart
         "PEP",    # PepsiCo
+        "COST",   # Costco Wholesale
+        "PM",     # Philip Morris International
+        "MO",     # Altria Group
+        "CL",     # Colgate-Palmolive
+        "GIS",    # General Mills
+        "KHC",    # Kraft Heinz
+        "HSY",    # Hershey
+        "SYY",    # Sysco
     ],
     # Industrials
     "us_industrials": [
@@ -216,6 +285,17 @@ FAMILIES: dict[str, list[str]] = {
         "GE",     # GE Aerospace
         "HON",    # Honeywell
         "UPS",    # United Parcel Service
+        "RTX",    # RTX (Raytheon Technologies)
+        "LMT",    # Lockheed Martin
+        "BA",     # Boeing
+        "DE",     # Deere & Company
+        "MMM",    # 3M
+        "FDX",    # FedEx
+        "NOC",    # Northrop Grumman
+        "GD",     # General Dynamics
+        "EMR",    # Emerson Electric
+        "ETN",    # Eaton
+        "CSX",    # CSX (railroads)
     ],
     # Materials
     "us_materials": [
@@ -223,6 +303,14 @@ FAMILIES: dict[str, list[str]] = {
         "APD",    # Air Products & Chemicals
         "FCX",    # Freeport-McMoRan (copper)
         "NEM",    # Newmont (gold mining)
+        "SHW",    # Sherwin-Williams
+        "ECL",    # Ecolab
+        "DD",     # DuPont de Nemours
+        "DOW",    # Dow Inc.
+        "PPG",    # PPG Industries
+        "ALB",    # Albemarle (lithium)
+        "CF",     # CF Industries (nitrogen fertilizers)
+        "MOS",    # Mosaic (potash/phosphate)
     ],
     # Utilities
     "us_utilities": [
@@ -230,6 +318,14 @@ FAMILIES: dict[str, list[str]] = {
         "DUK",    # Duke Energy
         "SO",     # Southern Company
         "AEP",    # American Electric Power
+        "EXC",    # Exelon
+        "SRE",    # Sempra
+        "D",      # Dominion Energy
+        "XEL",    # Xcel Energy
+        "PCG",    # PG&E
+        "AWK",    # American Water Works
+        "ES",     # Eversource Energy
+        "WEC",    # WEC Energy Group
     ],
     # Real Estate
     "us_real_estate": [
@@ -237,6 +333,14 @@ FAMILIES: dict[str, list[str]] = {
         "AMT",    # American Tower (cell towers REIT)
         "EQIX",   # Equinix (data centers REIT)
         "SPG",    # Simon Property Group (retail REIT)
+        "WELL",   # Welltower (healthcare REIT)
+        "DLR",    # Digital Realty Trust (data centers)
+        "O",      # Realty Income (net lease REIT)
+        "PSA",    # Public Storage (self-storage REIT)
+        "VTR",    # Ventas (healthcare REIT)
+        "EXR",    # Extra Space Storage
+        "AVB",    # AvalonBay Communities (apartments)
+        "EQR",    # Equity Residential (apartments)
     ],
     # -------------------------------------------------------------------------
     # Univers taïwanais d'Erwan — découpage sectoriel best-effort, à valider.

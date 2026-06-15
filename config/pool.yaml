@@ -94,56 +94,159 @@ symbols:
   - GOOGL
   - META
   - AMD
+  - AVGO
+  - CRM
+  - ORCL
+  - ADBE
+  - QCOM
+  - TXN
+  - INTC
+  - NOW
+  - INTU
+  - MU
+  - AMAT
   # Communication Services
   - NFLX
   - DIS
   - T
   - VZ
+  - CMCSA
+  - CHTR
+  - EA
+  - TTWO
+  - PARA
+  - WBD
+  - TMUS
+  - FOXA
   # Financials
   - JPM
   - BAC
   - GS
   - BLK
+  - WFC
+  - MS
+  - C
+  - AXP
+  - SCHW
+  - CB
+  - PGR
+  - USB
+  - COF
+  - MMC
+  - AON
   # Healthcare
   - JNJ
   - UNH
   - PFE
   - ABBV
+  - MRK
+  - LLY
+  - TMO
+  - ABT
+  - AMGN
+  - MDT
+  - CVS
+  - BMY
+  - ISRG
+  - DHR
+  - HCA
   # Energy
   - XOM
   - CVX
   - COP
   - SLB
+  - EOG
+  - MPC
+  - PSX
+  - VLO
+  - OXY
+  - HAL
+  - BKR
+  - DVN
   # Consumer Discretionary
   - AMZN
   - TSLA
   - HD
   - MCD
+  - NKE
+  - LOW
+  - SBUX
+  - TGT
+  - BKNG
+  - GM
+  - F
+  - ROST
+  - TJX
+  - YUM
+  - MAR
   # Consumer Staples
   - PG
   - KO
   - WMT
   - PEP
+  - COST
+  - PM
+  - MO
+  - CL
+  - GIS
+  - KHC
+  - HSY
+  - SYY
   # Industrials
   - CAT
   - GE
   - HON
   - UPS
+  - RTX
+  - LMT
+  - BA
+  - DE
+  - MMM
+  - FDX
+  - NOC
+  - GD
+  - EMR
+  - ETN
+  - CSX
   # Materials
   - LIN
   - APD
   - FCX
   - NEM
+  - SHW
+  - ECL
+  - DD
+  - DOW
+  - PPG
+  - ALB
+  - CF
+  - MOS
   # Utilities
   - NEE
   - DUK
   - SO
   - AEP
+  - EXC
+  - SRE
+  - D
+  - XEL
+  - PCG
+  - AWK
+  - ES
+  - WEC
   # Real Estate
   - PLD
   - AMT
   - EQIX
   - SPG
+  - WELL
+  - DLR
+  - O
+  - PSA
+  - VTR
+  - EXR
+  - AVB
+  - EQR
   - EURUSD=X
   - USDJPY=X
 hard_exclusions:
