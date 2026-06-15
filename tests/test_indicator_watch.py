@@ -276,6 +276,41 @@ def test_execute_order_avec_plan_valide_est_arme() -> None:
     assert order["exit_plan"]["hard_stop"]["price"] == 88.1
 
 
+def test_execute_order_avec_hard_stop_relatif_est_arme() -> None:
+    now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
+
+    for hard_stop in (
+        {"type": "percent", "percent": 0.025, "min_pct": 0.01, "max_pct": 0.05},
+        {"type": "volatility_multiple", "multiple": 1.8, "min_pct": 0.01, "max_pct": 0.05},
+    ):
+        order = _valid_order()
+        order["exit_plan"] = {"hard_stop": hard_stop}
+
+        result = build_indicator_watch(_armed_raw(order), owner_symbol="CL=F", now=now)
+
+        assert result.watch is not None
+        assert result.watch["on_trigger"] == "EXECUTE_ORDER"
+        assert result.watch["order"]["exit_plan"] == {"hard_stop": hard_stop}
+        assert result.rejections == []
+
+
+def test_execute_order_avec_hard_stop_relatif_malforme_degrade() -> None:
+    now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
+
+    for hard_stop in (
+        {"type": "percent", "percent": 5},
+        {"type": "volatility_multiple", "multiple": -1},
+    ):
+        order = _valid_order()
+        order["exit_plan"] = {"hard_stop": hard_stop}
+
+        result = build_indicator_watch(_armed_raw(order), owner_symbol="CL=F", now=now)
+
+        assert result.watch is not None
+        assert result.watch["on_trigger"] == "WAKE_WITH_ORDER_INTENT"
+        assert any(r.get("reason") == "invalid_armed_order" for r in result.rejections)
+
+
 def test_execute_order_sans_hard_stop_degrade_en_wake_with_order_intent() -> None:
     # guardrail à l'armement (fast-fail) : pas de stop -> pas d'exécution directe
     now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)

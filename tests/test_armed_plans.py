@@ -1,11 +1,15 @@
 """D7 étage B — plans armés : le daemon exécute au déclenchement sans re-appel LLM."""
 
+import json
 from datetime import datetime, timezone
+
+import pytest
 
 from trader import daemon
 from trader.codex_client import Decision
-from trader.tools.market import Bar
+from trader.trade_plan import TradePlanStore
 from trader.tools.execution import SimBroker
+from trader.tools.market import Bar
 from trader.tools.scheduler import Scheduler
 
 
@@ -22,7 +26,12 @@ def _bars_at(now_iso: str):
     return factory
 
 
-def _armed_trigger(*, stop_price: float, intent: str = "OPEN_LONG") -> dict:
+def _armed_trigger(
+    *,
+    stop_price: float = 95.0,
+    intent: str = "OPEN_LONG",
+    exit_plan: dict | None = None,
+) -> dict:
     action = "BUY" if intent == "OPEN_LONG" else "SELL"
     return {
         "watch_id": "SPY:abc123",
@@ -33,7 +42,7 @@ def _armed_trigger(*, stop_price: float, intent: str = "OPEN_LONG") -> dict:
             "action": action,
             "qty": 10.0,
             "confidence": 0.9,
-            "exit_plan": {"hard_stop": {"type": "price", "price": stop_price}},
+            "exit_plan": exit_plan or {"hard_stop": {"type": "price", "price": stop_price}},
             "rationale": "scénario breakout",
         },
     }
@@ -78,6 +87,99 @@ def test_plan_arme_execute_sans_appel_llm(monkeypatch, tmp_path, patch_batch, ma
     assert entry["armed_plan_id"] == "SPY:abc123"
     assert entry["llm_provider"] is None
     assert SimBroker(tmp_path / "state" / "broker.json").positions()["SPY"].quantity == 10.0
+    plans = TradePlanStore(tmp_path / "state" / "trade_plans.json").open_plans()
+    assert len(plans) == 1
+    assert plans[0].hard_stop_price == 95.0
+
+
+def test_plan_arme_resout_hard_stop_volatilite_au_tir(
+    monkeypatch, tmp_path, patch_batch, make_data_source
+) -> None:
+    fresh_vol_calls: list[dict] = []
+
+    def fresh_volatility(symbol, *, entry_price, cockpit, tradable_bars_by_symbol):
+        fresh_vol_calls.append(
+            {
+                "symbol": symbol,
+                "entry_price": entry_price,
+                "has_cockpit": bool(cockpit),
+                "has_bars": symbol in tradable_bars_by_symbol,
+            }
+        )
+        return 2.0
+
+    monkeypatch.setattr(daemon, "_reference_volatility_for_symbol", fresh_volatility)
+    trigger = _armed_trigger(
+        exit_plan={"hard_stop": {"type": "volatility_multiple", "multiple": 1.5}},
+    )
+
+    report, llm_calls = _run(monkeypatch, tmp_path, patch_batch, make_data_source, trigger)
+
+    assert llm_calls == []
+    entry = report["decisions"][0]
+    assert entry["executed"] is True
+    plans = TradePlanStore(tmp_path / "state" / "trade_plans.json").open_plans()
+    assert len(plans) == 1
+    assert plans[0].hard_stop_price == pytest.approx(97.0)
+    assert plans[0].hard_stop_price != 95.0
+    assert fresh_vol_calls == [
+        {"symbol": "SPY", "entry_price": 100.0, "has_cockpit": True, "has_bars": True},
+    ]
+    events = [
+        json.loads(line)
+        for line in (tmp_path / "state" / "events.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    resolved_events = [item for item in events if item.get("event") == "armed_plan_resolved"]
+    assert resolved_events
+    assert resolved_events[0]["symbol"] == "SPY"
+    assert resolved_events[0]["plan_id"] == "SPY:abc123"
+    assert resolved_events[0]["trace"]["hard_stop"]["resolved_price"] == pytest.approx(97.0)
+
+
+def test_plan_arme_persiste_take_profit_risk_multiple_resolu(
+    monkeypatch, tmp_path, patch_batch, make_data_source
+) -> None:
+    trigger = _armed_trigger(
+        exit_plan={
+            "hard_stop": {"type": "percent", "percent": 0.03},
+            "take_profits": [{"type": "risk_multiple", "r": 2.0, "fraction": 0.5}],
+        },
+    )
+
+    report, llm_calls = _run(monkeypatch, tmp_path, patch_batch, make_data_source, trigger)
+
+    assert llm_calls == []
+    assert report["decisions"][0]["executed"] is True
+    plans = TradePlanStore(tmp_path / "state" / "trade_plans.json").open_plans()
+    assert len(plans) == 1
+    assert plans[0].hard_stop_price == pytest.approx(97.0)
+    assert len(plans[0].take_profits) == 1
+    assert plans[0].take_profits[0].price == pytest.approx(106.0)
+    assert plans[0].take_profits[0].fraction == pytest.approx(0.5)
+
+
+def test_plan_arme_annule_si_volatilite_indisponible_au_tir(
+    monkeypatch, tmp_path, patch_batch, make_data_source
+) -> None:
+    monkeypatch.setattr(
+        daemon,
+        "_reference_volatility_for_symbol",
+        lambda symbol, *, entry_price, cockpit, tradable_bars_by_symbol: None,
+    )
+    trigger = _armed_trigger(
+        exit_plan={"hard_stop": {"type": "volatility_multiple", "multiple": 1.5}},
+    )
+
+    report, llm_calls = _run(monkeypatch, tmp_path, patch_batch, make_data_source, trigger)
+
+    assert llm_calls == ["SPY"]
+    entry = report["decisions"][0]
+    assert entry["executed"] is False
+    assert "SPY" not in SimBroker(tmp_path / "state" / "broker.json").positions()
+    events = (tmp_path / "state" / "events.jsonl").read_text(encoding="utf-8")
+    assert "armed_plan_cancelled" in events
+    assert "armed_plan_cancelled:exit_unresolved:hard_stop_volatility_unavailable" in events
 
 
 def test_plan_arme_incoherent_avec_le_stop_reveille_le_planificateur(

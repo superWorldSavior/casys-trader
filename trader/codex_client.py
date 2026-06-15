@@ -367,10 +367,19 @@ def _indicator_watch_vocabulary() -> str:
         "`on_trigger:\"EXECUTE_ORDER\"` arme un scénario d'entrée que le daemon "
         "exécutera au déclenchement SANS re-appel modèle : fournis `order` = "
         '{"intent":"OPEN_LONG|OPEN_SHORT","qty":<number>,"confidence":<0..1>,'
-        '"exit_plan":{"hard_stop":{"type":"price","price":<number>},...},"rationale":"..."}. '
-        "Contrat strict à l'armement : hard_stop en prix OBLIGATOIRE, qty>0, "
+        '"exit_plan":{"hard_stop":{"type":"price|percent|volatility_multiple",...},...},"rationale":"..."}. '
+        "Contrat strict à l'armement : hard_stop peut être en prix OU relatif, "
+        "hard_stop requis, qty>0, "
         "confidence explicite — sinon la watch est dégradée en WAKE_WITH_ORDER_INTENT "
-        "(l'ordre repassera par toi). TTL max 4 h — cale-le sur ton scénario ; tu peux ré-armer à ta prochaine revue. Au "
+        "(l'ordre repassera par toi). Schéma relatif armé : "
+        '`hard_stop` {type:"percent", percent:<0..1>, min_pct?, max_pct?} ou '
+        '{type:"volatility_multiple", multiple:<requis, >0>, min_pct?, max_pct?}; '
+        '`take_profits[]` peut utiliser {type:"risk_multiple", r:<requis, >0>, fraction?}. '
+        "Le hard_stop relatif est résolu en prix au déclenchement, puis les TP en R aussi. "
+        "RECOMMANDE volatility_multiple pour un plan "
+        "armé : le daemon le résout sur données FRAÎCHES au déclenchement ; un "
+        "prix absolu figé à l'armement devient mal calibré si la volatilité bouge "
+        "(ex. ouverture). TTL max 4 h — cale-le sur ton scénario ; tu peux ré-armer à ta prochaine revue. Au "
         "déclenchement le daemon annule et te réveille si le prix a déjà franchi le "
         "stop ou si une position existe ; le gate de risque s'applique comme à tout "
         "ordre. C'est l'outil du planificateur : préfère un plan armé à un réveil "

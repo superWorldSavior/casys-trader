@@ -8,6 +8,7 @@ from trader.trade_plan import (
     TradePlan,
     TradePlanStore,
     create_trade_plan,
+    resolve_exit_plan,
     trade_plan_from_dict,
     validate_exit_plan,
 )
@@ -147,6 +148,266 @@ def test_validate_exit_plan_ignore_trailing_stop_inexploitable_si_autres_sorties
             "trailing_stop": {"enabled_after": "tp1"},
         }
     )
+
+
+def test_validate_exit_plan_accepte_hard_stop_percent_non_resolu_si_autorise() -> None:
+    validate_exit_plan(
+        {
+            "hard_stop": {"type": "percent", "percent": 0.04, "min_pct": 0.02, "max_pct": 0.08},
+            "take_profits": [{"type": "risk_multiple", "r": 1.5, "fraction": 0.5}],
+        },
+        allow_unresolved=True,
+    )
+
+
+def test_validate_exit_plan_accepte_hard_stop_volatilite_non_resolu_sans_reference_si_autorise() -> None:
+    validate_exit_plan(
+        {
+            "hard_stop": {
+                "type": "volatility_multiple",
+                "multiple": 2.0,
+                "source": "atr",
+                "timeframe": "5m",
+                "window": 14,
+                "min_pct": 0.01,
+                "max_pct": 0.05,
+            },
+            "take_profits": [{"price": 105.0, "fraction": 1.0}],
+        },
+        allow_unresolved=True,
+    )
+
+
+def test_validate_exit_plan_garde_contrat_resolu_par_defaut() -> None:
+    with pytest.raises(InvalidExitPlanError, match="hard_stop_type_unsupported"):
+        validate_exit_plan({"hard_stop": {"type": "percent", "percent": 0.04}})
+
+    with pytest.raises(InvalidExitPlanError, match="take_profits_0_price_required"):
+        validate_exit_plan({"take_profits": [{"type": "risk_multiple", "r": 1.5}]})
+
+
+@pytest.mark.parametrize(
+    ("exit_plan", "code"),
+    [
+        (
+            {"hard_stop": {"type": "percent", "percent": 0}},
+            "hard_stop_percent_must_be_positive",
+        ),
+        (
+            {"hard_stop": {"type": "percent", "percent": 1.01}},
+            "hard_stop_percent_must_be_lte_1",
+        ),
+        (
+            {"hard_stop": {"type": "percent", "percent": 0.04, "min_pct": 0.06, "max_pct": 0.05}},
+            "hard_stop_min_pct_gt_max_pct",
+        ),
+        (
+            {"hard_stop": {"type": "volatility_multiple", "multiple": 0}},
+            "hard_stop_multiple_must_be_positive",
+        ),
+        (
+            {"take_profits": [{"type": "risk_multiple", "r": 0}]},
+            "take_profit_r_must_be_positive",
+        ),
+    ],
+)
+def test_validate_exit_plan_refuse_specs_non_resolues_invalides_si_autorisees(
+    exit_plan: dict,
+    code: str,
+) -> None:
+    with pytest.raises(InvalidExitPlanError, match=code):
+        validate_exit_plan(exit_plan, allow_unresolved=True)
+
+
+def test_resolve_exit_plan_none_retourne_trace_vide() -> None:
+    resolved, trace = resolve_exit_plan(None, entry_price=100.0, side="LONG")
+
+    assert resolved is None
+    assert trace == {}
+
+
+@pytest.mark.parametrize(
+    ("side", "expected_stop"),
+    [
+        ("LONG", 97.0),
+        ("SHORT", 103.0),
+    ],
+)
+def test_resolve_exit_plan_hard_stop_volatility_multiple_par_side(
+    side: str,
+    expected_stop: float,
+) -> None:
+    resolved, trace = resolve_exit_plan(
+        {"hard_stop": {"type": "volatility_multiple", "multiple": 1.5}},
+        entry_price=100.0,
+        side=side,  # type: ignore[arg-type]
+        reference_volatility=2.0,
+    )
+
+    assert resolved is not None
+    assert resolved["hard_stop"] == {"type": "price", "price": expected_stop}
+    validate_exit_plan(resolved)
+    assert trace["hard_stop"] == {
+        "spec_type": "volatility_multiple",
+        "multiple": 1.5,
+        "reference_volatility": 2.0,
+        "distance": 3.0,
+        "clamped": False,
+        "resolved_price": expected_stop,
+    }
+
+
+@pytest.mark.parametrize(
+    ("side", "expected_stop"),
+    [
+        ("LONG", 95.0),
+        ("SHORT", 105.0),
+    ],
+)
+def test_resolve_exit_plan_hard_stop_percent_par_side(side: str, expected_stop: float) -> None:
+    resolved, trace = resolve_exit_plan(
+        {"hard_stop": {"type": "percent", "percent": 0.05}},
+        entry_price=100.0,
+        side=side,  # type: ignore[arg-type]
+    )
+
+    assert resolved is not None
+    assert resolved["hard_stop"] == {"type": "price", "price": expected_stop}
+    validate_exit_plan(resolved)
+    assert trace["hard_stop"]["spec_type"] == "percent"
+    assert trace["hard_stop"]["percent"] == 0.05
+    assert trace["hard_stop"]["distance"] == 5.0
+    assert trace["hard_stop"]["clamped"] is False
+
+
+def test_resolve_exit_plan_normalise_alias_hard_stop_avant_resolution() -> None:
+    resolved, trace = resolve_exit_plan(
+        {"stop_loss": {"type": "percent", "percent": 0.05}},
+        entry_price=100.0,
+        side="LONG",
+    )
+
+    assert resolved is not None
+    assert resolved["hard_stop"] == {"type": "price", "price": 95.0}
+    assert trace["hard_stop"]["spec_type"] == "percent"
+    validate_exit_plan(resolved)
+
+
+@pytest.mark.parametrize(
+    ("hard_stop", "expected_stop", "expected_distance"),
+    [
+        ({"type": "percent", "percent": 0.01, "min_pct": 0.03}, 97.0, 3.0),
+        ({"type": "percent", "percent": 0.10, "max_pct": 0.04}, 96.0, 4.0),
+    ],
+)
+def test_resolve_exit_plan_clampe_hard_stop_percent(
+    hard_stop: dict,
+    expected_stop: float,
+    expected_distance: float,
+) -> None:
+    resolved, trace = resolve_exit_plan(
+        {"hard_stop": hard_stop},
+        entry_price=100.0,
+        side="LONG",
+    )
+
+    assert resolved is not None
+    assert resolved["hard_stop"] == {"type": "price", "price": expected_stop}
+    validate_exit_plan(resolved)
+    assert trace["hard_stop"]["distance"] == expected_distance
+    assert trace["hard_stop"]["clamped"] is True
+
+
+def test_resolve_exit_plan_refuse_volatility_multiple_sans_volatilite_reference() -> None:
+    with pytest.raises(InvalidExitPlanError, match="hard_stop_volatility_unavailable"):
+        resolve_exit_plan(
+            {"hard_stop": {"type": "volatility_multiple", "multiple": 1.5}},
+            entry_price=100.0,
+            side="LONG",
+        )
+
+
+@pytest.mark.parametrize(
+    ("side", "expected_tp"),
+    [
+        ("LONG", 106.0),
+        ("SHORT", 94.0),
+    ],
+)
+def test_resolve_exit_plan_take_profit_risk_multiple_depuis_distance_stop(
+    side: str,
+    expected_tp: float,
+) -> None:
+    resolved, trace = resolve_exit_plan(
+        {
+            "hard_stop": {"type": "percent", "percent": 0.03},
+            "take_profits": [{"type": "risk_multiple", "r": 2.0, "fraction": 0.5}],
+        },
+        entry_price=100.0,
+        side=side,  # type: ignore[arg-type]
+    )
+
+    assert resolved is not None
+    assert resolved["take_profits"][0]["type"] == "price"
+    assert resolved["take_profits"][0]["r"] == 2.0
+    assert resolved["take_profits"][0]["fraction"] == 0.5
+    assert resolved["take_profits"][0]["price"] == expected_tp
+    validate_exit_plan(resolved)
+    assert trace["take_profits"] == [
+        {"spec_type": "risk_multiple", "r": 2.0, "resolved_price": expected_tp},
+    ]
+
+
+def test_resolve_exit_plan_refuse_risk_multiple_sans_stop_resolvable() -> None:
+    with pytest.raises(InvalidExitPlanError, match="take_profit_risk_multiple_requires_stop"):
+        resolve_exit_plan(
+            {"take_profits": [{"type": "risk_multiple", "r": 1.0}]},
+            entry_price=100.0,
+            side="LONG",
+        )
+
+
+def test_resolve_exit_plan_refuse_take_profit_risk_multiple_resolu_non_positif() -> None:
+    with pytest.raises(InvalidExitPlanError, match="take_profit_resolved_non_positive"):
+        resolve_exit_plan(
+            {
+                "hard_stop": {"type": "percent", "percent": 0.20},
+                "take_profits": [{"type": "risk_multiple", "r": 6.0}],
+            },
+            entry_price=100.0,
+            side="SHORT",
+        )
+
+
+def test_resolve_exit_plan_passthrough_prix_et_trace_price() -> None:
+    raw = {
+        "hard_stop": {"type": "price", "price": 95.0},
+        "take_profits": [{"name": "tp1", "price": 105.0, "fraction": 1.0}],
+        "trailing_stop": {"trail_type": "price", "trail_value": 1.0},
+        "max_hold_minutes": 30,
+    }
+
+    resolved, trace = resolve_exit_plan(raw, entry_price=100.0, side="LONG")
+
+    assert resolved == raw
+    validate_exit_plan(resolved)
+    assert trace["hard_stop"] == {
+        "spec_type": "price",
+        "distance": 5.0,
+        "resolved_price": 95.0,
+    }
+    assert trace["take_profits"] == [
+        {"spec_type": "price", "resolved_price": 105.0},
+    ]
+
+
+def test_resolve_exit_plan_refuse_hard_stop_resolu_non_positif() -> None:
+    with pytest.raises(InvalidExitPlanError, match="hard_stop_resolved_non_positive"):
+        resolve_exit_plan(
+            {"hard_stop": {"type": "percent", "percent": 1.0}},
+            entry_price=100.0,
+            side="LONG",
+        )
 
 
 def test_create_trade_plan_refuse_volatility_multiple_sans_volatilite_reference() -> None:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import math
 from dataclasses import asdict, dataclass, field, replace
@@ -107,6 +108,17 @@ def _bounded_fraction(raw: object, field_name: str) -> float:
     if value > 1:
         raise InvalidExitPlanError(f"{field_name}_must_be_lte_1")
     return value
+
+
+def _validate_optional_pct_bounds(raw: dict, field_name: str) -> None:
+    min_pct = None
+    max_pct = None
+    if raw.get("min_pct") is not None:
+        min_pct = _bounded_fraction(raw["min_pct"], f"{field_name}_min_pct")
+    if raw.get("max_pct") is not None:
+        max_pct = _bounded_fraction(raw["max_pct"], f"{field_name}_max_pct")
+    if min_pct is not None and max_pct is not None and min_pct > max_pct:
+        raise InvalidExitPlanError(f"{field_name}_min_pct_gt_max_pct")
 
 
 def _non_negative_float(raw: object, field_name: str) -> float:
@@ -217,6 +229,7 @@ def validate_exit_plan(
     raw_exit_plan: dict | None,
     *,
     reference_volatility: float | None = None,
+    allow_unresolved: bool = False,
 ) -> None:
     """Validate that an exit plan can be normalized before any order is filled."""
     raw_exit_plan = normalize_exit_plan(raw_exit_plan)
@@ -226,11 +239,19 @@ def validate_exit_plan(
     hard_stop = raw_exit_plan.get("hard_stop")
     if hard_stop is not None:
         if isinstance(hard_stop, dict):
-            if hard_stop.get("type", "price") != "price":
+            hard_stop_type = str(hard_stop.get("type", "price"))
+            if hard_stop_type == "price":
+                if hard_stop.get("price") is None:
+                    raise InvalidExitPlanError("hard_stop_price_required")
+                _positive_float(hard_stop["price"], "hard_stop_price")
+            elif allow_unresolved and hard_stop_type == "percent":
+                _bounded_fraction(hard_stop.get("percent"), "hard_stop_percent")
+                _validate_optional_pct_bounds(hard_stop, "hard_stop")
+            elif allow_unresolved and hard_stop_type == "volatility_multiple":
+                _positive_float(hard_stop.get("multiple"), "hard_stop_multiple")
+                _validate_optional_pct_bounds(hard_stop, "hard_stop")
+            else:
                 raise InvalidExitPlanError("hard_stop_type_unsupported")
-            if hard_stop.get("price") is None:
-                raise InvalidExitPlanError("hard_stop_price_required")
-            _positive_float(hard_stop["price"], "hard_stop_price")
         else:
             _positive_float(hard_stop, "hard_stop_price")
 
@@ -241,6 +262,11 @@ def validate_exit_plan(
         prefix = f"take_profits_{index}"
         if not isinstance(item, dict):
             raise InvalidExitPlanError(f"{prefix}_must_be_object")
+        if allow_unresolved and str(item.get("type", "price")) == "risk_multiple":
+            _positive_float(item.get("r"), "take_profit_r")
+            if item.get("fraction") is not None:
+                _positive_float(item["fraction"], f"{prefix}_fraction")
+            continue
         if item.get("price") is None:
             raise InvalidExitPlanError(f"{prefix}_price_required")
         _positive_float(item["price"], f"{prefix}_price")
@@ -287,6 +313,164 @@ def validate_exit_plan(
             move_stop_to = str(protection.get("move_stop_to", "breakeven"))
             if move_stop_to not in {"breakeven", "none"}:
                 raise InvalidExitPlanError("profit_protection_move_stop_to_unsupported")
+
+
+def _clamp_distance_to_pct_bounds(
+    *,
+    distance: float,
+    entry_price: float,
+    raw: dict,
+) -> tuple[float, bool]:
+    clamped = False
+    if raw.get("min_pct") is not None:
+        min_distance = _bounded_fraction(raw["min_pct"], "hard_stop_min_pct") * entry_price
+        if distance < min_distance:
+            distance = min_distance
+            clamped = True
+    if raw.get("max_pct") is not None:
+        max_distance = _bounded_fraction(raw["max_pct"], "hard_stop_max_pct") * entry_price
+        if distance > max_distance:
+            distance = max_distance
+            clamped = True
+    return distance, clamped
+
+
+def resolve_exit_plan(
+    raw_exit_plan: dict | None,
+    *,
+    entry_price: float,
+    side: PositionSide,
+    reference_volatility: float | None = None,
+) -> tuple[dict | None, dict]:
+    if raw_exit_plan is None:
+        return None, {}
+    raw_exit_plan = normalize_exit_plan(raw_exit_plan)
+
+    entry_price_value = _positive_float(entry_price, "entry_price")
+    if side not in {"LONG", "SHORT"}:
+        raise InvalidExitPlanError("side_unsupported")
+
+    validate_exit_plan(
+        raw_exit_plan,
+        reference_volatility=reference_volatility,
+        allow_unresolved=True,
+    )
+
+    resolved = copy.deepcopy(raw_exit_plan)
+    trace: dict = {}
+    stop_distance: float | None = None
+
+    hard_stop = resolved.get("hard_stop")
+    if hard_stop is not None:
+        if isinstance(hard_stop, dict):
+            hard_stop_type = str(hard_stop.get("type", "price"))
+            if hard_stop_type == "price":
+                resolved_stop = float(hard_stop["price"])
+                stop_distance = abs(entry_price_value - resolved_stop)
+                trace["hard_stop"] = {
+                    "spec_type": "price",
+                    "distance": stop_distance,
+                    "resolved_price": resolved_stop,
+                }
+            elif hard_stop_type == "percent":
+                percent = _bounded_fraction(hard_stop.get("percent"), "hard_stop_percent")
+                distance = entry_price_value * percent
+                distance, clamped = _clamp_distance_to_pct_bounds(
+                    distance=distance,
+                    entry_price=entry_price_value,
+                    raw=hard_stop,
+                )
+                resolved_stop = (
+                    entry_price_value - distance
+                    if side == "LONG"
+                    else entry_price_value + distance
+                )
+                if resolved_stop <= 0:
+                    raise InvalidExitPlanError("hard_stop_resolved_non_positive")
+                resolved["hard_stop"] = {"type": "price", "price": resolved_stop}
+                stop_distance = distance
+                trace["hard_stop"] = {
+                    "spec_type": "percent",
+                    "percent": percent,
+                    "distance": distance,
+                    "clamped": clamped,
+                    "resolved_price": resolved_stop,
+                }
+            elif hard_stop_type == "volatility_multiple":
+                if reference_volatility is None:
+                    raise InvalidExitPlanError("hard_stop_volatility_unavailable")
+                volatility = _positive_float(reference_volatility, "reference_volatility")
+                multiple = _positive_float(hard_stop.get("multiple"), "hard_stop_multiple")
+                distance = volatility * multiple
+                distance, clamped = _clamp_distance_to_pct_bounds(
+                    distance=distance,
+                    entry_price=entry_price_value,
+                    raw=hard_stop,
+                )
+                resolved_stop = (
+                    entry_price_value - distance
+                    if side == "LONG"
+                    else entry_price_value + distance
+                )
+                if resolved_stop <= 0:
+                    raise InvalidExitPlanError("hard_stop_resolved_non_positive")
+                resolved["hard_stop"] = {"type": "price", "price": resolved_stop}
+                stop_distance = distance
+                trace["hard_stop"] = {
+                    "spec_type": "volatility_multiple",
+                    "multiple": multiple,
+                    "reference_volatility": volatility,
+                    "distance": distance,
+                    "clamped": clamped,
+                    "resolved_price": resolved_stop,
+                }
+        else:
+            resolved_stop = float(hard_stop)
+            stop_distance = abs(entry_price_value - resolved_stop)
+            resolved["hard_stop"] = {"type": "price", "price": resolved_stop}
+            trace["hard_stop"] = {
+                "spec_type": "price",
+                "distance": stop_distance,
+                "resolved_price": resolved_stop,
+            }
+
+    take_profit_traces: list[dict] = []
+    if resolved.get("take_profits") is not None:
+        take_profits = resolved.get("take_profits", []) or []
+        for item in take_profits:
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("type", "price")) == "risk_multiple" and item.get("price") is None:
+                if stop_distance is None:
+                    raise InvalidExitPlanError("take_profit_risk_multiple_requires_stop")
+                risk_multiple = _positive_float(item.get("r"), "take_profit_r")
+                resolved_price = (
+                    entry_price_value + risk_multiple * stop_distance
+                    if side == "LONG"
+                    else entry_price_value - risk_multiple * stop_distance
+                )
+                if resolved_price <= 0:
+                    raise InvalidExitPlanError("take_profit_resolved_non_positive")
+                item["type"] = "price"
+                item["price"] = resolved_price
+                take_profit_traces.append(
+                    {
+                        "spec_type": "risk_multiple",
+                        "r": risk_multiple,
+                        "resolved_price": resolved_price,
+                    }
+                )
+            elif item.get("price") is not None:
+                take_profit_traces.append(
+                    {
+                        "spec_type": "price",
+                        "resolved_price": float(item["price"]),
+                    }
+                )
+        trace["take_profits"] = take_profit_traces
+
+    validate_exit_plan(resolved)
+    return resolved, trace
 
 
 def _side_from_order_side(side: str) -> PositionSide:

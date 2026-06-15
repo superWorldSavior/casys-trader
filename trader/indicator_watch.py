@@ -214,7 +214,7 @@ def _condition_from_raw(raw: object, *, owner_symbol: str) -> tuple[dict | None,
 # --- D7 étage B : plans armés (EXECUTE_ORDER) -------------------------------
 # Le LLM arme un scénario d'entrée complet ; le daemon exécute au déclenchement
 # SANS re-appel modèle. Contrat strict à l'armement (fast-fail) : intent
-# OPEN_LONG/OPEN_SHORT, qty > 0, confidence 0..1 explicite, hard_stop en prix.
+# OPEN_LONG/OPEN_SHORT, qty > 0, confidence 0..1 explicite, hard_stop spécifié.
 
 _ARMABLE_INTENTS = {"OPEN_LONG": "BUY", "OPEN_SHORT": "SELL"}
 
@@ -257,6 +257,38 @@ def _armed_hard_stop_price(exit_plan: object) -> float | None:
     return price if math.isfinite(price) and price > 0 else None
 
 
+def _armed_hard_stop_is_specified(exit_plan: object) -> bool:
+    if not isinstance(exit_plan, dict):
+        return False
+    sentinel = object()
+    hard_stop = exit_plan.get("hard_stop", sentinel)
+    if hard_stop is sentinel:
+        for alias in ("stop_loss", "stop", "sl"):
+            if alias in exit_plan:
+                hard_stop = exit_plan[alias]
+                break
+    if hard_stop is sentinel:
+        return False
+    if not isinstance(hard_stop, dict):
+        try:
+            price = float(hard_stop)
+        except (TypeError, ValueError):
+            return False
+        return math.isfinite(price) and price > 0
+    hard_stop_type = str(hard_stop.get("type", "price"))
+    if hard_stop_type == "price":
+        try:
+            price = float(hard_stop.get("price"))
+        except (TypeError, ValueError):
+            return False
+        return math.isfinite(price) and price > 0
+    if hard_stop_type == "percent":
+        return hard_stop.get("percent") is not None
+    if hard_stop_type == "volatility_multiple":
+        return hard_stop.get("multiple") is not None
+    return False
+
+
 def normalize_armed_order(raw: object) -> dict | None:
     """Ordre armable ou None. L'action est DÉRIVÉE de l'intent (pas de mismatch)."""
     if not isinstance(raw, dict):
@@ -272,7 +304,13 @@ def normalize_armed_order(raw: object) -> dict | None:
     if not math.isfinite(qty) or qty <= 0:
         return None
     exit_plan = raw.get("exit_plan")
-    if _armed_hard_stop_price(exit_plan) is None:
+    if not _armed_hard_stop_is_specified(exit_plan):
+        return None
+    from .trade_plan import InvalidExitPlanError, validate_exit_plan
+
+    try:
+        validate_exit_plan(exit_plan, allow_unresolved=True)
+    except InvalidExitPlanError:
         return None
     try:
         confidence = float(raw.get("confidence"))

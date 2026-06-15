@@ -58,6 +58,7 @@ from .trade_plan import (
     create_trade_plan,
     create_trade_plan_from_order,
     normalize_exit_plan,
+    resolve_exit_plan,
     validate_exit_plan,
 )
 
@@ -1455,6 +1456,7 @@ def run_cycle(
     # déjà franchi le hard_stop (position instantanément stoppable) ou si stale.
     armed_decisions: dict[str, codex_client.Decision] = {}
     armed_plan_ids: dict[str, str] = {}
+    armed_reference_volatilities: dict[str, float | None] = {}
     # Conflit : plusieurs scénarios armés du MÊME symbole déclenchés au même
     # cycle = ambiguïté — on n'exécute pas arbitrairement, le planificateur
     # arbitre (les triggers annotés restent dans son contexte).
@@ -1484,8 +1486,33 @@ def run_cycle(
             # position déjà ouverte : un plan d'OUVERTURE armé avant ne doit pas
             # s'empiler mécaniquement — le planificateur re-décide (review Codex)
             cancel_reason = "armed_plan_cancelled:position_exists"
-        elif not armed_order_price_coherent(order, price=prices[sym]):
-            cancel_reason = "armed_plan_cancelled:stop_incoherent"
+        else:
+            intent_side = {"OPEN_LONG": "LONG", "OPEN_SHORT": "SHORT"}.get(str(order.get("intent")))
+            if intent_side is None:
+                cancel_reason = "armed_plan_cancelled:exit_unresolved:side_unsupported"
+            else:
+                ref_vol = _reference_volatility_for_symbol(
+                    sym,
+                    entry_price=prices[sym],
+                    cockpit=cockpit,
+                    tradable_bars_by_symbol=tradable_bars_by_symbol,
+                )
+                try:
+                    resolved_exit_plan, trace = resolve_exit_plan(
+                        order.get("exit_plan"),
+                        entry_price=prices[sym],
+                        side=intent_side,  # type: ignore[arg-type]
+                        reference_volatility=ref_vol,
+                    )
+                except InvalidExitPlanError as exc:
+                    cancel_reason = f"armed_plan_cancelled:exit_unresolved:{exc}"
+                else:
+                    order = {**order, "exit_plan": resolved_exit_plan}
+                    trigger["order"] = order
+                    armed_reference_volatilities[sym] = ref_vol
+                    _append_event("armed_plan_resolved", symbol=sym, plan_id=plan_id, trace=trace)
+                    if not armed_order_price_coherent(order, price=prices[sym]):
+                        cancel_reason = "armed_plan_cancelled:stop_incoherent"
         if cancel_reason is not None:
             # Scénario invalidé = événement : on n'exécute pas en aveugle, on
             # réveille le planificateur AVEC le contexte (trigger annoté), il
@@ -1763,12 +1790,15 @@ def run_cycle(
             continue
 
         if decision.exit_plan and decision.intent in {"OPEN_LONG", "OPEN_SHORT", "REVERSE"}:
-            reference_volatility = _reference_volatility_for_symbol(
-                sym,
-                entry_price=prices[sym],
-                cockpit=cockpit,
-                tradable_bars_by_symbol=tradable_bars_by_symbol,
-            )
+            if sym in armed_reference_volatilities:
+                reference_volatility = armed_reference_volatilities[sym]
+            else:
+                reference_volatility = _reference_volatility_for_symbol(
+                    sym,
+                    entry_price=prices[sym],
+                    cockpit=cockpit,
+                    tradable_bars_by_symbol=tradable_bars_by_symbol,
+                )
             try:
                 validate_exit_plan(
                     decision.exit_plan,
