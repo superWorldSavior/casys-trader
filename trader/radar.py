@@ -51,7 +51,7 @@ def daily_components(symbol: str, bars: list[object], params: RadarParams) -> di
     values = compute_indicator_values(
         bars,
         names=["efficiency_ratio", "return", "ohlc_volatility"],
-        window=params.dwell_days,
+        window=params.score_window_bars,
     )
     return {
         "efficiency_ratio": values["efficiency_ratio"],

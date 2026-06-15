@@ -125,6 +125,30 @@ def test_daily_components_adapte_compute_indicator_values_sur_de_vraies_barres()
     assert components["amplitude"] > 0
 
 
+def test_daily_components_window_est_score_window_et_decouple_de_dwell() -> None:
+    # 20 barres, close = 100 + jour : fenetre de scoring verifiable a la main.
+    bars = [
+        Bar(
+            ts=f"2026-06-{d:02d}T00:00:00+00:00",
+            open=100.0 + d,
+            high=101.0 + d,
+            low=99.0 + d,
+            close=100.0 + d,
+            volume=1_000.0,
+        )
+        for d in range(20)
+    ]
+    # close[-1]=119 ; fenetre de 10 barres -> closes 110..119 -> ret = 119/110 - 1.
+    c10 = daily_components("SPY", bars, RadarParams(score_window_bars=10, dwell_days=3))
+    assert c10["ret"] == pytest.approx(119 / 110 - 1, rel=1e-3)
+    # Decouplage : dwell_days (hysteresis) ne doit PAS bouger le score.
+    c10_bis = daily_components("SPY", bars, RadarParams(score_window_bars=10, dwell_days=8))
+    assert c10_bis["ret"] == pytest.approx(c10["ret"], rel=1e-9)
+    # Une fenetre plus courte change le rendement -> c'est bien score_window qui pilote.
+    c5 = daily_components("SPY", bars, RadarParams(score_window_bars=5))
+    assert c5["ret"] == pytest.approx(119 / 115 - 1, rel=1e-3)
+
+
 def test_scan_and_rank_records_ineligible_symbols() -> None:
     bars_by_symbol = {"SPY": "barsA", "ZZZ": "barsB", "CL=F": "barsC"}
 

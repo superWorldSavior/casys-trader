@@ -13,6 +13,7 @@ class RadarParams:
     cap_m: int = 25
     delta: float = 0.05
     dwell_days: int = 3
+    score_window_bars: int = 15  # horizon du score (~3 semaines daily), distinct du dwell
     atr_floor: float = 0.01
     amplitude_cap: float = 0.05
     min_coverage: float = 0.8

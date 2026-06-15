@@ -2,6 +2,7 @@
 cap_m: 25
 delta: 0.05
 dwell_days: 3
+score_window_bars: 15   # horizon du score (~3 semaines daily), distinct du dwell
 atr_floor: 0.01
 amplitude_cap: 0.05
 min_coverage: 0.8
