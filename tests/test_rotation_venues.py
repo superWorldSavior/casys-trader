@@ -10,6 +10,7 @@ from trader.rotation_venues import (
     compose_active_universe,
     empty_venue_state,
     load_venue_state,
+    run_venue_close,
     save_venue_state,
     update_venue_ranking,
     write_universe_if_changed,
@@ -177,6 +178,97 @@ def test_update_venue_ranking_increments_stayers_and_sets_entrant_dwell_to_one()
 
     assert result["venues"]["US"]["hotlist"] == ["AAPL", "MSFT"]
     assert result["venues"]["US"]["dwell"] == {"AAPL": 5, "MSFT": 1}
+
+
+def test_run_venue_close_filters_global_rank_to_requested_venue():
+    rank_obj = {
+        "ranked": [
+            _item("AAPL", 2.0),
+            _item("8299.TWO", 1.8),
+            _item("EURUSD=X", 1.7),
+            _item("2330.TW", 1.6),
+        ],
+        "gap_adverse": frozenset(),
+    }
+
+    result = run_venue_close(
+        empty_venue_state(),
+        "TW",
+        rank_obj,
+        cap_per_venue=5,
+        fx_cap=2,
+        delta=0.0,
+        dwell_days=1,
+        emergency_floor=0.0,
+        as_of="2026-06-15T05:30:00+00:00",
+    )
+
+    assert result["venues"]["TW"]["hotlist"] == ["8299.TWO", "2330.TW"]
+
+
+def test_run_venue_close_uses_fx_cap_for_fx_and_action_cap_otherwise():
+    rank_obj = {
+        "ranked": [
+            _item("EURUSD=X", 2.0),
+            _item("JPY=X", 1.9),
+            _item("GBPUSD=X", 1.8),
+            _item("AAPL", 1.7),
+            _item("MSFT", 1.6),
+        ],
+        "gap_adverse": frozenset(),
+    }
+
+    fx_state = run_venue_close(
+        empty_venue_state(),
+        "FX",
+        rank_obj,
+        cap_per_venue=5,
+        fx_cap=2,
+        delta=0.0,
+        dwell_days=1,
+        emergency_floor=0.0,
+        as_of="2026-06-15T22:00:00+00:00",
+    )
+    us_state = run_venue_close(
+        empty_venue_state(),
+        "US",
+        rank_obj,
+        cap_per_venue=1,
+        fx_cap=5,
+        delta=0.0,
+        dwell_days=1,
+        emergency_floor=0.0,
+        as_of="2026-06-15T20:00:00+00:00",
+    )
+
+    assert fx_state["venues"]["FX"]["hotlist"] == ["EURUSD=X", "JPY=X"]
+    assert us_state["venues"]["US"]["hotlist"] == ["AAPL"]
+
+
+def test_run_venue_close_filters_gap_adverse_to_requested_venue():
+    rank_obj = {
+        "ranked": [
+            _item("8299.TWO", 2.0),
+            _item("2330.TW", 1.9),
+            _item("AAPL", 1.8),
+        ],
+        "gap_adverse": frozenset({"8299.TWO", "AAPL"}),
+    }
+
+    result = run_venue_close(
+        empty_venue_state(),
+        "TW",
+        rank_obj,
+        cap_per_venue=3,
+        fx_cap=2,
+        delta=0.0,
+        dwell_days=1,
+        emergency_floor=0.0,
+        as_of="2026-06-15T05:30:00+00:00",
+    )
+
+    assert result["venues"]["TW"]["hotlist"] == ["2330.TW"]
+    assert result["venues"]["TW"]["scores"] == {"2330.TW": 1.9}
 
 
 def test_compose_active_universe_adds_open_action_hotlist_and_fx_cap():

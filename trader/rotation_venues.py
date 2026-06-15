@@ -11,6 +11,7 @@ from pathlib import Path
 import yaml
 
 from trader.rotation import apply_hysteresis, emergency_exits, write_universe_atomic
+from trader.rotation_wiring import venue_of
 
 
 def empty_venue_state() -> dict:
@@ -98,6 +99,42 @@ def write_universe_if_changed(path, symbols) -> bool:
 
     write_universe_atomic(str(universe_path), symbols)
     return True
+
+
+def run_venue_close(
+    state,
+    venue,
+    rank_obj,
+    *,
+    cap_per_venue,
+    fx_cap,
+    delta,
+    dwell_days,
+    emergency_floor,
+    as_of,
+) -> dict:
+    """Recompute one venue sleeve from a global radar ranking."""
+    cap = fx_cap if venue == "FX" else cap_per_venue
+    venue_ranked = [
+        item for item in rank_obj["ranked"]
+        if venue_of(item["symbol"]) == venue
+    ]
+    gap_venue = frozenset(
+        symbol
+        for symbol in rank_obj.get("gap_adverse", frozenset())
+        if venue_of(symbol) == venue
+    )
+    return update_venue_ranking(
+        state,
+        venue,
+        venue_ranked,
+        cap_per_venue=cap,
+        delta=delta,
+        dwell_days=dwell_days,
+        emergency_floor=emergency_floor,
+        gap_adverse=gap_venue,
+        as_of=as_of,
+    )
 
 
 def update_venue_ranking(
