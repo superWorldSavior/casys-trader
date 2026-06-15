@@ -8,7 +8,9 @@ import tempfile
 from itertools import zip_longest
 from pathlib import Path
 
-from trader.rotation import apply_hysteresis, emergency_exits
+import yaml
+
+from trader.rotation import apply_hysteresis, emergency_exits, write_universe_atomic
 
 
 def empty_venue_state() -> dict:
@@ -75,6 +77,27 @@ def compose_active_universe(state, open_venues, *, sticky, fx_cap=3) -> list[str
         if symbol not in sticky and symbol not in result:
             result.append(symbol)
     return result
+
+
+def write_universe_if_changed(path, symbols) -> bool:
+    """Write universe symbols only when the non-empty symbol set changes."""
+    if not symbols:
+        return False
+
+    universe_path = Path(path)
+    current_symbols = []
+    try:
+        data = yaml.safe_load(universe_path.read_text(encoding="utf-8"))
+        if isinstance(data, dict):
+            current_symbols = data.get("symbols") or []
+    except Exception:
+        current_symbols = []
+
+    if set(symbols) == set(current_symbols):
+        return False
+
+    write_universe_atomic(str(universe_path), symbols)
+    return True
 
 
 def update_venue_ranking(

@@ -4,12 +4,15 @@ from __future__ import annotations
 
 from copy import deepcopy
 
+import yaml
+
 from trader.rotation_venues import (
     compose_active_universe,
     empty_venue_state,
     load_venue_state,
     save_venue_state,
     update_venue_ranking,
+    write_universe_if_changed,
 )
 
 
@@ -216,3 +219,35 @@ def test_compose_active_universe_empty_without_open_venues_or_sticky():
 
 def test_compose_active_universe_returns_sticky_when_no_venues_are_open():
     assert compose_active_universe({"venues": {}}, [], sticky={"z"}) == ["z"]
+
+
+def test_write_universe_if_changed_skips_same_symbol_set(tmp_path):
+    path = tmp_path / "universe.yaml"
+    original = "symbols: [a, b]\n"
+    path.write_text(original, encoding="utf-8")
+
+    changed = write_universe_if_changed(path, ["b", "a"])
+
+    assert changed is False
+    assert path.read_text(encoding="utf-8") == original
+
+
+def test_write_universe_if_changed_rewrites_different_symbol_set(tmp_path):
+    path = tmp_path / "universe.yaml"
+    path.write_text("symbols: [a, b]\n", encoding="utf-8")
+
+    changed = write_universe_if_changed(path, ["a", "c"])
+
+    assert changed is True
+    assert yaml.safe_load(path.read_text(encoding="utf-8")) == {"symbols": ["a", "c"]}
+
+
+def test_write_universe_if_changed_skips_empty_symbols(tmp_path):
+    path = tmp_path / "universe.yaml"
+    original = "symbols: [a, b]\n"
+    path.write_text(original, encoding="utf-8")
+
+    changed = write_universe_if_changed(path, [])
+
+    assert changed is False
+    assert path.read_text(encoding="utf-8") == original
