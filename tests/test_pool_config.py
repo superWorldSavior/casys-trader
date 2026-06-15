@@ -40,15 +40,13 @@ def test_pool_config_portes_les_invariants_de_composition() -> None:
     assert {"EURUSD=X", "USDJPY=X", "^FCHI"} <= symbols
     assert {"CL=F", "NG=F", "GC=F"} <= pool.hard_exclusions
     assert not symbols & {"CL=F", "NG=F", "GC=F"}
+    # Pool ÉLARGI (D9) : on ne dégraisse plus les doublons corrélés ici (c'est le
+    # hot-set qui sélectionne). On garde seulement le verrou sur les paires FX redondantes.
     assert not symbols & {
         "GBPUSD=X",
         "USDCHF=X",
         "USDCAD=X",
         "AUDUSD=X",
-        "2317.TW",
-        "2412.TW",
-        "2882.TW",
-        "2603.TW",
     }
     for symbol in pool.symbols:
         assert family_for_symbol(symbol) is not None, symbol

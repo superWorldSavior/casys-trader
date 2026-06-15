@@ -11,8 +11,37 @@ symbols:
   - HO.PA
   - AM.PA
   - RHM.DE
+  # Tech / semis taïwanais (TWSE .TW + TPEx .TWO) — pool élargi (Erwan)
+  - 2408.TW
+  - 8299.TWO
   - 2330.TW
+  - 2303.TW
+  - 3661.TW
+  - 3443.TW
+  - 2327.TW
+  - 2492.TW
+  - 3231.TW
+  - 2382.TW
+  - 2317.TW
+  - 6488.TWO
+  - 3532.TW
+  - 3017.TW
+  - 3324.TWO
+  - 3081.TWO
+  - 6442.TW
+  - 3037.TW
+  - 8046.TW
+  - 3189.TW
   - 2454.TW
+  - 2379.TW
+  - 2308.TW
+  - 2301.TW
+  - 3131.TWO
+  - 2404.TW
+  - 3711.TW
+  - 2449.TW
+  - 2368.TW
+  - 2383.TW
   - EURUSD=X
   - USDJPY=X
 hard_exclusions:

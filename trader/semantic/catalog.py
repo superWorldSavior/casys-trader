@@ -17,6 +17,22 @@ LEVELS = ["market", "family", "symbol", "timeframe", "lookback", "window", "as_o
 WINDOWS = [2, 3, 5, 12, 24, 32, 48, 96, 120, 240]
 AS_OF_MODES = ["latest"]
 
+INDICATOR_LABEL_VALUES: dict[str, dict[str, float]] = {
+    "chart_breakout": {"breakout_up": 1.0, "breakout_down": -1.0},
+    "candlestick_signal": {
+        "bullish_engulfing": 1.0,
+        "bull_engulf": 1.0,
+        "bearish_engulfing": -1.0,
+        "bear_engulf": -1.0,
+        "hammer": 0.5,
+        "shooting_star": -0.5,
+    },
+}
+
+
+def label_to_value(indicator: str, label: str) -> float | None:
+    return INDICATOR_LABEL_VALUES.get(indicator, {}).get(label)
+
 TIMEFRAMES: dict[str, dict] = {
     "15m": {
         "label": "15 minutes",
@@ -70,7 +86,15 @@ FAMILIES: dict[str, list[str]] = {
     "commodities_futures": ["CL=F", "BZ=F", "NG=F"],
     "metals": ["GC=F"],
     "nasdaq_single_names": ["NVDA", "AAPL"],
-    "semis_tw": ["2330.TW", "2454.TW"],
+    # Marché taïwanais — panier large (pas seulement des semis : Foxconn, Delta,
+    # composants, TPEx .TWO, etc.). TSMC/MediaTek inclus.
+    "taiwan": [
+        "2408.TW", "8299.TWO", "2330.TW", "2303.TW", "3661.TW", "3443.TW",
+        "2327.TW", "2492.TW", "3231.TW", "2382.TW", "2317.TW", "6488.TWO",
+        "3532.TW", "3017.TW", "3324.TWO", "3081.TWO", "6442.TW", "3037.TW",
+        "8046.TW", "3189.TW", "2454.TW", "2379.TW", "2308.TW", "2301.TW",
+        "3131.TWO", "2404.TW", "3711.TW", "2449.TW", "2368.TW", "2383.TW",
+    ],
     "crypto": ["BTC-USD"],
     "forex_majors": [
         "EURUSD=X",
