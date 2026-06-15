@@ -11,6 +11,52 @@ symbols:
   - HO.PA
   - AM.PA
   - RHM.DE
+  # Actions européennes large-cap (sectorisé)
+  # eu_tech
+  - ASML.AS
+  - SAP.DE
+  - CAP.PA
+  - DSY.PA
+  # eu_financials
+  - BNP.PA
+  - ALV.DE
+  - INGA.AS
+  - SAN.MC
+  # eu_healthcare
+  - SAN.PA
+  - ROG.SW
+  - AZN.L
+  - NOVO-B.CO
+  # eu_energy
+  - TTE.PA
+  - ENI.MI
+  - RDSB.AS
+  - REPB.MC
+  # eu_luxury_consumer
+  - MC.PA
+  - OR.PA
+  - RMS.PA
+  - KER.PA
+  # eu_industrials
+  - AIR.PA
+  - SIE.DE
+  - SU.PA
+  - STLAM.AS
+  # eu_materials
+  - AI.PA
+  - BAS.DE
+  - MT.AS
+  - LIN.DE
+  # eu_utilities
+  - ENGI.PA
+  - ENEL.MI
+  - IBE.MC
+  - EDP.LS
+  # eu_telecom
+  - ORA.PA
+  - DTE.DE
+  - TEF.MC
+  - VOD.L
   # Tech / semis taïwanais (TWSE .TW + TPEx .TWO) — pool élargi (Erwan)
   - 2408.TW
   - 8299.TWO
