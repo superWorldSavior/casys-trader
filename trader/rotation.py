@@ -66,6 +66,35 @@ def apply_hysteresis(
     return selected
 
 
+def compose_final(
+    *,
+    default_hot: list[str],
+    sticky: set[str],
+    cap_m: int,
+) -> tuple[list[str], str | None]:
+    """Compose la liste finale : sticky hors quota + non-sticky dans le quota restant.
+
+    Returns:
+        (final_list, alert) où alert vaut 'sticky_over_cap' si len(sticky) > cap_m.
+    """
+    alert: str | None = "sticky_over_cap" if len(sticky) > cap_m else None
+    free = max(0, cap_m - len(sticky))
+
+    # sticky triés alphabétiquement pour ordre déterministe, puis non-sticky
+    sticky_sorted = sorted(sticky)
+    from_default = [s for s in default_hot if s not in sticky][:free]
+
+    # Déduplication ordre préservé
+    seen: set[str] = set()
+    final: list[str] = []
+    for s in sticky_sorted + from_default:
+        if s not in seen:
+            seen.add(s)
+            final.append(s)
+
+    return final, alert
+
+
 def sticky_symbols(
     *,
     positions: set[str],

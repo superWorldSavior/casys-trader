@@ -1,6 +1,6 @@
 """Tests TDD pour trader/rotation.py — veille deux niveaux."""
 import pytest
-from trader.rotation import apply_hysteresis, emergency_exits, sticky_symbols
+from trader.rotation import apply_hysteresis, compose_final, emergency_exits, sticky_symbols
 
 
 # ---------------------------------------------------------------------------
@@ -155,3 +155,42 @@ class TestStickySymbols:
             pending_orders=set(),
         )
         assert result == set()
+
+
+# ---------------------------------------------------------------------------
+# compose_final
+# ---------------------------------------------------------------------------
+
+class TestComposeFinal:
+    def test_sticky_over_cap_alert(self):
+        """3 sticky + cap_m=2 → tous présents + alert='sticky_over_cap'."""
+        final, alert = compose_final(
+            default_hot=["X", "Y"],
+            sticky={"A", "B", "C"},
+            cap_m=2,
+        )
+        assert set(final) >= {"A", "B", "C"}
+        assert alert == "sticky_over_cap"
+
+    def test_slot_libre_depuis_default(self):
+        """1 sticky + default [X,Y,Z] + cap_m=2 → {sticky, X}, alert=None."""
+        final, alert = compose_final(
+            default_hot=["X", "Y", "Z"],
+            sticky={"S"},
+            cap_m=2,
+        )
+        # 1 sticky + 1 slot libre → 1 élément de default_hot
+        assert "S" in final
+        assert len(final) == 2
+        assert final[len(final) - 1] == "X"  # premier de default_hot non-sticky
+        assert alert is None
+
+    def test_pas_de_doublons(self):
+        """Sticky qui est aussi dans default_hot → pas de doublon."""
+        final, alert = compose_final(
+            default_hot=["A", "B"],
+            sticky={"A"},
+            cap_m=2,
+        )
+        assert final.count("A") == 1
+        assert alert is None
