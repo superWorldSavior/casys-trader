@@ -219,6 +219,54 @@ def test_run_cycle_persiste_un_plan_apres_ouverture(monkeypatch, tmp_path, patch
     assert plans[0].hard_stop_price == 95.0
 
 
+def test_run_cycle_persiste_reference_volatility_pour_trailing_multiple(
+    monkeypatch,
+    tmp_path,
+    patch_batch,
+    make_data_source,
+) -> None:
+    _write_runtime_config(tmp_path)
+    state_dir = tmp_path / "state"
+    now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
+
+    monkeypatch.setattr(daemon, "ROOT", tmp_path)
+    monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+    bars = [
+        Bar(ts="2026-06-05T11:30:00+00:00", open=100.0, high=101.0, low=99.0, close=100.0, volume=1000.0),
+        Bar(ts="2026-06-05T11:45:00+00:00", open=100.0, high=102.0, low=99.5, close=101.0, volume=1000.0),
+        Bar(ts=now.isoformat(), open=101.0, high=104.0, low=100.5, close=103.0, volume=1000.0),
+    ]
+    data_source = make_data_source(lambda symbol, lookback, interval: bars)
+    patch_batch(
+        lambda **kwargs: Decision(
+            symbol="SPY",
+            action="BUY",
+            quantity=10.0,
+            confidence=0.8,
+            rationale="setup vol",
+            intent="OPEN_LONG",
+            exit_plan={
+                "hard_stop": {"type": "price", "price": 95.0},
+                "trailing_stop": {"trail_type": "volatility_multiple", "trail_value": 2.0},
+            },
+        ),
+    )
+
+    report = daemon.run_cycle(
+        dry_run=False,
+        now=now,
+        symbols_filter=["SPY"],
+        sched=Scheduler(state_dir / "scheduler.json"),
+        data_source=data_source,
+    )
+
+    assert report["decisions"][0]["trade_plan_created"] is True
+    plans = TradePlanStore(state_dir / "trade_plans.json").open_plans()
+    assert len(plans) == 1
+    assert plans[0].reference_volatility is not None
+    assert plans[0].reference_volatility > 0
+
+
 def test_run_cycle_cloture_le_plan_quand_codex_ferme_la_position(monkeypatch, tmp_path, patch_batch, make_data_source) -> None:
     _write_runtime_config(tmp_path)
     state_dir = tmp_path / "state"
@@ -801,8 +849,8 @@ def test_run_cycle_attribue_les_sorties_planifiees_au_modele_createur(monkeypatc
                 "hard_stop": {"type": "price", "price": 95.0},
                 "take_profits": [{"name": "tp1", "price": 105.0, "fraction": 0.5}],
             },
-            llm_provider="spark",
-            llm_model="gpt-5.3-codex-spark/medium",
+            llm_provider="acpx",
+            llm_model="gpt-5.5/medium",
         )
 
     patch_batch(decide)
@@ -829,8 +877,8 @@ def test_run_cycle_attribue_les_sorties_planifiees_au_modele_createur(monkeypatc
     assert len(rows) == 2
     assert rows[1]["action"] == "SELL"
     assert rows[1]["intent"] == "PLANNED_EXIT"
-    assert rows[1]["llm_provider"] == "spark"
-    assert rows[1]["llm_model"] == "gpt-5.3-codex-spark/medium"
+    assert rows[1]["llm_provider"] == "acpx"
+    assert rows[1]["llm_model"] == "gpt-5.5/medium"
     assert rows[1]["exit_reason"] == "take_profit:tp1"
 
 
@@ -874,8 +922,8 @@ def test_main_historise_les_sorties_planifiees_meme_sans_symbole_du(monkeypatch,
         json.loads(line)
         for line in (state_dir / "history.jsonl").read_text(encoding="utf-8").splitlines()
     ]
-    assert history_rows[-1]["cash"] == 99_530.0
-    assert history_rows[-1]["equity"] == 100_060.0
+    assert history_rows[-1]["cash"] == 99_529.65
+    assert history_rows[-1]["equity"] == 100_059.65
     assert history_rows[-1]["n_executed"] == 1
 
 

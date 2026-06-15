@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 
 from trader import daemon
 from trader.codex_client import Decision
+from trader.tools.execution import IbkrCommissionModel
 from trader.tools.market import Bar
 from trader.tools.scheduler import Scheduler
 
@@ -80,8 +81,8 @@ def test_run_cycle_ecrit_la_decision_dans_le_ledger(monkeypatch, tmp_path, patch
             confidence=0.7,
             rationale="range sans catalyseur",
             intent="HOLD",
-            llm_provider="spark",
-            llm_model="gpt-5.3-codex-spark/medium",
+            llm_provider="acpx",
+            llm_model="gpt-5.5/medium",
         )
     )
 
@@ -155,7 +156,7 @@ def test_run_cycle_historise_la_perf_par_modele_sur_fill(monkeypatch, tmp_path, 
             exit_plan={"hard_stop": {"type": "price", "price": 95.0}},
             llm_provider="ollama-cloud",
             llm_model="nemotron-3-nano:30b-cloud",
-            llm_fallback_reason="spark:quota_exceeded"),
+            llm_fallback_reason="acpx:quota_exceeded"),
     )
 
     daemon.run_cycle(
@@ -176,8 +177,96 @@ def test_run_cycle_historise_la_perf_par_modele_sur_fill(monkeypatch, tmp_path, 
     assert rows[0]["quantity"] == 10.0
     assert rows[0]["llm_provider"] == "ollama-cloud"
     assert rows[0]["llm_model"] == "nemotron-3-nano:30b-cloud"
-    assert rows[0]["llm_fallback_reason"] == "spark:quota_exceeded"
+    assert rows[0]["llm_fallback_reason"] == "acpx:quota_exceeded"
     assert rows[0]["equity"] == 100000.0
+
+
+def test_run_cycle_loggue_les_commissions_du_fill(monkeypatch, tmp_path, patch_batch, make_data_source) -> None:
+    _write_runtime_config(tmp_path)
+    state_dir = tmp_path / "state"
+    now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
+
+    monkeypatch.setattr(daemon, "ROOT", tmp_path)
+    monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+    data_source = make_data_source(lambda symbol, lookback, interval: [
+        Bar(ts=now.isoformat(), open=100.0, high=101.0, low=99.0, close=100.0, volume=1000.0)
+    ])
+    patch_batch(lambda **kwargs: Decision(
+            symbol=kwargs["symbol"],
+            action="BUY",
+            quantity=10.0,
+            confidence=0.95,
+            rationale="test frais",
+            intent="OPEN_LONG",
+            exit_plan={"hard_stop": {"type": "price", "price": 95.0}},
+            llm_provider="acpx",
+            llm_model="gpt-5.5/medium"),
+    )
+
+    daemon.run_cycle(
+        dry_run=False,
+        now=now,
+        symbols_filter=["SPY"],
+        sched=Scheduler(state_dir / "scheduler.json"),
+        data_source=data_source,
+        commission_model=IbkrCommissionModel(),
+    )
+
+    rows = [
+        json.loads(line)
+        for line in (state_dir / "model_performance.jsonl").read_text().splitlines()
+    ]
+    assert rows[0]["commission"] == 0.35
+    assert rows[0]["commission_currency"] == "USD"
+    assert rows[0]["commission_model"] == "ibkr_us_stock_tiered"
+    assert rows[0]["equity"] == 99_999.65
+
+
+def test_run_cycle_report_portefeuille_expose_le_pnl_latent_net_avec_commissions(
+    monkeypatch,
+    tmp_path,
+    patch_batch,
+    make_data_source,
+) -> None:
+    _write_runtime_config(tmp_path)
+    state_dir = tmp_path / "state"
+    now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
+
+    monkeypatch.setattr(daemon, "ROOT", tmp_path)
+    monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+    data_source = make_data_source(lambda symbol, lookback, interval: [
+        Bar(ts=now.isoformat(), open=100.0, high=101.0, low=99.0, close=100.0, volume=1000.0)
+    ])
+    patch_batch(lambda **kwargs: Decision(
+            symbol=kwargs["symbol"],
+            action="BUY",
+            quantity=10.0,
+            confidence=0.95,
+            rationale="test latent net",
+            intent="OPEN_LONG",
+            exit_plan={"hard_stop": {"type": "price", "price": 95.0}},
+            llm_provider="acpx",
+            llm_model="gpt-5.5/medium"),
+    )
+    sched = Scheduler(state_dir / "scheduler.json")
+    sched.set_symbol_next_wake("SPY", now.isoformat())
+
+    report = daemon.run_cycle(
+        dry_run=False,
+        now=now,
+        symbols_filter=["SPY"],
+        sched=sched,
+        data_source=data_source,
+        commission_model=IbkrCommissionModel(),
+    )
+
+    holding = report["portfolio"]["holdings"][0]
+    current_report = json.loads((state_dir / "current_report.json").read_text())
+    persisted_holding = current_report["portfolio"]["holdings"][0]
+    assert holding["unrealized_pnl"] == 0.0
+    assert holding["round_trip_fee"] == 0.7
+    assert holding["unrealized_pnl_net"] == -0.7
+    assert persisted_holding == holding
 
 
 def test_run_cycle_bloque_decision_sur_donnees_marche_perimees(monkeypatch, tmp_path, patch_batch, make_data_source) -> None:

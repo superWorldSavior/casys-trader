@@ -10,8 +10,8 @@ class CapturingRouter:
     def complete(self, prompt: str, *, timeout_s: int) -> LlmCompletion:
         self.prompt = prompt
         return LlmCompletion(
-            provider="spark",
-            model="gpt-5.3-codex-spark/medium",
+            provider="acpx",
+            model="gpt-5.5/medium",
             text=(
                 '{"decisions":[{"symbol":"SPY","action":"HOLD","quantity":0,'
                 '"confidence":0.5,"rationale":"attente"}]}'
@@ -52,6 +52,17 @@ def test_batch_contract_detaille_hard_stop_et_take_profits() -> None:
         "`take_profits`: liste d'OBJETS "
         "{price:<requis, >0>, fraction:<optionnel, >0>}"
     ) in prompt
+
+
+def test_batch_contract_clarifie_les_unites_du_trailing_stop() -> None:
+    prompt = _batch_prompt_from_decide_batch()
+
+    assert "percent = fraction" in prompt
+    assert "0.004 = 0.4%" in prompt
+    assert "price = distance absolue en prix" in prompt
+    assert "volatility_multiple = multiple de la volatilité récente" in prompt
+    assert "1.5-3" in prompt
+    assert "ne s'arme qu'une fois en profit" in prompt
 
 
 def test_batch_contract_et_validate_exit_plan_utilisent_la_meme_constante(monkeypatch) -> None:

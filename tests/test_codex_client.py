@@ -6,8 +6,8 @@ def test_decide_batch_renvoie_une_decision_par_symbole_avec_metadonnees() -> Non
     class StubRouter:
         def complete(self, prompt: str, *, timeout_s: int) -> LlmCompletion:
             return LlmCompletion(
-                provider="spark",
-                model="gpt-5.3-codex-spark/medium",
+                provider="acpx",
+                model="gpt-5.5/medium",
                 text=(
                     '{"decisions": ['
                     '{"symbol":"SPY","action":"BUY","quantity":10,"confidence":0.7,"rationale":"x","intent":"OPEN_LONG"},'
@@ -26,7 +26,7 @@ def test_decide_batch_renvoie_une_decision_par_symbole_avec_metadonnees() -> Non
     )
 
     assert result["SPY"].action == "BUY"
-    assert result["SPY"].llm_provider == "spark"
+    assert result["SPY"].llm_provider == "acpx"
     assert result["QQQ"].action == "HOLD"
 
 
@@ -38,8 +38,8 @@ def test_decide_utilise_un_plafond_decisionnel_900s_par_defaut() -> None:
         def complete(self, prompt: str, *, timeout_s: int) -> LlmCompletion:
             self.timeout_s = timeout_s
             return LlmCompletion(
-                provider="spark",
-                model="gpt-5.3-codex-spark/medium",
+                provider="acpx",
+                model="gpt-5.5/medium",
                 text='{"symbol":"SPY","action":"HOLD","quantity":0,"confidence":0.5,"rationale":"attente"}',
             )
 
@@ -65,8 +65,8 @@ def test_decide_batch_utilise_un_plafond_decisionnel_900s_par_defaut() -> None:
         def complete(self, prompt: str, *, timeout_s: int) -> LlmCompletion:
             self.timeout_s = timeout_s
             return LlmCompletion(
-                provider="spark",
-                model="gpt-5.3-codex-spark/medium",
+                provider="acpx",
+                model="gpt-5.5/medium",
                 text='{"decisions":[{"symbol":"SPY","action":"HOLD","quantity":0,"confidence":0.5,"rationale":"attente"}]}',
             )
 
@@ -88,7 +88,7 @@ def test_decide_batch_utilise_un_plafond_decisionnel_900s_par_defaut() -> None:
 def test_decide_batch_echec_llm_met_tout_en_hold() -> None:
     class FailRouter:
         def complete(self, prompt: str, *, timeout_s: int) -> LlmFailure:
-            return LlmFailure(provider="spark", model="m", code="timeout", message="boom", retryable=True)
+            return LlmFailure(provider="acpx", model="m", code="timeout", message="boom", retryable=True)
 
     result = decide_batch(
         symbols=["SPY", "QQQ"],
@@ -157,7 +157,7 @@ def test_parse_batch_json_global_invalide_tout_en_hold() -> None:
 
 
 def test_default_model_utilise_reasoning_medium() -> None:
-    assert DEFAULT_MODEL == "gpt-5.3-codex-spark/medium"
+    assert DEFAULT_MODEL == "gpt-5.5/medium"
 
 
 def test_parse_decision_accepte_next_wake_in_minutes_optionnel() -> None:
@@ -289,7 +289,7 @@ def test_decide_attache_les_metadonnees_llm() -> None:
             return LlmCompletion(
                 provider="ollama-cloud",
                 model="nemotron-3-nano:30b-cloud",
-                fallback_reason="spark:rate_limited",
+                fallback_reason="acpx:rate_limited",
                 text=(
                     '{"symbol":"SPY","action":"HOLD","quantity":0,'
                     '"confidence":0.9,"rationale":"flat"}'
@@ -306,4 +306,4 @@ def test_decide_attache_les_metadonnees_llm() -> None:
 
     assert decision.llm_provider == "ollama-cloud"
     assert decision.llm_model == "nemotron-3-nano:30b-cloud"
-    assert decision.llm_fallback_reason == "spark:rate_limited"
+    assert decision.llm_fallback_reason == "acpx:rate_limited"
