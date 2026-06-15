@@ -98,7 +98,7 @@ FAMILIES: dict[str, list[str]] = {
         "STMPA.PA",  # STMicroelectronics — semis mixtes, auto, IoT
         "IFX.DE",    # Infineon Technologies — semis auto & power
         "NOKIA.HE",  # Nokia — équipements réseaux 5G & AI infra
-        "NXPI.AS",   # NXP Semiconductors — semis auto & IoT
+        "NXPI",      # NXP Semiconductors — semis auto & IoT (Nasdaq)
         "WKL.AS",    # Wolters Kluwer — info services & software
         "AMS.MC",    # Amadeus IT Group — software voyage & hospitality
         "PHIA.AS",   # Philips — health tech & imagerie médicale
@@ -122,7 +122,7 @@ FAMILIES: dict[str, list[str]] = {
     # Santé (pharma, biotech, medtech)
     "eu_healthcare": [
         "SAN.PA",     # Sanofi — pharma diversifié
-        "ROG.SW",     # Roche — diagnostics & oncologie
+        "RO.SW",      # Roche — diagnostics & oncologie
         "AZN.L",      # AstraZeneca — oncologie & respiratoire
         "NOVO-B.CO",  # Novo Nordisk — diabète & obésité (GLP-1)
         "NOVN.SW",    # Novartis — pharma large-cap CH
@@ -165,7 +165,7 @@ FAMILIES: dict[str, list[str]] = {
         "AIR.PA",     # Airbus — aérospatial & défense civile
         "SIE.DE",     # Siemens — automation & électrification
         "SU.PA",      # Schneider Electric — gestion énergie & automation
-        "STLAM.AS",   # Stellantis — automobiles (Peugeot, Fiat, Chrysler…)
+        "STLA",       # Stellantis — automobiles (Peugeot, Fiat, Chrysler…) NYSE
         "SAF.PA",     # Safran — moteurs aéronautiques & équipements
         "RR.L",       # Rolls-Royce — moteurs aéro & énergie UK
         "ABBN.SW",    # ABB — automation, robotique & électrification CH
@@ -186,7 +186,7 @@ FAMILIES: dict[str, list[str]] = {
         "UMI.BR",    # Umicore — matériaux avancés & recyclage BE
         "HOLN.SW",   # Holcim — matériaux de construction CH
         "YAR.OL",    # Yara International — engrais azotés NO
-        "CRH.L",     # CRH — matériaux de construction IE/UK
+        "CRH",       # CRH — matériaux de construction IE/UK (NYSE, principal listing)
         "SY1.DE",    # Symrise — arômes & fragrances DE
     ],
     # Utilities (électricité, eau, gaz réseaux)
@@ -253,7 +253,7 @@ FAMILIES: dict[str, list[str]] = {
         "CHTR",   # Charter Communications
         "EA",     # Electronic Arts
         "TTWO",   # Take-Two Interactive
-        "PARA",   # Paramount Global
+        "PSKY",   # Paramount Skydance Corporation (fusion Skydance août 2025, ex-PARA)
         "WBD",    # Warner Bros. Discovery
         "TMUS",   # T-Mobile US
         "FOXA",   # Fox Corporation
@@ -273,7 +273,7 @@ FAMILIES: dict[str, list[str]] = {
         "PGR",    # Progressive
         "USB",    # U.S. Bancorp
         "COF",    # Capital One Financial
-        "MMC",    # Marsh & McLennan
+        "MRSH",   # Marsh McLennan (nouveau ticker depuis jan 2026, ex-MMC)
         "AON",    # Aon
     ],
     # Healthcare

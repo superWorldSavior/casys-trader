@@ -22,7 +22,7 @@ symbols:
   - SAN.MC
   # eu_healthcare
   - SAN.PA
-  - ROG.SW
+  - RO.SW
   - AZN.L
   - NOVO-B.CO
   # eu_energy
@@ -39,7 +39,7 @@ symbols:
   - AIR.PA
   - SIE.DE
   - SU.PA
-  - STLAM.AS
+  - STLA
   # eu_materials
   - AI.PA
   - BAS.DE
@@ -65,7 +65,7 @@ symbols:
   - STMPA.PA
   - IFX.DE
   - NOKIA.HE
-  - NXPI.AS
+  - NXPI
   - WKL.AS
   - AMS.MC
   - PHIA.AS
@@ -117,7 +117,7 @@ symbols:
   - UMI.BR
   - HOLN.SW
   - YAR.OL
-  - CRH.L
+  - CRH
   - SY1.DE
   # eu_utilities (extensions)
   - RWE.DE
@@ -183,7 +183,7 @@ symbols:
   - CHTR
   - EA
   - TTWO
-  - PARA
+  - PSKY
   - WBD
   - TMUS
   - FOXA
@@ -201,7 +201,7 @@ symbols:
   - PGR
   - USB
   - COF
-  - MMC
+  - MRSH
   - AON
   # Healthcare
   - JNJ
