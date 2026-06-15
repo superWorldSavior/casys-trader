@@ -64,3 +64,28 @@ def apply_hysteresis(
                 selected.append(sym)
 
     return selected
+
+
+def emergency_exits(
+    hot_set: set[str],
+    ranked: list[dict[str, Any]],
+    *,
+    emergency_floor: float,
+    gap_adverse: frozenset[str] = frozenset(),
+    daily_invalidated: frozenset[str] = frozenset(),
+) -> set[str]:
+    """Retourne les symboles de hot_set à évincer immédiatement.
+
+    Un symbole est évincé si :
+    - son attractiveness < emergency_floor (0.0 si absent de ranked) ;
+    - il est dans gap_adverse ;
+    - il est dans daily_invalidated.
+    """
+    attr_map: dict[str, float] = {item["symbol"]: item["attractiveness"] for item in ranked}
+
+    return {
+        s for s in hot_set
+        if attr_map.get(s, 0.0) < emergency_floor
+        or s in gap_adverse
+        or s in daily_invalidated
+    }

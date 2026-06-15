@@ -1,6 +1,6 @@
 """Tests TDD pour trader/rotation.py — veille deux niveaux."""
 import pytest
-from trader.rotation import apply_hysteresis
+from trader.rotation import apply_hysteresis, emergency_exits
 
 
 # ---------------------------------------------------------------------------
@@ -82,3 +82,51 @@ class TestApplyHysteresis:
             dwell_days=3,
         )
         assert set(result) == {"A", "C"}
+
+
+# ---------------------------------------------------------------------------
+# emergency_exits
+# ---------------------------------------------------------------------------
+
+class TestEmergencyExits:
+    def test_sous_le_floor_evince(self):
+        """Symbole chaud avec attractiveness < emergency_floor → évincé."""
+        ranked = [_item("A", 0.3), _item("B", 1.0)]
+        result = emergency_exits(
+            hot_set={"A", "B"},
+            ranked=ranked,
+            emergency_floor=0.5,
+        )
+        assert result == {"A"}
+
+    def test_dans_gap_adverse_evince(self):
+        """Symbole chaud dans gap_adverse → évincé."""
+        ranked = [_item("A", 0.9), _item("B", 1.0)]
+        result = emergency_exits(
+            hot_set={"A", "B"},
+            ranked=ranked,
+            emergency_floor=0.1,
+            gap_adverse=frozenset({"A"}),
+        )
+        assert result == {"A"}
+
+    def test_dans_daily_invalidated_evince(self):
+        """Symbole chaud dans daily_invalidated → évincé."""
+        ranked = [_item("A", 0.9), _item("B", 1.0)]
+        result = emergency_exits(
+            hot_set={"A", "B"},
+            ranked=ranked,
+            emergency_floor=0.1,
+            daily_invalidated=frozenset({"A"}),
+        )
+        assert result == {"A"}
+
+    def test_aucun_evince_si_tout_ok(self):
+        """Rien à évincer → set vide."""
+        ranked = [_item("A", 0.9), _item("B", 1.0)]
+        result = emergency_exits(
+            hot_set={"A", "B"},
+            ranked=ranked,
+            emergency_floor=0.5,
+        )
+        assert result == set()
