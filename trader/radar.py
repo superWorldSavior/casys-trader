@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from .features import compute_indicator_values
 from .radar_config import RadarParams
 
@@ -54,3 +56,56 @@ def daily_components(symbol: str, bars: list[object], params: RadarParams) -> di
         "ret": values["return"],
         "amplitude": values["ohlc_volatility"],
     }
+
+
+def scan_and_rank(
+    bars_by_symbol: dict[str, object],
+    *,
+    indicators_fn: Callable[[str, object], dict],
+    benchmark_ret_for: dict[str, float],
+    tilt_for: Callable[[str], float],
+    hard_exclusions: set[str],
+    atr_floor: float,
+    amplitude_cap: float,
+    w_trend: float,
+    w_rs: float,
+    w_amp: float,
+) -> dict:
+    """Classe les symboles éligibles par attractivité absolue décroissante."""
+    ranked: list[dict] = []
+    ineligible: list[dict] = []
+    for symbol in sorted(bars_by_symbol):
+        components = indicators_fn(symbol, bars_by_symbol[symbol])
+        amplitude = components.get("amplitude")
+        if not is_eligible(
+            symbol,
+            amplitude=amplitude,
+            hard_exclusions=hard_exclusions,
+            atr_floor=atr_floor,
+        ):
+            reason = "hard_exclusion" if symbol in hard_exclusions else "not_eligible"
+            ineligible.append({"symbol": symbol, "reason": reason})
+            continue
+
+        directional_score = score_symbol(
+            efficiency_ratio=components["efficiency_ratio"],
+            ret=components["ret"],
+            benchmark_ret=benchmark_ret_for.get(symbol, 0.0),
+            amplitude=amplitude,
+            tilt=tilt_for(symbol),
+            amplitude_cap=amplitude_cap,
+            w_trend=w_trend,
+            w_rs=w_rs,
+            w_amp=w_amp,
+        )
+        ranked.append(
+            {
+                "symbol": symbol,
+                "directional_score": directional_score,
+                "attractiveness": abs(directional_score),
+                "bias": "long" if directional_score >= 0 else "short",
+            }
+        )
+
+    ranked.sort(key=lambda row: (-row["attractiveness"], row["symbol"]))
+    return {"ranked": ranked, "ineligible": ineligible}

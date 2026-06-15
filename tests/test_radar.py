@@ -1,6 +1,6 @@
 import pytest
 
-from trader.radar import daily_components, is_eligible, score_symbol
+from trader.radar import daily_components, is_eligible, scan_and_rank, score_symbol
 from trader.radar_config import RadarParams
 from trader.tools.market import Bar
 
@@ -115,3 +115,70 @@ def test_daily_components_adapte_compute_indicator_values_sur_de_vraies_barres()
     assert components["efficiency_ratio"] is not None
     assert components["ret"] > 0
     assert components["amplitude"] > 0
+
+
+def test_scan_and_rank_records_ineligible_symbols() -> None:
+    bars_by_symbol = {"SPY": "barsA", "ZZZ": "barsB", "CL=F": "barsC"}
+
+    def indicators_fn(symbol: str, bars: object) -> dict:
+        return {
+            "SPY": {"efficiency_ratio": 0.8, "ret": 0.03, "amplitude": 0.03},
+            "ZZZ": {"efficiency_ratio": 0.9, "ret": 0.05, "amplitude": 0.001},
+            "CL=F": {"efficiency_ratio": 0.7, "ret": 0.04, "amplitude": 0.05},
+        }[symbol]
+
+    result = scan_and_rank(
+        bars_by_symbol,
+        indicators_fn=indicators_fn,
+        benchmark_ret_for={"SPY": 0.0, "ZZZ": 0.0, "CL=F": 0.0},
+        tilt_for=lambda symbol: 0.0,
+        hard_exclusions={"CL=F"},
+        atr_floor=0.01,
+        amplitude_cap=0.05,
+        w_trend=1.0,
+        w_rs=1.0,
+        w_amp=1.0,
+    )
+
+    assert [row["symbol"] for row in result["ranked"]] == ["SPY"]
+    assert {row["symbol"] for row in result["ineligible"]} == {"ZZZ", "CL=F"}
+
+
+def test_scan_and_rank_orders_by_attractiveness_not_raw_signed_score() -> None:
+    bars_by_symbol = {"STRONG_SHORT": "barsA", "WEAK_LONG": "barsB"}
+
+    def indicators_fn(symbol: str, bars: object) -> dict:
+        return {
+            "STRONG_SHORT": {
+                "efficiency_ratio": 0.95,
+                "ret": -0.10,
+                "amplitude": 0.04,
+            },
+            "WEAK_LONG": {
+                "efficiency_ratio": 0.10,
+                "ret": 0.01,
+                "amplitude": 0.02,
+            },
+        }[symbol]
+
+    result = scan_and_rank(
+        bars_by_symbol,
+        indicators_fn=indicators_fn,
+        benchmark_ret_for={"STRONG_SHORT": 0.0, "WEAK_LONG": 0.0},
+        tilt_for=lambda symbol: 0.0,
+        hard_exclusions=set(),
+        atr_floor=0.01,
+        amplitude_cap=0.05,
+        w_trend=1.0,
+        w_rs=1.0,
+        w_amp=1.0,
+    )
+
+    ranked = result["ranked"]
+    assert [row["symbol"] for row in ranked] == ["STRONG_SHORT", "WEAK_LONG"]
+    assert ranked[0]["directional_score"] < 0
+    assert ranked[0]["bias"] == "short"
+    assert ranked[0]["attractiveness"] == pytest.approx(
+        abs(ranked[0]["directional_score"])
+    )
+    assert ranked[1]["bias"] == "long"
