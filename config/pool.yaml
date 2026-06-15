@@ -42,6 +42,62 @@ symbols:
   - 2449.TW
   - 2368.TW
   - 2383.TW
+  # Actions US large-cap (sectorisé)
+  # Technology
+  - MSFT
+  - GOOGL
+  - META
+  - AMD
+  # Communication Services
+  - NFLX
+  - DIS
+  - T
+  - VZ
+  # Financials
+  - JPM
+  - BAC
+  - GS
+  - BLK
+  # Healthcare
+  - JNJ
+  - UNH
+  - PFE
+  - ABBV
+  # Energy
+  - XOM
+  - CVX
+  - COP
+  - SLB
+  # Consumer Discretionary
+  - AMZN
+  - TSLA
+  - HD
+  - MCD
+  # Consumer Staples
+  - PG
+  - KO
+  - WMT
+  - PEP
+  # Industrials
+  - CAT
+  - GE
+  - HON
+  - UPS
+  # Materials
+  - LIN
+  - APD
+  - FCX
+  - NEM
+  # Utilities
+  - NEE
+  - DUK
+  - SO
+  - AEP
+  # Real Estate
+  - PLD
+  - AMT
+  - EQIX
+  - SPG
   - EURUSD=X
   - USDJPY=X
 hard_exclusions:
