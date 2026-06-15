@@ -83,13 +83,41 @@ def test_section_plans_armes_documente_hard_stop_relatif_et_take_profit_en_r() -
     assert '{type:"risk_multiple", r:<requis, >0>, fraction?}' in armed_contract
 
 
-def test_batch_contract_recommande_hard_stop_relatif_pour_les_plans_armes() -> None:
+def test_batch_contract_ne_privilegie_aucune_forme_de_hard_stop_relatif() -> None:
+    """Les formes relatives (percent / volatility_multiple / structural) sont des
+    primitives à égalité : le contrat ne doit en RECOMMANDER aucune (anti-biais —
+    le LLM choisit selon son régime). Le prix absolu n'est pas interdit, juste
+    décrit factuellement (non recalibré au tir) — le choix reste à l'agent."""
     prompt = _batch_prompt_from_decide_batch()
 
     assert "hard_stop peut être en prix OU relatif" in prompt
-    assert "RECOMMANDE volatility_multiple" in prompt
-    assert "données FRAÎCHES au déclenchement" in prompt
-    assert "prix absolu figé à l'armement devient mal calibré" in prompt
+    # plus aucune recommandation d'une forme particulière
+    assert "RECOMMANDE volatility_multiple" not in prompt
+    # les trois formes présentées à égalité, résolues au tir
+    assert "percent, volatility_multiple ET structural, à égalité" in prompt
+    # le prix absolu : fait mécanique, PAS une interdiction
+    assert "n'est PAS recalibré au tir" in prompt
+    assert "utilise-le seulement si c'est vraiment ton niveau d'invalidation" in prompt
+    assert "à éviter pour un plan armé" not in prompt
+
+
+def test_section_hard_stop_arme_ne_contient_aucun_terme_directif() -> None:
+    """Anti-biais robuste : le bloc qui décrit le hard_stop d'un plan armé ne doit
+    contenir AUCUN terme qui privilégie une forme (recommande/conseille/privilégie/
+    préfère/plus robuste), pour les trois primitives. Chope toute réintroduction de
+    biais sous une formulation différente, pas seulement la string d'origine."""
+    armed = codex_client._indicator_watch_vocabulary()
+    # borne le bloc hard_stop : de son intro jusqu'à la mention du TTL (exclut la
+    # ligne « préfère un plan armé à un réveil court », biais D7 assumé hors scope)
+    start = armed.index("Le hard_stop relatif est résolu")
+    end = armed.index("TTL max 4 h", start)
+    stop_block = armed[start:end].lower()
+
+    for terme in ("recommand", "conseill", "privilégi", "préfèr", "plus robuste", "de préférence"):
+        assert terme not in stop_block, f"terme directif « {terme} » dans le bloc hard_stop"
+    assert "à égalité" in stop_block
+    for forme in ("percent", "volatility_multiple", "structural"):
+        assert forme in stop_block
 
 
 def test_batch_contract_clarifie_les_unites_du_trailing_stop() -> None:
@@ -99,7 +127,8 @@ def test_batch_contract_clarifie_les_unites_du_trailing_stop() -> None:
     assert "0.004 = 0.4%" in prompt
     assert "price = distance absolue en prix" in prompt
     assert "volatility_multiple = multiple de la volatilité récente" in prompt
-    assert "1.5-3" in prompt
+    # pas de fourchette de valeur suggérée : on n'oriente pas le choix de l'agent
+    assert "1.5-3" not in prompt
     assert "ne s'arme qu'une fois en profit" in prompt
 
 
