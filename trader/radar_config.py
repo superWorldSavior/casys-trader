@@ -23,6 +23,7 @@ class RadarParams:
     w_amp: float = 1.0
     benchmarks: dict[str, str] = field(default_factory=lambda: {"US": "SPY"})
     default_benchmark: str = "SPY"
+    gap_threshold: float = 0.03
 
 
 def load_radar_params(config_dir: Path) -> RadarParams:

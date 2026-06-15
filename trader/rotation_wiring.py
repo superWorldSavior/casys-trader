@@ -107,6 +107,46 @@ def resolve_as_of(bars_by_symbol: dict[str, list]) -> str:
 
 
 # ---------------------------------------------------------------------------
+# compute_gap_adverse
+# ---------------------------------------------------------------------------
+
+def compute_gap_adverse(
+    bars_by_symbol: dict[str, list],
+    ranked: list[dict],
+    *,
+    gap_threshold: float,
+) -> frozenset[str]:
+    """Symboles dont le gap d'ouverture est ADVERSE au biais déclaré.
+
+    Pour chaque item de `ranked` ayant ≥ 2 barres :
+        gap = (last.open - prev.close) / prev.close
+    Adverse si :
+        bias == "long"  ET gap <= -gap_threshold  (baisse contre biais haussier)
+        bias == "short" ET gap >= +gap_threshold  (hausse contre biais baissier)
+
+    Symbole absent de bars_by_symbol ou avec < 2 barres → ignoré (pas adverse).
+    prev.close == 0 → ignoré (division par zéro).
+    """
+    adverse: set[str] = set()
+    for item in ranked:
+        symbol = item["symbol"]
+        bias = item["bias"]
+        bars = bars_by_symbol.get(symbol)
+        if not bars or len(bars) < 2:
+            continue
+        prev = bars[-2]
+        last = bars[-1]
+        if prev.close == 0:
+            continue
+        gap = (last.open - prev.close) / prev.close
+        if bias == "long" and gap <= -gap_threshold:
+            adverse.add(symbol)
+        elif bias == "short" and gap >= gap_threshold:
+            adverse.add(symbol)
+    return frozenset(adverse)
+
+
+# ---------------------------------------------------------------------------
 # build_rank_fn
 # ---------------------------------------------------------------------------
 
@@ -165,6 +205,9 @@ def build_rank_fn(
             "ranked": scan["ranked"],
             "ineligible": scan["ineligible"],
             "components_by_symbol": components,
+            "gap_adverse": compute_gap_adverse(
+                bars, scan["ranked"], gap_threshold=params.gap_threshold
+            ),
         }
 
     return rank_fn
