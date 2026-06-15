@@ -128,7 +128,11 @@ def _render(renderable) -> str:
 def _render_ansi(renderable) -> str:
     """Rendu avec codes ANSI — pour vérifier les couleurs réelles."""
     console = Console(
-        width=120, highlight=False, force_terminal=True, color_system="256"
+        width=120,
+        highlight=False,
+        force_terminal=True,
+        color_system="256",
+        no_color=False,
     )
     with console.capture() as cap:
         console.print(renderable)

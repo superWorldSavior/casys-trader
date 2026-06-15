@@ -2,8 +2,6 @@
 # v1 : instruments disponibles via yfinance (data gratuite, démarrage immédiat).
 # Expansion native (Euronext Paris, Taïwan, FX broker) une fois IB Gateway branchée.
 
-starting_cash: 100000
-
 # Univers thématique 2026-06-10 (thèses Erwan) : énergie (gaz/pétrole, crise
 # Moyen-Orient), défense européenne (surtout française), IA/semi-conducteurs.
 # Panier TW dégraissé : on garde les deux semis (TSMC, MediaTek — le plus

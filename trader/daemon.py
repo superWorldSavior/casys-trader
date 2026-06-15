@@ -19,7 +19,7 @@ import math
 import os
 import time
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable
 
@@ -29,6 +29,7 @@ from .agent_context import build_market_cockpit, resolve_indicator_requests
 from . import attribution, code_version, codex_client, consolidator, decision_ledger, family_regime, relevance_gate, stats
 from .exit_engine import evaluate_plan
 from .features import DEFAULT_INDICATORS, build_indicator_snapshot
+from .ib_attach import IBAttachBackoff
 from .indicator_watch import (
     armed_order_price_coherent,
     build_indicator_watch,
@@ -1099,7 +1100,9 @@ def run_cycle(
     if symbols_filter is not None:
         wanted = set(symbols_filter)
         symbols_to_decide = [symbol for symbol in symbols if symbol in wanted]
-    starting_equity = float(universe_cfg.get("starting_cash", 100_000))
+    from .portfolio_config import load_starting_cash
+
+    starting_equity = load_starting_cash(ROOT / "config")
     indicator_triggers = indicator_triggers or []
     triggers_by_symbol: dict[str, list[dict]] = {}
     for trigger in indicator_triggers:
@@ -2067,7 +2070,12 @@ def run_cycle(
     return report
 
 
-def main(argv: list[str] | None = None) -> None:
+def main(
+    argv: list[str] | None = None,
+    *,
+    now_fn: Callable[[], datetime] | None = None,
+    sleep_fn: Callable[[float], None] | None = None,
+) -> None:
     parser = argparse.ArgumentParser(description="casys-trader daemon (boucle runtime)")
     parser.add_argument("--live", action="store_true", help="exécute réellement les ordres (défaut: dry-run)")
     parser.add_argument("--once", action="store_true", help="un seul cycle puis sortie")
@@ -2121,6 +2129,12 @@ def main(argv: list[str] | None = None) -> None:
         help="clientId IB utilisé par le daemon",
     )
     parser.add_argument(
+        "--ib-attach-retry-seconds",
+        type=float,
+        default=300.0,
+        help="secondes minimales entre deux tentatives de rattachement IB lazy en profil paper",
+    )
+    parser.add_argument(
         "--data-profile",
         default=os.getenv("TRADER_DATA_PROFILE"),
         help="profil de routing data (paper|prod). Override config/data_sources.yaml. Env: TRADER_DATA_PROFILE",
@@ -2132,6 +2146,10 @@ def main(argv: list[str] | None = None) -> None:
         help="modèle de frais appliqué au SimBroker live (défaut/env TRADER_COMMISSION_MODEL: ibkr)",
     )
     args = parser.parse_args(argv)
+    if not math.isfinite(args.ib_attach_retry_seconds) or args.ib_attach_retry_seconds <= 0:
+        parser.error("--ib-attach-retry-seconds doit être > 0")
+    now = now_fn or (lambda: datetime.now(timezone.utc))
+    sleep = sleep_fn or time.sleep
 
     from .logging_setup import setup_logging
     setup_logging(level=logging.INFO)
@@ -2154,6 +2172,8 @@ def main(argv: list[str] | None = None) -> None:
     bootstrap = args.bootstrap_all
 
     data_source = None
+    _composite_available: dict[str, object] = {}
+    _ib_attach_backoff: IBAttachBackoff | None = None
     _data_sources_cfg = ROOT / "config" / "data_sources.yaml"
     _use_composite = _data_sources_cfg.exists()
 
@@ -2193,13 +2213,22 @@ def main(argv: list[str] | None = None) -> None:
                                 args.ib_host, args.ib_port, args.ib_client_id,
                                 market_data_type=_mdt,
                             )
-                            _ib_source = IBDataSource(
-                                _ib_obj,
-                                reconnect_factory=lambda: connect_ib(
-                                    args.ib_host, args.ib_port, args.ib_client_id,
-                                    market_data_type=_mdt,
-                                ),
-                            )
+                            try:
+                                _ib_source = IBDataSource(
+                                    _ib_obj,
+                                    reconnect_factory=lambda: connect_ib(
+                                        args.ib_host, args.ib_port, args.ib_client_id,
+                                        market_data_type=_mdt,
+                                    ),
+                                )
+                            except Exception as _ib_ds_exc:  # noqa: BLE001 - frontière config/source IB
+                                _disconnect_quietly(_ib_obj)
+                                if isinstance(_ib_ds_exc, market.MarketError):
+                                    raise
+                                raise market.MarketError(
+                                    "ib_connect_failed",
+                                    f"IBDataSource init failed: {type(_ib_ds_exc).__name__}: {_ib_ds_exc}",
+                                ) from _ib_ds_exc
                         except market.MarketError as _ib_exc:
                             if _ib_required:
                                 # Prod : IB obligatoire — remonter l'erreur pour que
@@ -2212,6 +2241,12 @@ def main(argv: list[str] | None = None) -> None:
                         available: dict[str, object] = {"yfinance": YFinanceDataSource()}
                         if _ib_source is not None:
                             available["ib"] = _ib_source
+                        elif not _ib_required:
+                            _ib_attach_backoff = IBAttachBackoff(
+                                retry_after=timedelta(seconds=args.ib_attach_retry_seconds)
+                            )
+                            _ib_attach_backoff.record_failure(now())
+                        _composite_available = available
                         data_source = CompositeDataSource(
                             routes=_composite_routes,
                             sources=available,
@@ -2234,7 +2269,54 @@ def main(argv: list[str] | None = None) -> None:
                                 market_data_type=3,
                             ),
                         )
-                loop_now = datetime.now(timezone.utc)
+                loop_now = now()
+                if (
+                    _use_composite
+                    and _composite_profile == "paper"
+                    and data_source is not None
+                    and _ib_attach_backoff is not None
+                    and "ib" not in _composite_available
+                    and _ib_attach_backoff.due(loop_now)
+                ):
+                    try:
+                        _ib_obj = connect_ib(
+                            args.ib_host, args.ib_port, args.ib_client_id,
+                            market_data_type=3,
+                            attempts=1,
+                            backoff_seconds=0.0,
+                        )
+                    except market.MarketError as _ib_exc:
+                        _ib_attach_backoff.record_failure(loop_now)
+                        log.warning(
+                            "ib_attach: IB toujours indisponible (%s): %s",
+                            _ib_exc.code,
+                            _ib_exc.context,
+                        )
+                    else:
+                        try:
+                            _ib_source = IBDataSource(
+                                _ib_obj,
+                                reconnect_factory=lambda: connect_ib(
+                                    args.ib_host, args.ib_port, args.ib_client_id,
+                                    market_data_type=3,
+                                ),
+                            )
+                        except Exception as _ib_ds_exc:  # noqa: BLE001 - frontière config/source IB
+                            _disconnect_quietly(_ib_obj)
+                            _ib_attach_backoff.record_failure(loop_now)
+                            log.warning(
+                                "ib_attach: construction source IB échouée (%s): %s",
+                                type(_ib_ds_exc).__name__,
+                                _ib_ds_exc,
+                            )
+                        else:
+                            _composite_available = {**_composite_available, "ib": _ib_source}
+                            data_source = CompositeDataSource(
+                                routes=_composite_routes,
+                                sources=_composite_available,
+                            )
+                            _ib_attach_backoff.record_success()
+                            log.info("ib_attach: IB rattaché en cours de session")
                 symbols = _load_yaml(ROOT / "config" / "universe.yaml")["symbols"]
                 sched.reconcile_universe(symbols)
                 indicator_triggers = (
@@ -2247,6 +2329,7 @@ def main(argv: list[str] | None = None) -> None:
                 if not due_symbols:
                     report = run_cycle(
                         dry_run=dry_run,
+                        now=loop_now,
                         symbols_filter=[],
                         sched=sched,
                         data_source=data_source,
@@ -2276,6 +2359,7 @@ def main(argv: list[str] | None = None) -> None:
                 else:
                     report = run_cycle(
                         dry_run=dry_run,
+                        now=loop_now,
                         symbols_filter=due_symbols,
                         sched=sched,
                         data_source=data_source,
@@ -2307,6 +2391,32 @@ def main(argv: list[str] | None = None) -> None:
                         wait = sched.seconds_until_wake(symbols)
                         sleep_seconds = min(wait, args.poll)
                         log.info("[sleep] next_check_in=%.0fs next_due_in=%.0fs", sleep_seconds, wait)
+                consume_failed_sources = getattr(data_source, "consume_failed_sources", None)
+                failed_sources = consume_failed_sources() if callable(consume_failed_sources) else {}
+                ib_failure = failed_sources.get("ib") if isinstance(failed_sources, dict) else None
+                if (
+                    _use_composite
+                    and _composite_profile == "paper"
+                    and "ib" in _composite_available
+                    and ib_failure is not None
+                    and _is_connection_market_error(ib_failure)
+                ):
+                    _disconnect_quietly(_composite_available["ib"])
+                    _composite_available = {
+                        name: source
+                        for name, source in _composite_available.items()
+                        if name != "ib"
+                    }
+                    data_source = CompositeDataSource(
+                        routes=_composite_routes,
+                        sources=_composite_available,
+                    )
+                    if _ib_attach_backoff is None:
+                        _ib_attach_backoff = IBAttachBackoff(
+                            retry_after=timedelta(seconds=args.ib_attach_retry_seconds)
+                        )
+                    _ib_attach_backoff.record_failure(loop_now)
+                    log.warning("ib_attach: IB détaché après échec source, profil paper dégradé")
             except market.MarketError as exc:
                 if data_source is not None:
                     _disconnect_quietly(data_source)
@@ -2332,7 +2442,7 @@ def main(argv: list[str] | None = None) -> None:
             if stop_after_iteration:
                 break
             if sleep_seconds is not None:
-                time.sleep(sleep_seconds)
+                sleep(sleep_seconds)
     finally:
         if data_source is not None:
             _disconnect_quietly(data_source)

@@ -12,8 +12,6 @@ import argparse
 import json
 from pathlib import Path
 
-import yaml
-
 from backtest.metrics import Metrics, compute_metrics
 
 
@@ -104,21 +102,16 @@ def compute_live_kpis(state_dir: Path) -> dict:
     Lit :
       - ``state_dir/history.jsonl``  → courbe d'équité (lignes equity=null ignorées)
       - ``state_dir/broker.json``    → positions, fills, cash
-      - ``state_dir.parent/config/universe.yaml`` → starting_cash
+      - ``state_dir.parent/config/portfolio.yaml`` → starting_cash
 
     Tolère les fichiers absents : retourne des valeurs neutres sans lever.
 
     Retourne un dict machine-readable compact.
     """
-    # --- starting_equity depuis universe.yaml ---
-    universe_path = state_dir.parent / "config" / "universe.yaml"
-    starting_equity: float = 100_000.0
-    if universe_path.exists():
-        try:
-            cfg = yaml.safe_load(universe_path.read_text())
-            starting_equity = float(cfg.get("starting_cash", 100_000.0))
-        except Exception:
-            pass
+    # --- starting_equity depuis portfolio.yaml (fallback universe.yaml) ---
+    from .portfolio_config import load_starting_cash
+
+    starting_equity: float = load_starting_cash(state_dir.parent / "config")
 
     # --- Courbe d'équité depuis history.jsonl ---
     equity_curve: list[tuple[str, float]] = []
@@ -138,7 +131,7 @@ def compute_live_kpis(state_dir: Path) -> dict:
     # --- Broker : fills, positions, cash ---
     fills: list[dict] = []
     positions_raw: dict[str, dict] = {}
-    current_cash: float | None = None
+    current_cash: float | None = starting_equity
 
     broker_path = state_dir / "broker.json"
     if broker_path.exists():
