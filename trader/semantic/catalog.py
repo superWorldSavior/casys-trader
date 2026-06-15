@@ -83,6 +83,75 @@ FAMILIES: dict[str, list[str]] = {
     "countries": ["EWT", "EWQ"],
     "europe_indices": ["^FCHI"],
     "defense": ["ITA", "HO.PA", "AM.PA", "RHM.DE"],
+    # -------------------------------------------------------------------------
+    # Univers européen large-cap — découpage sectoriel.
+    # Source : Euronext Paris (.PA), Xetra (.DE), Amsterdam (.AS), Milan (.MI),
+    #          Madrid (.MC), Copenhague (.CO), Zurich (.SW), Londres (.L).
+    # Préfixe eu_ pour isoler le sous-graphe dans le cross-asset family_regime.
+    # -------------------------------------------------------------------------
+    # Technologie (semis, software, équipements)
+    "eu_tech": [
+        "ASML.AS",  # ASML — lithographie EUV, monopole mondial
+        "SAP.DE",   # SAP — ERP / cloud enterprise
+        "CAP.PA",   # Capgemini — IT services & conseil
+        "DSY.PA",   # Dassault Systèmes — PLM / 3D software
+    ],
+    # Financières (banques, assurances)
+    "eu_financials": [
+        "BNP.PA",   # BNP Paribas — banque universelle
+        "ALV.DE",   # Allianz — assurance / asset management
+        "INGA.AS",  # ING Groep — banque retail Europe
+        "SAN.MC",   # Banco Santander — banque pan-européenne & Latam
+    ],
+    # Santé (pharma, biotech, medtech)
+    "eu_healthcare": [
+        "SAN.PA",     # Sanofi — pharma diversifié
+        "ROG.SW",     # Roche — diagnostics & oncologie
+        "AZN.L",      # AstraZeneca — oncologie & respiratoire
+        "NOVO-B.CO",  # Novo Nordisk — diabète & obésité (GLP-1)
+    ],
+    # Énergie (pétrolières, utilities fossiles)
+    "eu_energy": [
+        "TTE.PA",   # TotalEnergies — oil & gas + renouvelables
+        "ENI.MI",   # Eni — pétrolière italienne
+        "RDSB.AS",  # Shell — major pétrolière (cotation AMS)
+        "REPB.MC",  # Repsol — pétrolière espagnole
+    ],
+    # Luxe & consommation (luxury, FMCG, distribution)
+    "eu_luxury_consumer": [
+        "MC.PA",    # LVMH — conglomérat luxe n°1 mondial
+        "OR.PA",    # L'Oréal — cosmétiques & beauté
+        "RMS.PA",   # Hermès — maroquinerie ultra-luxe
+        "KER.PA",   # Kering — Gucci, Saint Laurent, Bottega
+    ],
+    # Industriels (aéro, auto, capital goods, transports)
+    "eu_industrials": [
+        "AIR.PA",    # Airbus — aérospatial & défense civile
+        "SIE.DE",    # Siemens — automation & électrification
+        "SU.PA",     # Schneider Electric — gestion énergie & automation
+        "STLAM.AS",  # Stellantis — automobiles (Peugeot, Fiat, Chrysler…)
+    ],
+    # Matériaux (chimie, acier, spécialités)
+    "eu_materials": [
+        "AI.PA",    # Air Liquide — gaz industriels
+        "BAS.DE",   # BASF — chimie diversifiée
+        "MT.AS",    # ArcelorMittal — acier & minerai
+        "LIN.DE",   # Linde — gaz industriels (dual-listing DE/US)
+    ],
+    # Utilities (électricité, eau, gaz réseaux)
+    "eu_utilities": [
+        "ENGI.PA",  # Engie — énergie & services (gaz, renouvelables)
+        "ENEL.MI",  # Enel — électricité italienne & renouvelables
+        "IBE.MC",   # Iberdrola — éolien & réseaux électriques
+        "EDP.LS",   # EDP — utility portugaise, forte exposition renouvelables
+    ],
+    # Télécoms
+    "eu_telecom": [
+        "ORA.PA",   # Orange — télécom France & Afrique
+        "DTE.DE",   # Deutsche Telekom — télécom DE + T-Mobile US
+        "TEF.MC",   # Telefónica — télécom Espagne & Latam
+        "VOD.L",    # Vodafone — télécom pan-européen & Afrique
+    ],
     "energy": ["XLE", "USO", "UNG"],
     "commodities_futures": ["CL=F", "BZ=F", "NG=F"],
     "metals": ["GC=F"],
