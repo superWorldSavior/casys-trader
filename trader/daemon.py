@@ -2317,15 +2317,16 @@ def main(
                             )
                             _ib_attach_backoff.record_success()
                             log.info("ib_attach: IB rattaché en cours de session")
-                # Veille à deux niveaux (D9) : recalcul du hot-set aux clôtures de
-                # session de marché, juste avant de relire l'univers. Pas de cron externe ;
-                # état persisté → rattrapage au redémarrage. Fail-safe (n'interrompt pas le cycle).
-                from . import rotation_daemon
-                from .rotation_wiring import run_cli as _rotation_run_cli
-                rotation_daemon.maybe_rotate(
-                    ROOT / "config", STATE_DIR, loop_now.isoformat(),
-                    run_cli=_rotation_run_cli, log=log,
-                )
+                # Veille à deux niveaux — hot-lists par marché (D10). À chaque cycle :
+                # recalcule les venues dont la session vient de clôturer (1 scan radar),
+                # puis compose l'univers actif = sticky ∪ union(marchés ouverts) et l'écrit
+                # SI changé. Pas de cron externe ; état par venue persisté → rattrapage au
+                # redémarrage. Fail-safe : n'interrompt jamais le cycle.
+                from .rotation_venues import tick as _rotation_tick
+                try:
+                    _rotation_tick(ROOT / "config", STATE_DIR, loop_now.isoformat())
+                except Exception:  # noqa: BLE001 — la rotation ne doit pas faire tomber le daemon
+                    log.exception("rotation tick (D10) échouée")
                 symbols = _load_yaml(ROOT / "config" / "universe.yaml")["symbols"]
                 sched.reconcile_universe(symbols)
                 indicator_triggers = (
