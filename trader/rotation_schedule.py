@@ -52,6 +52,22 @@ def _close_dt(date: datetime, hhmm: str) -> datetime:
     return datetime(date.year, date.month, date.day, h, m, tzinfo=timezone.utc)
 
 
+def open_venues(now_iso: str, sessions: dict[str, SessionHours]) -> list[str]:
+    """Retourne les venues ouvertes à now_iso, triées pour déterminisme."""
+    now = datetime.fromisoformat(now_iso).astimezone(timezone.utc)
+    if now.weekday() >= 5:
+        return []
+
+    hits = ["FX"]
+    for venue, hours in sessions.items():
+        open_dt = _close_dt(now, hours["open"])
+        close_dt = _close_dt(now, hours["close"])
+        if open_dt <= now < close_dt:
+            hits.append(venue)
+
+    return sorted(hits)
+
+
 def closed_sessions_since(
     now_iso: str,
     last_rotation_iso: str | None,

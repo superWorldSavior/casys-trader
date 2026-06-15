@@ -4,6 +4,7 @@ import tempfile
 
 import pytest
 
+import trader.rotation_schedule as rotation_schedule
 from trader.rotation_schedule import closed_sessions_since, load_sessions, rotation_due
 
 _STANDARD_SESSIONS = {
@@ -153,6 +154,41 @@ class TestClosedSessionsSince:
             _STANDARD_SESSIONS,
         )
         assert result == sorted(result)
+
+
+# ---------------------------------------------------------------------------
+# open_venues
+# ---------------------------------------------------------------------------
+
+
+class TestOpenVenues:
+    def test_lundi_0300_fx_et_tw(self):
+        result = rotation_schedule.open_venues(
+            "2026-06-15T03:00:00+00:00",
+            _STANDARD_SESSIONS,
+        )
+        assert result == ["FX", "TW"]
+
+    def test_lundi_1400_overlap_eu_fx_us(self):
+        result = rotation_schedule.open_venues(
+            "2026-06-15T14:00:00+00:00",
+            _STANDARD_SESSIONS,
+        )
+        assert result == ["EU", "FX", "US"]
+
+    def test_lundi_2100_fx_seul(self):
+        result = rotation_schedule.open_venues(
+            "2026-06-15T21:00:00+00:00",
+            _STANDARD_SESSIONS,
+        )
+        assert result == ["FX"]
+
+    def test_samedi_fx_ferme(self):
+        result = rotation_schedule.open_venues(
+            "2026-06-20T03:00:00+00:00",
+            _STANDARD_SESSIONS,
+        )
+        assert result == []
 
 
 # ---------------------------------------------------------------------------
