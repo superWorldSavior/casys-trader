@@ -7,6 +7,7 @@ from trader.codex_client import build_batch_prompt, build_prompt
 from trader.features import DEFAULT_INDICATORS
 from trader.indicator_watch import WATCH_VALID_OPERATORS
 from trader.agent_context import INDICATOR_COLUMNS
+from trader.semantic.catalog import INDICATOR_LABEL_VALUES
 
 
 def _batch_prompt() -> str:
@@ -105,3 +106,55 @@ def test_le_prompt_cadre_le_role_de_planificateur() -> None:
     assert "scénario" in low
     # l'ancien cadrage « agent décideur » seul ne suffit plus comme rôle
     assert "tu es le planificateur" in low or "tu es un planificateur" in low
+
+
+def test_batch_prompt_indique_value_toujours_numerique() -> None:
+    """Le prompt doit préciser que `value` est TOUJOURS un nombre fini."""
+    prompt = _batch_prompt()
+    # La mention doit apparaître dans la section vocabulaire des veilles
+    assert "value" in prompt
+    assert "nombre" in prompt.lower() or "number" in prompt.lower()
+    # Formulation spécifique issue de la phase 4
+    assert "TOUJOURS un nombre fini" in prompt or "toujours un nombre fini" in prompt.lower()
+
+
+def test_batch_prompt_contient_mapping_labels_derive_de_indicator_label_values() -> None:
+    """Le prompt doit exposer au moins un label de chaque indicateur de INDICATOR_LABEL_VALUES."""
+    prompt = _batch_prompt()
+    for indicator_name, mapping in INDICATOR_LABEL_VALUES.items():
+        assert indicator_name in prompt, f"indicateur {indicator_name} absent du prompt"
+        for lbl in mapping:
+            assert lbl in prompt, f"label {lbl} absent du prompt (indicateur {indicator_name})"
+
+
+def test_batch_prompt_label_mapping_utilise_fleches_ascii() -> None:
+    """Le mapping label->float doit utiliser des flèches ASCII '->' (pas '→')."""
+    prompt = _batch_prompt()
+    # Au moins une flèche ASCII doit être présente dans le vocabulaire
+    assert " -> " in prompt
+    # Pas de flèche unicode dans la zone vocabulaire (on cherche la notation fléchée)
+    # On vérifie juste la présence de '->' qui est obligatoire par AX #2
+    vocab_start = prompt.find("# Vocabulaire des veilles")
+    assert vocab_start != -1
+    vocab_section = prompt[vocab_start : vocab_start + 2000]
+    assert " -> " in vocab_section
+
+
+def test_batch_prompt_exemple_chart_breakout_et_candlestick_signal() -> None:
+    """Le prompt doit mentionner chart_breakout == 1.0 et candlestick_signal == -0.5."""
+    prompt = _batch_prompt()
+    assert "chart_breakout" in prompt
+    assert "1.0" in prompt
+    assert "candlestick_signal" in prompt
+    assert "-0.5" in prompt
+
+
+def test_batch_prompt_passer_label_string_invalide() -> None:
+    """Le prompt doit préciser que passer un label string est invalide/rejeté."""
+    prompt = _batch_prompt()
+    # La mention doit exister dans la section vocabulaire
+    vocab_start = prompt.find("# Vocabulaire des veilles")
+    assert vocab_start != -1
+    vocab_section = prompt[vocab_start : vocab_start + 2000]
+    low = vocab_section.lower()
+    assert "invalide" in low or "rejeté" in low or "rejetée" in low

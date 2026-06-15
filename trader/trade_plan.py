@@ -539,6 +539,9 @@ def _normalize_exit_watch(
         now=created_at,
         max_ttl_minutes=max_ttl_minutes,
     )
+    # None peut venir d'une condition rejetée (silencieux ici par choix : exit_watch
+    # est optionnel ; pour le feedback structuré utiliser build_indicator_watch qui
+    # retourne IndicatorWatchResult.rejections).
     if watch is None:
         return None
     watch["on_trigger"] = "WAKE"

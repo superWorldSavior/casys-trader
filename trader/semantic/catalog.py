@@ -33,6 +33,7 @@ INDICATOR_LABEL_VALUES: dict[str, dict[str, float]] = {
 def label_to_value(indicator: str, label: str) -> float | None:
     return INDICATOR_LABEL_VALUES.get(indicator, {}).get(label)
 
+
 TIMEFRAMES: dict[str, dict] = {
     "15m": {
         "label": "15 minutes",

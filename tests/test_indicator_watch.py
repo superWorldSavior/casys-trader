@@ -5,6 +5,7 @@ from trader.indicator_watch import (
     WATCH_REJECT_MISSING_THRESHOLD,
     WATCH_REJECT_NON_FINITE_THRESHOLD,
     WATCH_REJECT_UNKNOWN_INDICATOR,
+    WATCH_REJECT_UNKNOWN_LABEL,
     build_indicator_watch,
     evaluate_indicator_watches,
     normalize_indicator_watch,
@@ -59,7 +60,11 @@ def test_normalize_indicator_watch_borne_et_persiste_une_combinaison_multi_timef
     assert watch["order"]["action"] == "BUY"
 
 
-def test_normalize_indicator_watch_ignore_les_conditions_sans_seuil_numerique() -> None:
+def test_normalize_indicator_watch_conditions_sans_seuil_invalident_la_watch() -> None:
+    # CONTRAT RÉVISÉ (filet atomique, phase 3) : une seule condition rejetée invalide
+    # TOUTE la veille — on ne persiste jamais une watch amputée. L'ancien contrat
+    # (persistance partielle des conditions valides) a été supprimé pour éviter qu'un
+    # logic=all privé d'un prédicat se déclenche sur la condition résiduelle permissive.
     now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
 
     empty = normalize_indicator_watch(
@@ -67,6 +72,7 @@ def test_normalize_indicator_watch_ignore_les_conditions_sans_seuil_numerique() 
         owner_symbol="SPY",
         now=now,
     )
+    # 3 conditions rejetées (seuil non-fini) + 2 conditions valides → filet → None
     mixed = normalize_indicator_watch(
         {
             "conditions": [
@@ -82,37 +88,30 @@ def test_normalize_indicator_watch_ignore_les_conditions_sans_seuil_numerique() 
     )
 
     assert empty is None
-    assert mixed is not None
-    assert mixed["conditions"] == [
+    # Le filet atomique invalide la veille dès qu'un rejet est présent
+    assert mixed is None
+
+    # Seules toutes les conditions valides → watch persistée
+    all_valid = normalize_indicator_watch(
         {
-            "symbol": "SPY",
-            "indicator": "trend_slope",
-            "op": "<",
-            "value": 0.0,
-            "interval": "1h",
-            "timeframe": "1h",
-            "source_interval": "1h",
-            "lookback": "5d",
-            "window": 48,
-            "as_of": "latest",
+            "conditions": [
+                {"indicator": "trend_slope", "op": "<", "threshold": 0.0},
+                {"indicator": "range_position", "op": ">", "value": 0.5},
+            ]
         },
-        {
-            "symbol": "SPY",
-            "indicator": "range_position",
-            "op": ">",
-            "value": 0.5,
-            "interval": "1h",
-            "timeframe": "1h",
-            "source_interval": "1h",
-            "lookback": "5d",
-            "window": 48,
-            "as_of": "latest",
-        }
-    ]
+        owner_symbol="SPY",
+        now=now,
+    )
+    assert all_valid is not None
+    assert [c["indicator"] for c in all_valid["conditions"]] == ["trend_slope", "range_position"]
 
 
 def test_build_indicator_watch_remonte_les_rejets_par_condition() -> None:
-    """Les rejets de conditions sont exposés dans l'ordre avec raison et valeur fautive."""
+    """Les rejets de conditions sont exposés dans l'ordre avec raison et valeur fautive.
+
+    CONTRAT RÉVISÉ (filet atomique, phase 3) : avec 4 rejets + 1 condition valide,
+    watch est None (pas de persistance partielle). Les rejets sont toujours exposés.
+    """
     now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
 
     result = build_indicator_watch(
@@ -129,8 +128,8 @@ def test_build_indicator_watch_remonte_les_rejets_par_condition() -> None:
         now=now,
     )
 
-    assert result.watch is not None
-    assert [condition["indicator"] for condition in result.watch["conditions"]] == ["range_position"]
+    # Filet atomique : une condition rejetée invalide toute la veille
+    assert result.watch is None
     assert result.rejections == [
         {"reason": WATCH_REJECT_NON_FINITE_THRESHOLD, "indicator": "z_score", "raw_value": None},
         {"reason": WATCH_REJECT_UNKNOWN_INDICATOR, "indicator": "inconnu", "raw_value": None},
@@ -346,3 +345,159 @@ def test_execute_order_ttl_borne_a_la_revue_periodique() -> None:
     )
     expires_wake = datetime.fromisoformat(wake.watch["expires_at"])
     assert expires_wake - now == timedelta(minutes=600)
+
+
+# --- Phase 2 : normalisation op-aware des labels ---
+
+
+def test_label_chart_breakout_up_resolu_en_float() -> None:
+    """chart_breakout == "breakout_up" -> threshold 1.0."""
+    now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
+    result = build_indicator_watch(
+        {
+            "conditions": [
+                {"indicator": "chart_breakout", "op": "==", "value": "breakout_up"}
+            ]
+        },
+        owner_symbol="SPY",
+        now=now,
+    )
+    assert result.watch is not None
+    assert result.watch["conditions"][0]["value"] == 1.0
+
+
+def test_label_candlestick_shooting_star_resolu_en_float() -> None:
+    """candlestick_signal == "shooting_star" -> threshold -0.5."""
+    now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
+    result = build_indicator_watch(
+        {
+            "conditions": [
+                {"indicator": "candlestick_signal", "op": "==", "value": "shooting_star"}
+            ]
+        },
+        owner_symbol="SPY",
+        now=now,
+    )
+    assert result.watch is not None
+    assert result.watch["conditions"][0]["value"] == -0.5
+
+
+def test_label_candlestick_shooting_star_abs_op_resolu_positif() -> None:
+    """candlestick_signal abs>= "shooting_star" -> seuil abs(−0.5) = 0.5."""
+    now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
+    result = build_indicator_watch(
+        {
+            "conditions": [
+                {"indicator": "candlestick_signal", "op": "abs>=", "value": "shooting_star"}
+            ]
+        },
+        owner_symbol="SPY",
+        now=now,
+    )
+    assert result.watch is not None
+    assert result.watch["conditions"][0]["value"] == 0.5
+
+
+def test_label_inconnu_rejet_avec_valid_labels() -> None:
+    """Label "shooting_starr" inconnu -> rejet unknown_indicator_label + valid_labels."""
+    now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
+    result = build_indicator_watch(
+        {
+            "conditions": [
+                {"indicator": "candlestick_signal", "op": "==", "value": "shooting_starr"}
+            ]
+        },
+        owner_symbol="SPY",
+        now=now,
+    )
+    assert result.watch is None
+    assert len(result.rejections) == 1
+    rejection = result.rejections[0]
+    assert rejection["reason"] == WATCH_REJECT_UNKNOWN_LABEL
+    assert rejection["raw_value"] == "shooting_starr"
+    # valid_labels dérivé de INDICATOR_LABEL_VALUES, contient la bonne variante
+    assert "shooting_star" in rejection["valid_labels"]
+    assert "bullish_engulfing" in rejection["valid_labels"]
+
+
+def test_non_regression_label_float_evaluable() -> None:
+    """chart_breakout == 1.0 (float direct) -> watch évaluable sans régression."""
+    now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
+    result = build_indicator_watch(
+        {
+            "conditions": [
+                {"indicator": "chart_breakout", "op": "==", "value": 1.0}
+            ]
+        },
+        owner_symbol="SPY",
+        now=now,
+    )
+    assert result.watch is not None
+    assert result.watch["conditions"][0]["value"] == 1.0
+
+
+# --- Phase 3 : filet atomique ---
+
+
+def test_filet_atomique_logic_all_une_condition_rejetee() -> None:
+    """logic=all : 1 condition valide + 1 rejetée -> watch is None, rejets exposés."""
+    now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
+    result = build_indicator_watch(
+        {
+            "logic": "all",
+            "conditions": [
+                {"indicator": "z_score", "op": ">=", "value": 1.5},
+                {"indicator": "return", "op": ">", "value": None},
+            ],
+        },
+        owner_symbol="SPY",
+        now=now,
+    )
+    assert result.watch is None
+    assert len(result.rejections) >= 1
+    assert result.rejections[0]["reason"] == WATCH_REJECT_NON_FINITE_THRESHOLD
+
+
+def test_filet_atomique_logic_any_une_condition_rejetee() -> None:
+    """logic=any : 1 condition valide + 1 rejetée -> watch is None, rejets exposés."""
+    now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
+    result = build_indicator_watch(
+        {
+            "logic": "any",
+            "conditions": [
+                {"indicator": "z_score", "op": ">=", "value": 1.5},
+                {"indicator": "return", "op": ">", "value": "NaN"},
+            ],
+        },
+        owner_symbol="SPY",
+        now=now,
+    )
+    assert result.watch is None
+    assert len(result.rejections) >= 1
+
+
+def test_filet_atomique_execute_order_condition_rejetee() -> None:
+    """Ordre armé valide + 1 condition rejetée -> watch is None (jamais EXECUTE_ORDER ni WAKE_WITH_ORDER_INTENT)."""
+    now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
+    raw = {
+        "on_trigger": "EXECUTE_ORDER",
+        "conditions": [
+            {"indicator": "z_score", "op": "abs>", "value": 2.0},
+            {"indicator": "return", "op": ">", "value": None},
+        ],
+        "order": _valid_order(),
+    }
+    result = build_indicator_watch(raw, owner_symbol="CL=F", now=now)
+    assert result.watch is None
+    assert len(result.rejections) >= 1
+
+
+def test_non_regression_execute_order_valide_conditions_ok_sans_hard_stop() -> None:
+    """EXECUTE_ORDER conditions valides + hard_stop manquant -> toujours WAKE_WITH_ORDER_INTENT."""
+    now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
+    order = _valid_order()
+    order["exit_plan"] = {"take_profits": [{"name": "tp", "price": 80.0, "fraction": 1.0}]}
+    result = build_indicator_watch(_armed_raw(order), owner_symbol="CL=F", now=now)
+    assert result.watch is not None
+    assert result.watch["on_trigger"] == "WAKE_WITH_ORDER_INTENT"
+    assert any(r.get("reason") == "invalid_armed_order" for r in result.rejections)

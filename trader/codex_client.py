@@ -27,6 +27,7 @@ from . import llm, trade_plan
 from .agent_context import INDICATOR_COLUMNS
 from .features import DEFAULT_INDICATORS
 from .indicator_watch import WATCH_VALID_OPERATORS
+from .semantic.catalog import INDICATOR_LABEL_VALUES
 
 Action = Literal["BUY", "SELL", "HOLD"]
 Intent = Literal["OPEN_LONG", "OPEN_SHORT", "REDUCE", "CLOSE", "REVERSE", "HOLD"]
@@ -313,14 +314,39 @@ def _batch_compact_contract() -> str:
 def _indicator_watch_vocabulary() -> str:
     """Vocabulaire EXACT accepté par le validateur de watch, dérivé des sources de
     vérité (`features.DEFAULT_INDICATORS`, `indicator_watch.WATCH_VALID_OPERATORS`,
-    `agent_context.INDICATOR_COLUMNS`) — jamais recopié à la main pour ne pas
-    diverger. But : l'agent emploie les noms canoniques (pas les abréviations du
-    cockpit) et les opérateurs exacts, sinon la condition est rejetée."""
+    `agent_context.INDICATOR_COLUMNS`, `semantic.catalog.INDICATOR_LABEL_VALUES`) —
+    jamais recopié à la main pour ne pas diverger. But : l'agent emploie les noms
+    canoniques (pas les abréviations du cockpit) et les opérateurs exacts, sinon la
+    condition est rejetée."""
     indicators = " ".join(DEFAULT_INDICATORS)
     operators = " ".join(WATCH_VALID_OPERATORS)
     aliases = ", ".join(
         f"{abbrev}={canonical}" for canonical, abbrev in INDICATOR_COLUMNS.items()
     )
+
+    # Mapping label -> float, dérivé de INDICATOR_LABEL_VALUES.
+    # Quand plusieurs labels pointent vers la même valeur, la forme longue est
+    # canonique ; la forme courte est présentée comme alias.
+    label_lines: list[str] = []
+    for indicator_name, mapping in INDICATOR_LABEL_VALUES.items():
+        # Grouper par valeur float pour détecter les alias
+        by_value: dict[float, list[str]] = {}
+        for lbl, val in mapping.items():
+            by_value.setdefault(val, []).append(lbl)
+        parts: list[str] = []
+        for val, lbls in sorted(by_value.items(), key=lambda kv: kv[0], reverse=True):
+            # heuristique : la forme longue est la plus longue
+            lbls_sorted = sorted(lbls, key=len, reverse=True)
+            canonical_lbl = lbls_sorted[0]
+            alias_lbls = lbls_sorted[1:]
+            if alias_lbls:
+                alias_str = ", ".join(f"{a} (alias)" for a in alias_lbls)
+                parts.append(f"{canonical_lbl} -> {val} [{alias_str}]")
+            else:
+                parts.append(f"{canonical_lbl} -> {val}")
+        label_lines.append(f"  {indicator_name}: {'; '.join(parts)}")
+    label_mapping = "\n".join(label_lines)
+
     return (
         "# Vocabulaire des veilles (indicator_watch / exit_watch)\n"
         "Dans une condition de watch, `indicator` doit être l'un de ces noms "
@@ -328,6 +354,12 @@ def _indicator_watch_vocabulary() -> str:
         f"`op` doit être l'un de: {operators}\n"
         "Le cockpit affiche des abréviations courtes ; dans une watch, emploie le "
         f"nom canonique correspondant: {aliases}.\n"
+        "`value` est TOUJOURS un nombre fini (float). Passer un label string dans "
+        "`value` est invalide et sera rejeté. Certains indicateurs ont des valeurs "
+        "nommées documentées ci-dessous — utilise UNIQUEMENT leur équivalent "
+        "numérique dans ta watch (ex: chart_breakout == 1.0 pour breakout_up, "
+        "candlestick_signal == -0.5 pour shooting_star):\n"
+        f"{label_mapping}\n"
         "Une watch minimale = `ttl_minutes` + une condition "
         '{"symbol","indicator","op","value","interval","window","as_of":"latest"}. '
         "Toute condition dont l'`indicator` ou l'`op` sort de ces listes est rejetée.\n"

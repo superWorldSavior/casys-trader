@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Callable, NamedTuple
 
 from .features import DEFAULT_INDICATORS, build_indicator_snapshot, compute_indicator_values
-from .semantic.catalog import FAMILIES, family_for_symbol, normalize_temporal_query
+from .semantic.catalog import FAMILIES, INDICATOR_LABEL_VALUES, family_for_symbol, label_to_value, normalize_temporal_query
 
 _OPS: dict[str, Callable[[float, float], bool]] = {
     ">": operator.gt,
@@ -33,6 +33,7 @@ WATCH_REJECT_INVALID_OPERATOR = "invalid_operator"
 WATCH_REJECT_MISSING_THRESHOLD = "missing_threshold"
 WATCH_REJECT_INVALID_ARMED_ORDER = "invalid_armed_order"
 WATCH_REJECT_NON_FINITE_THRESHOLD = "non_finite_threshold"
+WATCH_REJECT_UNKNOWN_LABEL = "unknown_indicator_label"
 
 _ABS_OPS: dict[str, Callable[[float, float], bool]] = {
     "abs>": operator.gt,
@@ -85,6 +86,42 @@ def _optional_finite_float(*values: object) -> float | None:
     return None
 
 
+def _normalize_threshold(
+    indicator: str, op: str, *values: object
+) -> tuple[float | None, str, object]:
+    """Parse threshold from raw values, resolving label strings via INDICATOR_LABEL_VALUES.
+
+    Returns (threshold, reject_reason, raw_value):
+    - threshold: parsed finite float, or None if invalid
+    - reject_reason: empty string on success, else a WATCH_REJECT_* constant
+    - raw_value: the first non-None raw value encountered (for error context)
+    """
+    raw_value: object = None
+    unknown_label: object = None
+
+    for value in values:
+        if value is None:
+            continue
+        if raw_value is None:
+            raw_value = value
+        try:
+            parsed = float(value)  # type: ignore[arg-type]
+            if math.isfinite(parsed):
+                return (parsed, "", None)
+        except (TypeError, ValueError):
+            pass
+        if isinstance(value, str):
+            lbl = label_to_value(indicator, value)
+            if lbl is not None:
+                resolved = abs(lbl) if op in _ABS_OPS else lbl
+                return (resolved, "", None)
+            unknown_label = value
+
+    if unknown_label is not None and indicator in INDICATOR_LABEL_VALUES:
+        return (None, WATCH_REJECT_UNKNOWN_LABEL, unknown_label)
+    return (None, WATCH_REJECT_NON_FINITE_THRESHOLD, raw_value)
+
+
 def _json_safe_scalar(value: object) -> object:
     if value is None or isinstance(value, str | int | bool):
         return value
@@ -134,16 +171,18 @@ def _condition_from_raw(raw: object, *, owner_symbol: str) -> tuple[dict | None,
                 "raw_value": None,
             },
         )
-    threshold = _optional_finite_float(raw.get("value"), raw.get("threshold"))
+    threshold, reject_reason, raw_threshold = _normalize_threshold(
+        indicator, op, raw.get("value"), raw.get("threshold")
+    )
     if threshold is None:
-        return (
-            None,
-            {
-                "reason": WATCH_REJECT_NON_FINITE_THRESHOLD,
-                "indicator": indicator or None,
-                "raw_value": _json_safe_scalar(raw.get("value") if "value" in raw else raw.get("threshold")),
-            },
-        )
+        rejection: dict = {
+            "reason": reject_reason,
+            "indicator": indicator or None,
+            "raw_value": _json_safe_scalar(raw_threshold),
+        }
+        if reject_reason == WATCH_REJECT_UNKNOWN_LABEL:
+            rejection["valid_labels"] = sorted(INDICATOR_LABEL_VALUES.get(indicator, {}).keys())
+        return (None, rejection)
     temporal = normalize_temporal_query(
         timeframe=str(raw.get("interval") or raw.get("timeframe") or "1h"),
         lookback=None if raw.get("lookback") is None else str(raw["lookback"]),
@@ -284,6 +323,13 @@ def build_indicator_watch(
             conditions.append(condition)
         elif rejection is not None:
             rejections.append(rejection)
+    # Filet de sécurité : watches ATOMIQUES. Une seule condition rejetée invalide
+    # toute la veille — on ne persiste jamais une watch amputée (sinon un logic=all
+    # ou un EXECUTE_ORDER privé d'un prédicat se déclencherait sur la condition
+    # résiduelle, souvent permissive → réveil/exécution fantôme).
+    if rejections:
+        return IndicatorWatchResult(None, rejections)
+
     if not conditions:
         return IndicatorWatchResult(None, rejections)
 
@@ -341,7 +387,14 @@ def normalize_indicator_watch(
     now: datetime,
     max_ttl_minutes: float = 24 * 60,
 ) -> dict | None:
-    """Normalize an LLM-provided watch into a small persistent JSON shape."""
+    """Normalize an LLM-provided watch into a small persistent JSON shape.
+
+    Returns the watch dict on success, or None if any condition was rejected
+    (atomicity guarantee: a partial watch is never returned).
+    NOTE: cette fonction ne remonte PAS les rejets — pour le feedback structuré
+    (raison du rejet, labels valides…), utiliser `build_indicator_watch` qui
+    retourne un `IndicatorWatchResult` avec `.rejections`.
+    """
     return build_indicator_watch(raw, owner_symbol=owner_symbol, now=now, max_ttl_minutes=max_ttl_minutes).watch
 
 
