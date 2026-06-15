@@ -12,8 +12,14 @@ from pathlib import Path
 import yaml
 
 from trader.rotation import apply_hysteresis, emergency_exits, write_universe_atomic
-from trader.rotation_schedule import closed_sessions_since
-from trader.rotation_wiring import venue_of
+from trader.rotation_collectors import (
+    build_plans_fn,
+    build_positions_fn,
+    sticky_collector,
+)
+from trader.rotation_schedule import closed_sessions_since, load_sessions, open_venues
+from trader.rotation_wiring import build_rank_fn, venue_of
+from trader.radar_config import load_radar_params
 
 
 def empty_venue_state() -> dict:
@@ -166,6 +172,45 @@ def due_venues(now_iso, state, sessions, *, fx_refresh="22:00") -> list[str]:
                 due.add("FX")
 
     return sorted(due)
+
+
+def tick(config_dir, state_dir, now_iso, *, rank_fn=None, sticky_fn=None, fx_cap=3) -> dict:
+    """Run one per-venue rotation cycle and reconcile the active universe."""
+    config_path = Path(config_dir)
+    sessions = load_sessions(config_dir)
+    params = load_radar_params(config_path)
+    state = load_venue_state(state_dir)
+
+    dues = due_venues(now_iso, state, sessions)
+    if dues:
+        scan_fn = rank_fn or build_rank_fn(config_dir, fetch_fn=None, as_of=now_iso)
+        rank_obj = scan_fn()
+        for venue in dues:
+            state = run_venue_close(
+                state,
+                venue,
+                rank_obj,
+                cap_per_venue=params.cap_m,
+                fx_cap=fx_cap,
+                delta=params.delta,
+                dwell_days=params.dwell_days,
+                emergency_floor=params.emergency_score,
+                as_of=now_iso,
+            )
+        save_venue_state(state_dir, state)
+
+    open_v = open_venues(now_iso, sessions)
+    if sticky_fn is None:
+        sticky = sticky_collector(
+            positions_fn=build_positions_fn(state_dir),
+            plans_fn=build_plans_fn(state_dir),
+        )
+    else:
+        sticky = sticky_fn()
+
+    final = compose_active_universe(state, open_v, sticky=sticky, fx_cap=fx_cap)
+    written = write_universe_if_changed(str(config_path / "universe.yaml"), final)
+    return {"dues": dues, "open": open_v, "final": final, "written": written}
 
 
 def update_venue_ranking(

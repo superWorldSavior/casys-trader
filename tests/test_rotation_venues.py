@@ -13,6 +13,7 @@ from trader.rotation_venues import (
     load_venue_state,
     run_venue_close,
     save_venue_state,
+    tick,
     update_venue_ranking,
     write_universe_if_changed,
 )
@@ -32,6 +33,37 @@ _SESSIONS = {
     "EU": {"open": "07:00", "close": "15:30"},
     "US": {"open": "13:30", "close": "20:00"},
 }
+
+
+def _write_tick_config(config_dir):
+    (config_dir / "config").mkdir()
+    (config_dir / "config" / "sessions.yaml").write_text(
+        'TW: {open: "01:00", close: "05:30"}\n'
+        'EU: {open: "07:00", close: "15:30"}\n'
+        'US: {open: "13:30", close: "20:00"}\n',
+        encoding="utf-8",
+    )
+    (config_dir / "radar.yaml").write_text(
+        "cap_m: 5\n"
+        "delta: 0.05\n"
+        "dwell_days: 1\n"
+        "emergency_score: -1\n",
+        encoding="utf-8",
+    )
+
+
+def _tick_rank_obj():
+    return {
+        "ranked": [
+            _item("8299.TWO", 2.0),
+            _item("2330.TW", 1.9),
+            _item("AAPL", 1.8),
+            _item("EURUSD=X", 1.7),
+        ],
+        "gap_adverse": frozenset(),
+        "ineligible": {},
+        "components_by_symbol": {},
+    }
 
 
 def test_empty_venue_state_returns_empty_venues():
@@ -440,3 +472,84 @@ def test_due_venues_does_not_mark_fx_due_on_saturday():
     )
 
     assert result == []
+
+
+def test_tick_bootstrap_updates_due_venues_and_writes_active_universe(tmp_path):
+    config_dir = tmp_path / "cfg"
+    state_dir = tmp_path / "state"
+    config_dir.mkdir()
+    _write_tick_config(config_dir)
+    calls = {"rank": 0}
+
+    def rank_fn():
+        calls["rank"] += 1
+        return _tick_rank_obj()
+
+    result = tick(
+        config_dir,
+        state_dir,
+        "2026-06-15T03:00:00+00:00",
+        rank_fn=rank_fn,
+        sticky_fn=lambda: set(),
+        fx_cap=3,
+    )
+
+    assert calls["rank"] == 1
+    assert result["dues"] == ["EU", "FX", "TW", "US"]
+    assert result["open"] == ["FX", "TW"]
+    assert result["written"] is True
+    assert "8299.TWO" in result["final"]
+    assert "2330.TW" in result["final"]
+    assert load_venue_state(state_dir)["venues"]["TW"]["hotlist"] == ["8299.TWO", "2330.TW"]
+    assert yaml.safe_load((config_dir / "universe.yaml").read_text(encoding="utf-8")) == {
+        "symbols": result["final"]
+    }
+
+
+def test_tick_keeps_sticky_symbol_when_its_market_is_closed(tmp_path):
+    config_dir = tmp_path / "cfg"
+    state_dir = tmp_path / "state"
+    config_dir.mkdir()
+    _write_tick_config(config_dir)
+
+    result = tick(
+        config_dir,
+        state_dir,
+        "2026-06-15T14:00:00+00:00",
+        rank_fn=_tick_rank_obj,
+        sticky_fn=lambda: {"ZZZ.TW"},
+        fx_cap=3,
+    )
+
+    assert result["open"] == ["EU", "FX", "US"]
+    assert result["final"][0] == "ZZZ.TW"
+    assert "ZZZ.TW" in result["final"]
+
+
+def test_tick_second_call_same_now_is_idempotent(tmp_path):
+    config_dir = tmp_path / "cfg"
+    state_dir = tmp_path / "state"
+    config_dir.mkdir()
+    _write_tick_config(config_dir)
+
+    first = tick(
+        config_dir,
+        state_dir,
+        "2026-06-15T03:00:00+00:00",
+        rank_fn=_tick_rank_obj,
+        sticky_fn=lambda: set(),
+        fx_cap=3,
+    )
+    second = tick(
+        config_dir,
+        state_dir,
+        "2026-06-15T03:00:00+00:00",
+        rank_fn=_tick_rank_obj,
+        sticky_fn=lambda: set(),
+        fx_cap=3,
+    )
+
+    assert first["written"] is True
+    assert second["dues"] == []
+    assert second["final"] == first["final"]
+    assert second["written"] is False
