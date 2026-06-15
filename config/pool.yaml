@@ -30,8 +30,8 @@ symbols:
   # eu_energy
   - TTE.PA
   - ENI.MI
-  - RDSB.AS
-  - REPB.MC
+  - SHELL.AS
+  - REP.MC
   # eu_luxury_consumer
   - MC.PA
   - OR.PA
@@ -57,6 +57,77 @@ symbols:
   - DTE.DE
   - TEF.MC
   - VOD.L
+  - ERIC-B.ST
+  - KPN.AS
+  - TELIA.ST
+  - PROX.BR
+  - TIT.MI
+  - TEL2-B.ST
+  # eu_tech (extensions)
+  - STMPA.PA
+  - IFX.DE
+  - NOKIA.HE
+  - NXPI.AS
+  - WKL.AS
+  - AMS.MC
+  - PHIA.AS
+  - HEXA-B.ST
+  # eu_financials (extensions)
+  - ACA.PA
+  - GLE.PA
+  - DBK.DE
+  - UCG.MI
+  - ZURN.SW
+  - CS.PA
+  - MUV2.DE
+  - NN.AS
+  # eu_healthcare (extensions)
+  - NOVN.SW
+  - GSK.L
+  - UCB.BR
+  - COLO-B.CO
+  - STMN.SW
+  - FRE.DE
+  - ESSITY-B.ST
+  # eu_energy (extensions)
+  - BP.L
+  - GALP.LS
+  - OMV.VI
+  - EQNR.OL
+  - NESTE.HE
+  # eu_luxury_consumer (extensions)
+  - CFR.SW
+  - MONC.MI
+  - UNA.AS
+  - NESN.SW
+  - DGE.L
+  - CARL-B.CO
+  - BN.PA
+  - BRBY.L
+  # eu_industrials (extensions)
+  - SAF.PA
+  - RR.L
+  - ABBN.SW
+  - VOW3.DE
+  - BMW.DE
+  - MBG.DE
+  - VOLV-B.ST
+  - KNEBV.HE
+  # eu_materials (extensions)
+  - AKE.PA
+  - SOLB.BR
+  - UMI.BR
+  - HOLN.SW
+  - YAR.OL
+  - CRH.L
+  - SY1.DE
+  # eu_utilities (extensions)
+  - RWE.DE
+  - EOAN.DE
+  - VIE.PA
+  - RED.MC
+  - A2A.MI
+  - FORTUM.HE
   # Tech / semis taïwanais (TWSE .TW + TPEx .TWO) — pool élargi (Erwan)
   - 2408.TW
   - 8299.TWO

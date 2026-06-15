@@ -91,17 +91,33 @@ FAMILIES: dict[str, list[str]] = {
     # -------------------------------------------------------------------------
     # Technologie (semis, software, équipements)
     "eu_tech": [
-        "ASML.AS",  # ASML — lithographie EUV, monopole mondial
-        "SAP.DE",   # SAP — ERP / cloud enterprise
-        "CAP.PA",   # Capgemini — IT services & conseil
-        "DSY.PA",   # Dassault Systèmes — PLM / 3D software
+        "ASML.AS",   # ASML — lithographie EUV, monopole mondial
+        "SAP.DE",    # SAP — ERP / cloud enterprise
+        "CAP.PA",    # Capgemini — IT services & conseil
+        "DSY.PA",    # Dassault Systèmes — PLM / 3D software
+        "STMPA.PA",  # STMicroelectronics — semis mixtes, auto, IoT
+        "IFX.DE",    # Infineon Technologies — semis auto & power
+        "NOKIA.HE",  # Nokia — équipements réseaux 5G & AI infra
+        "NXPI.AS",   # NXP Semiconductors — semis auto & IoT
+        "WKL.AS",    # Wolters Kluwer — info services & software
+        "AMS.MC",    # Amadeus IT Group — software voyage & hospitality
+        "PHIA.AS",   # Philips — health tech & imagerie médicale
+        "HEXA-B.ST",  # Hexagon AB — technologies de mesure & géospatiales SE
     ],
     # Financières (banques, assurances)
     "eu_financials": [
-        "BNP.PA",   # BNP Paribas — banque universelle
-        "ALV.DE",   # Allianz — assurance / asset management
-        "INGA.AS",  # ING Groep — banque retail Europe
-        "SAN.MC",   # Banco Santander — banque pan-européenne & Latam
+        "BNP.PA",    # BNP Paribas — banque universelle
+        "ALV.DE",    # Allianz — assurance / asset management
+        "INGA.AS",   # ING Groep — banque retail Europe
+        "SAN.MC",    # Banco Santander — banque pan-européenne & Latam
+        "ACA.PA",    # Crédit Agricole — banque coopérative française
+        "GLE.PA",    # Société Générale — banque universelle française
+        "DBK.DE",    # Deutsche Bank — banque d'investissement DE
+        "UCG.MI",    # UniCredit — banque italienne & pan-européenne
+        "ZURN.SW",   # Zurich Insurance Group — assurance CH
+        "CS.PA",     # AXA — assurance & asset management
+        "MUV2.DE",   # Munich Re — réassurance mondiale
+        "NN.AS",     # NN Group — assurance & gestion d'actifs NL
     ],
     # Santé (pharma, biotech, medtech)
     "eu_healthcare": [
@@ -109,48 +125,95 @@ FAMILIES: dict[str, list[str]] = {
         "ROG.SW",     # Roche — diagnostics & oncologie
         "AZN.L",      # AstraZeneca — oncologie & respiratoire
         "NOVO-B.CO",  # Novo Nordisk — diabète & obésité (GLP-1)
+        "NOVN.SW",    # Novartis — pharma large-cap CH
+        "GSK.L",      # GSK (GlaxoSmithKline) — pharma & vaccins UK
+        "UCB.BR",     # UCB SA — biopharma (CNS, immunologie) BE
+        "COLO-B.CO",  # Coloplast — dispositifs médicaux DK
+        "STMN.SW",    # Straumann Holding — implants dentaires CH
+        "FRE.DE",     # Fresenius SE — services santé & dialyse DE
+        "ESSITY-B.ST", # Essity — hygiène & santé grand public SE
     ],
     # Énergie (pétrolières, utilities fossiles)
     "eu_energy": [
-        "TTE.PA",   # TotalEnergies — oil & gas + renouvelables
-        "ENI.MI",   # Eni — pétrolière italienne
-        "RDSB.AS",  # Shell — major pétrolière (cotation AMS)
-        "REPB.MC",  # Repsol — pétrolière espagnole
+        "TTE.PA",    # TotalEnergies — oil & gas + renouvelables
+        "ENI.MI",    # Eni — pétrolière italienne
+        "SHELL.AS",  # Shell — major pétrolière (cotation AMS, post-rebrand)
+        "REP.MC",    # Repsol — pétrolière espagnole (ordinaire)
+        "BP.L",      # BP — major pétrolière & transition UK
+        "GALP.LS",   # Galp Energia — pétrolière & renouvelables PT
+        "OMV.VI",    # OMV — pétrolière & chimie AT
+        "EQNR.OL",   # Equinor — pétrolière norvégienne (ex-Statoil)
+        "NESTE.HE",  # Neste — carburants renouvelables & SAF FI
     ],
     # Luxe & consommation (luxury, FMCG, distribution)
     "eu_luxury_consumer": [
-        "MC.PA",    # LVMH — conglomérat luxe n°1 mondial
-        "OR.PA",    # L'Oréal — cosmétiques & beauté
-        "RMS.PA",   # Hermès — maroquinerie ultra-luxe
-        "KER.PA",   # Kering — Gucci, Saint Laurent, Bottega
+        "MC.PA",      # LVMH — conglomérat luxe n°1 mondial
+        "OR.PA",      # L'Oréal — cosmétiques & beauté
+        "RMS.PA",     # Hermès — maroquinerie ultra-luxe
+        "KER.PA",     # Kering — Gucci, Saint Laurent, Bottega
+        "CFR.SW",     # Richemont — bijouterie & montres luxe CH
+        "MONC.MI",    # Moncler — doudoune & mode luxe IT
+        "UNA.AS",     # Unilever — FMCG, hygiène & alimentaire (cotation AMS)
+        "NESN.SW",    # Nestlé — alimentation & boissons CH
+        "DGE.L",      # Diageo — alcools premium UK
+        "CARL-B.CO",  # Carlsberg — bières premium DK
+        "BN.PA",      # Danone — alimentation santé & eaux FR
+        "BRBY.L",     # Burberry — mode luxe UK
     ],
     # Industriels (aéro, auto, capital goods, transports)
     "eu_industrials": [
-        "AIR.PA",    # Airbus — aérospatial & défense civile
-        "SIE.DE",    # Siemens — automation & électrification
-        "SU.PA",     # Schneider Electric — gestion énergie & automation
-        "STLAM.AS",  # Stellantis — automobiles (Peugeot, Fiat, Chrysler…)
+        "AIR.PA",     # Airbus — aérospatial & défense civile
+        "SIE.DE",     # Siemens — automation & électrification
+        "SU.PA",      # Schneider Electric — gestion énergie & automation
+        "STLAM.AS",   # Stellantis — automobiles (Peugeot, Fiat, Chrysler…)
+        "SAF.PA",     # Safran — moteurs aéronautiques & équipements
+        "RR.L",       # Rolls-Royce — moteurs aéro & énergie UK
+        "ABBN.SW",    # ABB — automation, robotique & électrification CH
+        "VOW3.DE",    # Volkswagen — automobiles DE (actions ordinaires)
+        "BMW.DE",     # BMW — automobiles premium DE
+        "MBG.DE",     # Mercedes-Benz — automobiles & vans premium DE
+        "VOLV-B.ST",  # Volvo AB — camions & équipements SE
+        "KNEBV.HE",   # KONE — ascenseurs & escalators FI
     ],
     # Matériaux (chimie, acier, spécialités)
     "eu_materials": [
-        "AI.PA",    # Air Liquide — gaz industriels
-        "BAS.DE",   # BASF — chimie diversifiée
-        "MT.AS",    # ArcelorMittal — acier & minerai
-        "LIN.DE",   # Linde — gaz industriels (dual-listing DE/US)
+        "AI.PA",     # Air Liquide — gaz industriels
+        "BAS.DE",    # BASF — chimie diversifiée
+        "MT.AS",     # ArcelorMittal — acier & minerai
+        "LIN.DE",    # Linde — gaz industriels (dual-listing DE/US)
+        "AKE.PA",    # Arkema — chimie spécialités FR
+        "SOLB.BR",   # Solvay — chimie spécialités BE
+        "UMI.BR",    # Umicore — matériaux avancés & recyclage BE
+        "HOLN.SW",   # Holcim — matériaux de construction CH
+        "YAR.OL",    # Yara International — engrais azotés NO
+        "CRH.L",     # CRH — matériaux de construction IE/UK
+        "SY1.DE",    # Symrise — arômes & fragrances DE
     ],
     # Utilities (électricité, eau, gaz réseaux)
     "eu_utilities": [
-        "ENGI.PA",  # Engie — énergie & services (gaz, renouvelables)
-        "ENEL.MI",  # Enel — électricité italienne & renouvelables
-        "IBE.MC",   # Iberdrola — éolien & réseaux électriques
-        "EDP.LS",   # EDP — utility portugaise, forte exposition renouvelables
+        "ENGI.PA",   # Engie — énergie & services (gaz, renouvelables)
+        "ENEL.MI",   # Enel — électricité italienne & renouvelables
+        "IBE.MC",    # Iberdrola — éolien & réseaux électriques
+        "EDP.LS",    # EDP — utility portugaise, forte exposition renouvelables
+        "RWE.DE",    # RWE — électricité & renouvelables DE
+        "EOAN.DE",   # E.ON — réseaux & distribution énergie DE
+        "VIE.PA",    # Veolia — eau, déchets, énergie FR
+        "RED.MC",    # Redeia (ex-Red Eléctrica) — transport électricité ES
+        "A2A.MI",    # A2A — multi-utility italienne
+        "FORTUM.HE", # Fortum — électricité & chaleur nordique FI
     ],
     # Télécoms
     "eu_telecom": [
-        "ORA.PA",   # Orange — télécom France & Afrique
-        "DTE.DE",   # Deutsche Telekom — télécom DE + T-Mobile US
-        "TEF.MC",   # Telefónica — télécom Espagne & Latam
-        "VOD.L",    # Vodafone — télécom pan-européen & Afrique
+        "ORA.PA",     # Orange — télécom France & Afrique
+        "DTE.DE",     # Deutsche Telekom — télécom DE + T-Mobile US
+        "TEF.MC",     # Telefónica — télécom Espagne & Latam
+        "VOD.L",      # Vodafone — télécom pan-européen & Afrique
+        "ERIC-B.ST",  # Ericsson — équipements 5G & réseaux SE
+        "KPN.AS",     # KPN — télécom fixe & mobile NL
+        "TELIA.ST",   # Telia Company — télécom nordique SE
+        "PROX.BR",    # Proximus — télécom fixe & mobile BE
+        "TIT.MI",     # Telecom Italia (TIM) — télécom IT
+        "TEL2-B.ST",  # Tele2 — télécom suédois alternatif
     ],
     "energy": ["XLE", "USO", "UNG"],
     "commodities_futures": ["CL=F", "BZ=F", "NG=F"],
