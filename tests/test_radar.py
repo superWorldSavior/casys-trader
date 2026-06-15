@@ -216,6 +216,67 @@ def test_scan_and_rank_orders_by_attractiveness_not_raw_signed_score() -> None:
     assert ranked[1]["bias"] == "long"
 
 
+def test_hard_exclusion_skips_indicators_fn() -> None:
+    """A. indicators_fn NE DOIT PAS être appelé sur un symbole hard_exclusion."""
+    bars_by_symbol = {"SPY": "barsA", "CL=F": "barsB"}
+
+    def indicators_fn(symbol: str, bars: object) -> dict:
+        if symbol == "CL=F":
+            raise RuntimeError("indicators_fn appelé sur un symbole exclu !")
+        return {"efficiency_ratio": 0.8, "ret": 0.03, "amplitude": 0.03}
+
+    result = scan_and_rank(
+        bars_by_symbol,
+        indicators_fn=indicators_fn,
+        benchmark_ret_for={"SPY": 0.0},
+        tilt_for=lambda symbol: 0.0,
+        hard_exclusions={"CL=F"},
+        atr_floor=0.01,
+        amplitude_cap=0.05,
+        w_trend=1.0,
+        w_rs=1.0,
+        w_amp=1.0,
+    )
+
+    # CL=F doit apparaître dans ineligible avec reason="hard_exclusion"
+    ineligible_syms = {row["symbol"]: row["reason"] for row in result["ineligible"]}
+    assert "CL=F" in ineligible_syms
+    assert ineligible_syms["CL=F"] == "hard_exclusion"
+    # SPY reste dans ranked
+    assert any(row["symbol"] == "SPY" for row in result["ranked"])
+
+
+def test_partial_data_none_ret_is_ineligible_missing_data() -> None:
+    """B. indicators_fn retournant ret=None → inéligible missing_data, pas de crash."""
+    bars_by_symbol = {"GOOD": "barsA", "BAD_DATA": "barsB"}
+
+    def indicators_fn(symbol: str, bars: object) -> dict:
+        if symbol == "BAD_DATA":
+            return {"efficiency_ratio": 0.8, "ret": None, "amplitude": 0.05}
+        return {"efficiency_ratio": 0.8, "ret": 0.03, "amplitude": 0.03}
+
+    result = scan_and_rank(
+        bars_by_symbol,
+        indicators_fn=indicators_fn,
+        benchmark_ret_for={"GOOD": 0.0, "BAD_DATA": 0.0},
+        tilt_for=lambda symbol: 0.0,
+        hard_exclusions=set(),
+        atr_floor=0.01,
+        amplitude_cap=0.05,
+        w_trend=1.0,
+        w_rs=1.0,
+        w_amp=1.0,
+    )
+
+    ineligible_syms = {row["symbol"]: row["reason"] for row in result["ineligible"]}
+    assert "BAD_DATA" in ineligible_syms
+    assert ineligible_syms["BAD_DATA"] == "missing_data"
+    # BAD_DATA absent du ranked
+    assert not any(row["symbol"] == "BAD_DATA" for row in result["ranked"])
+    # GOOD reste ranked
+    assert any(row["symbol"] == "GOOD" for row in result["ranked"])
+
+
 def test_build_radar_snapshot_and_write_snapshot(tmp_path) -> None:
     ranked = [
         {
