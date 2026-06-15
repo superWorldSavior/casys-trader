@@ -2,7 +2,23 @@
 
 from __future__ import annotations
 
-from trader.rotation_venues import empty_venue_state, load_venue_state, save_venue_state
+from copy import deepcopy
+
+from trader.rotation_venues import (
+    empty_venue_state,
+    load_venue_state,
+    save_venue_state,
+    update_venue_ranking,
+)
+
+
+def _item(symbol: str, attractiveness: float) -> dict:
+    return {
+        "symbol": symbol,
+        "attractiveness": attractiveness,
+        "bias": "long",
+        "directional_score": attractiveness,
+    }
 
 
 def test_empty_venue_state_returns_empty_venues():
@@ -36,3 +52,124 @@ def test_save_venue_state_round_trips_and_creates_directory(tmp_path):
     save_venue_state(state_dir, state)
 
     assert load_venue_state(state_dir) == state
+
+
+def test_update_venue_ranking_creates_venue_with_top_hotlist_and_scores():
+    state = empty_venue_state()
+    as_of = "2026-06-15T20:00:00+00:00"
+
+    result = update_venue_ranking(
+        state,
+        "US",
+        [_item("AAPL", 1.3), _item("MSFT", 1.1), _item("NVDA", 0.9)],
+        cap_per_venue=2,
+        delta=0.1,
+        dwell_days=2,
+        emergency_floor=0.0,
+        as_of=as_of,
+    )
+
+    assert result["venues"]["US"]["hotlist"] == ["AAPL", "MSFT"]
+    assert result["venues"]["US"]["scores"] == {"AAPL": 1.3, "MSFT": 1.1}
+    assert result["venues"]["US"]["last_close_at"] == as_of
+    assert result["venues"]["US"]["stale"] is False
+
+
+def test_update_venue_ranking_keeps_incumbent_when_dwell_insufficient():
+    state = {
+        "venues": {
+            "US": {
+                "hotlist": ["AAPL"],
+                "scores": {"AAPL": 1.0},
+                "dwell": {"AAPL": 1},
+                "last_close_at": "2026-06-14T20:00:00+00:00",
+                "stale": False,
+            }
+        }
+    }
+
+    result = update_venue_ranking(
+        state,
+        "US",
+        [_item("MSFT", 2.0), _item("AAPL", 1.0)],
+        cap_per_venue=1,
+        delta=0.0,
+        dwell_days=2,
+        emergency_floor=0.0,
+        as_of="2026-06-15T20:00:00+00:00",
+    )
+
+    assert result["venues"]["US"]["hotlist"] == ["AAPL"]
+
+
+def test_update_venue_ranking_evicts_gap_adverse_symbol():
+    state = empty_venue_state()
+
+    result = update_venue_ranking(
+        state,
+        "US",
+        [_item("X", 2.0), _item("AAPL", 1.0)],
+        cap_per_venue=2,
+        delta=0.0,
+        dwell_days=1,
+        emergency_floor=0.0,
+        gap_adverse=frozenset({"X"}),
+        as_of="2026-06-15T20:00:00+00:00",
+    )
+
+    assert result["venues"]["US"]["hotlist"] == ["AAPL"]
+    assert result["venues"]["US"]["scores"] == {"AAPL": 1.0}
+    assert result["venues"]["US"]["dwell"] == {"AAPL": 1}
+
+
+def test_update_venue_ranking_keeps_other_venues_unchanged():
+    tw_state = {
+        "hotlist": ["2330.TW"],
+        "scores": {"2330.TW": 1.4},
+        "dwell": {"2330.TW": 7},
+        "last_close_at": "2026-06-15T05:30:00+00:00",
+        "stale": False,
+    }
+    state = {"venues": {"TW": deepcopy(tw_state)}}
+
+    result = update_venue_ranking(
+        state,
+        "US",
+        [_item("AAPL", 1.0)],
+        cap_per_venue=1,
+        delta=0.0,
+        dwell_days=1,
+        emergency_floor=0.0,
+        as_of="2026-06-15T20:00:00+00:00",
+    )
+
+    assert result["venues"]["TW"] == tw_state
+    assert result["venues"]["US"]["hotlist"] == ["AAPL"]
+
+
+def test_update_venue_ranking_increments_stayers_and_sets_entrant_dwell_to_one():
+    state = {
+        "venues": {
+            "US": {
+                "hotlist": ["AAPL"],
+                "scores": {"AAPL": 1.0},
+                "dwell": {"AAPL": 4},
+                "last_close_at": "2026-06-14T20:00:00+00:00",
+                "stale": False,
+            }
+        }
+    }
+
+    result = update_venue_ranking(
+        state,
+        "US",
+        [_item("AAPL", 1.2), _item("MSFT", 1.0)],
+        cap_per_venue=2,
+        delta=0.0,
+        dwell_days=1,
+        emergency_floor=0.0,
+        as_of="2026-06-15T20:00:00+00:00",
+    )
+
+    assert result["venues"]["US"]["hotlist"] == ["AAPL", "MSFT"]
+    assert result["venues"]["US"]["dwell"] == {"AAPL": 5, "MSFT": 1}
