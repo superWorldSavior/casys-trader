@@ -1,6 +1,6 @@
 """Tests TDD pour trader/rotation.py — veille deux niveaux."""
 import pytest
-from trader.rotation import apply_hysteresis, emergency_exits
+from trader.rotation import apply_hysteresis, emergency_exits, sticky_symbols
 
 
 # ---------------------------------------------------------------------------
@@ -128,5 +128,30 @@ class TestEmergencyExits:
             hot_set={"A", "B"},
             ranked=ranked,
             emergency_floor=0.5,
+        )
+        assert result == set()
+
+
+# ---------------------------------------------------------------------------
+# sticky_symbols
+# ---------------------------------------------------------------------------
+
+class TestStickySymbols:
+    def test_union_des_quatre_sources(self):
+        """sticky_symbols retourne l'union correcte des 4 sets."""
+        result = sticky_symbols(
+            positions={"AAPL", "MSFT"},
+            armed_plans={"TSLA"},
+            exit_watches={"NVDA"},
+            pending_orders={"AMD"},
+        )
+        assert result == {"AAPL", "MSFT", "TSLA", "NVDA", "AMD"}
+
+    def test_union_vide_si_tout_vide(self):
+        result = sticky_symbols(
+            positions=set(),
+            armed_plans=set(),
+            exit_watches=set(),
+            pending_orders=set(),
         )
         assert result == set()

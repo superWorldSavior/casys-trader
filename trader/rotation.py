@@ -66,6 +66,17 @@ def apply_hysteresis(
     return selected
 
 
+def sticky_symbols(
+    *,
+    positions: set[str],
+    armed_plans: set[str],
+    exit_watches: set[str],
+    pending_orders: set[str],
+) -> set[str]:
+    """Union des 4 sets de symboles protégés (hors quota)."""
+    return positions | armed_plans | exit_watches | pending_orders
+
+
 def emergency_exits(
     hot_set: set[str],
     ranked: list[dict[str, Any]],
