@@ -117,6 +117,7 @@ class CompositeDataSource:
         self._routes = routes
         self._sources = sources
         self._last_source: dict[str, str] = {}
+        self._failed_sources_since_last_check: dict[str, MarketError] = {}
 
     # ------------------------------------------------------------------
     # API publique
@@ -166,6 +167,7 @@ class CompositeDataSource:
                     exc if isinstance(exc, MarketError)
                     else MarketError("source_error", f"{symbol}@{name}: {exc}")
                 )
+                self._failed_sources_since_last_check[name] = last_error
                 log.info(
                     '{"event":"source_fallback","symbol":"%s","source":"%s",'
                     '"reason":"exception","code":"%s"}',
@@ -215,6 +217,12 @@ class CompositeDataSource:
     def last_source(self, symbol: str) -> str | None:
         """Retourne le nom de la source qui a servi symbol lors du dernier appel."""
         return self._last_source.get(symbol)
+
+    def consume_failed_sources(self) -> dict[str, MarketError]:
+        """Retourne et vide les dernières erreurs par source depuis le dernier relevé."""
+        failed = dict(self._failed_sources_since_last_check)
+        self._failed_sources_since_last_check.clear()
+        return failed
 
     def disconnect(self) -> None:
         """Déconnecte chaque source unique qui expose disconnect().
