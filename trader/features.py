@@ -56,6 +56,40 @@ def _window(bars: Iterable[object], window: int) -> list[object]:
     return selected[-window:] if window > 0 else selected
 
 
+def swing_low(bars: Iterable[object], window: int) -> float | None:
+    selected = _window(bars, window)
+    if not selected:
+        return None
+    return min(_lows(selected))
+
+
+def swing_high(bars: Iterable[object], window: int) -> float | None:
+    selected = _window(bars, window)
+    if not selected:
+        return None
+    return max(_highs(selected))
+
+
+def vwap(bars: Iterable[object], window: int) -> float | None:
+    selected = _window(bars, window)
+    if not selected:
+        return None
+
+    weighted_sum = 0.0
+    volume_sum = 0.0
+    for bar in selected:
+        volume = _attr(bar, "volume")
+        typical = (
+            _attr(bar, "high") + _attr(bar, "low") + _attr(bar, "close")
+        ) / 3.0
+        weighted_sum += typical * volume
+        volume_sum += volume
+
+    if volume_sum <= 0:
+        return None
+    return weighted_sum / volume_sum
+
+
 def _returns(closes: list[float]) -> list[float]:
     return [
         closes[i] / closes[i - 1] - 1.0

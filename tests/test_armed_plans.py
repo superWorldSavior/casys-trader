@@ -26,6 +26,16 @@ def _bars_at(now_iso: str):
     return factory
 
 
+def _bars_with_lows(now_iso: str, lows: list[float]):
+    def factory(symbol, lookback, interval):
+        return [
+            Bar(ts=now_iso, open=100.0, high=102.0, low=low, close=100.0, volume=1000.0)
+            for low in lows
+        ]
+
+    return factory
+
+
 def _armed_trigger(
     *,
     stop_price: float = 95.0,
@@ -48,7 +58,15 @@ def _armed_trigger(
     }
 
 
-def _run(monkeypatch, tmp_path, patch_batch, make_data_source, trigger) -> tuple[dict, list]:
+def _run(
+    monkeypatch,
+    tmp_path,
+    patch_batch,
+    make_data_source,
+    trigger,
+    *,
+    bars_factory=None,
+) -> tuple[dict, list]:
     _runtime_config(tmp_path)
     state_dir = tmp_path / "state"
     now = datetime(2026, 6, 11, 12, 0, tzinfo=timezone.utc)
@@ -68,7 +86,7 @@ def _run(monkeypatch, tmp_path, patch_batch, make_data_source, trigger) -> tuple
         now=now,
         symbols_filter=["SPY"],
         sched=Scheduler(state_dir / "scheduler.json"),
-        data_source=make_data_source(_bars_at(now.isoformat())),
+        data_source=make_data_source(bars_factory or _bars_at(now.isoformat())),
         indicator_triggers=[trigger],
     )
     return report, llm_calls
@@ -135,6 +153,68 @@ def test_plan_arme_resout_hard_stop_volatilite_au_tir(
     assert resolved_events[0]["symbol"] == "SPY"
     assert resolved_events[0]["plan_id"] == "SPY:abc123"
     assert resolved_events[0]["trace"]["hard_stop"]["resolved_price"] == pytest.approx(97.0)
+
+
+def test_plan_arme_resout_hard_stop_structural_sur_barres_fraiches(
+    monkeypatch, tmp_path, patch_batch, make_data_source
+) -> None:
+    trigger = _armed_trigger(
+        exit_plan={
+            "hard_stop": {
+                "type": "structural",
+                "anchor": "swing_low",
+                "window": 3,
+                "buffer_pct": 0.01,
+            }
+        },
+    )
+
+    report, llm_calls = _run(
+        monkeypatch,
+        tmp_path,
+        patch_batch,
+        make_data_source,
+        trigger,
+        bars_factory=_bars_with_lows(
+            "2026-06-11T12:00:00+00:00",
+            [90.0, 96.0, 94.0, 97.0],
+        ),
+    )
+
+    assert llm_calls == []
+    assert report["decisions"][0]["executed"] is True
+    plans = TradePlanStore(tmp_path / "state" / "trade_plans.json").open_plans()
+    assert len(plans) == 1
+    assert plans[0].hard_stop_price == pytest.approx(93.0)
+    events = [
+        json.loads(line)
+        for line in (tmp_path / "state" / "events.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    resolved_events = [item for item in events if item.get("event") == "armed_plan_resolved"]
+    assert resolved_events[0]["trace"]["hard_stop"]["level"] == pytest.approx(94.0)
+    assert resolved_events[0]["trace"]["hard_stop"]["resolved_price"] == pytest.approx(93.0)
+
+
+def test_plan_arme_structural_sans_barres_au_tir_est_annule(
+    monkeypatch, tmp_path, patch_batch, make_data_source
+) -> None:
+    def remove_fresh_bars(symbol, *, entry_price, cockpit, tradable_bars_by_symbol):
+        tradable_bars_by_symbol.pop(symbol, None)
+        return None
+
+    monkeypatch.setattr(daemon, "_reference_volatility_for_symbol", remove_fresh_bars)
+    trigger = _armed_trigger(
+        exit_plan={"hard_stop": {"type": "structural", "anchor": "swing_low", "window": 3}},
+    )
+
+    report, llm_calls = _run(monkeypatch, tmp_path, patch_batch, make_data_source, trigger)
+
+    assert llm_calls == ["SPY"]
+    assert report["decisions"][0]["executed"] is False
+    assert "SPY" not in SimBroker(tmp_path / "state" / "broker.json").positions()
+    events = (tmp_path / "state" / "events.jsonl").read_text(encoding="utf-8")
+    assert "armed_plan_cancelled:exit_unresolved:hard_stop_bars_unavailable" in events
 
 
 def test_plan_arme_persiste_take_profit_risk_multiple_resolu(

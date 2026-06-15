@@ -10,17 +10,29 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
 
+from .features import swing_high, swing_low, vwap
 from .indicator_watch import normalize_indicator_watch
 
 PositionSide = Literal["LONG", "SHORT"]
 MoveStopTo = Literal["breakeven", "none"]
 TrailingStopTrailType = Literal["price", "percent", "volatility_multiple"]
+StructuralHardStopAnchor = Literal["swing_low", "swing_high", "vwap"]
 
 TRAILING_STOP_TRAIL_TYPES: tuple[TrailingStopTrailType, ...] = (
     "price",
     "percent",
     "volatility_multiple",
 )
+STRUCTURAL_HARD_STOP_ANCHORS: tuple[StructuralHardStopAnchor, ...] = (
+    "swing_low",
+    "swing_high",
+    "vwap",
+)
+STRUCTURAL_HARD_STOP_LEVELS = {
+    "swing_low": swing_low,
+    "swing_high": swing_high,
+    "vwap": vwap,
+}
 
 
 class InvalidExitPlanError(ValueError):
@@ -119,6 +131,25 @@ def _validate_optional_pct_bounds(raw: dict, field_name: str) -> None:
         max_pct = _bounded_fraction(raw["max_pct"], f"{field_name}_max_pct")
     if min_pct is not None and max_pct is not None and min_pct > max_pct:
         raise InvalidExitPlanError(f"{field_name}_min_pct_gt_max_pct")
+
+
+def _positive_int(raw: object, field_name: str) -> int:
+    if isinstance(raw, bool) or not isinstance(raw, int) or raw <= 0:
+        raise InvalidExitPlanError(f"{field_name}_must_be_positive")
+    return raw
+
+
+def _validate_structural_hard_stop(hard_stop: dict) -> None:
+    if hard_stop.get("anchor") not in STRUCTURAL_HARD_STOP_ANCHORS:
+        raise InvalidExitPlanError("hard_stop_anchor_unsupported")
+    _positive_int(hard_stop.get("window"), "hard_stop_window")
+    if hard_stop.get("buffer_pct") is not None and hard_stop.get("buffer_atr") is not None:
+        raise InvalidExitPlanError("hard_stop_buffer_ambiguous")
+    if hard_stop.get("buffer_pct") is not None:
+        _positive_float(hard_stop["buffer_pct"], "hard_stop_buffer_pct")
+    if hard_stop.get("buffer_atr") is not None:
+        _positive_float(hard_stop["buffer_atr"], "hard_stop_buffer_atr")
+    _validate_optional_pct_bounds(hard_stop, "hard_stop")
 
 
 def _non_negative_float(raw: object, field_name: str) -> float:
@@ -250,6 +281,8 @@ def validate_exit_plan(
             elif allow_unresolved and hard_stop_type == "volatility_multiple":
                 _positive_float(hard_stop.get("multiple"), "hard_stop_multiple")
                 _validate_optional_pct_bounds(hard_stop, "hard_stop")
+            elif allow_unresolved and hard_stop_type == "structural":
+                _validate_structural_hard_stop(hard_stop)
             else:
                 raise InvalidExitPlanError("hard_stop_type_unsupported")
         else:
@@ -335,12 +368,19 @@ def _clamp_distance_to_pct_bounds(
     return distance, clamped
 
 
+def _copy_trace_fields(trace: dict, raw: dict, fields: tuple[str, ...]) -> None:
+    for field in fields:
+        if raw.get(field) is not None:
+            trace[field] = raw[field]
+
+
 def resolve_exit_plan(
     raw_exit_plan: dict | None,
     *,
     entry_price: float,
     side: PositionSide,
     reference_volatility: float | None = None,
+    bars: list | None = None,
 ) -> tuple[dict | None, dict]:
     if raw_exit_plan is None:
         return None, {}
@@ -396,6 +436,7 @@ def resolve_exit_plan(
                     "clamped": clamped,
                     "resolved_price": resolved_stop,
                 }
+                _copy_trace_fields(trace["hard_stop"], hard_stop, ("min_pct", "max_pct"))
             elif hard_stop_type == "volatility_multiple":
                 if reference_volatility is None:
                     raise InvalidExitPlanError("hard_stop_volatility_unavailable")
@@ -424,6 +465,77 @@ def resolve_exit_plan(
                     "clamped": clamped,
                     "resolved_price": resolved_stop,
                 }
+                _copy_trace_fields(
+                    trace["hard_stop"],
+                    hard_stop,
+                    ("source", "timeframe", "window", "min_pct", "max_pct"),
+                )
+            elif hard_stop_type == "structural":
+                if not bars:
+                    raise InvalidExitPlanError("hard_stop_bars_unavailable")
+                anchor = str(hard_stop["anchor"])
+                window = _positive_int(hard_stop.get("window"), "hard_stop_window")
+                level = STRUCTURAL_HARD_STOP_LEVELS[anchor](bars, window)
+                if level is None:
+                    raise InvalidExitPlanError("hard_stop_level_unavailable")
+                level_value = float(level)
+                if (
+                    (side == "LONG" and level_value >= entry_price_value)
+                    or (side == "SHORT" and level_value <= entry_price_value)
+                ):
+                    raise InvalidExitPlanError("hard_stop_structural_wrong_side")
+                volatility: float | None = None
+                if hard_stop.get("buffer_pct") is not None:
+                    buffer = _positive_float(hard_stop["buffer_pct"], "hard_stop_buffer_pct")
+                    buffer *= entry_price_value
+                elif hard_stop.get("buffer_atr") is not None:
+                    if reference_volatility is None:
+                        raise InvalidExitPlanError("hard_stop_buffer_volatility_unavailable")
+                    volatility = _positive_float(reference_volatility, "reference_volatility")
+                    buffer = _positive_float(hard_stop["buffer_atr"], "hard_stop_buffer_atr")
+                    buffer *= volatility
+                else:
+                    buffer = 0.0
+
+                raw_stop = level_value - buffer if side == "LONG" else level_value + buffer
+                distance = (
+                    entry_price_value - raw_stop
+                    if side == "LONG"
+                    else raw_stop - entry_price_value
+                )
+                if distance <= 0:
+                    raise InvalidExitPlanError("hard_stop_structural_wrong_side")
+                distance, clamped = _clamp_distance_to_pct_bounds(
+                    distance=distance,
+                    entry_price=entry_price_value,
+                    raw=hard_stop,
+                )
+                resolved_stop = (
+                    entry_price_value - distance
+                    if side == "LONG"
+                    else entry_price_value + distance
+                )
+                if resolved_stop <= 0:
+                    raise InvalidExitPlanError("hard_stop_resolved_non_positive")
+                resolved["hard_stop"] = {"type": "price", "price": resolved_stop}
+                stop_distance = distance
+                trace["hard_stop"] = {
+                    "spec_type": "structural",
+                    "anchor": anchor,
+                    "window": window,
+                    "level": level_value,
+                    "buffer": buffer,
+                    "distance": distance,
+                    "clamped": clamped,
+                    "resolved_price": resolved_stop,
+                }
+                if volatility is not None:
+                    trace["hard_stop"]["reference_volatility"] = volatility
+                _copy_trace_fields(
+                    trace["hard_stop"],
+                    hard_stop,
+                    ("min_pct", "max_pct"),
+                )
         else:
             resolved_stop = float(hard_stop)
             stop_distance = abs(entry_price_value - resolved_stop)

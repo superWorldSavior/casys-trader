@@ -282,6 +282,12 @@ def test_execute_order_avec_hard_stop_relatif_est_arme() -> None:
     for hard_stop in (
         {"type": "percent", "percent": 0.025, "min_pct": 0.01, "max_pct": 0.05},
         {"type": "volatility_multiple", "multiple": 1.8, "min_pct": 0.01, "max_pct": 0.05},
+        {
+            "type": "structural",
+            "anchor": "swing_low",
+            "window": 20,
+            "buffer_pct": 0.001,
+        },
     ):
         order = _valid_order()
         order["exit_plan"] = {"hard_stop": hard_stop}
@@ -300,6 +306,8 @@ def test_execute_order_avec_hard_stop_relatif_malforme_degrade() -> None:
     for hard_stop in (
         {"type": "percent", "percent": 5},
         {"type": "volatility_multiple", "multiple": -1},
+        {"type": "structural", "window": 20},
+        {"type": "structural", "anchor": "swing_low", "window": 0},
     ):
         order = _valid_order()
         order["exit_plan"] = {"hard_stop": hard_stop}

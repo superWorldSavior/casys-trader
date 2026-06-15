@@ -69,7 +69,17 @@ def test_section_plans_armes_documente_hard_stop_relatif_et_take_profit_en_r() -
 
     assert '{type:"percent", percent:<0..1>, min_pct?, max_pct?}' in armed_contract
     assert '{type:"volatility_multiple", multiple:<requis, >0>, min_pct?, max_pct?}' in armed_contract
+    assert (
+        '{type:"structural", anchor:"swing_low|swing_high|vwap", '
+        "window:<requis, >0>, buffer_pct?|buffer_atr?, min_pct?, max_pct?}"
+    ) in armed_contract
     assert "résolu en prix au déclenchement" in armed_contract
+    assert "barres FRAÎCHES" in armed_contract
+    assert "window est en barres du timeframe runtime" in armed_contract
+    assert "niveau d'invalidation chartiste" in armed_contract
+    assert "swing_low" in armed_contract
+    assert "swing_high" in armed_contract
+    assert "vwap" in armed_contract
     assert '{type:"risk_multiple", r:<requis, >0>, fraction?}' in armed_contract
 
 

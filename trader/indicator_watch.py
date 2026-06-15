@@ -286,6 +286,8 @@ def _armed_hard_stop_is_specified(exit_plan: object) -> bool:
         return hard_stop.get("percent") is not None
     if hard_stop_type == "volatility_multiple":
         return hard_stop.get("multiple") is not None
+    if hard_stop_type == "structural":
+        return hard_stop.get("anchor") is not None
     return False
 
 

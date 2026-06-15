@@ -367,15 +367,20 @@ def _indicator_watch_vocabulary() -> str:
         "`on_trigger:\"EXECUTE_ORDER\"` arme un scénario d'entrée que le daemon "
         "exécutera au déclenchement SANS re-appel modèle : fournis `order` = "
         '{"intent":"OPEN_LONG|OPEN_SHORT","qty":<number>,"confidence":<0..1>,'
-        '"exit_plan":{"hard_stop":{"type":"price|percent|volatility_multiple",...},...},"rationale":"..."}. '
+        '"exit_plan":{"hard_stop":{"type":"price|percent|volatility_multiple|structural",...},...},"rationale":"..."}. '
         "Contrat strict à l'armement : hard_stop peut être en prix OU relatif, "
         "hard_stop requis, qty>0, "
         "confidence explicite — sinon la watch est dégradée en WAKE_WITH_ORDER_INTENT "
         "(l'ordre repassera par toi). Schéma relatif armé : "
         '`hard_stop` {type:"percent", percent:<0..1>, min_pct?, max_pct?} ou '
-        '{type:"volatility_multiple", multiple:<requis, >0>, min_pct?, max_pct?}; '
+        '{type:"volatility_multiple", multiple:<requis, >0>, min_pct?, max_pct?} ou '
+        '{type:"structural", anchor:"swing_low|swing_high|vwap", '
+        "window:<requis, >0>, buffer_pct?|buffer_atr?, min_pct?, max_pct?}; "
         '`take_profits[]` peut utiliser {type:"risk_multiple", r:<requis, >0>, fraction?}. '
-        "Le hard_stop relatif est résolu en prix au déclenchement, puis les TP en R aussi. "
+        "Le hard_stop relatif est résolu en prix au déclenchement sur barres FRAÎCHES, puis les TP en R aussi. "
+        "Pour structural, window est en barres du timeframe runtime. "
+        "Ancrer le stop à un niveau d'invalidation chartiste (sous le swing_low pour un long, "
+        "au-dessus du swing_high pour un short) est souvent plus robuste qu'une distance fixe. "
         "RECOMMANDE volatility_multiple pour un plan "
         "armé : le daemon le résout sur données FRAÎCHES au déclenchement ; un "
         "prix absolu figé à l'armement devient mal calibré si la volatilité bouge "

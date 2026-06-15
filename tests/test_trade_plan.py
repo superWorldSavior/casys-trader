@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 import pytest
 
 import trader.exit_engine as exit_engine
+from trader.tools.market import Bar
 from trader.trade_plan import (
     InvalidExitPlanError,
     TradePlan,
@@ -12,6 +13,23 @@ from trader.trade_plan import (
     trade_plan_from_dict,
     validate_exit_plan,
 )
+
+
+def _bar(
+    ts: str,
+    close: float,
+    high: float | None = None,
+    low: float | None = None,
+    volume: float = 1000.0,
+) -> Bar:
+    return Bar(
+        ts=ts,
+        open=close,
+        high=high if high is not None else close + 1.0,
+        low=low if low is not None else close - 1.0,
+        close=close,
+        volume=volume,
+    )
 
 
 def _exit_plan() -> dict:
@@ -178,9 +196,32 @@ def test_validate_exit_plan_accepte_hard_stop_volatilite_non_resolu_sans_referen
     )
 
 
+def test_validate_exit_plan_accepte_hard_stop_structural_non_resolu_si_autorise() -> None:
+    validate_exit_plan(
+        {
+            "hard_stop": {
+                "type": "structural",
+                "anchor": "swing_low",
+                "window": 20,
+                "timeframe": "15m",
+                "buffer_pct": 0.001,
+                "min_pct": 0.005,
+                "max_pct": 0.03,
+            },
+            "take_profits": [{"price": 105.0, "fraction": 1.0}],
+        },
+        allow_unresolved=True,
+    )
+
+
 def test_validate_exit_plan_garde_contrat_resolu_par_defaut() -> None:
     with pytest.raises(InvalidExitPlanError, match="hard_stop_type_unsupported"):
         validate_exit_plan({"hard_stop": {"type": "percent", "percent": 0.04}})
+
+    with pytest.raises(InvalidExitPlanError, match="hard_stop_type_unsupported"):
+        validate_exit_plan(
+            {"hard_stop": {"type": "structural", "anchor": "swing_low", "window": 20}}
+        )
 
     with pytest.raises(InvalidExitPlanError, match="take_profits_0_price_required"):
         validate_exit_plan({"take_profits": [{"type": "risk_multiple", "r": 1.5}]})
@@ -204,6 +245,64 @@ def test_validate_exit_plan_garde_contrat_resolu_par_defaut() -> None:
         (
             {"hard_stop": {"type": "volatility_multiple", "multiple": 0}},
             "hard_stop_multiple_must_be_positive",
+        ),
+        (
+            {"hard_stop": {"type": "structural", "anchor": "pivot_low", "window": 20}},
+            "hard_stop_anchor_unsupported",
+        ),
+        (
+            {"hard_stop": {"type": "structural", "anchor": "swing_low"}},
+            "hard_stop_window_must_be_positive",
+        ),
+        (
+            {"hard_stop": {"type": "structural", "anchor": "swing_low", "window": 0}},
+            "hard_stop_window_must_be_positive",
+        ),
+        (
+            {
+                "hard_stop": {
+                    "type": "structural",
+                    "anchor": "swing_low",
+                    "window": 20,
+                    "buffer_pct": 0,
+                }
+            },
+            "hard_stop_buffer_pct_must_be_positive",
+        ),
+        (
+            {
+                "hard_stop": {
+                    "type": "structural",
+                    "anchor": "swing_low",
+                    "window": 20,
+                    "buffer_atr": 0,
+                }
+            },
+            "hard_stop_buffer_atr_must_be_positive",
+        ),
+        (
+            {
+                "hard_stop": {
+                    "type": "structural",
+                    "anchor": "swing_low",
+                    "window": 20,
+                    "buffer_pct": 0.001,
+                    "buffer_atr": 0.5,
+                }
+            },
+            "hard_stop_buffer_ambiguous",
+        ),
+        (
+            {
+                "hard_stop": {
+                    "type": "structural",
+                    "anchor": "swing_low",
+                    "window": 20,
+                    "min_pct": 0.06,
+                    "max_pct": 0.05,
+                }
+            },
+            "hard_stop_min_pct_gt_max_pct",
         ),
         (
             {"take_profits": [{"type": "risk_multiple", "r": 0}]},
@@ -316,6 +415,252 @@ def test_resolve_exit_plan_clampe_hard_stop_percent(
     validate_exit_plan(resolved)
     assert trace["hard_stop"]["distance"] == expected_distance
     assert trace["hard_stop"]["clamped"] is True
+
+
+@pytest.mark.parametrize(
+    ("side", "anchor", "expected_stop", "expected_distance"),
+    [
+        ("LONG", "swing_low", 91.0, 9.0),
+        ("SHORT", "swing_high", 110.0, 10.0),
+    ],
+)
+def test_resolve_exit_plan_hard_stop_structural_par_side(
+    side: str,
+    anchor: str,
+    expected_stop: float,
+    expected_distance: float,
+) -> None:
+    bars = [
+        _bar("t1", 100.0, high=105.0, low=96.0),
+        _bar("t2", 101.0, high=108.0, low=93.0),
+        _bar("t3", 102.0, high=104.0, low=92.0),
+        _bar("t4", 103.0, high=107.0, low=94.0),
+    ]
+
+    resolved, trace = resolve_exit_plan(
+        {
+            "hard_stop": {
+                "type": "structural",
+                "anchor": anchor,
+                "window": 3,
+                "timeframe": "1h",
+                "buffer_pct": 0.01 if side == "LONG" else 0.02,
+            },
+            "take_profits": [{"type": "risk_multiple", "r": 2.0, "fraction": 0.5}],
+        },
+        entry_price=100.0,
+        side=side,  # type: ignore[arg-type]
+        bars=bars,
+    )
+
+    assert resolved is not None
+    assert resolved["hard_stop"] == {"type": "price", "price": expected_stop}
+    expected_tp = (
+        100.0 + expected_distance * 2.0
+        if side == "LONG"
+        else 100.0 - expected_distance * 2.0
+    )
+    assert resolved["take_profits"][0]["price"] == expected_tp
+    validate_exit_plan(resolved)
+    assert trace["hard_stop"] == {
+        "spec_type": "structural",
+        "anchor": anchor,
+        "window": 3,
+        "level": 92.0 if side == "LONG" else 108.0,
+        "buffer": 1.0 if side == "LONG" else 2.0,
+        "distance": expected_distance,
+        "clamped": False,
+        "resolved_price": expected_stop,
+    }
+
+
+def test_resolve_exit_plan_hard_stop_structural_buffer_atr() -> None:
+    resolved, trace = resolve_exit_plan(
+        {
+            "hard_stop": {
+                "type": "structural",
+                "anchor": "swing_low",
+                "window": 2,
+                "buffer_atr": 0.5,
+            }
+        },
+        entry_price=100.0,
+        side="LONG",
+        reference_volatility=4.0,
+        bars=[
+            _bar("t1", 100.0, high=102.0, low=96.0),
+            _bar("t2", 100.0, high=101.0, low=94.0),
+        ],
+    )
+
+    assert resolved is not None
+    assert resolved["hard_stop"] == {"type": "price", "price": 92.0}
+    validate_exit_plan(resolved)
+    assert trace["hard_stop"]["buffer"] == 2.0
+    assert trace["hard_stop"]["reference_volatility"] == 4.0
+
+
+@pytest.mark.parametrize(
+    ("hard_stop", "expected_stop", "expected_distance"),
+    [
+        (
+            {"type": "structural", "anchor": "swing_low", "window": 1, "min_pct": 0.05},
+            95.0,
+            5.0,
+        ),
+        (
+            {"type": "structural", "anchor": "swing_low", "window": 1, "max_pct": 0.08},
+            92.0,
+            8.0,
+        ),
+    ],
+)
+def test_resolve_exit_plan_clampe_hard_stop_structural(
+    hard_stop: dict,
+    expected_stop: float,
+    expected_distance: float,
+) -> None:
+    structural_low = 98.0 if "min_pct" in hard_stop else 80.0
+    bars = [_bar("t1", 100.0, high=101.0, low=structural_low)]
+
+    resolved, trace = resolve_exit_plan(
+        {"hard_stop": hard_stop},
+        entry_price=100.0,
+        side="LONG",
+        bars=bars,
+    )
+
+    assert resolved is not None
+    assert resolved["hard_stop"] == {"type": "price", "price": expected_stop}
+    validate_exit_plan(resolved)
+    assert trace["hard_stop"]["distance"] == expected_distance
+    assert trace["hard_stop"]["clamped"] is True
+
+
+def test_resolve_exit_plan_refuse_structural_mauvais_cote() -> None:
+    with pytest.raises(InvalidExitPlanError, match="hard_stop_structural_wrong_side"):
+        resolve_exit_plan(
+            {"hard_stop": {"type": "structural", "anchor": "swing_low", "window": 2}},
+            entry_price=100.0,
+            side="LONG",
+            bars=[
+                _bar("t1", 103.0, high=105.0, low=101.0),
+                _bar("t2", 104.0, high=106.0, low=102.0),
+            ],
+        )
+
+
+@pytest.mark.parametrize(
+    ("anchor", "bars"),
+    [
+        (
+            "swing_low",
+            [
+                _bar("t1", 103.0, high=105.0, low=101.0),
+                _bar("t2", 104.0, high=106.0, low=102.0),
+            ],
+        ),
+        (
+            "vwap",
+            [
+                _bar("t1", 102.0, high=103.0, low=101.0),
+                _bar("t2", 102.0, high=103.0, low=101.0),
+            ],
+        ),
+    ],
+)
+def test_resolve_exit_plan_refuse_structural_niveau_mauvais_cote_avant_buffer(
+    anchor: str,
+    bars: list[Bar],
+) -> None:
+    with pytest.raises(InvalidExitPlanError, match="hard_stop_structural_wrong_side"):
+        resolve_exit_plan(
+            {
+                "hard_stop": {
+                    "type": "structural",
+                    "anchor": anchor,
+                    "window": 2,
+                    "buffer_pct": 0.03,
+                }
+            },
+            entry_price=100.0,
+            side="LONG",
+            bars=bars,
+        )
+
+
+def test_resolve_exit_plan_refuse_structural_sans_barres() -> None:
+    with pytest.raises(InvalidExitPlanError, match="hard_stop_bars_unavailable"):
+        resolve_exit_plan(
+            {"hard_stop": {"type": "structural", "anchor": "swing_low", "window": 2}},
+            entry_price=100.0,
+            side="LONG",
+        )
+
+
+def test_resolve_exit_plan_refuse_structural_level_indisponible() -> None:
+    with pytest.raises(InvalidExitPlanError, match="hard_stop_level_unavailable"):
+        resolve_exit_plan(
+            {"hard_stop": {"type": "structural", "anchor": "vwap", "window": 2}},
+            entry_price=100.0,
+            side="LONG",
+            bars=[
+                _bar("t1", 95.0, high=96.0, low=94.0, volume=0.0),
+                _bar("t2", 96.0, high=97.0, low=95.0, volume=0.0),
+            ],
+        )
+
+
+def test_resolve_exit_plan_refuse_structural_buffer_atr_sans_volatilite_reference() -> None:
+    with pytest.raises(InvalidExitPlanError, match="hard_stop_buffer_volatility_unavailable"):
+        resolve_exit_plan(
+            {
+                "hard_stop": {
+                    "type": "structural",
+                    "anchor": "swing_low",
+                    "window": 2,
+                    "buffer_atr": 0.5,
+                }
+            },
+            entry_price=100.0,
+            side="LONG",
+            bars=[_bar("t1", 100.0, high=102.0, low=94.0)],
+        )
+
+
+def test_resolve_exit_plan_trace_volatility_multiple_conserve_champs_spec() -> None:
+    resolved, trace = resolve_exit_plan(
+        {
+            "hard_stop": {
+                "type": "volatility_multiple",
+                "multiple": 2.0,
+                "source": "atr",
+                "timeframe": "15m",
+                "window": 14,
+                "min_pct": 0.01,
+                "max_pct": 0.10,
+            }
+        },
+        entry_price=100.0,
+        side="LONG",
+        reference_volatility=2.0,
+    )
+
+    assert resolved is not None
+    validate_exit_plan(resolved)
+    assert trace["hard_stop"] == {
+        "spec_type": "volatility_multiple",
+        "multiple": 2.0,
+        "reference_volatility": 2.0,
+        "source": "atr",
+        "timeframe": "15m",
+        "window": 14,
+        "min_pct": 0.01,
+        "max_pct": 0.10,
+        "distance": 4.0,
+        "clamped": False,
+        "resolved_price": 96.0,
+    }
 
 
 def test_resolve_exit_plan_refuse_volatility_multiple_sans_volatilite_reference() -> None:

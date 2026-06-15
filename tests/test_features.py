@@ -1,15 +1,27 @@
-from trader.features import build_indicator_snapshot, compute_indicator_values
+from trader.features import (
+    build_indicator_snapshot,
+    compute_indicator_values,
+    swing_high,
+    swing_low,
+    vwap,
+)
 from trader.tools.market import Bar
 
 
-def _bar(ts: str, close: float, high: float | None = None, low: float | None = None) -> Bar:
+def _bar(
+    ts: str,
+    close: float,
+    high: float | None = None,
+    low: float | None = None,
+    volume: float = 1000.0,
+) -> Bar:
     return Bar(
         ts=ts,
         open=close - 0.5,
         high=high if high is not None else close + 1.0,
         low=low if low is not None else close - 1.0,
         close=close,
-        volume=1000.0,
+        volume=volume,
     )
 
 
@@ -106,3 +118,44 @@ def test_compute_indicator_values_calcule_signaux_chartistes() -> None:
     assert values["chart_breakout"] == 1.0
     assert values["trend_slope"] > 0
     assert values["range_position"] > 0.8
+
+
+def test_swing_low_et_high_extraient_les_extremes_des_dernieres_barres() -> None:
+    bars = [
+        _bar("t1", 100.0, high=108.0, low=96.0),
+        _bar("t2", 101.0, high=105.0, low=98.0),
+        _bar("t3", 102.0, high=111.0, low=99.0),
+        _bar("t4", 103.0, high=107.0, low=97.0),
+    ]
+
+    assert swing_low(bars, 3) == 97.0
+    assert swing_high(bars, 3) == 111.0
+
+
+def test_swing_levels_gerent_vide_et_window_non_positive() -> None:
+    bars = [
+        _bar("t1", 100.0, high=110.0, low=95.0),
+        _bar("t2", 101.0, high=104.0, low=99.0),
+    ]
+
+    assert swing_low([], 20) is None
+    assert swing_high([], 20) is None
+    assert swing_low(bars, 0) == 95.0
+    assert swing_high(bars, -3) == 110.0
+
+
+def test_vwap_calcule_sur_la_fenetre_disponible() -> None:
+    bars = [
+        _bar("t1", 100.0, high=103.0, low=97.0, volume=10.0),
+        _bar("t2", 106.0, high=109.0, low=103.0, volume=20.0),
+        _bar("t3", 112.0, high=115.0, low=109.0, volume=30.0),
+    ]
+
+    assert vwap(bars, 2) == 109.6
+
+
+def test_vwap_retourne_none_sans_barres_ou_volume_total_non_positif() -> None:
+    assert vwap([], 10) is None
+    bars = [_bar("t1", 100.0, volume=0.0), _bar("t2", 101.0, volume=-1.0)]
+
+    assert vwap(bars, 2) is None

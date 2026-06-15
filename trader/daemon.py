@@ -1503,6 +1503,7 @@ def run_cycle(
                         entry_price=prices[sym],
                         side=intent_side,  # type: ignore[arg-type]
                         reference_volatility=ref_vol,
+                        bars=tradable_bars_by_symbol.get(sym),
                     )
                 except InvalidExitPlanError as exc:
                     cancel_reason = f"armed_plan_cancelled:exit_unresolved:{exc}"
