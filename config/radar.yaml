@@ -1,0 +1,16 @@
+# Parametres du radar (calibrables via le bench de rotation). Cf registre D9.
+cap_m: 25
+delta: 0.05
+dwell_days: 3
+atr_floor: 0.01
+amplitude_cap: 0.05
+min_coverage: 0.8
+emergency_score: 0.0
+w_trend: 1.0
+w_rs: 1.0
+w_amp: 1.0
+benchmarks:
+  US: SPY
+  EU: ^FCHI
+  TW: ^TWII
+default_benchmark: SPY
