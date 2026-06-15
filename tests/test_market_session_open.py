@@ -12,15 +12,18 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from trader.tools.market import (
+    _VENUE_BY_SUFFIX,
+    _VENUE_BY_SYMBOL,
     clamp_wake_to_session_open,
     most_recent_session_open,
     next_regular_session_open,
     session_snapshot,
 )
+from trader.rotation_wiring import _EU_SUFFIXES, _EU_SYMBOLS
 
 
-def _utc(y, mo, d, h, mi=0) -> datetime:
-    return datetime(y, mo, d, h, mi, tzinfo=timezone.utc)
+def _utc(y, mo, d, h, mi=0, sec=0) -> datetime:
+    return datetime(y, mo, d, h, mi, sec, tzinfo=timezone.utc)
 
 
 def test_vendredi_soir_saute_au_lundi_ete_edt():
@@ -206,6 +209,12 @@ def test_session_snapshot_us_en_seance():
     assert snap == {"open": True, "since_open_m": 60, "to_close_m": 330}
 
 
+def test_session_snapshot_us_hors_seance_avant_ouverture():
+    # Lundi 15/06 12h00 UTC = 08h00 EDT : Wall Street n'est pas encore ouverte.
+    snap = session_snapshot("NVDA", now=_utc(2026, 6, 15, 12, 0))
+    assert snap == {"open": False, "since_open_m": None, "to_close_m": None}
+
+
 def test_session_snapshot_twse_en_seance():
     # Lundi 15/06 02h00 UTC = 10h00 Taipei (open 09h00, close 13h30) : en séance.
     snap = session_snapshot("2330.TW", now=_utc(2026, 6, 15, 2, 0))
@@ -224,6 +233,31 @@ def test_session_snapshot_paris_en_seance():
     assert snap == {"open": True, "since_open_m": 60, "to_close_m": 450}
 
 
+def test_session_snapshot_amsterdam_en_seance_matin_eu():
+    # Lundi 15/06 07h21:39 UTC = 09h21 Amsterdam : Euronext Amsterdam est ouvert.
+    snap = session_snapshot("ASML.AS", now=_utc(2026, 6, 15, 7, 21, 39))
+    assert snap["open"] is True
+
+
+def test_session_snapshot_londres_en_seance_avant_ouverture_us():
+    # Lundi 15/06 07h30 UTC = 08h30 Londres, mais 03h30 EDT : le fallback US
+    # serait fermé, la place LSE doit être ouverte.
+    snap = session_snapshot("AZN.L", now=_utc(2026, 6, 15, 7, 30))
+    assert snap == {"open": True, "since_open_m": 30, "to_close_m": 480}
+
+
+def test_session_snapshot_helsinki_en_seance_a_l_heure_locale():
+    # Lundi 15/06 07h30 UTC = 10h30 Helsinki (open 10h00 EEST) : en séance.
+    snap = session_snapshot("NOKIA.HE", now=_utc(2026, 6, 15, 7, 30))
+    assert snap == {"open": True, "since_open_m": 30, "to_close_m": 480}
+
+
+def test_session_snapshot_eu_weekend_fermee():
+    # Samedi 13/06 07h30 UTC serait dans la plage Amsterdam un jour ouvré.
+    snap = session_snapshot("ASML.AS", now=_utc(2026, 6, 13, 7, 30))
+    assert snap == {"open": False, "since_open_m": None, "to_close_m": None}
+
+
 def test_session_snapshot_weekend_fermee():
     # Samedi 13/06 : tout est fermé, même en heures « de séance ».
     snap = session_snapshot("SPY", now=_utc(2026, 6, 13, 14, 30))
@@ -239,3 +273,15 @@ def test_session_snapshot_fx_toujours_ouvert_en_semaine():
 def test_session_snapshot_fx_ferme_le_weekend():
     snap = session_snapshot("EURUSD=X", now=_utc(2026, 6, 13, 12, 0))
     assert snap == {"open": False, "since_open_m": None, "to_close_m": None}
+
+
+def test_market_session_mapping_couvre_tous_les_suffixes_eu_du_pool():
+    missing_suffixes = sorted(set(_EU_SUFFIXES) - set(_VENUE_BY_SUFFIX))
+    missing_symbols = sorted(
+        symbol
+        for symbol in _EU_SYMBOLS
+        if symbol not in _VENUE_BY_SYMBOL
+        and not any(symbol.endswith(suffix) for suffix in _VENUE_BY_SUFFIX)
+    )
+    assert missing_suffixes == []
+    assert missing_symbols == []

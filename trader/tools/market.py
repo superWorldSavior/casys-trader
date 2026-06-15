@@ -108,6 +108,18 @@ _VENUE_BY_SUFFIX: dict[str, _Venue] = {
     ".TW": (ZoneInfo("Asia/Taipei"), 9, 0, 13, 30),     # TWSE (pas de DST)
     ".PA": (ZoneInfo("Europe/Paris"), 9, 0, 17, 30),    # Euronext Paris
     ".DE": (ZoneInfo("Europe/Berlin"), 9, 0, 17, 30),   # XETRA
+    ".AS": (ZoneInfo("Europe/Amsterdam"), 9, 0, 17, 30), # Euronext Amsterdam
+    ".BR": (ZoneInfo("Europe/Brussels"), 9, 0, 17, 30),  # Euronext Brussels
+    ".LS": (ZoneInfo("Europe/Lisbon"), 8, 0, 16, 30),    # Euronext Lisbon
+    ".SW": (ZoneInfo("Europe/Zurich"), 9, 0, 17, 30),    # SIX Swiss
+    ".MI": (ZoneInfo("Europe/Rome"), 9, 0, 17, 30),      # Borsa Italiana
+    ".MC": (ZoneInfo("Europe/Madrid"), 9, 0, 17, 30),    # BME Madrid
+    ".L": (ZoneInfo("Europe/London"), 8, 0, 16, 30),     # LSE
+    ".CO": (ZoneInfo("Europe/Copenhagen"), 9, 0, 17, 0), # Nasdaq Copenhagen
+    ".ST": (ZoneInfo("Europe/Stockholm"), 9, 0, 17, 30), # Nasdaq Stockholm
+    ".HE": (ZoneInfo("Europe/Helsinki"), 10, 0, 18, 30), # Nasdaq Helsinki
+    ".VI": (ZoneInfo("Europe/Vienna"), 9, 0, 17, 30),    # Wiener Börse
+    ".OL": (ZoneInfo("Europe/Oslo"), 9, 0, 16, 20),      # Oslo Børs
 }
 _VENUE_BY_SYMBOL: dict[str, _Venue] = {
     "^FCHI": (ZoneInfo("Europe/Paris"), 9, 0, 17, 30),  # CAC 40 — coté à Paris
