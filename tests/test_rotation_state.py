@@ -138,6 +138,34 @@ class TestAdvanceState:
         advance_state(state, ["AAPL"])
         assert state["dwell_days_by_symbol"] == original_dwell
 
+    def test_last_valid_explicit_via_kwarg(self):
+        """last_valid kwarg fourni → last_valid_universe = last_valid, pas new_hot_set."""
+        state = self._base_state()
+        hot_ns = ["AAPL"]         # hot non-sticky
+        final = ["AAPL", "STICKY"]  # final = hot + sticky
+
+        result = advance_state(state, hot_ns, last_valid=final)
+        assert result["current_hot_set"] == hot_ns, "current_hot_set = hot non-sticky"
+        assert result["last_valid_universe"] == final, (
+            "last_valid_universe doit être last_valid kwarg, pas new_hot_set"
+        )
+        # STICKY ne doit PAS être dans current_hot_set ni dwell
+        assert "STICKY" not in result["current_hot_set"]
+        assert "STICKY" not in result["dwell_days_by_symbol"]
+
+    def test_last_valid_none_falls_back_to_new_hot_set(self):
+        """last_valid=None (défaut) → last_valid_universe = new_hot_set (comportement actuel)."""
+        state = self._base_state()
+        new = ["GOOG", "TSLA"]
+        result = advance_state(state, new, last_valid=None)
+        assert result["last_valid_universe"] == new
+
+    def test_last_valid_vide_new_hot_set_non_vide(self):
+        """last_valid=[] avec new_hot_set non vide → last_valid_universe = [] (kwarg prioritaire)."""
+        state = self._base_state()
+        result = advance_state(state, ["AAPL"], last_valid=[])
+        assert result["last_valid_universe"] == []
+
 
 # ---------------------------------------------------------------------------
 # save_rotation_state

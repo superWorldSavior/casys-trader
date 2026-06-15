@@ -9,9 +9,10 @@ from typing import Any
 
 import yaml
 
+from trader.radar import build_radar_snapshot, write_snapshot
 from trader.radar_data import CoverageError
 from trader.rotation_ledger import log_rotation
-from trader.rotation_state import advance_state, load_rotation_state, save_rotation_state
+from trader.rotation_state import advance_state, load_rotation_state, save_rotation_state, seed_state
 
 
 def apply_hysteresis(
@@ -244,9 +245,27 @@ def run(
     ledger_path = Path(state_dir) / "rotation_ledger.jsonl"
     alerts: list[str] = []
 
+    # B. Bootstrap : si état vide ET universe.yaml présent → seed depuis universe.yaml
+    _is_empty_state = (
+        state["current_hot_set"] == []
+        and state["dwell_days_by_symbol"] == {}
+        and state["last_valid_universe"] == []
+    )
+    if _is_empty_state:
+        _universe_yaml_path = Path(config_dir) / "universe.yaml"
+        if _universe_yaml_path.exists():
+            try:
+                _universe_content = yaml.safe_load(_universe_yaml_path.read_text(encoding="utf-8"))
+                _universe_symbols = _universe_content.get("symbols", [])
+                if _universe_symbols:
+                    state = seed_state(_universe_symbols)
+            except Exception:
+                pass  # garder l'état vide si lecture échoue
+
     # 1. Ranking — peut lever CoverageError -> fail-safe : on NE réécrit PAS l'univers
     try:
-        ranked = rank_fn()["ranked"]
+        rank_result = rank_fn()
+        ranked = rank_result["ranked"]
     except CoverageError:
         log_rotation(
             ledger_path,
@@ -313,9 +332,42 @@ def run(
     if cap_alert:
         alerts.append(cap_alert)
 
+    # A. No-leader : si final est vide, ne pas écrire et retourner en fallback
+    if not final:
+        alerts.append("no_leader")
+        log_rotation(
+            ledger_path,
+            as_of=as_of,
+            default_hot=set(default_hot),
+            final_hot=set(state["last_valid_universe"]),
+            sticky=sticky,
+            overrides=overrides,
+            rejects=rejects,
+            alerts=alerts,
+        )
+        return {
+            "final_hot_set": state["last_valid_universe"],
+            "default_hot_set": default_hot,
+            "alerts": alerts,
+            "written": False,
+        }
+
+    # D. Snapshot radar — si rank_fn fournit ineligible + components_by_symbol
+    _ineligible = rank_result.get("ineligible")
+    _components = rank_result.get("components_by_symbol")
+    if _ineligible is not None and _components is not None:
+        snapshot = build_radar_snapshot(
+            ranked,
+            _ineligible,
+            as_of=as_of,
+            components_by_symbol=_components,
+        )
+        write_snapshot(Path(state_dir), snapshot)
+
     # 7. écriture atomique + état + ledger
+    # C. advance_state avec last_valid=final (hot non-sticky uniquement dans current_hot_set)
     write_universe_atomic(universe_path, final)
-    save_rotation_state(state_dir, advance_state(state, final))
+    save_rotation_state(state_dir, advance_state(state, hot, last_valid=final))
     log_rotation(
         ledger_path,
         as_of=as_of,

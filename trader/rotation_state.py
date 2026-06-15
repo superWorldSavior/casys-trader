@@ -49,13 +49,20 @@ def seed_state(universe_symbols: list[str]) -> dict:
     }
 
 
-def advance_state(state: dict, new_hot_set: list[str]) -> dict:
+def advance_state(
+    state: dict,
+    new_hot_set: list[str],
+    *,
+    last_valid: list[str] | None = None,
+) -> dict:
     """Transition déterministe vers new_hot_set.
 
     - Resté chaud → dwell += 1
     - Entrant      → dwell = 1
     - Sortant      → retiré de dwell_days_by_symbol
-    - Si new_hot_set vide → last_valid_universe conservé ; sinon mis à jour.
+    - last_valid : si fourni, utilisé comme last_valid_universe (typiquement = final
+      incluant les stickies). Si None, fallback : new_hot_set si non vide, sinon
+      état précédent conservé.
     """
     prev_set = set(state["current_hot_set"])
     prev_dwell: dict[str, int] = dict(state["dwell_days_by_symbol"])
@@ -67,15 +74,17 @@ def advance_state(state: dict, new_hot_set: list[str]) -> dict:
         else:
             new_dwell[sym] = 1
 
-    if new_hot_set:
-        last_valid = list(new_hot_set)
+    if last_valid is not None:
+        computed_last_valid = list(last_valid)
+    elif new_hot_set:
+        computed_last_valid = list(new_hot_set)
     else:
-        last_valid = list(state.get("last_valid_universe", []))
+        computed_last_valid = list(state.get("last_valid_universe", []))
 
     return {
         "current_hot_set": list(new_hot_set),
         "dwell_days_by_symbol": new_dwell,
-        "last_valid_universe": last_valid,
+        "last_valid_universe": computed_last_valid,
     }
 
 
