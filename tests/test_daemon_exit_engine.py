@@ -11,6 +11,14 @@ from trader.tools.scheduler import Scheduler
 from trader.trade_plan import TradePlanStore, create_trade_plan
 
 
+def test_llm_exit_reason_for_model_performance_tague_uniquement_les_sorties() -> None:
+    assert daemon._llm_exit_reason_for_intent("CLOSE") == "llm_exit"
+    assert daemon._llm_exit_reason_for_intent("REDUCE") == "llm_exit"
+    assert daemon._llm_exit_reason_for_intent("REVERSE") == "llm_exit"
+    assert daemon._llm_exit_reason_for_intent("OPEN_LONG") is None
+    assert daemon._llm_exit_reason_for_intent("OPEN_SHORT") is None
+
+
 def _write_runtime_config(
     root,
     *,
@@ -310,6 +318,12 @@ def test_run_cycle_cloture_le_plan_quand_codex_ferme_la_position(monkeypatch, tm
     assert report["decisions"][0]["executed"] is True
     assert TradePlanStore(state_dir / "trade_plans.json").open_plans() == []
     assert SimBroker(state_dir / "broker.json").positions() == {}
+    rows = [
+        json.loads(line)
+        for line in (state_dir / "model_performance.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert rows[0]["intent"] == "CLOSE"
+    assert rows[0]["exit_reason"] == "llm_exit"
 
 
 def test_run_cycle_autorise_close_qui_reduit_le_risque_meme_si_ordre_depasse_max_order(

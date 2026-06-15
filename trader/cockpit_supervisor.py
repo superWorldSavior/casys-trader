@@ -21,12 +21,13 @@ import os
 import signal as _signal
 import subprocess
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
 
 # Taille maximale de daemon_console.log avant rotation (5 Mo)
 MAX_LOG_SIZE_BYTES: int = 5 * 1024 * 1024
+UTC = timezone.utc
 
 # Marqueur de cmdline attendu pour identifier un daemon trader
 _DAEMON_MARKER = "trader.daemon"

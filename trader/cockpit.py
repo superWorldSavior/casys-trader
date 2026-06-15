@@ -44,7 +44,7 @@ Raccourcis :
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from rich.text import Text
@@ -79,16 +79,17 @@ from trader.tui import (
     _enrich_decisions_with_data_source,
     _safe_float,
     _safe_list_of_dicts,
+    build_closed_trades_table,
     build_selection_panel,
-    build_trades_table,
     build_universe_panel,
-    compute_realized_pnl_by_fill,
     load_runtime_state,
 )
 
 # ---------------------------------------------------------------------------
 # Thèmes Textual
 # ---------------------------------------------------------------------------
+
+UTC = timezone.utc
 
 _THEME_SALMON = Theme(
     name="casys-salmon",
@@ -429,7 +430,9 @@ class EquityTradesPane(Static):
             )
             if v is not None
         ]
-        fills = state.get("fills") if isinstance(state.get("fills"), list) else []
+        recent_trips = (
+            state.get("recent_trips") if isinstance(state.get("recent_trips"), list) else []
+        )
         daemon_status = (
             state.get("daemon_status")
             if isinstance(state.get("daemon_status"), dict)
@@ -439,9 +442,6 @@ class EquityTradesPane(Static):
         consolidation_status = state.get("consolidation_status")
         company_map = state.get("company_map") if isinstance(state.get("company_map"), dict) else {}
 
-        # Calcul du PnL réalisé net par fill (algo PURE)
-        pnl_by_fill = compute_realized_pnl_by_fill(fills)
-
         self.query_one("#kpi-compact", Static).update(
             _build_kpi_compact(kpis, equity_curve, palette=palette)
         )
@@ -449,7 +449,7 @@ class EquityTradesPane(Static):
             _build_equity_panel(equity_curve, palette=palette)
         )
         self.query_one("#trades-panel", Static).update(
-            _build_trades_with_pnl(fills, pnl_by_fill, company_map, palette=palette)
+            build_closed_trades_table(recent_trips, company_map, palette=palette)
         )
         self.query_one("#llm-activity-panel", Static).update(
             _build_llm_activity_panel(
@@ -535,7 +535,6 @@ def _build_trades_with_pnl(
     from rich.console import RenderableType
     from rich.table import Table
     from rich.text import Text
-    from datetime import UTC, datetime
     from trader.tui import _fmt_symbol_short, _safe_float, _fmt_fee_cost
 
     table = Table(title="Trades clôturés", show_lines=False, expand=True)

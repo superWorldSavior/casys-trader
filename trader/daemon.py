@@ -71,6 +71,13 @@ _ACTION_INTENTS = {
     "BUY": {"OPEN_LONG", "REDUCE", "CLOSE", "REVERSE"},
     "SELL": {"OPEN_SHORT", "REDUCE", "CLOSE", "REVERSE"},
 }
+
+
+def _llm_exit_reason_for_intent(intent: str) -> str | None:
+    """Libellé déterministe pour les sorties pilotées par le LLM."""
+    return "llm_exit" if intent in {"CLOSE", "REDUCE", "REVERSE"} else None
+
+
 # Barres fines (15m) pour coller à la cadence scalping (réveils 5-30 min) et avoir
 # un prix qui bouge intra-heure. La fraîcheur sur ces barres sert de garde
 # « marché live » (UTC, sans logique de fuseau). ~40 min ≈ tolérance de 2 barres + délai.
@@ -1955,11 +1962,13 @@ def run_cycle(
             if fill is not None:
                 latest = portfolio.snapshot(broker, lambda s: prices.get(s, 0.0), starting_equity)
                 final_position = broker.positions().get(sym)
+                llm_exit_reason = _llm_exit_reason_for_intent(decision.intent)
                 _append_model_performance(
                     ts=fill.ts,
                     symbol=sym,
                     action=decision.action,
                     intent=decision.intent,
+                    **({"exit_reason": llm_exit_reason} if llm_exit_reason is not None else {}),
                     quantity=effective_quantity,
                     price=prices[sym],
                     commission=fill.commission,

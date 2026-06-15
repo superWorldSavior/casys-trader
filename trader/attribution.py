@@ -18,6 +18,7 @@ from pathlib import Path
 # En-dessous, une position est considérée comme plate (évite les poussières
 # flottantes après des clôtures décimales exactes qui créeraient de faux micro-trades).
 _FLAT_EPS = 1e-9
+_RECENT_TRIPS_LIMIT = 25
 
 # Buckets de confidence pour la calibration (borne basse incluse, haute exclue
 # sauf le dernier). Permet de répondre : « les calls confiants gagnent-ils ? »
@@ -227,6 +228,13 @@ def _aggregate(trips: list[dict]) -> dict:
     }
 
 
+def _recent_round_trips(trips: list[dict], *, limit: int = _RECENT_TRIPS_LIMIT) -> list[dict]:
+    """Retourne les derniers round-trips par heure de sortie décroissante."""
+    if limit <= 0:
+        return []
+    return sorted(trips, key=lambda t: str(t["exit_ts"]), reverse=True)[:limit]
+
+
 def _parse_iso_date(value: str, *, field: str) -> date:
     raw = value.strip()
     try:
@@ -323,6 +331,7 @@ def compute_attribution(
         "avg_holding_minutes": (sum(holding) / len(holding)) if holding else None,
         "by_confidence": by_confidence,
         "by_exit_reason": by_exit_reason,
+        "recent_trips": _recent_round_trips(trips),
         "regime": regime,
     }
 
