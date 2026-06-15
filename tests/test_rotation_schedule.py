@@ -6,7 +6,11 @@ import pytest
 
 from trader.rotation_schedule import closed_sessions_since, load_sessions, rotation_due
 
-_STANDARD_SESSIONS = {"TW": "05:30", "EU": "15:30", "US": "20:00"}
+_STANDARD_SESSIONS = {
+    "TW": {"open": "01:00", "close": "05:30"},
+    "EU": {"open": "07:00", "close": "15:30"},
+    "US": {"open": "13:30", "close": "20:00"},
+}
 
 
 # ---------------------------------------------------------------------------
@@ -25,10 +29,16 @@ class TestLoadSessions:
         config_dir = tmp_path / "config"
         config_dir.mkdir()
         (config_dir / "sessions.yaml").write_text(
-            "TW: '06:00'\nEU: '16:00'\nUS: '21:00'\n"
+            "TW: {open: '01:15', close: '06:00'}\n"
+            "EU: {open: '07:15', close: '16:00'}\n"
+            "US: {open: '13:45', close: '21:00'}\n"
         )
         result = load_sessions(str(tmp_path))
-        assert result == {"TW": "06:00", "EU": "16:00", "US": "21:00"}
+        assert result == {
+            "TW": {"open": "01:15", "close": "06:00"},
+            "EU": {"open": "07:15", "close": "16:00"},
+            "US": {"open": "13:45", "close": "21:00"},
+        }
 
     def test_fichier_corrompu_retourne_defaut(self, tmp_path):
         """YAML corrompu → défaut, pas d'exception."""

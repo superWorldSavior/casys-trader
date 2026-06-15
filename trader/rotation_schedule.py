@@ -7,15 +7,17 @@ from __future__ import annotations
 import os
 from datetime import datetime, timedelta, timezone
 
-_DEFAULT_SESSIONS: dict[str, str] = {
-    "TW": "05:30",
-    "EU": "15:30",
-    "US": "20:00",
+SessionHours = dict[str, str]
+
+_DEFAULT_SESSIONS: dict[str, SessionHours] = {
+    "TW": {"open": "01:00", "close": "05:30"},
+    "EU": {"open": "07:00", "close": "15:30"},
+    "US": {"open": "13:30", "close": "20:00"},
 }
 
 
-def load_sessions(config_dir: str) -> dict[str, str]:
-    """Lit config/sessions.yaml (venue → "HH:MM").
+def load_sessions(config_dir: str) -> dict[str, SessionHours]:
+    """Lit config/sessions.yaml (venue → {"open": "HH:MM", "close": "HH:MM"}).
 
     Retourne le défaut si le fichier est absent ou illisible.
     """
@@ -26,7 +28,19 @@ def load_sessions(config_dir: str) -> dict[str, str]:
         with open(path, "r", encoding="utf-8") as fh:
             data = yaml.safe_load(fh)
         if isinstance(data, dict):
-            return {str(k): str(v) for k, v in data.items()}
+            sessions: dict[str, SessionHours] = {}
+            for venue, hours in data.items():
+                if not isinstance(hours, dict):
+                    return dict(_DEFAULT_SESSIONS)
+                open_hhmm = hours.get("open")
+                close_hhmm = hours.get("close")
+                if open_hhmm is None or close_hhmm is None:
+                    return dict(_DEFAULT_SESSIONS)
+                sessions[str(venue)] = {
+                    "open": str(open_hhmm),
+                    "close": str(close_hhmm),
+                }
+            return sessions
         return dict(_DEFAULT_SESSIONS)
     except Exception:
         return dict(_DEFAULT_SESSIONS)
@@ -41,7 +55,7 @@ def _close_dt(date: datetime, hhmm: str) -> datetime:
 def closed_sessions_since(
     now_iso: str,
     last_rotation_iso: str | None,
-    sessions: dict[str, str],
+    sessions: dict[str, SessionHours],
 ) -> list[str]:
     """Venues dont la clôture est tombée dans (last_rotation, now].
 
@@ -58,8 +72,8 @@ def closed_sessions_since(
     if bootstrap:
         # Toutes les clôtures du jour de now déjà passées (≤ now)
         hits: list[str] = []
-        for venue, hhmm in sessions.items():
-            close = _close_dt(now, hhmm)
+        for venue, hours in sessions.items():
+            close = _close_dt(now, hours["close"])
             if close <= now:
                 hits.append(venue)
         return sorted(hits)
@@ -75,8 +89,8 @@ def closed_sessions_since(
     # Nombre de jours à scanner (≥1 : le jour de last, jusqu'au jour de now)
     day = current_date
     while day <= end_date:
-        for venue, hhmm in sessions.items():
-            close = _close_dt(day, hhmm)
+        for venue, hours in sessions.items():
+            close = _close_dt(day, hours["close"])
             if last < close <= now:
                 if venue not in hits:
                     hits.append(venue)
@@ -88,7 +102,7 @@ def closed_sessions_since(
 def rotation_due(
     now_iso: str,
     last_rotation_iso: str | None,
-    sessions: dict[str, str],
+    sessions: dict[str, SessionHours],
 ) -> bool:
     """Retourne True si au moins une session a clôturé depuis last_rotation."""
     return bool(closed_sessions_since(now_iso, last_rotation_iso, sessions))

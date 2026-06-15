@@ -1,5 +1,5 @@
-# Heures de clôture (UTC, HH:MM) par venue — déclenchent une rotation du hot-set.
+# Heures d'ouverture/clôture (UTC, HH:MM) par venue — la clôture déclenche une rotation du hot-set.
 # DST non géré finement : ajuster à la main selon la saison.
-TW: "05:30"
-EU: "15:30"
-US: "20:00"
+TW: {open: "01:00", close: "05:30"}
+EU: {open: "07:00", close: "15:30"}
+US: {open: "13:30", close: "20:00"}
