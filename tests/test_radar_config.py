@@ -48,3 +48,34 @@ def test_missing_file_yields_documented_defaults(tmp_path) -> None:
 
     assert params.cap_m == 25
     assert params.min_coverage == 0.8
+
+
+# ---------------------------------------------------------------------------
+# override_enabled — nouveau champ
+# ---------------------------------------------------------------------------
+
+def test_override_enabled_default_true() -> None:
+    """RadarParams.override_enabled vaut True par défaut."""
+    params = RadarParams()
+    assert params.override_enabled is True
+
+
+def test_override_enabled_loaded_from_yaml(tmp_path) -> None:
+    """override_enabled=false dans radar.yaml est chargé correctement."""
+    (tmp_path / "radar.yaml").write_text("override_enabled: false\n", encoding="utf-8")
+    params = load_radar_params(tmp_path)
+    assert params.override_enabled is False
+
+
+def test_override_enabled_true_loaded_from_yaml(tmp_path) -> None:
+    """override_enabled=true dans radar.yaml est chargé correctement."""
+    (tmp_path / "radar.yaml").write_text("override_enabled: true\n", encoding="utf-8")
+    params = load_radar_params(tmp_path)
+    assert params.override_enabled is True
+
+
+def test_override_enabled_default_when_absent_from_yaml(tmp_path) -> None:
+    """Si override_enabled absent du yaml, la valeur par défaut True est utilisée."""
+    (tmp_path / "radar.yaml").write_text("cap_m: 25\n", encoding="utf-8")
+    params = load_radar_params(tmp_path)
+    assert params.override_enabled is True
