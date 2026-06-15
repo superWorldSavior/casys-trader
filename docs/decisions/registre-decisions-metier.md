@@ -99,3 +99,26 @@ Mécanique : agent écrit un HOLD → consolidé en interdiction → relu → re
 3. **Ancien moteur conservé comme baseline** (stratégies codées de référence), documenté comme NE représentant PAS le comportement live de l'agent.
 **Étage 2 (forward, attend la donnée).** Qualité des scénarios réellement armés : taux déclenchés/annulés/expirés, P&L par plan, par famille et par condition — quelques jours de plans réels nécessaires.
 **Points ouverts.** Granularité du replay (barres 15 m) ; modélisation des take_profits fractionnés ; intégration au CLI (`casys-trader plans replay`).
+
+---
+
+## D9 — Veille à deux niveaux : radar large + rotation du hot-set  ✅ validé (design, 2026-06-15)
+**Contexte.** L'univers est une liste unique curée à la main (`config/universe.yaml`, ~13 symboles) et **tout** passe au hot-path 15m (cher en appels LLM). On ne peut pas élargir la veille sans exploser le coût. On veut que **le marché choisisse ce qu'on trade** : un univers qui surperforme reçoit la veille fine, un qui décroche en sort — sans payer la veille fine sur tout, tout le temps.
+**Décision (Erwan, 2026-06-15).** Séparer la veille en **deux niveaux** :
+- **Tier 1 — radar** : grand pool liquide borné (~500-800, `config/pool.yaml`), scanné en **daily EOD, 100 % code, 0 LLM**. Sortie = un **classement** (éligibilité + biais directionnel), pas des trades.
+- **Tier 2 — hot-path 15m existant**, inchangé, mais opérant sur un **set dynamique** (`universe.yaml` devient un **output généré**, cap **M = 25** symboles, sticky hors quota).
+
+Décisions verrouillées :
+1. **Décideur = code défaut déterministe + agent override tracé.** Le radar produit le hot-set par défaut (reproductible/backtestable) ; l'agent reçoit le radar complet (1 appel/jour) et ajoute/retire avec **raison loggée**. Pas « l'agent décide tout » : un LLM non-déterministe dans la boucle de sélection casserait la backtestabilité de la rotation, qui *est* la nouvelle stratégie.
+2. **Score** = `efficacité_tendance × force_relative(benchmark de la venue) × amplitude` — la **volatilité est RÉCOMPENSÉE (bornée) et requise (plancher ATR%), pas pénalisée**. Règle métier clé d'Erwan : on veut « de la stabilité dans la tendance ET de la volatilité en même temps » (sinon rien à trader en 15m). Séries ajustées (splits/dividendes) obligatoires.
+3. **Contrat d'horizon** : le radar donne l'éligibilité + le biais ; le **timing d'entrée reste au hot-path 15m**. Le radar dit « surveille de près », pas « achète maintenant ».
+4. **Concentration assumée** : pas de garde-fou de concentration à la sélection (rotation quotidienne + conviction + même thèse sur plusieurs venues = plus de trades). Réserve actée : `max_gross_exposure` borne le levier nominal mais **pas la corrélation** → drawdown corrélé intra-jour assumé ; diversification non-objectif.
+5. **Cadence** : radar daily + **hystérésis** (marge Δ, dwell K jours) **+ sortie d'urgence** (seuil absolu/gap, court-circuite K). 
+6. **Tilt de conviction optionnel** (`conviction.yaml`, vide par défaut, borné) ; **exclusions dures** (futures data-différée) dans `pool.yaml` — PAS `regime.yaml` (qui ne sert que l'attribution et ne liste pas `NG=F`).
+7. **Sticky hors quota, calculé AVANT l'écriture** : union positions + plans armés + exit watches + ordres pending — sinon `reconcile_universe` purge les gardes d'une position hors hot-set.
+8. **Mesure d'alpha en parallèle de l'impl** : `rotation_ledger` (défaut vs final) + bench de rotation as-of (dynamique vs statique vs top-liquidité), P&L 15m net conditionné par appartenance au hot-set.
+
+S'appuie sur D2 (`family_regime`, biais par univers — le radar en est le frère long-horizon) et D7 (`relevance_gate`, gate de coût du hot-path).
+**Données.** Design relu par review Codex indépendante (fan-out 3 axes : stratégie / edge cases / faisabilité), 28 findings → 14 retenus. 2 bloquants corrigés (écriture atomique de `universe.yaml` ; sticky avant écriture). 3 erreurs factuelles du spec corrigées (`starting_cash` → `portfolio.yaml` repointant `daemon.py:1102` + `stats.py:114` ; `NG=F` absent de `regime.yaml` ; contrefactuel non branchable sur `decision-bench` → `rotation_ledger` dédié).
+**Spec détaillé.** `docs/superpowers/specs/2026-06-15-veille-deux-niveaux-design.md` (architecture, composants, edge cases, invariants de test).
+**Points ouverts.** Calibration (forme additive/multiplicative du score, gestion signe long/short, fenêtres, `atr_floor`, plafond amplitude, Δ, K, seuils de sortie d'urgence, benchmarks par venue) ; sizing corrélation-aware (réserve, hors scope du design) ; implémentation (plan à dérouler via `writing-plans`).
