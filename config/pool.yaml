@@ -1,0 +1,21 @@
+# Pool Tier-1 (radar). Source de verite du POOL ; le hot-set (universe.yaml)
+# en est derive par la rotation (cf registre D9). Elargir = editer ici.
+# hard_exclusions = exclusions DURES pour raison data, pas une opinion.
+symbols:
+  - SPY
+  - QQQ
+  - ^FCHI
+  - NVDA
+  - USO
+  - UNG
+  - HO.PA
+  - AM.PA
+  - RHM.DE
+  - 2330.TW
+  - 2454.TW
+  - EURUSD=X
+  - USDJPY=X
+hard_exclusions:
+  - CL=F
+  - NG=F
+  - GC=F
