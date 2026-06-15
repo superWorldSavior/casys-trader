@@ -14,6 +14,27 @@
 
 ---
 
+## Corrections post-review Codex (NORMATIF — priment sur les tâches en cas de divergence)
+
+Review stratégique Codex du plan : 12 findings VRAIS. À appliquer en codant :
+
+1. **stats** : `compute_live_kpis(state_dir)` (PAS `compute_stats`). Le retour expose `cash` (= `starting_equity` quand pas de `broker.json`) → tester via `["cash"]`. `compute_live_kpis` et `daemon.py:1103` lisent `load_starting_cash`.
+2. **Adapter indicateurs (NOUVELLE tâche, Phase 2)** : `daily_components(symbol, bars, params) -> {efficiency_ratio, ret, amplitude}` qui appelle `features.compute_indicator_values(bars, names=["efficiency_ratio","return","ohlc_volatility"], ...)` et mappe `return→ret`, `ohlc_volatility→amplitude`. Testé avec de vrais `Bar`. C'est CET adapter qu'on injecte comme `indicators_fn` (jamais `compute_indicator_values` brut — clés différentes).
+3. **Hystérésis** : NE PAS initialiser le hot-set avec le top du ranking. Partir des incumbents (`current`) protégés, puis autoriser les swaps. Tester `current={"A","B"}`, `cap_m=2`, entrant mieux classé mais dwell insuffisant → pas de swap ; dwell + marge → swap.
+4. **Attractivité vs biais** : `score_symbol` retourne un score signé ; `scan_and_rank` expose `{symbol, directional_score, attractiveness=abs(score), bias}`. **Ranking, hystérésis ET sortie d'urgence utilisent `attractiveness`** (jamais le score brut signé), sinon un short (score<0) est éjecté à tort.
+5. **État rotation (NOUVELLE tâche, Phase 3)** : `state/rotation_state.json` = `{current_hot_set, dwell_days_by_symbol, last_valid_universe}`. `load_rotation_state` / `update_rotation_state(as_of)` : incrémente le dwell des chauds restés, init 1 les entrants, retire les sortants. Bootstrap → seed depuis `universe.yaml` courant ; no-leader/échec → garde `last_valid_universe`. `run()` charge/persiste cet état (plus d'injection nue de `current`/`dwell`).
+6. **Override+cap+sticky** : `free_slots = max(0, cap_m - len(sticky))` calculé AVANT l'override ; `apply_override` borne les ajouts à `free_slots` (pas `cap_m`) ; au-delà → rejet `cap_exceeded` tracé. `compose_final` ne re-coupe pas un override accepté. Les alertes s'ACCUMULENT (liste) ; `override_unavailable` ne masque pas `sticky_over_cap`.
+7. **Couverture radar** : `min_coverage` dans `RadarParams` (défaut 0.8), utilisé en prod (pas 0.0). `run()` catch `CoverageError` → N'ÉCRIT PAS `universe.yaml` (garde le dernier valide), log `coverage_insufficient`. Tester ce fallback.
+8. **Task 18 découpée (testées)** : `benchmark_ret_for`, `sticky_collector` (broker+plans+watches+pending), `override_client` (codex), `as_of_resolver` (dernière barre daily clôturée par venue), `build_rank_fn`, puis smoke `main(["--run"])` qui écrit réellement un univers.
+9. **Data batch (NOUVELLE tâche, Phase 2)** : `download_daily_batch(symbols) -> {symbol: list[Bar]}` via `yf.download(symbols, interval="1d", auto_adjust=True, group_by="ticker", threads=True)` + chunks + retry/backoff + cache `state/radar_cache/<as_of>.json`. Mapping DataFrame→`Bar` comme `market.py:401`. Testé via DataFrame fake injecté.
+10. **Snapshot (NOUVELLE tâche, Phase 2)** : `build_radar_snapshot(ranked, ineligible, as_of)` (scores, composants, raisons, data manquante) + `write_snapshot`. Écrit par `run()`.
+11. **Migrer les invariants de compo** : déplacer les assertions de `tests/test_universe_config.py:24-63` (forex majors présents, futures/doublons absents, familles) vers `tests/test_pool_config.py` (sur `pool.yaml` : présence + `hard_exclusions ⊇ {CL=F,NG=F,GC=F}`). `test_universe_config` ne teste plus la compo (générée) ; au plus le seed initial.
+12. **Sortie d'urgence complète** : `emergency_exits` prend aussi `gap_adverse` (ouverture franchissant le biais au-delà d'un seuil) et `daily_invalidated` en plus de `attractiveness < emergency_floor`. Paramètres dans `radar.yaml` ; tester les 3 déclencheurs.
+
+**Réserve v1 assumée** : `pool.yaml` statique édité main ; `pool_removed_sticky` non garanti auto ; lifecycle (delisted/halted) couvert par l'inéligibilité data, pas une machine à états — itération ultérieure.
+
+---
+
 ## File Structure
 
 **Créés :**
