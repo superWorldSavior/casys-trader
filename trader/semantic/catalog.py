@@ -214,6 +214,7 @@ FAMILIES: dict[str, list[str]] = {
         "PROX.BR",    # Proximus — télécom fixe & mobile BE
         "TIT.MI",     # Telecom Italia (TIM) — télécom IT
         "TEL2-B.ST",  # Tele2 — télécom suédois alternatif
+        "CLNX.MC",    # Cellnex Telecom — infrastructure tours télécom ES/Europe
     ],
     "energy": ["XLE", "USO", "UNG"],
     "commodities_futures": ["CL=F", "BZ=F", "NG=F"],
@@ -242,6 +243,17 @@ FAMILIES: dict[str, list[str]] = {
         "INTU",   # Intuit
         "MU",     # Micron Technology
         "AMAT",   # Applied Materials
+        # extensions D10 — cybersécurité, cloud, IT services
+        "PANW",   # Palo Alto Networks — cybersecurity
+        "SNOW",   # Snowflake — cloud data warehouse
+        "PLTR",   # Palantir — data analytics / AI
+        "UBER",   # Uber — tech platforms & mobility
+        "ACN",    # Accenture — IT services & consulting
+        "IBM",    # IBM — enterprise tech & AI
+        "HPQ",    # HP Inc. — personal systems & printing
+        "DELL",   # Dell Technologies — PC & servers
+        "NET",    # Cloudflare — network security & CDN
+        "FTNT",   # Fortinet — cybersecurity
     ],
     # Communication Services
     "us_communication": [
@@ -275,6 +287,17 @@ FAMILIES: dict[str, list[str]] = {
         "COF",    # Capital One Financial
         "MRSH",   # Marsh McLennan (nouveau ticker depuis jan 2026, ex-MMC)
         "AON",    # Aon
+        # extensions D10 — assurance, régionaux, custody
+        "MET",    # MetLife — assurance vie & retraite
+        "PRU",    # Prudential Financial — assurance & asset management
+        "TRV",    # Travelers — assurance dommages
+        "AFL",    # Aflac — assurance santé complémentaire
+        "ALL",    # Allstate — assurance auto & habitation
+        "BK",     # Bank of New York Mellon — custody & securities
+        "STT",    # State Street — custody bank & ETF
+        "FITB",   # Fifth Third Bancorp — banque régionale
+        "RF",     # Regions Financial — banque régionale
+        "HIG",    # Hartford Financial — assurance & gestion d'actifs
     ],
     # Healthcare
     "us_healthcare": [
@@ -293,6 +316,16 @@ FAMILIES: dict[str, list[str]] = {
         "ISRG",   # Intuitive Surgical
         "DHR",    # Danaher
         "HCA",    # HCA Healthcare
+        # extensions D10 — managed care, biotech, medtech
+        "ELV",    # Elevance Health — managed care (ex-Anthem)
+        "CI",     # Cigna Group — managed care & PBM
+        "ZBH",    # Zimmer Biomet — orthopedics medtech
+        "BAX",    # Baxter International — dialysis & medtech
+        "IQV",    # IQVIA Holdings — CRO & data analytics
+        "BIO",    # Bio-Rad Laboratories — life science tools
+        "VTRS",   # Viatris — generics & biosimilars pharma
+        "REGN",   # Regeneron — biotech (mAbs, oncology)
+        "GILD",   # Gilead Sciences — antiviral & oncology biotech
     ],
     # Energy
     "us_energy": [
@@ -308,6 +341,16 @@ FAMILIES: dict[str, list[str]] = {
         "HAL",    # Halliburton
         "BKR",    # Baker Hughes
         "DVN",    # Devon Energy
+        # extensions D10 — midstream, E&P, renouvelables
+        "KMI",    # Kinder Morgan — natural gas pipelines
+        "WMB",    # Williams Companies — gas processing & pipelines
+        "OKE",    # ONEOK — natural gas gathering & processing
+        "LNG",    # Cheniere Energy — LNG export
+        "ET",     # Energy Transfer — midstream diversifié
+        "FANG",   # Diamondback Energy — Permian E&P
+        "APA",    # APA Corp — E&P international
+        "ENPH",   # Enphase Energy — microinverters solaires
+        "SEDG",   # SolarEdge — optimiseurs solaires
     ],
     # Consumer Discretionary
     "us_consumer_disc": [
@@ -326,6 +369,17 @@ FAMILIES: dict[str, list[str]] = {
         "TJX",    # TJX Companies
         "YUM",    # Yum! Brands
         "MAR",    # Marriott International
+        # extensions D10 — hôtellerie, homebuilders, loisirs/travel
+        "HLT",    # Hilton Worldwide — hôtellerie
+        "DHI",    # D.R. Horton — homebuilder (maisons individuelles)
+        "LEN",    # Lennar — homebuilder
+        "EBAY",   # eBay — ecommerce marketplace
+        "DASH",   # DoorDash — food delivery platform
+        "CMG",    # Chipotle Mexican Grill — restauration rapide premium
+        "DKNG",   # DraftKings — sports betting & gaming
+        "RCL",    # Royal Caribbean — croisières
+        "CCL",    # Carnival — croisières
+        "EXPE",   # Expedia — online travel agency
     ],
     # Consumer Staples
     "us_consumer_staples": [
@@ -341,6 +395,16 @@ FAMILIES: dict[str, list[str]] = {
         "KHC",    # Kraft Heinz
         "HSY",    # Hershey
         "SYY",    # Sysco
+        # extensions D10 — alcool, snacks, beauté, viande
+        "STZ",    # Constellation Brands — bière & spiritueux premium
+        "TAP",    # Molson Coors — bière
+        "MDLZ",   # Mondelez International — snacks & biscuits
+        "CAG",    # ConAgra Brands — alimentaire emballé
+        "CLX",    # Clorox — produits ménagers & soins
+        "CHD",    # Church & Dwight — consumer goods (Arm & Hammer)
+        "EL",     # Estée Lauder — cosmétiques & beauté
+        "KVUE",   # Kenvue — consumer health (J&J spinoff)
+        "TSN",    # Tyson Foods — viande & protéines
     ],
     # Industrials
     "us_industrials": [
@@ -359,6 +423,17 @@ FAMILIES: dict[str, list[str]] = {
         "EMR",    # Emerson Electric
         "ETN",    # Eaton
         "CSX",    # CSX (railroads)
+        # extensions D10 — automation, waste, distribution industrielle
+        "ITW",    # Illinois Tool Works — diversified industrial
+        "PH",     # Parker Hannifin — motion & control
+        "ROK",    # Rockwell Automation — automation industrielle
+        "DOV",    # Dover Corp — diversified industrial
+        "XYL",    # Xylem — water technology & solutions
+        "WM",     # Waste Management — collecte & recyclage
+        "RSG",    # Republic Services — waste & environmental
+        "FAST",   # Fastenal — distribution industrielle
+        "ROP",    # Roper Technologies — software & industriels diversifiés
+        "CTAS",   # Cintas — uniformes & services aux entreprises
     ],
     # Materials
     "us_materials": [
@@ -374,6 +449,15 @@ FAMILIES: dict[str, list[str]] = {
         "ALB",    # Albemarle (lithium)
         "CF",     # CF Industries (nitrogen fertilizers)
         "MOS",    # Mosaic (potash/phosphate)
+        # extensions D10 — acier, emballage, arômes
+        "NUE",    # Nucor — acier électrique US
+        "STLD",   # Steel Dynamics — acier US
+        "IP",     # International Paper — papier & emballage
+        "PKG",    # Packaging Corp of America — carton ondulé
+        "AVY",    # Avery Dennison — étiquettes & matériaux fonctionnels
+        "AMCR",   # Amcor — emballage flexible & rigide
+        "IFF",    # International Flavors & Fragrances — arômes & ingrédients
+        "RPM",    # RPM International — revêtements spéciaux & peintures
     ],
     # Utilities
     "us_utilities": [
@@ -389,6 +473,15 @@ FAMILIES: dict[str, list[str]] = {
         "AWK",    # American Water Works
         "ES",     # Eversource Energy
         "WEC",    # WEC Energy Group
+        # extensions D10 — utilities régionales
+        "ETR",    # Entergy — électricité Sud US
+        "PPL",    # PPL Corp — électricité PA & KY
+        "FE",     # FirstEnergy — électricité OH & NJ
+        "CMS",    # CMS Energy — gaz & électricité MI
+        "NI",     # NiSource — gaz & électricité Midwest
+        "AEE",    # Ameren — électricité & gaz MO & IL
+        "LNT",    # Alliant Energy — électricité & gaz Midwest
+        "EVRG",   # Evergy — électricité KS & MO
     ],
     # Real Estate
     "us_real_estate": [
@@ -404,6 +497,68 @@ FAMILIES: dict[str, list[str]] = {
         "EXR",    # Extra Space Storage
         "AVB",    # AvalonBay Communities (apartments)
         "EQR",    # Equity Residential (apartments)
+        # extensions D10 — towers, life-science, net-lease, industrial, storage
+        "CCI",    # Crown Castle — cell towers REIT
+        "ARE",    # Alexandria Real Estate — life science REIT
+        "EGP",    # EastGroup Properties — industrial REIT Sun Belt
+        "WPC",    # W. P. Carey — net lease diversified REIT
+        "NNN",    # National Retail Properties — net lease REIT
+        "COLD",   # Americold — cold storage logistics REIT
+        "STAG",   # STAG Industrial — industrial & logistics REIT
+        "IRM",    # Iron Mountain — data management & storage REIT
+        "MAA",    # Mid-America Apartment — résidentiel Sun Belt REIT
+    ],
+    # -------------------------------------------------------------------------
+    # Nouvelles familles EU — D10 : immobilier, industriels nordiques, matériaux,
+    # financiers supplémentaires, santé complémentaire, communication digitale.
+    # -------------------------------------------------------------------------
+    # Immobilier européen (REITs & foncières)
+    "eu_real_estate": [
+        "LEG.DE",   # LEG Immobilien — immobilier résidentiel Allemagne
+        "VNA.DE",   # Vonovia — immobilier résidentiel DE (leader)
+        "GFC.PA",   # Gecina — foncière bureaux & résidentiel Paris
+        "ICAD.PA",  # Icade — foncière santé & bureaux France
+        "LI.PA",    # Klépierre — centres commerciaux pan-européens
+        "SGRO.L",   # Segro — logistique & entrepôts UK/Europe
+        "LAND.L",   # Land Securities — immobilier commercial UK
+        "BLND.L",   # British Land — retail & bureaux UK
+        "WDP.BR",   # WDP — logistique & entrepôts Belgique/NL
+    ],
+    # Industriels nordiques & spécialités D10
+    "eu_industrials_nordic": [
+        "IMCD.AS",    # IMCD — distribution spécialités chimiques NL
+        "WRT1V.HE",   # Wärtsilä — moteurs marins & énergie FI
+        "NIBE-B.ST",  # NIBE Industrier — pompes à chaleur SE
+        "ALFA.ST",    # Alfa Laval — échangeurs thermiques & énergie SE
+        "SAND.ST",    # Sandvik — outils coupants & mining SE
+        "SKF-B.ST",   # SKF — roulements & solutions industrielles SE
+        "ATCO-A.ST",  # Atlas Copco — compresseurs & outils industriels SE
+        "ASSA-B.ST",  # Assa Abloy — serrures & sécurité physique SE
+        "HUSQ-B.ST",  # Husqvarna — outillage extérieur & robots SE
+        "INVE-B.ST",  # Investor AB — holding industriel & financier SE
+        "EVO.ST",     # Evolution Gaming — studios de jeux live casino SE
+    ],
+    # Matériaux nordiques & forestiers D10
+    "eu_materials_nordic": [
+        "SSAB-A.ST",  # SSAB — acier spécial haute résistance SE
+        "STERV.HE",   # Stora Enso — papier, carton & biomasse FI/SE
+        "UPM.HE",     # UPM-Kymmene — papier, pâte & bioraffinerie FI
+        "METSB.HE",   # Metsä Board — carton pliable FI
+    ],
+    # Financiers européens supplémentaires D10
+    "eu_financials_nordic": [
+        "NDA-SE.ST",  # Nordea Bank — banque nordique (cotation SE)
+        "DANSKE.CO",  # Danske Bank — banque universelle DK
+        "EBS.VI",     # Erste Group Bank — banque Europe Centrale (AT)
+        "KBC.BR",     # KBC Group — banque & assurance BE
+        "BAER.SW",    # Julius Baer — gestion de fortune CH
+        "UBSG.SW",    # UBS Group — banque universelle & wealth CH
+    ],
+    # Santé / pharma / diagnostics EU D10
+    "eu_healthcare_ext": [
+        "SOBI.ST",  # Swedish Orphan Biovitrum — maladies rares SE
+        "QIA.DE",   # Qiagen — diagnostics moléculaires DE
+        "BEI.DE",   # Beiersdorf — soins de la peau (Nivea, La Prairie) DE
     ],
     # -------------------------------------------------------------------------
     # Univers taïwanais d'Erwan — découpage sectoriel best-effort, à valider.
@@ -470,6 +625,42 @@ FAMILIES: dict[str, list[str]] = {
     "tw_services": [
         "2404.TW",   # United Integrated Services (UIS) — construction salles blanches & MEP fabs TSMC
     ],
+    # Financiers taïwanais D10 (holding financiers, assurance, banques)
+    "tw_financials": [
+        "2882.TW",  # Cathay Financial Holding — assurance vie & banque TW
+        "2881.TW",  # Fubon Financial Holding — assurance & banque TW
+        "2891.TW",  # CTBC Financial Holding — banque internationale TW
+        "2886.TW",  # Mega Financial Holding — banque d'État TW
+        "2884.TW",  # E.Sun Financial Holding — banque commerciale TW
+        "2892.TW",  # First Financial Holding — banque coopérative TW
+        "5880.TW",  # Taiwan Cooperative Financial Holding — banque TW
+    ],
+    # Consommation / distribution taïwanaise D10
+    "tw_consumer": [
+        "2912.TW",  # President Chain Store — 7-Eleven Taiwan & F&B
+        "1326.TW",  # Formosa Chemicals & Fibre — chimie / textile TW
+        "6505.TW",  # Formosa Petrochemical — raffinage & pétrochimie TW
+    ],
+    # Matériaux / chimie / acier taïwanais D10
+    "tw_materials": [
+        "1301.TW",  # Formosa Plastics — plastiques & chimie TW
+        "1303.TW",  # Nan Ya Plastics — plastiques & laminés TW
+        "2002.TW",  # China Steel Corporation — acier intégré TW
+        "1402.TW",  # Far Eastern New Century — textiles & fibres chimiques TW
+        "1440.TW",  # Nien Hsing Textile — textile export TW
+        "2015.TW",  # Feng Hsin Iron & Steel — acier long TW
+        "1723.TW",  # China Steel Chemical Corporation — pétrochimie TW
+    ],
+    # Industriels / transport taïwanais D10
+    "tw_industrials": [
+        "2371.TW",  # Tatung — électronique industrielle & énergie TW
+        "2618.TW",  # Eva Airways — compagnie aérienne TW
+        "2354.TW",  # Foxconn subsidiary (Foxconn Technology) — composants TW
+        "9910.TW",  # Feng Tay Enterprises — chaussures sportives OEM TW
+        "2633.TW",  # Taiwan High Speed Rail — infrastructure transport TW
+    ],
+    # Santé taïwanaise D10
+    "tw_healthcare": [],
     # Secteur incertain — à reclasser après validation
     "tw_other": [],
     "crypto": ["BTC-USD"],

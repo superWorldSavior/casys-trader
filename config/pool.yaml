@@ -61,6 +61,7 @@ symbols:
   - PROX.BR
   - TIT.MI
   - TEL2-B.ST
+  - CLNX.MC
   # eu_tech (extensions)
   - STMPA.PA
   - IFX.DE
@@ -316,6 +317,174 @@ symbols:
   - EXR
   - AVB
   - EQR
+  # us_real_estate (extensions D10)
+  - CCI
+  - ARE
+  - EGP
+  - WPC
+  - NNN
+  - COLD
+  - STAG
+  - IRM
+  - MAA
+  # us_tech (extensions D10 — cybersécurité, cloud, IT services)
+  - PANW
+  - SNOW
+  - PLTR
+  - UBER
+  - ACN
+  - IBM
+  - HPQ
+  - DELL
+  - NET
+  - FTNT
+  # us_financials (extensions D10 — assurance, régionaux, custody)
+  - MET
+  - PRU
+  - TRV
+  - AFL
+  - ALL
+  - BK
+  - STT
+  - FITB
+  - RF
+  - HIG
+  # us_healthcare (extensions D10 — managed care, biotech, medtech)
+  - ELV
+  - CI
+  - ZBH
+  - BAX
+  - IQV
+  - BIO
+  - VTRS
+  - REGN
+  - GILD
+  # us_energy (extensions D10 — midstream, E&P, renouvelables)
+  - KMI
+  - WMB
+  - OKE
+  - LNG
+  - ET
+  - FANG
+  - APA
+  - ENPH
+  - SEDG
+  # us_consumer_disc (extensions D10 — hôtellerie, homebuilders, loisirs)
+  - HLT
+  - DHI
+  - LEN
+  - EBAY
+  - DASH
+  - CMG
+  - DKNG
+  - RCL
+  - CCL
+  - EXPE
+  # us_consumer_staples (extensions D10 — alcool, snacks, beauté)
+  - STZ
+  - TAP
+  - MDLZ
+  - CAG
+  - CLX
+  - CHD
+  - EL
+  - KVUE
+  - TSN
+  # us_industrials (extensions D10 — automation, waste, distribution)
+  - ITW
+  - PH
+  - ROK
+  - DOV
+  - XYL
+  - WM
+  - RSG
+  - FAST
+  - ROP
+  - CTAS
+  # us_materials (extensions D10 — acier, emballage, arômes)
+  - NUE
+  - STLD
+  - IP
+  - PKG
+  - AVY
+  - AMCR
+  - IFF
+  - RPM
+  # us_utilities (extensions D10 — régionaux)
+  - ETR
+  - PPL
+  - FE
+  - CMS
+  - NI
+  - AEE
+  - LNT
+  - EVRG
+  # EU — immobilier (REITs) D10
+  - LEG.DE
+  - VNA.DE
+  - GFC.PA
+  - ICAD.PA
+  - SGRO.L
+  - LAND.L
+  - BLND.L
+  - LI.PA
+  - WDP.BR
+  # EU — industriels nordiques D10
+  - IMCD.AS
+  - WRT1V.HE
+  - NIBE-B.ST
+  - ALFA.ST
+  - SAND.ST
+  - SKF-B.ST
+  - ATCO-A.ST
+  - ASSA-B.ST
+  - HUSQ-B.ST
+  - INVE-B.ST
+  - EVO.ST
+  # EU — matériaux/acier nordiques D10
+  - SSAB-A.ST
+  - STERV.HE
+  - UPM.HE
+  - METSB.HE
+  # EU — financiers nordiques/européens D10
+  - NDA-SE.ST
+  - DANSKE.CO
+  - EBS.VI
+  - KBC.BR
+  - BAER.SW
+  - UBSG.SW
+  # EU — santé/pharma/diagnostics D10
+  - SOBI.ST
+  - QIA.DE
+  - BEI.DE
+  # TW — financiers D10
+  - 2882.TW
+  - 2881.TW
+  - 2891.TW
+  - 2886.TW
+  - 2884.TW
+  - 2892.TW
+  # TW — consommation/distribution D10
+  - 2912.TW
+  - 1326.TW
+  - 6505.TW
+  # TW — matériaux/chimie D10
+  - 1301.TW
+  - 1303.TW
+  - 2002.TW
+  - 1402.TW
+  - 1440.TW
+  - 2015.TW
+  # TW — industriels/transport D10
+  - 2371.TW
+  - 2618.TW
+  - 2354.TW
+  - 9910.TW
+  - 2633.TW
+  # TW — santé D10
+  - 1723.TW
+  # TW — financiers (coopératives) D10
+  - 5880.TW
 hard_exclusions:
   - CL=F
   - NG=F
