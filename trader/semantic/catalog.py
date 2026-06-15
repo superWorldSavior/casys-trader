@@ -86,14 +86,61 @@ FAMILIES: dict[str, list[str]] = {
     "commodities_futures": ["CL=F", "BZ=F", "NG=F"],
     "metals": ["GC=F"],
     "nasdaq_single_names": ["NVDA", "AAPL"],
-    # Marché taïwanais — panier large (pas seulement des semis : Foxconn, Delta,
-    # composants, TPEx .TWO, etc.). TSMC/MediaTek inclus.
-    "taiwan": [
-        "2408.TW", "8299.TWO", "2330.TW", "2303.TW", "3661.TW", "3443.TW",
-        "2327.TW", "2492.TW", "3231.TW", "2382.TW", "2317.TW", "6488.TWO",
-        "3532.TW", "3017.TW", "3324.TWO", "3081.TWO", "6442.TW", "3037.TW",
-        "8046.TW", "3189.TW", "2454.TW", "2379.TW", "2308.TW", "2301.TW",
-        "3131.TWO", "2404.TW", "3711.TW", "2449.TW", "2368.TW", "2383.TW",
+    # -------------------------------------------------------------------------
+    # Univers taïwanais d'Erwan — découpage sectoriel best-effort, à valider.
+    # Source : 30 tickers TWSE (.TW) / TPEx (.TWO) du pool papier.
+    # Préfixe tw_ pour isoler le sous-graphe dans le cross-asset family_regime (D2).
+    # Les tickers incertains sont regroupés dans tw_other — voir rapport de commit.
+    # -------------------------------------------------------------------------
+    # Fonderies (pure-play wafer fab)
+    "tw_foundry": ["2330.TW", "2303.TW"],  # TSMC, UMC
+    # Wafer silicium (matière première semi)
+    "tw_wafer": ["6488.TWO"],  # GlobalWafers
+    # Mémoire / DRAM
+    "tw_memory": ["2408.TW"],  # Nanya Technology
+    # IC Design / Fabless
+    "tw_ic_design": [
+        "2454.TW",   # MediaTek
+        "2379.TW",   # Realtek Semiconductor
+        "3661.TW",   # Parade Technologies
+        "8299.TWO",  # Phison Electronics (NAND controllers)
+        "3443.TW",   # Global Mixed-Mode Technology (power ICs)
+    ],
+    # OSAT — assemblage & test
+    "tw_osat": [
+        "3711.TW",   # ASE Technology Holding
+        "2449.TW",   # King Yuan Electronics (KYEC)
+        "2383.TW",   # Elite Semiconductor Memory Technology (ESMT)
+        "3081.TWO",  # Walton Advanced Engineering
+    ],
+    # EMS / ODM (assemblage systèmes)
+    "tw_ems_odm": [
+        "2317.TW",   # Foxconn / Hon Hai Precision
+        "2382.TW",   # Quanta Computer
+        "3231.TW",   # Wistron NeWeb Corp (modules comm / IoT)
+    ],
+    # Composants passifs & énergie
+    "tw_components": [
+        "2327.TW",   # Yageo (résistances/condensateurs)
+        "2492.TW",   # Walsin Technology (composants passifs)
+        "2308.TW",   # Delta Electronics (alimentations, thermique)
+        "2301.TW",   # Lite-On Technology (composants, LED)
+    ],
+    # PCB / substrats
+    "tw_pcb": [
+        "3189.TW",   # Kinsus Interconnect Technology (substrats IC)
+        "8046.TW",   # Nan Ya PCB
+        "3532.TW",   # Taiwan PCB Techvest
+        "3037.TW",   # Unimicron Technology (PCB avancés)
+    ],
+    # Secteur incertain — à reclasser par Erwan après validation
+    "tw_other": [
+        "3017.TW",   # incertain (distribution / services intégrés ?)
+        "3324.TWO",  # incertain
+        "6442.TW",   # incertain
+        "3131.TWO",  # incertain
+        "2404.TW",   # United Integrated Services ? (services fab semi)
+        "2368.TW",   # incertain (Golden Bridge ?)
     ],
     "crypto": ["BTC-USD"],
     "forex_majors": [
