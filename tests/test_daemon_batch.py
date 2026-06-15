@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 
 from trader import daemon
 from trader.codex_client import ContextResearchRequest, Decision, IndicatorRequest
+from trader.indicator_watch import summarize_watch
 from trader.tools.market import Bar
 from trader.tools.scheduler import Scheduler
 
@@ -65,6 +66,221 @@ def test_batch_decide_injecte_age_data_et_session_par_symbole(monkeypatch) -> No
     assert captured["SPY"]["data_age_m"] == 10  # arrondi à la minute entière
     assert captured["SPY"]["session"] == {"open": True, "since_open_m": 60, "to_close_m": 330}
     assert captured["QQQ"]["data_age_m"] is None  # âge inconnu = inconnu, pas 0
+
+
+def test_batch_decide_expose_les_active_watches_du_symbole_seulement(monkeypatch, tmp_path) -> None:
+    captured: dict = {}
+    now = datetime(2026, 6, 15, 14, 30, tzinfo=timezone.utc)
+    sched = Scheduler(tmp_path / "scheduler.json")
+    spy_watch = {
+        "id": "spy-watch",
+        "symbol": "SPY",
+        "on_trigger": "WAKE",
+        "expires_at": "2026-06-15T15:00:00+00:00",
+        "conditions": [{"indicator": "return", "op": ">", "value": 0.01, "timeframe": "1h"}],
+    }
+    qqq_watch = {
+        "id": "qqq-watch",
+        "symbol": "QQQ",
+        "on_trigger": "WAKE",
+        "expires_at": "2026-06-15T15:00:00+00:00",
+        "conditions": [{"indicator": "z_score", "op": ">=", "value": 1.5, "timeframe": "15m"}],
+    }
+    sched.set_symbol_indicator_watch("SPY", spy_watch)
+    sched.set_symbol_indicator_watch("QQQ", qqq_watch)
+
+    def fake_batch(*, symbols, per_symbol, **kwargs):
+        captured.update(per_symbol)
+        return {sym: Decision.hold(sym, "x") for sym in symbols}
+
+    monkeypatch.setattr(daemon.codex_client, "decide_batch", fake_batch)
+
+    daemon._batch_decide(
+        decidable=["SPY"],
+        max_model_calls=1,
+        sched=sched,
+        **{**_COMMON, "now": now},
+    )
+
+    assert captured["SPY"]["active_watches"] == [summarize_watch(spy_watch)]
+
+
+def test_apply_decision_schedule_annule_les_watches_avant_de_reposer(monkeypatch) -> None:
+    apply_fn = getattr(daemon, "_apply_decision_schedule", None)
+    assert apply_fn is not None
+    now = datetime(2026, 6, 15, 14, 30, tzinfo=timezone.utc)
+    operations: list[tuple[str, str]] = []
+    events: list[tuple[str, dict]] = []
+
+    class RecordingScheduler:
+        def set_symbol_next_wake_in(self, sym: str, *, minutes: float, now: datetime) -> None:
+            operations.append(("wake", sym))
+
+        def clear_symbol_next_wake(self, sym: str) -> None:
+            operations.append(("clear", sym))
+
+        def remove_indicator_watch(self, watch_id: str) -> None:
+            operations.append(("remove", watch_id))
+
+        def set_symbol_indicator_watch(self, sym: str, watch: dict) -> None:
+            operations.append(("set", watch["id"]))
+
+    monkeypatch.setattr(
+        daemon,
+        "_append_event",
+        lambda event, **payload: events.append((event, payload)),
+    )
+    entry = {"indicator_watch_created": False}
+    pending_watch = {
+        "id": "new-watch",
+        "expires_at": "2026-06-15T15:00:00+00:00",
+        "logic": "all",
+        "on_trigger": "WAKE",
+        "conditions": [{"indicator": "return", "op": ">", "value": 0.01, "timeframe": "1h"}],
+    }
+
+    apply_fn(
+        sched=RecordingScheduler(),
+        sym="SPY",
+        now=now,
+        next_wake_in_minutes=None,
+        cancel_watch_ids=["SPY:old-watch"],
+        pending_indicator_watch=pending_watch,
+        entry=entry,
+    )
+
+    assert ("remove", "SPY:old-watch") in operations
+    assert events == [
+        ("watch_cancelled_by_agent", {"symbol": "SPY", "watch_id": "SPY:old-watch"}),
+    ]
+    assert operations.index(("remove", "SPY:old-watch")) < operations.index(("set", "new-watch"))
+    assert entry["indicator_watch_created"] is True
+
+
+def test_apply_decision_schedule_rejette_l_annulation_d_une_watch_autre_symbole(monkeypatch) -> None:
+    now = datetime(2026, 6, 15, 14, 30, tzinfo=timezone.utc)
+    operations: list[tuple[str, str]] = []
+    events: list[tuple[str, dict]] = []
+
+    class RecordingScheduler:
+        def set_symbol_next_wake_in(self, sym: str, *, minutes: float, now: datetime) -> None:
+            operations.append(("wake", sym))
+
+        def clear_symbol_next_wake(self, sym: str) -> None:
+            operations.append(("clear", sym))
+
+        def remove_indicator_watch(self, watch_id: str) -> None:
+            operations.append(("remove", watch_id))
+
+        def set_symbol_indicator_watch(self, sym: str, watch: dict) -> None:
+            operations.append(("set", watch["id"]))
+
+    monkeypatch.setattr(
+        daemon,
+        "_append_event",
+        lambda event, **payload: events.append((event, payload)),
+    )
+
+    daemon._apply_decision_schedule(
+        sched=RecordingScheduler(),
+        sym="SYM",
+        now=now,
+        next_wake_in_minutes=None,
+        cancel_watch_ids=["OTHER:hash"],
+        pending_indicator_watch=None,
+        entry={},
+    )
+
+    assert ("remove", "OTHER:hash") not in operations
+    assert events == [
+        (
+            "watch_cancel_rejected",
+            {"symbol": "SYM", "watch_id": "OTHER:hash", "reason": "not_owned_by_symbol"},
+        )
+    ]
+
+
+def test_run_cycle_applique_cancel_watch_ids_avant_nouvelle_veille(
+    monkeypatch, tmp_path, make_data_source
+) -> None:
+    _write_runtime_config(tmp_path)
+    state_dir = tmp_path / "state"
+    now = datetime(2026, 6, 15, 14, 30, tzinfo=timezone.utc)
+
+    class RecordingScheduler(Scheduler):
+        def __init__(self, path):
+            super().__init__(path)
+            self.operations: list[tuple[str, str]] = []
+
+        def remove_indicator_watch(self, watch_id: str) -> None:
+            self.operations.append(("remove", watch_id))
+            super().remove_indicator_watch(watch_id)
+
+        def set_symbol_indicator_watch(self, symbol: str, watch: dict) -> None:
+            self.operations.append(("set", watch["id"]))
+            super().set_symbol_indicator_watch(symbol, watch)
+
+    sched = RecordingScheduler(state_dir / "scheduler.json")
+    sched.set_symbol_indicator_watch(
+        "SPY",
+        {
+            "id": "SPY:old-watch",
+            "symbol": "SPY",
+            "on_trigger": "WAKE",
+            "expires_at": "2026-06-15T15:00:00+00:00",
+            "conditions": [{"indicator": "return", "op": ">", "value": 0.01, "timeframe": "1h"}],
+        },
+    )
+    sched.set_symbol_next_wake("SPY", now.isoformat())
+    sched.operations.clear()
+    events: list[tuple[str, dict]] = []
+
+    def fake_batch_decide(**kwargs):
+        return {
+            "SPY": Decision(
+                symbol="SPY",
+                action="HOLD",
+                quantity=0.0,
+                confidence=0.0,
+                rationale="correction",
+                intent="HOLD",
+                cancel_watch_ids=["SPY:old-watch"],
+                indicator_watch={
+                    "ttl_minutes": 30,
+                    "conditions": [{"indicator": "return", "op": "<", "value": -0.01, "timeframe": "1h"}],
+                },
+            )
+        }, 1
+
+    monkeypatch.setattr(daemon, "ROOT", tmp_path)
+    monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+    monkeypatch.setattr(daemon, "_batch_decide", fake_batch_decide)
+    monkeypatch.setattr(
+        daemon,
+        "_append_event",
+        lambda event, **payload: events.append((event, payload)),
+    )
+    data_source = make_data_source(
+        lambda symbol, lookback, interval: [
+            Bar(ts=now.isoformat(), open=100.0, high=101.0, low=99.0, close=100.0, volume=1000.0)
+        ]
+    )
+
+    daemon.run_cycle(
+        dry_run=True,
+        now=now,
+        symbols_filter=["SPY"],
+        sched=sched,
+        data_source=data_source,
+    )
+
+    remove_index = sched.operations.index(("remove", "SPY:old-watch"))
+    first_set_index = next(index for index, operation in enumerate(sched.operations) if operation[0] == "set")
+    assert remove_index < first_set_index
+    assert (
+        "watch_cancelled_by_agent",
+        {"symbol": "SPY", "watch_id": "SPY:old-watch"},
+    ) in events
 
 
 def test_budget_zero_ne_fait_aucun_appel_et_tout_hold(monkeypatch) -> None:
@@ -163,6 +379,49 @@ def test_batch_decide_attache_context_request_apres_round_trip(monkeypatch) -> N
         "resolved": 1,
     }
     assert decisions["QQQ"].context_request is None
+
+
+def test_batch_decide_reinjecte_active_watches_apres_request_context(monkeypatch, tmp_path) -> None:
+    now = datetime(2026, 6, 15, 14, 30, tzinfo=timezone.utc)
+    sched = Scheduler(tmp_path / "scheduler.json")
+    spy_watch = {
+        "id": "SPY:watch",
+        "symbol": "SPY",
+        "on_trigger": "WAKE",
+        "expires_at": "2026-06-15T15:00:00+00:00",
+        "logic": "any",
+        "conditions": [{"indicator": "return", "op": ">", "value": 0.01, "timeframe": "1h"}],
+    }
+    sched.set_symbol_indicator_watch("SPY", spy_watch)
+    request = IndicatorRequest(symbol="SPY", indicators=["return"], timeframe="1h")
+    captured_per_symbol: list[dict] = []
+
+    def fake_batch(*, symbols, allow_context_request, per_symbol, **kwargs):
+        captured_per_symbol.append(per_symbol)
+        if allow_context_request:
+            return {
+                "SPY": ContextResearchRequest(
+                    symbol="SPY",
+                    rationale="besoin return",
+                    requests=[request],
+                )
+            }
+        return {sym: Decision.hold(sym, "attente") for sym in symbols}
+
+    def fake_resolve_indicator_requests(requests, *args, **kwargs):
+        return {"requests": [{"symbol": "SPY", "indicators": {"return": 0.02}}]}
+
+    monkeypatch.setattr(daemon.codex_client, "decide_batch", fake_batch)
+    monkeypatch.setattr(daemon, "resolve_indicator_requests", fake_resolve_indicator_requests)
+
+    daemon._batch_decide(
+        decidable=["SPY"],
+        max_model_calls=2,
+        sched=sched,
+        **{**_COMMON, "now": now},
+    )
+
+    assert captured_per_symbol[1]["SPY"]["active_watches"] == [summarize_watch(spy_watch)]
 
 
 def test_run_cycle_passe_le_plafond_decisionnel_a_batch_decide(monkeypatch, tmp_path, make_data_source) -> None:

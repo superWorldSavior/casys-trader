@@ -20,7 +20,7 @@ HOLD. On ne trade JAMAIS sur une réponse douteuse.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Any, Literal
 
 from . import llm, trade_plan
@@ -61,6 +61,7 @@ class Decision:
     intent: Intent | None = None
     exit_plan: dict[str, Any] | None = None
     indicator_watch: dict[str, Any] | None = None
+    cancel_watch_ids: list[str] = field(default_factory=list)  # plans/veilles à annuler (correction)
     context_request: dict | None = None
     learning: str | None = None  # note runtime que l'agent veut retenir (boucle de feedback)
     llm_provider: str | None = None
@@ -107,6 +108,7 @@ _OUTPUT_CONTRACT = (
     '"intent": "OPEN_LONG|OPEN_SHORT|REDUCE|CLOSE|REVERSE|HOLD", '
     '"exit_plan": <object|null>, '
     '"indicator_watch": <object|null>, '
+    '"cancel_watch_ids": [<watch_id>, ...], '
     '"learning": <string|null>}\n'
     "`learning` est optionnel : une note courte que tu veux retenir pour tes "
     "prochains réveils (ce que tu observes, ce que tu attends). Le daemon te la "
@@ -129,6 +131,7 @@ _COMPACT_OUTPUT_CONTRACT = (
     '"intent": "OPEN_LONG|OPEN_SHORT|REDUCE|CLOSE|REVERSE|HOLD", '
     '"exit_plan": <object|null>, '
     '"indicator_watch": <object|null>, '
+    '"cancel_watch_ids": [<watch_id>, ...], '
     '"learning": <string|null>}\n'
     "`learning`: optionnel, note courte à retenir pour tes prochains réveils ; "
     "le daemon te la réinjecte via `context.learnings`.\n"
@@ -173,6 +176,12 @@ _DECISION_GUIDANCE = (
     "demander un réveil court « pour surveiller ».\n"
     "Un bon réveil produit des scénarios ; un réveil qui ne produit ni décision, "
     "ni veille, ni plan était probablement inutile.\n\n"
+    "# Tes plans déjà en place\n"
+    "`active_watches` (fourni par symbole) liste tes veilles et plans armés "
+    "ACTIFS : id, kind, intent, conditions, expiration. Relis-les avant d'agir et "
+    "corrige au lieu d'empiler. Pour abandonner un plan, mets son `id` dans "
+    "`cancel_watch_ids`. Corriger un plan = l'annuler (`cancel_watch_ids`) ET "
+    "reposer un `indicator_watch` à jour dans la même décision.\n\n"
     "# Semantic layer\n"
     "Les indicateurs fiables sont calculés par le code. Le prompt expose "
     "`context.cockpit` (compact, sans barres brutes). Si ce cockpit ne suffit pas, "
@@ -265,7 +274,7 @@ _BATCH_FINAL_CONTRACT = (
     'Chaque <obj>: {"symbol":"<SYM>","action":"BUY|SELL|HOLD","quantity":<number>,'
     '"confidence":<0..1>,"rationale":"<court>","next_wake_in_minutes":<number|null>,'
     '"intent":"OPEN_LONG|OPEN_SHORT|REDUCE|CLOSE|REVERSE|HOLD","exit_plan":<object|null>,'
-    '"indicator_watch":<object|null>,"learning":<string|null>}\n'
+    '"indicator_watch":<object|null>,"cancel_watch_ids":[<watch_id>,...],"learning":<string|null>}\n'
     "Pour une ouverture, fournis un `exit_plan` conforme au schéma ci-dessous "
     "(hard_stop, take_profits, trailing_stop, "
     "profit_protection, exit_watch et/ou max_hold_minutes). `learning` optionnel : note "
@@ -467,6 +476,11 @@ def _decision_from_dict(data: dict, symbol: str) -> Decision:
             None
             if data.get("indicator_watch") is None
             else dict(data["indicator_watch"])
+        ),
+        cancel_watch_ids=(
+            [str(wid) for wid in data["cancel_watch_ids"] if isinstance(wid, str)]
+            if isinstance(data.get("cancel_watch_ids"), list)
+            else []
         ),
         learning=_normalize_learning(data.get("learning")),
     )

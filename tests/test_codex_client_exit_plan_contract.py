@@ -132,6 +132,35 @@ def test_batch_contract_clarifie_les_unites_du_trailing_stop() -> None:
     assert "ne s'arme qu'une fois en profit" in prompt
 
 
+def test_decision_parse_cancel_watch_ids() -> None:
+    """Le champ de correction `cancel_watch_ids` : absent → liste vide ; présent →
+    liste de str (valeurs non-str ignorées défensivement)."""
+    base = {"symbol": "SPY", "action": "HOLD", "quantity": 0,
+            "confidence": 0.5, "rationale": "x"}
+
+    assert codex_client._decision_from_dict(dict(base), "SPY").cancel_watch_ids == []
+
+    parsed = codex_client._decision_from_dict(
+        {**base, "cancel_watch_ids": ["SPY:abc", 123, "SPY:def"]}, "SPY"
+    )
+    assert parsed.cancel_watch_ids == ["SPY:abc", "SPY:def"]
+
+    # conteneur non-liste (string/dict) → [] et NON une itération sur les caractères
+    assert codex_client._decision_from_dict({**base, "cancel_watch_ids": "SPY:abc"}, "SPY").cancel_watch_ids == []
+    assert codex_client._decision_from_dict({**base, "cancel_watch_ids": {"x": 1}}, "SPY").cancel_watch_ids == []
+
+
+def test_batch_contract_documente_voir_et_corriger_ses_plans() -> None:
+    """L'agent doit savoir qu'il VOIT ses plans actifs (`active_watches`) et peut
+    les CORRIGER (`cancel_watch_ids` = annuler + reposer), au lieu d'empiler."""
+    prompt = _batch_prompt_from_decide_batch()
+
+    assert "active_watches" in prompt
+    assert "cancel_watch_ids" in prompt
+    low = prompt.lower()
+    assert "annul" in low and "repose" in low  # corriger = annuler + reposer
+
+
 def test_batch_contract_et_validate_exit_plan_utilisent_la_meme_constante(monkeypatch) -> None:
     trail_types = _trailing_stop_trail_types()
     extended_trail_types = trail_types + ("synthetic_test_trail_type",)

@@ -222,6 +222,44 @@ _ARMABLE_INTENTS = {"OPEN_LONG": "BUY", "OPEN_SHORT": "SELL"}
 def is_armed_plan(watch: dict) -> bool:
     """Prédicat UNIQUE « plan armé » (source de vérité pour daemon/scheduler/tui)."""
     return str(watch.get("on_trigger")) == "EXECUTE_ORDER" and isinstance(watch.get("order"), dict)
+
+
+def _summarize_watch_conditions(conditions: object) -> list[dict]:
+    if not isinstance(conditions, list):
+        return []
+    summaries: list[dict] = []
+    for condition in conditions:
+        if not isinstance(condition, dict):
+            continue
+        summary = {
+            "indicator": condition.get("indicator"),
+            "op": condition.get("op"),
+            "value": condition.get("value"),
+            "timeframe": condition.get("timeframe") or condition.get("interval"),
+        }
+        summaries.append({key: value for key, value in summary.items() if value is not None})
+    return summaries
+
+
+def summarize_watch(watch: dict) -> dict:
+    """Résumé compact et déterministe d'une indicator_watch pour l'agent."""
+    armed = is_armed_plan(watch)
+    summary = {}
+    if watch.get("id") is not None:
+        summary["id"] = watch.get("id")
+    summary["kind"] = "armed" if armed else "wake"
+    if armed:
+        order = watch.get("order")
+        if isinstance(order, dict) and order.get("intent") is not None:
+            summary["intent"] = order.get("intent")
+    if watch.get("expires_at") is not None:
+        summary["expires_at"] = watch.get("expires_at")
+    if watch.get("logic") is not None:
+        summary["logic"] = watch.get("logic")
+    summary["conditions"] = _summarize_watch_conditions(watch.get("conditions"))
+    return summary
+
+
 # Cap TTL des plans armés = 240 min, aligné sur la revue périodique garantie du
 # gate (4 h) : l'expiration de watch étant SILENCIEUSE, un TTL plus court
 # forcerait des réveils de ré-armement ou laisserait des trous désarmés. La

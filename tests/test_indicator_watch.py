@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 
+from trader import indicator_watch as indicator_watch_mod
 from trader.indicator_watch import (
     WATCH_REJECT_INVALID_OPERATOR,
     WATCH_REJECT_MISSING_THRESHOLD,
@@ -26,6 +27,91 @@ def _bar(ts: str, close: float) -> Bar:
 
 def _bars(*closes: float) -> list[Bar]:
     return [_bar(f"t{index}", close) for index, close in enumerate(closes)]
+
+
+def test_summarize_watch_resume_un_plan_arme() -> None:
+    summary_fn = getattr(indicator_watch_mod, "summarize_watch", None)
+    assert summary_fn is not None
+    watch = {
+        "id": "armed-1",
+        "symbol": "SPY",
+        "on_trigger": "EXECUTE_ORDER",
+        "expires_at": "2026-06-05T14:00:00+00:00",
+        "logic": "all",
+        "conditions": [
+            {
+                "indicator": "z_score",
+                "op": ">=",
+                "value": 1.8,
+                "timeframe": "15m",
+                "window": 32,
+            }
+        ],
+        "order": {"intent": "OPEN_LONG", "qty": 10},
+    }
+
+    assert summary_fn(watch) == {
+        "id": "armed-1",
+        "kind": "armed",
+        "intent": "OPEN_LONG",
+        "expires_at": "2026-06-05T14:00:00+00:00",
+        "logic": "all",
+        "conditions": [{"indicator": "z_score", "op": ">=", "value": 1.8, "timeframe": "15m"}],
+    }
+
+
+def test_summarize_watch_resume_une_veille() -> None:
+    watch = {
+        "id": "wake-1",
+        "symbol": "QQQ",
+        "on_trigger": "WAKE",
+        "expires_at": "2026-06-05T13:00:00+00:00",
+        "conditions": [
+            {
+                "indicator": "return",
+                "op": "<",
+                "value": -0.02,
+                "timeframe": "1h",
+                "source_interval": "1h",
+            }
+        ],
+    }
+
+    assert indicator_watch_mod.summarize_watch(watch) == {
+        "id": "wake-1",
+        "kind": "wake",
+        "expires_at": "2026-06-05T13:00:00+00:00",
+        "conditions": [{"indicator": "return", "op": "<", "value": -0.02, "timeframe": "1h"}],
+    }
+
+
+def test_summarize_watch_inclut_logic_quand_present() -> None:
+    watch = {
+        "id": "wake-logic",
+        "symbol": "SPY",
+        "on_trigger": "WAKE",
+        "logic": "any",
+        "conditions": [
+            {"indicator": "return", "op": ">", "value": 0.01, "timeframe": "1h"},
+            {"indicator": "z_score", "op": "<", "value": -1.2, "timeframe": "15m"},
+        ],
+    }
+
+    assert indicator_watch_mod.summarize_watch(watch)["logic"] == "any"
+
+
+def test_summarize_watch_est_defensif_sans_order_ni_conditions() -> None:
+    watch = {
+        "id": "partial-1",
+        "symbol": "SPY",
+        "on_trigger": "EXECUTE_ORDER",
+    }
+
+    assert indicator_watch_mod.summarize_watch(watch) == {
+        "id": "partial-1",
+        "kind": "wake",
+        "conditions": [],
+    }
 
 
 def test_normalize_indicator_watch_borne_et_persiste_une_combinaison_multi_timeframe() -> None:

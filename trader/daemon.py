@@ -34,6 +34,7 @@ from .indicator_watch import (
     armed_order_price_coherent,
     build_indicator_watch,
     evaluate_indicator_watches,
+    summarize_watch,
     watch_market_requests,
 )
 from .risk import RiskGate, RiskLimits
@@ -866,6 +867,62 @@ def _context_request_summary(
     }
 
 
+def _active_watch_summaries_by_symbol(
+    *,
+    sched: scheduler.Scheduler | None,
+    symbols: list[str],
+    now: datetime,
+) -> dict[str, list[dict]]:
+    summaries = {symbol: [] for symbol in symbols}
+    if sched is None:
+        return summaries
+    for watch in sched.active_indicator_watches(now=now):
+        symbol = str(watch.get("symbol"))
+        if symbol in summaries:
+            summaries[symbol].append(summarize_watch(watch))
+    return summaries
+
+
+def _apply_decision_schedule(
+    *,
+    sched: scheduler.Scheduler | None,
+    sym: str,
+    now: datetime,
+    next_wake_in_minutes: float | None,
+    cancel_watch_ids: list[str],
+    pending_indicator_watch: dict | None,
+    entry: dict,
+) -> None:
+    if sched is None:
+        return
+    if next_wake_in_minutes is not None:
+        sched.set_symbol_next_wake_in(sym, minutes=next_wake_in_minutes, now=now)
+    else:
+        sched.clear_symbol_next_wake(sym)
+    for watch_id in cancel_watch_ids:
+        watch_id = str(watch_id)
+        if not watch_id.startswith(f"{sym}:"):
+            _append_event(
+                "watch_cancel_rejected",
+                symbol=sym,
+                watch_id=watch_id,
+                reason="not_owned_by_symbol",
+            )
+            continue
+        sched.remove_indicator_watch(watch_id)
+        _append_event("watch_cancelled_by_agent", symbol=sym, watch_id=watch_id)
+    if pending_indicator_watch is not None:
+        sched.set_symbol_indicator_watch(sym, pending_indicator_watch)
+        entry["indicator_watch_created"] = True
+        entry["indicator_watch"] = {
+            "id": pending_indicator_watch["id"],
+            "expires_at": pending_indicator_watch["expires_at"],
+            "logic": pending_indicator_watch["logic"],
+            "on_trigger": pending_indicator_watch["on_trigger"],
+            "conditions": pending_indicator_watch["conditions"],
+        }
+
+
 def _batch_decide(
     *,
     decidable: list[str],
@@ -882,6 +939,7 @@ def _batch_decide(
     max_model_calls: int,
     now: datetime,
     data_age_by_symbol: dict[str, float],
+    sched: scheduler.Scheduler | None = None,
     decision_timeout_s: int = 900,
 ) -> tuple[dict[str, codex_client.Decision], int]:
     """Décide TOUS les symboles dus en UN appel batch (contexte partagé envoyé une
@@ -893,6 +951,8 @@ def _batch_decide(
         return {}, 0
     if max_model_calls < 1:
         return {sym: codex_client.Decision.hold(sym, "model_call_budget_exhausted") for sym in decidable}, 0
+    active_watches_by_symbol = _active_watch_summaries_by_symbol(sched=sched, symbols=decidable, now=now)
+
     def _symbol_facts(sym: str) -> dict:
         # Faits calculés par le code (pas des consignes en prose) : âge réel des
         # prix et état de la séance de la place du symbole. Âge inconnu = None.
@@ -900,6 +960,7 @@ def _batch_decide(
         return {
             "data_age_m": None if age is None else int(round(age)),
             "session": market.session_snapshot(sym, now=now),
+            "active_watches": active_watches_by_symbol.get(sym, []),
         }
 
     per_symbol = {
@@ -1614,6 +1675,7 @@ def run_cycle(
         max_model_calls=max_model_calls_per_cycle,
         now=now,
         data_age_by_symbol=data_age_by_symbol,
+        sched=sched,
         decision_timeout_s=decision_timeout_s,
     )
     # revue effective seulement si le modèle a réellement statué (review Codex :
@@ -1756,22 +1818,15 @@ def run_cycle(
                 pending_indicator_watch = indicator_watch_result.watch
 
         def apply_decision_schedule() -> None:
-            if sched is None:
-                return
-            if next_wake_in_minutes is not None:
-                sched.set_symbol_next_wake_in(sym, minutes=next_wake_in_minutes, now=now)
-            else:
-                sched.clear_symbol_next_wake(sym)
-            if pending_indicator_watch is not None:
-                sched.set_symbol_indicator_watch(sym, pending_indicator_watch)
-                entry["indicator_watch_created"] = True
-                entry["indicator_watch"] = {
-                    "id": pending_indicator_watch["id"],
-                    "expires_at": pending_indicator_watch["expires_at"],
-                    "logic": pending_indicator_watch["logic"],
-                    "on_trigger": pending_indicator_watch["on_trigger"],
-                    "conditions": pending_indicator_watch["conditions"],
-                }
+            _apply_decision_schedule(
+                sched=sched,
+                sym=sym,
+                now=now,
+                next_wake_in_minutes=next_wake_in_minutes,
+                cancel_watch_ids=decision.cancel_watch_ids,
+                pending_indicator_watch=pending_indicator_watch,
+                entry=entry,
+            )
 
         def apply_default_schedule_after_blocked() -> None:
             if sched is not None:
