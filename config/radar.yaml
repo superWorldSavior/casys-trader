@@ -15,3 +15,4 @@ benchmarks:
   EU: ^FCHI
   TW: ^TWII
 default_benchmark: SPY
+gap_threshold: 0.03  # seuil de gap d'ouverture adverse, 3%

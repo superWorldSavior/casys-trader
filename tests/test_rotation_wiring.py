@@ -9,6 +9,7 @@ from trader.rotation_wiring import (
     venue_of,
     benchmark_ret_for,
     resolve_as_of,
+    compute_gap_adverse,
 )
 
 
@@ -159,3 +160,121 @@ class TestResolveAsOf:
         bars_a = [_bar(1.0, ts="2024-12-31")]
         bars_b = [_bar(2.0, ts="2025-01-01")]
         assert resolve_as_of({"A": bars_a, "B": bars_b}) == "2025-01-01"
+
+
+# ---------------------------------------------------------------------------
+# compute_gap_adverse
+# ---------------------------------------------------------------------------
+
+def _ranked_item(symbol: str, bias: str) -> dict:
+    return {"symbol": symbol, "directional_score": 1.0, "attractiveness": 1.0, "bias": bias}
+
+
+def _two_bars(prev_close: float, last_open: float, last_close: float | None = None) -> list:
+    """Deux barres : prev_close puis last_open (pour simuler le gap d'ouverture)."""
+    lc = last_close if last_close is not None else last_open
+    return [
+        Bar(ts="2024-01-01", open=prev_close, high=prev_close, low=prev_close, close=prev_close, volume=0.0),
+        Bar(ts="2024-01-02", open=last_open,  high=lc,         low=lc,         close=lc,         volume=0.0),
+    ]
+
+
+class TestComputeGapAdverse:
+    GAP_THRESHOLD = 0.03
+
+    def test_long_with_gap_down_5pct_is_adverse(self):
+        """Long + gap d'ouverture -5% (seuil 3%) → adverse."""
+        # prev_close=100, last_open=95 → gap = (95-100)/100 = -0.05
+        bars = {"AAPL": _two_bars(prev_close=100.0, last_open=95.0)}
+        ranked = [_ranked_item("AAPL", "long")]
+        result = compute_gap_adverse(bars, ranked, gap_threshold=self.GAP_THRESHOLD)
+        assert "AAPL" in result
+
+    def test_short_with_gap_up_5pct_is_adverse(self):
+        """Short + gap d'ouverture +5% (seuil 3%) → adverse."""
+        # prev_close=100, last_open=105 → gap = (105-100)/100 = +0.05
+        bars = {"TSLA": _two_bars(prev_close=100.0, last_open=105.0)}
+        ranked = [_ranked_item("TSLA", "short")]
+        result = compute_gap_adverse(bars, ranked, gap_threshold=self.GAP_THRESHOLD)
+        assert "TSLA" in result
+
+    def test_long_with_gap_up_5pct_is_not_adverse(self):
+        """Long + gap d'ouverture +5% (hausse favorable) → PAS adverse."""
+        # prev_close=100, last_open=105 → gap = +0.05 → favorable pour long
+        bars = {"MSFT": _two_bars(prev_close=100.0, last_open=105.0)}
+        ranked = [_ranked_item("MSFT", "long")]
+        result = compute_gap_adverse(bars, ranked, gap_threshold=self.GAP_THRESHOLD)
+        assert "MSFT" not in result
+
+    def test_symbol_with_one_bar_not_adverse(self):
+        """Symbole avec < 2 barres → ignoré, pas adverse."""
+        bars = {"NVDA": [Bar(ts="2024-01-01", open=100.0, high=100.0, low=100.0, close=100.0, volume=0.0)]}
+        ranked = [_ranked_item("NVDA", "long")]
+        result = compute_gap_adverse(bars, ranked, gap_threshold=self.GAP_THRESHOLD)
+        assert "NVDA" not in result
+
+    def test_gap_exactly_at_threshold_not_adverse(self):
+        """Gap exactement au seuil (non strict) → PAS adverse (condition stricte <=/->=)."""
+        # Pour long : adverse si gap <= -threshold → gap = -0.03 → adverse
+        # Pour short : adverse si gap >= threshold → gap = +0.03 → adverse
+        bars_long = {"LONG": _two_bars(prev_close=100.0, last_open=97.0)}   # gap = -0.03
+        ranked_long = [_ranked_item("LONG", "long")]
+        result_long = compute_gap_adverse(bars_long, ranked_long, gap_threshold=self.GAP_THRESHOLD)
+        assert "LONG" in result_long  # -0.03 <= -0.03 → adverse
+
+    def test_returns_frozenset(self):
+        """Le retour est bien un frozenset."""
+        result = compute_gap_adverse({}, [], gap_threshold=self.GAP_THRESHOLD)
+        assert isinstance(result, frozenset)
+
+    def test_symbol_absent_from_bars_not_adverse(self):
+        """Symbole dans ranked mais absent de bars_by_symbol → pas adverse."""
+        ranked = [_ranked_item("XYZ", "long")]
+        result = compute_gap_adverse({}, ranked, gap_threshold=self.GAP_THRESHOLD)
+        assert "XYZ" not in result
+
+    def test_prev_close_zero_ignored(self):
+        """Si prev.close == 0, le symbole est ignoré (pas de division par 0)."""
+        bars = {"ABC": _two_bars(prev_close=0.0, last_open=10.0)}
+        ranked = [_ranked_item("ABC", "long")]
+        result = compute_gap_adverse(bars, ranked, gap_threshold=self.GAP_THRESHOLD)
+        assert "ABC" not in result
+
+
+# ---------------------------------------------------------------------------
+# build_rank_fn — gap_adverse key present
+# ---------------------------------------------------------------------------
+
+class TestBuildRankFnGapAdverse:
+    def test_rank_fn_returns_gap_adverse_key(self, tmp_path):
+        """rank_fn() retourne un dict avec la clé 'gap_adverse' (frozenset)."""
+        import yaml
+
+        # Créer les fichiers de config minimaux
+        (tmp_path / "pool.yaml").write_text(
+            yaml.dump({"symbols": ["AAPL", "MSFT"]}),
+            encoding="utf-8",
+        )
+        (tmp_path / "radar.yaml").write_text(
+            "gap_threshold: 0.03\n",
+            encoding="utf-8",
+        )
+        (tmp_path / "conviction.yaml").write_text("{}", encoding="utf-8")
+
+        # fetch_fn fake : retourne 2 barres par symbole
+        def fake_fetch(symbols: list[str]) -> dict:
+            result = {}
+            for s in symbols:
+                result[s] = [
+                    Bar(ts="2024-01-01", open=100.0, high=100.0, low=100.0, close=100.0, volume=1.0),
+                    Bar(ts="2024-01-02", open=100.0, high=100.0, low=100.0, close=100.0, volume=1.0),
+                ]
+            return result
+
+        from trader.rotation_wiring import build_rank_fn
+
+        rank_fn = build_rank_fn(str(tmp_path), fetch_fn=fake_fetch, as_of="2024-01-02")
+        result = rank_fn()
+
+        assert "gap_adverse" in result
+        assert isinstance(result["gap_adverse"], frozenset)
