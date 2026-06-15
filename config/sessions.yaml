@@ -1,0 +1,5 @@
+# Heures de clôture (UTC, HH:MM) par venue — déclenchent une rotation du hot-set.
+# DST non géré finement : ajuster à la main selon la saison.
+TW: "05:30"
+EU: "15:30"
+US: "20:00"

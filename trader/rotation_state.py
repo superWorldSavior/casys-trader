@@ -1,7 +1,7 @@
 """État persistant de la rotation — mémoire de l'hystérésis.
 
 Structure JSON : {"current_hot_set": [...], "dwell_days_by_symbol": {sym: int},
-                  "last_valid_universe": [...]}
+                  "last_valid_universe": [...], "last_rotation_at": ""}
 """
 from __future__ import annotations
 
@@ -23,6 +23,7 @@ def _default_state() -> dict:
         "current_hot_set": [],
         "dwell_days_by_symbol": {},
         "last_valid_universe": [],
+        "last_rotation_at": "",
     }
 
 
@@ -54,6 +55,7 @@ def advance_state(
     new_hot_set: list[str],
     *,
     last_valid: list[str] | None = None,
+    rotation_at: str | None = None,
 ) -> dict:
     """Transition déterministe vers new_hot_set.
 
@@ -63,6 +65,7 @@ def advance_state(
     - last_valid : si fourni, utilisé comme last_valid_universe (typiquement = final
       incluant les stickies). Si None, fallback : new_hot_set si non vide, sinon
       état précédent conservé.
+    - rotation_at : si fourni, mis dans last_rotation_at ; sinon, conserve l'existant.
     """
     prev_set = set(state["current_hot_set"])
     prev_dwell: dict[str, int] = dict(state["dwell_days_by_symbol"])
@@ -81,10 +84,13 @@ def advance_state(
     else:
         computed_last_valid = list(state.get("last_valid_universe", []))
 
+    new_rotation_at = rotation_at if rotation_at is not None else state.get("last_rotation_at", "")
+
     return {
         "current_hot_set": list(new_hot_set),
         "dwell_days_by_symbol": new_dwell,
         "last_valid_universe": computed_last_valid,
+        "last_rotation_at": new_rotation_at,
     }
 
 
