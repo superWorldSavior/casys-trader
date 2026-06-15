@@ -37,6 +37,20 @@ def _bars_with_return(start: float, end: float, ts: str = "2024-01-05") -> list[
 # ---------------------------------------------------------------------------
 
 class TestVenueOf:
+    @pytest.mark.parametrize(
+        ("symbol", "expected"),
+        [
+            ("8299.TWO", "TW"),
+            ("6488.TWO", "TW"),
+            ("2330.TW", "TW"),
+            ("SPY", "US"),
+            ("HO.PA", "EU"),
+            ("EURUSD=X", "FX"),
+        ],
+    )
+    def test_contract_examples(self, symbol, expected):
+        assert venue_of(symbol) == expected
+
     def test_spy_us(self):
         assert venue_of("SPY") == "US"
 

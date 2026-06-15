@@ -18,6 +18,7 @@ from trader.features import compute_indicator_values
 
 _EU_SUFFIXES = (".PA", ".DE", ".AS", ".MI")
 _EU_SYMBOLS = frozenset({"^FCHI"})
+_TW_SUFFIXES = (".TW", ".TWO")
 
 
 def venue_of(symbol: str) -> str:
@@ -30,7 +31,7 @@ def venue_of(symbol: str) -> str:
         return "EU"
     if any(symbol.endswith(s) for s in _EU_SUFFIXES):
         return "EU"
-    if symbol.endswith(".TW"):
+    if any(symbol.endswith(s) for s in _TW_SUFFIXES):
         return "TW"
     if symbol.endswith("=X"):
         return "FX"
