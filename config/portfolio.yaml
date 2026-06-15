@@ -1,0 +1,4 @@
+# Capital de depart du portefeuille paper. Sorti de universe.yaml (devenu un
+# output genere par la rotation, cf registre D9). Lu par le daemon (SimBroker)
+# et par stats.py.
+starting_cash: 100000
