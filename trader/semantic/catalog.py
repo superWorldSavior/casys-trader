@@ -17,6 +17,22 @@ LEVELS = ["market", "family", "symbol", "timeframe", "lookback", "window", "as_o
 WINDOWS = [2, 3, 5, 12, 24, 32, 48, 96, 120, 240]
 AS_OF_MODES = ["latest"]
 
+INDICATOR_LABEL_VALUES: dict[str, dict[str, float]] = {
+    "chart_breakout": {"breakout_up": 1.0, "breakout_down": -1.0},
+    "candlestick_signal": {
+        "bullish_engulfing": 1.0,
+        "bull_engulf": 1.0,
+        "bearish_engulfing": -1.0,
+        "bear_engulf": -1.0,
+        "hammer": 0.5,
+        "shooting_star": -0.5,
+    },
+}
+
+
+def label_to_value(indicator: str, label: str) -> float | None:
+    return INDICATOR_LABEL_VALUES.get(indicator, {}).get(label)
+
 TIMEFRAMES: dict[str, dict] = {
     "15m": {
         "label": "15 minutes",

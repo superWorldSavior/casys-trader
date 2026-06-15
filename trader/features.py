@@ -6,7 +6,10 @@ import math
 from statistics import mean, pstdev
 from typing import Iterable
 
-from .semantic.catalog import family_for_symbol
+from .semantic.catalog import INDICATOR_LABEL_VALUES, family_for_symbol
+
+_CANDLESTICK_VALUES = INDICATOR_LABEL_VALUES["candlestick_signal"]
+_CHART_BREAKOUT_VALUES = INDICATOR_LABEL_VALUES["chart_breakout"]
 
 DEFAULT_INDICATORS = [
     "return",
@@ -191,16 +194,16 @@ def _candlestick_signal(bars: list[object]) -> float | None:
             and close <= prev_open
         )
         if bullish_engulfing:
-            return 1.0
+            return _CANDLESTICK_VALUES["bullish_engulfing"]
         if bearish_engulfing:
-            return -1.0
+            return _CANDLESTICK_VALUES["bearish_engulfing"]
 
     upper = high - max(open_, close)
     lower = min(open_, close) - low
     if body > 0 and lower >= 2.0 * body and upper <= body:
-        return 0.5
+        return _CANDLESTICK_VALUES["hammer"]
     if body > 0 and upper >= 2.0 * body and lower <= body:
-        return -0.5
+        return _CANDLESTICK_VALUES["shooting_star"]
     return 0.0
 
 
@@ -212,9 +215,9 @@ def _chart_breakout(bars: list[object]) -> float | None:
     prior_high = max(_highs(prior))
     prior_low = min(_lows(prior))
     if last_close > prior_high:
-        return 1.0
+        return _CHART_BREAKOUT_VALUES["breakout_up"]
     if last_close < prior_low:
-        return -1.0
+        return _CHART_BREAKOUT_VALUES["breakout_down"]
     return 0.0
 
 
