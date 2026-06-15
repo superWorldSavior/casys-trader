@@ -2317,6 +2317,15 @@ def main(
                             )
                             _ib_attach_backoff.record_success()
                             log.info("ib_attach: IB rattaché en cours de session")
+                # Veille à deux niveaux (D9) : recalcul du hot-set aux clôtures de
+                # session de marché, juste avant de relire l'univers. Pas de cron externe ;
+                # état persisté → rattrapage au redémarrage. Fail-safe (n'interrompt pas le cycle).
+                from . import rotation_daemon
+                from .rotation_wiring import run_cli as _rotation_run_cli
+                rotation_daemon.maybe_rotate(
+                    ROOT / "config", STATE_DIR, loop_now.isoformat(),
+                    run_cli=_rotation_run_cli, log=log,
+                )
                 symbols = _load_yaml(ROOT / "config" / "universe.yaml")["symbols"]
                 sched.reconcile_universe(symbols)
                 indicator_triggers = (
