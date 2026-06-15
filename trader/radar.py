@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from collections.abc import Callable
 from pathlib import Path
 
@@ -46,10 +47,22 @@ def score_symbol(
     return raw * (1.0 + w_amp * amplitude_reward) * (1.0 + tilt)
 
 
+def _has_valid_close(bar: object) -> bool:
+    if isinstance(bar, dict):
+        close = bar.get("close")
+    else:
+        close = getattr(bar, "close", None)
+    if close is None:
+        return False
+    close_value = float(close)
+    return not math.isnan(close_value) and close_value > 0
+
+
 def daily_components(symbol: str, bars: list[object], params: RadarParams) -> dict:
     """Adapte les indicateurs features aux noms attendus par le radar daily."""
+    clean_bars = [bar for bar in bars if _has_valid_close(bar)]
     values = compute_indicator_values(
-        bars,
+        clean_bars,
         names=["efficiency_ratio", "return", "ohlc_volatility"],
         window=params.score_window_bars,
     )

@@ -1,5 +1,6 @@
 import pytest
 import json
+import math
 
 from trader.radar import (
     build_radar_snapshot,
@@ -147,6 +148,55 @@ def test_daily_components_window_est_score_window_et_decouple_de_dwell() -> None
     # Une fenetre plus courte change le rendement -> c'est bien score_window qui pilote.
     c5 = daily_components("SPY", bars, RadarParams(score_window_bars=5))
     assert c5["ret"] == pytest.approx(119 / 115 - 1, rel=1e-3)
+
+
+def test_daily_components_ignores_trailing_nan_close() -> None:
+    bars = [
+        Bar(
+            ts=f"2026-06-{day:02d}T00:00:00+00:00",
+            open=100.0 + day,
+            high=102.0 + day,
+            low=99.0 + day,
+            close=100.0 + day,
+            volume=1_000.0,
+        )
+        for day in range(1, 8)
+    ]
+    bars.append(
+        Bar(
+            ts="2026-06-08T00:00:00+00:00",
+            open=108.0,
+            high=109.0,
+            low=107.0,
+            close=float("nan"),
+            volume=0.0,
+        )
+    )
+
+    components = daily_components("SPY", bars, RadarParams(score_window_bars=5))
+
+    assert components["ret"] == pytest.approx(107 / 103 - 1, rel=1e-3)
+    assert math.isfinite(components["efficiency_ratio"])
+    assert math.isfinite(components["ret"])
+    assert math.isfinite(components["amplitude"])
+
+
+def test_daily_components_all_nan_closes_never_returns_nan() -> None:
+    bars = [
+        Bar(
+            ts=f"2026-06-{day:02d}T00:00:00+00:00",
+            open=100.0,
+            high=101.0,
+            low=99.0,
+            close=float("nan"),
+            volume=0.0,
+        )
+        for day in range(1, 4)
+    ]
+
+    components = daily_components("SPY", bars, RadarParams(score_window_bars=3))
+
+    assert components == {"efficiency_ratio": None, "ret": None, "amplitude": None}
 
 
 def test_scan_and_rank_records_ineligible_symbols() -> None:
