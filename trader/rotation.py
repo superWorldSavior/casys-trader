@@ -1,7 +1,11 @@
 """Rotation / hysteresis logic — veille deux niveaux."""
 from __future__ import annotations
 
+import os
+import tempfile
 from typing import Any
+
+import yaml
 
 
 def apply_hysteresis(
@@ -147,6 +151,38 @@ def apply_override(
                 result.append(s)
 
     return result, rejections
+
+
+class UniverseWriteError(ValueError):
+    """Levée quand write_universe_atomic reçoit des données invalides."""
+
+
+def write_universe_atomic(path: str, symbols: list[str]) -> None:
+    """Écrit {"symbols": [...]} dans path de manière atomique via tempfile + os.replace.
+
+    Args:
+        path: chemin du fichier de destination.
+        symbols: liste non vide de symboles.
+
+    Raises:
+        UniverseWriteError: si symbols est vide.
+    """
+    if not symbols:
+        raise UniverseWriteError("symbols ne peut pas être vide")
+
+    directory = os.path.dirname(os.path.abspath(path))
+    fd, tmp_path = tempfile.mkstemp(dir=directory)
+    try:
+        with os.fdopen(fd, "w") as f:
+            yaml.safe_dump({"symbols": symbols}, f)
+        os.replace(tmp_path, path)
+    except Exception:
+        # Nettoyer le fichier temporaire en cas d'erreur
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
 
 
 def emergency_exits(

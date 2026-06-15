@@ -1,6 +1,12 @@
 """Tests TDD pour trader/rotation.py — veille deux niveaux."""
 import pytest
-from trader.rotation import apply_hysteresis, compose_final, emergency_exits, sticky_symbols
+import os
+import tempfile
+
+import yaml
+
+from trader.rotation import apply_hysteresis, apply_override, compose_final, emergency_exits, sticky_symbols, write_universe_atomic
+from trader.rotation import UniverseWriteError
 
 
 # ---------------------------------------------------------------------------
@@ -194,3 +200,91 @@ class TestComposeFinal:
         )
         assert final.count("A") == 1
         assert alert is None
+
+
+# ---------------------------------------------------------------------------
+# apply_override
+# ---------------------------------------------------------------------------
+
+class TestApplyOverride:
+    def test_add_remove_valides(self):
+        """Add et remove valides → pas de rejets."""
+        result, rejections = apply_override(
+            default_hot=["A", "B", "C"],
+            add=["D"],
+            remove=["C"],
+            pool={"A", "B", "C", "D"},
+            sticky=set(),
+            free_slots=3,
+        )
+        assert "D" in result
+        assert "C" not in result
+        assert rejections == []
+
+    def test_out_of_pool_rejete(self):
+        """Ajout d'un symbole absent du pool → rejet out_of_pool."""
+        result, rejections = apply_override(
+            default_hot=["A", "B"],
+            add=["Z"],
+            remove=[],
+            pool={"A", "B"},
+            sticky=set(),
+            free_slots=3,
+        )
+        assert "Z" not in result
+        assert {"symbol": "Z", "reason": "out_of_pool"} in rejections
+
+    def test_remove_sticky_rejete(self):
+        """Retrait d'un symbole sticky → rejet sticky_protected, non retiré."""
+        result, rejections = apply_override(
+            default_hot=["A", "B"],
+            add=[],
+            remove=["A"],
+            pool={"A", "B"},
+            sticky={"A"},
+            free_slots=2,
+        )
+        assert "A" in result
+        assert {"symbol": "A", "reason": "sticky_protected"} in rejections
+
+    def test_add_depasse_free_slots_rejete(self):
+        """Ajout qui dépasse free_slots → rejet cap_exceeded."""
+        result, rejections = apply_override(
+            default_hot=["A", "B"],
+            add=["C", "D"],
+            remove=[],
+            pool={"A", "B", "C", "D"},
+            sticky=set(),
+            free_slots=2,
+        )
+        # A, B occupent déjà 2 slots ; C passerait à 3, D à 4 → les 2 rejetés
+        assert "C" not in result
+        assert "D" not in result
+        reasons = [r["reason"] for r in rejections]
+        assert "cap_exceeded" in reasons
+
+
+# ---------------------------------------------------------------------------
+# write_universe_atomic
+# ---------------------------------------------------------------------------
+
+class TestWriteUniverseAtomic:
+    def test_ecrit_yaml_relisible(self, tmp_path):
+        """Écrit un fichier YAML avec la clé 'symbols' et relisible via yaml.safe_load."""
+        path = tmp_path / "universe.yaml"
+        write_universe_atomic(str(path), ["AAPL", "MSFT", "NVDA"])
+        content = yaml.safe_load(path.read_text())
+        assert content == {"symbols": ["AAPL", "MSFT", "NVDA"]}
+
+    def test_aucun_fichier_temporaire_residuel(self, tmp_path):
+        """Après écriture, aucun fichier .tmp ne subsiste dans le dossier."""
+        path = tmp_path / "universe.yaml"
+        write_universe_atomic(str(path), ["AAPL"])
+        residuals = list(tmp_path.glob("*.tmp"))
+        assert residuals == []
+
+    def test_symbols_vide_leve_universe_write_error(self, tmp_path):
+        """symbols vide → lève UniverseWriteError."""
+        path = tmp_path / "universe.yaml"
+        with pytest.raises(UniverseWriteError):
+            write_universe_atomic(str(path), [])
