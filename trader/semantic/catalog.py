@@ -88,6 +88,88 @@ FAMILIES: dict[str, list[str]] = {
     "metals": ["GC=F"],
     "nasdaq_single_names": ["NVDA", "AAPL"],
     # -------------------------------------------------------------------------
+    # Univers US large-cap sectorisé (S&P 500) — découpage GICS.
+    # Préfixe us_ pour isoler le sous-graphe dans le cross-asset family_regime.
+    # Tickers sans suffixe (Yahoo Finance US).
+    # -------------------------------------------------------------------------
+    # Technology
+    "us_tech": [
+        "MSFT",   # Microsoft
+        "GOOGL",  # Alphabet (Google)
+        "META",   # Meta Platforms
+        "AMD",    # Advanced Micro Devices
+    ],
+    # Communication Services
+    "us_communication": [
+        "NFLX",   # Netflix
+        "DIS",    # Walt Disney
+        "T",      # AT&T
+        "VZ",     # Verizon Communications
+    ],
+    # Financials
+    "us_financials": [
+        "JPM",    # JPMorgan Chase
+        "BAC",    # Bank of America
+        "GS",     # Goldman Sachs
+        "BLK",    # BlackRock
+    ],
+    # Healthcare
+    "us_healthcare": [
+        "JNJ",    # Johnson & Johnson
+        "UNH",    # UnitedHealth Group
+        "PFE",    # Pfizer
+        "ABBV",   # AbbVie
+    ],
+    # Energy
+    "us_energy": [
+        "XOM",    # ExxonMobil
+        "CVX",    # Chevron
+        "COP",    # ConocoPhillips
+        "SLB",    # Schlumberger (SLB)
+    ],
+    # Consumer Discretionary
+    "us_consumer_disc": [
+        "AMZN",   # Amazon
+        "TSLA",   # Tesla
+        "HD",     # Home Depot
+        "MCD",    # McDonald's
+    ],
+    # Consumer Staples
+    "us_consumer_staples": [
+        "PG",     # Procter & Gamble
+        "KO",     # Coca-Cola
+        "WMT",    # Walmart
+        "PEP",    # PepsiCo
+    ],
+    # Industrials
+    "us_industrials": [
+        "CAT",    # Caterpillar
+        "GE",     # GE Aerospace
+        "HON",    # Honeywell
+        "UPS",    # United Parcel Service
+    ],
+    # Materials
+    "us_materials": [
+        "LIN",    # Linde
+        "APD",    # Air Products & Chemicals
+        "FCX",    # Freeport-McMoRan (copper)
+        "NEM",    # Newmont (gold mining)
+    ],
+    # Utilities
+    "us_utilities": [
+        "NEE",    # NextEra Energy
+        "DUK",    # Duke Energy
+        "SO",     # Southern Company
+        "AEP",    # American Electric Power
+    ],
+    # Real Estate
+    "us_real_estate": [
+        "PLD",    # Prologis (logistics REIT)
+        "AMT",    # American Tower (cell towers REIT)
+        "EQIX",   # Equinix (data centers REIT)
+        "SPG",    # Simon Property Group (retail REIT)
+    ],
+    # -------------------------------------------------------------------------
     # Univers taïwanais d'Erwan — découpage sectoriel best-effort, à valider.
     # Source : 30 tickers TWSE (.TW) / TPEx (.TWO) du pool papier.
     # Préfixe tw_ pour isoler le sous-graphe dans le cross-asset family_regime (D2).
