@@ -198,6 +198,14 @@ def build_rank_fn(
 
     def rank_fn() -> dict:
         bars = fetch_daily(all_syms, fetch_fn=fetch_fn, min_coverage=params.min_coverage)
+        # Nettoie les barres incomplètes (close NaN ou <= 0, ex barre du jour non
+        # clôturée côté yahoo) AVANT tout calcul — sinon le benchmark hérite du NaN
+        # et propage un score NaN à tout son marché (cf US/SPY). NaN != NaN.
+        bars = {
+            sym: clean
+            for sym, bb in bars.items()
+            if (clean := [b for b in bb if b.close == b.close and b.close > 0])
+        }
         bench_ret = benchmark_ret_for(
             bars,
             benchmarks=params.benchmarks,
