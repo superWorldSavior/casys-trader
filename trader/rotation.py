@@ -1,11 +1,17 @@
 """Rotation / hysteresis logic — veille deux niveaux."""
 from __future__ import annotations
 
+import argparse
 import os
 import tempfile
+from pathlib import Path
 from typing import Any
 
 import yaml
+
+from trader.radar_data import CoverageError
+from trader.rotation_ledger import log_rotation
+from trader.rotation_state import advance_state, load_rotation_state, save_rotation_state
 
 
 def apply_hysteresis(
@@ -208,3 +214,144 @@ def emergency_exits(
         or s in gap_adverse
         or s in daily_invalidated
     }
+
+
+def run(
+    *,
+    config_dir: str,
+    state_dir: str,
+    as_of: str,
+    rank_fn: Any,
+    sticky_fn: Any,
+    override_fn: Any,
+    pool: set[str],
+    cap_m: int,
+    delta: float,
+    dwell_days: int,
+    emergency_floor: float,
+    gap_adverse: frozenset[str] = frozenset(),
+    daily_invalidated: frozenset[str] = frozenset(),
+) -> dict:
+    """Orchestration EOD de la rotation d'univers.
+
+    Les I/O réseau/agent sont injectées via rank_fn, sticky_fn, override_fn.
+
+    Returns:
+        dict avec clés : final_hot_set, default_hot_set, alerts, written.
+    """
+    state = load_rotation_state(state_dir)
+    universe_path = str(Path(config_dir) / "universe.yaml")
+    ledger_path = Path(state_dir) / "rotation_ledger.jsonl"
+    alerts: list[str] = []
+
+    # 1. Ranking — peut lever CoverageError -> fail-safe : on NE réécrit PAS l'univers
+    try:
+        ranked = rank_fn()["ranked"]
+    except CoverageError:
+        log_rotation(
+            ledger_path,
+            as_of=as_of,
+            default_hot=set(state["current_hot_set"]),
+            final_hot=set(state["last_valid_universe"]),
+            sticky=set(),
+            overrides={},
+            rejects=[],
+            alerts=["coverage_insufficient"],
+        )
+        return {
+            "final_hot_set": state["last_valid_universe"],
+            "default_hot_set": state["current_hot_set"],
+            "alerts": ["coverage_insufficient"],
+            "written": False,
+        }
+
+    # 2. sticky (hors quota) + slots libres
+    sticky = sticky_fn()
+    free_slots = max(0, cap_m - len(sticky))
+
+    # 3. hystérésis sur les NON-sticky uniquement, cap = free_slots
+    ranked_ns = [r for r in ranked if r["symbol"] not in sticky]
+    current_ns = {s for s in state["current_hot_set"] if s not in sticky}
+    default_hot = apply_hysteresis(
+        ranked_ns,
+        current=current_ns,
+        dwell=state["dwell_days_by_symbol"],
+        cap_m=free_slots,
+        delta=delta,
+        dwell_days=dwell_days,
+    )
+
+    # 4. sortie d'urgence
+    evicted = emergency_exits(
+        set(default_hot),
+        ranked,
+        emergency_floor=emergency_floor,
+        gap_adverse=gap_adverse,
+        daily_invalidated=daily_invalidated,
+    )
+    default_hot = [s for s in default_hot if s not in evicted]
+
+    # 5. override agent — échec => commit du défaut
+    overrides: dict[str, list] = {"add": [], "remove": []}
+    rejects: list[dict] = []
+    try:
+        overrides = override_fn({"ranked": ranked, "default_hot": list(default_hot)}) or {"add": [], "remove": []}
+        hot, rejects = apply_override(
+            default_hot=default_hot,
+            add=overrides.get("add", []),
+            remove=overrides.get("remove", []),
+            pool=pool,
+            sticky=sticky,
+            free_slots=free_slots,
+        )
+    except Exception:
+        hot = default_hot
+        alerts.append("override_unavailable")
+
+    # 6. compose final (sticky hors quota)
+    final, cap_alert = compose_final(default_hot=hot, sticky=sticky, cap_m=cap_m)
+    if cap_alert:
+        alerts.append(cap_alert)
+
+    # 7. écriture atomique + état + ledger
+    write_universe_atomic(universe_path, final)
+    save_rotation_state(state_dir, advance_state(state, final))
+    log_rotation(
+        ledger_path,
+        as_of=as_of,
+        default_hot=set(default_hot),
+        final_hot=set(final),
+        sticky=sticky,
+        overrides=overrides,
+        rejects=rejects,
+        alerts=alerts,
+    )
+    return {
+        "final_hot_set": final,
+        "default_hot_set": default_hot,
+        "alerts": alerts,
+        "written": True,
+    }
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Point d'entrée CLI — squelette Phase 3.
+
+    Usage:
+      rotation.py --run --config-dir CONFIG --state-dir STATE
+    """
+    parser = argparse.ArgumentParser(description="Rotation EOD orchestrator")
+    parser.add_argument("--run", action="store_true", help="Lancer la rotation EOD")
+    parser.add_argument("--config-dir", default="config", help="Répertoire de config")
+    parser.add_argument("--state-dir", default="state", help="Répertoire d'état")
+    args = parser.parse_args(argv)
+
+    if not args.run:
+        parser.print_help()
+        return 0
+
+    raise SystemExit("câblage prod assemblé en Phase 4")
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
