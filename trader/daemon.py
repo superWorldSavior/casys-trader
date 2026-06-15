@@ -1100,7 +1100,9 @@ def run_cycle(
     if symbols_filter is not None:
         wanted = set(symbols_filter)
         symbols_to_decide = [symbol for symbol in symbols if symbol in wanted]
-    starting_equity = float(universe_cfg.get("starting_cash", 100_000))
+    from .portfolio_config import load_starting_cash
+
+    starting_equity = load_starting_cash(ROOT / "config")
     indicator_triggers = indicator_triggers or []
     triggers_by_symbol: dict[str, list[dict]] = {}
     for trigger in indicator_triggers:
