@@ -267,6 +267,8 @@ def run(
     try:
         rank_result = rank_fn()
         ranked = rank_result["ranked"]
+        # Le dict prime sur le param gap_adverse
+        gap_adverse = rank_result.get("gap_adverse", gap_adverse)
     except CoverageError:
         log_rotation(
             ledger_path,
@@ -333,7 +335,7 @@ def run(
     if cap_alert:
         alerts.append(cap_alert)
 
-    # A. No-leader : si final est vide, ne pas écrire et retourner en fallback
+    # A. No-leader : si final est vide, ne pas écrire l'univers mais persister rotation_at
     if not final:
         alerts.append("no_leader")
         log_rotation(
@@ -346,6 +348,9 @@ def run(
             rejects=rejects,
             alerts=alerts,
         )
+        # Persiste last_rotation_at sans toucher hot-set ni dwell
+        no_leader_state = {**state, "last_rotation_at": as_of}
+        save_rotation_state(state_dir, no_leader_state)
         return {
             "final_hot_set": state["last_valid_universe"],
             "default_hot_set": default_hot,
@@ -368,7 +373,7 @@ def run(
     # 7. écriture atomique + état + ledger
     # C. advance_state avec last_valid=final (hot non-sticky uniquement dans current_hot_set)
     write_universe_atomic(universe_path, final)
-    save_rotation_state(state_dir, advance_state(state, hot, last_valid=final))
+    save_rotation_state(state_dir, advance_state(state, hot, last_valid=final, rotation_at=as_of))
     log_rotation(
         ledger_path,
         as_of=as_of,

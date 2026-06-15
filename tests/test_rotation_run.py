@@ -503,3 +503,187 @@ def test_sticky_over_quota_non_sticky_count_le_cap_minus_sticky(tmp_path):
     assert len(non_sticky_in_final) <= max_non_sticky, (
         f"Non-sticky dans final ({non_sticky_in_final}) dépasse la limite {max_non_sticky}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Test F — gap_adverse consommé depuis rank_fn (prime sur param)
+# ---------------------------------------------------------------------------
+
+def test_gap_adverse_from_rank_fn_evicts_hot_symbol(tmp_path):
+    """rank_fn renvoie gap_adverse={'X'} avec X dans le hot-set initial.
+
+    X doit être évincé (sortie d'urgence) même si gap_adverse param par défaut est vide.
+    Vérifie que le dict retourné par rank_fn prime sur le param gap_adverse.
+    """
+    config_dir = tmp_path / "config"
+    state_dir = tmp_path / "state"
+    config_dir.mkdir()
+    state_dir.mkdir()
+
+    # X est dans le hot-set initial (dwell=5 — évictable)
+    initial_state = {
+        "current_hot_set": ["X", "A"],
+        "dwell_days_by_symbol": {"X": 5, "A": 5},
+        "last_valid_universe": ["X", "A"],
+    }
+    (state_dir / "rotation_state.json").write_text(
+        json.dumps(initial_state), encoding="utf-8"
+    )
+
+    def _rank_with_gap_adverse():
+        return {
+            "ranked": [
+                {"symbol": "X", "attractiveness": 0.9},
+                {"symbol": "A", "attractiveness": 0.7},
+            ],
+            "gap_adverse": frozenset({"X"}),
+        }
+
+    result = run(
+        config_dir=str(config_dir),
+        state_dir=str(state_dir),
+        as_of="2026-06-15",
+        rank_fn=_rank_with_gap_adverse,
+        sticky_fn=_sticky_fn(set()),
+        override_fn=_override_fn_noop(),
+        pool={"X", "A"},
+        cap_m=2,
+        delta=0.1,
+        dwell_days=2,
+        emergency_floor=0.0,
+        gap_adverse=frozenset(),  # param vide — le dict doit primer
+    )
+
+    assert "X" not in result["final_hot_set"], (
+        "X doit être évincé via gap_adverse fourni par rank_fn"
+    )
+    assert result["written"] is True
+
+
+# ---------------------------------------------------------------------------
+# Test G — rotation_at persisté : chemin succès
+# ---------------------------------------------------------------------------
+
+def test_rotation_at_persisted_on_success(tmp_path):
+    """Run nominal → rotation_state.json a last_rotation_at == as_of."""
+    config_dir = tmp_path / "config"
+    state_dir = tmp_path / "state"
+    config_dir.mkdir()
+    state_dir.mkdir()
+
+    result = run(
+        config_dir=str(config_dir),
+        state_dir=str(state_dir),
+        as_of="2026-06-15",
+        rank_fn=_rank_fn(("A", 0.9), ("B", 0.7)),
+        sticky_fn=_sticky_fn(set()),
+        override_fn=_override_fn_noop(),
+        pool={"A", "B"},
+        cap_m=2,
+        delta=0.1,
+        dwell_days=2,
+        emergency_floor=0.0,
+    )
+
+    assert result["written"] is True
+    persisted = json.loads((state_dir / "rotation_state.json").read_text())
+    assert persisted.get("last_rotation_at") == "2026-06-15", (
+        "last_rotation_at doit être mis à jour à as_of sur succès"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test H — rotation_at persisté : chemin no-leader
+# ---------------------------------------------------------------------------
+
+def test_rotation_at_persisted_on_no_leader(tmp_path):
+    """No-leader (ranked=[]) → last_rotation_at == as_of ET hot-set inchangé."""
+    config_dir = tmp_path / "config"
+    state_dir = tmp_path / "state"
+    config_dir.mkdir()
+    state_dir.mkdir()
+
+    initial_state = {
+        "current_hot_set": ["X"],
+        "dwell_days_by_symbol": {"X": 3},
+        "last_valid_universe": ["X", "Y"],
+        "last_rotation_at": "",
+    }
+    (state_dir / "rotation_state.json").write_text(
+        json.dumps(initial_state), encoding="utf-8"
+    )
+
+    result = run(
+        config_dir=str(config_dir),
+        state_dir=str(state_dir),
+        as_of="2026-06-15",
+        rank_fn=lambda: {"ranked": []},
+        sticky_fn=_sticky_fn(set()),
+        override_fn=_override_fn_noop(),
+        pool={"X", "Y"},
+        cap_m=2,
+        delta=0.1,
+        dwell_days=2,
+        emergency_floor=0.0,
+    )
+
+    assert result["written"] is False
+    assert "no_leader" in result["alerts"]
+
+    persisted = json.loads((state_dir / "rotation_state.json").read_text())
+    assert persisted.get("last_rotation_at") == "2026-06-15", (
+        "last_rotation_at doit être persisté même sur no-leader"
+    )
+    assert persisted["current_hot_set"] == initial_state["current_hot_set"], (
+        "hot-set doit rester inchangé sur no-leader"
+    )
+    assert persisted["dwell_days_by_symbol"] == initial_state["dwell_days_by_symbol"], (
+        "dwell ne doit pas changer sur no-leader"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test I — rotation_at NON mis à jour sur CoverageError
+# ---------------------------------------------------------------------------
+
+def test_rotation_at_not_updated_on_coverage_error(tmp_path):
+    """CoverageError → last_rotation_at ne doit PAS être mis à jour."""
+    config_dir = tmp_path / "config"
+    state_dir = tmp_path / "state"
+    config_dir.mkdir()
+    state_dir.mkdir()
+
+    initial_state = {
+        "current_hot_set": ["X"],
+        "dwell_days_by_symbol": {"X": 3},
+        "last_valid_universe": ["X", "Y"],
+        "last_rotation_at": "2026-06-10",
+    }
+    (state_dir / "rotation_state.json").write_text(
+        json.dumps(initial_state), encoding="utf-8"
+    )
+
+    def _failing_rank():
+        raise CoverageError("not enough data")
+
+    run(
+        config_dir=str(config_dir),
+        state_dir=str(state_dir),
+        as_of="2026-06-15",
+        rank_fn=_failing_rank,
+        sticky_fn=_sticky_fn(set()),
+        override_fn=_override_fn_noop(),
+        pool={"X", "Y"},
+        cap_m=2,
+        delta=0.1,
+        dwell_days=2,
+        emergency_floor=0.0,
+    )
+
+    # rotation_state.json ne doit pas être écrit / modifié en cas de CoverageError
+    state_path = state_dir / "rotation_state.json"
+    if state_path.exists():
+        persisted = json.loads(state_path.read_text())
+        assert persisted.get("last_rotation_at") == "2026-06-10", (
+            "last_rotation_at ne doit pas changer sur CoverageError"
+        )
