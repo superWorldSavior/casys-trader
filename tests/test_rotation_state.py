@@ -12,6 +12,7 @@ _DEFAULT_STATE = {
     "current_hot_set": [],
     "dwell_days_by_symbol": {},
     "last_valid_universe": [],
+    "last_rotation_at": "",
 }
 
 
@@ -165,6 +166,53 @@ class TestAdvanceState:
         state = self._base_state()
         result = advance_state(state, ["AAPL"], last_valid=[])
         assert result["last_valid_universe"] == []
+
+
+# ---------------------------------------------------------------------------
+# last_rotation_at — clé de gate temporelle
+# ---------------------------------------------------------------------------
+
+
+class TestLastRotationAt:
+    def test_defaut_contient_last_rotation_at_vide(self, tmp_path):
+        """Fichier absent → défaut inclut last_rotation_at=""."""
+        result = load_rotation_state(str(tmp_path))
+        assert "last_rotation_at" in result
+        assert result["last_rotation_at"] == ""
+
+    def test_advance_state_enregistre_rotation_at(self):
+        """advance_state(..., rotation_at=...) met à jour last_rotation_at."""
+        state = {
+            "current_hot_set": ["AAPL"],
+            "dwell_days_by_symbol": {"AAPL": 1},
+            "last_valid_universe": ["AAPL"],
+            "last_rotation_at": "",
+        }
+        result = advance_state(state, ["AAPL"], rotation_at="2026-06-15T20:00:00+00:00")
+        assert result["last_rotation_at"] == "2026-06-15T20:00:00+00:00"
+
+    def test_advance_state_sans_rotation_at_conserve_existant(self):
+        """advance_state sans rotation_at → last_rotation_at inchangé."""
+        state = {
+            "current_hot_set": ["AAPL"],
+            "dwell_days_by_symbol": {"AAPL": 1},
+            "last_valid_universe": ["AAPL"],
+            "last_rotation_at": "2026-06-15T15:30:00+00:00",
+        }
+        result = advance_state(state, ["AAPL"])
+        assert result["last_rotation_at"] == "2026-06-15T15:30:00+00:00"
+
+    def test_load_conserve_last_rotation_at_depuis_fichier(self, tmp_path):
+        """save puis load → last_rotation_at conservé."""
+        state = {
+            "current_hot_set": ["AAPL"],
+            "dwell_days_by_symbol": {"AAPL": 2},
+            "last_valid_universe": ["AAPL"],
+            "last_rotation_at": "2026-06-15T20:00:00+00:00",
+        }
+        save_rotation_state(str(tmp_path), state)
+        result = load_rotation_state(str(tmp_path))
+        assert result["last_rotation_at"] == "2026-06-15T20:00:00+00:00"
 
 
 # ---------------------------------------------------------------------------

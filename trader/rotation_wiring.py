@@ -107,6 +107,46 @@ def resolve_as_of(bars_by_symbol: dict[str, list]) -> str:
 
 
 # ---------------------------------------------------------------------------
+# compute_gap_adverse
+# ---------------------------------------------------------------------------
+
+def compute_gap_adverse(
+    bars_by_symbol: dict[str, list],
+    ranked: list[dict],
+    *,
+    gap_threshold: float,
+) -> frozenset[str]:
+    """Symboles dont le gap d'ouverture est ADVERSE au biais déclaré.
+
+    Pour chaque item de `ranked` ayant ≥ 2 barres :
+        gap = (last.open - prev.close) / prev.close
+    Adverse si :
+        bias == "long"  ET gap <= -gap_threshold  (baisse contre biais haussier)
+        bias == "short" ET gap >= +gap_threshold  (hausse contre biais baissier)
+
+    Symbole absent de bars_by_symbol ou avec < 2 barres → ignoré (pas adverse).
+    prev.close == 0 → ignoré (division par zéro).
+    """
+    adverse: set[str] = set()
+    for item in ranked:
+        symbol = item["symbol"]
+        bias = item["bias"]
+        bars = bars_by_symbol.get(symbol)
+        if not bars or len(bars) < 2:
+            continue
+        prev = bars[-2]
+        last = bars[-1]
+        if prev.close == 0:
+            continue
+        gap = (last.open - prev.close) / prev.close
+        if bias == "long" and gap <= -gap_threshold:
+            adverse.add(symbol)
+        elif bias == "short" and gap >= gap_threshold:
+            adverse.add(symbol)
+    return frozenset(adverse)
+
+
+# ---------------------------------------------------------------------------
 # build_rank_fn
 # ---------------------------------------------------------------------------
 
@@ -165,9 +205,48 @@ def build_rank_fn(
             "ranked": scan["ranked"],
             "ineligible": scan["ineligible"],
             "components_by_symbol": components,
+            "gap_adverse": compute_gap_adverse(
+                bars, scan["ranked"], gap_threshold=params.gap_threshold
+            ),
         }
 
     return rank_fn
+
+
+# ---------------------------------------------------------------------------
+# build_llm_override_fn
+# ---------------------------------------------------------------------------
+
+def build_llm_override_fn(
+    *,
+    acpx_bin: str = "acpx",
+    spark_model: str | None = None,
+    timeout_s: int = 120,
+) -> Callable:
+    """Construit une override_fn câblée sur le router LLM réel.
+
+    Args:
+        acpx_bin: chemin vers le binaire acpx.
+        spark_model: modèle Spark (None → défaut du router).
+        timeout_s: timeout transmis au LLM.
+
+    Returns:
+        override_fn(payload) -> {"add": [...], "remove": [...]}
+    """
+    from trader import llm
+    from trader.rotation_override import make_llm_override_fn
+
+    kw: dict = {"acpx_bin": acpx_bin}
+    if spark_model is not None:
+        kw["spark_model"] = spark_model
+
+    router = llm.build_default_router_from_env(**kw)
+
+    def _complete(prompt: str, *, timeout_s: int) -> str:
+        result = router.complete(prompt, timeout_s=timeout_s)
+        return getattr(result, "text", "")  # LlmFailure n'a pas .text -> ""
+
+    return make_llm_override_fn(_complete, timeout_s=timeout_s)
 
 
 # ---------------------------------------------------------------------------
@@ -228,7 +307,10 @@ def run_cli(
         )
 
     if override_fn is None:
-        override_fn = default_override_fn
+        if params.override_enabled:
+            override_fn = build_llm_override_fn()
+        else:
+            override_fn = default_override_fn
 
     return run(
         config_dir=config_dir,

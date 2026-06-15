@@ -15,3 +15,5 @@ benchmarks:
   EU: ^FCHI
   TW: ^TWII
 default_benchmark: SPY
+gap_threshold: 0.03  # seuil de gap d'ouverture adverse, 3%
+override_enabled: true  # override agent LLM ; fail-safe : retombe sur le défaut si le LLM échoue

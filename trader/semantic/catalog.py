@@ -87,7 +87,73 @@ FAMILIES: dict[str, list[str]] = {
     "commodities_futures": ["CL=F", "BZ=F", "NG=F"],
     "metals": ["GC=F"],
     "nasdaq_single_names": ["NVDA", "AAPL"],
-    "semis_tw": ["2330.TW", "2454.TW"],
+    # -------------------------------------------------------------------------
+    # Univers taïwanais d'Erwan — découpage sectoriel best-effort, à valider.
+    # Source : 30 tickers TWSE (.TW) / TPEx (.TWO) du pool papier.
+    # Préfixe tw_ pour isoler le sous-graphe dans le cross-asset family_regime (D2).
+    # Les tickers incertains sont regroupés dans tw_other — voir rapport de commit.
+    # -------------------------------------------------------------------------
+    # Fonderies (pure-play wafer fab)
+    "tw_foundry": ["2330.TW", "2303.TW"],  # TSMC, UMC
+    # Wafer silicium (matière première semi)
+    "tw_wafer": ["6488.TWO"],  # GlobalWafers
+    # Mémoire / DRAM
+    "tw_memory": ["2408.TW"],  # Nanya Technology
+    # IC Design / Fabless
+    "tw_ic_design": [
+        "2454.TW",   # MediaTek
+        "2379.TW",   # Realtek Semiconductor
+        "3661.TW",   # Parade Technologies
+        "8299.TWO",  # Phison Electronics (NAND controllers)
+        "3443.TW",   # Global Mixed-Mode Technology (power ICs)
+    ],
+    # OSAT — assemblage & test
+    "tw_osat": [
+        "3711.TW",   # ASE Technology Holding
+        "2449.TW",   # King Yuan Electronics (KYEC)
+        "2383.TW",   # Elite Semiconductor Memory Technology (ESMT)
+        "3081.TWO",  # Walton Advanced Engineering
+    ],
+    # EMS / ODM (assemblage systèmes)
+    "tw_ems_odm": [
+        "2317.TW",   # Foxconn / Hon Hai Precision
+        "2382.TW",   # Quanta Computer
+        "3231.TW",   # Wistron NeWeb Corp (modules comm / IoT)
+    ],
+    # Composants passifs & énergie
+    "tw_components": [
+        "2327.TW",   # Yageo (résistances/condensateurs)
+        "2492.TW",   # Walsin Technology (composants passifs)
+        "2308.TW",   # Delta Electronics (alimentations, thermique)
+        "2301.TW",   # Lite-On Technology (composants, LED)
+    ],
+    # PCB / substrats
+    "tw_pcb": [
+        "3189.TW",   # Kinsus Interconnect Technology (substrats IC)
+        "8046.TW",   # Nan Ya PCB
+        "3532.TW",   # Taiwan PCB Techvest
+        "3037.TW",   # Unimicron Technology (PCB avancés)
+        "2368.TW",   # Gold Circuit Electronics (PCB multicouches)
+    ],
+    # Thermique / refroidissement (heatsinks, heatpipes, vapor chambers)
+    "tw_thermal": [
+        "3017.TW",   # Asia Vital Components (AVC) — refroidissement serveurs/AI
+        "3324.TWO",  # Auras Technology — modules de refroidissement CPU/GPU/VGA
+    ],
+    # Connectique & composants optiques/RF
+    "tw_connectors": [
+        "6442.TW",   # EZconn Corporation — connecteurs RF + composants fibre optique
+    ],
+    # Équipements de fab semi (wet process, nettoyage wafer)
+    "tw_equipment": [
+        "3131.TWO",  # Grand Process Technology — équipements wet process (wafer cleaning, wet bench)
+    ],
+    # Services d'ingénierie fab semi (salles blanches, MEP, construction)
+    "tw_services": [
+        "2404.TW",   # United Integrated Services (UIS) — construction salles blanches & MEP fabs TSMC
+    ],
+    # Secteur incertain — à reclasser après validation
+    "tw_other": [],
     "crypto": ["BTC-USD"],
     "forex_majors": [
         "EURUSD=X",
