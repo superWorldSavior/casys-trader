@@ -132,16 +132,27 @@ FAMILIES: dict[str, list[str]] = {
         "8046.TW",   # Nan Ya PCB
         "3532.TW",   # Taiwan PCB Techvest
         "3037.TW",   # Unimicron Technology (PCB avancés)
+        "2368.TW",   # Gold Circuit Electronics (PCB multicouches)
     ],
-    # Secteur incertain — à reclasser par Erwan après validation
-    "tw_other": [
-        "3017.TW",   # incertain (distribution / services intégrés ?)
-        "3324.TWO",  # incertain
-        "6442.TW",   # incertain
-        "3131.TWO",  # incertain
-        "2404.TW",   # United Integrated Services ? (services fab semi)
-        "2368.TW",   # incertain (Golden Bridge ?)
+    # Thermique / refroidissement (heatsinks, heatpipes, vapor chambers)
+    "tw_thermal": [
+        "3017.TW",   # Asia Vital Components (AVC) — refroidissement serveurs/AI
+        "3324.TWO",  # Auras Technology — modules de refroidissement CPU/GPU/VGA
     ],
+    # Connectique & composants optiques/RF
+    "tw_connectors": [
+        "6442.TW",   # EZconn Corporation — connecteurs RF + composants fibre optique
+    ],
+    # Équipements de fab semi (wet process, nettoyage wafer)
+    "tw_equipment": [
+        "3131.TWO",  # Grand Process Technology — équipements wet process (wafer cleaning, wet bench)
+    ],
+    # Services d'ingénierie fab semi (salles blanches, MEP, construction)
+    "tw_services": [
+        "2404.TW",   # United Integrated Services (UIS) — construction salles blanches & MEP fabs TSMC
+    ],
+    # Secteur incertain — à reclasser après validation
+    "tw_other": [],
     "crypto": ["BTC-USD"],
     "forex_majors": [
         "EURUSD=X",
