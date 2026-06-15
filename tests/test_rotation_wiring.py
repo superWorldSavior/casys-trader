@@ -51,6 +51,28 @@ class TestVenueOf:
     def test_contract_examples(self, symbol, expected):
         assert venue_of(symbol) == expected
 
+    @pytest.mark.parametrize(
+        ("symbol", "expected"),
+        [
+            ("ROG.SW", "EU"),
+            ("AZN.L", "EU"),
+            ("NOVO-B.CO", "EU"),
+            ("SAN.MC", "EU"),
+            ("ERIC-B.ST", "EU"),
+            ("PROX.BR", "EU"),
+            ("EDP.LS", "EU"),
+            ("NOKIA.HE", "EU"),
+            ("OMV.VI", "EU"),
+            ("EQNR.OL", "EU"),
+            ("SPY", "US"),
+            ("AAPL", "US"),
+            ("2330.TW", "TW"),
+            ("8299.TWO", "TW"),
+        ],
+    )
+    def test_extended_market_suffixes(self, symbol, expected):
+        assert venue_of(symbol) == expected
+
     def test_spy_us(self):
         assert venue_of("SPY") == "US"
 

@@ -16,7 +16,22 @@ from trader.features import compute_indicator_values
 # venue_of
 # ---------------------------------------------------------------------------
 
-_EU_SUFFIXES = (".PA", ".DE", ".AS", ".MI")
+_EU_SUFFIXES = (
+    ".PA",
+    ".DE",
+    ".AS",
+    ".MI",
+    ".SW",
+    ".L",
+    ".CO",
+    ".ST",
+    ".MC",
+    ".BR",
+    ".LS",
+    ".HE",
+    ".VI",
+    ".OL",
+)
 _EU_SYMBOLS = frozenset({"^FCHI"})
 _TW_SUFFIXES = (".TW", ".TWO")
 
