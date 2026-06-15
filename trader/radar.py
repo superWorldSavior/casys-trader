@@ -77,7 +77,21 @@ def scan_and_rank(
     ranked: list[dict] = []
     ineligible: list[dict] = []
     for symbol in sorted(bars_by_symbol):
+        # A. Exclusions dures : court-circuit AVANT tout appel à indicators_fn.
+        if symbol in hard_exclusions:
+            ineligible.append({"symbol": symbol, "reason": "hard_exclusion"})
+            continue
+
         components = indicators_fn(symbol, bars_by_symbol[symbol])
+
+        # B. Données partielles : any(None) → inéligible sans scorer.
+        if any(
+            components.get(k) is None
+            for k in ("efficiency_ratio", "ret", "amplitude")
+        ):
+            ineligible.append({"symbol": symbol, "reason": "missing_data"})
+            continue
+
         amplitude = components.get("amplitude")
         if not is_eligible(
             symbol,
@@ -85,8 +99,7 @@ def scan_and_rank(
             hard_exclusions=hard_exclusions,
             atr_floor=atr_floor,
         ):
-            reason = "hard_exclusion" if symbol in hard_exclusions else "not_eligible"
-            ineligible.append({"symbol": symbol, "reason": reason})
+            ineligible.append({"symbol": symbol, "reason": "not_eligible"})
             continue
 
         directional_score = score_symbol(
