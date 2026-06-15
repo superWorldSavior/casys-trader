@@ -26,6 +26,8 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
+import yaml
+
 from trader.palette import PALETTE_DARK, Palette
 
 # Racine du repo (deux niveaux au-dessus de ce fichier)
@@ -342,6 +344,55 @@ def _count_learnings_safe(learnings_path: Path, *, limit: int = 200) -> int:
         return 0
 
 
+# ---------------------------------------------------------------------------
+# Cache module-level pour les noms de sociétés
+# ---------------------------------------------------------------------------
+_COMPANY_NAMES_CACHE: dict[str, str] = {}
+_COMPANY_NAMES_PATH: str = ""
+
+
+def _load_company_names(config_dir: str | Path) -> dict[str, str]:
+    """Lit config/symbol_names.yaml et retourne un dict ticker→nom.
+
+    Cache module-level rechargé uniquement si le chemin change (support tests).
+    Retourne {} si fichier absent ou illisible — jamais d'exception.
+    """
+    global _COMPANY_NAMES_CACHE, _COMPANY_NAMES_PATH
+
+    path = str(Path(config_dir) / "config" / "symbol_names.yaml")
+    if path == _COMPANY_NAMES_PATH and _COMPANY_NAMES_CACHE:
+        return _COMPANY_NAMES_CACHE
+
+    try:
+        raw = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
+        if isinstance(raw, dict):
+            _COMPANY_NAMES_CACHE = {str(k): str(v) for k, v in raw.items()}
+            _COMPANY_NAMES_PATH = path
+            return _COMPANY_NAMES_CACHE
+    except Exception:
+        pass
+
+    # Fichier absent ou illisible → cache vide, chemin mémorisé pour éviter
+    # les tentatives répétées sur le même chemin inexistant
+    _COMPANY_NAMES_CACHE = {}
+    _COMPANY_NAMES_PATH = path
+    return {}
+
+
+def _load_universe_symbols_safe(config_dir: str) -> list[str]:
+    """Lit config/universe.yaml → data["symbols"]. Retourne [] si absent/illisible."""
+    try:
+        path = Path(config_dir) / "config" / "universe.yaml"
+        raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+        if isinstance(raw, dict):
+            symbols = raw.get("symbols")
+            if isinstance(symbols, list):
+                return [str(s) for s in symbols]
+    except Exception:
+        pass
+    return []
+
+
 def load_runtime_state(
     *,
     state_dir: str | Path = _STATE_DIR,
@@ -400,6 +451,8 @@ def load_runtime_state(
     fills = _load_fills_safe(state_dir_path / "broker.json")
     _effective_config_dir = config_dir if config_dir is not None else str(state_dir_path.parent)
     venue_state, open_venues_list = _load_venue_open_state_safe(state_dir_path, _effective_config_dir)
+    universe_symbols = _load_universe_symbols_safe(_effective_config_dir)
+    company_map = _load_company_names(_effective_config_dir)
     return {
         **raw,
         "source": source,
@@ -425,6 +478,8 @@ def load_runtime_state(
         "fills": fills,
         "venue_state": venue_state,
         "open_venues_list": open_venues_list,
+        "universe_symbols": universe_symbols,
+        "company_map": company_map,
     }
 
 
@@ -1312,6 +1367,350 @@ def build_trades_table(
         table.add_row("—", "—", "—", "—", "—", "—")
 
     return table
+
+
+# ---------------------------------------------------------------------------
+# Fonctions pures — univers, PnL réalisé, panneau univers, KPI compact,
+# plans de sortie enrichis
+# ---------------------------------------------------------------------------
+
+
+def _fmt_symbol_short(ticker: str, company_map: dict[str, str]) -> str:
+    """Formate un ticker sous la forme "Nom · TICKER" tronquée à 20 chars max.
+
+    - Si le nom est absent de company_map → retourne le ticker brut.
+    - Si le nom dépasse 15 chars → utilise uniquement le premier mot.
+    - Le résultat final est tronqué à 20 chars.
+    """
+    name = company_map.get(ticker)
+    if not name:
+        return ticker
+
+    # Premier mot si nom long
+    display_name = name if len(name) <= 15 else name.split()[0]
+    label = f"{display_name} · {ticker}"
+    return label[:20]
+
+
+def compute_realized_pnl_by_fill(fills: list[dict]) -> list[float | None]:
+    """Calcule le PnL réalisé net par fill selon la méthode FIFO coût moyen.
+
+    Algo PURE et déterministe :
+    - BUY  → nouveau coût moyen pondéré (commission intégrée dans la base)
+              retourne None à la position correspondante.
+    - SELL → net_realized = (sell_price - avg_cost) * sell_qty - sell_commission
+              retourne la valeur calculée.
+    - Vente sans achat préalable → retourne None (pas de crash).
+
+    La liste retournée a exactement la même longueur que `fills`.
+    """
+    avg_cost: dict[str, float] = {}
+    qty: dict[str, float] = {}
+    result: list[float | None] = []
+
+    for fill in fills:
+        symbol = str(fill.get("symbol") or "")
+        side = str(fill.get("side") or "")
+        fill_qty = _safe_float(fill.get("quantity"), default=0.0) or 0.0
+        fill_price = _safe_float(fill.get("price"), default=0.0) or 0.0
+        commission = _safe_float(fill.get("commission"), default=0.0) or 0.0
+
+        if side == "BUY":
+            old_qty = qty.get(symbol, 0.0)
+            old_avg = avg_cost.get(symbol, 0.0)
+            total_qty = old_qty + fill_qty
+            if total_qty > 0:
+                # Commission intégrée dans le coût de base
+                new_avg = (old_qty * old_avg + fill_qty * fill_price + commission) / total_qty
+            else:
+                new_avg = fill_price
+            avg_cost[symbol] = new_avg
+            qty[symbol] = total_qty
+            result.append(None)
+
+        elif side == "SELL":
+            cost = avg_cost.get(symbol)
+            if cost is None:
+                # Vente sans achat préalable connu → pas de crash
+                result.append(None)
+            else:
+                net = (fill_price - cost) * fill_qty - commission
+                # Décrémenter la quantité (coût moyen inchangé)
+                qty[symbol] = max(0.0, qty.get(symbol, 0.0) - fill_qty)
+                result.append(net)
+
+        else:
+            # Side inconnu → None
+            result.append(None)
+
+    return result
+
+
+def build_universe_panel(
+    universe_symbols: list[str],
+    venue_state: dict,
+    open_venues_list: list[str],
+    company_map: dict[str, str],
+    *,
+    palette: Palette = PALETTE_DARK,
+) -> RenderableType:
+    """Panneau « Univers » regroupé par venue EU/TW/US (PURE — ne lit aucun fichier).
+
+    Pour chaque venue non vide :
+    - Titre coloré vif si ouvert, atténué si fermé.
+    - Chaque symbole affiché avec son score si disponible.
+    - Score coloré selon seuils : >= 0.7 positif, >= 0.4 neutre, < 0.4 atténué.
+
+    FX ignoré — pas dans l'univers actif.
+    Tolère les états vides.
+    """
+    from trader.rotation_wiring import venue_of  # import local pour éviter les cycles
+
+    venues_data = venue_state.get("venues") if isinstance(venue_state.get("venues"), dict) else {}
+
+    # Regrouper les symboles par venue
+    by_venue: dict[str, list[str]] = {}
+    for sym in universe_symbols:
+        try:
+            v = venue_of(sym)
+        except Exception:
+            v = "UNKNOWN"
+        if v not in _ACTION_VENUES:
+            # FX et venues inconnues ignorées
+            continue
+        by_venue.setdefault(v, []).append(sym)
+
+    blocks: list[RenderableType] = []
+    for venue in _ACTION_VENUES:
+        syms = by_venue.get(venue)
+        if not syms:
+            continue
+
+        is_open = venue in open_venues_list
+        venue_style = palette["kpi_default"] if is_open else palette["dim"]
+        badge = "OUVERT" if is_open else "fermé"
+
+        # Scores disponibles dans venue_state
+        venue_data = venues_data.get(venue) if isinstance(venues_data.get(venue), dict) else {}
+        scores: dict = venue_data.get("scores") if isinstance(venue_data.get("scores"), dict) else {}  # type: ignore[assignment]
+
+        table = Table(box=None, show_header=False, expand=True, pad_edge=False)
+        table.add_column("sym", no_wrap=True)
+        table.add_column("score", justify="right", no_wrap=True)
+
+        for sym in syms:
+            label = _fmt_symbol_short(sym, company_map)
+            score_val = scores.get(sym)
+            try:
+                score_f = float(score_val)  # type: ignore[arg-type]
+                score_str = f"{score_f:.4f}"
+                if score_f >= 0.7:
+                    score_style = palette["pnl_positive"]
+                elif score_f >= 0.4:
+                    score_style = palette["kpi_default"]
+                else:
+                    score_style = palette["dim"]
+            except (TypeError, ValueError):
+                score_str = "—"
+                score_style = palette["dim"]
+
+            table.add_row(
+                Text(label, style="bold"),
+                Text(score_str, style=score_style),
+            )
+
+        title_text = Text.assemble(
+            (venue, f"bold {venue_style}"),
+            ("  ", ""),
+            (f"[{badge}]", venue_style),
+        )
+        blocks.append(
+            Panel(table, title=title_text, border_style=palette["border_default"], expand=True)
+        )
+
+    if not blocks:
+        return Panel(
+            Text("univers vide", style=palette["dim"]),
+            title="[bold]Univers[/bold]",
+            border_style=palette["border_default"],
+            expand=True,
+        )
+
+    return Group(*blocks)
+
+
+def _build_kpi_compact(
+    kpis: dict,
+    equity_curve: list[float],
+    *,
+    palette: Palette = PALETTE_DARK,
+) -> RenderableType:
+    """Version compacte de _build_kpi_band : 2 lignes inline + sparkline (PURE).
+
+    Ligne 1 : Sharpe / MaxDD / WinRate / Vol / Trades
+    Ligne 2 : sparkline des 32 derniers points d'équité
+    """
+    sharpe = _safe_float(kpis.get("sharpe"), default=None)
+    max_dd = _safe_float(kpis.get("max_drawdown"), default=None)
+    win_rate = _safe_float(kpis.get("period_win_rate"), default=None)
+    volatility = _safe_float(kpis.get("volatility"), default=None)
+    trades = kpis.get("num_trades")
+
+    sharpe_str = f"{sharpe:.2f}" if sharpe is not None else "—"
+    dd_str = f"{max_dd * 100:.1f}%" if max_dd is not None else "—"
+    wr_str = f"{win_rate * 100:.1f}%" if win_rate is not None else "—"
+    vol_str = f"{volatility * 100:.1f}%" if volatility is not None else "—"
+    trades_str = str(int(trades)) if trades is not None else "0"
+
+    line1 = Text.assemble(
+        ("Sharpe: ", palette["dim"]),
+        (sharpe_str, f"bold {palette['kpi_default']}"),
+        ("  MaxDD: ", palette["dim"]),
+        (dd_str, f"bold {palette['kpi_sharpe_bad']}"),
+        ("  WinRate: ", palette["dim"]),
+        (wr_str, f"bold {palette['kpi_default']}"),
+        ("  Vol: ", palette["dim"]),
+        (vol_str, f"bold {palette['kpi_default']}"),
+        ("  Trades: ", palette["dim"]),
+        (trades_str, f"bold {palette['kpi_default']}"),
+    )
+
+    spark = sparkline(equity_curve[-32:]) if equity_curve else ""
+    line2 = Text(spark or "—", style=palette["dim"])
+
+    return Panel(
+        Group(line1, line2),
+        title="[bold]KPI[/bold]",
+        border_style=palette["border_default"],
+        expand=True,
+    )
+
+
+def _build_exit_plans_enriched(
+    plans: list[dict], *, palette: Palette = PALETTE_DARK
+) -> Panel:
+    """Plans de sortie enrichis : entrée, stop, TPs et bénéfice estimé par scénario.
+
+    Enrichit l'affichage de _build_exit_plans_panel sans le modifier.
+    Champs lus : entry_price, hard_stop_price, take_profits[].price,
+                 remaining_quantity, max_hold_minutes, llm_confidence.
+    Bénéfice estimé : (prix_scénario - entrée) × quantité_restante.
+    """
+    if not plans:
+        return Panel(
+            Text("aucun plan ouvert", style=palette["dim"]),
+            title="[bold]Plans sortie enrichis[/bold]",
+            border_style=palette["border_plans"],
+            expand=True,
+        )
+
+    lines: list[RenderableType] = []
+    for plan in plans:
+        symbol = str(plan.get("symbol", "?"))
+        side = str(plan.get("side", "?"))
+        entry = _safe_float(plan.get("entry_price"), default=None)
+        stop = _safe_float(plan.get("hard_stop_price"), default=None)
+        remaining = _safe_float(plan.get("remaining_quantity"), default=0.0) or 0.0
+        max_hold = _safe_float(plan.get("max_hold_minutes"), default=None)
+        confidence = _safe_float(plan.get("llm_confidence"), default=None)
+        take_profits = _safe_list_of_dicts(plan.get("take_profits") or [])
+
+        side_style = (
+            palette["action_buy"] if side == "LONG" else palette["action_sell"]
+        )
+
+        # Ligne principale
+        entry_str = f"${entry:,.2f}" if entry is not None else "—"
+        if entry is not None and stop is not None and entry > 0:
+            dist_pct = abs(entry - stop) / entry * 100.0
+            stop_str = f"${stop:,.2f} ({dist_pct:.1f}%)"
+        elif stop is not None:
+            stop_str = f"${stop:,.2f}"
+        else:
+            stop_str = "—"
+
+        conf_str = f"{confidence:.2f}" if confidence is not None else "—"
+
+        header = Text.assemble(
+            (symbol, f"bold {palette['kpi_default']}"),
+            ("  ", ""),
+            (side, side_style),
+            ("  entrée:", palette["dim"]),
+            (f" {entry_str}", "bold"),
+            ("  stop:", palette["dim"]),
+            (f" {stop_str}", palette["pnl_negative"] if stop else palette["dim"]),
+            ("  qté:", palette["dim"]),
+            (f" {remaining:,.4f}", "bold"),
+            ("  conf:", palette["dim"]),
+            (f" {conf_str}", palette["kpi_default"]),
+        )
+        lines.append(header)
+
+        # Bénéfice estimé scénario stop
+        if entry is not None and stop is not None:
+            stop_gain = (stop - entry) * remaining
+            stop_style = palette["pnl_positive"] if stop_gain >= 0 else palette["pnl_negative"]
+            stop_gain_str = f"{stop_gain:+,.2f}"
+            lines.append(
+                Text.assemble(
+                    ("  Stop: ", palette["dim"]),
+                    (f"${stop:,.2f}", "bold"),
+                    ("  → ", palette["dim"]),
+                    (stop_gain_str, stop_style),
+                )
+            )
+
+        # Take-profits avec bénéfice estimé
+        if take_profits:
+            for tp in take_profits:
+                tp_price = _safe_float(tp.get("price"), default=None)
+                tp_name = str(tp.get("name") or "tp?")
+                if tp_price is not None:
+                    tp_gain = (tp_price - entry) * remaining if entry is not None else None
+                    tp_gain_str = f"{tp_gain:+,.2f}" if tp_gain is not None else "—"
+                    tp_gain_style = (
+                        palette["pnl_positive"]
+                        if (tp_gain is not None and tp_gain >= 0)
+                        else palette["pnl_negative"]
+                    )
+                    lines.append(
+                        Text.assemble(
+                            (f"  {tp_name}: ", palette["dim"]),
+                            (f"${tp_price:,.2f}", palette["pnl_positive"]),
+                            ("  → ", palette["dim"]),
+                            (tp_gain_str, tp_gain_style),
+                        )
+                    )
+
+        # Raison de sortie : champ absent dans trade_plans.json → affiche —
+        lines.append(
+            Text.assemble(
+                ("  Raison sortie:", palette["dim"]),
+                (" —", palette["dim"]),
+            )
+        )
+
+        # max_hold
+        if max_hold is not None:
+            lines.append(
+                Text.assemble(
+                    ("  max hold:", palette["dim"]),
+                    (f" {int(max_hold)}min", "bold"),
+                )
+            )
+
+        lines.append(Text(""))  # séparateur
+
+    # Retire le dernier séparateur vide
+    if lines and isinstance(lines[-1], Text) and lines[-1].plain == "":
+        lines.pop()
+
+    return Panel(
+        Group(*lines),
+        title="[bold]Plans sortie enrichis[/bold]",
+        border_style=palette["border_plans"],
+        expand=True,
+    )
 
 
 def build_view(

@@ -1,7 +1,16 @@
 """cockpit — Salle de contrôle du daemon casys-trader (Textual).
 
 Dashboard complet (KPIs, courbe d'équité, positions, attribution, décisions,
-learnings) + flux de logs live (events.jsonl) + supervision du daemon.
+plans, univers) + flux de logs live (events.jsonl) + supervision du daemon.
+
+Layout F-pattern (priorité haute → bas) :
+    STATUT (dock:top, h=2)
+    ┌ BANDE HAUTE (#top-band, h=14)
+    │  PositionsPlansPane (40%)  |  ArmedPlansPane (60%)
+    ├ CORPS (#main-body, h=1fr, horizontal)
+    │  DecisionsPane (30%)  |  EquityTradesPane (40%)  |  UniversePane (30%)
+    LogsPane (dock:bottom, h=4)
+    Footer (dock:bottom, h=1)
 
 Pattern superviseur : le daemon reste un process indépendant qui survit à
 la fermeture du cockpit. Le cockpit peut le démarrer, l'arrêter et toggler
@@ -62,9 +71,8 @@ from trader.tui import (
     _build_data_health_panel,
     _build_decisions_table,
     _build_equity_panel,
-    _build_exit_plans_panel,
-    _build_kpi_band,
-    _build_learnings_panel,
+    _build_exit_plans_enriched,
+    _build_kpi_compact,
     _build_llm_activity_panel,
     _build_positions_panel,
     _build_watches_panel,
@@ -73,6 +81,8 @@ from trader.tui import (
     _safe_list_of_dicts,
     build_selection_panel,
     build_trades_table,
+    build_universe_panel,
+    compute_realized_pnl_by_fill,
     load_runtime_state,
 )
 
@@ -149,12 +159,13 @@ def _event_styles_for_palette(palette: Palette) -> dict[EventClass, str]:
 
 
 # ---------------------------------------------------------------------------
-# Widget : barre de statut 1 ligne (en plus du Header Textual)
+# Widget : barre de statut 1 ligne (dock:top)
 # ---------------------------------------------------------------------------
 
 
 class CockpitStatus(Static):
-    """Ligne d'état compacte : équité, cash, P&L, phase daemon, horloge UTC, kill."""
+    """Ligne d'état compacte : équité, cash, P&L, phase daemon, horloge UTC, kill,
+    learnings en attente."""
 
     DEFAULT_CSS = """
     CockpitStatus {
@@ -199,8 +210,8 @@ class CockpitStatus(Static):
         )
         now_utc = datetime.now(UTC).strftime("%H:%M:%S UTC")
         dry_run = state.get("dry_run", True)
+        learnings_pending = state.get("learnings_pending_count") or 0
 
-        # Styles via palette — mode et kill gardent leurs couleurs sémantiques fixes
         mode_str = (
             "[bold red]LIVE[/bold red]"
             if not dry_run
@@ -217,11 +228,10 @@ class CockpitStatus(Static):
         acc_style = palette["status_accent"]
         phase_style = palette["status_phase"]
 
-        # Indicateur vital — pid+identité (pas de seuil temporel pour vivant/mort)
+        # Indicateur vital
         vital = daemon_vital_state(_STATE_DIR / "daemon_status.json")
         if vital.status == "alive":
             if vital.battement_old:
-                # Daemon vivant mais battement ancien (batch long en cours)
                 _bat_mins = int(vital.since_seconds) // 60 if vital.since_seconds else 0
                 _bat_secs = int(vital.since_seconds) % 60 if vital.since_seconds else 0
                 vital_str = (
@@ -232,53 +242,51 @@ class CockpitStatus(Static):
                 vital_str = "[bold green]● VIVANT[/bold green]"
         elif vital.status == "stopped":
             vital_str = "[bold red]● ARRÊTÉ[/bold red]"
-        else:  # never_started
+        else:
             vital_str = "[dim]● jamais démarré[/dim]"
 
         text = (
             f"  {vital_str}"
             f"  Équité [{eq_style}]${equity:,.2f}[/{eq_style}]"
-            f"  Cash [{acc_style}]${cash:,.2f}[/{acc_style}]"
             f"  P&L [{ret_style}]{ret_pct:+.2f}%[/{ret_style}]"
             f" [{pnl_style}]({pnl:+,.2f})[/{pnl_style}]"
             f"  Daemon [{phase_style}]{phase}[/{phase_style}]"
-            f"  Symbole [{acc_style}]{current_symbol}[/{acc_style}]"
+            f"  [{acc_style}]{current_symbol}[/{acc_style}]"
             f"  Appels [{acc_style}]{calls_str}[/{acc_style}]"
             f"  {now_utc}"
             f"  Mode {mode_str}"
             f"  Kill {kill_str}"
+            f"  [dim]learnings: {learnings_pending} pending[/dim]"
         )
         self.update(Text.from_markup(text))
 
 
 # ---------------------------------------------------------------------------
-# Widgets v2 — layout 3 colonnes
+# Panes du nouveau layout
 # ---------------------------------------------------------------------------
 
 
-class LeftPane(Static):
-    """Colonne gauche (25%) : positions+PnL, plans sortie, apprentissages."""
+class PositionsPlansPane(Static):
+    """Bande haute gauche (40%) : positions+PnL net PUIS plans de sortie enrichis."""
 
     DEFAULT_CSS = """
-    LeftPane {
-        width: 25%;
+    PositionsPlansPane {
+        width: 40%;
         height: 100%;
         border-right: solid $primary;
         overflow-y: auto;
     }
-    LeftPane Static {
+    PositionsPlansPane Static {
         height: auto;
         margin: 0 0 1 0;
     }
     """
 
-    _current_palette: Palette = PALETTE_LIGHT  # défaut saumon
+    _current_palette: Palette = PALETTE_LIGHT
 
     def compose(self) -> ComposeResult:
         yield Static(id="positions-panel")
-        yield Static(id="armed-plans-panel")
         yield Static(id="exit-plans-panel")
-        yield Static(id="learnings-panel")
 
     def update_state(self, state: dict) -> None:
         palette = self._current_palette
@@ -286,66 +294,133 @@ class LeftPane(Static):
             state.get("portfolio") if isinstance(state.get("portfolio"), dict) else {}
         )
         holdings = _safe_list_of_dicts(portfolio.get("holdings"))
-        learnings = _safe_list_of_dicts(state.get("learnings"))
         trade_plans = (
             state.get("trade_plans")
             if isinstance(state.get("trade_plans"), list)
             else []
         )
 
-        armed_plans = (
-            state.get("armed_plans")
-            if isinstance(state.get("armed_plans"), list)
-            else []
-        )
-
         self.query_one("#positions-panel", Static).update(
             _build_positions_panel(holdings, palette=palette)
         )
-        self.query_one("#armed-plans-panel", Static).update(
-            _build_armed_plans_panel(armed_plans, palette=palette)
-        )
         self.query_one("#exit-plans-panel", Static).update(
-            _build_exit_plans_panel(trade_plans, palette=palette)
-        )
-        learnings_renderable = _build_learnings_panel(learnings, palette=palette)
-        self.query_one("#learnings-panel", Static).update(
-            learnings_renderable if learnings_renderable is not None else Text("")
+            _build_exit_plans_enriched(trade_plans, palette=palette)
         )
 
 
-class CenterPane(Static):
-    """Colonne centre (40%) : KPI band, décisions récentes (panneau roi), attribution, équité."""
+class ArmedPlansPane(Static):
+    """Bande haute droite (60%) : plans armés."""
 
     DEFAULT_CSS = """
-    CenterPane {
-        width: 40%;
+    ArmedPlansPane {
+        width: 60%;
         height: 100%;
-        border-right: solid $primary;
         overflow-y: auto;
     }
-    CenterPane Static {
+    ArmedPlansPane Static {
         height: auto;
         margin: 0 0 1 0;
     }
     """
 
-    _current_palette: Palette = PALETTE_LIGHT  # défaut saumon
+    _current_palette: Palette = PALETTE_LIGHT
 
     def compose(self) -> ComposeResult:
-        yield Static(id="kpi-band")
-        yield Static(id="decisions-table")
-        yield Static(id="attribution-panel")
-        yield Static(id="equity-panel")
+        yield Static(id="armed-plans-panel")
 
     def update_state(self, state: dict) -> None:
         palette = self._current_palette
-        kpis = state.get("kpis") if isinstance(state.get("kpis"), dict) else {}
+        armed_plans = (
+            state.get("armed_plans")
+            if isinstance(state.get("armed_plans"), list)
+            else []
+        )
+        self.query_one("#armed-plans-panel", Static).update(
+            _build_armed_plans_panel(armed_plans, palette=palette)
+        )
+
+
+class DecisionsPane(Static):
+    """Corps gauche (30%) : table décisions + attribution."""
+
+    DEFAULT_CSS = """
+    DecisionsPane {
+        width: 30%;
+        height: 100%;
+        border-right: solid $primary;
+        overflow-y: auto;
+    }
+    DecisionsPane Static {
+        height: auto;
+        margin: 0 0 1 0;
+    }
+    """
+
+    _current_palette: Palette = PALETTE_LIGHT
+
+    def compose(self) -> ComposeResult:
+        yield Static(id="decisions-table")
+        yield Static(id="attribution-panel")
+        yield Static(id="data-health-panel")
+
+    def update_state(self, state: dict) -> None:
+        palette = self._current_palette
         attribution = (
             state.get("attribution")
             if isinstance(state.get("attribution"), dict)
             else {}
         )
+        decisions_raw = _safe_list_of_dicts(state.get("decisions"))
+        recent_decisions = (
+            state.get("recent_decisions")
+            if isinstance(state.get("recent_decisions"), list)
+            else []
+        )
+        decisions = _enrich_decisions_with_data_source(decisions_raw, recent_decisions)
+        stale_streaks = (
+            state.get("stale_streaks")
+            if isinstance(state.get("stale_streaks"), dict)
+            else {}
+        )
+
+        self.query_one("#decisions-table", Static).update(
+            _build_decisions_table(decisions, palette=palette)
+        )
+        self.query_one("#attribution-panel", Static).update(
+            _build_attribution_panel(attribution, palette=palette)
+        )
+        self.query_one("#data-health-panel", Static).update(
+            _build_data_health_panel(recent_decisions, stale_streaks, palette=palette)
+        )
+
+
+class EquityTradesPane(Static):
+    """Corps centre (40%) : KPI compact + courbe équité + trades clôturés avec net P&L."""
+
+    DEFAULT_CSS = """
+    EquityTradesPane {
+        width: 40%;
+        height: 100%;
+        border-right: solid $primary;
+        overflow-y: auto;
+    }
+    EquityTradesPane Static {
+        height: auto;
+        margin: 0 0 1 0;
+    }
+    """
+
+    _current_palette: Palette = PALETTE_LIGHT
+
+    def compose(self) -> ComposeResult:
+        yield Static(id="kpi-compact")
+        yield Static(id="equity-panel")
+        yield Static(id="trades-panel")
+        yield Static(id="llm-activity-panel")
+
+    def update_state(self, state: dict) -> None:
+        palette = self._current_palette
+        kpis = state.get("kpis") if isinstance(state.get("kpis"), dict) else {}
         equity_curve = [
             v
             for v in (
@@ -354,80 +429,7 @@ class CenterPane(Static):
             )
             if v is not None
         ]
-        decisions_raw = _safe_list_of_dicts(state.get("decisions"))
-        recent_decisions = (
-            state.get("recent_decisions")
-            if isinstance(state.get("recent_decisions"), list)
-            else []
-        )
-        decisions = _enrich_decisions_with_data_source(decisions_raw, recent_decisions)
-
-        self.query_one("#kpi-band", Static).update(
-            _build_kpi_band(kpis, palette=palette)
-        )
-        self.query_one("#decisions-table", Static).update(
-            _build_decisions_table(decisions, palette=palette)
-        )
-        self.query_one("#attribution-panel", Static).update(
-            _build_attribution_panel(attribution, palette=palette)
-        )
-        self.query_one("#equity-panel", Static).update(
-            _build_equity_panel(equity_curve, palette=palette)
-        )
-
-
-class RightPane(Static):
-    """Colonne droite (35%) : logs live (≥60%) + panneaux compacts (veilles, santé data, LLM)."""
-
-    DEFAULT_CSS = """
-    RightPane {
-        width: 35%;
-        height: 100%;
-        layout: vertical;
-    }
-    RightPane EventsPane {
-        width: 100%;
-        height: 60%;
-    }
-    RightPane #compact-bottom {
-        height: 40%;
-        overflow-y: auto;
-        layout: vertical;
-    }
-    RightPane #compact-bottom Static {
-        height: auto;
-        margin: 0 0 1 0;
-    }
-    """
-
-    _current_palette: Palette = PALETTE_LIGHT  # défaut saumon
-
-    def compose(self) -> ComposeResult:
-        yield EventsPane(id="events-pane")
-        with Vertical(id="compact-bottom"):
-            yield Static(id="selection-panel")
-            yield Static(id="trades-panel")
-            yield Static(id="watches-panel")
-            yield Static(id="data-health-panel")
-            yield Static(id="llm-activity-panel")
-
-    def update_state(self, state: dict) -> None:
-        palette = self._current_palette
-        indicator_watches = (
-            state.get("indicator_watches")
-            if isinstance(state.get("indicator_watches"), list)
-            else []
-        )
-        stale_streaks = (
-            state.get("stale_streaks")
-            if isinstance(state.get("stale_streaks"), dict)
-            else {}
-        )
-        recent_decisions = (
-            state.get("recent_decisions")
-            if isinstance(state.get("recent_decisions"), list)
-            else []
-        )
+        fills = state.get("fills") if isinstance(state.get("fills"), list) else []
         daemon_status = (
             state.get("daemon_status")
             if isinstance(state.get("daemon_status"), dict)
@@ -435,25 +437,19 @@ class RightPane(Static):
         )
         learnings_pending = state.get("learnings_pending_count") or 0
         consolidation_status = state.get("consolidation_status")
+        company_map = state.get("company_map") if isinstance(state.get("company_map"), dict) else {}
 
-        # Panneau sélection par marché (venue_state + sessions)
-        venue_state = state.get("venue_state") if isinstance(state.get("venue_state"), dict) else {}
-        open_venues_list = state.get("open_venues_list") if isinstance(state.get("open_venues_list"), list) else []
-        self.query_one("#selection-panel", Static).update(
-            build_selection_panel(venue_state, open_venues_list, palette=palette)
+        # Calcul du PnL réalisé net par fill (algo PURE)
+        pnl_by_fill = compute_realized_pnl_by_fill(fills)
+
+        self.query_one("#kpi-compact", Static).update(
+            _build_kpi_compact(kpis, equity_curve, palette=palette)
         )
-
-        # Panneau derniers trades (fills depuis broker.json)
-        fills = state.get("fills") if isinstance(state.get("fills"), list) else []
+        self.query_one("#equity-panel", Static).update(
+            _build_equity_panel(equity_curve, palette=palette)
+        )
         self.query_one("#trades-panel", Static).update(
-            build_trades_table(fills, palette=palette)
-        )
-
-        self.query_one("#watches-panel", Static).update(
-            _build_watches_panel(indicator_watches, palette=palette)
-        )
-        self.query_one("#data-health-panel", Static).update(
-            _build_data_health_panel(recent_decisions, stale_streaks, palette=palette)
+            _build_trades_with_pnl(fills, pnl_by_fill, company_map, palette=palette)
         )
         self.query_one("#llm-activity-panel", Static).update(
             _build_llm_activity_panel(
@@ -462,31 +458,168 @@ class RightPane(Static):
         )
 
 
+class UniversePane(Static):
+    """Corps droit (30%) : univers actif groupé par venue avec scores D10."""
+
+    DEFAULT_CSS = """
+    UniversePane {
+        width: 30%;
+        height: 100%;
+        overflow-y: auto;
+    }
+    UniversePane Static {
+        height: auto;
+        margin: 0 0 1 0;
+    }
+    """
+
+    _current_palette: Palette = PALETTE_LIGHT
+
+    def compose(self) -> ComposeResult:
+        yield Static(id="universe-panel")
+        yield Static(id="watches-panel")
+
+    def update_state(self, state: dict) -> None:
+        palette = self._current_palette
+        universe_symbols = (
+            state.get("universe_symbols")
+            if isinstance(state.get("universe_symbols"), list)
+            else []
+        )
+        venue_state = (
+            state.get("venue_state") if isinstance(state.get("venue_state"), dict) else {}
+        )
+        open_venues_list = (
+            state.get("open_venues_list")
+            if isinstance(state.get("open_venues_list"), list)
+            else []
+        )
+        company_map = (
+            state.get("company_map") if isinstance(state.get("company_map"), dict) else {}
+        )
+        indicator_watches = (
+            state.get("indicator_watches")
+            if isinstance(state.get("indicator_watches"), list)
+            else []
+        )
+
+        self.query_one("#universe-panel", Static).update(
+            build_universe_panel(
+                universe_symbols, venue_state, open_venues_list, company_map, palette=palette
+            )
+        )
+        self.query_one("#watches-panel", Static).update(
+            _build_watches_panel(indicator_watches, palette=palette)
+        )
+
+
 # ---------------------------------------------------------------------------
-# Widget : panneau droit — logs live
+# Builder pur : table trades avec net P&L et noms de sociétés
 # ---------------------------------------------------------------------------
 
 
-class EventsPane(Static):
-    """Panneau droit : tail live d'events.jsonl avec auto-scroll et filtres."""
+def _build_trades_with_pnl(
+    fills: list[dict],
+    pnl_by_fill: list[float | None],
+    company_map: dict[str, str],
+    *,
+    limit: int = 20,
+    palette: Palette = PALETTE_DARK,
+) -> "RenderableType":
+    """Table des derniers trades clôturés avec net P&L calculé et noms de sociétés.
+
+    PURE — ne lit aucun fichier. Les fills BUY affichent — en P&L.
+    Les fills SELL affichent le bénéfice net réalisé coloré +/−.
+    Raison de sortie : non disponible dans les fills → —.
+    """
+    from rich.console import RenderableType
+    from rich.table import Table
+    from rich.text import Text
+    from datetime import UTC, datetime
+    from trader.tui import _fmt_symbol_short, _safe_float, _fmt_fee_cost
+
+    table = Table(title="Trades clôturés", show_lines=False, expand=True)
+    table.add_column("Heure", no_wrap=True, style=palette["dim"])
+    table.add_column("Société · Ticker", style="bold")
+    table.add_column("Sens")
+    table.add_column("Qté", justify="right")
+    table.add_column("Prix", justify="right")
+    table.add_column("Net P&L", justify="right")
+
+    # Aligner fills et pnl_by_fill (même longueur garantie par compute_realized_pnl_by_fill)
+    paired = list(zip(fills, pnl_by_fill)) if pnl_by_fill else [(f, None) for f in fills]
+    recent = paired[-limit:] if len(paired) > limit else paired
+
+    for fill, net_pnl in reversed(recent):
+        ts_raw = str(fill.get("ts") or "")
+        try:
+            candidate = f"{ts_raw[:-1]}+00:00" if ts_raw.endswith("Z") else ts_raw
+            dt = datetime.fromisoformat(candidate)
+            ts_str = dt.astimezone(UTC).strftime("%H:%M:%S")
+        except (ValueError, AttributeError):
+            ts_str = ts_raw[:8] if ts_raw else "—"
+
+        symbol = str(fill.get("symbol") or "?")
+        label = _fmt_symbol_short(symbol, company_map)
+        side = str(fill.get("side") or "")
+        side_style = (
+            palette["action_buy"] if side == "BUY" else (
+                palette["action_sell"] if side == "SELL" else palette["dim"]
+            )
+        )
+        qty_val = _safe_float(fill.get("quantity"), default=0.0) or 0.0
+        price_val = _safe_float(fill.get("price"), default=None)
+        price_str = f"${price_val:,.4f}" if price_val is not None else "—"
+
+        # Net P&L : None (BUY) → —, float → coloré
+        if net_pnl is None:
+            pnl_cell = Text("—", style=palette["dim"])
+        else:
+            pnl_style = palette["pnl_positive"] if net_pnl >= 0 else palette["pnl_negative"]
+            pnl_cell = Text(f"{net_pnl:+,.2f}", style=pnl_style)
+
+        table.add_row(
+            ts_str,
+            label,
+            Text(side, style=side_style),
+            f"{qty_val:,.4f}",
+            price_str,
+            pnl_cell,
+        )
+
+    if not recent:
+        table.add_row("—", "—", "—", "—", "—", "—")
+
+    return table
+
+
+# ---------------------------------------------------------------------------
+# Widget : panneau logs live (dock:bottom)
+# ---------------------------------------------------------------------------
+
+
+class LogsPane(Static):
+    """Panneau bas : tail live d'events.jsonl avec auto-scroll et filtres.
+
+    Remplace l'ancien EventsPane intégré dans RightPane. Garde exactement
+    les mêmes comportements : toggle cycles (c), toggle scroll (f), toggle
+    visibilité (l), backlog initial différé, poll périodique.
+    """
 
     _offset: int = 0
     _show_cycles: bool = True
     _auto_scroll: bool = True
-    # Dernier état connu du fichier : "ok" | "absent" | "error"
-    # Permet de n'émettre le diagnostic dim qu'une fois par changement d'état.
     _last_file_status: str = "ok"
-    _current_palette: Palette = PALETTE_LIGHT  # défaut saumon (thème par défaut)
-    # Garde-fou pour le backlog initial : différé jusqu'au premier on_ready
-    # afin que RichLog ait une largeur réelle avant le premier write().
+    _current_palette: Palette = PALETTE_LIGHT
     _backlog_loaded: bool = False
 
     DEFAULT_CSS = """
-    EventsPane {
-        width: 40%;
-        height: 100%;
+    LogsPane {
+        dock: bottom;
+        height: 4;
+        border-top: solid $primary;
     }
-    EventsPane RichLog {
+    LogsPane RichLog {
         height: 1fr;
     }
     """
@@ -504,25 +637,16 @@ class EventsPane(Static):
         )
 
     def on_mount(self) -> None:
-        """Diffère le chargement du backlog initial jusqu'après le premier layout.
-
-        RichLog fige le wrap de chaque ligne au moment du write(). Si on écrit
-        avant que le widget ait sa taille réelle (ce qui arrive lors d'un appel
-        direct dans on_mount parent), les lignes se replient sur une largeur
-        minimale. call_after_refresh garantit qu'au moins un cycle de layout
-        s'est exécuté avant le premier write().
-        """
+        """Diffère le chargement du backlog jusqu'après le premier layout."""
         self.call_after_refresh(self._load_initial_backlog)
 
     def _load_initial_backlog(self) -> None:
-        """Charge le backlog initial une seule fois, largeur déjà connue."""
         if self._backlog_loaded:
             return
         self._backlog_loaded = True
         try:
             events_path: Path = self.app._events_file  # type: ignore[attr-defined]
         except AttributeError:
-            # Fallback : importation directe de la constante module
             import trader.cockpit as _mod
             events_path = _mod._EVENTS_FILE
         self.poll_events(events_path)
@@ -540,12 +664,7 @@ class EventsPane(Static):
         log.write(Text(f"[scroll {status}]", style="dim italic"))
 
     def poll_events(self, events_path: Path) -> None:
-        """Lit les nouvelles lignes depuis events_path et les ajoute au log.
-
-        Si le fichier est absent, émet un diagnostic dim une seule fois
-        (dédupliqué par _last_file_status). Reprend normalement dès que
-        le fichier réapparaît.
-        """
+        """Lit les nouvelles lignes et les ajoute au RichLog."""
         log: RichLog = self.query_one("#events-log", RichLog)
 
         if not events_path.exists():
@@ -558,7 +677,6 @@ class EventsPane(Static):
                 )
             return
 
-        # Fichier présent : réinitialise le statut si on revenait d'absent
         if self._last_file_status == "absent":
             self._last_file_status = "ok"
             log.write(Text(f"[events] {events_path.name} disponible", style="dim"))
@@ -581,8 +699,12 @@ class EventsPane(Static):
             log.scroll_end(animate=False)
 
 
+# Alias de rétrocompatibilité — anciens tests qui importent EventsPane
+EventsPane = LogsPane
+
+
 # ---------------------------------------------------------------------------
-# Modals de confirmation
+# Modals de confirmation (inchangés)
 # ---------------------------------------------------------------------------
 
 
@@ -622,14 +744,7 @@ class ConfirmStop(ModalScreen[bool]):
 
 
 class ConfirmQuit(ModalScreen[bool]):
-    """Modal de confirmation à la sortie quand un daemon est vivant.
-
-    Retourne :
-        True  → arrêter le daemon puis quitter
-        False → annuler (rester dans le cockpit)
-
-    Échap → False (annuler).
-    """
+    """Modal de confirmation à la sortie quand un daemon est vivant."""
 
     BINDINGS = [
         Binding("escape", "cancel", "Annuler", show=False),
@@ -678,14 +793,7 @@ class ConfirmQuit(ModalScreen[bool]):
 
 
 class ConfirmStart(ModalScreen[bool]):
-    """Modal proposé au lancement du cockpit quand aucun daemon n'est vivant.
-
-    Retourne :
-        True  → lancer le moteur live (action_start_daemon)
-        False → ne rien lancer (cockpit en lecture seule)
-
-    Échap → False (ne pas lancer).
-    """
+    """Modal proposé au lancement du cockpit quand aucun daemon n'est vivant."""
 
     BINDINGS = [
         Binding("escape", "cancel", "Plus tard", show=False),
@@ -783,25 +891,33 @@ class ConfirmKill(ModalScreen[bool]):
 
 
 class CockpitApp(App):
-    """Cockpit console unifié — dashboard complet + logs live."""
+    """Cockpit console unifié — dashboard F-pattern + logs live."""
 
     TITLE = "casys-trader — cockpit"
+
+    # CSS TCSS décrivant le layout hiérarchique F-pattern
     CSS = """
     Screen {
         layout: vertical;
     }
-    #main-body {
-        layout: horizontal;
+    #body {
         height: 1fr;
+        layout: vertical;
+    }
+    #top-band {
+        height: 14;
+        layout: horizontal;
+        border-bottom: solid $primary;
+    }
+    #main-body {
+        height: 1fr;
+        layout: horizontal;
     }
     """
 
     BINDINGS = [
         Binding("q", "quit_confirm", "Quitter"),
-        # Ctrl+C : par défaut Textual le mappe sur help_quit (notification inerte).
-        # On le route vers le même avertissement que q pour qu'on ne puisse jamais
-        # quitter sans voir que le moteur live va être arrêté. priority pour passer
-        # devant le binding système.
+        # Ctrl+C → même comportement que q (avertissement si daemon vivant)
         Binding("ctrl+c", "quit_confirm", "Quitter", show=False, priority=True),
         Binding("s", "start_daemon", "Démarrer daemon"),
         Binding("X", "stop_daemon_confirm", "Maj+X — Arrêter daemon"),
@@ -813,45 +929,44 @@ class CockpitApp(App):
     ]
 
     _logs_visible: bool = True
-    # Dernier état mémorisé pour le re-render immédiat après toggle thème
     _last_state: dict | None = None
     _last_kill_active: bool = False
 
     def compose(self) -> ComposeResult:
+        """Structure du layout : statut → body (top-band + main-body) → logs → footer."""
         yield CockpitStatus(id="cockpit-status")
-        yield Static(id="main-body")
+        with Vertical(id="body"):
+            with Horizontal(id="top-band"):
+                yield PositionsPlansPane(id="positions-plans-pane")
+                yield ArmedPlansPane(id="armed-plans-pane")
+            with Horizontal(id="main-body"):
+                yield DecisionsPane(id="decisions-pane")
+                yield EquityTradesPane(id="equity-trades-pane")
+                yield UniversePane(id="universe-pane")
+        yield LogsPane(id="logs-pane")
         yield Footer()
 
     def on_mount(self) -> None:
-        # Enregistrement des thèmes custom
+        # Thèmes custom
         self.register_theme(_THEME_SALMON)
         self.register_theme(_THEME_INK)
-        # Thème saumon par défaut (fond clair FT editorial)
         self.theme = "casys-salmon"
 
-        # Expose le chemin events sur self pour que EventsPane._load_initial_backlog
+        # Expose le chemin events sur self pour que LogsPane._load_initial_backlog
         # puisse le résoudre même quand _EVENTS_FILE est monkeypatché en test.
         self._events_file = _EVENTS_FILE
 
-        body = self.query_one("#main-body", Static)
-        body.mount(LeftPane(id="left-pane"))
-        body.mount(CenterPane(id="center-pane"))
-        body.mount(RightPane(id="right-pane"))
         # Polling état toutes les 2 s (via worker thread — I/O hors UI loop)
         self.set_interval(2.0, self._schedule_refresh_state)
-        # Polling events toutes les 1 s (le backlog initial est chargé par EventsPane.on_ready)
+        # Polling events toutes les 1 s
         self.set_interval(1.0, self._poll_events)
         # Charge l'état immédiatement
         self._schedule_refresh_state()
-        # Propose de démarrer le daemon s'il n'est pas vivant (différé après layout)
+        # Propose de démarrer le daemon s'il n'est pas vivant
         self.call_after_refresh(self._maybe_propose_start)
 
     def _maybe_propose_start(self) -> None:
-        """Propose de lancer le daemon au démarrage si aucun n'est vivant.
-
-        Ne propose jamais quand un daemon est déjà vivant. Safe default :
-        la proposition ne lance rien sans confirmation explicite.
-        """
+        """Propose de lancer le daemon au démarrage si aucun n'est vivant."""
         vital = daemon_vital_state(_STATE_DIR / "daemon_status.json")
         if vital.status == "alive":
             return
@@ -870,22 +985,24 @@ class CockpitApp(App):
         return _THEME_PALETTE.get(self.theme, PALETTE_DARK)
 
     def _propagate_palette(self) -> None:
-        """Propage la palette courante aux 3 panes et à EventsPane."""
+        """Propage la palette courante à tous les panes et au LogsPane."""
         palette = self._current_palette()
-        for pane_id, cls in (
-            ("#left-pane", LeftPane),
-            ("#center-pane", CenterPane),
-            ("#right-pane", RightPane),
-        ):
+        pane_map = [
+            ("#positions-plans-pane", PositionsPlansPane),
+            ("#armed-plans-pane", ArmedPlansPane),
+            ("#decisions-pane", DecisionsPane),
+            ("#equity-trades-pane", EquityTradesPane),
+            ("#universe-pane", UniversePane),
+        ]
+        for pane_id, cls in pane_map:
             try:
                 pane = self.query_one(pane_id, cls)  # type: ignore[arg-type]
                 pane._current_palette = palette
             except Exception:
                 pass
         try:
-            right: RightPane = self.query_one("#right-pane", RightPane)
-            events_pane: EventsPane = right.query_one("#events-pane", EventsPane)
-            events_pane._current_palette = palette
+            logs_pane: LogsPane = self.query_one("#logs-pane", LogsPane)
+            logs_pane._current_palette = palette
         except Exception:
             pass
 
@@ -894,10 +1011,7 @@ class CockpitApp(App):
         self.run_worker(self._load_state_worker, thread=True)
 
     def _load_state_worker(self) -> None:
-        """Charge l'état depuis le disque dans un thread (hors UI loop).
-
-        Poste le résultat à l'UI via call_from_thread pour éviter tout blocage.
-        """
+        """Charge l'état depuis le disque dans un thread (hors UI loop)."""
         try:
             state = load_runtime_state(state_dir=_STATE_DIR, config_dir=_CONFIG_DIR)
             kill_active = _KILL_FILE.exists()
@@ -907,93 +1021,83 @@ class CockpitApp(App):
             pass
 
     def _apply_state(self, state: dict, kill_active: bool) -> None:
-        """Met à jour les 3 panes avec l'état chargé (appelé depuis le thread UI)."""
-        # Mémoriser pour le re-render immédiat lors du toggle thème
+        """Met à jour tous les panes avec l'état chargé (appelé depuis le thread UI)."""
         self._last_state = state
         self._last_kill_active = kill_active
         try:
             palette = self._current_palette()
+
             status: CockpitStatus = self.query_one("#cockpit-status", CockpitStatus)
             status.update_state(state, kill_active, palette=palette)
 
-            left: LeftPane = self.query_one("#left-pane", LeftPane)
-            left._current_palette = palette
-            left.update_state(state)
+            positions_plans: PositionsPlansPane = self.query_one(
+                "#positions-plans-pane", PositionsPlansPane
+            )
+            positions_plans._current_palette = palette
+            positions_plans.update_state(state)
 
-            center: CenterPane = self.query_one("#center-pane", CenterPane)
-            center._current_palette = palette
-            center.update_state(state)
+            armed_plans: ArmedPlansPane = self.query_one("#armed-plans-pane", ArmedPlansPane)
+            armed_plans._current_palette = palette
+            armed_plans.update_state(state)
 
-            right: RightPane = self.query_one("#right-pane", RightPane)
-            right._current_palette = palette
-            right.update_state(state)
+            decisions: DecisionsPane = self.query_one("#decisions-pane", DecisionsPane)
+            decisions._current_palette = palette
+            decisions.update_state(state)
+
+            equity_trades: EquityTradesPane = self.query_one(
+                "#equity-trades-pane", EquityTradesPane
+            )
+            equity_trades._current_palette = palette
+            equity_trades.update_state(state)
+
+            universe: UniversePane = self.query_one("#universe-pane", UniversePane)
+            universe._current_palette = palette
+            universe.update_state(state)
+
         except Exception:
             pass  # tolérant — widgets restent à leur dernier état
 
     def _poll_events(self) -> None:
-        """Lit les nouvelles lignes d'events.jsonl."""
+        """Lit les nouvelles lignes d'events.jsonl et les ajoute au LogsPane."""
         try:
-            right: RightPane = self.query_one("#right-pane", RightPane)
-            events_pane: EventsPane = right.query_one("#events-pane", EventsPane)
-            events_pane.poll_events(_EVENTS_FILE)
+            logs_pane: LogsPane = self.query_one("#logs-pane", LogsPane)
+            logs_pane.poll_events(_EVENTS_FILE)
         except Exception:
             pass
 
     def action_toggle_cycles(self) -> None:
         try:
-            right: RightPane = self.query_one("#right-pane", RightPane)
-            right.query_one("#events-pane", EventsPane).toggle_cycles()
+            self.query_one("#logs-pane", LogsPane).toggle_cycles()
         except Exception:
             pass
 
     def action_toggle_scroll(self) -> None:
         try:
-            right: RightPane = self.query_one("#right-pane", RightPane)
-            right.query_one("#events-pane", EventsPane).toggle_scroll()
+            self.query_one("#logs-pane", LogsPane).toggle_scroll()
         except Exception:
             pass
 
     def action_toggle_logs(self) -> None:
-        """Affiche/masque le panneau droit entier (logs + panneaux compacts) pour maximiser."""
+        """Affiche/masque le panneau logs (plein écran dashboard)."""
         try:
-            right: RightPane = self.query_one("#right-pane", RightPane)
-            left: LeftPane = self.query_one("#left-pane", LeftPane)
-            center: CenterPane = self.query_one("#center-pane", CenterPane)
+            logs_pane: LogsPane = self.query_one("#logs-pane", LogsPane)
             self._logs_visible = not self._logs_visible
-            if self._logs_visible:
-                right.display = True
-                left.styles.width = "25%"
-                center.styles.width = "40%"
-            else:
-                right.display = False
-                left.styles.width = "30%"
-                center.styles.width = "70%"
+            logs_pane.display = self._logs_visible
         except Exception:
             pass
 
     def action_toggle_theme(self) -> None:
-        """Bascule entre casys-salmon (clair) et casys-ink (sombre).
-
-        Propage la nouvelle palette et re-rend immédiatement depuis le dernier
-        état mémorisé — pas d'attente du prochain cycle de refresh.
-        """
+        """Bascule entre casys-salmon (clair) et casys-ink (sombre)."""
         if self.theme == "casys-salmon":
             self.theme = "casys-ink"
         else:
             self.theme = "casys-salmon"
         self._propagate_palette()
-        # Re-render immédiat avec la nouvelle palette
         if self._last_state is not None:
             self._apply_state(self._last_state, self._last_kill_active)
 
     def action_quit_confirm(self) -> None:
-        """Quitte avec confirmation si un daemon est vivant.
-
-        Si aucun daemon vivant → quit direct (pas de modal).
-        Si daemon vivant → ConfirmQuit modal :
-            - « Arrêter et quitter » → stop_daemon (SIGINT) puis quit.
-            - « Annuler » / Échap   → rester dans le cockpit.
-        """
+        """Quitte avec confirmation si un daemon est vivant."""
         from trader.cockpit_supervisor import daemon_vital_state, stop_daemon
 
         vital = daemon_vital_state(_STATE_DIR / "daemon_status.json")
@@ -1001,7 +1105,6 @@ class CockpitApp(App):
             self.exit()
             return
 
-        # Récupère le PID pour l'afficher dans le modal
         try:
             import json as _json
 
@@ -1017,9 +1120,9 @@ class CockpitApp(App):
                 return
             try:
                 result = stop_daemon(
-                pid_file=_STATE_DIR / "daemon.pid",
-                status_file=_STATE_DIR / "daemon_status.json",
-            )
+                    pid_file=_STATE_DIR / "daemon.pid",
+                    status_file=_STATE_DIR / "daemon_status.json",
+                )
                 if result.stopped:
                     self.notify(
                         f"Daemon arrêté (PID {result.pid})", severity="information"

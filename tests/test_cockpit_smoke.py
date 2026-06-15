@@ -63,9 +63,9 @@ async def test_cockpit_app_monte_avec_les_deux_panes(tmp_path, monkeypatch):
 
     app = CockpitApp()
     async with app.run_test(size=(220, 60)) as _:
-        assert app.query_one("#left-pane") is not None
-        assert app.query_one("#center-pane") is not None
-        assert app.query_one("#right-pane") is not None
+        assert app.query_one("#positions-plans-pane") is not None
+        assert app.query_one("#equity-trades-pane") is not None
+        assert app.query_one("#logs-pane") is not None
         assert app.query_one("#cockpit-status") is not None
 
 
@@ -91,7 +91,7 @@ async def test_cockpit_fichiers_absents_ne_crashent_pas(tmp_path, monkeypatch):
     app = CockpitApp()
     async with app.run_test(size=(200, 50)) as _:
         # Doit monter sans lever d'exception
-        assert app.query_one("#left-pane") is not None
+        assert app.query_one("#positions-plans-pane") is not None
 
 
 async def test_cockpit_theme_defaut_est_casys_salmon(tmp_path, monkeypatch):
@@ -158,13 +158,13 @@ async def test_cockpit_status_prend_palette_en_compte(tmp_path, monkeypatch):
 async def test_cockpit_toggle_theme_propage_palette_dashboard_immediatement(
     tmp_path, monkeypatch
 ):
-    """Finding 4 : après toggle d, LeftPane utilise la nouvelle palette
+    """Finding 4 : après toggle d, PositionsPlansPane utilise la nouvelle palette
     dès le prochain update_state — pas besoin d'attendre le poll interval.
 
-    On vérifie que _current_palette de LeftPane change immédiatement après
+    On vérifie que _current_palette de PositionsPlansPane change immédiatement après
     action_toggle_theme, sans attendre le prochain cycle de refresh.
     """
-    from trader.cockpit import LeftPane
+    from trader.cockpit import PositionsPlansPane
     from trader.palette import PALETTE_DARK, PALETTE_LIGHT
 
     # Daemon simulé vivant → pas de ConfirmStart qui intercepterait les touches
@@ -176,15 +176,15 @@ async def test_cockpit_toggle_theme_propage_palette_dashboard_immediatement(
 
     app = CockpitApp()
     async with app.run_test(size=(220, 60)) as pilot:
-        left = app.query_one("#left-pane", LeftPane)
+        pane = app.query_one("#positions-plans-pane", PositionsPlansPane)
         # Thème saumon → palette LIGHT
-        assert left._current_palette is PALETTE_LIGHT
+        assert pane._current_palette is PALETTE_LIGHT
         # Toggle → palette DARK immédiatement
         await pilot.press("d")
-        assert left._current_palette is PALETTE_DARK
+        assert pane._current_palette is PALETTE_DARK
         # Retour → palette LIGHT
         await pilot.press("d")
-        assert left._current_palette is PALETTE_LIGHT
+        assert pane._current_palette is PALETTE_LIGHT
 
 
 # ---------------------------------------------------------------------------
@@ -410,7 +410,7 @@ async def test_cockpit_v2_pane_left_existe(tmp_path, monkeypatch):
 
     app = CockpitApp()
     async with app.run_test(size=(220, 60)) as _:
-        assert app.query_one("#left-pane") is not None
+        assert app.query_one("#positions-plans-pane") is not None
 
 
 async def test_cockpit_v2_pane_center_existe(tmp_path, monkeypatch):
@@ -422,7 +422,7 @@ async def test_cockpit_v2_pane_center_existe(tmp_path, monkeypatch):
 
     app = CockpitApp()
     async with app.run_test(size=(220, 60)) as _:
-        assert app.query_one("#center-pane") is not None
+        assert app.query_one("#equity-trades-pane") is not None
 
 
 async def test_cockpit_v2_pane_right_existe(tmp_path, monkeypatch):
@@ -434,7 +434,7 @@ async def test_cockpit_v2_pane_right_existe(tmp_path, monkeypatch):
 
     app = CockpitApp()
     async with app.run_test(size=(220, 60)) as _:
-        assert app.query_one("#right-pane") is not None
+        assert app.query_one("#logs-pane") is not None
 
 
 async def test_cockpit_v2_toggle_l_masque_right_pane(tmp_path, monkeypatch):
@@ -448,7 +448,7 @@ async def test_cockpit_v2_toggle_l_masque_right_pane(tmp_path, monkeypatch):
 
     app = CockpitApp()
     async with app.run_test(size=(220, 60)) as pilot:
-        right = app.query_one("#right-pane")
+        right = app.query_one("#logs-pane")
         assert right.display is True
         await pilot.press("l")
         assert right.display is False
@@ -498,7 +498,7 @@ async def test_events_pane_backlog_charge_apres_layout(tmp_path, monkeypatch):
     les lignes d'un events.jsonl pré-rempli sont bien présentes dans le log.
     """
     import json as _json
-    from trader.cockpit import EventsPane, RightPane
+    from trader.cockpit import LogsPane
 
     _make_minimal_state(tmp_path)
     events_file = tmp_path / "events.jsonl"
@@ -519,15 +519,11 @@ async def test_events_pane_backlog_charge_apres_layout(tmp_path, monkeypatch):
     async with app.run_test(size=(220, 60)) as pilot:
         # Laisser un cycle supplémentaire pour que call_after_refresh s'exécute
         await pilot.pause()
-        right: RightPane = app.query_one("#right-pane", RightPane)
-        events_pane: EventsPane = right.query_one("#events-pane", EventsPane)
+        logs_pane: LogsPane = app.query_one("#logs-pane", LogsPane)
         # Le backlog doit avoir été chargé (flag positionné par on_mount + call_after_refresh)
-        assert events_pane._backlog_loaded is True
+        assert logs_pane._backlog_loaded is True
         # L'offset doit avoir avancé (les 5 lignes ont été lues)
-        assert events_pane._offset > 0
-        # EventsPane occupe toute la largeur du RightPane (bug MAJEUR v2 : était width:40%)
-        # On tolère ±2 colonnes pour les bordures internes
-        assert abs(events_pane.size.width - right.size.width) <= 2
+        assert logs_pane._offset > 0
 
 
 # ---------------------------------------------------------------------------
@@ -745,7 +741,7 @@ async def test_cockpit_q_avec_daemon_vivant_ne_quitte_pas_sans_confirmation(
         await pilot.press("q")
         await pilot.press("escape")
         # L'app est encore ouverte
-        assert app.query_one("#left-pane") is not None
+        assert app.query_one("#positions-plans-pane") is not None
 
     assert stop_calls == [], "stop_daemon ne doit pas être appelé si on annule"
 
@@ -770,7 +766,7 @@ async def test_cockpit_confirm_quit_echap_reste_ouvert(tmp_path, monkeypatch):
         await pilot.press("escape")
         # L'app est toujours là (on vérifie que le modal est parti et l'app est montée)
         assert not isinstance(app.screen, ConfirmQuit)
-        assert app.query_one("#left-pane") is not None
+        assert app.query_one("#positions-plans-pane") is not None
 
 
 # ---------------------------------------------------------------------------

@@ -1,7 +1,8 @@
-"""Tests TUI D10 — fonctions pures build_selection_panel et build_trades_table.
+"""Tests TUI D10 — fonctions pures build_selection_panel, build_trades_table,
+compute_realized_pnl_by_fill, _fmt_symbol_short, build_universe_panel.
 
-TDD sur les fonctions de rendu : données fixées, résultats vérifiables sans
-sortie visuelle (pas de test Textual ici — le rendu est pur Rich).
+TDD sur les fonctions de rendu et de calcul : données fixées, résultats
+vérifiables sans sortie visuelle (pas de test Textual ici — rendu pur Rich).
 """
 
 from __future__ import annotations
@@ -10,7 +11,13 @@ from rich.console import Console
 from rich.text import Text
 
 from trader.palette import PALETTE_DARK, PALETTE_LIGHT
-from trader.tui import build_selection_panel, build_trades_table
+from trader.tui import (
+    build_selection_panel,
+    build_trades_table,
+    build_universe_panel,
+    compute_realized_pnl_by_fill,
+    _fmt_symbol_short,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -282,3 +289,245 @@ class TestBuildTradesTable:
         rendered = _render_to_str(result)
         # MSFT à 15:05:00 → "15:05:05" ou "15:05"
         assert "15:05" in rendered
+
+
+# ---------------------------------------------------------------------------
+# Tests compute_realized_pnl_by_fill
+# ---------------------------------------------------------------------------
+
+
+class TestComputeRealizedPnlByFill:
+    """Tests du rejeu FIFO coût moyen des fills."""
+
+    def test_liste_vide(self):
+        """Liste vide → liste vide."""
+        result = compute_realized_pnl_by_fill([])
+        assert result == []
+
+    def test_buy_seul_retourne_none(self):
+        """Un BUY seul → None (pas de réalisé)."""
+        fills = [{"symbol": "AAPL", "side": "BUY", "quantity": 10.0, "price": 100.0, "commission": 0.0}]
+        result = compute_realized_pnl_by_fill(fills)
+        assert result == [None]
+
+    def test_achat_puis_vente_gagnante(self):
+        """Achat à 100, vente à 110 → net = (110 - 100) * 10 = 100."""
+        fills = [
+            {"symbol": "AAPL", "side": "BUY", "quantity": 10.0, "price": 100.0, "commission": 0.0},
+            {"symbol": "AAPL", "side": "SELL", "quantity": 10.0, "price": 110.0, "commission": 0.0},
+        ]
+        result = compute_realized_pnl_by_fill(fills)
+        assert result[0] is None
+        assert result[1] is not None
+        assert abs(result[1] - 100.0) < 0.01
+
+    def test_achat_puis_vente_perdante(self):
+        """Achat à 100, vente à 90 → net = (90 - 100) * 10 = -100."""
+        fills = [
+            {"symbol": "AAPL", "side": "BUY", "quantity": 10.0, "price": 100.0, "commission": 0.0},
+            {"symbol": "AAPL", "side": "SELL", "quantity": 10.0, "price": 90.0, "commission": 0.0},
+        ]
+        result = compute_realized_pnl_by_fill(fills)
+        assert result[1] is not None
+        assert abs(result[1] - (-100.0)) < 0.01
+
+    def test_commission_reduit_le_gain(self):
+        """Achat à 100 + commission 1, vente à 110 + commission 1 → net = 98."""
+        fills = [
+            {"symbol": "AAPL", "side": "BUY", "quantity": 10.0, "price": 100.0, "commission": 1.0},
+            {"symbol": "AAPL", "side": "SELL", "quantity": 10.0, "price": 110.0, "commission": 1.0},
+        ]
+        result = compute_realized_pnl_by_fill(fills)
+        # Coût moyen achat = (10 * 100 + 1) / 10 = 100.1
+        # Net SELL = (110 - 100.1) * 10 - 1 = 99 - 1 = 98
+        assert result[1] is not None
+        assert abs(result[1] - 98.0) < 0.01
+
+    def test_vente_partielle(self):
+        """Achat 10 actions, vente partielle 5 → coût moyen inchangé pour le reste."""
+        fills = [
+            {"symbol": "AAPL", "side": "BUY", "quantity": 10.0, "price": 100.0, "commission": 0.0},
+            {"symbol": "AAPL", "side": "SELL", "quantity": 5.0, "price": 110.0, "commission": 0.0},
+            {"symbol": "AAPL", "side": "SELL", "quantity": 5.0, "price": 120.0, "commission": 0.0},
+        ]
+        result = compute_realized_pnl_by_fill(fills)
+        assert result[0] is None
+        # Première vente : (110 - 100) * 5 = 50
+        assert abs(result[1] - 50.0) < 0.01
+        # Deuxième vente : (120 - 100) * 5 = 100 (coût moyen inchangé = 100)
+        assert abs(result[2] - 100.0) < 0.01
+
+    def test_vente_sans_achat_retourne_none(self):
+        """Vente sans achat préalable → None (pas de crash)."""
+        fills = [{"symbol": "AAPL", "side": "SELL", "quantity": 5.0, "price": 110.0, "commission": 0.0}]
+        result = compute_realized_pnl_by_fill(fills)
+        assert result == [None]
+
+    def test_longueur_egale_aux_fills(self):
+        """La liste retournée a toujours la même longueur que fills."""
+        fills = [
+            {"symbol": "AAPL", "side": "BUY", "quantity": 5.0, "price": 100.0, "commission": 0.0},
+            {"symbol": "NVDA", "side": "BUY", "quantity": 2.0, "price": 500.0, "commission": 0.0},
+            {"symbol": "AAPL", "side": "SELL", "quantity": 5.0, "price": 110.0, "commission": 0.0},
+        ]
+        result = compute_realized_pnl_by_fill(fills)
+        assert len(result) == len(fills)
+
+    def test_multi_symboles_isoles(self):
+        """Deux symboles distincts ne se mélangent pas."""
+        fills = [
+            {"symbol": "AAPL", "side": "BUY", "quantity": 10.0, "price": 100.0, "commission": 0.0},
+            {"symbol": "NVDA", "side": "BUY", "quantity": 5.0, "price": 200.0, "commission": 0.0},
+            {"symbol": "AAPL", "side": "SELL", "quantity": 10.0, "price": 110.0, "commission": 0.0},
+            {"symbol": "NVDA", "side": "SELL", "quantity": 5.0, "price": 180.0, "commission": 0.0},
+        ]
+        result = compute_realized_pnl_by_fill(fills)
+        assert result[0] is None  # BUY AAPL
+        assert result[1] is None  # BUY NVDA
+        assert abs(result[2] - 100.0) < 0.01   # SELL AAPL : (110-100)*10
+        assert abs(result[3] - (-100.0)) < 0.01  # SELL NVDA : (180-200)*5
+
+    def test_fill_sans_commission(self):
+        """Fill sans champ commission ne doit pas lever (commission = 0)."""
+        fills = [
+            {"symbol": "AAPL", "side": "BUY", "quantity": 10.0, "price": 100.0},
+            {"symbol": "AAPL", "side": "SELL", "quantity": 10.0, "price": 110.0},
+        ]
+        result = compute_realized_pnl_by_fill(fills)
+        assert result[1] is not None
+        assert abs(result[1] - 100.0) < 0.01
+
+
+# ---------------------------------------------------------------------------
+# Tests _fmt_symbol_short
+# ---------------------------------------------------------------------------
+
+
+class TestFmtSymbolShort:
+    """Tests du helper de formatage NOM · TICKER."""
+
+    def test_ticker_absent_retourne_brut(self):
+        """Ticker absent de company_map → ticker brut."""
+        assert _fmt_symbol_short("AAPL", {}) == "AAPL"
+
+    def test_nom_court_format_complet(self):
+        """Nom court → contient le nom (troncature à 20 chars peut couper le ticker)."""
+        result = _fmt_symbol_short("ASML.AS", {"ASML.AS": "ASML"})
+        assert "ASML" in result
+
+    def test_nom_long_premier_mot_seulement(self):
+        """Nom long (> 15 chars) → premier mot seulement."""
+        result = _fmt_symbol_short(
+            "2330.TW",
+            {"2330.TW": "Taiwan Semiconductor Manufacturing Company Limited"}
+        )
+        # Doit contenir "Taiwan" (premier mot) mais pas "Manufacturing"
+        assert "Taiwan" in result
+        assert "Manufacturing" not in result
+
+    def test_tronque_a_20_chars(self):
+        """Résultat tronqué à 20 chars max."""
+        result = _fmt_symbol_short("AAPL", {"AAPL": "Apple Inc."})
+        assert len(result) <= 20
+
+    def test_map_vide(self):
+        """company_map vide → ticker brut sans exception."""
+        result = _fmt_symbol_short("NVDA", {})
+        assert result == "NVDA"
+
+
+# ---------------------------------------------------------------------------
+# Tests build_universe_panel
+# ---------------------------------------------------------------------------
+
+
+_UNIVERSE_SYMBOLS = ["OR.PA", "ASML.AS", "CFR.SW", "AAPL", "NVDA"]
+
+_VENUE_STATE_UNIVERSE = {
+    "venues": {
+        "EU": {
+            "scores": {"OR.PA": 0.85, "ASML.AS": 0.92, "CFR.SW": 0.70},
+        },
+        "US": {
+            "scores": {"AAPL": 0.60, "NVDA": 0.95},
+        },
+    }
+}
+
+_COMPANY_MAP = {
+    "OR.PA": "L'Oréal S.A.",
+    "ASML.AS": "ASML Holding N.V.",
+    "CFR.SW": "Compagnie Financière Richemont SA",
+    "AAPL": "Apple Inc.",
+    "NVDA": "NVIDIA Corporation",
+}
+
+
+class TestBuildUniversePanel:
+    def test_ne_leve_pas_avec_etat_minimal(self):
+        """Ne doit pas lever avec un état minimal."""
+        result = build_universe_panel(
+            _UNIVERSE_SYMBOLS, _VENUE_STATE_UNIVERSE, ["EU"], _COMPANY_MAP,
+            palette=PALETTE_DARK
+        )
+        assert result is not None
+
+    def test_symboles_eu_presents(self):
+        """Les symboles EU apparaissent dans le rendu."""
+        result = build_universe_panel(
+            _UNIVERSE_SYMBOLS, _VENUE_STATE_UNIVERSE, ["EU"], _COMPANY_MAP,
+            palette=PALETTE_DARK
+        )
+        rendered = _render_to_str(result)
+        # Au moins un symbole EU doit être présent (avec son ticker brut ou le nom court)
+        assert "OR.PA" in rendered or "L'Oréal" in rendered
+
+    def test_symboles_us_presents(self):
+        """Les symboles US apparaissent dans le rendu."""
+        result = build_universe_panel(
+            _UNIVERSE_SYMBOLS, _VENUE_STATE_UNIVERSE, [], _COMPANY_MAP,
+            palette=PALETTE_DARK
+        )
+        rendered = _render_to_str(result)
+        assert "AAPL" in rendered or "Apple" in rendered
+
+    def test_venue_ouverte_badge_ouvert(self):
+        """Une venue ouverte doit afficher OUVERT dans son titre."""
+        result = build_universe_panel(
+            _UNIVERSE_SYMBOLS, _VENUE_STATE_UNIVERSE, ["EU", "US"], _COMPANY_MAP,
+            palette=PALETTE_DARK
+        )
+        rendered = _render_to_str(result)
+        assert "OUVERT" in rendered
+
+    def test_venue_fermee_badge_ferme(self):
+        """Une venue fermée doit afficher fermé dans son titre."""
+        result = build_universe_panel(
+            _UNIVERSE_SYMBOLS, _VENUE_STATE_UNIVERSE, [], _COMPANY_MAP,
+            palette=PALETTE_DARK
+        )
+        rendered = _render_to_str(result)
+        assert "fermé" in rendered
+
+    def test_tolere_liste_vide(self):
+        """Ne doit pas lever avec une liste de symboles vide."""
+        result = build_universe_panel([], {}, [], {}, palette=PALETTE_DARK)
+        assert result is not None
+
+    def test_scores_presents(self):
+        """Les scores doivent apparaître dans le rendu."""
+        result = build_universe_panel(
+            _UNIVERSE_SYMBOLS, _VENUE_STATE_UNIVERSE, [], _COMPANY_MAP,
+            palette=PALETTE_DARK
+        )
+        rendered = _render_to_str(result)
+        # Un score comme 0.9200 doit apparaître
+        assert "0.92" in rendered or "0.85" in rendered
+
+    def test_palette_light_ne_leve_pas(self):
+        """Doit fonctionner avec PALETTE_LIGHT sans exception."""
+        result = build_universe_panel(
+            _UNIVERSE_SYMBOLS, _VENUE_STATE_UNIVERSE, ["EU"], _COMPANY_MAP,
+            palette=PALETTE_LIGHT
+        )
+        assert result is not None
