@@ -706,6 +706,31 @@ def test_load_runtime_state_inclut_recent_decisions(tmp_path) -> None:
     assert len(state["recent_decisions"]) == 5
 
 
+def test_load_runtime_state_inclut_recent_trips_depuis_attribution(tmp_path) -> None:
+    import json as _json
+
+    from trader.tui import load_runtime_state
+
+    rows = [
+        {"ts": "2026-06-15T10:00:00+00:00", "symbol": "AAPL", "action": "BUY",
+         "quantity": 1, "price": 180.0, "confidence": 0.7, "intent": "OPEN_LONG"},
+        {"ts": "2026-06-15T11:00:00+00:00", "symbol": "AAPL", "action": "SELL",
+         "quantity": 1, "price": 185.0, "confidence": None, "intent": "PLANNED_EXIT",
+         "exit_reason": "take_profit:tp1"},
+    ]
+    (tmp_path / "model_performance.jsonl").write_text(
+        "\n".join(_json.dumps(row) for row in rows),
+        encoding="utf-8",
+    )
+
+    state = load_runtime_state(state_dir=tmp_path)
+
+    assert "recent_trips" in state
+    assert state["recent_trips"][0]["symbol"] == "AAPL"
+    assert state["recent_trips"][0]["exit_reason"] == "take_profit:tp1"
+    assert state["recent_trips"][0]["pnl"] == 5.0
+
+
 def test_load_runtime_state_trade_plans_absent_retourne_vide(tmp_path) -> None:
     from trader.tui import load_runtime_state
 

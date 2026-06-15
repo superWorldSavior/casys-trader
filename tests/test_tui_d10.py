@@ -291,6 +291,71 @@ class TestBuildTradesTable:
         assert "15:05" in rendered
 
 
+class TestBuildClosedTradesTable:
+    def test_affiche_trips_clotures_avec_nom_net_raison_et_duree(self):
+        from trader.tui import build_closed_trades_table
+
+        trips = [
+            {
+                "symbol": "AAPL",
+                "side": "LONG",
+                "entry_price": 180.0,
+                "exit_price": 184.25,
+                "pnl": 42.5,
+                "exit_reason": "take_profit:tp1",
+                "holding_minutes": 135.0,
+                "exit_ts": "2026-06-15T15:05:12+00:00",
+            },
+            {
+                "symbol": "NVDA",
+                "side": "SHORT",
+                "entry_price": 900.0,
+                "exit_price": 905.0,
+                "pnl": -25.0,
+                "exit_reason": "trailing_stop_extraordinairement_long_a_tronquer",
+                "holding_minutes": 9.0,
+                "exit_ts": "2026-06-15T14:00:00+00:00",
+            },
+        ]
+
+        result = build_closed_trades_table(
+            trips,
+            {"AAPL": "Apple Inc.", "NVDA": "NVIDIA Corporation"},
+            limit=2,
+            palette=PALETTE_DARK,
+        )
+        rendered = _render_to_str(result)
+
+        assert "Sorties / Trades clôturés" in rendered
+        assert "15:05:12" in rendered
+        assert "Apple" in rendered and "AAPL" in rendered
+        assert "LONG" in rendered
+        assert "180.0000" in rendered and "184.2500" in rendered
+        assert "+42.50" in rendered
+        assert "take_profit:tp1" in rendered
+        assert "2h15" in rendered
+        assert "-25.00" in rendered
+        assert "trailing_stop_extraordinairement_long_a_tronquer" not in rendered
+        assert "..." in rendered
+        assert result.columns[4]._cells[0].style == PALETTE_DARK["pnl_positive"]
+        assert result.columns[4]._cells[1].style == PALETTE_DARK["pnl_negative"]
+
+    def test_tolere_liste_vide_et_champs_manquants(self):
+        from trader.tui import build_closed_trades_table
+
+        empty = build_closed_trades_table([], {}, palette=PALETTE_DARK)
+        assert "—" in _render_to_str(empty)
+
+        minimal = build_closed_trades_table(
+            [{"symbol": "MSFT"}],
+            {},
+            palette=PALETTE_DARK,
+        )
+        rendered = _render_to_str(minimal)
+        assert "MSFT" in rendered
+        assert "—" in rendered
+
+
 # ---------------------------------------------------------------------------
 # Tests compute_realized_pnl_by_fill
 # ---------------------------------------------------------------------------
@@ -523,6 +588,19 @@ class TestBuildUniversePanel:
         rendered = _render_to_str(result)
         # Un score comme 0.9200 doit apparaître
         assert "0.92" in rendered or "0.85" in rendered
+
+    def test_score_nan_affiche_tiret_plutot_que_nan(self):
+        """Un score NaN est une donnée absente côté UI, jamais le texte 'nan'."""
+        result = build_universe_panel(
+            ["AAPL"],
+            {"venues": {"US": {"scores": {"AAPL": float("nan")}}}},
+            ["US"],
+            {"AAPL": "Apple Inc."},
+            palette=PALETTE_DARK,
+        )
+        rendered = _render_to_str(result)
+        assert "—" in rendered
+        assert "nan" not in rendered.lower()
 
     def test_palette_light_ne_leve_pas(self):
         """Doit fonctionner avec PALETTE_LIGHT sans exception."""

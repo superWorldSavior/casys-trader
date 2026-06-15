@@ -265,6 +265,45 @@ def test_compute_attribution_sans_args_garde_tous_les_trips(tmp_path) -> None:
     }
 
 
+def test_compute_attribution_expose_recent_trips_tries_par_sortie_desc(tmp_path) -> None:
+    _write_perf(
+        tmp_path,
+        [
+            {"ts": "2026-06-05T10:00:00+00:00", "symbol": "SPY", "action": "BUY",
+             "quantity": 1, "price": 100.0, "confidence": 0.7, "intent": "OPEN_LONG"},
+            {"ts": "2026-06-05T11:00:00+00:00", "symbol": "SPY", "action": "SELL",
+             "quantity": 1, "price": 105.0, "confidence": None, "intent": "PLANNED_EXIT",
+             "exit_reason": "take_profit:tp1"},
+            {"ts": "2026-06-05T12:00:00+00:00", "symbol": "SPY", "action": "BUY",
+             "quantity": 1, "price": 110.0, "confidence": 0.7, "intent": "OPEN_LONG"},
+            {"ts": "2026-06-05T13:00:00+00:00", "symbol": "SPY", "action": "SELL",
+             "quantity": 1, "price": 105.0, "confidence": None, "intent": "PLANNED_EXIT",
+             "exit_reason": "hard_stop"},
+            {"ts": "2026-06-05T14:00:00+00:00", "symbol": "SPY", "action": "BUY",
+             "quantity": 1, "price": 100.0, "confidence": 0.8, "intent": "OPEN_LONG"},
+            {"ts": "2026-06-05T15:00:00+00:00", "symbol": "SPY", "action": "SELL",
+             "quantity": 1, "price": 115.0, "confidence": None, "intent": "PLANNED_EXIT",
+             "exit_reason": "trailing_stop"},
+        ],
+    )
+
+    attr = compute_attribution(tmp_path)
+    recent = attr.get("recent_trips")
+
+    assert isinstance(recent, list)
+    assert [trip["exit_ts"] for trip in recent] == [
+        "2026-06-05T15:00:00+00:00",
+        "2026-06-05T13:00:00+00:00",
+        "2026-06-05T11:00:00+00:00",
+    ]
+    assert [trip["exit_reason"] for trip in recent] == [
+        "trailing_stop",
+        "hard_stop",
+        "take_profit:tp1",
+    ]
+    assert [trip["pnl"] for trip in recent] == [15.0, -5.0, 5.0]
+
+
 def test_compute_attribution_expose_brut_et_frais(tmp_path) -> None:
     """L'agent doit voir le brut ET les frais pour distinguer un scalp neutre
     qui devient perdant une fois les commissions déduites."""

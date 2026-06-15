@@ -14,7 +14,7 @@ from __future__ import annotations
 import json
 import math
 import time
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -39,6 +39,7 @@ _STATUS_FILE = _STATE_DIR / "daemon_status.json"
 _KILL_FILE = _ROOT / "KILL"
 
 _SPARK_BLOCKS = "▁▂▃▄▅▆▇█"
+UTC = timezone.utc
 
 
 # ---------------------------------------------------------------------------
@@ -316,7 +317,6 @@ def _load_venue_open_state_safe(
     try:
         from trader.rotation_venues import load_venue_state as _lvs
         from trader.rotation_schedule import load_sessions as _ls, open_venues as _ov
-        from datetime import UTC, datetime
 
         venue_state = _lvs(state_dir)
         sessions = _ls(config_dir)
@@ -449,6 +449,7 @@ def load_runtime_state(
         state_dir_path / "learnings.jsonl"
     )
     fills = _load_fills_safe(state_dir_path / "broker.json")
+    recent_trips = _safe_list_of_dicts(attribution.get("recent_trips"))
     _effective_config_dir = config_dir if config_dir is not None else str(state_dir_path.parent)
     venue_state, open_venues_list = _load_venue_open_state_safe(state_dir_path, _effective_config_dir)
     universe_symbols = _load_universe_symbols_safe(_effective_config_dir)
@@ -476,6 +477,7 @@ def load_runtime_state(
         "consolidation_status": consolidation_status,
         "learnings_pending_count": learnings_pending_count,
         "fills": fills,
+        "recent_trips": recent_trips,
         "venue_state": venue_state,
         "open_venues_list": open_venues_list,
         "universe_symbols": universe_symbols,
@@ -1392,6 +1394,100 @@ def _fmt_symbol_short(ticker: str, company_map: dict[str, str]) -> str:
     return label[:20]
 
 
+def _fmt_time_hms(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return "—"
+    try:
+        candidate = f"{text[:-1]}+00:00" if text.endswith("Z") else text
+        dt = datetime.fromisoformat(candidate)
+        return dt.astimezone(UTC).strftime("%H:%M:%S")
+    except (ValueError, AttributeError):
+        return text[:8] if text else "—"
+
+
+def _fmt_price_4(value: Any) -> str:
+    number = _safe_float(value, default=None)
+    return "—" if number is None else f"${number:,.4f}"
+
+
+def _fmt_price_pair(entry: Any, exit_: Any) -> str:
+    entry_str = _fmt_price_4(entry)
+    exit_str = _fmt_price_4(exit_)
+    if entry_str == "—" and exit_str == "—":
+        return "—"
+    return f"{entry_str}→{exit_str}"
+
+
+def _fmt_holding_duration(minutes: Any) -> str:
+    value = _safe_float(minutes, default=None)
+    if value is None or value < 0:
+        return "—"
+    total = int(round(value))
+    hours, mins = divmod(total, 60)
+    if hours:
+        return f"{hours}h{mins:02d}"
+    return f"{mins}m"
+
+
+def build_closed_trades_table(
+    trips: list[dict],
+    company_map: dict[str, str],
+    *,
+    limit: int = 20,
+    palette: Palette = PALETTE_DARK,
+) -> Table:
+    """Tableau « Sorties / Trades clôturés » depuis les round-trips d'attribution.
+
+    PURE — ne lit aucun fichier. Tolère les trips incomplets ou corrompus.
+    """
+    table = Table(title="Sorties / Trades clôturés", show_lines=False, expand=True)
+    table.add_column("Heure", no_wrap=True, style=palette["dim"])
+    table.add_column("Nom·Ticker", style="bold")
+    table.add_column("Sens")
+    table.add_column("Entrée→Sortie", justify="right")
+    table.add_column("Net", justify="right")
+    table.add_column("Raison")
+    table.add_column("Durée", justify="right")
+
+    clean_limit = max(0, int(limit))
+    recent = trips[:clean_limit] if clean_limit else []
+
+    for trip in recent:
+        if not isinstance(trip, dict):
+            continue
+        symbol = str(trip.get("symbol") or "?")
+        side = str(trip.get("side") or "—")
+        side_style = (
+            palette["action_buy"] if side == "LONG" else (
+                palette["action_sell"] if side == "SHORT" else palette["dim"]
+            )
+        )
+
+        pnl_value = _safe_float(trip.get("pnl"), default=None)
+        if pnl_value is None:
+            pnl_cell = Text("—", style=palette["dim"])
+        else:
+            pnl_style = palette["pnl_positive"] if pnl_value >= 0 else palette["pnl_negative"]
+            pnl_cell = Text(_fmt_signed_money(pnl_value, default="—"), style=pnl_style)
+
+        reason = str(trip.get("exit_reason") or "—")
+        table.add_row(
+            _fmt_time_hms(trip.get("exit_ts")),
+            _fmt_symbol_short(symbol, company_map),
+            Text(side, style=side_style),
+            _fmt_price_pair(trip.get("entry_price"), trip.get("exit_price")),
+            pnl_cell,
+            _truncate(reason, 36),
+            _fmt_holding_duration(trip.get("holding_minutes")),
+        )
+
+    if not table.rows:
+        table.add_row("—", "—", "—", "—", "—", "—", "—")
+
+    return table
+
+
 def compute_realized_pnl_by_fill(fills: list[dict]) -> list[float | None]:
     """Calcule le PnL réalisé net par fill selon la méthode FIFO coût moyen.
 
@@ -1503,6 +1599,8 @@ def build_universe_panel(
             score_val = scores.get(sym)
             try:
                 score_f = float(score_val)  # type: ignore[arg-type]
+                if math.isnan(score_f):
+                    raise ValueError("score NaN")
                 score_str = f"{score_f:.4f}"
                 if score_f >= 0.7:
                     score_style = palette["pnl_positive"]
