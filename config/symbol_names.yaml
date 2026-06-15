@@ -1,10 +1,20 @@
+1301.TW: Formosa Plastics Corporation
+1303.TW: Nan Ya Plastics Corporation
+1326.TW: Formosa Chemicals & Fibre Corporation
+1402.TW: Far Eastern New Century Corporation
+1440.TW: Tainan Spinning Co., Ltd.
+1723.TW: China Steel Chemical Corporation
+2002.TW: China Steel Corporation
+2015.TW: Feng Hsin Steel Co., Ltd.
 2301.TW: Lite-On Technology Corporation
 2303.TW: United Microelectronics Corporation
 2308.TW: Delta Electronics, Inc.
 2317.TW: Hon Hai Precision Industry Co., Ltd.
 2327.TW: Yageo Corporation
 2330.TW: Taiwan Semiconductor Manufacturing Company Limited
+2354.TW: Foxconn Technology Co., Ltd.
 2368.TW: Gold Circuit Electronics Ltd.
+2371.TW: Tatung Co., Ltd.
 2379.TW: Realtek Semiconductor Corp.
 2382.TW: Quanta Computer Inc.
 2383.TW: Elite Material Co., Ltd.
@@ -13,6 +23,15 @@
 2449.TW: King Yuan Electronics Co., Ltd.
 2454.TW: MediaTek Inc.
 2492.TW: Walsin Technology Corporation
+2618.TW: EVA Airways Corp.
+2633.TW: Taiwan High Speed Rail Corporation
+2881.TW: Fubon Financial Holding Co., Ltd.
+2882.TW: Cathay Financial Holding Co., Ltd.
+2884.TW: E.SUN Financial Holding Company, Ltd.
+2886.TW: Mega Financial Holding Co., Ltd.
+2891.TW: CTBC Financial Holding Co., Ltd.
+2892.TW: First Financial Holding Co., Ltd.
+2912.TW: President Chain Store Corporation
 3017.TW: Asia Vital Components Co., Ltd.
 3037.TW: Unimicron Technology Corp.
 3081.TWO: LandMark Optoelectronics Corporation
@@ -24,43 +43,63 @@
 3532.TW: Formosa Sumco Technology Corporation
 3661.TW: Alchip Technologies, Limited
 3711.TW: ASE Technology Holding Co., Ltd.
+5880.TW: Taiwan Cooperative Financial Holding Co., Ltd.
 6442.TW: EZconn Corporation
 6488.TWO: GlobalWafers Co., Ltd.
+6505.TW: Formosa Petrochemical Corporation
 8046.TW: Nan Ya Printed Circuit Board Corporation
 8299.TWO: Phison Electronics Corp.
+9910.TW: Feng Tay Enterprises Co., Ltd.
 A2A.MI: A2A S.p.A.
 ABBN.SW: ABB Ltd
 ABBV: AbbVie Inc.
 ABT: Abbott Laboratories
 ACA.PA: Crédit Agricole S.A.
+ACN: Accenture plc
 ADBE: Adobe Inc.
+AEE: Ameren Corporation
 AEP: American Electric Power Company, Inc.
+AFL: Aflac Incorporated
 AI.PA: L'Air Liquide S.A.
 AIR.PA: Airbus SE
 AKE.PA: Arkema S.A.
 ALB: Albemarle Corporation
+ALFA.ST: Alfa Laval AB (publ)
+ALL: The Allstate Corporation
 ALV.DE: Allianz SE
 AM.PA: Dassault Aviation société anonyme
 AMAT: Applied Materials, Inc.
+AMCR: Amcor plc
 AMD: Advanced Micro Devices, Inc.
 AMGN: Amgen Inc.
 AMS.MC: Amadeus IT Group, S.A.
 AMT: American Tower Corporation
 AMZN: Amazon.com, Inc.
 AON: Aon plc
+APA: APA Corporation
 APD: Air Products and Chemicals, Inc.
+ARE: Alexandria Real Estate Equities, Inc.
 ASML.AS: ASML Holding N.V.
+ASSA-B.ST: ASSA ABLOY AB (publ)
+ATCO-A.ST: Atlas Copco AB (publ)
 AVB: AvalonBay Communities, Inc.
 AVGO: Broadcom Inc.
+AVY: Avery Dennison Corporation
 AWK: American Water Works Company, Inc.
 AXP: American Express Company
 AZN.L: AstraZeneca PLC
 BA: The Boeing Company
 BAC: Bank of America Corporation
+BAER.SW: Julius Bär Gruppe AG
 BAS.DE: BASF SE
+BAX: Baxter International Inc.
+BEI.DE: Beiersdorf Aktiengesellschaft
+BIO: Bio-Rad Laboratories, Inc.
+BK: Bank of New York Mellon Corp
 BKNG: Booking Holdings Inc.
 BKR: Baker Hughes Company
 BLK: BlackRock, Inc.
+BLND.L: British Land Company PLC
 BMW.DE: Bayerische Motoren Werke Aktiengesellschaft
 BMY: Bristol-Myers Squibb Company
 BN.PA: Danone S.A.
@@ -68,16 +107,26 @@ BNP.PA: BNP Paribas SA
 BP.L: BP p.l.c.
 BRBY.L: Burberry Group plc
 C: Citigroup Inc.
+CAG: Conagra Brands, Inc.
 CAP.PA: Capgemini SE
 CARL-B.CO: Carlsberg A/S
 CAT: Caterpillar Inc.
 CB: Chubb Limited
+CCI: Crown Castle Inc.
+CCL: Carnival Corporation Ltd.
 CF: CF Industries Holdings, Inc.
 CFR.SW: Compagnie Financière Richemont SA
+CHD: Church & Dwight Co., Inc.
 CHTR: Charter Communications, Inc.
+CI: The Cigna Group
 CL: Colgate-Palmolive Company
+CLNX.MC: Cellnex Telecom, S.A.
+CLX: The Clorox Company
 CMCSA: Comcast Corporation
+CMG: Chipotle Mexican Grill, Inc.
+CMS: CMS Energy Corporation
 COF: Capital One Financial Corporation
+COLD: Americold Realty Trust, Inc.
 COLO-B.CO: Coloplast A/S
 COP: ConocoPhillips
 COST: Costco Wholesale Corporation
@@ -85,28 +134,41 @@ CRH: CRH plc
 CRM: Salesforce, Inc.
 CS.PA: AXA SA
 CSX: CSX Corporation
+CTAS: Cintas Corporation
 CVS: CVS Health Corporation
 CVX: Chevron Corporation
 D: Dominion Energy, Inc.
+DANSKE.CO: Danske Bank A/S
+DASH: DoorDash, Inc.
 DBK.DE: Deutsche Bank Aktiengesellschaft
 DD: DuPont de Nemours, Inc.
 DE: Deere & Company
+DELL: Dell Technologies Inc.
 DGE.L: Diageo plc
+DHI: D.R. Horton, Inc.
 DHR: Danaher Corporation
 DIS: The Walt Disney Company
+DKNG: DraftKings Inc.
 DLR: Digital Realty Trust, Inc.
+DOV: Dover Corporation
 DOW: Dow Inc.
 DSY.PA: Dassault Systèmes SE
 DTE.DE: Deutsche Telekom AG
 DUK: Duke Energy Corporation
 DVN: Devon Energy Corporation
 EA: Electronic Arts Inc.
+EBAY: eBay Inc.
+EBS.VI: Erste Group Bank AG
 ECL: Ecolab Inc.
 EDP.LS: EDP, S.A.
+EGP: EastGroup Properties, Inc.
+EL: The Estée Lauder Companies Inc.
+ELV: Elevance Health, Inc.
 EMR: Emerson Electric Co.
 ENEL.MI: Enel SpA
 ENGI.PA: Engie SA
 ENI.MI: Eni S.p.A.
+ENPH: Enphase Energy, Inc.
 EOAN.DE: E.ON SE
 EOG: EOG Resources, Inc.
 EQIX: Equinix, Inc.
@@ -115,18 +177,30 @@ EQR: Equity Residential
 ERIC-B.ST: Telefonaktiebolaget LM Ericsson (publ)
 ES: Eversource Energy
 ESSITY-B.ST: Essity AB (publ)
+ET: Energy Transfer LP
 ETN: Eaton Corporation plc
+ETR: Entergy Corporation
+EVO.ST: Evolution AB (publ)
+EVRG: Evergy, Inc.
 EXC: Exelon Corporation
+EXPE: Expedia Group, Inc.
 EXR: Extra Space Storage Inc.
 F: Ford Motor Company
+FANG: Diamondback Energy, Inc.
+FAST: Fastenal Company
 FCX: Freeport-McMoRan Inc.
 FDX: FedEx Corporation
+FE: FirstEnergy Corp.
+FITB: Fifth Third Bancorp
 FORTUM.HE: Fortum Oyj
 FOXA: Fox Corporation
 FRE.DE: Fresenius SE & Co. KGaA
+FTNT: Fortinet, Inc.
 GALP.LS: Galp Energia, SGPS, S.A.
 GD: General Dynamics Corporation
 GE: GE Aerospace
+GFC.PA: Gecina
+GILD: Gilead Sciences, Inc.
 GIS: General Mills, Inc.
 GLE.PA: Société Générale Société anonyme
 GM: General Motors Company
@@ -137,34 +211,61 @@ HAL: Halliburton Company
 HCA: HCA Healthcare, Inc.
 HD: The Home Depot, Inc.
 HEXA-B.ST: Hexagon AB (publ)
+HIG: The Hartford Insurance Group, Inc.
+HLT: Hilton Worldwide Holdings Inc.
 HO.PA: Thales S.A.
 HOLN.SW: Holcim AG
 HON: Honeywell International Inc.
+HPQ: HP Inc.
 HSY: The Hershey Company
+HUSQ-B.ST: Husqvarna AB (publ)
 IBE.MC: Iberdrola, S.A.
+IBM: International Business Machines Corporation
+ICAD.PA: Icade
+IFF: International Flavors & Fragrances Inc.
 IFX.DE: Infineon Technologies AG
+IMCD.AS: IMCD N.V.
 INGA.AS: ING Groep N.V.
 INTC: Intel Corporation
 INTU: Intuit Inc.
+INVE-B.ST: Investor AB (publ)
+IP: International Paper Company
+IQV: IQVIA Holdings Inc.
+IRM: Iron Mountain Incorporated
 ISRG: Intuitive Surgical, Inc.
+ITW: Illinois Tool Works Inc.
 JNJ: Johnson & Johnson
 JPM: JPMorgan Chase & Co.
+KBC.BR: KBC Group NV
 KER.PA: Kering SA
 KHC: The Kraft Heinz Company
+KMI: Kinder Morgan, Inc.
 KNEBV.HE: KONE Oyj
 KO: The Coca-Cola Company
 KPN.AS: Koninklijke KPN N.V.
+KVUE: Kenvue Inc.
+LAND.L: Land Securities Group Plc
+LEG.DE: LEG Immobilien SE
+LEN: Lennar Corporation
+LI.PA: Klépierre SA
 LIN: Linde plc
 LIN.DE: Linde plc
 LLY: Eli Lilly and Company
 LMT: Lockheed Martin Corporation
+LNG: Cheniere Energy, Inc.
+LNT: Alliant Energy Corporation
 LOW: Lowe's Companies, Inc.
+MAA: Mid-America Apartment Communities, Inc.
 MAR: Marriott International, Inc.
 MBG.DE: Mercedes-Benz Group AG
 MC.PA: LVMH Moët Hennessy - Louis Vuitton, Société Européenne
 MCD: McDonald's Corporation
+MDLZ: Mondelez International, Inc.
 MDT: Medtronic plc
+MET: MetLife, Inc.
 META: Meta Platforms, Inc.
+METSB.HE: Metsä Board Oyj
+MEUR.PA: Ossiam MSCI Europe ETF 1C EUR
 MMM: 3M Company
 MO: Altria Group, Inc.
 MONC.MI: Moncler S.p.A.
@@ -177,72 +278,106 @@ MSFT: Microsoft Corporation
 MT.AS: ArcelorMittal S.A.
 MU: Micron Technology, Inc.
 MUV2.DE: Münchener Rückversicherungs-Gesellschaft Aktiengesellschaft in München
+NDA-SE.ST: Nordea Bank Abp
 NEE: NextEra Energy, Inc.
 NEM: Newmont Corporation
 NESN.SW: Nestlé S.A.
 NESTE.HE: Neste Oyj
+NET: Cloudflare, Inc.
 NFLX: Netflix, Inc.
+NI: NiSource Inc.
+NIBE-B.ST: NIBE Industrier AB (publ)
 NKE: NIKE, Inc.
 NN.AS: NN Group N.V.
+NNN: NNN REIT, Inc.
 NOC: Northrop Grumman Corporation
 NOKIA.HE: Nokia Oyj
 NOVN.SW: Novartis AG
 NOVO-B.CO: Novo Nordisk A/S
 NOW: ServiceNow, Inc.
+NUE: Nucor Corporation
 NVDA: NVIDIA Corporation
 NXPI: NXP Semiconductors N.V.
 O: Realty Income Corporation
+OKE: ONEOK, Inc.
 OMV.VI: OMV Aktiengesellschaft
 OR.PA: L'Oréal S.A.
 ORA.PA: Orange S.A.
 ORCL: Oracle Corporation
 OXY: Occidental Petroleum Corporation
+PANW: Palo Alto Networks, Inc.
 PCG: PG&E Corporation
 PEP: PepsiCo, Inc.
 PFE: Pfizer Inc.
 PG: The Procter & Gamble Company
 PGR: The Progressive Corporation
+PH: Parker-Hannifin Corporation
 PHIA.AS: Koninklijke Philips N.V.
+PKG: Packaging Corporation of America
 PLD: Prologis, Inc.
+PLTR: Palantir Technologies Inc.
 PM: Philip Morris International Inc.
 PPG: PPG Industries, Inc.
+PPL: PPL Corporation
 PROX.BR: Proximus PLC
+PRU: Prudential Financial, Inc.
 PSA: Public Storage
 PSKY: Paramount Skydance Corporation
 PSX: Phillips 66
 QCOM: QUALCOMM Incorporated
+QIA.DE: Qiagen N.V.
 QQQ: Invesco QQQ Trust
+RCL: Royal Caribbean Cruises Ltd.
 RED.MC: Redeia Corporación, S.A.
+REGN: Regeneron Pharmaceuticals, Inc.
 REP.MC: Repsol, S.A.
+RF: Regions Financial Corporation
 RHM.DE: Rheinmetall AG
 RMS.PA: Hermès International Société en commandite par actions
 RO.SW: Roche Holding AG
+ROK: Rockwell Automation, Inc.
+ROP: Roper Technologies, Inc.
 ROST: Ross Stores, Inc.
+RPM: RPM International Inc.
 RR.L: Rolls-Royce Holdings plc
+RSG: Republic Services, Inc.
 RTX: RTX Corporation
 RWE.DE: RWE Aktiengesellschaft
 SAF.PA: Safran SA
 SAN.MC: Banco Santander, S.A.
 SAN.PA: Sanofi
+SAND.ST: Sandvik AB (publ)
 SAP.DE: SAP SE
 SBUX: Starbucks Corporation
 SCHW: The Charles Schwab Corporation
+SEDG: SolarEdge Technologies, Inc.
+SGRO.L: SEGRO Plc
 SHELL.AS: Shell plc
 SHW: The Sherwin-Williams Company
 SIE.DE: Siemens Aktiengesellschaft
+SKF-B.ST: AB SKF (publ)
 SLB: SLB N.V.
+SNOW: Snowflake Inc.
 SO: The Southern Company
+SOBI.ST: Swedish Orphan Biovitrum AB (publ)
 SOLB.BR: Solvay SA
 SPG: Simon Property Group, Inc.
 SPY: State Street SPDR S&P 500 ETF Trust
 SRE: Sempra
+SSAB-A.ST: SSAB AB (publ)
+STAG: STAG Industrial, Inc.
+STERV.HE: Stora Enso Oyj
 STLA: Stellantis N.V.
+STLD: Steel Dynamics, Inc.
 STMN.SW: Straumann Holding AG
 STMPA.PA: STMicroelectronics N.V.
+STT: State Street Corporation
+STZ: Constellation Brands, Inc.
 SU.PA: Schneider Electric S.E.
 SY1.DE: Symrise AG
 SYY: Sysco Corporation
 T: AT&T Inc.
+TAP: Molson Coors Beverage Company
 TEF.MC: Telefónica, S.A.
 TEL2-B.ST: Tele2 AB (publ)
 TELIA.ST: Telia Company AB (publ)
@@ -251,33 +386,47 @@ TIT.MI: Telecom Italia S.p.A.
 TJX: The TJX Companies, Inc.
 TMO: Thermo Fisher Scientific Inc.
 TMUS: T-Mobile US, Inc.
+TRV: The Travelers Companies, Inc.
 TSLA: Tesla, Inc.
+TSN: Tyson Foods, Inc.
 TTE.PA: TotalEnergies SE
 TTWO: Take-Two Interactive Software, Inc.
 TXN: Texas Instruments Incorporated
+UBER: Uber Technologies, Inc.
+UBSG.SW: UBS Group AG
 UCB.BR: UCB SA
 UCG.MI: UniCredit S.p.A.
 UMI.BR: Umicore SA
 UNA.AS: Unilever PLC
 UNH: UnitedHealth Group Incorporated
+UPM.HE: UPM-Kymmene Oyj
 UPS: United Parcel Service, Inc.
 USB: U.S. Bancorp
 VIE.PA: Veolia Environnement SA
 VLO: Valero Energy Corporation
+VNA.DE: Vonovia SE
 VOD.L: Vodafone Group Public Limited Company
 VOLV-B.ST: AB Volvo (publ)
 VOW3.DE: Volkswagen AG
 VTR: Ventas, Inc.
+VTRS: Viatris Inc.
 VZ: Verizon Communications Inc.
 WBD: Warner Bros. Discovery, Inc.
+WDP.BR: Warehouses De Pauw SA
 WEC: WEC Energy Group, Inc.
 WELL: Welltower Inc.
 WFC: Wells Fargo & Company
 WKL.AS: Wolters Kluwer N.V.
+WM: Waste Management, Inc.
+WMB: The Williams Companies, Inc.
 WMT: Walmart Inc.
+WPC: W. P. Carey Inc.
+WRT1V.HE: Wärtsilä Oyj Abp
 XEL: Xcel Energy Inc.
 XOM: Exxon Mobil Corporation
+XYL: Xylem Inc.
 YAR.OL: Yara International ASA
 YUM: Yum! Brands, Inc.
+ZBH: Zimmer Biomet Holdings, Inc.
 ZURN.SW: Zurich Insurance Group AG
 ^FCHI: CAC 40
