@@ -106,6 +106,49 @@ def sticky_symbols(
     return positions | armed_plans | exit_watches | pending_orders
 
 
+def apply_override(
+    *,
+    default_hot: list[str],
+    add: list[str],
+    remove: list[str],
+    pool: set[str],
+    sticky: set[str],
+    free_slots: int,
+) -> tuple[list[str], list[dict]]:
+    """Applique les overrides agent sur default_hot (liste de symboles non-sticky).
+
+    Rejets machine-readable :
+    - retrait d'un s in sticky → {"symbol": s, "reason": "sticky_protected"}
+    - ajout d'un s not in pool → {"symbol": s, "reason": "out_of_pool"}
+    - ajout dépassant free_slots → {"symbol": s, "reason": "cap_exceeded"}
+
+    Returns:
+        (result_list, rejections)
+    """
+    rejections: list[dict] = []
+    result = list(default_hot)
+
+    # Appliquer les retraits
+    for s in remove:
+        if s in sticky:
+            rejections.append({"symbol": s, "reason": "sticky_protected"})
+        else:
+            if s in result:
+                result.remove(s)
+
+    # Appliquer les ajouts
+    for s in add:
+        if s not in pool:
+            rejections.append({"symbol": s, "reason": "out_of_pool"})
+        elif len(result) >= free_slots:
+            rejections.append({"symbol": s, "reason": "cap_exceeded"})
+        else:
+            if s not in result:
+                result.append(s)
+
+    return result, rejections
+
+
 def emergency_exits(
     hot_set: set[str],
     ranked: list[dict[str, Any]],
