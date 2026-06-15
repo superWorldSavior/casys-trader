@@ -183,7 +183,17 @@ def tick(config_dir, state_dir, now_iso, *, rank_fn=None, sticky_fn=None, fx_cap
 
     dues = due_venues(now_iso, state, sessions)
     if dues:
-        scan_fn = rank_fn or build_rank_fn(config_dir, fetch_fn=None, as_of=now_iso)
+        if rank_fn is not None:
+            scan_fn = rank_fn
+        else:
+            from .radar_data import download_daily_batch
+            cache_dir = Path(state_dir) / "radar_cache"
+
+            def _fetch(syms):
+                # cache par JOUR (now_iso[:10]) pour réutiliser le batch dans la journée
+                return download_daily_batch(syms, as_of=now_iso[:10], cache_dir=cache_dir)
+
+            scan_fn = build_rank_fn(config_dir, fetch_fn=_fetch, as_of=now_iso)
         rank_obj = scan_fn()
         for venue in dues:
             state = run_venue_close(
