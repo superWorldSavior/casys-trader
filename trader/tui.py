@@ -327,19 +327,37 @@ def _load_venue_open_state_safe(
         return {}, []
 
 
-def _count_learnings_safe(learnings_path: Path, *, limit: int = 200) -> int:
-    """Compte les lignes non vides de learnings.jsonl sans tout charger (limité)."""
+def _count_pending_learnings_safe(
+    learnings_path: Path, consolidated_path: Path
+) -> int:
+    """Compte les learnings bruts NON consolidés (postérieurs au watermark).
+
+    `learnings.jsonl` est un buffer rolling plafonné (DEFAULT_RAW_MAX_ENTRIES) :
+    en compter toutes les lignes renvoie le cap (ex. 200), pas le vrai backlog.
+    On ne compte que les entrées postérieures au watermark du store consolidé —
+    le seul « pending » qui a du sens (ce qui reste à consolider).
+    """
     try:
         if not learnings_path.exists():
             return 0
-        count = 0
+        watermark = None
+        if consolidated_path.exists():
+            payload = json.loads(consolidated_path.read_text(encoding="utf-8"))
+            if isinstance(payload, dict):
+                watermark = payload.get("watermark")
+        raw_rows: list[dict] = []
         with learnings_path.open(encoding="utf-8") as fh:
-            for i, line in enumerate(fh):
-                if i >= limit:
-                    return limit  # tronqué
-                if line.strip():
-                    count += 1
-        return count
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    raw_rows.append(json.loads(line))
+                except Exception:
+                    continue
+        from trader.consolidator import select_new_raw
+
+        return len(select_new_raw(raw_rows, watermark))
     except Exception:
         return 0
 
@@ -445,8 +463,9 @@ def load_runtime_state(
     consolidation_status = _load_consolidation_status_safe(
         state_dir_path / "learnings_consolidation_status.json"
     )
-    learnings_pending_count = _count_learnings_safe(
-        state_dir_path / "learnings.jsonl"
+    learnings_pending_count = _count_pending_learnings_safe(
+        state_dir_path / "learnings.jsonl",
+        state_dir_path / "learnings_consolidated.json",
     )
     fills = _load_fills_safe(state_dir_path / "broker.json")
     recent_trips = _safe_list_of_dicts(attribution.get("recent_trips"))

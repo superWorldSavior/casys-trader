@@ -743,6 +743,47 @@ def test_load_runtime_state_trade_plans_absent_retourne_vide(tmp_path) -> None:
     assert state.get("consolidation_status") is None
 
 
+def test_count_pending_learnings_ne_compte_que_apres_watermark(tmp_path) -> None:
+    """Le buffer brut est rolling/plafonné — seul ce qui suit le watermark est pending."""
+    import json
+
+    from trader.tui import _count_pending_learnings_safe
+
+    lp = tmp_path / "learnings.jsonl"
+    cp = tmp_path / "learnings_consolidated.json"
+    rows = [
+        {"ts": "2026-06-15T10:00:00+00:00", "note": "consolidé1"},
+        {"ts": "2026-06-15T11:00:00+00:00", "note": "consolidé2"},
+        {"ts": "2026-06-15T13:00:00+00:00", "note": "pending1"},
+        {"ts": "2026-06-15T14:00:00+00:00", "note": "pending2"},
+    ]
+    lp.write_text("\n".join(json.dumps(r) for r in rows), encoding="utf-8")
+    cp.write_text(
+        json.dumps({"watermark": "2026-06-15T12:00:00+00:00", "global": [], "by_symbol": {}}),
+        encoding="utf-8",
+    )
+    # 4 lignes dans le buffer, mais seules les 2 après 12:00 sont réellement pending
+    assert _count_pending_learnings_safe(lp, cp) == 2
+
+
+def test_count_pending_learnings_sans_consolidation_compte_tout(tmp_path) -> None:
+    import json
+
+    from trader.tui import _count_pending_learnings_safe
+
+    lp = tmp_path / "learnings.jsonl"
+    cp = tmp_path / "learnings_consolidated.json"  # absent → watermark None
+    rows = [{"ts": "2026-06-15T10:00:00+00:00"}, {"ts": "2026-06-15T11:00:00+00:00"}]
+    lp.write_text("\n".join(json.dumps(r) for r in rows), encoding="utf-8")
+    assert _count_pending_learnings_safe(lp, cp) == 2
+
+
+def test_count_pending_learnings_fichier_absent(tmp_path) -> None:
+    from trader.tui import _count_pending_learnings_safe
+
+    assert _count_pending_learnings_safe(tmp_path / "nope.jsonl", tmp_path / "c.json") == 0
+
+
 # ---------------------------------------------------------------------------
 # D7 étage B — panneau plans armés
 # ---------------------------------------------------------------------------
