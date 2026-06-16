@@ -194,7 +194,91 @@ def _terminate_process_group(pgid: int, *, grace_s: float = 2.0) -> None:
         return
 
 
+def _codex_acp_pids() -> set[int]:
+    if os.name != "posix":
+        return set()
+
+    try:
+        proc = subprocess.run(
+            ["ps", "-axo", "pid=,command="],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            check=False,
+            timeout=2.0,
+        )
+    except subprocess.TimeoutExpired:
+        return set()
+    except Exception:  # noqa: BLE001 - observation système best-effort
+        return set()
+
+    if proc.returncode != 0:
+        return set()
+
+    pids: set[int] = set()
+    for line in proc.stdout.splitlines():
+        pid_text, separator, command = line.strip().partition(" ")
+        if not separator:
+            continue
+        executable = command.split(maxsplit=1)[0]
+        if os.path.basename(executable) != "codex-acp":
+            continue
+        try:
+            pids.add(int(pid_text))
+        except ValueError:
+            continue
+    return pids
+
+
+def _process_cwd(pid: int) -> str | None:
+    if os.name != "posix":
+        return None
+
+    try:
+        proc = subprocess.run(
+            ["lsof", "-a", "-d", "cwd", "-p", str(pid), "-Fn"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            check=False,
+            timeout=2.0,
+        )
+    except subprocess.TimeoutExpired:
+        return None
+    except Exception:  # noqa: BLE001 - observation système best-effort
+        return None
+
+    if proc.returncode != 0:
+        return None
+
+    for line in proc.stdout.splitlines():
+        if line.startswith("n") and len(line) > 1:
+            return os.path.realpath(line[1:])
+    return None
+
+
+def _reap_orphan_bridges(before: set[int], call_cwd: str | None) -> None:
+    try:
+        if call_cwd is None:
+            return
+        leaked_pids = _codex_acp_pids() - before
+        for pid in sorted(leaked_pids):
+            if _process_cwd(pid) != call_cwd:
+                continue
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                continue
+    except Exception:  # noqa: BLE001 - le reap ne doit jamais casser l'appel LLM
+        return
+
+
 def _run_one_shot_command(command: list[str], *, timeout_s: int) -> subprocess.CompletedProcess[str]:
+    try:
+        call_cwd = os.path.realpath(os.getcwd())
+    except Exception:  # noqa: BLE001 - reap conservateur si cwd introuvable
+        call_cwd = None
+    before = _codex_acp_pids()
     proc = subprocess.Popen(
         command,
         stdout=subprocess.PIPE,
@@ -217,6 +301,7 @@ def _run_one_shot_command(command: list[str], *, timeout_s: int) -> subprocess.C
         raise
     finally:
         _terminate_process_group(proc.pid)
+        _reap_orphan_bridges(before, call_cwd)
 
     return subprocess.CompletedProcess(
         args=command,
