@@ -442,6 +442,31 @@ def _extract_json(text: str) -> dict:
     return json.loads(text[start : end + 1])
 
 
+def _optional_float(data: dict, key: str) -> float | None:
+    if data.get(key) is None:
+        return None
+    return float(data[key])
+
+
+def _optional_upper_str(data: dict, key: str) -> str | None:
+    if data.get(key) is None:
+        return None
+    return str(data[key]).upper()
+
+
+def _optional_dict(data: dict, key: str) -> dict | None:
+    if data.get(key) is None:
+        return None
+    return dict(data[key])
+
+
+def _cancel_watch_ids(data: dict) -> list[str]:
+    raw_ids = data.get("cancel_watch_ids")
+    if not isinstance(raw_ids, list):
+        return []
+    return [str(wid) for wid in raw_ids if isinstance(wid, str)]
+
+
 def _decision_from_dict(data: dict, symbol: str) -> Decision:
     if not isinstance(data, dict):
         raise ValueError("élément non-objet")
@@ -457,31 +482,11 @@ def _decision_from_dict(data: dict, symbol: str) -> Decision:
         quantity=float(data["quantity"]),
         confidence=float(data["confidence"]),
         rationale=str(data["rationale"]),
-        next_wake_in_minutes=(
-            None
-            if data.get("next_wake_in_minutes") is None
-            else float(data["next_wake_in_minutes"])
-        ),
-        intent=(
-            None
-            if data.get("intent") is None
-            else str(data["intent"]).upper()  # type: ignore[arg-type]
-        ),
-        exit_plan=(
-            None
-            if data.get("exit_plan") is None
-            else dict(data["exit_plan"])
-        ),
-        indicator_watch=(
-            None
-            if data.get("indicator_watch") is None
-            else dict(data["indicator_watch"])
-        ),
-        cancel_watch_ids=(
-            [str(wid) for wid in data["cancel_watch_ids"] if isinstance(wid, str)]
-            if isinstance(data.get("cancel_watch_ids"), list)
-            else []
-        ),
+        next_wake_in_minutes=_optional_float(data, "next_wake_in_minutes"),
+        intent=_optional_upper_str(data, "intent"),  # type: ignore[arg-type]
+        exit_plan=_optional_dict(data, "exit_plan"),
+        indicator_watch=_optional_dict(data, "indicator_watch"),
+        cancel_watch_ids=_cancel_watch_ids(data),
         learning=_normalize_learning(data.get("learning")),
     )
 
@@ -490,42 +495,42 @@ def parse_decision(raw_text: str, symbol: str) -> Decision:
     return _decision_from_dict(_extract_json(raw_text), symbol)
 
 
+def _indicator_requests_from(data: dict, symbol: str) -> list[IndicatorRequest]:
+    raw_requests = data.get("requests") or data.get("indicator_requests") or []
+    requests: list[IndicatorRequest] = []
+    for item in raw_requests:
+        if not isinstance(item, dict):
+            continue
+        indicators = item.get("indicators") or item.get("names") or item.get("indicator") or []
+        if isinstance(indicators, str):
+            indicators = [indicators]
+        requests.append(
+            IndicatorRequest(
+                symbol=str(item.get("symbol") or symbol),
+                indicators=[str(name) for name in indicators],
+                timeframe=str(item.get("timeframe") or item.get("interval") or "1h"),
+                lookback=(
+                    None
+                    if item.get("lookback") is None
+                    else str(item["lookback"])
+                ),
+                window=int(item.get("window") or 48),
+                as_of=str(item.get("as_of") or "latest"),
+            )
+        )
+    return requests
+
+
 def _response_from_dict(data: dict, symbol: str) -> Decision | ContextResearchRequest:
     if not isinstance(data, dict):
         raise ValueError("élément non-objet")
     action = str(data.get("action", "")).upper()
     if action in {"REQUEST_CONTEXT", "NEEDS_CONTEXT"} or data.get("needs_context") is True:
-        raw_requests = data.get("requests") or data.get("indicator_requests") or []
-        requests: list[IndicatorRequest] = []
-        for item in raw_requests:
-            if not isinstance(item, dict):
-                continue
-            indicators = item.get("indicators") or item.get("names") or item.get("indicator") or []
-            if isinstance(indicators, str):
-                indicators = [indicators]
-            requests.append(
-                IndicatorRequest(
-                    symbol=str(item.get("symbol") or symbol),
-                    indicators=[str(name) for name in indicators],
-                    timeframe=str(item.get("timeframe") or item.get("interval") or "1h"),
-                    lookback=(
-                        None
-                        if item.get("lookback") is None
-                        else str(item["lookback"])
-                    ),
-                    window=int(item.get("window") or 48),
-                    as_of=str(item.get("as_of") or "latest"),
-                )
-            )
         return ContextResearchRequest(
             symbol=str(data.get("symbol") or symbol),
             rationale=str(data.get("rationale") or ""),
-            requests=requests,
-            next_wake_in_minutes=(
-                None
-                if data.get("next_wake_in_minutes") is None
-                else float(data["next_wake_in_minutes"])
-            ),
+            requests=_indicator_requests_from(data, symbol),
+            next_wake_in_minutes=_optional_float(data, "next_wake_in_minutes"),
         )
     return _decision_from_dict(data, symbol)
 

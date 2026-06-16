@@ -47,6 +47,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
 
+from rich.console import RenderableType
 from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.binding import Binding
@@ -56,8 +57,6 @@ from textual.theme import Theme
 from textual.widgets import Button, Footer, Label, RichLog, Static
 
 from trader.cockpit_supervisor import daemon_vital_state
-from trader.rotation_venues import load_venue_state
-from trader.rotation_schedule import load_sessions, open_venues as _open_venues
 
 from trader.cockpit_events import (
     EventClass,
@@ -80,7 +79,6 @@ from trader.tui import (
     _safe_float,
     _safe_list_of_dicts,
     build_closed_trades_table,
-    build_selection_panel,
     build_universe_panel,
     load_runtime_state,
 )
@@ -525,17 +523,16 @@ def _build_trades_with_pnl(
     *,
     limit: int = 20,
     palette: Palette = PALETTE_DARK,
-) -> "RenderableType":
+) -> RenderableType:
     """Table des derniers trades clôturés avec net P&L calculé et noms de sociétés.
 
     PURE — ne lit aucun fichier. Les fills BUY affichent — en P&L.
     Les fills SELL affichent le bénéfice net réalisé coloré +/−.
     Raison de sortie : non disponible dans les fills → —.
     """
-    from rich.console import RenderableType
     from rich.table import Table
     from rich.text import Text
-    from trader.tui import _fmt_symbol_short, _safe_float, _fmt_fee_cost
+    from trader.tui import _fmt_symbol_short, _safe_float
 
     table = Table(title="Trades clôturés", show_lines=False, expand=True)
     table.add_column("Heure", no_wrap=True, style=palette["dim"])
@@ -703,72 +700,81 @@ EventsPane = LogsPane
 
 
 # ---------------------------------------------------------------------------
-# Modals de confirmation (inchangés)
+# Modals de confirmation
 # ---------------------------------------------------------------------------
 
 
-class ConfirmStop(ModalScreen[bool]):
-    """Modal de confirmation pour l'arrêt du daemon (binding X)."""
-
-    DEFAULT_CSS = """
-    ConfirmStop {
+def _confirm_modal_css(screen_name: str, *, border: str, width: int) -> str:
+    return f"""
+    {screen_name} {{
         align: center middle;
-    }
-    ConfirmStop Vertical {
+    }}
+    {screen_name} Vertical {{
         background: $surface;
-        border: solid $error;
+        border: solid {border};
         padding: 1 2;
-        width: 50;
+        width: {width};
         height: auto;
-    }
-    ConfirmStop Horizontal {
+    }}
+    {screen_name} Horizontal {{
         height: auto;
         align: center middle;
         margin-top: 1;
-    }
-    ConfirmStop Button {
+    }}
+    {screen_name} Button {{
         margin: 0 1;
-    }
+    }}
     """
+
+
+def _confirmation_buttons(
+    confirm_label: str,
+    *,
+    confirm_id: str,
+    confirm_variant: str,
+    cancel_label: str,
+    cancel_id: str,
+) -> tuple[Button, Button]:
+    return (
+        Button(confirm_label, id=confirm_id, variant=confirm_variant),
+        Button(cancel_label, id=cancel_id, variant="default"),
+    )
+
+
+class _ConfirmModal(ModalScreen[bool]):
+    _confirm_button_id = ""
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        self.dismiss(event.button.id == self._confirm_button_id)
+
+
+class ConfirmStop(_ConfirmModal):
+    """Modal de confirmation pour l'arrêt du daemon (binding X)."""
+
+    _confirm_button_id = "confirm-stop-yes"
+    DEFAULT_CSS = _confirm_modal_css("ConfirmStop", border="$error", width=50)
 
     def compose(self) -> ComposeResult:
         with Vertical():
             yield Label("Arrêter le daemon ?\n(SIGINT — arrêt propre)")
             with Horizontal():
-                yield Button("Oui", id="confirm-stop-yes", variant="error")
-                yield Button("Non", id="confirm-stop-no", variant="default")
+                yield from _confirmation_buttons(
+                    "Oui",
+                    confirm_id="confirm-stop-yes",
+                    confirm_variant="error",
+                    cancel_label="Non",
+                    cancel_id="confirm-stop-no",
+                )
 
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        self.dismiss(event.button.id == "confirm-stop-yes")
 
-
-class ConfirmQuit(ModalScreen[bool]):
+class ConfirmQuit(_ConfirmModal):
     """Modal de confirmation à la sortie quand un daemon est vivant."""
 
+    _confirm_button_id = "confirm-quit-stop"
     BINDINGS = [
         Binding("escape", "cancel", "Annuler", show=False),
     ]
-
-    DEFAULT_CSS = """
-    ConfirmQuit {
-        align: center middle;
-    }
-    ConfirmQuit Vertical {
-        background: $surface;
-        border: solid $warning;
-        padding: 1 2;
-        width: 60;
-        height: auto;
-    }
-    ConfirmQuit Horizontal {
-        height: auto;
-        align: center middle;
-        margin-top: 1;
-    }
-    ConfirmQuit Button {
-        margin: 0 1;
-    }
-    """
+    DEFAULT_CSS = _confirm_modal_css("ConfirmQuit", border="$warning", width=60)
 
     def __init__(self, pid: int | None = None, **kwargs: object) -> None:
         super().__init__(**kwargs)
@@ -781,43 +787,26 @@ class ConfirmQuit(ModalScreen[bool]):
                 f"Quitter — le moteur live sera aussi arrêté{pid_info}."
             )
             with Horizontal():
-                yield Button("Arrêter et quitter", id="confirm-quit-stop", variant="warning")
-                yield Button("Annuler", id="confirm-quit-cancel", variant="default")
-
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        self.dismiss(event.button.id == "confirm-quit-stop")
+                yield from _confirmation_buttons(
+                    "Arrêter et quitter",
+                    confirm_id="confirm-quit-stop",
+                    confirm_variant="warning",
+                    cancel_label="Annuler",
+                    cancel_id="confirm-quit-cancel",
+                )
 
     def action_cancel(self) -> None:
         self.dismiss(False)
 
 
-class ConfirmStart(ModalScreen[bool]):
+class ConfirmStart(_ConfirmModal):
     """Modal proposé au lancement du cockpit quand aucun daemon n'est vivant."""
 
+    _confirm_button_id = "confirm-start-yes"
     BINDINGS = [
         Binding("escape", "cancel", "Plus tard", show=False),
     ]
-
-    DEFAULT_CSS = """
-    ConfirmStart {
-        align: center middle;
-    }
-    ConfirmStart Vertical {
-        background: $surface;
-        border: solid $primary;
-        padding: 1 2;
-        width: 60;
-        height: auto;
-    }
-    ConfirmStart Horizontal {
-        height: auto;
-        align: center middle;
-        margin-top: 1;
-    }
-    ConfirmStart Button {
-        margin: 0 1;
-    }
-    """
+    DEFAULT_CSS = _confirm_modal_css("ConfirmStart", border="$primary", width=60)
 
     def __init__(self, *, never_started: bool, **kwargs: object) -> None:
         super().__init__(**kwargs)
@@ -834,39 +823,23 @@ class ConfirmStart(ModalScreen[bool]):
                 f"{intro}\nDémarrer le moteur live (PAPER réel — exécute les ordres simulés) ?"
             )
             with Horizontal():
-                yield Button("Démarrer", id="confirm-start-yes", variant="primary")
-                yield Button("Plus tard", id="confirm-start-no", variant="default")
-
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        self.dismiss(event.button.id == "confirm-start-yes")
+                yield from _confirmation_buttons(
+                    "Démarrer",
+                    confirm_id="confirm-start-yes",
+                    confirm_variant="primary",
+                    cancel_label="Plus tard",
+                    cancel_id="confirm-start-no",
+                )
 
     def action_cancel(self) -> None:
         self.dismiss(False)
 
 
-class ConfirmKill(ModalScreen[bool]):
+class ConfirmKill(_ConfirmModal):
     """Modal de confirmation pour le toggle kill-switch (binding k)."""
 
-    DEFAULT_CSS = """
-    ConfirmKill {
-        align: center middle;
-    }
-    ConfirmKill Vertical {
-        background: $surface;
-        border: solid $warning;
-        padding: 1 2;
-        width: 50;
-        height: auto;
-    }
-    ConfirmKill Horizontal {
-        height: auto;
-        align: center middle;
-        margin-top: 1;
-    }
-    ConfirmKill Button {
-        margin: 0 1;
-    }
-    """
+    _confirm_button_id = "confirm-kill-yes"
+    DEFAULT_CSS = _confirm_modal_css("ConfirmKill", border="$warning", width=50)
 
     def __init__(self, kill_active: bool, **kwargs: object) -> None:
         super().__init__(**kwargs)
@@ -877,11 +850,13 @@ class ConfirmKill(ModalScreen[bool]):
         with Vertical():
             yield Label(f"{action} le kill-switch ?\n(bloque/débloque tous les ordres)")
             with Horizontal():
-                yield Button("Oui", id="confirm-kill-yes", variant="warning")
-                yield Button("Non", id="confirm-kill-no", variant="default")
-
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        self.dismiss(event.button.id == "confirm-kill-yes")
+                yield from _confirmation_buttons(
+                    "Oui",
+                    confirm_id="confirm-kill-yes",
+                    confirm_variant="warning",
+                    cancel_label="Non",
+                    cancel_id="confirm-kill-no",
+                )
 
 
 # ---------------------------------------------------------------------------
