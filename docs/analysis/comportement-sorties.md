@@ -93,7 +93,11 @@ LLM (`close`+`llm_exit`) sont ~neutres → le LLM coupe correctement.
 ⚠️ *Piège méthodo : les P&L bruts d'`attribution` sont en devise locale (BP.L
 « −99 » = −99 pence ≈ −1,2€). Toujours reconvertir avant d'additionner.*
 
-## 4. Stop des entrées DIRECTES : le trou D11  *(confirmé, code)*
+## 4. Stop des entrées DIRECTES : le trou D11  *(✅ CORRIGÉ — commit `a5c04df`)*
+
+> **État initial (avant `a5c04df`)** ci-dessous, conservé pour l'historique.
+> Depuis, les entrées directes passent par `resolve_exit_plan` (cf « Correction
+> livrée » en fin de section).
 
 - Chemin **armé** : `resolve_exit_plan` (`daemon.py:1562`) résout le stop relatif
   (`volatility_multiple`/`structural`) sur vol fraîche → AZN/BP/AMAT = ✅ break-even.
@@ -114,9 +118,15 @@ relatives ne sont documentées que pour les plans armés `EXECUTE_ORDER` (`:375`
 **Dette REVERSE (Codex)** : `REVERSE` n'est pas clampé au risque et l'absence de
 hard stop ne le bloque pas (contrairement à OPEN_LONG/SHORT) — `daemon.py:1918,1934`.
 
-**Levier** : router le `exit_plan` direct par `resolve_exit_plan` comme l'armé —
-unifie les deux chemins ET apporte le clamp. (Limite : ne corrige pas un
-`type:"price"` trop serré, cf §3.)
+**✅ Correction livrée (`a5c04df`)** : sur une entrée directe `OPEN_LONG/SHORT`
+(hors armé), le `exit_plan` est désormais routé par le **même `resolve_exit_plan`**
+que l'armé (vol fraîche au prix d'entrée + barres), avant le check risque/sizing,
+puis persisté résolu. Débloque `percent`/`volatility_multiple`/`structural` + TP
+en `risk_multiple` en direct. Échec de résolution → `reason=invalid_exit_plan:<code>`
+(pas de fallback, pas de réveil). L'incohérence vocabulaire (trailing vs
+hard_stop) et la dette REVERSE restent **hors scope** (à traiter séparément).
+**Limite** : ne corrige pas un `type:"price"` trop serré choisi par le LLM
+(cf §3) → étape 2 = inciter le LLM au `structural` via le prompt.
 
 ## 5. Feedback loop : capturer POURQUOI le LLM sort  *(idée Erwan)*
 
