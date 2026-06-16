@@ -8,7 +8,7 @@ from trader.codex_client import Decision
 from trader.tools.execution import Order, SimBroker
 from trader.tools.market import Bar
 from trader.tools.scheduler import Scheduler
-from trader.trade_plan import TradePlanStore, create_trade_plan
+from trader.trade_plan import TradePlanStore, create_trade_plan, resolve_exit_plan
 
 
 def test_llm_exit_reason_for_model_performance_tague_uniquement_les_sorties() -> None:
@@ -273,6 +273,34 @@ def test_run_cycle_persiste_reference_volatility_pour_trailing_multiple(
     assert len(plans) == 1
     assert plans[0].reference_volatility is not None
     assert plans[0].reference_volatility > 0
+
+
+def test_reference_volatility_prefere_vol_daily_et_respecte_clamp_stop() -> None:
+    cockpit = {
+        "cols": ["s", "vol", "vol_d"],
+        "rows": [["SPY", 0.01, 0.08]],
+    }
+
+    reference_volatility = daemon._reference_volatility_for_symbol(
+        "SPY",
+        entry_price=100.0,
+        cockpit=cockpit,
+        tradable_bars_by_symbol={},
+    )
+
+    assert reference_volatility == 8.0
+    resolved, trace = resolve_exit_plan(
+        {"hard_stop": {"type": "volatility_multiple", "multiple": 1.0, "max_pct": 0.03}},
+        entry_price=100.0,
+        side="LONG",
+        reference_volatility=reference_volatility,
+    )
+
+    assert resolved is not None
+    assert resolved["hard_stop"] == {"type": "price", "price": 97.0}
+    assert trace["hard_stop"]["reference_volatility"] == 8.0
+    assert trace["hard_stop"]["distance"] == 3.0
+    assert trace["hard_stop"]["clamped"] is True
 
 
 def test_run_cycle_cloture_le_plan_quand_codex_ferme_la_position(monkeypatch, tmp_path, patch_batch, make_data_source) -> None:

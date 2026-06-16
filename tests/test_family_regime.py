@@ -62,6 +62,17 @@ def test_momentum_depuis_les_barres() -> None:
     assert family_regime.momentum_from_bars(bars, lookback_bars=3) == 1.0
 
 
+def test_momentum_depuis_les_barres_daily_lookback_3_seances() -> None:
+    bars = [
+        _bar("2026-06-02T00:00:00+00:00", 100.0),
+        _bar("2026-06-03T00:00:00+00:00", 101.0),
+        _bar("2026-06-04T00:00:00+00:00", 102.0),
+        _bar("2026-06-05T00:00:00+00:00", 104.0),
+    ]
+
+    assert family_regime.momentum_from_bars(bars, lookback_bars=3) == 4.0
+
+
 def test_momentum_barres_insuffisantes() -> None:
     assert family_regime.momentum_from_bars([], lookback_bars=3) is None
     assert family_regime.momentum_from_bars([_bar("t", 100.0)], lookback_bars=3) is None

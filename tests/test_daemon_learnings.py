@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 
 from trader import daemon
 from trader.codex_client import Decision
-from trader.tools.market import Bar
+from trader.tools.market import Bar, MarketError
 from trader.tools.memory import LearningsStore
 from trader.tools.scheduler import Scheduler
 
@@ -364,3 +364,116 @@ def test_run_cycle_injecte_guardrails_et_regime_families(
     assert regime["indices"]["dir"] == "up"
     assert regime["indices"]["n"] == 2
     assert regime["indices"]["frac"] == 1.0
+
+
+def test_run_cycle_calcule_regime_families_sur_daily_plutot_que_runtime(
+    monkeypatch,
+    tmp_path,
+    patch_batch,
+    make_data_source,
+) -> None:
+    _write_runtime_config(tmp_path)
+    state_dir = tmp_path / "state"
+    sched = Scheduler(state_dir / "scheduler.json")
+    now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
+
+    def bars(symbol: str, lookback: str, interval: str) -> list[Bar]:
+        base = 100.0 if symbol == "SPY" else 200.0
+        if interval == "1d":
+            closes = [base, base + 1.0, base + 2.0, base + 3.0]
+            return [
+                Bar(
+                    ts=f"2026-06-{2 + index:02d}T00:00:00+00:00",
+                    open=close,
+                    high=close + 1.0,
+                    low=close - 1.0,
+                    close=close,
+                    volume=1000.0,
+                )
+                for index, close in enumerate(closes)
+            ]
+        closes = [base, base - 1.0, base - 2.0, base - 3.0]
+        return [
+            Bar(
+                ts=f"2026-06-05T11:{15 * index:02d}:00+00:00",
+                open=close,
+                high=close + 1.0,
+                low=close - 1.0,
+                close=close,
+                volume=1000.0,
+            )
+            for index, close in enumerate(closes)
+        ]
+
+    contexts: list[dict] = []
+
+    def decide(**kwargs):
+        contexts.append(kwargs["context"])
+        return Decision.hold(kwargs["symbol"], "attente")
+
+    monkeypatch.setattr(daemon, "ROOT", tmp_path)
+    monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+    patch_batch(decide)
+    data_source = make_data_source(bars)
+
+    daemon.run_cycle(
+        dry_run=True,
+        now=now,
+        symbols_filter=["SPY", "QQQ"],
+        sched=sched,
+        data_source=data_source,
+    )
+
+    regime = contexts[0]["regime_families"]
+    assert regime["indices"]["dir"] == "up"
+    assert regime["indices"]["n"] == 2
+
+
+def test_run_cycle_omet_regime_families_si_daily_indisponible_sans_fallback_intraday(
+    monkeypatch,
+    tmp_path,
+    patch_batch,
+    make_data_source,
+) -> None:
+    _write_runtime_config(tmp_path)
+    state_dir = tmp_path / "state"
+    sched = Scheduler(state_dir / "scheduler.json")
+    now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
+
+    def bars(symbol: str, lookback: str, interval: str) -> list[Bar]:
+        if interval == "1d":
+            raise MarketError("fetch_failed", f"{symbol}: daily unavailable")
+        base = 100.0 if symbol == "SPY" else 200.0
+        closes = [base, base + 1.0, base + 2.0, base + 3.0]
+        return [
+            Bar(
+                ts=f"2026-06-05T11:{15 * index:02d}:00+00:00",
+                open=close,
+                high=close + 1.0,
+                low=close - 1.0,
+                close=close,
+                volume=1000.0,
+            )
+            for index, close in enumerate(closes)
+        ]
+
+    contexts: list[dict] = []
+
+    def decide(**kwargs):
+        contexts.append(kwargs["context"])
+        return Decision.hold(kwargs["symbol"], "attente")
+
+    monkeypatch.setattr(daemon, "ROOT", tmp_path)
+    monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+    patch_batch(decide)
+    data_source = make_data_source(bars)
+
+    daemon.run_cycle(
+        dry_run=True,
+        now=now,
+        symbols_filter=["SPY", "QQQ"],
+        sched=sched,
+        data_source=data_source,
+    )
+
+    assert contexts[0]["regime_families"] == {}

@@ -52,10 +52,10 @@ continus. Expansion native Euronext/Taïwan/FX/futures après branchement IB.
 - L'agent peut rester **HOLD** autant qu'il veut : ne rien faire est une décision
   valide. On ne le pousse PAS à trader pour trader.
 - **Fraîcheur des données** : chaque symbole expose `data_age_m` (âge réel des
-  derniers prix, en minutes) et `session` (séance de SA place de cotation :
-  `open`/`since_open_m`/`to_close_m`) — calculés par le code, fais-leur
-  confiance. Un setup sensible au timing d'entrée à la minute doit justifier
-  dans `rationale` qu'il tolère ce `data_age_m`.
+  derniers prix, en minutes) et `session.open` (séance de SA place de cotation
+  ouverte ou non) — calculés par le code, fais-leur confiance. Un setup sensible
+  au timing d'entrée à la minute doit justifier dans `rationale` qu'il tolère ce
+  `data_age_m`.
 
 ## KPI suivis
 

@@ -107,6 +107,52 @@ def test_cockpit_preserve_les_colonnes_numeriques_existantes() -> None:
         assert col in cols, f"colonne {col!r} manquante"
 
 
+def test_cockpit_ajoute_les_colonnes_daily_avant_le_regime() -> None:
+    bars = {"SPY": _trending_bars()}
+    result = build_market_cockpit(
+        bars,
+        symbols=["SPY"],
+        prices={"SPY": 105.0},
+        window=12,
+        daily_bars_by_symbol={"SPY": _daily_trending_neutral()},
+    )
+
+    cols = result["cols"]
+
+    assert cols[3:10] == ["r", "vol", "z", "er", "ac", "rs", "sz"]
+    assert cols[10:17] == ["r_d", "vol_d", "z_d", "er_d", "ac_d", "rs_d", "sz_d"]
+    assert cols[17:21] == ["reg", "vs", "st", "cndle"]
+    assert cols[-3:] == ["htf", "aligned", "sig"]
+
+
+def test_cockpit_calcule_rs_daily_distinct_du_rs_court() -> None:
+    bars = {
+        "SPY": [_bar(close) for close in [100.0, 101.0, 102.0, 110.0]],
+        "QQQ": [_bar(close) for close in [200.0, 200.0, 200.0, 200.0]],
+        "DIA": [_bar(close) for close in [300.0, 300.0, 300.0, 300.0]],
+    }
+    daily = {
+        "SPY": [_bar(close) for close in [100.0, 99.0, 98.0, 97.0]],
+        "QQQ": [_bar(close) for close in [200.0, 202.0, 204.0, 206.0]],
+        "DIA": [_bar(close) for close in [300.0, 303.0, 306.0, 309.0]],
+    }
+
+    result = build_market_cockpit(
+        bars,
+        symbols=["SPY", "QQQ", "DIA"],
+        prices={"SPY": 110.0, "QQQ": 200.0, "DIA": 300.0},
+        window=4,
+        daily_bars_by_symbol=daily,
+    )
+
+    cols = result["cols"]
+    spy_row = next(row for row in result["rows"] if row[0] == "SPY")
+
+    assert spy_row[cols.index("rs")] > 0
+    assert spy_row[cols.index("rs_d")] < 0
+    assert spy_row[cols.index("rs")] != spy_row[cols.index("rs_d")]
+
+
 def test_cockpit_colonnes_regime_apres_colonnes_numeriques() -> None:
     """Les colonnes régime doivent être APRÈS les numériques (offset rank_by_abs safe)."""
     bars = {"SPY": _trending_bars()}

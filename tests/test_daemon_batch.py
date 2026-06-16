@@ -64,7 +64,9 @@ def test_batch_decide_injecte_age_data_et_session_par_symbole(monkeypatch) -> No
     decisions, n = daemon._batch_decide(decidable=["SPY", "QQQ"], max_model_calls=1, **common)
 
     assert captured["SPY"]["data_age_m"] == 10  # arrondi à la minute entière
-    assert captured["SPY"]["session"] == {"open": True, "since_open_m": 60, "to_close_m": 330}
+    assert captured["SPY"]["session"] == {"open": True}
+    assert "since_open_m" not in captured["SPY"]["session"]
+    assert "to_close_m" not in captured["SPY"]["session"]
     assert captured["QQQ"]["data_age_m"] is None  # âge inconnu = inconnu, pas 0
 
 

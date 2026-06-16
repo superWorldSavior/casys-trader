@@ -18,6 +18,7 @@ COCKPIT_INDICATORS = [
     "relative_strength",
     "spread_zscore",
 ]
+COCKPIT_DAILY_WINDOW = 15
 
 # Indicateurs supplémentaires nécessaires au classifieur de régime,
 # calculés dans le snapshot mais non affichés comme colonnes numériques.
@@ -36,6 +37,11 @@ _INDICATOR_COLUMNS = {
     "autocorrelation": "ac",
     "relative_strength": "rs",
     "spread_zscore": "sz",
+}
+_DAILY_INDICATOR_COLUMNS = {
+    name: f"{column}_d"
+    for name, column in _INDICATOR_COLUMNS.items()
+    if name in COCKPIT_INDICATORS
 }
 
 # Mapping public nom canonique -> abréviation cockpit. Le prompt s'en sert pour
@@ -96,6 +102,7 @@ def build_market_cockpit(
     appendées en fin de ligne pour ne pas décaler l'offset de `rank_by_abs`.
     """
     # On calcule les indicateurs affichables + ceux nécessaires au classifieur.
+    daily_bars_by_symbol = daily_bars_by_symbol or {}
     all_snapshot_names = COCKPIT_INDICATORS + _REGIME_EXTRA_INDICATORS
     snapshot = build_indicator_snapshot(
         bars_by_symbol,
@@ -103,15 +110,40 @@ def build_market_cockpit(
         names=all_snapshot_names,
         window=window,
     )
+    daily_snapshot = (
+        build_indicator_snapshot(
+            daily_bars_by_symbol,
+            symbols=symbols,
+            names=COCKPIT_INDICATORS,
+            window=COCKPIT_DAILY_WINDOW,
+        )
+        if daily_bars_by_symbol
+        else {}
+    )
     indicator_cols = [_INDICATOR_COLUMNS[name] for name in COCKPIT_INDICATORS]
-    cols = ["s", "f", "p", *indicator_cols, "reg", "vs", "st", "cndle", "htf", "aligned", "sig"]
+    daily_indicator_cols = [_DAILY_INDICATOR_COLUMNS[name] for name in COCKPIT_INDICATORS]
+    cols = [
+        "s",
+        "f",
+        "p",
+        *indicator_cols,
+        *daily_indicator_cols,
+        "reg",
+        "vs",
+        "st",
+        "cndle",
+        "htf",
+        "aligned",
+        "sig",
+    ]
     if fee_estimator is not None:
         cols = [*cols, "be_ref_bps", "fee", "fee_ccy"]
     rows: list[list] = []
-    daily_bars_by_symbol = daily_bars_by_symbol or {}
     for symbol in symbols:
         item = snapshot.get(symbol, {"family": None, "indicators": {}})
         indicators = item["indicators"]
+        daily_item = daily_snapshot.get(symbol, {"indicators": {}})
+        daily_indicators = daily_item["indicators"]
         regime = classify_regime(indicators)
         base_bars = bars_by_symbol.get(symbol, [])
         hourly_bars = market.aggregate_bars(base_bars, target_interval="1h") if base_bars else []
@@ -134,6 +166,7 @@ def build_market_cockpit(
             _family_code(item["family"]),
             _compact_price(prices.get(symbol)),
             *[indicators.get(name) for name in COCKPIT_INDICATORS],
+            *[daily_indicators.get(name) for name in COCKPIT_INDICATORS],
             regime.regime,
             regime.vol_state,
             regime.stretched,
@@ -163,13 +196,17 @@ def build_market_cockpit(
 
     schema = (
         "cols: s=sym,f=family,p=price,"
-        "r=ret,vol=stdev_ret,z=price_z,er=Kaufman,ac=lag1_ret_corr,rs=ret-fam_ret,sz=spread_z,"
+        "r=ret_short,vol=stdev_ret_short,z=price_z_short,er=Kaufman_short,"
+        "ac=lag1_ret_corr_short,rs=force relative courte,sz=spread_z_short,"
+        "r_d=ret_daily,vol_d=stdev_ret_daily,z_d=price_z_daily,er_d=Kaufman_daily,"
+        "ac_d=lag1_ret_corr_daily,rs_d=force relative daily,sz_d=spread_z_daily,"
         "reg=regime,vs=vol_state,st=stretched,cndle=candle_pattern,"
         "htf=highest_timeframe_regime,aligned=base_htf_trend_aligned,sig=notable_events"
     )
     result = {
         "v": "cp3",
         "window": window,
+        "daily_window": COCKPIT_DAILY_WINDOW,
         "schema": schema,
         "cols": cols,
         "rows": rows,

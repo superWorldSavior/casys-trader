@@ -1,4 +1,4 @@
-from trader.codex_client import DEFAULT_MODEL, ContextResearchRequest, parse_decision, parse_decision_or_context_request, parse_batch, decide, decide_batch
+from trader.codex_client import DEFAULT_MODEL, ContextResearchRequest, build_batch_prompt, parse_decision, parse_decision_or_context_request, parse_batch, decide, decide_batch
 from trader.llm import LlmCompletion, LlmFailure
 
 
@@ -28,6 +28,20 @@ def test_decide_batch_renvoie_une_decision_par_symbole_avec_metadonnees() -> Non
     assert result["SPY"].action == "BUY"
     assert result["SPY"].llm_provider == "acpx"
     assert result["QQQ"].action == "HOLD"
+
+
+def test_prompt_documente_rs_court_rs_daily_et_regime_family_daily() -> None:
+    prompt = build_batch_prompt(
+        mandate="m",
+        memory="mem",
+        shared_context={"cockpit": {"schema": "rs=short,rs_d=daily"}},
+        symbols_payload=[],
+    )
+
+    assert "rs=force relative courte" in prompt
+    assert "rs_d=force relative daily" in prompt
+    assert "~3 séances" in prompt
+    assert "~45 min" not in prompt
 
 
 def test_decide_utilise_un_plafond_decisionnel_900s_par_defaut() -> None:

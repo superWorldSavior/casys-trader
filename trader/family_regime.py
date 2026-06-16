@@ -18,8 +18,8 @@ __all__ = ["compute_family_bias", "families_for_universe", "momentum_from_bars"]
 def momentum_from_bars(bars: list[object], *, lookback_bars: int = 3) -> float | None:
     """Momentum % signé : close de la dernière barre vs `lookback_bars` en arrière.
 
-    Sur des barres 15m, lookback_bars=3 ≈ 45 min — la fenêtre validée par le
-    backtest du registre (D2). Retourne None si pas assez de barres.
+    L'appelant choisit l'horizon des barres : sur des barres daily,
+    lookback_bars=3 ≈ 3 séances. Retourne None si pas assez de barres.
     """
     if len(bars) < lookback_bars + 1:
         return None

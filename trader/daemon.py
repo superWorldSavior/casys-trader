@@ -518,16 +518,29 @@ def _cockpit_vol_fraction(cockpit: dict, symbol: str) -> float | None:
         return None
     try:
         symbol_index = cols.index("s")
-        vol_index = cols.index("vol")
     except ValueError:
+        return None
+    vol_indices = []
+    for column in ("vol_d", "vol"):
+        try:
+            vol_indices.append(cols.index(column))
+        except ValueError:
+            continue
+    if not vol_indices:
         return None
     for row in rows:
         if not isinstance(row, list):
             continue
-        if len(row) <= max(symbol_index, vol_index):
+        if len(row) <= symbol_index:
             continue
         if row[symbol_index] == symbol:
-            return _positive_finite_float(row[vol_index])
+            for vol_index in vol_indices:
+                if len(row) <= vol_index:
+                    continue
+                value = _positive_finite_float(row[vol_index])
+                if value is not None:
+                    return value
+            return None
     return None
 
 
@@ -957,9 +970,10 @@ def _batch_decide(
         # Faits calculés par le code (pas des consignes en prose) : âge réel des
         # prix et état de la séance de la place du symbole. Âge inconnu = None.
         age = data_age_by_symbol.get(sym)
+        session = market.session_snapshot(sym, now=now)
         return {
             "data_age_m": None if age is None else int(round(age)),
-            "session": market.session_snapshot(sym, now=now),
+            "session": {"open": bool(session.get("open"))},
             "active_watches": active_watches_by_symbol.get(sym, []),
         }
 
@@ -1427,7 +1441,7 @@ def run_cycle(
         "regime_families": family_regime.compute_family_bias(
             {
                 sym: family_regime.momentum_from_bars(bars)
-                for sym, bars in tradable_bars_by_symbol.items()
+                for sym, bars in daily_bars_by_symbol.items()
             },
             active_families,
         ),
