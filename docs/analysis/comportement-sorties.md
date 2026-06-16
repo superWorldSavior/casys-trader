@@ -149,6 +149,43 @@ les round-trips. Variante robuste : ajouter un `decision_id` reliant à
 priorité après hard_stop) — les 3 `max_hold` viennent de plans persistés avec
 `max_hold_minutes`, pas d'un artefact. (Corrige la note « max_hold non imposé ».)
 
+## 5bis. Hypothèse-racine n°1 : profil scalping vs données différées  *(découvert 16/06)*
+
+En traçant un trade perdant en live (AMAT 16/06, long stoppé à −1.9 % en 15 min),
+on remonte à une **incohérence dans le mandat/stratégie**, pas un bug ni un biais
+LLM :
+
+- `mandate.md:51-55` : la **fraîcheur est documentée** — `data_age_m` exposé, le
+  LLM doit justifier qu'il tolère le différé. Il l'a fait (« data_age 14m
+  acceptable »).
+- `memory.md:14` : le profil = **« scalping gentil / momentum intraday court sur
+  barres horaires »**.
+- `daemon.py:86` : `DEFAULT_RUNTIME_INTERVAL = "15m"` (« pour coller à la cadence
+  scalping »).
+
+➡️ **Contradiction structurelle** : on demande du **momentum intraday court**
+sur des données **différées de ~14 min**. Sur un breakout 15m, le temps que le
+signal parvienne au LLM et qu'il exécute, **le mouvement est déjà consommé** →
+il entre mécaniquement **au sommet** (AMAT acheté à 600.5 = high du jour 600.91,
+reversal immédiat). Même signature que CFR/ASML. Le LLM exécute fidèlement deux
+consignes incompatibles ; ce n'est pas lui le problème.
+
+**Le pattern « chase the breakout » est un symptôme du différé, pas (que) un
+biais** : la latence transforme une stratégie momentum en achat-au-sommet.
+
+### Carte d'impact d'un passage scalping → swing (estimé léger)
+- **Déjà swing** (rien à faire) : sélection radar/rotation (daily, dwell 3j),
+  cockpit daily, architecture stops/plans/exit_engine (agnostique à l'horizon).
+- **À changer (peu, mais à recalibrer)** : `DEFAULT_RUNTIME_INTERVAL` 15m→1h/4h,
+  cadence de réveil, `DEFAULT_MAX_MARKET_DATA_AGE_MINUTES`, le profil `memory.md`,
+  les distances de stop (vol daily plus large). `max_hold` est déjà par-plan.
+- **Coût réel** = re-calibration + re-validation (changement de *nature*), pas
+  une refonte de code.
+
+**À tester avant d'agir** : comparer le P&L des round-trips **par horizon de
+détention** (les courts perdent-ils, les longs gagnent-ils ?) pour valider
+empiriquement l'hypothèse latence/horizon.
+
 ## 6. Pistes de correction (à arbitrer APRÈS compréhension)
 - Normaliser le tagging des sorties LLM (plus de « close » fantôme).
 - Unifier la résolution de stop direct ↔ armé (resolver D11 partout).
