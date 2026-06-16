@@ -297,11 +297,21 @@ def _exit_plan_contract() -> str:
     trail_type_enum = "|".join(trade_plan.TRAILING_STOP_TRAIL_TYPES)
     return (
         "# Schéma exit_plan\n"
-        "`exit_plan`: objet|null. Pour OPEN_LONG/OPEN_SHORT/REVERSE, utilise ces "
-        "champs exacts:\n"
-        '`hard_stop`: nombre > 0 OU objet {type:"price", price:<requis, >0>}.\n'
+        "`exit_plan`: objet|null. Pour OPEN_LONG/OPEN_SHORT, utilise ces champs "
+        "exacts:\n"
+        '`hard_stop`: nombre > 0 OU objet {type:"price|percent|volatility_multiple|structural", ...}. '
+        '`type:"price"` reste pass-through. Le hard_stop relatif est résolu '
+        "mécaniquement au tir, sans rappel LLM; cela couvre "
+        "percent/volatility_multiple/structural. Schéma relatif: "
+        '{type:"percent", percent:<0..1>, min_pct?, max_pct?} ou '
+        '{type:"volatility_multiple", multiple:<requis, >0>, min_pct?, max_pct?} ou '
+        '{type:"structural", anchor:"swing_low|swing_high|vwap", '
+        "window:<requis, >0>, buffer_pct?|buffer_atr?, min_pct?, max_pct?}.\n"
         "`take_profits`: liste d'OBJETS "
-        "{price:<requis, >0>, fraction:<optionnel, >0>}.\n"
+        "{price:<requis, >0>, fraction:<optionnel, >0>} "
+        'OU {type:"risk_multiple", r:<requis, >0>, fraction?}. '
+        "Les TP en R sont résolus au tir depuis la distance du hard_stop.\n"
+        'Pour REVERSE, garde un hard_stop prix résolu: nombre > 0 OU {type:"price", price:<requis, >0>}.\n'
         f'`trailing_stop`: null OU {{trail_type:"{trail_type_enum}", '
         "trail_value:<requis, >0>}. "
         "`trail_type` doit être exactement l'un de cet enum. "

@@ -581,7 +581,7 @@ def resolve_exit_plan(
                 )
         trace["take_profits"] = take_profit_traces
 
-    validate_exit_plan(resolved)
+    validate_exit_plan(resolved, reference_volatility=reference_volatility)
     return resolved, trace
 
 

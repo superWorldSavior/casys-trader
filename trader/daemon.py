@@ -1803,6 +1803,7 @@ def run_cycle(
                  "data_source": runtime_data_source_by_sym.get(sym)}
 
         reference_volatility: float | None = None
+        runtime_exit_plan = decision.exit_plan
         pending_indicator_watch = None
         if decision.indicator_watch:
             indicator_watch_result = build_indicator_watch(decision.indicator_watch, owner_symbol=sym, now=now)
@@ -1845,7 +1846,7 @@ def run_cycle(
             record_decision({**entry, "executed": False, "reason": invalid_intent})
             continue
 
-        if decision.exit_plan and decision.intent in {"OPEN_LONG", "OPEN_SHORT", "REVERSE"}:
+        if runtime_exit_plan and decision.intent in {"OPEN_LONG", "OPEN_SHORT", "REVERSE"}:
             if sym in armed_reference_volatilities:
                 reference_volatility = armed_reference_volatilities[sym]
             else:
@@ -1856,10 +1857,20 @@ def run_cycle(
                     tradable_bars_by_symbol=tradable_bars_by_symbol,
                 )
             try:
-                validate_exit_plan(
-                    decision.exit_plan,
-                    reference_volatility=reference_volatility,
-                )
+                if decision.intent in {"OPEN_LONG", "OPEN_SHORT"} and sym not in armed_plan_ids:
+                    intent_side = "LONG" if decision.intent == "OPEN_LONG" else "SHORT"
+                    runtime_exit_plan, _trace = resolve_exit_plan(
+                        runtime_exit_plan,
+                        entry_price=prices[sym],
+                        side=intent_side,
+                        reference_volatility=reference_volatility,
+                        bars=tradable_bars_by_symbol.get(sym),
+                    )
+                else:
+                    validate_exit_plan(
+                        runtime_exit_plan,
+                        reference_volatility=reference_volatility,
+                    )
             except InvalidExitPlanError as exc:
                 _log_cycle_progress(
                     "[decision %d/%d] %s blocked invalid_exit_plan:%s",
@@ -1871,7 +1882,7 @@ def run_cycle(
                 apply_default_schedule_after_blocked()
                 record_decision({**entry, "executed": False, "reason": f"invalid_exit_plan:{exc}"})
                 continue
-            hard_stop_price = _hard_stop_price(decision.exit_plan)
+            hard_stop_price = _hard_stop_price(runtime_exit_plan)
             if (
                 decision.intent in {"OPEN_LONG", "OPEN_SHORT"}
                 and hard_stop_price is not None
@@ -1913,7 +1924,7 @@ def run_cycle(
         trace_risk = pure_open or decision.intent == "REVERSE"
         open_stop_distance: float | None = None
         if trace_risk:
-            hard_stop_price = _hard_stop_price(decision.exit_plan)
+            hard_stop_price = _hard_stop_price(runtime_exit_plan)
             risk_quantity = effective_quantity
             if decision.intent == "REVERSE":
                 # REVERSE est tracé mais PAS clampé au risque (dette connue).
@@ -2079,7 +2090,7 @@ def run_cycle(
                 plan_store.sync_symbol_quantity(sym, 0.0 if final_position is None else abs(final_position.quantity))
             if (
                 fill is not None
-                and decision.exit_plan
+                and runtime_exit_plan
                 and decision.intent in {"OPEN_LONG", "OPEN_SHORT", "REVERSE"}
             ):
                 if decision.intent == "REVERSE":
@@ -2089,7 +2100,7 @@ def run_cycle(
                         symbol=sym,
                         price=prices[sym],
                         opened_at=fill.ts,
-                        raw_exit_plan=decision.exit_plan,
+                        raw_exit_plan=runtime_exit_plan,
                         reference_volatility=reference_volatility,
                         llm_provider=decision.llm_provider,
                         llm_model=decision.llm_model,
@@ -2106,7 +2117,7 @@ def run_cycle(
                         quantity=effective_quantity,
                         entry_price=prices[sym],
                         opened_at=fill.ts,
-                        raw_exit_plan=decision.exit_plan,
+                        raw_exit_plan=runtime_exit_plan,
                         reference_volatility=reference_volatility,
                         llm_provider=decision.llm_provider,
                         llm_model=decision.llm_model,

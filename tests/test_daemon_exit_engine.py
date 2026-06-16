@@ -581,6 +581,195 @@ def test_run_cycle_accepte_open_long_si_hard_stop_est_du_bon_cote(
     assert SimBroker(state_dir / "broker.json").positions()["SPY"].quantity == 10.0
 
 
+def test_run_cycle_resout_hard_stop_volatilite_direct_avant_risque(
+    monkeypatch,
+    tmp_path,
+    patch_batch,
+    make_data_source,
+) -> None:
+    _write_runtime_config(tmp_path, max_order_value=100_000)
+    state_dir = tmp_path / "state"
+    now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
+    fresh_vol_calls: list[dict] = []
+
+    def fresh_volatility(symbol, *, entry_price, cockpit, tradable_bars_by_symbol):
+        fresh_vol_calls.append(
+            {
+                "symbol": symbol,
+                "entry_price": entry_price,
+                "has_cockpit": bool(cockpit),
+                "has_bars": symbol in tradable_bars_by_symbol,
+            }
+        )
+        return 2.0
+
+    monkeypatch.setattr(daemon, "ROOT", tmp_path)
+    monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+    monkeypatch.setattr(daemon, "_reference_volatility_for_symbol", fresh_volatility)
+    data_source = make_data_source(lambda symbol, lookback, interval: [
+        Bar(ts=now.isoformat(), open=100.0, high=101.0, low=99.0, close=100.0, volume=1000.0)
+    ])
+    patch_batch(lambda **kwargs: Decision(
+            symbol="SPY",
+            action="BUY",
+            quantity=10.0,
+            confidence=0.8,
+            rationale="stop volatilite direct",
+            intent="OPEN_LONG",
+            exit_plan={"hard_stop": {"type": "volatility_multiple", "multiple": 1.5}}),
+    )
+
+    report = daemon.run_cycle(
+        dry_run=False,
+        now=now,
+        symbols_filter=["SPY"],
+        sched=Scheduler(state_dir / "scheduler.json"),
+        data_source=data_source,
+    )
+
+    decision = report["decisions"][0]
+    plans = TradePlanStore(state_dir / "trade_plans.json").open_plans()
+    assert decision["executed"] is True
+    assert decision["reason"] == "ok"
+    assert decision["risk_unbounded_no_stop"] is False
+    assert decision["stop_distance"] == pytest.approx(3.0)
+    assert plans[0].hard_stop_price == pytest.approx(97.0)
+    assert fresh_vol_calls == [
+        {"symbol": "SPY", "entry_price": 100.0, "has_cockpit": True, "has_bars": True}
+    ]
+
+
+def test_run_cycle_rejette_stop_direct_volatilite_si_volatilite_indisponible(
+    monkeypatch,
+    tmp_path,
+    patch_batch,
+    make_data_source,
+) -> None:
+    _write_runtime_config(tmp_path, max_order_value=100_000)
+    state_dir = tmp_path / "state"
+    now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
+
+    monkeypatch.setattr(daemon, "ROOT", tmp_path)
+    monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+    monkeypatch.setattr(
+        daemon,
+        "_reference_volatility_for_symbol",
+        lambda symbol, *, entry_price, cockpit, tradable_bars_by_symbol: None,
+    )
+    data_source = make_data_source(lambda symbol, lookback, interval: [
+        Bar(ts=now.isoformat(), open=100.0, high=101.0, low=99.0, close=100.0, volume=1000.0)
+    ])
+    patch_batch(lambda **kwargs: Decision(
+            symbol="SPY",
+            action="BUY",
+            quantity=10.0,
+            confidence=0.8,
+            rationale="stop volatilite sans vol",
+            intent="OPEN_LONG",
+            exit_plan={"hard_stop": {"type": "volatility_multiple", "multiple": 1.5}}),
+    )
+
+    report = daemon.run_cycle(
+        dry_run=False,
+        now=now,
+        symbols_filter=["SPY"],
+        sched=Scheduler(state_dir / "scheduler.json"),
+        data_source=data_source,
+    )
+
+    decision = report["decisions"][0]
+    assert decision["executed"] is False
+    assert decision["reason"] == "invalid_exit_plan:hard_stop_volatility_unavailable"
+    assert decision["reason"] != "risk:missing_hard_stop"
+    assert "SPY" not in SimBroker(state_dir / "broker.json").positions()
+
+
+def test_run_cycle_direct_persiste_take_profit_risk_multiple_resolu(
+    monkeypatch,
+    tmp_path,
+    patch_batch,
+    make_data_source,
+) -> None:
+    _write_runtime_config(tmp_path, max_order_value=100_000)
+    state_dir = tmp_path / "state"
+    now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
+
+    monkeypatch.setattr(daemon, "ROOT", tmp_path)
+    monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+    data_source = make_data_source(lambda symbol, lookback, interval: [
+        Bar(ts=now.isoformat(), open=100.0, high=101.0, low=99.0, close=100.0, volume=1000.0)
+    ])
+    patch_batch(lambda **kwargs: Decision(
+            symbol="SPY",
+            action="BUY",
+            quantity=10.0,
+            confidence=0.8,
+            rationale="tp en R direct",
+            intent="OPEN_LONG",
+            exit_plan={
+                "hard_stop": {"type": "percent", "percent": 0.03},
+                "take_profits": [{"type": "risk_multiple", "r": 2.0, "fraction": 0.5}],
+            }),
+    )
+
+    report = daemon.run_cycle(
+        dry_run=False,
+        now=now,
+        symbols_filter=["SPY"],
+        sched=Scheduler(state_dir / "scheduler.json"),
+        data_source=data_source,
+    )
+
+    decision = report["decisions"][0]
+    plans = TradePlanStore(state_dir / "trade_plans.json").open_plans()
+    assert decision["executed"] is True
+    assert plans[0].hard_stop_price == pytest.approx(97.0)
+    assert len(plans[0].take_profits) == 1
+    assert plans[0].take_profits[0].price == pytest.approx(106.0)
+    assert plans[0].take_profits[0].fraction == pytest.approx(0.5)
+
+
+def test_run_cycle_resout_hard_stop_structural_direct_depuis_barres_fraiches(
+    monkeypatch,
+    tmp_path,
+    patch_batch,
+    make_data_source,
+) -> None:
+    _write_runtime_config(tmp_path, max_order_value=100_000)
+    state_dir = tmp_path / "state"
+    now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
+
+    monkeypatch.setattr(daemon, "ROOT", tmp_path)
+    monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+    data_source = make_data_source(lambda symbol, lookback, interval: [
+        Bar(ts=now.isoformat(), open=100.0, high=102.0, low=low, close=100.0, volume=1000.0)
+        for low in [90.0, 96.0, 94.0, 97.0]
+    ])
+    patch_batch(lambda **kwargs: Decision(
+            symbol="SPY",
+            action="BUY",
+            quantity=10.0,
+            confidence=0.8,
+            rationale="stop structural direct",
+            intent="OPEN_LONG",
+            exit_plan={"hard_stop": {"type": "structural", "anchor": "swing_low", "window": 3}}),
+    )
+
+    report = daemon.run_cycle(
+        dry_run=False,
+        now=now,
+        symbols_filter=["SPY"],
+        sched=Scheduler(state_dir / "scheduler.json"),
+        data_source=data_source,
+    )
+
+    decision = report["decisions"][0]
+    plans = TradePlanStore(state_dir / "trade_plans.json").open_plans()
+    assert decision["executed"] is True
+    assert decision["risk_unbounded_no_stop"] is False
+    assert plans[0].hard_stop_price == pytest.approx(94.0)
+
+
 def test_run_cycle_rejette_open_sans_hard_stop_meme_confiant(
     monkeypatch,
     tmp_path,

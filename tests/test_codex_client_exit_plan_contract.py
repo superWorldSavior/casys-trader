@@ -48,20 +48,30 @@ def test_batch_contract_expose_les_trail_type_valides_derives_du_validateur() ->
 def test_batch_contract_detaille_hard_stop_et_take_profits() -> None:
     prompt = _batch_prompt_from_decide_batch()
 
-    assert '`hard_stop`: nombre > 0 OU objet {type:"price", price:<requis, >0>}' in prompt
+    assert 'objet {type:"price|percent|volatility_multiple|structural", ...}' in prompt
+    assert "résolu mécaniquement au tir" in prompt
     assert (
         "`take_profits`: liste d'OBJETS "
-        "{price:<requis, >0>, fraction:<optionnel, >0>}"
+        "{price:<requis, >0>, fraction:<optionnel, >0>} "
+        'OU {type:"risk_multiple", r:<requis, >0>, fraction?}'
     ) in prompt
 
 
-def test_exit_plan_contract_immediat_reste_en_prix_absolus() -> None:
+def test_exit_plan_contract_immediat_autorise_relatif_sans_rappel_llm() -> None:
     contract = codex_client._exit_plan_contract()
 
-    assert '`hard_stop`: nombre > 0 OU objet {type:"price", price:<requis, >0>}' in contract
-    assert "{type:\"percent\"" not in contract
-    assert "{type:\"volatility_multiple\"" not in contract
-    assert "{type:\"risk_multiple\"" not in contract
+    assert 'objet {type:"price|percent|volatility_multiple|structural", ...}' in contract
+    assert '{type:"percent", percent:<0..1>, min_pct?, max_pct?}' in contract
+    assert '{type:"volatility_multiple", multiple:<requis, >0>, min_pct?, max_pct?}' in contract
+    assert (
+        '{type:"structural", anchor:"swing_low|swing_high|vwap", '
+        "window:<requis, >0>, buffer_pct?|buffer_atr?, min_pct?, max_pct?}"
+    ) in contract
+    assert '{type:"risk_multiple", r:<requis, >0>, fraction?}' in contract
+    assert "résolu mécaniquement au tir" in contract
+    assert "sans rappel LLM" in contract
+    assert 'type:"price"' in contract
+    assert "pass-through" in contract
 
 
 def test_section_plans_armes_documente_hard_stop_relatif_et_take_profit_en_r() -> None:
