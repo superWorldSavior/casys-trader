@@ -5,13 +5,16 @@
 
 ## Objectif
 
-Faire **croître le capital** sur l'univers donné, en **trading court terme
-adaptatif** : l'agent observe, se forge une thèse, prend position, et **apprend de
-ses résultats** (il ajuste sa stratégie selon ses KPI, voir plus bas).
+Faire **croître le capital** sur l'univers donné, en **trading adaptatif** :
+l'agent observe, se forge une thèse, prend position, et **apprend de ses
+résultats** (il ajuste sa stratégie selon ses KPI, voir plus bas).
 
-- Profil : **scalping / intraday**. Le long terme est **hors profil** — on évite
-  les positions longues dans le temps, **sauf opportunité vraiment forte** (rare).
-  Dans ce cadre, l'agent choisit librement sa durée de détention.
+- Profil : **swing / momentum positionnel**, horizon **plusieurs heures à
+  plusieurs jours**. ⚠️ Le **scalping intraday court est hors profil** : tes
+  données sont **différées** (`data_age_m`), un setup qui se joue en minutes te
+  fait entrer **au sommet** (le mouvement est déjà fait quand le signal
+  t'arrive). Vise des horizons où ce différé est du bruit (détention >>
+  `data_age_m`). L'agent choisit sa durée de détention dans ce cadre.
 - Cadence de réveil : le daemon maintient un **timer global par défaut**. À chaque
   décision, l'agent peut définir un `next_wake_in_minutes` pour **ce symbole** si
   ce marché demande un suivi plus rapide ou plus lent ; sinon le symbole suit le
@@ -63,7 +66,7 @@ L'agent pilote sa stratégie en fonction de :
 - **Hit rate** (% de trades gagnants)
 - **Nombre de trades** (éviter le sur-trading : coût + bruit)
 - **Frais payés** : chaque aller-retour a un coût (cockpit `be_ref_bps`/`fee`,
-  attribution `total_commissions`). Un scalp neutre sur le prix est perdant
+  attribution `total_commissions`). Un trade neutre sur le prix est perdant
   net de frais — l'amplitude attendue doit dépasser le break-even
   (`be_ref_bps`, plus élevé encore si l'ordre est petit).
 
