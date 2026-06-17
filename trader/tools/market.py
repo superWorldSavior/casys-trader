@@ -432,3 +432,53 @@ def get_quote(symbol: str) -> Quote:
     bars = get_bars(symbol, lookback="1d", interval="1h")
     last = bars[-1]
     return Quote(symbol=symbol, price=last.close, ts=last.ts)
+
+
+def classify_symbol_context(
+    *,
+    runtime_interval: str,
+    has_runtime_price: bool,
+    is_runtime_stale: bool,
+    session_open: bool,
+    daily_fresh: bool,
+    last_runtime_bar_ts: str | None = None,
+    data_age_minutes: float | None = None,
+    daily_as_of: str | None = None,
+    next_session_open: str | None = None,
+) -> dict:
+    """Sépare deux capacités d'un symbole (design §5.1) — fonction pure.
+
+    - ``execution.enabled`` : on peut passer un ordre. Exige un prix runtime FRAIS,
+      une session tradable et l'absence de stale. ``False`` interdit tout fill.
+    - ``planning.enabled`` : on peut analyser / poser une veille / planifier un
+      réveil. Vrai dès que le contexte daily/swing est valide, même runtime stale.
+
+    ``reason`` d'exécution, par priorité déterministe : ``session_closed`` (marché
+    fermé — le stale en découle) > ``runtime_stale`` (séance ouverte, données en
+    retard) > ``no_price`` ; ``tradable`` quand activé.
+    """
+    execution_enabled = has_runtime_price and session_open and not is_runtime_stale
+    if execution_enabled:
+        execution_reason = "tradable"
+    elif not session_open:
+        execution_reason = "session_closed"
+    elif is_runtime_stale:
+        execution_reason = "runtime_stale"
+    else:
+        execution_reason = "no_price"
+
+    return {
+        "execution": {
+            "enabled": execution_enabled,
+            "reason": execution_reason,
+            "runtime_interval": runtime_interval,
+            "last_runtime_bar_ts": last_runtime_bar_ts,
+            "data_age_minutes": data_age_minutes,
+        },
+        "planning": {
+            "enabled": bool(daily_fresh),
+            "reason": "daily_context_fresh" if daily_fresh else "daily_stale",
+            "daily_as_of": daily_as_of,
+            "next_session_open": next_session_open,
+        },
+    }
