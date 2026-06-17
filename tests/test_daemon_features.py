@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from trader import daemon
 from trader.codex_client import Decision
@@ -268,3 +268,55 @@ def test_run_cycle_daily_bars_stale_sont_ignorees_pour_le_cockpit(monkeypatch, t
     spy_row = next(row for row in cockpit["rows"] if row[0] == "SPY")
     assert spy_row[cols.index("htf")] == "trending_up"
     assert spy_row[cols.index("aligned")] is True
+
+
+def test_run_cycle_marque_les_decisions_llm_comme_model_called(
+    monkeypatch,
+    tmp_path,
+    patch_batch,
+    make_data_source,
+) -> None:
+    _write_runtime_config(tmp_path)
+    state_dir = tmp_path / "state"
+    now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
+
+    def bars(symbol: str, lookback: str, interval: str) -> list[Bar]:
+        return [
+            Bar(
+                ts=(now - timedelta(minutes=10)).isoformat(),
+                open=100.0,
+                high=101.0,
+                low=99.0,
+                close=100.0,
+                volume=1000.0,
+            )
+            for _ in range(32)
+        ]
+
+    def decide(**kwargs) -> Decision:
+        return Decision(
+            symbol=kwargs["symbol"],
+            action="HOLD",
+            quantity=0.0,
+            confidence=0.5,
+            rationale="attente",
+            intent="HOLD",
+            llm_provider="acpx",
+            llm_model="gpt-5.5/medium",
+        )
+
+    monkeypatch.setattr(daemon, "ROOT", tmp_path)
+    monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+    patch_batch(decide)
+    data_source = make_data_source(bars)
+
+    report = daemon.run_cycle(
+        dry_run=True,
+        now=now,
+        symbols_filter=["SPY"],
+        sched=Scheduler(state_dir / "scheduler.json"),
+        data_source=data_source,
+    )
+
+    assert report["decisions"][0]["decision_source"] == "llm"
+    assert report["decisions"][0]["model_called"] is True

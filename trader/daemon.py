@@ -934,6 +934,8 @@ def _apply_decision_schedule(
             "on_trigger": pending_indicator_watch["on_trigger"],
             "conditions": pending_indicator_watch["conditions"],
         }
+        if "order" in pending_indicator_watch:
+            entry["indicator_watch"]["order"] = pending_indicator_watch["order"]
 
 
 def _batch_decide(
@@ -1661,6 +1663,8 @@ def run_cycle(
                     "trade_plan_created": False,
                     "executed": False,
                     "reason": "quiet_gate",
+                    "decision_source": "infra",
+                    "model_called": False,
                     "data_source": runtime_data_source_by_sym.get(sym),
                 }
             )
@@ -1744,6 +1748,8 @@ def run_cycle(
                         "trade_plan_created": False,
                         "executed": False,
                         "reason": "stale_market_data",
+                        "decision_source": "infra",
+                        "model_called": False,
                         "stale_streak": new_streak,
                         "data_source": runtime_data_source_by_sym.get(sym),
                         **stale_data,
@@ -1798,6 +1804,11 @@ def run_cycle(
 
         effective_quantity = abs(decision.quantity)
 
+        decision_source = (
+            "armed_plan"
+            if sym in armed_plan_ids
+            else ("llm" if decision.llm_provider or decision.llm_model else "infra")
+        )
         entry = {"symbol": sym, "action": decision.action, "qty": effective_quantity,
                  **({"armed_plan_id": armed_plan_ids[sym]} if sym in armed_plan_ids else {}),
                  "confidence": decision.confidence, "rationale": decision.rationale,
@@ -1805,6 +1816,8 @@ def run_cycle(
                  "next_wake_requested": decision.next_wake_in_minutes,
                  "context_request": decision.context_request,
                  "intent": decision.intent,
+                 "decision_source": decision_source,
+                 "model_called": decision_source == "llm",
                  "llm_provider": decision.llm_provider,
                  "llm_model": decision.llm_model,
                  "llm_fallback_reason": decision.llm_fallback_reason,

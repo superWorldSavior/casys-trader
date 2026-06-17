@@ -317,6 +317,8 @@ def test_run_cycle_bloque_decision_sur_donnees_marche_perimees(monkeypatch, tmp_
             "trade_plan_created": False,
             "executed": False,
             "reason": "stale_market_data",
+            "decision_source": "infra",
+            "model_called": False,
             "stale_streak": 1,
             "data_source": None,
             "last_bar_ts": stale_ts,

@@ -46,6 +46,12 @@ def _optional_float(value: Any) -> float | None:
         return None
 
 
+def _optional_bool(value: Any) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    return None
+
+
 def _decision_id(cycle_ts: str, sequence: int, symbol: str) -> str:
     return f"{cycle_ts}|{sequence}|{symbol}"
 
@@ -82,6 +88,7 @@ def build_decision_row(
 
     original_decision = dict(decision)
     code_version = _as_dict(decision.get("code_version")) or _as_dict(report.get("code_version")) or dict(UNKNOWN_CODE_VERSION)
+    indicator_watch = _as_dict(decision.get("indicator_watch"))
     return {
         "schema_version": SCHEMA_VERSION,
         "decision_id": _decision_id(cycle_ts, sequence, symbol),
@@ -98,6 +105,8 @@ def build_decision_row(
         "next_wake_in_minutes": _optional_float(decision.get("next_wake_in_minutes")),
         "executed": decision.get("executed"),
         "reason": decision.get("reason"),
+        "decision_source": decision.get("decision_source"),
+        "model_called": _optional_bool(decision.get("model_called")),
         "price": price,
         "llm_provider": decision.get("llm_provider"),
         "llm_model": decision.get("llm_model"),
@@ -118,6 +127,7 @@ def build_decision_row(
             "indicator_watch_created": decision.get("indicator_watch_created"),
             "indicator_watch_requested": decision.get("indicator_watch_requested"),
             "indicator_watch_rejections": decision.get("indicator_watch_rejections"),
+            "indicator_watch_order": indicator_watch.get("order"),
             "context_request": decision.get("context_request"),
             "next_wake_requested": decision.get("next_wake_requested"),
             "risk_pct": decision.get("risk_pct"),

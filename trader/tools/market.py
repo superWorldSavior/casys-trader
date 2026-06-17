@@ -106,6 +106,7 @@ _Venue = tuple[ZoneInfo, int, int, int, int]
 _VENUE_US: _Venue = (_MARKET_TZ, _SESSION_OPEN_HOUR, _SESSION_OPEN_MINUTE, 16, 0)
 _VENUE_BY_SUFFIX: dict[str, _Venue] = {
     ".TW": (ZoneInfo("Asia/Taipei"), 9, 0, 13, 30),     # TWSE (pas de DST)
+    ".TWO": (ZoneInfo("Asia/Taipei"), 9, 0, 13, 30),    # Taipei Exchange (pas de DST)
     ".PA": (ZoneInfo("Europe/Paris"), 9, 0, 17, 30),    # Euronext Paris
     ".DE": (ZoneInfo("Europe/Berlin"), 9, 0, 17, 30),   # XETRA
     ".AS": (ZoneInfo("Europe/Amsterdam"), 9, 0, 17, 30), # Euronext Amsterdam

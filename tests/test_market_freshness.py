@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from trader.tools import market
 from trader.tools.market import Bar, assess_freshness
@@ -122,3 +123,11 @@ def test_budget_horaire_signale_stale_au_dela_de_75_minutes() -> None:
 
     assert verdict.fresh is False
     assert verdict.reason == "too_old"
+
+
+def test_session_snapshot_suffixe_two_utilise_le_calendrier_taiwan() -> None:
+    now = datetime(2026, 6, 17, 9, 32, tzinfo=ZoneInfo("Asia/Taipei"))
+
+    snapshot = market.session_snapshot("6488.TWO", now=now)
+
+    assert snapshot == {"open": True, "since_open_m": 32, "to_close_m": 238}
