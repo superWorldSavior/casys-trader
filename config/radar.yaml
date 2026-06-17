@@ -17,3 +17,4 @@ benchmarks:
 default_benchmark: SPY
 gap_threshold: 0.03  # seuil de gap d'ouverture adverse, 3%
 override_enabled: true  # override agent LLM ; fail-safe : retombe sur le défaut si le LLM échoue
+preopen_window_minutes: 90  # fenêtre (min) où une venue fermée entre en surveillance avant son ouverture (D13)

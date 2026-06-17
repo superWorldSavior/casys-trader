@@ -17,7 +17,12 @@ from trader.rotation_collectors import (
     build_positions_fn,
     sticky_collector,
 )
-from trader.rotation_schedule import closed_sessions_since, load_sessions, open_venues
+from trader.rotation_schedule import (
+    analyzable_venues,
+    closed_sessions_since,
+    load_sessions,
+    open_venues,
+)
 from trader.rotation_wiring import build_rank_fn, venue_of
 from trader.radar_config import load_radar_params
 
@@ -209,7 +214,9 @@ def tick(config_dir, state_dir, now_iso, *, rank_fn=None, sticky_fn=None, fx_cap
             )
         save_venue_state(state_dir, state)
 
-    open_v = open_venues(now_iso, sessions)
+    open_v = analyzable_venues(
+        now_iso, sessions, preopen_window_minutes=params.preopen_window_minutes
+    )
     if sticky_fn is None:
         sticky = sticky_collector(
             positions_fn=build_positions_fn(state_dir),

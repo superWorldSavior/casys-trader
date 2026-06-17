@@ -68,6 +68,49 @@ def open_venues(now_iso: str, sessions: dict[str, SessionHours]) -> list[str]:
     return sorted(hits)
 
 
+def preopen_venues(
+    now_iso: str, sessions: dict[str, SessionHours], *, window_minutes: int = 90
+) -> list[str]:
+    """Venues actions dont la PROCHAINE ouverture est dans (now, now+window].
+
+    Pré-open = analysable pour préparer le gong, PAS exécutable (brique 3 gate).
+    N'inclut jamais FX (24/5, pas de gong). Une venue déjà ouverte n'est pas pré-open.
+    Calendrier v1 = HH:MM + jour ouvré, cohérent avec open_venues (cf Task A4 pour
+    l'alignement exchange_calendars).
+    """
+    now = datetime.fromisoformat(now_iso).astimezone(timezone.utc)
+    horizon = now + timedelta(minutes=window_minutes)
+    open_now = set(open_venues(now_iso, sessions))
+    hits: list[str] = []
+    for venue, hours in sessions.items():
+        # FX = 24/5, pas de gong → jamais pré-open. Garantie PAR CONSTRUCTION
+        # (ne pas dépendre de la présence de FX dans open_now, faux le week-end).
+        if venue == "FX" or venue in open_now:
+            continue
+        # prochaine ouverture : aujourd'hui si pas encore passée, sinon prochain jour ouvré
+        candidate = _close_dt(now, hours["open"])
+        for _ in range(4):  # aujourd'hui + jusqu'à 3 jours (saute le week-end)
+            if candidate > now and candidate.weekday() < 5:
+                break
+            candidate = _close_dt(candidate + timedelta(days=1), hours["open"])
+        if now < candidate <= horizon:
+            hits.append(venue)
+    return sorted(hits)
+
+
+def analyzable_venues(
+    now_iso: str, sessions: dict[str, SessionHours], *, preopen_window_minutes: int = 90
+) -> list[str]:
+    """Venues à inclure dans l'univers de SURVEILLANCE = ouvertes ∪ pré-open.
+
+    L'exécutabilité reste décidée au runtime par classify_symbol_context (brique 2/3) ;
+    cette union ne dit que « surveille/analyse », jamais « trade ».
+    """
+    union = set(open_venues(now_iso, sessions))
+    union |= set(preopen_venues(now_iso, sessions, window_minutes=preopen_window_minutes))
+    return sorted(union)
+
+
 def closed_sessions_since(
     now_iso: str,
     last_rotation_iso: str | None,

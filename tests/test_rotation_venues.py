@@ -553,3 +553,124 @@ def test_tick_second_call_same_now_is_idempotent(tmp_path):
     assert second["dues"] == []
     assert second["final"] == first["final"]
     assert second["written"] is False
+
+
+# ---------------------------------------------------------------------------
+# A3 : tick admet les venues en pré-open (hotlists persistées) dans l'univers
+# ---------------------------------------------------------------------------
+
+
+def _write_tick_config_with_preopen(config_dir, preopen_window_minutes=90):
+    """Fixture helper identique à _write_tick_config mais avec preopen_window_minutes."""
+    (config_dir / "config").mkdir(exist_ok=True)
+    (config_dir / "config" / "sessions.yaml").write_text(
+        'TW: {open: "01:00", close: "05:30"}\n'
+        'EU: {open: "07:00", close: "15:30"}\n'
+        'US: {open: "13:30", close: "20:00"}\n',
+        encoding="utf-8",
+    )
+    # radar.yaml est à la racine de config_dir (load_radar_params cherche config_dir/radar.yaml)
+    (config_dir / "radar.yaml").write_text(
+        f"cap_m: 5\n"
+        f"delta: 0.05\n"
+        f"dwell_days: 1\n"
+        f"emergency_score: -1\n"
+        f"preopen_window_minutes: {preopen_window_minutes}\n",
+        encoding="utf-8",
+    )
+    (config_dir / "universe.yaml").write_text("symbols: [SEED]\n", encoding="utf-8")
+
+
+def test_tick_preopen_admet_la_hotlist_de_la_venue_fermee(tmp_path):
+    """Venue TW fermée à 00:30 UTC mais en pré-open (ouvre 01:00) → ses symboles entrent."""
+    import json
+
+    config_dir = tmp_path / "cfg"
+    state_dir = tmp_path / "state"
+    config_dir.mkdir()
+    state_dir.mkdir()
+    _write_tick_config_with_preopen(config_dir, preopen_window_minutes=90)
+
+    # venue TW déjà classée à sa dernière clôture (hotlist persistée)
+    initial_state = {
+        "venues": {
+            "TW": {
+                "hotlist": ["2330.TW", "2317.TW"],
+                "scores": {"2330.TW": 1.9, "2317.TW": 1.7},
+                "dwell": {"2330.TW": 1, "2317.TW": 1},
+                "last_close_at": "2026-06-15T05:30:00+00:00",
+                "stale": False,
+            }
+        }
+    }
+    (state_dir / "venue_state.json").write_text(
+        json.dumps(initial_state), encoding="utf-8"
+    )
+
+    # 00:30 UTC mardi : TW fermée mais en pré-open (ouvre 01:00) → ses symboles entrent
+    res = tick(
+        str(config_dir),
+        str(state_dir),
+        "2026-06-16T00:30:00+00:00",
+        rank_fn=lambda: {"ranked": [], "gap_adverse": frozenset(), "ineligible": {}, "components_by_symbol": {}},
+        sticky_fn=lambda: set(),
+    )
+
+    written = yaml.safe_load((config_dir / "universe.yaml").read_text(encoding="utf-8"))["symbols"]
+    assert "2330.TW" in written
+    assert "2317.TW" in written
+
+
+# ---------------------------------------------------------------------------
+# A4 : invariant zéro-churn preopen→open
+# ---------------------------------------------------------------------------
+
+
+def test_preopen_vers_open_sans_churn(tmp_path):
+    """À 00:30 (pré-open) puis 01:30 (ouvert), les .TW restent présents : zéro churn."""
+    import json
+
+    config_dir = tmp_path / "cfg"
+    state_dir = tmp_path / "state"
+    config_dir.mkdir()
+    state_dir.mkdir()
+    _write_tick_config_with_preopen(config_dir, preopen_window_minutes=90)
+
+    initial_state = {
+        "venues": {
+            "TW": {
+                "hotlist": ["2330.TW", "2317.TW"],
+                "scores": {"2330.TW": 1.9, "2317.TW": 1.7},
+                "dwell": {"2330.TW": 1, "2317.TW": 1},
+                "last_close_at": "2026-06-15T05:30:00+00:00",
+                "stale": False,
+            }
+        }
+    }
+
+    def null_rank():
+        return {"ranked": [], "gap_adverse": frozenset(), "ineligible": {}, "components_by_symbol": {}}
+
+    # Premier tick à 00:30 (pré-open)
+    (state_dir / "venue_state.json").write_text(json.dumps(initial_state), encoding="utf-8")
+    res_preopen = tick(
+        str(config_dir),
+        str(state_dir),
+        "2026-06-16T00:30:00+00:00",
+        rank_fn=null_rank,
+        sticky_fn=lambda: set(),
+    )
+    syms_preopen = set(res_preopen["final"])
+
+    # Second tick à 01:30 (TW désormais ouverte)
+    res_open = tick(
+        str(config_dir),
+        str(state_dir),
+        "2026-06-16T01:30:00+00:00",
+        rank_fn=null_rank,
+        sticky_fn=lambda: set(),
+    )
+    syms_open = set(res_open["final"])
+
+    assert {"2330.TW", "2317.TW"} <= syms_preopen
+    assert {"2330.TW", "2317.TW"} <= syms_open  # toujours là → pas de churn reconcile

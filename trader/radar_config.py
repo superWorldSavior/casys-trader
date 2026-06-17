@@ -25,6 +25,7 @@ class RadarParams:
     default_benchmark: str = "SPY"
     gap_threshold: float = 0.03
     override_enabled: bool = True
+    preopen_window_minutes: int = 90  # fenêtre (min) pré-open avant le gong (D13)
 
 
 def load_radar_params(config_dir: Path) -> RadarParams:
