@@ -10,6 +10,7 @@ dependencies = [
     "plotext>=5.2",
     "ib-async>=2.1.0",
     "textual>=8.2.7",
+    "exchange-calendars>=4.13.2",
 ]
 
 [project.scripts]
