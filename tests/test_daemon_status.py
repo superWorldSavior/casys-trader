@@ -139,7 +139,8 @@ def test_run_cycle_loggue_la_progression_console(monkeypatch, tmp_path, caplog, 
 def test_run_cycle_historise_la_perf_par_modele_sur_fill(monkeypatch, tmp_path, patch_batch, make_data_source) -> None:
     _write_runtime_config(tmp_path)
     state_dir = tmp_path / "state"
-    now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
+    # 14:30 UTC = 10:30 ET — session US régulière ouverte (13:30–20:00 UTC en EDT)
+    now = datetime(2026, 6, 5, 14, 30, tzinfo=timezone.utc)
 
     monkeypatch.setattr(daemon, "ROOT", tmp_path)
     monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
@@ -184,7 +185,8 @@ def test_run_cycle_historise_la_perf_par_modele_sur_fill(monkeypatch, tmp_path, 
 def test_run_cycle_loggue_les_commissions_du_fill(monkeypatch, tmp_path, patch_batch, make_data_source) -> None:
     _write_runtime_config(tmp_path)
     state_dir = tmp_path / "state"
-    now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
+    # 14:30 UTC = 10:30 ET — session US régulière ouverte (13:30–20:00 UTC en EDT)
+    now = datetime(2026, 6, 5, 14, 30, tzinfo=timezone.utc)
 
     monkeypatch.setattr(daemon, "ROOT", tmp_path)
     monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
@@ -230,7 +232,8 @@ def test_run_cycle_report_portefeuille_expose_le_pnl_latent_net_avec_commissions
 ) -> None:
     _write_runtime_config(tmp_path)
     state_dir = tmp_path / "state"
-    now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
+    # 14:30 UTC = 10:30 ET — session US régulière ouverte (13:30–20:00 UTC en EDT)
+    now = datetime(2026, 6, 5, 14, 30, tzinfo=timezone.utc)
 
     monkeypatch.setattr(daemon, "ROOT", tmp_path)
     monkeypatch.setattr(daemon, "STATE_DIR", state_dir)

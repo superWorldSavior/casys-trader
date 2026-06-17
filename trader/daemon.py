@@ -583,6 +583,26 @@ def _build_execution_eligibility(
     return eligibility
 
 
+def _execution_blocked_reason(
+    execution_eligibility: dict[str, dict], symbol: str, *, fail_closed: bool = False
+) -> str | None:
+    """Garde déterministe d'exécution (§13.5) : raison `execution:<reason>` si
+    l'exécution est explicitement interdite pour ce symbole (session fermée, runtime
+    stale, pas de prix), sinon None. Le RiskGate déterministe reste le fusible séparé.
+
+    Symbole non classé (absent de `execution_eligibility`) : `fail_closed=True` =>
+    bloqué (`execution:unclassified`), pour les OUVERTURES/REVERSE (invariant §10
+    "aucun ordre d'ouverture sans execution.enabled=true"). `fail_closed=False`
+    (défaut) => non bloqué, pour ne jamais empêcher une SORTIE de protection par
+    manque d'info."""
+    ctx = (execution_eligibility.get(symbol) or {}).get("execution")
+    if ctx is None:
+        return "execution:unclassified" if fail_closed else None
+    if ctx.get("enabled"):
+        return None
+    return f"execution:{ctx.get('reason') or 'disabled'}"
+
+
 def _positive_finite_float(raw: object) -> float | None:
     try:
         value = float(raw)  # type: ignore[arg-type]
@@ -672,6 +692,7 @@ def _apply_planned_exits(
     now: datetime,
     dry_run: bool,
     starting_equity: float,
+    execution_eligibility: dict[str, dict] | None = None,
 ) -> list[dict]:
     entries: list[dict] = []
     for plan in plan_store.open_plans():
@@ -741,6 +762,25 @@ def _apply_planned_exits(
                     "fill_price": blocked_fill,  # MINOR 5
                     "plan_snapshot": _plan_snapshot(plan),  # MINOR 5
                     "bars_interval": (bars_intervals_by_symbol or {}).get(plan.symbol, DEFAULT_RUNTIME_INTERVAL),
+                    "executed": False,
+                    "dry_run": dry_run,
+                }
+            )
+            continue
+
+        # §13.5 — garde déterministe d'exécution AUSSI sur les sorties mécaniques :
+        # marché fermé / runtime stale => l'ordre ne part pas (évite un fill irréaliste
+        # hors séance). Le plan reste OUVERT : la sortie repartira au prochain cycle
+        # exécutable. Le calcul de la sortie a bien eu lieu, seul le submit est retenu.
+        exit_execution_blocked = _execution_blocked_reason(execution_eligibility or {}, plan.symbol)
+        if exit_execution_blocked is not None:
+            entries.append(
+                {
+                    "symbol": plan.symbol,
+                    "side": evaluation.signal.side,
+                    "quantity": clamped_quantity,
+                    "reason": exit_execution_blocked,
+                    "price": price,
                     "executed": False,
                     "dry_run": dry_run,
                 }
@@ -1471,6 +1511,7 @@ def run_cycle(
         now=now,
         dry_run=dry_run,
         starting_equity=starting_equity,
+        execution_eligibility=execution_eligibility,
     )
     if planned_exits:
         _log_cycle_progress("[exit] planned exits=%d", len(planned_exits))
@@ -2013,6 +2054,25 @@ def run_cycle(
             _log_cycle_progress("[decision %d/%d] %s blocked %s", index, len(symbols_to_decide), sym, invalid_intent)
             apply_default_schedule_after_blocked()
             record_decision({**entry, "executed": False, "reason": invalid_intent})
+            continue
+
+        # §13.5 — garde déterministe d'exécution : marché fermé / runtime stale / pas
+        # de prix => aucun ordre ne part (le LLM a pu décider, l'infra ne fille pas une
+        # exécution irréaliste). On APPLIQUE le scheduling non-exécutif du LLM
+        # (next_wake + indicator_watch) comme pour un HOLD : la veille/le réveil sont
+        # réellement conservés. Le RiskGate reste le fusible séparé sur le risque/montant.
+        # Fail-closed pour les ouvertures (invariant §10) ; fail-open pour les sorties.
+        execution_blocked = _execution_blocked_reason(
+            execution_eligibility,
+            sym,
+            fail_closed=decision.intent in {"OPEN_LONG", "OPEN_SHORT", "REVERSE"},
+        )
+        if execution_blocked is not None:
+            _log_cycle_progress(
+                "[execution] %s ordre bloqué (%s) — watch/wake conservés", sym, execution_blocked
+            )
+            apply_decision_schedule()
+            record_decision({**entry, "executed": False, "reason": execution_blocked})
             continue
 
         if runtime_exit_plan and decision.intent in {"OPEN_LONG", "OPEN_SHORT", "REVERSE"}:

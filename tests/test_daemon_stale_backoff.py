@@ -503,3 +503,93 @@ def test_run_cycle_fetch_le_daily_meme_pour_un_symbole_runtime_stale(
         daemon.COCKPIT_DAILY_LOOKBACK,
         daemon.COCKPIT_DAILY_INTERVAL,
     ) in requests
+
+
+def test_run_cycle_bloque_l_ordre_hors_session_meme_avec_donnees_fraiches(
+    monkeypatch, tmp_path, patch_batch
+) -> None:
+    """§13.5 — données runtime FRAÎCHES mais session fermée (samedi) →
+    execution.enabled=false → l'ordre LLM ne part pas (executed=False,
+    reason=execution:session_closed). La garde précède le RiskGate."""
+    from datetime import timedelta
+
+    from trader.codex_client import Decision
+    from trader.tools.market import Bar
+
+    _write_runtime_config(tmp_path)
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    monkeypatch.setattr(daemon, "ROOT", tmp_path)
+    monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+    sched = Scheduler(state_dir / "scheduler.json")
+    now = datetime(2026, 6, 13, 12, 0, tzinfo=timezone.utc)  # samedi → session US fermée
+
+    class FreshButClosedSource:
+        def get_bars(self, symbol, lookback, interval):
+            ts = (now - timedelta(minutes=5)).isoformat()  # frais → non stale
+            return [
+                Bar(ts=ts, open=100.0, high=101.0, low=99.0, close=100.0, volume=1000.0)
+                for _ in range(32)
+            ]
+
+    patch_batch(
+        lambda **kwargs: Decision(
+            symbol=kwargs["symbol"], action="BUY", quantity=10.0, confidence=0.9,
+            rationale="open", intent="OPEN_LONG", llm_provider="acpx", llm_model="gpt-5.5/medium",
+        )
+    )
+
+    report = daemon.run_cycle(
+        dry_run=False, now=now, symbols_filter=["SPY"],
+        sched=sched, data_source=FreshButClosedSource(),
+    )
+
+    dec = report["decisions"][0]
+    assert dec["executed"] is False
+    assert dec["reason"] == "execution:session_closed"
+
+
+def test_run_cycle_ordre_bloque_hors_session_conserve_le_wake_du_llm(
+    monkeypatch, tmp_path, patch_batch
+) -> None:
+    """§13.5 — quand l'ordre est bloqué (session fermée), la veille / le réveil posés
+    par le LLM sont CONSERVÉS (le LLM a pu planifier en plus de proposer l'ordre)."""
+    from datetime import timedelta
+
+    from trader.codex_client import Decision
+    from trader.tools.market import Bar
+
+    _write_runtime_config(tmp_path)
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    monkeypatch.setattr(daemon, "ROOT", tmp_path)
+    monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+    sched = Scheduler(state_dir / "scheduler.json")
+    now = datetime(2026, 6, 13, 12, 0, tzinfo=timezone.utc)  # samedi → session fermée
+
+    class FreshButClosedSource:
+        def get_bars(self, symbol, lookback, interval):
+            ts = (now - timedelta(minutes=5)).isoformat()
+            return [
+                Bar(ts=ts, open=100.0, high=101.0, low=99.0, close=100.0, volume=1000.0)
+                for _ in range(32)
+            ]
+
+    patch_batch(
+        lambda **kwargs: Decision(
+            symbol=kwargs["symbol"], action="BUY", quantity=10.0, confidence=0.9,
+            rationale="open", intent="OPEN_LONG", next_wake_in_minutes=90.0,
+            llm_provider="acpx", llm_model="gpt-5.5/medium",
+        )
+    )
+
+    daemon.run_cycle(
+        dry_run=False, now=now, symbols_filter=["SPY"],
+        sched=sched, data_source=FreshButClosedSource(),
+        default_wake_minutes=30.0,  # distinct du wake LLM (90) pour discriminer
+    )
+
+    # Le réveil demandé par le LLM (90 min) n'est PAS perdu ni remplacé par le défaut.
+    wake = sched.next_wake("SPY")
+    assert wake is not None
+    assert abs((wake - now).total_seconds() - 90 * 60) < 2

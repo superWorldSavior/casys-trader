@@ -57,7 +57,7 @@ def test_run_cycle_rejette_ouverture_confidence_insuffisante(
     """Confidence 0.58 avec un risque calculé → rejeté confidence_below_required."""
     _write_runtime_config(tmp_path)
     state_dir = tmp_path / "state"
-    now = datetime(2026, 6, 10, 12, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 6, 5, 14, 30, tzinfo=timezone.utc)  # vendredi, 10:30 ET, session US ouverte
 
     decision = _open_long_decision(confidence=0.58)
 
@@ -92,7 +92,7 @@ def test_run_cycle_approuve_ouverture_confidence_suffisante(
     """Confidence 0.95 avec le même risque → approuvé (dry_run, donc executed=False mais reason=ok)."""
     _write_runtime_config(tmp_path)
     state_dir = tmp_path / "state"
-    now = datetime(2026, 6, 10, 12, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 6, 5, 14, 30, tzinfo=timezone.utc)  # vendredi, 10:30 ET, session US ouverte
 
     decision = _open_long_decision(confidence=0.95)
 
@@ -127,7 +127,7 @@ def test_run_cycle_rejette_ouverture_sans_hard_stop(
     """Guardrail D6 déterministe : ouverture sans hard_stop → rejet, même à confiance max."""
     _write_runtime_config(tmp_path)
     state_dir = tmp_path / "state"
-    now = datetime(2026, 6, 10, 12, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 6, 5, 14, 30, tzinfo=timezone.utc)  # vendredi, 10:30 ET, session US ouverte
 
     decision = Decision(
         symbol="SPY",

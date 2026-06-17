@@ -51,16 +51,16 @@ def _write_runtime_config(
 def test_run_cycle_execute_les_sorties_planifiees_avant_codex(monkeypatch, tmp_path, patch_batch, make_data_source) -> None:
     _write_runtime_config(tmp_path)
     state_dir = tmp_path / "state"
-    now = datetime(2026, 6, 5, 12, 10, tzinfo=timezone.utc)
+    now = datetime(2026, 6, 5, 14, 30, tzinfo=timezone.utc)
     broker = SimBroker(state_dir / "broker.json", starting_cash=100_000)
-    broker.submit(Order("SPY", "BUY", 10.0), 100.0, "2026-06-05T12:00:00+00:00", dry_run=False)
+    broker.submit(Order("SPY", "BUY", 10.0), 100.0, "2026-06-05T14:00:00+00:00", dry_run=False)
     TradePlanStore(state_dir / "trade_plans.json").upsert(
         create_trade_plan(
             symbol="SPY",
             side="LONG",
             quantity=10.0,
             entry_price=100.0,
-            opened_at="2026-06-05T12:00:00+00:00",
+            opened_at="2026-06-05T14:00:00+00:00",
             raw_exit_plan={"take_profits": [{"name": "tp1", "price": 105.0, "fraction": 0.5}]},
         )
     )
@@ -93,19 +93,61 @@ def test_run_cycle_execute_les_sorties_planifiees_avant_codex(monkeypatch, tmp_p
     assert SimBroker(state_dir / "broker.json").positions()["SPY"].quantity == 5.0
 
 
-def test_run_cycle_clamp_les_sorties_planifiees_sur_position_broker(monkeypatch, tmp_path, patch_batch, make_data_source) -> None:
+def test_run_cycle_ne_sort_pas_hors_session_meme_si_tp_atteint(monkeypatch, tmp_path, patch_batch, make_data_source) -> None:
+    """§13.5 — la garde déterministe couvre AUSSI les sorties mécaniques : le TP est
+    atteint (calcul fait) mais la session est fermée (samedi) → l'ordre ne part pas
+    (executed=False, execution:session_closed), la position reste. Réessai au prochain
+    cycle exécutable."""
     _write_runtime_config(tmp_path)
     state_dir = tmp_path / "state"
-    now = datetime(2026, 6, 5, 12, 10, tzinfo=timezone.utc)
+    now = datetime(2026, 6, 13, 12, 0, tzinfo=timezone.utc)  # samedi → session US fermée
     broker = SimBroker(state_dir / "broker.json", starting_cash=100_000)
-    broker.submit(Order("SPY", "BUY", 5.0), 100.0, "2026-06-05T12:00:00+00:00", dry_run=False)
+    broker.submit(Order("SPY", "BUY", 10.0), 100.0, "2026-06-12T20:00:00+00:00", dry_run=False)
     TradePlanStore(state_dir / "trade_plans.json").upsert(
         create_trade_plan(
             symbol="SPY",
             side="LONG",
             quantity=10.0,
             entry_price=100.0,
-            opened_at="2026-06-05T12:00:00+00:00",
+            opened_at="2026-06-12T20:00:00+00:00",
+            raw_exit_plan={"take_profits": [{"name": "tp1", "price": 105.0, "fraction": 0.5}]},
+        )
+    )
+    monkeypatch.setattr(daemon, "ROOT", tmp_path)
+    monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+    data_source = make_data_source(lambda symbol, lookback, interval: [
+        Bar(ts=now.isoformat(), open=106.0, high=107.0, low=105.0, close=106.0, volume=1000.0)
+    ])
+    patch_batch(lambda **kwargs: Decision.hold(kwargs["symbol"], "attente"))
+
+    report = daemon.run_cycle(
+        dry_run=False,
+        now=now,
+        symbols_filter=["SPY"],
+        sched=Scheduler(state_dir / "scheduler.json"),
+        data_source=data_source,
+    )
+
+    pe = report["planned_exits"][0]
+    assert pe["executed"] is False
+    assert pe["reason"] == "execution:session_closed"
+    # La position n'a PAS été réduite : la sortie repartira au prochain cycle exécutable.
+    assert SimBroker(state_dir / "broker.json").positions()["SPY"].quantity == 10.0
+
+
+def test_run_cycle_clamp_les_sorties_planifiees_sur_position_broker(monkeypatch, tmp_path, patch_batch, make_data_source) -> None:
+    _write_runtime_config(tmp_path)
+    state_dir = tmp_path / "state"
+    now = datetime(2026, 6, 5, 14, 30, tzinfo=timezone.utc)
+    broker = SimBroker(state_dir / "broker.json", starting_cash=100_000)
+    broker.submit(Order("SPY", "BUY", 5.0), 100.0, "2026-06-05T14:00:00+00:00", dry_run=False)
+    TradePlanStore(state_dir / "trade_plans.json").upsert(
+        create_trade_plan(
+            symbol="SPY",
+            side="LONG",
+            quantity=10.0,
+            entry_price=100.0,
+            opened_at="2026-06-05T14:00:00+00:00",
             raw_exit_plan={"take_profits": [{"name": "tp1", "price": 105.0, "fraction": 1.0}]},
         )
     )
@@ -191,7 +233,7 @@ def test_run_cycle_exit_watch_reveille_agent_sans_sortie_auto(monkeypatch, tmp_p
 def test_run_cycle_persiste_un_plan_apres_ouverture(monkeypatch, tmp_path, patch_batch, make_data_source) -> None:
     _write_runtime_config(tmp_path)
     state_dir = tmp_path / "state"
-    now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 6, 5, 14, 30, tzinfo=timezone.utc)
 
     monkeypatch.setattr(daemon, "ROOT", tmp_path)
     monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
@@ -232,7 +274,7 @@ def test_run_cycle_planifie_une_revue_post_entry_apres_ouverture(
 ) -> None:
     _write_runtime_config(tmp_path)
     state_dir = tmp_path / "state"
-    now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 6, 5, 14, 30, tzinfo=timezone.utc)
     sched = Scheduler(state_dir / "scheduler.json")
 
     monkeypatch.setattr(daemon, "ROOT", tmp_path)
@@ -324,7 +366,7 @@ def test_run_cycle_persiste_reference_volatility_pour_trailing_multiple(
 ) -> None:
     _write_runtime_config(tmp_path)
     state_dir = tmp_path / "state"
-    now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 6, 5, 14, 30, tzinfo=timezone.utc)
 
     monkeypatch.setattr(daemon, "ROOT", tmp_path)
     monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
@@ -395,7 +437,7 @@ def test_reference_volatility_prefere_vol_daily_et_respecte_clamp_stop() -> None
 def test_run_cycle_cloture_le_plan_quand_codex_ferme_la_position(monkeypatch, tmp_path, patch_batch, make_data_source) -> None:
     _write_runtime_config(tmp_path)
     state_dir = tmp_path / "state"
-    now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 6, 5, 14, 30, tzinfo=timezone.utc)
     broker = SimBroker(state_dir / "broker.json", starting_cash=100_000)
     broker.submit(Order("SPY", "BUY", 10.0), 100.0, "2026-06-05T11:00:00+00:00", dry_run=False)
     store = TradePlanStore(state_dir / "trade_plans.json")
@@ -451,7 +493,7 @@ def test_run_cycle_autorise_close_qui_reduit_le_risque_meme_si_ordre_depasse_max
 ) -> None:
     _write_runtime_config(tmp_path)
     state_dir = tmp_path / "state"
-    now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 6, 5, 14, 30, tzinfo=timezone.utc)
     broker = SimBroker(state_dir / "broker.json", starting_cash=100_000)
     broker.submit(Order("SPY", "BUY", 150.0), 100.0, "2026-06-05T11:00:00+00:00", dry_run=False)
 
@@ -490,7 +532,7 @@ def test_run_cycle_clamp_order_value_et_execute_sans_repasser_par_le_modele(
 ) -> None:
     _write_runtime_config(tmp_path)
     state_dir = tmp_path / "state"
-    now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 6, 5, 14, 30, tzinfo=timezone.utc)
     codex_calls = 0
 
     monkeypatch.setattr(daemon, "ROOT", tmp_path)
@@ -541,7 +583,7 @@ def test_run_cycle_clamp_order_value_reste_sous_plafond_avec_prix_non_binaire(
 ) -> None:
     _write_runtime_config(tmp_path)
     state_dir = tmp_path / "state"
-    now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 6, 5, 14, 30, tzinfo=timezone.utc)
 
     monkeypatch.setattr(daemon, "ROOT", tmp_path)
     monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
@@ -582,7 +624,7 @@ def test_run_cycle_clamp_open_long_quand_risque_depasse_un_pourcent(
 ) -> None:
     _write_runtime_config(tmp_path, max_order_value=100_000)
     state_dir = tmp_path / "state"
-    now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 6, 5, 14, 30, tzinfo=timezone.utc)
 
     monkeypatch.setattr(daemon, "ROOT", tmp_path)
     monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
@@ -626,7 +668,7 @@ def test_run_cycle_rejette_open_long_si_hard_stop_est_du_mauvais_cote(
 ) -> None:
     _write_runtime_config(tmp_path)
     state_dir = tmp_path / "state"
-    now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 6, 5, 14, 30, tzinfo=timezone.utc)
 
     monkeypatch.setattr(daemon, "ROOT", tmp_path)
     monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
@@ -665,7 +707,7 @@ def test_run_cycle_accepte_open_long_si_hard_stop_est_du_bon_cote(
 ) -> None:
     _write_runtime_config(tmp_path)
     state_dir = tmp_path / "state"
-    now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 6, 5, 14, 30, tzinfo=timezone.utc)
 
     monkeypatch.setattr(daemon, "ROOT", tmp_path)
     monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
@@ -706,7 +748,7 @@ def test_run_cycle_resout_hard_stop_volatilite_direct_avant_risque(
 ) -> None:
     _write_runtime_config(tmp_path, max_order_value=100_000)
     state_dir = tmp_path / "state"
-    now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 6, 5, 14, 30, tzinfo=timezone.utc)
     fresh_vol_calls: list[dict] = []
 
     def fresh_volatility(symbol, *, entry_price, cockpit, tradable_bars_by_symbol):
@@ -764,7 +806,7 @@ def test_run_cycle_rejette_stop_direct_volatilite_si_volatilite_indisponible(
 ) -> None:
     _write_runtime_config(tmp_path, max_order_value=100_000)
     state_dir = tmp_path / "state"
-    now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 6, 5, 14, 30, tzinfo=timezone.utc)
 
     monkeypatch.setattr(daemon, "ROOT", tmp_path)
     monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
@@ -809,7 +851,7 @@ def test_run_cycle_direct_persiste_take_profit_risk_multiple_resolu(
 ) -> None:
     _write_runtime_config(tmp_path, max_order_value=100_000)
     state_dir = tmp_path / "state"
-    now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 6, 5, 14, 30, tzinfo=timezone.utc)
 
     monkeypatch.setattr(daemon, "ROOT", tmp_path)
     monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
@@ -854,7 +896,7 @@ def test_run_cycle_resout_hard_stop_structural_direct_depuis_barres_fraiches(
 ) -> None:
     _write_runtime_config(tmp_path, max_order_value=100_000)
     state_dir = tmp_path / "state"
-    now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 6, 5, 14, 30, tzinfo=timezone.utc)
 
     monkeypatch.setattr(daemon, "ROOT", tmp_path)
     monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
@@ -897,7 +939,7 @@ def test_run_cycle_rejette_open_sans_hard_stop_meme_confiant(
     le risque non borné reste tracé pour l'audit."""
     _write_runtime_config(tmp_path, max_order_value=100_000)
     state_dir = tmp_path / "state"
-    now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 6, 5, 14, 30, tzinfo=timezone.utc)
 
     monkeypatch.setattr(daemon, "ROOT", tmp_path)
     monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
@@ -939,7 +981,7 @@ def test_run_cycle_risk_clamp_puis_order_value_clamp_satisfont_les_deux_bornes(
 ) -> None:
     _write_runtime_config(tmp_path, max_order_value=15_000)
     state_dir = tmp_path / "state"
-    now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 6, 5, 14, 30, tzinfo=timezone.utc)
 
     monkeypatch.setattr(daemon, "ROOT", tmp_path)
     monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
@@ -984,7 +1026,7 @@ def test_run_cycle_rejette_si_position_value_depasse_apres_clamp_order_value(
 ) -> None:
     _write_runtime_config(tmp_path, max_position_value=14_000)
     state_dir = tmp_path / "state"
-    now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 6, 5, 14, 30, tzinfo=timezone.utc)
     broker = SimBroker(state_dir / "broker.json", starting_cash=100_000)
     broker.submit(Order("SPY", "BUY", 50.0), 100.0, "2026-06-05T11:00:00+00:00", dry_run=False)
 
@@ -1027,7 +1069,7 @@ def test_run_cycle_rejette_si_gross_exposure_depasse_apres_clamp_order_value(
 ) -> None:
     _write_runtime_config(tmp_path, symbols=["SPY", "QQQ"], max_gross_exposure=14_000)
     state_dir = tmp_path / "state"
-    now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 6, 5, 14, 30, tzinfo=timezone.utc)
     broker = SimBroker(state_dir / "broker.json", starting_cash=100_000)
     broker.submit(Order("QQQ", "BUY", 50.0), 100.0, "2026-06-05T11:00:00+00:00", dry_run=False)
 
@@ -1071,7 +1113,7 @@ def test_run_cycle_ne_clamp_pas_reverse_trop_gros(
 ) -> None:
     _write_runtime_config(tmp_path)
     state_dir = tmp_path / "state"
-    now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 6, 5, 14, 30, tzinfo=timezone.utc)
     broker = SimBroker(state_dir / "broker.json", starting_cash=100_000)
     broker.submit(Order("SPY", "BUY", 150.0), 100.0, "2026-06-05T11:00:00+00:00", dry_run=False)
 
@@ -1108,7 +1150,7 @@ def test_run_cycle_ne_clamp_pas_reverse_trop_gros(
 def test_run_cycle_clamp_close_trop_grand_pour_ne_pas_reverser(monkeypatch, tmp_path, patch_batch, make_data_source) -> None:
     _write_runtime_config(tmp_path)
     state_dir = tmp_path / "state"
-    now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 6, 5, 14, 30, tzinfo=timezone.utc)
     broker = SimBroker(state_dir / "broker.json", starting_cash=100_000)
     broker.submit(Order("SPY", "BUY", 100.0), 100.0, "2026-06-05T11:00:00+00:00", dry_run=False)
 
@@ -1142,8 +1184,8 @@ def test_run_cycle_clamp_close_trop_grand_pour_ne_pas_reverser(monkeypatch, tmp_
 def test_run_cycle_attribue_les_sorties_planifiees_au_modele_createur(monkeypatch, tmp_path, patch_batch, make_data_source) -> None:
     _write_runtime_config(tmp_path)
     state_dir = tmp_path / "state"
-    first_now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
-    second_now = datetime(2026, 6, 5, 12, 10, tzinfo=timezone.utc)
+    first_now = datetime(2026, 6, 5, 14, 30, tzinfo=timezone.utc)
+    second_now = datetime(2026, 6, 5, 14, 40, tzinfo=timezone.utc)
     calls = 0
 
     monkeypatch.setattr(daemon, "ROOT", tmp_path)
@@ -1222,7 +1264,8 @@ def test_main_historise_les_sorties_planifiees_meme_sans_symbole_du(monkeypatch,
 
     monkeypatch.setattr(daemon, "ROOT", tmp_path)
     monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
-    fresh_ts = datetime.now(timezone.utc).isoformat()
+    _mocked_now = datetime(2026, 6, 17, 15, 0, tzinfo=timezone.utc)
+    fresh_ts = _mocked_now.isoformat()
     data_source = make_data_source(lambda symbol, lookback, interval: [
         Bar(ts=fresh_ts, open=106.0, high=107.0, low=105.0, close=106.0, volume=1000.0)
     ])
@@ -1236,7 +1279,10 @@ def test_main_historise_les_sorties_planifiees_meme_sans_symbole_du(monkeypatch,
     )
 
     with pytest.raises(KeyboardInterrupt):
-        daemon.main(["--live", "--poll", "0.01"])
+        daemon.main(
+            ["--live", "--poll", "0.01"],
+            now_fn=lambda: _mocked_now,
+        )
 
     history_rows = [
         json.loads(line)
@@ -1250,7 +1296,7 @@ def test_main_historise_les_sorties_planifiees_meme_sans_symbole_du(monkeypatch,
 def test_run_cycle_rejette_un_exit_plan_invalide_avant_fill(monkeypatch, tmp_path, patch_batch, make_data_source) -> None:
     _write_runtime_config(tmp_path)
     state_dir = tmp_path / "state"
-    now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 6, 5, 14, 30, tzinfo=timezone.utc)
 
     monkeypatch.setattr(daemon, "ROOT", tmp_path)
     monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
@@ -1284,7 +1330,7 @@ def test_run_cycle_ne_replanifie_pas_un_ordre_bloque(monkeypatch, tmp_path, patc
     _write_runtime_config(tmp_path)
     state_dir = tmp_path / "state"
     sched = Scheduler(state_dir / "scheduler.json")
-    now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 6, 5, 14, 30, tzinfo=timezone.utc)
     sched.set_symbol_next_wake("SPY", now.isoformat())
 
     monkeypatch.setattr(daemon, "ROOT", tmp_path)
@@ -1328,7 +1374,7 @@ def test_run_cycle_ne_replanifie_pas_un_ordre_bloque(monkeypatch, tmp_path, patc
 def test_run_cycle_reverse_cree_un_plan_sur_la_position_nette_finale(monkeypatch, tmp_path, patch_batch, make_data_source) -> None:
     _write_runtime_config(tmp_path)
     state_dir = tmp_path / "state"
-    now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 6, 5, 14, 30, tzinfo=timezone.utc)
     broker = SimBroker(state_dir / "broker.json", starting_cash=100_000)
     broker.submit(Order("SPY", "BUY", 10.0), 100.0, "2026-06-05T11:00:00+00:00", dry_run=False)
     TradePlanStore(state_dir / "trade_plans.json").upsert(
@@ -1381,7 +1427,7 @@ def test_run_cycle_reverse_cree_un_plan_sur_la_position_nette_finale(monkeypatch
 def test_run_cycle_reduce_resynchronise_le_plan_sur_position_restante(monkeypatch, tmp_path, patch_batch, make_data_source) -> None:
     _write_runtime_config(tmp_path)
     state_dir = tmp_path / "state"
-    now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 6, 5, 14, 30, tzinfo=timezone.utc)
     broker = SimBroker(state_dir / "broker.json", starting_cash=100_000)
     broker.submit(Order("SPY", "BUY", 10.0), 100.0, "2026-06-05T11:00:00+00:00", dry_run=False)
     TradePlanStore(state_dir / "trade_plans.json").upsert(
@@ -1425,7 +1471,7 @@ def test_run_cycle_reduce_resynchronise_le_plan_sur_position_restante(monkeypatc
 def test_run_cycle_rejette_un_ordre_non_hold_sans_intent(monkeypatch, tmp_path, patch_batch, make_data_source) -> None:
     _write_runtime_config(tmp_path)
     state_dir = tmp_path / "state"
-    now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 6, 5, 14, 30, tzinfo=timezone.utc)
 
     monkeypatch.setattr(daemon, "ROOT", tmp_path)
     monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
@@ -1458,7 +1504,7 @@ def test_run_cycle_decision_contient_plan_complet_apres_ouverture(
     """À la création d'un plan, l'entrée decisions.jsonl contient le plan complet."""
     _write_runtime_config(tmp_path)
     state_dir = tmp_path / "state"
-    now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 6, 5, 14, 30, tzinfo=timezone.utc)
 
     monkeypatch.setattr(daemon, "ROOT", tmp_path)
     monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
@@ -1871,18 +1917,18 @@ class TestExitChecks5mBars:
         # Barre 15m low=96 → pas de stop
         # Barre 5m low=94.5 ≤ 95 → stop déclenché
         opened_at = "2026-06-10T11:00:00+00:00"
-        now = datetime(2026, 6, 10, 12, 0, tzinfo=timezone.utc)
+        now = datetime(2026, 6, 10, 14, 30, tzinfo=timezone.utc)
         self._setup_state(tmp_path, state_dir, opened_at=opened_at)
 
         monkeypatch.setattr(daemon, "ROOT", tmp_path)
         monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
 
         bar_15m = Bar(
-            ts="2026-06-10T11:45:00+00:00",
+            ts="2026-06-10T14:00:00+00:00",
             open=97.0, high=98.0, low=96.0, close=97.0, volume=1000.0,
         )
         bar_5m = Bar(
-            ts="2026-06-10T11:55:00+00:00",
+            ts="2026-06-10T14:20:00+00:00",
             open=96.0, high=96.5, low=94.5, close=95.5, volume=300.0,
         )
 
@@ -1969,7 +2015,7 @@ class TestExitChecks5mBars:
         _write_runtime_config(tmp_path, symbols=["SPY", "QQQ"])
         state_dir = tmp_path / "state"
         opened_at = "2026-06-10T11:00:00+00:00"
-        now = datetime(2026, 6, 10, 12, 0, tzinfo=timezone.utc)
+        now = datetime(2026, 6, 10, 14, 30, tzinfo=timezone.utc)
 
         # SPY : plan LONG, stop 95, barre 5m low=94.5 → déclenché, interval='5m'
         from trader.tools.execution import Order, SimBroker
@@ -1995,7 +2041,7 @@ class TestExitChecks5mBars:
             if interval == "5m":
                 if symbol == "SPY":
                     return [Bar(
-                        ts="2026-06-10T11:55:00+00:00",
+                        ts="2026-06-10T14:20:00+00:00",
                         open=96.0, high=96.5, low=94.5, close=95.5, volume=300.0,
                     )]
                 # QQQ : échec 5m
@@ -2003,12 +2049,12 @@ class TestExitChecks5mBars:
             # 15m
             if symbol == "SPY":
                 return [Bar(
-                    ts="2026-06-10T11:45:00+00:00",
+                    ts="2026-06-10T14:00:00+00:00",
                     open=97.0, high=98.0, low=96.0, close=97.0, volume=1000.0,
                 )]
             if symbol == "QQQ":
                 return [Bar(
-                    ts="2026-06-10T11:45:00+00:00",
+                    ts="2026-06-10T14:00:00+00:00",
                     open=185.0, high=186.0, low=178.0, close=182.0, volume=800.0,
                 )]
             return []
@@ -2216,7 +2262,7 @@ class TestExitChecks5mAggregation:
         _write_runtime_config(tmp_path)
         state_dir = tmp_path / "state"
         opened_at = "2026-06-10T11:00:00+00:00"
-        now = datetime(2026, 6, 10, 12, 0, tzinfo=timezone.utc)
+        now = datetime(2026, 6, 10, 14, 30, tzinfo=timezone.utc)
         self._setup_long_spy(state_dir, opened_at=opened_at, stop=95.0)
 
         monkeypatch.setattr(daemon, "ROOT", tmp_path)
@@ -2225,15 +2271,15 @@ class TestExitChecks5mAggregation:
         # Fenêtre de 3 barres 5m :
         # - barre 2 (avant-dernière) : low=94.5 ≤ stop=95 → spike DANS la fenêtre
         # - barre 3 (dernière) : low=96 > stop=95 → spike revenu
-        bar_5m_1 = Bar(ts="2026-06-10T11:45:00+00:00", open=97.0, high=98.0, low=96.5, close=97.0, volume=300.0)
-        bar_5m_2 = Bar(ts="2026-06-10T11:50:00+00:00", open=96.5, high=97.0, low=94.5, close=96.0, volume=300.0)
-        bar_5m_3 = Bar(ts="2026-06-10T11:55:00+00:00", open=96.0, high=97.0, low=96.0, close=96.5, volume=300.0)
+        bar_5m_1 = Bar(ts="2026-06-10T14:10:00+00:00", open=97.0, high=98.0, low=96.5, close=97.0, volume=300.0)
+        bar_5m_2 = Bar(ts="2026-06-10T14:15:00+00:00", open=96.5, high=97.0, low=94.5, close=96.0, volume=300.0)
+        bar_5m_3 = Bar(ts="2026-06-10T14:20:00+00:00", open=96.0, high=97.0, low=96.0, close=96.5, volume=300.0)
 
         def get_bars(symbol, lookback, interval):
             if interval == "5m":
                 return [bar_5m_1, bar_5m_2, bar_5m_3]
             # 15m : low=96 > stop=95 → pas de stop sans agrégation
-            return [Bar(ts="2026-06-10T11:45:00+00:00", open=97.0, high=98.0, low=96.0, close=96.5, volume=900.0)]
+            return [Bar(ts="2026-06-10T14:00:00+00:00", open=97.0, high=98.0, low=96.0, close=96.5, volume=900.0)]
 
         data_source = make_data_source(get_bars)
         patch_batch(lambda **kwargs: Decision.hold(kwargs["symbol"], "hold"))
@@ -2315,14 +2361,14 @@ class TestExitChecks5mMinor:
         _write_runtime_config(tmp_path)
         state_dir = tmp_path / "state"
         opened_at = "2026-06-10T11:00:00+00:00"
-        now = datetime(2026, 6, 10, 12, 0, tzinfo=timezone.utc)
+        now = datetime(2026, 6, 10, 14, 30, tzinfo=timezone.utc)
         self._setup_long_spy(state_dir, opened_at=opened_at, stop=95.0)
 
         monkeypatch.setattr(daemon, "ROOT", tmp_path)
         monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
 
         # Barre 15m fraîche avec low=94 → stop déclenché
-        bar_15m = Bar(ts="2026-06-10T11:45:00+00:00", open=97.0, high=98.0, low=94.0, close=96.0, volume=1000.0)
+        bar_15m = Bar(ts="2026-06-10T14:00:00+00:00", open=97.0, high=98.0, low=94.0, close=96.0, volume=1000.0)
 
         def get_bars(symbol, lookback, interval):
             if interval == "5m":

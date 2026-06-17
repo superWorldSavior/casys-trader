@@ -80,7 +80,8 @@ def _run(
 ) -> tuple[dict, list]:
     _runtime_config(tmp_path)
     state_dir = tmp_path / "state"
-    now = datetime(2026, 6, 11, 12, 0, tzinfo=timezone.utc)
+    # 2026-06-05 (vendredi) à 14:30 UTC = 10:30 ET → séance US régulière ouverte
+    now = datetime(2026, 6, 5, 14, 30, tzinfo=timezone.utc)
 
     monkeypatch.setattr(daemon, "ROOT", tmp_path)
     monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
@@ -187,7 +188,7 @@ def test_plan_arme_resout_hard_stop_structural_sur_barres_fraiches(
         make_data_source,
         trigger,
         bars_factory=_bars_with_lows(
-            "2026-06-11T12:00:00+00:00",
+            "2026-06-05T14:25:00+00:00",
             [90.0, 96.0, 94.0, 97.0],
         ),
     )

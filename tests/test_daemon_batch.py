@@ -43,6 +43,24 @@ def _write_runtime_config(root) -> None:
     (root / "mandate" / "memory.md").write_text("# Memoire\n")
 
 
+def test_execution_blocked_reason_gate_les_ordres_hors_execution() -> None:
+    # §13.5 — la garde déterministe : un ordre ne part que si execution.enabled.
+    elig = {
+        "OK": {"execution": {"enabled": True, "reason": "tradable"}},
+        "CLOSED": {"execution": {"enabled": False, "reason": "session_closed"}},
+        "STALE": {"execution": {"enabled": False, "reason": "runtime_stale"}},
+    }
+    assert daemon._execution_blocked_reason(elig, "OK") is None
+    assert daemon._execution_blocked_reason(elig, "CLOSED") == "execution:session_closed"
+    assert daemon._execution_blocked_reason(elig, "STALE") == "execution:runtime_stale"
+    # Symbole hors classification (cas anormal) : fail-open par défaut (sorties de
+    # protection), fail-closed pour les ouvertures (invariant §10).
+    assert daemon._execution_blocked_reason(elig, "UNKNOWN") is None
+    assert daemon._execution_blocked_reason(elig, "UNKNOWN", fail_closed=True) == "execution:unclassified"
+    # Un symbole classé exécutable n'est jamais bloqué, même en fail_closed.
+    assert daemon._execution_blocked_reason(elig, "OK", fail_closed=True) is None
+
+
 def test_build_execution_eligibility_separe_planning_et_execution_pour_un_stale() -> None:
     # §13.2 branchée : un symbole runtime-stale mais au daily présent (frais) →
     # execution interdite (runtime_stale), planning autorisé (daily_context_fresh).
