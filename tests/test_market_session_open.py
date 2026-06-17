@@ -285,3 +285,13 @@ def test_market_session_mapping_couvre_tous_les_suffixes_eu_du_pool():
     )
     assert missing_suffixes == []
     assert missing_symbols == []
+
+
+def test_session_snapshot_two_suit_taipei_pas_le_defaut_us():
+    # Un ticker TPEx (.TWO) doit suivre le calendrier Taïwan (09:00-13:30 Asia/Taipei),
+    # pas le défaut US. Les deux assertions sont DISCRIMINANTES : elles échoueraient si
+    # .TWO retombait sur America/New_York.
+    # 02:00 UTC = 10:00 Taipei (TW ouvert) MAIS 22:00 EDT la veille (US fermé).
+    assert session_snapshot("6488.TWO", now=_utc(2026, 6, 10, 2))["open"] is True
+    # 14:00 UTC = 22:00 Taipei (TW fermé) MAIS 10:00 EDT (US ouvert).
+    assert session_snapshot("6488.TWO", now=_utc(2026, 6, 10, 14))["open"] is False
