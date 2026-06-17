@@ -136,8 +136,12 @@ Pour garder le contexte du trade :
 Le but n'est pas de stocker du raisonnement long, mais de rendre la thèse et les
 gardes suffisamment explicites pour les prochains réveils.
 
-`last_llm_review` doit être persisté dans `TradePlan` : `_LAST_LLM_AT` est seulement
-en RAM et repart de zéro au restart.
+`last_llm_review` est persisté dans `TradePlan` puis **réinjecté dans le contexte
+LLM par symbole** (`_batch_decide` / `_symbol_facts`) au réveil d'une position
+ouverte : le modèle revoit son propre dernier verdict (continuité de thèse). La
+persistance ne sert PAS à nourrir le gate de pertinence : `has_position` force
+déjà l'appel LLM sur toute position ouverte, donc réhydrater `_LAST_LLM_AT` au
+restart serait sans effet observable.
 
 ## 6. Cycle hors marché / runtime stale
 
@@ -289,6 +293,6 @@ brancher une librairie de calendriers exchange si nécessaire.
 5. Autoriser `_batch_decide` sur `analysis_decidable` avec `execution.enabled=false`.
 6. Bloquer les ordres immédiats non exécutables tout en appliquant watch/wake.
 7. Câbler le vrai préflight des plans d'ouverture (`requires_preflight` ou trigger dédié).
-8. Enrichir `TradePlan`, persister `last_llm_review` et ajouter le wake court post-entry
-   via le scheduler existant.
+8. Enrichir `TradePlan`, persister `last_llm_review`, **le réinjecter au contexte LLM**
+   (continuité de thèse) et ajouter le wake court post-entry via le scheduler existant.
 9. Corriger / compléter le calendrier `.TWO`, weekend, puis fériés/session.

@@ -70,6 +70,91 @@ def test_batch_decide_injecte_age_data_et_session_par_symbole(monkeypatch) -> No
     assert captured["QQQ"]["data_age_m"] is None  # âge inconnu = inconnu, pas 0
 
 
+def test_batch_decide_injecte_last_llm_review_du_plan_ouvert(monkeypatch) -> None:
+    # Continuité de thèse : le dernier verdict LLM persisté (last_llm_review d'un
+    # TradePlan ouvert) est réinjecté dans le contexte par symbole au réveil — le
+    # modèle voit son propre verdict intact/fragile/invalidated précédent.
+    captured: dict = {}
+
+    def fake_batch(*, per_symbol, **kwargs):
+        captured.update(per_symbol)
+        return {sym: Decision.hold(sym, "x") for sym in per_symbol}
+
+    monkeypatch.setattr(daemon.codex_client, "decide_batch", fake_batch)
+    review = {"ts": "2026-06-15T13:00:00+00:00", "verdict": "fragile", "action": "HOLD"}
+
+    daemon._batch_decide(
+        decidable=["SPY", "QQQ"],
+        max_model_calls=1,
+        last_review_by_symbol={"SPY": review},
+        **_COMMON,
+    )
+
+    assert captured["SPY"].get("last_llm_review") == review
+    assert "last_llm_review" not in captured["QQQ"]  # pas de review => champ absent
+
+
+def test_batch_decide_reinjecte_last_llm_review_dans_les_deux_batches(monkeypatch) -> None:
+    # La review doit suivre le symbole dans le 1er batch ET dans le 2e batch déclenché
+    # par un REQUEST_CONTEXT (sessions jetables : le 2e batch n'a pas l'historique du 1er).
+    captured: list[dict] = []
+    request = IndicatorRequest(symbol="SPY", indicators=["z_score"], timeframe="1h")
+
+    def fake_batch(*, symbols, per_symbol, allow_context_request, **kwargs):
+        captured.append({s: dict(f) for s, f in per_symbol.items()})
+        if allow_context_request:
+            return {"SPY": ContextResearchRequest(symbol="SPY", rationale="z", requests=[request])}
+        return {sym: Decision.hold(sym, "x") for sym in symbols}
+
+    def fake_resolve(requests, *args, **kwargs):
+        return {"requests": [{"symbol": "SPY", "indicators": {"z_score": 1.2}}]}
+
+    monkeypatch.setattr(daemon.codex_client, "decide_batch", fake_batch)
+    monkeypatch.setattr(daemon, "resolve_indicator_requests", fake_resolve)
+    review = {"ts": "2026-06-15T13:00:00+00:00", "verdict": "fragile"}
+
+    daemon._batch_decide(
+        decidable=["SPY"],
+        max_model_calls=2,
+        last_review_by_symbol={"SPY": review},
+        **_COMMON,
+    )
+
+    assert len(captured) == 2  # round-trip REQUEST_CONTEXT a bien eu lieu
+    assert captured[0]["SPY"].get("last_llm_review") == review  # 1er batch
+    assert captured[1]["SPY"].get("last_llm_review") == review  # 2e batch (per_symbol2)
+
+
+def test_last_review_by_symbol_filtre_plans_sans_review_et_hors_perimetre(tmp_path) -> None:
+    # Mapping symbole -> dernier verdict LLM, restreint aux plans ouverts du batch
+    # courant qui PORTENT une review (narrow contract : on ne passe pas le store entier).
+    from dataclasses import replace
+
+    from trader.trade_plan import TradePlanStore, create_trade_plan
+
+    store = TradePlanStore(tmp_path / "plans.json")
+
+    def _plan(sym: str, review: dict | None = None):
+        plan = create_trade_plan(
+            symbol=sym,
+            side="LONG",
+            quantity=10.0,
+            entry_price=100.0,
+            opened_at="2026-06-05T12:00:00+00:00",
+            raw_exit_plan={"hard_stop": 95.0},
+        )
+        return plan if review is None else replace(plan, last_llm_review=review)
+
+    review = {"ts": "2026-06-05T12:15:00+00:00", "verdict": "intact"}
+    store.upsert(_plan("SPY", review))
+    store.upsert(_plan("QQQ"))  # plan ouvert mais sans review
+    store.upsert(_plan("IWM", review))  # review mais hors du batch décidé
+
+    out = daemon._last_review_by_symbol(store, ["SPY", "QQQ"])
+
+    assert out == {"SPY": review}
+
+
 def test_batch_decide_expose_les_active_watches_du_symbole_seulement(monkeypatch, tmp_path) -> None:
     captured: dict = {}
     now = datetime(2026, 6, 15, 14, 30, tzinfo=timezone.utc)

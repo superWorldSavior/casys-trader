@@ -184,8 +184,9 @@ veto de thèse au moment du tir.
 - Le suivi post-entry v1 doit étendre le chemin existant : wake court après fill,
   puis `has_position` force l'appel LLM. Pas de canal `post_entry_watch` parallèle ;
   si un tel champ existe plus tard hors position, il devra devenir sticky D10.
-- `last_llm_review` doit être persisté dans `TradePlan`, car `_LAST_LLM_AT` est en
-  RAM et repart de zéro au restart.
+- `last_llm_review` est persisté dans `TradePlan` puis **réinjecté au contexte LLM**
+  par symbole (continuité de thèse au réveil). Il ne sert PAS à réhydrater le cache
+  `_LAST_LLM_AT` : `has_position` force déjà l'appel LLM sur toute position ouverte.
 **Point ouvert principal.** Critère de déclenchement du préflight : conditionnel
 vs global. La recommandation actuelle est conditionnelle pour préserver D7B sur les
 plans intra-séance récents, éviter le double-jugement inutile, et mesurer d'abord

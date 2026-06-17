@@ -538,6 +538,20 @@ def _persist_last_llm_review(
             plan_store.upsert(replace(plan, last_llm_review=review))
 
 
+def _last_review_by_symbol(
+    plan_store: TradePlanStore, symbols: list[str]
+) -> dict[str, dict]:
+    """Mapping {symbole: last_llm_review} pour les plans ouverts du périmètre qui
+    portent une revue. Narrow contract : on ne passe pas le store entier au batch,
+    juste le dernier verdict à réinjecter (continuité de thèse au réveil)."""
+    wanted = set(symbols)
+    out: dict[str, dict] = {}
+    for plan in plan_store.open_plans():
+        if plan.symbol in wanted and plan.last_llm_review:
+            out[plan.symbol] = plan.last_llm_review
+    return out
+
+
 def _positive_finite_float(raw: object) -> float | None:
     try:
         value = float(raw)  # type: ignore[arg-type]
@@ -992,6 +1006,7 @@ def _batch_decide(
     now: datetime,
     data_age_by_symbol: dict[str, float],
     sched: scheduler.Scheduler | None = None,
+    last_review_by_symbol: dict[str, dict] | None = None,
     decision_timeout_s: int = 900,
 ) -> tuple[dict[str, codex_client.Decision], int]:
     """Décide TOUS les symboles dus en UN appel batch (contexte partagé envoyé une
@@ -1005,16 +1020,24 @@ def _batch_decide(
         return {sym: codex_client.Decision.hold(sym, "model_call_budget_exhausted") for sym in decidable}, 0
     active_watches_by_symbol = _active_watch_summaries_by_symbol(sched=sched, symbols=decidable, now=now)
 
+    reviews = last_review_by_symbol or {}
+
     def _symbol_facts(sym: str) -> dict:
         # Faits calculés par le code (pas des consignes en prose) : âge réel des
         # prix et état de la séance de la place du symbole. Âge inconnu = None.
         age = data_age_by_symbol.get(sym)
         session = market.session_snapshot(sym, now=now)
-        return {
+        facts = {
             "data_age_m": None if age is None else int(round(age)),
             "session": {"open": bool(session.get("open"))},
             "active_watches": active_watches_by_symbol.get(sym, []),
         }
+        # Continuité de thèse : le dernier verdict LLM persisté dans le TradePlan
+        # (sessions acpx jetables) est réinjecté au réveil d'une position ouverte.
+        review = reviews.get(sym)
+        if review:
+            facts["last_llm_review"] = review
+        return facts
 
     per_symbol = {
         sym: {"indicator_triggers": triggers_by_symbol.get(sym, []), **_symbol_facts(sym)}
@@ -1737,6 +1760,7 @@ def run_cycle(
         now=now,
         data_age_by_symbol=data_age_by_symbol,
         sched=sched,
+        last_review_by_symbol=_last_review_by_symbol(plan_store, decidable),
         decision_timeout_s=decision_timeout_s,
     )
     # revue effective seulement si le modèle a réellement statué (review Codex :
