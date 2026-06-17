@@ -551,6 +551,38 @@ def _last_review_by_symbol(
     return out
 
 
+def _build_execution_eligibility(
+    symbols: list[str],
+    *,
+    stale_market_data: dict[str, dict],
+    prices: dict[str, float],
+    daily_bars_by_symbol: dict[str, list],
+    data_age_by_symbol: dict[str, float],
+    now: datetime,
+    runtime_interval: str,
+) -> dict[str, dict]:
+    """Classifie chaque symbole en {execution, planning} (design §5.1) depuis l'état
+    du cycle. execution gate les ordres (runtime frais + prix présent + session
+    ouverte) ; planning autorise l'analyse/veille dès que le daily est présent (jugé
+    frais par séance complétée), même runtime stale."""
+    eligibility: dict[str, dict] = {}
+    for sym in symbols:
+        daily_bars = daily_bars_by_symbol.get(sym)
+        stale = stale_market_data.get(sym) or {}
+        eligibility[sym] = market.classify_symbol_context(
+            runtime_interval=runtime_interval,
+            has_runtime_price=sym in prices,
+            is_runtime_stale=sym in stale_market_data,
+            session_open=bool(market.session_snapshot(sym, now=now).get("open")),
+            daily_fresh=bool(daily_bars),
+            last_runtime_bar_ts=stale.get("last_bar_ts"),
+            data_age_minutes=data_age_by_symbol.get(sym),
+            daily_as_of=str(daily_bars[-1].ts) if daily_bars else None,
+            next_session_open=market.next_regular_session_open(now, symbol=sym).isoformat(),
+        )
+    return eligibility
+
+
 def _positive_finite_float(raw: object) -> float | None:
     try:
         value = float(raw)  # type: ignore[arg-type]
@@ -1006,6 +1038,7 @@ def _batch_decide(
     data_age_by_symbol: dict[str, float],
     sched: scheduler.Scheduler | None = None,
     last_review_by_symbol: dict[str, dict] | None = None,
+    market_context_by_symbol: dict[str, dict] | None = None,
     decision_timeout_s: int = 900,
 ) -> tuple[dict[str, codex_client.Decision], int]:
     """Décide TOUS les symboles dus en UN appel batch (contexte partagé envoyé une
@@ -1020,6 +1053,7 @@ def _batch_decide(
     active_watches_by_symbol = _active_watch_summaries_by_symbol(sched=sched, symbols=decidable, now=now)
 
     reviews = last_review_by_symbol or {}
+    market_contexts = market_context_by_symbol or {}
 
     def _symbol_facts(sym: str) -> dict:
         # Faits calculés par le code (pas des consignes en prose) : âge réel des
@@ -1031,6 +1065,13 @@ def _batch_decide(
             "session": {"open": bool(session.get("open"))},
             "active_watches": active_watches_by_symbol.get(sym, []),
         }
+        # Séparation analyse/exécution (§5.1) : le LLM voit s'il peut exécuter
+        # (execution.enabled) distinctement de s'il peut seulement analyser/planifier
+        # (planning.enabled) — il ne confond plus une thèse swing et un ordre immédiat.
+        mc = market_contexts.get(sym)
+        if mc:
+            facts["execution"] = mc.get("execution")
+            facts["planning"] = mc.get("planning")
         # Continuité de thèse : le dernier verdict LLM persisté dans le TradePlan
         # (sessions acpx jetables) est réinjecté au réveil d'une position ouverte.
         review = reviews.get(sym)
@@ -1402,6 +1443,17 @@ def run_cycle(
             continue
         daily_bars_by_symbol[sym] = daily_bars
 
+    # §13.2 — classification execution/planning par symbole, injectée au contexte LLM.
+    execution_eligibility = _build_execution_eligibility(
+        symbols,
+        stale_market_data=stale_market_data,
+        prices=prices,
+        daily_bars_by_symbol=daily_bars_by_symbol,
+        data_age_by_symbol=data_age_by_symbol,
+        now=now,
+        runtime_interval=runtime_interval,
+    )
+
     exit_bars_by_symbol, exit_intervals_by_symbol = _fetch_5m_bars_for_open_plans(
         plan_store=plan_store,
         data_source=data_source,
@@ -1759,6 +1811,7 @@ def run_cycle(
         data_age_by_symbol=data_age_by_symbol,
         sched=sched,
         last_review_by_symbol=_last_review_by_symbol(plan_store, decidable),
+        market_context_by_symbol=execution_eligibility,
         decision_timeout_s=decision_timeout_s,
     )
     # revue effective seulement si le modèle a réellement statué (review Codex :

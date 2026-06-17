@@ -43,6 +43,28 @@ def _write_runtime_config(root) -> None:
     (root / "mandate" / "memory.md").write_text("# Memoire\n")
 
 
+def test_build_execution_eligibility_separe_planning_et_execution_pour_un_stale() -> None:
+    # §13.2 branchée : un symbole runtime-stale mais au daily présent (frais) →
+    # execution interdite (runtime_stale), planning autorisé (daily_context_fresh).
+    now = datetime(2026, 6, 15, 14, 30, tzinfo=timezone.utc)  # séance US ouverte
+    elig = daemon._build_execution_eligibility(
+        ["STALE"],
+        stale_market_data={
+            "STALE": {"last_bar_ts": "2026-06-12T20:00:00+00:00", "data_age_minutes": 4000.0}
+        },
+        prices={"STALE": 100.0},
+        daily_bars_by_symbol={"STALE": [Bar(ts="2026-06-12", open=1.0, high=1.0, low=1.0, close=1.0, volume=1.0)]},
+        data_age_by_symbol={"STALE": 4000.0},
+        now=now,
+        runtime_interval="15m",
+    )
+    assert elig["STALE"]["execution"]["enabled"] is False
+    assert elig["STALE"]["execution"]["reason"] == "runtime_stale"
+    assert elig["STALE"]["execution"]["data_age_minutes"] == 4000.0
+    assert elig["STALE"]["planning"]["enabled"] is True
+    assert elig["STALE"]["planning"]["reason"] == "daily_context_fresh"
+
+
 def test_batch_decide_injecte_age_data_et_session_par_symbole(monkeypatch) -> None:
     # Code over instructions : l'âge des prix et l'état de la séance de la place
     # du symbole sont des FAITS calculés par le code et injectés dans le payload —
@@ -92,6 +114,32 @@ def test_batch_decide_injecte_last_llm_review_du_plan_ouvert(monkeypatch) -> Non
 
     assert captured["SPY"].get("last_llm_review") == review
     assert "last_llm_review" not in captured["QQQ"]  # pas de review => champ absent
+
+
+def test_batch_decide_injecte_le_market_context_execution_planning(monkeypatch) -> None:
+    # §13.2 branchée : le bloc execution/planning arrive dans le per_symbol envoyé au
+    # LLM — le modèle voit execution.enabled=false et ne confond pas analyse et ordre.
+    captured: dict = {}
+
+    def fake_batch(*, per_symbol, **kwargs):
+        captured.update(per_symbol)
+        return {sym: Decision.hold(sym, "x") for sym in per_symbol}
+
+    monkeypatch.setattr(daemon.codex_client, "decide_batch", fake_batch)
+    mc = {
+        "execution": {"enabled": False, "reason": "runtime_stale"},
+        "planning": {"enabled": True, "reason": "daily_context_fresh"},
+    }
+
+    daemon._batch_decide(
+        decidable=["SPY"],
+        max_model_calls=1,
+        market_context_by_symbol={"SPY": mc},
+        **_COMMON,
+    )
+
+    assert captured["SPY"].get("execution") == mc["execution"]
+    assert captured["SPY"].get("planning") == mc["planning"]
 
 
 def test_batch_decide_reinjecte_last_llm_review_dans_les_deux_batches(monkeypatch) -> None:
