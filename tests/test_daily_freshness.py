@@ -55,3 +55,12 @@ def test_pas_de_barres_est_stale_no_data():
 
 def test_last_completed_session_date_recule_au_vendredi_le_weekend():
     assert last_completed_session_date(_utc(2026, 6, 14, 18), symbol="AAPL").isoformat() == "2026-06-12"
+
+
+def test_daily_timestampe_minuit_local_nest_pas_decale_par_le_fuseau():
+    # yfinance peut étiqueter la barre daily à minuit LOCAL (+08:00 pour Taipei).
+    # La date de séance est le 12 ; une conversion UTC la ferait reculer au 11 et
+    # rejeterait à tort un daily valide. On compare la date du LABEL, pas l'instant UTC.
+    bars = [Bar(ts="2026-06-12T00:00:00+08:00", open=1.0, high=1.0, low=1.0, close=1.0, volume=1.0)]
+    fresh = assess_daily_freshness(bars, now=_utc(2026, 6, 13, 6), symbol="2330.TW")  # samedi
+    assert fresh.fresh is True

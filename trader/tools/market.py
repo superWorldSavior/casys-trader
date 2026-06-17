@@ -257,7 +257,10 @@ def assess_daily_freshness(
     ts_utc = ts.astimezone(timezone.utc)
     if (ts_utc - now_utc).total_seconds() / 60.0 > _CLOCK_SKEW_TOLERANCE_MINUTES:
         return Freshness(False, "future_ts", None)
-    if ts_utc.date() >= last_completed_session_date(now_utc, symbol=symbol):
+    # On compare la date du LABEL de séance (composante date du timestamp, qu'il
+    # soit à minuit local ou UTC), PAS l'instant en UTC : un daily yfinance étiqueté
+    # minuit local (ex. +08:00 Taipei) reculerait d'un jour si on reprojetait en UTC.
+    if ts.date() >= last_completed_session_date(now_utc, symbol=symbol):
         return Freshness(True, None, None)
     return Freshness(False, "stale_session", None)
 
