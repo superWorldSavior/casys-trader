@@ -1673,10 +1673,25 @@ def run_cycle(
     if sched is not None:
         _ensure_default_wake(sched, now=now, default_wake_minutes=default_wake_minutes)
 
-    # Batch stateless : UN appel modèle pour tous les symboles dus & frais (le
-    # contexte partagé n'est envoyé qu'une fois, au lieu de N). Les symboles stale
-    # / sans prix ne sont pas décidés (HOLD ci-dessous).
-    decidable = [s for s in symbols_to_decide if s not in stale_market_data and s in prices]
+    # §13.4 — décidables : runtime frais avec prix (exécution possible) OU planning
+    # autorisé (daily valide → analyse swing même runtime stale) OU position ouverte
+    # (toujours relire la thèse). Les stale-analysables passent ensuite par le MÊME
+    # gate de pertinence (anti-déluge) ; seuls les stale non-analysables retombent
+    # sur le HOLD synthétique + backoff plus bas.
+    held_symbols = {h.symbol for h in snap.holdings if h.quantity}
+
+    def _analysis_eligible(sym: str) -> bool:
+        planning = (execution_eligibility.get(sym) or {}).get("planning") or {}
+        return bool(planning.get("enabled")) or sym in held_symbols
+
+    # Un prix runtime (même vieux) est REQUIS pour entrer dans le batch : sans prix,
+    # la boucle finale ne peut pas traiter le symbole (il retombe sur le HOLD stale).
+    # Cela évite une décision LLM fantôme jetée plus bas (gap silencieux).
+    decidable = [
+        s
+        for s in symbols_to_decide
+        if s in prices and (s not in stale_market_data or _analysis_eligible(s))
+    ]
 
     # Plans armés (D7 étage B) : un trigger EXECUTE_ORDER s'exécute SANS appel
     # LLM — le scénario a été validé à l'armement, le gate de risque déterministe
@@ -1782,7 +1797,6 @@ def run_cycle(
     family_of = {
         member: fam for fam, members in active_families.items() for member in members
     }
-    held_symbols = {h.symbol for h in snap.holdings if h.quantity}
     agent_wakes = sched.symbols_with_wake() if sched is not None else set()
     gated_symbols: list[str] = []
     kept: list[str] = []
@@ -1835,14 +1849,24 @@ def run_cycle(
         symbols_total=len(symbols_to_decide),
         batch_size=len(decidable),
     )
+    # §13.4 — barres pour le batch : runtime des non-stale + DAILY des stale-analysables,
+    # sinon le LLM analyserait un symbole stale sans aucune barre exploitable.
+    analysis_bars_by_symbol = dict(tradable_bars_by_symbol)
+    for sym in decidable:
+        if sym not in analysis_bars_by_symbol and sym in daily_bars_by_symbol:
+            analysis_bars_by_symbol[sym] = daily_bars_by_symbol[sym]
+    # §13.4 — les symboles dont resolve_indicator_requests peut servir un REQUEST_CONTEXT
+    # = ceux qui ont des barres (runtime non-stale + daily des stale-analysables). Sans
+    # ça, un stale qui demande du contexte sur lui-même reçoit un research vide.
+    analysis_symbols = sorted(analysis_bars_by_symbol)
     decisions_by_symbol, model_calls_used = _batch_decide(
         decidable=decidable,
         mandate=mandate_txt,
         memory=memory_txt,
         shared_context=base_context,
         triggers_by_symbol=triggers_by_symbol,
-        tradable_bars_by_symbol=tradable_bars_by_symbol,
-        tradable_symbols=tradable_symbols,
+        tradable_bars_by_symbol=analysis_bars_by_symbol,
+        tradable_symbols=analysis_symbols,
         runtime_interval=runtime_interval,
         runtime_lookback=runtime_lookback,
         max_context_requests_per_symbol=max_context_requests_per_symbol,
@@ -1872,7 +1896,10 @@ def run_cycle(
             # NB : un plan armé annulé n'est PAS ici — il passe au LLM (voulu).
             continue
         stale_data = stale_market_data.get(sym)
-        if stale_data is not None:
+        # §13.4 — un stale-analysable (planning.enabled / position) est passé au LLM
+        # via `decidable` : il ne retombe PLUS sur le HOLD synthétique + backoff. Seuls
+        # les stale NON décidables (rien d'exploitable) gardent le HOLD infra ci-dessous.
+        if stale_data is not None and sym not in decidable:
             streak = sched.get_stale_streak(sym) if sched is not None else 0
             wake_minutes = _stale_backoff_wake_minutes(streak, default_wake_minutes=default_wake_minutes)
             # Ne jamais dormir au-delà de la prochaine ouverture : on raccourcit le

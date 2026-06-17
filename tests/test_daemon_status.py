@@ -277,12 +277,18 @@ def test_run_cycle_bloque_decision_sur_donnees_marche_perimees(monkeypatch, tmp_
     state_dir = tmp_path / "state"
     now = datetime(2026, 6, 5, 16, 0, tzinfo=timezone.utc)
     stale_ts = (now - timedelta(hours=2)).isoformat()
+    # Daily AUSSI périmé (séance ancienne) : sinon un daily du jour serait jugé frais
+    # par séance (§13.4) et le symbole deviendrait analysable au lieu de HOLD stale.
+    old_daily_ts = (now - timedelta(days=10)).date().isoformat()
     codex_calls = 0
 
     monkeypatch.setattr(daemon, "ROOT", tmp_path)
     monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
     data_source = make_data_source(lambda symbol, lookback, interval: [
-        Bar(ts=stale_ts, open=100.0, high=101.0, low=99.0, close=100.0, volume=1000.0)
+        Bar(
+            ts=(old_daily_ts if interval == "1d" else stale_ts),
+            open=100.0, high=101.0, low=99.0, close=100.0, volume=1000.0,
+        )
     ])
 
     def decide(**kwargs) -> Decision:

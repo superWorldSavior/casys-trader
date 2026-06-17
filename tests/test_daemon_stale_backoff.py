@@ -60,12 +60,18 @@ def _write_runtime_config(root) -> None:
 
 
 def _make_stale_source(now, age_minutes=90.0):
-    """Retourne une data source dont la barre est trop vieille."""
+    """Retourne une data source TOUT stale : runtime trop vieux ET daily d'une séance
+    ancienne (§13.4 : un daily du JOUR serait jugé frais par séance → analysable ;
+    pour rester dans le cas "rien d'exploitable → HOLD + backoff", le daily doit
+    couvrir une séance révolue)."""
     from datetime import timedelta
     from trader.tools.market import Bar
 
     class FakeStaleDataSource:
         def get_bars(self, symbol, lookback, interval):
+            if interval == "1d":
+                old = (now - timedelta(days=10)).date().isoformat()
+                return [Bar(ts=old, open=100.0, high=101.0, low=99.0, close=100.0, volume=1000.0)]
             stale_ts = (now - timedelta(minutes=age_minutes)).isoformat()
             return [Bar(ts=stale_ts, open=100.0, high=101.0, low=99.0, close=100.0, volume=1000.0)]
 
@@ -461,6 +467,102 @@ def test_indicator_watch_trigger_reset_streak(monkeypatch, tmp_path, patch_batch
     assert sched.get_stale_streak("SPY") == 0, (
         "Après trigger indicator_watch + data fraîche, le streak doit être 0"
     )
+
+
+def test_run_cycle_nappelle_pas_le_llm_sur_un_stale_sans_prix(
+    monkeypatch, tmp_path, patch_batch
+) -> None:
+    """§13.4 — un symbole daily-valide MAIS sans aucune barre runtime (donc sans prix)
+    ne doit PAS coûter un appel LLM perdu : il n'entre pas dans decidable, il retombe
+    sur le HOLD stale. Pas de décision fantôme (anti gap silencieux)."""
+    from trader.codex_client import Decision
+    from trader.tools.market import Bar
+
+    _write_runtime_config(tmp_path)
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    monkeypatch.setattr(daemon, "ROOT", tmp_path)
+    monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+    sched = Scheduler(state_dir / "scheduler.json")
+    now = datetime(2026, 6, 15, 14, 30, tzinfo=timezone.utc)
+
+    class NoRuntimeFreshDaily:
+        def get_bars(self, symbol, lookback, interval):
+            if interval == "1d":
+                return [
+                    Bar(ts=d, open=100.0, high=101.0, low=99.0, close=100.0, volume=1000.0)
+                    for d in ("2026-06-11", "2026-06-12", "2026-06-15")
+                ]
+            return []  # aucune barre runtime → pas de prix
+
+    calls: list[str] = []
+
+    def decide(**kwargs):
+        calls.append(kwargs["symbol"])
+        return Decision.hold(kwargs["symbol"], "ne doit pas être appelé")
+
+    patch_batch(decide)
+
+    report = daemon.run_cycle(
+        dry_run=True, now=now, symbols_filter=["SPY"],
+        sched=sched, data_source=NoRuntimeFreshDaily(),
+    )
+
+    assert "SPY" not in calls  # pas d'appel LLM perdu (le symbole n'entre pas dans le batch)
+    assert report["model_calls_used"] == 0
+
+
+def test_run_cycle_appelle_le_llm_sur_stale_avec_daily_valide(
+    monkeypatch, tmp_path, patch_batch
+) -> None:
+    """§13.4 — incident Taïwan : runtime stale MAIS daily valide → le LLM est appelé
+    (analyse swing, execution.enabled=false), au lieu d'un HOLD synthétique infra."""
+    from datetime import timedelta
+
+    from trader.codex_client import Decision
+    from trader.tools.market import Bar
+
+    _write_runtime_config(tmp_path)
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    monkeypatch.setattr(daemon, "ROOT", tmp_path)
+    monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+    sched = Scheduler(state_dir / "scheduler.json")
+    now = datetime(2026, 6, 15, 14, 30, tzinfo=timezone.utc)  # lundi 10:30 ET
+
+    class StaleRuntimeFreshDaily:
+        def get_bars(self, symbol, lookback, interval):
+            if interval == "1d":
+                # daily valide : couvre la dernière séance complétée (vendredi 12)
+                return [
+                    Bar(ts=d, open=100.0, high=101.0, low=99.0, close=100.0, volume=1000.0)
+                    for d in ("2026-06-11", "2026-06-12", "2026-06-15")
+                ]
+            # runtime stale : barres 15m vieilles de 3h (> budget de fraîcheur)
+            ts = (now - timedelta(hours=3)).isoformat()
+            return [Bar(ts=ts, open=100.0, high=101.0, low=99.0, close=100.0, volume=1000.0) for _ in range(32)]
+
+    calls: list[str] = []
+
+    def decide(**kwargs):
+        calls.append(kwargs["symbol"])
+        return Decision(
+            symbol=kwargs["symbol"], action="HOLD", quantity=0.0, confidence=0.5,
+            rationale="analyse swing", intent="HOLD", llm_provider="acpx", llm_model="gpt-5.5/medium",
+        )
+
+    patch_batch(decide)
+
+    report = daemon.run_cycle(
+        dry_run=True, now=now, symbols_filter=["SPY"],
+        sched=sched, data_source=StaleRuntimeFreshDaily(),
+    )
+
+    # Le LLM a bien été appelé malgré le runtime stale (plus de HOLD synthétique aveugle).
+    assert "SPY" in calls
+    dec = report["decisions"][0]
+    assert dec["decision_source"] == "llm"
+    assert dec["reason"] != "stale_market_data"
 
 
 def test_run_cycle_fetch_le_daily_meme_pour_un_symbole_runtime_stale(

@@ -558,7 +558,13 @@ class TestDaemonDecisionDataSourceField:
         def fake_assess_stale(bars, *, now, max_age_minutes):
             return Freshness(False, "too_old", 9999.0)
 
+        # Daily AUSSI stale (§13.4) : sinon un daily frais rendrait le symbole
+        # analysable au lieu de produire le HOLD synthétique stale testé ici.
+        def fake_assess_daily_stale(bars, *, now, symbol=None):
+            return Freshness(False, "stale_session", None)
+
         monkeypatch.setattr(market_mod, "assess_freshness", fake_assess_stale)
+        monkeypatch.setattr(market_mod, "assess_daily_freshness", fake_assess_daily_stale)
         monkeypatch.setattr(daemon, "ROOT", tmp_path)
         monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
         monkeypatch.setattr(daemon.codex_client, "decide_batch", lambda **_: {})

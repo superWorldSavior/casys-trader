@@ -296,3 +296,42 @@ brancher une librairie de calendriers exchange si nécessaire.
 8. Enrichir `TradePlan`, persister `last_llm_review`, **le réinjecter au contexte LLM**
    (continuité de thèse) et ajouter le wake court post-entry via le scheduler existant.
 9. Corriger / compléter le calendrier `.TWO`, weekend, puis fériés/session.
+
+## 14. État d'implémentation — 2026-06-17 (traçabilité fait / pas-fait)
+
+Cœur « séparation analyse/exécution » découpé en 5 briques TDD, chacune relue par Codex.
+
+| Brique | Contenu | État |
+|---|---|---|
+| 0 | Fraîcheur daily « dernière séance complétée » (`assess_daily_freshness`, `last_completed_session_date`) + fix fuseau | ✅ committé (`554a197`, `142141f`), GO Codex |
+| 1 (§13.4) | Fetch daily sur **tout l'univers**, plus seulement `tradable_symbols` | ✅ committé (`707c104`), GO Codex |
+| 2 (§13.2) | Classification `execution`/`planning` par symbole + injection au contexte LLM | ✅ committé (`27b07b3`, `3d8ecf2`), GO Codex |
+| 3 (§13.5) | Garde déterministe : aucun `broker.submit` hors séance (ordres LLM + sorties méca), watch/wake conservés | ✅ committé (`05b160d`), GO Codex |
+| 4 (§13.4) | `analysis_decidable` : le LLM analyse les stale-daily-valides (incident Taïwan) + positions stale ; daily fourni au batch ; HOLD synthétique bifurqué | ⏳ **implémenté, 1367 tests verts, NON committé, review Codex en cours** |
+
+**Arbitrage acté (Erwan, 2026-06-17)** : `execution.enabled = runtime frais + prix présent + session.open`.
+Gater sur `session.open` (marché fermé ⇒ pas de `submit`, sorties mécaniques incluses) ; FX 24/5 via `session_snapshot`.
+
+### Limitations V1 assumées (à NE PAS laisser en gap silencieux)
+- **Cockpit cross-asset** construit sur `tradable_symbols` : un symbole stale analysé n'apparaît pas dans le
+  cockpit partagé envoyé au LLM (il a son `per_symbol` mais pas le contexte cross-asset). Sans danger, qualité dégradée.
+- **Grâce post-cloche** : juste après la fermeture, le daily du jour n'est pas encore publié → `planning.enabled`
+  peut retomber à faux quelques heures (Codex finding non bloquant). À traiter dans le chantier calendrier.
+- **Backoff stale** non appliqué aux stale analysés gated (retombent sur le polling par défaut).
+- **Cache barres research** (Codex Medium, brique 4) : `analysis_bars_by_symbol` mélange runtime (non-stale)
+  et daily (stale), mais `_batch_decide` ne transmet qu'un seul `cached_interval=runtime_interval`. Une
+  requête `REQUEST_CONTEXT` sur un stale peut donc refetcher le daily, ou calculer un indicateur `15m` sur
+  des barres daily. Edge case (seulement si un stale demande du contexte) ; à clarifier si « daily fourni au
+  batch » doit aussi signifier « daily utilisé comme cache ».
+
+### Hors cœur — chantiers séparés à prioriser APRÈS mesure
+- **§13.6 préflight D12** : EN DISCUSSION (amende D7B). Replay `preflight_reasons` en place pour mesurer avant câblage.
+- **§13.7 enrichir `TradePlan`** : `last_llm_review` fait + réinjecté ; `entry_thesis` / `entry_context` /
+  `entry_decision_id` / `preflight_decision_id` **PAS faits**.
+- **§13.8 calendrier fériés/demi-séances MULTI-PLACES** (pas seulement Taïwan) + grâce post-cloche : **PAS fait**
+  (faisabilité API/lib en cours d'évaluation).
+
+### Quick wins hors §13 livrés cette session
+- `fix(audit)` HOLD infra exclus des métriques D1 (`0e97d55`) ; `fix(rotation)` sticky lit `trade_plans.json` (`7f9dd82`) ;
+  `test(market)` calendrier `.TWO` verrouillé (`ed31df3`). **Sticky D10 prod reste à 2 sources sur 4** (plans armés
+  scheduler + ordres pending NON collectés) — gap connu, non corrigé.

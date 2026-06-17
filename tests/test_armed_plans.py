@@ -38,6 +38,13 @@ def _bars_with_lows(now_iso: str, lows: list[float]):
 
 def _stale_bars(now: datetime):
     def factory(symbol, lookback, interval):
+        if interval == "1d":
+            # Daily AUSSI périmé (séance ancienne) : sinon un daily du jour serait
+            # jugé frais par séance (§13.4) et le symbole deviendrait analysable.
+            return [
+                Bar(ts="2026-06-01", open=100.0, high=100.5, low=99.5, close=100.0, volume=1000.0)
+                for _ in range(4)
+            ]
         stale_ts = now.replace(hour=10).isoformat()
         return [
             Bar(ts=stale_ts, open=100.0, high=100.5, low=99.5, close=100.0, volume=1000.0)
