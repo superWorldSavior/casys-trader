@@ -227,6 +227,95 @@ def test_run_cycle_persiste_un_plan_apres_ouverture(monkeypatch, tmp_path, patch
     assert plans[0].hard_stop_price == 95.0
 
 
+def test_run_cycle_planifie_une_revue_post_entry_apres_ouverture(
+    monkeypatch, tmp_path, patch_batch, make_data_source
+) -> None:
+    _write_runtime_config(tmp_path)
+    state_dir = tmp_path / "state"
+    now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
+    sched = Scheduler(state_dir / "scheduler.json")
+
+    monkeypatch.setattr(daemon, "ROOT", tmp_path)
+    monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+    data_source = make_data_source(lambda symbol, lookback, interval: [
+        Bar(ts=now.isoformat(), open=100.0, high=101.0, low=99.0, close=100.0, volume=1000.0)
+    ])
+    patch_batch(lambda **kwargs: Decision(
+            symbol="SPY",
+            action="BUY",
+            quantity=10.0,
+            confidence=0.8,
+            rationale="setup",
+            intent="OPEN_LONG",
+            exit_plan={"hard_stop": {"type": "price", "price": 95.0}}),
+    )
+
+    daemon.run_cycle(
+        dry_run=False,
+        now=now,
+        symbols_filter=["SPY"],
+        sched=sched,
+        data_source=data_source,
+    )
+
+    assert sched.next_wake("SPY") == now + timedelta(minutes=15)
+
+
+def test_run_cycle_persiste_last_llm_review_sur_position_ouverte(
+    monkeypatch, tmp_path, patch_batch, make_data_source
+) -> None:
+    _write_runtime_config(tmp_path)
+    state_dir = tmp_path / "state"
+    now = datetime(2026, 6, 5, 12, 15, tzinfo=timezone.utc)
+    broker = SimBroker(state_dir / "broker.json", starting_cash=100_000)
+    broker.submit(Order("SPY", "BUY", 10.0), 100.0, "2026-06-05T12:00:00+00:00", dry_run=False)
+    store = TradePlanStore(state_dir / "trade_plans.json")
+    store.upsert(
+        create_trade_plan(
+            symbol="SPY",
+            side="LONG",
+            quantity=10.0,
+            entry_price=100.0,
+            opened_at="2026-06-05T12:00:00+00:00",
+            raw_exit_plan={"hard_stop": {"type": "price", "price": 95.0}},
+        )
+    )
+
+    monkeypatch.setattr(daemon, "ROOT", tmp_path)
+    monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+    data_source = make_data_source(lambda symbol, lookback, interval: [
+        Bar(ts=now.isoformat(), open=101.0, high=102.0, low=100.0, close=101.0, volume=1000.0)
+    ])
+    patch_batch(lambda **kwargs: Decision(
+            symbol="SPY",
+            action="HOLD",
+            quantity=0.0,
+            confidence=0.8,
+            rationale="thèse intacte",
+            intent="HOLD",
+            llm_provider="acpx",
+            llm_model="gpt-5.5/medium"),
+    )
+
+    daemon.run_cycle(
+        dry_run=False,
+        now=now,
+        symbols_filter=["SPY"],
+        sched=Scheduler(state_dir / "scheduler.json"),
+        data_source=data_source,
+    )
+
+    review = TradePlanStore(state_dir / "trade_plans.json").open_plans()[0].last_llm_review
+    assert review == {
+        "ts": now.isoformat(),
+        "verdict": "intact",
+        "action": "HOLD",
+        "intent": "HOLD",
+        "llm_provider": "acpx",
+        "llm_model": "gpt-5.5/medium",
+    }
+
+
 def test_run_cycle_persiste_reference_volatility_pour_trailing_multiple(
     monkeypatch,
     tmp_path,

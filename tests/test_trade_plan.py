@@ -1,3 +1,4 @@
+from dataclasses import replace
 from datetime import datetime, timezone
 
 import pytest
@@ -966,6 +967,32 @@ def test_trade_plan_store_persiste_exit_watch(tmp_path) -> None:
 
     reloaded = TradePlanStore(tmp_path / "plans.json").open_plans()[0]
     assert reloaded.exit_watch == plan.exit_watch
+
+
+def test_trade_plan_store_persiste_last_llm_review(tmp_path) -> None:
+    store = TradePlanStore(tmp_path / "plans.json")
+    plan = create_trade_plan(
+        symbol="SPY",
+        side="LONG",
+        quantity=10.0,
+        entry_price=100.0,
+        opened_at="2026-06-05T12:00:00+00:00",
+        raw_exit_plan={"hard_stop": 95.0},
+    )
+    plan = replace(
+        plan,
+        last_llm_review={
+            "ts": "2026-06-05T12:15:00+00:00",
+            "verdict": "intact",
+            "action": "HOLD",
+            "intent": "HOLD",
+        },
+    )
+
+    store.upsert(plan)
+
+    reloaded = TradePlanStore(tmp_path / "plans.json").open_plans()[0]
+    assert reloaded.last_llm_review == plan.last_llm_review
 
 
 def test_trade_plan_store_cloture_un_plan(tmp_path) -> None:

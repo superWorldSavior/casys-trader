@@ -23,6 +23,7 @@ from trader.indicator_watch import (
     evaluate_indicator_watches,
     is_armed_plan,
 )
+from trader.tools import market
 from trader.trade_plan import InvalidExitPlanError, create_trade_plan_from_order
 
 __all__ = ["PlanReplayResult", "replay_armed_plan"]
@@ -39,6 +40,7 @@ class PlanReplayResult:
     exit_at: str | None = None
     exit_price: float | None = None
     pnl_pct: float | None = None  # signé selon le sens (SHORT gagnant => positif)
+    preflight_reasons: tuple[str, ...] = ()
 
 
 def _parse_ts(raw: str) -> datetime | None:
@@ -46,6 +48,33 @@ def _parse_ts(raw: str) -> datetime | None:
         return datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
     except ValueError:
         return None
+
+
+def _preflight_reasons(
+    watch: dict,
+    *,
+    symbol: str,
+    triggered_at: datetime,
+    age_threshold_minutes: float = 240.0,
+    open_gap_minutes: int = 60,
+) -> tuple[str, ...]:
+    created = _parse_ts(str(watch.get("created_at") or ""))
+    if created is None:
+        return ()
+    tz = market._venue_for_symbol(symbol)[0]  # reuse live venue mapping for measurement.
+    created_local = created.astimezone(tz)
+    triggered_local = triggered_at.astimezone(tz)
+    reasons: list[str] = []
+    if created_local.date() != triggered_local.date():
+        reasons.append("cross_session")
+    session = market.session_snapshot(symbol, now=triggered_at)
+    since_open = session.get("since_open_m")
+    if isinstance(since_open, int) and since_open <= open_gap_minutes:
+        reasons.append("open_gap")
+    age_minutes = (triggered_at - created).total_seconds() / 60.0
+    if age_minutes > age_threshold_minutes:
+        reasons.append(f"age_gt_{int(age_threshold_minutes)}m")
+    return tuple(reasons)
 
 
 def _find_trigger_index(watch: dict, bars: list, *, min_window: int) -> int | None:
@@ -92,6 +121,12 @@ def replay_armed_plan(watch: dict, bars: list) -> PlanReplayResult:
         return PlanReplayResult(plan_id=plan_id, symbol=symbol, status="expired")
 
     trigger_bar = bars[trigger_index]
+    triggered_at = _parse_ts(trigger_bar.ts)
+    preflight_reasons = (
+        _preflight_reasons(watch, symbol=symbol, triggered_at=triggered_at)
+        if triggered_at is not None
+        else ()
+    )
     entry_price = float(trigger_bar.close)
     if not armed_order_price_coherent(order, price=entry_price):
         return PlanReplayResult(
@@ -99,6 +134,7 @@ def replay_armed_plan(watch: dict, bars: list) -> PlanReplayResult:
             symbol=symbol,
             status="cancelled:stop_incoherent",
             triggered_at=str(trigger_bar.ts),
+            preflight_reasons=preflight_reasons,
         )
 
     quantity = float(order["qty"])
@@ -119,6 +155,7 @@ def replay_armed_plan(watch: dict, bars: list) -> PlanReplayResult:
             status="invalid",
             triggered_at=str(trigger_bar.ts),
             entry_price=entry_price,
+            preflight_reasons=preflight_reasons,
         )
     direction = 1.0 if plan.side == "LONG" else -1.0
 
@@ -150,6 +187,7 @@ def replay_armed_plan(watch: dict, bars: list) -> PlanReplayResult:
                     exit_at=str(bar.ts),
                     exit_price=fill,
                     pnl_pct=round(realized / (entry_price * quantity) * 100.0, 4),
+                    preflight_reasons=preflight_reasons,
                 )
 
     # données épuisées : clôture du reliquat au dernier close
@@ -166,4 +204,5 @@ def replay_armed_plan(watch: dict, bars: list) -> PlanReplayResult:
         exit_at=str(last.ts),
         exit_price=last_close,
         pnl_pct=round(realized / (entry_price * quantity) * 100.0, 4),
+        preflight_reasons=preflight_reasons,
     )

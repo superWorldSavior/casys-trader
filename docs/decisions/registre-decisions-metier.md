@@ -181,8 +181,9 @@ veto de thèse au moment du tir.
 - `ARMED_ORDER_MAX_TTL_MINUTES=240` borne les plans armés à 4 h ; les setups swing
   multi-jours demandent un renouvellement explicite, un TTL différent, ou un réveil
   pré-open qui régénère le plan.
-- Le suivi `post_entry_watch` doit devenir sticky D10, sinon un trade sous surveillance
-  peut être évincé du hot-set.
+- Le suivi post-entry v1 doit étendre le chemin existant : wake court après fill,
+  puis `has_position` force l'appel LLM. Pas de canal `post_entry_watch` parallèle ;
+  si un tel champ existe plus tard hors position, il devra devenir sticky D10.
 - `last_llm_review` doit être persisté dans `TradePlan`, car `_LAST_LLM_AT` est en
   RAM et repart de zéro au restart.
 **Point ouvert principal.** Critère de déclenchement du préflight : conditionnel

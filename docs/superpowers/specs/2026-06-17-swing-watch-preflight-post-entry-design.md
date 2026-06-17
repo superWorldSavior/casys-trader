@@ -129,7 +129,8 @@ Pour garder le contexte du trade :
 - `entry_thesis` : thèse courte validée par le LLM.
 - `entry_decision_id` et éventuellement `preflight_decision_id`.
 - `entry_context` : prix, runtime interval, data age, session, daily as-of.
-- `post_entry_watch` : nombre de revues restantes, intervalle, dernière revue.
+- revue post-entry v1 : réveil scheduler court après fill, puis chemin existant
+  `has_position` / `exit_watch` ; pas de canal `post_entry_watch` parallèle.
 - `last_llm_review` : verdict court `intact|fragile|invalidated`, timestamp.
 
 Le but n'est pas de stocker du raisonnement long, mais de rendre la thèse et les
@@ -202,7 +203,7 @@ cross-session / open gap / âgés, puis estimer leur P&L via replay.
 Après un fill d'ouverture :
 
 1. créer / enrichir le `TradePlan` avec la thèse et le contexte d'entrée ;
-2. poser une revue courte automatique sur la première barre exploitable post-entry ;
+2. poser un réveil court automatique sur la première barre exploitable post-entry ;
 3. éventuellement poser une deuxième revue si le trade reste fragile ou très récent ;
 4. revenir ensuite au régime normal : `exit_plan`, `exit_watch`, position-open gate.
 
@@ -217,9 +218,9 @@ En v1, piloter le trade peut rester limité à `CLOSE` / `REDUCE` / `REVERSE` +
 veille. Modifier hard stop / TP existants demande un champ explicite nouveau, à
 ne pas cacher dans une décision ambiguë.
 
-Le symbole sous `post_entry_watch` doit devenir sticky dans la rotation (`sticky_symbols()`
-ou son collecteur), sinon D10 peut l'évincer du hot-set pendant la période où on veut
-justement surveiller les premières barres.
+En v1, ne pas ajouter de canal `post_entry_watch` parallèle : une position ouverte
+est déjà sticky via D10 et force le passage LLM via `has_position`. Si un futur champ
+`post_entry_watch` explicite est ajouté, il devra devenir sticky aussi.
 
 ## 9. Calendrier de marché
 
@@ -248,7 +249,8 @@ brancher une librairie de calendriers exchange si nécessaire.
 - Le daily stale ne doit pas empêcher l'analyse si la dernière séance complétée est
   encore la bonne séance disponible.
 - Un plan ou une position sticky ne doit jamais sortir de l'univers surveillé.
-- Un `post_entry_watch` actif protège aussi le symbole de l'éviction D10.
+- Une position ouverte en revue post-entry reste protégée par le sticky position D10.
+  Si un futur `post_entry_watch` existe sans position, il devra être sticky.
 
 ## 11. Tests attendus
 
@@ -261,7 +263,7 @@ brancher une librairie de calendriers exchange si nécessaire.
   déterministe toujours appliqué.
 - Hard stop / TP d'un plan ouvert restent mécaniques.
 - Fill d'ouverture => `TradePlan` enrichi + revue post-entry planifiée.
-- `post_entry_watch` actif => symbole sticky dans la rotation.
+- Revue post-entry planifiée => wake symbole court + `has_position` force l'appel LLM.
 - Position ouverte due => LLM appelé même sans signal cockpit.
 - `.TWO` utilise le calendrier Taiwan.
 - Weekend / férié => planning possible, exécution interdite.
@@ -287,6 +289,6 @@ brancher une librairie de calendriers exchange si nécessaire.
 5. Autoriser `_batch_decide` sur `analysis_decidable` avec `execution.enabled=false`.
 6. Bloquer les ordres immédiats non exécutables tout en appliquant watch/wake.
 7. Câbler le vrai préflight des plans d'ouverture (`requires_preflight` ou trigger dédié).
-8. Enrichir `TradePlan`, persister `last_llm_review` et ajouter la veille chaude post-entry.
-9. Ajouter `post_entry_watch` aux sources sticky D10.
-10. Corriger / compléter le calendrier `.TWO`, weekend, puis fériés/session.
+8. Enrichir `TradePlan`, persister `last_llm_review` et ajouter le wake court post-entry
+   via le scheduler existant.
+9. Corriger / compléter le calendrier `.TWO`, weekend, puis fériés/session.

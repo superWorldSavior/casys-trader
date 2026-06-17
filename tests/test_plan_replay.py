@@ -123,3 +123,32 @@ def test_donnees_finies_avant_la_sortie_clot_a_l_horizon() -> None:
     assert result.status == "executed"
     assert result.exit_reason == "horizon"
     assert result.exit_price == 103.5
+
+
+def test_replay_marque_les_plans_cross_session_open_gap_comme_preflight_candidats() -> None:
+    watch = _plan(stop=95.0)
+    watch["created_at"] = "2026-06-10T14:00:00+00:00"
+    watch["expires_at"] = "2026-06-11T18:00:00+00:00"
+    bars = [
+        Bar(
+            ts=(datetime(2026, 6, 11, 13, 30, tzinfo=timezone.utc) + timedelta(minutes=15 * i)).isoformat(),
+            open=c,
+            high=c + 0.5,
+            low=c - 0.5,
+            close=c,
+            volume=1000.0,
+        )
+        for i, c in enumerate([100.0, 100.2, 100.4, 102.0, 104.0])
+    ]
+
+    result = replay_armed_plan(watch, bars)
+
+    assert result.triggered_at == "2026-06-11T14:15:00+00:00"
+    assert set(result.preflight_reasons) == {"cross_session", "open_gap", "age_gt_240m"}
+
+
+def test_replay_ne_marque_pas_un_plan_recent_intra_session_comme_preflight_candidat() -> None:
+    result = replay_armed_plan(_plan(stop=95.0), _bars([100.0, 100.2, 100.4, 102.0, 104.0]))
+
+    assert result.triggered_at == "2026-06-10T14:45:00+00:00"
+    assert result.preflight_reasons == ()

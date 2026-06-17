@@ -90,6 +90,7 @@ class TradePlan:
     llm_model: str | None = None
     llm_fallback_reason: str | None = None
     llm_confidence: float | None = None
+    last_llm_review: dict | None = None
 
 
 def _parse_price(raw: object) -> float | None:
@@ -888,6 +889,11 @@ def trade_plan_from_dict(raw: dict) -> TradePlan:
             else str(raw["llm_fallback_reason"])
         ),
         llm_confidence=None if raw.get("llm_confidence") is None else float(raw["llm_confidence"]),
+        last_llm_review=(
+            dict(raw["last_llm_review"])
+            if isinstance(raw.get("last_llm_review"), dict)
+            else None
+        ),
     )
 
 

@@ -52,8 +52,10 @@ Design/decision state after the Claude review:
   addressed the stale absolute-stop issue from the CFR/ASML postmortem.
 - `WAKE_WITH_ORDER_INTENT` is not yet a full preflight path; wiring armed plan
   -> preflight -> execution is real implementation work.
-- Post-entry watch must be sticky in D10 rotation, and `last_llm_review` belongs
-  in persistent `TradePlan` state because `_LAST_LLM_AT` is RAM-only.
+- Post-entry review v1 extends the existing path: short scheduler wake after fill,
+  then `has_position` forces the LLM review. Do not add a parallel
+  `post_entry_watch` channel unless it is made sticky. `last_llm_review` belongs in
+  persistent `TradePlan` state because `_LAST_LLM_AT` is RAM-only.
 
 See:
 

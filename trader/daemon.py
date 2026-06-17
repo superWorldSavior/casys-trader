@@ -506,6 +506,38 @@ def _plan_snapshot(plan: TradePlan) -> dict:
     }
 
 
+def _llm_review_verdict(decision: codex_client.Decision) -> str:
+    if decision.intent == "HOLD":
+        return "intact"
+    if decision.intent == "REDUCE":
+        return "fragile"
+    if decision.intent in {"CLOSE", "REVERSE"}:
+        return "invalidated"
+    return "fragile"
+
+
+def _persist_last_llm_review(
+    *,
+    plan_store: TradePlanStore,
+    symbol: str,
+    now: datetime,
+    decision: codex_client.Decision,
+) -> None:
+    if not (decision.llm_provider or decision.llm_model):
+        return
+    review = {
+        "ts": now.astimezone(timezone.utc).isoformat(),
+        "verdict": _llm_review_verdict(decision),
+        "action": decision.action,
+        "intent": decision.intent,
+        "llm_provider": decision.llm_provider,
+        "llm_model": decision.llm_model,
+    }
+    for plan in plan_store.open_plans():
+        if plan.symbol == symbol:
+            plan_store.upsert(replace(plan, last_llm_review=review))
+
+
 def _positive_finite_float(raw: object) -> float | None:
     try:
         value = float(raw)  # type: ignore[arg-type]
@@ -1853,6 +1885,14 @@ def run_cycle(
                  "indicator_watch_rejections": [],
                  "data_source": runtime_data_source_by_sym.get(sym)}
 
+        if decision_source == "llm" and sym in held_symbols:
+            _persist_last_llm_review(
+                plan_store=plan_store,
+                symbol=sym,
+                now=now,
+                decision=decision,
+            )
+
         reference_volatility: float | None = None
         runtime_exit_plan = decision.exit_plan
         pending_indicator_watch = None
@@ -2181,6 +2221,12 @@ def run_cycle(
                     plan_store.upsert(plan)
                     entry["trade_plan_created"] = True
                     entry["trade_plan"] = _plan_snapshot(plan)
+            if fill is not None and decision.intent in {"OPEN_LONG", "OPEN_SHORT", "REVERSE"}:
+                post_entry_wake = market.freshness_budget_minutes(runtime_interval, grace_minutes=0.0)
+                if next_wake_in_minutes is None or next_wake_in_minutes > post_entry_wake:
+                    next_wake_in_minutes = post_entry_wake
+                    entry["next_wake_in_minutes"] = next_wake_in_minutes
+                    entry["post_entry_review_scheduled"] = True
         _log_cycle_progress(
             "[order] %s %s qty=%s price=%s executed=%s plan=%s",
             sym,
