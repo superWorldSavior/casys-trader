@@ -1,7 +1,8 @@
 # Veille swing, préflight d'exécution et suivi post-entry
 
 **Date** : 2026-06-17
-**Statut** : design en cours de validation, prêt à transformer en plan d'implémentation
+**Statut** : design en cours de validation ; dépend d'une décision D12 ou d'un
+amendement explicite de D7B avant implémentation
 **Auteurs** : Erwan + Codex
 
 ## 1. Problème
@@ -35,9 +36,10 @@ Le LLM peut donc penser à froid ; le système ne trade qu'à chaud.
    un signal d'exécution : pas de fill sans prix runtime frais.
 2. **Le daily/swing context doit être fetché avant ou en parallèle du verrou runtime.**
    Un symbole runtime-stale mais daily-valide peut devenir `analysis_decidable`.
-3. **Les plans armés d'ouverture doivent repasser par un préflight LLM.** Un trigger
-   d'ouverture ne doit plus exécuter directement `OPEN_LONG` / `OPEN_SHORT` sans
-   revalidation modèle avec données fraîches.
+3. **Proposition D12 : certains plans d'ouverture doivent repasser par un préflight LLM.**
+   Cette proposition révise partiellement le comportement D7B actuel, qui exécute
+   `EXECUTE_ORDER` sans re-appel modèle. Tant qu'Erwan ne valide pas D12 ou un
+   amendement de D7B, D7B reste la règle de production.
 4. **Les sorties mécaniques restent déterministes.** Hard stop, TP, trailing,
    profit protection et max-hold peuvent continuer à s'appliquer sans LLM : ce sont
    des garde-fous déjà validés au moment de l'entrée.
@@ -46,6 +48,26 @@ Le LLM peut donc penser à froid ; le système ne trade qu'à chaud.
    réduction/sortie.
 6. **Le contexte métier du trade doit vivre dans `TradePlan`, pas dans une session LLM.**
    Les sessions acpx restent jetables ; le contexte durable est structuré et réinjecté.
+
+### 3.1 Amendements après review Claude
+
+- **D7B n'est pas modifié implicitement.** Le préflight est une nouvelle décision
+  métier proposée (`D12`) : `EXECUTE_ORDER` reste le comportement actuel tant que
+  le registre n'a pas tranché.
+- **Le préflight ajoute un veto de thèse, pas un veto de risque.** Les plans armés
+  ne contournent déjà pas le `RiskGate` déterministe : `check_confidence()` et
+  `gate.check()` restent avant `broker.submit()`. Le préflight sert à demander au
+  LLM si la thèse d'ouverture est toujours valide avec données fraîches.
+- **D11 a déjà corrigé le problème des stops figés.** Le préflight ne doit pas être
+  présenté comme la correction principale du postmortem CFR/ASML ; il traite une
+  autre faille : l'absence de relecture de la thèse au tir.
+- **`WAKE_WITH_ORDER_INTENT` n'est pas un chemin préflight prêt à l'emploi.** Dans
+  le code actuel, il sert surtout de dégradation quand le contrat `EXECUTE_ORDER`
+  est invalide et se comporte comme une veille. Le chemin armement -> préflight ->
+  exécution est donc un vrai chantier.
+- **Le TTL actuel des plans armés est court.** `ARMED_ORDER_MAX_TTL_MINUTES=240`
+  convient à D7B intraday, mais pas à des setups swing multi-jours sans renouvellement
+  explicite ou nouvelle politique de TTL.
 
 ## 4. Alternatives considérées
 
@@ -108,6 +130,9 @@ Pour garder le contexte du trade :
 Le but n'est pas de stocker du raisonnement long, mais de rendre la thèse et les
 gardes suffisamment explicites pour les prochains réveils.
 
+`last_llm_review` doit être persisté dans `TradePlan` : `_LAST_LLM_AT` est seulement
+en RAM et repart de zéro au restart.
+
 ## 6. Cycle hors marché / runtime stale
 
 ```
@@ -142,15 +167,24 @@ plan armé froid
        └─ DEFER   => next_wake / watch
 ```
 
-Le mode existant `EXECUTE_ORDER` ne doit plus exécuter directement une ouverture
-swing sans rappel LLM. Deux chemins d'implémentation sont possibles :
+Le mode existant `EXECUTE_ORDER` exécute aujourd'hui directement une ouverture
+sans rappel LLM, conformément à D7B. Changer cela demande une décision explicite.
+Deux chemins d'implémentation sont possibles :
 
-- réutiliser `WAKE_WITH_ORDER_INTENT` comme mode standard pour les plans d'ouverture ;
+- câbler réellement `WAKE_WITH_ORDER_INTENT` comme mode standard de préflight,
+  avec transmission de l'intention d'ordre jusqu'au prompt et retour `CONFIRM` /
+  `ADJUST` / `CANCEL` / `DEFER` ;
 - ou garder `EXECUTE_ORDER` mais ajouter `requires_preflight=true` par défaut pour
-  `OPEN_LONG` / `OPEN_SHORT`.
+  les plans swing `OPEN_LONG` / `OPEN_SHORT`.
 
-La recommandation v1 est de réutiliser `WAKE_WITH_ORDER_INTENT` pour minimiser les
-nouveaux concepts.
+La recommandation v1 est de créer D12 avec un champ explicite (`requires_preflight`
+ou nouveau trigger dédié) plutôt que de changer silencieusement la sémantique de
+D7B. Le commentaire actuel du daemon "pas d'appel LLM, pas de gate" doit aussi être
+renommé : il parle du gate de pertinence, pas du `RiskGate`.
+
+Le TTL doit être traité dans le même chantier : soit le plan swing se renouvelle
+avant expiration, soit le système accepte une durée plus longue mais force une revue
+pré-open / pré-exécution.
 
 ## 8. Veille chaude post-entry
 
@@ -172,6 +206,10 @@ En v1, piloter le trade peut rester limité à `CLOSE` / `REDUCE` / `REVERSE` +
 veille. Modifier hard stop / TP existants demande un champ explicite nouveau, à
 ne pas cacher dans une décision ambiguë.
 
+Le symbole sous `post_entry_watch` doit devenir sticky dans la rotation (`sticky_symbols()`
+ou son collecteur), sinon D10 peut l'évincer du hot-set pendant la période où on veut
+justement surveiller les premières barres.
+
 ## 9. Calendrier de marché
 
 Le système actuel gère surtout horaires et week-ends simples par suffixe. Il faut
@@ -191,21 +229,27 @@ brancher une librairie de calendriers exchange si nécessaire.
 
 - Aucun ordre d'ouverture sans `execution.enabled=true`.
 - Aucun ordre d'ouverture sans risk gate.
-- Aucun ordre d'ouverture armé swing sans préflight LLM.
+- Aucun ordre d'ouverture armé swing marqué `requires_preflight` sans revue LLM
+  chaude. Les plans D7B existants restent directs tant que D12 n'est pas validée.
 - Les sorties mécaniques validées restent exécutables sans LLM.
-- Un `HOLD` infra doit être distinguable d'un `HOLD` LLM.
+- Un `HOLD` infra doit être distinguable d'un `HOLD` LLM, y compris
+  `no_decision_in_batch`.
 - Le daily stale ne doit pas empêcher l'analyse si la dernière séance complétée est
   encore la bonne séance disponible.
 - Un plan ou une position sticky ne doit jamais sortir de l'univers surveillé.
+- Un `post_entry_watch` actif protège aussi le symbole de l'éviction D10.
 
 ## 11. Tests attendus
 
 - Runtime stale + daily valide => appel LLM autorisé en mode `execution.enabled=false`.
 - Runtime stale + LLM demande `BUY` => ordre bloqué, watch/wake conservés.
-- Plan armé d'ouverture déclenché => préflight LLM appelé avant exécution.
-- Plan armé déclenché mais runtime stale => pas d'exécution, réveil serré / report.
+- Plan d'ouverture `requires_preflight` déclenché => préflight LLM appelé avant exécution.
+- Plan d'ouverture déclenché mais runtime stale => pas d'exécution, réveil serré / report.
+- Plan D7B non préflight => comportement actuel conservé : pas d'appel LLM, `RiskGate`
+  déterministe toujours appliqué.
 - Hard stop / TP d'un plan ouvert restent mécaniques.
 - Fill d'ouverture => `TradePlan` enrichi + revue post-entry planifiée.
+- `post_entry_watch` actif => symbole sticky dans la rotation.
 - Position ouverte due => LLM appelé même sans signal cockpit.
 - `.TWO` utilise le calendrier Taiwan.
 - Weekend / férié => planning possible, exécution interdite.
@@ -223,11 +267,14 @@ brancher une librairie de calendriers exchange si nécessaire.
 
 ## 13. Plan d'implémentation pressenti
 
-1. Corriger l'observabilité : `decision_source` / `model_called` pour distinguer infra HOLD et LLM HOLD.
-2. Extraire une classification `execution/planning` par symbole.
-3. Fetcher le daily/swing context pour les candidats d'analyse même si runtime stale.
-4. Autoriser `_batch_decide` sur `analysis_decidable` avec `execution.enabled=false`.
-5. Bloquer les ordres immédiats non exécutables tout en appliquant watch/wake.
-6. Convertir les plans d'ouverture armés vers préflight.
-7. Enrichir `TradePlan` et ajouter la veille chaude post-entry.
-8. Corriger le calendrier `.TWO` et poser les premiers tests weekend/session.
+1. Acter D12 ou amender D7B avant tout changement du chemin `EXECUTE_ORDER`.
+2. Corriger l'observabilité : `decision_source` / `model_called` / raisons infra
+   explicites pour distinguer infra HOLD et LLM HOLD.
+3. Extraire une classification `execution/planning` par symbole.
+4. Fetcher le daily/swing context pour les candidats d'analyse même si runtime stale.
+5. Autoriser `_batch_decide` sur `analysis_decidable` avec `execution.enabled=false`.
+6. Bloquer les ordres immédiats non exécutables tout en appliquant watch/wake.
+7. Câbler le vrai préflight des plans d'ouverture (`requires_preflight` ou trigger dédié).
+8. Enrichir `TradePlan`, persister `last_llm_review` et ajouter la veille chaude post-entry.
+9. Ajouter `post_entry_watch` aux sources sticky D10.
+10. Corriger / compléter le calendrier `.TWO`, weekend, puis fériés/session.

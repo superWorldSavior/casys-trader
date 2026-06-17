@@ -36,6 +36,24 @@ Likely direction, not yet implemented:
 
 - Separate "LLM can analyze/plan with swing context" from "system may execute an
   order now".
-- Expose whether a row is synthetic or model-authored, for example via
-  `model_called=false` or an equivalent decision-source field.
-- Avoid representing stale-data guards as if they were LLM `HOLD` decisions.
+- Observability quick win landed: decision rows now expose `decision_source` and
+  `model_called`; infra fallbacks such as `stale_market_data` and
+  `no_decision_in_batch` must not masquerade as model-authored `HOLD`.
+
+Design/decision state after the Claude review:
+
+- D7B remains the current production rule: valid `EXECUTE_ORDER` plans execute
+  without LLM re-call, while deterministic RiskGate checks still apply.
+- The proposed swing preflight is tracked as D12, not as an implicit rewrite of
+  D7B. Until Erwan validates D12 or amends D7B, implementation must preserve D7B.
+- Preflight adds a thesis veto by the LLM; it is not the risk fuse. D11 already
+  addressed the stale absolute-stop issue from the CFR/ASML postmortem.
+- `WAKE_WITH_ORDER_INTENT` is not yet a full preflight path; wiring armed plan
+  -> preflight -> execution is real implementation work.
+- Post-entry watch must be sticky in D10 rotation, and `last_llm_review` belongs
+  in persistent `TradePlan` state because `_LAST_LLM_AT` is RAM-only.
+
+See:
+
+- `docs/superpowers/specs/2026-06-17-swing-watch-preflight-post-entry-design.md`
+- `docs/decisions/registre-decisions-metier.md` section D12

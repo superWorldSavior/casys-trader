@@ -320,3 +320,48 @@ def test_run_cycle_marque_les_decisions_llm_comme_model_called(
 
     assert report["decisions"][0]["decision_source"] == "llm"
     assert report["decisions"][0]["model_called"] is True
+
+
+def test_run_cycle_marque_no_decision_in_batch_comme_hold_infra_specifique(
+    monkeypatch,
+    tmp_path,
+    make_data_source,
+) -> None:
+    _write_runtime_config(tmp_path)
+    state_dir = tmp_path / "state"
+    now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
+
+    def bars(symbol: str, lookback: str, interval: str) -> list[Bar]:
+        return [
+            Bar(
+                ts=(now - timedelta(minutes=10)).isoformat(),
+                open=100.0,
+                high=101.0,
+                low=99.0,
+                close=100.0,
+                volume=1000.0,
+            )
+            for _ in range(32)
+        ]
+
+    def empty_batch(**_kwargs) -> dict:
+        return {}
+
+    monkeypatch.setattr(daemon, "ROOT", tmp_path)
+    monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+    monkeypatch.setattr(daemon.codex_client, "decide_batch", empty_batch)
+    sched = Scheduler(state_dir / "scheduler.json")
+    sched.set_symbol_next_wake_in("SPY", minutes=-5, now=now)
+    data_source = make_data_source(bars)
+
+    report = daemon.run_cycle(
+        dry_run=True,
+        now=now,
+        symbols_filter=["SPY"],
+        sched=sched,
+        data_source=data_source,
+    )
+
+    assert report["decisions"][0]["reason"] == "no_decision_in_batch"
+    assert report["decisions"][0]["decision_source"] == "infra"
+    assert report["decisions"][0]["model_called"] is False

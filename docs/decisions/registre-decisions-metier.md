@@ -155,3 +155,34 @@ S'appuie sur D2 (`family_regime`, biais par univers — le radar en est le frèr
 **Points ouverts.** Valeur par défaut du multiple + floor/cap % ; source de vol (`volatility`/`ohlc_volatility`/futur ATR) ; TP en R ; plan d'implémentation TDD. **Hypothèse FAIBLE à NE PAS sur-interpréter (n=3, possiblement de la variance — Erwan sceptique) :** les cassures auto-tradées en fenêtre d'ouverture EU pourraient être de moindre qualité (RHM 11/06, CFR/ASML 15/06). NB : le mandat donne `session.since_open_m` mais aucune guidance « open dangereux » ; D3 note que 85 % des moves arrivent en milieu de séance. À confirmer sur échantillon plus large (filtrer l'historique par `since_open_m`) AVANT toute action — ne rien graver tant que ce n'est pas mesuré.
 **Implémenté (Phase 1, 2026-06-15).** Chaîne late-binding complète (TDD pair Codex, 4 unités) : `validate_exit_plan(allow_unresolved=)` accepte `hard_stop` relatif (`percent`/`volatility_multiple` + `min_pct`/`max_pct`) et TP `risk_multiple` ; resolver pur `resolve_exit_plan()` → prix + trace ; `daemon.run_cycle` résout au tir sur vol fraîche (`_reference_volatility_for_symbol`) avant `armed_order_price_coherent`, event `armed_plan_resolved`, annulation à code enum (`armed_plan_cancelled:exit_unresolved:*`) si vol indisponible ; `indicator_watch.normalize_armed_order` accepte le relatif (validé à l'armement, import paresseux anti-circulaire) ; contrat `codex_client` annonce le schéma relatif dans la section plans armés et **recommande `volatility_multiple`**. Review Codex indépendante : 5 findings, 4 corrigés (normalisation alias dans le resolver ; specs relatives cantonnées aux plans armés ; validation à l'armement ; garde `take_profit_resolved_non_positive`), 1 différé (enrichissement de la trace d'audit — repris en Phase 2). 1270 passed, 1 skipped. Commit `84ed965`.
 **Implémenté (Phase 2, 2026-06-15, commit suivant).** Ancrage CHARTISTE/structurel : `hard_stop` `{type:"structural", anchor:"swing_low"|"swing_high"|"vwap", window, buffer_pct?|buffer_atr?, min_pct?/max_pct?}`, niveau extrait des barres FRAÎCHES au tir et résolu en prix. `trader/features.py` : `swing_low`/`swing_high`/`vwap` (extraction pure). `resolve_exit_plan` : garde « bon côté » sur le niveau PRÉ-buffer (corrigé après review : contournable par le buffer sinon), buffer pct/atr exclusifs, clamp, garde non-positif. Daemon passe `tradable_bars_by_symbol` au tir (`window` en barres du timeframe runtime — `timeframe` retiré du schéma car non câblé, évite une trace mensongère). Trace d'audit enrichie (finding 4 Phase 1 absorbé). Contrat `codex_client` annonce `structural` dans la section plans armés. TDD pair Codex (4 unités) + review Codex indépendante (verdict BLOQUANT : garde bon-côté contournable + `timeframe` non câblé → 2 corrigés). 1296 passed, 1 skipped. **Reste (Phase 2+, optionnel)** : multi-timeframe réel pour le niveau structural ; ancres supplémentaires (range_low/range_high, fractales) ; mesure « open dangereux » (D11 points ouverts).
+
+---
+
+## D12 — Préflight LLM des ouvertures swing planifiées  💬 en discussion (2026-06-17)
+**Contexte.** Le passage vers un horizon swing rend utile la planification hors marché :
+daily/swing context valide, mais runtime 15m stale ou marché fermé. Le design
+`docs/superpowers/specs/2026-06-17-swing-watch-preflight-post-entry-design.md`
+sépare donc analyse/veille et exécution. Il introduit aussi une tension avec D7B :
+D7B a explicitement validé l'exécution directe des `EXECUTE_ORDER` sans re-appel LLM.
+**Décision proposée.** Ne pas réécrire D7B implicitement. Créer un chemin D12 pour
+les plans d'ouverture swing ou les plans marqués `requires_preflight=true` :
+au déclenchement, si prix runtime frais et session tradable, le daemon appelle le
+LLM pour relire la thèse (`CONFIRM` / `ADJUST` / `CANCEL` / `DEFER`) avant de passer
+au `RiskGate`. Le `RiskGate` déterministe reste inchangé et demeure obligatoire avant
+`broker.submit()`.
+**Non-décision.** D12 n'est pas la correction du postmortem CFR/ASML : D11 a déjà
+corrigé les stops figés via late-binding. D12 traite une autre faille, l'absence de
+veto de thèse au moment du tir.
+**Points d'intégration.**
+- `WAKE_WITH_ORDER_INTENT` n'est pas aujourd'hui un vrai chemin préflight : il sert
+  surtout de dégradation quand le contrat `EXECUTE_ORDER` est invalide. Le câblage
+  armement -> préflight -> exécution est un vrai chantier.
+- `ARMED_ORDER_MAX_TTL_MINUTES=240` borne les plans armés à 4 h ; les setups swing
+  multi-jours demandent un renouvellement explicite, un TTL différent, ou un réveil
+  pré-open qui régénère le plan.
+- Le suivi `post_entry_watch` doit devenir sticky D10, sinon un trade sous surveillance
+  peut être évincé du hot-set.
+- `last_llm_review` doit être persisté dans `TradePlan`, car `_LAST_LLM_AT` est en
+  RAM et repart de zéro au restart.
+**Statut.** En discussion. Tant qu'Erwan n'a pas validé D12 ou amendé D7B, le code
+doit conserver le comportement D7B actuel pour `EXECUTE_ORDER`.

@@ -73,6 +73,11 @@ _ACTION_INTENTS = {
     "BUY": {"OPEN_LONG", "REDUCE", "CLOSE", "REVERSE"},
     "SELL": {"OPEN_SHORT", "REDUCE", "CLOSE", "REVERSE"},
 }
+_INFRA_HOLD_REASONS = {
+    "no_decision_in_batch",
+    "model_call_budget_exhausted",
+    "model_call_budget_exhausted_after_context",
+}
 
 
 def _llm_exit_reason_for_intent(intent: str) -> str | None:
@@ -1610,7 +1615,8 @@ def run_cycle(
         )
         armed_plan_ids[sym] = plan_id
         _log_cycle_progress("[armed_plan] %s déclenché plan=%s — exécution sans LLM", sym, plan_id)
-    # les symboles armés ont déjà leur décision : pas d'appel LLM, pas de gate
+    # les symboles armés ont déjà leur décision : pas d'appel LLM, pas de
+    # relevance_gate. Le RiskGate déterministe reste appliqué plus bas.
     decidable = [s for s in decidable if s not in armed_decisions]
 
     # Gate de pertinence (D7 étage A) : ne soumettre au LLM que les réveils
@@ -1863,7 +1869,10 @@ def run_cycle(
         if decision.action == "HOLD" or effective_quantity == 0:
             _log_cycle_progress("[decision %d/%d] %s hold", index, len(symbols_to_decide), sym)
             apply_decision_schedule()
-            record_decision({**entry, "executed": False, "reason": "hold"})
+            hold_reason = "hold"
+            if decision_source == "infra" and decision.rationale in _INFRA_HOLD_REASONS:
+                hold_reason = decision.rationale
+            record_decision({**entry, "executed": False, "reason": hold_reason})
             continue
 
         invalid_intent = _invalid_intent_reason(decision)
