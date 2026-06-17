@@ -91,6 +91,12 @@ class TradePlan:
     llm_fallback_reason: str | None = None
     llm_confidence: float | None = None
     last_llm_review: dict | None = None
+    # §13.7 — contexte d'entrée durable (le contexte du trade vit dans TradePlan, pas
+    # dans une session LLM jetable) : thèse courte, id de la décision d'entrée, et
+    # snapshot du contexte au tir (prix, runtime interval, data age, session, daily as-of).
+    entry_thesis: str | None = None
+    entry_decision_id: str | None = None
+    entry_context: dict | None = None
 
 
 def _parse_price(raw: object) -> float | None:
@@ -370,9 +376,9 @@ def _clamp_distance_to_pct_bounds(
 
 
 def _copy_trace_fields(trace: dict, raw: dict, fields: tuple[str, ...]) -> None:
-    for field in fields:
-        if raw.get(field) is not None:
-            trace[field] = raw[field]
+    for key in fields:
+        if raw.get(key) is not None:
+            trace[key] = raw[key]
 
 
 def resolve_exit_plan(
@@ -893,6 +899,13 @@ def trade_plan_from_dict(raw: dict) -> TradePlan:
             dict(raw["last_llm_review"])
             if isinstance(raw.get("last_llm_review"), dict)
             else None
+        ),
+        entry_thesis=None if raw.get("entry_thesis") is None else str(raw["entry_thesis"]),
+        entry_decision_id=(
+            None if raw.get("entry_decision_id") is None else str(raw["entry_decision_id"])
+        ),
+        entry_context=(
+            dict(raw["entry_context"]) if isinstance(raw.get("entry_context"), dict) else None
         ),
     )
 

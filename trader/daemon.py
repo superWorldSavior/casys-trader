@@ -2349,6 +2349,21 @@ def run_cycle(
                 and runtime_exit_plan
                 and decision.intent in {"OPEN_LONG", "OPEN_SHORT", "REVERSE"}
             ):
+                # §13.7 — contexte d'entrée durable capturé dans le TradePlan : la thèse
+                # (rationale LLM) et un snapshot du contexte au tir, réinjectables au réveil.
+                _entry_age = data_age_by_symbol.get(sym)
+                entry_meta = {
+                    "entry_thesis": decision.rationale,
+                    "entry_context": {
+                        "price": prices[sym],
+                        "runtime_interval": runtime_interval,
+                        "data_age_m": None if _entry_age is None else int(round(_entry_age)),
+                        "session_open": bool(market.session_snapshot(sym, now=now).get("open")),
+                        "daily_as_of": (
+                            (execution_eligibility.get(sym) or {}).get("planning") or {}
+                        ).get("daily_as_of"),
+                    },
+                }
                 if decision.intent == "REVERSE":
                     created_plan = _create_plan_for_final_position(
                         broker=broker,
@@ -2365,6 +2380,8 @@ def run_cycle(
                     )
                     entry["trade_plan_created"] = created_plan is not None
                     if created_plan is not None:
+                        created_plan = replace(created_plan, **entry_meta)
+                        plan_store.upsert(created_plan)
                         entry["trade_plan"] = _plan_snapshot(created_plan)
                 else:
                     plan = create_trade_plan_from_order(
@@ -2380,6 +2397,7 @@ def run_cycle(
                         llm_fallback_reason=decision.llm_fallback_reason,
                         llm_confidence=decision.confidence,
                     )
+                    plan = replace(plan, **entry_meta)
                     plan_store.upsert(plan)
                     entry["trade_plan_created"] = True
                     entry["trade_plan"] = _plan_snapshot(plan)

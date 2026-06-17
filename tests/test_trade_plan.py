@@ -995,6 +995,37 @@ def test_trade_plan_store_persiste_last_llm_review(tmp_path) -> None:
     assert reloaded.last_llm_review == plan.last_llm_review
 
 
+def test_trade_plan_store_persiste_le_contexte_d_entree(tmp_path) -> None:
+    store = TradePlanStore(tmp_path / "plans.json")
+    plan = create_trade_plan(
+        symbol="SPY",
+        side="LONG",
+        quantity=10.0,
+        entry_price=100.0,
+        opened_at="2026-06-05T12:00:00+00:00",
+        raw_exit_plan={"hard_stop": 95.0},
+    )
+    plan = replace(
+        plan,
+        entry_thesis="cassure du range haut sur volume",
+        entry_decision_id="2026-06-05T12:00:00+00:00|0|SPY",
+        entry_context={
+            "price": 100.0,
+            "runtime_interval": "15m",
+            "data_age_m": 3,
+            "session": {"open": True},
+            "daily_as_of": "2026-06-04",
+        },
+    )
+
+    store.upsert(plan)
+
+    reloaded = TradePlanStore(tmp_path / "plans.json").open_plans()[0]
+    assert reloaded.entry_thesis == "cassure du range haut sur volume"
+    assert reloaded.entry_decision_id == "2026-06-05T12:00:00+00:00|0|SPY"
+    assert reloaded.entry_context == plan.entry_context
+
+
 def test_trade_plan_store_cloture_un_plan(tmp_path) -> None:
     store = TradePlanStore(tmp_path / "plans.json")
     plan = TradePlan(

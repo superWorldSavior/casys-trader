@@ -7,7 +7,6 @@ ayant une confiance suffisante.
 
 from datetime import datetime, timezone
 
-import pytest
 
 from trader import daemon
 from trader.codex_client import Decision
@@ -162,3 +161,41 @@ def test_run_cycle_rejette_ouverture_sans_hard_stop(
     decision_entry = report["decisions"][0]
     assert decision_entry["executed"] is False
     assert decision_entry["reason"] == "risk:missing_hard_stop"
+
+
+def test_run_cycle_ouverture_enrichit_le_tradeplan_avec_le_contexte_d_entree(
+    monkeypatch, tmp_path, make_data_source
+) -> None:
+    """§13.7 — au fill d'ouverture, le TradePlan capture la thèse (rationale) et le
+    contexte d'entrée (prix, runtime interval, data age, session, daily as-of)."""
+    from trader.trade_plan import TradePlanStore
+
+    _write_runtime_config(tmp_path)
+    state_dir = tmp_path / "state"
+    now = datetime(2026, 6, 5, 14, 30, tzinfo=timezone.utc)  # vendredi, séance US ouverte
+    decision = _open_long_decision(confidence=0.95)
+
+    def fake_batch_decide(**kwargs):
+        return {sym: decision if sym == "SPY" else Decision.hold(sym, "hold") for sym in kwargs["decidable"]}, 1
+
+    monkeypatch.setattr(daemon, "ROOT", tmp_path)
+    monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+    monkeypatch.setattr(daemon, "_batch_decide", fake_batch_decide)
+    data_source = make_data_source(
+        lambda symbol, lookback, interval: [
+            Bar(ts=now.isoformat(), open=100.0, high=101.0, low=99.0, close=100.0, volume=1000.0)
+        ]
+    )
+
+    daemon.run_cycle(
+        dry_run=False, now=now, symbols_filter=["SPY"],
+        sched=Scheduler(state_dir / "scheduler.json"), data_source=data_source,
+    )
+
+    plans = TradePlanStore(state_dir / "trade_plans.json").open_plans()
+    assert len(plans) == 1
+    plan = plans[0]
+    assert plan.entry_thesis == "test gate confiance"
+    assert plan.entry_context is not None
+    assert plan.entry_context["price"] == 100.0
+    assert plan.entry_context["runtime_interval"] == "15m"

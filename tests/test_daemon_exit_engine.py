@@ -1417,6 +1417,10 @@ def test_run_cycle_reverse_cree_un_plan_sur_la_position_nette_finale(monkeypatch
     assert len(plans) == 1
     assert plans[0].side == "SHORT"
     assert plans[0].quantity == 10.0
+    # §13.7 — le chemin REVERSE enrichit aussi le contexte d'entrée.
+    assert plans[0].entry_thesis == "reverse"
+    assert plans[0].entry_context is not None
+    assert plans[0].entry_context["price"] == 102.0
     decision = report["decisions"][0]
     assert decision["risk_clamped"] is False
     assert decision["risk_unbounded_no_stop"] is False
@@ -2011,7 +2015,6 @@ class TestExitChecks5mBars:
     ) -> None:
         """planned_exits[*].bars_interval = '5m' quand les barres 5m ont servi,
         '15m' quand le fallback a été pris."""
-        from trader.tools.market import MarketError
         _write_runtime_config(tmp_path, symbols=["SPY", "QQQ"])
         state_dir = tmp_path / "state"
         opened_at = "2026-06-10T11:00:00+00:00"
@@ -2131,7 +2134,6 @@ class TestExitChecks5mValidation:
         self, monkeypatch, tmp_path, patch_batch, make_data_source
     ) -> None:
         """Une barre 5m avec high non-fini (float('nan')) → fallback 15m, pas de crash."""
-        import math
         _write_runtime_config(tmp_path)
         state_dir = tmp_path / "state"
         opened_at = "2026-06-10T11:00:00+00:00"
