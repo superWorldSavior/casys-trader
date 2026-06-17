@@ -274,6 +274,27 @@ def build_llm_override_fn(
 
 
 # ---------------------------------------------------------------------------
+# build_market_context_from_regime
+# ---------------------------------------------------------------------------
+
+
+def build_market_context_from_regime(
+    family_bias: dict[str, dict] | None,
+) -> dict[str, Any] | None:
+    """Assemble le market_context v1 depuis family_regime.compute_family_bias.
+
+    Args:
+        family_bias: dict famille → {dir, frac, up, down, n} ou None.
+
+    Returns:
+        {"regime_families": family_bias} si family_bias non-vide, sinon None.
+    """
+    if not family_bias:
+        return None
+    return {"regime_families": dict(family_bias)}
+
+
+# ---------------------------------------------------------------------------
 # run_cli
 # ---------------------------------------------------------------------------
 

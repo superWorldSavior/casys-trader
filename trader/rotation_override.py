@@ -18,6 +18,8 @@ def build_override_prompt(
     ranked: list[dict[str, Any]],
     default_hot: list[str],
     *,
+    sticky: set[str] | frozenset[str] = frozenset(),
+    market_context: dict[str, Any] | None = None,
     max_candidates: int = 50,
 ) -> str:
     """Construit un prompt FR demandant un override JSON du hot-set.
@@ -26,6 +28,10 @@ def build_override_prompt(
         ranked: liste triée attractivité desc, chaque item contient
                 ``symbol``, ``attractiveness``, ``bias``.
         default_hot: symboles retenus par la logique déterministe.
+        sticky: symboles non-dégradables (positions + plans + watches) — ne peuvent
+                pas être retirés même si l'agent les liste dans ``remove``.
+        market_context: contexte de marché optionnel. v1 consomme uniquement la clé
+                ``regime_families`` (dict famille → {dir, frac, ...}).
         max_candidates: nombre maximum de candidats listés dans le prompt.
 
     Returns:
@@ -40,9 +46,34 @@ def build_override_prompt(
 
     lines_default = ", ".join(default_hot) if default_hot else "(vide)"
 
+    # Section sticky — anti-doublon : le LLM voit ce qu'il ne peut pas retirer
+    sticky_section = ""
+    if sticky:
+        lines_sticky = ", ".join(sorted(sticky))
+        sticky_section = (
+            f"\nSymboles sticky (déjà surveillés/positionnés, non retirables) : {lines_sticky}\n"
+            "Tu ne peux pas retirer ces symboles — ils sont protégés quelle que soit ta décision.\n"
+            "Tiens-en compte pour ne pas dupliquer : ne les ajoute pas à nouveau.\n"
+        )
+
+    # Section contexte de marché — v1 : régime sectoriel uniquement
+    market_section = ""
+    if market_context:
+        regime_families = market_context.get("regime_families")
+        if regime_families:
+            lines_regime = "\n".join(
+                f"  - {family}: {info.get('dir', '?')} (frac={info.get('frac', '?')})"
+                for family, info in sorted(regime_families.items())
+            )
+            market_section = (
+                f"\nContexte de marché — régime sectoriel :\n{lines_regime}\n"
+            )
+
     return (
         "Tu es un agent de rotation de portefeuille.\n\n"
-        f"Hot-set par défaut (logique déterministe) : {lines_default}\n\n"
+        f"Hot-set par défaut (logique déterministe) : {lines_default}\n"
+        f"{sticky_section}"
+        f"{market_section}\n"
         f"Top {len(candidates)} candidats du radar :\n{lines_candidates}\n\n"
         "Ta mission : proposer des ajustements parcimonieux au hot-set.\n"
         "- Ajoute uniquement un symbole décorrélé ou nettement supérieur.\n"
@@ -118,8 +149,16 @@ def make_llm_override_fn(
     def override_fn(payload: dict[str, Any]) -> dict[str, list[str]]:
         ranked: list[dict] = payload.get("ranked", [])
         default_hot: list[str] = payload.get("default_hot", [])
+        sticky: set[str] = payload.get("sticky") or frozenset()
+        market_context: dict[str, Any] | None = payload.get("market_context")
 
-        prompt = build_override_prompt(ranked, default_hot, max_candidates=max_candidates)
+        prompt = build_override_prompt(
+            ranked,
+            default_hot,
+            sticky=sticky,
+            market_context=market_context,
+            max_candidates=max_candidates,
+        )
 
         try:
             result = complete_fn(prompt, timeout_s=timeout_s)

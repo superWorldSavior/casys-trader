@@ -188,3 +188,120 @@ class TestMakeLlmOverrideFn:
         # Les 5 premiers doivent être présents
         for i in range(5):
             assert f"S{i}" in prompt
+
+
+# ---------------------------------------------------------------------------
+# B1 : build_override_prompt reçoit sticky → section "non retirables"
+# ---------------------------------------------------------------------------
+
+
+class TestBuildOverridePromptSticky:
+    def _ranked(self, symbols: list[str]) -> list[dict]:
+        return [
+            {"symbol": s, "attractiveness": float(i), "bias": "LONG"}
+            for i, s in enumerate(reversed(symbols), 1)
+        ]
+
+    def test_prompt_liste_les_sticky_comme_non_retirables(self):
+        prompt = build_override_prompt(
+            ranked=[{"symbol": "AAA", "attractiveness": 0.9, "bias": "LONG"},
+                    {"symbol": "BBB", "attractiveness": 0.5, "bias": "LONG"}],
+            default_hot=["AAA"],
+            sticky={"ZZZ"},
+        )
+        assert "ZZZ" in prompt
+        # le prompt doit indiquer que les sticky ne peuvent pas être retirés
+        assert "sticky" in prompt.lower() or "non retirable" in prompt.lower() or "ne peux pas" in prompt.lower()
+
+    def test_prompt_vide_sticky_pas_de_section(self):
+        """Quand sticky est vide, le prompt ne plante pas."""
+        prompt = build_override_prompt(
+            ranked=[{"symbol": "AAA", "attractiveness": 0.9, "bias": "LONG"}],
+            default_hot=["AAA"],
+            sticky=set(),
+        )
+        # Doit toujours être un prompt valide demandant du JSON
+        assert "add" in prompt.lower()
+        assert "remove" in prompt.lower()
+
+    def test_prompt_plusieurs_sticky_tous_presents(self):
+        prompt = build_override_prompt(
+            ranked=[{"symbol": "AAA", "attractiveness": 0.9, "bias": "LONG"}],
+            default_hot=["AAA"],
+            sticky={"SYM1", "SYM2", "SYM3"},
+        )
+        assert "SYM1" in prompt
+        assert "SYM2" in prompt
+        assert "SYM3" in prompt
+
+    def test_make_llm_override_fn_transmet_sticky_au_prompt(self):
+        """make_llm_override_fn extrait sticky du payload et le passe à build_override_prompt."""
+        received_prompts = []
+
+        def complete_fn(prompt, *, timeout_s=120):
+            received_prompts.append(prompt)
+            return '{"add": [], "remove": []}'
+
+        fn = make_llm_override_fn(complete_fn)
+        fn({
+            "ranked": [{"symbol": "AAA", "attractiveness": 0.9, "bias": "LONG"}],
+            "default_hot": ["AAA"],
+            "sticky": {"ZZZ"},
+        })
+        assert len(received_prompts) == 1
+        assert "ZZZ" in received_prompts[0]
+
+
+# ---------------------------------------------------------------------------
+# B2 : build_override_prompt reçoit market_context → section régime sectoriel
+# ---------------------------------------------------------------------------
+
+
+class TestBuildOverridePromptMarketContext:
+    def test_prompt_inclut_le_regime_sectoriel(self):
+        prompt = build_override_prompt(
+            ranked=[{"symbol": "AAA", "attractiveness": 0.9, "bias": "LONG"}],
+            default_hot=["AAA"],
+            sticky=set(),
+            market_context={"regime_families": {"defense": {"dir": "up", "frac": 0.8}}},
+        )
+        assert "defense" in prompt
+        assert "up" in prompt.lower() or "haussier" in prompt.lower()
+
+    def test_prompt_sans_market_context_ne_plante_pas(self):
+        """market_context=None → le prompt est généré normalement."""
+        prompt = build_override_prompt(
+            ranked=[{"symbol": "AAA", "attractiveness": 0.9, "bias": "LONG"}],
+            default_hot=["AAA"],
+            sticky=set(),
+            market_context=None,
+        )
+        assert "add" in prompt.lower()
+        assert "remove" in prompt.lower()
+
+    def test_prompt_market_context_vide_ne_plante_pas(self):
+        prompt = build_override_prompt(
+            ranked=[{"symbol": "AAA", "attractiveness": 0.9, "bias": "LONG"}],
+            default_hot=["AAA"],
+            sticky=set(),
+            market_context={},
+        )
+        assert "add" in prompt.lower()
+
+    def test_make_llm_override_fn_transmet_market_context(self):
+        """make_llm_override_fn lit market_context depuis payload et le passe au prompt."""
+        received_prompts = []
+
+        def complete_fn(prompt, *, timeout_s=120):
+            received_prompts.append(prompt)
+            return '{"add": [], "remove": []}'
+
+        fn = make_llm_override_fn(complete_fn)
+        fn({
+            "ranked": [{"symbol": "AAA", "attractiveness": 0.9, "bias": "LONG"}],
+            "default_hot": ["AAA"],
+            "sticky": set(),
+            "market_context": {"regime_families": {"semis": {"dir": "down", "frac": 0.6}}},
+        })
+        assert len(received_prompts) == 1
+        assert "semis" in received_prompts[0]

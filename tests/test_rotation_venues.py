@@ -626,6 +626,322 @@ def test_tick_preopen_admet_la_hotlist_de_la_venue_fermee(tmp_path):
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# B3 : hook override pré-open dans tick (override_fn injectable)
+# ---------------------------------------------------------------------------
+
+
+def _write_tick_config_with_override(config_dir, override_enabled=True):
+    """Config avec override_enabled et preopen."""
+    (config_dir / "config").mkdir(exist_ok=True)
+    (config_dir / "config" / "sessions.yaml").write_text(
+        'TW: {open: "01:00", close: "05:30"}\n'
+        'EU: {open: "07:00", close: "15:30"}\n'
+        'US: {open: "13:30", close: "20:00"}\n',
+        encoding="utf-8",
+    )
+    (config_dir / "radar.yaml").write_text(
+        f"cap_m: 5\n"
+        f"delta: 0.05\n"
+        f"dwell_days: 1\n"
+        f"emergency_score: -1\n"
+        f"preopen_window_minutes: 90\n"
+        f"override_enabled: {'true' if override_enabled else 'false'}\n",
+        encoding="utf-8",
+    )
+    (config_dir / "universe.yaml").write_text("symbols: [SEED]\n", encoding="utf-8")
+
+
+def _make_preopen_state(extra_candidates=None):
+    """État initial avec TW ayant une hotlist et des candidats persistés.
+
+    extra_candidates : liste de dicts {"symbol", "attractiveness"} à ajouter
+    aux candidats (permet aux tests d'injecter des symboles dans la shortlist).
+    """
+    import json
+    candidates = [{"symbol": "2330.TW", "attractiveness": 1.9}]
+    if extra_candidates:
+        candidates.extend(extra_candidates)
+    # Schéma réel : chaque candidat porte un bias (radar.py). build_override_prompt
+    # l'affiche ; le droper casse le prompt prod. On normalise pour coller au prod.
+    for c in candidates:
+        c.setdefault("bias", "long")
+    return json.dumps({
+        "venues": {
+            "TW": {
+                "candidates": candidates,
+                "default_hotlist": ["2330.TW"],
+                "hotlist": ["2330.TW"],
+                "scores": {"2330.TW": 1.9},
+                "dwell": {"2330.TW": 1},
+                "last_close_at": "2026-06-15T05:30:00+00:00",
+                "stale": False,
+            }
+        }
+    })
+
+
+def test_tick_override_preopen_appelle_override_fn_et_ajoute_symbole(tmp_path):
+    """venue TW en pré-open (00:30 UTC) + override_fn injectée qui ajoute 2454.TW
+    (dans les candidats) → le symbole ajouté est dans l'univers final.
+    Le LLM choisit dans la shortlist candidats, pas le pool brut."""
+    import json
+
+    config_dir = tmp_path / "cfg"
+    state_dir = tmp_path / "state"
+    config_dir.mkdir()
+    state_dir.mkdir()
+    _write_tick_config_with_override(config_dir, override_enabled=True)
+    # 2454.TW doit être dans les candidats pour que l'add passe la garde out_of_pool
+    (state_dir / "venue_state.json").write_text(
+        _make_preopen_state(extra_candidates=[{"symbol": "2454.TW", "attractiveness": 1.5}]),
+        encoding="utf-8",
+    )
+
+    calls = []
+
+    def override_fn(payload):
+        calls.append(payload)
+        # ranked contient les vrais scores, pas 0.0
+        assert any(c["attractiveness"] > 0 for c in payload["ranked"]), "ranked doit avoir de vrais scores"
+        return {"add": ["2454.TW"], "remove": []}
+
+    res = tick(
+        str(config_dir),
+        str(state_dir),
+        "2026-06-16T00:30:00+00:00",
+        rank_fn=lambda: {"ranked": [], "gap_adverse": frozenset(), "ineligible": {}, "components_by_symbol": {}},
+        sticky_fn=lambda: set(),
+        override_fn=override_fn,
+    )
+
+    assert len(calls) == 1, "override_fn doit être appelée une fois pour TW en pré-open"
+    assert "2330.TW" in res["final"]
+    assert "2454.TW" in res["final"]
+
+
+def test_tick_override_preopen_chemin_prompt_reel(tmp_path):
+    """INTÉGRATION : câble le VRAI make_llm_override_fn (donc build_override_prompt)
+    contre les candidats persistés. Garde anti-régression du contrat candidates↔prompt
+    (le bug 'bias' manquant levait KeyError AVANT l'appel LLM → fail-safe silencieux).
+    """
+    from trader.rotation_override import make_llm_override_fn
+
+    config_dir = tmp_path / "cfg"
+    state_dir = tmp_path / "state"
+    config_dir.mkdir()
+    state_dir.mkdir()
+    _write_tick_config_with_override(config_dir, override_enabled=True)
+    (state_dir / "venue_state.json").write_text(
+        _make_preopen_state(extra_candidates=[{"symbol": "2454.TW", "attractiveness": 1.5}]),
+        encoding="utf-8",
+    )
+
+    seen_prompts = []
+
+    def fake_complete(prompt, *, timeout_s=None):
+        # Si build_override_prompt avait levé (bias manquant), on n'arriverait jamais ici.
+        seen_prompts.append(prompt)
+        return '{"add": ["2454.TW"], "remove": []}'
+
+    override_fn = make_llm_override_fn(fake_complete)
+
+    res = tick(
+        str(config_dir),
+        str(state_dir),
+        "2026-06-16T00:30:00+00:00",
+        rank_fn=lambda: {"ranked": [], "gap_adverse": frozenset(), "ineligible": {}, "components_by_symbol": {}},
+        sticky_fn=lambda: set(),
+        override_fn=override_fn,
+    )
+
+    assert len(seen_prompts) == 1, "le vrai prompt doit avoir été construit puis envoyé"
+    assert "bias=" in seen_prompts[0], "le prompt affiche le bias des candidats"
+    assert "2454.TW" in res["final"], "l'override réel doit s'appliquer (add dans la shortlist)"
+
+
+def test_tick_override_preopen_candidats_legacy_sans_bias(tmp_path):
+    """Migration : un venue_state.json legacy avec candidats SANS bias ne casse pas le
+    vrai prompt (normalisation défensive du bias dans le hook)."""
+    import json
+
+    from trader.rotation_override import make_llm_override_fn
+
+    config_dir = tmp_path / "cfg"
+    state_dir = tmp_path / "state"
+    config_dir.mkdir()
+    state_dir.mkdir()
+    _write_tick_config_with_override(config_dir, override_enabled=True)
+    # candidats SANS bias (état d'avant l'ajout du champ)
+    (state_dir / "venue_state.json").write_text(
+        json.dumps({
+            "venues": {
+                "TW": {
+                    "candidates": [{"symbol": "2330.TW", "attractiveness": 1.9}],
+                    "default_hotlist": ["2330.TW"],
+                    "hotlist": ["2330.TW"],
+                    "scores": {"2330.TW": 1.9},
+                    "dwell": {"2330.TW": 1},
+                    "last_close_at": "2026-06-15T05:30:00+00:00",
+                    "stale": False,
+                }
+            }
+        }),
+        encoding="utf-8",
+    )
+
+    seen = []
+
+    def fake_complete(prompt, *, timeout_s=None):
+        seen.append(prompt)
+        return '{"add": [], "remove": []}'
+
+    res = tick(
+        str(config_dir),
+        str(state_dir),
+        "2026-06-16T00:30:00+00:00",
+        rank_fn=lambda: {"ranked": [], "gap_adverse": frozenset(), "ineligible": {}, "components_by_symbol": {}},
+        sticky_fn=lambda: set(),
+        override_fn=make_llm_override_fn(fake_complete),
+    )
+
+    assert len(seen) == 1, "le prompt doit se construire malgré l'absence de bias legacy"
+    assert "2330.TW" in res["final"]
+
+
+def test_tick_override_preopen_failsafe_sur_exception(tmp_path):
+    """Si override_fn lève une exception → fail-safe : hotlist par défaut conservée."""
+    import json
+
+    config_dir = tmp_path / "cfg"
+    state_dir = tmp_path / "state"
+    config_dir.mkdir()
+    state_dir.mkdir()
+    _write_tick_config_with_override(config_dir, override_enabled=True)
+    # candidates présents pour que l'override soit tenté (et lève l'exception)
+    (state_dir / "venue_state.json").write_text(_make_preopen_state(), encoding="utf-8")
+
+    def boom(payload):
+        raise RuntimeError("llm down")
+
+    res = tick(
+        str(config_dir),
+        str(state_dir),
+        "2026-06-16T00:30:00+00:00",
+        rank_fn=lambda: {"ranked": [], "gap_adverse": frozenset(), "ineligible": {}, "components_by_symbol": {}},
+        sticky_fn=lambda: set(),
+        override_fn=boom,
+    )
+
+    # Défaut conservé, rotation jamais bloquée
+    assert "2330.TW" in res["final"]
+
+
+def test_tick_override_preopen_once_per_day(tmp_path):
+    """L'override ne tourne qu'une fois par jour par venue (last_override_at persisté)."""
+    import json
+
+    config_dir = tmp_path / "cfg"
+    state_dir = tmp_path / "state"
+    config_dir.mkdir()
+    state_dir.mkdir()
+    _write_tick_config_with_override(config_dir, override_enabled=True)
+    # candidates présents pour que l'override soit tenté
+    (state_dir / "venue_state.json").write_text(_make_preopen_state(), encoding="utf-8")
+
+    calls = []
+
+    def override_fn(payload):
+        calls.append(payload)
+        return {"add": [], "remove": []}
+
+    # Premier tick : doit appeler override_fn
+    tick(
+        str(config_dir),
+        str(state_dir),
+        "2026-06-16T00:30:00+00:00",
+        rank_fn=lambda: {"ranked": [], "gap_adverse": frozenset(), "ineligible": {}, "components_by_symbol": {}},
+        sticky_fn=lambda: set(),
+        override_fn=override_fn,
+    )
+    assert len(calls) == 1
+
+    # Second tick même jour (00:45) : pas de nouvel appel
+    tick(
+        str(config_dir),
+        str(state_dir),
+        "2026-06-16T00:45:00+00:00",
+        rank_fn=lambda: {"ranked": [], "gap_adverse": frozenset(), "ineligible": {}, "components_by_symbol": {}},
+        sticky_fn=lambda: set(),
+        override_fn=override_fn,
+    )
+    assert len(calls) == 1, "override_fn ne doit pas être rappelée le même jour"
+
+
+def test_tick_override_preopen_ne_retire_pas_sticky(tmp_path):
+    """apply_override protège les sticky : même si override_fn tente de retirer un sticky,
+    il reste dans la hotlist finale."""
+    import json
+
+    config_dir = tmp_path / "cfg"
+    state_dir = tmp_path / "state"
+    config_dir.mkdir()
+    state_dir.mkdir()
+    _write_tick_config_with_override(config_dir, override_enabled=True)
+    # candidates présents pour que l'override soit tenté
+    (state_dir / "venue_state.json").write_text(_make_preopen_state(), encoding="utf-8")
+
+    def override_fn(payload):
+        return {"add": [], "remove": ["2330.TW"]}
+
+    res = tick(
+        str(config_dir),
+        str(state_dir),
+        "2026-06-16T00:30:00+00:00",
+        rank_fn=lambda: {"ranked": [], "gap_adverse": frozenset(), "ineligible": {}, "components_by_symbol": {}},
+        sticky_fn=lambda: {"2330.TW"},  # 2330.TW est sticky
+        override_fn=override_fn,
+    )
+
+    # Le sticky doit rester présent malgré le remove
+    assert "2330.TW" in res["final"]
+
+
+# ---------------------------------------------------------------------------
+# B4 : override_enabled=false → aucun appel override (rotation déterministe)
+# ---------------------------------------------------------------------------
+
+
+def test_override_disabled_aucun_appel_llm(tmp_path):
+    """Avec override_enabled=false dans radar.yaml, tick ne doit PAS appeler override_fn."""
+    import json
+
+    config_dir = tmp_path / "cfg"
+    state_dir = tmp_path / "state"
+    config_dir.mkdir()
+    state_dir.mkdir()
+    _write_tick_config_with_override(config_dir, override_enabled=False)
+    # candidates présents mais override_enabled=false → aucun appel
+    (state_dir / "venue_state.json").write_text(_make_preopen_state(), encoding="utf-8")
+
+    calls = []
+
+    def spy(payload):
+        calls.append(payload)
+        return {"add": [], "remove": []}
+
+    tick(
+        str(config_dir),
+        str(state_dir),
+        "2026-06-16T00:30:00+00:00",
+        rank_fn=lambda: {"ranked": [], "gap_adverse": frozenset(), "ineligible": {}, "components_by_symbol": {}},
+        sticky_fn=lambda: set(),
+        override_fn=spy,
+    )
+
+    assert calls == [], "override_fn ne doit jamais être appelée quand override_enabled=false"
+
+
 def test_preopen_vers_open_sans_churn(tmp_path):
     """À 00:30 (pré-open) puis 01:30 (ouvert), les .TW restent présents : zéro churn."""
     import json
@@ -674,3 +990,429 @@ def test_preopen_vers_open_sans_churn(tmp_path):
 
     assert {"2330.TW", "2317.TW"} <= syms_preopen
     assert {"2330.TW", "2317.TW"} <= syms_open  # toujours là → pas de churn reconcile
+
+
+# ---------------------------------------------------------------------------
+# Garde-fou #1 : sticky fraîchement recalculé à chaque tick
+# → un symbole devenu sticky entre deux ticks est protégé au tick suivant
+# ---------------------------------------------------------------------------
+
+
+def test_garde_fou_1_sticky_recalcule_a_chaque_tick(tmp_path):
+    """Un plan créé APRÈS le premier tick est vu comme sticky au tick suivant
+    sans avoir à redémarrer le daemon. sticky_fn est appelée à chaque tick —
+    donc la protection est immédiate, pas différée à la prochaine venue close."""
+    import json
+
+    config_dir = tmp_path / "cfg"
+    state_dir = tmp_path / "state"
+    config_dir.mkdir()
+    state_dir.mkdir()
+    _write_tick_config_with_preopen(config_dir, preopen_window_minutes=90)
+
+    initial_state = {
+        "venues": {
+            "TW": {
+                "hotlist": ["2330.TW", "2317.TW"],
+                "scores": {"2330.TW": 1.9, "2317.TW": 1.7},
+                "dwell": {"2330.TW": 1, "2317.TW": 1},
+                "last_close_at": "2026-06-15T05:30:00+00:00",
+                "stale": False,
+            }
+        }
+    }
+
+    def null_rank():
+        return {"ranked": [], "gap_adverse": frozenset(), "ineligible": {}, "components_by_symbol": {}}
+
+    # Tick 1 : pas encore de sticky pour 2330.TW
+    (state_dir / "venue_state.json").write_text(json.dumps(initial_state), encoding="utf-8")
+    sticky_set = set()  # mutable : on peut l'enrichir entre ticks
+
+    res1 = tick(
+        str(config_dir),
+        str(state_dir),
+        "2026-06-16T00:30:00+00:00",
+        rank_fn=null_rank,
+        sticky_fn=lambda: set(sticky_set),  # capture mutable
+    )
+    assert "2330.TW" in res1["final"]
+
+    # Entre les ticks : 2330.TW crée un plan → devient sticky
+    sticky_set.add("2330.TW")
+
+    # Tick 2 (même pré-open, override tente de retirer 2330.TW)
+    def aggressive_override(payload):
+        # Tente de retirer le symbole sticky
+        return {"add": [], "remove": ["2330.TW"]}
+
+    res2 = tick(
+        str(config_dir),
+        str(state_dir),
+        "2026-06-16T00:45:00+00:00",
+        rank_fn=null_rank,
+        sticky_fn=lambda: set(sticky_set),
+        override_fn=aggressive_override,
+    )
+    # 2330.TW est sticky → apply_override rejette le retrait → reste dans final
+    # Note : l'override ne retourne pas today car last_override_at est déjà set
+    # (testé dans test_tick_override_preopen_once_per_day). Ce test vérifie
+    # que sticky_fn est recalculée fraîchement, pas figée.
+    assert "2330.TW" in res2["final"]
+
+
+# ---------------------------------------------------------------------------
+# Garde-fou #2 : symbole admis en pré-open → dû au scheduler avant l'ouverture
+# → reconcile_universe + due_symbols (test via Scheduler direct)
+# ---------------------------------------------------------------------------
+
+
+def test_garde_fou_2_symbole_preopen_dans_univers_est_due_scheduler(tmp_path):
+    """Un symbole admis dans l'univers via pré-open (tick) est vu par
+    reconcile_universe + due_symbols du scheduler → le daemon l'analysera
+    avant l'ouverture de sa venue."""
+    import json
+    from datetime import datetime, timezone
+
+    from trader.tools.scheduler import Scheduler
+
+    config_dir = tmp_path / "cfg"
+    state_dir = tmp_path / "state"
+    config_dir.mkdir()
+    state_dir.mkdir()
+    _write_tick_config_with_preopen(config_dir, preopen_window_minutes=90)
+    (state_dir / "venue_state.json").write_text(json.dumps({
+        "venues": {
+            "TW": {
+                "hotlist": ["2330.TW", "2317.TW"],
+                "scores": {"2330.TW": 1.9, "2317.TW": 1.7},
+                "dwell": {"2330.TW": 1, "2317.TW": 1},
+                "last_close_at": "2026-06-15T05:30:00+00:00",
+                "stale": False,
+            }
+        }
+    }), encoding="utf-8")
+
+    # tick à 00:30 (pré-open TW) → symboles TW entrent dans l'univers
+    res = tick(
+        str(config_dir),
+        str(state_dir),
+        "2026-06-16T00:30:00+00:00",
+        rank_fn=lambda: {"ranked": [], "gap_adverse": frozenset(), "ineligible": {}, "components_by_symbol": {}},
+        sticky_fn=lambda: set(),
+    )
+    universe = res["final"]
+    assert "2330.TW" in universe
+
+    # Simuler ce que le daemon fait après tick : reconcile_universe
+    sched = Scheduler(state_dir / "scheduler.json")
+    sched.reconcile_universe(universe)
+
+    # due_symbols à 00:30 (avant l'ouverture TW à 01:00) → 2330.TW doit être dû
+    now_dt = datetime(2026, 6, 16, 0, 30, tzinfo=timezone.utc)
+    due = sched.due_symbols(universe, now=now_dt)
+    assert "2330.TW" in due, (
+        "Un symbole admis en pré-open doit être dû avant l'ouverture "
+        "(sinon il est présent dans l'univers mais jamais analysé)"
+    )
+
+
+# ---------------------------------------------------------------------------
+# D13 : candidats persistés par venue + pool réel dans le hook override
+# ---------------------------------------------------------------------------
+
+
+def test_update_venue_ranking_persiste_top40_candidats(tmp_path):
+    """Après update_venue_ranking avec 50 items, candidates a 40 entrées triées
+    avec les vrais scores (pas 0.0)."""
+    state = empty_venue_state()
+    venue_ranked = [_item(f"SYM{i:02d}", 50.0 - i) for i in range(50)]
+    as_of = "2026-06-17T05:30:00+00:00"
+
+    result = update_venue_ranking(
+        state,
+        "TW",
+        venue_ranked,
+        cap_per_venue=5,
+        delta=0.0,
+        dwell_days=1,
+        emergency_floor=-1.0,
+        as_of=as_of,
+    )
+
+    candidates = result["venues"]["TW"]["candidates"]
+    assert len(candidates) == 40, "top 40 attendu"
+    # tri desc par attractivité préservé
+    scores = [c["attractiveness"] for c in candidates]
+    assert scores == sorted(scores, reverse=True), "candidats doivent être triés desc"
+    # vrais scores (pas 0.0)
+    assert all(c["attractiveness"] > 0 for c in candidates), "scores doivent être réels"
+    # bias persisté (sinon build_override_prompt lève KeyError en prod)
+    assert all("bias" in c for c in candidates), "chaque candidat doit porter son bias"
+    # clés existantes inchangées
+    assert "hotlist" in result["venues"]["TW"]
+    assert "scores" in result["venues"]["TW"]
+    assert "dwell" in result["venues"]["TW"]
+    assert result["venues"]["TW"]["last_close_at"] == as_of
+    assert result["venues"]["TW"]["stale"] is False
+
+
+def test_override_rejette_add_hors_candidats(tmp_path):
+    """Un add d'un symbole absent des candidats est rejeté out_of_pool (la garde est réelle)."""
+    import json
+
+    config_dir = tmp_path / "cfg"
+    state_dir = tmp_path / "state"
+    config_dir.mkdir()
+    state_dir.mkdir()
+    _write_tick_config_with_override(config_dir, override_enabled=True)
+
+    # Candidats : seulement 2330.TW — 9999.TW est hors pool
+    (state_dir / "venue_state.json").write_text(
+        _make_preopen_state(),  # candidates = [{"symbol": "2330.TW", ...}]
+        encoding="utf-8",
+    )
+
+    received_rejects = []
+
+    def override_fn(payload):
+        # Tente d'ajouter un symbole hors candidats
+        return {"add": ["9999.TW"], "remove": []}
+
+    res = tick(
+        str(config_dir),
+        str(state_dir),
+        "2026-06-16T00:30:00+00:00",
+        rank_fn=lambda: {"ranked": [], "gap_adverse": frozenset(), "ineligible": {}, "components_by_symbol": {}},
+        sticky_fn=lambda: set(),
+        override_fn=override_fn,
+    )
+
+    # 9999.TW hors pool → rejeté → absent de l'univers final
+    assert "9999.TW" not in res["final"], "symbole hors candidats doit être rejeté out_of_pool"
+    # 2330.TW (hotlist défaut) toujours présent
+    assert "2330.TW" in res["final"]
+
+
+def test_override_accepte_add_dans_candidats_apres_remove(tmp_path):
+    """Swap : remove 2330.TW (non-sticky) puis add 2454.TW (dans candidats) → accepté."""
+    import json
+
+    config_dir = tmp_path / "cfg"
+    state_dir = tmp_path / "state"
+    config_dir.mkdir()
+    state_dir.mkdir()
+    _write_tick_config_with_override(config_dir, override_enabled=True)
+
+    (state_dir / "venue_state.json").write_text(
+        _make_preopen_state(extra_candidates=[{"symbol": "2454.TW", "attractiveness": 1.5}]),
+        encoding="utf-8",
+    )
+
+    def override_fn(payload):
+        return {"add": ["2454.TW"], "remove": ["2330.TW"]}
+
+    res = tick(
+        str(config_dir),
+        str(state_dir),
+        "2026-06-16T00:30:00+00:00",
+        rank_fn=lambda: {"ranked": [], "gap_adverse": frozenset(), "ineligible": {}, "components_by_symbol": {}},
+        sticky_fn=lambda: set(),
+        override_fn=override_fn,
+    )
+
+    # Swap accepté : 2454.TW entre, 2330.TW sort
+    assert "2454.TW" in res["final"], "2454.TW dans candidats doit être accepté après remove"
+    assert "2330.TW" not in res["final"], "2330.TW retiré par le swap"
+
+
+def test_override_ranked_contient_vrais_scores(tmp_path):
+    """Le payload ranked transmis au LLM contient les vrais scores, pas 0.0."""
+    import json
+
+    config_dir = tmp_path / "cfg"
+    state_dir = tmp_path / "state"
+    config_dir.mkdir()
+    state_dir.mkdir()
+    _write_tick_config_with_override(config_dir, override_enabled=True)
+    (state_dir / "venue_state.json").write_text(
+        _make_preopen_state(extra_candidates=[{"symbol": "2454.TW", "attractiveness": 1.5}]),
+        encoding="utf-8",
+    )
+
+    captured = []
+
+    def override_fn(payload):
+        captured.append(payload["ranked"])
+        return {"add": [], "remove": []}
+
+    tick(
+        str(config_dir),
+        str(state_dir),
+        "2026-06-16T00:30:00+00:00",
+        rank_fn=lambda: {"ranked": [], "gap_adverse": frozenset(), "ineligible": {}, "components_by_symbol": {}},
+        sticky_fn=lambda: set(),
+        override_fn=override_fn,
+    )
+
+    assert len(captured) == 1, "override_fn doit être appelée"
+    ranked = captured[0]
+    assert all(isinstance(c["attractiveness"], (int, float)) for c in ranked)
+    assert all(c["attractiveness"] != 0.0 for c in ranked), "scores 0.0 interdits (valeurs bidon)"
+    sym_to_score = {c["symbol"]: c["attractiveness"] for c in ranked}
+    assert sym_to_score.get("2330.TW") == 1.9
+    assert sym_to_score.get("2454.TW") == 1.5
+
+
+# ---------------------------------------------------------------------------
+# D13 (backtestabilité) : séparation default_hotlist / hotlist
+# ---------------------------------------------------------------------------
+
+
+def test_update_venue_ranking_persiste_default_hotlist_egal_hotlist_a_la_cloture():
+    """À la clôture, default_hotlist et hotlist doivent être identiques
+    (l'override ne s'est pas encore exécuté)."""
+    state = empty_venue_state()
+    as_of = "2026-06-17T05:30:00+00:00"
+
+    result = update_venue_ranking(
+        state,
+        "TW",
+        [_item("2330.TW", 1.9), _item("2317.TW", 1.7)],
+        cap_per_venue=5,
+        delta=0.0,
+        dwell_days=1,
+        emergency_floor=-1.0,
+        as_of=as_of,
+    )
+
+    tw = result["venues"]["TW"]
+    assert "default_hotlist" in tw, "default_hotlist doit être persisté à la clôture"
+    assert tw["default_hotlist"] == tw["hotlist"], (
+        "À la clôture, default_hotlist == hotlist (avant tout override)"
+    )
+
+
+def test_update_venue_ranking_migration_fallback_pas_de_default_hotlist():
+    """Un venue_state.json sans default_hotlist (ancien format) ne casse pas :
+    l'hystérésis se base sur hotlist (fallback) et default_hotlist est créé."""
+    state = {
+        "venues": {
+            "TW": {
+                # Ancien format : pas de default_hotlist
+                "hotlist": ["2330.TW"],
+                "scores": {"2330.TW": 1.9},
+                "dwell": {"2330.TW": 3},
+                "last_close_at": "2026-06-16T05:30:00+00:00",
+                "stale": False,
+            }
+        }
+    }
+
+    result = update_venue_ranking(
+        state,
+        "TW",
+        [_item("2330.TW", 1.9), _item("2317.TW", 1.7)],
+        cap_per_venue=5,
+        delta=0.0,
+        dwell_days=1,
+        emergency_floor=-1.0,
+        as_of="2026-06-17T05:30:00+00:00",
+    )
+
+    tw = result["venues"]["TW"]
+    assert "default_hotlist" in tw, "default_hotlist doit être créé même depuis un ancien état"
+    assert "2330.TW" in tw["default_hotlist"], "2330.TW doit survivre à la migration"
+
+
+def test_override_necrit_pas_default_hotlist(tmp_path):
+    """L'override pré-open ne touche que hotlist et last_override_at :
+    default_hotlist reste le déterministe pur."""
+    import json
+
+    config_dir = tmp_path / "cfg"
+    state_dir = tmp_path / "state"
+    config_dir.mkdir()
+    state_dir.mkdir()
+    _write_tick_config_with_override(config_dir, override_enabled=True)
+    (state_dir / "venue_state.json").write_text(
+        _make_preopen_state(extra_candidates=[{"symbol": "2454.TW", "attractiveness": 1.5}]),
+        encoding="utf-8",
+    )
+
+    def override_fn(payload):
+        return {"add": ["2454.TW"], "remove": ["2330.TW"]}
+
+    tick(
+        str(config_dir),
+        str(state_dir),
+        "2026-06-16T00:30:00+00:00",
+        rank_fn=lambda: {"ranked": [], "gap_adverse": frozenset(), "ineligible": {}, "components_by_symbol": {}},
+        sticky_fn=lambda: set(),
+        override_fn=override_fn,
+    )
+
+    saved = json.loads((state_dir / "venue_state.json").read_text(encoding="utf-8"))
+    tw = saved["venues"]["TW"]
+    assert tw["default_hotlist"] == ["2330.TW"], (
+        "default_hotlist doit rester déterministe pur après override"
+    )
+    assert tw["hotlist"] == ["2454.TW"], "hotlist reflète l'override"
+
+
+def test_purity_chain_override_nexfluence_pas_hysteresis_cloture_suivante(tmp_path):
+    """Test de pureté de chaîne D13 :
+    - Clôture C1 → default_hotlist = hotlist = [A, B]
+    - Pré-open override → hotlist = [A, C]  (C dans candidats, B retiré)
+    - Clôture C2 (mêmes venue_ranked) → l'hystérésis part de default_hotlist=[A,B],
+      pas de hotlist=[A,C] → le résultat déterministe est identique à C1.
+    Vérifie que la baseline ne dérive pas avec les overrides LLM.
+    """
+    # Clôture C1 — état vierge
+    state_c1_before = empty_venue_state()
+    state_c1 = update_venue_ranking(
+        state_c1_before,
+        "TW",
+        [_item("A.TW", 2.0), _item("B.TW", 1.8), _item("C.TW", 1.5)],
+        cap_per_venue=2,
+        delta=0.0,
+        dwell_days=1,
+        emergency_floor=-1.0,
+        as_of="2026-06-17T05:30:00+00:00",
+    )
+    tw_c1 = state_c1["venues"]["TW"]
+    assert tw_c1["default_hotlist"] == ["A.TW", "B.TW"]
+    assert tw_c1["hotlist"] == ["A.TW", "B.TW"]
+
+    # Simuler l'override pré-open : hotlist → [A.TW, C.TW], default_hotlist inchangé
+    from copy import deepcopy
+    state_post_override = deepcopy(state_c1)
+    state_post_override["venues"]["TW"]["hotlist"] = ["A.TW", "C.TW"]
+    # default_hotlist doit rester ["A.TW", "B.TW"]
+    assert state_post_override["venues"]["TW"]["default_hotlist"] == ["A.TW", "B.TW"]
+
+    # Clôture C2 — mêmes venue_ranked
+    state_c2 = update_venue_ranking(
+        state_post_override,
+        "TW",
+        [_item("A.TW", 2.0), _item("B.TW", 1.8), _item("C.TW", 1.5)],
+        cap_per_venue=2,
+        delta=0.0,
+        dwell_days=1,
+        emergency_floor=-1.0,
+        as_of="2026-06-18T05:30:00+00:00",
+    )
+    tw_c2 = state_c2["venues"]["TW"]
+
+    # L'hystérésis repart de default_hotlist=[A.TW, B.TW] → résultat stable
+    assert tw_c2["default_hotlist"] == ["A.TW", "B.TW"], (
+        "La baseline déterministe ne doit pas dériver (override C1 ignoré)"
+    )
+    assert tw_c2["hotlist"] == ["A.TW", "B.TW"], (
+        "hotlist C2 = default_hotlist C2 (avant override C2)"
+    )
+    # Si l'override avait contaminé l'hystérésis, C.TW serait entré en C2
+    # (car il était dans hotlist post-override C1) au détriment de B.TW
+    assert "C.TW" not in tw_c2["default_hotlist"], (
+        "C.TW NE doit PAS être dans la baseline C2 : l'override C1 ne doit pas contaminer"
+    )

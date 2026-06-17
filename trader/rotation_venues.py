@@ -11,20 +11,24 @@ from pathlib import Path
 
 import yaml
 
-from trader.rotation import apply_hysteresis, emergency_exits, write_universe_atomic
+from trader.rotation import apply_hysteresis, apply_override, emergency_exits, write_universe_atomic
 from trader.rotation_collectors import (
     build_plans_fn,
     build_positions_fn,
     sticky_collector,
 )
+from trader.rotation_ledger import log_rotation
 from trader.rotation_schedule import (
     analyzable_venues,
     closed_sessions_since,
     load_sessions,
-    open_venues,
+    preopen_venues,
 )
 from trader.rotation_wiring import build_rank_fn, venue_of
 from trader.radar_config import load_radar_params
+
+# Top N candidats radar persistés par venue pour l'override LLM pré-open (configurable plus tard)
+OVERRIDE_CANDIDATES_TOP = 40
 
 
 def empty_venue_state() -> dict:
@@ -179,8 +183,25 @@ def due_venues(now_iso, state, sessions, *, fx_refresh="22:00") -> list[str]:
     return sorted(due)
 
 
-def tick(config_dir, state_dir, now_iso, *, rank_fn=None, sticky_fn=None, fx_cap=3) -> dict:
-    """Run one per-venue rotation cycle and reconcile the active universe."""
+def tick(
+    config_dir,
+    state_dir,
+    now_iso,
+    *,
+    rank_fn=None,
+    sticky_fn=None,
+    fx_cap=3,
+    override_fn=None,
+    market_context=None,
+) -> dict:
+    """Run one per-venue rotation cycle and reconcile the active universe.
+
+    Args:
+        override_fn: callable(payload) -> {"add": [...], "remove": [...]} injectée pour
+            le test/prod. Si params.override_enabled=False, n'est JAMAIS appelée.
+            Si None, pas d'override (rotation 100 % déterministe).
+        market_context: dict optionnel transmis au payload override (v1 : regime_families).
+    """
     config_path = Path(config_dir)
     sessions = load_sessions(config_dir)
     params = load_radar_params(config_path)
@@ -225,6 +246,76 @@ def tick(config_dir, state_dir, now_iso, *, rank_fn=None, sticky_fn=None, fx_cap
     else:
         sticky = sticky_fn()
 
+    # Hook override pré-open par venue (B3/B4)
+    # Un appel LLM max par venue par jour, seulement si override_enabled
+    if override_fn is not None and params.override_enabled:
+        now_date = now_iso[:10]  # YYYY-MM-DD
+        preopen_v = preopen_venues(now_iso, sessions, window_minutes=params.preopen_window_minutes)
+        ledger_path = Path(state_dir) / "rotation_ledger.jsonl"
+
+        for venue in preopen_v:
+            # Vérifier si l'override a déjà tourné aujourd'hui pour cette venue
+            venue_meta = state.get("venues", {}).get(venue, {})
+            last_override_at = venue_meta.get("last_override_at", "")
+            if last_override_at.startswith(now_date):
+                continue  # déjà traité aujourd'hui
+
+            # Normalise bias : un venue_state.json legacy (candidats persistés avant
+            # l'ajout du bias) ferait lever build_override_prompt (KeyError). Défensif.
+            candidates = [
+                {**c, "bias": c.get("bias", "long")}
+                for c in venue_meta.get("candidates", [])
+            ]
+            if not candidates:
+                continue  # venue jamais classée, pas de shortlist
+
+            # Base de l'override = déterministe pur ; fallback "hotlist" pour migration
+            default_hotlist = list(venue_meta.get("default_hotlist", venue_meta.get("hotlist", [])))
+            pool = {c["symbol"] for c in candidates}
+
+            payload = {
+                "ranked": candidates,
+                "default_hot": default_hotlist,
+                "sticky": sticky,
+                "market_context": market_context,
+            }
+
+            final_hotlist = default_hotlist  # fail-safe
+            try:
+                override_result = override_fn(payload) or {"add": [], "remove": []}
+                add = override_result.get("add", [])
+                remove = override_result.get("remove", [])
+                final_hotlist, _rejects = apply_override(
+                    default_hot=default_hotlist,
+                    add=add,
+                    remove=remove,
+                    pool=pool,
+                    sticky=sticky,
+                    free_slots=params.cap_m,
+                )
+                log_rotation(
+                    ledger_path,
+                    as_of=now_iso,
+                    default_hot=set(default_hotlist),
+                    final_hot=set(final_hotlist),
+                    sticky=sticky,
+                    overrides={"venue": venue, "add": add, "remove": remove},
+                    rejects={"rejects": _rejects},
+                    alerts=[],
+                )
+            except Exception:  # noqa: BLE001 — fail-safe : rotation jamais bloquée
+                pass  # final_hotlist = default_hotlist (conservé)
+
+            # Persister la hotlist finale et last_override_at dans venue_state
+            venues = dict(state.get("venues", {}))
+            venue_entry = dict(venues.get(venue, {}))
+            venue_entry["hotlist"] = final_hotlist
+            venue_entry["last_override_at"] = now_iso
+            venues[venue] = venue_entry
+            state = {**state, "venues": venues}
+
+        save_venue_state(state_dir, state)
+
     final = compose_active_universe(state, open_v, sticky=sticky, fx_cap=fx_cap)
     written = write_universe_if_changed(str(config_path / "universe.yaml"), final)
     return {"dues": dues, "open": open_v, "final": final, "written": written}
@@ -245,7 +336,8 @@ def update_venue_ranking(
     """Update one venue ranking while preserving other venue entries."""
     venues = state.get("venues", {})
     previous = venues.get(venue, {}) if isinstance(venues, dict) else {}
-    old_hotlist = list(previous.get("hotlist", []))
+    # Hystérésis depuis le déterministe pur ; fallback "hotlist" pour migration
+    old_hotlist = list(previous.get("default_hotlist", previous.get("hotlist", [])))
     old_dwell = dict(previous.get("dwell", {}))
 
     default_hot = apply_hysteresis(
@@ -274,7 +366,21 @@ def update_venue_ranking(
 
     next_state = dict(state)
     next_venues = dict(venues) if isinstance(venues, dict) else {}
+    # bias inclus : build_override_prompt l'affiche au LLM (sens directionnel radar).
+    # Le droper casse le prompt prod (KeyError 'bias') → override jamais exécuté.
+    candidates = [
+        {
+            "symbol": item["symbol"],
+            "attractiveness": item["attractiveness"],
+            "bias": item.get("bias", "long"),
+        }
+        for item in venue_ranked[:OVERRIDE_CANDIDATES_TOP]
+    ]
     next_venues[venue] = {
+        "candidates": candidates,
+        # default_hotlist = déterministe pur (base hystérésis + ledger alpha)
+        # hotlist = effectif (initialisé = default_hotlist ; override pré-open l'ajuste)
+        "default_hotlist": hotlist,
         "hotlist": hotlist,
         "scores": scores,
         "dwell": dwell,

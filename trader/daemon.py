@@ -2709,8 +2709,31 @@ def main(
                 # SI changé. Pas de cron externe ; état par venue persisté → rattrapage au
                 # redémarrage. Fail-safe : n'interrompt jamais le cycle.
                 from .rotation_venues import tick as _rotation_tick
+                from .radar_config import load_radar_params as _load_radar_params
                 try:
-                    _rotation_tick(ROOT / "config", STATE_DIR, loop_now.isoformat())
+                    _radar_params = _load_radar_params(ROOT / "config")
+                    _override_fn = None
+                    if _radar_params.override_enabled:
+                        from .rotation_wiring import build_llm_override_fn as _build_override
+                        _override_fn = _build_override()
+                    # market_context v1 : peuplé depuis le cache de régime si disponible
+                    from .rotation_wiring import build_market_context_from_regime as _build_mctx
+                    _market_context = None
+                    _regime_cache_path = STATE_DIR / "last_regime.json"
+                    if _regime_cache_path.exists():
+                        try:
+                            import json as _json
+                            _cached_regime = _json.loads(_regime_cache_path.read_text(encoding="utf-8"))
+                            _market_context = _build_mctx(_cached_regime)
+                        except Exception:  # noqa: BLE001
+                            pass
+                    _rotation_tick(
+                        ROOT / "config",
+                        STATE_DIR,
+                        loop_now.isoformat(),
+                        override_fn=_override_fn,
+                        market_context=_market_context,
+                    )
                 except Exception:  # noqa: BLE001 — la rotation ne doit pas faire tomber le daemon
                     log.exception("rotation tick (D10) échouée")
                 symbols = _load_yaml(ROOT / "config" / "universe.yaml")["symbols"]
