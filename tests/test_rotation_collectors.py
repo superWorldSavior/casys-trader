@@ -109,6 +109,30 @@ class TestBuildPlansFn:
         fn = build_plans_fn(tmp_path)
         assert callable(fn)
 
+    def test_lit_le_fichier_ecrit_par_le_daemon(self, tmp_path: Path):
+        """build_plans_fn doit lire le MÊME fichier que le daemon écrit
+        (trade_plans.json, daemon.py). Sinon la branche plans du sticky est morte
+        et un trade plan ne devient jamais sticky (régression D10)."""
+        from trader.rotation_collectors import build_plans_fn
+        from trader.trade_plan import TradePlanStore, create_trade_plan
+
+        # Le daemon écrit STATE_DIR / "trade_plans.json".
+        store = TradePlanStore(tmp_path / "trade_plans.json")
+        store.upsert(
+            create_trade_plan(
+                symbol="SPY",
+                side="LONG",
+                quantity=10.0,
+                entry_price=100.0,
+                opened_at="2026-06-05T12:00:00+00:00",
+                raw_exit_plan={"hard_stop": 95.0},
+            )
+        )
+
+        plans = build_plans_fn(tmp_path)()
+
+        assert [p.symbol for p in plans] == ["SPY"]
+
 
 # ---------------------------------------------------------------------------
 # default_override_fn

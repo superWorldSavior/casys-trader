@@ -79,10 +79,11 @@ def build_positions_fn(state_dir: str | Path) -> Callable[[], dict]:
 def build_plans_fn(state_dir: str | Path) -> Callable[[], list]:
     """Retourne une closure qui lit les plans ouverts depuis TradePlanStore.
 
-    Si ``plans.json`` est absent ou corrompu, retourne [] sans lever.
+    Lit ``trade_plans.json`` — le MÊME fichier que celui écrit par le daemon
+    (``daemon.py``). Si absent ou corrompu, retourne [] sans lever.
 
     Args:
-        state_dir: Répertoire contenant ``plans.json``.
+        state_dir: Répertoire contenant ``trade_plans.json``.
 
     Returns:
         Callable[[], list[TradePlan]]
@@ -93,7 +94,7 @@ def build_plans_fn(state_dir: str | Path) -> Callable[[], list]:
         try:
             from trader.trade_plan import TradePlanStore
 
-            store = TradePlanStore(state_dir / "plans.json")
+            store = TradePlanStore(state_dir / "trade_plans.json")
             return store.open_plans()
         except Exception:
             return []
