@@ -84,6 +84,19 @@ def test_build_consolidator_router_depuis_env_dedie(monkeypatch) -> None:
     assert backend.model == "gpt-5.5/high"
 
 
+def test_build_consolidator_router_modele_defaut_acpx_annonce(monkeypatch) -> None:
+    monkeypatch.delenv("TRADER_CONSOLIDATOR_MODEL", raising=False)
+    monkeypatch.delenv("TRADER_CONSOLIDATOR_OLLAMA_API_KEY", raising=False)
+    monkeypatch.delenv("TRADER_OLLAMA_API_KEY", raising=False)
+    monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
+
+    router = consolidator.build_consolidator_router_from_env(env_path=None)
+
+    backend = router.backends[0]
+    assert backend.provider == "consolidator"
+    assert backend.model == "gpt-5.5"
+
+
 def test_maybe_consolidate_ecrit_le_consolide_et_avance_le_watermark(tmp_path) -> None:
     raw_store = LearningsStore(tmp_path / "learnings.jsonl", max_entries=200)
     consolidated_store = consolidator.ConsolidatedLearningsStore(tmp_path / "learnings_consolidated.json")
@@ -232,7 +245,7 @@ def test_maybe_consolidate_ne_retente_pas_un_echec_non_retryable(tmp_path) -> No
             calls += 1
             return llm.LlmFailure(
                 provider="consolidator",
-                model="gpt-5.5/high",
+                model="gpt-5.5",
                 code="nonzero_exit",
                 message="adapter failed",
                 retryable=False,
@@ -268,7 +281,7 @@ def test_maybe_consolidate_ne_retente_pas_un_echec_sans_nouveau_lot(tmp_path) ->
             calls += 1
             return llm.LlmFailure(
                 provider="consolidator",
-                model="gpt-5.5/high",
+                model="gpt-5.5",
                 code="nonzero_exit",
                 message="adapter failed",
                 retryable=False,

@@ -604,7 +604,7 @@ def build_parser() -> argparse.ArgumentParser:
     decisions_bench.add_argument(
         "--models",
         default=",".join(decision_bench.DEFAULT_BENCH_MODELS),
-        help="CSV provider:model, ex. acpx:gpt-5.5/medium,ollama-cloud:glm-5.1:cloud",
+        help="CSV provider:model, ex. acpx:gpt-5.5,ollama-cloud:glm-5.1:cloud",
     )
     decisions_bench.add_argument("--verdicts", default="good,bad,missed,neutral")
     decisions_bench.add_argument("--timeout-s", type=int, default=120)

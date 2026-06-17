@@ -17,10 +17,8 @@ from .agent_context import build_market_cockpit
 VALID_ACTIONS = {"BUY", "SELL", "HOLD"}
 DEFAULT_VERDICTS = {"good", "bad", "missed", "neutral"}
 DEFAULT_BENCH_MODELS = [
-    "acpx:gpt-5.3-codex-spark/medium",
-    "acpx:gpt-5.3-codex-spark/xhigh",
-    "acpx:gpt-5.5/medium",
-    "acpx:gpt-5.5/xhigh",
+    "acpx:gpt-5.3-codex-spark",
+    "acpx:gpt-5.5",
     "ollama-cloud:nemotron-3-super:cloud",
     "ollama-cloud:glm-5.1:cloud",
 ]

@@ -171,6 +171,30 @@ def test_acpx_backend_consolidateur_traite_internal_error_comme_retryable(monkey
     assert result.code == "provider_error"
 
 
+def test_acpx_backend_runtime_traite_internal_error_comme_retryable(monkeypatch) -> None:
+    monkeypatch.setattr("trader.llm.shutil.which", lambda _bin: "/usr/local/bin/acpx")
+    monkeypatch.setattr("trader.llm._terminate_process_group", lambda _pid: None)
+    monkeypatch.setattr("trader.llm._codex_acp_pids", lambda: set())
+
+    class InternalErrorPopen:
+        pid = 4242
+        returncode = 1
+
+        def __init__(self, command, **kwargs):
+            self.command = command
+
+        def communicate(self, timeout=None):
+            return "", "Internal error\n"
+
+    monkeypatch.setattr("trader.llm.subprocess.Popen", InternalErrorPopen)
+
+    result = AcpxBackend(provider="acpx", model="gpt-5.5").complete("prompt", timeout_s=240)
+
+    assert isinstance(result, LlmFailure)
+    assert result.retryable is True
+    assert result.code == "provider_error"
+
+
 def test_acpx_backend_isole_et_nettoie_le_process_group(monkeypatch) -> None:
     monkeypatch.setattr("trader.llm.shutil.which", lambda _bin: "/usr/local/bin/acpx")
     popen_calls = []
@@ -545,7 +569,7 @@ def test_build_default_router_from_env_configure_acpx_puis_ollama(monkeypatch) -
     router = build_default_router_from_env()
 
     assert [backend.provider for backend in router.backends] == ["acpx", "ollama-cloud"]
-    assert router.backends[0].model == "gpt-5.5/medium"
+    assert router.backends[0].model == "gpt-5.5"
     assert router.backends[1].model == "nemotron-3-nano:30b-cloud"
 
 

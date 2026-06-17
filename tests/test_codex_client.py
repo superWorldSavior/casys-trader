@@ -170,8 +170,8 @@ def test_parse_batch_json_global_invalide_tout_en_hold() -> None:
     assert result["QQQ"].action == "HOLD"
 
 
-def test_default_model_utilise_reasoning_medium() -> None:
-    assert DEFAULT_MODEL == "gpt-5.5/medium"
+def test_default_model_utilise_modele_acpx_annonce() -> None:
+    assert DEFAULT_MODEL == "gpt-5.5"
 
 
 def test_parse_decision_accepte_next_wake_in_minutes_optionnel() -> None:

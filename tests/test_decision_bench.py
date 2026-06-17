@@ -78,10 +78,8 @@ def test_parse_model_specs_par_defaut_couvre_le_banc_demande() -> None:
     specs = decision_bench.parse_model_specs(None)
 
     assert [(spec.provider, spec.model) for spec in specs] == [
-        ("acpx", "gpt-5.3-codex-spark/medium"),
-        ("acpx", "gpt-5.3-codex-spark/xhigh"),
-        ("acpx", "gpt-5.5/medium"),
-        ("acpx", "gpt-5.5/xhigh"),
+        ("acpx", "gpt-5.3-codex-spark"),
+        ("acpx", "gpt-5.5"),
         ("ollama-cloud", "nemotron-3-super:cloud"),
         ("ollama-cloud", "glm-5.1:cloud"),
     ]

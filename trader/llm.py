@@ -19,7 +19,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable, Protocol
 
-DEFAULT_SPARK_MODEL = "gpt-5.5/medium"
+DEFAULT_SPARK_MODEL = "gpt-5.5"
 DEFAULT_OLLAMA_BASE_URL = "https://ollama.com/v1"
 DEFAULT_OLLAMA_MODEL = "nemotron-3-nano:30b-cloud"
 DEFAULT_CONSOLIDATOR_OLLAMA_MODEL = "glm-5.1:cloud"
@@ -156,7 +156,7 @@ def _looks_retryable_provider_error(text: str) -> bool:
 def _looks_retryable_acpx_error(*, provider: str, text: str) -> bool:
     if _looks_retryable_provider_error(text):
         return True
-    if provider == "consolidator" and "internal error" in text.lower():
+    if "internal error" in text.lower():
         return True
     return False
 
