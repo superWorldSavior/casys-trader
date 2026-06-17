@@ -9,9 +9,17 @@ Aucune décision ici — uniquement de la donnée brute.
 
 from __future__ import annotations
 
+import functools
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
+
+try:
+    import exchange_calendars as _ec
+    import pandas as _pd
+    _EC_AVAILABLE = True
+except ImportError:
+    _EC_AVAILABLE = False
 
 
 @dataclass(frozen=True)
@@ -126,6 +134,73 @@ _VENUE_BY_SYMBOL: dict[str, _Venue] = {
     "^FCHI": (ZoneInfo("Europe/Paris"), 9, 0, 17, 30),  # CAC 40 — coté à Paris
 }
 
+# Mapping suffixe Yahoo Finance → code MIC exchange_calendars.
+# TPEx (.TWO) suit les mêmes jours fériés que TWSE (.TW) → même MIC XTAI.
+_VENUE_MIC: dict[str, str] = {
+    ".TW": "XTAI",
+    ".TWO": "XTAI",
+    ".PA": "XPAR",
+    ".DE": "XETR",
+    ".AS": "XAMS",
+    ".BR": "XBRU",
+    ".LS": "XLIS",
+    ".SW": "XSWX",
+    ".MI": "XMIL",
+    ".MC": "XMAD",
+    ".L": "XLON",
+    ".CO": "XCSE",
+    ".ST": "XSTO",
+    ".HE": "XHEL",
+    ".VI": "XWBO",
+    ".OL": "XOSL",
+}
+_SYMBOL_MIC: dict[str, str] = {
+    "^FCHI": "XPAR",
+    "^GDAXI": "XETR",
+    "^AEX": "XAMS",
+    "^BFX": "XBRU",
+    "^IBEX": "XMAD",
+    "^FTSE": "XLON",
+    "^STOXX50E": "XPAR",
+}
+
+
+def _mic_for_symbol(symbol: str) -> str:
+    if symbol in _SYMBOL_MIC:
+        return _SYMBOL_MIC[symbol]
+    for suffix, mic in _VENUE_MIC.items():
+        if symbol.endswith(suffix):
+            return mic
+    return "XNYS"
+
+
+@functools.lru_cache(maxsize=32)
+def _get_calendar(mic: str):
+    """Calendrier exchange_calendars pour un MIC, ou None. Cache PAR MIC (≤ 17 places),
+    donc borné par le nombre de places et non par le nombre de symboles de l'univers.
+
+    LIMITATION V1 CONNUE — borne temporelle non-déterministe :
+    `ec.get_calendar(mic)` sans paramètre start/end borne la plage de sessions selon
+    l'horloge SYSTÈME au moment de l'appel (last_session ≈ today_système + 365 j).
+    Conséquence : une query portant sur un `now` injecté far-future peut tomber en
+    fallback weekend-only si `now` dépasse la borne système, puis utiliser les vrais
+    fériés pour le MÊME `now` après un redémarrage du daemon (lorsque la borne système
+    aura avancé). Ce n'est PAS contourné par datetime.now() / Timestamp.now() — cela
+    casserait le déterminisme. Le daemon étant redémarré régulièrement, la fenêtre
+    affectée est négligeable en pratique.
+    """
+    if not _EC_AVAILABLE:
+        return None
+    try:
+        return _ec.get_calendar(mic)
+    except Exception:
+        return None
+
+
+def _calendar_for_symbol(symbol: str):
+    """Calendrier de la place du symbole, ou None (→ fallback weekend-only)."""
+    return _get_calendar(_mic_for_symbol(symbol))
+
 
 def _venue_for_symbol(symbol: str | None) -> _Venue:
     if symbol:
@@ -145,8 +220,8 @@ def session_snapshot(symbol: str, *, now: datetime) -> dict:
 
     Retour : {"open": bool, "since_open_m": int|None, "to_close_m": int|None}.
     FX (=X) : ~24h/5 → open=True en semaine sans bornes, fermé le weekend.
-    Compromis assumé (comme le calendrier de réveil) : fériés et demi-journées
-    non gérés ; weekend = samedi/dimanche locaux de la place.
+    Jours fériés et demi-séances gérés via exchange_calendars (fallback weekend-only
+    si le calendrier est indisponible ou si la date dépasse la borne temporelle).
     """
     now_utc = now if now.tzinfo is not None else now.replace(tzinfo=timezone.utc)
     if symbol.endswith("=X"):
@@ -156,8 +231,25 @@ def session_snapshot(symbol: str, *, now: datetime) -> dict:
     local_now = now_utc.astimezone(tz)
     if local_now.weekday() >= 5:
         return {"open": False, "since_open_m": None, "to_close_m": None}
-    open_dt = local_now.replace(hour=open_hour, minute=open_minute, second=0, microsecond=0)
-    close_dt = local_now.replace(hour=close_hour, minute=close_minute, second=0, microsecond=0)
+    date_str = local_now.strftime("%Y-%m-%d")
+    cal = _calendar_for_symbol(symbol)
+    if cal is not None:
+        try:
+            if not cal.is_session(date_str):
+                return {"open": False, "since_open_m": None, "to_close_m": None}
+            # Heure d'ouverture réelle (peut différer des horaires standards lors d'opens tardifs)
+            open_ts = cal.session_open(date_str)
+            open_dt = open_ts.to_pydatetime().astimezone(tz)
+            # Heure de clôture réelle (early close pour les demi-séances)
+            close_ts = cal.session_close(date_str)
+            close_dt = close_ts.to_pydatetime().astimezone(tz)
+        except Exception:
+            # Hors borne temporelle ou erreur → fallback
+            open_dt = local_now.replace(hour=open_hour, minute=open_minute, second=0, microsecond=0)
+            close_dt = local_now.replace(hour=close_hour, minute=close_minute, second=0, microsecond=0)
+    else:
+        open_dt = local_now.replace(hour=open_hour, minute=open_minute, second=0, microsecond=0)
+        close_dt = local_now.replace(hour=close_hour, minute=close_minute, second=0, microsecond=0)
     if not (open_dt <= local_now < close_dt):
         return {"open": False, "since_open_m": None, "to_close_m": None}
     return {
@@ -179,13 +271,21 @@ def next_regular_session_open(now: datetime, *, symbol: str | None = None) -> da
     """Prochaine ouverture de session régulière (strictement > now), en UTC.
 
     Le calendrier est celui de la place de cotation du `symbol` (TWSE, Euronext
-    Paris, XETRA) ; sans symbole ou symbole non mappé → US. Compromis assumé :
-    ne gère PAS les jours fériés ni les demi-journées — seuls les weekends
-    (samedi=5, dimanche=6) sont sautés. DST géré via zoneinfo. Déterministe :
+    Paris, XETRA) ; sans symbole ou symbole non mappé → US. Jours fériés et
+    weekends sautés via exchange_calendars (fallback weekend-only si calendrier
+    indisponible ou query hors-borne). DST géré via zoneinfo. Déterministe :
     `now` est injecté, aucune dépendance cachée à l'horloge.
     """
     tz, open_hour, open_minute, _close_h, _close_m = _venue_for_symbol(symbol)
     now_utc = now if now.tzinfo is not None else now.replace(tzinfo=timezone.utc)
+    cal = _calendar_for_symbol(symbol) if symbol is not None else None
+    if cal is not None:
+        try:
+            ts_now = _pd.Timestamp(now_utc)
+            next_open_ts = cal.next_open(ts_now)
+            return next_open_ts.to_pydatetime().astimezone(timezone.utc).replace(tzinfo=timezone.utc)
+        except Exception:
+            pass  # Hors borne → fallback
     local_now = now_utc.astimezone(tz)
     candidate = local_now.replace(
         hour=open_hour, minute=open_minute, second=0, microsecond=0
@@ -201,11 +301,27 @@ def next_regular_session_open(now: datetime, *, symbol: str | None = None) -> da
 def most_recent_session_open(now: datetime, *, symbol: str | None = None) -> datetime:
     """Ouverture régulière de la session courante/la plus récente (<= now), UTC.
 
-    Symétrique de `next_regular_session_open` : recule jour par jour en sautant
-    les weekends. Sert à détecter la fenêtre de grâce post-cloche.
+    Symétrique de `next_regular_session_open` : recule jusqu'à la dernière vraie
+    session (fériés compris) via exchange_calendars. Fallback weekend-only si
+    calendrier indisponible ou query hors-borne.
     """
     tz, open_hour, open_minute, _close_h, _close_m = _venue_for_symbol(symbol)
     now_utc = now if now.tzinfo is not None else now.replace(tzinfo=timezone.utc)
+    cal = _calendar_for_symbol(symbol) if symbol is not None else None
+    if cal is not None:
+        try:
+            ts_now = _pd.Timestamp(now_utc)
+            # `previous_open` est STRICT (< ts) : à la minute exacte d'ouverture, il retourne
+            # la session précédente. On utilise `is_open_on_minute` pour détecter ce cas et
+            # retourner l'ouverture de la session courante (borne inclusive).
+            if cal.is_open_on_minute(ts_now):
+                curr_session = cal.minute_to_session(ts_now)
+                open_ts = cal.session_open(curr_session)
+            else:
+                open_ts = cal.previous_open(ts_now)
+            return open_ts.to_pydatetime().astimezone(timezone.utc).replace(tzinfo=timezone.utc)
+        except Exception:
+            pass  # Hors borne → fallback
     local_now = now_utc.astimezone(tz)
     candidate = local_now.replace(
         hour=open_hour, minute=open_minute, second=0, microsecond=0
@@ -222,17 +338,40 @@ def last_completed_session_date(now: datetime, *, symbol: str | None = None):
 
     Sert à juger si un daily couvre la dernière séance disponible, plutôt qu'un âge
     brut en minutes (qui rejette à tort le daily du vendredi pendant le week-end).
-    Weekends sautés ; fériés/demi-séances non gérés (V1) ; FX/non mappé : calendrier US.
+    Jours fériés et early closes gérés via exchange_calendars ; fallback weekend-only
+    si calendrier indisponible ou query hors-borne.
     """
     tz, _open_h, _open_m, close_hour, close_minute = _venue_for_symbol(symbol)
     now_utc = now if now.tzinfo is not None else now.replace(tzinfo=timezone.utc)
+    cal = _calendar_for_symbol(symbol) if symbol is not None else None
+    if cal is not None:
+        try:
+            ts_now = _pd.Timestamp(now_utc)
+            # `previous_close` est STRICT (< ts) : à la minute exacte de clôture, la session
+            # vient de se terminer mais `previous_close(ts)` retourne la session précédente.
+            # Stratégie : utiliser `is_open_on_minute` pour distinguer deux cas.
+            # - Session en cours (is_open = True) → non complétée → chercher la clôture précédant
+            #   l'ouverture de la session courante (previous_close(session_open)).
+            # - Fermé, y compris pile à la cloche (is_open = False) → `previous_close(ts + 1min)`
+            #   rend la borne inclusive à la minute exacte de clôture.
+            if cal.is_open_on_minute(ts_now):
+                curr_session = cal.minute_to_session(ts_now)
+                curr_open = cal.session_open(curr_session)
+                prev_close_ts = cal.previous_close(curr_open)
+            else:
+                prev_close_ts = cal.previous_close(ts_now + _pd.Timedelta(minutes=1))
+            # Résoudre la session dont cette clôture fait partie :
+            # la minute (prev_close - 1min) appartient toujours à cette session.
+            completed_session = cal.minute_to_session(prev_close_ts - _pd.Timedelta(minutes=1))
+            return completed_session.date()
+        except Exception:
+            pass  # Hors borne → fallback
     open_dt = most_recent_session_open(now_utc, symbol=symbol)
     close_local = open_dt.astimezone(tz).replace(
         hour=close_hour, minute=close_minute, second=0, microsecond=0
     )
     if close_local.astimezone(timezone.utc) <= now_utc:
         return open_dt.date()
-    # Séance courante encore ouverte → la dernière complétée est la précédente.
     prev_open = most_recent_session_open(open_dt - timedelta(minutes=1), symbol=symbol)
     return prev_open.date()
 

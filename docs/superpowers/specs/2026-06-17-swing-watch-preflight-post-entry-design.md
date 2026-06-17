@@ -328,8 +328,10 @@ Gater sur `session.open` (marché fermé ⇒ pas de `submit`, sorties mécanique
 - **§13.6 préflight D12** : EN DISCUSSION (amende D7B). Replay `preflight_reasons` en place pour mesurer avant câblage.
 - **§13.7 enrichir `TradePlan`** : `last_llm_review` fait + réinjecté ; `entry_thesis` / `entry_context` /
   `entry_decision_id` / `preflight_decision_id` **PAS faits**.
-- **§13.8 calendrier fériés/demi-séances MULTI-PLACES** (pas seulement Taïwan) + grâce post-cloche : **PAS fait**
-  (faisabilité API/lib en cours d'évaluation).
+- **§13.8 calendrier fériés/demi-séances MULTI-PLACES** : ✅ **fait** via `exchange_calendars` (offline,
+  16/17 places + alias XTAI pour `.TWO`, early closes, lunar TW jusqu'à 2049), GO Codex. Limitation V1 :
+  borne temporelle far-future dépendante de l'horloge système (documentée dans `_get_calendar`). **Reste**
+  la grâce post-cloche (daily du jour pas encore publié) — non faite.
 
 ### Quick wins hors §13 livrés cette session
 - `fix(audit)` HOLD infra exclus des métriques D1 (`0e97d55`) ; `fix(rotation)` sticky lit `trade_plans.json` (`7f9dd82`) ;
