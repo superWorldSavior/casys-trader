@@ -64,9 +64,19 @@ def _price_at_or_after(prices: list[tuple[datetime, float]], ts: datetime) -> fl
     return None
 
 
-# Abstentions produites par l'infra (gate de pertinence D7, données périmées) :
-# pas des décisions agent — exclues des stats de qualité (verdict "machine").
-_MACHINE_REASONS = {"quiet_gate", "stale_market_data"}
+# Abstentions produites par l'infra (gate de pertinence D7, données périmées,
+# batch sans décision, budget LLM épuisé) : pas des décisions agent — exclues
+# des stats de qualité (verdict "machine"). Le critère canonique est désormais
+# `decision_source == "infra"` (posé par le daemon) ; cette liste de `reason`
+# reste un fallback pour les lignes ledger legacy écrites avant ce champ — elle
+# doit donc inclure TOUTES les raisons infra connues (cf daemon `_INFRA_HOLD_REASONS`).
+_MACHINE_REASONS = {
+    "quiet_gate",
+    "stale_market_data",
+    "no_decision_in_batch",
+    "model_call_budget_exhausted",
+    "model_call_budget_exhausted_after_context",
+}
 
 
 def _verdict(action: Any, future_return_pct: float | None, threshold_pct: float) -> str:
@@ -265,7 +275,10 @@ def audit_rows(
             future_return_pct = None
             if entry_price not in {None, 0} and future_price is not None:
                 future_return_pct = round(((future_price - entry_price) / entry_price) * 100.0, 6)
-            if str(row.get("reason") or "") in _MACHINE_REASONS:
+            if (
+                str(row.get("decision_source") or "") == "infra"
+                or str(row.get("reason") or "") in _MACHINE_REASONS
+            ):
                 verdict = "machine"
             else:
                 verdict = _verdict(row.get("action"), future_return_pct, threshold_pct)

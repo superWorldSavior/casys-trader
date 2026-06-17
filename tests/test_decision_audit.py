@@ -154,3 +154,56 @@ def test_abstentions_machine_exclues_de_l_audit() -> None:
     metrics = result["metrics"]["1h"]
     assert metrics["known"] == 1  # seule la décision agent compte
     assert metrics["missed"] == 1
+
+
+def test_abstentions_infra_machine_via_decision_source() -> None:
+    """no_decision_in_batch / budget_exhausted sont des abstentions infra
+    (decision_source='infra') : exclues des stats de qualité agent, même si
+    leur `reason` n'est pas listée dans _MACHINE_REASONS. Un armed_plan
+    (decision_source='armed_plan') reste une vraie décision agent à auditer."""
+    rows = [
+        {**_row("INFRA", "HOLD"), "reason": "no_decision_in_batch", "decision_source": "infra"},
+        {**_row("ARMED", "BUY"), "reason": "armed_plan", "decision_source": "armed_plan"},
+        {**_row("AGENT", "HOLD"), "reason": "hold", "decision_source": "llm"},
+    ]
+    prices = {
+        sym: [
+            {"ts": "2026-06-08T10:00:00+00:00", "close": 100.0},
+            {"ts": "2026-06-08T11:00:00+00:00", "close": 102.0},  # move > seuil
+        ]
+        for sym in ("INFRA", "ARMED", "AGENT")
+    }
+
+    result = decision_audit.audit_rows(rows, prices, horizons=["1h"], threshold_pct=0.5)
+
+    verdicts = {r["symbol"]: r["audits"]["1h"]["verdict"] for r in result["rows"]}
+    assert verdicts["INFRA"] == "machine"  # abstention infra exclue
+    assert verdicts["ARMED"] == "good"  # plan armé = vrai trade, jugé sur le move
+    assert verdicts["AGENT"] == "missed"  # la vraie abstention agent reste jugée
+
+
+def test_abstentions_infra_machine_legacy_sans_decision_source() -> None:
+    """Lignes ledger écrites AVANT le champ decision_source : les raisons infra
+    (no_decision_in_batch / budget_exhausted) doivent rester 'machine' via le
+    fallback _MACHINE_REASONS, sans avoir le champ decision_source."""
+    rows = [
+        {**_row("NODEC", "HOLD"), "reason": "no_decision_in_batch"},
+        {**_row("BUDGET", "HOLD"), "reason": "model_call_budget_exhausted"},
+        {**_row("BUDGET2", "HOLD"), "reason": "model_call_budget_exhausted_after_context"},
+        {**_row("AGENT", "HOLD"), "reason": "hold"},
+    ]
+    prices = {
+        sym: [
+            {"ts": "2026-06-08T10:00:00+00:00", "close": 100.0},
+            {"ts": "2026-06-08T11:00:00+00:00", "close": 102.0},  # move > seuil
+        ]
+        for sym in ("NODEC", "BUDGET", "BUDGET2", "AGENT")
+    }
+
+    result = decision_audit.audit_rows(rows, prices, horizons=["1h"], threshold_pct=0.5)
+
+    verdicts = {r["symbol"]: r["audits"]["1h"]["verdict"] for r in result["rows"]}
+    assert verdicts["NODEC"] == "machine"
+    assert verdicts["BUDGET"] == "machine"
+    assert verdicts["BUDGET2"] == "machine"
+    assert verdicts["AGENT"] == "missed"  # vraie abstention agent toujours jugée
