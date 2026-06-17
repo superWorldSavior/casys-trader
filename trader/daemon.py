@@ -1370,8 +1370,12 @@ def run_cycle(
         if symbol not in stale_market_data
     }
 
+    # §13.3 — le daily est fetché pour TOUT l'univers (pas seulement tradable) :
+    # un symbole runtime-stale doit pouvoir être analysé/planifié sur son daily.
+    # La fraîcheur daily est jugée par séance complétée (assess_daily_freshness),
+    # indépendamment du verrou runtime.
     daily_bars_by_symbol: dict[str, list] = {}
-    for sym in tradable_symbols:
+    for sym in symbols:
         try:
             daily_bars = data_source.get_bars(
                 sym,

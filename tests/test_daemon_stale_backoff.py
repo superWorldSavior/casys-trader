@@ -461,3 +461,45 @@ def test_indicator_watch_trigger_reset_streak(monkeypatch, tmp_path, patch_batch
     assert sched.get_stale_streak("SPY") == 0, (
         "Après trigger indicator_watch + data fraîche, le streak doit être 0"
     )
+
+
+def test_run_cycle_fetch_le_daily_meme_pour_un_symbole_runtime_stale(
+    monkeypatch, tmp_path, patch_batch
+) -> None:
+    """§13.3 — le daily/swing context doit être fetché même quand le runtime est
+    stale, pour permettre l'analyse swing hors marché. Avant : la boucle daily ne
+    couvrait que tradable_symbols (= non-stale), donc un stale n'avait jamais de daily."""
+    from datetime import timedelta
+
+    from trader.codex_client import Decision
+    from trader.tools.market import Bar
+
+    _write_runtime_config(tmp_path)
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    monkeypatch.setattr(daemon, "ROOT", tmp_path)
+    monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+    sched = Scheduler(state_dir / "scheduler.json")
+    now = datetime(2026, 6, 10, 3, 0, tzinfo=timezone.utc)
+    requests: list[tuple[str, str, str]] = []
+
+    class StaleRuntimeSource:
+        def get_bars(self, symbol, lookback, interval):
+            requests.append((symbol, lookback, interval))
+            # Barre vieille de 90 min → runtime stale pour tous les intervalles.
+            ts = (now - timedelta(minutes=90)).isoformat()
+            return [Bar(ts=ts, open=100.0, high=101.0, low=99.0, close=100.0, volume=1000.0)]
+
+    patch_batch(lambda **kwargs: Decision.hold(kwargs["symbol"], "hold"))
+
+    daemon.run_cycle(
+        dry_run=True, now=now, symbols_filter=["SPY"],
+        sched=sched, data_source=StaleRuntimeSource(),
+    )
+
+    # Le daily est demandé pour SPY MÊME s'il est runtime-stale.
+    assert (
+        "SPY",
+        daemon.COCKPIT_DAILY_LOOKBACK,
+        daemon.COCKPIT_DAILY_INTERVAL,
+    ) in requests
