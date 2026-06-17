@@ -217,6 +217,51 @@ def most_recent_session_open(now: datetime, *, symbol: str | None = None) -> dat
     return candidate.astimezone(timezone.utc)
 
 
+def last_completed_session_date(now: datetime, *, symbol: str | None = None):
+    """Date (UTC) de la dernière séance régulière dont la CLÔTURE est passée à `now`.
+
+    Sert à juger si un daily couvre la dernière séance disponible, plutôt qu'un âge
+    brut en minutes (qui rejette à tort le daily du vendredi pendant le week-end).
+    Weekends sautés ; fériés/demi-séances non gérés (V1) ; FX/non mappé : calendrier US.
+    """
+    tz, _open_h, _open_m, close_hour, close_minute = _venue_for_symbol(symbol)
+    now_utc = now if now.tzinfo is not None else now.replace(tzinfo=timezone.utc)
+    open_dt = most_recent_session_open(now_utc, symbol=symbol)
+    close_local = open_dt.astimezone(tz).replace(
+        hour=close_hour, minute=close_minute, second=0, microsecond=0
+    )
+    if close_local.astimezone(timezone.utc) <= now_utc:
+        return open_dt.date()
+    # Séance courante encore ouverte → la dernière complétée est la précédente.
+    prev_open = most_recent_session_open(open_dt - timedelta(minutes=1), symbol=symbol)
+    return prev_open.date()
+
+
+def assess_daily_freshness(
+    bars: list[Bar], *, now: datetime, symbol: str | None = None
+) -> Freshness:
+    """Fraîcheur d'une série DAILY jugée sur la dernière séance complétée (pas un
+    âge brut). Frais si la dernière barre couvre au moins cette séance.
+
+    Fail-safe comme assess_freshness : pas de barres / ts imparsable / ts dans le
+    futur => stale (jamais « frais par défaut »).
+    """
+    if not bars:
+        return Freshness(False, "no_data", None)
+    ts = _parse_ts(str(bars[-1].ts))
+    if ts is None:
+        return Freshness(False, "unparseable_ts", None)
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    now_utc = now if now.tzinfo is not None else now.replace(tzinfo=timezone.utc)
+    ts_utc = ts.astimezone(timezone.utc)
+    if (ts_utc - now_utc).total_seconds() / 60.0 > _CLOCK_SKEW_TOLERANCE_MINUTES:
+        return Freshness(False, "future_ts", None)
+    if ts_utc.date() >= last_completed_session_date(now_utc, symbol=symbol):
+        return Freshness(True, None, None)
+    return Freshness(False, "stale_session", None)
+
+
 def clamp_wake_to_session_open(
     wake_minutes: float,
     *,

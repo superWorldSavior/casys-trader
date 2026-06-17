@@ -93,7 +93,6 @@ DEFAULT_RUNTIME_LOOKBACK = "5d"
 DEFAULT_MAX_MARKET_DATA_AGE_MINUTES = 40.0
 COCKPIT_DAILY_LOOKBACK = "1y"
 COCKPIT_DAILY_INTERVAL = "1d"
-COCKPIT_DAILY_MAX_AGE_MINUTES = 48.0 * 60.0
 DEFAULT_IB_HOST = "127.0.0.1"
 DEFAULT_IB_PORT = 4002
 DEFAULT_IB_CLIENT_ID = 17
@@ -1372,7 +1371,6 @@ def run_cycle(
     }
 
     daily_bars_by_symbol: dict[str, list] = {}
-    daily_max_age_minutes = max(max_market_data_age_minutes, COCKPIT_DAILY_MAX_AGE_MINUTES)
     for sym in tradable_symbols:
         try:
             daily_bars = data_source.get_bars(
@@ -1391,11 +1389,7 @@ def run_cycle(
         if not daily_bars:
             continue
         try:
-            freshness = market.assess_freshness(
-                daily_bars,
-                now=now,
-                max_age_minutes=daily_max_age_minutes,
-            )
+            freshness = market.assess_daily_freshness(daily_bars, now=now, symbol=sym)
         except Exception as exc:  # noqa: BLE001 - daily cockpit data is optional
             log.warning("daily freshness failed %s: %s", sym, exc)
             continue
