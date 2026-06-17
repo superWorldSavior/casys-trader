@@ -46,6 +46,8 @@ Design/decision state after the Claude review:
   without LLM re-call, while deterministic RiskGate checks still apply.
 - The proposed swing preflight is tracked as D12, not as an implicit rewrite of
   D7B. Until Erwan validates D12 or amends D7B, implementation must preserve D7B.
+  Current recommendation: preflight should be conditional, not global, for
+  cross-session/open-gap/old armed plans or explicit `requires_preflight=true`.
 - Preflight adds a thesis veto by the LLM; it is not the risk fuse. D11 already
   addressed the stale absolute-stop issue from the CFR/ASML postmortem.
 - `WAKE_WITH_ORDER_INTENT` is not yet a full preflight path; wiring armed plan

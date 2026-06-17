@@ -128,6 +128,8 @@ def build_decision_row(
             "indicator_watch_requested": decision.get("indicator_watch_requested"),
             "indicator_watch_rejections": decision.get("indicator_watch_rejections"),
             "indicator_watch_order": indicator_watch.get("order"),
+            "armed_plan_id": decision.get("armed_plan_id"),
+            "armed_plan_order": decision.get("armed_plan_order"),
             "context_request": decision.get("context_request"),
             "next_wake_requested": decision.get("next_wake_requested"),
             "risk_pct": decision.get("risk_pct"),

@@ -164,12 +164,13 @@ daily/swing context valide, mais runtime 15m stale ou marché fermé. Le design
 `docs/superpowers/specs/2026-06-17-swing-watch-preflight-post-entry-design.md`
 sépare donc analyse/veille et exécution. Il introduit aussi une tension avec D7B :
 D7B a explicitement validé l'exécution directe des `EXECUTE_ORDER` sans re-appel LLM.
-**Décision proposée.** Ne pas réécrire D7B implicitement. Créer un chemin D12 pour
-les plans d'ouverture swing ou les plans marqués `requires_preflight=true` :
-au déclenchement, si prix runtime frais et session tradable, le daemon appelle le
-LLM pour relire la thèse (`CONFIRM` / `ADJUST` / `CANCEL` / `DEFER`) avant de passer
-au `RiskGate`. Le `RiskGate` déterministe reste inchangé et demeure obligatoire avant
-`broker.submit()`.
+**Décision proposée.** Ne pas réécrire D7B implicitement. Créer un chemin D12
+conditionnel pour les plans d'ouverture dont la thèse a pu se périmer :
+cross-session / gap d'ouverture, âge d'armement supérieur à un seuil, ou
+`requires_preflight=true` explicite. Au déclenchement, si prix runtime frais et
+session tradable, le daemon appelle le LLM pour relire la thèse (`CONFIRM` /
+`ADJUST` / `CANCEL` / `DEFER`) avant de passer au `RiskGate`. Le `RiskGate`
+déterministe reste inchangé et demeure obligatoire avant `broker.submit()`.
 **Non-décision.** D12 n'est pas la correction du postmortem CFR/ASML : D11 a déjà
 corrigé les stops figés via late-binding. D12 traite une autre faille, l'absence de
 veto de thèse au moment du tir.
@@ -184,5 +185,10 @@ veto de thèse au moment du tir.
   peut être évincé du hot-set.
 - `last_llm_review` doit être persisté dans `TradePlan`, car `_LAST_LLM_AT` est en
   RAM et repart de zéro au restart.
+**Point ouvert principal.** Critère de déclenchement du préflight : conditionnel
+vs global. La recommandation actuelle est conditionnelle pour préserver D7B sur les
+plans intra-séance récents, éviter le double-jugement inutile, et mesurer d'abord
+les cas cross-session / open gap / plan âgé avec `backtest/plan_replay.py` et
+`state/decisions.jsonl`.
 **Statut.** En discussion. Tant qu'Erwan n'a pas validé D12 ou amendé D7B, le code
 doit conserver le comportement D7B actuel pour `EXECUTE_ORDER`.

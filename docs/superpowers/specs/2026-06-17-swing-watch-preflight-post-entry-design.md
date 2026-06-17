@@ -68,6 +68,11 @@ Le LLM peut donc penser à froid ; le système ne trade qu'à chaud.
 - **Le TTL actuel des plans armés est court.** `ARMED_ORDER_MAX_TTL_MINUTES=240`
   convient à D7B intraday, mais pas à des setups swing multi-jours sans renouvellement
   explicite ou nouvelle politique de TTL.
+- **Point ouvert D12 : préflight conditionnel ou global.** Le choix qui décide si
+  D12 aide ou nuit est le critère de déclenchement. La recommandation courante est
+  conditionnelle : cross-session / gap d'ouverture, âge d'armement supérieur à un
+  seuil, ou `requires_preflight=true` explicite. Un déclenchement intra-séance peu
+  après l'armement reste D7B direct tant que le signal mesuré ne justifie pas plus.
 
 ## 4. Alternatives considérées
 
@@ -186,6 +191,12 @@ Le TTL doit être traité dans le même chantier : soit le plan swing se renouve
 avant expiration, soit le système accepte une durée plus longue mais force une revue
 pré-open / pré-exécution.
 
+La variante globale du préflight est volontairement non retenue en v1 : elle risque
+de réintroduire l'hésitation LLM sur des plans récents et cohérents, alors que D7B
+a été créé pour transformer une délibération validée en exécution réactive. Avant
+de câbler D12, mesurer dans les plans historiques combien de déclenchements sont
+cross-session / open gap / âgés, puis estimer leur P&L via replay.
+
 ## 8. Veille chaude post-entry
 
 Après un fill d'ouverture :
@@ -243,7 +254,8 @@ brancher une librairie de calendriers exchange si nécessaire.
 
 - Runtime stale + daily valide => appel LLM autorisé en mode `execution.enabled=false`.
 - Runtime stale + LLM demande `BUY` => ordre bloqué, watch/wake conservés.
-- Plan d'ouverture `requires_preflight` déclenché => préflight LLM appelé avant exécution.
+- Plan d'ouverture cross-session / âgé / `requires_preflight` déclenché => préflight
+  LLM appelé avant exécution.
 - Plan d'ouverture déclenché mais runtime stale => pas d'exécution, réveil serré / report.
 - Plan D7B non préflight => comportement actuel conservé : pas d'appel LLM, `RiskGate`
   déterministe toujours appliqué.

@@ -116,7 +116,7 @@ Source de vérité : `docs/decisions/registre-decisions-metier.md`.
 | **D9** | Veille deux niveaux : radar + rotation hot-set | 🛠 implémenté | Tier 1 radar daily 0-LLM (~283 symboles). Tier 2 hot-path 15m sur hot-set dynamique (cap M=25, par venue). Score = efficacité_tendance × force_relative × amplitude. Volatilité récompensée. |
 | **D10** | Hot-lists par marché | 🛠 implémenté | Une hot-list par venue (TW/EU/US). Univers actif = `sticky_all ∪ union(marchés ouverts)`. Classement intra-venue. Sticky hors quota, hors logique ouverture. *(La `sleeve_24/5` figurait au design D10 mais n'est pas implémentée — forex/commodity retirés, pool 100 % actions.)* |
 | **D11** | Stops adaptatifs : intention paramétrique résolue au tir | ✅+🛠 Ph1-2 | Late-binding : `hard_stop` armé exprimé en `volatility_multiple`/`percent`/`structural` (ancres chartistes), résolu en prix absolu au **déclenchement** sur vol fraîche. Unifié avec les entrées directes. |
-| **D12** | Préflight LLM des ouvertures swing planifiées | 💬 en discussion | Proposition : pour les plans swing ou `requires_preflight`, appeler le LLM au tir pour relire la thèse avant RiskGate. Ne modifie pas D7B tant qu'Erwan ne l'a pas validée. |
+| **D12** | Préflight LLM des ouvertures swing planifiées | 💬 en discussion | Proposition conditionnelle : cross-session / gap d'ouverture / plan âgé / `requires_preflight` → relire la thèse avant RiskGate. Ne modifie pas D7B tant qu'Erwan ne l'a pas validée. |
 
 ---
 

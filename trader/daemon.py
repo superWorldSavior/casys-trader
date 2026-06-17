@@ -1538,6 +1538,8 @@ def run_cycle(
     # déjà franchi le hard_stop (position instantanément stoppable) ou si stale.
     armed_decisions: dict[str, codex_client.Decision] = {}
     armed_plan_ids: dict[str, str] = {}
+    armed_plan_orders: dict[str, dict] = {}
+    stale_armed_plans: dict[str, dict] = {}
     armed_reference_volatilities: dict[str, float | None] = {}
     # Conflit : plusieurs scénarios armés du MÊME symbole déclenchés au même
     # cycle = ambiguïté — on n'exécute pas arbitrairement, le planificateur
@@ -1603,6 +1605,8 @@ def run_cycle(
             _log_cycle_progress("[armed_plan] %s %s plan=%s — réveil planificateur", sym, cancel_reason, plan_id)
             _append_event("armed_plan_cancelled", symbol=sym, plan_id=plan_id, reason=cancel_reason)
             trigger["armed_cancelled"] = cancel_reason
+            if cancel_reason == "armed_plan_cancelled:stale":
+                stale_armed_plans[sym] = {"id": plan_id, "order": dict(order)}
             continue
         armed_decisions[sym] = codex_client.Decision(
             symbol=sym,
@@ -1614,6 +1618,7 @@ def run_cycle(
             exit_plan=order.get("exit_plan"),
         )
         armed_plan_ids[sym] = plan_id
+        armed_plan_orders[sym] = dict(order)
         _log_cycle_progress("[armed_plan] %s déclenché plan=%s — exécution sans LLM", sym, plan_id)
     # les symboles armés ont déjà leur décision : pas d'appel LLM, pas de
     # relevance_gate. Le RiskGate déterministe reste appliqué plus bas.
@@ -1732,12 +1737,15 @@ def run_cycle(
                 sched.set_symbol_next_wake_in(sym, minutes=wake_minutes, now=now)
 
             is_first_stale = streak == 0  # transition fresh→stale : enregistrer la décision
-            if is_first_stale:
+            stale_armed_plan = stale_armed_plans.get(sym)
+            should_record_stale = is_first_stale or stale_armed_plan is not None
+            if should_record_stale:
                 _log_cycle_progress(
-                    "[decision %d/%d] %s stale_market_data (streak=1) reason=%s age=%s wake=%.0fmin",
+                    "[decision %d/%d] %s stale_market_data (streak=%d) reason=%s age=%s wake=%.0fmin",
                     index,
                     len(symbols_to_decide),
                     sym,
+                    new_streak,
                     stale_data.get("stale_reason"),
                     stale_data.get("data_age_minutes"),
                     wake_minutes,
@@ -1745,6 +1753,14 @@ def run_cycle(
                 record_decision(
                     {
                         "symbol": sym,
+                        **(
+                            {
+                                "armed_plan_id": stale_armed_plan["id"],
+                                "armed_plan_order": stale_armed_plan["order"],
+                            }
+                            if stale_armed_plan is not None
+                            else {}
+                        ),
                         "action": "HOLD",
                         "qty": 0.0,
                         "confidence": 0.0,
@@ -1815,8 +1831,10 @@ def run_cycle(
             if sym in armed_plan_ids
             else ("llm" if decision.llm_provider or decision.llm_model else "infra")
         )
+        armed_plan_order = armed_plan_orders.get(sym)
         entry = {"symbol": sym, "action": decision.action, "qty": effective_quantity,
                  **({"armed_plan_id": armed_plan_ids[sym]} if sym in armed_plan_ids else {}),
+                 **({"armed_plan_order": armed_plan_order} if armed_plan_order is not None else {}),
                  "confidence": decision.confidence, "rationale": decision.rationale,
                  "next_wake_in_minutes": next_wake_in_minutes,
                  "next_wake_requested": decision.next_wake_in_minutes,

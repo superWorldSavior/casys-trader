@@ -36,6 +36,17 @@ def _bars_with_lows(now_iso: str, lows: list[float]):
     return factory
 
 
+def _stale_bars(now: datetime):
+    def factory(symbol, lookback, interval):
+        stale_ts = now.replace(hour=10).isoformat()
+        return [
+            Bar(ts=stale_ts, open=100.0, high=100.5, low=99.5, close=100.0, volume=1000.0)
+            for _ in range(4)
+        ]
+
+    return factory
+
+
 def _armed_trigger(
     *,
     stop_price: float = 95.0,
@@ -339,7 +350,8 @@ def test_plan_arme_trace_sa_provenance_dans_le_ledger(
 ) -> None:
     import json as _json
 
-    _run(monkeypatch, tmp_path, patch_batch, make_data_source, _armed_trigger(stop_price=95.0))
+    trigger = _armed_trigger(stop_price=95.0)
+    _run(monkeypatch, tmp_path, patch_batch, make_data_source, trigger)
 
     rows = [
         _json.loads(line)
@@ -348,6 +360,42 @@ def test_plan_arme_trace_sa_provenance_dans_le_ledger(
     ]
     executed = [r for r in rows if r.get("executed")]
     assert executed and executed[0]["source"] == "armed_plan"
+    assert executed[0]["runtime"]["armed_plan_order"] == trigger["order"]
+
+
+def test_plan_arme_declenche_stale_trace_l_ordre_dans_le_ledger_meme_si_backoff(
+    monkeypatch, tmp_path, patch_batch, make_data_source
+) -> None:
+    import json as _json
+
+    _runtime_config(tmp_path)
+    state_dir = tmp_path / "state"
+    now = datetime(2026, 6, 11, 12, 0, tzinfo=timezone.utc)
+    sched = Scheduler(state_dir / "scheduler.json")
+    sched.set_stale_streak("SPY", 2)
+    trigger = _armed_trigger(stop_price=95.0)
+
+    monkeypatch.setattr(daemon, "ROOT", tmp_path)
+    monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+    patch_batch(lambda **kwargs: Decision.hold(kwargs["symbol"], "attente"))
+
+    report = daemon.run_cycle(
+        dry_run=False,
+        now=now,
+        symbols_filter=["SPY"],
+        sched=sched,
+        data_source=make_data_source(_stale_bars(now)),
+        indicator_triggers=[trigger],
+    )
+
+    assert report["decisions"][0]["reason"] == "stale_market_data"
+    rows = [
+        _json.loads(line)
+        for line in (state_dir / "decisions.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert rows[0]["source"] == "armed_plan"
+    assert rows[0]["runtime"]["armed_plan_order"] == trigger["order"]
 
 
 def test_deux_plans_du_meme_symbole_au_meme_cycle_reveillent_le_planificateur(
