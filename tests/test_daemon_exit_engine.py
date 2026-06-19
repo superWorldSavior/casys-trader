@@ -8,7 +8,7 @@ from trader.codex_client import Decision
 from trader.tools.execution import Order, SimBroker
 from trader.tools.market import Bar
 from trader.tools.scheduler import Scheduler
-from trader.trade_plan import TradePlanStore, create_trade_plan, resolve_exit_plan
+from trader.trade_plan import InvalidExitPlanError, TradePlanStore, create_trade_plan, resolve_exit_plan
 
 
 def test_llm_exit_reason_for_model_performance_tague_uniquement_les_sorties() -> None:
@@ -406,7 +406,7 @@ def test_run_cycle_persiste_reference_volatility_pour_trailing_multiple(
     assert plans[0].reference_volatility > 0
 
 
-def test_reference_volatility_prefere_vol_daily_et_respecte_clamp_stop() -> None:
+def test_reference_volatility_prefere_vol_daily_et_refuse_stop_hors_borne() -> None:
     cockpit = {
         "cols": ["s", "vol", "vol_d"],
         "rows": [["SPY", 0.01, 0.08]],
@@ -420,18 +420,13 @@ def test_reference_volatility_prefere_vol_daily_et_respecte_clamp_stop() -> None
     )
 
     assert reference_volatility == 8.0
-    resolved, trace = resolve_exit_plan(
-        {"hard_stop": {"type": "volatility_multiple", "multiple": 1.0, "max_pct": 0.03}},
-        entry_price=100.0,
-        side="LONG",
-        reference_volatility=reference_volatility,
-    )
-
-    assert resolved is not None
-    assert resolved["hard_stop"] == {"type": "price", "price": 97.0}
-    assert trace["hard_stop"]["reference_volatility"] == 8.0
-    assert trace["hard_stop"]["distance"] == 3.0
-    assert trace["hard_stop"]["clamped"] is True
+    with pytest.raises(InvalidExitPlanError, match="hard_stop_above_max_pct"):
+        resolve_exit_plan(
+            {"hard_stop": {"type": "volatility_multiple", "multiple": 1.0, "max_pct": 0.03}},
+            entry_price=100.0,
+            side="LONG",
+            reference_volatility=reference_volatility,
+        )
 
 
 def test_run_cycle_cloture_le_plan_quand_codex_ferme_la_position(monkeypatch, tmp_path, patch_batch, make_data_source) -> None:
@@ -524,7 +519,7 @@ def test_run_cycle_autorise_close_qui_reduit_le_risque_meme_si_ordre_depasse_max
     assert SimBroker(state_dir / "broker.json").positions() == {}
 
 
-def test_run_cycle_clamp_order_value_et_execute_sans_repasser_par_le_modele(
+def test_run_cycle_rejette_order_value_sans_modifier_quantite_agent(
     monkeypatch,
     tmp_path,
     patch_batch,
@@ -567,15 +562,14 @@ def test_run_cycle_clamp_order_value_et_execute_sans_repasser_par_le_modele(
 
     decision = report["decisions"][0]
     assert codex_calls == 1
-    assert decision["executed"] is True
-    assert decision["reason"] == "ok"
-    assert decision["requested_qty"] == 101.0
-    assert decision["qty"] == 100.0
-    assert decision["qty"] * decision["price"] <= 10_000
-    assert SimBroker(state_dir / "broker.json").positions()["SPY"].quantity == 100.0
+    assert decision["executed"] is False
+    assert decision["reason"] == "risk:order_value_exceeded"
+    assert decision["qty"] == 101.0
+    assert "requested_qty" not in decision
+    assert "SPY" not in SimBroker(state_dir / "broker.json").positions()
 
 
-def test_run_cycle_clamp_order_value_reste_sous_plafond_avec_prix_non_binaire(
+def test_run_cycle_rejette_order_value_prix_non_binaire_sans_modifier_quantite_agent(
     monkeypatch,
     tmp_path,
     patch_batch,
@@ -609,14 +603,14 @@ def test_run_cycle_clamp_order_value_reste_sous_plafond_avec_prix_non_binaire(
     )
 
     decision = report["decisions"][0]
-    assert decision["executed"] is True
-    assert decision["reason"] == "ok"
-    assert decision["requested_qty"] == 5_000.0
-    assert decision["qty"] * decision["price"] <= 10_000
-    assert SimBroker(state_dir / "broker.json").positions()["SPY"].quantity == decision["qty"]
+    assert decision["executed"] is False
+    assert decision["reason"] == "risk:order_value_exceeded"
+    assert decision["qty"] == 5_000.0
+    assert "requested_qty" not in decision
+    assert "SPY" not in SimBroker(state_dir / "broker.json").positions()
 
 
-def test_run_cycle_clamp_open_long_quand_risque_depasse_un_pourcent(
+def test_run_cycle_rejette_open_long_quand_risque_depasse_un_pourcent_sans_clamp(
     monkeypatch,
     tmp_path,
     patch_batch,
@@ -650,14 +644,14 @@ def test_run_cycle_clamp_open_long_quand_risque_depasse_un_pourcent(
     )
 
     decision = report["decisions"][0]
-    assert decision["executed"] is True
-    assert decision["reason"] == "ok"
-    assert decision["requested_qty"] == 300.0
-    assert decision["risk_clamped"] is True
-    assert decision["qty"] == pytest.approx(200.0)
+    assert decision["executed"] is False
+    assert decision["reason"] == "risk:risk_per_trade_exceeded"
+    assert decision["qty"] == pytest.approx(300.0)
+    assert "requested_qty" not in decision
+    assert decision["risk_clamped"] is False
     assert decision["stop_distance"] == pytest.approx(5.0)
-    assert decision["risk_pct"] <= 0.01
-    assert SimBroker(state_dir / "broker.json").positions()["SPY"].quantity == pytest.approx(200.0)
+    assert decision["risk_pct"] > 0.01
+    assert "SPY" not in SimBroker(state_dir / "broker.json").positions()
 
 
 def test_run_cycle_rejette_open_long_si_hard_stop_est_du_mauvais_cote(
@@ -973,7 +967,7 @@ def test_run_cycle_rejette_open_sans_hard_stop_meme_confiant(
     assert "SPY" not in SimBroker(state_dir / "broker.json").positions()
 
 
-def test_run_cycle_risk_clamp_puis_order_value_clamp_satisfont_les_deux_bornes(
+def test_run_cycle_rejette_risque_avant_order_value_sans_modifier_quantite_agent(
     monkeypatch,
     tmp_path,
     patch_batch,
@@ -1007,24 +1001,22 @@ def test_run_cycle_risk_clamp_puis_order_value_clamp_satisfont_les_deux_bornes(
     )
 
     decision = report["decisions"][0]
-    assert decision["executed"] is True
-    assert decision["reason"] == "ok"
-    assert decision["requested_qty"] == 300.0
-    assert decision["risk_clamped"] is True
-    assert decision["qty"] == pytest.approx(150.0)
-    assert decision["risk_pct"] == pytest.approx(0.0075)
-    assert decision["qty"] * decision["stop_distance"] <= 0.01 * report["portfolio"]["equity"]
-    assert decision["qty"] * decision["price"] <= 15_000
-    assert SimBroker(state_dir / "broker.json").positions()["SPY"].quantity == pytest.approx(150.0)
+    assert decision["executed"] is False
+    assert decision["reason"] == "risk:risk_per_trade_exceeded"
+    assert decision["qty"] == pytest.approx(300.0)
+    assert "requested_qty" not in decision
+    assert decision["risk_clamped"] is False
+    assert decision["risk_pct"] > 0.01
+    assert "SPY" not in SimBroker(state_dir / "broker.json").positions()
 
 
-def test_run_cycle_rejette_si_position_value_depasse_apres_clamp_order_value(
+def test_run_cycle_rejette_si_position_value_depasse_sans_clamp_order_value(
     monkeypatch,
     tmp_path,
     patch_batch,
     make_data_source,
 ) -> None:
-    _write_runtime_config(tmp_path, max_position_value=14_000)
+    _write_runtime_config(tmp_path, max_position_value=14_000, max_order_value=100_000)
     state_dir = tmp_path / "state"
     now = datetime(2026, 6, 5, 14, 30, tzinfo=timezone.utc)
     broker = SimBroker(state_dir / "broker.json", starting_cash=100_000)
@@ -1056,18 +1048,18 @@ def test_run_cycle_rejette_si_position_value_depasse_apres_clamp_order_value(
     decision = report["decisions"][0]
     assert decision["executed"] is False
     assert decision["reason"] == "risk:position_value_exceeded"
-    assert decision["requested_qty"] == 120.0
-    assert decision["qty"] == 100.0
+    assert "requested_qty" not in decision
+    assert decision["qty"] == 120.0
     assert SimBroker(state_dir / "broker.json").positions()["SPY"].quantity == 50.0
 
 
-def test_run_cycle_rejette_si_gross_exposure_depasse_apres_clamp_order_value(
+def test_run_cycle_rejette_si_gross_exposure_depasse_sans_clamp_order_value(
     monkeypatch,
     tmp_path,
     patch_batch,
     make_data_source,
 ) -> None:
-    _write_runtime_config(tmp_path, symbols=["SPY", "QQQ"], max_gross_exposure=14_000)
+    _write_runtime_config(tmp_path, symbols=["SPY", "QQQ"], max_gross_exposure=14_000, max_order_value=100_000)
     state_dir = tmp_path / "state"
     now = datetime(2026, 6, 5, 14, 30, tzinfo=timezone.utc)
     broker = SimBroker(state_dir / "broker.json", starting_cash=100_000)
@@ -1099,8 +1091,8 @@ def test_run_cycle_rejette_si_gross_exposure_depasse_apres_clamp_order_value(
     decision = report["decisions"][0]
     assert decision["executed"] is False
     assert decision["reason"] == "risk:gross_exposure_exceeded"
-    assert decision["requested_qty"] == 120.0
-    assert decision["qty"] == 100.0
+    assert "requested_qty" not in decision
+    assert decision["qty"] == 120.0
     assert "SPY" not in SimBroker(state_dir / "broker.json").positions()
     assert SimBroker(state_dir / "broker.json").positions()["QQQ"].quantity == 50.0
 

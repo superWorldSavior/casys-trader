@@ -23,7 +23,7 @@ import json
 from dataclasses import dataclass, field, replace
 from typing import Any, Literal
 
-from . import llm, trade_plan
+from . import decision_reason, llm, trade_plan
 from .agent_context import INDICATOR_COLUMNS
 from .features import DEFAULT_INDICATORS
 from .indicator_watch import WATCH_VALID_OPERATORS
@@ -64,6 +64,7 @@ class Decision:
     cancel_watch_ids: list[str] = field(default_factory=list)  # plans/veilles à annuler (correction)
     context_request: dict | None = None
     learning: str | None = None  # note runtime que l'agent veut retenir (boucle de feedback)
+    decision_reason_code: str = "UNKNOWN"
     llm_provider: str | None = None
     llm_model: str | None = None
     llm_fallback_reason: str | None = None
@@ -99,6 +100,7 @@ class ContextResearchRequest:
 # sources de vérité (pas tapées à la main : une liste figée diverge en silence).
 _WATCH_INDICATOR_ENUM = "|".join(DEFAULT_INDICATORS)
 _WATCH_OPERATOR_ENUM = "|".join(WATCH_VALID_OPERATORS)
+_REASON_CODE_ENUM = decision_reason.reason_code_enum_text()
 
 _OUTPUT_CONTRACT = (
     "Réponds UNIQUEMENT par un objet JSON valide, sans texte autour, de la forme:\n"
@@ -109,6 +111,7 @@ _OUTPUT_CONTRACT = (
     '"exit_plan": <object|null>, '
     '"indicator_watch": <object|null>, '
     '"cancel_watch_ids": [<watch_id>, ...], '
+    f'"decision_reason_code": "{_REASON_CODE_ENUM}", '
     '"learning": <string|null>}\n'
     "`learning` est optionnel : une note courte que tu veux retenir pour tes "
     "prochains réveils (ce que tu observes, ce que tu attends). Le daemon te la "
@@ -132,6 +135,7 @@ _COMPACT_OUTPUT_CONTRACT = (
     '"exit_plan": <object|null>, '
     '"indicator_watch": <object|null>, '
     '"cancel_watch_ids": [<watch_id>, ...], '
+    f'"decision_reason_code": "{_REASON_CODE_ENUM}", '
     '"learning": <string|null>}\n'
     "`learning`: optionnel, note courte à retenir pour tes prochains réveils ; "
     "le daemon te la réinjecte via `context.learnings`.\n"
@@ -277,7 +281,8 @@ _BATCH_FINAL_CONTRACT = (
     'Chaque <obj>: {"symbol":"<SYM>","action":"BUY|SELL|HOLD","quantity":<number>,'
     '"confidence":<0..1>,"rationale":"<court>","next_wake_in_minutes":<number|null>,'
     '"intent":"OPEN_LONG|OPEN_SHORT|REDUCE|CLOSE|REVERSE|HOLD","exit_plan":<object|null>,'
-    '"indicator_watch":<object|null>,"cancel_watch_ids":[<watch_id>,...],"learning":<string|null>}\n'
+    '"indicator_watch":<object|null>,"cancel_watch_ids":[<watch_id>,...],'
+    f'"decision_reason_code":"{_REASON_CODE_ENUM}","learning":<string|null>}}\n'
     "Pour une ouverture, fournis un `exit_plan` conforme au schéma ci-dessous "
     "(hard_stop, take_profits, trailing_stop, "
     "profit_protection, exit_watch et/ou max_hold_minutes). `learning` optionnel : note "
@@ -310,6 +315,9 @@ def _exit_plan_contract() -> str:
         '{type:"volatility_multiple", multiple:<requis, >0>, min_pct?, max_pct?} ou '
         '{type:"structural", anchor:"swing_low|swing_high|vwap", '
         "window:<requis, >0>, buffer_pct?|buffer_atr?, min_pct?, max_pct?}.\n"
+        "min_pct/max_pct sont des bornes de validation : si ton niveau résolu sort de "
+        "ces bornes, l'ordre est rejeté. Le daemon ne déplace jamais le hard_stop "
+        "pour le faire rentrer dans une borne.\n"
         "`take_profits`: liste d'OBJETS "
         "{price:<requis, >0>, fraction:<optionnel, >0>} "
         'OU {type:"risk_multiple", r:<requis, >0>, fraction?}. '
@@ -401,6 +409,8 @@ def _indicator_watch_vocabulary() -> str:
         '`take_profits[]` peut utiliser {type:"risk_multiple", r:<requis, >0>, fraction?}. '
         "Le hard_stop relatif est résolu en prix au déclenchement sur barres FRAÎCHES, puis les TP en R aussi — "
         "vrai pour percent, volatility_multiple ET structural, à égalité. "
+        "min_pct/max_pct sont des bornes de validation : si ton niveau résolu sort de "
+        "ces bornes, l'ordre est rejeté ; le daemon ne déplace jamais le hard_stop. "
         "Pour structural, window est en barres du timeframe runtime. "
         "Chaque forme exprime une logique d'invalidation : percent = distance fixe en %, "
         "volatility_multiple = distance proportionnelle à la volatilité récente, "
@@ -501,6 +511,7 @@ def _decision_from_dict(data: dict, symbol: str) -> Decision:
         indicator_watch=_optional_dict(data, "indicator_watch"),
         cancel_watch_ids=_cancel_watch_ids(data),
         learning=_normalize_learning(data.get("learning")),
+        decision_reason_code=decision_reason.normalize_reason_code(data.get("decision_reason_code")),
     )
 
 

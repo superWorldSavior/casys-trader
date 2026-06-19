@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 
-from trader.attribution import compute_round_trips, compute_attribution
+from trader.attribution import compute_round_trips, compute_attribution, compute_hard_stop_diagnostics
 
 
 def _write_perf(state_dir: Path, rows: list[dict]) -> None:
@@ -328,6 +328,134 @@ def test_compute_attribution_expose_brut_et_frais(tmp_path) -> None:
     scalp = next(r for r in attr["by_exit_reason"] if r["reason"] == "scalp")
     assert scalp["total_gross_pnl"] == 5.0
     assert scalp["total_commission"] == 0.70
+
+
+def test_hard_stop_diagnostics_marque_stop_trop_tot_si_reprise_apres_stop(tmp_path) -> None:
+    _write_perf(
+        tmp_path,
+        [
+            {"ts": "2026-06-05T10:00:00+00:00", "symbol": "SPY", "action": "BUY",
+             "quantity": 10, "price": 100.0, "confidence": 0.8, "intent": "OPEN_LONG"},
+            {"ts": "2026-06-05T11:00:00+00:00", "symbol": "SPY", "action": "SELL",
+             "quantity": 10, "price": 95.0, "confidence": None, "intent": "PLANNED_EXIT",
+             "exit_reason": "hard_stop"},
+        ],
+    )
+
+    diagnostic = compute_hard_stop_diagnostics(
+        tmp_path,
+        {
+            "SPY": [
+                {"ts": "2026-06-05T11:00:00+00:00", "open": 95.0, "high": 95.0, "low": 95.0, "close": 95.0},
+                {"ts": "2026-06-05T12:00:00+00:00", "open": 95.0, "high": 99.0, "low": 94.0, "close": 96.0},
+                {"ts": "2026-06-05T13:00:00+00:00", "open": 96.0, "high": 108.0, "low": 95.0, "close": 106.0},
+            ]
+        },
+        lookahead_bars=2,
+    )
+
+    assert diagnostic["summary"]["hard_stops"] == 1
+    assert diagnostic["summary"]["diagnosed"] == 1
+    assert diagnostic["summary"]["stop_too_early"] == 1
+    assert diagnostic["summary"]["actual_pnl"] == -50.0
+    assert diagnostic["summary"]["hold_to_lookahead_pnl"] == 60.0
+    assert diagnostic["summary"]["hold_to_lookahead_delta_vs_actual"] == 110.0
+    case = diagnostic["cases"][0]
+    assert case["symbol"] == "SPY"
+    assert case["verdict"] == "stop_too_early"
+    assert case["recovered_to_entry"] is True
+    assert case["would_have_won_by_lookahead"] is True
+    assert case["best_after_stop_pnl"] == 80.0
+    assert case["worst_after_stop_pnl"] == -60.0
+
+
+def test_hard_stop_diagnostics_marque_stop_utile_si_le_marche_continue_contre_la_position(tmp_path) -> None:
+    _write_perf(
+        tmp_path,
+        [
+            {"ts": "2026-06-05T10:00:00+00:00", "symbol": "QQQ", "action": "BUY",
+             "quantity": 10, "price": 100.0, "confidence": 0.8, "intent": "OPEN_LONG"},
+            {"ts": "2026-06-05T11:00:00+00:00", "symbol": "QQQ", "action": "SELL",
+             "quantity": 10, "price": 95.0, "confidence": None, "intent": "PLANNED_EXIT",
+             "exit_reason": "hard_stop"},
+        ],
+    )
+
+    diagnostic = compute_hard_stop_diagnostics(
+        tmp_path,
+        {
+            "QQQ": [
+                {"ts": "2026-06-05T12:00:00+00:00", "open": 95.0, "high": 96.0, "low": 92.0, "close": 93.0},
+                {"ts": "2026-06-05T13:00:00+00:00", "open": 93.0, "high": 94.0, "low": 88.0, "close": 90.0},
+            ]
+        },
+        lookahead_bars=2,
+    )
+
+    assert diagnostic["summary"]["hard_stops"] == 1
+    assert diagnostic["summary"]["stop_helped_or_neutral"] == 1
+    case = diagnostic["cases"][0]
+    assert case["verdict"] == "stop_helped_or_neutral"
+    assert case["recovered_to_entry"] is False
+    assert case["would_have_beaten_stop_by_lookahead"] is False
+    assert case["hold_to_lookahead_pnl"] == -100.0
+    assert case["hold_to_lookahead_delta_vs_actual"] == -50.0
+
+
+def test_hard_stop_diagnostics_supporte_les_shorts(tmp_path) -> None:
+    _write_perf(
+        tmp_path,
+        [
+            {"ts": "2026-06-05T10:00:00+00:00", "symbol": "IWM", "action": "SELL",
+             "quantity": 5, "price": 100.0, "confidence": 0.8, "intent": "OPEN_SHORT"},
+            {"ts": "2026-06-05T11:00:00+00:00", "symbol": "IWM", "action": "BUY",
+             "quantity": 5, "price": 105.0, "confidence": None, "intent": "PLANNED_EXIT",
+             "exit_reason": "hard_stop"},
+        ],
+    )
+
+    diagnostic = compute_hard_stop_diagnostics(
+        tmp_path,
+        {
+            "IWM": [
+                {"ts": "2026-06-05T12:00:00+00:00", "open": 105.0, "high": 106.0, "low": 98.0, "close": 99.0},
+                {"ts": "2026-06-05T13:00:00+00:00", "open": 99.0, "high": 100.0, "low": 90.0, "close": 92.0},
+            ]
+        },
+        lookahead_bars=2,
+    )
+
+    case = diagnostic["cases"][0]
+    assert case["side"] == "SHORT"
+    assert case["actual_pnl"] == -25.0
+    assert case["hold_to_lookahead_pnl"] == 40.0
+    assert case["best_after_stop_pnl"] == 50.0
+    assert case["worst_after_stop_pnl"] == -30.0
+    assert case["recovered_to_entry"] is True
+    assert case["verdict"] == "stop_too_early"
+
+
+def test_hard_stop_diagnostics_marque_inconnu_sans_barres_futures(tmp_path) -> None:
+    _write_perf(
+        tmp_path,
+        [
+            {"ts": "2026-06-05T10:00:00+00:00", "symbol": "SPY", "action": "BUY",
+             "quantity": 1, "price": 100.0, "confidence": 0.8, "intent": "OPEN_LONG"},
+            {"ts": "2026-06-05T11:00:00+00:00", "symbol": "SPY", "action": "SELL",
+             "quantity": 1, "price": 95.0, "confidence": None, "intent": "PLANNED_EXIT",
+             "exit_reason": "hard_stop"},
+        ],
+    )
+
+    diagnostic = compute_hard_stop_diagnostics(
+        tmp_path,
+        {"SPY": [{"ts": "2026-06-05T10:30:00+00:00", "high": 101.0, "low": 99.0, "close": 100.0}]},
+    )
+
+    assert diagnostic["summary"]["hard_stops"] == 1
+    assert diagnostic["summary"]["unknown"] == 1
+    assert diagnostic["cases"][0]["verdict"] == "unknown_no_future_bars"
+    assert diagnostic["cases"][0]["future_bars"] == 0
 
 
 def test_compute_attribution_brut_frais_neutres_sans_fichier(tmp_path) -> None:

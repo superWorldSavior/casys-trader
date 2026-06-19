@@ -9,6 +9,13 @@ def _history_bar(ts: str, close: float) -> Bar:
     return Bar(ts=ts, open=close, high=close + 1.0, low=close - 1.0, close=close, volume=1000.0)
 
 
+def _write_perf(state_dir, rows: list[dict]) -> None:
+    state_dir.mkdir(parents=True, exist_ok=True)
+    with (state_dir / "model_performance.jsonl").open("w", encoding="utf-8") as f:
+        for row in rows:
+            f.write(json.dumps(row) + "\n")
+
+
 def test_cli_status_json_expose_les_fichiers_runtime(monkeypatch, tmp_path, capsys) -> None:
     state_dir = tmp_path / "state"
     state_dir.mkdir()
@@ -341,6 +348,41 @@ def test_stats_payload_expose_missed_par_commit() -> None:
     row = payload["commits"][0]
     assert row["missed"] == 1
     assert row["missed_pct"] == 100.0
+
+
+def test_cli_diagnostics_hard_stops_json(monkeypatch, tmp_path, capsys) -> None:
+    state_dir = tmp_path / "state"
+    monkeypatch.setattr(daemon, "ROOT", tmp_path)
+    monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+    _write_perf(
+        state_dir,
+        [
+            {"ts": "2026-06-05T10:00:00+00:00", "symbol": "SPY", "action": "BUY",
+             "quantity": 10, "price": 100.0, "confidence": 0.8, "intent": "OPEN_LONG"},
+            {"ts": "2026-06-05T11:00:00+00:00", "symbol": "SPY", "action": "SELL",
+             "quantity": 10, "price": 95.0, "confidence": None, "intent": "PLANNED_EXIT",
+             "exit_reason": "hard_stop"},
+        ],
+    )
+
+    def get_bars(symbol, *, lookback, interval):
+        assert symbol == "SPY"
+        assert lookback == "5d"
+        assert interval == "1h"
+        return [
+            Bar(ts="2026-06-05T12:00:00+00:00", open=95.0, high=99.0, low=94.0, close=96.0, volume=1000.0),
+            Bar(ts="2026-06-05T13:00:00+00:00", open=96.0, high=108.0, low=95.0, close=106.0, volume=1000.0),
+        ]
+
+    monkeypatch.setattr(cli.market, "get_bars", get_bars)
+
+    assert cli.main(["diagnostics", "hard-stops", "--json", "--all-regimes", "--lookback", "5d"]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["summary"]["hard_stops"] == 1
+    assert payload["summary"]["stop_too_early"] == 1
+    assert payload["cases"][0]["symbol"] == "SPY"
+    assert payload["cases"][0]["hold_to_lookahead_pnl"] == 60.0
 
 
 def test_cli_decisions_bench_dry_run_preview_les_cases(monkeypatch, tmp_path, capsys) -> None:

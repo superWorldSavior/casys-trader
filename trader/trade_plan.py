@@ -355,24 +355,21 @@ def validate_exit_plan(
                 raise InvalidExitPlanError("profit_protection_move_stop_to_unsupported")
 
 
-def _clamp_distance_to_pct_bounds(
+def _validate_distance_pct_bounds(
     *,
     distance: float,
     entry_price: float,
     raw: dict,
-) -> tuple[float, bool]:
-    clamped = False
+) -> None:
+    tolerance = max(abs(distance), abs(entry_price), 1.0) * 1e-12
     if raw.get("min_pct") is not None:
         min_distance = _bounded_fraction(raw["min_pct"], "hard_stop_min_pct") * entry_price
-        if distance < min_distance:
-            distance = min_distance
-            clamped = True
+        if distance + tolerance < min_distance:
+            raise InvalidExitPlanError("hard_stop_below_min_pct")
     if raw.get("max_pct") is not None:
         max_distance = _bounded_fraction(raw["max_pct"], "hard_stop_max_pct") * entry_price
-        if distance > max_distance:
-            distance = max_distance
-            clamped = True
-    return distance, clamped
+        if distance - tolerance > max_distance:
+            raise InvalidExitPlanError("hard_stop_above_max_pct")
 
 
 def _copy_trace_fields(trace: dict, raw: dict, fields: tuple[str, ...]) -> None:
@@ -422,7 +419,7 @@ def resolve_exit_plan(
             elif hard_stop_type == "percent":
                 percent = _bounded_fraction(hard_stop.get("percent"), "hard_stop_percent")
                 distance = entry_price_value * percent
-                distance, clamped = _clamp_distance_to_pct_bounds(
+                _validate_distance_pct_bounds(
                     distance=distance,
                     entry_price=entry_price_value,
                     raw=hard_stop,
@@ -440,7 +437,7 @@ def resolve_exit_plan(
                     "spec_type": "percent",
                     "percent": percent,
                     "distance": distance,
-                    "clamped": clamped,
+                    "clamped": False,
                     "resolved_price": resolved_stop,
                 }
                 _copy_trace_fields(trace["hard_stop"], hard_stop, ("min_pct", "max_pct"))
@@ -450,7 +447,7 @@ def resolve_exit_plan(
                 volatility = _positive_float(reference_volatility, "reference_volatility")
                 multiple = _positive_float(hard_stop.get("multiple"), "hard_stop_multiple")
                 distance = volatility * multiple
-                distance, clamped = _clamp_distance_to_pct_bounds(
+                _validate_distance_pct_bounds(
                     distance=distance,
                     entry_price=entry_price_value,
                     raw=hard_stop,
@@ -469,7 +466,7 @@ def resolve_exit_plan(
                     "multiple": multiple,
                     "reference_volatility": volatility,
                     "distance": distance,
-                    "clamped": clamped,
+                    "clamped": False,
                     "resolved_price": resolved_stop,
                 }
                 _copy_trace_fields(
@@ -512,7 +509,7 @@ def resolve_exit_plan(
                 )
                 if distance <= 0:
                     raise InvalidExitPlanError("hard_stop_structural_wrong_side")
-                distance, clamped = _clamp_distance_to_pct_bounds(
+                _validate_distance_pct_bounds(
                     distance=distance,
                     entry_price=entry_price_value,
                     raw=hard_stop,
@@ -533,7 +530,7 @@ def resolve_exit_plan(
                     "level": level_value,
                     "buffer": buffer,
                     "distance": distance,
-                    "clamped": clamped,
+                    "clamped": False,
                     "resolved_price": resolved_stop,
                 }
                 if volatility is not None:

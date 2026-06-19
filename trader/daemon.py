@@ -26,7 +26,17 @@ from typing import Callable
 import yaml
 
 from .agent_context import build_market_cockpit, resolve_indicator_requests
-from . import attribution, code_version, codex_client, consolidator, decision_ledger, family_regime, relevance_gate, stats
+from . import (
+    attribution,
+    code_version,
+    codex_client,
+    consolidator,
+    decision_ledger,
+    family_regime,
+    meta_performance,
+    relevance_gate,
+    stats,
+)
 from .exit_engine import evaluate_plan
 from .features import DEFAULT_INDICATORS, build_indicator_snapshot
 from .ib_attach import IBAttachBackoff
@@ -1567,6 +1577,7 @@ def run_cycle(
         since=attribution_since,
         exclude_symbols=excluded_attribution_symbols,
     )
+    meta_performance_payload = meta_performance.compute_meta_performance(STATE_DIR)
     base_context = {
         "now": now.isoformat(),
         "portfolio": snap.as_context(fee_estimator=portfolio_fee_estimator),
@@ -1582,6 +1593,9 @@ def run_cycle(
         # confidence et coût par raison de sortie. Le signal qui dit à l'agent si
         # ses choix (surtout ses calls confiants) gagnent vraiment.
         "attribution": attribution_payload,
+        # Stats ex-post des décisions agent (dont HOLD missed), groupées par
+        # action/reason_code. Descriptif uniquement : l'agent garde le jugement.
+        "meta_performance": meta_performance_payload,
         # Boucle de feedback (D6) : guardrails humains nommés à part ; dès qu'un
         # consolidé existe, les bruts ne sont plus réinjectés (anti auto-renforcement).
         "learnings": consolidator.build_context_learnings(
@@ -1777,6 +1791,7 @@ def run_cycle(
             rationale=f"armed_plan:{plan_id} — {order.get('rationale') or ''}".strip(" —"),
             intent=str(order["intent"]),
             exit_plan=order.get("exit_plan"),
+            decision_reason_code="ARMED_PLAN",
         )
         armed_plan_ids[sym] = plan_id
         armed_plan_orders[sym] = dict(order)
@@ -1834,6 +1849,7 @@ def run_cycle(
                     "trade_plan_created": False,
                     "executed": False,
                     "reason": "quiet_gate",
+                    "decision_reason_code": "NO_EDGE",
                     "decision_source": "infra",
                     "model_called": False,
                     "data_source": runtime_data_source_by_sym.get(sym),
@@ -1945,6 +1961,7 @@ def run_cycle(
                         "trade_plan_created": False,
                         "executed": False,
                         "reason": "stale_market_data",
+                        "decision_reason_code": "DATA_STALE",
                         "decision_source": "infra",
                         "model_called": False,
                         "stale_streak": new_streak,
@@ -2015,6 +2032,7 @@ def run_cycle(
                  "next_wake_requested": decision.next_wake_in_minutes,
                  "context_request": decision.context_request,
                  "intent": decision.intent,
+                 "decision_reason_code": decision.decision_reason_code,
                  "decision_source": decision_source,
                  "model_called": decision_source == "llm",
                  "llm_provider": decision.llm_provider,
@@ -2212,24 +2230,45 @@ def run_cycle(
                     continue
             else:
                 open_stop_distance = abs(prices[sym] - hard_stop_price)
-                if pure_open:
-                    max_risk_quantity = gate.max_quantity_at_risk(
-                        snap.equity,
-                        prices[sym],
-                        hard_stop_price,
-                    )
-                    if effective_quantity > max_risk_quantity:
-                        entry.setdefault("requested_qty", effective_quantity)
-                        effective_quantity = max_risk_quantity
-                        entry["qty"] = effective_quantity
-                        entry["risk_clamped"] = True
-                    risk_quantity = effective_quantity
                 _set_entry_risk_metrics(
                     entry,
                     quantity=risk_quantity,
                     stop_distance=open_stop_distance,
                     equity=snap.equity,
                 )
+                if pure_open:
+                    max_risk_quantity = gate.max_quantity_at_risk(
+                        snap.equity,
+                        prices[sym],
+                        hard_stop_price,
+                    )
+                    entry["max_risk_qty"] = max_risk_quantity
+                    if max_risk_quantity <= 0:
+                        _log_cycle_progress("[decision %d/%d] %s hold zero_risk_quantity", index, len(symbols_to_decide), sym)
+                        apply_default_schedule_after_blocked()
+                        record_decision({**entry, "executed": False, "reason": "zero_risk_quantity"})
+                        continue
+                    if effective_quantity > max_risk_quantity:
+                        _log_cycle_progress(
+                            "[risk] %s rejected code=risk_per_trade_exceeded qty=%s max_qty=%s",
+                            sym,
+                            effective_quantity,
+                            max_risk_quantity,
+                        )
+                        apply_default_schedule_after_blocked()
+                        record_decision(
+                            {
+                                **entry,
+                                "executed": False,
+                                "reason": "risk:risk_per_trade_exceeded",
+                                "context": (
+                                    f"qty={effective_quantity} max_qty={max_risk_quantity:.8f} "
+                                    f"risk_pct={entry.get('risk_pct')} "
+                                    f"limit={gate.limits.max_risk_per_trade_pct}"
+                                ),
+                            }
+                        )
+                        continue
 
             if pure_open and effective_quantity == 0:
                 _log_cycle_progress("[decision %d/%d] %s hold zero_risk_quantity", index, len(symbols_to_decide), sym)
@@ -2240,10 +2279,6 @@ def run_cycle(
             if pure_open:
                 # Gate de confiance adapté au risque (ouvertures pures uniquement).
                 # REDUCE/CLOSE/REVERSE : réduire le risque doit toujours rester possible.
-                # Note : le check s'effectue AVANT le clamp max_order_value (plus bas).
-                # Si le clamp réduit ensuite la quantité, le risque réel sera plus faible
-                # que celui utilisé ici. Direction conservatrice (rejet plus fréquent, jamais
-                # plus permissif) — acceptable pour un fusible.
                 conf_verdict = gate.check_confidence(
                     decision.confidence,
                     entry.get("risk_pct"),
@@ -2264,7 +2299,6 @@ def run_cycle(
         order = Order(symbol=sym, side=decision.action, quantity=effective_quantity, rationale=decision.rationale)
         cur_pos_value = (pos.quantity * prices[sym]) if pos else 0.0
         allow_risk_reduction = decision.intent in {"REDUCE", "CLOSE"}
-        allow_order_value_clamp = decision.intent in {"OPEN_LONG", "OPEN_SHORT"}
         verdict = gate.check(
             order,
             prices[sym],
@@ -2273,28 +2307,6 @@ def run_cycle(
             equity=snap.equity,
             allow_risk_reduction=allow_risk_reduction,
         )
-        if not verdict.approved and verdict.code == "order_value_exceeded" and allow_order_value_clamp:
-            clamped_quantity = min(effective_quantity, gate.max_order_quantity_at_price(prices[sym]))
-            if 0 < clamped_quantity < effective_quantity:
-                entry.setdefault("requested_qty", effective_quantity)
-                effective_quantity = clamped_quantity
-                entry["qty"] = effective_quantity
-                if pure_open:
-                    _set_entry_risk_metrics(
-                        entry,
-                        quantity=effective_quantity,
-                        stop_distance=open_stop_distance,
-                        equity=snap.equity,
-                    )
-                order = Order(symbol=sym, side=decision.action, quantity=effective_quantity, rationale=decision.rationale)
-                verdict = gate.check(
-                    order,
-                    prices[sym],
-                    current_position_value=cur_pos_value,
-                    gross_exposure=gross,
-                    equity=snap.equity,
-                    allow_risk_reduction=allow_risk_reduction,
-                )
 
         if not verdict.approved:
             _log_cycle_progress(
@@ -2448,6 +2460,7 @@ def run_cycle(
         model=consolidator_model,
         timeout_s=consolidator_timeout_s,
         attribution=attribution_payload,
+        meta_performance=meta_performance_payload,
     )
     if consolidation_result.get("triggered"):
         report["learning_consolidation"] = consolidation_result

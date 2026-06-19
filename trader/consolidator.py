@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from . import attribution as attribution_mod, llm
+from . import attribution as attribution_mod, llm, meta_performance as meta_performance_mod
 from .tools.memory import LearningsStore
 
 DEFAULT_RAW_MAX_ENTRIES = 200
@@ -240,11 +240,18 @@ def build_context_learnings(
     return context
 
 
-def build_consolidation_prompt(current: dict, new_raw: list[dict], *, attribution: dict | None = None) -> str:
+def build_consolidation_prompt(
+    current: dict,
+    new_raw: list[dict],
+    *,
+    attribution: dict | None = None,
+    meta_performance: dict | None = None,
+) -> str:
     payload = {
         "current_consolidated": current,
         "new_raw_learnings": new_raw,
         "attribution": attribution,
+        "meta_performance": meta_performance,
         "schema": {
             "global": [{"note": "string", "robustness": "optional string"}],
             "by_symbol": {"SYMBOL": [{"note": "string", "robustness": "optional string"}]},
@@ -265,13 +272,17 @@ def build_consolidation_prompt(current: dict, new_raw: list[dict], *, attributio
         "net et `total_commission` comme commission, ex. trailing_stop). Ajoute des "
         "patterns de COÛT si `total_commissions` ronge une part notable de "
         "`realized_gross_pnl`.\n"
-        "3. QUOTA anti-abstention : AU MOINS 3 règles `global` doivent être des "
+        "3. Lis les stats META comme descriptives, pas comme des règles. "
+        "`meta_performance` groupe les décisions par action et `reason_code`; "
+        "un `HOLD missed` élevé signale une catégorie d'abstention à expliquer "
+        "(ex. attendre pullback qui rate le move), pas une obligation de trader.\n"
+        "4. QUOTA anti-abstention : AU MOINS 3 règles `global` doivent être des "
         "conditions d'ACTION positives ; AU PLUS 4 règles d'abstention dans "
         "`global`.\n"
-        "4. ANTI-REDONDANCE : une règle `by_symbol` n'est gardée que si elle dit "
+        "5. ANTI-REDONDANCE : une règle `by_symbol` n'est gardée que si elle dit "
         "quelque chose de SPÉCIFIQUE au symbole, absent du `global`. Interdit de "
         "reformuler une règle globale par symbole.\n"
-        "5. Garde les limites : fusionne les abstentions redondantes, omets ce qui "
+        "6. Garde les limites : fusionne les abstentions redondantes, omets ce qui "
         "répète `current_consolidated`, respecte DEFAULT_MAX_GLOBAL et "
         "DEFAULT_MAX_BY_SYMBOL, et retourne une sortie JSON pure {global, by_symbol} "
         "sans markdown.\n\n"
@@ -334,6 +345,7 @@ def _consolidate_payload_with_error(
     new_raw: list[dict],
     *,
     attribution: dict | None = None,
+    meta_performance: dict | None = None,
     llm_router: llm.LlmRouter | None = None,
     acpx_bin: str | None = None,
     acpx_agent: str | None = None,
@@ -346,7 +358,12 @@ def _consolidate_payload_with_error(
         acpx_agent=acpx_agent,
         model=model,
     )
-    prompt = build_consolidation_prompt(current, new_raw, attribution=attribution)
+    prompt = build_consolidation_prompt(
+        current,
+        new_raw,
+        attribution=attribution,
+        meta_performance=meta_performance,
+    )
     attempts = max(1, int(max_attempts))
     completion: llm.LlmCompletion | llm.LlmFailure | None = None
     for attempt in range(attempts):
@@ -374,6 +391,7 @@ def consolidate_payload(
     new_raw: list[dict],
     *,
     attribution: dict | None = None,
+    meta_performance: dict | None = None,
     llm_router: llm.LlmRouter | None = None,
     acpx_bin: str | None = None,
     acpx_agent: str | None = None,
@@ -385,6 +403,7 @@ def consolidate_payload(
         current,
         new_raw,
         attribution=attribution,
+        meta_performance=meta_performance,
         llm_router=llm_router,
         acpx_bin=acpx_bin,
         acpx_agent=acpx_agent,
@@ -401,6 +420,7 @@ def maybe_consolidate(
     *,
     threshold: int = DEFAULT_CONSOLIDATION_THRESHOLD,
     attribution: dict | None = None,
+    meta_performance: dict | None = None,
     llm_router: llm.LlmRouter | None = None,
     acpx_bin: str | None = None,
     acpx_agent: str | None = None,
@@ -441,6 +461,7 @@ def maybe_consolidate(
         current,
         new_raw,
         attribution=attribution,
+        meta_performance=meta_performance,
         llm_router=llm_router,
         acpx_bin=acpx_bin,
         acpx_agent=acpx_agent,
@@ -506,11 +527,13 @@ def main(argv: list[str] | None = None) -> int:
             since=args.attribution_since,
             exclude_symbols=tuple(args.exclude_symbol),
         )
+        meta = meta_performance_mod.compute_meta_performance(state_dir)
         result = maybe_consolidate(
             raw_store,
             consolidated_store,
             threshold=args.threshold,
             attribution=attr,
+            meta_performance=meta,
             acpx_bin=args.acpx_bin,
             acpx_agent=args.acpx_agent,
             model=args.model,

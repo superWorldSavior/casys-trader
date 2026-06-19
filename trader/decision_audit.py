@@ -6,6 +6,8 @@ from collections import Counter
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from . import decision_reason
+
 
 def parse_ts(raw: Any) -> datetime | None:
     if not raw:
@@ -152,9 +154,15 @@ def _counter_metrics(counts: Counter) -> dict:
 def summarize_audited_rows(rows: list[dict], horizons: list[str]) -> dict:
     summary: dict[str, Counter] = {horizon: Counter() for horizon in horizons}
     summary_by_commit: dict[str, dict[str, Counter]] = {horizon: {} for horizon in horizons}
+    summary_by_reason: dict[str, dict[str, dict[str, Counter]]] = {
+        horizon: {} for horizon in horizons
+    }
     for row in rows:
         commit_key = decision_commit_key(row)
         row["decision_commit_key"] = commit_key
+        reason_code = decision_reason.infer_reason_code(row)
+        row["decision_reason_code"] = reason_code
+        action = str(row.get("action") or "UNKNOWN").upper()
         audits = row.get("audits")
         if not isinstance(audits, dict):
             continue
@@ -165,6 +173,8 @@ def summarize_audited_rows(rows: list[dict], horizons: list[str]) -> dict:
             verdict = str(entry.get("verdict") or "unknown")
             summary[horizon][verdict] += 1
             summary_by_commit[horizon].setdefault(commit_key, Counter())[verdict] += 1
+            reason_by_action = summary_by_reason[horizon].setdefault(action, {})
+            reason_by_action.setdefault(reason_code, Counter())[verdict] += 1
     return {
         "summary": {horizon: dict(summary[horizon]) for horizon in horizons},
         "metrics": {
@@ -184,6 +194,26 @@ def summarize_audited_rows(rows: list[dict], horizons: list[str]) -> dict:
                 for commit, counts in commits.items()
             }
             for horizon, commits in summary_by_commit.items()
+        },
+        "summary_by_reason": {
+            horizon: {
+                action: {
+                    reason_code: dict(counts)
+                    for reason_code, counts in reasons.items()
+                }
+                for action, reasons in actions.items()
+            }
+            for horizon, actions in summary_by_reason.items()
+        },
+        "metrics_by_reason": {
+            horizon: {
+                action: {
+                    reason_code: _counter_metrics(counts)
+                    for reason_code, counts in reasons.items()
+                }
+                for action, reasons in actions.items()
+            }
+            for horizon, actions in summary_by_reason.items()
         },
     }
 
@@ -291,6 +321,7 @@ def audit_rows(
 
         audited = dict(row)
         audited["decision_commit_key"] = decision_commit_key(row)
+        audited["decision_reason_code"] = decision_reason.infer_reason_code(audited)
         audited["audits"] = audits
         audited_rows.append(audited)
 

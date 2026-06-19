@@ -9,7 +9,7 @@ from typing import Sequence
 
 import yaml
 
-from . import code_version, daemon, decision_audit, decision_bench, decision_ledger
+from . import attribution, code_version, daemon, decision_audit, decision_bench, decision_ledger
 from .features import DEFAULT_INDICATORS, build_indicator_snapshot, compute_indicator_values
 from .semantic.catalog import FAMILIES, describe_semantic_layer, find_indicators, list_indicators, normalize_temporal_query
 from .tools import market
@@ -56,6 +56,97 @@ def _read_state_json(filename: str) -> object | None:
     if not path.exists():
         return None
     return json.loads(path.read_text())
+
+
+def _load_regime_filters(args: argparse.Namespace) -> tuple[str | None, tuple[str, ...]]:
+    if getattr(args, "all_regimes", False):
+        return args.since, tuple(args.exclude_symbol or ())
+
+    cfg_path = daemon.ROOT / "config" / "regime.yaml"
+    cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) if cfg_path.exists() else {}
+    cfg = cfg or {}
+    since = args.since if args.since is not None else cfg.get("attribution_since")
+    exclude_symbols = [str(symbol) for symbol in (cfg.get("exclude_symbols") or [])]
+    exclude_symbols.extend(str(symbol) for symbol in (args.exclude_symbol or []))
+    return (None if since is None else str(since)), tuple(exclude_symbols)
+
+
+def _fmt_number(value: object, decimals: int = 2) -> str:
+    if value is None:
+        return "n/a"
+    try:
+        return f"{float(value):.{decimals}f}"
+    except (TypeError, ValueError):
+        return "n/a"
+
+
+def _cmd_diagnostics_hard_stops(args: argparse.Namespace) -> int:
+    if args.lookahead_bars <= 0:
+        raise SystemExit("--lookahead-bars doit être > 0")
+    since, exclude_symbols = _load_regime_filters(args)
+
+    trips = attribution.compute_round_trips(daemon.STATE_DIR)
+    trips, _ = attribution._filter_regime_trips(  # noqa: SLF001 - filtre partagé avec l'attribution runtime.
+        trips,
+        since=since,
+        exclude_symbols=exclude_symbols,
+    )
+    hard_stop_symbols = sorted(
+        {str(trip.get("symbol")) for trip in trips if trip.get("exit_reason") == "hard_stop" and trip.get("symbol")}
+    )
+    bars_by_symbol: dict[str, list[object]] = {}
+    fetch_errors: dict[str, str] = {}
+    for symbol in hard_stop_symbols:
+        try:
+            bars_by_symbol[symbol] = market.get_bars(symbol, lookback=args.lookback, interval=args.interval)
+        except Exception as exc:  # noqa: BLE001 - diagnostic post-mortem, on garde les autres symboles.
+            bars_by_symbol[symbol] = []
+            fetch_errors[symbol] = str(exc)
+
+    payload = attribution.compute_hard_stop_diagnostics(
+        daemon.STATE_DIR,
+        bars_by_symbol,
+        since=since,
+        exclude_symbols=exclude_symbols,
+        lookahead_bars=args.lookahead_bars,
+        interval=args.interval,
+    )
+    payload["price_fetch"] = {
+        "lookback": args.lookback,
+        "symbols": hard_stop_symbols,
+        "errors": fetch_errors,
+    }
+
+    if args.json:
+        _print_json(payload)
+        return 0
+
+    summary = payload["summary"]
+    print(f"Hard-stop diagnostics interval={args.interval} lookahead={args.lookahead_bars} bars")
+    print(
+        f"hard_stops={summary['hard_stops']} diagnosed={summary['diagnosed']} "
+        f"unknown={summary['unknown']} stop_too_early={summary['stop_too_early']} "
+        f"helped_or_neutral={summary['stop_helped_or_neutral']}"
+    )
+    print(
+        f"actual={_fmt_number(summary['actual_pnl'])} "
+        f"hold={_fmt_number(summary['hold_to_lookahead_pnl'])} "
+        f"delta={_fmt_number(summary['hold_to_lookahead_delta_vs_actual'])} "
+        f"best={_fmt_number(summary['best_after_stop_pnl'])} "
+        f"worst={_fmt_number(summary['worst_after_stop_pnl'])}"
+    )
+    if fetch_errors:
+        print("fetch_errors:", ", ".join(f"{symbol}={error}" for symbol, error in fetch_errors.items()))
+    for case in payload["cases"][: args.limit]:
+        print(
+            f"{case.get('exit_ts')} {case.get('symbol')} {case.get('side')} "
+            f"actual={_fmt_number(case.get('actual_pnl'))} "
+            f"hold={_fmt_number(case.get('hold_to_lookahead_pnl'))} "
+            f"best={_fmt_number(case.get('best_after_stop_pnl'))} "
+            f"worst={_fmt_number(case.get('worst_after_stop_pnl'))} "
+            f"recovered={case.get('recovered_to_entry')} verdict={case.get('verdict')}"
+        )
+    return 0
 
 
 def _cmd_status(args: argparse.Namespace) -> int:
@@ -551,6 +642,19 @@ def build_parser() -> argparse.ArgumentParser:
     status = sub.add_parser("status", help="état courant du daemon")
     status.add_argument("--json", action="store_true")
     status.set_defaults(func=_cmd_status)
+
+    diagnostics = sub.add_parser("diagnostics", help="diagnostics post-mortem")
+    diagnostics_sub = diagnostics.add_subparsers(dest="diagnostics_command", required=True)
+    hard_stops = diagnostics_sub.add_parser("hard-stops", help="diagnostique les sorties hard_stop")
+    hard_stops.add_argument("--lookahead-bars", type=int, default=8)
+    hard_stops.add_argument("--interval", default="1h")
+    hard_stops.add_argument("--lookback", default="10d")
+    hard_stops.add_argument("--since")
+    hard_stops.add_argument("--exclude-symbol", action="append", default=[])
+    hard_stops.add_argument("--all-regimes", action="store_true")
+    hard_stops.add_argument("--limit", type=int, default=20)
+    hard_stops.add_argument("--json", action="store_true")
+    hard_stops.set_defaults(func=_cmd_diagnostics_hard_stops)
 
     decisions = sub.add_parser("decisions", help="journal des décisions agent")
     decisions_sub = decisions.add_subparsers(dest="decisions_command", required=True)

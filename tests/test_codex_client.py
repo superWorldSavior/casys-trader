@@ -44,6 +44,19 @@ def test_prompt_documente_rs_court_rs_daily_et_regime_family_daily() -> None:
     assert "~45 min" not in prompt
 
 
+def test_prompt_demande_un_reason_code_structure() -> None:
+    prompt = build_batch_prompt(
+        mandate="m",
+        memory="mem",
+        shared_context={},
+        symbols_payload=[],
+    )
+
+    assert "decision_reason_code" in prompt
+    assert "WAITING_PULLBACK" in prompt
+    assert "POST_LOSS_CAUTION" in prompt
+
+
 def test_decide_utilise_un_plafond_decisionnel_900s_par_defaut() -> None:
     class StubRouter:
         def __init__(self) -> None:
@@ -224,6 +237,26 @@ def test_parse_decision_accepte_un_learning_optionnel() -> None:
     )
 
     assert decision.learning == "le range tient depuis 3 reveils, j attends une cassure nette"
+
+
+def test_parse_decision_accepte_un_reason_code_structure() -> None:
+    decision = parse_decision(
+        '{"symbol":"SPY","action":"HOLD","quantity":0,"confidence":0.6,'
+        '"rationale":"j attends un retest","decision_reason_code":"waiting_pullback"}',
+        "SPY",
+    )
+
+    assert decision.decision_reason_code == "WAITING_PULLBACK"
+
+
+def test_parse_decision_reason_code_inconnu_devient_unknown() -> None:
+    decision = parse_decision(
+        '{"symbol":"SPY","action":"HOLD","quantity":0,"confidence":0.6,'
+        '"rationale":"range","decision_reason_code":"maybe_later"}',
+        "SPY",
+    )
+
+    assert decision.decision_reason_code == "UNKNOWN"
 
 
 def test_parse_decision_ignore_un_learning_non_textuel() -> None:

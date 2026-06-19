@@ -394,28 +394,22 @@ def test_resolve_exit_plan_normalise_alias_hard_stop_avant_resolution() -> None:
 
 
 @pytest.mark.parametrize(
-    ("hard_stop", "expected_stop", "expected_distance"),
+    ("hard_stop", "expected_error"),
     [
-        ({"type": "percent", "percent": 0.01, "min_pct": 0.03}, 97.0, 3.0),
-        ({"type": "percent", "percent": 0.10, "max_pct": 0.04}, 96.0, 4.0),
+        ({"type": "percent", "percent": 0.01, "min_pct": 0.03}, "hard_stop_below_min_pct"),
+        ({"type": "percent", "percent": 0.10, "max_pct": 0.04}, "hard_stop_above_max_pct"),
     ],
 )
-def test_resolve_exit_plan_clampe_hard_stop_percent(
+def test_resolve_exit_plan_refuse_hard_stop_percent_hors_bornes_sans_clamp(
     hard_stop: dict,
-    expected_stop: float,
-    expected_distance: float,
+    expected_error: str,
 ) -> None:
-    resolved, trace = resolve_exit_plan(
-        {"hard_stop": hard_stop},
-        entry_price=100.0,
-        side="LONG",
-    )
-
-    assert resolved is not None
-    assert resolved["hard_stop"] == {"type": "price", "price": expected_stop}
-    validate_exit_plan(resolved)
-    assert trace["hard_stop"]["distance"] == expected_distance
-    assert trace["hard_stop"]["clamped"] is True
+    with pytest.raises(InvalidExitPlanError, match=expected_error):
+        resolve_exit_plan(
+            {"hard_stop": hard_stop},
+            entry_price=100.0,
+            side="LONG",
+        )
 
 
 @pytest.mark.parametrize(
@@ -502,40 +496,32 @@ def test_resolve_exit_plan_hard_stop_structural_buffer_atr() -> None:
 
 
 @pytest.mark.parametrize(
-    ("hard_stop", "expected_stop", "expected_distance"),
+    ("hard_stop", "expected_error"),
     [
         (
             {"type": "structural", "anchor": "swing_low", "window": 1, "min_pct": 0.05},
-            95.0,
-            5.0,
+            "hard_stop_below_min_pct",
         ),
         (
             {"type": "structural", "anchor": "swing_low", "window": 1, "max_pct": 0.08},
-            92.0,
-            8.0,
+            "hard_stop_above_max_pct",
         ),
     ],
 )
-def test_resolve_exit_plan_clampe_hard_stop_structural(
+def test_resolve_exit_plan_refuse_hard_stop_structural_hors_bornes_sans_clamp(
     hard_stop: dict,
-    expected_stop: float,
-    expected_distance: float,
+    expected_error: str,
 ) -> None:
     structural_low = 98.0 if "min_pct" in hard_stop else 80.0
     bars = [_bar("t1", 100.0, high=101.0, low=structural_low)]
 
-    resolved, trace = resolve_exit_plan(
-        {"hard_stop": hard_stop},
-        entry_price=100.0,
-        side="LONG",
-        bars=bars,
-    )
-
-    assert resolved is not None
-    assert resolved["hard_stop"] == {"type": "price", "price": expected_stop}
-    validate_exit_plan(resolved)
-    assert trace["hard_stop"]["distance"] == expected_distance
-    assert trace["hard_stop"]["clamped"] is True
+    with pytest.raises(InvalidExitPlanError, match=expected_error):
+        resolve_exit_plan(
+            {"hard_stop": hard_stop},
+            entry_price=100.0,
+            side="LONG",
+            bars=bars,
+        )
 
 
 def test_resolve_exit_plan_refuse_structural_mauvais_cote() -> None:

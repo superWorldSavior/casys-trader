@@ -103,6 +103,7 @@ def test_run_cycle_injecte_lattribution_dans_le_contexte(monkeypatch, tmp_path, 
     attribution = contexts[0]["attribution"]
     assert attribution["n_closed_trades"] == 1
     assert attribution["realized_pnl"] == 100.0
+    assert contexts[0]["meta_performance"]["available"] is False
 
 
 def test_run_cycle_passe_le_filtre_regime_a_lattribution(

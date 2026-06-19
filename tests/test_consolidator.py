@@ -580,6 +580,35 @@ def test_prompt_consolidation_injecte_lattribution_et_les_consigne_qualite() -> 
     assert "Interdit de reformuler une règle globale par symbole" in prompt
 
 
+def test_prompt_consolidation_injecte_les_stats_meta_descriptives() -> None:
+    meta = {
+        "available": True,
+        "horizons": {
+            "4h": {
+                "global": {"known": 100, "missed_known_pct": 56.0},
+                "hold_quality_by_reason": [
+                    {"reason_code": "WAITING_PULLBACK", "known": 10, "missed_known_pct": 80.0}
+                ],
+                "trade_quality_by_reason": [
+                    {"action": "BUY", "reason_code": "ENTRY_SIGNAL", "known": 5, "bad_known_pct": 40.0}
+                ],
+            }
+        },
+    }
+
+    prompt = consolidator.build_consolidation_prompt(
+        consolidator.empty_consolidated(),
+        [_raw("2026-06-10T10:00:00+00:00", note="attendre pullback")],
+        meta_performance=meta,
+    )
+    payload = json.loads(prompt.rsplit("\n\n", 1)[1])
+
+    assert payload["meta_performance"] == meta
+    assert "stats META" in prompt
+    assert "HOLD missed" in prompt
+    assert "reason_code" in prompt
+
+
 def test_maybe_consolidate_transmet_lattribution_au_prompt_llm(tmp_path) -> None:
     raw_store = LearningsStore(tmp_path / "learnings.jsonl", max_entries=200)
     consolidated_store = consolidator.ConsolidatedLearningsStore(tmp_path / "learnings_consolidated.json")
@@ -616,6 +645,35 @@ def test_maybe_consolidate_transmet_lattribution_au_prompt_llm(tmp_path) -> None
 
     assert result["written"] is True
     assert payload["attribution"] == attribution
+
+
+def test_maybe_consolidate_transmet_meta_performance_au_prompt_llm(tmp_path) -> None:
+    raw_store = LearningsStore(tmp_path / "learnings.jsonl", max_entries=200)
+    consolidated_store = consolidator.ConsolidatedLearningsStore(tmp_path / "learnings_consolidated.json")
+    raw_store.append(symbol="SPY", note="brut avec meta", now=datetime(2026, 6, 8, 10, tzinfo=timezone.utc))
+    meta = {"available": True, "horizons": {"1h": {"global": {"missed_known_pct": 50.0}}}}
+    prompts: list[str] = []
+
+    class Router:
+        def complete(self, prompt: str, *, timeout_s: int):
+            prompts.append(prompt)
+            return llm.LlmCompletion(
+                provider="test",
+                model="stub",
+                text=json.dumps({"global": [{"note": "meta descriptif"}], "by_symbol": {}}),
+            )
+
+    result = consolidator.maybe_consolidate(
+        raw_store,
+        consolidated_store,
+        threshold=1,
+        llm_router=Router(),
+        meta_performance=meta,
+    )
+    payload = json.loads(prompts[0].rsplit("\n\n", 1)[1])
+
+    assert result["written"] is True
+    assert payload["meta_performance"] == meta
 
 
 def test_main_run_declenche_la_consolidation_sur_un_state_tmp(monkeypatch, tmp_path, capsys) -> None:

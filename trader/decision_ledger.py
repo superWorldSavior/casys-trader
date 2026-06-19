@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from . import code_version
+from . import code_version, decision_reason
 
 SCHEMA_VERSION = 1
 DEFAULT_LEDGER_FILENAME = "decisions.jsonl"
@@ -87,6 +87,9 @@ def build_decision_row(
         price = _optional_float(prices.get(symbol))
 
     original_decision = dict(decision)
+    reason_code = decision_reason.infer_reason_code(
+        {**decision, "decision": original_decision}
+    )
     code_version = _as_dict(decision.get("code_version")) or _as_dict(report.get("code_version")) or dict(UNKNOWN_CODE_VERSION)
     indicator_watch = _as_dict(decision.get("indicator_watch"))
     return {
@@ -105,6 +108,7 @@ def build_decision_row(
         "next_wake_in_minutes": _optional_float(decision.get("next_wake_in_minutes")),
         "executed": decision.get("executed"),
         "reason": decision.get("reason"),
+        "decision_reason_code": reason_code,
         "decision_source": decision.get("decision_source"),
         "model_called": _optional_bool(decision.get("model_called")),
         "price": price,
@@ -289,6 +293,9 @@ def build_legacy_event_row(event: dict, *, sequence: int, source: str) -> dict:
         "executed": event.get("executed"),
         "reason": reason,
     }
+    reason_code = decision_reason.infer_reason_code(
+        {**decision, "decision": decision}
+    )
     return {
         "schema_version": SCHEMA_VERSION,
         "decision_id": f"{ts}|legacy|{sequence}|{symbol}",
@@ -306,6 +313,7 @@ def build_legacy_event_row(event: dict, *, sequence: int, source: str) -> dict:
         "next_wake_in_minutes": None,
         "executed": event.get("executed"),
         "reason": reason,
+        "decision_reason_code": reason_code,
         "price": None,
         "llm_provider": None,
         "llm_model": None,

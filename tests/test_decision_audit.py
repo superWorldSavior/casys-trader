@@ -76,6 +76,53 @@ def test_hold_pendant_un_move_est_missed_pas_bad() -> None:
     assert metrics["nonbad_known_pct"] == 100.0  # une abstention n'est pas un trade raté
 
 
+def test_audit_rows_groupe_la_qualite_par_action_et_reason_code() -> None:
+    rows = [
+        {**_row("PULLBACK", "HOLD"), "decision_reason_code": "WAITING_PULLBACK"},
+        {**_row("FEES", "HOLD"), "decision_reason_code": "FEES_TOO_HIGH"},
+        {**_row("TRADE", "BUY"), "decision_reason_code": "ENTRY_SIGNAL"},
+    ]
+    prices = {
+        "PULLBACK": [
+            {"ts": "2026-06-08T10:00:00+00:00", "close": 100.0},
+            {"ts": "2026-06-08T11:00:00+00:00", "close": 102.0},
+        ],
+        "FEES": [
+            {"ts": "2026-06-08T10:00:00+00:00", "close": 100.0},
+            {"ts": "2026-06-08T11:00:00+00:00", "close": 100.1},
+        ],
+        "TRADE": [
+            {"ts": "2026-06-08T10:00:00+00:00", "close": 100.0},
+            {"ts": "2026-06-08T11:00:00+00:00", "close": 99.0},
+        ],
+    }
+
+    result = decision_audit.audit_rows(rows, prices, horizons=["1h"], threshold_pct=0.5)
+
+    metrics = result["metrics_by_reason"]["1h"]
+    assert metrics["HOLD"]["WAITING_PULLBACK"]["missed"] == 1
+    assert metrics["HOLD"]["WAITING_PULLBACK"]["missed_known_pct"] == 100.0
+    assert metrics["HOLD"]["FEES_TOO_HIGH"]["good"] == 1
+    assert metrics["BUY"]["ENTRY_SIGNAL"]["bad"] == 1
+    assert result["rows"][0]["decision_reason_code"] == "WAITING_PULLBACK"
+
+
+def test_audit_rows_infere_un_reason_code_legacy_depuis_la_rationale() -> None:
+    rows = [{**_row("SPY", "HOLD"), "rationale": "apres hard_stop recent, attendre pullback propre"}]
+    prices = {
+        "SPY": [
+            {"ts": "2026-06-08T10:00:00+00:00", "close": 100.0},
+            {"ts": "2026-06-08T11:00:00+00:00", "close": 102.0},
+        ]
+    }
+
+    result = decision_audit.audit_rows(rows, prices, horizons=["1h"], threshold_pct=0.5)
+
+    row = result["rows"][0]
+    assert row["decision_reason_code"] == "POST_LOSS_CAUTION"
+    assert result["metrics_by_reason"]["1h"]["HOLD"]["POST_LOSS_CAUTION"]["missed"] == 1
+
+
 def test_audit_rows_reconstruit_le_prix_initial_pour_legacy() -> None:
     rows = [_row("SPY", "HOLD", price=None)]
     prices = {

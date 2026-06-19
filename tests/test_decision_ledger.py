@@ -83,6 +83,17 @@ def test_build_decision_row_propage_les_rejets_indicator_watch() -> None:
     assert row["runtime"]["indicator_watch_rejections"] == rejections
 
 
+def test_build_decision_row_propage_le_reason_code_structure() -> None:
+    decision = _decision()
+    decision["decision_reason_code"] = "WAITING_PULLBACK"
+    report = _report([decision])
+
+    row = decision_ledger.build_decision_row(report, decision, sequence=0, source="daemon")
+
+    assert row["decision_reason_code"] == "WAITING_PULLBACK"
+    assert row["decision"]["decision_reason_code"] == "WAITING_PULLBACK"
+
+
 def test_build_decision_row_propage_context_request_et_next_wake_requested() -> None:
     """La ligne d'audit garde les primitives de trace sans blob redondant."""
     decision = _decision()
