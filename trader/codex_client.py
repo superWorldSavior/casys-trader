@@ -36,7 +36,7 @@ Intent = Literal["OPEN_LONG", "OPEN_SHORT", "REDUCE", "CLOSE", "REVERSE", "HOLD"
 # Spark = faible latence, adapté à un agent en veille qui décide à chaque réveil.
 DEFAULT_MODEL = llm.DEFAULT_SPARK_MODEL
 
-_DECISION_KEYS = {"symbol", "action", "quantity", "confidence", "rationale"}
+_DECISION_KEYS = {"symbol", "action", "quantity", "confidence", "rationale", "decision_reason_code"}
 MAX_LEARNING_CHARS = 1000  # borne la note pour ne pas faire exploser le prompt/store
 
 
@@ -490,12 +490,19 @@ def _cancel_watch_ids(data: dict) -> list[str]:
     return [str(wid) for wid in raw_ids if isinstance(wid, str)]
 
 
+def _decision_reason_code(data: dict) -> str:
+    if "decision_reason_code" not in data or data.get("decision_reason_code") is None:
+        return decision_reason.infer_reason_code(data)
+    return decision_reason.normalize_reason_code(data.get("decision_reason_code"))
+
+
 def _decision_from_dict(data: dict, symbol: str) -> Decision:
     if not isinstance(data, dict):
         raise ValueError("élément non-objet")
     missing = _DECISION_KEYS - data.keys()
-    if missing:
-        raise ValueError(f"clés manquantes: {missing}")
+    blocking_missing = missing - {"decision_reason_code"}
+    if blocking_missing:
+        raise ValueError(f"clés manquantes: {blocking_missing}")
     action = str(data["action"]).upper()
     if action not in ("BUY", "SELL", "HOLD"):
         raise ValueError(f"action invalide: {action}")
@@ -511,7 +518,7 @@ def _decision_from_dict(data: dict, symbol: str) -> Decision:
         indicator_watch=_optional_dict(data, "indicator_watch"),
         cancel_watch_ids=_cancel_watch_ids(data),
         learning=_normalize_learning(data.get("learning")),
-        decision_reason_code=decision_reason.normalize_reason_code(data.get("decision_reason_code")),
+        decision_reason_code=_decision_reason_code(data),
     )
 
 

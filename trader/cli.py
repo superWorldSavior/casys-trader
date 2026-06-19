@@ -35,6 +35,8 @@ _DAEMON_FLAGS = {
     "--ib-client-id",
 }
 
+_PRICE_FETCH_ERROR_CODES = frozenset({"no_data", "fetch_failed", "market_error", "unexpected_error"})
+
 
 def _print_json(payload: object) -> None:
     print(json.dumps(payload, ensure_ascii=False, indent=2))
@@ -80,28 +82,32 @@ def _fmt_number(value: object, decimals: int = 2) -> str:
         return "n/a"
 
 
+def _price_fetch_error(exc: Exception) -> dict[str, str]:
+    if isinstance(exc, market.MarketError):
+        error_code = exc.code if exc.code in _PRICE_FETCH_ERROR_CODES else "market_error"
+    else:
+        error_code = "unexpected_error"
+    return {"error_code": error_code, "message": str(exc)}
+
+
 def _cmd_diagnostics_hard_stops(args: argparse.Namespace) -> int:
     if args.lookahead_bars <= 0:
         raise SystemExit("--lookahead-bars doit être > 0")
     since, exclude_symbols = _load_regime_filters(args)
 
-    trips = attribution.compute_round_trips(daemon.STATE_DIR)
-    trips, _ = attribution._filter_regime_trips(  # noqa: SLF001 - filtre partagé avec l'attribution runtime.
-        trips,
+    hard_stop_symbols = attribution.select_hard_stop_symbols(
+        daemon.STATE_DIR,
         since=since,
         exclude_symbols=exclude_symbols,
     )
-    hard_stop_symbols = sorted(
-        {str(trip.get("symbol")) for trip in trips if trip.get("exit_reason") == "hard_stop" and trip.get("symbol")}
-    )
     bars_by_symbol: dict[str, list[object]] = {}
-    fetch_errors: dict[str, str] = {}
+    fetch_errors: dict[str, dict[str, str]] = {}
     for symbol in hard_stop_symbols:
         try:
             bars_by_symbol[symbol] = market.get_bars(symbol, lookback=args.lookback, interval=args.interval)
         except Exception as exc:  # noqa: BLE001 - diagnostic post-mortem, on garde les autres symboles.
             bars_by_symbol[symbol] = []
-            fetch_errors[symbol] = str(exc)
+            fetch_errors[symbol] = _price_fetch_error(exc)
 
     payload = attribution.compute_hard_stop_diagnostics(
         daemon.STATE_DIR,
@@ -136,7 +142,7 @@ def _cmd_diagnostics_hard_stops(args: argparse.Namespace) -> int:
         f"worst={_fmt_number(summary['worst_after_stop_pnl'])}"
     )
     if fetch_errors:
-        print("fetch_errors:", ", ".join(f"{symbol}={error}" for symbol, error in fetch_errors.items()))
+        print("fetch_errors:", ", ".join(f"{symbol}={error['message']}" for symbol, error in fetch_errors.items()))
     for case in payload["cases"][: args.limit]:
         print(
             f"{case.get('exit_ts')} {case.get('symbol')} {case.get('side')} "

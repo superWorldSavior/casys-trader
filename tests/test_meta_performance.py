@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 from trader import decision_audit, meta_performance
 
@@ -63,7 +64,42 @@ def test_compute_meta_performance_resume_les_hold_missed_par_reason(tmp_path) ->
 
 
 def test_compute_meta_performance_absent_si_pas_daudit(tmp_path) -> None:
-    assert meta_performance.compute_meta_performance(tmp_path)["available"] is False
+    payload = meta_performance.compute_meta_performance(tmp_path)
+
+    assert payload == {"available": False, "reason": "decision_audit_missing"}
+
+
+def test_compute_meta_performance_signale_audit_json_invalide(tmp_path) -> None:
+    (tmp_path / "decision_audit.json").write_text("{not-json", encoding="utf-8")
+
+    payload = meta_performance.compute_meta_performance(tmp_path)
+
+    assert payload == {"available": False, "reason": "decision_audit_invalid_json"}
+
+
+def test_compute_meta_performance_signale_audit_illisible(monkeypatch, tmp_path) -> None:
+    audit_path = tmp_path / "decision_audit.json"
+    audit_path.write_text("{}", encoding="utf-8")
+
+    def unreadable(self: Path, *args, **kwargs):
+        if self == audit_path:
+            raise OSError("permission denied")
+        return original_read_text(self, *args, **kwargs)
+
+    original_read_text = Path.read_text
+    monkeypatch.setattr(Path, "read_text", unreadable)
+
+    payload = meta_performance.compute_meta_performance(tmp_path)
+
+    assert payload == {"available": False, "reason": "decision_audit_unreadable"}
+
+
+def test_compute_meta_performance_signale_schema_audit_invalide(tmp_path) -> None:
+    (tmp_path / "decision_audit.json").write_text("[]", encoding="utf-8")
+
+    payload = meta_performance.compute_meta_performance(tmp_path)
+
+    assert payload == {"available": False, "reason": "decision_audit_invalid_schema"}
 
 
 def test_compute_meta_performance_recalcule_les_anciens_audits_sans_reason_metrics(tmp_path) -> None:

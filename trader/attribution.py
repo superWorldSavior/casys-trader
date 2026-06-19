@@ -288,6 +288,24 @@ def _filter_regime_trips(
     }
 
 
+def select_hard_stop_symbols(
+    state_dir: Path,
+    *,
+    since: str | None = None,
+    exclude_symbols: tuple[str, ...] | frozenset[str] = (),
+) -> list[str]:
+    """Symboles ayant des sorties hard_stop après application des filtres régime."""
+    trips = compute_round_trips(state_dir)
+    trips, _ = _filter_regime_trips(
+        trips,
+        since=since,
+        exclude_symbols=exclude_symbols,
+    )
+    return sorted(
+        {str(trip.get("symbol")) for trip in trips if trip.get("exit_reason") == "hard_stop" and trip.get("symbol")}
+    )
+
+
 def _parse_optional_datetime(value: object) -> datetime | None:
     if value is None:
         return None

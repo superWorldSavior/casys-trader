@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 
+from trader import attribution
 from trader.attribution import compute_round_trips, compute_attribution, compute_hard_stop_diagnostics
 
 
@@ -328,6 +329,42 @@ def test_compute_attribution_expose_brut_et_frais(tmp_path) -> None:
     scalp = next(r for r in attr["by_exit_reason"] if r["reason"] == "scalp")
     assert scalp["total_gross_pnl"] == 5.0
     assert scalp["total_commission"] == 0.70
+
+
+def test_select_hard_stop_symbols_applique_les_filtres_regime(tmp_path) -> None:
+    _write_perf(
+        tmp_path,
+        [
+            {"ts": "2026-06-09T10:00:00+00:00", "symbol": "OLD", "action": "BUY",
+             "quantity": 1, "price": 100.0, "confidence": 0.8, "intent": "OPEN_LONG"},
+            {"ts": "2026-06-09T11:00:00+00:00", "symbol": "OLD", "action": "SELL",
+             "quantity": 1, "price": 95.0, "confidence": None, "intent": "PLANNED_EXIT",
+             "exit_reason": "hard_stop"},
+            {"ts": "2026-06-10T10:00:00+00:00", "symbol": "CL=F", "action": "BUY",
+             "quantity": 1, "price": 100.0, "confidence": 0.8, "intent": "OPEN_LONG"},
+            {"ts": "2026-06-10T11:00:00+00:00", "symbol": "CL=F", "action": "SELL",
+             "quantity": 1, "price": 95.0, "confidence": None, "intent": "PLANNED_EXIT",
+             "exit_reason": "hard_stop"},
+            {"ts": "2026-06-10T12:00:00+00:00", "symbol": "SPY", "action": "BUY",
+             "quantity": 1, "price": 100.0, "confidence": 0.8, "intent": "OPEN_LONG"},
+            {"ts": "2026-06-10T13:00:00+00:00", "symbol": "SPY", "action": "SELL",
+             "quantity": 1, "price": 95.0, "confidence": None, "intent": "PLANNED_EXIT",
+             "exit_reason": "hard_stop"},
+            {"ts": "2026-06-10T14:00:00+00:00", "symbol": "QQQ", "action": "BUY",
+             "quantity": 1, "price": 100.0, "confidence": 0.8, "intent": "OPEN_LONG"},
+            {"ts": "2026-06-10T15:00:00+00:00", "symbol": "QQQ", "action": "SELL",
+             "quantity": 1, "price": 105.0, "confidence": None, "intent": "PLANNED_EXIT",
+             "exit_reason": "take_profit"},
+        ],
+    )
+
+    symbols = attribution.select_hard_stop_symbols(
+        tmp_path,
+        since="2026-06-10",
+        exclude_symbols=("CL=F",),
+    )
+
+    assert symbols == ["SPY"]
 
 
 def test_hard_stop_diagnostics_marque_stop_trop_tot_si_reprise_apres_stop(tmp_path) -> None:

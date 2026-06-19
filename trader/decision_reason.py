@@ -79,6 +79,8 @@ def infer_reason_code(row: dict) -> str:
         return "POST_LOSS_CAUTION"
     if "frais" in text or "fee" in text or "commission" in text or "be_ref" in text or "coût" in text or "cout" in text:
         return "FEES_TOO_HIGH"
+    if "already exposed" in text or "déjà expos" in text or "deja expos" in text:
+        return "ALREADY_EXPOSED"
     if "position" in text or "conserver" in text or "renforcer" in text or "reduce" in intent:
         return "POSITION_MANAGEMENT"
     if "pullback" in text or "retest" in text or "digestion" in text or "attendre" in text:

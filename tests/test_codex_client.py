@@ -1,3 +1,4 @@
+from trader import codex_client
 from trader.codex_client import DEFAULT_MODEL, ContextResearchRequest, build_batch_prompt, parse_decision, parse_decision_or_context_request, parse_batch, decide, decide_batch
 from trader.llm import LlmCompletion, LlmFailure
 
@@ -55,6 +56,10 @@ def test_prompt_demande_un_reason_code_structure() -> None:
     assert "decision_reason_code" in prompt
     assert "WAITING_PULLBACK" in prompt
     assert "POST_LOSS_CAUTION" in prompt
+
+
+def test_contrat_decision_requiert_un_reason_code_structure() -> None:
+    assert "decision_reason_code" in codex_client._DECISION_KEYS
 
 
 def test_decide_utilise_un_plafond_decisionnel_900s_par_defaut() -> None:
@@ -257,6 +262,18 @@ def test_parse_decision_reason_code_inconnu_devient_unknown() -> None:
     )
 
     assert decision.decision_reason_code == "UNKNOWN"
+
+
+def test_parse_decision_sans_reason_code_reste_tolere_et_utilise_le_fallback_legacy() -> None:
+    decision = parse_decision(
+        '{"symbol":"SPY","action":"BUY","quantity":10,"confidence":0.8,'
+        '"rationale":"cassure exploitable","intent":"OPEN_LONG"}',
+        "SPY",
+    )
+
+    assert decision.action == "BUY"
+    assert decision.quantity == 10.0
+    assert decision.decision_reason_code == "ENTRY_SIGNAL"
 
 
 def test_parse_decision_ignore_un_learning_non_textuel() -> None:

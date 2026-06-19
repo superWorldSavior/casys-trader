@@ -10,15 +10,19 @@ from . import decision_audit
 DEFAULT_HORIZONS = ("1h", "4h", "1d")
 
 
-def _read_audit(state_dir: Path) -> dict | None:
+def _read_audit(state_dir: Path) -> tuple[dict | None, str | None]:
     path = state_dir / "decision_audit.json"
     if not path.exists():
-        return None
+        return None, "decision_audit_missing"
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return None
-    return payload if isinstance(payload, dict) else None
+    except json.JSONDecodeError:
+        return None, "decision_audit_invalid_json"
+    except OSError:
+        return None, "decision_audit_unreadable"
+    if not isinstance(payload, dict):
+        return None, "decision_audit_invalid_schema"
+    return payload, None
 
 
 def _pct_metric(metrics: dict, key: str) -> float | None:
@@ -106,9 +110,9 @@ def compute_meta_performance(
     horizons: tuple[str, ...] = DEFAULT_HORIZONS,
     top_n: int = 8,
 ) -> dict:
-    audit = _read_audit(state_dir)
+    audit, error_code = _read_audit(state_dir)
     if audit is None:
-        return {"available": False, "reason": "decision_audit_missing"}
+        return {"available": False, "reason": error_code}
     if "metrics_by_reason" not in audit and isinstance(audit.get("rows"), list):
         audit = decision_audit.refresh_audit_payload(audit)
     available_horizons = [horizon for horizon in horizons if horizon in (audit.get("horizons") or [])]

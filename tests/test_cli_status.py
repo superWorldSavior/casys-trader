@@ -1,4 +1,5 @@
 import json
+import inspect
 
 from backtest.data import HistoryStore
 from trader import cli, daemon
@@ -383,6 +384,43 @@ def test_cli_diagnostics_hard_stops_json(monkeypatch, tmp_path, capsys) -> None:
     assert payload["summary"]["stop_too_early"] == 1
     assert payload["cases"][0]["symbol"] == "SPY"
     assert payload["cases"][0]["hold_to_lookahead_pnl"] == 60.0
+
+
+def test_cli_diagnostics_hard_stops_ne_depend_pas_du_filtre_regime_prive() -> None:
+    source = inspect.getsource(cli._cmd_diagnostics_hard_stops)
+
+    assert "._filter_regime_trips" not in source
+
+
+def test_cli_diagnostics_hard_stops_json_structure_les_erreurs_price_fetch(monkeypatch, tmp_path, capsys) -> None:
+    state_dir = tmp_path / "state"
+    monkeypatch.setattr(daemon, "ROOT", tmp_path)
+    monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+    _write_perf(
+        state_dir,
+        [
+            {"ts": "2026-06-05T10:00:00+00:00", "symbol": "SPY", "action": "BUY",
+             "quantity": 10, "price": 100.0, "confidence": 0.8, "intent": "OPEN_LONG"},
+            {"ts": "2026-06-05T11:00:00+00:00", "symbol": "SPY", "action": "SELL",
+             "quantity": 10, "price": 95.0, "confidence": None, "intent": "PLANNED_EXIT",
+             "exit_reason": "hard_stop"},
+        ],
+    )
+
+    def get_bars(symbol, *, lookback, interval):
+        raise cli.market.MarketError("no_data", f"{symbol} unavailable")
+
+    monkeypatch.setattr(cli.market, "get_bars", get_bars)
+
+    assert cli.main(["diagnostics", "hard-stops", "--json", "--all-regimes"]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["price_fetch"]["errors"] == {
+        "SPY": {
+            "error_code": "no_data",
+            "message": "no_data: SPY unavailable",
+        }
+    }
 
 
 def test_cli_decisions_bench_dry_run_preview_les_cases(monkeypatch, tmp_path, capsys) -> None:
