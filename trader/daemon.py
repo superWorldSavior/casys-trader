@@ -13,6 +13,7 @@ via fichier. Toute erreur Codex -> HOLD.
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import logging
 import math
@@ -1770,7 +1771,13 @@ def run_cycle(
                     order = {**order, "exit_plan": resolved_exit_plan}
                     trigger["order"] = order
                     armed_reference_volatilities[sym] = ref_vol
-                    _append_event("armed_plan_resolved", symbol=sym, plan_id=plan_id, trace=trace)
+                    _append_event(
+                        "armed_plan_resolved",
+                        symbol=sym,
+                        plan_id=plan_id,
+                        trace=trace,
+                        exit_plan=order.get("exit_plan"),
+                    )
                     if not armed_order_price_coherent(order, price=prices[sym]):
                         cancel_reason = "armed_plan_cancelled:stop_incoherent"
         if cancel_reason is not None:
@@ -1778,7 +1785,13 @@ def run_cycle(
             # réveille le planificateur AVEC le contexte (trigger annoté), il
             # re-décide (re-armer autrement, ou laisser).
             _log_cycle_progress("[armed_plan] %s %s plan=%s — réveil planificateur", sym, cancel_reason, plan_id)
-            _append_event("armed_plan_cancelled", symbol=sym, plan_id=plan_id, reason=cancel_reason)
+            _append_event(
+                "armed_plan_cancelled",
+                symbol=sym,
+                plan_id=plan_id,
+                reason=cancel_reason,
+                exit_plan=order.get("exit_plan"),
+            )
             trigger["armed_cancelled"] = cancel_reason
             if cancel_reason == "armed_plan_cancelled:stale":
                 stale_armed_plans[sym] = {"id": plan_id, "order": dict(order)}
@@ -2056,6 +2069,10 @@ def run_cycle(
 
         reference_volatility: float | None = None
         runtime_exit_plan = decision.exit_plan
+        # Trace le plan de sortie BRUT (avant résolution) pour diagnostiquer les
+        # rejets invalid_exit_plan:hard_stop_* sans fouiller decision_audit.json.
+        # deepcopy : normalize_exit_plan/resolve peuvent muter la structure.
+        entry["exit_plan"] = copy.deepcopy(decision.exit_plan) if decision.exit_plan else None
         pending_indicator_watch = None
         if decision.indicator_watch:
             indicator_watch_result = build_indicator_watch(decision.indicator_watch, owner_symbol=sym, now=now)

@@ -122,7 +122,8 @@ def test_cockpit_ajoute_les_colonnes_daily_avant_le_regime() -> None:
     assert cols[3:10] == ["r", "vol", "z", "er", "ac", "rs", "sz"]
     assert cols[10:17] == ["r_d", "vol_d", "z_d", "er_d", "ac_d", "rs_d", "sz_d"]
     assert cols[17:21] == ["reg", "vs", "st", "cndle"]
-    assert cols[-3:] == ["htf", "aligned", "sig"]
+    sig_idx = cols.index("sig")
+    assert cols[sig_idx - 2 : sig_idx + 1] == ["htf", "aligned", "sig"]
 
 
 def test_cockpit_calcule_rs_daily_distinct_du_rs_court() -> None:
@@ -274,7 +275,8 @@ def test_cockpit_cp3_ajoute_signaux_multi_horizon_en_fin_de_ligne() -> None:
     spy_row = next(row for row in result["rows"] if row[0] == "SPY")
     qqq_row = next(row for row in result["rows"] if row[0] == "QQQ")
 
-    assert cols[-3:] == ["htf", "aligned", "sig"]
+    sig_idx = cols.index("sig")
+    assert cols[sig_idx - 2 : sig_idx + 1] == ["htf", "aligned", "sig"]
     assert spy_row[cols.index("htf")] == "breakout"
     assert spy_row[cols.index("aligned")] is False
     assert spy_row[cols.index("sig")] == ["1d:breakout_up"]
@@ -322,6 +324,98 @@ def test_return_index_toujours_accessible_par_col_name() -> None:
     return_index = result["cols"].index("r")
     spy_row = next(row for row in result["rows"] if row[0] == "SPY")
     assert spy_row[return_index] == 0.04
+
+
+# ---------------------------------------------------------------------------
+# Colonnes swing (distance % aux swing_low/high, fenêtres 24 et 48)
+# ---------------------------------------------------------------------------
+
+
+def test_cockpit_ajoute_colonnes_swing_24_48() -> None:
+    result = build_market_cockpit(
+        {"SPY": _trending_bars()},
+        symbols=["SPY"],
+        prices={"SPY": 105.0},
+        window=12,
+    )
+    cols = result["cols"]
+    for col in ["sl24", "sh24", "sl48", "sh48"]:
+        assert col in cols, f"colonne swing {col!r} manquante"
+
+
+def test_cockpit_swing_distance_signee_depuis_le_prix() -> None:
+    # Une barre dont low=90, high=110 ; prix=100.
+    #   sl = (100 - 90) / 100 = 0.1   (swing_low 10% SOUS le prix)
+    #   sh = (110 - 100) / 100 = 0.1  (swing_high 10% AU-DESSUS du prix)
+    result = build_market_cockpit(
+        {"SPY": [_bar(100.0, high=110.0, low=90.0)]},
+        symbols=["SPY"],
+        prices={"SPY": 100.0},
+        window=12,
+    )
+    cols = result["cols"]
+    row = next(r for r in result["rows"] if r[0] == "SPY")
+    assert row[cols.index("sl48")] == 0.1
+    assert row[cols.index("sh48")] == 0.1
+    assert row[cols.index("sl24")] == 0.1
+    assert row[cols.index("sh24")] == 0.1
+
+
+def test_cockpit_swing_none_sans_barres() -> None:
+    result = build_market_cockpit(
+        {},
+        symbols=["SPY"],
+        prices={"SPY": 100.0},
+        window=12,
+    )
+    cols = result["cols"]
+    row = next(r for r in result["rows"] if r[0] == "SPY")
+    assert row[cols.index("sl24")] is None
+    assert row[cols.index("sh48")] is None
+
+
+def test_cockpit_swing_apres_sig_avant_fee() -> None:
+    def estimator(symbol: str, price: float) -> dict:
+        return {"be_bps": 2.0, "fee_rt": 2.0, "currency": "EUR"}
+
+    result = build_market_cockpit(
+        {"SPY": _trending_bars()},
+        symbols=["SPY"],
+        prices={"SPY": 105.0},
+        window=12,
+        fee_estimator=estimator,
+        fee_ref_notional=10_000.0,
+    )
+    cols = result["cols"]
+    sig_idx = cols.index("sig")
+    # swing juste après sig, frais toujours en toute fin de ligne
+    assert cols[sig_idx + 1 : sig_idx + 5] == ["sl24", "sh24", "sl48", "sh48"]
+    assert cols[-3:] == ["be_ref_bps", "fee", "fee_ccy"]
+
+
+def test_cockpit_swing_dans_le_schema() -> None:
+    result = build_market_cockpit(
+        {"SPY": _trending_bars()},
+        symbols=["SPY"],
+        prices={"SPY": 105.0},
+        window=12,
+    )
+    assert "sl24" in result["schema"]
+    assert "sh48" in result["schema"]
+
+
+def test_cockpit_swing_n_affecte_pas_les_highlights() -> None:
+    """rank_by_abs (offset COCKPIT_INDICATORS + 3) reste correct."""
+    result = build_market_cockpit(
+        {"SPY": _trending_bars(), "QQQ": _choppy_bars(base=200.0)},
+        symbols=["SPY", "QQQ"],
+        prices={"SPY": 105.0, "QQQ": 202.0},
+        window=12,
+    )
+    return_index = result["cols"].index("r")
+    spy_row = next(r for r in result["rows"] if r[0] == "SPY")
+    assert isinstance(spy_row[return_index], float)
+    assert "abs_z" in result["highlights"]
 
 
 # ---------------------------------------------------------------------------

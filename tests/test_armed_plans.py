@@ -234,6 +234,19 @@ def test_plan_arme_structural_sans_barres_au_tir_est_annule(
     assert "SPY" not in SimBroker(tmp_path / "state" / "broker.json").positions()
     events = (tmp_path / "state" / "events.jsonl").read_text(encoding="utf-8")
     assert "armed_plan_cancelled:exit_unresolved:hard_stop_bars_unavailable" in events
+    # L'événement d'annulation porte l'exit_plan BRUT armé (observabilité :
+    # diagnostiquer un rejet d'exit sur le chemin armé sans fouiller ailleurs).
+    parsed = [json.loads(line) for line in events.splitlines() if line.strip()]
+    cancelled = [
+        e
+        for e in parsed
+        if e.get("event") == "armed_plan_cancelled"
+        and e.get("reason") == "armed_plan_cancelled:exit_unresolved:hard_stop_bars_unavailable"
+    ]
+    assert len(cancelled) == 1
+    assert cancelled[0]["exit_plan"] == {
+        "hard_stop": {"type": "structural", "anchor": "swing_low", "window": 3}
+    }
 
 
 def test_plan_arme_persiste_take_profit_risk_multiple_resolu(

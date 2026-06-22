@@ -2,9 +2,15 @@
 
 from __future__ import annotations
 
+import math
 from typing import Callable, Iterable
 
-from .features import DEFAULT_INDICATORS, build_indicator_snapshot
+from .features import (
+    DEFAULT_INDICATORS,
+    build_indicator_snapshot,
+    swing_high,
+    swing_low,
+)
 from .regime import classify_regime, multi_horizon_signals
 from .semantic.catalog import family_for_symbol, normalize_temporal_query
 from .tools import market
@@ -68,8 +74,43 @@ _FAMILY_CODES = {
 _CROSS_ASSET_INDICATORS = {"relative_strength", "spread_zscore"}
 
 
+# Fenêtres de swing exposées au LLM. Elles correspondent aux `window` que
+# l'agent emploie réellement pour ses hard_stop structurels (audit decisions :
+# 24 et 48). Donner la distance résolue ICI évite que l'agent borne min/max_pct
+# à l'aveugle et fasse rejeter son ordre (invalid_exit_plan:hard_stop_*_pct).
+_SWING_WINDOWS = (24, 48)
+
+
 def _compact_price(value: float | None) -> float | None:
     return None if value is None else round(float(value), 6)
+
+
+def _swing_distances_pct(
+    bars: list[object], price: float | None, window: int
+) -> tuple[float | None, float | None]:
+    """Distance signée (fraction du prix) du prix aux swing_low / swing_high.
+
+    Retourne ``(low_dist, high_dist)`` avec, sur la même fenêtre `window` et les
+    mêmes barres que `resolve_exit_plan` côté daemon :
+        low_dist  = (price - swing_low) / price   → >0 si swing_low SOUS le prix
+        high_dist = (swing_high - price) / price  → >0 si swing_high AU-DESSUS
+
+    L'unité (fraction) est identique à `min_pct`/`max_pct` du hard_stop, donc
+    l'agent compare directement. ``None`` si prix invalide ou barres absentes.
+    """
+    if not bars or price is None:
+        return None, None
+    try:
+        p = float(price)
+    except (TypeError, ValueError):
+        return None, None
+    if not math.isfinite(p) or p <= 0:
+        return None, None
+    low = swing_low(bars, window)
+    high = swing_high(bars, window)
+    low_dist = round((p - low) / p, 5) if low is not None else None
+    high_dist = round((high - p) / p, 5) if high is not None else None
+    return low_dist, high_dist
 
 
 def _family_code(value: str | None) -> str | None:
@@ -122,6 +163,7 @@ def build_market_cockpit(
     )
     indicator_cols = [_INDICATOR_COLUMNS[name] for name in COCKPIT_INDICATORS]
     daily_indicator_cols = [_DAILY_INDICATOR_COLUMNS[name] for name in COCKPIT_INDICATORS]
+    swing_cols = [name for w in _SWING_WINDOWS for name in (f"sl{w}", f"sh{w}")]
     cols = [
         "s",
         "f",
@@ -135,6 +177,7 @@ def build_market_cockpit(
         "htf",
         "aligned",
         "sig",
+        *swing_cols,
     ]
     if fee_estimator is not None:
         cols = [*cols, "be_ref_bps", "fee", "fee_ccy"]
@@ -175,6 +218,11 @@ def build_market_cockpit(
             htf_signals["aligned"],
             htf_signals.get("sig"),
         ]
+        for swing_window in _SWING_WINDOWS:
+            low_dist, high_dist = _swing_distances_pct(
+                base_bars, prices.get(symbol), swing_window
+            )
+            row += [low_dist, high_dist]
         if fee_estimator is not None:
             cost = fee_estimator(symbol, prices.get(symbol))
             if cost is None:
@@ -201,7 +249,9 @@ def build_market_cockpit(
         "r_d=ret_daily,vol_d=stdev_ret_daily,z_d=price_z_daily,er_d=Kaufman_daily,"
         "ac_d=lag1_ret_corr_daily,rs_d=force relative daily,sz_d=spread_z_daily,"
         "reg=regime,vs=vol_state,st=stretched,cndle=candle_pattern,"
-        "htf=highest_timeframe_regime,aligned=base_htf_trend_aligned,sig=notable_events"
+        "htf=highest_timeframe_regime,aligned=base_htf_trend_aligned,sig=notable_events,"
+        "sl24/sl48=dist_signee_au_swing_low_(frac_du_prix)_fenetres_24/48,"
+        "sh24/sh48=dist_signee_au_swing_high_(frac_du_prix)_fenetres_24/48"
     )
     result = {
         "v": "cp3",

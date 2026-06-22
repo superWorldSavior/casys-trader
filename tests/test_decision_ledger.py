@@ -83,6 +83,36 @@ def test_build_decision_row_propage_les_rejets_indicator_watch() -> None:
     assert row["runtime"]["indicator_watch_rejections"] == rejections
 
 
+def test_build_decision_row_propage_l_exit_plan_brut() -> None:
+    """L'exit_plan brut (tel que fourni par le LLM) est tracé dans runtime pour
+    diagnostiquer les rejets invalid_exit_plan sans fouiller decision_audit.json."""
+    decision = _decision()
+    exit_plan = {
+        "hard_stop": {
+            "type": "structural",
+            "anchor": "swing_low",
+            "window": 24,
+            "min_pct": 0.008,
+            "max_pct": 0.025,
+        }
+    }
+    decision["exit_plan"] = exit_plan
+    report = _report([decision])
+
+    row = decision_ledger.build_decision_row(report, decision, sequence=0, source="daemon")
+
+    assert row["runtime"]["exit_plan"] == exit_plan
+
+
+def test_build_decision_row_exit_plan_absent_est_none() -> None:
+    decision = _decision()
+    report = _report([decision])
+
+    row = decision_ledger.build_decision_row(report, decision, sequence=0, source="daemon")
+
+    assert row["runtime"]["exit_plan"] is None
+
+
 def test_build_decision_row_propage_le_reason_code_structure() -> None:
     decision = _decision()
     decision["decision_reason_code"] = "WAITING_PULLBACK"

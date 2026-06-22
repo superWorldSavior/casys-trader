@@ -136,6 +136,7 @@ def build_decision_row(
             "armed_plan_order": decision.get("armed_plan_order"),
             "context_request": decision.get("context_request"),
             "next_wake_requested": decision.get("next_wake_requested"),
+            "exit_plan": decision.get("exit_plan"),
             "risk_pct": decision.get("risk_pct"),
             "stop_distance": decision.get("stop_distance"),
             "risk_clamped": decision.get("risk_clamped"),
