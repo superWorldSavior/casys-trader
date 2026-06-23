@@ -161,3 +161,112 @@ def test_error_snapshot_not_cached():
     assert first["news_coverage"] == "error"
     assert second["news_coverage"] == "ok"  # pas servi depuis le cache
     assert calls["n"] == 2
+
+
+# ---------------------------------------------------------------------------
+# Task 4 : _yahoo_fetch — frontière impure (yfinance mocké)
+# ---------------------------------------------------------------------------
+
+import sys
+import types
+
+
+def _install_fake_yfinance(monkeypatch, *, last_price, earnings_index, news):
+    """Installe un mock yfinance réaliste.
+
+    `_FastInfo` expose l'accès par index `["key"]` (comme yf.FastInfo en prod)
+    MAIS ne supporte PAS `.get()` — appeler `.get()` lève AttributeError pour
+    coller au comportement yfinance réel.
+    """
+    fake = types.ModuleType("yfinance")
+
+    class _FastInfo:
+        """Simule yf.FastInfo : index OK, .get() cassé comme en production."""
+        def __init__(self, data):
+            self._data = data
+
+        def __getitem__(self, key):
+            return self._data[key]
+
+        def get(self, key, default=None):
+            raise AttributeError(
+                "_FastInfo.get() not supported — use index access"
+            )
+
+    class _Ticker:
+        def __init__(self, symbol):
+            self.symbol = symbol
+
+        @property
+        def fast_info(self):
+            return _FastInfo({"last_price": last_price})
+
+        def get_earnings_dates(self, limit=12):
+            class _DF:
+                def __init__(self, idx):
+                    self.index = idx
+            return _DF(earnings_index)
+
+        @property
+        def news(self):
+            return news
+
+    fake.Ticker = _Ticker
+    monkeypatch.setitem(sys.modules, "yfinance", fake)
+
+
+def test_yahoo_fetch_maps_and_counts(monkeypatch):
+    import pandas as pd
+    idx = [pd.Timestamp("2026-06-24T08:00:00Z")]
+    news = [
+        {"providerPublishTime": int((NOW - timedelta(days=1)).timestamp())},  # dans la fenêtre
+        {"providerPublishTime": int((NOW - timedelta(days=30)).timestamp())},  # hors fenêtre
+    ]
+    _install_fake_yfinance(monkeypatch, last_price=12.3, earnings_index=idx, news=news)
+    raw = nf._yahoo_fetch("ACA.PA", now=NOW)
+    assert raw.mapped is True
+    assert raw.news_count == 1
+    assert len(raw.earnings_dates) == 1
+
+
+def test_yahoo_fetch_unmapped_when_no_price(monkeypatch):
+    _install_fake_yfinance(monkeypatch, last_price=None, earnings_index=[], news=[])
+    raw = nf._yahoo_fetch("ZZZZ.XX", now=NOW)
+    assert raw.mapped is False
+
+
+# ---------------------------------------------------------------------------
+# Bug regression : fast_info.get() cassé en prod → faux-négatif unmapped
+# ---------------------------------------------------------------------------
+
+
+def test_yahoo_fetch_mapped_when_news_but_no_price(monkeypatch):
+    """Régression : un symbole avec des news mais sans prix doit être mapped=True.
+
+    Avant le fix : le code utilisait fast_info.get("last_price") qui lève
+    AttributeError sur le vrai yf.FastInfo → mapped restait False → coverage
+    "unmapped" au lieu de "ok". Le mock reflète désormais ce comportement cassé.
+    """
+    import pandas as pd
+    news = [
+        {"providerPublishTime": int((NOW - timedelta(days=1)).timestamp())},
+        {"providerPublishTime": int((NOW - timedelta(days=2)).timestamp())},
+    ]
+    _install_fake_yfinance(monkeypatch, last_price=None, earnings_index=[], news=news)
+    raw = nf._yahoo_fetch("ACA.PA", now=NOW)
+    assert raw.mapped is True, "un symbole avec des news doit être mapped=True"
+    assert raw.news_count == 2
+    snap = nf.news_snapshot("ACA.PA", now=NOW)
+    assert snap["news_coverage"] == "ok"
+
+
+def test_yahoo_fetch_mapped_when_earnings_but_no_price_no_news(monkeypatch):
+    """Un symbole avec earnings mais sans prix ni news doit être mapped=True (empty)."""
+    import pandas as pd
+    idx = [pd.Timestamp("2026-07-01T08:00:00Z")]
+    _install_fake_yfinance(monkeypatch, last_price=None, earnings_index=idx, news=[])
+    raw = nf._yahoo_fetch("MSFT", now=NOW)
+    assert raw.mapped is True, "un symbole avec earnings doit être mapped=True"
+    assert raw.news_count == 0
+    snap = nf.news_snapshot("MSFT", now=NOW)
+    assert snap["news_coverage"] == "empty"

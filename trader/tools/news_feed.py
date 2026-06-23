@@ -8,7 +8,7 @@ Aucune décision ici — la donnée est LOGGÉE, jamais vue par l'agent en live.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Callable
 
 COVERAGE_OK = "ok"
@@ -101,7 +101,7 @@ def news_snapshot(
         if (now_utc - cached_now).total_seconds() < CACHE_TTL_MINUTES * 60.0:
             return snap
     if fetcher is None:
-        fetcher = _yahoo_fetch  # type: ignore[name-defined]  # défini en Task 4
+        fetcher = _yahoo_fetch
     try:
         raw = fetcher(symbol, now=now_utc)
         snap = build_snapshot(symbol, now=now_utc, raw=raw, source="yahoo")
@@ -109,3 +109,62 @@ def news_snapshot(
         return _error_snapshot(now_utc)
     _CACHE[symbol] = (now_utc, snap)
     return snap
+
+
+def _yahoo_fetch(symbol: str, *, now: datetime) -> RawNews:
+    """Frontière impure : interroge Yahoo via yfinance.
+
+    Best-effort par champ : un champ qui échoue n'invalide pas les autres.
+    Propage seulement si AUCUN champ ne répond (→ news_snapshot renverra error).
+    """
+    import yfinance as yf
+
+    now_utc = now if now.tzinfo is not None else now.replace(tzinfo=timezone.utc)
+    tk = yf.Ticker(symbol)
+    any_ok = False
+
+    mapped = False
+    try:
+        last = tk.fast_info["last_price"]
+        mapped = last is not None
+        any_ok = True
+    except (KeyError, Exception):
+        pass
+
+    earnings: list[datetime] = []
+    try:
+        df = tk.get_earnings_dates(limit=12)
+        any_ok = True
+        if df is not None and getattr(df, "index", None) is not None:
+            for ts in df.index:
+                dt = ts.to_pydatetime()
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                earnings.append(dt.astimezone(timezone.utc))
+    except Exception:
+        pass
+
+    news_count = 0
+    try:
+        items = tk.news or []
+        any_ok = True
+        cutoff = now_utc - timedelta(days=_NEWS_WINDOW_DAYS)
+        for item in items:
+            ts_epoch = item.get("providerPublishTime")
+            if ts_epoch is None:
+                news_count += 1  # pas de timestamp → on compte par prudence
+                continue
+            published = datetime.fromtimestamp(ts_epoch, tz=timezone.utc)
+            if published >= cutoff:
+                news_count += 1
+    except Exception:
+        pass
+
+    # Règle défensive : si Yahoo a retourné des news ou des earnings, le symbole
+    # est forcément connu — même si fast_info["last_price"] a échoué ou vaut None.
+    # Sémantique : unmapped SEULEMENT quand AUCUN signal (ni prix, ni news, ni earnings).
+    mapped = mapped or news_count > 0 or bool(earnings)
+
+    if not any_ok:
+        raise RuntimeError(f"yahoo unreachable for {symbol}")
+    return RawNews(mapped=mapped, earnings_dates=tuple(earnings), news_count=news_count)
