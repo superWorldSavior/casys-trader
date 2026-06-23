@@ -51,6 +51,29 @@ def _earnings_in_h(now: datetime, next_dt: datetime | None) -> float | None:
     return round((next_dt - now).total_seconds() / 3600.0, 2)
 
 
+def _news_published_at(item: dict) -> datetime | None:
+    """Date de publication d'un item news yfinance, en UTC, ou None.
+
+    yfinance ≥1.4 : `item["content"]["pubDate"]` (ISO 8601). Legacy :
+    `item["providerPublishTime"]` (epoch). None si aucune date exploitable.
+    """
+    content = item.get("content") if isinstance(item.get("content"), dict) else {}
+    raw = content.get("pubDate") or content.get("displayTime")
+    if raw:
+        try:
+            dt = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+            return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
+        except ValueError:
+            pass
+    epoch = item.get("providerPublishTime")
+    if epoch is not None:
+        try:
+            return datetime.fromtimestamp(epoch, tz=timezone.utc)
+        except (TypeError, ValueError, OSError):
+            pass
+    return None
+
+
 def _classify_coverage(raw: RawNews) -> str:
     if not raw.mapped:
         return COVERAGE_UNMAPPED
@@ -150,12 +173,10 @@ def _yahoo_fetch(symbol: str, *, now: datetime) -> RawNews:
         any_ok = True
         cutoff = now_utc - timedelta(days=_NEWS_WINDOW_DAYS)
         for item in items:
-            ts_epoch = item.get("providerPublishTime")
-            if ts_epoch is None:
-                news_count += 1  # pas de timestamp → on compte par prudence
-                continue
-            published = datetime.fromtimestamp(ts_epoch, tz=timezone.utc)
-            if published >= cutoff:
+            published = _news_published_at(item)
+            if published is None:
+                news_count += 1  # pas de date exploitable → compté par prudence
+            elif published >= cutoff:
                 news_count += 1
     except Exception:
         pass

@@ -22,3 +22,78 @@ def test_entry_with_snapshot_flows_into_row():
     row = decision_ledger.build_decision_row(report, entry, sequence=0)
     assert row["news"]["news_coverage"] == "empty"
     assert row["news"]["source"] == "yahoo"
+
+
+# ---------------------------------------------------------------------------
+# Fix B : record_decision centralise l'enrichissement news pour TOUS les chemins
+# ---------------------------------------------------------------------------
+
+
+def _flat_bars_factory(now_iso: str):
+    from trader.tools.market import Bar
+
+    def factory(symbol, lookback, interval):
+        return [
+            Bar(ts=now_iso, open=100.0, high=100.1, low=99.9, close=100.0, volume=1000.0)
+            for _ in range(4)
+        ]
+
+    return factory
+
+
+def test_quiet_gate_decision_has_news_key(monkeypatch, tmp_path, patch_batch, make_data_source):
+    """Fix B : les décisions quiet_gate (chemins infra) doivent avoir une clé 'news'.
+
+    Avant le fix, `entry["news"]` n'était ajouté qu'APRÈS le batch LLM (~l.2062),
+    donc les HOLD infra (quiet_gate, stale_market_data) ne l'avaient jamais.
+    Après le fix, record_decision appelle news_feed.news_snapshot via setdefault
+    pour TOUS les chemins.
+    """
+    from trader import daemon
+    from trader.tools import news_feed as nf
+    from trader.tools.scheduler import Scheduler
+    from conftest import write_runtime_config
+
+    write_runtime_config(tmp_path, symbols=("SPY",))
+    state_dir = tmp_path / "state"
+    now = datetime(2026, 6, 23, 12, 0, tzinfo=timezone.utc)
+
+    monkeypatch.setattr(daemon, "ROOT", tmp_path)
+    monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+    # LLM vu il y a 1h → quiet_gate s'applique (pas d'appel LLM)
+    daemon._LAST_LLM_AT[(str(state_dir), "SPY")] = now.replace(hour=11)
+
+    # Patcher news_feed.news_snapshot pour ne pas appeler yfinance
+    nf.reset_cache()
+    fake_snap = {
+        "earnings_in_h": None,
+        "news_coverage": "empty",
+        "news_count": 0,
+        "source": "yahoo",
+        "asof": now.isoformat(),
+    }
+    monkeypatch.setattr(nf, "news_snapshot", lambda symbol, *, now, **kw: fake_snap)
+
+    from trader.codex_client import Decision
+
+    def decide(**kwargs):
+        return Decision.hold(kwargs["symbol"], "attente")
+
+    patch_batch(decide)
+    data_source = make_data_source(_flat_bars_factory(now.isoformat()))
+
+    report = daemon.run_cycle(
+        dry_run=True,
+        now=now,
+        symbols_filter=["SPY"],
+        sched=Scheduler(state_dir / "scheduler.json"),
+        data_source=data_source,
+    )
+
+    assert len(report["decisions"]) == 1
+    decision = report["decisions"][0]
+    assert decision["reason"] == "quiet_gate"
+    assert "news" in decision, (
+        f"Fix B requis : la décision quiet_gate doit avoir la clé 'news'. "
+        f"Clés présentes : {list(decision.keys())}"
+    )

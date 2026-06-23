@@ -270,3 +270,83 @@ def test_yahoo_fetch_mapped_when_earnings_but_no_price_no_news(monkeypatch):
     assert raw.news_count == 0
     snap = nf.news_snapshot("MSFT", now=NOW)
     assert snap["news_coverage"] == "empty"
+
+
+# ---------------------------------------------------------------------------
+# Fix A : _news_published_at — parsing des dates de news yfinance ≥1.4
+# ---------------------------------------------------------------------------
+
+
+def test_news_published_at_reads_content_pubdate_iso_with_z():
+    """yfinance ≥1.4 : content.pubDate au format ISO avec 'Z' → datetime UTC."""
+    item = {"content": {"pubDate": "2026-06-22T10:30:00Z"}}
+    dt = nf._news_published_at(item)
+    assert dt is not None
+    assert dt.tzinfo is not None
+    assert dt.year == 2026 and dt.month == 6 and dt.day == 22
+    assert dt.hour == 10 and dt.minute == 30
+
+
+def test_news_published_at_reads_content_pubdate_iso_with_offset():
+    """yfinance ≥1.4 : content.pubDate avec offset explicite → datetime tz-aware."""
+    item = {"content": {"pubDate": "2026-06-22T10:30:00+02:00"}}
+    dt = nf._news_published_at(item)
+    assert dt is not None
+    assert dt.tzinfo is not None
+    # L'instant doit être identique quel que soit la représentation de l'offset :
+    # 2026-06-22T10:30:00+02:00 == 2026-06-22T08:30:00Z
+    from datetime import timezone
+    dt_utc = dt.astimezone(timezone.utc)
+    assert dt_utc.hour == 8 and dt_utc.minute == 30
+
+
+def test_news_published_at_fallback_legacy_epoch():
+    """Legacy : providerPublishTime (epoch int) → datetime UTC."""
+    epoch = int(NOW.timestamp())
+    item = {"providerPublishTime": epoch}
+    dt = nf._news_published_at(item)
+    assert dt is not None
+    assert dt.tzinfo is not None
+    assert abs((dt - NOW).total_seconds()) < 1
+
+
+def test_news_published_at_returns_none_when_no_date():
+    """Aucune date exploitable → None."""
+    item = {"title": "no date here"}
+    dt = nf._news_published_at(item)
+    assert dt is None
+
+
+def test_news_published_at_content_not_dict_falls_to_legacy():
+    """content est une string (mauvais format) → pas d'erreur, fallback epoch."""
+    epoch = int(NOW.timestamp())
+    item = {"content": "some string", "providerPublishTime": epoch}
+    dt = nf._news_published_at(item)
+    assert dt is not None
+
+
+def test_yahoo_fetch_window_filter_with_content_pubdate(monkeypatch):
+    """Intégration : item avec content.pubDate récent compté, vieux exclu.
+
+    Un item dans la fenêtre 7j + un item hors fenêtre → news_count == 1.
+    """
+    recent = NOW - timedelta(days=1)
+    old = NOW - timedelta(days=30)
+    news = [
+        {"content": {"pubDate": recent.isoformat().replace("+00:00", "Z")}},  # dans la fenêtre
+        {"content": {"pubDate": old.isoformat().replace("+00:00", "Z")}},      # hors fenêtre
+    ]
+    _install_fake_yfinance(monkeypatch, last_price=12.3, earnings_index=[], news=news)
+    raw = nf._yahoo_fetch("ACA.PA", now=NOW)
+    assert raw.news_count == 1, f"attendu 1, obtenu {raw.news_count}"
+
+
+def test_yahoo_fetch_window_filter_legacy_epoch_still_works(monkeypatch):
+    """Régression : le format legacy epoch continue de fonctionner après le fix."""
+    news = [
+        {"providerPublishTime": int((NOW - timedelta(days=1)).timestamp())},   # dans la fenêtre
+        {"providerPublishTime": int((NOW - timedelta(days=30)).timestamp())},   # hors fenêtre
+    ]
+    _install_fake_yfinance(monkeypatch, last_price=12.3, earnings_index=[], news=news)
+    raw = nf._yahoo_fetch("ACA.PA", now=NOW)
+    assert raw.news_count == 1

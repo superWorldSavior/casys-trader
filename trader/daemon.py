@@ -1639,6 +1639,10 @@ def run_cycle(
     model_calls_used = 0
 
     def record_decision(decision_entry: dict) -> None:
+        # Phase attribution : snapshot news loggé sur CHAQUE décision, tous chemins
+        # confondus (y compris quiet_gate / stale_market_data). setdefault : n'écrase
+        # pas si déjà fourni (ex. enrichissement préalable dans le chemin LLM normal).
+        decision_entry.setdefault("news", news_feed.news_snapshot(decision_entry["symbol"], now=now))
         # Boucle de feedback : l'agent possède ses learnings ; l'infra les persiste
         # (machine-owned, borné) AVEC le résultat de la décision (executed/reason/
         # dry_run) pour qu'on puisse juger si l'agent fait les bons choix, puis les
@@ -2058,9 +2062,6 @@ def run_cycle(
                  "indicator_watch_requested": bool(decision.indicator_watch),
                  "indicator_watch_rejections": [],
                  "data_source": runtime_data_source_by_sym.get(sym)}
-        # Phase attribution : on LOGGE l'actu, on ne la passe PAS au LLM.
-        entry["news"] = news_feed.news_snapshot(sym, now=now)
-
         if decision_source == "llm" and sym in held_symbols:
             _persist_last_llm_review(
                 plan_store=plan_store,

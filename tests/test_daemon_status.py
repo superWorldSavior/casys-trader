@@ -314,28 +314,29 @@ def test_run_cycle_bloque_decision_sur_donnees_marche_perimees(monkeypatch, tmp_
     )
 
     assert codex_calls == 0
-    assert report["decisions"] == [
-        {
-            "symbol": "SPY",
-            "action": "HOLD",
-            "qty": 0.0,
-            "confidence": 0.0,
-            "rationale": "stale_market_data",
-            "next_wake_in_minutes": 30.0,
-            "intent": "HOLD",
-            "trade_plan_created": False,
-            "executed": False,
-            "reason": "stale_market_data",
-            "decision_reason_code": "DATA_STALE",
-            "decision_source": "infra",
-            "model_called": False,
-            "stale_streak": 1,
-            "data_source": None,
-            "last_bar_ts": stale_ts,
-            "stale_reason": "too_old",
-            "data_age_minutes": 120.0,
-        }
-    ]
+    assert len(report["decisions"]) == 1
+    d = report["decisions"][0]
+    # Vérifie les champs métier essentiels (la clé 'news' est ajoutée par Fix B
+    # sur TOUS les chemins via record_decision — ne pas l'exclure de l'assertion).
+    assert d["symbol"] == "SPY"
+    assert d["action"] == "HOLD"
+    assert d["qty"] == 0.0
+    assert d["confidence"] == 0.0
+    assert d["rationale"] == "stale_market_data"
+    assert d["next_wake_in_minutes"] == 30.0
+    assert d["intent"] == "HOLD"
+    assert d["trade_plan_created"] is False
+    assert d["executed"] is False
+    assert d["reason"] == "stale_market_data"
+    assert d["decision_reason_code"] == "DATA_STALE"
+    assert d["decision_source"] == "infra"
+    assert d["model_called"] is False
+    assert d["stale_streak"] == 1
+    assert d["data_source"] is None
+    assert d["last_bar_ts"] == stale_ts
+    assert d["stale_reason"] == "too_old"
+    assert d["data_age_minutes"] == 120.0
+    assert "news" in d  # Fix B : news présent sur tous les chemins
     assert report["stale_market_data"]["SPY"] == {
         "last_bar_ts": stale_ts,
         "stale_reason": "too_old",
