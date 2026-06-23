@@ -167,6 +167,27 @@ def test_build_exit_plans_panel_vide_affiche_aucun_plan() -> None:
     assert "aucun" in output.lower()
 
 
+def test_build_exit_plans_enriched_calcule_pnl_short_dans_le_bon_sens() -> None:
+    from trader.tui import _build_exit_plans_enriched
+
+    result = _build_exit_plans_enriched(
+        [
+            {
+                "symbol": "BMY",
+                "side": "SHORT",
+                "entry_price": 100.0,
+                "remaining_quantity": 10.0,
+                "hard_stop_price": 105.0,
+                "take_profits": [{"name": "tp1", "price": 90.0}],
+            }
+        ]
+    )
+    output = _render(result)
+
+    assert "-50.00" in output
+    assert "+100.00" in output
+
+
 def test_build_exit_plans_panel_avec_light_utilise_palette_light() -> None:
     from trader.tui import _build_exit_plans_panel
 
@@ -729,6 +750,36 @@ def test_load_runtime_state_inclut_recent_trips_depuis_attribution(tmp_path) -> 
     assert state["recent_trips"][0]["symbol"] == "AAPL"
     assert state["recent_trips"][0]["exit_reason"] == "take_profit:tp1"
     assert state["recent_trips"][0]["pnl"] == 5.0
+
+
+def test_load_runtime_state_expose_starting_cash_depuis_portfolio_config(tmp_path) -> None:
+    import json as _json
+
+    from trader.tui import load_runtime_state
+
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    (config_dir / "portfolio.yaml").write_text("starting_cash: 250000\n", encoding="utf-8")
+    (state_dir / "current_report.json").write_text(
+        _json.dumps(
+            {
+                "ts": "2026-06-21T12:00:00+00:00",
+                "portfolio": {
+                    "cash": 260000.0,
+                    "equity": 251000.0,
+                    "total_return_pct": 0.4,
+                    "holdings": [],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    state = load_runtime_state(state_dir=state_dir, config_dir=str(tmp_path))
+
+    assert state["starting_cash"] == 250000.0
 
 
 def test_load_runtime_state_trade_plans_absent_retourne_vide(tmp_path) -> None:

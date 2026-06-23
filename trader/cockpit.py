@@ -200,6 +200,9 @@ class CockpitStatus(Static):
         ret_pct = _safe_float(portfolio.get("total_return_pct"), default=0.0) or 0.0
         phase = str(daemon_status.get("phase", "—"))
         current_symbol = str(daemon_status.get("current_symbol") or "—")
+        done = daemon_status.get("decisions_done")
+        total = daemon_status.get("symbols_total")
+        progress = f"{done}/{total}" if done is not None and total is not None else "—"
         calls_used = daemon_status.get("model_calls_used")
         calls_max = daemon_status.get("max_model_calls_per_cycle")
         calls_str = (
@@ -246,11 +249,13 @@ class CockpitStatus(Static):
 
         text = (
             f"  {vital_str}"
-            f"  Équité [{eq_style}]${equity:,.2f}[/{eq_style}]"
-            f"  P&L [{ret_style}]{ret_pct:+.2f}%[/{ret_style}]"
+            f"  Équité non conv. [{eq_style}]{equity:,.2f}[/{eq_style}]"
+            f"  Cash non conv. [{eq_style}]{cash:,.2f}[/{eq_style}]"
+            f"  P&L net vs départ [{ret_style}]{ret_pct:+.2f}%[/{ret_style}]"
             f" [{pnl_style}]({pnl:+,.2f})[/{pnl_style}]"
             f"  Daemon [{phase_style}]{phase}[/{phase_style}]"
             f"  [{acc_style}]{current_symbol}[/{acc_style}]"
+            f"  Progrès [{acc_style}]{progress}[/{acc_style}]"
             f"  Appels [{acc_style}]{calls_str}[/{acc_style}]"
             f"  {now_utc}"
             f"  Mode {mode_str}"
@@ -565,7 +570,7 @@ def _build_trades_with_pnl(
         )
         qty_val = _safe_float(fill.get("quantity"), default=0.0) or 0.0
         price_val = _safe_float(fill.get("price"), default=None)
-        price_str = f"${price_val:,.4f}" if price_val is not None else "—"
+        price_str = f"{price_val:,.4f}" if price_val is not None else "—"
 
         # Net P&L : None (BUY) → —, float → coloré
         if net_pnl is None:

@@ -142,16 +142,28 @@ async def test_cockpit_status_prend_palette_en_compte(tmp_path, monkeypatch):
         status = app.query_one("#cockpit-status", CockpitStatus)
         state = {
             "portfolio": {
-                "cash": 100000.0,
-                "equity": 100000.0,
+                "cash": 85000.0,
+                "equity": 102500.0,
                 "total_return_pct": 0.5,
             },
+            "starting_cash": 100000.0,
             "kpis": {},
-            "daemon_status": {"phase": "idle"},
+            "daemon_status": {
+                "phase": "idle",
+                "decisions_done": 1,
+                "symbols_total": 3,
+            },
             "dry_run": True,
         }
         # Doit accepter palette= sans TypeError
         status.update_state(state, kill_active=False, palette=PALETTE_LIGHT)
+        rendered = str(status.render())
+        assert "Cash non conv." in rendered
+        assert "85,000.00" in rendered
+        assert "$85,000.00" not in rendered
+        assert "P&L net vs départ" in rendered
+        assert "(+2,500.00)" in rendered
+        assert "Progrès 1/3" in rendered
         status.update_state(state, kill_active=False, palette=PALETTE_DARK)
 
 

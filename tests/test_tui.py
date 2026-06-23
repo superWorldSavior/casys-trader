@@ -9,6 +9,7 @@ from trader.tui import (
     _build_attribution_panel,
     _build_positions_panel,
     _load_scheduler_data_safe,
+    build_closed_trades_table,
     build_view,
     load_runtime_state,
 )
@@ -104,7 +105,11 @@ def test_build_view_avec_etat_complet_retourne_un_renderable() -> None:
     # L'output doit contenir les données clé
     assert "AAPL" in output
     assert "TSLA" in output
-    assert "PnL latent total" in output
+    assert "Équité non conv." in output
+    assert "Cash non conv." in output
+    assert "$102,500.00" not in output
+    assert "$85,000.00" not in output
+    assert "PnL latent local" in output
     assert "-50.00" in output
     assert "deciding_symbol" in output
     assert "1/2" in output
@@ -129,6 +134,8 @@ def test_positions_affiche_le_pnl_latent_net_avec_frais_et_brut_secondaires() ->
     output = _render_plain(_build_positions_panel(holdings))
 
     assert "+98.25" in output
+    assert "$100.0000" not in output
+    assert "$110.0000" not in output
     assert "brut +100.00" in output
     assert "frais -1.75" in output
 
@@ -181,7 +188,7 @@ def test_build_view_total_latent_utilise_le_net_et_detaille_les_frais() -> None:
 
     output = _render_plain(build_view(state), width=220)
 
-    assert "PnL latent total" in output
+    assert "PnL latent local" in output
     assert "+47.00" in output
     assert "dont frais -3.00" in output
 
@@ -191,13 +198,42 @@ def test_attribution_affiche_le_realise_net_avec_frais_et_brut_secondaires() -> 
         "realized_pnl": 42.50,
         "total_commissions": 3.75,
         "realized_gross_pnl": 46.25,
+        "by_confidence": [
+            {"bucket": "0.7-0.85", "n": 1, "win_rate": 1.0, "total_pnl": 42.50}
+        ],
     }
 
     output = _render_plain(_build_attribution_panel(attribution))
 
+    assert "P&L local réalisé" in output
+    assert "P&L local +42.50" in output
     assert "+42.50" in output
     assert "dont frais -3.75" in output
     assert "brut +46.25" in output
+
+
+def test_trades_clotures_affichent_net_local_avec_brut_et_frais() -> None:
+    trips = [
+        {
+            "symbol": "AAPL",
+            "side": "LONG",
+            "entry_price": 100.0,
+            "exit_price": 110.0,
+            "gross_pnl": 10.0,
+            "commission": 1.5,
+            "pnl": 8.5,
+            "exit_ts": "2026-06-21T12:00:00+00:00",
+            "exit_reason": "llm_exit",
+            "holding_minutes": 60.0,
+        }
+    ]
+
+    output = _render_plain(build_closed_trades_table(trips, {}))
+
+    assert "Net local" in output
+    assert "+8.50" in output
+    assert "brut +10.00" in output
+    assert "frais -1.50" in output
 
 
 def test_build_view_normalise_le_timestamp_du_cycle_en_utc() -> None:

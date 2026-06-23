@@ -411,6 +411,16 @@ def _load_universe_symbols_safe(config_dir: str) -> list[str]:
     return []
 
 
+def _load_starting_cash_safe(config_dir: str | Path) -> float | None:
+    """Lit le capital de départ affiché par la barre cockpit."""
+    try:
+        from trader.portfolio_config import load_starting_cash
+
+        return load_starting_cash(Path(config_dir) / "config")
+    except Exception:
+        return None
+
+
 def load_runtime_state(
     *,
     state_dir: str | Path = _STATE_DIR,
@@ -470,12 +480,14 @@ def load_runtime_state(
     fills = _load_fills_safe(state_dir_path / "broker.json")
     recent_trips = _safe_list_of_dicts(attribution.get("recent_trips"))
     _effective_config_dir = config_dir if config_dir is not None else str(state_dir_path.parent)
+    starting_cash = _load_starting_cash_safe(_effective_config_dir)
     venue_state, open_venues_list = _load_venue_open_state_safe(state_dir_path, _effective_config_dir)
     universe_symbols = _load_universe_symbols_safe(_effective_config_dir)
     company_map = _load_company_names(_effective_config_dir)
     return {
         **raw,
         "source": source,
+        "starting_cash": starting_cash,
         "daemon_status": status if isinstance(status, dict) else {},
         "kpis": kpis
         if kpis
@@ -533,7 +545,7 @@ def sparkline(values: list[float]) -> str:
 
 def _fmt_money(value: Any, *, default: str = "n/a") -> str:
     number = _safe_float(value, default=None)
-    return default if number is None else f"${number:,.2f}"
+    return default if number is None else f"{number:,.2f}"
 
 
 def _fmt_signed_money(value: Any, *, default: str = "n/a") -> str:
@@ -706,8 +718,8 @@ def _build_positions_panel(
         pos_table.add_row(
             symbol,
             f"{qty:,.4f}",
-            f"${avg:,.4f}",
-            f"${last:,.4f}",
+            f"{avg:,.4f}",
+            f"{last:,.4f}",
             pnl_text,
             Text(f"{pnl_pct:+.2f}%", style=pnl_style),
         )
@@ -758,7 +770,7 @@ def _build_attribution_panel(
     summary = Text.assemble(
         ("Trades clôturés : ", "bold"),
         (_fmt_int(attribution.get("n_closed_trades")), palette["kpi_default"]),
-        ("   P&L réalisé : ", "bold"),
+        ("   P&L local réalisé : ", "bold"),
         (_fmt_signed_money(realized_pnl), pnl_style),
         (realized_detail, palette["dim"]),
         ("   Win rate : ", "bold"),
@@ -786,7 +798,7 @@ def _build_attribution_panel(
                 Text(str(row.get("bucket", "—")), style="bold"),
                 _confidence_bar(row.get("win_rate"), pnl, palette=palette),
                 Text(
-                    f"n={_fmt_int(row.get('n'))}  win={_fmt_percent(row.get('win_rate'))}  P&L {_fmt_signed_money(pnl)}",
+                    f"n={_fmt_int(row.get('n'))}  win={_fmt_percent(row.get('win_rate'))}  P&L local {_fmt_signed_money(pnl)}",
                     style=row_pnl_style,
                 ),
             )
@@ -804,7 +816,7 @@ def _build_attribution_panel(
     exit_table.add_column("Raison")
     exit_table.add_column("n", justify="right")
     exit_table.add_column("Win", justify="right")
-    exit_table.add_column("P&L", justify="right")
+    exit_table.add_column("P&L local", justify="right")
     if exit_rows:
         for row in exit_rows:
             pnl = _safe_float(row.get("total_pnl"), default=0.0) or 0.0
@@ -935,13 +947,13 @@ def _build_exit_plans_panel(
         # Ligne principale : symbole side  entrée → stop (dist%)
         if entry is not None and stop is not None and entry > 0:
             dist_pct = abs(entry - stop) / entry * 100.0
-            stop_str = f"${stop:,.2f} ({dist_pct:.1f}%)"
+            stop_str = f"{stop:,.2f} ({dist_pct:.1f}%)"
         elif stop is not None:
-            stop_str = f"${stop:,.2f}"
+            stop_str = f"{stop:,.2f}"
         else:
             stop_str = "—"
 
-        entry_str = f"${entry:,.2f}" if entry is not None else "—"
+        entry_str = f"{entry:,.2f}" if entry is not None else "—"
 
         header = Text.assemble(
             (symbol, f"bold {palette['kpi_default']}"),
@@ -963,7 +975,7 @@ def _build_exit_plans_panel(
                 tp_price = _safe_float(tp.get("price"), default=None)
                 tp_name = str(tp.get("name") or "tp?")
                 if tp_price is not None:
-                    tp_parts.append((f"{tp_name}@${tp_price:,.2f}", palette["pnl_positive"]))
+                    tp_parts.append((f"{tp_name}@{tp_price:,.2f}", palette["pnl_positive"]))
                     tp_parts.append(("  ", ""))
             if tp_parts:
                 tp_line = Text.assemble(("  TPs: ", palette["dim"]), *tp_parts)
@@ -1367,7 +1379,7 @@ def build_trades_table(
         )
         qty_val = _safe_float(fill.get("quantity"), default=0.0) or 0.0
         price_val = _safe_float(fill.get("price"), default=None)
-        price_str = f"${price_val:,.4f}" if price_val is not None else "—"
+        price_str = f"{price_val:,.4f}" if price_val is not None else "—"
         commission_val = _safe_float(fill.get("commission"), default=None)
         if commission_val is not None:
             comm_currency = str(fill.get("commission_currency") or "USD")
@@ -1427,7 +1439,7 @@ def _fmt_time_hms(value: Any) -> str:
 
 def _fmt_price_4(value: Any) -> str:
     number = _safe_float(value, default=None)
-    return "—" if number is None else f"${number:,.4f}"
+    return "—" if number is None else f"{number:,.4f}"
 
 
 def _fmt_price_pair(entry: Any, exit_: Any) -> str:
@@ -1465,7 +1477,7 @@ def build_closed_trades_table(
     table.add_column("Nom·Ticker", style="bold")
     table.add_column("Sens")
     table.add_column("Entrée→Sortie", justify="right")
-    table.add_column("Net", justify="right")
+    table.add_column("Net local", justify="right")
     table.add_column("Raison")
     table.add_column("Durée", justify="right")
 
@@ -1489,6 +1501,16 @@ def build_closed_trades_table(
         else:
             pnl_style = palette["pnl_positive"] if pnl_value >= 0 else palette["pnl_negative"]
             pnl_cell = Text(_fmt_signed_money(pnl_value, default="—"), style=pnl_style)
+            gross_pnl = _safe_float(trip.get("gross_pnl"), default=None)
+            commission = _safe_float(trip.get("commission"), default=None)
+            detail_parts: list[str] = []
+            if gross_pnl is not None:
+                detail_parts.append(f"brut {_fmt_signed_money(gross_pnl)}")
+            if commission is not None:
+                detail_parts.append(f"frais {_fmt_fee_cost(commission)}")
+            if detail_parts:
+                pnl_cell.append("\n")
+                pnl_cell.append(" · ".join(detail_parts), style=palette["dim"])
 
         reason = str(trip.get("exit_reason") or "—")
         table.add_row(
@@ -1711,7 +1733,7 @@ def _build_exit_plans_enriched(
     Enrichit l'affichage de _build_exit_plans_panel sans le modifier.
     Champs lus : entry_price, hard_stop_price, take_profits[].price,
                  remaining_quantity, max_hold_minutes, llm_confidence.
-    Bénéfice estimé : (prix_scénario - entrée) × quantité_restante.
+    Bénéfice estimé : (prix_scénario - entrée) × quantité_restante × sens.
     """
     if not plans:
         return Panel(
@@ -1725,6 +1747,7 @@ def _build_exit_plans_enriched(
     for plan in plans:
         symbol = str(plan.get("symbol", "?"))
         side = str(plan.get("side", "?"))
+        direction = -1.0 if side == "SHORT" else 1.0
         entry = _safe_float(plan.get("entry_price"), default=None)
         stop = _safe_float(plan.get("hard_stop_price"), default=None)
         remaining = _safe_float(plan.get("remaining_quantity"), default=0.0) or 0.0
@@ -1737,12 +1760,12 @@ def _build_exit_plans_enriched(
         )
 
         # Ligne principale
-        entry_str = f"${entry:,.2f}" if entry is not None else "—"
+        entry_str = f"{entry:,.2f}" if entry is not None else "—"
         if entry is not None and stop is not None and entry > 0:
             dist_pct = abs(entry - stop) / entry * 100.0
-            stop_str = f"${stop:,.2f} ({dist_pct:.1f}%)"
+            stop_str = f"{stop:,.2f} ({dist_pct:.1f}%)"
         elif stop is not None:
-            stop_str = f"${stop:,.2f}"
+            stop_str = f"{stop:,.2f}"
         else:
             stop_str = "—"
 
@@ -1765,13 +1788,13 @@ def _build_exit_plans_enriched(
 
         # Bénéfice estimé scénario stop
         if entry is not None and stop is not None:
-            stop_gain = (stop - entry) * remaining
+            stop_gain = (stop - entry) * remaining * direction
             stop_style = palette["pnl_positive"] if stop_gain >= 0 else palette["pnl_negative"]
             stop_gain_str = f"{stop_gain:+,.2f}"
             lines.append(
                 Text.assemble(
                     ("  Stop: ", palette["dim"]),
-                    (f"${stop:,.2f}", "bold"),
+                    (f"{stop:,.2f}", "bold"),
                     ("  → ", palette["dim"]),
                     (stop_gain_str, stop_style),
                 )
@@ -1783,7 +1806,11 @@ def _build_exit_plans_enriched(
                 tp_price = _safe_float(tp.get("price"), default=None)
                 tp_name = str(tp.get("name") or "tp?")
                 if tp_price is not None:
-                    tp_gain = (tp_price - entry) * remaining if entry is not None else None
+                    tp_gain = (
+                        (tp_price - entry) * remaining * direction
+                        if entry is not None
+                        else None
+                    )
                     tp_gain_str = f"{tp_gain:+,.2f}" if tp_gain is not None else "—"
                     tp_gain_style = (
                         palette["pnl_positive"]
@@ -1793,7 +1820,7 @@ def _build_exit_plans_enriched(
                     lines.append(
                         Text.assemble(
                             (f"  {tp_name}: ", palette["dim"]),
-                            (f"${tp_price:,.2f}", palette["pnl_positive"]),
+                            (f"{tp_price:,.2f}", palette["pnl_positive"]),
                             ("  → ", palette["dim"]),
                             (tp_gain_str, tp_gain_style),
                         )
@@ -1929,14 +1956,14 @@ def build_view(
     )
     inline_curve = sparkline(equity_curve[-32:]) if equity_curve else ""
     header_lines = Text.assemble(
-        ("Équité : ", "bold"),
-        (f"${equity:,.2f}", f"bold {palette['kpi_default']}"),
+        ("Équité non conv. : ", "bold"),
+        (f"{equity:,.2f}", f"bold {palette['kpi_default']}"),
         (f"  {inline_curve}   " if inline_curve else "   ", palette["kpi_default"]),
-        ("Cash : ", "bold"),
-        (f"${cash:,.2f}   ", palette["kpi_default"]),
-        ("Rendement : ", "bold"),
+        ("Cash non conv. : ", "bold"),
+        (f"{cash:,.2f}   ", palette["kpi_default"]),
+        ("Rendement non conv. : ", "bold"),
         (f"{ret_pct:+.2f}%   ", ret_style),
-        ("PnL latent total : ", "bold"),
+        ("PnL latent local : ", "bold"),
         (f"{unrealized_total:+,.2f}", unrealized_style),
         (
             f" (dont frais {_fmt_fee_cost(unrealized_fee_total)})   "
