@@ -18,6 +18,13 @@ COVERAGE_ERROR = "error"
 
 _NEWS_WINDOW_DAYS = 7
 
+CACHE_TTL_MINUTES = 30.0
+_CACHE: dict[str, tuple[datetime, dict]] = {}
+
+
+def reset_cache() -> None:
+    _CACHE.clear()
+
 
 @dataclass(frozen=True)
 class RawNews:
@@ -83,12 +90,22 @@ def news_snapshot(
 ) -> dict:
     """Snapshot d'actu pour un symbole. NE LÈVE JAMAIS : tout échec → coverage=error.
 
+    Cache TTL (CACHE_TTL_MINUTES) déterministe basé sur `now` ; seuls les
+    snapshots réussis sont cachés (un `error` est retenté au cycle suivant).
     `fetcher` injectable pour les tests ; défaut = Yahoo via yfinance (Task 4).
     """
+    now_utc = now if now.tzinfo is not None else now.replace(tzinfo=timezone.utc)
+    cached = _CACHE.get(symbol)
+    if cached is not None:
+        cached_now, snap = cached
+        if (now_utc - cached_now).total_seconds() < CACHE_TTL_MINUTES * 60.0:
+            return snap
     if fetcher is None:
         fetcher = _yahoo_fetch  # type: ignore[name-defined]  # défini en Task 4
     try:
-        raw = fetcher(symbol, now=now)
-        return build_snapshot(symbol, now=now, raw=raw, source="yahoo")
+        raw = fetcher(symbol, now=now_utc)
+        snap = build_snapshot(symbol, now=now_utc, raw=raw, source="yahoo")
     except Exception:
-        return _error_snapshot(now)
+        return _error_snapshot(now_utc)
+    _CACHE[symbol] = (now_utc, snap)
+    return snap

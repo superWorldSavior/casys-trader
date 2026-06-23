@@ -2,10 +2,20 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from trader.tools import news_feed as nf
 
 UTC = timezone.utc
 NOW = datetime(2026, 6, 23, 12, 0, tzinfo=UTC)
+
+
+@pytest.fixture(autouse=True)
+def _clear_news_cache():
+    """Vide le cache module-level avant chaque test (isolation)."""
+    nf.reset_cache()
+    yield
+    nf.reset_cache()
 
 
 def test_next_future_earnings_picks_soonest_future():
@@ -103,3 +113,51 @@ def test_news_snapshot_never_raises_on_fetcher_error():
     assert snap["news_count"] == 0
     assert snap["earnings_in_h"] is None
     assert snap["asof"] == "2026-06-23T12:00:00+00:00"
+
+
+# ---------------------------------------------------------------------------
+# Task 3 : cache TTL déterministe basé sur `now`
+# ---------------------------------------------------------------------------
+
+
+class _CountingFetcher:
+    def __init__(self, raw):
+        self.raw = raw
+        self.calls = 0
+
+    def __call__(self, symbol, *, now):
+        self.calls += 1
+        return self.raw
+
+
+def test_cache_hit_within_ttl_does_not_refetch():
+    nf.reset_cache()
+    fetcher = _CountingFetcher(nf.RawNews(mapped=True, earnings_dates=(), news_count=1))
+    nf.news_snapshot("ACA.PA", now=NOW, fetcher=fetcher)
+    nf.news_snapshot("ACA.PA", now=NOW + timedelta(minutes=10), fetcher=fetcher)
+    assert fetcher.calls == 1
+
+
+def test_cache_expires_after_ttl():
+    nf.reset_cache()
+    fetcher = _CountingFetcher(nf.RawNews(mapped=True, earnings_dates=(), news_count=1))
+    nf.news_snapshot("ACA.PA", now=NOW, fetcher=fetcher)
+    nf.news_snapshot("ACA.PA", now=NOW + timedelta(minutes=31), fetcher=fetcher)
+    assert fetcher.calls == 2
+
+
+def test_error_snapshot_not_cached():
+    nf.reset_cache()
+    calls = {"n": 0}
+
+    def flaky(symbol, *, now):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("down")
+        return nf.RawNews(mapped=True, earnings_dates=(), news_count=2)
+
+    first = nf.news_snapshot("ACA.PA", now=NOW, fetcher=flaky)
+    second = nf.news_snapshot("ACA.PA", now=NOW + timedelta(minutes=1), fetcher=flaky)
+    assert first["news_coverage"] == "error"
+    assert second["news_coverage"] == "ok"  # pas servi depuis le cache
+    assert calls["n"] == 2
