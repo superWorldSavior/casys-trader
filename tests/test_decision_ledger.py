@@ -325,3 +325,21 @@ def test_backfill_code_versions_complete_les_lignes_historiques(monkeypatch, tmp
     rows = store.read_all()
     assert rows[0]["code_version"]["git_commit_short"] == "111111111111"
     assert rows[1]["code_version"]["git_commit_short"] == "abcdef123456"
+
+
+def _simple_report():
+    return {"ts": "2026-06-23T12:00:00+00:00", "prices": {"ACA.PA": 12.3}}
+
+
+def test_build_decision_row_includes_news_when_present():
+    news = {"earnings_in_h": 24.0, "news_coverage": "ok",
+            "news_count": 2, "source": "yahoo", "asof": "2026-06-23T12:00:00+00:00"}
+    decision = {"symbol": "ACA.PA", "action": "HOLD", "news": news}
+    row = decision_ledger.build_decision_row(_simple_report(), decision, sequence=0)
+    assert row["news"] == news
+
+
+def test_build_decision_row_news_defaults_to_empty_dict():
+    decision = {"symbol": "ACA.PA", "action": "HOLD"}
+    row = decision_ledger.build_decision_row(_simple_report(), decision, sequence=0)
+    assert row["news"] == {}

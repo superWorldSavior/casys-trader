@@ -143,6 +143,7 @@ def build_decision_row(
             "risk_unbounded_no_stop": decision.get("risk_unbounded_no_stop"),
             "data_source": decision.get("data_source"),
         },
+        "news": _as_dict(decision.get("news")),
         "labels": {},
     }
 
