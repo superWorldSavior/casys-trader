@@ -59,3 +59,47 @@ def test_build_snapshot_shape():
         "source": "yahoo",
         "asof": "2026-06-23T12:00:00+00:00",
     }
+
+
+# ---------------------------------------------------------------------------
+# Task 2 : news_snapshot — orchestration avec fetcher injectable
+# ---------------------------------------------------------------------------
+
+
+def _fake_fetcher(raw=None, exc=None):
+    def _f(symbol, *, now):
+        if exc is not None:
+            raise exc
+        return raw
+    return _f
+
+
+def test_news_snapshot_ok_path():
+    raw = nf.RawNews(mapped=True, earnings_dates=(), news_count=1)
+    snap = nf.news_snapshot("ACA.PA", now=NOW, fetcher=_fake_fetcher(raw=raw))
+    assert snap["news_coverage"] == "ok"
+    assert snap["source"] == "yahoo"
+
+
+def test_news_snapshot_empty_distinct_from_unmapped():
+    empty = nf.news_snapshot(
+        "ACA.PA", now=NOW,
+        fetcher=_fake_fetcher(raw=nf.RawNews(mapped=True, earnings_dates=(), news_count=0)),
+    )
+    unmapped = nf.news_snapshot(
+        "ZZZZ.XX", now=NOW,
+        fetcher=_fake_fetcher(raw=nf.RawNews(mapped=False, earnings_dates=(), news_count=0)),
+    )
+    assert empty["news_coverage"] == "empty"
+    assert unmapped["news_coverage"] == "unmapped"
+
+
+def test_news_snapshot_never_raises_on_fetcher_error():
+    snap = nf.news_snapshot(
+        "ACA.PA", now=NOW, fetcher=_fake_fetcher(exc=RuntimeError("yahoo down")),
+    )
+    assert snap["news_coverage"] == "error"
+    assert snap["source"] == "none"
+    assert snap["news_count"] == 0
+    assert snap["earnings_in_h"] is None
+    assert snap["asof"] == "2026-06-23T12:00:00+00:00"

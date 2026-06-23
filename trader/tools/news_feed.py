@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from typing import Callable
 
 COVERAGE_OK = "ok"
 COVERAGE_EMPTY = "empty"
@@ -61,3 +62,33 @@ def build_snapshot(symbol: str, *, now: datetime, raw: RawNews, source: str) -> 
         "source": source,
         "asof": now_utc.astimezone(timezone.utc).isoformat(),
     }
+
+
+Fetcher = Callable[..., RawNews]
+
+
+def _error_snapshot(now: datetime) -> dict:
+    now_utc = now if now.tzinfo is not None else now.replace(tzinfo=timezone.utc)
+    return {
+        "earnings_in_h": None,
+        "news_coverage": COVERAGE_ERROR,
+        "news_count": 0,
+        "source": "none",
+        "asof": now_utc.astimezone(timezone.utc).isoformat(),
+    }
+
+
+def news_snapshot(
+    symbol: str, *, now: datetime, fetcher: Fetcher | None = None
+) -> dict:
+    """Snapshot d'actu pour un symbole. NE LÈVE JAMAIS : tout échec → coverage=error.
+
+    `fetcher` injectable pour les tests ; défaut = Yahoo via yfinance (Task 4).
+    """
+    if fetcher is None:
+        fetcher = _yahoo_fetch  # type: ignore[name-defined]  # défini en Task 4
+    try:
+        raw = fetcher(symbol, now=now)
+        return build_snapshot(symbol, now=now, raw=raw, source="yahoo")
+    except Exception:
+        return _error_snapshot(now)
