@@ -49,7 +49,7 @@ from .indicator_watch import (
     watch_market_requests,
 )
 from .risk import RiskGate, RiskLimits
-from .tools import market, memory as memory_mod, portfolio, scheduler
+from .tools import market, memory as memory_mod, news_feed, portfolio, scheduler
 from .tools.execution import (
     CommissionModel,
     Order,
@@ -2058,6 +2058,8 @@ def run_cycle(
                  "indicator_watch_requested": bool(decision.indicator_watch),
                  "indicator_watch_rejections": [],
                  "data_source": runtime_data_source_by_sym.get(sym)}
+        # Phase attribution : on LOGGE l'actu, on ne la passe PAS au LLM.
+        entry["news"] = news_feed.news_snapshot(sym, now=now)
 
         if decision_source == "llm" and sym in held_symbols:
             _persist_last_llm_review(
