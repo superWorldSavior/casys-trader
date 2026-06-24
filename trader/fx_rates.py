@@ -18,9 +18,20 @@ logger = logging.getLogger(__name__)
 Fetcher = Callable[[str], float | None]
 
 
+_REQUIRED_KEYS = ("yahoo", "fallback")
+
+
 def load_fx_config(path: str | Path) -> dict:
     data = yaml.safe_load(Path(path).read_text()) or {}
-    return {str(k): dict(v) for k, v in data.items()}
+    result: dict = {}
+    for k, v in data.items():
+        ccy = str(k)
+        block = dict(v)
+        for key in _REQUIRED_KEYS:
+            if key not in block:
+                raise ValueError(f"fx.yaml: bloc '{ccy}' manque la clé obligatoire '{key}'")
+        result[ccy] = block
+    return result
 
 
 def _rate_from_close(close: float | None, *, invert: bool) -> float | None:
@@ -39,12 +50,16 @@ def rates_for_symbols(symbols, *, fetcher: Fetcher, config: dict) -> dict[str, f
         if spec is None:
             raise ValueError(f"devise non configurée dans fx.yaml: {ccy}")
         rate = None
+        exc_info: Exception | None = None
         try:
             rate = _rate_from_close(fetcher(spec["yahoo"]), invert=bool(spec.get("invert")))
         except Exception as exc:  # noqa: BLE001 — fail-safe : on dégrade au fallback.
-            logger.warning("fx fetch %s échoué (%s), fallback statique", ccy, exc)
+            exc_info = exc
         if rate is None:
             rate = float(spec["fallback"])
-            logger.warning("fx %s : taux fallback statique %s", ccy, rate)
+            if exc_info is not None:
+                logger.warning("fx %s : fetch échoué (%s), fallback statique %s", ccy, exc_info, rate)
+            else:
+                logger.warning("fx %s : fetch retourné None, fallback statique %s", ccy, rate)
         rates[ccy] = rate
     return rates
