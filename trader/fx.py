@@ -25,6 +25,16 @@ SUFFIX_CCY: dict[str, str] = {
     ".MI": "EUR",
     ".L": "GBP",
     ".SW": "CHF",
+    # Places eurozone du pool (Bruxelles, Helsinki, Lisbonne, Madrid, Vienne).
+    ".BR": "EUR",
+    ".HE": "EUR",
+    ".LS": "EUR",
+    ".MC": "EUR",
+    ".VI": "EUR",
+    # Nordiques hors euro (Copenhague, Oslo, Stockholm).
+    ".CO": "DKK",
+    ".OL": "NOK",
+    ".ST": "SEK",
     # .T : dans CE pool ce sont des titres taïwanais (variante du suffixe .TW),
     # PAS du Tokyo — confirmé par Erwan 2026-06-24 (« y a pas de Tokyo ici, c'est
     # que du Taïwan »). Donc TWD. Pas de collision avec .TW/.TWO (endswith distinct).

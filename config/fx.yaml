@@ -19,3 +19,15 @@ CHF:
   yahoo: "CHF=X"
   invert: true   # CHF=X cote CHF/USD -> rate = 1/close (USD par CHF)
   fallback: 1.13
+DKK:
+  yahoo: "DKK=X"
+  invert: true   # DKK=X cote DKK/USD -> rate = 1/close (USD par DKK)
+  fallback: 0.145
+NOK:
+  yahoo: "NOK=X"
+  invert: true   # NOK=X cote NOK/USD -> rate = 1/close (USD par NOK)
+  fallback: 0.092
+SEK:
+  yahoo: "SEK=X"
+  invert: true   # SEK=X cote SEK/USD -> rate = 1/close (USD par SEK)
+  fallback: 0.095

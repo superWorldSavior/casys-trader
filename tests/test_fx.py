@@ -52,3 +52,25 @@ def test_to_usd_rejects_bad_rate_for_non_usd():
     for bad in (0.0, -1.0, math.inf, math.nan):
         with pytest.raises(ValueError):
             fx.to_usd(100.0, "TWD", bad)
+
+
+def test_currency_for_european_venues():
+    assert fx.currency_for("KBC.BR") == "EUR"      # Bruxelles
+    assert fx.currency_for("FORTUM.HE") == "EUR"   # Helsinki
+    assert fx.currency_for("EDP.LS") == "EUR"      # Lisbonne
+    assert fx.currency_for("AMS.MC") == "EUR"      # Madrid
+    assert fx.currency_for("EBS.VI") == "EUR"      # Vienne
+    assert fx.currency_for("B.CO") == "DKK"        # Copenhague
+    assert fx.currency_for("EQNR.OL") == "NOK"     # Oslo
+    assert fx.currency_for("A.ST") == "SEK"        # Stockholm
+
+
+def test_every_mapped_currency_is_configured_in_fx_yaml():
+    """Invariant : toute devise produite par currency_for (hors USD) doit avoir
+    une entrée dans config/fx.yaml — sinon fallback silencieux à 1.0."""
+    import yaml
+    from pathlib import Path
+    cfg = yaml.safe_load(Path("config/fx.yaml").read_text())
+    mapped = set(fx.SUFFIX_CCY.values()) | set(fx.SYMBOL_CCY.values())
+    missing = {c for c in mapped if c != "USD" and c not in cfg}
+    assert not missing, f"devises mappées absentes de fx.yaml: {missing}"
