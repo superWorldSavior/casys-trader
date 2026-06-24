@@ -1627,6 +1627,10 @@ def run_cycle(
         daily_bars_by_symbol=daily_bars_by_symbol,
         fee_estimator=cockpit_fee_estimator,
         fee_ref_notional=fee_ref_notional,
+        fx_rate_by_ccy=fx_rate_by_ccy,
+        equity_usd=float(snap.equity),
+        risk_pct=float(gate.limits.max_risk_per_trade_pct),
+        max_order_value=float(gate.limits.max_order_value),
     )
     excluded_attribution_symbols = tuple(regime_cfg.get("exclude_symbols") or [])
     attribution_payload = attribution.compute_attribution(

@@ -388,9 +388,11 @@ def test_cockpit_swing_apres_sig_avant_fee() -> None:
     )
     cols = result["cols"]
     sig_idx = cols.index("sig")
-    # swing juste après sig, frais toujours en toute fin de ligne
+    # swing juste après sig, frais avant les colonnes devise (en fin de ligne)
     assert cols[sig_idx + 1 : sig_idx + 5] == ["sl24", "sh24", "sl48", "sh48"]
-    assert cols[-3:] == ["be_ref_bps", "fee", "fee_ccy"]
+    # frais précèdent les 4 colonnes devise (ccy, fx_usd, risk_budget_native, max_order_native)
+    assert cols[-7:-4] == ["be_ref_bps", "fee", "fee_ccy"]
+    assert cols[-4:] == ["ccy", "fx_usd", "risk_budget_native", "max_order_native"]
 
 
 def test_cockpit_swing_dans_le_schema() -> None:
@@ -450,7 +452,9 @@ def test_cockpit_avec_fee_estimator_ajoute_be_ref_bps_fee_fee_ccy_en_fin_de_lign
         fee_ref_notional=10_000.0,
     )
     cols = result["cols"]
-    assert cols[-3:] == ["be_ref_bps", "fee", "fee_ccy"]
+    # frais précèdent les 4 colonnes devise (ccy, fx_usd, risk_budget_native, max_order_native)
+    assert cols[-7:-4] == ["be_ref_bps", "fee", "fee_ccy"]
+    assert cols[-4:] == ["ccy", "fx_usd", "risk_budget_native", "max_order_native"]
     assert result["fee_ref_notional"] == 10_000.0
     assert "be_ref_bps" in result["schema"]
 

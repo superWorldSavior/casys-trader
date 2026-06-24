@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 from typing import Callable, Iterable
 
+from . import fx as _fx
 from .features import (
     DEFAULT_INDICATORS,
     build_indicator_snapshot,
@@ -127,6 +128,10 @@ def build_market_cockpit(
     daily_bars_by_symbol: dict[str, list[object]] | None = None,
     fee_estimator: Callable[[str, float], dict | None] | None = None,
     fee_ref_notional: float | None = None,
+    fx_rate_by_ccy: dict[str, float] | None = None,
+    equity_usd: float = 0.0,
+    risk_pct: float = 0.0,
+    max_order_value: float = 0.0,
 ) -> dict:
     """Build a compact, deterministic market dashboard with no raw bars.
 
@@ -181,6 +186,7 @@ def build_market_cockpit(
     ]
     if fee_estimator is not None:
         cols = [*cols, "be_ref_bps", "fee", "fee_ccy"]
+    cols = [*cols, "ccy", "fx_usd", "risk_budget_native", "max_order_native"]
     rows: list[list] = []
     for symbol in symbols:
         item = snapshot.get(symbol, {"family": None, "indicators": {}})
@@ -231,6 +237,17 @@ def build_market_cockpit(
                 # Valeurs numériques (parsing agent) + devise séparée. be_ref_bps =
                 # break-even au notionnel de référence, PAS au sizing réel de l'ordre.
                 row += [cost["be_bps"], cost["fee_rt"], cost["currency"]]
+        # Estampillage devise : ccy, taux FX informatif, budgets natifs pré-calculés.
+        # Les valeurs d'analyse (p, indicateurs, swings) restent en devise native —
+        # seuls risk_budget_native et max_order_native sont des montants convertis.
+        ccy = _fx.currency_for(symbol)
+        rate = (fx_rate_by_ccy or {}).get(ccy, 1.0)
+        row += [
+            ccy,
+            rate,
+            (risk_pct * equity_usd / rate) if rate else 0.0,
+            (max_order_value / rate) if rate else 0.0,
+        ]
         rows.append(row)
 
     def rank_by_abs(indicator: str) -> list[dict]:
