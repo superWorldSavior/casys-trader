@@ -5,6 +5,7 @@ import subprocess
 import trader.llm as llm
 from trader.llm import (
     AcpxBackend,
+    DEFAULT_SPARK_FALLBACK_MODEL,
     LlmCompletion,
     LlmFailure,
     LlmRouter,
@@ -565,12 +566,13 @@ def test_build_default_router_from_env_labelle_le_brain_runtime(monkeypatch) -> 
 def test_build_default_router_from_env_configure_acpx_puis_ollama(monkeypatch) -> None:
     monkeypatch.setenv("TRADER_OLLAMA_API_KEY", "secret")
     monkeypatch.setenv("TRADER_OLLAMA_MODEL", "nemotron-3-nano:30b-cloud")
+    monkeypatch.delenv("TRADER_SPARK_FALLBACK_MODEL", raising=False)
 
     router = build_default_router_from_env()
 
-    assert [backend.provider for backend in router.backends] == ["acpx", "ollama-cloud"]
+    assert [backend.provider for backend in router.backends] == ["acpx", "acpx-spark-fallback", "ollama-cloud"]
     assert router.backends[0].model == "gpt-5.5"
-    assert router.backends[1].model == "nemotron-3-nano:30b-cloud"
+    assert router.backends[2].model == "nemotron-3-nano:30b-cloud"
 
 
 def test_build_default_router_from_env_configure_ollama_dedie_au_consolidateur(monkeypatch) -> None:
@@ -598,7 +600,60 @@ def test_build_default_router_from_env_charge_un_dotenv_local(monkeypatch, tmp_p
         "TRADER_OLLAMA_MODEL=nemotron-3-nano:30b-cloud\n"
     )
 
+    monkeypatch.delenv("TRADER_SPARK_FALLBACK_MODEL", raising=False)
     router = build_default_router_from_env(env_path=env_path)
 
-    assert [backend.provider for backend in router.backends] == ["acpx", "ollama-cloud"]
-    assert router.backends[1].model == "nemotron-3-nano:30b-cloud"
+    assert [backend.provider for backend in router.backends] == ["acpx", "acpx-spark-fallback", "ollama-cloud"]
+    assert router.backends[2].model == "nemotron-3-nano:30b-cloud"
+
+
+def test_trade_router_3_tiers_dans_lordre(monkeypatch) -> None:
+    """Router de trade = acpx → acpx-spark-fallback → ollama-cloud (3 tiers)."""
+    monkeypatch.setenv("TRADER_OLLAMA_API_KEY", "secret")
+    monkeypatch.delenv("TRADER_SPARK_FALLBACK_MODEL", raising=False)
+
+    router = build_default_router_from_env(env_path=None)
+
+    providers = [b.provider for b in router.backends]
+    assert providers == ["acpx", "acpx-spark-fallback", "ollama-cloud"]
+    assert router.backends[0].model == "gpt-5.5"
+    assert router.backends[1].model == DEFAULT_SPARK_FALLBACK_MODEL
+    assert router.backends[1].model == "gpt-5.3-codex-spark"
+    assert router.backends[2].provider == "ollama-cloud"
+
+
+def test_consolidator_router_sans_spark_fallback(monkeypatch) -> None:
+    """Le router consolidateur ne contient PAS de tier acpx-spark-fallback."""
+    monkeypatch.setenv("TRADER_CONSOLIDATOR_OLLAMA_API_KEY", "secret")
+    monkeypatch.delenv("TRADER_SPARK_FALLBACK_MODEL", raising=False)
+
+    router = build_default_router_from_env(env_path=None, acpx_provider="consolidator")
+
+    providers = [b.provider for b in router.backends]
+    assert "acpx-spark-fallback" not in providers
+    assert providers == ["consolidator", "ollama-cloud"]
+
+
+def test_env_override_spark_fallback_model_custom(monkeypatch) -> None:
+    """TRADER_SPARK_FALLBACK_MODEL défini → tier 2 utilise ce modèle."""
+    monkeypatch.setenv("TRADER_SPARK_FALLBACK_MODEL", "gpt-custom-spark")
+    monkeypatch.delenv("TRADER_OLLAMA_API_KEY", raising=False)
+
+    router = build_default_router_from_env(env_path=None)
+
+    providers = [b.provider for b in router.backends]
+    assert "acpx-spark-fallback" in providers
+    fallback = next(b for b in router.backends if b.provider == "acpx-spark-fallback")
+    assert fallback.model == "gpt-custom-spark"
+
+
+def test_env_override_spark_fallback_vide_desactive_le_tier(monkeypatch) -> None:
+    """TRADER_SPARK_FALLBACK_MODEL='' → pas de tier acpx-spark-fallback (2 tiers seulement)."""
+    monkeypatch.setenv("TRADER_SPARK_FALLBACK_MODEL", "")
+    monkeypatch.setenv("TRADER_OLLAMA_API_KEY", "secret")
+
+    router = build_default_router_from_env(env_path=None)
+
+    providers = [b.provider for b in router.backends]
+    assert "acpx-spark-fallback" not in providers
+    assert providers == ["acpx", "ollama-cloud"]

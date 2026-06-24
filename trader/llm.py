@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Callable, Protocol
 
 DEFAULT_SPARK_MODEL = "gpt-5.5"
+DEFAULT_SPARK_FALLBACK_MODEL = "gpt-5.3-codex-spark"
 DEFAULT_OLLAMA_BASE_URL = "https://ollama.com/v1"
 DEFAULT_OLLAMA_MODEL = "nemotron-3-nano:30b-cloud"
 DEFAULT_CONSOLIDATOR_OLLAMA_MODEL = "glm-5.1:cloud"
@@ -502,6 +503,7 @@ def build_default_router_from_env(
     env_path: str | Path | None = DEFAULT_ENV_PATH,
     acpx_bin: str = "acpx",
     spark_model: str = DEFAULT_SPARK_MODEL,
+    spark_fallback_model: str | None = DEFAULT_SPARK_FALLBACK_MODEL,
     acpx_provider: str = "acpx",
     acpx_agent: str | None = None,
     acpx_session_label: str | None = None,
@@ -522,6 +524,24 @@ def build_default_router_from_env(
             session_label=session_label,
         )
     ]
+
+    if acpx_provider != "consolidator":
+        # Resolve spark-fallback model: env var wins if defined (even empty = disable).
+        if "TRADER_SPARK_FALLBACK_MODEL" in os.environ:
+            resolved_fallback = os.environ["TRADER_SPARK_FALLBACK_MODEL"]
+        else:
+            resolved_fallback = spark_fallback_model
+        if resolved_fallback:
+            backends.append(
+                AcpxBackend(
+                    provider="acpx-spark-fallback",
+                    model=resolved_fallback,
+                    acpx_bin=acpx_bin,
+                    agent=acpx_agent,
+                    session_label=session_label,
+                )
+            )
+
     default_ollama_model = (
         DEFAULT_CONSOLIDATOR_OLLAMA_MODEL
         if acpx_provider == "consolidator"
