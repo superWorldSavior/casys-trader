@@ -50,16 +50,24 @@ le book est massivement faussé.
    avec le fail-safe existant et le principe « faits calculés par le code ».
 4. **Déterminisme : `fx_rate` persisté sur chaque fill.** L'attribution
    historique reconvertit exactement, sans dépendre du taux courant (AX #6).
-5. **L'agent ne propose plus la quantité.** Le code size depuis
-   `hard_stop` + `risk_pct` + equity USD (l'infra `max_quantity_at_risk` existe).
-   Stratégie de l'agent inchangée ; on lui retire l'arithmétique de sizing.
+5. **L'agent dimensionne en devise native ; le code lui livre son budget
+   converti.** L'agent a déjà tout le contexte natif (bougies, chart, niveaux) :
+   il place ET dimensionne ses ordres dans la devise de cotation du symbole. Le
+   code calcule et injecte par symbole le **budget de risque déjà converti en
+   natif** (`risk_budget_native = risk_pct × equity_USD ÷ fx_rate`) et le
+   **plafond d'ordre natif** (`max_order_value ÷ fx_rate`). L'agent fait alors
+   son sizing en pur natif (`quantity = risk_budget_native ÷ distance_stop`),
+   sans jamais convertir. Le risk gate reste le **fusible** : il clampe en USD
+   (currency-correct, cf. §4.1), backstop si l'agent sur-dimensionne. Unique
+   conversion = côté code (USD→natif pour le budget), jamais côté agent.
 6. **Migration : recalcul du cash depuis l'historique des fills** avec FX
    rétroactif, one-shot, backup `broker.json.bak`.
 7. **Deux référentiels qui ne se mélangent jamais** :
-   - **USD = vue humaine + vérité comptable** (cockpit, cash, equity, P&L,
-     sizing). C'est ce qu'Erwan lit.
-   - **Natif = vue interne de l'agent** : il analyse et pose ses niveaux par
-     symbole dans la devise de cotation, **sans jamais convertir**. L'analyse
+   - **USD = vue humaine + vérité comptable** (cockpit, cash, equity, P&L, et le
+     *budget* de risque, ancré sur l'equity USD). C'est ce qu'Erwan lit.
+   - **Natif = vue interne de l'agent** : il analyse, pose ses niveaux ET
+     dimensionne par symbole dans la devise de cotation, **sans jamais
+     convertir** (le code lui livre son budget déjà converti en natif). L'analyse
      (bougies, indicateurs) n'est JAMAIS convertie — le FX y injecterait du
      bruit qui corrompt les indicateurs. La conversion n'a lieu qu'au pont du
      sizing (code) et à l'affichage cockpit (humain).
@@ -107,9 +115,11 @@ jour) → reproductibilité.
   `quantity = risk_cap / distance_usd`. `equity` est déjà USD (cf. §4.3).
 - Bornes `max_position_value`, `max_gross_exposure`, `min_equity` : comparées à
   des valeurs **converties USD**.
-- **Voie principale de sizing** : le code calcule la quantité depuis
-  `hard_stop` + `risk_pct` (× confiance) + equity USD + FX. La quantité du LLM
-  n'est plus une entrée.
+- **Voie principale de sizing = l'agent en natif** (cf. §4.5/§4.6) : le code lui
+  fournit `risk_budget_native` et `max_order_native`, l'agent propose la
+  quantité. Le risk gate reste le **fusible** : il clampe la proposition de
+  l'agent contre les bornes (en USD, conversion côté gate). Il ne remplace pas
+  le jugement de l'agent, il le borne.
 
 ### 4.2 Cash — `trader/tools/execution.py`
 
@@ -138,12 +148,15 @@ jour) → reproductibilité.
 
 ### 4.5 Contrat agent — `trader/codex_client.py`
 
-- Retirer `quantity` des `_DECISION_KEYS` requis / de la sortie attendue (ou
-  l'accepter mais l'ignorer pour rétro-compat du parsing).
-- Le prompt n'invite plus l'agent à choisir un nombre d'actions. Il fournit
-  direction, `hard_stop`, `confidence`, `risk_pct`, `exit_plan`.
-- `daemon.py:2061` : `effective_quantity` calculée par le code (sizing §4.1),
-  plus `abs(decision.quantity)`.
+- L'agent **continue de proposer `quantity`**, mais en **devise native** du
+  symbole, dimensionnée avec le `risk_budget_native` que le code lui fournit
+  (cf. §4.6). `quantity` reste dans `_DECISION_KEYS`.
+- Le prompt explique le sizing natif : « Dimensionne en unités du titre.
+  `risk_budget_native` = ce que tu peux risquer dans la devise du symbole ;
+  `quantity ≈ risk_budget_native ÷ distance_au_hard_stop`, borné par
+  `max_order_native`. Ne convertis jamais : tout est déjà dans la bonne devise. »
+- `daemon.py:2061` : `effective_quantity = abs(decision.quantity)` (natif),
+  puis clampé par le risk gate (fusible currency-correct, §4.1).
 
 ---
 
@@ -154,16 +167,23 @@ sache toujours dans quel référentiel il agit (sinon il lit `p: 829` sans savoi
 que c'est du TWD).
 
 - `build_market_cockpit` : chaque ligne symbole gagne `ccy` (devise de cotation,
-  via `fx.currency_for`) et `fx_usd` (taux du cycle, pour l'ordre de grandeur).
-  Exemple : `{"s": "2379.TW", "ccy": "TWD", "p": 829, "fx_usd": 0.031, ...}`.
-- **Aucune valeur n'est convertie ici** : `p`, indicateurs, swings restent
-  natifs. `fx_usd` est purement informatif (situational awareness, AX #7).
+  via `fx.currency_for`), `fx_usd` (taux du cycle, pour l'ordre de grandeur),
+  `risk_budget_native` (= `risk_pct × equity_USD ÷ fx_usd`, ce que l'agent peut
+  risquer dans la devise du symbole) et `max_order_native`
+  (= `max_order_value ÷ fx_usd`). Exemple : `{"s": "2379.TW", "ccy": "TWD",
+  "p": 829, "fx_usd": 0.031, "risk_budget_native": 32258, "max_order_native":
+  322580, ...}`.
+- **Aucune valeur d'analyse n'est convertie ici** : `p`, indicateurs, swings
+  restent natifs. `fx_usd` est informatif ; `risk_budget_native`/
+  `max_order_native` sont les seuls montants, déjà exprimés en natif par le code
+  pour que l'agent dimensionne sans convertir.
 - Prompt (`codex_client.py`) : règle explicite — « Tous les prix, indicateurs,
-  swings et niveaux d'un symbole sont dans sa devise `ccy`. Tes `hard_stop` et
-  `take_profits` sont dans cette MÊME devise. Le portefeuille (equity, cash) est
-  en USD ; tu ne convertis rien, le code calcule la taille. »
+  swings et niveaux d'un symbole sont dans sa devise `ccy`. Tes `hard_stop`,
+  `take_profits` ET ta `quantity` sont dans cette MÊME devise. Dimensionne avec
+  `risk_budget_native` (quantity ≈ risk_budget_native ÷ distance_hard_stop),
+  borné par `max_order_native`. Tu ne convertis rien. »
 - Le bloc portefeuille du contexte (equity, cash, exposition) est, lui,
-  explicitement en USD.
+  explicitement en USD (vue d'ensemble ; le sizing par symbole se fait en natif).
 
 ## 5. Migration de l'état existant
 
@@ -185,9 +205,13 @@ Script one-shot (`scripts/`), `dry_run` par défaut (AX #2) :
 - `to_usd(x, "USD", r) == x` pour tout `r`.
 - `to_usd(amount, ccy, rate)` linéaire ; `rate <= 0` ou non-fini → rejet explicite.
 - `currency_for` couvre tous les suffixes de l'univers courant + défaut USD.
-- Sizing : un titre TWD à 870 (rate 0,031) avec budget 10 000 $ → ~370 actions
-  (pas 11) ; vérifier `quantity * price * rate ≈ max_order_value`.
-- `max_quantity_at_risk` : le risque réel en USD ≈ `pct * equity` (pas ×FX).
+- Contexte agent : `risk_budget_native = risk_pct × equity_USD ÷ fx_usd` et
+  `max_order_native = max_order_value ÷ fx_usd` (un titre TWD à rate 0,031,
+  equity 100 000 $, risk_pct 1 % → `risk_budget_native ≈ 32 258 TWD`).
+- Sizing agent en natif : `quantity ≈ risk_budget_native ÷ distance_hard_stop` ;
+  l'exposition USD résultante ≈ `risk_pct × equity` (pas ×FX).
+- Risk gate (fusible) : un titre TWD à 870 (rate 0,031), plafond ordre 10 000 $ →
+  clampe à ~370 actions max (pas 11) ; `quantity * price * rate ≤ max_order_value`.
 - Cash : BUY puis SELL d'un titre TWD ne déduit que les frais convertis USD.
 - Attribution : un round-trip TWD donne le P&L en USD = (P&L natif) × rate ;
   agrégat USD homogène avec un mix TWD/USD.

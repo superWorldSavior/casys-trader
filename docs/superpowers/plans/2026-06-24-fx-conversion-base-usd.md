@@ -493,18 +493,20 @@ git commit -m "feat(fx): sizing et bornes de risque en USD via fx_rate"
 
 ---
 
-## Task 5: Câblage daemon — taux du cycle, sizing code-side, propagation fill
+## Task 5: Câblage daemon — taux du cycle, gate fusible currency-correct, propagation fill
 
 **Files:**
-- Modify: `trader/daemon.py` (boucle prix ~1429-1444 ; `_submit_*`/`_execute` qui appellent `broker.submit` ~199-204, ~855 ; sizing entrée ~2061, ~2224-2234)
-- Modify: `trader/codex_client.py` (`_DECISION_KEYS` ~39 ; prompt sortie ~107,131,281,406 ; `Decision.quantity` reste accepté mais ignoré)
-- Test: `tests/test_daemon_*.py` (suite existante + un test de sizing code-side)
+- Modify: `trader/daemon.py` (boucle prix ~1429-1444 ; `_submit_*`/`_execute` qui appellent `broker.submit` ~199-204, ~855 ; clamp entrée ~2061, ~2224-2234)
+- Modify: `trader/codex_client.py` (prompt sortie : sizing en natif — l'agent GARDE `quantity`)
+- Test: `tests/test_daemon_sizing.py` (créer) + suite `test_daemon_*` existante
+
+**Design (révisé) :** l'agent **propose la quantité en devise native** (cf. Task 5B qui lui fournit `risk_budget_native`/`max_order_native`). Le daemon prend `decision.quantity` (natif) et le **clampe** avec le risk gate currency-correct (fusible). Le code ne calcule pas la quantité à la place de l'agent ; il la borne.
 
 **Interfaces:**
 - Consumes: `fx_rates.rates_for_symbols`, `fx_rates.load_fx_config`, `fx.currency_for`, `RiskGate.max_quantity_at_risk`, `RiskGate.max_order_quantity_at_price`.
-- Produces: `effective_quantity` calculée par le code à l'entrée ; `fx_rate` passé à chaque `broker.submit`.
+- Produces: `effective_quantity` = quantité native de l'agent **clampée** par le gate ; `fx_rate` passé à chaque `broker.submit` ; `fx_rate_by_ccy` dans le report.
 
-- [ ] **Step 1: Write the failing test (sizing code-side)**
+- [ ] **Step 1: Write the failing test (gate clampe la quantité native de l'agent)**
 
 ```python
 # tests/test_daemon_sizing.py (créer)
@@ -512,26 +514,32 @@ from trader.risk import RiskGate, RiskLimits
 from trader import fx
 
 
-def test_code_sizes_entry_in_usd():
-    """Le code calcule la quantité depuis equity USD + distance stop + fx_rate,
-    sans dépendre d'une quantité proposée par l'agent."""
+def test_gate_clamps_native_quantity_in_usd():
+    """L'agent propose une quantité native ; le gate la borne à l'exposition USD
+    autorisée (fusible currency-correct), sans la recalculer à sa place."""
     gate = RiskGate(RiskLimits(max_order_value=10_000.0, max_risk_per_trade_pct=0.01))
-    rate = fx.currency_for("2379.TW")  # TWD
-    assert rate == "TWD"
-    qty_risk = gate.max_quantity_at_risk(100_000.0, 870.0, 830.0, fx_rate=0.031)
+    assert fx.currency_for("2379.TW") == "TWD"
+    agent_qty = 100_000.0  # proposition absurde de l'agent
     qty_cap = gate.max_order_quantity_at_price(870.0, fx_rate=0.031)
-    qty = min(qty_risk, qty_cap)
-    assert qty > 0
-    # exposition USD bornée par max_order_value
-    assert qty * 870.0 * 0.031 <= 10_000.0 + 1e-6
+    effective = min(agent_qty, qty_cap)
+    assert effective < agent_qty                      # clampé
+    assert effective * 870.0 * 0.031 <= 10_000.0 + 1e-6  # exposition USD bornée
+    assert qty_cap > 300.0                            # pas l'ancien ~11
+
+
+def test_native_risk_budget_formula():
+    """Le budget natif livré à l'agent = risk_pct * equity_USD / fx_rate."""
+    equity_usd, pct, rate = 100_000.0, 0.01, 0.031
+    risk_budget_native = pct * equity_usd / rate
+    assert risk_budget_native == pytest.approx(1_000.0 / 0.031)  # ~32258 TWD
 ```
 
-(Ce test verrouille la formule de sizing réutilisée dans le daemon ; le câblage exact dans `daemon.py` est couvert par la suite `test_daemon_*` existante qui doit rester verte.)
+(Ces tests verrouillent le rôle fusible du gate et la formule du budget natif réutilisée en Task 5B ; le câblage exact dans `daemon.py` est couvert par la suite `test_daemon_*` qui doit rester verte. Importer `pytest`.)
 
 - [ ] **Step 2: Run test to verify it fails / suite de référence**
 
 Run: `pytest tests/test_daemon_sizing.py -v`
-Expected: FAIL au départ si `fx_rate` pas encore câblé (sinon vert une fois Task 4 mergée — dans ce cas, c'est un test de non-régression du contrat).
+Expected: FAIL si `fx_rate` pas encore câblé sur le gate (sinon vert une fois Task 4 mergée — test de non-régression du contrat).
 
 - [ ] **Step 3: Implement — fetch des taux du cycle**
 
@@ -550,39 +558,40 @@ fx_rate_by_ccy = fx_rates.rates_for_symbols(prices.keys(), fetcher=_fx_fetch, co
 Helper local : `def _rate(sym): return fx_rate_by_ccy[fx.currency_for(sym)]`.
 Stocker `fx_rate_by_ccy` dans le snapshot/report (clé `fx_rates`) pour l'audit.
 
-- [ ] **Step 4: Implement — sizing code-side à l'entrée**
+- [ ] **Step 4: Implement — clamp de la quantité native par le gate (fusible)**
 
-À l'entrée (`daemon.py` ~2061), remplacer `effective_quantity = abs(decision.quantity)` par un calcul code-side, quand `action ∈ {BUY, SELL}` et qu'un `hard_stop` résolu existe :
+À l'entrée (`daemon.py` ~2061), garder `effective_quantity = abs(decision.quantity)` (quantité native proposée par l'agent), puis la **clamper** avec le gate currency-correct quand `action ∈ {BUY, SELL}` :
 
 ```python
 rate = _rate(sym)
 entry_price = prices[sym]
-stop_price = resolved_hard_stop  # déjà résolu par l'exit-plan engine
-qty_risk = risk_gate.max_quantity_at_risk(equity_usd, entry_price, stop_price, fx_rate=rate)
 qty_cap = risk_gate.max_order_quantity_at_price(entry_price, fx_rate=rate)
-effective_quantity = min(qty_risk, qty_cap)
+effective_quantity = min(abs(decision.quantity), qty_cap)
+if resolved_hard_stop is not None:
+    qty_risk = risk_gate.max_quantity_at_risk(equity_usd, entry_price, resolved_hard_stop, fx_rate=rate)
+    effective_quantity = min(effective_quantity, qty_risk)
 ```
 
-Conserver le clamp existant (`max_position_value`, `max_gross_exposure`) en convertissant les valeurs en USD via `rate`. `equity_usd` = `broker.cash()` + Σ positions valorisées en USD (cf. Task 7 helper, ou calcul inline ici).
+Conserver le clamp existant (`max_position_value`, `max_gross_exposure`) en convertissant les valeurs en USD via `rate`. `equity_usd` = `broker.cash()` + Σ positions valorisées en USD (cf. Task 7 helper, ou calcul inline ici). Le gate **borne** la proposition de l'agent, il ne la remplace pas.
 
 - [ ] **Step 5: Implement — propager `fx_rate` aux fills**
 
 Chaque appel `broker.submit(order, price, ts, dry_run=...)` (entrée ~199-204, sortie ~855, et `_submit_*`) reçoit `fx_rate=_rate(symbol)`.
 
-- [ ] **Step 6: Implement — l'agent ne propose plus la quantité**
+- [ ] **Step 6: Implement — prompt : l'agent dimensionne en natif**
 
-Dans `trader/codex_client.py` : retirer `"quantity"` de `_DECISION_KEYS` (ligne 39) et des gabarits de sortie du prompt (lignes 107, 131, 281, 406). Garder `quantity` optionnel dans `Decision` avec défaut 0.0 (rétro-compat parsing) mais documenter qu'il est ignoré. Mettre à jour le texte du prompt pour expliquer que le sizing est calculé par le code depuis le `hard_stop` et `risk_pct`.
+Dans `trader/codex_client.py` : l'agent **garde** `quantity` (dans `_DECISION_KEYS` et les gabarits). Mettre à jour le texte du prompt pour expliquer le sizing natif : la `quantity` est en unités du titre, dimensionnée avec le `risk_budget_native` fourni par le contexte (cf. Task 5B), `quantity ≈ risk_budget_native ÷ distance_au_hard_stop`, bornée par `max_order_native` ; ne jamais convertir. (La règle devise complète est posée en Task 5B.)
 
 - [ ] **Step 7: Run the full daemon + sizing suites**
 
 Run: `pytest tests/test_daemon_sizing.py tests/test_daemon_confidence_gate.py tests/test_daemon_learnings.py -v`
-Expected: PASS. Corriger les tests qui supposaient une quantité agent.
+Expected: PASS. Corriger les tests dont les quantités attendues changent à cause du clamp currency-correct.
 
 - [ ] **Step 8: Commit**
 
 ```bash
 git add trader/daemon.py trader/codex_client.py tests/test_daemon_sizing.py
-git commit -m "feat(fx): taux du cycle, sizing code-side USD, agent sans quantité"
+git commit -m "feat(fx): taux du cycle, gate fusible currency-correct, fill fx_rate"
 ```
 
 ---
@@ -595,59 +604,78 @@ git commit -m "feat(fx): taux du cycle, sizing code-side USD, agent sans quantit
 - Test: `tests/test_agent_context.py` (créer si absent, sinon ajout)
 
 **Interfaces:**
-- Consumes: `trader.fx.currency_for`, `fx_rate_by_ccy` du cycle (Task 5).
-- Produces: chaque ligne symbole du cockpit agent contient `ccy: str` et
-  `fx_usd: float`. Aucune valeur de prix/indicateur convertie.
+- Consumes: `trader.fx.currency_for`, `fx_rate_by_ccy` du cycle (Task 5),
+  `equity_usd`, `risk_pct`, `max_order_value` (config risk).
+- Produces: chaque ligne symbole du cockpit agent contient `ccy: str`,
+  `fx_usd: float`, `risk_budget_native: float`, `max_order_native: float`.
+  Aucune valeur de prix/indicateur convertie.
 
 - [ ] **Step 1: Write the failing test**
 
 ```python
 # tests/test_agent_context.py (ajout)
+import pytest
 from trader.agent_context import build_market_cockpit
 
 
-def test_symbol_row_is_currency_stamped():
+def test_symbol_row_is_currency_stamped_and_native_budget():
     bars = {"2379.TW": _fake_bars(close=829.0), "MSFT": _fake_bars(close=370.0)}
     cockpit = build_market_cockpit(
         bars, symbols=["2379.TW", "MSFT"],
         prices={"2379.TW": 829.0, "MSFT": 370.0},
         fx_rate_by_ccy={"TWD": 0.031, "USD": 1.0},
+        equity_usd=100_000.0, risk_pct=0.01, max_order_value=10_000.0,
     )
     rows = {r["s"]: r for r in cockpit["rows"]}  # adapter à la clé réelle
-    assert rows["2379.TW"]["ccy"] == "TWD"
-    assert rows["2379.TW"]["fx_usd"] == 0.031
-    assert rows["2379.TW"]["p"] == 829.0          # natif, NON converti
-    assert rows["MSFT"]["ccy"] == "USD"
-    assert rows["MSFT"]["fx_usd"] == 1.0
+    tw = rows["2379.TW"]
+    assert tw["ccy"] == "TWD"
+    assert tw["fx_usd"] == 0.031
+    assert tw["p"] == 829.0                          # natif, NON converti
+    # budget natif = risk_pct * equity_usd / fx_usd = 1000 / 0.031
+    assert tw["risk_budget_native"] == pytest.approx(1_000.0 / 0.031)
+    assert tw["max_order_native"] == pytest.approx(10_000.0 / 0.031)
+    usd = rows["MSFT"]
+    assert usd["ccy"] == "USD" and usd["fx_usd"] == 1.0
+    assert usd["risk_budget_native"] == pytest.approx(1_000.0)  # USD -> /1.0
 ```
 
 (`_fake_bars` : réutiliser le helper existant des tests d'`agent_context`/cockpit ; adapter le nom de la clé de prix `p` et la structure `rows` au contrat réel de `build_market_cockpit`.)
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `pytest tests/test_agent_context.py -k currency_stamped -v`
-Expected: FAIL (`build_market_cockpit() got an unexpected keyword argument 'fx_rate_by_ccy'` ou absence de `ccy`).
+Run: `pytest tests/test_agent_context.py -k native_budget -v`
+Expected: FAIL (`build_market_cockpit() got an unexpected keyword argument 'fx_rate_by_ccy'` ou absence de `ccy`/`risk_budget_native`).
 
 - [ ] **Step 3: Implement**
 
-- Signature : ajouter `fx_rate_by_ccy: dict[str, float] | None = None` à
+- Signature : ajouter `fx_rate_by_ccy: dict[str, float] | None = None`,
+  `equity_usd: float = 0.0`, `risk_pct: float = 0.0`,
+  `max_order_value: float = 0.0` à `build_market_cockpit`.
+- Pour chaque symbole : `ccy = fx.currency_for(symbol)` ;
+  `rate = (fx_rate_by_ccy or {}).get(ccy, 1.0)`. Ajouter à la ligne :
+  `"ccy": ccy`, `"fx_usd": rate`,
+  `"risk_budget_native": (risk_pct * equity_usd / rate) if rate else 0.0`,
+  `"max_order_native": (max_order_value / rate) if rate else 0.0`.
+- **Ne convertir aucune valeur d'analyse** (`p`, indicateurs, swings restent
+  natifs). Seuls `risk_budget_native`/`max_order_native` sont des montants,
+  exprimés en natif pour que l'agent dimensionne sans convertir.
+- `daemon.py` : passer `fx_rate_by_ccy`, `equity_usd`, et les paramètres risk
+  (`risk_pct = max_risk_per_trade_pct`, `max_order_value`) à
   `build_market_cockpit`.
-- Pour chaque symbole, ajouter à la ligne : `"ccy": fx.currency_for(symbol)` et
-  `"fx_usd": (fx_rate_by_ccy or {}).get(fx.currency_for(symbol), 1.0)`.
-- **Ne convertir aucune valeur** (`p`, indicateurs, swings restent natifs).
-- `daemon.py` : passer `fx_rate_by_ccy=fx_rate_by_ccy` (du cycle, Task 5) à
-  l'appel `build_market_cockpit`.
 
 - [ ] **Step 4: Add the prompt rule**
 
 Dans `trader/codex_client.py`, ajouter au prompt une règle explicite :
 
 ```
-"Chaque symbole porte sa devise `ccy` et `fx_usd` (USD par unité). "
-"TOUS ses prix, indicateurs, swings et niveaux sont dans `ccy`. Tes `hard_stop` "
-"et `take_profits` doivent être dans cette MÊME devise (PAS en USD). "
-"Le portefeuille (equity, cash) est en USD : tu ne convertis rien, le code "
-"calcule la taille de position depuis ton hard_stop et ton risk_pct."
+"Chaque symbole porte sa devise `ccy`, `fx_usd` (USD par unité), "
+"`risk_budget_native` et `max_order_native` (déjà dans la devise du titre). "
+"TOUS ses prix, indicateurs, swings et niveaux sont dans `ccy`. Tes `hard_stop`, "
+"`take_profits` ET ta `quantity` sont dans cette MÊME devise (PAS en USD). "
+"Dimensionne en unités du titre : `quantity` ≈ `risk_budget_native` ÷ distance "
+"au hard_stop, borné par `max_order_native`. Le portefeuille (equity, cash) est "
+"en USD pour ta vue d'ensemble ; tu ne convertis JAMAIS, tout est déjà fourni "
+"dans la bonne devise."
 ```
 
 - [ ] **Step 5: Run tests to verify they pass**
@@ -931,7 +959,7 @@ Expected: PASS (corriger toute régression résiduelle des tests qui supposaient
 
 - [ ] **Step 2: Add D14 to the decision registry**
 
-Documenter D14 : « Comptabilité et sizing en base USD via couche FX ; l'agent ne propose plus la quantité ; taux live yfinance persistés sur le fill. » Référencer la spec et l'incident Realtek.
+Documenter D14 : « Comptabilité en base USD via couche FX ; l'agent dimensionne en devise native avec le budget que le code lui livre converti ; le risk gate clampe (fusible currency-correct) ; taux live yfinance persistés sur le fill. » Référencer la spec et l'incident Realtek.
 
 - [ ] **Step 3: Commit**
 
@@ -944,8 +972,9 @@ git commit -m "docs(decisions): D14 conversion FX base USD"
 
 ## Self-Review (effectué)
 
-- **Couverture spec** : §3.1→T1, §3.2/3.3→T2+T5, §4.1→T4+T5, §4.2→T3, §4.3→T6, §4.4→T7, §4.5→T5, §4.6→T5B, §5→T8, §6 invariants→répartis dans les tests de chaque task. ✅
+- **Couverture spec** : §3.1→T1, §3.2/3.3→T2+T5, §4.1→T4+T5, §4.2→T3, §4.3→T6, §4.4→T7, §4.5→T5+T5B, §4.6→T5B, §5→T8, §6 invariants→répartis dans les tests de chaque task. ✅
+- **Sizing (révisé)** : l'agent dimensionne en NATIF avec `risk_budget_native`/`max_order_native` livrés par le code (T5B) ; le risk gate clampe la proposition (fusible currency-correct, T4+T5). L'agent garde `quantity`. ✅
 - **Analyse = natif, jamais converti** : verrouillé par T5B (assert `p` natif) et par l'absence de toute conversion dans T6/T7 sur les niveaux de prix. ✅
-- **Placeholders** : code réel dans chaque step ; le câblage `daemon.py` (T5) pointe les lignes exactes et fournit le code des fragments (fetch, sizing, propagation) — pas de « TODO ». ✅
-- **Cohérence des types** : `fx_rate` (USD/unité), `to_usd(amount, ccy, rate)`, `currency_for(symbol)` cohérents de T1 à T8 ; `Fill.fx_rate` défaut 1.0 (rétro-compat) utilisé en T3/T6/T8. ✅
-- **Point d'attention implémenteur** : `equity_usd` en T5 nécessite la valorisation USD des positions ouvertes (helper introduit en T7 côté cockpit) — si T5 précède T7, calculer inline puis factoriser. Ordonner T7 avant la finalisation de T5 si besoin.
+- **Placeholders** : code réel dans chaque step ; le câblage `daemon.py` (T5) pointe les lignes exactes et fournit le code des fragments (fetch, clamp, propagation) — pas de « TODO ». ✅
+- **Cohérence des types** : `fx_rate` (USD/unité), `to_usd(amount, ccy, rate)`, `currency_for(symbol)`, `risk_budget_native = risk_pct×equity_usd/fx_usd` cohérents de T1 à T8 ; `Fill.fx_rate` défaut 1.0 (rétro-compat) utilisé en T3/T6/T8. ✅
+- **Point d'attention implémenteur** : `equity_usd` (T5 clamp ET T5B budget natif) nécessite la valorisation USD des positions ouvertes — calculer inline en T5, ou ordonner le helper de valorisation (T7) avant la finalisation de T5/T5B.
