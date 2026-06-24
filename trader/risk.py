@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from pathlib import Path
 
 from .tools.execution import Order
 
@@ -77,21 +78,35 @@ class RiskGate:
     def start_cycle(self) -> None:
         self._orders_this_cycle = 0
 
-    def max_order_quantity_at_price(self, price: float) -> float:
+    def max_order_quantity_at_price(self, price: float, *, fx_rate: float = 1.0) -> float:
         if not math.isfinite(price) or price <= 0:
             return 0.0
-        quantity = self.limits.max_order_value / price
-        while quantity > 0.0 and quantity * price > self.limits.max_order_value:
+        if not math.isfinite(fx_rate) or fx_rate <= 0:
+            return 0.0
+        price_usd = price * fx_rate
+        quantity = self.limits.max_order_value / price_usd
+        while quantity > 0.0 and quantity * price_usd > self.limits.max_order_value:
             quantity = math.nextafter(quantity, 0.0)
         return quantity
 
-    def max_quantity_at_risk(self, equity: float, entry_price: float, stop_price: float) -> float:
-        """Plus grande qty telle que qty * distance_stop <= pct_risque * equity."""
+    def max_quantity_at_risk(
+        self,
+        equity: float,
+        entry_price: float,
+        stop_price: float,
+        *,
+        fx_rate: float = 1.0,
+    ) -> float:
+        """Plus grande qty telle que qty * distance_stop_usd <= pct_risque * equity.
+
+        fx_rate : USD par unité native (défaut 1.0 → paire USD, comportement inchangé).
+        """
         try:
             equity = float(equity)
             entry_price = float(entry_price)
             stop_price = float(stop_price)
             pct = float(self.limits.max_risk_per_trade_pct)
+            fx_rate = float(fx_rate)
         except (TypeError, ValueError):
             return 0.0
 
@@ -100,12 +115,14 @@ class RiskGate:
             or not math.isfinite(entry_price)
             or not math.isfinite(stop_price)
             or not math.isfinite(pct)
+            or not math.isfinite(fx_rate)
             or equity <= 0
             or pct <= 0
+            or fx_rate <= 0
         ):
             return 0.0
 
-        distance = abs(entry_price - stop_price)
+        distance = abs(entry_price - stop_price) * fx_rate
         risk_cap = pct * equity
         if (
             not math.isfinite(distance)
@@ -226,3 +243,27 @@ class RiskGate:
     def record_pass(self) -> None:
         """À appeler après exécution effective d'un ordre approuvé."""
         self._orders_this_cycle += 1
+
+
+_DEFAULT_MIN_TRADE_CONFIDENCE = 0.7
+
+
+def read_min_trade_confidence(risk_yaml_path: Path) -> float:
+    """Lit min_trade_confidence depuis config/risk.yaml.
+
+    Fail-safe : retourne _DEFAULT_MIN_TRADE_CONFIDENCE si le fichier est absent,
+    illisible ou si la clé est manquante/invalide. Permet de ne pas dupliquer la
+    lecture yaml dans daemon, tui et consolidator.
+    """
+    try:
+        import yaml  # import local : yaml peut ne pas être disponible dans tous les contextes
+
+        raw = yaml.safe_load(risk_yaml_path.read_text(encoding="utf-8"))
+        if isinstance(raw, dict):
+            value = raw.get("min_trade_confidence", _DEFAULT_MIN_TRADE_CONFIDENCE)
+            parsed = float(value)
+            if math.isfinite(parsed) and 0.0 <= parsed <= 1.0:
+                return parsed
+    except Exception:
+        pass
+    return _DEFAULT_MIN_TRADE_CONFIDENCE

@@ -304,3 +304,72 @@ def test_check_confidence_nan_affiche_nan_dans_contexte() -> None:
     assert verdict.approved is False
     assert "nan" in verdict.context
     assert "None" not in verdict.context
+
+
+# ---------------------------------------------------------------------------
+# Task 4 — sizing et bornes de risque en USD via fx_rate
+# ---------------------------------------------------------------------------
+
+
+def _gate_usd(max_order_value: float = 10_000.0, pct: float = 0.01) -> RiskGate:
+    """Gate minimal pour les tests fx_rate (tous les autres champs à des valeurs neutres)."""
+    return RiskGate(
+        RiskLimits(
+            max_position_value=200_000.0,
+            max_gross_exposure=1_000_000.0,
+            max_order_value=max_order_value,
+            max_orders_per_cycle=10,
+            min_equity=0.0,
+            max_risk_per_trade_pct=pct,
+        )
+    )
+
+
+def test_order_qty_respects_usd_cap_for_twd() -> None:
+    """qty * price_native * fx_rate <= max_order_value (plafond USD respecté)."""
+    gate = _gate_usd(max_order_value=10_000.0)
+    qty = gate.max_order_quantity_at_price(870.0, fx_rate=0.031)
+    # valeur USD de l'ordre <= 10000
+    assert qty * 870.0 * 0.031 <= 10_000.0 + 1e-6
+    # et nettement plus que l'ancien 10000/870 ≈ 11
+    assert qty > 300.0
+
+
+def test_qty_at_risk_uses_usd_distance() -> None:
+    """qty * distance_native * fx_rate == risk_cap exactement (arrondi vers le bas)."""
+    gate = _gate_usd(pct=0.01)
+    # equity 100k USD, distance native 40 TWD, rate 0.031 -> risque USD ciblé 1000
+    qty = gate.max_quantity_at_risk(100_000.0, 870.0, 830.0, fx_rate=0.031)
+    real_risk_usd = qty * abs(870.0 - 830.0) * 0.031
+    assert real_risk_usd == pytest.approx(1_000.0, rel=1e-6)
+
+
+def test_order_qty_fx_rate_default_unchanged() -> None:
+    """fx_rate=1.0 par défaut → comportement USD identique à l'ancien."""
+    gate = _gate_usd(max_order_value=10_000.0)
+    qty_default = gate.max_order_quantity_at_price(100.0)
+    qty_explicit = gate.max_order_quantity_at_price(100.0, fx_rate=1.0)
+    assert qty_default == qty_explicit
+    assert qty_default * 100.0 <= 10_000.0 + 1e-6
+
+
+def test_qty_at_risk_fx_rate_default_unchanged() -> None:
+    """fx_rate=1.0 par défaut → comportement USD identique à l'ancien."""
+    gate = _gate_usd(pct=0.01)
+    qty_default = gate.max_quantity_at_risk(100_000.0, 100.0, 99.0)
+    qty_explicit = gate.max_quantity_at_risk(100_000.0, 100.0, 99.0, fx_rate=1.0)
+    assert qty_default == qty_explicit
+
+
+def test_order_qty_fx_rate_zero_returns_zero() -> None:
+    """fx_rate <= 0 est invalide → retourne 0."""
+    gate = _gate_usd()
+    assert gate.max_order_quantity_at_price(100.0, fx_rate=0.0) == 0.0
+    assert gate.max_order_quantity_at_price(100.0, fx_rate=-1.0) == 0.0
+
+
+def test_qty_at_risk_fx_rate_invalid_returns_zero() -> None:
+    """fx_rate non-fini ou <= 0 → retourne 0."""
+    gate = _gate_usd()
+    assert gate.max_quantity_at_risk(100_000.0, 100.0, 99.0, fx_rate=0.0) == 0.0
+    assert gate.max_quantity_at_risk(100_000.0, 100.0, 99.0, fx_rate=math.nan) == 0.0
