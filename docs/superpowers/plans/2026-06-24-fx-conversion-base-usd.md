@@ -587,6 +587,83 @@ git commit -m "feat(fx): taux du cycle, sizing code-side USD, agent sans quantit
 
 ---
 
+## Task 5B: Conscience devise du contexte agent (`trader/agent_context.py`)
+
+**Files:**
+- Modify: `trader/agent_context.py` (`build_market_cockpit` ~120-200, construction de la ligne par symbole)
+- Modify: `trader/codex_client.py` (texte du prompt : règle devise)
+- Test: `tests/test_agent_context.py` (créer si absent, sinon ajout)
+
+**Interfaces:**
+- Consumes: `trader.fx.currency_for`, `fx_rate_by_ccy` du cycle (Task 5).
+- Produces: chaque ligne symbole du cockpit agent contient `ccy: str` et
+  `fx_usd: float`. Aucune valeur de prix/indicateur convertie.
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+# tests/test_agent_context.py (ajout)
+from trader.agent_context import build_market_cockpit
+
+
+def test_symbol_row_is_currency_stamped():
+    bars = {"2379.TW": _fake_bars(close=829.0), "MSFT": _fake_bars(close=370.0)}
+    cockpit = build_market_cockpit(
+        bars, symbols=["2379.TW", "MSFT"],
+        prices={"2379.TW": 829.0, "MSFT": 370.0},
+        fx_rate_by_ccy={"TWD": 0.031, "USD": 1.0},
+    )
+    rows = {r["s"]: r for r in cockpit["rows"]}  # adapter à la clé réelle
+    assert rows["2379.TW"]["ccy"] == "TWD"
+    assert rows["2379.TW"]["fx_usd"] == 0.031
+    assert rows["2379.TW"]["p"] == 829.0          # natif, NON converti
+    assert rows["MSFT"]["ccy"] == "USD"
+    assert rows["MSFT"]["fx_usd"] == 1.0
+```
+
+(`_fake_bars` : réutiliser le helper existant des tests d'`agent_context`/cockpit ; adapter le nom de la clé de prix `p` et la structure `rows` au contrat réel de `build_market_cockpit`.)
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `pytest tests/test_agent_context.py -k currency_stamped -v`
+Expected: FAIL (`build_market_cockpit() got an unexpected keyword argument 'fx_rate_by_ccy'` ou absence de `ccy`).
+
+- [ ] **Step 3: Implement**
+
+- Signature : ajouter `fx_rate_by_ccy: dict[str, float] | None = None` à
+  `build_market_cockpit`.
+- Pour chaque symbole, ajouter à la ligne : `"ccy": fx.currency_for(symbol)` et
+  `"fx_usd": (fx_rate_by_ccy or {}).get(fx.currency_for(symbol), 1.0)`.
+- **Ne convertir aucune valeur** (`p`, indicateurs, swings restent natifs).
+- `daemon.py` : passer `fx_rate_by_ccy=fx_rate_by_ccy` (du cycle, Task 5) à
+  l'appel `build_market_cockpit`.
+
+- [ ] **Step 4: Add the prompt rule**
+
+Dans `trader/codex_client.py`, ajouter au prompt une règle explicite :
+
+```
+"Chaque symbole porte sa devise `ccy` et `fx_usd` (USD par unité). "
+"TOUS ses prix, indicateurs, swings et niveaux sont dans `ccy`. Tes `hard_stop` "
+"et `take_profits` doivent être dans cette MÊME devise (PAS en USD). "
+"Le portefeuille (equity, cash) est en USD : tu ne convertis rien, le code "
+"calcule la taille de position depuis ton hard_stop et ton risk_pct."
+```
+
+- [ ] **Step 5: Run tests to verify they pass**
+
+Run: `pytest tests/test_agent_context.py -v`
+Expected: PASS.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add trader/agent_context.py trader/codex_client.py tests/test_agent_context.py
+git commit -m "feat(fx): contexte agent estampillé devise (analyse en natif)"
+```
+
+---
+
 ## Task 6: Conversion P&L de l'attribution (`trader/attribution.py`)
 
 **Files:**
@@ -867,7 +944,8 @@ git commit -m "docs(decisions): D14 conversion FX base USD"
 
 ## Self-Review (effectué)
 
-- **Couverture spec** : §3.1→T1, §3.2/3.3→T2+T5, §4.1→T4+T5, §4.2→T3, §4.3→T6, §4.4→T7, §4.5→T5, §5→T8, §6 invariants→répartis dans les tests de chaque task. ✅
+- **Couverture spec** : §3.1→T1, §3.2/3.3→T2+T5, §4.1→T4+T5, §4.2→T3, §4.3→T6, §4.4→T7, §4.5→T5, §4.6→T5B, §5→T8, §6 invariants→répartis dans les tests de chaque task. ✅
+- **Analyse = natif, jamais converti** : verrouillé par T5B (assert `p` natif) et par l'absence de toute conversion dans T6/T7 sur les niveaux de prix. ✅
 - **Placeholders** : code réel dans chaque step ; le câblage `daemon.py` (T5) pointe les lignes exactes et fournit le code des fragments (fetch, sizing, propagation) — pas de « TODO ». ✅
 - **Cohérence des types** : `fx_rate` (USD/unité), `to_usd(amount, ccy, rate)`, `currency_for(symbol)` cohérents de T1 à T8 ; `Fill.fx_rate` défaut 1.0 (rétro-compat) utilisé en T3/T6/T8. ✅
 - **Point d'attention implémenteur** : `equity_usd` en T5 nécessite la valorisation USD des positions ouvertes (helper introduit en T7 côté cockpit) — si T5 précède T7, calculer inline puis factoriser. Ordonner T7 avant la finalisation de T5 si besoin.

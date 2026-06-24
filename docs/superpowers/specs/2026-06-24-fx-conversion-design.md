@@ -55,6 +55,14 @@ le book est massivement faussé.
    Stratégie de l'agent inchangée ; on lui retire l'arithmétique de sizing.
 6. **Migration : recalcul du cash depuis l'historique des fills** avec FX
    rétroactif, one-shot, backup `broker.json.bak`.
+7. **Deux référentiels qui ne se mélangent jamais** :
+   - **USD = vue humaine + vérité comptable** (cockpit, cash, equity, P&L,
+     sizing). C'est ce qu'Erwan lit.
+   - **Natif = vue interne de l'agent** : il analyse et pose ses niveaux par
+     symbole dans la devise de cotation, **sans jamais convertir**. L'analyse
+     (bougies, indicateurs) n'est JAMAIS convertie — le FX y injecterait du
+     bruit qui corrompt les indicateurs. La conversion n'a lieu qu'au pont du
+     sizing (code) et à l'affichage cockpit (humain).
 
 ---
 
@@ -138,6 +146,24 @@ jour) → reproductibilité.
   plus `abs(decision.quantity)`.
 
 ---
+
+### 4.6 Conscience devise du contexte agent — `trader/agent_context.py`
+
+L'analyse reste en natif, mais le natif doit être **étiqueté** pour que l'agent
+sache toujours dans quel référentiel il agit (sinon il lit `p: 829` sans savoir
+que c'est du TWD).
+
+- `build_market_cockpit` : chaque ligne symbole gagne `ccy` (devise de cotation,
+  via `fx.currency_for`) et `fx_usd` (taux du cycle, pour l'ordre de grandeur).
+  Exemple : `{"s": "2379.TW", "ccy": "TWD", "p": 829, "fx_usd": 0.031, ...}`.
+- **Aucune valeur n'est convertie ici** : `p`, indicateurs, swings restent
+  natifs. `fx_usd` est purement informatif (situational awareness, AX #7).
+- Prompt (`codex_client.py`) : règle explicite — « Tous les prix, indicateurs,
+  swings et niveaux d'un symbole sont dans sa devise `ccy`. Tes `hard_stop` et
+  `take_profits` sont dans cette MÊME devise. Le portefeuille (equity, cash) est
+  en USD ; tu ne convertis rien, le code calcule la taille. »
+- Le bloc portefeuille du contexte (equity, cash, exposition) est, lui,
+  explicitement en USD.
 
 ## 5. Migration de l'état existant
 
