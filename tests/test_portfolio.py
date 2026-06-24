@@ -68,3 +68,33 @@ def test_holding_usd_defaut_fx_rate_inchange() -> None:
     assert h.fx_rate == 1.0
     assert h.market_value == pytest.approx(1100.0, rel=1e-9)
     assert h.unrealized_pnl == pytest.approx(100.0, rel=1e-9)
+
+
+def test_as_context_inclut_fx_rate_dans_chaque_holding() -> None:
+    """as_context sérialise fx_rate pour que la TUI puisse calculer le notional USD."""
+    snap = Snapshot(
+        cash=0.0,
+        holdings=[
+            Holding("2379.TW", quantity=100.0, avg_price=800.0, last_price=870.0, fx_rate=0.031),
+            Holding("AAPL", quantity=10.0, avg_price=100.0, last_price=110.0, fx_rate=1.0),
+        ],
+        starting_equity=1_000.0,
+    )
+
+    holdings = snap.as_context()["holdings"]
+
+    assert holdings[0]["fx_rate"] == pytest.approx(0.031, rel=1e-9)
+    assert holdings[1]["fx_rate"] == pytest.approx(1.0, rel=1e-9)
+
+
+def test_as_context_fx_rate_usd_par_defaut() -> None:
+    """Un Holding sans fx_rate explicite expose fx_rate=1.0 dans le contexte."""
+    snap = Snapshot(
+        cash=0.0,
+        holdings=[Holding("AAPL", quantity=10.0, avg_price=100.0, last_price=110.0)],
+        starting_equity=1_000.0,
+    )
+
+    holding = snap.as_context()["holdings"][0]
+
+    assert holding["fx_rate"] == pytest.approx(1.0, rel=1e-9)

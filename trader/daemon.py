@@ -360,9 +360,13 @@ def _merge_gate_feedback(
     return note
 
 
-def _gross_exposure(broker: SimBroker, prices: dict[str, float]) -> float:
+def _gross_exposure(
+    broker: SimBroker,
+    prices: dict[str, float],
+    rate_of: Callable[[str], float] | None = None,
+) -> float:
     return sum(
-        abs(pos.quantity * prices.get(symbol, 0.0))
+        abs(pos.quantity * prices.get(symbol, 0.0) * (rate_of(symbol) if rate_of else 1.0))
         for symbol, pos in broker.positions().items()
     )
 
@@ -2411,7 +2415,7 @@ def run_cycle(
         fill = broker.submit(order, prices[sym], now.isoformat(), dry_run=dry_run, fx_rate=_rate(sym))
         if not dry_run:
             gate.record_pass()
-            gross = _gross_exposure(broker, prices)
+            gross = _gross_exposure(broker, prices, rate_of=_rate)
             if fill is not None:
                 latest = portfolio.snapshot(broker, lambda s: prices.get(s, 0.0), starting_equity, fx_rate_of=_rate)
                 final_position = broker.positions().get(sym)

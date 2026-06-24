@@ -64,6 +64,7 @@ class Snapshot:
                 "avg_price": round(h.avg_price, 4),
                 "last_price": round(h.last_price, 4),
                 "unrealized_pnl": unrealized_pnl,
+                "fx_rate": h.fx_rate,
             }
             if fee_estimator is not None:
                 round_trip_fee = fee_estimator(

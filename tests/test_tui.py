@@ -236,6 +236,47 @@ def test_trades_clotures_affichent_net_local_avec_brut_et_frais() -> None:
     assert "frais -1.50" in output
 
 
+def test_positions_pnl_pct_correct_pour_holding_non_usd() -> None:
+    """pnl_pct doit utiliser le notional en USD (avg_price * qty * fx_rate)."""
+    # Holding TWD : avg=800, qty=100, fx_rate=0.031
+    # PnL USD = (870-800)*100*0.031 = 217
+    # Notional USD = 800*100*0.031 = 2480
+    # pnl_pct = 217/2480*100 = 8.75%
+    holdings = [
+        {
+            "symbol": "2379.TW",
+            "quantity": 100.0,
+            "avg_price": 800.0,
+            "last_price": 870.0,
+            "unrealized_pnl": 217.0,  # = (870-800)*100*0.031
+            "fx_rate": 0.031,
+        }
+    ]
+
+    output = _render_plain(_build_positions_panel(holdings))
+
+    # pnl_pct = 217/(800*100*0.031)*100 ≈ 8.75%
+    assert "+8.75%" in output
+
+
+def test_positions_pnl_pct_fx_rate_absent_backward_compat() -> None:
+    """Quand fx_rate est absent du dict, pnl_pct utilise notional natif (compat)."""
+    holdings = [
+        {
+            "symbol": "AAPL",
+            "quantity": 10.0,
+            "avg_price": 100.0,
+            "last_price": 110.0,
+            "unrealized_pnl": 100.0,
+        }
+    ]
+
+    output = _render_plain(_build_positions_panel(holdings))
+
+    # pnl_pct = 100/(100*10*1.0)*100 = 10%
+    assert "+10.00%" in output
+
+
 def test_build_view_normalise_le_timestamp_du_cycle_en_utc() -> None:
     state = {
         **_FULL_STATE,

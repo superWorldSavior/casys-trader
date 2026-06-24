@@ -2423,3 +2423,52 @@ class TestExitChecks5mMinor:
         assert "SPY" not in calls_5m, "SPY hors tradable_prices → pas de fetch 5m"
         # Pas de crash ; le plan SPY n'est pas évalué (pas de prix)
         assert report["planned_exits"] == []
+
+
+# ---------------------------------------------------------------------------
+# Tests FX : _gross_exposure avec rate_of
+# ---------------------------------------------------------------------------
+
+def test_gross_exposure_fx_blind_sans_rate_of_retourne_natif(tmp_path) -> None:
+    """Sans rate_of, _gross_exposure renvoie la somme native (comportement historique)."""
+    state_dir = tmp_path / "state"
+    broker = SimBroker(state_dir / "broker.json", starting_cash=100_000)
+    broker.submit(Order("2379.TW", "BUY", 100.0), 800.0, "2026-06-24T09:00:00+00:00", dry_run=False)
+
+    prices = {"2379.TW": 820.0}
+    gross = daemon._gross_exposure(broker, prices)
+
+    assert gross == pytest.approx(100.0 * 820.0, rel=1e-9)
+
+
+def test_gross_exposure_fx_aware_twd_convergi_en_usd(tmp_path) -> None:
+    """rate_of=0.031 pour TWD : _gross_exposure multiplie par le taux FX."""
+    state_dir = tmp_path / "state"
+    broker = SimBroker(state_dir / "broker.json", starting_cash=100_000)
+    broker.submit(Order("2379.TW", "BUY", 100.0), 800.0, "2026-06-24T09:00:00+00:00", dry_run=False)
+
+    prices = {"2379.TW": 820.0}
+    twd_rate = 0.031
+
+    gross_native = daemon._gross_exposure(broker, prices)
+    gross_usd = daemon._gross_exposure(broker, prices, rate_of=lambda sym: twd_rate)
+
+    assert gross_usd == pytest.approx(gross_native * twd_rate, rel=1e-9)
+    # Sanity : la valeur USD doit être ~32× plus petite que la valeur native
+    assert gross_usd < gross_native / 10
+
+
+def test_gross_exposure_fx_multi_position_somme_en_usd(tmp_path) -> None:
+    """Deux positions dans des devises différentes : chacune est converti séparément."""
+    state_dir = tmp_path / "state"
+    broker = SimBroker(state_dir / "broker.json", starting_cash=100_000)
+    broker.submit(Order("AAPL", "BUY", 10.0), 200.0, "2026-06-24T09:00:00+00:00", dry_run=False)
+    broker.submit(Order("2379.TW", "BUY", 50.0), 800.0, "2026-06-24T09:00:00+00:00", dry_run=False)
+
+    prices = {"AAPL": 210.0, "2379.TW": 820.0}
+    rates = {"AAPL": 1.0, "2379.TW": 0.031}
+
+    gross = daemon._gross_exposure(broker, prices, rate_of=lambda sym: rates.get(sym, 1.0))
+
+    expected = abs(10.0 * 210.0 * 1.0) + abs(50.0 * 820.0 * 0.031)
+    assert gross == pytest.approx(expected, rel=1e-9)

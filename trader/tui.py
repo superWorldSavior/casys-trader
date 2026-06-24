@@ -721,7 +721,8 @@ def _build_positions_panel(
         net_pnl = _safe_float(h.get("unrealized_pnl_net"), default=None)
         round_trip_fee = _safe_float(h.get("round_trip_fee"), default=None)
         pnl = net_pnl if net_pnl is not None else gross_pnl
-        notional = abs(avg * qty)
+        fx_rate = _safe_float(h.get("fx_rate"), default=1.0) or 1.0
+        notional = abs(avg * qty * fx_rate)
         pnl_pct = (pnl / notional * 100.0) if notional else 0.0
         pnl_style = palette["pnl_positive"] if pnl >= 0 else palette["pnl_negative"]
         pnl_text = Text(f"{pnl:+,.2f}", style=pnl_style)
