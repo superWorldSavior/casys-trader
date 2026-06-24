@@ -73,3 +73,20 @@ def test_sim_broker_approxime_fchi_comme_cfd_indice_ibkr(tmp_path) -> None:
     assert fill.commission_currency == "EUR"
     assert fill.commission_model == "ibkr_france40_cfd"
     assert broker.cash() == pytest.approx(20_000.0 + 8372.28 - 1.0)
+
+
+def test_cash_deducted_in_usd_for_twd_symbol(tmp_path):
+    state = tmp_path / "broker.json"
+    broker = SimBroker(state_path=state, starting_cash=100_000.0)
+    # 10 actions @ 870 TWD, rate 0.031 -> 8700 * 0.031 = 269.7 USD
+    broker.submit(Order("2379.TW", "BUY", 10.0), price=870.0, ts="t", dry_run=False, fx_rate=0.031)
+    assert broker.cash() == pytest.approx(100_000.0 - 8700.0 * 0.031)
+    fill = broker._state.fills[-1]
+    assert fill["fx_rate"] == 0.031
+
+
+def test_cash_unchanged_for_usd_symbol(tmp_path):
+    state = tmp_path / "broker.json"
+    broker = SimBroker(state_path=state, starting_cash=100_000.0)
+    broker.submit(Order("MSFT", "BUY", 2.0), price=100.0, ts="t", dry_run=False, fx_rate=1.0)
+    assert broker.cash() == pytest.approx(100_000.0 - 200.0)

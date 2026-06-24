@@ -15,6 +15,8 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Literal, Protocol
 
+from .. import fx
+
 Side = Literal["BUY", "SELL"]
 CommissionModelName = Literal["none", "ibkr"]
 
@@ -37,6 +39,7 @@ class Fill:
     commission: float = 0.0
     commission_currency: str = "USD"
     commission_model: str = "none"
+    fx_rate: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -221,7 +224,7 @@ class SimBroker:
         self.state_path.parent.mkdir(parents=True, exist_ok=True)
         self.state_path.write_text(json.dumps(asdict(self._state), indent=2))
 
-    def submit(self, order: Order, price: float, ts: str, dry_run: bool = True) -> Fill | None:
+    def submit(self, order: Order, price: float, ts: str, dry_run: bool = True, fx_rate: float = 1.0) -> Fill | None:
         commission = self._commission_model.calculate(order, price)
         fill = Fill(
             order.symbol,
@@ -232,6 +235,7 @@ class SimBroker:
             commission=commission.amount,
             commission_currency=commission.currency,
             commission_model=commission.model,
+            fx_rate=fx_rate,
         )
         if dry_run:
             return None  # intention loggée par l'appelant, état non muté
@@ -249,7 +253,10 @@ class SimBroker:
             pos["avg_price"] = price
         pos["quantity"] = new_qty
         self._state.positions[order.symbol] = pos
-        self._state.cash -= signed * price + commission.amount
+        ccy = fx.currency_for(order.symbol)
+        cash_delta = fx.to_usd(signed * price, ccy, fx_rate)
+        fee_usd = fx.to_usd(commission.amount, commission.currency, fx_rate)
+        self._state.cash -= cash_delta + fee_usd
         self._state.fills.append(asdict(fill))
         self._save()
         return fill
