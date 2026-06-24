@@ -371,6 +371,20 @@ def _gross_exposure(
     )
 
 
+def _attribution_min_entry_confidence(
+    risk_cfg: dict, *, confidence_gate_enabled: bool
+) -> float | None:
+    """Seuil de censure de l'attribution par confiance d'entrée.
+
+    Gate confiance désactivé → None : aucune censure, les trips basse-confiance
+    entrent dans les buckets `by_confidence` (boucle de calibration). Gate actif →
+    `min_trade_confidence` (comportement live inchangé).
+    """
+    if not confidence_gate_enabled:
+        return None
+    return float(risk_cfg.get("min_trade_confidence", 0.7))
+
+
 def _hard_stop_price(raw_exit_plan: dict | None) -> float | None:
     if raw_exit_plan is None:
         return None
@@ -1396,6 +1410,10 @@ def run_cycle(
     )
     plan_store = TradePlanStore(STATE_DIR / "trade_plans.json")
     gate = RiskGate(RiskLimits.from_dict(risk_cfg))
+    # Paper/exploration : si False, une ouverture SANS hard_stop n'est plus rejetée
+    # (stop optionnel, position bornée par les seuls fusibles notionnels). Défaut
+    # True = guardrail D6 préservé (live-safe). Voir spec exploration-basse-confiance.
+    require_hard_stop = bool(risk_cfg.get("require_hard_stop", True))
     gate.start_cycle()
     mem = memory_mod.Memory(ROOT / "mandate" / "mandate.md", ROOT / "mandate" / "memory.md")
     learnings_store = memory_mod.LearningsStore(
@@ -1641,7 +1659,9 @@ def run_cycle(
         STATE_DIR,
         since=attribution_since,
         exclude_symbols=excluded_attribution_symbols,
-        min_entry_confidence=float(risk_cfg.get("min_trade_confidence", 0.7)),
+        min_entry_confidence=_attribution_min_entry_confidence(
+            risk_cfg, confidence_gate_enabled=gate.limits.confidence_gate_enabled
+        ),
     )
     meta_performance_payload = meta_performance.compute_meta_performance(STATE_DIR)
     base_context = {
@@ -2306,10 +2326,11 @@ def run_cycle(
                     stop_distance=None,
                     equity=snap.equity,
                 )
-                if pure_open:
+                if pure_open and require_hard_stop:
                     # Guardrail humain rendu déterministe (mandate/guardrails.json,
                     # D6 du registre) : pas d'ouverture sans hard_stop, quelle que
                     # soit la confiance. REVERSE reste tracé non bloqué (dette connue).
+                    # Désactivable en paper (require_hard_stop=false) : stop optionnel.
                     _log_cycle_progress(
                         "[risk] %s rejected code=missing_hard_stop", sym
                     )

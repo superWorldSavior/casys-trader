@@ -242,6 +242,113 @@ def test_run_cycle_rejette_ouverture_sans_hard_stop(
     assert decision_entry["reason"] == "risk:missing_hard_stop"
 
 
+def _enable_exploration(root) -> None:
+    """Mode exploration paper : gate confiance off, stop optionnel, position 30k."""
+    (root / "config" / "risk.yaml").write_text(
+        "\n".join(
+            [
+                "max_position_value: 30000",
+                "max_gross_exposure: 100000",
+                "max_order_value: 10000",
+                "max_risk_per_trade_pct: 0.01",
+                "max_orders_per_cycle: 5",
+                "min_equity: 50000",
+                "confidence_gate_enabled: false",
+                "require_hard_stop: false",
+            ]
+        )
+    )
+
+
+def test_run_cycle_gate_confiance_off_laisse_passer_confiance_basse(
+    monkeypatch, tmp_path, make_data_source
+) -> None:
+    """confidence_gate_enabled=false → ouverture (avec stop) à confiance ridicule
+    n'est PLUS rejetée pour la confiance."""
+    _write_runtime_config(tmp_path)
+    _enable_exploration(tmp_path)
+    state_dir = tmp_path / "state"
+    now = datetime(2026, 6, 5, 14, 30, tzinfo=timezone.utc)
+    decision = _open_long_decision(confidence=0.05)
+
+    def fake_batch_decide(**kwargs):
+        return {sym: decision if sym == "SPY" else Decision.hold(sym, "hold") for sym in kwargs["decidable"]}, 1
+
+    monkeypatch.setattr(daemon, "ROOT", tmp_path)
+    monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+    monkeypatch.setattr(daemon, "_batch_decide", fake_batch_decide)
+    data_source = make_data_source(
+        lambda symbol, lookback, interval: [
+            Bar(ts=now.isoformat(), open=100.0, high=101.0, low=99.0, close=100.0, volume=1000.0)
+        ]
+    )
+
+    report = daemon.run_cycle(
+        dry_run=True, now=now, symbols_filter=["SPY"],
+        sched=Scheduler(state_dir / "scheduler.json"), data_source=data_source,
+    )
+
+    entry = report["decisions"][0]
+    # dry_run → executed=False mais reason=ok (gate confiance off, ordre passé)
+    assert entry["reason"] == "ok"
+
+
+def test_run_cycle_require_hard_stop_false_laisse_passer_sans_stop(
+    monkeypatch, tmp_path, make_data_source
+) -> None:
+    """require_hard_stop=false → ouverture SANS hard_stop n'est plus rejetée
+    missing_hard_stop ; bornée par les seuls fusibles notionnels."""
+    _write_runtime_config(tmp_path)
+    _enable_exploration(tmp_path)
+    state_dir = tmp_path / "state"
+    now = datetime(2026, 6, 5, 14, 30, tzinfo=timezone.utc)
+    decision = Decision(
+        symbol="SPY", action="BUY", quantity=10.0, confidence=0.55,
+        rationale="explore sans stop", intent="OPEN_LONG", exit_plan=None,
+    )
+
+    def fake_batch_decide(**kwargs):
+        return {sym: decision if sym == "SPY" else Decision.hold(sym, "hold") for sym in kwargs["decidable"]}, 1
+
+    monkeypatch.setattr(daemon, "ROOT", tmp_path)
+    monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+    monkeypatch.setattr(daemon, "_batch_decide", fake_batch_decide)
+    data_source = make_data_source(
+        lambda symbol, lookback, interval: [
+            Bar(ts=now.isoformat(), open=100.0, high=101.0, low=99.0, close=100.0, volume=1000.0)
+        ]
+    )
+
+    report = daemon.run_cycle(
+        dry_run=True, now=now, symbols_filter=["SPY"],
+        sched=Scheduler(state_dir / "scheduler.json"), data_source=data_source,
+    )
+
+    entry = report["decisions"][0]
+    # dry_run → executed=False mais reason=ok (stop optionnel, borné par notionnel)
+    assert entry["reason"] == "ok"
+
+
+def test_attribution_min_entry_confidence_none_quand_gate_off() -> None:
+    """Gate confiance off → attribution non censurée (None) : les trips basse-confiance
+    entrent dans les buckets by_confidence. Gate on → seuil min_trade_confidence."""
+    assert (
+        daemon._attribution_min_entry_confidence(
+            {"min_trade_confidence": 0.7}, confidence_gate_enabled=False
+        )
+        is None
+    )
+    assert (
+        daemon._attribution_min_entry_confidence(
+            {"min_trade_confidence": 0.65}, confidence_gate_enabled=True
+        )
+        == 0.65
+    )
+    assert (
+        daemon._attribution_min_entry_confidence({}, confidence_gate_enabled=True) == 0.7
+    )
+
+
 def test_run_cycle_ouverture_enrichit_le_tradeplan_avec_le_contexte_d_entree(
     monkeypatch, tmp_path, make_data_source
 ) -> None:

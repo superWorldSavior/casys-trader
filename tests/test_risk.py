@@ -3,6 +3,7 @@ import math
 import pytest
 
 from trader.risk import RiskGate, RiskLimits
+from trader.tools.execution import Order
 
 
 def _gate(*, max_risk_per_trade_pct: float = 0.01) -> RiskGate:
@@ -16,6 +17,23 @@ def _gate(*, max_risk_per_trade_pct: float = 0.01) -> RiskGate:
             max_risk_per_trade_pct=max_risk_per_trade_pct,
         )
     )
+
+
+@pytest.mark.parametrize("bad_qty", [float("nan"), float("inf"), float("-inf")])
+def test_check_rejette_quantity_non_finie(bad_qty) -> None:
+    """Une quantity NaN/inf ne doit PAS contourner les bornes notionnelles
+    (NaN > limite == False) : fast-fail explicite. Critique en mode exploration
+    (gate confiance off + stop optionnel) où plus rien d'autre ne la borne."""
+    gate = _gate()
+    order = Order(symbol="SPY", side="BUY", quantity=bad_qty, rationale="x")
+    verdict = gate.check(
+        order,
+        100.0,
+        current_position_value=0.0,
+        gross_exposure=0.0,
+        equity=100_000.0,
+    )
+    assert verdict.approved is False
 
 
 @pytest.mark.parametrize(
@@ -162,6 +180,42 @@ def test_risk_limits_from_dict_defauts_confidence() -> None:
 
     assert limits.min_trade_confidence == 0.7
     assert limits.full_risk_confidence == 0.9
+    assert limits.confidence_gate_enabled is True  # défaut live-safe
+
+
+def test_check_confidence_desactive_approuve_meme_tres_basse() -> None:
+    """confidence_gate_enabled=False → le gate confiance ne rejette plus rien,
+    même une confiance ridicule au budget de risque plein (mode exploration paper)."""
+    gate = RiskGate(
+        RiskLimits(
+            max_position_value=30_000.0,
+            max_gross_exposure=100_000.0,
+            max_order_value=10_000.0,
+            max_orders_per_cycle=5,
+            min_equity=50_000.0,
+            max_risk_per_trade_pct=0.01,
+            confidence_gate_enabled=False,
+        )
+    )
+    assert gate.check_confidence(0.05, 0.01).approved is True
+    # None / hors-domaine ne doivent plus rejeter non plus quand le gate est off
+    assert gate.check_confidence(None, None).approved is True
+
+
+def test_risk_limits_from_dict_confidence_gate_desactivable() -> None:
+    """La clé confidence_gate_enabled est lue si présente."""
+    limits = RiskLimits.from_dict(
+        {
+            "max_position_value": 20_000.0,
+            "max_gross_exposure": 100_000.0,
+            "max_order_value": 10_000.0,
+            "max_orders_per_cycle": 5,
+            "min_equity": 50_000.0,
+            "confidence_gate_enabled": False,
+        }
+    )
+
+    assert limits.confidence_gate_enabled is False
 
 
 def test_risk_limits_from_dict_overrides_confidence() -> None:

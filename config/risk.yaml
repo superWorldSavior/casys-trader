@@ -2,15 +2,23 @@
 # Ce ne sont PAS les règles de stratégie de l'agent : ce sont les bornes externes
 # qui empêchent un bug de tout casser. Valeurs prudentes par défaut (paper).
 
-max_position_value: 20000      # $ max par position
+max_position_value: 30000      # $ max par position (~30% equity : concentration assumée D9)
 max_gross_exposure: 100000     # $ max exposition brute totale
 max_order_value: 10000         # $ max par ordre unique
-max_risk_per_trade_pct: 0.01   # 1% du capital risqué par trade (distance au stop)
+max_risk_per_trade_pct: 0.01   # 1% du capital risqué par trade (distance au stop), SI un stop existe
 max_orders_per_cycle: 5        # débit max d'ordres par réveil
 min_equity: 50000              # plancher : sous ce seuil, plus aucun ordre
-# Gate confiance adapté au risque :
+
+# --- Mode exploration / calibration (PAPER uniquement) ---
+# Spec : docs/superpowers/specs/2026-06-24-exploration-basse-confiance-calibration-design.md
+# La confiance ne gate plus la taille : c'est une prédiction pure mesurée ex-post
+# (buckets by_confidence de l'attribution, non censurés). Un profil LIVE doit
+# remettre ces deux flags à true et fournir des plafonds prudents.
+confidence_gate_enabled: false # false → le gate confiance ne rejette plus aucun ordre
+require_hard_stop: false       # false → ouverture sans hard_stop autorisée (bornée par le notionnel)
+
+# Seuils conservés pour référence / réactivation live (inertes tant que le gate est off) :
 #   required = min_trade_confidence + (full_risk_confidence − min_trade_confidence)
 #              × clamp(planned_risk_pct / max_risk_per_trade_pct, 0, 1)
-# Risque non borné (pas de hard stop) → full_risk_confidence exigée.
 min_trade_confidence: 0.7      # confiance minimale (risque nul)
 full_risk_confidence: 0.9      # confiance exigée au budget complet ou sans stop

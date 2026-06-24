@@ -38,6 +38,11 @@ class RiskLimits:
     #              × clamp(planned_risk_pct / max_risk_per_trade_pct, 0, 1)
     min_trade_confidence: float = 0.7   # seuil plancher (risque nul)
     full_risk_confidence: float = 0.9   # seuil exigé au budget complet (ou sans stop)
+    # Paper/exploration : si False, le gate de confiance ne rejette plus AUCUN ordre
+    # (la confiance devient une prédiction pure pour la calibration, découplée de la
+    # taille). Défaut True = comportement live-safe inchangé. Voir spec
+    # 2026-06-24-exploration-basse-confiance-calibration-design.md.
+    confidence_gate_enabled: bool = True
 
     def __post_init__(self) -> None:
         # Fail-closed : des seuils invalides rendraient le gate inutilisable.
@@ -60,6 +65,7 @@ class RiskLimits:
             max_risk_per_trade_pct=float(d.get("max_risk_per_trade_pct", 0.01)),
             min_trade_confidence=float(d.get("min_trade_confidence", 0.7)),
             full_risk_confidence=float(d.get("full_risk_confidence", 0.9)),
+            confidence_gate_enabled=bool(d.get("confidence_gate_enabled", True)),
         )
 
 
@@ -168,7 +174,13 @@ class RiskGate:
 
         confidence None ou non-finie → rejet fail-safe.
         confidence hors [0,1] → rejet (out_of_domain).
+
+        Gate désactivé (confidence_gate_enabled=False) → approuve TOUJOURS : la
+        confiance ne borne plus la taille (mode exploration/calibration paper).
         """
+        if not self.limits.confidence_gate_enabled:
+            return Verdict(True)
+
         required = self.required_confidence(planned_risk_pct)
 
         # Valeur inexploitable : None ou non-finie (nan, inf).
@@ -212,6 +224,11 @@ class RiskGate:
     ) -> Verdict:
         """Valide un ordre contre les bornes. Premier échec = rejet (fail fast)."""
         order_value = abs(order.quantity) * price * fx_rate
+        # Fast-fail : une valeur non-finie (NaN surtout) contournerait toutes les
+        # bornes (`NaN > limite` == False). Critique en mode exploration où le gate
+        # confiance et le hard_stop ne la bornent plus.
+        if not math.isfinite(order_value):
+            return Verdict(False, "non_finite_order", f"order_value={order_value}")
         signed = order_value if order.side == "BUY" else -order_value
         current_abs_position = abs(current_position_value)
         projected_position = abs(current_position_value + signed)

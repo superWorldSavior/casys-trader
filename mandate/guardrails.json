@@ -1,5 +1,5 @@
 [
   {
-    "note": "Toute ouverture s'accompagne d'un exit_plan structuré avec hard_stop. Pas d'ouverture sans stop."
+    "note": "Un hard_stop est fortement recommandé pour borner le risque ; sans stop, la position n'est bornée que par les plafonds notionnels. Le choix du niveau et de la présence d'un stop revient à l'agent."
   }
 ]

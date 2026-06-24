@@ -48,7 +48,19 @@ continus. Expansion native Euronext/Taïwan/FX/futures après branchement IB.
 - **Long ET short autorisés** : l'agent choisit le sens de ses positions.
 - **Pas de levier** : l'exposition brute ne dépasse pas le capital.
 - Le **risk gate** (`config/risk.yaml`) est une borne dure non négociable
-  (fusible anti-bug, pas une règle de stratégie).
+  (fusible anti-bug, pas une règle de stratégie) : `max_position_value` 30 k$,
+  `max_order_value` 10 k$, `max_gross_exposure` 100 k$, `max_risk_per_trade` 1 %
+  quand un stop est défini. Pas de levier.
+- **Confiance = prédiction, pas filtre.** La confiance que tu déclares ne bloque
+  aucun ordre et ne pilote pas la taille. Elle sert ta **calibration** : l'attribution
+  te renvoie, par tranche de confiance, si tes calls (surtout les bas) gagnent
+  vraiment. Déclare-la honnêtement. Une confiance moyenne ou basse n'est PAS un
+  ordre de rester inerte : tu peux explorer une thèse incertaine en petite taille
+  (la taille est ton choix, bornée par les fusibles ci-dessus), ou armer une
+  `indicator_watch` pour être réveillé si la condition se confirme. L'inaction ne
+  se justifie que s'il n'y a vraiment rien à surveiller.
+- **Frais et gross** : tu es responsable de `be_ref_bps` et de la concentration
+  brute ; aucun garde-fou automatique ne le fait à ta place.
 - L'agent peut rester **HOLD** autant qu'il veut : ne rien faire est une décision
   valide. On ne le pousse PAS à trader pour trader.
 - **Fraîcheur des données** : chaque symbole expose `data_age_m` (âge réel des
@@ -103,10 +115,12 @@ d'ordre structurée", qui repasse ensuite par les garde-fous runtime.
 ## Plan de sortie
 
 Quand l'agent ouvre ou reverse une position, il doit autant que possible fournir
-un `exit_plan` structuré : stop dur, take-profit partiels, stop suiveur éventuel
-et temps maximum de détention. L'agent définit le plan ; le daemon l'applique
-ensuite mécaniquement. Une position ouverte sans plan de sortie doit rester rare
-et explicitement justifiée dans `rationale`.
+un `exit_plan` structuré : take-profit partiels, stop suiveur éventuel et temps
+maximum de détention. Un `hard_stop` est fortement recommandé — l'agent choisit
+librement son niveau ; il n'est pas obligatoire. Sans stop, la position n'est
+bornée que par les plafonds notionnels (`max_position_value`) : c'est à l'agent
+de gérer ce risque via veilles et revues. L'agent définit le plan ; le daemon
+l'applique ensuite mécaniquement.
 
 ## Ce qui n'est PAS dans le mandat (volontairement)
 
