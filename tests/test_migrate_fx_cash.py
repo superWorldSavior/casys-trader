@@ -35,3 +35,41 @@ def test_commit_recomputes_cash_usd(tmp_path):
     assert data["fills"][0]["fx_rate"] == 0.031
     assert (p.parent / (p.name + ".bak-pre-fx")).exists() or any(
         f.name.startswith("broker.json.bak-pre-fx") for f in p.parent.iterdir())
+
+
+def test_commission_converted_via_own_currency(tmp_path):
+    """Regression: commission en EUR sur un fill TWD doit être converti à 1.2 (EUR), pas 0.031 (TWD).
+
+    Case: symbol priced in TWD (rate=0.031), but commission billed in EUR (rate=1.2).
+    The buggy code reuses the symbol's rate (0.031) for the commission.
+    The fixed code must look up EUR in rates separately.
+    """
+    p = tmp_path / "broker.json"
+    p.write_text(json.dumps({
+        "cash": 0.0,
+        "positions": {},
+        "fills": [
+            {
+                "symbol": "2379.TW",        # TWD-priced symbol
+                "side": "BUY",
+                "quantity": 1.0,
+                "price": 100.0,              # trade value = 100 TWD → 3.1 USD
+                "ts": "2026-06-24T05:00:00+00:00",
+                "commission": 10.0,
+                "commission_currency": "EUR",  # commission in EUR, NOT TWD
+            },
+        ],
+    }))
+    rates = {"TWD": 0.031, "EUR": 1.2}
+    report = migrate_fx_cash.run(p, rates=rates, starting_cash=100.0, commit=False)
+    # trade value: 100 TWD * 0.031 = 3.1 USD deducted
+    # commission: 10 EUR * 1.2 = 12.0 USD deducted  (NOT 10 * 0.031 = 0.31)
+    expected_cash = 100.0 - 3.1 - 12.0
+    buggy_cash = 100.0 - 3.1 - 0.31  # what the buggy code produces
+    assert report["cash_after"] != pytest.approx(buggy_cash, rel=1e-4), (
+        "Bug still present: commission was converted at symbol rate (TWD=0.031) instead of EUR rate (1.2)."
+    )
+    assert report["cash_after"] == pytest.approx(expected_cash, rel=1e-6), (
+        f"Expected {expected_cash} but got {report['cash_after']}. "
+        "Commission must be converted at its own currency rate (EUR=1.2), not symbol rate (TWD=0.031)."
+    )

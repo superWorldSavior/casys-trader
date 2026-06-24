@@ -24,8 +24,9 @@ def run(broker_path: Path, *, rates: dict[str, float], starting_cash: float, com
         fill["fx_rate"] = rate
         signed = fill["quantity"] if fill["side"] == "BUY" else -fill["quantity"]
         cash -= fx.to_usd(signed * fill["price"], sym_ccy, rate)
-        cash -= fx.to_usd(float(fill.get("commission") or 0.0),
-                          fill.get("commission_currency") or sym_ccy, rate)
+        comm_ccy = fill.get("commission_currency") or sym_ccy
+        comm_rate = float(fill.get("fx_rate") or rates.get(comm_ccy, 1.0)) if comm_ccy == sym_ccy else float(rates.get(comm_ccy, 1.0))
+        cash -= fx.to_usd(float(fill.get("commission") or 0.0), comm_ccy, comm_rate)
     report = {"cash_before": data.get("cash"), "cash_after": cash, "n_fills": len(fills)}
     if commit:
         ts_tag = fills[-1]["ts"][:10] if fills else "init"
