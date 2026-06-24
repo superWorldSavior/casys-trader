@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from trader import daemon
 from trader.codex_client import Decision
 from trader.tools.market import Bar
+from trader.tools.memory import LearningsStore
 from trader.tools.scheduler import Scheduler
 
 
@@ -83,6 +84,84 @@ def test_run_cycle_rejette_ouverture_confidence_insuffisante(
     decision_entry = report["decisions"][0]
     assert decision_entry["executed"] is False
     assert decision_entry["reason"] == "risk:confidence_below_required"
+
+
+def test_merge_gate_feedback_fusionne_avec_le_learning_de_lagent() -> None:
+    """Sur rejet de confiance, le seuil raté est appendé au learning de l'agent."""
+    out = daemon._merge_gate_feedback(
+        "risk:confidence_below_required",
+        "confidence=0.58 required=0.7000 planned_risk_pct=0.005",
+        "je tente un long sur cassure",
+    )
+    assert out is not None
+    assert "je tente un long sur cassure" in out  # learning de l'agent préservé
+    assert "required=0.7000" in out               # seuil exact raté
+
+
+def test_merge_gate_feedback_trace_le_rejet_meme_sans_learning() -> None:
+    """Rejet sans learning agent → on enregistre quand même le feedback du gate."""
+    out = daemon._merge_gate_feedback(
+        "risk:confidence_below_required",
+        "confidence=0.58 required=0.7000",
+        None,
+    )
+    assert out is not None and "required=0.7000" in out
+
+
+def test_merge_gate_feedback_laisse_les_autres_cas_intacts() -> None:
+    """Hors rejet de confiance (ou sans contexte), la note de l'agent passe telle quelle."""
+    assert daemon._merge_gate_feedback("ok", "ctx", "garde") == "garde"
+    assert daemon._merge_gate_feedback("ok", None, None) is None
+    # fail-safe : rejet de confiance mais contexte manquant → note inchangée
+    assert daemon._merge_gate_feedback("risk:confidence_below_required", None, "x") == "x"
+
+
+def test_run_cycle_rejet_confiance_injecte_le_feedback_dans_les_learnings(
+    monkeypatch, tmp_path, make_data_source
+) -> None:
+    """Intégration : un rejet de confiance laisse à l'agent le seuil exact raté
+    dans ses learnings relus au prochain réveil (pas juste un échec silencieux)."""
+    _write_runtime_config(tmp_path)
+    state_dir = tmp_path / "state"
+    now = datetime(2026, 6, 5, 14, 30, tzinfo=timezone.utc)  # vendredi, séance US ouverte
+
+    decision = Decision(
+        symbol="SPY",
+        action="BUY",
+        quantity=10.0,
+        confidence=0.58,
+        rationale="test gate confiance",
+        intent="OPEN_LONG",
+        exit_plan={"hard_stop": {"type": "price", "price": 95.0}},
+        learning="je tente un long sur cassure",
+    )
+
+    def fake_batch_decide(**kwargs):
+        return {sym: decision if sym == "SPY" else Decision.hold(sym, "hold") for sym in kwargs["decidable"]}, 1
+
+    monkeypatch.setattr(daemon, "ROOT", tmp_path)
+    monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+    monkeypatch.setattr(daemon, "_batch_decide", fake_batch_decide)
+    data_source = make_data_source(
+        lambda symbol, lookback, interval: [
+            Bar(ts=now.isoformat(), open=100.0, high=101.0, low=99.0, close=100.0, volume=1000.0)
+        ]
+    )
+
+    daemon.run_cycle(
+        dry_run=True,
+        now=now,
+        symbols_filter=["SPY"],
+        sched=Scheduler(state_dir / "scheduler.json"),
+        data_source=data_source,
+    )
+
+    recent = LearningsStore(state_dir / "learnings.jsonl").recent()
+    assert recent, "le rejet de confiance doit laisser une trace dans les learnings"
+    note = recent[0]["note"]
+    assert "je tente un long sur cassure" in note   # learning de l'agent préservé
+    assert "confidence=0.58" in note and "required=" in note  # feedback du gate
+    assert recent[0]["reason"] == "risk:confidence_below_required"
 
 
 def test_run_cycle_approuve_ouverture_confidence_suffisante(

@@ -122,11 +122,27 @@ def _compute_live_kpis_safe(state_dir: Path) -> dict:
     return result if isinstance(result, dict) else {}
 
 
+def _read_min_trade_confidence_safe() -> float:
+    """Lit min_trade_confidence depuis config/risk.yaml. Fail-safe → 0.7."""
+    try:
+        raw = yaml.safe_load((_ROOT / "config" / "risk.yaml").read_text(encoding="utf-8"))
+        if isinstance(raw, dict):
+            value = float(raw.get("min_trade_confidence", 0.7))
+            if 0.0 <= value <= 1.0:
+                return value
+    except Exception:
+        pass
+    return 0.7
+
+
 def _compute_attribution_safe(state_dir: Path) -> dict:
     try:
         from trader.attribution import compute_attribution
 
-        result = compute_attribution(state_dir)
+        result = compute_attribution(
+            state_dir,
+            min_entry_confidence=_read_min_trade_confidence_safe(),
+        )
     except Exception:
         return {}
     return result if isinstance(result, dict) else {}

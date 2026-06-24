@@ -157,6 +157,8 @@ def test_run_cycle_passe_le_filtre_regime_a_lattribution(
         "since": "2026-06-10",
         "excluded_symbols": ["CL=F", "GC=F"],
         "n_excluded_trades": 1,
+        "min_entry_confidence": 0.7,
+        "n_excluded_low_confidence": 0,
     }
 
 
@@ -268,7 +270,7 @@ def test_run_cycle_declenche_le_consolidateur_en_fin_de_cycle(
         contexts.append(kwargs["context"])
         return Decision.hold(kwargs["symbol"], "attente")
 
-    def compute_attribution(state_dir_arg, *, since=None, exclude_symbols=()):
+    def compute_attribution(state_dir_arg, *, since=None, exclude_symbols=(), min_entry_confidence=None):
         attribution_calls.append((state_dir_arg, since, exclude_symbols))
         return attribution_payload
 

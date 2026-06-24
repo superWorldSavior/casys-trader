@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from . import attribution as attribution_mod, llm, meta_performance as meta_performance_mod
+from .risk import read_min_trade_confidence
 from .tools.memory import LearningsStore
 
 DEFAULT_RAW_MAX_ENTRIES = 200
@@ -522,10 +523,12 @@ def main(argv: list[str] | None = None) -> int:
     consolidated_store = ConsolidatedLearningsStore(state_dir / "learnings_consolidated.json")
 
     if args.run:
+        _risk_yaml = Path(__file__).resolve().parent.parent / "config" / "risk.yaml"
         attr = attribution_mod.compute_attribution(
             state_dir,
             since=args.attribution_since,
             exclude_symbols=tuple(args.exclude_symbol),
+            min_entry_confidence=read_min_trade_confidence(_risk_yaml),
         )
         meta = meta_performance_mod.compute_meta_performance(state_dir)
         result = maybe_consolidate(

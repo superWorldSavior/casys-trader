@@ -338,6 +338,26 @@ def _invalid_intent_reason(decision: codex_client.Decision) -> str | None:
     return None
 
 
+def _merge_gate_feedback(
+    reason: str | None,
+    context: str | None,
+    note: str | None,
+) -> str | None:
+    """Fusionne le feedback du gate de confiance avec le learning de l'agent.
+
+    Quand une ouverture est rejetée faute de confiance, le seuil exact raté (porté
+    par `context`, ex. 'confidence=0.58 required=0.7000') ne remonte jamais à
+    l'agent : au mieux il devine qu'il a été refusé, sans savoir de combien. On
+    l'append aux learnings relus au prochain réveil pour qu'il calibre sa confiance
+    au lieu de re-proposer un ordre voué au même rejet. Retourne la note finale à
+    persister, ou None s'il n'y a rien à enregistrer.
+    """
+    if reason == "risk:confidence_below_required" and context:
+        feedback = f"[gate confiance] rejet — {context}"
+        return f"{note}\n{feedback}" if note else feedback
+    return note
+
+
 def _gross_exposure(broker: SimBroker, prices: dict[str, float]) -> float:
     return sum(
         abs(pos.quantity * prices.get(symbol, 0.0))
@@ -1577,6 +1597,7 @@ def run_cycle(
         STATE_DIR,
         since=attribution_since,
         exclude_symbols=excluded_attribution_symbols,
+        min_entry_confidence=float(risk_cfg.get("min_trade_confidence", 0.7)),
     )
     meta_performance_payload = meta_performance.compute_meta_performance(STATE_DIR)
     base_context = {
@@ -1647,7 +1668,11 @@ def run_cycle(
         # (machine-owned, borné) AVEC le résultat de la décision (executed/reason/
         # dry_run) pour qu'on puisse juger si l'agent fait les bons choix, puis les
         # réinjecte au prochain réveil.
-        note = decision_entry.get("learning")
+        note = _merge_gate_feedback(
+            decision_entry.get("reason"),
+            decision_entry.get("context"),
+            decision_entry.get("learning"),
+        )
         if note:
             decision_entry["learning_recorded"] = learnings_store.append(
                 symbol=decision_entry["symbol"],
