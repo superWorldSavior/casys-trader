@@ -10,6 +10,12 @@ import math
 
 BASE_CCY = "USD"
 
+# Correspondances exactes — prioritaires sur la boucle suffixes.
+SYMBOL_CCY: dict[str, str] = {
+    "^FCHI": "EUR",
+    "^TWII": "TWD",
+}
+
 SUFFIX_CCY: dict[str, str] = {
     ".TW": "TWD",
     ".TWO": "TWD",
@@ -17,12 +23,18 @@ SUFFIX_CCY: dict[str, str] = {
     ".DE": "EUR",
     ".AS": "EUR",
     ".MI": "EUR",
+    ".L": "GBP",
+    ".SW": "CHF",
+    # NOTE: .T est intentionnellement absent — suffixe ambigu (Tokyo + autres
+    # marchés) ; laissé à USD (défaut) en attendant une clarification.
 }
 
 
 def currency_for(symbol: str) -> str:
-    """Devise de cotation dérivée du suffixe. Défaut USD."""
+    """Devise de cotation : table exacte SYMBOL_CCY puis suffixe SUFFIX_CCY. Défaut USD."""
     sym = (symbol or "").strip().upper()
+    if sym in SYMBOL_CCY:
+        return SYMBOL_CCY[sym]
     for suffix, ccy in SUFFIX_CCY.items():
         if sym.endswith(suffix):
             return ccy

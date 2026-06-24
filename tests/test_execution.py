@@ -66,13 +66,19 @@ def test_sim_broker_approxime_fchi_comme_cfd_indice_ibkr(tmp_path) -> None:
         commission_model=IbkrCommissionModel(),
     )
 
-    fill = broker.submit(Order("^FCHI", "SELL", 1.0), 8372.28, "t1", dry_run=False)
+    # ^FCHI est maintenant correctement reconnu EUR (SYMBOL_CCY).
+    # trade_value_eur = 1 * 8372.28 ; commission_eur = 1.0
+    # cash_delta_usd = 8372.28 * eur_rate ; fee_usd = 1.0 * eur_rate
+    eur_rate = 1.10  # EUR/USD explicite
+    fill = broker.submit(Order("^FCHI", "SELL", 1.0), 8372.28, "t1", dry_run=False, fx_rate=eur_rate)
 
     assert fill is not None
     assert fill.commission == pytest.approx(1.0)
     assert fill.commission_currency == "EUR"
     assert fill.commission_model == "ibkr_france40_cfd"
-    assert broker.cash() == pytest.approx(20_000.0 + 8372.28 - 1.0)
+    # SELL : cash += trade_value_usd − commission_usd
+    expected_cash = 20_000.0 + 8372.28 * eur_rate - 1.0 * eur_rate
+    assert broker.cash() == pytest.approx(expected_cash)
 
 
 def test_cash_deducted_in_usd_for_twd_symbol(tmp_path):

@@ -17,7 +17,24 @@ def test_currency_for_europe():
 def test_currency_for_us_and_default():
     assert fx.currency_for("MSFT") == "USD"
     assert fx.currency_for("EURUSD=X") == "USD"
-    assert fx.currency_for("^FCHI") == "USD"
+
+
+def test_currency_for_exact_match_symbols():
+    assert fx.currency_for("^FCHI") == "EUR"
+    assert fx.currency_for("^TWII") == "TWD"
+
+
+def test_currency_for_gbp_suffix():
+    assert fx.currency_for("AZN.L") == "GBP"
+
+
+def test_currency_for_chf_suffix():
+    assert fx.currency_for("NESN.SW") == "CHF"
+
+
+def test_currency_for_dot_t_intentionally_usd():
+    # .T est intentionnellement non mappé (suffixe ambigu — voir commentaire dans fx.py)
+    assert fx.currency_for("AZN.T") == "USD"
 
 
 def test_to_usd_identity_for_usd():

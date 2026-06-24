@@ -5,9 +5,17 @@
 # fallback : taux statique utilisé si le fetch live échoue (dégradation loggée).
 TWD:
   yahoo: "TWD=X"
-  invert: true
+  invert: true   # TWD=X cote TWD/USD -> rate = 1/close (USD par TWD)
   fallback: 0.031
 EUR:
   yahoo: "EURUSD=X"
-  invert: false
+  invert: false  # EURUSD=X cote USD/EUR -> rate = close (USD par EUR)
   fallback: 1.08
+GBP:
+  yahoo: "GBPUSD=X"
+  invert: false  # GBPUSD=X cote USD/GBP -> rate = close (USD par GBP)
+  fallback: 1.27
+CHF:
+  yahoo: "CHF=X"
+  invert: true   # CHF=X cote CHF/USD -> rate = 1/close (USD par CHF)
+  fallback: 1.13
