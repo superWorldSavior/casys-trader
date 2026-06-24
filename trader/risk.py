@@ -208,9 +208,10 @@ class RiskGate:
         gross_exposure: float,
         equity: float,
         allow_risk_reduction: bool = False,
+        fx_rate: float = 1.0,
     ) -> Verdict:
         """Valide un ordre contre les bornes. Premier échec = rejet (fail fast)."""
-        order_value = abs(order.quantity) * price
+        order_value = abs(order.quantity) * price * fx_rate
         signed = order_value if order.side == "BUY" else -order_value
         current_abs_position = abs(current_position_value)
         projected_position = abs(current_position_value + signed)

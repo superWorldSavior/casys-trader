@@ -34,6 +34,8 @@ from . import (
     consolidator,
     decision_ledger,
     family_regime,
+    fx,
+    fx_rates,
     meta_performance,
     relevance_gate,
     stats,
@@ -724,6 +726,7 @@ def _apply_planned_exits(
     dry_run: bool,
     starting_equity: float,
     execution_eligibility: dict[str, dict] | None = None,
+    rate_fn: Callable[[str], float] | None = None,
 ) -> list[dict]:
     entries: list[dict] = []
     for plan in plan_store.open_plans():
@@ -828,7 +831,8 @@ def _apply_planned_exits(
             quantity=clamped_quantity,
             rationale=evaluation.signal.reason,
         )
-        fill = broker.submit(order, effective_fill_price, now.isoformat(), dry_run=dry_run)
+        _fill_rate = rate_fn(plan.symbol) if rate_fn is not None else 1.0
+        fill = broker.submit(order, effective_fill_price, now.isoformat(), dry_run=dry_run, fx_rate=_fill_rate)
         if not dry_run:
             final_position = broker.positions().get(plan.symbol)
             final_quantity = 0.0 if final_position is None else final_position.quantity
@@ -1466,6 +1470,37 @@ def run_cycle(
     if stale_market_data:
         _log_cycle_progress("[market] stale symbols=%s", sorted(stale_market_data))
 
+    # Taux FX du cycle — chargés une fois par cycle après la boucle prix.
+    # Fail-safe : si fx.yaml absent (tests, env simplifié), tous les symboles
+    # tombent sur le fallback USD=1.0. Le fetch utilise la même source que les
+    # barres (data_source), pour la cohérence temporelle du cycle.
+    _fx_cfg: dict = {}
+    _fx_yaml_path = ROOT / "config" / "fx.yaml"
+    if _fx_yaml_path.exists():
+        try:
+            _fx_cfg = fx_rates.load_fx_config(_fx_yaml_path)
+        except Exception as _fx_cfg_exc:  # noqa: BLE001 — fx.yaml mal formé : dégrade en USD
+            log.warning("fx.yaml illisible (%s), dégradation USD fallback", _fx_cfg_exc)
+
+    def _fx_fetch(yahoo_symbol: str) -> float | None:
+        try:
+            bars = data_source.get_bars(yahoo_symbol, lookback="2d", interval="1d")
+            return bars[-1].close if bars else None
+        except Exception:  # noqa: BLE001 — le fetch FX ne doit jamais casser le cycle
+            return None
+
+    try:
+        fx_rate_by_ccy: dict[str, float] = fx_rates.rates_for_symbols(
+            prices.keys(), fetcher=_fx_fetch, config=_fx_cfg
+        )
+    except Exception as _fx_rates_exc:  # noqa: BLE001 — devise non configurée → USD fallback
+        log.warning("fx rates fetch échoué (%s), dégradation USD fallback", _fx_rates_exc)
+        fx_rate_by_ccy = {fx.BASE_CCY: 1.0}
+
+    def _rate(sym: str) -> float:
+        """Retourne le taux USD/ccy pour le symbole ; USD=1.0 si inconnu."""
+        return fx_rate_by_ccy.get(fx.currency_for(sym), 1.0)
+
     # Reset streak pour tous les symboles frais (data fraîche reçue)
     if sched is not None:
         for sym in symbols:
@@ -1543,6 +1578,7 @@ def run_cycle(
         dry_run=dry_run,
         starting_equity=starting_equity,
         execution_eligibility=execution_eligibility,
+        rate_fn=_rate,
     )
     if planned_exits:
         _log_cycle_progress("[exit] planned exits=%d", len(planned_exits))
@@ -1648,6 +1684,7 @@ def run_cycle(
         "portfolio": snap.as_context(fee_estimator=portfolio_fee_estimator),
         "prices": {s: round(p, 4) for s, p in prices.items()},
         "stale_market_data": stale_market_data,
+        "fx_rates": fx_rate_by_ccy,
         "model_calls_used": 0,
     }
 
@@ -2286,6 +2323,7 @@ def run_cycle(
                         snap.equity,
                         prices[sym],
                         hard_stop_price,
+                        fx_rate=_rate(sym),
                     )
                     entry["max_risk_qty"] = max_risk_quantity
                     if max_risk_quantity <= 0:
@@ -2342,15 +2380,16 @@ def run_cycle(
                     continue
 
         order = Order(symbol=sym, side=decision.action, quantity=effective_quantity, rationale=decision.rationale)
-        cur_pos_value = (pos.quantity * prices[sym]) if pos else 0.0
+        cur_pos_value = (pos.quantity * prices[sym] * _rate(sym)) if pos else 0.0
         allow_risk_reduction = decision.intent in {"REDUCE", "CLOSE"}
         verdict = gate.check(
             order,
             prices[sym],
             current_position_value=cur_pos_value,
-            gross_exposure=gross,
+            gross_exposure=gross,  # TODO(fx Task7): gross/equity en USD
             equity=snap.equity,
             allow_risk_reduction=allow_risk_reduction,
+            fx_rate=_rate(sym),
         )
 
         if not verdict.approved:
@@ -2365,7 +2404,7 @@ def run_cycle(
             record_decision({**entry, "executed": False, "reason": f"risk:{verdict.code}", "context": verdict.context})
             continue
 
-        fill = broker.submit(order, prices[sym], now.isoformat(), dry_run=dry_run)
+        fill = broker.submit(order, prices[sym], now.isoformat(), dry_run=dry_run, fx_rate=_rate(sym))
         if not dry_run:
             gate.record_pass()
             gross = _gross_exposure(broker, prices)

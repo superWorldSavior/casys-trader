@@ -373,3 +373,43 @@ def test_qty_at_risk_fx_rate_invalid_returns_zero() -> None:
     gate = _gate_usd()
     assert gate.max_quantity_at_risk(100_000.0, 100.0, 99.0, fx_rate=0.0) == 0.0
     assert gate.max_quantity_at_risk(100_000.0, 100.0, 99.0, fx_rate=math.nan) == 0.0
+
+
+# ---------------------------------------------------------------------------
+# Task 5 — gate.check fx_rate : ordre natif TWD converti en USD
+# ---------------------------------------------------------------------------
+
+
+def test_check_fx_rate_converts_order_value_to_usd() -> None:
+    """gate.check avec fx_rate convertit la valeur de l'ordre en USD.
+
+    TWD : qty=101, price=870, fx_rate=0.031 → order_value_usd ≈ 2727 < 10000 → APPROVED.
+    Sans conversion (fx_rate=1.0) : order_value_native = 101*870 = 87870 > 10000 → REJECTED.
+    """
+    from trader.tools.execution import Order  # noqa: PLC0415
+    gate = _gate_usd(max_order_value=10_000.0)
+
+    order = Order(symbol="2379.TW", side="BUY", quantity=101.0)
+
+    # Avec fx_rate TWD : order_value_usd = 101 * 870 * 0.031 ≈ 2727 → approuvé
+    verdict_fx = gate.check(
+        order,
+        870.0,
+        current_position_value=0.0,
+        gross_exposure=0.0,
+        equity=200_000.0,
+        fx_rate=0.031,
+    )
+    assert verdict_fx.approved is True, f"expected APPROVED with fx_rate, got {verdict_fx.code}"
+
+    # Sans conversion (fx_rate=1.0) : order_value = 101 * 870 = 87870 > 10000 → rejeté
+    verdict_no_fx = gate.check(
+        order,
+        870.0,
+        current_position_value=0.0,
+        gross_exposure=0.0,
+        equity=200_000.0,
+        fx_rate=1.0,
+    )
+    assert verdict_no_fx.approved is False, "expected REJECTED without fx_rate"
+    assert verdict_no_fx.code == "order_value_exceeded"

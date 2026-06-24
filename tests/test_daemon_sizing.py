@@ -1,0 +1,183 @@
+"""Tests du fusible currency-correct : gate borne la quantité native de l'agent.
+
+Ces tests verrouillent :
+  1. le rôle fusible de RiskGate.max_order_quantity_at_price avec fx_rate non-USD ;
+  2. la formule du budget natif (utilisée en Task 5B pour construire le contexte agent) ;
+  3. l'intégration daemon : run_cycle REJETTE (sans modifier la quantité agent)
+     un ordre dont la valeur dépasse max_order_value.
+"""
+from __future__ import annotations
+
+from datetime import datetime, timezone
+
+import pytest
+
+from trader import daemon
+from trader.codex_client import Decision
+from trader.risk import RiskGate, RiskLimits
+from trader import fx
+from trader.tools.market import Bar
+from trader.tools.scheduler import Scheduler
+
+
+# ---------------------------------------------------------------------------
+# Tests unitaires (risk gate + formule budget natif)
+# ---------------------------------------------------------------------------
+
+
+def test_gate_clamps_native_quantity_in_usd():
+    """L'agent propose une quantité native absurde ; le gate la borne à l'exposition
+    USD autorisée (fusible currency-correct), sans la recalculer à sa place."""
+    gate = RiskGate(RiskLimits(
+        max_order_value=10_000.0,
+        max_risk_per_trade_pct=0.01,
+        max_position_value=50_000.0,
+        max_gross_exposure=200_000.0,
+        max_orders_per_cycle=10,
+        min_equity=0.0,
+    ))
+    assert fx.currency_for("2379.TW") == "TWD"
+    agent_qty = 100_000.0  # proposition absurde de l'agent
+    qty_cap = gate.max_order_quantity_at_price(870.0, fx_rate=0.031)
+    effective = min(agent_qty, qty_cap)
+    assert effective < agent_qty                      # clampé
+    assert effective * 870.0 * 0.031 <= 10_000.0 + 1e-6  # exposition USD bornée
+    assert qty_cap > 300.0                            # pas l'ancien ~11
+
+
+def test_native_risk_budget_formula():
+    """Le budget natif livré à l'agent = risk_pct * equity_USD / fx_rate."""
+    equity_usd, pct, rate = 100_000.0, 0.01, 0.031
+    risk_budget_native = pct * equity_usd / rate
+    assert risk_budget_native == pytest.approx(1_000.0 / 0.031)  # ~32258 TWD
+
+
+# ---------------------------------------------------------------------------
+# Test d'intégration : run_cycle clampe une quantité sur-proposée
+# ---------------------------------------------------------------------------
+
+
+def _write_config_with_fx(root) -> None:
+    """Crée la config minimale incluant fx.yaml pour le test d'intégration."""
+    (root / "config").mkdir(exist_ok=True)
+    (root / "mandate").mkdir(exist_ok=True)
+    (root / "config" / "universe.yaml").write_text(
+        "starting_cash: 100000\nsymbols:\n  - SPY\n"
+    )
+    (root / "config" / "risk.yaml").write_text(
+        "max_position_value: 20000\n"
+        "max_gross_exposure: 100000\n"
+        "max_order_value: 10000\n"
+        "max_risk_per_trade_pct: 0.01\n"
+        "max_orders_per_cycle: 5\n"
+        "min_equity: 50000\n"
+    )
+    # fx.yaml avec uniquement USD (SPY est USD — pas de conversion)
+    (root / "config" / "fx.yaml").write_text(
+        "# fx.yaml minimal pour tests\n"
+        "TWD:\n"
+        "  yahoo: TWD=X\n"
+        "  invert: true\n"
+        "  fallback: 0.031\n"
+        "EUR:\n"
+        "  yahoo: EURUSD=X\n"
+        "  invert: false\n"
+        "  fallback: 1.08\n"
+    )
+    (root / "mandate" / "mandate.md").write_text("# Mandat\n")
+    (root / "mandate" / "memory.md").write_text("# Memoire\n")
+
+
+def test_run_cycle_rejette_quantite_native_sur_proposee(monkeypatch, tmp_path, make_data_source) -> None:
+    """Le daemon REJETTE (sans clamper) un BUY absurde (1000) qui dépasse max_order_value.
+
+    SPY ≈ 100 USD, max_order_value=10 000 USD → order_value=100 000 > 10 000 → rejeté.
+    La quantité de l'agent (1000) n'est pas modifiée ; l'ordre n'est pas exécuté.
+    """
+    _write_config_with_fx(tmp_path)
+    state_dir = tmp_path / "state"
+    now = datetime(2026, 6, 5, 14, 30, tzinfo=timezone.utc)
+
+    # Agent propose une quantité absurde
+    decision = Decision(
+        symbol="SPY",
+        action="BUY",
+        quantity=1000.0,
+        confidence=0.95,
+        rationale="test reject",
+        intent="OPEN_LONG",
+        exit_plan={"hard_stop": {"type": "price", "price": 95.0}},
+    )
+
+    def fake_batch_decide(**kwargs):
+        return {
+            sym: decision if sym == "SPY" else Decision.hold(sym, "hold")
+            for sym in kwargs["decidable"]
+        }, 1
+
+    monkeypatch.setattr(daemon, "ROOT", tmp_path)
+    monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+    monkeypatch.setattr(daemon, "_batch_decide", fake_batch_decide)
+
+    data_source = make_data_source(
+        lambda symbol, lookback, interval: [
+            Bar(ts=now.isoformat(), open=100.0, high=101.0, low=99.0, close=100.0, volume=1000.0)
+        ]
+    )
+
+    report = daemon.run_cycle(
+        dry_run=True,
+        now=now,
+        symbols_filter=["SPY"],
+        sched=Scheduler(state_dir / "scheduler.json"),
+        data_source=data_source,
+    )
+
+    decisions = report["decisions"]
+    assert decisions, "aucune décision dans le rapport"
+    spy_dec = next((d for d in decisions if d["symbol"] == "SPY"), None)
+    assert spy_dec is not None, "décision SPY absente"
+
+    # L'ordre doit être REJETÉ (executed=False, reason contient 'risk')
+    # et la quantité dans le journal doit rester celle de l'agent (1000), non clampée
+    assert spy_dec.get("executed") is False, (
+        f"ordre non rejeté : executed={spy_dec.get('executed')}"
+    )
+    assert "risk" in (spy_dec.get("reason") or ""), (
+        f"raison de rejet inattendue : {spy_dec.get('reason')}"
+    )
+    recorded_qty = spy_dec.get("qty", spy_dec.get("quantity"))
+    assert recorded_qty == pytest.approx(1000.0), (
+        f"quantité agent modifiée par le daemon : {recorded_qty} ≠ 1000"
+    )
+
+
+def test_run_cycle_fx_rates_dans_le_rapport(monkeypatch, tmp_path, make_data_source) -> None:
+    """Le rapport de cycle contient la clé 'fx_rates' pour l'audit."""
+    _write_config_with_fx(tmp_path)
+    state_dir = tmp_path / "state"
+    now = datetime(2026, 6, 5, 14, 30, tzinfo=timezone.utc)
+
+    monkeypatch.setattr(daemon, "ROOT", tmp_path)
+    monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+    monkeypatch.setattr(daemon, "_batch_decide", lambda **kw: (
+        {sym: Decision.hold(sym, "hold") for sym in kw["decidable"]}, 0
+    ))
+
+    data_source = make_data_source(
+        lambda symbol, lookback, interval: [
+            Bar(ts=now.isoformat(), open=100.0, high=101.0, low=99.0, close=100.0, volume=1000.0)
+        ]
+    )
+
+    report = daemon.run_cycle(
+        dry_run=True,
+        now=now,
+        symbols_filter=["SPY"],
+        sched=Scheduler(state_dir / "scheduler.json"),
+        data_source=data_source,
+    )
+
+    assert "fx_rates" in report, "clé 'fx_rates' absente du rapport"
+    assert isinstance(report["fx_rates"], dict)
+    assert report["fx_rates"].get("USD") == 1.0
