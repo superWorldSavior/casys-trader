@@ -32,9 +32,12 @@ def test_currency_for_chf_suffix():
     assert fx.currency_for("NESN.SW") == "CHF"
 
 
-def test_currency_for_dot_t_intentionally_usd():
-    # .T est intentionnellement non mappé (suffixe ambigu — voir commentaire dans fx.py)
-    assert fx.currency_for("AZN.T") == "USD"
+def test_currency_for_dot_t_is_taiwan():
+    # Dans ce pool, .T = titres taïwanais (pas Tokyo) — confirmé par Erwan.
+    assert fx.currency_for("2330.T") == "TWD"
+    # Pas de collision : .TW/.TWO restent TWD aussi.
+    assert fx.currency_for("2379.TW") == "TWD"
+    assert fx.currency_for("6488.TWO") == "TWD"
 
 
 def test_to_usd_identity_for_usd():

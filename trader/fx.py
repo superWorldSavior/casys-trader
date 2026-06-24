@@ -25,8 +25,10 @@ SUFFIX_CCY: dict[str, str] = {
     ".MI": "EUR",
     ".L": "GBP",
     ".SW": "CHF",
-    # NOTE: .T est intentionnellement absent — suffixe ambigu (Tokyo + autres
-    # marchés) ; laissé à USD (défaut) en attendant une clarification.
+    # .T : dans CE pool ce sont des titres taïwanais (variante du suffixe .TW),
+    # PAS du Tokyo — confirmé par Erwan 2026-06-24 (« y a pas de Tokyo ici, c'est
+    # que du Taïwan »). Donc TWD. Pas de collision avec .TW/.TWO (endswith distinct).
+    ".T": "TWD",
 }
 
 
