@@ -67,6 +67,10 @@ class _OpenLeg:
         self.entry_ts: str | None = None
         self._conf_sum = 0.0     # somme pondérée par quantité ajoutée
         self._conf_qty = 0.0
+        # Taux de change et devise de commission de la jambe d'entrée.
+        # Défaut 1.0/USD = comportement legacy (fills sans fx_rate = USD natif).
+        self.entry_fx_rate: float = 1.0
+        self.entry_commission_currency: str = "USD"
 
     @property
     def entry_confidence(self) -> float | None:
@@ -80,12 +84,16 @@ class _OpenLeg:
         ts: str,
         confidence: float | None,
         commission: float = 0.0,
+        fx_rate: float = 1.0,
+        commission_currency: str = "USD",
     ) -> None:
         if self.qty == 0.0:
             self.entry_ts = ts
             self._conf_sum = 0.0
             self._conf_qty = 0.0
             self.commission = 0.0
+            self.entry_fx_rate = fx_rate
+            self.entry_commission_currency = commission_currency
         new_qty = self.qty + added_qty
         self.avg_price = (self.avg_price * abs(self.qty) + price * abs(added_qty)) / abs(new_qty)
         self.qty = new_qty
@@ -141,6 +149,8 @@ def compute_round_trips(state_dir: Path) -> list[dict]:
         confidence = row.get("confidence")
         confidence = float(confidence) if isinstance(confidence, (int, float)) else None
         row_commission = _as_non_negative_float(row.get("commission"))
+        row_fx_rate = _as_non_negative_float(row.get("fx_rate")) or 1.0
+        row_commission_currency = str(row.get("commission_currency") or "USD")
         signed = qty if action == "BUY" else -qty
 
         leg = legs.setdefault(symbol, _OpenLeg())
@@ -153,6 +163,8 @@ def compute_round_trips(state_dir: Path) -> list[dict]:
                 ts=ts,
                 confidence=confidence,
                 commission=row_commission,
+                fx_rate=row_fx_rate,
+                commission_currency=row_commission_currency,
             )
             continue
 
@@ -162,8 +174,16 @@ def compute_round_trips(state_dir: Path) -> list[dict]:
         old_abs = abs(leg.qty)
         entry_commission = leg.commission * (closing_qty / old_abs) if old_abs > 0 else 0.0
         exit_commission = row_commission * (closing_qty / qty) if qty > 0 else 0.0
-        gross_pnl = (price - leg.avg_price) * closing_qty * entry_sign
-        total_commission = entry_commission + exit_commission
+        # P&L brut en devise native. Le mouvement de prix est réalisé à la sortie →
+        # on convertit gross_pnl via le taux de la jambe de sortie. Les commissions
+        # sont converties chacune via leur propre taux (entrée pour entry_commission,
+        # sortie pour exit_commission). Fills sans fx_rate → taux 1.0 (comportement
+        # legacy USD inchangé).
+        gross_pnl_native = (price - leg.avg_price) * closing_qty * entry_sign
+        gross_pnl_usd = gross_pnl_native * row_fx_rate
+        entry_commission_usd = entry_commission * leg.entry_fx_rate
+        exit_commission_usd = exit_commission * row_fx_rate
+        total_commission_usd = entry_commission_usd + exit_commission_usd
         trips.append(
             {
                 "symbol": symbol,
@@ -171,9 +191,9 @@ def compute_round_trips(state_dir: Path) -> list[dict]:
                 "quantity": closing_qty,
                 "entry_price": leg.avg_price,
                 "exit_price": price,
-                "gross_pnl": gross_pnl,
-                "commission": total_commission,
-                "pnl": gross_pnl - total_commission,
+                "gross_pnl": gross_pnl_usd,
+                "commission": total_commission_usd,
+                "pnl": gross_pnl_usd - total_commission_usd,
                 "entry_ts": leg.entry_ts,
                 "exit_ts": ts,
                 "holding_minutes": _holding_minutes(leg.entry_ts or ts, ts),
@@ -196,6 +216,8 @@ def compute_round_trips(state_dir: Path) -> list[dict]:
                 ts=ts,
                 confidence=confidence,
                 commission=max(row_commission - exit_commission, 0.0),
+                fx_rate=row_fx_rate,
+                commission_currency=row_commission_currency,
             )
             legs[symbol] = fresh
         else:
@@ -262,29 +284,47 @@ def _filter_regime_trips(
     *,
     since: str | None,
     exclude_symbols: tuple[str, ...] | frozenset[str],
+    min_entry_confidence: float | None = None,
 ) -> tuple[list[dict], dict]:
     since_date = _parse_iso_date(since, field="since") if since is not None else None
     excluded_symbols = _normalize_excluded_symbols(exclude_symbols)
     excluded_symbol_set = set(excluded_symbols)
     kept: list[dict] = []
     n_excluded_trades = 0
+    n_excluded_low_confidence = 0
 
     for trip in trips:
-        excluded = False
+        excluded_regime = False
         if since_date is not None:
             exit_date = _parse_iso_date(str(trip.get("exit_ts")), field="exit_ts")
-            excluded = exit_date < since_date
+            excluded_regime = exit_date < since_date
         if str(trip.get("symbol")) in excluded_symbol_set:
-            excluded = True
-        if excluded:
+            excluded_regime = True
+        if excluded_regime:
             n_excluded_trades += 1
-        else:
-            kept.append(trip)
+            continue
+
+        # Filtre confiance d'entrée : exclut les anomalies historiques pré-gate
+        # ou passées par l'auto-exécution qui bypasse le risk gate.
+        # Un trip dont entry_confidence est None est TOUJOURS conservé :
+        # on n'exclut pas ce qu'on ne peut pas juger.
+        entry_conf = trip.get("entry_confidence")
+        if (
+            min_entry_confidence is not None
+            and entry_conf is not None
+            and entry_conf < min_entry_confidence
+        ):
+            n_excluded_low_confidence += 1
+            continue
+
+        kept.append(trip)
 
     return kept, {
         "since": since,
         "excluded_symbols": list(excluded_symbols),
         "n_excluded_trades": n_excluded_trades,
+        "min_entry_confidence": min_entry_confidence,
+        "n_excluded_low_confidence": n_excluded_low_confidence,
     }
 
 
@@ -293,6 +333,7 @@ def select_hard_stop_symbols(
     *,
     since: str | None = None,
     exclude_symbols: tuple[str, ...] | frozenset[str] = (),
+    min_entry_confidence: float | None = None,
 ) -> list[str]:
     """Symboles ayant des sorties hard_stop après application des filtres régime."""
     trips = compute_round_trips(state_dir)
@@ -300,6 +341,7 @@ def select_hard_stop_symbols(
         trips,
         since=since,
         exclude_symbols=exclude_symbols,
+        min_entry_confidence=min_entry_confidence,
     )
     return sorted(
         {str(trip.get("symbol")) for trip in trips if trip.get("exit_reason") == "hard_stop" and trip.get("symbol")}
@@ -475,6 +517,7 @@ def compute_hard_stop_diagnostics(
     exclude_symbols: tuple[str, ...] | frozenset[str] = (),
     lookahead_bars: int = 8,
     interval: str = "1h",
+    min_entry_confidence: float | None = None,
 ) -> dict:
     """Diagnostique après coup les sorties `hard_stop`.
 
@@ -487,6 +530,7 @@ def compute_hard_stop_diagnostics(
         trips,
         since=since,
         exclude_symbols=exclude_symbols,
+        min_entry_confidence=min_entry_confidence,
     )
     hard_stop_trips = [trip for trip in trips if trip.get("exit_reason") == "hard_stop"]
     cases = [
@@ -533,6 +577,7 @@ def compute_attribution(
     *,
     since: str | None = None,
     exclude_symbols: tuple[str, ...] | frozenset[str] = (),
+    min_entry_confidence: float | None = None,
 ) -> dict:
     """Round-trips + calibration par bucket de confidence + breakdown raison de sortie.
 
@@ -544,6 +589,7 @@ def compute_attribution(
         trips,
         since=since,
         exclude_symbols=exclude_symbols,
+        min_entry_confidence=min_entry_confidence,
     )
     overall = _aggregate(trips)
 

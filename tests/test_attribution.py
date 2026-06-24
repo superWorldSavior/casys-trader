@@ -204,6 +204,8 @@ def test_compute_attribution_filtre_les_trips_clotures_avant_since(tmp_path) -> 
         "since": "2026-06-10",
         "excluded_symbols": [],
         "n_excluded_trades": 1,
+        "min_entry_confidence": None,
+        "n_excluded_low_confidence": 0,
     }
 
 
@@ -235,6 +237,8 @@ def test_compute_attribution_exclut_les_symboles_et_recalcule_les_raisons(tmp_pa
         "since": None,
         "excluded_symbols": ["CL=F"],
         "n_excluded_trades": 1,
+        "min_entry_confidence": None,
+        "n_excluded_low_confidence": 0,
     }
 
 
@@ -263,6 +267,8 @@ def test_compute_attribution_sans_args_garde_tous_les_trips(tmp_path) -> None:
         "since": None,
         "excluded_symbols": [],
         "n_excluded_trades": 0,
+        "min_entry_confidence": None,
+        "n_excluded_low_confidence": 0,
     }
 
 
@@ -365,6 +371,51 @@ def test_select_hard_stop_symbols_applique_les_filtres_regime(tmp_path) -> None:
     )
 
     assert symbols == ["SPY"]
+
+
+def test_round_trip_pnl_converted_to_usd(tmp_path) -> None:
+    """Un round-trip TWD est rapporté en USD = (pnl natif) converti via fx_rate."""
+    import pytest
+
+    _write_perf(
+        tmp_path,
+        [
+            {"ts": "2026-06-23T05:00:00+00:00", "symbol": "2379.TW", "action": "BUY",
+             "quantity": 10.0, "price": 870.0, "commission": 80.0,
+             "commission_currency": "TWD", "fx_rate": 0.031},
+            {"ts": "2026-06-24T01:00:00+00:00", "symbol": "2379.TW", "action": "SELL",
+             "quantity": 10.0, "price": 829.0, "commission": 80.0,
+             "commission_currency": "TWD", "fx_rate": 0.031},
+        ],
+    )
+
+    trips = compute_round_trips(tmp_path)
+    assert len(trips) == 1
+    # gross_pnl natif = (829-870)*10 = -410 TWD → en USD via exit fx_rate
+    # commissions natives = 80 entry + 80 exit = 160 TWD → en USD via chaque leg fx_rate
+    # pnl natif total = -410 - 160 = -570 TWD ; en USD = -570 * 0.031
+    assert trips[0]["pnl"] == pytest.approx(-570.0 * 0.031, rel=1e-6)
+
+
+def test_round_trip_legacy_fill_sans_fx_rate_inchange(tmp_path) -> None:
+    """Un fill sans fx_rate doit garder le comportement legacy (pnl en native = USD)."""
+    import pytest
+
+    _write_perf(
+        tmp_path,
+        [
+            {"ts": "2026-06-05T10:00:00+00:00", "symbol": "SPY", "action": "BUY",
+             "quantity": 10, "price": 100.0, "commission": 0.35},
+            {"ts": "2026-06-05T11:00:00+00:00", "symbol": "SPY", "action": "SELL",
+             "quantity": 10, "price": 110.0, "commission": 0.35},
+        ],
+    )
+
+    trips = compute_round_trips(tmp_path)
+    assert len(trips) == 1
+    # gross = (110-100)*10 = 100.0 ; commissions = 0.70 ; pnl = 99.30
+    assert trips[0]["gross_pnl"] == pytest.approx(100.0)
+    assert trips[0]["pnl"] == pytest.approx(99.30)
 
 
 def test_hard_stop_diagnostics_marque_stop_trop_tot_si_reprise_apres_stop(tmp_path) -> None:
@@ -577,3 +628,194 @@ def test_position_se_clot_proprement_malgre_les_flottants(tmp_path) -> None:
     assert trips[1]["entry_price"] == 100.0
     assert trips[1]["quantity"] == 1
     assert trips[1]["entry_confidence"] == 0.5
+
+
+# ---------------------------------------------------------------------------
+# Filtre min_entry_confidence — anomalies historiques pré-gate ou auto-exec
+# ---------------------------------------------------------------------------
+
+def test_filtre_low_confidence_exclut_trip_sous_seuil(tmp_path) -> None:
+    """Un trip avec entry_confidence < seuil est exclu quand min_entry_confidence est fourni."""
+    _write_perf(
+        tmp_path,
+        [
+            # Confiance basse (0.6 < 0.7) : doit être exclu
+            {"ts": "2026-06-10T10:00:00+00:00", "symbol": "SPY", "action": "BUY",
+             "quantity": 1, "price": 100.0, "confidence": 0.6, "intent": "OPEN_LONG"},
+            {"ts": "2026-06-10T11:00:00+00:00", "symbol": "SPY", "action": "SELL",
+             "quantity": 1, "price": 90.0, "confidence": None, "intent": "PLANNED_EXIT",
+             "exit_reason": "hard_stop"},
+            # Confiance suffisante (0.8 >= 0.7) : doit être conservé
+            {"ts": "2026-06-10T12:00:00+00:00", "symbol": "QQQ", "action": "BUY",
+             "quantity": 1, "price": 100.0, "confidence": 0.8, "intent": "OPEN_LONG"},
+            {"ts": "2026-06-10T13:00:00+00:00", "symbol": "QQQ", "action": "SELL",
+             "quantity": 1, "price": 110.0, "confidence": None, "intent": "PLANNED_EXIT",
+             "exit_reason": "take_profit"},
+        ],
+    )
+
+    attr = compute_attribution(tmp_path, min_entry_confidence=0.7)
+
+    assert attr["n_closed_trades"] == 1
+    assert attr["realized_pnl"] == 10.0
+    assert attr["regime"]["n_excluded_low_confidence"] == 1
+    assert attr["regime"]["min_entry_confidence"] == 0.7
+
+
+def test_filtre_low_confidence_conserve_trip_exactement_au_seuil(tmp_path) -> None:
+    """entry_confidence == seuil : conservé (exclusion strictement inférieure)."""
+    _write_perf(
+        tmp_path,
+        [
+            {"ts": "2026-06-10T10:00:00+00:00", "symbol": "SPY", "action": "BUY",
+             "quantity": 1, "price": 100.0, "confidence": 0.7, "intent": "OPEN_LONG"},
+            {"ts": "2026-06-10T11:00:00+00:00", "symbol": "SPY", "action": "SELL",
+             "quantity": 1, "price": 110.0, "confidence": None, "intent": "PLANNED_EXIT",
+             "exit_reason": "take_profit"},
+        ],
+    )
+
+    attr = compute_attribution(tmp_path, min_entry_confidence=0.7)
+
+    assert attr["n_closed_trades"] == 1
+    assert attr["regime"]["n_excluded_low_confidence"] == 0
+
+
+def test_filtre_low_confidence_none_desactive_le_filtre(tmp_path) -> None:
+    """min_entry_confidence=None (défaut) ne filtre rien — rétrocompat."""
+    _write_perf(
+        tmp_path,
+        [
+            {"ts": "2026-06-10T10:00:00+00:00", "symbol": "SPY", "action": "BUY",
+             "quantity": 1, "price": 100.0, "confidence": 0.5, "intent": "OPEN_LONG"},
+            {"ts": "2026-06-10T11:00:00+00:00", "symbol": "SPY", "action": "SELL",
+             "quantity": 1, "price": 90.0, "confidence": None, "intent": "PLANNED_EXIT",
+             "exit_reason": "hard_stop"},
+        ],
+    )
+
+    attr = compute_attribution(tmp_path)  # min_entry_confidence absent → None
+
+    assert attr["n_closed_trades"] == 1
+    assert attr["regime"]["min_entry_confidence"] is None
+    assert attr["regime"]["n_excluded_low_confidence"] == 0
+
+
+def test_filtre_low_confidence_conserve_trip_avec_confidence_none(tmp_path) -> None:
+    """Un trip dont entry_confidence est None est toujours conservé même si le filtre est actif.
+    On n'exclut pas ce qu'on ne peut pas juger."""
+    _write_perf(
+        tmp_path,
+        [
+            # Pas de confidence sur l'entrée (champ absent) : conservé même avec filtre actif
+            {"ts": "2026-06-10T10:00:00+00:00", "symbol": "SPY", "action": "BUY",
+             "quantity": 1, "price": 100.0, "intent": "OPEN_LONG"},
+            {"ts": "2026-06-10T11:00:00+00:00", "symbol": "SPY", "action": "SELL",
+             "quantity": 1, "price": 110.0, "confidence": None, "intent": "PLANNED_EXIT",
+             "exit_reason": "take_profit"},
+        ],
+    )
+
+    attr = compute_attribution(tmp_path, min_entry_confidence=0.7)
+
+    assert attr["n_closed_trades"] == 1
+    assert attr["regime"]["n_excluded_low_confidence"] == 0
+
+
+def test_filtre_low_confidence_compte_separement_de_since_et_symbols(tmp_path) -> None:
+    """n_excluded_low_confidence ne compte QUE les exclusions par confiance (pas since/symbols)."""
+    _write_perf(
+        tmp_path,
+        [
+            # Exclu par since (pas par confiance)
+            {"ts": "2026-06-09T10:00:00+00:00", "symbol": "IWM", "action": "BUY",
+             "quantity": 1, "price": 100.0, "confidence": 0.5, "intent": "OPEN_LONG"},
+            {"ts": "2026-06-09T11:00:00+00:00", "symbol": "IWM", "action": "SELL",
+             "quantity": 1, "price": 90.0, "confidence": None, "intent": "PLANNED_EXIT",
+             "exit_reason": "hard_stop"},
+            # Exclu par symbole (pas par confiance)
+            {"ts": "2026-06-10T10:00:00+00:00", "symbol": "CL=F", "action": "BUY",
+             "quantity": 1, "price": 100.0, "confidence": 0.5, "intent": "OPEN_LONG"},
+            {"ts": "2026-06-10T11:00:00+00:00", "symbol": "CL=F", "action": "SELL",
+             "quantity": 1, "price": 90.0, "confidence": None, "intent": "PLANNED_EXIT",
+             "exit_reason": "hard_stop"},
+            # Exclu par confiance basse (et dans la fenêtre since, pas exclu par symbole)
+            {"ts": "2026-06-10T12:00:00+00:00", "symbol": "SPY", "action": "BUY",
+             "quantity": 1, "price": 100.0, "confidence": 0.6, "intent": "OPEN_LONG"},
+            {"ts": "2026-06-10T13:00:00+00:00", "symbol": "SPY", "action": "SELL",
+             "quantity": 1, "price": 90.0, "confidence": None, "intent": "PLANNED_EXIT",
+             "exit_reason": "hard_stop"},
+            # Conservé
+            {"ts": "2026-06-10T14:00:00+00:00", "symbol": "QQQ", "action": "BUY",
+             "quantity": 1, "price": 100.0, "confidence": 0.8, "intent": "OPEN_LONG"},
+            {"ts": "2026-06-10T15:00:00+00:00", "symbol": "QQQ", "action": "SELL",
+             "quantity": 1, "price": 110.0, "confidence": None, "intent": "PLANNED_EXIT",
+             "exit_reason": "take_profit"},
+        ],
+    )
+
+    attr = compute_attribution(
+        tmp_path,
+        since="2026-06-10",
+        exclude_symbols=("CL=F",),
+        min_entry_confidence=0.7,
+    )
+
+    assert attr["n_closed_trades"] == 1
+    assert attr["regime"]["n_excluded_trades"] == 2  # IWM (since) + CL=F (symbole)
+    assert attr["regime"]["n_excluded_low_confidence"] == 1  # SPY (confiance)
+
+
+def test_filtre_low_confidence_sur_select_hard_stop_symbols(tmp_path) -> None:
+    """select_hard_stop_symbols honore min_entry_confidence : un hard_stop à confiance basse est exclu."""
+    _write_perf(
+        tmp_path,
+        [
+            # Hard stop à confiance basse : ne doit PAS apparaître dans la liste
+            {"ts": "2026-06-10T10:00:00+00:00", "symbol": "SPY", "action": "BUY",
+             "quantity": 1, "price": 100.0, "confidence": 0.6, "intent": "OPEN_LONG"},
+            {"ts": "2026-06-10T11:00:00+00:00", "symbol": "SPY", "action": "SELL",
+             "quantity": 1, "price": 95.0, "confidence": None, "intent": "PLANNED_EXIT",
+             "exit_reason": "hard_stop"},
+            # Hard stop à confiance suffisante : doit apparaître
+            {"ts": "2026-06-10T12:00:00+00:00", "symbol": "QQQ", "action": "BUY",
+             "quantity": 1, "price": 100.0, "confidence": 0.8, "intent": "OPEN_LONG"},
+            {"ts": "2026-06-10T13:00:00+00:00", "symbol": "QQQ", "action": "SELL",
+             "quantity": 1, "price": 95.0, "confidence": None, "intent": "PLANNED_EXIT",
+             "exit_reason": "hard_stop"},
+        ],
+    )
+
+    symbols = attribution.select_hard_stop_symbols(tmp_path, min_entry_confidence=0.7)
+
+    assert symbols == ["QQQ"]
+
+
+def test_filtre_low_confidence_sur_compute_hard_stop_diagnostics(tmp_path) -> None:
+    """compute_hard_stop_diagnostics honore min_entry_confidence."""
+    _write_perf(
+        tmp_path,
+        [
+            # Hard stop confiance basse : exclu du diagnostic
+            {"ts": "2026-06-05T10:00:00+00:00", "symbol": "SPY", "action": "BUY",
+             "quantity": 10, "price": 100.0, "confidence": 0.6, "intent": "OPEN_LONG"},
+            {"ts": "2026-06-05T11:00:00+00:00", "symbol": "SPY", "action": "SELL",
+             "quantity": 10, "price": 95.0, "confidence": None, "intent": "PLANNED_EXIT",
+             "exit_reason": "hard_stop"},
+            # Hard stop confiance suffisante : inclus
+            {"ts": "2026-06-05T12:00:00+00:00", "symbol": "QQQ", "action": "BUY",
+             "quantity": 10, "price": 100.0, "confidence": 0.8, "intent": "OPEN_LONG"},
+            {"ts": "2026-06-05T13:00:00+00:00", "symbol": "QQQ", "action": "SELL",
+             "quantity": 10, "price": 95.0, "confidence": None, "intent": "PLANNED_EXIT",
+             "exit_reason": "hard_stop"},
+        ],
+    )
+
+    diagnostic = compute_hard_stop_diagnostics(
+        tmp_path,
+        {"QQQ": [], "SPY": []},
+        min_entry_confidence=0.7,
+    )
+
+    assert diagnostic["summary"]["hard_stops"] == 1
+    assert diagnostic["regime"]["n_excluded_low_confidence"] == 1
