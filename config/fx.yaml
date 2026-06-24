@@ -1,0 +1,13 @@
+# config/fx.yaml — taux de change vers la base USD.
+# rate_usd = USD par unité de la devise. Convention yfinance par paire :
+#   invert:true  -> la paire cote <ccy> par USD (TWD=X) -> rate = 1/close
+#   invert:false -> la paire cote USD par <ccy> (EURUSD=X) -> rate = close
+# fallback : taux statique utilisé si le fetch live échoue (dégradation loggée).
+TWD:
+  yahoo: "TWD=X"
+  invert: true
+  fallback: 0.031
+EUR:
+  yahoo: "EURUSD=X"
+  invert: false
+  fallback: 1.08
