@@ -249,8 +249,8 @@ class CockpitStatus(Static):
 
         text = (
             f"  {vital_str}"
-            f"  Équité non conv. [{eq_style}]{equity:,.2f}[/{eq_style}]"
-            f"  Cash non conv. [{eq_style}]{cash:,.2f}[/{eq_style}]"
+            f"  Équité $ [{eq_style}]${equity:,.2f}[/{eq_style}]"
+            f"  Cash $ [{eq_style}]${cash:,.2f}[/{eq_style}]"
             f"  P&L net vs départ [{ret_style}]{ret_pct:+.2f}%[/{ret_style}]"
             f" [{pnl_style}]({pnl:+,.2f})[/{pnl_style}]"
             f"  Daemon [{phase_style}]{phase}[/{phase_style}]"

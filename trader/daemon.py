@@ -846,7 +846,7 @@ def _apply_planned_exits(
             plan_store.sync_symbol_quantity(plan.symbol, abs(final_quantity))
             if fill is not None:
                 price_map = valuation_prices if valuation_prices is not None else prices
-                latest = portfolio.snapshot(broker, lambda s: price_map.get(s, 0.0), starting_equity)
+                latest = portfolio.snapshot(broker, lambda s: price_map.get(s, 0.0), starting_equity, fx_rate_of=rate_fn)
                 _append_model_performance(
                     ts=fill.ts,
                     symbol=plan.symbol,
@@ -1600,7 +1600,7 @@ def run_cycle(
             if symbol in symbols and symbol not in symbols_to_decide:
                 symbols_to_decide.append(symbol)
 
-    snap = portfolio.snapshot(broker, lambda s: prices.get(s, 0.0), starting_equity)
+    snap = portfolio.snapshot(broker, lambda s: prices.get(s, 0.0), starting_equity, fx_rate_of=_rate)
     gross = sum(abs(h.market_value) for h in snap.holdings)
     portfolio_fee_estimator = _build_portfolio_fee_estimator(commission_model)
 
@@ -1693,7 +1693,7 @@ def run_cycle(
     }
 
     def refresh_report_portfolio() -> None:
-        latest = portfolio.snapshot(broker, lambda s: prices.get(s, 0.0), starting_equity)
+        latest = portfolio.snapshot(broker, lambda s: prices.get(s, 0.0), starting_equity, fx_rate_of=_rate)
         report["portfolio"] = latest.as_context(fee_estimator=portfolio_fee_estimator)
 
     _write_current_report(report)
@@ -2390,7 +2390,7 @@ def run_cycle(
             order,
             prices[sym],
             current_position_value=cur_pos_value,
-            gross_exposure=gross,  # TODO(fx Task7): gross/equity en USD
+            gross_exposure=gross,
             equity=snap.equity,
             allow_risk_reduction=allow_risk_reduction,
             fx_rate=_rate(sym),
@@ -2413,7 +2413,7 @@ def run_cycle(
             gate.record_pass()
             gross = _gross_exposure(broker, prices)
             if fill is not None:
-                latest = portfolio.snapshot(broker, lambda s: prices.get(s, 0.0), starting_equity)
+                latest = portfolio.snapshot(broker, lambda s: prices.get(s, 0.0), starting_equity, fx_rate_of=_rate)
                 final_position = broker.positions().get(sym)
                 llm_exit_reason = _llm_exit_reason_for_intent(decision.intent)
                 _append_model_performance(

@@ -158,9 +158,9 @@ async def test_cockpit_status_prend_palette_en_compte(tmp_path, monkeypatch):
         # Doit accepter palette= sans TypeError
         status.update_state(state, kill_active=False, palette=PALETTE_LIGHT)
         rendered = str(status.render())
-        assert "Cash non conv." in rendered
+        assert "Cash $" in rendered
         assert "85,000.00" in rendered
-        assert "$85,000.00" not in rendered
+        assert "$85,000.00" in rendered
         assert "P&L net vs départ" in rendered
         assert "(+2,500.00)" in rendered
         assert "Progrès 1/3" in rendered

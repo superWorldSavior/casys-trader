@@ -786,7 +786,7 @@ def _build_attribution_panel(
     summary = Text.assemble(
         ("Trades clôturés : ", "bold"),
         (_fmt_int(attribution.get("n_closed_trades")), palette["kpi_default"]),
-        ("   P&L local réalisé : ", "bold"),
+        ("   P&L réalisé $ : ", "bold"),
         (_fmt_signed_money(realized_pnl), pnl_style),
         (realized_detail, palette["dim"]),
         ("   Win rate : ", "bold"),
@@ -814,7 +814,7 @@ def _build_attribution_panel(
                 Text(str(row.get("bucket", "—")), style="bold"),
                 _confidence_bar(row.get("win_rate"), pnl, palette=palette),
                 Text(
-                    f"n={_fmt_int(row.get('n'))}  win={_fmt_percent(row.get('win_rate'))}  P&L local {_fmt_signed_money(pnl)}",
+                    f"n={_fmt_int(row.get('n'))}  win={_fmt_percent(row.get('win_rate'))}  P&L $ {_fmt_signed_money(pnl)}",
                     style=row_pnl_style,
                 ),
             )
@@ -832,7 +832,7 @@ def _build_attribution_panel(
     exit_table.add_column("Raison")
     exit_table.add_column("n", justify="right")
     exit_table.add_column("Win", justify="right")
-    exit_table.add_column("P&L local", justify="right")
+    exit_table.add_column("P&L $", justify="right")
     if exit_rows:
         for row in exit_rows:
             pnl = _safe_float(row.get("total_pnl"), default=0.0) or 0.0
@@ -1493,7 +1493,7 @@ def build_closed_trades_table(
     table.add_column("Nom·Ticker", style="bold")
     table.add_column("Sens")
     table.add_column("Entrée→Sortie", justify="right")
-    table.add_column("Net local", justify="right")
+    table.add_column("Net $", justify="right")
     table.add_column("Raison")
     table.add_column("Durée", justify="right")
 
@@ -1972,15 +1972,15 @@ def build_view(
     )
     inline_curve = sparkline(equity_curve[-32:]) if equity_curve else ""
     header_lines = Text.assemble(
-        ("Équité non conv. : ", "bold"),
-        (f"{equity:,.2f}", f"bold {palette['kpi_default']}"),
+        ("Équité $ : ", "bold"),
+        (f"${equity:,.2f}", f"bold {palette['kpi_default']}"),
         (f"  {inline_curve}   " if inline_curve else "   ", palette["kpi_default"]),
-        ("Cash non conv. : ", "bold"),
-        (f"{cash:,.2f}   ", palette["kpi_default"]),
-        ("Rendement non conv. : ", "bold"),
+        ("Cash $ : ", "bold"),
+        (f"${cash:,.2f}   ", palette["kpi_default"]),
+        ("Rendement : ", "bold"),
         (f"{ret_pct:+.2f}%   ", ret_style),
-        ("PnL latent local : ", "bold"),
-        (f"{unrealized_total:+,.2f}", unrealized_style),
+        ("PnL latent $ : ", "bold"),
+        (f"${unrealized_total:+,.2f}", unrealized_style),
         (
             f" (dont frais {_fmt_fee_cost(unrealized_fee_total)})   "
             if unrealized_fees

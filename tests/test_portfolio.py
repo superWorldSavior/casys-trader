@@ -1,3 +1,5 @@
+import pytest
+
 from trader.tools.portfolio import Holding, Snapshot
 
 
@@ -51,3 +53,18 @@ def test_as_context_ignore_un_holding_quand_l_estimateur_renvoie_none() -> None:
     assert holdings[0]["unrealized_pnl_net"] == 98.0
     assert "round_trip_fee" not in holdings[1]
     assert "unrealized_pnl_net" not in holdings[1]
+
+
+def test_holding_twd_market_value_et_unrealized_pnl_en_usd() -> None:
+    """Holding TWD valorisé en USD via fx_rate."""
+    h = Holding("2379.TW", quantity=10.0, avg_price=800.0, last_price=870.0, fx_rate=0.031)
+    assert h.market_value == pytest.approx(870.0 * 10 * 0.031, rel=1e-9)
+    assert h.unrealized_pnl == pytest.approx((870.0 - 800.0) * 10 * 0.031, rel=1e-9)
+
+
+def test_holding_usd_defaut_fx_rate_inchange() -> None:
+    """fx_rate=1.0 par défaut : holding USD non altéré."""
+    h = Holding("AAPL", quantity=10.0, avg_price=100.0, last_price=110.0)
+    assert h.fx_rate == 1.0
+    assert h.market_value == pytest.approx(1100.0, rel=1e-9)
+    assert h.unrealized_pnl == pytest.approx(100.0, rel=1e-9)

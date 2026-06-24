@@ -105,11 +105,11 @@ def test_build_view_avec_etat_complet_retourne_un_renderable() -> None:
     # L'output doit contenir les données clé
     assert "AAPL" in output
     assert "TSLA" in output
-    assert "Équité non conv." in output
-    assert "Cash non conv." in output
-    assert "$102,500.00" not in output
-    assert "$85,000.00" not in output
-    assert "PnL latent local" in output
+    assert "Équité $" in output
+    assert "Cash $" in output
+    assert "$102,500.00" in output
+    assert "$85,000.00" in output
+    assert "PnL latent $" in output
     assert "-50.00" in output
     assert "deciding_symbol" in output
     assert "1/2" in output
@@ -188,7 +188,7 @@ def test_build_view_total_latent_utilise_le_net_et_detaille_les_frais() -> None:
 
     output = _render_plain(build_view(state), width=220)
 
-    assert "PnL latent local" in output
+    assert "PnL latent $" in output
     assert "+47.00" in output
     assert "dont frais -3.00" in output
 
@@ -205,8 +205,8 @@ def test_attribution_affiche_le_realise_net_avec_frais_et_brut_secondaires() -> 
 
     output = _render_plain(_build_attribution_panel(attribution))
 
-    assert "P&L local réalisé" in output
-    assert "P&L local +42.50" in output
+    assert "P&L réalisé $" in output
+    assert "P&L $ +42.50" in output
     assert "+42.50" in output
     assert "dont frais -3.75" in output
     assert "brut +46.25" in output
@@ -230,7 +230,7 @@ def test_trades_clotures_affichent_net_local_avec_brut_et_frais() -> None:
 
     output = _render_plain(build_closed_trades_table(trips, {}))
 
-    assert "Net local" in output
+    assert "Net $" in output
     assert "+8.50" in output
     assert "brut +10.00" in output
     assert "frais -1.50" in output

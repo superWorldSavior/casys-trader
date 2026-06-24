@@ -6,7 +6,7 @@ fournit le contexte chiffré que l'agent lit à chaque réveil pour piloter ses 
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable
 
 from .execution import Broker
@@ -18,14 +18,15 @@ class Holding:
     quantity: float
     avg_price: float
     last_price: float
+    fx_rate: float = field(default=1.0)
 
     @property
     def market_value(self) -> float:
-        return self.quantity * self.last_price
+        return self.quantity * self.last_price * self.fx_rate
 
     @property
     def unrealized_pnl(self) -> float:
-        return (self.last_price - self.avg_price) * self.quantity
+        return (self.last_price - self.avg_price) * self.quantity * self.fx_rate
 
 
 @dataclass(frozen=True)
@@ -72,9 +73,10 @@ class Snapshot:
                     h.last_price,
                 )
                 if round_trip_fee is not None:
-                    item["round_trip_fee"] = round_trip_fee
+                    round_trip_fee_usd = round_trip_fee * h.fx_rate
+                    item["round_trip_fee"] = round_trip_fee_usd
                     item["unrealized_pnl_net"] = round(
-                        unrealized_pnl - round_trip_fee,
+                        unrealized_pnl - round_trip_fee_usd,
                         2,
                     )
             holdings.append(item)
@@ -86,10 +88,24 @@ class Snapshot:
         }
 
 
-def snapshot(broker: Broker, price_of: Callable[[str], float], starting_equity: float) -> Snapshot:
-    """price_of(symbol) -> dernier prix. Injecté pour rester testable/déterministe."""
+def snapshot(
+    broker: Broker,
+    price_of: Callable[[str], float],
+    starting_equity: float,
+    fx_rate_of: Callable[[str], float] | None = None,
+) -> Snapshot:
+    """price_of(symbol) -> dernier prix. Injecté pour rester testable/déterministe.
+
+    fx_rate_of(symbol) -> taux USD/native (1.0 par défaut = USD natif).
+    """
     holdings = [
-        Holding(symbol=p.symbol, quantity=p.quantity, avg_price=p.avg_price, last_price=price_of(p.symbol))
+        Holding(
+            symbol=p.symbol,
+            quantity=p.quantity,
+            avg_price=p.avg_price,
+            last_price=price_of(p.symbol),
+            fx_rate=fx_rate_of(p.symbol) if fx_rate_of is not None else 1.0,
+        )
         for p in broker.positions().values()
     ]
     return Snapshot(cash=broker.cash(), holdings=holdings, starting_equity=starting_equity)
