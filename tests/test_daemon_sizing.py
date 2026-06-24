@@ -25,9 +25,11 @@ from trader.tools.scheduler import Scheduler
 # ---------------------------------------------------------------------------
 
 
-def test_gate_clamps_native_quantity_in_usd():
-    """L'agent propose une quantité native absurde ; le gate la borne à l'exposition
-    USD autorisée (fusible currency-correct), sans la recalculer à sa place."""
+def test_gate_order_value_cap_is_currency_correct():
+    """Unité (gate seul, PAS le daemon) : max_order_quantity_at_price calcule un
+    plafond d'ordre currency-correct. NB : le daemon REJETTE (reject-not-clamp) un
+    ordre au-dessus de ce plafond — il ne le réduit pas. Ce plafond sert de conseil
+    de sizing (advisory) côté contexte agent (Task 5B), pas de clamp daemon."""
     gate = RiskGate(RiskLimits(
         max_order_value=10_000.0,
         max_risk_per_trade_pct=0.01,
@@ -37,12 +39,9 @@ def test_gate_clamps_native_quantity_in_usd():
         min_equity=0.0,
     ))
     assert fx.currency_for("2379.TW") == "TWD"
-    agent_qty = 100_000.0  # proposition absurde de l'agent
-    qty_cap = gate.max_order_quantity_at_price(870.0, fx_rate=0.031)
-    effective = min(agent_qty, qty_cap)
-    assert effective < agent_qty                      # clampé
-    assert effective * 870.0 * 0.031 <= 10_000.0 + 1e-6  # exposition USD bornée
-    assert qty_cap > 300.0                            # pas l'ancien ~11
+    advisory_cap = gate.max_order_quantity_at_price(870.0, fx_rate=0.031)
+    assert advisory_cap * 870.0 * 0.031 <= 10_000.0 + 1e-6  # exposition USD bornée
+    assert advisory_cap > 300.0                             # pas l'ancien ~11 (currency-correct)
 
 
 def test_native_risk_budget_formula():
