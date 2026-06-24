@@ -73,3 +73,39 @@ def test_commission_converted_via_own_currency(tmp_path):
         f"Expected {expected_cash} but got {report['cash_after']}. "
         "Commission must be converted at its own currency rate (EUR=1.2), not symbol rate (TWD=0.031)."
     )
+
+
+def _perf(tmp_path: Path) -> Path:
+    p = tmp_path / "model_performance.jsonl"
+    p.write_text(
+        json.dumps({"symbol": "2379.TW", "action": "BUY", "price": 870.0, "quantity": 10.0,
+                    "commission": 80.0, "commission_currency": "TWD", "ts": "2026-06-23T05:00:00+00:00"}) + "\n"
+        + json.dumps({"symbol": "MSFT", "action": "BUY", "price": 100.0, "quantity": 2.0,
+                      "ts": "2026-06-23T06:00:00+00:00"}) + "\n"
+    )
+    return p
+
+
+def test_stamp_perf_dry_run_does_not_mutate(tmp_path):
+    p = _perf(tmp_path)
+    before = p.read_text()
+    rep = migrate_fx_cash.stamp_perf_rows(p, rates={"TWD": 0.031}, commit=False)
+    assert p.read_text() == before
+    # TWD stampé à 0.031, USD (MSFT) stampé explicitement à 1.0 (déterminisme)
+    assert rep["stamped"] == 2 and rep["by_ccy"] == {"TWD": 1, "USD": 1}
+
+
+def test_stamp_perf_commit_stamps_fx_rate(tmp_path):
+    p = _perf(tmp_path)
+    migrate_fx_cash.stamp_perf_rows(p, rates={"TWD": 0.031}, commit=True)
+    rows = [json.loads(l) for l in p.read_text().splitlines() if l.strip()]
+    tw = next(r for r in rows if r["symbol"] == "2379.TW")
+    assert tw["fx_rate"] == 0.031
+    assert any(f.name.startswith("model_performance.jsonl.bak-pre-fx") for f in p.parent.iterdir())
+
+
+def test_stamp_perf_idempotent(tmp_path):
+    p = _perf(tmp_path)
+    migrate_fx_cash.stamp_perf_rows(p, rates={"TWD": 0.031}, commit=True)
+    rep2 = migrate_fx_cash.stamp_perf_rows(p, rates={"TWD": 0.031}, commit=True)
+    assert rep2["stamped"] == 0  # déjà stampé → rien à refaire
