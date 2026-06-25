@@ -570,7 +570,7 @@ def test_build_default_router_from_env_configure_acpx_puis_ollama(monkeypatch) -
 
     router = build_default_router_from_env()
 
-    assert [backend.provider for backend in router.backends] == ["acpx", "acpx-spark-fallback", "ollama-cloud"]
+    assert [backend.provider for backend in router.backends] == ["acpx", "acpx-claude-sonnet", "ollama-cloud"]
     assert router.backends[0].model == "gpt-5.5"
     assert router.backends[2].model == "nemotron-3-nano:30b-cloud"
 
@@ -603,34 +603,34 @@ def test_build_default_router_from_env_charge_un_dotenv_local(monkeypatch, tmp_p
     monkeypatch.delenv("TRADER_SPARK_FALLBACK_MODEL", raising=False)
     router = build_default_router_from_env(env_path=env_path)
 
-    assert [backend.provider for backend in router.backends] == ["acpx", "acpx-spark-fallback", "ollama-cloud"]
+    assert [backend.provider for backend in router.backends] == ["acpx", "acpx-claude-sonnet", "ollama-cloud"]
     assert router.backends[2].model == "nemotron-3-nano:30b-cloud"
 
 
 def test_trade_router_3_tiers_dans_lordre(monkeypatch) -> None:
-    """Router de trade = acpx → acpx-spark-fallback → ollama-cloud (3 tiers)."""
+    """Router de trade = acpx → acpx-claude-sonnet → ollama-cloud (3 tiers)."""
     monkeypatch.setenv("TRADER_OLLAMA_API_KEY", "secret")
     monkeypatch.delenv("TRADER_SPARK_FALLBACK_MODEL", raising=False)
 
     router = build_default_router_from_env(env_path=None)
 
     providers = [b.provider for b in router.backends]
-    assert providers == ["acpx", "acpx-spark-fallback", "ollama-cloud"]
+    assert providers == ["acpx", "acpx-claude-sonnet", "ollama-cloud"]
     assert router.backends[0].model == "gpt-5.5"
-    assert router.backends[1].model == DEFAULT_SPARK_FALLBACK_MODEL
-    assert router.backends[1].model == "gpt-5.3-codex-spark"
+    assert router.backends[1].model == "sonnet"
+    assert router.backends[1].agent == "claude"
     assert router.backends[2].provider == "ollama-cloud"
 
 
 def test_consolidator_router_sans_spark_fallback(monkeypatch) -> None:
-    """Le router consolidateur ne contient PAS de tier acpx-spark-fallback."""
+    """Le router consolidateur ne contient PAS de tier acpx-claude-sonnet."""
     monkeypatch.setenv("TRADER_CONSOLIDATOR_OLLAMA_API_KEY", "secret")
     monkeypatch.delenv("TRADER_SPARK_FALLBACK_MODEL", raising=False)
 
     router = build_default_router_from_env(env_path=None, acpx_provider="consolidator")
 
     providers = [b.provider for b in router.backends]
-    assert "acpx-spark-fallback" not in providers
+    assert "acpx-claude-sonnet" not in providers
     assert providers == ["consolidator", "ollama-cloud"]
 
 
@@ -642,18 +642,18 @@ def test_env_override_spark_fallback_model_custom(monkeypatch) -> None:
     router = build_default_router_from_env(env_path=None)
 
     providers = [b.provider for b in router.backends]
-    assert "acpx-spark-fallback" in providers
-    fallback = next(b for b in router.backends if b.provider == "acpx-spark-fallback")
+    assert "acpx-claude-sonnet" in providers
+    fallback = next(b for b in router.backends if b.provider == "acpx-claude-sonnet")
     assert fallback.model == "gpt-custom-spark"
 
 
 def test_env_override_spark_fallback_vide_desactive_le_tier(monkeypatch) -> None:
-    """TRADER_SPARK_FALLBACK_MODEL='' → pas de tier acpx-spark-fallback (2 tiers seulement)."""
+    """TRADER_SPARK_FALLBACK_MODEL='' → pas de tier acpx-claude-sonnet (2 tiers seulement)."""
     monkeypatch.setenv("TRADER_SPARK_FALLBACK_MODEL", "")
     monkeypatch.setenv("TRADER_OLLAMA_API_KEY", "secret")
 
     router = build_default_router_from_env(env_path=None)
 
     providers = [b.provider for b in router.backends]
-    assert "acpx-spark-fallback" not in providers
+    assert "acpx-claude-sonnet" not in providers
     assert providers == ["acpx", "ollama-cloud"]

@@ -526,18 +526,21 @@ def build_default_router_from_env(
     ]
 
     if acpx_provider != "consolidator":
-        # Resolve spark-fallback model: env var wins if defined (even empty = disable).
+        # Fallback de trade : Sonnet via `acpx claude` (le primary gpt-5.5 est épuisé ;
+        # Sonnet exploite l'exploration là où spark restait inerte — backtest 2026-06-25,
+        # 4 trades vs 1). Quand gpt-5.5 revient, il reprend la main en primary.
+        # TRADER_SPARK_FALLBACK_MODEL surcharge le modèle ("" = désactive le tier).
         if "TRADER_SPARK_FALLBACK_MODEL" in os.environ:
             resolved_fallback = os.environ["TRADER_SPARK_FALLBACK_MODEL"]
         else:
-            resolved_fallback = spark_fallback_model
+            resolved_fallback = "sonnet"
         if resolved_fallback:
             backends.append(
                 AcpxBackend(
-                    provider="acpx-spark-fallback",
+                    provider="acpx-claude-sonnet",
                     model=resolved_fallback,
                     acpx_bin=acpx_bin,
-                    agent=acpx_agent,
+                    agent="claude",
                     session_label=session_label,
                 )
             )
