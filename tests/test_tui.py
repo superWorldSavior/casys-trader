@@ -10,6 +10,7 @@ from trader.tui import (
     _build_positions_panel,
     _load_scheduler_data_safe,
     build_closed_trades_table,
+    build_trades_table,
     build_view,
     load_runtime_state,
 )
@@ -140,6 +141,29 @@ def test_positions_affiche_le_pnl_latent_net_avec_frais_et_brut_secondaires() ->
     assert "frais -1.75" in output
 
 
+def test_positions_distinguent_prix_natifs_et_pnl_usd() -> None:
+    holdings = [
+        {
+            "symbol": "CFR.SW",
+            "quantity": 40.0,
+            "avg_price": 187.9,
+            "last_price": 185.8,
+            "unrealized_pnl": -94.92,
+            "fx_rate": 1.13,
+            "round_trip_fee": 0.79,
+            "unrealized_pnl_net": -95.71,
+        }
+    ]
+
+    output = _render_plain(_build_positions_panel(holdings))
+
+    assert "Dev." in output
+    assert "CHF" in output
+    assert "Prix moy. natif" in output
+    assert "Dernier natif" in output
+    assert "PnL latent $" in output
+
+
 def test_positions_sans_pnl_net_garde_l_affichage_brut_historique() -> None:
     holdings = [
         {
@@ -234,6 +258,51 @@ def test_trades_clotures_affichent_net_local_avec_brut_et_frais() -> None:
     assert "+8.50" in output
     assert "brut +10.00" in output
     assert "frais -1.50" in output
+
+
+def test_trades_clotures_distinguent_prix_natifs_et_net_usd() -> None:
+    trips = [
+        {
+            "symbol": "CFR.SW",
+            "side": "LONG",
+            "entry_price": 187.9,
+            "exit_price": 185.8,
+            "gross_pnl": -94.92,
+            "commission": 0.79,
+            "pnl": -95.71,
+            "exit_ts": "2026-06-21T12:00:00+00:00",
+            "exit_reason": "llm_exit",
+            "holding_minutes": 60.0,
+        }
+    ]
+
+    output = _render_plain(build_closed_trades_table(trips, {}))
+
+    assert "Dev." in output
+    assert "CHF" in output
+    assert "Entrée→Sortie natif" in output
+    assert "Net $" in output
+
+
+def test_derniers_trades_distinguent_prix_natif_et_commission() -> None:
+    fills = [
+        {
+            "symbol": "2379.TW",
+            "side": "BUY",
+            "quantity": 10.0,
+            "price": 870.0,
+            "commission": 80.0,
+            "commission_currency": "TWD",
+            "ts": "2026-06-21T12:00:00+00:00",
+        }
+    ]
+
+    output = _render_plain(build_trades_table(fills))
+
+    assert "Dev." in output
+    assert "TWD" in output
+    assert "Prix natif" in output
+    assert "Commission" in output
 
 
 def test_positions_pnl_pct_correct_pour_holding_non_usd() -> None:

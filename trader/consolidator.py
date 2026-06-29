@@ -169,6 +169,15 @@ class ConsolidationStatusStore:
                 "model": error.get("model"),
             }
         }
+        optional_fields = (
+            "requested_model",
+            "output_preview",
+            "output_tail",
+            "output_length",
+        )
+        for field in optional_fields:
+            if field in error:
+                payload["last_failure"][field] = error[field]
         self.path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self.path.with_suffix(self.path.suffix + ".tmp")
         tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -286,7 +295,11 @@ def build_consolidation_prompt(
         "6. Garde les limites : fusionne les abstentions redondantes, omets ce qui "
         "répète `current_consolidated`, respecte DEFAULT_MAX_GLOBAL et "
         "DEFAULT_MAX_BY_SYMBOL, et retourne une sortie JSON pure {global, by_symbol} "
-        "sans markdown.\n\n"
+        "sans markdown.\n"
+        "7. TRANSPORT STRICT : Ne produis aucun message de statut, aucune explication, "
+        "aucun appel outil, aucun markdown. Réponds par un seul message assistant "
+        "contenant uniquement du JSON pur conforme au schema, car stdout est parsé "
+        "automatiquement.\n\n"
         f"{json.dumps(payload, ensure_ascii=False, indent=2)}"
     )
 
@@ -337,8 +350,119 @@ def _failure_from_llm(completion: llm.LlmFailure) -> dict:
     }
 
 
-def _failure_payload(code: str, message: str) -> dict:
-    return {"error_code": code, "error_message": message[:500]}
+def _failure_payload(
+    code: str,
+    message: str,
+    *,
+    provider: str | None = None,
+    model: str | None = None,
+    output: str | None = None,
+) -> dict:
+    payload = {"error_code": code, "error_message": message[:500]}
+    if provider is not None:
+        payload["provider"] = provider
+    if model is not None:
+        payload["model"] = model
+    if output is not None:
+        payload["output_preview"] = output[:500]
+        payload["output_tail"] = output[-500:]
+        payload["output_length"] = len(output)
+    return payload
+
+
+def _looks_like_consolidated_payload(payload: Any) -> bool:
+    return isinstance(payload, dict) and "global" in payload and "by_symbol" in payload
+
+
+def _closing_suffix_for_truncated_json(text: str) -> str | None:
+    stack: list[str] = []
+    in_string = False
+    escaped = False
+    pairs = {"}": "{", "]": "["}
+    for char in text:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char in "{[":
+            stack.append(char)
+        elif char in "}]":
+            if not stack or stack.pop() != pairs[char]:
+                return None
+    if in_string or not stack:
+        return None
+    return "".join("}" if char == "{" else "]" for char in reversed(stack))
+
+
+def _repair_truncated_consolidated_payload(text: str) -> dict | None:
+    suffix = _closing_suffix_for_truncated_json(text)
+    if suffix is None:
+        return None
+    try:
+        payload = json.loads(text + suffix)
+    except json.JSONDecodeError:
+        return None
+    if _looks_like_consolidated_payload(payload):
+        return payload
+    return None
+
+
+def _parse_consolidated_json_from_text(text: str) -> tuple[dict | None, json.JSONDecodeError | None]:
+    """Parse le JSON consolidé depuis stdout acpx.
+
+    `acpx --format quiet` peut concaténer plusieurs messages assistant. Si le
+    premier message est un statut et le dernier est le JSON, `json.loads(stdout)`
+    échoue au caractère 0. On garde donc le contrat strict, mais on récupère le
+    dernier objet complet qui ressemble au payload attendu.
+    """
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError as exc:
+        first_error = exc
+    else:
+        if isinstance(payload, dict):
+            return payload, None
+        return None, None
+
+    decoder = json.JSONDecoder()
+    candidate: dict | None = None
+    for index, char in enumerate(text):
+        if char != "{":
+            continue
+        try:
+            payload, _end = decoder.raw_decode(text[index:])
+        except json.JSONDecodeError:
+            repaired = _repair_truncated_consolidated_payload(text[index:])
+            if repaired is not None:
+                candidate = repaired
+            continue
+        if _looks_like_consolidated_payload(payload):
+            candidate = payload
+
+    if candidate is not None:
+        return candidate, None
+    return None, first_error
+
+
+def _failure_result(error: dict, *, new_raw_count: int) -> dict:
+    result = {
+        "triggered": True,
+        "new_raw_count": new_raw_count,
+        "written": False,
+        "error_code": error["error_code"],
+        "error_message": error["error_message"],
+    }
+    if error.get("error_code") == "invalid_json":
+        for field in ("provider", "model", "output_preview", "output_tail", "output_length"):
+            if field in error:
+                result[field] = error[field]
+    return result
 
 
 def _consolidate_payload_with_error(
@@ -377,13 +501,32 @@ def _consolidate_payload_with_error(
         return None, _failure_from_llm(completion)
     if completion is None:
         return None, _failure_payload("no_attempt", "no consolidation attempt was executed")
-    try:
-        payload = json.loads(completion.text)
-    except json.JSONDecodeError as exc:
-        return None, _failure_payload("invalid_json", str(exc))
+    payload, parse_error = _parse_consolidated_json_from_text(completion.text)
+    if parse_error is not None:
+        return None, _failure_payload(
+            "invalid_json",
+            str(parse_error),
+            provider=completion.provider,
+            model=completion.model,
+            output=completion.text,
+        )
+    if payload is None:
+        return None, _failure_payload(
+            "invalid_payload",
+            "consolidateur returned non-object payload",
+            provider=completion.provider,
+            model=completion.model,
+            output=completion.text,
+        )
     normalized = normalize_consolidated(payload, watermark=current.get("watermark"))
     if normalized is None:
-        return None, _failure_payload("invalid_payload", "consolidateur returned invalid payload")
+        return None, _failure_payload(
+            "invalid_payload",
+            "consolidateur returned invalid payload",
+            provider=completion.provider,
+            model=completion.model,
+            output=completion.text,
+        )
     return normalized, None
 
 
@@ -440,10 +583,13 @@ def maybe_consolidate(
     status = status_store.read()
     last_failure = status.get("last_failure")
     requested_model = _resolved_consolidator_model(model)
+    last_failure_requested_model = None
+    if isinstance(last_failure, dict):
+        last_failure_requested_model = last_failure.get("requested_model", last_failure.get("model"))
     if (
         isinstance(last_failure, dict)
         and last_failure.get("consolidated_watermark") == current.get("watermark")
-        and last_failure.get("model") in (None, requested_model)
+        and last_failure_requested_model in (None, requested_model)
     ):
         raw_since_failure = select_new_raw(raw_rows, watermark=last_failure.get("raw_watermark"))
         retry_after_new_raw = max(1, threshold)
@@ -472,19 +618,14 @@ def maybe_consolidate(
     )
     if consolidated is None:
         error = error or _failure_payload("unknown", "unknown consolidation failure")
+        error = {**error, "requested_model": requested_model}
         status_store.write_failure(
             consolidated_watermark=current.get("watermark"),
             raw_watermark=_max_ts(new_raw),
             new_raw_count=len(new_raw),
             error=error,
         )
-        return {
-            "triggered": True,
-            "new_raw_count": len(new_raw),
-            "written": False,
-            "error_code": error["error_code"],
-            "error_message": error["error_message"],
-        }
+        return _failure_result(error, new_raw_count=len(new_raw))
 
     watermark = _max_ts(new_raw)
     consolidated_store.write(consolidated, watermark=watermark)

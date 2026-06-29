@@ -126,6 +126,66 @@ def test_maybe_consolidate_ecrit_le_consolide_et_avance_le_watermark(tmp_path) -
     assert saved["by_symbol"]["SPY"][0]["note"] == "SPY reste range tant que ER bas."
 
 
+def test_maybe_consolidate_parse_le_json_final_apres_messages_acpx(tmp_path) -> None:
+    raw_store = LearningsStore(tmp_path / "learnings.jsonl", max_entries=200)
+    consolidated_store = consolidator.ConsolidatedLearningsStore(tmp_path / "learnings_consolidated.json")
+    raw_store.append(symbol="SPY", note="brut", now=datetime(2026, 6, 8, 10, tzinfo=timezone.utc))
+
+    class ChattyRouter:
+        def complete(self, prompt: str, *, timeout_s: int):
+            payload = json.dumps(
+                {
+                    "global": [{"note": "Agir seulement sur cassure confirmee."}],
+                    "by_symbol": {"SPY": [{"note": "SPY attend le breakout."}]},
+                }
+            )
+            return llm.LlmCompletion(
+                provider="consolidator",
+                model="gpt-5.5",
+                text=(
+                    "J'utilise le workflow de consolidation avant le JSON.\n"
+                    "Le transport acpx peut concatener plusieurs messages.\n"
+                    f"{payload}\n"
+                ),
+            )
+
+    result = consolidator.maybe_consolidate(raw_store, consolidated_store, threshold=1, llm_router=ChattyRouter())
+    saved = consolidated_store.read()
+
+    assert result == {"triggered": True, "new_raw_count": 1, "written": True}
+    assert saved["global"] == [{"note": "Agir seulement sur cassure confirmee."}]
+    assert saved["by_symbol"] == {"SPY": [{"note": "SPY attend le breakout."}]}
+
+
+def test_maybe_consolidate_repare_un_json_final_tronque_en_fin_de_stdout(tmp_path) -> None:
+    raw_store = LearningsStore(tmp_path / "learnings.jsonl", max_entries=200)
+    consolidated_store = consolidator.ConsolidatedLearningsStore(tmp_path / "learnings_consolidated.json")
+    raw_store.append(symbol="SPY", note="brut", now=datetime(2026, 6, 8, 10, tzinfo=timezone.utc))
+    valid_payload = json.dumps(
+        {
+            "global": [{"note": "Tenir les gagnants structurels."}],
+            "by_symbol": {"SPY": [{"note": "SPY sort seulement sur breakdown."}]},
+        }
+    )
+    truncated_payload = valid_payload[:-1]
+
+    class TruncatedRouter:
+        def complete(self, prompt: str, *, timeout_s: int):
+            return llm.LlmCompletion(provider="consolidator", model="gpt-5.5", text=truncated_payload)
+
+    result = consolidator.maybe_consolidate(
+        raw_store,
+        consolidated_store,
+        threshold=1,
+        llm_router=TruncatedRouter(),
+    )
+    saved = consolidated_store.read()
+
+    assert result == {"triggered": True, "new_raw_count": 1, "written": True}
+    assert saved["global"] == [{"note": "Tenir les gagnants structurels."}]
+    assert saved["by_symbol"] == {"SPY": [{"note": "SPY sort seulement sur breakdown."}]}
+
+
 def test_maybe_consolidate_garde_letat_si_sortie_llm_invalide(tmp_path) -> None:
     raw_store = LearningsStore(tmp_path / "learnings.jsonl", max_entries=200)
     consolidated_store = consolidator.ConsolidatedLearningsStore(tmp_path / "learnings_consolidated.json")
@@ -143,8 +203,47 @@ def test_maybe_consolidate_garde_letat_si_sortie_llm_invalide(tmp_path) -> None:
         "written": False,
         "error_code": "invalid_json",
         "error_message": "Expecting value: line 1 column 1 (char 0)",
+        "provider": "test",
+        "model": "stub",
+        "output_preview": "pas du json",
+        "output_tail": "pas du json",
+        "output_length": 11,
     }
     assert consolidated_store.read()["watermark"] is None
+
+
+def test_maybe_consolidate_status_observe_la_sortie_non_json(tmp_path) -> None:
+    raw_store = LearningsStore(tmp_path / "learnings.jsonl", max_entries=200)
+    consolidated_store = consolidator.ConsolidatedLearningsStore(tmp_path / "learnings_consolidated.json")
+    status_store = consolidator.ConsolidationStatusStore(tmp_path / "learnings_consolidation_status.json")
+    raw_store.append(symbol="SPY", note="brut", now=datetime(2026, 6, 8, 10, tzinfo=timezone.utc))
+
+    class BadRouter:
+        def complete(self, prompt: str, *, timeout_s: int):
+            return llm.LlmCompletion(provider="consolidator", model="gpt-5.5", text="pas du json")
+
+    consolidator.maybe_consolidate(
+        raw_store,
+        consolidated_store,
+        threshold=1,
+        llm_router=BadRouter(),
+        status_store=status_store,
+    )
+
+    last_failure = status_store.read()["last_failure"]
+    assert last_failure["provider"] == "consolidator"
+    assert last_failure["model"] == "gpt-5.5"
+    assert last_failure["output_preview"] == "pas du json"
+    assert last_failure["output_tail"] == "pas du json"
+    assert last_failure["output_length"] == 11
+
+
+def test_build_consolidation_prompt_interdit_les_messages_hors_json() -> None:
+    prompt = consolidator.build_consolidation_prompt(consolidator.empty_consolidated(), [])
+
+    assert "Ne produis aucun message de statut" in prompt
+    assert "un seul message assistant" in prompt
+    assert "JSON pur" in prompt
 
 
 def test_maybe_consolidate_retente_un_echec_retryable_puis_ecrit_le_consolide(tmp_path) -> None:

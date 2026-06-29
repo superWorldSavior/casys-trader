@@ -337,8 +337,9 @@ class TestBuildClosedTradesTable:
         assert "-25.00" in rendered
         assert "trailing_stop_extraordinairement_long_a_tronquer" not in rendered
         assert "..." in rendered
-        assert result.columns[4]._cells[0].style == PALETTE_DARK["pnl_positive"]
-        assert result.columns[4]._cells[1].style == PALETTE_DARK["pnl_negative"]
+        net_col = next(col for col in result.columns if col.header == "Net $")
+        assert net_col._cells[0].style == PALETTE_DARK["pnl_positive"]
+        assert net_col._cells[1].style == PALETTE_DARK["pnl_negative"]
 
     def test_tolere_liste_vide_et_champs_manquants(self):
         from trader.tui import build_closed_trades_table

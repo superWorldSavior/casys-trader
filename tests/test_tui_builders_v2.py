@@ -188,6 +188,27 @@ def test_build_exit_plans_enriched_calcule_pnl_short_dans_le_bon_sens() -> None:
     assert "+100.00" in output
 
 
+def test_build_exit_plans_enriched_libelle_gains_en_natif() -> None:
+    from trader.tui import _build_exit_plans_enriched
+
+    result = _build_exit_plans_enriched(
+        [
+            {
+                "symbol": "CFR.SW",
+                "side": "LONG",
+                "entry_price": 187.9,
+                "remaining_quantity": 40.0,
+                "hard_stop_price": 185.8,
+                "take_profits": [{"name": "tp1", "price": 191.0}],
+            }
+        ]
+    )
+    output = _render(result)
+
+    assert "prix natif CHF" in output
+    assert "gain natif" in output
+
+
 def test_build_exit_plans_panel_avec_light_utilise_palette_light() -> None:
     from trader.tui import _build_exit_plans_panel
 

@@ -1,4 +1,5 @@
 # tests/test_fx_rates.py
+import math
 from pathlib import Path
 import textwrap
 import pytest
@@ -51,6 +52,12 @@ def test_fallback_on_fetch_failure(tmp_path):
 def test_fallback_on_none(tmp_path):
     cfg = fx_rates.load_fx_config(_write_cfg(tmp_path))
     rates = fx_rates.rates_for_symbols(["2379.TW"], fetcher=lambda s: None, config=cfg)
+    assert rates["TWD"] == pytest.approx(0.031)
+
+
+def test_fallback_on_nan_close(tmp_path):
+    cfg = fx_rates.load_fx_config(_write_cfg(tmp_path))
+    rates = fx_rates.rates_for_symbols(["2379.TW"], fetcher=lambda s: math.nan, config=cfg)
     assert rates["TWD"] == pytest.approx(0.031)
 
 

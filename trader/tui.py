@@ -28,6 +28,7 @@ from rich.text import Text
 
 import yaml
 
+from trader import fx
 from trader.palette import PALETTE_DARK, Palette
 
 # Racine du repo (deux niveaux au-dessus de ce fichier)
@@ -706,14 +707,16 @@ def _build_positions_panel(
 ) -> Panel:
     pos_table = Table(show_lines=False, expand=True)
     pos_table.add_column("Symbole", style="bold")
+    pos_table.add_column("Dev.", no_wrap=True)
     pos_table.add_column("Qté", justify="right")
-    pos_table.add_column("Prix moy.", justify="right")
-    pos_table.add_column("Dernier prix", justify="right")
-    pos_table.add_column("PnL latent", justify="right")
+    pos_table.add_column("Prix moy. natif", justify="right")
+    pos_table.add_column("Dernier natif", justify="right")
+    pos_table.add_column("PnL latent $", justify="right")
     pos_table.add_column("PnL %", justify="right")
 
     for h in holdings:
         symbol = str(h.get("symbol", "?"))
+        ccy = fx.currency_for(symbol)
         qty = _safe_float(h.get("quantity"), default=0.0) or 0.0
         avg = _safe_float(h.get("avg_price"), default=0.0) or 0.0
         last = _safe_float(h.get("last_price"), default=0.0) or 0.0
@@ -734,6 +737,7 @@ def _build_positions_panel(
             )
         pos_table.add_row(
             symbol,
+            ccy,
             f"{qty:,.4f}",
             f"{avg:,.4f}",
             f"{last:,.4f}",
@@ -742,7 +746,7 @@ def _build_positions_panel(
         )
 
     if not holdings:
-        pos_table.add_row("—", "—", "—", "—", "—", "—")
+        pos_table.add_row("—", "—", "—", "—", "—", "—", "—")
 
     return Panel(
         pos_table,
@@ -950,6 +954,7 @@ def _build_exit_plans_panel(
     lines: list[RenderableType] = []
     for plan in plans:
         symbol = str(plan.get("symbol", "?"))
+        ccy = fx.currency_for(symbol)
         side = str(plan.get("side", "?"))
         entry = _safe_float(plan.get("entry_price"), default=None)
         stop = _safe_float(plan.get("hard_stop_price"), default=None)
@@ -976,7 +981,7 @@ def _build_exit_plans_panel(
             (symbol, f"bold {palette['kpi_default']}"),
             ("  ", ""),
             (side, side_style),
-            ("  entrée:", palette["dim"]),
+            (f"  prix natif {ccy} entrée:", palette["dim"]),
             (f" {entry_str}", "bold"),
             ("  stop:", palette["dim"]),
             (f" {stop_str}", palette["pnl_negative"] if stop else palette["dim"]),
@@ -995,7 +1000,7 @@ def _build_exit_plans_panel(
                     tp_parts.append((f"{tp_name}@{tp_price:,.2f}", palette["pnl_positive"]))
                     tp_parts.append(("  ", ""))
             if tp_parts:
-                tp_line = Text.assemble(("  TPs: ", palette["dim"]), *tp_parts)
+                tp_line = Text.assemble((f"  TPs natifs {ccy}: ", palette["dim"]), *tp_parts)
                 lines.append(tp_line)
 
         # max_hold
@@ -1371,9 +1376,10 @@ def build_trades_table(
     table = Table(title="Derniers trades", show_lines=False, expand=True)
     table.add_column("Heure", no_wrap=True, style=palette["dim"])
     table.add_column("Symbole", style="bold")
+    table.add_column("Dev.", no_wrap=True)
     table.add_column("Sens")
     table.add_column("Qté", justify="right")
-    table.add_column("Prix", justify="right")
+    table.add_column("Prix natif", justify="right")
     table.add_column("Commission", justify="right")
 
     recent = fills[-limit:] if len(fills) > limit else fills
@@ -1388,6 +1394,7 @@ def build_trades_table(
             ts_str = ts_raw[:8] if ts_raw else "—"
 
         symbol = str(fill.get("symbol") or "?")
+        ccy = fx.currency_for(symbol)
         side = str(fill.get("side") or "")
         side_style = (
             palette["action_buy"] if side == "BUY" else (
@@ -1407,6 +1414,7 @@ def build_trades_table(
         table.add_row(
             ts_str,
             symbol,
+            ccy,
             Text(side, style=side_style),
             f"{qty_val:,.4f}",
             price_str,
@@ -1414,7 +1422,7 @@ def build_trades_table(
         )
 
     if not recent:
-        table.add_row("—", "—", "—", "—", "—", "—")
+        table.add_row("—", "—", "—", "—", "—", "—", "—")
 
     return table
 
@@ -1492,8 +1500,9 @@ def build_closed_trades_table(
     table = Table(title="Sorties / Trades clôturés", show_lines=False, expand=True)
     table.add_column("Heure", no_wrap=True, style=palette["dim"])
     table.add_column("Nom·Ticker", style="bold")
+    table.add_column("Dev.", no_wrap=True)
     table.add_column("Sens")
-    table.add_column("Entrée→Sortie", justify="right")
+    table.add_column("Entrée→Sortie natif", justify="right")
     table.add_column("Net $", justify="right")
     table.add_column("Raison")
     table.add_column("Durée", justify="right")
@@ -1505,6 +1514,7 @@ def build_closed_trades_table(
         if not isinstance(trip, dict):
             continue
         symbol = str(trip.get("symbol") or "?")
+        ccy = fx.currency_for(symbol)
         side = str(trip.get("side") or "—")
         side_style = (
             palette["action_buy"] if side == "LONG" else (
@@ -1533,6 +1543,7 @@ def build_closed_trades_table(
         table.add_row(
             _fmt_time_hms(trip.get("exit_ts")),
             _fmt_symbol_short(symbol, company_map),
+            ccy,
             Text(side, style=side_style),
             _fmt_price_pair(trip.get("entry_price"), trip.get("exit_price")),
             pnl_cell,
@@ -1541,7 +1552,7 @@ def build_closed_trades_table(
         )
 
     if not table.rows:
-        table.add_row("—", "—", "—", "—", "—", "—", "—")
+        table.add_row("—", "—", "—", "—", "—", "—", "—", "—")
 
     return table
 
@@ -1763,6 +1774,7 @@ def _build_exit_plans_enriched(
     lines: list[RenderableType] = []
     for plan in plans:
         symbol = str(plan.get("symbol", "?"))
+        ccy = fx.currency_for(symbol)
         side = str(plan.get("side", "?"))
         direction = -1.0 if side == "SHORT" else 1.0
         entry = _safe_float(plan.get("entry_price"), default=None)
@@ -1792,7 +1804,7 @@ def _build_exit_plans_enriched(
             (symbol, f"bold {palette['kpi_default']}"),
             ("  ", ""),
             (side, side_style),
-            ("  entrée:", palette["dim"]),
+            (f"  prix natif {ccy} entrée:", palette["dim"]),
             (f" {entry_str}", "bold"),
             ("  stop:", palette["dim"]),
             (f" {stop_str}", palette["pnl_negative"] if stop else palette["dim"]),
@@ -1810,9 +1822,9 @@ def _build_exit_plans_enriched(
             stop_gain_str = f"{stop_gain:+,.2f}"
             lines.append(
                 Text.assemble(
-                    ("  Stop: ", palette["dim"]),
+                    ("  Stop natif: ", palette["dim"]),
                     (f"{stop:,.2f}", "bold"),
-                    ("  → ", palette["dim"]),
+                    ("  → gain natif ", palette["dim"]),
                     (stop_gain_str, stop_style),
                 )
             )
@@ -1836,9 +1848,9 @@ def _build_exit_plans_enriched(
                     )
                     lines.append(
                         Text.assemble(
-                            (f"  {tp_name}: ", palette["dim"]),
+                            (f"  {tp_name} natif: ", palette["dim"]),
                             (f"{tp_price:,.2f}", palette["pnl_positive"]),
-                            ("  → ", palette["dim"]),
+                            ("  → gain natif ", palette["dim"]),
                             (tp_gain_str, tp_gain_style),
                         )
                     )

@@ -6,6 +6,7 @@ I/O isolée ici : le fetch est injecté (testable). Le module fx reste pur.
 from __future__ import annotations
 
 import logging
+import math
 from pathlib import Path
 from typing import Callable
 
@@ -35,7 +36,7 @@ def load_fx_config(path: str | Path) -> dict:
 
 
 def _rate_from_close(close: float | None, *, invert: bool) -> float | None:
-    if close is None or close <= 0.0:
+    if close is None or not math.isfinite(close) or close <= 0.0:
         return None
     return (1.0 / close) if invert else close
 
