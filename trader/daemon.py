@@ -51,6 +51,7 @@ from .indicator_watch import (
     summarize_watch,
     watch_market_requests,
 )
+from .gross_priority import PriorityItem, gross_execution_order
 from .risk import RiskGate, RiskLimits
 from .tools import market, memory as memory_mod, news_feed, portfolio, scheduler
 from .tools.execution import (
@@ -2217,6 +2218,22 @@ def run_cycle(
     if armed_decisions:
         decisions_by_symbol = {**decisions_by_symbol, **armed_decisions}
     _log_cycle_progress("[batch] decided=%d model_calls=%d", len(decisions_by_symbol), model_calls_used)
+
+    # Admission gross équitable sans clamp (spec 2026-06-30) : on réordonne
+    # l'exécution — réducteurs d'abord (ils libèrent de la marge), puis ouvertures
+    # par conviction décroissante — pour que le RiskGate arbitre au mérite plutôt
+    # que selon l'ordre de liste. Aucune qty n'est rognée : le gate admet/rejette à
+    # pleine taille ; quand la marge est épuisée ce sont les plus basse-conviction
+    # qui sautent (déterministe), pas les dernières de la liste.
+    def _gross_priority_item(sym: str) -> PriorityItem:
+        decided = decisions_by_symbol.get(sym)
+        return PriorityItem(
+            symbol=sym,
+            intent=(decided.intent if decided is not None else "HOLD"),
+            confidence=float((decided.confidence if decided is not None else 0.0) or 0.0),
+        )
+
+    symbols_to_decide = gross_execution_order([_gross_priority_item(sym) for sym in symbols_to_decide])
 
     gated_set = set(gated_symbols)
     for index, sym in enumerate(symbols_to_decide, start=1):

@@ -1,150 +1,132 @@
-# Allocateur de marge gross déterministe (greedy-conviction)
+# Admission gross équitable par ordonnancement (zéro clamp)
 
 **Date** : 2026-06-30
-**Statut** : 📐 **DESIGN VALIDÉ** — à implémenter (TDD).
+**Statut** : ✅ **IMPLÉMENTÉ** (TDD) — `trader/gross_priority.py` +
+réordonnancement dans `trader/daemon.py` (boucle d'exécution du cycle).
+
+> **Note de pivot** : une 1ʳᵉ version envisageait un *allocateur* qui clampe les
+> qtys (parts pro-rata / partielles). Abandonnée : le pattern maison est
+> **advisory + rejet** (jamais de down-size silencieux ; cf `risk.py` qui rejette
+> et ne clampe pas), et la consigne produit est **laisser la liberté de sizing à
+> l'agent**. La solution retenue ne clampe RIEN.
 
 ---
 
 ## 1. Contexte & problème
 
-Le portefeuille a un plafond d'exposition brute `max_gross_exposure = 100000`
-(`config/risk.yaml:6`). Deux mécanismes touchent ce plafond :
+Plafond d'exposition brute `max_gross_exposure = 100000` (`config/risk.yaml:6`).
+Le `RiskGate` (`trader/risk.py:255-257`) **rejette** un ordre si
+`projected_gross > max_gross_exposure`. Il n'y a pas de clamp d'entrée
+(`_clamp_exit_quantity` ne touche que les sorties).
 
-- **Advisory** : `_max_quantity_for_symbol` (`trader/daemon.py:444`) calcule
-  `max_buy_qty`/`gross_remaining_usd` par symbole et les **pousse à l'agent** dans
-  son contexte (`codex_client.py:251-256`). L'agent est *censé* se sizer dedans.
-- **Gate dur** : `RiskGate` (`trader/risk.py:255-257`) calcule
-  `projected_gross = gross − |position courante| + |position projetée|` et
-  **rejette en bloc** (`Verdict(False, "gross_exposure_exceeded")`) si
-  `projected_gross > max_gross_exposure`.
+Le défaut n'est PAS le rejet (c'est le fusible voulu) — c'est **qui** se fait
+rejeter. La boucle d'exécution (`daemon.py`, `for … in symbols_to_decide`) traite
+les décisions dans l'ordre de la **liste**, et `gross` est une variable
+**courante** mise à jour après chaque fill. Donc le premier symbole de la liste
+qui ouvre rafle la marge ; les suivants tapent le plafond et sont rejetés —
+**arbitraire** (ordre de liste), pas au mérite. Observé 29/06 : 5 rejets
+`risk:gross_exposure_exceeded` sur book ~plein (99.7k/100k).
 
-**Aucun clamp automatique des entrées.** `_clamp_exit_quantity`
-(`trader/daemon.py:632`) ne clampe que les sorties (`CLOSE`/`REDUCE`, ligne 639).
-Les entrées `OPEN_LONG`/`OPEN_SHORT` qui dépassent la marge ne sont pas réduites :
-elles tapent le gate et sont **rejetées entières**.
-
-Symptôme observé (29/06) : 5 rejets `risk:gross_exposure_exceeded` (3 LLM, 2 plans
-armés), tous des ordres qui augmentent le gross, book ~plein (dernier fill à gross
-99.7k/100k). Deux défauts :
-
-1. **Rejet en bloc** au lieu de réduire à ce qui rentre — un trade qui aurait pu
-   entrer en plus petit est perdu.
-2. **Non déterministe / injuste** : sous `decision_batch_parallelism=3`
-   (`daemon.py:135`), les appels concurrents reçoivent le **même snapshot** de
-   marge et se sizent chacun comme si toute la marge était libre ; à l'exécution
-   ils dépassent collectivement et le gate en recale **selon l'ordre d'arrivée des
-   threads** (arbitraire, irreproductible).
+Cause amont de l'over-sizing (hors périmètre ici, cf §6) : `_max_quantity_for_symbol`
+calcule `gross_remaining` **une fois par cycle**, mais le batch lance jusqu'à 3
+appels concurrents (`decision_batch_parallelism=3`) qui reçoivent **le même
+snapshot** → chacun se size comme s'il avait tout le budget.
 
 ## 2. Objectif
 
-Remplacer le rejet arbitraire par une **allocation déterministe au mérite** de la
-marge gross résiduelle, côté daemon, avant le RiskGate. « Juste » ici =
-**reproductible et fondé sur la conviction** : financer à fond les meilleures
-convictions dans un ordre stable, clamper l'ordre-frontière, skipper le reste —
-plutôt que saupoudrer ou laisser le hasard décider. (Une demi-position avec stop
-casse le R:R ; mieux vaut une position pleine sur la meilleure idée.)
+Rendre l'arbitrage **déterministe et au mérite**, **sans rien clamper** : un ordre
+passe à **pleine taille choisie par l'agent**, ou est rejeté proprement. Quand la
+marge gross est épuisée, ce sont les ouvertures **les plus basse-conviction** qui
+sautent — pas les dernières de la liste.
 
 ## 3. Décisions (validées)
 
-- **Politique d'allocation** : **greedy par conviction**. Tri `confidence`
-  décroissante ; on remplit chaque ordre à fond jusqu'à épuiser la marge ;
-  l'ordre-frontière obtient une part **partielle** ; les suivants **zéro**.
-- **Plans armés** : **même pool**, triés par leur `confidence` stockée à
-  l'armement. Traitement uniforme avec les entrées fraîches (pas de priorité).
-- **Sorties d'abord** : les réducteurs (`Δ ≤ 0`) passent tels quels et **libèrent
-  du gross** ; le headroom alloué aux entrées est calculé **après** les avoir pris
-  en compte.
-- **Déterminisme** : clé de tri `(−confidence, symbol)`. Aucune dépendance au
-  temps/hasard. Mêmes entrées → même allocation (AX principe 6).
-- **Garde dust** : une qty allouée sous le minimum tradable → qty 0, marqué
-  `skipped` (pas d'ordre poussière).
+- **Zéro clamp.** On ne réduit jamais une qty (liberté de sizing à l'agent).
+  L'ordre-frontière qui ne rentrerait que partiellement est **rejeté proprement**,
+  pas rogné.
+- **Mérite par conviction.** Les ouvertures sont servies par `confidence`
+  décroissante.
+- **Sorties d'abord.** Les réducteurs (CLOSE/REDUCE) s'exécutent avant les
+  ouvertures → ils libèrent de la marge que le gate accorde naturellement aux
+  ouvertures suivantes (le `gross` courant baisse avant qu'elles ne soient
+  évaluées). Pas de calcul d'allocation : c'est l'ordre d'exécution + le gate.
+- **Déterminisme.** Tie-break `symbol` croissant. Aucune dépendance temps/hasard.
+- **Plans armés : même pool.** Ordonnés par leur `confidence` stockée, comme les
+  entrées fraîches.
 
 ## 4. Architecture
 
-### 4.1 Nouvelle primitive pure
+### 4.1 Primitive pure — `trader/gross_priority.py`
 
 ```
-allocate_gross_budget(
-    orders: list[ProposedOrder],   # symbol, intent, action, qty, confidence,
-                                   # price, fx_rate, current_position_value_usd
-    gross_exposure: float,
-    max_gross_exposure: float,
-    min_order_notional_usd: float = 100.0,   # nouveau, optionnel dans risk.yaml
-) -> list[AllocationResult]        # order clampé + outcome
+gross_execution_order(items: list[PriorityItem]) -> list[str]
+PriorityItem(symbol, intent, confidence)
 ```
 
-`AllocationResult` : `{order (qty clampée), outcome: "full"|"partial"|"skipped"|"reducer", allocated_usd}`.
+Tri par clé `(phase, −confidence si ouverture sinon 0.0, symbol)` :
+- phase 0 : réducteurs `CLOSE`/`REDUCE`
+- phase 1 : ouvertures `OPEN_LONG`/`OPEN_SHORT`/`REVERSE`, par conviction ↓
+- phase 2 : le reste (`HOLD`, etc. — ne consomme pas de gross)
 
-Pure, déterministe, sans I/O. Vit dans un module dédié (ex. `trader/gross_budget.py`)
-ou à côté du sizing existant — à trancher au plan selon les imports.
+Pure, déterministe, testable isolément. Ne connaît ni prix, ni gross, ni gate.
 
-### 4.2 Algorithme
+### 4.2 Intégration daemon
 
-1. **Delta gross par ordre** : `Δ = |position projetée| − |position courante|`
-   (en USD), même base que `risk.py:255`.
-2. **Réducteurs** (`Δ ≤ 0`) : `outcome="reducer"`, qty inchangée. Leur `Δ` (négatif)
-   est sommé pour agrandir le headroom.
-3. **Headroom** = `max_gross_exposure − (gross_exposure + Σ Δ_réducteurs)`.
-4. **Augmenteurs** (`Δ > 0`) triés `(−confidence, symbol)`.
-5. **Greedy** : pour chaque, `Δ_alloué = min(Δ_demandé, max(0, headroom))` ;
-   `qty_allouée = qty_demandée × (Δ_alloué / Δ_demandé)` ; `headroom −= Δ_alloué`.
-   - `Δ_alloué == Δ_demandé` → `full`
-   - `0 < Δ_alloué < Δ_demandé` → `partial`
-   - `Δ_alloué == 0` → `skipped` (qty 0)
-6. **Garde dust** : si `qty_allouée × prix_usd < min_order_notional_usd` →
-   `skipped`, qty 0, et le `Δ` est **rendu au headroom** (non consommé) pour
-   l'ordre suivant. Défaut `min_order_notional_usd = 100` ; nouveau paramètre
-   optionnel dans `risk.yaml` (le réglage fin lié à la commission, notamment le
-   plancher TW, relève du chantier FX).
+Juste après l'assemblage final de `decisions_by_symbol` (plans armés mergés) et
+**avant** la boucle d'exécution : `symbols_to_decide` est réordonné via
+`gross_execution_order`. La boucle et le `RiskGate` sont **inchangés** — c'est le
+nouvel ordre qui rend leur rejet méritocratique. Aucune qty modifiée.
 
-### 4.3 Intégration daemon
+### 4.3 Conséquence
 
-Appelé après l'assemblage des décisions du batch, **avant** le RiskGate, sur
-l'ensemble entrées fraîches + plans armés déclenchés du cycle. La qty clampée
-remplace la qty proposée et arrive au gate (qui ne trippe plus sur le gross — le
-check devient une assertion de sûreté). Caps par ordre / par position : inchangés,
-le gate les gère.
+- Book plein + une ouverture haute conviction + une basse : la haute passe (pleine
+  taille), la basse est rejetée `risk:gross_exposure_exceeded` (au lieu de l'inverse
+  selon l'ordre de liste).
+- Sortie + ouverture le même cycle : la sortie s'exécute d'abord, libère la marge,
+  l'ouverture la récupère via le gate (running `gross` à jour). « Sorties d'abord »
+  obtenu par l'ordre d'exécution, sans allocateur.
 
-### 4.4 Observabilité
+## 5. Cas limites & risques
 
-Issue enregistrée dans la décision/event : `gross_budget:full|partial|skipped`
-(+ `allocated_usd`). Permet de voir au cockpit/journal pourquoi une qty a été
-réduite ou un symbole skippé. (La ré-injection de cette issue dans le **prompt**
-du cycle suivant — feedback à l'agent — est **hors périmètre** ici.)
-
-## 5. Cas limites
-
-- **Book plein** (headroom ≤ 0) : tous les augmenteurs `skipped` ; les réducteurs
-  passent (et peuvent rouvrir du headroom non utilisé ce cycle).
-- **Égalité de conviction** : tie-break `symbol` croissant → déterministe.
-- **`REVERSE`** (réduit la position courante puis ouvre dans l'autre sens) :
-  classé par son **delta net**. S'il augmente le gross net, il entre dans le pool
-  greedy et le clamp réduit la **jambe d'ouverture** ; sinon réducteur. Détail
-  d'implémentation (calcul de `projected_position` signé) à verrouiller au plan.
-- **Prix / fx manquant ou non fini** : ordre exclu de l'allocation (qty 0,
-  `skipped`), cohérent avec le garde-fou existant de `_max_quantity_for_symbol`.
+- **`max_orders_per_cycle` (=5)** : les réducteurs consomment désormais les slots
+  d'ordres **avant** les ouvertures. Effet voulu (de-risk d'abord) mais c'est un
+  changement de comportement à noter : un cycle saturé de sorties peut bloquer des
+  ouvertures par `order_rate_exceeded`. Acceptable (fusible débit).
+- **`REVERSE`** : classé en ouverture (phase 1), ordonné par conviction. Cohérent
+  avec son traitement existant (« tracé mais pas clampé », dette connue).
+- **`dry_run`** : `gross` n'est PAS recalculé entre fills simulés (le refresh est
+  sous `if not dry_run`). L'ordre d'exécution reste correct, mais l'admission
+  simulée diverge du réel : elle peut **sur-admettre** des ouvertures entre elles
+  (toutes voient le `gross` de début) **et sous-admettre** après une sortie simulée
+  (la marge libérée n'est pas reflétée). Artefact de simulation, sans effet réel.
+- **Confiance non finie** (NaN/inf) : possible en paper (gate confiance off) →
+  normalisée à la conviction la plus basse dans la clé de tri, pour garder le
+  déterminisme (sinon les comparaisons NaN, toujours fausses, rendraient l'ordre
+  dépendant de l'entrée). Testé.
+- **Reproductibilité** : `gross_execution_order` est invariant par permutation de
+  l'entrée, y compris avec des confidences non finies (testé).
 
 ## 6. Hors périmètre (YAGNI)
 
-- Caps `max_order_value` / `max_position_value` (déjà gérés par le gate).
-- La conversion FX base-USD (chantier séparé `casys-trader-chantier-fx-conversion`).
-- La ré-injection du verdict/issue dans le prompt de l'agent (feedback loop).
-- Toute modification de `decision_batch_parallelism` (le réglage reste à 3 ;
-  l'allocateur rend la concurrence inoffensive vis-à-vis du gross).
+- **Clamp / parts partielles** : explicitement écarté (cf pivot).
+- **Advisory honnête sous parallélisme** : réserver une tranche de budget par appel
+  concurrent du batch pour que `gross_remaining` poussé à l'agent soit exact — la
+  vraie correction de la cause amont. Plus gros, séparé.
+- **Feedback structuré du rejet dans le prompt** : le rejet est loggé
+  (`decisions`/`events`) ; sa ré-injection au cycle suivant est un chantier à part.
+- Conversion FX (`casys-trader-chantier-fx-conversion`).
 
-## 7. Tests (TDD, invariants d'abord)
+## 7. Tests (TDD)
 
-1. 1 augmenteur qui rentre sous le headroom → inchangé (`full`).
-2. 2 augmenteurs, total > headroom → +convaincu `full`, l'autre `partial`
-   (qty = part restante).
-3. 3 augmenteurs, headroom épuisé → le 3ᵉ `skipped` (qty 0).
-4. Réducteur dans le même cycle → libère du gross → un augmenteur qui ne rentrait
-   pas rentre.
-5. Égalité `confidence` → ordre `symbol` déterministe (mêmes entrées, même sortie).
-6. Allocation partielle sous `min_order_notional_usd` → `skipped`, pas d'ordre dust.
-7. Book plein (headroom ≤ 0) → tous augmenteurs `skipped`, réducteurs passent.
-8. Plan armé (qty figée + confidence stockée) traité comme un augmenteur du pool,
-   clampé/skippé selon sa conviction.
-9. Prix/fx non fini → `skipped`.
-10. Déterminisme global : permuter l'ordre d'entrée de la liste ne change pas
-    l'allocation.
+Primitive `gross_execution_order` (`tests/test_gross_priority.py`) :
+1. réducteurs avant ouvertures ;
+2. ouvertures par conviction décroissante ;
+3. le reste (HOLD) après les ouvertures ;
+4. tie-break symbole déterministe ;
+5. ordre complet trois phases ;
+6. invariance par permutation de l'entrée (déterminisme) ;
+7. confiance non finie (NaN/inf) → traitée comme basse conviction, déterministe.
+
+Intégration : couverte par la suite daemon existante (non-régression, 1620 passed)
++ revue Codex. Un test end-to-end « admission par conviction sur book plein »
+reste un renfort possible (harness daemon lourd).
