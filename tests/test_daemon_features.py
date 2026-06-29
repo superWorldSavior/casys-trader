@@ -1,5 +1,7 @@
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from trader import daemon
 from trader.codex_client import Decision
 from trader.tools.market import Bar, MarketError
@@ -101,6 +103,9 @@ def test_run_cycle_injecte_un_cockpit_compact_sans_barres(monkeypatch, tmp_path,
     spy_row = next(row for row in cockpit["rows"] if row[0] == "SPY")
     assert spy_row[return_index] == 0.04
     assert contexts[0]["risk_limits"]["max_order_value"] == 10000
+    risk_capacity = contexts[0]["risk_capacity"]
+    assert risk_capacity["gross_remaining_usd"] == 100000
+    assert risk_capacity["per_symbol"]["SPY"]["max_buy_qty"] == pytest.approx(10000 / 104)
 
 
 def test_run_cycle_resout_une_requete_indicateurs_bornee_avant_decision_finale(

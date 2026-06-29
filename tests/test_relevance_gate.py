@@ -164,3 +164,46 @@ def test_run_cycle_honore_le_reveil_demande_par_l_agent(
     )
 
     assert decided == ["SPY"]
+
+
+def test_run_cycle_ne_marque_pas_un_echec_llm_comme_revue_periodique(
+    monkeypatch, tmp_path, patch_batch, make_data_source
+) -> None:
+    from datetime import datetime, timezone
+
+    from trader import daemon
+    from trader.codex_client import Decision
+    from trader.tools.scheduler import Scheduler
+
+    _runtime_config(tmp_path)
+    state_dir = tmp_path / "state"
+    now = datetime(2026, 6, 11, 12, 0, tzinfo=timezone.utc)
+
+    monkeypatch.setattr(daemon, "ROOT", tmp_path)
+    monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+
+    def decide(**kwargs):
+        return Decision(
+            symbol=kwargs["symbol"],
+            action="HOLD",
+            quantity=0.0,
+            confidence=0.0,
+            rationale="llm_failed:acpx:timeout:> 900s",
+            intent="HOLD",
+            llm_provider="acpx",
+            llm_model="gpt-5.5",
+            llm_error="timeout",
+        )
+
+    patch_batch(decide)
+    data_source = make_data_source(_flat_bars_factory(now.isoformat()))
+
+    daemon.run_cycle(
+        dry_run=True,
+        now=now,
+        symbols_filter=["SPY"],
+        sched=Scheduler(state_dir / "scheduler.json"),
+        data_source=data_source,
+    )
+
+    assert (str(state_dir), "SPY") not in daemon._LAST_LLM_AT

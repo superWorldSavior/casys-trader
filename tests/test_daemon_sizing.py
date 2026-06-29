@@ -16,6 +16,7 @@ from trader import daemon
 from trader.codex_client import Decision
 from trader.risk import RiskGate, RiskLimits
 from trader import fx
+from trader.tools.execution import Order, SimBroker
 from trader.tools.market import Bar
 from trader.tools.scheduler import Scheduler
 
@@ -49,6 +50,51 @@ def test_native_risk_budget_formula():
     equity_usd, pct, rate = 100_000.0, 0.01, 0.031
     risk_budget_native = pct * equity_usd / rate
     assert risk_budget_native == pytest.approx(1_000.0 / 0.031)  # ~32258 TWD
+
+
+def test_risk_capacity_context_expose_le_plafond_gross_restant_en_quantite_native(tmp_path) -> None:
+    """Le contexte agent doit voir le plafond restant, pas seulement max_order_value.
+
+    Régression du 2026-06-29 : BUY 2892.TW rejeté car max_order_native passait,
+    mais le portefeuille était déjà proche de max_gross_exposure.
+    """
+    broker = SimBroker(tmp_path / "broker.json", starting_cash=100_000.0)
+    broker.submit(
+        Order("SPY", "BUY", 925.0),
+        100.0,
+        "2026-06-29T04:00:00+00:00",
+        dry_run=False,
+        fx_rate=1.0,
+    )
+    prices = {"SPY": 100.0, "2892.TW": 32.95}
+    rates = {"SPY": 1.0, "2892.TW": 0.031}
+    rate_of = lambda sym: rates[sym]
+    limits = RiskLimits(
+        max_order_value=10_000.0,
+        max_risk_per_trade_pct=0.01,
+        max_position_value=30_000.0,
+        max_gross_exposure=100_000.0,
+        max_orders_per_cycle=5,
+        min_equity=50_000.0,
+    )
+    gross = daemon._gross_exposure(broker, prices, rate_of=rate_of)
+
+    context = daemon._risk_capacity_context(
+        symbols=["2892.TW"],
+        prices=prices,
+        broker=broker,
+        gross_exposure=gross,
+        limits=limits,
+        equity=98_700.0,
+        rate_of=rate_of,
+    )
+
+    expected_remaining_usd = 7_500.0
+    expected_qty = expected_remaining_usd / (32.95 * 0.031)
+    per_symbol = context["per_symbol"]["2892.TW"]
+    assert context["gross_remaining_usd"] == pytest.approx(expected_remaining_usd)
+    assert per_symbol["max_buy_qty"] == pytest.approx(expected_qty)
+    assert per_symbol["max_buy_notional_native"] == pytest.approx(expected_remaining_usd / 0.031)
 
 
 # ---------------------------------------------------------------------------

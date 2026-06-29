@@ -170,6 +170,8 @@ def test_main_transmet_le_plafond_decisionnel_cli(monkeypatch, tmp_path) -> None
 
     def run_cycle(**kwargs):
         captured["decision_timeout_s"] = kwargs["decision_timeout_s"]
+        captured["decision_batch_size"] = kwargs["decision_batch_size"]
+        captured["decision_batch_parallelism"] = kwargs["decision_batch_parallelism"]
         return _empty_report(now)
 
     monkeypatch.setattr(daemon, "ROOT", tmp_path)
@@ -178,9 +180,19 @@ def test_main_transmet_le_plafond_decisionnel_cli(monkeypatch, tmp_path) -> None
     monkeypatch.setattr(daemon, "IBDataSource", FakeIBDataSource, raising=False)
     monkeypatch.setattr(daemon, "run_cycle", run_cycle)
 
-    daemon.main(["--once", "--decision-timeout-s", "321"])
+    daemon.main([
+        "--once",
+        "--decision-timeout-s",
+        "321",
+        "--decision-batch-size",
+        "7",
+        "--decision-batch-parallelism",
+        "2",
+    ])
 
     assert captured["decision_timeout_s"] == 321
+    assert captured["decision_batch_size"] == 7
+    assert captured["decision_batch_parallelism"] == 2
 
 
 def test_main_saute_le_cycle_si_connexion_ib_echoue_et_reessaie_au_reveil_suivant(monkeypatch, tmp_path) -> None:

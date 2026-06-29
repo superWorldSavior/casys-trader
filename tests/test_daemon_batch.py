@@ -1,5 +1,7 @@
 """Tests du helper batch _batch_decide (budget d'appels modèle honoré)."""
 
+import threading
+import time
 from datetime import datetime, timezone
 
 from trader import daemon
@@ -469,6 +471,65 @@ def test_batch_decide_passe_le_plafond_decisionnel_900s_par_defaut(monkeypatch) 
     assert timeouts == [900]
 
 
+def test_batch_decide_decoupe_les_decisions_en_chunks_paralleles_bornes(monkeypatch) -> None:
+    symbols = [f"SYM{i}" for i in range(12)]
+    chunks: list[tuple[str, ...]] = []
+    active = 0
+    max_active = 0
+    lock = threading.Lock()
+
+    def fake_batch(*, symbols, **kwargs):
+        nonlocal active, max_active
+        with lock:
+            chunks.append(tuple(symbols))
+            active += 1
+            max_active = max(max_active, active)
+        time.sleep(0.03)
+        with lock:
+            active -= 1
+        return {sym: Decision.hold(sym, "attente") for sym in symbols}
+
+    monkeypatch.setattr(daemon.codex_client, "decide_batch", fake_batch)
+
+    decisions, n = daemon._batch_decide(
+        decidable=symbols,
+        max_model_calls=10,
+        decision_batch_size=5,
+        decision_batch_parallelism=2,
+        **{**_COMMON, "tradable_symbols": symbols},
+    )
+
+    assert n == 3
+    assert sorted(len(chunk) for chunk in chunks) == [2, 5, 5]
+    assert max(len(chunk) for chunk in chunks) == 5
+    assert max_active == 2
+    assert set(decisions) == set(symbols)
+
+
+def test_batch_decide_ne_depasse_pas_le_budget_appels_en_chunks(monkeypatch) -> None:
+    symbols = [f"SYM{i}" for i in range(12)]
+    chunks: list[tuple[str, ...]] = []
+
+    def fake_batch(*, symbols, **kwargs):
+        chunks.append(tuple(symbols))
+        return {sym: Decision.hold(sym, "attente") for sym in symbols}
+
+    monkeypatch.setattr(daemon.codex_client, "decide_batch", fake_batch)
+
+    decisions, n = daemon._batch_decide(
+        decidable=symbols,
+        max_model_calls=2,
+        decision_batch_size=5,
+        decision_batch_parallelism=3,
+        **{**_COMMON, "tradable_symbols": symbols},
+    )
+
+    assert n == 2
+    assert sorted(len(chunk) for chunk in chunks) == [5, 5]
+    assert sum(1 for decision in decisions.values() if decision.rationale == "model_call_budget_exhausted") == 2
+    assert set(decisions) == set(symbols)
+
+
 def test_batch_decide_passe_le_plafond_custom_aux_deux_appels(monkeypatch) -> None:
     timeouts: list[tuple[bool, int]] = []
 
@@ -577,7 +638,7 @@ def test_batch_decide_reinjecte_active_watches_apres_request_context(monkeypatch
     assert captured_per_symbol[1]["SPY"]["active_watches"] == [summarize_watch(spy_watch)]
 
 
-def test_run_cycle_passe_le_plafond_decisionnel_a_batch_decide(monkeypatch, tmp_path, make_data_source) -> None:
+def test_run_cycle_passe_les_parametres_decisionnels_a_batch_decide(monkeypatch, tmp_path, make_data_source) -> None:
     _write_runtime_config(tmp_path)
     state_dir = tmp_path / "state"
     now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
@@ -585,6 +646,8 @@ def test_run_cycle_passe_le_plafond_decisionnel_a_batch_decide(monkeypatch, tmp_
 
     def fake_batch_decide(**kwargs):
         captured["decision_timeout_s"] = kwargs["decision_timeout_s"]
+        captured["decision_batch_size"] = kwargs["decision_batch_size"]
+        captured["decision_batch_parallelism"] = kwargs["decision_batch_parallelism"]
         return {sym: Decision.hold(sym, "attente") for sym in kwargs["decidable"]}, 1
 
     monkeypatch.setattr(daemon, "ROOT", tmp_path)
@@ -601,9 +664,13 @@ def test_run_cycle_passe_le_plafond_decisionnel_a_batch_decide(monkeypatch, tmp_
         sched=Scheduler(state_dir / "scheduler.json"),
         data_source=data_source,
         decision_timeout_s=444,
+        decision_batch_size=7,
+        decision_batch_parallelism=2,
     )
 
     assert captured["decision_timeout_s"] == 444
+    assert captured["decision_batch_size"] == 7
+    assert captured["decision_batch_parallelism"] == 2
 
 
 def test_budget_un_fait_un_seul_batch_et_request_context_devient_hold(monkeypatch) -> None:

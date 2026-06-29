@@ -19,6 +19,7 @@ import logging
 import math
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -91,11 +92,31 @@ _INFRA_HOLD_REASONS = {
     "model_call_budget_exhausted",
     "model_call_budget_exhausted_after_context",
 }
+_NON_REVIEW_RATIONALES = {
+    *_INFRA_HOLD_REASONS,
+    "batch_bad_output",
+    "missing_in_batch",
+    "context_loop_blocked",
+}
 
 
 def _llm_exit_reason_for_intent(intent: str) -> str | None:
     """Libellé déterministe pour les sorties pilotées par le LLM."""
     return "llm_exit" if intent in {"CLOSE", "REDUCE", "REVERSE"} else None
+
+
+def _counts_as_llm_review(decision: codex_client.Decision) -> bool:
+    """True seulement si le LLM a vraiment rendu une décision exploitable."""
+    if not (decision.llm_provider or decision.llm_model):
+        return False
+    if decision.llm_error:
+        return False
+    rationale = str(decision.rationale or "")
+    if rationale in _NON_REVIEW_RATIONALES:
+        return False
+    if rationale.startswith(("batch_bad_output:", "codex_bad_output:", "llm_failed:")):
+        return False
+    return True
 
 
 # Barres fines (15m) pour coller à la cadence scalping (réveils 5-30 min) et avoir
@@ -110,6 +131,8 @@ DEFAULT_IB_HOST = "127.0.0.1"
 DEFAULT_IB_PORT = 4002
 DEFAULT_IB_CLIENT_ID = 17
 DEFAULT_LEARNING_CONSOLIDATION_THRESHOLD = consolidator.DEFAULT_CONSOLIDATION_THRESHOLD
+DEFAULT_DECISION_BATCH_SIZE = 5
+DEFAULT_DECISION_BATCH_PARALLELISM = 3
 
 # D7 étage A — dernier passage LLM par (state_dir, symbole), pour la revue
 # périodique garantie du gate de pertinence. Volatile : reset au restart.
@@ -369,6 +392,124 @@ def _gross_exposure(
         abs(pos.quantity * prices.get(symbol, 0.0) * (rate_of(symbol) if rate_of else 1.0))
         for symbol, pos in broker.positions().items()
     )
+
+
+def _finite_positive(value: float | None) -> bool:
+    return value is not None and math.isfinite(value) and value > 0.0
+
+
+def _side_capacity_usd(
+    *,
+    side: str,
+    current_position_value: float,
+    gross_exposure: float,
+    limits: RiskLimits,
+    equity: float,
+) -> float:
+    if (
+        side not in {"BUY", "SELL"}
+        or not math.isfinite(current_position_value)
+        or not math.isfinite(gross_exposure)
+        or not math.isfinite(equity)
+        or equity < limits.min_equity
+    ):
+        return 0.0
+
+    max_order = float(limits.max_order_value)
+    position_cap = float(limits.max_position_value)
+    gross_cap_for_symbol = float(limits.max_gross_exposure) - gross_exposure + abs(current_position_value)
+    cap = min(position_cap, gross_cap_for_symbol)
+    if max_order <= 0.0 or cap < 0.0:
+        return 0.0
+
+    sign = 1.0 if side == "BUY" else -1.0
+    if sign > 0.0:
+        lower = -cap - current_position_value
+        upper = cap - current_position_value
+    else:
+        lower = current_position_value - cap
+        upper = current_position_value + cap
+    lower = max(0.0, lower)
+    upper = min(max_order, upper)
+    if upper < lower:
+        return 0.0
+    return max(0.0, upper)
+
+
+def _risk_capacity_context(
+    *,
+    symbols: list[str],
+    prices: dict[str, float],
+    broker: SimBroker,
+    gross_exposure: float,
+    limits: RiskLimits,
+    equity: float,
+    rate_of: Callable[[str], float],
+) -> dict:
+    """Expose les plafonds de sizing que le LLM doit respecter avant RiskGate.
+
+    `max_order_native` du cockpit est un montant en devise native. Ici on ajoute
+    aussi une quantite maximale par symbole, en tenant compte du plafond de gross
+    exposure restant, du plafond par position et du plafond par ordre.
+    """
+    positions = broker.positions()
+    per_symbol: dict[str, dict] = {}
+    for symbol in symbols:
+        price = prices.get(symbol)
+        rate = rate_of(symbol)
+        ccy = fx.currency_for(symbol)
+        if not _finite_positive(price) or not _finite_positive(rate):
+            per_symbol[symbol] = {
+                "price": price,
+                "ccy": ccy,
+                "fx_usd": rate,
+                "current_position_value_usd": 0.0,
+                "max_buy_qty": 0.0,
+                "max_buy_notional_native": 0.0,
+                "max_buy_notional_usd": 0.0,
+                "max_sell_qty": 0.0,
+                "max_sell_notional_native": 0.0,
+                "max_sell_notional_usd": 0.0,
+            }
+            continue
+        pos = positions.get(symbol)
+        current_position_value = 0.0 if pos is None else pos.quantity * float(price) * float(rate)
+        buy_usd = _side_capacity_usd(
+            side="BUY",
+            current_position_value=current_position_value,
+            gross_exposure=gross_exposure,
+            limits=limits,
+            equity=equity,
+        )
+        sell_usd = _side_capacity_usd(
+            side="SELL",
+            current_position_value=current_position_value,
+            gross_exposure=gross_exposure,
+            limits=limits,
+            equity=equity,
+        )
+        price_usd = float(price) * float(rate)
+        per_symbol[symbol] = {
+            "price": float(price),
+            "ccy": ccy,
+            "fx_usd": float(rate),
+            "current_position_value_usd": current_position_value,
+            "max_buy_qty": buy_usd / price_usd,
+            "max_buy_notional_native": buy_usd / float(rate),
+            "max_buy_notional_usd": buy_usd,
+            "max_sell_qty": sell_usd / price_usd,
+            "max_sell_notional_native": sell_usd / float(rate),
+            "max_sell_notional_usd": sell_usd,
+        }
+    return {
+        "gross_exposure_usd": gross_exposure,
+        "max_gross_exposure_usd": float(limits.max_gross_exposure),
+        "gross_remaining_usd": max(0.0, float(limits.max_gross_exposure) - gross_exposure),
+        "max_order_value_usd": float(limits.max_order_value),
+        "max_position_value_usd": float(limits.max_position_value),
+        "equity_usd": equity,
+        "per_symbol": per_symbol,
+    }
 
 
 def _attribution_min_entry_confidence(
@@ -1133,12 +1274,14 @@ def _batch_decide(
     last_review_by_symbol: dict[str, dict] | None = None,
     market_context_by_symbol: dict[str, dict] | None = None,
     decision_timeout_s: int = 900,
+    decision_batch_size: int = DEFAULT_DECISION_BATCH_SIZE,
+    decision_batch_parallelism: int = DEFAULT_DECISION_BATCH_PARALLELISM,
 ) -> tuple[dict[str, codex_client.Decision], int]:
-    """Décide TOUS les symboles dus en UN appel batch (contexte partagé envoyé une
-    seule fois). Gère le round-trip REQUEST_CONTEXT en batch : les symboles qui
-    demandent un complément sont résolus puis re-décidés en un 2e batch. Isolation
-    per-élément assurée par codex_client.parse_batch. `max_model_calls` est le fusible
-    coût (un batch = 1 appel ; le round-trip en ajoute 1). Retourne (décisions, n_appels)."""
+    """Décide les symboles dus par chunks LLM bornés et parallélisables.
+
+    Chaque chunk consomme un appel modèle et respecte `max_model_calls`. Les
+    demandes REQUEST_CONTEXT sont résolues puis re-décidées en chunks séparés.
+    """
     if not decidable:
         return {}, 0
     if max_model_calls < 1:
@@ -1176,16 +1319,60 @@ def _batch_decide(
         sym: {"indicator_triggers": triggers_by_symbol.get(sym, []), **_symbol_facts(sym)}
         for sym in decidable
     }
-    responses = codex_client.decide_batch(
+
+    batch_size = max(1, int(decision_batch_size))
+    parallelism = max(1, int(decision_batch_parallelism))
+
+    def _chunks(symbols: list[str]) -> list[list[str]]:
+        return [symbols[start : start + batch_size] for start in range(0, len(symbols), batch_size)]
+
+    def _decide_chunks(
+        *,
+        symbols: list[str],
+        per_symbol_payload: dict[str, dict],
+        allow_context_request: bool,
+        budget: int,
+    ) -> tuple[dict[str, object], int, list[str]]:
+        chunks = _chunks(symbols)
+        allowed_chunks = chunks[: max(0, budget)]
+        skipped = [sym for chunk in chunks[max(0, budget) :] for sym in chunk]
+        if not allowed_chunks:
+            return {}, 0, skipped
+
+        def _call(chunk: list[str]) -> dict[str, object]:
+            try:
+                return codex_client.decide_batch(
+                    symbols=chunk,
+                    mandate=mandate,
+                    memory=memory,
+                    shared_context=shared_context,
+                    per_symbol={sym: per_symbol_payload[sym] for sym in chunk},
+                    allow_context_request=allow_context_request,
+                    timeout_s=decision_timeout_s,
+                )
+            except Exception as exc:  # noqa: BLE001
+                return {
+                    sym: codex_client.Decision.hold(sym, f"llm_failed:batch_exception:{type(exc).__name__}")
+                    for sym in chunk
+                }
+
+        responses_by_symbol: dict[str, object] = {}
+        if parallelism == 1 or len(allowed_chunks) == 1:
+            for chunk in allowed_chunks:
+                responses_by_symbol.update(_call(chunk))
+        else:
+            with ThreadPoolExecutor(max_workers=min(parallelism, len(allowed_chunks))) as executor:
+                futures = [executor.submit(_call, chunk) for chunk in allowed_chunks]
+                for future in as_completed(futures):
+                    responses_by_symbol.update(future.result())
+        return responses_by_symbol, len(allowed_chunks), skipped
+
+    responses, calls, skipped_symbols = _decide_chunks(
         symbols=decidable,
-        mandate=mandate,
-        memory=memory,
-        shared_context=shared_context,
-        per_symbol=per_symbol,
+        per_symbol_payload=per_symbol,
         allow_context_request=True,
-        timeout_s=decision_timeout_s,
+        budget=max_model_calls,
     )
-    calls = 1
     decisions: dict[str, codex_client.Decision] = {}
     need: dict[str, codex_client.ContextResearchRequest] = {}
     for sym, resp in responses.items():
@@ -1193,6 +1380,8 @@ def _batch_decide(
             need[sym] = resp
         else:
             decisions[sym] = resp
+    for sym in skipped_symbols:
+        decisions[sym] = codex_client.Decision.hold(sym, "model_call_budget_exhausted")
 
     if need and calls >= max_model_calls:
         # Budget épuisé : pas de 2e batch pour résoudre les demandes de contexte.
@@ -1226,17 +1415,21 @@ def _batch_decide(
                 # repasse la rationale de la demande pour reprendre le raisonnement.
                 "prior_rationale": req.rationale,
             }
-        responses2 = codex_client.decide_batch(
+        responses2, calls2, skipped_context_symbols = _decide_chunks(
             symbols=list(need),
-            mandate=mandate,
-            memory=memory,
-            shared_context=shared_context,
-            per_symbol=per_symbol2,
+            per_symbol_payload=per_symbol2,
             allow_context_request=False,
-            timeout_s=decision_timeout_s,
+            budget=max_model_calls - calls,
         )
-        calls += 1
+        calls += calls2
+        for sym in skipped_context_symbols:
+            decisions[sym] = replace(
+                codex_client.Decision.hold(sym, "model_call_budget_exhausted_after_context"),
+                context_request=context_requests[sym],
+            )
         for sym in need:
+            if sym in skipped_context_symbols:
+                continue
             resp2 = responses2.get(sym)
             decision = (
                 resp2
@@ -1361,6 +1554,8 @@ def run_cycle(
     consolidator_model: str | None = None,
     consolidator_timeout_s: int = consolidator.DEFAULT_CONSOLIDATOR_TIMEOUT_S,
     decision_timeout_s: int = 900,
+    decision_batch_size: int = DEFAULT_DECISION_BATCH_SIZE,
+    decision_batch_parallelism: int = DEFAULT_DECISION_BATCH_PARALLELISM,
     commission_model: CommissionModel | None = None,
 ) -> dict:
     """Exécute UN cycle. Retourne un rapport structuré (machine-readable)."""
@@ -1668,6 +1863,15 @@ def run_cycle(
         "now": now.isoformat(),
         "portfolio": snap.as_context(fee_estimator=portfolio_fee_estimator),
         "risk_limits": risk_cfg,
+        "risk_capacity": _risk_capacity_context(
+            symbols=[symbol for symbol in symbols if symbol in prices],
+            prices=prices,
+            broker=broker,
+            gross_exposure=gross,
+            limits=gate.limits,
+            equity=snap.equity,
+            rate_of=_rate,
+        ),
         "semantic": {
             "requestable_indicator_ids": DEFAULT_INDICATORS,
         },
@@ -2001,11 +2205,14 @@ def run_cycle(
         last_review_by_symbol=_last_review_by_symbol(plan_store, decidable),
         market_context_by_symbol=execution_eligibility,
         decision_timeout_s=decision_timeout_s,
+        decision_batch_size=decision_batch_size,
+        decision_batch_parallelism=decision_batch_parallelism,
     )
     # revue effective seulement si le modèle a réellement statué (review Codex :
     # un échec/budget à 0 ne doit pas compter comme revue périodique)
     for sym in decidable:
-        if sym in decisions_by_symbol:
+        decision = decisions_by_symbol.get(sym)
+        if decision is not None and _counts_as_llm_review(decision):
             _LAST_LLM_AT[(str(STATE_DIR), sym)] = now
     if armed_decisions:
         decisions_by_symbol = {**decisions_by_symbol, **armed_decisions}
@@ -2152,7 +2359,7 @@ def run_cycle(
                  "indicator_watch_requested": bool(decision.indicator_watch),
                  "indicator_watch_rejections": [],
                  "data_source": runtime_data_source_by_sym.get(sym)}
-        if decision_source == "llm" and sym in held_symbols:
+        if decision_source == "llm" and sym in held_symbols and _counts_as_llm_review(decision):
             _persist_last_llm_review(
                 plan_store=plan_store,
                 symbol=sym,
@@ -2605,6 +2812,18 @@ def main(
         help="plafond de sécurité du temps de décision LLM (s) ; spark n'est PAS coupé avant, et un timeout ne déclenche PAS de fallback (HOLD fail-safe)",
     )
     parser.add_argument(
+        "--decision-batch-size",
+        type=int,
+        default=_env_int("CASYS_DECISION_BATCH_SIZE", DEFAULT_DECISION_BATCH_SIZE),
+        help="nombre max de symboles par appel LLM décideur (défaut/env CASYS_DECISION_BATCH_SIZE: 5)",
+    )
+    parser.add_argument(
+        "--decision-batch-parallelism",
+        type=int,
+        default=_env_int("CASYS_DECISION_BATCH_PARALLELISM", DEFAULT_DECISION_BATCH_PARALLELISM),
+        help="nombre max d'appels LLM décideur lancés en parallèle (défaut/env CASYS_DECISION_BATCH_PARALLELISM: 3)",
+    )
+    parser.add_argument(
         "--learning-consolidation-threshold",
         type=int,
         default=_env_int("TRADER_LEARNING_CONSOLIDATION_THRESHOLD", DEFAULT_LEARNING_CONSOLIDATION_THRESHOLD),
@@ -2660,6 +2879,10 @@ def main(
     args = parser.parse_args(argv)
     if not math.isfinite(args.ib_attach_retry_seconds) or args.ib_attach_retry_seconds <= 0:
         parser.error("--ib-attach-retry-seconds doit être > 0")
+    if args.decision_batch_size <= 0:
+        parser.error("--decision-batch-size doit être > 0")
+    if args.decision_batch_parallelism <= 0:
+        parser.error("--decision-batch-parallelism doit être > 0")
     now = now_fn or (lambda: datetime.now(timezone.utc))
     sleep = sleep_fn or time.sleep
 
@@ -2891,6 +3114,8 @@ def main(
                         consolidator_model=args.consolidator_model,
                         consolidator_timeout_s=args.consolidator_timeout_s,
                         decision_timeout_s=args.decision_timeout_s,
+                        decision_batch_size=args.decision_batch_size,
+                        decision_batch_parallelism=args.decision_batch_parallelism,
                         commission_model=commission_model,
                     )
                     if report.get("planned_exits") or report.get("decisions") or report.get("exit_watch_triggers"):
@@ -2921,6 +3146,8 @@ def main(
                         consolidator_model=args.consolidator_model,
                         consolidator_timeout_s=args.consolidator_timeout_s,
                         decision_timeout_s=args.decision_timeout_s,
+                        decision_batch_size=args.decision_batch_size,
+                        decision_batch_parallelism=args.decision_batch_parallelism,
                         commission_model=commission_model,
                     )
                     log.info("cycle: %s", json.dumps(report, ensure_ascii=False))
