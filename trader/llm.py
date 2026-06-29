@@ -159,6 +159,11 @@ def _looks_retryable_acpx_error(*, provider: str, text: str) -> bool:
         return True
     if "internal error" in text.lower():
         return True
+    # exit!=0 sans aucune sortie (stderr+stdout vides) = échec provider
+    # transitoire (blip quota/dispo) qu'acpx remonte muet sous --format quiet ;
+    # on le rend retryable pour autoriser le fallback plutôt qu'un HOLD sec.
+    if not text.strip():
+        return True
     return False
 
 

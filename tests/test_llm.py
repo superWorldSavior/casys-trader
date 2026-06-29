@@ -196,6 +196,60 @@ def test_acpx_backend_runtime_traite_internal_error_comme_retryable(monkeypatch)
     assert result.code == "provider_error"
 
 
+def test_acpx_backend_exit_non_zero_sans_sortie_est_retryable(monkeypatch) -> None:
+    """exit!=0 acpx SANS aucune sortie (stderr+stdout vides) = blip provider
+    transitoire (quota/dispo qui hoquette), donc retryable -> le routeur peut
+    tomber en fallback au lieu de figer un HOLD sec."""
+    monkeypatch.setattr("trader.llm.shutil.which", lambda _bin: "/usr/local/bin/acpx")
+    monkeypatch.setattr("trader.llm._terminate_process_group", lambda _pid: None)
+    monkeypatch.setattr("trader.llm._codex_acp_pids", lambda: set())
+
+    class EmptyExitPopen:
+        pid = 4242
+        returncode = 1
+
+        def __init__(self, command, **kwargs):
+            self.command = command
+
+        def communicate(self, timeout=None):
+            return "", ""
+
+    monkeypatch.setattr("trader.llm.subprocess.Popen", EmptyExitPopen)
+
+    result = AcpxBackend(provider="acpx", model="gpt-5.5").complete("prompt", timeout_s=240)
+
+    assert isinstance(result, LlmFailure)
+    assert result.retryable is True
+    assert result.code == "provider_error"
+
+
+def test_acpx_backend_exit_non_zero_avec_erreur_explicite_reste_non_retryable(monkeypatch) -> None:
+    """Garde-fou : un exit!=0 avec un message d'erreur explicite et NON transitoire
+    (ni rate-limit, ni internal-error, ni sortie vide) reste un nonzero_exit
+    non-retryable -- on ne doit pas tout rendre retryable."""
+    monkeypatch.setattr("trader.llm.shutil.which", lambda _bin: "/usr/local/bin/acpx")
+    monkeypatch.setattr("trader.llm._terminate_process_group", lambda _pid: None)
+    monkeypatch.setattr("trader.llm._codex_acp_pids", lambda: set())
+
+    class ExplicitErrorPopen:
+        pid = 4242
+        returncode = 1
+
+        def __init__(self, command, **kwargs):
+            self.command = command
+
+        def communicate(self, timeout=None):
+            return "", "fatal: configuration invalide\n"
+
+    monkeypatch.setattr("trader.llm.subprocess.Popen", ExplicitErrorPopen)
+
+    result = AcpxBackend(provider="acpx", model="gpt-5.5").complete("prompt", timeout_s=240)
+
+    assert isinstance(result, LlmFailure)
+    assert result.retryable is False
+    assert result.code == "nonzero_exit"
+
+
 def test_acpx_backend_isole_et_nettoie_le_process_group(monkeypatch) -> None:
     monkeypatch.setattr("trader.llm.shutil.which", lambda _bin: "/usr/local/bin/acpx")
     popen_calls = []
