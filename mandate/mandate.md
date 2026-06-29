@@ -114,9 +114,13 @@ d'ordre structurée", qui repasse ensuite par les garde-fous runtime.
 
 ## Plan de sortie
 
-Quand l'agent ouvre ou reverse une position, il doit autant que possible fournir
-un `exit_plan` structuré : take-profit partiels, stop suiveur éventuel et temps
-maximum de détention. Un `hard_stop` est fortement recommandé — l'agent choisit
+Quand l'agent ouvre ou reverse une position, il fournit un `exit_plan` structuré
+utile : take-profit partiels, stop suiveur éventuel, veilles d'invalidation, et
+autres sorties mécaniques pertinentes. `max_hold_minutes` est optionnel : il ne
+doit être ajouté que si la thèse a une expiration temporelle explicite
+(catalyseur, fenêtre de réaction, ou setup qui doit marcher avant une échéance
+précise). Sinon, l'agent le laisse absent/null et laisse vivre le trade tant que
+la thèse reste valide. Un `hard_stop` est fortement recommandé — l'agent choisit
 librement son niveau ; il n'est pas obligatoire. Sans stop, la position n'est
 bornée que par les plafonds notionnels (`max_position_value`) : c'est à l'agent
 de gérer ce risque via veilles et revues. L'agent définit le plan ; le daemon

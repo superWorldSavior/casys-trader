@@ -119,7 +119,9 @@ _OUTPUT_CONTRACT = (
     "`next_wake_in_minutes` est optionnel : utilise-le seulement si ce symbole doit "
     "override la cadence globale par défaut. Pour une ouverture de position, fournis "
     "un `exit_plan` avec hard_stop, take_profits, trailing_stop, "
-    "profit_protection, exit_watch et/ou max_hold_minutes. "
+    "profit_protection et/ou exit_watch. max_hold_minutes est optionnel : "
+    "n'en ajoute un que si la thèse a une expiration temporelle explicite ; "
+    "sinon laisse-le absent/null. "
     "`indicator_watch` peut définir une veille conditionnelle avec `timeframe`, "
     "`lookback`, `window` et `as_of=latest` si tu veux être réveillé par signaux. "
     "Si tu n'es pas sûr, renvoie action=HOLD."
@@ -193,9 +195,12 @@ _DECISION_GUIDANCE = (
     "`context.research` avec les indicateurs calculés, et `context.prior_rationale` "
     "(ta demande initiale) pour reprendre ton raisonnement sans repartir de zéro.\n\n"
     "# Plans de sortie\n"
-    "Quand tu ouvres ou reverses une position, fournis autant que possible un "
-    "`exit_plan` structuré : hard_stop, take_profits, trailing_stop, "
-    "profit_protection, exit_watch et/ou max_hold_minutes. `profit_protection` est "
+    "Quand tu ouvres ou reverses une position, fournis un `exit_plan` structuré "
+    "utile : hard_stop, take_profits, trailing_stop, profit_protection et/ou "
+    "exit_watch. max_hold_minutes est optionnel : n'en ajoute un que si la "
+    "thèse a une expiration temporelle explicite (catalyseur, fenêtre de "
+    "réaction, ou setup qui doit marcher avant une échéance précise) ; sinon "
+    "laisse-le absent/null. `profit_protection` est "
     "optionnel : utilise-le seulement si le setup justifie une sécurisation "
     "progressive; sinon le daemon ne l'ajoute pas de lui-même. `exit_watch` "
     "est une veille d'invalidation attachée au trade : si elle déclenche, "
@@ -294,8 +299,9 @@ _BATCH_FINAL_CONTRACT = (
     '"indicator_watch":<object|null>,"cancel_watch_ids":[<watch_id>,...],'
     f'"decision_reason_code":"{_REASON_CODE_ENUM}","learning":<string|null>}}\n'
     "Pour une ouverture, fournis un `exit_plan` conforme au schéma ci-dessous "
-    "(hard_stop, take_profits, trailing_stop, "
-    "profit_protection, exit_watch et/ou max_hold_minutes). `learning` optionnel : note "
+    "(hard_stop, take_profits, trailing_stop, profit_protection et/ou exit_watch). "
+    "max_hold_minutes est optionnel : seulement si la thèse a une expiration "
+    "temporelle explicite. `learning` optionnel : note "
     "à retenir, réinjectée via context.learnings. Si tu n'es pas sûr -> action=HOLD."
 )
 
