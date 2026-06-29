@@ -106,6 +106,28 @@ def _llm_exit_reason_for_intent(intent: str) -> str | None:
     return "llm_exit" if intent in {"CLOSE", "REDUCE", "REVERSE"} else None
 
 
+_GROSS_REJECT_REASON = "risk:gross_exposure_exceeded"
+
+
+def summarize_gross_rejections(decisions: list[dict]) -> dict | None:
+    """Résume les ouvertures recalées faute de marge gross sur un cycle.
+
+    Feedback léger réinjecté au cycle suivant (les sessions LLM sont stateless) :
+    l'agent voit qu'il a collectivement sur-proposé contre le plafond gross
+    partagé et peut être plus sélectif. Retourne None s'il n'y a rien à signaler.
+    """
+    symbols = sorted(
+        str(d.get("symbol"))
+        for d in decisions
+        if d.get("reason") == _GROSS_REJECT_REASON
+        and d.get("intent") in {"OPEN_LONG", "OPEN_SHORT", "REVERSE"}
+        and d.get("symbol")
+    )
+    if not symbols:
+        return None
+    return {"rejected_opens": len(symbols), "symbols": symbols}
+
+
 def _counts_as_llm_review(decision: codex_client.Decision) -> bool:
     """True seulement si le LLM a vraiment rendu une décision exploitable."""
     if not (decision.llm_provider or decision.llm_model):
@@ -138,6 +160,9 @@ DEFAULT_DECISION_BATCH_PARALLELISM = 3
 # D7 étage A — dernier passage LLM par (state_dir, symbole), pour la revue
 # périodique garantie du gate de pertinence. Volatile : reset au restart.
 _LAST_LLM_AT: dict[tuple[str, str], object] = {}
+# Feedback gross d'un cycle au suivant (process daemon long-vivant, comme
+# _LAST_LLM_AT). Keyé par STATE_DIR. Best-effort : vidé au redémarrage.
+_LAST_GROSS_REJECTIONS: dict[str, dict | None] = {}
 # Intervalle fin pour les checks de sortie (stop/TP/trailing).
 # Fetché uniquement pour les symboles ayant un plan ouvert.
 EXIT_CHECK_INTERVAL = "5m"
@@ -1905,6 +1930,13 @@ def run_cycle(
         ),
     }
 
+    # Feedback léger du cycle précédent : si des ouvertures ont été recalées faute
+    # de marge gross, on le signale à l'agent (marge partagée entre tous les
+    # symboles) — présent seulement si non vide.
+    _gross_feedback = _LAST_GROSS_REJECTIONS.get(str(STATE_DIR))
+    if _gross_feedback:
+        base_context["gross_budget_feedback"] = _gross_feedback
+
     report: dict = {
         "ts": now.isoformat(),
         "dry_run": dry_run,
@@ -2803,6 +2835,9 @@ def run_cycle(
         report["learning_consolidation"] = consolidation_result
         _write_current_report(report)
         _append_event("learning_consolidated", **consolidation_result)
+    # Mémorise les rejets gross de CE cycle pour les réinjecter au prochain (None
+    # si aucun → efface un éventuel feedback périmé).
+    _LAST_GROSS_REJECTIONS[str(STATE_DIR)] = summarize_gross_rejections(report["decisions"])
     return report
 
 
