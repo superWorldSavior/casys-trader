@@ -6,10 +6,23 @@ fournit le contexte chiffré que l'agent lit à chaque réveil pour piloter ses 
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import Callable
 
 from .execution import Broker
+
+
+def _safe_last_price(raw: float | None, avg_price: float) -> float:
+    """Backstop valorisation : un prix absent/aberrant (None, NaN, inf, <=0) ne
+    doit JAMAIS valoriser une position détenue à $0. On retombe sur le coût
+    (avg_price) → unrealized=0 le temps qu'un vrai prix revienne, au lieu d'une
+    fausse falaise d'équité (cf. STMN.SW 30/06 : prix 0 → équité -8 k un cycle).
+    Côté daemon, price_of = `prices.get(s, 0.0)` : un symbole non coté ce cycle
+    arrive donc ici à 0.0."""
+    if raw is None or not math.isfinite(raw) or raw <= 0.0:
+        return avg_price
+    return raw
 
 
 @dataclass(frozen=True)
@@ -104,7 +117,7 @@ def snapshot(
             symbol=p.symbol,
             quantity=p.quantity,
             avg_price=p.avg_price,
-            last_price=price_of(p.symbol),
+            last_price=_safe_last_price(price_of(p.symbol), p.avg_price),
             fx_rate=fx_rate_of(p.symbol) if fx_rate_of is not None else 1.0,
         )
         for p in broker.positions().values()

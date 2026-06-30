@@ -98,3 +98,50 @@ def test_as_context_fx_rate_usd_par_defaut() -> None:
     holding = snap.as_context()["holdings"][0]
 
     assert holding["fx_rate"] == pytest.approx(1.0, rel=1e-9)
+
+
+class _Pos:
+    def __init__(self, symbol: str, quantity: float, avg_price: float) -> None:
+        self.symbol = symbol
+        self.quantity = quantity
+        self.avg_price = avg_price
+
+
+class _Broker:
+    def __init__(self, cash: float, positions: dict) -> None:
+        self._cash = cash
+        self._positions = positions
+
+    def positions(self) -> dict:
+        return self._positions
+
+    def cash(self) -> float:
+        return self._cash
+
+
+def test_snapshot_valorise_au_avg_price_quand_le_prix_est_invalide() -> None:
+    """Backstop falaise : une position détenue sans prix valide (price_of renvoie
+    0.0 — le défaut `prices.get(s, 0.0)` côté daemon) ne doit JAMAIS être
+    valorisée à $0. On garde le coût (avg_price), unrealized=0, pas de fausse
+    falaise d'équité (cf. STMN.SW 30/06)."""
+    from trader.tools import portfolio
+
+    broker = _Broker(cash=25_447.0, positions={"STMN.SW": _Pos("STMN.SW", 60.0, 104.6)})
+
+    snap = portfolio.snapshot(broker, price_of=lambda s: 0.0, starting_equity=100_000.0)
+
+    h = snap.holdings[0]
+    assert h.last_price == pytest.approx(104.6)  # avg_price, PAS 0
+    assert h.market_value == pytest.approx(60.0 * 104.6)
+    assert snap.equity == pytest.approx(25_447.0 + 60.0 * 104.6)
+
+
+def test_snapshot_garde_le_prix_quand_il_est_valide() -> None:
+    """Non-régression : un prix valide est utilisé tel quel."""
+    from trader.tools import portfolio
+
+    broker = _Broker(cash=1_000.0, positions={"AAPL": _Pos("AAPL", 10.0, 100.0)})
+
+    snap = portfolio.snapshot(broker, price_of=lambda s: 110.0, starting_equity=1_000.0)
+
+    assert snap.holdings[0].last_price == pytest.approx(110.0)
