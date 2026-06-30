@@ -153,7 +153,7 @@ class CompositeDataSource:
         for name in source_names:
             source = self._sources.get(name)
             if source is None:
-                log.info(
+                log.debug(
                     '{"event":"source_skipped","symbol":"%s","source":"%s",'
                     '"reason":"absent_du_dict"}',
                     symbol, name,
@@ -168,7 +168,7 @@ class CompositeDataSource:
                     else MarketError("source_error", f"{symbol}@{name}: {exc}")
                 )
                 self._failed_sources_since_last_check[name] = last_error
-                log.info(
+                log.warning(
                     '{"event":"source_fallback","symbol":"%s","source":"%s",'
                     '"reason":"exception","code":"%s"}',
                     symbol, name,
@@ -183,7 +183,7 @@ class CompositeDataSource:
                     "stale_data",
                     f"{symbol}@{name}: reason={freshness.reason} age={freshness.age_minutes}min",
                 )
-                log.info(
+                log.debug(
                     '{"event":"source_fallback","symbol":"%s","source":"%s",'
                     '"reason":"stale","stale_reason":"%s"}',
                     symbol, name,

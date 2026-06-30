@@ -2944,7 +2944,12 @@ def main(
     sleep = sleep_fn or time.sleep
 
     from .logging_setup import setup_logging
-    setup_logging(level=logging.INFO)
+    # Niveau console pilotable via CASYS_LOG_LEVEL (.env/CLI), défaut INFO.
+    # DEBUG ressort le détail fetch par-symbole (source_skipped/stale) sinon muet.
+    _log_level = logging.getLevelNamesMapping().get(
+        os.getenv("CASYS_LOG_LEVEL", "INFO").upper(), logging.INFO
+    )
+    setup_logging(level=_log_level)
     dry_run = not args.live
     commission_model = commission_model_from_name(args.commission_model)
 
