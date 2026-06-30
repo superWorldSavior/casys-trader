@@ -37,6 +37,7 @@ from . import (
     family_regime,
     fx,
     fx_rates,
+    llm,
     meta_performance,
     relevance_gate,
     stats,
@@ -2847,6 +2848,10 @@ def main(
     now_fn: Callable[[], datetime] | None = None,
     sleep_fn: Callable[[float], None] | None = None,
 ) -> None:
+    # Charge le .env AVANT l'argparse pour que les defaults _env_int/_env
+    # (CASYS_DECISION_BATCH_PARALLELISM, etc.) le voient. override=False ⇒
+    # une var déjà posée en CLI/inline reste prioritaire.
+    llm.load_dotenv()
     parser = argparse.ArgumentParser(description="casys-trader daemon (boucle runtime)")
     parser.add_argument("--live", action="store_true", help="exécute réellement les ordres (défaut: dry-run)")
     parser.add_argument("--once", action="store_true", help="un seul cycle puis sortie")
@@ -2956,6 +2961,13 @@ def main(
 
     sched = scheduler.Scheduler(STATE_DIR / "scheduler.json")
     log.info("daemon démarré (dry_run=%s, once=%s)", dry_run, args.once)
+    log.info(
+        "[config] decision_batch_parallelism=%d batch_size=%d max_model_calls_per_cycle=%d decision_timeout_s=%d",
+        args.decision_batch_parallelism,
+        args.decision_batch_size,
+        args.max_model_calls_per_cycle,
+        args.decision_timeout_s,
+    )
     bootstrap = args.bootstrap_all
 
     data_source = None
