@@ -10,6 +10,7 @@ Aucune décision ici — uniquement de la donnée brute.
 from __future__ import annotations
 
 import functools
+import math
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -599,16 +600,25 @@ def get_bars(symbol: str, lookback: str = "5d", interval: str = "1h") -> list[Ba
 
     bars: list[Bar] = []
     for idx, row in df.iterrows():
+        close = float(row["Close"])
+        # yfinance renvoie par moments des barres à close 0/NaN (titres peu
+        # liquides, intraday). Ce n'est PAS un prix : on la jette ici, à la
+        # source, sinon elle empoisonne valorisation/sizing/décision (falaise
+        # d'équité STMN.SW 30/06). La fraîcheur ne checke que l'âge, pas la valeur.
+        if not math.isfinite(close) or close <= 0.0:
+            continue
         bars.append(
             Bar(
                 ts=idx.isoformat(),
                 open=float(row["Open"]),
                 high=float(row["High"]),
                 low=float(row["Low"]),
-                close=float(row["Close"]),
+                close=close,
                 volume=float(row["Volume"]),
             )
         )
+    if not bars:
+        raise MarketError("no_data", f"{symbol}: toutes les barres invalides (close 0/NaN)")
     if source_interval == interval:
         return bars
     return aggregate_bars(bars, target_interval=interval, source_interval=source_interval)
