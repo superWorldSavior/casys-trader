@@ -74,3 +74,8 @@ def setup_logging(
         lg.handlers.clear()
         lg.addHandler(handler)
         lg.propagate = False
+
+    # Bruit lib tierce : IB Gateway down en paper → ib_async crache des ERROR
+    # « API connection failed » / « Make sure API port » à chaque probe. Notre
+    # WARNING ib_attach résume déjà l'indisponibilité → on coupe le brut.
+    logging.getLogger("ib_async").setLevel(logging.CRITICAL)

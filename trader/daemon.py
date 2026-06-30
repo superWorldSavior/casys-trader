@@ -1545,7 +1545,7 @@ def _fetch_5m_bars_for_open_plans(
         # Contrôle de fraîcheur sur les barres valides (budget propre à l'intervalle 5m).
         freshness = market.assess_freshness(valid_bars, now=now, max_age_minutes=freshness_budget)
         if not freshness.fresh:
-            log.warning(
+            log.debug(
                 "5m bars stale for %s (%s, age=%.1f min) — falling back to %s",
                 symbol, freshness.reason, freshness.age_minutes or 0.0, DEFAULT_RUNTIME_INTERVAL,
             )
@@ -2357,7 +2357,10 @@ def run_cycle(
             continue
 
         decision = decisions_by_symbol.get(sym) or codex_client.Decision.hold(sym, "no_decision_in_batch")
-        _log_cycle_progress(
+        # Trades (action != HOLD) à l'INFO ; HOLD en DEBUG pour désengorger la
+        # console (le compte reste visible via [batch] decided / [cycle] completed).
+        _res_log = log.debug if decision.action == "HOLD" else log.info
+        _res_log(
             "[decision %d/%d] %s result action=%s qty=%s intent=%s wake=%s confidence=%.2f provider=%s model=%s fallback=%s",
             index,
             len(symbols_to_decide),
@@ -2453,7 +2456,8 @@ def run_cycle(
                 sched.clear_symbol_next_wake(sym)
 
         if decision.action == "HOLD" or effective_quantity == 0:
-            _log_cycle_progress("[decision %d/%d] %s hold", index, len(symbols_to_decide), sym)
+            # Pas de 2e ligne "hold" : la ligne result ci-dessus (DEBUG pour HOLD)
+            # porte déjà l'action.
             apply_decision_schedule()
             hold_reason = "hold"
             if decision_source == "infra" and decision.rationale in _INFRA_HOLD_REASONS:
@@ -3188,13 +3192,13 @@ def main(
                         commission_model=commission_model,
                     )
                     if report.get("planned_exits") or report.get("decisions") or report.get("exit_watch_triggers"):
-                        log.info("cycle actif sans symbole dû: %s", json.dumps(report, ensure_ascii=False))
+                        log.debug("cycle actif sans symbole dû: %s", json.dumps(report, ensure_ascii=False))
                         STATE_DIR.mkdir(parents=True, exist_ok=True)
                         (STATE_DIR / "last_report.json").write_text(json.dumps(report, indent=2, ensure_ascii=False))
                         _append_cycle_history(report)
                     wait = sched.seconds_until_wake(symbols)
                     sleep_seconds = min(wait, args.poll)
-                    log.info("aucun symbole dû — pause %.0fs", sleep_seconds)
+                    log.debug("aucun symbole dû — pause %.0fs", sleep_seconds)
                 else:
                     report = run_cycle(
                         dry_run=dry_run,
@@ -3219,7 +3223,7 @@ def main(
                         decision_batch_parallelism=args.decision_batch_parallelism,
                         commission_model=commission_model,
                     )
-                    log.info("cycle: %s", json.dumps(report, ensure_ascii=False))
+                    log.debug("cycle: %s", json.dumps(report, ensure_ascii=False))
                     STATE_DIR.mkdir(parents=True, exist_ok=True)
                     (STATE_DIR / "last_report.json").write_text(json.dumps(report, indent=2, ensure_ascii=False))
 
