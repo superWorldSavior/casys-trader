@@ -111,7 +111,7 @@ def test_run_cycle_loggue_la_progression_console(monkeypatch, tmp_path, caplog, 
     _write_runtime_config(tmp_path)
     state_dir = tmp_path / "state"
     now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
-    caplog.set_level(logging.INFO, logger="casys-trader")
+    caplog.set_level(logging.DEBUG, logger="casys-trader")
 
     monkeypatch.setattr(daemon, "ROOT", tmp_path)
     monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
@@ -128,12 +128,19 @@ def test_run_cycle_loggue_la_progression_console(monkeypatch, tmp_path, caplog, 
         data_source=data_source,
     )
 
-    messages = "\n".join(record.getMessage() for record in caplog.records)
-    assert "[cycle] start" in messages
-    assert "[market] loaded" in messages
-    assert "[batch] deciding" in messages
-    assert "[decision 1/1] SPY result" in messages
-    assert "[cycle] completed" in messages
+    info_messages = "\n".join(
+        record.getMessage() for record in caplog.records if record.levelno >= logging.INFO
+    )
+    all_messages = "\n".join(record.getMessage() for record in caplog.records)
+    # Progression visible à l'INFO en prod
+    assert "[cycle] start" in info_messages
+    assert "[market] loaded" in info_messages
+    assert "[batch] deciding" in info_messages
+    assert "[cycle] completed" in info_messages
+    # Trades-only à l'INFO : le détail d'une décision HOLD est en DEBUG, pas à
+    # l'INFO (sinon 31 HOLD/cycle noient la console). Toujours loggé, mais DEBUG.
+    assert "[decision 1/1] SPY result" not in info_messages
+    assert "[decision 1/1] SPY result" in all_messages
 
 
 def test_run_cycle_historise_la_perf_par_modele_sur_fill(monkeypatch, tmp_path, patch_batch, make_data_source) -> None:
