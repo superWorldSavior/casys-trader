@@ -26,7 +26,7 @@ documenté, où, et quels trous restent).
 Les **trous** ci-dessous obtiennent une page `reference/` dédiée ; les runbooks
 `how-to/` (quadrant entier absent) sont à créer.
 
-Pages `reference/` écrites : [`risk-gate.md`](reference/risk-gate.md), [`fx.md`](reference/fx.md).
+Pages `reference/` écrites : [`risk-gate`](reference/risk-gate.md), [`fx`](reference/fx.md), [`cockpit`](reference/cockpit.md), [`reporting`](reference/reporting.md).
 Pages `how-to/` écrites : [`run-the-daemon`](how-to/run-the-daemon.md), [`read-logs`](how-to/read-logs.md), [`measure-and-replay`](how-to/measure-and-replay.md).
 
 ---
@@ -86,8 +86,8 @@ Légende : ✅ couvert · 🟡 partiel / dispersé / potentiellement périmé ·
 ### Observabilité
 | Sous-système | Package/module | Réf | Où | Décisions |
 |---|---|---|---|---|
-| Cockpit TUI | `cockpit/` (app, supervisor, events), `ui/`, `read_models/runtime_state` | 🟡 | specs cockpit-v2 (chrono) | — |
-| Attribution / performance | `reporting/` (attribution, meta_performance, decision_audit, decision_bench, stats, tool_usage) | 🟡 | — | — |
+| Cockpit TUI | `cockpit/` (app, supervisor, events), `ui/`, `read_models/runtime_state` | ✅ | **`reference/cockpit.md`** | — |
+| Attribution / performance | `reporting/` (attribution, meta_performance, decision_audit, decision_bench, stats, tool_usage) | ✅ | **`reference/reporting.md`** | — |
 | Logging | `runtime/logging_setup` (`CASYS_LOG_LEVEL`, museler ib_async) | ✅ | archi §10.1 | — |
 
 ### How-to / runbooks
@@ -106,7 +106,7 @@ Du plus risqué au moins risqué :
 1. ~~**Risk gate — réf unique**~~ ✅ **fait** → [`reference/risk-gate.md`](reference/risk-gate.md).
 2. ~~**Conversion FX**~~ ✅ **fait** → [`reference/fx.md`](reference/fx.md).
 3. ~~**Runbooks how-to**~~ ✅ **fait** → `how-to/` (run-the-daemon, read-logs, measure-and-replay).
-4. **Cockpit & attribution** 🟡. Specs chronologiques, pas de « ce qu'affiche/mesure le cockpit aujourd'hui ». **← prochain**
-5. **Config univers/portefeuille** ❌. Les `.yaml` pilotent le comportement sans page qui les décrit.
+4. ~~**Cockpit & attribution**~~ ✅ **fait** → [`cockpit`](reference/cockpit.md), [`reporting`](reference/reporting.md).
+5. **Config univers/portefeuille** ❌. Les `.yaml` pilotent le comportement sans page qui les décrit. **← prochain (dernier)**
 
 On remplit dans cet ordre, une page à la fois.
