@@ -120,3 +120,16 @@ Proposition : déplacer les `.bak-*` et les bench files dans
 - Cache yfinance (`~/Library/Caches/py-yfinance`, 92 Ko) : géré par la lib.
 - Doubles lectures TUI sans cache (`model_performance` ×2, `consolidated` ×2
   par cycle) : optimisation opportuniste, pas urgente à ces tailles.
+
+
+## 8. Suivi post-review Codex (02/07 soir — non bloquant)
+
+Le chantier complet (P0+rotation+config+learnings) a eu sa passe Codex de
+rattrapage : CRITICAL rotation corrigé (réécriture atomique validée + dédup,
+commit 1c6d49d), artefacts prod vérifiés sains (gzip -t OK, 19 105
+decision_id uniques, zéro doublon). Deux follow-ups mineurs notés :
+- après un abort de mois corrompu, les lignes du mois aborté sont ré-écrites
+  APRÈS les lignes du mois courant dans le vif (ordre non préservé → peut
+  polluer un tail runtime) — préserver l'ordre original des kept.
+- garde-fou RAM absent pour la fusion d'une très grosse archive mensuelle
+  (OK à notre échelle ~30k lignes/mois).
