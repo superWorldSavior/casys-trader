@@ -352,23 +352,20 @@ def _build_portfolio_overview_tile(
         _metric_cell("Trades clos", str(closed_trades or 0), value_style=palette["kpi_default"], palette=palette),
     )
 
-    exposure_by_currency: dict[str, float] = {}
-    for holding in holdings:
-        exposure_by_currency[_holding_currency(holding)] = (
-            exposure_by_currency.get(_holding_currency(holding), 0.0)
-            + _holding_notional(holding)
-        )
-
-    allocation = Table(title="Allocation devise", show_header=True, expand=True, box=None)
+    allocation = Table(title="Allocation symboles", show_header=True, expand=True, box=None)
+    allocation.add_column("Sym", no_wrap=True)
     allocation.add_column("Dev.", no_wrap=True)
     allocation.add_column("Poids", overflow="fold")
-    for currency, notional in sorted(
-        exposure_by_currency.items(), key=lambda item: item[1], reverse=True
-    )[:4]:
+    for holding in sorted(holdings, key=_holding_notional, reverse=True)[:5]:
+        notional = _holding_notional(holding)
         pct = notional / total_notional * 100.0 if total_notional else 0.0
-        allocation.add_row(currency, f"{_bar(notional, total_notional, width=16)} {pct:>4.1f}%")
+        allocation.add_row(
+            _holding_symbol(holding),
+            _holding_currency(holding),
+            f"{_bar(notional, total_notional, width=14)} {pct:>4.1f}%",
+        )
     if not holdings:
-        allocation.add_row("—", "—")
+        allocation.add_row("—", "—", "—")
 
     pnl_rows = sorted(holdings, key=lambda item: abs(_holding_pnl(item)), reverse=True)[:4]
     max_abs_pnl = max((abs(_holding_pnl(item)) for item in pnl_rows), default=0.0)
@@ -667,23 +664,6 @@ def _build_decisions_overview_tile(
     return Group(mix, table, risk_table)
 
 
-def _plan_signal(item: dict) -> str:
-    take_profits = item.get("take_profits")
-    if isinstance(take_profits, list) and take_profits:
-        first = take_profits[0] if isinstance(take_profits[0], dict) else {}
-        price = first.get("price") if isinstance(first, dict) else None
-        if price is not None:
-            return f"TP {price}"
-    for key in ("kind", "reason", "id", "status"):
-        value = item.get(key)
-        if value:
-            return str(value)
-    remaining = item.get("remaining_quantity")
-    if remaining is not None:
-        return f"reste {remaining}"
-    return "—"
-
-
 def _price_for_symbol(state: dict, symbol: str) -> float | None:
     prices = _safe_dict(state.get("prices"))
     raw = prices.get(symbol)
@@ -817,62 +797,6 @@ def _watch_is_armed(watch: dict) -> bool:
     return bool(_safe_dict(watch.get("order"))) or str(watch.get("trigger_action") or "") == "EXECUTE_ORDER"
 
 
-def _build_plan_overview_rows(
-    state: dict,
-    armed_plans: list[dict],
-    trade_plans: list[dict],
-    watches: list[dict],
-    *,
-    limit: int = 8,
-) -> list[tuple[str, str, str, str, str, str, str]]:
-    rows: list[tuple[int, int, tuple[str, str, str, str, str, str, str]]] = []
-
-    for index, plan in enumerate(trade_plans):
-        symbol = str(plan.get("symbol") or "—")
-        price = _price_for_symbol(state, symbol) or _safe_float(plan.get("entry_price"), default=None)
-        stale = _symbol_is_stale(state, symbol)
-        priority = 0 if stale else 20
-        row = (
-            "sortie",
-            symbol,
-            _plan_qty_label(plan),
-            _exit_plan_risk_label(plan, price, stale),
-            _next_tp_label(plan, price),
-            _plan_state_label(plan),
-            "stale" if stale else "open",
-        )
-        rows.append((priority, index, row))
-
-    offset = len(rows)
-    for index, watch in enumerate(armed_plans):
-        row = (
-            "armé",
-            str(watch.get("symbol") or "—"),
-            _armed_order_label(watch),
-            _armed_stop_label(watch),
-            _condition_summary(watch.get("conditions"), watch.get("logic"), max_items=2),
-            f"exp {_relative_expiry(watch.get('expires_at'))}",
-            "armed",
-        )
-        rows.append((40, offset + index, row))
-
-    offset = len(rows)
-    simple_watches = [watch for watch in watches if not _watch_is_armed(watch)]
-    for index, watch in enumerate(simple_watches):
-        row = (
-            "veille",
-            str(watch.get("symbol") or "—"),
-            "WAKE",
-            "—",
-            _condition_summary(watch.get("conditions"), watch.get("logic"), max_items=2),
-            f"exp {_relative_expiry(watch.get('expires_at'))}",
-            "watch",
-        )
-        rows.append((70, offset + index, row))
-
-    return [row for _, _, row in sorted(rows, key=lambda item: (item[0], item[1]))[:limit]]
-
-
 def _build_plans_overview_tile(
     state: dict,
     armed_plans: list[dict],
@@ -895,34 +819,73 @@ def _build_plans_overview_tile(
         ("  Veilles ", palette["dim"]),
         (str(len(watches)), palette["kpi_default"]),
     )
-    table = Table(title="Plans actifs", show_header=True, expand=True, box=None)
-    table.add_column("Type", no_wrap=True)
-    table.add_column("Sym", style="bold", no_wrap=True)
-    table.add_column("Sens/Qté", no_wrap=True)
-    table.add_column("Risque", no_wrap=True)
-    table.add_column("Prochain", overflow="fold")
-    table.add_column("État", no_wrap=True)
-    rows = _build_plan_overview_rows(
-        state,
-        armed_plans,
-        trade_plans,
-        watches,
-        limit=8,
-    )
-    for kind, symbol, side_qty, risk, next_step, status, semantic_status in rows:
-        risk_style = palette["kpi_vol_warn"] if semantic_status == "stale" else palette["dim"]
-        status_style = palette["status_accent"] if semantic_status == "armed" else palette["dim"]
-        table.add_row(
-            kind,
+    armed_table = Table(title="Plans armés", show_header=True, expand=True, box=None)
+    armed_table.add_column("Sym", style="bold", no_wrap=True)
+    armed_table.add_column("Ordre", no_wrap=True)
+    armed_table.add_column("Stop", no_wrap=True)
+    armed_table.add_column("Déclencheur", overflow="fold")
+    armed_table.add_column("Exp.", no_wrap=True)
+    for watch in armed_plans[:3]:
+        armed_table.add_row(
+            str(watch.get("symbol") or "—"),
+            _armed_order_label(watch),
+            _armed_stop_label(watch),
+            _condition_summary(watch.get("conditions"), watch.get("logic"), max_items=2),
+            _relative_expiry(watch.get("expires_at")),
+        )
+    if not armed_plans:
+        armed_table.add_row("—", "—", "—", "aucun plan armé", "—")
+
+    exits_table = Table(title="Sorties ouvertes", show_header=True, expand=True, box=None)
+    exits_table.add_column("Sym", style="bold", no_wrap=True)
+    exits_table.add_column("Sens/Qté", no_wrap=True)
+    exits_table.add_column("Risque", no_wrap=True)
+    exits_table.add_column("Prochain", overflow="fold")
+    exits_table.add_column("État", no_wrap=True)
+    exit_rows = []
+    for plan in trade_plans:
+        symbol = str(plan.get("symbol") or "—")
+        price = _price_for_symbol(state, symbol) or _safe_float(plan.get("entry_price"), default=None)
+        stale = _symbol_is_stale(state, symbol)
+        exit_rows.append(
+            (
+                0 if stale else 1,
+                symbol,
+                _plan_qty_label(plan),
+                _exit_plan_risk_label(plan, price, stale),
+                _next_tp_label(plan, price),
+                _plan_state_label(plan),
+                stale,
+            )
+        )
+    for _, symbol, side_qty, risk, next_step, status, stale in sorted(exit_rows)[:4]:
+        exits_table.add_row(
             symbol,
             side_qty,
-            Text(risk, style=risk_style),
+            Text(risk, style=palette["kpi_vol_warn"] if stale else palette["dim"]),
             next_step,
-            Text(status, style=status_style),
+            status,
         )
-    if not rows:
-        table.add_row("—", "—", "—", "—", "aucun plan actif", "—")
-    return Group(header, table)
+    if not exit_rows:
+        exits_table.add_row("—", "—", "—", "aucune sortie ouverte", "—")
+
+    simple_watches = [watch for watch in watches if not _watch_is_armed(watch)]
+    watches_table = Table(title="Veilles", show_header=True, expand=True, box=None)
+    watches_table.add_column("Sym", style="bold", no_wrap=True)
+    watches_table.add_column("Mode", no_wrap=True)
+    watches_table.add_column("Déclencheur", overflow="fold")
+    watches_table.add_column("Exp.", no_wrap=True)
+    for watch in simple_watches[:3]:
+        watches_table.add_row(
+            str(watch.get("symbol") or "—"),
+            "WAKE",
+            _condition_summary(watch.get("conditions"), watch.get("logic"), max_items=2),
+            _relative_expiry(watch.get("expires_at")),
+        )
+    if not simple_watches:
+        watches_table.add_row("—", "—", "aucune veille active", "—")
+
+    return Group(header, armed_table, exits_table, watches_table)
 
 
 def _build_observability_overview_tile(
@@ -967,22 +930,80 @@ def _build_observability_overview_tile(
 
 
 def _build_logs_overview_tile(
-    *, kill_active: bool, palette: Palette = PALETTE_LIGHT
+    state: dict,
+    recent_decisions: list[dict],
+    daemon_status: dict,
+    stale_streaks: dict,
+    *,
+    kill_active: bool,
+    palette: Palette = PALETTE_LIGHT,
 ) -> RenderableType:
-    table = Table(title="Contrôle logs", show_header=True, expand=True, box=None)
-    table.add_column("Commande", no_wrap=True)
-    table.add_column("Effet", overflow="fold")
-    table.add_row("l / 6", "ouvrir la page logs")
-    table.add_row("c", "cycles on/off")
-    table.add_row("f", "scroll live on/off")
-    table.add_row(
+    done = daemon_status.get("decisions_done")
+    total = daemon_status.get("symbols_total")
+    progress = f"{done}/{total}" if done is not None and total is not None else "—"
+    calls_used = daemon_status.get("model_calls_used")
+    calls_max = daemon_status.get("max_model_calls_per_cycle")
+    calls = f"{calls_used}/{calls_max}" if calls_used is not None and calls_max is not None else "—"
+    stale_values = [
+        int(value)
+        for value in stale_streaks.values()
+        if isinstance(value, int | float) and value > 0
+    ]
+    data_label = (
+        f"stale {len(stale_values)} max {max(stale_values)}"
+        if stale_values
+        else "OK"
+    )
+
+    runtime = Table(title="Runtime", show_header=True, expand=True, box=None)
+    runtime.add_column("Signal", no_wrap=True)
+    runtime.add_column("Valeur", overflow="fold")
+    runtime.add_row("phase", str(daemon_status.get("phase") or "—"))
+    runtime.add_row("progression", progress)
+    runtime.add_row("LLM", calls)
+    runtime.add_row("source", str(state.get("source") or "—"))
+    runtime.add_row("cycle", _format_datetime(state.get("ts")))
+    runtime.add_row(
+        "data",
+        Text(
+            data_label,
+            style=palette["kpi_vol_warn"] if stale_values else palette["status_nominal"],
+        ),
+    )
+    runtime.add_row("learn pending", str(state.get("learnings_pending_count") or 0))
+    runtime.add_row(
         "kill",
         Text(
-            "actif" if kill_active else "nominal",
+            "KILL actif" if kill_active else "nominal",
             style=palette["pnl_negative"] if kill_active else palette["status_nominal"],
         ),
     )
-    return table
+
+    signals = Table(title="Derniers signaux", show_header=True, expand=True, box=None)
+    signals.add_column("UTC", no_wrap=True, style=palette["dim"])
+    signals.add_column("Sym", style="bold", no_wrap=True)
+    signals.add_column("État", no_wrap=True)
+    signals.add_column("Suite", overflow="fold")
+    for decision in _select_decision_rows([], recent_decisions, limit=4):
+        status = _decision_status(decision)
+        status_style = {
+            "exec": palette["status_nominal"],
+            "risk": palette["pnl_negative"],
+            "stale": palette["kpi_vol_warn"],
+            "plan": palette["status_accent"],
+            "veille": palette["status_accent"],
+            "quiet": palette["dim"],
+        }.get(status, palette["kpi_default"])
+        signals.add_row(
+            _decision_time_label(decision),
+            str(decision.get("symbol") or "—"),
+            Text(status, style=status_style),
+            _decision_effect_label(decision),
+        )
+    if not recent_decisions:
+        signals.add_row("—", "—", "—", "aucun signal récent")
+
+    return Group(runtime, signals)
 
 
 def _overview_state_parts(state: dict) -> tuple[
@@ -1109,8 +1130,15 @@ def _build_overview_panel(
             border_style=palette["border_learnings"],
         ),
         _overview_card(
-            "Logs",
-            _build_logs_overview_tile(kill_active=kill_active, palette=palette),
+            "Flux live",
+            _build_logs_overview_tile(
+                state,
+                recent_decisions,
+                daemon_status,
+                stale_streaks,
+                kill_active=kill_active,
+                palette=palette,
+            ),
             border_style=palette["border_default"],
         ),
     )
@@ -1245,8 +1273,15 @@ class OverviewPane(Static):
         )
         self.query_one("#overview-logs-tile", Static).update(
             _overview_card(
-                "Logs",
-                _build_logs_overview_tile(kill_active=kill_active, palette=palette),
+                "Flux live",
+                _build_logs_overview_tile(
+                    state,
+                    recent_decisions,
+                    daemon_status,
+                    stale_streaks,
+                    kill_active=kill_active,
+                    palette=palette,
+                ),
                 border_style=palette["border_default"],
             )
         )

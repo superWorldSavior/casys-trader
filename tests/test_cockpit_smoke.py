@@ -621,7 +621,7 @@ def test_cockpit_home_affiche_des_tuiles_analytiques() -> None:
 
     assert any(ch in rendered for ch in "▁▂▃▄▅▆▇█")
     assert "Top positions" in rendered
-    assert "Allocation devise" in rendered
+    assert "Allocation symboles" in rendered
     assert "Contrib PnL" in rendered
     assert "Risque sorties" in rendered
     assert "Équité locale" in rendered
@@ -637,9 +637,14 @@ def test_cockpit_home_affiche_des_tuiles_analytiques() -> None:
     assert "fresh" in rendered
     assert "risk" in rendered
     assert "Rejets récents" in rendered
-    assert "Plans actifs" in rendered
+    assert "Plans armés" in rendered
+    assert "Sorties ouvertes" in rendered
+    assert "Veilles" in rendered
     assert "Sens/Qté" in rendered
     assert "Risque" in rendered
+    assert "Flux live" in rendered
+    assert "Derniers signaux" in rendered
+    assert "ouvrir la page logs" not in rendered
     assert "Data health" in rendered
     assert "Learnings" in rendered
     assert "MSFT" in rendered
@@ -706,8 +711,55 @@ def test_cockpit_home_decisions_utilise_recent_decisions_quand_cycle_vide() -> N
     assert rendered.index("SELL") < rendered.index("quiet")
 
 
+def test_cockpit_home_portefeuille_priorise_allocation_par_symbole() -> None:
+    """La home doit montrer l'allocation par symbole plutôt qu'une vue devise vague."""
+    state = {
+        "portfolio": {
+            "cash": 10_000.0,
+            "equity": 120_000.0,
+            "holdings": [
+                {
+                    "symbol": "AAPL",
+                    "quantity": 20,
+                    "last_price": 200.0,
+                    "unrealized_pnl_net": 150.0,
+                    "fx_rate": 1.0,
+                },
+                {
+                    "symbol": "MSFT",
+                    "quantity": 10,
+                    "last_price": 400.0,
+                    "unrealized_pnl_net": -20.0,
+                    "fx_rate": 1.0,
+                },
+                {
+                    "symbol": "2330.TW",
+                    "quantity": 200,
+                    "last_price": 900.0,
+                    "unrealized_pnl_net": 50.0,
+                    "fx_rate": 0.031,
+                },
+            ],
+        },
+        "equity_curve": [100_000.0, 105_000.0, 120_000.0],
+    }
+
+    rendered = _render(
+        cockpit_module._build_overview_panel(state, kill_active=False),
+        width=220,
+    )
+
+    assert "Allocation symboles" in rendered
+    assert "AAPL" in rendered
+    assert "MSFT" in rendered
+    assert "2330.TW" in rendered
+    assert "USD" in rendered
+    assert "TWD" in rendered
+    assert "Allocation devise" not in rendered
+
+
 def test_cockpit_home_plans_affiche_file_operationnelle() -> None:
-    """Plans: sorties stale, ordres armés et veilles simples sont triés ensemble."""
+    """Plans: les ordres armés, sorties et veilles ont chacun leur section."""
     state = {
         "portfolio": {"cash": 100_000.0, "equity": 100_000.0, "holdings": []},
         "trade_plans": [
@@ -754,7 +806,9 @@ def test_cockpit_home_plans_affiche_file_operationnelle() -> None:
         width=220,
     )
 
-    assert "Plans actifs" in rendered
+    assert "Plans armés" in rendered
+    assert "Sorties ouvertes" in rendered
+    assert "Veilles" in rendered
     assert "SPY" in rendered
     assert "stale" in rendered
     assert "SELL 60" in rendered
@@ -762,6 +816,57 @@ def test_cockpit_home_plans_affiche_file_operationnelle() -> None:
     assert "RS<40@1h" in rendered
     assert "MSFT" in rendered
     assert "WAKE" in rendered
+
+
+def test_cockpit_home_flux_live_remplace_les_commandes_logs() -> None:
+    """La tuile logs de la home doit résumer le runtime, pas lister des raccourcis."""
+    state = {
+        "portfolio": {"cash": 100_000.0, "equity": 100_000.0, "holdings": []},
+        "source": "current_report",
+        "ts": "2026-07-03T08:15:00+00:00",
+        "learnings_pending_count": 3,
+        "stale_streaks": {"SPY": 2},
+        "daemon_status": {
+            "phase": "deciding_batch",
+            "decisions_done": 4,
+            "symbols_total": 12,
+            "model_calls_used": 5,
+            "max_model_calls_per_cycle": 8,
+        },
+        "recent_decisions": [
+            {
+                "cycle_ts": "2026-07-03T08:12:00+00:00",
+                "symbol": "AAPL",
+                "action": "BUY",
+                "confidence": 0.83,
+                "runtime": {"trade_plan_created": True},
+            },
+            {
+                "cycle_ts": "2026-07-03T08:13:00+00:00",
+                "symbol": "SPY",
+                "action": "HOLD",
+                "reason": "stale_market_data",
+            },
+        ],
+    }
+
+    rendered = _render(
+        cockpit_module._build_overview_panel(state, kill_active=True),
+        width=220,
+    )
+
+    assert "Flux live" in rendered
+    assert "Runtime" in rendered
+    assert "deciding_batch" in rendered
+    assert "4/12" in rendered
+    assert "5/8" in rendered
+    assert "current_report" in rendered
+    assert "Derniers signaux" in rendered
+    assert "AAPL" in rendered
+    assert "plan créé" in rendered
+    assert "stale" in rendered
+    assert "KILL actif" in rendered
+    assert "ouvrir la page logs" not in rendered
 
 
 async def test_cockpit_observabilite_affiche_les_derniers_learnings(
