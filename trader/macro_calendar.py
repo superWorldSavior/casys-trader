@@ -28,18 +28,20 @@ log = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 # Les 8 réunions FOMC 2026 (dates publiées par la Fed un an à l'avance).
-# Convention : statement à 18:00Z le 2e jour de la réunion à 2 jours.
+# Convention : statement à 14:00 America/New_York le 2e jour. Converti en UTC :
+# 18:00Z en EDT (mars→nov, DST) et 19:00Z en EST (jan + déc). Les réunions de
+# janvier et décembre 2026 sont donc à 19:00Z (finding review Codex 02/07).
 # MAJ : bump la version de module + mettre à jour la constante chaque année.
 # Scraping offline optionnel via script → state/macro_calendar.json.
 FOMC_2026: tuple[dict, ...] = (
-    {"event": "FOMC", "at": "2026-01-28T18:00:00Z"},  # 27-28 jan
-    {"event": "FOMC", "at": "2026-03-18T18:00:00Z"},  # 17-18 mar
+    {"event": "FOMC", "at": "2026-01-28T19:00:00Z"},  # 27-28 jan (EST)
+    {"event": "FOMC", "at": "2026-03-18T18:00:00Z"},  # 17-18 mar (EDT)
     {"event": "FOMC", "at": "2026-04-29T18:00:00Z"},  # 28-29 avr
     {"event": "FOMC", "at": "2026-06-17T18:00:00Z"},  # 16-17 jun
     {"event": "FOMC", "at": "2026-07-29T18:00:00Z"},  # 28-29 jul
     {"event": "FOMC", "at": "2026-09-16T18:00:00Z"},  # 15-16 sep
     {"event": "FOMC", "at": "2026-10-28T18:00:00Z"},  # 27-28 oct
-    {"event": "FOMC", "at": "2026-12-09T18:00:00Z"},  # 8-9 dec
+    {"event": "FOMC", "at": "2026-12-09T19:00:00Z"},  # 8-9 dec (EST)
 )
 
 # Calendrier de référence codé en dur (seules les constantes FOMC 2026 pour l'instant).

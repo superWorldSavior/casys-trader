@@ -294,11 +294,12 @@ def test_fomc_2026_huit_reunions():
     assert len(FOMC_2026) == 8
 
 
-def test_fomc_2026_toutes_a_18h_utc():
-    """Toutes les réunions FOMC 2026 sont à 18:00Z."""
+def test_fomc_2026_heure_selon_est_edt():
+    """Statement à 14:00 America/New_York → 18:00Z (EDT) ou 19:00Z (EST jan/déc)."""
     for entry in FOMC_2026:
         dt = datetime.fromisoformat(entry["at"].replace("Z", "+00:00"))
-        assert dt.hour == 18
+        expected_hour = 19 if dt.month in (1, 12) else 18
+        assert dt.hour == expected_hour, entry["at"]
         assert dt.minute == 0
         assert dt.second == 0
 

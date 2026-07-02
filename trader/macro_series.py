@@ -112,6 +112,11 @@ def _extract_last_observation(data: dict) -> tuple[str, float] | None:
         doc = docs[0]
         periods = doc.get("period", [])
         values = doc.get("value", [])
+        # Exiger des listes non vides : si DBnomics passait un champ en scalaire
+        # (string), periods[-1] prendrait le dernier caractère au lieu d'avaler
+        # proprement (finding review Codex 02/07).
+        if not isinstance(periods, list) or not isinstance(values, list):
+            return None
         if not periods or not values:
             return None
         period = str(periods[-1])
