@@ -1,7 +1,9 @@
 # Agent domain tools for the runtime LLM
 
 **Date**: 2026-06-29
-**Status**: design approved for spec; pending implementation plan
+**Status**: Phases 1-2 implémentées (registry V0 lecture-seule + tool loop),
+flag `CASYS_AGENT_TOOLS_ENABLED` éteint par défaut. Phases 3-5 (migration
+REQUEST_CONTEXT, scheduling/watches, propose_order) non commencées.
 
 ---
 
