@@ -358,3 +358,54 @@ TOOL_REGISTRY["get_attribution"] = ToolSpec(
 TOOL_REGISTRY["get_recent_decisions"] = ToolSpec(
     name="get_recent_decisions", validate_args=_validate_get_recent_decisions,
     handler=_handle_get_recent_decisions)
+
+
+# ---------------------------------------------------------------------------
+# Task 5 : get_indicator_context (cube borné, successeur REQUEST_CONTEXT)
+# ---------------------------------------------------------------------------
+
+# Import retardé pour éviter tout cycle si codex_client évolue : on importe
+# dans le handler, pas au niveau module. En V0 codex_client n'importe pas
+# agent_tools donc l'import module est sûr, mais le handler reste la forme
+# canonique recommandée par le design.
+
+_MAX_INDICATORS_PER_CALL = 6
+
+
+def _validate_get_indicator_context(args: dict) -> str | None:
+    if not isinstance(args.get("symbol"), str) or not args["symbol"]:
+        return "symbol: str non vide requis"
+    indicators = args.get("indicators")
+    if not isinstance(indicators, list) or not indicators or not all(isinstance(i, str) for i in indicators):
+        return "indicators: liste non vide de str requise"
+    if len(indicators) > _MAX_INDICATORS_PER_CALL:
+        return f"indicators: {_MAX_INDICATORS_PER_CALL} max"
+    window = args.get("window")
+    if window is not None and (not isinstance(window, int) or window < 1):
+        return "window: entier >= 1 ou absent"
+    return None
+
+
+def _handle_get_indicator_context(call: AgentToolCall, context: ToolContext) -> dict:
+    # Import local pour rester indépendant des cycles éventuels (AX composable primitives).
+    from trader.codex_client import IndicatorRequest  # noqa: PLC0415
+
+    sym = call.args["symbol"]
+    if sym not in context.allowed_symbols:
+        return {"symbol": sym, "error": "symbol_not_allowed"}
+    if context.indicator_resolver is None:
+        return {"symbol": sym, "error": "unavailable"}
+    request = IndicatorRequest(
+        symbol=sym,
+        indicators=[str(i) for i in call.args["indicators"]],
+        timeframe=str(call.args.get("timeframe") or "1h"),
+        lookback=None if call.args.get("lookback") is None else str(call.args["lookback"]),
+        window=int(call.args.get("window") or 48),
+        as_of=str(call.args.get("as_of") or "latest"),
+    )
+    return context.indicator_resolver([request])
+
+
+TOOL_REGISTRY["get_indicator_context"] = ToolSpec(
+    name="get_indicator_context", validate_args=_validate_get_indicator_context,
+    handler=_handle_get_indicator_context)

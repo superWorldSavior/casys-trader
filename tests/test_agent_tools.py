@@ -306,3 +306,53 @@ def test_get_recent_decisions_borne_la_limite():
         _providers_context(),
     )
     assert len(result.result["rows"]) <= agent_tools._MAX_DECISION_ROWS
+
+
+# ---------------------------------------------------------------------------
+# Task 5 : get_indicator_context (cube borné, successeur REQUEST_CONTEXT)
+# ---------------------------------------------------------------------------
+
+
+def test_get_indicator_context_construit_la_requete_et_resout():
+    captured: list = []
+
+    def _resolver(requests):
+        captured.extend(requests)
+        return {"requests": [{"symbol": r.symbol, "indicators": r.indicators} for r in requests]}
+
+    ctx = ToolContext(
+        now=datetime(2026, 7, 2, tzinfo=UTC),
+        allowed_symbols=frozenset({"2330.TW"}),
+        indicator_resolver=_resolver,
+    )
+    result, trace = agent_tools.execute_tool_call(
+        AgentToolCall(id="c1", tool="get_indicator_context",
+                      args={"symbol": "2330.TW", "indicators": ["rsi14"], "timeframe": "4h", "window": 24}),
+        ctx,
+    )
+    assert trace.outcome == "ok"
+    assert captured[0].symbol == "2330.TW"
+    assert captured[0].indicators == ["rsi14"]
+    assert captured[0].timeframe == "4h"
+    assert captured[0].window == 24
+    assert result.result["requests"][0]["symbol"] == "2330.TW"
+
+
+def test_get_indicator_context_symbole_hors_lot():
+    ctx = ToolContext(now=datetime(2026, 7, 2, tzinfo=UTC), allowed_symbols=frozenset({"2330.TW"}),
+                      indicator_resolver=lambda reqs: {"requests": []})
+    result, _ = agent_tools.execute_tool_call(
+        AgentToolCall(id="c1", tool="get_indicator_context",
+                      args={"symbol": "EVIL", "indicators": ["rsi14"]}),
+        ctx,
+    )
+    assert result.result == {"symbol": "EVIL", "error": "symbol_not_allowed"}
+
+
+def test_get_indicator_context_args_invalides():
+    trace = validate_tool_call(
+        {"id": "c1", "tool": "get_indicator_context", "args": {"symbol": "2330.TW", "indicators": []}},
+        allowed_tools=frozenset({"get_indicator_context"}),
+    )
+    assert isinstance(trace, AgentToolTrace)
+    assert trace.detail["reason"] == "invalid_args"
