@@ -3,7 +3,7 @@ import math
 from pathlib import Path
 import textwrap
 import pytest
-from trader import fx_rates
+from trader.market import fx_rates
 
 
 def _write_cfg(tmp_path: Path) -> Path:
@@ -78,7 +78,7 @@ def test_unconfigured_currency_warns_and_falls_back(tmp_path, caplog):
     orig_propagate = trader_lg.propagate
     trader_lg.propagate = True
     try:
-        with caplog.at_level(logging.WARNING, logger="trader.fx_rates"):
+        with caplog.at_level(logging.WARNING, logger="trader.market.fx_rates"):
             rates = fx_rates.rates_for_symbols(["2379.TW"], fetcher=lambda s: 32.0, config=cfg)
     finally:
         trader_lg.propagate = orig_propagate

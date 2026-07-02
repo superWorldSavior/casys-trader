@@ -1,4 +1,4 @@
-"""tests pour trader.stats — vérifie compute_live_kpis sans réseau ni daemon."""
+"""tests pour trader.reporting.stats — vérifie compute_live_kpis sans réseau ni daemon."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from trader.stats import compute_live_kpis
+from trader.reporting.stats import compute_live_kpis
 
 
 # ---------------------------------------------------------------------------

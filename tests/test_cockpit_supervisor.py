@@ -1,4 +1,4 @@
-"""Tests unitaires de trader.cockpit_supervisor — logique pure, zéro I/O externe.
+"""Tests unitaires de trader.cockpit.supervisor — logique pure, zéro I/O externe.
 
 Couverture spec complète :
 - daemon_vital_state : pid+identité, pas de seuil temporel pour vivant/mort
@@ -16,7 +16,7 @@ import subprocess
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from trader.cockpit_supervisor import (
+from trader.cockpit.supervisor import (
     claim_pid_file,
     daemon_vital_state,
     launch_daemon,
@@ -62,8 +62,8 @@ def test_vital_pid_vivant_identite_ok_returns_alive(tmp_path, monkeypatch):
     def fake_cmdline(pid):
         return "uv run python -m trader.daemon --live"
 
-    monkeypatch.setattr("trader.cockpit_supervisor.os.kill", fake_kill)
-    monkeypatch.setattr("trader.cockpit_supervisor._get_cmdline", fake_cmdline)
+    monkeypatch.setattr("trader.cockpit.supervisor.os.kill", fake_kill)
+    monkeypatch.setattr("trader.cockpit.supervisor._get_cmdline", fake_cmdline)
 
     state = daemon_vital_state(status_file)
     assert state.status == "alive"
@@ -82,8 +82,8 @@ def test_vital_pid_vivant_identite_ok_battement_ancien_returns_alive_busy(tmp_pa
     def fake_cmdline(pid):
         return "uv run python -m trader.daemon --live"
 
-    monkeypatch.setattr("trader.cockpit_supervisor.os.kill", fake_kill)
-    monkeypatch.setattr("trader.cockpit_supervisor._get_cmdline", fake_cmdline)
+    monkeypatch.setattr("trader.cockpit.supervisor.os.kill", fake_kill)
+    monkeypatch.setattr("trader.cockpit.supervisor._get_cmdline", fake_cmdline)
 
     state = daemon_vital_state(status_file)
     # Pid vivant + identité OK → ALIVE (pas STOPPED même si battement vieux)
@@ -97,8 +97,8 @@ def test_vital_pid_vivant_identite_ok_battement_recent_battement_old_false(tmp_p
     status_file = tmp_path / "daemon_status.json"
     _write_status(status_file, pid=42, ts_offset_s=30)
 
-    monkeypatch.setattr("trader.cockpit_supervisor.os.kill", lambda p, s: None)
-    monkeypatch.setattr("trader.cockpit_supervisor._get_cmdline", lambda p: "uv run python -m trader.daemon --live")
+    monkeypatch.setattr("trader.cockpit.supervisor.os.kill", lambda p, s: None)
+    monkeypatch.setattr("trader.cockpit.supervisor._get_cmdline", lambda p: "uv run python -m trader.daemon --live")
 
     state = daemon_vital_state(status_file)
     assert state.battement_old is False
@@ -112,8 +112,8 @@ def test_vital_pid_mort_returns_stopped(tmp_path, monkeypatch):
     def fake_kill(pid, sig):
         raise ProcessLookupError("no such process")
 
-    monkeypatch.setattr("trader.cockpit_supervisor.os.kill", fake_kill)
-    monkeypatch.setattr("trader.cockpit_supervisor._get_cmdline", lambda p: "")
+    monkeypatch.setattr("trader.cockpit.supervisor.os.kill", fake_kill)
+    monkeypatch.setattr("trader.cockpit.supervisor._get_cmdline", lambda p: "")
 
     state = daemon_vital_state(status_file)
     assert state.status == "stopped"
@@ -124,8 +124,8 @@ def test_vital_pid_vivant_mauvaise_identite_returns_stopped(tmp_path, monkeypatc
     status_file = tmp_path / "daemon_status.json"
     _write_status(status_file, pid=os.getpid(), ts_offset_s=10)
 
-    monkeypatch.setattr("trader.cockpit_supervisor.os.kill", lambda p, s: None)
-    monkeypatch.setattr("trader.cockpit_supervisor._get_cmdline", lambda p: "/usr/bin/python pytest")
+    monkeypatch.setattr("trader.cockpit.supervisor.os.kill", lambda p, s: None)
+    monkeypatch.setattr("trader.cockpit.supervisor._get_cmdline", lambda p: "/usr/bin/python pytest")
 
     state = daemon_vital_state(status_file)
     assert state.status == "stopped"
@@ -152,8 +152,8 @@ def test_vital_unparsable_ts_returns_stopped_failsafe(tmp_path, monkeypatch):
     status_file = tmp_path / "daemon_status.json"
     status_file.write_text(json.dumps({"ts": "pas-une-date", "phase": "idle", "pid": 42}), encoding="utf-8")
 
-    monkeypatch.setattr("trader.cockpit_supervisor.os.kill", lambda p, s: None)
-    monkeypatch.setattr("trader.cockpit_supervisor._get_cmdline", lambda p: "uv run python -m trader.daemon --live")
+    monkeypatch.setattr("trader.cockpit.supervisor.os.kill", lambda p, s: None)
+    monkeypatch.setattr("trader.cockpit.supervisor._get_cmdline", lambda p: "uv run python -m trader.daemon --live")
 
     # pid vivant + identité → ALIVE même si ts unparsable ; since_seconds = None
     state = daemon_vital_state(status_file)
@@ -166,8 +166,8 @@ def test_vital_missing_ts_key_pid_vivant_returns_alive(tmp_path, monkeypatch):
     status_file = tmp_path / "daemon_status.json"
     status_file.write_text(json.dumps({"phase": "idle", "pid": 42}), encoding="utf-8")
 
-    monkeypatch.setattr("trader.cockpit_supervisor.os.kill", lambda p, s: None)
-    monkeypatch.setattr("trader.cockpit_supervisor._get_cmdline", lambda p: "uv run python -m trader.daemon --live")
+    monkeypatch.setattr("trader.cockpit.supervisor.os.kill", lambda p, s: None)
+    monkeypatch.setattr("trader.cockpit.supervisor._get_cmdline", lambda p: "uv run python -m trader.daemon --live")
 
     state = daemon_vital_state(status_file)
     assert state.status == "alive"
@@ -192,7 +192,7 @@ def test_launch_daemon_pid_mort_appelle_popen(tmp_path, monkeypatch):
             calls.append(kwargs)
             self.pid = 99999
 
-    monkeypatch.setattr("trader.cockpit_supervisor.subprocess.Popen", FakePopen)
+    monkeypatch.setattr("trader.cockpit.supervisor.subprocess.Popen", FakePopen)
 
     result = launch_daemon(pid_file=pid_file, log_file=log_file, root=root, status_file=status_file)
 
@@ -216,11 +216,11 @@ def test_launch_daemon_pid_vivant_identite_ok_ne_relance_pas(tmp_path, monkeypat
     target_pid = 12345
     pid_file.write_text(str(target_pid), encoding="utf-8")
 
-    monkeypatch.setattr("trader.cockpit_supervisor.os.kill", lambda p, s: None)
-    monkeypatch.setattr("trader.cockpit_supervisor._get_cmdline", lambda p: "uv run python -m trader.daemon --live")
+    monkeypatch.setattr("trader.cockpit.supervisor.os.kill", lambda p, s: None)
+    monkeypatch.setattr("trader.cockpit.supervisor._get_cmdline", lambda p: "uv run python -m trader.daemon --live")
 
     popen_called = []
-    monkeypatch.setattr("trader.cockpit_supervisor.subprocess.Popen", lambda *a, **kw: popen_called.append(1))
+    monkeypatch.setattr("trader.cockpit.supervisor.subprocess.Popen", lambda *a, **kw: popen_called.append(1))
 
     result = launch_daemon(pid_file=pid_file, log_file=log_file, root=root, status_file=status_file)
 
@@ -239,8 +239,8 @@ def test_launch_daemon_pid_vivant_identite_etrangere_lance(tmp_path, monkeypatch
     # Pid du process test — vivant mais PAS trader.daemon
     pid_file.write_text(str(os.getpid()), encoding="utf-8")
 
-    monkeypatch.setattr("trader.cockpit_supervisor.os.kill", lambda p, s: None)
-    monkeypatch.setattr("trader.cockpit_supervisor._get_cmdline", lambda p: "/usr/bin/python -m pytest")
+    monkeypatch.setattr("trader.cockpit.supervisor.os.kill", lambda p, s: None)
+    monkeypatch.setattr("trader.cockpit.supervisor._get_cmdline", lambda p: "/usr/bin/python -m pytest")
 
     calls = []
 
@@ -249,7 +249,7 @@ def test_launch_daemon_pid_vivant_identite_etrangere_lance(tmp_path, monkeypatch
             calls.append(kw)
             self.pid = 77777
 
-    monkeypatch.setattr("trader.cockpit_supervisor.subprocess.Popen", FakePopen)
+    monkeypatch.setattr("trader.cockpit.supervisor.subprocess.Popen", FakePopen)
 
     result = launch_daemon(pid_file=pid_file, log_file=log_file, root=root, status_file=status_file)
 
@@ -267,11 +267,11 @@ def test_launch_daemon_daemon_manuel_status_frais_ne_relance_pas(tmp_path, monke
     daemon_pid = 88888
     _write_status(status_file, pid=daemon_pid, ts_offset_s=30)
 
-    monkeypatch.setattr("trader.cockpit_supervisor.os.kill", lambda p, s: None)
-    monkeypatch.setattr("trader.cockpit_supervisor._get_cmdline", lambda p: "uv run python -m trader.daemon --live")
+    monkeypatch.setattr("trader.cockpit.supervisor.os.kill", lambda p, s: None)
+    monkeypatch.setattr("trader.cockpit.supervisor._get_cmdline", lambda p: "uv run python -m trader.daemon --live")
 
     popen_called = []
-    monkeypatch.setattr("trader.cockpit_supervisor.subprocess.Popen", lambda *a, **kw: popen_called.append(1))
+    monkeypatch.setattr("trader.cockpit.supervisor.subprocess.Popen", lambda *a, **kw: popen_called.append(1))
 
     result = launch_daemon(pid_file=pid_file, log_file=log_file, root=root, status_file=status_file)
 
@@ -295,9 +295,9 @@ def test_launch_daemon_pidfile_corrompu_traite_comme_absent(tmp_path, monkeypatc
             calls.append(kw)
             self.pid = 11111
 
-    monkeypatch.setattr("trader.cockpit_supervisor.subprocess.Popen", FakePopen)
+    monkeypatch.setattr("trader.cockpit.supervisor.subprocess.Popen", FakePopen)
     # status absent → pas de daemon manuel
-    monkeypatch.setattr("trader.cockpit_supervisor._get_cmdline", lambda p: "")
+    monkeypatch.setattr("trader.cockpit.supervisor._get_cmdline", lambda p: "")
 
     result = launch_daemon(pid_file=pid_file, log_file=log_file, root=root, status_file=status_file)
 
@@ -319,7 +319,7 @@ def test_launch_daemon_stdout_stderr_vers_log_file(tmp_path, monkeypatch):
             captured.update(kw)
             self.pid = 55555
 
-    monkeypatch.setattr("trader.cockpit_supervisor.subprocess.Popen", FakePopen)
+    monkeypatch.setattr("trader.cockpit.supervisor.subprocess.Popen", FakePopen)
 
     launch_daemon(pid_file=pid_file, log_file=log_file, root=root, status_file=status_file)
 
@@ -347,7 +347,7 @@ def test_launch_daemon_nettoie_l_environnement_runtime_pollue(tmp_path, monkeypa
             captured.update(kw)
             self.pid = 55555
 
-    monkeypatch.setattr("trader.cockpit_supervisor.subprocess.Popen", FakePopen)
+    monkeypatch.setattr("trader.cockpit.supervisor.subprocess.Popen", FakePopen)
 
     launch_daemon(pid_file=pid_file, log_file=log_file, root=root, status_file=status_file)
 
@@ -360,7 +360,7 @@ def test_launch_daemon_nettoie_l_environnement_runtime_pollue(tmp_path, monkeypa
 
 def test_launch_daemon_rotation_log_si_depasse_max(tmp_path, monkeypatch):
     """Si daemon_console.log > MAX_LOG_SIZE_BYTES, le log est tronqué (rotation)."""
-    from trader.cockpit_supervisor import MAX_LOG_SIZE_BYTES
+    from trader.cockpit.supervisor import MAX_LOG_SIZE_BYTES
 
     pid_file = tmp_path / "daemon.pid"
     log_file = tmp_path / "daemon_console.log"
@@ -376,7 +376,7 @@ def test_launch_daemon_rotation_log_si_depasse_max(tmp_path, monkeypatch):
         def __init__(self, *a, **kw):
             self.pid = 22222
 
-    monkeypatch.setattr("trader.cockpit_supervisor.subprocess.Popen", FakePopen)
+    monkeypatch.setattr("trader.cockpit.supervisor.subprocess.Popen", FakePopen)
 
     launch_daemon(pid_file=pid_file, log_file=log_file, root=root, status_file=status_file)
 
@@ -398,13 +398,13 @@ def test_launch_daemon_utilise_lockfile(tmp_path, monkeypatch):
         lock_ops.append(op)
         return real_flock(fd, op)
 
-    monkeypatch.setattr("trader.cockpit_supervisor.fcntl.flock", spy_flock)
+    monkeypatch.setattr("trader.cockpit.supervisor.fcntl.flock", spy_flock)
 
     class FakePopen:
         def __init__(self, *a, **kw):
             self.pid = 33333
 
-    monkeypatch.setattr("trader.cockpit_supervisor.subprocess.Popen", FakePopen)
+    monkeypatch.setattr("trader.cockpit.supervisor.subprocess.Popen", FakePopen)
 
     launch_daemon(pid_file=pid_file, log_file=log_file, root=root, status_file=status_file)
 
@@ -425,8 +425,8 @@ def test_stop_daemon_envoie_sigint_au_daemon_identifie(tmp_path, monkeypatch):
     pid_file.write_text(str(target_pid), encoding="utf-8")
 
     signals_sent = []
-    monkeypatch.setattr("trader.cockpit_supervisor.os.kill", lambda p, s: signals_sent.append((p, s)))
-    monkeypatch.setattr("trader.cockpit_supervisor._get_cmdline", lambda p: "uv run python -m trader.daemon --live")
+    monkeypatch.setattr("trader.cockpit.supervisor.os.kill", lambda p, s: signals_sent.append((p, s)))
+    monkeypatch.setattr("trader.cockpit.supervisor._get_cmdline", lambda p: "uv run python -m trader.daemon --live")
 
     result = stop_daemon(pid_file=pid_file)
 
@@ -441,8 +441,8 @@ def test_stop_daemon_pid_etranger_aucun_signal(tmp_path, monkeypatch):
     pid_file.write_text(str(os.getpid()), encoding="utf-8")
 
     signals_sent = []
-    monkeypatch.setattr("trader.cockpit_supervisor.os.kill", lambda p, s: signals_sent.append((p, s)))
-    monkeypatch.setattr("trader.cockpit_supervisor._get_cmdline", lambda p: "/usr/bin/python pytest")
+    monkeypatch.setattr("trader.cockpit.supervisor.os.kill", lambda p, s: signals_sent.append((p, s)))
+    monkeypatch.setattr("trader.cockpit.supervisor._get_cmdline", lambda p: "/usr/bin/python pytest")
 
     result = stop_daemon(pid_file=pid_file)
 
@@ -458,7 +458,7 @@ def test_stop_daemon_pid_absent_ne_signale_pas(tmp_path, monkeypatch):
     pid_file = tmp_path / "daemon.pid"
 
     signals_sent = []
-    monkeypatch.setattr("trader.cockpit_supervisor.os.kill", lambda p, s: signals_sent.append((p, s)))
+    monkeypatch.setattr("trader.cockpit.supervisor.os.kill", lambda p, s: signals_sent.append((p, s)))
 
     result = stop_daemon(pid_file=pid_file)
 
@@ -475,7 +475,7 @@ def test_stop_daemon_pid_mort_ne_signale_pas(tmp_path, monkeypatch):
         if sig == 0:
             raise ProcessLookupError("no such process")
 
-    monkeypatch.setattr("trader.cockpit_supervisor.os.kill", fake_kill)
+    monkeypatch.setattr("trader.cockpit.supervisor.os.kill", fake_kill)
 
     result = stop_daemon(pid_file=pid_file)
 
@@ -528,8 +528,8 @@ def test_stop_daemon_fallback_status_quand_pid_file_absent(tmp_path, monkeypatch
     status_file.write_text(_json.dumps({"pid": target_pid}), encoding="utf-8")
 
     signals_sent = []
-    monkeypatch.setattr("trader.cockpit_supervisor.os.kill", lambda p, s: signals_sent.append((p, s)))
-    monkeypatch.setattr("trader.cockpit_supervisor._get_cmdline", lambda p: "python -m trader.daemon --live")
+    monkeypatch.setattr("trader.cockpit.supervisor.os.kill", lambda p, s: signals_sent.append((p, s)))
+    monkeypatch.setattr("trader.cockpit.supervisor._get_cmdline", lambda p: "python -m trader.daemon --live")
 
     result = stop_daemon(pid_file=pid_file, status_file=status_file)
 
@@ -548,8 +548,8 @@ def test_stop_daemon_fallback_status_identite_etrangere_refuse(tmp_path, monkeyp
     status_file.write_text(_json.dumps({"pid": os.getpid()}), encoding="utf-8")
 
     signals_sent = []
-    monkeypatch.setattr("trader.cockpit_supervisor.os.kill", lambda p, s: signals_sent.append((p, s)))
-    monkeypatch.setattr("trader.cockpit_supervisor._get_cmdline", lambda p: "/usr/bin/python pytest")
+    monkeypatch.setattr("trader.cockpit.supervisor.os.kill", lambda p, s: signals_sent.append((p, s)))
+    monkeypatch.setattr("trader.cockpit.supervisor._get_cmdline", lambda p: "/usr/bin/python pytest")
 
     result = stop_daemon(pid_file=pid_file, status_file=status_file)
 
@@ -564,8 +564,8 @@ def test_claim_pid_file_refuse_si_daemon_vivant_etranger(tmp_path, monkeypatch):
     pid_file = tmp_path / "daemon.pid"
     pid_file.write_text("11111", encoding="utf-8")
 
-    monkeypatch.setattr("trader.cockpit_supervisor.os.kill", lambda p, s: None)  # vivant
-    monkeypatch.setattr("trader.cockpit_supervisor._get_cmdline", lambda p: "python -m trader.daemon --live")
+    monkeypatch.setattr("trader.cockpit.supervisor.os.kill", lambda p, s: None)  # vivant
+    monkeypatch.setattr("trader.cockpit.supervisor._get_cmdline", lambda p: "python -m trader.daemon --live")
 
     assert claim_pid_file(pid_file=pid_file, pid=22222) is False
     assert pid_file.read_text(encoding="utf-8") == "11111"  # pas écrasé
@@ -577,7 +577,7 @@ def test_claim_pid_file_ecrit_si_pid_mort_ou_absent(tmp_path, monkeypatch):
     def dead_kill(pid, sig):
         raise ProcessLookupError
 
-    monkeypatch.setattr("trader.cockpit_supervisor.os.kill", dead_kill)
+    monkeypatch.setattr("trader.cockpit.supervisor.os.kill", dead_kill)
 
     assert claim_pid_file(pid_file=pid_file, pid=22222) is True  # absent
     assert pid_file.read_text(encoding="utf-8") == "22222"

@@ -1,4 +1,4 @@
-from trader import decision_audit
+from trader.reporting import decision_audit
 
 
 def _row(

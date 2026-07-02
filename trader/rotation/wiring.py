@@ -10,7 +10,7 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
-from trader.features import compute_indicator_values
+from trader.market.features import compute_indicator_values
 
 # ---------------------------------------------------------------------------
 # venue_of
@@ -182,10 +182,10 @@ def build_rank_fn(
     Returns:
         rank_fn() -> {"ranked", "ineligible", "components_by_symbol"}
     """
-    from trader.pool_config import load_pool
-    from trader.radar_config import load_radar_params, load_conviction
-    from trader.radar import scan_and_rank, daily_components
-    from trader.radar_data import fetch_daily
+    from trader.config.pool import load_pool
+    from trader.market.radar_config import load_radar_params, load_conviction
+    from trader.market.radar import scan_and_rank, daily_components
+    from trader.market.radar_data import fetch_daily
     from trader.semantic.catalog import FAMILIES, family_for_symbol
 
     config_dir = Path(config_dir)
@@ -258,7 +258,7 @@ def build_llm_override_fn(
         override_fn(payload) -> {"add": [...], "remove": [...]}
     """
     from trader import llm
-    from trader.rotation_override import make_llm_override_fn
+    from trader.rotation.override import make_llm_override_fn
 
     kw: dict = {"acpx_bin": acpx_bin}
     if spark_model is not None:
@@ -320,11 +320,11 @@ def run_cli(
     Returns:
         dict run() : {"final_hot_set", "default_hot_set", "alerts", "written"}.
     """
-    from trader.pool_config import load_pool
-    from trader.radar_config import load_radar_params
-    from trader.radar_data import download_daily_batch
+    from trader.config.pool import load_pool
+    from trader.market.radar_config import load_radar_params
+    from trader.market.radar_data import download_daily_batch
     from trader.rotation import run
-    from trader.rotation_collectors import (
+    from trader.rotation.collectors import (
         sticky_collector,
         build_positions_fn,
         build_plans_fn,

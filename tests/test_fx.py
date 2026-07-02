@@ -1,7 +1,7 @@
 # tests/test_fx.py
 import math
 import pytest
-from trader import fx
+from trader.market import fx
 
 
 def test_currency_for_taiwan():

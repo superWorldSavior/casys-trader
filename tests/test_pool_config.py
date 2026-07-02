@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from trader.pool_config import PoolConfigError, load_pool
+from trader.config.pool import PoolConfigError, load_pool
 from trader.semantic.catalog import family_for_symbol
 
 

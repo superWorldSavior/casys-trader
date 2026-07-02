@@ -14,7 +14,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from . import attribution as attribution_mod, llm, meta_performance as meta_performance_mod
+from . import llm
+from trader.reporting import attribution as attribution_mod, meta_performance as meta_performance_mod
 from .risk import read_min_trade_confidence
 from .tools.memory import LearningsStore
 

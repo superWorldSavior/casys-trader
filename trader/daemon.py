@@ -32,25 +32,16 @@ from .application import market_snapshot, order_admission, planner_batch
 from .application.decision_recorder import DecisionRecorder
 from . import (
     agent_tools as agent_tools,
-    attribution,
     code_version,
     codex_client,
     consolidator,
-    decision_ledger,
     embeddings as embeddings_mod,
-    family_regime,
-    fx,
     learnings_store as recall_store_mod,
     ledger_rotation,
     llm,
-    macro_calendar,
-    macro_series,
-    meta_performance,
     relevance_gate,
-    stats,
 )
 from .exit_engine import evaluate_plan
-from .features import DEFAULT_INDICATORS, build_indicator_snapshot
 from .ib_attach import IBAttachBackoff
 from .indicator_watch import (
     armed_order_price_coherent,
@@ -58,7 +49,6 @@ from .indicator_watch import (
     evaluate_indicator_watches,
     watch_market_requests,
 )
-from .gross_priority import PriorityItem, gross_execution_order
 from .risk import RiskGate, RiskLimits
 from .tools import market, memory as memory_mod, news_feed, portfolio, scheduler
 from .tools.execution import (
@@ -83,6 +73,10 @@ from .trade_plan import (
     resolve_exit_plan,
     validate_exit_plan,
 )
+from trader.market import family_regime, fx, macro_calendar, macro_series
+from trader.market.features import DEFAULT_INDICATORS, build_indicator_snapshot
+from trader.market.gross_priority import PriorityItem, gross_execution_order
+from trader.reporting import attribution, decision_ledger, meta_performance, stats
 
 ROOT = Path(__file__).resolve().parent.parent
 STATE_DIR = ROOT / "state"
@@ -1267,8 +1261,18 @@ def _apply_decision_schedule(
             continue
         sched.remove_indicator_watch(watch_id)
         _append_event("watch_cancelled_by_agent", symbol=sym, watch_id=watch_id)
+        # INFO même quand la décision est un HOLD (result en DEBUG) : la gestion
+        # de veilles par l'agent doit rester visible en console.
+        log.info("[watch] annulée par l'agent %s %s", sym, watch_id)
     if pending_indicator_watch is not None:
         sched.set_symbol_indicator_watch(sym, pending_indicator_watch)
+        log.info(
+            "[watch] armée %s %s on_trigger=%s expire=%s",
+            sym,
+            pending_indicator_watch.get("id"),
+            pending_indicator_watch.get("on_trigger"),
+            pending_indicator_watch.get("expires_at"),
+        )
         entry["indicator_watch_created"] = True
         entry["indicator_watch"] = {
             "id": pending_indicator_watch["id"],
@@ -1495,7 +1499,7 @@ def run_cycle(
     if symbols_filter is not None:
         wanted = set(symbols_filter)
         symbols_to_decide = [symbol for symbol in symbols if symbol in wanted]
-    from .portfolio_config import load_starting_cash
+    from trader.config.portfolio import load_starting_cash
 
     starting_equity = load_starting_cash(ROOT / "config")
     indicator_triggers = indicator_triggers or []
@@ -2954,16 +2958,16 @@ def main(
                 # puis compose l'univers actif = sticky ∪ union(marchés ouverts) et l'écrit
                 # SI changé. Pas de cron externe ; état par venue persisté → rattrapage au
                 # redémarrage. Fail-safe : n'interrompt jamais le cycle.
-                from .rotation_venues import tick as _rotation_tick
-                from .radar_config import load_radar_params as _load_radar_params
+                from .rotation.venues import tick as _rotation_tick
+                from trader.market.radar_config import load_radar_params as _load_radar_params
                 try:
                     _radar_params = _load_radar_params(ROOT / "config")
                     _override_fn = None
                     if _radar_params.override_enabled:
-                        from .rotation_wiring import build_llm_override_fn as _build_override
+                        from .rotation.wiring import build_llm_override_fn as _build_override
                         _override_fn = _build_override()
                     # market_context v1 : peuplé depuis le cache de régime si disponible
-                    from .rotation_wiring import build_market_context_from_regime as _build_mctx
+                    from .rotation.wiring import build_market_context_from_regime as _build_mctx
                     _market_context = None
                     _regime_cache_path = STATE_DIR / "last_regime.json"
                     if _regime_cache_path.exists():
@@ -2984,6 +2988,26 @@ def main(
                     log.exception("rotation tick (D10) échouée")
                 symbols = _load_yaml(ROOT / "config" / "universe.yaml")["symbols"]
                 sched.reconcile_universe(symbols)
+                # Expiration TTL : plus jamais silencieuse. On retire les veilles
+                # expirées AVANT le scan et on trace chacune (le réveil du symbole
+                # était déjà calé sur le TTL → l'agent re-décide ce cycle).
+                for _exp in sched.pop_expired_indicator_watches(now=loop_now):
+                    _esym = str(_exp.get("symbol"))
+                    _eid = str(_exp.get("id") or "")
+                    _eot = _exp.get("on_trigger")
+                    _append_event(
+                        "armed_plan_expired" if _eot == "EXECUTE_ORDER" else "indicator_watch_expired",
+                        symbol=_esym,
+                        watch_id=_eid,
+                        on_trigger=_eot,
+                        expires_at=_exp.get("expires_at"),
+                    )
+                    log.info(
+                        "[watch] expirée %s %s on_trigger=%s (TTL atteint → réveil déjà calé, l'agent re-décide)",
+                        _esym,
+                        _eid,
+                        _eot,
+                    )
                 indicator_triggers = (
                     []
                     if args.once or bootstrap

@@ -12,20 +12,20 @@ from pathlib import Path
 import yaml
 
 from trader.rotation import apply_hysteresis, apply_override, emergency_exits, write_universe_atomic
-from trader.rotation_collectors import (
+from trader.rotation.collectors import (
     build_plans_fn,
     build_positions_fn,
     sticky_collector,
 )
-from trader.rotation_ledger import log_rotation
-from trader.rotation_schedule import (
+from trader.rotation.ledger import log_rotation
+from trader.rotation.schedule import (
     analyzable_venues,
     closed_sessions_since,
     load_sessions,
     preopen_venues,
 )
-from trader.rotation_wiring import build_rank_fn, venue_of
-from trader.radar_config import load_radar_params
+from trader.rotation.wiring import build_rank_fn, venue_of
+from trader.market.radar_config import load_radar_params
 
 # Top N candidats radar persistés par venue pour l'override LLM pré-open (configurable plus tard)
 OVERRIDE_CANDIDATES_TOP = 40
@@ -242,7 +242,7 @@ def tick(
         if rank_fn is not None:
             scan_fn = rank_fn
         else:
-            from .radar_data import download_daily_batch
+            from trader.market.radar_data import download_daily_batch
             cache_dir = Path(state_dir) / "radar_cache"
 
             def _fetch(syms):

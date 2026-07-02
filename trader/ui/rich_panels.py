@@ -12,9 +12,9 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-from trader import fx
+from trader.market import fx
 from trader.indicator_watch import is_armed_plan as _is_armed_plan
-from trader.palette import PALETTE_DARK, Palette
+from trader.ui.palette import PALETTE_DARK, Palette
 from trader.read_models.runtime_state import (
     UTC,
     _format_datetime,
@@ -1120,7 +1120,7 @@ def build_universe_panel(
     FX ignoré — pas dans l'univers actif.
     Tolère les états vides.
     """
-    from trader.rotation_wiring import venue_of  # import local pour éviter les cycles
+    from trader.rotation.wiring import venue_of  # import local pour éviter les cycles
 
     venues_data = venue_state.get("venues") if isinstance(venue_state.get("venues"), dict) else {}
 

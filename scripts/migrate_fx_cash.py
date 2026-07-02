@@ -14,7 +14,7 @@ import json
 import shutil
 from pathlib import Path
 
-from trader import fx
+from trader.market import fx
 
 
 def _backup_once(path: Path, tag: str) -> None:
@@ -87,7 +87,7 @@ def main() -> int:
     ap.add_argument("--starting-cash", type=float, default=100_000.0)
     ap.add_argument("--commit", action="store_true", help="écrire (défaut: dry-run)")
     args = ap.parse_args()
-    from trader import fx_rates
+    from trader.market import fx_rates
     cfg = fx_rates.load_fx_config(Path("config/fx.yaml"))
     rates = {ccy: float(spec["fallback"]) for ccy, spec in cfg.items()}
     state = Path(args.state)

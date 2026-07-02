@@ -6,7 +6,7 @@ import json
 
 from trader import decision_reason, trade_plan
 from trader.agent_context import INDICATOR_COLUMNS
-from trader.features import DEFAULT_INDICATORS
+from trader.market.features import DEFAULT_INDICATORS
 from trader.indicator_watch import WATCH_VALID_OPERATORS
 from trader.semantic.catalog import INDICATOR_LABEL_VALUES
 

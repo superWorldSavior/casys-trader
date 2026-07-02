@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from rich.console import Console
 from rich.panel import Panel
-from trader.palette import ALL_PALETTE_KEYS, PALETTE_DARK, PALETTE_LIGHT
+from trader.ui.palette import ALL_PALETTE_KEYS, PALETTE_DARK, PALETTE_LIGHT
 
 
 def _render(renderable, width: int = 120) -> str:

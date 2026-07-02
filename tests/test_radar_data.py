@@ -1,6 +1,6 @@
 import pytest
 
-from trader.radar_data import CoverageError, download_daily_batch, fetch_daily
+from trader.market.radar_data import CoverageError, download_daily_batch, fetch_daily
 
 
 def _fake_fetch(symbols: list[str]) -> dict[str, list[object]]:

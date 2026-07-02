@@ -1,9 +1,9 @@
-"""Tests unitaires de trader.cockpit_events — logique pure, zéro I/O externe."""
+"""Tests unitaires de trader.cockpit.events — logique pure, zéro I/O externe."""
 from __future__ import annotations
 
 from pathlib import Path
 
-from trader.cockpit_events import (
+from trader.cockpit.events import (
     EventLine,
     format_event_line,
     classify_event,
@@ -249,7 +249,7 @@ def test_read_new_lines_fichier_vide_retourne_vide(tmp_path):
 
 def test_read_new_lines_gros_fichier_initial_borne_aux_n_dernieres_lignes(tmp_path):
     """Au premier appel (offset=0), seules les _TAIL_LINES_INIT dernières lignes sont émises."""
-    from trader.cockpit_events import _TAIL_LINES_INIT
+    from trader.cockpit.events import _TAIL_LINES_INIT
 
     f = tmp_path / "events.jsonl"
     n_total = _TAIL_LINES_INIT + 50  # dépasse la borne

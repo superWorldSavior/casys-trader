@@ -25,8 +25,8 @@ def maybe_rotate(
     Retourne True si une rotation a été tentée (succès ou échec loggé), False si aucune
     clôture n'était due depuis ``last_rotation_at``.
     """
-    from .rotation_schedule import load_sessions, rotation_due
-    from .rotation_state import load_rotation_state
+    from .schedule import load_sessions, rotation_due
+    from .state import load_rotation_state
 
     sessions = load_sessions(config_dir)
     state = load_rotation_state(state_dir)

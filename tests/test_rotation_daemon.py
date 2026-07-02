@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from trader.rotation_daemon import maybe_rotate
+from trader.rotation.daemon import maybe_rotate
 
 
 def _setup(tmp_path: Path, *, last_rotation_at: str) -> tuple[Path, Path]:

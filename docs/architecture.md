@@ -3,8 +3,7 @@
 > Ce document décrit l'architecture technique du daemon de trading paper piloté par LLM.
 > **Généré par analyse statique du code — à re-vérifier si l'architecture évolue.**
 >
-> Refactor modulaire en place sur la branche
-> `refactor/modular-architecture-logging`.
+> Refactor modulaire en place sur `main` par tranches compatibles.
 > La cible et les écarts assumés sont suivis dans
 > `docs/superpowers/specs/2026-07-02-modular-architecture-logging-refactor-design.md`.
 
@@ -43,8 +42,14 @@ les utilisaient :
 | `trader/application/order_admission.py` | Helpers purs d'admission : intent, clamp sortie, stop, risk metrics | l'orchestration RiskGate/broker reste dans `daemon.py` |
 | `trader/agent_protocol/` | Types, prompts, parsing du contrat LLM | `codex_client.py` reste la façade transport/compat |
 | `trader/agent_tools/` | Package des outils domaine lecture seule | `registry.TOOL_REGISTRY` assemble 9 handlers |
+| `trader/market/` | Indicateurs, FX, macro, radar, régime marché, priorisation gross exposure | anciens imports `trader.fx`, `trader.features`, etc. gardés en compat |
+| `trader/config/` | Loaders de configuration runtime (`pool`, `portfolio`) | retire les loaders transverses de la racine `trader/` |
+| `trader/rotation/` | Rotation d'univers, hot-sets par venue, schedule, override, ledger rotation | `trader.rotation` réexporte l'ancien core |
+| `trader/reporting/` | Ledger décision, audit ex-post, attribution, stats, tool usage, meta-performance | alias compat via `trader.__init__` |
+| `trader/runtime/` | Helpers de processus partagés par daemon/supervisor | ex. environnement subprocess macOS |
 | `trader/read_models/runtime_state.py` | Lecture tolérante des fichiers `state/` pour TUI/cockpit | ne participe pas aux décisions live |
-| `trader/ui/rich_panels.py` | Builders Rich purs | `trader.tui` reste CLI et façade d'import |
+| `trader/cockpit/` | App Textual, événements cockpit, supervisor local | `trader.cockpit` reste runnable |
+| `trader/ui/` | Builders Rich purs, TUI textuelle, palette | `trader.tui`, `trader.stats`, `trader.attribution`, `trader.tool_usage` restent des wrappers CLI |
 | `trader/logging_setup.py` | Configuration logging projet | stdlib `logging`, RichHandler en TTY |
 
 Le choix volontaire est de ne pas créer encore `domain/`, `ports/` ou
@@ -114,7 +119,7 @@ sélectionne les symboles dont le `next_wake` est passé. En mode `--once`/`--bo
 tout l'univers.
 
 L'univers actif est généré par la rotation (D9/D10) à chaque cycle :
-`rotation_daemon.py` appelle `compose_active_universe(now)` qui compose
+`trader/rotation/daemon.py` appelle `compose_active_universe(now)` qui compose
 `sticky_all ∪ union(hot-lists des marchés ouverts)` et écrit
 `config/universe.yaml` si le contenu change (`daemon.py:1159`).
 
@@ -289,13 +294,13 @@ directement par le LLM (voir `docs/analysis/comportement-sorties.md` §4).
 
 ### 6.1 Radar (Tier 1 — daily, 0 LLM)
 
-`trader/radar.py` — scan daily EOD du pool (`config/pool.yaml`, ~283 symboles).
+`trader/market/radar.py` — scan daily EOD du pool (`config/pool.yaml`, ~283 symboles).
 Score = `efficacité_tendance × force_relative(benchmark_venue) × amplitude`.
 La volatilité est **récompensée** (bornée par ATR floor). Séries ajustées obligatoires.
 
 ### 6.2 Rotation & hot-sets par venue (D10)
 
-`trader/rotation_venues.py` — une hot-list par place de marché (TW / EU / US).
+`trader/rotation/venues.py` — une hot-list par place de marché (TW / EU / US).
 Classement intra-venue contre son propre benchmark. Recalculé à la clôture de
 chaque session.
 
@@ -310,10 +315,10 @@ pending — toujours dans l'univers, hors quota, hors logique d'ouverture.
 (l'incumbent est protégé K jours). Sortie d'urgence court-circuite K.
 
 Écriture atomique de `universe.yaml` (idempotente — n'écrit que si le contenu
-change, jamais vide → fallback dernier univers valide). `rotation_venues.py`
+change, jamais vide → fallback dernier univers valide). `rotation/venues.py`
 
 Override LLM : l'agent peut ajouter/retirer des symboles avec raison loggée
-(`rotation_override.py`). Tracé dans `rotation_ledger`.
+(`rotation/override.py`). Tracé dans `rotation/ledger.py`.
 
 ---
 

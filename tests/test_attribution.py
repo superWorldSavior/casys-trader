@@ -1,8 +1,8 @@
 import json
 from pathlib import Path
 
-from trader import attribution
-from trader.attribution import compute_round_trips, compute_attribution, compute_hard_stop_diagnostics
+from trader.reporting import attribution
+from trader.reporting.attribution import compute_round_trips, compute_attribution, compute_hard_stop_diagnostics
 
 
 def _write_perf(state_dir: Path, rows: list[dict]) -> None:

@@ -56,14 +56,14 @@ from textual.screen import ModalScreen
 from textual.theme import Theme
 from textual.widgets import Button, Footer, Label, RichLog, Static
 
-from trader.cockpit_supervisor import daemon_vital_state
+from trader.cockpit.supervisor import daemon_vital_state
 
-from trader.cockpit_events import (
+from trader.cockpit.events import (
     EventClass,
     format_event_line,
     read_new_lines,
 )
-from trader.palette import PALETTE_DARK, PALETTE_LIGHT, Palette
+from trader.ui.palette import PALETTE_DARK, PALETTE_LIGHT, Palette
 from trader.read_models.runtime_state import (
     _enrich_decisions_with_data_source,
     _safe_float,
@@ -130,7 +130,7 @@ _THEME_PALETTE: dict[str, Palette] = {
 # ---------------------------------------------------------------------------
 # Chemins
 # ---------------------------------------------------------------------------
-_ROOT = Path(__file__).resolve().parent.parent
+_ROOT = Path(__file__).resolve().parents[2]
 _STATE_DIR = _ROOT / "state"
 _CONFIG_DIR = str(_ROOT)
 _EVENTS_FILE = _STATE_DIR / "events.jsonl"
@@ -1079,7 +1079,7 @@ class CockpitApp(App):
 
     def action_quit_confirm(self) -> None:
         """Quitte avec confirmation si un daemon est vivant."""
-        from trader.cockpit_supervisor import daemon_vital_state, stop_daemon
+        from trader.cockpit.supervisor import daemon_vital_state, stop_daemon
 
         vital = daemon_vital_state(_STATE_DIR / "daemon_status.json")
         if vital.status != "alive":
@@ -1125,7 +1125,7 @@ class CockpitApp(App):
 
     def action_start_daemon(self) -> None:
         """Lance le daemon en process détaché (anti-double-lancement via daemon.pid)."""
-        from trader.cockpit_supervisor import launch_daemon
+        from trader.cockpit.supervisor import launch_daemon
 
         result = launch_daemon(
             pid_file=_STATE_DIR / "daemon.pid",
@@ -1144,7 +1144,7 @@ class CockpitApp(App):
         async def _on_confirm(confirmed: bool) -> None:
             if not confirmed:
                 return
-            from trader.cockpit_supervisor import stop_daemon
+            from trader.cockpit.supervisor import stop_daemon
 
             result = stop_daemon(
                 pid_file=_STATE_DIR / "daemon.pid",
@@ -1164,7 +1164,7 @@ class CockpitApp(App):
         async def _on_confirm(confirmed: bool) -> None:
             if not confirmed:
                 return
-            from trader.cockpit_supervisor import toggle_kill_switch
+            from trader.cockpit.supervisor import toggle_kill_switch
 
             active = toggle_kill_switch(kill_file=_KILL_FILE)
             status = "activé" if active else "désactivé"

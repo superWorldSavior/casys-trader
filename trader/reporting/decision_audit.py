@@ -6,7 +6,7 @@ from collections import Counter
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from . import decision_reason
+from trader import decision_reason
 
 
 def parse_ts(raw: Any) -> datetime | None:

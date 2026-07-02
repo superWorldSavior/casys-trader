@@ -2,6 +2,7 @@
 
 import threading
 import time
+import logging
 from datetime import datetime, timezone
 
 from trader import daemon
@@ -345,6 +346,44 @@ def test_apply_decision_schedule_annule_les_watches_avant_de_reposer(monkeypatch
     ]
     assert operations.index(("remove", "SPY:old-watch")) < operations.index(("set", "new-watch"))
     assert entry["indicator_watch_created"] is True
+
+
+def test_apply_decision_schedule_loggue_cancel_et_arm_en_info(monkeypatch, caplog) -> None:
+    """Fix observabilité : la gestion de veilles reste visible à l'INFO même
+    quand la décision est un HOLD (dont la ligne result est en DEBUG)."""
+    now = datetime(2026, 6, 15, 14, 30, tzinfo=timezone.utc)
+
+    class NoopScheduler:
+        def set_symbol_next_wake_in(self, *a, **k) -> None: ...
+        def set_symbol_next_wake(self, *a, **k) -> None: ...
+        def clear_symbol_next_wake(self, *a, **k) -> None: ...
+        def remove_indicator_watch(self, *a, **k) -> None: ...
+        def set_symbol_indicator_watch(self, *a, **k) -> None: ...
+        def active_indicator_watches(self, *a, **k) -> list[dict]:
+            return []
+
+    monkeypatch.setattr(daemon, "_append_event", lambda event, **payload: None)
+    caplog.set_level(logging.INFO, logger="casys-trader")
+
+    daemon._apply_decision_schedule(
+        sched=NoopScheduler(),
+        sym="SPY",
+        now=now,
+        next_wake_in_minutes=None,
+        cancel_watch_ids=["SPY:old"],
+        pending_indicator_watch={
+            "id": "SPY:new",
+            "expires_at": "2026-06-15T15:00:00+00:00",
+            "logic": "all",
+            "on_trigger": "EXECUTE_ORDER",
+            "conditions": [],
+        },
+        entry={"indicator_watch_created": False},
+    )
+
+    msgs = "\n".join(r.getMessage() for r in caplog.records)
+    assert "[watch] annulée par l'agent SPY SPY:old" in msgs
+    assert "[watch] armée SPY SPY:new on_trigger=EXECUTE_ORDER" in msgs
 
 
 def test_apply_decision_schedule_rejette_l_annulation_d_une_watch_autre_symbole(monkeypatch) -> None:

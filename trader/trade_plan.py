@@ -10,8 +10,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
 
-from .features import swing_high, swing_low, vwap
 from .indicator_watch import normalize_indicator_watch
+from trader.market.features import swing_high, swing_low, vwap
 
 PositionSide = Literal["LONG", "SHORT"]
 MoveStopTo = Literal["breakeven", "none"]

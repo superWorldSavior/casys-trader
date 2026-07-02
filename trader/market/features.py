@@ -6,7 +6,7 @@ import math
 from statistics import mean, pstdev
 from typing import Iterable
 
-from .semantic.catalog import INDICATOR_LABEL_VALUES, family_for_symbol
+from trader.semantic.catalog import INDICATOR_LABEL_VALUES, family_for_symbol
 
 _CANDLESTICK_VALUES = INDICATOR_LABEL_VALUES["candlestick_signal"]
 _CHART_BREAKOUT_VALUES = INDICATOR_LABEL_VALUES["chart_breakout"]

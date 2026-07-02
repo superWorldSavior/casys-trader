@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from rich.console import Console
 
-from trader.palette import PALETTE_DARK, PALETTE_LIGHT
+from trader.ui.palette import PALETTE_DARK, PALETTE_LIGHT
 from trader.tui import (
     build_selection_panel,
     build_trades_table,

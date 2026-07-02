@@ -19,7 +19,7 @@ from trader.tools.market import (
     next_regular_session_open,
     session_snapshot,
 )
-from trader.rotation_wiring import _EU_SUFFIXES, _EU_SYMBOLS
+from trader.rotation.wiring import _EU_SUFFIXES, _EU_SYMBOLS
 
 
 def _utc(y, mo, d, h, mi=0, sec=0) -> datetime:

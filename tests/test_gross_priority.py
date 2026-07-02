@@ -1,5 +1,5 @@
 
-from trader.gross_priority import PriorityItem, gross_execution_order
+from trader.market.gross_priority import PriorityItem, gross_execution_order
 
 
 def _order(triples):

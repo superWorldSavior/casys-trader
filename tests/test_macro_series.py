@@ -20,8 +20,8 @@ from pathlib import Path
 
 import pytest
 
-import trader.macro_series as _ms
-from trader.macro_series import (
+import trader.market.macro_series as _ms
+from trader.market.macro_series import (
     SERIES,
     collect_daily,
     maybe_collect,
@@ -360,7 +360,7 @@ def test_marqueur_pose_au_lancement_pas_a_la_fin(tmp_path):
 def test_extract_last_observation_rejette_scalaire_non_liste():
     """Robustesse : si DBnomics passait period/value en scalaire, on avale
     proprement au lieu de prendre le dernier caractère (finding Codex 02/07)."""
-    from trader.macro_series import _extract_last_observation
+    from trader.market.macro_series import _extract_last_observation
 
     # Cas nominal (listes) : OK.
     ok = {"series": {"docs": [{"period": ["2026-06"], "value": [3.63]}]}}

@@ -1,9 +1,9 @@
-"""Tests TDD pour trader.palette — régression DARK + couverture LIGHT."""
+"""Tests TDD pour trader.ui.palette — régression DARK + couverture LIGHT."""
 
 from __future__ import annotations
 
 from rich.console import Console
-from trader.palette import ALL_PALETTE_KEYS, PALETTE_DARK, PALETTE_LIGHT
+from trader.ui.palette import ALL_PALETTE_KEYS, PALETTE_DARK, PALETTE_LIGHT
 from trader.tui import (
     _build_attribution_panel,
     _build_decisions_table,

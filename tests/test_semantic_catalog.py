@@ -1,4 +1,4 @@
-from trader.features import _candlestick_signal, _chart_breakout
+from trader.market.features import _candlestick_signal, _chart_breakout
 import trader.semantic.catalog as catalog
 from trader.semantic.catalog import (
     describe_semantic_layer,

@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from . import code_version, decision_reason
+from trader import code_version, decision_reason
 
 SCHEMA_VERSION = 1
 DEFAULT_LEDGER_FILENAME = "decisions.jsonl"

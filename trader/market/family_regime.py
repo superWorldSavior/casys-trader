@@ -10,7 +10,7 @@ instructions). Fonction pure : pas d'I/O, pas d'horloge.
 
 from __future__ import annotations
 
-from .semantic.catalog import FAMILIES
+from trader.semantic.catalog import FAMILIES
 
 __all__ = ["compute_family_bias", "families_for_universe", "momentum_from_bars"]
 

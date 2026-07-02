@@ -6,7 +6,7 @@ import pytest
 import yaml
 
 from trader.tools.market import Bar
-from trader.rotation_wiring import (
+from trader.rotation.wiring import (
     venue_of,
     benchmark_ret_for,
     resolve_as_of,
@@ -308,7 +308,7 @@ class TestBuildRankFnGapAdverse:
                 ]
             return result
 
-        from trader.rotation_wiring import build_rank_fn
+        from trader.rotation.wiring import build_rank_fn
 
         rank_fn = build_rank_fn(str(tmp_path), fetch_fn=fake_fetch, as_of="2024-01-02")
         result = rank_fn()
@@ -337,7 +337,7 @@ class TestBuildLlmOverrideFn:
 
         monkeypatch.setattr(llm_module, "build_default_router_from_env", lambda **kw: _FakeRouter())
 
-        from trader.rotation_wiring import build_llm_override_fn
+        from trader.rotation.wiring import build_llm_override_fn
 
         fn = build_llm_override_fn()
         assert callable(fn)
@@ -357,7 +357,7 @@ class TestBuildLlmOverrideFn:
 
         monkeypatch.setattr(llm_module, "build_default_router_from_env", lambda **kw: _FakeRouter())
 
-        from trader.rotation_wiring import build_llm_override_fn
+        from trader.rotation.wiring import build_llm_override_fn
 
         fn = build_llm_override_fn()
         result = fn({"ranked": [], "default_hot": []})
@@ -429,7 +429,7 @@ class TestRunCliOverrideWiring:
 
         monkeypatch.setattr(llm_module, "build_default_router_from_env", _must_not_be_called)
 
-        from trader.rotation_wiring import run_cli
+        from trader.rotation.wiring import run_cli
 
         config_dir = _make_config_for_override(tmp_path, override_enabled=False)
         state_dir = tmp_path / "state"
@@ -466,7 +466,7 @@ class TestRunCliOverrideWiring:
 
         monkeypatch.setattr(llm_module, "build_default_router_from_env", _fake_build)
 
-        from trader.rotation_wiring import run_cli
+        from trader.rotation.wiring import run_cli
 
         config_dir = _make_config_for_override(tmp_path, override_enabled=True)
         state_dir = tmp_path / "state"

@@ -1,4 +1,4 @@
-"""Tests TDD pour trader.regime — classifieur déterministe de régime de marché.
+"""Tests TDD pour trader.market.regime — classifieur déterministe de régime de marché.
 
 Priorité aux cas limites (AX: Test-First Invariants).
 """
@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import pytest
 
-from trader.regime import (
+from trader.market.regime import (
     CANDLE_SIGNAL_LABELS,
     ER_TREND_THRESHOLD,
     VOL_HIGH_THRESHOLD,

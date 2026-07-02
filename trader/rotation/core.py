@@ -10,10 +10,10 @@ from typing import Any
 
 import yaml
 
-from trader.radar import build_radar_snapshot, write_snapshot
-from trader.radar_data import CoverageError
-from trader.rotation_ledger import log_rotation
-from trader.rotation_state import advance_state, load_rotation_state, save_rotation_state, seed_state
+from trader.market.radar import build_radar_snapshot, write_snapshot
+from trader.market.radar_data import CoverageError
+from trader.rotation.ledger import log_rotation
+from trader.rotation.state import advance_state, load_rotation_state, save_rotation_state, seed_state
 
 
 def apply_hysteresis(
@@ -408,7 +408,7 @@ def main(argv: list[str] | None = None) -> int:
         parser.print_help()
         return 0
 
-    from .rotation_wiring import run_cli
+    from .wiring import run_cli
 
     result = run_cli(args.config_dir, args.state_dir)
     print(json.dumps(result, ensure_ascii=False))

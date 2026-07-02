@@ -7,7 +7,7 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
-from .tools.market import Bar
+from trader.tools.market import Bar
 
 
 class CoverageError(RuntimeError):

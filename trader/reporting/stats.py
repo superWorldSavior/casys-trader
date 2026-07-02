@@ -3,7 +3,7 @@
 Module pur côté I/O fichier (lecture uniquement). Réutilise backtest.metrics
 pour les calculs. N'importe jamais daemon (pas de cycle circulaire).
 
-CLI : python -m trader.stats [--json]
+CLI : python -m trader.reporting.stats [--json]
 """
 
 from __future__ import annotations
@@ -109,7 +109,7 @@ def compute_live_kpis(state_dir: Path) -> dict:
     Retourne un dict machine-readable compact.
     """
     # --- starting_equity depuis portfolio.yaml (fallback universe.yaml) ---
-    from .portfolio_config import load_starting_cash
+    from trader.config.portfolio import load_starting_cash
 
     starting_equity: float = load_starting_cash(state_dir.parent / "config")
 
@@ -216,13 +216,13 @@ def _render_text(kpis: dict) -> str:
 
 
 def main() -> None:
-    """Point d'entrée CLI : python -m trader.stats [--json]."""
+    """Point d'entrée CLI : python -m trader.reporting.stats [--json]."""
     parser = argparse.ArgumentParser(description="KPI live du trader paper")
     parser.add_argument("--json", action="store_true", help="sortie JSON compact")
     args = parser.parse_args()
 
     # STATE_DIR = racine repo / "state"
-    state_dir = Path(__file__).resolve().parent.parent / "state"
+    state_dir = Path(__file__).resolve().parents[2] / "state"
     kpis = compute_live_kpis(state_dir)
 
     if args.json:

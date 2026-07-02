@@ -19,7 +19,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable, Protocol
 
-from trader.process_env import sanitized_runtime_env
+from trader.runtime.process_env import sanitized_runtime_env
 
 DEFAULT_SPARK_MODEL = "gpt-5.5"
 DEFAULT_SPARK_FALLBACK_MODEL = "gpt-5.3-codex-spark"

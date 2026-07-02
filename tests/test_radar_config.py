@@ -1,4 +1,4 @@
-from trader.radar_config import RadarParams, load_radar_params
+from trader.market.radar_config import RadarParams, load_radar_params
 
 
 def test_gap_threshold_default() -> None:

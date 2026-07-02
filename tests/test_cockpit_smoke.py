@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import trader.cockpit as cockpit_module
+import trader.cockpit.app as cockpit_module
 from trader.cockpit import CockpitApp
 
 
@@ -130,7 +130,7 @@ async def test_cockpit_status_prend_palette_en_compte(tmp_path, monkeypatch):
     Le widget doit exposer update_state(state, kill_active, palette=...).
     """
     from trader.cockpit import CockpitStatus
-    from trader.palette import PALETTE_LIGHT, PALETTE_DARK
+    from trader.ui.palette import PALETTE_LIGHT, PALETTE_DARK
 
     _make_minimal_state(tmp_path)
     monkeypatch.setattr(cockpit_module, "_STATE_DIR", tmp_path)
@@ -177,7 +177,7 @@ async def test_cockpit_toggle_theme_propage_palette_dashboard_immediatement(
     action_toggle_theme, sans attendre le prochain cycle de refresh.
     """
     from trader.cockpit import PositionsPlansPane
-    from trader.palette import PALETTE_DARK, PALETTE_LIGHT
+    from trader.ui.palette import PALETTE_DARK, PALETTE_LIGHT
 
     # Daemon simulé vivant → pas de ConfirmStart qui intercepterait les touches
     _make_minimal_state_with_pid(tmp_path, 54321)
@@ -208,15 +208,15 @@ def test_indicateur_vital_alive_genere_vivant_markup(tmp_path, monkeypatch):
     """pid vivant + identité trader.daemon → vital.status == "alive", markup VIVANT."""
     from datetime import UTC, datetime, timedelta
     import json
-    from trader.cockpit_supervisor import daemon_vital_state
+    from trader.cockpit.supervisor import daemon_vital_state
 
     status_file = tmp_path / "daemon_status.json"
     now = datetime.now(UTC)
     ts = (now - timedelta(seconds=30)).isoformat()
     status_file.write_text(json.dumps({"ts": ts, "phase": "idle", "pid": 42}), encoding="utf-8")
 
-    monkeypatch.setattr("trader.cockpit_supervisor.os.kill", lambda p, s: None)
-    monkeypatch.setattr("trader.cockpit_supervisor._get_cmdline", lambda p: "uv run python -m trader.daemon --live")
+    monkeypatch.setattr("trader.cockpit.supervisor.os.kill", lambda p, s: None)
+    monkeypatch.setattr("trader.cockpit.supervisor._get_cmdline", lambda p: "uv run python -m trader.daemon --live")
 
     vital = daemon_vital_state(status_file)
     assert vital.status == "alive"
@@ -230,7 +230,7 @@ def test_indicateur_vital_sans_pid_genere_never_started_markup(tmp_path):
     """daemon_status.json sans champ pid → never_started (format pré-migration)."""
     from datetime import UTC, datetime, timedelta
     import json
-    from trader.cockpit_supervisor import daemon_vital_state
+    from trader.cockpit.supervisor import daemon_vital_state
 
     status_file = tmp_path / "daemon_status.json"
     now = datetime.now(UTC)
@@ -389,7 +389,7 @@ async def test_cockpit_q_sans_daemon_quitte_directement(tmp_path, monkeypatch):
     # Pas de daemon_status.json avec pid → never_started
     signals_sent = []
     import os as _os_real
-    import trader.cockpit_supervisor as sup_module
+    import trader.cockpit.supervisor as sup_module
 
     class TrackingOS:
         def kill(self, pid, sig):
@@ -557,7 +557,7 @@ def _make_minimal_state_with_pid(tmp_path: Path, pid: int) -> None:
 
 def _patch_daemon_alive(monkeypatch, pid: int) -> None:
     """Patche cockpit_supervisor pour simuler un daemon vivant avec identité OK."""
-    import trader.cockpit_supervisor as sup_module
+    import trader.cockpit.supervisor as sup_module
 
     monkeypatch.setattr(
         sup_module, "_is_daemon_pid", lambda p: p == pid
@@ -621,8 +621,8 @@ async def test_cockpit_confirm_quit_arreter_et_quitter_appelle_stop_daemon_et_ex
     stop_calls = []
     exit_calls = []
 
-    import trader.cockpit_supervisor as sup_module
-    from trader.cockpit_supervisor import StopResult
+    import trader.cockpit.supervisor as sup_module
+    from trader.cockpit.supervisor import StopResult
 
     monkeypatch.setattr(
         sup_module,
@@ -660,8 +660,8 @@ async def test_cockpit_confirm_quit_stop_daemon_retourne_false_quand_meme_exit(
 
     exit_calls = []
 
-    import trader.cockpit_supervisor as sup_module
-    from trader.cockpit_supervisor import StopResult
+    import trader.cockpit.supervisor as sup_module
+    from trader.cockpit.supervisor import StopResult
 
     monkeypatch.setattr(
         sup_module,
@@ -701,7 +701,7 @@ async def test_cockpit_confirm_quit_stop_daemon_leve_exception_quand_meme_exit(
 
     exit_calls = []
 
-    import trader.cockpit_supervisor as sup_module
+    import trader.cockpit.supervisor as sup_module
 
     def _raising_stop(*, pid_file, status_file=None):
         raise PermissionError("OS refuse le signal")
@@ -736,8 +736,8 @@ async def test_cockpit_q_avec_daemon_vivant_ne_quitte_pas_sans_confirmation(
 
     stop_calls = []
 
-    import trader.cockpit_supervisor as sup_module
-    from trader.cockpit_supervisor import StopResult
+    import trader.cockpit.supervisor as sup_module
+    from trader.cockpit.supervisor import StopResult
 
     monkeypatch.setattr(
         sup_module,
@@ -831,8 +831,8 @@ async def test_cockpit_confirm_start_demarrer_appelle_launch_daemon(
 
     launch_calls = []
 
-    import trader.cockpit_supervisor as sup_module
-    from trader.cockpit_supervisor import LaunchResult
+    import trader.cockpit.supervisor as sup_module
+    from trader.cockpit.supervisor import LaunchResult
 
     monkeypatch.setattr(
         sup_module,
@@ -860,8 +860,8 @@ async def test_cockpit_confirm_start_plus_tard_ne_lance_rien(tmp_path, monkeypat
 
     launch_calls = []
 
-    import trader.cockpit_supervisor as sup_module
-    from trader.cockpit_supervisor import LaunchResult
+    import trader.cockpit.supervisor as sup_module
+    from trader.cockpit.supervisor import LaunchResult
 
     monkeypatch.setattr(
         sup_module,

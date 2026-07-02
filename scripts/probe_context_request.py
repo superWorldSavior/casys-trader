@@ -36,7 +36,7 @@ from trader.agent_context import (
     build_market_cockpit,
     resolve_indicator_requests,
 )
-from trader.features import DEFAULT_INDICATORS
+from trader.market.features import DEFAULT_INDICATORS
 from trader.tools.market import Bar
 
 SYMBOLS = ["SPY", "QQQ", "NVDA", "CL=F", "BZ=F", "GC=F"]

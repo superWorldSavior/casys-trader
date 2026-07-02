@@ -10,7 +10,7 @@ from pathlib import Path
 import yaml
 
 from trader.tools.market import Bar
-from trader.rotation_collectors import default_override_fn
+from trader.rotation.collectors import default_override_fn
 
 
 # ---------------------------------------------------------------------------
@@ -85,7 +85,7 @@ def test_run_cli_writes_expected_artifacts(tmp_path):
     - state_dir/radar_snapshot.json existe
     - state_dir/rotation_state.json existe
     """
-    from trader.rotation_wiring import run_cli
+    from trader.rotation.wiring import run_cli
 
     config_dir = _make_config_dir(tmp_path)
     state_dir = tmp_path / "state"

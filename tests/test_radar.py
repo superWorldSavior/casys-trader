@@ -2,7 +2,7 @@ import pytest
 import json
 import math
 
-from trader.radar import (
+from trader.market.radar import (
     build_radar_snapshot,
     daily_components,
     is_eligible,
@@ -10,7 +10,7 @@ from trader.radar import (
     score_symbol,
     write_snapshot,
 )
-from trader.radar_config import RadarParams
+from trader.market.radar_config import RadarParams
 from trader.tools.market import Bar
 
 

@@ -1,4 +1,4 @@
-from trader import family_regime
+from trader.market import family_regime
 
 
 def test_biais_par_famille_sens_force_et_comptes() -> None:

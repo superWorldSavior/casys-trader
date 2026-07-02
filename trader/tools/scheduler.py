@@ -187,6 +187,29 @@ class Scheduler:
             self._save_state(state)
         return active
 
+    def pop_expired_indicator_watches(self, now: datetime | None = None) -> list[dict]:
+        """Retire et RETOURNE les veilles expirées (`expires_at <= now`).
+
+        Contrairement à `active_indicator_watches` qui purge en silence, ceci
+        rend les expirées à l'appelant pour qu'il émette un event/log par
+        expiration (un plan armé ne doit pas s'évaporer sans trace). Idempotent :
+        après appel, plus aucune veille expirée à purger.
+        """
+        now = now or datetime.now(timezone.utc)
+        state = self._load_state()
+        expired: list[dict] = []
+        kept: dict[str, dict] = {}
+        for watch_id, watch in state["indicator_watches"].items():
+            expires_at = self._parse(watch.get("expires_at"))
+            if expires_at is not None and expires_at <= now:
+                expired.append(watch)
+                continue
+            kept[watch_id] = watch
+        if expired:
+            state["indicator_watches"] = kept
+            self._save_state(state)
+        return expired
+
     def remove_indicator_watch(self, watch_id: str) -> None:
         state = self._load_state()
         if watch_id in state["indicator_watches"]:

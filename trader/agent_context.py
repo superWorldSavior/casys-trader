@@ -5,14 +5,14 @@ from __future__ import annotations
 import math
 from typing import Callable, Iterable
 
-from . import fx as _fx
-from .features import (
+from trader.market import fx as _fx
+from trader.market.features import (
     DEFAULT_INDICATORS,
     build_indicator_snapshot,
     swing_high,
     swing_low,
 )
-from .regime import classify_regime, multi_horizon_signals
+from trader.market.regime import classify_regime, multi_horizon_signals
 from .semantic.catalog import family_for_symbol, normalize_temporal_query
 from .tools import market
 

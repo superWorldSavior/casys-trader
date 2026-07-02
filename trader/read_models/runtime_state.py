@@ -93,7 +93,7 @@ def _load_equity_curve(history_path: Path) -> list[float]:
 
 def _compute_live_kpis_safe(state_dir: Path) -> dict:
     try:
-        from trader.stats import compute_live_kpis
+        from trader.reporting.stats import compute_live_kpis
 
         result = compute_live_kpis(state_dir)
     except Exception:
@@ -116,7 +116,7 @@ def _read_min_trade_confidence_safe() -> float:
 
 def _compute_attribution_safe(state_dir: Path) -> dict:
     try:
-        from trader.attribution import compute_attribution
+        from trader.reporting.attribution import compute_attribution
 
         result = compute_attribution(
             state_dir,
@@ -310,8 +310,8 @@ def _load_venue_open_state_safe(
 ) -> tuple[dict, list[str]]:
     """Charge venue_state et open_venues. Retourne ({}, []) si indisponible."""
     try:
-        from trader.rotation_venues import load_venue_state as _lvs
-        from trader.rotation_schedule import load_sessions as _ls, open_venues as _ov
+        from trader.rotation.venues import load_venue_state as _lvs
+        from trader.rotation.schedule import load_sessions as _ls, open_venues as _ov
 
         venue_state = _lvs(state_dir)
         sessions = _ls(config_dir)
@@ -409,7 +409,7 @@ def _load_universe_symbols_safe(config_dir: str) -> list[str]:
 def _load_starting_cash_safe(config_dir: str | Path) -> float | None:
     """Lit le capital de départ affiché par la barre cockpit."""
     try:
-        from trader.portfolio_config import load_starting_cash
+        from trader.config.portfolio import load_starting_cash
 
         return load_starting_cash(Path(config_dir) / "config")
     except Exception:

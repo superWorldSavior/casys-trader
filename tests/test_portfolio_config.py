@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from trader.portfolio_config import load_starting_cash
+from trader.config.portfolio import load_starting_cash
 
 
 def test_reads_portfolio_yaml(tmp_path: Path) -> None:

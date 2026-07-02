@@ -15,7 +15,7 @@ import pytest
 from trader import daemon
 from trader.codex_client import Decision
 from trader.risk import RiskGate, RiskLimits
-from trader import fx
+from trader.market import fx
 from trader.tools.execution import Order, SimBroker
 from trader.tools.market import Bar
 from trader.tools.scheduler import Scheduler

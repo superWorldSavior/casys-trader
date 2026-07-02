@@ -1,7 +1,7 @@
 # Modular architecture and logging refactor
 
 **Date**: 2026-07-02
-**Status**: Implemented in staged slices on `refactor/modular-architecture-logging`.
+**Status**: Implemented in staged slices on `main`.
 The implementation is behavior-preserving and keeps compatibility wrappers.
 
 ---
@@ -17,8 +17,8 @@ The main pressure points are:
 - `trader/daemon.py` is the runtime shell, the market snapshot builder, the
   planner batch coordinator, the order admission path, the decision recorder,
   and part of observability.
-- `trader/tui.py` mixes state-file reads, projection/enrichment, Rich rendering,
-  and functions imported privately by `trader/cockpit.py`.
+- The former flat `trader/tui.py` mixed state-file reads, projection/enrichment,
+  Rich rendering, and functions imported privately by the Textual cockpit.
 - `trader/codex_client.py` combines prompt text, response contracts, parsing,
   and the planner facade.
 - `trader/agent_tools.py` now contains a useful domain-tool registry, but the
@@ -73,6 +73,8 @@ heavier than the trading system itself.
 Use a modular monolith with Python-owned contracts close to their consumers. The
 post-refactor target deliberately avoids generic `domain/`, `ports/`, or
 `adapters/` packages until repeated slices prove those names carry their weight.
+This is closer to capability packaging than to strict Clean/Hexagonal
+Architecture: boundaries follow runtime ownership and auditability first.
 
 ```text
 trader/
@@ -96,13 +98,48 @@ trader/
     indicators.py
     learnings.py
 
+  rotation/
+    core.py
+    venues.py
+    schedule.py
+    wiring.py
+    ...
+
+  reporting/
+    decision_ledger.py
+    attribution.py
+    stats.py
+    tool_usage.py
+    ...
+
+  market/
+    features.py
+    fx.py
+    radar.py
+    regime.py
+    ...
+
+  config/
+    pool.py
+    portfolio.py
+
+  runtime/
+    process_env.py
+
   read_models/
     runtime_state.py
     cockpit_projection.py
     attribution_projection.py
 
+  cockpit/
+    app.py
+    events.py
+    supervisor.py
+
   ui/
+    tui.py
     rich_panels.py
+    palette.py
 ```
 
 Protocols and type aliases live in the module that consumes the collaborator
@@ -123,7 +160,7 @@ architecture framework.
   It must not influence live trading decisions.
 - `ui/*` renders read models. It must not read random state files directly once
   `read_models.runtime_state` exists.
-- `trader/daemon.py`, `trader/tui.py`, `trader/cockpit.py`,
+- `trader/daemon.py`, `trader.tui`, `trader.cockpit`,
   `trader/codex_client.py`, and `trader/agent_tools.py` may keep compatibility
   re-exports or thin wrappers until tests and callers have moved.
 
@@ -244,7 +281,7 @@ public names from `agent_tools/__init__.py`.
 ## 9. Read Models and UI
 
 Create `trader/read_models/runtime_state.py` for state-file loading and
-projection assembly currently owned by `trader/tui.py`.
+projection assembly previously owned by the flat `trader/tui.py`.
 
 Then move Rich builders into `trader/ui/rich_panels.py` so both the simple Rich
 TUI and the Textual cockpit import public UI builders instead of private
@@ -257,6 +294,12 @@ Rules:
 - cockpit does not import private `_build_*` symbols from `tui.py` after the
   migration;
 - `trader.tui` remains a runnable module and public compatibility layer.
+
+Implementation note (2026-07-02): market/radar/FX/regime helpers now live under
+`trader/market/`; config loaders under `trader/config/`; process helpers under
+`trader/runtime/`; Textual cockpit code under `trader/cockpit/`; and TUI/palette
+code under `trader/ui/`. Import compatibility is preserved for historical module
+names, but `python -m` is guaranteed only for real CLI wrappers and entrypoints.
 
 ## 10. Logging Design
 
@@ -348,7 +391,8 @@ Each tranche should end with:
   bulk of decision recording, planner batching, market snapshot building, and
   pure order-admission helper logic. Full order-admission orchestration remains
   in `daemon.py` for this tranche and is documented as the remaining seam.
-- Existing CLI commands and imports still work.
+- Existing CLI commands and imports still work. Alias-only compatibility modules
+  preserve imports, not arbitrary `python -m trader.<old_name>` execution.
 - Existing state files keep their current schemas unless a later explicit
   migration document says otherwise.
 - `state/decisions.jsonl` remains the audit source of truth.
@@ -383,5 +427,5 @@ Each tranche should end with:
   default.
 - Source of truth: `state/decisions.jsonl` and current state artifacts remain
   canonical.
-- Worktree: implementation occurs on branch
-  `refactor/modular-architecture-logging` in `.claude/worktrees`.
+- Worktree: the approved refactor has been integrated directly on `main` after
+  user approval.

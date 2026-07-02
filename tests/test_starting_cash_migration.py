@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from trader import stats as stats_mod
+from trader.reporting import stats as stats_mod
 
 
 def test_stats_reads_starting_cash_from_portfolio_without_broker(tmp_path: Path) -> None:

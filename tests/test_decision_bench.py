@@ -1,7 +1,7 @@
 import json
 
 from backtest.data import HistoryStore
-from trader import decision_bench
+from trader.reporting import decision_bench
 from trader.tools.market import Bar
 
 

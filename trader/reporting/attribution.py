@@ -624,14 +624,14 @@ def compute_attribution(
 
 
 def main() -> None:
-    """CLI d'inspection : python -m trader.attribution [--json]."""
+    """CLI d'inspection : python -m trader.reporting.attribution [--json]."""
     import argparse
 
     parser = argparse.ArgumentParser(description="Attribution décision->résultat du trader paper")
     parser.add_argument("--json", action="store_true", help="sortie JSON compact")
     args = parser.parse_args()
 
-    state_dir = Path(__file__).resolve().parent.parent / "state"
+    state_dir = Path(__file__).resolve().parents[2] / "state"
     attr = compute_attribution(state_dir)
 
     if args.json:

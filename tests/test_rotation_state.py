@@ -3,7 +3,7 @@ import json
 import os
 
 
-from trader.rotation_state import load_rotation_state, save_rotation_state, seed_state, advance_state
+from trader.rotation.state import load_rotation_state, save_rotation_state, seed_state, advance_state
 
 
 _DEFAULT_STATE = {

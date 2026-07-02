@@ -1,6 +1,6 @@
 import pytest
 
-from trader.radar_config import ConvictionError, load_conviction
+from trader.market.radar_config import ConvictionError, load_conviction
 from trader.semantic.catalog import FAMILIES
 
 

@@ -15,7 +15,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 
-from trader.macro_calendar import (
+from trader.market.macro_calendar import (
     DEFAULT_CALENDAR,
     FOMC_2026,
     load_calendar,

@@ -102,6 +102,31 @@ def test_indicator_watch_expiree_est_purgee(tmp_path) -> None:
     assert watches == []
 
 
+def test_pop_expired_indicator_watches_retire_et_retourne_les_expirees(tmp_path) -> None:
+    sched = Scheduler(tmp_path / "scheduler.json")
+    sched.set_symbol_indicator_watch(
+        "OLD",
+        {"id": "OLD:1", "symbol": "OLD", "on_trigger": "EXECUTE_ORDER",
+         "expires_at": "2026-06-05T12:00:00+00:00", "conditions": []},
+    )
+    sched.set_symbol_indicator_watch(
+        "LIVE",
+        {"id": "LIVE:1", "symbol": "LIVE", "on_trigger": "WAKE",
+         "expires_at": "2026-06-05T14:00:00+00:00", "conditions": []},
+    )
+
+    now = datetime(2026, 6, 5, 13, 0, tzinfo=timezone.utc)
+    expired = sched.pop_expired_indicator_watches(now=now)
+
+    # retourne l'expirée (avec ses métadonnées pour l'event) et la retire de l'état
+    assert [w["id"] for w in expired] == ["OLD:1"]
+    assert expired[0]["on_trigger"] == "EXECUTE_ORDER"
+    remaining = [w["id"] for w in sched.active_indicator_watches(now=now)]
+    assert remaining == ["LIVE:1"]
+    # idempotent : plus rien à retirer au 2e appel
+    assert sched.pop_expired_indicator_watches(now=now) == []
+
+
 def test_stale_streak_vaut_zero_sur_un_state_sans_champ(tmp_path) -> None:
     """Vieux scheduler.json sans stale_streaks → pas de crash, streak=0."""
     state_path = tmp_path / "scheduler.json"
