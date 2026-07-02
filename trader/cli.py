@@ -49,8 +49,12 @@ def _parse_csv(value: str | None, default: list[str]) -> list[str]:
 
 
 def _load_universe_symbols() -> list[str]:
-    cfg = yaml.safe_load((daemon.ROOT / "config" / "universe.yaml").read_text())
-    return list(cfg["symbols"])
+    """Symboles d'universe.yaml — [] si absent (fichier généré par la rotation)."""
+    path = daemon.ROOT / "config" / "universe.yaml"
+    if not path.exists():
+        return []
+    cfg = yaml.safe_load(path.read_text()) or {}
+    return list(cfg.get("symbols") or [])
 
 
 def _read_state_json(filename: str) -> object | None:

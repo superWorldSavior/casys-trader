@@ -3,6 +3,10 @@
 KILL
 .env
 
+# Univers courant — réécrit par la rotation à chaque tick (historique dans
+# state/rotation_ledger.jsonl) ; régénéré au premier tick si absent
+/config/universe.yaml
+
 # Python
 __pycache__/
 *.pyc
