@@ -107,3 +107,16 @@ La convergence majeure est un consensus anti-infrastructure : à l'échelle agen
 ---
 
 **Sources clés :** arXiv 2601.03192 (MemRL), arXiv 2508.13390 (FLAIR), arXiv 2409.02343 (NUDGE), arXiv 2604.06647 (PatchRAG/correction lag), arXiv 2501.13956 (Graphiti/bi-temporel), ZeroClaw SQLite hybrid benchmark, Qwen3-Embedding-0.6B HuggingFace, bm25s.github.io, arXiv 2506.02404 (GraphRAG-Bench — confirme l'overhead LLM-entity sur corpus structurés).
+---
+
+## Amendement — décisions Erwan 2026-07-02 (post-synthèse)
+
+- **Embeddings : OpenAI API** (et non Qwen3/Ollama local). Conséquences :
+  corpus pré-calculé en batch offline (coût négligeable à ce volume), la query
+  du recall coûte ~100-300 ms réseau (budget <1 s toujours tenu), et le
+  retrieval doit dégrader proprement en facettes+BM25 si l'API est
+  indisponible (le cycle live ne dépend jamais d'un service externe).
+- Le phasage d'implémentation validé vit dans la mémoire projet
+  (chantier learnings-rag) : store SQLite + FLAIR bootstrap → outil
+  recall_learnings + traçage des injections → decay par régime + MemRL →
+  bench A/B via decision_bench.
