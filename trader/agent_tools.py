@@ -411,7 +411,7 @@ def _handle_get_recent_decisions(call: AgentToolCall, context: ToolContext) -> d
         return {"error": "unavailable", "rows": []}
     limit = min(int(call.args.get("limit") or 5), _MAX_DECISION_ROWS)
     rows = context.recent_decisions_provider(call.args.get("symbol"), limit)
-    return {"rows": rows[:limit]}
+    return {"rows": rows}
 
 
 TOOL_REGISTRY["get_position_risk"] = ToolSpec(

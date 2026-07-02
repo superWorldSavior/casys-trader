@@ -7,6 +7,7 @@ trail that can later be labelled against future market movement.
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -153,6 +154,7 @@ def build_decision_row(
 class DecisionLedgerStore:
     def __init__(self, path: str | Path):
         self.path = Path(path)
+        self._ids_cache: set[str] | None = None
 
     def read_all(self, *, symbol: str | None = None, limit: int | None = None) -> list[dict]:
         rows = self._read_rows()
@@ -171,6 +173,8 @@ class DecisionLedgerStore:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(row, ensure_ascii=False) + "\n")
+        if self._ids_cache is not None:
+            self._ids_cache.add(decision_id)
         return True
 
     def append_from_report(self, report: dict, *, source: str = "report_seed") -> tuple[int, int]:
@@ -224,7 +228,13 @@ class DecisionLedgerStore:
         return rows
 
     def _existing_ids(self) -> set[str]:
-        return {str(row.get("decision_id")) for row in self._read_rows() if row.get("decision_id")}
+        if self._ids_cache is None:
+            self._ids_cache = {
+                str(row.get("decision_id"))
+                for row in self._read_rows()
+                if row.get("decision_id")
+            }
+        return self._ids_cache
 
     def _has_near_duplicate(self, row: dict) -> bool:
         row_ts = _parse_ts(row.get("cycle_ts"))
@@ -251,7 +261,14 @@ class DecisionLedgerStore:
     def replace_all(self, rows: list[dict]) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         payload = "\n".join(json.dumps(row, ensure_ascii=False) for row in rows)
-        self.path.write_text(payload + ("\n" if payload else ""), encoding="utf-8")
+        tmp = self.path.with_suffix(".tmp")
+        tmp.write_text(payload + ("\n" if payload else ""), encoding="utf-8")
+        os.replace(tmp, self.path)
+        self._ids_cache = {
+            str(row.get("decision_id"))
+            for row in rows
+            if row.get("decision_id")
+        }
 
 
 def _read_report(path: Path) -> dict | None:

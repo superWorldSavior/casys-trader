@@ -343,3 +343,85 @@ def test_build_decision_row_news_defaults_to_empty_dict():
     decision = {"symbol": "ACA.PA", "action": "HOLD"}
     row = decision_ledger.build_decision_row(_simple_report(), decision, sequence=0)
     assert row["news"] == {}
+
+
+# ---------------------------------------------------------------------------
+# Cache d'IDs en mémoire (P0 data-lifecycle §3.1)
+# ---------------------------------------------------------------------------
+
+
+def test_cache_ids_deuxieme_append_ne_relit_pas_le_fichier(monkeypatch, tmp_path) -> None:
+    """Après le 1er append (qui charge le cache), _read_rows ne doit plus être
+    appelée lors des appends suivants."""
+    store = decision_ledger.DecisionLedgerStore(tmp_path / "decisions.jsonl")
+    row1 = decision_ledger.build_decision_row(_report([_decision("SPY")]), _decision("SPY"), sequence=0)
+    row2 = decision_ledger.build_decision_row(_report([_decision("QQQ")]), _decision("QQQ"), sequence=1)
+
+    read_calls = 0
+    original_read_rows = store._read_rows
+
+    def counting_read_rows():
+        nonlocal read_calls
+        read_calls += 1
+        return original_read_rows()
+
+    monkeypatch.setattr(store, "_read_rows", counting_read_rows)
+
+    store.append(row1)  # charge le cache (1 lecture)
+    store.append(row2)  # doit utiliser le cache — pas de nouvelle lecture
+
+    assert read_calls == 1, f"_read_rows appelée {read_calls} fois (attendu 1)"
+
+
+def test_cache_ids_dedup_reste_effective_apres_cache(tmp_path) -> None:
+    """Le cache d'IDs n'ouvre pas de faille : un decision_id déjà présent
+    est toujours refusé, même après plusieurs appends."""
+    store = decision_ledger.DecisionLedgerStore(tmp_path / "decisions.jsonl")
+    row = decision_ledger.build_decision_row(_report([_decision("SPY")]), _decision("SPY"), sequence=0)
+
+    assert store.append(row) is True
+    assert store.append(row) is False  # doublon via cache chaud
+
+    # Nouvelle instance (cache froid) : doit relire et refuser aussi.
+    store2 = decision_ledger.DecisionLedgerStore(tmp_path / "decisions.jsonl")
+    assert store2.append(row) is False
+
+
+def test_replace_all_invalide_et_reconstruit_le_cache(tmp_path) -> None:
+    """replace_all() doit reconstruire le cache pour que les appends suivants
+    voient les nouvelles IDs sans relecture disque."""
+    store = decision_ledger.DecisionLedgerStore(tmp_path / "decisions.jsonl")
+    row_a = decision_ledger.build_decision_row(_report([_decision("SPY")]), _decision("SPY"), sequence=0)
+    row_b = decision_ledger.build_decision_row(_report([_decision("QQQ")]), _decision("QQQ"), sequence=1)
+    store.append(row_a)  # cache chargé avec row_a
+
+    # replace_all remplace le contenu par row_b uniquement
+    store.replace_all([row_b])
+
+    # row_a ne doit plus bloquer (sorti du fichier et du cache)
+    assert store.append(row_a) is True
+    # row_b est déjà présent → refusé
+    assert store.append(row_b) is False
+
+
+# ---------------------------------------------------------------------------
+# replace_all atomique (P0 data-lifecycle §3.3)
+# ---------------------------------------------------------------------------
+
+
+def test_replace_all_atomique_pas_de_fichier_tmp_residuel(tmp_path) -> None:
+    """replace_all() doit écrire via un .tmp puis le renommer :
+    le contenu final est correct et aucun .tmp ne reste sur disque."""
+    store = decision_ledger.DecisionLedgerStore(tmp_path / "decisions.jsonl")
+    rows = [
+        decision_ledger.build_decision_row(_report([_decision("SPY")]), _decision("SPY"), sequence=0),
+        decision_ledger.build_decision_row(_report([_decision("QQQ")]), _decision("QQQ"), sequence=1),
+    ]
+
+    store.replace_all(rows)
+
+    # Aucun fichier temporaire résiduel
+    assert not store.path.with_suffix(".tmp").exists()
+    # Contenu attendu : les 2 rows
+    persisted = store.read_all()
+    assert [r["symbol"] for r in persisted] == ["SPY", "QQQ"]

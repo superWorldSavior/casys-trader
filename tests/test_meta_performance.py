@@ -1,4 +1,5 @@
 import json
+import time
 from pathlib import Path
 
 from trader import decision_audit, meta_performance
@@ -140,3 +141,72 @@ def test_compute_meta_performance_recalcule_les_anciens_audits_sans_reason_metri
             "missed_known_pct": 100.0,
         }
     ]
+
+
+# ---------------------------------------------------------------------------
+# Cache mtime de _read_audit (P0 data-lifecycle §3.2)
+# ---------------------------------------------------------------------------
+
+
+def _minimal_audit(tmp_path: Path) -> Path:
+    """Écrit un decision_audit.json minimal valide et retourne son chemin."""
+    audit_path = tmp_path / "decision_audit.json"
+    audit_path.write_text(
+        json.dumps({"horizons": [], "metrics": {}, "rows": []}), encoding="utf-8"
+    )
+    return audit_path
+
+
+def test_mtime_cache_deux_appels_sans_modif_une_seule_lecture(monkeypatch, tmp_path) -> None:
+    """Deux appels consécutifs sans modification du fichier → read_text appelée
+    une seule fois (le 2e appel utilise le cache mtime)."""
+    audit_path = _minimal_audit(tmp_path)
+    # Vider le cache du module entre tests (clé unique par tmp_path de toute façon,
+    # mais on s'assure qu'aucune entrée résiduelle de cette clé n'existe).
+    meta_performance._AUDIT_CACHE.pop(str(audit_path), None)
+
+    read_count = 0
+    original_read_text = Path.read_text
+
+    def counting_read_text(self: Path, *args, **kwargs):
+        nonlocal read_count
+        if self == audit_path:
+            read_count += 1
+        return original_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", counting_read_text)
+
+    meta_performance.compute_meta_performance(tmp_path)
+    meta_performance.compute_meta_performance(tmp_path)
+
+    assert read_count == 1, f"read_text appelée {read_count} fois (attendu 1)"
+
+
+def test_mtime_cache_relecture_si_mtime_change(monkeypatch, tmp_path) -> None:
+    """Si le fichier est modifié (mtime change), le cache est invalidé et le
+    fichier est relu."""
+    audit_path = _minimal_audit(tmp_path)
+    meta_performance._AUDIT_CACHE.pop(str(audit_path), None)
+
+    read_count = 0
+    original_read_text = Path.read_text
+
+    def counting_read_text(self: Path, *args, **kwargs):
+        nonlocal read_count
+        if self == audit_path:
+            read_count += 1
+        return original_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", counting_read_text)
+
+    meta_performance.compute_meta_performance(tmp_path)  # lecture 1
+
+    # Forcer un mtime différent en récrivant le fichier.
+    time.sleep(0.01)
+    audit_path.write_text(
+        json.dumps({"horizons": ["1h"], "metrics": {}, "rows": []}), encoding="utf-8"
+    )
+
+    meta_performance.compute_meta_performance(tmp_path)  # lecture 2
+
+    assert read_count == 2, f"read_text appelée {read_count} fois (attendu 2)"

@@ -406,7 +406,8 @@ def test_describe_data_rend_le_cube_compact():
     d = result.result
     assert "1h" in d["timeframes"] and "lookbacks" in d["timeframes"]["1h"]
     assert d["windows"] and d["as_of_modes"] == ["latest"]
-    # indicateurs en forme compacte : name + category, pas les specs complètes
+    # indicateurs en forme compacte : au moins un, name + category, pas les specs complètes
+    assert d["indicators"]
     assert all(set(i) <= {"name", "label", "category", "concepts"} for i in d["indicators"])
 
 

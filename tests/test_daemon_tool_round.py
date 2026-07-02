@@ -135,8 +135,8 @@ def test_indicator_resolver_passe_les_bornes(monkeypatch):
         )
     )
 
-    # resolve_indicator_requests doit être appelé avec les bornes exactes câblées.
-    assert len(spy_calls) >= 1
+    # resolve_indicator_requests doit être appelé exactement une fois (une tournée).
+    assert len(spy_calls) == 1
     assert spy_calls[0]["max_requests"] == 2
     assert spy_calls[0]["max_indicators"] == 4
 
@@ -275,9 +275,9 @@ def test_budget_mode_tournee_limite_les_chunks(monkeypatch):
         )
     )
 
-    # Seul le 1er chunk [A, B] est autorisé (consomme 2 appels).
-    # [C, D] est hors budget → HOLD model_call_budget_exhausted.
-    assert calls <= 3
+    # Seul le 1er chunk [A, B] est autorisé (consomme 2 appels : tournée + final).
+    # [C, D] est hors budget → HOLD model_call_budget_exhausted (0 appel LLM).
+    assert calls == 2
     assert decisions["C"].rationale == "model_call_budget_exhausted"
     assert decisions["D"].rationale == "model_call_budget_exhausted"
     # A et B ont reçu des décisions réelles (HOLD de notre fake)

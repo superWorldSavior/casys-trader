@@ -9,11 +9,23 @@ from . import decision_audit
 
 DEFAULT_HORIZONS = ("1h", "4h", "1d")
 
+# Cache module-level par (chemin, mtime_ns) — un seul thread daemon l'appelle.
+# Évite de désérialiser 1,3 Mo de decision_audit.json à chaque run_cycle.
+_AUDIT_CACHE: dict[str, tuple[int, dict]] = {}
+
 
 def _read_audit(state_dir: Path) -> tuple[dict | None, str | None]:
     path = state_dir / "decision_audit.json"
     if not path.exists():
         return None, "decision_audit_missing"
+    try:
+        mtime_ns = path.stat().st_mtime_ns
+    except OSError:
+        return None, "decision_audit_unreadable"
+    cache_key = str(path)
+    cached = _AUDIT_CACHE.get(cache_key)
+    if cached is not None and cached[0] == mtime_ns:
+        return cached[1], None
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
@@ -22,6 +34,7 @@ def _read_audit(state_dir: Path) -> tuple[dict | None, str | None]:
         return None, "decision_audit_unreadable"
     if not isinstance(payload, dict):
         return None, "decision_audit_invalid_schema"
+    _AUDIT_CACHE[cache_key] = (mtime_ns, payload)
     return payload, None
 
 
