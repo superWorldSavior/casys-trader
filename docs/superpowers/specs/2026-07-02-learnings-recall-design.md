@@ -51,6 +51,13 @@ pertinence contextuelle, avec un plafond de 15 slots écrasés en continu.
 
 ### 4.1 Store — SQLite unique : `state/learnings.db`
 
+> Arbitrage SQLite vs DuckDB (question Erwan 02/07) : SQLite pour le store
+> chaud (OLTP : record_recall fréquent pendant que le daemon lit → WAL ;
+> FTS5 incrémental ; stdlib ; format stable à vie). DuckDB retenu comme
+> OPTION pour l'analytique offline des phases ③/④ (il requête directement
+> les archives `*.jsonl.gz` via read_json_auto — calibration τ, MemRL,
+> bench) sans y persister, donc sans son problème de format entre versions.
+
 Table `notes` :
 ```
 id INTEGER PK, decision_id TEXT UNIQUE, ts TEXT, symbol TEXT, family TEXT,
