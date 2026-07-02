@@ -110,7 +110,7 @@ Les 5 trous prioritaires identifiés à la v2 sont comblés :
 5. ~~Config univers/portefeuille~~ ✅ [`reference/config.md`](reference/config.md)
 
 **Couverture complète ✅ (2026-07-03)** — tous les sous-systèmes de la carte ont
-désormais une page `reference/` **fact-checkée** (13 pages reference + 3 how-to). Il
+désormais une page `reference/` **fact-checkée** (15 pages reference + 3 how-to). Il
 n'y a plus de trou. Maintenir : quand un module change, mettre à jour sa page (lire
 code → éditer → re-fact-check si substantiel).
 
