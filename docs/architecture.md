@@ -318,6 +318,11 @@ Opérateurs valides : `>`, `>=`, `<`, `<=`, `==`, `!=`, `abs>`, `abs>=`, `abs<`,
 | `current_report.json` | `_write_current_report()` | cockpit TUI | Rapport complet du cycle en cours |
 | `learnings.jsonl` | `record_decision()` | `consolidator` | Notes runtime de l'agent (bornées) |
 | `learnings_consolidated.json` | `consolidator` | daemon (contexte LLM) | Patterns consolidés (≤ seuil bruts → consolidation) |
+| `learnings.db` | `learnings_ingest` + daemon (`recalls`) | outil `recall_learnings` | Store SQLite dérivé : notes scorées par outcome (lift/symbole), embeddings, traces de recall |
+| `archive/*.jsonl.gz` | `ledger_rotation` (démarrage daemon) | `read_rows_with_archive` (analyses) | Mois passés de decisions/events — rotation mensuelle crash-safe |
+| `archive/learnings-*.jsonl` | `LearningsStore`/`consolidator` | ingestion recall | Évincés + historique des consolidés — plus rien ne se jette |
+| `news_items/YYYY-MM-DD.jsonl` | `news_feed` (P1a) | futur analyste-news | Items de news persistés (dédup uuid, purge 60 j) |
+| `macro_calendar.json` + `macro_series/` | `macro_calendar`/`macro_series` (P1a) | payload d'attribution | Dates FOMC/CPI + séries macro quotidiennes (DBnomics) |
 
 **Scheduler** (`state/scheduler.json`) : next_wake par symbole, indicator_watches,
 stale_streaks. Séparé de `broker.json`.
@@ -338,6 +343,14 @@ avec un code retryable (rate-limit, quota). `llm.py:57`
 
 Modèle courant : `gpt-5.5/medium` (Codex Spark, faible latence). `llm.py:22`
 
+**Fork acpx (2026-07-02)** : le runtime et le consolidateur pointent vers le
+fork `Casys-AI/acpx` (branche `casys-patches`) via `TRADER_ACPX_BIN` /
+`TRADER_CONSOLIDATOR_ACPX_BIN` (`.env`) — 2 patchs : erreurs quiet structurées
+sur stderr (fini les exit=1 muets) et bridges jamais orphelins (shutdown
+bridge-first sur signal). Le canon npm reste le binaire global de la machine.
+Rebuild après rebase : `make fork-acpx-build`. Les 2 branches `fix/*` du fork
+sont prêtes pour des PRs upstream.
+
 ### 9.2 Reap des ponts orphelins — `_reap_orphan_bridges`
 
 `llm.py:260` — les processus `codex-acp` (bridge acpx↔codex) démarrés via `setsid`
@@ -354,6 +367,77 @@ Le LLM ne trade jamais sur une réponse douteuse.
 
 La `Decision` inclut : `action`, `quantity`, `confidence`, `rationale`, `intent`,
 `exit_plan`, `indicator_watch`, `cancel_watch_ids`, `next_wake_in_minutes`, `learning`.
+
+---
+
+## 10. Outils domaine — la tournée d'outils du LLM (2026-07-02)
+
+Design : `docs/superpowers/specs/2026-06-29-agent-domain-tools-design.md`.
+Flag : `CASYS_AGENT_TOOLS_ENABLED=1` (actif ; visible au startup dans le log
+`[config] … agent_tools=True`).
+
+Le LLM reçoit UN prompt et peut répondre soit le contrat final, soit
+`{"tool_calls": [...]}` — UNE tournée max, puis décision finale obligatoire
+(sinon HOLD `tool_loop_blocked`). Les outils ne passent PAS par acpx
+(`--allowed-tools` reste `""`) : le daemon parse, valide contre
+`agent_tools.TOOL_REGISTRY` (allowlist Python) et exécute — lecture seule.
+
+Registre (9) : `get_freshness`, `get_active_plans`, `get_position_risk`,
+`get_attribution`, `get_recent_decisions`, `get_indicator_context`
+(voie moderne de REQUEST_CONTEXT), `describe_data`, `find_indicators`
+(découverte du cube sémantique TraderNexus), `recall_learnings` (mémoire, §11).
+
+Garde-fous : budgets 24 appels/lot et 3/symbole, cap 32 calls sérialisés
+(sentinel `truncated`), args scrubbed (profondeur/longueur), contexte borné au
+chunk (pas de fuite inter-chunks), budget modèle réservé (2 appels/chunk en
+mode tournée). Tout est tracé dans `runtime.tool_calls` du ledger → dérivable
+par `tool_trace.summarize_tools` et `tool_usage` (section `domain_usage`).
+
+Outils d'ACTION (set_next_wake, propose_indicator_watch, cancel_watch,
+record_learning, puis propose_order) : Phases 4-5, non implémentées — notes de
+design en mémoire projet.
+
+## 11. Mémoire outcome-weighted — recall des learnings (2026-07-02)
+
+Design : `docs/superpowers/specs/2026-07-02-learnings-recall-design.md`.
+
+Chaîne : les learnings ne se jettent plus (archives §8) → `learnings_ingest`
+construit `state/learnings.db` (SQLite dérivé, reconstructible : notes +
+facettes + FTS5 + embeddings OpenAI pré-calculés) → scoring FLAIR normalisé
+par symbole (lift vs base rate + shrinkage bayésien ; verdicts issus du
+forward via `decision_quality`) → l'outil `recall_learnings{symbol?|family?|
+query?}` sert un hybride facettes → FTS5+cosine → RRF → outcome×decay
+(~2-8 ms local, +~3 s max si embed de query OpenAI, dégradation FTS sinon).
+
+La table `recalls` trace quelles notes ont servi quelle décision
+(note_ids × decision_id) — c'est le flux qui alimentera MemRL (Q-value) et le
+bench A/B `decision_bench`. Le push linéaire des 15 slots consolidés reste en
+place tant que la mesure n'a pas tranché.
+
+## 12. Gestion des données — rotation et archives (2026-07-02)
+
+Doc : `docs/specs/2026-07-02-agent-data-lifecycle.md`.
+
+- **Rotation mensuelle** (`ledger_rotation`, au démarrage du daemon) :
+  decisions/events des mois passés → `state/archive/<stem>-YYYY-MM.jsonl.gz`.
+  Crash-safe : réécriture atomique de l'archive (fusion + dédup decision_id +
+  validation par relecture) avant `os.replace` du vif ; archive corrompue →
+  abort, vif intact. Les analyses lisent archives+vif via
+  `read_rows_with_archive` ; les lecteurs runtime (tail TUI) restent sur le vif.
+- **Caches** : dédup d'append du ledger en mémoire (fini les ~90 Go d'IO/j),
+  `decision_audit.json` par mtime.
+- **Purges** : radar_cache > 30 j (tick rotation), news_items > 60 j (P1a).
+- Sessions acpx (~/.acpx, 1,3 Go) : traité par patch de rétention NATIVE dans
+  le fork (backlog), pas de prune côté casys.
+
+## 13. Collecte macro/news — P1a (en livraison 2026-07-02)
+
+Spec : `docs/superpowers/specs/2026-07-02-macro-analyste-news-spec.md` ;
+sources : `docs/specs/2026-07-02-macro-data-sources.md`.
+Items de news persistés + calendrier FOMC/CPI (`macro_next` par décision) +
+séries macro quotidiennes via DBnomics (zéro clé). Tout attribution-first ;
+l'analyste-news (LLM offline, brief quotidien borné) viendra quand le stock
+aura ~2-3 semaines (P2), puis exposition en pull `get_macro_brief` (P3).
 
 ---
 
