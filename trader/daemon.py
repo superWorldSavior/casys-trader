@@ -330,8 +330,22 @@ def _kill_switch_active() -> bool:
     return (ROOT / "KILL").exists()
 
 
-def _bounded_wake_minutes(value: float, *, minimum: float, maximum: float) -> float:
-    return min(max(float(value), minimum), maximum)
+def _bounded_wake_minutes(
+    value: float, *, minimum: float | None = None, maximum: float | None = None
+) -> float:
+    """Réveil demandé par l'agent, borné SEULEMENT si une borne est fournie.
+
+    Par défaut (minimum/maximum=None) la valeur passe intacte : l'agent est
+    autonome sur sa cadence de re-décision (les sorties restent vérifiées à
+    chaque poll, indépendamment). Les flags --min/--max-wake-minutes réactivent
+    un bornage si besoin.
+    """
+    result = float(value)
+    if minimum is not None:
+        result = max(result, minimum)
+    if maximum is not None:
+        result = min(result, maximum)
+    return result
 
 
 def _stale_backoff_wake_minutes(streak: int, *, default_wake_minutes: float) -> float:
@@ -1804,8 +1818,8 @@ def run_cycle(
     sched: scheduler.Scheduler | None = None,
     data_source: object,
     default_wake_minutes: float = 30.0,
-    min_wake_minutes: float = 5.0,
-    max_wake_minutes: float = 240.0,
+    min_wake_minutes: float | None = None,
+    max_wake_minutes: float | None = None,
     max_context_requests_per_symbol: int = 2,
     max_indicators_per_request: int = 4,
     max_model_calls_per_cycle: int = 25,
@@ -3168,8 +3182,8 @@ def main(
     parser.add_argument("--once", action="store_true", help="un seul cycle puis sortie")
     parser.add_argument("--poll", type=float, default=30.0, help="secondes entre deux vérifications du scheduler")
     parser.add_argument("--default-wake-minutes", type=float, default=30.0, help="cadence globale par défaut")
-    parser.add_argument("--min-wake-minutes", type=float, default=5.0, help="borne basse pour un override symbole")
-    parser.add_argument("--max-wake-minutes", type=float, default=240.0, help="borne haute pour un override symbole")
+    parser.add_argument("--min-wake-minutes", type=float, default=None, help="borne basse optionnelle du réveil agent (défaut: aucune)")
+    parser.add_argument("--max-wake-minutes", type=float, default=None, help="borne haute optionnelle du réveil agent (défaut: aucune — l'agent est autonome)")
     parser.add_argument("--max-context-requests-per-symbol", type=int, default=2, help="nombre max de requêtes indicateurs par symbole")
     parser.add_argument("--max-indicators-per-request", type=int, default=4, help="nombre max d'indicateurs par requête")
     parser.add_argument("--max-model-calls-per-cycle", type=int, default=25, help="fusible coût: appels LLM max par cycle")
