@@ -103,25 +103,95 @@ def rotate_monthly(
 
     archived = 0
     written_files: list[str] = []
+    # Lignes des mois dont l'archivage a échoué — remises dans le vif.
+    extra_kept: list[bytes] = []
 
     if by_month:
         archive_dir.mkdir(parents=True, exist_ok=True)
         stem = path.stem  # "decisions" ou "events"
         for month in sorted(by_month):
-            lines = by_month[month]
+            new_lines = by_month[month]
             archive_path = archive_dir / f"{stem}-{month}.jsonl.gz"
-            with gzip.open(archive_path, "ab") as gz:
-                for line in lines:
-                    gz.write(line)
-            archived += len(lines)
+            tmp_archive = archive_path.parent / (archive_path.name + ".tmp")
+
+            # ── Étape 1 : lire l'archive existante (streaming) ──────────────
+            existing_lines: list[bytes] = []
+            if archive_path.exists():
+                try:
+                    with gzip.open(archive_path, "rb") as gz:
+                        for raw in gz:
+                            stripped = raw.rstrip(b"\r\n")
+                            if stripped:
+                                existing_lines.append(stripped + b"\n")
+                except (OSError, gzip.BadGzipFile, EOFError, zlib.error) as exc:
+                    # Archive corrompue → abort ce mois, vif intact pour ces lignes.
+                    log.error(
+                        "archive ledger corrompue — rotation abortée pour %s (%s); vif intact",
+                        archive_path,
+                        exc,
+                    )
+                    extra_kept.extend(new_lines)
+                    continue
+
+            # ── Étape 2 : fusionner + dédupliquer ───────────────────────────
+            # Priorité clé : decision_id quand présent ; sinon bytes bruts exacts.
+            seen_ids: set[str] = set()
+            seen_raw: set[bytes] = set()
+            deduped: list[bytes] = []
+            for raw_line in existing_lines + new_lines:
+                stripped = raw_line.rstrip(b"\r\n")
+                try:
+                    row = json.loads(stripped)
+                    decision_id = row.get("decision_id") if isinstance(row, dict) else None
+                except json.JSONDecodeError:
+                    decision_id = None
+
+                if decision_id:
+                    key = str(decision_id)
+                    if key in seen_ids:
+                        continue
+                    seen_ids.add(key)
+                else:
+                    if stripped in seen_raw:
+                        continue
+                    seen_raw.add(stripped)
+                deduped.append(stripped + b"\n")
+
+            # ── Étapes 3–5 : écriture tmp → validation → os.replace ─────────
+            try:
+                with gzip.open(tmp_archive, "wb") as gz:
+                    for line in deduped:
+                        gz.write(line)
+                # Validation : relecture complète du tmp avant de le promouvoir.
+                with gzip.open(tmp_archive, "rb") as gz:
+                    for _ in gz:
+                        pass
+                os.replace(tmp_archive, archive_path)
+            except Exception as exc:
+                try:
+                    tmp_archive.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                log.error(
+                    "écriture archive %s échouée — rotation abortée (%s)",
+                    archive_path,
+                    exc,
+                )
+                extra_kept.extend(new_lines)
+                continue
+
+            archived += len(new_lines)
             if str(archive_path) not in written_files:
                 written_files.append(str(archive_path))
 
-    # Réécriture atomique du fichier vif
+    # Les lignes des mois avortés retournent dans le vif.
+    all_kept = kept_lines + extra_kept
+
+    # Réécriture atomique du fichier vif — EN DERNIER (après toutes les archives).
     tmp = path.with_suffix(".tmp")
     try:
         with tmp.open("wb") as fh:
-            for line in kept_lines:
+            for line in all_kept:
                 fh.write(line)
         os.replace(tmp, path)
     except Exception:
@@ -131,7 +201,7 @@ def rotate_monthly(
             pass
         raise
 
-    return {"archived": archived, "kept": len(kept_lines), "files": written_files}
+    return {"archived": archived, "kept": len(all_kept), "files": written_files}
 
 
 def read_rows_with_archive(

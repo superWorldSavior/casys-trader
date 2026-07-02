@@ -91,3 +91,45 @@ def test_pas_deviction_pas_darchive(tmp_path) -> None:
     store = LearningsStore(tmp_path / "learnings.jsonl", max_entries=10)
     store.append(symbol="SPY", note="rien à évincer", now=datetime(2026, 7, 2, tzinfo=timezone.utc))
     assert not (tmp_path / "archive" / "learnings-evicted.jsonl").exists()
+
+
+# ---------------------------------------------------------------------------
+# Finding 2 — _archive_evicted : OSError → log.warning + vif toujours écrit
+# ---------------------------------------------------------------------------
+
+
+def test_archive_evicted_loggue_warning_si_ioerror(tmp_path) -> None:
+    """Finding 2 — échec d'archivage des évincés → log.warning (pas de perte silencieuse).
+
+    Le vif (buffer actif) doit quand même être écrit ; l'archive est best-effort.
+    Technique : on place un FICHIER à l'emplacement du répertoire d'archive
+    → Path.mkdir lève NotADirectoryError (sous-classe d'OSError).
+    """
+    import logging
+
+    # Créer un FICHIER là où LearningsStore voudrait créer un répertoire "archive"
+    archive_dir = tmp_path / "archive"
+    archive_dir.write_text("not a directory")  # bloque le mkdir de _archive_evicted
+
+    store = LearningsStore(tmp_path / "learnings.jsonl", max_entries=2)
+    base = datetime(2026, 7, 2, 10, 0, tzinfo=timezone.utc)
+
+    records: list[logging.LogRecord] = []
+    handler = logging.Handler()
+    handler.emit = records.append  # type: ignore[assignment]
+    mod_logger = logging.getLogger("trader.tools.memory")
+    mod_logger.addHandler(handler)
+    try:
+        # Déclenche une éviction (max_entries=2, on append 3 notes)
+        for i in range(3):
+            store.append(symbol=f"S{i}", note=f"note {i}", now=base.replace(minute=i))
+    finally:
+        mod_logger.removeHandler(handler)
+
+    # Le vif est bien écrit (2 dernières entrées)
+    assert len(store.all()) == 2
+
+    # Un log.warning a été émis
+    assert any(rec.levelno == logging.WARNING for rec in records), (
+        "Un log.warning doit être émis quand l'archivage des évincés échoue"
+    )

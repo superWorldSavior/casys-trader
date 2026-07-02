@@ -8,6 +8,7 @@ humaine `mandate/memory.md`.
 from __future__ import annotations
 
 import json
+import logging
 import os
 from datetime import datetime, timezone
 from pathlib import Path
@@ -16,6 +17,8 @@ from typing import Any
 from . import attribution as attribution_mod, llm, meta_performance as meta_performance_mod
 from .risk import read_min_trade_confidence
 from .tools.memory import LearningsStore
+
+log = logging.getLogger(__name__)
 
 DEFAULT_RAW_MAX_ENTRIES = 200
 DEFAULT_CONSOLIDATION_THRESHOLD = 50
@@ -163,8 +166,8 @@ class ConsolidatedLearningsStore:
             self.history_path.parent.mkdir(parents=True, exist_ok=True)
             with self.history_path.open("a", encoding="utf-8") as f:
                 f.write(json.dumps(entry, ensure_ascii=False) + "\n")
-        except OSError:
-            pass
+        except OSError as exc:
+            log.warning("historisation consolidé non écrite %s (%s)", self.history_path, exc)
 
 
 class ConsolidationStatusStore:

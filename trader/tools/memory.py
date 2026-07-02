@@ -10,9 +10,12 @@ Markdown volontaire : éditable par un humain ET par l'agent, versionnable en gi
 from __future__ import annotations
 
 import json
+import logging
 import os
 from datetime import datetime, timezone
 from pathlib import Path
+
+log = logging.getLogger(__name__)
 
 
 class LearningsStore:
@@ -88,10 +91,10 @@ class LearningsStore:
             with self.archive_path.open("a", encoding="utf-8") as f:
                 for item in evicted:
                     f.write(json.dumps({**item, "evicted_at": now.isoformat()}, ensure_ascii=False) + "\n")
-        except OSError:
+        except OSError as exc:
             # L'archive est best-effort : son échec ne doit jamais bloquer
             # l'écriture du buffer vif (le daemon live en dépend).
-            pass
+            log.warning("archive évincés non écrite %s (%s)", self.archive_path, exc)
 
     def recent(self, limit: int = 10) -> list[dict]:
         """Les `limit` entrées les plus récentes, dans l'ordre chronologique."""

@@ -346,6 +346,133 @@ def test_rotation_puis_lecture_integrale(tmp_path: Path) -> None:
     assert symbols.index("B") < symbols.index("C")
 
 
+# ---------------------------------------------------------------------------
+# rotate_monthly — crash-safe : pas de doublon si archive déjà écrite (Finding 1a)
+# ---------------------------------------------------------------------------
+
+
+def test_rotate_crash_safe_pas_de_doublon_si_archive_deja_ecrite(tmp_path: Path) -> None:
+    """Simule un crash entre écriture archive et replace du vif.
+
+    Scénario :
+      - L'archive mai est déjà écrite (crash après étape archive, avant replace vif).
+      - Le vif contient encore les lignes de mai ET juillet.
+      - rotate_monthly relancé (= daemon suivant) → fusionne + dédup → 0 doublon.
+    """
+    ledger = tmp_path / "decisions.jsonl"
+    archive_dir = tmp_path / "archive"
+    archive_dir.mkdir()
+
+    may_row = _make_row("2026-05-10T00:00:00+00:00", "SPY")
+    july_row = _make_row("2026-07-01T00:00:00+00:00", "AAPL")
+    # Vif « avant crash » : mai + juillet
+    _write_jsonl(ledger, [may_row, july_row])
+
+    # Archive mai déjà écrite avant le crash
+    archive_may = archive_dir / "decisions-2026-05.jsonl.gz"
+    with gzip.open(archive_may, "wt", encoding="utf-8") as gz:
+        gz.write(json.dumps(may_row) + "\n")
+
+    # Relance (simulation du redémarrage post-crash)
+    rotate_monthly(ledger, archive_dir, now=_NOW_JULY, ts_key="cycle_ts")
+
+    # Aucun doublon dans l'archive mai
+    may_rows = _read_gz(archive_may)
+    assert len(may_rows) == 1, f"Doublon détecté : {len(may_rows)} lignes, attendu 1"
+    assert may_rows[0]["symbol"] == "SPY"
+
+    # Le vif = juillet uniquement
+    live = _read_jsonl(ledger)
+    assert len(live) == 1
+    assert live[0]["symbol"] == "AAPL"
+
+
+# ---------------------------------------------------------------------------
+# rotate_monthly — archive corrompue → rotation abortée, vif intact (Finding 1b)
+# ---------------------------------------------------------------------------
+
+
+def test_rotate_archive_corrompue_abort_vif_intact_et_log_error(tmp_path: Path) -> None:
+    """Archive existante corrompue (tronquée) → rotation de ce mois abortée.
+
+    - Aucune ligne n'est perdue (les lignes du mois aborté restent dans le vif).
+    - log.error émis avec chemin de l'archive.
+    """
+    import logging as _logging
+
+    ledger = tmp_path / "decisions.jsonl"
+    archive_dir = tmp_path / "archive"
+    archive_dir.mkdir()
+
+    may_row = _make_row("2026-05-10T00:00:00+00:00", "SPY")
+    july_row = _make_row("2026-07-01T00:00:00+00:00", "AAPL")
+    _write_jsonl(ledger, [may_row, july_row])
+
+    # Archive corrompue pour mai (tronquée au milieu)
+    archive_may = archive_dir / "decisions-2026-05.jsonl.gz"
+    with gzip.open(archive_may, "wt", encoding="utf-8") as gz:
+        gz.write(json.dumps(_make_row("2026-05-01T00:00:00+00:00", "EXISTING")) + "\n" * 300)
+    raw = archive_may.read_bytes()
+    archive_may.write_bytes(raw[: len(raw) // 2])
+
+    records: list[_logging.LogRecord] = []
+    handler = _logging.Handler()
+    handler.emit = records.append  # type: ignore[assignment]
+    module_logger = _logging.getLogger("trader.ledger_rotation")
+    module_logger.addHandler(handler)
+    try:
+        result = rotate_monthly(ledger, archive_dir, now=_NOW_JULY, ts_key="cycle_ts")
+    finally:
+        module_logger.removeHandler(handler)
+
+    # Aucune ligne archivée (abort)
+    assert result["archived"] == 0
+
+    # Les deux lignes (mai + juillet) sont dans le vif — rien de perdu
+    live = _read_jsonl(ledger)
+    live_symbols = {r["symbol"] for r in live}
+    assert "SPY" in live_symbols   # mai : resté dans le vif (abort)
+    assert "AAPL" in live_symbols  # juillet : toujours dans le vif
+
+    # log.error avec mention de l'archive corrompue
+    assert any("corrompue" in rec.getMessage() for rec in records), (
+        "Un log.error avec 'corrompue' doit être émis"
+    )
+
+
+# ---------------------------------------------------------------------------
+# rotate_monthly — re-rotation sur archive saine existante → fusion sans doublon (Finding 1c)
+# ---------------------------------------------------------------------------
+
+
+def test_rotate_fusion_sans_doublon_sur_archive_saine(tmp_path: Path) -> None:
+    """Deux rotations distinctes sur le même mois, archive saine → fusion, 0 doublon."""
+    ledger = tmp_path / "decisions.jsonl"
+    archive_dir = tmp_path / "archive"
+
+    # 1re rotation : 1 ligne de mai
+    _write_jsonl(ledger, [
+        _make_row("2026-05-01T00:00:00+00:00", "SPY"),
+        _make_row("2026-07-01T00:00:00+00:00", "AAPL"),
+    ])
+    rotate_monthly(ledger, archive_dir, now=_NOW_JULY, ts_key="cycle_ts")
+
+    # 2e rotation : nouvelle ligne de mai (arrivée après coup)
+    _write_jsonl(ledger, [
+        _make_row("2026-05-15T00:00:00+00:00", "QQQ"),
+        _make_row("2026-07-02T00:00:00+00:00", "AAPL"),
+    ])
+    rotate_monthly(ledger, archive_dir, now=_NOW_JULY, ts_key="cycle_ts")
+
+    # Archive mai = SPY + QQQ, sans doublon
+    may_rows = _read_gz(archive_dir / "decisions-2026-05.jsonl.gz")
+    assert len(may_rows) == 2
+    assert {r["symbol"] for r in may_rows} == {"SPY", "QQQ"}
+
+
+# ---------------------------------------------------------------------------
+
+
 def test_archive_tronquee_est_sautee_sans_crash(tmp_path) -> None:
     """Un membre gzip tronqué par un crash pendant la rotation (zlib.error, pas
     BadGzipFile) ne doit pas casser toute l'analyse — skip + warning (review D-c)."""

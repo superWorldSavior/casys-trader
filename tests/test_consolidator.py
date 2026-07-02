@@ -869,3 +869,45 @@ def test_write_historise_la_version_remplacee(tmp_path) -> None:
     assert "archived_at" in rows[0]
     # Le vif contient bien la v2
     assert store.read()["global"][0]["note"] == "v2 : couper vite les perdants."
+
+
+# ---------------------------------------------------------------------------
+# Finding 2 — _archive_replaced : OSError → log.warning + vif toujours écrit
+# ---------------------------------------------------------------------------
+
+
+def test_archive_replaced_loggue_warning_si_ioerror(tmp_path) -> None:
+    """Finding 2 — échec d'archivage de l'historique → log.warning (pas de perte silencieuse).
+
+    Le vif consolidé doit quand même être écrit ; l'historique est best-effort.
+    Technique : on place un FICHIER à l'emplacement du répertoire d'archive
+    → Path.mkdir lève NotADirectoryError (sous-classe d'OSError).
+    """
+    import logging
+
+    # Créer un FICHIER là où ConsolidatedLearningsStore voudrait créer "archive/"
+    archive_dir = tmp_path / "archive"
+    archive_dir.write_text("not a directory")  # bloque le mkdir de _archive_replaced
+
+    store = consolidator.ConsolidatedLearningsStore(tmp_path / "learnings_consolidated.json")
+    v1 = {"global": [{"note": "v1"}], "by_symbol": {}}
+    v2 = {"global": [{"note": "v2"}], "by_symbol": {}}
+    store.write(v1, watermark="2026-07-01T00:00:00+00:00")
+
+    records: list[logging.LogRecord] = []
+    handler = logging.Handler()
+    handler.emit = records.append  # type: ignore[assignment]
+    mod_logger = logging.getLogger("trader.consolidator")
+    mod_logger.addHandler(handler)
+    try:
+        store.write(v2, watermark="2026-07-02T00:00:00+00:00")
+    finally:
+        mod_logger.removeHandler(handler)
+
+    # Le vif contient bien la v2 (écriture atomique non affectée)
+    assert store.read()["global"][0]["note"] == "v2"
+
+    # Un log.warning a été émis
+    assert any(rec.levelno == logging.WARNING for rec in records), (
+        "Un log.warning doit être émis quand l'historisation du consolidé échoue"
+    )

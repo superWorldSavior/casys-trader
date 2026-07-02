@@ -768,3 +768,29 @@ def test_trader_acpx_bin_vide_noverride_pas(monkeypatch) -> None:
 
     acpx_backends = [b for b in router.backends if isinstance(b, AcpxBackend)]
     assert all(b.acpx_bin == "mon-acpx-custom" for b in acpx_backends)
+
+
+def test_trader_acpx_bin_nisolation_pas_le_consolidateur(monkeypatch) -> None:
+    """Finding 3 — TRADER_ACPX_BIN ne doit PAS écraser le bin du consolidateur.
+
+    Quand build_consolidator_router_from_env résout TRADER_CONSOLIDATOR_ACPX_BIN
+    et le passe à build_default_router_from_env, TRADER_ACPX_BIN (global) ne doit
+    pas l'écraser. Les deux binaires sont indépendants (.env.example §9 et §13).
+    """
+    monkeypatch.setenv("TRADER_ACPX_BIN", "/opt/trading/acpx")
+    monkeypatch.setenv("TRADER_CONSOLIDATOR_ACPX_BIN", "/opt/review/acpx")
+    monkeypatch.delenv("TRADER_CONSOLIDATOR_OLLAMA_API_KEY", raising=False)
+    monkeypatch.delenv("TRADER_OLLAMA_API_KEY", raising=False)
+    monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
+
+    # build_default_router_from_env avec le bin consolidateur pré-résolu
+    router = build_default_router_from_env(
+        env_path=None,
+        acpx_bin="/opt/review/acpx",  # résolu en amont par build_consolidator_router_from_env
+        acpx_provider="consolidator",
+    )
+
+    backend = router.backends[0]
+    assert backend.acpx_bin == "/opt/review/acpx", (
+        f"Le bin consolidateur ne doit pas être écrasé par TRADER_ACPX_BIN ; got {backend.acpx_bin!r}"
+    )
