@@ -32,3 +32,6 @@ check: lint test  ## Lint + tests — le combo pré-commit
 
 fork-acpx-build:  ## Construit le fork acpx local (active la rétention native des sessions, voir TRADER_ACPX_BIN)
 	cd /Users/erwanpesle/Documents/GitHub/acpx && pnpm install --frozen-lockfile && pnpm build
+
+learnings-ingest:  ## Ingestion/scoring/embeddings du store de recall (state/learnings.db)
+	uv run python scripts/learnings_ingest.py

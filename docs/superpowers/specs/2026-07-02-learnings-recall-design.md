@@ -1,7 +1,7 @@
 # Recall des learnings — mémoire outcome-weighted pour l'agent runtime
 
 **Date** : 2026-07-02
-**Status** : design approuvé sur le principe (session Erwan 02/07) ; plan d'implémentation à écrire
+**Status** : V1 implémentée (store + outil + trace) ; phases ③ decay calibré/MemRL et ④ bench à venir
 **Amont** : `docs/specs/2026-07-02-agent-data-lifecycle.md` (§ learnings),
 `docs/specs/2026-07-02-learnings-memory-sota.md` (SOTA + décisions),
 `docs/superpowers/specs/2026-06-29-agent-domain-tools-design.md` (la couche d'outils hôte).
