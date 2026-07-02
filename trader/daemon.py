@@ -3251,6 +3251,7 @@ def main(
     from .cockpit_supervisor import claim_pid_file, release_pid_file
 
     STATE_DIR.mkdir(parents=True, exist_ok=True)
+    news_feed.set_default_news_archive(STATE_DIR / "news_items")
     _pid_file = STATE_DIR / "daemon.pid"
     if not claim_pid_file(pid_file=_pid_file, pid=os.getpid()):
         log.error("daemon déjà vivant (pid file %s) — refus de démarrer un doublon", _pid_file)
