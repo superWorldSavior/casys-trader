@@ -47,6 +47,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from rich.console import RenderableType
+from rich.panel import Panel
 from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.binding import Binding
@@ -77,9 +78,11 @@ from trader.ui.rich_panels import (
     _build_equity_panel,
     _build_exit_plans_enriched,
     _build_kpi_compact,
+    _build_learnings_panel,
     _build_llm_activity_panel,
     _build_positions_panel,
     _build_watches_panel,
+    _format_datetime,
     build_closed_trades_table,
     build_universe_panel,
 )
@@ -198,7 +201,10 @@ class CockpitStatus(Static):
         )
         starting_cash = _safe_float(state.get("starting_cash"), default=cash) or cash
         pnl = equity - starting_cash
-        ret_pct = _safe_float(portfolio.get("total_return_pct"), default=0.0) or 0.0
+        ret_pct = _safe_float(portfolio.get("total_return_pct"), default=None)
+        if ret_pct is None:
+            total_return = _safe_float(kpis.get("total_return"), default=0.0) or 0.0
+            ret_pct = total_return * 100.0
         phase = str(daemon_status.get("phase", "—"))
         current_symbol = str(daemon_status.get("current_symbol") or "—")
         done = daemon_status.get("decisions_done")
@@ -212,6 +218,8 @@ class CockpitStatus(Static):
             else "—"
         )
         now_utc = datetime.now(UTC).strftime("%H:%M:%S UTC")
+        cycle_ts = _format_datetime(state.get("ts"))
+        source = str(state.get("source") or "—")
         dry_run = state.get("dry_run", True)
         learnings_pending = state.get("learnings_pending_count") or 0
 
@@ -258,7 +266,9 @@ class CockpitStatus(Static):
             f"  [{acc_style}]{current_symbol}[/{acc_style}]"
             f"  Progrès [{acc_style}]{progress}[/{acc_style}]"
             f"  Appels [{acc_style}]{calls_str}[/{acc_style}]"
-            f"  {now_utc}"
+            f"  Cycle [{acc_style}]{cycle_ts}[/{acc_style}]"
+            f"  Source [{acc_style}]{source}[/{acc_style}]"
+            f"  Now {now_utc}"
             f"  Mode {mode_str}"
             f"  Kill {kill_str}"
             f"  [dim]learnings: {learnings_pending} pending[/dim]"
@@ -549,7 +559,7 @@ class EquityTradesPane(Static):
 
 
 class UniversePane(Static):
-    """Corps droit (30%) : univers actif groupé par venue avec scores D10."""
+    """Corps droit (30%) : univers, veilles et derniers learnings."""
 
     DEFAULT_CSS = """
     UniversePane {
@@ -568,6 +578,7 @@ class UniversePane(Static):
     def compose(self) -> ComposeResult:
         yield Static(id="universe-panel")
         yield Static(id="watches-panel")
+        yield Static(id="learnings-panel")
 
     def update_state(self, state: dict) -> None:
         palette = self._current_palette
@@ -592,6 +603,7 @@ class UniversePane(Static):
             if isinstance(state.get("indicator_watches"), list)
             else []
         )
+        learnings = _safe_list_of_dicts(state.get("learnings"))
 
         self.query_one("#universe-panel", Static).update(
             build_universe_panel(
@@ -600,6 +612,17 @@ class UniversePane(Static):
         )
         self.query_one("#watches-panel", Static).update(
             _build_watches_panel(indicator_watches, palette=palette)
+        )
+        learnings_panel = _build_learnings_panel(learnings, palette=palette)
+        self.query_one("#learnings-panel", Static).update(
+            learnings_panel
+            if learnings_panel is not None
+            else Panel(
+                Text("aucun learning récent", style=palette["dim"]),
+                title="[bold]Derniers apprentissages[/bold]",
+                border_style=palette["border_learnings"],
+                expand=True,
+            )
         )
 
 

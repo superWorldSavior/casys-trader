@@ -13,6 +13,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from rich.console import Console
+from textual.widgets import Static
+
 import trader.cockpit.app as cockpit_module
 from trader.cockpit import CockpitApp
 
@@ -47,6 +50,13 @@ def _make_minimal_state(tmp_path: Path) -> None:
         ),
         encoding="utf-8",
     )
+
+
+def _render(renderable, *, width: int = 120) -> str:
+    console = Console(width=width, highlight=False)
+    with console.capture() as capture:
+        console.print(renderable)
+    return capture.get()
 
 
 # ---------------------------------------------------------------------------
@@ -165,6 +175,40 @@ async def test_cockpit_status_prend_palette_en_compte(tmp_path, monkeypatch):
         assert "(+2,500.00)" in rendered
         assert "Progrès 1/3" in rendered
         status.update_state(state, kill_active=False, palette=PALETTE_DARK)
+
+
+async def test_cockpit_status_affiche_fraicheur_et_source_rapport(
+    tmp_path, monkeypatch
+):
+    """Le statut conserve la fraîcheur du rapport de l'ancien header TUI."""
+    from trader.cockpit import CockpitStatus
+    from trader.ui.palette import PALETTE_LIGHT
+
+    _make_minimal_state(tmp_path)
+    monkeypatch.setattr(cockpit_module, "_STATE_DIR", tmp_path)
+    monkeypatch.setattr(cockpit_module, "_EVENTS_FILE", tmp_path / "events.jsonl")
+    monkeypatch.setattr(cockpit_module, "_KILL_FILE", tmp_path / "KILL")
+
+    app = CockpitApp()
+    async with app.run_test(size=(220, 60)) as _:
+        status = app.query_one("#cockpit-status", CockpitStatus)
+        state = {
+            "ts": "2026-06-07T10:15:00+02:00",
+            "source": "last_report",
+            "portfolio": {"cash": 85_000.0, "equity": 102_500.0},
+            "starting_cash": 100_000.0,
+            "kpis": {"total_return": 0.025},
+            "daemon_status": {},
+            "dry_run": True,
+        }
+
+        status.update_state(state, kill_active=False, palette=PALETTE_LIGHT)
+        rendered = str(status.content)
+
+        assert "+2.50%" in rendered
+        assert "Cycle" in rendered
+        assert "2026-06-07 08:15 UTC" in rendered
+        assert "Source last_report" in rendered
 
 
 async def test_cockpit_toggle_theme_propage_palette_dashboard_immediatement(
@@ -439,6 +483,51 @@ async def test_cockpit_mission_control_structure_existe(tmp_path, monkeypatch):
         assert app.query_one("#decision-column") is not None
         assert app.query_one("#portfolio-column") is not None
         assert app.query_one("#ops-column") is not None
+
+
+async def test_cockpit_observabilite_affiche_les_derniers_learnings(
+    tmp_path, monkeypatch
+):
+    """Le cockpit Textual conserve le panneau narratif des learnings récents."""
+    _make_minimal_state(tmp_path)
+    monkeypatch.setattr(cockpit_module, "_STATE_DIR", tmp_path)
+    monkeypatch.setattr(cockpit_module, "_EVENTS_FILE", tmp_path / "events.jsonl")
+    monkeypatch.setattr(cockpit_module, "_KILL_FILE", tmp_path / "KILL")
+
+    note = (
+        "le range tient depuis cinq réveils consécutifs, j'attends une cassure nette "
+        "au-dessus de la résistance avant d'ouvrir"
+    )
+    state = {
+        "universe_symbols": [],
+        "venue_state": {},
+        "open_venues_list": [],
+        "company_map": {},
+        "indicator_watches": [],
+        "learnings": [
+            {
+                "ts": "2026-06-07T10:15:00+02:00",
+                "symbol": "AAPL",
+                "note": note,
+            }
+        ],
+    }
+
+    app = CockpitApp()
+    async with app.run_test(size=(220, 60)) as _:
+        pane = app.query_one("#universe-pane", cockpit_module.UniversePane)
+        pane.update_state(state)
+
+        panel = app.query_one("#learnings-panel", Static)
+        rendered = _render(panel.content)
+        compact_rendered = "".join(
+            ch for ch in rendered if not ch.isspace() and ch != "│"
+        )
+        compact_note = "".join(note.split())
+
+        assert "Derniers apprentissages" in rendered
+        assert "AAPL" in rendered
+        assert compact_note in compact_rendered
 
 
 def test_attention_strip_resume_les_alertes_operationnelles() -> None:
