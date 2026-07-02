@@ -26,7 +26,7 @@ documenté, où, et quels trous restent).
 Les **trous** ci-dessous obtiennent une page `reference/` dédiée ; les runbooks
 `how-to/` (quadrant entier absent) sont à créer.
 
-Pages `reference/` écrites : [`risk-gate.md`](reference/risk-gate.md).
+Pages `reference/` écrites : [`risk-gate.md`](reference/risk-gate.md), [`fx.md`](reference/fx.md).
 
 ---
 
@@ -59,7 +59,7 @@ Légende : ✅ couvert · 🟡 partiel / dispersé / potentiellement périmé ·
 | Sous-système | Package/module | Réf | Où | Décisions |
 |---|---|---|---|---|
 | Sources marché & fraîcheur | `tools/data_source`, `tools/market`, `tools/ib_source` | ✅ | archi §3.2 | — |
-| **Conversion FX** | `market/fx`, `market/fx_rates` | 🟡 | mention archi §3.3 ; spec 06-24 | chantier FX |
+| **Conversion FX** | `market/fx`, `market/fx_rates` | ✅ | **`reference/fx.md`** | chantier FX |
 | Fil d'actu (news) | `tools/news_feed` | 🟡 | archi §13 ; spec 06-23 | — |
 | Macro | `market/macro_calendar`, `market/macro_series` | 🟡 | archi §13 ; spec 07-02 | — |
 | Cycle de vie / rotation | `runtime/ledger_rotation`, `reporting/decision_ledger` | ✅ | archi §12 | — |
@@ -104,8 +104,8 @@ Légende : ✅ couvert · 🟡 partiel / dispersé / potentiellement périmé ·
 Du plus risqué au moins risqué :
 
 1. ~~**Risk gate — réf unique**~~ ✅ **fait** → [`reference/risk-gate.md`](reference/risk-gate.md).
-2. **Conversion FX** 🟡→✅. A déjà causé un incident (sizing aveugle aux devises). Réf `reference/fx.md` : base USD, où le taux s'applique, ce qui reste natif.
-3. **Runbooks how-to** ❌. Quadrant entier absent — déploiement, logs, mesure, replay. Faible risque, gros gain de friction.
+2. ~~**Conversion FX**~~ ✅ **fait** → [`reference/fx.md`](reference/fx.md).
+3. **Runbooks how-to** ❌. Quadrant entier absent — déploiement, logs, mesure, replay. Faible risque, gros gain de friction. **← prochain**
 4. **Cockpit & attribution** 🟡. Specs chronologiques, pas de « ce qu'affiche/mesure le cockpit aujourd'hui ».
 5. **Config univers/portefeuille** ❌. Les `.yaml` pilotent le comportement sans page qui les décrit.
 
