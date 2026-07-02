@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 
-from trader.trade_plan import InvalidExitPlanError, normalize_exit_plan
+from trader.planning.trade_plan import InvalidExitPlanError, normalize_exit_plan
 
 VALID_INTENTS = {"OPEN_LONG", "OPEN_SHORT", "REDUCE", "CLOSE", "REVERSE", "HOLD"}
 ACTION_INTENTS = {

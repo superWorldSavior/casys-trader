@@ -1,6 +1,6 @@
 """macro_series — collecte quotidienne de séries macro via DBnomics (P1a, spec §7).
 
-Zéro dépendance nouvelle : GET via urllib, analogue à _post_json dans trader/llm.py.
+Zéro dépendance nouvelle : GET via urllib, analogue à _post_json dans trader.agent.llm.
 Déclenché best-effort en fin de cycle daemon si dernière collecte > 20 h
 (marqueur state/macro_series/.last_collect). Toute exception est avalée —
 jamais d'impact sur le cycle.
@@ -80,7 +80,7 @@ SERIES: tuple[dict, ...] = (
 
 
 # ---------------------------------------------------------------------------
-# Client HTTP minimal (pattern _post_json de trader/llm.py)
+# Client HTTP minimal (pattern _post_json de trader.agent.llm)
 # ---------------------------------------------------------------------------
 
 

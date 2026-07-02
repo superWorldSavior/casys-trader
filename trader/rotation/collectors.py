@@ -92,7 +92,7 @@ def build_plans_fn(state_dir: str | Path) -> Callable[[], list]:
 
     def _plans() -> list:
         try:
-            from trader.trade_plan import TradePlanStore
+            from trader.planning.trade_plan import TradePlanStore
 
             store = TradePlanStore(state_dir / "trade_plans.json")
             return store.open_plans()

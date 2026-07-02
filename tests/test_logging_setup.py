@@ -3,7 +3,7 @@ import io
 import logging
 
 
-from trader.logging_setup import setup_logging
+from trader.runtime.logging_setup import setup_logging
 
 
 

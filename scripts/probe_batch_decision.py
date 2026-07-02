@@ -13,8 +13,8 @@ import time
 
 import yaml
 
-from trader import llm
-from trader.agent_context import build_market_cockpit
+from trader.agent import llm
+from trader.agent.context import build_market_cockpit
 from trader.tools.market import Bar
 
 REQUIRED = {"symbol", "action", "quantity", "confidence", "rationale"}

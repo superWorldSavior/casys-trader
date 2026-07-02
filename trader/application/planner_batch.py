@@ -8,9 +8,10 @@ from dataclasses import replace
 from datetime import datetime
 from typing import Callable
 
-from trader import agent_tools, codex_client
-from trader.agent_context import resolve_indicator_requests
-from trader.indicator_watch import summarize_watch
+import trader.agent_tools as agent_tools
+from trader.agent import client as codex_client
+from trader.agent.context import resolve_indicator_requests
+from trader.planning.indicator_watch import summarize_watch
 from trader.tools import market, scheduler
 
 log = logging.getLogger(__name__)

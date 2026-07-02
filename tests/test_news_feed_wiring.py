@@ -50,7 +50,7 @@ def test_quiet_gate_decision_has_news_key(monkeypatch, tmp_path, patch_batch, ma
     Après le fix, record_decision appelle news_feed.news_snapshot via setdefault
     pour TOUS les chemins.
     """
-    from trader import daemon
+    from trader.runtime import daemon
     from trader.tools import news_feed as nf
     from trader.tools.scheduler import Scheduler
     from conftest import write_runtime_config
@@ -75,7 +75,7 @@ def test_quiet_gate_decision_has_news_key(monkeypatch, tmp_path, patch_batch, ma
     }
     monkeypatch.setattr(nf, "news_snapshot", lambda symbol, *, now, **kw: fake_snap)
 
-    from trader.codex_client import Decision
+    from trader.agent.client import Decision
 
     def decide(**kwargs):
         return Decision.hold(kwargs["symbol"], "attente")
@@ -112,7 +112,7 @@ def test_payload_decision_contient_macro_next(monkeypatch, tmp_path, patch_batch
     poussé au prompt LLM (attribution-first). Le test vérifie que la clé est
     présente dans la décision loggée, quelle que soit la voie (quiet_gate inclus).
     """
-    from trader import daemon
+    from trader.runtime import daemon
     from trader.tools import news_feed as nf
     from trader.tools.scheduler import Scheduler
     from conftest import write_runtime_config
@@ -134,7 +134,7 @@ def test_payload_decision_contient_macro_next(monkeypatch, tmp_path, patch_batch
     }
     monkeypatch.setattr(nf, "news_snapshot", lambda symbol, *, now, **kw: fake_snap)
 
-    from trader.codex_client import Decision
+    from trader.agent.client import Decision
 
     def decide(**kwargs):
         return Decision.hold(kwargs["symbol"], "attente")

@@ -14,7 +14,7 @@ import math
 from dataclasses import dataclass
 from pathlib import Path
 
-from .tools.execution import Order
+from trader.tools.execution import Order
 
 
 def _validate_confidence_threshold(value: float, name: str) -> None:

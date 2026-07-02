@@ -25,11 +25,11 @@ Deux boucles se superposent :
 
 Le code est le seul à calculer les indicateurs, évaluer les plans, appliquer les
 gates. Le LLM reçoit les faits calculés, raisonne, et retourne des artefacts
-structurés (décisions JSON, plans, veilles). `daemon.py:1–11`
+structurés (décisions JSON, plans, veilles). `trader/runtime/daemon.py`
 
 ### 1.1 Carte modulaire actuelle
 
-`trader/daemon.py` reste l'entrypoint runtime et l'orchestrateur du cycle. Les
+`trader/runtime/daemon.py` reste l'entrypoint runtime et l'orchestrateur du cycle. Les
 responsabilités répétables ou testables ont été sorties vers des modules
 cohésifs, avec wrappers de compatibilité quand des tests ou imports historiques
 les utilisaient :
@@ -39,18 +39,21 @@ les utilisaient :
 | `trader/application/planner_batch.py` | Batch LLM, budget modèle, tournée d'outils, REQUEST_CONTEXT | appelé via `daemon._batch_decide()` |
 | `trader/application/market_snapshot.py` | Barres runtime/daily/exit, fraîcheur, FX, eligibility, tradable maps | retourne `MarketSnapshot`, le daemon l'unpack |
 | `trader/application/decision_recorder.py` | Enrichissement décision, ledger, report, status, event, recall traces | source durable : `state/decisions.jsonl` |
-| `trader/application/order_admission.py` | Helpers purs d'admission : intent, clamp sortie, stop, risk metrics | l'orchestration RiskGate/broker reste dans `daemon.py` |
-| `trader/agent_protocol/` | Types, prompts, parsing du contrat LLM | `codex_client.py` reste la façade transport/compat |
+| `trader/application/order_admission.py` | Helpers purs d'admission : intent, clamp sortie, stop, risk metrics | l'orchestration RiskGate/broker reste dans `trader/runtime/daemon.py` |
+| `trader/agent/` | Contexte agent, façade planner, transport LLM/acpx | compat : `trader.agent_context`, `trader.codex_client`, `trader.llm` |
+| `trader/agent_protocol/` | Types, prompts, parsing du contrat LLM | utilisé par `trader/agent/client.py` |
 | `trader/agent_tools/` | Package des outils domaine lecture seule | `registry.TOOL_REGISTRY` assemble 9 handlers |
+| `trader/planning/` | Plans de trade, veilles, exit engine, gate de pertinence | compat : `trader.trade_plan`, `trader.indicator_watch`, `trader.exit_engine`, `trader.relevance_gate` |
+| `trader/execution/risk.py` | RiskGate et limites d'exposition | compat : `trader.risk` |
+| `trader/learnings/` | Store SQLite, embeddings, consolidateur | compat : `trader.learnings_store`, `trader.embeddings`, `trader.consolidator` |
 | `trader/market/` | Indicateurs, FX, macro, radar, régime marché, priorisation gross exposure | anciens imports `trader.fx`, `trader.features`, etc. gardés en compat |
 | `trader/config/` | Loaders de configuration runtime (`pool`, `portfolio`) | retire les loaders transverses de la racine `trader/` |
 | `trader/rotation/` | Rotation d'univers, hot-sets par venue, schedule, override, ledger rotation | `trader.rotation` réexporte l'ancien core |
-| `trader/reporting/` | Ledger décision, audit ex-post, attribution, stats, tool usage, meta-performance | alias compat via `trader.__init__` |
-| `trader/runtime/` | Helpers de processus partagés par daemon/supervisor | ex. environnement subprocess macOS |
+| `trader/reporting/` | Ledger décision, raisons, audit ex-post, attribution, stats, tool usage, meta-performance | alias compat via `trader.__init__` |
+| `trader/runtime/` | Daemon, CLI, logging, version, IB attach, rotation ledger, helpers process | `trader.daemon` et `trader.cli` sont des packages proxy pour `python -m` |
 | `trader/read_models/runtime_state.py` | Lecture tolérante des fichiers `state/` pour TUI/cockpit | ne participe pas aux décisions live |
 | `trader/cockpit/` | App Textual, événements cockpit, supervisor local | `trader.cockpit` reste runnable |
 | `trader/ui/` | Builders Rich purs, TUI textuelle, palette | `trader.tui`, `trader.stats`, `trader.attribution`, `trader.tool_usage` restent des wrappers CLI |
-| `trader/logging_setup.py` | Configuration logging projet | stdlib `logging`, RichHandler en TTY |
 
 Le choix volontaire est de ne pas créer encore `domain/`, `ports/` ou
 `adapters/` génériques tant que les slices runtime existants suffisent. Le
@@ -67,7 +70,7 @@ nomme ses providers sans créer de couche abstraite globale.
 Scheduler (timer / indicator_watch trigger)
     │
     ▼
-run_cycle()                                     [daemon.py]
+run_cycle()                                     [trader/runtime/daemon.py]
     │
     ├─ Chargement config (universe.yaml, risk.yaml)
     ├─ Reload univers (rotation_daemon: compose_active_universe) ─── D9/D10
@@ -84,7 +87,7 @@ run_cycle()                                     [daemon.py]
     ├─ _scan_exit_watches()                       réveil depuis exit_watch
     ├─ _scan_indicator_watches()                  réveil depuis sched watches
     │
-    ├─ build_market_cockpit() → shared_context   [agent_context.py]
+    ├─ build_market_cockpit() → shared_context   [trader/agent/context.py]
     │    (cockpit compact, KPIs, attribution, regime_families, learnings)
     │
     ├─ Gate de pertinence (relevance_gate)  ──── D7 étage A
@@ -114,14 +117,15 @@ run_cycle()                                     [daemon.py]
 
 ### 3.1 Sélection des symboles dus
 
-`daemon.py:301 _select_due_symbols` — en mode normal : `Scheduler.due_symbols()`
+`trader/runtime/daemon.py::_select_due_symbols` — en mode normal :
+`Scheduler.due_symbols()`
 sélectionne les symboles dont le `next_wake` est passé. En mode `--once`/`--bootstrap` :
 tout l'univers.
 
 L'univers actif est généré par la rotation (D9/D10) à chaque cycle :
 `trader/rotation/daemon.py` appelle `compose_active_universe(now)` qui compose
 `sticky_all ∪ union(hot-lists des marchés ouverts)` et écrit
-`config/universe.yaml` si le contenu change (`daemon.py:1159`).
+`config/universe.yaml` si le contenu change (`trader/runtime/daemon.py`).
 
 ### 3.2 Chargement des barres & fraîcheur
 
@@ -129,17 +133,17 @@ L'univers actif est généré par la rotation (D9/D10) à chaque cycle :
 barres 15m / 5j (runtime décisionnel) + barres 1j / 1y (cockpit daily).
 `market.assess_freshness()` est le garde « marché live » : une dernière barre trop
 vieille (> 40 min par défaut) → `stale_market_data` → le symbole
-est exclu du tradable et reçoit un backoff exponentiel (`daemon.py:258`).
+est exclu du tradable et reçoit un backoff exponentiel (`trader/runtime/daemon.py`).
 
 Barres 5m (fenêtre 1j) fetched **uniquement** pour les symboles avec un plan ouvert,
 pour la détection fine intra-barre des stops/TP.
 
 ### 3.3 Construction du contexte partagé
 
-`build_market_cockpit()` (`agent_context.py:73`) produit le tableau compact (cols `s`,
+`build_market_cockpit()` (`trader/agent/context.py`) produit le tableau compact (cols `s`,
 `r`, `vol`, `z`, `er`, `ac`, `rs`, `sz`, régime daily, frais `be_ref_bps`/`rtrip_bps`).
 
-Le `base_context` injecté au LLM contient (`daemon.py:1403`) :
+Le `base_context` injecté au LLM contient (`trader/runtime/daemon.py`) :
 - `cockpit` — tableau cross-asset
 - `portfolio` — snapshot (holdings, equity, cash, frais estimés)
 - `risk_limits` — config `risk.yaml`
@@ -151,22 +155,22 @@ Le `base_context` injecté au LLM contient (`daemon.py:1403`) :
 - `semantic.requestable_indicator_ids` — indicateurs disponibles via REQUEST_CONTEXT
 
 Faits calculés par le code et injectés (principe AX : pas de prose) :
-- `data_age_m` (âge réel en min des barres) — `daemon.py:960`
+- `data_age_m` (âge réel en min des barres) — `trader/runtime/daemon.py`
 - `session` (état de la séance par place) — `market.session_snapshot()`
 - `active_watches` (résumé des veilles actives par symbole)
 
 ### 3.4 Gate de pertinence (D7 étage A)
 
-`relevance_gate.symbol_needs_llm()` (`relevance_gate.py:19`) — fonctions pures.
+`relevance_gate.symbol_needs_llm()` (`trader/planning/relevance_gate.py`) — fonctions pures.
 Passe au LLM uniquement si : réveil agent (`agent_wake`), trigger, position ouverte,
 régime fort (≥ 70 % de la famille), signal cockpit (`sig`/`stretched`),
 ou revue périodique garantie (4 h). Sinon → `quiet_gate` (HOLD sans appel).
-`daemon.py:1616`
+`trader/runtime/daemon.py`
 
 ### 3.5 Plans armés — exécution sans LLM (D7 étage B)
 
 Les `indicator_watch` à `on_trigger: EXECUTE_ORDER` portent un `order` complet
-(intent, qty, confidence, exit_plan). Au déclenchement (`daemon.py:1525`) :
+(intent, qty, confidence, exit_plan). Au déclenchement (`trader/runtime/daemon.py`) :
 1. `resolve_exit_plan()` — résolution late-binding du stop/TP sur vol fraîche (D11)
 2. `armed_order_price_coherent()` — vérif que le prix n'a pas déjà franchi le stop
 3. Si conflit multi-scénarios même symbole → réveil planificateur, pas d'exécution
@@ -184,14 +188,14 @@ Un seul appel `codex_client.decide_batch()` pour tous les symboles dus & frais.
 Round-trip `REQUEST_CONTEXT` optionnel : si le LLM demande des indicateurs
 supplémentaires (`ContextResearchRequest`), `resolve_indicator_requests()` les calcule
 à partir des barres déjà en mémoire et lance un 2e batch sans ré-appeler Codex une
-3e fois. Budget : `max_model_calls_per_cycle` (défaut 25). `daemon.py:979`
+3e fois. Budget : `max_model_calls_per_cycle` (défaut 25). `trader/runtime/daemon.py`
 
-Transport : `AcpxBackend.complete()` (`llm.py:322`) → `acpx --format quiet --allowed-tools "" --no-terminal exec [prompt]`.
+Transport : `AcpxBackend.complete()` (`trader/agent/llm.py`) → `acpx --format quiet --allowed-tools "" --no-terminal exec [prompt]`.
 Sessions jetables (isolation/idempotence). Fallback : `OpenAICompatibleBackend` (Ollama) si `TRADER_OLLAMA_API_KEY` défini.
 
 ### 3.7 Validation & gates pré-exécution
 
-Pour chaque décision (`daemon.py:1786+`) :
+Pour chaque décision (`trader/runtime/daemon.py`) :
 
 | Vérification | Code rejet |
 |---|---|
@@ -208,7 +212,7 @@ Pour chaque décision (`daemon.py:1786+`) :
 Les helpers purs de cette admission vivent dans
 `trader/application/order_admission.py` : intent, hard-stop, clamp de sortie,
 quantité ouverte d'un reverse, et métriques de risque d'entrée. L'orchestration
-complète reste volontairement dans `daemon.py` pour préserver l'ordre exact des
+complète reste volontairement dans `trader/runtime/daemon.py` pour préserver l'ordre exact des
 side effects : scheduling, recorder, `RiskGate`, broker, trade plans et
 performance model.
 
@@ -231,7 +235,7 @@ chiffré et les analyses P&L par raison.
 
 ### 4.1 Sortie automatique — exit_engine
 
-`exit_engine.evaluate_plan()` (`exit_engine.py:279`) — priorité stricte :
+`exit_engine.evaluate_plan()` (`trader/planning/exit_engine.py`) — priorité stricte :
 ```
 hard_stop > max_hold > take_profit > profit_protection > trailing_stop
 ```
@@ -247,11 +251,11 @@ hard_stop > max_hold > take_profit > profit_protection > trailing_stop
 
 Barres 5m agrégées sur `EXIT_CHECK_WINDOW_BARS` (3 × 5 min) pour les plans ouverts
 — évite les spikes manqués entre deux barres 15m. Garde temporelle : seules les
-barres `ts >= plan.opened_at` comptent. `daemon.py:569`
+barres `ts >= plan.opened_at` comptent. `trader/runtime/daemon.py`
 
 ### 4.2 Sortie discrétionnaire LLM
 
-`intent: CLOSE | REDUCE | REVERSE` → tag `exit_reason = "llm_exit"` (`daemon.py:78`).
+`intent: CLOSE | REDUCE | REVERSE` → tag `exit_reason = "llm_exit"` (`trader/runtime/daemon.py`).
 Raison : le LLM voit un changement de thèse avant le hard_stop.
 `plan_store.close_symbol()` à la clôture.
 
@@ -265,7 +269,7 @@ ici avant tout.
 
 ## 5. Stops & résolution — `resolve_exit_plan`
 
-`trade_plan.resolve_exit_plan()` (`trade_plan.py:377`) — résout une **intention
+`trade_plan.resolve_exit_plan()` (`trader/planning/trade_plan.py`) — résout une **intention
 paramétrique** en prix absolu. Types supportés :
 
 | Type `hard_stop` | Description | Résolution |
@@ -278,7 +282,7 @@ paramétrique** en prix absolu. Types supportés :
 TP supporte également le type `risk_multiple` (R) : `entry ± R × stop_distance`.
 
 La `reference_volatility` est calculée à partir du cockpit daily ou des barres 15m
-(`_reference_volatility_for_symbol`, `daemon.py:553`).
+(`_reference_volatility_for_symbol`, `trader/runtime/daemon.py`).
 
 La résolution produit un `trace` machine-readable (spec_type, distance, resolved_price,
 clamped, reference_volatility…) persisté dans l'événement `armed_plan_resolved`.
@@ -324,7 +328,7 @@ Override LLM : l'agent peut ajouter/retirer des symboles avec raison loggée
 
 ## 7. Veille / réveils — indicator_watch
 
-`trader/indicator_watch.py` — cube `symbol × indicator × timeframe × op × value`.
+`trader/planning/indicator_watch.py` — cube `symbol × indicator × timeframe × op × value`.
 
 Trois modes de déclenchement :
 
@@ -335,17 +339,17 @@ Trois modes de déclenchement :
 | `EXECUTE_ORDER` | Exécute l'ordre SANS re-appel LLM | Plan armé D7B |
 
 **INVARIANT ATOMIQUE** : une seule condition rejetée → toute la veille est rejetée
-(jamais de watch amputée). `indicator_watch.py:408`
+(jamais de watch amputée). `trader/planning/indicator_watch.py`
 
-TTL max des plans armés : 240 min (aligné sur la revue périodique garantie). `indicator_watch.py:268`
+TTL max des plans armés : 240 min (aligné sur la revue périodique garantie). `trader/planning/indicator_watch.py`
 
 **exit_watch** : veille attachée à un `TradePlan` ouvert — déclenche `WAKE` quand
 une condition technique se réalise post-entrée (ex. `z_score > 1`). Cooldown
-configurable (défaut 15 min). `daemon.py:727`
+configurable (défaut 15 min). `trader/runtime/daemon.py`
 
 **next_wake** : le LLM peut demander son propre réveil via `next_wake_in_minutes`
 dans sa décision — il n'est jamais filtré par le gate de pertinence (autonomie
-de planification). `daemon.py:1777`
+de planification). `trader/runtime/daemon.py`
 
 Opérateurs valides : `>`, `>=`, `<`, `<=`, `==`, `!=`, `abs>`, `abs>=`, `abs<`, `abs<=`.
 
@@ -356,17 +360,17 @@ Opérateurs valides : `>`, `>=`, `<`, `<=`, `==`, `!=`, `abs>`, `abs>=`, `abs<`,
 | Fichier | Écrit par | Lu par | Contenu |
 |---|---|---|---|
 | `decisions.jsonl` | `DecisionRecorder` via `decision_ledger_store.append()` | attribution, CLI, cockpit | Une ligne par décision (action, intent, qty, confidence, rationale, executed, reason…) |
-| `model_performance.jsonl` | `_append_model_performance()` | `attribution.py` | Une ligne par fill (entrée + sortie) — base des round-trips |
-| `broker.json` | `SimBroker` | daemon (reload à chaque cycle) | Positions paper + historique fills |
-| `trade_plans.json` | `TradePlanStore` | exit_engine, daemon | Plans ouverts (hard_stop_price, TPs, trailing, watermarks…) |
+| `model_performance.jsonl` | `_append_model_performance()` | `trader/reporting/attribution.py` | Une ligne par fill (entrée + sortie) — base des round-trips |
+| `broker.json` | `SimBroker` | `trader/runtime/daemon.py` (reload à chaque cycle) | Positions paper + historique fills |
+| `trade_plans.json` | `TradePlanStore` | `trader/planning/exit_engine.py`, `trader/runtime/daemon.py` | Plans ouverts (hard_stop_price, TPs, trailing, watermarks…) |
 | `events.jsonl` | `_append_event()` | monitoring / debug | Événements runtime (cycle_started, armed_plan_resolved, watch_triggered…) |
 | `history.jsonl` | `_append_cycle_history()` | CLI status | Résumé par cycle (equity, n_executed) |
 | `daemon_status.json` | `_write_status()` | cockpit TUI, CLI | Phase courante, PID, decisions_done |
 | `current_report.json` | `_write_current_report()` | cockpit TUI | Rapport complet du cycle en cours |
-| `learnings.jsonl` | `record_decision()` | `consolidator` | Notes runtime de l'agent (bornées) |
-| `learnings_consolidated.json` | `consolidator` | daemon (contexte LLM) | Patterns consolidés (≤ seuil bruts → consolidation) |
+| `learnings.jsonl` | `record_decision()` | `trader/learnings/consolidator.py` | Notes runtime de l'agent (bornées) |
+| `learnings_consolidated.json` | `trader/learnings/consolidator.py` | `trader/runtime/daemon.py` (contexte LLM) | Patterns consolidés (≤ seuil bruts → consolidation) |
 | `learnings.db` | `learnings_ingest` + daemon (`recalls`) | outil `recall_learnings` | Store SQLite dérivé : notes scorées par outcome (lift/symbole), embeddings, traces de recall |
-| `archive/*.jsonl.gz` | `ledger_rotation` (démarrage daemon) | `read_rows_with_archive` (analyses) | Mois passés de decisions/events — rotation mensuelle crash-safe |
+| `archive/*.jsonl.gz` | `trader/runtime/ledger_rotation.py` (démarrage daemon) | `read_rows_with_archive` (analyses) | Mois passés de decisions/events — rotation mensuelle crash-safe |
 | `archive/learnings-*.jsonl` | `LearningsStore`/`consolidator` | ingestion recall | Évincés + historique des consolidés — plus rien ne se jette |
 | `news_items/YYYY-MM-DD.jsonl` | `news_feed` (P1a) | futur analyste-news | Items de news persistés (dédup uuid, purge 60 j) |
 | `macro_calendar.json` + `macro_series/` | `macro_calendar`/`macro_series` (P1a) | payload d'attribution | Dates FOMC/CPI + séries macro quotidiennes (DBnomics) |
@@ -378,17 +382,17 @@ stale_streaks. Séparé de `broker.json`.
 
 ## 9. Intégration LLM / acpx
 
-### 9.1 Transport — `llm.py`
+### 9.1 Transport — `trader/agent/llm.py`
 
-`AcpxBackend` (`llm.py:314`) : invoque `acpx --format quiet --allowed-tools "" --no-terminal --non-interactive-permissions deny --model <m> exec [prompt]`.
+`AcpxBackend` (`trader/agent/llm.py`) : invoque `acpx --format quiet --allowed-tools "" --no-terminal --non-interactive-permissions deny --model <m> exec [prompt]`.
 
 Prompt labellisé `[casys-trader:runtime-brain]` pour nommage des sessions acpx.
 Session jetable (`exec`) — pas d'état partagé entre cycles.
 
 `LlmRouter` cascade sur `OpenAICompatibleBackend` (Ollama cloud) si `acpx` échoue
-avec un code retryable (rate-limit, quota). `llm.py:57`
+avec un code retryable (rate-limit, quota). `trader/agent/llm.py`
 
-Modèle courant : `gpt-5.5/medium` (Codex Spark, faible latence). `llm.py:22`
+Modèle courant : `gpt-5.5/medium` (Codex Spark, faible latence). `trader/agent/llm.py`
 
 **Fork acpx (2026-07-02)** : le runtime et le consolidateur pointent vers le
 fork `Casys-AI/acpx` (branche `casys-patches`) via `TRADER_ACPX_BIN` /
@@ -400,15 +404,16 @@ sont prêtes pour des PRs upstream.
 
 ### 9.2 Reap des ponts orphelins — `_reap_orphan_bridges`
 
-`llm.py:260` — les processus `codex-acp` (bridge acpx↔codex) démarrés via `setsid`
+`trader/agent/llm.py` — les processus `codex-acp` (bridge acpx↔codex) démarrés via `setsid`
 échappent au `killpg` et survivent à la fin de l'appel. Fix : snapshot `ps` avant
 l'appel, diff après, SIGKILL sur les PIDs nouveaux dont le `cwd` correspond au
 projet. Déclenché via `_run_one_shot_command.finally`. Cf post-incident
 `memory/casys-trader-acpx-bridge-pileup.md`.
 
-### 9.3 `codex_client` — façade transport, protocole séparé
+### 9.3 `trader/agent/client.py` — façade transport, protocole séparé
 
-`codex_client.py` reste la façade transport et compatibilité. Les contrats et
+`trader/agent/client.py` reste la façade transport. L'import historique
+`trader.codex_client` est un alias de compatibilité. Les contrats et
 parseurs vivent désormais dans `trader/agent_protocol/` :
 
 - `types.py` : `Decision`, `IndicatorRequest`, `ContextResearchRequest`,
@@ -462,7 +467,7 @@ Le refactor n'ajoute aucune dépendance dans `pyproject.toml` ou `uv.lock`.
 Le choix final reste donc :
 
 - `logging` standard library comme API de logging ;
-- `trader/logging_setup.py` comme point d'installation ;
+- `trader/runtime/logging_setup.py` comme point d'installation ;
 - `RichHandler` seulement en TTY, `StreamHandler` texte en non-TTY ;
 - `markup=False` pour éviter les balises Rich dans les logs machine ;
 - loggers `trader` et `casys-trader` avec `propagate=False` ;

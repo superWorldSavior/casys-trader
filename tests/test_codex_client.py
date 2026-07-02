@@ -1,6 +1,6 @@
-from trader import codex_client
-from trader.codex_client import DEFAULT_MODEL, ContextResearchRequest, build_batch_prompt, parse_decision, parse_decision_or_context_request, parse_batch, decide, decide_batch
-from trader.llm import LlmCompletion, LlmFailure
+from trader.agent import client as codex_client
+from trader.agent.client import DEFAULT_MODEL, ContextResearchRequest, build_batch_prompt, parse_decision, parse_decision_or_context_request, parse_batch, decide, decide_batch
+from trader.agent.llm import LlmCompletion, LlmFailure
 
 
 def test_agent_protocol_modules_exposent_les_contrats_publics() -> None:

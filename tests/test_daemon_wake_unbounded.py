@@ -6,7 +6,7 @@ poll, cf. _apply_planned_exits appelé à chaque cycle). Décision Erwan 2026-07
 """
 from __future__ import annotations
 
-from trader.daemon import _bounded_wake_minutes
+from trader.runtime.daemon import _bounded_wake_minutes
 
 
 def test_wake_non_borne_par_defaut():

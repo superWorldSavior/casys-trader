@@ -15,7 +15,7 @@ dependencies = [
 ]
 
 [project.scripts]
-casys-trader = "trader.cli:main"
+casys-trader = "trader.runtime.cli:main"
 
 [dependency-groups]
 dev = [

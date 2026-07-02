@@ -155,7 +155,7 @@ class Scheduler:
         Les deux familles ne s'évincent pas mutuellement.
         """
 
-        from trader.indicator_watch import is_armed_plan
+        from trader.planning.indicator_watch import is_armed_plan
 
         state = self._load_state()
         incoming_armed = is_armed_plan(watch)

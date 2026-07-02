@@ -2,7 +2,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from trader.ib_attach import IBAttachBackoff
+from trader.runtime.ib_attach import IBAttachBackoff
 
 
 def test_backoff_due_windows_and_success_disables_reprobe() -> None:

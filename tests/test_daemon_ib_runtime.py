@@ -4,7 +4,7 @@ from itertools import product
 
 import pytest
 
-from trader import daemon
+from trader.runtime import daemon
 from trader.tools.market import MarketError
 from trader.tools.scheduler import Scheduler
 

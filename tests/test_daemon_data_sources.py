@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from trader import daemon
+from trader.runtime import daemon
 from trader.tools.market import Bar, MarketError
 from trader.tools.scheduler import Scheduler
 
@@ -412,7 +412,7 @@ class TestDaemonDecisionDataSourceField:
     ):
         """run_cycle : entry de décision doit contenir 'data_source'."""
         from trader.tools.scheduler import Scheduler
-        from trader.codex_client import Decision
+        from trader.agent.client import Decision
 
         _write_runtime_config(tmp_path)
         state_dir = tmp_path / "state"
@@ -473,7 +473,7 @@ class TestDaemonDecisionDataSourceField:
         """F5 : le fetch daily (ou tout autre fetch secondaire) ne doit pas écraser
         la valeur last_source capturée après le fetch runtime décisionnel."""
         from trader.tools.scheduler import Scheduler
-        from trader.codex_client import Decision
+        from trader.agent.client import Decision
 
         _write_runtime_config(tmp_path)
         state_dir = tmp_path / "state"

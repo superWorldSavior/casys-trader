@@ -5,6 +5,7 @@ __all__ = [
     "decision_audit",
     "decision_bench",
     "decision_ledger",
+    "decision_reason",
     "meta_performance",
     "stats",
     "tool_trace",

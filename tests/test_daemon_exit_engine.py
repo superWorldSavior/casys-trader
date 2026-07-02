@@ -3,12 +3,12 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from trader import daemon
-from trader.codex_client import Decision
+from trader.runtime import daemon
+from trader.agent.client import Decision
 from trader.tools.execution import Order, SimBroker
 from trader.tools.market import Bar
 from trader.tools.scheduler import Scheduler
-from trader.trade_plan import InvalidExitPlanError, TradePlanStore, create_trade_plan, resolve_exit_plan
+from trader.planning.trade_plan import InvalidExitPlanError, TradePlanStore, create_trade_plan, resolve_exit_plan
 
 
 def test_llm_exit_reason_for_model_performance_tague_uniquement_les_sorties() -> None:
@@ -1921,7 +1921,7 @@ class TestExitChecks5mBars:
 
     def _setup_state(self, tmp_path, state_dir, *, opened_at: str, symbol: str = "SPY") -> None:
         from trader.tools.execution import Order, SimBroker
-        from trader.trade_plan import TradePlanStore, create_trade_plan
+        from trader.planning.trade_plan import TradePlanStore, create_trade_plan
         broker = SimBroker(state_dir / "broker.json", starting_cash=100_000)
         broker.submit(Order(symbol, "BUY", 10.0), 100.0, opened_at, dry_run=False)
         TradePlanStore(state_dir / "trade_plans.json").upsert(
@@ -2083,7 +2083,7 @@ class TestExitChecks5mBars:
 
         # SPY : plan LONG, stop 95, barre 5m low=94.5 → déclenché, interval='5m'
         from trader.tools.execution import Order, SimBroker
-        from trader.trade_plan import TradePlanStore, create_trade_plan
+        from trader.planning.trade_plan import TradePlanStore, create_trade_plan
         broker = SimBroker(state_dir / "broker.json", starting_cash=100_000)
         broker.submit(Order("SPY", "BUY", 10.0), 100.0, opened_at, dry_run=False)
         broker.submit(Order("QQQ", "BUY", 5.0), 200.0, opened_at, dry_run=False)
@@ -2144,7 +2144,7 @@ class TestExitChecks5mValidation:
 
     def _setup_long_spy(self, state_dir, *, opened_at: str) -> None:
         from trader.tools.execution import Order, SimBroker
-        from trader.trade_plan import TradePlanStore, create_trade_plan
+        from trader.planning.trade_plan import TradePlanStore, create_trade_plan
         broker = SimBroker(state_dir / "broker.json", starting_cash=100_000)
         broker.submit(Order("SPY", "BUY", 10.0), 100.0, opened_at, dry_run=False)
         TradePlanStore(state_dir / "trade_plans.json").upsert(
@@ -2238,7 +2238,7 @@ class TestExitChecks5mFreshness:
 
     def _setup_long_spy(self, state_dir, *, opened_at: str) -> None:
         from trader.tools.execution import Order, SimBroker
-        from trader.trade_plan import TradePlanStore, create_trade_plan
+        from trader.planning.trade_plan import TradePlanStore, create_trade_plan
         broker = SimBroker(state_dir / "broker.json", starting_cash=100_000)
         broker.submit(Order("SPY", "BUY", 10.0), 100.0, opened_at, dry_run=False)
         TradePlanStore(state_dir / "trade_plans.json").upsert(
@@ -2307,7 +2307,7 @@ class TestExitChecks5mAggregation:
 
     def _setup_long_spy(self, state_dir, *, opened_at: str, stop: float = 95.0) -> None:
         from trader.tools.execution import Order, SimBroker
-        from trader.trade_plan import TradePlanStore, create_trade_plan
+        from trader.planning.trade_plan import TradePlanStore, create_trade_plan
         broker = SimBroker(state_dir / "broker.json", starting_cash=100_000)
         broker.submit(Order("SPY", "BUY", 10.0), 100.0, opened_at, dry_run=False)
         TradePlanStore(state_dir / "trade_plans.json").upsert(
@@ -2407,7 +2407,7 @@ class TestExitChecks5mMinor:
 
     def _setup_long_spy(self, state_dir, *, opened_at: str, stop: float = 95.0) -> None:
         from trader.tools.execution import Order, SimBroker
-        from trader.trade_plan import TradePlanStore, create_trade_plan
+        from trader.planning.trade_plan import TradePlanStore, create_trade_plan
         broker = SimBroker(state_dir / "broker.json", starting_cash=100_000)
         broker.submit(Order("SPY", "BUY", 10.0), 100.0, opened_at, dry_run=False)
         TradePlanStore(state_dir / "trade_plans.json").upsert(

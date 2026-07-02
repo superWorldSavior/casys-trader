@@ -8,8 +8,8 @@ ayant une confiance suffisante.
 from datetime import datetime, timezone
 
 
-from trader import daemon
-from trader.codex_client import Decision
+from trader.runtime import daemon
+from trader.agent.client import Decision
 from trader.tools.market import Bar
 from trader.tools.memory import LearningsStore
 from trader.tools.scheduler import Scheduler
@@ -354,7 +354,7 @@ def test_run_cycle_ouverture_enrichit_le_tradeplan_avec_le_contexte_d_entree(
 ) -> None:
     """§13.7 — au fill d'ouverture, le TradePlan capture la thèse (rationale) et le
     contexte d'entrée (prix, runtime interval, data age, session, daily as-of)."""
-    from trader.trade_plan import TradePlanStore
+    from trader.planning.trade_plan import TradePlanStore
 
     _write_runtime_config(tmp_path)
     state_dir = tmp_path / "state"

@@ -2,7 +2,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from trader import daemon
+from trader.runtime import daemon
 from trader.tools import market as market_mod
 from trader.tools.market import Bar, Freshness, MarketError
 

@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 
-from trader import indicator_watch as indicator_watch_mod
-from trader.indicator_watch import (
+from trader.planning import indicator_watch as indicator_watch_mod
+from trader.planning.indicator_watch import (
     WATCH_REJECT_INVALID_OPERATOR,
     WATCH_REJECT_MISSING_THRESHOLD,
     WATCH_REJECT_NON_FINITE_THRESHOLD,
@@ -436,7 +436,7 @@ def test_execute_order_qty_ou_intent_invalides_degrade() -> None:
 
 
 def test_armed_order_price_coherent() -> None:
-    from trader.indicator_watch import armed_order_price_coherent
+    from trader.planning.indicator_watch import armed_order_price_coherent
 
     short = _valid_order()  # stop à 88.1, SHORT
     assert armed_order_price_coherent(short, price=87.0) is True   # prix sous le stop : ok

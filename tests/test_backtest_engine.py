@@ -1,4 +1,4 @@
-from trader.codex_client import Decision
+from trader.agent.client import Decision
 from trader.tools.market import Bar
 from trader.tools.execution import IbkrCommissionModel
 

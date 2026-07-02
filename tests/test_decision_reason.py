@@ -1,6 +1,6 @@
 import pytest
 
-from trader.decision_reason import infer_reason_code
+from trader.reporting.decision_reason import infer_reason_code
 
 
 @pytest.mark.parametrize(

@@ -30,8 +30,8 @@ import math
 from pathlib import Path
 from typing import Any
 
-from trader import codex_client
-from trader.agent_context import (
+from trader.agent import client as codex_client
+from trader.agent.context import (
     INDICATOR_COLUMNS,
     build_market_cockpit,
     resolve_indicator_requests,

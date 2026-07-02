@@ -13,8 +13,8 @@ from trader.market.features import (
     swing_low,
 )
 from trader.market.regime import classify_regime, multi_horizon_signals
-from .semantic.catalog import family_for_symbol, normalize_temporal_query
-from .tools import market
+from trader.semantic.catalog import family_for_symbol, normalize_temporal_query
+from trader.tools import market
 
 COCKPIT_INDICATORS = [
     "return",

@@ -5,10 +5,10 @@ import time
 import logging
 from datetime import datetime, timezone
 
-from trader import daemon
+from trader.runtime import daemon
 from trader.application import planner_batch
-from trader.codex_client import ContextResearchRequest, Decision, IndicatorRequest
-from trader.indicator_watch import summarize_watch
+from trader.agent.client import ContextResearchRequest, Decision, IndicatorRequest
+from trader.planning.indicator_watch import summarize_watch
 from trader.tools.market import Bar
 from trader.tools.scheduler import Scheduler
 
@@ -224,7 +224,7 @@ def test_last_review_by_symbol_filtre_plans_sans_review_et_hors_perimetre(tmp_pa
     # courant qui PORTENT une review (narrow contract : on ne passe pas le store entier).
     from dataclasses import replace
 
-    from trader.trade_plan import TradePlanStore, create_trade_plan
+    from trader.planning.trade_plan import TradePlanStore, create_trade_plan
 
     store = TradePlanStore(tmp_path / "plans.json")
 

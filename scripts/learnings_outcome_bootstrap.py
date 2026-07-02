@@ -123,7 +123,7 @@ def load_learnings() -> list[dict]:
 
 def load_decisions() -> dict[str, dict]:
     """Charge toutes les décisions et les indexe par decision_id."""
-    from trader.ledger_rotation import read_rows_with_archive  # noqa: PLC0415
+    from trader.runtime.ledger_rotation import read_rows_with_archive  # noqa: PLC0415
 
     by_id: dict[str, dict] = {}
     for row in read_rows_with_archive(DECISIONS_LIVE, ARCHIVE):

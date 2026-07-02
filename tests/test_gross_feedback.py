@@ -1,4 +1,4 @@
-from trader.daemon import summarize_gross_rejections
+from trader.runtime.daemon import summarize_gross_rejections
 
 
 def test_summarize_extrait_les_ouvertures_recalees_gross() -> None:

@@ -114,7 +114,7 @@ class TestBuildPlansFn:
         (trade_plans.json, daemon.py). Sinon la branche plans du sticky est morte
         et un trade plan ne devient jamais sticky (régression D10)."""
         from trader.rotation.collectors import build_plans_fn
-        from trader.trade_plan import TradePlanStore, create_trade_plan
+        from trader.planning.trade_plan import TradePlanStore, create_trade_plan
 
         # Le daemon écrit STATE_DIR / "trade_plans.json".
         store = TradePlanStore(tmp_path / "trade_plans.json")

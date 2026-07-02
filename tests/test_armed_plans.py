@@ -5,9 +5,9 @@ from datetime import datetime, timezone
 
 import pytest
 
-from trader import daemon
-from trader.codex_client import Decision
-from trader.trade_plan import TradePlanStore
+from trader.runtime import daemon
+from trader.agent.client import Decision
+from trader.planning.trade_plan import TradePlanStore
 from trader.tools.execution import SimBroker
 from trader.tools.market import Bar
 from trader.tools.scheduler import Scheduler

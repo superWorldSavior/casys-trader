@@ -9,7 +9,7 @@ import operator
 from datetime import datetime, timedelta, timezone
 from typing import Callable, NamedTuple
 
-from .semantic.catalog import FAMILIES, INDICATOR_LABEL_VALUES, family_for_symbol, label_to_value, normalize_temporal_query
+from trader.semantic.catalog import FAMILIES, INDICATOR_LABEL_VALUES, family_for_symbol, label_to_value, normalize_temporal_query
 from trader.market.features import DEFAULT_INDICATORS, build_indicator_snapshot, compute_indicator_values
 
 _OPS: dict[str, Callable[[float, float], bool]] = {

@@ -3,10 +3,10 @@
 pas rejeter sur le format (cf rejet réel GC=F : `er`/`ac` au lieu de
 `efficiency_ratio`/`autocorrelation`, opérateur `eq` inexistant)."""
 
-from trader.codex_client import build_batch_prompt, build_prompt
+from trader.agent.client import build_batch_prompt, build_prompt
 from trader.market.features import DEFAULT_INDICATORS
-from trader.indicator_watch import WATCH_VALID_OPERATORS
-from trader.agent_context import INDICATOR_COLUMNS
+from trader.planning.indicator_watch import WATCH_VALID_OPERATORS
+from trader.agent.context import INDICATOR_COLUMNS
 from trader.semantic.catalog import INDICATOR_LABEL_VALUES
 
 

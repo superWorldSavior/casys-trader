@@ -10,7 +10,7 @@ mémoire.
 - **Boucle 1 — Dev/design** : Erwan + Claude, en conversation dans le repo. On
   fait évoluer le mandat, les outils, le comportement, les marchés. Le backtest
   maison (`backtest/`) rejoue l'agent sur l'historique pour itérer.
-- **Boucle 2 — Runtime** : le daemon (`trader/daemon.py`), lancé par `run.sh`.
+- **Boucle 2 — Runtime** : le daemon (`trader/runtime/daemon.py`), lancé par `run.sh`.
   Réveil des symboles dus → contexte → Codex → risk gate → exécution paper → log
   → prochain réveil global, override par symbole ou veille indicateur temporaire.
 
@@ -40,17 +40,20 @@ CASYS_IB_HOST=127.0.0.1 CASYS_IB_PORT=4002 CASYS_IB_CLIENT_ID=17 ./run.sh --once
 
 - **Dry-run par défaut** : `--live` requis pour exécuter.
 - **Kill switch** : `touch KILL` à la racine → plus aucun ordre.
-- **Risk gate** (`trader/risk.py` + `config/risk.yaml`) : fusible non négociable.
+- **Risk gate** (`trader/execution/risk.py` + `config/risk.yaml`) : fusible non négociable.
 - **Fail-safe Codex** : toute erreur (timeout, JSON invalide, binaire absent) → HOLD.
 
 ## Structure
 
 ```
 trader/
-  daemon.py          boucle runtime
-  codex_client.py    appel Codex programmatique (sortie JSON validée)
-  indicator_watch.py veilles indicateurs multi-timeframe
-  risk.py            le fusible
+  runtime/           daemon, CLI, logging, version, IB attach
+  agent/             contexte agent, client Codex, transport LLM/acpx
+  planning/          plans, veilles indicateurs, exit engine, relevance gate
+  execution/         RiskGate et contraintes d'ordre
+  application/       services du cycle runtime extraits du daemon
+  reporting/         ledger, attribution, stats, audit décisionnel
+  market/            indicateurs, FX, macro, radar, régime
   tools/
     ib_source.py     données marché runtime (Interactive Brokers)
     market.py        données marché yfinance (backtest/cache, hors daemon)

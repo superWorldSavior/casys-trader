@@ -21,8 +21,8 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from . import llm
-from .agent_protocol.parsing import (
+from trader.agent import llm
+from trader.agent_protocol.parsing import (
     MAX_LEARNING_CHARS as MAX_LEARNING_CHARS,
     _DECISION_KEYS as _DECISION_KEYS,
     _cancel_watch_ids as _cancel_watch_ids,
@@ -41,7 +41,7 @@ from .agent_protocol.parsing import (
     parse_decision as parse_decision,
     parse_decision_or_context_request as parse_decision_or_context_request,
 )
-from .agent_protocol.prompts import (
+from trader.agent_protocol.prompts import (
     _BATCH_COMPACT_SUFFIX as _BATCH_COMPACT_SUFFIX,
     _BATCH_FINAL_CONTRACT as _BATCH_FINAL_CONTRACT,
     _COMPACT_OUTPUT_CONTRACT as _COMPACT_OUTPUT_CONTRACT,
@@ -58,7 +58,7 @@ from .agent_protocol.prompts import (
     build_batch_prompt as build_batch_prompt,
     build_prompt as build_prompt,
 )
-from .agent_protocol.types import (
+from trader.agent_protocol.types import (
     Action as Action,
     BatchToolCallRequest as BatchToolCallRequest,
     ContextResearchRequest as ContextResearchRequest,

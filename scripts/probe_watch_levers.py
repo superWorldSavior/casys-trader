@@ -28,8 +28,8 @@ import json
 import math
 from pathlib import Path
 
-from trader import codex_client
-from trader.agent_context import build_market_cockpit
+from trader.agent import client as codex_client
+from trader.agent.context import build_market_cockpit
 from trader.tools.market import Bar
 
 # Petit sous-ensemble : single = 1 appel/symbole, batch = 1 appel total.

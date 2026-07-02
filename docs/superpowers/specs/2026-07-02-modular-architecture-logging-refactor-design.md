@@ -12,19 +12,18 @@ The implementation is behavior-preserving and keeps compatibility wrappers.
 the LLM plans, `RiskGate` is the fuse, and `state/decisions.jsonl` is the durable
 audit truth. The code shape has drifted away from that clean conceptual model.
 
-The main pressure points are:
+Before the staged extraction, the main pressure points were:
 
-- `trader/daemon.py` is the runtime shell, the market snapshot builder, the
+- `trader/runtime/daemon.py` was the runtime shell, the market snapshot builder, the
   planner batch coordinator, the order admission path, the decision recorder,
   and part of observability.
 - The former flat `trader/tui.py` mixed state-file reads, projection/enrichment,
   Rich rendering, and functions imported privately by the Textual cockpit.
-- `trader/codex_client.py` combines prompt text, response contracts, parsing,
-  and the planner facade.
-- `trader/agent_tools.py` now contains a useful domain-tool registry, but the
-  validation/execution core and individual tool handlers live in one growing
-  file.
-- Logging exists and is tested through `trader/logging_setup.py`; the refactor
+- the former flat planner facade has moved to `trader/agent/client.py`;
+  prompt text, response contracts, and parsing live in `trader/agent_protocol/`.
+- the former flat `trader/agent_tools.py` became `trader/agent_tools/`, with a
+  package registry and individual bounded read-only handlers.
+- Logging exists and is tested through `trader/runtime/logging_setup.py`; the refactor
   should strengthen that standard logging path rather than introduce `loguru`
   unless the standard-library logger cannot cover a concrete need.
 - Third-party architecture helpers are allowed when they buy a concrete boundary,
@@ -64,7 +63,8 @@ heavier than the trading system itself.
   working slice.
 - No replacement of JSONL state with a database in this refactor.
 - No adoption of `loguru` by default. A new logging dependency is allowed only if
-  it removes a proven limitation that `logging_setup.py` cannot solve cleanly.
+  it removes a proven limitation that `trader/runtime/logging_setup.py` cannot
+  solve cleanly.
 - No dependency added for aesthetics only. Each new library must have a written
   reason in the implementation task and a small usage surface.
 
@@ -89,6 +89,11 @@ trader/
     prompts.py
     parsing.py
 
+  agent/
+    context.py
+    client.py
+    llm.py
+
   agent_tools/
     core.py
     freshness.py
@@ -97,6 +102,20 @@ trader/
     attribution.py
     indicators.py
     learnings.py
+
+  planning/
+    trade_plan.py
+    indicator_watch.py
+    exit_engine.py
+    relevance_gate.py
+
+  execution/
+    risk.py
+
+  learnings/
+    store.py
+    embeddings.py
+    consolidator.py
 
   rotation/
     core.py
@@ -107,6 +126,7 @@ trader/
 
   reporting/
     decision_ledger.py
+    decision_reason.py
     attribution.py
     stats.py
     tool_usage.py
@@ -124,6 +144,12 @@ trader/
     portfolio.py
 
   runtime/
+    daemon.py
+    cli.py
+    logging_setup.py
+    code_version.py
+    ib_attach.py
+    ledger_rotation.py
     process_env.py
 
   read_models/
@@ -155,13 +181,14 @@ architecture framework.
 - Pure helpers such as `order_admission.py` should depend on primitive fields or
   small project DTOs, not on broad transport objects.
 - Agent tool contracts stay in `agent_tools/core.py`; agent response contracts
-  stay in `agent_protocol/`; `codex_client.py` remains the transport facade.
+  stay in `agent_protocol/`; `trader/agent/client.py` remains the transport
+  facade.
 - `read_models/*` reads persisted state and builds display-friendly projections.
   It must not influence live trading decisions.
 - `ui/*` renders read models. It must not read random state files directly once
   `read_models.runtime_state` exists.
-- `trader/daemon.py`, `trader.tui`, `trader.cockpit`,
-  `trader/codex_client.py`, and `trader/agent_tools.py` may keep compatibility
+- `trader.__init__`, `trader.daemon`, `trader.cli`, `trader.tui`,
+  `trader.cockpit`, and `trader/agent_tools/__init__.py` may keep compatibility
   re-exports or thin wrappers until tests and callers have moved.
 
 ## 6. Runtime Slices
@@ -247,8 +274,8 @@ an explicit orchestration DTO/callback boundary first.
 
 ## 7. Agent Protocol Split
 
-`trader/codex_client.py` remains the public facade, but internals should move
-behind compatibility wrappers:
+`trader/agent/client.py` is the canonical planner facade. The legacy
+`trader.codex_client` import remains available through compatibility aliases:
 
 - `trader/agent_protocol/types.py`: `Decision`, `IndicatorRequest`,
   `ContextResearchRequest`, `BatchToolCallRequest`, literal action/intent types.
@@ -257,8 +284,9 @@ behind compatibility wrappers:
 - `trader/agent_protocol/parsing.py`: `_extract_json`, decision parsing, batch
   parsing, tool-call parsing.
 
-The public functions `codex_client.decide`, `codex_client.decide_batch`,
-`codex_client.parse_batch`, and public dataclasses must keep working.
+The public functions `trader.codex_client.decide`,
+`trader.codex_client.decide_batch`, `trader.codex_client.parse_batch`, and
+public dataclasses must keep working through that alias.
 
 ## 8. Agent Tools Split
 
@@ -305,7 +333,7 @@ names, but `python -m` is guaranteed only for real CLI wrappers and entrypoints.
 
 Use the existing logging framework:
 
-- `trader/logging_setup.py` remains the setup entrypoint;
+- `trader/runtime/logging_setup.py` remains the setup entrypoint;
 - `logging.getLogger(__name__)` should be the default in extracted modules;
 - `casys-trader` can remain the top-level daemon logger for high-level cycle
   milestones;
@@ -387,18 +415,23 @@ Each tranche should end with:
 
 ## 12. Acceptance Criteria
 
-- `trader/daemon.py` remains the runtime entrypoint but no longer contains the
+- `trader/runtime/daemon.py` remains the runtime entrypoint but no longer contains the
   bulk of decision recording, planner batching, market snapshot building, and
   pure order-admission helper logic. Full order-admission orchestration remains
-  in `daemon.py` for this tranche and is documented as the remaining seam.
+  in `trader/runtime/daemon.py` for this tranche and is documented as the
+  remaining seam.
 - Existing CLI commands and imports still work. Alias-only compatibility modules
   preserve imports, not arbitrary `python -m trader.<old_name>` execution.
+  `trader.daemon` and `trader.cli` are physical proxy packages because their
+  `python -m` entrypoints are part of the current operator workflow.
+- No capability implementation files remain flat under `trader/`; the only
+  root `.py` file is `trader/__init__.py`.
 - Existing state files keep their current schemas unless a later explicit
   migration document says otherwise.
 - `state/decisions.jsonl` remains the audit source of truth.
 - `RiskGate` remains on every live order path.
 - The runtime LLM still runs without shell or terminal access.
-- `trader/logging_setup.py` remains the logging setup path and covers extracted
+- `trader/runtime/logging_setup.py` remains the logging setup path and covers extracted
   modules.
 - No new logging dependency is added unless a specific implementation step
   records why standard logging is insufficient.

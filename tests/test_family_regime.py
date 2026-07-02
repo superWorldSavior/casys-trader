@@ -87,7 +87,7 @@ def test_familles_restreintes_a_l_univers() -> None:
 
 
 def test_guidance_decision_presente_regime_families_comme_opportunite() -> None:
-    from trader import codex_client
+    from trader.agent import client as codex_client
 
     prompt = codex_client.build_batch_prompt(
         mandate="m", memory="mem", shared_context={}, symbols_payload=[]

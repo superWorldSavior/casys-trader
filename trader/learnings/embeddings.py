@@ -1,6 +1,6 @@
 """Client embeddings OpenAI minimal — pattern _post_json, zéro dépendance nouvelle.
 
-Utilise le même transport urllib que trader/llm.py (injectable pour les tests).
+Utilise le même transport urllib que trader.agent.llm (injectable pour les tests).
 """
 
 from __future__ import annotations
@@ -9,7 +9,7 @@ from typing import Callable
 
 import numpy as np
 
-from trader.llm import _post_json as _default_post_json
+from trader.agent.llm import _post_json as _default_post_json
 
 DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small"
 EMBEDDING_DIMS = 1536

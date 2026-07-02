@@ -1,7 +1,7 @@
 """Override LLM de la rotation — surcharge tracée du default_hot.
 
 Usage (prod) :
-    from trader.llm import LlmRouter
+    from trader.agent.llm import LlmRouter
     override_fn = make_llm_override_fn(LlmRouter().complete)
 
 Usage (test) :

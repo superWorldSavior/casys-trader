@@ -1,4 +1,4 @@
-from trader import relevance_gate
+from trader.planning import relevance_gate
 
 
 def _needs(**kwargs) -> tuple[bool, str]:
@@ -88,8 +88,8 @@ def test_run_cycle_gate_le_polling_calme_sans_appel_llm(
 ) -> None:
     from datetime import datetime, timezone
 
-    from trader import daemon
-    from trader.codex_client import Decision
+    from trader.runtime import daemon
+    from trader.agent.client import Decision
     from trader.tools.scheduler import Scheduler
 
     _runtime_config(tmp_path)
@@ -130,8 +130,8 @@ def test_run_cycle_honore_le_reveil_demande_par_l_agent(
 ) -> None:
     from datetime import datetime, timezone
 
-    from trader import daemon
-    from trader.codex_client import Decision
+    from trader.runtime import daemon
+    from trader.agent.client import Decision
     from trader.tools.scheduler import Scheduler
 
     _runtime_config(tmp_path)
@@ -171,8 +171,8 @@ def test_run_cycle_ne_marque_pas_un_echec_llm_comme_revue_periodique(
 ) -> None:
     from datetime import datetime, timezone
 
-    from trader import daemon
-    from trader.codex_client import Decision
+    from trader.runtime import daemon
+    from trader.agent.client import Decision
     from trader.tools.scheduler import Scheduler
 
     _runtime_config(tmp_path)

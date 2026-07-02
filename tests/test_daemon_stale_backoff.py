@@ -3,7 +3,8 @@ import json
 from datetime import datetime, timezone
 
 
-from trader import daemon
+from trader.agent.client import Decision
+from trader.runtime import daemon
 from trader.tools.scheduler import Scheduler, STALE_BACKOFF_MAX_MINUTES, STALE_BACKOFF_MAX_STREAK
 
 
@@ -77,6 +78,10 @@ def _make_stale_source(now, age_minutes=90.0):
     return FakeStaleDataSource()
 
 
+def _hold_decision(**kwargs):
+    return Decision.hold(kwargs["symbol"], "hold")
+
+
 # ── tests intégration ────────────────────────────────────────────────────────
 
 def test_stale_premier_cycle_wake_egal_au_defaut(monkeypatch, tmp_path, patch_batch) -> None:
@@ -90,7 +95,7 @@ def test_stale_premier_cycle_wake_egal_au_defaut(monkeypatch, tmp_path, patch_ba
     now = datetime(2026, 6, 10, 3, 0, tzinfo=timezone.utc)
     data_source = _make_stale_source(now)
 
-    patch_batch(lambda **kwargs: __import__("trader.codex_client", fromlist=["Decision"]).Decision.hold(kwargs["symbol"], "hold"))
+    patch_batch(_hold_decision)
 
     daemon.run_cycle(
         dry_run=True, now=now, symbols_filter=["SPY"],
@@ -118,7 +123,7 @@ def test_stale_deuxieme_cycle_wake_double(monkeypatch, tmp_path, patch_batch) ->
     now = datetime(2026, 6, 10, 3, 0, tzinfo=timezone.utc)
     data_source = _make_stale_source(now)
 
-    patch_batch(lambda **kwargs: __import__("trader.codex_client", fromlist=["Decision"]).Decision.hold(kwargs["symbol"], "hold"))
+    patch_batch(_hold_decision)
 
     daemon.run_cycle(
         dry_run=True, now=now, symbols_filter=["SPY"],
@@ -144,7 +149,7 @@ def test_stale_streak_cappe_a_120_minutes(monkeypatch, tmp_path, patch_batch) ->
     now = datetime(2026, 6, 10, 3, 0, tzinfo=timezone.utc)
     data_source = _make_stale_source(now)
 
-    patch_batch(lambda **kwargs: __import__("trader.codex_client", fromlist=["Decision"]).Decision.hold(kwargs["symbol"], "hold"))
+    patch_batch(_hold_decision)
 
     daemon.run_cycle(
         dry_run=True, now=now, symbols_filter=["SPY"],
@@ -177,7 +182,7 @@ def test_stale_streak_reset_quand_data_fraiche(monkeypatch, tmp_path, patch_batc
             fresh_ts = (now - timedelta(minutes=1)).isoformat()
             return [Bar(ts=fresh_ts, open=100.0, high=101.0, low=99.0, close=100.0, volume=1000.0)]
 
-    patch_batch(lambda **kwargs: __import__("trader.codex_client", fromlist=["Decision"]).Decision.hold(kwargs["symbol"], "hold"))
+    patch_batch(_hold_decision)
 
     daemon.run_cycle(
         dry_run=True, now=now, symbols_filter=["SPY"],
@@ -200,7 +205,7 @@ def test_stale_premiere_occurrence_enregistre_une_decision(monkeypatch, tmp_path
     now = datetime(2026, 6, 10, 3, 0, tzinfo=timezone.utc)
     data_source = _make_stale_source(now)
 
-    patch_batch(lambda **kwargs: __import__("trader.codex_client", fromlist=["Decision"]).Decision.hold(kwargs["symbol"], "hold"))
+    patch_batch(_hold_decision)
 
     report = daemon.run_cycle(
         dry_run=True, now=now, symbols_filter=["SPY"],
@@ -226,7 +231,7 @@ def test_stale_occurrences_suivantes_ne_creent_pas_de_decision(monkeypatch, tmp_
     now = datetime(2026, 6, 10, 3, 0, tzinfo=timezone.utc)
     data_source = _make_stale_source(now)
 
-    patch_batch(lambda **kwargs: __import__("trader.codex_client", fromlist=["Decision"]).Decision.hold(kwargs["symbol"], "hold"))
+    patch_batch(_hold_decision)
 
     report = daemon.run_cycle(
         dry_run=True, now=now, symbols_filter=["SPY"],
@@ -259,7 +264,7 @@ def test_stale_sans_scheduler_ne_plante_pas(monkeypatch, tmp_path, patch_batch) 
     now = datetime(2026, 6, 10, 3, 0, tzinfo=timezone.utc)
     data_source = _make_stale_source(now)
 
-    patch_batch(lambda **kwargs: __import__("trader.codex_client", fromlist=["Decision"]).Decision.hold(kwargs["symbol"], "hold"))
+    patch_batch(_hold_decision)
 
     # Pas de sched → doit fonctionner sans crash
     report = daemon.run_cycle(
@@ -294,7 +299,7 @@ def test_stale_premier_cycle_default_240_wake_cappee_a_120(monkeypatch, tmp_path
     now = datetime(2026, 6, 10, 3, 0, tzinfo=timezone.utc)
     data_source = _make_stale_source(now)
 
-    patch_batch(lambda **kwargs: __import__("trader.codex_client", fromlist=["Decision"]).Decision.hold(kwargs["symbol"], "hold"))
+    patch_batch(_hold_decision)
 
     daemon.run_cycle(
         dry_run=True, now=now, symbols_filter=["SPY"],
@@ -361,7 +366,7 @@ def test_setup_logging_couvre_les_loggers_trader() -> None:
     """Un log émis par trader.tools.data_source ressort via le handler installé."""
     import io
     import logging
-    from trader.logging_setup import setup_logging
+    from trader.runtime.logging_setup import setup_logging
 
     class FakePipe(io.StringIO):
         def isatty(self):
@@ -396,7 +401,7 @@ def test_dedup_apres_restart_nouveau_scheduler(monkeypatch, tmp_path, patch_batc
     now = datetime(2026, 6, 10, 3, 0, tzinfo=timezone.utc)
     data_source = _make_stale_source(now)
 
-    patch_batch(lambda **kwargs: __import__("trader.codex_client", fromlist=["Decision"]).Decision.hold(kwargs["symbol"], "hold"))
+    patch_batch(_hold_decision)
 
     # Cycle 1 : premier stale → streak=1, 1 décision enregistrée
     sched1 = Scheduler(scheduler_path)
@@ -442,7 +447,7 @@ def test_indicator_watch_trigger_reset_streak(monkeypatch, tmp_path, patch_batch
             fresh_ts = (now - timedelta(minutes=1)).isoformat()
             return [Bar(ts=fresh_ts, open=100.0, high=101.0, low=99.0, close=100.0, volume=1000.0)]
 
-    patch_batch(lambda **kwargs: __import__("trader.codex_client", fromlist=["Decision"]).Decision.hold(kwargs["symbol"], "hold"))
+    patch_batch(_hold_decision)
 
     # Simuler un indicator trigger qui a réveillé le symbole
     trigger = {
@@ -472,7 +477,7 @@ def test_run_cycle_nappelle_pas_le_llm_sur_un_stale_sans_prix(
     """§13.4 — un symbole daily-valide MAIS sans aucune barre runtime (donc sans prix)
     ne doit PAS coûter un appel LLM perdu : il n'entre pas dans decidable, il retombe
     sur le HOLD stale. Pas de décision fantôme (anti gap silencieux)."""
-    from trader.codex_client import Decision
+    from trader.agent.client import Decision
     from trader.tools.market import Bar
 
     _write_runtime_config(tmp_path)
@@ -516,7 +521,7 @@ def test_run_cycle_appelle_le_llm_sur_stale_avec_daily_valide(
     (analyse swing, execution.enabled=false), au lieu d'un HOLD synthétique infra."""
     from datetime import timedelta
 
-    from trader.codex_client import Decision
+    from trader.agent.client import Decision
     from trader.tools.market import Bar
 
     _write_runtime_config(tmp_path)
@@ -570,7 +575,7 @@ def test_run_cycle_fetch_le_daily_meme_pour_un_symbole_runtime_stale(
     couvrait que tradable_symbols (= non-stale), donc un stale n'avait jamais de daily."""
     from datetime import timedelta
 
-    from trader.codex_client import Decision
+    from trader.agent.client import Decision
     from trader.tools.market import Bar
 
     _write_runtime_config(tmp_path)
@@ -612,7 +617,7 @@ def test_run_cycle_bloque_l_ordre_hors_session_meme_avec_donnees_fraiches(
     reason=execution:session_closed). La garde précède le RiskGate."""
     from datetime import timedelta
 
-    from trader.codex_client import Decision
+    from trader.agent.client import Decision
     from trader.tools.market import Bar
 
     _write_runtime_config(tmp_path)
@@ -655,7 +660,7 @@ def test_run_cycle_ordre_bloque_hors_session_conserve_le_wake_du_llm(
     par le LLM sont CONSERVÉS (le LLM a pu planifier en plus de proposer l'ordre)."""
     from datetime import timedelta
 
-    from trader.codex_client import Decision
+    from trader.agent.client import Decision
     from trader.tools.market import Bar
 
     _write_runtime_config(tmp_path)

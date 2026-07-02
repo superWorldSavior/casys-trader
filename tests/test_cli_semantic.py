@@ -1,6 +1,6 @@
 import json
 
-from trader.cli import main
+from trader.runtime.cli import main
 
 
 def test_cli_semantic_describe_json(capsys) -> None:
@@ -35,7 +35,7 @@ def test_cli_preserve_top_level_daemon_flags(monkeypatch) -> None:
     def fake_daemon(argv):
         calls.append(argv)
 
-    monkeypatch.setattr("trader.cli.daemon.main", fake_daemon)
+    monkeypatch.setattr("trader.runtime.cli.daemon.main", fake_daemon)
 
     main(["--once"])
 
@@ -48,7 +48,7 @@ def test_cli_preserve_bootstrap_all_daemon_flag(monkeypatch) -> None:
     def fake_daemon(argv):
         calls.append(argv)
 
-    monkeypatch.setattr("trader.cli.daemon.main", fake_daemon)
+    monkeypatch.setattr("trader.runtime.cli.daemon.main", fake_daemon)
 
     main(["--bootstrap-all"])
 
@@ -61,7 +61,7 @@ def test_cli_preserve_top_level_ib_daemon_flags(monkeypatch) -> None:
     def fake_daemon(argv):
         calls.append(argv)
 
-    monkeypatch.setattr("trader.cli.daemon.main", fake_daemon)
+    monkeypatch.setattr("trader.runtime.cli.daemon.main", fake_daemon)
 
     main(["--ib-host", "10.0.0.2", "--ib-port", "4003", "--ib-client-id", "44", "--once"])
 
@@ -74,7 +74,7 @@ def test_cli_preserve_top_level_consolidator_daemon_flags(monkeypatch) -> None:
     def fake_daemon(argv):
         calls.append(argv)
 
-    monkeypatch.setattr("trader.cli.daemon.main", fake_daemon)
+    monkeypatch.setattr("trader.runtime.cli.daemon.main", fake_daemon)
 
     main(
         [

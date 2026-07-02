@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from trader.agent_context import build_market_cockpit
+from trader.agent.context import build_market_cockpit
 from trader.tools.market import Bar
 
 

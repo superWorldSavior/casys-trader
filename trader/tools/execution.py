@@ -15,7 +15,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Literal, Protocol
 
-from .. import fx
+from trader.market import fx
 
 Side = Literal["BUY", "SELL"]
 CommissionModelName = Literal["none", "ibkr"]

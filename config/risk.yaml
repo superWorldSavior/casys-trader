@@ -1,4 +1,4 @@
-# Risk gate — le FUSIBLE (codé en dur dans trader/risk.py, paramétré ici).
+# Risk gate — le FUSIBLE (codé en dur dans trader/execution/risk.py, paramétré ici).
 # Ce ne sont PAS les règles de stratégie de l'agent : ce sont les bornes externes
 # qui empêchent un bug de tout casser. Valeurs prudentes par défaut (paper).
 

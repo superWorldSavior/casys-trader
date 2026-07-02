@@ -27,44 +27,27 @@ from typing import Callable
 
 import yaml
 
-from .agent_context import build_market_cockpit, resolve_indicator_requests
-from .application import market_snapshot, order_admission, planner_batch
-from .application.decision_recorder import DecisionRecorder
-from . import (
-    agent_tools as agent_tools,
-    code_version,
-    codex_client,
-    consolidator,
-    embeddings as embeddings_mod,
-    learnings_store as recall_store_mod,
-    ledger_rotation,
-    llm,
-    relevance_gate,
-)
-from .exit_engine import evaluate_plan
-from .ib_attach import IBAttachBackoff
-from .indicator_watch import (
+from trader.agent import client as codex_client
+from trader.agent import llm
+from trader.agent.context import build_market_cockpit, resolve_indicator_requests
+from trader.application import market_snapshot, order_admission, planner_batch
+from trader.application.decision_recorder import DecisionRecorder
+from trader.execution.risk import RiskGate, RiskLimits
+from trader.learnings import consolidator
+from trader.learnings import embeddings as embeddings_mod
+from trader.learnings import store as recall_store_mod
+from trader.market import family_regime, fx, macro_calendar, macro_series
+from trader.market.features import DEFAULT_INDICATORS, build_indicator_snapshot
+from trader.market.gross_priority import PriorityItem, gross_execution_order
+from trader.planning.exit_engine import evaluate_plan
+from trader.planning import relevance_gate
+from trader.planning.indicator_watch import (
     armed_order_price_coherent,
     build_indicator_watch,
     evaluate_indicator_watches,
     watch_market_requests,
 )
-from .risk import RiskGate, RiskLimits
-from .tools import market, memory as memory_mod, news_feed, portfolio, scheduler
-from .tools.execution import (
-    CommissionModel,
-    Order,
-    SimBroker,
-    commission_model_from_name,
-    round_trip_cost,
-)
-from .tools.data_source import (
-    CompositeDataSource,
-    YFinanceDataSource,
-    parse_data_sources_config,
-)
-from .tools.ib_source import IBDataSource, connect_ib
-from .trade_plan import (
+from trader.planning.trade_plan import (
     InvalidExitPlanError,
     TradePlan,
     TradePlanStore,
@@ -73,12 +56,25 @@ from .trade_plan import (
     resolve_exit_plan,
     validate_exit_plan,
 )
-from trader.market import family_regime, fx, macro_calendar, macro_series
-from trader.market.features import DEFAULT_INDICATORS, build_indicator_snapshot
-from trader.market.gross_priority import PriorityItem, gross_execution_order
 from trader.reporting import attribution, decision_ledger, meta_performance, stats
+from trader.runtime import code_version, ledger_rotation
+from trader.runtime.ib_attach import IBAttachBackoff
+from trader.tools import market, memory as memory_mod, news_feed, portfolio, scheduler
+from trader.tools.execution import (
+    CommissionModel,
+    Order,
+    SimBroker,
+    commission_model_from_name,
+    round_trip_cost,
+)
+from trader.tools.data_source import (
+    CompositeDataSource,
+    YFinanceDataSource,
+    parse_data_sources_config,
+)
+from trader.tools.ib_source import IBDataSource, connect_ib
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parents[2]
 STATE_DIR = ROOT / "state"
 
 log = logging.getLogger("casys-trader")
@@ -357,7 +353,7 @@ def _stale_backoff_wake_minutes(streak: int, *, default_wake_minutes: float) -> 
       STALE_BACKOFF_MAX_MINUTES = 120.0
       STALE_BACKOFF_MAX_STREAK = 8
     """
-    from .tools.scheduler import (
+    from trader.tools.scheduler import (
         STALE_BACKOFF_BASE_MULTIPLIER,
         STALE_BACKOFF_MAX_MINUTES,
         STALE_BACKOFF_MAX_STREAK,
@@ -2749,7 +2745,7 @@ def main(
     now = now_fn or (lambda: datetime.now(timezone.utc))
     sleep = sleep_fn or time.sleep
 
-    from .logging_setup import setup_logging
+    from trader.runtime.logging_setup import setup_logging
     # Niveau console pilotable via CASYS_LOG_LEVEL (.env/CLI), défaut INFO.
     # DEBUG ressort le détail fetch par-symbole (source_skipped/stale) sinon muet.
     _log_level = logging.getLevelNamesMapping().get(
@@ -2762,7 +2758,7 @@ def main(
     # Identité daemon : revendiquer le pid file en premier (avant tout _write_status).
     # Refus si un daemon vivant le détient déjà — un doublon qui écrase puis supprime
     # daemon.pid à son arrêt rend le daemon légitime inarrêtable depuis le cockpit.
-    from .cockpit_supervisor import claim_pid_file, release_pid_file
+    from trader.cockpit.supervisor import claim_pid_file, release_pid_file
 
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     news_feed.set_default_news_archive(STATE_DIR / "news_items")
@@ -2958,16 +2954,16 @@ def main(
                 # puis compose l'univers actif = sticky ∪ union(marchés ouverts) et l'écrit
                 # SI changé. Pas de cron externe ; état par venue persisté → rattrapage au
                 # redémarrage. Fail-safe : n'interrompt jamais le cycle.
-                from .rotation.venues import tick as _rotation_tick
+                from trader.rotation.venues import tick as _rotation_tick
                 from trader.market.radar_config import load_radar_params as _load_radar_params
                 try:
                     _radar_params = _load_radar_params(ROOT / "config")
                     _override_fn = None
                     if _radar_params.override_enabled:
-                        from .rotation.wiring import build_llm_override_fn as _build_override
+                        from trader.rotation.wiring import build_llm_override_fn as _build_override
                         _override_fn = _build_override()
                     # market_context v1 : peuplé depuis le cache de régime si disponible
-                    from .rotation.wiring import build_market_context_from_regime as _build_mctx
+                    from trader.rotation.wiring import build_market_context_from_regime as _build_mctx
                     _market_context = None
                     _regime_cache_path = STATE_DIR / "last_regime.json"
                     if _regime_cache_path.exists():

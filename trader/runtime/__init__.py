@@ -1,3 +1,11 @@
-"""Runtime process helpers shared by the daemon and supervisor."""
+"""Runtime entrypoints and process helpers."""
 
-__all__ = ["process_env"]
+__all__ = [
+    "cli",
+    "code_version",
+    "daemon",
+    "ib_attach",
+    "ledger_rotation",
+    "logging_setup",
+    "process_env",
+]

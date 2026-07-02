@@ -326,7 +326,7 @@ class TestBuildLlmOverrideFn:
 
     def test_returns_callable(self, monkeypatch):
         """build_llm_override_fn retourne un callable."""
-        from trader import llm as llm_module
+        from trader.agent import llm as llm_module
 
         class _FakeCompletion:
             text = '{"add":[],"remove":[]}'
@@ -344,7 +344,7 @@ class TestBuildLlmOverrideFn:
 
     def test_override_fn_parses_llm_response(self, monkeypatch):
         """Avec un router fake renvoyant du JSON, override_fn produit le bon dict."""
-        from trader import llm as llm_module
+        from trader.agent import llm as llm_module
 
         _JSON = '{"add":[],"remove":[]}'
 
@@ -422,7 +422,7 @@ class TestRunCliOverrideWiring:
 
     def test_override_disabled_uses_default_fn_not_router(self, tmp_path, monkeypatch):
         """override_enabled=false + override_fn=None → default_override_fn, router JAMAIS construit."""
-        from trader import llm as llm_module
+        from trader.agent import llm as llm_module
 
         def _must_not_be_called(**kw):
             raise AssertionError("build_default_router_from_env NE DOIT PAS être appelé")
@@ -447,7 +447,7 @@ class TestRunCliOverrideWiring:
 
     def test_override_enabled_builds_router(self, tmp_path, monkeypatch):
         """override_enabled=true + override_fn=None → build_default_router_from_env est appelé."""
-        from trader import llm as llm_module
+        from trader.agent import llm as llm_module
 
         _JSON = '{"add":[],"remove":[]}'
 

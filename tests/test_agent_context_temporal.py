@@ -1,5 +1,5 @@
-from trader.agent_context import resolve_indicator_requests
-from trader.codex_client import IndicatorRequest
+from trader.agent.context import resolve_indicator_requests
+from trader.agent.client import IndicatorRequest
 from trader.tools.market import Bar
 
 

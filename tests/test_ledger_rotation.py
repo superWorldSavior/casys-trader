@@ -7,7 +7,7 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
-from trader.ledger_rotation import read_rows_with_archive, rotate_monthly
+from trader.runtime.ledger_rotation import read_rows_with_archive, rotate_monthly
 
 
 # ---------------------------------------------------------------------------
@@ -418,7 +418,7 @@ def test_rotate_archive_corrompue_abort_vif_intact_et_log_error(tmp_path: Path) 
     records: list[_logging.LogRecord] = []
     handler = _logging.Handler()
     handler.emit = records.append  # type: ignore[assignment]
-    module_logger = _logging.getLogger("trader.ledger_rotation")
+    module_logger = _logging.getLogger("trader.runtime.ledger_rotation")
     module_logger.addHandler(handler)
     try:
         result = rotate_monthly(ledger, archive_dir, now=_NOW_JULY, ts_key="cycle_ts")
@@ -498,7 +498,7 @@ def test_archive_tronquee_est_sautee_sans_crash(tmp_path) -> None:
     records: list[_logging.LogRecord] = []
     handler = _logging.Handler()
     handler.emit = records.append  # type: ignore[assignment]
-    module_logger = _logging.getLogger("trader.ledger_rotation")
+    module_logger = _logging.getLogger("trader.runtime.ledger_rotation")
     module_logger.addHandler(handler)
     try:
         rows = list(read_rows_with_archive(vif, archive_dir))

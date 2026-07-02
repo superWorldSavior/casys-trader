@@ -13,7 +13,7 @@ import json
 import sqlite3
 from pathlib import Path
 
-from trader.learnings_store import LearningsStore
+from trader.learnings.store import LearningsStore
 
 
 # ---------------------------------------------------------------------------

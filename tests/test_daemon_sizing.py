@@ -12,9 +12,9 @@ from datetime import datetime, timezone
 
 import pytest
 
-from trader import daemon
-from trader.codex_client import Decision
-from trader.risk import RiskGate, RiskLimits
+from trader.runtime import daemon
+from trader.agent.client import Decision
+from trader.execution.risk import RiskGate, RiskLimits
 from trader.market import fx
 from trader.tools.execution import Order, SimBroker
 from trader.tools.market import Bar

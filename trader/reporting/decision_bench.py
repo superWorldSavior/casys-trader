@@ -11,8 +11,8 @@ import os
 import time
 from typing import Any, Callable
 
-from trader import llm
-from trader.agent_context import build_market_cockpit
+from trader.agent import llm
+from trader.agent.context import build_market_cockpit
 from trader.market import family_regime
 from trader.reporting import decision_audit
 

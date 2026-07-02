@@ -2,7 +2,7 @@ import json
 import inspect
 
 from backtest.data import HistoryStore
-from trader import cli, daemon
+from trader.runtime import cli, daemon
 from trader.tools.market import Bar
 
 

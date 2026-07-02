@@ -1,7 +1,7 @@
-from trader import trade_plan
-from trader import codex_client
-from trader.codex_client import decide_batch
-from trader.llm import LlmCompletion
+from trader.agent import client as codex_client
+from trader.agent.client import decide_batch
+from trader.agent.llm import LlmCompletion
+from trader.planning import trade_plan
 
 
 class CapturingRouter:

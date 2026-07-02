@@ -6,9 +6,9 @@ et que la structure existante (cols numériques, highlights) est préservée.
 
 from __future__ import annotations
 
-import trader.agent_context as agent_context
+import trader.agent.context as agent_context
 import trader.market.regime as regime
-from trader.agent_context import build_market_cockpit
+from trader.agent.context import build_market_cockpit
 from trader.tools.market import Bar
 
 

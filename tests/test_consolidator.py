@@ -1,8 +1,8 @@
 import json
 from datetime import datetime, timezone
 
-from trader import consolidator
-from trader import llm
+from trader.agent import llm
+from trader.learnings import consolidator
 from trader.tools.memory import LearningsStore
 
 
@@ -897,7 +897,7 @@ def test_archive_replaced_loggue_warning_si_ioerror(tmp_path) -> None:
     records: list[logging.LogRecord] = []
     handler = logging.Handler()
     handler.emit = records.append  # type: ignore[assignment]
-    mod_logger = logging.getLogger("trader.consolidator")
+    mod_logger = logging.getLogger("trader.learnings.consolidator")
     mod_logger.addHandler(handler)
     try:
         store.write(v2, watermark="2026-07-02T00:00:00+00:00")

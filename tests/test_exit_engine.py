@@ -2,9 +2,9 @@ from datetime import datetime, timezone
 
 import pytest
 
-import trader.exit_engine as exit_engine
-from trader.exit_engine import evaluate_plan
-from trader.trade_plan import create_trade_plan, trade_plan_from_dict
+import trader.planning.exit_engine as exit_engine
+from trader.planning.exit_engine import evaluate_plan
+from trader.planning.trade_plan import create_trade_plan, trade_plan_from_dict
 
 
 def _plan():

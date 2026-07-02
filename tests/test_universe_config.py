@@ -1,6 +1,6 @@
 import yaml
 
-from trader.agent_context import _family_code
+from trader.agent.context import _family_code
 from trader.semantic.catalog import family_for_symbol
 
 

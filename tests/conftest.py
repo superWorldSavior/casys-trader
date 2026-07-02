@@ -4,7 +4,7 @@ import logging
 
 import pytest
 
-from trader import daemon
+from trader.runtime import daemon
 
 
 @pytest.fixture(autouse=True)

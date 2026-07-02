@@ -4,7 +4,8 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 
-from trader import codex_client, daemon
+from trader.agent import client as codex_client
+from trader.runtime import daemon
 
 UTC = timezone.utc
 NOW = datetime(2026, 7, 2, 10, 0, tzinfo=UTC)
@@ -211,6 +212,7 @@ def test_hold_tool_loop_blocked_defaults_sains(monkeypatch):
 def test_contexte_run_tool_round_filtre_au_chunk(monkeypatch):
     """_run_tool_round ne livre pas les données des symboles hors chunk au ToolContext."""
     from trader import agent_tools
+    from trader.application import planner_batch
 
     captured: list[agent_tools.ToolContext] = []
     real_execute = agent_tools.execute_tool_round
@@ -221,7 +223,7 @@ def test_contexte_run_tool_round_filtre_au_chunk(monkeypatch):
             raw_calls, context=context, limits=limits, allowed_tools=allowed_tools, registry=registry
         )
 
-    monkeypatch.setattr(daemon.agent_tools, "execute_tool_round", spy_execute)
+    monkeypatch.setattr(planner_batch.agent_tools, "execute_tool_round", spy_execute)
 
     request = codex_client.BatchToolCallRequest(
         calls=[{"id": "c1", "tool": "get_freshness", "args": {"symbols": ["A"]}}]
@@ -375,7 +377,7 @@ def test_run_tool_round_store_absent_unavailable():
 
 def test_build_recall_provider_no_query_no_embedder(tmp_path):
     """Sans 'query' dans les args, l'embedder n'est jamais appelé."""
-    from trader import learnings_store as recall_mod
+    from trader.learnings import store as recall_mod
 
     store = recall_mod.LearningsStore(str(tmp_path / "test.db"))
     embed_calls: list = []
@@ -394,7 +396,7 @@ def test_build_recall_provider_no_query_no_embedder(tmp_path):
 
 def test_run_cycle_record_recall_apres_tool_round(monkeypatch, tmp_path, make_data_source):
     """run_cycle: après une tournée recall_learnings ok, record_recall est tracé dans le store."""
-    from trader import learnings_store as recall_mod
+    from trader.learnings import store as recall_mod
     from tests.conftest import write_runtime_config
 
     write_runtime_config(tmp_path, symbols=["SPY"])
@@ -529,7 +531,7 @@ def test_run_cycle_recall_db_corrompu_ne_leve_pas(monkeypatch, tmp_path, make_da
 
 def test_build_recall_provider_embed_timeout_3s(tmp_path, monkeypatch):
     """Finding 2a : le provider runtime passe timeout_s=3 à l'embedder par défaut."""
-    from trader import learnings_store as recall_mod
+    from trader.learnings import store as recall_mod
 
     store = recall_mod.LearningsStore(str(tmp_path / "test.db"))
     timeouts_seen: list[int] = []
@@ -544,7 +546,7 @@ def test_build_recall_provider_embed_timeout_3s(tmp_path, monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
 
     # Patcher _default_post_json dans le module embeddings (importé au moment de l'appel)
-    import trader.embeddings as emb_mod
+    import trader.learnings.embeddings as emb_mod
     monkeypatch.setattr(emb_mod, "_default_post_json", spy_post_json)
 
     # Construire le provider APRÈS le patch pour qu'il utilise le spy
@@ -558,7 +560,7 @@ def test_build_recall_provider_embed_timeout_3s(tmp_path, monkeypatch):
 
 def test_build_recall_provider_embed_echoue_degrade_fts(tmp_path, monkeypatch):
     """Finding 2b : échec embed → search appelé avec query_vec=None (dégradation FTS5)."""
-    from trader import learnings_store as recall_mod
+    from trader.learnings import store as recall_mod
 
     store = recall_mod.LearningsStore(str(tmp_path / "test.db"))
     search_calls: list[dict] = []

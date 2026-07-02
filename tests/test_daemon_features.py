@@ -2,8 +2,8 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from trader import daemon
-from trader.codex_client import Decision
+from trader.runtime import daemon
+from trader.agent.client import Decision
 from trader.tools.market import Bar, MarketError
 from trader.tools.scheduler import Scheduler
 

@@ -26,7 +26,7 @@ DEFAULT_SPARK_FALLBACK_MODEL = "gpt-5.3-codex-spark"
 DEFAULT_OLLAMA_BASE_URL = "https://ollama.com/v1"
 DEFAULT_OLLAMA_MODEL = "nemotron-3-nano:30b-cloud"
 DEFAULT_CONSOLIDATOR_OLLAMA_MODEL = "glm-5.1:cloud"
-DEFAULT_ENV_PATH = Path(__file__).resolve().parent.parent / ".env"
+DEFAULT_ENV_PATH = Path(__file__).resolve().parents[2] / ".env"
 DEFAULT_RUNTIME_SESSION_LABEL = "casys-trader:runtime-brain"
 DEFAULT_CONSOLIDATOR_SESSION_LABEL = "casys-trader:learning-consolidator"
 

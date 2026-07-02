@@ -2,8 +2,8 @@ import json
 import logging
 from datetime import datetime, timedelta, timezone
 
-from trader import daemon
-from trader.codex_client import Decision
+from trader.runtime import daemon
+from trader.agent.client import Decision
 from trader.tools.execution import IbkrCommissionModel
 from trader.tools.market import Bar
 from trader.tools.scheduler import Scheduler
@@ -465,7 +465,7 @@ def _fast_main_patches(monkeypatch, tmp_path, state_dir):
     monkeypatch.setattr(daemon, "connect_ib", lambda *a, **kw: (_ for _ in ()).throw(
         market.MarketError("ib_unavailable", "stub test")
     ))
-    monkeypatch.setattr("trader.daemon.time.sleep", lambda _: None)
+    monkeypatch.setattr("trader.runtime.daemon.time.sleep", lambda _: None)
 
 
 def test_main_ecrit_pid_file_au_demarrage(monkeypatch, tmp_path) -> None:

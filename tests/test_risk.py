@@ -2,7 +2,7 @@ import math
 
 import pytest
 
-from trader.risk import RiskGate, RiskLimits
+from trader.execution.risk import RiskGate, RiskLimits
 from trader.tools.execution import Order
 
 

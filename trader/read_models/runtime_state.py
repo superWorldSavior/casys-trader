@@ -10,7 +10,7 @@ from typing import Any
 
 import yaml
 
-from trader.indicator_watch import is_armed_plan as _is_armed_plan
+from trader.planning.indicator_watch import is_armed_plan as _is_armed_plan
 
 # Racine du repo (trois niveaux au-dessus de ce fichier)
 _ROOT = Path(__file__).resolve().parent.parent.parent
@@ -350,7 +350,7 @@ def _count_pending_learnings_safe(
                     raw_rows.append(json.loads(line))
                 except Exception:
                     continue
-        from trader.consolidator import select_new_raw
+        from trader.learnings.consolidator import select_new_raw
 
         return len(select_new_raw(raw_rows, watermark))
     except Exception:

@@ -257,7 +257,7 @@ def build_llm_override_fn(
     Returns:
         override_fn(payload) -> {"add": [...], "remove": [...]}
     """
-    from trader import llm
+    from trader.agent import llm
     from trader.rotation.override import make_llm_override_fn
 
     kw: dict = {"acpx_bin": acpx_bin}
