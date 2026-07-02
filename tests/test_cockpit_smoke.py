@@ -554,16 +554,24 @@ def test_cockpit_home_affiche_des_tuiles_analytiques() -> None:
                 {
                     "symbol": "AAPL",
                     "quantity": 3,
+                    "last_price": 201.25,
                     "unrealized_pnl_net": 120.5,
                     "fx_rate": 1.0,
                 },
                 {
                     "symbol": "2330.TW",
                     "quantity": 80,
+                    "last_price": 950.0,
                     "unrealized_pnl_net": -42.0,
                     "fx_rate": 0.031,
                 },
             ],
+        },
+        "starting_cash": 100_000.0,
+        "attribution": {
+            "realized_pnl": 310.0,
+            "total_commissions": 14.0,
+            "n_closed_trades": 4,
         },
         "equity_curve": [100_000, 100_400, 99_900, 101_500, 103_200],
         "decisions": [
@@ -608,22 +616,152 @@ def test_cockpit_home_affiche_des_tuiles_analytiques() -> None:
 
     rendered = _render(
         cockpit_module._build_overview_panel(state, kill_active=False),
-        width=180,
+        width=220,
     )
 
     assert any(ch in rendered for ch in "▁▂▃▄▅▆▇█")
     assert "Top positions" in rendered
+    assert "Allocation devise" in rendered
+    assert "Contrib PnL" in rendered
+    assert "Risque sorties" in rendered
+    assert "Équité locale" in rendered
+    assert "Dernier natif" in rendered
+    assert "PnL latent USD" in rendered
+    assert "FX→USD" in rendered
+    assert "sans plan" in rendered
     assert "AAPL" in rendered
     assert "2330.TW" in rendered
     assert "Décisions récentes" in rendered
+    assert "Triage décisions" in rendered
     assert "BUY" in rendered
     assert "fresh" in rendered
+    assert "risk" in rendered
+    assert "Rejets récents" in rendered
     assert "Plans actifs" in rendered
+    assert "Sens/Qté" in rendered
+    assert "Risque" in rendered
     assert "Data health" in rendered
+    assert "Learnings" in rendered
     assert "MSFT" in rendered
     assert "attendre" in rendered
     assert "confirmation" in rendered
     assert "volume" in rendered
+
+
+def test_cockpit_home_decisions_utilise_recent_decisions_quand_cycle_vide() -> None:
+    """La home ne doit pas devenir vide entre deux cycles quand seul le tail existe."""
+    state = {
+        "portfolio": {"cash": 100_000.0, "equity": 100_000.0, "holdings": []},
+        "decisions": [],
+        "recent_decisions": [
+            {
+                "cycle_ts": "2026-07-03T08:00:00+00:00",
+                "sequence": 1,
+                "symbol": "QUIET",
+                "action": "HOLD",
+                "reason": "quiet_gate",
+                "decision_source": "infra",
+                "model_called": False,
+            },
+            {
+                "cycle_ts": "2026-07-03T08:01:00+00:00",
+                "sequence": 2,
+                "symbol": "AAPL",
+                "action": "SELL",
+                "confidence": 0.91,
+                "executed": True,
+                "qty": 4,
+                "price": 123.45,
+                "llm_provider": "openai",
+                "llm_model": "gpt-test",
+            },
+            {
+                "cycle_ts": "2026-07-03T08:02:00+00:00",
+                "sequence": 3,
+                "symbol": "MSFT",
+                "action": "BUY",
+                "confidence": 0.44,
+                "reason": "risk:confidence_below",
+                "runtime": {"data_source": "fresh"},
+            },
+        ],
+        "daemon_status": {
+            "phase": "idle",
+            "model_calls_used": 1,
+            "max_model_calls_per_cycle": 8,
+        },
+    }
+
+    rendered = _render(
+        cockpit_module._build_overview_panel(state, kill_active=False),
+        width=220,
+    )
+
+    assert "AAPL" in rendered
+    assert "SELL" in rendered
+    assert "exec" in rendered
+    assert "ordre 4 @ 123.45" in rendered
+    assert "MSFT" in rendered
+    assert "risk" in rendered
+    assert rendered.index("SELL") < rendered.index("quiet")
+
+
+def test_cockpit_home_plans_affiche_file_operationnelle() -> None:
+    """Plans: sorties stale, ordres armés et veilles simples sont triés ensemble."""
+    state = {
+        "portfolio": {"cash": 100_000.0, "equity": 100_000.0, "holdings": []},
+        "trade_plans": [
+            {
+                "symbol": "SPY",
+                "side": "LONG",
+                "remaining_quantity": 10,
+                "entry_price": 100.0,
+                "hard_stop_price": 96.0,
+                "take_profits": [{"name": "TP1", "price": 108.0}],
+            }
+        ],
+        "armed_plans": [
+            {
+                "symbol": "QQQ",
+                "logic": "all",
+                "conditions": [
+                    {"indicator": "RS", "op": "<", "value": 40, "timeframe": "1h"},
+                    {"indicator": "MACD", "op": ">", "value": 0, "timeframe": "1h"},
+                ],
+                "expires_at": "2999-01-01T00:00:00+00:00",
+                "order": {
+                    "action": "SELL",
+                    "qty": 60,
+                    "exit_plan": {"hard_stop": {"price": 312.01}},
+                },
+            }
+        ],
+        "indicator_watches": [
+            {
+                "symbol": "MSFT",
+                "logic": "any",
+                "conditions": [{"indicator": "RS", "op": "<", "value": 35, "timeframe": "1h"}],
+                "expires_at": "2999-01-01T00:00:00+00:00",
+            }
+        ],
+        "prices": {"SPY": 101.0},
+        "stale_market_data": {"SPY": {"reason": "too_old"}},
+        "daemon_status": {"phase": "idle", "decisions_done": 0, "symbols_total": 3},
+    }
+
+    rendered = _render(
+        cockpit_module._build_overview_panel(state, kill_active=False),
+        width=220,
+    )
+
+    assert "Plans actifs" in rendered
+    assert "SPY" in rendered
+    assert "stale" in rendered
+    assert "SELL 60" in rendered
+    assert "stop 312.01" in rendered
+    assert "RS<40@1h" in rendered
+    assert "MSFT" in rendered
+    assert "WAKE" in rendered
 
 
 async def test_cockpit_observabilite_affiche_les_derniers_learnings(
