@@ -403,6 +403,13 @@ def test_replace_all_invalide_et_reconstruit_le_cache(tmp_path) -> None:
     # row_b est déjà présent → refusé
     assert store.append(row_b) is False
 
+    # Invariant DISQUE (review P0) : un store frais relit le fichier réel —
+    # replace_all puis append doivent avoir laissé exactement [row_b, row_a].
+    store2 = decision_ledger.DecisionLedgerStore(tmp_path / "decisions.jsonl")
+    ids = [r.get("decision_id") for r in store2.read_all()]
+    assert ids == [row_b.get("decision_id"), row_a.get("decision_id")]
+    assert store2.append(row_a) is False  # dédup effective depuis le disque
+
 
 # ---------------------------------------------------------------------------
 # replace_all atomique (P0 data-lifecycle §3.3)

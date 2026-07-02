@@ -10,10 +10,14 @@ from __future__ import annotations
 
 import gzip
 import json
+import logging
 import os
+import zlib
 from datetime import datetime
 from pathlib import Path
 from typing import Iterator
+
+log = logging.getLogger(__name__)
 
 
 def _month_prefix(ts_raw: object) -> str | None:
@@ -138,8 +142,8 @@ def read_rows_with_archive(
 
     Les archives sont lues dans l'ordre alphabétique du nom (= ordre chronologique
     YYYY-MM). Les lignes non-JSON ou non-dict sont silencieusement ignorées.
-    Les erreurs de lecture d'un fichier archive individuel sont ignorées (log absent
-    pour ne pas introduire de dépendance à ``logging`` dans ce module bas niveau).
+    Une archive individuelle illisible (corruption post-crash) est sautée avec
+    un warning — jamais d'exception qui casserait toute l'analyse.
 
     Utilisation typique (analyse historique) ::
 
@@ -163,7 +167,12 @@ def read_rows_with_archive(
                             continue
                         if isinstance(row, dict):
                             yield row
-            except (OSError, gzip.BadGzipFile, EOFError):
+            except (OSError, gzip.BadGzipFile, EOFError, zlib.error) as exc:
+                # zlib.error = cas réel d'un membre gzip tronqué par un crash
+                # pendant la rotation (vérifié : 4 troncatures sur 6 lèvent
+                # zlib.error, pas BadGzipFile). On saute l'archive abîmée mais
+                # on le DIT — une archive ignorée en silence fausse l'analyse.
+                log.warning("archive ledger illisible, ignorée: %s (%s)", archive_path, exc)
                 continue
 
     if path.exists():

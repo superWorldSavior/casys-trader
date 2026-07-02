@@ -181,15 +181,6 @@ def _aggregate_sort_key(item: tuple[str, str]) -> tuple[int, int, str, str]:
     return action_rank, horizon_rank, action, horizon
 
 
-def _read_ledger(path: Path) -> list[dict]:
-    """Lit un ledger JSONL en mémoire à la frontière I/O."""
-    decisions: list[dict] = []
-    for line in path.read_text().splitlines():
-        if line.strip():
-            decisions.append(json.loads(line))
-    return decisions
-
-
 def _partition_decisions(decisions: list[dict]) -> tuple[list[dict], dict[str, Any]]:
     """Sépare les décisions jugeables et les exclusions comptées par raison."""
     judgeable: list[dict] = []

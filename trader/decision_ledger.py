@@ -261,7 +261,9 @@ class DecisionLedgerStore:
     def replace_all(self, rows: list[dict]) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         payload = "\n".join(json.dumps(row, ensure_ascii=False) for row in rows)
-        tmp = self.path.with_suffix(".tmp")
+        # with_name (pas with_suffix) : decisions.jsonl.tmp, l'idiome du repo —
+        # with_suffix écraserait l'extension et créerait un tmp partagé par stem.
+        tmp = self.path.with_name(self.path.name + ".tmp")
         tmp.write_text(payload + ("\n" if payload else ""), encoding="utf-8")
         os.replace(tmp, self.path)
         self._ids_cache = {

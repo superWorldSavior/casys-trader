@@ -1,5 +1,5 @@
 import json
-import time
+import os
 from pathlib import Path
 
 from trader import decision_audit, meta_performance
@@ -202,7 +202,10 @@ def test_mtime_cache_relecture_si_mtime_change(monkeypatch, tmp_path) -> None:
     meta_performance.compute_meta_performance(tmp_path)  # lecture 1
 
     # Forcer un mtime différent en récrivant le fichier.
-    time.sleep(0.01)
+    # mtime forcé (review P0) : sleep(10ms) ne suffit pas sur les FS à
+    # résolution 1-2 s (ext3, FAT, certains NFS) — utime est déterministe.
+    stat = audit_path.stat()
+    os.utime(audit_path, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000_000))
     audit_path.write_text(
         json.dumps({"horizons": ["1h"], "metrics": {}, "rows": []}), encoding="utf-8"
     )

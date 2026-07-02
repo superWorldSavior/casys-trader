@@ -344,3 +344,40 @@ def test_rotation_puis_lecture_integrale(tmp_path: Path) -> None:
     # Archives d'abord (chrono), puis vif
     assert symbols.index("A") < symbols.index("C")
     assert symbols.index("B") < symbols.index("C")
+
+
+def test_archive_tronquee_est_sautee_sans_crash(tmp_path) -> None:
+    """Un membre gzip tronqué par un crash pendant la rotation (zlib.error, pas
+    BadGzipFile) ne doit pas casser toute l'analyse — skip + warning (review D-c)."""
+    import gzip as _gzip
+    import logging as _logging
+
+    archive_dir = tmp_path / "archive"
+    archive_dir.mkdir()
+    # Archive valide pour un mois...
+    with _gzip.open(archive_dir / "decisions-2026-05.jsonl.gz", "wt", encoding="utf-8") as gz:
+        gz.write('{"cycle_ts": "2026-05-15T00:00:00+00:00", "symbol": "OK5"}\n')
+    # ...et une archive TRONQUÉE au milieu d'un bloc DEFLATE pour un autre mois
+    with _gzip.open(archive_dir / "decisions-2026-06.jsonl.gz", "wt", encoding="utf-8") as gz:
+        gz.write('{"cycle_ts": "2026-06-15T00:00:00+00:00", "symbol": "CORRUPT"}\n' * 200)
+    raw = (archive_dir / "decisions-2026-06.jsonl.gz").read_bytes()
+    (archive_dir / "decisions-2026-06.jsonl.gz").write_bytes(raw[: len(raw) // 2])
+
+    vif = tmp_path / "decisions.jsonl"
+    vif.write_text('{"cycle_ts": "2026-07-01T00:00:00+00:00", "symbol": "VIF"}\n', encoding="utf-8")
+
+    # Handler direct sur le logger du module : indépendant de la config logging
+    # globale (un test voisin peut couper la propagation vers root/caplog).
+    records: list[_logging.LogRecord] = []
+    handler = _logging.Handler()
+    handler.emit = records.append  # type: ignore[assignment]
+    module_logger = _logging.getLogger("trader.ledger_rotation")
+    module_logger.addHandler(handler)
+    try:
+        rows = list(read_rows_with_archive(vif, archive_dir))
+    finally:
+        module_logger.removeHandler(handler)
+
+    symbols = [r.get("symbol") for r in rows]
+    assert "OK5" in symbols and "VIF" in symbols  # le valide et le vif passent
+    assert any("illisible" in rec.getMessage() for rec in records)
