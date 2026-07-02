@@ -1267,6 +1267,38 @@ def _active_watch_summaries_by_symbol(
     return summaries
 
 
+def _earliest_active_watch_expiry_iso(
+    sched: scheduler.Scheduler, sym: str, *, now: datetime
+) -> str | None:
+    """Plus proche expiration (ISO) des veilles actives du symbole, ou None.
+
+    Une veille armée EST le mécanisme de réveil du symbole : il doit dormir
+    jusqu'à ce qu'elle se déclenche (`_scan_indicator_watches` pose alors un
+    réveil immédiat) ou expire — pas retomber sur le défaut global 30 min et
+    être re-décidé en aveugle (finding 2026-07-02, confirmé Codex).
+    """
+    try:
+        watches = sched.active_indicator_watches(now=now)
+    except Exception:  # noqa: BLE001 - jamais bloquer le scheduling sur ce confort
+        return None
+    expiries: list[datetime] = []
+    for watch in watches:
+        if str(watch.get("symbol")) != sym:
+            continue
+        raw = watch.get("expires_at")
+        if not raw:
+            continue
+        try:
+            dt = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        if dt > now:
+            expiries.append(dt)
+    return min(expiries).isoformat() if expiries else None
+
+
 def _apply_decision_schedule(
     *,
     sched: scheduler.Scheduler | None,
@@ -1279,10 +1311,8 @@ def _apply_decision_schedule(
 ) -> None:
     if sched is None:
         return
-    if next_wake_in_minutes is not None:
-        sched.set_symbol_next_wake_in(sym, minutes=next_wake_in_minutes, now=now)
-    else:
-        sched.clear_symbol_next_wake(sym)
+    # Annulations puis persistance AVANT de programmer le réveil : l'état des
+    # veilles doit être à jour pour calculer la plus proche expiration.
     for watch_id in cancel_watch_ids:
         watch_id = str(watch_id)
         if not watch_id.startswith(f"{sym}:"):
@@ -1307,6 +1337,19 @@ def _apply_decision_schedule(
         }
         if "order" in pending_indicator_watch:
             entry["indicator_watch"]["order"] = pending_indicator_watch["order"]
+
+    # Programmation du réveil (état des veilles à jour) :
+    if next_wake_in_minutes is not None:
+        # L'agent a demandé une cadence explicite : elle prime (autonomie).
+        sched.set_symbol_next_wake_in(sym, minutes=next_wake_in_minutes, now=now)
+    else:
+        watch_wake_iso = _earliest_active_watch_expiry_iso(sched, sym, now=now)
+        if watch_wake_iso is not None:
+            # Une veille est armée : dormir jusqu'à sa plus proche expiration
+            # (le scan pose un réveil immédiat si elle se déclenche avant).
+            sched.set_symbol_next_wake(sym, watch_wake_iso)
+        else:
+            sched.clear_symbol_next_wake(sym)
 
 
 def _build_recall_provider(

@@ -268,8 +268,14 @@ def test_apply_decision_schedule_annule_les_watches_avant_de_reposer(monkeypatch
     events: list[tuple[str, dict]] = []
 
     class RecordingScheduler:
+        def __init__(self) -> None:
+            self._watches: list[dict] = []
+
         def set_symbol_next_wake_in(self, sym: str, *, minutes: float, now: datetime) -> None:
             operations.append(("wake", sym))
+
+        def set_symbol_next_wake(self, sym: str, when_iso: str) -> None:
+            operations.append(("wake_at", when_iso))
 
         def clear_symbol_next_wake(self, sym: str) -> None:
             operations.append(("clear", sym))
@@ -279,6 +285,10 @@ def test_apply_decision_schedule_annule_les_watches_avant_de_reposer(monkeypatch
 
         def set_symbol_indicator_watch(self, sym: str, watch: dict) -> None:
             operations.append(("set", watch["id"]))
+            self._watches.append(watch)
+
+        def active_indicator_watches(self, *, now: datetime) -> list[dict]:
+            return list(self._watches)
 
     monkeypatch.setattr(
         daemon,
@@ -318,8 +328,14 @@ def test_apply_decision_schedule_rejette_l_annulation_d_une_watch_autre_symbole(
     events: list[tuple[str, dict]] = []
 
     class RecordingScheduler:
+        def __init__(self) -> None:
+            self._watches: list[dict] = []
+
         def set_symbol_next_wake_in(self, sym: str, *, minutes: float, now: datetime) -> None:
             operations.append(("wake", sym))
+
+        def set_symbol_next_wake(self, sym: str, when_iso: str) -> None:
+            operations.append(("wake_at", when_iso))
 
         def clear_symbol_next_wake(self, sym: str) -> None:
             operations.append(("clear", sym))
@@ -329,6 +345,10 @@ def test_apply_decision_schedule_rejette_l_annulation_d_une_watch_autre_symbole(
 
         def set_symbol_indicator_watch(self, sym: str, watch: dict) -> None:
             operations.append(("set", watch["id"]))
+            self._watches.append(watch)
+
+        def active_indicator_watches(self, *, now: datetime) -> list[dict]:
+            return list(self._watches)
 
     monkeypatch.setattr(
         daemon,
@@ -700,3 +720,57 @@ def test_budget_un_fait_un_seul_batch_et_request_context_devient_hold(monkeypatc
         "resolved": 0,
     }
     assert decisions["QQQ"].action == "HOLD"
+
+
+def test_veille_armee_sans_next_wake_dort_jusqu_a_expiration(tmp_path) -> None:
+    """Finding 2026-07-02 (confirmé Codex) : une veille armée sans next_wake ne
+    doit PLUS effacer le timer (→ défaut 30 min → re-décision aveugle), mais
+    poser le réveil à l'expiration de la veille."""
+    from trader.tools.scheduler import Scheduler
+
+    sched = Scheduler(tmp_path / "scheduler.json")
+    now = datetime(2026, 7, 2, 10, 0, tzinfo=timezone.utc)
+    watch = {
+        "id": "AIR.PA:w1",
+        "symbol": "AIR.PA",
+        "expires_at": "2026-07-02T13:00:00+00:00",  # +3h
+        "logic": "all",
+        "on_trigger": "EXECUTE_ORDER",
+        "conditions": [{"indicator": "return", "op": ">", "value": 0.01, "timeframe": "1h"}],
+    }
+    daemon._apply_decision_schedule(
+        sched=sched,
+        sym="AIR.PA",
+        now=now,
+        next_wake_in_minutes=None,          # l'agent n'a rien programmé
+        cancel_watch_ids=[],
+        pending_indicator_watch=watch,
+        entry={"indicator_watch_created": False},
+    )
+
+    # Le symbole dort jusqu'à l'expiration de la veille, PAS le défaut global.
+    assert sched.next_wake("AIR.PA") == datetime(2026, 7, 2, 13, 0, tzinfo=timezone.utc)
+    # Donc il n'est PAS dû avant (exclu du batch périodique de re-décision).
+    assert "AIR.PA" not in sched.due_symbols(["AIR.PA"], now=datetime(2026, 7, 2, 10, 30, tzinfo=timezone.utc))
+    # ...mais redevient dû après expiration (réarmement/revue possible).
+    assert "AIR.PA" in sched.due_symbols(["AIR.PA"], now=datetime(2026, 7, 2, 13, 1, tzinfo=timezone.utc))
+
+
+def test_hold_sans_veille_ni_wake_reste_sur_le_defaut(tmp_path) -> None:
+    """Sans veille armée ni next_wake, le comportement historique tient :
+    le timer symbole est effacé (→ cadence par défaut)."""
+    from trader.tools.scheduler import Scheduler
+
+    sched = Scheduler(tmp_path / "scheduler.json")
+    now = datetime(2026, 7, 2, 10, 0, tzinfo=timezone.utc)
+    sched.set_symbol_next_wake_in("SPY", minutes=99, now=now)  # un timer préexistant
+    daemon._apply_decision_schedule(
+        sched=sched,
+        sym="SPY",
+        now=now,
+        next_wake_in_minutes=None,
+        cancel_watch_ids=[],
+        pending_indicator_watch=None,
+        entry={},
+    )
+    assert sched.next_wake("SPY") is None  # effacé → retombe sur le défaut global
