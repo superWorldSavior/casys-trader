@@ -69,19 +69,31 @@ pull (outils). Phase 3 : promotion au push cockpit UNIQUEMENT de ce que la
 mesure justifie (le veto earnings suivra ce chemin si la re-mesure de
 fin juillet le justifie).
 
-## 3. Phasage proposé
+## 3. Phasage (réordonné avec Erwan 02/07)
+
+Principe directeur (Erwan) : « un agent unique qui lit, plutôt que toutes les
+news dans tous les agents » — le flux brut n'entre JAMAIS dans un contexte de
+décision ; il est lu UNE fois par l'analyste et distribué en synthèse bornée
+(même logique que le consolidateur de learnings).
 
 - **P1 — calendriers (faits)** : FRED (3 séries) + dates FOMC/CPI (scraping
-  trimestriel des pages Fed/BLS) + Finnhub earnings US + investigation de la
-  couverture earnings actuelle (en cours 02/07 : buckets suspects). Livrable :
-  `macro_next` dans le payload d'attribution (pas encore au cockpit).
-- **P2 — analyste fondamental US+TW** : edgartools (MD&A/risk factors des
-  tickers US du portefeuille, post-filing) + FinMind (états financiers TW) →
-  briefs par symbole loggés.
-- **P3 — outils de pull + mesure** : `get_macro_brief`/`get_fundamentals` au
-  registre, mesure d'usage/outcome, puis décisions de promotion au cockpit.
-- **P4 (optionnel, sur mesure)** : EODHD ~60 €/mois si le calendrier EU/TW
-  prospectif prouve son manque.
+  trimestriel Fed/BLS) + earnings (couverture Yahoo validée 02/07, saine).
+  Livrable : `macro_next` dans le payload d'attribution.
+- **P2 — l'analyste-news quotidien** (priorité Erwan) : job batch qui LIT le
+  flux news déjà collecté (Yahoo par symbole + headlines macro) et produit LE
+  brief du jour par zone/famille — structuré, borné, daté. Loggé
+  attribution-first (pas encore exposé). S'appuie à 100 % sur la collecte
+  existante.
+- **P3 — exposition en pull + mesure** : `get_macro_brief` au registre,
+  mesure d'usage/outcome par l'attribution, décisions de promotion (dont
+  l'éventuel fait compact au cockpit).
+- **P4 — rapports/fondamentaux** : edgartools (MD&A/risques US, post-filing)
+  + FinMind (états financiers TW) par le même analyste → `get_fundamentals`.
+- **P5 — `ask_analyst` interactif** (session ACP persistante `macro-analyst`)
+  pour les questions ouvertes — seulement si la mesure de P3 montre que le
+  pull facetté ne suffit pas. Timeout/budget stricts.
+- **(sur mesure)** : EODHD ~60 €/mois si le calendrier EU/TW prospectif
+  manque vraiment.
 
 ## 4. Invariants
 
