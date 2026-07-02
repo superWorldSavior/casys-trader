@@ -158,7 +158,7 @@ S'appuie sur D2 (`family_regime`, biais par univers — le radar en est le frèr
 
 ---
 
-## D12 — Préflight LLM des ouvertures swing planifiées  💬 en discussion (2026-06-17)
+## D12 — Préflight LLM des ouvertures swing planifiées  💬 en discussion (2026-06-17) · ⛔ non retenu pour l'instant (2026-07-02)
 **Contexte.** Le passage vers un horizon swing rend utile la planification hors marché :
 daily/swing context valide, mais runtime 15m stale ou marché fermé. Le design
 `docs/superpowers/specs/2026-06-17-swing-watch-preflight-post-entry-design.md`
@@ -192,8 +192,30 @@ vs global. La recommandation actuelle est conditionnelle pour préserver D7B sur
 plans intra-séance récents, éviter le double-jugement inutile, et mesurer d'abord
 les cas cross-session / open gap / plan âgé avec `backtest/plan_replay.py` et
 `state/decisions.jsonl`.
-**Statut.** En discussion. Tant qu'Erwan n'a pas validé D12 ou amendé D7B, le code
-doit conserver le comportement D7B actuel pour `EXECUTE_ORDER`.
+**Décision Erwan (2026-07-02) : préflight NON retenu pour l'instant.** Le risque que
+D12 cible (absence de veto de thèse au tir) est **empiriquement négligeable à ce jour**.
+Vérif du 2026-07-02 (fil d'analyse agent, cross-check Codex « prendre de la hauteur ») :
+sur ~2900 décisions, les **exécutions** de plans armés sont RARES (5 sur 07-01/07-02) ;
+la seule perte armée documentée = l'incident CFR.SW/ASML.AS (2 trades, −95,40 €) dont la
+cause était le **stop figé pré-open, déjà corrigé par D11** (late-binding) — **0 cas propre
+de « thèse morte armée qui perd »**. Le postmortem lui-même juge le danger de la fenêtre
+d'open « hypothèse FAIBLE (n=3, pertes 1R dans le bruit) ».
+
+Le **filet existant suffit** : au tir, 5 garde-fous mécaniques (conflit, stale/pas de prix,
+`position_exists`, `exit_unresolved`, `armed_order_price_coherent`) → tout écart **annule +
+réveille le LLM**. Précision de câblage vérifiée : un plan invalidé laisse le symbole dans
+`decidable` (`daemon.py:2491` ne retire que ceux qui s'exécutent) → **le LLM re-décide ce
+cycle-là** avec le trigger annoté. Seuls les plans mécaniquement nickel s'exécutent sans LLM,
+et ils sont rares. Le trou résiduel = uniquement la thèse *mécaniquement cohérente mais morte*
+(fakeout/régime/news) — non observé dans les données.
+
+**Réouverture conditionnée à une MESURE**, pas à une intuition : `backtest/plan_replay.py` +
+`state/decisions.jsonl` montrant des pertes récurrentes attribuables à une thèse périmée au
+tir sur des plans *mécaniquement valides*. Tant que non mesuré, on ne construit ni préflight
+ni superviseur de plans (surface/risque/coût LLM en plus sans gain démontré).
+
+**Statut.** En discussion depuis 2026-06-17, **préflight écarté 2026-07-02** (réouvrable sur
+mesure). Le code conserve le comportement D7B actuel pour `EXECUTE_ORDER`.
 
 ---
 
