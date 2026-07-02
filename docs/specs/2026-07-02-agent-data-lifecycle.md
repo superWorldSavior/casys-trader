@@ -101,16 +101,17 @@ snapshots du repo).
 Proposition : déplacer les `.bak-*` et les bench files dans
 `state_archive_2026-07-cleanup/` (déjà gitignoré) plutôt que supprimer.
 
-## 6. Décisions à trancher
+## 6. Décisions — TRANCHÉES avec Erwan le 2026-07-02
 
-| # | Décision | Options | Reco |
-|---|---|---|---|
-| D-a | Fix dédup append (§3.1) | cache in-memory / index latéral / rien | **cache in-memory, immédiat** |
-| D-b | Cache mtime `decision_audit.json` (§3.2) | oui / non | **oui, immédiat** |
-| D-c | Rotation `decisions.jsonl` + `events.jsonl` | mensuelle gzip vers `state/archive/` / SQLite / rien | **mensuelle gzip** (SQLite = YAGNI tant que ça tient) |
-| D-d | Dédup schéma des rows (18+ champs top-level dupliqués de `decision{}`) | schema v2 (−40 % taille) / laisser | **coupler à la rotation** (les archives gzippent bien la redondance ; v2 seulement si D-c ne suffit pas) |
-| D-e | Purges caches (`radar_cache` 30 j, acpx sessions 30 j) | auto au tick / cible make manuelle | **auto pour radar_cache, make + rappel pour acpx** |
-| D-f | Nettoyage one-shot §5 | archive / suppression | **archive** |
+| # | Décision | Arbitrage |
+|---|---|---|
+| D-a | Fix dédup append (§3.1) | ✅ **GO** — cache in-memory, dès la fin du chantier agent-tools (conflit de fichier) |
+| D-b | Cache mtime `decision_audit.json` (§3.2) + replace_all atomique (§3.3) | ✅ **GO** — les 3 fixes P0 ensemble |
+| D-c | Rotation `decisions.jsonl` + `events.jsonl` | ✅ **GO** — mensuelle gzip vers `state/archive/`, SQLite = option future si l'analytique le justifie |
+| D-d | Dédup schéma des rows (18+ champs top-level dupliqués de `decision{}`) | couplé à D-c : v2 seulement si le gzip ne suffit pas |
+| D-e | Purge `radar_cache` (>30 j) | ✅ **GO** — auto au tick de rotation |
+| D-e' | Sessions acpx (1,3 Go) | ❌ pas de prune côté casys : **patch de rétention NATIVE dans le fork acpx** (config retentionDays + auto-prune des sessions fermées ; `sessions prune` upstream est manuel-only). Ajouté au backlog du fork. |
+| D-f | Nettoyage one-shot §5 | ✅ **GO** — archivage réversible dans `state_archive_2026-07-cleanup/` |
 
 ## 7. Hors périmètre noté
 
