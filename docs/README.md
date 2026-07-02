@@ -26,7 +26,7 @@ documenté, où, et quels trous restent).
 Les **trous** ci-dessous obtiennent une page `reference/` dédiée ; les runbooks
 `how-to/` (quadrant entier absent) sont à créer.
 
-Pages `reference/` écrites : [`risk-gate`](reference/risk-gate.md), [`fx`](reference/fx.md), [`cockpit`](reference/cockpit.md), [`reporting`](reference/reporting.md), [`config`](reference/config.md), [`learnings-rag`](reference/learnings-rag.md), [`agent-tools`](reference/agent-tools.md), [`macro`](reference/macro.md), [`llm-contract`](reference/llm-contract.md), [`universe-rotation`](reference/universe-rotation.md).
+Pages `reference/` écrites : [`risk-gate`](reference/risk-gate.md), [`fx`](reference/fx.md), [`cockpit`](reference/cockpit.md), [`reporting`](reference/reporting.md), [`config`](reference/config.md), [`learnings-rag`](reference/learnings-rag.md), [`agent-tools`](reference/agent-tools.md), [`macro`](reference/macro.md), [`llm-contract`](reference/llm-contract.md), [`universe-rotation`](reference/universe-rotation.md), [`execution`](reference/execution.md), [`news`](reference/news.md), [`regime`](reference/regime.md), [`agent-context`](reference/agent-context.md), [`semantic`](reference/semantic.md).
 Pages `how-to/` écrites : [`run-the-daemon`](how-to/run-the-daemon.md), [`read-logs`](how-to/read-logs.md), [`measure-and-replay`](how-to/measure-and-replay.md).
 
 ---
@@ -50,9 +50,9 @@ Légende : ✅ couvert · 🟡 partiel / dispersé / potentiellement périmé ·
 |---|---|---|---|---|
 | **Risk gate** | `execution/risk` | ✅ | **`reference/risk-gate.md`** | — |
 | Plans armés (EXECUTE_ORDER) | `planning/indicator_watch`, `planning/trade_plan`, `runtime/daemon` | ✅ | archi §3.5, §4.3 ; registre | D7B, D11, D12 |
-| Admission d'ordre | `application/order_admission` | 🟡 | archi §3.7 | — |
-| Allocateur budget gross | `market/gross_priority` | 🟡 | spec 06-30 | — |
-| Exécution / broker | `tools/execution`, `tools/portfolio` | 🟡 | archi §3.8 | — |
+| Admission d'ordre | `application/order_admission` | ✅ | **`reference/execution.md`** | — |
+| Allocateur budget gross | `market/gross_priority` | ✅ | **`reference/execution.md`** | — |
+| Exécution / broker | `tools/execution`, `tools/portfolio` | ✅ | **`reference/execution.md`** | — |
 | Sorties automatiques | `planning/exit_engine` | ✅ | archi §4 | — |
 | Stops & résolution au tir | `planning/exit_engine` (`resolve_exit_plan`) | ✅ | archi §5 | D11 |
 
@@ -61,7 +61,7 @@ Légende : ✅ couvert · 🟡 partiel / dispersé / potentiellement périmé ·
 |---|---|---|---|---|
 | Sources marché & fraîcheur | `tools/data_source`, `tools/market`, `tools/ib_source` | ✅ | archi §3.2 | — |
 | **Conversion FX** | `market/fx`, `market/fx_rates` | ✅ | **`reference/fx.md`** | chantier FX |
-| Fil d'actu (news) | `tools/news_feed` | 🟡 | archi §13 ; spec 06-23 | — |
+| Fil d'actu (news) | `tools/news_feed` | ✅ | **`reference/news.md`** | — |
 | Macro | `market/macro_calendar`, `market/macro_series` | ✅ | **`reference/macro.md`** | — |
 | Cycle de vie / rotation | `runtime/ledger_rotation`, `reporting/decision_ledger` | ✅ | archi §12 | — |
 | État persistant | `state/*.jsonl`, `trade_plans.json`, `scheduler.json` | ✅ | archi §8 | — |
@@ -70,7 +70,7 @@ Légende : ✅ couvert · 🟡 partiel / dispersé / potentiellement périmé ·
 | Sous-système | Package/module | Réf | Où | Décisions |
 |---|---|---|---|---|
 | Radar / rotation / hot-sets | `rotation/*` (core, venues, collectors, schedule, override, wiring) | ✅ | **`reference/universe-rotation.md`** | D9, D10, D13 |
-| Régime familial | `market/family_regime`, `market/regime` | 🟡 | — | D2 |
+| Régime (marché + familial) | `market/regime`, `market/family_regime` | ✅ | **`reference/regime.md`** | D2 |
 | Config univers & portefeuille | `config/*.yaml`, `config/pool`, `config/portfolio` | ✅ | **`reference/config.md`** | D9/D10/D13 |
 
 ### LLM & agent
@@ -78,10 +78,10 @@ Légende : ✅ couvert · 🟡 partiel / dispersé / potentiellement périmé ·
 |---|---|---|---|---|
 | Transport LLM / acpx | `agent/llm`, `agent/client` | ✅ | archi §9.1-9.2 | — |
 | Contrat / protocole (prompts + mandat) | `agent_protocol/` (types, prompts, parsing), `mandate/` | ✅ | **`reference/llm-contract.md`** | — |
-| Contexte agent | `agent/context` | 🟡 | archi §3.3 | — |
+| Contexte agent (cockpit) | `agent/context` | ✅ | **`reference/agent-context.md`** | — |
 | Outils domaine (read-only) | `agent_tools/` (9 handlers) | ✅ | **`reference/agent-tools.md`** | — |
 | Mémoire / recall / learnings (RAG) | `learnings/` (store, consolidator, embeddings) | ✅ | **`reference/learnings-rag.md`** | — |
-| Couche sémantique | `semantic/catalog` | 🟡 | — | — |
+| Couche sémantique | `semantic/catalog` | ✅ | **`reference/semantic.md`** | — |
 
 ### Observabilité
 | Sous-système | Package/module | Réf | Où | Décisions |
@@ -109,10 +109,10 @@ Les 5 trous prioritaires identifiés à la v2 sont comblés :
 4. ~~Cockpit & attribution~~ ✅ [`cockpit`](reference/cockpit.md) · [`reporting`](reference/reporting.md)
 5. ~~Config univers/portefeuille~~ ✅ [`reference/config.md`](reference/config.md)
 
-**Reste en 🟡 dans la carte** (moins prioritaire, à traiter au fil de l'eau) :
-admission d'ordre (`application/order_admission`), budget gross, exécution/broker,
-news, régime familial, contexte agent, sémantique. Chacun mérite sa page
-`reference/` quand on y touche.
+**Couverture complète ✅ (2026-07-03)** — tous les sous-systèmes de la carte ont
+désormais une page `reference/` **fact-checkée** (13 pages reference + 3 how-to). Il
+n'y a plus de trou. Maintenir : quand un module change, mettre à jour sa page (lire
+code → éditer → re-fact-check si substantiel).
 
 Méthode : lire le code → écrire la page `reference/` (comportement/invariants/codes)
 → passer la ligne ✅ dans la carte. Un fact-check Codex de chaque réf vs le code
