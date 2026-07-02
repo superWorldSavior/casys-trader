@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from trader.ledger_rotation import read_rows_with_archive
 from trader.tools.market import Bar
 
 from .data import DataError, HistoryStore
@@ -248,10 +249,16 @@ def score_from_ledger(
     band: float = BAND,
     days_buffer: int = 1,
     interval: str = "1h",
+    archive_dir: Path | None = None,
 ) -> dict:
-    """Score les décisions jugeables d'un ledger avec une clé de jointure stable."""
+    """Score les décisions jugeables d'un ledger avec une clé de jointure stable.
+
+    Si ``archive_dir`` est fourni (ou inféré depuis ``path``), les archives gzip
+    mensuelles sont chaînées avant le fichier vif pour couvrir l'historique complet.
+    """
     ledger_path = Path(path)
-    decisions = _read_ledger(ledger_path)
+    _archive = archive_dir if archive_dir is not None else ledger_path.parent / "archive"
+    decisions = list(read_rows_with_archive(ledger_path, _archive))
     judgeable, exclusions = _partition_decisions(decisions)
     symbols = sorted({str(decision["symbol"]) for decision in judgeable})
     start, end = _date_window(judgeable, days_buffer)

@@ -9,7 +9,7 @@ from typing import Sequence
 
 import yaml
 
-from . import attribution, code_version, daemon, decision_audit, decision_bench, decision_ledger
+from . import attribution, code_version, daemon, decision_audit, decision_bench, decision_ledger, ledger_rotation
 from .features import DEFAULT_INDICATORS, build_indicator_snapshot, compute_indicator_values
 from .semantic.catalog import FAMILIES, describe_semantic_layer, find_indicators, list_indicators, normalize_temporal_query
 from .tools import market
@@ -238,10 +238,12 @@ def _refresh_decision_audit_from_ledger() -> dict:
         return {"audit_updated": False, "audit_error": "invalid_json"}
     if not isinstance(payload, dict):
         return {"audit_updated": False, "audit_error": "invalid_payload"}
-    store = decision_ledger.DecisionLedgerStore(daemon.STATE_DIR / decision_ledger.DEFAULT_LEDGER_FILENAME)
+    ledger_path = daemon.STATE_DIR / decision_ledger.DEFAULT_LEDGER_FILENAME
+    archive_dir = daemon.STATE_DIR / "archive"
+    ledger_rows = list(ledger_rotation.read_rows_with_archive(ledger_path, archive_dir))
     refreshed = decision_audit.refresh_audit_payload(
         payload,
-        ledger_rows=store.read_all(),
+        ledger_rows=ledger_rows,
         audit_code_version=code_version.current_code_version(daemon.ROOT),
         include_missing_ledger_rows=True,
     )

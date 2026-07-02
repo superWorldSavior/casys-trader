@@ -38,6 +38,7 @@ from . import (
     family_regime,
     fx,
     fx_rates,
+    ledger_rotation,
     llm,
     meta_performance,
     relevance_gate,
@@ -3125,6 +3126,30 @@ def main(
     if not claim_pid_file(pid_file=_pid_file, pid=os.getpid()):
         log.error("daemon déjà vivant (pid file %s) — refus de démarrer un doublon", _pid_file)
         return 1
+
+    # D-c : rotation mensuelle des ledgers JSONL au démarrage, avant la boucle
+    # et avant toute création de DecisionLedgerStore (le cache d'IDs sera
+    # initialisé sur le fichier vif déjà tourné).
+    _archive_dir = STATE_DIR / "archive"
+    _rotation_now = now()
+    for _rot_path, _rot_ts_key in (
+        (STATE_DIR / decision_ledger.DEFAULT_LEDGER_FILENAME, "cycle_ts"),
+        (STATE_DIR / "events.jsonl", "ts"),
+    ):
+        try:
+            _rot_result = ledger_rotation.rotate_monthly(
+                _rot_path, _archive_dir, now=_rotation_now, ts_key=_rot_ts_key
+            )
+            if _rot_result["archived"]:
+                log.info(
+                    "[rotation] %s : archived=%d kept=%d files=%s",
+                    _rot_path.name,
+                    _rot_result["archived"],
+                    _rot_result["kept"],
+                    _rot_result["files"],
+                )
+        except Exception as _rot_exc:  # noqa: BLE001
+            log.warning("[rotation] échec sur %s : %s", _rot_path.name, _rot_exc)
 
     sched = scheduler.Scheduler(STATE_DIR / "scheduler.json")
     log.info("daemon démarré (dry_run=%s, once=%s)", dry_run, args.once)
