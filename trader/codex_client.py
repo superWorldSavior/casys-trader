@@ -480,6 +480,23 @@ def _indicator_watch_vocabulary() -> str:
     )
 
 
+_TOOL_CATALOG = (
+    "# Outils domaine (OPTIONNELS — une seule tournée)\n"
+    "Si le cockpit suffit, rends directement le contrat final. Sinon tu peux demander\n"
+    "UNE tournée d'outils lecture-seule en répondant À LA PLACE du contrat final :\n"
+    '{"tool_calls": [{"id": "c1", "tool": "<nom>", "args": {...}}]}\n'
+    "Bornes : 3 appels max par symbole, 24 par lot. Outils :\n"
+    "- get_freshness{symbols:[…]} : exécution/planification/âge des données par symbole\n"
+    "- get_active_plans{symbol?,limit?} : veilles et plans armés actifs (corrige au lieu d'empiler)\n"
+    "- get_position_risk{symbol} : position, exposition USD, bornes de risque\n"
+    "- get_attribution{scope:summary|confidence|exit_reason|symbol, symbol?} : perf attribuée compacte\n"
+    "- get_recent_decisions{symbol?,limit?} : dernières décisions et blocages du ledger\n"
+    "- get_indicator_context{symbol,indicators:[…],timeframe?,lookback?,window?,as_of?} : cube indicateurs borné\n"
+    "Après la tournée tu recevras `tool_results` par symbole et tu DEVRAS rendre le contrat final\n"
+    "(toute nouvelle tournée sera bloquée en HOLD).\n\n"
+)
+
+
 def build_batch_prompt(
     *,
     mandate: str,
@@ -487,6 +504,7 @@ def build_batch_prompt(
     shared_context: dict,
     symbols_payload: list[dict],
     allow_context_request: bool = False,
+    allow_tool_calls: bool = False,
 ) -> str:
     """Prompt batch : contexte PARTAGÉ (cockpit/portefeuille/KPI/attribution/learnings)
     envoyé UNE fois, puis la liste des symboles à décider -> un seul appel modèle."""
@@ -502,6 +520,7 @@ def build_batch_prompt(
         f"# Mémoire / stratégie\n{memory}\n\n"
         f"{_DECISION_GUIDANCE}"
         f"{_indicator_watch_vocabulary()}"
+        f"{_TOOL_CATALOG if allow_tool_calls else ''}"
         f"# Contexte partagé (JSON)\n{json.dumps(shared_context, ensure_ascii=False)}\n\n"
         f"# Symboles à décider (JSON)\n{json.dumps(symbols_payload, ensure_ascii=False)}\n\n"
         f"# Contrat de sortie\n{contract}\n"
@@ -766,11 +785,13 @@ def decide_batch(
     model: str = DEFAULT_MODEL,
     timeout_s: int = 900,
     allow_context_request: bool = False,
+    allow_tool_calls: bool = False,
     llm_router: llm.LlmRouter | None = None,
-) -> dict[str, Decision | ContextResearchRequest]:
+) -> dict[str, Decision | ContextResearchRequest] | BatchToolCallRequest:
     """UN seul appel modèle pour TOUS les symboles dus : le contexte partagé n'est
     envoyé qu'une fois (vs N fois en mode par-symbole). Isolation per-élément +
-    tout échec -> HOLD. Retourne un dict symbole -> Decision|ContextResearchRequest."""
+    tout échec -> HOLD. Retourne un dict symbole -> Decision|ContextResearchRequest,
+    ou un BatchToolCallRequest si le LLM demande une tournée d'outils (flag actif)."""
     if not symbols:
         return {}
     payload = [{"symbol": sym, **(per_symbol.get(sym) or {})} for sym in symbols]
@@ -780,10 +801,18 @@ def decide_batch(
         shared_context=shared_context,
         symbols_payload=payload,
         allow_context_request=allow_context_request,
+        allow_tool_calls=allow_tool_calls,
     )
     router = llm_router or llm.build_default_router_from_env(acpx_bin=acpx_bin, spark_model=model)
     completion = router.complete(prompt, timeout_s=timeout_s)
     if isinstance(completion, llm.LlmFailure):
         return {sym: _hold_from_llm_failure(sym, completion) for sym in symbols}
+    if allow_tool_calls:
+        results = parse_batch_or_tool_calls(
+            completion.text, symbols, allow_context_request=allow_context_request
+        )
+        if isinstance(results, BatchToolCallRequest):
+            return _attach_llm_metadata(results, completion)
+        return {sym: _attach_llm_metadata(resp, completion) for sym, resp in results.items()}
     results = parse_batch(completion.text, symbols, allow_context_request=allow_context_request)
     return {sym: _attach_llm_metadata(resp, completion) for sym, resp in results.items()}

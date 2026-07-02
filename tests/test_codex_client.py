@@ -421,3 +421,56 @@ def test_parse_batch_or_tool_calls_tool_calls_vides_ne_declenchent_pas():
     raw = '{"tool_calls": [], "decisions": [{"symbol": "2330.TW", "action": "HOLD", "quantity": 0, "confidence": 0, "rationale": "r", "decision_reason_code": "NO_EDGE"}]}'
     out = codex_client.parse_batch_or_tool_calls(raw, ["2330.TW"], allow_context_request=False)
     assert isinstance(out, dict)
+
+
+# ── Task 8 : catalogue d'outils au prompt + decide_batch(allow_tool_calls) ────
+
+def test_build_batch_prompt_sans_flag_ne_mentionne_pas_les_outils():
+    prompt = codex_client.build_batch_prompt(
+        mandate="m", memory="mem", shared_context={}, symbols_payload=[{"symbol": "2330.TW"}],
+        allow_context_request=True,
+    )
+    assert "tool_calls" not in prompt
+
+
+def test_build_batch_prompt_avec_flag_expose_le_catalogue():
+    prompt = codex_client.build_batch_prompt(
+        mandate="m", memory="mem", shared_context={}, symbols_payload=[{"symbol": "2330.TW"}],
+        allow_context_request=True, allow_tool_calls=True,
+    )
+    assert '"tool_calls"' in prompt
+    assert "get_freshness" in prompt
+    assert "get_indicator_context" in prompt
+
+
+def test_decide_batch_retourne_la_tournee_quand_le_llm_la_demande(monkeypatch):
+    class _Router:
+        def complete(self, prompt, *, timeout_s):
+            return LlmCompletion(
+                provider="acpx", model="gpt-5.5",
+                text='{"tool_calls": [{"id": "c1", "tool": "get_freshness", "args": {"symbols": ["2330.TW"]}}]}',
+                fallback_reason=None,
+            )
+    out = codex_client.decide_batch(
+        symbols=["2330.TW"], mandate="m", memory="mem", shared_context={},
+        per_symbol={"2330.TW": {}}, llm_router=_Router(), allow_tool_calls=True,
+    )
+    assert isinstance(out, codex_client.BatchToolCallRequest)
+    assert out.llm_provider == "acpx"
+
+
+def test_decide_batch_sans_flag_ignore_les_tool_calls(monkeypatch):
+    class _Router:
+        def complete(self, prompt, *, timeout_s):
+            return LlmCompletion(
+                provider="acpx", model="gpt-5.5",
+                text='{"tool_calls": [{"id": "c1", "tool": "get_freshness", "args": {}}]}',
+                fallback_reason=None,
+            )
+    out = codex_client.decide_batch(
+        symbols=["2330.TW"], mandate="m", memory="mem", shared_context={},
+        per_symbol={"2330.TW": {}}, llm_router=_Router(), allow_tool_calls=False,
+    )
+    # flag éteint => parse_batch classique => pas de clé decisions => HOLD fail-safe
+    assert isinstance(out, dict)
+    assert out["2330.TW"].action == "HOLD"
