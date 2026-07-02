@@ -36,7 +36,7 @@ from typing import Any
 
 import yaml
 
-from trader.tools.market import Bar, MarketError
+from trader.domain.market_data import Bar, MarketError
 
 # ---------------------------------------------------------------------------
 # Tables de mapping (constantes nommées, AX: Explicit over Implicit)

@@ -9,7 +9,8 @@ from typing import Sequence
 
 import yaml
 
-from trader.runtime import code_version, daemon, ledger_rotation
+from trader.metadata import code_version
+from trader.runtime import daemon, ledger_rotation
 from trader.semantic.catalog import FAMILIES, describe_semantic_layer, find_indicators, list_indicators, normalize_temporal_query
 from trader.tools import market
 from trader.market.features import DEFAULT_INDICATORS, build_indicator_snapshot, compute_indicator_values

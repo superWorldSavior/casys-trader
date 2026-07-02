@@ -15,22 +15,14 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
+from trader.domain.market_data import Bar, MarketError
+
 try:
     import exchange_calendars as _ec
     import pandas as _pd
     _EC_AVAILABLE = True
 except ImportError:
     _EC_AVAILABLE = False
-
-
-@dataclass(frozen=True)
-class Bar:
-    ts: str  # ISO 8601
-    open: float
-    high: float
-    low: float
-    close: float
-    volume: float
 
 
 @dataclass(frozen=True)
@@ -437,15 +429,6 @@ def clamp_wake_to_session_open(
     # max(1.0, ...) plancher sur les DEUX chemins : un wake_minutes <= 0 (ex. CLI
     # mal validé) ne doit jamais produire un réveil immédiat/négatif.
     return max(1.0, min(wake_minutes, capped_minutes))
-
-
-class MarketError(Exception):
-    """Erreur d'accès marché. code machine-readable + contexte."""
-
-    def __init__(self, code: str, context: str):
-        self.code = code
-        self.context = context
-        super().__init__(f"{code}: {context}")
 
 
 def _aggregate_sequential_bars(bars: list[Bar], *, group_size: int) -> list[Bar]:

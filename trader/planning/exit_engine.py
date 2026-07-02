@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from datetime import datetime
 
-from trader.tools.execution import Side
+from trader.domain.orders import Side
 from .trade_plan import ProfitProtection, TakeProfit, TradePlan
 
 

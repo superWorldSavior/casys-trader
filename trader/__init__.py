@@ -17,7 +17,7 @@ __version__ = "0.1.0"
 
 _COMPAT_MODULES = {
     "agent_context": "trader.agent.context",
-    "code_version": "trader.runtime.code_version",
+    "code_version": "trader.metadata.code_version",
     "codex_client": "trader.agent.client",
     "consolidator": "trader.learnings.consolidator",
     "decision_audit": "trader.reporting.decision_audit",
@@ -43,7 +43,7 @@ _COMPAT_MODULES = {
     "palette": "trader.ui.palette",
     "pool_config": "trader.config.pool",
     "portfolio_config": "trader.config.portfolio",
-    "process_env": "trader.runtime.process_env",
+    "process_env": "trader.system.process_env",
     "radar": "trader.market.radar",
     "radar_config": "trader.market.radar_config",
     "radar_data": "trader.market.radar_data",

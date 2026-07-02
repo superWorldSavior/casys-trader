@@ -7,5 +7,6 @@ __all__ = [
     "ib_attach",
     "ledger_rotation",
     "logging_setup",
+    "pid_file",
     "process_env",
 ]

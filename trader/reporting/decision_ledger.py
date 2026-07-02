@@ -12,8 +12,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from trader.metadata import code_version
 from trader.reporting import decision_reason
-from trader.runtime import code_version
 
 SCHEMA_VERSION = 1
 DEFAULT_LEDGER_FILENAME = "decisions.jsonl"

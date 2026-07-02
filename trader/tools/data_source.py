@@ -12,7 +12,7 @@ import logging
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
-from trader.tools.market import Bar, MarketError
+from trader.domain.market_data import Bar, MarketError
 
 log = logging.getLogger(__name__)
 

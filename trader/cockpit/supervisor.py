@@ -25,7 +25,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
 
-from trader.runtime.process_env import sanitized_runtime_env
+from trader.runtime.pid_file import claim_pid_file as claim_pid_file
+from trader.runtime.pid_file import release_pid_file as release_pid_file
+from trader.system.process_env import sanitized_runtime_env
 
 # Taille maximale de daemon_console.log avant rotation (5 Mo)
 MAX_LOG_SIZE_BYTES: int = 5 * 1024 * 1024
@@ -286,34 +288,6 @@ class StopResult:
     stopped: bool
     pid: int | None = None
     reason: str = ""  # "sigint_sent" | "no_daemon" | "pid_dead" | "identity_mismatch"
-
-
-def claim_pid_file(*, pid_file: Path, pid: int) -> bool:
-    """Revendique daemon.pid pour `pid`. Refuse si un daemon vivant le détient.
-
-    Anti-doublon côté daemon : un second daemon ne doit ni démarrer ni écraser
-    le pid file du daemon légitime (sinon, à son arrêt, il le supprime et le
-    cockpit perd Maj+X / Q sur le daemon survivant).
-    """
-    if pid_file.exists():
-        try:
-            existing = int(pid_file.read_text(encoding="utf-8").strip())
-        except (ValueError, OSError):
-            existing = None
-        if existing is not None and existing != pid and _is_daemon_pid(existing):
-            return False
-    pid_file.parent.mkdir(parents=True, exist_ok=True)
-    pid_file.write_text(str(pid), encoding="utf-8")
-    return True
-
-
-def release_pid_file(*, pid_file: Path, pid: int) -> None:
-    """Supprime daemon.pid seulement s'il contient encore `pid` (jamais celui d'un autre)."""
-    try:
-        if pid_file.exists() and int(pid_file.read_text(encoding="utf-8").strip()) == pid:
-            pid_file.unlink(missing_ok=True)
-    except (ValueError, OSError):
-        pass
 
 
 def _pid_from_status(status_file: Path | None) -> int | None:

@@ -564,8 +564,8 @@ def test_claim_pid_file_refuse_si_daemon_vivant_etranger(tmp_path, monkeypatch):
     pid_file = tmp_path / "daemon.pid"
     pid_file.write_text("11111", encoding="utf-8")
 
-    monkeypatch.setattr("trader.cockpit.supervisor.os.kill", lambda p, s: None)  # vivant
-    monkeypatch.setattr("trader.cockpit.supervisor._get_cmdline", lambda p: "python -m trader.daemon --live")
+    monkeypatch.setattr("trader.runtime.pid_file.os.kill", lambda p, s: None)  # vivant
+    monkeypatch.setattr("trader.runtime.pid_file._get_cmdline", lambda p: "python -m trader.daemon --live")
 
     assert claim_pid_file(pid_file=pid_file, pid=22222) is False
     assert pid_file.read_text(encoding="utf-8") == "11111"  # pas écrasé
@@ -577,7 +577,7 @@ def test_claim_pid_file_ecrit_si_pid_mort_ou_absent(tmp_path, monkeypatch):
     def dead_kill(pid, sig):
         raise ProcessLookupError
 
-    monkeypatch.setattr("trader.cockpit.supervisor.os.kill", dead_kill)
+    monkeypatch.setattr("trader.runtime.pid_file.os.kill", dead_kill)
 
     assert claim_pid_file(pid_file=pid_file, pid=22222) is True  # absent
     assert pid_file.read_text(encoding="utf-8") == "22222"

@@ -56,8 +56,9 @@ from trader.planning.trade_plan import (
     resolve_exit_plan,
     validate_exit_plan,
 )
+from trader.metadata import code_version
 from trader.reporting import attribution, decision_ledger, meta_performance, stats
-from trader.runtime import code_version, ledger_rotation
+from trader.runtime import ledger_rotation
 from trader.runtime.ib_attach import IBAttachBackoff
 from trader.tools import market, memory as memory_mod, news_feed, portfolio, scheduler
 from trader.tools.execution import (
@@ -2758,7 +2759,7 @@ def main(
     # Identité daemon : revendiquer le pid file en premier (avant tout _write_status).
     # Refus si un daemon vivant le détient déjà — un doublon qui écrase puis supprime
     # daemon.pid à son arrêt rend le daemon légitime inarrêtable depuis le cockpit.
-    from trader.cockpit.supervisor import claim_pid_file, release_pid_file
+    from trader.runtime.pid_file import claim_pid_file, release_pid_file
 
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     news_feed.set_default_news_archive(STATE_DIR / "news_items")

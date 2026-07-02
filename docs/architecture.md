@@ -43,24 +43,41 @@ les utilisaient :
 | `trader/agent/` | Contexte agent, façade planner, transport LLM/acpx | compat : `trader.agent_context`, `trader.codex_client`, `trader.llm` |
 | `trader/agent_protocol/` | Types, prompts, parsing du contrat LLM | utilisé par `trader/agent/client.py` |
 | `trader/agent_tools/` | Package des outils domaine lecture seule | `registry.TOOL_REGISTRY` assemble 9 handlers |
+| `trader/domain/` | Primitives neutres (`Bar`, `MarketError`, `Side`) | évite que `market`/`planning` importent `tools` |
 | `trader/planning/` | Plans de trade, veilles, exit engine, gate de pertinence | compat : `trader.trade_plan`, `trader.indicator_watch`, `trader.exit_engine`, `trader.relevance_gate` |
 | `trader/execution/risk.py` | RiskGate et limites d'exposition | compat : `trader.risk` |
 | `trader/learnings/` | Store SQLite, embeddings, consolidateur | compat : `trader.learnings_store`, `trader.embeddings`, `trader.consolidator` |
 | `trader/market/` | Indicateurs, FX, macro, radar, régime marché, priorisation gross exposure | anciens imports `trader.fx`, `trader.features`, etc. gardés en compat |
 | `trader/config/` | Loaders de configuration runtime (`pool`, `portfolio`) | retire les loaders transverses de la racine `trader/` |
 | `trader/rotation/` | Rotation d'univers, hot-sets par venue, schedule, override, ledger rotation | `trader.rotation` réexporte l'ancien core |
+| `trader/metadata/` | Métadonnées git/code version | utilisé par runtime et reporting sans cycle |
 | `trader/reporting/` | Ledger décision, raisons, audit ex-post, attribution, stats, tool usage, meta-performance | alias compat via `trader.__init__` |
-| `trader/runtime/` | Daemon, CLI, logging, version, IB attach, rotation ledger, helpers process | `trader.daemon` et `trader.cli` sont des packages proxy pour `python -m` |
+| `trader/system/` | Helpers système neutres (`process_env`) | partagé par agent/cockpit/runtime sans dépendance runtime |
+| `trader/runtime/` | Daemon, CLI, logging, PID file, IB attach, rotation ledger | `trader.daemon` et `trader.cli` sont des packages proxy pour `python -m` |
 | `trader/read_models/runtime_state.py` | Lecture tolérante des fichiers `state/` pour TUI/cockpit | ne participe pas aux décisions live |
 | `trader/cockpit/` | App Textual, événements cockpit, supervisor local | `trader.cockpit` reste runnable |
 | `trader/ui/` | Builders Rich purs, TUI textuelle, palette | `trader.tui`, `trader.stats`, `trader.attribution`, `trader.tool_usage` restent des wrappers CLI |
 
-Le choix volontaire est de ne pas créer encore `domain/`, `ports/` ou
-`adapters/` génériques tant que les slices runtime existants suffisent. Le
-monolithe reste modulaire, pas frameworkisé. Les contrats Python (`Protocol`,
-alias de types) vivent près des consommateurs : `DecisionRecorder` nomme ses
-stores injectés, `MarketSnapshot` nomme sa source de données, et `agent_tools`
-nomme ses providers sans créer de couche abstraite globale.
+Le choix volontaire reste de ne pas frameworkiser en `ports/`/`adapters`
+génériques. En revanche, trois packages neutres existent maintenant parce qu'ils
+suppriment des cycles réels :
+
+- `domain/` porte les primitives stables partagées par `market`, `planning` et
+  `tools` ;
+- `metadata/` porte la version git utilisée par `runtime` et `reporting` ;
+- `system/` porte les helpers de processus utilisés par l'agent et le cockpit.
+
+Les anciens imports restent compatibles quand ils existaient déjà
+(`trader.tools.market.Bar`, `trader.tools.execution.Side`,
+`trader.runtime.code_version`, `trader.process_env`), mais les imports internes
+doivent viser les packages neutres. Les tests `tests/test_package_layout.py`,
+`tests/test_code_version_imports.py` et `tests/test_runtime_pid_file.py`
+gardent ces frontières.
+
+Le graphe de packages n'a plus de cycle mutuel connu. Les dépendances montantes
+acceptées sont concentrées dans `trader/runtime/daemon.py`, composition root qui
+orchestre les side effects ; les modules métier ne doivent pas importer le
+runtime pour accéder à des primitives ou à des métadonnées.
 
 ---
 

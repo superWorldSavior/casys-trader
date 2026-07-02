@@ -1,3 +1,4 @@
+import ast
 import subprocess
 import sys
 from pathlib import Path
@@ -69,6 +70,66 @@ def test_legacy_daemon_and_cli_python_m_entrypoints() -> None:
         assert "usage:" in result.stdout
 
 
+def test_market_and_planning_use_domain_primitives_instead_of_tools() -> None:
+    trader_dir = Path(__file__).resolve().parents[1] / "trader"
+    checked_roots = (trader_dir / "market", trader_dir / "planning")
+    forbidden_modules = {"trader.tools.market", "trader.tools.execution"}
+
+    violations: list[str] = []
+    for root in checked_roots:
+        for path in sorted(root.rglob("*.py")):
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            rel_path = path.relative_to(trader_dir.parent)
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ImportFrom) and node.module in forbidden_modules:
+                    violations.append(f"{rel_path}: from {node.module} import ...")
+                elif isinstance(node, ast.ImportFrom) and node.module == "trader.tools":
+                    forbidden_names = {
+                        alias.name
+                        for alias in node.names
+                        if f"trader.tools.{alias.name}" in forbidden_modules
+                    }
+                    if forbidden_names:
+                        violations.append(f"{rel_path}: from trader.tools import {sorted(forbidden_names)}")
+                elif isinstance(node, ast.Import):
+                    for alias in node.names:
+                        if alias.name in forbidden_modules:
+                            violations.append(f"{rel_path}: import {alias.name}")
+
+    assert violations == []
+
+
+def test_agent_package_does_not_depend_on_runtime_package() -> None:
+    trader_dir = Path(__file__).resolve().parents[1] / "trader"
+    agent_dir = trader_dir / "agent"
+
+    violations: list[str] = []
+    for path in sorted(agent_dir.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        rel_path = path.relative_to(trader_dir.parent)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module and node.module.startswith("trader.runtime"):
+                violations.append(f"{rel_path}: from {node.module} import ...")
+            elif isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name.startswith("trader.runtime"):
+                        violations.append(f"{rel_path}: import {alias.name}")
+
+    assert violations == []
+
+
+def test_tool_primitive_imports_are_compatibility_aliases() -> None:
+    from trader.domain.market_data import Bar, MarketError
+    from trader.domain.orders import Side
+    from trader.tools.execution import Side as LegacySide
+    from trader.tools.market import Bar as LegacyBar
+    from trader.tools.market import MarketError as LegacyMarketError
+
+    assert LegacyBar is Bar
+    assert LegacyMarketError is MarketError
+    assert LegacySide == Side
+
+
 def test_agent_protocol_prompts_do_not_import_agent_context() -> None:
     repo_root = Path(__file__).resolve().parents[1]
     code = (
@@ -77,6 +138,36 @@ def test_agent_protocol_prompts_do_not_import_agent_context() -> None:
         "assert 'trader.agent.context' not in sys.modules, "
         "sorted(name for name in sys.modules if name.startswith('trader.agent'))"
     )
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_agent_protocol_type_import_stays_light() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    code = """
+import sys
+
+from trader.agent_protocol import IndicatorRequest
+
+assert IndicatorRequest.__module__ == "trader.agent_protocol.types"
+loaded = set(sys.modules)
+for name in (
+    "trader.market",
+    "trader.planning",
+    "trader.reporting",
+    "trader.semantic",
+    "trader.agent",
+):
+    assert name not in loaded, sorted(m for m in loaded if m.startswith("trader."))
+"""
     result = subprocess.run(
         [sys.executable, "-c", code],
         cwd=repo_root,
