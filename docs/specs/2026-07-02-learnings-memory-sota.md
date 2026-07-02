@@ -113,9 +113,10 @@ La convergence majeure est un consensus anti-infrastructure : à l'échelle agen
 
 - **Embeddings : OpenAI API** (et non Qwen3/Ollama local). Conséquences :
   corpus pré-calculé en batch offline (coût négligeable à ce volume), la query
-  du recall coûte ~100-300 ms réseau (budget <1 s toujours tenu), et le
-  retrieval doit dégrader proprement en facettes+BM25 si l'API est
-  indisponible (le cycle live ne dépend jamais d'un service externe).
+  du recall coûte ~100-300 ms réseau (budget <1 s toujours tenu). Pas de
+  mode dégradé dédié (décision Erwan : l'API sera joignable) — un échec
+  ponctuel est couvert par le contrat d'outil standard (outcome=error
+  compact, la décision continue sans recall).
 - Le phasage d'implémentation validé vit dans la mémoire projet
   (chantier learnings-rag) : store SQLite + FLAIR bootstrap → outil
   recall_learnings + traçage des injections → decay par régime + MemRL →
