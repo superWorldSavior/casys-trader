@@ -13,7 +13,12 @@ from trader.market.features import (
     swing_low,
 )
 from trader.market.regime import classify_regime, multi_horizon_signals
-from trader.semantic.catalog import family_for_symbol, normalize_temporal_query
+from trader.semantic.catalog import (
+    INDICATOR_ALIASES,
+    INDICATOR_COLUMNS,
+    family_for_symbol,
+    normalize_temporal_query,
+)
 from trader.tools import market
 
 COCKPIT_INDICATORS = [
@@ -35,29 +40,11 @@ _REGIME_EXTRA_INDICATORS = [
     "candlestick_signal",
 ]
 
-_INDICATOR_COLUMNS = {
-    "return": "r",
-    "volatility": "vol",
-    "ohlc_volatility": "ohv",
-    "z_score": "z",
-    "efficiency_ratio": "er",
-    "autocorrelation": "ac",
-    "relative_strength": "rs",
-    "spread_zscore": "sz",
-}
 _DAILY_INDICATOR_COLUMNS = {
     name: f"{column}_d"
-    for name, column in _INDICATOR_COLUMNS.items()
+    for name, column in INDICATOR_COLUMNS.items()
     if name in COCKPIT_INDICATORS
 }
-
-# Mapping public nom canonique -> abréviation cockpit. Le prompt s'en sert pour
-# lever la confusion qui fait rejeter les watches (l'agent écrit l'abréviation
-# `er` vue dans le cockpit au lieu du nom canonique `efficiency_ratio` exigé).
-INDICATOR_COLUMNS = _INDICATOR_COLUMNS
-_INDICATOR_ALIASES = {abbrev: canonical for canonical, abbrev in INDICATOR_COLUMNS.items()}
-if len(_INDICATOR_ALIASES) != len(INDICATOR_COLUMNS):
-    raise ValueError("collision d'abréviations dans INDICATOR_COLUMNS")
 
 _FAMILY_CODES = {
     "indices": "idx",
@@ -166,7 +153,7 @@ def build_market_cockpit(
         if daily_bars_by_symbol
         else {}
     )
-    indicator_cols = [_INDICATOR_COLUMNS[name] for name in COCKPIT_INDICATORS]
+    indicator_cols = [INDICATOR_COLUMNS[name] for name in COCKPIT_INDICATORS]
     daily_indicator_cols = [_DAILY_INDICATOR_COLUMNS[name] for name in COCKPIT_INDICATORS]
     swing_cols = [name for w in _SWING_WINDOWS for name in (f"sl{w}", f"sh{w}")]
     cols = [
@@ -321,7 +308,7 @@ def resolve_indicator_requests(
             continue
         requested_names = []
         for name in getattr(request, "indicators", []):
-            canonical_name = _INDICATOR_ALIASES.get(str(name), str(name))
+            canonical_name = INDICATOR_ALIASES.get(str(name), str(name))
             if canonical_name in known:
                 requested_names.append(canonical_name)
         requested_names = requested_names[:max_indicators]

@@ -4,6 +4,9 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from trader import agent_tools  # noqa: F401 — utilisé dans les tâches 2+
+from trader.agent_tools.attribution import _MAX_DECISION_ROWS
+from trader.agent_tools.core import _MAX_RAW_CALLS, _SCRUB_ID_LEN
+from trader.agent_tools.indicators import _MAX_INDICATOR_MATCHES
 from trader.agent_tools import (
     AgentToolCall,
     AgentToolTrace,
@@ -28,13 +31,15 @@ def test_agent_tools_package_expose_public_registry():
     assert "ok" in ToolOutcome.__args__
 
 
-def test_agent_tools_package_reexporte_ancienne_surface_privee_compatible():
-    from trader.agent_tools import (
-        _MAX_PLAN_ROWS,
-        _handle_get_freshness,
-        _validate_get_active_plans,
-        _validate_get_indicator_context,
-    )
+def test_agent_tools_package_all_reste_une_api_publique_compacte():
+    import trader.agent_tools as agent_tools
+    from trader.agent_tools.freshness import _handle_get_freshness
+    from trader.agent_tools.indicators import _validate_get_indicator_context
+    from trader.agent_tools.plans import _MAX_PLAN_ROWS, _validate_get_active_plans
+
+    assert not any(name.startswith("_handle_") for name in agent_tools.__all__)
+    assert not any(name.startswith("_validate_") for name in agent_tools.__all__)
+    assert not any(name.startswith("_MAX_") for name in agent_tools.__all__)
 
     assert _MAX_PLAN_ROWS == 20
     assert _validate_get_indicator_context({"symbol": "AAA", "indicators": ["rsi14"]}) is None
@@ -332,7 +337,7 @@ def test_get_recent_decisions_borne_la_limite():
         AgentToolCall(id="c1", tool="get_recent_decisions", args={"symbol": "2330.TW", "limit": 999}),
         _providers_context(),
     )
-    assert len(result.result["rows"]) <= agent_tools._MAX_DECISION_ROWS
+    assert len(result.result["rows"]) <= _MAX_DECISION_ROWS
 
 
 # ---------------------------------------------------------------------------
@@ -443,7 +448,7 @@ def test_find_indicators_par_concept_borne():
         AgentToolCall(id="c1", tool="find_indicators", args={"concept": "momentum"}), _context())
     assert trace.outcome == "ok"
     rows = result.result["rows"]
-    assert 0 < len(rows) <= agent_tools._MAX_INDICATOR_MATCHES
+    assert 0 < len(rows) <= _MAX_INDICATOR_MATCHES
     assert all("name" in r and "description" in r for r in rows)
 
 
@@ -467,8 +472,8 @@ def test_execute_tool_round_cap_40_appels_a_32_plus_sentinel():
         raw, context=_context(), limits=agent_tools.ToolRoundLimits(max_total_calls=40),
         allowed_tools=frozenset({"echo"}), registry=registry,
     )
-    assert len(results) == agent_tools._MAX_RAW_CALLS
-    assert len(traces) == agent_tools._MAX_RAW_CALLS + 1
+    assert len(results) == _MAX_RAW_CALLS
+    assert len(traces) == _MAX_RAW_CALLS + 1
     sentinel = next(t for t in traces if t.outcome == agent_tools.OUTCOME_TRUNCATED)
     assert sentinel.detail["dropped"] == 8
 
@@ -498,8 +503,8 @@ def test_execute_tool_round_scrub_id_geant():
         allowed_tools=frozenset({"echo"}), registry=registry,
     )
     assert len(traces) == 1
-    assert len(traces[0].id) <= agent_tools._SCRUB_ID_LEN + 1  # +1 pour le marqueur "…"
-    assert len(results[0].id) <= agent_tools._SCRUB_ID_LEN + 1
+    assert len(traces[0].id) <= _SCRUB_ID_LEN + 1  # +1 pour le marqueur "…"
+    assert len(results[0].id) <= _SCRUB_ID_LEN + 1
 
 
 # ---------------------------------------------------------------------------

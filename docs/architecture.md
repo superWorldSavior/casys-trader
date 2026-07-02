@@ -437,8 +437,9 @@ Flag : `CASYS_AGENT_TOOLS_ENABLED=1` (actif ; visible au startup dans le log
 `[config] … agent_tools=True`).
 
 Le package `trader/agent_tools/` contient le core d'exécution bornée, les
-handlers par domaine et `registry.py`. `trader.agent_tools.__init__` réexporte la
-surface historique de l'ancien module `trader/agent_tools.py`.
+handlers par domaine et `registry.py`. `trader.agent_tools.__init__` réexporte
+seulement l'API publique d'exécution ; les validateurs/handlers privés restent
+dans leurs modules propriétaires.
 
 Le LLM reçoit UN prompt et peut répondre soit le contrat final, soit
 `{"tool_calls": [...]}` — UNE tournée max, puis décision finale obligatoire

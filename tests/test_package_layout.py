@@ -67,3 +67,23 @@ def test_legacy_daemon_and_cli_python_m_entrypoints() -> None:
 
         assert result.returncode == 0, result.stderr
         assert "usage:" in result.stdout
+
+
+def test_agent_protocol_prompts_do_not_import_agent_context() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    code = (
+        "import sys; "
+        "import trader.agent_protocol.prompts; "
+        "assert 'trader.agent.context' not in sys.modules, "
+        "sorted(name for name in sys.modules if name.startswith('trader.agent'))"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr

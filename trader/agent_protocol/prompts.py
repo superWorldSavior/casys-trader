@@ -4,12 +4,11 @@ from __future__ import annotations
 
 import json
 
-from trader.agent.context import INDICATOR_COLUMNS
 from trader.market.features import DEFAULT_INDICATORS
 from trader.planning import trade_plan
 from trader.planning.indicator_watch import WATCH_VALID_OPERATORS
 from trader.reporting import decision_reason
-from trader.semantic.catalog import INDICATOR_LABEL_VALUES
+from trader.semantic.catalog import INDICATOR_COLUMNS, INDICATOR_LABEL_VALUES
 
 # Énumérations `|`-jointes pour les schémas JSON inline des contrats, DÉRIVÉES des
 # sources de vérité (pas tapées à la main : une liste figée diverge en silence).
@@ -293,7 +292,7 @@ def _batch_compact_contract() -> str:
 def _indicator_watch_vocabulary() -> str:
     """Vocabulaire EXACT accepté par le validateur de watch, dérivé des sources de
     vérité (`features.DEFAULT_INDICATORS`, `indicator_watch.WATCH_VALID_OPERATORS`,
-    `agent_context.INDICATOR_COLUMNS`, `semantic.catalog.INDICATOR_LABEL_VALUES`) —
+    `semantic.catalog.INDICATOR_COLUMNS`, `semantic.catalog.INDICATOR_LABEL_VALUES`) —
     jamais recopié à la main pour ne pas diverger. But : l'agent emploie les noms
     canoniques (pas les abréviations du cockpit) et les opérateurs exacts, sinon la
     condition est rejetée."""

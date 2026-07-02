@@ -32,11 +32,11 @@ from typing import Any
 
 from trader.agent import client as codex_client
 from trader.agent.context import (
-    INDICATOR_COLUMNS,
     build_market_cockpit,
     resolve_indicator_requests,
 )
 from trader.market.features import DEFAULT_INDICATORS
+from trader.semantic.catalog import INDICATOR_COLUMNS
 from trader.tools.market import Bar
 
 SYMBOLS = ["SPY", "QQQ", "NVDA", "CL=F", "BZ=F", "GC=F"]

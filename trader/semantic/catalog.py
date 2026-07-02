@@ -29,6 +29,21 @@ INDICATOR_LABEL_VALUES: dict[str, dict[str, float]] = {
     },
 }
 
+INDICATOR_COLUMNS = {
+    "return": "r",
+    "volatility": "vol",
+    "ohlc_volatility": "ohv",
+    "z_score": "z",
+    "efficiency_ratio": "er",
+    "autocorrelation": "ac",
+    "relative_strength": "rs",
+    "spread_zscore": "sz",
+}
+
+INDICATOR_ALIASES = {abbrev: canonical for canonical, abbrev in INDICATOR_COLUMNS.items()}
+if len(INDICATOR_ALIASES) != len(INDICATOR_COLUMNS):
+    raise ValueError("collision d'abréviations dans INDICATOR_COLUMNS")
+
 
 def label_to_value(indicator: str, label: str) -> float | None:
     return INDICATOR_LABEL_VALUES.get(indicator, {}).get(label)
