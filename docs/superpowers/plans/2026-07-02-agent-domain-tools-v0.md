@@ -1666,6 +1666,137 @@ git commit -m "docs(agent-tools): statut design + flag CASYS_AGENT_TOOLS_ENABLED
 
 ---
 
+### Task 11: Outils sémantiques `describe_data` + `find_indicators` (extension validée par Erwan le 02/07)
+
+Expose la couche sémantique gouvernée (`trader/semantic/catalog.py` — TraderNexus)
+comme porte d'entrée de découverte : le LLM peut demander « qu'est-ce qui
+existe ? » avant de requêter le cube via `get_indicator_context`.
+
+**Files:**
+- Modify: `trader/agent_tools.py`, `trader/codex_client.py` (`_TOOL_CATALOG`)
+- Test: `tests/test_agent_tools.py` (append), `tests/test_codex_client.py` (append)
+
+**Interfaces:**
+- Consumes: `trader.semantic.catalog.find_indicators(concept: str) -> list[dict]` (recherche plein-texte sur name/label/description/category/concepts ; concept vide = tout), `catalog.TIMEFRAMES`, `catalog.WINDOWS`, `catalog.AS_OF_MODES`, `catalog.LEVELS`, `catalog.list_indicators()`.
+- Produces: `TOOL_REGISTRY["describe_data"]` (args: aucun) et `TOOL_REGISTRY["find_indicators"]` (args: `{"concept": str}`), résultats compacts et bornés.
+
+- [ ] **Step 1: Tests qui échouent**
+
+```python
+# append à tests/test_agent_tools.py
+
+def test_describe_data_rend_le_cube_compact():
+    result, trace = agent_tools.execute_tool_call(
+        AgentToolCall(id="c1", tool="describe_data", args={}), _context())
+    assert trace.outcome == "ok"
+    d = result.result
+    assert "1h" in d["timeframes"] and "lookbacks" in d["timeframes"]["1h"]
+    assert d["windows"] and d["as_of_modes"] == ["latest"]
+    # indicateurs en forme compacte : name + category, pas les specs complètes
+    assert all(set(i) <= {"name", "label", "category", "concepts"} for i in d["indicators"])
+
+
+def test_find_indicators_par_concept_borne():
+    result, trace = agent_tools.execute_tool_call(
+        AgentToolCall(id="c1", tool="find_indicators", args={"concept": "momentum"}), _context())
+    assert trace.outcome == "ok"
+    rows = result.result["rows"]
+    assert 0 < len(rows) <= agent_tools._MAX_INDICATOR_MATCHES
+    assert all("name" in r and "description" in r for r in rows)
+
+
+def test_find_indicators_concept_requis():
+    trace = validate_tool_call(
+        {"id": "c1", "tool": "find_indicators", "args": {}},
+        allowed_tools=frozenset({"find_indicators"}))
+    assert isinstance(trace, AgentToolTrace)
+    assert trace.detail["reason"] == "invalid_args"
+```
+
+```python
+# append à tests/test_codex_client.py
+
+def test_catalogue_prompt_expose_les_outils_semantiques():
+    prompt = codex_client.build_batch_prompt(
+        mandate="m", memory="mem", shared_context={}, symbols_payload=[{"symbol": "SPY"}],
+        allow_context_request=True, allow_tool_calls=True)
+    assert "describe_data" in prompt
+    assert "find_indicators" in prompt
+```
+
+- [ ] **Step 2: Vérifier l'échec**
+
+Run: `uv run pytest tests/test_agent_tools.py -k "describe_data or find_indicators" tests/test_codex_client.py -k semantiques -v`
+Expected: FAIL — `KeyError: 'describe_data'`
+
+- [ ] **Step 3: Implémenter**
+
+```python
+# append à trader/agent_tools.py
+# import en tête : from trader.semantic import catalog as semantic_catalog
+
+_MAX_INDICATOR_MATCHES = 12
+
+
+def _handle_describe_data(call: AgentToolCall, context: ToolContext) -> dict:
+    """Auto-description du cube sémantique (compacte : la découverte, pas les specs)."""
+    return {
+        "levels": list(semantic_catalog.LEVELS),
+        "timeframes": {
+            name: {"lookbacks": spec["lookbacks"], "default_lookback": spec["default_lookback"],
+                   "default_window": spec["default_window"], "style": spec["style"]}
+            for name, spec in semantic_catalog.TIMEFRAMES.items()
+        },
+        "windows": list(semantic_catalog.WINDOWS),
+        "as_of_modes": list(semantic_catalog.AS_OF_MODES),
+        "indicators": [
+            {k: ind[k] for k in ("name", "label", "category", "concepts") if k in ind}
+            for ind in semantic_catalog.list_indicators()
+        ],
+    }
+
+
+def _validate_find_indicators(args: dict) -> str | None:
+    if not isinstance(args.get("concept"), str) or not args["concept"].strip():
+        return "concept: str non vide requis (ex. 'momentum', 'volatilité')"
+    return None
+
+
+def _handle_find_indicators(call: AgentToolCall, context: ToolContext) -> dict:
+    matches = semantic_catalog.find_indicators(call.args["concept"])
+    rows = [
+        {k: ind[k] for k in ("name", "label", "category", "concepts", "description") if k in ind}
+        for ind in matches[:_MAX_INDICATOR_MATCHES]
+    ]
+    return {"rows": rows, "truncated": len(matches) > _MAX_INDICATOR_MATCHES}
+
+
+TOOL_REGISTRY["describe_data"] = ToolSpec(
+    name="describe_data", validate_args=lambda a: None, handler=_handle_describe_data)
+TOOL_REGISTRY["find_indicators"] = ToolSpec(
+    name="find_indicators", validate_args=_validate_find_indicators, handler=_handle_find_indicators)
+```
+
+```python
+# trader/codex_client.py — dans _TOOL_CATALOG, ajouter 2 lignes avant get_indicator_context :
+    "- describe_data{} : cube sémantique (timeframes/lookbacks valides, windows, indicateurs)\n"
+    "- find_indicators{concept} : cherche des indicateurs par concept (momentum, volatilité, …)\n"
+```
+
+- [ ] **Step 4: Vérifier le vert + suite complète**
+
+Run: `uv run ruff check && uv run pytest -q > /tmp/pytest-task11.log 2>&1; echo "EXIT=$?"`
+Expected: `All checks passed!` puis `EXIT=0`
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add trader/agent_tools.py trader/codex_client.py tests/test_agent_tools.py tests/test_codex_client.py
+git commit -m "feat(agent-tools): describe_data + find_indicators — la couche sémantique devient la porte de découverte"
+```
+
+---
+
 ## Hors périmètre de ce plan (suites du design)
 
 - Migration effective de `REQUEST_CONTEXT` vers `get_indicator_context` (Phase 3) : nécessite d'abord des traces live du tool round flag-on.
