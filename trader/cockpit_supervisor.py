@@ -25,6 +25,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
 
+from trader.process_env import sanitized_runtime_env
+
 # Taille maximale de daemon_console.log avant rotation (5 Mo)
 MAX_LOG_SIZE_BYTES: int = 5 * 1024 * 1024
 UTC = timezone.utc
@@ -262,6 +264,7 @@ def launch_daemon(
             start_new_session=True,
             close_fds=True,
             cwd=root,
+            env=sanitized_runtime_env(),
         )
 
         return LaunchResult(launched=True, pid=proc.pid, reason="launched")

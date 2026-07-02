@@ -328,6 +328,36 @@ def test_launch_daemon_stdout_stderr_vers_log_file(tmp_path, monkeypatch):
     assert log_file.exists()
 
 
+def test_launch_daemon_nettoie_l_environnement_runtime_pollue(tmp_path, monkeypatch):
+    """Le daemon ne doit pas hériter des toggles malloc/debug du shell appelant."""
+    pid_file = tmp_path / "daemon.pid"
+    log_file = tmp_path / "daemon_console.log"
+    root = tmp_path
+    status_file = tmp_path / "daemon_status.json"
+
+    monkeypatch.setenv("MallocStackLogging", "0")
+    monkeypatch.setenv("MallocStackLoggingNoCompact", "1")
+    monkeypatch.setenv("TRADER_OLLAMA_MODEL", "nemotron-3-ultra:cloud")
+    monkeypatch.setenv("PATH", "/tmp/codex-path:/opt/homebrew/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin:/usr/bin")
+
+    captured = {}
+
+    class FakePopen:
+        def __init__(self, *a, **kw):
+            captured.update(kw)
+            self.pid = 55555
+
+    monkeypatch.setattr("trader.cockpit_supervisor.subprocess.Popen", FakePopen)
+
+    launch_daemon(pid_file=pid_file, log_file=log_file, root=root, status_file=status_file)
+
+    env = captured["env"]
+    assert "MallocStackLogging" not in env
+    assert "MallocStackLoggingNoCompact" not in env
+    assert env["TRADER_OLLAMA_MODEL"] == "nemotron-3-ultra:cloud"
+    assert env["PATH"] == "/opt/homebrew/bin:/usr/bin"
+
+
 def test_launch_daemon_rotation_log_si_depasse_max(tmp_path, monkeypatch):
     """Si daemon_console.log > MAX_LOG_SIZE_BYTES, le log est tronqué (rotation)."""
     from trader.cockpit_supervisor import MAX_LOG_SIZE_BYTES

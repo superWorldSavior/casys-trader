@@ -5,7 +5,6 @@ import subprocess
 import trader.llm as llm
 from trader.llm import (
     AcpxBackend,
-    DEFAULT_SPARK_FALLBACK_MODEL,
     LlmCompletion,
     LlmFailure,
     LlmRouter,
@@ -279,6 +278,38 @@ def test_acpx_backend_isole_et_nettoie_le_process_group(monkeypatch) -> None:
     assert popen_calls[0][1]["text"] is True
     assert popen_calls[0][1]["start_new_session"] is True
     assert cleaned_pids == [4242]
+
+
+def test_run_one_shot_nettoie_l_environnement_runtime_pollue(monkeypatch) -> None:
+    monkeypatch.setenv("MallocStackLogging", "0")
+    monkeypatch.setenv("MallocStackLoggingNoCompact", "1")
+    monkeypatch.setenv("TRADER_OLLAMA_MODEL", "nemotron-3-ultra:cloud")
+    monkeypatch.setenv("PATH", "/tmp/codex-path:/opt/homebrew/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin:/usr/bin")
+    captured = {}
+
+    class FakePopen:
+        pid = 4242
+        returncode = 0
+
+        def __init__(self, command, **kwargs):
+            self.command = command
+            captured.update(kwargs)
+
+        def communicate(self, timeout=None):
+            return "OK", ""
+
+    monkeypatch.setattr("trader.llm.subprocess.Popen", FakePopen)
+    monkeypatch.setattr("trader.llm._terminate_process_group", lambda _pid: None)
+    monkeypatch.setattr("trader.llm._codex_acp_pids", lambda: set())
+
+    result = _run_one_shot_command(["acpx", "exec", "prompt"], timeout_s=12)
+
+    assert result.returncode == 0
+    env = captured["env"]
+    assert "MallocStackLogging" not in env
+    assert "MallocStackLoggingNoCompact" not in env
+    assert env["TRADER_OLLAMA_MODEL"] == "nemotron-3-ultra:cloud"
+    assert env["PATH"] == "/opt/homebrew/bin:/usr/bin"
 
 
 def test_codex_acp_pids_filtre_sur_lexecutable_exact(monkeypatch) -> None:

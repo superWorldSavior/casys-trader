@@ -19,6 +19,8 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable, Protocol
 
+from trader.process_env import sanitized_runtime_env
+
 DEFAULT_SPARK_MODEL = "gpt-5.5"
 DEFAULT_SPARK_FALLBACK_MODEL = "gpt-5.3-codex-spark"
 DEFAULT_OLLAMA_BASE_URL = "https://ollama.com/v1"
@@ -291,6 +293,7 @@ def _run_one_shot_command(command: list[str], *, timeout_s: int) -> subprocess.C
         stderr=subprocess.PIPE,
         text=True,
         start_new_session=os.name == "posix",
+        env=sanitized_runtime_env(),
     )
     try:
         stdout, stderr = proc.communicate(timeout=timeout_s)
