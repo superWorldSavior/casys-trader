@@ -15,6 +15,29 @@ from trader.agent_tools import (
 UTC = timezone.utc
 
 
+def test_agent_tools_package_expose_public_registry():
+    import trader.agent_tools as agent_tools
+    from trader.agent_tools import core, registry
+
+    assert agent_tools.TOOL_REGISTRY is registry.TOOL_REGISTRY
+    assert core.ToolContext is agent_tools.ToolContext
+    assert "get_freshness" in agent_tools.TOOL_REGISTRY
+
+
+def test_agent_tools_package_reexporte_ancienne_surface_privee_compatible():
+    from trader.agent_tools import (
+        _MAX_PLAN_ROWS,
+        _handle_get_freshness,
+        _validate_get_active_plans,
+        _validate_get_indicator_context,
+    )
+
+    assert _MAX_PLAN_ROWS == 20
+    assert _validate_get_indicator_context({"symbol": "AAA", "indicators": ["rsi14"]}) is None
+    assert _validate_get_active_plans({"symbol": "AAA", "limit": 1}) is None
+    assert callable(_handle_get_freshness)
+
+
 def _registry_with_echo() -> dict[str, ToolSpec]:
     """Registre de test : un outil 'echo' qui rend ses args."""
     def _validate(args: dict) -> str | None:
