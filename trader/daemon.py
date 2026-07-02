@@ -44,6 +44,7 @@ from . import (
     ledger_rotation,
     llm,
     macro_calendar,
+    macro_series,
     meta_performance,
     relevance_gate,
     stats,
@@ -3133,6 +3134,19 @@ def run_cycle(
         report["learning_consolidation"] = consolidation_result
         _write_current_report(report)
         _append_event("learning_consolidated", **consolidation_result)
+    # Collecte macro quotidienne best-effort (DBnomics, zéro clé API).
+    # Ne touche jamais au chemin de décision : avalée silencieusement si elle échoue.
+    try:
+        _macro_collect_result = macro_series.maybe_collect(STATE_DIR, now)
+        if _macro_collect_result.get("triggered"):
+            log.debug(
+                "macro_series: collected=%s skipped=%s errors=%s",
+                _macro_collect_result.get("collected", 0),
+                _macro_collect_result.get("skipped", 0),
+                _macro_collect_result.get("errors", 0),
+            )
+    except Exception:  # noqa: BLE001 — best-effort total, jamais d'impact cycle
+        pass
     # Mémorise les rejets gross de CE cycle pour les réinjecter au prochain (None
     # si aucun → efface un éventuel feedback périmé).
     _LAST_GROSS_REJECTIONS[str(STATE_DIR)] = summarize_gross_rejections(report["decisions"])
