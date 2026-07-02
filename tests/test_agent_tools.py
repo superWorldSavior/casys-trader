@@ -162,3 +162,71 @@ def test_execute_tool_round_budget_par_symbole():
     assert [r.ok for r in results] == [True, True, True, False]
     assert traces[3].outcome == "budget_exhausted"
     assert traces[3].detail["reason"] == "max_calls_per_symbol"
+
+
+# ---------------------------------------------------------------------------
+# Task 3 : get_freshness + get_active_plans (handlers lecture-seule)
+# ---------------------------------------------------------------------------
+
+def _full_context() -> ToolContext:
+    return ToolContext(
+        now=datetime(2026, 7, 2, 10, 0, tzinfo=UTC),
+        allowed_symbols=frozenset({"2330.TW", "SAF.PA"}),
+        data_age_by_symbol={"2330.TW": 12.4},
+        market_context_by_symbol={
+            "2330.TW": {"execution": {"enabled": False, "reason": "session_closed"},
+                        "planning": {"enabled": True}},
+        },
+        active_watches_by_symbol={
+            "2330.TW": [{"watch_id": "2330.TW:w1", "kind": "indicator_watch", "expires_at": "2026-07-03T01:00:00Z"}],
+        },
+    )
+
+
+def test_get_freshness_rend_execution_planning_et_age():
+    result, trace = agent_tools.execute_tool_call(
+        AgentToolCall(id="c1", tool="get_freshness", args={"symbols": ["2330.TW"]}),
+        _full_context(),
+    )
+    assert trace.outcome == "ok"
+    row = result.result["rows"][0]
+    assert row["symbol"] == "2330.TW"
+    assert row["data_age_m"] == 12
+    assert row["execution"] == {"enabled": False, "reason": "session_closed"}
+    assert row["planning"] == {"enabled": True}
+
+
+def test_get_freshness_symbole_hors_lot_marque_sans_crasher():
+    result, _ = agent_tools.execute_tool_call(
+        AgentToolCall(id="c1", tool="get_freshness", args={"symbols": ["EVIL"]}),
+        _full_context(),
+    )
+    assert result.ok is True
+    assert result.result["rows"][0] == {"symbol": "EVIL", "error": "symbol_not_allowed"}
+
+
+def test_get_freshness_valide_ses_args():
+    trace = validate_tool_call(
+        {"id": "c1", "tool": "get_freshness", "args": {"symbols": []}},
+        allowed_tools=frozenset({"get_freshness"}),
+    )
+    assert isinstance(trace, AgentToolTrace)
+    assert trace.detail["reason"] == "invalid_args"
+
+
+def test_get_active_plans_filtre_par_symbole_et_limite():
+    result, _ = agent_tools.execute_tool_call(
+        AgentToolCall(id="c1", tool="get_active_plans", args={"symbol": "2330.TW", "limit": 1}),
+        _full_context(),
+    )
+    rows = result.result["rows"]
+    assert len(rows) == 1
+    assert rows[0]["watch_id"] == "2330.TW:w1"
+
+
+def test_get_active_plans_sans_symbole_rend_tout_le_lot():
+    result, _ = agent_tools.execute_tool_call(
+        AgentToolCall(id="c1", tool="get_active_plans", args={}),
+        _full_context(),
+    )
+    assert len(result.result["rows"]) == 1

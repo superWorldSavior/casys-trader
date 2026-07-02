@@ -224,3 +224,63 @@ def execute_tool_round(
         traces.append(trace)
 
     return results, traces
+
+
+# ---------------------------------------------------------------------------
+# Task 3 : get_freshness + get_active_plans (handlers lecture-seule)
+# ---------------------------------------------------------------------------
+
+_MAX_FRESHNESS_SYMBOLS = 8
+_MAX_PLAN_ROWS = 20
+
+
+def _validate_get_freshness(args: dict) -> str | None:
+    symbols = args.get("symbols")
+    if not isinstance(symbols, list) or not symbols or not all(isinstance(s, str) for s in symbols):
+        return "symbols: liste non vide de str requise"
+    if len(symbols) > _MAX_FRESHNESS_SYMBOLS:
+        return f"symbols: {_MAX_FRESHNESS_SYMBOLS} max"
+    return None
+
+
+def _handle_get_freshness(call: AgentToolCall, context: ToolContext) -> dict:
+    rows: list[dict] = []
+    for sym in call.args["symbols"]:
+        if sym not in context.allowed_symbols:
+            rows.append({"symbol": sym, "error": "symbol_not_allowed"})
+            continue
+        age = context.data_age_by_symbol.get(sym)
+        mc = context.market_context_by_symbol.get(sym) or {}
+        rows.append({
+            "symbol": sym,
+            "data_age_m": None if age is None else int(round(age)),
+            "execution": mc.get("execution"),
+            "planning": mc.get("planning"),
+        })
+    return {"rows": rows}
+
+
+def _validate_get_active_plans(args: dict) -> str | None:
+    symbol = args.get("symbol")
+    if symbol is not None and not isinstance(symbol, str):
+        return "symbol: str ou absent"
+    limit = args.get("limit")
+    if limit is not None and (not isinstance(limit, int) or limit < 1):
+        return "limit: entier >= 1 ou absent"
+    return None
+
+
+def _handle_get_active_plans(call: AgentToolCall, context: ToolContext) -> dict:
+    symbol = call.args.get("symbol")
+    limit = min(int(call.args.get("limit") or _MAX_PLAN_ROWS), _MAX_PLAN_ROWS)
+    if symbol is not None:
+        rows = list(context.active_watches_by_symbol.get(symbol, []))
+    else:
+        rows = [w for watches in context.active_watches_by_symbol.values() for w in watches]
+    return {"rows": rows[:limit]}
+
+
+TOOL_REGISTRY["get_freshness"] = ToolSpec(
+    name="get_freshness", validate_args=_validate_get_freshness, handler=_handle_get_freshness)
+TOOL_REGISTRY["get_active_plans"] = ToolSpec(
+    name="get_active_plans", validate_args=_validate_get_active_plans, handler=_handle_get_active_plans)
