@@ -1,8 +1,9 @@
 # Design — Brique d'ingestion « fil d'actu » (phase attribution)
 
 Date : 2026-06-23
-Statut : design validé, prêt pour plan d'implémentation
 Auteur : Erwan + Claude
+Statut : LIVRÉ 2026-07-02 — phase attribution complète (news_feed.py + daemon câblage + decision_ledger + tests TDD) ; phase 2 veto/earnings hors scope
+
 
 ## Contexte & objectif
 

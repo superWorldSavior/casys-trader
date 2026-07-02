@@ -1,7 +1,7 @@
 # Rotation swing-aware + réactivation du sélecteur LLM
 
 **Date** : 2026-06-17
-**Statut** : design validé (Erwan, 2026-06-17) — prêt pour plan d'implémentation TDD
+**Statut** : LIVRÉ 2026-07-02 — Phase A (analyzable_venues, rotation_schedule.py:101) + Phase B (override LLM pré-open D10, rotation_venues.py:281) committées et testées (commits 92f8e47 / 47af2e6 / 6c944db)
 **Auteurs** : Erwan + Claude (+ consult Codex)
 **Décision métier** : D13 (registre `docs/decisions/registre-decisions-metier.md`)
 

@@ -1,4 +1,6 @@
 # Sessions acpx persistantes pour le runtime trader
+**Statut** : DÉPASSÉ 2026-07-02 — sessions persistantes abandonnées (incident bridge-pileup 5ce8ed4) ; approche remplacée par session_label (préfixe texte) + acpx exec stateless systématique (llm.py:93-115, 123-127)
+
 
 ## Objectif
 

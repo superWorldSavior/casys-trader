@@ -1,7 +1,7 @@
 # Abstraction data sources — routage multi-API, profils paper/prod
 
 **Date** : 2026-06-10
-**Statut** : 🔶 design À VALIDER (Erwan) — aucune implémentation commencée
+**Statut** : ✅ LIVRÉ 2026-07-02 — Protocol DataSource + CompositeDataSource + config/data_sources.yaml + observabilité data_source implémentés (trader/tools/data_source.py, daemon.py:2010,2545) ; P2/P3 annulés §2bis
 **Origine** : post-mortem `docs/postmortems/2026-06-09-short-clf-hard-stop.md` —
 le daemon tourne en données IB différées (~15 min, `market_data_type=3`),
 décision de ne PAS prendre d'abonnement IB pour le moment.

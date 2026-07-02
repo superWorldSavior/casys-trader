@@ -1,9 +1,7 @@
 # Analyste-news quotidien + calendriers macro (P1-P2 de l'axe macro)
 
 **Date** : 2026-07-02
-**Status** : COLLECTE (P1a) en implémentation immédiate (décision Erwan 02/07 :
-« brancher les sources et collecter d'abord ») ; l'analyste (P2) attendra
-~2-3 semaines de stock d'items.
+**Status** : P1a LIVRÉ 2026-07-02 (news_items persist + macro_calendar FOMC + macro_next payload + macro_series DBnomics — testés, câblés daemon) ; P2 analyste-news EN ATTENTE de stock d'items (~2-3 semaines).
 **Amont** : `2026-07-02-macro-fundamental-design-sketch.md` (architecture 3 étages,
 phasage réordonné), `docs/specs/2026-07-02-macro-data-sources.md` (sources),
 pattern consolidateur (`trader/consolidator.py`) et news-feed

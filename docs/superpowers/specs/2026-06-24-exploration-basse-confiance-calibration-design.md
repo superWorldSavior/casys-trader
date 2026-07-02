@@ -1,11 +1,12 @@
 # Exploration basse-confiance + boucle de calibration (paper)
 
-Statut : design validé par Erwan (2026-06-24). Profil **paper** uniquement.
 Référence registre : candidate **D15** (à ouvrir après implémentation).
 
 S'appuie sur D1 (missed ≠ bad), D6 (spirale auto-HOLD), D9 (concentration assumée),
 D14 (sizing FX en natif, reject-not-clamp). Source du diagnostic : incident
 2026-06-24 « plus aucune veille intelligente ».
+
+Statut : **LIVRÉ** 2026-06-24 — commit 9905d51 (confiance non-bloquante + stop optionnel + calibration dé-censurée) ; mesure en cours (watches/basse-confiance).
 
 ---
 

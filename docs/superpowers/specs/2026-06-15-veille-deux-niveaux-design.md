@@ -1,7 +1,7 @@
 # Veille à deux niveaux — radar large + rotation du hot-set
 
 **Date** : 2026-06-15
-**Statut** : design validé (révisé post-review Codex), prêt pour plan d'implémentation
+**Statut** : LIVRÉ 2026-07-02 — radar.py/radar_data.py/rotation.py/rotation_ledger.py + configs pool|radar|conviction|portfolio + migration starting_cash + écriture atomique + sticky hors quota ; 143 tests verts
 **Auteurs** : Erwan + Claude (brainstorming), review indépendante Codex (3 axes)
 
 ## 0. Révisions (post-review Codex, 2026-06-15)

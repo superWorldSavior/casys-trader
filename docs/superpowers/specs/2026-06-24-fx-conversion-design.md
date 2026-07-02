@@ -1,7 +1,7 @@
 # Conversion FX — comptabilité et sizing en devise de base (USD)
 
 **Date** : 2026-06-24
-**Statut** : design validé, à implémenter
+**Statut** : LIVRÉ 2026-07-02 — fx.py + fx_rates.py + config/fx.yaml + risk/execution/attribution/agent_context/daemon câblés ; tests test_fx* + test_migrate_fx_cash ; migration script dry-run ; D14 dans le registre
 **Décision métier associée** : D14 (à ajouter au registre)
 **Incident déclencheur** : trade Realtek `2379.TW` du 2026-06-23
 

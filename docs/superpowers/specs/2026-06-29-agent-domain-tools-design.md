@@ -1,9 +1,7 @@
 # Agent domain tools for the runtime LLM
 
 **Date**: 2026-06-29
-**Status**: Phases 1-2 implémentées (registry V0 lecture-seule + tool loop),
-flag `CASYS_AGENT_TOOLS_ENABLED` éteint par défaut. Phases 3-5 (migration
-REQUEST_CONTEXT, scheduling/watches, propose_order) non commencées.
+**Status**: Phases 1-3 livrées 2026-07-02 (registry V0 + tool loop CASYS_AGENT_TOOLS_ENABLED off + get_indicator_context/REQUEST_CONTEXT dual-accept + extras describe_data/find_indicators/recall_learnings). Phases 4-5 (action tools set_next_wake/propose_indicator_watch/cancel_watch/record_learning + propose_order) non commencées.
 
 ---
 

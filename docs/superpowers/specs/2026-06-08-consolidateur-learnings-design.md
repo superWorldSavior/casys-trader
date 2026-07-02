@@ -1,7 +1,7 @@
 # Consolidateur de learnings — « boucle 1.5 »
 
 **Date** : 2026-06-08
-**Statut** : design validé, **implémenté** (cf. § Timing)
+**Statut** : LIVRÉ 2026-07-02 — trader/consolidator.py + tests/test_consolidator.py (30+ tests, invariants §9 complets) ; intégré daemon.py:1940-3186, CLI flags, injection scope-aware build_context_learnings
 **Auteurs** : Erwan + Claude
 
 ---

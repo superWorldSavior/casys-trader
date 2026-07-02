@@ -1,7 +1,7 @@
 # Axe macro/fondamental — esquisse d'architecture
 
 **Date** : 2026-07-02
-**Status** : cadrage validé sur le principe (Erwan) ; spec détaillée à écrire au lancement du chantier
+**Status** : partiel — P1 livré 2026-07-02 (macro_next + FOMC/DBnomics, wired daemon + tests) ; P2 analyste-news batch à coder ; P3–P5 en attente
 **Amont** : `docs/specs/2026-07-02-macro-data-sources.md` (cartographie des sources),
 pattern news-feed (`docs/superpowers/specs/2026-06-23-news-feed-attribution-design.md`),
 couche d'outils (`2026-06-29-agent-domain-tools-design.md`).

@@ -1,7 +1,7 @@
 # Traçage du comportement de l'agent — outils utilisés & choix
 
 **Date** : 2026-06-08
-**Statut** : **périmètre validé** (discussion close — prêt pour exécution TDD)
+**Statut** : **LIVRÉ** 2026-07-02 — 3 couches implémentées et testées : données (context_request args + next_wake effectif), dérivation (summarize_tools), jugement (CLI tool_usage × score forward)
 
 ---
 

@@ -1,8 +1,7 @@
 # Veille swing, préflight d'exécution et suivi post-entry
 
 **Date** : 2026-06-17
-**Statut** : design en cours de validation ; dépend d'une décision D12 ou d'un
-amendement explicite de D7B avant implémentation
+**Statut** : livré 2026-07-02 — briques 0-4 + §13.7 TradePlan + §13.8 calendriers committés (0a7dab3, 8f6f4ea, cfd7025) ; D12 préflight hors cœur V1, en discussion (preflight_reasons mesurable via backtest/plan_replay.py)
 **Auteurs** : Erwan + Codex
 
 ## 1. Problème

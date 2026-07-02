@@ -1,7 +1,8 @@
 # casys-trader — Design
 
-> Statut : design validé (brainstorming) — 2026-06-05
 > Auteur : Erwan + Claude
+Statut : LIVRÉ — 2026-07-02 — toutes les briques du design initial (daemon, tools/, codex_client, risk gate, indicator_watch, exit_plan/trade_plan, semantic layer, backtest maison) implémentées et testées en prod.
+
 
 ## 1. Intention
 
