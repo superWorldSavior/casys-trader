@@ -28,7 +28,7 @@ from typing import Callable
 import yaml
 
 from .agent_context import build_market_cockpit, resolve_indicator_requests
-from .application import planner_batch
+from .application import market_snapshot, planner_batch
 from .application.decision_recorder import DecisionRecorder
 from . import (
     agent_tools as agent_tools,
@@ -40,7 +40,6 @@ from . import (
     embeddings as embeddings_mod,
     family_regime,
     fx,
-    fx_rates,
     learnings_store as recall_store_mod,
     ledger_rotation,
     llm,
@@ -1617,49 +1616,35 @@ def run_cycle(
         _write_status("halted", current_symbol=None, halted="kill_switch")
         return report
 
-    # Données marché : barres récentes par symbole. Les indicateurs gouvernés sont
-    # calculés par `trader.features`, pas mentalement par le LLM.
-    bars_by_symbol: dict[str, list] = {}
-    prices: dict[str, float] = {}
-    stale_market_data: dict[str, dict] = {}
-    data_age_by_symbol: dict[str, float] = {}
-    # F5 : capturé immédiatement après le fetch runtime décisionnel, avant tout
-    # fetch secondaire (daily, watches) qui pourrait écraser last_source().
-    runtime_data_source_by_sym: dict[str, str | None] = {}
-    freshness_max_age = max(
-        max_market_data_age_minutes,
-        market.freshness_budget_minutes(runtime_interval),
+    snapshot = market_snapshot.build_market_snapshot(
+        symbols=symbols,
+        data_source=data_source,
+        now=now,
+        max_market_data_age_minutes=max_market_data_age_minutes,
+        runtime_interval=runtime_interval,
+        runtime_lookback=runtime_lookback,
+        config_dir=ROOT / "config",
+        plan_store=plan_store,
+        scheduler=sched,
+        daily_lookback=COCKPIT_DAILY_LOOKBACK,
+        daily_interval=COCKPIT_DAILY_INTERVAL,
+        is_connection_market_error=_is_connection_market_error,
+        execution_eligibility_builder=_build_execution_eligibility,
+        exit_bars_fetcher=_fetch_5m_bars_for_open_plans,
     )
-    _log_cycle_progress("[market] loading bars symbols=%d interval=%s", len(symbols), runtime_interval)
-    for sym in symbols:
-        try:
-            bars = data_source.get_bars(sym, lookback=runtime_lookback, interval=runtime_interval)
-        except market.MarketError as e:
-            if _is_connection_market_error(e):
-                raise
-            log.warning("données indisponibles %s: %s", sym, e.code)
-            continue
-        if not bars:  # défensif : get_bars lève normalement sur vide
-            log.warning("données vides %s", sym)
-            continue
-        bars_by_symbol[sym] = bars
-        prices[sym] = bars[-1].close
-        # F5 : capturer last_source ici, avant tout fetch secondaire (daily, watches).
-        runtime_data_source_by_sym[sym] = getattr(data_source, "last_source", lambda _: None)(sym)
-        # La fraîcheur EST le garde « marché live » : une dernière barre trop
-        # vieille / imparsable => stale => exclue du tradable (pas de fill sur
-        # données mortes hors-séance ou gelées).
-        freshness = market.assess_freshness(bars, now=now, max_age_minutes=freshness_max_age)
-        if freshness.age_minutes is not None:
-            data_age_by_symbol[sym] = freshness.age_minutes
-        if not freshness.fresh:
-            stale_market_data[sym] = {
-                "last_bar_ts": str(bars[-1].ts),
-                "stale_reason": freshness.reason,
-                "data_age_minutes": (
-                    None if freshness.age_minutes is None else round(freshness.age_minutes, 4)
-                ),
-            }
+    prices = snapshot.prices
+    stale_market_data = snapshot.stale_market_data
+    data_age_by_symbol = snapshot.data_age_by_symbol
+    runtime_data_source_by_sym = snapshot.runtime_data_source_by_symbol
+    daily_bars_by_symbol = snapshot.daily_bars_by_symbol
+    tradable_prices = snapshot.tradable_prices
+    tradable_symbols = snapshot.tradable_symbols
+    tradable_bars_by_symbol = snapshot.tradable_bars_by_symbol
+    fx_rate_by_ccy = snapshot.fx_rate_by_ccy
+    _rate = snapshot.rate_for_symbol
+    execution_eligibility = snapshot.execution_eligibility
+    exit_bars_by_symbol = snapshot.exit_bars_by_symbol
+    exit_intervals_by_symbol = snapshot.exit_intervals_by_symbol
     _log_cycle_progress(
         "[market] loaded ok=%d missing=%d",
         len(prices),
@@ -1668,103 +1653,6 @@ def run_cycle(
     if stale_market_data:
         _log_cycle_progress("[market] stale symbols=%s", sorted(stale_market_data))
 
-    # Taux FX du cycle — chargés une fois par cycle après la boucle prix.
-    # Fail-safe : si fx.yaml absent (tests, env simplifié), tous les symboles
-    # tombent sur le fallback USD=1.0. Le fetch utilise la même source que les
-    # barres (data_source), pour la cohérence temporelle du cycle.
-    _fx_cfg: dict = {}
-    _fx_yaml_path = ROOT / "config" / "fx.yaml"
-    if _fx_yaml_path.exists():
-        try:
-            _fx_cfg = fx_rates.load_fx_config(_fx_yaml_path)
-        except Exception as _fx_cfg_exc:  # noqa: BLE001 — fx.yaml mal formé : dégrade en USD
-            log.warning("fx.yaml illisible (%s), dégradation USD fallback", _fx_cfg_exc)
-
-    def _fx_fetch(yahoo_symbol: str) -> float | None:
-        try:
-            bars = data_source.get_bars(yahoo_symbol, lookback="2d", interval="1d")
-            return bars[-1].close if bars else None
-        except Exception:  # noqa: BLE001 — le fetch FX ne doit jamais casser le cycle
-            return None
-
-    try:
-        fx_rate_by_ccy: dict[str, float] = fx_rates.rates_for_symbols(
-            prices.keys(), fetcher=_fx_fetch, config=_fx_cfg
-        )
-    except Exception as _fx_rates_exc:  # noqa: BLE001 — devise non configurée → USD fallback
-        log.warning("fx rates fetch échoué (%s), dégradation USD fallback", _fx_rates_exc)
-        fx_rate_by_ccy = {fx.BASE_CCY: 1.0}
-
-    def _rate(sym: str) -> float:
-        """Retourne le taux USD/ccy pour le symbole ; USD=1.0 si inconnu."""
-        return fx_rate_by_ccy.get(fx.currency_for(sym), 1.0)
-
-    # Reset streak pour tous les symboles frais (data fraîche reçue)
-    if sched is not None:
-        for sym in symbols:
-            if sym in prices and sym not in stale_market_data:
-                current_streak = sched.get_stale_streak(sym)
-                if current_streak > 0:
-                    sched.reset_stale_streak(sym)
-
-    tradable_prices = {symbol: price for symbol, price in prices.items() if symbol not in stale_market_data}
-    tradable_symbols = [symbol for symbol in symbols if symbol not in stale_market_data]
-    tradable_bars_by_symbol = {
-        symbol: bars
-        for symbol, bars in bars_by_symbol.items()
-        if symbol not in stale_market_data
-    }
-
-    # §13.3 — le daily est fetché pour TOUT l'univers (pas seulement tradable) :
-    # un symbole runtime-stale doit pouvoir être analysé/planifié sur son daily.
-    # La fraîcheur daily est jugée par séance complétée (assess_daily_freshness),
-    # indépendamment du verrou runtime.
-    daily_bars_by_symbol: dict[str, list] = {}
-    for sym in symbols:
-        try:
-            daily_bars = data_source.get_bars(
-                sym,
-                lookback=COCKPIT_DAILY_LOOKBACK,
-                interval=COCKPIT_DAILY_INTERVAL,
-            )
-        except market.MarketError as exc:
-            if _is_connection_market_error(exc):
-                raise
-            log.warning("daily data unavailable %s: %s", sym, exc.code)
-            continue
-        except Exception as exc:  # noqa: BLE001 - daily cockpit data is optional
-            log.warning("daily data failed %s: %s", sym, exc)
-            continue
-        if not daily_bars:
-            continue
-        try:
-            freshness = market.assess_daily_freshness(daily_bars, now=now, symbol=sym)
-        except Exception as exc:  # noqa: BLE001 - daily cockpit data is optional
-            log.warning("daily freshness failed %s: %s", sym, exc)
-            continue
-        if not freshness.fresh:
-            log.warning("daily data stale %s: %s", sym, freshness.reason)
-            continue
-        daily_bars_by_symbol[sym] = daily_bars
-
-    # §13.2 — classification execution/planning par symbole, injectée au contexte LLM.
-    execution_eligibility = _build_execution_eligibility(
-        symbols,
-        stale_market_data=stale_market_data,
-        prices=prices,
-        daily_bars_by_symbol=daily_bars_by_symbol,
-        data_age_by_symbol=data_age_by_symbol,
-        now=now,
-        runtime_interval=runtime_interval,
-    )
-
-    exit_bars_by_symbol, exit_intervals_by_symbol = _fetch_5m_bars_for_open_plans(
-        plan_store=plan_store,
-        data_source=data_source,
-        tradable_bars_by_symbol=tradable_bars_by_symbol,
-        tradable_prices=tradable_prices,
-        now=now,
-    )
     planned_exits = _apply_planned_exits(
         broker=broker,
         plan_store=plan_store,
