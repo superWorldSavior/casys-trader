@@ -437,6 +437,10 @@ class LearningsStore:
         """
         if now is None:
             now = datetime.now(timezone.utc)
+        # Chaîne vide ≠ query : sinon la restriction FTS∪cosine (étape 4b)
+        # éliminerait tout sur une query vide (régression re-review Codex).
+        text_query = text_query or None
+        query_vec = query_vec or None
         now_ts = now.isoformat()
         tau_days = max(tau_days, 1e-9)
 

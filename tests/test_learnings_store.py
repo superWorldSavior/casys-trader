@@ -913,3 +913,16 @@ def test_search_verdict_null_retourne_unknown(tmp_path: Path) -> None:
         assert r["verdict"] == "UNKNOWN", (
             f"verdict NULL doit être retourné comme UNKNOWN, got {r['verdict']!r}"
         )
+
+
+def test_search_query_vide_equivaut_a_pas_de_query(tmp_path) -> None:
+    """text_query='' ne doit pas activer la restriction FTS∪cosine (re-review Codex)."""
+    store = LearningsStore(tmp_path / "learnings.db")
+    jsonl = tmp_path / "notes.jsonl"
+    _write_jsonl(jsonl, [
+        {"ts": "2026-07-01T00:00:00+00:00", "symbol": "SPY", "note": "note dividende", "decision_id": "d1"},
+    ])
+    store.ingest_jsonl(jsonl, source="runtime")
+    with_empty = store.search(symbol="SPY", text_query="")
+    without = store.search(symbol="SPY")
+    assert len(with_empty) == len(without) == 1
