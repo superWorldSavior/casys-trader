@@ -26,7 +26,7 @@ documenté, où, et quels trous restent).
 Les **trous** ci-dessous obtiennent une page `reference/` dédiée ; les runbooks
 `how-to/` (quadrant entier absent) sont à créer.
 
-Pages `reference/` écrites : [`risk-gate`](reference/risk-gate.md), [`fx`](reference/fx.md), [`cockpit`](reference/cockpit.md), [`reporting`](reference/reporting.md), [`config`](reference/config.md), [`learnings-rag`](reference/learnings-rag.md), [`agent-tools`](reference/agent-tools.md), [`macro`](reference/macro.md).
+Pages `reference/` écrites : [`risk-gate`](reference/risk-gate.md), [`fx`](reference/fx.md), [`cockpit`](reference/cockpit.md), [`reporting`](reference/reporting.md), [`config`](reference/config.md), [`learnings-rag`](reference/learnings-rag.md), [`agent-tools`](reference/agent-tools.md), [`macro`](reference/macro.md), [`llm-contract`](reference/llm-contract.md), [`universe-rotation`](reference/universe-rotation.md).
 Pages `how-to/` écrites : [`run-the-daemon`](how-to/run-the-daemon.md), [`read-logs`](how-to/read-logs.md), [`measure-and-replay`](how-to/measure-and-replay.md).
 
 ---
@@ -69,7 +69,7 @@ Légende : ✅ couvert · 🟡 partiel / dispersé / potentiellement périmé ·
 ### Univers & régime
 | Sous-système | Package/module | Réf | Où | Décisions |
 |---|---|---|---|---|
-| Radar / rotation / hot-sets | `rotation/*` (core, venues, collectors, schedule, override, wiring) | ✅ | archi §6 | D9, D10 |
+| Radar / rotation / hot-sets | `rotation/*` (core, venues, collectors, schedule, override, wiring) | ✅ | **`reference/universe-rotation.md`** | D9, D10, D13 |
 | Régime familial | `market/family_regime`, `market/regime` | 🟡 | — | D2 |
 | Config univers & portefeuille | `config/*.yaml`, `config/pool`, `config/portfolio` | ✅ | **`reference/config.md`** | D9/D10/D13 |
 
@@ -77,7 +77,7 @@ Légende : ✅ couvert · 🟡 partiel / dispersé / potentiellement périmé ·
 | Sous-système | Package/module | Réf | Où | Décisions |
 |---|---|---|---|---|
 | Transport LLM / acpx | `agent/llm`, `agent/client` | ✅ | archi §9.1-9.2 | — |
-| Contrat / protocole | `agent_protocol/` (types, prompts, parsing) | 🟡 | archi §9.3 | — |
+| Contrat / protocole (prompts + mandat) | `agent_protocol/` (types, prompts, parsing), `mandate/` | ✅ | **`reference/llm-contract.md`** | — |
 | Contexte agent | `agent/context` | 🟡 | archi §3.3 | — |
 | Outils domaine (read-only) | `agent_tools/` (9 handlers) | ✅ | **`reference/agent-tools.md`** | — |
 | Mémoire / recall / learnings (RAG) | `learnings/` (store, consolidator, embeddings) | ✅ | **`reference/learnings-rag.md`** | — |
@@ -111,8 +111,8 @@ Les 5 trous prioritaires identifiés à la v2 sont comblés :
 
 **Reste en 🟡 dans la carte** (moins prioritaire, à traiter au fil de l'eau) :
 admission d'ordre (`application/order_admission`), budget gross, exécution/broker,
-news, macro, régime familial, protocole agent, contexte agent, sémantique. Chacun
-mérite sa page `reference/` quand on y touche.
+news, régime familial, contexte agent, sémantique. Chacun mérite sa page
+`reference/` quand on y touche.
 
 Méthode : lire le code → écrire la page `reference/` (comportement/invariants/codes)
 → passer la ligne ✅ dans la carte. Un fact-check Codex de chaque réf vs le code
