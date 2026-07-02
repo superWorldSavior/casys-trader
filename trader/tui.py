@@ -708,10 +708,11 @@ def _build_positions_panel(
     pos_table = Table(show_lines=False, expand=True)
     pos_table.add_column("Symbole", style="bold")
     pos_table.add_column("Dev.", no_wrap=True)
+    pos_table.add_column("FX→USD", justify="right", no_wrap=True)
     pos_table.add_column("Qté", justify="right")
     pos_table.add_column("Prix moy. natif", justify="right")
     pos_table.add_column("Dernier natif", justify="right")
-    pos_table.add_column("PnL latent $", justify="right")
+    pos_table.add_column("PnL latent USD", justify="right")
     pos_table.add_column("PnL %", justify="right")
 
     for h in holdings:
@@ -738,6 +739,7 @@ def _build_positions_panel(
         pos_table.add_row(
             symbol,
             ccy,
+            f"{fx_rate:.5f}",
             f"{qty:,.4f}",
             f"{avg:,.4f}",
             f"{last:,.4f}",
@@ -746,7 +748,7 @@ def _build_positions_panel(
         )
 
     if not holdings:
-        pos_table.add_row("—", "—", "—", "—", "—", "—", "—")
+        pos_table.add_row("—", "—", "—", "—", "—", "—", "—", "—")
 
     return Panel(
         pos_table,
@@ -791,7 +793,7 @@ def _build_attribution_panel(
     summary = Text.assemble(
         ("Trades clôturés : ", "bold"),
         (_fmt_int(attribution.get("n_closed_trades")), palette["kpi_default"]),
-        ("   P&L réalisé $ : ", "bold"),
+        ("   P&L réalisé USD : ", "bold"),
         (_fmt_signed_money(realized_pnl), pnl_style),
         (realized_detail, palette["dim"]),
         ("   Win rate : ", "bold"),
@@ -819,7 +821,7 @@ def _build_attribution_panel(
                 Text(str(row.get("bucket", "—")), style="bold"),
                 _confidence_bar(row.get("win_rate"), pnl, palette=palette),
                 Text(
-                    f"n={_fmt_int(row.get('n'))}  win={_fmt_percent(row.get('win_rate'))}  P&L $ {_fmt_signed_money(pnl)}",
+                    f"n={_fmt_int(row.get('n'))}  win={_fmt_percent(row.get('win_rate'))}  P&L USD {_fmt_signed_money(pnl)}",
                     style=row_pnl_style,
                 ),
             )
@@ -837,7 +839,7 @@ def _build_attribution_panel(
     exit_table.add_column("Raison")
     exit_table.add_column("n", justify="right")
     exit_table.add_column("Win", justify="right")
-    exit_table.add_column("P&L $", justify="right")
+    exit_table.add_column("P&L USD", justify="right")
     if exit_rows:
         for row in exit_rows:
             pnl = _safe_float(row.get("total_pnl"), default=0.0) or 0.0
@@ -863,7 +865,7 @@ def _build_attribution_panel(
             Text("Raisons de sortie", style="bold"),
             exit_table,
         ),
-        title="[bold]Attribution[/bold]",
+        title="[bold]Attribution USD[/bold]",
         border_style=palette["border_attribution"],
         expand=True,
     )
@@ -1503,7 +1505,7 @@ def build_closed_trades_table(
     table.add_column("Dev.", no_wrap=True)
     table.add_column("Sens")
     table.add_column("Entrée→Sortie natif", justify="right")
-    table.add_column("Net $", justify="right")
+    table.add_column("Net USD", justify="right")
     table.add_column("Raison")
     table.add_column("Durée", justify="right")
 
@@ -1992,7 +1994,7 @@ def build_view(
         (f"${cash:,.2f}   ", palette["kpi_default"]),
         ("Rendement : ", "bold"),
         (f"{ret_pct:+.2f}%   ", ret_style),
-        ("PnL latent $ : ", "bold"),
+        ("PnL latent USD : ", "bold"),
         (f"${unrealized_total:+,.2f}", unrealized_style),
         (
             f" (dont frais {_fmt_fee_cost(unrealized_fee_total)})   "

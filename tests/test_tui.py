@@ -110,7 +110,7 @@ def test_build_view_avec_etat_complet_retourne_un_renderable() -> None:
     assert "Cash $" in output
     assert "$102,500.00" in output
     assert "$85,000.00" in output
-    assert "PnL latent $" in output
+    assert "PnL latent USD" in output
     assert "-50.00" in output
     assert "deciding_symbol" in output
     assert "1/2" in output
@@ -159,9 +159,10 @@ def test_positions_distinguent_prix_natifs_et_pnl_usd() -> None:
 
     assert "Dev." in output
     assert "CHF" in output
+    assert "FX→USD" in output
     assert "Prix moy. natif" in output
     assert "Dernier natif" in output
-    assert "PnL latent $" in output
+    assert "PnL latent USD" in output
 
 
 def test_positions_sans_pnl_net_garde_l_affichage_brut_historique() -> None:
@@ -212,7 +213,7 @@ def test_build_view_total_latent_utilise_le_net_et_detaille_les_frais() -> None:
 
     output = _render_plain(build_view(state), width=220)
 
-    assert "PnL latent $" in output
+    assert "PnL latent USD" in output
     assert "+47.00" in output
     assert "dont frais -3.00" in output
 
@@ -229,8 +230,8 @@ def test_attribution_affiche_le_realise_net_avec_frais_et_brut_secondaires() -> 
 
     output = _render_plain(_build_attribution_panel(attribution))
 
-    assert "P&L réalisé $" in output
-    assert "P&L $ +42.50" in output
+    assert "P&L réalisé USD" in output
+    assert "P&L USD +42.50" in output
     assert "+42.50" in output
     assert "dont frais -3.75" in output
     assert "brut +46.25" in output
@@ -254,7 +255,7 @@ def test_trades_clotures_affichent_net_local_avec_brut_et_frais() -> None:
 
     output = _render_plain(build_closed_trades_table(trips, {}))
 
-    assert "Net $" in output
+    assert "Net USD" in output
     assert "+8.50" in output
     assert "brut +10.00" in output
     assert "frais -1.50" in output
@@ -281,7 +282,7 @@ def test_trades_clotures_distinguent_prix_natifs_et_net_usd() -> None:
     assert "Dev." in output
     assert "CHF" in output
     assert "Entrée→Sortie natif" in output
-    assert "Net $" in output
+    assert "Net USD" in output
 
 
 def test_derniers_trades_distinguent_prix_natif_et_commission() -> None:

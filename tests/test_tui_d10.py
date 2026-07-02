@@ -337,7 +337,7 @@ class TestBuildClosedTradesTable:
         assert "-25.00" in rendered
         assert "trailing_stop_extraordinairement_long_a_tronquer" not in rendered
         assert "..." in rendered
-        net_col = next(col for col in result.columns if col.header == "Net $")
+        net_col = next(col for col in result.columns if col.header == "Net USD")
         assert net_col._cells[0].style == PALETTE_DARK["pnl_positive"]
         assert net_col._cells[1].style == PALETTE_DARK["pnl_negative"]
 
