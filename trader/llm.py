@@ -517,6 +517,10 @@ def build_default_router_from_env(
     acpx_session_label: str | None = None,
 ) -> LlmRouter:
     load_dotenv(env_path)
+    # TRADER_ACPX_BIN prime sur le paramètre — même pattern que TRADER_CONSOLIDATOR_ACPX_BIN
+    acpx_bin_env = os.getenv("TRADER_ACPX_BIN")
+    if acpx_bin_env:
+        acpx_bin = acpx_bin_env
     session_label = (
         _clean_optional(acpx_session_label)
         or _env_session_label(acpx_provider)

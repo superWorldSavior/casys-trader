@@ -7,6 +7,7 @@ from copy import deepcopy
 import yaml
 
 from trader.rotation_venues import (
+    _purge_old_radar_cache,
     compose_active_universe,
     due_venues,
     empty_venue_state,
@@ -1406,3 +1407,34 @@ def test_purity_chain_override_nexfluence_pas_hysteresis_cloture_suivante(tmp_pa
     assert "C.TW" not in tw_c2["default_hotlist"], (
         "C.TW NE doit PAS être dans la baseline C2 : l'override C1 ne doit pas contaminer"
     )
+
+
+def test_purge_old_radar_cache_supprime_les_anciens(tmp_path) -> None:
+    """Fichier 45j → supprimé ; fichier 29j et aujourd'hui → conservés."""
+    cache_dir = tmp_path / "radar_cache"
+    cache_dir.mkdir()
+
+    now_iso = "2026-07-02T10:00:00+00:00"
+
+    # Fichier de 45 jours (2026-05-18) — doit être supprimé
+    old_file = cache_dir / "2026-05-18.json"
+    old_file.write_text("{}")
+
+    # Fichier de 29 jours (2026-06-03) — doit être conservé
+    recent_file = cache_dir / "2026-06-03.json"
+    recent_file.write_text("{}")
+
+    # Fichier du jour — doit être conservé
+    today_file = cache_dir / "2026-07-02.json"
+    today_file.write_text("{}")
+
+    # Fichier au nom non-conforme — doit être conservé
+    noise_file = cache_dir / "2026-06-15T05:30:28.json"
+    noise_file.write_text("{}")
+
+    _purge_old_radar_cache(cache_dir, now_iso)
+
+    assert not old_file.exists(), "Le fichier 45j doit être supprimé"
+    assert recent_file.exists(), "Le fichier 29j doit être conservé"
+    assert today_file.exists(), "Le fichier du jour doit être conservé"
+    assert noise_file.exists(), "Le fichier au nom non-conforme doit être conservé"

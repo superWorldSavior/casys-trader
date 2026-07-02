@@ -29,3 +29,6 @@ lint:  ## Lint ruff (imports morts, variables fantômes — config dans pyprojec
 	uv run ruff check
 
 check: lint test  ## Lint + tests — le combo pré-commit
+
+fork-acpx-build:  ## Construit le fork acpx local (active la rétention native des sessions, voir TRADER_ACPX_BIN)
+	cd /Users/erwanpesle/Documents/GitHub/acpx && pnpm install --frozen-lockfile && pnpm build

@@ -30,6 +30,36 @@ from trader.radar_config import load_radar_params
 # Top N candidats radar persistés par venue pour l'override LLM pré-open (configurable plus tard)
 OVERRIDE_CANDIDATES_TOP = 40
 
+# Rétention des fichiers radar_cache (en jours). Fichiers YYYY-MM-DD.json plus vieux = purgés.
+RADAR_CACHE_RETENTION_DAYS = 30
+
+
+def _purge_old_radar_cache(cache_dir: Path, now_iso: str) -> None:
+    """Supprime les fichiers radar_cache/YYYY-MM-DD.json de plus de RADAR_CACHE_RETENTION_DAYS jours.
+
+    Les noms non conformes au pattern exact (YYYY-MM-DD.json) sont ignorés (non purgés).
+    """
+    if not cache_dir.is_dir():
+        return
+    try:
+        now_date = datetime.fromisoformat(now_iso[:10])
+    except ValueError:
+        return
+    for f in cache_dir.glob("*.json"):
+        stem = f.stem  # YYYY-MM-DD
+        if len(stem) != 10 or stem[4] != "-" or stem[7] != "-":
+            continue
+        try:
+            file_date = datetime.strptime(stem, "%Y-%m-%d")
+        except ValueError:
+            continue
+        age_days = (now_date - file_date).days
+        if age_days > RADAR_CACHE_RETENTION_DAYS:
+            try:
+                f.unlink()
+            except OSError:
+                pass
+
 
 def empty_venue_state() -> dict:
     """Return an empty per-venue rotation state."""
@@ -221,6 +251,8 @@ def tick(
 
             scan_fn = build_rank_fn(config_dir, fetch_fn=_fetch, as_of=now_iso)
         rank_obj = scan_fn()
+        if rank_fn is None:
+            _purge_old_radar_cache(Path(state_dir) / "radar_cache", now_iso)
         for venue in dues:
             state = run_venue_close(
                 state,

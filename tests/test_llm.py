@@ -742,3 +742,28 @@ def test_env_override_spark_fallback_vide_desactive_le_tier(monkeypatch) -> None
     providers = [b.provider for b in router.backends]
     assert "acpx-claude-sonnet" not in providers
     assert providers == ["acpx", "ollama-cloud"]
+
+
+def test_trader_acpx_bin_prime_sur_le_parametre(monkeypatch) -> None:
+    """TRADER_ACPX_BIN non-vide prime sur le paramètre acpx_bin."""
+    monkeypatch.setenv("TRADER_ACPX_BIN", "/opt/fork-acpx/dist/cli.js")
+    monkeypatch.delenv("TRADER_OLLAMA_API_KEY", raising=False)
+    monkeypatch.delenv("TRADER_SPARK_FALLBACK_MODEL", raising=False)
+
+    router = build_default_router_from_env(env_path=None, acpx_bin="acpx")
+
+    # Les deux backends acpx doivent utiliser le bin de l'env
+    acpx_backends = [b for b in router.backends if isinstance(b, AcpxBackend)]
+    assert all(b.acpx_bin == "/opt/fork-acpx/dist/cli.js" for b in acpx_backends)
+
+
+def test_trader_acpx_bin_vide_noverride_pas(monkeypatch) -> None:
+    """TRADER_ACPX_BIN vide → le paramètre acpx_bin est conservé."""
+    monkeypatch.setenv("TRADER_ACPX_BIN", "")
+    monkeypatch.delenv("TRADER_OLLAMA_API_KEY", raising=False)
+    monkeypatch.delenv("TRADER_SPARK_FALLBACK_MODEL", raising=False)
+
+    router = build_default_router_from_env(env_path=None, acpx_bin="mon-acpx-custom")
+
+    acpx_backends = [b for b in router.backends if isinstance(b, AcpxBackend)]
+    assert all(b.acpx_bin == "mon-acpx-custom" for b in acpx_backends)
