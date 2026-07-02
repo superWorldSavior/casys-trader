@@ -35,9 +35,11 @@ from . import (
     codex_client,
     consolidator,
     decision_ledger,
+    embeddings as embeddings_mod,
     family_regime,
     fx,
     fx_rates,
+    learnings_store as recall_store_mod,
     ledger_rotation,
     llm,
     meta_performance,
@@ -1285,6 +1287,50 @@ def _apply_decision_schedule(
             entry["indicator_watch"]["order"] = pending_indicator_watch["order"]
 
 
+def _build_recall_provider(
+    store: recall_store_mod.LearningsStore,
+    now: datetime,
+    *,
+    embedder: Callable[[list[str], ...], list[bytes]] | None = None,
+) -> Callable[[dict], dict]:
+    """Construit le provider learnings_recall injectable dans le ToolContext.
+
+    Paramètres :
+    - ``store`` : LearningsStore SQLite (dérivé reconstructible).
+    - ``now`` : timestamp du cycle courant (borné temporel de la recherche).
+    - ``embedder`` : callable pour les embeddings (injectable pour les tests) ;
+      par défaut ``embeddings_mod.embed_texts``.
+
+    Le provider retourne ``{"rows": [...]}`` — le handler re-tronque à ≤ 8.
+    Sans OPENAI_API_KEY ou sans query, la recherche tombe en mode FTS5+facettes.
+    """
+    _embed = embedder if embedder is not None else embeddings_mod.embed_texts
+
+    def _provider(args: dict) -> dict:
+        query = args.get("query")
+        query_vec: bytes | None = None
+        if query:
+            api_key = os.getenv("OPENAI_API_KEY")
+            if api_key:
+                try:
+                    blobs = _embed([query], api_key=api_key)
+                    query_vec = blobs[0] if blobs else None
+                except Exception:  # noqa: BLE001 — embed optionnel, dégradation FTS5
+                    query_vec = None
+        limit = min(int(args.get("limit") or 5), 8)
+        rows = store.search(
+            query_vec=query_vec,
+            text_query=query,
+            symbol=args.get("symbol"),
+            family=args.get("family"),
+            limit=limit,
+            now=now,
+        )
+        return {"rows": rows}
+
+    return _provider
+
+
 def _run_tool_round(
     request: codex_client.BatchToolCallRequest,
     *,
@@ -1295,6 +1341,7 @@ def _run_tool_round(
     active_watches_by_symbol: dict[str, list],
     shared_context: dict,
     indicator_resolver: object,
+    learnings_recall_provider: Callable[[dict], dict] | None = None,
 ) -> tuple[list[dict], dict]:
     """Exécute UNE tournée d'outils bornée et retourne :
     - results_payload : liste compacte réinjectable dans le prompt du tour final
@@ -1318,6 +1365,7 @@ def _run_tool_round(
         position_risk_provider=None,
         recent_decisions_provider=None,
         indicator_resolver=indicator_resolver,
+        learnings_recall_provider=learnings_recall_provider,
     )
     results, traces = agent_tools.execute_tool_round(
         request.calls,
@@ -1325,10 +1373,25 @@ def _run_tool_round(
         limits=agent_tools.ToolRoundLimits(),
         allowed_tools=frozenset(agent_tools.TOOL_REGISTRY),
     )
-    return (
-        agent_tools.results_prompt_payload(results),
-        agent_tools.round_runtime_payload(traces, rounds=1),
-    )
+    results_prompt = agent_tools.results_prompt_payload(results)
+    runtime = agent_tools.round_runtime_payload(traces, rounds=1)
+
+    # Enrichir le detail des appels recall_learnings avec les note_ids retournés.
+    # Ces ids sont stockés dans le trace durable (decisions.jsonl runtime.tool_calls)
+    # et utilisés par record_decision pour appeler store.record_recall (design §4.4).
+    results_by_id = {r.id: r for r in results}
+    for tc in runtime["tool_calls"]:
+        if tc["tool"] == "recall_learnings" and tc["outcome"] == agent_tools.OUTCOME_OK:
+            r = results_by_id.get(tc["id"])
+            if r and r.ok and isinstance(r.result, dict):
+                rows = r.result.get("rows", [])
+                note_ids = [
+                    row["id"] for row in rows
+                    if isinstance(row, dict) and isinstance(row.get("id"), int)
+                ]
+                tc["detail"] = {**tc["detail"], "note_ids": note_ids}
+
+    return results_prompt, runtime
 
 
 def _batch_decide(
@@ -1354,6 +1417,7 @@ def _batch_decide(
     decision_batch_size: int = DEFAULT_DECISION_BATCH_SIZE,
     decision_batch_parallelism: int = DEFAULT_DECISION_BATCH_PARALLELISM,
     agent_tools_enabled: bool = False,
+    learnings_recall_provider: Callable[[dict], dict] | None = None,
 ) -> tuple[dict[str, codex_client.Decision], int]:
     """Décide les symboles dus par chunks LLM bornés et parallélisables.
 
@@ -1474,6 +1538,7 @@ def _batch_decide(
                 active_watches_by_symbol=active_watches_by_symbol,
                 shared_context=shared_context,
                 indicator_resolver=_indicator_resolver,
+                learnings_recall_provider=learnings_recall_provider,
             )
             # Enrichir le payload par-symbole avec les tool_results filtrés.
             # Un call sans symbole explicite (scope global) est réinjecté à tous.
@@ -1795,6 +1860,19 @@ def run_cycle(
     )
     decision_ledger_store = decision_ledger.DecisionLedgerStore(
         STATE_DIR / decision_ledger.DEFAULT_LEDGER_FILENAME
+    )
+
+    # Store SQLite de recall des learnings (dérivé reconstructible, paresseux).
+    # Si learnings.db est absent, provider=None → l'outil répond "unavailable".
+    # La création du .db reste le job du script d'ingestion (Task 7).
+    _learnings_db_path = STATE_DIR / "learnings.db"
+    _recall_store: recall_store_mod.LearningsStore | None = (
+        recall_store_mod.LearningsStore(str(_learnings_db_path))
+        if _learnings_db_path.exists()
+        else None
+    )
+    _recall_provider: Callable[[dict], dict] | None = (
+        _build_recall_provider(_recall_store, now) if _recall_store is not None else None
     )
 
     if _kill_switch_active():
@@ -2147,6 +2225,25 @@ def run_cycle(
                 source="armed_plan" if decision_entry.get("armed_plan_id") else "daemon",
             )
         )
+        # Trace d'injection recall_learnings (design §4.4).
+        # Appelé après la persistance ledger : le decision_id est construit au
+        # même instant (cycle_ts|sequence|symbol), invariant lecture seule de l'outil.
+        if _recall_store is not None:
+            _cycle_ts = str(report.get("ts") or "")
+            _sym = str(decision_entry.get("symbol") or "")
+            if _cycle_ts and _sym:
+                _did = decision_ledger._decision_id(_cycle_ts, sequence, _sym)
+                for _tc in decision_entry.get("tool_calls") or []:
+                    if _tc.get("tool") == "recall_learnings" and _tc.get("outcome") == "ok":
+                        _note_ids = [
+                            _nid for _nid in (_tc.get("detail") or {}).get("note_ids", [])
+                            if isinstance(_nid, int)
+                        ]
+                        if _note_ids:
+                            try:
+                                _recall_store.record_recall(decision_id=_did, note_ids=_note_ids)
+                            except Exception as _exc:  # noqa: BLE001
+                                log.warning("record_recall failed: %s", _exc)
         _write_current_report(report)
         _write_status(
             "decision_recorded",
@@ -2390,6 +2487,7 @@ def run_cycle(
         decision_batch_size=decision_batch_size,
         decision_batch_parallelism=decision_batch_parallelism,
         agent_tools_enabled=agent_tools_enabled,
+        learnings_recall_provider=_recall_provider,
     )
     # revue effective seulement si le modèle a réellement statué (review Codex :
     # un échec/budget à 0 ne doit pas compter comme revue périodique)
