@@ -386,3 +386,38 @@ def test_decide_attache_les_metadonnees_llm() -> None:
     assert decision.llm_provider == "ollama-cloud"
     assert decision.llm_model == "nemotron-3-nano:30b-cloud"
     assert decision.llm_fallback_reason == "acpx:rate_limited"
+
+
+# ── Task 7 : parse_batch_or_tool_calls + BatchToolCallRequest ─────────────────
+
+def test_parse_batch_or_tool_calls_detecte_une_tournee():
+    raw = '{"tool_calls": [{"id": "c1", "tool": "get_freshness", "args": {"symbols": ["2330.TW"]}}]}'
+    out = codex_client.parse_batch_or_tool_calls(raw, ["2330.TW"], allow_context_request=True)
+    assert isinstance(out, codex_client.BatchToolCallRequest)
+    assert out.calls[0]["tool"] == "get_freshness"
+
+
+def test_parse_batch_or_tool_calls_ignore_les_elements_non_objets():
+    raw = '{"tool_calls": [42, {"id": "c1", "tool": "t", "args": {}}]}'
+    out = codex_client.parse_batch_or_tool_calls(raw, ["2330.TW"], allow_context_request=True)
+    assert isinstance(out, codex_client.BatchToolCallRequest)
+    assert len(out.calls) == 1
+
+
+def test_parse_batch_or_tool_calls_tombe_sur_les_decisions():
+    raw = '{"decisions": [{"symbol": "2330.TW", "action": "HOLD", "quantity": 0, "confidence": 0.1, "rationale": "r", "decision_reason_code": "NO_EDGE"}]}'
+    out = codex_client.parse_batch_or_tool_calls(raw, ["2330.TW"], allow_context_request=False)
+    assert isinstance(out, dict)
+    assert out["2330.TW"].action == "HOLD"
+
+
+def test_parse_batch_or_tool_calls_json_invalide_hold_global():
+    out = codex_client.parse_batch_or_tool_calls("pas du json", ["2330.TW"], allow_context_request=False)
+    assert isinstance(out, dict)
+    assert out["2330.TW"].rationale == "batch_bad_output"
+
+
+def test_parse_batch_or_tool_calls_tool_calls_vides_ne_declenchent_pas():
+    raw = '{"tool_calls": [], "decisions": [{"symbol": "2330.TW", "action": "HOLD", "quantity": 0, "confidence": 0, "rationale": "r", "decision_reason_code": "NO_EDGE"}]}'
+    out = codex_client.parse_batch_or_tool_calls(raw, ["2330.TW"], allow_context_request=False)
+    assert isinstance(out, dict)

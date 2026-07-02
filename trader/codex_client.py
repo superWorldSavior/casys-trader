@@ -64,6 +64,7 @@ class Decision:
     cancel_watch_ids: list[str] = field(default_factory=list)  # plans/veilles à annuler (correction)
     context_request: dict | None = None
     learning: str | None = None  # note runtime que l'agent veut retenir (boucle de feedback)
+    domain_tools: dict | None = None  # traces tournée d'outils (runtime.tool_*)
     decision_reason_code: str = "UNKNOWN"
     llm_provider: str | None = None
     llm_model: str | None = None
@@ -91,6 +92,18 @@ class ContextResearchRequest:
     rationale: str
     requests: list[IndicatorRequest]
     next_wake_in_minutes: float | None = None
+    llm_provider: str | None = None
+    llm_model: str | None = None
+    llm_fallback_reason: str | None = None
+
+
+@dataclass(frozen=True)
+class BatchToolCallRequest:
+    """Le lot a répondu par une tournée d'outils au lieu de décisions finales.
+
+    `calls` reste BRUT (list[dict]) : la validation vit dans trader.agent_tools,
+    côté daemon — codex_client reste un transport sans dépendance domaine."""
+    calls: list[dict]
     llm_provider: str | None = None
     llm_model: str | None = None
     llm_fallback_reason: str | None = None
@@ -618,20 +631,17 @@ def _extract_decisions_array(text: str) -> list:
     return decisions
 
 
-def parse_batch(
-    raw_text: str, symbols: list[str], *, allow_context_request: bool
+def _parse_batch_data(
+    data: dict, symbols: list[str], *, allow_context_request: bool
 ) -> dict[str, Decision | ContextResearchRequest]:
-    """Décode un tableau de décisions (une par symbole), avec ISOLATION per-élément :
-    un élément invalide -> HOLD pour CE symbole, les autres passent. Un JSON global
-    invalide -> tous HOLD. Tout symbole demandé mais absent de la réponse -> HOLD."""
+    """Corps de parse_batch sur un dict déjà extrait. Isolation per-élément."""
     by_symbol: dict[str, Decision | ContextResearchRequest] = {}
-    try:
-        elements = _extract_decisions_array(raw_text)
-    except (ValueError, json.JSONDecodeError):
+    decisions = data.get("decisions")
+    if not isinstance(decisions, list):
         return {sym: Decision.hold(sym, "batch_bad_output") for sym in symbols}
 
     requested = set(symbols)
-    for element in elements:
+    for element in decisions:
         sym = str(element.get("symbol")) if isinstance(element, dict) else None
         if sym is None or sym not in requested:
             continue  # symbole hors périmètre ou élément non-objet -> ignoré
@@ -648,15 +658,45 @@ def parse_batch(
     return by_symbol
 
 
+def parse_batch(
+    raw_text: str, symbols: list[str], *, allow_context_request: bool
+) -> dict[str, Decision | ContextResearchRequest]:
+    """Décode un tableau de décisions (une par symbole), avec ISOLATION per-élément :
+    un élément invalide -> HOLD pour CE symbole, les autres passent. Un JSON global
+    invalide -> tous HOLD. Tout symbole demandé mais absent de la réponse -> HOLD."""
+    try:
+        data = _extract_json(raw_text)
+    except (ValueError, json.JSONDecodeError):
+        return {sym: Decision.hold(sym, "batch_bad_output") for sym in symbols}
+    return _parse_batch_data(data, symbols, allow_context_request=allow_context_request)
+
+
+def parse_batch_or_tool_calls(
+    raw_text: str, symbols: list[str], *, allow_context_request: bool
+) -> dict[str, Decision | ContextResearchRequest] | BatchToolCallRequest:
+    """Réponse batch OU tournée d'outils. tool_calls non vide prime ; toute
+    malformation retombe sur le chemin décisions (fail-safe HOLD)."""
+    try:
+        data = _extract_json(raw_text)
+    except (ValueError, json.JSONDecodeError):
+        return {sym: Decision.hold(sym, "batch_bad_output") for sym in symbols}
+    raw_calls = data.get("tool_calls")
+    if isinstance(raw_calls, list):
+        calls = [c for c in raw_calls if isinstance(c, dict)]
+        if calls:
+            return BatchToolCallRequest(calls=calls)
+    return _parse_batch_data(data, symbols, allow_context_request=allow_context_request)
+
+
 def build_command(prompt: str, *, acpx_bin: str, model: str, timeout_s: int) -> list[str]:
     """Commande acpx pour une décision pure (codex, sans outils, sortie texte brute)."""
     return llm.build_acpx_command(prompt, acpx_bin=acpx_bin, model=model, timeout_s=timeout_s)
 
 
 def _attach_llm_metadata(
-    response: Decision | ContextResearchRequest,
+    response: Decision | ContextResearchRequest | BatchToolCallRequest,
     completion: llm.LlmCompletion,
-) -> Decision | ContextResearchRequest:
+) -> Decision | ContextResearchRequest | BatchToolCallRequest:
     return replace(
         response,
         llm_provider=completion.provider,
