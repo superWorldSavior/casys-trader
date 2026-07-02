@@ -1,14 +1,13 @@
 """cockpit — Salle de contrôle du daemon casys-trader (Textual).
 
-Dashboard complet (KPIs, courbe d'équité, positions, attribution, décisions,
-plans, univers) + flux de logs live (events.jsonl) + supervision du daemon.
+Shell cockpit navigable : home courte, pages de détail (portefeuille, décisions,
+plans, observabilité, logs live) + supervision du daemon.
 
-Layout mission-control (priorité haute → bas) :
+Layout mission-control navigable (priorité haute → bas) :
     STATUT (dock:top, h=2)
     ATTENTION (#attention-strip, h=3)
-    ┌ WORKSPACE (#workspace, h=1fr)
-    │  Décision (34%) | Portefeuille (38%) | Observabilité (28%)
-    LogsPane (dock:bottom, h=6)
+    NAV (#cockpit-nav, h=3)
+    PAGE ACTIVE (#workspace, h=1fr)
     Footer (dock:bottom, h=1)
 
 Pattern superviseur : le daemon reste un process indépendant qui survit à
@@ -37,17 +36,22 @@ Raccourcis :
     k         Toggle kill-switch (modal de confirmation)
     c         Toggle l'affichage des events cycle_started/cycle_completed
     f         Pause/reprise de l'auto-scroll du panneau logs
-    l         Toggle visibilité du panneau logs (plein écran dashboard)
+    l         Aller/retour page Logs
     d         Dark/Light (thèmes casys-salmon / casys-ink)
+    Tab/→     Vue suivante
+    ←/Shift+Tab Vue précédente
+    1..6      Accès direct aux pages
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from rich.console import RenderableType
+from rich.console import Group, RenderableType
 from rich.panel import Panel
+from rich.table import Table
 from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.binding import Binding
@@ -140,6 +144,25 @@ _KILL_FILE = _ROOT / "KILL"
 
 # Buffer maximum pour le panneau events
 _MAX_EVENT_LINES = 500
+
+
+@dataclass(frozen=True)
+class CockpitPage:
+    key: str
+    title: str
+    widget_id: str
+
+
+_PAGES: tuple[CockpitPage, ...] = (
+    CockpitPage("home", "Accueil", "overview-page"),
+    CockpitPage("portfolio", "Portefeuille", "portfolio-page"),
+    CockpitPage("decisions", "Décisions", "decisions-page"),
+    CockpitPage("plans", "Plans", "plans-page"),
+    CockpitPage("observability", "Observabilité", "observability-page"),
+    CockpitPage("logs", "Logs", "logs-page"),
+)
+_PAGE_BY_KEY = {page.key: page for page in _PAGES}
+_PAGE_KEYS = tuple(page.key for page in _PAGES)
 
 # ---------------------------------------------------------------------------
 # Styles events par EventClass — construits depuis une palette
@@ -363,6 +386,203 @@ class AttentionStrip(Static):
         self, state: dict, kill_active: bool, *, palette: Palette = PALETTE_DARK
     ) -> None:
         self.update(_build_attention_line(state, kill_active=kill_active, palette=palette))
+
+
+class CockpitNav(Static):
+    """Navigation compacte entre les vues du cockpit."""
+
+    DEFAULT_CSS = """
+    CockpitNav {
+        height: 3;
+        background: $panel;
+        border-bottom: solid $primary;
+        padding: 0 1;
+    }
+    """
+
+    def update_page(self, active_key: str, *, palette: Palette = PALETTE_LIGHT) -> None:
+        text = Text("  ")
+        text.append("Tab/←/→ ", style=palette["dim"])
+        text.append("vue", style=palette["dim"])
+        text.append("   ")
+        for index, page in enumerate(_PAGES, start=1):
+            if index > 1:
+                text.append("  ")
+            label = f"{index} {page.title}"
+            if page.key == active_key:
+                text.append(f"[{label}]", style=f"bold {palette['status_accent']}")
+            else:
+                text.append(label, style=palette["dim"])
+        self.update(text)
+
+
+def _overview_card(
+    title: str,
+    rows: list[tuple[str, str, str]],
+    *,
+    border_style: str,
+    palette: Palette,
+) -> Panel:
+    body = Text()
+    for index, (label, value, style) in enumerate(rows):
+        if index:
+            body.append("\n")
+        body.append(f"{label}: ", style=palette["dim"])
+        body.append(value, style=style)
+    return Panel(
+        body,
+        title=f"[bold]{title}[/bold]",
+        border_style=border_style,
+        expand=True,
+    )
+
+
+def _count_risk_rows(rows: list[dict]) -> int:
+    return sum(1 for row in rows if str(row.get("reason") or "").startswith("risk:"))
+
+
+def _build_overview_panel(
+    state: dict, *, kill_active: bool, palette: Palette = PALETTE_LIGHT
+) -> RenderableType:
+    portfolio = state.get("portfolio") if isinstance(state.get("portfolio"), dict) else {}
+    kpis = state.get("kpis") if isinstance(state.get("kpis"), dict) else {}
+    daemon_status = (
+        state.get("daemon_status")
+        if isinstance(state.get("daemon_status"), dict)
+        else {}
+    )
+    holdings = _safe_list_of_dicts(portfolio.get("holdings"))
+    decisions = _safe_list_of_dicts(state.get("decisions"))
+    recent_decisions = _safe_list_of_dicts(state.get("recent_decisions"))
+    armed_plans = _safe_list_of_dicts(state.get("armed_plans"))
+    trade_plans = _safe_list_of_dicts(state.get("trade_plans"))
+    watches = _safe_list_of_dicts(state.get("indicator_watches"))
+    stale_streaks = (
+        state.get("stale_streaks") if isinstance(state.get("stale_streaks"), dict) else {}
+    )
+    stale_values = [
+        int(value)
+        for value in stale_streaks.values()
+        if isinstance(value, int | float) and value > 0
+    ]
+
+    cash = _safe_float(portfolio.get("cash") or kpis.get("cash"), default=0.0) or 0.0
+    equity = _safe_float(portfolio.get("equity") or kpis.get("equity"), default=0.0) or 0.0
+    starting_cash = _safe_float(state.get("starting_cash"), default=cash) or cash
+    pnl = equity - starting_cash
+    ret_pct = _safe_float(portfolio.get("total_return_pct"), default=None)
+    if ret_pct is None:
+        ret_pct = (_safe_float(kpis.get("total_return"), default=0.0) or 0.0) * 100.0
+    pnl_style = palette["pnl_positive"] if pnl >= 0 else palette["pnl_negative"]
+    ret_style = palette["pnl_positive"] if ret_pct >= 0 else palette["pnl_negative"]
+
+    done = daemon_status.get("decisions_done")
+    total = daemon_status.get("symbols_total")
+    progress = f"{done}/{total}" if done is not None and total is not None else "—"
+    calls_used = daemon_status.get("model_calls_used")
+    calls_max = daemon_status.get("max_model_calls_per_cycle")
+    calls = f"{calls_used}/{calls_max}" if calls_used is not None and calls_max is not None else "—"
+    stale_summary = (
+        f"{len(stale_values)} symboles · max {max(stale_values)}"
+        if stale_values
+        else "OK"
+    )
+    stale_style = palette["kpi_vol_warn"] if stale_values else palette["status_nominal"]
+
+    cards = Table.grid(expand=True)
+    for _ in range(5):
+        cards.add_column(ratio=1)
+    cards.add_row(
+        _overview_card(
+            "Portefeuille",
+            [
+                ("Équité", f"${equity:,.2f}", palette["status_equity"]),
+                ("Cash", f"${cash:,.2f}", palette["status_equity"]),
+                ("P&L", f"{ret_pct:+.2f}% ({pnl:+,.2f})", ret_style or pnl_style),
+                ("Positions", str(len(holdings)), palette["kpi_default"]),
+            ],
+            border_style=palette["border_default"],
+            palette=palette,
+        ),
+        _overview_card(
+            "Décisions",
+            [
+                ("Dernières", str(len(decisions)), palette["kpi_default"]),
+                ("Risque", str(_count_risk_rows(recent_decisions)), palette["pnl_negative"]),
+                ("Daemon", str(daemon_status.get("phase") or "—"), palette["status_phase"]),
+                ("Appels", calls, palette["kpi_default"]),
+            ],
+            border_style=palette["border_attribution"],
+            palette=palette,
+        ),
+        _overview_card(
+            "Plans",
+            [
+                ("Armés", str(len(armed_plans)), palette["kpi_default"]),
+                ("Sortie", str(len(trade_plans)), palette["kpi_default"]),
+                ("Veilles", str(len(watches)), palette["kpi_default"]),
+                ("Progrès", progress, palette["status_accent"]),
+            ],
+            border_style=palette["border_plans"],
+            palette=palette,
+        ),
+        _overview_card(
+            "Observabilité",
+            [
+                ("Data", stale_summary, stale_style),
+                ("Learnings", str(state.get("learnings_pending_count") or 0), palette["kpi_default"]),
+                ("Source", str(state.get("source") or "—"), palette["dim"]),
+                ("Cycle", _format_datetime(state.get("ts")), palette["dim"]),
+            ],
+            border_style=palette["border_learnings"],
+            palette=palette,
+        ),
+        _overview_card(
+            "Logs",
+            [
+                ("Page", "l ou 6", palette["status_accent"]),
+                ("Cycles", "c", palette["dim"]),
+                ("Scroll", "f", palette["dim"]),
+                ("Kill", "actif" if kill_active else "nominal", palette["pnl_negative"] if kill_active else palette["status_nominal"]),
+            ],
+            border_style=palette["border_default"],
+            palette=palette,
+        ),
+    )
+
+    return Group(
+        Panel(
+            _build_attention_line(state, kill_active=kill_active, palette=palette),
+            title="[bold]Synthèse[/bold]",
+            border_style=palette["border_default"],
+            expand=True,
+        ),
+        cards,
+    )
+
+
+class OverviewPane(Static):
+    """Home courte : résumé exploitable sans scroll."""
+
+    DEFAULT_CSS = """
+    OverviewPane {
+        height: 100%;
+        width: 100%;
+        overflow-y: hidden;
+        padding: 0 1;
+    }
+    """
+
+    _current_palette: Palette = PALETTE_LIGHT
+
+    def update_state(self, state: dict, kill_active: bool) -> None:
+        self.update(
+            _build_overview_panel(
+                state,
+                kill_active=kill_active,
+                palette=self._current_palette,
+            )
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -726,9 +946,8 @@ class LogsPane(Static):
 
     DEFAULT_CSS = """
     LogsPane {
-        dock: bottom;
-        height: 6;
-        border-top: solid $primary;
+        height: 100%;
+        border: solid $primary;
     }
     LogsPane RichLog {
         height: 1fr;
@@ -984,45 +1203,52 @@ class CockpitApp(App):
 
     TITLE = "casys-trader — cockpit"
 
-    # CSS TCSS décrivant le layout mission-control
+    # CSS TCSS décrivant le shell navigable
     CSS = """
     Screen {
         layout: vertical;
     }
     #workspace {
         height: 1fr;
+        layout: vertical;
+    }
+    #overview-page {
+        width: 100%;
+        height: 100%;
+    }
+    #portfolio-page {
+        width: 100%;
+        height: 100%;
         layout: horizontal;
     }
-    #decision-column {
-        width: 34%;
+    #portfolio-page PositionsPlansPane {
+        width: 45%;
         height: 100%;
         layout: vertical;
         border-right: solid $primary;
     }
-    #portfolio-column {
-        width: 38%;
+    #portfolio-page EquityTradesPane {
+        width: 55%;
+        height: 100%;
+    }
+    #decisions-page,
+    #plans-page,
+    #observability-page,
+    #logs-page {
+        width: 100%;
         height: 100%;
         layout: vertical;
-        border-right: solid $primary;
     }
-    #ops-column {
-        width: 28%;
+    #decisions-page DecisionsPane,
+    #plans-page ArmedPlansPane,
+    #observability-page UniversePane,
+    #logs-page LogsPane {
         height: 100%;
-        layout: vertical;
+        width: 100%;
     }
-    #decision-column DecisionsPane {
-        height: 58%;
-        border-bottom: solid $primary;
-    }
-    #decision-column ArmedPlansPane {
-        height: 42%;
-    }
-    #portfolio-column PositionsPlansPane {
-        height: 48%;
-        border-bottom: solid $primary;
-    }
-    #portfolio-column EquityTradesPane {
-        height: 52%;
+    .cockpit-page {
+        width: 100%;
+        height: 100%;
     }
     """
 
@@ -1035,28 +1261,43 @@ class CockpitApp(App):
         Binding("k", "toggle_kill", "Kill-switch"),
         Binding("c", "toggle_cycles", "Toggle cycles"),
         Binding("f", "toggle_scroll", "Pause scroll"),
-        Binding("l", "toggle_logs", "Toggle logs"),
+        Binding("l", "toggle_logs", "Logs"),
         Binding("d", "toggle_theme", "Dark/Light"),
+        Binding("tab", "next_page", "Vue suivante", show=False, priority=True),
+        Binding("right", "next_page", "Vue suivante", show=False, priority=True),
+        Binding("left", "previous_page", "Vue précédente", show=False, priority=True),
+        Binding("shift+tab", "previous_page", "Vue précédente", show=False, priority=True),
+        Binding("1", "show_page('home')", "Accueil", show=False),
+        Binding("2", "show_page('portfolio')", "Portefeuille", show=False),
+        Binding("3", "show_page('decisions')", "Décisions", show=False),
+        Binding("4", "show_page('plans')", "Plans", show=False),
+        Binding("5", "show_page('observability')", "Observabilité", show=False),
+        Binding("6", "show_page('logs')", "Logs", show=False),
     ]
 
-    _logs_visible: bool = True
     _last_state: dict | None = None
     _last_kill_active: bool = False
+    _active_page_key: str = "home"
+    _previous_non_logs_page: str = "home"
 
     def compose(self) -> ComposeResult:
-        """Structure : statut → attention → workspace 3 colonnes → logs → footer."""
+        """Structure : statut → attention → navigation → page active → footer."""
         yield CockpitStatus(id="cockpit-status")
         yield AttentionStrip(id="attention-strip")
-        with Horizontal(id="workspace"):
-            with Vertical(id="decision-column"):
-                yield DecisionsPane(id="decisions-pane")
-                yield ArmedPlansPane(id="armed-plans-pane")
-            with Vertical(id="portfolio-column"):
+        yield CockpitNav(id="cockpit-nav")
+        with Vertical(id="workspace"):
+            yield OverviewPane(id="overview-page", classes="cockpit-page")
+            with Horizontal(id="portfolio-page", classes="cockpit-page"):
                 yield PositionsPlansPane(id="positions-plans-pane")
                 yield EquityTradesPane(id="equity-trades-pane")
-            with Vertical(id="ops-column"):
+            with Vertical(id="decisions-page", classes="cockpit-page"):
+                yield DecisionsPane(id="decisions-pane")
+            with Vertical(id="plans-page", classes="cockpit-page"):
+                yield ArmedPlansPane(id="armed-plans-pane")
+            with Vertical(id="observability-page", classes="cockpit-page"):
                 yield UniversePane(id="universe-pane")
-        yield LogsPane(id="logs-pane")
+            with Vertical(id="logs-page", classes="cockpit-page"):
+                yield LogsPane(id="logs-pane")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -1064,6 +1305,7 @@ class CockpitApp(App):
         self.register_theme(_THEME_SALMON)
         self.register_theme(_THEME_INK)
         self.theme = "casys-salmon"
+        self._set_active_page("home")
 
         # Expose le chemin events sur self pour que LogsPane._load_initial_backlog
         # puisse le résoudre même quand _EVENTS_FILE est monkeypatché en test.
@@ -1093,6 +1335,37 @@ class CockpitApp(App):
             _on_confirm,
         )
 
+    def _set_active_page(self, page_key: str) -> None:
+        """Affiche une page et masque les autres."""
+        if page_key not in _PAGE_BY_KEY:
+            return
+        self._active_page_key = page_key
+        if page_key != "logs":
+            self._previous_non_logs_page = page_key
+
+        for page in _PAGES:
+            try:
+                widget = self.query_one(f"#{page.widget_id}")
+                widget.display = page.key == page_key
+            except Exception:
+                pass
+        try:
+            nav = self.query_one("#cockpit-nav", CockpitNav)
+            nav.update_page(page_key, palette=self._current_palette())
+        except Exception:
+            pass
+
+    def action_next_page(self) -> None:
+        index = _PAGE_KEYS.index(self._active_page_key)
+        self._set_active_page(_PAGE_KEYS[(index + 1) % len(_PAGE_KEYS)])
+
+    def action_previous_page(self) -> None:
+        index = _PAGE_KEYS.index(self._active_page_key)
+        self._set_active_page(_PAGE_KEYS[(index - 1) % len(_PAGE_KEYS)])
+
+    def action_show_page(self, page_key: str) -> None:
+        self._set_active_page(page_key)
+
     def _current_palette(self) -> Palette:
         """Retourne la palette Rich correspondant au thème actif."""
         return _THEME_PALETTE.get(self.theme, PALETTE_DARK)
@@ -1101,6 +1374,7 @@ class CockpitApp(App):
         """Propage la palette courante à tous les panes et au LogsPane."""
         palette = self._current_palette()
         pane_map = [
+            ("#overview-page", OverviewPane),
             ("#positions-plans-pane", PositionsPlansPane),
             ("#armed-plans-pane", ArmedPlansPane),
             ("#decisions-pane", DecisionsPane),
@@ -1113,6 +1387,11 @@ class CockpitApp(App):
                 pane._current_palette = palette
             except Exception:
                 pass
+        try:
+            nav = self.query_one("#cockpit-nav", CockpitNav)
+            nav.update_page(self._active_page_key, palette=palette)
+        except Exception:
+            pass
         try:
             logs_pane: LogsPane = self.query_one("#logs-pane", LogsPane)
             logs_pane._current_palette = palette
@@ -1145,6 +1424,10 @@ class CockpitApp(App):
 
             attention: AttentionStrip = self.query_one("#attention-strip", AttentionStrip)
             attention.update_state(state, kill_active, palette=palette)
+
+            overview: OverviewPane = self.query_one("#overview-page", OverviewPane)
+            overview._current_palette = palette
+            overview.update_state(state, kill_active)
 
             positions_plans: PositionsPlansPane = self.query_one(
                 "#positions-plans-pane", PositionsPlansPane
@@ -1194,13 +1477,11 @@ class CockpitApp(App):
             pass
 
     def action_toggle_logs(self) -> None:
-        """Affiche/masque le panneau logs (plein écran dashboard)."""
-        try:
-            logs_pane: LogsPane = self.query_one("#logs-pane", LogsPane)
-            self._logs_visible = not self._logs_visible
-            logs_pane.display = self._logs_visible
-        except Exception:
-            pass
+        """Bascule entre la page Logs et la dernière page métier."""
+        if self._active_page_key == "logs":
+            self._set_active_page(self._previous_non_logs_page or "home")
+        else:
+            self._set_active_page("logs")
 
     def action_toggle_theme(self) -> None:
         """Bascule entre casys-salmon (clair) et casys-ink (sombre)."""

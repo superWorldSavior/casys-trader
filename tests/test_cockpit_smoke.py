@@ -469,8 +469,10 @@ async def test_cockpit_v2_pane_left_existe(tmp_path, monkeypatch):
         assert app.query_one("#positions-plans-pane") is not None
 
 
-async def test_cockpit_mission_control_structure_existe(tmp_path, monkeypatch):
-    """Le cockpit expose une composition mission-control : attention + 3 colonnes."""
+async def test_cockpit_shell_navigable_expose_home_et_pages_detail(
+    tmp_path, monkeypatch
+):
+    """Le cockpit expose une home courte et des pages de détail navigables."""
     _make_minimal_state(tmp_path)
     monkeypatch.setattr(cockpit_module, "_STATE_DIR", tmp_path)
     monkeypatch.setattr(cockpit_module, "_EVENTS_FILE", tmp_path / "events.jsonl")
@@ -479,10 +481,42 @@ async def test_cockpit_mission_control_structure_existe(tmp_path, monkeypatch):
     app = CockpitApp()
     async with app.run_test(size=(220, 60)) as _:
         assert app.query_one("#attention-strip") is not None
+        assert app.query_one("#cockpit-nav") is not None
         assert app.query_one("#workspace") is not None
-        assert app.query_one("#decision-column") is not None
-        assert app.query_one("#portfolio-column") is not None
-        assert app.query_one("#ops-column") is not None
+        assert app.query_one("#overview-page") is not None
+        assert app.query_one("#portfolio-page") is not None
+        assert app.query_one("#decisions-page") is not None
+        assert app.query_one("#plans-page") is not None
+        assert app.query_one("#observability-page") is not None
+        assert app.query_one("#logs-page") is not None
+
+        assert app.query_one("#overview-page").display is True
+        assert app.query_one("#portfolio-page").display is False
+        assert app.query_one("#logs-page").display is False
+
+
+async def test_cockpit_tab_et_fleches_naviguent_entre_pages(tmp_path, monkeypatch):
+    """Tab, droite et gauche changent de page sans scroller le dashboard."""
+    _make_minimal_state(tmp_path)
+    monkeypatch.setattr(cockpit_module, "_STATE_DIR", tmp_path)
+    monkeypatch.setattr(cockpit_module, "_EVENTS_FILE", tmp_path / "events.jsonl")
+    monkeypatch.setattr(cockpit_module, "_KILL_FILE", tmp_path / "KILL")
+
+    app = CockpitApp()
+    async with app.run_test(size=(220, 60)) as pilot:
+        assert app._active_page_key == "home"
+
+        await pilot.press("tab")
+        assert app._active_page_key == "portfolio"
+        assert app.query_one("#portfolio-page").display is True
+
+        await pilot.press("right")
+        assert app._active_page_key == "decisions"
+        assert app.query_one("#decisions-page").display is True
+
+        await pilot.press("left")
+        assert app._active_page_key == "portfolio"
+        assert app.query_one("#portfolio-page").display is True
 
 
 async def test_cockpit_observabilite_affiche_les_derniers_learnings(
@@ -592,8 +626,8 @@ async def test_cockpit_v2_pane_right_existe(tmp_path, monkeypatch):
         assert app.query_one("#logs-pane") is not None
 
 
-async def test_cockpit_v2_toggle_l_masque_right_pane(tmp_path, monkeypatch):
-    """Le toggle l masque le pane droit (logs + panneaux compacts)."""
+async def test_cockpit_l_bascule_vers_la_page_logs(tmp_path, monkeypatch):
+    """Le raccourci l ouvre la page Logs puis revient à la page précédente."""
     # Daemon simulé vivant → pas de ConfirmStart qui intercepterait les touches
     _make_minimal_state_with_pid(tmp_path, 54321)
     _patch_daemon_alive(monkeypatch, 54321)
@@ -603,12 +637,16 @@ async def test_cockpit_v2_toggle_l_masque_right_pane(tmp_path, monkeypatch):
 
     app = CockpitApp()
     async with app.run_test(size=(220, 60)) as pilot:
-        right = app.query_one("#logs-pane")
-        assert right.display is True
+        assert app._active_page_key == "home"
+        assert app.query_one("#logs-page").display is False
+
         await pilot.press("l")
-        assert right.display is False
+        assert app._active_page_key == "logs"
+        assert app.query_one("#logs-page").display is True
+
         await pilot.press("l")
-        assert right.display is True
+        assert app._active_page_key == "home"
+        assert app.query_one("#logs-page").display is False
 
 
 async def test_cockpit_v2_exit_plans_panel_existe(tmp_path, monkeypatch):
