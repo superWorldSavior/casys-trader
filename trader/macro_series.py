@@ -5,6 +5,14 @@ Déclenché best-effort en fin de cycle daemon si dernière collecte > 20 h
 (marqueur state/macro_series/.last_collect). Toute exception est avalée —
 jamais d'impact sur le cycle.
 
+maybe_collect lance collect_daily dans un thread daemon fire-and-forget :
+le cycle reprend immédiatement. Le marqueur .last_collect est posé AU LANCEMENT
+du thread (avant que la collecte ne se termine) pour bloquer un double départ
+si le cycle suivant arrive pendant la collecte (~25 s pire cas).
+Un verrou module (_collect_lock) garantit qu'un seul thread tourne à la fois.
+Les écritures du thread n'affectent que state/macro_series/* — aucun état
+partagé avec le cycle daemon.
+
 Séries versionnées (v1) — identifiants vérifiés DBnomics 2026-07-02 :
   FED/H15/RIFSPFF_N.D            Fed funds effectif (quotidien)
   BLS/cu/CUSR0000SA0             CPI US tous postes (mensuel)
@@ -21,6 +29,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
@@ -30,9 +39,16 @@ from typing import Callable
 log = logging.getLogger(__name__)
 
 DBNOMICS_BASE = "https://api.db.nomics.world/v22"
-DEFAULT_TIMEOUT_S = 15
+DEFAULT_TIMEOUT_S = 5  # 5 s/requête → pire cas thread ~25 s, invisible pour le cycle
 COLLECT_COOLDOWN_H = 20
 MARKER_FILE = ".last_collect"
+
+# ---------------------------------------------------------------------------
+# Verrou module — empêche un second thread si la collecte est en cours
+# ---------------------------------------------------------------------------
+
+_collect_lock = threading.Lock()
+_collect_in_progress: bool = False
 
 # ---------------------------------------------------------------------------
 # Séries macro versionnées — v1
@@ -151,6 +167,9 @@ def collect_daily(
 
     Retourne {"collected": int, "skipped": int, "errors": int}.
 
+    Cette fonction est synchrone. C'est maybe_collect qui asynchronise l'appel
+    dans un thread daemon pour ne pas bloquer le cycle.
+
     Arguments :
       state_dir   — répertoire racine de l'état (ex : state/)
       now         — horodatage de collecte (datetime avec ou sans tzinfo)
@@ -227,7 +246,7 @@ def _write_last_collect(marker: Path, now_utc: datetime) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Déclenchement best-effort — pattern consolidateur
+# Déclenchement best-effort — thread daemon fire-and-forget
 # ---------------------------------------------------------------------------
 
 
@@ -239,16 +258,28 @@ def maybe_collect(
     timeout_s: int = DEFAULT_TIMEOUT_S,
     cooldown_h: float = COLLECT_COOLDOWN_H,
 ) -> dict:
-    """Déclenche collect_daily si dernière collecte > cooldown_h heures (défaut 20 h).
+    """Déclenche collect_daily dans un thread daemon fire-and-forget si cooldown dépassé.
 
-    Best-effort total : toute exception est avalée, jamais d'impact sur le cycle daemon.
+    Retourne immédiatement — le cycle n'est jamais bloqué.
+
+    Le marqueur .last_collect est posé AU LANCEMENT du thread (avant que la
+    collecte ne se termine) pour bloquer un double départ si le cycle suivant
+    arrive pendant la collecte. Un verrou module (_collect_lock) garantit
+    qu'un seul thread tourne à la fois.
+
+    Les écritures du thread n'affectent que state/macro_series/* —
+    aucun état partagé avec le cycle daemon.
 
     Retourne :
-      {"triggered": False, "reason": "cooldown", "elapsed_h": float}
-        → si la collecte est trop récente
-      {"triggered": True, "collected": int, "skipped": int, "errors": int}
-        → si la collecte s'est déroulée (même en erreur partielle ou totale)
+      {"triggered": False, "reason": "cooldown",     "elapsed_h": float}
+        → collecte trop récente
+      {"triggered": False, "reason": "in_progress"}
+        → un thread de collecte tourne déjà
+      {"triggered": True,  "_thread": threading.Thread}
+        → thread lancé ; join() pour attendre la fin (tests uniquement)
     """
+    global _collect_in_progress
+
     macro_dir = Path(state_dir) / "macro_series"
     marker = macro_dir / MARKER_FILE
     now_utc = now.astimezone(timezone.utc) if now.tzinfo else now.replace(tzinfo=timezone.utc)
@@ -263,12 +294,26 @@ def maybe_collect(
                 "elapsed_h": round(elapsed_h, 2),
             }
 
-    try:
-        result = collect_daily(state_dir, now, get_json=get_json, timeout_s=timeout_s)
-        _write_last_collect(marker, now_utc)
-        return {"triggered": True, **result}
-    except Exception as exc:  # noqa: BLE001 — best-effort total, jamais de remontée
-        log.warning("macro_series: échec inattendu collect_daily : %s", exc)
-        # On écrit quand même le marqueur pour éviter une boucle de retry frénétique
-        _write_last_collect(marker, now_utc)
-        return {"triggered": True, "collected": 0, "skipped": 0, "errors": 1, "error": str(exc)}
+    with _collect_lock:
+        if _collect_in_progress:
+            return {"triggered": False, "reason": "in_progress"}
+        _collect_in_progress = True
+
+    # Poser le marqueur AVANT de lancer le thread : si le cycle suivant
+    # arrive pendant la collecte (~25 s pire cas), il voit un marqueur
+    # récent et ne redéclenche pas.
+    _write_last_collect(marker, now_utc)
+
+    def _run() -> None:
+        global _collect_in_progress
+        try:
+            collect_daily(state_dir, now, get_json=get_json, timeout_s=timeout_s)
+        except Exception as exc:  # noqa: BLE001 — best-effort total, jamais de remontée
+            log.warning("macro_series: échec inattendu collect_daily : %s", exc)
+        finally:
+            with _collect_lock:
+                _collect_in_progress = False
+
+    t = threading.Thread(target=_run, daemon=True, name="macro-series-collect")
+    t.start()
+    return {"triggered": True, "_thread": t}

@@ -6,13 +6,21 @@ Couverture :
   - erreur d'une série n'empêche pas les autres
   - déclenchement 20 h respecté (cooldown)
   - échec réseau total → cycle intact (maybe_collect retourne sans lever)
+  - maybe_collect retourne immédiatement (thread fire-and-forget)
+  - pas de double départ pendant une collecte en cours
+  - marqueur posé au lancement du thread (pas à la fin)
 """
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+import threading
+import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import pytest
+
+import trader.macro_series as _ms
 from trader.macro_series import (
     SERIES,
     collect_daily,
@@ -21,6 +29,19 @@ from trader.macro_series import (
 
 UTC = timezone.utc
 NOW = datetime(2026, 7, 2, 10, 0, 0, tzinfo=UTC)
+
+
+# ---------------------------------------------------------------------------
+# Fixture — réinitialise le flag de collecte entre les tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def reset_collect_flag():
+    """Garantit que _collect_in_progress est False avant et après chaque test."""
+    _ms._collect_in_progress = False
+    yield
+    _ms._collect_in_progress = False
 
 
 # ---------------------------------------------------------------------------
@@ -49,6 +70,13 @@ def _stub_all(period: str, value: float = 3.5):
     def get_json(_url: str) -> dict:
         return _dbnomics_resp(period, value)
     return get_json
+
+
+def _join(result: dict, timeout: float = 5.0) -> None:
+    """Joint le thread de collecte si présent dans le résultat."""
+    t = result.get("_thread")
+    if isinstance(t, threading.Thread):
+        t.join(timeout=timeout)
 
 
 # ---------------------------------------------------------------------------
@@ -147,19 +175,25 @@ def test_erreur_observation_absente(tmp_path):
 
 
 def test_maybe_collect_sans_marqueur(tmp_path):
-    """Pas de marqueur → déclenche, crée le marqueur."""
+    """Pas de marqueur → déclenche, crée le marqueur, collecte les séries."""
     result = maybe_collect(tmp_path, NOW, get_json=_stub_all("2026-06"))
 
     assert result["triggered"] is True
-    assert result["collected"] == len(SERIES)
+    _join(result)
 
     marker = tmp_path / "macro_series" / ".last_collect"
     assert marker.exists()
 
+    macro_dir = tmp_path / "macro_series"
+    for s in SERIES:
+        rows = _read_jsonl(macro_dir / f"{s['label']}.jsonl")
+        assert len(rows) == 1, f"JSONL manquant pour {s['label']}"
+
 
 def test_maybe_collect_cooldown_bloque(tmp_path):
     """Moins de 20 h depuis dernière collecte → pas de déclenchement."""
-    maybe_collect(tmp_path, NOW, get_json=_stub_all("2026-06"))
+    result0 = maybe_collect(tmp_path, NOW, get_json=_stub_all("2026-06"))
+    _join(result0)
 
     # 5 h après (< 20 h)
     now2 = datetime(2026, 7, 2, 15, 0, 0, tzinfo=UTC)
@@ -171,22 +205,29 @@ def test_maybe_collect_cooldown_bloque(tmp_path):
 
 
 def test_maybe_collect_declenche_apres_20h(tmp_path):
-    """Plus de 20 h depuis dernière collecte → déclenchement."""
-    maybe_collect(tmp_path, NOW, get_json=_stub_all("2026-06"))
+    """Plus de 20 h depuis dernière collecte → déclenchement et nouvelles données."""
+    result0 = maybe_collect(tmp_path, NOW, get_json=_stub_all("2026-06"))
+    _join(result0)
 
     # 21 h après
     now2 = datetime(2026, 7, 3, 7, 0, 0, tzinfo=UTC)
     result = maybe_collect(tmp_path, now2, get_json=_stub_all("2026-07"))
 
     assert result["triggered"] is True
-    assert result["collected"] == len(SERIES)
+    _join(result)
+
+    macro_dir = tmp_path / "macro_series"
+    for s in SERIES:
+        rows = _read_jsonl(macro_dir / f"{s['label']}.jsonl")
+        assert len(rows) == 2, f"deuxième ligne attendue pour {s['label']}"
+        assert rows[1]["period"] == "2026-07"
 
 
 def test_maybe_collect_juste_avant_seuil(tmp_path):
     """19 h 59 min → encore bloqué."""
-    maybe_collect(tmp_path, NOW, get_json=_stub_all("2026-06"))
+    result0 = maybe_collect(tmp_path, NOW, get_json=_stub_all("2026-06"))
+    _join(result0)
 
-    from datetime import timedelta
     now2 = NOW + timedelta(hours=19, minutes=59)
     result = maybe_collect(tmp_path, now2, get_json=_stub_all("2026-06"))
 
@@ -208,9 +249,7 @@ def test_echec_reseau_total_cycle_intact(tmp_path):
     result = maybe_collect(tmp_path, NOW, get_json=get_json)
 
     assert result["triggered"] is True
-    assert result["collected"] == 0
-    # Soit errors > 0 via collect_daily, soit error= dans le catch externe
-    assert result.get("errors", 0) > 0 or "error" in result
+    _join(result)
 
 
 def test_echec_reseau_marqueur_quand_meme_ecrit(tmp_path):
@@ -218,7 +257,8 @@ def test_echec_reseau_marqueur_quand_meme_ecrit(tmp_path):
     def get_json(_url: str) -> dict:
         raise ConnectionError("réseau coupé")
 
-    maybe_collect(tmp_path, NOW, get_json=get_json)
+    result0 = maybe_collect(tmp_path, NOW, get_json=get_json)
+    _join(result0)
 
     marker = tmp_path / "macro_series" / ".last_collect"
     assert marker.exists()
@@ -228,3 +268,90 @@ def test_echec_reseau_marqueur_quand_meme_ecrit(tmp_path):
     result2 = maybe_collect(tmp_path, now2, get_json=get_json)
     assert result2["triggered"] is False
     assert result2["reason"] == "cooldown"
+
+
+# ---------------------------------------------------------------------------
+# maybe_collect — comportement asynchrone
+# ---------------------------------------------------------------------------
+
+
+def test_maybe_collect_retourne_immediatement(tmp_path):
+    """maybe_collect rend la main immédiatement, même si get_json est lente."""
+    started = threading.Event()
+    can_finish = threading.Event()
+
+    def slow_get_json(_url: str) -> dict:
+        started.set()
+        can_finish.wait(timeout=5.0)
+        return _dbnomics_resp("2026-06", 3.5)
+
+    t0 = time.monotonic()
+    result = maybe_collect(tmp_path, NOW, get_json=slow_get_json)
+    elapsed = time.monotonic() - t0
+
+    assert result["triggered"] is True
+    # Le cycle ne doit pas avoir attendu la fin de la collecte
+    assert elapsed < 0.1, f"maybe_collect a bloqué {elapsed:.3f}s (attendu < 0.1s)"
+
+    # Laisser le thread finir proprement
+    can_finish.set()
+    _join(result)
+
+
+def test_no_double_demarrage_en_cours(tmp_path):
+    """Pendant une collecte en cours, un second appel retourne in_progress."""
+    started = threading.Event()
+    can_finish = threading.Event()
+
+    def slow_get_json(_url: str) -> dict:
+        started.set()
+        can_finish.wait(timeout=5.0)
+        return _dbnomics_resp("2026-06", 3.5)
+
+    result1 = maybe_collect(tmp_path, NOW, get_json=slow_get_json)
+    assert result1["triggered"] is True
+
+    # Attendre que le thread ait réellement démarré
+    assert started.wait(timeout=2.0), "thread de collecte non démarré"
+
+    # Second appel pendant la collecte : cooldown dépassé (21 h) mais thread en cours
+    now2 = NOW + timedelta(hours=21)
+    result2 = maybe_collect(tmp_path, now2, get_json=slow_get_json)
+
+    assert result2["triggered"] is False
+    assert result2["reason"] == "in_progress"
+
+    # Laisser le premier thread finir
+    can_finish.set()
+    _join(result1)
+
+
+def test_marqueur_pose_au_lancement_pas_a_la_fin(tmp_path):
+    """Le marqueur existe avant la fin de la collecte — protège le cycle suivant."""
+    started = threading.Event()
+    can_finish = threading.Event()
+
+    def slow_get_json(_url: str) -> dict:
+        started.set()
+        can_finish.wait(timeout=5.0)
+        return _dbnomics_resp("2026-06", 3.5)
+
+    result = maybe_collect(tmp_path, NOW, get_json=slow_get_json)
+    assert result["triggered"] is True
+
+    # Attendre le démarrage effectif du thread
+    assert started.wait(timeout=2.0), "thread de collecte non démarré"
+
+    # Le thread tourne encore, mais le marqueur doit déjà être posé
+    marker = tmp_path / "macro_series" / ".last_collect"
+    assert marker.exists(), "marqueur absent alors que le thread tourne encore"
+
+    # Un appel 5 min plus tard est bloqué par le cooldown (marqueur présent)
+    now2 = NOW + timedelta(minutes=5)
+    result2 = maybe_collect(tmp_path, now2, get_json=_stub_all("2026-06"))
+    assert result2["triggered"] is False
+    assert result2["reason"] == "cooldown"
+
+    # Laisser le thread finir proprement
+    can_finish.set()
+    _join(result)
