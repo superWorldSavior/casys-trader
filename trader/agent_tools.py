@@ -19,6 +19,15 @@ OUTCOME_OK = "ok"
 OUTCOME_REJECTED = "rejected"
 OUTCOME_ERROR = "error"
 OUTCOME_BUDGET_EXHAUSTED = "budget_exhausted"
+OUTCOME_TRUNCATED = "truncated"
+
+# Bornes de sérialisation — design §6 / findings Codex 2026-07-02.
+_MAX_RAW_CALLS = 32    # au-delà : trace sentinel "truncated", surplus ignoré
+_SCRUB_ID_LEN = 64     # id/tool tronqués à 64 chars
+_SCRUB_STR_LEN = 256   # strings dans args tronquées à 256 chars
+_SCRUB_LIST_LEN = 16   # listes dans args plafonnées à 16 éléments
+_SCRUB_DICT_KEYS = 16  # dicts dans args plafonnés à 16 clés
+_SCRUB_DEPTH = 3       # profondeur de récursion ≤ 3
 
 
 @dataclass(frozen=True)
@@ -79,15 +88,43 @@ class ToolSpec:
 TOOL_REGISTRY: dict[str, ToolSpec] = {}
 
 
+def _scrub_str(s: str, max_len: int = _SCRUB_STR_LEN) -> str:
+    return s if len(s) <= max_len else s[:max_len] + "…"
+
+
+def _scrub_args(args: dict[str, Any]) -> dict[str, Any]:
+    """Borne récursive : profondeur ≤ 3, listes ≤ 16, dicts ≤ 16 clés, strings ≤ 256.
+    Garantit que les args persistés/réinjectés restent bornés en taille."""
+    def _rec(obj: Any, depth: int) -> Any:
+        if depth >= _SCRUB_DEPTH:
+            return "…"
+        if isinstance(obj, str):
+            return _scrub_str(obj)
+        if isinstance(obj, dict):
+            items = list(obj.items())[:_SCRUB_DICT_KEYS]
+            out: dict[str, Any] = {str(k): _rec(v, depth + 1) for k, v in items}
+            if len(obj) > _SCRUB_DICT_KEYS:
+                out["…"] = f"(+{len(obj) - _SCRUB_DICT_KEYS} clés)"
+            return out
+        if isinstance(obj, list):
+            out_list: list[Any] = [_rec(v, depth + 1) for v in obj[:_SCRUB_LIST_LEN]]
+            if len(obj) > _SCRUB_LIST_LEN:
+                out_list.append(f"… (+{len(obj) - _SCRUB_LIST_LEN})")
+            return out_list
+        return obj
+    return _rec(args, 0)  # type: ignore[return-value]
+
+
 def _rejected(raw: object, *, reason: str, message: str = "") -> AgentToolTrace:
     data = raw if isinstance(raw, dict) else {}
     detail: dict[str, Any] = {"reason": reason}
     if message:
         detail["message"] = message
+    raw_args: dict[str, Any] = data.get("args") if isinstance(data.get("args"), dict) else {}
     return AgentToolTrace(
-        id=str(data.get("id") or "?"),
-        tool=str(data.get("tool") or "?"),
-        args=data.get("args") if isinstance(data.get("args"), dict) else {},
+        id=_scrub_str(str(data.get("id") or "?"), _SCRUB_ID_LEN),
+        tool=_scrub_str(str(data.get("tool") or "?"), _SCRUB_ID_LEN),
+        args=_scrub_args(raw_args),
         outcome=OUTCOME_REJECTED,
         detail=detail,
     )
@@ -119,7 +156,12 @@ def validate_tool_call(
     error = tools[tool].validate_args(args)
     if error:
         return _rejected(raw, reason="invalid_args", message=error)
-    return AgentToolCall(id=call_id, tool=tool, args=args)
+    # Scrub après validation : traces/résultats utilisent les valeurs bornées, jamais les bruts.
+    return AgentToolCall(
+        id=_scrub_str(call_id, _SCRUB_ID_LEN),
+        tool=_scrub_str(tool, _SCRUB_ID_LEN),
+        args=_scrub_args(args),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -179,9 +221,9 @@ def _budget_exhausted(call_or_raw: object, *, reason: str) -> tuple[AgentToolRes
         call_id, tool, args = call_or_raw.id, call_or_raw.tool, call_or_raw.args
     else:
         data = call_or_raw if isinstance(call_or_raw, dict) else {}
-        call_id = str(data.get("id") or "?")
-        tool = str(data.get("tool") or "?")
-        args = data.get("args") if isinstance(data.get("args"), dict) else {}
+        call_id = _scrub_str(str(data.get("id") or "?"), _SCRUB_ID_LEN)
+        tool = _scrub_str(str(data.get("tool") or "?"), _SCRUB_ID_LEN)
+        args = _scrub_args(data.get("args") if isinstance(data.get("args"), dict) else {})
     return (
         AgentToolResult(id=call_id, tool=tool, ok=False, error="budget_exhausted"),
         AgentToolTrace(id=call_id, tool=tool, args=args,
@@ -201,6 +243,16 @@ def execute_tool_round(
     même rejeté ou hors budget — pour que le LLM voie ce qui s'est passé."""
     results: list[AgentToolResult] = []
     traces: list[AgentToolTrace] = []
+
+    # Cap de liste d'entrée : surplus ignoré, résumé par une trace sentinel truncated.
+    dropped = len(raw_calls) - _MAX_RAW_CALLS
+    if dropped > 0:
+        raw_calls = raw_calls[:_MAX_RAW_CALLS]
+        traces.append(AgentToolTrace(
+            id="[sentinel]", tool="?", args={},
+            outcome=OUTCOME_TRUNCATED, detail={"dropped": dropped},
+        ))
+
     executed_total = 0
     per_symbol: dict[str, int] = {}
 
@@ -335,8 +387,11 @@ def _handle_get_attribution(call: AgentToolCall, context: ToolContext) -> dict:
         return {"rows": list(context.attribution.get("by_confidence") or [])}
     if scope == "exit_reason":
         return {"rows": list(context.attribution.get("by_exit_reason") or [])}
-    rows = [r for r in (context.attribution.get("by_symbol") or [])
-            if r.get("symbol") == call.args.get("symbol")]
+    # scope == "symbol" : vérifier l'allowlist (même pattern que get_position_risk).
+    sym = call.args.get("symbol")
+    if sym not in context.allowed_symbols:
+        return {"symbol": sym, "error": "symbol_not_allowed"}
+    rows = [r for r in (context.attribution.get("by_symbol") or []) if r.get("symbol") == sym]
     return {"rows": rows}
 
 

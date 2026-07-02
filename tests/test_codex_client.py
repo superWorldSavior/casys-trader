@@ -487,3 +487,18 @@ def test_catalogue_prompt_expose_les_outils_semantiques():
         allow_context_request=True, allow_tool_calls=True)
     assert "describe_data" in prompt
     assert "find_indicators" in prompt
+
+
+# ---------------------------------------------------------------------------
+# Finding 4 : reason tool_loop_blocked (parse_batch au tour final)
+# ---------------------------------------------------------------------------
+
+def test_parse_batch_tool_calls_sans_decisions_devient_tool_loop_blocked() -> None:
+    """Au tour final (parse_batch, allow_tool_calls implicitement faux), une réponse
+    tool_calls-only → tous HOLD avec raison 'tool_loop_blocked', pas 'batch_bad_output'."""
+    text = '{"tool_calls": [{"id": "c1", "tool": "get_freshness", "args": {"symbols": ["SPY"]}}]}'
+    result = parse_batch(text, ["SPY", "QQQ"], allow_context_request=False)
+    assert result["SPY"].action == "HOLD"
+    assert result["SPY"].rationale == "tool_loop_blocked"
+    assert result["QQQ"].action == "HOLD"
+    assert result["QQQ"].rationale == "tool_loop_blocked"

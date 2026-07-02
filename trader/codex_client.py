@@ -650,6 +650,10 @@ def _parse_batch_data(
     by_symbol: dict[str, Decision | ContextResearchRequest] = {}
     decisions = data.get("decisions")
     if not isinstance(decisions, list):
+        # Réponse tool_calls sans decisions au tour final → raison explicite (défense en profondeur).
+        raw_calls = data.get("tool_calls")
+        if isinstance(raw_calls, list) and any(isinstance(c, dict) for c in raw_calls):
+            return {sym: Decision.hold(sym, "tool_loop_blocked") for sym in symbols}
         return {sym: Decision.hold(sym, "batch_bad_output") for sym in symbols}
 
     requested = set(symbols)

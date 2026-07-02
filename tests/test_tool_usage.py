@@ -1,7 +1,7 @@
 import pytest
 
 from trader.tool_trace import TOOLS, summarize_tools
-from trader.tool_usage import build_report, clamp_count, risk_observability, tool_usage_rates, tool_vs_quality
+from trader.tool_usage import build_report, clamp_count, domain_tool_usage, risk_observability, tool_usage_rates, tool_vs_quality
 
 
 def _trace(
@@ -194,13 +194,11 @@ def test_risk_observability_rapporte_les_ouvertures_sans_stop_aux_ouvertures_tra
 
 
 def test_tool_usage_rates_compat_avec_domain_tools() -> None:
-    """tool_usage_rates reste cohérent quand des domain tools sont dans tools_used (migration §8).
+    """Séparation legacy / domain (design §8/§12, findings Codex 2026-07-02).
 
-    Les domain tools (get_freshness, get_position_risk…) apparaissent dans
-    tools_used via summarize_tools, mais ne créent pas de lignes supplémentaires
-    dans tool_usage_rates (qui ne connaît que les 5 tools legacy). C'est le
-    contrat de migration : les rates legacy sont inchangés, les domain tools sont
-    tracés et visibles dans la trace, pas dans les rates agrégés.
+    tool_usage_rates ne retourne que les 5 pseudo-tools legacy (invariant legacy).
+    Les domain tools (get_freshness, get_position_risk…) sont comptabilisés
+    séparément via domain_tool_usage, qui scanne runtime.tool_calls bruts.
     """
     row_with_domain = {
         "action": "HOLD",
@@ -228,7 +226,7 @@ def test_tool_usage_rates_compat_avec_domain_tools() -> None:
     summary_domain = summarize_tools(row_with_domain)
     summary_legacy = summarize_tools(row_legacy)
 
-    # Les domain tools sont présents dans tools_used de leur summary.
+    # Les domain tools sont présents dans tools_used de leur summary (via _domain_tool_traces).
     assert "get_freshness" in summary_domain["tools_used"]
     assert "get_position_risk" in summary_domain["tools_used"]
 
@@ -240,8 +238,46 @@ def test_tool_usage_rates_compat_avec_domain_tools() -> None:
     assert rates["context_request"]["used"] == 0
     assert rates["context_request"]["skipped"] == 2
 
-    # tool_usage_rates ne retourne que les 5 outils legacy — pas de fuite domain.
+    # Invariant legacy inchangé : tool_usage_rates ne retourne que les 5 outils legacy.
     assert set(rates.keys()) == set(TOOLS)
+
+    # Domain tools tracés dans domain_tool_usage (section séparée, §8/§12).
+    by_tool, global_outcomes = domain_tool_usage([row_with_domain, row_legacy])
+    indexed = {item["tool"]: item for item in by_tool}
+    assert "get_freshness" in indexed
+    assert indexed["get_freshness"]["outcomes"] == {"ok": 1}
+    assert "get_position_risk" in indexed
+    assert indexed["get_position_risk"]["outcomes"] == {"rejected": 1}
+    # row_legacy n'a pas de runtime.tool_calls → pas de domain tools
+    assert indexed["get_freshness"]["used"] == 1
+    assert global_outcomes == {"ok": 1, "rejected": 1}
+
+
+def test_domain_tool_usage_quatre_outcomes() -> None:
+    """domain_tool_usage comptabilise les 4 outcomes domain (ok/rejected/error/budget_exhausted)."""
+    row = {
+        "runtime": {
+            "tool_calls": [
+                {"tool": "get_freshness", "outcome": "ok", "args": {}, "detail": {}},
+                {"tool": "get_freshness", "outcome": "rejected", "args": {}, "detail": {}},
+                {"tool": "get_freshness", "outcome": "error", "args": {}, "detail": {}},
+                {"tool": "get_freshness", "outcome": "budget_exhausted", "args": {}, "detail": {}},
+                {"tool": "get_position_risk", "outcome": "ok", "args": {}, "detail": {}},
+                # Outil legacy : doit être ignoré par domain_tool_usage.
+                {"tool": "order", "outcome": "ok", "args": {}, "detail": {}},
+            ],
+        }
+    }
+    per_tool, global_outcomes = domain_tool_usage([row])
+    by_tool = {item["tool"]: item for item in per_tool}
+
+    assert "order" not in by_tool  # legacy tool ignoré
+    assert by_tool["get_freshness"]["used"] == 4
+    assert by_tool["get_freshness"]["outcomes"] == {
+        "ok": 1, "rejected": 1, "error": 1, "budget_exhausted": 1,
+    }
+    assert by_tool["get_position_risk"]["used"] == 1
+    assert global_outcomes == {"ok": 2, "rejected": 1, "error": 1, "budget_exhausted": 1}
 
 
 def test_build_report_integre_les_agregats_risque(monkeypatch, tmp_path) -> None:

@@ -17,6 +17,48 @@ DEFAULT_LEDGER = STATE_DIR / "decisions.jsonl"
 OUTPUT_PATH = STATE_DIR / "last_tool_usage.json"
 
 
+def domain_tool_usage(judgeable: list[dict]) -> tuple[list[dict], dict[str, int]]:
+    """Compte l'usage des domain tools (hors TOOLS legacy) avec répartition par outcome.
+
+    Scanne runtime.tool_calls de chaque row du ledger (données brutes, pas les traces
+    summarize_tools) pour construire deux agrégats :
+    - per_tool : [{tool, used, outcomes: {outcome: count}}] trié par nom d'outil
+    - global_outcomes : {outcome: total_count}
+
+    Conforme design §8/§12 : les domain tools et leurs outcomes (ok/rejected/error/
+    budget_exhausted/truncated) sont désormais comptabilisés séparément de la section
+    legacy (tool_usage_rates).
+    """
+    tool_outcomes: dict[str, dict[str, int]] = {}
+    global_counts: dict[str, int] = {}
+
+    for row in judgeable:
+        if not isinstance(row, dict):
+            continue
+        runtime = row.get("runtime")
+        if not isinstance(runtime, dict):
+            continue
+        calls = runtime.get("tool_calls")
+        if not isinstance(calls, list):
+            continue
+        for call in calls:
+            if not isinstance(call, dict):
+                continue
+            tool = call.get("tool")
+            if not isinstance(tool, str) or tool in TOOLS:
+                continue  # ignorer les outils legacy et les entrées non-str
+            outcome = str(call.get("outcome") or "unknown")
+            tool_outcomes.setdefault(tool, {})
+            tool_outcomes[tool][outcome] = tool_outcomes[tool].get(outcome, 0) + 1
+            global_counts[outcome] = global_counts.get(outcome, 0) + 1
+
+    per_tool = [
+        {"tool": t, "used": sum(c.values()), "outcomes": c}
+        for t, c in sorted(tool_outcomes.items())
+    ]
+    return per_tool, global_counts
+
+
 def tool_usage_rates(judgeable_traces: list[dict]) -> list[dict]:
     total = len(judgeable_traces)
     rows: list[dict] = []
@@ -168,6 +210,7 @@ def build_report(ledger: str | Path, *, band: float = BAND, days_buffer: int = 1
     clamps = clamp_count(traces)
     risk = risk_observability(traces)
     quality = tool_vs_quality(data["scored_rows"], indexed)
+    by_tool, d_outcomes = domain_tool_usage(data["judgeable"])
     start, end = data["window"]
     return {
         "params": {
@@ -184,6 +227,8 @@ def build_report(ledger: str | Path, *, band: float = BAND, days_buffer: int = 1
             "joined_decisions": len(indexed),
         },
         "usage": usage,
+        "domain_usage": by_tool,
+        "domain_outcomes": d_outcomes,
         "clamps": clamps,
         "risk": risk,
         "tool_vs_quality": quality,

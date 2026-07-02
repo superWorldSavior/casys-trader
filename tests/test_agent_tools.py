@@ -425,3 +425,65 @@ def test_find_indicators_concept_requis():
         allowed_tools=frozenset({"find_indicators"}))
     assert isinstance(trace, AgentToolTrace)
     assert trace.detail["reason"] == "invalid_args"
+
+
+# ---------------------------------------------------------------------------
+# Finding 1 : sérialisation bornée (_MAX_RAW_CALLS, _scrub_args, _scrub_str)
+# ---------------------------------------------------------------------------
+
+def test_execute_tool_round_cap_40_appels_a_32_plus_sentinel():
+    """40 calls → 32 traités + 1 trace sentinel truncated, len(traces) == 33."""
+    registry = _registry_with_echo()
+    raw = [{"id": f"c{i}", "tool": "echo", "args": {"text": "x"}} for i in range(40)]
+    results, traces = agent_tools.execute_tool_round(
+        raw, context=_context(), limits=agent_tools.ToolRoundLimits(max_total_calls=40),
+        allowed_tools=frozenset({"echo"}), registry=registry,
+    )
+    assert len(results) == agent_tools._MAX_RAW_CALLS
+    assert len(traces) == agent_tools._MAX_RAW_CALLS + 1
+    sentinel = next(t for t in traces if t.outcome == agent_tools.OUTCOME_TRUNCATED)
+    assert sentinel.detail["dropped"] == 8
+
+
+def test_execute_tool_round_scrub_args_geants():
+    """Un call avec args de 10k chars → sérialisation JSON < 2k chars."""
+    import json
+    registry = _registry_with_echo()
+    huge = "x" * 10_000
+    raw = [{"id": "c1", "tool": "echo", "args": {"text": huge}}]
+    results, traces = agent_tools.execute_tool_round(
+        raw, context=_context(), limits=agent_tools.ToolRoundLimits(),
+        allowed_tools=frozenset({"echo"}), registry=registry,
+    )
+    assert len(traces) == 1
+    serialized = json.dumps({"r": [r.__dict__ for r in results], "t": [t.__dict__ for t in traces]})
+    assert len(serialized) < 2_000
+
+
+def test_execute_tool_round_scrub_id_geant():
+    """Un id de 200 chars est tronqué à _SCRUB_ID_LEN dans la trace."""
+    registry = _registry_with_echo()
+    big_id = "a" * 200
+    raw = [{"id": big_id, "tool": "echo", "args": {"text": "hi"}}]
+    results, traces = agent_tools.execute_tool_round(
+        raw, context=_context(), limits=agent_tools.ToolRoundLimits(),
+        allowed_tools=frozenset({"echo"}), registry=registry,
+    )
+    assert len(traces) == 1
+    assert len(traces[0].id) <= agent_tools._SCRUB_ID_LEN + 1  # +1 pour le marqueur "…"
+    assert len(results[0].id) <= agent_tools._SCRUB_ID_LEN + 1
+
+
+# ---------------------------------------------------------------------------
+# Finding 2 : get_attribution(scope="symbol") vérifie l'allowlist
+# ---------------------------------------------------------------------------
+
+def test_get_attribution_scope_symbol_hors_allowlist():
+    """scope='symbol' avec un symbole hors allowed_symbols → error symbol_not_allowed."""
+    ctx = _providers_context()  # allowed_symbols = frozenset({"2330.TW"})
+    result, _ = agent_tools.execute_tool_call(
+        AgentToolCall(id="c1", tool="get_attribution", args={"scope": "symbol", "symbol": "EVIL"}),
+        ctx,
+    )
+    assert result.ok is True
+    assert result.result == {"symbol": "EVIL", "error": "symbol_not_allowed"}
