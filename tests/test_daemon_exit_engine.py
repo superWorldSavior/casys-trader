@@ -93,6 +93,75 @@ def test_run_cycle_execute_les_sorties_planifiees_avant_codex(monkeypatch, tmp_p
     assert SimBroker(state_dir / "broker.json").positions()["SPY"].quantity == 5.0
 
 
+def test_run_cycle_persiste_fx_rate_sur_sortie_planifiee_non_usd(
+    monkeypatch,
+    tmp_path,
+    patch_batch,
+    make_data_source,
+) -> None:
+    _write_runtime_config(tmp_path, symbols=["2379.TW"])
+    (tmp_path / "config" / "fx.yaml").write_text(
+        "TWD:\n"
+        "  yahoo: TWD=X\n"
+        "  invert: true\n"
+        "  fallback: 0.031\n",
+        encoding="utf-8",
+    )
+    state_dir = tmp_path / "state"
+    now = datetime(2026, 6, 29, 1, 30, tzinfo=timezone.utc)
+    expected_rate = 1.0 / 32.0
+    broker = SimBroker(state_dir / "broker.json", starting_cash=100_000)
+    broker.submit(
+        Order("2379.TW", "BUY", 100.0),
+        870.0,
+        "2026-06-29T01:00:00+00:00",
+        dry_run=False,
+        fx_rate=expected_rate,
+    )
+    TradePlanStore(state_dir / "trade_plans.json").upsert(
+        create_trade_plan(
+            symbol="2379.TW",
+            side="LONG",
+            quantity=100.0,
+            entry_price=870.0,
+            opened_at="2026-06-29T01:00:00+00:00",
+            raw_exit_plan={"take_profits": [{"name": "tp1", "price": 880.0, "fraction": 1.0}]},
+        )
+    )
+
+    monkeypatch.setattr(daemon, "ROOT", tmp_path)
+    monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+    data_source = make_data_source(lambda symbol, lookback, interval: [
+        Bar(
+            ts=now.isoformat(),
+            open=32.0 if symbol == "TWD=X" else 880.0,
+            high=32.0 if symbol == "TWD=X" else 881.0,
+            low=32.0 if symbol == "TWD=X" else 879.0,
+            close=32.0 if symbol == "TWD=X" else 880.0,
+            volume=1000.0,
+        )
+    ])
+    patch_batch(lambda **kwargs: Decision.hold(kwargs["symbol"], "attente"))
+
+    report = daemon.run_cycle(
+        dry_run=False,
+        now=now,
+        symbols_filter=["2379.TW"],
+        sched=Scheduler(state_dir / "scheduler.json"),
+        data_source=data_source,
+    )
+
+    assert report["planned_exits"][0]["executed"] is True
+    rows = [
+        json.loads(line)
+        for line in (state_dir / "model_performance.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert rows[-1]["symbol"] == "2379.TW"
+    assert rows[-1]["intent"] == "PLANNED_EXIT"
+    assert rows[-1]["fx_rate"] == pytest.approx(expected_rate)
+
+
 def test_run_cycle_ne_sort_pas_hors_session_meme_si_tp_atteint(monkeypatch, tmp_path, patch_batch, make_data_source) -> None:
     """§13.5 — la garde déterministe couvre AUSSI les sorties mécaniques : le TP est
     atteint (calcul fait) mais la session est fermée (samedi) → l'ordre ne part pas

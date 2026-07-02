@@ -102,12 +102,13 @@ def test_risk_capacity_context_expose_le_plafond_gross_restant_en_quantite_nativ
 # ---------------------------------------------------------------------------
 
 
-def _write_config_with_fx(root) -> None:
+def _write_config_with_fx(root, *, symbols=("SPY",)) -> None:
     """Crée la config minimale incluant fx.yaml pour le test d'intégration."""
     (root / "config").mkdir(exist_ok=True)
     (root / "mandate").mkdir(exist_ok=True)
+    symbols_yaml = "".join(f"  - {symbol}\n" for symbol in symbols)
     (root / "config" / "universe.yaml").write_text(
-        "starting_cash: 100000\nsymbols:\n  - SPY\n"
+        f"starting_cash: 100000\nsymbols:\n{symbols_yaml}"
     )
     (root / "config" / "risk.yaml").write_text(
         "max_position_value: 20000\n"
@@ -226,3 +227,66 @@ def test_run_cycle_fx_rates_dans_le_rapport(monkeypatch, tmp_path, make_data_sou
     assert "fx_rates" in report, "clé 'fx_rates' absente du rapport"
     assert isinstance(report["fx_rates"], dict)
     assert report["fx_rates"].get("USD") == 1.0
+
+
+def test_run_cycle_persiste_fx_rate_dans_model_performance_non_usd(
+    monkeypatch,
+    tmp_path,
+    make_data_source,
+) -> None:
+    """Attribution/trades clôturés lisent model_performance.jsonl.
+
+    Si le daemon n'y copie pas le fx_rate du fill, un trade TWD est ensuite
+    recompté comme si 1 TWD valait 1 USD dans le cockpit.
+    """
+    _write_config_with_fx(tmp_path, symbols=("2379.TW",))
+    state_dir = tmp_path / "state"
+    now = datetime(2026, 6, 29, 1, 30, tzinfo=timezone.utc)
+    expected_rate = 1.0 / 32.0
+
+    decision = Decision(
+        symbol="2379.TW",
+        action="BUY",
+        quantity=100.0,
+        confidence=0.95,
+        rationale="test fx",
+        intent="OPEN_LONG",
+        exit_plan={"hard_stop": {"type": "price", "price": 860.0}},
+    )
+
+    def fake_batch_decide(**kwargs):
+        return {sym: decision for sym in kwargs["decidable"]}, 1
+
+    monkeypatch.setattr(daemon, "ROOT", tmp_path)
+    monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+    monkeypatch.setattr(daemon, "_batch_decide", fake_batch_decide)
+
+    def bars(symbol: str, lookback: str, interval: str):
+        close = 32.0 if symbol == "TWD=X" else 870.0
+        return [
+            Bar(
+                ts=now.isoformat(),
+                open=close,
+                high=close,
+                low=close,
+                close=close,
+                volume=1000.0,
+            )
+        ]
+
+    report = daemon.run_cycle(
+        dry_run=False,
+        now=now,
+        symbols_filter=["2379.TW"],
+        sched=Scheduler(state_dir / "scheduler.json"),
+        data_source=make_data_source(bars),
+    )
+
+    assert report["decisions"][0]["executed"] is True
+    rows = [
+        __import__("json").loads(line)
+        for line in (state_dir / "model_performance.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert rows[-1]["symbol"] == "2379.TW"
+    assert rows[-1]["fx_rate"] == pytest.approx(expected_rate)

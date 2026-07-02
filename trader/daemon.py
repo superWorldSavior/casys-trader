@@ -1045,6 +1045,7 @@ def _apply_planned_exits(
                     commission=fill.commission,
                     commission_currency=fill.commission_currency,
                     commission_model=fill.commission_model,
+                    fx_rate=fill.fx_rate,
                     confidence=plan.llm_confidence,
                     llm_provider=plan.llm_provider or "unknown",
                     llm_model=plan.llm_model or "unknown",
@@ -1071,6 +1072,7 @@ def _apply_planned_exits(
                         "commission": fill.commission,
                         "commission_currency": fill.commission_currency,
                         "commission_model": fill.commission_model,
+                        "fx_rate": fill.fx_rate,
                     }
                     if fill is not None
                     else {}
@@ -2713,6 +2715,7 @@ def run_cycle(
                     commission=fill.commission,
                     commission_currency=fill.commission_currency,
                     commission_model=fill.commission_model,
+                    fx_rate=fill.fx_rate,
                     confidence=decision.confidence,
                     llm_provider=decision.llm_provider or "unknown",
                     llm_model=decision.llm_model or "unknown",
@@ -2725,6 +2728,7 @@ def run_cycle(
                 entry["commission"] = fill.commission
                 entry["commission_currency"] = fill.commission_currency
                 entry["commission_model"] = fill.commission_model
+                entry["fx_rate"] = fill.fx_rate
             if fill is not None and decision.intent in {"CLOSE", "REVERSE"}:
                 plan_store.close_symbol(sym)
             if fill is not None and decision.intent == "REDUCE":
