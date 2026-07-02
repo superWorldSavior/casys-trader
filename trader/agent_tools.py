@@ -118,3 +118,109 @@ def validate_tool_call(
     if error:
         return _rejected(raw, reason="invalid_args", message=error)
     return AgentToolCall(id=call_id, tool=tool, args=args)
+
+
+# ---------------------------------------------------------------------------
+# Task 2 : exécution bornée (budgets total + par-symbole, erreurs compactes)
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class ToolRoundLimits:
+    """Bornes design §6.2 : petites, explicites, non contournables par le LLM."""
+    max_total_calls: int = 24
+    max_calls_per_symbol: int = 3
+
+
+def _symbols_mentioned(args: dict) -> list[str]:
+    """Symboles qu'un call consomme pour le budget par-symbole."""
+    out: list[str] = []
+    if isinstance(args.get("symbol"), str):
+        out.append(args["symbol"])
+    if isinstance(args.get("symbols"), list):
+        out.extend(str(s) for s in args["symbols"])
+    return out
+
+
+def execute_tool_call(
+    call: AgentToolCall,
+    context: ToolContext,
+    *,
+    registry: Mapping[str, ToolSpec] | None = None,
+) -> tuple[AgentToolResult, AgentToolTrace]:
+    tools = TOOL_REGISTRY if registry is None else registry
+    try:
+        payload = tools[call.tool].handler(call, context)
+    except Exception as exc:  # noqa: BLE001 — aucune exception ne remonte au daemon
+        message = f"{type(exc).__name__}: {exc}"[:200]
+        return (
+            AgentToolResult(id=call.id, tool=call.tool, ok=False, error=message),
+            AgentToolTrace(id=call.id, tool=call.tool, args=call.args,
+                           outcome=OUTCOME_ERROR, detail={"message": message}),
+        )
+    detail: dict[str, Any] = {}
+    if isinstance(payload, dict) and "rows" in payload and isinstance(payload["rows"], list):
+        detail["result_count"] = len(payload["rows"])
+    return (
+        AgentToolResult(id=call.id, tool=call.tool, ok=True, result=payload),
+        AgentToolTrace(id=call.id, tool=call.tool, args=call.args,
+                       outcome=OUTCOME_OK, detail=detail),
+    )
+
+
+def _budget_exhausted(call_or_raw: object, *, reason: str) -> tuple[AgentToolResult, AgentToolTrace]:
+    data = call_or_raw if isinstance(call_or_raw, dict) else {}
+    if isinstance(call_or_raw, AgentToolCall):
+        call_id, tool, args = call_or_raw.id, call_or_raw.tool, call_or_raw.args
+    else:
+        call_id = str(data.get("id") or "?")
+        tool = str(data.get("tool") or "?")
+        args = data.get("args") if isinstance(data.get("args"), dict) else {}
+    return (
+        AgentToolResult(id=call_id, tool=tool, ok=False, error="budget_exhausted"),
+        AgentToolTrace(id=call_id, tool=tool, args=args,
+                       outcome=OUTCOME_BUDGET_EXHAUSTED, detail={"reason": reason}),
+    )
+
+
+def execute_tool_round(
+    raw_calls: list,
+    *,
+    context: ToolContext,
+    limits: ToolRoundLimits,
+    allowed_tools: frozenset[str],
+    registry: Mapping[str, ToolSpec] | None = None,
+) -> tuple[list[AgentToolResult], list[AgentToolTrace]]:
+    """UNE tournée bornée : chaque call rend TOUJOURS un (result, trace) —
+    même rejeté ou hors budget — pour que le LLM voie ce qui s'est passé."""
+    results: list[AgentToolResult] = []
+    traces: list[AgentToolTrace] = []
+    executed_total = 0
+    per_symbol: dict[str, int] = {}
+
+    for raw in raw_calls:
+        if executed_total >= limits.max_total_calls:
+            result, trace = _budget_exhausted(raw, reason="max_total_calls")
+            results.append(result)
+            traces.append(trace)
+            continue
+        validated = validate_tool_call(raw, allowed_tools=allowed_tools, registry=registry)
+        if isinstance(validated, AgentToolTrace):
+            reason = validated.detail.get("reason", "rejected")
+            results.append(AgentToolResult(id=validated.id, tool=validated.tool,
+                                           ok=False, error=f"rejected:{reason}"))
+            traces.append(validated)
+            continue
+        symbols = _symbols_mentioned(validated.args)
+        if any(per_symbol.get(sym, 0) >= limits.max_calls_per_symbol for sym in symbols):
+            result, trace = _budget_exhausted(validated, reason="max_calls_per_symbol")
+            results.append(result)
+            traces.append(trace)
+            continue
+        for sym in symbols:
+            per_symbol[sym] = per_symbol.get(sym, 0) + 1
+        executed_total += 1
+        result, trace = execute_tool_call(validated, context, registry=registry)
+        results.append(result)
+        traces.append(trace)
+
+    return results, traces
