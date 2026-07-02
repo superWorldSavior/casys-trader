@@ -529,3 +529,294 @@ def test_compute_outcome_scores_fallback_global(tmp_path: Path) -> None:
     conn.close()
 
     assert c_win_score == pytest.approx(expected_c_win, abs=1e-9)
+
+
+# ---------------------------------------------------------------------------
+# Task 4 : backfill_embeddings + search hybride + record_recall
+# ---------------------------------------------------------------------------
+
+from datetime import datetime, timezone  # noqa: E402
+
+import numpy as np  # noqa: E402
+
+EMBEDDING_DIMS = 1536
+
+
+def _make_unit_blob(dim_index: int) -> bytes:
+    """Vecteur unitaire float32 avec 1.0 à l'index dim_index (1536 dims)."""
+    arr = np.zeros(EMBEDDING_DIMS, dtype=np.float32)
+    arr[dim_index] = 1.0
+    return arr.tobytes()
+
+
+_SEARCH_ROWS = [
+    {
+        "ts": "2026-06-01T10:00:00+00:00",
+        "symbol": "NVDA",
+        "note": "breakout cassure résistance momentum fort signal haussier",
+        "action": "BUY",
+        "intent": "BUY",
+        "executed": True,
+        "reason": "breakout",
+        "decision_id": "emb-nvda-1",
+    },
+    {
+        "ts": "2026-06-02T10:00:00+00:00",
+        "symbol": "NVDA",
+        "note": "consolidation range serré avant reprise possible",
+        "action": "HOLD",
+        "intent": "HOLD",
+        "executed": False,
+        "reason": "hold",
+        "decision_id": "emb-nvda-2",
+    },
+    {
+        "ts": "2026-06-03T10:00:00+00:00",
+        "symbol": "AAPL",
+        "note": "support testé divergence RSI retournement possible swing",
+        "action": "BUY",
+        "intent": "BUY",
+        "executed": True,
+        "reason": "reversal",
+        "decision_id": "emb-aapl-1",
+    },
+]
+
+
+def _setup_search_store(tmp_path: Path) -> "LearningsStore":
+    """Store peuplé avec 3 notes (2 NVDA, 1 AAPL), sans embeddings initiaux."""
+    jsonl = tmp_path / "search_test.jsonl"
+    _write_jsonl(jsonl, _SEARCH_ROWS)
+    store = LearningsStore(tmp_path / "learnings.db")
+    store.ingest_jsonl(jsonl, source="test")
+    return store
+
+
+# --- backfill_embeddings ---
+
+
+def test_backfill_embeddings_embede_seulement_les_sans(tmp_path: Path) -> None:
+    """backfill_embeddings n'embède que les 2 notes sans embedding ; retourne 2."""
+    store = _setup_search_store(tmp_path)
+
+    # Pré-renseigner l'embedding de emb-aapl-1 → ne doit PAS être re-embeddé
+    store._conn.execute(
+        "UPDATE notes SET embedding = ? WHERE decision_id = 'emb-aapl-1'",
+        (_make_unit_blob(0),),
+    )
+    store._conn.commit()
+
+    calls: list[list[str]] = []
+
+    def fake_embedder(texts: list[str]) -> list[bytes]:
+        calls.append(list(texts))
+        return [_make_unit_blob(i + 10) for i in range(len(texts))]
+
+    n = store.backfill_embeddings(fake_embedder)
+
+    assert n == 2
+    total_texts = sum(len(c) for c in calls)
+    assert total_texts == 2
+
+
+def test_backfill_embeddings_zero_si_tous_ont_embedding(tmp_path: Path) -> None:
+    """backfill_embeddings retourne 0 et n'appelle pas l'embedder si toutes les notes sont embeddées."""
+    store = _setup_search_store(tmp_path)
+
+    for did in ["emb-nvda-1", "emb-nvda-2", "emb-aapl-1"]:
+        store._conn.execute(
+            "UPDATE notes SET embedding = ? WHERE decision_id = ?",
+            (_make_unit_blob(0), did),
+        )
+    store._conn.commit()
+
+    called: list = []
+
+    def fake_embedder(texts: list[str]) -> list[bytes]:
+        called.append(texts)
+        return [_make_unit_blob(0)] * len(texts)
+
+    n = store.backfill_embeddings(fake_embedder)
+
+    assert n == 0
+    assert called == [], "L'embedder ne doit pas être appelé si toutes les notes ont déjà un embedding"
+
+
+# --- search — facettes ---
+
+
+def test_search_facette_symbol_filtre(tmp_path: Path) -> None:
+    """search(symbol='NVDA') retourne uniquement les notes NVDA."""
+    store = _setup_search_store(tmp_path)
+    results = store.search(symbol="NVDA")
+    assert len(results) > 0, "Au moins une note NVDA attendue"
+    for r in results:
+        assert r["symbol"] == "NVDA", f"Note inattendue : {r['symbol']}"
+
+
+def test_search_sans_filtre_retourne_toutes_les_notes(tmp_path: Path) -> None:
+    """search() sans filtre retourne les 3 notes."""
+    store = _setup_search_store(tmp_path)
+    results = store.search()
+    assert len(results) == 3
+
+
+# --- search — expiration ---
+
+
+def test_search_note_expiree_exclue(tmp_path: Path) -> None:
+    """Une note dont valid_until est dans le passé est exclue des résultats."""
+    store = _setup_search_store(tmp_path)
+
+    past = "2020-01-01T00:00:00+00:00"
+    store._conn.execute(
+        "UPDATE notes SET valid_until = ? WHERE decision_id = 'emb-nvda-1'", (past,)
+    )
+    store._conn.commit()
+
+    now = datetime(2026, 6, 10, tzinfo=timezone.utc)
+    results = store.search(symbol="NVDA", now=now)
+
+    expired_id = store._conn.execute(
+        "SELECT id FROM notes WHERE decision_id = 'emb-nvda-1'"
+    ).fetchone()[0]
+    ids = [r["id"] for r in results]
+    assert expired_id not in ids, "La note expirée ne doit pas apparaître dans les résultats"
+
+
+def test_search_note_non_expiree_incluse(tmp_path: Path) -> None:
+    """Une note dont valid_until est dans le futur est incluse."""
+    store = _setup_search_store(tmp_path)
+
+    future = "2099-12-31T00:00:00+00:00"
+    store._conn.execute(
+        "UPDATE notes SET valid_until = ? WHERE decision_id = 'emb-nvda-1'", (future,)
+    )
+    store._conn.commit()
+
+    now = datetime(2026, 6, 10, tzinfo=timezone.utc)
+    results = store.search(now=now)
+
+    active_id = store._conn.execute(
+        "SELECT id FROM notes WHERE decision_id = 'emb-nvda-1'"
+    ).fetchone()[0]
+    ids = [r["id"] for r in results]
+    assert active_id in ids
+
+
+# --- search — cosine ---
+
+
+def test_search_cosine_trouve_note_la_plus_proche(tmp_path: Path) -> None:
+    """search(query_vec=...) retourne en tête la note dont l'embedding est le plus proche."""
+    store = _setup_search_store(tmp_path)
+
+    # Embeddings orthogonaux : dim0→nvda-1, dim1→nvda-2, dim2→aapl-1
+    for did, dim in [("emb-nvda-1", 0), ("emb-nvda-2", 1), ("emb-aapl-1", 2)]:
+        store._conn.execute(
+            "UPDATE notes SET embedding = ? WHERE decision_id = ?",
+            (_make_unit_blob(dim), did),
+        )
+    store._conn.commit()
+
+    # Query alignée sur dim 0 → nvda-1 doit être en tête
+    query = _make_unit_blob(0)
+    # now = ts des notes → age_days = 0 pour tous → freshness identique
+    now = datetime(2026, 6, 1, 10, 0, 0, tzinfo=timezone.utc)
+    results = store.search(query_vec=query, now=now)
+
+    assert len(results) > 0
+    nvda1_id = store._conn.execute(
+        "SELECT id FROM notes WHERE decision_id = 'emb-nvda-1'"
+    ).fetchone()[0]
+    assert results[0]["id"] == nvda1_id, (
+        f"nvda-1 (dim 0) devrait être en tête, got id={results[0]['id']}"
+    )
+
+
+# --- search — déterminisme (RRF stable) ---
+
+
+def test_search_rrf_deterministique(tmp_path: Path) -> None:
+    """search avec les mêmes paramètres retourne le même ordre (déterminisme)."""
+    store = _setup_search_store(tmp_path)
+    now = datetime(2026, 6, 10, tzinfo=timezone.utc)
+    results1 = store.search(text_query="momentum", now=now)
+    results2 = store.search(text_query="momentum", now=now)
+    assert [r["id"] for r in results1] == [r["id"] for r in results2]
+
+
+# --- search — limit et troncature ---
+
+
+def test_search_limit_respecte(tmp_path: Path) -> None:
+    """search(limit=1) retourne au plus 1 résultat."""
+    store = _setup_search_store(tmp_path)
+    results = store.search(limit=1)
+    assert len(results) <= 1
+
+
+def test_search_note_tronquee_240c(tmp_path: Path) -> None:
+    """Les notes dans les résultats sont tronquées à 240 caractères max."""
+    long_note = "X" * 300
+    rows = [
+        {
+            "ts": "2026-06-10T10:00:00+00:00",
+            "symbol": "TSLA",
+            "note": long_note,
+            "action": "BUY",
+            "intent": "BUY",
+            "executed": True,
+            "reason": "test",
+            "decision_id": "long-note-tsla",
+        }
+    ]
+    jsonl = tmp_path / "long.jsonl"
+    _write_jsonl(jsonl, rows)
+    store = LearningsStore(tmp_path / "learnings.db")
+    store.ingest_jsonl(jsonl, source="test")
+
+    results = store.search()
+    assert len(results) > 0
+    for r in results:
+        assert len(r["note"]) <= 240, f"Note trop longue : {len(r['note'])} chars"
+
+
+def test_search_champs_attendus(tmp_path: Path) -> None:
+    """Chaque résultat contient les clés id, ts, symbol, verdict, outcome_score, note."""
+    store = _setup_search_store(tmp_path)
+    results = store.search()
+    assert len(results) > 0
+    required_keys = {"id", "ts", "symbol", "verdict", "outcome_score", "note"}
+    for r in results:
+        missing = required_keys - set(r)
+        assert not missing, f"Clés manquantes : {missing}"
+
+
+# --- record_recall ---
+
+
+def test_record_recall_ecrit_la_ligne(tmp_path: Path) -> None:
+    """record_recall persiste une ligne dans la table recalls avec les bons note_ids."""
+    store = _setup_search_store(tmp_path)
+
+    store.record_recall(decision_id="test-decision-42", note_ids=[1, 2, 3])
+
+    rows = store._conn.execute(
+        "SELECT decision_id, note_ids FROM recalls WHERE decision_id = 'test-decision-42'"
+    ).fetchall()
+    assert len(rows) == 1
+    assert rows[0][0] == "test-decision-42"
+    assert json.loads(rows[0][1]) == [1, 2, 3]
+
+
+def test_record_recall_ts_renseigne(tmp_path: Path) -> None:
+    """record_recall renseigne le champ ts (non vide, ISO format)."""
+    store = _setup_search_store(tmp_path)
+    store.record_recall(decision_id="test-ts-recall", note_ids=[7])
+
+    row = store._conn.execute(
+        "SELECT ts FROM recalls WHERE decision_id = 'test-ts-recall'"
+    ).fetchone()
+    assert row is not None
+    assert row[0] and len(row[0]) > 0, "ts doit être non vide"

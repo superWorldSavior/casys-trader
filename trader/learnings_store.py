@@ -11,9 +11,14 @@ Le .db est un DÉRIVÉ reconstructible — les JSONL d'archives restent canoniqu
 from __future__ import annotations
 
 import json
+import math
 import sqlite3
 from collections import defaultdict
+from collections.abc import Callable
+from datetime import datetime, timezone
 from pathlib import Path
+
+import numpy as np
 
 from trader.semantic.catalog import family_for_symbol
 
@@ -358,3 +363,209 @@ class LearningsStore:
 
         self._conn.commit()
         return {"scored": scored, "base_rates": base_rates}
+
+    # ------------------------------------------------------------------
+    # Embeddings
+    # ------------------------------------------------------------------
+
+    def backfill_embeddings(self, embedder: Callable[[list[str]], list[bytes]]) -> int:
+        """Embède les notes sans embedding (embedding IS NULL).
+
+        L'``embedder`` est un callable ``list[str] → list[bytes]`` (injectable
+        pour les tests — aucun appel réseau direct ici).
+        Seules les notes avec ``note IS NOT NULL AND embedding IS NULL`` sont traitées.
+        Retourne le nombre de notes embeddées.
+        """
+        rows = self._conn.execute(
+            "SELECT id, note FROM notes WHERE embedding IS NULL AND note IS NOT NULL"
+        ).fetchall()
+
+        if not rows:
+            return 0
+
+        ids = [r["id"] for r in rows]
+        texts = [r["note"] for r in rows]
+
+        blobs = embedder(texts)
+
+        for note_id, blob in zip(ids, blobs):
+            self._conn.execute(
+                "UPDATE notes SET embedding = ? WHERE id = ?",
+                (blob, note_id),
+            )
+
+        self._conn.commit()
+        return len(ids)
+
+    # ------------------------------------------------------------------
+    # Recherche hybride
+    # ------------------------------------------------------------------
+
+    def search(
+        self,
+        *,
+        query_vec: bytes | None = None,
+        text_query: str | None = None,
+        symbol: str | None = None,
+        family: str | None = None,
+        limit: int = 8,
+        now: datetime | None = None,
+        tau_days: float = 30.0,
+    ) -> list[dict]:
+        """Recherche hybride : facettes + FTS5 BM25 + cosine numpy + fusion RRF.
+
+        Algorithme (design §4.3, V1) :
+        1. Filtre SQL (facettes symbol/family + expiration valid_until).
+        2. Classement FTS5 BM25 si ``text_query`` fourni.
+        3. Classement cosine brute-force si ``query_vec`` fourni.
+        4. Fusion RRF (k=60) des deux classements.
+        5. Score final = rrf + outcome_score + exp(−age_days/τ) − 1.
+        6. Retourne les ``limit`` meilleurs résultats, note tronquée à 240 c.
+        """
+        if now is None:
+            now = datetime.now(timezone.utc)
+        now_ts = now.isoformat()
+        tau_days = max(tau_days, 1e-9)
+
+        # --- 1. Filtre SQL facetté (sans préfixe table) ---
+        base_clauses = ["(valid_until IS NULL OR valid_until > :now_ts)"]
+        params: dict = {"now_ts": now_ts}
+
+        if symbol:
+            base_clauses.append("symbol = :symbol")
+            params["symbol"] = symbol
+        if family:
+            base_clauses.append("family = :family")
+            params["family"] = family
+
+        base_where = " AND ".join(base_clauses)
+
+        # Filtre avec préfixe n. pour les JOINs FTS5
+        fts_clauses = ["(n.valid_until IS NULL OR n.valid_until > :now_ts)"]
+        if symbol:
+            fts_clauses.append("n.symbol = :symbol")
+        if family:
+            fts_clauses.append("n.family = :family")
+        fts_where = " AND ".join(fts_clauses)
+
+        # --- Récupérer tous les candidats facettés ---
+        base_rows = self._conn.execute(
+            f"""
+            SELECT id, ts, symbol, family, verdict, outcome_score,
+                   embedding, valid_from, note
+            FROM notes
+            WHERE {base_where}
+            """,
+            params,
+        ).fetchall()
+
+        if not base_rows:
+            return []
+
+        candidates: dict[int, dict] = {r["id"]: dict(r) for r in base_rows}
+        candidate_ids: set[int] = set(candidates)
+
+        # --- 2. Classement FTS5 (si text_query) ---
+        fts_ranked: list[int] = []
+        if text_query:
+            fts_rows = self._conn.execute(
+                f"""
+                SELECT n.id
+                FROM notes_fts
+                JOIN notes n ON n.id = notes_fts.rowid
+                WHERE notes_fts MATCH :text_query AND {fts_where}
+                ORDER BY bm25(notes_fts)
+                """,
+                {**params, "text_query": text_query},
+            ).fetchall()
+            fts_ranked = [r[0] for r in fts_rows if r[0] in candidate_ids]
+
+        # --- 3. Classement cosine (si query_vec) ---
+        cosine_ranked: list[int] = []
+        if query_vec is not None:
+            query_arr = np.frombuffer(query_vec, dtype=np.float32)
+            query_norm = float(np.linalg.norm(query_arr))
+
+            sims: list[tuple[float, int]] = []
+            for note_id, row in candidates.items():
+                blob = row.get("embedding")
+                if blob:
+                    note_arr = np.frombuffer(blob, dtype=np.float32)
+                    note_norm = float(np.linalg.norm(note_arr))
+                    if query_norm > 0 and note_norm > 0:
+                        cos_sim = float(np.dot(query_arr, note_arr)) / (query_norm * note_norm)
+                    else:
+                        cos_sim = 0.0
+                    sims.append((-cos_sim, note_id))  # signe négatif → sort ascendant = meilleur en premier
+
+            sims.sort()
+            cosine_ranked = [note_id for _, note_id in sims]
+
+        # --- 4. Fusion RRF (k=60) ---
+        rrf_k = 60
+        rrf_scores: dict[int, float] = {}
+        for rank, nid in enumerate(fts_ranked, 1):
+            rrf_scores[nid] = rrf_scores.get(nid, 0.0) + 1.0 / (rrf_k + rank)
+        for rank, nid in enumerate(cosine_ranked, 1):
+            rrf_scores[nid] = rrf_scores.get(nid, 0.0) + 1.0 / (rrf_k + rank)
+
+        # --- 5. Score final et tri ---
+        scored: list[tuple[float, int]] = []
+        for note_id, row in candidates.items():
+            rrf = rrf_scores.get(note_id, 0.0)
+            outcome_score = row.get("outcome_score") or 0.0
+
+            vf_str = row.get("valid_from") or row.get("ts") or ""
+            try:
+                if vf_str:
+                    note_dt = datetime.fromisoformat(vf_str.replace("Z", "+00:00"))
+                    if note_dt.tzinfo is None:
+                        note_dt = note_dt.replace(tzinfo=timezone.utc)
+                    age_days = max(0.0, (now - note_dt).total_seconds() / 86400.0)
+                else:
+                    age_days = 0.0
+            except (ValueError, TypeError):
+                age_days = 0.0
+
+            freshness = math.exp(-age_days / tau_days) - 1.0
+            final_score = rrf + outcome_score + freshness
+            # Tri descendant : on stocke le négatif + note_id comme tie-breaker
+            scored.append((-final_score, note_id))
+
+        scored.sort()
+        top = scored[:limit]
+
+        # --- 6. Construire le résultat ---
+        result: list[dict] = []
+        for _, note_id in top:
+            row = candidates[note_id]
+            note_text = row.get("note") or ""
+            result.append(
+                {
+                    "id": note_id,
+                    "ts": row.get("ts"),
+                    "symbol": row.get("symbol"),
+                    "verdict": row.get("verdict"),
+                    "outcome_score": row.get("outcome_score"),
+                    "note": note_text[:240],
+                }
+            )
+
+        return result
+
+    # ------------------------------------------------------------------
+    # Trace des injections
+    # ------------------------------------------------------------------
+
+    def record_recall(self, *, decision_id: str, note_ids: list[int]) -> None:
+        """Trace l'injection de notes pour une décision (design §4.4, invariant lecture seule de l'outil).
+
+        Appelé par le daemon après une tournée d'outils, pas par le handler.
+        Écrit une ligne dans ``recalls(decision_id, note_ids JSON, ts ISO)`` .
+        """
+        ts = datetime.now(timezone.utc).isoformat()
+        self._conn.execute(
+            "INSERT INTO recalls (decision_id, note_ids, ts) VALUES (?, ?, ?)",
+            (decision_id, json.dumps(note_ids), ts),
+        )
+        self._conn.commit()
