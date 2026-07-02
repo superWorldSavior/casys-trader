@@ -26,7 +26,7 @@ documenté, où, et quels trous restent).
 Les **trous** ci-dessous obtiennent une page `reference/` dédiée ; les runbooks
 `how-to/` (quadrant entier absent) sont à créer.
 
-Pages `reference/` écrites : [`risk-gate`](reference/risk-gate.md), [`fx`](reference/fx.md), [`cockpit`](reference/cockpit.md), [`reporting`](reference/reporting.md).
+Pages `reference/` écrites : [`risk-gate`](reference/risk-gate.md), [`fx`](reference/fx.md), [`cockpit`](reference/cockpit.md), [`reporting`](reference/reporting.md), [`config`](reference/config.md).
 Pages `how-to/` écrites : [`run-the-daemon`](how-to/run-the-daemon.md), [`read-logs`](how-to/read-logs.md), [`measure-and-replay`](how-to/measure-and-replay.md).
 
 ---
@@ -71,7 +71,7 @@ Légende : ✅ couvert · 🟡 partiel / dispersé / potentiellement périmé ·
 |---|---|---|---|---|
 | Radar / rotation / hot-sets | `rotation/*` (core, venues, collectors, schedule, override, wiring) | ✅ | archi §6 | D9, D10 |
 | Régime familial | `market/family_regime`, `market/regime` | 🟡 | — | D2 |
-| Config univers & portefeuille | `config/pool`, `config/portfolio`, `*.yaml` | ❌ | — | — |
+| Config univers & portefeuille | `config/*.yaml`, `config/pool`, `config/portfolio` | ✅ | **`reference/config.md`** | D9/D10/D13 |
 
 ### LLM & agent
 | Sous-système | Package/module | Réf | Où | Décisions |
@@ -99,14 +99,21 @@ Légende : ✅ couvert · 🟡 partiel / dispersé / potentiellement périmé ·
 
 ---
 
-## Trous prioritaires (backlog)
+## Backlog v2 — vidé ✅ (2026-07-03)
 
-Du plus risqué au moins risqué :
+Les 5 trous prioritaires identifiés à la v2 sont comblés :
 
-1. ~~**Risk gate — réf unique**~~ ✅ **fait** → [`reference/risk-gate.md`](reference/risk-gate.md).
-2. ~~**Conversion FX**~~ ✅ **fait** → [`reference/fx.md`](reference/fx.md).
-3. ~~**Runbooks how-to**~~ ✅ **fait** → `how-to/` (run-the-daemon, read-logs, measure-and-replay).
-4. ~~**Cockpit & attribution**~~ ✅ **fait** → [`cockpit`](reference/cockpit.md), [`reporting`](reference/reporting.md).
-5. **Config univers/portefeuille** ❌. Les `.yaml` pilotent le comportement sans page qui les décrit. **← prochain (dernier)**
+1. ~~Risk gate~~ ✅ [`reference/risk-gate.md`](reference/risk-gate.md)
+2. ~~Conversion FX~~ ✅ [`reference/fx.md`](reference/fx.md)
+3. ~~Runbooks how-to~~ ✅ [`how-to/`](how-to/) (run-the-daemon, read-logs, measure-and-replay)
+4. ~~Cockpit & attribution~~ ✅ [`cockpit`](reference/cockpit.md) · [`reporting`](reference/reporting.md)
+5. ~~Config univers/portefeuille~~ ✅ [`reference/config.md`](reference/config.md)
 
-On remplit dans cet ordre, une page à la fois.
+**Reste en 🟡 dans la carte** (moins prioritaire, à traiter au fil de l'eau) :
+admission d'ordre (`application/order_admission`), budget gross, exécution/broker,
+news, macro, régime familial, protocole agent, contexte agent, sémantique. Chacun
+mérite sa page `reference/` quand on y touche.
+
+Méthode : lire le code → écrire la page `reference/` (comportement/invariants/codes)
+→ passer la ligne ✅ dans la carte. Un fact-check Codex de chaque réf vs le code
+est recommandé avant de s'y fier (réf fausse pire que pas de réf).
