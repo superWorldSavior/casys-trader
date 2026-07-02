@@ -26,7 +26,7 @@ documenté, où, et quels trous restent).
 Les **trous** ci-dessous obtiennent une page `reference/` dédiée ; les runbooks
 `how-to/` (quadrant entier absent) sont à créer.
 
-Pages `reference/` écrites : [`risk-gate`](reference/risk-gate.md), [`fx`](reference/fx.md), [`cockpit`](reference/cockpit.md), [`reporting`](reference/reporting.md), [`config`](reference/config.md).
+Pages `reference/` écrites : [`risk-gate`](reference/risk-gate.md), [`fx`](reference/fx.md), [`cockpit`](reference/cockpit.md), [`reporting`](reference/reporting.md), [`config`](reference/config.md), [`learnings-rag`](reference/learnings-rag.md), [`agent-tools`](reference/agent-tools.md), [`macro`](reference/macro.md).
 Pages `how-to/` écrites : [`run-the-daemon`](how-to/run-the-daemon.md), [`read-logs`](how-to/read-logs.md), [`measure-and-replay`](how-to/measure-and-replay.md).
 
 ---
@@ -62,7 +62,7 @@ Légende : ✅ couvert · 🟡 partiel / dispersé / potentiellement périmé ·
 | Sources marché & fraîcheur | `tools/data_source`, `tools/market`, `tools/ib_source` | ✅ | archi §3.2 | — |
 | **Conversion FX** | `market/fx`, `market/fx_rates` | ✅ | **`reference/fx.md`** | chantier FX |
 | Fil d'actu (news) | `tools/news_feed` | 🟡 | archi §13 ; spec 06-23 | — |
-| Macro | `market/macro_calendar`, `market/macro_series` | 🟡 | archi §13 ; spec 07-02 | — |
+| Macro | `market/macro_calendar`, `market/macro_series` | ✅ | **`reference/macro.md`** | — |
 | Cycle de vie / rotation | `runtime/ledger_rotation`, `reporting/decision_ledger` | ✅ | archi §12 | — |
 | État persistant | `state/*.jsonl`, `trade_plans.json`, `scheduler.json` | ✅ | archi §8 | — |
 
@@ -79,8 +79,8 @@ Légende : ✅ couvert · 🟡 partiel / dispersé / potentiellement périmé ·
 | Transport LLM / acpx | `agent/llm`, `agent/client` | ✅ | archi §9.1-9.2 | — |
 | Contrat / protocole | `agent_protocol/` (types, prompts, parsing) | 🟡 | archi §9.3 | — |
 | Contexte agent | `agent/context` | 🟡 | archi §3.3 | — |
-| Outils domaine (read-only) | `agent_tools/` (9 handlers) | ✅ | archi §10 ; spec 06-29 | — |
-| Mémoire / recall / learnings | `learnings/` (store, consolidator, embeddings) | ✅ | archi §11 ; spec 07-02 | — |
+| Outils domaine (read-only) | `agent_tools/` (9 handlers) | ✅ | **`reference/agent-tools.md`** | — |
+| Mémoire / recall / learnings (RAG) | `learnings/` (store, consolidator, embeddings) | ✅ | **`reference/learnings-rag.md`** | — |
 | Couche sémantique | `semantic/catalog` | 🟡 | — | — |
 
 ### Observabilité
