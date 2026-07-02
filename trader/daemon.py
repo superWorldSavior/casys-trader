@@ -29,6 +29,7 @@ import yaml
 
 from .agent_context import build_market_cockpit, resolve_indicator_requests
 from .application import planner_batch
+from .application.decision_recorder import DecisionRecorder
 from . import (
     agent_tools as agent_tools,
     attribution,
@@ -1920,84 +1921,26 @@ def run_cycle(
     _calendar = macro_calendar.load_calendar(STATE_DIR / "macro_calendar.json")
     _cycle_macro_next = macro_calendar.macro_next(now, _calendar)
 
-    def record_decision(decision_entry: dict) -> None:
-        # Phase attribution : snapshot news loggé sur CHAQUE décision, tous chemins
-        # confondus (y compris quiet_gate / stale_market_data). setdefault : n'écrase
-        # pas si déjà fourni (ex. enrichissement préalable dans le chemin LLM normal).
-        decision_entry.setdefault("news", news_feed.news_snapshot(decision_entry["symbol"], now=now))
-        # macro_next ajouté au payload news de chaque décision (UNE fois par cycle,
-        # pas par symbole). Copie défensive du dict pour ne pas muter le cache news.
-        _news = decision_entry.get("news")
-        if isinstance(_news, dict) and "macro_next" not in _news:
-            decision_entry["news"] = {**_news, "macro_next": _cycle_macro_next}
-        # Boucle de feedback : l'agent possède ses learnings ; l'infra les persiste
-        # (machine-owned, borné) AVEC le résultat de la décision (executed/reason/
-        # dry_run) pour qu'on puisse juger si l'agent fait les bons choix, puis les
-        # réinjecte au prochain réveil.
-        note = _merge_gate_feedback(
-            decision_entry.get("reason"),
-            decision_entry.get("context"),
-            decision_entry.get("learning"),
-        )
-        if note:
-            decision_entry["learning_recorded"] = learnings_store.append(
-                symbol=decision_entry["symbol"],
-                note=note,
-                now=now,
-                action=decision_entry.get("action"),
-                intent=decision_entry.get("intent"),
-                executed=decision_entry.get("executed"),
-                reason=decision_entry.get("reason"),
-                dry_run=dry_run,
-            )
-        sequence = len(report["decisions"])
-        report["decisions"].append(decision_entry)
-        report["model_calls_used"] = model_calls_used
-        refresh_report_portfolio()
-        decision_ledger_store.append(
-            decision_ledger.build_decision_row(
-                report,
-                decision_entry,
-                sequence=sequence,
-                source="armed_plan" if decision_entry.get("armed_plan_id") else "daemon",
-            )
-        )
-        # Trace d'injection recall_learnings (design §4.4).
-        # Appelé après la persistance ledger : le decision_id est construit au
-        # même instant (cycle_ts|sequence|symbol), invariant lecture seule de l'outil.
-        if _recall_store is not None:
-            _cycle_ts = str(report.get("ts") or "")
-            _sym = str(decision_entry.get("symbol") or "")
-            if _cycle_ts and _sym:
-                _did = decision_ledger._decision_id(_cycle_ts, sequence, _sym)
-                for _tc in decision_entry.get("tool_calls") or []:
-                    if _tc.get("tool") == "recall_learnings" and _tc.get("outcome") == "ok":
-                        _note_ids = [
-                            _nid for _nid in (_tc.get("detail") or {}).get("note_ids", [])
-                            if isinstance(_nid, int)
-                        ]
-                        if _note_ids:
-                            try:
-                                _recall_store.record_recall(decision_id=_did, note_ids=_note_ids)
-                            except Exception as _exc:  # noqa: BLE001
-                                log.warning("record_recall failed: %s", _exc)
-        _write_current_report(report)
-        _write_status(
-            "decision_recorded",
-            current_symbol=decision_entry["symbol"],
-            decisions_done=len(report["decisions"]),
-            symbols_total=len(symbols_to_decide),
-            last_decision=decision_entry,
-            model_calls_used=model_calls_used,
-            max_model_calls_per_cycle=max_model_calls_per_cycle,
-        )
-        _append_event(
-            "decision_recorded",
-            symbol=decision_entry["symbol"],
-            action=decision_entry.get("action"),
-            reason=decision_entry.get("reason"),
-            executed=decision_entry.get("executed"),
-        )
+    recorder = DecisionRecorder(
+        report=report,
+        state_dir=STATE_DIR,
+        dry_run=dry_run,
+        symbols_total=len(symbols_to_decide),
+        max_model_calls_per_cycle=max_model_calls_per_cycle,
+        learnings_store=learnings_store,
+        decision_ledger_store=decision_ledger_store,
+        refresh_report_portfolio=refresh_report_portfolio,
+        write_current_report=_write_current_report,
+        write_status=_write_status,
+        append_event=_append_event,
+        news_snapshot=lambda symbol, now: news_feed.news_snapshot(symbol, now=now),
+        macro_next=_cycle_macro_next,
+        now=now,
+        recall_store=_recall_store,
+        merge_gate_feedback=_merge_gate_feedback,
+        model_calls_used_getter=lambda: model_calls_used,
+    )
+    record_decision = recorder.record
 
     if sched is not None:
         _ensure_default_wake(sched, now=now, default_wake_minutes=default_wake_minutes)
