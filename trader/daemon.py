@@ -3252,11 +3252,12 @@ def main(
     sched = scheduler.Scheduler(STATE_DIR / "scheduler.json")
     log.info("daemon démarré (dry_run=%s, once=%s)", dry_run, args.once)
     log.info(
-        "[config] decision_batch_parallelism=%d batch_size=%d max_model_calls_per_cycle=%d decision_timeout_s=%d",
+        "[config] decision_batch_parallelism=%d batch_size=%d max_model_calls_per_cycle=%d decision_timeout_s=%d agent_tools=%s",
         args.decision_batch_parallelism,
         args.decision_batch_size,
         args.max_model_calls_per_cycle,
         args.decision_timeout_s,
+        args.agent_tools,
     )
     bootstrap = args.bootstrap_all
 
