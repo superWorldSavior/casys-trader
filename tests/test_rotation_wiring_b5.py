@@ -45,7 +45,6 @@ def test_tick_daemon_passe_override_fn_quand_enabled(tmp_path):
     """Smoke test : tick avec override_fn assemblée via build_llm_override_fn mock
     + market_context peuplé → override appelé en pré-open."""
     import json
-    import yaml
     from trader.rotation_venues import tick
 
     config_dir = tmp_path / "cfg"

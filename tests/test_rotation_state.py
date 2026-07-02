@@ -1,9 +1,7 @@
 """Tests TDD pour trader/rotation_state.py — état persistant de la rotation."""
 import json
 import os
-import tempfile
 
-import pytest
 
 from trader.rotation_state import load_rotation_state, save_rotation_state, seed_state, advance_state
 

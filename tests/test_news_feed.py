@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sys
+import types
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -167,9 +169,6 @@ def test_error_snapshot_not_cached():
 # Task 4 : _yahoo_fetch — frontière impure (yfinance mocké)
 # ---------------------------------------------------------------------------
 
-import sys
-import types
-
 
 def _install_fake_yfinance(monkeypatch, *, last_price, earnings_index, news):
     """Installe un mock yfinance réaliste.
@@ -247,7 +246,6 @@ def test_yahoo_fetch_mapped_when_news_but_no_price(monkeypatch):
     AttributeError sur le vrai yf.FastInfo → mapped restait False → coverage
     "unmapped" au lieu de "ok". Le mock reflète désormais ce comportement cassé.
     """
-    import pandas as pd
     news = [
         {"providerPublishTime": int((NOW - timedelta(days=1)).timestamp())},
         {"providerPublishTime": int((NOW - timedelta(days=2)).timestamp())},

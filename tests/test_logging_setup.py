@@ -2,7 +2,6 @@
 import io
 import logging
 
-import pytest
 
 from trader.logging_setup import setup_logging
 
@@ -10,7 +9,6 @@ from trader.logging_setup import setup_logging
 
 def test_tty_installe_un_rich_handler(monkeypatch) -> None:
     """Quand stdout est un TTY, le logger reçoit un RichHandler."""
-    from rich.logging import RichHandler
 
     root_logger = logging.getLogger("casys-trader")
     # Nettoyer les handlers résiduels d'autres tests
@@ -49,8 +47,6 @@ def test_non_tty_ne_laisse_pas_fuir_les_balises_rich() -> None:
     """En mode non-TTY, les messages ne doivent pas contenir de markup [green]..."""
     root_logger = logging.getLogger("casys-trader")
     root_logger.handlers.clear()
-
-    output = io.StringIO()
 
     class FakePipe(io.StringIO):
         def isatty(self):

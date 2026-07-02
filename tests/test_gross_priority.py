@@ -1,4 +1,3 @@
-import math
 
 from trader.gross_priority import PriorityItem, gross_execution_order
 

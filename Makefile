@@ -24,3 +24,8 @@ live-logs:  ## Démarre le daemon DÉTACHÉ (supervisé, anti-doublon) puis ouvr
 
 test:  ## Lance toute la suite de tests
 	uv run pytest -q
+
+lint:  ## Lint ruff (imports morts, variables fantômes — config dans pyproject.toml)
+	uv run ruff check
+
+check: lint test  ## Lint + tests — le combo pré-commit

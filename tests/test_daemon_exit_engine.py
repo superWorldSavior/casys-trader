@@ -1873,9 +1873,9 @@ class TestCheminBloqueObservabilite:
         _write_runtime_config(tmp_path)
         state_dir = tmp_path / "state"
         now = datetime(2026, 6, 5, 12, 10, tzinfo=timezone.utc)
-        broker = SimBroker(state_dir / "broker.json", starting_cash=100_000)
+        SimBroker(state_dir / "broker.json", starting_cash=100_000)
         # Position broker = 0 → _clamp_exit_quantity retourne "no_position_to_reduce"
-        # (pas de submit de position initiale volontairement)
+        # (pas de submit de position initiale volontairement : SimBroker initialise broker.json)
         TradePlanStore(state_dir / "trade_plans.json").upsert(
             create_trade_plan(
                 symbol="SPY",

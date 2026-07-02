@@ -608,7 +608,7 @@ def test_tick_preopen_admet_la_hotlist_de_la_venue_fermee(tmp_path):
     )
 
     # 00:30 UTC mardi : TW fermée mais en pré-open (ouvre 01:00) → ses symboles entrent
-    res = tick(
+    tick(
         str(config_dir),
         str(state_dir),
         "2026-06-16T00:30:00+00:00",
@@ -685,7 +685,6 @@ def test_tick_override_preopen_appelle_override_fn_et_ajoute_symbole(tmp_path):
     """venue TW en pré-open (00:30 UTC) + override_fn injectée qui ajoute 2454.TW
     (dans les candidats) → le symbole ajouté est dans l'univers final.
     Le LLM choisit dans la shortlist candidats, pas le pool brut."""
-    import json
 
     config_dir = tmp_path / "cfg"
     state_dir = tmp_path / "state"
@@ -811,7 +810,6 @@ def test_tick_override_preopen_candidats_legacy_sans_bias(tmp_path):
 
 def test_tick_override_preopen_failsafe_sur_exception(tmp_path):
     """Si override_fn lève une exception → fail-safe : hotlist par défaut conservée."""
-    import json
 
     config_dir = tmp_path / "cfg"
     state_dir = tmp_path / "state"
@@ -839,7 +837,6 @@ def test_tick_override_preopen_failsafe_sur_exception(tmp_path):
 
 def test_tick_override_preopen_once_per_day(tmp_path):
     """L'override ne tourne qu'une fois par jour par venue (last_override_at persisté)."""
-    import json
 
     config_dir = tmp_path / "cfg"
     state_dir = tmp_path / "state"
@@ -881,7 +878,6 @@ def test_tick_override_preopen_once_per_day(tmp_path):
 def test_tick_override_preopen_ne_retire_pas_sticky(tmp_path):
     """apply_override protège les sticky : même si override_fn tente de retirer un sticky,
     il reste dans la hotlist finale."""
-    import json
 
     config_dir = tmp_path / "cfg"
     state_dir = tmp_path / "state"
@@ -914,7 +910,6 @@ def test_tick_override_preopen_ne_retire_pas_sticky(tmp_path):
 
 def test_override_disabled_aucun_appel_llm(tmp_path):
     """Avec override_enabled=false dans radar.yaml, tick ne doit PAS appeler override_fn."""
-    import json
 
     config_dir = tmp_path / "cfg"
     state_dir = tmp_path / "state"
@@ -1159,7 +1154,6 @@ def test_update_venue_ranking_persiste_top40_candidats(tmp_path):
 
 def test_override_rejette_add_hors_candidats(tmp_path):
     """Un add d'un symbole absent des candidats est rejeté out_of_pool (la garde est réelle)."""
-    import json
 
     config_dir = tmp_path / "cfg"
     state_dir = tmp_path / "state"
@@ -1172,8 +1166,6 @@ def test_override_rejette_add_hors_candidats(tmp_path):
         _make_preopen_state(),  # candidates = [{"symbol": "2330.TW", ...}]
         encoding="utf-8",
     )
-
-    received_rejects = []
 
     def override_fn(payload):
         # Tente d'ajouter un symbole hors candidats
@@ -1196,7 +1188,6 @@ def test_override_rejette_add_hors_candidats(tmp_path):
 
 def test_override_accepte_add_dans_candidats_apres_remove(tmp_path):
     """Swap : remove 2330.TW (non-sticky) puis add 2454.TW (dans candidats) → accepté."""
-    import json
 
     config_dir = tmp_path / "cfg"
     state_dir = tmp_path / "state"
@@ -1228,7 +1219,6 @@ def test_override_accepte_add_dans_candidats_apres_remove(tmp_path):
 
 def test_override_ranked_contient_vrais_scores(tmp_path):
     """Le payload ranked transmis au LLM contient les vrais scores, pas 0.0."""
-    import json
 
     config_dir = tmp_path / "cfg"
     state_dir = tmp_path / "state"

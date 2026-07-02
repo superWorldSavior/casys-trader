@@ -68,7 +68,8 @@ def test_risk_capacity_context_expose_le_plafond_gross_restant_en_quantite_nativ
     )
     prices = {"SPY": 100.0, "2892.TW": 32.95}
     rates = {"SPY": 1.0, "2892.TW": 0.031}
-    rate_of = lambda sym: rates[sym]
+    def rate_of(sym):
+        return rates[sym]
     limits = RiskLimits(
         max_order_value=10_000.0,
         max_risk_per_trade_pct=0.01,

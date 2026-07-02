@@ -1,8 +1,5 @@
 """Tests TDD pour trader/rotation_schedule.py — gate de déclenchement rotation."""
-import os
-import tempfile
 
-import pytest
 
 import trader.rotation_schedule as rotation_schedule
 from trader.rotation_schedule import closed_sessions_since, load_sessions, rotation_due

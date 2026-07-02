@@ -1,7 +1,5 @@
 """Tests TDD pour trader/rotation.py — veille deux niveaux."""
 import pytest
-import os
-import tempfile
 
 import yaml
 

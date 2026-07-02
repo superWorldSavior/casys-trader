@@ -1,6 +1,5 @@
 """Tests d'intégration daemon : câblage CompositeDataSource, observabilité data_source."""
 
-import json
 from datetime import datetime, timezone
 
 import pytest
@@ -607,7 +606,7 @@ class TestDaemonCompositeF6AllStale:
         le daemon swallowait l'exception → le symbole disparaissait sans trace.
         """
         from trader.tools.market import Freshness
-        from trader.tools.data_source import CompositeDataSource, YFinanceDataSource
+        from trader.tools.data_source import CompositeDataSource
 
         _write_runtime_config(tmp_path)
         state_dir = tmp_path / "state"

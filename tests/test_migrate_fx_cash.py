@@ -98,7 +98,7 @@ def test_stamp_perf_dry_run_does_not_mutate(tmp_path):
 def test_stamp_perf_commit_stamps_fx_rate(tmp_path):
     p = _perf(tmp_path)
     migrate_fx_cash.stamp_perf_rows(p, rates={"TWD": 0.031}, commit=True)
-    rows = [json.loads(l) for l in p.read_text().splitlines() if l.strip()]
+    rows = [json.loads(line) for line in p.read_text().splitlines() if line.strip()]
     tw = next(r for r in rows if r["symbol"] == "2379.TW")
     assert tw["fx_rate"] == 0.031
     assert any(f.name.startswith("model_performance.jsonl.bak-pre-fx") for f in p.parent.iterdir())

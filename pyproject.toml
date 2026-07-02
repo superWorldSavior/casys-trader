@@ -29,6 +29,16 @@ pythonpath = ["."]
 testpaths = ["tests"]
 asyncio_mode = "auto"
 
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+# Défauts ruff (E4/E7/E9 pyflakes+pycodestyle erreurs) — volontairement léger,
+# dev solo : on attrape les vrais bugs (imports morts, variables fantômes),
+# pas le style.
+select = ["E4", "E7", "E9", "F"]
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"

@@ -2,7 +2,6 @@
 import json
 from datetime import datetime, timezone
 
-import pytest
 
 from trader import daemon
 from trader.tools.scheduler import Scheduler, STALE_BACKOFF_MAX_MINUTES, STALE_BACKOFF_MAX_STREAK
@@ -363,8 +362,6 @@ def test_setup_logging_couvre_les_loggers_trader() -> None:
     import io
     import logging
     from trader.logging_setup import setup_logging
-
-    buf = io.StringIO()
 
     class FakePipe(io.StringIO):
         def isatty(self):

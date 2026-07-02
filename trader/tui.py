@@ -29,6 +29,7 @@ from rich.text import Text
 import yaml
 
 from trader import fx
+from trader.indicator_watch import is_armed_plan as _is_armed_plan
 from trader.palette import PALETTE_DARK, Palette
 
 # Racine du repo (deux niveaux au-dessus de ce fichier)
@@ -1026,9 +1027,6 @@ def _build_exit_plans_panel(
         border_style=palette["border_plans"],
         expand=True,
     )
-
-
-from trader.indicator_watch import is_armed_plan as _is_armed_plan
 
 
 def _expire_relative(expires_raw: str, *, now: datetime) -> str:

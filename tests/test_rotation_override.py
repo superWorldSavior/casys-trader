@@ -1,7 +1,6 @@
 """Tests TDD pour trader.rotation_override."""
 from __future__ import annotations
 
-import pytest
 
 from trader.rotation_override import (
     build_override_prompt,

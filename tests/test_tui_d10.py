@@ -8,7 +8,6 @@ vérifiables sans sortie visuelle (pas de test Textual ici — rendu pur Rich).
 from __future__ import annotations
 
 from rich.console import Console
-from rich.text import Text
 
 from trader.palette import PALETTE_DARK, PALETTE_LIGHT
 from trader.tui import (

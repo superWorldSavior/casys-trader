@@ -339,17 +339,19 @@ def run_cli(
 
     if fetch_fn is None:
         cache_dir = Path(state_dir) / "radar_cache"
-        fetch_fn = lambda syms: download_daily_batch(syms, as_of=as_of, cache_dir=cache_dir)
+        def fetch_fn(syms):
+            return download_daily_batch(syms, as_of=as_of, cache_dir=cache_dir)
 
     params = load_radar_params(Path(config_dir))
     pool = load_pool(Path(config_dir))
     rank_fn = build_rank_fn(config_dir, fetch_fn=fetch_fn, as_of=as_of)
 
     if sticky_fn is None:
-        sticky_fn = lambda: sticky_collector(
-            positions_fn=build_positions_fn(state_dir),
-            plans_fn=build_plans_fn(state_dir),
-        )
+        def sticky_fn():
+            return sticky_collector(
+                positions_fn=build_positions_fn(state_dir),
+                plans_fn=build_plans_fn(state_dir),
+            )
 
     if override_fn is None:
         if params.override_enabled:

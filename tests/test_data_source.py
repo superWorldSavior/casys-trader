@@ -1,7 +1,6 @@
 """Tests : DataSource Protocol, YFinanceDataSource, CompositeDataSource, config."""
 
 import pytest
-from unittest.mock import patch
 
 from trader.tools.market import Bar, MarketError
 
@@ -332,7 +331,6 @@ class TestDataSourceConfig:
 
     def test_charge_profil_paper_et_construit_composite(self, tmp_path, monkeypatch):
         """Profil paper → CompositeDataSource avec les bonnes routes."""
-        import os
         from trader.tools.data_source import load_composite_from_config, YFinanceDataSource
 
         config_content = """
