@@ -242,3 +242,49 @@ def test_summarize_tools_sans_domain_tools_inchange():
     summary = summarize_tools({"action": "HOLD", "runtime": {}})
     assert summary["tools_used"] == []
     assert summary["rounds"] == 0
+
+
+def test_summarize_tools_domain_tools_error_et_budget_exhausted():
+    """Les outcomes error et budget_exhausted dans runtime.tool_calls
+    sont retranscrits fidèlement dans trace/tools_used."""
+    row = {
+        "action": "HOLD",
+        "runtime": {
+            "tool_rounds": 1,
+            "tool_calls": [
+                {
+                    "id": "c1",
+                    "tool": "get_indicator_context",
+                    "args": {"symbol": "SPY"},
+                    "outcome": "error",
+                    "detail": {"message": "ValueError: handler crash"},
+                },
+                {
+                    "id": "c2",
+                    "tool": "get_freshness",
+                    "args": {"symbols": ["SPY"]},
+                    "outcome": "budget_exhausted",
+                    "detail": {"reason": "max_total_calls"},
+                },
+            ],
+        },
+    }
+    summary = summarize_tools(row)
+
+    # Les deux outils sont tracés, quels que soient leurs outcomes.
+    assert "get_indicator_context" in summary["tools_used"]
+    assert "get_freshness" in summary["tools_used"]
+
+    # Outcomes exacts préservés dans la trace.
+    error_items = [item for item in summary["trace"] if item["tool"] == "get_indicator_context"]
+    assert len(error_items) == 1
+    assert error_items[0]["outcome"] == "error"
+    assert error_items[0]["detail"]["message"] == "ValueError: handler crash"
+
+    budget_items = [item for item in summary["trace"] if item["tool"] == "get_freshness"]
+    assert len(budget_items) == 1
+    assert budget_items[0]["outcome"] == "budget_exhausted"
+    assert budget_items[0]["detail"]["reason"] == "max_total_calls"
+
+    # rounds dérivé de tool_rounds
+    assert summary["rounds"] == 1

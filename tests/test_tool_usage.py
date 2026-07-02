@@ -1,5 +1,6 @@
 import pytest
 
+from trader.tool_trace import TOOLS, summarize_tools
 from trader.tool_usage import build_report, clamp_count, risk_observability, tool_usage_rates, tool_vs_quality
 
 
@@ -190,6 +191,57 @@ def test_risk_observability_rapporte_les_ouvertures_sans_stop_aux_ouvertures_tra
         "risk_unbounded_no_stop_count": 1,
         "risk_unbounded_no_stop_rate": pytest.approx(0.5),
     }
+
+
+def test_tool_usage_rates_compat_avec_domain_tools() -> None:
+    """tool_usage_rates reste cohérent quand des domain tools sont dans tools_used (migration §8).
+
+    Les domain tools (get_freshness, get_position_risk…) apparaissent dans
+    tools_used via summarize_tools, mais ne créent pas de lignes supplémentaires
+    dans tool_usage_rates (qui ne connaît que les 5 tools legacy). C'est le
+    contrat de migration : les rates legacy sont inchangés, les domain tools sont
+    tracés et visibles dans la trace, pas dans les rates agrégés.
+    """
+    row_with_domain = {
+        "action": "HOLD",
+        "runtime": {
+            "tool_rounds": 1,
+            "tool_calls": [
+                {
+                    "id": "c1", "tool": "get_freshness",
+                    "args": {"symbols": ["2330.TW"]}, "outcome": "ok", "detail": {},
+                },
+                {
+                    "id": "c2", "tool": "get_position_risk",
+                    "args": {"symbol": "2330.TW"}, "outcome": "rejected",
+                    "detail": {"reason": "invalid_args"},
+                },
+            ],
+        },
+    }
+    row_legacy = {
+        "action": "HOLD",
+        "runtime": {"next_wake_requested": 30.0},
+        "next_wake_in_minutes": 30.0,
+    }
+
+    summary_domain = summarize_tools(row_with_domain)
+    summary_legacy = summarize_tools(row_legacy)
+
+    # Les domain tools sont présents dans tools_used de leur summary.
+    assert "get_freshness" in summary_domain["tools_used"]
+    assert "get_position_risk" in summary_domain["tools_used"]
+
+    # tool_usage_rates avec les deux summaries : counts legacy corrects.
+    rates = {item["tool"]: item for item in tool_usage_rates([summary_domain, summary_legacy])}
+
+    assert rates["next_wake"]["used"] == 1
+    assert rates["next_wake"]["skipped"] == 1
+    assert rates["context_request"]["used"] == 0
+    assert rates["context_request"]["skipped"] == 2
+
+    # tool_usage_rates ne retourne que les 5 outils legacy — pas de fuite domain.
+    assert set(rates.keys()) == set(TOOLS)
 
 
 def test_build_report_integre_les_agregats_risque(monkeypatch, tmp_path) -> None:

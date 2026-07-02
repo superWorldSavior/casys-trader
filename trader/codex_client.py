@@ -484,7 +484,7 @@ _TOOL_CATALOG = (
     "# Outils domaine (OPTIONNELS — une seule tournée)\n"
     "Si le cockpit suffit, rends directement le contrat final. Sinon tu peux demander\n"
     "UNE tournée d'outils lecture-seule en répondant À LA PLACE du contrat final :\n"
-    '{"tool_calls": [{"id": "c1", "tool": "<nom>", "args": {...}}]}\n'
+    '{"tool_calls": [{"id": "c1", "tool": "<nom>", "args": {"symbols": ["2330.TW"]}}]}\n'
     "Bornes : 3 appels max par symbole, 24 par lot. Outils :\n"
     "- get_freshness{symbols:[…]} : exécution/planification/âge des données par symbole\n"
     "- get_active_plans{symbol?,limit?} : veilles et plans armés actifs (corrige au lieu d'empiler)\n"
@@ -639,15 +639,6 @@ def _response_from_dict(data: dict, symbol: str) -> Decision | ContextResearchRe
 
 def parse_decision_or_context_request(raw_text: str, symbol: str) -> Decision | ContextResearchRequest:
     return _response_from_dict(_extract_json(raw_text), symbol)
-
-
-def _extract_decisions_array(text: str) -> list:
-    """Récupère la liste `decisions` d'un objet JSON batch (tolère la prose autour)."""
-    data = _extract_json(text)
-    decisions = data.get("decisions")
-    if not isinstance(decisions, list):
-        raise ValueError("clé 'decisions' absente ou non-liste")
-    return decisions
 
 
 def _parse_batch_data(

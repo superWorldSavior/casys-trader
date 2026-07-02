@@ -1302,12 +1302,15 @@ def _run_tool_round(
     Toute erreur outil est absorbée en résultat compact — aucune exception ne
     remonte au daemon (AX §4 : machine-readable errors, §8 : structured outputs).
     """
+    # Borner le contexte au chunk : évite la fuite inter-chunks en parallélisme>1
+    # (un call sans symbol explicite comme get_attribution voyait TOUT le batch).
+    chunk_set = frozenset(chunk)
     context = agent_tools.ToolContext(
         now=now,
-        allowed_symbols=frozenset(chunk),
-        data_age_by_symbol=data_age_by_symbol,
-        market_context_by_symbol=market_contexts,
-        active_watches_by_symbol=active_watches_by_symbol,
+        allowed_symbols=chunk_set,
+        data_age_by_symbol={s: v for s, v in data_age_by_symbol.items() if s in chunk_set},
+        market_context_by_symbol={s: v for s, v in market_contexts.items() if s in chunk_set},
+        active_watches_by_symbol={s: v for s, v in active_watches_by_symbol.items() if s in chunk_set},
         attribution=shared_context.get("attribution"),
         # V0 : providers lourds non câblés — répondent "unavailable" proprement.
         # À brancher quand la mesure d'usage le justifie (Phase 2+).
@@ -1424,8 +1427,11 @@ def _batch_decide(
         budget: int,
     ) -> tuple[dict[str, object], int, list[str]]:
         chunks = _chunks(symbols)
-        allowed_chunks = chunks[: max(0, budget)]
-        skipped = [sym for chunk in chunks[max(0, budget) :] for sym in chunk]
+        # Pire cas budget en mode tournée : 2 appels par chunk (tournée + final).
+        # On réserve ce pire cas quand allow_tool_calls est actif pour ce pass.
+        _chunk_budget = budget // 2 if (agent_tools_enabled and allow_context_request) else budget
+        allowed_chunks = chunks[: max(0, _chunk_budget)]
+        skipped = [sym for chunk in chunks[max(0, _chunk_budget) :] for sym in chunk]
         if not allowed_chunks:
             return {}, 0, skipped
 
@@ -1497,6 +1503,8 @@ def _batch_decide(
                 )
 
             # Deuxième tournée d'outils au tour final → blocage HOLD (design §6.2).
+            # Défense en profondeur : le parser (allow_tool_calls=False → parse_batch)
+            # protège déjà en amont ; ce guard couvre un futur refactor.
             if isinstance(resp2, codex_client.BatchToolCallRequest):
                 return (
                     {sym: codex_client.Decision.hold(sym, "tool_loop_blocked") for sym in chunk},

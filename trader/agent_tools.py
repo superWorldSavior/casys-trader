@@ -147,6 +147,11 @@ def execute_tool_call(
     *,
     registry: Mapping[str, ToolSpec] | None = None,
 ) -> tuple[AgentToolResult, AgentToolTrace]:
+    """Exécute un tool call validé et retourne un (result, trace) compact.
+
+    Toute exception handler est absorbée en résultat error — jamais une exception
+    ne remonte au daemon (AX §4 : machine-readable errors, §8 : structured outputs).
+    """
     tools = TOOL_REGISTRY if registry is None else registry
     try:
         payload = tools[call.tool].handler(call, context)
@@ -168,10 +173,10 @@ def execute_tool_call(
 
 
 def _budget_exhausted(call_or_raw: object, *, reason: str) -> tuple[AgentToolResult, AgentToolTrace]:
-    data = call_or_raw if isinstance(call_or_raw, dict) else {}
     if isinstance(call_or_raw, AgentToolCall):
         call_id, tool, args = call_or_raw.id, call_or_raw.tool, call_or_raw.args
     else:
+        data = call_or_raw if isinstance(call_or_raw, dict) else {}
         call_id = str(data.get("id") or "?")
         tool = str(data.get("tool") or "?")
         args = data.get("args") if isinstance(data.get("args"), dict) else {}
