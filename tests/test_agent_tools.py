@@ -230,3 +230,79 @@ def test_get_active_plans_sans_symbole_rend_tout_le_lot():
         _full_context(),
     )
     assert len(result.result["rows"]) == 1
+
+
+# ---------------------------------------------------------------------------
+# Task 4 : get_position_risk, get_attribution, get_recent_decisions
+# ---------------------------------------------------------------------------
+
+
+def _providers_context() -> ToolContext:
+    return ToolContext(
+        now=datetime(2026, 7, 2, 10, 0, tzinfo=UTC),
+        allowed_symbols=frozenset({"2330.TW"}),
+        attribution={
+            "summary": {"n_closed_trades": 12, "realized_pnl": -84.2},
+            "by_confidence": [{"bucket": "0.6-0.8", "n": 5}],
+            "by_exit_reason": [{"reason": "stop", "n": 4}],
+            "by_symbol": [{"symbol": "2330.TW", "n": 2}],
+        },
+        position_risk_provider=lambda sym: {"symbol": sym, "qty": 1000.0, "usd_exposure": 1023.0}
+        if sym == "2330.TW" else None,
+        recent_decisions_provider=lambda sym, limit: [
+            {"cycle_ts": "2026-07-02T01:20:51Z", "symbol": sym or "2330.TW", "action": "HOLD",
+             "reason": "quiet_gate", "executed": False}
+        ][:limit],
+    )
+
+
+def test_get_position_risk_via_provider():
+    result, trace = agent_tools.execute_tool_call(
+        AgentToolCall(id="c1", tool="get_position_risk", args={"symbol": "2330.TW"}),
+        _providers_context(),
+    )
+    assert trace.outcome == "ok"
+    assert result.result["qty"] == 1000.0
+
+
+def test_get_position_risk_hors_allowlist_rejete_au_handler():
+    result, _ = agent_tools.execute_tool_call(
+        AgentToolCall(id="c1", tool="get_position_risk", args={"symbol": "EVIL"}),
+        _providers_context(),
+    )
+    assert result.ok is True
+    assert result.result == {"symbol": "EVIL", "error": "symbol_not_allowed"}
+
+
+def test_get_position_risk_provider_absent():
+    ctx = ToolContext(now=datetime(2026, 7, 2, tzinfo=UTC), allowed_symbols=frozenset({"2330.TW"}))
+    result, _ = agent_tools.execute_tool_call(
+        AgentToolCall(id="c1", tool="get_position_risk", args={"symbol": "2330.TW"}), ctx)
+    assert result.result == {"symbol": "2330.TW", "error": "unavailable"}
+
+
+def test_get_attribution_scope_summary_et_symbol():
+    ctx = _providers_context()
+    result, _ = agent_tools.execute_tool_call(
+        AgentToolCall(id="c1", tool="get_attribution", args={"scope": "summary"}), ctx)
+    assert result.result == {"summary": {"n_closed_trades": 12, "realized_pnl": -84.2}}
+    result2, _ = agent_tools.execute_tool_call(
+        AgentToolCall(id="c2", tool="get_attribution", args={"scope": "symbol", "symbol": "2330.TW"}), ctx)
+    assert result2.result == {"rows": [{"symbol": "2330.TW", "n": 2}]}
+
+
+def test_get_attribution_scope_invalide():
+    trace = validate_tool_call(
+        {"id": "c1", "tool": "get_attribution", "args": {"scope": "everything"}},
+        allowed_tools=frozenset({"get_attribution"}),
+    )
+    assert isinstance(trace, AgentToolTrace)
+    assert trace.detail["reason"] == "invalid_args"
+
+
+def test_get_recent_decisions_borne_la_limite():
+    result, _ = agent_tools.execute_tool_call(
+        AgentToolCall(id="c1", tool="get_recent_decisions", args={"symbol": "2330.TW", "limit": 999}),
+        _providers_context(),
+    )
+    assert len(result.result["rows"]) <= agent_tools._MAX_DECISION_ROWS
