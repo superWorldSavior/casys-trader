@@ -474,3 +474,16 @@ def test_decide_batch_sans_flag_ignore_les_tool_calls(monkeypatch):
     # flag éteint => parse_batch classique => pas de clé decisions => HOLD fail-safe
     assert isinstance(out, dict)
     assert out["2330.TW"].action == "HOLD"
+
+
+# ---------------------------------------------------------------------------
+# Task 11 : outils sémantiques dans le catalogue prompt
+# ---------------------------------------------------------------------------
+
+
+def test_catalogue_prompt_expose_les_outils_semantiques():
+    prompt = codex_client.build_batch_prompt(
+        mandate="m", memory="mem", shared_context={}, symbols_payload=[{"symbol": "SPY"}],
+        allow_context_request=True, allow_tool_calls=True)
+    assert "describe_data" in prompt
+    assert "find_indicators" in prompt

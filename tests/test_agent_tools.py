@@ -392,3 +392,36 @@ def test_calls_for_symbol_filtre_et_garde_les_globaux():
     ]
     mine = agent_tools.calls_for_symbol(calls, "2330.TW")
     assert [c["id"] for c in mine] == ["c1", "c3"]
+
+
+# ---------------------------------------------------------------------------
+# Task 11 : outils sémantiques describe_data + find_indicators
+# ---------------------------------------------------------------------------
+
+
+def test_describe_data_rend_le_cube_compact():
+    result, trace = agent_tools.execute_tool_call(
+        AgentToolCall(id="c1", tool="describe_data", args={}), _context())
+    assert trace.outcome == "ok"
+    d = result.result
+    assert "1h" in d["timeframes"] and "lookbacks" in d["timeframes"]["1h"]
+    assert d["windows"] and d["as_of_modes"] == ["latest"]
+    # indicateurs en forme compacte : name + category, pas les specs complètes
+    assert all(set(i) <= {"name", "label", "category", "concepts"} for i in d["indicators"])
+
+
+def test_find_indicators_par_concept_borne():
+    result, trace = agent_tools.execute_tool_call(
+        AgentToolCall(id="c1", tool="find_indicators", args={"concept": "momentum"}), _context())
+    assert trace.outcome == "ok"
+    rows = result.result["rows"]
+    assert 0 < len(rows) <= agent_tools._MAX_INDICATOR_MATCHES
+    assert all("name" in r and "description" in r for r in rows)
+
+
+def test_find_indicators_concept_requis():
+    trace = validate_tool_call(
+        {"id": "c1", "tool": "find_indicators", "args": {}},
+        allowed_tools=frozenset({"find_indicators"}))
+    assert isinstance(trace, AgentToolTrace)
+    assert trace.detail["reason"] == "invalid_args"

@@ -12,6 +12,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
+from trader.semantic import catalog as semantic_catalog
+
 # Enum fermé des issues d'un tool call (invariant design §11 : machine-readable).
 OUTCOME_OK = "ok"
 OUTCOME_REJECTED = "rejected"
@@ -454,3 +456,53 @@ def calls_for_symbol(payload_calls: list[dict], symbol: str) -> list[dict]:
         if not mentioned or symbol in mentioned:
             mine.append(call)
     return mine
+
+
+# ---------------------------------------------------------------------------
+# Task 11 : outils sémantiques — découverte du cube avant get_indicator_context
+# ---------------------------------------------------------------------------
+
+_MAX_INDICATOR_MATCHES = 12
+
+
+def _handle_describe_data(call: AgentToolCall, context: ToolContext) -> dict:
+    """Auto-description du cube sémantique (compacte : la découverte, pas les specs)."""
+    return {
+        "levels": list(semantic_catalog.LEVELS),
+        "timeframes": {
+            name: {
+                "lookbacks": spec["lookbacks"],
+                "default_lookback": spec["default_lookback"],
+                "default_window": spec["default_window"],
+                "style": spec["style"],
+            }
+            for name, spec in semantic_catalog.TIMEFRAMES.items()
+        },
+        "windows": list(semantic_catalog.WINDOWS),
+        "as_of_modes": list(semantic_catalog.AS_OF_MODES),
+        "indicators": [
+            {k: ind[k] for k in ("name", "label", "category", "concepts") if k in ind}
+            for ind in semantic_catalog.list_indicators()
+        ],
+    }
+
+
+def _validate_find_indicators(args: dict) -> str | None:
+    if not isinstance(args.get("concept"), str) or not args["concept"].strip():
+        return "concept: str non vide requis (ex. 'momentum', 'volatilité')"
+    return None
+
+
+def _handle_find_indicators(call: AgentToolCall, context: ToolContext) -> dict:
+    matches = semantic_catalog.find_indicators(call.args["concept"])
+    rows = [
+        {k: ind[k] for k in ("name", "label", "category", "concepts", "description") if k in ind}
+        for ind in matches[:_MAX_INDICATOR_MATCHES]
+    ]
+    return {"rows": rows, "truncated": len(matches) > _MAX_INDICATOR_MATCHES}
+
+
+TOOL_REGISTRY["describe_data"] = ToolSpec(
+    name="describe_data", validate_args=lambda a: None, handler=_handle_describe_data)
+TOOL_REGISTRY["find_indicators"] = ToolSpec(
+    name="find_indicators", validate_args=_validate_find_indicators, handler=_handle_find_indicators)
