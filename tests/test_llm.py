@@ -619,6 +619,7 @@ def test_build_acpx_command_peut_prefixer_un_label_identifiable() -> None:
 def test_build_default_router_from_env_peut_nommer_lagent_acpx(monkeypatch) -> None:
     monkeypatch.delenv("TRADER_OLLAMA_API_KEY", raising=False)
     monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
+    monkeypatch.delenv("TRADER_ACPX_BIN", raising=False)
 
     router = build_default_router_from_env(
         env_path=None,
