@@ -6,9 +6,10 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Protocol, runtime_checkable
 
 from trader import fx, fx_rates
+from trader.tools.data_source import DataSource
 from trader.tools import market
 
 log = logging.getLogger(__name__)
@@ -29,10 +30,46 @@ class MarketSnapshot:
     tradable_symbols: list[str]
     tradable_bars_by_symbol: dict[str, list]
     fx_rate_by_ccy: dict[str, float]
-    rate_for_symbol: Callable[[str], float]
     execution_eligibility: dict[str, dict]
     exit_bars_by_symbol: dict[str, list]
     exit_intervals_by_symbol: dict[str, str]
+
+    def rate_for_symbol(self, symbol: str) -> float:
+        return self.fx_rate_by_ccy.get(fx.currency_for(symbol), 1.0)
+
+
+@runtime_checkable
+class RuntimeSourceReporter(Protocol):
+    def last_source(self, symbol: str) -> str | None:
+        ...
+
+
+class ExecutionEligibilityBuilder(Protocol):
+    def __call__(
+        self,
+        symbols: list[str],
+        *,
+        stale_market_data: dict[str, dict],
+        prices: dict[str, float],
+        daily_bars_by_symbol: dict[str, list],
+        data_age_by_symbol: dict[str, float],
+        now: datetime,
+        runtime_interval: str,
+    ) -> dict[str, dict]:
+        ...
+
+
+class ExitBarsFetcher(Protocol):
+    def __call__(
+        self,
+        *,
+        plan_store: object | None,
+        data_source: DataSource,
+        tradable_bars_by_symbol: dict[str, list],
+        tradable_prices: dict[str, float],
+        now: datetime,
+    ) -> tuple[dict[str, list], dict[str, str]]:
+        ...
 
 
 def _default_connection_error(_: market.MarketError) -> bool:
@@ -81,7 +118,7 @@ def _default_exit_bars(
 def build_market_snapshot(
     *,
     symbols: list[str],
-    data_source: object,
+    data_source: DataSource,
     now: datetime,
     max_market_data_age_minutes: float,
     runtime_interval: str,
@@ -92,8 +129,8 @@ def build_market_snapshot(
     daily_lookback: str = DEFAULT_DAILY_LOOKBACK,
     daily_interval: str = DEFAULT_DAILY_INTERVAL,
     is_connection_market_error: Callable[[market.MarketError], bool] = _default_connection_error,
-    execution_eligibility_builder: Callable[..., dict[str, dict]] | None = None,
-    exit_bars_fetcher: Callable[..., tuple[dict[str, list], dict[str, str]]] | None = None,
+    execution_eligibility_builder: ExecutionEligibilityBuilder | None = None,
+    exit_bars_fetcher: ExitBarsFetcher | None = None,
 ) -> MarketSnapshot:
     bars_by_symbol: dict[str, list] = {}
     prices: dict[str, float] = {}
@@ -119,7 +156,9 @@ def build_market_snapshot(
             continue
         bars_by_symbol[sym] = bars
         prices[sym] = bars[-1].close
-        runtime_data_source_by_symbol[sym] = getattr(data_source, "last_source", lambda _: None)(sym)
+        runtime_data_source_by_symbol[sym] = (
+            data_source.last_source(sym) if isinstance(data_source, RuntimeSourceReporter) else None
+        )
         freshness = market.assess_freshness(bars, now=now, max_age_minutes=freshness_max_age)
         if freshness.age_minutes is not None:
             data_age_by_symbol[sym] = freshness.age_minutes
@@ -157,9 +196,6 @@ def build_market_snapshot(
     except Exception as exc:  # noqa: BLE001 - unknown currency degrades to USD fallback
         log.warning("fx rates fetch échoué (%s), dégradation USD fallback", exc)
         fx_rate_by_ccy = {fx.BASE_CCY: 1.0}
-
-    def rate_for_symbol(sym: str) -> float:
-        return fx_rate_by_ccy.get(fx.currency_for(sym), 1.0)
 
     if scheduler is not None:
         for sym in symbols:
@@ -246,7 +282,6 @@ def build_market_snapshot(
         tradable_symbols=tradable_symbols,
         tradable_bars_by_symbol=tradable_bars_by_symbol,
         fx_rate_by_ccy=fx_rate_by_ccy,
-        rate_for_symbol=rate_for_symbol,
         execution_eligibility=execution_eligibility,
         exit_bars_by_symbol=exit_bars_by_symbol,
         exit_intervals_by_symbol=exit_intervals_by_symbol,

@@ -23,7 +23,7 @@ def _validate_get_indicator_context(args: dict) -> str | None:
 
 
 def _handle_get_indicator_context(call: AgentToolCall, context: ToolContext) -> dict:
-    from trader.codex_client import IndicatorRequest  # noqa: PLC0415
+    from trader.agent_protocol import IndicatorRequest  # noqa: PLC0415
 
     sym = call.args["symbol"]
     if sym not in context.allowed_symbols:

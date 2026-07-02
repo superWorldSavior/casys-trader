@@ -8,6 +8,8 @@ from trader.agent_tools import (
     AgentToolCall,
     AgentToolTrace,
     ToolContext,
+    ToolOutcome,
+    ToolPayload,
     ToolSpec,
     validate_tool_call,
 )
@@ -22,6 +24,8 @@ def test_agent_tools_package_expose_public_registry():
     assert agent_tools.TOOL_REGISTRY is registry.TOOL_REGISTRY
     assert core.ToolContext is agent_tools.ToolContext
     assert "get_freshness" in agent_tools.TOOL_REGISTRY
+    assert ToolPayload.__origin__ is dict
+    assert "ok" in ToolOutcome.__args__
 
 
 def test_agent_tools_package_reexporte_ancienne_surface_privee_compatible():

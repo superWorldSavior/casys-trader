@@ -6,35 +6,55 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
-from pathlib import Path
-from typing import Any
+from typing import Any, Protocol, TypeAlias
 
 from trader import decision_ledger
 
 log = logging.getLogger(__name__)
 
+DecisionEntry: TypeAlias = dict[str, Any]
+ReportPayload: TypeAlias = dict[str, Any]
+StatusWriter: TypeAlias = Callable[..., None]
+EventAppender: TypeAlias = Callable[..., None]
+NewsSnapshotProvider: TypeAlias = Callable[[str, datetime], ReportPayload]
+MergeGateFeedback: TypeAlias = Callable[[object, object, object], str | None]
+
+
+class LearningAppender(Protocol):
+    def append(self, *, symbol: str, note: str, now: datetime, **extra: object) -> object:
+        ...
+
+
+class DecisionLedgerAppender(Protocol):
+    def append(self, row: ReportPayload) -> object:
+        ...
+
+
+class RecallRecorder(Protocol):
+    def record_recall(self, *, decision_id: str, note_ids: list[int]) -> None:
+        ...
+
 
 @dataclass
 class DecisionRecorder:
-    report: dict
-    state_dir: Path
+    report: ReportPayload
     dry_run: bool
     symbols_total: int
     max_model_calls_per_cycle: int
-    learnings_store: Any
-    decision_ledger_store: Any
+    learnings_store: LearningAppender
+    decision_ledger_store: DecisionLedgerAppender
     refresh_report_portfolio: Callable[[], None]
-    write_current_report: Callable[[dict], None]
-    write_status: Callable[..., None]
-    append_event: Callable[..., None]
-    news_snapshot: Callable[[str, datetime], dict]
-    macro_next: dict | None
+    write_current_report: Callable[[ReportPayload], None]
+    write_status: StatusWriter
+    append_event: EventAppender
+    news_snapshot: NewsSnapshotProvider
+    macro_next: ReportPayload | None
     now: datetime
-    recall_store: Any | None = None
-    merge_gate_feedback: Callable[[Any, Any, Any], str | None] | None = None
+    recall_store: RecallRecorder | None = None
+    merge_gate_feedback: MergeGateFeedback | None = None
     model_calls_used_getter: Callable[[], int] = lambda: 0
 
-    def record(self, decision_entry: dict) -> None:
+    def record(self, decision_entry: DecisionEntry) -> None:
         symbol = str(decision_entry["symbol"])
         decision_entry.setdefault("news", self.news_snapshot(symbol, self.now))
         news = decision_entry.get("news")
@@ -103,7 +123,7 @@ class DecisionRecorder:
             decision_entry.get("executed"),
         )
 
-    def _record_recall_trace(self, decision_entry: dict, sequence: int) -> None:
+    def _record_recall_trace(self, decision_entry: DecisionEntry, sequence: int) -> None:
         if self.recall_store is None:
             return
         cycle_ts = str(self.report.get("ts") or "")

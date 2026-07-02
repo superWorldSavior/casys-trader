@@ -49,7 +49,10 @@ les utilisaient :
 
 Le choix volontaire est de ne pas créer encore `domain/`, `ports/` ou
 `adapters/` génériques tant que les slices runtime existants suffisent. Le
-monolithe reste modulaire, pas frameworkisé.
+monolithe reste modulaire, pas frameworkisé. Les contrats Python (`Protocol`,
+alias de types) vivent près des consommateurs : `DecisionRecorder` nomme ses
+stores injectés, `MarketSnapshot` nomme sa source de données, et `agent_tools`
+nomme ses providers sans créer de couche abstraite globale.
 
 ---
 

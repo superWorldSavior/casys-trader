@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import math
 
-from trader.agent_protocol import Decision
 from trader.trade_plan import InvalidExitPlanError, normalize_exit_plan
 
 VALID_INTENTS = {"OPEN_LONG", "OPEN_SHORT", "REDUCE", "CLOSE", "REVERSE", "HOLD"}
@@ -14,14 +13,19 @@ ACTION_INTENTS = {
 }
 
 
-def invalid_intent_reason(decision: Decision) -> str | None:
-    if decision.action == "HOLD" or decision.quantity == 0:
+def invalid_intent_reason(
+    *,
+    action: str,
+    quantity: float,
+    intent: str | None,
+) -> str | None:
+    if action == "HOLD" or quantity == 0:
         return None
-    if decision.intent not in VALID_INTENTS:
+    if intent not in VALID_INTENTS:
         return "invalid_intent"
-    if decision.intent == "HOLD":
+    if intent == "HOLD":
         return "invalid_intent"
-    if decision.intent not in ACTION_INTENTS.get(decision.action, set()):
+    if intent not in ACTION_INTENTS.get(action, set()):
         return "invalid_intent"
     return None
 

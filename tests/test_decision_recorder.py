@@ -38,7 +38,6 @@ def test_decision_recorder_appends_report_ledger_status_and_event(tmp_path):
 
     recorder = DecisionRecorder(
         report=report,
-        state_dir=state_dir,
         dry_run=True,
         symbols_total=1,
         max_model_calls_per_cycle=25,
@@ -88,7 +87,6 @@ def test_decision_recorder_reads_model_calls_used_when_recording(tmp_path):
 
     recorder = DecisionRecorder(
         report=report,
-        state_dir=state_dir,
         dry_run=True,
         symbols_total=1,
         max_model_calls_per_cycle=25,

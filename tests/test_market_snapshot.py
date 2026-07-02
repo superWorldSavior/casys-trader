@@ -1,3 +1,4 @@
+from dataclasses import fields
 from datetime import datetime, timezone
 
 from trader.application.market_snapshot import MarketSnapshot, build_market_snapshot
@@ -139,3 +140,9 @@ def test_market_snapshot_captures_runtime_source_before_daily_and_fx(tmp_path):
     assert source.calls[0] == ("2330.TW", "5d", "15m")
     assert ("2330.TW", "1y", "1d") in source.calls
     assert ("TWD=X", "2d", "1d") in source.calls
+
+
+def test_market_snapshot_rate_lookup_is_derived_method_not_captured_field() -> None:
+    field_names = {field.name for field in fields(MarketSnapshot)}
+
+    assert "rate_for_symbol" not in field_names

@@ -4,14 +4,19 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal, Protocol, TypeAlias
+
+JsonObject: TypeAlias = dict[str, Any]
+ToolArgs: TypeAlias = JsonObject
+ToolPayload: TypeAlias = JsonObject
+ToolOutcome: TypeAlias = Literal["ok", "rejected", "error", "budget_exhausted", "truncated"]
 
 # Enum fermé des issues d'un tool call (invariant design §11 : machine-readable).
-OUTCOME_OK = "ok"
-OUTCOME_REJECTED = "rejected"
-OUTCOME_ERROR = "error"
-OUTCOME_BUDGET_EXHAUSTED = "budget_exhausted"
-OUTCOME_TRUNCATED = "truncated"
+OUTCOME_OK: ToolOutcome = "ok"
+OUTCOME_REJECTED: ToolOutcome = "rejected"
+OUTCOME_ERROR: ToolOutcome = "error"
+OUTCOME_BUDGET_EXHAUSTED: ToolOutcome = "budget_exhausted"
+OUTCOME_TRUNCATED: ToolOutcome = "truncated"
 
 # Bornes de sérialisation — design §6 / findings Codex 2026-07-02.
 _MAX_RAW_CALLS = 32    # au-delà : trace sentinel "truncated", surplus ignoré
@@ -26,7 +31,7 @@ _SCRUB_DEPTH = 3       # profondeur de récursion ≤ 3
 class AgentToolCall:
     id: str
     tool: str
-    args: dict[str, Any]
+    args: ToolArgs
 
 
 @dataclass(frozen=True)
@@ -36,7 +41,7 @@ class AgentToolResult:
     id: str
     tool: str
     ok: bool
-    result: dict[str, Any] | None = None
+    result: ToolPayload | None = None
     error: str | None = None
 
 
@@ -46,9 +51,29 @@ class AgentToolTrace:
 
     id: str
     tool: str
-    args: dict[str, Any]
-    outcome: str
-    detail: dict[str, Any] = field(default_factory=dict)
+    args: ToolArgs
+    outcome: ToolOutcome
+    detail: ToolPayload = field(default_factory=dict)
+
+
+class PositionRiskProvider(Protocol):
+    def __call__(self, symbol: str) -> ToolPayload | None:
+        ...
+
+
+class RecentDecisionsProvider(Protocol):
+    def __call__(self, symbol: str | None, limit: int) -> list[JsonObject]:
+        ...
+
+
+class IndicatorResolver(Protocol):
+    def __call__(self, requests: list[Any]) -> ToolPayload:
+        ...
+
+
+class LearningsRecallProvider(Protocol):
+    def __call__(self, query: JsonObject) -> ToolPayload:
+        ...
 
 
 @dataclass(frozen=True)
@@ -66,10 +91,10 @@ class ToolContext:
     market_context_by_symbol: Mapping[str, dict] = field(default_factory=dict)
     active_watches_by_symbol: Mapping[str, list] = field(default_factory=dict)
     attribution: Mapping[str, Any] | None = None
-    position_risk_provider: Callable[[str], dict | None] | None = None
-    recent_decisions_provider: Callable[[str | None, int], list[dict]] | None = None
-    indicator_resolver: Callable[[list], dict] | None = None
-    learnings_recall_provider: Callable[[dict], dict] | None = None
+    position_risk_provider: PositionRiskProvider | None = None
+    recent_decisions_provider: RecentDecisionsProvider | None = None
+    indicator_resolver: IndicatorResolver | None = None
+    learnings_recall_provider: LearningsRecallProvider | None = None
 
 
 @dataclass(frozen=True)
@@ -77,8 +102,8 @@ class ToolSpec:
     """validate_args retourne None si OK, sinon un message d'erreur compact."""
 
     name: str
-    validate_args: Callable[[dict], str | None]
-    handler: Callable[[AgentToolCall, ToolContext], dict]
+    validate_args: Callable[[ToolArgs], str | None]
+    handler: Callable[[AgentToolCall, ToolContext], ToolPayload]
 
 
 def _default_registry() -> Mapping[str, ToolSpec]:
@@ -91,7 +116,7 @@ def _scrub_str(s: str, max_len: int = _SCRUB_STR_LEN) -> str:
     return s if len(s) <= max_len else s[:max_len] + "…"
 
 
-def _scrub_args(args: dict[str, Any]) -> dict[str, Any]:
+def _scrub_args(args: ToolArgs) -> ToolArgs:
     """Borne récursive : profondeur ≤ 3, listes ≤ 16, dicts ≤ 16 clés, strings ≤ 256.
     Garantit que les args persistés/réinjectés restent bornés en taille."""
 
@@ -103,7 +128,7 @@ def _scrub_args(args: dict[str, Any]) -> dict[str, Any]:
         if isinstance(obj, dict):
             items = list(obj.items())[:_SCRUB_DICT_KEYS]
             # Les clés font partie du JSON persisté : bornées comme les valeurs.
-            out: dict[str, Any] = {_scrub_str(str(k)): _rec(v, depth + 1) for k, v in items}
+            out: ToolPayload = {_scrub_str(str(k)): _rec(v, depth + 1) for k, v in items}
             if len(obj) > _SCRUB_DICT_KEYS:
                 out["…"] = f"(+{len(obj) - _SCRUB_DICT_KEYS} clés)"
             return out
@@ -119,10 +144,10 @@ def _scrub_args(args: dict[str, Any]) -> dict[str, Any]:
 
 def _rejected(raw: object, *, reason: str, message: str = "") -> AgentToolTrace:
     data = raw if isinstance(raw, dict) else {}
-    detail: dict[str, Any] = {"reason": reason}
+    detail: ToolPayload = {"reason": reason}
     if message:
         detail["message"] = message
-    raw_args: dict[str, Any] = data.get("args") if isinstance(data.get("args"), dict) else {}
+    raw_args: ToolArgs = data.get("args") if isinstance(data.get("args"), dict) else {}
     return AgentToolTrace(
         id=_scrub_str(str(data.get("id") or "?"), _SCRUB_ID_LEN),
         tool=_scrub_str(str(data.get("tool") or "?"), _SCRUB_ID_LEN),
@@ -212,7 +237,7 @@ def execute_tool_call(
                 detail={"message": message},
             ),
         )
-    detail: dict[str, Any] = {}
+    detail: ToolPayload = {}
     if isinstance(payload, dict) and "rows" in payload and isinstance(payload["rows"], list):
         detail["result_count"] = len(payload["rows"])
     return (
@@ -319,7 +344,7 @@ def results_prompt_payload(results: list[AgentToolResult]) -> list[dict]:
 
     out: list[dict] = []
     for result in results:
-        item: dict[str, Any] = {"id": result.id, "tool": result.tool, "ok": result.ok}
+        item: ToolPayload = {"id": result.id, "tool": result.tool, "ok": result.ok}
         if result.ok:
             item["result"] = result.result
         else:

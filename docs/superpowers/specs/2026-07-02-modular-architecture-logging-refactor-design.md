@@ -70,38 +70,17 @@ heavier than the trading system itself.
 
 ## 4. Architecture Target
 
-Use a modular monolith with a light hexagonal shape:
+Use a modular monolith with Python-owned contracts close to their consumers. The
+post-refactor target deliberately avoids generic `domain/`, `ports/`, or
+`adapters/` packages until repeated slices prove those names carry their weight.
 
 ```text
 trader/
   application/
-    runtime_cycle.py
     market_snapshot.py
     planner_batch.py
     order_admission.py
     decision_recorder.py
-    runtime_logging.py
-
-  domain/
-    decisions.py
-    market_state.py
-    order_intent.py
-    portfolio_state.py
-    risk_admission.py
-
-  ports/
-    market_data.py
-    planner.py
-    broker.py
-    state_store.py
-    clock.py
-
-  adapters/
-    market/yfinance.py
-    market/ib.py
-    planner/acpx.py
-    broker/sim.py
-    state/json_files.py
 
   agent_protocol/
     types.py
@@ -124,21 +103,22 @@ trader/
 
   ui/
     rich_panels.py
-    textual_app.py
 ```
 
-This tree is a target shape, not a mandate to move every file at once. The
-implementation should create modules only when a slice needs them.
+Protocols and type aliases live in the module that consumes the collaborator
+unless at least two production modules share the same contract. This keeps the
+daemon-owned execution model explicit without turning the repo into an
+architecture framework.
 
 ## 5. Dependency Rules
 
-- `domain/*` imports only Python standard library and other domain modules.
-- `application/*` may import domain modules and ports. It may call existing
-  adapters during migration, but new code should prefer injected collaborators
-  for testability.
-- `ports/*` contains Protocols and small dataclasses only.
-- `adapters/*` implements ports and may talk to external systems, files, `acpx`,
-  IB, yfinance, or local JSON state.
+- `application/*` owns cohesive runtime services and may define local
+  `Protocol` classes for injected collaborators such as stores, providers, and
+  data sources.
+- Pure helpers such as `order_admission.py` should depend on primitive fields or
+  small project DTOs, not on broad transport objects.
+- Agent tool contracts stay in `agent_tools/core.py`; agent response contracts
+  stay in `agent_protocol/`; `codex_client.py` remains the transport facade.
 - `read_models/*` reads persisted state and builds display-friendly projections.
   It must not influence live trading decisions.
 - `ui/*` renders read models. It must not read random state files directly once

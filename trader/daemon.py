@@ -403,7 +403,11 @@ def _select_due_symbols(
 
 
 def _invalid_intent_reason(decision: codex_client.Decision) -> str | None:
-    return order_admission.invalid_intent_reason(decision)
+    return order_admission.invalid_intent_reason(
+        action=decision.action,
+        quantity=decision.quantity,
+        intent=decision.intent,
+    )
 
 
 def _merge_gate_feedback(
@@ -1768,7 +1772,6 @@ def run_cycle(
 
     recorder = DecisionRecorder(
         report=report,
-        state_dir=STATE_DIR,
         dry_run=dry_run,
         symbols_total=len(symbols_to_decide),
         max_model_calls_per_cycle=max_model_calls_per_cycle,

@@ -1,18 +1,12 @@
 from trader.application.order_admission import clamp_exit_quantity, invalid_intent_reason
-from trader.codex_client import Decision
 
 
 def test_invalid_intent_reason_preserves_daemon_reason_for_buy_hold_mismatch() -> None:
-    decision = Decision(
-        symbol="SPY",
+    assert invalid_intent_reason(
         action="BUY",
         quantity=1.0,
-        confidence=0.8,
-        rationale="x",
         intent="HOLD",
-    )
-
-    assert invalid_intent_reason(decision) == "invalid_intent"
+    ) == "invalid_intent"
 
 
 def test_clamp_exit_quantity_preserves_daemon_reason_without_position() -> None:
