@@ -173,7 +173,7 @@ class NewsItemsArchive:
                         uuids.add(str(uid))
                 except json.JSONDecodeError:
                     continue
-        except OSError:
+        except Exception:
             pass
         return uuids
 
