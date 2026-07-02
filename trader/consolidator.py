@@ -114,8 +114,16 @@ def normalize_consolidated(payload: Any, *, watermark: str | None) -> dict | Non
 
 
 class ConsolidatedLearningsStore:
-    def __init__(self, path: str | Path):
+    def __init__(self, path: str | Path, *, history_path: str | Path | None = None):
         self.path = Path(path)
+        # Historique append-only des versions remplacées : chaque consolidation
+        # écrase les ~15 slots — sans historique, impossible d'auditer ce qui a
+        # été broyé ni de récupérer une note (chantier learnings 2026-07-02).
+        self.history_path = (
+            Path(history_path)
+            if history_path is not None
+            else self.path.parent / "archive" / f"{self.path.stem}-history.jsonl"
+        )
 
     def read(self) -> dict:
         if not self.path.exists():
@@ -131,10 +139,32 @@ class ConsolidatedLearningsStore:
         normalized = normalize_consolidated(payload, watermark=watermark)
         if normalized is None:
             raise ValueError("invalid consolidated learnings payload")
+        self._archive_replaced(replaced_by_watermark=normalized.get("watermark"))
         self.path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self.path.with_suffix(self.path.suffix + ".tmp")
         tmp.write_text(json.dumps(normalized, ensure_ascii=False, indent=2), encoding="utf-8")
         os.replace(tmp, self.path)
+
+    def _archive_replaced(self, *, replaced_by_watermark: str | None) -> None:
+        """Historise la version courante avant écrasement. Best-effort : un échec
+        d'archive ne doit jamais bloquer la consolidation."""
+        if not self.path.exists():
+            return
+        try:
+            previous = json.loads(self.path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return
+        entry = {
+            "archived_at": datetime.now(timezone.utc).isoformat(),
+            "replaced_by_watermark": replaced_by_watermark,
+            "payload": previous,
+        }
+        try:
+            self.history_path.parent.mkdir(parents=True, exist_ok=True)
+            with self.history_path.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        except OSError:
+            pass
 
 
 class ConsolidationStatusStore:

@@ -65,3 +65,29 @@ def test_append_ignore_une_note_vide(tmp_path) -> None:
     store.append(symbol="SPY", note="   ")
     store.append(symbol="SPY", note="vraie note")
     assert [item["note"] for item in store.recent()] == ["vraie note"]
+
+
+def test_eviction_archivee_au_lieu_de_jetee(tmp_path) -> None:
+    """Le rolling buffer n'a plus le droit de jeter : les évincés partent en archive
+    append-only datée (chantier learnings 2026-07-02)."""
+    store = LearningsStore(tmp_path / "learnings.jsonl", max_entries=3)
+    base = datetime(2026, 7, 2, 10, 0, tzinfo=timezone.utc)
+    for i in range(5):
+        store.append(symbol=f"S{i}", note=f"note {i}", now=base.replace(minute=i))
+
+    # Le vif garde les 3 dernières
+    assert [r["symbol"] for r in store.all()] == ["S2", "S3", "S4"]
+    # Les 2 plus anciennes sont archivées, ts d'origine conservé + evicted_at
+    archive = tmp_path / "archive" / "learnings-evicted.jsonl"
+    assert archive.exists()
+    import json as _json
+    rows = [_json.loads(line) for line in archive.read_text().splitlines()]
+    assert [r["symbol"] for r in rows] == ["S0", "S1"]
+    assert rows[0]["ts"] == base.replace(minute=0).isoformat()
+    assert all("evicted_at" in r for r in rows)
+
+
+def test_pas_deviction_pas_darchive(tmp_path) -> None:
+    store = LearningsStore(tmp_path / "learnings.jsonl", max_entries=10)
+    store.append(symbol="SPY", note="rien à évincer", now=datetime(2026, 7, 2, tzinfo=timezone.utc))
+    assert not (tmp_path / "archive" / "learnings-evicted.jsonl").exists()

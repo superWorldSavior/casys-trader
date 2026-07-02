@@ -849,3 +849,23 @@ def test_load_guardrails(tmp_path) -> None:
 
     path.write_text(json.dumps([{"note": "stop obligatoire"}]), encoding="utf-8")
     assert consolidator.load_guardrails(path) == [{"note": "stop obligatoire"}]
+
+
+def test_write_historise_la_version_remplacee(tmp_path) -> None:
+    """Chaque consolidation écrase ~15 slots : la version remplacée doit être
+    historisée en append-only pour audit/récupération (chantier learnings 02/07)."""
+    store = consolidator.ConsolidatedLearningsStore(tmp_path / "learnings_consolidated.json")
+    v1 = {"global": [{"note": "v1 : tenir les gagnants."}], "by_symbol": {}}
+    v2 = {"global": [{"note": "v2 : couper vite les perdants."}], "by_symbol": {}}
+    store.write(v1, watermark="2026-07-01T00:00:00+00:00")
+    store.write(v2, watermark="2026-07-02T00:00:00+00:00")
+
+    history = tmp_path / "archive" / "learnings_consolidated-history.jsonl"
+    assert history.exists()
+    rows = [json.loads(line) for line in history.read_text().splitlines()]
+    assert len(rows) == 1  # le premier write ne remplace rien
+    assert rows[0]["payload"]["global"][0]["note"] == "v1 : tenir les gagnants."
+    assert rows[0]["replaced_by_watermark"] == "2026-07-02T00:00:00+00:00"
+    assert "archived_at" in rows[0]
+    # Le vif contient bien la v2
+    assert store.read()["global"][0]["note"] == "v2 : couper vite les perdants."

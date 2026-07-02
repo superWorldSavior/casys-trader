@@ -25,9 +25,22 @@ class LearningsStore:
     périodiquement ce flux vers `memory.md`.
     """
 
-    def __init__(self, path: str | Path, *, max_entries: int = 200):
+    def __init__(
+        self,
+        path: str | Path,
+        *,
+        max_entries: int = 200,
+        archive_path: str | Path | None = None,
+    ):
         self.path = Path(path)
         self.max_entries = max_entries
+        # Archive append-only des évincés : le rolling buffer ne JETTE plus
+        # (chantier learnings 2026-07-02 — 89 % des notes partaient à la poubelle).
+        self.archive_path = (
+            Path(archive_path)
+            if archive_path is not None
+            else self.path.parent / "archive" / f"{self.path.stem}-evicted.jsonl"
+        )
 
     def _read_rows(self) -> list[dict]:
         if not self.path.exists():
@@ -55,7 +68,10 @@ class LearningsStore:
         row = {"ts": now.isoformat(), "symbol": symbol, "note": note, **extra}
         rows = self._read_rows()
         rows.append(row)
+        evicted = rows[: -self.max_entries] if len(rows) > self.max_entries else []
         rows = rows[-self.max_entries :]
+        if evicted:
+            self._archive_evicted(evicted, now=now)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self.path.with_suffix(self.path.suffix + ".tmp")
         with tmp.open("w", encoding="utf-8") as f:
@@ -63,6 +79,19 @@ class LearningsStore:
                 f.write(json.dumps(item, ensure_ascii=False) + "\n")
         os.replace(tmp, self.path)
         return True
+
+    def _archive_evicted(self, evicted: list[dict], *, now: datetime) -> None:
+        """Append-only, jamais relu par le runtime — matière première du futur
+        recall/RAG. `ts` d'origine conservé, `evicted_at` ajouté pour l'audit."""
+        try:
+            self.archive_path.parent.mkdir(parents=True, exist_ok=True)
+            with self.archive_path.open("a", encoding="utf-8") as f:
+                for item in evicted:
+                    f.write(json.dumps({**item, "evicted_at": now.isoformat()}, ensure_ascii=False) + "\n")
+        except OSError:
+            # L'archive est best-effort : son échec ne doit jamais bloquer
+            # l'écriture du buffer vif (le daemon live en dépend).
+            pass
 
     def recent(self, limit: int = 10) -> list[dict]:
         """Les `limit` entrées les plus récentes, dans l'ordre chronologique."""
