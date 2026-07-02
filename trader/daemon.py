@@ -29,6 +29,7 @@ import yaml
 
 from .agent_context import build_market_cockpit, resolve_indicator_requests
 from . import (
+    agent_tools,
     attribution,
     code_version,
     codex_client,
@@ -1283,6 +1284,49 @@ def _apply_decision_schedule(
             entry["indicator_watch"]["order"] = pending_indicator_watch["order"]
 
 
+def _run_tool_round(
+    request: codex_client.BatchToolCallRequest,
+    *,
+    chunk: list[str],
+    now: datetime,
+    data_age_by_symbol: dict[str, float],
+    market_contexts: dict[str, dict],
+    active_watches_by_symbol: dict[str, list],
+    shared_context: dict,
+    indicator_resolver: object,
+) -> tuple[list[dict], dict]:
+    """Exécute UNE tournée d'outils bornée et retourne :
+    - results_payload : liste compacte réinjectable dans le prompt du tour final
+    - runtime_payload : dict durable pour decisions.jsonl (runtime.tool_*)
+
+    Toute erreur outil est absorbée en résultat compact — aucune exception ne
+    remonte au daemon (AX §4 : machine-readable errors, §8 : structured outputs).
+    """
+    context = agent_tools.ToolContext(
+        now=now,
+        allowed_symbols=frozenset(chunk),
+        data_age_by_symbol=data_age_by_symbol,
+        market_context_by_symbol=market_contexts,
+        active_watches_by_symbol=active_watches_by_symbol,
+        attribution=shared_context.get("attribution"),
+        # V0 : providers lourds non câblés — répondent "unavailable" proprement.
+        # À brancher quand la mesure d'usage le justifie (Phase 2+).
+        position_risk_provider=None,
+        recent_decisions_provider=None,
+        indicator_resolver=indicator_resolver,
+    )
+    results, traces = agent_tools.execute_tool_round(
+        request.calls,
+        context=context,
+        limits=agent_tools.ToolRoundLimits(),
+        allowed_tools=frozenset(agent_tools.TOOL_REGISTRY),
+    )
+    return (
+        agent_tools.results_prompt_payload(results),
+        agent_tools.round_runtime_payload(traces, rounds=1),
+    )
+
+
 def _batch_decide(
     *,
     decidable: list[str],
@@ -1305,11 +1349,15 @@ def _batch_decide(
     decision_timeout_s: int = 900,
     decision_batch_size: int = DEFAULT_DECISION_BATCH_SIZE,
     decision_batch_parallelism: int = DEFAULT_DECISION_BATCH_PARALLELISM,
+    agent_tools_enabled: bool = False,
 ) -> tuple[dict[str, codex_client.Decision], int]:
     """Décide les symboles dus par chunks LLM bornés et parallélisables.
 
     Chaque chunk consomme un appel modèle et respecte `max_model_calls`. Les
     demandes REQUEST_CONTEXT sont résolues puis re-décidées en chunks séparés.
+    Quand `agent_tools_enabled=True`, le LLM peut émettre UNE tournée d'outils
+    lecture-seule (flag CASYS_AGENT_TOOLS_ENABLED) ; chaque chunk avec tournée
+    consomme alors 2 appels modèle au lieu d'un.
     """
     if not decidable:
         return {}, 0
@@ -1352,6 +1400,19 @@ def _batch_decide(
     batch_size = max(1, int(decision_batch_size))
     parallelism = max(1, int(decision_batch_parallelism))
 
+    # Résolveur d'indicateurs réutilisable pour la tournée d'outils (mêmes
+    # bornes que REQUEST_CONTEXT — le coût d'un resolve reste identique).
+    def _indicator_resolver(requests):
+        return resolve_indicator_requests(
+            requests,
+            tradable_bars_by_symbol,
+            symbols=tradable_symbols,
+            max_requests=max_context_requests_per_symbol,
+            max_indicators=max_indicators_per_request,
+            cached_interval=runtime_interval,
+            cached_lookback=runtime_lookback,
+        )
+
     def _chunks(symbols: list[str]) -> list[list[str]]:
         return [symbols[start : start + batch_size] for start in range(0, len(symbols), batch_size)]
 
@@ -1368,33 +1429,108 @@ def _batch_decide(
         if not allowed_chunks:
             return {}, 0, skipped
 
-        def _call(chunk: list[str]) -> dict[str, object]:
+        def _call(chunk: list[str]) -> tuple[dict[str, object], int]:
+            """Retourne (réponses par symbole, nombre d'appels modèle consommés).
+
+            Quand agent_tools_enabled, le premier appel peut rendre une tournée
+            d'outils (BatchToolCallRequest) ; le daemon l'exécute et relance un
+            tour final — tout en absorbant les erreurs (design §11, §4).
+            """
             try:
-                return codex_client.decide_batch(
+                resp = codex_client.decide_batch(
                     symbols=chunk,
                     mandate=mandate,
                     memory=memory,
                     shared_context=shared_context,
                     per_symbol={sym: per_symbol_payload[sym] for sym in chunk},
                     allow_context_request=allow_context_request,
+                    allow_tool_calls=agent_tools_enabled and allow_context_request,
                     timeout_s=decision_timeout_s,
                 )
             except Exception as exc:  # noqa: BLE001
-                return {
-                    sym: codex_client.Decision.hold(sym, f"llm_failed:batch_exception:{type(exc).__name__}")
-                    for sym in chunk
-                }
+                return (
+                    {sym: codex_client.Decision.hold(sym, f"llm_failed:batch_exception:{type(exc).__name__}") for sym in chunk},
+                    1,
+                )
+
+            if not (agent_tools_enabled and isinstance(resp, codex_client.BatchToolCallRequest)):
+                # Comportement historique : réponse décision directe.
+                return resp, 1
+
+            # --- Tournée d'outils (flag actif, LLM a demandé des outils) ---
+            results_payload, runtime_payload = _run_tool_round(
+                resp,
+                chunk=chunk,
+                now=now,
+                data_age_by_symbol=data_age_by_symbol,
+                market_contexts=market_contexts,
+                active_watches_by_symbol=active_watches_by_symbol,
+                shared_context=shared_context,
+                indicator_resolver=_indicator_resolver,
+            )
+            # Enrichir le payload par-symbole avec les tool_results filtrés.
+            # Un call sans symbole explicite (scope global) est réinjecté à tous.
+            trace_calls = runtime_payload["tool_calls"]
+            per_symbol_round2 = {}
+            for sym in chunk:
+                sym_traces = agent_tools.calls_for_symbol(trace_calls, sym)
+                sym_ids = {t["id"] for t in sym_traces}
+                sym_results = [r for r in results_payload if r["id"] in sym_ids]
+                per_symbol_round2[sym] = {**per_symbol_payload[sym], "tool_results": sym_results}
+
+            # Tour final : le LLM DOIT décider — plus de tool_calls acceptés.
+            try:
+                resp2 = codex_client.decide_batch(
+                    symbols=chunk,
+                    mandate=mandate,
+                    memory=memory,
+                    shared_context=shared_context,
+                    per_symbol=per_symbol_round2,
+                    allow_context_request=False,
+                    allow_tool_calls=False,
+                    timeout_s=decision_timeout_s,
+                )
+            except Exception as exc:  # noqa: BLE001
+                return (
+                    {sym: codex_client.Decision.hold(sym, f"llm_failed:batch_exception:{type(exc).__name__}") for sym in chunk},
+                    2,
+                )
+
+            # Deuxième tournée d'outils au tour final → blocage HOLD (design §6.2).
+            if isinstance(resp2, codex_client.BatchToolCallRequest):
+                return (
+                    {sym: codex_client.Decision.hold(sym, "tool_loop_blocked") for sym in chunk},
+                    2,
+                )
+
+            # Attacher les traces d'outils à chaque décision pour persistance ledger.
+            final_decisions: dict[str, object] = {}
+            for sym in chunk:
+                decision = resp2.get(sym, codex_client.Decision.hold(sym, "missing_in_batch"))
+                if isinstance(decision, codex_client.Decision):
+                    sym_traces = agent_tools.calls_for_symbol(trace_calls, sym)
+                    decision = replace(decision, domain_tools={
+                        "tool_rounds": runtime_payload["tool_rounds"],
+                        "tool_calls": sym_traces,
+                    })
+                final_decisions[sym] = decision
+            return final_decisions, 2
 
         responses_by_symbol: dict[str, object] = {}
+        total_calls = 0
         if parallelism == 1 or len(allowed_chunks) == 1:
             for chunk in allowed_chunks:
-                responses_by_symbol.update(_call(chunk))
+                chunk_responses, chunk_n_calls = _call(chunk)
+                responses_by_symbol.update(chunk_responses)
+                total_calls += chunk_n_calls
         else:
             with ThreadPoolExecutor(max_workers=min(parallelism, len(allowed_chunks))) as executor:
                 futures = [executor.submit(_call, chunk) for chunk in allowed_chunks]
                 for future in as_completed(futures):
-                    responses_by_symbol.update(future.result())
-        return responses_by_symbol, len(allowed_chunks), skipped
+                    chunk_responses, chunk_n_calls = future.result()
+                    responses_by_symbol.update(chunk_responses)
+                    total_calls += chunk_n_calls
+        return responses_by_symbol, total_calls, skipped
 
     responses, calls, skipped_symbols = _decide_chunks(
         symbols=decidable,
@@ -1586,6 +1722,7 @@ def run_cycle(
     decision_batch_size: int = DEFAULT_DECISION_BATCH_SIZE,
     decision_batch_parallelism: int = DEFAULT_DECISION_BATCH_PARALLELISM,
     commission_model: CommissionModel | None = None,
+    agent_tools_enabled: bool = False,
 ) -> dict:
     """Exécute UN cycle. Retourne un rapport structuré (machine-readable)."""
     now = now or datetime.now(timezone.utc)
@@ -2243,6 +2380,7 @@ def run_cycle(
         decision_timeout_s=decision_timeout_s,
         decision_batch_size=decision_batch_size,
         decision_batch_parallelism=decision_batch_parallelism,
+        agent_tools_enabled=agent_tools_enabled,
     )
     # revue effective seulement si le modèle a réellement statué (review Codex :
     # un échec/budget à 0 ne doit pas compter comme revue périodique)
@@ -2413,7 +2551,9 @@ def run_cycle(
                  "indicator_watch_created": False,
                  "indicator_watch_requested": bool(decision.indicator_watch),
                  "indicator_watch_rejections": [],
-                 "data_source": runtime_data_source_by_sym.get(sym)}
+                 "data_source": runtime_data_source_by_sym.get(sym),
+                 "tool_rounds": (decision.domain_tools or {}).get("tool_rounds"),
+                 "tool_calls": (decision.domain_tools or {}).get("tool_calls")}
         if decision_source == "llm" and sym in held_symbols and _counts_as_llm_review(decision):
             _persist_last_llm_review(
                 plan_store=plan_store,
@@ -2889,6 +3029,12 @@ def main(
         help="nombre max d'appels LLM décideur lancés en parallèle (défaut/env CASYS_DECISION_BATCH_PARALLELISM: 3)",
     )
     parser.add_argument(
+        "--agent-tools",
+        action=argparse.BooleanOptionalAction,
+        default=_env_int("CASYS_AGENT_TOOLS_ENABLED", 0) == 1,
+        help="tournée d'outils domaine pour le LLM (défaut/env CASYS_AGENT_TOOLS_ENABLED: 0)",
+    )
+    parser.add_argument(
         "--learning-consolidation-threshold",
         type=int,
         default=_env_int("TRADER_LEARNING_CONSOLIDATION_THRESHOLD", DEFAULT_LEARNING_CONSOLIDATION_THRESHOLD),
@@ -3194,6 +3340,7 @@ def main(
                         decision_batch_size=args.decision_batch_size,
                         decision_batch_parallelism=args.decision_batch_parallelism,
                         commission_model=commission_model,
+                        agent_tools_enabled=args.agent_tools,
                     )
                     if report.get("planned_exits") or report.get("decisions") or report.get("exit_watch_triggers"):
                         log.debug("cycle actif sans symbole dû: %s", json.dumps(report, ensure_ascii=False))
@@ -3226,6 +3373,7 @@ def main(
                         decision_batch_size=args.decision_batch_size,
                         decision_batch_parallelism=args.decision_batch_parallelism,
                         commission_model=commission_model,
+                        agent_tools_enabled=args.agent_tools,
                     )
                     log.debug("cycle: %s", json.dumps(report, ensure_ascii=False))
                     STATE_DIR.mkdir(parents=True, exist_ok=True)
