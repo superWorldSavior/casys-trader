@@ -5,6 +5,7 @@ import time
 from datetime import datetime, timezone
 
 from trader import daemon
+from trader.application import planner_batch
 from trader.codex_client import ContextResearchRequest, Decision, IndicatorRequest
 from trader.indicator_watch import summarize_watch
 from trader.tools.market import Bar
@@ -24,6 +25,10 @@ _COMMON = dict(
     now=datetime(2026, 6, 15, 14, 30, tzinfo=timezone.utc),
     data_age_by_symbol={},
 )
+
+
+def test_planner_batch_module_expose_batch_decide() -> None:
+    assert callable(planner_batch.batch_decide)
 
 
 def _write_runtime_config(root) -> None:
@@ -110,6 +115,26 @@ def test_batch_decide_injecte_age_data_et_session_par_symbole(monkeypatch) -> No
     assert "since_open_m" not in captured["SPY"]["session"]
     assert "to_close_m" not in captured["SPY"]["session"]
     assert captured["QQQ"]["data_age_m"] is None  # âge inconnu = inconnu, pas 0
+
+
+def test_daemon_batch_decide_wrapper_delegue_au_module_application(monkeypatch) -> None:
+    captured: dict = {}
+
+    def fake_batch_decide(**kwargs):
+        captured.update(kwargs)
+        return {"SPY": Decision.hold("SPY", "module")}, 0
+
+    monkeypatch.setattr(planner_batch, "batch_decide", fake_batch_decide)
+
+    decisions, calls = daemon._batch_decide(
+        decidable=["SPY"],
+        max_model_calls=1,
+        **_COMMON,
+    )
+
+    assert calls == 0
+    assert decisions["SPY"].rationale == "module"
+    assert captured["decidable"] == ["SPY"]
 
 
 def test_batch_decide_injecte_last_llm_review_du_plan_ouvert(monkeypatch) -> None:
@@ -524,6 +549,26 @@ def test_batch_decide_decoupe_les_decisions_en_chunks_paralleles_bornes(monkeypa
     assert max(len(chunk) for chunk in chunks) == 5
     assert max_active == 2
     assert set(decisions) == set(symbols)
+
+
+def test_batch_decide_loggue_le_decoupage_des_chunks(monkeypatch, caplog) -> None:
+    caplog.set_level("DEBUG", logger="trader.application.planner_batch")
+
+    def fake_batch(*, symbols, **kwargs):
+        return {sym: Decision.hold(sym, "x") for sym in symbols}
+
+    monkeypatch.setattr(planner_batch.codex_client, "decide_batch", fake_batch)
+
+    planner_batch.batch_decide(
+        decidable=["A", "B", "C"],
+        max_model_calls=2,
+        decision_batch_size=2,
+        decision_batch_parallelism=1,
+        **_COMMON,
+    )
+
+    messages = "\n".join(record.getMessage() for record in caplog.records)
+    assert "planner_batch chunks=2 allowed=2 skipped=0" in messages
 
 
 def test_batch_decide_ne_depasse_pas_le_budget_appels_en_chunks(monkeypatch) -> None:
