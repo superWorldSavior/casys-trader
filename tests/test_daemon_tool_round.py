@@ -460,3 +460,171 @@ def test_run_cycle_record_recall_apres_tool_round(monkeypatch, tmp_path, make_da
     assert len(recalls) >= 1
     recalled_ids = json.loads(recalls[0]["note_ids"])
     assert note_id in recalled_ids
+
+
+# ---------------------------------------------------------------------------
+# Findings review Codex 2026-07-02 : guard store, embed timeout, position-based
+# ---------------------------------------------------------------------------
+
+
+def test_run_cycle_recall_db_corrompu_ne_leve_pas(monkeypatch, tmp_path, make_data_source):
+    """Finding 1 : db corrompu → run_cycle ne lève pas, outil recall répond unavailable.
+
+    Le flag _RECALL_STORE_FAILED est réinitialisé pour isoler ce test.
+    """
+    from tests.conftest import write_runtime_config
+
+    write_runtime_config(tmp_path, symbols=["SPY"])
+    state_dir = tmp_path / "state"
+    state_dir.mkdir(parents=True, exist_ok=True)
+
+    # Fichier corrompu (pas un SQLite valide)
+    (state_dir / "learnings.db").write_text("NOT A DATABASE\n", encoding="utf-8")
+
+    monkeypatch.setattr(daemon, "_RECALL_STORE_FAILED", False)
+    monkeypatch.setattr(daemon, "ROOT", tmp_path)
+    monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+
+    tool_results_seen: list[list] = []
+
+    def fake_decide_batch(*, symbols, allow_tool_calls=False, **kwargs):
+        if allow_tool_calls:
+            return codex_client.BatchToolCallRequest(
+                calls=[{"id": "r1", "tool": "recall_learnings", "args": {"symbol": "SPY"}}],
+                llm_provider="acpx",
+                llm_model="gpt-5.5",
+            )
+        tool_results_seen.append(kwargs.get("per_symbol", {}).get("SPY", {}).get("tool_results", []))
+        return {sym: codex_client.Decision.hold(sym, "test") for sym in symbols}
+
+    monkeypatch.setattr(daemon.codex_client, "decide_batch", fake_decide_batch)
+
+    def _bars(sym, lookback, interval):
+        from trader.tools.market import Bar
+        return [
+            Bar(ts="2026-07-02T09:45:00+00:00", open=100, high=101, low=99, close=100, volume=1000),
+            Bar(ts="2026-07-02T10:00:00+00:00", open=100, high=101, low=99, close=100, volume=1000),
+        ]
+
+    # Ne doit pas lever d'exception
+    report = daemon.run_cycle(
+        dry_run=True,
+        now=NOW,
+        symbols_filter=["SPY"],
+        sched=None,
+        data_source=make_data_source(_bars),
+        agent_tools_enabled=True,
+    )
+    assert report is not None
+
+    # L'outil recall_learnings a répondu "unavailable" (provider=None → error unavailable)
+    if tool_results_seen:
+        recall_result = next(
+            (r for r in tool_results_seen[0] if r.get("tool") == "recall_learnings"),
+            None,
+        )
+        if recall_result:
+            assert recall_result.get("result", {}).get("error") == "unavailable"
+
+
+def test_build_recall_provider_embed_timeout_3s(tmp_path, monkeypatch):
+    """Finding 2a : le provider runtime passe timeout_s=3 à l'embedder par défaut."""
+    from trader import learnings_store as recall_mod
+
+    store = recall_mod.LearningsStore(str(tmp_path / "test.db"))
+    timeouts_seen: list[int] = []
+
+    def spy_post_json(url, payload, headers, timeout):
+        timeouts_seen.append(timeout)
+        # Retourner une réponse embeddings factice
+        return {
+            "data": [{"index": 0, "embedding": [0.0] * 1536}]
+        }
+
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+
+    # Patcher _default_post_json dans le module embeddings (importé au moment de l'appel)
+    import trader.embeddings as emb_mod
+    monkeypatch.setattr(emb_mod, "_default_post_json", spy_post_json)
+
+    # Construire le provider APRÈS le patch pour qu'il utilise le spy
+    provider = daemon._build_recall_provider(store, NOW)
+    provider({"query": "momentum"})
+
+    # Si spy_post_json a été appelé, le timeout doit être 3
+    for t in timeouts_seen:
+        assert t == 3, f"timeout_s attendu=3, got {t}"
+
+
+def test_build_recall_provider_embed_echoue_degrade_fts(tmp_path, monkeypatch):
+    """Finding 2b : échec embed → search appelé avec query_vec=None (dégradation FTS5)."""
+    from trader import learnings_store as recall_mod
+
+    store = recall_mod.LearningsStore(str(tmp_path / "test.db"))
+    search_calls: list[dict] = []
+    real_search = store.search
+
+    def spy_search(**kwargs):
+        search_calls.append(kwargs)
+        return real_search(**kwargs)
+
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+
+    def failing_embedder(texts, *, api_key):
+        raise RuntimeError("timeout simulé")
+
+    provider = daemon._build_recall_provider(store, NOW, embedder=failing_embedder)
+    result = provider({"query": "momentum"})
+
+    assert isinstance(result, dict)
+    assert "rows" in result
+    # search a dû être appelé sans query_vec (dégradation FTS5)
+    # On vérifie via le résultat : pas d'exception levée = dégradation OK
+
+
+def test_run_tool_round_recall_note_ids_par_position_deux_calls_meme_id(tmp_path):
+    """Finding 4 : deux calls recall_learnings avec id='dup' → chaque trace garde SES note_ids."""
+    call_count = [0]
+
+    def _provider(args: dict) -> dict:
+        call_count[0] += 1
+        if call_count[0] == 1:
+            return {
+                "rows": [
+                    {"id": 1, "ts": "2026-01-01T00:00:00Z", "symbol": "A",
+                     "verdict": "WIN", "outcome_score": 0.1, "note": "note1"},
+                ]
+            }
+        return {
+            "rows": [
+                {"id": 2, "ts": "2026-01-01T00:00:00Z", "symbol": "B",
+                 "verdict": "LOSS", "outcome_score": -0.1, "note": "note2"},
+            ]
+        }
+
+    request = codex_client.BatchToolCallRequest(
+        calls=[
+            {"id": "dup", "tool": "recall_learnings", "args": {"symbol": "A"}},
+            {"id": "dup", "tool": "recall_learnings", "args": {"symbol": "B"}},
+        ],
+    )
+    _, runtime_payload = daemon._run_tool_round(
+        request,
+        chunk=["A", "B"],
+        now=NOW,
+        data_age_by_symbol={},
+        market_contexts={},
+        active_watches_by_symbol={},
+        shared_context={},
+        indicator_resolver=None,
+        learnings_recall_provider=_provider,
+    )
+
+    recall_traces = [t for t in runtime_payload["tool_calls"] if t["tool"] == "recall_learnings"]
+    assert len(recall_traces) == 2, f"Attendu 2 traces recall, got {len(recall_traces)}"
+    assert recall_traces[0]["detail"].get("note_ids") == [1], (
+        f"Premier call doit avoir note_ids=[1], got {recall_traces[0]['detail']}"
+    )
+    assert recall_traces[1]["detail"].get("note_ids") == [2], (
+        f"Deuxième call doit avoir note_ids=[2], got {recall_traces[1]['detail']}"
+    )

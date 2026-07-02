@@ -820,3 +820,96 @@ def test_record_recall_ts_renseigne(tmp_path: Path) -> None:
     ).fetchone()
     assert row is not None
     assert row[0] and len(row[0]) > 0, "ts doit être non vide"
+
+
+# ---------------------------------------------------------------------------
+# Findings review Codex 2026-07-02 : thread-safety, query restriction, verdict
+# ---------------------------------------------------------------------------
+
+import threading  # noqa: E402
+
+
+def test_search_record_recall_thread_safe(tmp_path: Path) -> None:
+    """Finding 3 : 8 threads × search+record_recall concurrents → aucune exception."""
+    store = _setup_search_store(tmp_path)
+    errors: list[Exception] = []
+
+    def worker(i: int) -> None:
+        try:
+            store.search(text_query="momentum")
+            store.record_recall(decision_id=f"t-{i}", note_ids=[1])
+        except Exception as exc:
+            errors.append(exc)
+
+    threads = [threading.Thread(target=worker, args=(i,)) for i in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert errors == [], f"Exceptions dans les threads : {errors}"
+
+
+def test_search_query_filtre_aux_matches_seulement(tmp_path: Path) -> None:
+    """Finding 5 : une note récente WIN sans rapport avec la query ne remonte pas.
+
+    Scénario : 2 notes — "momentum cassure breakout" et "dividende bilan annuel".
+    La note dividende est récente et a outcome_score=+0.15 (WIN).
+    La query = "momentum breakout" → FTS5 ne match que la première.
+    Sans restriction, la note dividende (récente+WIN) pourrait remonter grâce
+    au score freshness+outcome. Avec restriction query → elle ne doit pas apparaître.
+    """
+    rows = [
+        {
+            "ts": "2026-01-01T00:00:00+00:00",  # ancienne
+            "symbol": "NVDA",
+            "note": "momentum cassure breakout résistance signal fort",
+            "action": "BUY",
+            "intent": "BUY",
+            "executed": True,
+            "reason": "breakout",
+            "decision_id": "query-nvda-1",
+        },
+        {
+            "ts": "2026-06-30T00:00:00+00:00",  # très récente → freshness haute
+            "symbol": "AAPL",
+            "note": "dividende bilan annuel résultats trimestriels",
+            "action": "HOLD",
+            "intent": "HOLD",
+            "executed": False,
+            "reason": "hold",
+            "decision_id": "query-aapl-1",
+        },
+    ]
+    jsonl = tmp_path / "q.jsonl"
+    _write_jsonl(jsonl, rows)
+    store = LearningsStore(tmp_path / "learnings.db")
+    store.ingest_jsonl(jsonl, source="test")
+
+    # Donner un outcome_score élevé à la note AAPL (WIN récente)
+    store._conn.execute(
+        "UPDATE notes SET outcome_score=0.15, verdict='WIN' WHERE decision_id='query-aapl-1'"
+    )
+    store._conn.commit()
+
+    now = datetime(2026, 7, 2, tzinfo=timezone.utc)
+    results = store.search(text_query="momentum breakout", now=now)
+
+    result_ids = {r["symbol"] for r in results}
+    assert "AAPL" not in result_ids, (
+        "AAPL (dividende, sans rapport avec 'momentum breakout') ne doit pas remonter quand une query est fournie"
+    )
+    # NVDA doit quand même apparaître (match FTS)
+    assert "NVDA" in result_ids, "NVDA (match FTS 'momentum breakout') doit apparaître"
+
+
+def test_search_verdict_null_retourne_unknown(tmp_path: Path) -> None:
+    """Finding 6 : verdict NULL en base → UNKNOWN dans les résultats search."""
+    store = _setup_search_store(tmp_path)
+    # Les notes insérées n'ont pas de verdict → NULL en base
+    results = store.search()
+    assert len(results) > 0
+    for r in results:
+        assert r["verdict"] == "UNKNOWN", (
+            f"verdict NULL doit être retourné comme UNKNOWN, got {r['verdict']!r}"
+        )

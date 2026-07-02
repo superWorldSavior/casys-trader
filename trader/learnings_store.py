@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import math
 import sqlite3
+import threading
 from collections import defaultdict
 from collections.abc import Callable
 from datetime import datetime, timezone
@@ -27,6 +28,7 @@ _PRAGMAS = [
     "PRAGMA journal_mode=WAL;",
     "PRAGMA synchronous=NORMAL;",
     "PRAGMA foreign_keys=ON;",
+    "PRAGMA busy_timeout=2000;",
 ]
 
 _DDL_NOTES = """
@@ -129,6 +131,7 @@ class LearningsStore:
 
     def __init__(self, db_path: str | Path) -> None:
         self._db_path = Path(db_path)
+        self._lock = threading.Lock()
         self._conn = _open_db(self._db_path)
         _create_schema(self._conn)
 
@@ -138,7 +141,8 @@ class LearningsStore:
 
     def count(self) -> int:
         """Nombre de notes dans le store."""
-        row = self._conn.execute("SELECT COUNT(*) FROM notes").fetchone()
+        with self._lock:
+            row = self._conn.execute("SELECT COUNT(*) FROM notes").fetchone()
         return int(row[0])
 
     # ------------------------------------------------------------------
@@ -161,6 +165,7 @@ class LearningsStore:
         inserted = 0
         skipped = 0
 
+        rows_to_insert = []
         with path.open(encoding="utf-8") as fh:
             for raw_line in fh:
                 raw_line = raw_line.strip()
@@ -192,6 +197,24 @@ class LearningsStore:
                 else:
                     concepts = None
 
+                rows_to_insert.append({
+                    "decision_id": decision_id,
+                    "ts": ts,
+                    "symbol": symbol,
+                    "family": family,
+                    "venue": row.get("venue"),
+                    "action": row.get("action"),
+                    "intent": row.get("intent"),
+                    "executed": int(bool(row.get("executed"))) if row.get("executed") is not None else None,
+                    "reason": row.get("reason"),
+                    "note": row.get("note"),
+                    "concepts": concepts,
+                    "source": source,
+                    "valid_from": ts,
+                })
+
+        with self._lock:
+            for params in rows_to_insert:
                 cursor = self._conn.execute(
                     """
                     INSERT OR IGNORE INTO notes (
@@ -204,28 +227,13 @@ class LearningsStore:
                         :concepts, :source, :valid_from
                     )
                     """,
-                    {
-                        "decision_id": decision_id,
-                        "ts": ts,
-                        "symbol": symbol,
-                        "family": family,
-                        "venue": row.get("venue"),
-                        "action": row.get("action"),
-                        "intent": row.get("intent"),
-                        "executed": int(bool(row.get("executed"))) if row.get("executed") is not None else None,
-                        "reason": row.get("reason"),
-                        "note": row.get("note"),
-                        "concepts": concepts,
-                        "source": source,
-                        "valid_from": ts,
-                    },
+                    params,
                 )
                 if cursor.rowcount == 1:
                     inserted += 1
                 else:
                     skipped += 1
-
-        self._conn.commit()
+            self._conn.commit()
         return {"inserted": inserted, "skipped": skipped}
 
     # ------------------------------------------------------------------
@@ -249,27 +257,28 @@ class LearningsStore:
         learnings = data.get("learnings", [])
 
         updated = 0
-        for item in learnings:
-            decision_id = item.get("decision_id")
-            if not decision_id:
-                continue
-            cursor = self._conn.execute(
-                """
-                UPDATE notes
-                   SET verdict        = :verdict,
-                       forward_return = :forward_return
-                 WHERE decision_id = :decision_id
-                """,
-                {
-                    "decision_id": str(decision_id),
-                    "verdict": item.get("verdict"),
-                    "forward_return": item.get("forward_return"),
-                },
-            )
-            if cursor.rowcount > 0:
-                updated += 1
+        with self._lock:
+            for item in learnings:
+                decision_id = item.get("decision_id")
+                if not decision_id:
+                    continue
+                cursor = self._conn.execute(
+                    """
+                    UPDATE notes
+                       SET verdict        = :verdict,
+                           forward_return = :forward_return
+                     WHERE decision_id = :decision_id
+                    """,
+                    {
+                        "decision_id": str(decision_id),
+                        "verdict": item.get("verdict"),
+                        "forward_return": item.get("forward_return"),
+                    },
+                )
+                if cursor.rowcount > 0:
+                    updated += 1
 
-        self._conn.commit()
+            self._conn.commit()
         return updated
 
     def compute_outcome_scores(self, *, shrinkage_k: float = 5.0) -> dict:
@@ -285,83 +294,84 @@ class LearningsStore:
 
         Retourne ``{"scored": n, "base_rates": {sym: rate, ...}}``.
         """
-        # Charger toutes les notes avec un verdict posé
-        rows = self._conn.execute(
-            "SELECT id, symbol, family, verdict FROM notes WHERE verdict IS NOT NULL"
-        ).fetchall()
+        with self._lock:
+            # Charger toutes les notes avec un verdict posé
+            rows = self._conn.execute(
+                "SELECT id, symbol, family, verdict FROM notes WHERE verdict IS NOT NULL"
+            ).fetchall()
 
-        if not rows:
-            return {"scored": 0, "base_rates": {}}
+            if not rows:
+                return {"scored": 0, "base_rates": {}}
 
-        # Compter wins/losses par symbole et par famille (pour les fallbacks)
-        wins_by_sym: dict[str, int] = defaultdict(int)
-        losses_by_sym: dict[str, int] = defaultdict(int)
-        wins_by_family: dict[str, int] = defaultdict(int)
-        losses_by_family: dict[str, int] = defaultdict(int)
-        global_wins = 0
-        global_losses = 0
+            # Compter wins/losses par symbole et par famille (pour les fallbacks)
+            wins_by_sym: dict[str, int] = defaultdict(int)
+            losses_by_sym: dict[str, int] = defaultdict(int)
+            wins_by_family: dict[str, int] = defaultdict(int)
+            losses_by_family: dict[str, int] = defaultdict(int)
+            global_wins = 0
+            global_losses = 0
 
-        for row in rows:
-            verdict = row["verdict"]
-            if verdict not in ("WIN", "LOSS"):
-                continue
-            sym = row["symbol"] or ""
-            fam = row["family"] or ""
-            if verdict == "WIN":
-                wins_by_sym[sym] += 1
-                global_wins += 1
+            for row in rows:
+                verdict = row["verdict"]
+                if verdict not in ("WIN", "LOSS"):
+                    continue
+                sym = row["symbol"] or ""
+                fam = row["family"] or ""
+                if verdict == "WIN":
+                    wins_by_sym[sym] += 1
+                    global_wins += 1
+                    if fam:
+                        wins_by_family[fam] += 1
+                else:  # LOSS
+                    losses_by_sym[sym] += 1
+                    global_losses += 1
+                    if fam:
+                        losses_by_family[fam] += 1
+
+            # Base rate globale (fallback ultime)
+            global_total = global_wins + global_losses
+            global_base_rate = global_wins / global_total if global_total > 0 else 0.5
+
+            def _base_rate(sym: str, fam: str) -> float:
+                """Retourne la base_rate du symbole, avec fallbacks famille puis global."""
+                sym_total = wins_by_sym[sym] + losses_by_sym[sym]
+                if sym_total >= 5:
+                    return wins_by_sym[sym] / sym_total
+                # Fallback famille
                 if fam:
-                    wins_by_family[fam] += 1
-            else:  # LOSS
-                losses_by_sym[sym] += 1
-                global_losses += 1
-                if fam:
-                    losses_by_family[fam] += 1
+                    fam_total = wins_by_family.get(fam, 0) + losses_by_family.get(fam, 0)
+                    if fam_total >= 5:
+                        return wins_by_family[fam] / fam_total
+                # Fallback global
+                return global_base_rate
 
-        # Base rate globale (fallback ultime)
-        global_total = global_wins + global_losses
-        global_base_rate = global_wins / global_total if global_total > 0 else 0.5
+            # Calculer et persister outcome_score pour chaque note
+            scored = 0
+            base_rates: dict[str, float] = {}
 
-        def _base_rate(sym: str, fam: str) -> float:
-            """Retourne la base_rate du symbole, avec fallbacks famille puis global."""
-            sym_total = wins_by_sym[sym] + losses_by_sym[sym]
-            if sym_total >= 5:
-                return wins_by_sym[sym] / sym_total
-            # Fallback famille
-            if fam:
-                fam_total = wins_by_family.get(fam, 0) + losses_by_family.get(fam, 0)
-                if fam_total >= 5:
-                    return wins_by_family[fam] / fam_total
-            # Fallback global
-            return global_base_rate
+            for row in rows:
+                note_id = row["id"]
+                verdict = row["verdict"]
+                sym = row["symbol"] or ""
+                fam = row["family"] or ""
 
-        # Calculer et persister outcome_score pour chaque note
-        scored = 0
-        base_rates: dict[str, float] = {}
+                if verdict in ("WIN", "LOSS"):
+                    br = _base_rate(sym, fam)
+                    base_rates[sym] = br
+                    win_indicator = 1.0 if verdict == "WIN" else 0.0
+                    lift = win_indicator - br
+                    outcome_score = lift / (1.0 + shrinkage_k)
+                else:
+                    # NEUTRAL ou UNKNOWN : neutre au ranking
+                    outcome_score = 0.0
 
-        for row in rows:
-            note_id = row["id"]
-            verdict = row["verdict"]
-            sym = row["symbol"] or ""
-            fam = row["family"] or ""
+                self._conn.execute(
+                    "UPDATE notes SET outcome_score = :score WHERE id = :id",
+                    {"score": outcome_score, "id": note_id},
+                )
+                scored += 1
 
-            if verdict in ("WIN", "LOSS"):
-                br = _base_rate(sym, fam)
-                base_rates[sym] = br
-                win_indicator = 1.0 if verdict == "WIN" else 0.0
-                lift = win_indicator - br
-                outcome_score = lift / (1.0 + shrinkage_k)
-            else:
-                # NEUTRAL ou UNKNOWN : neutre au ranking
-                outcome_score = 0.0
-
-            self._conn.execute(
-                "UPDATE notes SET outcome_score = :score WHERE id = :id",
-                {"score": outcome_score, "id": note_id},
-            )
-            scored += 1
-
-        self._conn.commit()
+            self._conn.commit()
         return {"scored": scored, "base_rates": base_rates}
 
     # ------------------------------------------------------------------
@@ -376,9 +386,10 @@ class LearningsStore:
         Seules les notes avec ``note IS NOT NULL AND embedding IS NULL`` sont traitées.
         Retourne le nombre de notes embeddées.
         """
-        rows = self._conn.execute(
-            "SELECT id, note FROM notes WHERE embedding IS NULL AND note IS NOT NULL"
-        ).fetchall()
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT id, note FROM notes WHERE embedding IS NULL AND note IS NOT NULL"
+            ).fetchall()
 
         if not rows:
             return 0
@@ -386,15 +397,16 @@ class LearningsStore:
         ids = [r["id"] for r in rows]
         texts = [r["note"] for r in rows]
 
+        # L'appel réseau sort du verrou pour ne pas bloquer les readers.
         blobs = embedder(texts)
 
-        for note_id, blob in zip(ids, blobs):
-            self._conn.execute(
-                "UPDATE notes SET embedding = ? WHERE id = ?",
-                (blob, note_id),
-            )
-
-        self._conn.commit()
+        with self._lock:
+            for note_id, blob in zip(ids, blobs):
+                self._conn.execute(
+                    "UPDATE notes SET embedding = ? WHERE id = ?",
+                    (blob, note_id),
+                )
+            self._conn.commit()
         return len(ids)
 
     # ------------------------------------------------------------------
@@ -419,6 +431,7 @@ class LearningsStore:
         2. Classement FTS5 BM25 si ``text_query`` fourni.
         3. Classement cosine brute-force si ``query_vec`` fourni.
         4. Fusion RRF (k=60) des deux classements.
+        4b. Si une query est fournie, restriction à l'union FTS ∪ cosine matchés.
         5. Score final = rrf + outcome_score + exp(−age_days/τ) − 1.
         6. Retourne les ``limit`` meilleurs résultats, note tronquée à 240 c.
         """
@@ -448,39 +461,41 @@ class LearningsStore:
             fts_clauses.append("n.family = :family")
         fts_where = " AND ".join(fts_clauses)
 
-        # --- Récupérer tous les candidats facettés ---
-        base_rows = self._conn.execute(
-            f"""
-            SELECT id, ts, symbol, family, verdict, outcome_score,
-                   embedding, valid_from, note
-            FROM notes
-            WHERE {base_where}
-            """,
-            params,
-        ).fetchall()
-
-        if not base_rows:
-            return []
-
-        candidates: dict[int, dict] = {r["id"]: dict(r) for r in base_rows}
-        candidate_ids: set[int] = set(candidates)
-
-        # --- 2. Classement FTS5 (si text_query) ---
-        fts_ranked: list[int] = []
-        if text_query:
-            fts_rows = self._conn.execute(
+        # --- DB reads sous verrou ---
+        with self._lock:
+            # --- Récupérer tous les candidats facettés ---
+            base_rows = self._conn.execute(
                 f"""
-                SELECT n.id
-                FROM notes_fts
-                JOIN notes n ON n.id = notes_fts.rowid
-                WHERE notes_fts MATCH :text_query AND {fts_where}
-                ORDER BY bm25(notes_fts)
+                SELECT id, ts, symbol, family, verdict, outcome_score,
+                       embedding, valid_from, note
+                FROM notes
+                WHERE {base_where}
                 """,
-                {**params, "text_query": text_query},
+                params,
             ).fetchall()
-            fts_ranked = [r[0] for r in fts_rows if r[0] in candidate_ids]
 
-        # --- 3. Classement cosine (si query_vec) ---
+            if not base_rows:
+                return []
+
+            candidates: dict[int, dict] = {r["id"]: dict(r) for r in base_rows}
+            candidate_ids: set[int] = set(candidates)
+
+            # --- 2. Classement FTS5 (si text_query) ---
+            fts_ranked: list[int] = []
+            if text_query:
+                fts_rows = self._conn.execute(
+                    f"""
+                    SELECT n.id
+                    FROM notes_fts
+                    JOIN notes n ON n.id = notes_fts.rowid
+                    WHERE notes_fts MATCH :text_query AND {fts_where}
+                    ORDER BY bm25(notes_fts)
+                    """,
+                    {**params, "text_query": text_query},
+                ).fetchall()
+                fts_ranked = [r[0] for r in fts_rows if r[0] in candidate_ids]
+
+        # --- 3. Classement cosine (si query_vec) — hors verrou (CPU-only) ---
         cosine_ranked: list[int] = []
         if query_vec is not None:
             query_arr = np.frombuffer(query_vec, dtype=np.float32)
@@ -508,6 +523,16 @@ class LearningsStore:
             rrf_scores[nid] = rrf_scores.get(nid, 0.0) + 1.0 / (rrf_k + rank)
         for rank, nid in enumerate(cosine_ranked, 1):
             rrf_scores[nid] = rrf_scores.get(nid, 0.0) + 1.0 / (rrf_k + rank)
+
+        # --- 4b. Restriction aux matchés si une query est fournie ---
+        # Sans query : facettes seules → tous les candidats sont éligibles.
+        # Avec query : seuls les résultats FTS ∪ cosine remontent (évite qu'une
+        # note haute outcome+fraîcheur sans rapport avec la query ne passe).
+        if text_query is not None or query_vec is not None:
+            matched_ids = set(rrf_scores)
+            if not matched_ids:
+                return []
+            candidates = {nid: row for nid, row in candidates.items() if nid in matched_ids}
 
         # --- 5. Score final et tri ---
         scored: list[tuple[float, int]] = []
@@ -545,7 +570,7 @@ class LearningsStore:
                     "id": note_id,
                     "ts": row.get("ts"),
                     "symbol": row.get("symbol"),
-                    "verdict": row.get("verdict"),
+                    "verdict": row.get("verdict") or "UNKNOWN",
                     "outcome_score": row.get("outcome_score"),
                     "note": note_text[:240],
                 }
@@ -564,8 +589,9 @@ class LearningsStore:
         Écrit une ligne dans ``recalls(decision_id, note_ids JSON, ts ISO)`` .
         """
         ts = datetime.now(timezone.utc).isoformat()
-        self._conn.execute(
-            "INSERT INTO recalls (decision_id, note_ids, ts) VALUES (?, ?, ?)",
-            (decision_id, json.dumps(note_ids), ts),
-        )
-        self._conn.commit()
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO recalls (decision_id, note_ids, ts) VALUES (?, ?, ?)",
+                (decision_id, json.dumps(note_ids), ts),
+            )
+            self._conn.commit()

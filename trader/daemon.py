@@ -18,6 +18,7 @@ import json
 import logging
 import math
 import os
+import sqlite3
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import replace
@@ -87,6 +88,11 @@ ROOT = Path(__file__).resolve().parent.parent
 STATE_DIR = ROOT / "state"
 
 log = logging.getLogger("casys-trader")
+
+# Drapeau d'échec définitif du store recall (db corrompu/verrouillé à l'ouverture).
+# Posé à True dès le premier échec ; ne pas réessayer à chaque cycle pour éviter
+# de logguer la même erreur indéfiniment. Réinitialisable dans les tests.
+_RECALL_STORE_FAILED: bool = False
 
 _VALID_INTENTS = {"OPEN_LONG", "OPEN_SHORT", "REDUCE", "CLOSE", "REVERSE", "HOLD"}
 _ACTION_INTENTS = {
@@ -1304,19 +1310,33 @@ def _build_recall_provider(
     Le provider retourne ``{"rows": [...]}`` — le handler re-tronque à ≤ 8.
     Sans OPENAI_API_KEY ou sans query, la recherche tombe en mode FTS5+facettes.
     """
-    _embed = embedder if embedder is not None else embeddings_mod.embed_texts
+    _use_default_embedder = embedder is None
+    _embed = embeddings_mod.embed_texts if _use_default_embedder else embedder
+    # Cache run-local : évite de ré-embedder la même query dans le même cycle.
+    _embed_cache: dict[str, bytes] = {}
 
     def _provider(args: dict) -> dict:
         query = args.get("query")
         query_vec: bytes | None = None
         if query:
-            api_key = os.getenv("OPENAI_API_KEY")
-            if api_key:
-                try:
-                    blobs = _embed([query], api_key=api_key)
-                    query_vec = blobs[0] if blobs else None
-                except Exception:  # noqa: BLE001 — embed optionnel, dégradation FTS5
-                    query_vec = None
+            if query in _embed_cache:
+                query_vec = _embed_cache[query]
+            else:
+                api_key = os.getenv("OPENAI_API_KEY")
+                if api_key:
+                    try:
+                        # timeout_s=3 seulement pour l'embedder par défaut ;
+                        # les embedders injectés (tests) gèrent leur propre timeout.
+                        if _use_default_embedder:
+                            blobs = _embed([query], api_key=api_key, timeout_s=3)
+                        else:
+                            blobs = _embed([query], api_key=api_key)
+                        query_vec = blobs[0] if blobs else None
+                    except Exception:  # noqa: BLE001 — embed optionnel, dégradation FTS5
+                        log.warning("learnings_recall: embed échoué, dégradation FTS5")
+                        query_vec = None
+                    if query_vec is not None:
+                        _embed_cache[query] = query_vec
         limit = min(int(args.get("limit") or 5), 8)
         rows = store.search(
             query_vec=query_vec,
@@ -1379,10 +1399,15 @@ def _run_tool_round(
     # Enrichir le detail des appels recall_learnings avec les note_ids retournés.
     # Ces ids sont stockés dans le trace durable (decisions.jsonl runtime.tool_calls)
     # et utilisés par record_decision pour appeler store.record_recall (design §4.4).
-    results_by_id = {r.id: r for r in results}
-    for tc in runtime["tool_calls"]:
+    #
+    # Association PAR POSITION : results et tool_calls sont ordonnés 1:1,
+    # sauf une éventuelle trace sentinel "[sentinel]" en tête de tc_list
+    # (OUTCOME_TRUNCATED, id="[sentinel]") sans résultat correspondant.
+    tc_list = runtime["tool_calls"]
+    sentinel_offset = 1 if (tc_list and tc_list[0].get("id") == "[sentinel]") else 0
+    for pos, tc in enumerate(tc_list[sentinel_offset:]):
         if tc["tool"] == "recall_learnings" and tc["outcome"] == agent_tools.OUTCOME_OK:
-            r = results_by_id.get(tc["id"])
+            r = results[pos] if pos < len(results) else None
             if r and r.ok and isinstance(r.result, dict):
                 rows = r.result.get("rows", [])
                 note_ids = [
@@ -1866,11 +1891,17 @@ def run_cycle(
     # Si learnings.db est absent, provider=None → l'outil répond "unavailable".
     # La création du .db reste le job du script d'ingestion (Task 7).
     _learnings_db_path = STATE_DIR / "learnings.db"
-    _recall_store: recall_store_mod.LearningsStore | None = (
-        recall_store_mod.LearningsStore(str(_learnings_db_path))
-        if _learnings_db_path.exists()
-        else None
-    )
+    _recall_store: recall_store_mod.LearningsStore | None = None
+    global _RECALL_STORE_FAILED
+    if _learnings_db_path.exists() and not _RECALL_STORE_FAILED:
+        try:
+            _recall_store = recall_store_mod.LearningsStore(str(_learnings_db_path))
+        except (sqlite3.Error, OSError) as _store_exc:
+            _RECALL_STORE_FAILED = True
+            log.warning(
+                "learnings_recall: échec ouverture db (échec définitif, outil unavailable) — %s",
+                _store_exc,
+            )
     _recall_provider: Callable[[dict], dict] | None = (
         _build_recall_provider(_recall_store, now) if _recall_store is not None else None
     )

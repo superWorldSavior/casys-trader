@@ -26,6 +26,7 @@ def embed_texts(
     base_url: str = "https://api.openai.com/v1",
     post_json: Callable[[str, dict, dict, int], dict] | None = None,
     batch_size: int = 512,
+    timeout_s: int = _DEFAULT_TIMEOUT_S,
 ) -> list[bytes]:
     """Encode une liste de textes via l'API OpenAI embeddings.
 
@@ -59,7 +60,7 @@ def embed_texts(
         payload = {"model": model, "input": batch}
 
         try:
-            response = post_json(url, payload, headers, _DEFAULT_TIMEOUT_S)
+            response = post_json(url, payload, headers, timeout_s)
         except Exception as exc:  # noqa: BLE001 — frontière fournisseur
             raise RuntimeError(
                 f"embed_texts: échec appel embeddings ({type(exc).__name__}: {exc})"
