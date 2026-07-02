@@ -1,7 +1,8 @@
 # Modular architecture and logging refactor
 
 **Date**: 2026-07-02
-**Status**: Approved direction. Implementation must be staged and behavior-preserving.
+**Status**: Implemented in staged slices on `refactor/modular-architecture-logging`.
+The implementation is behavior-preserving and keeps compatibility wrappers.
 
 ---
 
@@ -219,6 +220,14 @@ Responsibilities:
 This is the riskiest extraction and should happen only after recorder, planner,
 and market snapshot have created clear seams.
 
+Implementation note (2026-07-02): this branch extracted the pure admission
+helpers only (`invalid_intent_reason`, `clamp_exit_quantity`, hard-stop helpers,
+reverse quantity, risk metrics). The full decision-to-fill orchestration remains
+in `daemon.py` because it couples scheduler semantics, recorder callbacks,
+`RiskGate`, broker fills, model performance rows, and trade-plan mutations. This
+keeps the live side-effect order unchanged; a later extraction should introduce
+an explicit orchestration DTO/callback boundary first.
+
 ## 7. Agent Protocol Split
 
 `trader/codex_client.py` remains the public facade, but internals should move
@@ -357,7 +366,8 @@ Each tranche should end with:
 
 - `trader/daemon.py` remains the runtime entrypoint but no longer contains the
   bulk of decision recording, planner batching, market snapshot building, and
-  order admission logic.
+  pure order-admission helper logic. Full order-admission orchestration remains
+  in `daemon.py` for this tranche and is documented as the remaining seam.
 - Existing CLI commands and imports still work.
 - Existing state files keep their current schemas unless a later explicit
   migration document says otherwise.

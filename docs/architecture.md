@@ -3,7 +3,9 @@
 > Ce document décrit l'architecture technique du daemon de trading paper piloté par LLM.
 > **Généré par analyse statique du code — à re-vérifier si l'architecture évolue.**
 >
-> Refactor cible en cours de cadrage :
+> Refactor modulaire en place sur la branche
+> `refactor/modular-architecture-logging`.
+> La cible et les écarts assumés sont suivis dans
 > `docs/superpowers/specs/2026-07-02-modular-architecture-logging-refactor-design.md`.
 
 ---
@@ -26,6 +28,29 @@ Le code est le seul à calculer les indicateurs, évaluer les plans, appliquer l
 gates. Le LLM reçoit les faits calculés, raisonne, et retourne des artefacts
 structurés (décisions JSON, plans, veilles). `daemon.py:1–11`
 
+### 1.1 Carte modulaire actuelle
+
+`trader/daemon.py` reste l'entrypoint runtime et l'orchestrateur du cycle. Les
+responsabilités répétables ou testables ont été sorties vers des modules
+cohésifs, avec wrappers de compatibilité quand des tests ou imports historiques
+les utilisaient :
+
+| Zone | Rôle | Notes |
+|---|---|---|
+| `trader/application/planner_batch.py` | Batch LLM, budget modèle, tournée d'outils, REQUEST_CONTEXT | appelé via `daemon._batch_decide()` |
+| `trader/application/market_snapshot.py` | Barres runtime/daily/exit, fraîcheur, FX, eligibility, tradable maps | retourne `MarketSnapshot`, le daemon l'unpack |
+| `trader/application/decision_recorder.py` | Enrichissement décision, ledger, report, status, event, recall traces | source durable : `state/decisions.jsonl` |
+| `trader/application/order_admission.py` | Helpers purs d'admission : intent, clamp sortie, stop, risk metrics | l'orchestration RiskGate/broker reste dans `daemon.py` |
+| `trader/agent_protocol/` | Types, prompts, parsing du contrat LLM | `codex_client.py` reste la façade transport/compat |
+| `trader/agent_tools/` | Package des outils domaine lecture seule | `registry.TOOL_REGISTRY` assemble 9 handlers |
+| `trader/read_models/runtime_state.py` | Lecture tolérante des fichiers `state/` pour TUI/cockpit | ne participe pas aux décisions live |
+| `trader/ui/rich_panels.py` | Builders Rich purs | `trader.tui` reste CLI et façade d'import |
+| `trader/logging_setup.py` | Configuration logging projet | stdlib `logging`, RichHandler en TTY |
+
+Le choix volontaire est de ne pas créer encore `domain/`, `ports/` ou
+`adapters/` génériques tant que les slices runtime existants suffisent. Le
+monolithe reste modulaire, pas frameworkisé.
+
 ---
 
 ## 2. Diagramme ASCII — flux d'un cycle
@@ -34,16 +59,16 @@ structurés (décisions JSON, plans, veilles). `daemon.py:1–11`
 Scheduler (timer / indicator_watch trigger)
     │
     ▼
-run_cycle()                                     [daemon.py:1131]
+run_cycle()                                     [daemon.py]
     │
     ├─ Chargement config (universe.yaml, risk.yaml)
     ├─ Reload univers (rotation_daemon: compose_active_universe) ─── D9/D10
     │
-    ├─ Fetch barres marché (15m × 5j)           [daemon.py:1246]
-    │    └─ assess_freshness → stale? → backoff exponentiel
-    │
-    ├─ Fetch barres daily (1y) → cockpit daily
-    ├─ Fetch barres 5m (plans ouverts) → exit checks fins
+    ├─ market_snapshot.build_market_snapshot()
+    │    ├─ Fetch barres marché (15m × 5j)
+    │    ├─ assess_freshness → stale? → backoff exponentiel
+    │    ├─ Fetch barres daily (1y) → cockpit daily
+    │    └─ Fetch barres 5m (plans ouverts) → exit checks fins
     │
     ├─ _apply_planned_exits()  ──────────────────  chemin sortie AUTO
     │    └─ exit_engine.evaluate_plan(hard_stop|TP|trailing|max_hold|profit_protection)
@@ -60,18 +85,18 @@ run_cycle()                                     [daemon.py:1131]
     ├─ Plans armés (EXECUTE_ORDER) ─────────────  D7 étage B
     │    └─ resolve_exit_plan() sur vol fraîche → exécution SANS LLM
     │
-    ├─ _batch_decide() ─ 1 appel LLM pour tous les symboles dus
+    ├─ planner_batch.batch_decide() ─ 1 appel LLM pour tous les symboles dus
     │    └─ codex_client.decide_batch()
     │         ├─ AcpxBackend (acpx --format quiet exec)
     │         └─ round-trip optionnel REQUEST_CONTEXT (indicateurs à la demande)
     │
     └─ Pour chaque décision :
-         ├─ validate intent / exit_plan
+         ├─ order_admission helpers / exit_plan
          ├─ resolve_exit_plan() (direct OPEN_LONG/SHORT) ─── unification D11
          ├─ RiskGate.check_confidence() + RiskGate.check()
          ├─ SimBroker.submit() → fill
          ├─ create_trade_plan() → TradePlanStore
-         ├─ record_decision() → decisions.jsonl + model_performance.jsonl
+         ├─ DecisionRecorder.record() → decisions.jsonl + current_report/status
          └─ _apply_decision_schedule() → Scheduler (next_wake, indicator_watch)
 ```
 
@@ -92,13 +117,14 @@ L'univers actif est généré par la rotation (D9/D10) à chaque cycle :
 
 ### 3.2 Chargement des barres & fraîcheur
 
-Barres 15m / 5j (runtime décisionnel) + barres 1j / 1y (cockpit daily).
+`trader/application/market_snapshot.py` construit le snapshot du cycle :
+barres 15m / 5j (runtime décisionnel) + barres 1j / 1y (cockpit daily).
 `market.assess_freshness()` est le garde « marché live » : une dernière barre trop
-vieille (> 40 min par défaut, `daemon.py:86`) → `stale_market_data` → le symbole
+vieille (> 40 min par défaut) → `stale_market_data` → le symbole
 est exclu du tradable et reçoit un backoff exponentiel (`daemon.py:258`).
 
 Barres 5m (fenêtre 1j) fetched **uniquement** pour les symboles avec un plan ouvert,
-pour la détection fine intra-barre des stops/TP (`daemon.py:1069`).
+pour la détection fine intra-barre des stops/TP.
 
 ### 3.3 Construction du contexte partagé
 
@@ -140,10 +166,12 @@ Les `indicator_watch` à `on_trigger: EXECUTE_ORDER` portent un `order` complet
 
 Le scénario validé crée une `Decision` directement, sans appel LLM.
 
-### 3.6 Appel LLM batch — `_batch_decide()`
+### 3.6 Appel LLM batch — `planner_batch.batch_decide()`
 
 Un seul appel `codex_client.decide_batch()` pour tous les symboles dus & frais.
-`daemon.py:926`. Le contexte partagé est envoyé une fois (économie D7).
+`daemon._batch_decide()` est un wrapper de compatibilité vers
+`trader/application/planner_batch.py`. Le contexte partagé est envoyé une fois
+(économie D7).
 
 Round-trip `REQUEST_CONTEXT` optionnel : si le LLM demande des indicateurs
 supplémentaires (`ContextResearchRequest`), `resolve_indicator_requests()` les calcule
@@ -167,14 +195,22 @@ Pour chaque décision (`daemon.py:1786+`) :
 | RiskGate.check() | `risk:order_value_exceeded`, `risk:gross_exposure_exceeded`, etc. |
 
 `resolve_exit_plan()` est appliqué aux entrées directes `OPEN_LONG`/`OPEN_SHORT`
-(unification avec les armés, D11) : `daemon.py:1860`.
+(unification avec les armés, D11).
+
+Les helpers purs de cette admission vivent dans
+`trader/application/order_admission.py` : intent, hard-stop, clamp de sortie,
+quantité ouverte d'un reverse, et métriques de risque d'entrée. L'orchestration
+complète reste volontairement dans `daemon.py` pour préserver l'ordre exact des
+side effects : scheduling, recorder, `RiskGate`, broker, trade plans et
+performance model.
 
 ### 3.8 Exécution et persistance
 
 `SimBroker.submit()` → `Fill`. Post-fill :
 - `_append_model_performance()` → `state/model_performance.jsonl`
 - `create_trade_plan()` → `TradePlanStore` (`state/trade_plans.json`)
-- `decision_ledger_store.append()` → `state/decisions.jsonl`
+- `DecisionRecorder.record()` → `decision_ledger_store.append()` →
+  `state/decisions.jsonl`
 - `_apply_decision_schedule()` → Scheduler (next_wake, indicator_watch créée/annulée)
 - `_write_current_report()` → `state/current_report.json`
 
@@ -311,7 +347,7 @@ Opérateurs valides : `>`, `>=`, `<`, `<=`, `==`, `!=`, `abs>`, `abs>=`, `abs<`,
 
 | Fichier | Écrit par | Lu par | Contenu |
 |---|---|---|---|
-| `decisions.jsonl` | `record_decision()` | attribution, CLI, cockpit | Une ligne par décision (action, intent, qty, confidence, rationale, executed, reason…) |
+| `decisions.jsonl` | `DecisionRecorder` via `decision_ledger_store.append()` | attribution, CLI, cockpit | Une ligne par décision (action, intent, qty, confidence, rationale, executed, reason…) |
 | `model_performance.jsonl` | `_append_model_performance()` | `attribution.py` | Une ligne par fill (entrée + sortie) — base des round-trips |
 | `broker.json` | `SimBroker` | daemon (reload à chaque cycle) | Positions paper + historique fills |
 | `trade_plans.json` | `TradePlanStore` | exit_engine, daemon | Plans ouverts (hard_stop_price, TPs, trailing, watermarks…) |
@@ -362,9 +398,17 @@ l'appel, diff après, SIGKILL sur les PIDs nouveaux dont le `cwd` correspond au
 projet. Déclenché via `_run_one_shot_command.finally`. Cf post-incident
 `memory/casys-trader-acpx-bridge-pileup.md`.
 
-### 9.3 `codex_client` — parsing et schéma
+### 9.3 `codex_client` — façade transport, protocole séparé
 
-`codex_client.py` traduit la réponse texte du LLM en `Decision` (dataclass frozen).
+`codex_client.py` reste la façade transport et compatibilité. Les contrats et
+parseurs vivent désormais dans `trader/agent_protocol/` :
+
+- `types.py` : `Decision`, `IndicatorRequest`, `ContextResearchRequest`,
+  `BatchToolCallRequest` ;
+- `prompts.py` : contrats de sortie, vocabulaire watches/tools, builders ;
+- `parsing.py` : extraction JSON, parsing décision/batch/tool calls.
+
+La réponse texte du LLM est traduite en `Decision` (dataclass frozen).
 Fail-safe : toute erreur (timeout, JSON invalide, clé manquante) → `Decision.hold(sym, reason)`.
 Le LLM ne trade jamais sur une réponse douteuse.
 
@@ -378,6 +422,10 @@ La `Decision` inclut : `action`, `quantity`, `confidence`, `rationale`, `intent`
 Design : `docs/superpowers/specs/2026-06-29-agent-domain-tools-design.md`.
 Flag : `CASYS_AGENT_TOOLS_ENABLED=1` (actif ; visible au startup dans le log
 `[config] … agent_tools=True`).
+
+Le package `trader/agent_tools/` contient le core d'exécution bornée, les
+handlers par domaine et `registry.py`. `trader.agent_tools.__init__` réexporte la
+surface historique de l'ancien module `trader/agent_tools.py`.
 
 Le LLM reçoit UN prompt et peut répondre soit le contrat final, soit
 `{"tool_calls": [...]}` — UNE tournée max, puis décision finale obligatoire
@@ -399,6 +447,24 @@ par `tool_trace.summarize_tools` et `tool_usage` (section `domain_usage`).
 Outils d'ACTION (set_next_wake, propose_indicator_watch, cancel_watch,
 record_learning, puis propose_order) : Phases 4-5, non implémentées — notes de
 design en mémoire projet.
+
+## 10.1 Logging et dépendances du refactor
+
+Le refactor n'ajoute aucune dépendance dans `pyproject.toml` ou `uv.lock`.
+Le choix final reste donc :
+
+- `logging` standard library comme API de logging ;
+- `trader/logging_setup.py` comme point d'installation ;
+- `RichHandler` seulement en TTY, `StreamHandler` texte en non-TTY ;
+- `markup=False` pour éviter les balises Rich dans les logs machine ;
+- loggers `trader` et `casys-trader` avec `propagate=False` ;
+- bruit `ib_async` abaissé à `CRITICAL`.
+
+Les modules extraits utilisent `logging.getLogger(__name__)` pour les logs de
+frontière (`planner_batch`, `market_snapshot`, `decision_recorder`). Aucun
+`loguru`, `structlog`, `dependency-injector`, `pydantic` ou `attrs` n'a été ajouté :
+les `dataclasses`, callbacks explicites et wrappers de compatibilité suffisent
+pour cette tranche.
 
 ## 11. Mémoire outcome-weighted — recall des learnings (2026-07-02)
 
