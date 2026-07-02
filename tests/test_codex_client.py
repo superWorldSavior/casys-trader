@@ -3,6 +3,14 @@ from trader.codex_client import DEFAULT_MODEL, ContextResearchRequest, build_bat
 from trader.llm import LlmCompletion, LlmFailure
 
 
+def test_agent_protocol_modules_exposent_les_contrats_publics() -> None:
+    from trader.agent_protocol import parsing, prompts, types
+
+    assert types.Decision is codex_client.Decision
+    assert callable(prompts.build_batch_prompt)
+    assert callable(parsing.parse_batch)
+
+
 def test_decide_batch_renvoie_une_decision_par_symbole_avec_metadonnees() -> None:
     class StubRouter:
         def complete(self, prompt: str, *, timeout_s: int) -> LlmCompletion:
