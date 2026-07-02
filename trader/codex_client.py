@@ -496,7 +496,9 @@ _TOOL_CATALOG = (
     "- get_indicator_context{symbol,indicators:[…],timeframe?,lookback?,window?,as_of?} : cube indicateurs borné\n"
     "- recall_learnings{symbol?|family?|query?, limit?} : mémoire vérifiée — notes passées pondérées par leurs résultats réels\n"
     "Après la tournée tu recevras `tool_results` par symbole et tu DEVRAS rendre le contrat final\n"
-    "(toute nouvelle tournée sera bloquée en HOLD).\n\n"
+    "(toute nouvelle tournée sera bloquée en HOLD).\n"
+    "NB : get_indicator_context est la voie moderne de REQUEST_CONTEXT (les deux marchent) —\n"
+    "préfère la tournée d'outils, qui te donne AUSSI plans/risque/attribution/mémoire en un tour.\n\n"
 )
 
 
