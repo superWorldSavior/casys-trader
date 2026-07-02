@@ -74,6 +74,7 @@ class ToolContext:
     position_risk_provider: Callable[[str], dict | None] | None = None
     recent_decisions_provider: Callable[[str | None, int], list[dict]] | None = None
     indicator_resolver: Callable[[list], dict] | None = None
+    learnings_recall_provider: Callable[[dict], dict] | None = None
 
 
 @dataclass(frozen=True)
@@ -562,3 +563,45 @@ TOOL_REGISTRY["describe_data"] = ToolSpec(
     name="describe_data", validate_args=lambda a: None, handler=_handle_describe_data)
 TOOL_REGISTRY["find_indicators"] = ToolSpec(
     name="find_indicators", validate_args=_validate_find_indicators, handler=_handle_find_indicators)
+
+
+# ---------------------------------------------------------------------------
+# Task 5 (plan 2026-07-02) : recall_learnings — mémoire outcome-weighted
+# ---------------------------------------------------------------------------
+
+_MAX_RECALL_ROWS = 8
+
+
+def _validate_recall_learnings(args: dict) -> str | None:
+    """Au moins un de symbol/family/query requis ; limit optionnel ≤ 8."""
+    has_symbol = isinstance(args.get("symbol"), str) and bool(args["symbol"])
+    has_family = isinstance(args.get("family"), str) and bool(args["family"])
+    has_query = isinstance(args.get("query"), str) and bool(args["query"])
+    if not (has_symbol or has_family or has_query):
+        return "au moins un de symbol, family, query requis"
+    limit = args.get("limit")
+    if limit is not None and (not isinstance(limit, int) or limit < 1):
+        return "limit: entier >= 1 ou absent"
+    return None
+
+
+def _handle_recall_learnings(call: AgentToolCall, context: ToolContext) -> dict:
+    """Délègue au provider injecté ; re-tronque rows à 8 par défense."""
+    sym = call.args.get("symbol")
+    if sym is not None and sym not in context.allowed_symbols:
+        return {"symbol": sym, "error": "symbol_not_allowed"}
+    if context.learnings_recall_provider is None:
+        return {"error": "unavailable"}
+    payload = context.learnings_recall_provider(call.args)
+    # Borne défensive : le provider est responsable des bornes, mais le handler
+    # garantit que rows ≤ 8 même si le provider déborde (invariant design §4).
+    if isinstance(payload.get("rows"), list) and len(payload["rows"]) > _MAX_RECALL_ROWS:
+        payload = {**payload, "rows": payload["rows"][:_MAX_RECALL_ROWS]}
+    return payload
+
+
+TOOL_REGISTRY["recall_learnings"] = ToolSpec(
+    name="recall_learnings",
+    validate_args=_validate_recall_learnings,
+    handler=_handle_recall_learnings,
+)

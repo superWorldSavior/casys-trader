@@ -494,6 +494,7 @@ _TOOL_CATALOG = (
     "- describe_data{} : cube sémantique (timeframes/lookbacks valides, windows, indicateurs)\n"
     "- find_indicators{concept} : cherche des indicateurs par concept (momentum, volatilité, …)\n"
     "- get_indicator_context{symbol,indicators:[…],timeframe?,lookback?,window?,as_of?} : cube indicateurs borné\n"
+    "- recall_learnings{symbol?|family?|query?, limit?} : mémoire vérifiée — notes passées pondérées par leurs résultats réels\n"
     "Après la tournée tu recevras `tool_results` par symbole et tu DEVRAS rendre le contrat final\n"
     "(toute nouvelle tournée sera bloquée en HOLD).\n\n"
 )

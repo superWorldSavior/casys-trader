@@ -500,3 +500,76 @@ def test_scrub_borne_aussi_les_cles_de_dict():
     )
     assert isinstance(call, AgentToolCall)
     assert all(len(k) <= 257 for k in call.args)  # 256 + ellipse
+
+
+# ---------------------------------------------------------------------------
+# Task 5 (plan) : recall_learnings — mémoire outcome-weighted
+# ---------------------------------------------------------------------------
+
+
+def _recall_context(
+    provider=None, symbols: frozenset | None = None
+) -> ToolContext:
+    if symbols is None:
+        symbols = frozenset({"2330.TW"})
+    return ToolContext(
+        now=datetime(2026, 7, 2, 10, 0, tzinfo=UTC),
+        allowed_symbols=symbols,
+        learnings_recall_provider=provider,
+    )
+
+
+def test_recall_learnings_provider_stub_rend_les_rows():
+    def _provider(args):
+        return {"rows": [{"id": 1, "symbol": args.get("symbol"), "note": "bon timing"}]}
+
+    result, trace = agent_tools.execute_tool_call(
+        AgentToolCall(id="c1", tool="recall_learnings", args={"symbol": "2330.TW"}),
+        _recall_context(provider=_provider),
+    )
+    assert trace.outcome == "ok"
+    assert result.result["rows"][0]["note"] == "bon timing"
+
+
+def test_recall_learnings_symbole_hors_allowlist():
+    def _provider(args):
+        return {"rows": []}
+
+    result, _ = agent_tools.execute_tool_call(
+        AgentToolCall(id="c1", tool="recall_learnings", args={"symbol": "EVIL"}),
+        _recall_context(provider=_provider),
+    )
+    assert result.ok is True
+    assert result.result == {"symbol": "EVIL", "error": "symbol_not_allowed"}
+
+
+def test_recall_learnings_provider_absent():
+    result, _ = agent_tools.execute_tool_call(
+        AgentToolCall(id="c1", tool="recall_learnings", args={"query": "momentum"}),
+        _recall_context(provider=None),
+    )
+    assert result.ok is True
+    assert result.result == {"error": "unavailable"}
+
+
+def test_recall_learnings_validation_au_moins_un_critere():
+    """Aucun des trois critères (symbol, family, query) → args invalides."""
+    trace = validate_tool_call(
+        {"id": "c1", "tool": "recall_learnings", "args": {}},
+        allowed_tools=frozenset({"recall_learnings"}),
+    )
+    assert isinstance(trace, AgentToolTrace)
+    assert trace.detail["reason"] == "invalid_args"
+
+
+def test_recall_learnings_limite_bornee_a_8():
+    """Provider qui renvoie 10 rows → handler re-tronque à 8 par défense."""
+    def _provider(args):
+        return {"rows": [{"id": i} for i in range(10)]}
+
+    result, _ = agent_tools.execute_tool_call(
+        AgentToolCall(id="c1", tool="recall_learnings", args={"query": "momentum", "limit": 10}),
+        _recall_context(provider=_provider),
+    )
+    assert result.ok is True
+    assert len(result.result["rows"]) == 8

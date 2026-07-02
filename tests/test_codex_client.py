@@ -487,6 +487,7 @@ def test_catalogue_prompt_expose_les_outils_semantiques():
         allow_context_request=True, allow_tool_calls=True)
     assert "describe_data" in prompt
     assert "find_indicators" in prompt
+    assert "recall_learnings" in prompt
 
 
 # ---------------------------------------------------------------------------
