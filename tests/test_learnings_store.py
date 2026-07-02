@@ -287,3 +287,245 @@ def test_ingest_source_externe_prioritaire(tmp_path: Path) -> None:
     row = conn.execute("SELECT source FROM notes LIMIT 1").fetchone()
     conn.close()
     assert row[0] == "ledger-backfill"
+
+
+# ---------------------------------------------------------------------------
+# Task 3 : apply_verdicts + compute_outcome_scores
+# ---------------------------------------------------------------------------
+
+import pytest  # noqa: E402 (import en bas de fichier, acceptable dans les tests)
+
+# Fixtures pour le scoring : SYM_A (4W/1L), SYM_B (1W/4L), SYM_C (1W + 1N)
+_SCORING_ROWS_A = [
+    {
+        "ts": f"2026-06-10T0{i}:00:00+00:00",
+        "symbol": "SYM_A",
+        "note": f"Note SYM_A {i}",
+        "action": "BUY",
+        "intent": "BUY",
+        "executed": True,
+        "reason": "test",
+        "decision_id": f"did-A-{i}",
+    }
+    for i in range(5)
+]
+
+_SCORING_ROWS_B = [
+    {
+        "ts": f"2026-06-11T0{i}:00:00+00:00",
+        "symbol": "SYM_B",
+        "note": f"Note SYM_B {i}",
+        "action": "BUY",
+        "intent": "BUY",
+        "executed": True,
+        "reason": "test",
+        "decision_id": f"did-B-{i}",
+    }
+    for i in range(5)
+]
+
+_SCORING_ROWS_C = [
+    {
+        "ts": "2026-06-12T01:00:00+00:00",
+        "symbol": "SYM_C",
+        "note": "Note SYM_C WIN",
+        "action": "BUY",
+        "intent": "BUY",
+        "executed": True,
+        "reason": "test",
+        "decision_id": "did-C-0",
+    },
+    {
+        "ts": "2026-06-12T02:00:00+00:00",
+        "symbol": "SYM_C",
+        "note": "Note SYM_C NEUTRAL",
+        "action": "HOLD",
+        "intent": "HOLD",
+        "executed": False,
+        "reason": "test",
+        "decision_id": "did-C-1",
+    },
+]
+
+
+def _make_bootstrap_json(path: Path, verdicts: dict) -> None:
+    """Crée un fichier bootstrap JSON (format learnings_outcome_bootstrap) avec les verdicts donnés."""
+    learnings = [
+        {"decision_id": did, **fields}
+        for did, fields in verdicts.items()
+    ]
+    report = {
+        "generated_at": "2026-07-02T00:00:00+00:00",
+        "params": {},
+        "counts": {},
+        "unavailable_symbols": [],
+        "aggregates": {},
+        "learnings": learnings,
+    }
+    path.write_text(json.dumps(report), encoding="utf-8")
+
+
+def _setup_scoring_store(tmp_path: Path) -> "LearningsStore":
+    """Crée un store peuplé avec SYM_A (4W/1L), SYM_B (1W/4L), SYM_C (1W+1N)."""
+    all_rows = _SCORING_ROWS_A + _SCORING_ROWS_B + _SCORING_ROWS_C
+    jsonl = tmp_path / "scoring.jsonl"
+    _write_jsonl(jsonl, all_rows)
+
+    store = LearningsStore(tmp_path / "learnings.db")
+    store.ingest_jsonl(jsonl, source="test")
+
+    # Verdicts : SYM_A 4W/1L, SYM_B 1W/4L, SYM_C 1W+1N
+    verdicts: dict[str, dict] = {}
+    for i in range(4):
+        verdicts[f"did-A-{i}"] = {"verdict": "WIN", "forward_return": 0.03}
+    verdicts["did-A-4"] = {"verdict": "LOSS", "forward_return": -0.04}
+    verdicts["did-B-0"] = {"verdict": "WIN", "forward_return": 0.05}
+    for i in range(1, 5):
+        verdicts[f"did-B-{i}"] = {"verdict": "LOSS", "forward_return": -0.02}
+    verdicts["did-C-0"] = {"verdict": "WIN", "forward_return": 0.02}
+    verdicts["did-C-1"] = {"verdict": "NEUTRAL", "forward_return": 0.0}
+
+    bootstrap = tmp_path / "bootstrap.json"
+    _make_bootstrap_json(bootstrap, verdicts)
+    store.apply_verdicts(bootstrap)
+    return store
+
+
+# --- apply_verdicts ---
+
+def test_apply_verdicts_met_a_jour_verdict_et_forward_return(tmp_path: Path) -> None:
+    """apply_verdicts met à jour verdict + forward_return et retourne le nombre de notes mises à jour."""
+    jsonl = tmp_path / "test.jsonl"
+    _write_jsonl(jsonl, _ROWS)
+    store = LearningsStore(tmp_path / "learnings.db")
+    store.ingest_jsonl(jsonl, source="test")
+
+    did0 = _ROWS[0]["decision_id"]
+    did2 = _ROWS[2]["decision_id"]
+    bootstrap = tmp_path / "bootstrap.json"
+    _make_bootstrap_json(bootstrap, {
+        did0: {"verdict": "WIN", "forward_return": 0.05},
+        did2: {"verdict": "LOSS", "forward_return": -0.03},
+    })
+
+    n = store.apply_verdicts(bootstrap)
+    assert n == 2
+
+    conn = sqlite3.connect(str(tmp_path / "learnings.db"))
+    r0 = conn.execute(
+        "SELECT verdict, forward_return FROM notes WHERE decision_id=?", (did0,)
+    ).fetchone()
+    r2 = conn.execute(
+        "SELECT verdict, forward_return FROM notes WHERE decision_id=?", (did2,)
+    ).fetchone()
+    conn.close()
+
+    assert r0[0] == "WIN"
+    assert r0[1] == pytest.approx(0.05)
+    assert r2[0] == "LOSS"
+    assert r2[1] == pytest.approx(-0.03)
+
+
+def test_apply_verdicts_fichier_absent_retourne_zero(tmp_path: Path) -> None:
+    """apply_verdicts sur fichier inexistant retourne 0 sans lever d'exception."""
+    store = LearningsStore(tmp_path / "learnings.db")
+    n = store.apply_verdicts(tmp_path / "absent.json")
+    assert n == 0
+
+
+# --- compute_outcome_scores ---
+
+def test_compute_outcome_scores_lift_signe_correct(tmp_path: Path) -> None:
+    """Lift signé correct pour les deux côtés (A haute base_rate, B basse base_rate)."""
+    store = _setup_scoring_store(tmp_path)
+    result = store.compute_outcome_scores()
+
+    assert "scored" in result
+    assert "base_rates" in result
+    assert result["scored"] > 0
+
+    conn = sqlite3.connect(str(tmp_path / "learnings.db"))
+    a_wins = [r[0] for r in conn.execute(
+        "SELECT outcome_score FROM notes WHERE symbol='SYM_A' AND verdict='WIN'"
+    ).fetchall()]
+    a_loss_score = conn.execute(
+        "SELECT outcome_score FROM notes WHERE symbol='SYM_A' AND verdict='LOSS'"
+    ).fetchone()[0]
+    b_win_score = conn.execute(
+        "SELECT outcome_score FROM notes WHERE symbol='SYM_B' AND verdict='WIN'"
+    ).fetchone()[0]
+    b_losses = [r[0] for r in conn.execute(
+        "SELECT outcome_score FROM notes WHERE symbol='SYM_B' AND verdict='LOSS'"
+    ).fetchall()]
+    conn.close()
+
+    # SYM_A base_rate=0.8 : WIN doit avoir score > 0 (lift faible), LOSS score < 0 (lift fort)
+    for s in a_wins:
+        assert s > 0, f"WIN SYM_A (base_rate=0.8) doit avoir score > 0, got {s}"
+    assert a_loss_score < 0, f"LOSS SYM_A (base_rate=0.8) doit avoir score < 0, got {a_loss_score}"
+
+    # SYM_B base_rate=0.2 : WIN doit avoir score > 0 (lift fort), LOSS score < 0 (lift faible)
+    assert b_win_score > 0, f"WIN SYM_B (base_rate=0.2) doit avoir score > 0, got {b_win_score}"
+    for s in b_losses:
+        assert s < 0, f"LOSS SYM_B (base_rate=0.2) doit avoir score < 0, got {s}"
+
+    # WIN B (basse base_rate) > WIN A (haute base_rate) : lift plus grand
+    assert b_win_score > a_wins[0]
+    # LOSS A (haute base_rate) < LOSS B (basse base_rate) : lift plus négatif
+    assert a_loss_score < b_losses[0]
+
+
+def test_compute_outcome_scores_shrinkage_formule(tmp_path: Path) -> None:
+    """|score| = |lift| / (1 + k) pour n=1, k=5 → divisé par 6."""
+    store = _setup_scoring_store(tmp_path)
+    store.compute_outcome_scores(shrinkage_k=5.0)
+
+    conn = sqlite3.connect(str(tmp_path / "learnings.db"))
+    a_loss_score = conn.execute(
+        "SELECT outcome_score FROM notes WHERE symbol='SYM_A' AND verdict='LOSS'"
+    ).fetchone()[0]
+    b_win_score = conn.execute(
+        "SELECT outcome_score FROM notes WHERE symbol='SYM_B' AND verdict='WIN'"
+    ).fetchone()[0]
+    conn.close()
+
+    # SYM_A base_rate=0.8 ; LOSS → lift = 0.0 - 0.8 = -0.8 ; score = -0.8/6
+    assert a_loss_score == pytest.approx(-0.8 / 6.0, abs=1e-9)
+    # SYM_B base_rate=0.2 ; WIN → lift = 1.0 - 0.2 = 0.8 ; score = 0.8/6
+    assert b_win_score == pytest.approx(0.8 / 6.0, abs=1e-9)
+
+
+def test_compute_outcome_scores_neutral_zero(tmp_path: Path) -> None:
+    """Notes NEUTRAL → outcome_score = 0.0."""
+    store = _setup_scoring_store(tmp_path)
+    store.compute_outcome_scores()
+
+    conn = sqlite3.connect(str(tmp_path / "learnings.db"))
+    neutral_scores = [r[0] for r in conn.execute(
+        "SELECT outcome_score FROM notes WHERE verdict='NEUTRAL'"
+    ).fetchall()]
+    conn.close()
+
+    assert neutral_scores, "Il doit exister au moins une note NEUTRAL dans la fixture"
+    for s in neutral_scores:
+        assert s == pytest.approx(0.0), f"NEUTRAL doit avoir outcome_score=0.0, got {s}"
+
+
+def test_compute_outcome_scores_fallback_global(tmp_path: Path) -> None:
+    """SYM_C (<5 scorables WIN/LOSS) utilise la base_rate globale."""
+    store = _setup_scoring_store(tmp_path)
+    store.compute_outcome_scores(shrinkage_k=5.0)
+
+    # Global : SYM_A(4W+1L) + SYM_B(1W+4L) + SYM_C(1W) = 6W / 11 scorables
+    global_wins = 4 + 1 + 1
+    global_losses = 1 + 4
+    global_base_rate = global_wins / (global_wins + global_losses)
+    expected_c_win = (1.0 - global_base_rate) / 6.0
+
+    conn = sqlite3.connect(str(tmp_path / "learnings.db"))
+    c_win_score = conn.execute(
+        "SELECT outcome_score FROM notes WHERE symbol='SYM_C' AND verdict='WIN'"
+    ).fetchone()[0]
+    conn.close()
+
+    assert c_win_score == pytest.approx(expected_c_win, abs=1e-9)

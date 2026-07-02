@@ -1,9 +1,10 @@
-"""Store SQLite des learnings de trading — schéma + ingestion idempotente.
+"""Store SQLite des learnings de trading — schéma + ingestion + scoring FLAIR.
 
-Implémente le design 2026-07-02-learnings-recall-design.md §4.1 :
+Implémente le design 2026-07-02-learnings-recall-design.md §4.1 et §4.2 :
 - Table `notes` : colonnes complètes incluant scoring FLAIR et embeddings.
 - Index FTS5 `notes_fts` (content table, maintenu par triggers).
 - Table `recalls` : trace des notes servies par décision (phase ②).
+- Scoring FLAIR : lift normalisé par symbole + shrinkage bayésien vers 0.
 
 Le .db est un DÉRIVÉ reconstructible — les JSONL d'archives restent canoniques.
 """
@@ -11,6 +12,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from collections import defaultdict
 from pathlib import Path
 
 from trader.semantic.catalog import family_for_symbol
@@ -220,3 +222,139 @@ class LearningsStore:
 
         self._conn.commit()
         return {"inserted": inserted, "skipped": skipped}
+
+    # ------------------------------------------------------------------
+    # Scoring FLAIR
+    # ------------------------------------------------------------------
+
+    def apply_verdicts(self, bootstrap_json: "str | Path") -> int:
+        """Met à jour verdict et forward_return à partir du fichier de bootstrap FLAIR.
+
+        Format attendu : fichier JSON produit par scripts/learnings_outcome_bootstrap.py,
+        avec une clé ``"learnings"`` contenant une liste d'objets ayant au moins
+        ``decision_id``, ``verdict``, et ``forward_return``.
+
+        Retourne le nombre de notes effectivement mises à jour (rowcount > 0).
+        """
+        bootstrap_json = Path(bootstrap_json)
+        if not bootstrap_json.exists():
+            return 0
+
+        data = json.loads(bootstrap_json.read_text(encoding="utf-8"))
+        learnings = data.get("learnings", [])
+
+        updated = 0
+        for item in learnings:
+            decision_id = item.get("decision_id")
+            if not decision_id:
+                continue
+            cursor = self._conn.execute(
+                """
+                UPDATE notes
+                   SET verdict        = :verdict,
+                       forward_return = :forward_return
+                 WHERE decision_id = :decision_id
+                """,
+                {
+                    "decision_id": str(decision_id),
+                    "verdict": item.get("verdict"),
+                    "forward_return": item.get("forward_return"),
+                },
+            )
+            if cursor.rowcount > 0:
+                updated += 1
+
+        self._conn.commit()
+        return updated
+
+    def compute_outcome_scores(self, *, shrinkage_k: float = 5.0) -> dict:
+        """Calcule et persiste les outcome_scores FLAIR pour toutes les notes scorées.
+
+        Algorithme (design §4.2, V1 n=1 par note) :
+
+        - ``base_rate(sym)`` = wins / (wins + losses) des notes WIN/LOSS du symbole
+          (≥ 5 scorables WIN/LOSS requis ; sinon fallback base_rate famille ; sinon globale).
+        - ``lift(note)`` = (1.0 si WIN, sinon 0.0) − base_rate  [notes WIN/LOSS seulement]
+        - ``outcome_score`` = lift / (1 + shrinkage_k)  [n=1 en V1, shrinkage vers 0]
+        - NEUTRAL / UNKNOWN → ``outcome_score = 0.0``
+
+        Retourne ``{"scored": n, "base_rates": {sym: rate, ...}}``.
+        """
+        # Charger toutes les notes avec un verdict posé
+        rows = self._conn.execute(
+            "SELECT id, symbol, family, verdict FROM notes WHERE verdict IS NOT NULL"
+        ).fetchall()
+
+        if not rows:
+            return {"scored": 0, "base_rates": {}}
+
+        # Compter wins/losses par symbole et par famille (pour les fallbacks)
+        wins_by_sym: dict[str, int] = defaultdict(int)
+        losses_by_sym: dict[str, int] = defaultdict(int)
+        wins_by_family: dict[str, int] = defaultdict(int)
+        losses_by_family: dict[str, int] = defaultdict(int)
+        global_wins = 0
+        global_losses = 0
+
+        for row in rows:
+            verdict = row["verdict"]
+            if verdict not in ("WIN", "LOSS"):
+                continue
+            sym = row["symbol"] or ""
+            fam = row["family"] or ""
+            if verdict == "WIN":
+                wins_by_sym[sym] += 1
+                global_wins += 1
+                if fam:
+                    wins_by_family[fam] += 1
+            else:  # LOSS
+                losses_by_sym[sym] += 1
+                global_losses += 1
+                if fam:
+                    losses_by_family[fam] += 1
+
+        # Base rate globale (fallback ultime)
+        global_total = global_wins + global_losses
+        global_base_rate = global_wins / global_total if global_total > 0 else 0.5
+
+        def _base_rate(sym: str, fam: str) -> float:
+            """Retourne la base_rate du symbole, avec fallbacks famille puis global."""
+            sym_total = wins_by_sym[sym] + losses_by_sym[sym]
+            if sym_total >= 5:
+                return wins_by_sym[sym] / sym_total
+            # Fallback famille
+            if fam:
+                fam_total = wins_by_family.get(fam, 0) + losses_by_family.get(fam, 0)
+                if fam_total >= 5:
+                    return wins_by_family[fam] / fam_total
+            # Fallback global
+            return global_base_rate
+
+        # Calculer et persister outcome_score pour chaque note
+        scored = 0
+        base_rates: dict[str, float] = {}
+
+        for row in rows:
+            note_id = row["id"]
+            verdict = row["verdict"]
+            sym = row["symbol"] or ""
+            fam = row["family"] or ""
+
+            if verdict in ("WIN", "LOSS"):
+                br = _base_rate(sym, fam)
+                base_rates[sym] = br
+                win_indicator = 1.0 if verdict == "WIN" else 0.0
+                lift = win_indicator - br
+                outcome_score = lift / (1.0 + shrinkage_k)
+            else:
+                # NEUTRAL ou UNKNOWN : neutre au ranking
+                outcome_score = 0.0
+
+            self._conn.execute(
+                "UPDATE notes SET outcome_score = :score WHERE id = :id",
+                {"score": outcome_score, "id": note_id},
+            )
+            scored += 1
+
+        self._conn.commit()
+        return {"scored": scored, "base_rates": base_rates}
