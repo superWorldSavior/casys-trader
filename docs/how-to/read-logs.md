@@ -1,0 +1,59 @@
+# How-to — Lire les logs du daemon
+
+> **Type** : How-to (Diátaxis).
+> **Fichiers** : `state/daemon_console.log` (texte, niveaux) · `state/events.jsonl` (events structurés)
+
+## Vue rapide dans le terminal
+
+```bash
+tail -f state/daemon_console.log        # brut
+make logs                               # Gonzo (TUI), daemon supposé lancé
+```
+
+`make logs` = `gonzo -f state/daemon_console.log --follow`. Dans Gonzo :
+- `/` → filtre **regex** · `Ctrl+f` → filtre **sévérité** (ERROR/WARN/INFO/DEBUG)
+- `s` → recherche · `d` → ouvre **Dstl8.Lite** (dashboard web local `http://localhost:5718`,
+  heatmaps de sévérité, recherche — 100 % local, sans compte).
+
+Skin Gonzo config : `~/.config/gonzo/config.yml` (`skin: gruvbox` = sombre lisible).
+
+> **Historique vs live** : Gonzo (et le cockpit) chargent tout le fichier → tu vois
+> le **scrollback** (vieux logs) en plus du live. Après un changement de niveau,
+> les vieilles lignes restent visibles plus haut. Pour repartir propre : archiver
+> le log (cf. [run-the-daemon](run-the-daemon.md#relancer)).
+
+## Niveaux de log — `CASYS_LOG_LEVEL`
+
+Défaut **INFO**. La console montre le **signal** : cycles, batchs, décisions de
+**trade** (les HOLD sont en DEBUG), gestion de veilles (arm/cancel/expiration),
+résumé `[market]`. Le bruit fetch par-symbole (`source_skipped`/`source_fallback`
+stale) est en DEBUG.
+
+```bash
+# ressortir tout le détail (fetch par-symbole, HOLD détaillés) pour débugger data :
+CASYS_LOG_LEVEL=DEBUG   # dans .env, puis relancer le daemon
+```
+
+`CASYS_LOG_LEVEL=DEBUG` active tout le DEBUG de `trader.*` (pas les libs tierces —
+`ib_async` est musclé à CRITICAL, cf. `runtime/logging_setup`).
+
+## Ce que tu dois voir à l'INFO (repères)
+
+| Ligne | Sens |
+|---|---|
+| `[config] decision_batch_parallelism=… ` | config au démarrage (vérifiable) |
+| `[cycle] start/completed decisions=N executed=N` | bornes de cycle |
+| `[market] loaded ok=N / stale symbols=[…]` | chargement marché (résumé) |
+| `[batch] deciding/decided model_calls=N` | appels LLM du batch |
+| `[decision …] SYM result action=BUY/SELL …` | **trade** (HOLD → DEBUG) |
+| `[watch] armée / annulée / expirée SYM …` | gestion de veilles (visible même en HOLD) |
+| `[armed_plan] … réveil planificateur` | plan armé annulé par un garde-fou |
+
+## Events structurés (`events.jsonl`)
+
+Machine-readable, non affecté par `CASYS_LOG_LEVEL`. Lu par le cockpit. Events
+notables : `armed_plan_resolved/cancelled/expired`, `indicator_watch_triggered`,
+`watch_cancelled_by_agent`, `context_resolved`, `cycle_started/completed`.
+
+## Voir aussi
+- [Lancer le daemon](run-the-daemon.md) · Architecture §10.1 (logging).

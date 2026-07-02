@@ -16,7 +16,7 @@ documenté, où, et quels trous restent).
 |---|---|---|---|
 | **Reference** | `docs/reference/` | Ce que fait chaque sous-système **aujourd'hui** : comportement, invariants, garde-fous, codes | « comment ça marche *maintenant* ? » |
 | **Explanation** | `docs/architecture.md` | Le cycle de bout en bout, le pourquoi | « pourquoi comme ça ? » |
-| **How-to** | `docs/how-to/` *(à remplir)* | Runbooks : déployer, relancer, mesurer, lire les logs | « comment je fais X ? » |
+| **How-to** | `docs/how-to/` | Runbooks : déployer, relancer, mesurer, lire les logs | « comment je fais X ? » |
 | **Décisions (ADR)** | `docs/decisions/registre-decisions-metier.md` | Journal D1-D12, datées, immuables | « quelle décision, pourquoi ? » |
 | **Postmortems** | `docs/postmortems/` | Incidents + fix | « qu'est-ce qui a cassé ? » |
 | **Specs / plans** | `docs/specs/`, `docs/superpowers/` | Intention de conception au moment T | « comment on l'a conçu ? » |
@@ -27,6 +27,7 @@ Les **trous** ci-dessous obtiennent une page `reference/` dédiée ; les runbook
 `how-to/` (quadrant entier absent) sont à créer.
 
 Pages `reference/` écrites : [`risk-gate.md`](reference/risk-gate.md), [`fx.md`](reference/fx.md).
+Pages `how-to/` écrites : [`run-the-daemon`](how-to/run-the-daemon.md), [`read-logs`](how-to/read-logs.md), [`measure-and-replay`](how-to/measure-and-replay.md).
 
 ---
 
@@ -92,10 +93,9 @@ Légende : ✅ couvert · 🟡 partiel / dispersé / potentiellement périmé ·
 ### How-to / runbooks
 | Runbook | Réf | Où |
 |---|---|---|
-| Déployer / relancer le daemon (superviseur, SIGINT hors-batch) | ❌ | — |
-| Lire les logs (Gonzo `make logs`, `CASYS_LOG_LEVEL=DEBUG`) | ❌ | — |
-| Mesurer le cœur swing (`scripts/measure_d7.py`) | ❌ | — |
-| Rejouer des plans (`backtest/plan_replay.py`) | ❌ | — |
+| Déployer / relancer / arrêter le daemon (superviseur, SIGINT hors-batch) | ✅ | `how-to/run-the-daemon.md` |
+| Lire les logs (Gonzo `make logs`, `CASYS_LOG_LEVEL=DEBUG`, Dstl8.Lite) | ✅ | `how-to/read-logs.md` |
+| Mesurer (`measure_d7.py`) & rejouer des plans (`plan_replay`) | ✅ | `how-to/measure-and-replay.md` |
 
 ---
 
@@ -105,8 +105,8 @@ Du plus risqué au moins risqué :
 
 1. ~~**Risk gate — réf unique**~~ ✅ **fait** → [`reference/risk-gate.md`](reference/risk-gate.md).
 2. ~~**Conversion FX**~~ ✅ **fait** → [`reference/fx.md`](reference/fx.md).
-3. **Runbooks how-to** ❌. Quadrant entier absent — déploiement, logs, mesure, replay. Faible risque, gros gain de friction. **← prochain**
-4. **Cockpit & attribution** 🟡. Specs chronologiques, pas de « ce qu'affiche/mesure le cockpit aujourd'hui ».
+3. ~~**Runbooks how-to**~~ ✅ **fait** → `how-to/` (run-the-daemon, read-logs, measure-and-replay).
+4. **Cockpit & attribution** 🟡. Specs chronologiques, pas de « ce qu'affiche/mesure le cockpit aujourd'hui ». **← prochain**
 5. **Config univers/portefeuille** ❌. Les `.yaml` pilotent le comportement sans page qui les décrit.
 
 On remplit dans cet ordre, une page à la fois.
