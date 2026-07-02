@@ -502,3 +502,10 @@ def test_parse_batch_tool_calls_sans_decisions_devient_tool_loop_blocked() -> No
     assert result["SPY"].rationale == "tool_loop_blocked"
     assert result["QQQ"].action == "HOLD"
     assert result["QQQ"].rationale == "tool_loop_blocked"
+
+
+def test_decisions_malforme_avec_tool_calls_reste_batch_bad_output():
+    """`decisions` présent mais malformé ne doit PAS être masqué en tool_loop_blocked (re-review Codex)."""
+    raw = '{"decisions": "bad", "tool_calls": [{"id": "c1", "tool": "t", "args": {}}]}'
+    out = codex_client.parse_batch(raw, ["2330.TW"], allow_context_request=False)
+    assert out["2330.TW"].rationale == "batch_bad_output"

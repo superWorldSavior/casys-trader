@@ -487,3 +487,15 @@ def test_get_attribution_scope_symbol_hors_allowlist():
     )
     assert result.ok is True
     assert result.result == {"symbol": "EVIL", "error": "symbol_not_allowed"}
+
+
+def test_scrub_borne_aussi_les_cles_de_dict():
+    """Une clé d'args de 10k chars ne doit pas traverser vers le ledger (re-review Codex)."""
+    giant_key = "K" * 10_000
+    call = validate_tool_call(
+        {"id": "c1", "tool": "echo", "args": {"text": "ok", giant_key: "v"}},
+        allowed_tools=frozenset({"echo"}),
+        registry=_registry_with_echo(),
+    )
+    assert isinstance(call, AgentToolCall)
+    assert all(len(k) <= 257 for k in call.args)  # 256 + ellipse

@@ -102,7 +102,8 @@ def _scrub_args(args: dict[str, Any]) -> dict[str, Any]:
             return _scrub_str(obj)
         if isinstance(obj, dict):
             items = list(obj.items())[:_SCRUB_DICT_KEYS]
-            out: dict[str, Any] = {str(k): _rec(v, depth + 1) for k, v in items}
+            # Les clés font partie du JSON persisté : bornées comme les valeurs.
+            out: dict[str, Any] = {_scrub_str(str(k)): _rec(v, depth + 1) for k, v in items}
             if len(obj) > _SCRUB_DICT_KEYS:
                 out["…"] = f"(+{len(obj) - _SCRUB_DICT_KEYS} clés)"
             return out
