@@ -10,7 +10,8 @@ la donnée live).
 
 ## Ce qu'il affiche
 
-Panneaux (builders purs dans `ui/rich_panels.py`) :
+Le **Status** est un widget Textual `CockpitStatus` (`cockpit/app.py`) ; les autres
+panneaux sont des **builders purs** dans `ui/rich_panels.py` :
 
 | Panneau | Contenu |
 |---|---|
@@ -22,8 +23,10 @@ Panneaux (builders purs dans `ui/rich_panels.py`) :
 | Courbe d'équité | historique (`history.jsonl`) |
 | KPI compact | métriques live (cf. [reporting](reporting.md) `stats`) |
 | Décisions | table des décisions récentes |
-| Activité LLM | appels modèle, fallback |
-| Attribution | trades clôturés → décision d'entrée |
+| Activité LLM | appels du cycle (`model_calls_used`/max), learnings bruts en attente, statut consolidation |
+| Attribution | trades clôturés (round-trips, cf. [reporting](reporting.md)) |
+| Derniers apprentissages | learnings récents (`_build_learnings_panel`) |
+| Trades clôturés | round-trips avec P&L net (`build_closed_trades_table`) |
 | Santé données | fraîcheur / sources / stale |
 | Univers | symboles suivis par place |
 
@@ -37,7 +40,10 @@ fichiers `state/` :
 | `current_report.json` / `last_report.json` | dernier cycle |
 | `daemon_status.json` | phase, pid, progression |
 | `history.jsonl` | courbe d'équité (points non nuls) |
-| `decisions.jsonl`, `events.jsonl` | décisions / events |
+| `decisions.jsonl` | décisions récentes |
+
+(Les **events** `events.jsonl` sont lus séparément par `cockpit/events.py` dans la
+couche UI, pas par le read model.)
 
 `load_state(path)` → dict ou `None` (absent/illisible). Ne bloque jamais l'UI sur
 un fichier corrompu.

@@ -16,14 +16,14 @@ leur propre page de référence, liés ci-dessous.
 | `pool.yaml` | **pool Tier-1** source du radar + exclusions dures | `symbols`, `hard_exclusions` | `config/pool` (`load_pool`) |
 | `portfolio.yaml` | capital de départ paper | `starting_cash` (100000) | `config/portfolio` (`load_starting_cash`) |
 | `risk.yaml` | **bornes du risk gate** → voir [risk-gate](risk-gate.md) | `max_position_value` (30k), `max_gross_exposure`, `max_order_value`, `min_equity`, `max_orders_per_cycle`, `max_risk_per_trade_pct` (0.01), `confidence_gate_enabled` (false), `require_hard_stop` (false) | `execution/risk` |
-| `fx.yaml` | **taux FX** (paires + fallback) → voir [fx](fx.md) | par devise : `yahoo`, `fallback` | `market/fx_rates` |
+| `fx.yaml` | **taux FX** (paires + fallback) → voir [fx](fx.md) | par devise : `yahoo`, `invert`, `fallback` | `market/fx_rates` |
 | `radar.yaml` | **rotation swing-aware** (D9/D10) | `cap_m` (25), `delta`, `dwell_days` (3), `score_window_bars` (15), `atr_floor`, `amplitude_cap`, `min_coverage`, `emergency_score` | `rotation/*`, `market/radar*` |
-| `regime.yaml` | régime familial + fenêtre d'attribution | `attribution_since`, `exclude_symbols` | `market/regime`, `market/family_regime` |
+| `regime.yaml` | régime familial + fenêtre d'attribution | `attribution_since`, `exclude_symbols` | `runtime/daemon` (+ `runtime/cli`, `learnings/consolidator`) |
 | `data_sources.yaml` | **profil de données** (paper/prod) + routes de sources | `profile`, `profiles` | `tools/data_source` |
-| `sessions.yaml` | horaires/calendriers de séance par place | (par venue) | `tools/market` (fériés `exchange_calendars`) |
+| `sessions.yaml` | horaires/calendriers de séance par place | (par venue) | `rotation/schedule` (`load_sessions`) |
 | `ib_contracts.yaml` | mapping symbole → contrat IB | `contracts` | `tools/ib_source` |
-| `symbol_names.yaml` | libellés d'affichage | (par symbole) | `ui/`, cockpit |
-| `conviction.yaml` | pondérations de conviction | (par symbole/famille) | — |
+| `symbol_names.yaml` | libellés d'affichage | (par symbole) | `read_models/runtime_state` (`_load_company_names`) |
+| `conviction.yaml` | tilt de conviction **par famille** | (par famille) | `market/radar_config` (`load_conviction`) → `rotation/wiring` |
 
 ## Flags de comportement notables
 

@@ -17,12 +17,12 @@ gate = RiskGate(RiskLimits.from_dict(risk_yaml))
 gate.start_cycle()                       # remet à zéro le débit d'ordres du cycle
 verdict = gate.check(order, price, current_position_value=…, gross_exposure=…,
                      equity=…, allow_risk_reduction=…, fx_rate=…)
-if verdict.ok:
+if verdict.approved:
     broker.submit(order); gate.record_pass()
 ```
 
-`Verdict(ok: bool, reason: str, context: str)` — **premier échec = rejet** (fail-fast).
-`reason` est un **code enum** stable (parsable), pas de la prose.
+`Verdict(approved: bool, code: str = "ok", context: str = "")` — **premier échec = rejet** (fail-fast).
+`code` est un **code enum** stable (parsable), pas de la prose.
 
 ## Les 6 contrôles de `check()` (dans l'ordre d'évaluation)
 
@@ -80,7 +80,7 @@ Autrement dit : plus tu risques, plus tu dois être confiant.
 | `min_equity` | plancher equity : sous ce seuil, zéro ordre | — (requis) |
 | `max_risk_per_trade_pct` | % equity risqué si le hard_stop saute | `0.01` |
 | `min_trade_confidence` | seuil confiance plancher (risque nul) | `0.7` |
-| `full_risk_confidence` | seuil confiance au risque max | (requis si présent) |
+| `full_risk_confidence` | seuil confiance au risque max | `0.9` |
 
 `read_min_trade_confidence(path)` : lecture **fail-safe** de `min_trade_confidence`
 (défaut 0.7 si fichier absent/illisible/clé invalide) — partagée daemon/tui/consolidator.
