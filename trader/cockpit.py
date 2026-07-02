@@ -64,7 +64,13 @@ from trader.cockpit_events import (
     read_new_lines,
 )
 from trader.palette import PALETTE_DARK, PALETTE_LIGHT, Palette
-from trader.tui import (
+from trader.read_models.runtime_state import (
+    _enrich_decisions_with_data_source,
+    _safe_float,
+    _safe_list_of_dicts,
+    load_runtime_state,
+)
+from trader.ui.rich_panels import (
     _build_armed_plans_panel,
     _build_attribution_panel,
     _build_data_health_panel,
@@ -75,12 +81,8 @@ from trader.tui import (
     _build_llm_activity_panel,
     _build_positions_panel,
     _build_watches_panel,
-    _enrich_decisions_with_data_source,
-    _safe_float,
-    _safe_list_of_dicts,
     build_closed_trades_table,
     build_universe_panel,
-    load_runtime_state,
 )
 
 # ---------------------------------------------------------------------------
@@ -537,7 +539,7 @@ def _build_trades_with_pnl(
     """
     from rich.table import Table
     from rich.text import Text
-    from trader.tui import _fmt_symbol_short, _safe_float
+    from trader.ui.rich_panels import _fmt_symbol_short
 
     table = Table(title="Trades clôturés", show_lines=False, expand=True)
     table.add_column("Heure", no_wrap=True, style=palette["dim"])

@@ -91,6 +91,26 @@ _FULL_STATE: dict = {
 # ---------------------------------------------------------------------------
 
 
+def test_runtime_state_read_model_est_import_public() -> None:
+    from trader.read_models.runtime_state import load_runtime_state
+
+    assert callable(load_runtime_state)
+
+
+def test_rich_panels_exports_public_builders() -> None:
+    from trader.ui import rich_panels
+
+    assert callable(rich_panels.build_view)
+    assert callable(rich_panels.build_universe_panel)
+
+
+def test_tui_reexporte_les_constantes_univers_historiques() -> None:
+    import trader.tui as tui
+
+    assert tui._ACTION_VENUES == ("TW", "EU", "US")
+    assert tui._MAX_HOTLIST_DISPLAY == 12
+
+
 def test_build_view_avec_etat_complet_retourne_un_renderable() -> None:
     """build_view avec un dict complet retourne un RenderableType sans exception."""
     result = build_view(_FULL_STATE)
