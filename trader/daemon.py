@@ -43,6 +43,7 @@ from . import (
     learnings_store as recall_store_mod,
     ledger_rotation,
     llm,
+    macro_calendar,
     meta_performance,
     relevance_gate,
     stats,
@@ -2219,11 +2220,21 @@ def run_cycle(
     mandate_txt, memory_txt = mem.read_mandate(), mem.read_memory()
     model_calls_used = 0
 
+    # Calendrier macro : calculé UNE fois par cycle (pas par symbole) — best-effort.
+    # Attribution-first : n'entre PAS dans le contexte LLM (même mécanique que news).
+    _calendar = macro_calendar.load_calendar(STATE_DIR / "macro_calendar.json")
+    _cycle_macro_next = macro_calendar.macro_next(now, _calendar)
+
     def record_decision(decision_entry: dict) -> None:
         # Phase attribution : snapshot news loggé sur CHAQUE décision, tous chemins
         # confondus (y compris quiet_gate / stale_market_data). setdefault : n'écrase
         # pas si déjà fourni (ex. enrichissement préalable dans le chemin LLM normal).
         decision_entry.setdefault("news", news_feed.news_snapshot(decision_entry["symbol"], now=now))
+        # macro_next ajouté au payload news de chaque décision (UNE fois par cycle,
+        # pas par symbole). Copie défensive du dict pour ne pas muter le cache news.
+        _news = decision_entry.get("news")
+        if isinstance(_news, dict) and "macro_next" not in _news:
+            decision_entry["news"] = {**_news, "macro_next": _cycle_macro_next}
         # Boucle de feedback : l'agent possède ses learnings ; l'infra les persiste
         # (machine-owned, borné) AVEC le résultat de la décision (executed/reason/
         # dry_run) pour qu'on puisse juger si l'agent fait les bons choix, puis les

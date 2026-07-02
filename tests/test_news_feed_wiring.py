@@ -2,6 +2,7 @@
 
 Vérifie que la chaîne entry → build_decision_row préserve le snapshot de news
 et que la clé `news` n'est jamais ajoutée au contexte LLM (per_symbol).
+Comprend également les tests de câblage macro_next (P1a spec §2.2).
 """
 from __future__ import annotations
 
@@ -97,3 +98,71 @@ def test_quiet_gate_decision_has_news_key(monkeypatch, tmp_path, patch_batch, ma
         f"Fix B requis : la décision quiet_gate doit avoir la clé 'news'. "
         f"Clés présentes : {list(decision.keys())}"
     )
+
+
+# ---------------------------------------------------------------------------
+# macro_next câblé dans le payload news par décision (spec §2.2)
+# ---------------------------------------------------------------------------
+
+
+def test_payload_decision_contient_macro_next(monkeypatch, tmp_path, patch_batch, make_data_source):
+    """Le payload news de chaque décision contient la clé 'macro_next' (spec §2.2).
+
+    macro_next est calculé UNE fois par cycle (pas par symbole) et n'est PAS
+    poussé au prompt LLM (attribution-first). Le test vérifie que la clé est
+    présente dans la décision loggée, quelle que soit la voie (quiet_gate inclus).
+    """
+    from trader import daemon
+    from trader.tools import news_feed as nf
+    from trader.tools.scheduler import Scheduler
+    from conftest import write_runtime_config
+
+    write_runtime_config(tmp_path, symbols=("SPY",))
+    state_dir = tmp_path / "state"
+    now = datetime(2026, 7, 29, 12, 0, tzinfo=timezone.utc)
+
+    monkeypatch.setattr(daemon, "ROOT", tmp_path)
+    monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+
+    nf.reset_cache()
+    fake_snap = {
+        "earnings_in_h": None,
+        "news_coverage": "empty",
+        "news_count": 0,
+        "source": "yahoo",
+        "asof": now.isoformat(),
+    }
+    monkeypatch.setattr(nf, "news_snapshot", lambda symbol, *, now, **kw: fake_snap)
+
+    from trader.codex_client import Decision
+
+    def decide(**kwargs):
+        return Decision.hold(kwargs["symbol"], "attente")
+
+    patch_batch(decide)
+    data_source = make_data_source(_flat_bars_factory(now.isoformat()))
+
+    report = daemon.run_cycle(
+        dry_run=True,
+        now=now,
+        symbols_filter=["SPY"],
+        sched=Scheduler(state_dir / "scheduler.json"),
+        data_source=data_source,
+    )
+
+    assert len(report["decisions"]) >= 1
+    decision = report["decisions"][0]
+    assert "news" in decision, f"clé 'news' manquante : {list(decision.keys())}"
+    news = decision["news"]
+    assert "macro_next" in news, (
+        f"spec §2.2 : 'macro_next' doit être dans le payload news. "
+        f"Clés news présentes : {list(news.keys())}"
+    )
+    assert isinstance(news["macro_next"], list), (
+        f"macro_next doit être une liste, obtenu : {type(news['macro_next'])}"
+    )
+    # macro_next ne doit pas être dans le contexte LLM per_symbol (attribution-first).
+    # Vérifié en s'assurant qu'il n'est posé QUE dans la décision loggée, pas dans
+    # base_context ou per_symbol (contrainte d'architecture, non testée ici car le
+    # contexte LLM n'est pas exposé directement — le pattern setdefault(news) garantit
+    # que news n'entre jamais dans per_symbol, vérifié par test_entry_with_snapshot_flows_into_row).
