@@ -28,7 +28,7 @@ from typing import Callable
 import yaml
 
 from .agent_context import build_market_cockpit, resolve_indicator_requests
-from .application import market_snapshot, planner_batch
+from .application import market_snapshot, order_admission, planner_batch
 from .application.decision_recorder import DecisionRecorder
 from . import (
     agent_tools as agent_tools,
@@ -80,7 +80,6 @@ from .trade_plan import (
     TradePlanStore,
     create_trade_plan,
     create_trade_plan_from_order,
-    normalize_exit_plan,
     resolve_exit_plan,
     validate_exit_plan,
 )
@@ -404,15 +403,7 @@ def _select_due_symbols(
 
 
 def _invalid_intent_reason(decision: codex_client.Decision) -> str | None:
-    if decision.action == "HOLD" or decision.quantity == 0:
-        return None
-    if decision.intent not in _VALID_INTENTS:
-        return "invalid_intent"
-    if decision.intent == "HOLD":
-        return "invalid_intent"
-    if decision.intent not in _ACTION_INTENTS.get(decision.action, set()):
-        return "invalid_intent"
-    return None
+    return order_admission.invalid_intent_reason(decision)
 
 
 def _merge_gate_feedback(
@@ -579,60 +570,23 @@ def _attribution_min_entry_confidence(
 
 
 def _hard_stop_price(raw_exit_plan: dict | None) -> float | None:
-    if raw_exit_plan is None:
-        return None
-    try:
-        normalized = normalize_exit_plan(raw_exit_plan)
-    except InvalidExitPlanError:
-        return None
-    if not normalized:
-        return None
-
-    hard_stop = normalized.get("hard_stop")
-    if isinstance(hard_stop, dict):
-        if hard_stop.get("type", "price") != "price":
-            return None
-        raw_price = hard_stop.get("price")
-    else:
-        raw_price = hard_stop
-    if raw_price is None:
-        return None
-
-    try:
-        price = float(raw_price)
-    except (TypeError, ValueError):
-        return None
-    if not math.isfinite(price) or price <= 0:
-        return None
-    return price
+    return order_admission.hard_stop_price(raw_exit_plan)
 
 
 def _hard_stop_wrong_side(intent: str | None, entry_price: float, stop_price: float) -> bool:
-    if not math.isfinite(entry_price) or not math.isfinite(stop_price):
-        return False
-    if intent == "OPEN_LONG":
-        return stop_price >= entry_price
-    if intent == "OPEN_SHORT":
-        return stop_price <= entry_price
-    return False
+    return order_admission.hard_stop_wrong_side(intent, entry_price, stop_price)
 
 
 def _reverse_open_quantity(*, action: str, quantity: float, position_quantity: float) -> float:
-    signed_order = quantity if action == "BUY" else -quantity
-    if position_quantity != 0 and position_quantity * signed_order < 0:
-        return max(0.0, abs(signed_order) - abs(position_quantity))
-    return quantity
+    return order_admission.reverse_open_quantity(
+        action=action,
+        quantity=quantity,
+        position_quantity=position_quantity,
+    )
 
 
 def _risk_pct_for_quantity(quantity: float, stop_distance: float | None, equity: float) -> float | None:
-    if stop_distance is None:
-        return None
-    if not math.isfinite(quantity) or not math.isfinite(stop_distance) or stop_distance < 0:
-        return None
-    if not math.isfinite(equity) or equity <= 0:
-        return None
-    risk_pct = quantity * stop_distance / equity
-    return risk_pct if math.isfinite(risk_pct) else None
+    return order_admission.risk_pct_for_quantity(quantity, stop_distance, equity)
 
 
 def _set_entry_risk_metrics(
@@ -642,8 +596,12 @@ def _set_entry_risk_metrics(
     stop_distance: float | None,
     equity: float,
 ) -> None:
-    entry["stop_distance"] = stop_distance
-    entry["risk_pct"] = _risk_pct_for_quantity(quantity, stop_distance, equity)
+    order_admission.set_entry_risk_metrics(
+        entry,
+        quantity=quantity,
+        stop_distance=stop_distance,
+        equity=equity,
+    )
 
 
 
@@ -688,13 +646,12 @@ def _clamp_exit_quantity(
     quantity: float,
     position_quantity: float,
 ) -> tuple[float, str | None]:
-    if intent not in {"CLOSE", "REDUCE"}:
-        return quantity, None
-    if position_quantity == 0:
-        return 0.0, "no_position_to_reduce"
-    if (position_quantity > 0 and action != "SELL") or (position_quantity < 0 and action != "BUY"):
-        return 0.0, "exit_side_not_reducing"
-    return min(quantity, abs(position_quantity)), None
+    return order_admission.clamp_exit_quantity(
+        intent=intent,
+        action=action,
+        quantity=quantity,
+        position_quantity=position_quantity,
+    )
 
 
 def _bar_ts_after_plan_open(bar_ts: str, opened_at: str | None) -> bool:
