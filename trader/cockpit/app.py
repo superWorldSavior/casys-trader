@@ -3,13 +3,12 @@
 Dashboard complet (KPIs, courbe d'équité, positions, attribution, décisions,
 plans, univers) + flux de logs live (events.jsonl) + supervision du daemon.
 
-Layout F-pattern (priorité haute → bas) :
+Layout mission-control (priorité haute → bas) :
     STATUT (dock:top, h=2)
-    ┌ BANDE HAUTE (#top-band, h=14)
-    │  PositionsPlansPane (40%)  |  ArmedPlansPane (60%)
-    ├ CORPS (#main-body, h=1fr, horizontal)
-    │  DecisionsPane (30%)  |  EquityTradesPane (40%)  |  UniversePane (30%)
-    LogsPane (dock:bottom, h=4)
+    ATTENTION (#attention-strip, h=3)
+    ┌ WORKSPACE (#workspace, h=1fr)
+    │  Décision (34%) | Portefeuille (38%) | Observabilité (28%)
+    LogsPane (dock:bottom, h=6)
     Footer (dock:bottom, h=1)
 
 Pattern superviseur : le daemon reste un process indépendant qui survit à
@@ -267,6 +266,95 @@ class CockpitStatus(Static):
         self.update(Text.from_markup(text))
 
 
+def _build_attention_line(
+    state: dict, *, kill_active: bool, palette: Palette = PALETTE_DARK
+) -> Text:
+    """Synthèse compacte des signaux qui méritent une attention humaine."""
+    if not isinstance(state, dict):
+        state = {}
+    portfolio = state.get("portfolio") if isinstance(state.get("portfolio"), dict) else {}
+    holdings = _safe_list_of_dicts(portfolio.get("holdings"))
+    armed_plans = _safe_list_of_dicts(state.get("armed_plans"))
+    watches = _safe_list_of_dicts(state.get("indicator_watches"))
+    recent_decisions = _safe_list_of_dicts(state.get("recent_decisions"))
+    stale_streaks = (
+        state.get("stale_streaks") if isinstance(state.get("stale_streaks"), dict) else {}
+    )
+    daemon_status = (
+        state.get("daemon_status")
+        if isinstance(state.get("daemon_status"), dict)
+        else {}
+    )
+
+    stale_values = [
+        int(value)
+        for value in stale_streaks.values()
+        if isinstance(value, int | float) and value > 0
+    ]
+    risk_count = sum(
+        1
+        for row in recent_decisions
+        if str(row.get("reason") or "").startswith("risk:")
+    )
+    phase = str(daemon_status.get("phase") or "—")
+    done = daemon_status.get("decisions_done")
+    total = daemon_status.get("symbols_total")
+    progress = f"{done}/{total}" if done is not None and total is not None else "—"
+    used = daemon_status.get("model_calls_used")
+    limit = daemon_status.get("max_model_calls_per_cycle")
+    calls = f"{used}/{limit}" if used is not None and limit is not None else "—"
+    learnings_pending = state.get("learnings_pending_count") or 0
+    halted = state.get("halted")
+
+    items: list[tuple[str, str]] = []
+    if kill_active:
+        items.append(("KILL", "bold white on red"))
+    if halted:
+        items.append((f"HALT {halted}", palette["pnl_negative"]))
+    items.append((f"phase {phase}", palette["status_phase"]))
+    items.append((f"prog {progress}", palette["status_accent"]))
+    if stale_values:
+        items.append((f"stale {len(stale_values)} max {max(stale_values)}", palette["kpi_vol_warn"]))
+    else:
+        items.append(("data ok", palette["status_nominal"]))
+    if risk_count:
+        items.append((f"risk {risk_count}", palette["pnl_negative"]))
+    items.extend(
+        [
+            (f"pos {len(holdings)}", palette["kpi_default"]),
+            (f"plans {len(armed_plans)}", palette["kpi_default"]),
+            (f"veilles {len(watches)}", palette["kpi_default"]),
+            (f"LLM {calls}", palette["kpi_default"]),
+            (f"learn {learnings_pending}", palette["dim"]),
+        ]
+    )
+
+    text = Text("  ")
+    for index, (label, style) in enumerate(items):
+        if index:
+            text.append("  |  ", style=palette["dim"])
+        text.append(label, style=style)
+    return text
+
+
+class AttentionStrip(Static):
+    """Ligne de triage entre le statut global et l'espace de travail."""
+
+    DEFAULT_CSS = """
+    AttentionStrip {
+        height: 3;
+        background: $surface;
+        border-bottom: solid $primary;
+        padding: 0 1;
+    }
+    """
+
+    def update_state(
+        self, state: dict, kill_active: bool, *, palette: Palette = PALETTE_DARK
+    ) -> None:
+        self.update(_build_attention_line(state, kill_active=kill_active, palette=palette))
+
+
 # ---------------------------------------------------------------------------
 # Panes du nouveau layout
 # ---------------------------------------------------------------------------
@@ -277,9 +365,8 @@ class PositionsPlansPane(Static):
 
     DEFAULT_CSS = """
     PositionsPlansPane {
-        width: 40%;
-        height: 100%;
-        border-right: solid $primary;
+        width: 100%;
+        height: 1fr;
         overflow-y: auto;
     }
     PositionsPlansPane Static {
@@ -319,8 +406,8 @@ class ArmedPlansPane(Static):
 
     DEFAULT_CSS = """
     ArmedPlansPane {
-        width: 60%;
-        height: 100%;
+        width: 100%;
+        height: 1fr;
         overflow-y: auto;
     }
     ArmedPlansPane Static {
@@ -351,9 +438,8 @@ class DecisionsPane(Static):
 
     DEFAULT_CSS = """
     DecisionsPane {
-        width: 30%;
-        height: 100%;
-        border-right: solid $primary;
+        width: 100%;
+        height: 1fr;
         overflow-y: auto;
     }
     DecisionsPane Static {
@@ -405,9 +491,8 @@ class EquityTradesPane(Static):
 
     DEFAULT_CSS = """
     EquityTradesPane {
-        width: 40%;
-        height: 100%;
-        border-right: solid $primary;
+        width: 100%;
+        height: 1fr;
         overflow-y: auto;
     }
     EquityTradesPane Static {
@@ -468,8 +553,8 @@ class UniversePane(Static):
 
     DEFAULT_CSS = """
     UniversePane {
-        width: 30%;
-        height: 100%;
+        width: 100%;
+        height: 1fr;
         overflow-y: auto;
     }
     UniversePane Static {
@@ -619,7 +704,7 @@ class LogsPane(Static):
     DEFAULT_CSS = """
     LogsPane {
         dock: bottom;
-        height: 4;
+        height: 6;
         border-top: solid $primary;
     }
     LogsPane RichLog {
@@ -876,23 +961,45 @@ class CockpitApp(App):
 
     TITLE = "casys-trader — cockpit"
 
-    # CSS TCSS décrivant le layout hiérarchique F-pattern
+    # CSS TCSS décrivant le layout mission-control
     CSS = """
     Screen {
         layout: vertical;
     }
-    #body {
+    #workspace {
         height: 1fr;
+        layout: horizontal;
+    }
+    #decision-column {
+        width: 34%;
+        height: 100%;
+        layout: vertical;
+        border-right: solid $primary;
+    }
+    #portfolio-column {
+        width: 38%;
+        height: 100%;
+        layout: vertical;
+        border-right: solid $primary;
+    }
+    #ops-column {
+        width: 28%;
+        height: 100%;
         layout: vertical;
     }
-    #top-band {
-        height: 14;
-        layout: horizontal;
+    #decision-column DecisionsPane {
+        height: 58%;
         border-bottom: solid $primary;
     }
-    #main-body {
-        height: 1fr;
-        layout: horizontal;
+    #decision-column ArmedPlansPane {
+        height: 42%;
+    }
+    #portfolio-column PositionsPlansPane {
+        height: 48%;
+        border-bottom: solid $primary;
+    }
+    #portfolio-column EquityTradesPane {
+        height: 52%;
     }
     """
 
@@ -914,15 +1021,17 @@ class CockpitApp(App):
     _last_kill_active: bool = False
 
     def compose(self) -> ComposeResult:
-        """Structure du layout : statut → body (top-band + main-body) → logs → footer."""
+        """Structure : statut → attention → workspace 3 colonnes → logs → footer."""
         yield CockpitStatus(id="cockpit-status")
-        with Vertical(id="body"):
-            with Horizontal(id="top-band"):
-                yield PositionsPlansPane(id="positions-plans-pane")
-                yield ArmedPlansPane(id="armed-plans-pane")
-            with Horizontal(id="main-body"):
+        yield AttentionStrip(id="attention-strip")
+        with Horizontal(id="workspace"):
+            with Vertical(id="decision-column"):
                 yield DecisionsPane(id="decisions-pane")
+                yield ArmedPlansPane(id="armed-plans-pane")
+            with Vertical(id="portfolio-column"):
+                yield PositionsPlansPane(id="positions-plans-pane")
                 yield EquityTradesPane(id="equity-trades-pane")
+            with Vertical(id="ops-column"):
                 yield UniversePane(id="universe-pane")
         yield LogsPane(id="logs-pane")
         yield Footer()
@@ -1010,6 +1119,9 @@ class CockpitApp(App):
 
             status: CockpitStatus = self.query_one("#cockpit-status", CockpitStatus)
             status.update_state(state, kill_active, palette=palette)
+
+            attention: AttentionStrip = self.query_one("#attention-strip", AttentionStrip)
+            attention.update_state(state, kill_active, palette=palette)
 
             positions_plans: PositionsPlansPane = self.query_one(
                 "#positions-plans-pane", PositionsPlansPane

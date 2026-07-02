@@ -425,6 +425,60 @@ async def test_cockpit_v2_pane_left_existe(tmp_path, monkeypatch):
         assert app.query_one("#positions-plans-pane") is not None
 
 
+async def test_cockpit_mission_control_structure_existe(tmp_path, monkeypatch):
+    """Le cockpit expose une composition mission-control : attention + 3 colonnes."""
+    _make_minimal_state(tmp_path)
+    monkeypatch.setattr(cockpit_module, "_STATE_DIR", tmp_path)
+    monkeypatch.setattr(cockpit_module, "_EVENTS_FILE", tmp_path / "events.jsonl")
+    monkeypatch.setattr(cockpit_module, "_KILL_FILE", tmp_path / "KILL")
+
+    app = CockpitApp()
+    async with app.run_test(size=(220, 60)) as _:
+        assert app.query_one("#attention-strip") is not None
+        assert app.query_one("#workspace") is not None
+        assert app.query_one("#decision-column") is not None
+        assert app.query_one("#portfolio-column") is not None
+        assert app.query_one("#ops-column") is not None
+
+
+def test_attention_strip_resume_les_alertes_operationnelles() -> None:
+    """La ligne d'attention remonte les signaux qui appellent une action humaine."""
+    from trader.cockpit import _build_attention_line
+    from trader.ui.palette import PALETTE_LIGHT
+
+    state = {
+        "halted": "risk_gate",
+        "portfolio": {"holdings": [{"symbol": "AAPL"}]},
+        "armed_plans": [{"id": "AAPL-breakout"}],
+        "indicator_watches": [{"id": "AAPL-watch"}, {"id": "MSFT-watch"}],
+        "stale_streaks": {"AAPL": 2, "MSFT": 0, "TSLA": 5},
+        "recent_decisions": [
+            {"symbol": "AAPL", "reason": "risk:gross_exposure_exceeded"},
+            {"symbol": "MSFT", "reason": "hold"},
+        ],
+        "daemon_status": {
+            "phase": "deciding_batch",
+            "decisions_done": 7,
+            "symbols_total": 12,
+            "model_calls_used": 3,
+            "max_model_calls_per_cycle": 5,
+        },
+        "learnings_pending_count": 9,
+    }
+
+    text = _build_attention_line(state, kill_active=True, palette=PALETTE_LIGHT)
+    rendered = text.plain
+
+    assert "KILL" in rendered
+    assert "HALT risk_gate" in rendered
+    assert "stale 2" in rendered
+    assert "risk 1" in rendered
+    assert "plans 1" in rendered
+    assert "veilles 2" in rendered
+    assert "LLM 3/5" in rendered
+    assert "learn 9" in rendered
+
+
 async def test_cockpit_v2_pane_center_existe(tmp_path, monkeypatch):
     """Le layout v2 expose un pane central."""
     _make_minimal_state(tmp_path)
