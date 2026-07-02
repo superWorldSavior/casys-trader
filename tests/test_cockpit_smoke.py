@@ -14,7 +14,7 @@ import json
 from pathlib import Path
 
 from rich.console import Console
-from textual.widgets import Static
+from textual.widgets import ContentSwitcher, Static
 
 import trader.cockpit.app as cockpit_module
 from trader.cockpit import CockpitApp
@@ -480,8 +480,9 @@ async def test_cockpit_shell_navigable_expose_home_et_pages_detail(
 
     app = CockpitApp()
     async with app.run_test(size=(220, 60)) as _:
-        assert app.query_one("#attention-strip") is not None
         assert app.query_one("#cockpit-nav") is not None
+        switcher = app.query_one("#page-switcher", ContentSwitcher)
+        assert switcher.current == "overview-page"
         assert app.query_one("#workspace") is not None
         assert app.query_one("#overview-page") is not None
         assert app.query_one("#portfolio-page") is not None
@@ -517,6 +518,112 @@ async def test_cockpit_tab_et_fleches_naviguent_entre_pages(tmp_path, monkeypatc
         await pilot.press("left")
         assert app._active_page_key == "portfolio"
         assert app.query_one("#portfolio-page").display is True
+
+
+async def test_cockpit_home_layout_respire_sur_tout_l_ecran(tmp_path, monkeypatch):
+    """La home expose de vraies tuiles Textual dimensionnées, pas une grille comprimée."""
+    _make_minimal_state(tmp_path)
+    monkeypatch.setattr(cockpit_module, "_STATE_DIR", tmp_path)
+    monkeypatch.setattr(cockpit_module, "_EVENTS_FILE", tmp_path / "events.jsonl")
+    monkeypatch.setattr(cockpit_module, "_KILL_FILE", tmp_path / "KILL")
+
+    app = CockpitApp()
+    async with app.run_test(size=(220, 60)) as pilot:
+        await pilot.pause()
+        portfolio = app.query_one("#overview-portfolio-tile", Static)
+        decisions = app.query_one("#overview-decisions-tile", Static)
+        plans = app.query_one("#overview-plans-tile", Static)
+        observability = app.query_one("#overview-observability-tile", Static)
+        logs = app.query_one("#overview-logs-tile", Static)
+
+        assert portfolio.size.width > decisions.size.width
+        assert portfolio.size.height >= decisions.size.height
+        assert plans.size.height > 5
+        assert observability.size.width > 60
+        assert logs.size.width > 60
+
+
+def test_cockpit_home_affiche_des_tuiles_analytiques() -> None:
+    """La home doit afficher des mini-artefacts analytiques, pas juste des compteurs."""
+    state = {
+        "portfolio": {
+            "cash": 94_000.0,
+            "equity": 103_200.0,
+            "total_return_pct": 3.2,
+            "holdings": [
+                {
+                    "symbol": "AAPL",
+                    "quantity": 3,
+                    "unrealized_pnl_net": 120.5,
+                    "fx_rate": 1.0,
+                },
+                {
+                    "symbol": "2330.TW",
+                    "quantity": 80,
+                    "unrealized_pnl_net": -42.0,
+                    "fx_rate": 0.031,
+                },
+            ],
+        },
+        "equity_curve": [100_000, 100_400, 99_900, 101_500, 103_200],
+        "decisions": [
+            {
+                "symbol": "AAPL",
+                "action": "BUY",
+                "confidence": 0.81,
+                "rationale": "cassure propre",
+                "data_source": "fresh",
+            },
+            {
+                "symbol": "MSFT",
+                "action": "HOLD",
+                "confidence": 0.55,
+                "rationale": "range",
+                "data_source": "stale",
+            },
+        ],
+        "recent_decisions": [{"symbol": "MSFT", "reason": "risk:confidence_below"}],
+        "armed_plans": [{"symbol": "AAPL", "kind": "breakout"}],
+        "trade_plans": [{"symbol": "AAPL", "remaining_quantity": 3}],
+        "indicator_watches": [{"symbol": "MSFT"}, {"symbol": "NVDA"}],
+        "stale_streaks": {"MSFT": 4},
+        "learnings": [
+            {
+                "symbol": "AAPL",
+                "note": "attendre confirmation volume",
+                "ts": "2026-06-07T10:15:00+02:00",
+            }
+        ],
+        "learnings_pending_count": 2,
+        "daemon_status": {
+            "phase": "deciding_batch",
+            "decisions_done": 3,
+            "symbols_total": 12,
+            "model_calls_used": 2,
+            "max_model_calls_per_cycle": 8,
+        },
+        "source": "current_report",
+        "ts": "2026-06-07T10:15:00+02:00",
+    }
+
+    rendered = _render(
+        cockpit_module._build_overview_panel(state, kill_active=False),
+        width=180,
+    )
+
+    assert any(ch in rendered for ch in "▁▂▃▄▅▆▇█")
+    assert "Top positions" in rendered
+    assert "AAPL" in rendered
+    assert "2330.TW" in rendered
+    assert "Décisions récentes" in rendered
+    assert "BUY" in rendered
+    assert "fresh" in rendered
+    assert "Plans actifs" in rendered
+    assert "Data health" in rendered
+    assert "MSFT" in rendered
+    assert "attendre" in rendered
+    assert "confirmation" in rendered
+    assert "volume" in rendered
 
 
 async def test_cockpit_observabilite_affiche_les_derniers_learnings(

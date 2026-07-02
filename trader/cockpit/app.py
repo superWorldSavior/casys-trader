@@ -5,9 +5,8 @@ plans, observabilité, logs live) + supervision du daemon.
 
 Layout mission-control navigable (priorité haute → bas) :
     STATUT (dock:top, h=2)
-    ATTENTION (#attention-strip, h=3)
     NAV (#cockpit-nav, h=3)
-    PAGE ACTIVE (#workspace, h=1fr)
+    CONTENT SWITCHER (#page-switcher, h=1fr)
     Footer (dock:bottom, h=1)
 
 Pattern superviseur : le daemon reste un process indépendant qui survit à
@@ -58,7 +57,7 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.theme import Theme
-from textual.widgets import Button, Footer, Label, RichLog, Static
+from textual.widgets import Button, ContentSwitcher, Footer, Label, RichLog, Static
 
 from trader.cockpit.supervisor import daemon_vital_state
 
@@ -89,6 +88,7 @@ from trader.ui.rich_panels import (
     _format_datetime,
     build_closed_trades_table,
     build_universe_panel,
+    sparkline,
 )
 
 # ---------------------------------------------------------------------------
@@ -418,19 +418,12 @@ class CockpitNav(Static):
 
 def _overview_card(
     title: str,
-    rows: list[tuple[str, str, str]],
+    content: RenderableType,
     *,
     border_style: str,
-    palette: Palette,
 ) -> Panel:
-    body = Text()
-    for index, (label, value, style) in enumerate(rows):
-        if index:
-            body.append("\n")
-        body.append(f"{label}: ", style=palette["dim"])
-        body.append(value, style=style)
     return Panel(
-        body,
+        content,
         title=f"[bold]{title}[/bold]",
         border_style=border_style,
         expand=True,
@@ -439,6 +432,218 @@ def _overview_card(
 
 def _count_risk_rows(rows: list[dict]) -> int:
     return sum(1 for row in rows if str(row.get("reason") or "").startswith("risk:"))
+
+
+def _action_style(action: str, palette: Palette) -> str:
+    upper = action.upper()
+    if upper == "BUY":
+        return palette["action_buy"]
+    if upper == "SELL":
+        return palette["action_sell"]
+    return palette["dim"] if upper == "HOLD" else palette["kpi_default"]
+
+
+def _fmt_compact_float(value: object, *, decimals: int = 2, default: str = "—") -> str:
+    number = _safe_float(value, default=None)
+    return f"{number:,.{decimals}f}" if number is not None else default
+
+
+def _build_portfolio_overview_tile(
+    portfolio: dict,
+    kpis: dict,
+    equity_curve: list[float],
+    *,
+    starting_cash: float,
+    palette: Palette,
+) -> RenderableType:
+    cash = _safe_float(portfolio.get("cash") or kpis.get("cash"), default=0.0) or 0.0
+    equity = _safe_float(portfolio.get("equity") or kpis.get("equity"), default=0.0) or 0.0
+    pnl = equity - starting_cash
+    ret_pct = _safe_float(portfolio.get("total_return_pct"), default=None)
+    if ret_pct is None:
+        ret_pct = (_safe_float(kpis.get("total_return"), default=0.0) or 0.0) * 100.0
+    pnl_style = palette["pnl_positive"] if pnl >= 0 else palette["pnl_negative"]
+    ret_style = palette["pnl_positive"] if ret_pct >= 0 else palette["pnl_negative"]
+    curve = sparkline(equity_curve[-24:]) if equity_curve else "—"
+
+    header = Text.assemble(
+        ("Équité ", palette["dim"]),
+        (f"${equity:,.0f}", f"bold {palette['status_equity']}"),
+        ("  Cash ", palette["dim"]),
+        (f"${cash:,.0f}", palette["status_equity"]),
+        ("\nP&L ", palette["dim"]),
+        (f"{ret_pct:+.2f}%", ret_style),
+        ("  ", ""),
+        (f"{pnl:+,.0f}", pnl_style),
+        ("\n", ""),
+        (curve, f"bold {palette['equity_line']}"),
+    )
+
+    holdings = sorted(
+        _safe_list_of_dicts(portfolio.get("holdings")),
+        key=lambda item: abs(_safe_float(item.get("unrealized_pnl_net"), default=0.0) or 0.0),
+        reverse=True,
+    )
+    table = Table(title="Top positions", show_header=True, expand=True, box=None)
+    table.add_column("Sym", style="bold", no_wrap=True)
+    table.add_column("Qté", justify="right", no_wrap=True)
+    table.add_column("PnL", justify="right", no_wrap=True)
+    table.add_column("FX", justify="right", no_wrap=True)
+    for holding in holdings[:3]:
+        pnl_value = _safe_float(holding.get("unrealized_pnl_net"), default=None)
+        pnl_render = Text(
+            _fmt_compact_float(pnl_value, decimals=0),
+            style=palette["pnl_positive"] if (pnl_value or 0.0) >= 0 else palette["pnl_negative"],
+        )
+        table.add_row(
+            str(holding.get("symbol") or "—"),
+            _fmt_compact_float(holding.get("quantity"), decimals=2),
+            pnl_render,
+            _fmt_compact_float(holding.get("fx_rate"), decimals=3),
+        )
+    if not holdings:
+        table.add_row("—", "—", "—", "—")
+    return Group(header, table)
+
+
+def _build_decisions_overview_tile(
+    decisions: list[dict],
+    recent_decisions: list[dict],
+    daemon_status: dict,
+    *,
+    palette: Palette,
+) -> RenderableType:
+    risk_count = _count_risk_rows(recent_decisions)
+    calls_used = daemon_status.get("model_calls_used")
+    calls_max = daemon_status.get("max_model_calls_per_cycle")
+    calls = (
+        f"{calls_used}/{calls_max}"
+        if calls_used is not None and calls_max is not None
+        else "—"
+    )
+    header = Text.assemble(
+        ("Phase ", palette["dim"]),
+        (str(daemon_status.get("phase") or "—"), palette["status_phase"]),
+        ("  Appels ", palette["dim"]),
+        (calls, palette["kpi_default"]),
+        ("  Risk ", palette["dim"]),
+        (str(risk_count), palette["pnl_negative"] if risk_count else palette["status_nominal"]),
+    )
+    table = Table(title="Décisions récentes", show_header=True, expand=True, box=None)
+    table.add_column("Sym", style="bold", no_wrap=True)
+    table.add_column("Act", no_wrap=True)
+    table.add_column("Conf", justify="right", no_wrap=True)
+    table.add_column("Source", no_wrap=True)
+    for decision in decisions[-4:]:
+        action = str(decision.get("action") or "—").upper()
+        confidence = _safe_float(decision.get("confidence"), default=None)
+        table.add_row(
+            str(decision.get("symbol") or "—"),
+            Text(action, style=_action_style(action, palette)),
+            f"{confidence:.2f}" if confidence is not None else "—",
+            str(decision.get("data_source") or "—"),
+        )
+    if not decisions:
+        table.add_row("—", "—", "—", "—")
+    return Group(header, table)
+
+
+def _build_plans_overview_tile(
+    armed_plans: list[dict],
+    trade_plans: list[dict],
+    watches: list[dict],
+    daemon_status: dict,
+    *,
+    palette: Palette,
+) -> RenderableType:
+    done = daemon_status.get("decisions_done")
+    total = daemon_status.get("symbols_total")
+    progress = f"{done}/{total}" if done is not None and total is not None else "—"
+    header = Text.assemble(
+        ("Progression ", palette["dim"]),
+        (progress, palette["status_accent"]),
+        ("  Armés ", palette["dim"]),
+        (str(len(armed_plans)), palette["kpi_default"]),
+        ("  Sorties ", palette["dim"]),
+        (str(len(trade_plans)), palette["kpi_default"]),
+    )
+    table = Table(title="Plans actifs", show_header=True, expand=True, box=None)
+    table.add_column("Type", no_wrap=True)
+    table.add_column("Sym", style="bold", no_wrap=True)
+    table.add_column("Signal", overflow="fold")
+    rows: list[tuple[str, dict]] = (
+        [("armé", item) for item in armed_plans[:2]]
+        + [("sortie", item) for item in trade_plans[:2]]
+        + [("veille", item) for item in watches[:2]]
+    )
+    for kind, item in rows[:5]:
+        signal = (
+            item.get("kind")
+            or item.get("reason")
+            or item.get("remaining_quantity")
+            or item.get("id")
+            or "—"
+        )
+        table.add_row(kind, str(item.get("symbol") or "—"), str(signal))
+    if not rows:
+        table.add_row("—", "—", "aucun plan actif")
+    return Group(header, table)
+
+
+def _build_observability_overview_tile(
+    state: dict,
+    stale_streaks: dict,
+    learnings: list[dict],
+    *,
+    palette: Palette,
+) -> RenderableType:
+    table = Table(title="Data health", show_header=True, expand=True, box=None)
+    table.add_column("Signal", no_wrap=True)
+    table.add_column("Valeur", overflow="fold")
+    stale_rows = [
+        (symbol, value)
+        for symbol, value in stale_streaks.items()
+        if isinstance(value, int | float) and value > 0
+    ]
+    if stale_rows:
+        worst = sorted(stale_rows, key=lambda item: int(item[1]), reverse=True)[:3]
+        for symbol, streak in worst:
+            table.add_row(str(symbol), Text(f"stale x{int(streak)}", style=palette["kpi_vol_warn"]))
+    else:
+        table.add_row("data", Text("OK", style=palette["status_nominal"]))
+    table.add_row("source", str(state.get("source") or "—"))
+    table.add_row("cycle", _format_datetime(state.get("ts")))
+    table.add_row("pending learn", str(state.get("learnings_pending_count") or 0))
+
+    latest = learnings[-1] if learnings else {}
+    note = str(latest.get("note") or "aucun learning récent")
+    symbol = str(latest.get("symbol") or "—")
+    learning_line = Text.assemble(
+        ("Learning ", palette["dim"]),
+        (symbol, palette["learning_symbol"]),
+        ("  ", palette["dim"]),
+        (note, palette["dim"]),
+    )
+    return Group(table, learning_line)
+
+
+def _build_logs_overview_tile(
+    *, kill_active: bool, palette: Palette = PALETTE_LIGHT
+) -> RenderableType:
+    table = Table(title="Contrôle logs", show_header=True, expand=True, box=None)
+    table.add_column("Commande", no_wrap=True)
+    table.add_column("Effet", overflow="fold")
+    table.add_row("l / 6", "ouvrir la page logs")
+    table.add_row("c", "cycles on/off")
+    table.add_row("f", "scroll live on/off")
+    table.add_row(
+        "kill",
+        Text(
+            "actif" if kill_active else "nominal",
+            style=palette["pnl_negative"] if kill_active else palette["status_nominal"],
+        ),
+    )
+    return table
 
 
 def _build_overview_panel(
@@ -451,7 +656,6 @@ def _build_overview_panel(
         if isinstance(state.get("daemon_status"), dict)
         else {}
     )
-    holdings = _safe_list_of_dicts(portfolio.get("holdings"))
     decisions = _safe_list_of_dicts(state.get("decisions"))
     recent_decisions = _safe_list_of_dicts(state.get("recent_decisions"))
     armed_plans = _safe_list_of_dicts(state.get("armed_plans"))
@@ -460,34 +664,17 @@ def _build_overview_panel(
     stale_streaks = (
         state.get("stale_streaks") if isinstance(state.get("stale_streaks"), dict) else {}
     )
-    stale_values = [
-        int(value)
-        for value in stale_streaks.values()
-        if isinstance(value, int | float) and value > 0
+    equity_curve = [
+        value
+        for value in (
+            _safe_float(item, default=None) for item in (state.get("equity_curve") or [])
+        )
+        if value is not None
     ]
+    learnings = _safe_list_of_dicts(state.get("learnings"))
 
     cash = _safe_float(portfolio.get("cash") or kpis.get("cash"), default=0.0) or 0.0
-    equity = _safe_float(portfolio.get("equity") or kpis.get("equity"), default=0.0) or 0.0
     starting_cash = _safe_float(state.get("starting_cash"), default=cash) or cash
-    pnl = equity - starting_cash
-    ret_pct = _safe_float(portfolio.get("total_return_pct"), default=None)
-    if ret_pct is None:
-        ret_pct = (_safe_float(kpis.get("total_return"), default=0.0) or 0.0) * 100.0
-    pnl_style = palette["pnl_positive"] if pnl >= 0 else palette["pnl_negative"]
-    ret_style = palette["pnl_positive"] if ret_pct >= 0 else palette["pnl_negative"]
-
-    done = daemon_status.get("decisions_done")
-    total = daemon_status.get("symbols_total")
-    progress = f"{done}/{total}" if done is not None and total is not None else "—"
-    calls_used = daemon_status.get("model_calls_used")
-    calls_max = daemon_status.get("max_model_calls_per_cycle")
-    calls = f"{calls_used}/{calls_max}" if calls_used is not None and calls_max is not None else "—"
-    stale_summary = (
-        f"{len(stale_values)} symboles · max {max(stale_values)}"
-        if stale_values
-        else "OK"
-    )
-    stale_style = palette["kpi_vol_warn"] if stale_values else palette["status_nominal"]
 
     cards = Table.grid(expand=True)
     for _ in range(5):
@@ -495,58 +682,50 @@ def _build_overview_panel(
     cards.add_row(
         _overview_card(
             "Portefeuille",
-            [
-                ("Équité", f"${equity:,.2f}", palette["status_equity"]),
-                ("Cash", f"${cash:,.2f}", palette["status_equity"]),
-                ("P&L", f"{ret_pct:+.2f}% ({pnl:+,.2f})", ret_style or pnl_style),
-                ("Positions", str(len(holdings)), palette["kpi_default"]),
-            ],
+            _build_portfolio_overview_tile(
+                portfolio,
+                kpis,
+                equity_curve,
+                starting_cash=starting_cash,
+                palette=palette,
+            ),
             border_style=palette["border_default"],
-            palette=palette,
         ),
         _overview_card(
             "Décisions",
-            [
-                ("Dernières", str(len(decisions)), palette["kpi_default"]),
-                ("Risque", str(_count_risk_rows(recent_decisions)), palette["pnl_negative"]),
-                ("Daemon", str(daemon_status.get("phase") or "—"), palette["status_phase"]),
-                ("Appels", calls, palette["kpi_default"]),
-            ],
+            _build_decisions_overview_tile(
+                decisions,
+                recent_decisions,
+                daemon_status,
+                palette=palette,
+            ),
             border_style=palette["border_attribution"],
-            palette=palette,
         ),
         _overview_card(
             "Plans",
-            [
-                ("Armés", str(len(armed_plans)), palette["kpi_default"]),
-                ("Sortie", str(len(trade_plans)), palette["kpi_default"]),
-                ("Veilles", str(len(watches)), palette["kpi_default"]),
-                ("Progrès", progress, palette["status_accent"]),
-            ],
+            _build_plans_overview_tile(
+                armed_plans,
+                trade_plans,
+                watches,
+                daemon_status,
+                palette=palette,
+            ),
             border_style=palette["border_plans"],
-            palette=palette,
         ),
         _overview_card(
             "Observabilité",
-            [
-                ("Data", stale_summary, stale_style),
-                ("Learnings", str(state.get("learnings_pending_count") or 0), palette["kpi_default"]),
-                ("Source", str(state.get("source") or "—"), palette["dim"]),
-                ("Cycle", _format_datetime(state.get("ts")), palette["dim"]),
-            ],
+            _build_observability_overview_tile(
+                state,
+                stale_streaks,
+                learnings,
+                palette=palette,
+            ),
             border_style=palette["border_learnings"],
-            palette=palette,
         ),
         _overview_card(
             "Logs",
-            [
-                ("Page", "l ou 6", palette["status_accent"]),
-                ("Cycles", "c", palette["dim"]),
-                ("Scroll", "f", palette["dim"]),
-                ("Kill", "actif" if kill_active else "nominal", palette["pnl_negative"] if kill_active else palette["status_nominal"]),
-            ],
+            _build_logs_overview_tile(kill_active=kill_active, palette=palette),
             border_style=palette["border_default"],
-            palette=palette,
         ),
     )
 
@@ -562,7 +741,7 @@ def _build_overview_panel(
 
 
 class OverviewPane(Static):
-    """Home courte : résumé exploitable sans scroll."""
+    """Home analytique : tuiles Textual responsives et non scrollables."""
 
     DEFAULT_CSS = """
     OverviewPane {
@@ -570,17 +749,143 @@ class OverviewPane(Static):
         width: 100%;
         overflow-y: hidden;
         padding: 0 1;
+        layout: vertical;
+    }
+    #overview-top-row {
+        height: 2fr;
+        width: 100%;
+        layout: horizontal;
+    }
+    #overview-bottom-row {
+        height: 1fr;
+        width: 100%;
+        layout: horizontal;
+    }
+    #overview-right-stack {
+        width: 1fr;
+        height: 100%;
+        layout: vertical;
+    }
+    #overview-portfolio-tile {
+        width: 2fr;
+        height: 100%;
+    }
+    #overview-decisions-tile,
+    #overview-plans-tile {
+        width: 100%;
+        height: 1fr;
+    }
+    #overview-observability-tile,
+    #overview-logs-tile {
+        width: 1fr;
+        height: 100%;
+    }
+    .overview-tile {
+        margin: 0 1 1 0;
+        overflow: hidden;
     }
     """
 
     _current_palette: Palette = PALETTE_LIGHT
 
+    def compose(self) -> ComposeResult:
+        with Horizontal(id="overview-top-row"):
+            yield Static(id="overview-portfolio-tile", classes="overview-tile")
+            with Vertical(id="overview-right-stack"):
+                yield Static(id="overview-decisions-tile", classes="overview-tile")
+                yield Static(id="overview-plans-tile", classes="overview-tile")
+        with Horizontal(id="overview-bottom-row"):
+            yield Static(id="overview-observability-tile", classes="overview-tile")
+            yield Static(id="overview-logs-tile", classes="overview-tile")
+
     def update_state(self, state: dict, kill_active: bool) -> None:
-        self.update(
-            _build_overview_panel(
-                state,
-                kill_active=kill_active,
-                palette=self._current_palette,
+        palette = self._current_palette
+        portfolio = (
+            state.get("portfolio") if isinstance(state.get("portfolio"), dict) else {}
+        )
+        kpis = state.get("kpis") if isinstance(state.get("kpis"), dict) else {}
+        daemon_status = (
+            state.get("daemon_status")
+            if isinstance(state.get("daemon_status"), dict)
+            else {}
+        )
+        decisions = _safe_list_of_dicts(state.get("decisions"))
+        recent_decisions = _safe_list_of_dicts(state.get("recent_decisions"))
+        armed_plans = _safe_list_of_dicts(state.get("armed_plans"))
+        trade_plans = _safe_list_of_dicts(state.get("trade_plans"))
+        watches = _safe_list_of_dicts(state.get("indicator_watches"))
+        stale_streaks = (
+            state.get("stale_streaks")
+            if isinstance(state.get("stale_streaks"), dict)
+            else {}
+        )
+        equity_curve = [
+            value
+            for value in (
+                _safe_float(item, default=None)
+                for item in (state.get("equity_curve") or [])
+            )
+            if value is not None
+        ]
+        learnings = _safe_list_of_dicts(state.get("learnings"))
+        cash = _safe_float(portfolio.get("cash") or kpis.get("cash"), default=0.0) or 0.0
+        starting_cash = _safe_float(state.get("starting_cash"), default=cash) or cash
+
+        self.query_one("#overview-portfolio-tile", Static).update(
+            _overview_card(
+                "Portefeuille",
+                _build_portfolio_overview_tile(
+                    portfolio,
+                    kpis,
+                    equity_curve,
+                    starting_cash=starting_cash,
+                    palette=palette,
+                ),
+                border_style=palette["border_default"],
+            )
+        )
+        self.query_one("#overview-decisions-tile", Static).update(
+            _overview_card(
+                "Décisions",
+                _build_decisions_overview_tile(
+                    decisions,
+                    recent_decisions,
+                    daemon_status,
+                    palette=palette,
+                ),
+                border_style=palette["border_attribution"],
+            )
+        )
+        self.query_one("#overview-plans-tile", Static).update(
+            _overview_card(
+                "Plans",
+                _build_plans_overview_tile(
+                    armed_plans,
+                    trade_plans,
+                    watches,
+                    daemon_status,
+                    palette=palette,
+                ),
+                border_style=palette["border_plans"],
+            )
+        )
+        self.query_one("#overview-observability-tile", Static).update(
+            _overview_card(
+                "Observabilité",
+                _build_observability_overview_tile(
+                    state,
+                    stale_streaks,
+                    learnings,
+                    palette=palette,
+                ),
+                border_style=palette["border_learnings"],
+            )
+        )
+        self.query_one("#overview-logs-tile", Static).update(
+            _overview_card(
+                "Logs",
+                _build_logs_overview_tile(kill_active=kill_active, palette=palette),
+                border_style=palette["border_default"],
             )
         )
 
@@ -1212,6 +1517,10 @@ class CockpitApp(App):
         height: 1fr;
         layout: vertical;
     }
+    #page-switcher {
+        width: 100%;
+        height: 100%;
+    }
     #overview-page {
         width: 100%;
         height: 100%;
@@ -1281,23 +1590,23 @@ class CockpitApp(App):
     _previous_non_logs_page: str = "home"
 
     def compose(self) -> ComposeResult:
-        """Structure : statut → attention → navigation → page active → footer."""
+        """Structure : statut → navigation → page active → footer."""
         yield CockpitStatus(id="cockpit-status")
-        yield AttentionStrip(id="attention-strip")
         yield CockpitNav(id="cockpit-nav")
         with Vertical(id="workspace"):
-            yield OverviewPane(id="overview-page", classes="cockpit-page")
-            with Horizontal(id="portfolio-page", classes="cockpit-page"):
-                yield PositionsPlansPane(id="positions-plans-pane")
-                yield EquityTradesPane(id="equity-trades-pane")
-            with Vertical(id="decisions-page", classes="cockpit-page"):
-                yield DecisionsPane(id="decisions-pane")
-            with Vertical(id="plans-page", classes="cockpit-page"):
-                yield ArmedPlansPane(id="armed-plans-pane")
-            with Vertical(id="observability-page", classes="cockpit-page"):
-                yield UniversePane(id="universe-pane")
-            with Vertical(id="logs-page", classes="cockpit-page"):
-                yield LogsPane(id="logs-pane")
+            with ContentSwitcher(id="page-switcher", initial="overview-page"):
+                yield OverviewPane(id="overview-page", classes="cockpit-page")
+                with Horizontal(id="portfolio-page", classes="cockpit-page"):
+                    yield PositionsPlansPane(id="positions-plans-pane")
+                    yield EquityTradesPane(id="equity-trades-pane")
+                with Vertical(id="decisions-page", classes="cockpit-page"):
+                    yield DecisionsPane(id="decisions-pane")
+                with Vertical(id="plans-page", classes="cockpit-page"):
+                    yield ArmedPlansPane(id="armed-plans-pane")
+                with Vertical(id="observability-page", classes="cockpit-page"):
+                    yield UniversePane(id="universe-pane")
+                with Vertical(id="logs-page", classes="cockpit-page"):
+                    yield LogsPane(id="logs-pane")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -1343,12 +1652,11 @@ class CockpitApp(App):
         if page_key != "logs":
             self._previous_non_logs_page = page_key
 
-        for page in _PAGES:
-            try:
-                widget = self.query_one(f"#{page.widget_id}")
-                widget.display = page.key == page_key
-            except Exception:
-                pass
+        try:
+            switcher = self.query_one("#page-switcher", ContentSwitcher)
+            switcher.current = _PAGE_BY_KEY[page_key].widget_id
+        except Exception:
+            pass
         try:
             nav = self.query_one("#cockpit-nav", CockpitNav)
             nav.update_page(page_key, palette=self._current_palette())
@@ -1421,9 +1729,6 @@ class CockpitApp(App):
 
             status: CockpitStatus = self.query_one("#cockpit-status", CockpitStatus)
             status.update_state(state, kill_active, palette=palette)
-
-            attention: AttentionStrip = self.query_one("#attention-strip", AttentionStrip)
-            attention.update_state(state, kill_active, palette=palette)
 
             overview: OverviewPane = self.query_one("#overview-page", OverviewPane)
             overview._current_palette = palette
