@@ -409,3 +409,43 @@ def _handle_get_indicator_context(call: AgentToolCall, context: ToolContext) -> 
 TOOL_REGISTRY["get_indicator_context"] = ToolSpec(
     name="get_indicator_context", validate_args=_validate_get_indicator_context,
     handler=_handle_get_indicator_context)
+
+
+# ---------------------------------------------------------------------------
+# Task 6 : sérialisation des traces + helpers prompt/ledger
+# ---------------------------------------------------------------------------
+
+
+def round_runtime_payload(traces: list[AgentToolTrace], *, rounds: int) -> dict:
+    """Payload durable (decisions.jsonl runtime.*) — primitives seulement (§8)."""
+    return {
+        "tool_rounds": rounds,
+        "tool_calls": [
+            {"id": t.id, "tool": t.tool, "args": t.args, "outcome": t.outcome, "detail": t.detail}
+            for t in traces
+        ],
+    }
+
+
+def results_prompt_payload(results: list[AgentToolResult]) -> list[dict]:
+    """Forme compacte réinjectée au LLM pour le tour final."""
+    out: list[dict] = []
+    for r in results:
+        item: dict[str, Any] = {"id": r.id, "tool": r.tool, "ok": r.ok}
+        if r.ok:
+            item["result"] = r.result
+        else:
+            item["error"] = r.error
+        out.append(item)
+    return out
+
+
+def calls_for_symbol(payload_calls: list[dict], symbol: str) -> list[dict]:
+    """Traces à attacher au row d'UN symbole : ses calls + les calls globaux."""
+    mine: list[dict] = []
+    for call in payload_calls:
+        args = call.get("args") or {}
+        mentioned = _symbols_mentioned(args if isinstance(args, dict) else {})
+        if not mentioned or symbol in mentioned:
+            mine.append(call)
+    return mine

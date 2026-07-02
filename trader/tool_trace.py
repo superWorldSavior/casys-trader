@@ -94,10 +94,28 @@ def _learning_trace(row: dict) -> dict:
     return {"tool": "learning", "invoked": True, "outcome": "applied"}
 
 
+def _domain_tool_traces(runtime: dict) -> list[dict]:
+    """Traces des domain tools V0 persistées dans runtime.tool_calls."""
+    calls = runtime.get("tool_calls")
+    if not isinstance(calls, list):
+        return []
+    return [
+        {
+            "tool": str(call.get("tool") or "?"),
+            "invoked": True,
+            "args": call.get("args") or {},
+            "outcome": call.get("outcome"),
+            "detail": call.get("detail") or {},
+        }
+        for call in calls
+        if isinstance(call, dict)
+    ]
+
+
 def summarize_tools(row: dict) -> dict:
     runtime = _runtime(row)
     context_request = runtime.get("context_request")
-    rounds = (
+    context_rounds = (
         _as_int(context_request.get("rounds"))
         if isinstance(context_request, dict)
         else 0
@@ -108,11 +126,13 @@ def summarize_tools(row: dict) -> dict:
         _next_wake_trace(row, runtime),
         _order_trace(row),
         _learning_trace(row),
+        *_domain_tool_traces(runtime),
     ]
     tools_used = [item["tool"] for item in trace if item["invoked"]]
     return {
         "tools_used": tools_used,
+        # compat : le taux d'usage legacy reste calculé sur les 5 pseudo-tools
         "tools_skipped": [tool for tool in TOOLS if tool not in tools_used],
-        "rounds": rounds,
+        "rounds": max(context_rounds, _as_int(runtime.get("tool_rounds"))),
         "trace": trace,
     }

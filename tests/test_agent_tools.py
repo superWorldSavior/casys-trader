@@ -356,3 +356,39 @@ def test_get_indicator_context_args_invalides():
     )
     assert isinstance(trace, AgentToolTrace)
     assert trace.detail["reason"] == "invalid_args"
+
+
+# ---------------------------------------------------------------------------
+# Task 6 : payloads runtime/prompt + calls_for_symbol
+# ---------------------------------------------------------------------------
+
+
+def test_round_runtime_payload_schema_design():
+    traces = [AgentToolTrace(id="c1", tool="get_freshness", args={"symbols": ["2330.TW"]},
+                             outcome="ok", detail={"result_count": 1})]
+    payload = agent_tools.round_runtime_payload(traces, rounds=1)
+    assert payload == {"tool_rounds": 1, "tool_calls": [
+        {"id": "c1", "tool": "get_freshness", "args": {"symbols": ["2330.TW"]},
+         "outcome": "ok", "detail": {"result_count": 1}}]}
+
+
+def test_results_prompt_payload_compact():
+    results = [
+        agent_tools.AgentToolResult(id="c1", tool="echo", ok=True, result={"x": 1}),
+        agent_tools.AgentToolResult(id="c2", tool="echo", ok=False, error="rejected:unknown_tool"),
+    ]
+    payload = agent_tools.results_prompt_payload(results)
+    assert payload == [
+        {"id": "c1", "tool": "echo", "ok": True, "result": {"x": 1}},
+        {"id": "c2", "tool": "echo", "ok": False, "error": "rejected:unknown_tool"},
+    ]
+
+
+def test_calls_for_symbol_filtre_et_garde_les_globaux():
+    calls = [
+        {"id": "c1", "tool": "get_freshness", "args": {"symbols": ["2330.TW"]}, "outcome": "ok", "detail": {}},
+        {"id": "c2", "tool": "get_position_risk", "args": {"symbol": "SAF.PA"}, "outcome": "ok", "detail": {}},
+        {"id": "c3", "tool": "get_attribution", "args": {"scope": "summary"}, "outcome": "ok", "detail": {}},
+    ]
+    mine = agent_tools.calls_for_symbol(calls, "2330.TW")
+    assert [c["id"] for c in mine] == ["c1", "c3"]

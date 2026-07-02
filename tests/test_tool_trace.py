@@ -210,3 +210,35 @@ def test_hold_pur_et_vieilles_rows_sans_cles() -> None:
     assert summary["tools_skipped"] == TOOL_ORDER
     assert summary["rounds"] == 0
     assert summary["trace"] == [{"tool": tool, "invoked": False} for tool in TOOL_ORDER]
+
+
+# ---------------------------------------------------------------------------
+# Task 6 : summarize_tools voit les domain tools
+# ---------------------------------------------------------------------------
+
+
+def test_summarize_tools_inclut_les_domain_tools():
+    row = {
+        "action": "HOLD",
+        "runtime": {
+            "tool_rounds": 1,
+            "tool_calls": [
+                {"id": "c1", "tool": "get_freshness", "args": {"symbols": ["2330.TW"]},
+                 "outcome": "ok", "detail": {"result_count": 1}},
+                {"id": "c2", "tool": "get_position_risk", "args": {"symbol": "2330.TW"},
+                 "outcome": "rejected", "detail": {"reason": "invalid_args"}},
+            ],
+        },
+    }
+    summary = summarize_tools(row)
+    assert "get_freshness" in summary["tools_used"]
+    assert "get_position_risk" in summary["tools_used"]
+    assert summary["rounds"] == 1
+    domain_items = [item for item in summary["trace"] if item["tool"] == "get_freshness"]
+    assert domain_items[0]["outcome"] == "ok"
+
+
+def test_summarize_tools_sans_domain_tools_inchange():
+    summary = summarize_tools({"action": "HOLD", "runtime": {}})
+    assert summary["tools_used"] == []
+    assert summary["rounds"] == 0
