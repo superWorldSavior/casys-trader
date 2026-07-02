@@ -2,6 +2,9 @@
 
 > Ce document décrit l'architecture technique du daemon de trading paper piloté par LLM.
 > **Généré par analyse statique du code — à re-vérifier si l'architecture évolue.**
+>
+> Refactor cible en cours de cadrage :
+> `docs/superpowers/specs/2026-07-02-modular-architecture-logging-refactor-design.md`.
 
 ---
 
