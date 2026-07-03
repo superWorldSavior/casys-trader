@@ -165,3 +165,43 @@ def test_risk_at_stops_worst_symbol_determine():
     assert result.worst_symbol == "BBB"
     assert result.worst_usd == -80.0
     assert result.total_usd == -130.0
+
+
+# ---------------------------------------------------------------------------
+# attention_items
+# ---------------------------------------------------------------------------
+
+def test_attention_items_ordre_et_kill_premier():
+    from trader.cockpit.aggregates import attention_items
+
+    state = {
+        "halted": "drawdown",
+        "portfolio": {"holdings": [{"symbol": "AAA", "quantity": 10, "last_price": 100.0}]},
+        "trade_plans": [{"symbol": "AAA", "side": "LONG", "hard_stop_price": 90.0,
+                         "remaining_quantity": 10}],
+        "stale_streaks": {"BBB": 3},
+        "recent_decisions": [{"reason": "risk:max_exposure"}],
+        "armed_plans": [{"expires_at": (NOW + timedelta(minutes=30)).isoformat()}],
+    }
+    items = attention_items(state, kill_active=True, now=NOW)
+    labels = [item.label for item in items]
+    assert items[0].label == "KILL actif" and items[0].severity == "crit"
+    assert labels[1].startswith("HALT")
+    assert labels[2].startswith("risque@stops")
+    assert labels[3].startswith("stale 1")
+    assert labels[4].endswith("rejets risk")
+    assert "expirent <1h" in labels[5]
+    assert len(items) == 6
+
+
+def test_attention_items_nominal_vide():
+    from trader.cockpit.aggregates import attention_items
+
+    assert attention_items({}, kill_active=False, now=NOW) == []
+
+
+def test_attention_items_arme_deja_expire_ignore():
+    from trader.cockpit.aggregates import attention_items
+
+    state = {"armed_plans": [{"expires_at": (NOW - timedelta(minutes=5)).isoformat()}]}
+    assert attention_items(state, kill_active=False, now=NOW) == []

@@ -172,6 +172,64 @@ def risk_at_stops(holdings: list[dict], trade_plans: list[dict]) -> RiskAtStops:
     )
 
 
+@dataclass(frozen=True)
+class AttentionItem:
+    label: str
+    severity: str  # "crit" | "warn"
+
+
+def attention_items(state: dict, *, kill_active: bool, now: datetime) -> list[AttentionItem]:
+    """Anomalies méritant l'attention, par criticité décroissante. [] = RAS."""
+    state = state if isinstance(state, dict) else {}
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=UTC)
+    items: list[AttentionItem] = []
+
+    if kill_active:
+        items.append(AttentionItem("KILL actif", "crit"))
+    halted = state.get("halted")
+    if halted:
+        items.append(AttentionItem(f"HALT {halted}", "crit"))
+
+    portfolio = state.get("portfolio") if isinstance(state.get("portfolio"), dict) else {}
+    risk = risk_at_stops(
+        _safe_list_of_dicts(portfolio.get("holdings")),
+        _safe_list_of_dicts(state.get("trade_plans")),
+    )
+    if risk.total_usd < 0:
+        items.append(AttentionItem(f"risque@stops {risk.total_usd:+,.0f}$", "warn"))
+
+    stale_streaks = (
+        state.get("stale_streaks") if isinstance(state.get("stale_streaks"), dict) else {}
+    )
+    stale = [int(v) for v in stale_streaks.values() if isinstance(v, (int, float)) and v > 0]
+    if stale:
+        items.append(AttentionItem(f"stale {len(stale)} (max ×{max(stale)})", "warn"))
+
+    rejects = sum(
+        1
+        for row in _safe_list_of_dicts(state.get("recent_decisions"))
+        if str(row.get("reason") or "").startswith("risk:")
+    )
+    if rejects:
+        items.append(AttentionItem(f"{rejects} rejets risk", "warn"))
+
+    expiring = 0
+    for watch in _safe_list_of_dicts(state.get("armed_plans")):
+        expires_at = parse_ts(watch.get("expires_at"))
+        if expires_at is not None and timedelta(0) <= expires_at - now < timedelta(hours=1):
+            expiring += 1
+    if expiring:
+        items.append(AttentionItem(f"{expiring} armé(s) expirent <1h", "warn"))
+
+    if risk.without_stop:
+        shown = ", ".join(risk.without_stop[:3])
+        extra = f" +{len(risk.without_stop) - 3}" if len(risk.without_stop) > 3 else ""
+        items.append(AttentionItem(f"sans stop: {shown}{extra}", "warn"))
+
+    return items
+
+
 def activity_buckets(
     recent_decisions: list[dict],
     now: datetime,

@@ -143,7 +143,7 @@ si rien : « RAS » discret. Remplace l'`AttentionStrip` morte (supprimée).
 |---|---|
 | `activity_buckets(recent_decisions, now, *, window_min=60, bucket_min=5)` | → séries par état (réutilise la logique de `_decision_status`) ; décisions sans ts ignorées |
 | `risk_at_stops(holdings, trade_plans)` | → total USD au déclenchement des stops + pire position (généralise `_stop_risk_for_holding`) ; plans sans stop → comptés « sans stop », pas d'exception |
-| `attention_items(state)` | → liste ordonnée (kill, halted, stale N, rejets risk N, armés expirant <1 h, positions sans stop) avec seuils explicites |
+| `attention_items(state)` | → liste ordonnée (kill, halted, risque@stops négatif, stale N, rejets risk N, armés expirant <1 h, positions sans stop) avec seuils explicites |
 | `venue_clock(venue_state, open_venues_list, sessions, now)` | → venues ouvertes + prochaine transition (réutilise `trader.rotation.schedule`) |
 
 Valeurs neutres sur données partielles (dict vide → agrégat vide, jamais de raise).
