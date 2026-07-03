@@ -60,3 +60,42 @@ def test_status_line_cycle_absent_hors_batch():
     line = build_status_line(state, kill_active=False, palette=PALETTE_LIGHT,
                              width=300, now=NOW, vital=FakeVital())
     assert "cycle 0/0" not in line.plain
+
+
+def test_attention_line_ras_et_anomalies():
+    from trader.cockpit.home import build_attention_text
+
+    assert "RAS" in build_attention_text({}, kill_active=False, palette=PALETTE_LIGHT, now=NOW).plain
+
+    state = {"stale_streaks": {"AAA": 2}}
+    rendered = build_attention_text(state, kill_active=True, palette=PALETTE_LIGHT, now=NOW).plain
+    assert "KILL" in rendered and "stale" in rendered
+
+
+def _patch_state_paths(monkeypatch, tmp_path):
+    """Monkeypatch des constantes de chemins (même mécanique que test_cockpit_smoke)."""
+    import json
+
+    import trader.cockpit.app as cockpit_module
+    import trader.read_models.runtime_state as rs
+
+    (tmp_path / "current_report.json").write_text(json.dumps({
+        "ts": "2026-07-03T10:00:00+00:00",
+        "dry_run": True,
+        "portfolio": {"cash": 100000.0, "equity": 100000.0, "holdings": []},
+        "decisions": [],
+    }), encoding="utf-8")
+    monkeypatch.setattr(cockpit_module, "_STATE_DIR", tmp_path)
+    monkeypatch.setattr(cockpit_module, "_EVENTS_FILE", tmp_path / "events.jsonl")
+    monkeypatch.setattr(cockpit_module, "_KILL_FILE", tmp_path / "KILL")
+    monkeypatch.setattr(rs, "_STATE_DIR", tmp_path)
+
+
+async def test_app_compose_attention_line(tmp_path, monkeypatch):
+    from trader.cockpit.home import AttentionLine
+    from trader.cockpit import CockpitApp
+
+    _patch_state_paths(monkeypatch, tmp_path)
+    app = CockpitApp()
+    async with app.run_test(size=(200, 50)) as _:
+        assert app.query_one("#attention-line", AttentionLine) is not None

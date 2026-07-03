@@ -9,13 +9,58 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from rich.text import Text
+from textual.widgets import Static
 
-from trader.cockpit.aggregates import venue_clock
+from trader.cockpit.aggregates import attention_items, venue_clock
 from trader.read_models.runtime_state import _safe_float
 from trader.ui.palette import Palette
 from trader.ui.rich_panels import sparkline
 
 UTC = timezone.utc
+
+
+def build_attention_text(
+    state: dict,
+    *,
+    kill_active: bool,
+    palette: Palette,
+    now: datetime | None = None,
+) -> Text:
+    """Ligne « à surveiller » : anomalies uniquement, sinon RAS discret. PURE."""
+    now = now or datetime.now(UTC)
+    items = attention_items(state, kill_active=kill_active, now=now)
+    if not items:
+        return Text("✓ RAS", style=palette["status_nominal"])
+    text = Text(" ⚠ ", style=f"bold {palette['kpi_vol_warn']}")
+    for index, item in enumerate(items):
+        if index:
+            text.append("  ·  ", style=palette["dim"])
+        style = "bold white on red" if item.severity == "crit" else palette["kpi_vol_warn"]
+        text.append(item.label, style=style)
+    return text
+
+
+class AttentionLine(Static):
+    """Ligne « à surveiller » — widget mince sur build_attention_text."""
+
+    DEFAULT_CSS = """
+    AttentionLine {
+        height: 1;
+        background: $surface;
+        padding: 0 1;
+    }
+    """
+
+    def update_state(
+        self,
+        state: dict,
+        kill_active: bool,
+        *,
+        palette: Palette,
+        now: datetime | None = None,
+    ) -> None:
+        self.update(build_attention_text(state, kill_active=kill_active, palette=palette, now=now))
+
 
 # Ordre de drop quand la largeur manque — les 4 segments critiques
 # (vital, équité, mode, kill) ne figurent volontairement pas ici.

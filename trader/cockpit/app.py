@@ -5,6 +5,7 @@ plans, observabilité, logs live) + supervision du daemon.
 
 Layout mission-control navigable (priorité haute → bas) :
     STATUT (dock:top, h=2)
+    ATTENTION (#attention-line, h=1)
     NAV (#cockpit-nav, h=3)
     CONTENT SWITCHER (#page-switcher, h=1fr)
     Footer (dock:bottom, h=1)
@@ -59,6 +60,7 @@ from textual.theme import Theme
 from textual.widgets import Button, ContentSwitcher, Footer, Label, RichLog, Static
 
 from trader.cockpit.supervisor import daemon_vital_state
+from trader.cockpit.home import AttentionLine
 
 from trader.cockpit.events import (
     EventClass,
@@ -231,24 +233,6 @@ class CockpitStatus(Static):
                 getattr(app, "_last_kill_active", False),
                 palette=app._current_palette(),  # type: ignore[attr-defined]
             )
-
-
-class AttentionStrip(Static):
-    """Ligne de triage entre le statut global et l'espace de travail."""
-
-    DEFAULT_CSS = """
-    AttentionStrip {
-        height: 3;
-        background: $surface;
-        border-bottom: solid $primary;
-        padding: 0 1;
-    }
-    """
-
-    def update_state(
-        self, state: dict, kill_active: bool, *, palette: Palette = PALETTE_DARK
-    ) -> None:
-        self.update(_build_attention_line(state, kill_active=kill_active, palette=palette))
 
 
 class CockpitNav(Static):
@@ -538,84 +522,6 @@ class UniversePane(Static):
                 expand=True,
             )
         )
-
-
-# ---------------------------------------------------------------------------
-# Builder pur : table trades avec net P&L et noms de sociétés
-# ---------------------------------------------------------------------------
-
-
-def _build_trades_with_pnl(
-    fills: list[dict],
-    pnl_by_fill: list[float | None],
-    company_map: dict[str, str],
-    *,
-    limit: int = 20,
-    palette: Palette = PALETTE_DARK,
-) -> RenderableType:
-    """Table des derniers trades clôturés avec net P&L calculé et noms de sociétés.
-
-    PURE — ne lit aucun fichier. Les fills BUY affichent — en P&L.
-    Les fills SELL affichent le bénéfice net réalisé coloré +/−.
-    Raison de sortie : non disponible dans les fills → —.
-    """
-    from rich.table import Table
-    from rich.text import Text
-    from trader.ui.rich_panels import _fmt_symbol_short
-
-    table = Table(title="Trades clôturés", show_lines=False, expand=True)
-    table.add_column("Heure", no_wrap=True, style=palette["dim"])
-    table.add_column("Société · Ticker", style="bold")
-    table.add_column("Sens")
-    table.add_column("Qté", justify="right")
-    table.add_column("Prix", justify="right")
-    table.add_column("Net P&L", justify="right")
-
-    # Aligner fills et pnl_by_fill (même longueur garantie par compute_realized_pnl_by_fill)
-    paired = list(zip(fills, pnl_by_fill)) if pnl_by_fill else [(f, None) for f in fills]
-    recent = paired[-limit:] if len(paired) > limit else paired
-
-    for fill, net_pnl in reversed(recent):
-        ts_raw = str(fill.get("ts") or "")
-        try:
-            candidate = f"{ts_raw[:-1]}+00:00" if ts_raw.endswith("Z") else ts_raw
-            dt = datetime.fromisoformat(candidate)
-            ts_str = dt.astimezone(UTC).strftime("%H:%M:%S")
-        except (ValueError, AttributeError):
-            ts_str = ts_raw[:8] if ts_raw else "—"
-
-        symbol = str(fill.get("symbol") or "?")
-        label = _fmt_symbol_short(symbol, company_map)
-        side = str(fill.get("side") or "")
-        side_style = (
-            palette["action_buy"] if side == "BUY" else (
-                palette["action_sell"] if side == "SELL" else palette["dim"]
-            )
-        )
-        qty_val = _safe_float(fill.get("quantity"), default=0.0) or 0.0
-        price_val = _safe_float(fill.get("price"), default=None)
-        price_str = f"{price_val:,.4f}" if price_val is not None else "—"
-
-        # Net P&L : None (BUY) → —, float → coloré
-        if net_pnl is None:
-            pnl_cell = Text("—", style=palette["dim"])
-        else:
-            pnl_style = palette["pnl_positive"] if net_pnl >= 0 else palette["pnl_negative"]
-            pnl_cell = Text(f"{net_pnl:+,.2f}", style=pnl_style)
-
-        table.add_row(
-            ts_str,
-            label,
-            Text(side, style=side_style),
-            f"{qty_val:,.4f}",
-            price_str,
-            pnl_cell,
-        )
-
-    if not recent:
-        table.add_row("—", "—", "—", "—", "—", "—")
-
-    return table
 
 
 # ---------------------------------------------------------------------------
@@ -979,8 +885,9 @@ class CockpitApp(App):
     _previous_non_logs_page: str = "home"
 
     def compose(self) -> ComposeResult:
-        """Structure : statut → navigation → page active → footer."""
+        """Structure : statut → attention → navigation → page active → footer."""
         yield CockpitStatus(id="cockpit-status")
+        yield AttentionLine(id="attention-line")
         yield CockpitNav(id="cockpit-nav")
         with Vertical(id="workspace"):
             with ContentSwitcher(id="page-switcher", initial="overview-page"):
@@ -1118,6 +1025,9 @@ class CockpitApp(App):
 
             status: CockpitStatus = self.query_one("#cockpit-status", CockpitStatus)
             status.update_state(state, kill_active, palette=palette)
+
+            attention: AttentionLine = self.query_one("#attention-line", AttentionLine)
+            attention.update_state(state, kill_active, palette=palette)
 
             overview: OverviewPane = self.query_one("#overview-page", OverviewPane)
             overview._current_palette = palette
