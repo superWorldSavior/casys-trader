@@ -18,6 +18,7 @@ import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Union
+from unittest.mock import patch
 
 import pytest
 
@@ -147,6 +148,19 @@ class TestDefaultNextWake:
         # Symbole sans override → défaut global
         assert sqlite_sched.next_wake("UNKNOWN") == datetime.fromisoformat(iso)
 
+    # FIX 1 — now naïf : attacher UTC, ne pas convertir
+    def test_set_next_wake_in_naive_now_parity_with_json(
+        self, sqlite_sched: SqliteScheduler, json_sched: Scheduler
+    ) -> None:
+        """now naïf doit être traité comme UTC (replace, pas astimezone)."""
+        naive_now = datetime(2026, 7, 3, 10, 30)  # sans tzinfo
+        sqlite_sched.set_next_wake_in(minutes=5, now=naive_now)
+        json_sched.set_next_wake_in(minutes=5, now=naive_now)
+        assert sqlite_sched.next_wake() == json_sched.next_wake()
+        # Valeur attendue : 10:35 UTC, PAS une conversion depuis le fuseau local
+        expected = datetime(2026, 7, 3, 10, 35, tzinfo=timezone.utc)
+        assert sqlite_sched.next_wake() == expected
+
 
 # ---------------------------------------------------------------------------
 # Famille réveils par symbole
@@ -242,6 +256,18 @@ class TestSymbolWake:
             sqlite_sched.due_symbols(["SPY", "QQQ", "DIA"], now=now)
             == json_sched.due_symbols(["SPY", "QQQ", "DIA"], now=now)
         )
+
+    # FIX 1 — now naïf sur set_symbol_next_wake_in
+    def test_set_symbol_next_wake_in_naive_now_parity_with_json(
+        self, sqlite_sched: SqliteScheduler, json_sched: Scheduler
+    ) -> None:
+        """now naïf sur set_symbol_next_wake_in : same result as Scheduler."""
+        naive_now = datetime(2026, 7, 3, 10, 30)
+        sqlite_sched.set_symbol_next_wake_in("SPY", minutes=5, now=naive_now)
+        json_sched.set_symbol_next_wake_in("SPY", minutes=5, now=naive_now)
+        assert sqlite_sched.next_wake("SPY") == json_sched.next_wake("SPY")
+        expected = datetime(2026, 7, 3, 10, 35, tzinfo=timezone.utc)
+        assert sqlite_sched.next_wake("SPY") == expected
 
 
 # ---------------------------------------------------------------------------
@@ -426,6 +452,32 @@ class TestSetIndicatorWatch:
         js = {w["id"] for w in json_sched.active_indicator_watches(now=_NOW)}
         assert sq == js
 
+    # FIX 2 — upsert d'une watch ARMÉE existante ne doit PAS changer l'ordre
+    def test_upsert_existing_armed_watch_preserves_order(
+        self, sqlite_sched: SqliteScheduler
+    ) -> None:
+        """Re-upsert d'un id armé existant : la position (seq) est préservée.
+
+        Pour les armées (EXECUTE_ORDER), la source Scheduler utilise
+        `watches[id] = watch` sur une clé existante → position Python dict préservée.
+        SQLite doit faire pareil : ON CONFLICT DO UPDATE sans toucher seq.
+        (Pour les non-armées, elles sont toujours supprimées + réinsérées à la fin
+        — les deux implémentations s'alignent donc.)
+        """
+        w_x = _armed_watch("SPY:X", "SPY", _future(240))
+        w_y = _armed_watch("QQQ:Y", "QQQ", _future(240))
+        sqlite_sched.set_symbol_indicator_watch("SPY", w_x)
+        sqlite_sched.set_symbol_indicator_watch("QQQ", w_y)
+        # Ré-upsert X (armée) avec expires_at modifié → doit garder sa position
+        w_x_modified = _armed_watch("SPY:X", "SPY", _future(360))
+        sqlite_sched.set_symbol_indicator_watch("SPY", w_x_modified)
+
+        active = sqlite_sched.active_indicator_watches(now=_NOW)
+        ids = [a["id"] for a in active]
+        assert ids == ["SPY:X", "QQQ:Y"], f"ordre attendu [X, Y], obtenu {ids}"
+        # Vérifier que la valeur a bien été mise à jour (watch_json reflète le nouveau dict)
+        assert active[0]["expires_at"] == w_x_modified["expires_at"]
+
 
 # ---------------------------------------------------------------------------
 # Famille indicator watches — active vs pop_expired
@@ -550,6 +602,25 @@ class TestRemoveIndicatorWatch:
         sq = sqlite_sched.active_indicator_watches(now=_NOW)
         js = json_sched.active_indicator_watches(now=_NOW)
         assert [a["id"] for a in sq] == [a["id"] for a in js]
+
+    # FIX 3 — remove inexistant ne doit PAS réécrire le shadow
+    def test_remove_nonexistent_does_not_rewrite_shadow(
+        self, sqlite_sched: SqliteScheduler
+    ) -> None:
+        """remove d'un id inexistant → _write_shadow NON appelé."""
+        with patch.object(sqlite_sched, "_write_shadow") as mock_write:
+            sqlite_sched.remove_indicator_watch("nonexistent-id")
+            mock_write.assert_not_called()
+
+    def test_remove_existing_does_rewrite_shadow(
+        self, sqlite_sched: SqliteScheduler
+    ) -> None:
+        """remove d'un id existant → _write_shadow appelé."""
+        w = _wake_watch("SPY:001", "SPY", _future(60))
+        sqlite_sched.set_symbol_indicator_watch("SPY", w)
+        with patch.object(sqlite_sched, "_write_shadow") as mock_write:
+            sqlite_sched.remove_indicator_watch("SPY:001")
+            mock_write.assert_called_once()
 
 
 # ---------------------------------------------------------------------------

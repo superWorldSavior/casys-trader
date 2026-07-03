@@ -39,15 +39,18 @@ log = logging.getLogger(__name__)
 def _canon_ts(raw: str | None) -> str | None:
     """Canonicalise un timestamp ISO → UTC +00:00 pour comparaison SQL lexicale sûre.
 
-    Gère : format naïf (→ UTC), +00:00, Z, et offsets quelconques → +00:00.
+    Gère : format naïf (→ UTC attach, pas de conversion locale), +00:00, Z,
+    et offsets quelconques → +00:00.
     Retourne None si raw est absent/None/vide.
     """
     if not raw:
         return None
     dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
     if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(timezone.utc).isoformat()
+        dt = dt.replace(tzinfo=timezone.utc)  # attache UTC, ne convertit PAS
+    else:
+        dt = dt.astimezone(timezone.utc)
+    return dt.isoformat()
 
 
 # ---------------------------------------------------------------------------
@@ -107,7 +110,11 @@ class SqliteScheduler:
 
     def set_next_wake_in(self, *, minutes: float, now: datetime | None = None) -> str:
         now = now or datetime.now(timezone.utc)
-        when = (now + timedelta(minutes=minutes)).astimezone(timezone.utc).isoformat()
+        result = now + timedelta(minutes=minutes)
+        if result.tzinfo is None:
+            when = result.replace(tzinfo=timezone.utc).isoformat()
+        else:
+            when = result.astimezone(timezone.utc).isoformat()
         self.set_next_wake(when)
         return when
 
@@ -147,7 +154,11 @@ class SqliteScheduler:
         now: datetime | None = None,
     ) -> str:
         now = now or datetime.now(timezone.utc)
-        when = (now + timedelta(minutes=minutes)).astimezone(timezone.utc).isoformat()
+        result = now + timedelta(minutes=minutes)
+        if result.tzinfo is None:
+            when = result.replace(tzinfo=timezone.utc).isoformat()
+        else:
+            when = result.astimezone(timezone.utc).isoformat()
         self.set_symbol_next_wake(symbol, when)
         return when
 
@@ -277,13 +288,14 @@ class SqliteScheduler:
                 )
             # Upsert par id : plans armés coexistent (chacun a son propre id unique),
             # watch non-armée remplace la précédente du même symbole (supprimée ci-dessus).
+            # NOTE : seq N'est PAS mis à jour en cas de conflit — l'id existant garde
+            # sa position d'origine dans l'ordre d'insertion (parité Scheduler dict).
             cur.execute(
                 "INSERT INTO scheduler_watches"
                 "(id, seq, symbol, created_at, expires_at, on_trigger, watch_json)"
                 " VALUES (?, (SELECT COALESCE(MAX(seq),0)+1 FROM scheduler_watches),"
                 " ?, ?, ?, ?, ?)"
                 " ON CONFLICT(id) DO UPDATE SET"
-                "   seq=(SELECT COALESCE(MAX(seq),0)+1 FROM scheduler_watches),"
                 "   symbol=excluded.symbol,"
                 "   created_at=excluded.created_at,"
                 "   expires_at=excluded.expires_at,"
@@ -373,10 +385,12 @@ class SqliteScheduler:
     def remove_indicator_watch(self, watch_id: str) -> None:
         with self._db.transaction() as cur:
             cur.execute("DELETE FROM scheduler_watches WHERE id=?", (watch_id,))
-        try:
-            self._write_shadow()
-        except Exception as exc:
-            log.warning("[state_db] shadow échec remove_indicator_watch: %s", exc)
+            deleted = cur.rowcount
+        if deleted:
+            try:
+                self._write_shadow()
+            except Exception as exc:
+                log.warning("[state_db] shadow échec remove_indicator_watch: %s", exc)
 
     # ------------------------------------------------------------------
     # Reconciliation univers
