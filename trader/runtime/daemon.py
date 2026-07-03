@@ -1305,12 +1305,47 @@ def _earliest_active_watch_expiry_iso(
     return min(expiries).isoformat() if expiries else None
 
 
+def _resolve_wake_event(
+    event: str,
+    sym: str,
+    now: datetime,
+    macro_next: list[dict],
+    next_regular_session_open: Callable,
+) -> str | None:
+    """Résout un événement calendaire en timestamp ISO absolu.
+
+    Retourne None si l'événement est inconnu, non résolu, ou si les données
+    sont absentes. Jamais d'exception : fail-safe total.
+
+    Rôle : set_next_wake = RECONSULTATION (l'agent reprend la main pour
+    redécider) — distinct de propose_indicator_watch = PLAN ARMÉ (exécution
+    automatique sans reconsulter).
+    """
+    try:
+        if event == "session_open":
+            dt = next_regular_session_open(now, symbol=sym)
+            return dt.isoformat()
+        if event == "macro_event":
+            if macro_next:
+                return macro_next[0]["at"]
+            return None
+        if event == "pre_earnings":
+            # Pas de source earnings disponible en V1 : fail-safe silencieux.
+            # À câbler quand la donnée sera collectée (chantier macro/fondamental).
+            return None
+        # Événement inconnu : fail-safe → cadence globale
+        return None
+    except Exception:  # noqa: BLE001 — jamais de crash sur un réveil non résolu
+        return None
+
+
 def _apply_decision_schedule(
     *,
     sched: scheduler.Scheduler | None,
     sym: str,
     now: datetime,
     next_wake_in_minutes: float | None,
+    next_wake_iso: str | None = None,
     cancel_watch_ids: list[str],
     pending_indicator_watch: dict | None,
     entry: dict,
@@ -1362,7 +1397,12 @@ def _apply_decision_schedule(
             entry["indicator_watch"]["order"] = pending_indicator_watch["order"]
 
     # Programmation du réveil (état des veilles à jour) :
-    if next_wake_in_minutes is not None:
+    # Priorité : next_wake_iso (événement calendaire résolu) > next_wake_in_minutes
+    # (timer relatif) > expiration veille > cadence globale (clear).
+    if next_wake_iso is not None:
+        # Réveil événementiel résolu (session_open, macro_event…) : timestamp absolu.
+        sched.set_symbol_next_wake(sym, next_wake_iso)
+    elif next_wake_in_minutes is not None:
         # L'agent a demandé une cadence explicite : elle prime (autonomie).
         sched.set_symbol_next_wake_in(sym, minutes=next_wake_in_minutes, now=now)
     else:
@@ -2245,6 +2285,18 @@ def run_cycle(
             pos_qty = raw_pos.quantity if raw_pos is not None else 0.0
             decision = _resolve_position_aware_decision(decision, pos_qty)
 
+        # L5 : résolution d'un réveil événementiel (session_open / macro_event / pre_earnings).
+        # Retourne None si l'événement est inconnu ou non résolu → fail-safe cadence globale.
+        next_wake_event_iso: str | None = None
+        if decision.next_wake_event is not None:
+            next_wake_event_iso = _resolve_wake_event(
+                event=decision.next_wake_event,
+                sym=sym,
+                now=now,
+                macro_next=_cycle_macro_next,
+                next_regular_session_open=market.next_regular_session_open,
+            )
+
         effective_quantity = abs(decision.quantity)
 
         decision_source = (
@@ -2259,6 +2311,8 @@ def run_cycle(
                  "confidence": decision.confidence, "rationale": decision.rationale,
                  "next_wake_in_minutes": next_wake_in_minutes,
                  "next_wake_requested": decision.next_wake_in_minutes,
+                 "next_wake_event": decision.next_wake_event,
+                 "next_wake_event_iso": next_wake_event_iso,
                  "context_request": decision.context_request,
                  "intent": decision.intent,
                  "decision_reason_code": decision.decision_reason_code,
@@ -2311,6 +2365,7 @@ def run_cycle(
                 sym=sym,
                 now=now,
                 next_wake_in_minutes=next_wake_in_minutes,
+                next_wake_iso=next_wake_event_iso,
                 cancel_watch_ids=decision.cancel_watch_ids,
                 pending_indicator_watch=pending_indicator_watch,
                 entry=entry,

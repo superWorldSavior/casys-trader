@@ -294,6 +294,7 @@ def _decision_from_symbol_calls(data: dict, symbol: str) -> Decision:
     }
     traces: list[dict] = []
     cancel_ids: list[str] = []
+    next_wake_event: str | None = None
 
     for index, raw in enumerate(calls):
         if not isinstance(raw, dict):
@@ -350,10 +351,16 @@ def _decision_from_symbol_calls(data: dict, symbol: str) -> Decision:
                 if reduce_fraction is not None:
                     decision["_reduce_fraction"] = reduce_fraction
         elif tool == "set_next_wake":
+            on_event = args.get("on")
             minutes = args.get("minutes")
-            if minutes is None:
+            if on_event is not None:
+                # Réveil événementiel : stocké pour résolution au daemon.
+                # Un on: inconnu est accepté ici ; le daemon tombera en fail-safe.
+                next_wake_event = str(on_event)
+            elif minutes is not None:
+                decision["next_wake_in_minutes"] = float(minutes)
+            else:
                 raise ValueError("wake_minutes_required")
-            decision["next_wake_in_minutes"] = float(minutes)
         elif tool == "record_learning":
             decision["learning"] = _normalize_learning(args.get("note"))
         elif tool == "propose_indicator_watch":
@@ -379,7 +386,12 @@ def _decision_from_symbol_calls(data: dict, symbol: str) -> Decision:
     resolve_from_position = decision.pop("_resolve_from_position", False)
     reduce_fraction_val = decision.pop("_reduce_fraction", None)
     parsed = _decision_from_dict(decision, symbol)
-    result = replace(parsed, domain_tools={"tool_rounds": 0, "tool_calls": traces}, thesis=decision.get("thesis"))
+    result = replace(
+        parsed,
+        domain_tools={"tool_rounds": 0, "tool_calls": traces},
+        thesis=decision.get("thesis"),
+        next_wake_event=next_wake_event,
+    )
     if resolve_from_position:
         result = replace(result, resolve_from_position=True)
     if reduce_fraction_val is not None:

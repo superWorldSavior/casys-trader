@@ -16,7 +16,8 @@ class Decision:
     quantity: float  # nombre d'unités ; ignoré si HOLD
     confidence: float  # 0..1
     rationale: str
-    next_wake_in_minutes: float | None = None  # override du timer pour CE symbole
+    next_wake_in_minutes: float | None = None  # override du timer pour CE symbole (relatif)
+    next_wake_event: str | None = None  # réveil calendaire : "session_open" | "pre_earnings" | "macro_event"
     intent: Intent | None = None
     exit_plan: dict[str, Any] | None = None
     indicator_watch: dict[str, Any] | None = None
