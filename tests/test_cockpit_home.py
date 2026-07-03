@@ -292,6 +292,34 @@ async def test_theme_defaut_est_ink(tmp_path, monkeypatch):
         assert app.theme == "casys-ink"
 
 
+async def test_binding_d_cycle_trois_themes(tmp_path, monkeypatch):
+    """La touche d parcourt le cycle ink → glass → salmon → ink (3 états)."""
+    import json
+    import trader.cockpit.supervisor as sup_module
+
+    _patch_state_paths(monkeypatch, tmp_path)
+    # Daemon vivant → évite le ConfirmStart modal qui intercepterait les touches
+    (tmp_path / "daemon_status.json").write_text(
+        json.dumps({"ts": "2026-07-03T10:00:00Z", "phase": "idle", "pid": 54321}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(sup_module, "_is_daemon_pid", lambda p: p == 54321)
+
+    from trader.cockpit import CockpitApp
+
+    app = CockpitApp()
+    async with app.run_test(size=(200, 50)) as pilot:
+        assert app.theme == "casys-ink"
+        await pilot.press("d")
+        assert app.theme == "casys-glass"
+        assert app.screen.has_class("glass")
+        await pilot.press("d")
+        assert app.theme == "casys-salmon"
+        assert not app.screen.has_class("glass")
+        await pilot.press("d")
+        assert app.theme == "casys-ink"
+
+
 def test_build_symbol_detail_sections():
     from trader.cockpit.home import build_symbol_detail
     from trader.ui.palette import PALETTE_LIGHT

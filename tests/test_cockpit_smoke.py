@@ -118,7 +118,7 @@ async def test_cockpit_theme_defaut_est_casys_ink(tmp_path, monkeypatch):
 
 
 async def test_cockpit_binding_d_bascule_theme(tmp_path, monkeypatch):
-    """La touche d bascule entre casys-salmon et casys-ink."""
+    """La touche d parcourt le cycle ink → glass → salmon → ink (3 états)."""
     # Daemon simulé vivant → pas de ConfirmStart qui intercepterait les touches
     _make_minimal_state_with_pid(tmp_path, 54321)
     _patch_daemon_alive(monkeypatch, 54321)
@@ -129,6 +129,8 @@ async def test_cockpit_binding_d_bascule_theme(tmp_path, monkeypatch):
     app = CockpitApp()
     async with app.run_test(size=(200, 50)) as pilot:
         assert app.theme == "casys-ink"
+        await pilot.press("d")
+        assert app.theme == "casys-glass"
         await pilot.press("d")
         assert app.theme == "casys-salmon"
         await pilot.press("d")
@@ -238,10 +240,13 @@ async def test_cockpit_toggle_theme_propage_palette_dashboard_immediatement(
         pane = app.query_one("#positions-plans-pane", PositionsPlansPane)
         # Thème ink → palette INK
         assert pane._current_palette is PALETTE_INK
-        # Toggle → palette LIGHT immédiatement
+        # ink → glass : glass réutilise PALETTE_INK (variante de rendu)
+        await pilot.press("d")
+        assert pane._current_palette is PALETTE_INK
+        # glass → salmon : palette LIGHT immédiatement
         await pilot.press("d")
         assert pane._current_palette is PALETTE_LIGHT
-        # Retour → palette INK
+        # salmon → ink : retour INK
         await pilot.press("d")
         assert pane._current_palette is PALETTE_INK
 
@@ -1019,7 +1024,7 @@ async def test_cockpit_v2_exit_plans_panel_existe(tmp_path, monkeypatch):
 
 
 async def test_cockpit_v2_toggle_d_rerender_nouveaux_panneaux(tmp_path, monkeypatch):
-    """La touche d bascule le thème sans crash avec les nouveaux panneaux."""
+    """La touche d parcourt le cycle 3 états sans crash avec les nouveaux panneaux."""
     # Daemon simulé vivant → pas de ConfirmStart qui intercepterait les touches
     _make_minimal_state_with_pid(tmp_path, 54321)
     _patch_daemon_alive(monkeypatch, 54321)
@@ -1029,6 +1034,8 @@ async def test_cockpit_v2_toggle_d_rerender_nouveaux_panneaux(tmp_path, monkeypa
 
     app = CockpitApp()
     async with app.run_test(size=(220, 60)) as pilot:
+        await pilot.press("d")
+        assert app.theme == "casys-glass"
         await pilot.press("d")
         assert app.theme == "casys-salmon"
         await pilot.press("d")

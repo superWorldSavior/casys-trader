@@ -130,10 +130,30 @@ _THEME_INK = Theme(
     panel="#32302f",
 )
 
+_THEME_GLASS = Theme(
+    name="casys-glass",
+    dark=True,
+    primary="#8ec07c",
+    secondary="#928374",
+    warning="#d79921",
+    error="#fb4934",
+    success="#b8bb26",
+    accent="#83a598",
+    foreground="#ebdbb2",
+    # Fond charbon (transparent non supporté en rendu SVG/headless, blur = terminal)
+    background="#141617",
+    surface="#1d2021",
+    panel="#242628",
+)
+
+# Cycle de thèmes : ink → glass → salmon → ink
+_THEME_CYCLE = ("casys-ink", "casys-glass", "casys-salmon")
+
 # Mapping nom de thème → palette Rich
 _THEME_PALETTE: dict[str, Palette] = {
     "casys-salmon": PALETTE_LIGHT,
     "casys-ink": PALETTE_INK,
+    "casys-glass": PALETTE_INK,  # glass = variante de rendu, pas de sémantique différente
 }
 
 OverviewPane = _cockpit_overview.OverviewPane
@@ -957,6 +977,15 @@ class CockpitApp(App):
         width: 100%;
         height: 100%;
     }
+    /* ---- Thème glass : calques alpha + bordures round (blur = terminal iTerm2/Ghostty) ---- */
+    .glass HomePane #home-portfolio,
+    .glass HomePane #home-activity,
+    .glass HomePane #home-decisions,
+    .glass HomePane #home-plans,
+    .glass #home-flux {
+        border: round #8ec07c 40%;
+        background: #1d2021 35%;
+    }
     """
 
     BINDINGS = [
@@ -1010,6 +1039,7 @@ class CockpitApp(App):
         # Thèmes custom
         self.register_theme(_THEME_SALMON)
         self.register_theme(_THEME_INK)
+        self.register_theme(_THEME_GLASS)
         self.theme = "casys-ink"
         self._propagate_palette()
         self._set_active_page("home")
@@ -1206,11 +1236,10 @@ class CockpitApp(App):
             self._set_active_page("logs")
 
     def action_toggle_theme(self) -> None:
-        """Bascule entre casys-salmon (clair) et casys-ink (sombre)."""
-        if self.theme == "casys-salmon":
-            self.theme = "casys-ink"
-        else:
-            self.theme = "casys-salmon"
+        """Parcourt le cycle de thèmes : casys-ink → casys-glass → casys-salmon → …"""
+        current_idx = _THEME_CYCLE.index(self.theme) if self.theme in _THEME_CYCLE else 0
+        self.theme = _THEME_CYCLE[(current_idx + 1) % len(_THEME_CYCLE)]
+        self.screen.set_class(self.theme == "casys-glass", "glass")
         self._propagate_palette()
         if self._last_state is not None:
             self._apply_state(self._last_state, self._last_kill_active)
