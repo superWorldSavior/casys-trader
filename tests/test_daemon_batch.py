@@ -992,20 +992,41 @@ def test_resolve_no_position_produit_nothing_to_close() -> None:
     assert resolved.rationale == "nothing_to_close"
 
 
-def test_resolve_sans_flag_retourne_decision_inchangee() -> None:
-    """L2 compat : resolve_from_position=False (side explicite) → décision inchangée."""
+def test_resolve_relative_add_force_la_resolution_meme_sans_flag() -> None:
+    """Défense aval : un Decision relatif construit à la main repasse par la dérivation."""
+    dec = Decision(
+        symbol="SPY",
+        action="SELL",
+        quantity=3.0,
+        confidence=0.9,
+        rationale="add explicite incoherent",
+        intent="ADD",
+        resolve_from_position=False,
+    )
+    resolved = daemon._resolve_position_aware_decision(dec, position_quantity=10.0)
+
+    assert resolved.action == "BUY"
+    assert resolved.quantity == 3.0
+    assert resolved.resolve_from_position is False
+
+
+def test_resolve_relative_close_sans_position_force_le_fusible_meme_sans_flag() -> None:
+    """Défense aval : CLOSE manuel sans position → HOLD, jamais ordre explicite aveugle."""
     dec = Decision(
         symbol="SPY",
         action="SELL",
         quantity=10.0,
         confidence=0.9,
-        rationale="close explicite",
+        rationale="close manuel",
         intent="CLOSE",
         resolve_from_position=False,
     )
-    resolved = daemon._resolve_position_aware_decision(dec, position_quantity=10.0)
+    resolved = daemon._resolve_position_aware_decision(dec, position_quantity=0.0)
 
-    assert resolved is dec  # identité : rien ne change
+    assert resolved.action == "HOLD"
+    assert resolved.quantity == 0.0
+    assert resolved.intent == "HOLD"
+    assert resolved.rationale == "nothing_to_close"
 
 
 # ---------------------------------------------------------------------------

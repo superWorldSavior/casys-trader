@@ -94,6 +94,7 @@ _ACTION_INTENTS = {
 _OPENING_INTENTS = {"OPEN_LONG", "OPEN_SHORT", "REVERSE", "ADD"}
 _PURE_OPEN_INTENTS = {"OPEN_LONG", "OPEN_SHORT"}
 _RISK_GUARDED_OPENING_INTENTS = {"OPEN_LONG", "OPEN_SHORT", "ADD"}
+_RELATIVE_ORDER_INTENTS = {"CLOSE", "REDUCE", "REVERSE", "ADD"}
 _INFRA_HOLD_REASONS = {
     "no_decision_in_batch",
     "model_call_budget_exhausted",
@@ -414,16 +415,16 @@ def _resolve_position_aware_decision(
     Fail-safe absolu : position_quantity == 0 → HOLD.
       - CLOSE/REDUCE/REVERSE sans position → 'nothing_to_close'
       - ADD sans position → 'add_without_position'
-    Si resolve_from_position=False, retourne la décision inchangée.
+    Les intents relatifs repassent toujours par cette dérivation, même si le
+    Decision a été construit à la main avec resolve_from_position=False.
 
     Side :
       - CLOSE/REDUCE/REVERSE → côté OPPOSÉ à la position (clôture/retournement).
       - ADD → côté IDENTIQUE à la position (renforcement dans le même sens).
     """
-    if not decision.resolve_from_position:
-        return decision
-
     intent = decision.intent
+    if not decision.resolve_from_position and intent not in _RELATIVE_ORDER_INTENTS:
+        return decision
 
     if position_quantity == 0.0:
         reason = "add_without_position" if intent == "ADD" else "nothing_to_close"
@@ -680,6 +681,10 @@ def _risk_pct_for_quantity(quantity: float, stop_distance: float | None, equity:
     return order_admission.risk_pct_for_quantity(quantity, stop_distance, equity)
 
 
+def _loss_distance_to_stop(intent: str | None, entry_price: float, stop_price: float) -> float:
+    return order_admission.loss_distance_to_stop(intent, entry_price, stop_price)
+
+
 def _set_entry_risk_metrics(
     entry: dict,
     *,
@@ -693,6 +698,18 @@ def _set_entry_risk_metrics(
         stop_distance=stop_distance,
         equity=equity,
     )
+
+
+def _runtime_tool_audit_fields(domain_tools: dict | None) -> dict:
+    tools = domain_tools if isinstance(domain_tools, dict) else {}
+    fields = {
+        "tool_rounds": tools.get("tool_rounds"),
+        "tool_calls": tools.get("tool_calls"),
+    }
+    normalizations = tools.get("normalizations")
+    if normalizations is not None:
+        fields["tool_normalizations"] = normalizations
+    return fields
 
 
 
@@ -2340,8 +2357,9 @@ def run_cycle(
                 maximum=max_wake_minutes,
             )
 
-        # L2 : résoudre CLOSE/REDUCE/REVERSE sans side depuis la position au portefeuille.
-        if decision.resolve_from_position:
+        # L2/R3 : résoudre les intents relatifs depuis la position au portefeuille.
+        # Le flag parser reste informatif ; l'invariant aval est forcé ici.
+        if decision.resolve_from_position or decision.intent in _RELATIVE_ORDER_INTENTS:
             raw_pos = broker.positions().get(sym)
             pos_qty = raw_pos.quantity if raw_pos is not None else 0.0
             decision = _resolve_position_aware_decision(decision, pos_qty)
@@ -2391,8 +2409,7 @@ def run_cycle(
                  "indicator_watch_requested": bool(decision.indicator_watch),
                  "indicator_watch_rejections": [],
                  "data_source": runtime_data_source_by_sym.get(sym),
-                 "tool_rounds": (decision.domain_tools or {}).get("tool_rounds"),
-                 "tool_calls": (decision.domain_tools or {}).get("tool_calls")}
+                 **_runtime_tool_audit_fields(decision.domain_tools)}
         if decision_source == "llm" and sym in held_symbols and _counts_as_llm_review(decision):
             _persist_last_llm_review(
                 plan_store=plan_store,
@@ -2465,6 +2482,8 @@ def run_cycle(
                 )
             hold_reason = "hold"
             if decision_source == "infra" and decision.rationale in _INFRA_HOLD_REASONS:
+                hold_reason = decision.rationale
+            elif decision.rationale in {"nothing_to_close", "add_without_position"}:
                 hold_reason = decision.rationale
             record_decision({**entry, "executed": False, "reason": hold_reason})
             continue
@@ -2541,17 +2560,10 @@ def run_cycle(
                 record_decision({**entry, "executed": False, "reason": f"invalid_exit_plan:{exc}"})
                 continue
             hard_stop_price = _hard_stop_price(runtime_exit_plan)
-            hard_stop_intent = (
-                "OPEN_LONG"
-                if decision.intent == "ADD" and decision.action == "BUY"
-                else "OPEN_SHORT"
-                if decision.intent == "ADD" and decision.action == "SELL"
-                else decision.intent
-            )
             if (
-                hard_stop_intent in _PURE_OPEN_INTENTS
+                decision.intent in _PURE_OPEN_INTENTS
                 and hard_stop_price is not None
-                and _hard_stop_wrong_side(hard_stop_intent, prices[sym], hard_stop_price)
+                and _hard_stop_wrong_side(decision.intent, prices[sym], hard_stop_price)
             ):
                 _log_cycle_progress(
                     "[decision %d/%d] %s blocked invalid_exit_plan:hard_stop_wrong_side",
@@ -2656,14 +2668,25 @@ def run_cycle(
                     )
                     continue
             else:
-                open_stop_distance = abs(risk_entry_price - hard_stop_price)
+                risk_stop_intent = (
+                    "OPEN_LONG"
+                    if decision.intent == "ADD" and decision.action == "BUY"
+                    else "OPEN_SHORT"
+                    if decision.intent == "ADD" and decision.action == "SELL"
+                    else decision.intent
+                )
+                open_stop_distance = _loss_distance_to_stop(
+                    risk_stop_intent,
+                    risk_entry_price,
+                    hard_stop_price,
+                )
                 _set_entry_risk_metrics(
                     entry,
                     quantity=risk_quantity,
                     stop_distance=open_stop_distance,
                     equity=snap.equity,
                 )
-                if risk_guarded_open:
+                if risk_guarded_open and open_stop_distance > 0.0:
                     max_risk_quantity = gate.max_quantity_at_risk(
                         snap.equity,
                         risk_entry_price,

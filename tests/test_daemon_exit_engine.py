@@ -6,6 +6,7 @@ import pytest
 
 from trader.runtime import daemon
 from trader.agent.client import Decision
+from trader.agent_protocol.parsing import parse_batch
 from trader.tools.execution import Order, SimBroker
 from trader.tools.market import Bar
 from trader.tools.scheduler import Scheduler
@@ -1187,7 +1188,7 @@ def test_run_cycle_ne_clamp_pas_reverse_trop_gros(
     patch_batch(lambda **kwargs: Decision(
             symbol="SPY",
             action="SELL",
-            quantity=200.0,
+            quantity=50.0,
             confidence=0.8,
             rationale="reverse trop gros",
             intent="REVERSE"),
@@ -1379,6 +1380,50 @@ def test_run_cycle_add_depassement_risque_est_rejete(
     assert SimBroker(state_dir / "broker.json").positions()["SPY"].quantity == 10.0
 
 
+def test_run_cycle_add_long_stop_profit_lock_ne_compte_pas_comme_risque(
+    monkeypatch,
+    tmp_path,
+    patch_batch,
+    make_data_source,
+) -> None:
+    _write_runtime_config(tmp_path)
+    state_dir = tmp_path / "state"
+    now = datetime(2026, 6, 5, 14, 30, tzinfo=timezone.utc)
+    broker = SimBroker(state_dir / "broker.json", starting_cash=100_000)
+    broker.submit(Order("SPY", "BUY", 10.0), 100.0, "2026-06-05T11:00:00+00:00", dry_run=False)
+
+    monkeypatch.setattr(daemon, "ROOT", tmp_path)
+    monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+    data_source = make_data_source(lambda symbol, lookback, interval: [
+        Bar(ts=now.isoformat(), open=100.0, high=101.0, low=99.0, close=100.0, volume=1000.0)
+    ])
+    patch_batch(lambda **kwargs: Decision(
+            symbol="SPY",
+            action="HOLD",
+            quantity=5.0,
+            confidence=0.95,
+            rationale="add avec stop profit-lock",
+            intent="ADD",
+            resolve_from_position=True,
+            exit_plan={"hard_stop": {"type": "price", "price": 120.0}}),
+    )
+
+    report = daemon.run_cycle(
+        dry_run=False,
+        now=now,
+        symbols_filter=["SPY"],
+        sched=Scheduler(state_dir / "scheduler.json"),
+        data_source=data_source,
+    )
+
+    decision = report["decisions"][0]
+    assert decision["reason"] == "ok"
+    assert decision["executed"] is True
+    assert decision["stop_distance"] == pytest.approx(0.0)
+    assert decision["risk_pct"] == pytest.approx(0.0)
+    assert SimBroker(state_dir / "broker.json").positions()["SPY"].quantity == 15.0
+
+
 def test_run_cycle_add_rejette_petit_ajout_si_risque_position_totale_depasse(
     monkeypatch,
     tmp_path,
@@ -1423,7 +1468,55 @@ def test_run_cycle_add_rejette_petit_ajout_si_risque_position_totale_depasse(
     assert SimBroker(state_dir / "broker.json").positions()["SPY"].quantity == 100.0
 
 
-def test_run_cycle_rejette_ordre_buy_sell_a_quantite_zero(
+def test_run_cycle_legacy_relative_ignored_fields_arrivent_dans_runtime_ledger(
+    monkeypatch,
+    tmp_path,
+    make_data_source,
+) -> None:
+    _write_runtime_config(tmp_path)
+    state_dir = tmp_path / "state"
+    now = datetime(2026, 6, 5, 14, 30, tzinfo=timezone.utc)
+    broker = SimBroker(state_dir / "broker.json", starting_cash=100_000)
+    broker.submit(Order("SPY", "BUY", 10.0), 100.0, "2026-06-05T11:00:00+00:00", dry_run=False)
+    raw = """
+    {"decisions": [
+      {"symbol": "SPY", "action": "SELL", "quantity": 10,
+       "confidence": 0.8, "rationale": "close legacy",
+       "intent": "CLOSE", "decision_reason_code": "EXIT_SIGNAL"}
+    ]}
+    """
+    parsed = parse_batch(raw, ["SPY"], allow_context_request=False)
+
+    def fake_batch_decide(**kwargs):
+        return parsed, 1
+
+    monkeypatch.setattr(daemon, "ROOT", tmp_path)
+    monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+    monkeypatch.setattr(daemon, "_batch_decide", fake_batch_decide)
+
+    report = daemon.run_cycle(
+        dry_run=False,
+        now=now,
+        symbols_filter=["SPY"],
+        sched=Scheduler(state_dir / "scheduler.json"),
+        data_source=make_data_source(lambda symbol, lookback, interval: [
+            Bar(ts=now.isoformat(), open=100.0, high=101.0, low=99.0, close=100.0, volume=1000.0)
+        ]),
+    )
+
+    normalizations = report["decisions"][0]["tool_normalizations"]
+    assert normalizations[0]["code"] == "relative_intent_position_resolved"
+    assert normalizations[0]["ignored_fields"] == ["action"]
+
+    rows = [
+        json.loads(line)
+        for line in (state_dir / "decisions.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    runtime = rows[-1]["runtime"]
+    assert runtime["tool_normalizations"][0]["ignored_fields"] == ["action"]
+
+
+def test_run_cycle_close_direct_sans_position_passe_par_fusible_position_aware(
     monkeypatch,
     tmp_path,
     patch_batch,
@@ -1456,7 +1549,7 @@ def test_run_cycle_rejette_ordre_buy_sell_a_quantite_zero(
     )
 
     decision = report["decisions"][0]
-    assert decision["reason"] == "zero_quantity_order"
+    assert decision["reason"] == "nothing_to_close"
     assert decision["executed"] is False
     assert SimBroker(state_dir / "broker.json").positions() == {}
 
@@ -1745,7 +1838,7 @@ def test_run_cycle_reverse_cree_un_plan_sur_la_position_nette_finale(monkeypatch
     patch_batch(lambda **kwargs: Decision(
             symbol="SPY",
             action="SELL",
-            quantity=20.0,
+            quantity=10.0,
             confidence=0.8,
             rationale="reverse",
             intent="REVERSE",

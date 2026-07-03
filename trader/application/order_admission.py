@@ -69,6 +69,22 @@ def hard_stop_wrong_side(intent: str | None, entry_price: float, stop_price: flo
     return False
 
 
+def loss_distance_to_stop(intent: str | None, entry_price: float, stop_price: float) -> float:
+    """Distance de perte réelle jusqu'au stop, clampée à 0 côté profit."""
+    try:
+        entry_price = float(entry_price)
+        stop_price = float(stop_price)
+    except (TypeError, ValueError):
+        return 0.0
+    if not math.isfinite(entry_price) or not math.isfinite(stop_price):
+        return 0.0
+    if intent == "OPEN_LONG":
+        return max(0.0, entry_price - stop_price)
+    if intent == "OPEN_SHORT":
+        return max(0.0, stop_price - entry_price)
+    return abs(entry_price - stop_price)
+
+
 def reverse_open_quantity(*, action: str, quantity: float, position_quantity: float) -> float:
     signed_order = quantity if action == "BUY" else -quantity
     if position_quantity != 0 and position_quantity * signed_order < 0:

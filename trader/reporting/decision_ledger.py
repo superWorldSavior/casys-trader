@@ -152,6 +152,7 @@ def build_decision_row(
             "data_source": decision.get("data_source"),
             "tool_rounds": decision.get("tool_rounds"),
             "tool_calls": decision.get("tool_calls"),
+            "tool_normalizations": decision.get("tool_normalizations"),
             "cancel_watch_results": decision.get("cancel_watch_results"),
         },
         "news": _as_dict(decision.get("news")),
