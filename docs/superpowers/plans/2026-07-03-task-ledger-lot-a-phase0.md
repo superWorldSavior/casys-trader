@@ -25,7 +25,7 @@
 - Create `trader/queue/ledger.py` — `TaskLedger` : schéma/migrations, `enqueue`, `claim`, `complete`, `fail`, `heartbeat`, `recover_on_boot`.
 - Create `trader/queue/pools.py` — `ResourcePools` : sémaphores nommés + backpressure AIMD + `free_resources()`.
 - Create `trader/queue/worker.py` — `Worker` : `run_once()` (claim → acquire ressource → handler → complete/fail → release) + thread heartbeat.
-- Create `tests/queue/__init__.py`, `tests/queue/test_ledger.py`, `tests/queue/test_pools.py`, `tests/queue/test_worker.py`.
+- Create `tests/queue_ledger/__init__.py`, `tests/queue_ledger/test_ledger.py`, `tests/queue_ledger/test_pools.py`, `tests/queue_ledger/test_worker.py`.
 
 ---
 
@@ -34,7 +34,7 @@
 **Files:**
 - Create: `trader/queue/__init__.py` (vide)
 - Create: `trader/queue/ledger.py`
-- Test: `tests/queue/__init__.py` (vide), `tests/queue/test_ledger.py`
+- Test: `tests/queue_ledger/__init__.py` (vide), `tests/queue_ledger/test_ledger.py`
 
 **Interfaces:**
 - Produces: `TaskLedger(db_path: str | Path)` ; attribut `path` ; connexion en WAL. Table `tasks` (schéma §4.2 de la spec) + index `idx_claim`, `uniq_running_partition`, `uniq_active_kind_partition`. Migration idempotente (ré-instanciation = no-op).
@@ -42,7 +42,7 @@
 - [ ] **Step 1: Write the failing test**
 
 ```python
-# tests/queue/test_ledger.py
+# tests/queue_ledger/test_ledger.py
 import sqlite3
 from trader.queue.ledger import TaskLedger
 
@@ -73,7 +73,7 @@ def test_reinstantiation_is_idempotent(tmp_path):
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd /Users/erwanpesle/Documents/GitHub/casys-trader && python -m pytest tests/queue/test_ledger.py -q; echo "EXIT=$?"`
+Run: `cd /Users/erwanpesle/Documents/GitHub/casys-trader && python -m pytest tests/queue_ledger/test_ledger.py -q; echo "EXIT=$?"`
 Expected: FAIL — `ModuleNotFoundError: trader.queue.ledger`.
 
 - [ ] **Step 3: Write minimal implementation**
@@ -139,13 +139,13 @@ class TaskLedger:
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd /Users/erwanpesle/Documents/GitHub/casys-trader && python -m pytest tests/queue/test_ledger.py -q; echo "EXIT=$?"`
+Run: `cd /Users/erwanpesle/Documents/GitHub/casys-trader && python -m pytest tests/queue_ledger/test_ledger.py -q; echo "EXIT=$?"`
 Expected: PASS, `EXIT=0`.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add trader/queue/__init__.py trader/queue/ledger.py tests/queue/__init__.py tests/queue/test_ledger.py
+git add trader/queue/__init__.py trader/queue/ledger.py tests/queue_ledger/__init__.py tests/queue_ledger/test_ledger.py
 git commit -m "feat(queue): TaskLedger schéma SQLite idempotent (WAL + index partiels)"
 ```
 
@@ -155,7 +155,7 @@ git commit -m "feat(queue): TaskLedger schéma SQLite idempotent (WAL + index pa
 
 **Files:**
 - Modify: `trader/queue/ledger.py`
-- Test: `tests/queue/test_ledger.py`
+- Test: `tests/queue_ledger/test_ledger.py`
 
 **Interfaces:**
 - Produces: `TaskLedger.enqueue(*, kind, priority, scheduled_at_ms, now_ms, dedup_key=None, partition_key=None, resource=None, payload=None, max_attempts=3, parent_id=None) -> int | None`. Retourne l'`id` créé, ou `None` si `dedup_key` déjà présent (`ON CONFLICT DO NOTHING`). Statut initial `'pending'`, `attempts=0`.
@@ -163,7 +163,7 @@ git commit -m "feat(queue): TaskLedger schéma SQLite idempotent (WAL + index pa
 - [ ] **Step 1: Write the failing test**
 
 ```python
-# tests/queue/test_ledger.py (append)
+# tests/queue_ledger/test_ledger.py (append)
 def test_enqueue_returns_id_and_is_idempotent(tmp_path):
     led = TaskLedger(tmp_path / "q.db")
     tid = led.enqueue(kind="decide", priority=5, scheduled_at_ms=1000,
@@ -180,7 +180,7 @@ def test_enqueue_returns_id_and_is_idempotent(tmp_path):
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd /Users/erwanpesle/Documents/GitHub/casys-trader && python -m pytest tests/queue/test_ledger.py::test_enqueue_returns_id_and_is_idempotent -q; echo "EXIT=$?"`
+Run: `cd /Users/erwanpesle/Documents/GitHub/casys-trader && python -m pytest tests/queue_ledger/test_ledger.py::test_enqueue_returns_id_and_is_idempotent -q; echo "EXIT=$?"`
 Expected: FAIL — `AttributeError: 'TaskLedger' object has no attribute 'enqueue'`.
 
 - [ ] **Step 3: Write minimal implementation**
@@ -208,13 +208,13 @@ Expected: FAIL — `AttributeError: 'TaskLedger' object has no attribute 'enqueu
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd /Users/erwanpesle/Documents/GitHub/casys-trader && python -m pytest tests/queue/test_ledger.py -q; echo "EXIT=$?"`
+Run: `cd /Users/erwanpesle/Documents/GitHub/casys-trader && python -m pytest tests/queue_ledger/test_ledger.py -q; echo "EXIT=$?"`
 Expected: PASS, `EXIT=0`.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add trader/queue/ledger.py tests/queue/test_ledger.py
+git add trader/queue/ledger.py tests/queue_ledger/test_ledger.py
 git commit -m "feat(queue): enqueue idempotent (ON CONFLICT dedup_key)"
 ```
 
@@ -224,7 +224,7 @@ git commit -m "feat(queue): enqueue idempotent (ON CONFLICT dedup_key)"
 
 **Files:**
 - Modify: `trader/queue/ledger.py`
-- Test: `tests/queue/test_ledger.py`
+- Test: `tests/queue_ledger/test_ledger.py`
 
 **Interfaces:**
 - Produces: `TaskLedger.claim(*, worker_id, token, now_ms, lease_ms, free_resources) -> dict | None`. Sélectionne la tâche `pending` **due** (`scheduled_at <= now_ms`) avec `attempts < max_attempts`, `ORDER BY priority ASC, scheduled_at ASC, id ASC`, en `BEGIN IMMEDIATE`. Passe `status='running'`, pose `claim_token=token`, `claimed_by=worker_id`, `lease_expires_at=now_ms+lease_ms`, `attempts+=1`. Retourne la ligne (dict) ou `None`. (La sérialisation par clé + resource-aware arrivent Tasks 4-5 ; ici `free_resources` est accepté mais le filtre ressource est ajouté Task 5.)
@@ -232,7 +232,7 @@ git commit -m "feat(queue): enqueue idempotent (ON CONFLICT dedup_key)"
 - [ ] **Step 1: Write the failing test**
 
 ```python
-# tests/queue/test_ledger.py (append)
+# tests/queue_ledger/test_ledger.py (append)
 def test_claim_orders_by_priority_then_id(tmp_path):
     led = TaskLedger(tmp_path / "q.db")
     led.enqueue(kind="decide", priority=5, scheduled_at_ms=0, now_ms=0,
@@ -258,7 +258,7 @@ def test_claim_skips_future_and_exhausted(tmp_path):
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd /Users/erwanpesle/Documents/GitHub/casys-trader && python -m pytest tests/queue/test_ledger.py::test_claim_orders_by_priority_then_id tests/queue/test_ledger.py::test_claim_skips_future_and_exhausted -q; echo "EXIT=$?"`
+Run: `cd /Users/erwanpesle/Documents/GitHub/casys-trader && python -m pytest tests/queue_ledger/test_ledger.py::test_claim_orders_by_priority_then_id tests/queue_ledger/test_ledger.py::test_claim_skips_future_and_exhausted -q; echo "EXIT=$?"`
 Expected: FAIL — `AttributeError: ... 'claim'`.
 
 - [ ] **Step 3: Write minimal implementation**
@@ -292,13 +292,13 @@ Expected: FAIL — `AttributeError: ... 'claim'`.
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd /Users/erwanpesle/Documents/GitHub/casys-trader && python -m pytest tests/queue/test_ledger.py -q; echo "EXIT=$?"`
+Run: `cd /Users/erwanpesle/Documents/GitHub/casys-trader && python -m pytest tests/queue_ledger/test_ledger.py -q; echo "EXIT=$?"`
 Expected: PASS, `EXIT=0`.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add trader/queue/ledger.py tests/queue/test_ledger.py
+git add trader/queue/ledger.py tests/queue_ledger/test_ledger.py
 git commit -m "feat(queue): claim atomique BEGIN IMMEDIATE (priorité + fencing token)"
 ```
 
@@ -308,7 +308,7 @@ git commit -m "feat(queue): claim atomique BEGIN IMMEDIATE (priorité + fencing 
 
 **Files:**
 - Modify: `trader/queue/ledger.py`
-- Test: `tests/queue/test_ledger.py`
+- Test: `tests/queue_ledger/test_ledger.py`
 
 **Interfaces:**
 - Modifies `claim` : la sous-requête exclut toute `partition_key` déjà `running`. Invariant DB `uniq_running_partition` déjà en place (Task 1) = filet.
@@ -316,7 +316,7 @@ git commit -m "feat(queue): claim atomique BEGIN IMMEDIATE (priorité + fencing 
 - [ ] **Step 1: Write the failing test**
 
 ```python
-# tests/queue/test_ledger.py (append)
+# tests/queue_ledger/test_ledger.py (append)
 def test_claim_serializes_same_partition(tmp_path):
     led = TaskLedger(tmp_path / "q.db")
     led.enqueue(kind="refresh_symbol", priority=5, scheduled_at_ms=0, now_ms=0,
@@ -341,7 +341,7 @@ def test_claim_serializes_same_partition(tmp_path):
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd /Users/erwanpesle/Documents/GitHub/casys-trader && python -m pytest tests/queue/test_ledger.py::test_claim_serializes_same_partition -q; echo "EXIT=$?"`
+Run: `cd /Users/erwanpesle/Documents/GitHub/casys-trader && python -m pytest tests/queue_ledger/test_ledger.py::test_claim_serializes_same_partition -q; echo "EXIT=$?"`
 Expected: FAIL — `third` n'est pas `None` (AAPL est reclaimé).
 
 - [ ] **Step 3: Write minimal implementation**
@@ -361,13 +361,13 @@ Expected: FAIL — `third` n'est pas `None` (AAPL est reclaimé).
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd /Users/erwanpesle/Documents/GitHub/casys-trader && python -m pytest tests/queue/test_ledger.py -q; echo "EXIT=$?"`
+Run: `cd /Users/erwanpesle/Documents/GitHub/casys-trader && python -m pytest tests/queue_ledger/test_ledger.py -q; echo "EXIT=$?"`
 Expected: PASS, `EXIT=0`.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add trader/queue/ledger.py tests/queue/test_ledger.py
+git add trader/queue/ledger.py tests/queue_ledger/test_ledger.py
 git commit -m "feat(queue): claim sérialisé par partition_key (au plus 1 running/clé)"
 ```
 
@@ -377,7 +377,7 @@ git commit -m "feat(queue): claim sérialisé par partition_key (au plus 1 runni
 
 **Files:**
 - Modify: `trader/queue/ledger.py`
-- Test: `tests/queue/test_ledger.py`
+- Test: `tests/queue_ledger/test_ledger.py`
 
 **Interfaces:**
 - Modifies `claim` : ne sélectionne une tâche avec `resource IS NOT NULL` que si sa `resource ∈ free_resources`. Une tâche `resource IS NULL` est toujours éligible. Empêche les workers de claim des tâches dont la ressource est saturée (anti-piégeage §4.2).
@@ -385,7 +385,7 @@ git commit -m "feat(queue): claim sérialisé par partition_key (au plus 1 runni
 - [ ] **Step 1: Write the failing test**
 
 ```python
-# tests/queue/test_ledger.py (append)
+# tests/queue_ledger/test_ledger.py (append)
 def test_claim_respects_free_resources(tmp_path):
     led = TaskLedger(tmp_path / "q.db")
     led.enqueue(kind="decide", priority=5, scheduled_at_ms=0, now_ms=0,
@@ -403,7 +403,7 @@ def test_claim_respects_free_resources(tmp_path):
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd /Users/erwanpesle/Documents/GitHub/casys-trader && python -m pytest tests/queue/test_ledger.py::test_claim_respects_free_resources -q; echo "EXIT=$?"`
+Run: `cd /Users/erwanpesle/Documents/GitHub/casys-trader && python -m pytest tests/queue_ledger/test_ledger.py::test_claim_respects_free_resources -q; echo "EXIT=$?"`
 Expected: FAIL — la tâche `acpx` est claimée alors que `acpx` n'est pas libre.
 
 - [ ] **Step 3: Write minimal implementation**
@@ -447,13 +447,13 @@ Expected: FAIL — la tâche `acpx` est claimée alors que `acpx` n'est pas libr
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd /Users/erwanpesle/Documents/GitHub/casys-trader && python -m pytest tests/queue/test_ledger.py -q; echo "EXIT=$?"`
+Run: `cd /Users/erwanpesle/Documents/GitHub/casys-trader && python -m pytest tests/queue_ledger/test_ledger.py -q; echo "EXIT=$?"`
 Expected: PASS, `EXIT=0`.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add trader/queue/ledger.py tests/queue/test_ledger.py
+git add trader/queue/ledger.py tests/queue_ledger/test_ledger.py
 git commit -m "feat(queue): claim resource-aware (ne claim que si permit libre)"
 ```
 
@@ -463,7 +463,7 @@ git commit -m "feat(queue): claim resource-aware (ne claim que si permit libre)"
 
 **Files:**
 - Modify: `trader/queue/ledger.py`
-- Test: `tests/queue/test_ledger.py`
+- Test: `tests/queue_ledger/test_ledger.py`
 
 **Interfaces:**
 - Produces: `TaskLedger.complete(*, task_id, token, now_ms, result=None) -> bool` (True si `claim_token` matche, sinon False sans effet). `TaskLedger.fail(*, task_id, token, now_ms, error, retryable, backoff_base_ms) -> str` : si `retryable` et `attempts < max_attempts` → `status='pending'`, `scheduled_at = now_ms + backoff_base_ms * 2**(attempts-1)`, retourne `"pending"` ; sinon → `status='dead'`, retourne `"dead"`. Les deux exigent le bon `token` (fencing) ; token périmé → no-op, retourne `False`/`"stale"`.
@@ -471,7 +471,7 @@ git commit -m "feat(queue): claim resource-aware (ne claim que si permit libre)"
 - [ ] **Step 1: Write the failing test**
 
 ```python
-# tests/queue/test_ledger.py (append)
+# tests/queue_ledger/test_ledger.py (append)
 def _claim_one(led, now_ms=1):
     return led.claim(worker_id="w", token="tok", now_ms=now_ms,
                      lease_ms=1000, free_resources=["acpx", "ib", "yahoo"])
@@ -508,7 +508,7 @@ def test_fail_retryable_backoff_then_dead(tmp_path):
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd /Users/erwanpesle/Documents/GitHub/casys-trader && python -m pytest tests/queue/test_ledger.py::test_complete_requires_token tests/queue/test_ledger.py::test_fail_retryable_backoff_then_dead -q; echo "EXIT=$?"`
+Run: `cd /Users/erwanpesle/Documents/GitHub/casys-trader && python -m pytest tests/queue_ledger/test_ledger.py::test_complete_requires_token tests/queue_ledger/test_ledger.py::test_fail_retryable_backoff_then_dead -q; echo "EXIT=$?"`
 Expected: FAIL — `AttributeError: ... 'complete'`.
 
 - [ ] **Step 3: Write minimal implementation**
@@ -551,13 +551,13 @@ Expected: FAIL — `AttributeError: ... 'complete'`.
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd /Users/erwanpesle/Documents/GitHub/casys-trader && python -m pytest tests/queue/test_ledger.py -q; echo "EXIT=$?"`
+Run: `cd /Users/erwanpesle/Documents/GitHub/casys-trader && python -m pytest tests/queue_ledger/test_ledger.py -q; echo "EXIT=$?"`
 Expected: PASS, `EXIT=0`.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add trader/queue/ledger.py tests/queue/test_ledger.py
+git add trader/queue/ledger.py tests/queue_ledger/test_ledger.py
 git commit -m "feat(queue): complete/fail avec fencing token + backoff exponentiel"
 ```
 
@@ -567,7 +567,7 @@ git commit -m "feat(queue): complete/fail avec fencing token + backoff exponenti
 
 **Files:**
 - Modify: `trader/queue/ledger.py`
-- Test: `tests/queue/test_ledger.py`
+- Test: `tests/queue_ledger/test_ledger.py`
 
 **Interfaces:**
 - Produces: `TaskLedger.heartbeat(*, task_id, token, now_ms, lease_ms) -> bool` : si `claim_token` matche, `lease_expires_at = now_ms + lease_ms`, retourne True. `TaskLedger.recover_on_boot(*, now_ms) -> int` : toute tâche `running` avec `lease_expires_at < now_ms` repasse `pending` (token/lease effacés), retourne le nombre repending. Une `running` à lease valide (heartbeat récent) N'est PAS reprise.
@@ -575,7 +575,7 @@ git commit -m "feat(queue): complete/fail avec fencing token + backoff exponenti
 - [ ] **Step 1: Write the failing test**
 
 ```python
-# tests/queue/test_ledger.py (append)
+# tests/queue_ledger/test_ledger.py (append)
 def test_heartbeat_extends_lease_and_boot_recovery(tmp_path):
     led = TaskLedger(tmp_path / "q.db")
     led.enqueue(kind="decide", priority=5, scheduled_at_ms=0, now_ms=0,
@@ -600,7 +600,7 @@ def test_heartbeat_extends_lease_and_boot_recovery(tmp_path):
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd /Users/erwanpesle/Documents/GitHub/casys-trader && python -m pytest tests/queue/test_ledger.py::test_heartbeat_extends_lease_and_boot_recovery -q; echo "EXIT=$?"`
+Run: `cd /Users/erwanpesle/Documents/GitHub/casys-trader && python -m pytest tests/queue_ledger/test_ledger.py::test_heartbeat_extends_lease_and_boot_recovery -q; echo "EXIT=$?"`
 Expected: FAIL — `AttributeError: ... 'heartbeat'`.
 
 - [ ] **Step 3: Write minimal implementation**
@@ -629,13 +629,13 @@ Expected: FAIL — `AttributeError: ... 'heartbeat'`.
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd /Users/erwanpesle/Documents/GitHub/casys-trader && python -m pytest tests/queue/test_ledger.py -q; echo "EXIT=$?"`
+Run: `cd /Users/erwanpesle/Documents/GitHub/casys-trader && python -m pytest tests/queue_ledger/test_ledger.py -q; echo "EXIT=$?"`
 Expected: PASS, `EXIT=0`.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add trader/queue/ledger.py tests/queue/test_ledger.py
+git add trader/queue/ledger.py tests/queue_ledger/test_ledger.py
 git commit -m "feat(queue): heartbeat (prolonge lease) + recover_on_boot (running orphelines)"
 ```
 
@@ -645,7 +645,7 @@ git commit -m "feat(queue): heartbeat (prolonge lease) + recover_on_boot (runnin
 
 **Files:**
 - Create: `trader/queue/pools.py`
-- Test: `tests/queue/test_pools.py`
+- Test: `tests/queue_ledger/test_pools.py`
 
 **Interfaces:**
 - Produces: `ResourcePools(limits: dict[str, int])`. `free_resources() -> list[str]` (ressources avec ≥1 permit libre). `try_acquire(resource) -> bool` (non bloquant), `release(resource)`. AIMD : `on_overload(resource)` (limite effective ×0.5, min 1), `on_success(resource)` (limite effective +1, plafonnée à la limite initiale). Les permits libres = limite effective − permits pris.
@@ -653,7 +653,7 @@ git commit -m "feat(queue): heartbeat (prolonge lease) + recover_on_boot (runnin
 - [ ] **Step 1: Write the failing test**
 
 ```python
-# tests/queue/test_pools.py
+# tests/queue_ledger/test_pools.py
 from trader.queue.pools import ResourcePools
 
 
@@ -684,7 +684,7 @@ def test_aimd_backpressure():
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd /Users/erwanpesle/Documents/GitHub/casys-trader && python -m pytest tests/queue/test_pools.py -q; echo "EXIT=$?"`
+Run: `cd /Users/erwanpesle/Documents/GitHub/casys-trader && python -m pytest tests/queue_ledger/test_pools.py -q; echo "EXIT=$?"`
 Expected: FAIL — `ModuleNotFoundError: trader.queue.pools`.
 
 - [ ] **Step 3: Write minimal implementation**
@@ -736,13 +736,13 @@ class ResourcePools:
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd /Users/erwanpesle/Documents/GitHub/casys-trader && python -m pytest tests/queue/test_pools.py -q; echo "EXIT=$?"`
+Run: `cd /Users/erwanpesle/Documents/GitHub/casys-trader && python -m pytest tests/queue_ledger/test_pools.py -q; echo "EXIT=$?"`
 Expected: PASS, `EXIT=0`.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add trader/queue/pools.py tests/queue/test_pools.py
+git add trader/queue/pools.py tests/queue_ledger/test_pools.py
 git commit -m "feat(queue): ResourcePools (sémaphores nommés + backpressure AIMD)"
 ```
 
@@ -752,7 +752,7 @@ git commit -m "feat(queue): ResourcePools (sémaphores nommés + backpressure AI
 
 **Files:**
 - Create: `trader/queue/worker.py`
-- Test: `tests/queue/test_worker.py`
+- Test: `tests/queue_ledger/test_worker.py`
 
 **Interfaces:**
 - Consumes: `TaskLedger` (Tasks 1-7), `ResourcePools` (Task 8).
@@ -761,7 +761,7 @@ git commit -m "feat(queue): ResourcePools (sémaphores nommés + backpressure AI
 - [ ] **Step 1: Write the failing test**
 
 ```python
-# tests/queue/test_worker.py
+# tests/queue_ledger/test_worker.py
 import pytest
 from trader.queue.ledger import TaskLedger
 from trader.queue.pools import ResourcePools
@@ -815,7 +815,7 @@ def test_worker_returns_false_when_resource_saturated(tmp_path):
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd /Users/erwanpesle/Documents/GitHub/casys-trader && python -m pytest tests/queue/test_worker.py -q; echo "EXIT=$?"`
+Run: `cd /Users/erwanpesle/Documents/GitHub/casys-trader && python -m pytest tests/queue_ledger/test_worker.py -q; echo "EXIT=$?"`
 Expected: FAIL — `ModuleNotFoundError: trader.queue.worker`.
 
 - [ ] **Step 3: Write minimal implementation**
@@ -877,13 +877,13 @@ class Worker:
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd /Users/erwanpesle/Documents/GitHub/casys-trader && python -m pytest tests/queue/ -q; echo "EXIT=$?"`
-Expected: PASS (toute la suite `tests/queue/`), `EXIT=0`.
+Run: `cd /Users/erwanpesle/Documents/GitHub/casys-trader && python -m pytest tests/queue_ledger/ -q; echo "EXIT=$?"`
+Expected: PASS (toute la suite `tests/queue_ledger/`), `EXIT=0`.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add trader/queue/worker.py tests/queue/test_worker.py
+git add trader/queue/worker.py tests/queue_ledger/test_worker.py
 git commit -m "feat(queue): Worker.run_once (claim→handler→complete/fail, resource + AIMD)"
 ```
 
