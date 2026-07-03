@@ -1,4 +1,4 @@
-"""compare — outil shadow-compare json↔sqlite (FIX 3).
+"""compare — outil shadow-compare json↔sqlite (pur lecture).
 
 Compare les états broker, trade_plans et scheduler entre les stores JSON et les
 stores SQLite d'un même state_dir. Machine-readable (dict structuré), pas de prose.
@@ -10,9 +10,16 @@ CLI :
     python -m trader.state_db.compare <state_dir>
     Imprime le dict JSON (indent=2) ; exit 0 si identical, exit 1 sinon.
 
-Le module ouvre la connexion SQLite via open_state_db (registre singleton) et
-appelle les import_* en mode idempotent (sentinels state_imports). Pas d'effet
-de bord destructif si casys.db est déjà peuplé.
+Contrainte fondamentale : le compare est PUR (read-only).
+- Exige que casys.db existe et que les 3 sentinels state_imports soient posés.
+- N'appelle jamais import_*, n'instancie aucun store avec starting_cash.
+- Aucun fichier créé/modifié.
+
+Dimensions comparées :
+- broker   : cash (≈1e-9), TOUTES les positions (q=0 incluses), fills (séquence)
+- plans    : liste ORDONNÉE (open_plans order, asdict par position)
+- scheduler: wakes par symbole {sym→heure}, default_next_wake, stale streaks,
+             watches ACTIVES (non-expirées, ordonnées par seq) avec expires_at normalisé
 
 Logging : [state_db] (getLogger(__name__), %-style).
 """
@@ -39,12 +46,63 @@ def _norm_ts(raw: str | None) -> str | None:
     return dt.astimezone(timezone.utc).isoformat()
 
 
-def compare_backends(state_dir: str | Path) -> dict:
-    """Compare les états JSON et SQLite d'un state_dir.
+def _normalize_watch(w: dict) -> dict:
+    """Normalise une watch du côté JSON pour comparaison homogène avec SQLite.
 
-    Ouvre SimBroker/TradePlanStore/Scheduler (JSON) et SqliteBroker/
-    SqliteTradePlanStore/SqliteScheduler (SQLite) sur le même répertoire.
-    Les imports SQLite sont idempotents (pas de re-import si sentinels déjà posés).
+    Extrait les champs clés (id, symbol, on_trigger, expires_at normalisé) en plus
+    du watch_json brut — miroir du tuple retourné côté SQLite.
+    """
+    return {
+        "id": w.get("id"),
+        "symbol": w.get("symbol"),
+        "on_trigger": w.get("on_trigger", "WAKE"),
+        "expires_at": _norm_ts(w.get("expires_at")),
+        "watch_json": w,
+    }
+
+
+def _compare_fills(json_fills: list[dict], sqlite_fills: list[dict]) -> bool:
+    """Compare deux séquences de fills (champs numériques avec _EPS, strings strict).
+
+    Retourne True ssi les deux listes sont identiques élément par élément.
+    """
+    if len(json_fills) != len(sqlite_fills):
+        return False
+    for jf, sf in zip(json_fills, sqlite_fills):
+        for key in ("symbol", "side", "commission_currency", "commission_model"):
+            if jf.get(key) != sf.get(key):
+                return False
+        for key in ("quantity", "price", "commission", "fx_rate"):
+            jv = jf.get(key)
+            sv = sf.get(key)
+            if jv is None and sv is None:
+                continue
+            if jv is None or sv is None:
+                return False
+            if abs(float(jv) - float(sv)) >= _EPS:
+                return False
+        if _norm_ts(jf.get("ts")) != _norm_ts(sf.get("ts")):
+            return False
+    return True
+
+
+def compare_backends(state_dir: str | Path) -> dict:
+    """Compare les états JSON et SQLite d'un state_dir (pur lecture).
+
+    **Précondition** : casys.db doit exister et les 3 sentinels state_imports
+    (broker, trade_plans, scheduler) doivent être posés. Si l'une de ces conditions
+    n'est pas remplie → RuntimeError explicite. Aucun fichier n'est créé/modifié.
+
+    Dimensions comparées :
+    - broker.cash       : abs(json − sqlite) < 1e-9
+    - broker.positions  : TOUTES les positions (q=0 incluses), par symbole
+    - broker.fills      : séquence complète dans l'ordre d'insertion
+    - trade_plans       : liste ORDONNÉE (position par position via asdict)
+    - scheduler.wakes   : {symbol: heure normalisée} + default_next_wake
+    - scheduler.stale   : streaks par symbole
+    - scheduler.watches : watches ACTIVES (non-expirées), ordonnées par seq,
+                          avec id / symbol / on_trigger / expires_at normalisé /
+                          watch_json comparés
 
     Returns:
         dict avec structure :
@@ -52,117 +110,199 @@ def compare_backends(state_dir: str | Path) -> dict:
           "broker": {
             "cash": {"json": float, "sqlite": float, "identical": bool},
             "positions_diff": [{"symbol": str, "json": {...}, "sqlite": {...}}, ...],
+            "fills_diff": {} | {"json_count": int, "sqlite_count": int},
           },
           "trade_plans": {
-            "diff": [{"id": str, "json": dict|None, "sqlite": dict|None}, ...],
+            "diff": [{"position": int, "json": dict|None, "sqlite": dict|None}, ...],
           },
           "scheduler": {
             "wakes_diff":   [{"field": str, "json": ..., "sqlite": ...}, ...],
-            "watches_diff": [{"id": str, "json": dict|None, "sqlite": dict|None}, ...],
+            "watches_diff": [{"position": int, "json": dict|None, "sqlite": dict|None}, ...],
             "stale_diff":   [{"symbol": str, "json": int, "sqlite": int}, ...],
           },
           "identical": bool,
         }
-        ``identical=True`` si aucune divergence détectée.
+        ``identical=True`` ssi TOUTES les dimensions coïncident.
 
     Args:
         state_dir: répertoire d'état (ex. ROOT / "state").
+
+    Raises:
+        RuntimeError: casys.db absent, sentinels manquants, ou fichier JSON requis absent.
     """
     # Imports locaux — évite dépendances circulaires et imports lourds au top-level
     from trader.state_db.connection import open_state_db
-    from trader.state_db.migrations import (
-        import_broker_from_json,
-        import_trade_plans_from_json,
-        import_scheduler_from_json,
-    )
-    from trader.state_db.broker_store import SqliteBroker
-    from trader.state_db.trade_plan_store import SqliteTradePlanStore
-    from trader.state_db.scheduler_store import SqliteScheduler
-    from trader.tools.execution import SimBroker, NoCommissionModel
-    from trader.planning.trade_plan import TradePlanStore
+    from trader.state_db.trade_plan_store import row_to_plan
+    from trader.planning.trade_plan import trade_plan_from_dict
 
     state_dir = Path(state_dir)
+    db_path = state_dir / "casys.db"
     json_broker_path = state_dir / "broker.json"
     json_plans_path = state_dir / "trade_plans.json"
     json_sched_path = state_dir / "scheduler.json"
 
     # ------------------------------------------------------------------
-    # Côté JSON
+    # FIX 1 — Guard : compare pur, exige DB + sentinels + JSON existants
     # ------------------------------------------------------------------
 
-    # Broker JSON
-    json_broker = SimBroker(
-        json_broker_path,
-        starting_cash=0.0,
-        commission_model=NoCommissionModel(),
-    )
-    json_cash: float = json_broker.cash()
-    json_positions = json_broker.positions()
+    if not db_path.exists():
+        raise RuntimeError(
+            f"compare: casys.db absent ou non initialisé — "
+            f"lancer le daemon en CASYS_STATE_BACKEND=sqlite d'abord ({db_path})"
+        )
 
-    # Plans JSON
-    json_plans_store = TradePlanStore(json_plans_path)
-    json_plans = json_plans_store.open_plans()
+    # Ouvrir la DB en lecture (le fichier existe, pas de création)
+    db = open_state_db(db_path)
 
-    # Scheduler JSON — lire le fichier directement pour accès complet
-    # (stale_streaks + indicator_watches sans effets de bord de purge)
-    json_sched_raw: dict = {}
-    if json_sched_path.exists():
-        json_sched_raw = json.loads(json_sched_path.read_text())
+    # Vérification sentinels state_imports
+    try:
+        rows = db.query_all(
+            "SELECT store FROM state_imports"
+            " WHERE store IN ('broker', 'trade_plans', 'scheduler')"
+        )
+        imported_stores = {r["store"] for r in rows}
+    except Exception:
+        imported_stores = set()
+
+    missing = {"broker", "trade_plans", "scheduler"} - imported_stores
+    if missing:
+        raise RuntimeError(
+            f"compare: casys.db absent ou non initialisé — "
+            f"lancer le daemon en CASYS_STATE_BACKEND=sqlite d'abord "
+            f"(sentinels manquants: {sorted(missing)})"
+        )
+
+    # Vérification fichiers JSON requis
+    for json_path in (json_broker_path, json_plans_path, json_sched_path):
+        if not json_path.exists():
+            raise RuntimeError(f"compare: fichier JSON requis absent: {json_path}")
+
+    # ------------------------------------------------------------------
+    # Côté JSON — lecture directe, aucune création ni modification
+    # ------------------------------------------------------------------
+
+    json_broker_raw = json.loads(json_broker_path.read_text())
+    json_cash: float = float(json_broker_raw["cash"])
+
+    # TOUTES positions (q=0 incluses) — format broker.json {symbol: {symbol, quantity, avg_price}}
+    json_all_positions: dict[str, dict] = {
+        sym: {
+            "symbol": sym,
+            "quantity": float(pos.get("quantity", 0.0)),
+            "avg_price": float(pos.get("avg_price", 0.0)),
+        }
+        for sym, pos in json_broker_raw.get("positions", {}).items()
+    }
+
+    json_fills: list[dict] = json_broker_raw.get("fills", [])
+
+    json_plans_raw = json.loads(json_plans_path.read_text())
+    json_plans_list: list[dict] = json_plans_raw.get("plans", [])
+
+    json_sched_raw: dict = json.loads(json_sched_path.read_text())
     json_sched_raw.setdefault("default_next_wake", None)
     json_sched_raw.setdefault("symbols", {})
     json_sched_raw.setdefault("stale_streaks", {})
     json_sched_raw.setdefault("indicator_watches", {})
 
-    json_symbols_with_wake: set[str] = {
-        s for s, v in json_sched_raw["symbols"].items() if v
+    # Wakes par symbole : {symbol: norm_ts} — seuls ceux avec une valeur non-nulle
+    json_symbol_wakes: dict[str, str | None] = {
+        s: _norm_ts(v)
+        for s, v in json_sched_raw["symbols"].items()
+        if v
     }
     json_default_wake_norm = _norm_ts(json_sched_raw["default_next_wake"])
+
     json_stale: dict[str, int] = {
         s: int(v) for s, v in json_sched_raw["stale_streaks"].items()
     }
-    # indicator_watches : id → watch_dict (toutes, y compris expirées)
-    json_watches: dict[str, dict] = dict(json_sched_raw["indicator_watches"])
+
+    # Watches actives (non-expirées) côté JSON, horodatage de référence fixé
+    now_utc = datetime.now(timezone.utc)
+    now_s = now_utc.isoformat()
+
+    def _is_active(w: dict) -> bool:
+        exp = _norm_ts(w.get("expires_at"))
+        return exp is None or exp > now_s
+
+    json_active_watches: list[dict] = [
+        _normalize_watch(w)
+        for w in json_sched_raw["indicator_watches"].values()
+        if _is_active(w)
+    ]
 
     # ------------------------------------------------------------------
-    # Côté SQLite
+    # Côté SQLite — lecture pure (aucune écriture, aucun import, aucun shadow)
     # ------------------------------------------------------------------
 
-    db_path = state_dir / "casys.db"
-    db = open_state_db(db_path)
+    # Broker
+    cash_row = db.query_one("SELECT cash FROM broker_state WHERE id=1")
+    sqlite_cash: float = float(cash_row["cash"]) if cash_row else 0.0
 
-    # Imports idempotents : no-op si sentinels déjà posés
-    import_broker_from_json(db, json_broker_path, starting_cash=0.0)
-    import_trade_plans_from_json(db, json_plans_path)
-    import_scheduler_from_json(db, json_sched_path)
+    # TOUTES positions (q=0 incluses) — pas de filtre quantity
+    pos_rows = db.query_all(
+        "SELECT symbol, quantity, avg_price FROM broker_positions ORDER BY symbol"
+    )
+    sqlite_all_positions: dict[str, dict] = {
+        r["symbol"]: {
+            "symbol": r["symbol"],
+            "quantity": float(r["quantity"]),
+            "avg_price": float(r["avg_price"]),
+        }
+        for r in pos_rows
+    }
 
-    sqlite_broker = SqliteBroker(db, commission_model=NoCommissionModel())
-    sqlite_cash: float = sqlite_broker.cash()
-    sqlite_positions = sqlite_broker.positions()
+    # Fills (séquence complète)
+    fill_rows = db.query_all(
+        "SELECT symbol, side, quantity, price, ts,"
+        " commission, commission_currency, commission_model, fx_rate"
+        " FROM broker_fills ORDER BY seq"
+    )
+    sqlite_fills: list[dict] = [dict(r) for r in fill_rows]
 
-    sqlite_plans_store = SqliteTradePlanStore(db)
-    sqlite_plans = sqlite_plans_store.open_plans()
+    # Plans (ordonnés par seq)
+    plan_rows = db.query_all("SELECT * FROM trade_plans ORDER BY seq")
+    sqlite_plans_list: list[dict] = [asdict(row_to_plan(r)) for r in plan_rows]
 
-    sqlite_sched = SqliteScheduler(db)
-    sqlite_symbols_with_wake: set[str] = sqlite_sched.symbols_with_wake()
+    # Scheduler — wakes par symbole
+    sym_wake_rows = db.query_all(
+        "SELECT symbol, when_iso FROM scheduler_symbol_wake ORDER BY symbol"
+    )
+    sqlite_symbol_wakes: dict[str, str | None] = {
+        r["symbol"]: _norm_ts(r["when_iso"]) for r in sym_wake_rows
+    }
 
-    default_wake_dt = sqlite_sched.next_wake()
+    default_wake_row = db.query_one(
+        "SELECT value FROM scheduler_meta WHERE key='default_next_wake'"
+    )
     sqlite_default_wake_norm = _norm_ts(
-        default_wake_dt.isoformat() if default_wake_dt else None
+        default_wake_row["value"] if default_wake_row else None
     )
 
-    # Stale streaks — lecture directe de la table (pas d'API d'itération sur SqliteScheduler)
+    # Stale streaks
     stale_rows = db.query_all(
         "SELECT symbol, streak FROM scheduler_stale_streaks ORDER BY symbol"
     )
     sqlite_stale: dict[str, int] = {r["symbol"]: int(r["streak"]) for r in stale_rows}
 
-    # Watches — toutes (y compris expirées, pour parité avec le JSON)
-    watch_rows = db.query_all(
-        "SELECT id, watch_json FROM scheduler_watches ORDER BY seq"
+    # Watches actives (non-expirées, même référence temporelle que le côté JSON)
+    active_watch_rows = db.query_all(
+        "SELECT id, symbol, on_trigger, expires_at, watch_json"
+        " FROM scheduler_watches"
+        " WHERE expires_at IS NULL OR expires_at > ?"
+        " ORDER BY seq",
+        (now_s,),
     )
-    sqlite_watches: dict[str, dict] = {
-        r["id"]: json.loads(r["watch_json"]) for r in watch_rows
-    }
+    sqlite_active_watches: list[dict] = [
+        {
+            "id": r["id"],
+            "symbol": r["symbol"],
+            "on_trigger": r["on_trigger"],
+            "expires_at": _norm_ts(r["expires_at"]),  # colonne canonique
+            "watch_json": json.loads(r["watch_json"]),
+        }
+        for r in active_watch_rows
+    ]
 
     # ------------------------------------------------------------------
     # Comparaison broker
@@ -175,15 +315,15 @@ def compare_backends(state_dir: str | Path) -> dict:
         "identical": cash_identical,
     }
 
-    all_pos_symbols = sorted(set(json_positions) | set(sqlite_positions))
+    all_pos_symbols = sorted(set(json_all_positions) | set(sqlite_all_positions))
     positions_diff: list[dict] = []
     for sym in all_pos_symbols:
-        j_pos = json_positions.get(sym)
-        s_pos = sqlite_positions.get(sym)
-        j_qty = j_pos.quantity if j_pos is not None else None
-        j_avg = j_pos.avg_price if j_pos is not None else None
-        s_qty = s_pos.quantity if s_pos is not None else None
-        s_avg = s_pos.avg_price if s_pos is not None else None
+        j_pos = json_all_positions.get(sym)
+        s_pos = sqlite_all_positions.get(sym)
+        j_qty = j_pos["quantity"] if j_pos is not None else None
+        j_avg = j_pos["avg_price"] if j_pos is not None else None
+        s_qty = s_pos["quantity"] if s_pos is not None else None
+        s_avg = s_pos["avg_price"] if s_pos is not None else None
         qty_ok = (j_qty is None and s_qty is None) or (
             j_qty is not None
             and s_qty is not None
@@ -203,19 +343,25 @@ def compare_backends(state_dir: str | Path) -> dict:
                 }
             )
 
+    fills_identical = _compare_fills(json_fills, sqlite_fills)
+    fills_diff: dict = {} if fills_identical else {
+        "json_count": len(json_fills),
+        "sqlite_count": len(sqlite_fills),
+    }
+
     # ------------------------------------------------------------------
-    # Comparaison trade_plans
+    # Comparaison trade_plans (liste ordonnée par position)
     # ------------------------------------------------------------------
 
-    json_plans_by_id = {p.id: asdict(p) for p in json_plans}
-    sqlite_plans_by_id = {p.id: asdict(p) for p in sqlite_plans}
-    all_plan_ids = sorted(set(json_plans_by_id) | set(sqlite_plans_by_id))
+    # Parse JSON plans via trade_plan_from_dict pour comparaison homogène avec SQLite
+    json_plans_parsed: list[dict] = [asdict(trade_plan_from_dict(p)) for p in json_plans_list]
+
     plans_diff: list[dict] = []
-    for plan_id in all_plan_ids:
-        j_plan = json_plans_by_id.get(plan_id)
-        s_plan = sqlite_plans_by_id.get(plan_id)
+    for i in range(max(len(json_plans_parsed), len(sqlite_plans_list), 1)):
+        j_plan = json_plans_parsed[i] if i < len(json_plans_parsed) else None
+        s_plan = sqlite_plans_list[i] if i < len(sqlite_plans_list) else None
         if j_plan != s_plan:
-            plans_diff.append({"id": plan_id, "json": j_plan, "sqlite": s_plan})
+            plans_diff.append({"position": i, "json": j_plan, "sqlite": s_plan})
 
     # ------------------------------------------------------------------
     # Comparaison scheduler
@@ -223,13 +369,13 @@ def compare_backends(state_dir: str | Path) -> dict:
 
     wakes_diff: list[dict] = []
 
-    # Symboles avec override de réveil
-    if json_symbols_with_wake != sqlite_symbols_with_wake:
+    # Wakes par symbole : compare {symbol: heure normalisée} (heure incluse)
+    if json_symbol_wakes != sqlite_symbol_wakes:
         wakes_diff.append(
             {
                 "field": "symbols_with_wake",
-                "json": sorted(json_symbols_with_wake),
-                "sqlite": sorted(sqlite_symbols_with_wake),
+                "json": json_symbol_wakes,
+                "sqlite": sqlite_symbol_wakes,
             }
         )
 
@@ -252,14 +398,14 @@ def compare_backends(state_dir: str | Path) -> dict:
         if j_s != s_s:
             stale_diff.append({"symbol": sym, "json": j_s, "sqlite": s_s})
 
-    # Indicator watches
-    all_watch_ids = sorted(set(json_watches) | set(sqlite_watches))
+    # Watches actives (vue opérationnelle, ordonnée par position)
     watches_diff: list[dict] = []
-    for watch_id in all_watch_ids:
-        j_w = json_watches.get(watch_id)
-        s_w = sqlite_watches.get(watch_id)
+    n_watches = max(len(json_active_watches), len(sqlite_active_watches))
+    for i in range(n_watches):
+        j_w = json_active_watches[i] if i < len(json_active_watches) else None
+        s_w = sqlite_active_watches[i] if i < len(sqlite_active_watches) else None
         if j_w != s_w:
-            watches_diff.append({"id": watch_id, "json": j_w, "sqlite": s_w})
+            watches_diff.append({"position": i, "json": j_w, "sqlite": s_w})
 
     # ------------------------------------------------------------------
     # Résultat
@@ -268,6 +414,7 @@ def compare_backends(state_dir: str | Path) -> dict:
     identical = (
         cash_identical
         and not positions_diff
+        and fills_identical
         and not plans_diff
         and not wakes_diff
         and not stale_diff
@@ -278,6 +425,7 @@ def compare_backends(state_dir: str | Path) -> dict:
         "broker": {
             "cash": cash_info,
             "positions_diff": positions_diff,
+            "fills_diff": fills_diff,
         },
         "trade_plans": {
             "diff": plans_diff,

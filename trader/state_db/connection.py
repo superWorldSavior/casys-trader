@@ -121,6 +121,15 @@ class StateDb:
     # Primitives publiques
     # ------------------------------------------------------------------
 
+    def _ensure_open(self) -> None:
+        """Lève RuntimeError si la connexion a été fermée.
+
+        Doit être appelé sous self._lock (voir query_one, query_all, transaction).
+        close() reste idempotent et n'appelle PAS _ensure_open.
+        """
+        if self._conn is None:
+            raise RuntimeError("StateDb fermé")
+
     @contextmanager
     def transaction(self) -> Generator[sqlite3.Cursor, None, None]:
         """Context manager : BEGIN IMMEDIATE … COMMIT (ou ROLLBACK sur exception).
@@ -136,6 +145,7 @@ class StateDb:
         explicitement via cursor — plus robuste que conn.commit()/rollback().
         """
         with self._lock:
+            self._ensure_open()
             cur = self._conn.cursor()
             cur.execute("BEGIN IMMEDIATE")
             try:
@@ -152,16 +162,20 @@ class StateDb:
         """Lit une ligne sous _lock (fetch inclus). Retourne None si absente.
 
         Toutes les écritures passent EXCLUSIVEMENT par transaction().
+        Lève RuntimeError si la connexion est fermée.
         """
         with self._lock:
+            self._ensure_open()
             return self._conn.execute(sql, params).fetchone()
 
     def query_all(self, sql: str, params: tuple = ()) -> list[sqlite3.Row]:
         """Lit toutes les lignes sous _lock (fetch inclus).
 
         Toutes les écritures passent EXCLUSIVEMENT par transaction().
+        Lève RuntimeError si la connexion est fermée.
         """
         with self._lock:
+            self._ensure_open()
             return self._conn.execute(sql, params).fetchall()
 
     def executescript(self, sql: str) -> None:

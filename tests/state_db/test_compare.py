@@ -1,23 +1,33 @@
-"""Tests TDD — FIX 3 compare_backends (trader/state_db/compare.py).
+"""Tests TDD — compare_backends (trader/state_db/compare.py).
 
 Couverture :
-    - État identique (JSON shadow ↔ SQLite) → identical=True, exit 0
-    - Divergence cash broker (JSON modifié post-import) → identical=False,
-      broker.cash.identical=False, positions_diff vide
-    - Divergence trade_plan → identical=False, trade_plans.diff non vide
-    - Divergence scheduler (symbols_with_wake) → identical=False, wakes_diff non vide
-    - CLI exit code : 0 si identical, 1 sinon
+    FIX 1 — compare pur (read-only) :
+        - RuntimeError si casys.db absent
+        - RuntimeError si sentinels manquants
+        - Compare n'importe jamais (vérifié par structure du résultat)
+
+    FIX 2 — fidélité :
+        - État identique (JSON shadow ↔ SQLite) → identical=True, exit 0
+        - Divergence cash broker (JSON modifié post-import) → identical=False
+        - Divergence scheduler.symbols : même symbole, heure différente → identical=False
+        - Divergence trade_plans : ordre différent → identical=False
+        - Divergence watches : expires_at différent côté JSON → identical=False
+        - Divergence scheduler.symbols_with_wake (symbole absent côté SQLite) → identical=False
+        - CLI exit code : 0 si identical, 1 sinon
+        - Structure du dict retourné
 """
 from __future__ import annotations
 
 import json
 import subprocess
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
 
 from trader.state_db.connection import (
+    StateDb,
     _DB_REGISTRY,
     _DB_REGISTRY_LOCK,
     close_all_state_dbs,
@@ -58,8 +68,86 @@ def _bootstrap(tmp_path: Path, cash: float = 50_000.0) -> None:
     )
 
 
+def _minimal_plan_dict(plan_id: str, symbol: str = "AAPL.US") -> dict:
+    """Dict minimal valide pour TradePlan."""
+    return {
+        "id": plan_id,
+        "symbol": symbol,
+        "side": "LONG",
+        "quantity": 10.0,
+        "remaining_quantity": 10.0,
+        "entry_price": 100.0,
+        "opened_at": "2026-07-01T10:00:00+00:00",
+        "reference_volatility": None,
+        "hard_stop_price": 90.0,
+        "take_profits": [],
+        "trailing_stop": None,
+        "max_hold_minutes": None,
+        "high_watermark": None,
+        "low_watermark": None,
+        "filled_take_profits": [],
+        "profit_protection": None,
+        "exit_watch": None,
+        "llm_provider": None,
+        "llm_model": None,
+        "llm_fallback_reason": None,
+        "llm_confidence": None,
+        "last_llm_review": None,
+        "entry_thesis": None,
+        "entry_decision_id": None,
+        "entry_context": None,
+    }
+
+
 # ---------------------------------------------------------------------------
-# Test 1 — États identiques → identical=True
+# FIX 1 — compare pur : guards
+# ---------------------------------------------------------------------------
+
+
+def test_compare_raises_if_db_absent(tmp_path: Path) -> None:
+    """compare_backends lève RuntimeError si casys.db est absent."""
+    # Fichiers JSON présents mais pas de casys.db
+    (tmp_path / "broker.json").write_text(
+        json.dumps({"cash": 100.0, "positions": {}, "fills": []})
+    )
+    (tmp_path / "trade_plans.json").write_text(json.dumps({"plans": []}))
+    (tmp_path / "scheduler.json").write_text(
+        json.dumps({"default_next_wake": None, "symbols": {}, "stale_streaks": {}, "indicator_watches": {}})
+    )
+
+    with pytest.raises(RuntimeError, match="casys.db absent"):
+        compare_backends(tmp_path)
+
+
+def test_compare_raises_if_sentinel_missing(tmp_path: Path) -> None:
+    """compare_backends lève RuntimeError si les sentinels state_imports sont manquants."""
+    db_path = tmp_path / "casys.db"
+    _clear_registry_for([db_path])
+
+    # Crée le fichier DB sans tables ni sentinels
+    db = StateDb(db_path)
+    db.close()
+    _clear_registry_for([db_path])
+
+    # Fichiers JSON présents
+    (tmp_path / "broker.json").write_text(
+        json.dumps({"cash": 100.0, "positions": {}, "fills": []})
+    )
+    (tmp_path / "trade_plans.json").write_text(json.dumps({"plans": []}))
+    (tmp_path / "scheduler.json").write_text(
+        json.dumps({"default_next_wake": None, "symbols": {}, "stale_streaks": {}, "indicator_watches": {}})
+    )
+
+    try:
+        with pytest.raises(RuntimeError, match="non initialisé"):
+            compare_backends(tmp_path)
+    finally:
+        close_all_state_dbs()
+        _clear_registry_for([db_path])
+
+
+# ---------------------------------------------------------------------------
+# FIX 2 — État identique → identical=True
 # ---------------------------------------------------------------------------
 
 
@@ -77,6 +165,7 @@ def test_compare_identical_states(tmp_path: Path) -> None:
     )
     assert result["broker"]["cash"]["identical"] is True
     assert result["broker"]["positions_diff"] == []
+    assert result["broker"]["fills_diff"] == {}
     assert result["trade_plans"]["diff"] == []
     assert result["scheduler"]["wakes_diff"] == []
     assert result["scheduler"]["watches_diff"] == []
@@ -84,7 +173,7 @@ def test_compare_identical_states(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Test 2 — Divergence broker.cash → identical=False
+# FIX 2 — Divergence broker.cash → identical=False
 # ---------------------------------------------------------------------------
 
 
@@ -118,7 +207,162 @@ def test_compare_divergent_broker_cash(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Test 3 — Divergence scheduler.symbols_with_wake → identical=False
+# FIX 2 — Divergence scheduler.symbols : heure différente (faux négatif corrigé)
+# ---------------------------------------------------------------------------
+
+
+def test_compare_wake_time_divergence(tmp_path: Path) -> None:
+    """Même symbole mais heure de réveil différente → identical=False.
+
+    Faux négatif de l'ancienne version (comparait uniquement les ensembles de
+    symboles, pas les heures). La nouvelle version compare {symbol: heure}.
+    """
+    _bootstrap(tmp_path, cash=50_000.0)
+
+    db_path = tmp_path / "casys.db"
+    db = open_state_db(db_path)
+
+    from trader.state_db.scheduler_store import SqliteScheduler
+
+    sched = SqliteScheduler(db, json_path=tmp_path / "scheduler.json")
+    sched.set_symbol_next_wake("AAPL.US", "2026-07-04T10:00:00+00:00")
+    # SQLite = 10:00, shadow scheduler.json aussi = 10:00
+
+    # Modifier manuellement scheduler.json pour avoir une heure différente
+    sched_path = tmp_path / "scheduler.json"
+    sched_data = json.loads(sched_path.read_text())
+    sched_data["symbols"]["AAPL.US"] = "2026-07-04T11:00:00+00:00"  # 11:00 ≠ 10:00
+    sched_path.write_text(json.dumps(sched_data))
+
+    try:
+        result = compare_backends(tmp_path)
+    finally:
+        close_all_state_dbs()
+        _clear_registry_for([db_path])
+
+    assert result["identical"] is False, (
+        "Même symbole, heure différente → identical doit être False"
+    )
+    wakes_field = next(
+        (d for d in result["scheduler"]["wakes_diff"] if d["field"] == "symbols_with_wake"),
+        None,
+    )
+    assert wakes_field is not None, "wakes_diff doit contenir symbols_with_wake"
+    assert "AAPL.US" in wakes_field["json"]
+    assert "AAPL.US" in wakes_field["sqlite"]
+    # Les heures doivent différer
+    assert wakes_field["json"]["AAPL.US"] != wakes_field["sqlite"]["AAPL.US"]
+
+
+# ---------------------------------------------------------------------------
+# FIX 2 — Divergence trade_plans : ordre différent (faux négatif corrigé)
+# ---------------------------------------------------------------------------
+
+
+def test_compare_plan_order_divergence(tmp_path: Path) -> None:
+    """Mêmes plans mais dans un ordre différent → identical=False.
+
+    Faux négatif de l'ancienne version (comparait par id, ignorait l'ordre/seq).
+    La nouvelle version compare la liste ordonnée position par position.
+    """
+    _bootstrap(tmp_path, cash=50_000.0)
+
+    db_path = tmp_path / "casys.db"
+    db = open_state_db(db_path)
+
+    from trader.state_db.trade_plan_store import SqliteTradePlanStore
+    from trader.planning.trade_plan import trade_plan_from_dict
+
+    plans_store = SqliteTradePlanStore(db, json_path=tmp_path / "trade_plans.json")
+    plan_a = trade_plan_from_dict(_minimal_plan_dict("plan-A", "AAPL.US"))
+    plan_b = trade_plan_from_dict(_minimal_plan_dict("plan-B", "BN.PA"))
+    plans_store.upsert(plan_a)  # seq=1
+    plans_store.upsert(plan_b)  # seq=2
+    # SQLite : A, B ; shadow JSON : A, B
+
+    # Inverser l'ordre dans trade_plans.json
+    plans_path = tmp_path / "trade_plans.json"
+    plans_data = json.loads(plans_path.read_text())
+    plans_data["plans"] = list(reversed(plans_data["plans"]))  # B, A
+    plans_path.write_text(json.dumps(plans_data))
+
+    try:
+        result = compare_backends(tmp_path)
+    finally:
+        close_all_state_dbs()
+        _clear_registry_for([db_path])
+
+    assert result["identical"] is False, (
+        "Ordre différent des plans → identical doit être False"
+    )
+    assert result["trade_plans"]["diff"], "trade_plans.diff doit être non vide"
+    # Position 0 doit différer (JSON:B vs SQLite:A)
+    first_diff = result["trade_plans"]["diff"][0]
+    assert first_diff["position"] == 0
+    assert first_diff["json"]["symbol"] == "BN.PA"
+    assert first_diff["sqlite"]["symbol"] == "AAPL.US"
+
+
+# ---------------------------------------------------------------------------
+# FIX 2 — Divergence watches : expires_at différent (faux négatif corrigé)
+# ---------------------------------------------------------------------------
+
+
+def test_compare_watch_expires_divergence(tmp_path: Path) -> None:
+    """Watch avec expires_at différent entre JSON et SQLite → identical=False.
+
+    Faux négatif potentiel si la comparaison ne normalise pas ou ne compare pas
+    le champ expires_at de la colonne DB vs le JSON.
+    """
+    _bootstrap(tmp_path, cash=50_000.0)
+
+    db_path = tmp_path / "casys.db"
+    db = open_state_db(db_path)
+
+    from trader.state_db.scheduler_store import SqliteScheduler
+
+    sched = SqliteScheduler(db, json_path=tmp_path / "scheduler.json")
+
+    # Crée une watch avec expires_at dans le futur (T1)
+    future1 = (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat()
+    watch = {
+        "id": "w-test-001",
+        "symbol": "AAPL.US",
+        "on_trigger": "WAKE",
+        "expires_at": future1,
+    }
+    sched.set_symbol_indicator_watch("AAPL.US", watch)
+    # SQLite colonne expires_at = canonical(T1) ; watch_json = {expires_at: T1}
+    # Shadow scheduler.json synchronisé avec T1
+
+    # Modifier scheduler.json pour changer expires_at de la watch vers T2 (différent)
+    future2 = (datetime.now(timezone.utc) + timedelta(hours=4)).isoformat()
+    sched_path = tmp_path / "scheduler.json"
+    sched_data = json.loads(sched_path.read_text())
+    watch_data = sched_data["indicator_watches"]["w-test-001"]
+    watch_data["expires_at"] = future2
+    sched_data["indicator_watches"]["w-test-001"] = watch_data
+    sched_path.write_text(json.dumps(sched_data))
+
+    try:
+        result = compare_backends(tmp_path)
+    finally:
+        close_all_state_dbs()
+        _clear_registry_for([db_path])
+
+    assert result["identical"] is False, (
+        "expires_at différent dans la watch → identical doit être False"
+    )
+    assert result["scheduler"]["watches_diff"], "watches_diff doit être non vide"
+    diff = result["scheduler"]["watches_diff"][0]
+    assert diff["position"] == 0
+    assert diff["json"] is not None
+    assert diff["sqlite"] is not None
+    assert diff["json"]["expires_at"] != diff["sqlite"]["expires_at"]
+
+
+# ---------------------------------------------------------------------------
+# FIX 2 — Divergence scheduler.symbols_with_wake (symbole côté JSON uniquement)
 # ---------------------------------------------------------------------------
 
 
@@ -144,7 +388,7 @@ def test_compare_divergent_scheduler_wakes(tmp_path: Path) -> None:
     assert result["scheduler"]["wakes_diff"], (
         "wakes_diff doit être non vide quand symbols_with_wake divergent"
     )
-    # Le diff doit mentionner AAPL.US (côté JSON) vs set vide (côté SQLite)
+    # Le diff doit mentionner AAPL.US (côté JSON) vs dict vide (côté SQLite)
     wakes_field = next(
         (d for d in result["scheduler"]["wakes_diff"] if d["field"] == "symbols_with_wake"),
         None,
@@ -154,7 +398,7 @@ def test_compare_divergent_scheduler_wakes(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Test 4 — CLI exit code 0 si identical
+# CLI exit code 0 si identical
 # ---------------------------------------------------------------------------
 
 
@@ -178,7 +422,7 @@ def test_cli_exit_0_when_identical(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Test 5 — CLI exit code 1 si divergence
+# CLI exit code 1 si divergence
 # ---------------------------------------------------------------------------
 
 
@@ -210,7 +454,7 @@ def test_cli_exit_1_when_divergent(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Test 6 — identical=True reflète bien le contenu du dict
+# Structure du dict retourné
 # ---------------------------------------------------------------------------
 
 
@@ -231,6 +475,7 @@ def test_compare_result_structure(tmp_path: Path) -> None:
     assert "sqlite" in result["broker"]["cash"]
     assert "positions_diff" in result["broker"]
     assert isinstance(result["broker"]["positions_diff"], list)
+    assert "fills_diff" in result["broker"]
 
     # Structure trade_plans
     assert "trade_plans" in result

@@ -86,7 +86,8 @@ def bootstrap_state_backend(
     ic_results = db.integrity_check()
     if ic_results != ["ok"]:
         log.error(
-            "[state_db] integrity_check ÉCHEC: %s",
+            "[state_db] integrity_check ÉCHEC %s: %s",
+            db_path,
             "; ".join(ic_results),
         )
 

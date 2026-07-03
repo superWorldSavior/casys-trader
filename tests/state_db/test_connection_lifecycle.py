@@ -224,3 +224,52 @@ def test_bootstrap_no_error_on_healthy_db(tmp_path: Path, caplog) -> None:
     finally:
         close_all_state_dbs()
         _clear_registry_for([db_path])
+
+
+# ---------------------------------------------------------------------------
+# FIX 3 — _ensure_open : RuntimeError après close()
+# ---------------------------------------------------------------------------
+
+
+def test_ensure_open_raises_query_one_after_close(tmp_path: Path) -> None:
+    """query_one lève RuntimeError('StateDb fermé') après close()."""
+    db = StateDb(tmp_path / "eo_test.db")
+    db.close()
+
+    with pytest.raises(RuntimeError, match="StateDb fermé"):
+        db.query_one("SELECT 1")
+
+
+def test_ensure_open_raises_query_all_after_close(tmp_path: Path) -> None:
+    """query_all lève RuntimeError('StateDb fermé') après close()."""
+    db = StateDb(tmp_path / "eo_all.db")
+    db.close()
+
+    with pytest.raises(RuntimeError, match="StateDb fermé"):
+        db.query_all("SELECT 1")
+
+
+def test_ensure_open_raises_transaction_after_close(tmp_path: Path) -> None:
+    """transaction() lève RuntimeError('StateDb fermé') après close()."""
+    db = StateDb(tmp_path / "eo_tx.db")
+    db.close()
+
+    with pytest.raises(RuntimeError, match="StateDb fermé"):
+        with db.transaction() as cur:
+            cur.execute("SELECT 1")
+
+
+def test_ensure_open_raises_integrity_check_after_close(tmp_path: Path) -> None:
+    """integrity_check() lève RuntimeError('StateDb fermé') après close()."""
+    db = StateDb(tmp_path / "eo_ic.db")
+    db.close()
+
+    with pytest.raises(RuntimeError, match="StateDb fermé"):
+        db.integrity_check()
+
+
+def test_ensure_open_close_remains_idempotent(tmp_path: Path) -> None:
+    """close() reste idempotent malgré _ensure_open : 2e appel silencieux."""
+    db = StateDb(tmp_path / "eo_idem.db")
+    db.close()
+    db.close()  # Ne doit pas lever
