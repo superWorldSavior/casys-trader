@@ -113,23 +113,48 @@ def _decision_from_dict(data: dict, symbol: str) -> Decision:
     blocking_missing = missing - {"decision_reason_code"}
     if blocking_missing:
         raise ValueError(f"clés manquantes: {blocking_missing}")
-    action = str(data["action"]).upper()
-    if action not in ("BUY", "SELL", "HOLD"):
-        raise ValueError(f"action invalide: {action}")
+    intent = _optional_upper_str(data, "intent")
+    quantity = float(data["quantity"])
+    resolve_from_position = False
+    normalizations: list[dict] = []
+    if intent in _RELATIVE_ORDER_INTENTS:
+        has_reduce_fraction = data.get("_reduce_fraction") is not None
+        if (
+            quantity < 0.0
+            or intent in {"REVERSE", "ADD"} and quantity <= 0.0
+            or intent == "REDUCE" and quantity <= 0.0 and not has_reduce_fraction
+        ):
+            raise ValueError("order_qty_must_be_positive")
+        action = "HOLD"
+        resolve_from_position = True
+        if intent == "CLOSE":
+            quantity = 0.0
+        normalizations.append(
+            {
+                "code": "relative_intent_position_resolved",
+                "ignored_fields": ["action"],
+            }
+        )
+    else:
+        action = str(data["action"]).upper()
+        if action not in ("BUY", "SELL", "HOLD"):
+            raise ValueError(f"action invalide: {action}")
     return Decision(
         symbol=str(data["symbol"]),
         action=action,  # type: ignore[arg-type]
-        quantity=float(data["quantity"]),
+        quantity=quantity,
         confidence=float(data["confidence"]),
         rationale=str(data["rationale"]),
         next_wake_in_minutes=_optional_float(data, "next_wake_in_minutes"),
-        intent=_optional_upper_str(data, "intent"),  # type: ignore[arg-type]
+        intent=intent,  # type: ignore[arg-type]
         exit_plan=_optional_dict(data, "exit_plan"),
         indicator_watch=_optional_dict(data, "indicator_watch"),
         cancel_watch_ids=_cancel_watch_ids(data),
         learning=_normalize_learning(data.get("learning")),
         decision_reason_code=_decision_reason_code(data),
         amend_exit=_optional_dict(data, "amend_exit"),
+        resolve_from_position=resolve_from_position,
+        domain_tools=({"normalizations": normalizations} if normalizations else None),
     )
 
 
@@ -321,13 +346,25 @@ def _decision_from_symbol_calls(data: dict, symbol: str) -> Decision:
                 raise ValueError("order_intent_invalid")
             risk_pct_raw = args.get("risk_pct")
             if risk_pct_raw is not None and intent not in {"OPEN_LONG", "OPEN_SHORT"}:
-                raise ValueError("risk_pct_only_for_opens")
+                traces[-1]["detail"].setdefault("ignored_fields", []).append(
+                    {"field": "risk_pct", "reason": "risk_pct_only_used_for_open_intents"}
+                )
 
             needs_position_resolve = False
             reduce_fraction: float | None = None
             if intent in _RELATIVE_ORDER_INTENTS:
-                if args.get("side") is not None or args.get("action") is not None:
-                    raise ValueError("side_not_allowed_for_relative_intent")
+                ignored_side_fields = [
+                    field
+                    for field in ("side", "action")
+                    if args.get(field) is not None
+                ]
+                if ignored_side_fields:
+                    traces[-1]["detail"].setdefault("ignored_fields", []).append(
+                        {
+                            "fields": ignored_side_fields,
+                            "reason": "relative_intent_side_derived_from_position",
+                        }
+                    )
                 needs_position_resolve = True
                 action = "HOLD"  # Provisoire — remplacé par le daemon depuis la position
                 if intent == "REDUCE":
@@ -429,8 +466,9 @@ def _decision_from_symbol_calls(data: dict, symbol: str) -> Decision:
     if propose_order_used and amend_exit_used:
         raise ValueError("amend_exit_conflicts_with_propose_order")
     resolve_from_position = decision.pop("_resolve_from_position", False)
-    reduce_fraction_val = decision.pop("_reduce_fraction", None)
+    reduce_fraction_val = decision.get("_reduce_fraction")
     parsed = _decision_from_dict(decision, symbol)
+    decision.pop("_reduce_fraction", None)
     result = replace(
         parsed,
         domain_tools={"tool_rounds": 0, "tool_calls": traces},

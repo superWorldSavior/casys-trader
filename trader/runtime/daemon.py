@@ -126,7 +126,7 @@ def summarize_gross_rejections(decisions: list[dict]) -> dict | None:
         str(d.get("symbol"))
         for d in decisions
         if d.get("reason") == _GROSS_REJECT_REASON
-        and d.get("intent") in {"OPEN_LONG", "OPEN_SHORT", "REVERSE"}
+        and d.get("intent") in _OPENING_INTENTS
         and d.get("symbol")
     )
     if not symbols:
@@ -647,6 +647,33 @@ def _reverse_open_quantity(*, action: str, quantity: float, position_quantity: f
         quantity=quantity,
         position_quantity=position_quantity,
     )
+
+
+def _projected_add_risk_basis(
+    *,
+    action: str,
+    add_quantity: float,
+    add_price: float,
+    position_quantity: float,
+    position_avg_price: float,
+) -> tuple[float, float]:
+    """Retourne (qty totale, prix moyen projeté) pour le risque d'un ADD."""
+    signed_add = add_quantity if action == "BUY" else -add_quantity
+    projected_quantity = position_quantity + signed_add
+    total_quantity = abs(projected_quantity)
+    if total_quantity <= 0.0:
+        return 0.0, add_price
+    if (
+        position_quantity != 0.0
+        and position_quantity * signed_add > 0.0
+        and math.isfinite(position_avg_price)
+        and position_avg_price > 0.0
+        and math.isfinite(add_price)
+        and add_price > 0.0
+    ):
+        total_cost = position_avg_price * abs(position_quantity) + add_price * abs(signed_add)
+        return total_quantity, total_cost / total_quantity
+    return total_quantity, add_price
 
 
 def _risk_pct_for_quantity(quantity: float, stop_distance: float | None, equity: float) -> float | None:
@@ -2588,6 +2615,7 @@ def run_cycle(
                 entry["risk_pct_target"] = decision.risk_pct_target
                 entry["risk_qty_derived"] = True
             risk_quantity = effective_quantity
+            risk_entry_price = prices[sym]
             if decision.intent == "REVERSE":
                 # REVERSE est tracé mais PAS clampé au risque (dette connue).
                 risk_quantity = _reverse_open_quantity(
@@ -2595,6 +2623,16 @@ def run_cycle(
                     quantity=effective_quantity,
                     position_quantity=0.0 if pos is None else pos.quantity,
                 )
+            elif decision.intent == "ADD":
+                risk_quantity, risk_entry_price = _projected_add_risk_basis(
+                    action=decision.action,
+                    add_quantity=effective_quantity,
+                    add_price=prices[sym],
+                    position_quantity=0.0 if pos is None else pos.quantity,
+                    position_avg_price=0.0 if pos is None else pos.avg_price,
+                )
+                entry["risk_total_position_qty"] = risk_quantity
+                entry["risk_entry_price"] = risk_entry_price
             entry["risk_clamped"] = False
             entry["risk_unbounded_no_stop"] = hard_stop_price is None
             if hard_stop_price is None:
@@ -2618,7 +2656,7 @@ def run_cycle(
                     )
                     continue
             else:
-                open_stop_distance = abs(prices[sym] - hard_stop_price)
+                open_stop_distance = abs(risk_entry_price - hard_stop_price)
                 _set_entry_risk_metrics(
                     entry,
                     quantity=risk_quantity,
@@ -2628,7 +2666,7 @@ def run_cycle(
                 if risk_guarded_open:
                     max_risk_quantity = gate.max_quantity_at_risk(
                         snap.equity,
-                        prices[sym],
+                        risk_entry_price,
                         hard_stop_price,
                         fx_rate=_rate(sym),
                     )
@@ -2638,11 +2676,11 @@ def run_cycle(
                         apply_default_schedule_after_blocked()
                         record_decision({**entry, "executed": False, "reason": "zero_risk_quantity"})
                         continue
-                    if effective_quantity > max_risk_quantity:
+                    if risk_quantity > max_risk_quantity:
                         _log_cycle_progress(
                             "[risk] %s rejected code=risk_per_trade_exceeded qty=%s max_qty=%s",
                             sym,
-                            effective_quantity,
+                            risk_quantity,
                             max_risk_quantity,
                         )
                         apply_default_schedule_after_blocked()
@@ -2652,7 +2690,7 @@ def run_cycle(
                                 "executed": False,
                                 "reason": "risk:risk_per_trade_exceeded",
                                 "context": (
-                                    f"qty={effective_quantity} max_qty={max_risk_quantity:.8f} "
+                                    f"risk_qty={risk_quantity} max_qty={max_risk_quantity:.8f} "
                                     f"risk_pct={entry.get('risk_pct')} "
                                     f"limit={gate.limits.max_risk_per_trade_pct}"
                                 ),
@@ -2790,15 +2828,23 @@ def run_cycle(
                         entry["trade_plan"] = _plan_snapshot(created_plan)
                 else:
                     plan_quantity = effective_quantity
+                    plan_entry_price = prices[sym]
+                    add_previous_plan: TradePlan | None = None
                     if decision.intent == "ADD":
                         final_position = broker.positions().get(sym)
                         plan_quantity = 0.0 if final_position is None else abs(final_position.quantity)
+                        if final_position is not None and final_position.avg_price > 0.0:
+                            plan_entry_price = final_position.avg_price
+                        add_previous_plan = next(
+                            (plan for plan in plan_store.open_plans() if plan.symbol == sym),
+                            None,
+                        )
                         plan_store.close_symbol(sym)
                     plan = create_trade_plan_from_order(
                         symbol=sym,
                         order_side=decision.action,
                         quantity=plan_quantity,
-                        entry_price=prices[sym],
+                        entry_price=plan_entry_price,
                         opened_at=fill.ts,
                         raw_exit_plan=runtime_exit_plan,
                         reference_volatility=reference_volatility,
@@ -2808,6 +2854,8 @@ def run_cycle(
                         llm_confidence=decision.confidence,
                     )
                     plan = replace(plan, **entry_meta)
+                    if add_previous_plan is not None and add_previous_plan.last_llm_review is not None:
+                        plan = replace(plan, last_llm_review=copy.deepcopy(add_previous_plan.last_llm_review))
                     plan_store.upsert(plan)
                     entry["trade_plan_created"] = True
                     entry["trade_plan"] = _plan_snapshot(plan)

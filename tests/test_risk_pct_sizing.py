@@ -87,18 +87,27 @@ def test_parse_no_qty_no_risk_pct_raises() -> None:
         _decision_from_symbol_calls(data, "SPY")
 
 
-def test_parse_risk_pct_only_for_open_intents() -> None:
-    """REVERSE + risk_pct est rejeté explicitement : risk_pct ne vaut que pour OPEN."""
-    data = _symbol_call_data(intent="REVERSE", risk_pct=0.005)
-    with pytest.raises(ValueError, match="risk_pct_only_for_opens"):
-        _decision_from_symbol_calls(data, "SPY")
+def test_parse_risk_pct_hors_open_est_ignore_si_qty_presente() -> None:
+    """REVERSE + qty + risk_pct : risk_pct est superflu, pas bloquant."""
+    data = _symbol_call_data(intent="REVERSE", qty=12, risk_pct=0.005)
+    dec = _decision_from_symbol_calls(data, "SPY")
+
+    assert dec.intent == "REVERSE"
+    assert dec.quantity == pytest.approx(12.0)
+    assert dec.resolve_from_position is True
+    assert dec.risk_pct_target is None
 
 
-def test_parse_close_side_risk_pct_sans_qty_est_rejete() -> None:
-    """CLOSE avec side explicite + risk_pct sans qty ne doit pas produire qty=0."""
+def test_parse_close_side_risk_pct_sans_qty_ignore_champs_superflus() -> None:
+    """CLOSE dérive side+qty depuis la position et ignore side/risk_pct."""
     data = _symbol_call_data(intent="CLOSE", side="SELL", risk_pct=0.005)
-    with pytest.raises(ValueError, match="risk_pct_only_for_opens"):
-        _decision_from_symbol_calls(data, "SPY")
+    dec = _decision_from_symbol_calls(data, "SPY")
+
+    assert dec.action == "HOLD"
+    assert dec.intent == "CLOSE"
+    assert dec.quantity == 0.0
+    assert dec.resolve_from_position is True
+    assert dec.risk_pct_target is None
 
 
 # ---------------------------------------------------------------------------

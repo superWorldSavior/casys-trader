@@ -272,8 +272,8 @@ def test_batch_parse_calls_vides_signifie_hold_explicite() -> None:
     assert parsed.domain_tools == {"tool_rounds": 0, "tool_calls": []}
 
 
-def test_batch_parse_close_avec_side_explicite_est_rejete() -> None:
-    """Relative intents dérivent leur side depuis la position, jamais depuis l'agent."""
+def test_batch_parse_close_avec_side_explicite_ignore_side_et_resout_position() -> None:
+    """Relative intents ignorent la side fournie et dérivent depuis la position."""
     raw = """
     {"decisions": [
       {"symbol": "SPY", "confidence": 0.7, "rationale": "these invalidee",
@@ -284,7 +284,9 @@ def test_batch_parse_close_avec_side_explicite_est_rejete() -> None:
     parsed = codex_client.parse_batch(raw, ["SPY"], allow_context_request=False)["SPY"]
 
     assert parsed.action == "HOLD"
-    assert "side_not_allowed_for_relative_intent" in parsed.rationale
+    assert parsed.intent == "CLOSE"
+    assert parsed.quantity == 0.0
+    assert parsed.resolve_from_position is True
 
 
 def test_batch_parse_close_sans_side_produit_resolve_from_position() -> None:
@@ -316,6 +318,24 @@ def test_batch_parse_rejette_melange_legacy_et_calls() -> None:
 
     assert parsed.action == "HOLD"
     assert "mixed_legacy_and_tools" in parsed.rationale
+
+
+def test_batch_parse_protege_intent_relatif_legacy_avec_action_explicite() -> None:
+    """Un intent position-aware legacy ignore action et passe en résolution position."""
+    raw = """
+    {"decisions": [
+      {"symbol": "SPY", "action": "SELL", "quantity": 20, "confidence": 0.8,
+       "rationale": "legacy reverse", "intent": "REVERSE",
+       "decision_reason_code": "REVERSAL"}
+    ]}
+    """
+
+    parsed = codex_client.parse_batch(raw, ["SPY"], allow_context_request=False)["SPY"]
+
+    assert parsed.action == "HOLD"
+    assert parsed.intent == "REVERSE"
+    assert parsed.quantity == 20.0
+    assert parsed.resolve_from_position is True
 
 
 def test_batch_contract_documente_voir_et_corriger_ses_plans() -> None:
@@ -360,8 +380,9 @@ def test_symbol_calls_contract_documente_l2_position_aware() -> None:
     assert "CLOSE" in prompt
     assert "REDUCE" in prompt
     assert "REVERSE" in prompt
-    assert "ne fournis PAS side" in prompt
-    assert "il est rejeté" in prompt
+    assert "inutile de fournir side/action" in prompt
+    assert "ignorée" in prompt
+    assert "il est rejeté" not in prompt
     assert "fraction" in prompt  # REDUCE accepte fraction
 
 
@@ -460,7 +481,7 @@ def test_batch_parse_reverse_sans_side_ni_qty_tombe_en_hold() -> None:
     ("REVERSE", "SELL", 20),
     ("ADD", "SELL", 5),
 ])
-def test_batch_parse_relative_intent_avec_side_explicite_est_rejete(
+def test_batch_parse_relative_intent_avec_side_explicite_ignore_side_et_resout_position(
     intent: str,
     side: str,
     qty: int,
@@ -475,7 +496,9 @@ def test_batch_parse_relative_intent_avec_side_explicite_est_rejete(
     parsed = codex_client.parse_batch(raw, ["SPY"], allow_context_request=False)["SPY"]
 
     assert parsed.action == "HOLD"
-    assert "side_not_allowed_for_relative_intent" in parsed.rationale
+    assert parsed.intent == intent
+    assert parsed.quantity == pytest.approx(qty)
+    assert parsed.resolve_from_position is True
 
 
 @pytest.mark.parametrize("qty", [0, -1])

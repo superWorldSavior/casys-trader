@@ -1,4 +1,5 @@
 import json
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -1378,6 +1379,50 @@ def test_run_cycle_add_depassement_risque_est_rejete(
     assert SimBroker(state_dir / "broker.json").positions()["SPY"].quantity == 10.0
 
 
+def test_run_cycle_add_rejette_petit_ajout_si_risque_position_totale_depasse(
+    monkeypatch,
+    tmp_path,
+    patch_batch,
+    make_data_source,
+) -> None:
+    _write_runtime_config(tmp_path, max_position_value=200_000, max_order_value=100_000)
+    state_dir = tmp_path / "state"
+    now = datetime(2026, 6, 5, 14, 30, tzinfo=timezone.utc)
+    broker = SimBroker(state_dir / "broker.json", starting_cash=100_000)
+    broker.submit(Order("SPY", "BUY", 100.0), 100.0, "2026-06-05T11:00:00+00:00", dry_run=False)
+
+    monkeypatch.setattr(daemon, "ROOT", tmp_path)
+    monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+    data_source = make_data_source(lambda symbol, lookback, interval: [
+        Bar(ts=now.isoformat(), open=50.0, high=51.0, low=49.0, close=50.0, volume=1000.0)
+    ])
+    patch_batch(lambda **kwargs: Decision(
+            symbol="SPY",
+            action="HOLD",
+            quantity=1.0,
+            confidence=0.95,
+            rationale="petit add mais risque total au prix moyen",
+            intent="ADD",
+            resolve_from_position=True,
+            exit_plan={"hard_stop": {"type": "price", "price": 41.0}}),
+    )
+
+    report = daemon.run_cycle(
+        dry_run=False,
+        now=now,
+        symbols_filter=["SPY"],
+        sched=Scheduler(state_dir / "scheduler.json"),
+        data_source=data_source,
+    )
+
+    decision = report["decisions"][0]
+    assert decision["reason"] == "risk:risk_per_trade_exceeded"
+    assert decision["executed"] is False
+    assert decision["qty"] == pytest.approx(1.0)
+    assert decision["risk_pct"] > 0.01
+    assert SimBroker(state_dir / "broker.json").positions()["SPY"].quantity == 100.0
+
+
 def test_run_cycle_rejette_ordre_buy_sell_a_quantite_zero(
     monkeypatch,
     tmp_path,
@@ -1782,14 +1827,22 @@ def test_run_cycle_add_resynchronise_le_plan_sur_position_totale(monkeypatch, tm
     now = datetime(2026, 6, 5, 14, 30, tzinfo=timezone.utc)
     broker = SimBroker(state_dir / "broker.json", starting_cash=100_000)
     broker.submit(Order("SPY", "BUY", 10.0), 100.0, "2026-06-05T11:00:00+00:00", dry_run=False)
+    last_review = {
+        "reviewed_at": "2026-06-05T14:00:00+00:00",
+        "action": "HOLD",
+        "rationale": "thesis intacte",
+    }
     TradePlanStore(state_dir / "trade_plans.json").upsert(
-        create_trade_plan(
-            symbol="SPY",
-            side="LONG",
-            quantity=10.0,
-            entry_price=100.0,
-            opened_at="2026-06-05T11:00:00+00:00",
-            raw_exit_plan={"hard_stop": {"type": "price", "price": 94.0}},
+        replace(
+            create_trade_plan(
+                symbol="SPY",
+                side="LONG",
+                quantity=10.0,
+                entry_price=100.0,
+                opened_at="2026-06-05T11:00:00+00:00",
+                raw_exit_plan={"hard_stop": {"type": "price", "price": 94.0}},
+            ),
+            last_llm_review=last_review,
         )
     )
 
@@ -1827,7 +1880,9 @@ def test_run_cycle_add_resynchronise_le_plan_sur_position_totale(monkeypatch, tm
     assert len(plans) == 1
     assert plans[0].side == "LONG"
     assert plans[0].remaining_quantity == 15.0
+    assert plans[0].entry_price == pytest.approx((10.0 * 100.0 + 5.0 * 102.0) / 15.0)
     assert plans[0].hard_stop_price == pytest.approx(97.0)
+    assert plans[0].last_llm_review == last_review
 
 
 def test_run_cycle_rejette_un_ordre_non_hold_sans_intent(monkeypatch, tmp_path, patch_batch, make_data_source) -> None:

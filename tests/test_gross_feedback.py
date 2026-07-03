@@ -14,6 +14,18 @@ def test_summarize_extrait_les_ouvertures_recalees_gross() -> None:
     }
 
 
+def test_summarize_compte_add_comme_augmentation_exposition() -> None:
+    decisions = [
+        {"symbol": "A", "intent": "ADD", "reason": "risk:gross_exposure_exceeded"},
+        {"symbol": "B", "intent": "OPEN_LONG", "reason": "risk:gross_exposure_exceeded"},
+    ]
+
+    assert summarize_gross_rejections(decisions) == {
+        "rejected_opens": 2,
+        "symbols": ["A", "B"],
+    }
+
+
 def test_summarize_ignore_les_non_ouvertures() -> None:
     # Seules les ouvertures augmentent le gross et peuvent tripper le gate ; un
     # rejet gross sur un intent non-ouvreur (cas théorique) n'est pas compté.

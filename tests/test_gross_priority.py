@@ -17,6 +17,12 @@ def test_ouvertures_par_conviction_decroissante() -> None:
     assert order == ["HIGH", "MID", "LOW"]
 
 
+def test_add_est_une_ouverture_dans_l_arbitrage_gross() -> None:
+    order = _order([("H", "HOLD", 0.0), ("ADD", "ADD", 0.8), ("OPEN", "OPEN_LONG", 0.7)])
+
+    assert order == ["ADD", "OPEN", "H"]
+
+
 def test_reste_apres_les_ouvertures() -> None:
     order = _order([("H", "HOLD", 0.0), ("O", "OPEN_LONG", 0.5)])
     assert order.index("O") < order.index("H")

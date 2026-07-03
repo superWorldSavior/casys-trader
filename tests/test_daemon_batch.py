@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from trader.runtime import daemon
 from trader.application import planner_batch
 from trader.agent.client import ContextResearchRequest, Decision, IndicatorRequest
+from trader.agent_protocol.parsing import parse_batch
 from trader.planning.indicator_watch import summarize_watch
 from trader.tools.market import Bar
 from trader.tools.scheduler import Scheduler
@@ -1042,6 +1043,28 @@ def test_resolve_add_short_position_produit_sell() -> None:
     assert resolved.action == "SELL"
     assert resolved.quantity == 3.0
     assert resolved.resolve_from_position is False
+
+
+def test_parse_side_explicite_relative_est_ignoree_puis_derivee_depuis_position() -> None:
+    raw = """
+    {"decisions": [
+      {"symbol": "SPY", "confidence": 0.8, "rationale": "renforce long",
+       "decision_reason_code": "ENTRY_SIGNAL",
+       "calls": [{"tool": "propose_order", "args": {"intent": "ADD", "side": "SELL", "qty": 3}}]},
+      {"symbol": "QQQ", "confidence": 0.8, "rationale": "flip short",
+       "decision_reason_code": "REVERSAL",
+       "calls": [{"tool": "propose_order", "args": {"intent": "REVERSE", "side": "SELL", "qty": 4}}]}
+    ]}
+    """
+    parsed = parse_batch(raw, ["SPY", "QQQ"], allow_context_request=False)
+
+    add = daemon._resolve_position_aware_decision(parsed["SPY"], position_quantity=10.0)
+    reverse = daemon._resolve_position_aware_decision(parsed["QQQ"], position_quantity=-6.0)
+
+    assert add.action == "BUY"
+    assert add.quantity == 3.0
+    assert reverse.action == "BUY"
+    assert reverse.quantity == 10.0
 
 
 def test_resolve_add_sans_position_produit_add_without_position() -> None:
