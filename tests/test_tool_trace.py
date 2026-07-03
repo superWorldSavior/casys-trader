@@ -1,4 +1,8 @@
-from trader.reporting.tool_trace import TOOLS, summarize_tools
+from trader.reporting.tool_trace import (
+    TOOLS,
+    finalize_action_tool_outcomes,
+    summarize_tools,
+)
 
 
 TOOL_ORDER = ["context_request", "indicator_watch", "next_wake", "order", "learning", "cancel_watch"]
@@ -331,3 +335,62 @@ def test_cancel_watch_rejetee_si_non_possedee() -> None:
     summary = summarize_tools(row)
 
     assert _entry(summary, "cancel_watch")["outcome"] == "rejected"
+
+
+def test_finalize_reecrit_les_vrais_outcomes_des_action_tools() -> None:
+    """F4 : les traces brutes runtime.tool_calls des action tools finaux portent
+    outcome:"ok" figé. On les réécrit avec le résultat réel de la décision — SANS
+    toucher les outils de tournée (recall_learnings/get_*) dont outcome=="ok" pilote
+    le recall."""
+    entry = {
+        "executed": True,
+        "next_wake_requested": 30.0,
+        "next_wake_in_minutes": 30.0,
+        "indicator_watch_created": True,
+        "cancel_watch_results": [{"watch_id": "SPY:a", "outcome": "cancelled"}],
+        "tool_calls": [
+            {"id": "1", "tool": "propose_order", "outcome": "ok"},
+            {"id": "2", "tool": "set_next_wake", "outcome": "ok"},
+            {"id": "3", "tool": "propose_indicator_watch", "outcome": "ok"},
+            {"id": "4", "tool": "record_learning", "outcome": "ok"},
+            {"id": "5", "tool": "cancel_watch", "outcome": "ok"},
+            {"id": "6", "tool": "recall_learnings", "outcome": "ok"},
+        ],
+    }
+
+    by_id = {c["id"]: c["outcome"] for c in finalize_action_tool_outcomes(entry)}
+
+    assert by_id == {
+        "1": "executed",
+        "2": "applied",
+        "3": "created",
+        "4": "applied",
+        "5": "cancelled",
+        "6": "ok",  # tool de tournée : outcome d'origine PRÉSERVÉ (pilote le recall)
+    }
+
+
+def test_finalize_marque_blocked_clamped_rejected() -> None:
+    entry = {
+        "executed": False,
+        "reason": "risk:gross_exposure_exceeded",
+        "next_wake_requested": 120.0,
+        "next_wake_in_minutes": 60.0,
+        "indicator_watch_created": False,
+        "cancel_watch_results": [{"watch_id": "X:a", "outcome": "not_owned"}],
+        "tool_calls": [
+            {"id": "1", "tool": "propose_order", "outcome": "ok"},
+            {"id": "2", "tool": "set_next_wake", "outcome": "ok"},
+            {"id": "3", "tool": "propose_indicator_watch", "outcome": "ok"},
+            {"id": "5", "tool": "cancel_watch", "outcome": "ok"},
+        ],
+    }
+
+    by_id = {c["id"]: c["outcome"] for c in finalize_action_tool_outcomes(entry)}
+
+    assert by_id == {"1": "blocked", "2": "clamped", "3": "rejected", "5": "rejected"}
+
+
+def test_finalize_sans_tool_calls_ne_casse_pas() -> None:
+    assert finalize_action_tool_outcomes({"symbol": "SPY"}) is None
+    assert finalize_action_tool_outcomes({"tool_calls": []}) == []

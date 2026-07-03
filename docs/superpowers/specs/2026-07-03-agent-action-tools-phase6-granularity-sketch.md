@@ -77,11 +77,14 @@ Reprend le chantier OCO (conscience d'état) : lier explicitement des ordres
 - Les **outils read-only** (pull) couvrent déjà position/risque/plans/attribution/
   mémoire. Le manque n'est pas côté observation mais côté **action**.
 
-## Dettes techniques à solder en parallèle (issues du fact-check 2026-07-03)
-- Réécriture fine des outcomes bruts de `runtime.tool_calls` (aujourd'hui
-  `outcome:"ok"` figé ; les vrais résultats sont dérivés par `tool_trace`, mais la
-  surface brute reste optimiste). Filtrée avec soin : `decision_recorder` et
-  `planner_batch` filtrent sur `outcome == "ok"` pour le recall.
+## Dettes techniques (issues du fact-check 2026-07-03)
+- ~~Réécriture fine des outcomes bruts de `runtime.tool_calls`~~ — **SOLDÉE
+  2026-07-03** : `tool_trace.finalize_action_tool_outcomes` réécrit, dans le
+  `DecisionRecorder`, le résultat RÉEL des 5 action tools finaux (executed/blocked,
+  applied/clamped, created/rejected, cancelled/rejected). Les outils de la tournée
+  read-only (`recall_learnings`/`get_*`) sont préservés : leur `outcome == "ok"`
+  pilote le recall (`decision_recorder`/`planner_batch`), et les noms diffèrent
+  (`record_learning` ≠ `recall_learnings`), donc la discrimination par nom est sûre.
 
 ## Prochaine étape
 Prioriser L1 + L2 (haute valeur, effort maîtrisé, position-aware = dette connue)

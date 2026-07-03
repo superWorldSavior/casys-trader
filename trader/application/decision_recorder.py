@@ -9,6 +9,7 @@ from datetime import datetime
 from typing import Any, Protocol, TypeAlias
 
 from trader.reporting import decision_ledger
+from trader.reporting.tool_trace import finalize_action_tool_outcomes
 
 log = logging.getLogger(__name__)
 
@@ -56,6 +57,9 @@ class DecisionRecorder:
 
     def record(self, decision_entry: DecisionEntry) -> None:
         symbol = str(decision_entry["symbol"])
+        # Réécrit l'outcome des action tools finaux avec le résultat réel de la
+        # décision (le brut naît "ok"). Ne touche pas les outils de tournée (recall).
+        decision_entry["tool_calls"] = finalize_action_tool_outcomes(decision_entry)
         decision_entry.setdefault("news", self.news_snapshot(symbol, self.now))
         news = decision_entry.get("news")
         if isinstance(news, dict) and "macro_next" not in news:
