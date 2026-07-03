@@ -198,6 +198,44 @@ class _State:
     fills: list[dict] = field(default_factory=list)
 
 
+def compute_fill_effect(
+    *,
+    old_quantity: float,
+    old_avg_price: float,
+    order: Order,
+    price: float,
+    fx_rate: float,
+    commission: Commission,
+) -> tuple[float, float, float]:
+    """Retourne (new_quantity, new_avg_price, cash_delta_total_usd) — logique paper.
+
+    cash_delta_total_usd est le montant à soustraire du cash (USD) après le fill.
+
+    Logique avg_price :
+      - new_qty == 0                            → avg_price = 0 (position clôturée)
+      - old_qty == 0 ou même sens               → moyenne pondérée
+      - retournement (old_qty * new_qty < 0)    → prix d'exécution
+      - réduction sans retournement             → avg_price inchangé
+    """
+    signed = order.quantity if order.side == "BUY" else -order.quantity
+    new_qty = old_quantity + signed
+
+    if new_qty == 0:
+        new_avg_price = 0.0
+    elif old_quantity == 0 or old_quantity * signed > 0:
+        total = old_avg_price * abs(old_quantity) + price * abs(signed)
+        new_avg_price = total / abs(new_qty)
+    elif old_quantity * new_qty < 0:
+        new_avg_price = price
+    else:
+        new_avg_price = old_avg_price
+
+    ccy = fx.currency_for(order.symbol)
+    cash_delta = fx.to_usd(signed * price, ccy, fx_rate)
+    fee_usd = fx.to_usd(commission.amount, commission.currency, fx_rate)
+    return new_qty, new_avg_price, cash_delta + fee_usd
+
+
 class SimBroker:
     """Broker paper simulé. État persisté pour survivre aux redémarrages du daemon.
 
@@ -240,23 +278,19 @@ class SimBroker:
         if dry_run:
             return None  # intention loggée par l'appelant, état non muté
 
-        signed = order.quantity if order.side == "BUY" else -order.quantity
         pos = self._state.positions.get(order.symbol, {"symbol": order.symbol, "quantity": 0.0, "avg_price": 0.0})
-        old_qty = pos["quantity"]
-        new_qty = pos["quantity"] + signed
-        if new_qty == 0:
-            pos["avg_price"] = 0.0
-        elif old_qty == 0 or old_qty * signed > 0:
-            total = pos["avg_price"] * abs(old_qty) + price * abs(signed)
-            pos["avg_price"] = total / abs(new_qty)
-        elif old_qty * new_qty < 0:
-            pos["avg_price"] = price
+        new_qty, new_avg_price, cash_delta_total = compute_fill_effect(
+            old_quantity=pos["quantity"],
+            old_avg_price=pos["avg_price"],
+            order=order,
+            price=price,
+            fx_rate=fx_rate,
+            commission=commission,
+        )
         pos["quantity"] = new_qty
+        pos["avg_price"] = new_avg_price
         self._state.positions[order.symbol] = pos
-        ccy = fx.currency_for(order.symbol)
-        cash_delta = fx.to_usd(signed * price, ccy, fx_rate)
-        fee_usd = fx.to_usd(commission.amount, commission.currency, fx_rate)
-        self._state.cash -= cash_delta + fee_usd
+        self._state.cash -= cash_delta_total
         self._state.fills.append(asdict(fill))
         self._save()
         return fill
