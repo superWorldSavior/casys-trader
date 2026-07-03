@@ -72,11 +72,14 @@ Action tools acceptés :
 
 | Tool | Remplace | Effet réel |
 |---|---|---|
-| `propose_order` | `action` / `quantity` / `intent` + `exit_plan` | compile une intention ; le daemon valide puis RiskGate/broker |
-| `set_next_wake` | `next_wake_in_minutes` | planifie le prochain réveil du symbole |
-| `propose_indicator_watch` | `indicator_watch` | pose une veille via le scheduler |
+| `propose_order` | `action` / `quantity` / `intent` + `exit_plan` | compile une intention (`intent` OPEN_LONG/OPEN_SHORT/REDUCE/CLOSE/REVERSE) ; le daemon valide puis RiskGate/broker. Options : `thesis` (L6), side/qty position-aware (L2, ci-dessous) |
+| `amend_exit` | — *(nouveau, L3)* | patche le plan de sortie d'une position **déjà ouverte** (`hard_stop`/`tp`/`trail`/`protect`, même vocabulaire compact que `propose_order.exit`) sans fermer/rouvrir ; no-op tracé si pas de plan ouvert. Peut coexister avec `calls:[]` (HOLD + gestion active) |
+| `set_next_wake` | `next_wake_in_minutes` | planifie la **reconsultation** du symbole : `{minutes}` (timer) OU `{on: session_open\|macro_event\|pre_earnings}` (événement calendaire, L5) |
+| `propose_indicator_watch` | `indicator_watch` | pose une veille/plan armé via le scheduler (`WAKE` = réveil de reconsultation ; `EXECUTE_ORDER` = **plan armé** exécuté sans reconsulter) |
 | `cancel_watch` | `cancel_watch_ids` | annule seulement les veilles possédées par le symbole |
 | `record_learning` | `learning` | borne et persiste une note runtime |
+
+**Réveil vs plan armé** : `set_next_wake` = **reconsultation** (l'agent reprend la main pour redécider) ; `propose_indicator_watch{on_trigger:EXECUTE_ORDER}` = **automatisation** (le daemon exécute sans reconsulter l'agent). Aujourd'hui le réveil-sur-indicateur passe par `propose_indicator_watch{WAKE}` — non encore fusionné dans `set_next_wake` (backlog).
 
 **Side de `propose_order`** : `OPEN_LONG`→BUY et `OPEN_SHORT`→SELL sont déduits
 automatiquement. **`CLOSE`/`REDUCE`/`REVERSE` dérivent aussi la side depuis la
@@ -85,6 +88,11 @@ omise ou ignorée) ; `REDUCE` accepte `fraction:0.5` ou `qty` absolue ; `REVERSE
 dérive la side mais requiert `qty` (nouvelle jambe). Si `side:BUY|SELL` est fourni
 explicitement, il est utilisé tel quel (compat). Fail-safe : position=0 → HOLD
 tracé `nothing_to_close`.
+
+**`thesis` de `propose_order`** *(optionnel, L6)* : `{setup, horizon:"intraday|swing|position",
+invalidation}` — tag **structuré** persisté sur la décision (`decisions.jsonl`) pour
+l'attribution et le RAG learnings (corréler setup → résultat). Fail-safe : un thesis
+malformé/partiel est ignoré (jamais de décision cassée). Branchement RAG = backlog.
 
 Vocabulaire compact de `propose_order.args.exit` :
 
@@ -99,6 +107,12 @@ Vocabulaire compact de `propose_order.args.exit` :
 
 Aliases compat : `after_r` / `enabled_after_r` / `activate_after_r` -> `arm_r`,
 `protect_r` / `lock_in_r` -> `lock_r`.
+
+**OCO ratchet (L7)** : un take-profit avec `after_fill:"move_stop_to_tp"` déplace le
+`hard_stop` au niveau du TP au moment du fill (monotone — ne rétrograde jamais un stop
+déjà plus protecteur) ; sur un plan multi-TP, le stop s'égrène automatiquement de TP en
+TP. (`after_fill:"move_stop_to_breakeven"` remonte au prix d'entrée.) L'exit engine a
+déjà un OCO implicite : une fermeture totale rend caducs les autres ordres du plan.
 
 ## Contrat d'exécution — `execute_tool_round`
 
