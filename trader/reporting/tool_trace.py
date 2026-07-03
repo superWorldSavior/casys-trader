@@ -94,6 +94,27 @@ def _learning_trace(row: dict) -> dict:
     return {"tool": "learning", "invoked": True, "outcome": "applied"}
 
 
+def _cancel_watch_trace(runtime: dict) -> dict:
+    """Résultat réel des annulations de veilles demandées par l'agent.
+
+    Le daemon vérifie l'ownership (un symbole n'annule que SES veilles) et n'émet
+    sinon qu'un event `watch_cancel_rejected` : sans cette pseudo-trace, le refus
+    d'annulation resterait invisible dans l'audit des outils (cf. design §7.2/§8).
+    """
+    results = runtime.get("cancel_watch_results")
+    if not results:
+        return {"tool": "cancel_watch", "invoked": False}
+    rejected = any(
+        isinstance(r, dict) and r.get("outcome") == "not_owned" for r in results
+    )
+    return {
+        "tool": "cancel_watch",
+        "invoked": True,
+        "outcome": "rejected" if rejected else "cancelled",
+        "detail": {"results": results},
+    }
+
+
 def _domain_tool_traces(runtime: dict) -> list[dict]:
     """Traces des domain tools V0 persistées dans runtime.tool_calls."""
     calls = runtime.get("tool_calls")
@@ -126,6 +147,7 @@ def summarize_tools(row: dict) -> dict:
         _next_wake_trace(row, runtime),
         _order_trace(row),
         _learning_trace(row),
+        _cancel_watch_trace(runtime),
         *_domain_tool_traces(runtime),
     ]
     tools_used = [item["tool"] for item in trace if item["invoked"]]

@@ -346,6 +346,10 @@ def test_apply_decision_schedule_annule_les_watches_avant_de_reposer(monkeypatch
     ]
     assert operations.index(("remove", "SPY:old-watch")) < operations.index(("set", "new-watch"))
     assert entry["indicator_watch_created"] is True
+    # F4 : le résultat de l'annulation est tracé pour l'audit (dérivé par tool_trace).
+    assert entry["cancel_watch_results"] == [
+        {"watch_id": "SPY:old-watch", "outcome": "cancelled"}
+    ]
 
 
 def test_apply_decision_schedule_loggue_cancel_et_arm_en_info(monkeypatch, caplog) -> None:
@@ -420,6 +424,7 @@ def test_apply_decision_schedule_rejette_l_annulation_d_une_watch_autre_symbole(
         lambda event, **payload: events.append((event, payload)),
     )
 
+    entry: dict = {}
     daemon._apply_decision_schedule(
         sched=RecordingScheduler(),
         sym="SYM",
@@ -427,7 +432,7 @@ def test_apply_decision_schedule_rejette_l_annulation_d_une_watch_autre_symbole(
         next_wake_in_minutes=None,
         cancel_watch_ids=["OTHER:hash"],
         pending_indicator_watch=None,
-        entry={},
+        entry=entry,
     )
 
     assert ("remove", "OTHER:hash") not in operations
@@ -436,6 +441,10 @@ def test_apply_decision_schedule_rejette_l_annulation_d_une_watch_autre_symbole(
             "watch_cancel_rejected",
             {"symbol": "SYM", "watch_id": "OTHER:hash", "reason": "not_owned_by_symbol"},
         )
+    ]
+    # F4 : le refus d'annulation (ownership) est tracé pour l'audit, pas seulement en event.
+    assert entry["cancel_watch_results"] == [
+        {"watch_id": "OTHER:hash", "outcome": "not_owned"}
     ]
 
 

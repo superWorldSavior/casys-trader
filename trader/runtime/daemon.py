@@ -1246,6 +1246,7 @@ def _apply_decision_schedule(
         return
     # Annulations puis persistance AVANT de programmer le réveil : l'état des
     # veilles doit être à jour pour calculer la plus proche expiration.
+    cancel_results: list[dict] = []
     for watch_id in cancel_watch_ids:
         watch_id = str(watch_id)
         if not watch_id.startswith(f"{sym}:"):
@@ -1255,12 +1256,18 @@ def _apply_decision_schedule(
                 watch_id=watch_id,
                 reason="not_owned_by_symbol",
             )
+            cancel_results.append({"watch_id": watch_id, "outcome": "not_owned"})
             continue
         sched.remove_indicator_watch(watch_id)
         _append_event("watch_cancelled_by_agent", symbol=sym, watch_id=watch_id)
         # INFO même quand la décision est un HOLD (result en DEBUG) : la gestion
         # de veilles par l'agent doit rester visible en console.
         log.info("[watch] annulée par l'agent %s %s", sym, watch_id)
+        cancel_results.append({"watch_id": watch_id, "outcome": "cancelled"})
+    if cancel_results:
+        # Audit : le résultat réel des annulations (cancelled/not_owned) est dérivé
+        # dans tool_trace, pas seulement laissé en event (cf. F4 / design §7.2).
+        entry["cancel_watch_results"] = cancel_results
     if pending_indicator_watch is not None:
         sched.set_symbol_indicator_watch(sym, pending_indicator_watch)
         log.info(

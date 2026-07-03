@@ -1,7 +1,7 @@
-from trader.reporting.tool_trace import summarize_tools
+from trader.reporting.tool_trace import TOOLS, summarize_tools
 
 
-TOOL_ORDER = ["context_request", "indicator_watch", "next_wake", "order", "learning"]
+TOOL_ORDER = ["context_request", "indicator_watch", "next_wake", "order", "learning", "cancel_watch"]
 
 
 def _summary(row: dict) -> dict:
@@ -207,7 +207,9 @@ def test_hold_pur_et_vieilles_rows_sans_cles() -> None:
     summary = _summary({"action": "HOLD"})
 
     assert summary["tools_used"] == []
-    assert summary["tools_skipped"] == TOOL_ORDER
+    # tools_skipped reste sur les 5 pseudo-tools legacy (cancel_watch n'y est pas :
+    # c'est un outil optionnel, tracé seulement quand invoqué).
+    assert summary["tools_skipped"] == TOOLS
     assert summary["rounds"] == 0
     assert summary["trace"] == [{"tool": tool, "invoked": False} for tool in TOOL_ORDER]
 
@@ -288,3 +290,44 @@ def test_summarize_tools_domain_tools_error_et_budget_exhausted():
 
     # rounds dérivé de tool_rounds
     assert summary["rounds"] == 1
+
+
+def test_cancel_watch_absent_non_invoque() -> None:
+    summary = summarize_tools({"symbol": "SPY", "runtime": {}})
+    assert _entry(summary, "cancel_watch") == {"tool": "cancel_watch", "invoked": False}
+
+
+def test_cancel_watch_annulee() -> None:
+    """F4 : le résultat d'un cancel_watch (cancelled/not_owned) doit être dérivé
+    dans la trace d'audit, comme watch/wake/order/learning — pas seulement en event."""
+    row = {
+        "symbol": "SPY",
+        "runtime": {
+            "cancel_watch_results": [{"watch_id": "SPY:abc", "outcome": "cancelled"}],
+        },
+    }
+    summary = summarize_tools(row)
+
+    assert "cancel_watch" in summary["tools_used"]
+    assert _entry(summary, "cancel_watch") == {
+        "tool": "cancel_watch",
+        "invoked": True,
+        "outcome": "cancelled",
+        "detail": {"results": [{"watch_id": "SPY:abc", "outcome": "cancelled"}]},
+    }
+
+
+def test_cancel_watch_rejetee_si_non_possedee() -> None:
+    """Un seul id non possédé par le symbole -> outcome rejected (ownership refusé)."""
+    row = {
+        "symbol": "SPY",
+        "runtime": {
+            "cancel_watch_results": [
+                {"watch_id": "SPY:abc", "outcome": "cancelled"},
+                {"watch_id": "QQQ:zzz", "outcome": "not_owned"},
+            ],
+        },
+    }
+    summary = summarize_tools(row)
+
+    assert _entry(summary, "cancel_watch")["outcome"] == "rejected"
