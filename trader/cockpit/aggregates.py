@@ -291,6 +291,7 @@ def activity_buckets(
     Retourne {état: [n_buckets ints]}, du plus ancien au plus récent.
     Décisions sans ts parsable, futures, ou d'âge >= window_min : ignorées.
     """
+    bucket_min = max(1, bucket_min)
     n_buckets = max(1, window_min // bucket_min)
     series: dict[str, list[int]] = {state: [0] * n_buckets for state in ACTIVITY_STATES}
     if now.tzinfo is None:

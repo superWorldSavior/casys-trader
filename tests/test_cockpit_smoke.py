@@ -181,7 +181,7 @@ async def test_cockpit_status_prend_palette_en_compte(tmp_path, monkeypatch):
         status.update_state(state, kill_active=False, palette=PALETTE_DARK)
 
 
-async def test_cockpit_status_affiche_fraicheur_et_source_rapport(
+async def test_cockpit_status_format_distille(
     tmp_path, monkeypatch
 ):
     """CockpitStatus.update_state produit le format distillé A2 (équité, pnl, mode, kill)."""

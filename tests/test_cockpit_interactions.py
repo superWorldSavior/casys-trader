@@ -165,3 +165,29 @@ async def test_binding_F_ouvre_class_filter_modal(tmp_path, monkeypatch):
         await pilot.pause()
         await pilot.press("F")
         assert isinstance(app.screen, ClassFilterModal)
+
+
+async def test_plans_table_trie_sorties_par_risque(tmp_path, monkeypatch):
+    """Sorties triées stale d'abord puis distance au stop croissante (spec §4.3)."""
+    from trader.cockpit.home import PlansTable
+    from trader.ui.palette import PALETTE_LIGHT
+    from trader.cockpit import CockpitApp
+
+    _patch_state_paths(monkeypatch, tmp_path)
+    state = {
+        "armed_plans": [], "indicator_watches": [],
+        "trade_plans": [
+            {"symbol": "LOIN.TW", "side": "LONG", "hard_stop_price": 90.0,
+             "entry_price": 100.0, "remaining_quantity": 1},   # distance 10%
+            {"symbol": "PRES.TW", "side": "LONG", "hard_stop_price": 99.0,
+             "entry_price": 100.0, "remaining_quantity": 1},   # distance 1% → premier
+        ],
+    }
+    app = CockpitApp()
+    async with app.run_test(size=(200, 50)) as pilot:
+        await pilot.pause()
+        table = app.query_one(PlansTable)
+        table.refresh_rows(state, palette=PALETTE_LIGHT)
+        rows = [table.get_row_at(i) for i in range(table.row_count)]
+        symbols = [str(r[1]) for r in rows]
+        assert symbols.index("PRES.TW") < symbols.index("LOIN.TW")

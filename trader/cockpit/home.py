@@ -383,7 +383,10 @@ def build_activity_tile(buckets: dict[str, list[int]], *, palette: Palette) -> R
 def build_plans_tile(
     state: dict, *, palette: Palette, now: datetime | None = None
 ) -> RenderableType:
-    """Table unifiée armés → sorties (par risque) → veilles (par expiration)."""
+    """Table unifiée armés → sorties (par risque) → veilles (par expiration).
+
+    Non branché en prod depuis T10 (DataTables) — conservé comme référence pure/testable ; supprimer ou re-brancher lors du chantier export/captures.
+    """
     now = now or datetime.now(UTC)
     state = state if isinstance(state, dict) else {}
     armed = _safe_list_of_dicts(state.get("armed_plans"))
@@ -454,7 +457,10 @@ def build_plans_tile(
 def build_decisions_tile(
     decisions: list[dict], recent_decisions: list[dict], *, palette: Palette
 ) -> RenderableType:
-    """Triage statique (remplacé par DataTable en Task 10)."""
+    """Triage statique (remplacé par DataTable en Task 10).
+
+    Non branché en prod depuis T10 (DataTables) — conservé comme référence pure/testable ; supprimer ou re-brancher lors du chantier export/captures.
+    """
     table = Table(show_header=True, expand=True, box=None, pad_edge=False)
     for column in ("UTC", "Sym", "Act", "État", "Conf", "Suite"):
         table.add_column(column, no_wrap=(column != "Suite"),
@@ -570,8 +576,16 @@ class PlansTable(_SymbolTable):
             symbol = str(plan.get("symbol") or "—")
             price = _price_for_symbol(state, symbol)
             stale = _symbol_is_stale(state, symbol)
-            exit_rows.append((0 if stale else 1, symbol, plan, price, stale))
-        for _, symbol, plan, price, stale in sorted(exit_rows, key=lambda r: (r[0], r[1]))[:8]:
+            stop = _safe_float(plan.get("hard_stop_price"), default=None)
+            reference = price or _safe_float(plan.get("entry_price"), default=None)
+            side = str(plan.get("side") or "LONG").upper()
+            direction = -1.0 if side == "SHORT" else 1.0
+            if stop is not None and reference:
+                stop_distance = abs((stop - reference) / reference * direction)
+            else:
+                stop_distance = float("inf")  # sans stop/prix → en queue des non-stale
+            exit_rows.append((0 if stale else 1, stop_distance, symbol, plan, price, stale))
+        for _, _, symbol, plan, price, stale in sorted(exit_rows, key=lambda r: (r[0], r[1], r[2]))[:8]:
             self.add_row(
                 Text("sortie", style=palette["kpi_default"]),
                 Text(symbol, style="bold"),

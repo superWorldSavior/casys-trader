@@ -264,11 +264,11 @@ def _stop_risk_for_holding(holding: dict, plan: dict) -> tuple[str, str, str, st
 
     stop = _safe_float(plan.get("hard_stop_price"), default=None)
     reference = _holding_native_price(holding) or _safe_float(plan.get("entry_price"), default=None)
-    qty = (
-        _safe_float(plan.get("remaining_quantity"), default=None)
-        or _safe_float(plan.get("quantity"), default=None)
-        or abs(_holding_quantity(holding))
-    )
+    qty = _safe_float(plan.get("remaining_quantity"), default=None)
+    if qty is None:
+        qty = _safe_float(plan.get("quantity"), default=None)
+    if qty is None:
+        qty = abs(_holding_quantity(holding))
     side = str(plan.get("side") or "LONG").upper()
     direction = -1.0 if side == "SHORT" else 1.0
     fx_rate = _safe_float(holding.get("fx_rate"), default=1.0) or 1.0

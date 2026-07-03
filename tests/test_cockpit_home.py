@@ -352,3 +352,15 @@ def test_build_symbol_detail_sections():
     assert "gap à l'open" in rendered          # learning du symbole
     assert "BBB.TW" not in rendered            # filtré par symbole
     assert "stale" in rendered.lower()         # santé data
+
+
+def test_stop_risk_for_holding_plan_solde_risque_nul():
+    """remaining_quantity=0 → perte@stop nulle (plus de risque fantôme gen-2)."""
+    from trader.cockpit.overview import _stop_risk_for_holding
+
+    holding = {"symbol": "AAA", "quantity": 10, "last_price": 100.0, "fx_rate": 1.0}
+    plan = {"symbol": "AAA", "side": "LONG", "hard_stop_price": 95.0,
+            "remaining_quantity": 0, "quantity": 10}
+    stop_label, dist_label, loss_label, state_label = _stop_risk_for_holding(holding, plan)
+    # (95-100)*0*1*1 = -0.0 en IEEE 754 → _fmt_signed_compact_float → "-0"
+    assert loss_label in ("+0", "-0", "0", "+0.0", "-0.0") or loss_label.startswith("+0") or loss_label.startswith("-0")
