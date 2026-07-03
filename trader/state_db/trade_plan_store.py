@@ -43,6 +43,11 @@ def plan_to_columns(plan: TradePlan, seq: int) -> dict:
     ProfitProtection, listes TakeProfit/str, dicts) sérialisés en JSON.
     Le JSON NULL Python → chaîne "null" (TEXT), pas SQL NULL.
 
+    Non-finis scalaires (NaN, Inf) → NULL en colonne REAL, relu None par sqlite3.
+    Ce comportement est une parité fonctionnelle avec le backend JSON :
+    trade_plan_from_dict normalise aussi les non-finis scalaires → None.
+    Ce n'est pas un round-trip byte-exact mais une parité fonctionnelle.
+
     Args:
         plan: TradePlan frozen à convertir.
         seq:  ordinal d'insertion (ORDER BY seq → ordre préservé).
@@ -221,28 +226,40 @@ class SqliteTradePlanStore:
         with self._db.transaction() as cur:
             cur.execute(_UPSERT_SQL, cols)
         log.debug("[state_db] upsert plan %s (%s)", plan.id, plan.symbol)
-        self._write_shadow()
+        try:
+            self._write_shadow()
+        except Exception as exc:
+            log.warning("[state_db] shadow échec trade_plans.json: %s", exc)
 
     def close(self, plan_id: str) -> None:
         """Supprime le plan avec cet id."""
         with self._db.transaction() as cur:
             cur.execute("DELETE FROM trade_plans WHERE id=?", (plan_id,))
         log.debug("[state_db] close plan %s", plan_id)
-        self._write_shadow()
+        try:
+            self._write_shadow()
+        except Exception as exc:
+            log.warning("[state_db] shadow échec trade_plans.json: %s", exc)
 
     def close_symbol(self, symbol: str) -> None:
         """Supprime tous les plans du symbole."""
         with self._db.transaction() as cur:
             cur.execute("DELETE FROM trade_plans WHERE symbol=?", (symbol,))
         log.debug("[state_db] close_symbol %s", symbol)
-        self._write_shadow()
+        try:
+            self._write_shadow()
+        except Exception as exc:
+            log.warning("[state_db] shadow échec trade_plans.json: %s", exc)
 
     def clear(self) -> None:
         """Supprime TOUS les plans."""
         with self._db.transaction() as cur:
             cur.execute("DELETE FROM trade_plans")
         log.debug("[state_db] clear trade_plans")
-        self._write_shadow()
+        try:
+            self._write_shadow()
+        except Exception as exc:
+            log.warning("[state_db] shadow échec trade_plans.json: %s", exc)
 
     def sync_symbol_quantity(self, symbol: str, remaining_quantity: float) -> None:
         """Synchronise la quantité totale restante du symbole avec le broker.
@@ -300,7 +317,10 @@ class SqliteTradePlanStore:
         log.debug(
             "[state_db] sync_symbol_quantity %s remaining=%.4f", symbol, remaining_quantity
         )
-        self._write_shadow()
+        try:
+            self._write_shadow()
+        except Exception as exc:
+            log.warning("[state_db] shadow échec trade_plans.json: %s", exc)
 
     # ------------------------------------------------------------------
     # Shadow helpers
@@ -327,15 +347,16 @@ class SqliteTradePlanStore:
         Format identique à trade_plans.json (TradePlanStore) :
           {"plans": [asdict(plan), ...]}
 
+        Propage les exceptions (pas de swallow) — les appelants de write (upsert,
+        close, close_symbol, clear, sync_symbol_quantity) la wrappent en best-effort.
+        regenerate_shadow() appelle directement ici pour fail-fast au boot.
+
         No-op si json_path est None.
         """
         if self._json_path is None:
             return
         plans = self.open_plans()
-        try:
-            write_json_atomic(
-                self._json_path,
-                {"plans": [asdict(p) for p in plans]},
-            )
-        except Exception as exc:
-            log.warning("[state_db] shadow échec trade_plans.json: %s", exc)
+        write_json_atomic(
+            self._json_path,
+            {"plans": [asdict(p) for p in plans]},
+        )

@@ -405,6 +405,12 @@ class TestPariteJsonSqlite:
         store.sync_symbol_quantity("AAPL", 0.0)
         snap()
 
+        # clear dans séquence parité (après ajout d'un plan)
+        store.upsert(_plan("GOOG-1", "GOOG", quantity=3.0))
+        snap()
+        store.clear()
+        snap()  # doit être []
+
         return snapshots
 
     def test_parite_json_sqlite(
@@ -510,6 +516,149 @@ class TestShadow:
         store.upsert(_plan("P1", "AAPL"))
         json_files = [f for f in tmp_path.iterdir() if f.suffix == ".json"]
         assert json_files == [], f"Aucun fichier JSON ne doit être créé, trouvé: {json_files}"
+
+    def test_shadow_after_close_symbol(
+        self, sqlite_store: SqliteTradePlanStore, tmp_path: Path
+    ) -> None:
+        """Shadow est miroir exact après close_symbol."""
+        sqlite_store.upsert(_plan("AAPL-1", "AAPL"))
+        sqlite_store.upsert(_plan("AAPL-2", "AAPL"))
+        sqlite_store.upsert(_plan("MSFT-1", "MSFT"))
+        sqlite_store.close_symbol("AAPL")
+
+        shadow_path = tmp_path / "trade_plans.json"
+        data = json.loads(shadow_path.read_text())
+        assert len(data["plans"]) == 1
+        assert data["plans"][0]["id"] == "MSFT-1"
+        expected = [asdict(p) for p in sqlite_store.open_plans()]
+        assert data["plans"] == expected
+
+    def test_shadow_after_sync_symbol_quantity(
+        self, sqlite_store: SqliteTradePlanStore, tmp_path: Path
+    ) -> None:
+        """Shadow est miroir exact après sync_symbol_quantity (rescale partiel)."""
+        plan = _plan("AAPL-1", "AAPL", quantity=10.0, remaining_quantity=10.0)
+        sqlite_store.upsert(plan)
+        sqlite_store.sync_symbol_quantity("AAPL", 6.0)
+
+        shadow_path = tmp_path / "trade_plans.json"
+        data = json.loads(shadow_path.read_text())
+        assert len(data["plans"]) == 1
+        assert data["plans"][0]["remaining_quantity"] == pytest.approx(6.0)
+        expected = [asdict(p) for p in sqlite_store.open_plans()]
+        assert data["plans"] == expected
+
+
+# ---------------------------------------------------------------------------
+# Parité non-finis (NaN / Inf)
+# ---------------------------------------------------------------------------
+
+
+class TestNonFiniteParity:
+    """Non-finis scalaires (NaN/Inf) → None après round-trip : parité JSON ↔ SQLite.
+
+    SQLite : float('nan') en colonne REAL → NULL → None (sqlite3 adapter).
+    JSON   : json.dumps sérialise NaN/Inf (allow_nan=True par défaut) →
+             trade_plan_from_dict normalise les non-finis → None.
+    C'est une parité fonctionnelle, pas un round-trip byte-exact.
+    """
+
+    def test_non_finite_scalars_parity(
+        self,
+        json_store: TradePlanStore,
+        sqlite_store: SqliteTradePlanStore,
+    ) -> None:
+        """reference_volatility=NaN et trailing_stop.trail_value=Inf → None dans les deux backends."""
+        import math
+
+        plan = TradePlan(
+            id="NAN-1",
+            symbol="AAPL",
+            side="LONG",
+            quantity=10.0,
+            remaining_quantity=10.0,
+            entry_price=100.0,
+            opened_at="2026-07-01T10:00:00+00:00",
+            reference_volatility=float("nan"),  # NaN → SQLite NULL → None
+            hard_stop_price=95.0,
+            take_profits=[],
+            trailing_stop=TrailingStop(
+                enabled_after=None,
+                trail_type="percent",
+                trail_value=float("inf"),  # Inf → _trailing_from_dict → None
+                trail_floored=False,
+            ),
+            max_hold_minutes=120.0,
+            high_watermark=105.0,
+            low_watermark=98.0,
+            filled_take_profits=[],
+            profit_protection=None,
+            exit_watch=None,
+            llm_provider="openai",
+            llm_model="gpt-4o",
+            llm_fallback_reason=None,
+            llm_confidence=0.85,
+            last_llm_review=None,
+            entry_thesis="Test non-fini",
+            entry_decision_id="dec-nan",
+            entry_context=None,
+        )
+
+        json_store.upsert(plan)
+        sqlite_store.upsert(plan)
+
+        json_plans = json_store.open_plans()
+        sqlite_plans = sqlite_store.open_plans()
+
+        assert len(json_plans) == 1
+        assert len(sqlite_plans) == 1
+
+        # Les deux backends normalisent les non-finis → None
+        assert json_plans[0].reference_volatility is None, "JSON: NaN doit devenir None"
+        assert sqlite_plans[0].reference_volatility is None, "SQLite: NaN doit devenir None"
+        assert json_plans[0].trailing_stop is None, "JSON: trail_value=Inf → trailing_stop None"
+        assert sqlite_plans[0].trailing_stop is None, "SQLite: trail_value=Inf → trailing_stop None"
+
+        # Parité exacte entre les deux backends
+        assert asdict(json_plans[0]) == asdict(sqlite_plans[0])
+
+
+# ---------------------------------------------------------------------------
+# Rollback transaction
+# ---------------------------------------------------------------------------
+
+
+class TestRollback:
+    def test_sync_symbol_quantity_rollback_on_exception(
+        self, sqlite_store: SqliteTradePlanStore, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Exception mid-transaction dans sync_symbol_quantity → rollback, état inchangé."""
+        from trader.state_db import trade_plan_store as tps_module
+
+        p1 = _plan("AAPL-1", "AAPL", quantity=6.0, remaining_quantity=6.0)
+        p2 = _plan("AAPL-2", "AAPL", quantity=4.0, remaining_quantity=4.0)
+        sqlite_store.upsert(p1)
+        sqlite_store.upsert(p2)
+
+        original_plan_to_columns = tps_module.plan_to_columns
+        call_count = [0]
+
+        def plan_to_columns_fail_on_second(plan, seq):
+            call_count[0] += 1
+            if call_count[0] >= 2:
+                raise RuntimeError("injection erreur rollback test")
+            return original_plan_to_columns(plan, seq)
+
+        monkeypatch.setattr(tps_module, "plan_to_columns", plan_to_columns_fail_on_second)
+
+        with pytest.raises(RuntimeError, match="injection erreur rollback test"):
+            sqlite_store.sync_symbol_quantity("AAPL", 5.0)  # total=10 → ratio=0.5
+
+        # Transaction rollbackée : les 2 plans sont inchangés
+        plans = sqlite_store.open_plans()
+        assert len(plans) == 2
+        assert plans[0].remaining_quantity == pytest.approx(6.0)
+        assert plans[1].remaining_quantity == pytest.approx(4.0)
 
 
 # ---------------------------------------------------------------------------
