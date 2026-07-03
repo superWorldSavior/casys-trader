@@ -61,6 +61,7 @@ from textual.theme import Theme
 from textual.widgets import Button, Checkbox, ContentSwitcher, Footer, Input, Label, RichLog, Static
 
 from trader.cockpit.supervisor import daemon_vital_state
+from trader.cockpit.aggregates import open_venue_set
 from trader.cockpit.home import AttentionLine, HomePane, SymbolChosen
 
 from trader.cockpit.events import (
@@ -321,9 +322,20 @@ class PositionsPlansPane(Static):
             if isinstance(state.get("trade_plans"), list)
             else []
         )
+        sessions = state.get("sessions")
+        open_venues = (
+            open_venue_set(sessions, datetime.now(UTC))
+            if isinstance(sessions, dict) and sessions
+            else None
+        )
 
         self.query_one("#positions-panel", Static).update(
-            _build_positions_panel(holdings, palette=palette)
+            _build_positions_panel(
+                holdings,
+                trade_plans=trade_plans,
+                open_venues=open_venues,
+                palette=palette,
+            )
         )
         self.query_one("#exit-plans-panel", Static).update(
             _build_exit_plans_enriched(trade_plans, palette=palette)

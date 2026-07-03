@@ -364,3 +364,115 @@ def test_stop_risk_for_holding_plan_solde_risque_nul():
     stop_label, dist_label, loss_label, state_label = _stop_risk_for_holding(holding, plan)
     # (95-100)*0*1*1 = -0.0 en IEEE 754 → _fmt_signed_compact_float → "-0"
     assert loss_label in ("+0", "-0", "0", "+0.0", "-0.0") or loss_label.startswith("+0") or loss_label.startswith("-0")
+
+
+# ---------------------------------------------------------------------------
+# Drill-down enrichi : contexte marché, pourquoi, veilles/armé, P&L réalisé
+# ---------------------------------------------------------------------------
+
+
+def _detail_state() -> dict:
+    return {
+        "sessions": {"EU": {"open": "07:00", "close": "15:30"}},
+        "company_map": {"ASML.AS": "ASML Holding"},
+        "prices": {"ASML.AS": {"price": 710.2}},
+        "portfolio": {"holdings": [{
+            "symbol": "ASML.AS", "quantity": 12, "avg_price": 680,
+            "last_price": 710.2, "unrealized_pnl": 363, "fx_rate": 1.08,
+        }]},
+        "trade_plans": [{
+            "symbol": "ASML.AS", "side": "LONG", "entry_price": 680,
+            "hard_stop_price": 650, "remaining_quantity": 6, "quantity": 12,
+            "filled_take_profits": ["tp1"],
+        }],
+        "armed_plans": [{"symbol": "ASML.AS", "order": {"side": "BUY"}}],
+        "indicator_watches": [{
+            "symbol": "ASML.AS", "logic": "all", "expires_at": "2026-07-04T00:00:00Z",
+            "conditions": [{"indicator": "rsi", "op": "<", "value": 30, "timeframe": "1h"}],
+        }],
+        "decisions": [{
+            "symbol": "ASML.AS", "action": "buy", "confidence": 0.72,
+            "rationale": "Cassure de résistance sur volume.", "ts": "2026-07-03T09:00:00Z",
+        }],
+        "recent_decisions": [{"symbol": "ASML.AS", "action": "buy",
+                              "confidence": 0.72, "ts": "2026-07-03T09:00:00Z"}],
+        "recent_trips": [{"symbol": "ASML.AS", "side": "LONG", "pnl": 120.5,
+                          "exit_reason": "tp1", "exit_ts": "2026-07-02T14:00:00Z",
+                          "entry_price": 600, "exit_price": 620}],
+        "learnings": [],
+        "stale_streaks": {},
+    }
+
+
+def test_symbol_detail_contexte_marche_ouvert_et_valeur_usd():
+    from trader.cockpit.home import build_symbol_detail
+
+    now = datetime(2026, 7, 3, 10, 0, tzinfo=timezone.utc)  # EU ouverte
+    out = _console_render(
+        build_symbol_detail(_detail_state(), "ASML.AS", palette=PALETTE_LIGHT, now=now)
+    )
+    assert "ASML Holding" in out          # nom société
+    assert "ouvert" in out                # badge marché
+    assert "EUR" in out                   # devise
+    # Valeur USD = 12 × 710.2 × 1.08 ≈ 9204
+    assert "9,204 USD" in out
+
+
+def test_symbol_detail_marche_ferme_hors_session():
+    from trader.cockpit.home import build_symbol_detail
+
+    now = datetime(2026, 7, 3, 22, 0, tzinfo=timezone.utc)  # EU fermée
+    out = _console_render(
+        build_symbol_detail(_detail_state(), "ASML.AS", palette=PALETTE_LIGHT, now=now)
+    )
+    assert "fermé" in out
+
+
+def test_symbol_detail_pourquoi_et_veilles_et_pnl_realise():
+    from trader.cockpit.home import build_symbol_detail
+
+    now = datetime(2026, 7, 3, 10, 0, tzinfo=timezone.utc)
+    out = _console_render(
+        build_symbol_detail(_detail_state(), "ASML.AS", palette=PALETTE_LIGHT, now=now)
+    )
+    assert "Pourquoi" in out                       # bloc thèse
+    assert "Cassure de résistance" in out          # rationale
+    assert "Veilles" in out                        # bloc veilles/armé
+    assert "rsi<30@1h" in out                      # condition de veille
+    assert "P&L réalisé cumulé" in out             # historique réalisé
+    assert "+120 USD" in out
+
+
+def test_symbol_detail_sessions_absentes_badge_neutre():
+    """Régression (review Codex) : sans `sessions`, le drill-down affiche un
+    badge marché neutre, pas « fermé » (cohérent avec la table Positions)."""
+    from trader.cockpit.home import build_symbol_detail
+
+    state = _detail_state()
+    state.pop("sessions")
+    now = datetime(2026, 7, 3, 10, 0, tzinfo=timezone.utc)
+    out = _console_render(
+        build_symbol_detail(state, "ASML.AS", palette=PALETTE_LIGHT, now=now)
+    )
+    assert "marché ?" in out
+    assert "fermé" not in out
+
+
+def test_symbol_detail_rationale_cycle_courant_prioritaire_sur_ledger():
+    """Régression (review Codex) : une rationale de cycle courant sans ts prime
+    sur une vieille rationale du ledger horodatée."""
+    from trader.cockpit.home import build_symbol_detail
+
+    state = _detail_state()
+    state["decisions"] = [{"symbol": "ASML.AS", "action": "sell",
+                           "rationale": "Sortie sur cassure baissière."}]  # pas de ts
+    state["recent_decisions"] = [{"symbol": "ASML.AS", "action": "buy",
+                                  "rationale": "Vieille thèse ledger.",
+                                  "ts": "2026-07-03T09:00:00Z"}]
+    now = datetime(2026, 7, 3, 10, 0, tzinfo=timezone.utc)
+    out = _console_render(
+        build_symbol_detail(state, "ASML.AS", palette=PALETTE_LIGHT, now=now)
+    )
+    # La rationale du cycle courant (`decisions`) ne se rend QUE dans le panneau
+    # « Pourquoi » : sa présence prouve qu'elle a primé sur le ledger horodaté.
+    assert "cassure baissière" in out

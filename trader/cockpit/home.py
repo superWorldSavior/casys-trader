@@ -9,6 +9,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from rich.console import Group, RenderableType
+from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 from textual.app import ComposeResult
@@ -23,6 +24,8 @@ from trader.cockpit.aggregates import (  # noqa: F401
     activity_buckets,
     attention_items,
     decision_status,
+    open_venue_set,
+    parse_ts,
     select_decision_rows,
     venue_clock,
 )
@@ -53,10 +56,16 @@ from trader.cockpit.overview import (
     _stop_risk_for_holding,
     _symbol_is_stale,
 )
+from trader.market import fx
 from trader.planning.indicator_watch import is_armed_plan as _is_armed_plan
 from trader.read_models.runtime_state import _safe_float, _safe_list_of_dicts
 from trader.ui.palette import PALETTE_LIGHT, Palette
-from trader.ui.rich_panels import _build_exit_plans_enriched, _build_learnings_panel, sparkline
+from trader.ui.rich_panels import (
+    _build_exit_plans_enriched,
+    _build_learnings_panel,
+    build_closed_trades_table,
+    sparkline,
+)
 
 UTC = timezone.utc
 
@@ -711,50 +720,145 @@ class HomePane(Static):
         )
 
 
-def build_symbol_detail(state: dict, symbol: str, *, palette: Palette) -> RenderableType:
-    """Contexte complet d'un symbole — pur filtrage du read model en mémoire."""
+def build_symbol_detail(
+    state: dict, symbol: str, *, palette: Palette, now: datetime | None = None
+) -> RenderableType:
+    """Contexte complet d'un symbole — pur filtrage du read model en mémoire.
+
+    Ordre : contexte marché live → position (USD) → pourquoi (thèse) → plans de
+    sortie → veilles & armé → décisions récentes → historique P&L réalisé →
+    learnings. ``now`` injectable pour un rendu déterministe en test.
+    """
+    from trader.rotation.wiring import venue_of
+
+    now = now or datetime.now(UTC)
     state = state if isinstance(state, dict) else {}
     portfolio = state.get("portfolio") if isinstance(state.get("portfolio"), dict) else {}
+    company_map = state.get("company_map") if isinstance(state.get("company_map"), dict) else {}
     holdings = [h for h in _safe_list_of_dicts(portfolio.get("holdings"))
                 if _holding_symbol(h) == symbol]
     plans = [p for p in _safe_list_of_dicts(state.get("trade_plans"))
              if str(p.get("symbol") or "") == symbol]
     armed = [w for w in _safe_list_of_dicts(state.get("armed_plans"))
              if str(w.get("symbol") or "") == symbol]
-    decisions = [d for d in _safe_list_of_dicts(state.get("recent_decisions"))
-                 if str(d.get("symbol") or "") == symbol][-8:]
+    watches = [w for w in _safe_list_of_dicts(state.get("indicator_watches"))
+               if str(w.get("symbol") or "") == symbol and not _is_armed_plan(w)]
+    decisions_full = [d for d in _safe_list_of_dicts(state.get("decisions"))
+                      if str(d.get("symbol") or "") == symbol]
+    recent = [d for d in _safe_list_of_dicts(state.get("recent_decisions"))
+              if str(d.get("symbol") or "") == symbol][-8:]
+    trips = [t for t in _safe_list_of_dicts(state.get("recent_trips"))
+             if str(t.get("symbol") or "") == symbol]
     learnings = [l for l in _safe_list_of_dicts(state.get("learnings"))
                  if str(l.get("symbol") or "") == symbol]
     streak = (state.get("stale_streaks") or {}).get(symbol, 0)
 
-    parts: list[RenderableType] = [Text(symbol, style=f"bold {palette['status_equity']}")]
+    parts: list[RenderableType] = []
 
+    # 1. En-tête contexte marché : société · venue ouvert/fermé · devise · prix · stale
+    venue = venue_of(symbol)
+    sessions = state.get("sessions")
+    open_set = (
+        open_venue_set(sessions, now)
+        if isinstance(sessions, dict) and sessions
+        else None
+    )
+    price = _price_for_symbol(state, symbol)
+    company = str(company_map.get(symbol) or "").strip()
+    header = Text(symbol, style=f"bold {palette['status_equity']}")
+    if company:
+        header.append(f"  {company}", style=palette["dim"])
+    header.append(f"   {venue} ", style=palette["dim"])
+    if open_set is None:
+        # Sessions inconnues → badge neutre, comme la table Positions.
+        header.append("· marché ?", style=palette["dim"])
+    else:
+        is_open = venue in open_set
+        header.append(
+            "● ouvert" if is_open else "○ fermé",
+            style=palette["status_nominal"] if is_open else palette["dim"],
+        )
+    header.append(f"   {fx.currency_for(symbol)}", style=palette["dim"])
+    if price is not None:
+        header.append("  dernier ", style=palette["dim"])
+        header.append(_fmt_compact_float(price, decimals=2), style="bold")
+    if _symbol_is_stale(state, symbol):
+        header.append(f"  stale ×{int(streak) if streak else '?'}", style=palette["kpi_vol_warn"])
+    parts.append(header)
+
+    # 2. Position détenue — exprimée en USD (base USD), qté native entre parenthèses
     if holdings:
         holding = holdings[0]
         pnl_value = _holding_pnl(holding)
         pnl_style = palette["pnl_positive"] if pnl_value >= 0 else palette["pnl_negative"]
+        qty = _safe_float(holding.get("quantity"), default=0.0) or 0.0
+        native = _safe_float(_holding_native_price(holding), default=0.0) or 0.0
+        fx_rate = _safe_float(holding.get("fx_rate"), default=1.0) or 1.0
+        value_usd = abs(qty * native * fx_rate)
         parts.append(Text.assemble(
             ("Position : ", palette["dim"]),
-            (f"{_fmt_compact_float(holding.get('quantity'), decimals=2)} @ "
-             f"{_fmt_compact_float(_holding_native_price(holding), decimals=2)} "
-             f"{_holding_currency(holding)}", "bold"),
+            (f"{value_usd:,.0f} USD", "bold"),
+            (f"  ({_fmt_compact_float(qty, decimals=2)} @ "
+             f"{_fmt_compact_float(native, decimals=2)} {_holding_currency(holding)})",
+             palette["dim"]),
             ("  PnL ", palette["dim"]),
-            (_fmt_signed_compact_float(pnl_value, decimals=0), pnl_style),
+            (_fmt_signed_compact_float(pnl_value, decimals=0) + " USD", pnl_style),
         ))
     else:
         parts.append(Text("Aucune position ouverte", style=palette["dim"]))
 
+    # 3. Le « pourquoi » — thèse de la décision qui en porte une. On privilégie
+    # le cycle courant (`decisions`, le plus frais, parfois sans ts) puis le
+    # ledger (`recent_decisions`), et on trie par ts parsé (offsets hétérogènes).
+    def _latest_rationale(rows: list[dict]) -> dict | None:
+        candidates = [d for d in rows if str(d.get("rationale") or "").strip()]
+        if not candidates:
+            return None
+        floor = datetime.min.replace(tzinfo=UTC)
+        return max(
+            candidates,
+            key=lambda d: parse_ts(d.get("cycle_ts") or d.get("ts")) or floor,
+        )
+
+    latest = _latest_rationale(decisions_full) or _latest_rationale(recent)
+    if latest is not None:
+        conf = _safe_float(latest.get("confidence"), default=None)
+        head = Text.assemble(
+            (str(latest.get("action") or "—").upper(), "bold"),
+            (f"  conf {conf:.2f}" if conf is not None else "", palette["dim"]),
+            (f"  {_decision_time_label(latest)}", palette["dim"]),
+        )
+        body = Text(str(latest.get("rationale")).strip())
+        parts.append(Panel(Group(head, body), title="[bold]Pourquoi[/bold]",
+                           border_style=palette["status_accent"], expand=True))
+
+    # 4. Plans de sortie enrichis
     if plans:
         parts.append(_build_exit_plans_enriched(plans, palette=palette))
-    if armed:
-        parts.append(Text(f"{len(armed)} plan(s) armé(s) : "
-                          + ", ".join(_armed_order_label(w) for w in armed),
-                          style=palette["status_accent"]))
 
+    # 5. Veilles & conditions armées qui surveillent ce symbole
+    watch_lines: list[RenderableType] = []
+    if armed:
+        watch_lines.append(Text.assemble(
+            (f"{len(armed)} armé(s) : ", palette["status_accent"]),
+            (", ".join(_armed_order_label(w) for w in armed), "bold"),
+        ))
+    for watch in watches:
+        watch_lines.append(Text.assemble(
+            ("veille ", palette["dim"]),
+            (_condition_summary(watch.get("conditions"), watch.get("logic"), max_items=3), "bold"),
+            ("  exp. ", palette["dim"]),
+            (_relative_expiry(watch.get("expires_at"), now=now), palette["dim"]),
+        ))
+    if watch_lines:
+        parts.append(Panel(Group(*watch_lines), title="[bold]Veilles & armé[/bold]",
+                           border_style=palette["status_accent"], expand=True))
+
+    # 6. Décisions récentes (table)
     table = Table(title="Décisions récentes", show_header=True, expand=True, box=None)
     for column in ("UTC", "Act", "État", "Conf", "Suite"):
         table.add_column(column, overflow="fold" if column == "Suite" else "ellipsis")
-    for row in decisions:
+    for row in recent:
         confidence = _safe_float(row.get("confidence"), default=None)
         table.add_row(
             _decision_time_label(row),
@@ -763,20 +867,25 @@ def build_symbol_detail(state: dict, symbol: str, *, palette: Palette) -> Render
             f"{confidence:.2f}" if confidence is not None else "—",
             _decision_effect_label(row),
         )
-    if not decisions:
+    if not recent:
         table.add_row("—", "—", "—", "—", "aucune décision récente")
     parts.append(table)
 
+    # 7. Historique P&L réalisé — trades clôturés sur ce symbole
+    if trips:
+        realized = sum(_safe_float(t.get("pnl"), default=0.0) or 0.0 for t in trips)
+        realized_style = palette["pnl_positive"] if realized >= 0 else palette["pnl_negative"]
+        parts.append(Text.assemble(
+            ("P&L réalisé cumulé : ", palette["dim"]),
+            (_fmt_signed_compact_float(realized, decimals=0) + " USD", realized_style),
+            (f"  ({len(trips)} trade(s) clôturé(s))", palette["dim"]),
+        ))
+        parts.append(build_closed_trades_table(trips, company_map, limit=8, palette=palette))
+
+    # 8. Learnings du symbole
     learnings_panel = _build_learnings_panel(learnings, palette=palette)
     if learnings_panel is not None:
         parts.append(learnings_panel)
-
-    health = Text.assemble(("Santé data : ", palette["dim"]))
-    if streak:
-        health.append(f"stale ×{int(streak)}", style=palette["kpi_vol_warn"])
-    else:
-        health.append("OK", style=palette["status_nominal"])
-    parts.append(health)
 
     return Group(*parts)
 

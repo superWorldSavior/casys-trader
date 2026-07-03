@@ -205,17 +205,35 @@ def _build_equity_panel(
 
 
 def _build_positions_panel(
-    holdings: list[dict], *, palette: Palette = PALETTE_DARK
+    holdings: list[dict],
+    *,
+    trade_plans: list[dict] | None = None,
+    open_venues: "set[str] | None" = None,
+    palette: Palette = PALETTE_DARK,
 ) -> Panel:
+    """Table Positions débruitée : marché ouvert/fermé + stop en un coup d'œil.
+
+    Colonnes bruyantes retirées (taux FX, prix natifs — dispo dans le drill-down
+    et les plans de sortie). ``open_venues`` = codes venue ouverts (EU/US/TW/FX) ;
+    ``trade_plans`` alimente la colonne Stop. Les deux sont optionnels : sans eux
+    la table reste valide (badge neutre « · », stop « — »).
+    """
+    from trader.rotation.wiring import venue_of
+
+    plans_by_symbol: dict[str, dict] = {}
+    for plan in _safe_list_of_dicts(trade_plans or []):
+        sym = str(plan.get("symbol") or "")
+        if sym and sym not in plans_by_symbol:
+            plans_by_symbol[sym] = plan
+
     pos_table = Table(show_lines=False, expand=True)
+    pos_table.add_column("Mkt", no_wrap=True, justify="center")
     pos_table.add_column("Symbole", style="bold")
     pos_table.add_column("Dev.", no_wrap=True)
-    pos_table.add_column("FX→USD", justify="right", no_wrap=True)
-    pos_table.add_column("Qté", justify="right")
-    pos_table.add_column("Prix moy. natif", justify="right")
-    pos_table.add_column("Dernier natif", justify="right")
+    pos_table.add_column("Valeur USD", justify="right")
     pos_table.add_column("PnL latent USD", justify="right")
     pos_table.add_column("PnL %", justify="right")
+    pos_table.add_column("Stop", justify="right", no_wrap=True)
 
     for h in holdings:
         symbol = str(h.get("symbol", "?"))
@@ -238,19 +256,64 @@ def _build_positions_panel(
                 f"brut {gross_pnl:+,.2f} · frais {_fmt_fee_cost(round_trip_fee)}",
                 style=palette["dim"],
             )
+
+        # Badge marché : ● ouvert / ○ fermé / · inconnu (open_venues non fourni)
+        if open_venues is None:
+            mkt_cell = Text("·", style=palette["dim"])
+        elif venue_of(symbol) in open_venues:
+            mkt_cell = Text("●", style=palette["status_nominal"])
+        else:
+            mkt_cell = Text("○", style=palette["dim"])
+
+        plan = plans_by_symbol.get(symbol)
+
+        # Valeur de marché en USD (base USD) — plus parlant que la qté native.
+        # Repli sur le prix moyen si le dernier prix manque.
+        ref_price = last if last > 0 else avg
+        value_usd = abs(qty * ref_price * fx_rate)
+        value_cell = Text(f"{value_usd:,.0f}")
+        if plan is not None:
+            planned = _safe_float(plan.get("quantity"), default=None)
+            remaining = _safe_float(plan.get("remaining_quantity"), default=None)
+            filled_tps = plan.get("filled_take_profits") or []
+            reduced = (
+                planned is not None
+                and remaining is not None
+                and planned > 0
+                and remaining < planned - 1e-9
+            )
+            if reduced or filled_tps:
+                frac = (1.0 - remaining / planned) if reduced else 0.0
+                label = f"◑ soldé {frac:.0%}" if frac > 0 else "◑ solde en cours"
+                if filled_tps:
+                    label += " (" + "·".join(str(t) for t in filled_tps) + ")"
+                value_cell.append("\n")
+                value_cell.append(label, style=palette["status_accent"])
+
+        # Stop du plan de sortie + distance signée vs dernier prix natif
+        stop = _safe_float(plan.get("hard_stop_price"), default=None) if plan else None
+        if stop is not None and last > 0:
+            dist_pct = (stop - last) / last * 100.0
+            stop_cell = Text(
+                f"{stop:,.2f} ({dist_pct:+.1f}%)", style=palette["pnl_negative"]
+            )
+        elif stop is not None:
+            stop_cell = Text(f"{stop:,.2f}", style=palette["pnl_negative"])
+        else:
+            stop_cell = Text("—", style=palette["dim"])
+
         pos_table.add_row(
+            mkt_cell,
             symbol,
             ccy,
-            f"{fx_rate:.5f}",
-            f"{qty:,.4f}",
-            f"{avg:,.4f}",
-            f"{last:,.4f}",
+            value_cell,
             pnl_text,
             Text(f"{pnl_pct:+.2f}%", style=pnl_style),
+            stop_cell,
         )
 
     if not holdings:
-        pos_table.add_row("—", "—", "—", "—", "—", "—", "—", "—")
+        pos_table.add_row("—", "—", "—", "—", "—", "—", "—")
 
     return Panel(
         pos_table,

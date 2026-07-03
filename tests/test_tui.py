@@ -161,7 +161,9 @@ def test_positions_affiche_le_pnl_latent_net_avec_frais_et_brut_secondaires() ->
     assert "frais -1.75" in output
 
 
-def test_positions_distinguent_prix_natifs_et_pnl_usd() -> None:
+def test_positions_debruitees_valeur_usd_sans_prix_natifs() -> None:
+    """Table débruitée : valeur USD + devise, mais plus de colonnes bruyantes
+    (taux FX, prix moyen/dernier natifs) — déplacées vers plans / drill-down."""
     holdings = [
         {
             "symbol": "CFR.SW",
@@ -177,12 +179,56 @@ def test_positions_distinguent_prix_natifs_et_pnl_usd() -> None:
 
     output = _render_plain(_build_positions_panel(holdings))
 
+    # Signal conservé : devise, valeur USD, PnL, marché, stop.
     assert "Dev." in output
     assert "CHF" in output
-    assert "FX→USD" in output
-    assert "Prix moy. natif" in output
-    assert "Dernier natif" in output
+    assert "Valeur USD" in output
     assert "PnL latent USD" in output
+    assert "Mkt" in output
+    assert "Stop" in output
+    # Valeur de marché USD = 40 × 185.8 × 1.13 ≈ 8398
+    assert "8,398" in output
+    # Bruit retiré.
+    assert "FX→USD" not in output
+    assert "Prix moy. natif" not in output
+    assert "Dernier natif" not in output
+
+
+def test_positions_badge_marche_ouvert_ferme() -> None:
+    """Badge ● quand la venue du symbole est ouverte, ○ sinon."""
+    holdings = [{"symbol": "AAPL", "quantity": 10.0, "avg_price": 100.0,
+                 "last_price": 110.0, "unrealized_pnl": 100.0}]
+
+    open_output = _render_plain(
+        _build_positions_panel(holdings, open_venues={"US"})
+    )
+    closed_output = _render_plain(
+        _build_positions_panel(holdings, open_venues=set())
+    )
+
+    assert "●" in open_output
+    assert "○" in closed_output
+
+
+def test_positions_stop_et_solde_depuis_le_plan() -> None:
+    """Colonne Stop alimentée par le plan ; marqueur de solde quand un TP a fill."""
+    holdings = [{"symbol": "AAPL", "quantity": 5.0, "avg_price": 100.0,
+                 "last_price": 110.0, "unrealized_pnl": 50.0}]
+    trade_plans = [{
+        "symbol": "AAPL",
+        "hard_stop_price": 95.0,
+        "quantity": 10.0,
+        "remaining_quantity": 5.0,
+        "filled_take_profits": ["tp1"],
+    }]
+
+    output = _render_plain(
+        _build_positions_panel(holdings, trade_plans=trade_plans)
+    )
+
+    assert "95.00" in output          # stop du plan
+    assert "◑" in output               # position en cours de solde
+    assert "50%" in output             # moitié soldée (10 → 5)
 
 
 def test_positions_sans_pnl_net_garde_l_affichage_brut_historique() -> None:
