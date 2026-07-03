@@ -60,6 +60,12 @@ class TaskLedger:
     def enqueue(self, *, kind, priority, scheduled_at_ms, now_ms,
                 dedup_key=None, partition_key=None, resource=None,
                 payload=None, max_attempts=3, parent_id=None):
+        """Enfile une tâche en status 'pending'.
+
+        Idempotent : si ``dedup_key`` est déjà présent (conflit UNIQUE),
+        l'INSERT est ignoré et retourne ``None``.
+        Retourne l'``id`` (int) de la nouvelle ligne, ou ``None`` sur conflit.
+        """
         with self._lock:
             try:
                 cur = self._conn.execute(
@@ -82,6 +88,14 @@ class TaskLedger:
                 raise
 
     def claim(self, *, worker_id, token, now_ms, lease_ms, free_resources):
+        """Tente de passer la tâche la plus prioritaire en 'running'.
+
+        Respecte : ``scheduled_at <= now_ms``, ``attempts < max_attempts``,
+        ressource dans ``free_resources`` (ou None), ``partition_key`` sans
+        tâche running concurrente. Priorité : priority ASC, scheduled_at ASC,
+        id ASC. Retourne ``dict`` de la ligne claimée, ou ``None`` si rien à
+        claimer.
+        """
         if free_resources:
             ph = ",".join("?" for _ in free_resources)
             res_clause = f"(resource IS NULL OR resource IN ({ph}))"
@@ -119,6 +133,12 @@ class TaskLedger:
                 raise
 
     def complete(self, *, task_id, token, now_ms, result=None):
+        """Marque la tâche comme 'done' et efface le claim.
+
+        Gardé par fencing token : sans effet si ``claim_token`` ne correspond
+        pas ou si status != 'running'. Retourne ``True`` si la ligne a été
+        modifiée.
+        """
         with self._lock:
             try:
                 cur = self._conn.execute(
@@ -134,6 +154,14 @@ class TaskLedger:
                 raise
 
     def fail(self, *, task_id, token, now_ms, error, retryable, backoff_base_ms):
+        """Signale l'échec d'une tâche et applique la politique de retry.
+
+        Si ``retryable=True`` et ``attempts < max_attempts`` : replanifie en
+        'pending' avec délai ``backoff_base_ms * 2^(attempts-1)``.
+        Sinon : passe en 'dead'. Gardé par fencing token (``claim_token``).
+        Retourne ``'pending'`` (retry), ``'dead'`` (épuisé) ou ``'stale'``
+        (token inconnu — sans effet).
+        """
         with self._lock:
             try:
                 row = self._conn.execute(
@@ -168,6 +196,11 @@ class TaskLedger:
                 raise
 
     def heartbeat(self, *, task_id, token, now_ms, lease_ms):
+        """Prolonge le bail d'une tâche en cours d'exécution.
+
+        Gardé par fencing token. Retourne ``True`` si le bail a été renouvelé,
+        ``False`` si la tâche est introuvable ou le token invalide.
+        """
         with self._lock:
             try:
                 cur = self._conn.execute(
@@ -205,6 +238,11 @@ class TaskLedger:
                 raise
 
     def recover_on_boot(self, *, now_ms):
+        """Remet en 'pending' les tâches 'running' dont le bail a expiré.
+
+        À appeler au démarrage du daemon pour reprendre les tâches orphelines
+        d'un crash précédent. Retourne le nombre de tâches réactivées (int).
+        """
         with self._lock:
             try:
                 cur = self._conn.execute(

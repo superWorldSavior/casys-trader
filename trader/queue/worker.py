@@ -32,6 +32,15 @@ class Worker:
         self._backoff_base_ms = backoff_base_ms
 
     def run_once(self, *, now_ms, token) -> bool:
+        """Tente de claimer et d'exécuter une tâche.
+
+        Séquence : free_resources → claim → try_acquire → handler →
+        complete/fail → release. Sur resource miss (course entre
+        ``free_resources`` et ``claim``) : unclaim neutre via ``release_claim``
+        sans brûler de tentative.
+        Retourne ``True`` si une tâche a été tentée (même en resource miss),
+        ``False`` si rien n'était à claimer.
+        """
         free = self._pools.free_resources()
         task = self._ledger.claim(worker_id=self._id, token=token, now_ms=now_ms,
                                   lease_ms=self._lease_ms, free_resources=free)
