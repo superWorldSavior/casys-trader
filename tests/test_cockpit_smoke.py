@@ -499,8 +499,8 @@ async def test_cockpit_shell_navigable_expose_home_et_pages_detail(
         assert app.query_one("#logs-page").display is False
 
 
-async def test_cockpit_tab_et_fleches_naviguent_entre_pages(tmp_path, monkeypatch):
-    """Tab, droite et gauche changent de page sans scroller le dashboard."""
+async def test_cockpit_chiffres_naviguent_entre_pages(tmp_path, monkeypatch):
+    """Les touches 2/3 changent de page ; Tab ne change plus de page."""
     _make_minimal_state(tmp_path)
     monkeypatch.setattr(cockpit_module, "_STATE_DIR", tmp_path)
     monkeypatch.setattr(cockpit_module, "_EVENTS_FILE", tmp_path / "events.jsonl")
@@ -509,16 +509,20 @@ async def test_cockpit_tab_et_fleches_naviguent_entre_pages(tmp_path, monkeypatc
     app = CockpitApp()
     async with app.run_test(size=(220, 60)) as pilot:
         assert app._active_page_key == "home"
+        # ConfirmStart apparaît après le premier refresh — la fermer avant de tester les touches
+        await pilot.pause()
+        await pilot.click("#confirm-start-no")
+        await pilot.pause()
 
-        await pilot.press("tab")
+        await pilot.press("2")
         assert app._active_page_key == "portfolio"
         assert app.query_one("#portfolio-page").display is True
 
-        await pilot.press("right")
+        await pilot.press("3")
         assert app._active_page_key == "decisions"
         assert app.query_one("#decisions-page").display is True
 
-        await pilot.press("left")
+        await pilot.press("2")
         assert app._active_page_key == "portfolio"
         assert app.query_one("#portfolio-page").display is True
 

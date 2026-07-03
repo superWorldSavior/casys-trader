@@ -38,9 +38,8 @@ Raccourcis :
     f         Pause/reprise de l'auto-scroll du panneau logs
     l         Aller/retour page Logs
     d         Dark/Light (thèmes casys-salmon / casys-ink)
-    Tab/→     Vue suivante
-    ←/Shift+Tab Vue précédente
-    1..6      Accès direct aux pages
+    Tab       Focus panneaux
+    1..6      Pages (accès direct)
 """
 
 from __future__ import annotations
@@ -60,7 +59,7 @@ from textual.theme import Theme
 from textual.widgets import Button, ContentSwitcher, Footer, Label, RichLog, Static
 
 from trader.cockpit.supervisor import daemon_vital_state
-from trader.cockpit.home import AttentionLine, HomePane
+from trader.cockpit.home import AttentionLine, HomePane, SymbolChosen
 
 from trader.cockpit.events import (
     EventClass,
@@ -249,8 +248,7 @@ class CockpitNav(Static):
 
     def update_page(self, active_key: str, *, palette: Palette = PALETTE_LIGHT) -> None:
         text = Text("  ")
-        text.append("Tab/←/→ ", style=palette["dim"])
-        text.append("vue", style=palette["dim"])
+        text.append("1-6 vues · Tab focus · Enter détail", style=palette["dim"])
         text.append("   ")
         for index, page in enumerate(_PAGES, start=1):
             if index > 1:
@@ -874,10 +872,6 @@ class CockpitApp(App):
         Binding("f", "toggle_scroll", "Pause scroll"),
         Binding("l", "toggle_logs", "Logs"),
         Binding("d", "toggle_theme", "Dark/Light"),
-        Binding("tab", "next_page", "Vue suivante", show=False, priority=True),
-        Binding("right", "next_page", "Vue suivante", show=False, priority=True),
-        Binding("left", "previous_page", "Vue précédente", show=False, priority=True),
-        Binding("shift+tab", "previous_page", "Vue précédente", show=False, priority=True),
         Binding("1", "show_page('home')", "Accueil", show=False),
         Binding("2", "show_page('portfolio')", "Portefeuille", show=False),
         Binding("3", "show_page('decisions')", "Décisions", show=False),
@@ -976,6 +970,11 @@ class CockpitApp(App):
 
     def action_show_page(self, page_key: str) -> None:
         self._set_active_page(page_key)
+
+    def on_symbol_chosen(self, message: "SymbolChosen") -> None:
+        from trader.cockpit.home import SymbolDetailScreen
+
+        self.push_screen(SymbolDetailScreen(message.symbol))
 
     def _current_palette(self) -> Palette:
         """Retourne la palette Rich correspondant au thème actif."""

@@ -12,8 +12,10 @@ from rich.console import Group, RenderableType
 from rich.table import Table
 from rich.text import Text
 from textual.app import ComposeResult
-from textual.containers import Horizontal, Vertical
+from textual.binding import Binding
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.message import Message
+from textual.screen import ModalScreen
 from textual.widgets import DataTable, Static
 
 from trader.cockpit.aggregates import (  # noqa: F401
@@ -54,7 +56,7 @@ from trader.cockpit.overview import (
 from trader.planning.indicator_watch import is_armed_plan as _is_armed_plan
 from trader.read_models.runtime_state import _safe_float, _safe_list_of_dicts
 from trader.ui.palette import PALETTE_LIGHT, Palette
-from trader.ui.rich_panels import sparkline
+from trader.ui.rich_panels import _build_exit_plans_enriched, _build_learnings_panel, sparkline
 
 UTC = timezone.utc
 
@@ -688,3 +690,110 @@ class HomePane(Static):
         self.query_one("#home-positions", PositionsTable).refresh_rows(
             state, palette=palette
         )
+
+
+def build_symbol_detail(state: dict, symbol: str, *, palette: Palette) -> RenderableType:
+    """Contexte complet d'un symbole — pur filtrage du read model en mémoire."""
+    state = state if isinstance(state, dict) else {}
+    portfolio = state.get("portfolio") if isinstance(state.get("portfolio"), dict) else {}
+    holdings = [h for h in _safe_list_of_dicts(portfolio.get("holdings"))
+                if _holding_symbol(h) == symbol]
+    plans = [p for p in _safe_list_of_dicts(state.get("trade_plans"))
+             if str(p.get("symbol") or "") == symbol]
+    armed = [w for w in _safe_list_of_dicts(state.get("armed_plans"))
+             if str(w.get("symbol") or "") == symbol]
+    decisions = [d for d in _safe_list_of_dicts(state.get("recent_decisions"))
+                 if str(d.get("symbol") or "") == symbol][-8:]
+    learnings = [l for l in _safe_list_of_dicts(state.get("learnings"))
+                 if str(l.get("symbol") or "") == symbol]
+    streak = (state.get("stale_streaks") or {}).get(symbol, 0)
+
+    parts: list[RenderableType] = [Text(symbol, style=f"bold {palette['status_equity']}")]
+
+    if holdings:
+        holding = holdings[0]
+        pnl_value = _holding_pnl(holding)
+        pnl_style = palette["pnl_positive"] if pnl_value >= 0 else palette["pnl_negative"]
+        parts.append(Text.assemble(
+            ("Position : ", palette["dim"]),
+            (f"{_fmt_compact_float(holding.get('quantity'), decimals=2)} @ "
+             f"{_fmt_compact_float(_holding_native_price(holding), decimals=2)} "
+             f"{_holding_currency(holding)}", "bold"),
+            ("  PnL ", palette["dim"]),
+            (_fmt_signed_compact_float(pnl_value, decimals=0), pnl_style),
+        ))
+    else:
+        parts.append(Text("Aucune position ouverte", style=palette["dim"]))
+
+    if plans:
+        parts.append(_build_exit_plans_enriched(plans, palette=palette))
+    if armed:
+        parts.append(Text(f"{len(armed)} plan(s) armé(s) : "
+                          + ", ".join(_armed_order_label(w) for w in armed),
+                          style=palette["status_accent"]))
+
+    table = Table(title="Décisions récentes", show_header=True, expand=True, box=None)
+    for column in ("UTC", "Act", "État", "Conf", "Suite"):
+        table.add_column(column, overflow="fold" if column == "Suite" else "ellipsis")
+    from trader.cockpit.aggregates import decision_status
+
+    for row in decisions:
+        confidence = _safe_float(row.get("confidence"), default=None)
+        table.add_row(
+            _decision_time_label(row),
+            str(row.get("action") or "—").upper(),
+            decision_status(row),
+            f"{confidence:.2f}" if confidence is not None else "—",
+            _decision_effect_label(row),
+        )
+    if not decisions:
+        table.add_row("—", "—", "—", "—", "aucune décision récente")
+    parts.append(table)
+
+    learnings_panel = _build_learnings_panel(learnings, palette=palette)
+    if learnings_panel is not None:
+        parts.append(learnings_panel)
+
+    health = Text.assemble(("Santé data : ", palette["dim"]))
+    if streak:
+        health.append(f"stale ×{int(streak)}", style=palette["kpi_vol_warn"])
+    else:
+        health.append("OK", style=palette["status_nominal"])
+    parts.append(health)
+
+    return Group(*parts)
+
+
+class SymbolDetailScreen(ModalScreen[None]):
+    """Drill-down symbole (Enter depuis une table de la home). Esc ferme."""
+
+    BINDINGS = [Binding("escape", "close_detail", "Fermer")]
+    DEFAULT_CSS = """
+    SymbolDetailScreen { align: center middle; }
+    SymbolDetailScreen > VerticalScroll {
+        width: 90%;
+        height: 90%;
+        border: solid $primary;
+        background: $surface;
+        padding: 1 2;
+    }
+    """
+
+    def __init__(self, symbol: str, **kwargs: object) -> None:
+        super().__init__(**kwargs)
+        self._symbol = symbol
+
+    def compose(self) -> ComposeResult:
+        with VerticalScroll():
+            yield Static(id="symbol-detail-body")
+
+    def on_mount(self) -> None:
+        app = self.app
+        state = getattr(app, "_last_state", None) or {}
+        palette = app._current_palette()  # type: ignore[attr-defined]
+        self.query_one("#symbol-detail-body", Static).update(
+            build_symbol_detail(state, self._symbol, palette=palette)
+        )
+
+    def action_close_detail(self) -> None:
+        self.dismiss(None)

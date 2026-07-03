@@ -275,3 +275,28 @@ async def test_home_flux_recoit_les_events(tmp_path, monkeypatch):
 
         flux_log = app.query_one("#home-flux").query_one(RichLog)
         assert len(flux_log.lines) > 0  # RichLog stocke les lignes dans .lines (pas .line_count)
+
+
+def test_build_symbol_detail_sections():
+    from trader.cockpit.home import build_symbol_detail
+    from trader.ui.palette import PALETTE_LIGHT
+
+    state = {
+        "portfolio": {"holdings": [{"symbol": "AAA.TW", "quantity": 10,
+                                    "avg_price": 90.0, "last_price": 100.0}]},
+        "trade_plans": [{"symbol": "AAA.TW", "side": "LONG", "hard_stop_price": 95.0,
+                         "entry_price": 90.0, "remaining_quantity": 10}],
+        "recent_decisions": [{"symbol": "AAA.TW", "action": "BUY", "executed": True,
+                              "ts": "2026-07-03T09:00:00Z"},
+                             {"symbol": "BBB.TW", "action": "HOLD",
+                              "ts": "2026-07-03T09:00:00Z"}],
+        "learnings": [{"symbol": "AAA.TW", "note": "gap à l'open fréquent",
+                       "ts": "2026-07-01T00:00:00Z"}],
+        "stale_streaks": {"AAA.TW": 2},
+    }
+    rendered = _console_render(build_symbol_detail(state, "AAA.TW", palette=PALETTE_LIGHT))
+    assert "AAA.TW" in rendered
+    assert "95" in rendered                    # plan de sortie
+    assert "gap à l'open" in rendered          # learning du symbole
+    assert "BBB.TW" not in rendered            # filtré par symbole
+    assert "stale" in rendered.lower()         # santé data

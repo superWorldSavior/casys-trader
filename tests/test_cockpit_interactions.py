@@ -6,7 +6,11 @@ from pathlib import Path
 
 
 def _patch_state_paths(monkeypatch, tmp_path: Path) -> None:
-    """Même mécanique que tests/test_cockpit_smoke.py : monkeypatch des constantes."""
+    """Même mécanique que tests/test_cockpit_smoke.py : monkeypatch des constantes.
+
+    Supprime aussi ConfirmStart (via _maybe_propose_start=noop) pour que les tests
+    d'interaction claviers/focus ne soient pas bloqués par la modal au démarrage.
+    """
     import trader.cockpit.app as cockpit_module
 
     (tmp_path / "current_report.json").write_text(json.dumps({
@@ -23,6 +27,9 @@ def _patch_state_paths(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr(cockpit_module, "_KILL_FILE", tmp_path / "KILL")
     import trader.read_models.runtime_state as rs
     monkeypatch.setattr(rs, "_STATE_DIR", tmp_path)
+    # Supprime la modal ConfirmStart : elle intercepte les touches et le focus
+    # ce qui casse les tests de navigation/focus clavier.
+    monkeypatch.setattr(cockpit_module.CockpitApp, "_maybe_propose_start", lambda self: None)
 
 
 async def test_positions_table_vide_affiche_placeholder(tmp_path, monkeypatch):
@@ -51,3 +58,47 @@ async def test_decisions_table_montee_et_peuplee(tmp_path, monkeypatch):
         await pilot.pause(1.0)
         table = app.query_one(DecisionsTable)
         assert table.row_count >= 1
+
+
+async def test_enter_ouvre_modal_et_esc_ferme(tmp_path, monkeypatch):
+    from trader.cockpit.home import DecisionsTable, SymbolDetailScreen
+    from trader.cockpit import CockpitApp
+
+    _patch_state_paths(monkeypatch, tmp_path)
+    app = CockpitApp()
+    async with app.run_test(size=(200, 50)) as pilot:
+        await pilot.pause()
+        app._schedule_refresh_state()
+        await pilot.pause(1.0)
+        table = app.query_one(DecisionsTable)
+        table.focus()
+        await pilot.press("enter")
+        assert isinstance(app.screen, SymbolDetailScreen)
+        await pilot.press("escape")
+        assert not isinstance(app.screen, SymbolDetailScreen)
+
+
+async def test_pages_par_chiffres_tab_ne_change_plus_de_page(tmp_path, monkeypatch):
+    from trader.cockpit import CockpitApp
+
+    _patch_state_paths(monkeypatch, tmp_path)
+    app = CockpitApp()
+    async with app.run_test(size=(200, 50)) as pilot:
+        await pilot.pause()
+        await pilot.press("3")
+        assert app._active_page_key == "decisions"
+        await pilot.press("tab")
+        assert app._active_page_key == "decisions"  # tab = focus, plus de changement de page
+
+
+async def test_tab_focus_une_datatable(tmp_path, monkeypatch):
+    """Tab (libéré des pages) donne le focus à une DataTable de la home."""
+    from textual.widgets import DataTable
+    from trader.cockpit import CockpitApp
+
+    _patch_state_paths(monkeypatch, tmp_path)
+    app = CockpitApp()
+    async with app.run_test(size=(200, 50)) as pilot:
+        await pilot.pause()
+        await pilot.press("tab")
+        assert isinstance(app.focused, DataTable)
