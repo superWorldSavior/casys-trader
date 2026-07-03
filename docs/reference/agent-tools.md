@@ -2,7 +2,7 @@
 
 > **Type** : Reference (Diátaxis).
 > **Code** : `trader/agent_tools/` · **Registry** : `agent_tools/registry.TOOL_REGISTRY`
-> **Activation** : `CASYS_AGENT_TOOLS_ENABLED=1` · **Spec** : `docs/superpowers/specs/2026-06-29-agent-domain-tools-design.md`
+> **Activation** : `CASYS_AGENT_TOOLS_ENABLED=1` · **Historique du design** : voir `git log` (specs 2026-06-29 / 2026-07-03 supprimées une fois livrées, cette page fait foi)
 
 Le LLM décideur peut **pull** du contexte supplémentaire via des outils
 **lecture-seule**, en émettant `{"tool_calls":[...]}` dans sa réponse (protocole
