@@ -197,35 +197,45 @@ réécrit (tx courte).
 | `apply_exits` | **0 (EXIT)** | ib¹ | portfolio | — |
 | `scan_watches` | 0 | — | — | intention (Lot B) |
 | `refresh_symbol` | 5 | yahoo **ou** ib² | symbol | `decide` |
-| `decide` | 5 (DECISION) | acpx | chunk³ | **intention** (Lot B) |
+| `decide` | 5 (DECISION) | acpx | symbol³ | **intention** (Lot B) |
 | `arm_watch` | 5 | — | symbol | — |
 | `consolidate_learnings` | **9 (MAINT)** | acpx | — | — |
 
 ¹ Lot B. ² `resource` = la source active du symbole (une seule), pas « yahoo/ib »
-(correctif arch MAJEUR 4). ³ voir §4.3bis.
+(correctif arch MAJEUR 4). ³ grain-symbole par défaut — voir §4.3bis.
 
-### 4.3bis Granularité de `decide` : chunk configurable, pas 1 symbole
+### 4.3bis Granularité de `decide` : grain-symbole par défaut (décision 2026-07-03)
 
-Le chunking actuel (~5 symboles/prompt, `planner_batch.py`) n'est pas qu'une optim
-de coût : dans un prompt multi-symboles, l'agent **arbitre entre eux** (allocation
-du budget gross). Le casser en 1 appel/symbole perdrait cette vue comparative ET
-multiplierait par ~5 les appels/charge app-server. Décision :
+**1 tâche `decide` = 1 symbole = 1 appel acpx** (`partition_key = symbole`). On
+écarte le chunking par défaut du batch actuel (~5 symboles/prompt), après analyse :
 
-- **`decide` reste chunké** : le producteur regroupe les symboles dus en chunks de
-  taille `K` (configurable, défaut ~5). **1 tâche `decide` = 1 chunk = 1 appel
-  acpx.** `partition_key` = un id de chunk ; le producteur garantit qu'un symbole
-  n'est que dans un chunk actif à la fois (via `refresh_symbol` partitionné par
-  symbole en amont + l'index `uniq_active_kind_partition`).
-- **Isolation par chunk** au niveau décision (un chunk qui timeout ne bloque pas les
-  autres — déjà un gain net vs le batch séquentiel actuel).
-- **Isolation fine par symbole** là où elle est critique : `execute_order` (1 ordre
-  = 1 tâche, partition `portfolio`).
+- La **vue comparative** qu'apportait le chunk est **redondante** : l'agent a déjà
+  son état portefeuille dans le contexte (`equity_usd`, `context.py:119` ; `cash`/
+  positions, `daemon.py:218`), et l'arbitrage de marge entre candidats est fait **par
+  le code** (`trader/application/order_admission`, au mérite/conviction, déterministe),
+  pas par le jugement LLM.
+- Le **coût en nombre d'appels** est atténué par les **réveils intelligents** : on ne
+  décide que les symboles *dus* (souvent 1-3/tick), pas tout l'univers.
+- Le seul surcoût réel est la **redondance du contexte de base** (mandat/régime/
+  portefeuille répétés par appel) — écrasée par le **prompt caching** (préfixe commun
+  cachable ; seul le bloc symbole varie).
+
+Bénéfices : `partition_key = symbole` **directement** (pas de « chunk-id », pas de
+gestion « un symbole dans un seul chunk actif » ; l'index `uniq_active_kind_partition`
+sur `(decide, symbole)` empêche nativement deux `decide` du même symbole) ;
+**isolation native par symbole** (un des 3 besoins initiaux) ; prompt focalisé ; un
+pic (open de marché, 20 symboles dus) s'écoule par les M guichets à la capacité de
+l'app-server au lieu de gros prompts monolithiques.
+
+**Échappatoire** : la taille de regroupement `K` reste **configurable** (défaut
+`K=1` = grain-symbole). Passer `K>1` restaure un chunk (`partition_key` = id de
+chunk) si le coût token remontait et que le caching ne suffisait pas — YAGNI par
+défaut.
 
 **Modèle d'exécution des appels acpx** : le pool `acpx` = **M « guichets »**
-(M = limite adaptative AIMD, §4.5). Jusqu'à **M appels acpx en parallèle**, chacun
-traitant un chunk ; les chunks en trop attendent, servis dès qu'un guichet se libère
-(priorité aux sorties). Donc **M×K symboles** peuvent être décidés en parallèle en
-seulement **M appels**. Flux continu et borné, pas de batch monolithique séquentiel.
+(M = limite adaptative AIMD, §4.5). Jusqu'à **M appels en parallèle**, un par
+symbole ; les tâches en trop attendent, servies dès qu'un guichet se libère (priorité
+aux sorties). Flux continu et borné, pas de batch monolithique séquentiel.
 
 **Voie rapide** : `ORDER BY priority ASC` sert EXIT/EXEC avant DECISION.
 **Anti-famine** (correctif arch 6 + safety 7) : *aging* — au-delà d'un seuil
