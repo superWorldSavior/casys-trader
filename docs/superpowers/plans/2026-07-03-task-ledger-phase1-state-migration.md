@@ -13,9 +13,9 @@
 - **Zéro dépendance nouvelle** ; `sqlite3`/`threading` stdlib.
 - **Fichier unique** `state/casys.db` (partagé avec le futur `task_ledger` du Lot B, pour l'outbox). WAL + `busy_timeout=5000` + `check_same_thread=False` + `threading.Lock` (pattern `trader/learnings/store.py:26,31,107`).
 - **API publique des 3 stores INCHANGÉE** — aucun appelant *via l'objet store* ne doit être modifié. Vérifié par les tests existants qui doivent rester verts sans édition.
-- **Double-write shadow JSON atomique** (`tmp` + `os.replace`) tant que les lecteurs hors-store (§1e) ne sont pas migrés. Le JSON est un **miroir** ; SQLite fait foi.
+- **Double-write shadow JSON atomique** (`tmp` + `os.replace`) tant que les lecteurs hors-store (§1e) ne sont pas migrés. Le JSON est un **miroir** ; SQLite fait foi. **Garde-fous cohérence (correctif Codex #5)** : `os.replace` rend le fichier non-partiel mais **pas atomique avec le commit SQLite** (crash entre commit et shadow → JSON stale). Donc : (a) **régénérer tous les shadows au boot** depuis SQLite (rattrape un shadow en retard) ; (b) **logguer/alerter** tout échec d'écriture shadow ; (c) **interdire les process mixtes** (un même état écrit tantôt en JSON tantôt en SQLite) via le flag `CASYS_STATE_BACKEND`.
 - **Migration idempotente** : `schema_migrations` (version) ; import JSON→tables **seulement si les tables sont vides** ; backup horodaté du `.json` avant bascule ; contraintes `UNIQUE` bloquant tout doublon si l'import est relancé.
-- **Temps** : conserver le format existant de chaque store (SimBroker/TradePlan : ISO strings `TEXT` tels quels ; Scheduler : ISO strings `TEXT`). Ne PAS convertir en epoch (les lecteurs JSON attendent l'ISO). Cohérence > micro-optim.
+- **Temps** : ISO strings `TEXT` (pas d'epoch — les lecteurs JSON attendent l'ISO). **Correctif Codex #2** : une comparaison SQL lexicale `WHERE expires_at <= :now` n'est correcte QUE si tout est **canonicalisé UTC au même format** (le code actuel gère `Z`, offsets, naïf→UTC via `scheduler.py:46-53`). Donc : **canonicaliser à l'écriture/import** en un format unique (`datetime→astimezone(UTC)→isoformat()`, toujours `+00:00`, jamais `Z`) et passer un `:now` canonicalisé de la même façon ; OU (repli) charger puis filtrer/comparer en Python via le `_parse` existant. Choix retenu : **canonicalisation à l'écriture** (comparaison SQL sûre + lisible par le shadow).
 - **Déterminisme AX** : le temps reste injecté (`now`) où les stores le prennent déjà (Scheduler). Pas de `datetime.now()` caché ajouté.
 - **Vérifier le vrai exit code pytest** : `uv run pytest …; echo "EXIT=$?"` — jamais conclure vert sur un pipe.
 - **Ordre imposé** : §1a → §1b → §1c → §1d → §1e. Un flag `CASYS_STATE_BACKEND` (`json`|`sqlite`, défaut `json`) permet de basculer store par store et de **revenir en arrière** tant que §1e n'est pas fait.
@@ -36,7 +36,7 @@
 
 | JSON | Lecteurs directs |
 |---|---|
-| `broker.json` | `read_models/runtime_state.py:294` (`_load_fills_safe`), `reporting/stats.py:136`, `rotation/collectors.py:69`, `cockpit/app.py` |
+| `broker.json` | `read_models/runtime_state.py:294` (`_load_fills_safe`), `reporting/stats.py:136`, `rotation/collectors.py:69`, `cockpit/app.py`, **`runtime/cli.py:169`** (`_cmd_status`, correctif Codex #6), + hors-runtime **`scripts/migrate_fx_cash.py:27-46,94`** (outil maintenance — à migrer ou déprécier) |
 | `trade_plans.json` | `read_models/runtime_state.py:141`, `runtime/cli.py:171` |
 | `scheduler.json` | `read_models/runtime_state.py:184,462`, `runtime/cli.py:170`, `ui/tui.py:36` |
 
@@ -128,7 +128,9 @@ CREATE TABLE broker_fills (
 - `cash()` = `SELECT cash FROM broker_state`.
 - **Fills hétérogènes** : la migration one-shot depuis `broker.json` patche les champs manquants (`commission=0.0`, `commission_currency='USD'`, `commission_model='none'`, `fx_rate=1.0`) sur les anciens fills.
 - **Double-write shadow** : après chaque `submit` live, ré-écrire `broker.json` atomiquement (miroir `{cash, positions, fills}` reconstruit depuis les tables, format identique) pour les lecteurs hors-store.
-- **Instanciation parasite** (`collectors.py:71`) : le backend SQLite ne doit PAS créer d'état si le fichier n'existe pas en mode lecture (paramètre `create=False` ou ouverture read-only).
+- **Broker neuf (correctif Codex #3)** : si aucun état n'existe, le mode **owner** (`create=True`, le daemon) insère `broker_state(id=1, cash=starting_cash)` — équivalent de `execution.py:216-221` (JSON absent → `_State(cash=starting_cash)` + save). Sans ça, `cash()` renverrait vide.
+- **Instanciation parasite** (`collectors.py:71`) : le mode **lecteur** (`create=False`) ne doit PAS créer d'état si l'état n'existe pas (aujourd'hui `collectors` crée un broker.json vide à 100k). Ouverture read-only / pas d'`INSERT` d'init.
+- **Hors contrat** (Codex mineur) : quantités négatives/non-finies restent hors contrat (comme aujourd'hui) — ne pas ajouter de validation nouvelle.
 
 ### Tâches (TDD)
 - [ ] **Task 4** — migration v1 broker + `import_broker_from_json(db, json_path)` idempotent (import si `broker_state` vide ; patch fills ; backup `broker.json.bak-<ts>`). Test : import depuis un `broker.json` fixture (avec fills hétérogènes + positions q=0) → tables peuplées, defaults patchés ; ré-import → no-op.
@@ -146,7 +148,9 @@ CREATE TABLE broker_fills (
 ### Schéma (migration v2)
 ```sql
 CREATE TABLE trade_plans (
-  id TEXT PRIMARY KEY, symbol TEXT NOT NULL, side TEXT, quantity REAL,
+  id TEXT PRIMARY KEY,
+  seq INTEGER,  -- ordinal d'insertion : open_plans() rend l'ordre du JSON (correctif Codex #4) → ORDER BY seq
+  symbol TEXT NOT NULL, side TEXT, quantity REAL,
   remaining_quantity REAL, entry_price REAL, opened_at TEXT,
   reference_volatility REAL, hard_stop_price REAL, max_hold_minutes REAL,
   high_watermark REAL, low_watermark REAL,
@@ -163,10 +167,10 @@ CREATE INDEX idx_trade_plans_symbol ON trade_plans(symbol);
 > Choix : colonnes scalaires en dur (requêtables), sous-objets/listes en **JSON colonnes** (`asdict`/`json.dumps` au write, `trade_plan_from_dict` au read). Justif : `sync_symbol_quantity` recalcule les quantités de la **liste entière** de TP → une table jointe n'apporte rien ici, le JSON est plus simple et fidèle à `asdict`.
 
 ### Invariants de non-régression
-- `upsert(plan)` = `INSERT OR REPLACE` sur `id` (unicité par id, `trade_plan.py:1031`).
-- `open_plans()` = `SELECT *` → `trade_plan_from_dict` (round-trip exact via `asdict`/`from_dict`, y compris champs `None` et non-finis tolérés).
+- `upsert(plan)` = `INSERT OR REPLACE` sur `id`, **avec `seq = COALESCE(MAX(seq),0)+1`** pour reproduire le « retire puis append en fin » de `trade_plan.py:1031` (le plan ré-upserté repart en fin d'ordre).
+- `open_plans()` = `SELECT * ORDER BY seq` → `trade_plan_from_dict` (round-trip exact via `asdict`/`from_dict`, champs `None`/non-finis tolérés). **L'ordre d'itération DOIT être préservé (correctif Codex #4)** — plusieurs appelants dépendent implicitement de l'ordre.
 - `close(id)`, `close_symbol(symbol)` = `DELETE`.
-- `sync_symbol_quantity(symbol, remaining)` : si `remaining<=0` → `close_symbol` ; sinon recalcul ratio sur les plans du symbole (logique `trade_plan.py:1045+` portée), **close+update dans UNE transaction**.
+- `sync_symbol_quantity(symbol, remaining)` : si `remaining<=0` → `close_symbol` ; sinon `ratio = remaining / total_remaining` du symbole, on met à jour `remaining_quantity` et **rescale les TP NON remplis** ; **les TP déjà remplis (`filled_take_profits`) sont conservés tels quels** (précision Codex, `trade_plan.py:1073-1079`). Le tout **dans UNE transaction**.
 - **Plusieurs plans par symbole** possibles (cas ADD) — pas de contrainte unique sur `symbol`.
 - Double-write shadow `trade_plans.json` (`{"plans": [asdict(p) …]}`).
 
@@ -188,8 +192,10 @@ CREATE TABLE scheduler_meta (key TEXT PRIMARY KEY, value TEXT);   -- default_nex
 CREATE TABLE scheduler_symbol_wake (symbol TEXT PRIMARY KEY, when_iso TEXT NOT NULL);
 CREATE TABLE scheduler_stale_streaks (symbol TEXT PRIMARY KEY, streak INTEGER NOT NULL);
 CREATE TABLE scheduler_watches (
-  id TEXT PRIMARY KEY, symbol TEXT NOT NULL, created_at TEXT, expires_at TEXT,
-  on_trigger TEXT, watch_json TEXT NOT NULL);   -- watch complet (conditions+order) en JSON
+  id TEXT PRIMARY KEY,
+  seq INTEGER,   -- ordinal d'insertion : préserve l'ordre dict (correctif Codex #4) → ORDER BY seq
+  symbol TEXT NOT NULL, created_at TEXT, expires_at TEXT,   -- expires_at canonicalisé UTC (cf. Global Constraints)
+  on_trigger TEXT, watch_json TEXT NOT NULL);   -- watch complet (conditions+order+rationale) en JSON
 CREATE INDEX idx_watches_symbol ON scheduler_watches(symbol);
 CREATE INDEX idx_watches_expires ON scheduler_watches(expires_at);
 ```
@@ -199,8 +205,11 @@ CREATE INDEX idx_watches_expires ON scheduler_watches(expires_at);
 - **Migration legacy** : la clé `next_wake` (ancienne) est promue `default_next_wake` à l'import (`scheduler.py:34`).
 - `default_next_wake`/`symbols`/`stale_streaks` : CRUD direct par clé.
 - `due_symbols` : aujourd'hui 1 load/symbole ; en SQL, `next_wake(symbol)` = `SELECT` ciblé (gain).
-- `set_symbol_indicator_watch` : **coexistence par famille** (`is_armed_plan` : `EXECUTE_ORDER` coexistent, `WAKE` remplace le précédent du même symbole) — porter la logique `scheduler.py:149+` exactement (INSERT OR REPLACE par id, mais suppression du WAKE précédent du symbole).
-- `active_indicator_watches` / `pop_expired_indicator_watches` : `SELECT WHERE expires_at <= now` ; `pop` **DELETE en transaction** et retourne les expirées ; `active` purge conditionnellement. Distinguer les deux (l'un trace, l'autre silencieux).
+- `set_symbol_indicator_watch` : **coexistence par famille** (`is_armed_plan`, `scheduler.py:149-171`) — les watches **armées** (`on_trigger=EXECUTE_ORDER`, avec `order`) **coexistent** (scénarios alternatifs) ; **tout non-armé remplace** le non-armé précédent du même symbole — ce qui inclut `WAKE` **ET** `WAKE_WITH_ORDER_INTENT`, pas seulement `WAKE` (précision Codex). Porter la logique exactement : `INSERT OR REPLACE` par `id` + suppression du non-armé précédent du symbole.
+- **⚠️ `active_indicator_watches` ≠ `pop_expired_indicator_watches` (correctif Codex #1 — je les avais confondus)** :
+  - `active_indicator_watches(now)` retourne les **NON expirées** (`expires_at IS NULL OR expires_at > :now`) et **purge silencieusement** les expirées (save conditionnel) — `scheduler.py:173-188`.
+  - `pop_expired_indicator_watches(now)` retourne les **EXPIRÉES** (`expires_at <= :now`), les **DELETE en transaction**, pour que l'appelant les trace (log+event) — `scheduler.py:190-211`.
+  Comparaisons sur `expires_at` **canonicalisé UTC** (cf. Global Constraints).
 - `reconcile_universe` : `DELETE FROM {symbol_wake,stale_streaks,watches} WHERE symbol NOT IN (...)` **en une transaction**, idempotent (ne rien changer si univers identique — préserver le comportement « ne sauvegarde que si changement »).
 - `_apply_decision_schedule` (daemon) enchaîne `remove_watch×N` + `set_watch` + `set_wake` : ces appels restent séparés (API inchangée) mais chacun devient atomique ; **noter** que l'atomicité de la SÉQUENCE complète (RC-5) viendra avec l'outbox du Lot B, hors périmètre Phase 1.
 - Timestamps ISO `TEXT` (pas d'epoch) pour rester lisible par le shadow/cockpit.
@@ -247,7 +256,11 @@ CREATE INDEX idx_watches_expires ON scheduler_watches(expires_at);
 5. **Instanciations parasites** (`collectors.py`) — ne pas créer d'état en lecture (`create=False`).
 6. **Coexistence des indicator_watches par famille** — logique subtile, tester EXECUTE_ORDER vs WAKE.
 7. **Atomicité de séquence multi-appels** (RC-5, `_apply_decision_schedule`) — **hors périmètre Phase 1** (chaque appel devient atomique ; la séquence complète = outbox Lot B). Le noter, ne pas prétendre le résoudre ici.
-8. **Format ISO conservé** (pas epoch) pour le shadow/cockpit.
+8. **Format ISO CANONICALISÉ UTC** (pas epoch, format unique `+00:00` jamais `Z`) — sinon `WHERE expires_at <= :now` lexical casse (correctif Codex #2). Canonicaliser à l'écriture/import.
+11. **Ordre des listes préservé** (`seq` + `ORDER BY seq`) pour `open_plans()` et les watches — l'ordre d'itération du JSON est un comportement implicite dont dépendent des appelants (correctif Codex #4).
+12. **`active_indicator_watches` ≠ `pop_expired_indicator_watches`** : `active` = non-expirées (+ purge silencieuse), `pop` = expirées (tracées, DELETE). Ne pas confondre (correctif Codex #1).
+13. **Broker neuf** : owner insère `cash=starting_cash` si absent ; lecteur ne crée rien (correctif Codex #3).
+14. **Shadow non atomique avec le commit** : régénérer les shadows au boot, logguer les échecs, pas de process mixte (correctif Codex #5).
 9. **Un seul `.db`** partagé (`state/casys.db`) — le `task_ledger` du Lot B s'y branchera pour l'outbox ; le `TaskLedger` de la Phase 0 (sa propre connexion) sera rebranché sur `StateDb` au Lot B (hors périmètre ici, à noter).
 10. **Nom des dossiers de test** : `tests/state_db/` (sûr) — ne jamais nommer un dossier de test comme un module stdlib (`queue`, `state`) sous peine de shadow sys.path (cf. incident `tests/queue`→`tests/queue_ledger`).
 
