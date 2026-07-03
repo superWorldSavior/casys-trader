@@ -234,3 +234,51 @@ def test_heartbeat_extends_lease_and_boot_recovery(tmp_path):
             led._conn.execute("SELECT id, status FROM tasks")}
     assert rows[alive["id"]] == "running"
     assert rows[stuck["id"]] == "pending"
+
+
+# ---------------------------------------------------------------------------
+# Task release_claim — annule un claim sans consommer de tentative
+# ---------------------------------------------------------------------------
+
+def test_release_claim_restores_pending_and_zeroes_attempts(tmp_path):
+    """release_claim avec le bon token : status→pending, attempts→0, token effacé,
+    tâche immédiatement re-claimable."""
+    led = TaskLedger(tmp_path / "q.db")
+    led.enqueue(kind="decide", priority=5, scheduled_at_ms=0, now_ms=0,
+                dedup_key="d", partition_key="C1")
+    t = led.claim(worker_id="w", token="tok", now_ms=1,
+                  lease_ms=1000, free_resources=[])
+    assert t["attempts"] == 1
+
+    ok = led.release_claim(task_id=t["id"], token="tok", now_ms=1)
+    assert ok is True
+
+    row = led._conn.execute(
+        "SELECT status, attempts, claim_token FROM tasks WHERE id=?",
+        (t["id"],)).fetchone()
+    assert row["status"] == "pending"
+    assert row["attempts"] == 0
+    assert row["claim_token"] is None
+
+    # immédiatement re-claimable (pas de backoff, scheduled_at inchangé)
+    t2 = led.claim(worker_id="w2", token="tok2", now_ms=1,
+                   lease_ms=1000, free_resources=[])
+    assert t2 is not None
+    assert t2["id"] == t["id"]
+    assert t2["attempts"] == 1
+
+
+def test_release_claim_wrong_token_is_noop(tmp_path):
+    """release_claim avec un mauvais token retourne False et ne change rien."""
+    led = TaskLedger(tmp_path / "q.db")
+    led.enqueue(kind="decide", priority=5, scheduled_at_ms=0, now_ms=0,
+                dedup_key="d", partition_key="C1")
+    t = led.claim(worker_id="w", token="tok", now_ms=1,
+                  lease_ms=1000, free_resources=[])
+
+    ok = led.release_claim(task_id=t["id"], token="WRONG", now_ms=1)
+    assert ok is False
+
+    row = led._conn.execute("SELECT status FROM tasks WHERE id=?",
+                             (t["id"],)).fetchone()
+    assert row["status"] == "running"

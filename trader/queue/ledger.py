@@ -180,6 +180,30 @@ class TaskLedger:
                 self._conn.rollback()
                 raise
 
+    def release_claim(self, *, task_id, token, now_ms) -> bool:
+        """Annule un claim sans consommer de tentative (resource miss, etc.).
+
+        Remet status='pending', décrémente attempts (MAX(0,attempts-1)),
+        efface les champs de claim. Ne touche PAS scheduled_at.
+        WHERE id=? AND claim_token=? AND status='running'.
+        Retourne True si la ligne a été modifiée.
+        """
+        with self._lock:
+            try:
+                cur = self._conn.execute(
+                    """UPDATE tasks
+                       SET status='pending', attempts=MAX(0, attempts-1),
+                           claim_token=NULL, claimed_by=NULL, lease_expires_at=NULL,
+                           updated_at=?
+                       WHERE id=? AND claim_token=? AND status='running'""",
+                    (now_ms, task_id, token))
+                self._conn.commit()
+                log.debug("[queue.ledger] release_claim id=%s", task_id)
+                return cur.rowcount == 1
+            except Exception:
+                self._conn.rollback()
+                raise
+
     def recover_on_boot(self, *, now_ms):
         with self._lock:
             try:

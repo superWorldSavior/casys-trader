@@ -7,7 +7,18 @@ log = logging.getLogger(__name__)
 
 
 class RetryableError(Exception):
-    """Le handler signale un échec transitoire → requeue avec backoff."""
+    """Le handler signale un échec transitoire → requeue avec backoff.
+
+    Paramètre ``is_overload`` : True seulement si l'erreur est due à une
+    saturation de la ressource externe (ex. rate-limit, queue pleine).
+    Laisser False pour les erreurs transitoires sans rapport avec la charge
+    (ex. timeout réseau, erreur HTTP 503 ponctuelle) — cela évite de baisser
+    la limite AIMD pour des raisons non-liées à la capacité.
+    """
+
+    def __init__(self, *args, is_overload: bool = False):
+        super().__init__(*args)
+        self.is_overload = is_overload
 
 
 class Worker:
@@ -31,9 +42,10 @@ class Worker:
         acquired = self._pools.try_acquire(resource) if resource else True
         if resource and not acquired:
             # course rare : la ressource a été prise entre free_resources et claim.
-            self._ledger.fail(task_id=task["id"], token=token, now_ms=now_ms,
-                              error="resource_unavailable", retryable=True,
-                              backoff_base_ms=self._backoff_base_ms)
+            # On rend le claim sans brûler de tentative ni appliquer de backoff.
+            self._ledger.release_claim(task_id=task["id"], token=token, now_ms=now_ms)
+            log.debug("[queue.worker] resource miss id=%s resource=%s → unclaim",
+                      task["id"], resource)
             return True
         try:
             self._handlers[task["kind"]](task)
@@ -43,7 +55,7 @@ class Worker:
                 self._pools.on_success(resource)
         except RetryableError as exc:
             log.warning("[queue.worker] retryable fail id=%s: %s", task["id"], exc)
-            if resource:
+            if resource and exc.is_overload:
                 self._pools.on_overload(resource)
             self._ledger.fail(task_id=task["id"], token=token, now_ms=now_ms,
                               error=str(exc), retryable=True,

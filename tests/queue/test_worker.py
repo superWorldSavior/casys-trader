@@ -48,3 +48,65 @@ def test_worker_returns_false_when_resource_saturated(tmp_path):
     pools.try_acquire("acpx")                            # sature acpx
     w = Worker(led, pools, {"decide": lambda t: None}, worker_id="w1")
     assert w.run_once(now_ms=1, token="tok1") is False  # rien de claimable
+
+
+# ── FIX 1 : is_overload conditionnel ───────────────────────────────────────
+
+def test_worker_retryable_no_overload_flag_keeps_limit(tmp_path):
+    """RetryableError sans is_overload → effective_limit inchangé (M non baissé)."""
+    led, pools = _setup(tmp_path)
+    led.enqueue(kind="decide", priority=5, scheduled_at_ms=0, now_ms=0,
+                dedup_key="d", partition_key="C1", resource="acpx", max_attempts=3)
+    initial_limit = pools.effective_limit("acpx")
+
+    def boom(task):
+        raise RetryableError("timeout réseau")  # is_overload=False par défaut
+
+    w = Worker(led, pools, {"decide": boom}, worker_id="w1")
+    w.run_once(now_ms=1, token="tok1")
+    assert pools.effective_limit("acpx") == initial_limit  # M intact
+
+
+def test_worker_retryable_with_overload_flag_lowers_limit(tmp_path):
+    """RetryableError avec is_overload=True → effective_limit baisse (AIMD).
+    On utilise limit=4 pour que le halving (→2) soit visible au-dessus du plancher 1.
+    """
+    led = TaskLedger(tmp_path / "q.db")
+    pools = ResourcePools({"acpx": 4, "ib": 1})  # limit 4 pour que halving soit mesurable
+    led.enqueue(kind="decide", priority=5, scheduled_at_ms=0, now_ms=0,
+                dedup_key="d", partition_key="C1", resource="acpx", max_attempts=3)
+    initial_limit = pools.effective_limit("acpx")  # 4
+
+    def boom(task):
+        raise RetryableError("rate limit externe", is_overload=True)
+
+    w = Worker(led, pools, {"decide": boom}, worker_id="w1")
+    w.run_once(now_ms=1, token="tok1")
+    assert pools.effective_limit("acpx") < initial_limit  # 2 < 4 → M a baissé
+
+
+def test_worker_resource_miss_unclaims_without_burning_attempt(tmp_path):
+    """Course rare : free_resources signale acpx libre mais try_acquire échoue.
+    La tâche doit revenir pending avec attempts=0 (aucune tentative brûlée)."""
+    led, _ = _setup(tmp_path)
+    led.enqueue(kind="decide", priority=5, scheduled_at_ms=0, now_ms=0,
+                dedup_key="d", partition_key="C1", resource="acpx")
+
+    class RacingPools:
+        """Simule la course : free_resources dit oui, try_acquire dit non."""
+        def free_resources(self):
+            return ["acpx"]
+
+        def try_acquire(self, resource):
+            return False
+
+        def release(self, resource):
+            pass
+
+    w = Worker(led, RacingPools(), {"decide": lambda t: None}, worker_id="w1")
+    result = w.run_once(now_ms=1, token="tok1")
+    assert result is True  # du travail a été tenté (claim + unclaim)
+
+    row = led._conn.execute("SELECT status, attempts FROM tasks").fetchone()
+    assert row["status"] == "pending"
+    assert row["attempts"] == 0  # tentative non brûlée
