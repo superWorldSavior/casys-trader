@@ -307,8 +307,8 @@ def _load_fills_safe(broker_path: Path, *, limit: int = 100) -> list[dict]:
 
 def _load_venue_open_state_safe(
     state_dir: Path, config_dir: str
-) -> tuple[dict, list[str]]:
-    """Charge venue_state et open_venues. Retourne ({}, []) si indisponible."""
+) -> tuple[dict, list[str], dict]:
+    """Charge venue_state, open_venues et sessions. ({}, [], {}) si indisponible."""
     try:
         from trader.rotation.venues import load_venue_state as _lvs
         from trader.rotation.schedule import load_sessions as _ls, open_venues as _ov
@@ -317,9 +317,9 @@ def _load_venue_open_state_safe(
         sessions = _ls(config_dir)
         now_iso = datetime.now(UTC).isoformat()
         ov_list = _ov(now_iso, sessions)
-        return venue_state, ov_list
+        return venue_state, ov_list, sessions
     except Exception:
-        return {}, []
+        return {}, [], {}
 
 
 def _count_pending_learnings_safe(
@@ -476,7 +476,7 @@ def load_runtime_state(
     recent_trips = _safe_list_of_dicts(attribution.get("recent_trips"))
     _effective_config_dir = config_dir if config_dir is not None else str(state_dir_path.parent)
     starting_cash = _load_starting_cash_safe(_effective_config_dir)
-    venue_state, open_venues_list = _load_venue_open_state_safe(state_dir_path, _effective_config_dir)
+    venue_state, open_venues_list, sessions = _load_venue_open_state_safe(state_dir_path, _effective_config_dir)
     universe_symbols = _load_universe_symbols_safe(_effective_config_dir)
     company_map = _load_company_names(_effective_config_dir)
     return {
@@ -506,6 +506,7 @@ def load_runtime_state(
         "recent_trips": recent_trips,
         "venue_state": venue_state,
         "open_venues_list": open_venues_list,
+        "sessions": sessions,
         "universe_symbols": universe_symbols,
         "company_map": company_map,
     }

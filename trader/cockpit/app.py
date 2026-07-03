@@ -5,6 +5,7 @@ plans, observabilité, logs live) + supervision du daemon.
 
 Layout mission-control navigable (priorité haute → bas) :
     STATUT (dock:top, h=2)
+    ATTENTION (#attention-line, h=1)
     NAV (#cockpit-nav, h=3)
     CONTENT SWITCHER (#page-switcher, h=1fr)
     Footer (dock:bottom, h=1)
@@ -36,14 +37,15 @@ Raccourcis :
     c         Toggle l'affichage des events cycle_started/cycle_completed
     f         Pause/reprise de l'auto-scroll du panneau logs
     l         Aller/retour page Logs
-    d         Dark/Light (thèmes casys-salmon / casys-ink)
-    Tab/→     Vue suivante
-    ←/Shift+Tab Vue précédente
+    d         Cycle thème (ink → glass → salmon)
+    Tab       Focus panneaux (Enter = détail symbole)
     1..6      Accès direct aux pages
 """
 
 from __future__ import annotations
 
+import re
+from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -56,17 +58,19 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.theme import Theme
-from textual.widgets import Button, ContentSwitcher, Footer, Label, RichLog, Static
+from textual.widgets import Button, Checkbox, ContentSwitcher, Footer, Input, Label, RichLog, Static
 
 from trader.cockpit.supervisor import daemon_vital_state
+from trader.cockpit.home import AttentionLine, HomePane, SymbolChosen
 
 from trader.cockpit.events import (
     EventClass,
+    EventLine,
     format_event_line,
     read_new_lines,
 )
 from trader.cockpit import overview as _cockpit_overview
-from trader.ui.palette import PALETTE_DARK, PALETTE_LIGHT, Palette
+from trader.ui.palette import PALETTE_DARK, PALETTE_INK, PALETTE_LIGHT, Palette
 from trader.read_models.runtime_state import (
     _enrich_decisions_with_data_source,
     _safe_float,
@@ -114,22 +118,42 @@ _THEME_SALMON = Theme(
 _THEME_INK = Theme(
     name="casys-ink",
     dark=True,
-    primary="#0178D4",
-    secondary="#888888",
-    warning="#ffcc00",
-    error="#e05252",
-    success="#4caf50",
-    accent="#0178D4",
-    foreground="#e0e0e0",
-    background="#1a1a2e",
-    surface="#16213e",
-    panel="#0f3460",
+    primary="#83a598",
+    secondary="#928374",
+    warning="#d79921",
+    error="#fb4934",
+    success="#b8bb26",
+    accent="#8ec07c",
+    foreground="#ebdbb2",
+    background="#1d2021",
+    surface="#282828",
+    panel="#32302f",
 )
+
+_THEME_GLASS = Theme(
+    name="casys-glass",
+    dark=True,
+    primary="#8ec07c",
+    secondary="#928374",
+    warning="#d79921",
+    error="#fb4934",
+    success="#b8bb26",
+    accent="#83a598",
+    foreground="#ebdbb2",
+    # Fond charbon (transparent non supporté en rendu SVG/headless, blur = terminal)
+    background="#141617",
+    surface="#1d2021",
+    panel="#242628",
+)
+
+# Cycle de thèmes : ink → glass → salmon → ink
+_THEME_CYCLE = ("casys-ink", "casys-glass", "casys-salmon")
 
 # Mapping nom de thème → palette Rich
 _THEME_PALETTE: dict[str, Palette] = {
     "casys-salmon": PALETTE_LIGHT,
-    "casys-ink": PALETTE_DARK,
+    "casys-ink": PALETTE_INK,
+    "casys-glass": PALETTE_INK,  # glass = variante de rendu, pas de sémantique différente
 }
 
 OverviewPane = _cockpit_overview.OverviewPane
@@ -193,8 +217,7 @@ def _event_styles_for_palette(palette: Palette) -> dict[EventClass, str]:
 
 
 class CockpitStatus(Static):
-    """Ligne d'état compacte : équité, cash, P&L, phase daemon, horloge UTC, kill,
-    learnings en attente."""
+    """Barre de statut distillée — un seul endroit pour l'état runtime."""
 
     DEFAULT_CSS = """
     CockpitStatus {
@@ -208,116 +231,30 @@ class CockpitStatus(Static):
     def update_state(
         self, state: dict, kill_active: bool, *, palette: Palette = PALETTE_DARK
     ) -> None:
-        portfolio = (
-            state.get("portfolio") if isinstance(state.get("portfolio"), dict) else {}
-        )
-        kpis = state.get("kpis") if isinstance(state.get("kpis"), dict) else {}
-        daemon_status = (
-            state.get("daemon_status")
-            if isinstance(state.get("daemon_status"), dict)
-            else {}
-        )
+        from trader.cockpit.home import build_status_line
 
-        equity = (
-            _safe_float(portfolio.get("equity") or kpis.get("equity"), default=0.0)
-            or 0.0
-        )
-        cash = (
-            _safe_float(portfolio.get("cash") or kpis.get("cash"), default=0.0) or 0.0
-        )
-        starting_cash = _safe_float(state.get("starting_cash"), default=cash) or cash
-        pnl = equity - starting_cash
-        ret_pct = _safe_float(portfolio.get("total_return_pct"), default=None)
-        if ret_pct is None:
-            total_return = _safe_float(kpis.get("total_return"), default=0.0) or 0.0
-            ret_pct = total_return * 100.0
-        phase = str(daemon_status.get("phase", "—"))
-        current_symbol = str(daemon_status.get("current_symbol") or "—")
-        done = daemon_status.get("decisions_done")
-        total = daemon_status.get("symbols_total")
-        progress = f"{done}/{total}" if done is not None and total is not None else "—"
-        calls_used = daemon_status.get("model_calls_used")
-        calls_max = daemon_status.get("max_model_calls_per_cycle")
-        calls_str = (
-            f"{calls_used}/{calls_max}"
-            if calls_used is not None and calls_max is not None
-            else "—"
-        )
-        now_utc = datetime.now(UTC).strftime("%H:%M:%S UTC")
-        cycle_ts = _format_datetime(state.get("ts"))
-        source = str(state.get("source") or "—")
-        dry_run = state.get("dry_run", True)
-        learnings_pending = state.get("learnings_pending_count") or 0
-
-        mode_str = (
-            "[bold red]LIVE[/bold red]"
-            if not dry_run
-            else "[bold yellow]DRY-RUN[/bold yellow]"
-        )
-        kill_str = (
-            "[bold white on red] !! KILL ACTIF !! [/bold white on red]"
-            if kill_active
-            else f"[{palette['status_nominal']}]nominal[/{palette['status_nominal']}]"
-        )
-        ret_style = palette["pnl_positive"] if ret_pct >= 0 else palette["pnl_negative"]
-        pnl_style = palette["pnl_positive"] if pnl >= 0 else palette["pnl_negative"]
-        eq_style = palette["status_equity"]
-        acc_style = palette["status_accent"]
-        phase_style = palette["status_phase"]
-
-        # Indicateur vital
         vital = daemon_vital_state(_STATE_DIR / "daemon_status.json")
-        if vital.status == "alive":
-            if vital.battement_old:
-                _bat_mins = int(vital.since_seconds) // 60 if vital.since_seconds else 0
-                _bat_secs = int(vital.since_seconds) % 60 if vital.since_seconds else 0
-                vital_str = (
-                    f"[bold yellow]● VIVANT[/bold yellow]"
-                    f" [dim](occupé, battement {_bat_mins:02d}:{_bat_secs:02d})[/dim]"
-                )
-            else:
-                vital_str = "[bold green]● VIVANT[/bold green]"
-        elif vital.status == "stopped":
-            vital_str = "[bold red]● ARRÊTÉ[/bold red]"
-        else:
-            vital_str = "[dim]● jamais démarré[/dim]"
-
-        text = (
-            f"  {vital_str}"
-            f"  Équité $ [{eq_style}]${equity:,.2f}[/{eq_style}]"
-            f"  Cash $ [{eq_style}]${cash:,.2f}[/{eq_style}]"
-            f"  P&L net vs départ [{ret_style}]{ret_pct:+.2f}%[/{ret_style}]"
-            f" [{pnl_style}]({pnl:+,.2f})[/{pnl_style}]"
-            f"  Daemon [{phase_style}]{phase}[/{phase_style}]"
-            f"  [{acc_style}]{current_symbol}[/{acc_style}]"
-            f"  Progrès [{acc_style}]{progress}[/{acc_style}]"
-            f"  Appels [{acc_style}]{calls_str}[/{acc_style}]"
-            f"  Cycle [{acc_style}]{cycle_ts}[/{acc_style}]"
-            f"  Source [{acc_style}]{source}[/{acc_style}]"
-            f"  Now {now_utc}"
-            f"  Mode {mode_str}"
-            f"  Kill {kill_str}"
-            f"  [dim]learnings: {learnings_pending} pending[/dim]"
+        width = self.size.width or 200
+        self.update(
+            build_status_line(
+                state,
+                kill_active=kill_active,
+                palette=palette,
+                width=width,
+                now=datetime.now(UTC),
+                vital=vital,
+            )
         )
-        self.update(Text.from_markup(text))
 
-
-class AttentionStrip(Static):
-    """Ligne de triage entre le statut global et l'espace de travail."""
-
-    DEFAULT_CSS = """
-    AttentionStrip {
-        height: 3;
-        background: $surface;
-        border-bottom: solid $primary;
-        padding: 0 1;
-    }
-    """
-
-    def update_state(
-        self, state: dict, kill_active: bool, *, palette: Palette = PALETTE_DARK
-    ) -> None:
-        self.update(_build_attention_line(state, kill_active=kill_active, palette=palette))
+    def on_resize(self) -> None:
+        app = self.app
+        state = getattr(app, "_last_state", None)
+        if state is not None:
+            self.update_state(
+                state,
+                getattr(app, "_last_kill_active", False),
+                palette=app._current_palette(),  # type: ignore[attr-defined]
+            )
 
 
 class CockpitNav(Static):
@@ -334,8 +271,7 @@ class CockpitNav(Static):
 
     def update_page(self, active_key: str, *, palette: Palette = PALETTE_LIGHT) -> None:
         text = Text("  ")
-        text.append("Tab/←/→ ", style=palette["dim"])
-        text.append("vue", style=palette["dim"])
+        text.append("1-6 vues · Tab focus · Enter détail", style=palette["dim"])
         text.append("   ")
         for index, page in enumerate(_PAGES, start=1):
             if index > 1:
@@ -610,84 +546,6 @@ class UniversePane(Static):
 
 
 # ---------------------------------------------------------------------------
-# Builder pur : table trades avec net P&L et noms de sociétés
-# ---------------------------------------------------------------------------
-
-
-def _build_trades_with_pnl(
-    fills: list[dict],
-    pnl_by_fill: list[float | None],
-    company_map: dict[str, str],
-    *,
-    limit: int = 20,
-    palette: Palette = PALETTE_DARK,
-) -> RenderableType:
-    """Table des derniers trades clôturés avec net P&L calculé et noms de sociétés.
-
-    PURE — ne lit aucun fichier. Les fills BUY affichent — en P&L.
-    Les fills SELL affichent le bénéfice net réalisé coloré +/−.
-    Raison de sortie : non disponible dans les fills → —.
-    """
-    from rich.table import Table
-    from rich.text import Text
-    from trader.ui.rich_panels import _fmt_symbol_short
-
-    table = Table(title="Trades clôturés", show_lines=False, expand=True)
-    table.add_column("Heure", no_wrap=True, style=palette["dim"])
-    table.add_column("Société · Ticker", style="bold")
-    table.add_column("Sens")
-    table.add_column("Qté", justify="right")
-    table.add_column("Prix", justify="right")
-    table.add_column("Net P&L", justify="right")
-
-    # Aligner fills et pnl_by_fill (même longueur garantie par compute_realized_pnl_by_fill)
-    paired = list(zip(fills, pnl_by_fill)) if pnl_by_fill else [(f, None) for f in fills]
-    recent = paired[-limit:] if len(paired) > limit else paired
-
-    for fill, net_pnl in reversed(recent):
-        ts_raw = str(fill.get("ts") or "")
-        try:
-            candidate = f"{ts_raw[:-1]}+00:00" if ts_raw.endswith("Z") else ts_raw
-            dt = datetime.fromisoformat(candidate)
-            ts_str = dt.astimezone(UTC).strftime("%H:%M:%S")
-        except (ValueError, AttributeError):
-            ts_str = ts_raw[:8] if ts_raw else "—"
-
-        symbol = str(fill.get("symbol") or "?")
-        label = _fmt_symbol_short(symbol, company_map)
-        side = str(fill.get("side") or "")
-        side_style = (
-            palette["action_buy"] if side == "BUY" else (
-                palette["action_sell"] if side == "SELL" else palette["dim"]
-            )
-        )
-        qty_val = _safe_float(fill.get("quantity"), default=0.0) or 0.0
-        price_val = _safe_float(fill.get("price"), default=None)
-        price_str = f"{price_val:,.4f}" if price_val is not None else "—"
-
-        # Net P&L : None (BUY) → —, float → coloré
-        if net_pnl is None:
-            pnl_cell = Text("—", style=palette["dim"])
-        else:
-            pnl_style = palette["pnl_positive"] if net_pnl >= 0 else palette["pnl_negative"]
-            pnl_cell = Text(f"{net_pnl:+,.2f}", style=pnl_style)
-
-        table.add_row(
-            ts_str,
-            label,
-            Text(side, style=side_style),
-            f"{qty_val:,.4f}",
-            price_str,
-            pnl_cell,
-        )
-
-    if not recent:
-        table.add_row("—", "—", "—", "—", "—", "—")
-
-    return table
-
-
-# ---------------------------------------------------------------------------
 # Widget : panneau logs live (dock:bottom)
 # ---------------------------------------------------------------------------
 
@@ -700,12 +558,18 @@ class LogsPane(Static):
     visibilité (l), backlog initial différé, poll périodique.
     """
 
+    log_widget_id: str = "events-log"
+    pane_title: str = "[bold]Logs live[/bold]  [dim]c:cycles  f:scroll  l:toggle pane[/dim]"
+
     _offset: int = 0
     _show_cycles: bool = True
     _auto_scroll: bool = True
     _last_file_status: str = "ok"
     _current_palette: Palette = PALETTE_LIGHT
     _backlog_loaded: bool = False
+    _class_filter: "set[EventClass] | None" = None
+    _regex_text: str | None = None
+    _regex: "re.Pattern[str] | None" = None
 
     DEFAULT_CSS = """
     LogsPane {
@@ -717,13 +581,14 @@ class LogsPane(Static):
     }
     """
 
+    def __init__(self, **kwargs: object) -> None:
+        super().__init__(**kwargs)
+        self._buffer: deque[EventLine] = deque(maxlen=_MAX_EVENT_LINES)
+
     def compose(self) -> ComposeResult:
-        yield Static(
-            "[bold]Logs live[/bold]  [dim]c:cycles  f:scroll  l:toggle pane[/dim]",
-            id="logs-title",
-        )
+        yield Static(self.pane_title, id=f"{self.log_widget_id}-title")
         yield RichLog(
-            id="events-log",
+            id=self.log_widget_id,
             highlight=False,
             markup=False,
             max_lines=_MAX_EVENT_LINES,
@@ -744,21 +609,51 @@ class LogsPane(Static):
             events_path = _mod._EVENTS_FILE
         self.poll_events(events_path)
 
+    def _passes(self, line: EventLine) -> bool:
+        if line.markup_class == EventClass.CYCLE and not self._show_cycles:
+            return False
+        if self._class_filter is not None and line.markup_class not in self._class_filter:
+            return False
+        if self._regex is not None and not self._regex.search(line.text):
+            return False
+        return True
+
+    def _write_line(self, log: RichLog, line: EventLine) -> None:
+        style = _event_styles_for_palette(self._current_palette).get(line.markup_class, "")
+        log.write(Text(line.text, style=style))
+
+    def set_filters(self, classes: "set[EventClass] | None", regex_text: str | None) -> None:
+        """Applique les filtres et re-rend tout le buffer. Regex invalide → ignorée."""
+        self._class_filter = classes
+        self._regex_text = regex_text or None  # mémorisé pour pré-remplir les modals
+        if regex_text:
+            try:
+                self._regex = re.compile(regex_text)
+            except re.error:
+                self._regex = None
+        else:
+            self._regex = None
+        log: RichLog = self.query_one(f"#{self.log_widget_id}", RichLog)
+        log.clear()
+        for line in self._buffer:
+            if self._passes(line):
+                self._write_line(log, line)
+        if self._auto_scroll:
+            log.scroll_end(animate=False)
+
     def toggle_cycles(self) -> None:
         self._show_cycles = not self._show_cycles
-        status = "visibles" if self._show_cycles else "masqués"
-        log: RichLog = self.query_one("#events-log", RichLog)
-        log.write(Text(f"[cycles {status}]", style="dim italic"))
+        self.set_filters(self._class_filter, self._regex_text)
 
     def toggle_scroll(self) -> None:
         self._auto_scroll = not self._auto_scroll
-        log: RichLog = self.query_one("#events-log", RichLog)
+        log: RichLog = self.query_one(f"#{self.log_widget_id}", RichLog)
         status = "repris" if self._auto_scroll else "pausé"
         log.write(Text(f"[scroll {status}]", style="dim italic"))
 
     def poll_events(self, events_path: Path) -> None:
         """Lit les nouvelles lignes et les ajoute au RichLog."""
-        log: RichLog = self.query_one("#events-log", RichLog)
+        log: RichLog = self.query_one(f"#{self.log_widget_id}", RichLog)
 
         if not events_path.exists():
             if self._last_file_status != "absent":
@@ -780,16 +675,21 @@ class LogsPane(Static):
         if not new_dicts:
             return
 
-        event_styles = _event_styles_for_palette(self._current_palette)
         for ev_dict in new_dicts:
             ev_line = format_event_line(ev_dict)
-            if ev_line.markup_class == EventClass.CYCLE and not self._show_cycles:
-                continue
-            style = event_styles.get(ev_line.markup_class, "")
-            log.write(Text(ev_line.text, style=style))
+            self._buffer.append(ev_line)
+            if self._passes(ev_line):
+                self._write_line(log, ev_line)
 
         if self._auto_scroll:
             log.scroll_end(animate=False)
+
+
+class FluxPane(LogsPane):
+    """Tuile flux de la home — même moteur que la page Logs, ids distincts."""
+
+    log_widget_id = "flux-log"
+    pane_title = "[bold]Flux live[/bold]  [dim]f:scroll  F:classes  /:regex[/dim]"
 
 
 # Alias de rétrocompatibilité — anciens tests qui importent EventsPane
@@ -956,6 +856,66 @@ class ConfirmKill(_ConfirmModal):
                 )
 
 
+class ClassFilterModal(ModalScreen["set[EventClass] | None"]):
+    """Toggles par classe d'événement (à la Ctrl+F de Gonzo)."""
+
+    BINDINGS = [Binding("escape", "cancel", "Annuler", show=False)]
+    DEFAULT_CSS = _confirm_modal_css("ClassFilterModal", border="$primary", width=44)
+
+    def __init__(self, active: "set[EventClass] | None", **kwargs: object) -> None:
+        super().__init__(**kwargs)
+        self._active = active
+
+    def compose(self) -> ComposeResult:
+        with Vertical():
+            yield Label("Classes d'événements affichées")
+            for event_class in EventClass:
+                yield Checkbox(
+                    event_class.name.lower(),
+                    value=self._active is None or event_class in self._active,
+                    id=f"class-{event_class.name}",
+                )
+            with Horizontal():
+                yield Button("Appliquer", id="class-filter-apply", variant="primary")
+                yield Button("Tout", id="class-filter-all", variant="default")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "class-filter-all":
+            self.dismiss(None)
+            return
+        selected = {
+            event_class
+            for event_class in EventClass
+            if self.query_one(f"#class-{event_class.name}", Checkbox).value
+        }
+        self.dismiss(selected if len(selected) < len(list(EventClass)) else None)
+
+    def action_cancel(self) -> None:
+        self.dismiss(self._active)
+
+
+class RegexModal(ModalScreen["str | None"]):
+    """Filtre regex sur le texte des lignes du flux."""
+
+    BINDINGS = [Binding("escape", "cancel", "Annuler", show=False)]
+    DEFAULT_CSS = _confirm_modal_css("RegexModal", border="$primary", width=60)
+
+    def __init__(self, current: str | None = None, **kwargs: object) -> None:
+        super().__init__(**kwargs)
+        self._current = current or ""
+
+    def compose(self) -> ComposeResult:
+        with Vertical():
+            yield Label("Filtre regex (vide = aucun)")
+            yield Input(value=self._current, placeholder="ex. 2303|SELL", id="regex-input")
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        self.dismiss(event.value or None)
+
+    def action_cancel(self) -> None:
+        self.dismiss(self._current or None)
+
+
 # ---------------------------------------------------------------------------
 # App principale
 # ---------------------------------------------------------------------------
@@ -1017,6 +977,18 @@ class CockpitApp(App):
         width: 100%;
         height: 100%;
     }
+    /* ---- Thème glass : fond transparent (blur terminal) + calques alpha ---- */
+    Screen.glass {
+        background: transparent;
+    }
+    .glass HomePane #home-portfolio,
+    .glass HomePane #home-activity,
+    .glass HomePane #home-decisions,
+    .glass HomePane #home-plans,
+    .glass #home-flux {
+        border: round #8ec07c 40%;
+        background: #1d2021 35%;
+    }
     """
 
     BINDINGS = [
@@ -1030,16 +1002,14 @@ class CockpitApp(App):
         Binding("f", "toggle_scroll", "Pause scroll"),
         Binding("l", "toggle_logs", "Logs"),
         Binding("d", "toggle_theme", "Dark/Light"),
-        Binding("tab", "next_page", "Vue suivante", show=False, priority=True),
-        Binding("right", "next_page", "Vue suivante", show=False, priority=True),
-        Binding("left", "previous_page", "Vue précédente", show=False, priority=True),
-        Binding("shift+tab", "previous_page", "Vue précédente", show=False, priority=True),
         Binding("1", "show_page('home')", "Accueil", show=False),
         Binding("2", "show_page('portfolio')", "Portefeuille", show=False),
         Binding("3", "show_page('decisions')", "Décisions", show=False),
         Binding("4", "show_page('plans')", "Plans", show=False),
         Binding("5", "show_page('observability')", "Observabilité", show=False),
         Binding("6", "show_page('logs')", "Logs", show=False),
+        Binding("F", "filter_classes", "Filtre classes"),
+        Binding("slash", "filter_regex", "Filtre regex"),
     ]
 
     _last_state: dict | None = None
@@ -1048,12 +1018,13 @@ class CockpitApp(App):
     _previous_non_logs_page: str = "home"
 
     def compose(self) -> ComposeResult:
-        """Structure : statut → navigation → page active → footer."""
+        """Structure : statut → attention → navigation → page active → footer."""
         yield CockpitStatus(id="cockpit-status")
+        yield AttentionLine(id="attention-line")
         yield CockpitNav(id="cockpit-nav")
         with Vertical(id="workspace"):
             with ContentSwitcher(id="page-switcher", initial="overview-page"):
-                yield OverviewPane(id="overview-page", classes="cockpit-page")
+                yield HomePane(id="overview-page", classes="cockpit-page")
                 with Horizontal(id="portfolio-page", classes="cockpit-page"):
                     yield PositionsPlansPane(id="positions-plans-pane")
                     yield EquityTradesPane(id="equity-trades-pane")
@@ -1071,7 +1042,9 @@ class CockpitApp(App):
         # Thèmes custom
         self.register_theme(_THEME_SALMON)
         self.register_theme(_THEME_INK)
-        self.theme = "casys-salmon"
+        self.register_theme(_THEME_GLASS)
+        self.theme = "casys-ink"
+        self._propagate_palette()
         self._set_active_page("home")
 
         # Expose le chemin events sur self pour que LogsPane._load_initial_backlog
@@ -1132,15 +1105,20 @@ class CockpitApp(App):
     def action_show_page(self, page_key: str) -> None:
         self._set_active_page(page_key)
 
+    def on_symbol_chosen(self, message: "SymbolChosen") -> None:
+        from trader.cockpit.home import SymbolDetailScreen
+
+        self.push_screen(SymbolDetailScreen(message.symbol))
+
     def _current_palette(self) -> Palette:
         """Retourne la palette Rich correspondant au thème actif."""
-        return _THEME_PALETTE.get(self.theme, PALETTE_DARK)
+        return _THEME_PALETTE.get(self.theme, PALETTE_INK)
 
     def _propagate_palette(self) -> None:
         """Propage la palette courante à tous les panes et au LogsPane."""
         palette = self._current_palette()
         pane_map = [
-            ("#overview-page", OverviewPane),
+            ("#overview-page", HomePane),
             ("#positions-plans-pane", PositionsPlansPane),
             ("#armed-plans-pane", ArmedPlansPane),
             ("#decisions-pane", DecisionsPane),
@@ -1161,6 +1139,11 @@ class CockpitApp(App):
         try:
             logs_pane: LogsPane = self.query_one("#logs-pane", LogsPane)
             logs_pane._current_palette = palette
+        except Exception:
+            pass
+        try:
+            flux_pane: FluxPane = self.query_one("#home-flux", FluxPane)
+            flux_pane._current_palette = palette
         except Exception:
             pass
 
@@ -1188,9 +1171,12 @@ class CockpitApp(App):
             status: CockpitStatus = self.query_one("#cockpit-status", CockpitStatus)
             status.update_state(state, kill_active, palette=palette)
 
-            overview: OverviewPane = self.query_one("#overview-page", OverviewPane)
-            overview._current_palette = palette
-            overview.update_state(state, kill_active)
+            attention: AttentionLine = self.query_one("#attention-line", AttentionLine)
+            attention.update_state(state, kill_active, palette=palette)
+
+            home: HomePane = self.query_one("#overview-page", HomePane)
+            home._current_palette = palette
+            home.update_state(state, kill_active)
 
             positions_plans: PositionsPlansPane = self.query_one(
                 "#positions-plans-pane", PositionsPlansPane
@@ -1226,18 +1212,24 @@ class CockpitApp(App):
             logs_pane.poll_events(_EVENTS_FILE)
         except Exception:
             pass
+        try:
+            self.query_one("#home-flux").poll_events(_EVENTS_FILE)
+        except Exception:
+            pass
 
     def action_toggle_cycles(self) -> None:
-        try:
-            self.query_one("#logs-pane", LogsPane).toggle_cycles()
-        except Exception:
-            pass
+        for pane_id, cls in [("#logs-pane", LogsPane), ("#home-flux", FluxPane)]:
+            try:
+                self.query_one(pane_id, cls).toggle_cycles()
+            except Exception:
+                pass
 
     def action_toggle_scroll(self) -> None:
-        try:
-            self.query_one("#logs-pane", LogsPane).toggle_scroll()
-        except Exception:
-            pass
+        for pane_id, cls in [("#logs-pane", LogsPane), ("#home-flux", FluxPane)]:
+            try:
+                self.query_one(pane_id, cls).toggle_scroll()
+            except Exception:
+                pass
 
     def action_toggle_logs(self) -> None:
         """Bascule entre la page Logs et la dernière page métier."""
@@ -1247,11 +1239,10 @@ class CockpitApp(App):
             self._set_active_page("logs")
 
     def action_toggle_theme(self) -> None:
-        """Bascule entre casys-salmon (clair) et casys-ink (sombre)."""
-        if self.theme == "casys-salmon":
-            self.theme = "casys-ink"
-        else:
-            self.theme = "casys-salmon"
+        """Parcourt le cycle de thèmes : casys-ink → casys-glass → casys-salmon → …"""
+        current_idx = _THEME_CYCLE.index(self.theme) if self.theme in _THEME_CYCLE else 0
+        self.theme = _THEME_CYCLE[(current_idx + 1) % len(_THEME_CYCLE)]
+        self.screen.set_class(self.theme == "casys-glass", "glass")
         self._propagate_palette()
         if self._last_state is not None:
             self._apply_state(self._last_state, self._last_kill_active)
@@ -1353,6 +1344,30 @@ class CockpitApp(App):
             )
 
         self.push_screen(ConfirmKill(kill_active=kill_active), _on_confirm)
+
+    def _visible_flux(self) -> LogsPane:
+        pane_id = "#logs-pane" if self._active_page_key == "logs" else "#home-flux"
+        return self.query_one(pane_id)  # type: ignore[return-value]
+
+    def action_filter_classes(self) -> None:
+        pane = self._visible_flux()
+
+        def _apply(classes: "set[EventClass] | None") -> None:
+            if classes == pane._class_filter:
+                return
+            pane.set_filters(classes, pane._regex_text)
+
+        self.push_screen(ClassFilterModal(pane._class_filter), _apply)
+
+    def action_filter_regex(self) -> None:
+        pane = self._visible_flux()
+
+        def _apply(regex_text: str | None) -> None:
+            if regex_text == pane._regex_text:
+                return
+            pane.set_filters(pane._class_filter, regex_text)
+
+        self.push_screen(RegexModal(pane._regex_text), _apply)
 
 
 # ---------------------------------------------------------------------------

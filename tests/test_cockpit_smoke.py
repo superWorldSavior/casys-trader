@@ -107,8 +107,8 @@ async def test_cockpit_fichiers_absents_ne_crashent_pas(tmp_path, monkeypatch):
         assert app.query_one("#positions-plans-pane") is not None
 
 
-async def test_cockpit_theme_defaut_est_casys_salmon(tmp_path, monkeypatch):
-    """Le thème par défaut doit être casys-salmon (fond clair saumon)."""
+async def test_cockpit_theme_defaut_est_casys_ink(tmp_path, monkeypatch):
+    """Le thème par défaut doit être casys-ink (sombre gruvbox)."""
     _make_minimal_state(tmp_path)
     monkeypatch.setattr(cockpit_module, "_STATE_DIR", tmp_path)
     monkeypatch.setattr(cockpit_module, "_EVENTS_FILE", tmp_path / "events.jsonl")
@@ -116,11 +116,11 @@ async def test_cockpit_theme_defaut_est_casys_salmon(tmp_path, monkeypatch):
 
     app = CockpitApp()
     async with app.run_test(size=(200, 50)) as _:
-        assert app.theme == "casys-salmon"
+        assert app.theme == "casys-ink"
 
 
 async def test_cockpit_binding_d_bascule_theme(tmp_path, monkeypatch):
-    """La touche d bascule entre casys-salmon et casys-ink."""
+    """La touche d parcourt le cycle ink → glass → salmon → ink (3 états)."""
     # Daemon simulé vivant → pas de ConfirmStart qui intercepterait les touches
     _make_minimal_state_with_pid(tmp_path, 54321)
     _patch_daemon_alive(monkeypatch, 54321)
@@ -130,11 +130,13 @@ async def test_cockpit_binding_d_bascule_theme(tmp_path, monkeypatch):
 
     app = CockpitApp()
     async with app.run_test(size=(200, 50)) as pilot:
+        assert app.theme == "casys-ink"
+        await pilot.press("d")
+        assert app.theme == "casys-glass"
+        await pilot.press("d")
         assert app.theme == "casys-salmon"
         await pilot.press("d")
         assert app.theme == "casys-ink"
-        await pilot.press("d")
-        assert app.theme == "casys-salmon"
 
 
 async def test_cockpit_status_prend_palette_en_compte(tmp_path, monkeypatch):
@@ -171,19 +173,20 @@ async def test_cockpit_status_prend_palette_en_compte(tmp_path, monkeypatch):
         # Doit accepter palette= sans TypeError
         status.update_state(state, kill_active=False, palette=PALETTE_LIGHT)
         rendered = str(status.render())
-        assert "Cash $" in rendered
-        assert "85,000.00" in rendered
-        assert "$85,000.00" in rendered
-        assert "P&L net vs départ" in rendered
-        assert "(+2,500.00)" in rendered
-        assert "Progrès 1/3" in rendered
+        # Format distillé A2 : équité/pct/pnl/mode/kill/cycle (ts/source/cash supprimés)
+        assert "102,500" in rendered     # équité = 102 500$
+        assert "+0.50%" in rendered      # total_return_pct = 0.5
+        assert "(+2,500)" in rendered    # PnL brut = +2 500
+        assert "DRY" in rendered         # dry_run=True
+        assert "kill" in rendered        # kill:nominal
+        assert "cycle 1/3" in rendered   # decisions_done=1, symbols_total=3
         status.update_state(state, kill_active=False, palette=PALETTE_DARK)
 
 
-async def test_cockpit_status_affiche_fraicheur_et_source_rapport(
+async def test_cockpit_status_format_distille(
     tmp_path, monkeypatch
 ):
-    """Le statut conserve la fraîcheur du rapport de l'ancien header TUI."""
+    """CockpitStatus.update_state produit le format distillé A2 (équité, pnl, mode, kill)."""
     from trader.cockpit import CockpitStatus
     from trader.ui.palette import PALETTE_LIGHT
 
@@ -208,10 +211,11 @@ async def test_cockpit_status_affiche_fraicheur_et_source_rapport(
         status.update_state(state, kill_active=False, palette=PALETTE_LIGHT)
         rendered = str(status.content)
 
-        assert "+2.50%" in rendered
-        assert "Cycle" in rendered
-        assert "2026-06-07 08:15 UTC" in rendered
-        assert "Source last_report" in rendered
+        # Format distillé A2 : ts/source supprimés, équité/pnl/mode/kill présents
+        assert "+2.50%" in rendered      # retour kpis.total_return=0.025 → 2.50%
+        assert "102,500" in rendered     # équité = 102 500$
+        assert "DRY" in rendered         # mode dry_run=True
+        assert "kill" in rendered        # kill:nominal
 
 
 async def test_cockpit_toggle_theme_propage_palette_dashboard_immediatement(
@@ -224,7 +228,7 @@ async def test_cockpit_toggle_theme_propage_palette_dashboard_immediatement(
     action_toggle_theme, sans attendre le prochain cycle de refresh.
     """
     from trader.cockpit import PositionsPlansPane
-    from trader.ui.palette import PALETTE_DARK, PALETTE_LIGHT
+    from trader.ui.palette import PALETTE_INK, PALETTE_LIGHT
 
     # Daemon simulé vivant → pas de ConfirmStart qui intercepterait les touches
     _make_minimal_state_with_pid(tmp_path, 54321)
@@ -236,14 +240,17 @@ async def test_cockpit_toggle_theme_propage_palette_dashboard_immediatement(
     app = CockpitApp()
     async with app.run_test(size=(220, 60)) as pilot:
         pane = app.query_one("#positions-plans-pane", PositionsPlansPane)
-        # Thème saumon → palette LIGHT
-        assert pane._current_palette is PALETTE_LIGHT
-        # Toggle → palette DARK immédiatement
+        # Thème ink → palette INK
+        assert pane._current_palette is PALETTE_INK
+        # ink → glass : glass réutilise PALETTE_INK (variante de rendu)
         await pilot.press("d")
-        assert pane._current_palette is PALETTE_DARK
-        # Retour → palette LIGHT
+        assert pane._current_palette is PALETTE_INK
+        # glass → salmon : palette LIGHT immédiatement
         await pilot.press("d")
         assert pane._current_palette is PALETTE_LIGHT
+        # salmon → ink : retour INK
+        await pilot.press("d")
+        assert pane._current_palette is PALETTE_INK
 
 
 # ---------------------------------------------------------------------------
@@ -499,8 +506,8 @@ async def test_cockpit_shell_navigable_expose_home_et_pages_detail(
         assert app.query_one("#logs-page").display is False
 
 
-async def test_cockpit_tab_et_fleches_naviguent_entre_pages(tmp_path, monkeypatch):
-    """Tab, droite et gauche changent de page sans scroller le dashboard."""
+async def test_cockpit_chiffres_naviguent_entre_pages(tmp_path, monkeypatch):
+    """Les touches 2/3 changent de page ; Tab ne change plus de page."""
     _make_minimal_state(tmp_path)
     monkeypatch.setattr(cockpit_module, "_STATE_DIR", tmp_path)
     monkeypatch.setattr(cockpit_module, "_EVENTS_FILE", tmp_path / "events.jsonl")
@@ -509,16 +516,20 @@ async def test_cockpit_tab_et_fleches_naviguent_entre_pages(tmp_path, monkeypatc
     app = CockpitApp()
     async with app.run_test(size=(220, 60)) as pilot:
         assert app._active_page_key == "home"
+        # ConfirmStart apparaît après le premier refresh — la fermer avant de tester les touches
+        await pilot.pause()
+        await pilot.click("#confirm-start-no")
+        await pilot.pause()
 
-        await pilot.press("tab")
+        await pilot.press("2")
         assert app._active_page_key == "portfolio"
         assert app.query_one("#portfolio-page").display is True
 
-        await pilot.press("right")
+        await pilot.press("3")
         assert app._active_page_key == "decisions"
         assert app.query_one("#decisions-page").display is True
 
-        await pilot.press("left")
+        await pilot.press("2")
         assert app._active_page_key == "portfolio"
         assert app.query_one("#portfolio-page").display is True
 
@@ -533,17 +544,14 @@ async def test_cockpit_home_layout_respire_sur_tout_l_ecran(tmp_path, monkeypatc
     app = CockpitApp()
     async with app.run_test(size=(220, 60)) as pilot:
         await pilot.pause()
-        portfolio = app.query_one("#overview-portfolio-tile", Static)
-        decisions = app.query_one("#overview-decisions-tile", Static)
-        plans = app.query_one("#overview-plans-tile", Static)
-        observability = app.query_one("#overview-observability-tile", Static)
-        logs = app.query_one("#overview-logs-tile", Static)
+        portfolio = app.query_one("#home-portfolio")  # Vertical container (Task 10)
+        activity = app.query_one("#home-activity", Static)
+        plans = app.query_one("#home-plans")  # PlansTable (Task 10)
+        flux = app.query_one("#home-flux", Static)
 
-        assert portfolio.size.width > decisions.size.width
-        assert portfolio.size.height >= decisions.size.height
+        assert portfolio.size.width > activity.size.width   # 2fr > 1fr
         assert plans.size.height > 5
-        assert observability.size.width > 60
-        assert logs.size.width > 60
+        assert flux.size.width > 60
 
 
 def test_cockpit_home_affiche_des_tuiles_analytiques() -> None:
@@ -907,6 +915,8 @@ async def test_cockpit_observabilite_affiche_les_derniers_learnings(
 
         panel = app.query_one("#learnings-panel", Static)
         rendered = _render(panel.content)
+        # La note peut wrapper dans le panneau : on retire les codes ANSI
+        # (insérés entre les lignes wrappées) avant de compacter.
         plain = _ANSI_RE.sub("", rendered)
         compact_rendered = "".join(
             ch for ch in plain if not ch.isspace() and ch != "│"
@@ -1016,7 +1026,7 @@ async def test_cockpit_v2_exit_plans_panel_existe(tmp_path, monkeypatch):
 
 
 async def test_cockpit_v2_toggle_d_rerender_nouveaux_panneaux(tmp_path, monkeypatch):
-    """La touche d bascule le thème sans crash avec les nouveaux panneaux."""
+    """La touche d parcourt le cycle 3 états sans crash avec les nouveaux panneaux."""
     # Daemon simulé vivant → pas de ConfirmStart qui intercepterait les touches
     _make_minimal_state_with_pid(tmp_path, 54321)
     _patch_daemon_alive(monkeypatch, 54321)
@@ -1027,9 +1037,11 @@ async def test_cockpit_v2_toggle_d_rerender_nouveaux_panneaux(tmp_path, monkeypa
     app = CockpitApp()
     async with app.run_test(size=(220, 60)) as pilot:
         await pilot.press("d")
-        assert app.theme == "casys-ink"
+        assert app.theme == "casys-glass"
         await pilot.press("d")
         assert app.theme == "casys-salmon"
+        await pilot.press("d")
+        assert app.theme == "casys-ink"
 
 
 # ---------------------------------------------------------------------------

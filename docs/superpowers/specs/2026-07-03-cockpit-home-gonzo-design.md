@@ -143,8 +143,8 @@ si rien : « RAS » discret. Remplace l'`AttentionStrip` morte (supprimée).
 |---|---|
 | `activity_buckets(recent_decisions, now, *, window_min=60, bucket_min=5)` | → séries par état (réutilise la logique de `_decision_status`) ; décisions sans ts ignorées |
 | `risk_at_stops(holdings, trade_plans)` | → total USD au déclenchement des stops + pire position (généralise `_stop_risk_for_holding`) ; plans sans stop → comptés « sans stop », pas d'exception |
-| `attention_items(state)` | → liste ordonnée (kill, halted, stale N, rejets risk N, armés expirant <1 h, positions sans stop) avec seuils explicites |
-| `venue_clock(venue_state, open_venues_list, sessions, now)` | → venues ouvertes + prochaine transition (réutilise `trader.rotation.schedule`) |
+| `attention_items(state)` | → liste ordonnée (kill, halted, risque@stops négatif, stale N, rejets risk N, armés expirant <1 h, positions sans stop) avec seuils explicites |
+| `venue_clock(sessions, now)` | → venues ouvertes + prochaine transition (réutilise `trader.rotation.schedule`) |
 
 Valeurs neutres sur données partielles (dict vide → agrégat vide, jamais de raise).
 
@@ -203,6 +203,21 @@ Vérification visuelle à chaque étape : captures SVG headless
 - hjkl complet, command palette custom, skins supplémentaires.
 - Tuiles multi-horizon (`agent/context.py` cp3) — candidat naturel de
   l'itération suivante, la donnée existe déjà côté agent.
+
+## 10 bis. Direction visuelle complémentaire — Liquid Glass (ajout 2026-07-03)
+
+Demande d'Erwan en cours de chantier : style **Liquid Glass** (Apple) sur les UI.
+Traduction par support :
+
+- **TUI (fin de phase 1, Task 13b du plan)** : évocation seulement — thème
+  `casys-glass` en 3ᵉ option (cycle `d`) : fonds transparents/`ansi_default`
+  pour laisser passer le blur du terminal, calques en alpha (`$surface 30%`),
+  bordures `round` sur les tuiles, hairlines. Un spike valide d'abord ce que
+  Textual 8.2.7 supporte ; fallback documenté sinon (pseudo-verre par alpha
+  sur fond très sombre). Le blur réel est fourni par le terminal
+  (iTerm2/Ghostty) — how-to dédié.
+- **Web distl8 (phase 2)** : le vrai Liquid Glass (backdrop-filter,
+  translucidité, spéculaires) devient la direction par défaut du compagnon web.
 
 ## 11. Critères de réussite
 
