@@ -98,6 +98,41 @@ def set_entry_risk_metrics(
     entry["risk_pct"] = risk_pct_for_quantity(quantity, stop_distance, equity)
 
 
+def qty_from_risk_pct(
+    risk_pct: float,
+    equity: float,
+    stop_distance_native: float,
+    *,
+    fx_rate: float = 1.0,
+) -> float:
+    """Inverse de risk_pct_for_quantity : qty telle que risk_pct ≈ qty * stop_usd / equity.
+
+    stop_distance_native : distance au hard_stop en unités de prix natives.
+    fx_rate : USD par unité native (défaut 1.0 → symbole USD).
+    Renvoie 0.0 si les inputs sont invalides ou non-finis.
+    """
+    try:
+        risk_pct = float(risk_pct)
+        equity = float(equity)
+        stop_distance_native = float(stop_distance_native)
+        fx_rate = float(fx_rate)
+    except (TypeError, ValueError):
+        return 0.0
+    if not math.isfinite(risk_pct) or risk_pct <= 0:
+        return 0.0
+    if not math.isfinite(equity) or equity <= 0:
+        return 0.0
+    if not math.isfinite(stop_distance_native) or stop_distance_native <= 0:
+        return 0.0
+    if not math.isfinite(fx_rate) or fx_rate <= 0:
+        return 0.0
+    stop_usd = stop_distance_native * fx_rate
+    if not math.isfinite(stop_usd) or stop_usd <= 0:
+        return 0.0
+    qty = risk_pct * equity / stop_usd
+    return qty if math.isfinite(qty) and qty > 0 else 0.0
+
+
 def clamp_exit_quantity(
     *,
     intent: str | None,

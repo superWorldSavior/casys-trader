@@ -2389,7 +2389,8 @@ def run_cycle(
             if sched is not None:
                 sched.clear_symbol_next_wake(sym)
 
-        if decision.action == "HOLD" or effective_quantity == 0:
+        # L1 — si risk_pct_target est fourni, qty=0 est un placeholder : ne pas traiter comme HOLD.
+        if decision.action == "HOLD" or (effective_quantity == 0 and decision.risk_pct_target is None):
             # Pas de 2e ligne "hold" : la ligne result ci-dessus (DEBUG pour HOLD)
             # porte déjà l'action.
             apply_decision_schedule()
@@ -2504,7 +2505,8 @@ def run_cycle(
             entry.setdefault("requested_qty", effective_quantity)
             effective_quantity = clamped_quantity
             entry["qty"] = effective_quantity
-        if effective_quantity == 0:
+        # L1 — risk_pct_target : qty=0 est un placeholder, pas un zero_exit.
+        if effective_quantity == 0 and decision.risk_pct_target is None:
             _log_cycle_progress("[decision %d/%d] %s hold zero_exit_quantity", index, len(symbols_to_decide), sym)
             apply_default_schedule_after_blocked()
             record_decision({**entry, "executed": False, "reason": "zero_exit_quantity"})
@@ -2515,6 +2517,27 @@ def run_cycle(
         open_stop_distance: float | None = None
         if trace_risk:
             hard_stop_price = _hard_stop_price(runtime_exit_plan)
+            # L1 — sizing en risque : dériver effective_quantity depuis risk_pct_target.
+            # Requiert un hard_stop résolu ; rejeté sinon (même si require_hard_stop=False).
+            # Logique : qty = risk_pct_target × equity / (|entry − stop| × fx_rate).
+            # Le gate max_risk_per_trade_pct reste le fusible (cf. vérification ci-dessous).
+            if pure_open and decision.risk_pct_target is not None:
+                if hard_stop_price is None:
+                    _log_cycle_progress("[risk] %s rejected code=risk_sizing_needs_stop", sym)
+                    apply_default_schedule_after_blocked()
+                    record_decision({**entry, "executed": False, "reason": "risk:risk_sizing_needs_stop"})
+                    continue
+                _l1_stop_dist_native = abs(prices[sym] - hard_stop_price)
+                _l1_derived_qty = order_admission.qty_from_risk_pct(
+                    decision.risk_pct_target,
+                    snap.equity,
+                    _l1_stop_dist_native,
+                    fx_rate=_rate(sym),
+                )
+                effective_quantity = _l1_derived_qty
+                entry["qty"] = effective_quantity
+                entry["risk_pct_target"] = decision.risk_pct_target
+                entry["risk_qty_derived"] = True
             risk_quantity = effective_quantity
             if decision.intent == "REVERSE":
                 # REVERSE est tracé mais PAS clampé au risque (dette connue).

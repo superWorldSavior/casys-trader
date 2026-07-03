@@ -295,6 +295,8 @@ def _decision_from_symbol_calls(data: dict, symbol: str) -> Decision:
     traces: list[dict] = []
     cancel_ids: list[str] = []
     next_wake_event: str | None = None
+    # L1 — sizing en risque : extrait de propose_order.args{"risk_pct":...}
+    risk_pct_target_local: float | None = None
 
     for index, raw in enumerate(calls):
         if not isinstance(raw, dict):
@@ -337,9 +339,18 @@ def _decision_from_symbol_calls(data: dict, symbol: str) -> Decision:
                         raise ValueError("order_qty_required")
                     qty = float(qty_raw)
             else:
-                if qty_raw is None:
+                # L1 — risk_pct est une alternative à qty pour OPEN_LONG/OPEN_SHORT.
+                # Explicit qty > risk_pct (Explicit Over Implicit).
+                risk_pct_raw = args.get("risk_pct")
+                if qty_raw is None and risk_pct_raw is None:
                     raise ValueError("order_qty_required")
-                qty = float(qty_raw)
+                if qty_raw is not None:
+                    qty = float(qty_raw)
+                else:
+                    # qty absente : placeholder 0.0 ; daemon dérive la qty réelle
+                    # depuis risk_pct_target × equity / (stop_distance × fx_rate).
+                    qty = 0.0
+                    risk_pct_target_local = float(risk_pct_raw)
 
             decision["action"] = action
             decision["quantity"] = qty
@@ -391,6 +402,7 @@ def _decision_from_symbol_calls(data: dict, symbol: str) -> Decision:
         domain_tools={"tool_rounds": 0, "tool_calls": traces},
         thesis=decision.get("thesis"),
         next_wake_event=next_wake_event,
+        risk_pct_target=risk_pct_target_local,
     )
     if resolve_from_position:
         result = replace(result, resolve_from_position=True)

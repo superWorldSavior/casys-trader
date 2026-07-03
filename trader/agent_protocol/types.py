@@ -34,6 +34,10 @@ class Decision:
     llm_model: str | None = None
     llm_fallback_reason: str | None = None
     llm_error: str | None = None
+    # L1 — sizing en risque : % d'equity à risquer sur ce trade.
+    # Présent = qty=0.0 est un placeholder ; le daemon dérive la qty depuis
+    # risk_pct_target * equity / (stop_distance * fx_rate).
+    risk_pct_target: float | None = None
 
     @staticmethod
     def hold(symbol: str, reason: str) -> "Decision":
