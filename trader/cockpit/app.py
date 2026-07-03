@@ -193,8 +193,7 @@ def _event_styles_for_palette(palette: Palette) -> dict[EventClass, str]:
 
 
 class CockpitStatus(Static):
-    """Ligne d'état compacte : équité, cash, P&L, phase daemon, horloge UTC, kill,
-    learnings en attente."""
+    """Barre de statut distillée — un seul endroit pour l'état runtime."""
 
     DEFAULT_CSS = """
     CockpitStatus {
@@ -208,98 +207,30 @@ class CockpitStatus(Static):
     def update_state(
         self, state: dict, kill_active: bool, *, palette: Palette = PALETTE_DARK
     ) -> None:
-        portfolio = (
-            state.get("portfolio") if isinstance(state.get("portfolio"), dict) else {}
-        )
-        kpis = state.get("kpis") if isinstance(state.get("kpis"), dict) else {}
-        daemon_status = (
-            state.get("daemon_status")
-            if isinstance(state.get("daemon_status"), dict)
-            else {}
-        )
+        from trader.cockpit.home import build_status_line
 
-        equity = (
-            _safe_float(portfolio.get("equity") or kpis.get("equity"), default=0.0)
-            or 0.0
-        )
-        cash = (
-            _safe_float(portfolio.get("cash") or kpis.get("cash"), default=0.0) or 0.0
-        )
-        starting_cash = _safe_float(state.get("starting_cash"), default=cash) or cash
-        pnl = equity - starting_cash
-        ret_pct = _safe_float(portfolio.get("total_return_pct"), default=None)
-        if ret_pct is None:
-            total_return = _safe_float(kpis.get("total_return"), default=0.0) or 0.0
-            ret_pct = total_return * 100.0
-        phase = str(daemon_status.get("phase", "—"))
-        current_symbol = str(daemon_status.get("current_symbol") or "—")
-        done = daemon_status.get("decisions_done")
-        total = daemon_status.get("symbols_total")
-        progress = f"{done}/{total}" if done is not None and total is not None else "—"
-        calls_used = daemon_status.get("model_calls_used")
-        calls_max = daemon_status.get("max_model_calls_per_cycle")
-        calls_str = (
-            f"{calls_used}/{calls_max}"
-            if calls_used is not None and calls_max is not None
-            else "—"
-        )
-        now_utc = datetime.now(UTC).strftime("%H:%M:%S UTC")
-        cycle_ts = _format_datetime(state.get("ts"))
-        source = str(state.get("source") or "—")
-        dry_run = state.get("dry_run", True)
-        learnings_pending = state.get("learnings_pending_count") or 0
-
-        mode_str = (
-            "[bold red]LIVE[/bold red]"
-            if not dry_run
-            else "[bold yellow]DRY-RUN[/bold yellow]"
-        )
-        kill_str = (
-            "[bold white on red] !! KILL ACTIF !! [/bold white on red]"
-            if kill_active
-            else f"[{palette['status_nominal']}]nominal[/{palette['status_nominal']}]"
-        )
-        ret_style = palette["pnl_positive"] if ret_pct >= 0 else palette["pnl_negative"]
-        pnl_style = palette["pnl_positive"] if pnl >= 0 else palette["pnl_negative"]
-        eq_style = palette["status_equity"]
-        acc_style = palette["status_accent"]
-        phase_style = palette["status_phase"]
-
-        # Indicateur vital
         vital = daemon_vital_state(_STATE_DIR / "daemon_status.json")
-        if vital.status == "alive":
-            if vital.battement_old:
-                _bat_mins = int(vital.since_seconds) // 60 if vital.since_seconds else 0
-                _bat_secs = int(vital.since_seconds) % 60 if vital.since_seconds else 0
-                vital_str = (
-                    f"[bold yellow]● VIVANT[/bold yellow]"
-                    f" [dim](occupé, battement {_bat_mins:02d}:{_bat_secs:02d})[/dim]"
-                )
-            else:
-                vital_str = "[bold green]● VIVANT[/bold green]"
-        elif vital.status == "stopped":
-            vital_str = "[bold red]● ARRÊTÉ[/bold red]"
-        else:
-            vital_str = "[dim]● jamais démarré[/dim]"
-
-        text = (
-            f"  {vital_str}"
-            f"  Équité $ [{eq_style}]${equity:,.2f}[/{eq_style}]"
-            f"  Cash $ [{eq_style}]${cash:,.2f}[/{eq_style}]"
-            f"  P&L net vs départ [{ret_style}]{ret_pct:+.2f}%[/{ret_style}]"
-            f" [{pnl_style}]({pnl:+,.2f})[/{pnl_style}]"
-            f"  Daemon [{phase_style}]{phase}[/{phase_style}]"
-            f"  [{acc_style}]{current_symbol}[/{acc_style}]"
-            f"  Progrès [{acc_style}]{progress}[/{acc_style}]"
-            f"  Appels [{acc_style}]{calls_str}[/{acc_style}]"
-            f"  Cycle [{acc_style}]{cycle_ts}[/{acc_style}]"
-            f"  Source [{acc_style}]{source}[/{acc_style}]"
-            f"  Now {now_utc}"
-            f"  Mode {mode_str}"
-            f"  Kill {kill_str}"
-            f"  [dim]learnings: {learnings_pending} pending[/dim]"
+        width = self.size.width or 200
+        self.update(
+            build_status_line(
+                state,
+                kill_active=kill_active,
+                palette=palette,
+                width=width,
+                now=datetime.now(UTC),
+                vital=vital,
+            )
         )
-        self.update(Text.from_markup(text))
+
+    def on_resize(self) -> None:
+        app = self.app
+        state = getattr(app, "_last_state", None)
+        if state is not None:
+            self.update_state(
+                state,
+                getattr(app, "_last_kill_active", False),
+                palette=app._current_palette(),  # type: ignore[attr-defined]
+            )
 
 
 class AttentionStrip(Static):

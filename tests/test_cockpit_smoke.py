@@ -169,19 +169,20 @@ async def test_cockpit_status_prend_palette_en_compte(tmp_path, monkeypatch):
         # Doit accepter palette= sans TypeError
         status.update_state(state, kill_active=False, palette=PALETTE_LIGHT)
         rendered = str(status.render())
-        assert "Cash $" in rendered
-        assert "85,000.00" in rendered
-        assert "$85,000.00" in rendered
-        assert "P&L net vs départ" in rendered
-        assert "(+2,500.00)" in rendered
-        assert "Progrès 1/3" in rendered
+        # Format distillé A2 : équité/pct/pnl/mode/kill/cycle (ts/source/cash supprimés)
+        assert "102,500" in rendered     # équité = 102 500$
+        assert "+0.50%" in rendered      # total_return_pct = 0.5
+        assert "(+2,500)" in rendered    # PnL brut = +2 500
+        assert "DRY" in rendered         # dry_run=True
+        assert "kill" in rendered        # kill:nominal
+        assert "cycle 1/3" in rendered   # decisions_done=1, symbols_total=3
         status.update_state(state, kill_active=False, palette=PALETTE_DARK)
 
 
 async def test_cockpit_status_affiche_fraicheur_et_source_rapport(
     tmp_path, monkeypatch
 ):
-    """Le statut conserve la fraîcheur du rapport de l'ancien header TUI."""
+    """CockpitStatus.update_state produit le format distillé A2 (équité, pnl, mode, kill)."""
     from trader.cockpit import CockpitStatus
     from trader.ui.palette import PALETTE_LIGHT
 
@@ -206,10 +207,11 @@ async def test_cockpit_status_affiche_fraicheur_et_source_rapport(
         status.update_state(state, kill_active=False, palette=PALETTE_LIGHT)
         rendered = str(status.content)
 
-        assert "+2.50%" in rendered
-        assert "Cycle" in rendered
-        assert "2026-06-07 08:15 UTC" in rendered
-        assert "Source last_report" in rendered
+        # Format distillé A2 : ts/source supprimés, équité/pnl/mode/kill présents
+        assert "+2.50%" in rendered      # retour kpis.total_return=0.025 → 2.50%
+        assert "102,500" in rendered     # équité = 102 500$
+        assert "DRY" in rendered         # mode dry_run=True
+        assert "kill" in rendered        # kill:nominal
 
 
 async def test_cockpit_toggle_theme_propage_palette_dashboard_immediatement(
