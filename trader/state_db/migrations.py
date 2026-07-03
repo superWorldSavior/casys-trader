@@ -5,6 +5,8 @@ Contient :
 - import_broker_from_json : migration one-shot idempotente depuis broker.json
 - TRADE_PLANS_MIGRATION : schéma trade_plans v2
 - import_trade_plans_from_json : migration one-shot idempotente depuis trade_plans.json
+- SCHEDULER_MIGRATION : schéma scheduler v3 (4 tables + 2 index)
+- import_scheduler_from_json : migration one-shot idempotente depuis scheduler.json
 """
 from __future__ import annotations
 
@@ -233,3 +235,145 @@ def import_trade_plans_from_json(db: StateDb, json_path: Path) -> None:
     json_path.rename(backup_path)
 
     log.info("[state_db] trade_plans importés: %d plans", len(plans_raw))
+
+
+# ---------------------------------------------------------------------------
+# Scheduler — migration v3
+# ---------------------------------------------------------------------------
+
+SCHEDULER_MIGRATION: tuple[int, list[str]] = (
+    3,
+    [
+        """CREATE TABLE scheduler_meta (
+            key   TEXT PRIMARY KEY,
+            value TEXT
+        )""",
+        """CREATE TABLE scheduler_symbol_wake (
+            symbol   TEXT PRIMARY KEY,
+            when_iso TEXT NOT NULL
+        )""",
+        """CREATE TABLE scheduler_stale_streaks (
+            symbol TEXT PRIMARY KEY,
+            streak INTEGER NOT NULL
+        )""",
+        """CREATE TABLE scheduler_watches (
+            id         TEXT PRIMARY KEY,
+            seq        INTEGER,
+            symbol     TEXT NOT NULL,
+            created_at TEXT,
+            expires_at TEXT,
+            on_trigger TEXT,
+            watch_json TEXT NOT NULL
+        )""",
+        "CREATE INDEX idx_watches_symbol ON scheduler_watches(symbol)",
+        "CREATE INDEX idx_watches_expires ON scheduler_watches(expires_at)",
+    ],
+)
+
+
+def import_scheduler_from_json(db: StateDb, json_path: Path) -> None:
+    """Migration one-shot idempotente : importe scheduler.json dans les tables SQLite.
+
+    - Applique SCHEDULER_MIGRATION (idempotent).
+    - Si scheduler_meta n'est pas vide : skip (déjà migré — sentinel `_imported`).
+    - Promotion legacy : `next_wake` → `default_next_wake` (scheduler.py:34).
+    - JSON absent → tables vides + sentinel pour idempotence.
+    - Canonicalise les timestamps à l'import (UTC +00:00, comparaison SQL lexicale).
+    - Backup horodaté SEULEMENT après commit réussi (valider-avant-rename).
+    """
+    # Import local pour éviter les dépendances circulaires au top-level
+    from trader.tools.scheduler import STALE_BACKOFF_MAX_STREAK  # noqa: PLC0415
+
+    db.apply_migrations([SCHEDULER_MIGRATION])
+
+    # Idempotence : scheduler_meta non vide → déjà importé, no-op silencieux
+    if not db.table_is_empty("scheduler_meta"):
+        return
+
+    def _canon(raw: str | None) -> str | None:
+        """Canonicalise ISO → UTC +00:00 (comparaison SQL lexicale sûre)."""
+        if not raw:
+            return None
+        dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc).isoformat()
+
+    json_path = Path(json_path)
+
+    if not json_path.exists():
+        # JSON absent → démarrage vide ; sentinel pour idempotence
+        with db.transaction() as cur:
+            cur.execute(
+                "INSERT INTO scheduler_meta(key, value) VALUES ('_imported', '1')"
+            )
+        log.info("[state_db] scheduler: JSON absent, démarrage avec tables vides")
+        return
+
+    # 1. Parse/validate AVANT toute mutation (JSON invalide → exception, fichier intact)
+    raw = json.loads(json_path.read_text())
+
+    # Promotion legacy : next_wake → default_next_wake
+    if "default_next_wake" not in raw and "next_wake" in raw:
+        raw["default_next_wake"] = raw["next_wake"]
+    raw.setdefault("default_next_wake", None)
+    raw.setdefault("symbols", {})
+    raw.setdefault("stale_streaks", {})
+    raw.setdefault("indicator_watches", {})
+
+    default_next_wake = _canon(raw["default_next_wake"])
+    symbols: dict = raw["symbols"]
+    stale_streaks: dict = raw["stale_streaks"]
+    indicator_watches: dict = raw["indicator_watches"]
+
+    # 2. Import atomique dans la base
+    with db.transaction() as cur:
+        # Sentinel d'idempotence (scheduler_meta aura toujours >= 1 ligne après import)
+        cur.execute("INSERT INTO scheduler_meta(key, value) VALUES ('_imported', '1')")
+        if default_next_wake is not None:
+            cur.execute(
+                "INSERT INTO scheduler_meta(key, value) VALUES ('default_next_wake', ?)",
+                (default_next_wake,),
+            )
+
+        for symbol, when_iso in symbols.items():
+            if when_iso:
+                cur.execute(
+                    "INSERT INTO scheduler_symbol_wake(symbol, when_iso) VALUES (?, ?)",
+                    (symbol, _canon(when_iso)),
+                )
+
+        for symbol, streak in stale_streaks.items():
+            cur.execute(
+                "INSERT INTO scheduler_stale_streaks(symbol, streak) VALUES (?, ?)",
+                (symbol, min(int(streak), STALE_BACKOFF_MAX_STREAK)),
+            )
+
+        for seq, (watch_id, watch) in enumerate(indicator_watches.items(), start=1):
+            expires_at = _canon(watch.get("expires_at"))
+            on_trigger = watch.get("on_trigger", "WAKE")
+            cur.execute(
+                "INSERT INTO scheduler_watches"
+                "(id, seq, symbol, created_at, expires_at, on_trigger, watch_json)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    watch_id,
+                    seq,
+                    watch.get("symbol", ""),
+                    watch.get("created_at"),
+                    expires_at,
+                    on_trigger,
+                    json.dumps(watch),
+                ),
+            )
+
+    # 3. Backup horodaté SEULEMENT après commit réussi (JSON original intact en cas d'erreur)
+    ts = datetime.now(timezone.utc).isoformat().replace(":", "")
+    backup_path = json_path.with_name(json_path.name + f".bak-{ts}")
+    json_path.rename(backup_path)
+
+    log.info(
+        "[state_db] scheduler importé: %d symboles, %d watches",
+        len(symbols),
+        len(indicator_watches),
+    )

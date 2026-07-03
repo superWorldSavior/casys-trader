@@ -75,7 +75,7 @@ from trader.tools.data_source import (
     parse_data_sources_config,
 )
 from trader.tools.ib_source import IBDataSource, connect_ib
-from trader.state_db.broker_factory import make_broker, make_trade_plan_store
+from trader.state_db.broker_factory import make_broker, make_trade_plan_store, make_scheduler
 
 ROOT = Path(__file__).resolve().parents[2]
 STATE_DIR = ROOT / "state"
@@ -3112,7 +3112,7 @@ def main(
         except Exception as _rot_exc:  # noqa: BLE001
             log.warning("[rotation] échec sur %s : %s", _rot_path.name, _rot_exc)
 
-    sched = scheduler.Scheduler(STATE_DIR / "scheduler.json")
+    sched = make_scheduler(state_dir=STATE_DIR, backend=os.getenv("CASYS_STATE_BACKEND", "json"))
     log.info("daemon démarré (dry_run=%s, once=%s)", dry_run, args.once)
     log.info(
         "[config] decision_batch_parallelism=%d batch_size=%d max_model_calls_per_cycle=%d decision_timeout_s=%d agent_tools=%s",

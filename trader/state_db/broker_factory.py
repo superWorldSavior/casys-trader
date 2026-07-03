@@ -3,6 +3,7 @@
 Factories disponibles :
     make_broker            → SimBroker (json) ou SqliteBroker (sqlite)
     make_trade_plan_store  → TradePlanStore (json) ou SqliteTradePlanStore (sqlite)
+    make_scheduler         → Scheduler (json) ou SqliteScheduler (sqlite)
 
 Valeurs backend acceptées (insensibles à la casse) :
     "json"   (défaut) → stores JSON, comportement strictement inchangé.
@@ -10,7 +11,7 @@ Valeurs backend acceptées (insensibles à la casse) :
 
 Usage (daemon.py) ::
 
-    from trader.state_db.broker_factory import make_broker, make_trade_plan_store
+    from trader.state_db.broker_factory import make_broker, make_trade_plan_store, make_scheduler
 
     broker = make_broker(
         state_dir=STATE_DIR,
@@ -19,6 +20,10 @@ Usage (daemon.py) ::
         backend=os.getenv("CASYS_STATE_BACKEND", "json"),
     )
     plan_store = make_trade_plan_store(
+        state_dir=STATE_DIR,
+        backend=os.getenv("CASYS_STATE_BACKEND", "json"),
+    )
+    sched = make_scheduler(
         state_dir=STATE_DIR,
         backend=os.getenv("CASYS_STATE_BACKEND", "json"),
     )
@@ -135,6 +140,59 @@ def make_trade_plan_store(
         db = StateDb(db_path)
         import_trade_plans_from_json(db, json_path)
         store = SqliteTradePlanStore(db, json_path=json_path)
+        # Rattrape un shadow stale/absent depuis SQLite au boot
+        store.regenerate_shadow()
+        return store
+
+    raise ValueError(
+        f"CASYS_STATE_BACKEND inconnu : {backend!r}. Valeurs acceptées : {_VALID_BACKENDS}"
+    )
+
+
+def make_scheduler(
+    *,
+    state_dir: Path,
+    backend: str = "json",
+):
+    """Construit et retourne un Scheduler (Scheduler ou SqliteScheduler) selon *backend*.
+
+    Args:
+        state_dir: répertoire d'état (ex. ROOT / "state").
+        backend:   "json" (défaut) ou "sqlite". Toute autre valeur → ValueError.
+
+    Returns:
+        Scheduler        si backend == "json".
+        SqliteScheduler  si backend == "sqlite".
+
+    Raises:
+        ValueError: backend inconnu.
+    """
+    state_dir = Path(state_dir)
+    backend = backend.lower()
+
+    if backend == "json":
+        from trader.tools.scheduler import Scheduler  # import local — pas de circular dep  # noqa: PLC0415
+
+        log.debug(
+            "[broker_factory] scheduler backend=json → Scheduler(%s)",
+            state_dir / "scheduler.json",
+        )
+        return Scheduler(state_dir / "scheduler.json")
+
+    if backend == "sqlite":
+        from trader.state_db.connection import StateDb  # noqa: PLC0415
+        from trader.state_db.migrations import import_scheduler_from_json  # noqa: PLC0415
+        from trader.state_db.scheduler_store import SqliteScheduler  # noqa: PLC0415
+
+        db_path = state_dir / "casys.db"
+        json_path = state_dir / "scheduler.json"
+
+        log.debug(
+            "[broker_factory] scheduler backend=sqlite → StateDb(%s)", db_path
+        )
+        db = StateDb(db_path)
+        import_scheduler_from_json(db, json_path)
+        store = SqliteScheduler(db, json_path=json_path)
         # Rattrape un shadow stale/absent depuis SQLite au boot
         store.regenerate_shadow()
         return store
