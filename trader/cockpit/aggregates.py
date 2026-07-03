@@ -230,6 +230,55 @@ def attention_items(state: dict, *, kill_active: bool, now: datetime) -> list[At
     return items
 
 
+@dataclass(frozen=True)
+class VenueClock:
+    open_now: tuple[str, ...] = ()
+    next_venue: str | None = None
+    next_kind: str | None = None  # "open" | "close"
+    next_at: datetime | None = None
+
+
+def venue_clock(sessions: dict, now: datetime) -> VenueClock:
+    """Venues actions ouvertes + prochaine transition (open/close), UTC.
+
+    FX (24/5) exclue. Sessions vides/malformées → VenueClock() neutre.
+    """
+    from trader.rotation.schedule import _close_dt, open_venues
+
+    if not isinstance(sessions, dict) or not sessions:
+        return VenueClock()
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=UTC)
+
+    try:
+        open_list = tuple(v for v in open_venues(now.isoformat(), sessions) if v != "FX")
+    except Exception:
+        return VenueClock()
+
+    best: tuple[datetime, str, str] | None = None
+    for venue, hours in sessions.items():
+        if venue == "FX" or not isinstance(hours, dict):
+            continue
+        try:
+            if venue in open_list:
+                candidate = (_close_dt(now, str(hours["close"])), venue, "close")
+            else:
+                open_dt = _close_dt(now, str(hours["open"]))
+                for _ in range(4):  # saute le week-end
+                    if open_dt > now and open_dt.weekday() < 5:
+                        break
+                    open_dt = _close_dt(open_dt + timedelta(days=1), str(hours["open"]))
+                candidate = (open_dt, venue, "open")
+        except Exception:
+            continue
+        if best is None or candidate[0] < best[0]:
+            best = candidate
+
+    if best is None:
+        return VenueClock(open_now=open_list)
+    return VenueClock(open_now=open_list, next_venue=best[1], next_kind=best[2], next_at=best[0])
+
+
 def activity_buckets(
     recent_decisions: list[dict],
     now: datetime,

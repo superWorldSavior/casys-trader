@@ -205,3 +205,43 @@ def test_attention_items_arme_deja_expire_ignore():
 
     state = {"armed_plans": [{"expires_at": (NOW - timedelta(minutes=5)).isoformat()}]}
     assert attention_items(state, kill_active=False, now=NOW) == []
+
+
+# ---------------------------------------------------------------------------
+# venue_clock
+# ---------------------------------------------------------------------------
+
+def test_venue_clock_ouverte_et_prochaine_transition():
+    from trader.cockpit.aggregates import venue_clock
+
+    sessions = {"TW": {"open": "01:00", "close": "05:30"},
+                "EU": {"open": "07:00", "close": "15:30"}}
+    # Vendredi 2026-07-03 12:00 UTC : EU ouverte, prochaine transition = close EU 15:30
+    clock = venue_clock(sessions, NOW)
+    assert clock.open_now == ("EU",)
+    assert (clock.next_venue, clock.next_kind) == ("EU", "close")
+    assert clock.next_at is not None and clock.next_at.hour == 15
+
+
+def test_venue_clock_weekend_prochaine_ouverture_lundi():
+    from trader.cockpit.aggregates import venue_clock
+
+    saturday = datetime(2026, 7, 4, 12, 0, tzinfo=UTC)
+    clock = venue_clock({"EU": {"open": "07:00", "close": "15:30"}}, saturday)
+    assert clock.open_now == ()
+    assert clock.next_kind == "open"
+    assert clock.next_at is not None and clock.next_at.weekday() == 0  # lundi
+
+
+def test_venue_clock_sessions_absentes_neutre():
+    from trader.cockpit.aggregates import venue_clock
+
+    clock = venue_clock({}, NOW)
+    assert clock.open_now == () and clock.next_at is None
+
+
+def test_read_model_expose_sessions(tmp_path):
+    from trader.read_models.runtime_state import load_runtime_state
+
+    state = load_runtime_state(state_dir=tmp_path, config_dir=str(tmp_path))
+    assert isinstance(state.get("sessions"), dict)
