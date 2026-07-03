@@ -401,6 +401,41 @@ def _invalid_intent_reason(decision: codex_client.Decision) -> str | None:
     )
 
 
+def _resolve_position_aware_decision(
+    decision: codex_client.Decision,
+    position_quantity: float,
+) -> codex_client.Decision:
+    """Dérive action + qty depuis la position pour CLOSE/REDUCE/REVERSE sans side.
+
+    Fail-safe absolu : position_quantity == 0 → HOLD 'nothing_to_close'.
+    Si resolve_from_position=False, retourne la décision inchangée.
+    """
+    if not decision.resolve_from_position:
+        return decision
+
+    if position_quantity == 0.0:
+        return codex_client.Decision.hold(decision.symbol, "nothing_to_close")
+
+    side: codex_client.Action = "SELL" if position_quantity > 0 else "BUY"
+    pos_abs = abs(position_quantity)
+    intent = decision.intent
+
+    if intent == "CLOSE":
+        qty = pos_abs
+    elif intent == "REDUCE":
+        if decision.reduce_fraction is not None:
+            qty = decision.reduce_fraction * pos_abs
+        else:
+            qty = decision.quantity  # qty absolue fournie par l'agent
+        qty = min(qty, pos_abs)
+    elif intent == "REVERSE":
+        qty = decision.quantity  # nouvelle jambe ; qty requise au parsing
+    else:
+        return codex_client.Decision.hold(decision.symbol, "nothing_to_close")
+
+    return replace(decision, action=side, quantity=qty, resolve_from_position=False, reduce_fraction=None)
+
+
 def _merge_gate_feedback(
     reason: str | None,
     context: str | None,
@@ -2165,6 +2200,12 @@ def run_cycle(
                 minimum=min_wake_minutes,
                 maximum=max_wake_minutes,
             )
+
+        # L2 : résoudre CLOSE/REDUCE/REVERSE sans side depuis la position au portefeuille.
+        if decision.resolve_from_position:
+            raw_pos = broker.positions().get(sym)
+            pos_qty = raw_pos.quantity if raw_pos is not None else 0.0
+            decision = _resolve_position_aware_decision(decision, pos_qty)
 
         effective_quantity = abs(decision.quantity)
 

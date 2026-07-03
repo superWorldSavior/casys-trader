@@ -79,10 +79,12 @@ Action tools acceptés :
 | `record_learning` | `learning` | borne et persiste une note runtime |
 
 **Side de `propose_order`** : `OPEN_LONG`→BUY et `OPEN_SHORT`→SELL sont déduits
-automatiquement. **`REDUCE`/`CLOSE`/`REVERSE` exigent `side:BUY|SELL` explicite**
-(le sens de l'ordre qui réduit/ferme/inverse la position). Sans `side`, ces intents
-retombent en HOLD tracé (`batch_bad_output: order_side_required`) — le daemon
-n'infère pas encore la side depuis la position au portefeuille (dette Phase 6).
+automatiquement. **`CLOSE`/`REDUCE`/`REVERSE` dérivent aussi la side depuis la
+position au portefeuille (L2, Phase 6)** : `CLOSE` ferme toute la position (qty
+omise ou ignorée) ; `REDUCE` accepte `fraction:0.5` ou `qty` absolue ; `REVERSE`
+dérive la side mais requiert `qty` (nouvelle jambe). Si `side:BUY|SELL` est fourni
+explicitement, il est utilisé tel quel (compat). Fail-safe : position=0 → HOLD
+tracé `nothing_to_close`.
 
 Vocabulaire compact de `propose_order.args.exit` :
 

@@ -281,13 +281,45 @@ def _decision_from_symbol_calls(data: dict, symbol: str) -> Decision:
             intent = str(args.get("intent") or "").upper()
             if intent not in {"OPEN_LONG", "OPEN_SHORT", "REDUCE", "CLOSE", "REVERSE"}:
                 raise ValueError("order_intent_invalid")
-            qty = args.get("qty", args.get("quantity"))
-            if qty is None:
-                raise ValueError("order_qty_required")
-            decision["action"] = _action_for_order_tool(args)
-            decision["quantity"] = float(qty)
+
+            needs_position_resolve = False
+            reduce_fraction: float | None = None
+            try:
+                action = _action_for_order_tool(args)
+            except ValueError as exc:
+                if str(exc) == "order_side_required" and intent in {"CLOSE", "REDUCE", "REVERSE"}:
+                    needs_position_resolve = True
+                    action = "HOLD"  # Provisoire — remplacé par le daemon depuis la position
+                    if intent == "REDUCE":
+                        frac = args.get("fraction")
+                        if frac is not None:
+                            reduce_fraction = float(frac)
+                else:
+                    raise
+
+            qty_raw = args.get("qty") if args.get("qty") is not None else args.get("quantity")
+            if needs_position_resolve:
+                if intent == "CLOSE":
+                    qty = 0.0  # Dérivé de |position| dans le daemon
+                elif intent == "REDUCE":
+                    qty = float(qty_raw) if qty_raw is not None else 0.0
+                else:  # REVERSE : qty de la nouvelle jambe reste requise
+                    if qty_raw is None:
+                        raise ValueError("order_qty_required")
+                    qty = float(qty_raw)
+            else:
+                if qty_raw is None:
+                    raise ValueError("order_qty_required")
+                qty = float(qty_raw)
+
+            decision["action"] = action
+            decision["quantity"] = qty
             decision["intent"] = intent
             decision["exit_plan"] = _compact_exit_plan(args.get("exit"))
+            if needs_position_resolve:
+                decision["_resolve_from_position"] = True
+                if reduce_fraction is not None:
+                    decision["_reduce_fraction"] = reduce_fraction
         elif tool == "set_next_wake":
             minutes = args.get("minutes")
             if minutes is None:
@@ -309,8 +341,15 @@ def _decision_from_symbol_calls(data: dict, symbol: str) -> Decision:
             raise ValueError(f"unknown_action_tool:{tool}")
 
     decision["cancel_watch_ids"] = cancel_ids
+    resolve_from_position = decision.pop("_resolve_from_position", False)
+    reduce_fraction_val = decision.pop("_reduce_fraction", None)
     parsed = _decision_from_dict(decision, symbol)
-    return replace(parsed, domain_tools={"tool_rounds": 0, "tool_calls": traces})
+    result = replace(parsed, domain_tools={"tool_rounds": 0, "tool_calls": traces})
+    if resolve_from_position:
+        result = replace(result, resolve_from_position=True)
+    if reduce_fraction_val is not None:
+        result = replace(result, reduce_fraction=reduce_fraction_val)
+    return result
 
 
 def parse_decision(raw_text: str, symbol: str) -> Decision:

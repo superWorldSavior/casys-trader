@@ -867,3 +867,141 @@ def test_hold_sans_veille_ni_wake_reste_sur_le_defaut(tmp_path) -> None:
         entry={},
     )
     assert sched.next_wake("SPY") is None  # effacé → retombe sur le défaut global
+
+
+# ---------------------------------------------------------------------------
+# L2 — _resolve_position_aware_decision (tests unitaires purs)
+# ---------------------------------------------------------------------------
+
+def _make_pending_close(symbol: str = "SPY", qty: float = 0.0) -> Decision:
+    """Decision CLOSE sans side (resolve_from_position=True, action=HOLD provisoire)."""
+    return Decision(
+        symbol=symbol,
+        action="HOLD",
+        quantity=qty,
+        confidence=0.8,
+        rationale="close position",
+        intent="CLOSE",
+        resolve_from_position=True,
+    )
+
+
+def _make_pending_reduce(
+    symbol: str = "SPY",
+    qty: float = 0.0,
+    fraction: float | None = None,
+) -> Decision:
+    """Decision REDUCE sans side (resolve_from_position=True)."""
+    return Decision(
+        symbol=symbol,
+        action="HOLD",
+        quantity=qty,
+        confidence=0.8,
+        rationale="reduce position",
+        intent="REDUCE",
+        resolve_from_position=True,
+        reduce_fraction=fraction,
+    )
+
+
+def _make_pending_reverse(symbol: str = "SPY", qty: float = 20.0) -> Decision:
+    """Decision REVERSE sans side (resolve_from_position=True, qty = nouvelle jambe)."""
+    return Decision(
+        symbol=symbol,
+        action="HOLD",
+        quantity=qty,
+        confidence=0.8,
+        rationale="flip position",
+        intent="REVERSE",
+        resolve_from_position=True,
+    )
+
+
+def test_resolve_close_long_position_produit_sell() -> None:
+    """L2 : CLOSE sur position longue (qty=10) → action=SELL, qty=10."""
+    dec = _make_pending_close()
+    resolved = daemon._resolve_position_aware_decision(dec, position_quantity=10.0)
+
+    assert resolved.action == "SELL"
+    assert resolved.quantity == 10.0
+    assert resolved.resolve_from_position is False
+
+
+def test_resolve_close_short_position_produit_buy() -> None:
+    """L2 : CLOSE sur position courte (qty=-8) → action=BUY, qty=8."""
+    dec = _make_pending_close()
+    resolved = daemon._resolve_position_aware_decision(dec, position_quantity=-8.0)
+
+    assert resolved.action == "BUY"
+    assert resolved.quantity == 8.0
+    assert resolved.resolve_from_position is False
+
+
+def test_resolve_reduce_fraction_sur_long_position() -> None:
+    """L2 : REDUCE fraction=0.5 sur position=10 → SELL 5."""
+    dec = _make_pending_reduce(fraction=0.5)
+    resolved = daemon._resolve_position_aware_decision(dec, position_quantity=10.0)
+
+    assert resolved.action == "SELL"
+    assert resolved.quantity == 5.0
+
+
+def test_resolve_reduce_qty_abs_sur_long_position() -> None:
+    """L2 : REDUCE qty=3 (abs) sans fraction → SELL 3, clampé à |pos|."""
+    dec = _make_pending_reduce(qty=3.0)
+    resolved = daemon._resolve_position_aware_decision(dec, position_quantity=10.0)
+
+    assert resolved.action == "SELL"
+    assert resolved.quantity == 3.0
+
+
+def test_resolve_reduce_qty_abs_depasse_position_est_clampee() -> None:
+    """L2 fail-safe : qty > |pos| → clampé à |pos|, pas d'ordre oversized."""
+    dec = _make_pending_reduce(qty=15.0)
+    resolved = daemon._resolve_position_aware_decision(dec, position_quantity=10.0)
+
+    assert resolved.action == "SELL"
+    assert resolved.quantity == 10.0  # clampé à |pos|
+
+
+def test_resolve_reverse_sur_long_position_derive_side_sell() -> None:
+    """L2 : REVERSE sur position longue → SELL qty (nouvelle jambe), side dérivée."""
+    dec = _make_pending_reverse(qty=20.0)
+    resolved = daemon._resolve_position_aware_decision(dec, position_quantity=10.0)
+
+    assert resolved.action == "SELL"
+    assert resolved.quantity == 20.0
+
+
+def test_resolve_reverse_sur_short_position_derive_side_buy() -> None:
+    """L2 : REVERSE sur position courte → BUY qty (nouvelle jambe)."""
+    dec = _make_pending_reverse(qty=20.0)
+    resolved = daemon._resolve_position_aware_decision(dec, position_quantity=-5.0)
+
+    assert resolved.action == "BUY"
+    assert resolved.quantity == 20.0
+
+
+def test_resolve_no_position_produit_nothing_to_close() -> None:
+    """L2 fail-safe ABSOLU : pas de position → HOLD 'nothing_to_close', jamais d'ordre."""
+    dec = _make_pending_close()
+    resolved = daemon._resolve_position_aware_decision(dec, position_quantity=0.0)
+
+    assert resolved.action == "HOLD"
+    assert resolved.rationale == "nothing_to_close"
+
+
+def test_resolve_sans_flag_retourne_decision_inchangee() -> None:
+    """L2 compat : resolve_from_position=False (side explicite) → décision inchangée."""
+    dec = Decision(
+        symbol="SPY",
+        action="SELL",
+        quantity=10.0,
+        confidence=0.9,
+        rationale="close explicite",
+        intent="CLOSE",
+        resolve_from_position=False,
+    )
+    resolved = daemon._resolve_position_aware_decision(dec, position_quantity=10.0)
+
+    assert resolved is dec  # identité : rien ne change

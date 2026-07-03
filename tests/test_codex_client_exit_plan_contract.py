@@ -287,9 +287,9 @@ def test_batch_parse_close_avec_side_produit_action_sell() -> None:
     assert parsed.quantity == 10.0
 
 
-def test_batch_parse_close_sans_side_tombe_en_hold_trace() -> None:
-    """F2 : sans side, CLOSE ne dérive aucune action broker → HOLD tracé (jamais
-    d'exécution silencieuse). La raison porte la cause pour l'audit."""
+def test_batch_parse_close_sans_side_produit_resolve_from_position() -> None:
+    """L2 : CLOSE sans side → resolve_from_position=True ; le daemon résout depuis la
+    position au lieu de tomber en HOLD dès le parsing. qty=10 ignoré (dérivé de |pos|)."""
     raw = """
     {"decisions": [
       {"symbol": "SPY", "confidence": 0.7, "rationale": "these invalidee",
@@ -299,8 +299,9 @@ def test_batch_parse_close_sans_side_tombe_en_hold_trace() -> None:
     """
     parsed = codex_client.parse_batch(raw, ["SPY"], allow_context_request=False)["SPY"]
 
-    assert parsed.action == "HOLD"
-    assert "order_side_required" in parsed.rationale
+    assert parsed.resolve_from_position is True
+    assert parsed.intent == "CLOSE"
+    # action=HOLD provisoire — le daemon le remplacera par BUY ou SELL
 
 
 def test_batch_parse_rejette_melange_legacy_et_calls() -> None:
@@ -351,14 +352,101 @@ def test_symbol_calls_contract_laisse_l_agent_pull_au_premier_tour() -> None:
     assert "premier tour" in prompt.lower()  # clause explicite du choix
 
 
-def test_symbol_calls_contract_exige_side_pour_reduce_close_reverse() -> None:
-    """F2 : sans `side`, seuls OPEN_LONG/OPEN_SHORT dérivent une action broker ;
-    REDUCE/CLOSE/REVERSE tombent sinon en HOLD. Le prompt DOIT donc dire clairement
-    que ces intents exigent side:BUY|SELL, pas le présenter comme optionnel partout."""
+def test_symbol_calls_contract_documente_l2_position_aware() -> None:
+    """L2 : le prompt doit indiquer que CLOSE/REDUCE dérivent side+qty de la position,
+    et que REVERSE dérive la side (qty cible reste requise). `side` reste optionnel."""
     prompt = _symbol_calls_prompt_from_decide_batch()
 
-    assert "REDUCE/CLOSE/REVERSE" in prompt
-    assert "side:BUY|SELL" in prompt
+    assert "CLOSE" in prompt
+    assert "REDUCE" in prompt
+    assert "REVERSE" in prompt
+    # Le prompt indique que side est optionnel/dérivé pour CLOSE/REDUCE/REVERSE
+    assert "fraction" in prompt  # REDUCE accepte fraction
+
+
+def test_batch_parse_reduce_fraction_sans_side_produit_resolve_from_position() -> None:
+    """L2 : REDUCE avec fraction=0.5 sans side → resolve_from_position=True,
+    reduce_fraction=0.5. Le daemon calculera side=opposé, qty=0.5×|pos|."""
+    raw = """
+    {"decisions": [
+      {"symbol": "SPY", "confidence": 0.7, "rationale": "scale-out",
+       "decision_reason_code": "EXIT_SIGNAL",
+       "calls": [{"tool": "propose_order", "args": {"intent": "REDUCE", "fraction": 0.5}}]}
+    ]}
+    """
+    parsed = codex_client.parse_batch(raw, ["SPY"], allow_context_request=False)["SPY"]
+
+    assert parsed.resolve_from_position is True
+    assert parsed.intent == "REDUCE"
+    assert parsed.reduce_fraction == 0.5
+
+
+def test_batch_parse_reduce_qty_abs_sans_side_produit_resolve_from_position() -> None:
+    """L2 : REDUCE avec qty absolue sans side → resolve_from_position=True,
+    reduce_fraction=None. Le daemon calculera side=opposé, qty=min(qty, |pos|)."""
+    raw = """
+    {"decisions": [
+      {"symbol": "SPY", "confidence": 0.7, "rationale": "scale-out partiel",
+       "decision_reason_code": "EXIT_SIGNAL",
+       "calls": [{"tool": "propose_order", "args": {"intent": "REDUCE", "qty": 5}}]}
+    ]}
+    """
+    parsed = codex_client.parse_batch(raw, ["SPY"], allow_context_request=False)["SPY"]
+
+    assert parsed.resolve_from_position is True
+    assert parsed.intent == "REDUCE"
+    assert parsed.reduce_fraction is None
+    assert parsed.quantity == 5.0
+
+
+def test_batch_parse_reverse_sans_side_avec_qty_produit_resolve_from_position() -> None:
+    """L2 : REVERSE sans side mais avec qty → resolve_from_position=True.
+    qty de la nouvelle jambe est conservée ; le daemon dérivera la side."""
+    raw = """
+    {"decisions": [
+      {"symbol": "SPY", "confidence": 0.8, "rationale": "flip position",
+       "decision_reason_code": "REVERSAL",
+       "calls": [{"tool": "propose_order", "args": {"intent": "REVERSE", "qty": 20}}]}
+    ]}
+    """
+    parsed = codex_client.parse_batch(raw, ["SPY"], allow_context_request=False)["SPY"]
+
+    assert parsed.resolve_from_position is True
+    assert parsed.intent == "REVERSE"
+    assert parsed.quantity == 20.0
+
+
+def test_batch_parse_reverse_sans_side_ni_qty_tombe_en_hold() -> None:
+    """L2 : REVERSE sans qty reste une erreur — la jambe cible est ambiguë.
+    Pas de résolution possible → HOLD tracé."""
+    raw = """
+    {"decisions": [
+      {"symbol": "SPY", "confidence": 0.8, "rationale": "flip position",
+       "decision_reason_code": "REVERSAL",
+       "calls": [{"tool": "propose_order", "args": {"intent": "REVERSE"}}]}
+    ]}
+    """
+    parsed = codex_client.parse_batch(raw, ["SPY"], allow_context_request=False)["SPY"]
+
+    assert parsed.action == "HOLD"
+    assert "order_qty_required" in parsed.rationale
+
+
+def test_batch_parse_close_side_explicite_reste_inchange() -> None:
+    """L2 compat : si side est fourni explicitement, comportement actuel maintenu.
+    La présence de resolve_from_position=False confirme l'absence d'inférence."""
+    raw = """
+    {"decisions": [
+      {"symbol": "SPY", "confidence": 0.7, "rationale": "these invalidee",
+       "decision_reason_code": "EXIT_SIGNAL",
+       "calls": [{"tool": "propose_order", "args": {"intent": "CLOSE", "side": "SELL", "qty": 10}}]}
+    ]}
+    """
+    parsed = codex_client.parse_batch(raw, ["SPY"], allow_context_request=False)["SPY"]
+
+    assert parsed.action == "SELL"
+    assert parsed.intent == "CLOSE"
+    assert parsed.resolve_from_position is False
 
 
 def test_symbol_calls_contract_impose_decisions_au_tour_final() -> None:

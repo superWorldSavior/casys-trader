@@ -25,6 +25,8 @@ class Decision:
     learning: str | None = None  # note runtime que l'agent veut retenir (boucle de feedback)
     domain_tools: dict | None = None  # traces tournée d'outils (runtime.tool_*)
     decision_reason_code: str = "UNKNOWN"
+    resolve_from_position: bool = False   # CLOSE/REDUCE/REVERSE sans side : dériver depuis la position
+    reduce_fraction: float | None = None  # REDUCE : fraction de la position à réduire (0.5 = moitié)
     llm_provider: str | None = None
     llm_model: str | None = None
     llm_fallback_reason: str | None = None
