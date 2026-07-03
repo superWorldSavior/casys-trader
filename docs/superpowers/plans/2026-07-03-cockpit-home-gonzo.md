@@ -2643,6 +2643,101 @@ git commit -m "feat(cockpit): thème sombre gruvbox par défaut (casys-ink) + PA
 
 ---
 
+### Task 13b: Thème « casys-glass » — évocation Liquid Glass (ajout utilisateur 2026-07-03)
+
+**Files:**
+- Modify: `trader/cockpit/app.py` (3ᵉ thème + cycle `d` ink→glass→salmon, classe CSS `glass` sur le Screen)
+- Create: `docs/how-to/cockpit-glass.md` (réglage blur terminal iTerm2/Ghostty)
+- Test: `tests/test_cockpit_home.py`
+
+**Interfaces:**
+- Consumes: thèmes existants (`casys-ink` T13, `casys-salmon`), `PALETTE_INK` (réutilisée telle quelle pour les tokens Rich — le verre est une variante de rendu, pas de sémantique).
+- Produces: thème Textual `casys-glass` ; `_THEME_PALETTE["casys-glass"] = PALETTE_INK` ; cycle `d` à 3 états ; classe `glass` togglée sur l'app pour les règles CSS conditionnelles.
+
+- [ ] **Step 1: Spike transparence (résultat consigné dans le rapport, AVANT d'écrire les tests)**
+
+Script jetable dans le scratchpad (pas commité) : une mini-app Textual 8.2.7 qui tente
+(a) `Screen { background: transparent; }` et `App.ansi_color = True`,
+(b) tuile avec `background: $surface 30%;` (alpha) et `border: round #83a598 40%;`.
+Lancer avec `run_test` + `save_screenshot`, regarder le SVG. Consigner : transparent supporté ? alpha supporté ? round supporté ?
+→ Si (a) échoue : le thème glass utilise `background: #141617` + calques alpha uniquement (pseudo-verre), et le how-to l'explique.
+
+- [ ] **Step 2: Test qui échoue**
+
+```python
+async def test_binding_d_cycle_trois_themes(tmp_path, monkeypatch):
+    from trader.cockpit import CockpitApp
+
+    _patch_state_paths(monkeypatch, tmp_path)
+    app = CockpitApp()
+    async with app.run_test(size=(200, 50)) as pilot:
+        assert app.theme == "casys-ink"
+        await pilot.press("d")
+        assert app.theme == "casys-glass"
+        assert app.screen.has_class("glass")
+        await pilot.press("d")
+        assert app.theme == "casys-salmon"
+        assert not app.screen.has_class("glass")
+        await pilot.press("d")
+        assert app.theme == "casys-ink"
+```
+
+Run: `uv run pytest tests/test_cockpit_home.py -v -k cycle_trois` — FAIL attendu.
+(Adapter le test T13 du binding `d` à 2 états → cycle à 3 états dans le même commit.)
+
+- [ ] **Step 3: Implémentation**
+
+```python
+# app.py — après _THEME_INK
+_THEME_GLASS = Theme(
+    name="casys-glass",
+    dark=True,
+    primary="#8ec07c",
+    secondary="#928374",
+    warning="#d79921",
+    error="#fb4934",
+    success="#b8bb26",
+    accent="#83a598",
+    foreground="#ebdbb2",
+    # Ajusté selon le spike : "transparent" si supporté, sinon fond charbon
+    background="#141617",
+    surface="#1d2021",
+    panel="#242628",
+)
+
+_THEME_CYCLE = ("casys-ink", "casys-glass", "casys-salmon")
+_THEME_PALETTE["casys-glass"] = PALETTE_INK
+```
+
+`action_toggle_theme` : avancer dans `_THEME_CYCLE` (modulo), puis
+`self.screen.set_class(self.theme == "casys-glass", "glass")` avant
+`_propagate_palette()`. CSS app : règles conditionnelles
+
+```css
+.glass HomePane #home-portfolio, .glass HomePane #home-activity,
+.glass HomePane #home-decisions, .glass HomePane #home-plans, .glass #home-flux {
+    border: round #8ec07c 40%;
+    background: #1d2021 35%;
+}
+```
+(+ si le spike a validé `transparent` : `.glass Screen { background: transparent; }`, à consigner dans le rapport.)
+
+`docs/how-to/cockpit-glass.md` : ~15 lignes — iTerm2 (Settings→Profiles→Window : transparency ~15 %, blur ~20) et Ghostty (`background-opacity = 0.85`, `background-blur-radius = 20`), + rappel `make watch`, thème via `d`.
+
+- [ ] **Step 4: Vérifier + captures**
+
+Run: `uv run pytest tests/test_cockpit_home.py tests/test_cockpit_smoke.py -v` → PASS.
+Run: `uv run python scripts/cockpit_screenshots.py` — regarder le rendu glass.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add trader/cockpit/app.py docs/how-to/cockpit-glass.md tests/
+git commit -m "feat(cockpit): thème casys-glass — évocation Liquid Glass (blur terminal + alpha + round)"
+```
+
+---
+
 ### Task 14: Vérification finale de bout en bout
 
 **Files:**

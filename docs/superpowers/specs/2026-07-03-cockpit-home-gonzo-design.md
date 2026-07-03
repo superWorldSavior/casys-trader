@@ -204,6 +204,21 @@ Vérification visuelle à chaque étape : captures SVG headless
 - Tuiles multi-horizon (`agent/context.py` cp3) — candidat naturel de
   l'itération suivante, la donnée existe déjà côté agent.
 
+## 10 bis. Direction visuelle complémentaire — Liquid Glass (ajout 2026-07-03)
+
+Demande d'Erwan en cours de chantier : style **Liquid Glass** (Apple) sur les UI.
+Traduction par support :
+
+- **TUI (fin de phase 1, Task 13b du plan)** : évocation seulement — thème
+  `casys-glass` en 3ᵉ option (cycle `d`) : fonds transparents/`ansi_default`
+  pour laisser passer le blur du terminal, calques en alpha (`$surface 30%`),
+  bordures `round` sur les tuiles, hairlines. Un spike valide d'abord ce que
+  Textual 8.2.7 supporte ; fallback documenté sinon (pseudo-verre par alpha
+  sur fond très sombre). Le blur réel est fourni par le terminal
+  (iTerm2/Ghostty) — how-to dédié.
+- **Web distl8 (phase 2)** : le vrai Liquid Glass (backdrop-filter,
+  translucidité, spéculaires) devient la direction par défaut du compagnon web.
+
 ## 11. Critères de réussite
 
 1. La home répond en un coup d'œil à : *je perds ou je gagne ? quelque chose
