@@ -1,7 +1,9 @@
 """Shadow JSON atomique — double-write derrière les stores SQLite.
 
-Principe : écriture dans un fichier `.tmp`, puis `os.replace` (rename atomique
-POSIX) → la cible ne reçoit jamais un contenu partiel.
+Principe : écriture dans un fichier `.tmp` à nom unique (pid + thread id),
+puis `os.replace` (rename atomique POSIX) → la cible ne reçoit jamais un
+contenu partiel. Deux writers concurrents depuis des threads différents
+utilisent des tmp distincts → pas de collision.
 
 Usage :
     from trader.state_db.shadow import write_json_atomic
@@ -11,6 +13,7 @@ Usage :
 import json
 import logging
 import os
+import threading
 from pathlib import Path
 
 log = logging.getLogger(__name__)
@@ -32,16 +35,18 @@ def _write_text(path: str, data: str, encoding: str = "utf-8") -> None:
 
 
 def write_json_atomic(path: Path, data: dict) -> None:
-    """Écrit *data* dans *path* de façon atomique via un fichier temporaire.
+    """Écrit *data* dans *path* de façon atomique via un fichier temporaire unique.
 
     Étapes :
     1. S'assurer que le répertoire parent existe.
     2. Sérialiser en JSON (indent=2, ensure_ascii=False — identique à l'existant).
-    3. Écrire dans ``path.with_suffix(path.suffix + ".tmp")``.
+    3. Écrire dans un tmp à nom unique : ``{name}.{pid}.{tid}.tmp``
+       (pid = os.getpid(), tid = threading.get_ident()).
     4. ``os.replace(tmp, path)`` (rename atomique POSIX).
 
-    En cas d'exception à l'écriture du tmp :
+    En cas d'exception :
     - loggue ``[state_db] shadow échec <name>: <exc>`` en WARNING.
+    - nettoie le tmp (best-effort ``os.unlink``).
     - re-raise → le caller décide.
 
     Args:
@@ -49,7 +54,9 @@ def write_json_atomic(path: Path, data: dict) -> None:
         data: dict sérialisable en JSON.
     """
     path = Path(path)
-    tmp = path.with_suffix(path.suffix + ".tmp")
+    pid = os.getpid()
+    tid = threading.get_ident()
+    tmp = path.with_name(f"{path.name}.{pid}.{tid}.tmp")
 
     path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -57,9 +64,13 @@ def write_json_atomic(path: Path, data: dict) -> None:
 
     try:
         _write_text(str(tmp), payload)
+        os.replace(tmp, path)
     except Exception as exc:
         log.warning("[state_db] shadow échec %s: %s", path.name, exc)
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
         raise
 
-    os.replace(tmp, path)
     log.debug("[state_db] shadow écrit %s", path.name)

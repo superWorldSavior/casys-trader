@@ -19,6 +19,10 @@ log = logging.getLogger(__name__)
 class StateDb:
     """Connexion SQLite partagée (WAL + threading.Lock) — substrat commun des stores.
 
+    Mode autocommit (isolation_level=None) : aucune transaction implicite n'est
+    ouverte par sqlite3 legacy. Toutes les transactions sont gérées explicitement
+    via transaction(). BEGIN IMMEDIATE ouvre la tx ; COMMIT/ROLLBACK via cursor.
+
     Attributs publics :
         path   (Path)           — chemin absolu du fichier .db
         _lock  (threading.Lock) — protège self._conn ; NE PAS acquérir manuellement
@@ -28,7 +32,9 @@ class StateDb:
         self.path = Path(db_path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
-        self._conn = sqlite3.connect(str(self.path), check_same_thread=False)
+        self._conn = sqlite3.connect(
+            str(self.path), check_same_thread=False, isolation_level=None
+        )
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA busy_timeout=5000")
@@ -47,27 +53,38 @@ class StateDb:
                 cur.execute("INSERT INTO …")
 
         Le lock est tenu pendant toute la durée du bloc.
-        Ne PAS appeler db.execute() / db.executescript() à l'intérieur
-        (deadlock) — utiliser le cursor yielded directement.
+        Toutes les écritures passent EXCLUSIVEMENT par transaction().
+        En mode autocommit (isolation_level=None), BEGIN/COMMIT/ROLLBACK sont émis
+        explicitement via cursor — plus robuste que conn.commit()/rollback().
         """
         with self._lock:
             cur = self._conn.cursor()
+            cur.execute("BEGIN IMMEDIATE")
             try:
-                cur.execute("BEGIN IMMEDIATE")
                 yield cur
-                self._conn.commit()
+                cur.execute("COMMIT")
             except Exception:
-                self._conn.rollback()
+                try:
+                    cur.execute("ROLLBACK")
+                except Exception:
+                    pass
                 raise
 
-    def execute(self, sql: str, params: tuple = ()) -> sqlite3.Cursor:
-        """Execute une requête SQL sous _lock, retourne le cursor.
+    def query_one(self, sql: str, params: tuple = ()) -> sqlite3.Row | None:
+        """Lit une ligne sous _lock (fetch inclus). Retourne None si absente.
 
-        Appeler .fetchone() / .fetchall() immédiatement sur le cursor retourné.
-        Ne PAS utiliser depuis l'intérieur d'un bloc transaction() (deadlock).
+        Toutes les écritures passent EXCLUSIVEMENT par transaction().
         """
         with self._lock:
-            return self._conn.execute(sql, params)
+            return self._conn.execute(sql, params).fetchone()
+
+    def query_all(self, sql: str, params: tuple = ()) -> list[sqlite3.Row]:
+        """Lit toutes les lignes sous _lock (fetch inclus).
+
+        Toutes les écritures passent EXCLUSIVEMENT par transaction().
+        """
+        with self._lock:
+            return self._conn.execute(sql, params).fetchall()
 
     def executescript(self, sql: str) -> None:
         """Execute un script SQL multi-instructions (DDL) sous _lock.
@@ -80,31 +97,34 @@ class StateDb:
 
     def table_is_empty(self, name: str) -> bool:
         """Retourne True si la table `name` ne contient aucune ligne."""
-        with self._lock:
-            row = self._conn.execute(
-                f"SELECT COUNT(*) FROM {name}"  # noqa: S608 — name interne seulement
-            ).fetchone()
-            return row[0] == 0
+        row = self.query_one(
+            f"SELECT COUNT(*) FROM {name}"  # noqa: S608 — name interne seulement
+        )
+        return row[0] == 0
 
     # ------------------------------------------------------------------
     # Migrations
     # ------------------------------------------------------------------
 
-    def apply_migrations(self, migrations: list[tuple[int, str]]) -> None:
+    def apply_migrations(self, migrations: list[tuple[int, list[str]]]) -> None:
         """Applique les migrations absentes, idempotent.
 
         Crée `schema_migrations(version INTEGER PRIMARY KEY, applied_at TEXT)`
-        si elle n'existe pas, puis pour chaque (version, sql) dont la version
-        n'est pas encore enregistrée : exécute le sql dans une transaction et
-        insère la ligne dans schema_migrations.
+        si elle n'existe pas (autocommit → DDL immédiatement persisted), puis pour
+        chaque (version, [stmt1, stmt2, ...]) :
 
-        Un sql peut contenir plusieurs statements séparés par ';'.
-        Re-run complet → no-op (versions déjà présentes ignorées).
+        - Ouvre BEGIN IMMEDIATE AVANT le check de version (verrou write SQLite acquis).
+        - Re-check SELECT sous ce verrou : si présent → COMMIT no-op ; si absent →
+          exécute les statements + INSERT version + COMMIT.
+        - En cas d'erreur : ROLLBACK + re-raise.
+        - Idempotent : re-run complet → no-op silencieux (pas de log).
+        - Log ``[state_db] migration v%d appliquée`` uniquement si réellement appliquée.
 
         Args:
-            migrations: liste ordonnée de (version, sql).
+            migrations: liste ordonnée de (version, statements). Chaque migration est
+                        une liste explicite de statements SQL — pas de split sur ';'.
         """
-        # Crée schema_migrations si absente (DDL idempotent).
+        # CREATE TABLE IF NOT EXISTS : DDL autocommitté immédiatement (isolation_level=None).
         with self._lock:
             self._conn.execute("""
                 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -112,32 +132,33 @@ class StateDb:
                     applied_at TEXT NOT NULL
                 )
             """)
-            self._conn.commit()
 
-        for version, sql in migrations:
+        for version, statements in migrations:
             with self._lock:
-                already = self._conn.execute(
+                cur = self._conn.cursor()
+                cur.execute("BEGIN IMMEDIATE")
+                already = cur.execute(
                     "SELECT 1 FROM schema_migrations WHERE version = ?",
                     (version,),
                 ).fetchone()
                 if already is not None:
-                    continue  # déjà appliquée → skip
-
-                applied_at = datetime.now(timezone.utc).isoformat()
-                try:
-                    cur = self._conn.cursor()
-                    cur.execute("BEGIN IMMEDIATE")
-                    for stmt in sql.split(";"):
-                        stmt = stmt.strip()
-                        if stmt:
-                            cur.execute(stmt)
-                    cur.execute(
-                        "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
-                        (version, applied_at),
-                    )
-                    self._conn.commit()
-                except Exception:
-                    self._conn.rollback()
-                    raise
-
-            log.info("[state_db] migration v%d appliquée", version)
+                    cur.execute("COMMIT")
+                else:
+                    applied_at = datetime.now(timezone.utc).isoformat()
+                    try:
+                        for stmt in statements:
+                            s = stmt.strip()
+                            if s:
+                                cur.execute(s)
+                        cur.execute(
+                            "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+                            (version, applied_at),
+                        )
+                        cur.execute("COMMIT")
+                    except Exception:
+                        try:
+                            cur.execute("ROLLBACK")
+                        except Exception:
+                            pass
+                        raise
+                    log.info("[state_db] migration v%d appliquée", version)
