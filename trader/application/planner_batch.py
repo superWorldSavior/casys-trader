@@ -202,10 +202,9 @@ def batch_decide(
         # Faits calculés par le code (pas des consignes en prose) : âge réel des
         # prix et état de la séance de la place du symbole. Âge inconnu = None.
         age = data_age_by_symbol.get(sym)
-        session = market.session_snapshot(sym, now=now)
         facts = {
             "data_age_m": None if age is None else int(round(age)),
-            "session": {"open": bool(session.get("open"))},
+            "session": market.session_context(sym, now=now),
             "active_watches": active_watches_by_symbol.get(sym, []),
         }
         # Séparation analyse/exécution (§5.1) : le LLM voit s'il peut exécuter

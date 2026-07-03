@@ -206,6 +206,44 @@ def _venue_for_symbol(symbol: str | None) -> _Venue:
     return _VENUE_US
 
 
+_JOURS_FR = (
+    "lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche"
+)
+
+
+def human_clock(now: datetime) -> str:
+    """Jour de semaine en français + date + heure UTC — déterministe (locale indépendant).
+
+    Utilise un tuple fixe des jours FR indexé par now.weekday() (lundi=0).
+    Entrée : datetime (UTC recommandé). Sortie : ex. ``"vendredi 03/07 14:02 UTC"``.
+    """
+    now_utc = now if now.tzinfo is not None else now.replace(tzinfo=timezone.utc)
+    jour = _JOURS_FR[now_utc.weekday()]
+    return f"{jour} {now_utc.day:02d}/{now_utc.month:02d} {now_utc.hour:02d}:{now_utc.minute:02d} UTC"
+
+
+def session_context(symbol: str, *, now: datetime) -> dict:
+    """Contexte de session enrichi : ouvert (depuis/jusqu'à) ou fermé (prochaine ouverture).
+
+    Réutilise session_snapshot + next_regular_session_open sans dupliquer la logique
+    calendaire. Déterministe : now injecté.
+
+    Ouvert  → ``{"open": True, "since_open_m": int|None, "to_close_m": int|None}``
+    Fermé   → ``{"open": False, "next_open": <iso UTC str>, "opens_in_m": int}``
+    """
+    snap = session_snapshot(symbol, now=now)
+    if snap["open"]:
+        return snap
+    next_open = next_regular_session_open(now, symbol=symbol)
+    now_utc = now if now.tzinfo is not None else now.replace(tzinfo=timezone.utc)
+    opens_in_m = int((next_open - now_utc).total_seconds() // 60)
+    return {
+        "open": False,
+        "next_open": next_open.isoformat(),
+        "opens_in_m": opens_in_m,
+    }
+
+
 def session_snapshot(symbol: str, *, now: datetime) -> dict:
     """Où en est la session régulière du marché du symbole — fait calculé par le
     code et injecté dans le contexte LLM (le prompt n'a pas à lister les horaires

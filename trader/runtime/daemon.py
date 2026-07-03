@@ -1908,6 +1908,7 @@ def run_cycle(
     meta_performance_payload = meta_performance.compute_meta_performance(STATE_DIR)
     base_context = {
         "now": now.isoformat(),
+        "now_human": market.human_clock(now),
         "portfolio": snap.as_context(fee_estimator=portfolio_fee_estimator),
         "risk_limits": risk_cfg,
         "risk_capacity": _risk_capacity_context(

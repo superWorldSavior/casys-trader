@@ -15,8 +15,10 @@ from trader.tools.market import (
     _VENUE_BY_SUFFIX,
     _VENUE_BY_SYMBOL,
     clamp_wake_to_session_open,
+    human_clock,
     most_recent_session_open,
     next_regular_session_open,
+    session_context,
     session_snapshot,
 )
 from trader.rotation.wiring import _EU_SUFFIXES, _EU_SYMBOLS
@@ -295,3 +297,48 @@ def test_session_snapshot_two_suit_taipei_pas_le_defaut_us():
     assert session_snapshot("6488.TWO", now=_utc(2026, 6, 10, 2))["open"] is True
     # 14:00 UTC = 22:00 Taipei (TW fermé) MAIS 10:00 EDT (US ouvert).
     assert session_snapshot("6488.TWO", now=_utc(2026, 6, 10, 14))["open"] is False
+
+
+# --- session_context : contexte enrichi (ouvert + fermé avec next_open) ------
+
+
+def test_session_context_ouvert_marche_eu_en_seance():
+    # Lundi 15/06 08h00 UTC = 10h00 Paris : HO.PA est en séance.
+    ctx = session_context("HO.PA", now=_utc(2026, 6, 15, 8, 0))
+    assert ctx["open"] is True
+    assert ctx["to_close_m"] > 0
+    assert "next_open" not in ctx
+    assert "opens_in_m" not in ctx
+
+
+def test_session_context_ferme_weekend_abbv():
+    # ABBV (NYSE) vendredi 12/06 22h UTC → marché fermé.
+    now = _utc(2026, 6, 12, 22)
+    ctx = session_context("ABBV", now=now)
+    assert ctx["open"] is False
+    expected_next = next_regular_session_open(now, symbol="ABBV").isoformat()
+    assert ctx["next_open"] == expected_next
+    assert ctx["opens_in_m"] > 0
+    assert "since_open_m" not in ctx
+    assert "to_close_m" not in ctx
+
+
+def test_session_context_ferme_ferie_independence_day_abbv():
+    # ABBV (NYSE) vendredi 3 juillet 2026 = Independence Day observé → NYSE fermé.
+    # Prochaine session : lundi 6 juillet à 09h30 EDT = 13h30 UTC.
+    ctx = session_context("ABBV", now=_utc(2026, 7, 3, 14))
+    assert ctx["open"] is False
+    assert ctx["next_open"] == _utc(2026, 7, 6, 13, 30).isoformat()
+    assert ctx["opens_in_m"] > 0
+
+
+# --- human_clock : jour de semaine EN FRANÇAIS, déterministe ----------------
+
+
+def test_human_clock_vendredi_utc():
+    # 2026-07-03 14h02 UTC est un vendredi.
+    assert human_clock(_utc(2026, 7, 3, 14, 2)) == "vendredi 03/07 14:02 UTC"
+
+
+def test_human_clock_lundi():
+    assert human_clock(_utc(2026, 6, 15, 9, 5)) == "lundi 15/06 09:05 UTC"
