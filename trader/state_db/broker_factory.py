@@ -82,6 +82,14 @@ def bootstrap_state_backend(
     db_path = state_dir / "casys.db"
     db = open_state_db(db_path)
 
+    # integrity_check — signal d'exploitation (log uniquement, ne crashe pas)
+    ic_results = db.integrity_check()
+    if ic_results != ["ok"]:
+        log.error(
+            "[state_db] integrity_check ÉCHEC: %s",
+            "; ".join(ic_results),
+        )
+
     # 1. Migrations + imports JSON (idempotents via sentinels state_imports)
     import_broker_from_json(db, state_dir / "broker.json", starting_cash=starting_cash)
     import_trade_plans_from_json(db, state_dir / "trade_plans.json")
