@@ -72,17 +72,14 @@ def import_broker_from_json(
     json_path = Path(json_path)
 
     if json_path.exists():
-        # Backup horodaté — isoformat sans ':' pour compatibilité nom de fichier
-        ts = datetime.now(timezone.utc).isoformat().replace(":", "")
-        backup_path = json_path.with_name(json_path.name + f".bak-{ts}")
-        json_path.rename(backup_path)
-
-        raw = json.loads(backup_path.read_text())
+        # 1. Parse/validate AVANT toute mutation (JSON invalide → JSONDecodeError, fichier intact)
+        raw = json.loads(json_path.read_text())
         cash: float = raw["cash"]
         # positions = dict symbol → dict ; on itère les valeurs
         positions: list[dict] = list(raw.get("positions", {}).values())
         fills: list[dict] = raw.get("fills", [])
 
+        # 2. Import atomique dans la base
         with db.transaction() as cur:
             cur.execute("INSERT INTO broker_state(id, cash) VALUES (1, ?)", (cash,))
             for pos in positions:
@@ -109,6 +106,11 @@ def import_broker_from_json(
                         fill.get("fx_rate", 1.0),
                     ),
                 )
+
+        # 3. Backup horodaté SEULEMENT après commit réussi (JSON original intact en cas d'erreur)
+        ts = datetime.now(timezone.utc).isoformat().replace(":", "")
+        backup_path = json_path.with_name(json_path.name + f".bak-{ts}")
+        json_path.rename(backup_path)
 
         log.info(
             "[state_db] broker importé: %d positions, %d fills, cash=%.2f",

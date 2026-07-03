@@ -75,6 +75,7 @@ from trader.tools.data_source import (
     parse_data_sources_config,
 )
 from trader.tools.ib_source import IBDataSource, connect_ib
+from trader.state_db.broker_factory import make_broker
 
 ROOT = Path(__file__).resolve().parents[2]
 STATE_DIR = ROOT / "state"
@@ -1719,10 +1720,11 @@ def run_cycle(
     )
     _append_event("cycle_started", symbols_due=symbols_to_decide, dry_run=dry_run)
 
-    broker = SimBroker(
-        STATE_DIR / "broker.json",
+    broker = make_broker(
+        state_dir=STATE_DIR,
         starting_cash=starting_equity,
         commission_model=commission_model,
+        backend=os.getenv("CASYS_STATE_BACKEND", "json"),
     )
     plan_store = TradePlanStore(STATE_DIR / "trade_plans.json")
     gate = RiskGate(RiskLimits.from_dict(risk_cfg))

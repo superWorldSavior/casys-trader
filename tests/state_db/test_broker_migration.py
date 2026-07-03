@@ -181,3 +181,55 @@ class TestImportBrokerFromJson:
 
         assert db.query_all("SELECT * FROM broker_positions") == []
         assert db.query_all("SELECT * FROM broker_fills") == []
+
+
+class TestImportBrokerInvalidJson:
+    """FIX 4 — valider le JSON AVANT de renommer (fichier intact sur erreur)."""
+
+    def test_invalid_json_raises_json_decode_error(self, db: StateDb, tmp_path: Path) -> None:
+        """JSON corrompu → JSONDecodeError levée."""
+        corrupted = tmp_path / "broker.json"
+        corrupted.write_text("{ this is not valid json !!!}")
+
+        with pytest.raises(json.JSONDecodeError):
+            import_broker_from_json(db, corrupted, starting_cash=100_000.0)
+
+    def test_invalid_json_file_preserved_after_error(self, db: StateDb, tmp_path: Path) -> None:
+        """JSON corrompu → fichier original TOUJOURS présent après l'erreur (pas renommé)."""
+        corrupted = tmp_path / "broker.json"
+        corrupted.write_text("{ corrupted json }")
+
+        with pytest.raises(json.JSONDecodeError):
+            import_broker_from_json(db, corrupted, starting_cash=100_000.0)
+
+        assert corrupted.exists(), "Le JSON corrompu ne doit PAS être renommé"
+        bak_files = list(tmp_path.glob("broker.json.bak-*"))
+        assert bak_files == [], "Aucun backup ne doit être créé sur erreur de parse"
+
+    def test_invalid_json_tables_remain_empty(self, db: StateDb, tmp_path: Path) -> None:
+        """JSON corrompu → broker_state reste vide (pas de demi-import)."""
+        corrupted = tmp_path / "broker.json"
+        corrupted.write_text("not json at all")
+
+        with pytest.raises(json.JSONDecodeError):
+            import_broker_from_json(db, corrupted, starting_cash=100_000.0)
+
+        assert db.table_is_empty("broker_state")
+
+    def test_retry_after_invalid_json_does_not_create_new_broker(
+        self, db: StateDb, tmp_path: Path
+    ) -> None:
+        """Retry après JSON invalide → ne crée PAS un broker neuf (fichier toujours là)."""
+        corrupted = tmp_path / "broker.json"
+        corrupted.write_text("{{ invalid }}")
+
+        # Premier essai : erreur
+        with pytest.raises(json.JSONDecodeError):
+            import_broker_from_json(db, corrupted, starting_cash=100_000.0)
+
+        # Retry : le fichier est toujours là → nouvel essai échoue aussi (pas de broker neuf)
+        with pytest.raises(json.JSONDecodeError):
+            import_broker_from_json(db, corrupted, starting_cash=100_000.0)
+
+        # Aucun broker_state créé
+        assert db.table_is_empty("broker_state")

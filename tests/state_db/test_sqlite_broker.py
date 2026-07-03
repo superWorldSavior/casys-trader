@@ -394,3 +394,155 @@ class TestShadowJson:
         # Aucun .json créé dans tmp_path (hors db)
         json_files = list(tmp_path.glob("*.json"))
         assert json_files == []
+
+
+# ---------------------------------------------------------------------------
+# Classe 5 — regenerate_shadow (FIX 3)
+# ---------------------------------------------------------------------------
+
+
+class TestRegenerateShadow:
+    def test_regenerate_shadow_creates_json_from_tables(self, tmp_path: Path) -> None:
+        """regenerate_shadow() crée broker.json miroir des tables (sans submit)."""
+        json_path = tmp_path / "broker.json"
+        db, broker = _make_sqlite_broker(tmp_path, json_path=json_path)
+
+        # Soumettre un ordre pour muter les tables
+        broker.submit(Order("MSFT", "BUY", 5.0), 200.0, "t1", dry_run=False)
+
+        # Supprimer le shadow (simule crash après COMMIT avant shadow-write)
+        json_path.unlink()
+        assert not json_path.exists()
+
+        # regenerate_shadow doit le recréer
+        broker.regenerate_shadow()
+        assert json_path.exists()
+
+        shadow = json.loads(json_path.read_text())
+        assert shadow["cash"] == pytest.approx(broker.cash())
+        assert "MSFT" in shadow["positions"]
+        assert shadow["positions"]["MSFT"]["quantity"] == pytest.approx(5.0)
+
+    def test_regenerate_shadow_noop_without_json_path(self, tmp_path: Path) -> None:
+        """regenerate_shadow() sans json_path = no-op (pas d'exception)."""
+        db, broker = _make_sqlite_broker(tmp_path, json_path=None)
+        broker.submit(Order("AAPL", "BUY", 2.0), 100.0, "t1", dry_run=False)
+        # Doit passer sans erreur
+        broker.regenerate_shadow()
+        json_files = list(tmp_path.glob("*.json"))
+        assert json_files == []
+
+    def test_regenerate_shadow_overrides_stale_json(self, tmp_path: Path) -> None:
+        """regenerate_shadow() écrase un broker.json stale avec les données des tables."""
+        json_path = tmp_path / "broker.json"
+        db, broker = _make_sqlite_broker(tmp_path, json_path=json_path)
+
+        # État réel dans les tables
+        broker.submit(Order("GOOG", "BUY", 3.0), 180.0, "t1", dry_run=False)
+
+        # Écrire un JSON stale (données erronées)
+        json_path.write_text(json.dumps({"cash": 9999.0, "positions": {}, "fills": []}))
+
+        # regenerate_shadow doit corriger
+        broker.regenerate_shadow()
+
+        shadow = json.loads(json_path.read_text())
+        assert shadow["cash"] == pytest.approx(broker.cash())
+        assert "GOOG" in shadow["positions"]
+
+
+# ---------------------------------------------------------------------------
+# Classe 6 — Parité supplémentaire (FIX 5)
+# ---------------------------------------------------------------------------
+
+
+class TestPariteSupplementaire:
+    """Cas de parité SimBroker ↔ SqliteBroker non couverts dans TestParite."""
+
+    def test_short_to_long_reversal(self, tmp_path: Path) -> None:
+        """Retournement short → long : parité exacte avec SimBroker."""
+        sim = _make_sim_broker(tmp_path / "sim")
+        _, sqlite = _make_sqlite_broker(tmp_path / "sq")
+
+        # Ouvrir short de -5
+        sim.submit(Order("SPY", "SELL", 5.0), 100.0, "t1", dry_run=False)
+        sqlite.submit(Order("SPY", "SELL", 5.0), 100.0, "t1", dry_run=False)
+        _assert_brokers_equal(sim, sqlite)
+
+        # Retournement : achète 10 → net +5 long
+        sim.submit(Order("SPY", "BUY", 10.0), 105.0, "t2", dry_run=False)
+        sqlite.submit(Order("SPY", "BUY", 10.0), 105.0, "t2", dry_run=False)
+        _assert_brokers_equal(sim, sqlite)
+
+        pos = sqlite.positions()["SPY"]
+        assert pos.quantity == pytest.approx(5.0)
+        assert pos.avg_price == pytest.approx(105.0)  # avg = prix du retournement
+
+    def test_partial_reduction_of_short(self, tmp_path: Path) -> None:
+        """Réduction partielle d'un short : parité exacte avec SimBroker."""
+        sim = _make_sim_broker(tmp_path / "sim")
+        _, sqlite = _make_sqlite_broker(tmp_path / "sq")
+
+        # Ouvrir short de -8
+        sim.submit(Order("SPY", "SELL", 8.0), 100.0, "t1", dry_run=False)
+        sqlite.submit(Order("SPY", "SELL", 8.0), 100.0, "t1", dry_run=False)
+
+        # Réduire de 3 → -5 short
+        sim.submit(Order("SPY", "BUY", 3.0), 98.0, "t2", dry_run=False)
+        sqlite.submit(Order("SPY", "BUY", 3.0), 98.0, "t2", dry_run=False)
+        _assert_brokers_equal(sim, sqlite)
+
+        pos = sqlite.positions()["SPY"]
+        assert pos.quantity == pytest.approx(-5.0)
+        assert pos.avg_price == pytest.approx(100.0)  # avg short inchangé
+
+    def test_exact_close_long(self, tmp_path: Path) -> None:
+        """Fermeture exacte d'un long : q==0 absent de positions(), parité SimBroker."""
+        sim = _make_sim_broker(tmp_path / "sim")
+        _, sqlite = _make_sqlite_broker(tmp_path / "sq")
+
+        sim.submit(Order("TSLA", "BUY", 7.0), 250.0, "t1", dry_run=False)
+        sqlite.submit(Order("TSLA", "BUY", 7.0), 250.0, "t1", dry_run=False)
+
+        sim.submit(Order("TSLA", "SELL", 7.0), 260.0, "t2", dry_run=False)
+        sqlite.submit(Order("TSLA", "SELL", 7.0), 260.0, "t2", dry_run=False)
+
+        _assert_brokers_equal(sim, sqlite)
+        assert "TSLA" not in sqlite.positions()
+        assert "TSLA" not in sim.positions()
+
+    def test_commission_ibkr_non_usd_symbol(self, tmp_path: Path) -> None:
+        """Commission IBKR sur symbole TWD (fx_rate << 1) : parité SimBroker."""
+        model = IbkrCommissionModel()
+        sim = SimBroker(
+            tmp_path / "sim" / "broker.json",
+            starting_cash=100_000.0,
+            commission_model=model,
+        )
+        _, sqlite = _make_sqlite_broker(
+            tmp_path / "sq", commission_model=model
+        )
+
+        # 2379.TW : prix en TWD, fx_rate = 0.031 (TWD→USD)
+        order = Order("2379.TW", "BUY", 100.0)
+        sim.submit(order, 870.0, "t1", dry_run=False, fx_rate=0.031)
+        sqlite.submit(order, 870.0, "t1", dry_run=False, fx_rate=0.031)
+        _assert_brokers_equal(sim, sqlite)
+
+    def test_commission_ibkr_eu_symbol(self, tmp_path: Path) -> None:
+        """Commission IBKR sur symbole EUR (^FCHI proxy) : parité SimBroker."""
+        model = IbkrCommissionModel()
+        sim = SimBroker(
+            tmp_path / "sim" / "broker.json",
+            starting_cash=100_000.0,
+            commission_model=model,
+        )
+        _, sqlite = _make_sqlite_broker(
+            tmp_path / "sq", commission_model=model
+        )
+
+        # Symbole EU, prix en EUR, fx_rate ~1.08 (EUR→USD)
+        order = Order("AIR.PA", "BUY", 5.0)
+        sim.submit(order, 170.0, "t1", dry_run=False, fx_rate=1.08)
+        sqlite.submit(order, 170.0, "t1", dry_run=False, fx_rate=1.08)
+        _assert_brokers_equal(sim, sqlite)

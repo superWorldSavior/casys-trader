@@ -108,38 +108,38 @@ class SqliteBroker:
         if dry_run:
             return None
 
-        # Lire la position courante (hors transaction — lecture only)
-        row = self._db.query_one(
-            "SELECT quantity, avg_price FROM broker_positions WHERE symbol = ?",
-            (order.symbol,),
-        )
-        old_qty = float(row["quantity"]) if row is not None else 0.0
-        old_avg = float(row["avg_price"]) if row is not None else 0.0
-
-        new_qty, new_avg_price, cash_delta_total = compute_fill_effect(
-            old_quantity=old_qty,
-            old_avg_price=old_avg,
-            order=order,
-            price=price,
-            fx_rate=fx_rate,
-            commission=commission,
-        )
-
-        log.debug(
-            "[state_db] submit %s %s qty=%.4f price=%.4f new_qty=%.4f cash_delta_usd=%.4f",
-            order.side,
-            order.symbol,
-            order.quantity,
-            price,
-            new_qty,
-            cash_delta_total,
-        )
-
-        # Mutation atomique : position + cash + fill dans UNE transaction
+        # Lecture position + toutes les mutations dans UNE transaction (linéarisable)
         with self._db.transaction() as cur:
+            row = cur.execute(
+                "SELECT quantity, avg_price FROM broker_positions WHERE symbol=?",
+                (order.symbol,),
+            ).fetchone()
+            old_qty = float(row["quantity"]) if row is not None else 0.0
+            old_avg = float(row["avg_price"]) if row is not None else 0.0
+
+            new_qty, new_avg_price, cash_delta_total = compute_fill_effect(
+                old_quantity=old_qty,
+                old_avg_price=old_avg,
+                order=order,
+                price=price,
+                fx_rate=fx_rate,
+                commission=commission,
+            )
+
+            log.debug(
+                "[state_db] submit %s %s qty=%.4f price=%.4f new_qty=%.4f cash_delta_usd=%.4f",
+                order.side,
+                order.symbol,
+                order.quantity,
+                price,
+                new_qty,
+                cash_delta_total,
+            )
+
             cur.execute(
-                "INSERT OR REPLACE INTO broker_positions(symbol, quantity, avg_price)"
-                " VALUES (?, ?, ?)",
+                "INSERT INTO broker_positions(symbol, quantity, avg_price) VALUES (?,?,?)"
+                " ON CONFLICT(symbol) DO UPDATE SET"
+                " quantity=excluded.quantity, avg_price=excluded.avg_price",
                 (order.symbol, new_qty, new_avg_price),
             )
             cur.execute(
@@ -177,6 +177,21 @@ class SqliteBroker:
     # Shadow helpers
     # ------------------------------------------------------------------
 
+    def regenerate_shadow(self) -> None:
+        """Régénère le shadow broker.json depuis les tables SQLite.
+
+        Idempotent et sûr au boot : rattrape un shadow absent ou stale suite à
+        un crash entre le COMMIT SQLite et le double-write shadow JSON.
+        No-op si json_path est None.
+        """
+        if self._json_path is None:
+            return
+        try:
+            self._write_shadow()
+        except Exception as exc:
+            log.warning("[state_db] regenerate_shadow échec: %s", exc)
+            raise
+
     def _write_shadow(self) -> None:
         """Reconstruit le shadow broker.json depuis les tables et l'écrit atomiquement.
 
@@ -190,9 +205,9 @@ class SqliteBroker:
         cash_row = self._db.query_one("SELECT cash FROM broker_state WHERE id=1")
         cash = float(cash_row["cash"]) if cash_row is not None else 0.0
 
-        # TOUTES les positions (y compris quantity=0) — pas de filtre
+        # TOUTES les positions (y compris quantity=0) — pas de filtre, ordre déterministe
         pos_rows = self._db.query_all(
-            "SELECT symbol, quantity, avg_price FROM broker_positions"
+            "SELECT symbol, quantity, avg_price FROM broker_positions ORDER BY symbol"
         )
         positions = {
             r["symbol"]: {
