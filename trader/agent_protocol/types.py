@@ -23,6 +23,7 @@ class Decision:
     cancel_watch_ids: list[str] = field(default_factory=list)  # plans/veilles à annuler (correction)
     context_request: dict | None = None
     learning: str | None = None  # note runtime que l'agent veut retenir (boucle de feedback)
+    thesis: dict | None = None  # L6 tag structuré {setup, horizon, invalidation} — persisté pour attribution RAG
     domain_tools: dict | None = None  # traces tournée d'outils (runtime.tool_*)
     decision_reason_code: str = "UNKNOWN"
     resolve_from_position: bool = False   # CLOSE/REDUCE/REVERSE sans side : dériver depuis la position

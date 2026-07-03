@@ -26,6 +26,33 @@ _LEGACY_DECISION_FIELDS = {
     "learning",
 }
 MAX_LEARNING_CHARS = 1000  # borne la note pour ne pas faire exploser le prompt/store
+MAX_THESIS_FIELD_CHARS = 200  # borne chaque champ texte du thesis tag
+_THESIS_VALID_HORIZONS = frozenset({"intraday", "swing", "position"})
+
+
+def _normalize_thesis(value: object) -> dict | None:
+    """Valide et borne le thesis tag {setup, horizon, invalidation}.
+
+    Fail-safe : tout thesis malformé, partiel ou hors-contrat retourne None
+    sans faire tomber la décision. Règles :
+    - value doit être un dict
+    - setup et invalidation : str non vide, tronqués à MAX_THESIS_FIELD_CHARS
+    - horizon : str dans {intraday, swing, position} (case-insensitive, normalisé lowercase)
+    - un seul champ manquant → None
+    """
+    if not isinstance(value, dict):
+        return None
+    setup = value.get("setup")
+    horizon = value.get("horizon")
+    invalidation = value.get("invalidation")
+    if not isinstance(setup, str) or not isinstance(horizon, str) or not isinstance(invalidation, str):
+        return None
+    setup = setup.strip()[:MAX_THESIS_FIELD_CHARS]
+    invalidation = invalidation.strip()[:MAX_THESIS_FIELD_CHARS]
+    horizon_norm = horizon.strip().lower()
+    if not setup or not invalidation or horizon_norm not in _THESIS_VALID_HORIZONS:
+        return None
+    return {"setup": setup, "horizon": horizon_norm, "invalidation": invalidation}
 
 
 def _normalize_learning(value: object) -> str | None:
@@ -316,6 +343,7 @@ def _decision_from_symbol_calls(data: dict, symbol: str) -> Decision:
             decision["quantity"] = qty
             decision["intent"] = intent
             decision["exit_plan"] = _compact_exit_plan(args.get("exit"))
+            decision["thesis"] = _normalize_thesis(args.get("thesis"))
             if needs_position_resolve:
                 decision["_resolve_from_position"] = True
                 if reduce_fraction is not None:
@@ -344,7 +372,7 @@ def _decision_from_symbol_calls(data: dict, symbol: str) -> Decision:
     resolve_from_position = decision.pop("_resolve_from_position", False)
     reduce_fraction_val = decision.pop("_reduce_fraction", None)
     parsed = _decision_from_dict(decision, symbol)
-    result = replace(parsed, domain_tools={"tool_rounds": 0, "tool_calls": traces})
+    result = replace(parsed, domain_tools={"tool_rounds": 0, "tool_calls": traces}, thesis=decision.get("thesis"))
     if resolve_from_position:
         result = replace(result, resolve_from_position=True)
     if reduce_fraction_val is not None:

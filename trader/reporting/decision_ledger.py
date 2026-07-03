@@ -119,6 +119,7 @@ def build_decision_row(
         "llm_fallback_reason": decision.get("llm_fallback_reason"),
         "llm_error": decision.get("llm_error"),
         "learning": decision.get("learning"),
+        "thesis": decision.get("thesis") if isinstance(decision.get("thesis"), dict) else None,
         "decision": original_decision,
         "market_snapshot": {
             "price": price,

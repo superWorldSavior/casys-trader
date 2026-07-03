@@ -2231,6 +2231,7 @@ def run_cycle(
                  "llm_fallback_reason": decision.llm_fallback_reason,
                  "llm_error": decision.llm_error,
                  "learning": decision.learning,
+                 "thesis": decision.thesis,
                  "trade_plan_created": False,
                  "indicator_watch_created": False,
                  "indicator_watch_requested": bool(decision.indicator_watch),
