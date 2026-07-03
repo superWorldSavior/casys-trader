@@ -99,3 +99,48 @@ def select_decision_rows(
     indexed = list(enumerate(decision_source_rows(decisions, recent_decisions)))
     ranked = sorted(indexed, key=lambda item: (decision_priority(item[1])[0], -item[0]))
     return [row for _, row in ranked[:limit]]
+
+
+ACTIVITY_STATES: tuple[str, ...] = ("exec", "veille", "plan", "risk", "stale", "hold")
+
+_STATUS_TO_SERIES: dict[str, str] = {
+    "exec": "exec",
+    "veille": "veille",
+    "armé": "plan",
+    "plan": "plan",
+    "risk": "risk",
+    "stale": "stale",
+    "quiet": "hold",
+    "hold": "hold",
+    "signal": "hold",
+}
+
+
+def activity_buckets(
+    recent_decisions: list[dict],
+    now: datetime,
+    *,
+    window_min: int = 60,
+    bucket_min: int = 5,
+) -> dict[str, list[int]]:
+    """Compte les décisions par état et tranche de temps.
+
+    Retourne {état: [n_buckets ints]}, du plus ancien au plus récent.
+    Décisions sans ts parsable, futures, ou d'âge >= window_min : ignorées.
+    """
+    n_buckets = max(1, window_min // bucket_min)
+    series: dict[str, list[int]] = {state: [0] * n_buckets for state in ACTIVITY_STATES}
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=UTC)
+    window_seconds = window_min * 60
+    for row in _safe_list_of_dicts(recent_decisions):
+        ts = parse_ts(row.get("cycle_ts") or row.get("ts"))
+        if ts is None:
+            continue
+        age = (now - ts).total_seconds()
+        if age < 0 or age >= window_seconds:
+            continue
+        index = n_buckets - 1 - int(age // (bucket_min * 60))
+        target = _STATUS_TO_SERIES.get(decision_status(row), "hold")
+        series[target][index] += 1
+    return series
