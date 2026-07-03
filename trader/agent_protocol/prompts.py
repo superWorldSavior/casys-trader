@@ -232,7 +232,7 @@ _BATCH_FINAL_CONTRACT = (
 )
 
 _SYMBOL_CALLS_FINAL_CONTRACT = (
-    'Réponds UNIQUEMENT par {"decisions": [ <obj>, ... ]} avec EXACTEMENT une entrée '
+    'Le contrat final: {"decisions": [ <obj>, ... ]} avec EXACTEMENT une entrée '
     "par symbole listé.\n"
     'Chaque <obj>: {"symbol":"<SYM>","confidence":<0..1>,"rationale":"<court>",'
     f'"decision_reason_code":"{_REASON_CODE_ENUM}","calls":[<tool_call>,...]}}\n'
@@ -318,8 +318,29 @@ def _batch_compact_contract() -> str:
     return _batch_final_contract() + _BATCH_COMPACT_SUFFIX
 
 
-def _symbol_calls_final_contract() -> str:
-    return _SYMBOL_CALLS_FINAL_CONTRACT
+def _symbol_calls_final_contract(allow_tool_calls: bool = False) -> str:
+    """Contrat de sortie « action tools par symbole ».
+
+    Au 1er passage (`allow_tool_calls`), l'agent garde le choix : émettre d'abord
+    une tournée d'outils lecture-seule, OU rendre directement le contrat final.
+    On ne bride pas ce choix (AX : faire confiance à l'agent). Au tour final,
+    plus de tournée — la réponse `decisions` est imposée.
+    """
+    if allow_tool_calls:
+        head = (
+            "Au PREMIER tour, tu choisis librement : soit tu émets d'abord une "
+            "tournée d'outils lecture-seule "
+            '{"tool_calls":[...]}'
+            " (cf. « Outils domaine » ci-dessus) pour aller chercher le contexte "
+            "qui te manque, soit tu rends directement le contrat final ci-dessous. "
+            "Après une tournée, tu rendras le contrat final.\n"
+        )
+    else:
+        head = (
+            'Réponds UNIQUEMENT par {"decisions":[...]} ci-dessous'
+            " : c'est le tour final, plus aucune tournée d'outils n'est acceptée.\n"
+        )
+    return head + _SYMBOL_CALLS_FINAL_CONTRACT
 
 
 def _indicator_watch_vocabulary() -> str:
@@ -447,7 +468,7 @@ def build_batch_prompt(
     """Prompt batch : contexte PARTAGÉ (cockpit/portefeuille/KPI/attribution/learnings)
     envoyé UNE fois, puis la liste des symboles à décider -> un seul appel modèle."""
     if use_symbol_calls_contract:
-        contract = _symbol_calls_final_contract()
+        contract = _symbol_calls_final_contract(allow_tool_calls)
     else:
         contract = _batch_compact_contract() if allow_context_request else _batch_final_contract()
     return (

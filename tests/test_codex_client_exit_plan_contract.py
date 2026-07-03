@@ -48,6 +48,22 @@ def _symbol_calls_prompt_from_decide_batch() -> str:
     return router.prompt
 
 
+def _symbol_calls_final_prompt_from_decide_batch() -> str:
+    """Tour final : plus de tournée d'outils (allow_tool_calls=False)."""
+    router = CapturingRouter()
+    decide_batch(
+        symbols=["SPY"],
+        mandate="(mandat)",
+        memory="(memoire)",
+        shared_context={"cockpit": {}},
+        per_symbol={},
+        allow_tool_calls=False,
+        use_symbol_calls_contract=True,
+        llm_router=router,
+    )
+    return router.prompt
+
+
 def _trailing_stop_trail_types() -> tuple[str, ...]:
     assert hasattr(trade_plan, "TRAILING_STOP_TRAIL_TYPES")
     return tuple(trade_plan.TRAILING_STOP_TRAIL_TYPES)
@@ -289,6 +305,26 @@ def test_batch_contract_tools_par_symbole_remplace_le_schema_legacy_visible() ->
     assert '"action":"BUY|SELL|HOLD"' not in prompt
     assert '"exit_plan":<object|null>' not in prompt
     assert 'Chaque <obj>: {"symbol":"<SYM>","action"' not in prompt
+
+
+def test_symbol_calls_contract_laisse_l_agent_pull_au_premier_tour() -> None:
+    """AX : au 1er passage (allow_tool_calls), le contrat symbol_calls ne DOIT PAS
+    interdire la tournée read-only. L'agent choisit lui-même : tool_calls d'abord,
+    OU directement le contrat final. Le « Réponds UNIQUEMENT » bridait ce choix."""
+    prompt = _symbol_calls_prompt_from_decide_batch()  # allow_tool_calls=True
+
+    assert 'Réponds UNIQUEMENT par {"decisions"' not in prompt
+    assert '"tool_calls"' in prompt  # le pull reste offert
+    assert "premier tour" in prompt.lower()  # clause explicite du choix
+
+
+def test_symbol_calls_contract_impose_decisions_au_tour_final() -> None:
+    """Au tour final (allow_tool_calls=False), plus de tournée : le contrat impose
+    la réponse `decisions` et ne propose plus le catalogue d'outils."""
+    prompt = _symbol_calls_final_prompt_from_decide_batch()
+
+    assert 'Réponds UNIQUEMENT par {"decisions"' in prompt
+    assert "# Outils domaine" not in prompt  # catalogue read-only absent au tour final
 
 
 def test_batch_contract_et_validate_exit_plan_utilisent_la_meme_constante(monkeypatch) -> None:
