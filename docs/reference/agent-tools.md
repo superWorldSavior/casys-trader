@@ -78,6 +78,12 @@ Action tools acceptés :
 | `cancel_watch` | `cancel_watch_ids` | annule seulement les veilles possédées par le symbole |
 | `record_learning` | `learning` | borne et persiste une note runtime |
 
+**Side de `propose_order`** : `OPEN_LONG`→BUY et `OPEN_SHORT`→SELL sont déduits
+automatiquement. **`REDUCE`/`CLOSE`/`REVERSE` exigent `side:BUY|SELL` explicite**
+(le sens de l'ordre qui réduit/ferme/inverse la position). Sans `side`, ces intents
+retombent en HOLD tracé (`batch_bad_output: order_side_required`) — le daemon
+n'infère pas encore la side depuis la position au portefeuille (dette Phase 6).
+
 Vocabulaire compact de `propose_order.args.exit` :
 
 | Compact | Interne |
@@ -111,6 +117,11 @@ rejeté ou hors budget (le LLM voit ce qui s'est passé).
 - Offert **seulement au 1er passage** de décision (`allow_tool_calls =
   agent_tools_enabled AND allow_context_request`), pas après un `REQUEST_CONTEXT`
   ni au tour final.
+- En mode `use_symbol_calls_contract` (le langage `calls:[...]`), le contrat du
+  **1er tour laisse le choix** à l'agent : émettre `{"tool_calls":[...]}` (pull
+  read-only) OU rendre directement `{"decisions":[...]}` ; le tour final impose
+  `decisions`. Correctif 9bbfa6a : le « Réponds UNIQUEMENT » d'origine neutralisait
+  la tournée read-only pourtant offerte au même passage.
 - Budget réservé (`budget // 2` quand actif).
 - Catalogue (`_TOOL_CATALOG`) injecté dans le prompt **seulement si** `allow_tool_calls`.
 

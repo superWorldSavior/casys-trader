@@ -1,7 +1,7 @@
 # Agent domain tools for the runtime LLM
 
 **Date**: 2026-06-29
-**Status**: Phases 1-3 livrées 2026-07-02 (registry V0 + tool loop CASYS_AGENT_TOOLS_ENABLED off + get_indicator_context/REQUEST_CONTEXT dual-accept + extras describe_data/find_indicators/recall_learnings). Phases 4-5 (action tools set_next_wake/propose_indicator_watch/cancel_watch/record_learning + propose_order) non commencées.
+**Status**: Phases 1-3 livrées 2026-07-02 (registry V0 + tool loop CASYS_AGENT_TOOLS_ENABLED off + get_indicator_context/REQUEST_CONTEXT dual-accept + extras describe_data/find_indicators/recall_learnings). Phases 4-5 (action tools par symbole : propose_order + set_next_wake + propose_indicator_watch + cancel_watch + record_learning) **LIVRÉES 2026-07-03** (commit 7ceca4a — contrat `calls:[...]` compilé vers les primitives internes), puis durcies le même jour : pull read-only ré-autorisé au 1er tour (9bbfa6a), `side` requis pour REDUCE/CLOSE/REVERSE (d11c559), résultat des cancel_watch tracé pour l'audit (4b3b548). **Dettes connues** (candidates Phase 6, cf. note granularité) : compilation position-aware (intent CLOSE/REDUCE seul → side/qty dérivés de la position au lieu d'exiger `side`) et réécriture fine des outcomes bruts de `runtime.tool_calls`.
 
 ---
 
