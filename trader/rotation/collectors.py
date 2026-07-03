@@ -66,6 +66,12 @@ def build_positions_fn(state_dir: str | Path) -> Callable[[], dict]:
 
     def _positions() -> dict:
         try:
+            # Garde-fou : SimBroker crée broker.json si absent (starting_cash défaut).
+            # En mode sqlite, le shadow est généré par bootstrap ; en mode json, la
+            # création au premier accès serait parasite (cash par défaut incorrect).
+            # On retourne {} proprement plutôt que de créer un fichier fantôme.
+            if not (state_dir / "broker.json").exists():
+                return {}
             from trader.tools.execution import SimBroker
 
             broker = SimBroker(state_dir / "broker.json")

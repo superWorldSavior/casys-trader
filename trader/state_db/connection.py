@@ -15,6 +15,33 @@ from typing import Generator
 
 log = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Registre singleton par process (FIX 1 — connexion partagée)
+# ---------------------------------------------------------------------------
+
+_DB_REGISTRY: dict[str, "StateDb"] = {}
+_DB_REGISTRY_LOCK = threading.Lock()
+
+
+def open_state_db(db_path: str | Path) -> "StateDb":
+    """Retourne (ou crée) la StateDb canonique pour *db_path*.
+
+    Cache module-level keyé par chemin absolu résolu : deux appels avec des
+    chemins équivalents (``./state/casys.db`` vs ``/abs/state/casys.db``)
+    retournent la MÊME instance. Thread-safe.
+
+    Args:
+        db_path: chemin du fichier SQLite (relatif ou absolu).
+
+    Returns:
+        StateDb — toujours la même instance pour un chemin résolu donné.
+    """
+    key = str(Path(db_path).resolve())
+    with _DB_REGISTRY_LOCK:
+        if key not in _DB_REGISTRY:
+            _DB_REGISTRY[key] = StateDb(db_path)
+        return _DB_REGISTRY[key]
+
 
 class StateDb:
     """Connexion SQLite partagée (WAL + threading.Lock) — substrat commun des stores.

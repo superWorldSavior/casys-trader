@@ -75,7 +75,12 @@ from trader.tools.data_source import (
     parse_data_sources_config,
 )
 from trader.tools.ib_source import IBDataSource, connect_ib
-from trader.state_db.broker_factory import make_broker, make_trade_plan_store, make_scheduler
+from trader.state_db.broker_factory import (
+    bootstrap_state_backend,
+    make_broker,
+    make_scheduler,
+    make_trade_plan_store,
+)
 
 ROOT = Path(__file__).resolve().parents[2]
 STATE_DIR = ROOT / "state"
@@ -3111,6 +3116,17 @@ def main(
                 )
         except Exception as _rot_exc:  # noqa: BLE001
             log.warning("[rotation] échec sur %s : %s", _rot_path.name, _rot_exc)
+
+    # Bootstrap ordonné du backend SQLite AVANT toute lecture d'état ou rotation :
+    # migrations + import JSON idempotents + 3 shadows régénérés depuis la DB.
+    # No-op si backend="json". Doit précéder make_scheduler et run_cycle.
+    from trader.config.portfolio import load_starting_cash as _load_starting_cash
+    bootstrap_state_backend(
+        state_dir=STATE_DIR,
+        starting_cash=_load_starting_cash(ROOT / "config"),
+        commission_model=commission_model,
+        backend=os.getenv("CASYS_STATE_BACKEND", "json"),
+    )
 
     sched = make_scheduler(state_dir=STATE_DIR, backend=os.getenv("CASYS_STATE_BACKEND", "json"))
     log.info("daemon démarré (dry_run=%s, once=%s)", dry_run, args.once)
