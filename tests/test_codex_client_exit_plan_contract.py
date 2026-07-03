@@ -272,9 +272,8 @@ def test_batch_parse_calls_vides_signifie_hold_explicite() -> None:
     assert parsed.domain_tools == {"tool_rounds": 0, "tool_calls": []}
 
 
-def test_batch_parse_close_avec_side_produit_action_sell() -> None:
-    """F2 : REDUCE/CLOSE/REVERSE exigent une side explicite. Avec side, le contrat
-    compile vers l'action broker (SELL) tout en gardant l'intent CLOSE."""
+def test_batch_parse_close_avec_side_explicite_est_rejete() -> None:
+    """Relative intents dérivent leur side depuis la position, jamais depuis l'agent."""
     raw = """
     {"decisions": [
       {"symbol": "SPY", "confidence": 0.7, "rationale": "these invalidee",
@@ -284,9 +283,8 @@ def test_batch_parse_close_avec_side_produit_action_sell() -> None:
     """
     parsed = codex_client.parse_batch(raw, ["SPY"], allow_context_request=False)["SPY"]
 
-    assert parsed.action == "SELL"
-    assert parsed.intent == "CLOSE"
-    assert parsed.quantity == 10.0
+    assert parsed.action == "HOLD"
+    assert "side_not_allowed_for_relative_intent" in parsed.rationale
 
 
 def test_batch_parse_close_sans_side_produit_resolve_from_position() -> None:
@@ -356,13 +354,14 @@ def test_symbol_calls_contract_laisse_l_agent_pull_au_premier_tour() -> None:
 
 def test_symbol_calls_contract_documente_l2_position_aware() -> None:
     """L2 : le prompt doit indiquer que CLOSE/REDUCE dérivent side+qty de la position,
-    et que REVERSE dérive la side (qty cible reste requise). `side` reste optionnel."""
+    et que REVERSE dérive la side (qty cible reste requise)."""
     prompt = _symbol_calls_prompt_from_decide_batch()
 
     assert "CLOSE" in prompt
     assert "REDUCE" in prompt
     assert "REVERSE" in prompt
-    # Le prompt indique que side est optionnel/dérivé pour CLOSE/REDUCE/REVERSE
+    assert "ne fournis PAS side" in prompt
+    assert "il est rejeté" in prompt
     assert "fraction" in prompt  # REDUCE accepte fraction
 
 
@@ -457,21 +456,41 @@ def test_batch_parse_reverse_sans_side_ni_qty_tombe_en_hold() -> None:
     assert "order_qty_required" in parsed.rationale
 
 
-def test_batch_parse_close_side_explicite_reste_inchange() -> None:
-    """L2 compat : si side est fourni explicitement, comportement actuel maintenu.
-    La présence de resolve_from_position=False confirme l'absence d'inférence."""
+@pytest.mark.parametrize("intent,side,qty", [
+    ("REVERSE", "SELL", 20),
+    ("ADD", "SELL", 5),
+])
+def test_batch_parse_relative_intent_avec_side_explicite_est_rejete(
+    intent: str,
+    side: str,
+    qty: int,
+) -> None:
     raw = """
     {"decisions": [
-      {"symbol": "SPY", "confidence": 0.7, "rationale": "these invalidee",
-       "decision_reason_code": "EXIT_SIGNAL",
-       "calls": [{"tool": "propose_order", "args": {"intent": "CLOSE", "side": "SELL", "qty": 10}}]}
+      {"symbol": "SPY", "confidence": 0.7, "rationale": "relative intent",
+       "decision_reason_code": "REVERSAL",
+       "calls": [{"tool": "propose_order", "args": {"intent": "%s", "side": "%s", "qty": %d}}]}
     ]}
-    """
+    """ % (intent, side, qty)
     parsed = codex_client.parse_batch(raw, ["SPY"], allow_context_request=False)["SPY"]
 
-    assert parsed.action == "SELL"
-    assert parsed.intent == "CLOSE"
-    assert parsed.resolve_from_position is False
+    assert parsed.action == "HOLD"
+    assert "side_not_allowed_for_relative_intent" in parsed.rationale
+
+
+@pytest.mark.parametrize("qty", [0, -1])
+def test_batch_parse_propose_order_rejette_qty_non_positive(qty: int) -> None:
+    raw = """
+    {"decisions": [
+      {"symbol": "SPY", "confidence": 0.7, "rationale": "bad qty",
+       "decision_reason_code": "ENTRY_SIGNAL",
+       "calls": [{"tool": "propose_order", "args": {"intent": "OPEN_LONG", "qty": %d}}]}
+    ]}
+    """ % qty
+    parsed = codex_client.parse_batch(raw, ["SPY"], allow_context_request=False)["SPY"]
+
+    assert parsed.action == "HOLD"
+    assert "order_qty_must_be_positive" in parsed.rationale
 
 
 def test_batch_parse_add_sans_side_produit_resolve_from_position() -> None:

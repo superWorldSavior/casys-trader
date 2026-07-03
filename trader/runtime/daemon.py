@@ -784,6 +784,7 @@ def _apply_amend_exit(
     propagée (AX : fail-safe, le HOLD est déjà enregistré).
     Mutate `entry` pour tracer le résultat dans le log de décision.
     """
+    entry["amend_exit"] = copy.deepcopy(amend_exit)
     open_plans = [p for p in plan_store.open_plans() if p.symbol == symbol]
     if not open_plans:
         entry["amend_exit_applied"] = False
@@ -2357,6 +2358,7 @@ def run_cycle(
                  "llm_error": decision.llm_error,
                  "learning": decision.learning,
                  "thesis": decision.thesis,
+                 "risk_pct_target": decision.risk_pct_target,
                  "trade_plan_created": False,
                  "indicator_watch_created": False,
                  "indicator_watch_requested": bool(decision.indicator_watch),
@@ -2750,7 +2752,7 @@ def run_cycle(
             if (
                 fill is not None
                 and runtime_exit_plan
-                and decision.intent in {"OPEN_LONG", "OPEN_SHORT", "REVERSE"}
+                and decision.intent in _OPENING_INTENTS
             ):
                 # §13.7 — contexte d'entrée durable capturé dans le TradePlan : la thèse
                 # (rationale LLM) et un snapshot du contexte au tir, réinjectables au réveil.
@@ -2787,10 +2789,15 @@ def run_cycle(
                         plan_store.upsert(created_plan)
                         entry["trade_plan"] = _plan_snapshot(created_plan)
                 else:
+                    plan_quantity = effective_quantity
+                    if decision.intent == "ADD":
+                        final_position = broker.positions().get(sym)
+                        plan_quantity = 0.0 if final_position is None else abs(final_position.quantity)
+                        plan_store.close_symbol(sym)
                     plan = create_trade_plan_from_order(
                         symbol=sym,
                         order_side=decision.action,
-                        quantity=effective_quantity,
+                        quantity=plan_quantity,
                         entry_price=prices[sym],
                         opened_at=fill.ts,
                         raw_exit_plan=runtime_exit_plan,
@@ -2804,7 +2811,7 @@ def run_cycle(
                     plan_store.upsert(plan)
                     entry["trade_plan_created"] = True
                     entry["trade_plan"] = _plan_snapshot(plan)
-            if fill is not None and decision.intent in {"OPEN_LONG", "OPEN_SHORT", "REVERSE"}:
+            if fill is not None and decision.intent in _OPENING_INTENTS:
                 post_entry_wake = market.freshness_budget_minutes(runtime_interval, grace_minutes=0.0)
                 if next_wake_in_minutes is None or next_wake_in_minutes > post_entry_wake:
                     next_wake_in_minutes = post_entry_wake

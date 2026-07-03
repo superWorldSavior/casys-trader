@@ -139,6 +139,7 @@ _ACTION_TOOLS = {
     "propose_indicator_watch",
     "record_learning",
     "cancel_watch",
+    "amend_exit",
 }
 
 
@@ -163,6 +164,13 @@ def _action_tool_outcome(tool: str, entry: dict) -> str | None:
             isinstance(r, dict) and r.get("outcome") == "not_owned" for r in results
         )
         return "rejected" if rejected else "cancelled"
+    if tool == "amend_exit":
+        if entry.get("amend_exit_applied"):
+            return "applied"
+        reason = str(entry.get("amend_exit_reason") or "")
+        if reason.startswith("resolve_failed"):
+            return "rejected"
+        return "noop"
     return None
 
 

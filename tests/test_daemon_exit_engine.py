@@ -1776,6 +1776,60 @@ def test_run_cycle_reduce_resynchronise_le_plan_sur_position_restante(monkeypatc
     assert plans[0].take_profits[0].quantity == 6.0
 
 
+def test_run_cycle_add_resynchronise_le_plan_sur_position_totale(monkeypatch, tmp_path, patch_batch, make_data_source) -> None:
+    _write_runtime_config(tmp_path)
+    state_dir = tmp_path / "state"
+    now = datetime(2026, 6, 5, 14, 30, tzinfo=timezone.utc)
+    broker = SimBroker(state_dir / "broker.json", starting_cash=100_000)
+    broker.submit(Order("SPY", "BUY", 10.0), 100.0, "2026-06-05T11:00:00+00:00", dry_run=False)
+    TradePlanStore(state_dir / "trade_plans.json").upsert(
+        create_trade_plan(
+            symbol="SPY",
+            side="LONG",
+            quantity=10.0,
+            entry_price=100.0,
+            opened_at="2026-06-05T11:00:00+00:00",
+            raw_exit_plan={"hard_stop": {"type": "price", "price": 94.0}},
+        )
+    )
+
+    monkeypatch.setattr(daemon, "ROOT", tmp_path)
+    monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+    data_source = make_data_source(lambda symbol, lookback, interval: [
+        Bar(ts=now.isoformat(), open=102.0, high=103.0, low=101.0, close=102.0, volume=1000.0)
+    ])
+    patch_batch(lambda **kwargs: Decision(
+            symbol="SPY",
+            action="HOLD",
+            quantity=5.0,
+            confidence=0.9,
+            rationale="add with tighter plan",
+            intent="ADD",
+            resolve_from_position=True,
+            exit_plan={"hard_stop": {"type": "price", "price": 97.0}}),
+    )
+
+    report = daemon.run_cycle(
+        dry_run=False,
+        now=now,
+        symbols_filter=["SPY"],
+        sched=Scheduler(state_dir / "scheduler.json"),
+        data_source=data_source,
+    )
+
+    decision = report["decisions"][0]
+    pos = SimBroker(state_dir / "broker.json").positions()["SPY"]
+    plans = TradePlanStore(state_dir / "trade_plans.json").open_plans()
+    assert decision["reason"] == "ok"
+    assert decision["trade_plan_created"] is True
+    assert decision["post_entry_review_scheduled"] is True
+    assert pos.quantity == 15.0
+    assert len(plans) == 1
+    assert plans[0].side == "LONG"
+    assert plans[0].remaining_quantity == 15.0
+    assert plans[0].hard_stop_price == pytest.approx(97.0)
+
+
 def test_run_cycle_rejette_un_ordre_non_hold_sans_intent(monkeypatch, tmp_path, patch_batch, make_data_source) -> None:
     _write_runtime_config(tmp_path)
     state_dir = tmp_path / "state"

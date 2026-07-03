@@ -257,6 +257,7 @@ class TestDaemonApplyAmendExit:
 
         assert entry["amend_exit_applied"] is False
         assert entry["amend_exit_reason"] == "no_open_plan"
+        assert entry["amend_exit"] == {"hard_stop": 97.0}
         # Le plan AAPL est intact
         assert len(store.open_plans()) == 1
         assert store.open_plans()[0].symbol == "AAPL"
@@ -275,6 +276,7 @@ class TestDaemonApplyAmendExit:
         )
 
         assert entry["amend_exit_applied"] is True
+        assert entry["amend_exit"] == {"hard_stop": 97.5}
         updated = store.open_plans()[0]
         assert updated.hard_stop_price == pytest.approx(97.5)
 

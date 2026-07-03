@@ -221,6 +221,7 @@ def test_daemon_risk_pct_no_stop_rejected(monkeypatch, tmp_path, make_data_sourc
     assert spy_dec is not None
     assert spy_dec.get("executed") is False
     assert "risk_sizing_needs_stop" in (spy_dec.get("reason") or "")
+    assert spy_dec.get("risk_pct_target") == pytest.approx(0.005)
 
 
 # ---------------------------------------------------------------------------

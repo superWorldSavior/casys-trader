@@ -28,6 +28,7 @@ _LEGACY_DECISION_FIELDS = {
 MAX_LEARNING_CHARS = 1000  # borne la note pour ne pas faire exploser le prompt/store
 MAX_THESIS_FIELD_CHARS = 200  # borne chaque champ texte du thesis tag
 _THESIS_VALID_HORIZONS = frozenset({"intraday", "swing", "position"})
+_RELATIVE_ORDER_INTENTS = frozenset({"CLOSE", "REDUCE", "REVERSE", "ADD"})
 
 
 def _normalize_thesis(value: object) -> dict | None:
@@ -324,22 +325,23 @@ def _decision_from_symbol_calls(data: dict, symbol: str) -> Decision:
 
             needs_position_resolve = False
             reduce_fraction: float | None = None
-            try:
+            if intent in _RELATIVE_ORDER_INTENTS:
+                if args.get("side") is not None or args.get("action") is not None:
+                    raise ValueError("side_not_allowed_for_relative_intent")
+                needs_position_resolve = True
+                action = "HOLD"  # Provisoire — remplacé par le daemon depuis la position
+                if intent == "REDUCE":
+                    frac = args.get("fraction")
+                    if frac is not None:
+                        reduce_fraction = float(frac)
+                        if not (0.0 < reduce_fraction <= 1.0):
+                            raise ValueError("reduce_fraction_out_of_range")
+            else:
                 action = _action_for_order_tool(args)
-            except ValueError as exc:
-                if str(exc) == "order_side_required" and intent in {"CLOSE", "REDUCE", "REVERSE", "ADD"}:
-                    needs_position_resolve = True
-                    action = "HOLD"  # Provisoire — remplacé par le daemon depuis la position
-                    if intent == "REDUCE":
-                        frac = args.get("fraction")
-                        if frac is not None:
-                            reduce_fraction = float(frac)
-                            if not (0.0 < reduce_fraction <= 1.0):
-                                raise ValueError("reduce_fraction_out_of_range")
-                else:
-                    raise
 
             qty_raw = args.get("qty") if args.get("qty") is not None else args.get("quantity")
+            if qty_raw is not None and float(qty_raw) <= 0.0:
+                raise ValueError("order_qty_must_be_positive")
             if needs_position_resolve:
                 if intent == "CLOSE":
                     qty = 0.0  # Dérivé de |position| dans le daemon
