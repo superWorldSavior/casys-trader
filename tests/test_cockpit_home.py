@@ -320,6 +320,15 @@ async def test_binding_d_cycle_trois_themes(tmp_path, monkeypatch):
         assert app.theme == "casys-ink"
 
 
+def test_build_portfolio_summary_sans_equite_pas_de_pnl_fantome():
+    from trader.cockpit.home import build_portfolio_summary
+
+    state = {"portfolio": {"cash": 100000.0, "equity": 0.0, "holdings": []},
+             "starting_cash": 100000.0, "kpis": {}, "attribution": {}, "equity_curve": []}
+    rendered = _console_render(build_portfolio_summary(state, palette=PALETTE_LIGHT))
+    assert "-100,000" not in rendered
+
+
 def test_build_symbol_detail_sections():
     from trader.cockpit.home import build_symbol_detail
     from trader.ui.palette import PALETTE_LIGHT

@@ -284,10 +284,15 @@ def build_portfolio_summary(state: dict, *, palette: Palette) -> RenderableType:
     for _ in range(4):
         header.add_column(ratio=1)
     ret_style = palette["pnl_positive"] if ret_pct >= 0 else palette["pnl_negative"]
+    pnl_cell = (
+        _metric_cell("P&L total", "—", value_style=palette["dim"], palette=palette)
+        if equity <= 0
+        else _metric_cell("P&L total", f"{ret_pct:+.2f}% {pnl:+,.0f}", value_style=ret_style, palette=palette)
+    )
     header.add_row(
         _metric_cell("Équité", f"{equity:,.0f}", value_style=f"bold {palette['status_equity']}", palette=palette),
         _metric_cell("Cash", f"{cash:,.0f} ({cash / equity * 100.0 if equity else 0.0:.0f}%)", value_style=palette["kpi_default"], palette=palette),
-        _metric_cell("P&L total", f"{ret_pct:+.2f}% {pnl:+,.0f}", value_style=ret_style, palette=palette),
+        pnl_cell,
         _metric_cell(
             "Latent / Réalisé / Frais",
             f"{_fmt_signed_compact_float(unrealized, decimals=0)} / "
@@ -735,8 +740,6 @@ def build_symbol_detail(state: dict, symbol: str, *, palette: Palette) -> Render
     table = Table(title="Décisions récentes", show_header=True, expand=True, box=None)
     for column in ("UTC", "Act", "État", "Conf", "Suite"):
         table.add_column(column, overflow="fold" if column == "Suite" else "ellipsis")
-    from trader.cockpit.aggregates import decision_status
-
     for row in decisions:
         confidence = _safe_float(row.get("confidence"), default=None)
         table.add_row(

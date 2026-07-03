@@ -37,9 +37,9 @@ Raccourcis :
     c         Toggle l'affichage des events cycle_started/cycle_completed
     f         Pause/reprise de l'auto-scroll du panneau logs
     l         Aller/retour page Logs
-    d         Dark/Light (thèmes casys-salmon / casys-ink)
-    Tab       Focus panneaux
-    1..6      Pages (accès direct)
+    d         Cycle thème (ink → glass → salmon)
+    Tab       Focus panneaux (Enter = détail symbole)
+    1..6      Accès direct aux pages
 """
 
 from __future__ import annotations
@@ -977,7 +977,10 @@ class CockpitApp(App):
         width: 100%;
         height: 100%;
     }
-    /* ---- Thème glass : calques alpha + bordures round (blur = terminal iTerm2/Ghostty) ---- */
+    /* ---- Thème glass : fond transparent (blur terminal) + calques alpha ---- */
+    Screen.glass {
+        background: transparent;
+    }
     .glass HomePane #home-portfolio,
     .glass HomePane #home-activity,
     .glass HomePane #home-decisions,
@@ -1350,6 +1353,8 @@ class CockpitApp(App):
         pane = self._visible_flux()
 
         def _apply(classes: "set[EventClass] | None") -> None:
+            if classes == pane._class_filter:
+                return
             pane.set_filters(classes, pane._regex_text)
 
         self.push_screen(ClassFilterModal(pane._class_filter), _apply)
@@ -1358,6 +1363,8 @@ class CockpitApp(App):
         pane = self._visible_flux()
 
         def _apply(regex_text: str | None) -> None:
+            if regex_text == pane._regex_text:
+                return
             pane.set_filters(pane._class_filter, regex_text)
 
         self.push_screen(RegexModal(pane._regex_text), _apply)

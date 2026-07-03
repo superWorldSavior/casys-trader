@@ -54,3 +54,4 @@ uv run python -m trader.cockpit
 - La palette Rich (couleurs des tableaux, statuts) est identique à `casys-ink` : `PALETTE_INK`.
 - Les sélecteurs CSS conditionnels `.glass HomePane #home-*` et `.glass #home-flux` appliquent
   `background: #1d2021 35%` et `border: round #8ec07c 40%` sur les tuiles de la home.
+- En thème glass, le fond de l'app est transparent : l'opacité/blur réglés dans le terminal traversent réellement.

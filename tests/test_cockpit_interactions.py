@@ -153,3 +153,15 @@ async def test_binding_slash_ouvre_regex_modal(tmp_path, monkeypatch):
         await pilot.pause()
         await pilot.press("slash")
         assert isinstance(app.screen, RegexModal)
+
+
+async def test_binding_F_ouvre_class_filter_modal(tmp_path, monkeypatch):
+    from trader.cockpit.app import ClassFilterModal
+    from trader.cockpit import CockpitApp
+
+    _patch_state_paths(monkeypatch, tmp_path)
+    app = CockpitApp()
+    async with app.run_test(size=(200, 50)) as pilot:
+        await pilot.pause()
+        await pilot.press("F")
+        assert isinstance(app.screen, ClassFilterModal)
