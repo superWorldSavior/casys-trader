@@ -452,11 +452,11 @@ def risk_at_stops(holdings: list[dict], trade_plans: list[dict]) -> RiskAtStops:
         if stop is None or not reference:
             without_stop.append(symbol)
             continue
-        qty = (
-            _safe_float(plan.get("remaining_quantity"), default=None)
-            or _safe_float(plan.get("quantity"), default=None)
-            or abs(_safe_float(holding.get("quantity"), default=0.0) or 0.0)
-        )
+        qty = _safe_float(plan.get("remaining_quantity"), default=None)
+        if qty is None:
+            qty = _safe_float(plan.get("quantity"), default=None)
+        if qty is None:
+            qty = abs(_safe_float(holding.get("quantity"), default=0.0) or 0.0)
         direction = -1.0 if str(plan.get("side") or "LONG").upper() == "SHORT" else 1.0
         fx_rate = _safe_float(holding.get("fx_rate"), default=1.0) or 1.0
         risk_usd = (stop - reference) * qty * direction * fx_rate

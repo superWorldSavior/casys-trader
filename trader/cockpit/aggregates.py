@@ -116,6 +116,62 @@ _STATUS_TO_SERIES: dict[str, str] = {
 }
 
 
+@dataclass(frozen=True)
+class RiskAtStops:
+    total_usd: float = 0.0
+    worst_symbol: str | None = None
+    worst_usd: float = 0.0
+    without_stop: tuple[str, ...] = ()
+
+
+def risk_at_stops(holdings: list[dict], trade_plans: list[dict]) -> RiskAtStops:
+    """Somme USD du P&L si tous les stops se déclenchent + pire position.
+
+    Position sans plan, sans stop ou sans prix de référence → listée dans
+    without_stop, exclue du total. Jamais d'exception.
+    """
+    plans_by_symbol: dict[str, dict] = {}
+    for plan in _safe_list_of_dicts(trade_plans):
+        symbol = str(plan.get("symbol") or "")
+        if symbol and symbol not in plans_by_symbol:
+            plans_by_symbol[symbol] = plan
+
+    total = 0.0
+    worst_symbol: str | None = None
+    worst_usd = 0.0
+    without_stop: list[str] = []
+    for holding in _safe_list_of_dicts(holdings):
+        symbol = str(holding.get("symbol") or "?")
+        plan = plans_by_symbol.get(symbol) or {}
+        stop = _safe_float(plan.get("hard_stop_price"), default=None)
+        reference = (
+            _safe_float(holding.get("last_price"), default=None)
+            or _safe_float(holding.get("avg_price"), default=None)
+            or _safe_float(plan.get("entry_price"), default=None)
+        )
+        if stop is None or not reference:
+            without_stop.append(symbol)
+            continue
+        qty = _safe_float(plan.get("remaining_quantity"), default=None)
+        if qty is None:
+            qty = _safe_float(plan.get("quantity"), default=None)
+        if qty is None:
+            qty = abs(_safe_float(holding.get("quantity"), default=0.0) or 0.0)
+        direction = -1.0 if str(plan.get("side") or "LONG").upper() == "SHORT" else 1.0
+        fx_rate = _safe_float(holding.get("fx_rate"), default=1.0) or 1.0
+        risk_usd = (stop - reference) * qty * direction * fx_rate
+        total += risk_usd
+        if worst_symbol is None or risk_usd < worst_usd:
+            worst_symbol, worst_usd = symbol, risk_usd
+
+    return RiskAtStops(
+        total_usd=total,
+        worst_symbol=worst_symbol,
+        worst_usd=worst_usd,
+        without_stop=tuple(without_stop),
+    )
+
+
 def activity_buckets(
     recent_decisions: list[dict],
     now: datetime,

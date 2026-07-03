@@ -102,3 +102,66 @@ def test_activity_buckets_mapping_series():
     buckets = activity_buckets(rows, NOW)
     assert buckets["plan"][11] == 1
     assert buckets["hold"][11] == 2
+
+
+# ---------------------------------------------------------------------------
+# risk_at_stops
+# ---------------------------------------------------------------------------
+
+def test_risk_at_stops_long_short_fx():
+    from trader.cockpit.aggregates import risk_at_stops
+
+    holdings = [
+        {"symbol": "AAA", "quantity": 10, "last_price": 100.0, "fx_rate": 1.0},
+        {"symbol": "BBB", "quantity": -5, "last_price": 50.0, "fx_rate": 2.0},
+    ]
+    plans = [
+        {"symbol": "AAA", "side": "LONG", "hard_stop_price": 95.0, "remaining_quantity": 10},
+        {"symbol": "BBB", "side": "SHORT", "hard_stop_price": 55.0, "remaining_quantity": 5},
+    ]
+    result = risk_at_stops(holdings, plans)
+    # AAA : (95-100)*10*1*1 = -50 ; BBB : (55-50)*5*(-1)*2 = -50
+    assert result.total_usd == -100.0
+    assert result.worst_usd == -50.0
+    assert result.without_stop == ()
+
+
+def test_risk_at_stops_sans_stop_et_vide():
+    from trader.cockpit.aggregates import risk_at_stops
+
+    holdings = [{"symbol": "CCC", "quantity": 3, "last_price": 10.0}]
+    result = risk_at_stops(holdings, [])  # aucun plan
+    assert result.without_stop == ("CCC",)
+    assert result.total_usd == 0.0
+
+    empty = risk_at_stops([], [])
+    assert empty.total_usd == 0.0 and empty.worst_symbol is None
+
+
+def test_risk_at_stops_plan_solde_contribue_zero():
+    """remaining_quantity=0 (plan soldé) → risque nul, pas de fallback sur quantity."""
+    from trader.cockpit.aggregates import risk_at_stops
+
+    holdings = [{"symbol": "AAA", "quantity": 10, "last_price": 100.0, "fx_rate": 1.0}]
+    plans = [{"symbol": "AAA", "side": "LONG", "hard_stop_price": 95.0,
+              "remaining_quantity": 0, "quantity": 10}]
+    result = risk_at_stops(holdings, plans)
+    assert result.total_usd == 0.0
+    assert result.without_stop == ()
+
+
+def test_risk_at_stops_worst_symbol_determine():
+    from trader.cockpit.aggregates import risk_at_stops
+
+    holdings = [
+        {"symbol": "AAA", "quantity": 10, "last_price": 100.0},
+        {"symbol": "BBB", "quantity": 10, "last_price": 100.0},
+    ]
+    plans = [
+        {"symbol": "AAA", "side": "LONG", "hard_stop_price": 95.0, "remaining_quantity": 10},
+        {"symbol": "BBB", "side": "LONG", "hard_stop_price": 92.0, "remaining_quantity": 10},
+    ]
+    result = risk_at_stops(holdings, plans)
+    assert result.worst_symbol == "BBB"
+    assert result.worst_usd == -80.0
+    assert result.total_usd == -130.0
