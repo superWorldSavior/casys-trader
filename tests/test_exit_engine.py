@@ -793,3 +793,155 @@ class TestProfitProtectionFillPrice:
         assert protected.signal.reason == "profit_protection"
         # fill_price doit être le prix courant, pas None
         assert protected.signal.fill_price == pytest.approx(205.96)
+
+
+# ── L7 — OCO / move_stop_to_tp ──────────────────────────────────────────────
+
+
+class TestAfterFillMoveStopToTp:
+    """after_fill='move_stop_to_tp' ratchète le stop au prix du TP déclenché."""
+
+    def test_long_tp1_declenche_deplace_stop_au_prix_du_tp(self) -> None:
+        """Cas typique : TP1@105 déclenché, stop doit monter de 95 à 105."""
+        plan = create_trade_plan(
+            symbol="SPY",
+            side="LONG",
+            quantity=10.0,
+            entry_price=100.0,
+            opened_at="2026-06-05T12:00:00+00:00",
+            raw_exit_plan={
+                "hard_stop": {"type": "price", "price": 95.0},
+                "take_profits": [
+                    {"name": "tp1", "price": 105.0, "fraction": 0.5, "after_fill": "move_stop_to_tp"},
+                    {"name": "tp2", "price": 110.0, "fraction": 0.5},
+                ],
+            },
+        )
+        result = evaluate_plan(
+            plan,
+            price=106.0,
+            now=datetime(2026, 6, 5, 12, 10, tzinfo=timezone.utc),
+        )
+
+        assert result.signal is not None
+        assert result.signal.reason == "take_profit:tp1"
+        assert result.signal.quantity == pytest.approx(5.0)
+        assert result.updated_plan.remaining_quantity == pytest.approx(5.0)
+        # Stop ratcheté au prix du TP1
+        assert result.updated_plan.hard_stop_price == pytest.approx(105.0)
+
+    def test_short_tp1_declenche_deplace_stop_au_prix_du_tp(self) -> None:
+        """Cas SHORT : TP1@95 déclenché, stop doit descendre de 105 à 95."""
+        plan = create_trade_plan(
+            symbol="SPY",
+            side="SHORT",
+            quantity=10.0,
+            entry_price=100.0,
+            opened_at="2026-06-05T12:00:00+00:00",
+            raw_exit_plan={
+                "hard_stop": {"type": "price", "price": 105.0},
+                "take_profits": [
+                    {"name": "tp1", "price": 95.0, "fraction": 0.5, "after_fill": "move_stop_to_tp"},
+                    {"name": "tp2", "price": 90.0, "fraction": 0.5},
+                ],
+            },
+        )
+        result = evaluate_plan(
+            plan,
+            price=94.0,
+            now=datetime(2026, 6, 5, 12, 10, tzinfo=timezone.utc),
+        )
+
+        assert result.signal is not None
+        assert result.signal.reason == "take_profit:tp1"
+        assert result.updated_plan.remaining_quantity == pytest.approx(5.0)
+        # Stop ratcheté au prix du TP1
+        assert result.updated_plan.hard_stop_price == pytest.approx(95.0)
+
+    def test_ratchet_ne_retrocede_pas_si_stop_deja_meilleur(self) -> None:
+        """Si le stop courant est déjà meilleur que le TP, il ne doit pas rétrograder."""
+        # stop déjà à 108 > tp1@105 pour un LONG : ne pas redescendre à 105
+        plan = create_trade_plan(
+            symbol="SPY",
+            side="LONG",
+            quantity=10.0,
+            entry_price=100.0,
+            opened_at="2026-06-05T12:00:00+00:00",
+            raw_exit_plan={
+                "hard_stop": {"type": "price", "price": 108.0},
+                "take_profits": [
+                    {"name": "tp1", "price": 105.0, "fraction": 0.5, "after_fill": "move_stop_to_tp"},
+                ],
+            },
+        )
+        result = evaluate_plan(
+            plan,
+            price=109.0,
+            now=datetime(2026, 6, 5, 12, 10, tzinfo=timezone.utc),
+        )
+
+        assert result.signal is not None
+        assert result.signal.reason == "take_profit:tp1"
+        # Stop reste à 108 (meilleur que 105)
+        assert result.updated_plan.hard_stop_price == pytest.approx(108.0)
+
+    def test_move_stop_to_tp_sans_stop_existant(self) -> None:
+        """Sans stop préalable, move_stop_to_tp crée le stop au prix du TP."""
+        plan = create_trade_plan(
+            symbol="SPY",
+            side="LONG",
+            quantity=10.0,
+            entry_price=100.0,
+            opened_at="2026-06-05T12:00:00+00:00",
+            raw_exit_plan={
+                "take_profits": [
+                    {"name": "tp1", "price": 105.0, "fraction": 0.5, "after_fill": "move_stop_to_tp"},
+                ],
+            },
+        )
+        result = evaluate_plan(
+            plan,
+            price=106.0,
+            now=datetime(2026, 6, 5, 12, 10, tzinfo=timezone.utc),
+        )
+
+        assert result.signal is not None
+        assert result.signal.reason == "take_profit:tp1"
+        # Un stop est créé au prix du TP
+        assert result.updated_plan.hard_stop_price == pytest.approx(105.0)
+
+    def test_oco_ratchet_enchaine_tp1_puis_stop_sur_residuel(self) -> None:
+        """Scénario complet : TP1 → stop ratcheté → prix redescend → stop déclenche sur résidu."""
+        plan = create_trade_plan(
+            symbol="SPY",
+            side="LONG",
+            quantity=10.0,
+            entry_price=100.0,
+            opened_at="2026-06-05T12:00:00+00:00",
+            raw_exit_plan={
+                "hard_stop": {"type": "price", "price": 95.0},
+                "take_profits": [
+                    {"name": "tp1", "price": 105.0, "fraction": 0.5, "after_fill": "move_stop_to_tp"},
+                    {"name": "tp2", "price": 110.0, "fraction": 0.5},
+                ],
+            },
+        )
+        # TP1 déclenché, stop ratcheté à 105
+        after_tp1 = evaluate_plan(
+            plan,
+            price=106.0,
+            now=datetime(2026, 6, 5, 12, 10, tzinfo=timezone.utc),
+        )
+        assert after_tp1.signal is not None
+        assert after_tp1.updated_plan.hard_stop_price == pytest.approx(105.0)
+
+        # Prix redescend sous 105 → stop se déclenche sur le résidu
+        after_stop = evaluate_plan(
+            after_tp1.updated_plan,
+            price=104.0,
+            now=datetime(2026, 6, 5, 12, 20, tzinfo=timezone.utc),
+        )
+        assert after_stop.signal is not None
+        assert after_stop.signal.reason == "hard_stop"
+        assert after_stop.signal.quantity == pytest.approx(5.0)
+        assert after_stop.close_plan is True

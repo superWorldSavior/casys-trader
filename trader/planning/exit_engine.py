@@ -333,6 +333,15 @@ def evaluate_plan(
         hard_stop = plan.hard_stop_price
         if tp.after_fill == "move_stop_to_breakeven":
             hard_stop = plan.entry_price
+        elif tp.after_fill == "move_stop_to_tp":
+            # OCO ratchet: déplace le stop au niveau du TP déclenché.
+            # Monotone : ne rétrograde jamais un stop déjà plus protecteur.
+            if hard_stop is None:
+                hard_stop = tp.price
+            elif plan.side == "LONG":
+                hard_stop = max(hard_stop, tp.price)
+            else:  # SHORT
+                hard_stop = min(hard_stop, tp.price)
         updated = replace(
             plan,
             remaining_quantity=remaining,
