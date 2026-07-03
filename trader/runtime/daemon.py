@@ -2245,6 +2245,24 @@ def run_cycle(
         agent_tools_enabled=agent_tools_enabled,
         learnings_recall_provider=_recall_provider,
     )
+    # Shadow queue (CASYS_SHADOW_QUEUE_ENABLED=1) : vérifie que la file
+    # achemine le même ensemble de symboles que le chemin synchrone.
+    # Fire-and-forget : le résultat est loggué, jamais utilisé pour décider.
+    if os.getenv("CASYS_SHADOW_QUEUE_ENABLED", "0") == "1":
+        try:
+            from trader.queue.shadow import ShadowQueueProbe
+            _shadow_probe = ShadowQueueProbe(STATE_DIR / "shadow_queue.db")
+            _shadow_result = _shadow_probe.run(
+                cycle_ts=now.isoformat(),
+                decided_symbols=list(decisions_by_symbol.keys()),
+                now_ms=int(now.timestamp() * 1000),
+            )
+            log.info("[shadow-queue] rapport cycle=%s identical=%s missing=%s",
+                     now.isoformat(), _shadow_result.get("identical"),
+                     _shadow_result.get("missing") or "[]")
+        except Exception as _shadow_exc:  # noqa: BLE001
+            log.warning("[shadow-queue] échec sonde: %s", _shadow_exc)
+
     # revue effective seulement si le modèle a réellement statué (review Codex :
     # un échec/budget à 0 ne doit pas compter comme revue périodique)
     for sym in decidable:
