@@ -311,8 +311,9 @@ def test_compare_plan_order_divergence(tmp_path: Path) -> None:
 def test_compare_watch_expires_divergence(tmp_path: Path) -> None:
     """Watch avec expires_at différent entre JSON et SQLite → identical=False.
 
-    Faux négatif potentiel si la comparaison ne normalise pas ou ne compare pas
-    le champ expires_at de la colonne DB vs le JSON.
+    Faux négatif corrigé : la comparaison utilise le champ expires_at normalisé
+    de la colonne DB (pas seulement watch_json), et couvre toutes les watches (y
+    compris celles dont expires_at est dans le futur proche ou le passé).
     """
     _bootstrap(tmp_path, cash=50_000.0)
 
@@ -335,7 +336,7 @@ def test_compare_watch_expires_divergence(tmp_path: Path) -> None:
     # SQLite colonne expires_at = canonical(T1) ; watch_json = {expires_at: T1}
     # Shadow scheduler.json synchronisé avec T1
 
-    # Modifier scheduler.json pour changer expires_at de la watch vers T2 (différent)
+    # Modifier scheduler.json : changer expires_at de la watch vers T2 (différent)
     future2 = (datetime.now(timezone.utc) + timedelta(hours=4)).isoformat()
     sched_path = tmp_path / "scheduler.json"
     sched_data = json.loads(sched_path.read_text())
@@ -355,10 +356,64 @@ def test_compare_watch_expires_divergence(tmp_path: Path) -> None:
     )
     assert result["scheduler"]["watches_diff"], "watches_diff doit être non vide"
     diff = result["scheduler"]["watches_diff"][0]
-    assert diff["position"] == 0
+    assert diff["id"] == "w-test-001"
     assert diff["json"] is not None
     assert diff["sqlite"] is not None
     assert diff["json"]["expires_at"] != diff["sqlite"]["expires_at"]
+
+
+# ---------------------------------------------------------------------------
+# FIX 2 — Watch EXPIRÉE diverge entre JSON et SQLite → identical=False
+# ---------------------------------------------------------------------------
+
+
+def test_compare_expired_watch_divergence(tmp_path: Path) -> None:
+    """Watch déjà expirée absente côté JSON mais présente côté SQLite → identical=False.
+
+    Cas non couvert par l'ancienne version (ne comparait que les watches actives) :
+    le daemon consomme aussi les watches expirées (pop_expired_indicator_watches),
+    donc une divergence sur une expirée doit être détectée.
+    """
+    _bootstrap(tmp_path, cash=50_000.0)
+
+    db_path = tmp_path / "casys.db"
+    db = open_state_db(db_path)
+
+    from trader.state_db.scheduler_store import SqliteScheduler
+
+    sched = SqliteScheduler(db, json_path=tmp_path / "scheduler.json")
+
+    # Crée une watch avec expires_at dans le PASSÉ (déjà expirée)
+    past = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+    watch = {
+        "id": "w-expired-001",
+        "symbol": "BN.PA",
+        "on_trigger": "WAKE",
+        "expires_at": past,
+    }
+    sched.set_symbol_indicator_watch("BN.PA", watch)
+    # SQLite a la watch expirée ; shadow JSON aussi
+
+    # Supprimer la watch du scheduler.json pour simuler une divergence
+    sched_path = tmp_path / "scheduler.json"
+    sched_data = json.loads(sched_path.read_text())
+    del sched_data["indicator_watches"]["w-expired-001"]
+    sched_path.write_text(json.dumps(sched_data))
+
+    try:
+        result = compare_backends(tmp_path)
+    finally:
+        close_all_state_dbs()
+        _clear_registry_for([db_path])
+
+    assert result["identical"] is False, (
+        "Watch expirée absente du JSON mais présente dans SQLite → identical=False"
+    )
+    assert result["scheduler"]["watches_diff"], "watches_diff doit être non vide"
+    diff = result["scheduler"]["watches_diff"][0]
+    assert diff["id"] == "w-expired-001"
+    assert diff["json"] is None, "Watch absente côté JSON → json=None"
+    assert diff["sqlite"] is not None, "Watch présente côté SQLite"
 
 
 # ---------------------------------------------------------------------------

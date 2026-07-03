@@ -19,7 +19,7 @@ Dimensions comparées :
 - broker   : cash (≈1e-9), TOUTES les positions (q=0 incluses), fills (séquence)
 - plans    : liste ORDONNÉE (open_plans order, asdict par position)
 - scheduler: wakes par symbole {sym→heure}, default_next_wake, stale streaks,
-             watches ACTIVES (non-expirées, ordonnées par seq) avec expires_at normalisé
+             TOUTES les watches (actives ET expirées) par id, expires_at normalisé
 
 Logging : [state_db] (getLogger(__name__), %-style).
 """
@@ -44,21 +44,6 @@ def _norm_ts(raw: str | None) -> str | None:
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     return dt.astimezone(timezone.utc).isoformat()
-
-
-def _normalize_watch(w: dict) -> dict:
-    """Normalise une watch du côté JSON pour comparaison homogène avec SQLite.
-
-    Extrait les champs clés (id, symbol, on_trigger, expires_at normalisé) en plus
-    du watch_json brut — miroir du tuple retourné côté SQLite.
-    """
-    return {
-        "id": w.get("id"),
-        "symbol": w.get("symbol"),
-        "on_trigger": w.get("on_trigger", "WAKE"),
-        "expires_at": _norm_ts(w.get("expires_at")),
-        "watch_json": w,
-    }
 
 
 def _compare_fills(json_fills: list[dict], sqlite_fills: list[dict]) -> bool:
@@ -100,9 +85,9 @@ def compare_backends(state_dir: str | Path) -> dict:
     - trade_plans       : liste ORDONNÉE (position par position via asdict)
     - scheduler.wakes   : {symbol: heure normalisée} + default_next_wake
     - scheduler.stale   : streaks par symbole
-    - scheduler.watches : watches ACTIVES (non-expirées), ordonnées par seq,
-                          avec id / symbol / on_trigger / expires_at normalisé /
-                          watch_json comparés
+    - scheduler.watches : TOUTES les watches (actives ET expirées), comparées par id,
+                          avec symbol / on_trigger / expires_at normalisé / watch_json.
+                          Une watch expirée absente d'un côté → identical=False.
 
     Returns:
         dict avec structure :
@@ -117,7 +102,7 @@ def compare_backends(state_dir: str | Path) -> dict:
           },
           "scheduler": {
             "wakes_diff":   [{"field": str, "json": ..., "sqlite": ...}, ...],
-            "watches_diff": [{"position": int, "json": dict|None, "sqlite": dict|None}, ...],
+            "watches_diff": [{"id": str, "json": dict|None, "sqlite": dict|None}, ...],
             "stale_diff":   [{"symbol": str, "json": int, "sqlite": int}, ...],
           },
           "identical": bool,
@@ -217,19 +202,17 @@ def compare_backends(state_dir: str | Path) -> dict:
         s: int(v) for s, v in json_sched_raw["stale_streaks"].items()
     }
 
-    # Watches actives (non-expirées) côté JSON, horodatage de référence fixé
-    now_utc = datetime.now(timezone.utc)
-    now_s = now_utc.isoformat()
-
-    def _is_active(w: dict) -> bool:
-        exp = _norm_ts(w.get("expires_at"))
-        return exp is None or exp > now_s
-
-    json_active_watches: list[dict] = [
-        _normalize_watch(w)
-        for w in json_sched_raw["indicator_watches"].values()
-        if _is_active(w)
-    ]
+    # TOUTES les watches (actives ET expirées) — par id pour comparaison exhaustive
+    # (une watch expirée absente d'un côté doit aussi détecter une divergence)
+    json_all_watches: dict[str, dict] = {
+        w_id: {
+            "symbol": w.get("symbol"),
+            "on_trigger": w.get("on_trigger", "WAKE"),
+            "expires_at": _norm_ts(w.get("expires_at")),
+            "watch_json": w,
+        }
+        for w_id, w in json_sched_raw["indicator_watches"].items()
+    }
 
     # ------------------------------------------------------------------
     # Côté SQLite — lecture pure (aucune écriture, aucun import, aucun shadow)
@@ -285,24 +268,21 @@ def compare_backends(state_dir: str | Path) -> dict:
     )
     sqlite_stale: dict[str, int] = {r["symbol"]: int(r["streak"]) for r in stale_rows}
 
-    # Watches actives (non-expirées, même référence temporelle que le côté JSON)
-    active_watch_rows = db.query_all(
+    # TOUTES les watches (actives ET expirées) — par id, pas de filtre expires_at
+    all_watch_rows = db.query_all(
         "SELECT id, symbol, on_trigger, expires_at, watch_json"
         " FROM scheduler_watches"
-        " WHERE expires_at IS NULL OR expires_at > ?"
         " ORDER BY seq",
-        (now_s,),
     )
-    sqlite_active_watches: list[dict] = [
-        {
-            "id": r["id"],
+    sqlite_all_watches: dict[str, dict] = {
+        r["id"]: {
             "symbol": r["symbol"],
             "on_trigger": r["on_trigger"],
             "expires_at": _norm_ts(r["expires_at"]),  # colonne canonique
             "watch_json": json.loads(r["watch_json"]),
         }
-        for r in active_watch_rows
-    ]
+        for r in all_watch_rows
+    }
 
     # ------------------------------------------------------------------
     # Comparaison broker
@@ -398,14 +378,14 @@ def compare_backends(state_dir: str | Path) -> dict:
         if j_s != s_s:
             stale_diff.append({"symbol": sym, "json": j_s, "sqlite": s_s})
 
-    # Watches actives (vue opérationnelle, ordonnée par position)
+    # TOUTES les watches (actives ET expirées) — comparaison par id
+    all_watch_ids = sorted(set(json_all_watches) | set(sqlite_all_watches))
     watches_diff: list[dict] = []
-    n_watches = max(len(json_active_watches), len(sqlite_active_watches))
-    for i in range(n_watches):
-        j_w = json_active_watches[i] if i < len(json_active_watches) else None
-        s_w = sqlite_active_watches[i] if i < len(sqlite_active_watches) else None
+    for w_id in all_watch_ids:
+        j_w = json_all_watches.get(w_id)
+        s_w = sqlite_all_watches.get(w_id)
         if j_w != s_w:
-            watches_diff.append({"position": i, "json": j_w, "sqlite": s_w})
+            watches_diff.append({"id": w_id, "json": j_w, "sqlite": s_w})
 
     # ------------------------------------------------------------------
     # Résultat
