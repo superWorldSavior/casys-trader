@@ -165,9 +165,10 @@ class TestImportTradePlansFromJson:
         seqs = [r["seq"] for r in rows]
         assert seqs == sorted(seqs), "seq doit être croissant"
 
-    def test_import_creates_backup(self, db: StateDb, plans_json: Path) -> None:
+    def test_import_creates_backup_source_preserved(self, db: StateDb, plans_json: Path) -> None:
+        """Backup horodaté créé (copie), JSON original conservé (rollback possible)."""
         import_trade_plans_from_json(db, plans_json)
-        assert not plans_json.exists(), "Le JSON source doit être renommé"
+        assert plans_json.exists(), "Le JSON original doit être conservé (rollback possible)"
         baks = list(plans_json.parent.glob("trade_plans.json.bak-*"))
         assert len(baks) == 1
 
@@ -209,3 +210,70 @@ class TestImportTradePlansFromJson:
             import_trade_plans_from_json(db, bad)
 
         assert db.table_is_empty("trade_plans")
+
+
+class TestStateImportsSentinelTradePlans:
+    """FIX 1 — sentinel state_imports : pas de résurrection, idempotence stricte."""
+
+    def test_state_imports_marked_after_import(
+        self, db: StateDb, plans_json: Path
+    ) -> None:
+        """Après import réussi, state_imports contient la clé 'trade_plans'."""
+        import_trade_plans_from_json(db, plans_json)
+
+        row = db.query_one("SELECT store FROM state_imports WHERE store='trade_plans'")
+        assert row is not None, "state_imports doit contenir 'trade_plans' après l'import"
+
+    def test_no_resurrection_after_all_plans_closed(
+        self, db: StateDb, plans_json: Path, tmp_path: Path
+    ) -> None:
+        """Résurrection impossible : après fermeture de tous les plans (table vide),
+        state_imports bloque tout ré-import du JSON original."""
+        import_trade_plans_from_json(db, plans_json)
+
+        # Simuler la fermeture de tous les plans (état valide : table vide)
+        with db.transaction() as cur:
+            cur.execute("DELETE FROM trade_plans")
+
+        assert db.table_is_empty("trade_plans"), "trade_plans doit être vide pour le test"
+
+        # Ré-import avec le même JSON (ou un autre) → doit être bloqué par state_imports
+        second_json = _plans_json([_rich_plan_dict("RESURRECTED")], tmp_path / "trade_plans2.json")
+        import_trade_plans_from_json(db, second_json)
+
+        # Table RESTE vide — aucune résurrection
+        assert db.table_is_empty("trade_plans"), (
+            "Résurrection détectée ! Les plans fermés ne doivent pas réapparaître"
+        )
+
+    def test_idempotence_state_imports_single_row(
+        self, db: StateDb, plans_json: Path, tmp_path: Path
+    ) -> None:
+        """3 appels → 1 seule ligne state_imports pour 'trade_plans', pas de doublon."""
+        import_trade_plans_from_json(db, plans_json)
+
+        for i in range(2):
+            other = _plans_json(
+                [_rich_plan_dict(f"OTHER-{i}")],
+                tmp_path / f"other_{i}.json",
+            )
+            import_trade_plans_from_json(db, other)
+
+        rows = db.query_all("SELECT store FROM state_imports WHERE store='trade_plans'")
+        assert len(rows) == 1, f"Attendu 1 ligne state_imports, obtenu {len(rows)}"
+
+    def test_state_imports_marked_for_absent_json(
+        self, db: StateDb, tmp_path: Path
+    ) -> None:
+        """JSON absent → state_imports marqué ; second appel avec JSON présent = no-op."""
+        absent = tmp_path / "trade_plans.json"
+        import_trade_plans_from_json(db, absent)
+
+        row = db.query_one("SELECT store FROM state_imports WHERE store='trade_plans'")
+        assert row is not None, "state_imports doit être marqué même sans JSON"
+
+        # Créer un JSON maintenant et ré-importer → toujours no-op
+        present = _plans_json([_rich_plan_dict("GHOST")], tmp_path / "trade_plans.json")
+        import_trade_plans_from_json(db, present)
+
+        assert db.table_is_empty("trade_plans"), "Le JSON créé après l'init vide ne doit pas être importé"

@@ -131,13 +131,13 @@ class TestImportBrokerFromJson:
         assert fill_tsla["commission_model"] == "none"
         assert fill_tsla["fx_rate"] == pytest.approx(1.0)
 
-    def test_import_creates_backup_and_removes_source(
+    def test_import_creates_backup_and_source_preserved(
         self, db: StateDb, broker_json: Path
     ) -> None:
-        """Le fichier source est renommé en .bak-<ts>, le fichier original disparaît."""
+        """Le backup horodaté est créé (copie), le JSON original reste en place (rollback possible)."""
         import_broker_from_json(db, broker_json, starting_cash=100_000.0)
 
-        assert not broker_json.exists(), "Le JSON source doit être renommé (backup)"
+        assert broker_json.exists(), "Le JSON original doit être conservé (rollback possible)"
         bak_files = list(broker_json.parent.glob("broker.json.bak-*"))
         assert len(bak_files) == 1, "Exactement un backup horodaté attendu"
 
@@ -181,6 +181,68 @@ class TestImportBrokerFromJson:
 
         assert db.query_all("SELECT * FROM broker_positions") == []
         assert db.query_all("SELECT * FROM broker_fills") == []
+
+
+class TestStateImportsSentinelBroker:
+    """FIX 1 — sentinel state_imports : pas de résurrection, idempotence stricte."""
+
+    def test_state_imports_marked_after_import(
+        self, db: StateDb, broker_json: Path
+    ) -> None:
+        """Après import réussi, state_imports contient la clé 'broker'."""
+        import_broker_from_json(db, broker_json, starting_cash=100_000.0)
+
+        row = db.query_one("SELECT store FROM state_imports WHERE store='broker'")
+        assert row is not None, "state_imports doit contenir 'broker' après l'import"
+
+    def test_no_resurrection_after_broker_state_cleared(
+        self, db: StateDb, broker_json: Path
+    ) -> None:
+        """Résurrection impossible : même si broker_state est vidée, state_imports bloque le ré-import."""
+        import_broker_from_json(db, broker_json, starting_cash=100_000.0)
+
+        # Simuler une suppression opérationnelle des données broker
+        with db.transaction() as cur:
+            cur.execute("DELETE FROM broker_state")
+            cur.execute("DELETE FROM broker_positions")
+            cur.execute("DELETE FROM broker_fills")
+
+        assert db.table_is_empty("broker_state"), "broker_state doit être vide pour le test"
+
+        # Ré-import : doit être un no-op complet (state_imports bloque)
+        second_json = broker_json.parent / "broker2.json"
+        second_json.write_text(
+            '{"cash": 99999.0, "positions": {}, "fills": []}'
+        )
+        import_broker_from_json(db, second_json, starting_cash=100_000.0)
+
+        # broker_state reste vide — aucune résurrection
+        assert db.table_is_empty("broker_state"), "Résurrection détectée ! broker_state ne doit pas être re-remplie"
+
+    def test_idempotence_state_imports_single_row(
+        self, db: StateDb, broker_json: Path
+    ) -> None:
+        """3 appels → 1 seule ligne state_imports pour 'broker', pas de doublon."""
+        import_broker_from_json(db, broker_json, starting_cash=100_000.0)
+
+        # 2e et 3e appels avec des JSON différents → no-op
+        for _ in range(2):
+            other = broker_json.parent / "broker_other.json"
+            other.write_text('{"cash": 1.0, "positions": {}, "fills": []}')
+            import_broker_from_json(db, other, starting_cash=100_000.0)
+
+        rows = db.query_all("SELECT store FROM state_imports WHERE store='broker'")
+        assert len(rows) == 1, f"Attendu 1 ligne state_imports, obtenu {len(rows)}"
+
+    def test_state_imports_marked_for_new_broker_no_json(
+        self, db: StateDb, tmp_path: Path
+    ) -> None:
+        """JSON absent (broker neuf) → state_imports est aussi marqué pour bloquer futur ré-import."""
+        absent = tmp_path / "broker.json"
+        import_broker_from_json(db, absent, starting_cash=50_000.0)
+
+        row = db.query_one("SELECT store FROM state_imports WHERE store='broker'")
+        assert row is not None, "state_imports doit être marqué même sans JSON (broker neuf)"
 
 
 class TestImportBrokerInvalidJson:

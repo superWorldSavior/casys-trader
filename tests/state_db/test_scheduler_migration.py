@@ -208,11 +208,12 @@ class TestImportSchedulerFromJson:
         )
         assert sym_row["when_iso"] == "2026-07-03T11:00:00+00:00"
 
-    def test_import_creates_backup(
+    def test_import_creates_backup_source_preserved(
         self, db: StateDb, scheduler_json: Path
     ) -> None:
+        """Backup horodaté créé (copie), JSON original conservé (rollback possible)."""
         import_scheduler_from_json(db, scheduler_json)
-        assert not scheduler_json.exists(), "Le JSON source doit être renommé"
+        assert scheduler_json.exists(), "Le JSON original doit être conservé (rollback possible)"
         baks = list(scheduler_json.parent.glob("scheduler.json.bak-*"))
         assert len(baks) == 1
 
@@ -244,8 +245,9 @@ class TestImportSchedulerFromJson:
         assert db.table_is_empty("scheduler_symbol_wake")
         assert db.table_is_empty("scheduler_stale_streaks")
         assert db.table_is_empty("scheduler_watches")
-        # Mais scheduler_meta a le sentinel → idempotence garantie
-        assert not db.table_is_empty("scheduler_meta")
+        # Le sentinel est désormais dans state_imports (pas scheduler_meta) → idempotence garantie
+        row = db.query_one("SELECT 1 FROM state_imports WHERE store='scheduler'")
+        assert row is not None, "state_imports doit contenir 'scheduler' même sans JSON"
 
     def test_absent_json_reimport_is_noop(
         self, db: StateDb, tmp_path: Path
@@ -288,6 +290,87 @@ class TestImportSchedulerFromJson:
         # IMPORTANT : scheduler_meta DOIT rester vide sur erreur de parse
         # (le sentinel n'est inséré qu'APRÈS le parse réussi, en transaction)
         assert db.table_is_empty("scheduler_meta")
+        # state_imports ne doit pas être marqué non plus sur erreur
+        assert db.query_one("SELECT 1 FROM state_imports WHERE store='scheduler'") is None
+
+
+class TestStateImportsSentinelScheduler:
+    """FIX 1 — sentinel state_imports : pas de résurrection, idempotence stricte."""
+
+    def test_state_imports_marked_after_import(
+        self, db: StateDb, scheduler_json: Path
+    ) -> None:
+        """Après import réussi, state_imports contient la clé 'scheduler'."""
+        import_scheduler_from_json(db, scheduler_json)
+
+        row = db.query_one("SELECT store FROM state_imports WHERE store='scheduler'")
+        assert row is not None, "state_imports doit contenir 'scheduler' après l'import"
+
+    def test_no_resurrection_after_watches_cleared(
+        self, db: StateDb, scheduler_json: Path, tmp_path: Path
+    ) -> None:
+        """Résurrection impossible : même si les watches sont supprimées, state_imports bloque."""
+        import_scheduler_from_json(db, scheduler_json)
+
+        # Simuler une purge opérationnelle
+        with db.transaction() as cur:
+            cur.execute("DELETE FROM scheduler_watches")
+            cur.execute("DELETE FROM scheduler_symbol_wake")
+            cur.execute("DELETE FROM scheduler_stale_streaks")
+            cur.execute("DELETE FROM scheduler_meta")
+
+        second = _scheduler_json(
+            tmp_path / "scheduler2.json",
+            {"default_next_wake": "2099-01-01T00:00:00+00:00",
+             "symbols": {"GHOST": "2099-01-01T00:00:00+00:00"},
+             "stale_streaks": {}, "indicator_watches": {}},
+        )
+        import_scheduler_from_json(db, second)
+
+        # Aucune résurrection : tables restent vides
+        assert db.table_is_empty("scheduler_symbol_wake"), (
+            "Résurrection détectée ! scheduler_symbol_wake ne doit pas être re-remplie"
+        )
+
+    def test_idempotence_state_imports_single_row(
+        self, db: StateDb, scheduler_json: Path, tmp_path: Path
+    ) -> None:
+        """3 appels → 1 seule ligne state_imports pour 'scheduler'."""
+        import_scheduler_from_json(db, scheduler_json)
+
+        for _ in range(2):
+            other = _scheduler_json(
+                tmp_path / "other.json",
+                {"default_next_wake": None, "symbols": {},
+                 "stale_streaks": {}, "indicator_watches": {}},
+            )
+            import_scheduler_from_json(db, other)
+
+        rows = db.query_all("SELECT store FROM state_imports WHERE store='scheduler'")
+        assert len(rows) == 1, f"Attendu 1 ligne state_imports, obtenu {len(rows)}"
+
+    def test_state_imports_marked_for_absent_json(
+        self, db: StateDb, tmp_path: Path
+    ) -> None:
+        """JSON absent → state_imports marqué ; ré-import ultérieur avec JSON présent = no-op."""
+        absent = tmp_path / "scheduler.json"
+        import_scheduler_from_json(db, absent)
+
+        row = db.query_one("SELECT store FROM state_imports WHERE store='scheduler'")
+        assert row is not None, "state_imports doit être marqué même sans JSON"
+
+        # Créer un JSON maintenant → doit être ignoré
+        present = _scheduler_json(
+            tmp_path / "scheduler.json",
+            {"default_next_wake": "2099-01-01T00:00:00+00:00",
+             "symbols": {"GHOST": "2099-01-01T00:00:00+00:00"},
+             "stale_streaks": {}, "indicator_watches": {}},
+        )
+        import_scheduler_from_json(db, present)
+
+        assert db.table_is_empty("scheduler_symbol_wake"), (
+            "Un JSON créé après l'init vide ne doit pas être importé"
+        )
 
 
 # ---------------------------------------------------------------------------

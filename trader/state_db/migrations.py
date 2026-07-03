@@ -12,12 +12,42 @@ from __future__ import annotations
 
 import json
 import logging
+import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 
 from trader.state_db.connection import StateDb
 
 log = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Sentinel d'import — partagé par les 3 imports
+# ---------------------------------------------------------------------------
+
+_STATE_IMPORTS_DDL = (
+    "CREATE TABLE IF NOT EXISTS state_imports"
+    "(store TEXT PRIMARY KEY, imported_at TEXT)"
+)
+
+
+def _ensure_state_imports(db: StateDb) -> None:
+    """Crée la table state_imports si elle n'existe pas (idempotent, DDL autocommit)."""
+    db.executescript(_STATE_IMPORTS_DDL)
+
+
+def _already_imported(db: StateDb, store: str) -> bool:
+    """Retourne True si ce store a déjà été importé (sentinel présent)."""
+    return db.query_one("SELECT 1 FROM state_imports WHERE store=?", (store,)) is not None
+
+
+def _mark_imported(cur, store: str) -> None:
+    """Insère le sentinel dans state_imports (à appeler dans la même transaction que l'import)."""
+    ts = datetime.now(timezone.utc).isoformat()
+    cur.execute(
+        "INSERT INTO state_imports(store, imported_at) VALUES(?, ?)",
+        (store, ts),
+    )
+
 
 # ---------------------------------------------------------------------------
 # Broker — migration v1
@@ -68,9 +98,10 @@ def import_broker_from_json(
       dans une transaction.
     """
     db.apply_migrations([BROKER_MIGRATION])
+    _ensure_state_imports(db)
 
-    # Idempotence : déjà migré → no-op silencieux
-    if not db.table_is_empty("broker_state"):
+    # Idempotence via sentinel dédié (pas le contenu de la table métier)
+    if _already_imported(db, "broker"):
         return
 
     json_path = Path(json_path)
@@ -83,7 +114,7 @@ def import_broker_from_json(
         positions: list[dict] = list(raw.get("positions", {}).values())
         fills: list[dict] = raw.get("fills", [])
 
-        # 2. Import atomique dans la base
+        # 2. Import atomique dans la base (sentinel inclus dans la même transaction)
         with db.transaction() as cur:
             cur.execute("INSERT INTO broker_state(id, cash) VALUES (1, ?)", (cash,))
             for pos in positions:
@@ -110,11 +141,12 @@ def import_broker_from_json(
                         fill.get("fx_rate", 1.0),
                     ),
                 )
+            _mark_imported(cur, "broker")
 
-        # 3. Backup horodaté SEULEMENT après commit réussi (JSON original intact en cas d'erreur)
+        # 3. Backup par COPIE après commit réussi (JSON original conservé pour rollback)
         ts = datetime.now(timezone.utc).isoformat().replace(":", "")
         backup_path = json_path.with_name(json_path.name + f".bak-{ts}")
-        json_path.rename(backup_path)
+        shutil.copy2(json_path, backup_path)
 
         log.info(
             "[state_db] broker importé: %d positions, %d fills, cash=%.2f",
@@ -123,12 +155,13 @@ def import_broker_from_json(
             cash,
         )
     else:
-        # Broker neuf : initialiser avec starting_cash
+        # Broker neuf : initialiser avec starting_cash + marquer sentinel
         with db.transaction() as cur:
             cur.execute(
                 "INSERT INTO broker_state(id, cash) VALUES (1, ?)",
                 (starting_cash,),
             )
+            _mark_imported(cur, "broker")
 
 
 # ---------------------------------------------------------------------------
@@ -182,14 +215,18 @@ def import_trade_plans_from_json(db: StateDb, json_path: Path) -> None:
     - Si le JSON n'existe pas : démarrage avec liste vide (table déjà créée par la migration).
     """
     db.apply_migrations([TRADE_PLANS_MIGRATION])
+    _ensure_state_imports(db)
 
-    # Idempotence : déjà migré → no-op silencieux
-    if not db.table_is_empty("trade_plans"):
+    # Idempotence via sentinel dédié (pas le contenu de la table métier)
+    if _already_imported(db, "trade_plans"):
         return
 
     json_path = Path(json_path)
 
     if not json_path.exists():
+        # JSON absent → tables vides ; sentinel pour bloquer tout ré-import ultérieur
+        with db.transaction() as cur:
+            _mark_imported(cur, "trade_plans")
         log.info("[state_db] trade_plans: JSON absent, démarrage avec liste vide")
         return
 
@@ -201,7 +238,7 @@ def import_trade_plans_from_json(db: StateDb, json_path: Path) -> None:
     from trader.state_db.trade_plan_store import plan_to_columns  # noqa: PLC0415
     from trader.planning.trade_plan import trade_plan_from_dict  # noqa: PLC0415
 
-    # 2. Import atomique dans la base
+    # 2. Import atomique dans la base (sentinel inclus dans la même transaction)
     with db.transaction() as cur:
         for seq, plan_dict in enumerate(plans_raw, start=1):
             plan = trade_plan_from_dict(plan_dict)
@@ -228,11 +265,12 @@ def import_trade_plans_from_json(db: StateDb, json_path: Path) -> None:
                 )""",
                 cols,
             )
+        _mark_imported(cur, "trade_plans")
 
-    # 3. Backup horodaté SEULEMENT après commit réussi (JSON original intact en cas d'erreur)
+    # 3. Backup par COPIE après commit réussi (JSON original conservé pour rollback)
     ts = datetime.now(timezone.utc).isoformat().replace(":", "")
     backup_path = json_path.with_name(json_path.name + f".bak-{ts}")
-    json_path.rename(backup_path)
+    shutil.copy2(json_path, backup_path)
 
     log.info("[state_db] trade_plans importés: %d plans", len(plans_raw))
 
@@ -285,9 +323,10 @@ def import_scheduler_from_json(db: StateDb, json_path: Path) -> None:
     from trader.tools.scheduler import STALE_BACKOFF_MAX_STREAK  # noqa: PLC0415
 
     db.apply_migrations([SCHEDULER_MIGRATION])
+    _ensure_state_imports(db)
 
-    # Idempotence : scheduler_meta non vide → déjà importé, no-op silencieux
-    if not db.table_is_empty("scheduler_meta"):
+    # Idempotence via sentinel dédié (pas le contenu de scheduler_meta)
+    if _already_imported(db, "scheduler"):
         return
 
     def _canon(raw: str | None) -> str | None:
@@ -302,11 +341,9 @@ def import_scheduler_from_json(db: StateDb, json_path: Path) -> None:
     json_path = Path(json_path)
 
     if not json_path.exists():
-        # JSON absent → démarrage vide ; sentinel pour idempotence
+        # JSON absent → démarrage vide ; sentinel dans state_imports pour idempotence
         with db.transaction() as cur:
-            cur.execute(
-                "INSERT INTO scheduler_meta(key, value) VALUES ('_imported', '1')"
-            )
+            _mark_imported(cur, "scheduler")
         log.info("[state_db] scheduler: JSON absent, démarrage avec tables vides")
         return
 
@@ -326,10 +363,8 @@ def import_scheduler_from_json(db: StateDb, json_path: Path) -> None:
     stale_streaks: dict = raw["stale_streaks"]
     indicator_watches: dict = raw["indicator_watches"]
 
-    # 2. Import atomique dans la base
+    # 2. Import atomique dans la base (sentinel inclus dans la même transaction)
     with db.transaction() as cur:
-        # Sentinel d'idempotence (scheduler_meta aura toujours >= 1 ligne après import)
-        cur.execute("INSERT INTO scheduler_meta(key, value) VALUES ('_imported', '1')")
         if default_next_wake is not None:
             cur.execute(
                 "INSERT INTO scheduler_meta(key, value) VALUES ('default_next_wake', ?)",
@@ -366,11 +401,12 @@ def import_scheduler_from_json(db: StateDb, json_path: Path) -> None:
                     json.dumps(watch),
                 ),
             )
+        _mark_imported(cur, "scheduler")
 
-    # 3. Backup horodaté SEULEMENT après commit réussi (JSON original intact en cas d'erreur)
+    # 3. Backup par COPIE après commit réussi (JSON original conservé pour rollback)
     ts = datetime.now(timezone.utc).isoformat().replace(":", "")
     backup_path = json_path.with_name(json_path.name + f".bak-{ts}")
-    json_path.rename(backup_path)
+    shutil.copy2(json_path, backup_path)
 
     log.info(
         "[state_db] scheduler importé: %d symboles, %d watches",
