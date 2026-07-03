@@ -6,10 +6,10 @@ import math
 
 from trader.planning.trade_plan import InvalidExitPlanError, normalize_exit_plan
 
-VALID_INTENTS = {"OPEN_LONG", "OPEN_SHORT", "REDUCE", "CLOSE", "REVERSE", "HOLD"}
+VALID_INTENTS = {"OPEN_LONG", "OPEN_SHORT", "REDUCE", "CLOSE", "REVERSE", "HOLD", "ADD"}
 ACTION_INTENTS = {
-    "BUY": {"OPEN_LONG", "REDUCE", "CLOSE", "REVERSE"},
-    "SELL": {"OPEN_SHORT", "REDUCE", "CLOSE", "REVERSE"},
+    "BUY": {"OPEN_LONG", "REDUCE", "CLOSE", "REVERSE", "ADD"},
+    "SELL": {"OPEN_SHORT", "REDUCE", "CLOSE", "REVERSE", "ADD"},
 }
 
 

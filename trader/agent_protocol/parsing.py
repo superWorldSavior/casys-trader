@@ -308,7 +308,7 @@ def _decision_from_symbol_calls(data: dict, symbol: str) -> Decision:
 
         if tool == "propose_order":
             intent = str(args.get("intent") or "").upper()
-            if intent not in {"OPEN_LONG", "OPEN_SHORT", "REDUCE", "CLOSE", "REVERSE"}:
+            if intent not in {"OPEN_LONG", "OPEN_SHORT", "REDUCE", "CLOSE", "REVERSE", "ADD"}:
                 raise ValueError("order_intent_invalid")
 
             needs_position_resolve = False
@@ -316,7 +316,7 @@ def _decision_from_symbol_calls(data: dict, symbol: str) -> Decision:
             try:
                 action = _action_for_order_tool(args)
             except ValueError as exc:
-                if str(exc) == "order_side_required" and intent in {"CLOSE", "REDUCE", "REVERSE"}:
+                if str(exc) == "order_side_required" and intent in {"CLOSE", "REDUCE", "REVERSE", "ADD"}:
                     needs_position_resolve = True
                     action = "HOLD"  # Provisoire — remplacé par le daemon depuis la position
                     if intent == "REDUCE":
@@ -332,7 +332,7 @@ def _decision_from_symbol_calls(data: dict, symbol: str) -> Decision:
                     qty = 0.0  # Dérivé de |position| dans le daemon
                 elif intent == "REDUCE":
                     qty = float(qty_raw) if qty_raw is not None else 0.0
-                else:  # REVERSE : qty de la nouvelle jambe reste requise
+                else:  # REVERSE / ADD : qty requise (jambe cible ou renforcement)
                     if qty_raw is None:
                         raise ValueError("order_qty_required")
                     qty = float(qty_raw)

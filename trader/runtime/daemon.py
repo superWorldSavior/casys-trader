@@ -86,10 +86,10 @@ log = logging.getLogger("casys-trader")
 # de logguer la même erreur indéfiniment. Réinitialisable dans les tests.
 _RECALL_STORE_FAILED: bool = False
 
-_VALID_INTENTS = {"OPEN_LONG", "OPEN_SHORT", "REDUCE", "CLOSE", "REVERSE", "HOLD"}
+_VALID_INTENTS = {"OPEN_LONG", "OPEN_SHORT", "REDUCE", "CLOSE", "REVERSE", "HOLD", "ADD"}
 _ACTION_INTENTS = {
-    "BUY": {"OPEN_LONG", "REDUCE", "CLOSE", "REVERSE"},
-    "SELL": {"OPEN_SHORT", "REDUCE", "CLOSE", "REVERSE"},
+    "BUY": {"OPEN_LONG", "REDUCE", "CLOSE", "REVERSE", "ADD"},
+    "SELL": {"OPEN_SHORT", "REDUCE", "CLOSE", "REVERSE", "ADD"},
 }
 _INFRA_HOLD_REASONS = {
     "no_decision_in_batch",
@@ -406,20 +406,34 @@ def _resolve_position_aware_decision(
     decision: codex_client.Decision,
     position_quantity: float,
 ) -> codex_client.Decision:
-    """Dérive action + qty depuis la position pour CLOSE/REDUCE/REVERSE sans side.
+    """Dérive action + qty depuis la position pour CLOSE/REDUCE/REVERSE/ADD sans side.
 
-    Fail-safe absolu : position_quantity == 0 → HOLD 'nothing_to_close'.
+    Fail-safe absolu : position_quantity == 0 → HOLD.
+      - CLOSE/REDUCE/REVERSE sans position → 'nothing_to_close'
+      - ADD sans position → 'add_without_position'
     Si resolve_from_position=False, retourne la décision inchangée.
+
+    Side :
+      - CLOSE/REDUCE/REVERSE → côté OPPOSÉ à la position (clôture/retournement).
+      - ADD → côté IDENTIQUE à la position (renforcement dans le même sens).
     """
     if not decision.resolve_from_position:
         return decision
 
-    if position_quantity == 0.0:
-        return codex_client.Decision.hold(decision.symbol, "nothing_to_close")
+    intent = decision.intent
 
+    if position_quantity == 0.0:
+        reason = "add_without_position" if intent == "ADD" else "nothing_to_close"
+        return codex_client.Decision.hold(decision.symbol, reason)
+
+    if intent == "ADD":
+        # Side IDENTIQUE à la position — renforcement dans le même sens.
+        add_side: codex_client.Action = "BUY" if position_quantity > 0 else "SELL"
+        return replace(decision, action=add_side, resolve_from_position=False)
+
+    # CLOSE / REDUCE / REVERSE — côté OPPOSÉ pour clôturer/réduire/retourner.
     side: codex_client.Action = "SELL" if position_quantity > 0 else "BUY"
     pos_abs = abs(position_quantity)
-    intent = decision.intent
 
     if intent == "CLOSE":
         qty = pos_abs

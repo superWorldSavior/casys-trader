@@ -1005,3 +1005,59 @@ def test_resolve_sans_flag_retourne_decision_inchangee() -> None:
     resolved = daemon._resolve_position_aware_decision(dec, position_quantity=10.0)
 
     assert resolved is dec  # identité : rien ne change
+
+
+# ---------------------------------------------------------------------------
+# L4 — ADD intent : _resolve_position_aware_decision (tests unitaires purs)
+# ---------------------------------------------------------------------------
+
+def _make_pending_add(symbol: str = "SPY", qty: float = 5.0) -> Decision:
+    """Decision ADD sans side (resolve_from_position=True, qty = renforcement)."""
+    return Decision(
+        symbol=symbol,
+        action="HOLD",
+        quantity=qty,
+        confidence=0.8,
+        rationale="scale-in conviction",
+        intent="ADD",  # type: ignore[arg-type]
+        resolve_from_position=True,
+    )
+
+
+def test_resolve_add_long_position_produit_buy() -> None:
+    """L4 : ADD sur position longue → action=BUY (même sens), qty conservée."""
+    dec = _make_pending_add(qty=5.0)
+    resolved = daemon._resolve_position_aware_decision(dec, position_quantity=10.0)
+
+    assert resolved.action == "BUY"
+    assert resolved.quantity == 5.0
+    assert resolved.resolve_from_position is False
+
+
+def test_resolve_add_short_position_produit_sell() -> None:
+    """L4 : ADD sur position courte → action=SELL (même sens), qty conservée."""
+    dec = _make_pending_add(qty=3.0)
+    resolved = daemon._resolve_position_aware_decision(dec, position_quantity=-8.0)
+
+    assert resolved.action == "SELL"
+    assert resolved.quantity == 3.0
+    assert resolved.resolve_from_position is False
+
+
+def test_resolve_add_sans_position_produit_add_without_position() -> None:
+    """L4 fail-safe : ADD sans position ouverte → HOLD 'add_without_position'."""
+    dec = _make_pending_add(qty=5.0)
+    resolved = daemon._resolve_position_aware_decision(dec, position_quantity=0.0)
+
+    assert resolved.action == "HOLD"
+    assert resolved.rationale == "add_without_position"
+
+
+def test_resolve_add_ne_casse_pas_resolve_close_l2() -> None:
+    """L4 invariant : l'ajout de ADD ne doit pas altérer la résolution CLOSE (L2).
+    CLOSE sur position longue → SELL qty=|pos| (comportement L2 inchangé)."""
+    dec = _make_pending_close()
+    resolved = daemon._resolve_position_aware_decision(dec, position_quantity=10.0)
+
+    assert resolved.action == "SELL"
+    assert resolved.quantity == 10.0

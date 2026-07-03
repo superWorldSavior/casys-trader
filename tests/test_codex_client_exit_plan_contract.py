@@ -449,6 +449,58 @@ def test_batch_parse_close_side_explicite_reste_inchange() -> None:
     assert parsed.resolve_from_position is False
 
 
+def test_batch_parse_add_sans_side_produit_resolve_from_position() -> None:
+    """L4 : ADD sans side → resolve_from_position=True, qty conservée.
+    Le daemon dérivera side = même sens que la position (BUY si long, SELL si short)."""
+    raw = """
+    {"decisions": [
+      {"symbol": "SPY", "confidence": 0.75, "rationale": "renforcement breakout",
+       "decision_reason_code": "ENTRY_SIGNAL",
+       "calls": [{"tool": "propose_order", "args": {"intent": "ADD", "qty": 5}}]}
+    ]}
+    """
+    parsed = codex_client.parse_batch(raw, ["SPY"], allow_context_request=False)["SPY"]
+
+    assert parsed.resolve_from_position is True
+    assert parsed.intent == "ADD"
+    assert parsed.quantity == 5.0
+
+
+def test_batch_parse_add_sans_qty_tombe_en_hold() -> None:
+    """L4 : ADD sans qty est une erreur — la taille du renforcement est requise."""
+    raw = """
+    {"decisions": [
+      {"symbol": "SPY", "confidence": 0.75, "rationale": "renforcement",
+       "decision_reason_code": "ENTRY_SIGNAL",
+       "calls": [{"tool": "propose_order", "args": {"intent": "ADD"}}]}
+    ]}
+    """
+    parsed = codex_client.parse_batch(raw, ["SPY"], allow_context_request=False)["SPY"]
+
+    assert parsed.action == "HOLD"
+    assert "order_qty_required" in parsed.rationale
+
+
+def test_batch_parse_add_avec_exit_plan_preserve_exit_plan() -> None:
+    """L4 : ADD peut fournir un exit_plan (stop combiné) — il est conservé."""
+    raw = """
+    {"decisions": [
+      {"symbol": "SPY", "confidence": 0.8, "rationale": "pyramiding",
+       "decision_reason_code": "ENTRY_SIGNAL",
+       "calls": [{"tool": "propose_order", "args": {
+         "intent": "ADD", "qty": 3,
+         "exit": {"stop": {"price": 145.0}}
+       }}]}
+    ]}
+    """
+    parsed = codex_client.parse_batch(raw, ["SPY"], allow_context_request=False)["SPY"]
+
+    assert parsed.resolve_from_position is True
+    assert parsed.intent == "ADD"
+    assert parsed.exit_plan is not None
+    assert parsed.exit_plan["hard_stop"]["price"] == 145.0
+
+
 def test_symbol_calls_contract_impose_decisions_au_tour_final() -> None:
     """Au tour final (allow_tool_calls=False), plus de tournée : le contrat impose
     la réponse `decisions` et ne propose plus le catalogue d'outils."""
