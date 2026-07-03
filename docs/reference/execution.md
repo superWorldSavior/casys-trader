@@ -27,7 +27,7 @@ d'aide à la décision d'ordre :
 d'exécution déterministe** des décisions pour une admission gross **équitable** —
 quand plusieurs ordres se présentent au même cycle et que le plafond d'exposition
 brute (`max_gross_exposure`) est contraint, l'ordre de passage est fixé (pas de
-biais d'itération). Cf. spec 2026-06-30-gross-budget-allocator.
+biais d'itération). Cf. historique `git log` (design gross-budget-allocator livré).
 
 ## Broker / passage d'ordres — `tools/execution`
 

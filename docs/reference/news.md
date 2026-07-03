@@ -2,7 +2,7 @@
 
 > **Type** : Reference (Diátaxis).
 > **Code** : `trader/tools/news_feed` · **Phase** : attribution (loggée, pas au LLM)
-> **Spec** : `docs/superpowers/specs/2026-06-23-news-feed-attribution-design.md`
+> **Design** : livré (historique dans `git log` ; cette page de référence fait foi)
 
 Ingestion du fil d'actualité par symbole (Yahoo via yfinance). **Phase
 attribution** : la news est **loggée par décision**, elle **n'est PAS vue par le

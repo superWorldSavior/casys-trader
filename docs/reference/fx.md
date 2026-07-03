@@ -71,5 +71,5 @@ l'agent. Seules les **valeurs monétaires pour les bornes et le P&L** passent en
 
 ## Voir aussi
 
-- [Décisions](../decisions/registre-decisions-metier.md) · spec `docs/superpowers/specs/2026-06-24-fx-conversion-design.md`.
+- [Décisions](../decisions/registre-decisions-metier.md) · design livré (historique `git log`).
 - [Risk gate](risk-gate.md) — consommateur principal du `fx_rate`.
