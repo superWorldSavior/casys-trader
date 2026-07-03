@@ -1,12 +1,16 @@
-"""make_broker — sélection du backend broker via CASYS_STATE_BACKEND.
+"""Factories d'état — sélection du backend via CASYS_STATE_BACKEND.
 
-Valeurs acceptées (insensibles à la casse) :
-    "json"   (défaut) → SimBroker JSON, comportement strictement inchangé.
-    "sqlite"          → SqliteBroker sur StateDb (migration one-shot idempotente au boot).
+Factories disponibles :
+    make_broker            → SimBroker (json) ou SqliteBroker (sqlite)
+    make_trade_plan_store  → TradePlanStore (json) ou SqliteTradePlanStore (sqlite)
+
+Valeurs backend acceptées (insensibles à la casse) :
+    "json"   (défaut) → stores JSON, comportement strictement inchangé.
+    "sqlite"          → stores SQLite (migration one-shot idempotente au boot).
 
 Usage (daemon.py) ::
 
-    from trader.state_db.broker_factory import make_broker
+    from trader.state_db.broker_factory import make_broker, make_trade_plan_store
 
     broker = make_broker(
         state_dir=STATE_DIR,
@@ -14,8 +18,12 @@ Usage (daemon.py) ::
         commission_model=commission_model,
         backend=os.getenv("CASYS_STATE_BACKEND", "json"),
     )
+    plan_store = make_trade_plan_store(
+        state_dir=STATE_DIR,
+        backend=os.getenv("CASYS_STATE_BACKEND", "json"),
+    )
 
-La valeur inconnue lève ValueError explicite (AX : fast-fail, machine-readable).
+Les valeurs inconnues lèvent ValueError explicite (AX : fast-fail, machine-readable).
 """
 from __future__ import annotations
 
@@ -77,6 +85,59 @@ def make_broker(
         # Rattrape un shadow stale/absent depuis SQLite au boot (crash entre COMMIT et shadow write)
         broker.regenerate_shadow()
         return broker
+
+    raise ValueError(
+        f"CASYS_STATE_BACKEND inconnu : {backend!r}. Valeurs acceptées : {_VALID_BACKENDS}"
+    )
+
+
+def make_trade_plan_store(
+    *,
+    state_dir: Path,
+    backend: str = "json",
+):
+    """Construit et retourne un TradePlanStore selon *backend*.
+
+    Args:
+        state_dir: répertoire d'état (ex. ROOT / "state").
+        backend:   "json" (défaut) ou "sqlite". Toute autre valeur → ValueError.
+
+    Returns:
+        TradePlanStore       si backend == "json".
+        SqliteTradePlanStore si backend == "sqlite".
+
+    Raises:
+        ValueError: backend inconnu.
+    """
+    state_dir = Path(state_dir)
+    backend = backend.lower()
+
+    if backend == "json":
+        from trader.planning.trade_plan import TradePlanStore  # import local
+
+        log.debug(
+            "[broker_factory] trade_plan backend=json → TradePlanStore(%s)",
+            state_dir / "trade_plans.json",
+        )
+        return TradePlanStore(state_dir / "trade_plans.json")
+
+    if backend == "sqlite":
+        from trader.state_db.connection import StateDb
+        from trader.state_db.migrations import import_trade_plans_from_json
+        from trader.state_db.trade_plan_store import SqliteTradePlanStore
+
+        db_path = state_dir / "casys.db"
+        json_path = state_dir / "trade_plans.json"
+
+        log.debug(
+            "[broker_factory] trade_plan backend=sqlite → StateDb(%s)", db_path
+        )
+        db = StateDb(db_path)
+        import_trade_plans_from_json(db, json_path)
+        store = SqliteTradePlanStore(db, json_path=json_path)
+        # Rattrape un shadow stale/absent depuis SQLite au boot
+        store.regenerate_shadow()
+        return store
 
     raise ValueError(
         f"CASYS_STATE_BACKEND inconnu : {backend!r}. Valeurs acceptées : {_VALID_BACKENDS}"
