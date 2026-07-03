@@ -1468,9 +1468,11 @@ def build_plans_tile(
     state = state if isinstance(state, dict) else {}
     armed = _safe_list_of_dicts(state.get("armed_plans"))
     trade_plans = _safe_list_of_dicts(state.get("trade_plans"))
-    armed_ids = {id(w) for w in armed}
-    watches = [w for w in _safe_list_of_dicts(state.get("indicator_watches"))
-               if id(w) not in armed_ids]
+    # home.py importe déjà `from trader.planning.indicator_watch import is_armed_plan as _is_armed_plan`
+    watches = [
+        w for w in _safe_list_of_dicts(state.get("indicator_watches"))
+        if not _is_armed_plan(w)
+    ]
 
     table = Table(show_header=True, expand=True, box=None, pad_edge=False)
     for column in ("Type", "Sym", "Détail", "Déclencheur / Risque", "Exp."):
@@ -1491,8 +1493,16 @@ def build_plans_tile(
         symbol = str(plan.get("symbol") or "—")
         price = _price_for_symbol(state, symbol)
         stale = _symbol_is_stale(state, symbol)
-        exit_rows.append((0 if stale else 1, symbol, plan, price, stale))
-    for _, symbol, plan, price, stale in sorted(exit_rows, key=lambda r: (r[0], r[1]))[:8]:
+        stop = _safe_float(plan.get("hard_stop_price"), default=None)
+        reference = price or _safe_float(plan.get("entry_price"), default=None)
+        side = str(plan.get("side") or "LONG").upper()
+        direction = -1.0 if side == "SHORT" else 1.0
+        if stop is not None and reference:
+            stop_distance = abs((stop - reference) / reference * direction)
+        else:
+            stop_distance = float("inf")  # sans stop/prix → en queue des non-stale
+        exit_rows.append((0 if stale else 1, stop_distance, symbol, plan, price, stale))
+    for _, _, symbol, plan, price, stale in sorted(exit_rows, key=lambda r: (r[0], r[1], r[2]))[:8]:
         risk_label = _exit_plan_risk_label(plan, price, stale)
         table.add_row(
             Text("sortie", style=palette["kpi_default"]),
@@ -1952,9 +1962,11 @@ class PlansTable(_SymbolTable):
         self.clear()
         armed = _safe_list_of_dicts(state.get("armed_plans"))
         trade_plans = _safe_list_of_dicts(state.get("trade_plans"))
-        armed_ids = {id(w) for w in armed}
-        watches = [w for w in _safe_list_of_dicts(state.get("indicator_watches"))
-                   if id(w) not in armed_ids]
+        # home.py importe déjà `from trader.planning.indicator_watch import is_armed_plan as _is_armed_plan`
+        watches = [
+            w for w in _safe_list_of_dicts(state.get("indicator_watches"))
+            if not _is_armed_plan(w)
+        ]
         index = 0
         for watch in armed:
             symbol = str(watch.get("symbol") or "—")

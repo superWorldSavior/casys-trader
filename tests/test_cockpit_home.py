@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from trader.ui.palette import PALETTE_LIGHT
 
@@ -89,6 +89,97 @@ def _patch_state_paths(monkeypatch, tmp_path):
     monkeypatch.setattr(cockpit_module, "_EVENTS_FILE", tmp_path / "events.jsonl")
     monkeypatch.setattr(cockpit_module, "_KILL_FILE", tmp_path / "KILL")
     monkeypatch.setattr(rs, "_STATE_DIR", tmp_path)
+
+
+def _console_render(renderable) -> str:
+    from rich.console import Console
+
+    console = Console(width=100, record=True)
+    console.print(renderable)
+    return console.export_text()
+
+
+def test_build_activity_tile_series_et_compteurs():
+    from trader.cockpit.home import build_activity_tile
+
+    buckets = {"exec": [0] * 11 + [2], "veille": [0] * 12, "plan": [0] * 12,
+               "risk": [1] + [0] * 11, "stale": [0] * 12, "hold": [3] * 12}
+    rendered = _console_render(build_activity_tile(buckets, palette=PALETTE_LIGHT))
+    assert "exec" in rendered and "n=2" in rendered
+    assert "risk" in rendered and "n=1" in rendered
+    assert "n=36" in rendered  # hold
+
+
+def test_build_portfolio_tile_risque_fusionne():
+    from trader.cockpit.home import build_portfolio_tile
+
+    state = {
+        "portfolio": {"cash": 50000.0, "equity": 100000.0, "holdings": [
+            {"symbol": "AAA", "quantity": 10, "avg_price": 90.0,
+             "last_price": 100.0, "fx_rate": 1.0, "unrealized_pnl": 100.0},
+        ]},
+        "trade_plans": [{"symbol": "AAA", "side": "LONG", "hard_stop_price": 95.0,
+                         "remaining_quantity": 10}],
+        "equity_curve": [100000.0, 100100.0],
+        "attribution": {},
+        "kpis": {},
+        "starting_cash": 100000.0,
+    }
+    rendered = _console_render(build_portfolio_tile(state, palette=PALETTE_LIGHT))
+    assert "AAA" in rendered
+    assert "-50" in rendered  # perte@stop (95-100)*10 — colonne fusionnée
+    assert "Perte@stop" in rendered
+    assert "Risque sorties" not in rendered  # plus de table séparée clippée
+
+
+def test_build_plans_tile_ordre_types():
+    from trader.cockpit.home import build_plans_tile
+
+    state = {
+        "armed_plans": [{"symbol": "ARM.TW", "order": {"intent": "OPEN_LONG", "qty": 4},
+                         "conditions": [], "expires_at": (NOW + timedelta(hours=2)).isoformat()}],
+        "trade_plans": [{"symbol": "EXI.TW", "side": "LONG", "hard_stop_price": 1.0,
+                         "entry_price": 2.0, "remaining_quantity": 1}],
+        "indicator_watches": [{"symbol": "WCH.TW", "conditions": [],
+                               "expires_at": (NOW + timedelta(hours=3)).isoformat()}],
+    }
+    rendered = _console_render(build_plans_tile(state, palette=PALETTE_LIGHT, now=NOW))
+    assert rendered.index("ARM.TW") < rendered.index("EXI.TW") < rendered.index("WCH.TW")
+    assert "armé" in rendered and "sortie" in rendered and "veille" in rendered
+
+
+def test_hex_to_rgb():
+    from trader.cockpit.home import _hex_to_rgb
+
+    assert _hex_to_rgb("#0D7680") == (13, 118, 128)
+    assert _hex_to_rgb("cyan") == "cyan"
+
+
+def test_build_plans_tile_arme_pas_duplique_apres_round_trip_json():
+    """Un plan armé (présent dans armed_plans ET indicator_watches) n'apparaît
+    qu'une fois, même après round-trip JSON (objets différents).
+
+    Note fixture : is_armed_plan vérifie on_trigger == "EXECUTE_ORDER" et
+    isinstance(order, dict) — utiliser on_trigger (pas trigger_action).
+    """
+    import json as _json
+    from trader.cockpit.home import build_plans_tile
+
+    state = {
+        "armed_plans": [{"symbol": "ARM.TW", "on_trigger": "EXECUTE_ORDER",
+                         "order": {"intent": "OPEN_LONG", "qty": 4}, "conditions": [],
+                         "expires_at": (NOW + timedelta(hours=2)).isoformat()}],
+        "indicator_watches": [{"symbol": "ARM.TW", "on_trigger": "EXECUTE_ORDER",
+                               "order": {"intent": "OPEN_LONG", "qty": 4}, "conditions": [],
+                               "expires_at": (NOW + timedelta(hours=2)).isoformat()},
+                              {"symbol": "WCH.TW", "conditions": [],
+                               "expires_at": (NOW + timedelta(hours=3)).isoformat()}],
+        "trade_plans": [],
+    }
+    state = _json.loads(_json.dumps(state))
+    rendered = _console_render(build_plans_tile(state, palette=PALETTE_LIGHT, now=NOW))
+    assert rendered.count("ARM.TW") == 1   # une seule ligne armé, pas de doublon veille
+    assert "WCH.TW" in rendered            # la veille simple reste listée
 
 
 async def test_app_compose_attention_line(tmp_path, monkeypatch):

@@ -172,13 +172,23 @@ def _build_equity_panel(
             expand=True,
         )
 
+    def _rgb_from_palette(color: str) -> tuple[int, int, int] | str:
+        text = color.strip()
+        if text.startswith("#") and len(text) == 7:
+            try:
+                return (int(text[1:3], 16), int(text[3:5], 16), int(text[5:7], 16))
+            except ValueError:
+                return text
+        return text
+
     try:
         import plotext as plt
 
         plt.clear_figure()
-        plt.theme("pro")
+        plt.theme("clear")
         plt.plotsize(70, 12)
-        plt.plot(list(range(len(values))), values, marker="braille", color="cyan")
+        plt.plot(list(range(len(values))), values, marker="braille",
+                 color=_rgb_from_palette(palette["equity_line"]))
         plt.title("Courbe d'équité")
         plt.xlabel("cycle")
         plt.ylabel("équité")
