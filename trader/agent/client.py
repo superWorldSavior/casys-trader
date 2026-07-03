@@ -48,6 +48,7 @@ from trader.agent_protocol.prompts import (
     _DECISION_GUIDANCE as _DECISION_GUIDANCE,
     _OUTPUT_CONTRACT as _OUTPUT_CONTRACT,
     _REASON_CODE_ENUM as _REASON_CODE_ENUM,
+    _SYMBOL_CALLS_FINAL_CONTRACT as _SYMBOL_CALLS_FINAL_CONTRACT,
     _TOOL_CATALOG as _TOOL_CATALOG,
     _WATCH_INDICATOR_ENUM as _WATCH_INDICATOR_ENUM,
     _WATCH_OPERATOR_ENUM as _WATCH_OPERATOR_ENUM,
@@ -55,6 +56,7 @@ from trader.agent_protocol.prompts import (
     _batch_final_contract as _batch_final_contract,
     _exit_plan_contract as _exit_plan_contract,
     _indicator_watch_vocabulary as _indicator_watch_vocabulary,
+    _symbol_calls_final_contract as _symbol_calls_final_contract,
     build_batch_prompt as build_batch_prompt,
     build_prompt as build_prompt,
 )
@@ -151,6 +153,7 @@ def decide_batch(
     timeout_s: int = 900,
     allow_context_request: bool = False,
     allow_tool_calls: bool = False,
+    use_symbol_calls_contract: bool = False,
     llm_router: llm.LlmRouter | None = None,
 ) -> dict[str, Decision | ContextResearchRequest] | BatchToolCallRequest:
     """UN seul appel modèle pour TOUS les symboles dus : le contexte partagé n'est
@@ -167,6 +170,7 @@ def decide_batch(
         symbols_payload=payload,
         allow_context_request=allow_context_request,
         allow_tool_calls=allow_tool_calls,
+        use_symbol_calls_contract=use_symbol_calls_contract,
     )
     router = llm_router or llm.build_default_router_from_env(acpx_bin=acpx_bin, spark_model=model)
     completion = router.complete(prompt, timeout_s=timeout_s)

@@ -64,6 +64,7 @@ class ProfitProtection:
     close_fraction: float = 1.0 / 3.0
     move_stop_to: MoveStopTo = "breakeven"
     min_hold_minutes: float = 10.0
+    lock_r: float | None = None
     triggered: bool = False
 
 
@@ -251,13 +252,24 @@ def normalize_exit_plan(raw_exit_plan: dict | None) -> dict | None:
         raw["profit_protection"] = {}
     elif isinstance(protection, dict):
         normalized_protection = dict(protection)
-        if "arm_at_r" not in normalized_protection and "arm_at_R" in normalized_protection:
-            normalized_protection["arm_at_r"] = normalized_protection["arm_at_R"]
+        if "arm_at_r" not in normalized_protection:
+            for alias in ("arm_at_R", "arm_r", "after_r", "enabled_after_r", "activate_after_r"):
+                if alias in normalized_protection:
+                    normalized_protection["arm_at_r"] = normalized_protection[alias]
+                    break
         if (
             "trigger_on_giveback_pct" not in normalized_protection
-            and "giveback_pct" in normalized_protection
+            and any(alias in normalized_protection for alias in ("giveback", "giveback_pct"))
         ):
-            normalized_protection["trigger_on_giveback_pct"] = normalized_protection["giveback_pct"]
+            normalized_protection["trigger_on_giveback_pct"] = normalized_protection.get(
+                "giveback",
+                normalized_protection.get("giveback_pct"),
+            )
+        if "lock_r" not in normalized_protection:
+            for alias in ("protect_r", "lock_in_r"):
+                if alias in normalized_protection:
+                    normalized_protection["lock_r"] = normalized_protection[alias]
+                    break
         raw["profit_protection"] = normalized_protection
 
     return raw
@@ -350,6 +362,11 @@ def validate_exit_plan(
                     protection["min_hold_minutes"],
                     "profit_protection_min_hold_minutes",
                 )
+            if protection.get("lock_r") is not None:
+                lock_r = _non_negative_float(protection["lock_r"], "profit_protection_lock_r")
+                arm_at_r = _positive_float(protection.get("arm_at_r", 0.5), "profit_protection_arm_at_r")
+                if lock_r > arm_at_r:
+                    raise InvalidExitPlanError("profit_protection_lock_r_gt_arm_at_r")
             move_stop_to = str(protection.get("move_stop_to", "breakeven"))
             if move_stop_to not in {"breakeven", "none"}:
                 raise InvalidExitPlanError("profit_protection_move_stop_to_unsupported")
@@ -814,6 +831,7 @@ def _profit_protection_from_raw(raw: dict | None) -> ProfitProtection | None:
         close_fraction=float(raw.get("close_fraction", 1.0 / 3.0)),
         move_stop_to=move_stop_to,  # type: ignore[arg-type]
         min_hold_minutes=float(raw.get("min_hold_minutes", 10.0)),
+        lock_r=(None if raw.get("lock_r") is None else float(raw["lock_r"])),
         triggered=bool(raw.get("triggered", False)),
     )
 

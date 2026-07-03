@@ -123,6 +123,32 @@ def _run_tool_round(
     return results_prompt, runtime
 
 
+def _merge_domain_tools(
+    *,
+    decision_domain_tools: dict | None,
+    runtime_payload: dict,
+    symbol_tool_traces: list[dict],
+) -> dict:
+    final_tool_calls = []
+    final_rounds = 0
+    if isinstance(decision_domain_tools, dict):
+        raw_final_tool_calls = decision_domain_tools.get("tool_calls")
+        if isinstance(raw_final_tool_calls, list):
+            final_tool_calls = list(raw_final_tool_calls)
+        try:
+            final_rounds = int(decision_domain_tools.get("tool_rounds") or 0)
+        except (TypeError, ValueError):
+            final_rounds = 0
+    try:
+        runtime_rounds = int(runtime_payload.get("tool_rounds") or 0)
+    except (TypeError, ValueError):
+        runtime_rounds = 0
+    return {
+        "tool_rounds": max(runtime_rounds, final_rounds),
+        "tool_calls": [*symbol_tool_traces, *final_tool_calls],
+    }
+
+
 def batch_decide(
     *,
     decidable: list[str],
@@ -255,6 +281,7 @@ def batch_decide(
                     per_symbol={sym: per_symbol_payload[sym] for sym in chunk},
                     allow_context_request=allow_context_request,
                     allow_tool_calls=agent_tools_enabled and allow_context_request,
+                    use_symbol_calls_contract=agent_tools_enabled,
                     timeout_s=decision_timeout_s,
                 )
             except Exception as exc:  # noqa: BLE001
@@ -299,6 +326,7 @@ def batch_decide(
                     per_symbol=per_symbol_round2,
                     allow_context_request=False,
                     allow_tool_calls=False,
+                    use_symbol_calls_contract=agent_tools_enabled,
                     timeout_s=decision_timeout_s,
                 )
             except Exception as exc:  # noqa: BLE001
@@ -322,10 +350,14 @@ def batch_decide(
                 decision = resp2.get(sym, codex_client.Decision.hold(sym, "missing_in_batch"))
                 if isinstance(decision, codex_client.Decision):
                     sym_traces = agent_tools.calls_for_symbol(trace_calls, sym)
-                    decision = replace(decision, domain_tools={
-                        "tool_rounds": runtime_payload["tool_rounds"],
-                        "tool_calls": sym_traces,
-                    })
+                    decision = replace(
+                        decision,
+                        domain_tools=_merge_domain_tools(
+                            decision_domain_tools=decision.domain_tools,
+                            runtime_payload=runtime_payload,
+                            symbol_tool_traces=sym_traces,
+                        ),
+                    )
                 final_decisions[sym] = decision
             return final_decisions, 2
 

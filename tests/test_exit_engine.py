@@ -133,6 +133,35 @@ def test_evaluate_plan_protege_un_short_apres_gain_puis_giveback() -> None:
     assert protected.updated_plan.profit_protection.triggered is True
 
 
+def test_evaluate_plan_profit_protection_lock_r_remonte_stop_en_profit() -> None:
+    plan = create_trade_plan(
+        symbol="SPY",
+        side="LONG",
+        quantity=10.0,
+        entry_price=100.0,
+        opened_at="2026-06-05T12:00:00+00:00",
+        raw_exit_plan={
+            "hard_stop": 90.0,
+            "profit_protection": {
+                "arm_at_r": 1.0,
+                "trigger_on_giveback_pct": 0.4,
+                "close_fraction": 0.5,
+                "lock_r": 0.25,
+                "min_hold_minutes": 0,
+            },
+        },
+    )
+
+    armed = evaluate_plan(plan, price=112.0, now=datetime(2026, 6, 5, 12, 1, tzinfo=timezone.utc))
+    protected = evaluate_plan(armed.updated_plan, price=106.0, now=datetime(2026, 6, 5, 12, 2, tzinfo=timezone.utc))
+
+    assert armed.signal is None
+    assert protected.signal is not None
+    assert protected.signal.reason == "profit_protection"
+    assert protected.signal.quantity == 5.0
+    assert protected.updated_plan.hard_stop_price == 102.5
+
+
 def test_evaluate_plan_ne_protege_pas_deux_fois() -> None:
     plan = create_trade_plan(
         symbol="SPY",

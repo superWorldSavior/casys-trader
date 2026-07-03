@@ -84,6 +84,43 @@ def test_flag_on_tournee_puis_decision_finale(monkeypatch):
     assert dt["tool_calls"][0]["outcome"] == "ok"
 
 
+def test_tournee_preserve_les_traces_action_tools_du_tour_final(monkeypatch):
+    def _fake_decide_batch(**kwargs):
+        if kwargs.get("allow_tool_calls"):
+            return codex_client.BatchToolCallRequest(
+                calls=[{"id": "fresh", "tool": "get_freshness", "args": {"symbols": ["2330.TW"]}}],
+                llm_provider="acpx",
+                llm_model="gpt-5.5",
+            )
+        action_trace = {
+            "id": "2330.TW:0",
+            "tool": "propose_order",
+            "args": {"intent": "OPEN_LONG"},
+            "outcome": "ok",
+            "detail": {},
+        }
+        return {
+            sym: codex_client.Decision(
+                symbol=sym,
+                action="BUY",
+                quantity=1.0,
+                confidence=0.75,
+                rationale="test",
+                intent="OPEN_LONG",
+                domain_tools={"tool_rounds": 0, "tool_calls": [action_trace]},
+            )
+            for sym in kwargs["symbols"]
+        }
+
+    monkeypatch.setattr(daemon.codex_client, "decide_batch", _fake_decide_batch)
+    decisions, calls = daemon._batch_decide(**_kwargs(), agent_tools_enabled=True)
+
+    assert calls == 2
+    dt = decisions["2330.TW"].domain_tools
+    assert dt["tool_rounds"] == 1
+    assert [call["tool"] for call in dt["tool_calls"]] == ["get_freshness", "propose_order"]
+
+
 def test_flag_on_seconde_tournee_bloquee_en_hold(monkeypatch):
     def _fake_decide_batch(**kwargs):
         # le LLM re-demande des outils même au tour final

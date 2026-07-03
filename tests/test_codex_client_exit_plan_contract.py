@@ -33,6 +33,21 @@ def _batch_prompt_from_decide_batch() -> str:
     return router.prompt
 
 
+def _symbol_calls_prompt_from_decide_batch() -> str:
+    router = CapturingRouter()
+    decide_batch(
+        symbols=["SPY"],
+        mandate="(mandat)",
+        memory="(memoire)",
+        shared_context={"cockpit": {}},
+        per_symbol={},
+        allow_tool_calls=True,
+        use_symbol_calls_contract=True,
+        llm_router=router,
+    )
+    return router.prompt
+
+
 def _trailing_stop_trail_types() -> tuple[str, ...]:
     assert hasattr(trade_plan, "TRAILING_STOP_TRAIL_TYPES")
     return tuple(trade_plan.TRAILING_STOP_TRAIL_TYPES)
@@ -164,6 +179,95 @@ def test_decision_parse_cancel_watch_ids() -> None:
     assert codex_client._decision_from_dict({**base, "cancel_watch_ids": {"x": 1}}, "SPY").cancel_watch_ids == []
 
 
+def test_batch_parse_compile_calls_par_symbole_en_decision_interne() -> None:
+    raw = """
+    {
+      "decisions": [
+        {
+          "symbol": "DASH",
+          "confidence": 0.74,
+          "rationale": "breakout propre",
+          "decision_reason_code": "ENTRY_SIGNAL",
+          "calls": [
+            {
+              "tool": "propose_order",
+              "args": {
+                "intent": "OPEN_LONG",
+                "qty": 20,
+                "exit": {
+                  "stop": {"struct": "swing_low", "window": 24, "buffer_pct": 0.004},
+                  "tp": [{"r": 1.4, "fraction": 0.5}, {"r": 2.2, "fraction": 0.5}],
+                  "trail": {"type": "percent", "value": 0.018},
+                  "protect": {"arm_r": 1.0, "giveback": 0.35, "close_fraction": 0.5, "lock_r": 0.25}
+                }
+              }
+            },
+            {"tool": "set_next_wake", "args": {"minutes": 15}},
+            {"tool": "record_learning", "args": {"note": "breakout stretched: surveiller le stop structural"}}
+          ]
+        }
+      ]
+    }
+    """
+
+    parsed = codex_client.parse_batch(raw, ["DASH"], allow_context_request=False)["DASH"]
+
+    assert parsed.action == "BUY"
+    assert parsed.intent == "OPEN_LONG"
+    assert parsed.quantity == 20.0
+    assert parsed.next_wake_in_minutes == 15.0
+    assert parsed.learning == "breakout stretched: surveiller le stop structural"
+    assert parsed.exit_plan == {
+        "hard_stop": {"type": "structural", "anchor": "swing_low", "window": 24, "buffer_pct": 0.004},
+        "take_profits": [{"type": "risk_multiple", "r": 1.4, "fraction": 0.5}, {"type": "risk_multiple", "r": 2.2, "fraction": 0.5}],
+        "trailing_stop": {"trail_type": "percent", "trail_value": 0.018},
+        "profit_protection": {
+            "arm_at_r": 1.0,
+            "trigger_on_giveback_pct": 0.35,
+            "close_fraction": 0.5,
+            "lock_r": 0.25,
+        },
+    }
+    assert parsed.domain_tools is not None
+    assert [call["tool"] for call in parsed.domain_tools["tool_calls"]] == [
+        "propose_order",
+        "set_next_wake",
+        "record_learning",
+    ]
+
+
+def test_batch_parse_calls_vides_signifie_hold_explicite() -> None:
+    raw = """
+    {"decisions": [
+      {"symbol": "SPY", "confidence": 0.61, "rationale": "setup trop tendu",
+       "decision_reason_code": "NO_EDGE", "calls": []}
+    ]}
+    """
+
+    parsed = codex_client.parse_batch(raw, ["SPY"], allow_context_request=False)["SPY"]
+
+    assert parsed.action == "HOLD"
+    assert parsed.intent == "HOLD"
+    assert parsed.quantity == 0.0
+    assert parsed.confidence == 0.61
+    assert parsed.rationale == "setup trop tendu"
+    assert parsed.domain_tools == {"tool_rounds": 0, "tool_calls": []}
+
+
+def test_batch_parse_rejette_melange_legacy_et_calls() -> None:
+    raw = """
+    {"decisions": [
+      {"symbol": "SPY", "action": "BUY", "quantity": 1, "confidence": 0.8,
+       "rationale": "ambigu", "calls": []}
+    ]}
+    """
+
+    parsed = codex_client.parse_batch(raw, ["SPY"], allow_context_request=False)["SPY"]
+
+    assert parsed.action == "HOLD"
+    assert "mixed_legacy_and_tools" in parsed.rationale
+
+
 def test_batch_contract_documente_voir_et_corriger_ses_plans() -> None:
     """L'agent doit savoir qu'il VOIT ses plans actifs (`active_watches`) et peut
     les CORRIGER (`cancel_watch_ids` = annuler + reposer), au lieu d'empiler."""
@@ -173,6 +277,18 @@ def test_batch_contract_documente_voir_et_corriger_ses_plans() -> None:
     assert "cancel_watch_ids" in prompt
     low = prompt.lower()
     assert "annul" in low and "repose" in low  # corriger = annuler + reposer
+
+
+def test_batch_contract_tools_par_symbole_remplace_le_schema_legacy_visible() -> None:
+    prompt = _symbol_calls_prompt_from_decide_batch()
+
+    assert '"calls":[' in prompt
+    assert "propose_order" in prompt
+    assert "protect" in prompt
+    assert "lock_r" in prompt
+    assert '"action":"BUY|SELL|HOLD"' not in prompt
+    assert '"exit_plan":<object|null>' not in prompt
+    assert 'Chaque <obj>: {"symbol":"<SYM>","action"' not in prompt
 
 
 def test_batch_contract_et_validate_exit_plan_utilisent_la_meme_constante(monkeypatch) -> None:

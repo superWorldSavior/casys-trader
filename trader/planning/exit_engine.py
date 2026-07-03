@@ -219,6 +219,17 @@ def _breakeven_stop(plan: TradePlan) -> float:
     return min(plan.hard_stop_price, plan.entry_price)
 
 
+def _lock_r_stop(plan: TradePlan, lock_r: float) -> float:
+    risk = _risk_per_share(plan)
+    if risk is None:
+        return _breakeven_stop(plan)
+    if plan.side == "LONG":
+        target = plan.entry_price + lock_r * risk
+        return target if plan.hard_stop_price is None else max(plan.hard_stop_price, target)
+    target = plan.entry_price - lock_r * risk
+    return target if plan.hard_stop_price is None else min(plan.hard_stop_price, target)
+
+
 def _profit_protection_signal(plan: TradePlan, *, price: float, now: datetime) -> ExitEvaluation | None:
     protection = plan.profit_protection
     if protection is None or not protection.enabled or protection.triggered:
@@ -242,7 +253,9 @@ def _profit_protection_signal(plan: TradePlan, *, price: float, now: datetime) -
         return None
     remaining = max(0.0, plan.remaining_quantity - qty)
     hard_stop = plan.hard_stop_price
-    if protection.move_stop_to == "breakeven":
+    if protection.lock_r is not None:
+        hard_stop = _lock_r_stop(plan, protection.lock_r)
+    elif protection.move_stop_to == "breakeven":
         hard_stop = _breakeven_stop(plan)
     updated = replace(
         plan,

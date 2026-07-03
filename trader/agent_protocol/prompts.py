@@ -231,6 +231,35 @@ _BATCH_FINAL_CONTRACT = (
     "à retenir, réinjectée via context.learnings. Si tu n'es pas sûr -> action=HOLD."
 )
 
+_SYMBOL_CALLS_FINAL_CONTRACT = (
+    'Réponds UNIQUEMENT par {"decisions": [ <obj>, ... ]} avec EXACTEMENT une entrée '
+    "par symbole listé.\n"
+    'Chaque <obj>: {"symbol":"<SYM>","confidence":<0..1>,"rationale":"<court>",'
+    f'"decision_reason_code":"{_REASON_CODE_ENUM}","calls":[<tool_call>,...]}}\n'
+    "`calls: []` signifie HOLD explicite pour ce symbole. Ne mélange pas `calls` "
+    "avec les anciens champs métier.\n"
+    "Action tools finaux autorisés par symbole:\n"
+    "- propose_order{intent:OPEN_LONG|OPEN_SHORT|REDUCE|CLOSE|REVERSE, qty, side?, exit?} : "
+    "propose un ordre; le daemon reste seul exécuteur et applique execution/exit/RiskGate.\n"
+    "- set_next_wake{minutes} : demande le prochain réveil du symbole.\n"
+    "- propose_indicator_watch{...} : pose une veille/plan armé avec le vocabulaire des veilles.\n"
+    "- cancel_watch{id|ids|watch_ids} : annule uniquement tes veilles du symbole.\n"
+    "- record_learning{note} : note courte bornée pour la mémoire runtime.\n"
+    "Vocabulaire compact de `propose_order.exit`: "
+    "stop -> hard_stop; tp[{r,fraction}|{price,fraction}] -> take_profits; "
+    "trail{type,value}; protect{arm_r,giveback,close_fraction?,lock_r?,min_hold_minutes?}; "
+    "exit_watch; max_hold_minutes. "
+    "`protect.lock_r` verrouille le stop à +N R (0 = breakeven); "
+    "aliases acceptés: after_r/enabled_after_r/activate_after_r -> arm_r, "
+    "protect_r/lock_in_r -> lock_r.\n"
+    "Exemple compact: "
+    '{"symbol":"DASH","confidence":0.74,"rationale":"breakout propre",'
+    f'"decision_reason_code":"ENTRY_SIGNAL","calls":[{{"tool":"propose_order","args":'
+    '{"intent":"OPEN_LONG","qty":20,"exit":{"stop":{"struct":"swing_low","window":24},'
+    '"tp":[{"r":1.4,"fraction":0.5}],"protect":{"arm_r":1.0,"giveback":0.35,"lock_r":0.25}}}}},'
+    '{"tool":"set_next_wake","args":{"minutes":15}}]}'
+)
+
 _BATCH_COMPACT_SUFFIX = (
     "\nPour un symbole précis où un indicateur manque, mets à la place "
     '{"symbol":"<SYM>","action":"REQUEST_CONTEXT","rationale":"<pourquoi>",'
@@ -287,6 +316,10 @@ def _batch_final_contract() -> str:
 
 def _batch_compact_contract() -> str:
     return _batch_final_contract() + _BATCH_COMPACT_SUFFIX
+
+
+def _symbol_calls_final_contract() -> str:
+    return _SYMBOL_CALLS_FINAL_CONTRACT
 
 
 def _indicator_watch_vocabulary() -> str:
@@ -409,10 +442,14 @@ def build_batch_prompt(
     symbols_payload: list[dict],
     allow_context_request: bool = False,
     allow_tool_calls: bool = False,
+    use_symbol_calls_contract: bool = False,
 ) -> str:
     """Prompt batch : contexte PARTAGÉ (cockpit/portefeuille/KPI/attribution/learnings)
     envoyé UNE fois, puis la liste des symboles à décider -> un seul appel modèle."""
-    contract = _batch_compact_contract() if allow_context_request else _batch_final_contract()
+    if use_symbol_calls_contract:
+        contract = _symbol_calls_final_contract()
+    else:
+        contract = _batch_compact_contract() if allow_context_request else _batch_final_contract()
     return (
         "Tu es le PLANIFICATEUR d'un système de trading paper : tu conçois des "
         "scénarios — entrées armées, veilles, plans de sortie — que le daemon "

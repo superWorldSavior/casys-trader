@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 
 from trader.reporting import decision_reason
 from trader.agent_protocol.types import (
@@ -13,6 +14,17 @@ from trader.agent_protocol.types import (
 )
 
 _DECISION_KEYS = {"symbol", "action", "quantity", "confidence", "rationale", "decision_reason_code"}
+_LEGACY_DECISION_FIELDS = {
+    "action",
+    "quantity",
+    "qty",
+    "intent",
+    "exit_plan",
+    "indicator_watch",
+    "cancel_watch_ids",
+    "next_wake_in_minutes",
+    "learning",
+}
 MAX_LEARNING_CHARS = 1000  # borne la note pour ne pas faire exploser le prompt/store
 
 
@@ -92,6 +104,215 @@ def _decision_from_dict(data: dict, symbol: str) -> Decision:
     )
 
 
+def _tool_call_id(symbol: str, index: int, raw: dict) -> str:
+    raw_id = raw.get("id")
+    return str(raw_id) if isinstance(raw_id, str) and raw_id else f"{symbol}:{index}"
+
+
+def _tool_args(raw: dict) -> dict:
+    args = raw.get("args")
+    if args is None:
+        return {}
+    if not isinstance(args, dict):
+        raise ValueError("tool_args_must_be_object")
+    return args
+
+
+def _compact_stop(raw: object) -> object:
+    if not isinstance(raw, dict):
+        return raw
+    if raw.get("struct") is not None:
+        out = {"type": "structural", "anchor": raw["struct"]}
+        for key in ("window", "buffer_pct", "buffer_atr", "min_pct", "max_pct"):
+            if raw.get(key) is not None:
+                out[key] = raw[key]
+        return out
+    if raw.get("type") == "structural" and raw.get("anchor") is None and raw.get("struct") is not None:
+        out = dict(raw)
+        out["anchor"] = out.pop("struct")
+        return out
+    return dict(raw)
+
+
+def _compact_take_profits(raw: object) -> list[dict]:
+    if not isinstance(raw, list):
+        return []
+    out: list[dict] = []
+    for item in raw:
+        if isinstance(item, dict):
+            if item.get("r") is not None:
+                tp = {"type": "risk_multiple", "r": item["r"]}
+                if item.get("fraction") is not None:
+                    tp["fraction"] = item["fraction"]
+                if item.get("name") is not None:
+                    tp["name"] = item["name"]
+                out.append(tp)
+            else:
+                out.append(dict(item))
+        else:
+            out.append({"price": item})
+    return out
+
+
+def _compact_trailing(raw: object) -> dict | None:
+    if raw in (None, False, ""):
+        return None
+    if not isinstance(raw, dict):
+        return {"trail_type": "price", "trail_value": raw}
+    value = raw.get("trail_value")
+    if value is None:
+        value = raw.get("value")
+    if value is None:
+        return None
+    trail_type = raw.get("trail_type") or raw.get("type") or "price"
+    out = {"trail_type": trail_type, "trail_value": value}
+    if raw.get("enabled_after") is not None:
+        out["enabled_after"] = raw["enabled_after"]
+    return out
+
+
+def _first_present(data: dict, *keys: str) -> object | None:
+    for key in keys:
+        if data.get(key) is not None:
+            return data[key]
+    return None
+
+
+def _compact_protection(raw: object) -> dict | None:
+    if raw in (None, False, ""):
+        return None
+    if raw is True:
+        return {}
+    if not isinstance(raw, dict):
+        raise ValueError("protect_must_be_object")
+    out: dict = {}
+    arm = _first_present(raw, "arm_r", "arm_at_r", "arm_at_R", "after_r", "enabled_after_r", "activate_after_r")
+    if arm is not None:
+        out["arm_at_r"] = arm
+    giveback = _first_present(raw, "giveback", "giveback_pct", "trigger_on_giveback_pct")
+    if giveback is not None:
+        out["trigger_on_giveback_pct"] = giveback
+    for src, dst in (
+        ("close_fraction", "close_fraction"),
+        ("min_hold_minutes", "min_hold_minutes"),
+        ("move_stop_to", "move_stop_to"),
+    ):
+        if raw.get(src) is not None:
+            out[dst] = raw[src]
+    lock_r = _first_present(raw, "lock_r", "protect_r", "lock_in_r")
+    if lock_r is not None:
+        out["lock_r"] = lock_r
+    return out
+
+
+def _compact_exit_plan(raw: object) -> dict | None:
+    if raw in (None, False, ""):
+        return None
+    if not isinstance(raw, dict):
+        raise ValueError("exit_must_be_object")
+    out: dict = {}
+    stop = _first_present(raw, "stop", "hard_stop", "sl")
+    if stop is not None:
+        out["hard_stop"] = _compact_stop(stop)
+    take_profits = _first_present(raw, "tp", "take_profits")
+    if take_profits is not None:
+        out["take_profits"] = _compact_take_profits(take_profits)
+    trailing = _first_present(raw, "trail", "trailing_stop")
+    compact_trailing = _compact_trailing(trailing)
+    if compact_trailing is not None:
+        out["trailing_stop"] = compact_trailing
+    protection = _first_present(raw, "protect", "profit_protection")
+    compact_protection = _compact_protection(protection)
+    if compact_protection is not None:
+        out["profit_protection"] = compact_protection
+    if raw.get("exit_watch") is not None:
+        out["exit_watch"] = raw["exit_watch"]
+    max_hold = _first_present(raw, "max_hold_minutes", "max_hold_m")
+    if max_hold is not None:
+        out["max_hold_minutes"] = max_hold
+    return out or None
+
+
+def _action_for_order_tool(args: dict) -> str:
+    raw_action = args.get("side") or args.get("action")
+    if raw_action is not None:
+        action = str(raw_action).upper()
+        if action in {"BUY", "SELL"}:
+            return action
+        raise ValueError("order_side_invalid")
+    intent = str(args.get("intent") or "").upper()
+    if intent == "OPEN_LONG":
+        return "BUY"
+    if intent == "OPEN_SHORT":
+        return "SELL"
+    raise ValueError("order_side_required")
+
+
+def _decision_from_symbol_calls(data: dict, symbol: str) -> Decision:
+    if any(field in data for field in _LEGACY_DECISION_FIELDS):
+        raise ValueError("mixed_legacy_and_tools")
+    calls = data.get("calls")
+    if not isinstance(calls, list):
+        raise ValueError("calls_must_be_list")
+
+    decision: dict = {
+        "symbol": symbol,
+        "action": "HOLD",
+        "quantity": 0.0,
+        "confidence": float(data.get("confidence") or 0.0),
+        "rationale": str(data.get("rationale") or ""),
+        "intent": "HOLD",
+        "decision_reason_code": _decision_reason_code(data),
+    }
+    traces: list[dict] = []
+    cancel_ids: list[str] = []
+
+    for index, raw in enumerate(calls):
+        if not isinstance(raw, dict):
+            raise ValueError("tool_call_must_be_object")
+        tool = raw.get("tool")
+        if not isinstance(tool, str) or not tool:
+            raise ValueError("tool_name_required")
+        args = _tool_args(raw)
+        call_id = _tool_call_id(symbol, index, raw)
+        traces.append({"id": call_id, "tool": tool, "args": args, "outcome": "ok", "detail": {}})
+
+        if tool == "propose_order":
+            intent = str(args.get("intent") or "").upper()
+            if intent not in {"OPEN_LONG", "OPEN_SHORT", "REDUCE", "CLOSE", "REVERSE"}:
+                raise ValueError("order_intent_invalid")
+            qty = args.get("qty", args.get("quantity"))
+            if qty is None:
+                raise ValueError("order_qty_required")
+            decision["action"] = _action_for_order_tool(args)
+            decision["quantity"] = float(qty)
+            decision["intent"] = intent
+            decision["exit_plan"] = _compact_exit_plan(args.get("exit"))
+        elif tool == "set_next_wake":
+            minutes = args.get("minutes")
+            if minutes is None:
+                raise ValueError("wake_minutes_required")
+            decision["next_wake_in_minutes"] = float(minutes)
+        elif tool == "record_learning":
+            decision["learning"] = _normalize_learning(args.get("note"))
+        elif tool == "propose_indicator_watch":
+            watch = args.get("watch")
+            decision["indicator_watch"] = dict(watch) if isinstance(watch, dict) else dict(args)
+        elif tool == "cancel_watch":
+            raw_ids = args.get("ids") or args.get("watch_ids")
+            if raw_ids is None and isinstance(args.get("id"), str):
+                raw_ids = [args["id"]]
+            if not isinstance(raw_ids, list):
+                raise ValueError("cancel_watch_ids_required")
+            cancel_ids.extend(str(wid) for wid in raw_ids if isinstance(wid, str))
+        else:
+            raise ValueError(f"unknown_action_tool:{tool}")
+
+    decision["cancel_watch_ids"] = cancel_ids
+    parsed = _decision_from_dict(decision, symbol)
+    return replace(parsed, domain_tools={"tool_rounds": 0, "tool_calls": traces})
+
+
 def parse_decision(raw_text: str, symbol: str) -> Decision:
     return _decision_from_dict(_extract_json(raw_text), symbol)
 
@@ -157,7 +378,9 @@ def _parse_batch_data(
         if sym is None or sym not in requested:
             continue  # symbole hors périmètre ou élément non-objet -> ignoré
         try:
-            if allow_context_request:
+            if isinstance(element, dict) and "calls" in element:
+                by_symbol[sym] = _decision_from_symbol_calls(element, sym)
+            elif allow_context_request:
                 by_symbol[sym] = _response_from_dict(element, sym)
             else:
                 by_symbol[sym] = _decision_from_dict(element, sym)

@@ -10,6 +10,12 @@ JSON dans le prompt, PAS les outils natifs de codex — la décision tourne avec
 `--allowed-tools ""`). Le daemon exécute, réinjecte les résultats, et le LLM
 statue.
 
+En mode `CASYS_AGENT_TOOLS_ENABLED=1`, le contrat final visible peut aussi être
+un langage **tools par symbole** : chaque symbole rend `calls`, et ces calls sont
+compilés par le daemon vers les primitives internes (`Decision`, `exit_plan`,
+veille, réveil, learning) avant les gates existants. Les anciens champs restent
+acceptés en compat cachée, mais ne sont pas exposés dans ce contrat.
+
 ## Les 9 outils
 
 | Outil | Module | Rôle |
@@ -26,6 +32,65 @@ statue.
 
 Chaque outil = un `ToolSpec(name, validate_args, handler)` enregistré dans
 `TOOL_REGISTRY` (`agent_tools/registry`).
+
+## Action tools finaux par symbole
+
+Format agent visible :
+
+```json
+{
+  "decisions": [
+    {
+      "symbol": "DASH",
+      "confidence": 0.74,
+      "rationale": "breakout propre",
+      "decision_reason_code": "ENTRY_SIGNAL",
+      "calls": [
+        {
+          "tool": "propose_order",
+          "args": {
+            "intent": "OPEN_LONG",
+            "qty": 20,
+            "exit": {
+              "stop": {"struct": "swing_low", "window": 24},
+              "tp": [{"r": 1.4, "fraction": 0.5}],
+              "protect": {"arm_r": 1.0, "giveback": 0.35, "lock_r": 0.25}
+            }
+          }
+        },
+        {"tool": "set_next_wake", "args": {"minutes": 15}}
+      ]
+    }
+  ]
+}
+```
+
+`calls: []` signifie HOLD explicite. `id` est optionnel : le daemon en génère un
+stable si besoin pour `runtime.tool_calls`.
+
+Action tools acceptés :
+
+| Tool | Remplace | Effet réel |
+|---|---|---|
+| `propose_order` | `action` / `quantity` / `intent` + `exit_plan` | compile une intention ; le daemon valide puis RiskGate/broker |
+| `set_next_wake` | `next_wake_in_minutes` | planifie le prochain réveil du symbole |
+| `propose_indicator_watch` | `indicator_watch` | pose une veille via le scheduler |
+| `cancel_watch` | `cancel_watch_ids` | annule seulement les veilles possédées par le symbole |
+| `record_learning` | `learning` | borne et persiste une note runtime |
+
+Vocabulaire compact de `propose_order.args.exit` :
+
+| Compact | Interne |
+|---|---|
+| `stop` | `hard_stop` |
+| `tp[{r,...}]` | `take_profits[{type:"risk_multiple", r,...}]` |
+| `trail{type,value}` | `trailing_stop{trail_type, trail_value}` |
+| `protect.arm_r` | `profit_protection.arm_at_r` |
+| `protect.giveback` | `profit_protection.trigger_on_giveback_pct` |
+| `protect.lock_r` | remonte le stop à `entry +/- lock_r * R` au déclenchement |
+
+Aliases compat : `after_r` / `enabled_after_r` / `activate_after_r` -> `arm_r`,
+`protect_r` / `lock_in_r` -> `lock_r`.
 
 ## Contrat d'exécution — `execute_tool_round`
 

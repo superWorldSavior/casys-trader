@@ -108,6 +108,29 @@ def test_create_trade_plan_accepte_profit_protection_agent() -> None:
     assert plan.profit_protection.close_fraction == 0.5
 
 
+def test_create_trade_plan_normalise_profit_protection_compacte_en_r() -> None:
+    plan = create_trade_plan(
+        symbol="SPY",
+        side="LONG",
+        quantity=10.0,
+        entry_price=100.0,
+        opened_at="2026-06-05T12:00:00+00:00",
+        raw_exit_plan={
+            "hard_stop": 95.0,
+            "profit_protection": {
+                "enabled_after_r": 1.0,
+                "giveback": 0.35,
+                "protect_r": 0.25,
+            },
+        },
+    )
+
+    assert plan.profit_protection is not None
+    assert plan.profit_protection.arm_at_r == 1.0
+    assert plan.profit_protection.trigger_on_giveback_pct == 0.35
+    assert plan.profit_protection.lock_r == 0.25
+
+
 def test_create_trade_plan_accepte_exit_watch_agent() -> None:
     plan = create_trade_plan(
         symbol="SPY",
