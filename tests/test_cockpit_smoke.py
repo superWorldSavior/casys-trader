@@ -11,10 +11,13 @@ Note : les fichiers state sont mockés via monkeypatch sur les constantes du mod
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 from rich.console import Console
 from textual.widgets import ContentSwitcher, Static
+
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 import trader.cockpit.app as cockpit_module
 from trader.cockpit import CockpitApp
@@ -904,8 +907,9 @@ async def test_cockpit_observabilite_affiche_les_derniers_learnings(
 
         panel = app.query_one("#learnings-panel", Static)
         rendered = _render(panel.content)
+        plain = _ANSI_RE.sub("", rendered)
         compact_rendered = "".join(
-            ch for ch in rendered if not ch.isspace() and ch != "│"
+            ch for ch in plain if not ch.isspace() and ch != "│"
         )
         compact_note = "".join(note.split())
 
