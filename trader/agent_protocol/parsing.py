@@ -297,6 +297,9 @@ def _decision_from_symbol_calls(data: dict, symbol: str) -> Decision:
     next_wake_event: str | None = None
     # L1 — sizing en risque : extrait de propose_order.args{"risk_pct":...}
     risk_pct_target_local: float | None = None
+    # L5-unify — set_next_wake{when} : coexistence avec propose_indicator_watch
+    wake_when_used: bool = False
+    propose_indicator_watch_used: bool = False
 
     for index, raw in enumerate(calls):
         if not isinstance(raw, dict):
@@ -364,7 +367,20 @@ def _decision_from_symbol_calls(data: dict, symbol: str) -> Decision:
         elif tool == "set_next_wake":
             on_event = args.get("on")
             minutes = args.get("minutes")
-            if on_event is not None:
+            when = args.get("when")
+            if when is not None:
+                # Réveil-sur-indicateur : {when: <condition>} → indicator_watch{WAKE}.
+                # Réutilise le mécanisme propose_indicator_watch{WAKE} sans le dupliquer :
+                # on assemble le dict brut que build_indicator_watch (daemon) consomme.
+                # Validation indicateur/opérateur : déléguée à build_indicator_watch (atomicité).
+                if not isinstance(when, dict):
+                    raise ValueError("wake_when_must_be_object")
+                watch_raw: dict = {"on_trigger": "WAKE", "logic": "all", "conditions": [when]}
+                if args.get("ttl_minutes") is not None:
+                    watch_raw["ttl_minutes"] = args["ttl_minutes"]
+                decision["indicator_watch"] = watch_raw
+                wake_when_used = True
+            elif on_event is not None:
                 # Réveil événementiel : stocké pour résolution au daemon.
                 # Un on: inconnu est accepté ici ; le daemon tombera en fail-safe.
                 next_wake_event = str(on_event)
@@ -377,6 +393,7 @@ def _decision_from_symbol_calls(data: dict, symbol: str) -> Decision:
         elif tool == "propose_indicator_watch":
             watch = args.get("watch")
             decision["indicator_watch"] = dict(watch) if isinstance(watch, dict) else dict(args)
+            propose_indicator_watch_used = True
         elif tool == "cancel_watch":
             raw_ids = args.get("ids") or args.get("watch_ids")
             if raw_ids is None and isinstance(args.get("id"), str):
@@ -394,6 +411,11 @@ def _decision_from_symbol_calls(data: dict, symbol: str) -> Decision:
             raise ValueError(f"unknown_action_tool:{tool}")
 
     decision["cancel_watch_ids"] = cancel_ids
+    # Coexistence : set_next_wake{when} et propose_indicator_watch écrivent tous deux
+    # indicator_watch → ambiguïté. On rejette explicitement plutôt que de silencieusement
+    # laisser le dernier gagner (AX : Explicit Over Implicit).
+    if wake_when_used and propose_indicator_watch_used:
+        raise ValueError("wake_when_conflicts_with_propose_indicator_watch")
     resolve_from_position = decision.pop("_resolve_from_position", False)
     reduce_fraction_val = decision.pop("_reduce_fraction", None)
     parsed = _decision_from_dict(decision, symbol)
