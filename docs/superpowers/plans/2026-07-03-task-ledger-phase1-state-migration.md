@@ -70,9 +70,9 @@ Ces lecteurs sont **fail-safe** (try/except → `[]`/`{}`). Tant qu'on écrit le
 **Files:** Create `trader/state_db/__init__.py` (vide), `trader/state_db/connection.py` ; Test `tests/state_db/__init__.py` (vide), `tests/state_db/test_connection.py`.
 
 **Interfaces — Produces:**
-- `StateDb(db_path)` : ouvre `sqlite3.connect(check_same_thread=False)`, `row_factory=Row`, `PRAGMA journal_mode=WAL`, `busy_timeout=5000`. Attribut `path`, `_lock` (threading.Lock).
-- `StateDb.transaction()` : context manager `BEGIN IMMEDIATE` … `COMMIT` / `rollback` sur exception, sous `_lock`.
-- `StateDb.executescript(sql)` / `execute(sql, params)` gardés par `_lock`.
+- `StateDb(db_path)` : `sqlite3.connect(check_same_thread=False, **isolation_level=None**)` (autocommit — transactions gérées à la main), `row_factory=Row`, WAL, `busy_timeout=5000`. Attribut `path`, `_lock`.
+- `StateDb.transaction()` : context manager `BEGIN IMMEDIATE` + **`COMMIT`/`ROLLBACK` explicites via cursor** (mode autocommit), sous `_lock`. **Toute écriture passe EXCLUSIVEMENT par `transaction()`.**
+- `StateDb.query_one(sql, params) -> Row|None` / `query_all(sql, params) -> list[Row]` : lecture, **fetch inclus sous `_lock`** (pas de cursor exposé hors lock). *(correctifs Codex §1a : autocommit + fetch-sous-lock)*
 - `StateDb.table_is_empty(name) -> bool`.
 
 - [ ] **Step 1: failing test** — `test_wal_and_transaction_atomicity` : ouvrir un `StateDb` sur `tmp_path`, vérifier `PRAGMA journal_mode == 'wal'` ; dans une `transaction()`, faire un INSERT puis lever → vérifier rollback (table vide). Deuxième `transaction()` qui commit → ligne présente.
@@ -85,7 +85,7 @@ Ces lecteurs sont **fail-safe** (try/except → `[]`/`{}`). Tant qu'on écrit le
 
 **Files:** Modify `connection.py` (ou Create `migrations.py`) ; Test `tests/state_db/test_migrations.py`.
 
-**Interfaces — Produces:** `StateDb.apply_migrations(migrations: list[tuple[int, str]])` : crée `schema_migrations(version INTEGER PRIMARY KEY, applied_at TEXT)`, applique chaque migration dont la `version` n'est pas déjà enregistrée, dans une transaction, idempotent (re-run = no-op).
+**Interfaces — Produces:** `StateDb.apply_migrations(migrations: list[tuple[int, list[str]]])` — chaque migration = `(version, [stmt1, stmt2, …])` (**liste explicite de statements**, pas de `split(';')`). Crée `schema_migrations(version INTEGER PRIMARY KEY, applied_at TEXT)`, puis pour chaque version : `BEGIN IMMEDIATE` **avant** le check de version (verrou write), re-check sous verrou, exécute les statements + INSERT version + COMMIT. Idempotent (re-run = no-op). *(correctif Codex §1a : liste de statements + robustesse race)*. **NB : les schémas SQL donnés en blocs dans §1b/§1c/§1d ci-dessous sont à découper en listes de statements pour cette API.**
 
 - [ ] **Step 1: failing test** — appliquer 2 migrations, vérifier tables créées + `schema_migrations` a 2 lignes ; ré-appliquer → toujours 2 lignes, pas d'erreur.
 - [ ] **Steps 2-4** (TDD).
