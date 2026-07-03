@@ -237,6 +237,21 @@ class TaskLedger:
                 self._conn.rollback()
                 raise
 
+    def purge_all(self) -> int:
+        """Supprime toutes les tâches de la DB (shadow éphémère : purge par cycle).
+
+        Helper de la sonde shadow uniquement. NE modifie PAS la logique métier
+        de enqueue/claim/complete/fail. Retourne le nombre de lignes supprimées.
+        """
+        with self._lock:
+            try:
+                cur = self._conn.execute("DELETE FROM tasks")
+                self._conn.commit()
+                return cur.rowcount
+            except Exception:
+                self._conn.rollback()
+                raise
+
     def recover_on_boot(self, *, now_ms):
         """Remet en 'pending' les tâches 'running' dont le bail a expiré.
 

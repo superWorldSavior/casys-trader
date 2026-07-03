@@ -5,11 +5,14 @@ ensemble de symboles que le chemin synchrone, une fois chacun, sans perte
 ni doublon.
 
 Le shadow ne re-appelle JAMAIS le LLM. Il vérifie uniquement que
-l'ORCHESTRATION est correcte (tous les symboles décidés sont enfilés,
+l'ORCHESTRATION est correcte (tous les symboles decidables sont enfilés,
 claimés et drainés exactement une fois).
 
 Isolation garantie : DB dédiée (shadow_queue.db), jamais la prod.
 Toute exception interne est capturée → rapport {"error": ..., "identical": False}.
+
+Purge par cycle : DELETE FROM tasks en début de run() — la DB shadow ne
+contient jamais que les jobs du cycle courant (pas d'historique).
 """
 from __future__ import annotations
 
@@ -74,17 +77,30 @@ class ShadowQueueProbe:
     # API publique
     # ------------------------------------------------------------------
 
-    def run(self, *, cycle_ts: str, decided_symbols: list[str], now_ms: int) -> dict:
+    def run(
+        self,
+        *,
+        cycle_ts: str,
+        decidable_symbols: list[str],
+        decided_symbols: list[str],
+        now_ms: int,
+    ) -> dict:
         """Enfile, draine et compare.
 
         Parameters
         ----------
         cycle_ts:
             Horodatage ISO du cycle (ex. ``now.isoformat()``). Utilisé dans
-            le ``dedup_key`` pour garantir l'idempotence par cycle.
+            le ``dedup_key`` pour garantir l'idempotence intra-run.
+        decidable_symbols:
+            Symboles que la file DEVRAIT acheminer (source indépendante —
+            ex. ``decidable`` du daemon, avant le LLM). La sonde enfile
+            ceux-ci, pas ``decided_symbols``.
         decided_symbols:
-            Liste des symboles retournés par ``_batch_decide`` (clés de
-            ``decisions_by_symbol``).
+            Symboles réellement décidés par le LLM (clés de
+            ``decisions_by_symbol``). Utilisés UNIQUEMENT pour le champ
+            ``decided_vs_decidable`` (comparaison ensembliste, non pour
+            l'acheminement).
         now_ms:
             Epoch en millisecondes (int). Injecté pour déterminisme.
 
@@ -92,12 +108,13 @@ class ShadowQueueProbe:
         -------
         dict
             Rapport machine-readable. ``identical=True`` ssi
-            ``drained_symbols == sorted(decided_symbols)``, sans missing
+            ``drained_symbols == sorted(decidable_symbols)``, sans missing
             ni duplicated ni dead.
         """
         try:
             return self._run_internal(
                 cycle_ts=cycle_ts,
+                decidable_symbols=decidable_symbols,
                 decided_symbols=decided_symbols,
                 now_ms=now_ms,
             )
@@ -110,14 +127,23 @@ class ShadowQueueProbe:
     # ------------------------------------------------------------------
 
     def _run_internal(
-        self, *, cycle_ts: str, decided_symbols: list[str], now_ms: int
+        self,
+        *,
+        cycle_ts: str,
+        decidable_symbols: list[str],
+        decided_symbols: list[str],
+        now_ms: int,
     ) -> dict:
         self._drained_symbols = []
 
-        # ── 1. Enqueue ───────────────────────────────────────────────
+        # ── 0. Purge : repart propre à chaque cycle ──────────────────────
+        # Aucun historique gardé → dead_count/drained ne concernent QUE ce cycle.
+        self._ledger.purge_all()
+
+        # ── 1. Enqueue decidable_symbols (source indépendante) ────────────
         enqueued = 0
         deduped = 0
-        for sym in decided_symbols:
+        for sym in decidable_symbols:
             dedup_key = f"shadow:{cycle_ts}:{sym}"
             task_id = self._ledger.enqueue(
                 kind=_SHADOW_KIND,
@@ -133,8 +159,8 @@ class ShadowQueueProbe:
             else:
                 enqueued += 1
 
-        # ── 2. Drain ─────────────────────────────────────────────────
-        safety = _SAFETY_MULTIPLIER * len(decided_symbols) + _SAFETY_EXTRA
+        # ── 2. Drain ─────────────────────────────────────────────────────
+        safety = _SAFETY_MULTIPLIER * len(decidable_symbols) + _SAFETY_EXTRA
         drained = 0
         token = uuid.uuid4().hex
         for _ in range(safety):
@@ -145,14 +171,14 @@ class ShadowQueueProbe:
             # Renouvelle le token à chaque tâche (fencing par tâche)
             token = uuid.uuid4().hex
 
-        # ── 3. Compter les tâches mortes (dead) ──────────────────────
+        # ── 3. Compter les tâches mortes (dead) ──────────────────────────
         dead_count = self._ledger._conn.execute(
             "SELECT COUNT(*) FROM tasks WHERE status='dead' AND kind=?",
             (_SHADOW_KIND,),
         ).fetchone()[0]
 
-        # ── 4. Rapport ───────────────────────────────────────────────
-        expected = sorted(decided_symbols)
+        # ── 4. Rapport acheminement (decidable vs drained) ───────────────
+        expected = sorted(decidable_symbols)
         drained_sorted = sorted(self._drained_symbols)
 
         expected_set = set(expected)
@@ -171,6 +197,16 @@ class ShadowQueueProbe:
             and dead_count == 0
         )
 
+        # ── 5. decided_vs_decidable : comparaison ensembliste ────────────
+        decided_set = set(decided_symbols)
+        decidable_set = set(decidable_symbols)
+        decided_vs_decidable = {
+            "decided": sorted(decided_symbols),
+            "decidable": sorted(decidable_symbols),
+            "only_decided": sorted(decided_set - decidable_set),
+            "only_decidable": sorted(decidable_set - decided_set),
+        }
+
         report = {
             "cycle_ts": cycle_ts,
             "enqueued": enqueued,
@@ -182,13 +218,15 @@ class ShadowQueueProbe:
             "duplicated": duplicated,
             "dead": dead_count,
             "identical": identical,
+            "decided_vs_decidable": decided_vs_decidable,
         }
         log.info(
-            "[shadow-queue] cycle=%s enq=%d drain=%d identical=%s missing=%s",
+            "[shadow-queue] cycle=%s enq=%d drain=%d identical=%s missing=%s decided_vs_decidable=%s",
             cycle_ts,
             enqueued,
             drained,
             identical,
             missing or "[]",
+            decided_vs_decidable,
         )
         return report
