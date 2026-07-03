@@ -423,6 +423,9 @@ def _resolve_position_aware_decision(
       - ADD → côté IDENTIQUE à la position (renforcement dans le même sens).
     """
     intent = decision.intent
+    if decision.position_resolved:
+        return decision
+
     if not decision.resolve_from_position and intent not in _RELATIVE_ORDER_INTENTS:
         return decision
 
@@ -434,6 +437,7 @@ def _resolve_position_aware_decision(
             quantity=0.0,
             intent="HOLD",
             resolve_from_position=False,
+            position_resolved=True,
             reduce_fraction=None,
             rationale=reason,
         )
@@ -441,7 +445,7 @@ def _resolve_position_aware_decision(
     if intent == "ADD":
         # Side IDENTIQUE à la position — renforcement dans le même sens.
         add_side: codex_client.Action = "BUY" if position_quantity > 0 else "SELL"
-        return replace(decision, action=add_side, resolve_from_position=False)
+        return replace(decision, action=add_side, resolve_from_position=False, position_resolved=True)
 
     # CLOSE / REDUCE / REVERSE — côté OPPOSÉ pour clôturer/réduire/retourner.
     side: codex_client.Action = "SELL" if position_quantity > 0 else "BUY"
@@ -464,11 +468,19 @@ def _resolve_position_aware_decision(
             quantity=0.0,
             intent="HOLD",
             resolve_from_position=False,
+            position_resolved=True,
             reduce_fraction=None,
             rationale="nothing_to_close",
         )
 
-    return replace(decision, action=side, quantity=qty, resolve_from_position=False, reduce_fraction=None)
+    return replace(
+        decision,
+        action=side,
+        quantity=qty,
+        resolve_from_position=False,
+        position_resolved=True,
+        reduce_fraction=None,
+    )
 
 
 def _merge_gate_feedback(
@@ -638,8 +650,14 @@ def _hard_stop_price(raw_exit_plan: dict | None) -> float | None:
     return order_admission.hard_stop_price(raw_exit_plan)
 
 
-def _hard_stop_wrong_side(intent: str | None, entry_price: float, stop_price: float) -> bool:
-    return order_admission.hard_stop_wrong_side(intent, entry_price, stop_price)
+def _hard_stop_wrong_side(
+    intent: str | None,
+    entry_price: float,
+    stop_price: float,
+    *,
+    action: str | None = None,
+) -> bool:
+    return order_admission.hard_stop_wrong_side(intent, entry_price, stop_price, action=action)
 
 
 def _reverse_open_quantity(*, action: str, quantity: float, position_quantity: float) -> float:
@@ -2561,9 +2579,9 @@ def run_cycle(
                 continue
             hard_stop_price = _hard_stop_price(runtime_exit_plan)
             if (
-                decision.intent in _PURE_OPEN_INTENTS
+                decision.intent in _RISK_GUARDED_OPENING_INTENTS
                 and hard_stop_price is not None
-                and _hard_stop_wrong_side(decision.intent, prices[sym], hard_stop_price)
+                and _hard_stop_wrong_side(decision.intent, prices[sym], hard_stop_price, action=decision.action)
             ):
                 _log_cycle_progress(
                     "[decision %d/%d] %s blocked invalid_exit_plan:hard_stop_wrong_side",

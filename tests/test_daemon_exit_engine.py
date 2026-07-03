@@ -1380,7 +1380,7 @@ def test_run_cycle_add_depassement_risque_est_rejete(
     assert SimBroker(state_dir / "broker.json").positions()["SPY"].quantity == 10.0
 
 
-def test_run_cycle_add_long_stop_profit_lock_ne_compte_pas_comme_risque(
+def test_run_cycle_add_long_rejette_hard_stop_du_mauvais_cote(
     monkeypatch,
     tmp_path,
     patch_batch,
@@ -1402,7 +1402,7 @@ def test_run_cycle_add_long_stop_profit_lock_ne_compte_pas_comme_risque(
             action="HOLD",
             quantity=5.0,
             confidence=0.95,
-            rationale="add avec stop profit-lock",
+            rationale="add avec stop du mauvais cote",
             intent="ADD",
             resolve_from_position=True,
             exit_plan={"hard_stop": {"type": "price", "price": 120.0}}),
@@ -1417,10 +1417,52 @@ def test_run_cycle_add_long_stop_profit_lock_ne_compte_pas_comme_risque(
     )
 
     decision = report["decisions"][0]
+    assert decision["reason"] == "invalid_exit_plan:hard_stop_wrong_side"
+    assert decision["executed"] is False
+    assert SimBroker(state_dir / "broker.json").positions()["SPY"].quantity == 10.0
+
+
+def test_run_cycle_add_long_accepte_hard_stop_du_bon_cote(
+    monkeypatch,
+    tmp_path,
+    patch_batch,
+    make_data_source,
+) -> None:
+    _write_runtime_config(tmp_path)
+    state_dir = tmp_path / "state"
+    now = datetime(2026, 6, 5, 14, 30, tzinfo=timezone.utc)
+    broker = SimBroker(state_dir / "broker.json", starting_cash=100_000)
+    broker.submit(Order("SPY", "BUY", 10.0), 100.0, "2026-06-05T11:00:00+00:00", dry_run=False)
+
+    monkeypatch.setattr(daemon, "ROOT", tmp_path)
+    monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+    data_source = make_data_source(lambda symbol, lookback, interval: [
+        Bar(ts=now.isoformat(), open=100.0, high=101.0, low=99.0, close=100.0, volume=1000.0)
+    ])
+    patch_batch(lambda **kwargs: Decision(
+            symbol="SPY",
+            action="HOLD",
+            quantity=5.0,
+            confidence=0.95,
+            rationale="add avec stop protecteur",
+            intent="ADD",
+            resolve_from_position=True,
+            exit_plan={"hard_stop": {"type": "price", "price": 98.0}}),
+    )
+
+    report = daemon.run_cycle(
+        dry_run=False,
+        now=now,
+        symbols_filter=["SPY"],
+        sched=Scheduler(state_dir / "scheduler.json"),
+        data_source=data_source,
+    )
+
+    decision = report["decisions"][0]
     assert decision["reason"] == "ok"
     assert decision["executed"] is True
-    assert decision["stop_distance"] == pytest.approx(0.0)
-    assert decision["risk_pct"] == pytest.approx(0.0)
+    assert decision["stop_distance"] == pytest.approx(2.0)
+    assert decision["risk_pct"] == pytest.approx(0.0003)
     assert SimBroker(state_dir / "broker.json").positions()["SPY"].quantity == 15.0
 
 

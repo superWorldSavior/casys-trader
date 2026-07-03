@@ -131,10 +131,12 @@ def _merge_domain_tools(
 ) -> dict:
     final_tool_calls = []
     final_rounds = 0
+    final_normalizations = None
     if isinstance(decision_domain_tools, dict):
         raw_final_tool_calls = decision_domain_tools.get("tool_calls")
         if isinstance(raw_final_tool_calls, list):
             final_tool_calls = list(raw_final_tool_calls)
+        final_normalizations = decision_domain_tools.get("normalizations")
         try:
             final_rounds = int(decision_domain_tools.get("tool_rounds") or 0)
         except (TypeError, ValueError):
@@ -143,10 +145,13 @@ def _merge_domain_tools(
         runtime_rounds = int(runtime_payload.get("tool_rounds") or 0)
     except (TypeError, ValueError):
         runtime_rounds = 0
-    return {
+    merged = {
         "tool_rounds": max(runtime_rounds, final_rounds),
         "tool_calls": [*symbol_tool_traces, *final_tool_calls],
     }
+    if final_normalizations is not None:
+        merged["normalizations"] = final_normalizations
+    return merged
 
 
 def batch_decide(

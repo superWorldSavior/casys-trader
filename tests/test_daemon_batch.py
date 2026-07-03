@@ -974,6 +974,17 @@ def test_resolve_reverse_sur_long_position_derive_side_sell() -> None:
     assert resolved.quantity == 30.0
 
 
+def test_resolve_reverse_deja_resolu_est_idempotent() -> None:
+    """L2/R3 : un REVERSE déjà résolu ne double pas la jambe de fermeture."""
+    dec = _make_pending_reverse(qty=20.0)
+    once = daemon._resolve_position_aware_decision(dec, position_quantity=10.0)
+    twice = daemon._resolve_position_aware_decision(once, position_quantity=10.0)
+
+    assert twice == once
+    assert twice.action == "SELL"
+    assert twice.quantity == 30.0
+
+
 def test_resolve_reverse_sur_short_position_derive_side_buy() -> None:
     """L2 : REVERSE sur position courte → BUY fermeture + nouvelle jambe."""
     dec = _make_pending_reverse(qty=20.0)

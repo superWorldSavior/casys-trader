@@ -5,6 +5,7 @@ import json
 from datetime import datetime, timezone
 
 from trader.agent import client as codex_client
+from trader.agent_protocol.parsing import parse_batch
 from trader.runtime import daemon
 
 UTC = timezone.utc
@@ -119,6 +120,33 @@ def test_tournee_preserve_les_traces_action_tools_du_tour_final(monkeypatch):
     dt = decisions["2330.TW"].domain_tools
     assert dt["tool_rounds"] == 1
     assert [call["tool"] for call in dt["tool_calls"]] == ["get_freshness", "propose_order"]
+
+
+def test_tournee_preserve_les_normalizations_du_tour_final(monkeypatch):
+    def _fake_decide_batch(**kwargs):
+        if kwargs.get("allow_tool_calls"):
+            return codex_client.BatchToolCallRequest(
+                calls=[{"id": "fresh", "tool": "get_freshness", "args": {"symbols": ["2330.TW"]}}],
+                llm_provider="acpx",
+                llm_model="gpt-5.5",
+            )
+        raw = """
+        {"decisions": [
+          {"symbol": "2330.TW", "action": "SELL", "quantity": 10,
+           "confidence": 0.8, "rationale": "close legacy",
+           "intent": "CLOSE", "decision_reason_code": "EXIT_SIGNAL"}
+        ]}
+        """
+        return parse_batch(raw, kwargs["symbols"], allow_context_request=False)
+
+    monkeypatch.setattr(daemon.codex_client, "decide_batch", _fake_decide_batch)
+    decisions, calls = daemon._batch_decide(**_kwargs(), agent_tools_enabled=True)
+
+    assert calls == 2
+    audit = daemon._runtime_tool_audit_fields(decisions["2330.TW"].domain_tools)
+    normalizations = audit["tool_normalizations"]
+    assert normalizations[0]["code"] == "relative_intent_position_resolved"
+    assert normalizations[0]["ignored_fields"] == ["action"]
 
 
 def test_flag_on_seconde_tournee_bloquee_en_hold(monkeypatch):

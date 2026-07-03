@@ -59,8 +59,20 @@ def hard_stop_price(raw_exit_plan: dict | None) -> float | None:
     return price
 
 
-def hard_stop_wrong_side(intent: str | None, entry_price: float, stop_price: float) -> bool:
+def hard_stop_wrong_side(
+    intent: str | None,
+    entry_price: float,
+    stop_price: float,
+    *,
+    action: str | None = None,
+) -> bool:
     if not math.isfinite(entry_price) or not math.isfinite(stop_price):
+        return False
+    if intent == "ADD":
+        if action == "BUY":
+            return stop_price >= entry_price
+        if action == "SELL":
+            return stop_price <= entry_price
         return False
     if intent == "OPEN_LONG":
         return stop_price >= entry_price

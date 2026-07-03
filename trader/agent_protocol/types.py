@@ -29,6 +29,7 @@ class Decision:
     amend_exit: dict | None = None  # L3 — patch plan de sortie ouvert (hard_stop?, take_profits?, trailing_stop?, profit_protection?)
     decision_reason_code: str = "UNKNOWN"
     resolve_from_position: bool = False   # CLOSE/REDUCE/REVERSE sans side : dériver depuis la position
+    position_resolved: bool = False  # True une fois action/qty dérivées depuis la position
     reduce_fraction: float | None = None  # REDUCE : fraction de la position à réduire (0.5 = moitié)
     llm_provider: str | None = None
     llm_model: str | None = None
