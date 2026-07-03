@@ -101,6 +101,18 @@ from trader.ui.rich_panels import (
 
 UTC = timezone.utc
 
+
+def _open_venues_from_state(state: dict) -> "set[str] | None":
+    """Codes venue ouverts maintenant, ou None si les sessions sont indisponibles.
+
+    None → badge marché neutre côté builders (distinct de « tout fermé »).
+    """
+    sessions = state.get("sessions")
+    if not isinstance(sessions, dict) or not sessions:
+        return None
+    return open_venue_set(sessions, datetime.now(UTC))
+
+
 _THEME_SALMON = Theme(
     name="casys-salmon",
     dark=False,
@@ -322,12 +334,7 @@ class PositionsPlansPane(Static):
             if isinstance(state.get("trade_plans"), list)
             else []
         )
-        sessions = state.get("sessions")
-        open_venues = (
-            open_venue_set(sessions, datetime.now(UTC))
-            if isinstance(sessions, dict) and sessions
-            else None
-        )
+        open_venues = _open_venues_from_state(state)
 
         self.query_one("#positions-panel", Static).update(
             _build_positions_panel(
@@ -370,7 +377,9 @@ class ArmedPlansPane(Static):
             else []
         )
         self.query_one("#armed-plans-panel", Static).update(
-            _build_armed_plans_panel(armed_plans, palette=palette)
+            _build_armed_plans_panel(
+                armed_plans, open_venues=_open_venues_from_state(state), palette=palette
+            )
         )
 
 
@@ -417,7 +426,9 @@ class DecisionsPane(Static):
         )
 
         self.query_one("#decisions-table", Static).update(
-            _build_decisions_table(decisions, palette=palette)
+            _build_decisions_table(
+                decisions, open_venues=_open_venues_from_state(state), palette=palette
+            )
         )
         self.query_one("#attribution-panel", Static).update(
             _build_attribution_panel(attribution, palette=palette)

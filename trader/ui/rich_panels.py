@@ -204,6 +204,23 @@ def _build_equity_panel(
     )
 
 
+def _market_badge(
+    symbol: str, open_venues: "set[str] | None", palette: Palette
+) -> Text:
+    """Badge marché partagé : ● ouvert / ○ fermé / · inconnu (open_venues absent).
+
+    ``open_venues`` = codes venue ouverts (EU/US/TW/FX). None → badge neutre,
+    pour distinguer « fermé » d'« information de session indisponible ».
+    """
+    from trader.rotation.wiring import venue_of
+
+    if open_venues is None:
+        return Text("·", style=palette["dim"])
+    if venue_of(symbol) in open_venues:
+        return Text("●", style=palette["status_nominal"])
+    return Text("○", style=palette["dim"])
+
+
 def _build_positions_panel(
     holdings: list[dict],
     *,
@@ -218,7 +235,6 @@ def _build_positions_panel(
     ``trade_plans`` alimente la colonne Stop. Les deux sont optionnels : sans eux
     la table reste valide (badge neutre « · », stop « — »).
     """
-    from trader.rotation.wiring import venue_of
 
     plans_by_symbol: dict[str, dict] = {}
     for plan in _safe_list_of_dicts(trade_plans or []):
@@ -257,13 +273,7 @@ def _build_positions_panel(
                 style=palette["dim"],
             )
 
-        # Badge marché : ● ouvert / ○ fermé / · inconnu (open_venues non fourni)
-        if open_venues is None:
-            mkt_cell = Text("·", style=palette["dim"])
-        elif venue_of(symbol) in open_venues:
-            mkt_cell = Text("●", style=palette["status_nominal"])
-        else:
-            mkt_cell = Text("○", style=palette["dim"])
+        mkt_cell = _market_badge(symbol, open_venues, palette)
 
         plan = plans_by_symbol.get(symbol)
 
@@ -437,9 +447,13 @@ def _build_attribution_panel(
 
 
 def _build_decisions_table(
-    decisions: list[dict], *, palette: Palette = PALETTE_DARK
+    decisions: list[dict],
+    *,
+    open_venues: "set[str] | None" = None,
+    palette: Palette = PALETTE_DARK,
 ) -> Table:
     dec_table = Table(title="Dernières décisions", show_lines=False, expand=True)
+    dec_table.add_column("Mkt", no_wrap=True, justify="center")
     dec_table.add_column("Symbole", style="bold")
     dec_table.add_column("Action")
     dec_table.add_column("Qté", justify="right")
@@ -456,11 +470,13 @@ def _build_decisions_table(
                 palette["action_sell"] if action == "SELL" else palette["action_hold"]
             )
         )
+        symbol = str(d.get("symbol", "?"))
         qty_d = _safe_float(d.get("qty"), default=0.0) or 0.0
         rationale = str(d.get("rationale") or "")
         confidence = _safe_float(d.get("confidence"), default=0.0) or 0.0
         dec_table.add_row(
-            str(d.get("symbol", "?")),
+            _market_badge(symbol, open_venues, palette),
+            symbol,
             Text(action, style=action_style),
             f"{qty_d:,.4f}",
             rationale,
@@ -469,7 +485,7 @@ def _build_decisions_table(
         )
 
     if not decisions:
-        dec_table.add_row("—", "—", "—", "—", "—", "—")
+        dec_table.add_row("—", "—", "—", "—", "—", "—", "—")
 
     return dec_table
 
@@ -612,7 +628,10 @@ def _expire_relative(expires_raw: str, *, now: datetime) -> str:
 
 
 def _build_armed_plans_panel(
-    watches: list[dict], *, palette: Palette = PALETTE_DARK
+    watches: list[dict],
+    *,
+    open_venues: "set[str] | None" = None,
+    palette: Palette = PALETTE_DARK,
 ) -> Panel:
     """Plans armés (colonne gauche) : scénarios d'entrée que le daemon exécutera
     au déclenchement sans appel LLM. Distincts des positions (rien n'est ouvert)
@@ -652,20 +671,24 @@ def _build_armed_plans_panel(
             cond_str += f" +{len(conditions) - 2}"
         confidence = order.get("confidence")
         conf_str = f"  c.{confidence:.2f}".rstrip("0").rstrip(".") if isinstance(confidence, (int, float)) else ""
-        lines.append(
-            Text.assemble(
-                (symbol, f"bold {palette['kpi_default']}"),
-                ("  ", ""),
-                (sens, f"bold {sens_style}"),
-                (f" {qty:g}" if isinstance(qty, (int, float)) else " ?", ""),
-                (f"  stop {stop}" if stop is not None else "  stop ?", palette["kpi_default"]),
-                ("  si ", palette["dim"]),
-                (cond_str, palette["dim"]),
-                ("  ", ""),
-                (_expire_relative(str(watch.get("expires_at") or ""), now=now_utc), palette["dim"]),
-                (conf_str, palette["dim"]),
-            )
-        )
+        # Conteneur neutre : le style du badge reste local (span) et ne
+        # contamine pas le style de base de toute la ligne (cf. review Codex).
+        line = Text()
+        line.append_text(_market_badge(symbol, open_venues, palette))
+        line.append(" ")
+        line.append_text(Text.assemble(
+            (symbol, f"bold {palette['kpi_default']}"),
+            ("  ", ""),
+            (sens, f"bold {sens_style}"),
+            (f" {qty:g}" if isinstance(qty, (int, float)) else " ?", ""),
+            (f"  stop {stop}" if stop is not None else "  stop ?", palette["kpi_default"]),
+            ("  si ", palette["dim"]),
+            (cond_str, palette["dim"]),
+            ("  ", ""),
+            (_expire_relative(str(watch.get("expires_at") or ""), now=now_utc), palette["dim"]),
+            (conf_str, palette["dim"]),
+        ))
+        lines.append(line)
     return Panel(
         Group(*lines),
         title=f"[bold]Plans armés[/bold] ({len(armed)})",

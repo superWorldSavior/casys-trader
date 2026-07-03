@@ -922,3 +922,58 @@ def test_build_watches_panel_exclut_les_plans_armes() -> None:
     rendered = _render(_build_watches_panel([_armed_watch()]))
 
     assert "aucune veille active" in rendered
+
+
+# ---------------------------------------------------------------------------
+# Rollout badge marché ouvert/fermé — Décisions + Plans armés
+# ---------------------------------------------------------------------------
+
+
+def test_build_decisions_table_badge_marche() -> None:
+    from trader.tui import _build_decisions_table
+
+    decisions = [{"symbol": "AAPL", "action": "BUY", "qty": 2.0,
+                  "rationale": "r", "confidence": 0.8}]
+    out_open = _render(_build_decisions_table(decisions, open_venues={"US"}))
+    out_closed = _render(_build_decisions_table(decisions, open_venues=set()))
+
+    assert "Mkt" in out_open        # nouvelle colonne
+    assert "●" in out_open           # US ouvert
+    assert "○" in out_closed         # US fermé
+
+
+def test_build_decisions_table_sans_open_venues_badge_neutre() -> None:
+    from trader.tui import _build_decisions_table
+
+    decisions = [{"symbol": "AAPL", "action": "BUY", "qty": 2.0,
+                  "rationale": "r", "confidence": 0.8}]
+    out = _render(_build_decisions_table(decisions))  # rétro-compat
+
+    assert "·" in out                # badge neutre, pas de crash
+
+
+def test_build_armed_plans_panel_badge_marche() -> None:
+    from trader.tui import _build_armed_plans_panel
+
+    out_open = _render(_build_armed_plans_panel([_armed_watch("AAPL")], open_venues={"US"}))
+    out_closed = _render(_build_armed_plans_panel([_armed_watch("AAPL")], open_venues=set()))
+
+    assert "●" in out_open
+    assert "○" in out_closed
+    assert "AAPL" in out_open        # contenu préservé
+
+
+def test_build_armed_plans_badge_ferme_ne_contamine_pas_la_ligne() -> None:
+    """Régression (review Codex) : un badge marché fermé (dim) ne doit pas
+    griser toute la ligne — le symbole garde son cyan gras (1;36m)."""
+    from rich.console import Console
+    from trader.tui import _build_armed_plans_panel
+
+    console = Console(width=100, force_terminal=True)
+    with console.capture() as cap:
+        console.print(_build_armed_plans_panel([_armed_watch("AAPL")], open_venues=set()))
+    out = cap.get()
+
+    # Le symbole garde son cyan gras (1;36m) malgré le badge dim → pas de
+    # contamination du style de base de la ligne.
+    assert "1;36m" in out
