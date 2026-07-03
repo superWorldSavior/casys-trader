@@ -11,6 +11,7 @@ Note : les fichiers state sont mockés via monkeypatch sur les constantes du mod
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 from rich.console import Console
@@ -904,8 +905,11 @@ async def test_cockpit_observabilite_affiche_les_derniers_learnings(
 
         panel = app.query_one("#learnings-panel", Static)
         rendered = _render(panel.content)
+        # La note peut wrapper dans le panneau : on retire les codes ANSI
+        # (insérés entre les lignes wrappées) avant de compacter.
+        ansi_free = re.sub(r"\x1b\[[0-9;]*m", "", rendered)
         compact_rendered = "".join(
-            ch for ch in rendered if not ch.isspace() and ch != "│"
+            ch for ch in ansi_free if not ch.isspace() and ch != "│"
         )
         compact_note = "".join(note.split())
 
