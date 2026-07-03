@@ -88,10 +88,16 @@ def test_parse_no_qty_no_risk_pct_raises() -> None:
 
 
 def test_parse_risk_pct_only_for_open_intents() -> None:
-    """REVERSE sans qty → order_qty_required (risk_pct non applicable aux exits)."""
+    """REVERSE + risk_pct est rejeté explicitement : risk_pct ne vaut que pour OPEN."""
     data = _symbol_call_data(intent="REVERSE", risk_pct=0.005)
-    # REVERSE sans side = needs_position_resolve, qty requise
-    with pytest.raises(ValueError, match="order_qty_required"):
+    with pytest.raises(ValueError, match="risk_pct_only_for_opens"):
+        _decision_from_symbol_calls(data, "SPY")
+
+
+def test_parse_close_side_risk_pct_sans_qty_est_rejete() -> None:
+    """CLOSE avec side explicite + risk_pct sans qty ne doit pas produire qty=0."""
+    data = _symbol_call_data(intent="CLOSE", side="SELL", risk_pct=0.005)
+    with pytest.raises(ValueError, match="risk_pct_only_for_opens"):
         _decision_from_symbol_calls(data, "SPY")
 
 

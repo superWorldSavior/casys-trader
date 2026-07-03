@@ -965,21 +965,21 @@ def test_resolve_reduce_qty_abs_depasse_position_est_clampee() -> None:
 
 
 def test_resolve_reverse_sur_long_position_derive_side_sell() -> None:
-    """L2 : REVERSE sur position longue → SELL qty (nouvelle jambe), side dérivée."""
+    """L2 : REVERSE sur position longue → SELL fermeture + nouvelle jambe."""
     dec = _make_pending_reverse(qty=20.0)
     resolved = daemon._resolve_position_aware_decision(dec, position_quantity=10.0)
 
     assert resolved.action == "SELL"
-    assert resolved.quantity == 20.0
+    assert resolved.quantity == 30.0
 
 
 def test_resolve_reverse_sur_short_position_derive_side_buy() -> None:
-    """L2 : REVERSE sur position courte → BUY qty (nouvelle jambe)."""
+    """L2 : REVERSE sur position courte → BUY fermeture + nouvelle jambe."""
     dec = _make_pending_reverse(qty=20.0)
     resolved = daemon._resolve_position_aware_decision(dec, position_quantity=-5.0)
 
     assert resolved.action == "BUY"
-    assert resolved.quantity == 20.0
+    assert resolved.quantity == 25.0
 
 
 def test_resolve_no_position_produit_nothing_to_close() -> None:

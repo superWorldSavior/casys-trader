@@ -1,3 +1,5 @@
+import pytest
+
 from trader.agent import client as codex_client
 from trader.agent.client import decide_batch
 from trader.agent.llm import LlmCompletion
@@ -364,6 +366,14 @@ def test_symbol_calls_contract_documente_l2_position_aware() -> None:
     assert "fraction" in prompt  # REDUCE accepte fraction
 
 
+def test_symbol_calls_contract_documente_amend_exit_sans_propose_order() -> None:
+    prompt = _symbol_calls_prompt_from_decide_batch()
+
+    assert "amend_exit" in prompt
+    assert "sans propose_order" in prompt.lower()
+    assert "amend_exit + propose_order" in prompt
+
+
 def test_batch_parse_reduce_fraction_sans_side_produit_resolve_from_position() -> None:
     """L2 : REDUCE avec fraction=0.5 sans side → resolve_from_position=True,
     reduce_fraction=0.5. Le daemon calculera side=opposé, qty=0.5×|pos|."""
@@ -379,6 +389,21 @@ def test_batch_parse_reduce_fraction_sans_side_produit_resolve_from_position() -
     assert parsed.resolve_from_position is True
     assert parsed.intent == "REDUCE"
     assert parsed.reduce_fraction == 0.5
+
+
+@pytest.mark.parametrize("fraction", [-0.1, 0.0, 1.2])
+def test_batch_parse_reduce_fraction_hors_borne_tombe_en_hold(fraction: float) -> None:
+    raw = f"""
+    {{"decisions": [
+      {{"symbol": "SPY", "confidence": 0.7, "rationale": "scale-out",
+       "decision_reason_code": "EXIT_SIGNAL",
+       "calls": [{{"tool": "propose_order", "args": {{"intent": "REDUCE", "fraction": {fraction}}}}}]}}
+    ]}}
+    """
+    parsed = codex_client.parse_batch(raw, ["SPY"], allow_context_request=False)["SPY"]
+
+    assert parsed.action == "HOLD"
+    assert "reduce_fraction_out_of_range" in parsed.rationale
 
 
 def test_batch_parse_reduce_qty_abs_sans_side_produit_resolve_from_position() -> None:

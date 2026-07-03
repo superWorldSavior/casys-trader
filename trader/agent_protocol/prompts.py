@@ -262,7 +262,7 @@ _SYMBOL_CALLS_FINAL_CONTRACT = (
     "déjà ouvert (remonte le stop au break-even, déplace un TP, reserre le trailing). "
     "Même vocabulaire compact que propose_order.exit (stop/tp/trail/protect). "
     "No-op tracé si pas de plan ouvert. "
-    "Peut coexister avec calls:[] ou propose_order : "
+    "Utilise-le sans propose_order sur ce symbole ; amend_exit + propose_order est rejeté. "
     "`calls:[{amend_exit}]` = HOLD + ajustement de gestion actif.\n"
     "- set_next_wake{minutes} OU {on:\"session_open\"|\"macro_event\"|\"pre_earnings\"} OU {when:<condition>, ttl_minutes?} : "
     "planifie la prochaine RECONSULTATION du symbole (l'agent reprend la main pour redécider). "

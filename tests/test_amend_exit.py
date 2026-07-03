@@ -123,14 +123,14 @@ class TestParsingAmendExit:
         assert d.intent == "HOLD"
         assert d.amend_exit == {"hard_stop": 98.0}
 
-    def test_amend_exit_coexiste_avec_propose_order(self) -> None:
-        """amend_exit peut coexister avec propose_order dans la même calls list."""
+    def test_amend_exit_ne_coexiste_pas_avec_propose_order(self) -> None:
+        """amend_exit + propose_order sur le même symbole est rejeté explicitement."""
         d = _parse_calls([
             {"tool": "propose_order", "args": {"intent": "OPEN_LONG", "qty": 5}},
             {"tool": "amend_exit", "args": {"stop": 95.0}},
         ])
-        assert d.action == "BUY"
-        assert d.amend_exit == {"hard_stop": 95.0}
+        assert d.action == "HOLD"
+        assert "amend_exit_conflicts_with_propose_order" in d.rationale
 
     def test_amend_exit_calls_vides_pas_de_amend(self) -> None:
         """calls:[] → HOLD explicite, pas de amend_exit."""

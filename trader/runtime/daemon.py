@@ -91,6 +91,9 @@ _ACTION_INTENTS = {
     "BUY": {"OPEN_LONG", "REDUCE", "CLOSE", "REVERSE", "ADD"},
     "SELL": {"OPEN_SHORT", "REDUCE", "CLOSE", "REVERSE", "ADD"},
 }
+_OPENING_INTENTS = {"OPEN_LONG", "OPEN_SHORT", "REVERSE", "ADD"}
+_PURE_OPEN_INTENTS = {"OPEN_LONG", "OPEN_SHORT"}
+_RISK_GUARDED_OPENING_INTENTS = {"OPEN_LONG", "OPEN_SHORT", "ADD"}
 _INFRA_HOLD_REASONS = {
     "no_decision_in_batch",
     "model_call_budget_exhausted",
@@ -424,7 +427,15 @@ def _resolve_position_aware_decision(
 
     if position_quantity == 0.0:
         reason = "add_without_position" if intent == "ADD" else "nothing_to_close"
-        return codex_client.Decision.hold(decision.symbol, reason)
+        return replace(
+            decision,
+            action="HOLD",
+            quantity=0.0,
+            intent="HOLD",
+            resolve_from_position=False,
+            reduce_fraction=None,
+            rationale=reason,
+        )
 
     if intent == "ADD":
         # Side IDENTIQUE à la position — renforcement dans le même sens.
@@ -444,9 +455,17 @@ def _resolve_position_aware_decision(
             qty = decision.quantity  # qty absolue fournie par l'agent
         qty = min(qty, pos_abs)
     elif intent == "REVERSE":
-        qty = decision.quantity  # nouvelle jambe ; qty requise au parsing
+        qty = pos_abs + decision.quantity  # fermeture + nouvelle jambe cible
     else:
-        return codex_client.Decision.hold(decision.symbol, "nothing_to_close")
+        return replace(
+            decision,
+            action="HOLD",
+            quantity=0.0,
+            intent="HOLD",
+            resolve_from_position=False,
+            reduce_fraction=None,
+            rationale="nothing_to_close",
+        )
 
     return replace(decision, action=side, quantity=qty, resolve_from_position=False, reduce_fraction=None)
 
@@ -2389,6 +2408,16 @@ def run_cycle(
             if sched is not None:
                 sched.clear_symbol_next_wake(sym)
 
+        if (
+            decision.action in {"BUY", "SELL"}
+            and effective_quantity == 0
+            and decision.risk_pct_target is None
+        ):
+            _log_cycle_progress("[decision %d/%d] %s blocked zero_quantity_order", index, len(symbols_to_decide), sym)
+            apply_default_schedule_after_blocked()
+            record_decision({**entry, "executed": False, "reason": "zero_quantity_order"})
+            continue
+
         # L1 — si risk_pct_target est fourni, qty=0 est un placeholder : ne pas traiter comme HOLD.
         if decision.action == "HOLD" or (effective_quantity == 0 and decision.risk_pct_target is None):
             # Pas de 2e ligne "hold" : la ligne result ci-dessus (DEBUG pour HOLD)
@@ -2427,7 +2456,7 @@ def run_cycle(
         execution_blocked = _execution_blocked_reason(
             execution_eligibility,
             sym,
-            fail_closed=decision.intent in {"OPEN_LONG", "OPEN_SHORT", "REVERSE"},
+            fail_closed=decision.intent in _OPENING_INTENTS,
         )
         if execution_blocked is not None:
             _log_cycle_progress(
@@ -2437,7 +2466,7 @@ def run_cycle(
             record_decision({**entry, "executed": False, "reason": execution_blocked})
             continue
 
-        if runtime_exit_plan and decision.intent in {"OPEN_LONG", "OPEN_SHORT", "REVERSE"}:
+        if runtime_exit_plan and decision.intent in _OPENING_INTENTS:
             if sym in armed_reference_volatilities:
                 reference_volatility = armed_reference_volatilities[sym]
             else:
@@ -2448,8 +2477,17 @@ def run_cycle(
                     tradable_bars_by_symbol=tradable_bars_by_symbol,
                 )
             try:
-                if decision.intent in {"OPEN_LONG", "OPEN_SHORT"} and sym not in armed_plan_ids:
+                if decision.intent in _PURE_OPEN_INTENTS and sym not in armed_plan_ids:
                     intent_side = "LONG" if decision.intent == "OPEN_LONG" else "SHORT"
+                    runtime_exit_plan, _trace = resolve_exit_plan(
+                        runtime_exit_plan,
+                        entry_price=prices[sym],
+                        side=intent_side,
+                        reference_volatility=reference_volatility,
+                        bars=tradable_bars_by_symbol.get(sym),
+                    )
+                elif decision.intent == "ADD":
+                    intent_side = "LONG" if decision.action == "BUY" else "SHORT"
                     runtime_exit_plan, _trace = resolve_exit_plan(
                         runtime_exit_plan,
                         entry_price=prices[sym],
@@ -2474,10 +2512,17 @@ def run_cycle(
                 record_decision({**entry, "executed": False, "reason": f"invalid_exit_plan:{exc}"})
                 continue
             hard_stop_price = _hard_stop_price(runtime_exit_plan)
+            hard_stop_intent = (
+                "OPEN_LONG"
+                if decision.intent == "ADD" and decision.action == "BUY"
+                else "OPEN_SHORT"
+                if decision.intent == "ADD" and decision.action == "SELL"
+                else decision.intent
+            )
             if (
-                decision.intent in {"OPEN_LONG", "OPEN_SHORT"}
+                hard_stop_intent in _PURE_OPEN_INTENTS
                 and hard_stop_price is not None
-                and _hard_stop_wrong_side(decision.intent, prices[sym], hard_stop_price)
+                and _hard_stop_wrong_side(hard_stop_intent, prices[sym], hard_stop_price)
             ):
                 _log_cycle_progress(
                     "[decision %d/%d] %s blocked invalid_exit_plan:hard_stop_wrong_side",
@@ -2512,8 +2557,10 @@ def run_cycle(
             record_decision({**entry, "executed": False, "reason": "zero_exit_quantity"})
             continue
 
-        pure_open = decision.intent in {"OPEN_LONG", "OPEN_SHORT"}
+        pure_open = decision.intent in _PURE_OPEN_INTENTS
+        risk_guarded_open = decision.intent in _RISK_GUARDED_OPENING_INTENTS
         trace_risk = pure_open or decision.intent == "REVERSE"
+        trace_risk = trace_risk or decision.intent == "ADD"
         open_stop_distance: float | None = None
         if trace_risk:
             hard_stop_price = _hard_stop_price(runtime_exit_plan)
@@ -2555,7 +2602,7 @@ def run_cycle(
                     stop_distance=None,
                     equity=snap.equity,
                 )
-                if pure_open and require_hard_stop:
+                if risk_guarded_open and require_hard_stop:
                     # Guardrail humain rendu déterministe (mandate/guardrails.json,
                     # D6 du registre) : pas d'ouverture sans hard_stop, quelle que
                     # soit la confiance. REVERSE reste tracé non bloqué (dette connue).
@@ -2576,7 +2623,7 @@ def run_cycle(
                     stop_distance=open_stop_distance,
                     equity=snap.equity,
                 )
-                if pure_open:
+                if risk_guarded_open:
                     max_risk_quantity = gate.max_quantity_at_risk(
                         snap.equity,
                         prices[sym],
@@ -2611,13 +2658,13 @@ def run_cycle(
                         )
                         continue
 
-            if pure_open and effective_quantity == 0:
+            if risk_guarded_open and effective_quantity == 0:
                 _log_cycle_progress("[decision %d/%d] %s hold zero_risk_quantity", index, len(symbols_to_decide), sym)
                 apply_default_schedule_after_blocked()
                 record_decision({**entry, "executed": False, "reason": "zero_risk_quantity"})
                 continue
 
-            if pure_open:
+            if risk_guarded_open:
                 # Gate de confiance adapté au risque (ouvertures pures uniquement).
                 # REDUCE/CLOSE/REVERSE : réduire le risque doit toujours rester possible.
                 conf_verdict = gate.check_confidence(

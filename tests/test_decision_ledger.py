@@ -168,6 +168,30 @@ def test_build_decision_row_propage_les_champs_risque_runtime() -> None:
     assert row["runtime"]["risk_unbounded_no_stop"] is False
 
 
+def test_build_decision_row_propage_les_nouveaux_champs_audit_runtime() -> None:
+    decision = _decision(action="BUY")
+    decision.update(
+        {
+            "intent": "OPEN_LONG",
+            "qty": 100.0,
+            "next_wake_event": "session_open",
+            "next_wake_event_iso": "2026-06-09T13:30:00+00:00",
+            "risk_pct_target": 0.005,
+            "risk_qty_derived": True,
+            "amend_exit": {"hard_stop": 97.0},
+        }
+    )
+    report = _report([decision])
+
+    row = decision_ledger.build_decision_row(report, decision, sequence=0, source="daemon")
+
+    assert row["runtime"]["next_wake_event"] == "session_open"
+    assert row["runtime"]["next_wake_event_iso"] == "2026-06-09T13:30:00+00:00"
+    assert row["runtime"]["risk_pct_target"] == 0.005
+    assert row["runtime"]["risk_qty_derived"] is True
+    assert row["runtime"]["amend_exit"] is True
+
+
 def test_build_decision_row_propage_data_source_runtime() -> None:
     # Régression : entry["data_source"] (source composite ayant servi les barres)
     # était perdu par la whitelist runtime — décisions persistées sans traçabilité.

@@ -1208,6 +1208,249 @@ def test_run_cycle_ne_clamp_pas_reverse_trop_gros(
     assert SimBroker(state_dir / "broker.json").positions()["SPY"].quantity == 150.0
 
 
+def test_run_cycle_reverse_position_aware_long_vers_short_utilise_qty_totale(
+    monkeypatch,
+    tmp_path,
+    patch_batch,
+    make_data_source,
+) -> None:
+    _write_runtime_config(tmp_path)
+    state_dir = tmp_path / "state"
+    now = datetime(2026, 6, 5, 14, 30, tzinfo=timezone.utc)
+    broker = SimBroker(state_dir / "broker.json", starting_cash=100_000)
+    broker.submit(Order("SPY", "BUY", 10.0), 100.0, "2026-06-05T11:00:00+00:00", dry_run=False)
+
+    monkeypatch.setattr(daemon, "ROOT", tmp_path)
+    monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+    data_source = make_data_source(lambda symbol, lookback, interval: [
+        Bar(ts=now.isoformat(), open=100.0, high=101.0, low=99.0, close=100.0, volume=1000.0)
+    ])
+    patch_batch(lambda **kwargs: Decision(
+            symbol="SPY",
+            action="HOLD",
+            quantity=20.0,
+            confidence=0.8,
+            rationale="reverse target short 20",
+            intent="REVERSE",
+            resolve_from_position=True,
+            exit_plan={"hard_stop": {"type": "price", "price": 105.0}}),
+    )
+
+    report = daemon.run_cycle(
+        dry_run=False,
+        now=now,
+        symbols_filter=["SPY"],
+        sched=Scheduler(state_dir / "scheduler.json"),
+        data_source=data_source,
+    )
+
+    decision = report["decisions"][0]
+    assert decision["action"] == "SELL"
+    assert decision["qty"] == 30.0
+    assert decision["reason"] == "ok"
+    assert SimBroker(state_dir / "broker.json").positions()["SPY"].quantity == -20.0
+
+
+def test_run_cycle_reverse_position_aware_short_vers_long_utilise_qty_totale(
+    monkeypatch,
+    tmp_path,
+    patch_batch,
+    make_data_source,
+) -> None:
+    _write_runtime_config(tmp_path)
+    state_dir = tmp_path / "state"
+    now = datetime(2026, 6, 5, 14, 30, tzinfo=timezone.utc)
+    broker = SimBroker(state_dir / "broker.json", starting_cash=100_000)
+    broker.submit(Order("SPY", "SELL", 8.0), 100.0, "2026-06-05T11:00:00+00:00", dry_run=False)
+
+    monkeypatch.setattr(daemon, "ROOT", tmp_path)
+    monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+    data_source = make_data_source(lambda symbol, lookback, interval: [
+        Bar(ts=now.isoformat(), open=100.0, high=101.0, low=99.0, close=100.0, volume=1000.0)
+    ])
+    patch_batch(lambda **kwargs: Decision(
+            symbol="SPY",
+            action="HOLD",
+            quantity=12.0,
+            confidence=0.8,
+            rationale="reverse target long 12",
+            intent="REVERSE",
+            resolve_from_position=True,
+            exit_plan={"hard_stop": {"type": "price", "price": 95.0}}),
+    )
+
+    report = daemon.run_cycle(
+        dry_run=False,
+        now=now,
+        symbols_filter=["SPY"],
+        sched=Scheduler(state_dir / "scheduler.json"),
+        data_source=data_source,
+    )
+
+    decision = report["decisions"][0]
+    assert decision["action"] == "BUY"
+    assert decision["qty"] == 20.0
+    assert decision["reason"] == "ok"
+    assert SimBroker(state_dir / "broker.json").positions()["SPY"].quantity == 12.0
+
+
+def test_run_cycle_add_sans_hard_stop_est_rejete(
+    monkeypatch,
+    tmp_path,
+    patch_batch,
+    make_data_source,
+) -> None:
+    _write_runtime_config(tmp_path)
+    state_dir = tmp_path / "state"
+    now = datetime(2026, 6, 5, 14, 30, tzinfo=timezone.utc)
+    broker = SimBroker(state_dir / "broker.json", starting_cash=100_000)
+    broker.submit(Order("SPY", "BUY", 10.0), 100.0, "2026-06-05T11:00:00+00:00", dry_run=False)
+
+    monkeypatch.setattr(daemon, "ROOT", tmp_path)
+    monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+    data_source = make_data_source(lambda symbol, lookback, interval: [
+        Bar(ts=now.isoformat(), open=100.0, high=101.0, low=99.0, close=100.0, volume=1000.0)
+    ])
+    patch_batch(lambda **kwargs: Decision(
+            symbol="SPY",
+            action="HOLD",
+            quantity=5.0,
+            confidence=0.95,
+            rationale="add sans stop",
+            intent="ADD",
+            resolve_from_position=True),
+    )
+
+    report = daemon.run_cycle(
+        dry_run=False,
+        now=now,
+        symbols_filter=["SPY"],
+        sched=Scheduler(state_dir / "scheduler.json"),
+        data_source=data_source,
+    )
+
+    decision = report["decisions"][0]
+    assert decision["reason"] == "risk:missing_hard_stop"
+    assert decision["executed"] is False
+    assert SimBroker(state_dir / "broker.json").positions()["SPY"].quantity == 10.0
+
+
+def test_run_cycle_add_depassement_risque_est_rejete(
+    monkeypatch,
+    tmp_path,
+    patch_batch,
+    make_data_source,
+) -> None:
+    _write_runtime_config(tmp_path)
+    state_dir = tmp_path / "state"
+    now = datetime(2026, 6, 5, 14, 30, tzinfo=timezone.utc)
+    broker = SimBroker(state_dir / "broker.json", starting_cash=100_000)
+    broker.submit(Order("SPY", "BUY", 10.0), 100.0, "2026-06-05T11:00:00+00:00", dry_run=False)
+
+    monkeypatch.setattr(daemon, "ROOT", tmp_path)
+    monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+    data_source = make_data_source(lambda symbol, lookback, interval: [
+        Bar(ts=now.isoformat(), open=100.0, high=101.0, low=99.0, close=100.0, volume=1000.0)
+    ])
+    patch_batch(lambda **kwargs: Decision(
+            symbol="SPY",
+            action="HOLD",
+            quantity=200.0,
+            confidence=0.95,
+            rationale="add trop risque",
+            intent="ADD",
+            resolve_from_position=True,
+            exit_plan={"hard_stop": {"type": "price", "price": 90.0}}),
+    )
+
+    report = daemon.run_cycle(
+        dry_run=False,
+        now=now,
+        symbols_filter=["SPY"],
+        sched=Scheduler(state_dir / "scheduler.json"),
+        data_source=data_source,
+    )
+
+    decision = report["decisions"][0]
+    assert decision["reason"] == "risk:risk_per_trade_exceeded"
+    assert decision["executed"] is False
+    assert decision["risk_pct"] > 0.01
+    assert SimBroker(state_dir / "broker.json").positions()["SPY"].quantity == 10.0
+
+
+def test_run_cycle_rejette_ordre_buy_sell_a_quantite_zero(
+    monkeypatch,
+    tmp_path,
+    patch_batch,
+    make_data_source,
+) -> None:
+    _write_runtime_config(tmp_path)
+    state_dir = tmp_path / "state"
+    now = datetime(2026, 6, 5, 14, 30, tzinfo=timezone.utc)
+
+    monkeypatch.setattr(daemon, "ROOT", tmp_path)
+    monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+    data_source = make_data_source(lambda symbol, lookback, interval: [
+        Bar(ts=now.isoformat(), open=100.0, high=101.0, low=99.0, close=100.0, volume=1000.0)
+    ])
+    patch_batch(lambda **kwargs: Decision(
+            symbol="SPY",
+            action="SELL",
+            quantity=0.0,
+            confidence=0.8,
+            rationale="close risk_pct mal resolu",
+            intent="CLOSE"),
+    )
+
+    report = daemon.run_cycle(
+        dry_run=False,
+        now=now,
+        symbols_filter=["SPY"],
+        sched=Scheduler(state_dir / "scheduler.json"),
+        data_source=data_source,
+    )
+
+    decision = report["decisions"][0]
+    assert decision["reason"] == "zero_quantity_order"
+    assert decision["executed"] is False
+    assert SimBroker(state_dir / "broker.json").positions() == {}
+
+
+@pytest.mark.parametrize(
+    ("intent", "reason"),
+    [("CLOSE", "nothing_to_close"), ("ADD", "add_without_position")],
+)
+def test_resolve_position_aware_hold_preserve_les_metadonnees_llm(intent: str, reason: str) -> None:
+    decision = Decision(
+        symbol="SPY",
+        action="HOLD",
+        quantity=5.0,
+        confidence=0.73,
+        rationale="decision llm",
+        intent=intent,
+        resolve_from_position=True,
+        llm_provider="acpx",
+        llm_model="gpt-5.5/medium",
+        thesis={"setup": "breakout", "horizon": "swing", "invalidation": "under support"},
+        domain_tools={"tool_rounds": 1, "tool_calls": [{"tool": "fetch"}]},
+        cancel_watch_ids=["watch-1"],
+        next_wake_event="session_open",
+    )
+
+    resolved = daemon._resolve_position_aware_decision(decision, 0.0)
+
+    assert resolved.action == "HOLD"
+    assert resolved.quantity == 0.0
+    assert resolved.intent == "HOLD"
+    assert resolved.rationale == reason
+    assert resolved.llm_provider == "acpx"
+    assert resolved.llm_model == "gpt-5.5/medium"
+    assert resolved.thesis == decision.thesis
+    assert resolved.domain_tools == decision.domain_tools
+    assert resolved.cancel_watch_ids == ["watch-1"]
+    assert resolved.next_wake_event == "session_open"
+
+
 def test_run_cycle_clamp_close_trop_grand_pour_ne_pas_reverser(monkeypatch, tmp_path, patch_batch, make_data_source) -> None:
     _write_runtime_config(tmp_path)
     state_dir = tmp_path / "state"

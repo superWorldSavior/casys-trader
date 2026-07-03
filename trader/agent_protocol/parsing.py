@@ -300,6 +300,8 @@ def _decision_from_symbol_calls(data: dict, symbol: str) -> Decision:
     # L5-unify — set_next_wake{when} : coexistence avec propose_indicator_watch
     wake_when_used: bool = False
     propose_indicator_watch_used: bool = False
+    propose_order_used: bool = False
+    amend_exit_used: bool = False
 
     for index, raw in enumerate(calls):
         if not isinstance(raw, dict):
@@ -312,9 +314,13 @@ def _decision_from_symbol_calls(data: dict, symbol: str) -> Decision:
         traces.append({"id": call_id, "tool": tool, "args": args, "outcome": "ok", "detail": {}})
 
         if tool == "propose_order":
+            propose_order_used = True
             intent = str(args.get("intent") or "").upper()
             if intent not in {"OPEN_LONG", "OPEN_SHORT", "REDUCE", "CLOSE", "REVERSE", "ADD"}:
                 raise ValueError("order_intent_invalid")
+            risk_pct_raw = args.get("risk_pct")
+            if risk_pct_raw is not None and intent not in {"OPEN_LONG", "OPEN_SHORT"}:
+                raise ValueError("risk_pct_only_for_opens")
 
             needs_position_resolve = False
             reduce_fraction: float | None = None
@@ -328,6 +334,8 @@ def _decision_from_symbol_calls(data: dict, symbol: str) -> Decision:
                         frac = args.get("fraction")
                         if frac is not None:
                             reduce_fraction = float(frac)
+                            if not (0.0 < reduce_fraction <= 1.0):
+                                raise ValueError("reduce_fraction_out_of_range")
                 else:
                     raise
 
@@ -344,7 +352,6 @@ def _decision_from_symbol_calls(data: dict, symbol: str) -> Decision:
             else:
                 # L1 — risk_pct est une alternative à qty pour OPEN_LONG/OPEN_SHORT.
                 # Explicit qty > risk_pct (Explicit Over Implicit).
-                risk_pct_raw = args.get("risk_pct")
                 if qty_raw is None and risk_pct_raw is None:
                     raise ValueError("order_qty_required")
                 if qty_raw is not None:
@@ -402,6 +409,7 @@ def _decision_from_symbol_calls(data: dict, symbol: str) -> Decision:
                 raise ValueError("cancel_watch_ids_required")
             cancel_ids.extend(str(wid) for wid in raw_ids if isinstance(wid, str))
         elif tool == "amend_exit":
+            amend_exit_used = True
             # L3 — patch du plan de sortie ouvert. Réutilise _compact_exit_plan
             # (même vocabulaire que propose_order.exit : stop/tp/trail/protect).
             amend = _compact_exit_plan(args)
@@ -416,6 +424,8 @@ def _decision_from_symbol_calls(data: dict, symbol: str) -> Decision:
     # laisser le dernier gagner (AX : Explicit Over Implicit).
     if wake_when_used and propose_indicator_watch_used:
         raise ValueError("wake_when_conflicts_with_propose_indicator_watch")
+    if propose_order_used and amend_exit_used:
+        raise ValueError("amend_exit_conflicts_with_propose_order")
     resolve_from_position = decision.pop("_resolve_from_position", False)
     reduce_fraction_val = decision.pop("_reduce_fraction", None)
     parsed = _decision_from_dict(decision, symbol)
