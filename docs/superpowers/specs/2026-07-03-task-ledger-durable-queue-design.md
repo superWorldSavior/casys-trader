@@ -197,12 +197,35 @@ réécrit (tx courte).
 | `apply_exits` | **0 (EXIT)** | ib¹ | portfolio | — |
 | `scan_watches` | 0 | — | — | intention (Lot B) |
 | `refresh_symbol` | 5 | yahoo **ou** ib² | symbol | `decide` |
-| `decide` | 5 (DECISION) | acpx | symbol | **intention** (Lot B) |
+| `decide` | 5 (DECISION) | acpx | chunk³ | **intention** (Lot B) |
 | `arm_watch` | 5 | — | symbol | — |
 | `consolidate_learnings` | **9 (MAINT)** | acpx | — | — |
 
 ¹ Lot B. ² `resource` = la source active du symbole (une seule), pas « yahoo/ib »
-(correctif arch MAJEUR 4).
+(correctif arch MAJEUR 4). ³ voir §4.3bis.
+
+### 4.3bis Granularité de `decide` : chunk configurable, pas 1 symbole
+
+Le chunking actuel (~5 symboles/prompt, `planner_batch.py`) n'est pas qu'une optim
+de coût : dans un prompt multi-symboles, l'agent **arbitre entre eux** (allocation
+du budget gross). Le casser en 1 appel/symbole perdrait cette vue comparative ET
+multiplierait par ~5 les appels/charge app-server. Décision :
+
+- **`decide` reste chunké** : le producteur regroupe les symboles dus en chunks de
+  taille `K` (configurable, défaut ~5). **1 tâche `decide` = 1 chunk = 1 appel
+  acpx.** `partition_key` = un id de chunk ; le producteur garantit qu'un symbole
+  n'est que dans un chunk actif à la fois (via `refresh_symbol` partitionné par
+  symbole en amont + l'index `uniq_active_kind_partition`).
+- **Isolation par chunk** au niveau décision (un chunk qui timeout ne bloque pas les
+  autres — déjà un gain net vs le batch séquentiel actuel).
+- **Isolation fine par symbole** là où elle est critique : `execute_order` (1 ordre
+  = 1 tâche, partition `portfolio`).
+
+**Modèle d'exécution des appels acpx** : le pool `acpx` = **M « guichets »**
+(M = limite adaptative AIMD, §4.5). Jusqu'à **M appels acpx en parallèle**, chacun
+traitant un chunk ; les chunks en trop attendent, servis dès qu'un guichet se libère
+(priorité aux sorties). Donc **M×K symboles** peuvent être décidés en parallèle en
+seulement **M appels**. Flux continu et borné, pas de batch monolithique séquentiel.
 
 **Voie rapide** : `ORDER BY priority ASC` sert EXIT/EXEC avant DECISION.
 **Anti-famine** (correctif arch 6 + safety 7) : *aging* — au-delà d'un seuil
@@ -364,6 +387,8 @@ Lot A :
 | N workers, `acpx=1`, une sortie prio 0 arrive → servie sans être piégée | resource-aware claim |
 | flux continu prio 0-1 → `decide` finit par passer (aging) | anti-famine |
 | échec retryable → backoff, `dead` après max | retry |
+| timeout acpx desserré dépassé → `requeue` (retryable), jamais `HOLD` | garde acpx |
+| worker bloqué mais daemon vivant (heartbeat continue) → tâche **pas** reprise | garde daemon vs acpx |
 | `complete()` avec token périmé → refusé | fencing |
 | lease expirée au boot → repending ; tâche vivante (heartbeat) → **pas** repending | reprise |
 | import migration relancé → aucun doublon (tables non vides → skip) | migration idempotente |
