@@ -925,6 +925,88 @@ def trade_plan_from_dict(raw: dict) -> TradePlan:
     )
 
 
+def apply_amend_exit(
+    plan: TradePlan,
+    amend: dict,
+    *,
+    bars: list | None = None,
+) -> TradePlan:
+    """Patche les champs de sortie d'un TradePlan ouvert via un dict amend normalisé.
+
+    `amend` est issu de `_compact_exit_plan` (clés internes : hard_stop?, take_profits?,
+    trailing_stop?, profit_protection?). Seuls les champs PRÉSENTS dans `amend` sont
+    patchés ; les autres champs du plan restent inchangés.
+
+    Pour les TP en risk_multiple sans hard_stop dans l'amend, utilise le
+    `plan.hard_stop_price` existant comme référence de distance (injection transparente).
+
+    Raises:
+        InvalidExitPlanError: si la résolution du stop/TP échoue (bars manquants pour
+            structural, stop_distance introuvable pour risk_multiple, etc.).
+    """
+    if not amend:
+        return plan
+
+    # Pour résoudre les TP en risk_multiple sans hard_stop dans l'amend,
+    # injecte le stop existant du plan comme référence de distance.
+    resolve_input = dict(amend)
+    if "take_profits" in amend and "hard_stop" not in amend and plan.hard_stop_price is not None:
+        resolve_input = {**amend, "hard_stop": {"type": "price", "price": plan.hard_stop_price}}
+
+    resolved, _ = resolve_exit_plan(
+        resolve_input,
+        entry_price=plan.entry_price,
+        side=plan.side,
+        reference_volatility=plan.reference_volatility,
+        bars=bars,
+    )
+
+    if resolved is None:
+        return plan
+
+    patches: dict = {}
+
+    if "hard_stop" in amend:
+        patches["hard_stop_price"] = _parse_price(resolved.get("hard_stop"))
+
+    if "take_profits" in amend:
+        raw_tps = resolved.get("take_profits") or []
+        quantity = plan.remaining_quantity
+        remaining_fraction = 1.0
+        new_tps: list[TakeProfit] = []
+        for index, item in enumerate(raw_tps):
+            if not isinstance(item, dict):
+                continue
+            fraction = float(item.get("fraction", remaining_fraction))
+            fraction = max(0.0, min(fraction, remaining_fraction))
+            remaining_fraction -= fraction
+            new_tps.append(
+                TakeProfit(
+                    name=str(item.get("name") or f"tp{index + 1}"),
+                    price=float(item["price"]),
+                    fraction=fraction,
+                    quantity=round(quantity * fraction, 8),
+                    after_fill=str(item.get("after_fill") or ""),
+                )
+            )
+        patches["take_profits"] = new_tps
+        # Preserve filled state: keep names that exist in new TP list too.
+        # (L'agent est responsable de choisir des noms cohérents.)
+        new_tp_names = {tp.name for tp in new_tps}
+        patches["filled_take_profits"] = [n for n in plan.filled_take_profits if n in new_tp_names]
+
+    if "trailing_stop" in amend:
+        patches["trailing_stop"] = _trailing_from_dict(resolved.get("trailing_stop"))
+
+    if "profit_protection" in amend:
+        patches["profit_protection"] = _profit_protection_from_raw(resolved.get("profit_protection"))
+
+    if not patches:
+        return plan
+
+    return replace(plan, **patches)
+
+
 class TradePlanStore:
     def __init__(self, state_path: str | Path):
         self.state_path = Path(state_path)

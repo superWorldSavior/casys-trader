@@ -128,6 +128,7 @@ def _decision_from_dict(data: dict, symbol: str) -> Decision:
         cancel_watch_ids=_cancel_watch_ids(data),
         learning=_normalize_learning(data.get("learning")),
         decision_reason_code=_decision_reason_code(data),
+        amend_exit=_optional_dict(data, "amend_exit"),
     )
 
 
@@ -365,6 +366,12 @@ def _decision_from_symbol_calls(data: dict, symbol: str) -> Decision:
             if not isinstance(raw_ids, list):
                 raise ValueError("cancel_watch_ids_required")
             cancel_ids.extend(str(wid) for wid in raw_ids if isinstance(wid, str))
+        elif tool == "amend_exit":
+            # L3 — patch du plan de sortie ouvert. Réutilise _compact_exit_plan
+            # (même vocabulaire que propose_order.exit : stop/tp/trail/protect).
+            amend = _compact_exit_plan(args)
+            if amend:
+                decision["amend_exit"] = amend
         else:
             raise ValueError(f"unknown_action_tool:{tool}")
 

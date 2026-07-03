@@ -51,6 +51,7 @@ from trader.planning.trade_plan import (
     InvalidExitPlanError,
     TradePlan,
     TradePlanStore,
+    apply_amend_exit,
     create_trade_plan,
     create_trade_plan_from_order,
     resolve_exit_plan,
@@ -734,6 +735,43 @@ def _plan_snapshot(plan: TradePlan) -> dict:
         "high_watermark": plan.high_watermark,
         "low_watermark": plan.low_watermark,
     }
+
+
+def _apply_amend_exit(
+    *,
+    plan_store: TradePlanStore,
+    symbol: str,
+    amend_exit: dict,
+    bars: list | None,
+    entry: dict,
+) -> None:
+    """Applique amend_exit au TradePlan ouvert du symbole.
+
+    No-op tracé si pas de plan ouvert ou si la résolution échoue : jamais d'erreur
+    propagée (AX : fail-safe, le HOLD est déjà enregistré).
+    Mutate `entry` pour tracer le résultat dans le log de décision.
+    """
+    open_plans = [p for p in plan_store.open_plans() if p.symbol == symbol]
+    if not open_plans:
+        entry["amend_exit_applied"] = False
+        entry["amend_exit_reason"] = "no_open_plan"
+        return
+
+    plan = open_plans[0]
+    try:
+        patched = apply_amend_exit(plan, amend_exit, bars=bars)
+    except (InvalidExitPlanError, ValueError) as exc:
+        entry["amend_exit_applied"] = False
+        entry["amend_exit_reason"] = f"resolve_failed:{exc}"
+        return
+
+    if patched is plan:
+        entry["amend_exit_applied"] = False
+        entry["amend_exit_reason"] = "empty_amend"
+        return
+
+    plan_store.upsert(patched)
+    entry["amend_exit_applied"] = True
 
 
 def _llm_review_verdict(decision: codex_client.Decision) -> str:
@@ -2286,6 +2324,17 @@ def run_cycle(
             # Pas de 2e ligne "hold" : la ligne result ci-dessus (DEBUG pour HOLD)
             # porte déjà l'action.
             apply_decision_schedule()
+            # L3 — amend_exit : l'agent peut ajuster son plan ouvert même en HOLD
+            # (remonter le stop, déplacer un TP, reserer le trailing). No-op si pas
+            # de plan ouvert ou résolution impossible — never throws.
+            if decision.amend_exit:
+                _apply_amend_exit(
+                    plan_store=plan_store,
+                    symbol=sym,
+                    amend_exit=decision.amend_exit,
+                    bars=tradable_bars_by_symbol.get(sym),
+                    entry=entry,
+                )
             hold_reason = "hold"
             if decision_source == "infra" and decision.rationale in _INFRA_HOLD_REASONS:
                 hold_reason = decision.rationale
