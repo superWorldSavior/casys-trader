@@ -58,6 +58,8 @@ séance, earnings, publication macro (FOMC/CPI). Lien direct avec le chantier
 macro/news (collecte `macro_next` déjà en place). **Proposer** :
 `set_next_wake{on: session_open | pre_earnings | macro_event}` — l'agent se
 reprogramme sur ce qui compte, pas sur une horloge aveugle.
+**remarque erwan**
+Ok c est top mais un timer en minute c est bien aussi, faut juste enrichir le set nect wake. d ailleurs : c est fait exprés d avoir un autre outil 'propose indicator watch' alors qu on a aussi set next wake ? Faut pas confondre avec les plans armés, mais a mon sens on devrait avoir un tool explicite pour le next wake et differentes options non
 
 ### L6 — Attribution structurée à la décision *(valeur : moyenne · effort : faible)*
 `record_learning` est du texte libre. **Proposer** un canal structuré léger sur

@@ -21,7 +21,7 @@ Deux boucles se superposent :
 | Boucle | Acteur | Cadence | But |
 |--------|--------|---------|-----|
 | **Boucle 1** | Humain | ad hoc | Mandat, guardrails, universe config |
-| **Boucle 2** | Daemon + LLM | cycle (5–240 min) | Décision, exécution, logging |
+| **Boucle 2** | Daemon + LLM | cycle (x–x+1 min) | Décision, exécution, logging |
 
 Le code est le seul à calculer les indicateurs, évaluer les plans, appliquer les
 gates. Le LLM reçoit les faits calculés, raisonne, et retourne des artefacts
