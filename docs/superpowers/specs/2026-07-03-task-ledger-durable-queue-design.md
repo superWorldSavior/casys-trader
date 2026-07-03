@@ -5,13 +5,12 @@
 implémentation non commencée.
 **Approche retenue** : ① Task-ledger SQLite in-process, threads, migration
 *strangler*. Fait-main (zéro dépendance), patterns empruntés au SOTA durable
-execution.
+execution. **Maximise la réutilisation de l'existant** (§3bis).
 **Revue** : 2 sessions Codex (axes *architecture/concurrence SQLite* et *safety
-trading/migration*), 2026-07-03. Verdicts : arch = GO-AVEC-CORRECTIFS ; safety =
-STOP sur la partie ordre/live tant que la machine d'état externe, la corrélation
-IB, la migration idempotente et l'ownership unique ne sont pas spécifiés. Tous les
-correctifs sont intégrés ci-dessous ; la scission **Lot A / Lot B** (§0) répond au
-STOP.
+trading/migration*), 2026-07-03. Correctifs intégrés. Le verdict STOP safety
+portait sur l'exécution *live IB* — or `IBBroker` **n'existe pas** (seul
+`SimBroker` tourne, IB n'est qu'une source de données opt-in dormante). Le STOP est
+donc reclassé **Lot C (futur)** ; il ne bloque pas le présent (§0).
 
 > **Portée** : remplace le pilotage du daemon (boucle `while-True` synchrone +
 > `scheduler.json`) par une **file de tâches durable** adossée à SQLite, et migre
@@ -22,21 +21,26 @@ STOP.
 
 ---
 
-## 0. Découpage en deux lots (réponse au STOP safety)
+## 0. Découpage en trois lots
 
-Le verdict STOP ne porte QUE sur l'exécution d'ordres. On livre en deux lots
-indépendants, alignés sur le strangler :
+Ce qui **tourne aujourd'hui** : broker = **`SimBroker`** (fills simulés synchrones
+au dernier prix, état JSON — `execution.py:201`) ; source = **yfinance** par défaut
+(`data_source=None`, `daemon.py:2997`) ; IB = source de données **opt-in dormante**
+(`IBDataSource`), **aucun** passage d'ordre IB (`IBBroker` est un TODO,
+`execution.py:4`).
 
 - **Lot A — Socle file + durabilité de l'état (GO).** File SQLite durcie ;
-  migration `broker`/`trade_plans`/`scheduler` en SQLite (tue RC-1/2/4) ; `decide`
-  via file produisant des **intentions** ; resource-aware claim ; fencing/lease ;
-  backpressure adaptative. **La file ne passe AUCUN ordre** — l'exécution reste sur
-  le chemin synchrone actuel. Le gros des races critiques meurt ici.
-- **Lot B — Exécution d'ordres via file (nécessite que §7 soit spécifié et validé
-  avant impl).** Machine d'état `external_orders`, corrélation + réconciliation IB,
-  `order_intents` (ownership exclusif), `trade_plan` activé **après** fill.
-
-**Aucune ligne de Lot B ne s'implémente tant que §7 n'est pas revalidé.**
+  migration `broker`/`trade_plans`/`scheduler` en SQLite (tue RC-1/2/4) ;
+  `refresh`/`decide` via file ; resource-aware claim ; fencing/lease ; backpressure
+  adaptative ; lifecycle acpx. **La file ne passe aucun ordre.**
+- **Lot B — Exécution d'ordres via file en PAPER (GO après A).** Avec `SimBroker`,
+  `submit()` est **synchrone et déterministe** (fill immédiat, `execution.py:227`) :
+  `execute_order` = `broker.submit()` + mutation + `mark done` **dans une seule
+  transaction SQLite**. Idempotence gratuite, **aucune réconciliation, pas de STOP**.
+- **Lot C — Exécution live IB (FUTUR, gated).** Le jour où un `IBBroker` réel
+  (asynchrone) est écrit : machine d'état `external_orders`, corrélation +
+  réconciliation IB, `order_intents`, `trade_plan` après fill (§7). **Repoussé,
+  non bloquant** ; à revalider par Codex quand l'`IBBroker` existera.
 
 ## 1. Contexte & problème
 
@@ -69,11 +73,6 @@ Débit : à saturation acpx, `decide` tombe en `LlmFailure` **non-retryable** �
 `HOLD` synthétique **définitif** (`llm.py:358`). Le `timeout` (900 s) est aussi
 non-retryable.
 
-Sain déjà en place (à préserver) : dédup `decision_id` + `os.replace` atomique sur
-`decisions.jsonl` (`decision_ledger.py:169`, `:267-269`) ; `learnings.db` WAL +
-`threading.Lock` + `busy_timeout` + `check_same_thread=False`
-(`learnings/store.py:26,31,107`) ; backoff LLM (`LlmRouter`) et stale-data.
-
 ## 2. Objectif
 
 File de tâches durable in-process, sans Docker ni service externe :
@@ -83,24 +82,46 @@ File de tâches durable in-process, sans Docker ni service externe :
 4. **Débit récupéré** — backpressure adaptative + requeue au lieu de HOLD.
 
 Non-objectifs (YAGNI) : distribution multi-process, broker de messages, workers
-externes (daemon stateful côté IB — cf. §3).
+externes (§3).
 
 ## 3. Décisions (validées)
 
 - **Fait-main SQLite, pas de lib/moteur.** SOTA 2026 : Celery/RQ/Dramatiq/arq/
   taskiq/procrastinate/pgqueuer exigent Redis ou Postgres → écartés (no-Docker).
   Temporal/Restate/Hatchet/Inngest/Windmill → serveur séparé, écartés. **DBOS
-  Transact** est le seul moteur embarquable (SQLite dev) et reste l'upgrade
-  transparent si Postgres entre en stack ; on emprunte ses patterns sans sa
-  dépendance. `task_ledger.db` maison, même pattern que `learnings.db`.
-- **Threads in-process, pas d'asyncio.** `ib-async` via API **synchrone**
-  (`ib.connect`, `ib_source.py:405`) — gère sa loop en interne. SQLite multi-thread
-  déjà maîtrisé (`learnings/store.py:107`). Travail **I/O-bound** → threads OK.
+  Transact** = seul moteur embarquable (SQLite dev), upgrade transparent si Postgres
+  entre en stack ; on emprunte ses patterns sans sa dépendance.
+- **Threads in-process, pas d'asyncio.** Justification **corrigée** : ce n'est pas
+  « la socket IB » (il n'y a pas d'`IBBroker`) — c'est que le travail est
+  **I/O-bound** (subprocess acpx, réseau yfinance), le GIL se relâche, les threads
+  donnent tout le parallélisme utile ; le multi-process n'apporterait que
+  l'isolation-crash (inutile en Python) au prix d'une grosse complexité. `ib-async`
+  (si un jour source IB active) est utilisé en API **synchrone** (`ib_source.py:405`).
 - **Migrer l'état dans le même `.db`.** `broker`/`trade_plans`/`scheduler` en tables
   → transactions ACID réelles. Fix de fond RC-1/RC-2/RC-4.
 - **`decisions.jsonl` reste** (append-only + `os.replace`, journal d'audit).
-- **Multi-process = non** (stateful côté IB) ; `task_ledger` reste le point de
-  découplage si un broker REST stateless ouvre la porte plus tard.
+- **Multi-process = non** ; `task_ledger` reste le point de découplage si un broker
+  REST stateless l'ouvre un jour.
+
+## 3bis. Réutilisation de l'existant (ne rien réinventer — DRY)
+
+On **branche** la file sur les briques déjà en place ; le nouveau code se limite au
+`trader/queue/`. Réutilisé tel quel ou derrière la même interface :
+
+| Brique existante | Chemin | Rôle réutilisé |
+|---|---|---|
+| Pattern SQLite WAL+Lock+busy_timeout | `learnings/store.py:26,31,107` | **modèle direct** du `TaskLedger` (copier le pattern, pas réinventer) |
+| Interface `Broker` (Protocol) + `SimBroker` | `execution.py:188,201` | backend SQLite **derrière la même interface** ; l'exécution appelle `broker.submit()` inchangé |
+| `TradePlanStore`, `Scheduler` | `trade_plan.py:1010`, `scheduler.py:26` | **API publique identique**, backend SQLite dessous |
+| Réveils intelligents (D7/D8) + `scheduler.json` | `scheduler.py`, `daemon.py` | le **producteur lit le scheduler existant** pour savoir quels symboles enfiler |
+| `order_admission` (arbitrage gross au mérite) | `trader/application/order_admission` | **réutilisé tel quel** à l'exécution (pas d'arbitrage dans le prompt) |
+| `LlmRouter` + classif `retryable` | `llm.py:60-90,144-168` | fallback/backoff LLM **réutilisés** ; **le signal de backpressure = ces classifications** (§4.5) |
+| `codex_client.decide_batch` + `context.py` | `client.py:144`, `agent/context.py` | construction prompt + parsing décision **réutilisés** dans le handler `decide` (avec K=1) |
+| **Fork acpx** (« bridges jamais orphelins ») | `TRADER_ACPX_BIN` (.env) | **brique de lifecycle** : ferme le bridge en fin d'`exec` (§4.6) |
+| `_terminate_process_group` / reap | `llm.py:183-201,268-313` | réutilisé **corrigé** : reap par **PID propre**, pas par cwd (défaut A) |
+| `DecisionLedgerStore` (dédup + `os.replace`) | `decision_ledger.py:169,267` | `decisions.jsonl` **inchangé** (journal d'audit) |
+| `claim_pid_file` | `pid_file.py:34` | réutilisé **rendu atomique** (`O_EXCL`/`flock`) → RC-3 |
+| `measure_d7` | `scripts/measure_d7.py` | **réutilisé** pour l'observation post-bascule |
 
 ## 4. Architecture — Lot A (socle)
 
@@ -110,8 +131,9 @@ Un process. Le `while-True` devient un **producteur** : lit le scheduler (table)
 enfile des tâches, dort. Un **pool de N worker-threads** consomme le ledger.
 
 Trois mécanismes superposés :
-1. **Pools de ressources** (sémaphores nommés) : `acpx` (limite **adaptative**
-   AIMD, §4.5), `yahoo` (basse, anti-429), `ib` (**1** = verrou portefeuille).
+1. **Pools de ressources** (sémaphores nommés) : `acpx` (limite **adaptative**,
+   §4.5), `yahoo` (basse, anti-429), `portfolio` (**1** = verrou de mutation de
+   portefeuille — sérialise cash/positions, `SimBroker` aujourd'hui, IB demain).
    **Une seule ressource par tâche** — pas d'acquisition imbriquée (évite tout
    deadlock ; correctif arch MAJEUR 4).
 2. **Sérialisation par clé (`partition_key`)** : au plus une tâche `running` par
@@ -120,9 +142,9 @@ Trois mécanismes superposés :
 
 ### 4.2 Schéma `task_ledger.db`
 
-WAL + `busy_timeout=5000` + `check_same_thread=False` + `threading.Lock`.
-**Timestamps en epoch integer (ms UTC)** — jamais de TEXT comparé
-lexicographiquement (correctif arch, trous).
+WAL + `busy_timeout=5000` + `check_same_thread=False` + `threading.Lock` (pattern
+`learnings/store.py`). **Timestamps en epoch integer (ms UTC)** — jamais de TEXT
+comparé lexicographiquement (correctif arch, trous).
 
 ```sql
 CREATE TABLE tasks (
@@ -130,7 +152,7 @@ CREATE TABLE tasks (
   kind           TEXT NOT NULL,
   dedup_key      TEXT UNIQUE,          -- idempotency key
   partition_key  TEXT,                 -- "AAPL" | "portfolio" | NULL
-  resource       TEXT,                 -- acpx | yahoo | ib | NULL (UNE seule)
+  resource       TEXT,                 -- acpx | yahoo | portfolio | NULL (UNE seule)
   priority       INTEGER NOT NULL,     -- 0=EXIT .. 9=MAINTENANCE
   payload        TEXT,
   status         TEXT NOT NULL,        -- pending | running | done | failed | dead
@@ -156,10 +178,9 @@ CREATE UNIQUE INDEX uniq_active_kind_partition
   WHERE status IN ('pending','running') AND partition_key IS NOT NULL;
 ```
 
-**Claim atomique** — en transaction `BEGIN IMMEDIATE` (correctif arch MAJEUR 1),
-**resource-aware** (correctif arch MAJEUR 6 : ne claim que si un permit de la
-ressource est libre, sinon les workers se piègent tous sur `acpx=1` et la voie
-rapide meurt) :
+**Claim atomique** — en transaction `BEGIN IMMEDIATE`, **resource-aware** (ne claim
+que si un permit de la ressource est libre, sinon les workers se piègent tous sur
+`acpx` et la voie rapide meurt) :
 
 ```sql
 BEGIN IMMEDIATE;
@@ -168,41 +189,41 @@ UPDATE tasks SET status='running', claimed_by=:w, claim_token=:token,
 WHERE id = (
   SELECT id FROM tasks
   WHERE status='pending' AND scheduled_at <= :now
-    AND attempts < max_attempts                    -- filtre les morts (arch, trous)
-    AND (resource IS NULL OR resource IN (:free_resources))  -- resource-aware
+    AND attempts < max_attempts
+    AND (resource IS NULL OR resource IN (:free_resources))
     AND (partition_key IS NULL
          OR partition_key NOT IN (SELECT partition_key FROM tasks
                                    WHERE status='running' AND partition_key IS NOT NULL))
-  ORDER BY priority ASC, scheduled_at ASC, id ASC   -- tie-break déterministe
+  ORDER BY priority ASC, scheduled_at ASC, id ASC
   LIMIT 1)
 RETURNING *;
 COMMIT;
 ```
 
 Le worker consomme/ferme le curseur avant `COMMIT`, gère `SQLITE_BUSY`, n'utilise
-pas `rowcount`. `complete()/fail()` sont gardés par le fencing token :
+pas `rowcount`. `complete()/fail()` gardés par le fencing token :
 `UPDATE ... WHERE id=:id AND claim_token=:token`.
 
 **Réveil sur release** : `Condition.wait()`/notify sur libération de permit, pas un
-simple polling 200 ms (correctif arch MAJEUR 6). Le polling reste le filet.
+simple polling 200 ms. Le polling reste le filet.
 
-**Jamais de transaction SQLite ouverte pendant un appel acpx/yahoo/IB** (correctif
-arch MINEUR 3 / MAJEUR 4) : on claim (tx courte), on relâche, on fait l'I/O, on
-réécrit (tx courte).
+**Jamais de transaction SQLite ouverte pendant un appel acpx/yahoo/IB** : on claim
+(tx courte), on relâche, on fait l'I/O, on réécrit (tx courte).
 
 ### 4.3 Taxonomie des tâches, priorités
 
 | `kind` | priorité | resource | partition | engendre |
 |--------|----------|----------|-----------|----------|
-| `apply_exits` | **0 (EXIT)** | ib¹ | portfolio | — |
-| `scan_watches` | 0 | — | — | intention (Lot B) |
-| `refresh_symbol` | 5 | yahoo **ou** ib² | symbol | `decide` |
-| `decide` | 5 (DECISION) | acpx | symbol³ | **intention** (Lot B) |
+| `apply_exits` | **0 (EXIT)** | portfolio | portfolio | — |
+| `scan_watches` | 0 | — | — | intention |
+| `refresh_symbol` | 5 | yahoo¹ | symbol | `decide` |
+| `decide` | 5 (DECISION) | acpx | symbol² | **intention** |
 | `arm_watch` | 5 | — | symbol | — |
+| `execute_order` | **1 (EXEC)** | portfolio | portfolio | — |
 | `consolidate_learnings` | **9 (MAINT)** | acpx | — | — |
 
-¹ Lot B. ² `resource` = la source active du symbole (une seule), pas « yahoo/ib »
-(correctif arch MAJEUR 4). ³ grain-symbole par défaut — voir §4.3bis.
+¹ `yahoo` = source active (défaut) ; `ib` si source IB opt-in un jour (une seule
+ressource data). ² grain-symbole par défaut — voir §4.3bis.
 
 ### 4.3bis Granularité de `decide` : grain-symbole par défaut (décision 2026-07-03)
 
@@ -212,30 +233,24 @@ réécrit (tx courte).
 - La **vue comparative** qu'apportait le chunk est **redondante** : l'agent a déjà
   son état portefeuille dans le contexte (`equity_usd`, `context.py:119` ; `cash`/
   positions, `daemon.py:218`), et l'arbitrage de marge entre candidats est fait **par
-  le code** (`trader/application/order_admission`, au mérite/conviction, déterministe),
-  pas par le jugement LLM.
+  le code** (`order_admission`, au mérite/conviction, déterministe), pas par le LLM.
 - Le **coût en nombre d'appels** est atténué par les **réveils intelligents** : on ne
   décide que les symboles *dus* (souvent 1-3/tick), pas tout l'univers.
 - Le seul surcoût réel est la **redondance du contexte de base** (mandat/régime/
   portefeuille répétés par appel) — écrasée par le **prompt caching** (préfixe commun
   cachable ; seul le bloc symbole varie).
 
-Bénéfices : `partition_key = symbole` **directement** (pas de « chunk-id », pas de
-gestion « un symbole dans un seul chunk actif » ; l'index `uniq_active_kind_partition`
-sur `(decide, symbole)` empêche nativement deux `decide` du même symbole) ;
-**isolation native par symbole** (un des 3 besoins initiaux) ; prompt focalisé ; un
-pic (open de marché, 20 symboles dus) s'écoule par les M guichets à la capacité de
-l'app-server au lieu de gros prompts monolithiques.
+Bénéfices : `partition_key = symbole` **directement** (pas de « chunk-id » ; l'index
+`uniq_active_kind_partition` sur `(decide, symbole)` empêche nativement deux `decide`
+du même symbole) ; **isolation native par symbole** ; prompt focalisé ; un pic (open
+de marché) s'écoule par les M guichets à la capacité de l'app-server.
 
 **Échappatoire** : la taille de regroupement `K` reste **configurable** (défaut
-`K=1` = grain-symbole). Passer `K>1` restaure un chunk (`partition_key` = id de
-chunk) si le coût token remontait et que le caching ne suffisait pas — YAGNI par
-défaut.
+`K=1` = grain-symbole). `K>1` restaure un chunk si le coût token remontait — YAGNI.
 
 **Modèle d'exécution des appels acpx** : le pool `acpx` = **M « guichets »**
-(M = limite adaptative AIMD, §4.5). Jusqu'à **M appels en parallèle**, un par
-symbole ; les tâches en trop attendent, servies dès qu'un guichet se libère (priorité
-aux sorties). Flux continu et borné, pas de batch monolithique séquentiel.
+(M = limite adaptative, §4.5). Jusqu'à **M appels en parallèle**, un par symbole ; le
+reste attend, servi dès qu'un guichet se libère (priorité aux sorties).
 
 **Voie rapide** : `ORDER BY priority ASC` sert EXIT/EXEC avant DECISION.
 **Anti-famine** (correctif arch 6 + safety 7) : *aging* — au-delà d'un seuil
@@ -243,204 +258,192 @@ d'attente (`enqueued_seq`), une tâche `decide` gagne en priorité effective ; e
 **ne lance pas** de nouvelle entrée tant qu'une sortie du même portefeuille est
 `pending`.
 
-### 4.4 `decide` produit une INTENTION, pas un ordre ni un plan
+### 4.4 `decide` produit une INTENTION ; l'exécution est simple en paper
 
-**Correctif majeur convergent (arch BLOQUANT + safety)** : le `trade_plan`
-représente une **position ouverte** (créé *après* fill aujourd'hui,
+Le `trade_plan` représente une **position ouverte** (créé *après* fill aujourd'hui,
 `daemon.py:2628/2706`). Donc :
 
-- `decide` (Lot A) → jeton `acpx` → LLM → écrit une **décision d'audit** et, si
-  trade, une **intention** (`order_intents`, §7) `pending`. **Aucun plan, aucun
-  ordre.**
-- L'exécution de l'intention est du **Lot B** (§7). En Lot A, c'est le **chemin
-  synchrone existant** qui exécute, en consommant `order_intents` (ownership
-  exclusif, évite la double soumission — safety BLOQUANT 5).
+- `decide` → jeton `acpx` → LLM → écrit une **décision d'audit** et, si trade, une
+  **intention** `pending`. **Aucun plan, aucun ordre dans `decide`.**
+- `execute_order` (Lot B paper, `resource=portfolio`) consomme l'intention et, comme
+  `SimBroker.submit()` est **synchrone/déterministe**, écrit **broker + plan +
+  `done` dans UNE transaction** (revalidation risk/cash/prix avant, réutilise
+  `order_admission` + les checks `daemon.py:2477/2606`). Idempotence gratuite.
+- **Live IB** (Lot C) : l'ordre devient un effet externe asynchrone → machine d'état
+  `external_orders` + réconciliation (§7). *Non implémenté tant qu'`IBBroker`
+  n'existe pas.*
 
 ### 4.5 Erreurs, retry, backpressure, reprise
 
-**Deux gardes de temps DISTINCTES — ne pas les confondre** (décision 2026-07-03) :
+**Deux gardes de temps DISTINCTES — ne pas les confondre** :
 
-- **Heartbeat + lease → panne « le daemon entier meurt ».** Un thread dédié
-  prolonge `lease_expires_at` des tâches `running` tant que le daemon vit. S'il
-  meurt (kill/OOM), les leases cessent d'être prolongées ; au boot,
+- **Heartbeat + lease → panne « le daemon entier meurt ».** Un thread dédié prolonge
+  `lease_expires_at` des tâches `running` tant que le daemon vit. S'il meurt, au boot
   `recover_on_boot()` repasse en `pending` les `running` à lease expirée. **Un agent
-  qui réfléchit longtemps n'est JAMAIS considéré orphelin tant que le daemon vit** —
-  le heartbeat court dans un thread séparé du worker bloqué sur l'I/O. C'est ce qui
-  permet de « laisser le temps qu'il faut » côté file.
-- **Timeout du subprocess acpx → panne « un appel individuel se fige »** (bridge
-  `codex-acp` zombie) sans tuer le daemon. Le heartbeat ne peut PAS le casser (le
-  worker est vivant, bloqué dans `communicate()`, et tiendrait le jeton `acpx`
-  limité à vie → la voie `decide` se gèle). On garde donc un timeout subprocess,
-  mais **desserré et configurable par `kind`** (ex. `decide` 30-60 min) : l'agent a
-  « le temps qu'il faut ». Son **dépassement devient un `requeue` (retryable), plus
-  jamais un `HOLD` définitif** — la décision est reportée, pas perdue.
-  *(Amélioration future : idle-watchdog — couper sur inactivité, pas sur durée —
-  quand acpx exposera un flux de tokens ; aujourd'hui `--format quiet` +
-  `communicate()` bloquant, `llm.py:106,299`, ne le permet pas.)*
+  qui réfléchit longtemps n'est jamais orphelin tant que le daemon vit** (heartbeat
+  dans un thread séparé du worker bloqué sur l'I/O).
+- **Timeout du subprocess acpx → panne « un appel se fige »** (bridge zombie). Le
+  heartbeat ne peut PAS le casser (worker vivant, bloqué dans `communicate()`,
+  tiendrait le jeton `acpx` à vie). Timeout subprocess **desserré + configurable par
+  `kind`** (ex. `decide` 30-60 min) ; dépassement = **`requeue` (retryable), jamais
+  `HOLD`**. *(Futur : idle-watchdog sur inactivité quand acpx streamera ;
+  `--format quiet` + `communicate()` bloquant aujourd'hui, `llm.py:106,299`.)*
 
-- **Retry + backoff** : échec *retryable* (rate limit, overload, timeout desserré
-  dépassé) → `pending`, `scheduled_at = now + base·2^attempts`, jusqu'à
-  `max_attempts` → `dead`. `decide` idempotent (dedup) → rejeu sûr → **fin du
-  HOLD-par-saturation**.
-- **Backpressure adaptative `acpx`** (AIMD) : overload → concurrence ×0.5 ; succès
-  → +1, plafonnée. Couplée au **claim resource-aware** (§4.2) pour ne pas piéger les
-  workers.
-- **Fencing token** : `complete()/fail()` gardés par `claim_token` → neutralise une
-  double exécution résiduelle après reprise.
-- **pid-lock atomique** (`O_EXCL` ou `fcntl.flock`) au boot → résout RC-3, condition
-  de la reprise sûre.
+- **Retry + backoff** : échec *retryable* → `pending`, `scheduled_at = now +
+  base·2^attempts`, jusqu'à `max_attempts` → `dead`. `decide` idempotent → rejeu sûr
+  → **fin du HOLD-par-saturation**.
+- **Backpressure adaptative `acpx` = contrôleur de concurrence à DOUBLE SIGNAL**
+  (réutilise la classif d'erreurs `llm.py:144-168`) :
+  - *Signal dur (réactif)* : un `LlmFailure` overload / internal-error / sortie vide
+    → **decrease agressif** `M ×0.5`.
+  - *Signal doux (proactif)* : latence glissante (p50/p95) des appels acpx ; si elle
+    gonfle anormalement → **gel de l'increase** (pré-choke détecté avant les erreurs).
+  - *Increase prudent* : série saine → `M +1`, jusqu'à un **plafond configurable**.
+  Pattern *adaptive concurrency limiting* (AIMD ; raffinable en Gradient/Vegas si
+  oscillation). Couplé au **claim resource-aware** (§4.2). `M` trouve seul le point
+  où acpx choke et s'y tient.
+- **Fencing token** : `complete()/fail()` gardés par `claim_token`.
+- **pid-lock atomique** (`O_EXCL`/`fcntl.flock`) au boot → résout RC-3.
+
+### 4.6 Lifecycle des appels acpx (même cadran que la backpressure)
+
+En grain-symbole, **1 `decide` = 1 `acpx exec` one-shot = 1 bridge `codex-acp`
+éphémère**. Donc **`M` appels concurrents = `M` bridges vivants au même instant** :
+le `M` calculé par la backpressure (§4.5) est *aussi* le plafond de bridges
+simultanés → **contrôler `M` protège l'app-server ET borne le pileup d'un seul
+geste**. Le lifecycle par appel réutilise l'existant :
+
+- **Fork acpx en service** (`TRADER_ACPX_BIN`, « bridges jamais orphelins ») : ferme
+  le bridge en fin d'`exec` — brique de lifecycle propre déjà validée.
+- **Worker en filet** : garantit la fermeture du groupe de process, **reap par PID
+  propre** (celui de *son* subprocess), **jamais par cwd partagé** — tue le
+  reap-croisé (défaut A) qui, en grain-symbole parallèle, reviendrait sinon.
+  Réutilise `_terminate_process_group` (`llm.py:183-201`) corrigé.
+- **Reap de sécurité périodique** : un balayage des orphelins résiduels (dernier
+  filet), tracé.
 
 ## 5. Migration des stores d'état (Lot A) — idempotente
 
-Backends SQLite pour `SimBroker` / `TradePlanStore` / `Scheduler`, **API publique
-identique** (consommateurs inchangés). Migration one-shot au boot, **idempotente**
-(correctif safety MAJEUR 4) :
+Backends SQLite pour `SimBroker` / `TradePlanStore` / `Scheduler`, **derrière l'API
+publique existante** (Protocol `Broker`, `execution.py:188` ; consommateurs
+inchangés). Migration one-shot au boot, **idempotente** (correctif safety MAJEUR 4) :
 
 - Table `schema_migrations` (version appliquée).
 - Import JSON → tables **seulement si les tables sont vides** ; sinon skip.
-- Contraintes `UNIQUE` (ex. un fill par `dedup_key`, un plan par `id`) pour bloquer
-  tout doublon même si l'import est relancé.
+- Contraintes `UNIQUE` (un fill par `dedup_key`, un plan par `id`) → bloque tout
+  doublon même si l'import est relancé.
 - Backup horodaté des `.json` avant bascule.
-- **SimBroker** : la mutation d'état **et** le `mark done` de la tâche/fill dans
-  **une seule transaction** (correctif safety MAJEUR 3) → pas de double mutation au
-  rejeu, même en paper.
+- **SimBroker** : mutation d'état **et** `mark done` dans **une seule transaction**
+  (correctif safety MAJEUR 3) → pas de double mutation au rejeu, même en paper.
 
 ## 6. Migration *strangler* (réversible par flag)
 
-- **Phase 0 — Substrat débranché.** Module `queue/`, `task_ledger.db`, tests.
-  Flag maître `CASYS_QUEUE_ENABLED=0`.
+- **Phase 0 — Substrat débranché.** Module `queue/`, `task_ledger.db`, tests. Flag
+  maître `CASYS_QUEUE_ENABLED=0`. *(Plan committé : `2026-07-03-task-ledger-lot-a-phase0.md`.)*
 - **Phase 1 — État en SQLite, comportement inchangé** (§5). Mono-thread. →
   **RC-1/2/4 morts ici.**
 - **Phase 2 — File en shadow.** Producteur enfile `refresh_symbol`+`decide`, on
-  *compare* décisions/intentions file vs chemin synchrone (équivalence, risque nul,
-  aucun ordre par la file).
-- **Phase 3 (Lot A complet) — `decide`/`refresh` via file** ; l'exécution reste
-  synchrone, consommant `order_intents`.
-- **Phase 4 (Lot B) — exécution via file** : après §7 validé. `execute_order`,
-  `external_orders`, réconciliation IB. Un flag, ancien chemin en fallback.
-- **Phase 5 — Nettoyage** après observation (`measure_d7`).
+  *compare* décisions/intentions file vs chemin synchrone (équivalence, risque nul).
+- **Phase 3 (Lot A complet) — `refresh`/`decide` via file** ; exécution encore
+  synchrone.
+- **Phase 4 (Lot B paper) — `execute_order` via file avec `SimBroker`** (transaction
+  unique, §4.4). Un flag, ancien chemin en fallback. **Simple, pas de STOP.**
+- **Phase 5 (Lot C, futur) — live IB** : seulement quand `IBBroker` existe (§7).
+- **Phase 6 — Nettoyage** après observation (`measure_d7`).
 
-**Réversibilité** (nuance safety MAJEUR 6) : réversible par flag **pour les classes
-de tâches** ; pour le **substrat état**, « rollback » = *SQLite backend + queue
-off*, PAS un retour au JSON (le backup JSON serait stale). Un export JSON
-atomique/versionné est fourni comme filet, sans être le mode nominal.
+**Réversibilité** : par flag pour les classes de tâches ; pour le substrat état,
+« rollback » = *SQLite backend + queue off*, PAS un retour au JSON (backup stale).
+Export JSON atomique/versionné fourni comme filet.
 
 **Observabilité** : vue cockpit `pending/running/dead/retry` par `kind`.
 
-## 7. Lot B — Exécution d'ordres via file (À SPÉCIFIER/VALIDER AVANT IMPL)
+## 7. Lot C — Exécution LIVE IB (FUTUR — à revalider Codex quand `IBBroker` existera)
 
-> Cette section répond au STOP safety. Elle est **normative pour l'impl du Lot B**
-> et doit être revue (Codex) avant tout code.
+> **Ne s'implémente pas maintenant.** `IBBroker` n'existe pas ; en paper (SimBroker)
+> l'exécution est synchrone et simple (§4.4). Cette section capture le design de
+> sûreté à activer **le jour où** un `IBBroker` asynchrone sera écrit — pour ne pas
+> reperdre les findings Codex safety.
 
 ### 7.1 `order_intents` — ownership exclusif (safety BLOQUANT 5)
 
 Table unique consommée par **exactement un** exécutant (ancien chemin OU file,
 jamais les deux). `UNIQUE(intent_key)`, statut `open/claimed/executed/cancelled`,
-claim atomique (`UPDATE ... WHERE status='open'`). Empêche que `decide` + un
-chemin d'exécution soumettent deux fois.
+claim atomique. Empêche la double soumission pendant une bascule.
 
 ### 7.2 `external_orders` — machine d'état IB (safety BLOQUANT 1+2)
 
-L'ordre IB est un effet **externe hors transaction SQLite**. On persiste sa
-machine d'état :
-
-```
-prepared → submitted → (partially_filled) → filled
-                     ↘ rejected / cancelled
-```
-
-Colonnes clés : `intent_key`, `order_ref` (= `dedup_key`, posé comme `orderRef` IB),
-`perm_id`, `client_id`, `order_id`, `status`, `filled_qty`, `avg_fill_px`, horodatages.
-
-**Protocole anti-perte** : on écrit `prepared` **avant** `submit`, puis on met à
-jour `submitted`+`perm_id` dès l'accusé IB. Un crash après `submit` mais avant la
-mise à jour est rattrapé par la réconciliation (§7.3) via `order_ref`.
+L'ordre IB est un effet **externe hors transaction SQLite**. Machine d'état :
+`prepared → submitted → (partially_filled) → filled` / `rejected|cancelled`.
+Colonnes : `intent_key`, `order_ref` (=`dedup_key`, posé comme `orderRef` IB),
+`perm_id`, `client_id`, `order_id`, `status`, `filled_qty`, `avg_fill_px`. Écrire
+`prepared` **avant** `submit` ; crash entre les deux rattrapé par §7.3 via `order_ref`.
 
 ### 7.3 Réconciliation IB au boot (safety BLOQUANT 2)
 
-Avant de (re)jouer une intention/ordre, interroger IB : `openOrders` +
-`completedOrders`/`executions` + `positions`, corréler par `order_ref` → `perm_id`
-→ `order_id`. Traiter les statuts comme une machine d'état :
-- `Filled`/exécutions présentes → marquer `filled`, activer le `trade_plan` (§7.4),
-  `done`. **Pas de re-submit.**
-- `partially_filled` → position modifiée **et** ordre encore ouvert : réconcilier la
-  quantité, décider (compléter/annuler) — jamais replay aveugle.
-- `PreSubmitted`/`Submitted` → laisser vivre, **ne pas** marquer `done`.
-- `Rejected`/`Cancelled` → `failed`/`dead`, pas de replay aveugle.
-- Corrélation ambiguë → **halt manuel** (safe default), pas de soumission.
+Interroger `openOrders` + `completedOrders`/`executions` + `positions`, corréler par
+`order_ref`→`perm_id`→`order_id`. `Filled` → activer plan + `done` ;
+`partially_filled` → réconcilier quantité ; `PreSubmitted`/`Submitted` → laisser
+vivre ; `Rejected`/`Cancelled` → `failed`/`dead` ; ambigu → **halt manuel**.
 
-### 7.4 `trade_plan` activé APRÈS fill (arch BLOQUANT + safety)
+### 7.4 `trade_plan` activé APRÈS fill · 7.5 revalidation avant submit · 7.6 stop/TP broker-side
 
-L'intention porte le futur plan (stop/TP/trailing) en *payload*. Le `trade_plan`
-(position ouverte) n'est **créé/activé qu'au fill confirmé**, dans la transaction
-qui écrit broker+plan+`done`. Avant fill : rien dans `trade_plans`.
-
-### 7.5 Revalidation avant submit (arch MINEUR 5, safety trous)
-
-`execute_order` (partition `portfolio`, sous `ib=1`) **re-check risk/cash/prix/
-session juste avant submit** — les `decide` parallèles ont pu voir un portefeuille
-stale (le code actuel fait déjà ces checks avant ordre, `daemon.py:2477/2606`).
-
-### 7.6 Protection résiduelle (safety trous)
-
-Si le daemon tombe **après** l'entrée mais avant d'armer les sorties : prévoir un
-stop/TP **broker-side** (ordre protecteur chez IB) ou une reprise qui réarme les
-sorties au boot. À trancher dans la revue Lot B.
+Plan (position ouverte) créé **au fill confirmé** seulement. Re-check
+risk/cash/prix/session avant submit (`order_admission` + `daemon.py:2477/2606`). Si
+le daemon tombe après entrée : stop/TP **broker-side** ou réarmement au boot.
 
 ## 8. Tests (TDD — chaque race → test de non-régression)
 
-Lot A :
+**Lot A** :
 | Test | Couvre |
 |------|--------|
 | 2× enqueue même `dedup_key` → 1 exécution | idempotence |
-| 2 tâches même `partition_key` → jamais 2 `running` (+ invariant DB) | sérialisation par clé |
-| N workers, `acpx=1`, une sortie prio 0 arrive → servie sans être piégée | resource-aware claim |
+| 2 tâches même `partition_key` → jamais 2 `running` (+ invariant DB) | sérialisation |
+| N workers, `acpx` saturé, sortie prio 0 → servie sans piège | resource-aware |
 | flux continu prio 0-1 → `decide` finit par passer (aging) | anti-famine |
 | échec retryable → backoff, `dead` après max | retry |
-| timeout acpx desserré dépassé → `requeue` (retryable), jamais `HOLD` | garde acpx |
-| worker bloqué mais daemon vivant (heartbeat continue) → tâche **pas** reprise | garde daemon vs acpx |
-| `complete()` avec token périmé → refusé | fencing |
-| lease expirée au boot → repending ; tâche vivante (heartbeat) → **pas** repending | reprise |
-| import migration relancé → aucun doublon (tables non vides → skip) | migration idempotente |
+| overload → `M ×0.5` ; latence haute → increase gelé ; sain → `M +1` | backpressure double-signal |
+| `M` bridges max vivants ; reap par PID propre ne tue pas le voisin | lifecycle acpx / défaut A |
+| timeout acpx desserré dépassé → `requeue`, jamais `HOLD` | garde acpx |
+| worker bloqué mais daemon vivant (heartbeat) → tâche **pas** reprise | garde daemon vs acpx |
+| `complete()` token périmé → refusé | fencing |
+| lease expirée au boot → repending ; heartbeat récent → **pas** repending | reprise |
+| import migration relancé → aucun doublon | migration idempotente |
 | crash mid-write simulé → état SQLite cohérent | RC-1/2/4 |
 | 2ᵉ daemon lancé → refusé (pid-lock) | RC-3 |
 
-Lot B :
+**Lot B (paper)** :
 | Test | Couvre |
 |------|--------|
-| crash après `submit` avant maj → réconciliation retrouve l'ordre par `order_ref`, pas de double | external_orders |
-| `partial fill` au boot → quantité réconciliée, pas replay aveugle | réconciliation |
-| `PreSubmitted` au boot → pas marqué `done` | réconciliation |
-| `Rejected` → `failed`, pas de replay | réconciliation |
+| `execute_order` : `submit`+mutation+`done` atomiques ; rejeu → pas de double mutation | idempotence paper |
 | intention consommée par un seul exécutant (ancien XOR file) | ownership |
 | `trade_plan` absent tant que pas de fill ; présent après fill | plan-après-fill |
 
-Intégration : cycle complet en sim (`SimBroker` + acpx mocké)
-`refresh→decide→intention` (Lot A) ; puis `intention→execute→fill→plan` (Lot B).
+**Lot C (futur, à écrire avec l'`IBBroker`)** : crash après `submit` → réconciliation
+par `order_ref` ; partial fill ; `PreSubmitted` non `done` ; `Rejected` → `failed`.
+
+Intégration : cycle en sim (`SimBroker` + acpx mocké)
+`refresh→decide→intention→execute→fill→plan`.
 
 ## 9. Composants (fichiers)
 
-- `trader/queue/ledger.py` — schéma, `enqueue()`, `claim()` (BEGIN IMMEDIATE,
-  resource-aware, fencing), `complete()/fail()/retry()`, `recover_on_boot()`.
-- `trader/queue/pools.py` — sémaphores de ressource + backpressure AIMD +
-  `Condition` de réveil.
-- `trader/queue/worker.py` — boucle worker-thread (claim → dispatch → engendre).
-- `trader/queue/tasks/` — un handler par `kind` (narrow contract).
-- Backends SQLite : `SimBroker`, `TradePlanStore`, `Scheduler` (API inchangée) +
-  `schema_migrations`.
-- Lot B : `trader/queue/orders.py` (`order_intents`, `external_orders`,
-  réconciliation IB).
-- Producteur : refonte de la boucle `daemon.py`. Cockpit : vue file.
+**Nouveau** (`trader/queue/`) :
+- `ledger.py` — schéma, `enqueue`, `claim` (BEGIN IMMEDIATE, resource-aware,
+  fencing), `complete/fail/retry`, `heartbeat`, `recover_on_boot`.
+- `pools.py` — sémaphores + backpressure double-signal + `Condition`.
+- `worker.py` — boucle worker-thread + lifecycle acpx (reap PID propre) + thread heartbeat.
+- `tasks/` — un handler par `kind` (réutilise `decide_batch`/`order_admission`/`SimBroker`).
+
+**Modifié / réutilisé** : `SimBroker`/`TradePlanStore`/`Scheduler` (backend SQLite,
+API inchangée) + `schema_migrations` ; `pid_file` (atomique) ; producteur =
+refonte boucle `daemon.py` ; cockpit (vue file). **Lot C** : `trader/queue/orders.py`.
 
 ## 10. Risques & points ouverts
 
 - **Contention SQLite mono-writer** : tenable au volume (~25 symboles, quelques
-  writes/s ; seuils de bascule = `SQLITE_BUSY` récurrents, p95 claim > 100-200 ms,
-  centaines de writes/s soutenues). Ne jamais tenir de tx pendant l'I/O externe.
-- **Corrélation IB** (Lot B) : dépend de la fiabilité `orderRef`/`permId` ; en
-  paper (SimBroker) pas d'ordre en vol, mais l'idempotence fill reste requise.
-- **Ampleur Phase 1** : migrer 3 stores est le gros du chantier — c'est aussi ce
-  qui tue les races critiques.
-- **`_LAST_LLM_AT`** volatile (`daemon.py:165`) : à migrer en table (bonus, tue le
-  surcoût LLM au reboot).
-- **Lot B non implémentable** tant que §7 n'est pas revalidé (Codex).
+  writes/s ; bascule = `SQLITE_BUSY` récurrents, p95 claim > 100-200 ms). Jamais de
+  tx pendant l'I/O externe.
+- **Ampleur Phase 1** : migrer 3 stores est le gros du chantier — et ce qui tue les
+  races critiques.
+- **`_LAST_LLM_AT`** volatile (`daemon.py:165`) : à migrer en table (bonus).
+- **Lot C (live IB)** : non implémentable tant qu'`IBBroker` n'existe pas ; §7 à
+  revalider Codex à ce moment-là.
