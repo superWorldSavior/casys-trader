@@ -2980,6 +2980,32 @@ def run_cycle(
     # Mémorise les rejets gross de CE cycle pour les réinjecter au prochain (None
     # si aucun → efface un éventuel feedback périmé).
     _LAST_GROSS_REJECTIONS[str(STATE_DIR)] = summarize_gross_rejections(report["decisions"])
+
+    # Shadow queue (CASYS_SHADOW_QUEUE_ENABLED=1) — placement FIN de cycle :
+    # ne retarde JAMAIS l'exécution des ordres (FIX 1).
+    # Fire-and-forget : le résultat est loggué, jamais utilisé pour décider.
+    # Source indépendante : decidable_symbols = symboles passés au LLM ;
+    # decided_symbols = décisions effectives (LLM + armés).
+    if os.getenv("CASYS_SHADOW_QUEUE_ENABLED", "0") == "1":
+        try:
+            from trader.queue.shadow import ShadowQueueProbe
+            _shadow_probe = ShadowQueueProbe(STATE_DIR / "shadow_queue.db")
+            _shadow_result = _shadow_probe.run(
+                cycle_ts=now.isoformat(),
+                decidable_symbols=list(decidable),
+                decided_symbols=list(decisions_by_symbol.keys()),
+                now_ms=int(now.timestamp() * 1000),
+            )
+            log.info(
+                "[shadow-queue] rapport cycle=%s identical=%s missing=%s decided_vs_decidable=%s",
+                now.isoformat(),
+                _shadow_result.get("identical"),
+                _shadow_result.get("missing") or "[]",
+                _shadow_result.get("decided_vs_decidable"),
+            )
+        except Exception as _shadow_exc:  # noqa: BLE001
+            log.warning("[shadow-queue] échec sonde: %s", _shadow_exc)
+
     return report
 
 

@@ -43,6 +43,19 @@ def open_state_db(db_path: str | Path) -> "StateDb":
         return _DB_REGISTRY[key]
 
 
+def close_all_state_dbs() -> None:
+    """Ferme toutes les StateDb du registre et vide le cache.
+
+    Thread-safe (sous _DB_REGISTRY_LOCK). Utile pour les tests (isolation) et
+    pour un atexit propre. Après appel, open_state_db(même chemin) retourne une
+    nouvelle instance (le cache a été vidé).
+    """
+    with _DB_REGISTRY_LOCK:
+        for db in list(_DB_REGISTRY.values()):
+            db.close()
+        _DB_REGISTRY.clear()
+
+
 class StateDb:
     """Connexion SQLite partagée (WAL + threading.Lock) — substrat commun des stores.
 
@@ -67,8 +80,55 @@ class StateDb:
         self._conn.execute("PRAGMA busy_timeout=5000")
 
     # ------------------------------------------------------------------
+    # Cycle de vie
+    # ------------------------------------------------------------------
+
+    def close(self) -> None:
+        """Checkpoint WAL + ferme la connexion. Idempotent.
+
+        1. Acquiert self._lock.
+        2. Si connexion déjà fermée (self._conn is None) → no-op immédiat.
+        3. PRAGMA wal_checkpoint(TRUNCATE) (best-effort — ne lève pas).
+        4. self._conn.close() puis self._conn = None.
+
+        Un deuxième appel après le premier est silencieux (idempotent).
+        """
+        with self._lock:
+            if self._conn is None:
+                return
+            try:
+                self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            except Exception:
+                pass  # best-effort : ne pas masquer une fermeture propre
+            try:
+                self._conn.close()
+            finally:
+                self._conn = None
+
+    def integrity_check(self) -> list[str]:
+        """Exécute PRAGMA integrity_check et retourne les lignes de résultat.
+
+        Sur une base saine, retourne ``['ok']``.
+        Sur une base corrompue, retourne la liste des problèmes détectés.
+
+        Returns:
+            list[str] — lignes du PRAGMA (ex. ``['ok']`` ou messages d'erreur).
+        """
+        rows = self.query_all("PRAGMA integrity_check")
+        return [row[0] for row in rows]
+
+    # ------------------------------------------------------------------
     # Primitives publiques
     # ------------------------------------------------------------------
+
+    def _ensure_open(self) -> None:
+        """Lève RuntimeError si la connexion a été fermée.
+
+        Doit être appelé sous self._lock (voir query_one, query_all, transaction).
+        close() reste idempotent et n'appelle PAS _ensure_open.
+        """
+        if self._conn is None:
+            raise RuntimeError("StateDb fermé")
 
     @contextmanager
     def transaction(self) -> Generator[sqlite3.Cursor, None, None]:
@@ -85,6 +145,7 @@ class StateDb:
         explicitement via cursor — plus robuste que conn.commit()/rollback().
         """
         with self._lock:
+            self._ensure_open()
             cur = self._conn.cursor()
             cur.execute("BEGIN IMMEDIATE")
             try:
@@ -101,16 +162,20 @@ class StateDb:
         """Lit une ligne sous _lock (fetch inclus). Retourne None si absente.
 
         Toutes les écritures passent EXCLUSIVEMENT par transaction().
+        Lève RuntimeError si la connexion est fermée.
         """
         with self._lock:
+            self._ensure_open()
             return self._conn.execute(sql, params).fetchone()
 
     def query_all(self, sql: str, params: tuple = ()) -> list[sqlite3.Row]:
         """Lit toutes les lignes sous _lock (fetch inclus).
 
         Toutes les écritures passent EXCLUSIVEMENT par transaction().
+        Lève RuntimeError si la connexion est fermée.
         """
         with self._lock:
+            self._ensure_open()
             return self._conn.execute(sql, params).fetchall()
 
     def executescript(self, sql: str) -> None:
