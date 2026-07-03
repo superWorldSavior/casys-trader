@@ -38,6 +38,7 @@ class ResourcePools:
             return self._eff[resource]
 
     def free_resources(self) -> list[str]:
+        """Retourne la liste des ressources ayant encore au moins un slot libre."""
         with self._cond:
             return [r for r in self._max if self._used[r] < self._eff[r]]
 
@@ -46,6 +47,11 @@ class ResourcePools:
     # ------------------------------------------------------------------
 
     def try_acquire(self, resource: str) -> bool:
+        """Tente d'acquérir un slot sur ``resource`` sans bloquer.
+
+        Retourne ``True`` et incrémente ``_used`` si un slot est disponible
+        (``_used < _eff``), ``False`` sinon.
+        """
         with self._cond:
             if self._used[resource] < self._eff[resource]:
                 self._used[resource] += 1
@@ -53,6 +59,10 @@ class ResourcePools:
             return False
 
     def release(self, resource: str) -> None:
+        """Libère un slot sur ``resource`` et notifie les waiters.
+
+        Sur over-release (``_used`` déjà à 0) : log warning, pas d'exception.
+        """
         with self._cond:
             if self._used[resource] > 0:
                 self._used[resource] -= 1
@@ -66,6 +76,12 @@ class ResourcePools:
     # ------------------------------------------------------------------
 
     def on_overload(self, resource: str) -> None:
+        """Signal AIMD : surcharge détectée → divise la limite effective par 2.
+
+        Remet le streak à 0 : il faudra ``COOLDOWN_SUCCESSES`` succès
+        consécutifs avant de pouvoir ré-incrémenter ``_eff``.
+        Plancher à 1 (jamais 0 slot disponible).
+        """
         with self._cond:
             self._eff[resource] = max(1, self._eff[resource] // 2)
             # Réinitialise le streak : il faut COOLDOWN_SUCCESSES succès
@@ -77,6 +93,11 @@ class ResourcePools:
             self._cond.notify_all()
 
     def on_success(self, resource: str) -> None:
+        """Signal AIMD : succès → incrémente le streak, restaure la limite si seuil atteint.
+
+        N'incrémente ``_eff`` que si ``_success_streak >= COOLDOWN_SUCCESSES``,
+        et dans la limite de ``_max``. Notifie les waiters si la capacité augmente.
+        """
         with self._cond:
             self._success_streak[resource] += 1
             if self._success_streak[resource] >= self.COOLDOWN_SUCCESSES:

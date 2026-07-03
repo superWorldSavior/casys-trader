@@ -26,7 +26,7 @@ documenté, où, et quels trous restent).
 Les **trous** ci-dessous obtiennent une page `reference/` dédiée ; les runbooks
 `how-to/` (quadrant entier absent) sont à créer.
 
-Pages `reference/` écrites : [`risk-gate`](reference/risk-gate.md), [`fx`](reference/fx.md), [`cockpit`](reference/cockpit.md), [`reporting`](reference/reporting.md), [`config`](reference/config.md), [`learnings-rag`](reference/learnings-rag.md), [`agent-tools`](reference/agent-tools.md), [`macro`](reference/macro.md), [`llm-contract`](reference/llm-contract.md), [`universe-rotation`](reference/universe-rotation.md), [`execution`](reference/execution.md), [`news`](reference/news.md), [`regime`](reference/regime.md), [`agent-context`](reference/agent-context.md), [`semantic`](reference/semantic.md).
+Pages `reference/` écrites : [`risk-gate`](reference/risk-gate.md), [`fx`](reference/fx.md), [`cockpit`](reference/cockpit.md), [`reporting`](reference/reporting.md), [`config`](reference/config.md), [`learnings-rag`](reference/learnings-rag.md), [`agent-tools`](reference/agent-tools.md), [`macro`](reference/macro.md), [`llm-contract`](reference/llm-contract.md), [`universe-rotation`](reference/universe-rotation.md), [`execution`](reference/execution.md), [`news`](reference/news.md), [`regime`](reference/regime.md), [`agent-context`](reference/agent-context.md), [`semantic`](reference/semantic.md), [`task-queue`](reference/task-queue.md).
 Pages `how-to/` écrites : [`run-the-daemon`](how-to/run-the-daemon.md), [`read-logs`](how-to/read-logs.md), [`measure-and-replay`](how-to/measure-and-replay.md).
 
 ---
@@ -44,6 +44,7 @@ Légende : ✅ couvert · 🟡 partiel / dispersé / potentiellement périmé ·
 | Contexte marché (snapshot) | `application/market_snapshot` | ✅ | archi §3.2-3.3 | — |
 | Enregistrement décision | `application/decision_recorder` | ✅ | archi §3.8, §8 | — |
 | Gate de pertinence (coût) | `planning/relevance_gate` | ✅ | archi §3.4 | D7A |
+| **File de tâches durable** | `queue/*` (ledger, pools, worker) | 🟡 | **`reference/task-queue.md`** | — Phase 0, non branché |
 
 ### Actions & exécution
 | Sous-système | Package/module | Réf | Où | Décisions |
@@ -110,9 +111,10 @@ Les 5 trous prioritaires identifiés à la v2 sont comblés :
 5. ~~Config univers/portefeuille~~ ✅ [`reference/config.md`](reference/config.md)
 
 **Couverture complète ✅ (2026-07-03)** — tous les sous-systèmes de la carte ont
-désormais une page `reference/` **fact-checkée** (15 pages reference + 3 how-to). Il
-n'y a plus de trou. Maintenir : quand un module change, mettre à jour sa page (lire
-code → éditer → re-fact-check si substantiel).
+désormais une page `reference/` **fact-checkée** (16 pages reference + 3 how-to).
+Nouveau sous-système documenté : `queue/*` (file de tâches durable, Phase 0 —
+cœur en place, non branché au daemon). Maintenir : quand un module change, mettre
+à jour sa page (lire code → éditer → re-fact-check si substantiel).
 
 Méthode : lire le code → écrire la page `reference/` (comportement/invariants/codes)
 → passer la ligne ✅ dans la carte. Un fact-check Codex de chaque réf vs le code
