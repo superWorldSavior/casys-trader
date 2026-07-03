@@ -61,6 +61,7 @@ from textual.theme import Theme
 from textual.widgets import Button, Checkbox, ContentSwitcher, Footer, Input, Label, RichLog, Static
 
 from trader.cockpit.supervisor import daemon_vital_state
+from trader.cockpit.aggregates import open_venue_set
 from trader.cockpit.home import AttentionLine, HomePane, SymbolChosen
 
 from trader.cockpit.events import (
@@ -99,6 +100,18 @@ from trader.ui.rich_panels import (
 # ---------------------------------------------------------------------------
 
 UTC = timezone.utc
+
+
+def _open_venues_from_state(state: dict) -> "set[str] | None":
+    """Codes venue ouverts maintenant, ou None si les sessions sont indisponibles.
+
+    None → badge marché neutre côté builders (distinct de « tout fermé »).
+    """
+    sessions = state.get("sessions")
+    if not isinstance(sessions, dict) or not sessions:
+        return None
+    return open_venue_set(sessions, datetime.now(UTC))
+
 
 _THEME_SALMON = Theme(
     name="casys-salmon",
@@ -321,9 +334,15 @@ class PositionsPlansPane(Static):
             if isinstance(state.get("trade_plans"), list)
             else []
         )
+        open_venues = _open_venues_from_state(state)
 
         self.query_one("#positions-panel", Static).update(
-            _build_positions_panel(holdings, palette=palette)
+            _build_positions_panel(
+                holdings,
+                trade_plans=trade_plans,
+                open_venues=open_venues,
+                palette=palette,
+            )
         )
         self.query_one("#exit-plans-panel", Static).update(
             _build_exit_plans_enriched(trade_plans, palette=palette)
@@ -358,7 +377,9 @@ class ArmedPlansPane(Static):
             else []
         )
         self.query_one("#armed-plans-panel", Static).update(
-            _build_armed_plans_panel(armed_plans, palette=palette)
+            _build_armed_plans_panel(
+                armed_plans, open_venues=_open_venues_from_state(state), palette=palette
+            )
         )
 
 
@@ -405,7 +426,9 @@ class DecisionsPane(Static):
         )
 
         self.query_one("#decisions-table", Static).update(
-            _build_decisions_table(decisions, palette=palette)
+            _build_decisions_table(
+                decisions, open_venues=_open_venues_from_state(state), palette=palette
+            )
         )
         self.query_one("#attribution-panel", Static).update(
             _build_attribution_panel(attribution, palette=palette)

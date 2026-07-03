@@ -279,6 +279,24 @@ def venue_clock(sessions: dict, now: datetime) -> VenueClock:
     return VenueClock(open_now=open_list, next_venue=best[1], next_kind=best[2], next_at=best[0])
 
 
+def open_venue_set(sessions: object, now: datetime) -> "set[str]":
+    """Codes venue ouverts à `now` (EU/US/TW/FX). Sessions vides/invalides → set().
+
+    Utilisé pour le badge marché ouvert/fermé des positions et du drill-down.
+    Contrairement à `venue_clock`, inclut FX (24/5) car on peut détenir des paires.
+    """
+    from trader.rotation.schedule import open_venues
+
+    if not isinstance(sessions, dict) or not sessions:
+        return set()
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=UTC)
+    try:
+        return set(open_venues(now.isoformat(), sessions))
+    except Exception:
+        return set()
+
+
 def activity_buckets(
     recent_decisions: list[dict],
     now: datetime,
