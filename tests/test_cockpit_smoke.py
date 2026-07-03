@@ -105,8 +105,8 @@ async def test_cockpit_fichiers_absents_ne_crashent_pas(tmp_path, monkeypatch):
         assert app.query_one("#positions-plans-pane") is not None
 
 
-async def test_cockpit_theme_defaut_est_casys_salmon(tmp_path, monkeypatch):
-    """Le thème par défaut doit être casys-salmon (fond clair saumon)."""
+async def test_cockpit_theme_defaut_est_casys_ink(tmp_path, monkeypatch):
+    """Le thème par défaut doit être casys-ink (sombre gruvbox)."""
     _make_minimal_state(tmp_path)
     monkeypatch.setattr(cockpit_module, "_STATE_DIR", tmp_path)
     monkeypatch.setattr(cockpit_module, "_EVENTS_FILE", tmp_path / "events.jsonl")
@@ -114,7 +114,7 @@ async def test_cockpit_theme_defaut_est_casys_salmon(tmp_path, monkeypatch):
 
     app = CockpitApp()
     async with app.run_test(size=(200, 50)) as _:
-        assert app.theme == "casys-salmon"
+        assert app.theme == "casys-ink"
 
 
 async def test_cockpit_binding_d_bascule_theme(tmp_path, monkeypatch):
@@ -128,11 +128,11 @@ async def test_cockpit_binding_d_bascule_theme(tmp_path, monkeypatch):
 
     app = CockpitApp()
     async with app.run_test(size=(200, 50)) as pilot:
-        assert app.theme == "casys-salmon"
-        await pilot.press("d")
         assert app.theme == "casys-ink"
         await pilot.press("d")
         assert app.theme == "casys-salmon"
+        await pilot.press("d")
+        assert app.theme == "casys-ink"
 
 
 async def test_cockpit_status_prend_palette_en_compte(tmp_path, monkeypatch):
@@ -224,7 +224,7 @@ async def test_cockpit_toggle_theme_propage_palette_dashboard_immediatement(
     action_toggle_theme, sans attendre le prochain cycle de refresh.
     """
     from trader.cockpit import PositionsPlansPane
-    from trader.ui.palette import PALETTE_DARK, PALETTE_LIGHT
+    from trader.ui.palette import PALETTE_INK, PALETTE_LIGHT
 
     # Daemon simulé vivant → pas de ConfirmStart qui intercepterait les touches
     _make_minimal_state_with_pid(tmp_path, 54321)
@@ -236,14 +236,14 @@ async def test_cockpit_toggle_theme_propage_palette_dashboard_immediatement(
     app = CockpitApp()
     async with app.run_test(size=(220, 60)) as pilot:
         pane = app.query_one("#positions-plans-pane", PositionsPlansPane)
-        # Thème saumon → palette LIGHT
-        assert pane._current_palette is PALETTE_LIGHT
-        # Toggle → palette DARK immédiatement
-        await pilot.press("d")
-        assert pane._current_palette is PALETTE_DARK
-        # Retour → palette LIGHT
+        # Thème ink → palette INK
+        assert pane._current_palette is PALETTE_INK
+        # Toggle → palette LIGHT immédiatement
         await pilot.press("d")
         assert pane._current_palette is PALETTE_LIGHT
+        # Retour → palette INK
+        await pilot.press("d")
+        assert pane._current_palette is PALETTE_INK
 
 
 # ---------------------------------------------------------------------------
@@ -1030,9 +1030,9 @@ async def test_cockpit_v2_toggle_d_rerender_nouveaux_panneaux(tmp_path, monkeypa
     app = CockpitApp()
     async with app.run_test(size=(220, 60)) as pilot:
         await pilot.press("d")
-        assert app.theme == "casys-ink"
-        await pilot.press("d")
         assert app.theme == "casys-salmon"
+        await pilot.press("d")
+        assert app.theme == "casys-ink"
 
 
 # ---------------------------------------------------------------------------

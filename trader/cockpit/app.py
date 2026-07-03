@@ -44,6 +44,8 @@ Raccourcis :
 
 from __future__ import annotations
 
+import re
+from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -56,18 +58,19 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.theme import Theme
-from textual.widgets import Button, ContentSwitcher, Footer, Label, RichLog, Static
+from textual.widgets import Button, Checkbox, ContentSwitcher, Footer, Input, Label, RichLog, Static
 
 from trader.cockpit.supervisor import daemon_vital_state
 from trader.cockpit.home import AttentionLine, HomePane, SymbolChosen
 
 from trader.cockpit.events import (
     EventClass,
+    EventLine,
     format_event_line,
     read_new_lines,
 )
 from trader.cockpit import overview as _cockpit_overview
-from trader.ui.palette import PALETTE_DARK, PALETTE_LIGHT, Palette
+from trader.ui.palette import PALETTE_DARK, PALETTE_INK, PALETTE_LIGHT, Palette
 from trader.read_models.runtime_state import (
     _enrich_decisions_with_data_source,
     _safe_float,
@@ -115,22 +118,22 @@ _THEME_SALMON = Theme(
 _THEME_INK = Theme(
     name="casys-ink",
     dark=True,
-    primary="#0178D4",
-    secondary="#888888",
-    warning="#ffcc00",
-    error="#e05252",
-    success="#4caf50",
-    accent="#0178D4",
-    foreground="#e0e0e0",
-    background="#1a1a2e",
-    surface="#16213e",
-    panel="#0f3460",
+    primary="#83a598",
+    secondary="#928374",
+    warning="#d79921",
+    error="#fb4934",
+    success="#b8bb26",
+    accent="#8ec07c",
+    foreground="#ebdbb2",
+    background="#1d2021",
+    surface="#282828",
+    panel="#32302f",
 )
 
 # Mapping nom de thème → palette Rich
 _THEME_PALETTE: dict[str, Palette] = {
     "casys-salmon": PALETTE_LIGHT,
-    "casys-ink": PALETTE_DARK,
+    "casys-ink": PALETTE_INK,
 }
 
 OverviewPane = _cockpit_overview.OverviewPane
@@ -544,6 +547,9 @@ class LogsPane(Static):
     _last_file_status: str = "ok"
     _current_palette: Palette = PALETTE_LIGHT
     _backlog_loaded: bool = False
+    _class_filter: "set[EventClass] | None" = None
+    _regex_text: str | None = None
+    _regex: "re.Pattern[str] | None" = None
 
     DEFAULT_CSS = """
     LogsPane {
@@ -554,6 +560,10 @@ class LogsPane(Static):
         height: 1fr;
     }
     """
+
+    def __init__(self, **kwargs: object) -> None:
+        super().__init__(**kwargs)
+        self._buffer: deque[EventLine] = deque(maxlen=_MAX_EVENT_LINES)
 
     def compose(self) -> ComposeResult:
         yield Static(self.pane_title, id=f"{self.log_widget_id}-title")
@@ -579,11 +589,41 @@ class LogsPane(Static):
             events_path = _mod._EVENTS_FILE
         self.poll_events(events_path)
 
+    def _passes(self, line: EventLine) -> bool:
+        if line.markup_class == EventClass.CYCLE and not self._show_cycles:
+            return False
+        if self._class_filter is not None and line.markup_class not in self._class_filter:
+            return False
+        if self._regex is not None and not self._regex.search(line.text):
+            return False
+        return True
+
+    def _write_line(self, log: RichLog, line: EventLine) -> None:
+        style = _event_styles_for_palette(self._current_palette).get(line.markup_class, "")
+        log.write(Text(line.text, style=style))
+
+    def set_filters(self, classes: "set[EventClass] | None", regex_text: str | None) -> None:
+        """Applique les filtres et re-rend tout le buffer. Regex invalide → ignorée."""
+        self._class_filter = classes
+        self._regex_text = regex_text or None  # mémorisé pour pré-remplir les modals
+        if regex_text:
+            try:
+                self._regex = re.compile(regex_text)
+            except re.error:
+                self._regex = None
+        else:
+            self._regex = None
+        log: RichLog = self.query_one(f"#{self.log_widget_id}", RichLog)
+        log.clear()
+        for line in self._buffer:
+            if self._passes(line):
+                self._write_line(log, line)
+        if self._auto_scroll:
+            log.scroll_end(animate=False)
+
     def toggle_cycles(self) -> None:
         self._show_cycles = not self._show_cycles
-        status = "visibles" if self._show_cycles else "masqués"
-        log: RichLog = self.query_one(f"#{self.log_widget_id}", RichLog)
-        log.write(Text(f"[cycles {status}]", style="dim italic"))
+        self.set_filters(self._class_filter, self._regex_text)
 
     def toggle_scroll(self) -> None:
         self._auto_scroll = not self._auto_scroll
@@ -615,13 +655,11 @@ class LogsPane(Static):
         if not new_dicts:
             return
 
-        event_styles = _event_styles_for_palette(self._current_palette)
         for ev_dict in new_dicts:
             ev_line = format_event_line(ev_dict)
-            if ev_line.markup_class == EventClass.CYCLE and not self._show_cycles:
-                continue
-            style = event_styles.get(ev_line.markup_class, "")
-            log.write(Text(ev_line.text, style=style))
+            self._buffer.append(ev_line)
+            if self._passes(ev_line):
+                self._write_line(log, ev_line)
 
         if self._auto_scroll:
             log.scroll_end(animate=False)
@@ -798,6 +836,66 @@ class ConfirmKill(_ConfirmModal):
                 )
 
 
+class ClassFilterModal(ModalScreen["set[EventClass] | None"]):
+    """Toggles par classe d'événement (à la Ctrl+F de Gonzo)."""
+
+    BINDINGS = [Binding("escape", "cancel", "Annuler", show=False)]
+    DEFAULT_CSS = _confirm_modal_css("ClassFilterModal", border="$primary", width=44)
+
+    def __init__(self, active: "set[EventClass] | None", **kwargs: object) -> None:
+        super().__init__(**kwargs)
+        self._active = active
+
+    def compose(self) -> ComposeResult:
+        with Vertical():
+            yield Label("Classes d'événements affichées")
+            for event_class in EventClass:
+                yield Checkbox(
+                    event_class.name.lower(),
+                    value=self._active is None or event_class in self._active,
+                    id=f"class-{event_class.name}",
+                )
+            with Horizontal():
+                yield Button("Appliquer", id="class-filter-apply", variant="primary")
+                yield Button("Tout", id="class-filter-all", variant="default")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "class-filter-all":
+            self.dismiss(None)
+            return
+        selected = {
+            event_class
+            for event_class in EventClass
+            if self.query_one(f"#class-{event_class.name}", Checkbox).value
+        }
+        self.dismiss(selected if len(selected) < len(list(EventClass)) else None)
+
+    def action_cancel(self) -> None:
+        self.dismiss(self._active)
+
+
+class RegexModal(ModalScreen["str | None"]):
+    """Filtre regex sur le texte des lignes du flux."""
+
+    BINDINGS = [Binding("escape", "cancel", "Annuler", show=False)]
+    DEFAULT_CSS = _confirm_modal_css("RegexModal", border="$primary", width=60)
+
+    def __init__(self, current: str | None = None, **kwargs: object) -> None:
+        super().__init__(**kwargs)
+        self._current = current or ""
+
+    def compose(self) -> ComposeResult:
+        with Vertical():
+            yield Label("Filtre regex (vide = aucun)")
+            yield Input(value=self._current, placeholder="ex. 2303|SELL", id="regex-input")
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        self.dismiss(event.value or None)
+
+    def action_cancel(self) -> None:
+        self.dismiss(self._current or None)
+
+
 # ---------------------------------------------------------------------------
 # App principale
 # ---------------------------------------------------------------------------
@@ -878,6 +976,8 @@ class CockpitApp(App):
         Binding("4", "show_page('plans')", "Plans", show=False),
         Binding("5", "show_page('observability')", "Observabilité", show=False),
         Binding("6", "show_page('logs')", "Logs", show=False),
+        Binding("F", "filter_classes", "Filtre classes"),
+        Binding("slash", "filter_regex", "Filtre regex"),
     ]
 
     _last_state: dict | None = None
@@ -910,7 +1010,8 @@ class CockpitApp(App):
         # Thèmes custom
         self.register_theme(_THEME_SALMON)
         self.register_theme(_THEME_INK)
-        self.theme = "casys-salmon"
+        self.theme = "casys-ink"
+        self._propagate_palette()
         self._set_active_page("home")
 
         # Expose le chemin events sur self pour que LogsPane._load_initial_backlog
@@ -978,7 +1079,7 @@ class CockpitApp(App):
 
     def _current_palette(self) -> Palette:
         """Retourne la palette Rich correspondant au thème actif."""
-        return _THEME_PALETTE.get(self.theme, PALETTE_DARK)
+        return _THEME_PALETTE.get(self.theme, PALETTE_INK)
 
     def _propagate_palette(self) -> None:
         """Propage la palette courante à tous les panes et au LogsPane."""
@@ -1211,6 +1312,26 @@ class CockpitApp(App):
             )
 
         self.push_screen(ConfirmKill(kill_active=kill_active), _on_confirm)
+
+    def _visible_flux(self) -> LogsPane:
+        pane_id = "#logs-pane" if self._active_page_key == "logs" else "#home-flux"
+        return self.query_one(pane_id)  # type: ignore[return-value]
+
+    def action_filter_classes(self) -> None:
+        pane = self._visible_flux()
+
+        def _apply(classes: "set[EventClass] | None") -> None:
+            pane.set_filters(classes, pane._regex_text)
+
+        self.push_screen(ClassFilterModal(pane._class_filter), _apply)
+
+    def action_filter_regex(self) -> None:
+        pane = self._visible_flux()
+
+        def _apply(regex_text: str | None) -> None:
+            pane.set_filters(pane._class_filter, regex_text)
+
+        self.push_screen(RegexModal(pane._regex_text), _apply)
 
 
 # ---------------------------------------------------------------------------

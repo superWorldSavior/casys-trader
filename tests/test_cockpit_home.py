@@ -277,6 +277,21 @@ async def test_home_flux_recoit_les_events(tmp_path, monkeypatch):
         assert len(flux_log.lines) > 0  # RichLog stocke les lignes dans .lines (pas .line_count)
 
 
+def test_palette_ink_complete():
+    from trader.ui.palette import ALL_PALETTE_KEYS, PALETTE_INK
+
+    assert set(PALETTE_INK.keys()) == set(ALL_PALETTE_KEYS)
+
+
+async def test_theme_defaut_est_ink(tmp_path, monkeypatch):
+    from trader.cockpit import CockpitApp
+
+    _patch_state_paths(monkeypatch, tmp_path)
+    app = CockpitApp()
+    async with app.run_test(size=(200, 50)) as _:
+        assert app.theme == "casys-ink"
+
+
 def test_build_symbol_detail_sections():
     from trader.cockpit.home import build_symbol_detail
     from trader.ui.palette import PALETTE_LIGHT

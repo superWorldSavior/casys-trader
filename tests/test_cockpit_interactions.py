@@ -102,3 +102,54 @@ async def test_tab_focus_une_datatable(tmp_path, monkeypatch):
         await pilot.pause()
         await pilot.press("tab")
         assert isinstance(app.focused, DataTable)
+
+
+async def test_flux_filtre_regex_et_classes(tmp_path, monkeypatch):
+    import json
+
+    from textual.widgets import RichLog
+    from trader.cockpit.events import EventClass
+    from trader.cockpit import CockpitApp
+
+    _patch_state_paths(monkeypatch, tmp_path)
+    events = tmp_path / "events.jsonl"
+    lines = [
+        {"ts": "2026-07-03T01:00:00Z", "event": "decision_recorded", "symbol": "AAA.TW",
+         "action": "BUY", "executed": True},
+        {"ts": "2026-07-03T01:00:01Z", "event": "decision_recorded", "symbol": "BBB.TW",
+         "action": "HOLD"},
+        {"ts": "2026-07-03T01:00:02Z", "event": "cycle_completed", "decisions_done": 0},
+    ]
+    events.write_text("\n".join(json.dumps(l) for l in lines) + "\n", encoding="utf-8")
+
+    app = CockpitApp()
+    async with app.run_test(size=(200, 50)) as pilot:
+        # Navigate to logs page so the RichLog gets its layout (→ _size_known=True)
+        # and deferred backlog writes are flushed into RichLog.lines.
+        await pilot.press("6")
+        await pilot.pause()
+        pane = app.query_one("#logs-pane")
+        pane.poll_events(events)
+        base_count = len(pane.query_one(RichLog).lines)
+
+        pane.set_filters(None, "AAA")
+        assert len(pane.query_one(RichLog).lines) < base_count
+
+        pane.set_filters({EventClass.DECISION_EXECUTED}, None)
+        rendered_count = len(pane.query_one(RichLog).lines)
+        assert rendered_count >= 1  # le BUY exécuté passe
+
+        pane.set_filters(None, None)  # reset
+        assert len(pane.query_one(RichLog).lines) >= base_count - 1
+
+
+async def test_binding_slash_ouvre_regex_modal(tmp_path, monkeypatch):
+    from trader.cockpit.app import RegexModal
+    from trader.cockpit import CockpitApp
+
+    _patch_state_paths(monkeypatch, tmp_path)
+    app = CockpitApp()
+    async with app.run_test(size=(200, 50)) as pilot:
+        await pilot.pause()
+        await pilot.press("slash")
+        assert isinstance(app.screen, RegexModal)
