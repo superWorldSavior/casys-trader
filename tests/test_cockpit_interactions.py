@@ -1,0 +1,53 @@
+"""Interactions de la home : DataTables, focus, modal symbole, filtres."""
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+
+def _patch_state_paths(monkeypatch, tmp_path: Path) -> None:
+    """Même mécanique que tests/test_cockpit_smoke.py : monkeypatch des constantes."""
+    import trader.cockpit.app as cockpit_module
+
+    (tmp_path / "current_report.json").write_text(json.dumps({
+        "ts": "2026-07-03T10:00:00+00:00",
+        "dry_run": True,
+        "portfolio": {"cash": 100000.0, "equity": 100000.0, "holdings": [
+            {"symbol": "AAA.TW", "quantity": 10, "avg_price": 90.0, "last_price": 100.0},
+        ]},
+        "decisions": [{"symbol": "AAA.TW", "action": "BUY", "executed": True,
+                       "confidence": 0.7, "ts": "2026-07-03T09:59:00Z"}],
+    }), encoding="utf-8")
+    monkeypatch.setattr(cockpit_module, "_STATE_DIR", tmp_path)
+    monkeypatch.setattr(cockpit_module, "_EVENTS_FILE", tmp_path / "events.jsonl")
+    monkeypatch.setattr(cockpit_module, "_KILL_FILE", tmp_path / "KILL")
+    import trader.read_models.runtime_state as rs
+    monkeypatch.setattr(rs, "_STATE_DIR", tmp_path)
+
+
+async def test_positions_table_vide_affiche_placeholder(tmp_path, monkeypatch):
+    from trader.cockpit.home import PositionsTable
+    from trader.cockpit import CockpitApp
+    from trader.ui.palette import PALETTE_LIGHT
+
+    _patch_state_paths(monkeypatch, tmp_path)
+    app = CockpitApp()
+    async with app.run_test(size=(200, 50)) as pilot:
+        await pilot.pause()
+        table = app.query_one(PositionsTable)
+        table.refresh_rows({}, palette=PALETTE_LIGHT)
+        assert table.row_count == 1  # ligne placeholder "—"
+
+
+async def test_decisions_table_montee_et_peuplee(tmp_path, monkeypatch):
+    from trader.cockpit.home import DecisionsTable
+    from trader.cockpit import CockpitApp
+
+    _patch_state_paths(monkeypatch, tmp_path)
+    app = CockpitApp()
+    async with app.run_test(size=(200, 50)) as pilot:
+        await pilot.pause()
+        app._schedule_refresh_state()
+        await pilot.pause(1.0)
+        table = app.query_one(DecisionsTable)
+        assert table.row_count >= 1

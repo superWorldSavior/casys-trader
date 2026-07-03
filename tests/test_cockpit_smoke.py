@@ -533,9 +533,9 @@ async def test_cockpit_home_layout_respire_sur_tout_l_ecran(tmp_path, monkeypatc
     app = CockpitApp()
     async with app.run_test(size=(220, 60)) as pilot:
         await pilot.pause()
-        portfolio = app.query_one("#home-portfolio", Static)
+        portfolio = app.query_one("#home-portfolio")  # Vertical container (Task 10)
         activity = app.query_one("#home-activity", Static)
-        plans = app.query_one("#home-plans", Static)
+        plans = app.query_one("#home-plans")  # PlansTable (Task 10)
         flux = app.query_one("#home-flux", Static)
 
         assert portfolio.size.width > activity.size.width   # 2fr > 1fr

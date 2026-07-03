@@ -12,8 +12,9 @@ from rich.console import Group, RenderableType
 from rich.table import Table
 from rich.text import Text
 from textual.app import ComposeResult
-from textual.containers import Horizontal
-from textual.widgets import Static
+from textual.containers import Horizontal, Vertical
+from textual.message import Message
+from textual.widgets import DataTable, Static
 
 from trader.cockpit.aggregates import (  # noqa: F401
     ACTIVITY_STATES,
@@ -253,13 +254,12 @@ def build_equity_chart(
         return Text(sparkline(series[-width:]), style=f"bold {palette['equity_line']}")
 
 
-def build_portfolio_tile(state: dict, *, palette: Palette) -> RenderableType:
-    """Métriques portefeuille + courbe + top 5 positions AVEC risque@stop fusionné."""
+def build_portfolio_summary(state: dict, *, palette: Palette) -> RenderableType:
+    """Métriques portefeuille + courbe équité + mini-allocation/contrib. Sans table positions."""
     state = state if isinstance(state, dict) else {}
     portfolio = state.get("portfolio") if isinstance(state.get("portfolio"), dict) else {}
     kpis = state.get("kpis") if isinstance(state.get("kpis"), dict) else {}
     attribution = state.get("attribution") if isinstance(state.get("attribution"), dict) else {}
-    trade_plans = _safe_list_of_dicts(state.get("trade_plans"))
     holdings = sorted(
         _safe_list_of_dicts(portfolio.get("holdings")),
         key=lambda item: max(abs(_holding_pnl(item)), _holding_notional(item)),
@@ -277,6 +277,7 @@ def build_portfolio_tile(state: dict, *, palette: Palette) -> RenderableType:
     realized = _safe_float(attribution.get("realized_pnl"), default=None)
     fees = _safe_float(attribution.get("total_commissions"), default=None)
 
+    # 1. Metrics header (2 rows)
     header = Table.grid(expand=True)
     for _ in range(4):
         header.add_column(ratio=1)
@@ -295,72 +296,47 @@ def build_portfolio_tile(state: dict, *, palette: Palette) -> RenderableType:
         ),
     )
 
+    # 2. Equity chart — pleine largeur, ligne dédiée
+    chart = build_equity_chart(_extract_equity_curve(state), palette=palette, width=64, height=8)
+
+    # 3. Allocation + Contrib côte à côte — cellules single-line (no_wrap + overflow="crop")
     total_notional = sum(_holding_notional(h) for h in holdings)
     max_abs_pnl = max((abs(_holding_pnl(h)) for h in holdings[:4]), default=0.0)
-    side_tables = Table.grid(expand=True)
-    side_tables.add_column(ratio=3)
-    side_tables.add_column(ratio=2)
+
     alloc = Table(title="Allocation", show_header=False, expand=True, box=None, pad_edge=False)
-    alloc.add_column("sym", no_wrap=True)
-    alloc.add_column("bar", overflow="fold")
+    alloc.add_column("sym", no_wrap=True, overflow="crop")
+    alloc.add_column("bar", no_wrap=True, overflow="crop")
     for holding in holdings[:5]:
         notional = _holding_notional(holding)
         pct = notional / total_notional * 100.0 if total_notional else 0.0
         alloc.add_row(
             _holding_symbol(holding),
             Text.assemble(
-                styled_bar(notional, total_notional, width=12, style=palette["status_accent"]),
+                styled_bar(notional, total_notional, width=8, style=palette["status_accent"]),
                 (f" {pct:>4.1f}%", palette["dim"]),
             ),
         )
+
     contrib = Table(title="Contrib PnL", show_header=False, expand=True, box=None, pad_edge=False)
-    contrib.add_column("sym", no_wrap=True)
-    contrib.add_column("bar", overflow="fold")
+    contrib.add_column("sym", no_wrap=True, overflow="crop")
+    contrib.add_column("bar", no_wrap=True, overflow="crop")
     for holding in sorted(holdings, key=lambda h: abs(_holding_pnl(h)), reverse=True)[:4]:
         value = _holding_pnl(holding)
         style = palette["pnl_positive"] if value >= 0 else palette["pnl_negative"]
         contrib.add_row(
             _holding_symbol(holding),
             Text.assemble(
-                styled_bar(value, max_abs_pnl, width=10, style=style, signed=True),
+                styled_bar(value, max_abs_pnl, width=8, style=style, signed=True),
                 (f" {_fmt_signed_compact_float(value, decimals=0)}", style),
             ),
         )
-    side_tables.add_row(alloc, contrib)
 
-    charts = Table.grid(expand=True)
-    charts.add_column(ratio=3)
-    charts.add_column(ratio=2)
-    charts.add_row(build_equity_chart(_extract_equity_curve(state), palette=palette), side_tables)
+    side_by_side = Table.grid(expand=True)
+    side_by_side.add_column(ratio=1)
+    side_by_side.add_column(ratio=1)
+    side_by_side.add_row(alloc, contrib)
 
-    positions = Table(show_header=True, expand=True, box=None, pad_edge=False)
-    for column, justify in (
-        ("Sym", "left"), ("Dev.", "left"), ("Qté", "right"), ("Dernier", "right"),
-        ("Expo USD", "right"), ("PnL USD", "right"), ("Stop", "right"), ("Perte@stop", "right"),
-    ):
-        positions.add_column(column, justify=justify, no_wrap=True)
-    for holding in holdings[:5]:
-        symbol = _holding_symbol(holding)
-        pnl_value = _holding_pnl(holding)
-        pnl_style = palette["pnl_positive"] if pnl_value >= 0 else palette["pnl_negative"]
-        stop_label, dist_label, loss_label, state_label = _stop_risk_for_holding(
-            holding, _plan_for_symbol(trade_plans, symbol)
-        )
-        loss_style = palette["pnl_negative"] if state_label == "risque" else palette["dim"]
-        positions.add_row(
-            Text(symbol, style="bold"),
-            _holding_currency(holding),
-            _fmt_compact_float(holding.get("quantity"), decimals=2),
-            _fmt_compact_float(_holding_native_price(holding), decimals=2),
-            _fmt_compact_float(_holding_notional(holding), decimals=0),
-            Text(_fmt_signed_compact_float(pnl_value, decimals=0), style=pnl_style),
-            f"{stop_label} {dist_label}",
-            Text(loss_label, style=loss_style),
-        )
-    if not holdings:
-        positions.add_row("—", "—", "—", "—", "—", "—", "—", "—")
-
-    return Group(header, charts, positions)
+    return Group(header, chart, side_by_side)
 
 
 _SERIES_STYLE_KEYS: dict[str, str] = {
@@ -501,6 +477,157 @@ def build_decisions_tile(
     return table
 
 
+class SymbolChosen(Message):
+    """Une ligne portant un symbole a été validée (Enter)."""
+
+    def __init__(self, symbol: str) -> None:
+        self.symbol = symbol
+        super().__init__()
+
+
+class _SymbolTable(DataTable):
+    """Base : cursor row + Enter → SymbolChosen(symbol extrait de la row key)."""
+
+    def on_mount(self) -> None:
+        self.cursor_type = "row"
+
+    def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
+        raw = str(event.row_key.value or "")
+        symbol = raw.split("|", 1)[0]
+        if symbol and symbol != "—":
+            self.post_message(SymbolChosen(symbol))
+
+
+class DecisionsTable(_SymbolTable):
+    def on_mount(self) -> None:
+        super().on_mount()
+        self.add_columns("UTC", "Sym", "Act", "État", "Conf", "Suite")
+
+    def refresh_rows(
+        self, decisions: list[dict], recent_decisions: list[dict], *, palette: Palette
+    ) -> None:
+        from trader.cockpit.aggregates import decision_status
+
+        self.clear()
+        rows = select_decision_rows(decisions, recent_decisions, limit=8)
+        for index, row in enumerate(rows):
+            symbol = str(row.get("symbol") or "—")
+            action = str(row.get("action") or "—").upper()
+            status = decision_status(row)
+            confidence = _safe_float(row.get("confidence"), default=None)
+            action_style = (palette["action_buy"] if action == "BUY"
+                            else palette["action_sell"] if action == "SELL" else palette["dim"])
+            status_style = {
+                "exec": palette["status_nominal"], "risk": palette["pnl_negative"],
+                "stale": palette["kpi_vol_warn"], "quiet": palette["dim"],
+            }.get(status, palette["status_accent"])
+            self.add_row(
+                _decision_time_label(row),
+                Text(symbol, style="bold"),
+                Text(action, style=action_style),
+                Text(status, style=status_style),
+                f"{confidence:.2f}" if confidence is not None else "—",
+                _decision_effect_label(row),
+                key=f"{symbol}|{row.get('cycle_ts') or row.get('ts') or ''}|{index}",
+            )
+        if not rows:
+            self.add_row("—", "—", "—", "—", "—", "—", key="—")
+
+
+class PlansTable(_SymbolTable):
+    def on_mount(self) -> None:
+        super().on_mount()
+        self.add_columns("Type", "Sym", "Détail", "Déclencheur / Risque", "Exp.")
+
+    def refresh_rows(self, state: dict, *, palette: Palette, now: datetime | None = None) -> None:
+        now = now or datetime.now(UTC)
+        self.clear()
+        armed = _safe_list_of_dicts(state.get("armed_plans"))
+        trade_plans = _safe_list_of_dicts(state.get("trade_plans"))
+        watches = [w for w in _safe_list_of_dicts(state.get("indicator_watches"))
+                   if not _is_armed_plan(w)]
+        index = 0
+        for watch in armed:
+            symbol = str(watch.get("symbol") or "—")
+            self.add_row(
+                Text("armé", style=f"bold {palette['status_accent']}"),
+                Text(symbol, style="bold"),
+                f"{_armed_order_label(watch)} {_armed_stop_label(watch)}",
+                _condition_summary(watch.get("conditions"), watch.get("logic"), max_items=2),
+                _relative_expiry(watch.get("expires_at"), now=now),
+                key=f"{symbol}|armed|{index}",
+            )
+            index += 1
+        exit_rows = []
+        for plan in trade_plans:
+            symbol = str(plan.get("symbol") or "—")
+            price = _price_for_symbol(state, symbol)
+            stale = _symbol_is_stale(state, symbol)
+            exit_rows.append((0 if stale else 1, symbol, plan, price, stale))
+        for _, symbol, plan, price, stale in sorted(exit_rows, key=lambda r: (r[0], r[1]))[:8]:
+            self.add_row(
+                Text("sortie", style=palette["kpi_default"]),
+                Text(symbol, style="bold"),
+                f"{_plan_qty_label(plan)} · {_plan_state_label(plan)}",
+                Text(f"{_exit_plan_risk_label(plan, price, stale)} · {_next_tp_label(plan, price)}",
+                     style=palette["kpi_vol_warn"] if stale else palette["dim"]),
+                "—",
+                key=f"{symbol}|exit|{index}",
+            )
+            index += 1
+        for watch in sorted(watches, key=lambda w: str(w.get("expires_at") or ""))[:5]:
+            symbol = str(watch.get("symbol") or "—")
+            self.add_row(
+                Text("veille", style=palette["dim"]),
+                Text(symbol, style="bold"),
+                "WAKE",
+                _condition_summary(watch.get("conditions"), watch.get("logic"), max_items=2),
+                _relative_expiry(watch.get("expires_at"), now=now),
+                key=f"{symbol}|watch|{index}",
+            )
+            index += 1
+        if not (armed or exit_rows or watches):
+            self.add_row("—", "—", "aucun plan", "", "", key="—")
+
+
+class PositionsTable(_SymbolTable):
+    def on_mount(self) -> None:
+        super().on_mount()
+        self.add_columns("Sym", "Dev.", "Qté", "Dernier", "Expo USD", "PnL USD",
+                         "Stop", "Perte@stop")
+
+    def refresh_rows(self, state: dict, *, palette: Palette) -> None:
+        self.clear()
+        portfolio = state.get("portfolio") if isinstance(state.get("portfolio"), dict) else {}
+        trade_plans = _safe_list_of_dicts(state.get("trade_plans"))
+        holdings = sorted(
+            _safe_list_of_dicts(portfolio.get("holdings")),
+            key=lambda item: max(abs(_holding_pnl(item)), _holding_notional(item)),
+            reverse=True,
+        )
+        for index, holding in enumerate(holdings[:5]):
+            symbol = _holding_symbol(holding)
+            pnl_value = _holding_pnl(holding)
+            pnl_style = palette["pnl_positive"] if pnl_value >= 0 else palette["pnl_negative"]
+            stop_label, dist_label, loss_label, state_label = _stop_risk_for_holding(
+                holding, _plan_for_symbol(trade_plans, symbol)
+            )
+            self.add_row(
+                Text(symbol, style="bold"),
+                _holding_currency(holding),
+                _fmt_compact_float(holding.get("quantity"), decimals=2),
+                _fmt_compact_float(_holding_native_price(holding), decimals=2),
+                _fmt_compact_float(_holding_notional(holding), decimals=0),
+                Text(_fmt_signed_compact_float(pnl_value, decimals=0), style=pnl_style),
+                f"{stop_label} {dist_label}",
+                Text(loss_label, style=palette["pnl_negative"]
+                     if state_label == "risque" else palette["dim"]),
+                key=f"{symbol}|pos|{index}",
+            )
+        if not holdings:
+            self.add_row("—", "—", "—", "—", "—", "—", "—", "—", key="—")
+
+
 class HomePane(Static):
     """Home dense 1 écran — grammaire Gonzo (spec §4)."""
 
@@ -515,9 +642,11 @@ class HomePane(Static):
     #home-top-row { height: 3fr; width: 100%; layout: horizontal; }
     #home-bottom-row { height: 2fr; width: 100%; layout: horizontal; }
     #home-portfolio { width: 2fr; height: 100%; border: solid $primary; padding: 0 1; }
+    #home-portfolio Static { height: auto; }
+    #home-positions { height: 1fr; }
     #home-activity { width: 1fr; height: 100%; border: solid $primary; padding: 0 1; }
-    #home-decisions { width: 2fr; height: 100%; border: solid $primary; padding: 0 1; }
-    #home-plans { width: 2fr; height: 100%; border: solid $primary; padding: 0 1; }
+    #home-decisions { width: 2fr; height: 100%; border: solid $primary; }
+    #home-plans { width: 2fr; height: 100%; border: solid $primary; }
     #home-flux { width: 3fr; height: 100%; }
     """
 
@@ -529,27 +658,33 @@ class HomePane(Static):
         from trader.cockpit.app import FluxPane
 
         with Horizontal(id="home-top-row"):
-            yield Static(id="home-portfolio")
+            with Vertical(id="home-portfolio"):
+                yield Static(id="home-portfolio-summary")
+                yield PositionsTable(id="home-positions")
             yield Static(id="home-activity")
-            yield Static(id="home-decisions")
+            yield DecisionsTable(id="home-decisions")
         with Horizontal(id="home-bottom-row"):
-            yield Static(id="home-plans")
+            yield PlansTable(id="home-plans")
             yield FluxPane(id="home-flux")
 
     def update_state(self, state: dict, kill_active: bool) -> None:  # kill_active : réservé (modal/kill overlay à venir) — compat interface _apply_state
+        state = state if isinstance(state, dict) else {}
         palette = self._current_palette
         now = datetime.now(UTC)
         recent = state.get("recent_decisions") if isinstance(state.get("recent_decisions"), list) else []
         decisions = _safe_list_of_dicts(state.get("decisions"))
-        self.query_one("#home-portfolio", Static).update(
-            build_portfolio_tile(state, palette=palette)
+        self.query_one("#home-portfolio-summary", Static).update(
+            build_portfolio_summary(state, palette=palette)
         )
         self.query_one("#home-activity", Static).update(
             build_activity_tile(activity_buckets(recent, now), palette=palette)
         )
-        self.query_one("#home-decisions", Static).update(
-            build_decisions_tile(decisions, recent, palette=palette)
+        self.query_one("#home-decisions", DecisionsTable).refresh_rows(
+            decisions, recent, palette=palette
         )
-        self.query_one("#home-plans", Static).update(
-            build_plans_tile(state, palette=palette, now=now)
+        self.query_one("#home-plans", PlansTable).refresh_rows(
+            state, palette=palette, now=now
+        )
+        self.query_one("#home-positions", PositionsTable).refresh_rows(
+            state, palette=palette
         )

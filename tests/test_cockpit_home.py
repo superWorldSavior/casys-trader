@@ -130,8 +130,9 @@ def test_status_line_sans_equite_pas_de_pnl_fantome():
     assert "-100,000" not in line.plain
 
 
-def test_build_portfolio_tile_risque_fusionne():
-    from trader.cockpit.home import build_portfolio_tile
+def test_build_portfolio_summary_sans_positions():
+    """build_portfolio_summary ne contient PAS la table positions (déplacée vers PositionsTable)."""
+    from trader.cockpit.home import build_portfolio_summary
 
     state = {
         "portfolio": {"cash": 50000.0, "equity": 100000.0, "holdings": [
@@ -145,10 +146,9 @@ def test_build_portfolio_tile_risque_fusionne():
         "kpis": {},
         "starting_cash": 100000.0,
     }
-    rendered = _console_render(build_portfolio_tile(state, palette=PALETTE_LIGHT))
-    assert "AAA" in rendered
-    assert "-50" in rendered  # perte@stop (95-100)*10 — colonne fusionnée
-    assert "Perte@stop" in rendered
+    rendered = _console_render(build_portfolio_summary(state, palette=PALETTE_LIGHT))
+    assert "AAA" in rendered            # apparaît dans allocation/contrib
+    assert "Perte@stop" not in rendered  # colonne déplacée vers PositionsTable
     assert "Risque sorties" not in rendered  # plus de table séparée clippée
 
 
@@ -233,7 +233,7 @@ def test_home_tuiles_sans_champs_runtime():
     plus jamais dans les tuiles."""
     from datetime import timedelta
 
-    from trader.cockpit.home import build_activity_tile, build_plans_tile, build_portfolio_tile
+    from trader.cockpit.home import build_activity_tile, build_plans_tile, build_portfolio_summary
     from trader.cockpit.aggregates import activity_buckets
 
     state = {
@@ -248,7 +248,7 @@ def test_home_tuiles_sans_champs_runtime():
     rendered = "".join(
         _console_render(build)
         for build in (
-            build_portfolio_tile(state, palette=PALETTE_LIGHT),
+            build_portfolio_summary(state, palette=PALETTE_LIGHT),
             build_activity_tile(activity_buckets([], NOW), palette=PALETTE_LIGHT),
             build_plans_tile(state, palette=PALETTE_LIGHT, now=NOW),
         )
