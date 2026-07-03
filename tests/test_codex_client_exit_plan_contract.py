@@ -270,6 +270,39 @@ def test_batch_parse_calls_vides_signifie_hold_explicite() -> None:
     assert parsed.domain_tools == {"tool_rounds": 0, "tool_calls": []}
 
 
+def test_batch_parse_close_avec_side_produit_action_sell() -> None:
+    """F2 : REDUCE/CLOSE/REVERSE exigent une side explicite. Avec side, le contrat
+    compile vers l'action broker (SELL) tout en gardant l'intent CLOSE."""
+    raw = """
+    {"decisions": [
+      {"symbol": "SPY", "confidence": 0.7, "rationale": "these invalidee",
+       "decision_reason_code": "EXIT_SIGNAL",
+       "calls": [{"tool": "propose_order", "args": {"intent": "CLOSE", "side": "SELL", "qty": 10}}]}
+    ]}
+    """
+    parsed = codex_client.parse_batch(raw, ["SPY"], allow_context_request=False)["SPY"]
+
+    assert parsed.action == "SELL"
+    assert parsed.intent == "CLOSE"
+    assert parsed.quantity == 10.0
+
+
+def test_batch_parse_close_sans_side_tombe_en_hold_trace() -> None:
+    """F2 : sans side, CLOSE ne dérive aucune action broker → HOLD tracé (jamais
+    d'exécution silencieuse). La raison porte la cause pour l'audit."""
+    raw = """
+    {"decisions": [
+      {"symbol": "SPY", "confidence": 0.7, "rationale": "these invalidee",
+       "decision_reason_code": "EXIT_SIGNAL",
+       "calls": [{"tool": "propose_order", "args": {"intent": "CLOSE", "qty": 10}}]}
+    ]}
+    """
+    parsed = codex_client.parse_batch(raw, ["SPY"], allow_context_request=False)["SPY"]
+
+    assert parsed.action == "HOLD"
+    assert "order_side_required" in parsed.rationale
+
+
 def test_batch_parse_rejette_melange_legacy_et_calls() -> None:
     raw = """
     {"decisions": [
@@ -316,6 +349,16 @@ def test_symbol_calls_contract_laisse_l_agent_pull_au_premier_tour() -> None:
     assert 'Réponds UNIQUEMENT par {"decisions"' not in prompt
     assert '"tool_calls"' in prompt  # le pull reste offert
     assert "premier tour" in prompt.lower()  # clause explicite du choix
+
+
+def test_symbol_calls_contract_exige_side_pour_reduce_close_reverse() -> None:
+    """F2 : sans `side`, seuls OPEN_LONG/OPEN_SHORT dérivent une action broker ;
+    REDUCE/CLOSE/REVERSE tombent sinon en HOLD. Le prompt DOIT donc dire clairement
+    que ces intents exigent side:BUY|SELL, pas le présenter comme optionnel partout."""
+    prompt = _symbol_calls_prompt_from_decide_batch()
+
+    assert "REDUCE/CLOSE/REVERSE" in prompt
+    assert "side:BUY|SELL" in prompt
 
 
 def test_symbol_calls_contract_impose_decisions_au_tour_final() -> None:
