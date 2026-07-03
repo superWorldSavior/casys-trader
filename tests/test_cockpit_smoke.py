@@ -533,17 +533,14 @@ async def test_cockpit_home_layout_respire_sur_tout_l_ecran(tmp_path, monkeypatc
     app = CockpitApp()
     async with app.run_test(size=(220, 60)) as pilot:
         await pilot.pause()
-        portfolio = app.query_one("#overview-portfolio-tile", Static)
-        decisions = app.query_one("#overview-decisions-tile", Static)
-        plans = app.query_one("#overview-plans-tile", Static)
-        observability = app.query_one("#overview-observability-tile", Static)
-        logs = app.query_one("#overview-logs-tile", Static)
+        portfolio = app.query_one("#home-portfolio", Static)
+        activity = app.query_one("#home-activity", Static)
+        plans = app.query_one("#home-plans", Static)
+        flux = app.query_one("#home-flux", Static)
 
-        assert portfolio.size.width > decisions.size.width
-        assert portfolio.size.height >= decisions.size.height
+        assert portfolio.size.width > activity.size.width   # 2fr > 1fr
         assert plans.size.height > 5
-        assert observability.size.width > 60
-        assert logs.size.width > 60
+        assert flux.size.width > 60
 
 
 def test_cockpit_home_affiche_des_tuiles_analytiques() -> None:

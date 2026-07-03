@@ -60,7 +60,7 @@ from textual.theme import Theme
 from textual.widgets import Button, ContentSwitcher, Footer, Label, RichLog, Static
 
 from trader.cockpit.supervisor import daemon_vital_state
-from trader.cockpit.home import AttentionLine
+from trader.cockpit.home import AttentionLine, HomePane
 
 from trader.cockpit.events import (
     EventClass,
@@ -537,6 +537,9 @@ class LogsPane(Static):
     visibilité (l), backlog initial différé, poll périodique.
     """
 
+    log_widget_id: str = "events-log"
+    pane_title: str = "[bold]Logs live[/bold]  [dim]c:cycles  f:scroll  l:toggle pane[/dim]"
+
     _offset: int = 0
     _show_cycles: bool = True
     _auto_scroll: bool = True
@@ -555,12 +558,9 @@ class LogsPane(Static):
     """
 
     def compose(self) -> ComposeResult:
-        yield Static(
-            "[bold]Logs live[/bold]  [dim]c:cycles  f:scroll  l:toggle pane[/dim]",
-            id="logs-title",
-        )
+        yield Static(self.pane_title, id=f"{self.log_widget_id}-title")
         yield RichLog(
-            id="events-log",
+            id=self.log_widget_id,
             highlight=False,
             markup=False,
             max_lines=_MAX_EVENT_LINES,
@@ -584,18 +584,18 @@ class LogsPane(Static):
     def toggle_cycles(self) -> None:
         self._show_cycles = not self._show_cycles
         status = "visibles" if self._show_cycles else "masqués"
-        log: RichLog = self.query_one("#events-log", RichLog)
+        log: RichLog = self.query_one(f"#{self.log_widget_id}", RichLog)
         log.write(Text(f"[cycles {status}]", style="dim italic"))
 
     def toggle_scroll(self) -> None:
         self._auto_scroll = not self._auto_scroll
-        log: RichLog = self.query_one("#events-log", RichLog)
+        log: RichLog = self.query_one(f"#{self.log_widget_id}", RichLog)
         status = "repris" if self._auto_scroll else "pausé"
         log.write(Text(f"[scroll {status}]", style="dim italic"))
 
     def poll_events(self, events_path: Path) -> None:
         """Lit les nouvelles lignes et les ajoute au RichLog."""
-        log: RichLog = self.query_one("#events-log", RichLog)
+        log: RichLog = self.query_one(f"#{self.log_widget_id}", RichLog)
 
         if not events_path.exists():
             if self._last_file_status != "absent":
@@ -627,6 +627,13 @@ class LogsPane(Static):
 
         if self._auto_scroll:
             log.scroll_end(animate=False)
+
+
+class FluxPane(LogsPane):
+    """Tuile flux de la home — même moteur que la page Logs, ids distincts."""
+
+    log_widget_id = "flux-log"
+    pane_title = "[bold]Flux live[/bold]  [dim]f:scroll  F:classes  /:regex[/dim]"
 
 
 # Alias de rétrocompatibilité — anciens tests qui importent EventsPane
@@ -891,7 +898,7 @@ class CockpitApp(App):
         yield CockpitNav(id="cockpit-nav")
         with Vertical(id="workspace"):
             with ContentSwitcher(id="page-switcher", initial="overview-page"):
-                yield OverviewPane(id="overview-page", classes="cockpit-page")
+                yield HomePane(id="overview-page", classes="cockpit-page")
                 with Horizontal(id="portfolio-page", classes="cockpit-page"):
                     yield PositionsPlansPane(id="positions-plans-pane")
                     yield EquityTradesPane(id="equity-trades-pane")
@@ -978,7 +985,7 @@ class CockpitApp(App):
         """Propage la palette courante à tous les panes et au LogsPane."""
         palette = self._current_palette()
         pane_map = [
-            ("#overview-page", OverviewPane),
+            ("#overview-page", HomePane),
             ("#positions-plans-pane", PositionsPlansPane),
             ("#armed-plans-pane", ArmedPlansPane),
             ("#decisions-pane", DecisionsPane),
@@ -999,6 +1006,11 @@ class CockpitApp(App):
         try:
             logs_pane: LogsPane = self.query_one("#logs-pane", LogsPane)
             logs_pane._current_palette = palette
+        except Exception:
+            pass
+        try:
+            flux_pane: FluxPane = self.query_one("#home-flux", FluxPane)
+            flux_pane._current_palette = palette
         except Exception:
             pass
 
@@ -1029,9 +1041,9 @@ class CockpitApp(App):
             attention: AttentionLine = self.query_one("#attention-line", AttentionLine)
             attention.update_state(state, kill_active, palette=palette)
 
-            overview: OverviewPane = self.query_one("#overview-page", OverviewPane)
-            overview._current_palette = palette
-            overview.update_state(state, kill_active)
+            home: HomePane = self.query_one("#overview-page", HomePane)
+            home._current_palette = palette
+            home.update_state(state, kill_active)
 
             positions_plans: PositionsPlansPane = self.query_one(
                 "#positions-plans-pane", PositionsPlansPane
@@ -1067,18 +1079,24 @@ class CockpitApp(App):
             logs_pane.poll_events(_EVENTS_FILE)
         except Exception:
             pass
+        try:
+            self.query_one("#home-flux").poll_events(_EVENTS_FILE)
+        except Exception:
+            pass
 
     def action_toggle_cycles(self) -> None:
-        try:
-            self.query_one("#logs-pane", LogsPane).toggle_cycles()
-        except Exception:
-            pass
+        for pane_id, cls in [("#logs-pane", LogsPane), ("#home-flux", FluxPane)]:
+            try:
+                self.query_one(pane_id, cls).toggle_cycles()
+            except Exception:
+                pass
 
     def action_toggle_scroll(self) -> None:
-        try:
-            self.query_one("#logs-pane", LogsPane).toggle_scroll()
-        except Exception:
-            pass
+        for pane_id, cls in [("#logs-pane", LogsPane), ("#home-flux", FluxPane)]:
+            try:
+                self.query_one(pane_id, cls).toggle_scroll()
+            except Exception:
+                pass
 
     def action_toggle_logs(self) -> None:
         """Bascule entre la page Logs et la dernière page métier."""

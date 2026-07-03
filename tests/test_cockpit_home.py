@@ -110,6 +110,26 @@ def test_build_activity_tile_series_et_compteurs():
     assert "n=36" in rendered  # hold
 
 
+def test_build_activity_tile_serie_vide_en_pointilles():
+    """Série à zéro → pointillés dim, pas une fausse barre pleine."""
+    from trader.cockpit.home import build_activity_tile
+
+    buckets = {state: [0] * 12 for state in
+               ("exec", "veille", "plan", "risk", "stale", "hold")}
+    rendered = _console_render(build_activity_tile(buckets, palette=PALETTE_LIGHT))
+    assert "············" in rendered
+    assert "▄" not in rendered
+
+
+def test_status_line_sans_equite_pas_de_pnl_fantome():
+    from trader.cockpit.home import build_status_line
+
+    state = {**STATE, "portfolio": {"cash": 100000.0, "equity": 0.0, "holdings": []}}
+    line = build_status_line(state, kill_active=False, palette=PALETTE_LIGHT,
+                             width=300, now=NOW, vital=FakeVital())
+    assert "-100,000" not in line.plain
+
+
 def test_build_portfolio_tile_risque_fusionne():
     from trader.cockpit.home import build_portfolio_tile
 
@@ -190,3 +210,68 @@ async def test_app_compose_attention_line(tmp_path, monkeypatch):
     app = CockpitApp()
     async with app.run_test(size=(200, 50)) as _:
         assert app.query_one("#attention-line", AttentionLine) is not None
+
+
+async def test_home_pane_remplace_overview(tmp_path, monkeypatch):
+    from trader.cockpit.app import FluxPane
+    from trader.cockpit.home import HomePane
+    from trader.cockpit import CockpitApp
+
+    _patch_state_paths(monkeypatch, tmp_path)
+    app = CockpitApp()
+    async with app.run_test(size=(200, 50)) as _:
+        home = app.query_one("#overview-page", HomePane)
+        assert home is not None
+        assert app.query_one("#home-flux", FluxPane) is not None
+        # les tuiles existent
+        for tile_id in ("#home-portfolio", "#home-activity", "#home-decisions", "#home-plans"):
+            assert home.query_one(tile_id) is not None
+
+
+def test_home_tuiles_sans_champs_runtime():
+    """Anti-redondance (spec §8.6) : phase/LLM/cycle/source vivent dans le statut,
+    plus jamais dans les tuiles."""
+    from datetime import timedelta
+
+    from trader.cockpit.home import build_activity_tile, build_plans_tile, build_portfolio_tile
+    from trader.cockpit.aggregates import activity_buckets
+
+    state = {
+        "portfolio": {"cash": 1.0, "equity": 1.0, "holdings": []},
+        "daemon_status": {"phase": "analyzing_batch", "model_calls_used": 9,
+                          "max_model_calls_per_cycle": 25},
+        "source": "current_report",
+        "ts": "2026-07-03T10:00:00Z",
+        "armed_plans": [], "trade_plans": [], "indicator_watches": [],
+        "attribution": {}, "kpis": {}, "equity_curve": [],
+    }
+    rendered = "".join(
+        _console_render(build)
+        for build in (
+            build_portfolio_tile(state, palette=PALETTE_LIGHT),
+            build_activity_tile(activity_buckets([], NOW), palette=PALETTE_LIGHT),
+            build_plans_tile(state, palette=PALETTE_LIGHT, now=NOW),
+        )
+    )
+    assert "analyzing_batch" not in rendered
+    assert "current_report" not in rendered
+    assert "9/25" not in rendered
+
+
+async def test_home_flux_recoit_les_events(tmp_path, monkeypatch):
+    import json
+
+    from trader.cockpit import CockpitApp
+
+    _patch_state_paths(monkeypatch, tmp_path)
+    events = tmp_path / "events.jsonl"
+    events.write_text(json.dumps({"ts": "2026-07-03T01:00:00Z", "event": "decision_recorded",
+                                  "symbol": "AAA", "action": "BUY", "executed": True}) + "\n",
+                      encoding="utf-8")
+    app = CockpitApp()
+    async with app.run_test(size=(200, 50)) as pilot:
+        await pilot.pause()
+        from textual.widgets import RichLog
+
+        flux_log = app.query_one("#home-flux").query_one(RichLog)
+        assert len(flux_log.lines) > 0  # RichLog stocke les lignes dans .lines (pas .line_count)

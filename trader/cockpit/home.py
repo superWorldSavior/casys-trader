@@ -11,12 +11,16 @@ from datetime import datetime, timezone
 from rich.console import Group, RenderableType
 from rich.table import Table
 from rich.text import Text
+from textual.app import ComposeResult
+from textual.containers import Horizontal
 from textual.widgets import Static
 
 from trader.cockpit.aggregates import (  # noqa: F401
     ACTIVITY_STATES,
     activity_buckets,
     attention_items,
+    decision_status,
+    select_decision_rows,
     venue_clock,
 )
 from trader.cockpit.overview import (
@@ -24,6 +28,8 @@ from trader.cockpit.overview import (
     _armed_stop_label,
     _bar,
     _condition_summary,
+    _decision_effect_label,
+    _decision_time_label,
     _exit_plan_risk_label,
     _extract_equity_curve,
     _fmt_compact_float,
@@ -46,7 +52,7 @@ from trader.cockpit.overview import (
 )
 from trader.planning.indicator_watch import is_armed_plan as _is_armed_plan
 from trader.read_models.runtime_state import _safe_float, _safe_list_of_dicts
-from trader.ui.palette import Palette
+from trader.ui.palette import PALETTE_LIGHT, Palette
 from trader.ui.rich_panels import sparkline
 
 UTC = timezone.utc
@@ -179,8 +185,8 @@ def build_status_line(
         ("vital", _vital_text(vital, palette)),
         ("equity", Text(f"{equity:,.0f}$", style=f"bold {palette['status_equity']}")),
         ("spark", Text(spark, style=palette["equity_line"]) if spark else None),
-        ("pnl_pct", Text(f"{ret_pct:+.2f}%", style=pnl_style)),
-        ("pnl_usd", Text(f"({pnl:+,.0f})", style=pnl_style)),
+        ("pnl_pct", Text(f"{ret_pct:+.2f}%", style=pnl_style) if equity > 0 else None),
+        ("pnl_usd", Text(f"({pnl:+,.0f})", style=pnl_style) if equity > 0 else None),
         ("mode", mode),
         ("kill", kill),
         ("llm", Text(llm, style=palette["status_accent"])),
@@ -377,11 +383,16 @@ def build_activity_tile(buckets: dict[str, list[int]], *, palette: Palette) -> R
         counts = buckets.get(state_name) or []
         total = sum(counts)
         style = palette[_SERIES_STYLE_KEYS.get(state_name, "dim")]
-        spark = sparkline([float(c) for c in counts]) if counts else ""
+        if total > 0:
+            spark = sparkline([float(c) for c in counts])
+            row_style = style
+        else:
+            spark = "·" * len(counts)
+            row_style = palette["dim"]
         table.add_row(
-            Text(state_name, style=style if total else palette["dim"]),
-            Text(spark, style=style if total else palette["dim"]),
-            Text(f"n={total}", style=style if total else palette["dim"]),
+            Text(state_name, style=row_style),
+            Text(spark, style=row_style),
+            Text(f"n={total}", style=row_style),
         )
     return table
 
@@ -455,3 +466,90 @@ def build_plans_tile(
     if not (armed or exit_rows or watches):
         table.add_row("—", "—", "aucun plan", "", "")
     return table
+
+
+def build_decisions_tile(
+    decisions: list[dict], recent_decisions: list[dict], *, palette: Palette
+) -> RenderableType:
+    """Triage statique (remplacé par DataTable en Task 10)."""
+    table = Table(show_header=True, expand=True, box=None, pad_edge=False)
+    for column in ("UTC", "Sym", "Act", "État", "Conf", "Suite"):
+        table.add_column(column, no_wrap=(column != "Suite"),
+                         overflow="fold" if column == "Suite" else "ellipsis")
+    for row in select_decision_rows(decisions, recent_decisions, limit=8):
+        action = str(row.get("action") or "—").upper()
+        status = decision_status(row)
+        confidence = _safe_float(row.get("confidence"), default=None)
+        status_style = {
+            "exec": palette["status_nominal"], "risk": palette["pnl_negative"],
+            "stale": palette["kpi_vol_warn"], "armé": palette["status_accent"],
+            "plan": palette["status_accent"], "veille": palette["status_accent"],
+            "quiet": palette["dim"],
+        }.get(status, palette["kpi_default"])
+        action_style = (palette["action_buy"] if action == "BUY"
+                        else palette["action_sell"] if action == "SELL" else palette["dim"])
+        table.add_row(
+            _decision_time_label(row),
+            Text(str(row.get("symbol") or "—"), style="bold"),
+            Text(action, style=action_style),
+            Text(status, style=status_style),
+            f"{confidence:.2f}" if confidence is not None else "—",
+            _decision_effect_label(row),
+        )
+    if not table.rows:
+        table.add_row("—", "—", "—", "—", "—", "—")
+    return table
+
+
+class HomePane(Static):
+    """Home dense 1 écran — grammaire Gonzo (spec §4)."""
+
+    DEFAULT_CSS = """
+    HomePane {
+        height: 100%;
+        width: 100%;
+        overflow-y: hidden;
+        layout: vertical;
+        padding: 0 1;
+    }
+    #home-top-row { height: 3fr; width: 100%; layout: horizontal; }
+    #home-bottom-row { height: 2fr; width: 100%; layout: horizontal; }
+    #home-portfolio { width: 2fr; height: 100%; border: solid $primary; padding: 0 1; }
+    #home-activity { width: 1fr; height: 100%; border: solid $primary; padding: 0 1; }
+    #home-decisions { width: 2fr; height: 100%; border: solid $primary; padding: 0 1; }
+    #home-plans { width: 2fr; height: 100%; border: solid $primary; padding: 0 1; }
+    #home-flux { width: 3fr; height: 100%; }
+    """
+
+    _current_palette: Palette = PALETTE_LIGHT
+
+    def compose(self) -> ComposeResult:
+        # Import tardif OBLIGATOIRE : app.py importe home.py en tête de module,
+        # un import module-level de app ici créerait un cycle.
+        from trader.cockpit.app import FluxPane
+
+        with Horizontal(id="home-top-row"):
+            yield Static(id="home-portfolio")
+            yield Static(id="home-activity")
+            yield Static(id="home-decisions")
+        with Horizontal(id="home-bottom-row"):
+            yield Static(id="home-plans")
+            yield FluxPane(id="home-flux")
+
+    def update_state(self, state: dict, kill_active: bool) -> None:  # kill_active : réservé (modal/kill overlay à venir) — compat interface _apply_state
+        palette = self._current_palette
+        now = datetime.now(UTC)
+        recent = state.get("recent_decisions") if isinstance(state.get("recent_decisions"), list) else []
+        decisions = _safe_list_of_dicts(state.get("decisions"))
+        self.query_one("#home-portfolio", Static).update(
+            build_portfolio_tile(state, palette=palette)
+        )
+        self.query_one("#home-activity", Static).update(
+            build_activity_tile(activity_buckets(recent, now), palette=palette)
+        )
+        self.query_one("#home-decisions", Static).update(
+            build_decisions_tile(decisions, recent, palette=palette)
+        )
+        self.query_one("#home-plans", Static).update(
+            build_plans_tile(state, palette=palette, now=now)
+        )
