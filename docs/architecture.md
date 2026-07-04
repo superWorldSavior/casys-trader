@@ -61,14 +61,14 @@ les utilisaient :
 | `trader/config/` | Loaders de configuration runtime (`pool`, `portfolio`) | retire les loaders transverses de la racine `trader/` |
 | `trader/rotation/` | Rotation d'univers, hot-sets par venue, schedule, override, ledger rotation | `trader.rotation` réexporte l'ancien core |
 | `trader/metadata/` | Métadonnées git/code version | utilisé par runtime et reporting sans cycle |
-| `trader/reporting/` | Ledger décision, raisons, audit ex-post, attribution, stats, tool usage, meta-performance | alias compat via `trader.__init__` |
+| `trader/reporting/` | Ledger décision, raisons, audit ex-post, attribution, stats, tool usage, meta-performance | alias compat via `trader.__init__` et shims legacy plats |
 | `trader/commands/` | Entry points CLI canoniques (`stats`, `attribution`, `tool_usage`, `tui`) | compat : `python -m trader.stats`, `python -m trader.attribution`, etc. |
 | `trader/system/` | Helpers système neutres (`process_env`) | partagé par agent/cockpit/runtime sans dépendance runtime |
 | `trader/runtime/` | Daemon, CLI, logging, PID file, IB attach, rotation ledger | `trader.daemon` et `trader.cli` sont des packages proxy pour `python -m` |
 | `trader/read_models/runtime_state.py` | Lecture tolérante des fichiers `state/` pour TUI/cockpit | ne participe pas aux décisions live |
 | `trader/cockpit/` | App Textual, événements cockpit, supervisor local | `trader.cockpit` reste runnable |
 | `trader/ui/` | Builders Rich purs, TUI textuelle, palette | `trader.tui` reste une façade import/CLI legacy |
-| `trader/attribution/`, `trader/stats/`, `trader/tool_usage/`, `trader/tui/`, `trader/daemon/`, `trader/cli/`, `trader/tools/` | Façades de compatibilité import/CLI | doivent rester fines et déléguer vers les packages canoniques |
+| `trader/attribution/`, `trader/tui/`, `trader/daemon/`, `trader/cli/`, `trader/tools/`, `trader/stats.py`, `trader/tool_usage.py` | Façades de compatibilité import/CLI | doivent rester fines et déléguer vers les packages canoniques |
 
 ### 1.2 Niveaux d'architecture
 
@@ -82,7 +82,7 @@ mais ses packages ne sont pas tous du même niveau :
 | Capacités métier | `market/`, `planning/`, `execution/`, `scheduling/`, `learnings/`, `rotation/`, `agent/`, `agent_protocol/`, `agent_tools/` | porte la logique du domaine et ne dépend pas de `runtime/` |
 | Primitives transverses | `domain/`, `metadata/`, `system/`, `config/` | types/helpers stables, sans dépendance montante |
 | Read models et surfaces | `reporting/`, `read_models/`, `ui/`, `cockpit/` | lit l'état produit par le runtime, ne décide pas à sa place |
-| Compatibilité legacy | `tools/`, `attribution/`, `stats/`, `tool_usage/`, `tui/`, `daemon/`, `cli/` | délègue vers le canonique ; aucun nouvel import interne ne doit viser ici |
+| Compatibilité legacy | `tools/`, `attribution/`, `tui/`, `daemon/`, `cli/`, modules `stats.py`/`tool_usage.py` | délègue vers le canonique ; aucun nouvel import interne ne doit viser ici |
 
 La cible n'est donc pas forcément de créer six dossiers parents (`core/`,
 `infra/`, etc.) d'un coup. Le travail en cours est d'abord de rendre le niveau de

@@ -4,21 +4,17 @@ import sys
 from pathlib import Path
 
 
-def test_capability_modules_are_not_flat_files() -> None:
+def test_only_legacy_compat_modules_are_flat_files() -> None:
     trader_dir = Path(__file__).resolve().parents[1] / "trader"
 
     flat_files = sorted(path.name for path in trader_dir.glob("*.py"))
 
-    assert flat_files == ["__init__.py"]
+    assert flat_files == ["__init__.py", "stats.py", "tool_usage.py"]
 
 
 def test_top_level_packages_have_declared_architecture_roles() -> None:
     trader_dir = Path(__file__).resolve().parents[1] / "trader"
-    actual = {
-        path.name
-        for path in trader_dir.iterdir()
-        if path.is_dir() and path.name != "__pycache__"
-    }
+    actual = {path.name for path in trader_dir.iterdir() if path.is_dir() and path.name != "__pycache__"}
     canonical_packages = {
         "agent",
         "agent_protocol",
@@ -48,8 +44,6 @@ def test_top_level_packages_have_declared_architecture_roles() -> None:
         "attribution",
         "cli",
         "daemon",
-        "stats",
-        "tool_usage",
         "tools",
         "tui",
     }
@@ -154,9 +148,7 @@ def test_internal_backtest_scripts_use_canonical_imports_instead_of_legacy_facad
                 if isinstance(node, ast.ImportFrom) and node.module and _is_forbidden_module(node.module):
                     violations.append(f"{rel_path}: from {node.module} import ...")
                 elif isinstance(node, ast.ImportFrom) and node.module == "trader":
-                    forbidden_names = sorted(
-                        alias.name for alias in node.names if alias.name in forbidden_from_trader
-                    )
+                    forbidden_names = sorted(alias.name for alias in node.names if alias.name in forbidden_from_trader)
                     if forbidden_names:
                         violations.append(f"{rel_path}: from trader import {forbidden_names}")
                 elif isinstance(node, ast.Import):
@@ -178,7 +170,7 @@ def _module_imports(path: Path, module_name: str) -> bool:
     return False
 
 
-def test_runnable_compatibility_packages_delegate_to_command_modules() -> None:
+def test_runnable_compatibility_facades_delegate_to_command_modules() -> None:
     trader_dir = Path(__file__).resolve().parents[1] / "trader"
     command_modules = {
         "attribution": "trader.reporting.attribution",
@@ -189,11 +181,16 @@ def test_runnable_compatibility_packages_delegate_to_command_modules() -> None:
 
     for command_name, canonical_module in command_modules.items():
         command_path = trader_dir / "commands" / f"{command_name}.py"
-        legacy_main_path = trader_dir / command_name / "__main__.py"
+        legacy_package_main_path = trader_dir / command_name / "__main__.py"
+        legacy_module_path = trader_dir / f"{command_name}.py"
 
         assert command_path.exists(), f"missing canonical command module for {command_name}"
         assert _module_imports(command_path, canonical_module)
-        assert _module_imports(legacy_main_path, f"trader.commands.{command_name}")
+        if legacy_package_main_path.exists():
+            assert _module_imports(legacy_package_main_path, f"trader.commands.{command_name}")
+        else:
+            assert legacy_module_path.exists(), f"missing legacy module shim for {command_name}"
+            assert _module_imports(legacy_module_path, f"trader.commands.{command_name}")
 
 
 def test_reporting_command_python_m_entrypoints() -> None:
@@ -234,9 +231,7 @@ def test_market_and_planning_use_domain_primitives_instead_of_tools() -> None:
                     violations.append(f"{rel_path}: from {node.module} import ...")
                 elif isinstance(node, ast.ImportFrom) and node.module == "trader.tools":
                     forbidden_names = {
-                        alias.name
-                        for alias in node.names
-                        if f"trader.tools.{alias.name}" in forbidden_modules
+                        alias.name for alias in node.names if f"trader.tools.{alias.name}" in forbidden_modules
                     }
                     if forbidden_names:
                         violations.append(f"{rel_path}: from trader.tools import {sorted(forbidden_names)}")
@@ -345,9 +340,7 @@ def test_application_uses_market_ports_instead_of_data_source_adapters() -> None
             if isinstance(node, ast.ImportFrom) and node.module in forbidden_modules:
                 violations.append(f"{rel_path}: from {node.module} import ...")
             elif isinstance(node, ast.ImportFrom) and node.module == "trader.market":
-                forbidden_names = sorted(
-                    alias.name for alias in node.names if alias.name in forbidden_from_market
-                )
+                forbidden_names = sorted(alias.name for alias in node.names if alias.name in forbidden_from_market)
                 if forbidden_names:
                     violations.append(f"{rel_path}: from trader.market import {forbidden_names}")
             elif isinstance(node, ast.Import):
@@ -420,9 +413,7 @@ def test_core_packages_do_not_depend_on_legacy_news_feed_tool() -> None:
                 if isinstance(node, ast.ImportFrom) and node.module in forbidden_modules:
                     violations.append(f"{rel_path}: from {node.module} import ...")
                 elif isinstance(node, ast.ImportFrom) and node.module == "trader.tools":
-                    forbidden_names = sorted(
-                        alias.name for alias in node.names if alias.name in forbidden_from_tools
-                    )
+                    forbidden_names = sorted(alias.name for alias in node.names if alias.name in forbidden_from_tools)
                     if forbidden_names:
                         violations.append(f"{rel_path}: from trader.tools import {forbidden_names}")
                 elif isinstance(node, ast.Import):
@@ -458,9 +449,7 @@ def test_core_packages_do_not_depend_on_legacy_market_tools() -> None:
                 if isinstance(node, ast.ImportFrom) and node.module in forbidden_modules:
                     violations.append(f"{rel_path}: from {node.module} import ...")
                 elif isinstance(node, ast.ImportFrom) and node.module == "trader.tools":
-                    forbidden_names = sorted(
-                        alias.name for alias in node.names if alias.name in forbidden_from_tools
-                    )
+                    forbidden_names = sorted(alias.name for alias in node.names if alias.name in forbidden_from_tools)
                     if forbidden_names:
                         violations.append(f"{rel_path}: from trader.tools import {forbidden_names}")
                 elif isinstance(node, ast.Import):
@@ -616,9 +605,7 @@ def test_runtime_agent_and_learnings_do_not_depend_on_legacy_memory_tool() -> No
                 if isinstance(node, ast.ImportFrom) and node.module in forbidden_modules:
                     violations.append(f"{rel_path}: from {node.module} import ...")
                 elif isinstance(node, ast.ImportFrom) and node.module == "trader.tools":
-                    forbidden_names = sorted(
-                        alias.name for alias in node.names if alias.name in forbidden_from_tools
-                    )
+                    forbidden_names = sorted(alias.name for alias in node.names if alias.name in forbidden_from_tools)
                     if forbidden_names:
                         violations.append(f"{rel_path}: from trader.tools import {forbidden_names}")
                 elif isinstance(node, ast.Import):
@@ -664,9 +651,7 @@ def test_runtime_and_execution_do_not_depend_on_legacy_portfolio_tool() -> None:
                 if isinstance(node, ast.ImportFrom) and node.module in forbidden_modules:
                     violations.append(f"{rel_path}: from {node.module} import ...")
                 elif isinstance(node, ast.ImportFrom) and node.module == "trader.tools":
-                    forbidden_names = sorted(
-                        alias.name for alias in node.names if alias.name in forbidden_from_tools
-                    )
+                    forbidden_names = sorted(alias.name for alias in node.names if alias.name in forbidden_from_tools)
                     if forbidden_names:
                         violations.append(f"{rel_path}: from trader.tools import {forbidden_names}")
                 elif isinstance(node, ast.Import):
