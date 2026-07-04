@@ -224,6 +224,14 @@ def test_reporting_command_python_m_entrypoints() -> None:
         assert "usage:" in result.stdout
 
 
+def test_tool_usage_cli_owner_is_command_module() -> None:
+    from trader.commands import tool_usage as command_tool_usage
+    from trader.reporting import tool_usage as reporting_tool_usage
+
+    assert command_tool_usage.main.__module__ == "trader.commands.tool_usage"
+    assert not hasattr(reporting_tool_usage, "main")
+
+
 def test_market_and_planning_use_domain_primitives_instead_of_tools() -> None:
     trader_dir = Path(__file__).resolve().parents[1] / "trader"
     checked_roots = (trader_dir / "market", trader_dir / "planning")

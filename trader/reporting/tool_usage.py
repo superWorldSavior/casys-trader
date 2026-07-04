@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import argparse
-import json
 import math
 from pathlib import Path
 from typing import Any
@@ -11,10 +9,6 @@ from typing import Any
 from backtest.decision_quality import BAND, CAVEAT, score_from_ledger
 
 from .tool_trace import TOOLS, summarize_tools
-
-STATE_DIR = Path("state")
-DEFAULT_LEDGER = STATE_DIR / "decisions.jsonl"
-OUTPUT_PATH = STATE_DIR / "last_tool_usage.json"
 
 
 def domain_tool_usage(judgeable: list[dict]) -> tuple[list[dict], dict[str, int]]:
@@ -52,10 +46,7 @@ def domain_tool_usage(judgeable: list[dict]) -> tuple[list[dict], dict[str, int]
             tool_outcomes[tool][outcome] = tool_outcomes[tool].get(outcome, 0) + 1
             global_counts[outcome] = global_counts.get(outcome, 0) + 1
 
-    per_tool = [
-        {"tool": t, "used": sum(c.values()), "outcomes": c}
-        for t, c in sorted(tool_outcomes.items())
-    ]
+    per_tool = [{"tool": t, "used": sum(c.values()), "outcomes": c} for t, c in sorted(tool_outcomes.items())]
     return per_tool, global_counts
 
 
@@ -135,17 +126,11 @@ def _risk_observed_opening(item: dict) -> bool:
 def risk_observability(judgeable_traces: list[dict]) -> dict[str, Any]:
     orders = _order_items(judgeable_traces)
     executed = [item for item in orders if item.get("outcome") == "executed"]
-    risk_values = [
-        value
-        for item in executed
-        if (value := _finite_float(_detail(item).get("risk_pct"))) is not None
-    ]
+    risk_values = [value for item in executed if (value := _finite_float(_detail(item).get("risk_pct"))) is not None]
     opening_orders = [item for item in orders if _risk_observed_opening(item)]
     risk_clamped_count = sum(1 for item in opening_orders if _detail(item).get("risk_clamped") is True)
     risk_unbounded_no_stop_count = sum(
-        1
-        for item in opening_orders
-        if _detail(item).get("risk_unbounded_no_stop") is True
+        1 for item in opening_orders if _detail(item).get("risk_unbounded_no_stop") is True
     )
 
     return {
@@ -162,24 +147,15 @@ def risk_observability(judgeable_traces: list[dict]) -> dict[str, Any]:
 
 def tool_vs_quality(scored_rows: list[dict], traces_by_decision_id: dict[str, dict]) -> list[dict]:
     rows: list[dict] = []
-    matched = [
-        row
-        for row in scored_rows
-        if row.get("decision_id") in traces_by_decision_id
-    ]
+    matched = [row for row in scored_rows if row.get("decision_id") in traces_by_decision_id]
     for tool in TOOLS:
         for group_name, expected_used in (("used", True), ("skipped", False)):
             group = [
                 row
                 for row in matched
-                if (tool in traces_by_decision_id[str(row.get("decision_id"))].get("tools_used", []))
-                is expected_used
+                if (tool in traces_by_decision_id[str(row.get("decision_id"))].get("tools_used", [])) is expected_used
             ]
-            evaluable = [
-                row
-                for row in group
-                if row.get("evaluable") and row.get("forward_return") is not None
-            ]
+            evaluable = [row for row in group if row.get("evaluable") and row.get("forward_return") is not None]
             returns = [float(row["forward_return"]) for row in evaluable]
             rows.append(
                 {
@@ -203,7 +179,13 @@ def _traces_by_decision_id(judgeable: list[dict]) -> tuple[list[dict], dict[str,
     return traces, indexed
 
 
-def build_report(ledger: str | Path, *, band: float = BAND, days_buffer: int = 1) -> dict[str, Any]:
+def build_report(
+    ledger: str | Path,
+    *,
+    band: float = BAND,
+    days_buffer: int = 1,
+    output_path: str | Path = "state/last_tool_usage.json",
+) -> dict[str, Any]:
     data = score_from_ledger(ledger, band=band, days_buffer=days_buffer)
     traces, indexed = _traces_by_decision_id(data["judgeable"])
     usage = tool_usage_rates(traces)
@@ -234,7 +216,7 @@ def build_report(ledger: str | Path, *, band: float = BAND, days_buffer: int = 1
         "tool_vs_quality": quality,
         "exclusions": data["exclusions"],
         "unavailable_symbols": data["unavailable_symbols"],
-        "output_path": str(OUTPUT_PATH),
+        "output_path": str(output_path),
     }
 
 
@@ -250,16 +232,14 @@ def _format_return(value: float | None) -> str:
     return f"{value * 100:+.2f}%"
 
 
-def _render_cli(report: dict[str, Any]) -> str:
+def render_cli(report: dict[str, Any]) -> str:
     lines = [
         "Usage des outils (décisions jugeables)",
         f"{'Outil':<18} {'used':>5} {'skipped':>8} {'usage%':>8}",
         "-" * 43,
     ]
     for item in report["usage"]:
-        lines.append(
-            f"{item['tool']:<18} {item['used']:>5} {item['skipped']:>8} {_format_pct(item['usage_rate']):>8}"
-        )
+        lines.append(f"{item['tool']:<18} {item['used']:>5} {item['skipped']:>8} {_format_pct(item['usage_rate']):>8}")
 
     lines.extend(
         [
@@ -314,23 +294,10 @@ def _render_cli(report: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Usage des canaux d'outils vs qualité forward")
-    parser.add_argument("--ledger", default=str(DEFAULT_LEDGER), help="ledger JSONL des décisions")
-    parser.add_argument("--band", type=float, default=BAND, help="bande significative de rendement forward")
-    parser.add_argument("--days-buffer", type=int, default=1, help="jours de marge avant la première décision")
-    parser.add_argument("--json", action="store_true", help="affiche le rapport complet en JSON")
-    args = parser.parse_args()
-
-    report = build_report(args.ledger, band=args.band, days_buffer=args.days_buffer)
-    STATE_DIR.mkdir(parents=True, exist_ok=True)
-    OUTPUT_PATH.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-
-    if args.json:
-        print(json.dumps(report, ensure_ascii=False, indent=2))
-    else:
-        print(_render_cli(report))
+_render_cli = render_cli
 
 
 if __name__ == "__main__":
+    from trader.commands.tool_usage import main
+
     main()

@@ -6,8 +6,9 @@
 > `python -m trader.commands.tool_usage`.
 
 Presque tout est **ex-post et lecture-seule**, chacun sur sa source : `attribution`
-lit `model_performance.jsonl` ; `stats` lit `history.jsonl` + `broker.json` ;
-`meta_performance` lit `decision_audit.json`. **Exception** : `decision_ledger`
+lit `model_performance.jsonl` ; `stats` rend les KPI projetés par
+`read_models/live_kpis.py` ; `meta_performance` lit `decision_audit.json`.
+**Exception** : `decision_ledger`
 **écrit** — c'est lui qui PRODUIT `decisions.jsonl` (`append`/`replace_all`/`seed`).
 Rien n'est dans le hot-path de décision.
 
@@ -19,7 +20,7 @@ Rien n'est dans le hot-path de décision.
 | `decision_audit` | **Audit ex-post** des décisions loggées (classification, cohérence, cas anormaux). |
 | `decision_bench` | **Bench contrefactuel** de modèles sur des lignes de décision auditées (compare des modèles a posteriori). |
 | `meta_performance` | Payload **compact de méta-performance** pour l'agent runtime + le consolidateur (réinjecté au contexte). |
-| `stats` | **KPI live** depuis l'historique d'équité + l'état du broker (affiché au cockpit). |
+| `stats` | Façade reporting/CLI des **KPI live** calculés par `read_models/live_kpis.py`. |
 | `decision_ledger` | Journal durable des décisions (schéma versionné). |
 | `decision_reason` | Vocabulaire des `decision_reason_code` (NO_EDGE, MARKET_CLOSED, ARMED_PLAN, EXIT_SIGNAL…). |
 | `tool_trace` / `tool_usage` | Traces des tournées d'outils domaine du LLM. |
