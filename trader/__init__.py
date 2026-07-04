@@ -127,6 +127,9 @@ _COMPAT_PACKAGES = {
         "live_kpis": "trader.reporting.read_models.live_kpis",
         "runtime_state": "trader.reporting.read_models.runtime_state",
     },
+    "semantic": {
+        "catalog": "trader.domain.semantic.catalog",
+    },
     "state_db": {
         "broker_factory": "trader.infrastructure.state_db.broker_factory",
         "broker_store": "trader.infrastructure.state_db.broker_store",
@@ -154,6 +157,7 @@ _COMPAT_PACKAGE_ALIASES = {
     "cockpit": "trader.interfaces.cockpit",
     "commands": "trader.interfaces.cli",
     "queue": "trader.infrastructure.queue",
+    "semantic": "trader.domain.semantic",
     "state_db": "trader.infrastructure.state_db",
     "ui": "trader.interfaces.ui",
 }

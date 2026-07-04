@@ -82,7 +82,7 @@ Légende : ✅ couvert · 🟡 partiel / dispersé / potentiellement périmé ·
 | Contexte agent (cockpit) | `agent/context` | ✅ | **`reference/agent-context.md`** | — |
 | Outils domaine (read-only) | `agent/tools/` (9 handlers) | ✅ | **`reference/agent-tools.md`** | — |
 | Mémoire / recall / learnings (RAG) | `learnings/` (store, consolidator, embeddings) | ✅ | **`reference/learnings-rag.md`** | — |
-| Couche sémantique | `semantic/catalog` | ✅ | **`reference/semantic.md`** | — |
+| Couche sémantique | `domain/semantic/catalog` | ✅ | **`reference/semantic.md`** | — |
 
 ### Observabilité
 | Sous-système | Package/module | Réf | Où | Décisions |

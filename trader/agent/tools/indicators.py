@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from trader.agent.tools.core import AgentToolCall, ToolContext, ToolSpec
-from trader.semantic import catalog as semantic_catalog
+from trader.domain.semantic import catalog as semantic_catalog
 
 _MAX_INDICATORS_PER_CALL = 6
 _MAX_INDICATOR_MATCHES = 12

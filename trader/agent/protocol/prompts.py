@@ -8,7 +8,7 @@ from trader.market.features import DEFAULT_INDICATORS
 from trader.planning import trade_plan
 from trader.planning.indicator_watch import WATCH_VALID_OPERATORS
 from trader.reporting import decision_reason
-from trader.semantic.catalog import INDICATOR_COLUMNS, INDICATOR_LABEL_VALUES
+from trader.domain.semantic.catalog import INDICATOR_COLUMNS, INDICATOR_LABEL_VALUES
 
 # Énumérations `|`-jointes pour les schémas JSON inline des contrats, DÉRIVÉES des
 # sources de vérité (pas tapées à la main : une liste figée diverge en silence).

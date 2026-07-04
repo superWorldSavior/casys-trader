@@ -1,7 +1,7 @@
 import yaml
 
 from trader.agent.context import _family_code
-from trader.semantic.catalog import family_for_symbol
+from trader.domain.semantic.catalog import family_for_symbol
 
 
 def test_bitcoin_hors_univers_actif_mais_famille_crypto_connue() -> None:
@@ -19,4 +19,3 @@ def test_or_hors_univers_calibration_mais_famille_metals_connue() -> None:
     assert "GC=F" not in set(cfg["symbols"])
     assert family_for_symbol("GC=F") == "metals"
     assert _family_code("metals") == "met"
-

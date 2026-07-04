@@ -14,7 +14,7 @@ from trader.market.features import (
     swing_low,
 )
 from trader.market.regime import classify_regime, multi_horizon_signals
-from trader.semantic.catalog import (
+from trader.domain.semantic.catalog import (
     INDICATOR_ALIASES,
     INDICATOR_COLUMNS,
     family_for_symbol,

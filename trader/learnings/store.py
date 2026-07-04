@@ -21,7 +21,7 @@ from pathlib import Path
 
 import numpy as np
 
-from trader.semantic.catalog import family_for_symbol
+from trader.domain.semantic.catalog import family_for_symbol
 
 # Mode WAL : lecture concurrente daemon + écriture record_recall sans blocage.
 _PRAGMAS = [

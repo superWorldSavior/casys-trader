@@ -1,7 +1,7 @@
 # Référence — Couche sémantique (catalogue d'indicateurs)
 
 > **Type** : Reference (Diátaxis).
-> **Code** : `trader/semantic/catalog` · **Rôle** : catalogue **gouverné** des indicateurs de trading.
+> **Code** : `trader/domain/semantic/catalog` · **Rôle** : catalogue **gouverné** des indicateurs de trading. L'ancien import `trader.semantic.catalog` reste compatible via alias virtuel.
 
 Une couche sémantique au-dessus des indicateurs bruts : elle nomme, décrit,
 regroupe et rend **recherchables** les indicateurs, et traduit les labels

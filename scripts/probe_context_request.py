@@ -36,7 +36,7 @@ from trader.agent.context import (
     resolve_indicator_requests,
 )
 from trader.market.features import DEFAULT_INDICATORS
-from trader.semantic.catalog import INDICATOR_COLUMNS
+from trader.domain.semantic.catalog import INDICATOR_COLUMNS
 from trader.domain.market_data import Bar
 
 SYMBOLS = ["SPY", "QQQ", "NVDA", "CL=F", "BZ=F", "GC=F"]

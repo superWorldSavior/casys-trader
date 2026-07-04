@@ -54,7 +54,7 @@ class LearningsStore:
     def ingest_jsonl(self, path: Path, *, source: str) -> dict   # {"inserted": n, "skipped": n}
     def count(self) -> int
 ```
-Schéma table `notes` : colonnes du design §4.1 (id PK, decision_id UNIQUE, ts, symbol, family, venue, action, intent, executed, reason, note, concepts, source, valid_from, valid_until, superseded_by, verdict, forward_return, outcome_score, q_value, embedding BLOB). `family` = `trader.semantic.catalog.family_for_symbol(symbol)` (None accepté). FTS5 `notes_fts(note, content='notes', content_rowid='id')` maintenue par triggers INSERT/UPDATE/DELETE. Table `recalls(id PK, decision_id TEXT, note_ids TEXT/*JSON*/, ts TEXT)`.
+Schéma table `notes` : colonnes du design §4.1 (id PK, decision_id UNIQUE, ts, symbol, family, venue, action, intent, executed, reason, note, concepts, source, valid_from, valid_until, superseded_by, verdict, forward_return, outcome_score, q_value, embedding BLOB). `family` = `trader.domain.semantic.catalog.family_for_symbol(symbol)` (None accepté ; ancien import `trader.semantic.catalog` conservé en compat). FTS5 `notes_fts(note, content='notes', content_rowid='id')` maintenue par triggers INSERT/UPDATE/DELETE. Table `recalls(id PK, decision_id TEXT, note_ids TEXT/*JSON*/, ts TEXT)`.
 
 Ingestion : lit un JSONL (format de `state/archive/learnings-from-ledger.jsonl` : ts, symbol, note, action, intent, executed, reason, decision_id) ; dédup par `decision_id` (INSERT OR IGNORE) ; lignes sans decision_id : clé de secours `ts|symbol` (stockée comme decision_id synthétique `synth:{ts}|{symbol}`). `valid_from = ts`.
 

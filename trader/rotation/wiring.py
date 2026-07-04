@@ -186,7 +186,7 @@ def build_rank_fn(
     from trader.market.radar_config import load_radar_params, load_conviction
     from trader.market.radar import scan_and_rank, daily_components
     from trader.market.radar_data import fetch_daily
-    from trader.semantic.catalog import FAMILIES, family_for_symbol
+    from trader.domain.semantic.catalog import FAMILIES, family_for_symbol
 
     config_dir = Path(config_dir)
     pool = load_pool(config_dir)

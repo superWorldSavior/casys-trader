@@ -40,7 +40,6 @@ def test_top_level_packages_have_declared_architecture_roles() -> None:
         "rotation",
         "runtime",
         "scheduling",
-        "semantic",
         "support",
     }
     compatibility_facades = set()
@@ -75,6 +74,15 @@ def test_infrastructure_backends_are_nested_under_infrastructure() -> None:
 
     for old_top_level_name in ("queue", "state_db"):
         assert not _has_python_sources(trader_dir / old_top_level_name)
+
+
+def test_semantic_catalog_is_nested_under_domain() -> None:
+    trader_dir = Path(__file__).resolve().parents[1] / "trader"
+    semantic_dir = trader_dir / "domain" / "semantic"
+
+    assert semantic_dir.exists()
+    assert (semantic_dir / "catalog.py").exists()
+    assert not _has_python_sources(trader_dir / "semantic")
 
 
 def test_foundation_packages_do_not_depend_on_higher_layers() -> None:
@@ -257,6 +265,22 @@ def test_infrastructure_legacy_packages_are_virtual() -> None:
     assert LegacyStateDb is StateDb
 
 
+def test_semantic_legacy_package_is_virtual() -> None:
+    trader_dir = Path(__file__).resolve().parents[1] / "trader"
+
+    assert not _has_python_sources(trader_dir / "semantic")
+
+    import trader.semantic as legacy_semantic
+    import trader.semantic.catalog as legacy_catalog
+    from trader.domain.semantic import catalog
+    from trader.semantic.catalog import family_for_symbol as legacy_family_for_symbol
+
+    assert getattr(legacy_semantic, "__file__", None) is None
+    assert getattr(legacy_semantic, "__path__", None) == []
+    assert legacy_catalog.family_for_symbol is catalog.family_for_symbol
+    assert legacy_family_for_symbol is catalog.family_for_symbol
+
+
 def test_internal_code_uses_canonical_interface_imports() -> None:
     repo_root = Path(__file__).resolve().parents[1]
     trader_dir = repo_root / "trader"
@@ -340,6 +364,44 @@ def test_internal_code_uses_canonical_infrastructure_imports() -> None:
     assert violations == []
 
 
+def test_internal_code_uses_canonical_semantic_imports() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    trader_dir = repo_root / "trader"
+    checked_roots = (trader_dir, repo_root / "scripts")
+    ignored_files = {trader_dir / "__init__.py"}
+    forbidden_direct_modules = {"trader.semantic"}
+    forbidden_from_trader = {"semantic"}
+
+    def _is_forbidden_module(module_name: str) -> bool:
+        return any(
+            module_name == forbidden or module_name.startswith(f"{forbidden}.")
+            for forbidden in forbidden_direct_modules
+        )
+
+    violations: list[str] = []
+    for root in checked_roots:
+        if not root.exists():
+            continue
+        for path in sorted(root.rglob("*.py")):
+            if path in ignored_files:
+                continue
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            rel_path = path.relative_to(repo_root)
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ImportFrom) and node.module and _is_forbidden_module(node.module):
+                    violations.append(f"{rel_path}: from {node.module} import ...")
+                elif isinstance(node, ast.ImportFrom) and node.module == "trader":
+                    forbidden_names = sorted(alias.name for alias in node.names if alias.name in forbidden_from_trader)
+                    if forbidden_names:
+                        violations.append(f"{rel_path}: from trader import {forbidden_names}")
+                elif isinstance(node, ast.Import):
+                    for alias in node.names:
+                        if _is_forbidden_module(alias.name):
+                            violations.append(f"{rel_path}: import {alias.name}")
+
+    assert violations == []
+
+
 def test_legacy_virtual_packages_support_from_trader_and_python_m() -> None:
     import trader
     from trader import config as legacy_config
@@ -359,6 +421,7 @@ def test_legacy_virtual_packages_support_from_trader_and_python_m() -> None:
         "trader.system.process_env",
         "trader.read_models.live_kpis",
         "trader.read_models.runtime_state",
+        "trader.semantic.catalog",
     ):
         result = subprocess.run(
             [sys.executable, "-m", module_name],
