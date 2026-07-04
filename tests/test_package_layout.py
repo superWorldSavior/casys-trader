@@ -56,6 +56,33 @@ def test_top_level_packages_have_declared_architecture_roles() -> None:
     assert actual == canonical_packages | compatibility_facades
 
 
+def test_foundation_packages_do_not_depend_on_higher_layers() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    trader_dir = repo_root / "trader"
+    foundation_roots = (trader_dir / "domain", trader_dir / "support")
+
+    violations: list[str] = []
+    for root in foundation_roots:
+        root_package = root.name
+        for path in sorted(root.rglob("*.py")):
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            rel_path = path.relative_to(repo_root)
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ImportFrom) and node.module and node.module.startswith("trader."):
+                    imported_package = node.module.split(".")[1]
+                    if imported_package != root_package:
+                        violations.append(f"{rel_path}: from {node.module} import ...")
+                elif isinstance(node, ast.Import):
+                    for alias in node.names:
+                        if not alias.name.startswith("trader."):
+                            continue
+                        imported_package = alias.name.split(".")[1]
+                        if imported_package != root_package:
+                            violations.append(f"{rel_path}: import {alias.name}")
+
+    assert violations == []
+
+
 def test_legacy_tools_package_is_virtual_compatibility_layer(monkeypatch) -> None:
     trader_dir = Path(__file__).resolve().parents[1] / "trader"
 
