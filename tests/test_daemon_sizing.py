@@ -18,7 +18,7 @@ from trader.execution.risk import RiskGate, RiskLimits
 from trader.market import fx
 from trader.execution.broker import Order, SimBroker
 from trader.market.market_data import Bar
-from trader.scheduling.scheduler import Scheduler
+from trader.planning.scheduler import Scheduler
 
 
 # ---------------------------------------------------------------------------

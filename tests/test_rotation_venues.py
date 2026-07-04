@@ -1070,7 +1070,7 @@ def test_garde_fou_2_symbole_preopen_dans_univers_est_due_scheduler(tmp_path):
     import json
     from datetime import datetime, timezone
 
-    from trader.scheduling.scheduler import Scheduler
+    from trader.planning.scheduler import Scheduler
 
     config_dir = tmp_path / "cfg"
     state_dir = tmp_path / "state"

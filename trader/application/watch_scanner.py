@@ -9,7 +9,7 @@ from typing import Callable, Protocol
 
 from trader.market import market_data as market
 from trader.planning.indicator_watch import evaluate_indicator_watches, watch_market_requests
-from trader.scheduling.scheduler import Scheduler
+from trader.planning.scheduler import Scheduler
 
 log = logging.getLogger(__name__)
 

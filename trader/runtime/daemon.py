@@ -83,7 +83,7 @@ from trader.reporting import attribution, decision_ledger, meta_performance
 from trader.runtime import ledger_rotation
 from trader.runtime.ib_attach import IBAttachBackoff
 from trader.runtime.state_writer import RuntimeStateWriter
-from trader.scheduling import scheduler
+from trader.planning import scheduler
 from trader.execution import portfolio
 from trader.execution.contracts import Fill, Order
 from trader.execution.broker import (
@@ -316,7 +316,7 @@ def _stale_backoff_wake_minutes(streak: int, *, default_wake_minutes: float) -> 
     Le streak est borné à STALE_BACKOFF_MAX_STREAK avant appel (voir Scheduler)
     pour éviter tout OverflowError sur 2**streak.
 
-    Constantes dans trader/scheduling/scheduler.py :
+    Constantes dans trader/planning/scheduler.py :
       STALE_BACKOFF_BASE_MULTIPLIER = 2
       STALE_BACKOFF_MAX_MINUTES = 120.0
       STALE_BACKOFF_MAX_STREAK = 8

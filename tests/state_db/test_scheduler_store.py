@@ -25,7 +25,7 @@ import pytest
 from trader.state_db.connection import StateDb
 from trader.state_db.migrations import import_scheduler_from_json
 from trader.state_db.scheduler_store import SqliteScheduler
-from trader.scheduling.scheduler import Scheduler, STALE_BACKOFF_MAX_STREAK
+from trader.planning.scheduler import Scheduler, STALE_BACKOFF_MAX_STREAK
 
 AnyScheduler = Union[Scheduler, SqliteScheduler]
 
@@ -806,7 +806,7 @@ class TestShadowJson:
 class TestMakeScheduler:
     def test_make_scheduler_json(self, tmp_path: Path) -> None:
         from trader.state_db.broker_factory import make_scheduler
-        from trader.scheduling.scheduler import Scheduler
+        from trader.planning.scheduler import Scheduler
 
         sched = make_scheduler(state_dir=tmp_path, backend="json")
         assert isinstance(sched, Scheduler)
@@ -841,7 +841,7 @@ class TestMakeScheduler:
 
     def test_make_scheduler_default_is_json(self, tmp_path: Path) -> None:
         from trader.state_db.broker_factory import make_scheduler
-        from trader.scheduling.scheduler import Scheduler
+        from trader.planning.scheduler import Scheduler
 
         sched = make_scheduler(state_dir=tmp_path)
         assert isinstance(sched, Scheduler)

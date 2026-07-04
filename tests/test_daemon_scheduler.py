@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 from trader.runtime import daemon
 from trader.agent.client import Decision
 from trader.market.market_data import Bar
-from trader.scheduling.scheduler import Scheduler
+from trader.planning.scheduler import Scheduler
 
 
 def _write_runtime_config(root) -> None:

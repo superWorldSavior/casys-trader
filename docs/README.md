@@ -39,7 +39,7 @@ Légende : ✅ couvert · 🟡 partiel / dispersé / potentiellement périmé ·
 | Sous-système | Package/module | Réf | Où | Décisions |
 |---|---|---|---|---|
 | Orchestration du cycle | `runtime/daemon` | ✅ | archi §2-3 | D7 |
-| Sélection des dus / veilles | `scheduling/scheduler`, `planning/indicator_watch` | ✅ | archi §3.1, §7 | D7, D9, D10 |
+| Sélection des dus / veilles | `planning/scheduler`, `planning/indicator_watch` | ✅ | archi §3.1, §7 | D7, D9, D10 |
 | Batch LLM / planificateur | `application/planner_batch` | ✅ | archi §3.6 | D7 |
 | Contexte marché (snapshot) | `application/market_snapshot` | ✅ | archi §3.2-3.3 | — |
 | Enregistrement décision | `application/decision_recorder` | ✅ | archi §3.8, §8 | — |

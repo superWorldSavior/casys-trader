@@ -6,7 +6,7 @@ import pytest
 
 from trader.runtime import daemon
 from trader.market.market_data import Bar, MarketError
-from trader.scheduling.scheduler import Scheduler
+from trader.planning.scheduler import Scheduler
 
 
 # ---------------------------------------------------------------------------
@@ -411,7 +411,7 @@ class TestDaemonDecisionDataSourceField:
         self, monkeypatch, tmp_path
     ):
         """run_cycle : entry de décision doit contenir 'data_source'."""
-        from trader.scheduling.scheduler import Scheduler
+        from trader.planning.scheduler import Scheduler
         from trader.agent.client import Decision
 
         _write_runtime_config(tmp_path)
@@ -472,7 +472,7 @@ class TestDaemonDecisionDataSourceField:
     ):
         """F5 : le fetch daily (ou tout autre fetch secondaire) ne doit pas écraser
         la valeur last_source capturée après le fetch runtime décisionnel."""
-        from trader.scheduling.scheduler import Scheduler
+        from trader.planning.scheduler import Scheduler
         from trader.agent.client import Decision
 
         _write_runtime_config(tmp_path)
@@ -536,7 +536,7 @@ class TestDaemonDecisionDataSourceField:
         self, monkeypatch, tmp_path
     ):
         """F5 : décision HOLD stale doit aussi contenir 'data_source'."""
-        from trader.scheduling.scheduler import Scheduler
+        from trader.planning.scheduler import Scheduler
         from trader.market.market_data import Freshness
 
         _write_runtime_config(tmp_path)

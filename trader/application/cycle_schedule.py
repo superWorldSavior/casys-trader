@@ -10,7 +10,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Callable
 
-from trader.scheduling.scheduler import (
+from trader.planning.scheduler import (
     STALE_BACKOFF_BASE_MULTIPLIER,
     STALE_BACKOFF_MAX_MINUTES,
     STALE_BACKOFF_MAX_STREAK,

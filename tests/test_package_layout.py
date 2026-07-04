@@ -39,7 +39,6 @@ def test_top_level_packages_have_declared_architecture_roles() -> None:
         "reporting",
         "rotation",
         "runtime",
-        "scheduling",
         "support",
     }
     compatibility_facades = set()
@@ -83,6 +82,14 @@ def test_semantic_catalog_is_nested_under_domain() -> None:
     assert semantic_dir.exists()
     assert (semantic_dir / "catalog.py").exists()
     assert not _has_python_sources(trader_dir / "semantic")
+
+
+def test_scheduler_is_nested_under_planning() -> None:
+    trader_dir = Path(__file__).resolve().parents[1] / "trader"
+    scheduler_path = trader_dir / "planning" / "scheduler.py"
+
+    assert scheduler_path.exists()
+    assert not _has_python_sources(trader_dir / "scheduling")
 
 
 def test_foundation_packages_do_not_depend_on_higher_layers() -> None:
@@ -281,6 +288,22 @@ def test_semantic_legacy_package_is_virtual() -> None:
     assert legacy_family_for_symbol is catalog.family_for_symbol
 
 
+def test_scheduling_legacy_package_is_virtual() -> None:
+    trader_dir = Path(__file__).resolve().parents[1] / "trader"
+
+    assert not _has_python_sources(trader_dir / "scheduling")
+
+    import trader.scheduling as legacy_scheduling
+    import trader.scheduling.scheduler as legacy_scheduler
+    from trader.planning.scheduler import Scheduler
+    from trader.scheduling.scheduler import Scheduler as LegacyScheduler
+
+    assert getattr(legacy_scheduling, "__file__", None) is None
+    assert getattr(legacy_scheduling, "__path__", None) == []
+    assert legacy_scheduler.Scheduler is Scheduler
+    assert LegacyScheduler is Scheduler
+
+
 def test_internal_code_uses_canonical_interface_imports() -> None:
     repo_root = Path(__file__).resolve().parents[1]
     trader_dir = repo_root / "trader"
@@ -402,6 +425,44 @@ def test_internal_code_uses_canonical_semantic_imports() -> None:
     assert violations == []
 
 
+def test_internal_code_uses_canonical_scheduling_imports() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    trader_dir = repo_root / "trader"
+    checked_roots = (trader_dir, repo_root / "scripts")
+    ignored_files = {trader_dir / "__init__.py"}
+    forbidden_direct_modules = {"trader.scheduling"}
+    forbidden_from_trader = {"scheduling"}
+
+    def _is_forbidden_module(module_name: str) -> bool:
+        return any(
+            module_name == forbidden or module_name.startswith(f"{forbidden}.")
+            for forbidden in forbidden_direct_modules
+        )
+
+    violations: list[str] = []
+    for root in checked_roots:
+        if not root.exists():
+            continue
+        for path in sorted(root.rglob("*.py")):
+            if path in ignored_files:
+                continue
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            rel_path = path.relative_to(repo_root)
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ImportFrom) and node.module and _is_forbidden_module(node.module):
+                    violations.append(f"{rel_path}: from {node.module} import ...")
+                elif isinstance(node, ast.ImportFrom) and node.module == "trader":
+                    forbidden_names = sorted(alias.name for alias in node.names if alias.name in forbidden_from_trader)
+                    if forbidden_names:
+                        violations.append(f"{rel_path}: from trader import {forbidden_names}")
+                elif isinstance(node, ast.Import):
+                    for alias in node.names:
+                        if _is_forbidden_module(alias.name):
+                            violations.append(f"{rel_path}: import {alias.name}")
+
+    assert violations == []
+
+
 def test_legacy_virtual_packages_support_from_trader_and_python_m() -> None:
     import trader
     from trader import config as legacy_config
@@ -422,6 +483,8 @@ def test_legacy_virtual_packages_support_from_trader_and_python_m() -> None:
         "trader.read_models.live_kpis",
         "trader.read_models.runtime_state",
         "trader.semantic.catalog",
+        "trader.scheduling.scheduler",
+        "trader.tools.scheduler",
     ):
         result = subprocess.run(
             [sys.executable, "-m", module_name],
@@ -1132,35 +1195,36 @@ def test_execution_package_does_not_depend_on_tools_package() -> None:
 
 
 def test_scheduler_imports_are_canonical_with_tools_compatibility() -> None:
-    from trader.scheduling.scheduler import (
+    from trader.planning.scheduler import (
         STALE_BACKOFF_MAX_MINUTES,
         STALE_BACKOFF_MAX_STREAK,
         Scheduler,
     )
+    from trader.scheduling.scheduler import Scheduler as LegacyPackageScheduler
     from trader.tools.scheduler import STALE_BACKOFF_MAX_MINUTES as LegacyMaxMinutes
     from trader.tools.scheduler import STALE_BACKOFF_MAX_STREAK as LegacyMaxStreak
     from trader.tools.scheduler import Scheduler as LegacyScheduler
 
+    assert LegacyPackageScheduler is Scheduler
     assert LegacyScheduler is Scheduler
     assert LegacyMaxMinutes == STALE_BACKOFF_MAX_MINUTES
     assert LegacyMaxStreak == STALE_BACKOFF_MAX_STREAK
 
 
-def test_scheduling_package_does_not_depend_on_tools_package() -> None:
+def test_planning_scheduler_does_not_depend_on_tools_package() -> None:
     trader_dir = Path(__file__).resolve().parents[1] / "trader"
-    scheduling_dir = trader_dir / "scheduling"
+    scheduler_path = trader_dir / "planning" / "scheduler.py"
 
     violations: list[str] = []
-    for path in sorted(scheduling_dir.rglob("*.py")):
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-        rel_path = path.relative_to(trader_dir.parent)
-        for node in ast.walk(tree):
-            if isinstance(node, ast.ImportFrom) and node.module and node.module.startswith("trader.tools"):
-                violations.append(f"{rel_path}: from {node.module} import ...")
-            elif isinstance(node, ast.Import):
-                for alias in node.names:
-                    if alias.name.startswith("trader.tools"):
-                        violations.append(f"{rel_path}: import {alias.name}")
+    tree = ast.parse(scheduler_path.read_text(encoding="utf-8"), filename=str(scheduler_path))
+    rel_path = scheduler_path.relative_to(trader_dir.parent)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module and node.module.startswith("trader.tools"):
+            violations.append(f"{rel_path}: from {node.module} import ...")
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name.startswith("trader.tools"):
+                    violations.append(f"{rel_path}: import {alias.name}")
 
     assert violations == []
 

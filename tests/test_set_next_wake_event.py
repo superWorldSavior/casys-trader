@@ -217,7 +217,7 @@ def test_resolve_session_open_exception_returns_none() -> None:
 def test_apply_decision_schedule_next_wake_iso_sets_absolute_wake(tmp_path) -> None:
     """next_wake_iso → set_symbol_next_wake (non relatif)."""
     from trader.runtime.daemon import _apply_decision_schedule
-    from trader.scheduling.scheduler import Scheduler
+    from trader.planning.scheduler import Scheduler
 
     sched = Scheduler(tmp_path / "scheduler.json")
     now = _now()
@@ -242,7 +242,7 @@ def test_apply_decision_schedule_next_wake_iso_sets_absolute_wake(tmp_path) -> N
 def test_apply_decision_schedule_minutes_still_works(tmp_path) -> None:
     """next_wake_iso=None + next_wake_in_minutes → comportement existant inchangé."""
     from trader.runtime.daemon import _apply_decision_schedule
-    from trader.scheduling.scheduler import Scheduler
+    from trader.planning.scheduler import Scheduler
 
     sched = Scheduler(tmp_path / "scheduler.json")
     now = _now()
@@ -267,7 +267,7 @@ def test_apply_decision_schedule_minutes_still_works(tmp_path) -> None:
 def test_apply_decision_schedule_iso_takes_precedence_over_minutes(tmp_path) -> None:
     """Si next_wake_iso ET next_wake_in_minutes → next_wake_iso prime."""
     from trader.runtime.daemon import _apply_decision_schedule
-    from trader.scheduling.scheduler import Scheduler
+    from trader.planning.scheduler import Scheduler
 
     sched = Scheduler(tmp_path / "scheduler.json")
     now = _now()

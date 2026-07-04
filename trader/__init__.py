@@ -130,6 +130,9 @@ _COMPAT_PACKAGES = {
     "semantic": {
         "catalog": "trader.domain.semantic.catalog",
     },
+    "scheduling": {
+        "scheduler": "trader.planning.scheduler",
+    },
     "state_db": {
         "broker_factory": "trader.infrastructure.state_db.broker_factory",
         "broker_store": "trader.infrastructure.state_db.broker_store",
@@ -158,6 +161,7 @@ _COMPAT_PACKAGE_ALIASES = {
     "commands": "trader.interfaces.cli",
     "queue": "trader.infrastructure.queue",
     "semantic": "trader.domain.semantic",
+    "scheduling": "trader.planning",
     "state_db": "trader.infrastructure.state_db",
     "ui": "trader.interfaces.ui",
 }
@@ -169,7 +173,7 @@ _TOOLS_COMPAT_MODULES = {
     "market": "trader.market.market_data",
     "news_feed": "trader.market.news_feed",
     "portfolio": "trader.execution.portfolio",
-    "scheduler": "trader.scheduling.scheduler",
+    "scheduler": "trader.planning.scheduler",
 }
 
 _TOOLS_MEMORY_NAMES = {

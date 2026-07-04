@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from trader.scheduling.scheduler import Scheduler, STALE_BACKOFF_MAX_MINUTES
+from trader.planning.scheduler import Scheduler, STALE_BACKOFF_MAX_MINUTES
 
 
 def test_cycle_schedule_exposes_wake_policies_from_application_layer(tmp_path) -> None:

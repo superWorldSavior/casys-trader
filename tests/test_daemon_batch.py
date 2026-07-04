@@ -11,7 +11,7 @@ from trader.agent.client import ContextResearchRequest, Decision, IndicatorReque
 from trader.agent.protocol.parsing import parse_batch
 from trader.planning.indicator_watch import summarize_watch
 from trader.market.market_data import Bar
-from trader.scheduling.scheduler import Scheduler
+from trader.planning.scheduler import Scheduler
 
 _COMMON = dict(
     mandate="",
@@ -822,7 +822,7 @@ def test_veille_armee_sans_next_wake_dort_jusqu_a_expiration(tmp_path) -> None:
     """Finding 2026-07-02 (confirmé Codex) : une veille armée sans next_wake ne
     doit PLUS effacer le timer (→ défaut 30 min → re-décision aveugle), mais
     poser le réveil à l'expiration de la veille."""
-    from trader.scheduling.scheduler import Scheduler
+    from trader.planning.scheduler import Scheduler
 
     sched = Scheduler(tmp_path / "scheduler.json")
     now = datetime(2026, 7, 2, 10, 0, tzinfo=timezone.utc)
@@ -855,7 +855,7 @@ def test_veille_armee_sans_next_wake_dort_jusqu_a_expiration(tmp_path) -> None:
 def test_hold_sans_veille_ni_wake_reste_sur_le_defaut(tmp_path) -> None:
     """Sans veille armée ni next_wake, le comportement historique tient :
     le timer symbole est effacé (→ cadence par défaut)."""
-    from trader.scheduling.scheduler import Scheduler
+    from trader.planning.scheduler import Scheduler
 
     sched = Scheduler(tmp_path / "scheduler.json")
     now = datetime(2026, 7, 2, 10, 0, tzinfo=timezone.utc)

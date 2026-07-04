@@ -9,7 +9,7 @@ from trader.agent.client import Decision
 from trader.agent.protocol.parsing import parse_batch
 from trader.execution.broker import Order, SimBroker
 from trader.market.market_data import Bar
-from trader.scheduling.scheduler import Scheduler
+from trader.planning.scheduler import Scheduler
 from trader.planning.trade_plan import InvalidExitPlanError, TradePlanStore, create_trade_plan, resolve_exit_plan
 
 

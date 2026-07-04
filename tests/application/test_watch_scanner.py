@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 
 from trader.market.market_data import Bar, MarketError
 from trader.planning.trade_plan import TradePlan, create_trade_plan
-from trader.scheduling.scheduler import Scheduler
+from trader.planning.scheduler import Scheduler
 
 
 class _DataSource:

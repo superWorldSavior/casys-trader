@@ -1,7 +1,7 @@
 import json
 from datetime import datetime, timezone
 
-from trader.scheduling.scheduler import Scheduler
+from trader.planning.scheduler import Scheduler
 
 
 def test_next_wake_utilise_le_defaut_global_sans_override_symbole(tmp_path) -> None:

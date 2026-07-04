@@ -52,7 +52,7 @@ def test_quiet_gate_decision_has_news_key(monkeypatch, tmp_path, patch_batch, ma
     """
     from trader.runtime import daemon
     from trader.market import news_feed as nf
-    from trader.scheduling.scheduler import Scheduler
+    from trader.planning.scheduler import Scheduler
     from conftest import write_runtime_config
 
     write_runtime_config(tmp_path, symbols=("SPY",))
@@ -114,7 +114,7 @@ def test_payload_decision_contient_macro_next(monkeypatch, tmp_path, patch_batch
     """
     from trader.runtime import daemon
     from trader.market import news_feed as nf
-    from trader.scheduling.scheduler import Scheduler
+    from trader.planning.scheduler import Scheduler
     from conftest import write_runtime_config
 
     write_runtime_config(tmp_path, symbols=("SPY",))
