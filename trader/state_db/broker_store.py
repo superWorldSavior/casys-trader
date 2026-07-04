@@ -88,9 +88,54 @@ class SqliteBroker:
     ) -> Fill | None:
         """Soumet un ordre paper.
 
-        dry_run=True (défaut Safe) : construit le Fill, ne mute rien, retourne None.
-        dry_run=False : mutation position+cash+fill atomique en une transaction SQLite ;
-                        puis double-write shadow JSON (hors transaction, best-effort).
+        dry_run=True (défaut Safe) : ne mute rien, retourne None.
+        dry_run=False : mutation position+cash+fill atomique en une transaction SQLite
+                        (délègue à submit_in_tx) ; puis double-write shadow JSON
+                        (hors transaction, best-effort).
+        """
+        if dry_run:
+            return None
+
+        with self._db.transaction() as cur:
+            fill = self.submit_in_tx(cur, order, price, ts, dry_run=False, fx_rate=fx_rate)
+
+        # Double-write shadow JSON (hors transaction — best-effort)
+        if self._json_path is not None:
+            try:
+                self._write_shadow()
+            except Exception as exc:
+                log.warning("[state_db] shadow échec broker.json: %s", exc)
+
+        return fill
+
+    def submit_in_tx(
+        self,
+        cur,
+        order: Order,
+        price: float,
+        ts: str,
+        *,
+        dry_run: bool = False,
+        fx_rate: float = 1.0,
+    ) -> Fill | None:
+        """Variante transactionnelle de submit : écrit sur un curseur fourni.
+
+        N'ouvre PAS de transaction, n'écrit PAS le shadow.
+        À appeler exclusivement depuis l'intérieur d'un bloc ``with db.transaction() as cur:``.
+
+        dry_run=True : calcule le fill, ne mute rien, retourne None.
+        dry_run=False : effectue les écritures SQL via ``cur`` et retourne le Fill.
+
+        Args:
+            cur:     Curseur SQLite déjà dans une transaction BEGIN IMMEDIATE.
+            order:   Ordre à soumettre.
+            price:   Prix d'exécution.
+            ts:      Timestamp du fill (ISO string).
+            dry_run: Si True, lecture seule — aucune écriture.
+            fx_rate: Taux de change (devise native → USD).
+
+        Returns:
+            Fill si dry_run=False, None si dry_run=True.
         """
         commission: Commission = self._commission_model.calculate(order, price)
         fill = Fill(
@@ -108,68 +153,60 @@ class SqliteBroker:
         if dry_run:
             return None
 
-        # Lecture position + toutes les mutations dans UNE transaction (linéarisable)
-        with self._db.transaction() as cur:
-            row = cur.execute(
-                "SELECT quantity, avg_price FROM broker_positions WHERE symbol=?",
-                (order.symbol,),
-            ).fetchone()
-            old_qty = float(row["quantity"]) if row is not None else 0.0
-            old_avg = float(row["avg_price"]) if row is not None else 0.0
+        row = cur.execute(
+            "SELECT quantity, avg_price FROM broker_positions WHERE symbol=?",
+            (order.symbol,),
+        ).fetchone()
+        old_qty = float(row["quantity"]) if row is not None else 0.0
+        old_avg = float(row["avg_price"]) if row is not None else 0.0
 
-            new_qty, new_avg_price, cash_delta_total = compute_fill_effect(
-                old_quantity=old_qty,
-                old_avg_price=old_avg,
-                order=order,
-                price=price,
-                fx_rate=fx_rate,
-                commission=commission,
-            )
+        new_qty, new_avg_price, cash_delta_total = compute_fill_effect(
+            old_quantity=old_qty,
+            old_avg_price=old_avg,
+            order=order,
+            price=price,
+            fx_rate=fx_rate,
+            commission=commission,
+        )
 
-            log.debug(
-                "[state_db] submit %s %s qty=%.4f price=%.4f new_qty=%.4f cash_delta_usd=%.4f",
-                order.side,
-                order.symbol,
-                order.quantity,
-                price,
-                new_qty,
-                cash_delta_total,
-            )
+        log.debug(
+            "[state_db] submit_in_tx %s %s qty=%.4f price=%.4f"
+            " new_qty=%.4f cash_delta_usd=%.4f",
+            order.side,
+            order.symbol,
+            order.quantity,
+            price,
+            new_qty,
+            cash_delta_total,
+        )
 
-            cur.execute(
-                "INSERT INTO broker_positions(symbol, quantity, avg_price) VALUES (?,?,?)"
-                " ON CONFLICT(symbol) DO UPDATE SET"
-                " quantity=excluded.quantity, avg_price=excluded.avg_price",
-                (order.symbol, new_qty, new_avg_price),
-            )
-            cur.execute(
-                "UPDATE broker_state SET cash = cash - ? WHERE id = 1",
-                (cash_delta_total,),
-            )
-            cur.execute(
-                "INSERT INTO broker_fills"
-                "(symbol, side, quantity, price, ts,"
-                " commission, commission_currency, commission_model, fx_rate)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (
-                    fill.symbol,
-                    fill.side,
-                    fill.quantity,
-                    fill.price,
-                    fill.ts,
-                    fill.commission,
-                    fill.commission_currency,
-                    fill.commission_model,
-                    fill.fx_rate,
-                ),
-            )
-
-        # Double-write shadow JSON (hors transaction — best-effort)
-        if self._json_path is not None:
-            try:
-                self._write_shadow()
-            except Exception as exc:
-                log.warning("[state_db] shadow échec broker.json: %s", exc)
+        cur.execute(
+            "INSERT INTO broker_positions(symbol, quantity, avg_price) VALUES (?,?,?)"
+            " ON CONFLICT(symbol) DO UPDATE SET"
+            " quantity=excluded.quantity, avg_price=excluded.avg_price",
+            (order.symbol, new_qty, new_avg_price),
+        )
+        cur.execute(
+            "UPDATE broker_state SET cash = cash - ? WHERE id = 1",
+            (cash_delta_total,),
+        )
+        cur.execute(
+            "INSERT INTO broker_fills"
+            "(symbol, side, quantity, price, ts,"
+            " commission, commission_currency, commission_model, fx_rate)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                fill.symbol,
+                fill.side,
+                fill.quantity,
+                fill.price,
+                fill.ts,
+                fill.commission,
+                fill.commission_currency,
+                fill.commission_model,
+                fill.fx_rate,
+            ),
+        )
 
         return fill
 

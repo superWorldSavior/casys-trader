@@ -174,14 +174,36 @@ class TaskLedger:
         modifiée.
         """
         with self._db.transaction() as cur:
-            n = cur.execute(
-                """UPDATE tasks
-                   SET status='done', result=?, updated_at=?,
-                       claim_token=NULL, claimed_by=NULL, lease_expires_at=NULL
-                   WHERE id=? AND claim_token=? AND status='running'""",
-                (result, now_ms, task_id, token),
-            ).rowcount
-            return n == 1
+            return self.complete_in_tx(cur, task_id=task_id, token=token,
+                                       now_ms=now_ms, result=result)
+
+    def complete_in_tx(self, cur, *, task_id, token, now_ms, result=None) -> bool:
+        """Variante transactionnelle de complete : écrit sur un curseur fourni.
+
+        N'ouvre PAS de transaction.
+        À appeler exclusivement depuis l'intérieur d'un bloc ``with db.transaction() as cur:``.
+
+        Gardé par fencing token : sans effet si ``claim_token`` ne correspond
+        pas ou si status != 'running'. Retourne ``True`` si la ligne a été modifiée.
+
+        Args:
+            cur:     Curseur SQLite déjà dans une transaction BEGIN IMMEDIATE.
+            task_id: ID de la tâche à compléter.
+            token:   Token de fencing (claim_token attendu).
+            now_ms:  Timestamp courant (epoch ms) pour updated_at.
+            result:  Résultat optionnel à sérialiser dans la colonne result (TEXT).
+
+        Returns:
+            True si la tâche a été marquée 'done', False si token invalide / non running.
+        """
+        n = cur.execute(
+            """UPDATE tasks
+               SET status='done', result=?, updated_at=?,
+                   claim_token=NULL, claimed_by=NULL, lease_expires_at=NULL
+               WHERE id=? AND claim_token=? AND status='running'""",
+            (result, now_ms, task_id, token),
+        ).rowcount
+        return n == 1
 
     def fail(self, *, task_id, token, now_ms, error, retryable, backoff_base_ms):
         """Signale l'échec d'une tâche et applique la politique de retry.

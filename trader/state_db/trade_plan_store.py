@@ -222,14 +222,26 @@ class SqliteTradePlanStore:
         liste (seq = MAX(seq)+1) — comportement identique au « retire + append »
         du TradePlanStore JSON.
         """
-        cols = plan_to_columns(plan, seq=0)  # seq calculé inline en SQL
         with self._db.transaction() as cur:
-            cur.execute(_UPSERT_SQL, cols)
-        log.debug("[state_db] upsert plan %s (%s)", plan.id, plan.symbol)
+            self.upsert_in_tx(cur, plan)
         try:
             self._write_shadow()
         except Exception as exc:
             log.warning("[state_db] shadow échec trade_plans.json: %s", exc)
+
+    def upsert_in_tx(self, cur, plan: TradePlan) -> None:
+        """Variante transactionnelle de upsert : écrit sur un curseur fourni.
+
+        N'ouvre PAS de transaction, n'écrit PAS le shadow.
+        À appeler exclusivement depuis l'intérieur d'un bloc ``with db.transaction() as cur:``.
+
+        Args:
+            cur:  Curseur SQLite déjà dans une transaction BEGIN IMMEDIATE.
+            plan: TradePlan à insérer ou mettre à jour.
+        """
+        cols = plan_to_columns(plan, seq=0)  # seq calculé inline en SQL
+        cur.execute(_UPSERT_SQL, cols)
+        log.debug("[state_db] upsert_in_tx plan %s (%s)", plan.id, plan.symbol)
 
     def close(self, plan_id: str) -> None:
         """Supprime le plan avec cet id."""
@@ -244,12 +256,25 @@ class SqliteTradePlanStore:
     def close_symbol(self, symbol: str) -> None:
         """Supprime tous les plans du symbole."""
         with self._db.transaction() as cur:
-            cur.execute("DELETE FROM trade_plans WHERE symbol=?", (symbol,))
+            self.close_symbol_in_tx(cur, symbol)
         log.debug("[state_db] close_symbol %s", symbol)
         try:
             self._write_shadow()
         except Exception as exc:
             log.warning("[state_db] shadow échec trade_plans.json: %s", exc)
+
+    def close_symbol_in_tx(self, cur, symbol: str) -> None:
+        """Variante transactionnelle de close_symbol : écrit sur un curseur fourni.
+
+        N'ouvre PAS de transaction, n'écrit PAS le shadow.
+        À appeler exclusivement depuis l'intérieur d'un bloc ``with db.transaction() as cur:``.
+
+        Args:
+            cur:    Curseur SQLite déjà dans une transaction BEGIN IMMEDIATE.
+            symbol: Symbole dont supprimer tous les plans ouverts.
+        """
+        cur.execute("DELETE FROM trade_plans WHERE symbol=?", (symbol,))
+        log.debug("[state_db] close_symbol_in_tx %s", symbol)
 
     def clear(self) -> None:
         """Supprime TOUS les plans."""
