@@ -9,7 +9,15 @@ def test_only_legacy_compat_modules_are_flat_files() -> None:
 
     flat_files = sorted(path.name for path in trader_dir.glob("*.py"))
 
-    assert flat_files == ["__init__.py", "stats.py", "tool_usage.py"]
+    assert flat_files == [
+        "__init__.py",
+        "attribution.py",
+        "cli.py",
+        "daemon.py",
+        "stats.py",
+        "tool_usage.py",
+        "tui.py",
+    ]
 
 
 def test_top_level_packages_have_declared_architecture_roles() -> None:
@@ -49,11 +57,7 @@ def test_top_level_packages_have_declared_architecture_roles() -> None:
         "ui",
     }
     compatibility_facades = {
-        "attribution",
-        "cli",
-        "daemon",
         "tools",
-        "tui",
     }
 
     assert actual == canonical_packages | compatibility_facades

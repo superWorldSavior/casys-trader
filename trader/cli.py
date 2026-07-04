@@ -1,4 +1,4 @@
-"""Mutable compatibility package for ``trader.runtime.cli``."""
+"""Mutable compatibility module for ``trader.runtime.cli``."""
 
 from __future__ import annotations
 
@@ -24,3 +24,7 @@ class _CompatModule(types.ModuleType):
 _module = sys.modules[__name__]
 _module.__class__ = _CompatModule
 __all__ = [name for name in dir(_target) if not name.startswith("__")]
+
+
+if __name__ == "__main__":
+    raise SystemExit(_target.main())

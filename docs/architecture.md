@@ -75,12 +75,12 @@ les utilisaient :
 | `trader/reporting/` | Ledger décision, raisons, audit ex-post, attribution, stats, tool usage, meta-performance | analyse/rendu ex-post ; les side effects CLI vivent dans `commands/` |
 | `trader/commands/` | Entry points CLI canoniques (`stats`, `attribution`, `tool_usage`, `tui`) | compat : `python -m trader.stats`, `python -m trader.attribution`, etc. |
 | `trader/system/` | Helpers système neutres (`process_env`) | partagé par agent/cockpit/runtime sans dépendance runtime |
-| `trader/runtime/` | Daemon, CLI, logging, PID file, IB attach, rotation ledger, writers d'état fichier | `trader.daemon` et `trader.cli` sont des packages proxy pour `python -m` |
+| `trader/runtime/` | Daemon, CLI, logging, PID file, IB attach, rotation ledger, writers d'état fichier | `trader.daemon.py` et `trader.cli.py` sont des shims proxy pour `python -m` |
 | `trader/read_models/live_kpis.py` | Projection live des KPI depuis `state/` pour daemon/cockpit/TUI | `reporting.stats` rend les KPI ; `commands.stats` possède la CLI |
 | `trader/read_models/runtime_state.py` | Lecture tolérante des fichiers `state/` pour TUI/cockpit | ne participe pas aux décisions live |
 | `trader/cockpit/` | App Textual, événements cockpit, supervisor local | `trader.cockpit` reste runnable |
-| `trader/ui/` | Builders Rich purs, TUI textuelle, palette | `trader.tui` reste une façade import/CLI legacy |
-| `trader/attribution/`, `trader/tui/`, `trader/daemon/`, `trader/cli/`, `trader/tools/`, `trader/stats.py`, `trader/tool_usage.py` | Façades de compatibilité import/CLI | doivent rester fines et déléguer vers les packages canoniques |
+| `trader/ui/` | Builders Rich purs, TUI textuelle, palette | `trader.tui.py` reste une façade import/CLI legacy |
+| `trader/attribution.py`, `trader/tui.py`, `trader/daemon.py`, `trader/cli.py`, `trader/stats.py`, `trader/tool_usage.py`, `trader/tools/` | Façades de compatibilité import/CLI | doivent rester fines et déléguer vers les packages canoniques |
 
 ### 1.2 Niveaux d'architecture
 
@@ -89,12 +89,12 @@ mais ses packages ne sont pas tous du même niveau :
 
 | Niveau | Packages | Règle pratique |
 |---|---|---|
-| Composition runtime | `runtime/`, `commands/`, wrappers `daemon`/`cli` | peut assembler les dépendances et déclencher les side effects |
+| Composition runtime | `runtime/`, `commands/`, wrappers `daemon.py`/`cli.py` | peut assembler les dépendances et déclencher les side effects |
 | Services applicatifs | `application/` | orchestre un cas d'usage testable sans être l'entrypoint process |
 | Capacités métier | `market/`, `planning/`, `execution/`, `scheduling/`, `learnings/`, `rotation/`, `agent/`, `agent_protocol/`, `agent_tools/` | porte la logique du domaine et ne dépend pas de `runtime/` |
 | Primitives transverses | `domain/`, `metadata/`, `system/`, `config/` | types/helpers stables, sans dépendance montante |
 | Read models et surfaces | `reporting/`, `read_models/`, `ui/`, `cockpit/` | lit l'état produit par le runtime, ne décide pas à sa place |
-| Compatibilité legacy | `tools/`, `attribution/`, `tui/`, `daemon/`, `cli/`, modules `stats.py`/`tool_usage.py` | délègue vers le canonique ; aucun nouvel import interne ne doit viser ici |
+| Compatibilité legacy | `tools/`, modules `attribution.py`/`tui.py`/`daemon.py`/`cli.py`/`stats.py`/`tool_usage.py` | délègue vers le canonique ; aucun nouvel import interne ne doit viser ici |
 
 La cible n'est donc pas forcément de créer six dossiers parents (`core/`,
 `infra/`, etc.) d'un coup. Le travail en cours est d'abord de rendre le niveau de
