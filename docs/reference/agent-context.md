@@ -5,7 +5,7 @@
 
 `build_market_cockpit` construit le dict **`cockpit`** — **une clé** du
 `shared_context`. Le `shared_context` complet est assemblé dans `runtime/daemon`
-(il ajoute `now`, `portfolio`, `risk_limits`/`risk_capacity`, `kpis`, `attribution`,
+(il ajoute `now`, `now_human`, `market_clocks`, `portfolio`, `risk_limits`/`risk_capacity`, `kpis`, `attribution`,
 `meta_performance`, `learnings`, `regime_families`, `semantic`, `stale_market_data`).
 Ce contexte est injecté **une fois** dans le prompt batch (cf.
 [llm-contract](llm-contract.md)) : faits calculés par le code, pas de prose (AX).
@@ -32,6 +32,25 @@ Résout une **demande de contexte bornée** (`REQUEST_CONTEXT`) : quand l'agent
 demande des indicateurs supplémentaires, cette fonction les calcule dans les limites
 (`max_requests`, `max_indicators`) et les réinjecte au 2e passage de décision. Borné
 pour maîtriser le coût (cf. `application/planner_batch`).
+
+## Horodatage (`now`, `now_human`, `market_clocks`)
+
+Trois repères temporels, tous dérivés d'un `now` **UTC-aware**
+(`datetime.now(timezone.utc)`, `daemon.py` `main()`) — jamais l'heure locale de la
+machine :
+
+- **`now`** : ISO 8601 UTC (`2026-07-04T07:16:00+00:00`) — repère machine.
+- **`now_human`** (`market.human_clock`) : jour FR + date + heure **UTC**
+  (`"vendredi 04/07 07:16 UTC"`), déterministe et locale-indépendant.
+- **`market_clocks`** (`market.market_clocks`) : heure **locale de chaque place**
+  présente dans l'univers du cycle, dédupliquée par fuseau et triée ouest→est
+  (`"New York ven 03:16 · Paris ven 09:16 · Taipei ven 15:16"`). Le jour est affiché
+  **par zone** : il peut différer de l'UTC (ex. **samedi à Taipei** alors qu'il est
+  encore vendredi UTC) → lève l'ambiguïté week-end/ouverture.
+
+Le raisonnement est ancré sur UTC (neutre pour du multi-marchés) ; les sessions
+(`session_snapshot`) utilisent la tz de **chaque place**, jamais celle de l'hôte. Un
+daemon opéré depuis n'importe quel fuseau (ex. Taiwan) produit donc le même contexte.
 
 ## Invariant
 

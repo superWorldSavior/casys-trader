@@ -1,9 +1,9 @@
 # Référence — File de tâches durable (task-ledger)
 
 > **Type** : Reference (Diátaxis).
-> **Code** : `queue/ledger`, `queue/pools`, `queue/worker`
-> **Statut** : ⚠️ **Phase 0 — cœur en place, NON branché au daemon** (`CASYS_QUEUE_ENABLED` n'existe pas encore). Décrit le comportement du module ; l'intégration (producteur, handlers `decide`/`execute`) arrive en Phase 1-3.
-> **Rôle** : file durable qui découple la production des tâches de leur traitement.
+> **Code** : primitives `queue/ledger`, `queue/pools`, `queue/worker` ; intégration `runtime/daemon`, handlers `application/decide_handler` + `application/execute_order_handler`, backend `state_db/*` (outbox).
+> **Statut** : ✅ **Phase 3 ACTIVÉE en paper (2026-07-04)** — les 3 flags on (`CASYS_STATE_BACKEND=sqlite`, `CASYS_QUEUE_DECIDE_ENABLED`, `CASYS_QUEUE_EXECUTE_ENABLED`), migration d'état validée, `[state-compare] identical=True`. Les chemins synchrones historiques restent présents comme fallback (flags off) jusqu'au gommage strangler. Voir la section « Pipeline » ci-dessous.
+> **Rôle** : file durable qui découple la production des tâches de leur traitement (durabilité, reprise, idempotence, backpressure).
 
 ## `TaskLedger` (`queue/ledger`)
 
@@ -124,8 +124,82 @@ poser pour les timeouts réseau ponctuels.
 - **Reprise au boot** : `recover_on_boot` remet en `pending` les `running` à bail expiré (orphelins d'un crash précédent).
 - **Unclaim neutre** : `release_claim` sur resource-miss ne consomme pas de tentative ni n'applique de backoff.
 
+## Pipeline `decide` / `execute` via la file (Phase 3)
+
+Le daemon route deux étages de `run_cycle` par la file durable, chacun derrière un
+**flag orthogonal** (off = comportement historique strictement inchangé). Les 4
+combinaisons sont valides et testées.
+
+### Backend d'état — `CASYS_STATE_BACKEND` (`json` | `sqlite`)
+
+- `json` (défaut historique) : `SimBroker` / `TradePlanStore` / `Scheduler` sur fichiers.
+- `sqlite` : mêmes API, état unifié dans `state/casys.db` (WAL). Migration one-shot
+  **idempotente** au boot (`bootstrap_state_backend`) : import des JSON existants +
+  sentinels `state_imports` (anti-résurrection d'un état déjà migré) + régénération
+  des **shadows JSON**. Le shadow (double-write JSON après chaque mutation) est un
+  filet transitoire pour les lecteurs hors-store encore branchés sur les fichiers
+  (cockpit/TUI/CLI/stats/rotation). Prérequis de l'outbox execute.
+
+### Étage `decide` — `CASYS_QUEUE_DECIDE_ENABLED`
+
+- off : `_batch_decide` synchrone (ThreadPoolExecutor), inchangé.
+- on : `dispatch_decide_via_queue` enfile **1 tâche `decide` par symbole**
+  (`partition_key=symbole`, `resource=acpx`, `dedup_key=cycle:sym`) ; le `DecidePool`
+  (`task_ledger.db`) les draine, `run_cycle` attend le budget
+  (`CASYS_DECISION_TIMEOUT_S`, 900 s) puis collecte. Symboles non finis =
+  **skippés** (pas de HOLD synthétique) → fin du HOLD-par-saturation. Le nb de
+  workers = `CASYS_DECISION_BATCH_PARALLELISM` (même flag, sens différent du mode
+  batch). `CASYS_DECISION_BATCH_SIZE` est **sans objet** en queue (grain-symbole) —
+  warning au boot. ⚠️ **Mode dégradé connu (Lot A)** : le handler décide sans
+  `context_request` / tool round / `recall_learnings` (parité future, hors périmètre).
+
+### Étage `execute` — `CASYS_QUEUE_EXECUTE_ENABLED` (exige `sqlite`)
+
+- off : `SimBroker.submit` synchrone dans `run_cycle`, inchangé.
+- on : `run_cycle` enfile **1 tâche `execute_order`** par ordre retenu
+  (`resource=portfolio`, sérialisé), le worker exécute **submit + plan + `done` dans
+  UNE transaction SQLite** (outbox, `execute_order_unit`). Le Fill est écrit **dans
+  la même tx** (`complete_in_tx`) → aucune perte de fill au crash. Fencing (`SELECT
+  status/token` avant submit) → aucun double-fill au rejeu. `dead`/timeout →
+  **fail-closed** (`executed=False`, jamais loggé « ok »). `dedup_key`
+  `exec:{cycle}:{sym}:{intent}`. Si `CASYS_STATE_BACKEND != sqlite`, le flag est
+  ignoré avec warning (broker/plan/ledger doivent partager la même `casys.db`).
+
+### Observabilité
+
+- **`[state-compare]`** (fin de cycle, sous sqlite) : `compare_backends` compare
+  `casys.db` ↔ shadows JSON et logge `identical=… cash=… positions=N plans=N wakes=N
+  watches=N stale=N`. `identical=True` = zéro dérive ; toute divergence part en
+  warning avec le détail. **C'est le filet de la bascule.**
+- Logs `[queue_dispatch]` (producteur : `symbols/decided/undecided/skipped`),
+  `[queue_decide]` / `[queue_execute]` (pools), `[queue.ledger]` / `[queue.worker]`.
+- **Sonde `[shadow-queue]`** (`CASYS_SHADOW_QUEUE_ENABLED`) : **OBSOLÈTE** — elle
+  drainait un handler no-op dans `shadow_queue.db` pour valider la mécanique *avant*
+  bascule. Désactivée (=0) depuis l'activation de la vraie file ; à retirer au gommage.
+
+### Activation / rollback
+
+Chaque flag est un strangler **réversible**. Rollback = repasser le(s) flag(s) à
+`0`/`json` dans `.env` puis **redémarrer** le daemon (`load_dotenv` est lu au boot,
+`daemon.py` `main()`). Le double-write shadow JSON garde l'état JSON à jour en
+parallèle du SQLite → retour arrière sans perte d'état.
+
+### État (2026-07-04) et gommage strangler à venir
+
+- **Activé en paper**, migration validée, `[state-compare] identical=True`. Le vrai
+  trafic `decide`/`execute` via file s'observe à la réouverture des marchés (un boot
+  frais week-end donne `due=0`).
+- **Gommage** (dette, **gated par validation**, ordre contraint) : (1) migrer les
+  ~10 lecteurs JSON hors-store → SQLite ; (2) retirer le double-write + basculer le
+  défaut `sqlite` ; (3) retirer le fallback `decide` synchrone ; (4) retirer le
+  fallback `execute` synchrone ; (5) retirer la sonde shadow. Les lecteurs d'abord :
+  ils bloquent le retrait du double-write.
+
 ## Voir aussi
 
-- Spec de conception et contexte des phases : [`../superpowers/specs/2026-07-03-task-ledger-durable-queue-design.md`](../superpowers/specs/2026-07-03-task-ledger-durable-queue-design.md)
+- Conception générale + phases : [`../superpowers/specs/2026-07-03-task-ledger-durable-queue-design.md`](../superpowers/specs/2026-07-03-task-ledger-durable-queue-design.md)
+- Conception Phase 3 (decide + execute via file, flags) : [`../superpowers/specs/2026-07-04-phase3-decide-execute-via-file-design.md`](../superpowers/specs/2026-07-04-phase3-decide-execute-via-file-design.md)
+- Plan Phase 1 (migration état SQLite) : [`../superpowers/plans/2026-07-03-task-ledger-phase1-state-migration.md`](../superpowers/plans/2026-07-03-task-ledger-phase1-state-migration.md)
 - Plan d'implémentation Phase 0 : [`../superpowers/plans/2026-07-03-task-ledger-lot-a-phase0.md`](../superpowers/plans/2026-07-03-task-ledger-lot-a-phase0.md)
+- Contexte agent (`now_human`, `market_clocks`) : [`agent-context.md`](agent-context.md)
 - Registre de décisions : [`../decisions/registre-decisions-metier.md`](../decisions/registre-decisions-metier.md)

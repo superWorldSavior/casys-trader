@@ -16,6 +16,7 @@ from trader.tools.market import (
     _VENUE_BY_SYMBOL,
     clamp_wake_to_session_open,
     human_clock,
+    market_clocks,
     most_recent_session_open,
     next_regular_session_open,
     session_context,
@@ -342,3 +343,28 @@ def test_human_clock_vendredi_utc():
 
 def test_human_clock_lundi():
     assert human_clock(_utc(2026, 6, 15, 9, 5)) == "lundi 15/06 09:05 UTC"
+
+
+# --- market_clocks : heure locale par place, triée ouest→est, déterministe ---
+
+
+def test_market_clocks_trois_zones_triees_ouest_est():
+    # Vendredi 03/07 07:16 UTC (été : NY=EDT UTC-4, Paris=CEST UTC+2, Taipei=UTC+8).
+    out = market_clocks(_utc(2026, 7, 3, 7, 16), ["AAPL", "BN.PA", "2330.TW"])
+    assert out == "New York ven 03:16 · Paris ven 09:16 · Taipei ven 15:16"
+
+
+def test_market_clocks_dedup_par_fuseau():
+    # BN.PA et ^FCHI partagent Europe/Paris → une seule entrée Paris.
+    out = market_clocks(_utc(2026, 7, 3, 7, 16), ["BN.PA", "^FCHI", "AAPL"])
+    assert out == "New York ven 03:16 · Paris ven 09:16"
+
+
+def test_market_clocks_jour_bascule_a_taipei():
+    # Vendredi 03/07 18:00 UTC : à Taipei (+8) il est déjà samedi 02:00.
+    out = market_clocks(_utc(2026, 7, 3, 18, 0), ["AAPL", "2330.TW"])
+    assert out == "New York ven 14:00 · Taipei sam 02:00"
+
+
+def test_market_clocks_vide():
+    assert market_clocks(_utc(2026, 7, 3, 7, 16), []) == ""
