@@ -228,9 +228,10 @@ def test_tool_primitive_imports_are_compatibility_aliases() -> None:
 
 
 def test_market_data_imports_are_canonical_with_tools_compatibility() -> None:
-    from trader.market.data_source import CompositeDataSource, DataSource, YFinanceDataSource
+    from trader.market.data_source import CompositeDataSource, DataSource as AdapterDataSource, YFinanceDataSource
     from trader.market.ib_source import IBDataSource, INTERVAL_MAP, LOOKBACK_MAP, connect_ib
     from trader.market.market_data import Bar, Freshness, MarketError, assess_freshness
+    from trader.market.ports import DataSource
     from trader.tools.data_source import CompositeDataSource as LegacyCompositeDataSource
     from trader.tools.data_source import DataSource as LegacyDataSource
     from trader.tools.data_source import YFinanceDataSource as LegacyYFinanceDataSource
@@ -247,6 +248,7 @@ def test_market_data_imports_are_canonical_with_tools_compatibility() -> None:
     assert LegacyMarketError is MarketError
     assert LegacyFreshness is Freshness
     assert legacy_assess_freshness is assess_freshness
+    assert AdapterDataSource is DataSource
     assert LegacyDataSource is DataSource
     assert LegacyCompositeDataSource is CompositeDataSource
     assert LegacyYFinanceDataSource is YFinanceDataSource
@@ -275,6 +277,33 @@ def test_legacy_market_tool_modules_proxy_mutations_to_canonical_modules(monkeyp
     assert canonical_market._compat_probe is market_sentinel
     assert canonical_data_source._compat_probe is data_source_sentinel
     assert canonical_ib_source._compat_probe is ib_source_sentinel
+
+
+def test_application_uses_market_ports_instead_of_data_source_adapters() -> None:
+    trader_dir = Path(__file__).resolve().parents[1] / "trader"
+    application_dir = trader_dir / "application"
+    forbidden_modules = {"trader.market.data_source"}
+    forbidden_from_market = {"data_source"}
+
+    violations: list[str] = []
+    for path in sorted(application_dir.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        rel_path = path.relative_to(trader_dir.parent)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module in forbidden_modules:
+                violations.append(f"{rel_path}: from {node.module} import ...")
+            elif isinstance(node, ast.ImportFrom) and node.module == "trader.market":
+                forbidden_names = sorted(
+                    alias.name for alias in node.names if alias.name in forbidden_from_market
+                )
+                if forbidden_names:
+                    violations.append(f"{rel_path}: from trader.market import {forbidden_names}")
+            elif isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name in forbidden_modules:
+                        violations.append(f"{rel_path}: import {alias.name}")
+
+    assert violations == []
 
 
 def test_news_feed_imports_are_canonical_with_tools_compatibility() -> None:

@@ -10,7 +10,7 @@ from typing import Callable, Protocol, runtime_checkable
 
 from trader.market import fx, fx_rates
 from trader.market import market_data as market
-from trader.market.data_source import DataSource
+from trader.market.ports import DataSource
 
 log = logging.getLogger(__name__)
 

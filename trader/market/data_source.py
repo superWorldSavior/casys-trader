@@ -1,4 +1,4 @@
-"""data_source — Protocol DataSource + adapters (yfinance, composite).
+"""data_source — adapters and config for market data sources.
 
 AX / Contrats étroits  : Protocol minimal (get_bars seul).
 AX / Explicit over Implicit : aucun défaut magique de source.
@@ -10,45 +10,11 @@ from __future__ import annotations
 import fnmatch
 import logging
 from pathlib import Path
-from typing import Protocol, runtime_checkable
 
 from trader.domain.market_data import Bar, MarketError
+from trader.market.ports import DataSource as DataSource
 
 log = logging.getLogger(__name__)
-
-
-# ---------------------------------------------------------------------------
-# Protocol
-# ---------------------------------------------------------------------------
-
-@runtime_checkable
-class DataSource(Protocol):
-    """Contrat minimal d'une source de barres OHLCV.
-
-    Une source conforme expose uniquement get_bars — pas de connexion,
-    pas de disconnect (géré en dehors si besoin).
-    """
-
-    def get_bars(
-        self,
-        symbol: str,
-        lookback: str,
-        interval: str,
-    ) -> list[Bar]:
-        """Retourne les barres OHLCV pour symbol.
-
-        Args:
-            symbol:   Ticker interne casys-trader (format yfinance).
-            lookback: Période ('5d','1mo','3mo','6mo','1y').
-            interval: Taille de barre ('15m','30m','1h','4h','1d').
-
-        Returns:
-            list[Bar] non vide.
-
-        Raises:
-            MarketError: code machine-readable, jamais d'exception brute.
-        """
-        ...
 
 
 # ---------------------------------------------------------------------------

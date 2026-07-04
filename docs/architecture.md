@@ -50,7 +50,7 @@ les utilisaient :
 | `trader/planning/` | Plans de trade, veilles, exit engine, gate de pertinence | compat : `trader.trade_plan`, `trader.indicator_watch`, `trader.exit_engine`, `trader.relevance_gate` |
 | `trader/execution/` | Broker paper, primitives d'ordre/fill, commissions, RiskGate, projection portefeuille | compat : `trader.tools.execution`, `trader.tools.portfolio`, `trader.risk` |
 | `trader/learnings/` | Buffer brut JSONL, store SQLite recall, embeddings, consolidateur | compat : `trader.tools.memory.LearningsStore`, `trader.learnings_store`, `trader.embeddings`, `trader.consolidator` |
-| `trader/market/` | Données marché, sources yfinance/IB, fraîcheur, indicateurs, FX, news, macro, radar, régime, priorisation gross exposure | compat : `trader.tools.market`, `trader.tools.data_source`, `trader.tools.ib_source`, `trader.tools.news_feed`, `trader.fx`, `trader.features`, etc. |
+| `trader/market/` | Port `DataSource`, adaptateurs yfinance/IB/composite, fraîcheur, indicateurs, FX, news, macro, radar, régime, priorisation gross exposure | port : `trader.market.ports.DataSource`; compat : `trader.tools.market`, `trader.tools.data_source`, `trader.tools.ib_source`, `trader.tools.news_feed`, `trader.fx`, `trader.features`, etc. |
 | `trader/queue/` | File de tâches durable, workers, pools, backpressure | backend technique utilisé par le runtime queue-on |
 | `trader/state_db/` | Backend SQLite de l'état paper, broker store, outbox | source durable quand `CASYS_STATE_BACKEND=sqlite` |
 | `trader/config/` | Loaders de configuration runtime (`pool`, `portfolio`) | retire les loaders transverses de la racine `trader/` |
