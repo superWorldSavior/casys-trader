@@ -32,6 +32,7 @@ from trader.agent import llm
 from trader.agent import memory as agent_memory
 from trader.agent.context import build_market_cockpit, resolve_indicator_requests
 from trader.application import (
+    amend_exit as amend_exit_service,
     confidence_feedback,
     cycle_schedule,
     execution_eligibility as execution_eligibility_service,
@@ -72,7 +73,6 @@ from trader.planning.trade_plan import (
     InvalidExitPlanError,
     TradePlan,
     TradePlanStore,
-    apply_amend_exit,
     create_trade_plan,
     create_trade_plan_from_order,
     resolve_exit_plan,
@@ -667,34 +667,13 @@ def _apply_amend_exit(
     bars: list | None,
     entry: dict,
 ) -> None:
-    """Applique amend_exit au TradePlan ouvert du symbole.
-
-    No-op tracé si pas de plan ouvert ou si la résolution échoue : jamais d'erreur
-    propagée (AX : fail-safe, le HOLD est déjà enregistré).
-    Mutate `entry` pour tracer le résultat dans le log de décision.
-    """
-    entry["amend_exit"] = copy.deepcopy(amend_exit)
-    open_plans = [p for p in plan_store.open_plans() if p.symbol == symbol]
-    if not open_plans:
-        entry["amend_exit_applied"] = False
-        entry["amend_exit_reason"] = "no_open_plan"
-        return
-
-    plan = open_plans[0]
-    try:
-        patched = apply_amend_exit(plan, amend_exit, bars=bars)
-    except (InvalidExitPlanError, ValueError) as exc:
-        entry["amend_exit_applied"] = False
-        entry["amend_exit_reason"] = f"resolve_failed:{exc}"
-        return
-
-    if patched is plan:
-        entry["amend_exit_applied"] = False
-        entry["amend_exit_reason"] = "empty_amend"
-        return
-
-    plan_store.upsert(patched)
-    entry["amend_exit_applied"] = True
+    amend_exit_service.apply_amend_exit_to_open_plan(
+        plan_store=plan_store,
+        symbol=symbol,
+        amend_exit=amend_exit,
+        bars=bars,
+        entry=entry,
+    )
 
 
 def _llm_review_verdict(decision: codex_client.Decision) -> str:

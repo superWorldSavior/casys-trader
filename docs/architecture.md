@@ -37,6 +37,7 @@ les utilisaient :
 
 | Zone | Rôle | Notes |
 |---|---|---|
+| `trader/application/amend_exit.py` | Application fail-safe des amendements de plan ouvert demandés par l'agent | contrat `Protocol` local pour le store, le daemon conserve un wrapper historique |
 | `trader/application/planner_batch.py` | Batch LLM, budget modèle, tournée d'outils, REQUEST_CONTEXT | appelé via `daemon._batch_decide()` |
 | `trader/application/market_snapshot.py` | Barres runtime/daily/exit, fraîcheur, FX, eligibility, tradable maps | retourne `MarketSnapshot`, le daemon l'unpack |
 | `trader/application/decision_recorder.py` | Enrichissement décision, ledger, report, status, event, recall traces | source durable : `state/decisions.jsonl` |
