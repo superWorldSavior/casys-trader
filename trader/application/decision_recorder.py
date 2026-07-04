@@ -8,8 +8,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Protocol, TypeAlias
 
+from trader.application.tool_outcomes import finalize_action_tool_outcomes
 from trader.reporting import decision_ledger
-from trader.reporting.tool_trace import finalize_action_tool_outcomes
 
 log = logging.getLogger(__name__)
 

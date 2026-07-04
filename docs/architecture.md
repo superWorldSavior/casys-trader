@@ -49,6 +49,7 @@ les utilisaient :
 | `trader/application/plan_review.py` | Persistance et réinjection du dernier verdict LLM sur les plans ouverts | le daemon conserve les wrappers privés historiques |
 | `trader/application/reference_volatility.py` | Calcul de volatilité de référence pour résoudre stops/trailings en multiples de volatilité | le daemon conserve les wrappers privés monkeypatchables |
 | `trader/application/risk_capacity.py` | Contexte de capacité exposé à l'agent : gross exposure, plafonds buy/sell, quantités natives FX-aware | le daemon injecte le broker, les prix, les FX et la fonction devise |
+| `trader/application/tool_outcomes.py` | Finalisation des outcomes réels des action tools avant persistance des décisions | `reporting.tool_trace` réexporte l'ancien point de compatibilité |
 | `trader/application/watch_scanner.py` | Scan applicatif des indicator/exit watches : fetch des barres, évaluation, cooldown, retrait et réveil symbole | le daemon conserve l'émission d'événements/logs runtime |
 | `trader/agent/` | Contexte agent, mémoire mandat/stratégie, façade planner, transport LLM/acpx | compat : `trader.agent_context`, `trader.codex_client`, `trader.llm`, `trader.tools.memory.Memory` |
 | `trader/agent_protocol/` | Types, prompts, parsing du contrat LLM | utilisé par `trader/agent/client.py` |

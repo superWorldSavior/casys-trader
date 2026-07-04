@@ -1,13 +1,14 @@
 """Garde-fou d'invariant : tout action tool final du contrat symbol_calls doit
-être couvert par la finalisation d'outcome (tool_trace._ACTION_TOOLS), sinon son
+être couvert par la finalisation d'outcome (tool_outcomes.ACTION_TOOLS), sinon son
 outcome dans runtime.tool_calls reste brut "ok" — trou d'audit SILENCIEUX.
 
 Cette dette s'est déjà re-creusée une fois (amend_exit ajouté par L3 sans être
 finalisé). Ce test la verrouille : quand tu ajoutes un action tool à
-`_decision_from_symbol_calls`, ajoute-le ICI, dans `tool_trace._ACTION_TOOLS`,
+`_decision_from_symbol_calls`, ajoute-le ICI, dans `tool_outcomes.ACTION_TOOLS`,
 et pense à `build_decision_row` pour l'audit durable.
 """
 from trader.agent import client as codex_client
+from trader.application import tool_outcomes
 from trader.reporting import tool_trace
 
 # Les action tools FINAUX (par symbole) reconnus par le contrat symbol_calls.
@@ -39,7 +40,11 @@ def test_action_tools_du_contrat_sont_reconnus_par_le_parsing() -> None:
 
 
 def test_action_tools_du_contrat_sont_finalises_pour_l_audit() -> None:
-    missing = _CONTRACT_ACTION_TOOLS - tool_trace._ACTION_TOOLS
+    missing = _CONTRACT_ACTION_TOOLS - tool_outcomes.ACTION_TOOLS
     assert not missing, (
         f"action tools sans finalisation d'outcome (trou d'audit silencieux) : {missing}"
     )
+
+
+def test_tool_trace_garde_l_alias_legacy_des_action_tools() -> None:
+    assert tool_trace._ACTION_TOOLS is tool_outcomes.ACTION_TOOLS
