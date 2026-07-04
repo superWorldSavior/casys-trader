@@ -6,6 +6,9 @@ Cas couverts :
   3. Pool : 3 tâches decide enfilées → toutes 'done' avec result non-null.
   4. RetryableError non-overload → requeue (status='pending', attempts >= 1).
   5. RetryableError overload → on_overload() → effective_limit baisse (AIMD).
+  6. [FIX 1] finish_now_ms capturé après handler → scheduled_at ancré sur fin.
+  7. [FIX 2] stop(timeout_s court) avec thread bloquant → thread vivant conservé.
+  8. [FIX 3] start() lève RuntimeError si threads encore vivants.
 """
 from __future__ import annotations
 
@@ -236,3 +239,163 @@ def test_pool_overload_baisse_effective_limit(tmp_path):
         f"effective_limit devrait avoir baissé après overload, "
         f"était {initial_limit}, est {pools.effective_limit('acpx')}"
     )
+
+
+# ---------------------------------------------------------------------------
+# 6 : [FIX 1] finish_now_ms ancré sur la fin du handler, pas le début
+# ---------------------------------------------------------------------------
+
+def test_backoff_ancre_sur_finish_now_ms(tmp_path):
+    """Handler lent (avance l'horloge de 900s) + RetryableError →
+    scheduled_at reflète l'heure de FIN du handler, pas de début du claim.
+
+    Sans fix : scheduled_at = now_ms_claim + backoff → déjà écoulé après 900s.
+    Avec fix  : scheduled_at = finish_now_ms + backoff → correctement dans le futur.
+    """
+    T0_S = 1_000_000  # epoch fictive (secondes)
+    ADVANCE_S = 900   # simule 15 min de LLM
+
+    clock = [float(T0_S)]
+
+    def fake_now() -> float:
+        return clock[0]
+
+    def slow_handler(task):
+        clock[0] += ADVANCE_S  # avance l'horloge pendant le "traitement"
+        raise RetryableError("timeout LLM simulé")
+
+    led = TaskLedger(tmp_path / "q.db")
+    pools = ResourcePools({})
+    led.enqueue(
+        kind="decide", priority=0,
+        scheduled_at_ms=0, now_ms=0,
+        dedup_key="d1", max_attempts=3,
+    )
+
+    pool = DecidePool(
+        ledger=led,
+        pools=pools,
+        handlers={"decide": slow_handler},
+        num_workers=1,
+        now_fn=fake_now,
+        backoff_base_ms=1000,
+    )
+    pool.start()
+
+    # Attend qu'au moins 1 tentative soit enregistrée
+    deadline = time.time() + 5.0
+    while time.time() < deadline:
+        row = led._conn.execute("SELECT attempts FROM tasks").fetchone()
+        if row and row["attempts"] >= 1:
+            break
+        time.sleep(0.05)
+
+    pool.stop()
+
+    row = led._conn.execute("SELECT status, scheduled_at FROM tasks").fetchone()
+    assert row["status"] == "pending", f"attendu pending, got {row['status']}"
+
+    # scheduled_at doit être >= T_finish * 1000 (pas claimable immédiatement
+    # à l'heure de fin du handler)
+    T_finish_ms = int((T0_S + ADVANCE_S) * 1000)
+    assert row["scheduled_at"] >= T_finish_ms, (
+        f"scheduled_at={row['scheduled_at']} devrait être >= T_finish_ms={T_finish_ms} — "
+        f"le backoff doit être ancré sur finish_now_ms, pas now_ms_claim "
+        f"(now_ms_claim * 1000 ≈ {T0_S * 1000})"
+    )
+
+
+# ---------------------------------------------------------------------------
+# 7 : [FIX 2] stop() avec thread bloquant → thread vivant conservé dans _threads
+# ---------------------------------------------------------------------------
+
+def test_stop_thread_bloque_reste_reference(tmp_path):
+    """stop(timeout_s court) avec un handler bloquant → _threads garde le thread
+    encore vivant (pas de clear aveugle) et logge un warning."""
+    import threading
+
+    entered = threading.Event()
+    unblock = threading.Event()
+
+    led = TaskLedger(tmp_path / "q.db")
+    pools = ResourcePools({})
+    led.enqueue(kind="decide", priority=0, scheduled_at_ms=0, now_ms=0, dedup_key="d1")
+
+    def blocking_handler(task):
+        entered.set()   # signale que le handler est entré
+        unblock.wait()  # bloque jusqu'au nettoyage du test
+        return "done"
+
+    pool = DecidePool(
+        ledger=led,
+        pools=pools,
+        handlers={"decide": blocking_handler},
+        num_workers=1,
+        now_fn=time.time,
+    )
+    pool.start()
+
+    # Attend que le handler soit entré
+    assert entered.wait(timeout=5.0), "le handler n'a pas démarré dans les temps"
+
+    # stop avec timeout court → le thread est encore vivant à l'expiration
+    pool.stop(timeout_s=0.2)
+
+    try:
+        # Le thread vivant ne doit PAS avoir été clearé de _threads
+        assert len(pool._threads) >= 1, (
+            "_threads ne doit pas être vidé quand un thread est encore vivant"
+        )
+        assert any(t.is_alive() for t in pool._threads), (
+            "le thread encore vivant doit rester référencé dans _threads"
+        )
+    finally:
+        # Nettoyage : débloque le handler pour permettre une fin propre
+        unblock.set()
+        for t in pool._threads:
+            t.join(timeout=2.0)
+
+
+# ---------------------------------------------------------------------------
+# 8 : [FIX 3] start() lève RuntimeError si threads encore vivants
+# ---------------------------------------------------------------------------
+
+def test_start_leve_si_threads_encore_vivants(tmp_path):
+    """start() après un stop incomplet (threads encore vivants) → RuntimeError."""
+    import threading
+
+    entered = threading.Event()
+    unblock = threading.Event()
+
+    led = TaskLedger(tmp_path / "q.db")
+    pools = ResourcePools({})
+    led.enqueue(kind="decide", priority=0, scheduled_at_ms=0, now_ms=0, dedup_key="d1")
+
+    def blocking_handler(task):
+        entered.set()
+        unblock.wait()
+        return "done"
+
+    pool = DecidePool(
+        ledger=led,
+        pools=pools,
+        handlers={"decide": blocking_handler},
+        num_workers=1,
+        now_fn=time.time,
+    )
+    pool.start()
+
+    assert entered.wait(timeout=5.0), "le handler n'a pas démarré dans les temps"
+
+    # stop partiel → thread encore vivant dans _threads
+    pool.stop(timeout_s=0.2)
+
+    try:
+        # Un second start() doit être refusé
+        with pytest.raises(RuntimeError, match="threads encore actifs"):
+            pool.start()
+    finally:
+        # Nettoyage
+        unblock.set()
+        for t in pool._threads:
+            t.join(timeout=2.0)

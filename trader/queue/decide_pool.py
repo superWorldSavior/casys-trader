@@ -79,7 +79,19 @@ class DecidePool:
     # ------------------------------------------------------------------
 
     def start(self) -> None:
-        """Démarre les N threads workers."""
+        """Démarre les N threads workers.
+
+        Lève ``RuntimeError`` si des threads issus d'un start précédent sont
+        encore vivants (stop incomplet). Un start propre (aucun thread vivant)
+        purge les références mortes avant de créer les nouveaux threads.
+        """
+        alive = [t for t in self._threads if t.is_alive()]
+        if alive:
+            raise RuntimeError(
+                f"[decide_pool] start() refusé : {len(alive)} threads encore actifs — "
+                "appeler stop(timeout_s=...) et attendre leur fin avant de redémarrer"
+            )
+        self._threads = []  # purge les références mortes résiduelles
         self._stop_event.clear()
         for i in range(self._num_workers):
             t = threading.Thread(
@@ -100,17 +112,31 @@ class DecidePool:
         durée du ``run_once`` en cours (≤ lease_ms dans le pire cas, mais le
         test utilise des handlers mockés qui retournent immédiatement).
 
+        Après les join, seuls les threads RÉELLEMENT terminés sont retirés de
+        ``_threads``. Les threads encore vivants (handler LLM long) y restent
+        référencés — leurs permits acpx restent détenus, et ``start()`` les
+        détectera et refusera de démarrer.
+
         Parameters
         ----------
         timeout_s:
-            Délai max d'attente par thread (secondes). Passé ce délai, le thread
-            est laissé en vie (daemon=True : il mourra avec le processus principal).
+            Délai max d'attente par thread (secondes). Passé ce délai, les threads
+            encore actifs sont conservés dans ``_threads`` (daemon=True : ils
+            mourront avec le processus principal si non rejoints).
         """
         self._stop_event.set()
         for t in self._threads:
             t.join(timeout=timeout_s)
-        self._threads.clear()
-        log.info("[decide_pool] stopped")
+        still_alive = [t for t in self._threads if t.is_alive()]
+        finished_count = len(self._threads) - len(still_alive)
+        self._threads = still_alive
+        if still_alive:
+            log.warning(
+                "[decide_pool] stop: %d threads encore actifs après timeout (%.1fs) — "
+                "permits acpx potentiellement détenus",
+                len(still_alive), timeout_s,
+            )
+        log.info("[decide_pool] stopped finished=%d alive=%d", finished_count, len(still_alive))
 
     # ------------------------------------------------------------------
     # Boucle worker
@@ -130,6 +156,7 @@ class DecidePool:
             worker_id=worker_id,
             lease_ms=self._lease_ms,
             backoff_base_ms=self._backoff_base_ms,
+            now_fn=self._now_fn,
         )
         log.debug("[decide_pool] worker started id=%s", worker_id)
 
