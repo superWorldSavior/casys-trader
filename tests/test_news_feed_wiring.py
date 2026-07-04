@@ -9,7 +9,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from trader.reporting import decision_ledger
-from trader.tools import news_feed as nf
+from trader.market import news_feed as nf
 
 NOW = datetime(2026, 6, 23, 12, 0, tzinfo=timezone.utc)
 
@@ -51,7 +51,7 @@ def test_quiet_gate_decision_has_news_key(monkeypatch, tmp_path, patch_batch, ma
     pour TOUS les chemins.
     """
     from trader.runtime import daemon
-    from trader.tools import news_feed as nf
+    from trader.market import news_feed as nf
     from trader.scheduling.scheduler import Scheduler
     from conftest import write_runtime_config
 
@@ -113,7 +113,7 @@ def test_payload_decision_contient_macro_next(monkeypatch, tmp_path, patch_batch
     présente dans la décision loggée, quelle que soit la voie (quiet_gate inclus).
     """
     from trader.runtime import daemon
-    from trader.tools import news_feed as nf
+    from trader.market import news_feed as nf
     from trader.scheduling.scheduler import Scheduler
     from conftest import write_runtime_config
 

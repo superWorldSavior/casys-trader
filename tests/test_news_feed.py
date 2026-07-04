@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from trader.tools import news_feed as nf
+from trader.market import news_feed as nf
 
 UTC = timezone.utc
 NOW = datetime(2026, 6, 23, 12, 0, tzinfo=UTC)

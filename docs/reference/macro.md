@@ -39,4 +39,4 @@ vue par le LLM en décision** (comme le fil news : phase attribution d'abord,
 promotion après mesure). Voir la carte de couverture et le registre pour la suite.
 
 ## Voir aussi
-- [Config](config.md) (`data_sources.yaml`, `sessions.yaml`) · fil news (`tools/news_feed`).
+- [Config](config.md) (`data_sources.yaml`, `sessions.yaml`) · fil news (`market/news_feed`).

@@ -48,7 +48,7 @@ les utilisaient :
 | `trader/planning/` | Plans de trade, veilles, exit engine, gate de pertinence | compat : `trader.trade_plan`, `trader.indicator_watch`, `trader.exit_engine`, `trader.relevance_gate` |
 | `trader/execution/` | Broker paper, primitives d'ordre/fill, commissions, RiskGate | compat : `trader.tools.execution`, `trader.risk` |
 | `trader/learnings/` | Store SQLite, embeddings, consolidateur | compat : `trader.learnings_store`, `trader.embeddings`, `trader.consolidator` |
-| `trader/market/` | Données marché, sources yfinance/IB, fraîcheur, indicateurs, FX, macro, radar, régime, priorisation gross exposure | compat : `trader.tools.market`, `trader.tools.data_source`, `trader.tools.ib_source`, `trader.fx`, `trader.features`, etc. |
+| `trader/market/` | Données marché, sources yfinance/IB, fraîcheur, indicateurs, FX, news, macro, radar, régime, priorisation gross exposure | compat : `trader.tools.market`, `trader.tools.data_source`, `trader.tools.ib_source`, `trader.tools.news_feed`, `trader.fx`, `trader.features`, etc. |
 | `trader/config/` | Loaders de configuration runtime (`pool`, `portfolio`) | retire les loaders transverses de la racine `trader/` |
 | `trader/rotation/` | Rotation d'univers, hot-sets par venue, schedule, override, ledger rotation | `trader.rotation` réexporte l'ancien core |
 | `trader/metadata/` | Métadonnées git/code version | utilisé par runtime et reporting sans cycle |
@@ -394,7 +394,7 @@ Opérateurs valides : `>`, `>=`, `<`, `<=`, `==`, `!=`, `abs>`, `abs>=`, `abs<`,
 | `learnings.db` | `learnings_ingest` + daemon (`recalls`) | outil `recall_learnings` | Store SQLite dérivé : notes scorées par outcome (lift/symbole), embeddings, traces de recall |
 | `archive/*.jsonl.gz` | `trader/runtime/ledger_rotation.py` (démarrage daemon) | `read_rows_with_archive` (analyses) | Mois passés de decisions/events — rotation mensuelle crash-safe |
 | `archive/learnings-*.jsonl` | `LearningsStore`/`consolidator` | ingestion recall | Évincés + historique des consolidés — plus rien ne se jette |
-| `news_items/YYYY-MM-DD.jsonl` | `news_feed` (P1a) | futur analyste-news | Items de news persistés (dédup uuid, purge 60 j) |
+| `news_items/YYYY-MM-DD.jsonl` | `market/news_feed` (P1a) | futur analyste-news | Items de news persistés (dédup uuid, purge 60 j) |
 | `macro_calendar.json` + `macro_series/` | `macro_calendar`/`macro_series` (P1a) | payload d'attribution | Dates FOMC/CPI + séries macro quotidiennes (DBnomics) |
 
 **Scheduler** (`state/scheduler.json`) : next_wake par symbole, indicator_watches,

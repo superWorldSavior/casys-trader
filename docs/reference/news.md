@@ -1,7 +1,7 @@
 # Référence — Fil d'actu (news)
 
 > **Type** : Reference (Diátaxis).
-> **Code** : `trader/tools/news_feed` · **Phase** : attribution (loggée, pas au LLM)
+> **Code** : `trader/market/news_feed` · **Phase** : attribution (loggée, pas au LLM)
 > **Design** : livré (historique dans `git log` ; cette page de référence fait foi)
 
 Ingestion du fil d'actualité par symbole (Yahoo via yfinance). **Phase

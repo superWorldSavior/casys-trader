@@ -11,6 +11,7 @@ __all__ = [
     "macro_calendar",
     "macro_series",
     "market_data",
+    "news_feed",
     "radar",
     "radar_config",
     "radar_data",

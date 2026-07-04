@@ -232,6 +232,62 @@ def test_legacy_market_tool_modules_proxy_mutations_to_canonical_modules(monkeyp
     assert canonical_ib_source._compat_probe is ib_source_sentinel
 
 
+def test_news_feed_imports_are_canonical_with_tools_compatibility() -> None:
+    from trader.market.news_feed import NewsItemsArchive, RawNews, news_snapshot, reset_cache
+    from trader.tools.news_feed import NewsItemsArchive as LegacyNewsItemsArchive
+    from trader.tools.news_feed import RawNews as LegacyRawNews
+    from trader.tools.news_feed import news_snapshot as legacy_news_snapshot
+    from trader.tools.news_feed import reset_cache as legacy_reset_cache
+
+    assert LegacyNewsItemsArchive is NewsItemsArchive
+    assert LegacyRawNews is RawNews
+    assert legacy_news_snapshot is news_snapshot
+    assert legacy_reset_cache is reset_cache
+
+
+def test_legacy_news_feed_tool_module_proxies_mutations_to_canonical_module(monkeypatch) -> None:
+    from trader.market import news_feed as canonical_news_feed
+    from trader.tools import news_feed as legacy_news_feed
+
+    sentinel = object()
+    monkeypatch.setattr(legacy_news_feed, "_compat_probe", sentinel, raising=False)
+
+    assert canonical_news_feed._compat_probe is sentinel
+
+
+def test_core_packages_do_not_depend_on_legacy_news_feed_tool() -> None:
+    trader_dir = Path(__file__).resolve().parents[1] / "trader"
+    checked_roots = (
+        trader_dir / "application",
+        trader_dir / "market",
+        trader_dir / "reporting",
+        trader_dir / "runtime",
+    )
+    forbidden_modules = {"trader.tools.news_feed"}
+    forbidden_from_tools = {"news_feed"}
+
+    violations: list[str] = []
+    for root in checked_roots:
+        for path in sorted(root.rglob("*.py")):
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            rel_path = path.relative_to(trader_dir.parent)
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ImportFrom) and node.module in forbidden_modules:
+                    violations.append(f"{rel_path}: from {node.module} import ...")
+                elif isinstance(node, ast.ImportFrom) and node.module == "trader.tools":
+                    forbidden_names = sorted(
+                        alias.name for alias in node.names if alias.name in forbidden_from_tools
+                    )
+                    if forbidden_names:
+                        violations.append(f"{rel_path}: from trader.tools import {forbidden_names}")
+                elif isinstance(node, ast.Import):
+                    for alias in node.names:
+                        if alias.name in forbidden_modules:
+                            violations.append(f"{rel_path}: import {alias.name}")
+
+    assert violations == []
+
+
 def test_core_packages_do_not_depend_on_legacy_market_tools() -> None:
     trader_dir = Path(__file__).resolve().parents[1] / "trader"
     checked_roots = (
