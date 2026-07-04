@@ -172,10 +172,7 @@ class ShadowQueueProbe:
             token = uuid.uuid4().hex
 
         # ── 3. Compter les tâches mortes (dead) ──────────────────────────
-        dead_count = self._ledger._conn.execute(
-            "SELECT COUNT(*) FROM tasks WHERE status='dead' AND kind=?",
-            (_SHADOW_KIND,),
-        ).fetchone()[0]
+        dead_count = self._ledger.count_by_status("dead", kind=_SHADOW_KIND)
 
         # ── 4. Rapport acheminement (decidable vs drained) ───────────────
         expected = sorted(decidable_symbols)
