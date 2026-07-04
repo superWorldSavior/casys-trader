@@ -57,16 +57,16 @@ les utilisaient :
 | `trader/application/risk_capacity.py` | Contexte de capacité exposé à l'agent : gross exposure, plafonds buy/sell, quantités natives FX-aware | le daemon injecte le broker, les prix, les FX et la fonction devise |
 | `trader/application/tool_outcomes.py` | Finalisation des outcomes réels des action tools avant persistance des décisions | `reporting.tool_trace` réexporte l'ancien point de compatibilité |
 | `trader/application/watch_scanner.py` | Scan applicatif des indicator/exit watches : fetch des barres, évaluation, cooldown, retrait et réveil symbole | le daemon conserve l'émission d'événements/logs runtime |
-| `trader/agent/` | Contexte agent, mémoire mandat/stratégie, façade planner, transport LLM/acpx | compat : `trader.agent_context`, `trader.codex_client`, `trader.llm`, `trader.tools.memory.Memory` |
+| `trader/agent/` | Contexte agent, mémoire mandat/stratégie, façade planner, transport LLM/acpx | compat virtuelle : `trader.agent_context`, `trader.codex_client`, `trader.llm`, `trader.tools.memory.Memory` |
 | `trader/agent_protocol/` | Types, prompts, parsing du contrat LLM | utilisé par `trader/agent/client.py` |
 | `trader/agent_tools/` | Package des outils domaine lecture seule | `registry.TOOL_REGISTRY` assemble 9 handlers |
 | `trader/semantic/` | Catalogue sémantique des indicateurs et requêtes agent | évite de disperser les IDs/request contracts |
 | `trader/domain/` | Primitives neutres (`Bar`, `MarketError`, `Side`) | évite que `market`/`planning` importent `tools` |
-| `trader/scheduling/` | Réveils globaux/par symbole, stale backoff, veilles persistées | compat : `trader.tools.scheduler` |
+| `trader/scheduling/` | Réveils globaux/par symbole, stale backoff, veilles persistées | compat virtuelle : `trader.tools.scheduler` |
 | `trader/planning/` | Plans de trade, veilles, exit engine, gate de pertinence | compat : `trader.trade_plan`, `trader.indicator_watch`, `trader.exit_engine`, `trader.relevance_gate` |
-| `trader/execution/` | Contrats `Order`/`Fill`, ports `Broker`/`CommissionModel`, broker paper, commissions, RiskGate, projection portefeuille | contrats/ports : `trader.execution.contracts`, `trader.execution.ports`; compat : `trader.tools.execution`, `trader.tools.portfolio`, `trader.risk` |
-| `trader/learnings/` | Buffer brut JSONL, store SQLite recall, embeddings, consolidateur | compat : `trader.tools.memory.LearningsStore`, `trader.learnings_store`, `trader.embeddings`, `trader.consolidator` |
-| `trader/market/` | Port `DataSource`, adaptateurs yfinance/IB/composite, fraîcheur, indicateurs, FX, news, macro, radar, régime, priorisation gross exposure | port : `trader.market.ports.DataSource`; compat : `trader.tools.market`, `trader.tools.data_source`, `trader.tools.ib_source`, `trader.tools.news_feed`, `trader.fx`, `trader.features`, etc. |
+| `trader/execution/` | Contrats `Order`/`Fill`, ports `Broker`/`CommissionModel`, broker paper, commissions, RiskGate, projection portefeuille | contrats/ports : `trader.execution.contracts`, `trader.execution.ports`; compat virtuelle : `trader.tools.execution`, `trader.tools.portfolio`, `trader.risk` |
+| `trader/learnings/` | Buffer brut JSONL, store SQLite recall, embeddings, consolidateur | compat virtuelle : `trader.tools.memory.LearningsStore`, `trader.learnings_store`, `trader.embeddings`, `trader.consolidator` |
+| `trader/market/` | Port `DataSource`, adaptateurs yfinance/IB/composite, fraîcheur, indicateurs, FX, news, macro, radar, régime, priorisation gross exposure | port : `trader.market.ports.DataSource`; compat virtuelle : `trader.tools.market`, `trader.tools.data_source`, `trader.tools.ib_source`, `trader.tools.news_feed`, `trader.fx`, `trader.features`, etc. |
 | `trader/queue/` | File de tâches durable, workers, pools, backpressure | backend technique utilisé par le runtime queue-on |
 | `trader/state_db/` | Backend SQLite de l'état paper, broker store, outbox | source durable quand `CASYS_STATE_BACKEND=sqlite` |
 | `trader/config/` | Loaders de configuration runtime (`pool`, `portfolio`) | retire les loaders transverses de la racine `trader/` |
@@ -80,7 +80,7 @@ les utilisaient :
 | `trader/read_models/runtime_state.py` | Lecture tolérante des fichiers `state/` pour TUI/cockpit | ne participe pas aux décisions live |
 | `trader/cockpit/` | App Textual, événements cockpit, supervisor local | `trader.cockpit` reste runnable |
 | `trader/ui/` | Builders Rich purs, TUI textuelle, palette | `trader.tui.py` reste une façade import/CLI legacy |
-| `trader/attribution.py`, `trader/tui.py`, `trader/daemon.py`, `trader/cli.py`, `trader/stats.py`, `trader/tool_usage.py`, `trader/tools/` | Façades de compatibilité import/CLI | doivent rester fines et déléguer vers les packages canoniques |
+| `trader/__init__.py`, `trader/attribution.py`, `trader/tui.py`, `trader/daemon.py`, `trader/cli.py`, `trader/stats.py`, `trader/tool_usage.py` | Façades de compatibilité import/CLI | `trader.tools.*` est un package virtuel, pas un dossier physique |
 
 ### 1.2 Niveaux d'architecture
 
@@ -94,11 +94,11 @@ mais ses packages ne sont pas tous du même niveau :
 | Capacités métier | `market/`, `planning/`, `execution/`, `scheduling/`, `learnings/`, `rotation/`, `agent/`, `agent_protocol/`, `agent_tools/` | porte la logique du domaine et ne dépend pas de `runtime/` |
 | Primitives transverses | `domain/`, `metadata/`, `system/`, `config/` | types/helpers stables, sans dépendance montante |
 | Read models et surfaces | `reporting/`, `read_models/`, `ui/`, `cockpit/` | lit l'état produit par le runtime, ne décide pas à sa place |
-| Compatibilité legacy | `tools/`, modules `attribution.py`/`tui.py`/`daemon.py`/`cli.py`/`stats.py`/`tool_usage.py` | délègue vers le canonique ; aucun nouvel import interne ne doit viser ici |
+| Compatibilité legacy | modules `attribution.py`/`tui.py`/`daemon.py`/`cli.py`/`stats.py`/`tool_usage.py`, alias virtuels de `trader/__init__.py` | délègue vers le canonique ; aucun nouvel import interne ne doit viser ici |
 
 La cible n'est donc pas forcément de créer six dossiers parents (`core/`,
 `infra/`, etc.) d'un coup. Le travail en cours est d'abord de rendre le niveau de
-chaque module explicite, puis de réduire `tools/` à une couche de compatibilité.
+chaque module explicite, puis de réduire les anciennes façades à une couche de compatibilité virtuelle.
 
 Le choix volontaire reste de ne pas frameworkiser en `ports/`/`adapters`
 génériques. En revanche, trois packages neutres existent maintenant parce qu'ils
@@ -117,7 +117,9 @@ partagés et déjà structurants (`execution`, `market`).
 Les anciens imports restent compatibles quand ils existaient déjà
 (`trader.tools.market.Bar`, `trader.tools.execution.Order`, `trader.tools.scheduler.Scheduler`,
 `trader.runtime.code_version`, `trader.process_env`, `trader.stats`,
-`trader.attribution`, `trader.tool_usage`, `trader.tui`), mais les imports internes
+`trader.attribution`, `trader.tool_usage`, `trader.tui`). `trader.tools` est
+fourni par le finder de compatibilité dans `trader/__init__.py` et ne correspond
+plus à un dossier physique. Les imports internes
 doivent viser les packages neutres ou canoniques (`domain/`, `execution/broker`,
 `execution/contracts`, `execution/ports`, `market/`, `market/ports`, `metadata/`,
 `system/`, `commands/`). Les adaptateurs concrets restent dans

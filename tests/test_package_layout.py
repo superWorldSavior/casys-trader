@@ -56,11 +56,58 @@ def test_top_level_packages_have_declared_architecture_roles() -> None:
         "system",
         "ui",
     }
-    compatibility_facades = {
-        "tools",
-    }
+    compatibility_facades = set()
 
     assert actual == canonical_packages | compatibility_facades
+
+
+def test_legacy_tools_package_is_virtual_compatibility_layer(monkeypatch) -> None:
+    trader_dir = Path(__file__).resolve().parents[1] / "trader"
+
+    assert not (trader_dir / "tools").exists()
+
+    import trader.tools as legacy_tools
+    from trader.market import market_data as canonical_market
+    from trader.tools import market as legacy_market
+    from trader.tools.market import Bar as LegacyBar
+
+    assert getattr(legacy_tools, "__file__", None) is None
+    assert getattr(legacy_tools, "__path__", None) == []
+    assert legacy_tools.market is legacy_market
+    assert LegacyBar is canonical_market.Bar
+
+    sentinel = object()
+    monkeypatch.setattr(legacy_market, "_compat_probe", sentinel, raising=False)
+
+    assert canonical_market._compat_probe is sentinel
+
+
+def test_legacy_tools_virtual_modules_preserve_explicit_star_exports() -> None:
+    import trader.tools.execution as legacy_execution
+    import trader.tools.scheduler as legacy_scheduler
+
+    assert legacy_execution.__all__ == [
+        "Broker",
+        "Commission",
+        "CommissionModel",
+        "CommissionModelName",
+        "Fill",
+        "IbkrCommissionModel",
+        "NoCommissionModel",
+        "Order",
+        "Position",
+        "Side",
+        "SimBroker",
+        "commission_model_from_name",
+        "compute_fill_effect",
+        "round_trip_cost",
+    ]
+    assert legacy_scheduler.__all__ == [
+        "STALE_BACKOFF_BASE_MULTIPLIER",
+        "STALE_BACKOFF_MAX_MINUTES",
+        "STALE_BACKOFF_MAX_STREAK",
+        "Scheduler",
+    ]
 
 
 def test_legacy_flat_module_imports_remain_compatible() -> None:
