@@ -8,6 +8,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable, Protocol, runtime_checkable
 
+from trader.application import execution_eligibility
 from trader.market import fx, fx_rates
 from trader.market import market_data as market
 from trader.market.ports import DataSource
@@ -86,22 +87,15 @@ def _default_execution_eligibility(
     now: datetime,
     runtime_interval: str,
 ) -> dict[str, dict]:
-    eligibility: dict[str, dict] = {}
-    for sym in symbols:
-        daily_bars = daily_bars_by_symbol.get(sym)
-        stale = stale_market_data.get(sym) or {}
-        eligibility[sym] = market.classify_symbol_context(
-            runtime_interval=runtime_interval,
-            has_runtime_price=sym in prices,
-            is_runtime_stale=sym in stale_market_data,
-            session_open=bool(market.session_snapshot(sym, now=now).get("open")),
-            daily_fresh=bool(daily_bars),
-            last_runtime_bar_ts=stale.get("last_bar_ts"),
-            data_age_minutes=data_age_by_symbol.get(sym),
-            daily_as_of=str(daily_bars[-1].ts) if daily_bars else None,
-            next_session_open=market.next_regular_session_open(now, symbol=sym).isoformat(),
-        )
-    return eligibility
+    return execution_eligibility.build_execution_eligibility(
+        symbols,
+        stale_market_data=stale_market_data,
+        prices=prices,
+        daily_bars_by_symbol=daily_bars_by_symbol,
+        data_age_by_symbol=data_age_by_symbol,
+        now=now,
+        runtime_interval=runtime_interval,
+    )
 
 
 def _default_exit_bars(

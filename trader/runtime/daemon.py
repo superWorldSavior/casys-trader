@@ -34,6 +34,7 @@ from trader.agent.context import build_market_cockpit, resolve_indicator_request
 from trader.application import (
     confidence_feedback,
     cycle_schedule,
+    execution_eligibility as execution_eligibility_service,
     market_snapshot,
     order_admission,
     planner_batch,
@@ -806,22 +807,15 @@ def _build_execution_eligibility(
     du cycle. execution gate les ordres (runtime frais + prix présent + session
     ouverte) ; planning autorise l'analyse/veille dès que le daily est présent (jugé
     frais par séance complétée), même runtime stale."""
-    eligibility: dict[str, dict] = {}
-    for sym in symbols:
-        daily_bars = daily_bars_by_symbol.get(sym)
-        stale = stale_market_data.get(sym) or {}
-        eligibility[sym] = market.classify_symbol_context(
-            runtime_interval=runtime_interval,
-            has_runtime_price=sym in prices,
-            is_runtime_stale=sym in stale_market_data,
-            session_open=bool(market.session_snapshot(sym, now=now).get("open")),
-            daily_fresh=bool(daily_bars),
-            last_runtime_bar_ts=stale.get("last_bar_ts"),
-            data_age_minutes=data_age_by_symbol.get(sym),
-            daily_as_of=str(daily_bars[-1].ts) if daily_bars else None,
-            next_session_open=market.next_regular_session_open(now, symbol=sym).isoformat(),
-        )
-    return eligibility
+    return execution_eligibility_service.build_execution_eligibility(
+        symbols,
+        stale_market_data=stale_market_data,
+        prices=prices,
+        daily_bars_by_symbol=daily_bars_by_symbol,
+        data_age_by_symbol=data_age_by_symbol,
+        now=now,
+        runtime_interval=runtime_interval,
+    )
 
 
 def _execution_blocked_reason(
@@ -836,12 +830,11 @@ def _execution_blocked_reason(
     "aucun ordre d'ouverture sans execution.enabled=true"). `fail_closed=False`
     (défaut) => non bloqué, pour ne jamais empêcher une SORTIE de protection par
     manque d'info."""
-    ctx = (execution_eligibility.get(symbol) or {}).get("execution")
-    if ctx is None:
-        return "execution:unclassified" if fail_closed else None
-    if ctx.get("enabled"):
-        return None
-    return f"execution:{ctx.get('reason') or 'disabled'}"
+    return execution_eligibility_service.execution_blocked_reason(
+        execution_eligibility,
+        symbol,
+        fail_closed=fail_closed,
+    )
 
 
 def _positive_finite_float(raw: object) -> float | None:
