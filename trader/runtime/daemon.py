@@ -41,6 +41,7 @@ from trader.application import (
     order_admission,
     plan_review,
     planner_batch,
+    reference_volatility as reference_volatility_service,
     risk_capacity,
     watch_scanner,
 )
@@ -57,7 +58,7 @@ from trader.market.data_source import (
     YFinanceDataSource,
     parse_data_sources_config,
 )
-from trader.market.features import DEFAULT_INDICATORS, build_indicator_snapshot
+from trader.market.features import DEFAULT_INDICATORS
 from trader.market.gross_priority import PriorityItem, gross_execution_order
 from trader.market.ib_source import IBDataSource, connect_ib
 from trader.market import news_feed
@@ -778,65 +779,21 @@ def _execution_blocked_reason(
 
 
 def _positive_finite_float(raw: object) -> float | None:
-    try:
-        value = float(raw)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
-        return None
-    if not math.isfinite(value) or value <= 0:
-        return None
-    return value
+    return reference_volatility_service.positive_finite_float(raw)
 
 
 def _cockpit_vol_fraction(cockpit: dict, symbol: str) -> float | None:
-    cols = cockpit.get("cols")
-    rows = cockpit.get("rows")
-    if not isinstance(cols, list) or not isinstance(rows, list):
-        return None
-    try:
-        symbol_index = cols.index("s")
-    except ValueError:
-        return None
-    vol_indices = []
-    for column in ("vol_d", "vol"):
-        try:
-            vol_indices.append(cols.index(column))
-        except ValueError:
-            continue
-    if not vol_indices:
-        return None
-    for row in rows:
-        if not isinstance(row, list):
-            continue
-        if len(row) <= symbol_index:
-            continue
-        if row[symbol_index] == symbol:
-            for vol_index in vol_indices:
-                if len(row) <= vol_index:
-                    continue
-                value = _positive_finite_float(row[vol_index])
-                if value is not None:
-                    return value
-            return None
-    return None
+    return reference_volatility_service.cockpit_vol_fraction(cockpit, symbol)
 
 
 def _feature_vol_fraction(
     symbol: str,
     tradable_bars_by_symbol: dict[str, list],
 ) -> float | None:
-    if symbol not in tradable_bars_by_symbol:
-        return None
-    snapshot = build_indicator_snapshot(
+    return reference_volatility_service.feature_vol_fraction(
+        symbol,
         tradable_bars_by_symbol,
-        symbols=[symbol],
-        names=["volatility"],
-        window=48,
     )
-    item = snapshot.get(symbol, {})
-    indicators = item.get("indicators") if isinstance(item, dict) else None
-    if not isinstance(indicators, dict):
-        return None
-    return _positive_finite_float(indicators.get("volatility"))
 
 
 def _reference_volatility_for_symbol(
@@ -846,13 +803,12 @@ def _reference_volatility_for_symbol(
     cockpit: dict,
     tradable_bars_by_symbol: dict[str, list],
 ) -> float | None:
-    vol_fraction = _cockpit_vol_fraction(cockpit, symbol)
-    if vol_fraction is None:
-        vol_fraction = _feature_vol_fraction(symbol, tradable_bars_by_symbol)
-    price = _positive_finite_float(entry_price)
-    if price is None or vol_fraction is None:
-        return None
-    return price * vol_fraction
+    return reference_volatility_service.reference_volatility_for_symbol(
+        symbol,
+        entry_price=entry_price,
+        cockpit=cockpit,
+        tradable_bars_by_symbol=tradable_bars_by_symbol,
+    )
 
 
 def _apply_planned_exits(
