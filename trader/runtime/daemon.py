@@ -97,15 +97,10 @@ log = logging.getLogger("casys-trader")
 # de logguer la même erreur indéfiniment. Réinitialisable dans les tests.
 _RECALL_STORE_FAILED: bool = False
 
-_VALID_INTENTS = {"OPEN_LONG", "OPEN_SHORT", "REDUCE", "CLOSE", "REVERSE", "HOLD", "ADD"}
-_ACTION_INTENTS = {
-    "BUY": {"OPEN_LONG", "REDUCE", "CLOSE", "REVERSE", "ADD"},
-    "SELL": {"OPEN_SHORT", "REDUCE", "CLOSE", "REVERSE", "ADD"},
-}
 _OPENING_INTENTS = {"OPEN_LONG", "OPEN_SHORT", "REVERSE", "ADD"}
 _PURE_OPEN_INTENTS = {"OPEN_LONG", "OPEN_SHORT"}
 _RISK_GUARDED_OPENING_INTENTS = {"OPEN_LONG", "OPEN_SHORT", "ADD"}
-_RELATIVE_ORDER_INTENTS = {"CLOSE", "REDUCE", "REVERSE", "ADD"}
+_RELATIVE_ORDER_INTENTS = order_admission.RELATIVE_ORDER_INTENTS
 _INFRA_HOLD_REASONS = {
     "no_decision_in_batch",
     "model_call_budget_exhausted",
@@ -429,65 +424,7 @@ def _resolve_position_aware_decision(
       - CLOSE/REDUCE/REVERSE → côté OPPOSÉ à la position (clôture/retournement).
       - ADD → côté IDENTIQUE à la position (renforcement dans le même sens).
     """
-    intent = decision.intent
-    if decision.position_resolved:
-        return decision
-
-    if not decision.resolve_from_position and intent not in _RELATIVE_ORDER_INTENTS:
-        return decision
-
-    if position_quantity == 0.0:
-        reason = "add_without_position" if intent == "ADD" else "nothing_to_close"
-        return replace(
-            decision,
-            action="HOLD",
-            quantity=0.0,
-            intent="HOLD",
-            resolve_from_position=False,
-            position_resolved=True,
-            reduce_fraction=None,
-            rationale=reason,
-        )
-
-    if intent == "ADD":
-        # Side IDENTIQUE à la position — renforcement dans le même sens.
-        add_side: codex_client.Action = "BUY" if position_quantity > 0 else "SELL"
-        return replace(decision, action=add_side, resolve_from_position=False, position_resolved=True)
-
-    # CLOSE / REDUCE / REVERSE — côté OPPOSÉ pour clôturer/réduire/retourner.
-    side: codex_client.Action = "SELL" if position_quantity > 0 else "BUY"
-    pos_abs = abs(position_quantity)
-
-    if intent == "CLOSE":
-        qty = pos_abs
-    elif intent == "REDUCE":
-        if decision.reduce_fraction is not None:
-            qty = decision.reduce_fraction * pos_abs
-        else:
-            qty = decision.quantity  # qty absolue fournie par l'agent
-        qty = min(qty, pos_abs)
-    elif intent == "REVERSE":
-        qty = pos_abs + decision.quantity  # fermeture + nouvelle jambe cible
-    else:
-        return replace(
-            decision,
-            action="HOLD",
-            quantity=0.0,
-            intent="HOLD",
-            resolve_from_position=False,
-            position_resolved=True,
-            reduce_fraction=None,
-            rationale="nothing_to_close",
-        )
-
-    return replace(
-        decision,
-        action=side,
-        quantity=qty,
-        resolve_from_position=False,
-        position_resolved=True,
-        reduce_fraction=None,
-    )
+    return order_admission.resolve_position_aware_decision(decision, position_quantity)
 
 
 def _merge_gate_feedback(

@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import math
+from dataclasses import replace
 
+from trader.agent_protocol.types import Action, Decision
 from trader.planning.trade_plan import InvalidExitPlanError, normalize_exit_plan
 
 VALID_INTENTS = {"OPEN_LONG", "OPEN_SHORT", "REDUCE", "CLOSE", "REVERSE", "HOLD", "ADD"}
@@ -11,6 +13,7 @@ ACTION_INTENTS = {
     "BUY": {"OPEN_LONG", "REDUCE", "CLOSE", "REVERSE", "ADD"},
     "SELL": {"OPEN_SHORT", "REDUCE", "CLOSE", "REVERSE", "ADD"},
 }
+RELATIVE_ORDER_INTENTS = {"CLOSE", "REDUCE", "REVERSE", "ADD"}
 
 
 def invalid_intent_reason(
@@ -28,6 +31,70 @@ def invalid_intent_reason(
     if intent not in ACTION_INTENTS.get(action, set()):
         return "invalid_intent"
     return None
+
+
+def resolve_position_aware_decision(
+    decision: Decision,
+    position_quantity: float,
+) -> Decision:
+    """Derive action and quantity for relative intents from the live position."""
+    intent = decision.intent
+    if decision.position_resolved:
+        return decision
+
+    if not decision.resolve_from_position and intent not in RELATIVE_ORDER_INTENTS:
+        return decision
+
+    if position_quantity == 0.0:
+        reason = "add_without_position" if intent == "ADD" else "nothing_to_close"
+        return replace(
+            decision,
+            action="HOLD",
+            quantity=0.0,
+            intent="HOLD",
+            resolve_from_position=False,
+            position_resolved=True,
+            reduce_fraction=None,
+            rationale=reason,
+        )
+
+    if intent == "ADD":
+        add_side: Action = "BUY" if position_quantity > 0 else "SELL"
+        return replace(decision, action=add_side, resolve_from_position=False, position_resolved=True)
+
+    side: Action = "SELL" if position_quantity > 0 else "BUY"
+    pos_abs = abs(position_quantity)
+
+    if intent == "CLOSE":
+        qty = pos_abs
+    elif intent == "REDUCE":
+        if decision.reduce_fraction is not None:
+            qty = decision.reduce_fraction * pos_abs
+        else:
+            qty = decision.quantity
+        qty = min(qty, pos_abs)
+    elif intent == "REVERSE":
+        qty = pos_abs + decision.quantity
+    else:
+        return replace(
+            decision,
+            action="HOLD",
+            quantity=0.0,
+            intent="HOLD",
+            resolve_from_position=False,
+            position_resolved=True,
+            reduce_fraction=None,
+            rationale="nothing_to_close",
+        )
+
+    return replace(
+        decision,
+        action=side,
+        quantity=qty,
+        resolve_from_position=False,
+        position_resolved=True,
+        reduce_fraction=None,
+    )
 
 
 def hard_stop_price(raw_exit_plan: dict | None) -> float | None:
