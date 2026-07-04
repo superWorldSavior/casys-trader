@@ -70,7 +70,8 @@ from trader.reporting import attribution, decision_ledger, meta_performance, sta
 from trader.runtime import ledger_rotation
 from trader.runtime.ib_attach import IBAttachBackoff
 from trader.scheduling import scheduler
-from trader.tools import memory as memory_mod, portfolio
+from trader.tools import memory as memory_mod
+from trader.execution import portfolio
 from trader.execution.broker import (
     CommissionModel,
     Order,

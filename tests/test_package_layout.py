@@ -12,6 +12,51 @@ def test_capability_modules_are_not_flat_files() -> None:
     assert flat_files == ["__init__.py"]
 
 
+def test_top_level_packages_have_declared_architecture_roles() -> None:
+    trader_dir = Path(__file__).resolve().parents[1] / "trader"
+    actual = {
+        path.name
+        for path in trader_dir.iterdir()
+        if path.is_dir() and path.name != "__pycache__"
+    }
+    canonical_packages = {
+        "agent",
+        "agent_protocol",
+        "agent_tools",
+        "application",
+        "cockpit",
+        "commands",
+        "config",
+        "domain",
+        "execution",
+        "learnings",
+        "market",
+        "metadata",
+        "planning",
+        "queue",
+        "read_models",
+        "reporting",
+        "rotation",
+        "runtime",
+        "scheduling",
+        "semantic",
+        "state_db",
+        "system",
+        "ui",
+    }
+    compatibility_facades = {
+        "attribution",
+        "cli",
+        "daemon",
+        "stats",
+        "tool_usage",
+        "tools",
+        "tui",
+    }
+
+    assert actual == canonical_packages | compatibility_facades
+
+
 def test_legacy_flat_module_imports_remain_compatible() -> None:
     import trader.cockpit_events as legacy_cockpit_events
     import trader.codex_client as legacy_codex_client
@@ -348,6 +393,65 @@ def test_execution_broker_imports_are_canonical_with_tools_compatibility() -> No
     assert LegacyNoCommissionModel is NoCommissionModel
     assert LegacyOrder is Order
     assert LegacySimBroker is SimBroker
+
+
+def test_portfolio_imports_are_canonical_with_tools_compatibility() -> None:
+    from trader.execution.portfolio import Holding, Snapshot, snapshot
+    from trader.tools.portfolio import Holding as LegacyHolding
+    from trader.tools.portfolio import Snapshot as LegacySnapshot
+    from trader.tools.portfolio import snapshot as legacy_snapshot
+
+    assert LegacyHolding is Holding
+    assert LegacySnapshot is Snapshot
+    assert legacy_snapshot is snapshot
+
+
+def test_legacy_portfolio_tool_module_proxies_mutations_to_canonical_module(monkeypatch) -> None:
+    from trader.execution import portfolio as canonical_portfolio
+    from trader.tools import portfolio as legacy_portfolio
+
+    sentinel = object()
+    monkeypatch.setattr(legacy_portfolio, "_compat_probe", sentinel, raising=False)
+
+    assert canonical_portfolio._compat_probe is sentinel
+
+    def fake_snapshot(*_args, **_kwargs):
+        return sentinel
+
+    monkeypatch.setattr(legacy_portfolio, "snapshot", fake_snapshot)
+
+    assert canonical_portfolio.snapshot is fake_snapshot
+
+
+def test_runtime_and_execution_do_not_depend_on_legacy_portfolio_tool() -> None:
+    trader_dir = Path(__file__).resolve().parents[1] / "trader"
+    checked_roots = (
+        trader_dir / "execution",
+        trader_dir / "runtime",
+    )
+    forbidden_modules = {"trader.tools.portfolio"}
+    forbidden_from_tools = {"portfolio"}
+
+    violations: list[str] = []
+    for root in checked_roots:
+        for path in sorted(root.rglob("*.py")):
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            rel_path = path.relative_to(trader_dir.parent)
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ImportFrom) and node.module in forbidden_modules:
+                    violations.append(f"{rel_path}: from {node.module} import ...")
+                elif isinstance(node, ast.ImportFrom) and node.module == "trader.tools":
+                    forbidden_names = sorted(
+                        alias.name for alias in node.names if alias.name in forbidden_from_tools
+                    )
+                    if forbidden_names:
+                        violations.append(f"{rel_path}: from trader.tools import {forbidden_names}")
+                elif isinstance(node, ast.Import):
+                    for alias in node.names:
+                        if alias.name in forbidden_modules:
+                            violations.append(f"{rel_path}: import {alias.name}")
+
+    assert violations == []
 
 
 def test_execution_package_does_not_depend_on_tools_package() -> None:

@@ -1,7 +1,7 @@
 # Référence — Exécution : admission, budget gross, broker, portefeuille
 
 > **Type** : Reference (Diátaxis).
-> **Code** : `application/order_admission`, `market/gross_priority`, `execution/broker`, `tools/portfolio`
+> **Code** : `application/order_admission`, `market/gross_priority`, `execution/broker`, `execution/portfolio`
 > **Rôle** : le chemin d'un ordre approuvé jusqu'au fill, et la vue portefeuille.
 
 Après la décision LLM et le [risk gate](risk-gate.md), un ordre passe par :
@@ -47,7 +47,7 @@ défaut `ibkr`). Les frais rendent le P&L **net** (cf. conscience-frais, `be_ref
 `tools/execution` reste une façade de compatibilité pour les imports historiques.
 Les imports internes nouveaux doivent viser `execution/broker`.
 
-## Portefeuille — `tools/portfolio`
+## Portefeuille — `execution/portfolio`
 
 `snapshot(...) -> Snapshot` : vue **agrégée** — positions valorisées (`Holding`),
 équité, cash, P&L net, KPI. Valorisation **en USD** (`quantity × last_price ×

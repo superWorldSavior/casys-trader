@@ -4,8 +4,9 @@
 > **Généré par analyse statique du code — à re-vérifier si l'architecture évolue.**
 >
 > Refactor modulaire en place sur `main` par tranches compatibles.
-> La cible et les écarts assumés sont suivis dans
-> `docs/superpowers/specs/2026-07-02-modular-architecture-logging-refactor-design.md`.
+> Les tranches récentes sont suivies dans `docs/superpowers/plans/`
+> (`tools-market-data-boundary`, `tools-news-feed-boundary`,
+> `tools-portfolio-boundary`).
 
 ---
 
@@ -43,12 +44,15 @@ les utilisaient :
 | `trader/agent/` | Contexte agent, façade planner, transport LLM/acpx | compat : `trader.agent_context`, `trader.codex_client`, `trader.llm` |
 | `trader/agent_protocol/` | Types, prompts, parsing du contrat LLM | utilisé par `trader/agent/client.py` |
 | `trader/agent_tools/` | Package des outils domaine lecture seule | `registry.TOOL_REGISTRY` assemble 9 handlers |
+| `trader/semantic/` | Catalogue sémantique des indicateurs et requêtes agent | évite de disperser les IDs/request contracts |
 | `trader/domain/` | Primitives neutres (`Bar`, `MarketError`, `Side`) | évite que `market`/`planning` importent `tools` |
 | `trader/scheduling/` | Réveils globaux/par symbole, stale backoff, veilles persistées | compat : `trader.tools.scheduler` |
 | `trader/planning/` | Plans de trade, veilles, exit engine, gate de pertinence | compat : `trader.trade_plan`, `trader.indicator_watch`, `trader.exit_engine`, `trader.relevance_gate` |
-| `trader/execution/` | Broker paper, primitives d'ordre/fill, commissions, RiskGate | compat : `trader.tools.execution`, `trader.risk` |
+| `trader/execution/` | Broker paper, primitives d'ordre/fill, commissions, RiskGate, projection portefeuille | compat : `trader.tools.execution`, `trader.tools.portfolio`, `trader.risk` |
 | `trader/learnings/` | Store SQLite, embeddings, consolidateur | compat : `trader.learnings_store`, `trader.embeddings`, `trader.consolidator` |
 | `trader/market/` | Données marché, sources yfinance/IB, fraîcheur, indicateurs, FX, news, macro, radar, régime, priorisation gross exposure | compat : `trader.tools.market`, `trader.tools.data_source`, `trader.tools.ib_source`, `trader.tools.news_feed`, `trader.fx`, `trader.features`, etc. |
+| `trader/queue/` | File de tâches durable, workers, pools, backpressure | backend technique utilisé par le runtime queue-on |
+| `trader/state_db/` | Backend SQLite de l'état paper, broker store, outbox | source durable quand `CASYS_STATE_BACKEND=sqlite` |
 | `trader/config/` | Loaders de configuration runtime (`pool`, `portfolio`) | retire les loaders transverses de la racine `trader/` |
 | `trader/rotation/` | Rotation d'univers, hot-sets par venue, schedule, override, ledger rotation | `trader.rotation` réexporte l'ancien core |
 | `trader/metadata/` | Métadonnées git/code version | utilisé par runtime et reporting sans cycle |
@@ -59,6 +63,25 @@ les utilisaient :
 | `trader/read_models/runtime_state.py` | Lecture tolérante des fichiers `state/` pour TUI/cockpit | ne participe pas aux décisions live |
 | `trader/cockpit/` | App Textual, événements cockpit, supervisor local | `trader.cockpit` reste runnable |
 | `trader/ui/` | Builders Rich purs, TUI textuelle, palette | `trader.tui` reste une façade import/CLI legacy |
+| `trader/attribution/`, `trader/stats/`, `trader/tool_usage/`, `trader/tui/`, `trader/daemon/`, `trader/cli/`, `trader/tools/` | Façades de compatibilité import/CLI | doivent rester fines et déléguer vers les packages canoniques |
+
+### 1.2 Niveaux d'architecture
+
+Le répertoire `trader/` reste volontairement peu profond pendant la migration,
+mais ses packages ne sont pas tous du même niveau :
+
+| Niveau | Packages | Règle pratique |
+|---|---|---|
+| Composition runtime | `runtime/`, `commands/`, wrappers `daemon`/`cli` | peut assembler les dépendances et déclencher les side effects |
+| Services applicatifs | `application/` | orchestre un cas d'usage testable sans être l'entrypoint process |
+| Capacités métier | `market/`, `planning/`, `execution/`, `scheduling/`, `learnings/`, `rotation/`, `agent/`, `agent_protocol/`, `agent_tools/` | porte la logique du domaine et ne dépend pas de `runtime/` |
+| Primitives transverses | `domain/`, `metadata/`, `system/`, `config/` | types/helpers stables, sans dépendance montante |
+| Read models et surfaces | `reporting/`, `read_models/`, `ui/`, `cockpit/` | lit l'état produit par le runtime, ne décide pas à sa place |
+| Compatibilité legacy | `tools/`, `attribution/`, `stats/`, `tool_usage/`, `tui/`, `daemon/`, `cli/` | délègue vers le canonique ; aucun nouvel import interne ne doit viser ici |
+
+La cible n'est donc pas forcément de créer six dossiers parents (`core/`,
+`infra/`, etc.) d'un coup. Le travail en cours est d'abord de rendre le niveau de
+chaque module explicite, puis de réduire `tools/` à une couche de compatibilité.
 
 Le choix volontaire reste de ne pas frameworkiser en `ports/`/`adapters`
 génériques. En revanche, trois packages neutres existent maintenant parce qu'ils

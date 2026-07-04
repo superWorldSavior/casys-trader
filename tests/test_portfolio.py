@@ -1,6 +1,6 @@
 import pytest
 
-from trader.tools.portfolio import Holding, Snapshot
+from trader.execution.portfolio import Holding, Snapshot
 
 
 def test_as_context_ajoute_le_pnl_latent_net_quand_un_estimateur_frais_est_fourni() -> None:
@@ -124,7 +124,7 @@ def test_snapshot_valorise_au_avg_price_quand_le_prix_est_invalide() -> None:
     0.0 — le défaut `prices.get(s, 0.0)` côté daemon) ne doit JAMAIS être
     valorisée à $0. On garde le coût (avg_price), unrealized=0, pas de fausse
     falaise d'équité (cf. STMN.SW 30/06)."""
-    from trader.tools import portfolio
+    from trader.execution import portfolio
 
     broker = _Broker(cash=25_447.0, positions={"STMN.SW": _Pos("STMN.SW", 60.0, 104.6)})
 
@@ -138,7 +138,7 @@ def test_snapshot_valorise_au_avg_price_quand_le_prix_est_invalide() -> None:
 
 def test_snapshot_garde_le_prix_quand_il_est_valide() -> None:
     """Non-régression : un prix valide est utilisé tel quel."""
-    from trader.tools import portfolio
+    from trader.execution import portfolio
 
     broker = _Broker(cash=1_000.0, positions={"AAPL": _Pos("AAPL", 10.0, 100.0)})
 
