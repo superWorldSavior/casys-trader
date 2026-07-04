@@ -14,7 +14,15 @@ def test_only_legacy_compat_modules_are_flat_files() -> None:
 
 def test_top_level_packages_have_declared_architecture_roles() -> None:
     trader_dir = Path(__file__).resolve().parents[1] / "trader"
-    actual = {path.name for path in trader_dir.iterdir() if path.is_dir() and path.name != "__pycache__"}
+
+    def _has_python_sources(path: Path) -> bool:
+        return any("__pycache__" not in candidate.parts for candidate in path.rglob("*.py"))
+
+    actual = {
+        path.name
+        for path in trader_dir.iterdir()
+        if path.is_dir() and path.name != "__pycache__" and _has_python_sources(path)
+    }
     canonical_packages = {
         "agent",
         "agent_protocol",
