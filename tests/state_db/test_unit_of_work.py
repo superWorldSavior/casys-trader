@@ -2,6 +2,8 @@
 
 Couvre :
   - Happy path : fill + plan (upsert ou close) + task done — les 3 visibles après.
+  - Fill atomique (FIX 1 phase3-lot-b) : task done ET task.result=Fill JSON dans la
+    même tx — pas de fenêtre done-sans-result (crash-safe).
   - Atomicité : exception dans upsert_in_tx → ROLLBACK total (aucune écriture).
   - Fence early (FIX 1) : task already done ou token mismatch → RuntimeError,
     aucune écriture.
@@ -113,7 +115,7 @@ def _simple_plan(plan_id: str = "AAPL-p1", symbol: str = "AAPL") -> TradePlan:
 
 class TestHappyPath:
     def test_execute_order_with_upsert_writes_all_three(self, tmp_path: Path) -> None:
-        """execute_order_unit (upsert) écrit fill + plan + task done."""
+        """execute_order_unit (upsert) écrit fill + plan + task done + task.result."""
         db, broker, plan_store, ledger = _make_stack(tmp_path)
         task_id, token = _enqueue_and_claim(ledger, dedup="ex-1")
         plan = _simple_plan()
@@ -152,9 +154,54 @@ class TestHappyPath:
         assert len(plans) == 1
         assert plans[0].id == "AAPL-p1"
 
-        # Task done
-        row = db.query_one("SELECT status FROM tasks WHERE id=?", (task_id,))
+        # Task done + result contient le Fill JSON (FIX 1 : fill atomique)
+        row = db.query_one("SELECT status, result FROM tasks WHERE id=?", (task_id,))
         assert row["status"] == "done"
+        assert row["result"] is not None, (
+            "task.result doit contenir le Fill JSON (écrit dans la même tx que done)"
+        )
+        import json
+        fill_data = json.loads(row["result"])
+        assert fill_data["symbol"] == "AAPL"
+        assert fill_data["quantity"] == pytest.approx(10.0)
+
+    def test_fill_atomique_status_and_result_in_same_tx(self, tmp_path: Path) -> None:
+        """FIX 1 — Invariant atomicité fill : task.status='done' ET task.result=Fill JSON
+        dans la MÊME transaction. Pas de fenêtre où la task est done mais result=NULL.
+
+        Ce test vérifie que ledger.get(task_id) retourne les deux en même temps
+        après execute_order_unit — sans aucune opération intermédiaire.
+        """
+        import json as _json
+        db, broker, plan_store, ledger = _make_stack(tmp_path)
+        task_id, token = _enqueue_and_claim(ledger, dedup="atomic-fill")
+
+        execute_order_unit(
+            db=db,
+            broker=broker,
+            plan_store=plan_store,
+            ledger=ledger,
+            order=Order("AAPL", "BUY", 5.0),
+            price=200.0,
+            ts="2026-07-04T09:00:00+00:00",
+            fx_rate=1.0,
+            dry_run=False,
+            task_id=task_id,
+            token=token,
+            now_ms=10,
+        )
+
+        # Après execute_order_unit : status ET result sont tous les deux présents
+        task_dict = ledger.get(task_id)
+        assert task_dict is not None
+        assert task_dict["status"] == "done", "status doit être 'done'"
+        assert task_dict["result"] is not None, (
+            "result doit être non-NULL — fill écrit atomiquement dans la même tx"
+        )
+        fill_data = _json.loads(task_dict["result"])
+        assert fill_data["symbol"] == "AAPL"
+        assert fill_data["quantity"] == pytest.approx(5.0)
+        assert fill_data["price"] == pytest.approx(200.0)
 
     def test_execute_order_with_close_symbol(self, tmp_path: Path) -> None:
         """execute_order_unit (close) ferme les plans du symbole + fill + task done."""

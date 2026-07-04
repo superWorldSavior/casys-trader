@@ -2914,6 +2914,64 @@ def run_cycle(
                     },
                 )
                 _exec_plan_dict = asdict(_pre_plan)
+            elif runtime_exit_plan and decision.intent == "ADD":
+                # FIX 3 — ADD : pré-calculer le NOUVEAU plan (quantité projetée
+                # post-fill) et le passer avec symbol_to_close → UoW ferme l'ancien
+                # ET ouvre le nouveau dans la même transaction (atomicité garantie).
+                # En cas de crash entre le close et un upsert hors-UoW, la position
+                # serait sans plan (pas de stop/TP).
+                _add_pos_qty = 0.0 if pos is None else pos.quantity
+                _add_avg_price = (
+                    0.0 if (pos is None or pos.avg_price <= 0.0) else pos.avg_price
+                )
+                _add_total_qty, _add_avg = _projected_add_risk_basis(
+                    action=decision.action,
+                    add_quantity=effective_quantity,
+                    add_price=prices[sym],
+                    position_quantity=_add_pos_qty,
+                    position_avg_price=_add_avg_price,
+                )
+                if _add_total_qty > 0:
+                    _prev_add_plan_for_pre = next(
+                        (p for p in plan_store.open_plans() if p.symbol == sym), None
+                    )
+                    _pre_entry_age = data_age_by_symbol.get(sym)
+                    _pre_plan = create_trade_plan_from_order(
+                        symbol=sym,
+                        order_side=decision.action,
+                        quantity=_add_total_qty,
+                        entry_price=_add_avg,
+                        opened_at=now.isoformat(),
+                        raw_exit_plan=runtime_exit_plan,
+                        reference_volatility=reference_volatility,
+                        llm_provider=decision.llm_provider,
+                        llm_model=decision.llm_model,
+                        llm_fallback_reason=decision.llm_fallback_reason,
+                        llm_confidence=decision.confidence,
+                    )
+                    _pre_plan = replace(
+                        _pre_plan,
+                        entry_thesis=decision.rationale,
+                        entry_context={
+                            "price": prices[sym],
+                            "runtime_interval": runtime_interval,
+                            "data_age_m": None if _pre_entry_age is None else int(round(_pre_entry_age)),
+                            "session_open": bool(market.session_snapshot(sym, now=now).get("open")),
+                            "daily_as_of": (
+                                (execution_eligibility.get(sym) or {}).get("planning") or {}
+                            ).get("daily_as_of"),
+                        },
+                    )
+                    if (
+                        _prev_add_plan_for_pre is not None
+                        and _prev_add_plan_for_pre.last_llm_review is not None
+                    ):
+                        _pre_plan = replace(
+                            _pre_plan,
+                            last_llm_review=copy.deepcopy(_prev_add_plan_for_pre.last_llm_review),
+                        )
+                    _exec_plan_dict = asdict(_pre_plan)
+
             elif runtime_exit_plan and decision.intent == "REVERSE":
                 # FIX 4 (daemon) — REVERSE : pré-calculer le NOUVEAU plan (jambe open)
                 # et le passer avec symbol_to_close → UoW ferme l'ancien ET ouvre le
@@ -2970,12 +3028,19 @@ def run_cycle(
                 "symbol_to_close": _exec_sym_close,
             })
             _exec_now_ms = int(time.time() * 1000)
+            # FIX 4 — dedup_key STABLE par (cycle, sym, intent) pour idempotence
+            # d'enqueue : un re-enqueue après crash du cycle retourne None (pas de
+            # doublon). partition_key="portfolio" : au plus un execute_order running
+            # à la fois (sérialisation accès broker).
+            _exec_dedup_key = f"exec:{now.isoformat()}:{sym}:{decision.intent}"
             _exec_tid = execute_ledger.enqueue(
                 kind="execute_order",
                 priority=0,
                 scheduled_at_ms=_exec_now_ms,
                 now_ms=_exec_now_ms,
                 resource="portfolio",
+                partition_key="portfolio",
+                dedup_key=_exec_dedup_key,
                 payload=_exec_payload,
             )
             if _exec_tid is None:
@@ -2985,11 +3050,19 @@ def run_cycle(
                 continue
 
             fill = None
+            # FIX 2 — tracking de l'état terminal pour fail-closed post-boucle.
+            # "done"      → task complétée, fill décodé depuis result (ou None si dry_run)
+            # "dead"      → retries épuisés — FAIL-CLOSED : NE PAS loguer executed=True
+            # "not_found" → task disparue (purge/crash) — FAIL-CLOSED
+            # "timeout"   → budget expiré sans état terminal — FAIL-CLOSED
+            #               (tâche toujours active : risque d'exécution tardive documenté)
+            _exec_terminal: str = "timeout"  # défaut = timeout (else-clause)
             _exec_deadline = time.time() + _EXECUTE_POLL_BUDGET_S
             while time.time() < _exec_deadline:
                 _exec_task = execute_ledger.get(_exec_tid)
                 if _exec_task is None:
                     log.warning("[queue_execute] task introuvable id=%s sym=%s", _exec_tid, sym)
+                    _exec_terminal = "not_found"
                     break
                 _exec_status = _exec_task.get("status")
                 if _exec_status == "done":
@@ -3000,13 +3073,42 @@ def run_cycle(
                             fill = _Fill(**json.loads(_exec_result))
                         except Exception as _fill_exc:  # noqa: BLE001
                             log.warning("[queue_execute] désérialisation fill sym=%s: %s", sym, _fill_exc)
+                    _exec_terminal = "done"
                     break
                 if _exec_status == "dead":
                     log.warning("[queue_execute] task dead sym=%s id=%s", sym, _exec_tid)
+                    _exec_terminal = "dead"
                     break
                 time.sleep(0.05)
             else:
                 log.warning("[queue_execute] budget épuisé sym=%s budget_s=%s", sym, _EXECUTE_POLL_BUDGET_S)
+                # _exec_terminal reste "timeout" (valeur par défaut)
+
+            # FIX 2 — FAIL-CLOSED : tout état non-terminal et non-done → NE PAS loguer
+            # executed=True. L'ordre ne doit pas apparaître comme « exécuté » en cas
+            # d'échec ou de timeout (l'ordre pourrait encore partir plus tard — warning).
+            if _exec_terminal == "dead":
+                apply_default_schedule_after_blocked()
+                record_decision({**entry, "executed": False, "reason": "queue_execute_dead"})
+                continue
+            if _exec_terminal == "not_found":
+                apply_default_schedule_after_blocked()
+                record_decision({**entry, "executed": False, "reason": "queue_execute_not_found"})
+                continue
+            if _exec_terminal == "timeout":
+                # RISQUE RÉSIDUEL : la tâche est toujours pending/running — l'ordre PEUT
+                # encore s'exécuter après ce cycle. On ne peut pas l'annuler depuis ici.
+                # Fail-closed minimal : ne pas loguer executed=True, logger un warning clair.
+                log.warning(
+                    "[queue_execute] FAIL-CLOSED sym=%s — budget expiré sans état terminal "
+                    "(tâche id=%s toujours active, ordre peut encore s'exécuter plus tard — "
+                    "risque résiduel d'exécution tardive non géré dans ce cycle)",
+                    sym, _exec_tid,
+                )
+                apply_default_schedule_after_blocked()
+                record_decision({**entry, "executed": False, "reason": "queue_execute_timeout"})
+                continue
+            # _exec_terminal == "done" → chemin normal ci-dessous
         else:
             fill = broker.submit(order, prices[sym], now.isoformat(), dry_run=dry_run, fx_rate=_rate(sym))
         if not dry_run:
@@ -3130,9 +3232,13 @@ def run_cycle(
                     if add_previous_plan is not None and add_previous_plan.last_llm_review is not None:
                         plan = replace(plan, last_llm_review=copy.deepcopy(add_previous_plan.last_llm_review))
                     # En mode queue + OPEN_LONG/OPEN_SHORT : plan déjà upsert par UoW.
-                    # En mode queue + ADD : UoW a fermé l'ancien plan (symbol_to_close) ;
-                    # le NOUVEAU plan est toujours inséré ici (non couvert par UoW).
-                    if not queue_execute_enabled or decision.intent == "ADD":
+                    # En mode queue + ADD : plan pré-calculé ET upsert par UoW (FIX 3 —
+                    # close + upsert atomiques → plus de crash window sans plan). Le
+                    # `plan` local ci-dessus sert uniquement au reporting entry["trade_plan"].
+                    # REDUCE : sync_symbol_quantity reste hors UoW (compromis documenté :
+                    # ajustement de quantité ; plan stale possible sur crash — acceptable
+                    # pour l'instant, à noter comme dette technique).
+                    if not queue_execute_enabled:
                         plan_store.upsert(plan)
                     entry["trade_plan_created"] = True
                     entry["trade_plan"] = _plan_snapshot(plan)

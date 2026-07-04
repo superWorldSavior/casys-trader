@@ -1,12 +1,14 @@
 """Tests TDD — execute_order_handler.py.
 
 Cas couverts :
-  - Payload valide (BUY, dry_run=False) → execute_order_unit appelé, Fill JSON retourné.
-  - Payload dry_run=True → retourne None (broker no-op).
+  - Payload valide (BUY, dry_run=False) → execute_order_unit appelé, handler retourne
+    None (FIX 1 : Fill JSON écrit atomiquement dans task.result par UoW).
+  - Payload dry_run=True → retourne None (broker no-op, task.result=None).
   - plan_to_upsert dans le payload → reconstruit en TradePlan, passé à UoW.
   - symbol_to_close dans le payload → passé à UoW, plan fermé atomiquement.
   - Exception dans execute_order_unit → remonte sans être avalée (Worker → dead).
-  - task.result patché best-effort par Worker après auto-complete (end-to-end).
+  - Fill atomique (FIX 1) : task.result = Fill JSON présent DANS la même tx que
+    task.status='done' (pas de fenêtre done-sans-result).
 """
 from __future__ import annotations
 
@@ -128,8 +130,12 @@ def _make_task_payload(
 
 
 class TestHappyPath:
-    def test_buy_returns_fill_json(self, tmp_path: Path) -> None:
-        """Payload BUY valide → execute_order_unit appelé, Fill JSON retourné."""
+    def test_buy_returns_none_fill_in_task_result(self, tmp_path: Path) -> None:
+        """Payload BUY valide → handler retourne None, Fill JSON dans task.result (FIX 1).
+
+        Après le fix fill-atomique : le handler ne retourne plus le Fill JSON
+        directement (il est déjà dans task.result écrit atomiquement par UoW).
+        """
         db, broker, plan_store, ledger = _make_stack(tmp_path)
         task = _enqueue_and_claim(ledger, dedup="h1")
         handler = make_execute_order_handler(db=db, broker=broker, plan_store=plan_store, ledger=ledger)
@@ -139,8 +145,14 @@ class TestHappyPath:
 
         result = handler(task)
 
-        assert result is not None
-        fill_data = json.loads(result)
+        # FIX 1 : le handler retourne None (fill déjà dans task.result via UoW)
+        assert result is None
+
+        # Fill JSON dans task.result (écrit atomiquement par UoW dans la même tx)
+        row = db.query_one("SELECT status, result FROM tasks WHERE id=?", (task["id"],))
+        assert row["status"] == "done"
+        assert row["result"] is not None, "task.result doit contenir le Fill JSON (atomique)"
+        fill_data = json.loads(row["result"])
         assert fill_data["symbol"] == "AAPL"
         assert fill_data["side"] == "BUY"
         assert fill_data["quantity"] == pytest.approx(10.0)
@@ -148,10 +160,6 @@ class TestHappyPath:
 
         # Broker muté
         assert broker.cash() < 100_000.0
-
-        # Task done (auto-complete par UoW)
-        row = db.query_one("SELECT status FROM tasks WHERE id=?", (task["id"],))
-        assert row["status"] == "done"
 
     def test_dry_run_returns_none(self, tmp_path: Path) -> None:
         """dry_run=True → retourne None, cash inchangé, task done."""
@@ -183,7 +191,7 @@ class TestHappyPath:
 
         result = handler(task)
 
-        assert result is not None  # fill retourné
+        assert result is None  # FIX 1 : handler retourne None, fill dans task.result
         plans = plan_store.open_plans()
         assert len(plans) == 1
         assert plans[0].id == "AAPL-test"
@@ -203,7 +211,7 @@ class TestHappyPath:
 
         result = handler(task)
 
-        assert result is not None
+        assert result is None  # FIX 1 : handler retourne None, fill dans task.result
         # Plan AAPL fermé atomiquement
         assert plan_store.open_plans() == []
         # Task done
@@ -242,47 +250,61 @@ class TestException:
 
 
 # ---------------------------------------------------------------------------
-# Classe 3 — Worker._patch_result : fill dans task.result après auto-complete
+# Classe 3 — Fill atomique (FIX 1) : fill dans task.result après UoW
 # ---------------------------------------------------------------------------
 
 
-class TestWorkerPatchResult:
-    def test_fill_json_patched_into_task_result_after_auto_complete(self, tmp_path: Path) -> None:
-        """Worker._patch_result écrit le Fill JSON dans task.result après no-op complete.
+class TestFillAtomique:
+    def test_fill_in_task_result_written_atomically_by_uow(self, tmp_path: Path) -> None:
+        """FIX 1 — Fill atomique : task.result = Fill JSON présent DANS la même tx
+        que task.status='done'.  Pas de fenêtre 'done' sans 'result'.
 
-        Simule le chemin complet :
-          1. Handler exécute execute_order_unit (UoW → task done, result=NULL).
-          2. Worker appelle complete() → no-op (fencing, retourne False).
-          3. Worker appelle _patch_result → task.result = fill JSON.
-          4. Daemon peut lire le fill via ledger.get(task_id)["result"].
+        Après le fix :
+          1. Handler exécute execute_order_unit (UoW → task done + result=Fill JSON
+             dans la même tx).
+          2. task.result est immédiatement lisible après le handler — sans _patch_result.
+          3. Le daemon peut lire le fill via ledger.get(task_id)["result"].
         """
-        from trader.queue.worker import _patch_result
-
         db, broker, plan_store, ledger = _make_stack(tmp_path)
-        task = _enqueue_and_claim(ledger, dedup="patch1")
+        task = _enqueue_and_claim(ledger, dedup="atomic1")
         handler = make_execute_order_handler(db=db, broker=broker, plan_store=plan_store, ledger=ledger)
 
         payload = _make_task_payload()
         task["payload"] = json.dumps(payload)
 
-        # Étape 1 : handler auto-complete (UoW → done, result=NULL)
-        fill_json = handler(task)
-        assert fill_json is not None
+        # Étape 1 : handler → UoW écrit done + result atomiquement
+        result = handler(task)
+        assert result is None, "handler doit retourner None (FIX 1 : fill déjà en base)"
+
+        # Étape 2 : task.result contient le Fill JSON IMMÉDIATEMENT (sans _patch_result)
         row = db.query_one("SELECT status, result FROM tasks WHERE id=?", (task["id"],))
         assert row["status"] == "done"
-        assert row["result"] is None  # UoW ne passe pas de result
-
-        # Étape 2 : Worker appelle complete() → retourne False (fencing)
-        finish_ms = 999
-        completed = ledger.complete(task_id=task["id"], token=task["claim_token"], now_ms=finish_ms, result=fill_json)
-        assert completed is False  # fencing : task déjà done
-
-        # Étape 3 : Worker appelle _patch_result
-        _patch_result(ledger, task["id"], fill_json)
-
-        # Étape 4 : task.result contient maintenant le Fill JSON
-        row2 = db.query_one("SELECT result FROM tasks WHERE id=?", (task["id"],))
-        assert row2["result"] is not None
-        fill_data = json.loads(row2["result"])
+        assert row["result"] is not None, (
+            "task.result doit contenir le Fill JSON — pas de fenêtre done-sans-result"
+        )
+        fill_data = json.loads(row["result"])
         assert fill_data["symbol"] == "AAPL"
         assert fill_data["side"] == "BUY"
+        assert fill_data["quantity"] == pytest.approx(10.0)
+
+        # Étape 3 : ledger.get retourne le même result (chemin daemon)
+        task_dict = ledger.get(task["id"])
+        assert task_dict is not None
+        assert task_dict["result"] == row["result"]
+
+    def test_dry_run_task_result_is_none(self, tmp_path: Path) -> None:
+        """En dry_run, task.result=None (pas de fill → pas de JSON à sérialiser)."""
+        db, broker, plan_store, ledger = _make_stack(tmp_path)
+        task = _enqueue_and_claim(ledger, dedup="atomic-dry")
+        handler = make_execute_order_handler(db=db, broker=broker, plan_store=plan_store, ledger=ledger)
+
+        payload = _make_task_payload(dry_run=True)
+        task["payload"] = json.dumps(payload)
+
+        result = handler(task)
+        assert result is None
+
+        # task.result doit être None (dry_run → pas de fill)
+        row = db.query_one("SELECT status, result FROM tasks WHERE id=?", (task["id"],))
+        assert row["status"] == "done"
+        assert row["result"] is None, "dry_run → task.result doit être None"

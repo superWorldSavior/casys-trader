@@ -1,6 +1,6 @@
 """Handler execute_order — exécution atomique d'un ordre via le TaskLedger.
 
-``make_execute_order_handler`` retourne un ``Callable[[dict], str | None]``
+``make_execute_order_handler`` retourne un ``Callable[[dict], None]``
 compatible avec ``Worker.run_once`` (``DecidePool`` ou pool équivalent).
 
 Atomicité (outbox transactionnel)
@@ -9,13 +9,16 @@ Atomicité (outbox transactionnel)
 UNE transaction SQLite.  Si N'IMPORTE quelle étape lève → ROLLBACK total :
 pas de fill sans plan, pas de cash muté sans task done.
 
-Double-complete
----------------
-``execute_order_unit`` appelle ``complete_in_tx`` DANS sa transaction → la
-task passe à ``status='done'``, ``claim_token=NULL``.  Quand le Worker appelle
-ensuite ``complete(result=fill_json)``, le WHERE clause ``claim_token=?`` ne
-matche plus → no-op (fencing).  Le résultat (Fill JSON) est alors patché
-best-effort par ``worker.run_once`` via ``_patch_result`` (voir ``worker.py``).
+Fill atomique (FIX 1)
+----------------------
+``execute_order_unit`` appelle ``complete_in_tx`` DANS sa transaction EN
+passant le Fill JSON sérialisé comme ``result``.  Ainsi ``status='done'`` ET
+``result=<fill JSON>`` sont écrits atomiquement — un crash post-commit garantit
+les deux présents ensemble.  Le handler retourne donc ``None`` : le fill est
+déjà lisible via ``ledger.get(task_id)["result"]``.
+
+Quand le Worker appelle ensuite ``complete(result=None)``, le WHERE clause
+``claim_token=?`` ne matche plus → no-op (fencing, sans effet).
 
 AX §5 Fast Fail Early : payload invalide → KeyError/ValueError remonte au
 Worker → task passée en dead (non retryable).
@@ -26,7 +29,6 @@ from __future__ import annotations
 import json
 import logging
 import time
-from dataclasses import asdict
 from typing import TYPE_CHECKING, Callable
 
 if TYPE_CHECKING:
@@ -61,14 +63,15 @@ def make_execute_order_handler(
                     le déterminisme des tests (défaut : ``time.time``).
 
     Returns:
-        Handler ``Callable[[dict], str | None]`` :
-        - Retourne le ``Fill`` sérialisé en JSON (str) si le fill a eu lieu.
-        - Retourne ``None`` si ``dry_run=True`` ou si l'ordre n'a pas produit de fill.
+        Handler ``Callable[[dict], None]`` :
+        - Retourne toujours ``None`` — le Fill JSON est déjà écrit dans
+          ``task.result`` par ``execute_order_unit`` dans sa transaction (FIX 1).
+          Le daemon lit le fill via ``ledger.get(task_id)["result"]``.
         - Lève l'exception d'``execute_order_unit`` sur erreur (Worker → dead).
 
     Note double-complete : le handler NE fait PAS lui-même ``ledger.complete`` —
-    c'est ``execute_order_unit`` qui le fait dans sa transaction.  Le Worker
-    appellera ensuite ``complete()`` (no-op, fencing) puis patchera le résultat.
+    c'est ``execute_order_unit`` qui le fait dans sa transaction (avec result=fill JSON).
+    Le Worker appellera ensuite ``complete(result=None)`` → no-op (fencing).
     """
 
     def handler(task: dict) -> "str | None":
@@ -111,8 +114,9 @@ def make_execute_order_handler(
             now_ms=int(now_fn() * 1000),
         )
 
-        if fill is None:
-            return None
-        return json.dumps(asdict(fill))
+        # FIX 1 — Fill déjà écrit dans task.result par execute_order_unit (atomique).
+        # Le daemon lit le fill via ledger.get(task_id)["result"]. Retourner None ici
+        # évite que Worker._patch_result (supprimé) tente un UPDATE séparé.
+        return None
 
     return handler

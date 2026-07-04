@@ -13,7 +13,9 @@ Logging : [unit_of_work] (getLogger(__name__), %-style).
 """
 from __future__ import annotations
 
+import json
 import logging
+from dataclasses import asdict
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -148,8 +150,14 @@ def execute_order_unit(
             if plan_to_upsert is not None:
                 plan_store.upsert_in_tx(cur, plan_to_upsert)
 
-        # Étape 3 — ledger (toujours, même en dry_run)
-        completed = ledger.complete_in_tx(cur, task_id=task_id, token=token, now_ms=now_ms)
+        # Étape 3 — ledger (toujours, même en dry_run).
+        # FIX 1 — Fill atomique : sérialise le fill ET passe-le à complete_in_tx
+        # DANS LA MÊME TRANSACTION. Ainsi task 'done' ET result=<fill JSON> sont
+        # atomiques — un crash post-commit garantit les deux présents ensemble.
+        _fill_result: str | None = json.dumps(asdict(fill)) if fill is not None else None
+        completed = ledger.complete_in_tx(
+            cur, task_id=task_id, token=token, now_ms=now_ms, result=_fill_result
+        )
         if not completed:
             # Défense en profondeur : ne devrait pas arriver grâce au fence early.
             raise RuntimeError(

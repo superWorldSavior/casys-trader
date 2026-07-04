@@ -4,18 +4,16 @@ Cas auto-complete (execute_order_handler)
 -----------------------------------------
 Certains handlers (ex. ``execute_order_handler``) appellent
 ``execute_order_unit`` qui exécute ``ledger.complete_in_tx`` DANS sa
-transaction SQLite.  Quand le Worker appelle ensuite ``complete(result=…)``,
+transaction SQLite — en écrivant aussi le Fill JSON sérialisé dans ``result``
+(FIX 1 : fill atomique).  Quand le Worker appelle ensuite ``complete(result=None)``,
 le fencing token ne matche plus (``claim_token=NULL``, ``status='done'``) →
 ``complete`` retourne ``False`` (no-op).
 
-Si le handler a retourné un résultat non-None (Fill JSON), ce résultat est
-absent de ``task.result`` (qui reste NULL, posé par le UoW sans résultat).
-``_patch_result`` écrit le résultat best-effort via ``ledger._db`` pour que
-le daemon puisse le récupérer via ``ledger.get(task_id)["result"]``.
+Le handler retourne ``None`` : le fill est déjà lisible via
+``ledger.get(task_id)["result"]``.  Aucun patch post-complétion n'est requis.
 
 Rétro-compat decide/shadow : pour ces handlers, ``complete`` retourne ``True``
-(ils ne font pas de complete interne) → la branche ``_patch_result`` n'est
-jamais prise.
+(ils ne font pas de complete interne) → pas d'impact.
 """
 from __future__ import annotations
 
@@ -25,29 +23,6 @@ from typing import Callable
 
 log = logging.getLogger(__name__)
 
-
-def _patch_result(ledger, task_id: int, result: str) -> None:
-    """Écrit ``result`` dans une tâche déjà complétée par son handler (best-effort).
-
-    Appelé uniquement quand ``complete()`` retourne False (fencing : task déjà
-    done par le handler via UoW) et que le handler a retourné un résultat
-    non-None.  Préserve l'idempotence : si la tâche n'est plus ``done`` (ex.
-    déjà purgée), l'UPDATE ne touche rien.
-
-    Args:
-        ledger:  TaskLedger dont on accède ``_db`` pour l'UPDATE direct.
-        task_id: ID de la tâche à patcher.
-        result:  Résultat à écrire (str, typiquement Fill JSON).
-    """
-    try:
-        with ledger._db.transaction() as cur:
-            cur.execute(
-                "UPDATE tasks SET result=? WHERE id=? AND status='done'",
-                (result, task_id),
-            )
-        log.debug("[queue.worker] result patched id=%s", task_id)
-    except Exception as exc:  # noqa: BLE001 — best-effort
-        log.warning("[queue.worker] result patch failed id=%s: %s", task_id, exc)
 
 
 class RetryableError(Exception):
@@ -110,11 +85,12 @@ class Worker:
             )
             if _completed:
                 log.debug("[queue.worker] complete id=%s kind=%s", task["id"], task["kind"])
-            elif result is not None:
+            else:
                 # Handler auto-completed (ex. execute_order_unit inside the handler).
                 # complete() a retourné False (fencing : task déjà done, token invalide).
-                # Patch le résultat best-effort pour que les pollers puissent le lire.
-                _patch_result(self._ledger, task["id"], result)
+                # FIX 1 : le Fill est déjà dans task.result (écrit atomiquement par UoW).
+                # Aucun patch supplémentaire nécessaire.
+                log.debug("[queue.worker] auto-complete id=%s kind=%s (fencing ok)", task["id"], task["kind"])
             if resource:
                 self._pools.on_success(resource)
         except RetryableError as exc:

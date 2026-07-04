@@ -136,3 +136,50 @@ présents comme fallback (flags off).
 - **Cohabitation shadow (Phase 2)** : ledgers distincts (`task_ledger.db` vs `shadow_queue.db`).
 - **Ordre d'activation recommandé** : decide-flag d'abord (observer), puis execute-flag — mais
   techniquement indépendants.
+
+## 8. État d'implémentation (2026-07-04)
+
+**Lot A (decide via file) — MERGÉ `main` (d7a3fe2), flag `CASYS_QUEUE_DECIDE_ENABLED` off.**
+`decide_one` (expose les erreurs, y compris HOLD de parsing, via `RetryableError`) + `DecidePool`
+(backoff ancré sur la fin de l'appel, `stop()`/`start()` guardés) + `dispatch_decide_via_queue`
+(purge stale par `cycle_id` → enqueue borné par `max_model_calls` → poll budget → **skippés exclus
+du fallback HOLD** = fin du HOLD-par-saturation ; mode batch inchangé) + `build_symbol_facts`
+factorisé. 6 reviews Codex. **Re-check final du mode queue PAS encore tourné (pileup acpx) → à faire
+avant activation.**
+
+**Lot B (execute via file + outbox) — branche `feat/phase3-lot-b-execute`, flag
+`CASYS_QUEUE_EXECUTE_ENABLED` off, sqlite requis.** Décisions d'implémentation (findings Codex
+intégrés) :
+- **Fill atomique** : le Fill est sérialisé et écrit dans `complete_in_tx(result=…)` **DANS la
+  transaction** du UoW (task `done` ET `result` atomiques). Le mécanisme `_patch_result` (écriture
+  du fill hors tx) est **supprimé** pour execute_order → plus de perte de fill sur crash post-commit.
+- **Fencing** : `execute_order_unit` fait un `SELECT status, claim_token` **avant** le submit, dans
+  la tx ; si task ≠ `running` ou token stale → `RuntimeError` → ROLLBACK total (pas de double fill
+  au rejeu / recover_on_boot / double-claim).
+- **Précondition StateDb** : `raise RuntimeError` dur (pas un warning) si broker/plan_store/ledger
+  n'ont pas la MÊME instance `StateDb` (atomicité jamais silencieusement rompue).
+- **`dry_run`** : aucune mutation broker NI plan (`if not dry_run`) ; task complétée quand même.
+- **Atomicité par intent** : OPEN (submit+upsert), CLOSE (submit+close), **REVERSE et ADD**
+  (submit + close ancien plan + upsert nouveau plan) — tous dans **UNE** transaction (le nouveau
+  plan est pré-calculé dans run_cycle et passé au UoW via `symbol_to_close` + `plan_to_upsert`).
+- **`dead`/timeout** : run_cycle exige `status='done'` + fill décodé pour poursuivre ; `dead` →
+  `record_decision(executed=False, reason="queue_execute_dead")` ; budget expiré → **fail-closed**
+  (`executed=False`, pas de succès loggé).
+- **`dedup_key`** stable par ordre (`exec:{cycle_id}:{sym}:{intent}`) sur l'enqueue → idempotence
+  d'enqueue (re-enqueue après crash de cycle dédupliqué). `portfolio=1` = cash séquentiel.
+
+**Compromis / risques résiduels notés :**
+- **REDUCE** : `sync_symbol_quantity` reste hors UoW (ajustement de quantité) → plan stale possible
+  sur crash post-fill. Acceptable pour l'instant, à durcir si besoin.
+- **Timeout d'attente** : si run_cycle timeout, la tâche execute_order peut encore s'exécuter plus
+  tard (worker) hors cycle — atténué par SimBroker synchrone rapide (le timeout ne devrait pas
+  arriver en paper) + le `dedup_key`. Fail-closed + warning explicite.
+- **Mode decide dégradé** (Lot A) : sans context_request/tools/recall (voir §7).
+
+**Reste (déploiement, à froid) :** re-check Codex Lot A + Lot B (post-fix) ; **③** activer SQLite
+en paper + observer (§1e) ; activation graduée des flags (decide d'abord, puis execute) avec
+`shadow-compare` ; **Lot C** (live IB) = futur gated (`IBBroker` inexistant).
+
+**⚠️ Discipline acpx** : ~18 sessions Codex/jour → 156 ponts `codex-acp` orphelins (PPID=1) ont
+choké l'app-server ET le daemon prod (paper). Prune agressif en cours de session ;
+`ps codex-acp PPID=1 | kill` est chirurgical (épargne le daemon).
