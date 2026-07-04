@@ -6,7 +6,7 @@ But : juger le rendu visuel sans avoir besoin de données live.
 
 from rich.console import Console
 
-from trader.ui.rich_panels import build_view
+from trader.interfaces.ui.rich_panels import build_view
 
 _DEMO_STATE = {
     "ts": "2026-06-07T03:10:00+00:00",

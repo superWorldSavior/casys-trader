@@ -24,7 +24,7 @@ rien n'est lancé sans confirmation explicite — « Plus tard » / Échap n'agi
     KILL                      — fichier kill-switch (toggle)
 
 Usage :
-    uv run python -m trader.cockpit
+    uv run python -m trader.interfaces.cockpit
     make watch
 
 Raccourcis :
@@ -59,25 +59,25 @@ from textual.screen import ModalScreen
 from textual.theme import Theme
 from textual.widgets import Button, Checkbox, ContentSwitcher, Footer, Input, Label, RichLog, Static
 
-from trader.cockpit.supervisor import daemon_vital_state
-from trader.cockpit.aggregates import open_venue_set
-from trader.cockpit.home import AttentionLine, HomePane, SymbolChosen
+from trader.interfaces.cockpit.supervisor import daemon_vital_state
+from trader.interfaces.cockpit.aggregates import open_venue_set
+from trader.interfaces.cockpit.home import AttentionLine, HomePane, SymbolChosen
 
-from trader.cockpit.events import (
+from trader.interfaces.cockpit.events import (
     EventClass,
     EventLine,
     format_event_line,
     read_new_lines,
 )
-from trader.cockpit import overview as _cockpit_overview
-from trader.ui.palette import PALETTE_DARK, PALETTE_INK, PALETTE_LIGHT, Palette
+from trader.interfaces.cockpit import overview as _cockpit_overview
+from trader.interfaces.ui.palette import PALETTE_DARK, PALETTE_INK, PALETTE_LIGHT, Palette
 from trader.reporting.read_models.runtime_state import (
     _enrich_decisions_with_data_source,
     _safe_float,
     _safe_list_of_dicts,
     load_runtime_state,
 )
-from trader.ui.rich_panels import (
+from trader.interfaces.ui.rich_panels import (
     _build_armed_plans_panel,
     _build_attribution_panel,
     _build_data_health_panel,
@@ -240,7 +240,7 @@ class CockpitStatus(Static):
     """
 
     def update_state(self, state: dict, kill_active: bool, *, palette: Palette = PALETTE_DARK) -> None:
-        from trader.cockpit.home import build_status_line
+        from trader.interfaces.cockpit.home import build_status_line
 
         vital = daemon_vital_state(_STATE_DIR / "daemon_status.json")
         width = self.size.width or 200
@@ -557,7 +557,7 @@ class LogsPane(Static):
         try:
             events_path: Path = self.app._events_file  # type: ignore[attr-defined]
         except AttributeError:
-            import trader.cockpit as _mod
+            import trader.interfaces.cockpit as _mod
 
             events_path = _mod._EVENTS_FILE
         self.poll_events(events_path)
@@ -1045,7 +1045,7 @@ class CockpitApp(App):
         self._set_active_page(page_key)
 
     def on_symbol_chosen(self, message: "SymbolChosen") -> None:
-        from trader.cockpit.home import SymbolDetailScreen
+        from trader.interfaces.cockpit.home import SymbolDetailScreen
 
         self.push_screen(SymbolDetailScreen(message.symbol))
 
@@ -1184,7 +1184,7 @@ class CockpitApp(App):
 
     def action_quit_confirm(self) -> None:
         """Quitte avec confirmation si un daemon est vivant."""
-        from trader.cockpit.supervisor import daemon_vital_state, stop_daemon
+        from trader.interfaces.cockpit.supervisor import daemon_vital_state, stop_daemon
 
         vital = daemon_vital_state(_STATE_DIR / "daemon_status.json")
         if vital.status != "alive":
@@ -1226,7 +1226,7 @@ class CockpitApp(App):
 
     def action_start_daemon(self) -> None:
         """Lance le daemon en process détaché (anti-double-lancement via daemon.pid)."""
-        from trader.cockpit.supervisor import launch_daemon
+        from trader.interfaces.cockpit.supervisor import launch_daemon
 
         result = launch_daemon(
             pid_file=_STATE_DIR / "daemon.pid",
@@ -1245,7 +1245,7 @@ class CockpitApp(App):
         async def _on_confirm(confirmed: bool) -> None:
             if not confirmed:
                 return
-            from trader.cockpit.supervisor import stop_daemon
+            from trader.interfaces.cockpit.supervisor import stop_daemon
 
             result = stop_daemon(
                 pid_file=_STATE_DIR / "daemon.pid",
@@ -1265,7 +1265,7 @@ class CockpitApp(App):
         async def _on_confirm(confirmed: bool) -> None:
             if not confirmed:
                 return
-            from trader.cockpit.supervisor import toggle_kill_switch
+            from trader.interfaces.cockpit.supervisor import toggle_kill_switch
 
             active = toggle_kill_switch(kill_file=_KILL_FILE)
             status = "activé" if active else "désactivé"

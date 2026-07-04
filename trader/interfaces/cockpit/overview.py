@@ -1,6 +1,6 @@
 """Home analytique du cockpit Textual.
 
-Le shell Textual est dans ``trader.cockpit.app``; ce module possède la home :
+Le shell Textual est dans ``trader.interfaces.cockpit.app``; ce module possède la home :
 layout responsive et mini-artefacts Rich destinés aux tuiles analytiques.
 """
 
@@ -18,9 +18,9 @@ from textual.widgets import Static
 
 from trader.market import fx
 from trader.reporting.read_models.runtime_state import _safe_float, _safe_list_of_dicts
-from trader.ui.palette import PALETTE_DARK, PALETTE_LIGHT, Palette
-from trader.ui.rich_panels import _format_datetime
-from trader.cockpit import aggregates as _aggregates
+from trader.interfaces.ui.palette import PALETTE_DARK, PALETTE_LIGHT, Palette
+from trader.interfaces.ui.rich_panels import _format_datetime
+from trader.interfaces.cockpit import aggregates as _aggregates
 
 
 def _build_attention_line(

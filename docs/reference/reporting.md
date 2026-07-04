@@ -2,8 +2,9 @@
 
 > **Type** : Reference (Diátaxis).
 > **Code** : `trader/reporting/` · **Rôle** : relier trades ↔ décisions, auditer, mesurer.
-> **CLI** : `python -m trader.commands.stats`, `python -m trader.commands.attribution`,
-> `python -m trader.commands.tool_usage`.
+> **CLI canonique** : `python -m trader.interfaces.cli.stats`,
+> `python -m trader.interfaces.cli.attribution`,
+> `python -m trader.interfaces.cli.tool_usage`.
 
 Presque tout est **ex-post et lecture-seule**, chacun sur sa source : `attribution`
 lit `model_performance.jsonl` ; `stats` calcule/rend les KPI projetés par
@@ -16,11 +17,11 @@ Rien n'est dans le hot-path de décision.
 
 | Module | Rôle |
 |---|---|
-| `attribution` | Reconstruit/rend les **round-trips** (trades clôturés) depuis `model_performance.jsonl`, rattachés au plan via `source_plan_id`; la CLI canonique vit dans `commands.attribution`. |
+| `attribution` | Reconstruit/rend les **round-trips** (trades clôturés) depuis `model_performance.jsonl`, rattachés au plan via `source_plan_id`; la CLI canonique vit dans `interfaces.cli.attribution`. |
 | `decision_audit` | **Audit ex-post** des décisions loggées (classification, cohérence, cas anormaux). |
 | `decision_bench` | **Bench contrefactuel** de modèles sur des lignes de décision auditées (compare des modèles a posteriori). |
 | `meta_performance` | Payload **compact de méta-performance** pour l'agent runtime + le consolidateur (réinjecté au contexte). |
-| `stats` | Helpers de reporting des **KPI live** calculés par `reporting/read_models/live_kpis.py`; la CLI canonique vit dans `commands.stats`. |
+| `stats` | Helpers de reporting des **KPI live** calculés par `reporting/read_models/live_kpis.py`; la CLI canonique vit dans `interfaces.cli.stats`. |
 | `decision_ledger` | Journal durable des décisions (schéma versionné). |
 | `decision_reason` | Vocabulaire des `decision_reason_code` (NO_EDGE, MARKET_CLOSED, ARMED_PLAN, EXIT_SIGNAL…). |
 | `tool_trace` / `tool_usage` | Traces des tournées d'outils domaine du LLM. |
@@ -36,8 +37,9 @@ Rien n'est dans le hot-path de décision.
 | « L'agent voit-il sa propre perf passée ? » | `meta_performance` → contexte LLM |
 
 Les anciens raccourcis `python -m trader.stats`, `python -m trader.attribution`
-et `python -m trader.tool_usage` restent supportés, mais ils délèguent aux
-modules canoniques de `trader/commands/`.
+et `python -m trader.tool_usage`, ainsi que `python -m trader.commands.*`,
+restent supportés, mais ils délèguent aux modules canoniques de
+`trader/interfaces/cli/`.
 
 ## Codes de raison de décision (`decision_reason`)
 

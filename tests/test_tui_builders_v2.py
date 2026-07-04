@@ -965,15 +965,15 @@ def test_build_armed_plans_panel_badge_marche() -> None:
 
 def test_build_armed_plans_badge_ferme_ne_contamine_pas_la_ligne() -> None:
     """Régression (review Codex) : un badge marché fermé (dim) ne doit pas
-    griser toute la ligne — le symbole garde son cyan gras (1;36m)."""
-    from rich.console import Console
+    griser toute la ligne — le symbole garde son style propre."""
     from trader.tui import _build_armed_plans_panel
 
-    console = Console(width=100, force_terminal=True)
-    with console.capture() as cap:
-        console.print(_build_armed_plans_panel([_armed_watch("AAPL")], open_venues=set()))
-    out = cap.get()
+    panel = _build_armed_plans_panel([_armed_watch("AAPL")], open_venues=set())
+    line = panel.renderable.renderables[0]
+    symbol_start = line.plain.index("AAPL")
 
-    # Le symbole garde son cyan gras (1;36m) malgré le badge dim → pas de
-    # contamination du style de base de la ligne.
-    assert "1;36m" in out
+    badge_span = next(span for span in line.spans if span.start == 0 and span.end == 1)
+    symbol_span = next(span for span in line.spans if span.start <= symbol_start < span.end)
+
+    assert str(badge_span.style) == "dim"
+    assert str(symbol_span.style) == "bold cyan"

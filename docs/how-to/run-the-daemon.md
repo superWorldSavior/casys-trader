@@ -1,7 +1,7 @@
 # How-to — Lancer / relancer / arrêter le daemon
 
 > **Type** : How-to (Diátaxis) — procédure orientée tâche.
-> **Superviseur** : `trader/cockpit/supervisor.py` · **State** : `state/daemon.pid`, `state/daemon_status.json`, `state/daemon_console.log`
+> **Superviseur** : `trader/interfaces/cockpit/supervisor.py` · **State** : `state/daemon.pid`, `state/daemon_status.json`, `state/daemon_console.log`
 
 Le daemon est un **process indépendant** (PPID=1) qui survit au cockpit. Le
 superviseur gère lock, anti-doublon, rotation du log, détachement.
@@ -25,7 +25,7 @@ Le superviseur envoie **SIGINT** (jamais SIGKILL) après vérification d'identit
 
 ```python
 from pathlib import Path
-from trader.cockpit.supervisor import stop_daemon
+from trader.interfaces.cockpit.supervisor import stop_daemon
 stop_daemon(pid_file=Path("state/daemon.pid"), status_file=Path("state/daemon_status.json"))
 ```
 
@@ -62,7 +62,7 @@ Le daemon lit le code + le `.env` **au démarrage** (cf. `CASYS_DECISION_BATCH_P
 
 ```python
 from pathlib import Path
-from trader.cockpit.supervisor import launch_daemon
+from trader.interfaces.cockpit.supervisor import launch_daemon
 launch_daemon(pid_file=Path("state/daemon.pid"), log_file=Path("state/daemon_console.log"),
               root=Path("."), status_file=Path("state/daemon_status.json"))
 ```

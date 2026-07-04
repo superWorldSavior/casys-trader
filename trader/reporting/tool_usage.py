@@ -298,6 +298,6 @@ _render_cli = render_cli
 
 
 if __name__ == "__main__":
-    from trader.commands.tool_usage import main
+    from trader.interfaces.cli.tool_usage import main
 
     main()

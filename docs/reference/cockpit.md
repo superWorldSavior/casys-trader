@@ -1,7 +1,7 @@
 # Référence — Cockpit (TUI)
 
 > **Type** : Reference (Diátaxis).
-> **Code** : `trader/cockpit/` (app, supervisor, events) · `trader/ui/` (rich_panels, palette, tui) · `trader/reporting/read_models/runtime_state`
+> **Code** : `trader/interfaces/cockpit/` (app, supervisor, events) · `trader/interfaces/ui/` (rich_panels, palette, tui) · `trader/reporting/read_models/runtime_state`
 > **Lancer** : `make watch` · **Rôle** : dashboard Textual + supervision du daemon.
 
 Le cockpit est un **observateur** : il lit l'état (`state/`), l'affiche, et pilote
@@ -10,8 +10,9 @@ la donnée live).
 
 ## Ce qu'il affiche
 
-Le **Status** est un widget Textual `CockpitStatus` (`cockpit/app.py`) ; les autres
-panneaux sont des **builders purs** dans `ui/rich_panels.py` :
+Le **Status** est un widget Textual `CockpitStatus`
+(`interfaces/cockpit/app.py`) ; les autres panneaux sont des **builders purs**
+dans `interfaces/ui/rich_panels.py` :
 
 | Panneau | Contenu |
 |---|---|
@@ -42,20 +43,21 @@ fichiers `state/` :
 | `history.jsonl` | courbe d'équité (points non nuls) |
 | `decisions.jsonl` | décisions récentes |
 
-(Les **events** `events.jsonl` sont lus séparément par `cockpit/events.py` dans la
-couche UI, pas par le read model.)
+(Les **events** `events.jsonl` sont lus séparément par
+`interfaces/cockpit/events.py` dans la couche UI, pas par le read model.)
 
 `load_state(path)` → dict ou `None` (absent/illisible). Ne bloque jamais l'UI sur
 un fichier corrompu.
 
 ## Supervision du daemon
 
-Via `cockpit/supervisor` (touches du cockpit) : lancer / arrêter (SIGINT) /
-kill-switch, `daemon_vital_state`. Détail dans [run-the-daemon](../how-to/run-the-daemon.md).
+Via `interfaces/cockpit/supervisor` (touches du cockpit) : lancer / arrêter
+(SIGINT) / kill-switch, `daemon_vital_state`. Détail dans
+[run-the-daemon](../how-to/run-the-daemon.md).
 
 ## Thème
 
-`ui/palette` — couleurs par niveau/event. Le cockpit dessine ses propres couleurs
+`interfaces/ui/palette` — couleurs par niveau/event. Le cockpit dessine ses propres couleurs
 (indépendant du thème du terminal ; cf. how-to logs pour Gonzo, qui est séparé).
 
 ## Voir aussi

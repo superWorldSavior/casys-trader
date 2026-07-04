@@ -7,7 +7,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from trader.cockpit.app import CockpitApp
+from trader.interfaces.cockpit.app import CockpitApp
 
 OUT = Path(sys.argv[1] if len(sys.argv) > 1 else "state/screenshots")
 OUT.mkdir(parents=True, exist_ok=True)

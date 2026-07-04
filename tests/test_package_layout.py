@@ -34,10 +34,9 @@ def test_top_level_packages_have_declared_architecture_roles() -> None:
     canonical_packages = {
         "agent",
         "application",
-        "cockpit",
-        "commands",
         "domain",
         "execution",
+        "interfaces",
         "learnings",
         "market",
         "planning",
@@ -49,11 +48,25 @@ def test_top_level_packages_have_declared_architecture_roles() -> None:
         "semantic",
         "state_db",
         "support",
-        "ui",
     }
     compatibility_facades = set()
 
     assert actual == canonical_packages | compatibility_facades
+
+
+def test_operator_surfaces_are_nested_under_interfaces() -> None:
+    trader_dir = Path(__file__).resolve().parents[1] / "trader"
+    interfaces_dir = trader_dir / "interfaces"
+
+    assert interfaces_dir.exists()
+    assert sorted(path.name for path in interfaces_dir.iterdir() if path.is_dir() and path.name != "__pycache__") == [
+        "cli",
+        "cockpit",
+        "ui",
+    ]
+
+    for old_top_level_name in ("commands", "cockpit", "ui"):
+        assert not (trader_dir / old_top_level_name).exists()
 
 
 def test_foundation_packages_do_not_depend_on_higher_layers() -> None:
@@ -189,6 +202,74 @@ def test_support_and_read_model_legacy_packages_are_virtual() -> None:
     assert legacy_compute_live_kpis is compute_live_kpis
 
 
+def test_operator_interface_legacy_packages_are_virtual() -> None:
+    trader_dir = Path(__file__).resolve().parents[1] / "trader"
+
+    for legacy_dir in ("commands", "cockpit", "ui"):
+        assert not (trader_dir / legacy_dir).exists()
+
+    import trader.cockpit as legacy_cockpit
+    import trader.commands as legacy_commands
+    import trader.ui as legacy_ui
+    from trader.commands import stats as legacy_stats
+    from trader.interfaces.cli import stats
+    from trader.interfaces.cockpit.app import CockpitApp
+    from trader.interfaces.ui import palette
+    from trader.ui import palette as legacy_palette
+
+    assert getattr(legacy_cockpit, "__file__", None) is None
+    assert getattr(legacy_cockpit, "__path__", None) == []
+    assert getattr(legacy_commands, "__file__", None) is None
+    assert getattr(legacy_commands, "__path__", None) == []
+    assert getattr(legacy_ui, "__file__", None) is None
+    assert getattr(legacy_ui, "__path__", None) == []
+    assert legacy_cockpit.CockpitApp is CockpitApp
+    assert legacy_stats.main is stats.main
+    assert legacy_palette.PALETTE_LIGHT is palette.PALETTE_LIGHT
+
+
+def test_internal_code_uses_canonical_interface_imports() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    trader_dir = repo_root / "trader"
+    checked_roots = (trader_dir, repo_root / "scripts")
+    ignored_files = {trader_dir / "__init__.py"}
+    forbidden_direct_modules = {
+        "trader.cockpit",
+        "trader.commands",
+        "trader.ui",
+    }
+    forbidden_from_trader = {"cockpit", "commands", "ui"}
+
+    def _is_forbidden_module(module_name: str) -> bool:
+        return any(
+            module_name == forbidden or module_name.startswith(f"{forbidden}.")
+            for forbidden in forbidden_direct_modules
+        )
+
+    violations: list[str] = []
+    for root in checked_roots:
+        if not root.exists():
+            continue
+        for path in sorted(root.rglob("*.py")):
+            if path in ignored_files:
+                continue
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            rel_path = path.relative_to(repo_root)
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ImportFrom) and node.module and _is_forbidden_module(node.module):
+                    violations.append(f"{rel_path}: from {node.module} import ...")
+                elif isinstance(node, ast.ImportFrom) and node.module == "trader":
+                    forbidden_names = sorted(alias.name for alias in node.names if alias.name in forbidden_from_trader)
+                    if forbidden_names:
+                        violations.append(f"{rel_path}: from trader import {forbidden_names}")
+                elif isinstance(node, ast.Import):
+                    for alias in node.names:
+                        if _is_forbidden_module(alias.name):
+                            violations.append(f"{rel_path}: import {alias.name}")
+
+    assert violations == []
+
+
 def test_legacy_virtual_packages_support_from_trader_and_python_m() -> None:
     import trader
     from trader import config as legacy_config
@@ -236,19 +317,19 @@ def test_legacy_flat_module_imports_remain_compatible() -> None:
     from trader.risk import RiskGate
     from trader.tui import build_view
 
-    assert legacy_cockpit_events.__name__ == "trader.cockpit.events"
+    assert legacy_cockpit_events.__name__ == "trader.interfaces.cockpit.events"
     assert legacy_codex_client.Decision.__module__ == "trader.agent.protocol.types"
     assert legacy_daemon.run_cycle.__module__ == "trader.runtime.daemon"
     assert legacy_fx.__name__ == "trader.market.fx"
     assert legacy_llm.LlmRouter.__module__ == "trader.agent.llm"
-    assert legacy_palette.__name__ == "trader.ui.palette"
+    assert legacy_palette.__name__ == "trader.interfaces.ui.palette"
     assert legacy_schedule.__name__ == "trader.rotation.schedule"
     assert legacy_stats.compute_live_kpis.__module__ == "trader.reporting.stats"
     assert decision_ledger.__name__ == "trader.reporting.decision_ledger"
-    assert CockpitApp.__module__ == "trader.cockpit.app"
+    assert CockpitApp.__module__ == "trader.interfaces.cockpit.app"
     assert ">" in WATCH_VALID_OPERATORS
     assert RiskGate.__module__ == "trader.execution.risk"
-    assert build_view.__module__ == "trader.ui.rich_panels"
+    assert build_view.__module__ == "trader.interfaces.ui.rich_panels"
 
 
 def test_legacy_daemon_and_cli_packages_proxy_mutations(monkeypatch, tmp_path) -> None:
@@ -340,17 +421,17 @@ def _module_imports(path: Path, module_name: str) -> bool:
     return False
 
 
-def test_runnable_compatibility_facades_delegate_to_command_modules() -> None:
+def test_runnable_compatibility_facades_delegate_to_interface_command_modules() -> None:
     trader_dir = Path(__file__).resolve().parents[1] / "trader"
     command_modules = {
         "attribution": "trader.reporting.attribution",
         "stats": "trader.reporting.stats",
         "tool_usage": "trader.reporting.tool_usage",
-        "tui": "trader.ui.tui",
+        "tui": "trader.interfaces.ui.tui",
     }
 
     for command_name, canonical_module in command_modules.items():
-        command_path = trader_dir / "commands" / f"{command_name}.py"
+        command_path = trader_dir / "interfaces" / "cli" / f"{command_name}.py"
         legacy_package_main_path = trader_dir / command_name / "__main__.py"
         legacy_module_path = trader_dir / f"{command_name}.py"
 
@@ -360,12 +441,15 @@ def test_runnable_compatibility_facades_delegate_to_command_modules() -> None:
             assert _module_imports(legacy_package_main_path, f"trader.commands.{command_name}")
         else:
             assert legacy_module_path.exists(), f"missing legacy module shim for {command_name}"
-            assert _module_imports(legacy_module_path, f"trader.commands.{command_name}")
+            assert _module_imports(legacy_module_path, f"trader.interfaces.cli.{command_name}")
 
 
 def test_reporting_command_python_m_entrypoints() -> None:
     repo_root = Path(__file__).resolve().parents[1]
     for module_name in (
+        "trader.interfaces.cli.attribution",
+        "trader.interfaces.cli.stats",
+        "trader.interfaces.cli.tool_usage",
         "trader.commands.attribution",
         "trader.commands.stats",
         "trader.commands.tool_usage",
@@ -392,7 +476,7 @@ def test_tool_usage_cli_owner_is_command_module() -> None:
     from trader.commands import tool_usage as command_tool_usage
     from trader.reporting import tool_usage as reporting_tool_usage
 
-    assert command_tool_usage.main.__module__ == "trader.commands.tool_usage"
+    assert command_tool_usage.main.__module__ == "trader.interfaces.cli.tool_usage"
     assert not hasattr(reporting_tool_usage, "main")
 
 
@@ -400,7 +484,7 @@ def test_stats_cli_owner_is_command_module() -> None:
     from trader.commands import stats as command_stats
     from trader.reporting import stats as reporting_stats
 
-    assert command_stats.main.__module__ == "trader.commands.stats"
+    assert command_stats.main.__module__ == "trader.interfaces.cli.stats"
     assert not hasattr(reporting_stats, "main")
 
 
@@ -408,7 +492,7 @@ def test_attribution_cli_owner_is_command_module() -> None:
     from trader.commands import attribution as command_attribution
     from trader.reporting import attribution as reporting_attribution
 
-    assert command_attribution.main.__module__ == "trader.commands.attribution"
+    assert command_attribution.main.__module__ == "trader.interfaces.cli.attribution"
     assert not hasattr(reporting_attribution, "main")
 
 

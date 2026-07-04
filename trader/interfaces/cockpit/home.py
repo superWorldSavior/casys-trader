@@ -20,7 +20,7 @@ from textual.message import Message
 from textual.screen import ModalScreen
 from textual.widgets import DataTable, Static
 
-from trader.cockpit.aggregates import (  # noqa: F401
+from trader.interfaces.cockpit.aggregates import (  # noqa: F401
     ACTIVITY_STATES,
     activity_buckets,
     attention_items,
@@ -30,7 +30,7 @@ from trader.cockpit.aggregates import (  # noqa: F401
     select_decision_rows,
     venue_clock,
 )
-from trader.cockpit.overview import (
+from trader.interfaces.cockpit.overview import (
     _armed_order_label,
     _armed_stop_label,
     _bar,
@@ -60,8 +60,8 @@ from trader.cockpit.overview import (
 from trader.market import fx
 from trader.planning.indicator_watch import is_armed_plan as _is_armed_plan
 from trader.reporting.read_models.runtime_state import _safe_float, _safe_list_of_dicts
-from trader.ui.palette import PALETTE_LIGHT, Palette
-from trader.ui.rich_panels import (
+from trader.interfaces.ui.palette import PALETTE_LIGHT, Palette
+from trader.interfaces.ui.rich_panels import (
     _build_exit_plans_enriched,
     _build_learnings_panel,
     build_closed_trades_table,
@@ -517,7 +517,7 @@ class DecisionsTable(_SymbolTable):
         self.add_columns("UTC", "Sym", "Act", "État", "Conf", "Suite")
 
     def refresh_rows(self, decisions: list[dict], recent_decisions: list[dict], *, palette: Palette) -> None:
-        from trader.cockpit.aggregates import decision_status
+        from trader.interfaces.cockpit.aggregates import decision_status
 
         self.clear()
         rows = select_decision_rows(decisions, recent_decisions, limit=8)
@@ -680,7 +680,7 @@ class HomePane(Static):
     def compose(self) -> ComposeResult:
         # Import tardif OBLIGATOIRE : app.py importe home.py en tête de module,
         # un import module-level de app ici créerait un cycle.
-        from trader.cockpit.app import FluxPane
+        from trader.interfaces.cockpit.app import FluxPane
 
         with Horizontal(id="home-top-row"):
             with Vertical(id="home-portfolio"):

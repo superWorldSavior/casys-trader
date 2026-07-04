@@ -1,7 +1,7 @@
 """tui — CLI live pour le rendu Rich casys-trader.
 
 Les lectures d'état vivent dans :mod:`trader.reporting.read_models.runtime_state`.
-Les builders Rich purs vivent dans :mod:`trader.ui.rich_panels`.
+Les builders Rich purs vivent dans :mod:`trader.interfaces.ui.rich_panels`.
 
 Ce module reste la façade historique pour les tests et les imports existants.
 """
@@ -46,7 +46,7 @@ from trader.reporting.read_models.runtime_state import (  # noqa: F401
     load_runtime_state,
     load_state,
 )
-from trader.ui.rich_panels import (  # noqa: F401
+from trader.interfaces.ui.rich_panels import (  # noqa: F401
     _ACTION_VENUES,
     _MAX_HOTLIST_DISPLAY,
     _SPARK_BLOCKS,

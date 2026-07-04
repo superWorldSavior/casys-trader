@@ -1,7 +1,7 @@
-"""Compatibility module for ``trader.ui.tui``."""
+"""Compatibility module for historical ``trader.tui`` imports."""
 
-from trader.commands.tui import main as _command_main
-from trader.ui import tui as _tui
+from trader.interfaces.cli.tui import main as _command_main
+from trader.interfaces.ui import tui as _tui
 
 _EXPORT_NAMES = [_name for _name in dir(_tui) if not _name.startswith("__")]
 

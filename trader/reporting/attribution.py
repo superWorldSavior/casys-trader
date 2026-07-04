@@ -649,6 +649,6 @@ def render_text(attr: dict) -> str:
 
 
 if __name__ == "__main__":
-    from trader.commands.attribution import main
+    from trader.interfaces.cli.attribution import main
 
     main()

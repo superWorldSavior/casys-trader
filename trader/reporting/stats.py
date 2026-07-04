@@ -61,6 +61,6 @@ _render_text = render_text
 
 
 if __name__ == "__main__":
-    from trader.commands.stats import main
+    from trader.interfaces.cli.stats import main
 
     main()

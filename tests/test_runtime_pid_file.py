@@ -1,4 +1,5 @@
 """Runtime ownership checks for daemon PID-file primitives."""
+
 from __future__ import annotations
 
 import ast
@@ -9,7 +10,7 @@ from pathlib import Path
 
 
 def _load_supervisor_without_cockpit_package_init():
-    supervisor_path = Path(__file__).resolve().parents[1] / "trader" / "cockpit" / "supervisor.py"
+    supervisor_path = Path(__file__).resolve().parents[1] / "trader" / "interfaces" / "cockpit" / "supervisor.py"
     spec = importlib.util.spec_from_file_location("_casys_test_cockpit_supervisor", supervisor_path)
     assert spec is not None
     assert spec.loader is not None
@@ -38,7 +39,7 @@ def test_daemon_imports_pid_file_primitives_from_runtime_not_cockpit() -> None:
         node
         for node in ast.walk(tree)
         if isinstance(node, ast.ImportFrom)
-        and node.module == "trader.cockpit.supervisor"
+        and node.module in {"trader.cockpit.supervisor", "trader.interfaces.cockpit.supervisor"}
         and {alias.name for alias in node.names} & {"claim_pid_file", "release_pid_file"}
     ]
 

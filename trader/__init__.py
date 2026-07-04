@@ -41,7 +41,7 @@ _COMPAT_MODULES = {
     "macro_calendar": "trader.market.macro_calendar",
     "macro_series": "trader.market.macro_series",
     "meta_performance": "trader.reporting.meta_performance",
-    "palette": "trader.ui.palette",
+    "palette": "trader.interfaces.ui.palette",
     "pool_config": "trader.support.config.pool",
     "portfolio_config": "trader.support.config.portfolio",
     "process_env": "trader.support.system.process_env",
@@ -62,8 +62,8 @@ _COMPAT_MODULES = {
     "rotation_wiring": "trader.rotation.wiring",
     "trade_plan": "trader.planning.trade_plan",
     "tool_trace": "trader.reporting.tool_trace",
-    "cockpit_events": "trader.cockpit.events",
-    "cockpit_supervisor": "trader.cockpit.supervisor",
+    "cockpit_events": "trader.interfaces.cockpit.events",
+    "cockpit_supervisor": "trader.interfaces.cockpit.supervisor",
 }
 
 _COMPAT_PACKAGES = {
@@ -82,6 +82,21 @@ _COMPAT_PACKAGES = {
         "registry": "trader.agent.tools.registry",
         "risk": "trader.agent.tools.risk",
     },
+    "cockpit": {
+        "__main__": "trader.interfaces.cockpit.__main__",
+        "aggregates": "trader.interfaces.cockpit.aggregates",
+        "app": "trader.interfaces.cockpit.app",
+        "events": "trader.interfaces.cockpit.events",
+        "home": "trader.interfaces.cockpit.home",
+        "overview": "trader.interfaces.cockpit.overview",
+        "supervisor": "trader.interfaces.cockpit.supervisor",
+    },
+    "commands": {
+        "attribution": "trader.interfaces.cli.attribution",
+        "stats": "trader.interfaces.cli.stats",
+        "tool_usage": "trader.interfaces.cli.tool_usage",
+        "tui": "trader.interfaces.cli.tui",
+    },
     "config": {
         "pool": "trader.support.config.pool",
         "portfolio": "trader.support.config.portfolio",
@@ -96,11 +111,19 @@ _COMPAT_PACKAGES = {
     "system": {
         "process_env": "trader.support.system.process_env",
     },
+    "ui": {
+        "palette": "trader.interfaces.ui.palette",
+        "rich_panels": "trader.interfaces.ui.rich_panels",
+        "tui": "trader.interfaces.ui.tui",
+    },
 }
 
 _COMPAT_PACKAGE_ALIASES = {
     "agent_protocol": "trader.agent.protocol",
     "agent_tools": "trader.agent.tools",
+    "cockpit": "trader.interfaces.cockpit",
+    "commands": "trader.interfaces.cli",
+    "ui": "trader.interfaces.ui",
 }
 
 _TOOLS_COMPAT_MODULES = {
