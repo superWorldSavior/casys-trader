@@ -524,8 +524,10 @@ FAMILIES: dict[str, list[str]] = {
         "MAA",    # Mid-America Apartment — résidentiel Sun Belt REIT
     ],
     # -------------------------------------------------------------------------
-    # Nouvelles familles EU — D10 : immobilier, industriels nordiques, matériaux,
-    # financiers supplémentaires, santé complémentaire, communication digitale.
+    # Extensions EU D10 — familles first-class du régime cross-asset.
+    # Séparées des familles EU initiales pour préserver des sous-régimes distincts
+    # (immobilier, nordiques, matériaux forestiers, financiers nordiques/CH,
+    # santé complémentaire). Elles sont traitées comme toutes les autres familles.
     # -------------------------------------------------------------------------
     # Immobilier européen (REITs & foncières)
     "eu_real_estate": [
