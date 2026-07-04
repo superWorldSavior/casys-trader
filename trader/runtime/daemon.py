@@ -73,13 +73,13 @@ from trader.runtime import ledger_rotation
 from trader.runtime.ib_attach import IBAttachBackoff
 from trader.scheduling import scheduler
 from trader.execution import portfolio
+from trader.execution.contracts import Fill, Order
 from trader.execution.broker import (
-    CommissionModel,
-    Order,
     SimBroker,
     commission_model_from_name,
     round_trip_cost,
 )
+from trader.execution.ports import CommissionModel
 from trader.state_db.broker_factory import (
     bootstrap_state_backend,
     make_broker,
@@ -3075,8 +3075,7 @@ def run_cycle(
                     _exec_result = _exec_task.get("result")
                     if _exec_result:
                         try:
-                            from trader.execution.broker import Fill as _Fill  # noqa: PLC0415
-                            fill = _Fill(**json.loads(_exec_result))
+                            fill = Fill(**json.loads(_exec_result))
                         except Exception as _fill_exc:  # noqa: BLE001
                             log.warning("[queue_execute] désérialisation fill sym=%s: %s", sym, _fill_exc)
                     _exec_terminal = "done"

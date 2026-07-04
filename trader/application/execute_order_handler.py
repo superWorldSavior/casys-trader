@@ -78,7 +78,7 @@ def make_execute_order_handler(
         payload = json.loads(task["payload"])
 
         # --- Decode order ---
-        from trader.execution.broker import Order  # import local — pas de circular dep
+        from trader.execution.contracts import Order
         order_raw = payload["order"]
         order = Order(
             symbol=str(order_raw["symbol"]),

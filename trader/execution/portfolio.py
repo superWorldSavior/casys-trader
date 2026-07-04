@@ -10,7 +10,7 @@ import math
 from dataclasses import dataclass, field
 from typing import Callable
 
-from trader.execution.broker import Broker
+from trader.execution.ports import Broker
 
 
 def _safe_last_price(raw: float | None, avg_price: float) -> float:

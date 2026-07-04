@@ -23,7 +23,7 @@ if TYPE_CHECKING:
     from trader.state_db.broker_store import SqliteBroker
     from trader.state_db.trade_plan_store import SqliteTradePlanStore
     from trader.queue.ledger import TaskLedger
-    from trader.execution.broker import Fill, Order
+    from trader.execution.contracts import Fill, Order
     from trader.planning.trade_plan import TradePlan
 
 log = logging.getLogger(__name__)

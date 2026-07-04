@@ -48,7 +48,7 @@ les utilisaient :
 | `trader/domain/` | Primitives neutres (`Bar`, `MarketError`, `Side`) | évite que `market`/`planning` importent `tools` |
 | `trader/scheduling/` | Réveils globaux/par symbole, stale backoff, veilles persistées | compat : `trader.tools.scheduler` |
 | `trader/planning/` | Plans de trade, veilles, exit engine, gate de pertinence | compat : `trader.trade_plan`, `trader.indicator_watch`, `trader.exit_engine`, `trader.relevance_gate` |
-| `trader/execution/` | Broker paper, primitives d'ordre/fill, commissions, RiskGate, projection portefeuille | compat : `trader.tools.execution`, `trader.tools.portfolio`, `trader.risk` |
+| `trader/execution/` | Contrats `Order`/`Fill`, ports `Broker`/`CommissionModel`, broker paper, commissions, RiskGate, projection portefeuille | contrats/ports : `trader.execution.contracts`, `trader.execution.ports`; compat : `trader.tools.execution`, `trader.tools.portfolio`, `trader.risk` |
 | `trader/learnings/` | Buffer brut JSONL, store SQLite recall, embeddings, consolidateur | compat : `trader.tools.memory.LearningsStore`, `trader.learnings_store`, `trader.embeddings`, `trader.consolidator` |
 | `trader/market/` | Port `DataSource`, adaptateurs yfinance/IB/composite, fraîcheur, indicateurs, FX, news, macro, radar, régime, priorisation gross exposure | port : `trader.market.ports.DataSource`; compat : `trader.tools.market`, `trader.tools.data_source`, `trader.tools.ib_source`, `trader.tools.news_feed`, `trader.fx`, `trader.features`, etc. |
 | `trader/queue/` | File de tâches durable, workers, pools, backpressure | backend technique utilisé par le runtime queue-on |
@@ -97,9 +97,11 @@ Les anciens imports restent compatibles quand ils existaient déjà
 `trader.runtime.code_version`, `trader.process_env`, `trader.stats`,
 `trader.attribution`, `trader.tool_usage`, `trader.tui`), mais les imports internes
 doivent viser les packages neutres ou canoniques (`domain/`, `execution/broker`,
-`market/`, `metadata/`, `system/`, `commands/`). Les tests `tests/test_package_layout.py`,
-`tests/test_code_version_imports.py` et `tests/test_runtime_pid_file.py`
-gardent ces frontières.
+`execution/contracts`, `execution/ports`, `market/`, `market/ports`, `metadata/`,
+`system/`, `commands/`). Les adaptateurs concrets restent dans
+`execution/broker` et `market/data_source` quand la composition runtime les
+instancie. Les tests `tests/test_package_layout.py`, `tests/test_code_version_imports.py`
+et `tests/test_runtime_pid_file.py` gardent ces frontières.
 
 Les nouveaux lots ne doivent pas ajouter de dépendances montantes hors
 composition root. Les dépendances montantes acceptées sont concentrées dans

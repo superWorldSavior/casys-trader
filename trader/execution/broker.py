@@ -1,6 +1,6 @@
 """Broker paper et primitives d'exécution.
 
-Interface `Broker` unique. v1 : `SimBroker` (fills simulés au dernier prix, état
+Port `Broker` unique. v1 : `SimBroker` (fills simulés au dernier prix, état
 persisté en JSON). Plus tard : `IBBroker` derrière la MÊME interface, l'agent ne
 voit pas la différence.
 
@@ -13,44 +13,16 @@ import json
 import math
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Literal, Protocol
 
-from trader.domain.orders import Side
+from trader.domain.orders import Side as Side
+from trader.execution.contracts import Commission as Commission
+from trader.execution.contracts import CommissionModelName as CommissionModelName
+from trader.execution.contracts import Fill as Fill
+from trader.execution.contracts import Order as Order
+from trader.execution.contracts import Position as Position
+from trader.execution.ports import Broker as Broker
+from trader.execution.ports import CommissionModel as CommissionModel
 from trader.market import fx
-
-CommissionModelName = Literal["none", "ibkr"]
-
-
-@dataclass(frozen=True)
-class Order:
-    symbol: str
-    side: Side
-    quantity: float
-    rationale: str = ""
-
-
-@dataclass(frozen=True)
-class Fill:
-    symbol: str
-    side: Side
-    quantity: float
-    price: float
-    ts: str
-    commission: float = 0.0
-    commission_currency: str = "USD"
-    commission_model: str = "none"
-    fx_rate: float = 1.0
-
-
-@dataclass(frozen=True)
-class Commission:
-    amount: float
-    currency: str = "USD"
-    model: str = "none"
-
-
-class CommissionModel(Protocol):
-    def calculate(self, order: Order, price: float) -> Commission: ...
 
 
 class NoCommissionModel:
@@ -176,19 +148,6 @@ def commission_model_from_name(name: CommissionModelName | str | None) -> Commis
     if normalized == "ibkr":
         return IbkrCommissionModel()
     raise ValueError(f"commission model inconnu: {name}")
-
-
-@dataclass
-class Position:
-    symbol: str
-    quantity: float = 0.0
-    avg_price: float = 0.0
-
-
-class Broker(Protocol):
-    def submit(self, order: Order, price: float, ts: str, dry_run: bool = True, fx_rate: float = 1.0) -> Fill | None: ...
-    def positions(self) -> dict[str, Position]: ...
-    def cash(self) -> float: ...
 
 
 @dataclass

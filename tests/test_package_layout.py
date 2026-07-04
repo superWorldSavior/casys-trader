@@ -403,25 +403,85 @@ def test_core_packages_do_not_depend_on_legacy_market_tools() -> None:
 def test_execution_broker_imports_are_canonical_with_tools_compatibility() -> None:
     from trader.execution.broker import (
         Broker,
+        Commission,
+        CommissionModel,
+        CommissionModelName,
         Fill,
         IbkrCommissionModel,
         NoCommissionModel,
         Order,
+        Position,
+        Side,
         SimBroker,
     )
+    from trader.domain.orders import Side as CanonicalSide
+    from trader.execution.contracts import Commission as CanonicalCommission
+    from trader.execution.contracts import CommissionModelName as CanonicalCommissionModelName
+    from trader.execution.contracts import Fill as CanonicalFill
+    from trader.execution.contracts import Order as CanonicalOrder
+    from trader.execution.contracts import Position as CanonicalPosition
+    from trader.execution.ports import Broker as CanonicalBroker
+    from trader.execution.ports import CommissionModel as CanonicalCommissionModel
     from trader.tools.execution import Broker as LegacyBroker
+    from trader.tools.execution import Commission as LegacyCommission
+    from trader.tools.execution import CommissionModel as LegacyCommissionModel
+    from trader.tools.execution import CommissionModelName as LegacyCommissionModelName
     from trader.tools.execution import Fill as LegacyFill
     from trader.tools.execution import IbkrCommissionModel as LegacyIbkrCommissionModel
     from trader.tools.execution import NoCommissionModel as LegacyNoCommissionModel
     from trader.tools.execution import Order as LegacyOrder
+    from trader.tools.execution import Position as LegacyPosition
+    from trader.tools.execution import Side as LegacySide
     from trader.tools.execution import SimBroker as LegacySimBroker
 
+    assert Broker is CanonicalBroker
+    assert Commission is CanonicalCommission
+    assert CommissionModel is CanonicalCommissionModel
+    assert CommissionModelName is CanonicalCommissionModelName
+    assert Fill is CanonicalFill
+    assert Order is CanonicalOrder
+    assert Position is CanonicalPosition
+    assert Side is CanonicalSide
     assert LegacyBroker is Broker
+    assert LegacyCommission is Commission
+    assert LegacyCommissionModel is CommissionModel
+    assert LegacyCommissionModelName is CommissionModelName
     assert LegacyFill is Fill
     assert LegacyIbkrCommissionModel is IbkrCommissionModel
     assert LegacyNoCommissionModel is NoCommissionModel
     assert LegacyOrder is Order
+    assert LegacyPosition is Position
+    assert LegacySide is Side
     assert LegacySimBroker is SimBroker
+
+
+def test_application_uses_execution_contracts_and_ports_instead_of_broker_adapter() -> None:
+    trader_dir = Path(__file__).resolve().parents[1] / "trader"
+    checked_paths = (
+        trader_dir / "application",
+        trader_dir / "execution" / "portfolio.py",
+        trader_dir / "execution" / "risk.py",
+    )
+    forbidden_module = "trader.execution.broker"
+    forbidden_names = {"Broker", "CommissionModel", "Fill", "Order", "Position"}
+
+    violations: list[str] = []
+    for checked_path in checked_paths:
+        paths = sorted(checked_path.rglob("*.py")) if checked_path.is_dir() else [checked_path]
+        for path in paths:
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            rel_path = path.relative_to(trader_dir.parent)
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ImportFrom) and node.module == forbidden_module:
+                    imported = sorted(alias.name for alias in node.names if alias.name in forbidden_names)
+                    if imported:
+                        violations.append(f"{rel_path}: from {forbidden_module} import {imported}")
+                elif isinstance(node, ast.Import):
+                    for alias in node.names:
+                        if alias.name == forbidden_module:
+                            violations.append(f"{rel_path}: import {alias.name}")
+
+    assert violations == []
 
 
 def test_portfolio_imports_are_canonical_with_tools_compatibility() -> None:
