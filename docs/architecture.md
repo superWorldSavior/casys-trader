@@ -11,7 +11,8 @@
 > `flat-compat-facades`, `domain-semantic-boundary`,
 > `planning-scheduling-boundary`, `agent-learnings-boundary`,
 > `market-rotation-boundary`, `wake-watch-runtime-glue`,
-> `learnings-selection-readmodel`, `planned-exits-boundary`).
+> `learnings-selection-readmodel`, `planned-exits-boundary`,
+> `decision-reason-domain`).
 
 ---
 
@@ -67,7 +68,7 @@ les utilisaient :
 | `trader/agent/protocol/` | Types, prompts, parsing du contrat LLM | utilisé par `trader/agent/client.py` |
 | `trader/agent/tools/` | Package des outils domaine lecture seule | `registry.TOOL_REGISTRY` assemble 9 handlers |
 | `trader/agent/learnings/` | Buffer brut JSONL, sélection pure, store SQLite recall, embeddings, consolidateur | mémoire machine de l'agent ; `trader.learnings.*` reste virtuel |
-| `trader/domain/` | Primitives neutres (`Bar`, `MarketError`, `Side`) et catalogue sémantique gouverné (`domain/semantic/`) | évite que `market`/`planning` importent `tools` ou un package racine de vocabulaire |
+| `trader/domain/` | Primitives neutres (`Bar`, `MarketError`, `Side`), vocabulaire partagé des `decision_reason_code` et catalogue sémantique gouverné (`domain/semantic/`) | évite que `market`/`planning`/`agent` importent `tools` ou `reporting` pour accéder à un vocabulaire métier |
 | `trader/planning/` | Plans de trade, scheduler de réveils, veilles, exit engine, gate de pertinence | compat : `trader.trade_plan`, `trader.indicator_watch`, `trader.exit_engine`, `trader.relevance_gate`, `trader.scheduling.scheduler`, `trader.tools.scheduler` |
 | `trader/execution/` | Contrats `Order`/`Fill`, ports `Broker`/`CommissionModel`, broker paper, commissions, RiskGate, projection portefeuille | contrats/ports : `trader.execution.contracts`, `trader.execution.ports`; compat virtuelle : `trader.tools.execution`, `trader.tools.portfolio`, `trader.risk` |
 | `trader/market/` | Port `DataSource`, adaptateurs yfinance/IB/composite, fraîcheur, indicateurs, FX, news, macro, radar, régime, priorisation gross exposure | port : `trader.market.ports.DataSource`; compat virtuelle : `trader.tools.market`, `trader.tools.data_source`, `trader.tools.ib_source`, `trader.tools.news_feed`, `trader.fx`, `trader.features`, etc. |
@@ -75,7 +76,7 @@ les utilisaient :
 | `trader/infrastructure/state_db/` | Backend SQLite de l'état paper, broker store, outbox | source durable quand `CASYS_STATE_BACKEND=sqlite` ; compat virtuelle : `trader.state_db.*` |
 | `trader/market/rotation/` | Rotation d'univers, hot-sets par venue, schedule, override, ledger rotation | compat virtuelle : `trader.rotation.*`, `trader.rotation_*` |
 | `trader/support/` | Helpers support stables : config (`pool`, `portfolio`), metadata git/code version, process env | compat virtuelle : `trader.config.*`, `trader.metadata.*`, `trader.system.*` |
-| `trader/reporting/` | Ledger décision, raisons, audit ex-post, attribution, stats, tool usage, meta-performance, read models | analyse/rendu ex-post ; les side effects CLI vivent dans `interfaces/cli/` |
+| `trader/reporting/` | Ledger décision, audit ex-post, attribution, stats, tool usage, meta-performance, read models | analyse/rendu ex-post ; `reporting.decision_reason` reste une façade de compatibilité vers `domain.decision_reason` |
 | `trader/interfaces/cli/` | Entry points CLI canoniques (`stats`, `attribution`, `tool_usage`, `tui`) | compat virtuelle : `python -m trader.commands.stats`, `python -m trader.stats`, etc. |
 | `trader/runtime/cycle_scheduling.py` | Adaptateur runtime wake/watch : délègue la politique à `application/cycle_schedule.py` et `application/watch_scanner.py`, puis émet events/logs et compat wrappers | évite que `daemon.py` réimporte directement la glue applicative |
 | `trader/runtime/` | Daemon, CLI, logging, PID file, IB attach, rotation ledger, writers d'état fichier | compat virtuelle : `python -m trader.daemon`, `python -m trader.cli` |
@@ -129,7 +130,7 @@ Les anciens imports restent compatibles quand ils existaient déjà
 `trader.cockpit.app`, `trader.ui.palette`, `trader.queue.ledger`,
 `trader.state_db.connection`, `trader.semantic.catalog`,
 `trader.scheduling.scheduler`, `trader.learnings.raw_store`,
-`trader.rotation.schedule`). `trader.tools` est fourni par le finder de
+`trader.rotation.schedule`, `trader.reporting.decision_reason`). `trader.tools` est fourni par le finder de
 compatibilité dans `trader/__init__.py` et ne correspond plus à un dossier
 physique ; `trader.config`, `trader.metadata`, `trader.system`,
 `trader.read_models`, `trader.commands`, `trader.cockpit`, `trader.ui`,
@@ -142,7 +143,7 @@ doivent viser les packages neutres ou canoniques (`domain/`, `execution/broker`,
 `reporting/read_models/`, `agent/protocol/`, `agent/tools/`, `interfaces/cli/`,
 `interfaces/cockpit/`, `interfaces/ui/`, `infrastructure/queue/`,
 `infrastructure/state_db/`, `domain/semantic/`, `planning/scheduler.py`,
-`agent/learnings/`, `market/rotation/`). Les adaptateurs concrets restent dans
+`agent/learnings/`, `market/rotation/`, `domain/decision_reason.py`). Les adaptateurs concrets restent dans
 `execution/broker` et `market/data_source` quand la composition runtime les
 instancie. Les tests `tests/test_package_layout.py`, `tests/test_code_version_imports.py`
 et `tests/test_runtime_pid_file.py` gardent ces frontières.

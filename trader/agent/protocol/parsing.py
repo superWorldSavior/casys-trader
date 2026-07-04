@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from dataclasses import replace
 
-from trader.reporting import decision_reason
+from trader.domain import decision_reason
 from trader.agent.protocol.types import (
     BatchToolCallRequest,
     ContextResearchRequest,

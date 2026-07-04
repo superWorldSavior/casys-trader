@@ -3,6 +3,15 @@ import pytest
 from trader.reporting.decision_reason import infer_reason_code
 
 
+def test_decision_reason_domain_canonical_reporting_compat() -> None:
+    from trader.domain import decision_reason as canonical
+    from trader.reporting import decision_reason as legacy
+
+    assert canonical.infer_reason_code is legacy.infer_reason_code
+    assert canonical.normalize_reason_code is legacy.normalize_reason_code
+    assert canonical.reason_code_enum_text() == legacy.reason_code_enum_text()
+
+
 @pytest.mark.parametrize(
     ("row", "expected"),
     [

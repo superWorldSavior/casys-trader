@@ -23,7 +23,7 @@ Rien n'est dans le hot-path de décision.
 | `meta_performance` | Payload **compact de méta-performance** pour l'agent runtime + le consolidateur (réinjecté au contexte). |
 | `stats` | Helpers de reporting des **KPI live** calculés par `reporting/read_models/live_kpis.py`; la CLI canonique vit dans `interfaces.cli.stats`. |
 | `decision_ledger` | Journal durable des décisions (schéma versionné). |
-| `decision_reason` | Vocabulaire des `decision_reason_code` (NO_EDGE, MARKET_CLOSED, ARMED_PLAN, EXIT_SIGNAL…). |
+| `decision_reason` | Façade de compatibilité vers `trader.domain.decision_reason`, vocabulaire canonique des `decision_reason_code`. |
 | `tool_trace` / `tool_usage` | Traces des tournées d'outils domaine du LLM. |
 
 ## Flux typiques
@@ -41,14 +41,18 @@ et `python -m trader.tool_usage`, ainsi que `python -m trader.commands.*`,
 restent supportés via les alias virtuels de `trader/__init__.py`, mais ils
 délèguent aux modules canoniques de `trader/interfaces/cli/`.
 
-## Codes de raison de décision (`decision_reason`)
+## Codes de raison de décision (`domain.decision_reason`)
 
-Enum stable (15 codes, `decision_reason.py`) posé sur chaque décision
-(`decision_reason_code`) : `NO_EDGE`, `MARKET_CLOSED`, `POSITION_MANAGEMENT`,
-`WATCH_ARMED`, `DATA_STALE`, `EXIT_SIGNAL`, `ENTRY_SIGNAL`, `ARMED_PLAN`,
-`FEES_TOO_HIGH`, `CONFLICTING_SIGNALS`, `WAITING_PULLBACK`, `RISK_LIMIT`,
-`ALREADY_EXPOSED`, `POST_LOSS_CAUTION`, `UNKNOWN`. Sert au filtrage et à l'audit
-(distinguer un HOLD infra d'un HOLD authored par le LLM).
+Enum stable (15 codes, `trader/domain/decision_reason.py`) posé sur chaque
+décision (`decision_reason_code`) : `NO_EDGE`, `MARKET_CLOSED`,
+`POSITION_MANAGEMENT`, `WATCH_ARMED`, `DATA_STALE`, `EXIT_SIGNAL`,
+`ENTRY_SIGNAL`, `ARMED_PLAN`, `FEES_TOO_HIGH`, `CONFLICTING_SIGNALS`,
+`WAITING_PULLBACK`, `RISK_LIMIT`, `ALREADY_EXPOSED`, `POST_LOSS_CAUTION`,
+`UNKNOWN`. Sert au protocole LLM, au filtrage et à l'audit (distinguer un HOLD
+infra d'un HOLD authored par le LLM).
+
+`trader.reporting.decision_reason` reste importable comme façade legacy, mais
+les imports internes doivent viser `trader.domain.decision_reason`.
 
 ## Voir aussi
 - [Cockpit](cockpit.md) (consomme `stats`, `attribution`) · Architecture §11 (recall).

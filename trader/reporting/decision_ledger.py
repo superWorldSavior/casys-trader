@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from trader.support.metadata import code_version
-from trader.reporting import decision_reason
+from trader.domain import decision_reason
 
 SCHEMA_VERSION = 1
 DEFAULT_LEDGER_FILENAME = "decisions.jsonl"

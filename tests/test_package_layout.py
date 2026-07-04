@@ -157,6 +157,43 @@ def test_daemon_delegates_planned_exit_logic_to_application_service() -> None:
     assert violations == []
 
 
+def test_decision_reason_vocabulary_is_domain_canonical() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    canonical_path = repo_root / "trader" / "domain" / "decision_reason.py"
+    reporting_root = repo_root / "trader" / "reporting"
+    reporting_facade = repo_root / "trader" / "reporting" / "decision_reason.py"
+
+    assert canonical_path.exists()
+    assert reporting_facade.exists()
+
+    violations: list[str] = []
+    for path in sorted((repo_root / "trader").rglob("*.py")):
+        if "__pycache__" in path.parts or path == reporting_facade:
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        rel_path = path.relative_to(repo_root)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module == "trader.reporting":
+                for alias in node.names:
+                    if alias.name == "decision_reason":
+                        violations.append(f"{rel_path}: from trader.reporting import decision_reason")
+            elif isinstance(node, ast.ImportFrom) and node.module == "trader.reporting.decision_reason":
+                violations.append(f"{rel_path}: from trader.reporting.decision_reason import ...")
+            elif isinstance(node, ast.ImportFrom) and node.level and reporting_root in path.parents:
+                if node.module == "decision_reason":
+                    violations.append(f"{rel_path}: from .decision_reason import ...")
+                elif node.module is None:
+                    for alias in node.names:
+                        if alias.name == "decision_reason":
+                            violations.append(f"{rel_path}: from . import decision_reason")
+            elif isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name == "trader.reporting.decision_reason":
+                        violations.append(f"{rel_path}: import trader.reporting.decision_reason")
+
+    assert violations == []
+
+
 def test_foundation_packages_do_not_depend_on_higher_layers() -> None:
     repo_root = Path(__file__).resolve().parents[1]
     trader_dir = repo_root / "trader"

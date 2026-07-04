@@ -31,7 +31,7 @@ des symboles à décider. Ordre d'assemblage :
 
 Enums injectés (source de vérité côté code) : indicateurs de veille
 (`DEFAULT_INDICATORS`), opérateurs (`WATCH_VALID_OPERATORS`), codes de raison
-(`decision_reason.reason_code_enum_text()`).
+(`trader.domain.decision_reason.reason_code_enum_text()`).
 
 ## Le contrat de sortie
 
@@ -60,4 +60,4 @@ l'agent runtime. Sections : Objectif · Marchés autorisés · Contraintes · KP
 > reste stratégique et minimal.
 
 ## Voir aussi
-- [Domain tools](agent-tools.md) · [reporting](reporting.md) (`decision_reason`) · Architecture §9.3.
+- [Domain tools](agent-tools.md) · [reporting](reporting.md) (`decision_reason` compat, vocabulaire canonique dans `domain`) · Architecture §9.3.

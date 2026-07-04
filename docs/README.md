@@ -79,6 +79,7 @@ Légende : ✅ couvert · 🟡 partiel / dispersé / potentiellement périmé ·
 |---|---|---|---|---|
 | Transport LLM / acpx | `agent/llm`, `agent/client` | ✅ | archi §9.1-9.2 | — |
 | Contrat / protocole (prompts + mandat) | `agent/protocol/` (types, prompts, parsing), `mandate/` | ✅ | **`reference/llm-contract.md`** | — |
+| Vocabulaire des raisons de décision | `domain/decision_reason` | ✅ | **`reference/reporting.md`** | — |
 | Contexte agent (cockpit) | `agent/context` | ✅ | **`reference/agent-context.md`** | — |
 | Outils domaine (read-only) | `agent/tools/` (9 handlers) | ✅ | **`reference/agent-tools.md`** | — |
 | Mémoire / recall / learnings (RAG) | `agent/learnings/` (store, consolidator, embeddings) | ✅ | **`reference/learnings-rag.md`** | — |
