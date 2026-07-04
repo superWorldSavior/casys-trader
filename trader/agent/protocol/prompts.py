@@ -257,7 +257,7 @@ _SYMBOL_CALLS_FINAL_CONTRACT = (
     "Requiert un hard_stop dans exit (OBLIGATOIRE sans quoi l'ordre est rejeté). "
     "Le gate max_risk_per_trade_pct reste le fusible : si risk_pct > limite, l'ordre est rejeté. "
     "qty explicite prime toujours sur risk_pct (Explicit Over Implicit). "
-    "`thesis` est OPTIONNEL : {setup:\"<setup court>\", horizon:\"intraday|swing|position\", "
+    '`thesis` est OPTIONNEL : {setup:"<setup court>", horizon:"intraday|swing|position", '
     "invalidation:\"<condition d'invalidation>\"} — tag structuré persisté pour l'attribution "
     "et la boucle d'apprentissage. N'en ajoute un que si la thèse est claire.\n"
     "- amend_exit{hard_stop?, tp?, trail?, protect?} : patche le plan de sortie du symbole "
@@ -266,7 +266,7 @@ _SYMBOL_CALLS_FINAL_CONTRACT = (
     "No-op tracé si pas de plan ouvert. "
     "Utilise-le sans propose_order sur ce symbole ; amend_exit + propose_order est rejeté. "
     "`calls:[{amend_exit}]` = HOLD + ajustement de gestion actif.\n"
-    "- set_next_wake{minutes} OU {on:\"session_open\"|\"macro_event\"|\"pre_earnings\"} OU {when:<condition>, ttl_minutes?} : "
+    '- set_next_wake{minutes} OU {on:"session_open"|"macro_event"|"pre_earnings"} OU {when:<condition>, ttl_minutes?} : '
     "planifie la prochaine RECONSULTATION du symbole (l'agent reprend la main pour redécider). "
     "minutes = timer fixe (ex: 15 après une entrée) ; "
     "on:session_open = prochaine ouverture de séance de la place du symbole ; "
@@ -274,8 +274,8 @@ _SYMBOL_CALLS_FINAL_CONTRACT = (
     "on:pre_earnings = avant les prochains earnings (si la donnée existe) ; "
     "when = réveil-sur-indicateur : RECONSULTATION quand une condition indicateur devient vraie — "
     "équivalent interne à propose_indicator_watch{WAKE} mais dans set_next_wake. "
-    "Format when: {\"indicator\":\"<nom>\",\"op\":\">=|>|<=|<|==\",\"value\":<float>,"
-    "\"interval\":\"15m|1h|4h\",\"window\":<int>,\"as_of\":\"latest\"} (même vocabulaire que les conditions de veille). "
+    'Format when: {"indicator":"<nom>","op":">=|>|<=|<|==","value":<float>,'
+    '"interval":"15m|1h|4h","window":<int>,"as_of":"latest"} (même vocabulaire que les conditions de veille). '
     "ttl_minutes optionnel (défaut 60). "
     "INTERDIT de combiner when et propose_indicator_watch dans la même décision (conflit → HOLD). "
     "Distinction clé : set_next_wake = RECONSULTATION (l'agent re-juge) ; "

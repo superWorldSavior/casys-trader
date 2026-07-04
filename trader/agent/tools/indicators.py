@@ -1,7 +1,8 @@
 """Semantic data and indicator context tool handlers."""
+
 from __future__ import annotations
 
-from trader.agent_tools.core import AgentToolCall, ToolContext, ToolSpec
+from trader.agent.tools.core import AgentToolCall, ToolContext, ToolSpec
 from trader.semantic import catalog as semantic_catalog
 
 _MAX_INDICATORS_PER_CALL = 6
@@ -23,7 +24,7 @@ def _validate_get_indicator_context(args: dict) -> str | None:
 
 
 def _handle_get_indicator_context(call: AgentToolCall, context: ToolContext) -> dict:
-    from trader.agent_protocol import IndicatorRequest  # noqa: PLC0415
+    from trader.agent.protocol import IndicatorRequest  # noqa: PLC0415
 
     sym = call.args["symbol"]
     if sym not in context.allowed_symbols:

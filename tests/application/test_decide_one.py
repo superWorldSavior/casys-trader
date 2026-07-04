@@ -19,7 +19,7 @@ from dataclasses import replace
 
 import pytest
 
-from trader.agent_protocol.types import Decision
+from trader.agent.protocol.types import Decision
 from trader.application.decide_one import decide_one
 from trader.queue.worker import RetryableError
 
@@ -215,7 +215,7 @@ class _ParsePassthroughClient:
         self._llm_text = llm_text
 
     def decide_batch(self, *, symbols, allow_context_request=False, **kwargs):
-        from trader.agent_protocol.parsing import parse_batch
+        from trader.agent.protocol.parsing import parse_batch
         return parse_batch(
             self._llm_text,
             list(symbols),

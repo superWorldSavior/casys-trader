@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Mapping, Protocol
 
-from trader.agent_protocol.types import Decision
+from trader.agent.protocol.types import Decision
 from trader.planning.indicator_watch import armed_order_price_coherent
 from trader.planning.trade_plan import InvalidExitPlanError, resolve_exit_plan
 

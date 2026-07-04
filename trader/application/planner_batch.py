@@ -8,7 +8,7 @@ from dataclasses import replace
 from datetime import datetime
 from typing import Callable
 
-import trader.agent_tools as agent_tools
+import trader.agent.tools as agent_tools
 from trader.agent import client as codex_client
 from trader.agent.context import resolve_indicator_requests
 from trader.market import market_data as market
@@ -115,10 +115,7 @@ def _run_tool_round(
             r = results[pos] if pos < len(results) else None
             if r and r.ok and isinstance(r.result, dict):
                 rows = r.result.get("rows", [])
-                note_ids = [
-                    row["id"] for row in rows
-                    if isinstance(row, dict) and isinstance(row.get("id"), int)
-                ]
+                note_ids = [row["id"] for row in rows if isinstance(row, dict) and isinstance(row.get("id"), int)]
                 tc["detail"] = {**tc["detail"], "note_ids": note_ids}
 
     return results_prompt, runtime
@@ -315,7 +312,10 @@ def batch_decide(
                 )
             except Exception as exc:  # noqa: BLE001
                 return (
-                    {sym: codex_client.Decision.hold(sym, f"llm_failed:batch_exception:{type(exc).__name__}") for sym in chunk},
+                    {
+                        sym: codex_client.Decision.hold(sym, f"llm_failed:batch_exception:{type(exc).__name__}")
+                        for sym in chunk
+                    },
                     1,
                 )
 
@@ -360,7 +360,10 @@ def batch_decide(
                 )
             except Exception as exc:  # noqa: BLE001
                 return (
-                    {sym: codex_client.Decision.hold(sym, f"llm_failed:batch_exception:{type(exc).__name__}") for sym in chunk},
+                    {
+                        sym: codex_client.Decision.hold(sym, f"llm_failed:batch_exception:{type(exc).__name__}")
+                        for sym in chunk
+                    },
                     2,
                 )
 
@@ -445,7 +448,9 @@ def batch_decide(
                 cached_lookback=runtime_lookback,
             )
             if event_appender is not None:
-                event_appender("context_resolved", symbol=sym, requested=len(req.requests), resolved=len(research["requests"]))
+                event_appender(
+                    "context_resolved", symbol=sym, requested=len(req.requests), resolved=len(research["requests"])
+                )
             context_requests[sym] = _context_request_summary(req, resolved=len(research["requests"]))
             per_symbol2[sym] = {
                 "indicator_triggers": triggers_by_symbol.get(sym, []),

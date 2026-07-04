@@ -1,4 +1,5 @@
 """Core validation, execution, and serialization for bounded agent tools."""
+
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
@@ -19,12 +20,12 @@ OUTCOME_BUDGET_EXHAUSTED: ToolOutcome = "budget_exhausted"
 OUTCOME_TRUNCATED: ToolOutcome = "truncated"
 
 # Bornes de sérialisation — design §6 / findings Codex 2026-07-02.
-_MAX_RAW_CALLS = 32    # au-delà : trace sentinel "truncated", surplus ignoré
-_SCRUB_ID_LEN = 64     # id/tool tronqués à 64 chars
-_SCRUB_STR_LEN = 256   # strings dans args tronquées à 256 chars
-_SCRUB_LIST_LEN = 16   # listes dans args plafonnées à 16 éléments
+_MAX_RAW_CALLS = 32  # au-delà : trace sentinel "truncated", surplus ignoré
+_SCRUB_ID_LEN = 64  # id/tool tronqués à 64 chars
+_SCRUB_STR_LEN = 256  # strings dans args tronquées à 256 chars
+_SCRUB_LIST_LEN = 16  # listes dans args plafonnées à 16 éléments
 _SCRUB_DICT_KEYS = 16  # dicts dans args plafonnés à 16 clés
-_SCRUB_DEPTH = 3       # profondeur de récursion ≤ 3
+_SCRUB_DEPTH = 3  # profondeur de récursion ≤ 3
 
 
 @dataclass(frozen=True)
@@ -57,23 +58,19 @@ class AgentToolTrace:
 
 
 class PositionRiskProvider(Protocol):
-    def __call__(self, symbol: str) -> ToolPayload | None:
-        ...
+    def __call__(self, symbol: str) -> ToolPayload | None: ...
 
 
 class RecentDecisionsProvider(Protocol):
-    def __call__(self, symbol: str | None, limit: int) -> list[JsonObject]:
-        ...
+    def __call__(self, symbol: str | None, limit: int) -> list[JsonObject]: ...
 
 
 class IndicatorResolver(Protocol):
-    def __call__(self, requests: list[Any]) -> ToolPayload:
-        ...
+    def __call__(self, requests: list[Any]) -> ToolPayload: ...
 
 
 class LearningsRecallProvider(Protocol):
-    def __call__(self, query: JsonObject) -> ToolPayload:
-        ...
+    def __call__(self, query: JsonObject) -> ToolPayload: ...
 
 
 @dataclass(frozen=True)
@@ -107,7 +104,7 @@ class ToolSpec:
 
 
 def _default_registry() -> Mapping[str, ToolSpec]:
-    from trader.agent_tools.registry import TOOL_REGISTRY  # noqa: PLC0415
+    from trader.agent.tools.registry import TOOL_REGISTRY  # noqa: PLC0415
 
     return TOOL_REGISTRY
 
@@ -283,13 +280,15 @@ def execute_tool_round(
     dropped = len(raw_calls) - _MAX_RAW_CALLS
     if dropped > 0:
         raw_calls = raw_calls[:_MAX_RAW_CALLS]
-        traces.append(AgentToolTrace(
-            id="[sentinel]",
-            tool="?",
-            args={},
-            outcome=OUTCOME_TRUNCATED,
-            detail={"dropped": dropped},
-        ))
+        traces.append(
+            AgentToolTrace(
+                id="[sentinel]",
+                tool="?",
+                args={},
+                outcome=OUTCOME_TRUNCATED,
+                detail={"dropped": dropped},
+            )
+        )
 
     executed_total = 0
     per_symbol: dict[str, int] = {}
@@ -303,12 +302,14 @@ def execute_tool_round(
         validated = validate_tool_call(raw, allowed_tools=allowed_tools, registry=registry)
         if isinstance(validated, AgentToolTrace):
             reason = validated.detail.get("reason", "rejected")
-            results.append(AgentToolResult(
-                id=validated.id,
-                tool=validated.tool,
-                ok=False,
-                error=f"rejected:{reason}",
-            ))
+            results.append(
+                AgentToolResult(
+                    id=validated.id,
+                    tool=validated.tool,
+                    ok=False,
+                    error=f"rejected:{reason}",
+                )
+            )
             traces.append(validated)
             continue
         symbols = _symbols_mentioned(validated.args)
@@ -333,8 +334,7 @@ def round_runtime_payload(traces: list[AgentToolTrace], *, rounds: int) -> dict:
     return {
         "tool_rounds": rounds,
         "tool_calls": [
-            {"id": t.id, "tool": t.tool, "args": t.args, "outcome": t.outcome, "detail": t.detail}
-            for t in traces
+            {"id": t.id, "tool": t.tool, "args": t.args, "outcome": t.outcome, "detail": t.detail} for t in traces
         ],
     }
 

@@ -1,7 +1,7 @@
 # Référence — Domain tools (la tournée d'outils du LLM)
 
 > **Type** : Reference (Diátaxis).
-> **Code** : `trader/agent_tools/` · **Registry** : `agent_tools/registry.TOOL_REGISTRY`
+> **Code** : `trader/agent/tools/` · **Registry** : `agent/tools/registry.TOOL_REGISTRY`
 > **Activation** : `CASYS_AGENT_TOOLS_ENABLED=1` · **Historique du design** : voir `git log` (specs 2026-06-29 / 2026-07-03 supprimées une fois livrées, cette page fait foi)
 
 Le LLM décideur peut **pull** du contexte supplémentaire via des outils
@@ -31,7 +31,7 @@ acceptés en compat cachée, mais ne sont pas exposés dans ce contrat.
 | `recall_learnings` | `learnings` | rappel sémantique de learnings (cf. [RAG](learnings-rag.md)) |
 
 Chaque outil = un `ToolSpec(name, validate_args, handler)` enregistré dans
-`TOOL_REGISTRY` (`agent_tools/registry`).
+`TOOL_REGISTRY` (`agent/tools/registry`).
 
 ## Action tools finaux par symbole
 
@@ -116,7 +116,7 @@ déjà un OCO implicite : une fermeture totale rend caducs les autres ordres du 
 
 ## Contrat d'exécution — `execute_tool_round`
 
-`agent_tools/core.execute_tool_round(raw_calls, *, context, limits, allowed_tools)`
+`agent/tools/core.execute_tool_round(raw_calls, *, context, limits, allowed_tools)`
 → **UNE tournée bornée** : chaque call rend TOUJOURS un `(result, trace)`, même
 rejeté ou hors budget (le LLM voit ce qui s'est passé).
 

@@ -67,6 +67,21 @@ _COMPAT_MODULES = {
 }
 
 _COMPAT_PACKAGES = {
+    "agent_protocol": {
+        "parsing": "trader.agent.protocol.parsing",
+        "prompts": "trader.agent.protocol.prompts",
+        "types": "trader.agent.protocol.types",
+    },
+    "agent_tools": {
+        "attribution": "trader.agent.tools.attribution",
+        "core": "trader.agent.tools.core",
+        "freshness": "trader.agent.tools.freshness",
+        "indicators": "trader.agent.tools.indicators",
+        "learnings": "trader.agent.tools.learnings",
+        "plans": "trader.agent.tools.plans",
+        "registry": "trader.agent.tools.registry",
+        "risk": "trader.agent.tools.risk",
+    },
     "config": {
         "pool": "trader.support.config.pool",
         "portfolio": "trader.support.config.portfolio",
@@ -81,6 +96,11 @@ _COMPAT_PACKAGES = {
     "system": {
         "process_env": "trader.support.system.process_env",
     },
+}
+
+_COMPAT_PACKAGE_ALIASES = {
+    "agent_protocol": "trader.agent.protocol",
+    "agent_tools": "trader.agent.tools",
 }
 
 _TOOLS_COMPAT_MODULES = {
@@ -152,7 +172,13 @@ class _CompatAliasModule(types.ModuleType):
         return getattr(self._target(), name)
 
     def __setattr__(self, name: str, value):
-        if name.startswith("__") or name in {"_alias_name", "_target_name", "_target_module", "_export_names"}:
+        if name.startswith("__") or name in {
+            "_alias_name",
+            "_target_name",
+            "_target_module",
+            "_export_names",
+            "_modules",
+        }:
             return super().__setattr__(name, value)
         setattr(self._target(), name, value)
 
@@ -191,13 +217,38 @@ class _CompatPackage(types.ModuleType):
         super().__setattr__("_modules", modules)
         super().__setattr__("__package__", alias_name)
         super().__setattr__("__path__", [])
+        super().__setattr__("__file__", None)
         super().__setattr__("__all__", sorted(modules))
 
     def __getattr__(self, name: str):
+        if name == "__file__":
+            return None
         modules = super().__getattribute__("_modules")
         if name in modules:
             return importlib.import_module(f"{self.__name__}.{name}")
         raise AttributeError(f"module {self.__name__!r} has no attribute {name!r}")
+
+    def __dir__(self) -> list[str]:
+        modules = super().__getattribute__("_modules")
+        return sorted(set(super().__dir__()) | set(modules))
+
+
+class _CompatPackageAliasModule(_CompatAliasModule):
+    """Virtual legacy package proxying a canonical package."""
+
+    def __init__(self, alias_name: str, target_name: str, modules: dict[str, str]) -> None:
+        super().__init__(alias_name, target_name)
+        super().__setattr__("_modules", modules)
+        super().__setattr__("__package__", alias_name)
+        super().__setattr__("__path__", [])
+
+    def __getattr__(self, name: str):
+        if name == "__file__":
+            return None
+        modules = super().__getattribute__("_modules")
+        if name in modules:
+            return importlib.import_module(f"{self.__name__}.{name}")
+        return super().__getattr__(name)
 
     def __dir__(self) -> list[str]:
         modules = super().__getattribute__("_modules")
@@ -257,6 +308,9 @@ class _CompatAliasFinder(importlib.abc.MetaPathFinder, importlib.abc.Loader):
         if not fullname.startswith(prefix):
             return None
         old_name = fullname.removeprefix(prefix)
+        package_alias_target = _COMPAT_PACKAGE_ALIASES.get(old_name)
+        if package_alias_target is not None:
+            return package_alias_target
         if "." not in old_name:
             return _COMPAT_MODULES.get(old_name)
         package_name, _, submodule_name = old_name.partition(".")
@@ -278,6 +332,8 @@ class _CompatAliasFinder(importlib.abc.MetaPathFinder, importlib.abc.Loader):
         prefix = f"{__name__}."
         if fullname.startswith(prefix):
             old_name = fullname.removeprefix(prefix)
+            if "." not in old_name and old_name in _COMPAT_PACKAGE_ALIASES:
+                return self._module_spec(fullname, is_package=True)
             if "." not in old_name and old_name in _COMPAT_PACKAGES:
                 return self._module_spec(fullname, is_package=True)
             package_name, _, submodule_name = old_name.partition(".")
@@ -328,6 +384,8 @@ class _CompatAliasFinder(importlib.abc.MetaPathFinder, importlib.abc.Loader):
     def create_module(self, spec):
         prefix = f"{__name__}."
         old_name = spec.name.removeprefix(prefix)
+        if "." not in old_name and old_name in _COMPAT_PACKAGE_ALIASES:
+            return _CompatPackageAliasModule(spec.name, _COMPAT_PACKAGE_ALIASES[old_name], _COMPAT_PACKAGES[old_name])
         if "." not in old_name and old_name in _COMPAT_PACKAGES:
             return _CompatPackage(spec.name, _COMPAT_PACKAGES[old_name])
         package_name, _, submodule_name = old_name.partition(".")
@@ -355,7 +413,9 @@ class _CompatAliasFinder(importlib.abc.MetaPathFinder, importlib.abc.Loader):
         tools_name = f"{__name__}.tools"
         prefix = f"{__name__}."
         old_name = alias_name.removeprefix(prefix) if isinstance(alias_name, str) else ""
-        if "." not in old_name and old_name in _COMPAT_PACKAGES:
+        if "." not in old_name and old_name in _COMPAT_PACKAGE_ALIASES:
+            setattr(sys.modules[__name__], old_name, module)
+        elif "." not in old_name and old_name in _COMPAT_PACKAGES:
             setattr(sys.modules[__name__], old_name, module)
         elif isinstance(alias_name, str) and "." in old_name:
             package_name, _, submodule_name = old_name.partition(".")
@@ -381,6 +441,8 @@ def _install_compat_finder() -> None:
 
 
 def __getattr__(name: str):
+    if name in _COMPAT_PACKAGE_ALIASES:
+        return importlib.import_module(f"{__name__}.{name}")
     if name in _COMPAT_PACKAGES:
         return importlib.import_module(f"{__name__}.{name}")
     if name in _COMPAT_MODULES:

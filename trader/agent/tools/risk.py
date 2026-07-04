@@ -1,7 +1,8 @@
 """Position risk tool handlers."""
+
 from __future__ import annotations
 
-from trader.agent_tools.core import AgentToolCall, ToolContext, ToolSpec
+from trader.agent.tools.core import AgentToolCall, ToolContext, ToolSpec
 
 
 def _validate_symbol_only(args: dict) -> str | None:

@@ -72,15 +72,15 @@ Légende : ✅ couvert · 🟡 partiel / dispersé / potentiellement périmé ·
 |---|---|---|---|---|
 | Radar / rotation / hot-sets | `rotation/*` (core, venues, collectors, schedule, override, wiring) | ✅ | **`reference/universe-rotation.md`** | D9, D10, D13 |
 | Régime (marché + familial) | `market/regime`, `market/family_regime` | ✅ | **`reference/regime.md`** | D2 |
-| Config univers & portefeuille | `config/*.yaml`, `config/pool`, `config/portfolio` | ✅ | **`reference/config.md`** | D9/D10/D13 |
+| Config univers & portefeuille | `config/*.yaml`, `support/config/pool`, `support/config/portfolio` | ✅ | **`reference/config.md`** | D9/D10/D13 |
 
 ### LLM & agent
 | Sous-système | Package/module | Réf | Où | Décisions |
 |---|---|---|---|---|
 | Transport LLM / acpx | `agent/llm`, `agent/client` | ✅ | archi §9.1-9.2 | — |
-| Contrat / protocole (prompts + mandat) | `agent_protocol/` (types, prompts, parsing), `mandate/` | ✅ | **`reference/llm-contract.md`** | — |
+| Contrat / protocole (prompts + mandat) | `agent/protocol/` (types, prompts, parsing), `mandate/` | ✅ | **`reference/llm-contract.md`** | — |
 | Contexte agent (cockpit) | `agent/context` | ✅ | **`reference/agent-context.md`** | — |
-| Outils domaine (read-only) | `agent_tools/` (9 handlers) | ✅ | **`reference/agent-tools.md`** | — |
+| Outils domaine (read-only) | `agent/tools/` (9 handlers) | ✅ | **`reference/agent-tools.md`** | — |
 | Mémoire / recall / learnings (RAG) | `learnings/` (store, consolidator, embeddings) | ✅ | **`reference/learnings-rag.md`** | — |
 | Couche sémantique | `semantic/catalog` | ✅ | **`reference/semantic.md`** | — |
 

@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import logging
 
-from trader.agent_protocol.types import Decision
+from trader.agent.protocol.types import Decision
 from trader.queue.worker import RetryableError
 
 log = logging.getLogger(__name__)

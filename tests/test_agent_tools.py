@@ -4,10 +4,10 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from trader import agent_tools  # noqa: F401 — utilisé dans les tâches 2+
-from trader.agent_tools.attribution import _MAX_DECISION_ROWS
-from trader.agent_tools.core import _MAX_RAW_CALLS, _SCRUB_ID_LEN
-from trader.agent_tools.indicators import _MAX_INDICATOR_MATCHES
-from trader.agent_tools import (
+from trader.agent.tools.attribution import _MAX_DECISION_ROWS
+from trader.agent.tools.core import _MAX_RAW_CALLS, _SCRUB_ID_LEN
+from trader.agent.tools.indicators import _MAX_INDICATOR_MATCHES
+from trader.agent.tools import (
     AgentToolCall,
     AgentToolTrace,
     ToolContext,
@@ -21,8 +21,8 @@ UTC = timezone.utc
 
 
 def test_agent_tools_package_expose_public_registry():
-    import trader.agent_tools as agent_tools
-    from trader.agent_tools import core, registry
+    import trader.agent.tools as agent_tools
+    from trader.agent.tools import core, registry
 
     assert agent_tools.TOOL_REGISTRY is registry.TOOL_REGISTRY
     assert core.ToolContext is agent_tools.ToolContext
@@ -32,10 +32,10 @@ def test_agent_tools_package_expose_public_registry():
 
 
 def test_agent_tools_package_all_reste_une_api_publique_compacte():
-    import trader.agent_tools as agent_tools
-    from trader.agent_tools.freshness import _handle_get_freshness
-    from trader.agent_tools.indicators import _validate_get_indicator_context
-    from trader.agent_tools.plans import _MAX_PLAN_ROWS, _validate_get_active_plans
+    import trader.agent.tools as agent_tools
+    from trader.agent.tools.freshness import _handle_get_freshness
+    from trader.agent.tools.indicators import _validate_get_indicator_context
+    from trader.agent.tools.plans import _MAX_PLAN_ROWS, _validate_get_active_plans
 
     assert not any(name.startswith("_handle_") for name in agent_tools.__all__)
     assert not any(name.startswith("_validate_") for name in agent_tools.__all__)

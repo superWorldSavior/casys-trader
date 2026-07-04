@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from trader.agent_protocol.types import Decision
+from trader.agent.protocol.types import Decision
 from trader.application.decision_entries import (
     build_decision_entry,
     counts_as_llm_review,

@@ -1,7 +1,7 @@
 # Référence — Learnings & RAG (recall outcome-weighted)
 
 > **Type** : Reference (Diátaxis).
-> **Code** : `trader/learnings/` (store, consolidator, embeddings) · **Outil LLM** : `recall_learnings` (`agent_tools/learnings`)
+> **Code** : `trader/learnings/` (store, consolidator, embeddings) · **Outil LLM** : `recall_learnings` (`agent/tools/learnings`)
 > **Store** : `state/learnings.db` (SQLite) · **Spec** : `docs/superpowers/specs/2026-07-02-learnings-recall-design.md`
 
 Mémoire de trading **pondérée par le résultat** : les notes passées sont scorées

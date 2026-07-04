@@ -1,9 +1,10 @@
 """agent_tools — validation, budgets, handlers lecture-seule (design 2026-06-29)."""
+
 from __future__ import annotations
 
-from trader.agent_tools import core as core
-from trader.agent_tools import registry as registry
-from trader.agent_tools.core import (
+from trader.agent.tools import core as core
+from trader.agent.tools import registry as registry
+from trader.agent.tools.core import (
     OUTCOME_BUDGET_EXHAUSTED,
     OUTCOME_ERROR,
     OUTCOME_OK,
@@ -30,7 +31,7 @@ from trader.agent_tools.core import (
     round_runtime_payload,
     validate_tool_call,
 )
-from trader.agent_tools.registry import TOOL_REGISTRY
+from trader.agent.tools.registry import TOOL_REGISTRY
 
 __all__ = [
     "OUTCOME_BUDGET_EXHAUSTED",

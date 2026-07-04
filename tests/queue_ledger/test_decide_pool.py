@@ -19,7 +19,7 @@ from dataclasses import replace
 
 import pytest
 
-from trader.agent_protocol.types import Decision
+from trader.agent.protocol.types import Decision
 from trader.application.decide_handler import make_decide_handler
 from trader.queue.decide_pool import DecidePool
 from trader.queue.ledger import TaskLedger

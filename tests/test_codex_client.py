@@ -4,7 +4,7 @@ from trader.agent.llm import LlmCompletion, LlmFailure
 
 
 def test_agent_protocol_modules_exposent_les_contrats_publics() -> None:
-    from trader.agent_protocol import parsing, prompts, types
+    from trader.agent.protocol import parsing, prompts, types
 
     assert types.Decision is codex_client.Decision
     assert callable(prompts.build_batch_prompt)

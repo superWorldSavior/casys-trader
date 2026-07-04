@@ -1,7 +1,8 @@
 """Attribution and recent decision tool handlers."""
+
 from __future__ import annotations
 
-from trader.agent_tools.core import AgentToolCall, ToolContext, ToolSpec
+from trader.agent.tools.core import AgentToolCall, ToolContext, ToolSpec
 
 _ATTRIBUTION_SCOPES = {"summary", "confidence", "exit_reason", "symbol"}
 _MAX_DECISION_ROWS = 10

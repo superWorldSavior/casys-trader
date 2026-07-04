@@ -9,9 +9,9 @@ from __future__ import annotations
 
 import pytest
 
-from trader.agent_protocol import parsing as codex_client
-from trader.agent_protocol.parsing import _normalize_thesis
-from trader.agent_protocol.types import Decision
+from trader.agent.protocol import parsing as codex_client
+from trader.agent.protocol.parsing import _normalize_thesis
+from trader.agent.protocol.types import Decision
 from trader.reporting import decision_ledger
 
 

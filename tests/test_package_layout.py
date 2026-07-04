@@ -33,8 +33,6 @@ def test_top_level_packages_have_declared_architecture_roles() -> None:
     }
     canonical_packages = {
         "agent",
-        "agent_protocol",
-        "agent_tools",
         "application",
         "cockpit",
         "commands",
@@ -107,6 +105,35 @@ def test_legacy_tools_virtual_modules_preserve_explicit_star_exports() -> None:
     ]
 
 
+def test_legacy_agent_packages_are_virtual_compatibility_layers(monkeypatch) -> None:
+    trader_dir = Path(__file__).resolve().parents[1] / "trader"
+
+    for legacy_dir in ("agent_protocol", "agent_tools"):
+        assert not (trader_dir / legacy_dir).exists()
+
+    import trader.agent_protocol as legacy_protocol
+    import trader.agent_tools as legacy_tools
+    from trader.agent.protocol.parsing import parse_batch
+    from trader.agent.protocol import IndicatorRequest
+    from trader.agent.tools import core, registry
+    from trader.agent_protocol.parsing import parse_batch as legacy_parse_batch
+    from trader.agent_tools.core import ToolContext as LegacyToolContext
+
+    assert getattr(legacy_protocol, "__file__", None) is None
+    assert getattr(legacy_protocol, "__path__", None) == []
+    assert getattr(legacy_tools, "__file__", None) is None
+    assert getattr(legacy_tools, "__path__", None) == []
+    assert IndicatorRequest.__module__ == "trader.agent.protocol.types"
+    assert legacy_parse_batch is parse_batch
+    assert legacy_tools.TOOL_REGISTRY is registry.TOOL_REGISTRY
+    assert LegacyToolContext is core.ToolContext
+
+    sentinel = object()
+    monkeypatch.setattr(legacy_tools.core, "_compat_probe", sentinel, raising=False)
+
+    assert core._compat_probe is sentinel
+
+
 def test_support_and_read_model_legacy_packages_are_virtual() -> None:
     trader_dir = Path(__file__).resolve().parents[1] / "trader"
 
@@ -143,6 +170,10 @@ def test_legacy_virtual_packages_support_from_trader_and_python_m() -> None:
 
     repo_root = Path(__file__).resolve().parents[1]
     for module_name in (
+        "trader.agent_protocol.parsing",
+        "trader.agent_protocol.prompts",
+        "trader.agent_tools.core",
+        "trader.agent_tools.registry",
         "trader.config.pool",
         "trader.config.portfolio",
         "trader.metadata.code_version",
@@ -178,7 +209,7 @@ def test_legacy_flat_module_imports_remain_compatible() -> None:
     from trader.tui import build_view
 
     assert legacy_cockpit_events.__name__ == "trader.cockpit.events"
-    assert legacy_codex_client.Decision.__module__ == "trader.agent_protocol.types"
+    assert legacy_codex_client.Decision.__module__ == "trader.agent.protocol.types"
     assert legacy_daemon.run_cycle.__module__ == "trader.runtime.daemon"
     assert legacy_fx.__name__ == "trader.market.fx"
     assert legacy_llm.LlmRouter.__module__ == "trader.agent.llm"
@@ -856,7 +887,7 @@ def test_agent_protocol_prompts_do_not_import_agent_context() -> None:
     repo_root = Path(__file__).resolve().parents[1]
     code = (
         "import sys; "
-        "import trader.agent_protocol.prompts; "
+        "import trader.agent.protocol.prompts; "
         "assert 'trader.agent.context' not in sys.modules, "
         "sorted(name for name in sys.modules if name.startswith('trader.agent'))"
     )
@@ -877,16 +908,18 @@ def test_agent_protocol_type_import_stays_light() -> None:
     code = """
 import sys
 
-from trader.agent_protocol import IndicatorRequest
+from trader.agent.protocol import IndicatorRequest
 
-assert IndicatorRequest.__module__ == "trader.agent_protocol.types"
+assert IndicatorRequest.__module__ == "trader.agent.protocol.types"
 loaded = set(sys.modules)
 for name in (
     "trader.market",
     "trader.planning",
     "trader.reporting",
     "trader.semantic",
-    "trader.agent",
+    "trader.agent.context",
+    "trader.agent.client",
+    "trader.agent.llm",
 ):
     assert name not in loaded, sorted(m for m in loaded if m.startswith("trader."))
 """

@@ -1,7 +1,8 @@
 """Outcome-weighted learning recall tool handlers."""
+
 from __future__ import annotations
 
-from trader.agent_tools.core import AgentToolCall, ToolContext, ToolSpec
+from trader.agent.tools.core import AgentToolCall, ToolContext, ToolSpec
 
 _MAX_RECALL_ROWS = 8
 

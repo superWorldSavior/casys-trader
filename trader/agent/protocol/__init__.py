@@ -9,7 +9,7 @@ from __future__ import annotations
 import importlib
 from typing import Any
 
-from trader.agent_protocol.types import (
+from trader.agent.protocol.types import (
     Action,
     BatchToolCallRequest,
     ContextResearchRequest,
@@ -19,12 +19,12 @@ from trader.agent_protocol.types import (
 )
 
 _LAZY_EXPORTS = {
-    "build_batch_prompt": "trader.agent_protocol.prompts",
-    "build_prompt": "trader.agent_protocol.prompts",
-    "parse_batch": "trader.agent_protocol.parsing",
-    "parse_batch_or_tool_calls": "trader.agent_protocol.parsing",
-    "parse_decision": "trader.agent_protocol.parsing",
-    "parse_decision_or_context_request": "trader.agent_protocol.parsing",
+    "build_batch_prompt": "trader.agent.protocol.prompts",
+    "build_prompt": "trader.agent.protocol.prompts",
+    "parse_batch": "trader.agent.protocol.parsing",
+    "parse_batch_or_tool_calls": "trader.agent.protocol.parsing",
+    "parse_decision": "trader.agent.protocol.parsing",
+    "parse_decision_or_context_request": "trader.agent.protocol.parsing",
 }
 
 __all__ = [

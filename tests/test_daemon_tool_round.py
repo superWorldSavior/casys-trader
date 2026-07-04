@@ -5,7 +5,7 @@ import json
 from datetime import datetime, timezone
 
 from trader.agent import client as codex_client
-from trader.agent_protocol.parsing import parse_batch
+from trader.agent.protocol.parsing import parse_batch
 from trader.runtime import daemon
 
 UTC = timezone.utc

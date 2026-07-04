@@ -1,7 +1,8 @@
 """Freshness tool handlers."""
+
 from __future__ import annotations
 
-from trader.agent_tools.core import AgentToolCall, ToolContext, ToolSpec
+from trader.agent.tools.core import AgentToolCall, ToolContext, ToolSpec
 
 _MAX_FRESHNESS_SYMBOLS = 8
 
@@ -23,12 +24,14 @@ def _handle_get_freshness(call: AgentToolCall, context: ToolContext) -> dict:
             continue
         age = context.data_age_by_symbol.get(sym)
         mc = context.market_context_by_symbol.get(sym) or {}
-        rows.append({
-            "symbol": sym,
-            "data_age_m": None if age is None else int(round(age)),
-            "execution": mc.get("execution"),
-            "planning": mc.get("planning"),
-        })
+        rows.append(
+            {
+                "symbol": sym,
+                "data_age_m": None if age is None else int(round(age)),
+                "execution": mc.get("execution"),
+                "planning": mc.get("planning"),
+            }
+        )
     return {"rows": rows}
 
 

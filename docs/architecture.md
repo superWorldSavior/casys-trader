@@ -58,8 +58,8 @@ les utilisaient :
 | `trader/application/tool_outcomes.py` | Finalisation des outcomes réels des action tools avant persistance des décisions | `reporting.tool_trace` réexporte l'ancien point de compatibilité |
 | `trader/application/watch_scanner.py` | Scan applicatif des indicator/exit watches : fetch des barres, évaluation, cooldown, retrait et réveil symbole | le daemon conserve l'émission d'événements/logs runtime |
 | `trader/agent/` | Contexte agent, mémoire mandat/stratégie, façade planner, transport LLM/acpx | compat virtuelle : `trader.agent_context`, `trader.codex_client`, `trader.llm`, `trader.tools.memory.Memory` |
-| `trader/agent_protocol/` | Types, prompts, parsing du contrat LLM | utilisé par `trader/agent/client.py` |
-| `trader/agent_tools/` | Package des outils domaine lecture seule | `registry.TOOL_REGISTRY` assemble 9 handlers |
+| `trader/agent/protocol/` | Types, prompts, parsing du contrat LLM | utilisé par `trader/agent/client.py` |
+| `trader/agent/tools/` | Package des outils domaine lecture seule | `registry.TOOL_REGISTRY` assemble 9 handlers |
 | `trader/semantic/` | Catalogue sémantique des indicateurs et requêtes agent | évite de disperser les IDs/request contracts |
 | `trader/domain/` | Primitives neutres (`Bar`, `MarketError`, `Side`) | évite que `market`/`planning` importent `tools` |
 | `trader/scheduling/` | Réveils globaux/par symbole, stale backoff, veilles persistées | compat virtuelle : `trader.tools.scheduler` |
@@ -89,7 +89,7 @@ mais ses packages ne sont pas tous du même niveau :
 |---|---|---|
 | Composition runtime | `runtime/`, `commands/`, wrappers `daemon.py`/`cli.py` | peut assembler les dépendances et déclencher les side effects |
 | Services applicatifs | `application/` | orchestre un cas d'usage testable sans être l'entrypoint process |
-| Capacités métier | `market/`, `planning/`, `execution/`, `scheduling/`, `learnings/`, `rotation/`, `agent/`, `agent_protocol/`, `agent_tools/` | porte la logique du domaine et ne dépend pas de `runtime/` |
+| Capacités métier | `market/`, `planning/`, `execution/`, `scheduling/`, `learnings/`, `rotation/`, `agent/` (`protocol/`, `tools/`) | porte la logique du domaine et ne dépend pas de `runtime/` |
 | Primitives transverses | `domain/`, `support/` | types/helpers stables, sans dépendance montante |
 | Read models et surfaces | `reporting/`, `reporting/read_models/`, `ui/`, `cockpit/` | lit l'état produit par le runtime, ne décide pas à sa place |
 | Compatibilité legacy | modules `attribution.py`/`tui.py`/`daemon.py`/`cli.py`/`stats.py`/`tool_usage.py`, alias virtuels de `trader/__init__.py` | délègue vers le canonique ; aucun nouvel import interne ne doit viser ici |
@@ -115,13 +115,15 @@ Les anciens imports restent compatibles quand ils existaient déjà
 (`trader.tools.market.Bar`, `trader.tools.execution.Order`, `trader.tools.scheduler.Scheduler`,
 `trader.runtime.code_version`, `trader.config.pool`, `trader.metadata.code_version`,
 `trader.process_env`, `trader.read_models.runtime_state`, `trader.stats`,
+`trader.agent_protocol.parsing`, `trader.agent_tools.registry`,
 `trader.attribution`, `trader.tool_usage`, `trader.tui`). `trader.tools` est
 fourni par le finder de compatibilité dans `trader/__init__.py` et ne correspond
 plus à un dossier physique ; `trader.config`, `trader.metadata`, `trader.system`
-et `trader.read_models` sont aussi des packages virtuels de compatibilité. Les imports internes
+et `trader.read_models`, comme `trader.agent_protocol` et `trader.agent_tools`,
+sont aussi des packages virtuels de compatibilité. Les imports internes
 doivent viser les packages neutres ou canoniques (`domain/`, `execution/broker`,
 `execution/contracts`, `execution/ports`, `market/`, `market/ports`, `support/`,
-`reporting/read_models/`, `commands/`). Les adaptateurs concrets restent dans
+`reporting/read_models/`, `agent/protocol/`, `agent/tools/`, `commands/`). Les adaptateurs concrets restent dans
 `execution/broker` et `market/data_source` quand la composition runtime les
 instancie. Les tests `tests/test_package_layout.py`, `tests/test_code_version_imports.py`
 et `tests/test_runtime_pid_file.py` gardent ces frontières.
@@ -486,7 +488,7 @@ projet. Déclenché via `_run_one_shot_command.finally`. Cf post-incident
 
 `trader/agent/client.py` reste la façade transport. L'import historique
 `trader.codex_client` est un alias de compatibilité. Les contrats et
-parseurs vivent désormais dans `trader/agent_protocol/` :
+parseurs vivent désormais dans `trader/agent/protocol/` :
 
 - `types.py` : `Decision`, `IndicatorRequest`, `ContextResearchRequest`,
   `BatchToolCallRequest` ;
@@ -508,8 +510,8 @@ Design : `docs/superpowers/specs/2026-06-29-agent-domain-tools-design.md`.
 Flag : `CASYS_AGENT_TOOLS_ENABLED=1` (actif ; visible au startup dans le log
 `[config] … agent_tools=True`).
 
-Le package `trader/agent_tools/` contient le core d'exécution bornée, les
-handlers par domaine et `registry.py`. `trader.agent_tools.__init__` réexporte
+Le package `trader/agent/tools/` contient le core d'exécution bornée, les
+handlers par domaine et `registry.py`. `trader.agent.tools.__init__` réexporte
 seulement l'API publique d'exécution ; les validateurs/handlers privés restent
 dans leurs modules propriétaires.
 
@@ -517,7 +519,7 @@ Le LLM reçoit UN prompt et peut répondre soit le contrat final, soit
 `{"tool_calls": [...]}` — UNE tournée max, puis décision finale obligatoire
 (sinon HOLD `tool_loop_blocked`). Les outils ne passent PAS par acpx
 (`--allowed-tools` reste `""`) : le daemon parse, valide contre
-`agent_tools.TOOL_REGISTRY` (allowlist Python) et exécute — lecture seule.
+`agent.tools.TOOL_REGISTRY` (allowlist Python) et exécute — lecture seule.
 
 Registre (9) : `get_freshness`, `get_active_plans`, `get_position_risk`,
 `get_attribution`, `get_recent_decisions`, `get_indicator_context`

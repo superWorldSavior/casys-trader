@@ -17,8 +17,8 @@ from datetime import datetime, timezone
 
 import pytest
 
-from trader.agent_protocol.parsing import _decision_from_symbol_calls, parse_batch
-from trader.agent_protocol.types import Decision
+from trader.agent.protocol.parsing import _decision_from_symbol_calls, parse_batch
+from trader.agent.protocol.types import Decision
 
 # ---------------------------------------------------------------------------
 # Helpers

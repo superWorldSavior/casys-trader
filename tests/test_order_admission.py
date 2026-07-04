@@ -1,4 +1,4 @@
-from trader.agent_protocol.types import Decision
+from trader.agent.protocol.types import Decision
 from trader.application.order_admission import (
     ACTION_INTENTS,
     VALID_INTENTS,

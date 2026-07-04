@@ -6,7 +6,7 @@ import json
 from dataclasses import replace
 
 from trader.reporting import decision_reason
-from trader.agent_protocol.types import (
+from trader.agent.protocol.types import (
     BatchToolCallRequest,
     ContextResearchRequest,
     Decision,
@@ -121,8 +121,11 @@ def _decision_from_dict(data: dict, symbol: str) -> Decision:
         has_reduce_fraction = data.get("_reduce_fraction") is not None
         if (
             quantity < 0.0
-            or intent in {"REVERSE", "ADD"} and quantity <= 0.0
-            or intent == "REDUCE" and quantity <= 0.0 and not has_reduce_fraction
+            or intent in {"REVERSE", "ADD"}
+            and quantity <= 0.0
+            or intent == "REDUCE"
+            and quantity <= 0.0
+            and not has_reduce_fraction
         ):
             raise ValueError("order_qty_must_be_positive")
         action = "HOLD"
@@ -353,11 +356,7 @@ def _decision_from_symbol_calls(data: dict, symbol: str) -> Decision:
             needs_position_resolve = False
             reduce_fraction: float | None = None
             if intent in _RELATIVE_ORDER_INTENTS:
-                ignored_side_fields = [
-                    field
-                    for field in ("side", "action")
-                    if args.get(field) is not None
-                ]
+                ignored_side_fields = [field for field in ("side", "action") if args.get(field) is not None]
                 if ignored_side_fields:
                     traces[-1]["detail"].setdefault("ignored_fields", []).append(
                         {

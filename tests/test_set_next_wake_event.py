@@ -16,8 +16,8 @@ from pathlib import Path
 
 import pytest
 
-from trader.agent_protocol.parsing import _decision_from_symbol_calls
-from trader.agent_protocol.types import Decision
+from trader.agent.protocol.parsing import _decision_from_symbol_calls
+from trader.agent.protocol.types import Decision
 
 
 # ---------------------------------------------------------------------------
@@ -304,7 +304,7 @@ def test_decision_next_wake_event_field_exists() -> None:
 
 def test_parse_batch_on_session_open_via_symbol_calls() -> None:
     """Intégration : parse_batch parse {on:session_open} depuis decisions[].calls."""
-    from trader.agent_protocol.parsing import parse_batch
+    from trader.agent.protocol.parsing import parse_batch
 
     raw = json.dumps({
         "decisions": [{

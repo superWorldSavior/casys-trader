@@ -15,8 +15,8 @@ from datetime import datetime, timezone
 
 import pytest
 
-from trader.agent_protocol.parsing import _decision_from_symbol_calls
-from trader.agent_protocol.types import Decision
+from trader.agent.protocol.parsing import _decision_from_symbol_calls
+from trader.agent.protocol.types import Decision
 from trader.application.order_admission import qty_from_risk_pct
 from trader.runtime import daemon
 from trader.market.market_data import Bar

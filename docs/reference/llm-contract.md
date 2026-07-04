@@ -1,7 +1,7 @@
 # Référence — Contrat LLM : prompts & mandat
 
 > **Type** : Reference (Diátaxis).
-> **Code** : `trader/agent_protocol/prompts.py` (assemblage), `trader/agent_protocol/parsing.py` (validation), `trader/agent_protocol/types.py` · **Mandat** : `mandate/`
+> **Code** : `trader/agent/protocol/prompts.py` (assemblage), `trader/agent/protocol/parsing.py` (validation), `trader/agent/protocol/types.py` · **Mandat** : `mandate/`
 > **Rôle** : comment on parle au LLM décideur, et comment on parse sa réponse.
 
 Le protocole est **prompt-based** : tout (contexte, contrat de sortie, vocabulaire
@@ -43,7 +43,7 @@ son niveau), `next_wake_in_minutes`, `indicator_watch` (veille/plan armé),
 **Alternative** : `action: "REQUEST_CONTEXT"` — un objet entier (pas un champ) qui
 retourne une `ContextResearchRequest` pour demander plus d'indicateurs.
 
-Parsé/validé par `agent_protocol/parsing` → toute réponse douteuse **dégrade en
+Parsé/validé par `agent/protocol/parsing` → toute réponse douteuse **dégrade en
 HOLD** (fail-safe, cf. `codex_client`).
 
 ## Le mandat — `mandate/mandate.md`
