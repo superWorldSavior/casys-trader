@@ -31,7 +31,14 @@ from trader.agent import client as codex_client
 from trader.agent import llm
 from trader.agent import memory as agent_memory
 from trader.agent.context import build_market_cockpit, resolve_indicator_requests
-from trader.application import cycle_schedule, market_snapshot, order_admission, planner_batch, risk_capacity
+from trader.application import (
+    confidence_feedback,
+    cycle_schedule,
+    market_snapshot,
+    order_admission,
+    planner_batch,
+    risk_capacity,
+)
 from trader.application.decision_recorder import DecisionRecorder
 from trader.execution.risk import RiskGate, RiskLimits
 from trader.learnings import consolidator
@@ -441,10 +448,7 @@ def _merge_gate_feedback(
     au lieu de re-proposer un ordre voué au même rejet. Retourne la note finale à
     persister, ou None s'il n'y a rien à enregistrer.
     """
-    if reason == "risk:confidence_below_required" and context:
-        feedback = f"[gate confiance] rejet — {context}"
-        return f"{note}\n{feedback}" if note else feedback
-    return note
+    return confidence_feedback.merge_gate_feedback(reason, context, note)
 
 
 def _gross_exposure(
