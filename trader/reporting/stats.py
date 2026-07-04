@@ -1,12 +1,7 @@
-"""stats — reporting/CLI facade for live KPI read models.
-
-CLI : python -m trader.reporting.stats [--json]
-"""
+"""stats — read-only live KPI reporting helpers."""
 
 from __future__ import annotations
 
-import argparse
-import json
 from pathlib import Path
 
 from trader.read_models import live_kpis
@@ -22,7 +17,7 @@ def compute_live_kpis(state_dir: Path) -> dict:
     return live_kpis.compute_live_kpis(state_dir)
 
 
-def _render_text(kpis: dict) -> str:
+def render_text(kpis: dict) -> str:
     """Rendu texte lisible pour l'opérateur CLI (inspiré de backtest.metrics.render_cli)."""
 
     def fmt_pct(v: float | None) -> str:
@@ -62,20 +57,10 @@ def _render_text(kpis: dict) -> str:
     return "\n".join(lines)
 
 
-def main() -> None:
-    """Point d'entrée CLI : python -m trader.reporting.stats [--json]."""
-    parser = argparse.ArgumentParser(description="KPI live du trader paper")
-    parser.add_argument("--json", action="store_true", help="sortie JSON compact")
-    args = parser.parse_args()
-
-    state_dir = Path(__file__).resolve().parents[2] / "state"
-    kpis = compute_live_kpis(state_dir)
-
-    if args.json:
-        print(json.dumps(kpis, separators=(",", ":"), ensure_ascii=False))
-    else:
-        print(_render_text(kpis))
+_render_text = render_text
 
 
 if __name__ == "__main__":
+    from trader.commands.stats import main
+
     main()
