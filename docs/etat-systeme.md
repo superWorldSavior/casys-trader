@@ -4,16 +4,24 @@
 > mécanismes dans `docs/architecture.md` ; décisions métier dans
 > `docs/decisions/registre-decisions-metier.md`.
 
-**Dernière mise à jour : 2026-07-02 (soir)**
+**Dernière mise à jour : 2026-07-04**
 
 ## Ce qui tourne
 
 - **Daemon** `trader.daemon --live` (paper), supervisé (`cockpit_supervisor`,
   anti-doublon PID). Startup : rotation des ledgers + log `[config] …
   agent_tools=True`. Code committé propre (traçabilité `code_version` saine).
+- **Orchestration = file durable SQLite (task-ledger — ACTIVÉE en paper 04/07)** :
+  état en `state/casys.db` (`CASYS_STATE_BACKEND=sqlite`), `decide` et `execute`
+  routés par la file (`CASYS_QUEUE_DECIDE_ENABLED` / `CASYS_QUEUE_EXECUTE_ENABLED`,
+  outbox transactionnel), sonde `[state-compare]` par cycle = `identical=True`. Les
+  chemins synchrones restent en fallback (flags off) jusqu'au gommage. Réf :
+  `docs/reference/task-queue.md`. ⚠️ Vrai trafic decide/execute à observer à la
+  réouverture des marchés (week-end `due=0`).
 - **Transport LLM** : fork `Casys-AI/acpx#casys-patches` via `TRADER_ACPX_BIN`
   (erreurs quiet structurées, bridges jamais orphelins) ; modèle gpt-5.5 →
-  fallback sonnet → ollama-cloud ; `parallelism=1`.
+  fallback sonnet → ollama-cloud ; `parallelism=5` (backpressure AIMD ; monté depuis
+  le bridage historique à 1, test observé lundi).
   ⚠️ Vérification en attente : preuve par process que le fork sert les appels
   (poll `ps` sur `…/acpx/dist/cli.js` pendant un batch actif).
 - **Cockpit TUI** + gonzo sur les logs.
@@ -26,8 +34,13 @@
   **`recall_learnings`** — sa mémoire pondérée par les résultats réels
   (2 091 notes scorées, win rate historique 34 %, dispersion 3-100 % par
   symbole). Une tournée max, tout tracé.
-- **Pas encore d'outils d'action** (Phases 4-5 : prochaine session — notes de
-  design prêtes en mémoire projet).
+- **Outils d'action LIVRÉS + LIVE en paper** (Phase 6) : `propose_order`
+  (OPEN/CLOSE/REDUCE/REVERSE/ADD, sizing par `risk_pct`), `amend_exit`,
+  `set_next_wake` — le daemon reste seul exécuteur (exécution/exit-plan/RiskGate
+  inchangés). Réf : `docs/reference/agent-tools.md`.
+- **Horodatage** : `now_human` (jour + heure UTC) + `market_clocks` (heure locale
+  de chaque place, tri ouest→est) — lève l'ambiguïté jour/session, y compris piloté
+  depuis Taiwan (cf. `docs/reference/agent-context.md`).
 - Décision finale = JSON gaté (exécution/exit-plan/RiskGate inchangés).
 
 ## Données et mémoire
@@ -53,7 +66,10 @@
 
 ## Chantiers à venir (priorités)
 
-1. **Outils d'action** (Phases 4-5) — priorité Erwan, notes de design prêtes.
+1. **File durable — observation + gommage** : observer le vrai trafic
+   decide/execute-via-file à la réouverture (redémarrage lundi charge `market_clocks`
+   + `parallelism=5`), puis gommer l'ancien mode (fallbacks synchrones + double-write
+   JSON + sonde shadow ; 5 étapes gated, lecteurs JSON d'abord).
 2. **Analyste-news** (P2 macro) — attend le stock d'items.
 3. **MemRL + decay calibré** (phase ③ recall) — attend le volume de `recalls`.
 4. **Patch rétention sessions acpx** (fork) — règle les 1,3 Go de ~/.acpx.
