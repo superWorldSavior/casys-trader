@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import logging
 import threading
-import time
 import uuid
 from typing import Callable
 
@@ -171,10 +170,8 @@ class DecidePool:
 
             if not did_work:
                 # Rien à claimer — pause courte pour éviter le spin.
-                # Pas de wait_for_free ici : ne réveille pas sur enqueue de
-                # nouvelles tâches (uniquement sur libération de ressource).
-                # _IDLE_SLEEP_S (50ms) est suffisamment petit pour rester réactif
-                # sur un cycle LLM dont la latence est >> 50ms.
-                time.sleep(_IDLE_SLEEP_S)
+                # Event.wait garde le worker découplé du time.sleep global,
+                # souvent patché par les tests de boucle daemon.
+                self._stop_event.wait(_IDLE_SLEEP_S)
 
         log.debug("[decide_pool] worker stopped id=%s", worker_id)

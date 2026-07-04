@@ -9,6 +9,7 @@ Cas couverts :
   6. [FIX 1] finish_now_ms capturé après handler → scheduled_at ancré sur fin.
   7. [FIX 2] stop(timeout_s court) avec thread bloquant → thread vivant conservé.
   8. [FIX 3] start() lève RuntimeError si threads encore vivants.
+  9. Worker idle : ne dépend pas du time.sleep global patché par les tests daemon.
 """
 from __future__ import annotations
 
@@ -399,3 +400,41 @@ def test_start_leve_si_threads_encore_vivants(tmp_path):
         unblock.set()
         for t in pool._threads:
             t.join(timeout=2.0)
+
+
+# ---------------------------------------------------------------------------
+# 9 : worker idle indépendant du time.sleep global
+# ---------------------------------------------------------------------------
+
+def test_idle_worker_ne_depend_pas_du_time_sleep_global(monkeypatch, tmp_path):
+    """Les tests daemon patchent parfois time.sleep pour piloter la boucle main.
+
+    Les workers queue tournent en arrière-plan et ne doivent pas hériter de ce
+    patch, sinon CASYS_QUEUE_DECIDE_ENABLED=1 rend les tests main instables.
+    """
+    real_sleep = time.sleep
+    calls: list[float] = []
+
+    def forbidden_sleep(seconds: float) -> None:
+        calls.append(seconds)
+        raise KeyboardInterrupt("sleep global patché par un test daemon")
+
+    monkeypatch.setattr(time, "sleep", forbidden_sleep)
+
+    led = TaskLedger(tmp_path / "q.db")
+    pools = ResourcePools({})
+    pool = DecidePool(
+        ledger=led,
+        pools=pools,
+        handlers={"decide": lambda task: "done"},
+        num_workers=1,
+        now_fn=time.time,
+    )
+    pool.start()
+
+    try:
+        real_sleep(0.12)
+        assert calls == []
+        assert pool._threads and all(t.is_alive() for t in pool._threads)
+    finally:
+        pool.stop(timeout_s=1.0)
