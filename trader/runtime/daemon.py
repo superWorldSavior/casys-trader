@@ -64,8 +64,6 @@ from trader.planning import relevance_gate
 from trader.planning.indicator_watch import (
     armed_order_price_coherent,
     build_indicator_watch,
-    evaluate_indicator_watches,
-    watch_market_requests,
 )
 from trader.planning.trade_plan import (
     InvalidExitPlanError,
@@ -1085,17 +1083,7 @@ def _apply_planned_exits(
 
 
 def _exit_watch_cooldown_elapsed(watch: dict, *, now: datetime) -> bool:
-    last_raw = watch.get("last_triggered_at")
-    if not last_raw:
-        return True
-    try:
-        last = datetime.fromisoformat(str(last_raw))
-    except ValueError:
-        return True
-    if last.tzinfo is None:
-        last = last.replace(tzinfo=timezone.utc)
-    cooldown = float(watch.get("cooldown_minutes") or 15.0)
-    return (now - last).total_seconds() >= cooldown * 60.0
+    return watch_scanner.exit_watch_cooldown_elapsed(watch, now=now)
 
 
 def _scan_exit_watches(
@@ -1108,56 +1096,18 @@ def _scan_exit_watches(
     bars_interval: str,
     data_source: object,
 ) -> list[dict]:
-    plans_by_watch_id: dict[str, object] = {}
-    watches: list[dict] = []
-    for plan in plan_store.open_plans():
-        if plan.symbol not in symbols or not isinstance(plan.exit_watch, dict):
-            continue
-        if not _exit_watch_cooldown_elapsed(plan.exit_watch, now=now):
-            continue
-        watch = dict(plan.exit_watch)
-        watch["symbol"] = plan.symbol
-        watch["on_trigger"] = "WAKE"
-        watch["source"] = "exit_watch"
-        watches.append(watch)
-        plans_by_watch_id[str(watch["id"])] = plan
-    if not watches:
-        return []
-
-    # Les barres runtime préchargées sont à `bars_interval` (15m), pas 1h : on les
-    # indexe sous leur vrai intervalle pour qu'une watch ne lise pas le mauvais TF.
-    bars_by_key: dict[tuple[str, str], list] = {
-        (symbol, bars_interval): bars
-        for symbol, bars in bars_by_symbol.items()
-    }
-    for symbol, interval, lookback in watch_market_requests(watches, universe_symbols=symbols):
-        key = (symbol, interval)
-        if key in bars_by_key:
-            continue
-        try:
-            bars_by_key[key] = data_source.get_bars(symbol, lookback=lookback, interval=interval)
-        except market.MarketError as exc:
-            if _is_connection_market_error(exc):
-                raise
-            log.warning("exit_watch data unavailable %s/%s: %s", symbol, interval, exc.code)
-
-    triggered = evaluate_indicator_watches(watches, bars_by_key, now=now)
-    enriched: list[dict] = []
-    for event in triggered:
-        plan = plans_by_watch_id.get(str(event["watch_id"]))
-        if plan is None:
-            continue
-        event = {
-            **event,
-            "source": "exit_watch",
-            "plan_id": plan.id,
-            "on_trigger": "WAKE",
-        }
-        enriched.append(event)
-        if not dry_run:
-            watch = dict(plan.exit_watch or {})
-            watch["last_triggered_at"] = now.astimezone(timezone.utc).isoformat()
-            plan_store.upsert(replace(plan, exit_watch=watch))
+    enriched = watch_scanner.scan_exit_watches(
+        plan_store=plan_store,
+        bars_by_symbol=bars_by_symbol,
+        symbols=symbols,
+        now=now,
+        dry_run=dry_run,
+        bars_interval=bars_interval,
+        data_source=data_source,
+        is_connection_market_error=_is_connection_market_error,
+        log_warning=log.warning,
+    )
+    for event in enriched:
         _append_event(
             "exit_watch_triggered",
             symbol=event["symbol"],
