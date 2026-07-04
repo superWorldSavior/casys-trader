@@ -45,6 +45,7 @@ les utilisaient :
 | `trader/application/execution_eligibility.py` | Classification execution/planning par symbole et raison de blocage d'exécution | utilisé par `market_snapshot` et wrappers privés du daemon |
 | `trader/application/exit_bars.py` | Fetch/validation des barres fines de sortie et calcul high/low de fenêtre pour plans ouverts | branché comme `exit_bars_fetcher` dans `market_snapshot`, wrappers privés du daemon |
 | `trader/application/gross_feedback.py` | Feedback applicatif des ouvertures rejetées par le plafond gross exposure | le daemon garde un wrapper public historique |
+| `trader/application/learnings_recall.py` | Provider applicatif de recall mémoire : cache embeddings, timeout court, fallback FTS | contrats `Protocol` pour store et embedder |
 | `trader/application/order_admission.py` | Helpers purs d'admission : intent, résolution position-aware, clamp sortie, stop, risk metrics | l'orchestration RiskGate/broker reste dans `trader/runtime/daemon.py` |
 | `trader/application/plan_review.py` | Persistance et réinjection du dernier verdict LLM sur les plans ouverts | le daemon conserve les wrappers privés historiques |
 | `trader/application/reference_volatility.py` | Calcul de volatilité de référence pour résoudre stops/trailings en multiples de volatilité | le daemon conserve les wrappers privés monkeypatchables |
@@ -102,6 +103,11 @@ suppriment des cycles réels :
   les façades legacy ;
 - `metadata/` porte la version git utilisée par `runtime` et `reporting` ;
 - `system/` porte les helpers de processus utilisés par l'agent et le cockpit.
+
+Quand une frontière n'est utile qu'à un cas d'usage, le contrat reste local sous
+forme de `Protocol` dans le module applicatif plutôt que de créer un dossier
+`ports/` dédié. Les packages `ports` existants restent réservés aux contrats
+partagés et déjà structurants (`execution`, `market`).
 
 Les anciens imports restent compatibles quand ils existaient déjà
 (`trader.tools.market.Bar`, `trader.tools.execution.Order`, `trader.tools.scheduler.Scheduler`,

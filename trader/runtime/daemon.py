@@ -37,6 +37,7 @@ from trader.application import (
     execution_eligibility as execution_eligibility_service,
     exit_bars as exit_bars_service,
     gross_feedback,
+    learnings_recall,
     market_snapshot,
     order_admission,
     plan_review,
@@ -48,7 +49,6 @@ from trader.application import (
 from trader.application.decision_recorder import DecisionRecorder
 from trader.execution.risk import RiskGate, RiskLimits
 from trader.learnings import consolidator
-from trader.learnings import embeddings as embeddings_mod
 from trader.learnings import raw_store as raw_learnings
 from trader.learnings import store as recall_store_mod
 from trader.market import family_regime, fx, macro_calendar, macro_series
@@ -1147,50 +1147,17 @@ def _build_recall_provider(
     - ``store`` : LearningsStore SQLite (dérivé reconstructible).
     - ``now`` : timestamp du cycle courant (borné temporel de la recherche).
     - ``embedder`` : callable pour les embeddings (injectable pour les tests) ;
-      par défaut ``embeddings_mod.embed_texts``.
+      par défaut, le service applicatif utilise ``learnings.embeddings.embed_texts``.
 
     Le provider retourne ``{"rows": [...]}`` — le handler re-tronque à ≤ 8.
     Sans OPENAI_API_KEY ou sans query, la recherche tombe en mode FTS5+facettes.
     """
-    _use_default_embedder = embedder is None
-    _embed = embeddings_mod.embed_texts if _use_default_embedder else embedder
-    # Cache run-local : évite de ré-embedder la même query dans le même cycle.
-    _embed_cache: dict[str, bytes] = {}
-
-    def _provider(args: dict) -> dict:
-        query = args.get("query")
-        query_vec: bytes | None = None
-        if query:
-            if query in _embed_cache:
-                query_vec = _embed_cache[query]
-            else:
-                api_key = os.getenv("OPENAI_API_KEY")
-                if api_key:
-                    try:
-                        # timeout_s=3 seulement pour l'embedder par défaut ;
-                        # les embedders injectés (tests) gèrent leur propre timeout.
-                        if _use_default_embedder:
-                            blobs = _embed([query], api_key=api_key, timeout_s=3)
-                        else:
-                            blobs = _embed([query], api_key=api_key)
-                        query_vec = blobs[0] if blobs else None
-                    except Exception:  # noqa: BLE001 — embed optionnel, dégradation FTS5
-                        log.warning("learnings_recall: embed échoué, dégradation FTS5")
-                        query_vec = None
-                    if query_vec is not None:
-                        _embed_cache[query] = query_vec
-        limit = min(int(args.get("limit") or 5), 8)
-        rows = store.search(
-            query_vec=query_vec,
-            text_query=query,
-            symbol=args.get("symbol"),
-            family=args.get("family"),
-            limit=limit,
-            now=now,
-        )
-        return {"rows": rows}
-
-    return _provider
+    return learnings_recall.build_recall_provider(
+        store,
+        now,
+        embedder=embedder,
+        log_warning=log.warning,
+    )
 
 
 def _run_tool_round(*args, **kwargs):
