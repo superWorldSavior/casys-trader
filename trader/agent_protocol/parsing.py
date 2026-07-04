@@ -527,6 +527,19 @@ def parse_decision_or_context_request(raw_text: str, symbol: str) -> Decision | 
     return _response_from_dict(_extract_json(raw_text), symbol)
 
 
+def _hold_parse_error(symbol: str, reason: str, llm_error: str) -> Decision:
+    """HOLD synthétique d'erreur de parsing — llm_error explicite pour decide_one.
+
+    Codes llm_error par cas :
+      parse_error:invalid_json       — JSON global invalide ou absent
+      parse_error:bad_decisions_field — champ decisions présent mais non-list
+      tool_loop                      — tool_calls sans decisions (tour final)
+      parse_error:corrupt_element    — élément decisions malformé (parse individuel)
+      parse_error:missing_symbol     — symbole absent de la réponse batch
+    """
+    return replace(Decision.hold(symbol, reason), llm_error=llm_error)
+
+
 def _parse_batch_data(
     data: dict, symbols: list[str], *, allow_context_request: bool
 ) -> dict[str, Decision | ContextResearchRequest]:
@@ -539,8 +552,8 @@ def _parse_batch_data(
         # batch_bad_output : ne pas le masquer en tool_loop_blocked.
         raw_calls = data.get("tool_calls")
         if decisions is None and isinstance(raw_calls, list) and any(isinstance(c, dict) for c in raw_calls):
-            return {sym: Decision.hold(sym, "tool_loop_blocked") for sym in symbols}
-        return {sym: Decision.hold(sym, "batch_bad_output") for sym in symbols}
+            return {sym: _hold_parse_error(sym, "tool_loop_blocked", "tool_loop") for sym in symbols}
+        return {sym: _hold_parse_error(sym, "batch_bad_output", "parse_error:bad_decisions_field") for sym in symbols}
 
     requested = set(symbols)
     for element in decisions:
@@ -555,10 +568,10 @@ def _parse_batch_data(
             else:
                 by_symbol[sym] = _decision_from_dict(element, sym)
         except Exception as e:  # noqa: BLE001 - isolation per-élément
-            by_symbol[sym] = Decision.hold(sym, f"batch_bad_output: {e}")
+            by_symbol[sym] = _hold_parse_error(sym, f"batch_bad_output: {e}", "parse_error:corrupt_element")
 
     for sym in symbols:
-        by_symbol.setdefault(sym, Decision.hold(sym, "missing_in_batch"))
+        by_symbol.setdefault(sym, _hold_parse_error(sym, "missing_in_batch", "parse_error:missing_symbol"))
     return by_symbol
 
 
@@ -571,7 +584,7 @@ def parse_batch(
     try:
         data = _extract_json(raw_text)
     except (ValueError, json.JSONDecodeError):
-        return {sym: Decision.hold(sym, "batch_bad_output") for sym in symbols}
+        return {sym: _hold_parse_error(sym, "batch_bad_output", "parse_error:invalid_json") for sym in symbols}
     return _parse_batch_data(data, symbols, allow_context_request=allow_context_request)
 
 
@@ -583,7 +596,7 @@ def parse_batch_or_tool_calls(
     try:
         data = _extract_json(raw_text)
     except (ValueError, json.JSONDecodeError):
-        return {sym: Decision.hold(sym, "batch_bad_output") for sym in symbols}
+        return {sym: _hold_parse_error(sym, "batch_bad_output", "parse_error:invalid_json") for sym in symbols}
     raw_calls = data.get("tool_calls")
     if isinstance(raw_calls, list):
         calls = [c for c in raw_calls if isinstance(c, dict)]

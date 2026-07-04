@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import logging
+import time
+from typing import Callable
 
 log = logging.getLogger(__name__)
 
@@ -23,13 +25,15 @@ class RetryableError(Exception):
 
 class Worker:
     def __init__(self, ledger, pools, handlers, worker_id,
-                 lease_ms=1_800_000, backoff_base_ms=1000):
+                 lease_ms=1_800_000, backoff_base_ms=1000,
+                 now_fn: Callable[[], float] = time.time):
         self._ledger = ledger
         self._pools = pools
         self._handlers = handlers
         self._id = worker_id
         self._lease_ms = lease_ms
         self._backoff_base_ms = backoff_base_ms
+        self._now_fn = now_fn
 
     def run_once(self, *, now_ms, token) -> bool:
         """Tente de claimer et d'exécuter une tâche.
@@ -57,22 +61,25 @@ class Worker:
                       task["id"], resource)
             return True
         try:
-            self._handlers[task["kind"]](task)
-            self._ledger.complete(task_id=task["id"], token=token, now_ms=now_ms)
+            result = self._handlers[task["kind"]](task)
+            finish_now_ms = int(self._now_fn() * 1000)
+            self._ledger.complete(task_id=task["id"], token=token, now_ms=finish_now_ms, result=result)
             log.debug("[queue.worker] complete id=%s kind=%s", task["id"], task["kind"])
             if resource:
                 self._pools.on_success(resource)
         except RetryableError as exc:
+            finish_now_ms = int(self._now_fn() * 1000)
             log.warning("[queue.worker] retryable fail id=%s: %s", task["id"], exc)
             if resource and exc.is_overload:
                 self._pools.on_overload(resource)
-            self._ledger.fail(task_id=task["id"], token=token, now_ms=now_ms,
+            self._ledger.fail(task_id=task["id"], token=token, now_ms=finish_now_ms,
                               error=str(exc), retryable=True,
                               backoff_base_ms=self._backoff_base_ms)
         except Exception as exc:  # noqa: BLE001 — frontière handler
+            finish_now_ms = int(self._now_fn() * 1000)
             log.warning("[queue.worker] fatal fail id=%s: %s", task["id"],
                         f"{type(exc).__name__}: {exc}")
-            self._ledger.fail(task_id=task["id"], token=token, now_ms=now_ms,
+            self._ledger.fail(task_id=task["id"], token=token, now_ms=finish_now_ms,
                               error=f"{type(exc).__name__}: {exc}",
                               retryable=False, backoff_base_ms=self._backoff_base_ms)
         finally:

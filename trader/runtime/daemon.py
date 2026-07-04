@@ -1702,6 +1702,8 @@ def run_cycle(
     decision_batch_parallelism: int = DEFAULT_DECISION_BATCH_PARALLELISM,
     commission_model: CommissionModel | None = None,
     agent_tools_enabled: bool = False,
+    queue_decide_enabled: bool = False,
+    task_ledger=None,  # TaskLedger | None
 ) -> dict:
     """Exécute UN cycle. Retourne un rapport structuré (machine-readable)."""
     now = now or datetime.now(timezone.utc)
@@ -2221,30 +2223,79 @@ def run_cycle(
     # = ceux qui ont des barres (runtime non-stale + daily des stale-analysables). Sans
     # ça, un stale qui demande du contexte sur lui-même reçoit un research vide.
     analysis_symbols = sorted(analysis_bars_by_symbol)
-    decisions_by_symbol, model_calls_used = _batch_decide(
-        decidable=decidable,
-        mandate=mandate_txt,
-        memory=memory_txt,
-        shared_context=base_context,
-        triggers_by_symbol=triggers_by_symbol,
-        tradable_bars_by_symbol=analysis_bars_by_symbol,
-        tradable_symbols=analysis_symbols,
-        runtime_interval=runtime_interval,
-        runtime_lookback=runtime_lookback,
-        max_context_requests_per_symbol=max_context_requests_per_symbol,
-        max_indicators_per_request=max_indicators_per_request,
-        max_model_calls=max_model_calls_per_cycle,
-        now=now,
-        data_age_by_symbol=data_age_by_symbol,
-        sched=sched,
-        last_review_by_symbol=_last_review_by_symbol(plan_store, decidable),
-        market_context_by_symbol=execution_eligibility,
-        decision_timeout_s=decision_timeout_s,
-        decision_batch_size=decision_batch_size,
-        decision_batch_parallelism=decision_batch_parallelism,
-        agent_tools_enabled=agent_tools_enabled,
-        learnings_recall_provider=_recall_provider,
-    )
+    # undecided_symbols : symboles non décidés en mode queue (reportés par le
+    # fusible + skippés dead/budget). Ils sont EXCLUS du fallback HOLD synthétique
+    # ci-dessous (FIX 2). En mode batch, reste vide (comportement inchangé).
+    undecided_symbols: set[str] = set()
+
+    if queue_decide_enabled and task_ledger is not None:
+        # Mode file : enfile 1 tâche par symbole et collecte via polling.
+        # Le pool DecidePool tourne en arrière-plan (démarré dans main()).
+        from trader.application.planner_batch import (
+            _active_watch_summaries_by_symbol,
+            build_symbol_facts,
+        )
+        from trader.application.queue_dispatch import dispatch_decide_via_queue
+        _last_review = _last_review_by_symbol(plan_store, decidable)
+        _active_watches = _active_watch_summaries_by_symbol(
+            sched=sched, symbols=decidable, now=now,
+        )
+        symbol_facts_by_sym = {
+            sym: {
+                "indicator_triggers": triggers_by_symbol.get(sym, []),
+                **build_symbol_facts(
+                    sym,
+                    data_age_by_symbol=data_age_by_symbol,
+                    now=now,
+                    active_watches_by_symbol=_active_watches,
+                    market_context_by_symbol=execution_eligibility,
+                    last_review_by_symbol=_last_review,
+                ),
+            }
+            for sym in decidable
+        }
+        # FIX 1 : passe max_model_calls_per_cycle pour borner le nombre d'appels
+        # LLM par cycle (fusible coût acpx). Les symboles au-delà sont reportés.
+        decisions_by_symbol, model_calls_used, undecided_symbols = dispatch_decide_via_queue(
+            ledger=task_ledger,
+            decidable=decidable,
+            mandate=mandate_txt,
+            memory=memory_txt,
+            shared_context=base_context,
+            symbol_facts_by_sym=symbol_facts_by_sym,
+            decision_timeout_s=decision_timeout_s,
+            agent_tools_enabled=agent_tools_enabled,
+            cycle_id=now.isoformat(),
+            budget_s=float(decision_timeout_s),
+            now_fn=time.time,
+            max_model_calls=max_model_calls_per_cycle,
+        )
+    else:
+        # Mode batch classique — comportement STRICTEMENT inchangé (flag off).
+        decisions_by_symbol, model_calls_used = _batch_decide(
+            decidable=decidable,
+            mandate=mandate_txt,
+            memory=memory_txt,
+            shared_context=base_context,
+            triggers_by_symbol=triggers_by_symbol,
+            tradable_bars_by_symbol=analysis_bars_by_symbol,
+            tradable_symbols=analysis_symbols,
+            runtime_interval=runtime_interval,
+            runtime_lookback=runtime_lookback,
+            max_context_requests_per_symbol=max_context_requests_per_symbol,
+            max_indicators_per_request=max_indicators_per_request,
+            max_model_calls=max_model_calls_per_cycle,
+            now=now,
+            data_age_by_symbol=data_age_by_symbol,
+            sched=sched,
+            last_review_by_symbol=_last_review_by_symbol(plan_store, decidable),
+            market_context_by_symbol=execution_eligibility,
+            decision_timeout_s=decision_timeout_s,
+            decision_batch_size=decision_batch_size,
+            decision_batch_parallelism=decision_batch_parallelism,
+            agent_tools_enabled=agent_tools_enabled,
+            learnings_recall_provider=_recall_provider,
+        )
     # revue effective seulement si le modèle a réellement statué (review Codex :
     # un échec/budget à 0 ne doit pas compter comme revue périodique)
     for sym in decidable:
@@ -2357,6 +2408,18 @@ def run_cycle(
             continue
         if sym not in prices:
             _log_cycle_progress("[decision %d/%d] %s skipped no_price", index, len(symbols_to_decide), sym)
+            continue
+
+        # FIX 2 : en mode queue, les symboles non décidés ce cycle (reportés par le
+        # fusible ou skippés dead/budget) sont EXCLUS du fallback HOLD synthétique —
+        # ils seront redécidés au prochain cycle. Le mode batch garde son comportement
+        # (HOLD no_decision_in_batch) via undecided_symbols = set() initialisé plus haut.
+        if sym in undecided_symbols:
+            _log_cycle_progress(
+                "[decision %d/%d] %s queue_decide_deferred — aucun HOLD synthétique",
+                index, len(symbols_to_decide), sym,
+            )
+            _append_event("queue_decide_deferred", symbol=sym, cycle_id=now.isoformat())
             continue
 
         decision = decisions_by_symbol.get(sym) or codex_client.Decision.hold(sym, "no_decision_in_batch")
@@ -3185,6 +3248,36 @@ def main(
     )
     bootstrap = args.bootstrap_all
 
+    # Boot du pool decide-via-file (CASYS_QUEUE_DECIDE_ENABLED).
+    # DB dédiée (task_ledger.db) — ne partage PAS casys.db pour isoler la file.
+    # Si le flag est off, _task_ledger et _decide_pool restent None et le
+    # comportement de run_cycle est STRICTEMENT inchangé (branche else).
+    _queue_decide_enabled = _env_int("CASYS_QUEUE_DECIDE_ENABLED", 0) == 1
+    _task_ledger = None
+    _decide_pool = None
+    if _queue_decide_enabled:
+        from trader.queue.ledger import TaskLedger as _TaskLedger
+        from trader.queue.pools import ResourcePools as _ResourcePools
+        from trader.queue.decide_pool import DecidePool as _DecidePool
+        from trader.application.decide_handler import make_decide_handler as _make_handler
+        _parallelism = args.decision_batch_parallelism
+        _task_ledger = _TaskLedger(STATE_DIR / "task_ledger.db")
+        _task_ledger.recover_on_boot(now_ms=int(time.time() * 1000))
+        _decide_pools_obj = _ResourcePools({"acpx": _parallelism})
+        _decide_pool = _DecidePool(
+            ledger=_task_ledger,
+            pools=_decide_pools_obj,
+            handlers={"decide": _make_handler(codex_client=codex_client)},
+            num_workers=_parallelism,
+            now_fn=time.time,
+        )
+        _decide_pool.start()
+        log.info(
+            "[queue_decide] pool démarré num_workers=%d db=%s",
+            _parallelism,
+            _task_ledger.path,
+        )
+
     data_source = None
     _composite_available: dict[str, object] = {}
     _ib_attach_backoff: IBAttachBackoff | None = None
@@ -3417,6 +3510,8 @@ def main(
                         decision_batch_parallelism=args.decision_batch_parallelism,
                         commission_model=commission_model,
                         agent_tools_enabled=args.agent_tools,
+                        queue_decide_enabled=_queue_decide_enabled,
+                        task_ledger=_task_ledger,
                     )
                     if report.get("planned_exits") or report.get("decisions") or report.get("exit_watch_triggers"):
                         log.debug("cycle actif sans symbole dû: %s", json.dumps(report, ensure_ascii=False))
@@ -3450,6 +3545,8 @@ def main(
                         decision_batch_parallelism=args.decision_batch_parallelism,
                         commission_model=commission_model,
                         agent_tools_enabled=args.agent_tools,
+                        queue_decide_enabled=_queue_decide_enabled,
+                        task_ledger=_task_ledger,
                     )
                     log.debug("cycle: %s", json.dumps(report, ensure_ascii=False))
                     STATE_DIR.mkdir(parents=True, exist_ok=True)
@@ -3517,6 +3614,12 @@ def main(
             if sleep_seconds is not None:
                 sleep(sleep_seconds)
     finally:
+        if _decide_pool is not None:
+            try:
+                _decide_pool.stop()
+                log.info("[queue_decide] pool arrêté")
+            except Exception:  # noqa: BLE001 — best-effort, ne jamais bloquer la sortie
+                pass
         if data_source is not None:
             _disconnect_quietly(data_source)
         # Suppression du pid file au shutdown propre — seulement s'il contient

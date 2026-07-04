@@ -126,7 +126,13 @@ présents comme fallback (flags off).
   `execute_order` refait la revalidation *finale* (cash/prix au moment du submit). Bien séparer
   arbitrage (cycle) vs revalidation (worker).
 - **Coût acpx** (grain-symbole, +appels) : atténué réveils intelligents + prompt caching ; à
-  mesurer flag-on.
+  mesurer flag-on. Fusible `max_model_calls_per_cycle` borné dans `dispatch_decide_via_queue`.
+- **Mode queue Lot A = décision dégradée (sans context_request / tools / recall)** :
+  `decide_handler` appelle `decide_batch(allow_context_request=False, allow_tool_calls=False)`,
+  ce qui désactive `REQUEST_CONTEXT`, le tool round, et `recall_learnings`.
+  La parité complète avec le mode batch est une **itération future hors périmètre Lot A**.
+  Impact mesuré après mise en production flag-on ; ticket ouvert si le delta de qualité est
+  significatif (A/B batch vs queue sur même univers).
 - **Cohabitation shadow (Phase 2)** : ledgers distincts (`task_ledger.db` vs `shadow_queue.db`).
 - **Ordre d'activation recommandé** : decide-flag d'abord (observer), puis execute-flag — mais
   techniquement indépendants.
