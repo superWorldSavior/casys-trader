@@ -3349,6 +3349,34 @@ def run_cycle(
         except Exception as _shadow_exc:  # noqa: BLE001
             log.warning("[shadow-queue] échec sonde: %s", _shadow_exc)
 
+    # State-compare (obs migration SQLite) — best-effort, FIN de cycle, jamais
+    # d'impact décision. Sous backend sqlite, le shadow JSON coexiste avec les
+    # tables : on mesure la dérive json↔sqlite à chaud (filet de la bascule).
+    if os.getenv("CASYS_STATE_BACKEND", "json").lower() == "sqlite":
+        try:
+            from trader.state_db.compare import compare_backends
+            _cmp = compare_backends(STATE_DIR)
+            _cmp_broker = _cmp.get("broker", {})
+            _cmp_sched = _cmp.get("scheduler", {})
+            log.info(
+                "[state-compare] cycle=%s identical=%s cash=%s positions=%d "
+                "plans=%d wakes=%d watches=%d stale=%d",
+                now.isoformat(),
+                _cmp.get("identical"),
+                (_cmp_broker.get("cash") or {}).get("identical"),
+                len(_cmp_broker.get("positions_diff") or []),
+                len(_cmp.get("trade_plans", {}).get("diff") or []),
+                len(_cmp_sched.get("wakes_diff") or []),
+                len(_cmp_sched.get("watches_diff") or []),
+                len(_cmp_sched.get("stale_diff") or []),
+            )
+            if not _cmp.get("identical"):
+                log.warning(
+                    "[state-compare] DIVERGENCE cycle=%s détail=%s", now.isoformat(), _cmp
+                )
+        except Exception as _cmp_exc:  # noqa: BLE001 — best-effort, jamais d'impact cycle
+            log.warning("[state-compare] échec: %s", _cmp_exc)
+
     return report
 
 
