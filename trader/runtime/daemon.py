@@ -1928,6 +1928,7 @@ def run_cycle(
     base_context = {
         "now": now.isoformat(),
         "now_human": market.human_clock(now),
+        "market_clocks": market.market_clocks(now, symbols),
         "portfolio": snap.as_context(fee_estimator=portfolio_fee_estimator),
         "risk_limits": risk_cfg,
         "risk_capacity": _risk_capacity_context(
@@ -3417,7 +3418,7 @@ def main(
         "--decision-batch-parallelism",
         type=int,
         default=_env_int("CASYS_DECISION_BATCH_PARALLELISM", DEFAULT_DECISION_BATCH_PARALLELISM),
-        help="nombre max d'appels LLM décideur lancés en parallèle (défaut/env CASYS_DECISION_BATCH_PARALLELISM: 3)",
+        help="appels LLM décideur en parallèle par batch ; en mode queue (CASYS_QUEUE_DECIDE_ENABLED=1) ce même flag = nb de workers du pool (défaut/env CASYS_DECISION_BATCH_PARALLELISM: 3)",
     )
     parser.add_argument(
         "--agent-tools",
@@ -3569,6 +3570,9 @@ def main(
         from trader.queue.pools import ResourcePools as _ResourcePools
         from trader.queue.decide_pool import DecidePool as _DecidePool
         from trader.application.decide_handler import make_decide_handler as _make_handler
+        # NB : en mode queue, CASYS_DECISION_BATCH_PARALLELISM change de sens — il ne
+        # règle plus la concurrence d'un batch mais le NOMBRE DE WORKERS persistants du
+        # pool (= taille du pool acpx). Même flag, sémantique distincte du mode batch.
         _parallelism = args.decision_batch_parallelism
         _task_ledger = _TaskLedger(STATE_DIR / "task_ledger.db")
         _task_ledger.recover_on_boot(now_ms=int(time.time() * 1000))
@@ -3586,6 +3590,12 @@ def main(
             _parallelism,
             _task_ledger.path,
         )
+        if args.decision_batch_size != DEFAULT_DECISION_BATCH_SIZE:
+            log.warning(
+                "[queue_decide] CASYS_DECISION_BATCH_SIZE=%d IGNORÉ en mode queue "
+                "(grain-symbole : 1 tâche = 1 symbole, pas de chunk). Sans effet.",
+                args.decision_batch_size,
+            )
 
     # Boot du pool execute-via-file (CASYS_QUEUE_EXECUTE_ENABLED).
     # Requiert backend=sqlite : execute_order_unit partage casys.db avec broker/plan/ledger.

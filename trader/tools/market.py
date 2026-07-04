@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import functools
 import math
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -220,6 +221,34 @@ def human_clock(now: datetime) -> str:
     now_utc = now if now.tzinfo is not None else now.replace(tzinfo=timezone.utc)
     jour = _JOURS_FR[now_utc.weekday()]
     return f"{jour} {now_utc.day:02d}/{now_utc.month:02d} {now_utc.hour:02d}:{now_utc.minute:02d} UTC"
+
+
+def market_clocks(now: datetime, symbols: Iterable[str]) -> str:
+    """Heure locale de chaque place de cotation présente dans `symbols` — déterministe.
+
+    Complète `human_clock` (UTC) en montrant à l'agent où en est la journée sur
+    chaque fuseau en jeu : le jour peut différer de l'UTC (ex. samedi à Taipei
+    alors qu'il est encore vendredi UTC), ce qui lève l'ambiguïté week-end/ouverture.
+
+    Zones dédupliquées par fuseau, triées ouest→est (offset UTC croissant). DST géré
+    par zoneinfo. Entrée : now (UTC recommandé) + symboles. Sortie : ex.
+    ``"New York ven 03:16 · Paris ven 09:16 · Taipei ven 15:16"`` ; ``""`` si aucun symbole.
+    """
+    now_utc = now if now.tzinfo is not None else now.replace(tzinfo=timezone.utc)
+    zones: dict[str, ZoneInfo] = {}
+    for symbol in symbols:
+        tz = _venue_for_symbol(symbol)[0]
+        zones[str(tz)] = tz  # dédup par clé de fuseau (ex. "Europe/Paris")
+    entries: list[tuple[timedelta, str]] = []
+    for tz in zones.values():
+        local = now_utc.astimezone(tz)
+        label = str(tz).split("/")[-1].replace("_", " ")
+        jour = _JOURS_FR[local.weekday()][:3]
+        entries.append(
+            (local.utcoffset() or timedelta(0), f"{label} {jour} {local.hour:02d}:{local.minute:02d}")
+        )
+    entries.sort(key=lambda e: e[0])
+    return " · ".join(text for _, text in entries)
 
 
 def session_context(symbol: str, *, now: datetime) -> dict:
