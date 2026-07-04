@@ -623,40 +623,32 @@ def compute_attribution(
     }
 
 
-def main() -> None:
-    """CLI d'inspection : python -m trader.reporting.attribution [--json]."""
-    import argparse
-
-    parser = argparse.ArgumentParser(description="Attribution décision->résultat du trader paper")
-    parser.add_argument("--json", action="store_true", help="sortie JSON compact")
-    args = parser.parse_args()
-
-    state_dir = Path(__file__).resolve().parents[2] / "state"
-    attr = compute_attribution(state_dir)
-
-    if args.json:
-        print(json.dumps(attr, separators=(",", ":"), ensure_ascii=False))
-        return
-
+def render_text(attr: dict) -> str:
     def fmt(value: float | None, decimals: int = 2) -> str:
         return "n/a" if value is None else f"{value:.{decimals}f}"
 
-    print("Attribution décision->résultat")
-    print(f"Trades clôturés : {attr['n_closed_trades']}")
-    print(f"P&L réalisé     : {fmt(attr['realized_pnl'])}")
-    print(f"Win rate        : {fmt(attr['win_rate'], 3)}")
-    print(f"P&L moyen/trade : {fmt(attr['avg_pnl'])}")
-    print(f"Détention moy.  : {fmt(attr['avg_holding_minutes'])} min")
+    lines = [
+        "Attribution décision->résultat",
+        f"Trades clôturés : {attr['n_closed_trades']}",
+        f"P&L réalisé     : {fmt(attr['realized_pnl'])}",
+        f"Win rate        : {fmt(attr['win_rate'], 3)}",
+        f"P&L moyen/trade : {fmt(attr['avg_pnl'])}",
+        f"Détention moy.  : {fmt(attr['avg_holding_minutes'])} min",
+    ]
     if attr["by_confidence"]:
-        print("Calibration confidence:")
+        lines.append("Calibration confidence:")
         for bucket in attr["by_confidence"]:
-            print(f"  {bucket['bucket']}: n={bucket['n']} win={fmt(bucket['win_rate'], 3)} "
-                  f"pnl={fmt(bucket['total_pnl'])}")
+            lines.append(
+                f"  {bucket['bucket']}: n={bucket['n']} win={fmt(bucket['win_rate'], 3)} pnl={fmt(bucket['total_pnl'])}"
+            )
     if attr["by_exit_reason"]:
-        print("Par raison de sortie:")
+        lines.append("Par raison de sortie:")
         for reason in attr["by_exit_reason"]:
-            print(f"  {reason['reason']}: n={reason['n']} pnl={fmt(reason['total_pnl'])}")
+            lines.append(f"  {reason['reason']}: n={reason['n']} pnl={fmt(reason['total_pnl'])}")
+    return "\n".join(lines)
 
 
 if __name__ == "__main__":
+    from trader.commands.attribution import main
+
     main()

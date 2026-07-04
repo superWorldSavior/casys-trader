@@ -207,6 +207,7 @@ def test_reporting_command_python_m_entrypoints() -> None:
         "trader.commands.attribution",
         "trader.commands.stats",
         "trader.commands.tool_usage",
+        "trader.reporting.attribution",
         "trader.reporting.stats",
         "trader.attribution",
         "trader.stats",
@@ -239,6 +240,14 @@ def test_stats_cli_owner_is_command_module() -> None:
 
     assert command_stats.main.__module__ == "trader.commands.stats"
     assert not hasattr(reporting_stats, "main")
+
+
+def test_attribution_cli_owner_is_command_module() -> None:
+    from trader.commands import attribution as command_attribution
+    from trader.reporting import attribution as reporting_attribution
+
+    assert command_attribution.main.__module__ == "trader.commands.attribution"
+    assert not hasattr(reporting_attribution, "main")
 
 
 def test_market_and_planning_use_domain_primitives_instead_of_tools() -> None:

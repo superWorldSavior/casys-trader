@@ -16,7 +16,7 @@ Rien n'est dans le hot-path de décision.
 
 | Module | Rôle |
 |---|---|
-| `attribution` | Reconstruit les **round-trips** (trades clôturés) depuis `model_performance.jsonl`, rattachés au plan via `source_plan_id`. Base de l'analyse « pourquoi ce trade ? ». |
+| `attribution` | Reconstruit/rend les **round-trips** (trades clôturés) depuis `model_performance.jsonl`, rattachés au plan via `source_plan_id`; la CLI canonique vit dans `commands.attribution`. |
 | `decision_audit` | **Audit ex-post** des décisions loggées (classification, cohérence, cas anormaux). |
 | `decision_bench` | **Bench contrefactuel** de modèles sur des lignes de décision auditées (compare des modèles a posteriori). |
 | `meta_performance` | Payload **compact de méta-performance** pour l'agent runtime + le consolidateur (réinjecté au contexte). |
