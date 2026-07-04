@@ -57,8 +57,8 @@ class Worker:
                       task["id"], resource)
             return True
         try:
-            self._handlers[task["kind"]](task)
-            self._ledger.complete(task_id=task["id"], token=token, now_ms=now_ms)
+            result = self._handlers[task["kind"]](task)
+            self._ledger.complete(task_id=task["id"], token=token, now_ms=now_ms, result=result)
             log.debug("[queue.worker] complete id=%s kind=%s", task["id"], task["kind"])
             if resource:
                 self._pools.on_success(resource)
