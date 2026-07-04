@@ -6,7 +6,7 @@
 > Refactor modulaire en place sur `main` par tranches compatibles.
 > Les tranches récentes sont suivies dans `docs/superpowers/plans/`
 > (`tools-market-data-boundary`, `tools-news-feed-boundary`,
-> `tools-portfolio-boundary`).
+> `tools-portfolio-boundary`, `tools-memory-boundary`).
 
 ---
 
@@ -41,7 +41,7 @@ les utilisaient :
 | `trader/application/market_snapshot.py` | Barres runtime/daily/exit, fraîcheur, FX, eligibility, tradable maps | retourne `MarketSnapshot`, le daemon l'unpack |
 | `trader/application/decision_recorder.py` | Enrichissement décision, ledger, report, status, event, recall traces | source durable : `state/decisions.jsonl` |
 | `trader/application/order_admission.py` | Helpers purs d'admission : intent, clamp sortie, stop, risk metrics | l'orchestration RiskGate/broker reste dans `trader/runtime/daemon.py` |
-| `trader/agent/` | Contexte agent, façade planner, transport LLM/acpx | compat : `trader.agent_context`, `trader.codex_client`, `trader.llm` |
+| `trader/agent/` | Contexte agent, mémoire mandat/stratégie, façade planner, transport LLM/acpx | compat : `trader.agent_context`, `trader.codex_client`, `trader.llm`, `trader.tools.memory.Memory` |
 | `trader/agent_protocol/` | Types, prompts, parsing du contrat LLM | utilisé par `trader/agent/client.py` |
 | `trader/agent_tools/` | Package des outils domaine lecture seule | `registry.TOOL_REGISTRY` assemble 9 handlers |
 | `trader/semantic/` | Catalogue sémantique des indicateurs et requêtes agent | évite de disperser les IDs/request contracts |
@@ -49,7 +49,7 @@ les utilisaient :
 | `trader/scheduling/` | Réveils globaux/par symbole, stale backoff, veilles persistées | compat : `trader.tools.scheduler` |
 | `trader/planning/` | Plans de trade, veilles, exit engine, gate de pertinence | compat : `trader.trade_plan`, `trader.indicator_watch`, `trader.exit_engine`, `trader.relevance_gate` |
 | `trader/execution/` | Broker paper, primitives d'ordre/fill, commissions, RiskGate, projection portefeuille | compat : `trader.tools.execution`, `trader.tools.portfolio`, `trader.risk` |
-| `trader/learnings/` | Store SQLite, embeddings, consolidateur | compat : `trader.learnings_store`, `trader.embeddings`, `trader.consolidator` |
+| `trader/learnings/` | Buffer brut JSONL, store SQLite recall, embeddings, consolidateur | compat : `trader.tools.memory.LearningsStore`, `trader.learnings_store`, `trader.embeddings`, `trader.consolidator` |
 | `trader/market/` | Données marché, sources yfinance/IB, fraîcheur, indicateurs, FX, news, macro, radar, régime, priorisation gross exposure | compat : `trader.tools.market`, `trader.tools.data_source`, `trader.tools.ib_source`, `trader.tools.news_feed`, `trader.fx`, `trader.features`, etc. |
 | `trader/queue/` | File de tâches durable, workers, pools, backpressure | backend technique utilisé par le runtime queue-on |
 | `trader/state_db/` | Backend SQLite de l'état paper, broker store, outbox | source durable quand `CASYS_STATE_BACKEND=sqlite` |
@@ -416,7 +416,7 @@ Opérateurs valides : `>`, `>=`, `<`, `<=`, `==`, `!=`, `abs>`, `abs>=`, `abs<`,
 | `learnings_consolidated.json` | `trader/learnings/consolidator.py` | `trader/runtime/daemon.py` (contexte LLM) | Patterns consolidés (≤ seuil bruts → consolidation) |
 | `learnings.db` | `learnings_ingest` + daemon (`recalls`) | outil `recall_learnings` | Store SQLite dérivé : notes scorées par outcome (lift/symbole), embeddings, traces de recall |
 | `archive/*.jsonl.gz` | `trader/runtime/ledger_rotation.py` (démarrage daemon) | `read_rows_with_archive` (analyses) | Mois passés de decisions/events — rotation mensuelle crash-safe |
-| `archive/learnings-*.jsonl` | `LearningsStore`/`consolidator` | ingestion recall | Évincés + historique des consolidés — plus rien ne se jette |
+| `archive/learnings-*.jsonl` | `RawLearningsStore`/`consolidator` | ingestion recall | Évincés + historique des consolidés — plus rien ne se jette |
 | `news_items/YYYY-MM-DD.jsonl` | `market/news_feed` (P1a) | futur analyste-news | Items de news persistés (dédup uuid, purge 60 j) |
 | `macro_calendar.json` + `macro_series/` | `macro_calendar`/`macro_series` (P1a) | payload d'attribution | Dates FOMC/CPI + séries macro quotidiennes (DBnomics) |
 

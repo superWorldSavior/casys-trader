@@ -1,10 +1,10 @@
 from datetime import datetime, timezone
 
-from trader.tools.memory import LearningsStore
+from trader.learnings.raw_store import RawLearningsStore
 
 
 def test_recent_renvoie_les_entrees_dans_lordre_dajout(tmp_path) -> None:
-    store = LearningsStore(tmp_path / "learnings.jsonl")
+    store = RawLearningsStore(tmp_path / "learnings.jsonl")
     now = datetime(2026, 6, 6, 9, 0, tzinfo=timezone.utc)
     store.append(symbol="SPY", note="momentum faible, j'attends une cassure", now=now)
     store.append(symbol="QQQ", note="spread vs famille trop tendu", now=now)
@@ -16,7 +16,7 @@ def test_recent_renvoie_les_entrees_dans_lordre_dajout(tmp_path) -> None:
 
 
 def test_recent_limit_renvoie_les_plus_recents(tmp_path) -> None:
-    store = LearningsStore(tmp_path / "learnings.jsonl")
+    store = RawLearningsStore(tmp_path / "learnings.jsonl")
     for i in range(5):
         store.append(symbol="SPY", note=f"note {i}")
 
@@ -26,7 +26,7 @@ def test_recent_limit_renvoie_les_plus_recents(tmp_path) -> None:
 
 def test_append_borne_le_fichier_a_max_entries(tmp_path) -> None:
     path = tmp_path / "learnings.jsonl"
-    store = LearningsStore(path, max_entries=3)
+    store = RawLearningsStore(path, max_entries=3)
     for i in range(10):
         store.append(symbol="SPY", note=f"note {i}")
 
@@ -36,12 +36,12 @@ def test_append_borne_le_fichier_a_max_entries(tmp_path) -> None:
 
 
 def test_recent_sur_fichier_absent_renvoie_vide(tmp_path) -> None:
-    store = LearningsStore(tmp_path / "absent.jsonl")
+    store = RawLearningsStore(tmp_path / "absent.jsonl")
     assert store.recent() == []
 
 
 def test_recent_limit_non_positif_renvoie_vide(tmp_path) -> None:
-    store = LearningsStore(tmp_path / "learnings.jsonl")
+    store = RawLearningsStore(tmp_path / "learnings.jsonl")
     store.append(symbol="SPY", note="x")
     store.append(symbol="QQQ", note="y")
     assert store.recent(limit=0) == []
@@ -49,19 +49,19 @@ def test_recent_limit_non_positif_renvoie_vide(tmp_path) -> None:
 
 
 def test_max_entries_non_positif_ne_stocke_rien(tmp_path) -> None:
-    store = LearningsStore(tmp_path / "learnings.jsonl", max_entries=0)
+    store = RawLearningsStore(tmp_path / "learnings.jsonl", max_entries=0)
     store.append(symbol="SPY", note="x")
     assert store.recent(limit=10) == []
 
 
 def test_append_renvoie_true_si_ecrit_false_si_vide(tmp_path) -> None:
-    store = LearningsStore(tmp_path / "learnings.jsonl")
+    store = RawLearningsStore(tmp_path / "learnings.jsonl")
     assert store.append(symbol="SPY", note="vraie note") is True
     assert store.append(symbol="SPY", note="   ") is False
 
 
 def test_append_ignore_une_note_vide(tmp_path) -> None:
-    store = LearningsStore(tmp_path / "learnings.jsonl")
+    store = RawLearningsStore(tmp_path / "learnings.jsonl")
     store.append(symbol="SPY", note="   ")
     store.append(symbol="SPY", note="vraie note")
     assert [item["note"] for item in store.recent()] == ["vraie note"]
@@ -70,7 +70,7 @@ def test_append_ignore_une_note_vide(tmp_path) -> None:
 def test_eviction_archivee_au_lieu_de_jetee(tmp_path) -> None:
     """Le rolling buffer n'a plus le droit de jeter : les évincés partent en archive
     append-only datée (chantier learnings 2026-07-02)."""
-    store = LearningsStore(tmp_path / "learnings.jsonl", max_entries=3)
+    store = RawLearningsStore(tmp_path / "learnings.jsonl", max_entries=3)
     base = datetime(2026, 7, 2, 10, 0, tzinfo=timezone.utc)
     for i in range(5):
         store.append(symbol=f"S{i}", note=f"note {i}", now=base.replace(minute=i))
@@ -88,7 +88,7 @@ def test_eviction_archivee_au_lieu_de_jetee(tmp_path) -> None:
 
 
 def test_pas_deviction_pas_darchive(tmp_path) -> None:
-    store = LearningsStore(tmp_path / "learnings.jsonl", max_entries=10)
+    store = RawLearningsStore(tmp_path / "learnings.jsonl", max_entries=10)
     store.append(symbol="SPY", note="rien à évincer", now=datetime(2026, 7, 2, tzinfo=timezone.utc))
     assert not (tmp_path / "archive" / "learnings-evicted.jsonl").exists()
 
@@ -107,17 +107,17 @@ def test_archive_evicted_loggue_warning_si_ioerror(tmp_path) -> None:
     """
     import logging
 
-    # Créer un FICHIER là où LearningsStore voudrait créer un répertoire "archive"
+    # Créer un FICHIER là où RawLearningsStore voudrait créer un répertoire "archive"
     archive_dir = tmp_path / "archive"
     archive_dir.write_text("not a directory")  # bloque le mkdir de _archive_evicted
 
-    store = LearningsStore(tmp_path / "learnings.jsonl", max_entries=2)
+    store = RawLearningsStore(tmp_path / "learnings.jsonl", max_entries=2)
     base = datetime(2026, 7, 2, 10, 0, tzinfo=timezone.utc)
 
     records: list[logging.LogRecord] = []
     handler = logging.Handler()
     handler.emit = records.append  # type: ignore[assignment]
-    mod_logger = logging.getLogger("trader.tools.memory")
+    mod_logger = logging.getLogger("trader.learnings.raw_store")
     mod_logger.addHandler(handler)
     try:
         # Déclenche une éviction (max_entries=2, on append 3 notes)

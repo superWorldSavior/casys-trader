@@ -1,3 +1,3 @@
-"""Runtime learnings storage, embeddings, and consolidation."""
+"""Runtime learnings storage, raw buffers, embeddings, and consolidation."""
 
-__all__ = ["consolidator", "embeddings", "store"]
+__all__ = ["consolidator", "embeddings", "raw_store", "store"]

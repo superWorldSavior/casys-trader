@@ -1,3 +1,3 @@
-"""Agent-facing context, LLM transport, and Codex client facade."""
+"""Agent-facing context, prompt memory, LLM transport, and Codex client facade."""
 
-__all__ = ["client", "context", "llm"]
+__all__ = ["client", "context", "llm", "memory"]

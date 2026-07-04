@@ -48,19 +48,14 @@ CASYS_IB_HOST=127.0.0.1 CASYS_IB_PORT=4002 CASYS_IB_CLIENT_ID=17 ./run.sh --once
 ```
 trader/
   runtime/           daemon, CLI, logging, version, IB attach
-  agent/             contexte agent, client Codex, transport LLM/acpx
+  agent/             contexte agent, mémoire mandat, client Codex, transport LLM/acpx
   planning/          plans, veilles indicateurs, exit engine, relevance gate
   execution/         RiskGate et contraintes d'ordre
   application/       services du cycle runtime extraits du daemon
   reporting/         ledger, attribution, stats, audit décisionnel
   market/            indicateurs, FX, macro, radar, régime
-  tools/
-    ib_source.py     données marché runtime (Interactive Brokers)
-    market.py        données marché yfinance (backtest/cache, hors daemon)
-    execution.py     ordres (SimBroker paper -> IB plus tard, même interface)
-    portfolio.py     positions / PnL / KPI
-    scheduler.py     cadence globale par défaut + overrides par symbole
-    memory.py        stratégie + learnings persistants
+  learnings/         buffer brut JSONL, consolidation, recall SQLite
+  tools/             façades de compatibilité legacy vers les packages ci-dessus
 backtest/                            <- backtest maison (SimBroker + yfinance)
 config/  universe.yaml  risk.yaml
 mandate/ mandate.md  memory.md      <- définis en boucle 1

@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 
 from trader.agent import llm
 from trader.learnings import consolidator
-from trader.tools.memory import LearningsStore
+from trader.learnings.raw_store import RawLearningsStore
 
 
 def _raw(ts: str, symbol: str = "SPY", note: str = "range confirme") -> dict:
@@ -42,7 +42,7 @@ def test_consolidated_store_valide_et_borne_la_sortie(tmp_path) -> None:
 
 
 def test_maybe_consolidate_attend_le_seuil(tmp_path) -> None:
-    raw_store = LearningsStore(tmp_path / "learnings.jsonl", max_entries=200)
+    raw_store = RawLearningsStore(tmp_path / "learnings.jsonl", max_entries=200)
     consolidated_store = consolidator.ConsolidatedLearningsStore(tmp_path / "learnings_consolidated.json")
     now = datetime(2026, 6, 8, 10, tzinfo=timezone.utc)
     raw_store.append(symbol="SPY", note="un seul brut", now=now)
@@ -54,7 +54,7 @@ def test_maybe_consolidate_attend_le_seuil(tmp_path) -> None:
 
 
 def test_maybe_consolidate_attend_50_bruts_par_defaut(tmp_path) -> None:
-    raw_store = LearningsStore(tmp_path / "learnings.jsonl", max_entries=200)
+    raw_store = RawLearningsStore(tmp_path / "learnings.jsonl", max_entries=200)
     consolidated_store = consolidator.ConsolidatedLearningsStore(tmp_path / "learnings_consolidated.json")
     for idx in range(49):
         raw_store.append(
@@ -98,7 +98,7 @@ def test_build_consolidator_router_modele_defaut_acpx_annonce(monkeypatch) -> No
 
 
 def test_maybe_consolidate_ecrit_le_consolide_et_avance_le_watermark(tmp_path) -> None:
-    raw_store = LearningsStore(tmp_path / "learnings.jsonl", max_entries=200)
+    raw_store = RawLearningsStore(tmp_path / "learnings.jsonl", max_entries=200)
     consolidated_store = consolidator.ConsolidatedLearningsStore(tmp_path / "learnings_consolidated.json")
     raw_store.append(symbol="SPY", note="z seul ne suffit pas", now=datetime(2026, 6, 8, 10, tzinfo=timezone.utc))
     raw_store.append(symbol="QQQ", note="attendre ER+AC", now=datetime(2026, 6, 8, 10, 30, tzinfo=timezone.utc))
@@ -127,7 +127,7 @@ def test_maybe_consolidate_ecrit_le_consolide_et_avance_le_watermark(tmp_path) -
 
 
 def test_maybe_consolidate_parse_le_json_final_apres_messages_acpx(tmp_path) -> None:
-    raw_store = LearningsStore(tmp_path / "learnings.jsonl", max_entries=200)
+    raw_store = RawLearningsStore(tmp_path / "learnings.jsonl", max_entries=200)
     consolidated_store = consolidator.ConsolidatedLearningsStore(tmp_path / "learnings_consolidated.json")
     raw_store.append(symbol="SPY", note="brut", now=datetime(2026, 6, 8, 10, tzinfo=timezone.utc))
 
@@ -158,7 +158,7 @@ def test_maybe_consolidate_parse_le_json_final_apres_messages_acpx(tmp_path) -> 
 
 
 def test_maybe_consolidate_repare_un_json_final_tronque_en_fin_de_stdout(tmp_path) -> None:
-    raw_store = LearningsStore(tmp_path / "learnings.jsonl", max_entries=200)
+    raw_store = RawLearningsStore(tmp_path / "learnings.jsonl", max_entries=200)
     consolidated_store = consolidator.ConsolidatedLearningsStore(tmp_path / "learnings_consolidated.json")
     raw_store.append(symbol="SPY", note="brut", now=datetime(2026, 6, 8, 10, tzinfo=timezone.utc))
     valid_payload = json.dumps(
@@ -187,7 +187,7 @@ def test_maybe_consolidate_repare_un_json_final_tronque_en_fin_de_stdout(tmp_pat
 
 
 def test_maybe_consolidate_garde_letat_si_sortie_llm_invalide(tmp_path) -> None:
-    raw_store = LearningsStore(tmp_path / "learnings.jsonl", max_entries=200)
+    raw_store = RawLearningsStore(tmp_path / "learnings.jsonl", max_entries=200)
     consolidated_store = consolidator.ConsolidatedLearningsStore(tmp_path / "learnings_consolidated.json")
     raw_store.append(symbol="SPY", note="brut", now=datetime(2026, 6, 8, 10, tzinfo=timezone.utc))
 
@@ -213,7 +213,7 @@ def test_maybe_consolidate_garde_letat_si_sortie_llm_invalide(tmp_path) -> None:
 
 
 def test_maybe_consolidate_status_observe_la_sortie_non_json(tmp_path) -> None:
-    raw_store = LearningsStore(tmp_path / "learnings.jsonl", max_entries=200)
+    raw_store = RawLearningsStore(tmp_path / "learnings.jsonl", max_entries=200)
     consolidated_store = consolidator.ConsolidatedLearningsStore(tmp_path / "learnings_consolidated.json")
     status_store = consolidator.ConsolidationStatusStore(tmp_path / "learnings_consolidation_status.json")
     raw_store.append(symbol="SPY", note="brut", now=datetime(2026, 6, 8, 10, tzinfo=timezone.utc))
@@ -247,7 +247,7 @@ def test_build_consolidation_prompt_interdit_les_messages_hors_json() -> None:
 
 
 def test_maybe_consolidate_retente_un_echec_retryable_puis_ecrit_le_consolide(tmp_path) -> None:
-    raw_store = LearningsStore(tmp_path / "learnings.jsonl", max_entries=200)
+    raw_store = RawLearningsStore(tmp_path / "learnings.jsonl", max_entries=200)
     consolidated_store = consolidator.ConsolidatedLearningsStore(tmp_path / "learnings_consolidated.json")
     raw_store.append(symbol="SPY", note="brut retryable", now=datetime(2026, 6, 8, 10, tzinfo=timezone.utc))
     calls = 0
@@ -284,7 +284,7 @@ def test_maybe_consolidate_retente_un_echec_retryable_puis_ecrit_le_consolide(tm
 
 
 def test_maybe_consolidate_enregistre_un_seul_echec_apres_retries_epuises(tmp_path) -> None:
-    raw_store = LearningsStore(tmp_path / "learnings.jsonl", max_entries=200)
+    raw_store = RawLearningsStore(tmp_path / "learnings.jsonl", max_entries=200)
     consolidated_store = consolidator.ConsolidatedLearningsStore(tmp_path / "learnings_consolidated.json")
     raw_store.append(symbol="SPY", note="brut retryable", now=datetime(2026, 6, 8, 10, tzinfo=timezone.utc))
     calls = 0
@@ -326,7 +326,7 @@ def test_maybe_consolidate_enregistre_un_seul_echec_apres_retries_epuises(tmp_pa
 
 
 def test_maybe_consolidate_ne_retente_pas_un_echec_non_retryable(tmp_path) -> None:
-    raw_store = LearningsStore(tmp_path / "learnings.jsonl", max_entries=200)
+    raw_store = RawLearningsStore(tmp_path / "learnings.jsonl", max_entries=200)
     consolidated_store = consolidator.ConsolidatedLearningsStore(tmp_path / "learnings_consolidated.json")
     raw_store.append(symbol="SPY", note="brut fatal", now=datetime(2026, 6, 8, 10, tzinfo=timezone.utc))
     calls = 0
@@ -367,7 +367,7 @@ def test_maybe_consolidate_ne_retente_pas_un_echec_non_retryable(tmp_path) -> No
 
 
 def test_maybe_consolidate_ne_retente_pas_un_echec_sans_nouveau_lot(tmp_path) -> None:
-    raw_store = LearningsStore(tmp_path / "learnings.jsonl", max_entries=200)
+    raw_store = RawLearningsStore(tmp_path / "learnings.jsonl", max_entries=200)
     consolidated_store = consolidator.ConsolidatedLearningsStore(tmp_path / "learnings_consolidated.json")
     status_store = consolidator.ConsolidationStatusStore(tmp_path / "learnings_consolidation_status.json")
     raw_store.append(symbol="SPY", note="brut 1", now=datetime(2026, 6, 8, 10, tzinfo=timezone.utc))
@@ -421,7 +421,7 @@ def test_maybe_consolidate_ne_retente_pas_un_echec_sans_nouveau_lot(tmp_path) ->
 
 
 def test_maybe_consolidate_retente_apres_un_nouveau_lot_depuis_lechec(tmp_path) -> None:
-    raw_store = LearningsStore(tmp_path / "learnings.jsonl", max_entries=200)
+    raw_store = RawLearningsStore(tmp_path / "learnings.jsonl", max_entries=200)
     consolidated_store = consolidator.ConsolidatedLearningsStore(tmp_path / "learnings_consolidated.json")
     status_store = consolidator.ConsolidationStatusStore(tmp_path / "learnings_consolidation_status.json")
     raw_store.append(symbol="SPY", note="brut 1", now=datetime(2026, 6, 8, 10, tzinfo=timezone.utc))
@@ -467,7 +467,7 @@ def test_maybe_consolidate_retente_apres_un_nouveau_lot_depuis_lechec(tmp_path) 
 
 
 def test_maybe_consolidate_retente_si_le_modele_a_change_depuis_lechec(tmp_path) -> None:
-    raw_store = LearningsStore(tmp_path / "learnings.jsonl", max_entries=200)
+    raw_store = RawLearningsStore(tmp_path / "learnings.jsonl", max_entries=200)
     consolidated_store = consolidator.ConsolidatedLearningsStore(tmp_path / "learnings_consolidated.json")
     status_store = consolidator.ConsolidationStatusStore(tmp_path / "learnings_consolidation_status.json")
     raw_store.append(symbol="SPY", note="brut 1", now=datetime(2026, 6, 8, 10, tzinfo=timezone.utc))
@@ -510,7 +510,7 @@ def test_maybe_consolidate_retente_si_le_modele_a_change_depuis_lechec(tmp_path)
 
 
 def test_maybe_consolidate_nettoie_le_status_apres_succes_suivant_un_echec(tmp_path) -> None:
-    raw_store = LearningsStore(tmp_path / "learnings.jsonl", max_entries=200)
+    raw_store = RawLearningsStore(tmp_path / "learnings.jsonl", max_entries=200)
     consolidated_store = consolidator.ConsolidatedLearningsStore(tmp_path / "learnings_consolidated.json")
     status_store = consolidator.ConsolidationStatusStore(tmp_path / "learnings_consolidation_status.json")
     raw_store.append(symbol="SPY", note="brut 1", now=datetime(2026, 6, 8, 10, tzinfo=timezone.utc))
@@ -559,7 +559,7 @@ def test_maybe_consolidate_nettoie_le_status_apres_succes_suivant_un_echec(tmp_p
 
 
 def test_maybe_consolidate_ignore_le_backoff_si_watermark_consolide_avance(tmp_path) -> None:
-    raw_store = LearningsStore(tmp_path / "learnings.jsonl", max_entries=200)
+    raw_store = RawLearningsStore(tmp_path / "learnings.jsonl", max_entries=200)
     consolidated_store = consolidator.ConsolidatedLearningsStore(tmp_path / "learnings_consolidated.json")
     status_store = consolidator.ConsolidationStatusStore(tmp_path / "learnings_consolidation_status.json")
     w0 = "2026-06-08T09:00:00+00:00"
@@ -709,7 +709,7 @@ def test_prompt_consolidation_injecte_les_stats_meta_descriptives() -> None:
 
 
 def test_maybe_consolidate_transmet_lattribution_au_prompt_llm(tmp_path) -> None:
-    raw_store = LearningsStore(tmp_path / "learnings.jsonl", max_entries=200)
+    raw_store = RawLearningsStore(tmp_path / "learnings.jsonl", max_entries=200)
     consolidated_store = consolidator.ConsolidatedLearningsStore(tmp_path / "learnings_consolidated.json")
     raw_store.append(symbol="SPY", note="brut avec attribution", now=datetime(2026, 6, 8, 10, tzinfo=timezone.utc))
     attribution = {
@@ -747,7 +747,7 @@ def test_maybe_consolidate_transmet_lattribution_au_prompt_llm(tmp_path) -> None
 
 
 def test_maybe_consolidate_transmet_meta_performance_au_prompt_llm(tmp_path) -> None:
-    raw_store = LearningsStore(tmp_path / "learnings.jsonl", max_entries=200)
+    raw_store = RawLearningsStore(tmp_path / "learnings.jsonl", max_entries=200)
     consolidated_store = consolidator.ConsolidatedLearningsStore(tmp_path / "learnings_consolidated.json")
     raw_store.append(symbol="SPY", note="brut avec meta", now=datetime(2026, 6, 8, 10, tzinfo=timezone.utc))
     meta = {"available": True, "horizons": {"1h": {"global": {"missed_known_pct": 50.0}}}}
@@ -777,7 +777,7 @@ def test_maybe_consolidate_transmet_meta_performance_au_prompt_llm(tmp_path) -> 
 
 def test_main_run_declenche_la_consolidation_sur_un_state_tmp(monkeypatch, tmp_path, capsys) -> None:
     state_dir = tmp_path / "state"
-    raw_store = LearningsStore(state_dir / "learnings.jsonl", max_entries=200)
+    raw_store = RawLearningsStore(state_dir / "learnings.jsonl", max_entries=200)
     raw_store.append(symbol="SPY", note="brut 1", now=datetime(2026, 6, 8, 10, tzinfo=timezone.utc))
     raw_store.append(symbol="QQQ", note="brut 2", now=datetime(2026, 6, 8, 10, 1, tzinfo=timezone.utc))
 

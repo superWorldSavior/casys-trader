@@ -20,7 +20,7 @@ from pathlib import Path
 import yaml
 
 from trader import codex_client
-from trader.tools import memory as memory_mod
+from trader.agent import memory as agent_memory
 from trader.tools.execution import commission_model_from_name
 
 from .data import DataError, HistoryStore
@@ -119,7 +119,7 @@ def main() -> None:
     if args.mock:
         decision_fn = _mock_decision_fn
     else:
-        mem = memory_mod.Memory(ROOT / "mandate" / "mandate.md", ROOT / "mandate" / "memory.md")
+        mem = agent_memory.Memory(ROOT / "mandate" / "mandate.md", ROOT / "mandate" / "memory.md")
         decision_fn = _codex_decision_fn(mem.read_mandate(), mem.read_memory(), args.model)
 
     result = run_backtest(

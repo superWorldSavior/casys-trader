@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from trader.runtime import daemon
 from trader.agent.client import Decision
 from trader.market.market_data import Bar
-from trader.tools.memory import LearningsStore
+from trader.learnings.raw_store import RawLearningsStore
 from trader.scheduling.scheduler import Scheduler
 
 
@@ -156,7 +156,7 @@ def test_run_cycle_rejet_confiance_injecte_le_feedback_dans_les_learnings(
         data_source=data_source,
     )
 
-    recent = LearningsStore(state_dir / "learnings.jsonl").recent()
+    recent = RawLearningsStore(state_dir / "learnings.jsonl").recent()
     assert recent, "le rejet de confiance doit laisser une trace dans les learnings"
     note = recent[0]["note"]
     assert "je tente un long sur cassure" in note   # learning de l'agent préservé

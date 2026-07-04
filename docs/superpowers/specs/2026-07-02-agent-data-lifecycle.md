@@ -93,7 +93,7 @@ snapshots du repo).
 - 12 fichiers `.bak-*` manuels (`broker.json.bak-pre-fx-*`,
   `decisions.jsonl.bak-2026-06-16-preincident` 8,4 Mo,
   `history.jsonl.bak-precliff-fix`…) : dead artifacts jamais lus par le code.
-- `mandate/memory.md` : `Memory.append_learning()` (`trader/tools/memory.py:94`)
+- `mandate/memory.md` : `Memory.append_learning()` (`trader/agent/memory.py`)
   n'a AUCUN appelant en prod — code mort à supprimer ou brancher.
 - `rotation_ledger.jsonl` : write-only (aucun lecteur) — à garder comme
   audit-trail (c'est l'archive des univers) mais le documenter comme tel.

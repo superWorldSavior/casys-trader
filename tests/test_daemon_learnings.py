@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 from trader.runtime import daemon
 from trader.agent.client import Decision
 from trader.market.market_data import Bar, MarketError
-from trader.tools.memory import LearningsStore
+from trader.learnings.raw_store import RawLearningsStore
 from trader.scheduling.scheduler import Scheduler
 
 
@@ -61,7 +61,7 @@ def test_run_cycle_ecrit_le_learning_emis_par_lagent(monkeypatch, tmp_path, patc
 
     daemon.run_cycle(dry_run=True, now=now, symbols_filter=["SPY"], sched=sched, data_source=data_source)
 
-    recent = LearningsStore(state_dir / "learnings.jsonl").recent()
+    recent = RawLearningsStore(state_dir / "learnings.jsonl").recent()
     assert [item["note"] for item in recent] == ["le range SPY tient depuis 3 reveils"]
     assert recent[0]["symbol"] == "SPY"
     # Le learning porte le résultat de la décision (pour juger les bons choix).
@@ -173,7 +173,7 @@ def test_run_cycle_reinjecte_les_learnings_recents_dans_le_contexte(
     sched = Scheduler(state_dir / "scheduler.json")
     now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
 
-    LearningsStore(state_dir / "learnings.jsonl").append(
+    RawLearningsStore(state_dir / "learnings.jsonl").append(
         symbol="SPY", note="cassure ratee au dernier reveil", now=now
     )
 
@@ -208,7 +208,7 @@ def test_run_cycle_injecte_les_learnings_consolides_scope_aware(
     state_dir.mkdir(parents=True, exist_ok=True)
     sched = Scheduler(state_dir / "scheduler.json")
     now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
-    LearningsStore(state_dir / "learnings.jsonl").append(
+    RawLearningsStore(state_dir / "learnings.jsonl").append(
         symbol="SPY", note="brut recent", now=now
     )
     (state_dir / "learnings_consolidated.json").write_text(

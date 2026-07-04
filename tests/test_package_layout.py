@@ -406,6 +406,69 @@ def test_portfolio_imports_are_canonical_with_tools_compatibility() -> None:
     assert legacy_snapshot is snapshot
 
 
+def test_agent_memory_and_raw_learnings_imports_are_canonical_with_tools_compatibility() -> None:
+    from trader.agent.memory import Memory
+    from trader.learnings.raw_store import LearningsStore
+    from trader.learnings.raw_store import RawLearningsStore
+    from trader.tools.memory import LearningsStore as LegacyLearningsStore
+    from trader.tools.memory import Memory as LegacyMemory
+
+    assert LegacyMemory is Memory
+    assert LearningsStore is RawLearningsStore
+    assert LegacyLearningsStore is RawLearningsStore
+
+
+def test_legacy_memory_tool_module_proxies_mutations_to_canonical_modules(monkeypatch) -> None:
+    from trader.agent import memory as canonical_agent_memory
+    from trader.learnings import raw_store as canonical_raw_store
+    from trader.tools import memory as legacy_memory
+
+    memory_sentinel = object()
+    learnings_sentinel = object()
+
+    monkeypatch.setattr(legacy_memory, "Memory", memory_sentinel)
+    monkeypatch.setattr(legacy_memory, "LearningsStore", learnings_sentinel)
+
+    assert canonical_agent_memory.Memory is memory_sentinel
+    assert canonical_raw_store.RawLearningsStore is learnings_sentinel
+    assert canonical_raw_store.LearningsStore is learnings_sentinel
+
+
+def test_runtime_agent_and_learnings_do_not_depend_on_legacy_memory_tool() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    trader_dir = repo_root / "trader"
+    checked_roots = (
+        repo_root / "backtest",
+        trader_dir / "agent",
+        trader_dir / "learnings",
+        trader_dir / "read_models",
+        trader_dir / "runtime",
+    )
+    forbidden_modules = {"trader.tools.memory"}
+    forbidden_from_tools = {"memory"}
+
+    violations: list[str] = []
+    for root in checked_roots:
+        for path in sorted(root.rglob("*.py")):
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            rel_path = path.relative_to(repo_root)
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ImportFrom) and node.module in forbidden_modules:
+                    violations.append(f"{rel_path}: from {node.module} import ...")
+                elif isinstance(node, ast.ImportFrom) and node.module == "trader.tools":
+                    forbidden_names = sorted(
+                        alias.name for alias in node.names if alias.name in forbidden_from_tools
+                    )
+                    if forbidden_names:
+                        violations.append(f"{rel_path}: from trader.tools import {forbidden_names}")
+                elif isinstance(node, ast.Import):
+                    for alias in node.names:
+                        if alias.name in forbidden_modules:
+                            violations.append(f"{rel_path}: import {alias.name}")
+
+    assert violations == []
+
+
 def test_legacy_portfolio_tool_module_proxies_mutations_to_canonical_module(monkeypatch) -> None:
     from trader.execution import portfolio as canonical_portfolio
     from trader.tools import portfolio as legacy_portfolio

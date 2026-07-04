@@ -29,12 +29,14 @@ import yaml
 
 from trader.agent import client as codex_client
 from trader.agent import llm
+from trader.agent import memory as agent_memory
 from trader.agent.context import build_market_cockpit, resolve_indicator_requests
 from trader.application import market_snapshot, order_admission, planner_batch
 from trader.application.decision_recorder import DecisionRecorder
 from trader.execution.risk import RiskGate, RiskLimits
 from trader.learnings import consolidator
 from trader.learnings import embeddings as embeddings_mod
+from trader.learnings import raw_store as raw_learnings
 from trader.learnings import store as recall_store_mod
 from trader.market import family_regime, fx, macro_calendar, macro_series
 from trader.market import market_data as market
@@ -70,7 +72,6 @@ from trader.reporting import attribution, decision_ledger, meta_performance, sta
 from trader.runtime import ledger_rotation
 from trader.runtime.ib_attach import IBAttachBackoff
 from trader.scheduling import scheduler
-from trader.tools import memory as memory_mod
 from trader.execution import portfolio
 from trader.execution.broker import (
     CommissionModel,
@@ -1771,8 +1772,8 @@ def run_cycle(
     # True = guardrail D6 préservé (live-safe). Voir spec exploration-basse-confiance.
     require_hard_stop = bool(risk_cfg.get("require_hard_stop", True))
     gate.start_cycle()
-    mem = memory_mod.Memory(ROOT / "mandate" / "mandate.md", ROOT / "mandate" / "memory.md")
-    learnings_store = memory_mod.LearningsStore(
+    mem = agent_memory.Memory(ROOT / "mandate" / "mandate.md", ROOT / "mandate" / "memory.md")
+    learnings_store = raw_learnings.RawLearningsStore(
         STATE_DIR / "learnings.jsonl",
         max_entries=consolidator.DEFAULT_RAW_MAX_ENTRIES,
     )

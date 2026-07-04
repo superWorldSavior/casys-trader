@@ -16,8 +16,8 @@ from typing import Any
 
 from trader.agent import llm
 from trader.execution.risk import read_min_trade_confidence
+from trader.learnings.raw_store import RawLearningsStore
 from trader.reporting import attribution as attribution_mod, meta_performance as meta_performance_mod
-from trader.tools.memory import LearningsStore
 
 log = logging.getLogger(__name__)
 
@@ -593,7 +593,7 @@ def consolidate_payload(
 
 
 def maybe_consolidate(
-    raw_store: LearningsStore,
+    raw_store: RawLearningsStore,
     consolidated_store: ConsolidatedLearningsStore,
     *,
     threshold: int = DEFAULT_CONSOLIDATION_THRESHOLD,
@@ -694,7 +694,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     state_dir = Path(args.state_dir)
-    raw_store = LearningsStore(state_dir / "learnings.jsonl", max_entries=DEFAULT_RAW_MAX_ENTRIES)
+    raw_store = RawLearningsStore(state_dir / "learnings.jsonl", max_entries=DEFAULT_RAW_MAX_ENTRIES)
     consolidated_store = ConsolidatedLearningsStore(state_dir / "learnings_consolidated.json")
 
     if args.run:
