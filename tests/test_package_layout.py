@@ -174,6 +174,7 @@ def test_legacy_virtual_packages_support_from_trader_and_python_m() -> None:
         "trader.agent_protocol.prompts",
         "trader.agent_tools.core",
         "trader.agent_tools.registry",
+        "trader.tools.memory",
         "trader.config.pool",
         "trader.config.portfolio",
         "trader.metadata.code_version",
@@ -729,10 +730,12 @@ def test_agent_memory_and_raw_learnings_imports_are_canonical_with_tools_compati
     from trader.learnings.raw_store import RawLearningsStore
     from trader.tools.memory import LearningsStore as LegacyLearningsStore
     from trader.tools.memory import Memory as LegacyMemory
+    from trader.tools.memory import RawLearningsStore as LegacyRawLearningsStore
 
     assert LegacyMemory is Memory
     assert LearningsStore is RawLearningsStore
     assert LegacyLearningsStore is RawLearningsStore
+    assert LegacyRawLearningsStore is RawLearningsStore
 
 
 def test_legacy_memory_tool_module_proxies_mutations_to_canonical_modules(monkeypatch) -> None:
@@ -742,6 +745,7 @@ def test_legacy_memory_tool_module_proxies_mutations_to_canonical_modules(monkey
 
     memory_sentinel = object()
     learnings_sentinel = object()
+    raw_sentinel = object()
 
     monkeypatch.setattr(legacy_memory, "Memory", memory_sentinel)
     monkeypatch.setattr(legacy_memory, "LearningsStore", learnings_sentinel)
@@ -749,6 +753,11 @@ def test_legacy_memory_tool_module_proxies_mutations_to_canonical_modules(monkey
     assert canonical_agent_memory.Memory is memory_sentinel
     assert canonical_raw_store.RawLearningsStore is learnings_sentinel
     assert canonical_raw_store.LearningsStore is learnings_sentinel
+
+    monkeypatch.setattr(legacy_memory, "RawLearningsStore", raw_sentinel)
+
+    assert canonical_raw_store.RawLearningsStore is raw_sentinel
+    assert canonical_raw_store.LearningsStore is raw_sentinel
 
 
 def test_runtime_agent_and_learnings_do_not_depend_on_legacy_memory_tool() -> None:
@@ -758,7 +767,7 @@ def test_runtime_agent_and_learnings_do_not_depend_on_legacy_memory_tool() -> No
         repo_root / "backtest",
         trader_dir / "agent",
         trader_dir / "learnings",
-        trader_dir / "read_models",
+        trader_dir / "reporting" / "read_models",
         trader_dir / "runtime",
     )
     forbidden_modules = {"trader.tools.memory"}
