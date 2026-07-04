@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Mapping, Protocol
+from typing import Any, Mapping, Protocol
 
+from trader.application import cycle_schedule
 from trader.planning import relevance_gate
 
 
@@ -13,11 +14,29 @@ class SymbolWakeSource(Protocol):
     def symbols_with_wake(self) -> set[str]: ...
 
 
+class SessionWakeClamp(Protocol):
+    def __call__(self, wake_minutes: float, *, now: datetime, symbol: str) -> float: ...
+
+
 @dataclass(frozen=True)
 class QuietGateResult:
     kept_symbols: list[str]
     gated_symbols: list[str]
     entries: list[dict]
+
+
+@dataclass(frozen=True)
+class InfraHoldEvent:
+    name: str
+    payload: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class StaleMarketHoldResult:
+    new_streak: int
+    wake_minutes: float
+    entry: dict | None
+    event: InfraHoldEvent | None
 
 
 def quiet_gate_decisions(
@@ -84,4 +103,75 @@ def quiet_gate_decisions(
         kept_symbols=kept_symbols,
         gated_symbols=gated_symbols,
         entries=entries,
+    )
+
+
+def stale_market_hold_decision(
+    *,
+    symbol: str,
+    stale_data: Mapping[str, Any],
+    current_streak: int,
+    default_wake_minutes: float,
+    now: datetime,
+    clamp_wake_to_session_open: SessionWakeClamp,
+    stale_armed_plan: Mapping[str, Any] | None,
+    runtime_data_source: object,
+) -> StaleMarketHoldResult:
+    """Build the infra HOLD or lightweight backoff event for non-decidable stale data."""
+    wake_minutes = cycle_schedule.stale_backoff_wake_minutes(
+        current_streak,
+        default_wake_minutes=default_wake_minutes,
+    )
+    wake_minutes = clamp_wake_to_session_open(wake_minutes, now=now, symbol=symbol)
+    new_streak = current_streak + 1
+
+    should_record_stale = current_streak == 0 or stale_armed_plan is not None
+    if should_record_stale:
+        entry = {
+            "symbol": symbol,
+            **(
+                {
+                    "armed_plan_id": stale_armed_plan["id"],
+                    "armed_plan_order": stale_armed_plan["order"],
+                }
+                if stale_armed_plan is not None
+                else {}
+            ),
+            "action": "HOLD",
+            "qty": 0.0,
+            "confidence": 0.0,
+            "rationale": "stale_market_data",
+            "next_wake_in_minutes": wake_minutes,
+            "intent": "HOLD",
+            "trade_plan_created": False,
+            "executed": False,
+            "reason": "stale_market_data",
+            "decision_reason_code": "DATA_STALE",
+            "decision_source": "infra",
+            "model_called": False,
+            "stale_streak": new_streak,
+            "data_source": runtime_data_source,
+            **dict(stale_data),
+        }
+        return StaleMarketHoldResult(
+            new_streak=new_streak,
+            wake_minutes=wake_minutes,
+            entry=entry,
+            event=None,
+        )
+
+    return StaleMarketHoldResult(
+        new_streak=new_streak,
+        wake_minutes=wake_minutes,
+        entry=None,
+        event=InfraHoldEvent(
+            "stale_backoff",
+            {
+                "symbol": symbol,
+                "streak": new_streak,
+                "next_wake_minutes": wake_minutes,
+                "stale_reason": stale_data.get("stale_reason"),
+                "data_age_minutes": stale_data.get("data_age_minutes"),
+            },
+        ),
     )

@@ -1738,20 +1738,23 @@ def run_cycle(
         # les stale NON décidables (rien d'exploitable) gardent le HOLD infra ci-dessous.
         if stale_data is not None and sym not in decidable:
             streak = sched.get_stale_streak(sym) if sched is not None else 0
-            wake_minutes = _stale_backoff_wake_minutes(streak, default_wake_minutes=default_wake_minutes)
-            # Ne jamais dormir au-delà de la prochaine ouverture : on raccourcit le
-            # backoff pour être réveillé pile avant la cloche DU marché du symbole
-            # (TWSE/Euronext/XETRA/US — anti-rater-l'open).
-            wake_minutes = market.clamp_wake_to_session_open(wake_minutes, now=now, symbol=sym)
-            new_streak = streak + 1
+            stale_hold = infra_holds.stale_market_hold_decision(
+                symbol=sym,
+                stale_data=stale_data,
+                current_streak=streak,
+                default_wake_minutes=default_wake_minutes,
+                now=now,
+                clamp_wake_to_session_open=market.clamp_wake_to_session_open,
+                stale_armed_plan=stale_armed_plans.get(sym),
+                runtime_data_source=runtime_data_source_by_sym.get(sym),
+            )
+            wake_minutes = stale_hold.wake_minutes
+            new_streak = stale_hold.new_streak
             if sched is not None:
                 sched.set_stale_streak(sym, new_streak)
                 sched.set_symbol_next_wake_in(sym, minutes=wake_minutes, now=now)
 
-            is_first_stale = streak == 0  # transition fresh→stale : enregistrer la décision
-            stale_armed_plan = stale_armed_plans.get(sym)
-            should_record_stale = is_first_stale or stale_armed_plan is not None
-            if should_record_stale:
+            if stale_hold.entry is not None:
                 _log_cycle_progress(
                     "[decision %d/%d] %s stale_market_data (streak=%d) reason=%s age=%s wake=%.0fmin",
                     index,
@@ -1762,34 +1765,7 @@ def run_cycle(
                     stale_data.get("data_age_minutes"),
                     wake_minutes,
                 )
-                record_decision(
-                    {
-                        "symbol": sym,
-                        **(
-                            {
-                                "armed_plan_id": stale_armed_plan["id"],
-                                "armed_plan_order": stale_armed_plan["order"],
-                            }
-                            if stale_armed_plan is not None
-                            else {}
-                        ),
-                        "action": "HOLD",
-                        "qty": 0.0,
-                        "confidence": 0.0,
-                        "rationale": "stale_market_data",
-                        "next_wake_in_minutes": wake_minutes,
-                        "intent": "HOLD",
-                        "trade_plan_created": False,
-                        "executed": False,
-                        "reason": "stale_market_data",
-                        "decision_reason_code": "DATA_STALE",
-                        "decision_source": "infra",
-                        "model_called": False,
-                        "stale_streak": new_streak,
-                        "data_source": runtime_data_source_by_sym.get(sym),
-                        **stale_data,
-                    }
-                )
+                record_decision(stale_hold.entry)
             else:
                 _log_cycle_progress(
                     "[decision %d/%d] %s stale_backoff streak=%d wake=%.0fmin reason=%s",
@@ -1800,14 +1776,8 @@ def run_cycle(
                     wake_minutes,
                     stale_data.get("stale_reason"),
                 )
-                _append_event(
-                    "stale_backoff",
-                    symbol=sym,
-                    streak=new_streak,
-                    next_wake_minutes=wake_minutes,
-                    stale_reason=stale_data.get("stale_reason"),
-                    data_age_minutes=stale_data.get("data_age_minutes"),
-                )
+                if stale_hold.event is not None:
+                    _append_event(stale_hold.event.name, **stale_hold.event.payload)
             continue
         if sym not in prices:
             _log_cycle_progress("[decision %d/%d] %s skipped no_price", index, len(symbols_to_decide), sym)
