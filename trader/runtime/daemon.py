@@ -37,6 +37,7 @@ from trader.application import (
     confidence_feedback,
     cycle_schedule,
     decision_entries,
+    decision_watches,
     execution_eligibility as execution_eligibility_service,
     exit_bars as exit_bars_service,
     gross_feedback,
@@ -67,7 +68,6 @@ from trader.market.gross_priority import PriorityItem, gross_execution_order
 from trader.market.ib_source import IBDataSource, connect_ib
 from trader.market import news_feed
 from trader.planning.exit_engine import evaluate_plan
-from trader.planning.indicator_watch import build_indicator_watch
 from trader.planning.trade_plan import (
     InvalidExitPlanError,
     TradePlan,
@@ -1840,19 +1840,21 @@ def run_cycle(
         # rejets invalid_exit_plan:hard_stop_* sans fouiller decision_audit.json.
         # deepcopy : normalize_exit_plan/resolve peuvent muter la structure.
         entry["exit_plan"] = copy.deepcopy(decision.exit_plan) if decision.exit_plan else None
-        pending_indicator_watch = None
-        if decision.indicator_watch:
-            indicator_watch_result = build_indicator_watch(decision.indicator_watch, owner_symbol=sym, now=now)
-            entry["indicator_watch_rejections"] = indicator_watch_result.rejections
-            if indicator_watch_result.rejections:
-                log.warning(
-                    "indicator_watch rejets %s: %d conditions %s",
-                    sym,
-                    len(indicator_watch_result.rejections),
-                    [r["reason"] for r in indicator_watch_result.rejections],
-                )
-            if sched is not None:
-                pending_indicator_watch = indicator_watch_result.watch
+        watch_preparation = decision_watches.prepare_decision_indicator_watch(
+            decision.indicator_watch,
+            symbol=sym,
+            now=now,
+            scheduling_enabled=sched is not None,
+        )
+        entry.update(watch_preparation.entry_updates)
+        if watch_preparation.rejections:
+            log.warning(
+                "indicator_watch rejets %s: %d conditions %s",
+                sym,
+                len(watch_preparation.rejections),
+                [r["reason"] for r in watch_preparation.rejections],
+            )
+        pending_indicator_watch = watch_preparation.pending_watch
 
         def apply_decision_schedule() -> None:
             _apply_decision_schedule(
