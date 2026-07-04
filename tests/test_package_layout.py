@@ -39,17 +39,16 @@ def test_top_level_packages_have_declared_architecture_roles() -> None:
         "application",
         "domain",
         "execution",
+        "infrastructure",
         "interfaces",
         "learnings",
         "market",
         "planning",
-        "queue",
         "reporting",
         "rotation",
         "runtime",
         "scheduling",
         "semantic",
-        "state_db",
         "support",
     }
     compatibility_facades = set()
@@ -69,6 +68,20 @@ def test_operator_surfaces_are_nested_under_interfaces() -> None:
     ]
 
     for old_top_level_name in ("commands", "cockpit", "ui"):
+        assert not _has_python_sources(trader_dir / old_top_level_name)
+
+
+def test_infrastructure_backends_are_nested_under_infrastructure() -> None:
+    trader_dir = Path(__file__).resolve().parents[1] / "trader"
+    infrastructure_dir = trader_dir / "infrastructure"
+
+    assert infrastructure_dir.exists()
+    assert sorted(path.name for path in infrastructure_dir.iterdir() if path.is_dir() and path.name != "__pycache__") == [
+        "queue",
+        "state_db",
+    ]
+
+    for old_top_level_name in ("queue", "state_db"):
         assert not _has_python_sources(trader_dir / old_top_level_name)
 
 
@@ -231,6 +244,27 @@ def test_operator_interface_legacy_packages_are_virtual() -> None:
     assert legacy_palette.PALETTE_LIGHT is palette.PALETTE_LIGHT
 
 
+def test_infrastructure_legacy_packages_are_virtual() -> None:
+    trader_dir = Path(__file__).resolve().parents[1] / "trader"
+
+    for legacy_dir in ("queue", "state_db"):
+        assert not _has_python_sources(trader_dir / legacy_dir)
+
+    import trader.queue as legacy_queue
+    import trader.state_db as legacy_state_db
+    from trader.infrastructure.queue.ledger import TaskLedger
+    from trader.infrastructure.state_db.connection import StateDb
+    from trader.queue.ledger import TaskLedger as LegacyTaskLedger
+    from trader.state_db.connection import StateDb as LegacyStateDb
+
+    assert getattr(legacy_queue, "__file__", None) is None
+    assert getattr(legacy_queue, "__path__", None) == []
+    assert getattr(legacy_state_db, "__file__", None) is None
+    assert getattr(legacy_state_db, "__path__", None) == []
+    assert LegacyTaskLedger is TaskLedger
+    assert LegacyStateDb is StateDb
+
+
 def test_internal_code_uses_canonical_interface_imports() -> None:
     repo_root = Path(__file__).resolve().parents[1]
     trader_dir = repo_root / "trader"
@@ -242,6 +276,47 @@ def test_internal_code_uses_canonical_interface_imports() -> None:
         "trader.ui",
     }
     forbidden_from_trader = {"cockpit", "commands", "ui"}
+
+    def _is_forbidden_module(module_name: str) -> bool:
+        return any(
+            module_name == forbidden or module_name.startswith(f"{forbidden}.")
+            for forbidden in forbidden_direct_modules
+        )
+
+    violations: list[str] = []
+    for root in checked_roots:
+        if not root.exists():
+            continue
+        for path in sorted(root.rglob("*.py")):
+            if path in ignored_files:
+                continue
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            rel_path = path.relative_to(repo_root)
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ImportFrom) and node.module and _is_forbidden_module(node.module):
+                    violations.append(f"{rel_path}: from {node.module} import ...")
+                elif isinstance(node, ast.ImportFrom) and node.module == "trader":
+                    forbidden_names = sorted(alias.name for alias in node.names if alias.name in forbidden_from_trader)
+                    if forbidden_names:
+                        violations.append(f"{rel_path}: from trader import {forbidden_names}")
+                elif isinstance(node, ast.Import):
+                    for alias in node.names:
+                        if _is_forbidden_module(alias.name):
+                            violations.append(f"{rel_path}: import {alias.name}")
+
+    assert violations == []
+
+
+def test_internal_code_uses_canonical_infrastructure_imports() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    trader_dir = repo_root / "trader"
+    checked_roots = (trader_dir, repo_root / "scripts")
+    ignored_files = {trader_dir / "__init__.py"}
+    forbidden_direct_modules = {
+        "trader.queue",
+        "trader.state_db",
+    }
+    forbidden_from_trader = {"queue", "state_db"}
 
     def _is_forbidden_module(module_name: str) -> bool:
         return any(

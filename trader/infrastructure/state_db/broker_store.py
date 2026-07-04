@@ -16,8 +16,8 @@ import logging
 from pathlib import Path
 from typing import Optional
 
-from trader.state_db.connection import StateDb
-from trader.state_db.shadow import write_json_atomic
+from trader.infrastructure.state_db.connection import StateDb
+from trader.infrastructure.state_db.shadow import write_json_atomic
 from trader.execution.contracts import Commission, Fill, Order, Position
 from trader.execution.broker import (
     NoCommissionModel,

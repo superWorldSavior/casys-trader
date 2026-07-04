@@ -8,7 +8,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from trader.state_db.connection import StateDb
+from trader.infrastructure.state_db.connection import StateDb
 
 log = logging.getLogger(__name__)
 

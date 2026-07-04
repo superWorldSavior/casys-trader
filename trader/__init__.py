@@ -104,9 +104,27 @@ _COMPAT_PACKAGES = {
     "metadata": {
         "code_version": "trader.support.metadata.code_version",
     },
+    "queue": {
+        "decide_pool": "trader.infrastructure.queue.decide_pool",
+        "ledger": "trader.infrastructure.queue.ledger",
+        "pools": "trader.infrastructure.queue.pools",
+        "shadow": "trader.infrastructure.queue.shadow",
+        "worker": "trader.infrastructure.queue.worker",
+    },
     "read_models": {
         "live_kpis": "trader.reporting.read_models.live_kpis",
         "runtime_state": "trader.reporting.read_models.runtime_state",
+    },
+    "state_db": {
+        "broker_factory": "trader.infrastructure.state_db.broker_factory",
+        "broker_store": "trader.infrastructure.state_db.broker_store",
+        "compare": "trader.infrastructure.state_db.compare",
+        "connection": "trader.infrastructure.state_db.connection",
+        "migrations": "trader.infrastructure.state_db.migrations",
+        "scheduler_store": "trader.infrastructure.state_db.scheduler_store",
+        "shadow": "trader.infrastructure.state_db.shadow",
+        "trade_plan_store": "trader.infrastructure.state_db.trade_plan_store",
+        "unit_of_work": "trader.infrastructure.state_db.unit_of_work",
     },
     "system": {
         "process_env": "trader.support.system.process_env",
@@ -123,6 +141,8 @@ _COMPAT_PACKAGE_ALIASES = {
     "agent_tools": "trader.agent.tools",
     "cockpit": "trader.interfaces.cockpit",
     "commands": "trader.interfaces.cli",
+    "queue": "trader.infrastructure.queue",
+    "state_db": "trader.infrastructure.state_db",
     "ui": "trader.interfaces.ui",
 }
 

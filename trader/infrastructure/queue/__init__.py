@@ -1,9 +1,9 @@
-"""trader.queue — file de tâches durable in-process (SQLite, threads).
+"""trader.infrastructure.queue — file de tâches durable in-process.
 
 Découple production et traitement des tâches : les producteurs enfilent sans
 bloquer ; un Worker consomme au rythme des ressources disponibles.
-Phase 0 = cœur autonome, non branché au daemon (CASYS_QUEUE_ENABLED n'existe
-pas encore).
+Le daemon peut router les décisions et les exécutions par cette file durable via
+les flags de queue.
 
 Spec : docs/superpowers/specs/2026-07-03-task-ledger-durable-queue-design.md
 
@@ -37,9 +37,9 @@ Usage minimal
 -------------
 ::
 
-    from trader.queue.ledger import TaskLedger
-    from trader.queue.pools import ResourcePools
-    from trader.queue.worker import Worker
+    from trader.infrastructure.queue.ledger import TaskLedger
+    from trader.infrastructure.queue.pools import ResourcePools
+    from trader.infrastructure.queue.worker import Worker
     import time
 
     ledger = TaskLedger("tasks.db")

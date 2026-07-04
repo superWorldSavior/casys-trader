@@ -7,7 +7,7 @@ API publique :
     compare_backends(state_dir) → dict structuré (identical: bool + diffs)
 
 CLI :
-    python -m trader.state_db.compare <state_dir>
+    python -m trader.infrastructure.state_db.compare <state_dir>
     Imprime le dict JSON (indent=2) ; exit 0 si identical, exit 1 sinon.
 
 Contrainte fondamentale : le compare est PUR (read-only).
@@ -116,8 +116,8 @@ def compare_backends(state_dir: str | Path) -> dict:
         RuntimeError: casys.db absent, sentinels manquants, ou fichier JSON requis absent.
     """
     # Imports locaux — évite dépendances circulaires et imports lourds au top-level
-    from trader.state_db.connection import open_state_db
-    from trader.state_db.trade_plan_store import row_to_plan
+    from trader.infrastructure.state_db.connection import open_state_db
+    from trader.infrastructure.state_db.trade_plan_store import row_to_plan
     from trader.planning.trade_plan import trade_plan_from_dict
 
     state_dir = Path(state_dir)
@@ -428,7 +428,7 @@ if __name__ == "__main__":
 
     if len(sys.argv) < 2:
         print(
-            "Usage: python -m trader.state_db.compare <state_dir>",
+            "Usage: python -m trader.infrastructure.state_db.compare <state_dir>",
             file=sys.stderr,
         )
         sys.exit(2)

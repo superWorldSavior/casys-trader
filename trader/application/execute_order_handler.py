@@ -32,10 +32,10 @@ import time
 from typing import TYPE_CHECKING, Callable
 
 if TYPE_CHECKING:
-    from trader.state_db.connection import StateDb
-    from trader.state_db.broker_store import SqliteBroker
-    from trader.state_db.trade_plan_store import SqliteTradePlanStore
-    from trader.queue.ledger import TaskLedger
+    from trader.infrastructure.state_db.connection import StateDb
+    from trader.infrastructure.state_db.broker_store import SqliteBroker
+    from trader.infrastructure.state_db.trade_plan_store import SqliteTradePlanStore
+    from trader.infrastructure.queue.ledger import TaskLedger
 
 log = logging.getLogger(__name__)
 
@@ -96,7 +96,7 @@ def make_execute_order_handler(
         symbol_to_close: str | None = payload.get("symbol_to_close") or None
 
         # --- Execute (broker + plan + task done — atomic) ---
-        from trader.state_db.unit_of_work import execute_order_unit  # noqa: PLC0415
+        from trader.infrastructure.state_db.unit_of_work import execute_order_unit  # noqa: PLC0415
         execute_order_unit(
             db=db,
             broker=broker,

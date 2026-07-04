@@ -92,7 +92,7 @@ from trader.execution.broker import (
     round_trip_cost,
 )
 from trader.execution.ports import CommissionModel
-from trader.state_db.broker_factory import (
+from trader.infrastructure.state_db.broker_factory import (
     bootstrap_state_backend,
     make_broker,
     make_scheduler,
@@ -2649,7 +2649,7 @@ def run_cycle(
     # decided_symbols = décisions effectives (LLM + armés).
     if os.getenv("CASYS_SHADOW_QUEUE_ENABLED", "0") == "1":
         try:
-            from trader.queue.shadow import ShadowQueueProbe
+            from trader.infrastructure.queue.shadow import ShadowQueueProbe
             _shadow_probe = ShadowQueueProbe(STATE_DIR / "shadow_queue.db")
             _shadow_result = _shadow_probe.run(
                 cycle_ts=now.isoformat(),
@@ -2672,7 +2672,7 @@ def run_cycle(
     # tables : on mesure la dérive json↔sqlite à chaud (filet de la bascule).
     if os.getenv("CASYS_STATE_BACKEND", "json").lower() == "sqlite":
         try:
-            from trader.state_db.compare import compare_backends
+            from trader.infrastructure.state_db.compare import compare_backends
             _cmp = compare_backends(STATE_DIR)
             _cmp_broker = _cmp.get("broker", {})
             _cmp_sched = _cmp.get("scheduler", {})
@@ -2882,9 +2882,9 @@ def main(
     _task_ledger = None
     _decide_pool = None
     if _queue_decide_enabled:
-        from trader.queue.ledger import TaskLedger as _TaskLedger
-        from trader.queue.pools import ResourcePools as _ResourcePools
-        from trader.queue.decide_pool import DecidePool as _DecidePool
+        from trader.infrastructure.queue.ledger import TaskLedger as _TaskLedger
+        from trader.infrastructure.queue.pools import ResourcePools as _ResourcePools
+        from trader.infrastructure.queue.decide_pool import DecidePool as _DecidePool
         from trader.application.decide_handler import make_decide_handler as _make_handler
         # NB : en mode queue, CASYS_DECISION_BATCH_PARALLELISM change de sens — il ne
         # règle plus la concurrence d'un batch mais le NOMBRE DE WORKERS persistants du
@@ -2927,12 +2927,12 @@ def main(
     _execute_ledger = None
     _execute_pool = None
     if _queue_execute_enabled:
-        from trader.state_db.connection import open_state_db as _open_exec_db  # noqa: PLC0415
-        from trader.state_db.broker_store import SqliteBroker as _ExecBroker  # noqa: PLC0415
-        from trader.state_db.trade_plan_store import SqliteTradePlanStore as _ExecPlanStore  # noqa: PLC0415
-        from trader.queue.ledger import TaskLedger as _ExecLedger  # noqa: PLC0415
-        from trader.queue.pools import ResourcePools as _ExecPools  # noqa: PLC0415
-        from trader.queue.decide_pool import DecidePool as _ExecPool  # noqa: PLC0415
+        from trader.infrastructure.state_db.connection import open_state_db as _open_exec_db  # noqa: PLC0415
+        from trader.infrastructure.state_db.broker_store import SqliteBroker as _ExecBroker  # noqa: PLC0415
+        from trader.infrastructure.state_db.trade_plan_store import SqliteTradePlanStore as _ExecPlanStore  # noqa: PLC0415
+        from trader.infrastructure.queue.ledger import TaskLedger as _ExecLedger  # noqa: PLC0415
+        from trader.infrastructure.queue.pools import ResourcePools as _ExecPools  # noqa: PLC0415
+        from trader.infrastructure.queue.decide_pool import DecidePool as _ExecPool  # noqa: PLC0415
         from trader.application.execute_order_handler import (  # noqa: PLC0415
             make_execute_order_handler as _make_exec_handler,
         )

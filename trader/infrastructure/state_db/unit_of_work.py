@@ -19,10 +19,10 @@ from dataclasses import asdict
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from trader.state_db.connection import StateDb
-    from trader.state_db.broker_store import SqliteBroker
-    from trader.state_db.trade_plan_store import SqliteTradePlanStore
-    from trader.queue.ledger import TaskLedger
+    from trader.infrastructure.state_db.connection import StateDb
+    from trader.infrastructure.state_db.broker_store import SqliteBroker
+    from trader.infrastructure.state_db.trade_plan_store import SqliteTradePlanStore
+    from trader.infrastructure.queue.ledger import TaskLedger
     from trader.execution.contracts import Fill, Order
     from trader.planning.trade_plan import TradePlan
 

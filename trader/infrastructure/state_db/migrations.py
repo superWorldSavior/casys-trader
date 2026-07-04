@@ -16,7 +16,7 @@ import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 
-from trader.state_db.connection import StateDb
+from trader.infrastructure.state_db.connection import StateDb
 
 log = logging.getLogger(__name__)
 
@@ -235,7 +235,7 @@ def import_trade_plans_from_json(db: StateDb, json_path: Path) -> None:
     plans_raw: list[dict] = raw.get("plans", [])
 
     # Imports locaux pour éviter les dépendances circulaires au top-level
-    from trader.state_db.trade_plan_store import plan_to_columns  # noqa: PLC0415
+    from trader.infrastructure.state_db.trade_plan_store import plan_to_columns  # noqa: PLC0415
     from trader.planning.trade_plan import trade_plan_from_dict  # noqa: PLC0415
 
     # 2. Import atomique dans la base (sentinel inclus dans la même transaction)

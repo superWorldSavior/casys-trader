@@ -25,8 +25,8 @@ from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Optional
 
-from trader.state_db.connection import StateDb
-from trader.state_db.shadow import write_json_atomic
+from trader.infrastructure.state_db.connection import StateDb
+from trader.infrastructure.state_db.shadow import write_json_atomic
 from trader.planning.trade_plan import TradePlan, trade_plan_from_dict
 
 log = logging.getLogger(__name__)

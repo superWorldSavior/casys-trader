@@ -44,7 +44,7 @@ Légende : ✅ couvert · 🟡 partiel / dispersé / potentiellement périmé ·
 | Contexte marché (snapshot) | `application/market_snapshot` | ✅ | archi §3.2-3.3 | — |
 | Enregistrement décision | `application/decision_recorder` | ✅ | archi §3.8, §8 | — |
 | Gate de pertinence (coût) | `planning/relevance_gate` | ✅ | archi §3.4 | D7A |
-| **File de tâches durable** | `queue/*` (ledger, pools, worker) | 🟡 | **`reference/task-queue.md`** | — Phase 0, non branché |
+| **File de tâches durable** | `infrastructure/queue/*` (ledger, pools, worker) | ✅ | **`reference/task-queue.md`** | queue paper activée |
 
 ### Actions & exécution
 | Sous-système | Package/module | Réf | Où | Décisions |
@@ -65,7 +65,7 @@ Légende : ✅ couvert · 🟡 partiel / dispersé / potentiellement périmé ·
 | Fil d'actu (news) | `market/news_feed` | ✅ | **`reference/news.md`** | — |
 | Macro | `market/macro_calendar`, `market/macro_series` | ✅ | **`reference/macro.md`** | — |
 | Cycle de vie / rotation | `runtime/ledger_rotation`, `reporting/decision_ledger` | ✅ | archi §12 | — |
-| État persistant | `state/*.jsonl`, `trade_plans.json`, `scheduler.json` | ✅ | archi §8 | — |
+| État persistant | `state/*.jsonl`, `trade_plans.json`, `scheduler.json`, `infrastructure/state_db/*` | ✅ | archi §8, `reference/task-queue.md` | — |
 
 ### Univers & régime
 | Sous-système | Package/module | Réf | Où | Décisions |
@@ -113,8 +113,8 @@ Les 5 trous prioritaires identifiés à la v2 sont comblés :
 
 **Couverture complète ✅ (2026-07-03)** — tous les sous-systèmes de la carte ont
 désormais une page `reference/` **fact-checkée** (16 pages reference + 3 how-to).
-Nouveau sous-système documenté : `queue/*` (file de tâches durable, Phase 0 —
-cœur en place, non branché au daemon). Maintenir : quand un module change, mettre
+Nouveau sous-système documenté : `infrastructure/queue/*` (file de tâches durable
+branchée au daemon en paper). Maintenir : quand un module change, mettre
 à jour sa page (lire code → éditer → re-fact-check si substantiel).
 
 Méthode : lire le code → écrire la page `reference/` (comportement/invariants/codes)

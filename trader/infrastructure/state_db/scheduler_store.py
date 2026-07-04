@@ -24,8 +24,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterable, Optional
 
-from trader.state_db.connection import StateDb
-from trader.state_db.shadow import write_json_atomic
+from trader.infrastructure.state_db.connection import StateDb
+from trader.infrastructure.state_db.shadow import write_json_atomic
 from trader.scheduling.scheduler import STALE_BACKOFF_MAX_STREAK
 
 log = logging.getLogger(__name__)

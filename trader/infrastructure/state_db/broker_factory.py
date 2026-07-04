@@ -11,7 +11,7 @@ Valeurs backend acceptées (insensibles à la casse) :
 
 Usage (daemon.py) ::
 
-    from trader.state_db.broker_factory import make_broker, make_trade_plan_store, make_scheduler
+    from trader.infrastructure.state_db.broker_factory import make_broker, make_trade_plan_store, make_scheduler
 
     broker = make_broker(
         state_dir=STATE_DIR,
@@ -69,15 +69,15 @@ def bootstrap_state_backend(
     if backend.lower() != "sqlite":
         return
 
-    from trader.state_db.connection import open_state_db
-    from trader.state_db.migrations import (
+    from trader.infrastructure.state_db.connection import open_state_db
+    from trader.infrastructure.state_db.migrations import (
         import_broker_from_json,
         import_trade_plans_from_json,
         import_scheduler_from_json,
     )
-    from trader.state_db.broker_store import SqliteBroker
-    from trader.state_db.trade_plan_store import SqliteTradePlanStore
-    from trader.state_db.scheduler_store import SqliteScheduler
+    from trader.infrastructure.state_db.broker_store import SqliteBroker
+    from trader.infrastructure.state_db.trade_plan_store import SqliteTradePlanStore
+    from trader.infrastructure.state_db.scheduler_store import SqliteScheduler
 
     db_path = state_dir / "casys.db"
     db = open_state_db(db_path)
@@ -140,9 +140,9 @@ def make_broker(
         )
 
     if backend == "sqlite":
-        from trader.state_db.connection import open_state_db
-        from trader.state_db.migrations import import_broker_from_json
-        from trader.state_db.broker_store import SqliteBroker
+        from trader.infrastructure.state_db.connection import open_state_db
+        from trader.infrastructure.state_db.migrations import import_broker_from_json
+        from trader.infrastructure.state_db.broker_store import SqliteBroker
 
         db_path = state_dir / "casys.db"
         json_path = state_dir / "broker.json"
@@ -191,9 +191,9 @@ def make_trade_plan_store(
         return TradePlanStore(state_dir / "trade_plans.json")
 
     if backend == "sqlite":
-        from trader.state_db.connection import open_state_db
-        from trader.state_db.migrations import import_trade_plans_from_json
-        from trader.state_db.trade_plan_store import SqliteTradePlanStore
+        from trader.infrastructure.state_db.connection import open_state_db
+        from trader.infrastructure.state_db.migrations import import_trade_plans_from_json
+        from trader.infrastructure.state_db.trade_plan_store import SqliteTradePlanStore
 
         db_path = state_dir / "casys.db"
         json_path = state_dir / "trade_plans.json"
@@ -244,9 +244,9 @@ def make_scheduler(
         return Scheduler(state_dir / "scheduler.json")
 
     if backend == "sqlite":
-        from trader.state_db.connection import open_state_db  # noqa: PLC0415
-        from trader.state_db.migrations import import_scheduler_from_json  # noqa: PLC0415
-        from trader.state_db.scheduler_store import SqliteScheduler  # noqa: PLC0415
+        from trader.infrastructure.state_db.connection import open_state_db  # noqa: PLC0415
+        from trader.infrastructure.state_db.migrations import import_scheduler_from_json  # noqa: PLC0415
+        from trader.infrastructure.state_db.scheduler_store import SqliteScheduler  # noqa: PLC0415
 
         db_path = state_dir / "casys.db"
         json_path = state_dir / "scheduler.json"

@@ -6,7 +6,7 @@ contenu partiel. Deux writers concurrents depuis des threads différents
 utilisent des tmp distincts → pas de collision.
 
 Usage :
-    from trader.state_db.shadow import write_json_atomic
+    from trader.infrastructure.state_db.shadow import write_json_atomic
     write_json_atomic(state_dir / "broker.json", {"cash": 100_000.0, ...})
 """
 

@@ -1,11 +1,11 @@
 # Référence — File de tâches durable (task-ledger)
 
 > **Type** : Reference (Diátaxis).
-> **Code** : primitives `queue/ledger`, `queue/pools`, `queue/worker` ; intégration `runtime/daemon`, handlers `application/decide_handler` + `application/execute_order_handler`, backend `state_db/*` (outbox).
+> **Code** : primitives `infrastructure/queue/ledger`, `infrastructure/queue/pools`, `infrastructure/queue/worker` ; intégration `runtime/daemon`, handlers `application/decide_handler` + `application/execute_order_handler`, backend `infrastructure/state_db/*` (outbox). Les anciens imports `trader.queue.*` et `trader.state_db.*` restent compatibles via alias virtuels.
 > **Statut** : ✅ **Phase 3 ACTIVÉE en paper (2026-07-04)** — les 3 flags on (`CASYS_STATE_BACKEND=sqlite`, `CASYS_QUEUE_DECIDE_ENABLED`, `CASYS_QUEUE_EXECUTE_ENABLED`), migration d'état validée, `[state-compare] identical=True`. Les chemins synchrones historiques restent présents comme fallback (flags off) jusqu'au gommage strangler. Voir la section « Pipeline » ci-dessous.
 > **Rôle** : file durable qui découple la production des tâches de leur traitement (durabilité, reprise, idempotence, backpressure).
 
-## `TaskLedger` (`queue/ledger`)
+## `TaskLedger` (`infrastructure/queue/ledger`)
 
 Persistance SQLite (WAL, `busy_timeout=5000`). Une connexion partagée
 (`check_same_thread=False`) protégée par un `threading.Lock`, sur le modèle de
@@ -50,7 +50,7 @@ timestamps = epoch ms (int).
 | `recover_on_boot(*, now_ms)` | Repasse en `pending` les tâches `running` dont `lease_expires_at < now_ms` (orphelines d'un crash). Retourne le nombre de tâches réactivées. |
 | `release_claim(*, task_id, token, now_ms)` | Annule un claim **sans consommer de tentative** (`attempts = MAX(0, attempts-1)`) — pour les resource-miss. Remet en `pending`, ne touche pas `scheduled_at`. Retourne `True` si modifié. |
 
-## `ResourcePools` (`queue/pools`)
+## `ResourcePools` (`infrastructure/queue/pools`)
 
 Bornage de concurrence par ressource nommée (`acpx` / `yahoo` / `portfolio`).
 Chaque ressource a un plafond initial (`_max`) et une limite effective courante
@@ -80,7 +80,7 @@ chaque succès incrémente `_eff` directement).
 directement à `_used`/`_eff`/`_max` (pas via `free_resources()`) pour éviter
 un deadlock.
 
-## `Worker` (`queue/worker`)
+## `Worker` (`infrastructure/queue/worker`)
 
 Boucle de traitement : claim → acquire ressource → handler → complete/fail → release.
 

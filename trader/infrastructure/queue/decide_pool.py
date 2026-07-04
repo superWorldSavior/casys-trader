@@ -18,7 +18,7 @@ import threading
 import uuid
 from typing import Callable
 
-from trader.queue.worker import Worker
+from trader.infrastructure.queue.worker import Worker
 
 log = logging.getLogger(__name__)
 

@@ -21,9 +21,9 @@ import logging
 import uuid
 from pathlib import Path
 
-from trader.queue.ledger import TaskLedger
-from trader.queue.pools import ResourcePools
-from trader.queue.worker import Worker
+from trader.infrastructure.queue.ledger import TaskLedger
+from trader.infrastructure.queue.pools import ResourcePools
+from trader.infrastructure.queue.worker import Worker
 
 log = logging.getLogger(__name__)
 
