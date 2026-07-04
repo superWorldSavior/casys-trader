@@ -114,6 +114,28 @@ def test_rotation_is_nested_under_market() -> None:
     assert not _has_python_sources(trader_dir / "rotation")
 
 
+def test_daemon_delegates_watch_schedule_glue_to_runtime_adapter() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    daemon_path = repo_root / "trader" / "runtime" / "daemon.py"
+    adapter_path = repo_root / "trader" / "runtime" / "cycle_scheduling.py"
+
+    assert adapter_path.exists()
+
+    tree = ast.parse(daemon_path.read_text(encoding="utf-8"), filename=str(daemon_path))
+    forbidden = {"cycle_schedule", "watch_scanner"}
+    violations: list[str] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ImportFrom):
+            continue
+        if node.module != "trader.application":
+            continue
+        for alias in node.names:
+            if alias.name in forbidden:
+                violations.append(alias.name)
+
+    assert violations == []
+
+
 def test_foundation_packages_do_not_depend_on_higher_layers() -> None:
     repo_root = Path(__file__).resolve().parents[1]
     trader_dir = repo_root / "trader"

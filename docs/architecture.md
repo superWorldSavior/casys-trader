@@ -10,7 +10,7 @@
 > `interfaces-boundary`, `infrastructure-boundary`,
 > `flat-compat-facades`, `domain-semantic-boundary`,
 > `planning-scheduling-boundary`, `agent-learnings-boundary`,
-> `market-rotation-boundary`).
+> `market-rotation-boundary`, `wake-watch-runtime-glue`).
 
 ---
 
@@ -75,6 +75,7 @@ les utilisaient :
 | `trader/support/` | Helpers support stables : config (`pool`, `portfolio`), metadata git/code version, process env | compat virtuelle : `trader.config.*`, `trader.metadata.*`, `trader.system.*` |
 | `trader/reporting/` | Ledger décision, raisons, audit ex-post, attribution, stats, tool usage, meta-performance, read models | analyse/rendu ex-post ; les side effects CLI vivent dans `interfaces/cli/` |
 | `trader/interfaces/cli/` | Entry points CLI canoniques (`stats`, `attribution`, `tool_usage`, `tui`) | compat virtuelle : `python -m trader.commands.stats`, `python -m trader.stats`, etc. |
+| `trader/runtime/cycle_scheduling.py` | Adaptateur runtime wake/watch : délègue la politique à `application/cycle_schedule.py` et `application/watch_scanner.py`, puis émet events/logs et compat wrappers | évite que `daemon.py` réimporte directement la glue applicative |
 | `trader/runtime/` | Daemon, CLI, logging, PID file, IB attach, rotation ledger, writers d'état fichier | compat virtuelle : `python -m trader.daemon`, `python -m trader.cli` |
 | `trader/reporting/read_models/live_kpis.py` | Projection live des KPI depuis `state/` pour daemon/cockpit/TUI | `reporting.stats` rend les KPI ; `interfaces.cli.stats` possède la CLI |
 | `trader/reporting/read_models/runtime_state.py` | Lecture tolérante des fichiers `state/` pour TUI/cockpit | compat virtuelle : `trader.read_models.*` |

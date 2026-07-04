@@ -35,7 +35,6 @@ from trader.application import (
     amend_exit as amend_exit_service,
     armed_plans,
     confidence_feedback,
-    cycle_schedule,
     decision_entries,
     decision_watches,
     execution_eligibility as execution_eligibility_service,
@@ -49,7 +48,6 @@ from trader.application import (
     planner_batch,
     reference_volatility as reference_volatility_service,
     risk_capacity,
-    watch_scanner,
 )
 from trader.application.decision_recorder import DecisionRecorder
 from trader.execution.risk import RiskGate, RiskLimits
@@ -80,7 +78,7 @@ from trader.planning.trade_plan import (
 from trader.support.metadata import code_version
 from trader.reporting.read_models import live_kpis
 from trader.reporting import attribution, decision_ledger, meta_performance
-from trader.runtime import ledger_rotation
+from trader.runtime import cycle_scheduling, ledger_rotation
 from trader.runtime.ib_attach import IBAttachBackoff
 from trader.runtime.state_writer import RuntimeStateWriter
 from trader.planning import scheduler
@@ -301,7 +299,7 @@ def _bounded_wake_minutes(
     chaque poll, indépendamment). Les flags --min/--max-wake-minutes réactivent
     un bornage si besoin.
     """
-    return cycle_schedule.bounded_wake_minutes(value, minimum=minimum, maximum=maximum)
+    return cycle_scheduling.bounded_wake_minutes(value, minimum=minimum, maximum=maximum)
 
 
 def _stale_backoff_wake_minutes(streak: int, *, default_wake_minutes: float) -> float:
@@ -321,7 +319,7 @@ def _stale_backoff_wake_minutes(streak: int, *, default_wake_minutes: float) -> 
       STALE_BACKOFF_MAX_MINUTES = 120.0
       STALE_BACKOFF_MAX_STREAK = 8
     """
-    return cycle_schedule.stale_backoff_wake_minutes(
+    return cycle_scheduling.stale_backoff_wake_minutes(
         streak,
         default_wake_minutes=default_wake_minutes,
     )
@@ -333,7 +331,7 @@ def _ensure_default_wake(
     now: datetime,
     default_wake_minutes: float,
 ) -> None:
-    cycle_schedule.ensure_default_wake(
+    cycle_scheduling.ensure_default_wake(
         sched,
         now=now,
         default_wake_minutes=default_wake_minutes,
@@ -348,7 +346,7 @@ def _select_due_symbols(
     bootstrap: bool,
     now: datetime | None = None,
 ) -> list[str]:
-    return cycle_schedule.select_due_symbols(
+    return cycle_scheduling.select_due_symbols(
         symbols,
         sched=sched,
         once=once,
@@ -930,7 +928,7 @@ def _apply_planned_exits(
 
 
 def _exit_watch_cooldown_elapsed(watch: dict, *, now: datetime) -> bool:
-    return watch_scanner.exit_watch_cooldown_elapsed(watch, now=now)
+    return cycle_scheduling.exit_watch_cooldown_elapsed(watch, now=now)
 
 
 def _scan_exit_watches(
@@ -943,7 +941,7 @@ def _scan_exit_watches(
     bars_interval: str,
     data_source: object,
 ) -> list[dict]:
-    enriched = watch_scanner.scan_exit_watches(
+    return cycle_scheduling.scan_exit_watches(
         plan_store=plan_store,
         bars_by_symbol=bars_by_symbol,
         symbols=symbols,
@@ -953,17 +951,9 @@ def _scan_exit_watches(
         data_source=data_source,
         is_connection_market_error=_is_connection_market_error,
         log_warning=log.warning,
+        append_event=_append_event,
+        log_cycle_progress=_log_cycle_progress,
     )
-    for event in enriched:
-        _append_event(
-            "exit_watch_triggered",
-            symbol=event["symbol"],
-            plan_id=event["plan_id"],
-            watch_id=event["watch_id"],
-        )
-    if enriched:
-        _log_cycle_progress("[exit_watch] triggered=%d symbols=%s", len(enriched), [item["symbol"] for item in enriched])
-    return enriched
 
 
 def _scan_indicator_watches(
@@ -973,25 +963,16 @@ def _scan_indicator_watches(
     now: datetime,
     data_source: object,
 ) -> list[dict]:
-    triggered = watch_scanner.scan_indicator_watches(
+    return cycle_scheduling.scan_indicator_watches(
         symbols,
         sched=sched,
         now=now,
         data_source=data_source,
         is_connection_market_error=_is_connection_market_error,
         log_warning=log.warning,
+        append_event=_append_event,
+        log_cycle_progress=_log_cycle_progress,
     )
-
-    for event in triggered:
-        _append_event(
-            "indicator_watch_triggered",
-            symbol=event["symbol"],
-            watch_id=event["watch_id"],
-            on_trigger=event.get("on_trigger"),
-        )
-    if triggered:
-        _log_cycle_progress("[indicator_watch] triggered=%d symbols=%s", len(triggered), [item["symbol"] for item in triggered])
-    return triggered
 
 
 def _context_request_summary(
@@ -1021,7 +1002,7 @@ def _earliest_active_watch_expiry_iso(
     réveil immédiat) ou expire — pas retomber sur le défaut global 30 min et
     être re-décidé en aveugle (finding 2026-07-02, confirmé Codex).
     """
-    return cycle_schedule.earliest_active_watch_expiry_iso(sched, sym, now=now)
+    return cycle_scheduling.earliest_active_watch_expiry_iso(sched, sym, now=now)
 
 
 def _resolve_wake_event(
@@ -1040,7 +1021,7 @@ def _resolve_wake_event(
     redécider) — distinct de propose_indicator_watch = PLAN ARMÉ (exécution
     automatique sans reconsulter).
     """
-    return cycle_schedule.resolve_wake_event(
+    return cycle_scheduling.resolve_wake_event(
         event,
         sym,
         now,
@@ -1060,7 +1041,7 @@ def _apply_decision_schedule(
     pending_indicator_watch: dict | None,
     entry: dict,
 ) -> None:
-    cycle_schedule.apply_decision_schedule(
+    cycle_scheduling.apply_decision_schedule(
         sched=sched,
         sym=sym,
         now=now,
@@ -3143,26 +3124,12 @@ def main(
                     log.exception("rotation tick (D10) échouée")
                 symbols = _load_yaml(ROOT / "config" / "universe.yaml")["symbols"]
                 sched.reconcile_universe(symbols)
-                # Expiration TTL : plus jamais silencieuse. On retire les veilles
-                # expirées AVANT le scan et on trace chacune (le réveil du symbole
-                # était déjà calé sur le TTL → l'agent re-décide ce cycle).
-                for _exp in sched.pop_expired_indicator_watches(now=loop_now):
-                    _esym = str(_exp.get("symbol"))
-                    _eid = str(_exp.get("id") or "")
-                    _eot = _exp.get("on_trigger")
-                    _append_event(
-                        "armed_plan_expired" if _eot == "EXECUTE_ORDER" else "indicator_watch_expired",
-                        symbol=_esym,
-                        watch_id=_eid,
-                        on_trigger=_eot,
-                        expires_at=_exp.get("expires_at"),
-                    )
-                    log.info(
-                        "[watch] expirée %s %s on_trigger=%s (TTL atteint → réveil déjà calé, l'agent re-décide)",
-                        _esym,
-                        _eid,
-                        _eot,
-                    )
+                cycle_scheduling.expire_indicator_watches(
+                    sched,
+                    now=loop_now,
+                    append_event=_append_event,
+                    log_info=log.info,
+                )
                 indicator_triggers = (
                     []
                     if args.once or bootstrap
