@@ -33,6 +33,7 @@ from trader.agent import memory as agent_memory
 from trader.agent.context import build_market_cockpit, resolve_indicator_requests
 from trader.application import (
     amend_exit as amend_exit_service,
+    armed_plans,
     confidence_feedback,
     cycle_schedule,
     execution_eligibility as execution_eligibility_service,
@@ -65,10 +66,7 @@ from trader.market.gross_priority import PriorityItem, gross_execution_order
 from trader.market.ib_source import IBDataSource, connect_ib
 from trader.market import news_feed
 from trader.planning.exit_engine import evaluate_plan
-from trader.planning.indicator_watch import (
-    armed_order_price_coherent,
-    build_indicator_watch,
-)
+from trader.planning.indicator_watch import build_indicator_watch
 from trader.planning.trade_plan import (
     InvalidExitPlanError,
     TradePlan,
@@ -1557,103 +1555,30 @@ def run_cycle(
     # LLM — le scénario a été validé à l'armement, le gate de risque déterministe
     # reste le fusible à l'exécution. Annulation si le prix au déclenchement a
     # déjà franchi le hard_stop (position instantanément stoppable) ou si stale.
-    armed_decisions: dict[str, codex_client.Decision] = {}
-    armed_plan_ids: dict[str, str] = {}
-    armed_plan_orders: dict[str, dict] = {}
-    stale_armed_plans: dict[str, dict] = {}
-    armed_reference_volatilities: dict[str, float | None] = {}
-    # Conflit : plusieurs scénarios armés du MÊME symbole déclenchés au même
-    # cycle = ambiguïté — on n'exécute pas arbitrairement, le planificateur
-    # arbitre (les triggers annotés restent dans son contexte).
-    _armed_by_symbol: dict[str, list[dict]] = {}
-    for trigger in indicator_triggers:
-        if str(trigger.get("on_trigger")) == "EXECUTE_ORDER" and isinstance(trigger.get("order"), dict):
-            _armed_by_symbol.setdefault(str(trigger.get("symbol")), []).append(trigger)
-    _armed_conflicts = {sym for sym, items in _armed_by_symbol.items() if len(items) > 1}
-    for sym in _armed_conflicts:
-        plan_ids = [str(t.get("watch_id") or "") for t in _armed_by_symbol[sym]]
-        _log_cycle_progress("[armed_plan] %s conflit (%d plans déclenchés) — réveil planificateur", sym, len(plan_ids))
-        _append_event("armed_plan_conflict", symbol=sym, plan_ids=plan_ids)
-        for t in _armed_by_symbol[sym]:
-            t["armed_conflict"] = True
-    _positions_snapshot = broker.positions() if _armed_by_symbol else {}
-    for sym, sym_triggers in _armed_by_symbol.items():
-        if sym in _armed_conflicts or sym not in symbols_to_decide:
-            continue
-        trigger = sym_triggers[0]
-        order = trigger["order"]
-        plan_id = str(trigger.get("watch_id") or "")
-        position = _positions_snapshot.get(sym)
-        cancel_reason = None
-        if sym in stale_market_data or sym not in prices:
-            cancel_reason = "armed_plan_cancelled:stale"
-        elif position is not None and position.quantity:
-            # position déjà ouverte : un plan d'OUVERTURE armé avant ne doit pas
-            # s'empiler mécaniquement — le planificateur re-décide (review Codex)
-            cancel_reason = "armed_plan_cancelled:position_exists"
-        else:
-            intent_side = {"OPEN_LONG": "LONG", "OPEN_SHORT": "SHORT"}.get(str(order.get("intent")))
-            if intent_side is None:
-                cancel_reason = "armed_plan_cancelled:exit_unresolved:side_unsupported"
-            else:
-                ref_vol = _reference_volatility_for_symbol(
-                    sym,
-                    entry_price=prices[sym],
-                    cockpit=cockpit,
-                    tradable_bars_by_symbol=tradable_bars_by_symbol,
-                )
-                try:
-                    resolved_exit_plan, trace = resolve_exit_plan(
-                        order.get("exit_plan"),
-                        entry_price=prices[sym],
-                        side=intent_side,  # type: ignore[arg-type]
-                        reference_volatility=ref_vol,
-                        bars=tradable_bars_by_symbol.get(sym),
-                    )
-                except InvalidExitPlanError as exc:
-                    cancel_reason = f"armed_plan_cancelled:exit_unresolved:{exc}"
-                else:
-                    order = {**order, "exit_plan": resolved_exit_plan}
-                    trigger["order"] = order
-                    armed_reference_volatilities[sym] = ref_vol
-                    _append_event(
-                        "armed_plan_resolved",
-                        symbol=sym,
-                        plan_id=plan_id,
-                        trace=trace,
-                        exit_plan=order.get("exit_plan"),
-                    )
-                    if not armed_order_price_coherent(order, price=prices[sym]):
-                        cancel_reason = "armed_plan_cancelled:stop_incoherent"
-        if cancel_reason is not None:
-            # Scénario invalidé = événement : on n'exécute pas en aveugle, on
-            # réveille le planificateur AVEC le contexte (trigger annoté), il
-            # re-décide (re-armer autrement, ou laisser).
-            _log_cycle_progress("[armed_plan] %s %s plan=%s — réveil planificateur", sym, cancel_reason, plan_id)
-            _append_event(
-                "armed_plan_cancelled",
-                symbol=sym,
-                plan_id=plan_id,
-                reason=cancel_reason,
-                exit_plan=order.get("exit_plan"),
-            )
-            trigger["armed_cancelled"] = cancel_reason
-            if cancel_reason == "armed_plan_cancelled:stale":
-                stale_armed_plans[sym] = {"id": plan_id, "order": dict(order)}
-            continue
-        armed_decisions[sym] = codex_client.Decision(
-            symbol=sym,
-            action=str(order["action"]),
-            quantity=float(order["qty"]),
-            confidence=float(order["confidence"]),
-            rationale=f"armed_plan:{plan_id} — {order.get('rationale') or ''}".strip(" —"),
-            intent=str(order["intent"]),
-            exit_plan=order.get("exit_plan"),
-            decision_reason_code="ARMED_PLAN",
-        )
-        armed_plan_ids[sym] = plan_id
-        armed_plan_orders[sym] = dict(order)
-        _log_cycle_progress("[armed_plan] %s déclenché plan=%s — exécution sans LLM", sym, plan_id)
+    _has_armed_triggers = any(
+        str(trigger.get("on_trigger")) == "EXECUTE_ORDER" and isinstance(trigger.get("order"), dict)
+        for trigger in indicator_triggers
+    )
+    armed_resolution = armed_plans.resolve_armed_plan_triggers(
+        indicator_triggers=indicator_triggers,
+        symbols_to_decide=symbols_to_decide,
+        prices=prices,
+        stale_market_data=stale_market_data,
+        positions=broker.positions() if _has_armed_triggers else {},
+        cockpit=cockpit,
+        tradable_bars_by_symbol=tradable_bars_by_symbol,
+        reference_volatility_for_symbol=_reference_volatility_for_symbol,
+    )
+    for progress in armed_resolution.progress_logs:
+        _log_cycle_progress(progress.message, *progress.args)
+    for event in armed_resolution.events:
+        _append_event(event.name, **event.payload)
+
+    armed_decisions = armed_resolution.decisions
+    armed_plan_ids = armed_resolution.plan_ids
+    armed_plan_orders = armed_resolution.plan_orders
+    stale_armed_plans = armed_resolution.stale_plans
+    armed_reference_volatilities = armed_resolution.reference_volatilities
     # les symboles armés ont déjà leur décision : pas d'appel LLM, pas de
     # relevance_gate. Le RiskGate déterministe reste appliqué plus bas.
     decidable = [s for s in decidable if s not in armed_decisions]

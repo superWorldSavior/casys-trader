@@ -38,6 +38,7 @@ les utilisaient :
 | Zone | Rôle | Notes |
 |---|---|---|
 | `trader/application/amend_exit.py` | Application fail-safe des amendements de plan ouvert demandés par l'agent | contrat `Protocol` local pour le store, le daemon conserve un wrapper historique |
+| `trader/application/armed_plans.py` | Résolution applicative des triggers `EXECUTE_ORDER` en décisions armées ou réveils planificateur | contrats `Protocol` locaux pour position/volatilité ; le daemon conserve logs et événements |
 | `trader/application/planner_batch.py` | Batch LLM, budget modèle, tournée d'outils, REQUEST_CONTEXT | appelé via `daemon._batch_decide()` |
 | `trader/application/market_snapshot.py` | Barres runtime/daily/exit, fraîcheur, FX, eligibility, tradable maps | retourne `MarketSnapshot`, le daemon l'unpack |
 | `trader/application/decision_recorder.py` | Enrichissement décision, ledger, report, status, event, recall traces | source durable : `state/decisions.jsonl` |
@@ -236,7 +237,9 @@ ou revue périodique garantie (4 h). Sinon → `quiet_gate` (HOLD sans appel).
 ### 3.5 Plans armés — exécution sans LLM (D7 étage B)
 
 Les `indicator_watch` à `on_trigger: EXECUTE_ORDER` portent un `order` complet
-(intent, qty, confidence, exit_plan). Au déclenchement (`trader/runtime/daemon.py`) :
+(intent, qty, confidence, exit_plan). Au déclenchement,
+`trader/application/armed_plans.py` résout le cas d'usage et le daemon émet les
+logs/événements retournés :
 1. `resolve_exit_plan()` — résolution late-binding du stop/TP sur vol fraîche (D11)
 2. `armed_order_price_coherent()` — vérif que le prix n'a pas déjà franchi le stop
 3. Si conflit multi-scénarios même symbole → réveil planificateur, pas d'exécution
