@@ -1,6 +1,6 @@
-"""Boîte à outils de l'agent — primitives composables, contrats étroits.
+"""Adapters et façades legacy du runtime agent.
 
-Chaque module fait UNE chose et expose une interface stable que l'agent runtime
-manipule. Les implémentations (data, exécution) sont swappables sans toucher au
-reste (ex. SimBroker -> IB).
+Les nouveaux imports internes doivent privilégier les packages canoniques
+(`execution/`, `market/`, `planning/`, etc.) quand ils existent. Ce package
+conserve les adapters encore en place et les façades de compatibilité.
 """

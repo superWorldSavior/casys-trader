@@ -1,7 +1,7 @@
 # Référence — Exécution : admission, budget gross, broker, portefeuille
 
 > **Type** : Reference (Diátaxis).
-> **Code** : `application/order_admission`, `market/gross_priority`, `tools/execution`, `tools/portfolio`
+> **Code** : `application/order_admission`, `market/gross_priority`, `execution/broker`, `tools/portfolio`
 > **Rôle** : le chemin d'un ordre approuvé jusqu'au fill, et la vue portefeuille.
 
 Après la décision LLM et le [risk gate](risk-gate.md), un ordre passe par :
@@ -29,7 +29,7 @@ quand plusieurs ordres se présentent au même cycle et que le plafond d'exposit
 brute (`max_gross_exposure`) est contraint, l'ordre de passage est fixé (pas de
 biais d'itération). Cf. historique `git log` (design gross-budget-allocator livré).
 
-## Broker / passage d'ordres — `tools/execution`
+## Broker / passage d'ordres — `execution/broker`
 
 Modèle d'ordre + commissions.
 
@@ -43,6 +43,9 @@ Modèle d'ordre + commissions.
 
 Le modèle de commission est sélectionné par config (`TRADER_COMMISSION_MODEL`,
 défaut `ibkr`). Les frais rendent le P&L **net** (cf. conscience-frais, `be_ref_bps`).
+
+`tools/execution` reste une façade de compatibilité pour les imports historiques.
+Les imports internes nouveaux doivent viser `execution/broker`.
 
 ## Portefeuille — `tools/portfolio`
 

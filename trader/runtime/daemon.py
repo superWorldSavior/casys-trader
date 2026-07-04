@@ -62,7 +62,7 @@ from trader.reporting import attribution, decision_ledger, meta_performance, sta
 from trader.runtime import ledger_rotation
 from trader.runtime.ib_attach import IBAttachBackoff
 from trader.tools import market, memory as memory_mod, news_feed, portfolio, scheduler
-from trader.tools.execution import (
+from trader.execution.broker import (
     CommissionModel,
     Order,
     SimBroker,
@@ -3069,7 +3069,7 @@ def run_cycle(
                     _exec_result = _exec_task.get("result")
                     if _exec_result:
                         try:
-                            from trader.tools.execution import Fill as _Fill  # noqa: PLC0415
+                            from trader.execution.broker import Fill as _Fill  # noqa: PLC0415
                             fill = _Fill(**json.loads(_exec_result))
                         except Exception as _fill_exc:  # noqa: BLE001
                             log.warning("[queue_execute] désérialisation fill sym=%s: %s", sym, _fill_exc)

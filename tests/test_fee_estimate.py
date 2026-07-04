@@ -7,7 +7,7 @@ devise (`fee_rt`) et le seuil de rentabilité en points de base (`be_bps`).
 
 from __future__ import annotations
 
-from trader.tools.execution import (
+from trader.execution.broker import (
     IbkrCommissionModel,
     NoCommissionModel,
     round_trip_cost,

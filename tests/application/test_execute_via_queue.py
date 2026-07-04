@@ -28,7 +28,7 @@ from trader.state_db.broker_store import SqliteBroker
 from trader.state_db.connection import StateDb
 from trader.state_db.migrations import import_broker_from_json, import_trade_plans_from_json
 from trader.state_db.trade_plan_store import SqliteTradePlanStore
-from trader.tools.execution import Fill
+from trader.execution.broker import Fill
 
 
 # ---------------------------------------------------------------------------
@@ -438,7 +438,7 @@ class TestFailClosed:
         fill = None
         if _exec_result:  # None → branche ignorée, fill reste None
             try:
-                from trader.tools.execution import Fill as _Fill  # noqa: PLC0415
+                from trader.execution.broker import Fill as _Fill  # noqa: PLC0415
                 fill = _Fill(**json.loads(_exec_result))
             except Exception:  # noqa: BLE001
                 pass
@@ -462,7 +462,7 @@ class TestFlagOff:
     def test_submit_synchrone_when_flag_off(self, tmp_path: Path) -> None:
         """Sans queue, broker.submit est appelé directement (aucune tâche enfilée)."""
         db, broker, plan_store, ledger = _make_stack(tmp_path)
-        from trader.tools.execution import Order
+        from trader.execution.broker import Order
 
         cash_before = broker.cash()
         order = Order(symbol="AAPL", side="BUY", quantity=5.0)

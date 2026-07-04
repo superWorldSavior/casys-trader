@@ -7,7 +7,7 @@ import pytest
 from trader.runtime import daemon
 from trader.agent.client import Decision
 from trader.agent_protocol.parsing import parse_batch
-from trader.tools.execution import Order, SimBroker
+from trader.execution.broker import Order, SimBroker
 from trader.tools.market import Bar
 from trader.tools.scheduler import Scheduler
 from trader.planning.trade_plan import InvalidExitPlanError, TradePlanStore, create_trade_plan, resolve_exit_plan
@@ -2407,7 +2407,7 @@ class TestExitChecks5mBars:
     """Checks de sortie affinés sur barres 5m pour les symboles avec plan ouvert."""
 
     def _setup_state(self, tmp_path, state_dir, *, opened_at: str, symbol: str = "SPY") -> None:
-        from trader.tools.execution import Order, SimBroker
+        from trader.execution.broker import Order, SimBroker
         from trader.planning.trade_plan import TradePlanStore, create_trade_plan
         broker = SimBroker(state_dir / "broker.json", starting_cash=100_000)
         broker.submit(Order(symbol, "BUY", 10.0), 100.0, opened_at, dry_run=False)
@@ -2569,7 +2569,7 @@ class TestExitChecks5mBars:
         now = datetime(2026, 6, 10, 14, 30, tzinfo=timezone.utc)
 
         # SPY : plan LONG, stop 95, barre 5m low=94.5 → déclenché, interval='5m'
-        from trader.tools.execution import Order, SimBroker
+        from trader.execution.broker import Order, SimBroker
         from trader.planning.trade_plan import TradePlanStore, create_trade_plan
         broker = SimBroker(state_dir / "broker.json", starting_cash=100_000)
         broker.submit(Order("SPY", "BUY", 10.0), 100.0, opened_at, dry_run=False)
@@ -2630,7 +2630,7 @@ class TestExitChecks5mValidation:
     """MAJOR 1 — Validation des barres 5m avant substitution."""
 
     def _setup_long_spy(self, state_dir, *, opened_at: str) -> None:
-        from trader.tools.execution import Order, SimBroker
+        from trader.execution.broker import Order, SimBroker
         from trader.planning.trade_plan import TradePlanStore, create_trade_plan
         broker = SimBroker(state_dir / "broker.json", starting_cash=100_000)
         broker.submit(Order("SPY", "BUY", 10.0), 100.0, opened_at, dry_run=False)
@@ -2724,7 +2724,7 @@ class TestExitChecks5mFreshness:
     """MAJOR 2 — Fraîcheur des barres 5m avant substitution."""
 
     def _setup_long_spy(self, state_dir, *, opened_at: str) -> None:
-        from trader.tools.execution import Order, SimBroker
+        from trader.execution.broker import Order, SimBroker
         from trader.planning.trade_plan import TradePlanStore, create_trade_plan
         broker = SimBroker(state_dir / "broker.json", starting_cash=100_000)
         broker.submit(Order("SPY", "BUY", 10.0), 100.0, opened_at, dry_run=False)
@@ -2793,7 +2793,7 @@ class TestExitChecks5mAggregation:
     """MAJOR 3 — Agrégation high/low sur fenêtre de barres 5m (pas seulement la dernière)."""
 
     def _setup_long_spy(self, state_dir, *, opened_at: str, stop: float = 95.0) -> None:
-        from trader.tools.execution import Order, SimBroker
+        from trader.execution.broker import Order, SimBroker
         from trader.planning.trade_plan import TradePlanStore, create_trade_plan
         broker = SimBroker(state_dir / "broker.json", starting_cash=100_000)
         broker.submit(Order("SPY", "BUY", 10.0), 100.0, opened_at, dry_run=False)
@@ -2893,7 +2893,7 @@ class TestExitChecks5mMinor:
     """MINOR 4 — Tests complémentaires de robustesse des checks 5m."""
 
     def _setup_long_spy(self, state_dir, *, opened_at: str, stop: float = 95.0) -> None:
-        from trader.tools.execution import Order, SimBroker
+        from trader.execution.broker import Order, SimBroker
         from trader.planning.trade_plan import TradePlanStore, create_trade_plan
         broker = SimBroker(state_dir / "broker.json", starting_cash=100_000)
         broker.submit(Order("SPY", "BUY", 10.0), 100.0, opened_at, dry_run=False)

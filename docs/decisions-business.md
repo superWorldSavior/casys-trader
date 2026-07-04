@@ -122,7 +122,7 @@ Source de vérité : `docs/decisions/registre-decisions-metier.md`.
 
 ## 4. Frais & break-even
 
-Modèle de frais IBKR simulé (`tools/execution.py`, `CommissionModel`). Le break-even
+Modèle de frais IBKR simulé (`execution/broker.py`, `CommissionModel`). Le break-even
 en bps (`be_ref_bps`) et le coût aller-retour (`rtrip_bps`) pour un ordre de référence
 = `max_order_value` sont injectés dans le cockpit — l'agent peut comparer l'amplitude
 attendue au coût avant de scalper.

@@ -8,7 +8,7 @@ import pytest
 from trader.runtime import daemon
 from trader.agent.client import Decision
 from trader.planning.trade_plan import TradePlanStore
-from trader.tools.execution import SimBroker
+from trader.execution.broker import SimBroker
 from trader.tools.market import Bar
 from trader.tools.scheduler import Scheduler
 
@@ -336,7 +336,7 @@ def test_plan_arme_sur_position_existante_reveille_le_planificateur(
 ) -> None:
     # une position existe déjà : pas d'exécution mécanique d'un plan d'OUVERTURE
     # potentiellement périmé — le planificateur re-décide (review Codex).
-    from trader.tools.execution import Order
+    from trader.execution.broker import Order
 
     _runtime_config(tmp_path)
     state_dir = tmp_path / "state"

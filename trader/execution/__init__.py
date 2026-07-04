@@ -1,3 +1,3 @@
-"""Execution-side safety gates and order constraints."""
+"""Execution-side broker primitives, safety gates, and order constraints."""
 
-__all__ = ["risk"]
+__all__ = ["broker", "risk"]

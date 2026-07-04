@@ -3,7 +3,7 @@ import math
 import pytest
 
 from trader.execution.risk import RiskGate, RiskLimits
-from trader.tools.execution import Order
+from trader.execution.broker import Order
 
 
 def _gate(*, max_risk_per_trade_pct: float = 0.01) -> RiskGate:
@@ -440,7 +440,7 @@ def test_check_fx_rate_converts_order_value_to_usd() -> None:
     TWD : qty=101, price=870, fx_rate=0.031 → order_value_usd ≈ 2727 < 10000 → APPROVED.
     Sans conversion (fx_rate=1.0) : order_value_native = 101*870 = 87870 > 10000 → REJECTED.
     """
-    from trader.tools.execution import Order  # noqa: PLC0415
+    from trader.execution.broker import Order  # noqa: PLC0415
     gate = _gate_usd(max_order_value=10_000.0)
 
     order = Order(symbol="2379.TW", side="BUY", quantity=101.0)

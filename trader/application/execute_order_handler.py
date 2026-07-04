@@ -78,7 +78,7 @@ def make_execute_order_handler(
         payload = json.loads(task["payload"])
 
         # --- Decode order ---
-        from trader.tools.execution import Order  # import local — pas de circular dep
+        from trader.execution.broker import Order  # import local — pas de circular dep
         order_raw = payload["order"]
         order = Order(
             symbol=str(order_raw["symbol"]),
@@ -97,7 +97,7 @@ def make_execute_order_handler(
 
         # --- Execute (broker + plan + task done — atomic) ---
         from trader.state_db.unit_of_work import execute_order_unit  # noqa: PLC0415
-        fill = execute_order_unit(
+        execute_order_unit(
             db=db,
             broker=broker,
             plan_store=plan_store,

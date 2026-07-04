@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 
 from trader.runtime import daemon
 from trader.agent.client import Decision
-from trader.tools.execution import IbkrCommissionModel
+from trader.execution.broker import IbkrCommissionModel
 from trader.tools.market import Bar
 from trader.tools.scheduler import Scheduler
 

@@ -72,7 +72,7 @@ def build_positions_fn(state_dir: str | Path) -> Callable[[], dict]:
             # On retourne {} proprement plutôt que de créer un fichier fantôme.
             if not (state_dir / "broker.json").exists():
                 return {}
-            from trader.tools.execution import SimBroker
+            from trader.execution.broker import SimBroker
 
             broker = SimBroker(state_dir / "broker.json")
             return broker.positions()

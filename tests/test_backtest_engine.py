@@ -1,6 +1,6 @@
 from trader.agent.client import Decision
 from trader.tools.market import Bar
-from trader.tools.execution import IbkrCommissionModel
+from trader.execution.broker import IbkrCommissionModel
 
 from backtest.engine import run_backtest
 

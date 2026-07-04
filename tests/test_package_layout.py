@@ -130,6 +130,49 @@ def test_tool_primitive_imports_are_compatibility_aliases() -> None:
     assert LegacySide == Side
 
 
+def test_execution_broker_imports_are_canonical_with_tools_compatibility() -> None:
+    from trader.execution.broker import (
+        Broker,
+        Fill,
+        IbkrCommissionModel,
+        NoCommissionModel,
+        Order,
+        SimBroker,
+    )
+    from trader.tools.execution import Broker as LegacyBroker
+    from trader.tools.execution import Fill as LegacyFill
+    from trader.tools.execution import IbkrCommissionModel as LegacyIbkrCommissionModel
+    from trader.tools.execution import NoCommissionModel as LegacyNoCommissionModel
+    from trader.tools.execution import Order as LegacyOrder
+    from trader.tools.execution import SimBroker as LegacySimBroker
+
+    assert LegacyBroker is Broker
+    assert LegacyFill is Fill
+    assert LegacyIbkrCommissionModel is IbkrCommissionModel
+    assert LegacyNoCommissionModel is NoCommissionModel
+    assert LegacyOrder is Order
+    assert LegacySimBroker is SimBroker
+
+
+def test_execution_package_does_not_depend_on_tools_package() -> None:
+    trader_dir = Path(__file__).resolve().parents[1] / "trader"
+    execution_dir = trader_dir / "execution"
+
+    violations: list[str] = []
+    for path in sorted(execution_dir.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        rel_path = path.relative_to(trader_dir.parent)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module and node.module.startswith("trader.tools"):
+                violations.append(f"{rel_path}: from {node.module} import ...")
+            elif isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name.startswith("trader.tools"):
+                        violations.append(f"{rel_path}: import {alias.name}")
+
+    assert violations == []
+
+
 def test_agent_protocol_prompts_do_not_import_agent_context() -> None:
     repo_root = Path(__file__).resolve().parents[1]
     code = (

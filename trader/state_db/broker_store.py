@@ -1,6 +1,6 @@
 """SqliteBroker — Broker paper sur substrat SQLite.
 
-Implémente le Protocol Broker (trader/tools/execution.py) avec StateDb comme
+Implémente le Protocol Broker (trader/execution/broker.py) avec StateDb comme
 backend. L'état est déjà présent dans les tables (via import_broker_from_json)
 avant l'instanciation — pas de starting_cash ici.
 
@@ -18,7 +18,7 @@ from typing import Optional
 
 from trader.state_db.connection import StateDb
 from trader.state_db.shadow import write_json_atomic
-from trader.tools.execution import (
+from trader.execution.broker import (
     Commission,
     Fill,
     NoCommissionModel,

@@ -45,7 +45,7 @@ les utilisaient :
 | `trader/agent_tools/` | Package des outils domaine lecture seule | `registry.TOOL_REGISTRY` assemble 9 handlers |
 | `trader/domain/` | Primitives neutres (`Bar`, `MarketError`, `Side`) | évite que `market`/`planning` importent `tools` |
 | `trader/planning/` | Plans de trade, veilles, exit engine, gate de pertinence | compat : `trader.trade_plan`, `trader.indicator_watch`, `trader.exit_engine`, `trader.relevance_gate` |
-| `trader/execution/risk.py` | RiskGate et limites d'exposition | compat : `trader.risk` |
+| `trader/execution/` | Broker paper, primitives d'ordre/fill, commissions, RiskGate | compat : `trader.tools.execution`, `trader.risk` |
 | `trader/learnings/` | Store SQLite, embeddings, consolidateur | compat : `trader.learnings_store`, `trader.embeddings`, `trader.consolidator` |
 | `trader/market/` | Indicateurs, FX, macro, radar, régime marché, priorisation gross exposure | anciens imports `trader.fx`, `trader.features`, etc. gardés en compat |
 | `trader/config/` | Loaders de configuration runtime (`pool`, `portfolio`) | retire les loaders transverses de la racine `trader/` |
@@ -63,21 +63,23 @@ génériques. En revanche, trois packages neutres existent maintenant parce qu'i
 suppriment des cycles réels :
 
 - `domain/` porte les primitives stables partagées par `market`, `planning` et
-  `tools` ;
+  les façades legacy ;
 - `metadata/` porte la version git utilisée par `runtime` et `reporting` ;
 - `system/` porte les helpers de processus utilisés par l'agent et le cockpit.
 
 Les anciens imports restent compatibles quand ils existaient déjà
-(`trader.tools.market.Bar`, `trader.tools.execution.Side`,
+(`trader.tools.market.Bar`, `trader.tools.execution.Order`,
 `trader.runtime.code_version`, `trader.process_env`), mais les imports internes
-doivent viser les packages neutres. Les tests `tests/test_package_layout.py`,
+doivent viser les packages neutres ou canoniques (`domain/`, `execution/broker`,
+`metadata/`, `system/`). Les tests `tests/test_package_layout.py`,
 `tests/test_code_version_imports.py` et `tests/test_runtime_pid_file.py`
 gardent ces frontières.
 
-Le graphe de packages n'a plus de cycle mutuel connu. Les dépendances montantes
-acceptées sont concentrées dans `trader/runtime/daemon.py`, composition root qui
-orchestre les side effects ; les modules métier ne doivent pas importer le
-runtime pour accéder à des primitives ou à des métadonnées.
+Les nouveaux lots ne doivent pas ajouter de dépendances montantes hors
+composition root. Les dépendances montantes acceptées sont concentrées dans
+`trader/runtime/daemon.py`, qui orchestre les side effects ; les modules métier
+ne doivent pas importer le runtime pour accéder à des primitives ou à des
+métadonnées.
 
 ---
 

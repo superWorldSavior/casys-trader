@@ -207,7 +207,7 @@ def test_bootstrap_unknown_backend_noop(tmp_path: Path) -> None:
 def test_bootstrap_and_make_broker_share_same_connection(tmp_path: Path) -> None:
     """Après bootstrap_state_backend, make_broker(sqlite) réutilise la même connexion."""
     from trader.state_db.broker_factory import make_broker
-    from trader.tools.execution import NoCommissionModel
+    from trader.execution.broker import NoCommissionModel
 
     db_path = tmp_path / "casys.db"
     _clear_registry_for([db_path])

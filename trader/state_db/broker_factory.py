@@ -130,7 +130,7 @@ def make_broker(
     backend = backend.lower()
 
     if backend == "json":
-        from trader.tools.execution import SimBroker  # import local — pas de circular dep
+        from trader.execution.broker import SimBroker  # import local — pas de circular dep
 
         log.debug("[broker_factory] backend=json → SimBroker(%s)", state_dir / "broker.json")
         return SimBroker(

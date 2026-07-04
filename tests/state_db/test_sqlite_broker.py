@@ -17,7 +17,7 @@ import pytest
 from trader.state_db.broker_store import SqliteBroker
 from trader.state_db.connection import StateDb
 from trader.state_db.migrations import import_broker_from_json
-from trader.tools.execution import IbkrCommissionModel, Order, SimBroker
+from trader.execution.broker import IbkrCommissionModel, Order, SimBroker
 
 
 # ---------------------------------------------------------------------------

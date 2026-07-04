@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from trader.tools.execution import IbkrCommissionModel, Order, SimBroker
+from trader.execution.broker import IbkrCommissionModel, Order, SimBroker
 
 
 def test_sim_broker_enregistre_avg_price_sur_ouverture_short(tmp_path) -> None:

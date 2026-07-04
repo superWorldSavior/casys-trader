@@ -26,7 +26,7 @@ from trader.state_db.broker_store import SqliteBroker
 from trader.state_db.connection import StateDb
 from trader.state_db.migrations import import_broker_from_json, import_trade_plans_from_json
 from trader.state_db.trade_plan_store import SqliteTradePlanStore
-from trader.tools.execution import Fill, Order
+from trader.execution.broker import Fill, Order
 
 
 # ---------------------------------------------------------------------------
