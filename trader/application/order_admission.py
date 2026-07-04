@@ -171,6 +171,33 @@ def reverse_open_quantity(*, action: str, quantity: float, position_quantity: fl
     return quantity
 
 
+def projected_add_risk_basis(
+    *,
+    action: str,
+    add_quantity: float,
+    add_price: float,
+    position_quantity: float,
+    position_avg_price: float,
+) -> tuple[float, float]:
+    """Return projected absolute quantity and average price for ADD risk checks."""
+    signed_add = add_quantity if action == "BUY" else -add_quantity
+    projected_quantity = position_quantity + signed_add
+    total_quantity = abs(projected_quantity)
+    if total_quantity <= 0.0:
+        return 0.0, add_price
+    if (
+        position_quantity != 0.0
+        and position_quantity * signed_add > 0.0
+        and math.isfinite(position_avg_price)
+        and position_avg_price > 0.0
+        and math.isfinite(add_price)
+        and add_price > 0.0
+    ):
+        total_cost = position_avg_price * abs(position_quantity) + add_price * abs(signed_add)
+        return total_quantity, total_cost / total_quantity
+    return total_quantity, add_price
+
+
 def risk_pct_for_quantity(quantity: float, stop_distance: float | None, equity: float) -> float | None:
     if stop_distance is None:
         return None

@@ -524,23 +524,13 @@ def _projected_add_risk_basis(
     position_quantity: float,
     position_avg_price: float,
 ) -> tuple[float, float]:
-    """Retourne (qty totale, prix moyen projeté) pour le risque d'un ADD."""
-    signed_add = add_quantity if action == "BUY" else -add_quantity
-    projected_quantity = position_quantity + signed_add
-    total_quantity = abs(projected_quantity)
-    if total_quantity <= 0.0:
-        return 0.0, add_price
-    if (
-        position_quantity != 0.0
-        and position_quantity * signed_add > 0.0
-        and math.isfinite(position_avg_price)
-        and position_avg_price > 0.0
-        and math.isfinite(add_price)
-        and add_price > 0.0
-    ):
-        total_cost = position_avg_price * abs(position_quantity) + add_price * abs(signed_add)
-        return total_quantity, total_cost / total_quantity
-    return total_quantity, add_price
+    return order_admission.projected_add_risk_basis(
+        action=action,
+        add_quantity=add_quantity,
+        add_price=add_price,
+        position_quantity=position_quantity,
+        position_avg_price=position_avg_price,
+    )
 
 
 def _risk_pct_for_quantity(quantity: float, stop_distance: float | None, equity: float) -> float | None:
