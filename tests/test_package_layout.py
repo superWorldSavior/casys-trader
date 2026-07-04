@@ -136,6 +136,27 @@ def test_daemon_delegates_watch_schedule_glue_to_runtime_adapter() -> None:
     assert violations == []
 
 
+def test_daemon_delegates_planned_exit_logic_to_application_service() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    daemon_path = repo_root / "trader" / "runtime" / "daemon.py"
+    planned_exits_path = repo_root / "trader" / "application" / "planned_exits.py"
+
+    assert planned_exits_path.exists()
+
+    tree = ast.parse(daemon_path.read_text(encoding="utf-8"), filename=str(daemon_path))
+    violations: list[str] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ImportFrom):
+            continue
+        if node.module != "trader.planning.exit_engine":
+            continue
+        for alias in node.names:
+            if alias.name == "evaluate_plan":
+                violations.append(alias.name)
+
+    assert violations == []
+
+
 def test_foundation_packages_do_not_depend_on_higher_layers() -> None:
     repo_root = Path(__file__).resolve().parents[1]
     trader_dir = repo_root / "trader"

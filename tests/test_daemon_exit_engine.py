@@ -9,6 +9,7 @@ from trader.agent.client import Decision
 from trader.agent.protocol.parsing import parse_batch
 from trader.execution.broker import Order, SimBroker
 from trader.market.market_data import Bar
+from trader.planning.exit_engine import ExitEvaluation, ExitSignal
 from trader.planning.scheduler import Scheduler
 from trader.planning.trade_plan import InvalidExitPlanError, TradePlanStore, create_trade_plan, resolve_exit_plan
 
@@ -93,6 +94,72 @@ def test_run_cycle_execute_les_sorties_planifiees_avant_codex(monkeypatch, tmp_p
     assert report["planned_exits"][0]["executed"] is True
     assert codex_calls == 1
     assert SimBroker(state_dir / "broker.json").positions()["SPY"].quantity == 5.0
+
+
+def test_apply_planned_exits_preserve_daemon_monkeypatch_hooks(monkeypatch, tmp_path) -> None:
+    state_dir = tmp_path / "state"
+    now = datetime(2026, 6, 5, 14, 30, tzinfo=timezone.utc)
+    broker = SimBroker(state_dir / "broker.json", starting_cash=100_000)
+    broker.submit(Order("SPY", "BUY", 10.0), 100.0, "2026-06-05T14:00:00+00:00", dry_run=False)
+    plan_store = TradePlanStore(state_dir / "trade_plans.json")
+    plan_store.upsert(
+        create_trade_plan(
+            symbol="SPY",
+            side="LONG",
+            quantity=10.0,
+            entry_price=100.0,
+            opened_at="2026-06-05T14:00:00+00:00",
+            raw_exit_plan={"hard_stop": 50.0},
+        )
+    )
+
+    def fake_evaluate_plan(plan, **kwargs) -> ExitEvaluation:
+        return ExitEvaluation(
+            updated_plan=plan,
+            signal=ExitSignal(
+                symbol=plan.symbol,
+                side="SELL",
+                quantity=10.0,
+                reason="patched_exit",
+                fill_price=103.0,
+            ),
+            close_plan=True,
+        )
+
+    monkeypatch.setattr(daemon, "evaluate_plan", fake_evaluate_plan)
+    monkeypatch.setattr(
+        daemon,
+        "_clamp_exit_quantity",
+        lambda **kwargs: (4.0, None),
+    )
+    monkeypatch.setattr(
+        daemon,
+        "_execution_blocked_reason",
+        lambda execution_eligibility, symbol, *, fail_closed=False: "execution:patched_block",
+    )
+
+    entries = daemon._apply_planned_exits(
+        broker=broker,
+        plan_store=plan_store,
+        prices={"SPY": 100.0},
+        now=now,
+        dry_run=False,
+        starting_equity=100_000.0,
+        execution_eligibility={"SPY": {"execution": {"enabled": True}}},
+    )
+
+    assert entries == [
+        {
+            "symbol": "SPY",
+            "side": "SELL",
+            "quantity": 4.0,
+            "reason": "execution:patched_block",
+            "price": 100.0,
+            "executed": False,
+            "dry_run": False,
+        }
+    ]
+    assert broker.positions()["SPY"].quantity == pytest.approx(10.0)
 
 
 def test_run_cycle_persiste_fx_rate_sur_sortie_planifiee_non_usd(

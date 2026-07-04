@@ -10,7 +10,8 @@
 > `interfaces-boundary`, `infrastructure-boundary`,
 > `flat-compat-facades`, `domain-semantic-boundary`,
 > `planning-scheduling-boundary`, `agent-learnings-boundary`,
-> `market-rotation-boundary`, `wake-watch-runtime-glue`).
+> `market-rotation-boundary`, `wake-watch-runtime-glue`,
+> `learnings-selection-readmodel`, `planned-exits-boundary`).
 
 ---
 
@@ -56,6 +57,7 @@ les utilisaient :
 | `trader/application/infra_holds.py` | Construction applicative des HOLD infra (`quiet_gate`, `stale_market_data`) sans appel modèle | contrats `Protocol` locaux pour wakes/clamp session ; le daemon garde scheduler, log et persistance |
 | `trader/application/learnings_recall.py` | Provider applicatif de recall mémoire : cache embeddings, timeout court, fallback FTS | contrats `Protocol` pour store et embedder |
 | `trader/application/order_admission.py` | Helpers purs d'admission : intent, résolution position-aware, clamp sortie, stop, risk metrics | l'orchestration RiskGate/broker reste dans `trader/runtime/daemon.py` |
+| `trader/application/planned_exits.py` | Exécution applicative déterministe des sorties planifiées : évaluation des plans ouverts, clamp sortie, garde d'exécution, mutation broker/plan-store et payload performance | le daemon conserve `_apply_planned_exits()` et `_plan_snapshot()` comme wrappers privés |
 | `trader/application/plan_review.py` | Persistance et réinjection du dernier verdict LLM sur les plans ouverts | le daemon conserve les wrappers privés historiques |
 | `trader/application/reference_volatility.py` | Calcul de volatilité de référence pour résoudre stops/trailings en multiples de volatilité | le daemon conserve les wrappers privés monkeypatchables |
 | `trader/application/risk_capacity.py` | Contexte de capacité exposé à l'agent : gross exposure, plafonds buy/sell, quantités natives FX-aware | le daemon injecte le broker, les prix, les FX et la fonction devise |
@@ -64,7 +66,7 @@ les utilisaient :
 | `trader/agent/` | Contexte agent, mémoire mandat/stratégie, mémoire learnings/RAG, façade planner, transport LLM/acpx | compat virtuelle : `trader.agent_context`, `trader.codex_client`, `trader.llm`, `trader.tools.memory.Memory`, `trader.tools.memory.LearningsStore`, `trader.learnings.*`, `trader.learnings_store`, `trader.embeddings`, `trader.consolidator` |
 | `trader/agent/protocol/` | Types, prompts, parsing du contrat LLM | utilisé par `trader/agent/client.py` |
 | `trader/agent/tools/` | Package des outils domaine lecture seule | `registry.TOOL_REGISTRY` assemble 9 handlers |
-| `trader/agent/learnings/` | Buffer brut JSONL, store SQLite recall, embeddings, consolidateur | mémoire machine de l'agent ; `trader.learnings.*` reste virtuel |
+| `trader/agent/learnings/` | Buffer brut JSONL, sélection pure, store SQLite recall, embeddings, consolidateur | mémoire machine de l'agent ; `trader.learnings.*` reste virtuel |
 | `trader/domain/` | Primitives neutres (`Bar`, `MarketError`, `Side`) et catalogue sémantique gouverné (`domain/semantic/`) | évite que `market`/`planning` importent `tools` ou un package racine de vocabulaire |
 | `trader/planning/` | Plans de trade, scheduler de réveils, veilles, exit engine, gate de pertinence | compat : `trader.trade_plan`, `trader.indicator_watch`, `trader.exit_engine`, `trader.relevance_gate`, `trader.scheduling.scheduler`, `trader.tools.scheduler` |
 | `trader/execution/` | Contrats `Order`/`Fill`, ports `Broker`/`CommissionModel`, broker paper, commissions, RiskGate, projection portefeuille | contrats/ports : `trader.execution.contracts`, `trader.execution.ports`; compat virtuelle : `trader.tools.execution`, `trader.tools.portfolio`, `trader.risk` |
