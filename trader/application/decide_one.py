@@ -21,7 +21,9 @@ log = logging.getLogger(__name__)
 
 # Codes LLM signalant une surcharge de la ressource acpx/fournisseur.
 # → is_overload=True : le pool AIMD réduit M (M×0.5).
-_OVERLOAD_CODES: frozenset[str] = frozenset({"rate_limited", "quota_exceeded"})
+# provider_error = internal error acpx + sortie vide (§4.5 design) — pression app-server,
+# retryable avec decrease M au même titre que rate_limited/quota_exceeded.
+_OVERLOAD_CODES: frozenset[str] = frozenset({"rate_limited", "quota_exceeded", "provider_error"})
 
 
 def decide_one(

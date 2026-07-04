@@ -190,3 +190,111 @@ def test_appel_client_per_symbol_contient_facts():
     kwargs = {**_BASE_KWARGS, "per_symbol_facts": facts}
     decide_one(**kwargs, codex_client=client)
     assert client.calls[0]["per_symbol"] == {SYMBOL: facts}
+
+
+# ---------------------------------------------------------------------------
+# Erreurs de parsing (FIX 1) — parse_batch réel + decide_one
+#
+# Ces tests utilisent un mock passthrough qui appelle le VRAI parse_batch avec
+# un texte LLM brut contrôlé. Ils valident que les HOLD-parser produits par
+# parse_batch (après FIX 1 : llm_error != None) font bien lever RetryableError
+# dans decide_one, au lieu d'être silencieusement retournés comme HOLD délibérés.
+# ---------------------------------------------------------------------------
+
+
+class _ParsePassthroughClient:
+    """Mock qui fait transiter la réponse LLM brute via le VRAI parse_batch.
+
+    Simule le chemin de client.decide_batch pour le cas sans tool_calls :
+    parse_batch est appelé avec le texte brut et retourne le dict décisions.
+    Sans _attach_llm_metadata (pas de LlmCompletion), mais decide_one ne consulte
+    que llm_error — pas llm_provider/llm_model.
+    """
+
+    def __init__(self, llm_text: str):
+        self._llm_text = llm_text
+
+    def decide_batch(self, *, symbols, allow_context_request=False, **kwargs):
+        from trader.agent_protocol.parsing import parse_batch
+        return parse_batch(
+            self._llm_text,
+            list(symbols),
+            allow_context_request=allow_context_request,
+        )
+
+
+def test_parse_error_json_invalide_leve_retryable():
+    """JSON invalide → parse_error:invalid_json → RetryableError(is_overload=False)."""
+    client = _ParsePassthroughClient("pas du json valide {{{")
+    with pytest.raises(RetryableError) as exc_info:
+        decide_one(**_BASE_KWARGS, codex_client=client)
+    assert exc_info.value.is_overload is False
+    assert "parse_error:invalid_json" in str(exc_info.value)
+
+
+def test_parse_error_symbole_manquant_leve_retryable():
+    """Symbole absent de la réponse batch → parse_error:missing_symbol → RetryableError."""
+    # Réponse LLM valide mais sans AAPL (symbole inconnu GOOG à la place)
+    llm_text = (
+        '{"decisions": [{"symbol": "GOOG", "action": "HOLD", "quantity": 0,'
+        ' "confidence": 0, "rationale": "ok", "decision_reason_code": "NO_EDGE"}]}'
+    )
+    client = _ParsePassthroughClient(llm_text)
+    with pytest.raises(RetryableError) as exc_info:
+        decide_one(**_BASE_KWARGS, codex_client=client)
+    assert exc_info.value.is_overload is False
+    assert "parse_error:missing_symbol" in str(exc_info.value)
+
+
+def test_parse_error_tool_loop_leve_retryable():
+    """tool_calls sans decisions (tour final) → tool_loop → RetryableError(is_overload=False)."""
+    llm_text = '{"tool_calls": [{"tool": "get_freshness", "args": {}}]}'
+    client = _ParsePassthroughClient(llm_text)
+    with pytest.raises(RetryableError) as exc_info:
+        decide_one(**_BASE_KWARGS, codex_client=client)
+    assert exc_info.value.is_overload is False
+    assert "tool_loop" in str(exc_info.value)
+
+
+def test_parse_error_element_corrompu_leve_retryable():
+    """Élément decisions malformé (action invalide) → parse_error:corrupt_element → RetryableError."""
+    llm_text = (
+        '{"decisions": [{"symbol": "AAPL", "action": "INVALID", "quantity": 0,'
+        ' "confidence": 0, "rationale": "bad"}]}'
+    )
+    client = _ParsePassthroughClient(llm_text)
+    with pytest.raises(RetryableError) as exc_info:
+        decide_one(**_BASE_KWARGS, codex_client=client)
+    assert exc_info.value.is_overload is False
+    assert "parse_error:corrupt_element" in str(exc_info.value)
+
+
+def test_hold_delibere_via_parse_batch_retourne_decision_sans_exception():
+    """HOLD délibéré parsé proprement (llm_error=None) → retourné sans exception.
+
+    Valide que FIX 1 n'a pas accidentellement estampillé les HOLD LLM légitimes.
+    """
+    llm_text = (
+        '{"decisions": [{"symbol": "AAPL", "action": "HOLD", "quantity": 0,'
+        ' "confidence": 0.3, "rationale": "pas de signal", "decision_reason_code": "NO_EDGE"}]}'
+    )
+    client = _ParsePassthroughClient(llm_text)
+    result = decide_one(**_BASE_KWARGS, codex_client=client)
+    assert result.action == "HOLD"
+    assert result.llm_error is None  # HOLD délibéré — pas estampillé
+
+
+# ---------------------------------------------------------------------------
+# FIX 2 — provider_error → is_overload=True
+# ---------------------------------------------------------------------------
+
+
+def test_provider_error_leve_retryable_overload():
+    """provider_error (internal error / sortie vide acpx) → RetryableError(is_overload=True).
+
+    §4.5 design : internal-error/sortie vide acpx = pression app-server → decrease M.
+    """
+    client = _FakeClient({SYMBOL: _synthetic_hold("provider_error")})
+    with pytest.raises(RetryableError) as exc_info:
+        decide_one(**_BASE_KWARGS, codex_client=client)
+    assert exc_info.value.is_overload is True
