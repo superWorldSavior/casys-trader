@@ -269,7 +269,7 @@ def test_dispatch_3_symbols_all_done(tmp_path):
     pool.start()
 
     try:
-        decisions, model_calls = dispatch_decide_via_queue(
+        decisions, model_calls, undecided = dispatch_decide_via_queue(
             ledger=led,
             decidable=symbols,
             mandate="test mandate",
@@ -287,6 +287,7 @@ def test_dispatch_3_symbols_all_done(tmp_path):
 
     assert set(decisions.keys()) == set(symbols), f"décisions manquantes: {decisions.keys()}"
     assert model_calls == 3
+    assert undecided == set(), f"aucun undecided attendu, got {undecided}"
     for sym in symbols:
         dec = decisions[sym]
         assert isinstance(dec, Decision)
@@ -320,7 +321,7 @@ def test_dispatch_dead_task_skipped(tmp_path):
     pool.start()
 
     try:
-        decisions, model_calls = dispatch_decide_via_queue(
+        decisions, model_calls, undecided = dispatch_decide_via_queue(
             ledger=led,
             decidable=[sym],
             mandate="m",
@@ -338,6 +339,8 @@ def test_dispatch_dead_task_skipped(tmp_path):
 
     assert decisions == {}, f"aucune décision attendue, got {decisions}"
     assert model_calls == 0
+    # Tâche dead → dans undecided (pas de HOLD synthétique en mode queue)
+    assert sym in undecided, f"{sym} doit être dans undecided, got {undecided}"
     # Tâche doit être dead (3 tentatives épuisées)
     assert led.count_by_status("dead", kind="decide") == 1
 
@@ -370,7 +373,7 @@ def test_dispatch_budget_elapsed_skips_unfinished(tmp_path):
             return start
         return start + budget_s + 1.0
 
-    decisions, model_calls = dispatch_decide_via_queue(
+    decisions, model_calls, undecided = dispatch_decide_via_queue(
         ledger=led,
         decidable=["SLOW"],
         mandate="m",
@@ -386,6 +389,8 @@ def test_dispatch_budget_elapsed_skips_unfinished(tmp_path):
 
     assert decisions == {}, f"aucune décision attendue, got {decisions}"
     assert model_calls == 0
+    # Budget épuisé → symbole dans undecided (pas de HOLD synthétique)
+    assert "SLOW" in undecided, f"SLOW doit être dans undecided, got {undecided}"
     # La tâche doit exister dans le ledger (enfilée) mais pas décidée
     assert led.count_by_status("pending", kind="decide") == 1
 
@@ -493,3 +498,194 @@ def test_flag_off_uses_batch_decide(monkeypatch):
     # Défaut = False (flag off par défaut)
     assert sig.parameters["queue_decide_enabled"].default is False
     assert sig.parameters["task_ledger"].default is None
+
+
+# ---------------------------------------------------------------------------
+# Test 6 (FIX 1) : fusible max_model_calls — au plus N tâches enfilées
+# ---------------------------------------------------------------------------
+
+
+def test_dispatch_max_model_calls_limits_enqueued(tmp_path):
+    """5 décidables, max_model_calls=2 → exactement 2 tâches enfilées, 3 reportées.
+
+    Les 3 symboles non enfilés figurent dans undecided_symbols et aucune
+    décision n'est produite pour eux (pas de HOLD synthétique).
+    """
+    symbols = ["S1", "S2", "S3", "S4", "S5"]
+    led = TaskLedger(tmp_path / "q.db")
+
+    # Pas de pool : les tâches restent pending. On teste uniquement l'enfilage.
+    start = 1_000_000.0
+    call_count = [0]
+
+    def jumping_now():
+        call_count[0] += 1
+        # Appels 1+2 = phase setup ; appel 3+ = boucle polling → budget déjà expiré
+        if call_count[0] <= 2:
+            return start
+        return start + 9999.0
+
+    decisions, model_calls, undecided = dispatch_decide_via_queue(
+        ledger=led,
+        decidable=symbols,
+        mandate="m",
+        memory="m",
+        shared_context={},
+        symbol_facts_by_sym={sym: {} for sym in symbols},
+        decision_timeout_s=60,
+        agent_tools_enabled=False,
+        cycle_id="cycle-cap",
+        budget_s=30.0,
+        now_fn=jumping_now,
+        max_model_calls=2,
+    )
+
+    # Seulement 2 tâches enfilées (les 2 premiers selon l'ordre de decidable)
+    assert led.count_by_status("pending", kind="decide") == 2, (
+        "attendu 2 tâches pending (fusible max_model_calls=2)"
+    )
+    # Tous les 5 symboles sont undecided :
+    # - 2 enfilés mais budget expiré → pending_syms → skipped → undecided
+    # - 3 non enfilés (deferred par cap) → undecided
+    assert undecided == set(symbols), (
+        f"les 5 symboles doivent être dans undecided (budget expiré + cap), got {undecided}"
+    )
+    # Aucune décision produite
+    assert decisions == {}
+    assert model_calls == 0
+
+
+def test_dispatch_max_model_calls_admitted_syms_are_first_in_order(tmp_path):
+    """max_model_calls=2 : les 2 PREMIERS de decidable sont enfilés (ordre déterministe)."""
+    symbols = ["PRIO1", "PRIO2", "LOW3", "LOW4", "LOW5"]
+    led = TaskLedger(tmp_path / "q.db")
+
+    start = 1_000_000.0
+    call_count = [0]
+
+    def jumping_now():
+        call_count[0] += 1
+        if call_count[0] <= 2:
+            return start
+        return start + 9999.0
+
+    dispatch_decide_via_queue(
+        ledger=led,
+        decidable=symbols,
+        mandate="m",
+        memory="m",
+        shared_context={},
+        symbol_facts_by_sym={sym: {} for sym in symbols},
+        decision_timeout_s=60,
+        agent_tools_enabled=False,
+        cycle_id="cycle-order",
+        budget_s=30.0,
+        now_fn=jumping_now,
+        max_model_calls=2,
+    )
+
+    rows = led._conn.execute(
+        "SELECT partition_key FROM tasks WHERE kind='decide'"
+    ).fetchall()
+    admitted_syms = {r["partition_key"] for r in rows}
+    assert admitted_syms == {"PRIO1", "PRIO2"}, (
+        f"attendu {{PRIO1, PRIO2}} enfilés, got {admitted_syms}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test 7 (FIX 2) : undecided → PAS de HOLD synthétique en mode queue
+# ---------------------------------------------------------------------------
+
+
+def test_dispatch_undecided_not_in_decisions(tmp_path):
+    """Un symbole skippé (dead) figure dans undecided et ABSENT de decisions.
+
+    Ce test vérifie le contrat retourné — run_cycle doit utiliser undecided
+    pour ne PAS générer de HOLD synthétique pour ces symboles.
+    """
+    client = _FakeClient(raise_exc=RuntimeError("LLM indisponible"))
+    sym_dead = "DEADX"
+    sym_ok = "OKX"
+
+    led = TaskLedger(tmp_path / "q.db")
+    pools = ResourcePools({"acpx": 2})
+    handlers = {"decide": make_decide_handler(codex_client=_FakeClient({sym_ok: _ok_decision(sym_ok)}))}
+
+    # Pool avec handler OK pour sym_ok, mais client crée erreur pour DEADX.
+    # Astuce : make_decide_handler reçoit un client unique → on crée 2 handlers
+    # séparés. Ici on utilise un seul client qui retourne ok pour sym_ok
+    # et lève une erreur pour DEADX via le _raise_exc conditionnel.
+
+    class _PartialClient:
+        def decide_batch(self, *, symbols, **kwargs):
+            results = {}
+            for s in symbols:
+                if s == sym_ok:
+                    results[s] = _ok_decision(s)
+                else:
+                    raise RuntimeError(f"LLM error for {s}")
+            return results
+
+    handlers_mixed = {"decide": make_decide_handler(codex_client=_PartialClient())}
+    pool = DecidePool(
+        ledger=led,
+        pools=pools,
+        handlers=handlers_mixed,
+        num_workers=2,
+        now_fn=time.time,
+        backoff_base_ms=1,
+    )
+    pool.start()
+
+    try:
+        decisions, model_calls, undecided = dispatch_decide_via_queue(
+            ledger=led,
+            decidable=[sym_dead, sym_ok],
+            mandate="m",
+            memory="m",
+            shared_context={},
+            symbol_facts_by_sym={sym_dead: {}, sym_ok: {}},
+            decision_timeout_s=60,
+            agent_tools_enabled=False,
+            cycle_id="cycle-mixed",
+            budget_s=10.0,
+            now_fn=time.time,
+        )
+    finally:
+        pool.stop()
+
+    # sym_ok décidé → présent dans decisions
+    assert sym_ok in decisions, f"{sym_ok} doit être décidé"
+    # sym_dead (dead après 3 tentatives) → dans undecided, absent de decisions
+    assert sym_dead in undecided, f"{sym_dead} doit être dans undecided"
+    assert sym_dead not in decisions, f"{sym_dead} ne doit PAS être dans decisions"
+
+
+# ---------------------------------------------------------------------------
+# Test 8 (FIX 4) : flag OFF réel — signature + defaults
+# ---------------------------------------------------------------------------
+
+
+def test_flag_off_no_ledger_in_signature():
+    """Avec flag off (défaut), run_cycle a task_ledger=None et queue_decide_enabled=False.
+
+    Vérifie que les defaults correspondent exactement au flag off attendu, et
+    que la signature de run_cycle accepte les deux paramètres queue.
+    """
+    import inspect
+    import trader.runtime.daemon as daemon_mod
+
+    sig = inspect.signature(daemon_mod.run_cycle)
+
+    # Paramètres présents
+    assert "queue_decide_enabled" in sig.parameters
+    assert "task_ledger" in sig.parameters
+
+    # Défauts = flag off (prod inchangée)
+    assert sig.parameters["queue_decide_enabled"].default is False, (
+        "queue_decide_enabled doit défaut à False"
+    )
+    assert sig.parameters["task_ledger"].default is None, (
+        "task_ledger doit défaut à None"
+    )

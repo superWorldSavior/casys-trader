@@ -2223,6 +2223,11 @@ def run_cycle(
     # = ceux qui ont des barres (runtime non-stale + daily des stale-analysables). Sans
     # ça, un stale qui demande du contexte sur lui-même reçoit un research vide.
     analysis_symbols = sorted(analysis_bars_by_symbol)
+    # undecided_symbols : symboles non décidés en mode queue (reportés par le
+    # fusible + skippés dead/budget). Ils sont EXCLUS du fallback HOLD synthétique
+    # ci-dessous (FIX 2). En mode batch, reste vide (comportement inchangé).
+    undecided_symbols: set[str] = set()
+
     if queue_decide_enabled and task_ledger is not None:
         # Mode file : enfile 1 tâche par symbole et collecte via polling.
         # Le pool DecidePool tourne en arrière-plan (démarré dans main()).
@@ -2249,7 +2254,9 @@ def run_cycle(
             }
             for sym in decidable
         }
-        decisions_by_symbol, model_calls_used = dispatch_decide_via_queue(
+        # FIX 1 : passe max_model_calls_per_cycle pour borner le nombre d'appels
+        # LLM par cycle (fusible coût acpx). Les symboles au-delà sont reportés.
+        decisions_by_symbol, model_calls_used, undecided_symbols = dispatch_decide_via_queue(
             ledger=task_ledger,
             decidable=decidable,
             mandate=mandate_txt,
@@ -2261,6 +2268,7 @@ def run_cycle(
             cycle_id=now.isoformat(),
             budget_s=float(decision_timeout_s),
             now_fn=time.time,
+            max_model_calls=max_model_calls_per_cycle,
         )
     else:
         # Mode batch classique — comportement STRICTEMENT inchangé (flag off).
@@ -2400,6 +2408,18 @@ def run_cycle(
             continue
         if sym not in prices:
             _log_cycle_progress("[decision %d/%d] %s skipped no_price", index, len(symbols_to_decide), sym)
+            continue
+
+        # FIX 2 : en mode queue, les symboles non décidés ce cycle (reportés par le
+        # fusible ou skippés dead/budget) sont EXCLUS du fallback HOLD synthétique —
+        # ils seront redécidés au prochain cycle. Le mode batch garde son comportement
+        # (HOLD no_decision_in_batch) via undecided_symbols = set() initialisé plus haut.
+        if sym in undecided_symbols:
+            _log_cycle_progress(
+                "[decision %d/%d] %s queue_decide_deferred — aucun HOLD synthétique",
+                index, len(symbols_to_decide), sym,
+            )
+            _append_event("queue_decide_deferred", symbol=sym, cycle_id=now.isoformat())
             continue
 
         decision = decisions_by_symbol.get(sym) or codex_client.Decision.hold(sym, "no_decision_in_batch")

@@ -20,6 +20,13 @@ AX §8 (Structured Outputs) : aucun spinner, retour machine-readable.
 AX §5 (Fast Fail Early) : les tâches stale des cycles précédents sont purgées
 avant l'enfilage pour libérer l'index uniq_active_kind_partition.
 AX §6 (Deterministic Outputs) : now_fn injectable pour déterminisme des tests.
+
+COMPROMIS MODE QUEUE — DÉCISION DÉGRADÉE (Lot A) :
+  Le handler decide_handler appelle decide_batch avec allow_context_request=False
+  et allow_tool_calls=False, ce qui désactive : REQUEST_CONTEXT, tool round,
+  recall_learnings.  La parité complète avec le mode batch (context_request,
+  tools, recall) est une itération future hors périmètre Lot A.
+  Source : decide_one.py, decide_handler.make_decide_handler.
 """
 from __future__ import annotations
 
@@ -51,7 +58,8 @@ def dispatch_decide_via_queue(
     cycle_id: str,
     budget_s: float,
     now_fn: Callable[[], float],
-) -> tuple[dict[str, Decision], int]:
+    max_model_calls: int = 999,
+) -> tuple[dict[str, Decision], int, set[str]]:
     """Enfile les décisions grain-symbole et collecte les résultats via polling.
 
     Parameters
@@ -59,7 +67,7 @@ def dispatch_decide_via_queue(
     ledger:
         ``TaskLedger`` dédié à la file decide (``task_ledger.db``).
     decidable:
-        Liste des symboles à décider ce cycle.
+        Liste des symboles à décider ce cycle (déjà priorisés en amont).
     mandate, memory, shared_context:
         Contexte partagé transmis tel quel au handler decide.
     symbol_facts_by_sym:
@@ -77,12 +85,24 @@ def dispatch_decide_via_queue(
         Les symboles non résolus dans ce délai sont skippés.
     now_fn:
         ``Callable[[], float]`` retournant epoch secondes. Injectable pour les tests.
+    max_model_calls:
+        Nombre maximum de tâches enfilées ce cycle (fusible coût acpx).
+        Les symboles au-delà de la limite sont REPORTÉS (non enfilés) — ils
+        reviendront décidables au tick suivant.  Ordre = ordre de ``decidable``
+        (déjà priorisé en amont, AX §6 déterminisme).  Défaut 999 = pas de
+        limite effective (rétrocompatibilité si non passé).
 
     Returns
     -------
-    tuple[dict[str, Decision], int]
-        ``(decisions_by_symbol, model_calls_used)`` où ``model_calls_used`` est
-        le nombre de tâches ``done`` (décisions réussies).
+    tuple[dict[str, Decision], int, set[str]]
+        ``(decisions_by_symbol, model_calls_used, undecided_symbols)`` où :
+
+        - ``decisions_by_symbol`` : décisions collectées ce cycle.
+        - ``model_calls_used`` : nombre de tâches ``done`` (décisions réussies).
+        - ``undecided_symbols`` : symboles non décidés ce cycle = reportés par
+          le fusible + skippés (dead / budget épuisé / task introuvable).
+          Ces symboles ne doivent PAS recevoir un HOLD synthétique — ils seront
+          redécidés au prochain cycle.
     """
     now_ms = int(now_fn() * 1000)
 
@@ -100,10 +120,21 @@ def dispatch_decide_via_queue(
         )
 
     # -----------------------------------------------------------------------
-    # 2. Enfilage — 1 tâche par symbole
+    # 2. Enfilage — 1 tâche par symbole, dans la limite du fusible
     # -----------------------------------------------------------------------
+    # FIX 1 : on n'enfile qu'au plus `max_model_calls` symboles ce cycle.
+    # Les symboles au-delà sont reportés (undecided) sans enfilage — ils
+    # reviendront décidables au tick suivant (pas de HOLD synthétique).
+    admitted = decidable[:max_model_calls]
+    deferred_by_cap = set(decidable[max_model_calls:])
+    if deferred_by_cap:
+        log.info(
+            "[queue_dispatch] fusible max_model_calls=%d : %d symboles reportés au cycle suivant",
+            max_model_calls, len(deferred_by_cap),
+        )
+
     task_ids: dict[str, int] = {}
-    for sym in decidable:
+    for sym in admitted:
         payload = {
             "symbol": sym,
             "mandate": mandate,
@@ -151,6 +182,8 @@ def dispatch_decide_via_queue(
     deadline = now_fn() + budget_s
     decisions_by_symbol: dict[str, Decision] = {}
     pending_syms = set(task_ids)
+    # Symboles enfilés mais non résolus (dead/budget) — seront dans undecided.
+    skipped_syms: set[str] = set()
 
     while pending_syms and now_fn() < deadline:
         resolved = set()
@@ -162,6 +195,7 @@ def dispatch_decide_via_queue(
                     "[queue_dispatch] task introuvable sym=%s task_id=%s — skip",
                     sym, tid,
                 )
+                skipped_syms.add(sym)
                 resolved.add(sym)
                 continue
 
@@ -181,12 +215,14 @@ def dispatch_decide_via_queue(
                             "[queue_dispatch] désérialisation Decision échouée sym=%s: %s",
                             sym, exc,
                         )
+                        skipped_syms.add(sym)
                 resolved.add(sym)
             elif status == "dead":
                 log.warning(
                     "[queue_dispatch] task dead sym=%s task_id=%s — skip",
                     sym, tid,
                 )
+                skipped_syms.add(sym)
                 resolved.add(sym)
 
         pending_syms -= resolved
@@ -202,16 +238,23 @@ def dispatch_decide_via_queue(
             "[queue_dispatch] budget épuisé sym=%s budget_s=%.1f — skip",
             sym, budget_s,
         )
+        skipped_syms.add(sym)
+
+    # FIX 2 : undecided = reportés par le fusible + skippés (dead/budget/introuvable).
+    # run_cycle EXCLUT ces symboles du fallback HOLD synthétique en mode queue.
+    undecided_symbols = deferred_by_cap | skipped_syms
 
     model_calls_used = len(decisions_by_symbol)
     log.info(
-        "[queue_dispatch] cycle=%s symbols=%d decided=%d skipped=%d",
+        "[queue_dispatch] cycle=%s symbols=%d decided=%d undecided=%d (deferred=%d skipped=%d)",
         cycle_id,
         len(decidable),
         model_calls_used,
-        len(decidable) - model_calls_used,
+        len(undecided_symbols),
+        len(deferred_by_cap),
+        len(skipped_syms),
     )
-    return decisions_by_symbol, model_calls_used
+    return decisions_by_symbol, model_calls_used, undecided_symbols
 
 
 def _get_by_dedup_key(ledger, dedup_key: str) -> "dict | None":

@@ -9,6 +9,14 @@ Distinction HOLD-délibéré vs erreur :
   _hold_from_llm_failure (codex_client.py) estampille toujours llm_error=failure.code
   → llm_error not None = synthétique (erreur LLM absorbée en amont).
   → llm_error is None = décision authentique du LLM (BUY, SELL, ou HOLD voulu).
+
+COMPROMIS MODE QUEUE — DÉCISION DÉGRADÉE (Lot A) :
+  decide_batch est appelé avec allow_context_request=False et allow_tool_calls=False,
+  ce qui désactive : REQUEST_CONTEXT (pas de collecte de contexte supplémentaire),
+  tournée d'outils (pas d'appels d'outils inter-tours), recall_learnings (pas de
+  récupération de learnings via RAG).
+  La parité complète avec le mode batch (context_request, tools, recall) est une
+  itération future hors périmètre Lot A.
 """
 from __future__ import annotations
 
