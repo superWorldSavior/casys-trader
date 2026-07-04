@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from trader.metadata import code_version
+from trader.support.metadata import code_version
 from trader.reporting import decision_reason
 
 SCHEMA_VERSION = 1

@@ -1,6 +1,6 @@
 """tui — CLI live pour le rendu Rich casys-trader.
 
-Les lectures d'état vivent dans :mod:`trader.read_models.runtime_state`.
+Les lectures d'état vivent dans :mod:`trader.reporting.read_models.runtime_state`.
 Les builders Rich purs vivent dans :mod:`trader.ui.rich_panels`.
 
 Ce module reste la façade historique pour les tests et les imports existants.
@@ -13,7 +13,7 @@ import time
 from rich.console import Console
 from rich.live import Live
 
-from trader.read_models.runtime_state import (  # noqa: F401
+from trader.reporting.read_models.runtime_state import (  # noqa: F401
     UTC,
     _COMPANY_NAMES_CACHE,
     _COMPANY_NAMES_PATH,

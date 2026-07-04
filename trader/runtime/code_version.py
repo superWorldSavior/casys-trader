@@ -1,6 +1,6 @@
 """Compatibility shim for code-version metadata helpers."""
 
-from trader.metadata.code_version import (
+from trader.support.metadata.code_version import (
     MAX_DIRTY_FILES,
     SCHEMA_VERSION,
     current_code_version,

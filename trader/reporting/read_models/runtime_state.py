@@ -12,8 +12,8 @@ import yaml
 
 from trader.planning.indicator_watch import is_armed_plan as _is_armed_plan
 
-# Racine du repo (trois niveaux au-dessus de ce fichier)
-_ROOT = Path(__file__).resolve().parent.parent.parent
+# Racine du repo (quatre niveaux au-dessus de ce fichier)
+_ROOT = Path(__file__).resolve().parents[3]
 _STATE_DIR = _ROOT / "state"
 _CURRENT_REPORT_FILE = _STATE_DIR / "current_report.json"
 _LAST_REPORT_FILE = _STATE_DIR / "last_report.json"
@@ -93,7 +93,7 @@ def _load_equity_curve(history_path: Path) -> list[float]:
 
 def _compute_live_kpis_safe(state_dir: Path) -> dict:
     try:
-        from trader.read_models.live_kpis import compute_live_kpis
+        from trader.reporting.read_models.live_kpis import compute_live_kpis
 
         result = compute_live_kpis(state_dir)
     except Exception:
@@ -131,9 +131,7 @@ def _load_learnings_safe(state_dir: Path, *, limit: int = 5) -> list[dict]:
     try:
         from trader.learnings.raw_store import RawLearningsStore
 
-        return _safe_list_of_dicts(
-            RawLearningsStore(state_dir / "learnings.jsonl").recent(limit=limit)
-        )
+        return _safe_list_of_dicts(RawLearningsStore(state_dir / "learnings.jsonl").recent(limit=limit))
     except Exception:
         return []
 
@@ -169,9 +167,7 @@ def _watch_is_expired(watch: dict, now: datetime) -> bool:
     return expires_at <= now
 
 
-def _load_scheduler_data_safe(
-    scheduler_path: Path, *, now: datetime | None = None
-) -> tuple[list[dict], dict]:
+def _load_scheduler_data_safe(scheduler_path: Path, *, now: datetime | None = None) -> tuple[list[dict], dict]:
     """Lit scheduler.json, retourne (indicator_watches, stale_streaks).
 
     indicator_watches : liste de dicts (valeurs du dict indicator_watches),
@@ -253,9 +249,7 @@ def _tail_decisions_safe(decisions_path: Path, *, n: int = 50) -> list[dict]:
         return []
 
 
-def _enrich_decisions_with_data_source(
-    decisions: list[dict], recent_decisions: list[dict]
-) -> list[dict]:
+def _enrich_decisions_with_data_source(decisions: list[dict], recent_decisions: list[dict]) -> list[dict]:
     """Injecte 'data_source' dans chaque décision du rapport depuis les décisions récentes.
 
     Pour chaque décision du rapport, cherche la dernière entrée dans
@@ -305,9 +299,7 @@ def _load_fills_safe(broker_path: Path, *, limit: int = 100) -> list[dict]:
         return []
 
 
-def _load_venue_open_state_safe(
-    state_dir: Path, config_dir: str
-) -> tuple[dict, list[str], dict]:
+def _load_venue_open_state_safe(state_dir: Path, config_dir: str) -> tuple[dict, list[str], dict]:
     """Charge venue_state, open_venues et sessions. ({}, [], {}) si indisponible."""
     try:
         from trader.rotation.venues import load_venue_state as _lvs
@@ -322,9 +314,7 @@ def _load_venue_open_state_safe(
         return {}, [], {}
 
 
-def _count_pending_learnings_safe(
-    learnings_path: Path, consolidated_path: Path
-) -> int:
+def _count_pending_learnings_safe(learnings_path: Path, consolidated_path: Path) -> int:
     """Compte les learnings bruts NON consolidés (postérieurs au watermark).
 
     `learnings.jsonl` est un buffer rolling plafonné (DEFAULT_RAW_MAX_ENTRIES) :
@@ -409,7 +399,7 @@ def _load_universe_symbols_safe(config_dir: str) -> list[str]:
 def _load_starting_cash_safe(config_dir: str | Path) -> float | None:
     """Lit le capital de départ affiché par la barre cockpit."""
     try:
-        from trader.config.portfolio import load_starting_cash
+        from trader.support.config.portfolio import load_starting_cash
 
         return load_starting_cash(Path(config_dir) / "config")
     except Exception:
@@ -427,20 +417,10 @@ def load_runtime_state(
     """Charge le meilleur état affichable sans lever d'exception."""
     state_dir_path = Path(state_dir)
     current_report_path = (
-        Path(current_report_path)
-        if current_report_path is not None
-        else state_dir_path / "current_report.json"
+        Path(current_report_path) if current_report_path is not None else state_dir_path / "current_report.json"
     )
-    last_report_path = (
-        Path(last_report_path)
-        if last_report_path is not None
-        else state_dir_path / "last_report.json"
-    )
-    status_path = (
-        Path(status_path)
-        if status_path is not None
-        else state_dir_path / "daemon_status.json"
-    )
+    last_report_path = Path(last_report_path) if last_report_path is not None else state_dir_path / "last_report.json"
+    status_path = Path(status_path) if status_path is not None else state_dir_path / "daemon_status.json"
 
     source = "none"
     raw = load_state(current_report_path)
@@ -459,15 +439,9 @@ def load_runtime_state(
     equity_curve = _load_equity_curve(state_dir_path / "history.jsonl")
     learnings = _load_learnings_safe(state_dir_path)
     trade_plans = _load_trade_plans_safe(state_dir_path / "trade_plans.json")
-    indicator_watches, stale_streaks = _load_scheduler_data_safe(
-        state_dir_path / "scheduler.json"
-    )
-    recent_decisions = _tail_decisions_safe(
-        state_dir_path / "decisions.jsonl", n=50
-    )
-    consolidation_status = _load_consolidation_status_safe(
-        state_dir_path / "learnings_consolidation_status.json"
-    )
+    indicator_watches, stale_streaks = _load_scheduler_data_safe(state_dir_path / "scheduler.json")
+    recent_decisions = _tail_decisions_safe(state_dir_path / "decisions.jsonl", n=50)
+    consolidation_status = _load_consolidation_status_safe(state_dir_path / "learnings_consolidation_status.json")
     learnings_pending_count = _count_pending_learnings_safe(
         state_dir_path / "learnings.jsonl",
         state_dir_path / "learnings_consolidated.json",
@@ -484,14 +458,10 @@ def load_runtime_state(
         "source": source,
         "starting_cash": starting_cash,
         "daemon_status": status if isinstance(status, dict) else {},
-        "kpis": kpis
-        if kpis
-        else (raw.get("kpis") if isinstance(raw.get("kpis"), dict) else {}),
+        "kpis": kpis if kpis else (raw.get("kpis") if isinstance(raw.get("kpis"), dict) else {}),
         "attribution": attribution
         if attribution
-        else (
-            raw.get("attribution") if isinstance(raw.get("attribution"), dict) else {}
-        ),
+        else (raw.get("attribution") if isinstance(raw.get("attribution"), dict) else {}),
         "equity_curve": equity_curve,
         "learnings": learnings,
         "trade_plans": trade_plans,

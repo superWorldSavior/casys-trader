@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from trader.read_models import live_kpis
+from trader.reporting.read_models import live_kpis
 
 
 def _compute_model_performance(state_dir: Path) -> list[dict]:

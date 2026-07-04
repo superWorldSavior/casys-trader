@@ -15,7 +15,7 @@ from rich.text import Text
 from trader.market import fx
 from trader.planning.indicator_watch import is_armed_plan as _is_armed_plan
 from trader.ui.palette import PALETTE_DARK, Palette
-from trader.read_models.runtime_state import (
+from trader.reporting.read_models.runtime_state import (
     UTC,
     _format_datetime,
     _safe_float,

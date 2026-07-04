@@ -87,7 +87,7 @@ Légende : ✅ couvert · 🟡 partiel / dispersé / potentiellement périmé ·
 ### Observabilité
 | Sous-système | Package/module | Réf | Où | Décisions |
 |---|---|---|---|---|
-| Cockpit TUI | `cockpit/` (app, supervisor, events), `ui/`, `read_models/runtime_state` | ✅ | **`reference/cockpit.md`** | — |
+| Cockpit TUI | `cockpit/` (app, supervisor, events), `ui/`, `reporting/read_models/runtime_state` | ✅ | **`reference/cockpit.md`** | — |
 | Attribution / performance | `reporting/` (attribution, meta_performance, decision_audit, decision_bench, stats, tool_usage) | ✅ | **`reference/reporting.md`** | — |
 | Commandes opérateur | `commands/` + wrappers legacy `trader.stats`, `trader.attribution`, `trader.tool_usage`, `trader.tui` | ✅ | archi §1.1, **`reference/reporting.md`** | — |
 | Logging | `runtime/logging_setup` (`CASYS_LOG_LEVEL`, museler ib_async) | ✅ | archi §10.1 | — |

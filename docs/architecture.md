@@ -69,15 +69,13 @@ les utilisaient :
 | `trader/market/` | Port `DataSource`, adaptateurs yfinance/IB/composite, fraîcheur, indicateurs, FX, news, macro, radar, régime, priorisation gross exposure | port : `trader.market.ports.DataSource`; compat virtuelle : `trader.tools.market`, `trader.tools.data_source`, `trader.tools.ib_source`, `trader.tools.news_feed`, `trader.fx`, `trader.features`, etc. |
 | `trader/queue/` | File de tâches durable, workers, pools, backpressure | backend technique utilisé par le runtime queue-on |
 | `trader/state_db/` | Backend SQLite de l'état paper, broker store, outbox | source durable quand `CASYS_STATE_BACKEND=sqlite` |
-| `trader/config/` | Loaders de configuration runtime (`pool`, `portfolio`) | retire les loaders transverses de la racine `trader/` |
 | `trader/rotation/` | Rotation d'univers, hot-sets par venue, schedule, override, ledger rotation | `trader.rotation` réexporte l'ancien core |
-| `trader/metadata/` | Métadonnées git/code version | utilisé par runtime et reporting sans cycle |
-| `trader/reporting/` | Ledger décision, raisons, audit ex-post, attribution, stats, tool usage, meta-performance | analyse/rendu ex-post ; les side effects CLI vivent dans `commands/` |
+| `trader/support/` | Helpers support stables : config (`pool`, `portfolio`), metadata git/code version, process env | compat virtuelle : `trader.config.*`, `trader.metadata.*`, `trader.system.*` |
+| `trader/reporting/` | Ledger décision, raisons, audit ex-post, attribution, stats, tool usage, meta-performance, read models | analyse/rendu ex-post ; les side effects CLI vivent dans `commands/` |
 | `trader/commands/` | Entry points CLI canoniques (`stats`, `attribution`, `tool_usage`, `tui`) | compat : `python -m trader.stats`, `python -m trader.attribution`, etc. |
-| `trader/system/` | Helpers système neutres (`process_env`) | partagé par agent/cockpit/runtime sans dépendance runtime |
 | `trader/runtime/` | Daemon, CLI, logging, PID file, IB attach, rotation ledger, writers d'état fichier | `trader.daemon.py` et `trader.cli.py` sont des shims proxy pour `python -m` |
-| `trader/read_models/live_kpis.py` | Projection live des KPI depuis `state/` pour daemon/cockpit/TUI | `reporting.stats` rend les KPI ; `commands.stats` possède la CLI |
-| `trader/read_models/runtime_state.py` | Lecture tolérante des fichiers `state/` pour TUI/cockpit | ne participe pas aux décisions live |
+| `trader/reporting/read_models/live_kpis.py` | Projection live des KPI depuis `state/` pour daemon/cockpit/TUI | `reporting.stats` rend les KPI ; `commands.stats` possède la CLI |
+| `trader/reporting/read_models/runtime_state.py` | Lecture tolérante des fichiers `state/` pour TUI/cockpit | compat virtuelle : `trader.read_models.*` |
 | `trader/cockpit/` | App Textual, événements cockpit, supervisor local | `trader.cockpit` reste runnable |
 | `trader/ui/` | Builders Rich purs, TUI textuelle, palette | `trader.tui.py` reste une façade import/CLI legacy |
 | `trader/__init__.py`, `trader/attribution.py`, `trader/tui.py`, `trader/daemon.py`, `trader/cli.py`, `trader/stats.py`, `trader/tool_usage.py` | Façades de compatibilité import/CLI | `trader.tools.*` est un package virtuel, pas un dossier physique |
@@ -92,8 +90,8 @@ mais ses packages ne sont pas tous du même niveau :
 | Composition runtime | `runtime/`, `commands/`, wrappers `daemon.py`/`cli.py` | peut assembler les dépendances et déclencher les side effects |
 | Services applicatifs | `application/` | orchestre un cas d'usage testable sans être l'entrypoint process |
 | Capacités métier | `market/`, `planning/`, `execution/`, `scheduling/`, `learnings/`, `rotation/`, `agent/`, `agent_protocol/`, `agent_tools/` | porte la logique du domaine et ne dépend pas de `runtime/` |
-| Primitives transverses | `domain/`, `metadata/`, `system/`, `config/` | types/helpers stables, sans dépendance montante |
-| Read models et surfaces | `reporting/`, `read_models/`, `ui/`, `cockpit/` | lit l'état produit par le runtime, ne décide pas à sa place |
+| Primitives transverses | `domain/`, `support/` | types/helpers stables, sans dépendance montante |
+| Read models et surfaces | `reporting/`, `reporting/read_models/`, `ui/`, `cockpit/` | lit l'état produit par le runtime, ne décide pas à sa place |
 | Compatibilité legacy | modules `attribution.py`/`tui.py`/`daemon.py`/`cli.py`/`stats.py`/`tool_usage.py`, alias virtuels de `trader/__init__.py` | délègue vers le canonique ; aucun nouvel import interne ne doit viser ici |
 
 La cible n'est donc pas forcément de créer six dossiers parents (`core/`,
@@ -101,13 +99,12 @@ La cible n'est donc pas forcément de créer six dossiers parents (`core/`,
 chaque module explicite, puis de réduire les anciennes façades à une couche de compatibilité virtuelle.
 
 Le choix volontaire reste de ne pas frameworkiser en `ports/`/`adapters`
-génériques. En revanche, trois packages neutres existent maintenant parce qu'ils
+génériques. En revanche, deux packages neutres existent maintenant parce qu'ils
 suppriment des cycles réels :
 
 - `domain/` porte les primitives stables partagées par `market`, `planning` et
   les façades legacy ;
-- `metadata/` porte la version git utilisée par `runtime` et `reporting` ;
-- `system/` porte les helpers de processus utilisés par l'agent et le cockpit.
+- `support/` porte les helpers partagés de configuration, version git et processus.
 
 Quand une frontière n'est utile qu'à un cas d'usage, le contrat reste local sous
 forme de `Protocol` dans le module applicatif plutôt que de créer un dossier
@@ -116,13 +113,15 @@ partagés et déjà structurants (`execution`, `market`).
 
 Les anciens imports restent compatibles quand ils existaient déjà
 (`trader.tools.market.Bar`, `trader.tools.execution.Order`, `trader.tools.scheduler.Scheduler`,
-`trader.runtime.code_version`, `trader.process_env`, `trader.stats`,
+`trader.runtime.code_version`, `trader.config.pool`, `trader.metadata.code_version`,
+`trader.process_env`, `trader.read_models.runtime_state`, `trader.stats`,
 `trader.attribution`, `trader.tool_usage`, `trader.tui`). `trader.tools` est
 fourni par le finder de compatibilité dans `trader/__init__.py` et ne correspond
-plus à un dossier physique. Les imports internes
+plus à un dossier physique ; `trader.config`, `trader.metadata`, `trader.system`
+et `trader.read_models` sont aussi des packages virtuels de compatibilité. Les imports internes
 doivent viser les packages neutres ou canoniques (`domain/`, `execution/broker`,
-`execution/contracts`, `execution/ports`, `market/`, `market/ports`, `metadata/`,
-`system/`, `commands/`). Les adaptateurs concrets restent dans
+`execution/contracts`, `execution/ports`, `market/`, `market/ports`, `support/`,
+`reporting/read_models/`, `commands/`). Les adaptateurs concrets restent dans
 `execution/broker` et `market/data_source` quand la composition runtime les
 instancie. Les tests `tests/test_package_layout.py`, `tests/test_code_version_imports.py`
 et `tests/test_runtime_pid_file.py` gardent ces frontières.

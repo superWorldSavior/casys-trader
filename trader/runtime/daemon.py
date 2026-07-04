@@ -77,8 +77,8 @@ from trader.planning.trade_plan import (
     resolve_exit_plan,
     validate_exit_plan,
 )
-from trader.metadata import code_version
-from trader.read_models import live_kpis
+from trader.support.metadata import code_version
+from trader.reporting.read_models import live_kpis
 from trader.reporting import attribution, decision_ledger, meta_performance
 from trader.runtime import ledger_rotation
 from trader.runtime.ib_attach import IBAttachBackoff
@@ -1199,7 +1199,7 @@ def run_cycle(
     if symbols_filter is not None:
         wanted = set(symbols_filter)
         symbols_to_decide = [symbol for symbol in symbols if symbol in wanted]
-    from trader.config.portfolio import load_starting_cash
+    from trader.support.config.portfolio import load_starting_cash
 
     starting_equity = load_starting_cash(ROOT / "config")
     indicator_triggers = indicator_triggers or []
@@ -2854,7 +2854,7 @@ def main(
     # Bootstrap ordonné du backend SQLite AVANT toute lecture d'état ou rotation :
     # migrations + import JSON idempotents + 3 shadows régénérés depuis la DB.
     # No-op si backend="json". Doit précéder make_scheduler et run_cycle.
-    from trader.config.portfolio import load_starting_cash as _load_starting_cash
+    from trader.support.config.portfolio import load_starting_cash as _load_starting_cash
     bootstrap_state_backend(
         state_dir=STATE_DIR,
         starting_cash=_load_starting_cash(ROOT / "config"),

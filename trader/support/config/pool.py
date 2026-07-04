@@ -25,12 +25,8 @@ def load_pool(config_dir: Path) -> Pool:
         raise PoolConfigError(f"pool_yaml_missing: {path}")
     cfg = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     raw = [str(symbol) for symbol in (cfg.get("symbols") or [])]
-    hard_exclusions = frozenset(
-        str(symbol) for symbol in (cfg.get("hard_exclusions") or [])
-    )
-    symbols = tuple(
-        symbol for symbol in dict.fromkeys(raw) if symbol not in hard_exclusions
-    )
+    hard_exclusions = frozenset(str(symbol) for symbol in (cfg.get("hard_exclusions") or []))
+    symbols = tuple(symbol for symbol in dict.fromkeys(raw) if symbol not in hard_exclusions)
     if not symbols:
         raise PoolConfigError("pool_empty_after_exclusions")
     return Pool(symbols=symbols, hard_exclusions=hard_exclusions)

@@ -8,7 +8,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
-from trader.read_models.runtime_state import _safe_float, _safe_list_of_dicts
+from trader.reporting.read_models.runtime_state import _safe_float, _safe_list_of_dicts
 
 UTC = timezone.utc
 

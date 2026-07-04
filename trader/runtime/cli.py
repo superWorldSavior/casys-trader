@@ -9,7 +9,7 @@ from typing import Sequence
 
 import yaml
 
-from trader.metadata import code_version
+from trader.support.metadata import code_version
 from trader.market import market_data as market
 from trader.market.features import DEFAULT_INDICATORS, build_indicator_snapshot, compute_indicator_values
 from trader.runtime import daemon, ledger_rotation

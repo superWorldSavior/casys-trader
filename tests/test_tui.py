@@ -92,7 +92,7 @@ _FULL_STATE: dict = {
 
 
 def test_runtime_state_read_model_est_import_public() -> None:
-    from trader.read_models.runtime_state import load_runtime_state
+    from trader.reporting.read_models.runtime_state import load_runtime_state
 
     assert callable(load_runtime_state)
 

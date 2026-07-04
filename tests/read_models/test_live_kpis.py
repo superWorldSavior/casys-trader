@@ -5,7 +5,7 @@ from pathlib import Path
 
 import yaml
 
-from trader.read_models.live_kpis import compute_live_kpis
+from trader.reporting.read_models.live_kpis import compute_live_kpis
 
 
 def test_compute_live_kpis_read_model_projects_state_files(tmp_path: Path) -> None:

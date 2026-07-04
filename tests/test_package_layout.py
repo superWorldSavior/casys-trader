@@ -38,22 +38,19 @@ def test_top_level_packages_have_declared_architecture_roles() -> None:
         "application",
         "cockpit",
         "commands",
-        "config",
         "domain",
         "execution",
         "learnings",
         "market",
-        "metadata",
         "planning",
         "queue",
-        "read_models",
         "reporting",
         "rotation",
         "runtime",
         "scheduling",
         "semantic",
         "state_db",
-        "system",
+        "support",
         "ui",
     }
     compatibility_facades = set()
@@ -108,6 +105,61 @@ def test_legacy_tools_virtual_modules_preserve_explicit_star_exports() -> None:
         "STALE_BACKOFF_MAX_STREAK",
         "Scheduler",
     ]
+
+
+def test_support_and_read_model_legacy_packages_are_virtual() -> None:
+    trader_dir = Path(__file__).resolve().parents[1] / "trader"
+
+    for legacy_dir in ("config", "metadata", "read_models", "system"):
+        assert not (trader_dir / legacy_dir).exists()
+
+    from trader.config import pool as legacy_pool
+    from trader.config.portfolio import load_starting_cash as legacy_load_starting_cash
+    from trader.metadata import code_version as legacy_code_version
+    from trader.read_models import runtime_state as legacy_runtime_state
+    from trader.read_models.live_kpis import compute_live_kpis as legacy_compute_live_kpis
+    from trader.support.config import pool as support_pool
+    from trader.support.config.portfolio import load_starting_cash
+    from trader.support.metadata import code_version
+    from trader.support.system.process_env import sanitized_runtime_env
+    from trader.system.process_env import sanitized_runtime_env as legacy_sanitized_runtime_env
+    from trader.reporting.read_models import runtime_state
+    from trader.reporting.read_models.live_kpis import compute_live_kpis
+
+    assert getattr(__import__("trader.config").config, "__path__", None) == []
+    assert legacy_pool.load_pool is support_pool.load_pool
+    assert legacy_load_starting_cash is load_starting_cash
+    assert legacy_code_version.current_code_version is code_version.current_code_version
+    assert legacy_sanitized_runtime_env is sanitized_runtime_env
+    assert legacy_runtime_state.load_runtime_state is runtime_state.load_runtime_state
+    assert legacy_compute_live_kpis is compute_live_kpis
+
+
+def test_legacy_virtual_packages_support_from_trader_and_python_m() -> None:
+    import trader
+    from trader import config as legacy_config
+
+    assert trader.config is legacy_config
+
+    repo_root = Path(__file__).resolve().parents[1]
+    for module_name in (
+        "trader.config.pool",
+        "trader.config.portfolio",
+        "trader.metadata.code_version",
+        "trader.system.process_env",
+        "trader.read_models.live_kpis",
+        "trader.read_models.runtime_state",
+    ):
+        result = subprocess.run(
+            [sys.executable, "-m", module_name],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+
+        assert result.returncode == 0, f"{module_name}: {result.stderr}"
 
 
 def test_legacy_flat_module_imports_remain_compatible() -> None:

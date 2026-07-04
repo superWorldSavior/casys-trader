@@ -10,6 +10,7 @@ from __future__ import annotations
 import importlib
 import importlib.abc
 import importlib.machinery
+import importlib.util
 import sys
 import types
 
@@ -17,7 +18,7 @@ __version__ = "0.1.0"
 
 _COMPAT_MODULES = {
     "agent_context": "trader.agent.context",
-    "code_version": "trader.metadata.code_version",
+    "code_version": "trader.support.metadata.code_version",
     "codex_client": "trader.agent.client",
     "consolidator": "trader.learnings.consolidator",
     "decision_audit": "trader.reporting.decision_audit",
@@ -41,9 +42,9 @@ _COMPAT_MODULES = {
     "macro_series": "trader.market.macro_series",
     "meta_performance": "trader.reporting.meta_performance",
     "palette": "trader.ui.palette",
-    "pool_config": "trader.config.pool",
-    "portfolio_config": "trader.config.portfolio",
-    "process_env": "trader.system.process_env",
+    "pool_config": "trader.support.config.pool",
+    "portfolio_config": "trader.support.config.portfolio",
+    "process_env": "trader.support.system.process_env",
     "radar": "trader.market.radar",
     "radar_config": "trader.market.radar_config",
     "radar_data": "trader.market.radar_data",
@@ -63,6 +64,23 @@ _COMPAT_MODULES = {
     "tool_trace": "trader.reporting.tool_trace",
     "cockpit_events": "trader.cockpit.events",
     "cockpit_supervisor": "trader.cockpit.supervisor",
+}
+
+_COMPAT_PACKAGES = {
+    "config": {
+        "pool": "trader.support.config.pool",
+        "portfolio": "trader.support.config.portfolio",
+    },
+    "metadata": {
+        "code_version": "trader.support.metadata.code_version",
+    },
+    "read_models": {
+        "live_kpis": "trader.reporting.read_models.live_kpis",
+        "runtime_state": "trader.reporting.read_models.runtime_state",
+    },
+    "system": {
+        "process_env": "trader.support.system.process_env",
+    },
 }
 
 _TOOLS_COMPAT_MODULES = {
@@ -164,6 +182,28 @@ class _CompatToolsPackage(types.ModuleType):
         return sorted(set(super().__dir__()) | set(_TOOLS_COMPAT_MODULES) | {"memory"})
 
 
+class _CompatPackage(types.ModuleType):
+    """Virtual legacy package with explicitly mapped submodules."""
+
+    def __init__(self, alias_name: str, modules: dict[str, str]) -> None:
+        super().__init__(alias_name)
+        super().__setattr__("_alias_name", alias_name)
+        super().__setattr__("_modules", modules)
+        super().__setattr__("__package__", alias_name)
+        super().__setattr__("__path__", [])
+        super().__setattr__("__all__", sorted(modules))
+
+    def __getattr__(self, name: str):
+        modules = super().__getattribute__("_modules")
+        if name in modules:
+            return importlib.import_module(f"{self.__name__}.{name}")
+        raise AttributeError(f"module {self.__name__!r} has no attribute {name!r}")
+
+    def __dir__(self) -> list[str]:
+        modules = super().__getattribute__("_modules")
+        return sorted(set(super().__dir__()) | set(modules))
+
+
 class _CompatToolsMemoryModule(types.ModuleType):
     """Compatibility module for names split between agent memory and raw learnings."""
 
@@ -208,27 +248,92 @@ class _CompatToolsMemoryModule(types.ModuleType):
 class _CompatAliasFinder(importlib.abc.MetaPathFinder, importlib.abc.Loader):
     _compat_package = __name__
 
-    def find_spec(self, fullname: str, path=None, target=None):  # noqa: ANN001
+    def _target_name_for(self, fullname: str) -> str | None:
+        prefix = f"{__name__}."
         tools_name = f"{__name__}.tools"
-        if fullname == tools_name:
-            spec = importlib.machinery.ModuleSpec(fullname, self, is_package=True)
+        if fullname.startswith(f"{tools_name}."):
+            old_tool_name = fullname.removeprefix(f"{tools_name}.")
+            return _TOOLS_COMPAT_MODULES.get(old_tool_name)
+        if not fullname.startswith(prefix):
+            return None
+        old_name = fullname.removeprefix(prefix)
+        if "." not in old_name:
+            return _COMPAT_MODULES.get(old_name)
+        package_name, _, submodule_name = old_name.partition(".")
+        return _COMPAT_PACKAGES.get(package_name, {}).get(submodule_name)
+
+    def _module_spec(self, fullname: str, *, is_package: bool) -> importlib.machinery.ModuleSpec:
+        spec = importlib.machinery.ModuleSpec(fullname, self, is_package=is_package)
+        if is_package:
             spec.submodule_search_locations = []
             return spec
+        target_name = self._target_name_for(fullname)
+        if target_name is not None:
+            target_spec = importlib.util.find_spec(target_name)
+            if target_spec is not None:
+                spec.origin = target_spec.origin
+        return spec
+
+    def find_spec(self, fullname: str, path=None, target=None):  # noqa: ANN001
+        prefix = f"{__name__}."
+        if fullname.startswith(prefix):
+            old_name = fullname.removeprefix(prefix)
+            if "." not in old_name and old_name in _COMPAT_PACKAGES:
+                return self._module_spec(fullname, is_package=True)
+            package_name, _, submodule_name = old_name.partition(".")
+            if (
+                package_name in _COMPAT_PACKAGES
+                and submodule_name in _COMPAT_PACKAGES[package_name]
+                and "." not in submodule_name
+            ):
+                return self._module_spec(fullname, is_package=False)
+
+        tools_name = f"{__name__}.tools"
+        if fullname == tools_name:
+            return self._module_spec(fullname, is_package=True)
         if fullname.startswith(f"{tools_name}."):
             old_tool_name = fullname.removeprefix(f"{tools_name}.")
             if "." in old_tool_name or (old_tool_name not in _TOOLS_COMPAT_MODULES and old_tool_name != "memory"):
                 return None
-            return importlib.machinery.ModuleSpec(fullname, self, is_package=False)
+            return self._module_spec(fullname, is_package=False)
 
-        prefix = f"{__name__}."
         if not fullname.startswith(prefix):
             return None
         old_name = fullname.removeprefix(prefix)
         if "." in old_name or old_name not in _COMPAT_MODULES:
             return None
-        return importlib.machinery.ModuleSpec(fullname, self, is_package=False)
+        return self._module_spec(fullname, is_package=False)
+
+    def get_code(self, fullname: str):
+        target_name = self._target_name_for(fullname)
+        if target_name is None:
+            if fullname == f"{__name__}.tools.memory":
+                return compile("", f"<{fullname}>", "exec")
+            return None
+        target_spec = importlib.util.find_spec(target_name)
+        if target_spec is None or target_spec.loader is None:
+            return None
+        get_code = getattr(target_spec.loader, "get_code", None)
+        if get_code is not None:
+            return get_code(target_name)
+        get_source = getattr(target_spec.loader, "get_source", None)
+        if get_source is None:
+            return None
+        source = get_source(target_name)
+        if source is None:
+            return None
+        filename = getattr(target_spec.loader, "get_filename", lambda _name: f"<{fullname}>")(target_name)
+        return compile(source, filename, "exec")
 
     def create_module(self, spec):
+        prefix = f"{__name__}."
+        old_name = spec.name.removeprefix(prefix)
+        if "." not in old_name and old_name in _COMPAT_PACKAGES:
+            return _CompatPackage(spec.name, _COMPAT_PACKAGES[old_name])
+        package_name, _, submodule_name = old_name.partition(".")
+        if package_name in _COMPAT_PACKAGES and submodule_name in _COMPAT_PACKAGES[package_name]:
+            return _CompatAliasModule(spec.name, _COMPAT_PACKAGES[package_name][submodule_name])
+
         tools_name = f"{__name__}.tools"
         if spec.name == tools_name:
             return _CompatToolsPackage(spec.name)
@@ -248,6 +353,17 @@ class _CompatAliasFinder(importlib.abc.MetaPathFinder, importlib.abc.Loader):
     def exec_module(self, module: types.ModuleType) -> None:
         alias_name = module.__dict__.get("_alias_name")
         tools_name = f"{__name__}.tools"
+        prefix = f"{__name__}."
+        old_name = alias_name.removeprefix(prefix) if isinstance(alias_name, str) else ""
+        if "." not in old_name and old_name in _COMPAT_PACKAGES:
+            setattr(sys.modules[__name__], old_name, module)
+        elif isinstance(alias_name, str) and "." in old_name:
+            package_name, _, submodule_name = old_name.partition(".")
+            if package_name in _COMPAT_PACKAGES and submodule_name in _COMPAT_PACKAGES[package_name]:
+                package_module = importlib.import_module(f"{__name__}.{package_name}")
+                setattr(package_module, submodule_name, module)
+                return None
+
         if alias_name == tools_name:
             setattr(sys.modules[__name__], "tools", module)
         elif isinstance(alias_name, str) and alias_name.startswith(f"{tools_name}."):
@@ -265,6 +381,8 @@ def _install_compat_finder() -> None:
 
 
 def __getattr__(name: str):
+    if name in _COMPAT_PACKAGES:
+        return importlib.import_module(f"{__name__}.{name}")
     if name in _COMPAT_MODULES:
         return importlib.import_module(f"{__name__}.{name}")
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

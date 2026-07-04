@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from trader.metadata import code_version
+from trader.support.metadata import code_version
 
 
 def test_historical_code_version_retrouve_le_commit_avant_un_timestamp(monkeypatch) -> None:

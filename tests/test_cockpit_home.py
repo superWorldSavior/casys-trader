@@ -77,7 +77,7 @@ def _patch_state_paths(monkeypatch, tmp_path):
     import json
 
     import trader.cockpit.app as cockpit_module
-    import trader.read_models.runtime_state as rs
+    import trader.reporting.read_models.runtime_state as rs
 
     (tmp_path / "current_report.json").write_text(json.dumps({
         "ts": "2026-07-03T10:00:00+00:00",

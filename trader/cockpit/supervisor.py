@@ -27,7 +27,7 @@ from typing import Literal
 
 from trader.runtime.pid_file import claim_pid_file as claim_pid_file
 from trader.runtime.pid_file import release_pid_file as release_pid_file
-from trader.system.process_env import sanitized_runtime_env
+from trader.support.system.process_env import sanitized_runtime_env
 
 # Taille maximale de daemon_console.log avant rotation (5 Mo)
 MAX_LOG_SIZE_BYTES: int = 5 * 1024 * 1024

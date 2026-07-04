@@ -241,7 +241,7 @@ def test_venue_clock_sessions_absentes_neutre():
 
 
 def test_read_model_expose_sessions(tmp_path):
-    from trader.read_models.runtime_state import load_runtime_state
+    from trader.reporting.read_models.runtime_state import load_runtime_state
 
     state = load_runtime_state(state_dir=tmp_path, config_dir=str(tmp_path))
     assert isinstance(state.get("sessions"), dict)

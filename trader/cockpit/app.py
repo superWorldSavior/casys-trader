@@ -50,7 +50,6 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from rich.console import RenderableType
 from rich.panel import Panel
 from rich.text import Text
 from textual.app import App, ComposeResult
@@ -72,7 +71,7 @@ from trader.cockpit.events import (
 )
 from trader.cockpit import overview as _cockpit_overview
 from trader.ui.palette import PALETTE_DARK, PALETTE_INK, PALETTE_LIGHT, Palette
-from trader.read_models.runtime_state import (
+from trader.reporting.read_models.runtime_state import (
     _enrich_decisions_with_data_source,
     _safe_float,
     _safe_list_of_dicts,
@@ -90,7 +89,6 @@ from trader.ui.rich_panels import (
     _build_llm_activity_panel,
     _build_positions_panel,
     _build_watches_panel,
-    _format_datetime,
     build_closed_trades_table,
     build_universe_panel,
 )
@@ -241,9 +239,7 @@ class CockpitStatus(Static):
     }
     """
 
-    def update_state(
-        self, state: dict, kill_active: bool, *, palette: Palette = PALETTE_DARK
-    ) -> None:
+    def update_state(self, state: dict, kill_active: bool, *, palette: Palette = PALETTE_DARK) -> None:
         from trader.cockpit.home import build_status_line
 
         vital = daemon_vital_state(_STATE_DIR / "daemon_status.json")
@@ -325,15 +321,9 @@ class PositionsPlansPane(Static):
 
     def update_state(self, state: dict) -> None:
         palette = self._current_palette
-        portfolio = (
-            state.get("portfolio") if isinstance(state.get("portfolio"), dict) else {}
-        )
+        portfolio = state.get("portfolio") if isinstance(state.get("portfolio"), dict) else {}
         holdings = _safe_list_of_dicts(portfolio.get("holdings"))
-        trade_plans = (
-            state.get("trade_plans")
-            if isinstance(state.get("trade_plans"), list)
-            else []
-        )
+        trade_plans = state.get("trade_plans") if isinstance(state.get("trade_plans"), list) else []
         open_venues = _open_venues_from_state(state)
 
         self.query_one("#positions-panel", Static).update(
@@ -344,9 +334,7 @@ class PositionsPlansPane(Static):
                 palette=palette,
             )
         )
-        self.query_one("#exit-plans-panel", Static).update(
-            _build_exit_plans_enriched(trade_plans, palette=palette)
-        )
+        self.query_one("#exit-plans-panel", Static).update(_build_exit_plans_enriched(trade_plans, palette=palette))
 
 
 class ArmedPlansPane(Static):
@@ -371,15 +359,9 @@ class ArmedPlansPane(Static):
 
     def update_state(self, state: dict) -> None:
         palette = self._current_palette
-        armed_plans = (
-            state.get("armed_plans")
-            if isinstance(state.get("armed_plans"), list)
-            else []
-        )
+        armed_plans = state.get("armed_plans") if isinstance(state.get("armed_plans"), list) else []
         self.query_one("#armed-plans-panel", Static).update(
-            _build_armed_plans_panel(
-                armed_plans, open_venues=_open_venues_from_state(state), palette=palette
-            )
+            _build_armed_plans_panel(armed_plans, open_venues=_open_venues_from_state(state), palette=palette)
         )
 
 
@@ -407,32 +389,16 @@ class DecisionsPane(Static):
 
     def update_state(self, state: dict) -> None:
         palette = self._current_palette
-        attribution = (
-            state.get("attribution")
-            if isinstance(state.get("attribution"), dict)
-            else {}
-        )
+        attribution = state.get("attribution") if isinstance(state.get("attribution"), dict) else {}
         decisions_raw = _safe_list_of_dicts(state.get("decisions"))
-        recent_decisions = (
-            state.get("recent_decisions")
-            if isinstance(state.get("recent_decisions"), list)
-            else []
-        )
+        recent_decisions = state.get("recent_decisions") if isinstance(state.get("recent_decisions"), list) else []
         decisions = _enrich_decisions_with_data_source(decisions_raw, recent_decisions)
-        stale_streaks = (
-            state.get("stale_streaks")
-            if isinstance(state.get("stale_streaks"), dict)
-            else {}
-        )
+        stale_streaks = state.get("stale_streaks") if isinstance(state.get("stale_streaks"), dict) else {}
 
         self.query_one("#decisions-table", Static).update(
-            _build_decisions_table(
-                decisions, open_venues=_open_venues_from_state(state), palette=palette
-            )
+            _build_decisions_table(decisions, open_venues=_open_venues_from_state(state), palette=palette)
         )
-        self.query_one("#attribution-panel", Static).update(
-            _build_attribution_panel(attribution, palette=palette)
-        )
+        self.query_one("#attribution-panel", Static).update(_build_attribution_panel(attribution, palette=palette))
         self.query_one("#data-health-panel", Static).update(
             _build_data_health_panel(recent_decisions, stale_streaks, palette=palette)
         )
@@ -465,38 +431,21 @@ class EquityTradesPane(Static):
         palette = self._current_palette
         kpis = state.get("kpis") if isinstance(state.get("kpis"), dict) else {}
         equity_curve = [
-            v
-            for v in (
-                _safe_float(x, default=None)
-                for x in (state.get("equity_curve") or [])
-            )
-            if v is not None
+            v for v in (_safe_float(x, default=None) for x in (state.get("equity_curve") or [])) if v is not None
         ]
-        recent_trips = (
-            state.get("recent_trips") if isinstance(state.get("recent_trips"), list) else []
-        )
-        daemon_status = (
-            state.get("daemon_status")
-            if isinstance(state.get("daemon_status"), dict)
-            else {}
-        )
+        recent_trips = state.get("recent_trips") if isinstance(state.get("recent_trips"), list) else []
+        daemon_status = state.get("daemon_status") if isinstance(state.get("daemon_status"), dict) else {}
         learnings_pending = state.get("learnings_pending_count") or 0
         consolidation_status = state.get("consolidation_status")
         company_map = state.get("company_map") if isinstance(state.get("company_map"), dict) else {}
 
-        self.query_one("#kpi-compact", Static).update(
-            _build_kpi_compact(kpis, equity_curve, palette=palette)
-        )
-        self.query_one("#equity-panel", Static).update(
-            _build_equity_panel(equity_curve, palette=palette)
-        )
+        self.query_one("#kpi-compact", Static).update(_build_kpi_compact(kpis, equity_curve, palette=palette))
+        self.query_one("#equity-panel", Static).update(_build_equity_panel(equity_curve, palette=palette))
         self.query_one("#trades-panel", Static).update(
             build_closed_trades_table(recent_trips, company_map, palette=palette)
         )
         self.query_one("#llm-activity-panel", Static).update(
-            _build_llm_activity_panel(
-                daemon_status, learnings_pending, consolidation_status, palette=palette
-            )
+            _build_llm_activity_panel(daemon_status, learnings_pending, consolidation_status, palette=palette)
         )
 
 
@@ -524,37 +473,17 @@ class UniversePane(Static):
 
     def update_state(self, state: dict) -> None:
         palette = self._current_palette
-        universe_symbols = (
-            state.get("universe_symbols")
-            if isinstance(state.get("universe_symbols"), list)
-            else []
-        )
-        venue_state = (
-            state.get("venue_state") if isinstance(state.get("venue_state"), dict) else {}
-        )
-        open_venues_list = (
-            state.get("open_venues_list")
-            if isinstance(state.get("open_venues_list"), list)
-            else []
-        )
-        company_map = (
-            state.get("company_map") if isinstance(state.get("company_map"), dict) else {}
-        )
-        indicator_watches = (
-            state.get("indicator_watches")
-            if isinstance(state.get("indicator_watches"), list)
-            else []
-        )
+        universe_symbols = state.get("universe_symbols") if isinstance(state.get("universe_symbols"), list) else []
+        venue_state = state.get("venue_state") if isinstance(state.get("venue_state"), dict) else {}
+        open_venues_list = state.get("open_venues_list") if isinstance(state.get("open_venues_list"), list) else []
+        company_map = state.get("company_map") if isinstance(state.get("company_map"), dict) else {}
+        indicator_watches = state.get("indicator_watches") if isinstance(state.get("indicator_watches"), list) else []
         learnings = _safe_list_of_dicts(state.get("learnings"))
 
         self.query_one("#universe-panel", Static).update(
-            build_universe_panel(
-                universe_symbols, venue_state, open_venues_list, company_map, palette=palette
-            )
+            build_universe_panel(universe_symbols, venue_state, open_venues_list, company_map, palette=palette)
         )
-        self.query_one("#watches-panel", Static).update(
-            _build_watches_panel(indicator_watches, palette=palette)
-        )
+        self.query_one("#watches-panel", Static).update(_build_watches_panel(indicator_watches, palette=palette))
         learnings_panel = _build_learnings_panel(learnings, palette=palette)
         self.query_one("#learnings-panel", Static).update(
             learnings_panel
@@ -629,6 +558,7 @@ class LogsPane(Static):
             events_path: Path = self.app._events_file  # type: ignore[attr-defined]
         except AttributeError:
             import trader.cockpit as _mod
+
             events_path = _mod._EVENTS_FILE
         self.poll_events(events_path)
 
@@ -681,11 +611,7 @@ class LogsPane(Static):
         if not events_path.exists():
             if self._last_file_status != "absent":
                 self._last_file_status = "absent"
-                log.write(
-                    Text(
-                        f"[events] {events_path.name} absent — en attente…", style="dim"
-                    )
-                )
+                log.write(Text(f"[events] {events_path.name} absent — en attente…", style="dim"))
             return
 
         if self._last_file_status == "absent":
@@ -803,9 +729,7 @@ class ConfirmQuit(_ConfirmModal):
     def compose(self) -> ComposeResult:
         pid_info = f" (PID {self._pid})" if self._pid else ""
         with Vertical():
-            yield Label(
-                f"Quitter — le moteur live sera aussi arrêté{pid_info}."
-            )
+            yield Label(f"Quitter — le moteur live sera aussi arrêté{pid_info}.")
             with Horizontal():
                 yield from _confirmation_buttons(
                     "Arrêter et quitter",
@@ -833,15 +757,9 @@ class ConfirmStart(_ConfirmModal):
         self._never_started = never_started
 
     def compose(self) -> ComposeResult:
-        intro = (
-            "Aucun daemon en cours."
-            if self._never_started
-            else "Le daemon est arrêté."
-        )
+        intro = "Aucun daemon en cours." if self._never_started else "Le daemon est arrêté."
         with Vertical():
-            yield Label(
-                f"{intro}\nDémarrer le moteur live (PAPER réel — exécute les ordres simulés) ?"
-            )
+            yield Label(f"{intro}\nDémarrer le moteur live (PAPER réel — exécute les ordres simulés) ?")
             with Horizontal():
                 yield from _confirmation_buttons(
                     "Démarrer",
@@ -907,9 +825,7 @@ class ClassFilterModal(ModalScreen["set[EventClass] | None"]):
             self.dismiss(None)
             return
         selected = {
-            event_class
-            for event_class in EventClass
-            if self.query_one(f"#class-{event_class.name}", Checkbox).value
+            event_class for event_class in EventClass if self.query_one(f"#class-{event_class.name}", Checkbox).value
         }
         self.dismiss(selected if len(selected) < len(list(EventClass)) else None)
 
@@ -1201,9 +1117,7 @@ class CockpitApp(App):
             home._current_palette = palette
             home.update_state(state, kill_active)
 
-            positions_plans: PositionsPlansPane = self.query_one(
-                "#positions-plans-pane", PositionsPlansPane
-            )
+            positions_plans: PositionsPlansPane = self.query_one("#positions-plans-pane", PositionsPlansPane)
             positions_plans._current_palette = palette
             positions_plans.update_state(state)
 
@@ -1215,9 +1129,7 @@ class CockpitApp(App):
             decisions._current_palette = palette
             decisions.update_state(state)
 
-            equity_trades: EquityTradesPane = self.query_one(
-                "#equity-trades-pane", EquityTradesPane
-            )
+            equity_trades: EquityTradesPane = self.query_one("#equity-trades-pane", EquityTradesPane)
             equity_trades._current_palette = palette
             equity_trades.update_state(state)
 
@@ -1282,9 +1194,7 @@ class CockpitApp(App):
         try:
             import json as _json
 
-            _data = _json.loads(
-                (_STATE_DIR / "daemon_status.json").read_text(encoding="utf-8")
-            )
+            _data = _json.loads((_STATE_DIR / "daemon_status.json").read_text(encoding="utf-8"))
             _pid: int | None = int(_data.get("pid")) if _data.get("pid") else None
         except Exception:
             _pid = None
@@ -1298,9 +1208,7 @@ class CockpitApp(App):
                     status_file=_STATE_DIR / "daemon_status.json",
                 )
                 if result.stopped:
-                    self.notify(
-                        f"Daemon arrêté (PID {result.pid})", severity="information"
-                    )
+                    self.notify(f"Daemon arrêté (PID {result.pid})", severity="information")
                 else:
                     self.notify(
                         "Daemon non arrêté (déjà mort ou identité KO)",

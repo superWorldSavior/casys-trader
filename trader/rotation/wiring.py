@@ -182,7 +182,7 @@ def build_rank_fn(
     Returns:
         rank_fn() -> {"ranked", "ineligible", "components_by_symbol"}
     """
-    from trader.config.pool import load_pool
+    from trader.support.config.pool import load_pool
     from trader.market.radar_config import load_radar_params, load_conviction
     from trader.market.radar import scan_and_rank, daily_components
     from trader.market.radar_data import fetch_daily
@@ -320,7 +320,7 @@ def run_cli(
     Returns:
         dict run() : {"final_hot_set", "default_hot_set", "alerts", "written"}.
     """
-    from trader.config.pool import load_pool
+    from trader.support.config.pool import load_pool
     from trader.market.radar_config import load_radar_params
     from trader.market.radar_data import download_daily_batch
     from trader.rotation import run

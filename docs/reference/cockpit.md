@@ -1,7 +1,7 @@
 # Référence — Cockpit (TUI)
 
 > **Type** : Reference (Diátaxis).
-> **Code** : `trader/cockpit/` (app, supervisor, events) · `trader/ui/` (rich_panels, palette, tui) · `trader/read_models/runtime_state`
+> **Code** : `trader/cockpit/` (app, supervisor, events) · `trader/ui/` (rich_panels, palette, tui) · `trader/reporting/read_models/runtime_state`
 > **Lancer** : `make watch` · **Rôle** : dashboard Textual + supervision du daemon.
 
 Le cockpit est un **observateur** : il lit l'état (`state/`), l'affiche, et pilote
@@ -30,7 +30,7 @@ panneaux sont des **builders purs** dans `ui/rich_panels.py` :
 | Santé données | fraîcheur / sources / stale |
 | Univers | symboles suivis par place |
 
-## Read model — `read_models/runtime_state`
+## Read model — `reporting/read_models/runtime_state`
 
 Assemble l'état pour l'UI par **lectures tolérantes** (jamais de `raise`) des
 fichiers `state/` :

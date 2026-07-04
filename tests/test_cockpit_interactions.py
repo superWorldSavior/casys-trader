@@ -25,7 +25,7 @@ def _patch_state_paths(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr(cockpit_module, "_STATE_DIR", tmp_path)
     monkeypatch.setattr(cockpit_module, "_EVENTS_FILE", tmp_path / "events.jsonl")
     monkeypatch.setattr(cockpit_module, "_KILL_FILE", tmp_path / "KILL")
-    import trader.read_models.runtime_state as rs
+    import trader.reporting.read_models.runtime_state as rs
     monkeypatch.setattr(rs, "_STATE_DIR", tmp_path)
     # Supprime la modal ConfirmStart : elle intercepte les touches et le focus
     # ce qui casse les tests de navigation/focus clavier.

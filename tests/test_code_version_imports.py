@@ -31,7 +31,7 @@ assert "trader.runtime" not in loaded, sorted(
 def test_runtime_code_version_import_remains_a_metadata_shim() -> None:
     repo_root = Path(__file__).resolve().parents[1]
     code = """
-from trader.metadata import code_version as metadata_code_version
+from trader.support.metadata import code_version as metadata_code_version
 from trader.runtime import code_version as runtime_code_version
 
 assert runtime_code_version.SCHEMA_VERSION == metadata_code_version.SCHEMA_VERSION

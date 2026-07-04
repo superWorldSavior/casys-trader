@@ -85,7 +85,7 @@ def compute_model_performance(state_dir: Path) -> list[dict]:
 
 def compute_live_kpis(state_dir: Path) -> dict:
     """Compute live KPIs from history, broker state and model-performance logs."""
-    from trader.config.portfolio import load_starting_cash
+    from trader.support.config.portfolio import load_starting_cash
 
     starting_equity: float = load_starting_cash(state_dir.parent / "config")
 

@@ -17,7 +17,7 @@ from textual.containers import Horizontal
 from textual.widgets import Static
 
 from trader.market import fx
-from trader.read_models.runtime_state import _safe_float, _safe_list_of_dicts
+from trader.reporting.read_models.runtime_state import _safe_float, _safe_list_of_dicts
 from trader.ui.palette import PALETTE_DARK, PALETTE_LIGHT, Palette
 from trader.ui.rich_panels import _format_datetime
 from trader.cockpit import aggregates as _aggregates

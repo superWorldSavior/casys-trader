@@ -4,6 +4,7 @@ Spec : docs/superpowers/specs/2026-07-03-cockpit-home-gonzo-design.md.
 Les builders sont purs (state dict → renderable) ; seuls les widgets
 touchent Textual. Aucune I/O ici.
 """
+
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -58,7 +59,7 @@ from trader.cockpit.overview import (
 )
 from trader.market import fx
 from trader.planning.indicator_watch import is_armed_plan as _is_armed_plan
-from trader.read_models.runtime_state import _safe_float, _safe_list_of_dicts
+from trader.reporting.read_models.runtime_state import _safe_float, _safe_list_of_dicts
 from trader.ui.palette import PALETTE_LIGHT, Palette
 from trader.ui.rich_panels import (
     _build_exit_plans_enriched,
@@ -123,8 +124,7 @@ def _vital_text(vital, palette: Palette) -> Text:
         if vital.battement_old:
             mins = int(vital.since_seconds or 0) // 60
             secs = int(vital.since_seconds or 0) % 60
-            return Text.assemble(("● VIVANT", "bold yellow"),
-                                 (f" {mins:02d}:{secs:02d}", palette["dim"]))
+            return Text.assemble(("● VIVANT", "bold yellow"), (f" {mins:02d}:{secs:02d}", palette["dim"]))
         return Text("● VIVANT", style="bold green")
     if vital.status == "stopped":
         return Text("● ARRÊTÉ", style="bold red")
@@ -144,9 +144,7 @@ def build_status_line(
     state = state if isinstance(state, dict) else {}
     portfolio = state.get("portfolio") if isinstance(state.get("portfolio"), dict) else {}
     kpis = state.get("kpis") if isinstance(state.get("kpis"), dict) else {}
-    daemon_status = (
-        state.get("daemon_status") if isinstance(state.get("daemon_status"), dict) else {}
-    )
+    daemon_status = state.get("daemon_status") if isinstance(state.get("daemon_status"), dict) else {}
 
     equity = _safe_float(portfolio.get("equity") or kpis.get("equity"), default=0.0) or 0.0
     cash = _safe_float(portfolio.get("cash") or kpis.get("cash"), default=0.0) or 0.0
@@ -157,10 +155,7 @@ def build_status_line(
         ret_pct = (_safe_float(kpis.get("total_return"), default=0.0) or 0.0) * 100.0
     pnl_style = palette["pnl_positive"] if pnl >= 0 else palette["pnl_negative"]
 
-    curve = [
-        v for v in (_safe_float(x, default=None) for x in (state.get("equity_curve") or []))
-        if v is not None
-    ]
+    curve = [v for v in (_safe_float(x, default=None) for x in (state.get("equity_curve") or [])) if v is not None]
     spark = sparkline(curve[-24:]) if len(curve) >= 2 else ""
 
     used = daemon_status.get("model_calls_used")
@@ -169,9 +164,7 @@ def build_status_line(
 
     done = daemon_status.get("decisions_done")
     total = daemon_status.get("symbols_total")
-    cycle_running = (
-        isinstance(total, int) and total > 0 and isinstance(done, int) and done < total
-    )
+    cycle_running = isinstance(total, int) and total > 0 and isinstance(done, int) and done < total
 
     clock = venue_clock(state.get("sessions") or {}, now)
     venue_bits: list[tuple[str, str]] = []
@@ -179,14 +172,10 @@ def build_status_line(
         venue_bits.append((f"{venue}●", palette["status_nominal"]))
         venue_bits.append((" ", ""))
     if clock.next_at is not None and clock.next_venue not in clock.open_now:
-        venue_bits.append(
-            (f"{clock.next_venue} {clock.next_at.strftime('%H:%M')}", palette["dim"])
-        )
+        venue_bits.append((f"{clock.next_venue} {clock.next_at.strftime('%H:%M')}", palette["dim"]))
     venues = Text.assemble(*venue_bits) if venue_bits else None
 
-    mode = Text("LIVE", style="bold red") if not state.get("dry_run", True) else Text(
-        "DRY", style="bold yellow"
-    )
+    mode = Text("LIVE", style="bold red") if not state.get("dry_run", True) else Text("DRY", style="bold yellow")
     kill = (
         Text(" !! KILL !! ", style="bold white on red")
         if kill_active
@@ -202,8 +191,7 @@ def build_status_line(
         ("mode", mode),
         ("kill", kill),
         ("llm", Text(llm, style=palette["status_accent"])),
-        ("cycle", Text(f"cycle {done}/{total}", style=palette["status_accent"])
-         if cycle_running else None),
+        ("cycle", Text(f"cycle {done}/{total}", style=palette["status_accent"]) if cycle_running else None),
         ("venues", venues),
         ("utc", Text(now.strftime("%H:%M:%SZ"), style=palette["dim"])),
     ]
@@ -227,7 +215,7 @@ def build_status_line(
 
 
 def _hex_to_rgb(color: str) -> tuple[int, int, int] | str:
-    """"#RRGGBB" → tuple RGB pour plotext ; nom de couleur → inchangé."""
+    """ "#RRGGBB" → tuple RGB pour plotext ; nom de couleur → inchangé."""
     text = color.strip()
     if text.startswith("#") and len(text) == 7:
         try:
@@ -237,17 +225,13 @@ def _hex_to_rgb(color: str) -> tuple[int, int, int] | str:
     return text
 
 
-def styled_bar(
-    value: float, total: float, *, width: int, style: str, signed: bool = False
-) -> Text:
+def styled_bar(value: float, total: float, *, width: int, style: str, signed: bool = False) -> Text:
     """Barre unicode STYLÉE (fix des barres noires : _bar retourne une str nue)."""
     raw = _signed_bar(value, total, width=width) if signed else _bar(value, total, width=width)
     return Text(raw, style=style)
 
 
-def build_equity_chart(
-    values: list[float], *, palette: Palette, width: int = 58, height: int = 9
-) -> RenderableType:
+def build_equity_chart(values: list[float], *, palette: Palette, width: int = 58, height: int = 9) -> RenderableType:
     """Courbe d'équité en braille plotext, couleur palette, fenêtre ~200 pts."""
     series = [v for v in values if v == v][-200:]
     if len(series) < 2:
@@ -258,8 +242,7 @@ def build_equity_chart(
         plt.clear_figure()
         plt.theme("clear")
         plt.plotsize(width, height)
-        plt.plot(list(range(len(series))), series, marker="braille",
-                 color=_hex_to_rgb(palette["equity_line"]))
+        plt.plot(list(range(len(series))), series, marker="braille", color=_hex_to_rgb(palette["equity_line"]))
         return Text.from_ansi(plt.build())
     except Exception:
         return Text(sparkline(series[-width:]), style=f"bold {palette['equity_line']}")
@@ -300,7 +283,12 @@ def build_portfolio_summary(state: dict, *, palette: Palette) -> RenderableType:
     )
     header.add_row(
         _metric_cell("Équité", f"{equity:,.0f}", value_style=f"bold {palette['status_equity']}", palette=palette),
-        _metric_cell("Cash", f"{cash:,.0f} ({cash / equity * 100.0 if equity else 0.0:.0f}%)", value_style=palette["kpi_default"], palette=palette),
+        _metric_cell(
+            "Cash",
+            f"{cash:,.0f} ({cash / equity * 100.0 if equity else 0.0:.0f}%)",
+            value_style=palette["kpi_default"],
+            palette=palette,
+        ),
         pnl_cell,
         _metric_cell(
             "Latent / Réalisé / Frais",
@@ -389,9 +377,7 @@ def build_activity_tile(buckets: dict[str, list[int]], *, palette: Palette) -> R
     return table
 
 
-def build_plans_tile(
-    state: dict, *, palette: Palette, now: datetime | None = None
-) -> RenderableType:
+def build_plans_tile(state: dict, *, palette: Palette, now: datetime | None = None) -> RenderableType:
     """Table unifiée armés → sorties (par risque) → veilles (par expiration).
 
     Non branché en prod depuis T10 (DataTables) — conservé comme référence pure/testable ; supprimer ou re-brancher lors du chantier export/captures.
@@ -400,15 +386,15 @@ def build_plans_tile(
     state = state if isinstance(state, dict) else {}
     armed = _safe_list_of_dicts(state.get("armed_plans"))
     trade_plans = _safe_list_of_dicts(state.get("trade_plans"))
-    watches = [
-        w for w in _safe_list_of_dicts(state.get("indicator_watches"))
-        if not _is_armed_plan(w)
-    ]
+    watches = [w for w in _safe_list_of_dicts(state.get("indicator_watches")) if not _is_armed_plan(w)]
 
     table = Table(show_header=True, expand=True, box=None, pad_edge=False)
     for column in ("Type", "Sym", "Détail", "Déclencheur / Risque", "Exp."):
-        table.add_column(column, no_wrap=(column != "Déclencheur / Risque"),
-                         overflow="fold" if column == "Déclencheur / Risque" else "ellipsis")
+        table.add_column(
+            column,
+            no_wrap=(column != "Déclencheur / Risque"),
+            overflow="fold" if column == "Déclencheur / Risque" else "ellipsis",
+        )
 
     for watch in armed:
         table.add_row(
@@ -439,13 +425,16 @@ def build_plans_tile(
             Text("sortie", style=palette["kpi_default"]),
             Text(symbol, style="bold"),
             f"{_plan_qty_label(plan)} · {_plan_state_label(plan)}",
-            Text(f"{risk_label} · {_next_tp_label(plan, price)}",
-                 style=palette["kpi_vol_warn"] if stale else palette["dim"]),
+            Text(
+                f"{risk_label} · {_next_tp_label(plan, price)}",
+                style=palette["kpi_vol_warn"] if stale else palette["dim"],
+            ),
             "—",
         )
     if len(exit_rows) > 8:
-        table.add_row(Text("sortie", style=palette["dim"]), Text(f"+{len(exit_rows) - 8}",
-                      style=palette["dim"]), "…", "", "")
+        table.add_row(
+            Text("sortie", style=palette["dim"]), Text(f"+{len(exit_rows) - 8}", style=palette["dim"]), "…", "", ""
+        )
 
     for watch in sorted(watches, key=lambda w: str(w.get("expires_at") or ""))[:5]:
         table.add_row(
@@ -456,36 +445,38 @@ def build_plans_tile(
             _relative_expiry(watch.get("expires_at"), now=now),
         )
     if len(watches) > 5:
-        table.add_row(Text("veille", style=palette["dim"]),
-                      Text(f"+{len(watches) - 5}", style=palette["dim"]), "…", "", "")
+        table.add_row(
+            Text("veille", style=palette["dim"]), Text(f"+{len(watches) - 5}", style=palette["dim"]), "…", "", ""
+        )
     if not (armed or exit_rows or watches):
         table.add_row("—", "—", "aucun plan", "", "")
     return table
 
 
-def build_decisions_tile(
-    decisions: list[dict], recent_decisions: list[dict], *, palette: Palette
-) -> RenderableType:
+def build_decisions_tile(decisions: list[dict], recent_decisions: list[dict], *, palette: Palette) -> RenderableType:
     """Triage statique (remplacé par DataTable en Task 10).
 
     Non branché en prod depuis T10 (DataTables) — conservé comme référence pure/testable ; supprimer ou re-brancher lors du chantier export/captures.
     """
     table = Table(show_header=True, expand=True, box=None, pad_edge=False)
     for column in ("UTC", "Sym", "Act", "État", "Conf", "Suite"):
-        table.add_column(column, no_wrap=(column != "Suite"),
-                         overflow="fold" if column == "Suite" else "ellipsis")
+        table.add_column(column, no_wrap=(column != "Suite"), overflow="fold" if column == "Suite" else "ellipsis")
     for row in select_decision_rows(decisions, recent_decisions, limit=8):
         action = str(row.get("action") or "—").upper()
         status = decision_status(row)
         confidence = _safe_float(row.get("confidence"), default=None)
         status_style = {
-            "exec": palette["status_nominal"], "risk": palette["pnl_negative"],
-            "stale": palette["kpi_vol_warn"], "armé": palette["status_accent"],
-            "plan": palette["status_accent"], "veille": palette["status_accent"],
+            "exec": palette["status_nominal"],
+            "risk": palette["pnl_negative"],
+            "stale": palette["kpi_vol_warn"],
+            "armé": palette["status_accent"],
+            "plan": palette["status_accent"],
+            "veille": palette["status_accent"],
             "quiet": palette["dim"],
         }.get(status, palette["kpi_default"])
-        action_style = (palette["action_buy"] if action == "BUY"
-                        else palette["action_sell"] if action == "SELL" else palette["dim"])
+        action_style = (
+            palette["action_buy"] if action == "BUY" else palette["action_sell"] if action == "SELL" else palette["dim"]
+        )
         table.add_row(
             _decision_time_label(row),
             Text(str(row.get("symbol") or "—"), style="bold"),
@@ -525,9 +516,7 @@ class DecisionsTable(_SymbolTable):
         super().on_mount()
         self.add_columns("UTC", "Sym", "Act", "État", "Conf", "Suite")
 
-    def refresh_rows(
-        self, decisions: list[dict], recent_decisions: list[dict], *, palette: Palette
-    ) -> None:
+    def refresh_rows(self, decisions: list[dict], recent_decisions: list[dict], *, palette: Palette) -> None:
         from trader.cockpit.aggregates import decision_status
 
         self.clear()
@@ -537,11 +526,18 @@ class DecisionsTable(_SymbolTable):
             action = str(row.get("action") or "—").upper()
             status = decision_status(row)
             confidence = _safe_float(row.get("confidence"), default=None)
-            action_style = (palette["action_buy"] if action == "BUY"
-                            else palette["action_sell"] if action == "SELL" else palette["dim"])
+            action_style = (
+                palette["action_buy"]
+                if action == "BUY"
+                else palette["action_sell"]
+                if action == "SELL"
+                else palette["dim"]
+            )
             status_style = {
-                "exec": palette["status_nominal"], "risk": palette["pnl_negative"],
-                "stale": palette["kpi_vol_warn"], "quiet": palette["dim"],
+                "exec": palette["status_nominal"],
+                "risk": palette["pnl_negative"],
+                "stale": palette["kpi_vol_warn"],
+                "quiet": palette["dim"],
             }.get(status, palette["status_accent"])
             self.add_row(
                 _decision_time_label(row),
@@ -566,8 +562,7 @@ class PlansTable(_SymbolTable):
         self.clear()
         armed = _safe_list_of_dicts(state.get("armed_plans"))
         trade_plans = _safe_list_of_dicts(state.get("trade_plans"))
-        watches = [w for w in _safe_list_of_dicts(state.get("indicator_watches"))
-                   if not _is_armed_plan(w)]
+        watches = [w for w in _safe_list_of_dicts(state.get("indicator_watches")) if not _is_armed_plan(w)]
         index = 0
         for watch in armed:
             symbol = str(watch.get("symbol") or "—")
@@ -599,8 +594,10 @@ class PlansTable(_SymbolTable):
                 Text("sortie", style=palette["kpi_default"]),
                 Text(symbol, style="bold"),
                 f"{_plan_qty_label(plan)} · {_plan_state_label(plan)}",
-                Text(f"{_exit_plan_risk_label(plan, price, stale)} · {_next_tp_label(plan, price)}",
-                     style=palette["kpi_vol_warn"] if stale else palette["dim"]),
+                Text(
+                    f"{_exit_plan_risk_label(plan, price, stale)} · {_next_tp_label(plan, price)}",
+                    style=palette["kpi_vol_warn"] if stale else palette["dim"],
+                ),
                 "—",
                 key=f"{symbol}|exit|{index}",
             )
@@ -623,8 +620,7 @@ class PlansTable(_SymbolTable):
 class PositionsTable(_SymbolTable):
     def on_mount(self) -> None:
         super().on_mount()
-        self.add_columns("Sym", "Dev.", "Qté", "Dernier", "Expo USD", "PnL USD",
-                         "Stop", "Perte@stop")
+        self.add_columns("Sym", "Dev.", "Qté", "Dernier", "Expo USD", "PnL USD", "Stop", "Perte@stop")
 
     def refresh_rows(self, state: dict, *, palette: Palette) -> None:
         self.clear()
@@ -650,8 +646,7 @@ class PositionsTable(_SymbolTable):
                 _fmt_compact_float(_holding_notional(holding), decimals=0),
                 Text(_fmt_signed_compact_float(pnl_value, decimals=0), style=pnl_style),
                 f"{stop_label} {dist_label}",
-                Text(loss_label, style=palette["pnl_negative"]
-                     if state_label == "risque" else palette["dim"]),
+                Text(loss_label, style=palette["pnl_negative"] if state_label == "risque" else palette["dim"]),
                 key=f"{symbol}|pos|{index}",
             )
         if not holdings:
@@ -697,32 +692,24 @@ class HomePane(Static):
             yield PlansTable(id="home-plans")
             yield FluxPane(id="home-flux")
 
-    def update_state(self, state: dict, kill_active: bool) -> None:  # kill_active : réservé (modal/kill overlay à venir) — compat interface _apply_state
+    def update_state(
+        self, state: dict, kill_active: bool
+    ) -> None:  # kill_active : réservé (modal/kill overlay à venir) — compat interface _apply_state
         state = state if isinstance(state, dict) else {}
         palette = self._current_palette
         now = datetime.now(UTC)
         recent = state.get("recent_decisions") if isinstance(state.get("recent_decisions"), list) else []
         decisions = _safe_list_of_dicts(state.get("decisions"))
-        self.query_one("#home-portfolio-summary", Static).update(
-            build_portfolio_summary(state, palette=palette)
-        )
+        self.query_one("#home-portfolio-summary", Static).update(build_portfolio_summary(state, palette=palette))
         self.query_one("#home-activity", Static).update(
             build_activity_tile(activity_buckets(recent, now), palette=palette)
         )
-        self.query_one("#home-decisions", DecisionsTable).refresh_rows(
-            decisions, recent, palette=palette
-        )
-        self.query_one("#home-plans", PlansTable).refresh_rows(
-            state, palette=palette, now=now
-        )
-        self.query_one("#home-positions", PositionsTable).refresh_rows(
-            state, palette=palette
-        )
+        self.query_one("#home-decisions", DecisionsTable).refresh_rows(decisions, recent, palette=palette)
+        self.query_one("#home-plans", PlansTable).refresh_rows(state, palette=palette, now=now)
+        self.query_one("#home-positions", PositionsTable).refresh_rows(state, palette=palette)
 
 
-def build_symbol_detail(
-    state: dict, symbol: str, *, palette: Palette, now: datetime | None = None
-) -> RenderableType:
+def build_symbol_detail(state: dict, symbol: str, *, palette: Palette, now: datetime | None = None) -> RenderableType:
     """Contexte complet d'un symbole — pur filtrage du read model en mémoire.
 
     Ordre : contexte marché live → position (USD) → pourquoi (thèse) → plans de
@@ -735,22 +722,24 @@ def build_symbol_detail(
     state = state if isinstance(state, dict) else {}
     portfolio = state.get("portfolio") if isinstance(state.get("portfolio"), dict) else {}
     company_map = state.get("company_map") if isinstance(state.get("company_map"), dict) else {}
-    holdings = [h for h in _safe_list_of_dicts(portfolio.get("holdings"))
-                if _holding_symbol(h) == symbol]
-    plans = [p for p in _safe_list_of_dicts(state.get("trade_plans"))
-             if str(p.get("symbol") or "") == symbol]
-    armed = [w for w in _safe_list_of_dicts(state.get("armed_plans"))
-             if str(w.get("symbol") or "") == symbol]
-    watches = [w for w in _safe_list_of_dicts(state.get("indicator_watches"))
-               if str(w.get("symbol") or "") == symbol and not _is_armed_plan(w)]
-    decisions_full = [d for d in _safe_list_of_dicts(state.get("decisions"))
-                      if str(d.get("symbol") or "") == symbol]
-    recent = [d for d in _safe_list_of_dicts(state.get("recent_decisions"))
-              if str(d.get("symbol") or "") == symbol][-8:]
-    trips = [t for t in _safe_list_of_dicts(state.get("recent_trips"))
-             if str(t.get("symbol") or "") == symbol]
-    learnings = [l for l in _safe_list_of_dicts(state.get("learnings"))
-                 if str(l.get("symbol") or "") == symbol]
+    holdings = [h for h in _safe_list_of_dicts(portfolio.get("holdings")) if _holding_symbol(h) == symbol]
+    plans = [p for p in _safe_list_of_dicts(state.get("trade_plans")) if str(p.get("symbol") or "") == symbol]
+    armed = [w for w in _safe_list_of_dicts(state.get("armed_plans")) if str(w.get("symbol") or "") == symbol]
+    watches = [
+        w
+        for w in _safe_list_of_dicts(state.get("indicator_watches"))
+        if str(w.get("symbol") or "") == symbol and not _is_armed_plan(w)
+    ]
+    decisions_full = [d for d in _safe_list_of_dicts(state.get("decisions")) if str(d.get("symbol") or "") == symbol]
+    recent = [d for d in _safe_list_of_dicts(state.get("recent_decisions")) if str(d.get("symbol") or "") == symbol][
+        -8:
+    ]
+    trips = [t for t in _safe_list_of_dicts(state.get("recent_trips")) if str(t.get("symbol") or "") == symbol]
+    learnings = [
+        learning
+        for learning in _safe_list_of_dicts(state.get("learnings"))
+        if str(learning.get("symbol") or "") == symbol
+    ]
     streak = (state.get("stale_streaks") or {}).get(symbol, 0)
 
     parts: list[RenderableType] = []
@@ -758,11 +747,7 @@ def build_symbol_detail(
     # 1. En-tête contexte marché : société · venue ouvert/fermé · devise · prix · stale
     venue = venue_of(symbol)
     sessions = state.get("sessions")
-    open_set = (
-        open_venue_set(sessions, now)
-        if isinstance(sessions, dict) and sessions
-        else None
-    )
+    open_set = open_venue_set(sessions, now) if isinstance(sessions, dict) and sessions else None
     price = _price_for_symbol(state, symbol)
     company = str(company_map.get(symbol) or "").strip()
     header = Text(symbol, style=f"bold {palette['status_equity']}")
@@ -795,15 +780,19 @@ def build_symbol_detail(
         native = _safe_float(_holding_native_price(holding), default=0.0) or 0.0
         fx_rate = _safe_float(holding.get("fx_rate"), default=1.0) or 1.0
         value_usd = abs(qty * native * fx_rate)
-        parts.append(Text.assemble(
-            ("Position : ", palette["dim"]),
-            (f"{value_usd:,.0f} USD", "bold"),
-            (f"  ({_fmt_compact_float(qty, decimals=2)} @ "
-             f"{_fmt_compact_float(native, decimals=2)} {_holding_currency(holding)})",
-             palette["dim"]),
-            ("  PnL ", palette["dim"]),
-            (_fmt_signed_compact_float(pnl_value, decimals=0) + " USD", pnl_style),
-        ))
+        parts.append(
+            Text.assemble(
+                ("Position : ", palette["dim"]),
+                (f"{value_usd:,.0f} USD", "bold"),
+                (
+                    f"  ({_fmt_compact_float(qty, decimals=2)} @ "
+                    f"{_fmt_compact_float(native, decimals=2)} {_holding_currency(holding)})",
+                    palette["dim"],
+                ),
+                ("  PnL ", palette["dim"]),
+                (_fmt_signed_compact_float(pnl_value, decimals=0) + " USD", pnl_style),
+            )
+        )
     else:
         parts.append(Text("Aucune position ouverte", style=palette["dim"]))
 
@@ -829,8 +818,9 @@ def build_symbol_detail(
             (f"  {_decision_time_label(latest)}", palette["dim"]),
         )
         body = Text(str(latest.get("rationale")).strip())
-        parts.append(Panel(Group(head, body), title="[bold]Pourquoi[/bold]",
-                           border_style=palette["status_accent"], expand=True))
+        parts.append(
+            Panel(Group(head, body), title="[bold]Pourquoi[/bold]", border_style=palette["status_accent"], expand=True)
+        )
 
     # 4. Plans de sortie enrichis
     if plans:
@@ -839,20 +829,30 @@ def build_symbol_detail(
     # 5. Veilles & conditions armées qui surveillent ce symbole
     watch_lines: list[RenderableType] = []
     if armed:
-        watch_lines.append(Text.assemble(
-            (f"{len(armed)} armé(s) : ", palette["status_accent"]),
-            (", ".join(_armed_order_label(w) for w in armed), "bold"),
-        ))
+        watch_lines.append(
+            Text.assemble(
+                (f"{len(armed)} armé(s) : ", palette["status_accent"]),
+                (", ".join(_armed_order_label(w) for w in armed), "bold"),
+            )
+        )
     for watch in watches:
-        watch_lines.append(Text.assemble(
-            ("veille ", palette["dim"]),
-            (_condition_summary(watch.get("conditions"), watch.get("logic"), max_items=3), "bold"),
-            ("  exp. ", palette["dim"]),
-            (_relative_expiry(watch.get("expires_at"), now=now), palette["dim"]),
-        ))
+        watch_lines.append(
+            Text.assemble(
+                ("veille ", palette["dim"]),
+                (_condition_summary(watch.get("conditions"), watch.get("logic"), max_items=3), "bold"),
+                ("  exp. ", palette["dim"]),
+                (_relative_expiry(watch.get("expires_at"), now=now), palette["dim"]),
+            )
+        )
     if watch_lines:
-        parts.append(Panel(Group(*watch_lines), title="[bold]Veilles & armé[/bold]",
-                           border_style=palette["status_accent"], expand=True))
+        parts.append(
+            Panel(
+                Group(*watch_lines),
+                title="[bold]Veilles & armé[/bold]",
+                border_style=palette["status_accent"],
+                expand=True,
+            )
+        )
 
     # 6. Décisions récentes (table)
     table = Table(title="Décisions récentes", show_header=True, expand=True, box=None)
@@ -875,11 +875,13 @@ def build_symbol_detail(
     if trips:
         realized = sum(_safe_float(t.get("pnl"), default=0.0) or 0.0 for t in trips)
         realized_style = palette["pnl_positive"] if realized >= 0 else palette["pnl_negative"]
-        parts.append(Text.assemble(
-            ("P&L réalisé cumulé : ", palette["dim"]),
-            (_fmt_signed_compact_float(realized, decimals=0) + " USD", realized_style),
-            (f"  ({len(trips)} trade(s) clôturé(s))", palette["dim"]),
-        ))
+        parts.append(
+            Text.assemble(
+                ("P&L réalisé cumulé : ", palette["dim"]),
+                (_fmt_signed_compact_float(realized, decimals=0) + " USD", realized_style),
+                (f"  ({len(trips)} trade(s) clôturé(s))", palette["dim"]),
+            )
+        )
         parts.append(build_closed_trades_table(trips, company_map, limit=8, palette=palette))
 
     # 8. Learnings du symbole
@@ -917,9 +919,7 @@ class SymbolDetailScreen(ModalScreen[None]):
         app = self.app
         state = getattr(app, "_last_state", None) or {}
         palette = app._current_palette()  # type: ignore[attr-defined]
-        self.query_one("#symbol-detail-body", Static).update(
-            build_symbol_detail(state, self._symbol, palette=palette)
-        )
+        self.query_one("#symbol-detail-body", Static).update(build_symbol_detail(state, self._symbol, palette=palette))
 
     def action_close_detail(self) -> None:
         self.dismiss(None)

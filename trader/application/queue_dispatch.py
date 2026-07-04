@@ -28,12 +28,12 @@ COMPROMIS MODE QUEUE — DÉCISION DÉGRADÉE (Lot A) :
   tools, recall) est une itération future hors périmètre Lot A.
   Source : decide_one.py, decide_handler.make_decide_handler.
 """
+
 from __future__ import annotations
 
 import json
 import logging
 import time as _time
-from dataclasses import asdict
 from typing import Callable
 
 from trader.agent_protocol.types import Decision
@@ -116,7 +116,8 @@ def dispatch_decide_via_queue(
     if stale_deleted:
         log.debug(
             "[queue_dispatch] purged stale decide tasks cycle=%s deleted=%d",
-            cycle_id, stale_deleted,
+            cycle_id,
+            stale_deleted,
         )
 
     # -----------------------------------------------------------------------
@@ -130,7 +131,8 @@ def dispatch_decide_via_queue(
     if deferred_by_cap:
         log.info(
             "[queue_dispatch] fusible max_model_calls=%d : %d symboles reportés au cycle suivant",
-            max_model_calls, len(deferred_by_cap),
+            max_model_calls,
+            len(deferred_by_cap),
         )
 
     task_ids: dict[str, int] = {}
@@ -159,7 +161,9 @@ def dispatch_decide_via_queue(
             task_ids[sym] = tid
             log.debug(
                 "[queue_dispatch] enqueued sym=%s task_id=%s dedup=%s",
-                sym, tid, dedup_key,
+                sym,
+                tid,
+                dedup_key,
             )
         else:
             # Conflit dedup avec même cycle_id (appel double) : chercher via dedup_key.
@@ -168,12 +172,14 @@ def dispatch_decide_via_queue(
                 task_ids[sym] = existing["id"]
                 log.debug(
                     "[queue_dispatch] dedup conflict sym=%s existing_id=%s",
-                    sym, existing["id"],
+                    sym,
+                    existing["id"],
                 )
             else:
                 log.warning(
                     "[queue_dispatch] enqueue returned None mais task introuvable sym=%s dedup=%s",
-                    sym, dedup_key,
+                    sym,
+                    dedup_key,
                 )
 
     # -----------------------------------------------------------------------
@@ -193,7 +199,8 @@ def dispatch_decide_via_queue(
             if task is None:
                 log.warning(
                     "[queue_dispatch] task introuvable sym=%s task_id=%s — skip",
-                    sym, tid,
+                    sym,
+                    tid,
                 )
                 skipped_syms.add(sym)
                 resolved.add(sym)
@@ -208,19 +215,22 @@ def dispatch_decide_via_queue(
                         decisions_by_symbol[sym] = Decision(**data)
                         log.debug(
                             "[queue_dispatch] collected sym=%s action=%s",
-                            sym, decisions_by_symbol[sym].action,
+                            sym,
+                            decisions_by_symbol[sym].action,
                         )
                     except Exception as exc:  # noqa: BLE001 — skip au lieu de bloquer
                         log.warning(
                             "[queue_dispatch] désérialisation Decision échouée sym=%s: %s",
-                            sym, exc,
+                            sym,
+                            exc,
                         )
                         skipped_syms.add(sym)
                 resolved.add(sym)
             elif status == "dead":
                 log.warning(
                     "[queue_dispatch] task dead sym=%s task_id=%s — skip",
-                    sym, tid,
+                    sym,
+                    tid,
                 )
                 skipped_syms.add(sym)
                 resolved.add(sym)
@@ -236,7 +246,8 @@ def dispatch_decide_via_queue(
     for sym in pending_syms:
         log.warning(
             "[queue_dispatch] budget épuisé sym=%s budget_s=%.1f — skip",
-            sym, budget_s,
+            sym,
+            budget_s,
         )
         skipped_syms.add(sym)
 
@@ -260,9 +271,7 @@ def dispatch_decide_via_queue(
 def _get_by_dedup_key(ledger, dedup_key: str) -> "dict | None":
     """Lookup par dedup_key via le _db sous-jacent du ledger (fallback dedup)."""
     try:
-        row = ledger._db.query_one(
-            "SELECT * FROM tasks WHERE dedup_key=?", (dedup_key,)
-        )
+        row = ledger._db.query_one("SELECT * FROM tasks WHERE dedup_key=?", (dedup_key,))
         return dict(row) if row else None
     except Exception as exc:  # noqa: BLE001 — fallback best-effort
         log.warning("[queue_dispatch] get_by_dedup_key failed: %s", exc)
