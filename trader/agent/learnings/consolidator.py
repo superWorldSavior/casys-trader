@@ -15,8 +15,9 @@ from pathlib import Path
 from typing import Any
 
 from trader.agent import llm
-from trader.execution.risk import read_min_trade_confidence
+from trader.agent.learnings.selection import _parse_ts, pending_raw_count, select_new_raw
 from trader.agent.learnings.raw_store import RawLearningsStore
+from trader.execution.risk import read_min_trade_confidence
 from trader.reporting import attribution as attribution_mod, meta_performance as meta_performance_mod
 
 log = logging.getLogger(__name__)
@@ -31,33 +32,8 @@ DEFAULT_CONSOLIDATOR_MODEL = "gpt-5.5"
 DEFAULT_CONSOLIDATOR_TIMEOUT_S = 240
 
 
-def _parse_ts(raw: Any) -> datetime | None:
-    if not raw:
-        return None
-    try:
-        value = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    if value.tzinfo is None:
-        return value.replace(tzinfo=timezone.utc)
-    return value.astimezone(timezone.utc)
-
-
 def empty_consolidated() -> dict:
     return {"watermark": None, "global": [], "by_symbol": {}}
-
-
-def select_new_raw(raw_rows: list[dict], watermark: str | None) -> list[dict]:
-    watermark_dt = _parse_ts(watermark)
-    selected: list[dict] = []
-    for row in raw_rows:
-        row_ts = _parse_ts(row.get("ts"))
-        if row_ts is None:
-            continue
-        if watermark_dt is None or row_ts > watermark_dt:
-            selected.append(row)
-    selected.sort(key=lambda item: _parse_ts(item.get("ts")) or datetime.min.replace(tzinfo=timezone.utc))
-    return selected
 
 
 def _max_ts(rows: list[dict]) -> str | None:
@@ -726,7 +702,7 @@ def main(argv: list[str] | None = None) -> int:
     payload = {
         "state_dir": str(state_dir),
         "raw_count": len(raw_rows),
-        "new_raw_count": len(select_new_raw(raw_rows, watermark=current.get("watermark"))),
+        "new_raw_count": pending_raw_count(raw_rows, watermark=current.get("watermark")),
         "consolidated_watermark": current.get("watermark"),
         "has_consolidated": _has_consolidated(current),
         "last_failure": _default_status_store(consolidated_store).read().get("last_failure"),

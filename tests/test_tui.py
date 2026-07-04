@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import importlib.abc
+import sys
 from datetime import UTC, datetime
 
 from trader.tui import (
@@ -493,6 +495,44 @@ def test_load_runtime_state_retombe_sur_last_report_si_current_absent(tmp_path) 
 
     assert state["ts"] == "last"
     assert state["source"] == "last_report"
+
+
+def test_load_runtime_state_compte_pending_learnings_sans_importer_consolidator(tmp_path, monkeypatch) -> None:
+    class BlockConsolidatorImport(importlib.abc.MetaPathFinder):
+        def find_spec(self, fullname, path, target=None):
+            if fullname == "trader.agent.learnings.consolidator":
+                raise ImportError("consolidator import blocked for read-model boundary test")
+            return None
+
+    monkeypatch.delitem(sys.modules, "trader.agent.learnings.consolidator", raising=False)
+    monkeypatch.setattr(sys, "meta_path", [BlockConsolidatorImport(), *sys.meta_path])
+
+    (tmp_path / "current_report.json").write_text(
+        '{"ts":"current","portfolio":{"holdings":[]}}',
+        encoding="utf-8",
+    )
+    (tmp_path / "learnings_consolidated.json").write_text(
+        json.dumps({"watermark": "2026-06-08T10:30:00+00:00", "global": [], "by_symbol": {}}),
+        encoding="utf-8",
+    )
+    rows = [
+        {"ts": "2026-06-08T10:00:00+00:00", "note": "old"},
+        {"ts": "2026-06-08T10:45:00+00:00", "note": "new"},
+        {"ts": "2026-06-08T11:00:00+00:00", "note": "newer"},
+    ]
+    (tmp_path / "learnings.jsonl").write_text(
+        "\n".join(json.dumps(row) for row in rows) + "\n",
+        encoding="utf-8",
+    )
+
+    state = load_runtime_state(
+        state_dir=tmp_path,
+        current_report_path=tmp_path / "current_report.json",
+        last_report_path=tmp_path / "missing_last.json",
+        status_path=tmp_path / "missing_status.json",
+    )
+
+    assert state["learnings_pending_count"] == 2
 
 
 def test_load_scheduler_data_safe_filtre_les_veilles_expirees(tmp_path) -> None:
