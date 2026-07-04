@@ -1,5 +1,7 @@
 """CLI compatibility for ``python -m trader.tui``."""
 
-from trader.ui.tui import main
+from trader.commands.tui import main
 
-main()
+
+if __name__ == "__main__":
+    main()

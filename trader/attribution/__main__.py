@@ -1,5 +1,7 @@
 """CLI compatibility for ``python -m trader.attribution``."""
 
-from trader.reporting.attribution import main
+from trader.commands.attribution import main
 
-main()
+
+if __name__ == "__main__":
+    main()

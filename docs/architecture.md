@@ -53,11 +53,12 @@ les utilisaient :
 | `trader/rotation/` | Rotation d'univers, hot-sets par venue, schedule, override, ledger rotation | `trader.rotation` réexporte l'ancien core |
 | `trader/metadata/` | Métadonnées git/code version | utilisé par runtime et reporting sans cycle |
 | `trader/reporting/` | Ledger décision, raisons, audit ex-post, attribution, stats, tool usage, meta-performance | alias compat via `trader.__init__` |
+| `trader/commands/` | Entry points CLI canoniques (`stats`, `attribution`, `tool_usage`, `tui`) | compat : `python -m trader.stats`, `python -m trader.attribution`, etc. |
 | `trader/system/` | Helpers système neutres (`process_env`) | partagé par agent/cockpit/runtime sans dépendance runtime |
 | `trader/runtime/` | Daemon, CLI, logging, PID file, IB attach, rotation ledger | `trader.daemon` et `trader.cli` sont des packages proxy pour `python -m` |
 | `trader/read_models/runtime_state.py` | Lecture tolérante des fichiers `state/` pour TUI/cockpit | ne participe pas aux décisions live |
 | `trader/cockpit/` | App Textual, événements cockpit, supervisor local | `trader.cockpit` reste runnable |
-| `trader/ui/` | Builders Rich purs, TUI textuelle, palette | `trader.tui`, `trader.stats`, `trader.attribution`, `trader.tool_usage` restent des wrappers CLI |
+| `trader/ui/` | Builders Rich purs, TUI textuelle, palette | `trader.tui` reste une façade import/CLI legacy |
 
 Le choix volontaire reste de ne pas frameworkiser en `ports/`/`adapters`
 génériques. En revanche, trois packages neutres existent maintenant parce qu'ils
@@ -70,9 +71,10 @@ suppriment des cycles réels :
 
 Les anciens imports restent compatibles quand ils existaient déjà
 (`trader.tools.market.Bar`, `trader.tools.execution.Order`, `trader.tools.scheduler.Scheduler`,
-`trader.runtime.code_version`, `trader.process_env`), mais les imports internes
+`trader.runtime.code_version`, `trader.process_env`, `trader.stats`,
+`trader.attribution`, `trader.tool_usage`, `trader.tui`), mais les imports internes
 doivent viser les packages neutres ou canoniques (`domain/`, `execution/broker`,
-`metadata/`, `system/`). Les tests `tests/test_package_layout.py`,
+`metadata/`, `system/`, `commands/`). Les tests `tests/test_package_layout.py`,
 `tests/test_code_version_imports.py` et `tests/test_runtime_pid_file.py`
 gardent ces frontières.
 

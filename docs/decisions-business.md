@@ -132,13 +132,13 @@ le 2026-06-13 (commit `390a3ea`). Les statistiques mélangeant avant/après peuv
 donner un biais favorable.
 
 Les P&L dans `model_performance.jsonl` sont en **devise locale** (BP.L = pences, CHF,
-USD…). `attribution.py` additionne sans conversion → à reconvertir avant de comparer.
+USD…). `reporting/attribution.py` additionne sans conversion → à reconvertir avant de comparer.
 
 ---
 
 ## 5. Attribution
 
-`trader/attribution.py` — calcule des round-trips (entrée + sortie appariés) et
+`trader/reporting/attribution.py` — calcule des round-trips (entrée + sortie appariés) et
 produit `by_exit_reason`, `by_confidence_bin`, coût moyen par trade.
 
 Injecté dans `base_context["attribution"]` à chaque cycle : l'agent voit sa propre

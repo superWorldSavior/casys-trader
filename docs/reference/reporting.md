@@ -2,6 +2,8 @@
 
 > **Type** : Reference (Diátaxis).
 > **Code** : `trader/reporting/` · **Rôle** : relier trades ↔ décisions, auditer, mesurer.
+> **CLI** : `python -m trader.commands.stats`, `python -m trader.commands.attribution`,
+> `python -m trader.commands.tool_usage`.
 
 Presque tout est **ex-post et lecture-seule**, chacun sur sa source : `attribution`
 lit `model_performance.jsonl` ; `stats` lit `history.jsonl` + `broker.json` ;
@@ -31,6 +33,10 @@ Rien n'est dans le hot-path de décision.
 | « Un autre modèle aurait-il mieux fait ? » | `decision_bench` (sur audit) |
 | « KPI live (equity, P&L, win rate) ? » | `stats` → cockpit |
 | « L'agent voit-il sa propre perf passée ? » | `meta_performance` → contexte LLM |
+
+Les anciens raccourcis `python -m trader.stats`, `python -m trader.attribution`
+et `python -m trader.tool_usage` restent supportés, mais ils délèguent aux
+modules canoniques de `trader/commands/`.
 
 ## Codes de raison de décision (`decision_reason`)
 

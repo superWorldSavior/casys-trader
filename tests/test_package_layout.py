@@ -70,6 +70,58 @@ def test_legacy_daemon_and_cli_python_m_entrypoints() -> None:
         assert "usage:" in result.stdout
 
 
+def _module_imports(path: Path, module_name: str) -> bool:
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module == module_name:
+            return True
+        if isinstance(node, ast.Import):
+            if any(alias.name == module_name for alias in node.names):
+                return True
+    return False
+
+
+def test_runnable_compatibility_packages_delegate_to_command_modules() -> None:
+    trader_dir = Path(__file__).resolve().parents[1] / "trader"
+    command_modules = {
+        "attribution": "trader.reporting.attribution",
+        "stats": "trader.reporting.stats",
+        "tool_usage": "trader.reporting.tool_usage",
+        "tui": "trader.ui.tui",
+    }
+
+    for command_name, canonical_module in command_modules.items():
+        command_path = trader_dir / "commands" / f"{command_name}.py"
+        legacy_main_path = trader_dir / command_name / "__main__.py"
+
+        assert command_path.exists(), f"missing canonical command module for {command_name}"
+        assert _module_imports(command_path, canonical_module)
+        assert _module_imports(legacy_main_path, f"trader.commands.{command_name}")
+
+
+def test_reporting_command_python_m_entrypoints() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    for module_name in (
+        "trader.commands.attribution",
+        "trader.commands.stats",
+        "trader.commands.tool_usage",
+        "trader.attribution",
+        "trader.stats",
+        "trader.tool_usage",
+    ):
+        result = subprocess.run(
+            [sys.executable, "-m", module_name, "--help"],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert "usage:" in result.stdout
+
+
 def test_market_and_planning_use_domain_primitives_instead_of_tools() -> None:
     trader_dir = Path(__file__).resolve().parents[1] / "trader"
     checked_roots = (trader_dir / "market", trader_dir / "planning")

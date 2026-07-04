@@ -1,5 +1,7 @@
 """CLI compatibility for ``python -m trader.stats``."""
 
-from trader.reporting.stats import main
+from trader.commands.stats import main
 
-main()
+
+if __name__ == "__main__":
+    main()

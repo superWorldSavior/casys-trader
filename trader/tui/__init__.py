@@ -2,7 +2,8 @@
 
 Historically tests and scripts imported private Rich/read-model helpers from
 ``trader.tui``. Re-export every non-dunder symbol so that moving the module into
-``trader.ui`` does not break those imports.
+``trader.ui`` does not break those imports. The canonical runnable module is
+``trader.commands.tui``.
 """
 
 from trader.ui import tui as _tui

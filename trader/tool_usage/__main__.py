@@ -1,5 +1,7 @@
 """CLI compatibility for ``python -m trader.tool_usage``."""
 
-from trader.reporting.tool_usage import main
+from trader.commands.tool_usage import main
 
-main()
+
+if __name__ == "__main__":
+    main()
