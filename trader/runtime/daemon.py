@@ -36,6 +36,7 @@ from trader.application import (
     cycle_schedule,
     execution_eligibility as execution_eligibility_service,
     exit_bars as exit_bars_service,
+    gross_feedback,
     market_snapshot,
     order_admission,
     planner_batch,
@@ -128,8 +129,6 @@ def _llm_exit_reason_for_intent(intent: str) -> str | None:
     return "llm_exit" if intent in {"CLOSE", "REDUCE", "REVERSE"} else None
 
 
-_GROSS_REJECT_REASON = "risk:gross_exposure_exceeded"
-
 # Budget de polling pour execute_order via la file (secondes).
 # L'exécution est locale et synchrone (pool in-process) — 10 s est généreux.
 _EXECUTE_POLL_BUDGET_S: float = 10.0
@@ -142,16 +141,7 @@ def summarize_gross_rejections(decisions: list[dict]) -> dict | None:
     l'agent voit qu'il a collectivement sur-proposé contre le plafond gross
     partagé et peut être plus sélectif. Retourne None s'il n'y a rien à signaler.
     """
-    symbols = sorted(
-        str(d.get("symbol"))
-        for d in decisions
-        if d.get("reason") == _GROSS_REJECT_REASON
-        and d.get("intent") in _OPENING_INTENTS
-        and d.get("symbol")
-    )
-    if not symbols:
-        return None
-    return {"rejected_opens": len(symbols), "symbols": symbols}
+    return gross_feedback.summarize_gross_rejections(decisions)
 
 
 def _counts_as_llm_review(decision: codex_client.Decision) -> bool:

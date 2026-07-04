@@ -44,6 +44,7 @@ les utilisaient :
 | `trader/application/confidence_feedback.py` | Feedback persistant des rejets de gate confiance vers les learnings de l'agent | le daemon conserve le wrapper privé historique |
 | `trader/application/execution_eligibility.py` | Classification execution/planning par symbole et raison de blocage d'exécution | utilisé par `market_snapshot` et wrappers privés du daemon |
 | `trader/application/exit_bars.py` | Fetch/validation des barres fines de sortie et calcul high/low de fenêtre pour plans ouverts | branché comme `exit_bars_fetcher` dans `market_snapshot`, wrappers privés du daemon |
+| `trader/application/gross_feedback.py` | Feedback applicatif des ouvertures rejetées par le plafond gross exposure | le daemon garde un wrapper public historique |
 | `trader/application/order_admission.py` | Helpers purs d'admission : intent, résolution position-aware, clamp sortie, stop, risk metrics | l'orchestration RiskGate/broker reste dans `trader/runtime/daemon.py` |
 | `trader/application/risk_capacity.py` | Contexte de capacité exposé à l'agent : gross exposure, plafonds buy/sell, quantités natives FX-aware | le daemon injecte le broker, les prix, les FX et la fonction devise |
 | `trader/application/watch_scanner.py` | Scan applicatif des indicator/exit watches : fetch des barres, évaluation, cooldown, retrait et réveil symbole | le daemon conserve l'émission d'événements/logs runtime |
