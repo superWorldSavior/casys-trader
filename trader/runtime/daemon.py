@@ -39,6 +39,7 @@ from trader.application import (
     gross_feedback,
     market_snapshot,
     order_admission,
+    plan_review,
     planner_batch,
     risk_capacity,
     watch_scanner,
@@ -705,13 +706,7 @@ def _apply_amend_exit(
 
 
 def _llm_review_verdict(decision: codex_client.Decision) -> str:
-    if decision.intent == "HOLD":
-        return "intact"
-    if decision.intent == "REDUCE":
-        return "fragile"
-    if decision.intent in {"CLOSE", "REVERSE"}:
-        return "invalidated"
-    return "fragile"
+    return plan_review.llm_review_verdict(decision.intent)
 
 
 def _persist_last_llm_review(
@@ -721,19 +716,12 @@ def _persist_last_llm_review(
     now: datetime,
     decision: codex_client.Decision,
 ) -> None:
-    if not (decision.llm_provider or decision.llm_model):
-        return
-    review = {
-        "ts": now.astimezone(timezone.utc).isoformat(),
-        "verdict": _llm_review_verdict(decision),
-        "action": decision.action,
-        "intent": decision.intent,
-        "llm_provider": decision.llm_provider,
-        "llm_model": decision.llm_model,
-    }
-    for plan in plan_store.open_plans():
-        if plan.symbol == symbol:
-            plan_store.upsert(replace(plan, last_llm_review=review))
+    plan_review.persist_last_llm_review(
+        plan_store=plan_store,
+        symbol=symbol,
+        now=now,
+        decision=decision,
+    )
 
 
 def _last_review_by_symbol(
@@ -742,12 +730,7 @@ def _last_review_by_symbol(
     """Mapping {symbole: last_llm_review} pour les plans ouverts du périmètre qui
     portent une revue. Narrow contract : on ne passe pas le store entier au batch,
     juste le dernier verdict à réinjecter (continuité de thèse au réveil)."""
-    wanted = set(symbols)
-    out: dict[str, dict] = {}
-    for plan in plan_store.open_plans():
-        if plan.symbol in wanted and plan.last_llm_review:
-            out[plan.symbol] = plan.last_llm_review
-    return out
+    return plan_review.last_review_by_symbol(plan_store, symbols)
 
 
 def _build_execution_eligibility(
