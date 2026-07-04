@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import logging
 import math
-from datetime import datetime
+from dataclasses import dataclass
+from datetime import datetime, timezone
 
 from trader.market import market_data as market
 
@@ -12,6 +13,14 @@ DEFAULT_EXIT_INTERVAL = "5m"
 DEFAULT_EXIT_LOOKBACK = "1d"
 
 log = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class ExitBarExtremes:
+    """High/low window used for deterministic exit-plan evaluation."""
+
+    high: float | None = None
+    low: float | None = None
 
 
 def is_valid_exit_bar(bar: object) -> bool:
@@ -34,6 +43,50 @@ def is_valid_exit_bar(bar: object) -> bool:
     except Exception:  # noqa: BLE001 - malformed external bar object
         return False
     return True
+
+
+def bar_ts_after_plan_open(bar_ts: str, opened_at: str | None) -> bool:
+    """Return True when bar_ts >= opened_at, preserving legacy fail-open parsing."""
+    if not opened_at:
+        return True
+    try:
+        bar_dt = datetime.fromisoformat(str(bar_ts))
+        plan_dt = datetime.fromisoformat(opened_at)
+        if bar_dt.tzinfo is None:
+            bar_dt = bar_dt.replace(tzinfo=timezone.utc)
+        if plan_dt.tzinfo is None:
+            plan_dt = plan_dt.replace(tzinfo=timezone.utc)
+        return bar_dt >= plan_dt
+    except (ValueError, TypeError):
+        return True
+
+
+def exit_bar_extremes(
+    bars: list,
+    *,
+    interval: str,
+    fine_interval: str,
+    fine_window_bars: int,
+    opened_at: str | None,
+) -> ExitBarExtremes:
+    """Return the bar high/low window used for deterministic exit checks."""
+    if not bars:
+        return ExitBarExtremes()
+
+    if interval == fine_interval:
+        window = bars[-fine_window_bars:] if fine_window_bars > 0 else []
+        eligible = [bar for bar in window if bar_ts_after_plan_open(bar.ts, opened_at)]
+        if not eligible:
+            return ExitBarExtremes()
+        return ExitBarExtremes(
+            high=max(bar.high for bar in eligible),
+            low=min(bar.low for bar in eligible),
+        )
+
+    last_bar = bars[-1]
+    if not bar_ts_after_plan_open(last_bar.ts, opened_at):
+        return ExitBarExtremes()
+    return ExitBarExtremes(high=last_bar.high, low=last_bar.low)
 
 
 def fetch_exit_bars_for_open_plans(

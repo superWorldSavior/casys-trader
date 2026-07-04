@@ -664,18 +664,7 @@ def _bar_ts_after_plan_open(bar_ts: str, opened_at: str | None) -> bool:
     Parsing failures on either side are treated as True (extremes applied) so
     that old plans without a parseable opened_at keep the current behaviour.
     """
-    if not opened_at:
-        return True
-    try:
-        bar_dt = datetime.fromisoformat(bar_ts)
-        plan_dt = datetime.fromisoformat(opened_at)
-        if bar_dt.tzinfo is None:
-            bar_dt = bar_dt.replace(tzinfo=timezone.utc)
-        if plan_dt.tzinfo is None:
-            plan_dt = plan_dt.replace(tzinfo=timezone.utc)
-        return bar_dt >= plan_dt
-    except (ValueError, TypeError):
-        return True  # conservative: apply extremes on parse error
+    return exit_bars_service.bar_ts_after_plan_open(bar_ts, opened_at)
 
 
 def _plan_snapshot(plan: TradePlan) -> dict:
@@ -953,19 +942,15 @@ def _apply_planned_exits(
         if bars_by_symbol is not None:
             bars = bars_by_symbol.get(plan.symbol)
             if bars:
-                if interval_used == EXIT_CHECK_INTERVAL:
-                    # 5m path: aggregate high/low over the recent window, respecting temporal guard.
-                    window = bars[-EXIT_CHECK_WINDOW_BARS:]
-                    eligible = [b for b in window if _bar_ts_after_plan_open(b.ts, plan.opened_at)]
-                    if eligible:
-                        bar_high = max(b.high for b in eligible)
-                        bar_low = min(b.low for b in eligible)
-                else:
-                    # 15m path: single last bar with temporal guard (existing behaviour).
-                    last_bar = bars[-1]
-                    if _bar_ts_after_plan_open(last_bar.ts, plan.opened_at):
-                        bar_high = last_bar.high
-                        bar_low = last_bar.low
+                extremes = exit_bars_service.exit_bar_extremes(
+                    bars,
+                    interval=interval_used,
+                    fine_interval=EXIT_CHECK_INTERVAL,
+                    fine_window_bars=EXIT_CHECK_WINDOW_BARS,
+                    opened_at=plan.opened_at,
+                )
+                bar_high = extremes.high
+                bar_low = extremes.low
 
         evaluation = evaluate_plan(plan, price=price, bar_high=bar_high, bar_low=bar_low, now=now)
         if evaluation.signal is None:

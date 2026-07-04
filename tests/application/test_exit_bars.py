@@ -64,3 +64,71 @@ def test_fetch_exit_bars_falls_back_when_5m_bars_are_invalid() -> None:
 
     assert bars["SPY"] == [fallback_bar]
     assert intervals == {"SPY": "15m"}
+
+
+def test_bar_ts_after_plan_open_preserves_fail_open_parse_errors() -> None:
+    from trader.application.exit_bars import bar_ts_after_plan_open
+
+    assert bar_ts_after_plan_open("NOT_A_DATE", "2026-06-10T11:52:00+00:00") is True
+    assert bar_ts_after_plan_open("2026-06-10T11:45:00+00:00", "NOT_A_DATE") is True
+
+
+def test_exit_bar_extremes_aggregate_recent_5m_bars_after_plan_open() -> None:
+    from trader.application.exit_bars import exit_bar_extremes
+
+    bars = [
+        Bar(ts="2026-06-10T11:45:00+00:00", open=99.0, high=110.0, low=90.0, close=99.0, volume=10.0),
+        Bar(ts="2026-06-10T11:55:00+00:00", open=99.0, high=101.0, low=97.0, close=99.0, volume=10.0),
+        Bar(ts="2026-06-10T12:00:00+00:00", open=99.0, high=102.0, low=94.0, close=99.0, volume=10.0),
+        Bar(ts="2026-06-10T12:05:00+00:00", open=99.0, high=100.0, low=96.0, close=99.0, volume=10.0),
+    ]
+
+    extremes = exit_bar_extremes(
+        bars,
+        interval="5m",
+        fine_interval="5m",
+        fine_window_bars=3,
+        opened_at="2026-06-10T11:52:00+00:00",
+    )
+
+    assert extremes.high == 102.0
+    assert extremes.low == 94.0
+
+
+def test_exit_bar_extremes_uses_only_last_fallback_bar_after_plan_open() -> None:
+    from trader.application.exit_bars import exit_bar_extremes
+
+    bars = [
+        Bar(ts="2026-06-10T12:00:00+00:00", open=99.0, high=110.0, low=90.0, close=99.0, volume=10.0),
+        Bar(ts="2026-06-10T12:15:00+00:00", open=99.0, high=101.0, low=97.0, close=99.0, volume=10.0),
+    ]
+
+    extremes = exit_bar_extremes(
+        bars,
+        interval="15m",
+        fine_interval="5m",
+        fine_window_bars=3,
+        opened_at="2026-06-10T11:52:00+00:00",
+    )
+
+    assert extremes.high == 101.0
+    assert extremes.low == 97.0
+
+
+def test_exit_bar_extremes_ignores_last_fallback_bar_before_plan_open() -> None:
+    from trader.application.exit_bars import exit_bar_extremes
+
+    bars = [
+        Bar(ts="2026-06-10T11:45:00+00:00", open=99.0, high=110.0, low=90.0, close=99.0, volume=10.0),
+    ]
+
+    extremes = exit_bar_extremes(
+        bars,
+        interval="15m",
+        fine_interval="5m",
+        fine_window_bars=3,
+        opened_at="2026-06-10T11:52:00+00:00",
+    )
+
+    assert extremes.high is None
+    assert extremes.low is None
