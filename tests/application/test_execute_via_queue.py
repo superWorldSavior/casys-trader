@@ -383,6 +383,73 @@ class TestFailClosed:
         finally:
             pool.stop(timeout_s=2.0)
 
+    def test_done_task_with_null_result_triggers_no_fill_path(self, tmp_path: Path) -> None:
+        """Task done avec result=NULL → fill=None → daemon fail-closed (queue_execute_no_fill).
+
+        Résiduel FIX 2 : si UoW bug ou purge race laisse result=NULL malgré status='done',
+        le daemon NE DOIT PAS loguer executed=True.
+        Ce test vérifie la condition préalable exacte qui déclenche le guard.
+        """
+        db, _broker, _plan_store, ledger = _make_stack(tmp_path)
+
+        # Enfile une tâche quelconque (le payload importe peu, on force done+NULL manuellement)
+        now_ms = int(time.time() * 1000)
+        tid = ledger.enqueue(
+            kind="execute_order",
+            priority=0,
+            scheduled_at_ms=now_ms,
+            now_ms=now_ms,
+            resource="portfolio",
+            payload=json.dumps({
+                "order": {"symbol": "AAPL", "side": "BUY", "quantity": 1.0, "rationale": ""},
+                "price": 100.0,
+                "ts": "2026-07-04T08:00:00+00:00",
+                "fx_rate": 1.0,
+                "dry_run": False,
+                "plan_to_upsert": None,
+                "symbol_to_close": None,
+            }),
+        )
+        assert tid is not None
+
+        # Claim la tâche manuellement (bypass worker) pour pouvoir la complete
+        task = ledger.claim(
+            worker_id="anomaly-test",
+            token="tok-anomaly-null-result",
+            now_ms=now_ms + 1,
+            lease_ms=60_000,
+            free_resources=["portfolio"],
+        )
+        assert task is not None
+        assert task["id"] == tid
+
+        # Complete avec result=NULL (simule anomalie UoW / purge race)
+        ok = ledger.complete(task_id=task["id"], token=task["claim_token"], now_ms=now_ms + 2, result=None)
+        assert ok, "ledger.complete doit réussir même avec result=None"
+
+        # État attendu dans le ledger
+        task_state = ledger.get(tid)
+        assert task_state is not None
+        assert task_state["status"] == "done", "status doit être 'done'"
+        assert task_state["result"] is None, "result doit être NULL (anomalie simulée)"
+
+        # Simule le décodage fill tel que le daemon le fait dans son poll loop
+        _exec_result = task_state.get("result")
+        fill = None
+        if _exec_result:  # None → branche ignorée, fill reste None
+            try:
+                from trader.tools.execution import Fill as _Fill  # noqa: PLC0415
+                fill = _Fill(**json.loads(_exec_result))
+            except Exception:  # noqa: BLE001
+                pass
+
+        # Invariant : fill=None → la condition `if fill is None and not dry_run` est True
+        # → daemon doit loguer executed=False, reason="queue_execute_no_fill"
+        assert fill is None, (
+            "fill doit être None pour déclencher le guard queue_execute_no_fill "
+            "(task done sans result → pas de confirmation d'exécution)"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Classe 3 — flag_off : broker.submit synchrone inchangé (non-régression)

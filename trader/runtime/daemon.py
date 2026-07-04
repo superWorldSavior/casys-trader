@@ -3108,7 +3108,19 @@ def run_cycle(
                 apply_default_schedule_after_blocked()
                 record_decision({**entry, "executed": False, "reason": "queue_execute_timeout"})
                 continue
-            # _exec_terminal == "done" → chemin normal ci-dessous
+            # _exec_terminal == "done" — fail-closed si fill absent en non-dry_run.
+            # Cas : task done MAIS result=NULL ou JSON invalide (bug UoW ou purge race).
+            # En dry_run result=None est normal ; en non-dry_run il signale une anomalie.
+            if fill is None and not dry_run:
+                log.error(
+                    "[queue_execute] FAIL-CLOSED sym=%s id=%s — task done sans fill décodable "
+                    "(result=%r) — ordre non confirmé, executed=False",
+                    sym, _exec_tid,
+                    (execute_ledger.get(_exec_tid) or {}).get("result"),
+                )
+                apply_default_schedule_after_blocked()
+                record_decision({**entry, "executed": False, "reason": "queue_execute_no_fill"})
+                continue
         else:
             fill = broker.submit(order, prices[sym], now.isoformat(), dry_run=dry_run, fx_rate=_rate(sym))
         if not dry_run:
