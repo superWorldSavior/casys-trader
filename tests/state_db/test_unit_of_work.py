@@ -3,6 +3,13 @@
 Couvre :
   - Happy path : fill + plan (upsert ou close) + task done — les 3 visibles après.
   - Atomicité : exception dans upsert_in_tx → ROLLBACK total (aucune écriture).
+  - Fence early (FIX 1) : task already done ou token mismatch → RuntimeError,
+    aucune écriture.
+  - Précondition StateDb (FIX 2) : dbs différents → RuntimeError immédiat,
+    aucune écriture.
+  - dry_run (FIX 3) : aucune écriture broker NI plan, task complétée.
+  - REVERSE = close + upsert (FIX 4) : les deux dans la même UoW, atomicité
+    garantie (exception sur upsert rollback aussi le close).
   - Idempotence : complete_in_tx sur tâche déjà 'done' = sans effet (fencing).
   - Rétro-compat : submit/upsert/close_symbol/complete publics inchangés.
 """
@@ -189,7 +196,11 @@ class TestHappyPath:
         assert row["status"] == "done"
 
     def test_execute_order_dry_run_no_writes(self, tmp_path: Path) -> None:
-        """dry_run=True : aucune écriture dans broker/plan, task quand même complétée."""
+        """dry_run=True : aucune écriture dans broker NI plan, task quand même complétée.
+
+        FIX 3 : en dry_run, ni le broker ni le plan ne sont mutés.
+        La tâche est quand même complétée pour éviter le re-play.
+        """
         db, broker, plan_store, ledger = _make_stack(tmp_path)
         task_id, token = _enqueue_and_claim(ledger, dedup="ex-dry")
         cash_before = broker.cash()
@@ -216,8 +227,8 @@ class TestHappyPath:
         assert db.query_all("SELECT * FROM broker_fills") == []
         # Cash inchangé
         assert broker.cash() == pytest.approx(cash_before)
-        # Plan quand même upsert (l'upsert est hors dry_run)
-        assert len(plan_store.open_plans()) == 1
+        # Plan PAS upsert (FIX 3 : dry_run protège aussi les mutations plan)
+        assert plan_store.open_plans() == []
         # Task done (complete_in_tx s'exécute toujours)
         row = db.query_one("SELECT status FROM tasks WHERE id=?", (task_id,))
         assert row["status"] == "done"
@@ -311,7 +322,308 @@ class TestAtomicite:
 
 
 # ---------------------------------------------------------------------------
-# Classe 3 — Idempotence (fencing token)
+# Classe 3 — Fence early (FIX 1) : guard AVANT le submit
+# ---------------------------------------------------------------------------
+
+
+class TestFencing:
+    """FIX 1 : fence SELECT dans la même transaction, avant submit.
+
+    Task already done ou token mismatch → RuntimeError + ROLLBACK total
+    (aucune écriture broker ni plan).
+    """
+
+    def test_task_already_done_raises_and_no_writes(self, tmp_path: Path) -> None:
+        """Task déjà 'done' → RuntimeError levée, aucune écriture (fill, cash, plan)."""
+        db, broker, plan_store, ledger = _make_stack(tmp_path)
+        task_id, token = _enqueue_and_claim(ledger, dedup="fence-done")
+        cash_before = broker.cash()
+
+        # Compléter manuellement la tâche (simuler un rejeu)
+        ok = ledger.complete(task_id=task_id, token=token, now_ms=1)
+        assert ok is True
+        row = db.query_one("SELECT status FROM tasks WHERE id=?", (task_id,))
+        assert row["status"] == "done"
+
+        # Rejouer execute_order_unit → doit lever (fence early)
+        with pytest.raises(RuntimeError, match="status='done'"):
+            execute_order_unit(
+                db=db,
+                broker=broker,
+                plan_store=plan_store,
+                ledger=ledger,
+                order=Order("AAPL", "BUY", 10.0),
+                price=150.0,
+                ts="t",
+                fx_rate=1.0,
+                dry_run=False,
+                plan_to_upsert=_simple_plan(),
+                task_id=task_id,
+                token=token,
+                now_ms=2,
+            )
+
+        # Aucune écriture
+        assert db.query_all("SELECT * FROM broker_fills") == []
+        assert broker.cash() == pytest.approx(cash_before)
+        assert plan_store.open_plans() == []
+
+    def test_stale_token_raises_and_no_writes(self, tmp_path: Path) -> None:
+        """Token invalide (stale/wrong) → RuntimeError levée, aucune écriture."""
+        db, broker, plan_store, ledger = _make_stack(tmp_path)
+        task_id, token = _enqueue_and_claim(ledger, dedup="fence-token")
+        cash_before = broker.cash()
+
+        with pytest.raises(RuntimeError, match="token mismatch"):
+            execute_order_unit(
+                db=db,
+                broker=broker,
+                plan_store=plan_store,
+                ledger=ledger,
+                order=Order("AAPL", "BUY", 10.0),
+                price=150.0,
+                ts="t",
+                fx_rate=1.0,
+                dry_run=False,
+                plan_to_upsert=_simple_plan(),
+                task_id=task_id,
+                token="wrong-token",  # mauvais token
+                now_ms=2,
+            )
+
+        # Aucune écriture (ROLLBACK)
+        assert db.query_all("SELECT * FROM broker_fills") == []
+        assert broker.cash() == pytest.approx(cash_before)
+        assert plan_store.open_plans() == []
+        # Task toujours running
+        row = db.query_one("SELECT status FROM tasks WHERE id=?", (task_id,))
+        assert row["status"] == "running"
+
+
+# ---------------------------------------------------------------------------
+# Classe 4 — Précondition StateDb (FIX 2)
+# ---------------------------------------------------------------------------
+
+
+class TestPrecondition:
+    """FIX 2 : db partagé non-identique → RuntimeError immédiat, aucune écriture."""
+
+    def test_different_broker_db_raises_immediately(self, tmp_path: Path) -> None:
+        """broker._db != db → RuntimeError avant ouverture de la transaction."""
+        db, broker, plan_store, ledger = _make_stack(tmp_path)
+        task_id, token = _enqueue_and_claim(ledger, dedup="pre-broker")
+        cash_before = broker.cash()
+
+        # Créer un broker sur une DB différente
+        db2 = _make_db(tmp_path, name="other.db")
+        broker2 = SqliteBroker(db2)
+
+        with pytest.raises(RuntimeError, match="broker._db is not db"):
+            execute_order_unit(
+                db=db,
+                broker=broker2,  # mauvais db
+                plan_store=plan_store,
+                ledger=ledger,
+                order=Order("AAPL", "BUY", 10.0),
+                price=150.0,
+                ts="t",
+                fx_rate=1.0,
+                dry_run=False,
+                task_id=task_id,
+                token=token,
+                now_ms=2,
+            )
+
+        # Aucune écriture
+        assert db.query_all("SELECT * FROM broker_fills") == []
+        assert broker.cash() == pytest.approx(cash_before)
+
+    def test_different_plan_store_db_raises_immediately(self, tmp_path: Path) -> None:
+        """plan_store._db != db → RuntimeError avant ouverture de la transaction."""
+        db, broker, plan_store, ledger = _make_stack(tmp_path)
+        task_id, token = _enqueue_and_claim(ledger, dedup="pre-plan")
+
+        db2 = _make_db(tmp_path, name="other2.db")
+        plan_store2 = SqliteTradePlanStore(db2)
+
+        with pytest.raises(RuntimeError, match="plan_store._db is not db"):
+            execute_order_unit(
+                db=db,
+                broker=broker,
+                plan_store=plan_store2,  # mauvais db
+                ledger=ledger,
+                order=Order("AAPL", "BUY", 10.0),
+                price=150.0,
+                ts="t",
+                fx_rate=1.0,
+                dry_run=False,
+                task_id=task_id,
+                token=token,
+                now_ms=2,
+            )
+
+    def test_different_ledger_db_raises_immediately(self, tmp_path: Path) -> None:
+        """ledger._db != db → RuntimeError avant ouverture de la transaction."""
+        db, broker, plan_store, ledger = _make_stack(tmp_path)
+        task_id, token = _enqueue_and_claim(ledger, dedup="pre-ledger")
+
+        db2 = _make_db(tmp_path, name="other3.db")
+        ledger2 = TaskLedger(db2)
+        # Enfile + claime une tâche sur db2 pour avoir un task_id valide
+        tid2 = ledger2.enqueue(kind="x", priority=1, scheduled_at_ms=0, now_ms=0, dedup_key="pre-l2")
+        task2 = ledger2.claim(worker_id="w", token="tok-l2", now_ms=1, lease_ms=60_000, free_resources=[])
+
+        with pytest.raises(RuntimeError, match="ledger._db is not db"):
+            execute_order_unit(
+                db=db,
+                broker=broker,
+                plan_store=plan_store,
+                ledger=ledger2,  # mauvais db
+                order=Order("AAPL", "BUY", 10.0),
+                price=150.0,
+                ts="t",
+                fx_rate=1.0,
+                dry_run=False,
+                task_id=task2["id"],
+                token=task2["claim_token"],
+                now_ms=2,
+            )
+
+
+# ---------------------------------------------------------------------------
+# Classe 5 — REVERSE = close + upsert dans la même UoW (FIX 4)
+# ---------------------------------------------------------------------------
+
+
+class TestReverse:
+    """FIX 4 : symbol_to_close ET plan_to_upsert non exclusifs.
+
+    REVERSE ferme l'ancien plan PUIS ouvre le nouveau dans la même transaction.
+    Exception sur l'upsert rollback aussi le close.
+    """
+
+    def test_reverse_close_and_upsert_atomically(self, tmp_path: Path) -> None:
+        """REVERSE : ancien plan fermé ET nouveau plan créé dans la même UoW."""
+        db, broker, plan_store, ledger = _make_stack(tmp_path)
+
+        # Pré-insère un plan LONG AAPL (position courante)
+        plan_store.upsert(_simple_plan("AAPL-long", symbol="AAPL"))
+        assert len(plan_store.open_plans()) == 1
+
+        task_id, token = _enqueue_and_claim(ledger, dedup="reverse-1")
+
+        # Nouveau plan SHORT (après REVERSE)
+        new_plan = TradePlan(
+            id="AAPL-short-new",
+            symbol="AAPL",
+            side="SHORT",
+            quantity=5.0,
+            remaining_quantity=5.0,
+            entry_price=155.0,
+            opened_at="2026-07-04T09:00:00+00:00",
+            reference_volatility=0.02,
+            hard_stop_price=165.0,
+            take_profits=[],
+            trailing_stop=None,
+            max_hold_minutes=120.0,
+            high_watermark=155.0,
+            low_watermark=153.0,
+            filled_take_profits=[],
+            profit_protection=None,
+            exit_watch=None,
+            llm_provider="openai",
+            llm_model="gpt-4o",
+            llm_fallback_reason=None,
+            llm_confidence=0.80,
+            last_llm_review=None,
+            entry_thesis="REVERSE thesis",
+            entry_decision_id="dec-rev-001",
+            entry_context=None,
+        )
+
+        # SELL order : ferme la position LONG + ouvre SHORT
+        fill = execute_order_unit(
+            db=db,
+            broker=broker,
+            plan_store=plan_store,
+            ledger=ledger,
+            order=Order("AAPL", "SELL", 15.0),  # close 10 + open 5
+            price=155.0,
+            ts="t-rev",
+            fx_rate=1.0,
+            dry_run=False,
+            symbol_to_close="AAPL",      # ferme l'ancien plan
+            plan_to_upsert=new_plan,     # ouvre le nouveau plan
+            task_id=task_id,
+            token=token,
+            now_ms=3,
+        )
+
+        # Fill écrit
+        assert fill is not None
+
+        # Ancien plan fermé, nouveau plan présent
+        plans = plan_store.open_plans()
+        assert len(plans) == 1
+        assert plans[0].id == "AAPL-short-new"
+        assert plans[0].side == "SHORT"
+
+        # Task done
+        row = db.query_one("SELECT status FROM tasks WHERE id=?", (task_id,))
+        assert row["status"] == "done"
+
+    def test_reverse_exception_on_upsert_rolls_back_close(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """Exception sur upsert rollback aussi le close : atomicité REVERSE garantie."""
+        db, broker, plan_store, ledger = _make_stack(tmp_path)
+
+        # Pré-insère un plan LONG AAPL
+        plan_store.upsert(_simple_plan("AAPL-long-2", symbol="AAPL"))
+        assert len(plan_store.open_plans()) == 1
+
+        task_id, token = _enqueue_and_claim(ledger, dedup="reverse-rollback")
+        cash_before = broker.cash()
+
+        def _failing_upsert_in_tx(cur, plan):
+            raise RuntimeError("injected upsert fail on REVERSE")
+
+        monkeypatch.setattr(plan_store, "upsert_in_tx", _failing_upsert_in_tx)
+
+        with pytest.raises(RuntimeError, match="injected upsert fail on REVERSE"):
+            execute_order_unit(
+                db=db,
+                broker=broker,
+                plan_store=plan_store,
+                ledger=ledger,
+                order=Order("AAPL", "SELL", 10.0),
+                price=155.0,
+                ts="t-rv-rb",
+                fx_rate=1.0,
+                dry_run=False,
+                symbol_to_close="AAPL",
+                plan_to_upsert=_simple_plan("AAPL-short-fail"),
+                task_id=task_id,
+                token=token,
+                now_ms=3,
+            )
+
+        # ROLLBACK total : ancien plan toujours présent (close rollbacké aussi)
+        plans = plan_store.open_plans()
+        assert len(plans) == 1
+        assert plans[0].id == "AAPL-long-2"
+
+        # Cash inchangé (broker rollbacké)
+        assert broker.cash() == pytest.approx(cash_before)
+        assert db.query_all("SELECT * FROM broker_fills") == []
+
+        # Task toujours running
+        row = db.query_one("SELECT status FROM tasks WHERE id=?", (task_id,))
+        assert row["status"] == "running"
+
+
+# ---------------------------------------------------------------------------
+# Classe 6 — Idempotence (fencing token)
 # ---------------------------------------------------------------------------
 
 
@@ -369,7 +681,7 @@ class TestIdempotence:
 
 
 # ---------------------------------------------------------------------------
-# Classe 4 — Rétro-compat des méthodes publiques
+# Classe 7 — Rétro-compat des méthodes publiques
 # ---------------------------------------------------------------------------
 
 

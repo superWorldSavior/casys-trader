@@ -2914,6 +2914,46 @@ def run_cycle(
                     },
                 )
                 _exec_plan_dict = asdict(_pre_plan)
+            elif runtime_exit_plan and decision.intent == "REVERSE":
+                # FIX 4 (daemon) — REVERSE : pré-calculer le NOUVEAU plan (jambe open)
+                # et le passer avec symbol_to_close → UoW ferme l'ancien ET ouvre le
+                # nouveau dans la même transaction (atomicité garantie).
+                # La quantité du nouveau plan = jambe open uniquement (≠ effective_quantity
+                # qui inclut la jambe close).
+                _rv_open_qty = _reverse_open_quantity(
+                    action=decision.action,
+                    quantity=effective_quantity,
+                    position_quantity=0.0 if pos is None else pos.quantity,
+                )
+                if _rv_open_qty > 0 and runtime_exit_plan:
+                    _pre_entry_age = data_age_by_symbol.get(sym)
+                    _pre_plan = create_trade_plan_from_order(
+                        symbol=sym,
+                        order_side=decision.action,
+                        quantity=_rv_open_qty,
+                        entry_price=prices[sym],
+                        opened_at=now.isoformat(),
+                        raw_exit_plan=runtime_exit_plan,
+                        reference_volatility=reference_volatility,
+                        llm_provider=decision.llm_provider,
+                        llm_model=decision.llm_model,
+                        llm_fallback_reason=decision.llm_fallback_reason,
+                        llm_confidence=decision.confidence,
+                    )
+                    _pre_plan = replace(
+                        _pre_plan,
+                        entry_thesis=decision.rationale,
+                        entry_context={
+                            "price": prices[sym],
+                            "runtime_interval": runtime_interval,
+                            "data_age_m": None if _pre_entry_age is None else int(round(_pre_entry_age)),
+                            "session_open": bool(market.session_snapshot(sym, now=now).get("open")),
+                            "daily_as_of": (
+                                (execution_eligibility.get(sym) or {}).get("planning") or {}
+                            ).get("daily_as_of"),
+                        },
+                    )
+                    _exec_plan_dict = asdict(_pre_plan)
 
             _exec_payload = json.dumps({
                 "order": {
@@ -3029,24 +3069,34 @@ def run_cycle(
                     },
                 }
                 if decision.intent == "REVERSE":
-                    created_plan = _create_plan_for_final_position(
-                        broker=broker,
-                        plan_store=plan_store,
-                        symbol=sym,
-                        price=prices[sym],
-                        opened_at=fill.ts,
-                        raw_exit_plan=runtime_exit_plan,
-                        reference_volatility=reference_volatility,
-                        llm_provider=decision.llm_provider,
-                        llm_model=decision.llm_model,
-                        llm_fallback_reason=decision.llm_fallback_reason,
-                        llm_confidence=decision.confidence,
-                    )
-                    entry["trade_plan_created"] = created_plan is not None
-                    if created_plan is not None:
-                        created_plan = replace(created_plan, **entry_meta)
-                        plan_store.upsert(created_plan)
-                        entry["trade_plan"] = _plan_snapshot(created_plan)
+                    if not queue_execute_enabled:
+                        # Mode synchrone : créer + upsert le plan post-fill.
+                        created_plan = _create_plan_for_final_position(
+                            broker=broker,
+                            plan_store=plan_store,
+                            symbol=sym,
+                            price=prices[sym],
+                            opened_at=fill.ts,
+                            raw_exit_plan=runtime_exit_plan,
+                            reference_volatility=reference_volatility,
+                            llm_provider=decision.llm_provider,
+                            llm_model=decision.llm_model,
+                            llm_fallback_reason=decision.llm_fallback_reason,
+                            llm_confidence=decision.confidence,
+                        )
+                        entry["trade_plan_created"] = created_plan is not None
+                        if created_plan is not None:
+                            created_plan = replace(created_plan, **entry_meta)
+                            plan_store.upsert(created_plan)
+                            entry["trade_plan"] = _plan_snapshot(created_plan)
+                    else:
+                        # FIX 4 (daemon) — Mode queue : UoW a déjà fermé l'ancien plan
+                        # ET créé le nouveau atomiquement (symbol_to_close + plan_to_upsert).
+                        # Pas de double-upsert ni de _create_plan_for_final_position.
+                        entry["trade_plan_created"] = True
+                        _rv_new_plans = [p for p in plan_store.open_plans() if p.symbol == sym]
+                        if _rv_new_plans:
+                            entry["trade_plan"] = _plan_snapshot(_rv_new_plans[-1])
                 else:
                     plan_quantity = effective_quantity
                     plan_entry_price = prices[sym]

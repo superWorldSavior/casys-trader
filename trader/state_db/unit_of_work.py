@@ -1,13 +1,13 @@
 """execute_order_unit — UnitOfWork atomique broker + plan + ledger.
 
-Ouvre UNE transaction SQLite : submit_in_tx → plan (upsert ou close) →
-complete_in_tx. Si N'IMPORTE quelle étape lève → ROLLBACK total (pas de fill
+Ouvre UNE transaction SQLite : fence → submit_in_tx → plan (close et/ou upsert)
+→ complete_in_tx. Si N'IMPORTE quelle étape lève → ROLLBACK total (pas de fill
 sans plan, pas de cash muté sans task done). Après COMMIT réussi : shadows
 best-effort hors transaction (broker.json + trade_plans.json).
 
-Précondition : broker, plan_store et ledger doivent partager le MÊME StateDb
-(db). Sans ça, l'atomicité n'est PAS garantie — les écritures seraient
-réparties sur des connexions distinctes.
+Précondition (élevée en erreur dure) : broker, plan_store et ledger doivent
+partager le MÊME StateDb (db). Sinon RuntimeError levée AVANT d'ouvrir la
+transaction — l'atomicité ne peut pas être garantie.
 
 Logging : [unit_of_work] (getLogger(__name__), %-style).
 """
@@ -46,20 +46,24 @@ def execute_order_unit(
 ) -> "Fill | None":
     """Exécute broker + plan + ledger dans UNE transaction SQLite atomique.
 
-    L'ordre des opérations dans la transaction :
-      1. submit_in_tx  — écrit positions/cash/fill (ou no-op si dry_run=True).
-      2. plan          — close_symbol_in_tx OU upsert_in_tx (si fourni).
-      3. complete_in_tx — passe la tâche à 'done' (fencing token).
+    Ordre des opérations dans la transaction :
+      0. Fence early — SELECT status/claim_token ; lève si task non-running ou
+         token mismatch (ROLLBACK total, rien écrit).
+      1. submit_in_tx  — écrit positions/cash/fill (no-op si dry_run=True).
+      2. plan          — close_symbol_in_tx ET/OU upsert_in_tx (si fourni,
+         uniquement si dry_run=False). Les deux peuvent coexister (REVERSE :
+         ferme l'ancien plan PUIS ouvre le nouveau dans la même transaction).
+      3. complete_in_tx — passe la tâche à 'done' ; vérifie retour=True.
 
-    Si N'IMPORTE quelle étape lève → ROLLBACK complet de la transaction :
-    aucune des trois écritures n'est persistée. Après COMMIT réussi : les
-    shadows broker.json et trade_plans.json sont régénérés best-effort hors
-    transaction.
+    Si N'IMPORTE quelle étape lève → ROLLBACK complet de la transaction.
+    Après COMMIT réussi : shadows broker.json et trade_plans.json régénérés
+    best-effort hors transaction.
 
-    Précondition : broker._db, plan_store._db et ledger._db doivent tous être
-    la même instance que ``db``. Un assert-log (pas un assert dur) signale
-    l'incohérence sans interrompre l'exécution, mais l'atomicité n'est plus
-    garantie dans ce cas.
+    Préconditions (erreur dure avant ouverture de la transaction) :
+        broker._db, plan_store._db et ledger._db doivent tous être la même
+        instance que ``db``. Si ce n'est pas le cas, RuntimeError levée avant
+        tout SQL — l'atomicité ne peut pas être garantie sur des connexions
+        distinctes.
 
     Args:
         db:              StateDb partagé — substrat unique de toutes les écritures.
@@ -70,46 +74,88 @@ def execute_order_unit(
         price:           Prix d'exécution.
         ts:              Timestamp du fill (ISO string).
         fx_rate:         Taux de change devise native → USD.
-        dry_run:         Si True, aucune écriture SQL (submit_in_tx no-op).
-        plan_to_upsert:  TradePlan à upsert après le fill (ignoré si symbol_to_close).
-        symbol_to_close: Symbole dont fermer tous les plans ouverts (prioritaire).
+        dry_run:         Si True, submit et mutations plan sont no-op ; la tâche
+                         est quand même complétée (évite le re-play).
+        plan_to_upsert:  TradePlan à upsert après le fill (uniquement si
+                         dry_run=False). Compatible avec symbol_to_close
+                         (REVERSE : les deux s'appliquent, close avant upsert).
+        symbol_to_close: Symbole dont fermer tous les plans ouverts (uniquement
+                         si dry_run=False). Compatible avec plan_to_upsert.
         task_id:         ID de la tâche ledger à compléter.
         token:           Token de fencing de la tâche (claim_token attendu).
         now_ms:          Timestamp courant en epoch ms (injecté pour déterminisme).
 
     Returns:
-        Fill retourné par submit_in_tx (None si dry_run=True ou si la tâche
-        était déjà done / token invalide ne lève pas).
+        Fill retourné par submit_in_tx (None si dry_run=True).
 
     Raises:
-        Toute exception levée dans la transaction → ROLLBACK total + re-raise.
+        RuntimeError: si db partagé non identique (précondition), si la tâche
+                      est introuvable, si status != 'running' ou token mismatch
+                      (fence early), ou si complete_in_tx retourne False (défense
+                      en profondeur). Dans tous les cas → ROLLBACK total.
+        Toute autre exception levée dans la transaction → ROLLBACK total + re-raise.
     """
-    # Vérification de cohérence du StateDb partagé (best-effort, pas un assert dur)
+    # FIX 2 — Précondition StateDb enforce : raise dur AVANT d'ouvrir la transaction.
+    # Sans ça, les trois écritures seraient réparties sur des connexions distinctes
+    # → atomicité silencieusement rompue.
     if broker._db is not db:
-        log.warning(
-            "[unit_of_work] broker._db is not db — atomicité NON garantie"
+        raise RuntimeError(
+            "[unit_of_work] broker._db is not db — atomicité rompue, abandon"
         )
     if plan_store._db is not db:
-        log.warning(
-            "[unit_of_work] plan_store._db is not db — atomicité NON garantie"
+        raise RuntimeError(
+            "[unit_of_work] plan_store._db is not db — atomicité rompue, abandon"
         )
     if ledger._db is not db:
-        log.warning(
-            "[unit_of_work] ledger._db is not db — atomicité NON garantie"
+        raise RuntimeError(
+            "[unit_of_work] ledger._db is not db — atomicité rompue, abandon"
         )
 
     with db.transaction() as cur:
-        # Étape 1 — broker
+        # FIX 1 — Fence early : SELECT status/claim_token dans la MÊME transaction,
+        # AVANT le submit. Si la task est déjà 'done' ou le token est stale (rejeu,
+        # double-claim, recover_on_boot), lève ici → ROLLBACK total, rien n'est écrit.
+        fence_row = cur.execute(
+            "SELECT status, claim_token FROM tasks WHERE id=?",
+            (task_id,),
+        ).fetchone()
+        if fence_row is None:
+            raise RuntimeError(
+                f"[unit_of_work] task {task_id} introuvable — abandon"
+            )
+        if fence_row["status"] != "running":
+            raise RuntimeError(
+                f"[unit_of_work] task {task_id} status={fence_row['status']!r} != 'running'"
+                " — double-fill évité (ROLLBACK)"
+            )
+        if fence_row["claim_token"] != token:
+            raise RuntimeError(
+                f"[unit_of_work] task {task_id} token mismatch — token stale,"
+                " double-fill évité (ROLLBACK)"
+            )
+
+        # Étape 1 — broker (no-op si dry_run=True)
         fill = broker.submit_in_tx(cur, order, price, ts, dry_run=dry_run, fx_rate=fx_rate)
 
-        # Étape 2 — plan (close prioritaire sur upsert)
-        if symbol_to_close is not None:
-            plan_store.close_symbol_in_tx(cur, symbol_to_close)
-        elif plan_to_upsert is not None:
-            plan_store.upsert_in_tx(cur, plan_to_upsert)
+        # FIX 3 — dry_run : pas de mutation plan.
+        # submit_in_tx est déjà no-op en dry_run ; on protège aussi le plan.
+        if not dry_run:
+            # FIX 4 — REVERSE = close ET upsert dans la même UoW (non exclusifs).
+            # Étape 2a — close (si fourni)
+            if symbol_to_close is not None:
+                plan_store.close_symbol_in_tx(cur, symbol_to_close)
+            # Étape 2b — upsert (si fourni) — s'applique APRÈS le close pour REVERSE
+            if plan_to_upsert is not None:
+                plan_store.upsert_in_tx(cur, plan_to_upsert)
 
-        # Étape 3 — ledger
-        ledger.complete_in_tx(cur, task_id=task_id, token=token, now_ms=now_ms)
+        # Étape 3 — ledger (toujours, même en dry_run)
+        completed = ledger.complete_in_tx(cur, task_id=task_id, token=token, now_ms=now_ms)
+        if not completed:
+            # Défense en profondeur : ne devrait pas arriver grâce au fence early.
+            raise RuntimeError(
+                f"[unit_of_work] complete_in_tx task {task_id} retourné False"
+                " malgré le fence — abandon (ROLLBACK)"
+            )
 
     log.debug(
         "[unit_of_work] committed task_id=%s dry_run=%s fill=%s",
