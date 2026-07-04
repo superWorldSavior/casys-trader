@@ -9,22 +9,25 @@ from trader.runtime import daemon
 
 @pytest.fixture(autouse=True)
 def _restore_casys_trader_logger():
-    """Restaure l'état du logger 'casys-trader' après chaque test.
+    """Restaure l'état des loggers 'casys-trader' ET 'trader' après chaque test.
 
     Nécessaire car certains tests appellent daemon.main() qui déclenche
-    setup_logging() (propagate=False, handlers remplacés). Sans cette
-    fixture, le caplog des tests suivants serait silencieux.
+    setup_logging() (propagate=False, handlers remplacés sur les deux loggers).
+    Sans cette fixture, le caplog des tests suivants serait silencieux car les
+    records de trader.application.* ne remonteraient plus jusqu'au root logger.
     """
-    logger = logging.getLogger("casys-trader")
-    original_handlers = list(logger.handlers)
-    original_propagate = logger.propagate
-    original_level = logger.level
+    snapshots = {}
+    for name in ("casys-trader", "trader"):
+        lg = logging.getLogger(name)
+        snapshots[name] = (list(lg.handlers), lg.propagate, lg.level)
     yield
-    logger.handlers.clear()
-    for h in original_handlers:
-        logger.addHandler(h)
-    logger.propagate = original_propagate
-    logger.level = original_level
+    for name, (handlers, propagate, level) in snapshots.items():
+        lg = logging.getLogger(name)
+        lg.handlers.clear()
+        for h in handlers:
+            lg.addHandler(h)
+        lg.propagate = propagate
+        lg.level = level
 
 
 class FakeDataSource:

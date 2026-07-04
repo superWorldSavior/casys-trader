@@ -154,6 +154,43 @@ def _merge_domain_tools(
     return merged
 
 
+def build_symbol_facts(
+    sym: str,
+    *,
+    data_age_by_symbol: dict[str, float],
+    now: datetime,
+    active_watches_by_symbol: dict[str, list],
+    market_context_by_symbol: "dict[str, dict] | None" = None,
+    last_review_by_symbol: "dict[str, dict] | None" = None,
+) -> dict:
+    """Construit les faits par-symbole réinjectés dans le payload de décision.
+
+    Réutilisable par le producteur de file (queue_dispatch) et batch_decide.
+    Comportement IDENTIQUE à l'ancienne closure ``_symbol_facts`` de batch_decide.
+
+    Returns
+    -------
+    dict
+        Contient toujours data_age_m, session, active_watches.
+        Contient execution/planning si market_context_by_symbol[sym] est fourni.
+        Contient last_llm_review si last_review_by_symbol[sym] est fourni.
+    """
+    age = data_age_by_symbol.get(sym)
+    facts: dict = {
+        "data_age_m": None if age is None else int(round(age)),
+        "session": market.session_context(sym, now=now),
+        "active_watches": active_watches_by_symbol.get(sym, []),
+    }
+    mc = (market_context_by_symbol or {}).get(sym)
+    if mc:
+        facts["execution"] = mc.get("execution")
+        facts["planning"] = mc.get("planning")
+    review = (last_review_by_symbol or {}).get(sym)
+    if review:
+        facts["last_llm_review"] = review
+    return facts
+
+
 def batch_decide(
     *,
     decidable: list[str],
@@ -198,31 +235,18 @@ def batch_decide(
     reviews = last_review_by_symbol or {}
     market_contexts = market_context_by_symbol or {}
 
-    def _symbol_facts(sym: str) -> dict:
-        # Faits calculés par le code (pas des consignes en prose) : âge réel des
-        # prix et état de la séance de la place du symbole. Âge inconnu = None.
-        age = data_age_by_symbol.get(sym)
-        facts = {
-            "data_age_m": None if age is None else int(round(age)),
-            "session": market.session_context(sym, now=now),
-            "active_watches": active_watches_by_symbol.get(sym, []),
-        }
-        # Séparation analyse/exécution (§5.1) : le LLM voit s'il peut exécuter
-        # (execution.enabled) distinctement de s'il peut seulement analyser/planifier
-        # (planning.enabled) — il ne confond plus une thèse swing et un ordre immédiat.
-        mc = market_contexts.get(sym)
-        if mc:
-            facts["execution"] = mc.get("execution")
-            facts["planning"] = mc.get("planning")
-        # Continuité de thèse : le dernier verdict LLM persisté dans le TradePlan
-        # (sessions acpx jetables) est réinjecté au réveil d'une position ouverte.
-        review = reviews.get(sym)
-        if review:
-            facts["last_llm_review"] = review
-        return facts
-
     per_symbol = {
-        sym: {"indicator_triggers": triggers_by_symbol.get(sym, []), **_symbol_facts(sym)}
+        sym: {
+            "indicator_triggers": triggers_by_symbol.get(sym, []),
+            **build_symbol_facts(
+                sym,
+                data_age_by_symbol=data_age_by_symbol,
+                now=now,
+                active_watches_by_symbol=active_watches_by_symbol,
+                market_context_by_symbol=market_contexts,
+                last_review_by_symbol=reviews,
+            ),
+        }
         for sym in decidable
     }
 
@@ -424,7 +448,14 @@ def batch_decide(
             context_requests[sym] = _context_request_summary(req, resolved=len(research["requests"]))
             per_symbol2[sym] = {
                 "indicator_triggers": triggers_by_symbol.get(sym, []),
-                **_symbol_facts(sym),
+                **build_symbol_facts(
+                    sym,
+                    data_age_by_symbol=data_age_by_symbol,
+                    now=now,
+                    active_watches_by_symbol=active_watches_by_symbol,
+                    market_context_by_symbol=market_contexts,
+                    last_review_by_symbol=reviews,
+                ),
                 "research": research,
                 # Sessions jetables : le 2e batch n'a pas l'historique du 1er ; on
                 # repasse la rationale de la demande pour reprendre le raisonnement.

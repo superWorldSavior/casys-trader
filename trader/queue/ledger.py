@@ -265,6 +265,42 @@ class TaskLedger:
             n = cur.execute("DELETE FROM tasks").rowcount
             return n
 
+    def get(self, task_id: int) -> "dict | None":
+        """Retourne la tâche identifiée par *task_id* sous forme de dict.
+
+        Lit sous lock (via query_one) — cohérent avec les transactions de
+        enqueue/claim/complete/fail. Retourne None si la tâche est introuvable.
+        """
+        row = self._db.query_one("SELECT * FROM tasks WHERE id=?", (task_id,))
+        return dict(row) if row else None
+
+    def delete_stale_decide(self, current_cycle_id: str) -> int:
+        """Supprime les tâches 'decide' pending/running d'un cycle précédent.
+
+        Seules les tâches dont ``dedup_key`` ne commence PAS par
+        ``{current_cycle_id}:`` sont supprimées. Libère l'index
+        ``uniq_active_kind_partition`` pour que les nouvelles tâches du cycle
+        courant puissent être enfilées sans conflit de partition.
+
+        Retourne le nombre de lignes supprimées.
+        """
+        pattern = f"{current_cycle_id}:%"
+        with self._db.transaction() as cur:
+            n = cur.execute(
+                """DELETE FROM tasks
+                   WHERE kind='decide'
+                     AND status IN ('pending', 'running')
+                     AND (dedup_key IS NULL OR dedup_key NOT LIKE ?)""",
+                (pattern,),
+            ).rowcount
+            if n > 0:
+                log.info(
+                    "[queue.ledger] delete_stale_decide current_cycle=%s deleted=%d",
+                    current_cycle_id,
+                    n,
+                )
+            return n
+
     def recover_on_boot(self, *, now_ms):
         """Remet en 'pending' les tâches 'running' dont le bail a expiré.
 
