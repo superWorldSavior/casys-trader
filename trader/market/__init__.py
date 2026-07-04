@@ -17,4 +17,5 @@ __all__ = [
     "radar_config",
     "radar_data",
     "regime",
+    "rotation",
 ]

@@ -22,7 +22,7 @@ from trader.market.market_data import (
     session_context,
     session_snapshot,
 )
-from trader.rotation.wiring import _EU_SUFFIXES, _EU_SYMBOLS
+from trader.market.rotation.wiring import _EU_SUFFIXES, _EU_SYMBOLS
 
 
 def _utc(y, mo, d, h, mi=0, sec=0) -> datetime:

@@ -1,7 +1,7 @@
 # Référence — Gestion d'univers (radar & rotation)
 
 > **Type** : Reference (Diátaxis).
-> **Code** : `trader/rotation/` (core, wiring, venues, schedule, override, collectors, state), `trader/market/radar*` · **Config** : `pool.yaml`, `radar.yaml`, `universe.yaml`
+> **Code** : `trader/market/rotation/` (core, wiring, venues, schedule, override, collectors, state), `trader/market/radar*` · **Config** : `pool.yaml`, `radar.yaml`, `universe.yaml`
 > **Décisions** : D9 (univers = tradable), D10 (rotation/hot-sets par place), D13 (analyzable)
 
 L'univers **live** n'est pas figé : un radar daily (0 LLM) score le pool, une
@@ -17,7 +17,7 @@ univers), `score_window_bars` (~3 sem.), poids composites `w_trend`/`w_rs`/`w_am
 `benchmarks`/`default_benchmark`, `delta`, `dwell_days`, `override_enabled`,
 `preopen_window_minutes`.
 
-## Rotation à hystérésis — `rotation/core.apply_hysteresis(...)`
+## Rotation à hystérésis — `market/rotation/core.apply_hysteresis(...)`
 
 Sélectionne ≤ `cap_m` symboles chauds en **préservant les incumbents** (évite le
 churn) :
@@ -47,10 +47,10 @@ Deux besoins opposés sur le même `universe.yaml` :
 - **D9/D10** : univers = **tradable** (éjecte les places fermées).
 - **Swing** : analyser aussi les **fermés daily-valides**.
 
-Réconcilié par **D13** : `analyzable_venues()` (`rotation/schedule:101`) =
+Réconcilié par **D13** : `analyzable_venues()` (`market/rotation/schedule:101`) =
 **open ∪ preopen**. Attention : D13 ne couvre que la fenêtre pré-open, pas toute la
 fermeture (cf. registre D9/D10/D13, note live 17/06).
 
 ## Voir aussi
 - [Config](config.md) (`pool.yaml`, `radar.yaml`, `universe.yaml`) · registre D9/D10/D13.
-- Override rotation : **actif** en prod — `build_llm_override_fn` (`rotation/wiring`) est branché quand `radar.yaml override_enabled: true`, et passé à `venues.tick()`. (Le code mort, c'est `rotation/daemon.maybe_rotate()` — jamais appelé par le daemon prod.)
+- Override rotation : **actif** en prod — `build_llm_override_fn` (`market/rotation/wiring`) est branché quand `radar.yaml override_enabled: true`, et passé à `venues.tick()`. (Le code mort, c'est `market/rotation/daemon.maybe_rotate()` — jamais appelé par le daemon prod.)

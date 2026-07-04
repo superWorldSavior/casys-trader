@@ -9,7 +9,8 @@
 > `tools-portfolio-boundary`, `tools-memory-boundary`,
 > `interfaces-boundary`, `infrastructure-boundary`,
 > `flat-compat-facades`, `domain-semantic-boundary`,
-> `planning-scheduling-boundary`, `agent-learnings-boundary`).
+> `planning-scheduling-boundary`, `agent-learnings-boundary`,
+> `market-rotation-boundary`).
 
 ---
 
@@ -70,7 +71,7 @@ les utilisaient :
 | `trader/market/` | Port `DataSource`, adaptateurs yfinance/IB/composite, fraîcheur, indicateurs, FX, news, macro, radar, régime, priorisation gross exposure | port : `trader.market.ports.DataSource`; compat virtuelle : `trader.tools.market`, `trader.tools.data_source`, `trader.tools.ib_source`, `trader.tools.news_feed`, `trader.fx`, `trader.features`, etc. |
 | `trader/infrastructure/queue/` | File de tâches durable, workers, pools, backpressure | backend technique utilisé par le runtime queue-on ; compat virtuelle : `trader.queue.*` |
 | `trader/infrastructure/state_db/` | Backend SQLite de l'état paper, broker store, outbox | source durable quand `CASYS_STATE_BACKEND=sqlite` ; compat virtuelle : `trader.state_db.*` |
-| `trader/rotation/` | Rotation d'univers, hot-sets par venue, schedule, override, ledger rotation | `trader.rotation` réexporte l'ancien core |
+| `trader/market/rotation/` | Rotation d'univers, hot-sets par venue, schedule, override, ledger rotation | compat virtuelle : `trader.rotation.*`, `trader.rotation_*` |
 | `trader/support/` | Helpers support stables : config (`pool`, `portfolio`), metadata git/code version, process env | compat virtuelle : `trader.config.*`, `trader.metadata.*`, `trader.system.*` |
 | `trader/reporting/` | Ledger décision, raisons, audit ex-post, attribution, stats, tool usage, meta-performance, read models | analyse/rendu ex-post ; les side effects CLI vivent dans `interfaces/cli/` |
 | `trader/interfaces/cli/` | Entry points CLI canoniques (`stats`, `attribution`, `tool_usage`, `tui`) | compat virtuelle : `python -m trader.commands.stats`, `python -m trader.stats`, etc. |
@@ -91,7 +92,7 @@ mais ses packages ne sont pas tous du même niveau :
 | Composition runtime | `runtime/`, `interfaces/cli/`, alias legacy `trader.daemon`/`trader.cli` | peut assembler les dépendances et déclencher les side effects |
 | Services applicatifs | `application/` | orchestre un cas d'usage testable sans être l'entrypoint process |
 | Infrastructure technique | `infrastructure/queue/`, `infrastructure/state_db/` | backends durables et mécaniques ; pas de logique de décision métier |
-| Capacités métier | `market/`, `planning/`, `execution/`, `rotation/`, `agent/` (`protocol/`, `tools/`, `learnings/`) | porte la logique du domaine et ne dépend pas de `runtime/` |
+| Capacités métier | `market/`, `planning/`, `execution/`, `market/rotation/`, `agent/` (`protocol/`, `tools/`, `learnings/`) | porte la logique du domaine et ne dépend pas de `runtime/` |
 | Primitives transverses | `domain/`, `domain/semantic/`, `support/` | types/catalogues/helpers stables, sans dépendance montante |
 | Read models et surfaces | `reporting/`, `reporting/read_models/`, `interfaces/ui/`, `interfaces/cockpit/` | lit l'état produit par le runtime, ne décide pas à sa place |
 | Compatibilité legacy | alias virtuels de `trader/__init__.py` | délègue vers le canonique ; aucun nouvel import interne ne doit viser ici |
@@ -124,11 +125,13 @@ Les anciens imports restent compatibles quand ils existaient déjà
 `trader.tui`, `trader.commands.stats`,
 `trader.cockpit.app`, `trader.ui.palette`, `trader.queue.ledger`,
 `trader.state_db.connection`, `trader.semantic.catalog`,
-`trader.scheduling.scheduler`, `trader.learnings.raw_store`). `trader.tools` est fourni par le finder de
+`trader.scheduling.scheduler`, `trader.learnings.raw_store`,
+`trader.rotation.schedule`). `trader.tools` est fourni par le finder de
 compatibilité dans `trader/__init__.py` et ne correspond plus à un dossier
 physique ; `trader.config`, `trader.metadata`, `trader.system`,
 `trader.read_models`, `trader.commands`, `trader.cockpit`, `trader.ui`,
-`trader.queue`, `trader.state_db`, `trader.semantic`, `trader.scheduling` et `trader.learnings`, comme `trader.agent_protocol` et
+`trader.queue`, `trader.state_db`, `trader.semantic`, `trader.scheduling`,
+`trader.learnings` et `trader.rotation`, comme `trader.agent_protocol` et
 `trader.agent_tools`, sont aussi des packages virtuels de compatibilité. Les
 imports internes
 doivent viser les packages neutres ou canoniques (`domain/`, `execution/broker`,
@@ -136,7 +139,7 @@ doivent viser les packages neutres ou canoniques (`domain/`, `execution/broker`,
 `reporting/read_models/`, `agent/protocol/`, `agent/tools/`, `interfaces/cli/`,
 `interfaces/cockpit/`, `interfaces/ui/`, `infrastructure/queue/`,
 `infrastructure/state_db/`, `domain/semantic/`, `planning/scheduler.py`,
-`agent/learnings/`). Les adaptateurs concrets restent dans
+`agent/learnings/`, `market/rotation/`). Les adaptateurs concrets restent dans
 `execution/broker` et `market/data_source` quand la composition runtime les
 instancie. Les tests `tests/test_package_layout.py`, `tests/test_code_version_imports.py`
 et `tests/test_runtime_pid_file.py` gardent ces frontières.
@@ -208,7 +211,7 @@ sélectionne les symboles dont le `next_wake` est passé. En mode `--once`/`--bo
 tout l'univers.
 
 L'univers actif est généré par la rotation (D9/D10) à chaque cycle :
-`trader/rotation/daemon.py` appelle `compose_active_universe(now)` qui compose
+`trader/market/rotation/daemon.py` appelle `compose_active_universe(now)` qui compose
 `sticky_all ∪ union(hot-lists des marchés ouverts)` et écrit
 `config/universe.yaml` si le contenu change (`trader/runtime/daemon.py`).
 
@@ -391,7 +394,7 @@ La volatilité est **récompensée** (bornée par ATR floor). Séries ajustées 
 
 ### 6.2 Rotation & hot-sets par venue (D10)
 
-`trader/rotation/venues.py` — une hot-list par place de marché (TW / EU / US).
+`trader/market/rotation/venues.py` — une hot-list par place de marché (TW / EU / US).
 Classement intra-venue contre son propre benchmark. Recalculé à la clôture de
 chaque session.
 
@@ -406,10 +409,10 @@ pending — toujours dans l'univers, hors quota, hors logique d'ouverture.
 (l'incumbent est protégé K jours). Sortie d'urgence court-circuite K.
 
 Écriture atomique de `universe.yaml` (idempotente — n'écrit que si le contenu
-change, jamais vide → fallback dernier univers valide). `rotation/venues.py`
+change, jamais vide → fallback dernier univers valide). `market/rotation/venues.py`
 
 Override LLM : l'agent peut ajouter/retirer des symboles avec raison loggée
-(`rotation/override.py`). Tracé dans `rotation/ledger.py`.
+(`market/rotation/override.py`). Tracé dans `market/rotation/ledger.py`.
 
 ---
 

@@ -29,7 +29,7 @@ def _make_plan(symbol: str) -> SimpleNamespace:
 class TestStickyCollector:
     def test_union_of_positions_and_plans(self):
         """AAA (qty=10) + BBB (plan) → {'AAA','BBB'} ; FLAT (qty=0) exclu."""
-        from trader.rotation.collectors import sticky_collector
+        from trader.market.rotation.collectors import sticky_collector
 
         positions_fn = lambda: {  # noqa: E731
             "AAA": _make_position(10),
@@ -43,7 +43,7 @@ class TestStickyCollector:
 
     def test_zero_quantity_excluded(self):
         """Une position à qty=0 n'est pas sticky."""
-        from trader.rotation.collectors import sticky_collector
+        from trader.market.rotation.collectors import sticky_collector
 
         positions_fn = lambda: {"FLAT": _make_position(0.0)}  # noqa: E731
         plans_fn = lambda: []  # noqa: E731
@@ -51,20 +51,20 @@ class TestStickyCollector:
         assert sticky_collector(positions_fn=positions_fn, plans_fn=plans_fn) == set()
 
     def test_empty_inputs_return_empty_set(self):
-        from trader.rotation.collectors import sticky_collector
+        from trader.market.rotation.collectors import sticky_collector
 
         assert sticky_collector(positions_fn=lambda: {}, plans_fn=lambda: []) == set()
 
     def test_negative_quantity_is_sticky(self):
         """Position short (qty < 0) est non-nulle → sticky."""
-        from trader.rotation.collectors import sticky_collector
+        from trader.market.rotation.collectors import sticky_collector
 
         positions_fn = lambda: {"SHORT": _make_position(-5)}  # noqa: E731
         assert sticky_collector(positions_fn=positions_fn, plans_fn=lambda: []) == {"SHORT"}
 
     def test_duplicate_symbol_in_both_sources(self):
         """Si un symbole est en position ET en plan, il apparaît une seule fois."""
-        from trader.rotation.collectors import sticky_collector
+        from trader.market.rotation.collectors import sticky_collector
 
         positions_fn = lambda: {"AAA": _make_position(3)}  # noqa: E731
         plans_fn = lambda: [_make_plan("AAA")]  # noqa: E731
@@ -80,14 +80,14 @@ class TestStickyCollector:
 class TestBuildPositionsFn:
     def test_empty_state_dir_returns_empty_dict(self, tmp_path: Path):
         """Aucun broker.json → closure retourne {} sans lever."""
-        from trader.rotation.collectors import build_positions_fn
+        from trader.market.rotation.collectors import build_positions_fn
 
         fn = build_positions_fn(tmp_path)
         result = fn()
         assert result == {}
 
     def test_returns_callable(self, tmp_path: Path):
-        from trader.rotation.collectors import build_positions_fn
+        from trader.market.rotation.collectors import build_positions_fn
 
         fn = build_positions_fn(tmp_path)
         assert callable(fn)
@@ -96,7 +96,7 @@ class TestBuildPositionsFn:
 class TestBuildPlansFn:
     def test_empty_state_dir_returns_empty_list(self, tmp_path: Path):
         """Aucun plans.json → closure retourne [] sans lever."""
-        from trader.rotation.collectors import build_plans_fn
+        from trader.market.rotation.collectors import build_plans_fn
 
         fn = build_plans_fn(tmp_path)
         result = fn()
@@ -104,7 +104,7 @@ class TestBuildPlansFn:
         assert list(result) == []
 
     def test_returns_callable(self, tmp_path: Path):
-        from trader.rotation.collectors import build_plans_fn
+        from trader.market.rotation.collectors import build_plans_fn
 
         fn = build_plans_fn(tmp_path)
         assert callable(fn)
@@ -113,7 +113,7 @@ class TestBuildPlansFn:
         """build_plans_fn doit lire le MÊME fichier que le daemon écrit
         (trade_plans.json, daemon.py). Sinon la branche plans du sticky est morte
         et un trade plan ne devient jamais sticky (régression D10)."""
-        from trader.rotation.collectors import build_plans_fn
+        from trader.market.rotation.collectors import build_plans_fn
         from trader.planning.trade_plan import TradePlanStore, create_trade_plan
 
         # Le daemon écrit STATE_DIR / "trade_plans.json".
@@ -141,13 +141,13 @@ class TestBuildPlansFn:
 
 class TestDefaultOverrideFn:
     def test_returns_noop_override(self):
-        from trader.rotation.collectors import default_override_fn
+        from trader.market.rotation.collectors import default_override_fn
 
         result = default_override_fn({"symbols": ["AAA", "BBB"]})
         assert result == {"add": [], "remove": []}
 
     def test_noop_regardless_of_payload(self):
-        from trader.rotation.collectors import default_override_fn
+        from trader.market.rotation.collectors import default_override_fn
 
         assert default_override_fn(None) == {"add": [], "remove": []}
         assert default_override_fn({}) == {"add": [], "remove": []}

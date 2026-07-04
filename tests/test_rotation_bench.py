@@ -1,10 +1,10 @@
-"""Tests pour trader.rotation.bench — mesure de l'apport P&L du hot-set."""
+"""Tests pour trader.market.rotation.bench — mesure de l'apport P&L du hot-set."""
 
 from __future__ import annotations
 
 import pytest
 
-from trader.rotation.bench import membership_pnl
+from trader.market.rotation.bench import membership_pnl
 
 
 def test_membership_pnl_cas_nominal():

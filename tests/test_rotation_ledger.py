@@ -1,11 +1,11 @@
-"""Tests pour trader.rotation.ledger — journal des décisions de composition d'univers."""
+"""Tests pour trader.market.rotation.ledger — journal des décisions de composition d'univers."""
 
 from __future__ import annotations
 
 import json
 
 
-from trader.rotation.ledger import log_rotation
+from trader.market.rotation.ledger import log_rotation
 
 
 def test_log_rotation_ecrit_une_ligne_json_relisible(tmp_path):

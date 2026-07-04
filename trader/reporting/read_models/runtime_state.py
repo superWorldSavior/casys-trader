@@ -302,8 +302,8 @@ def _load_fills_safe(broker_path: Path, *, limit: int = 100) -> list[dict]:
 def _load_venue_open_state_safe(state_dir: Path, config_dir: str) -> tuple[dict, list[str], dict]:
     """Charge venue_state, open_venues et sessions. ({}, [], {}) si indisponible."""
     try:
-        from trader.rotation.venues import load_venue_state as _lvs
-        from trader.rotation.schedule import load_sessions as _ls, open_venues as _ov
+        from trader.market.rotation.venues import load_venue_state as _lvs
+        from trader.market.rotation.schedule import load_sessions as _ls, open_venues as _ov
 
         venue_state = _lvs(state_dir)
         sessions = _ls(config_dir)

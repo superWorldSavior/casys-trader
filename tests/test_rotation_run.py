@@ -9,7 +9,7 @@ import json
 import yaml
 
 from trader.market.radar_data import CoverageError
-from trader.rotation import run
+from trader.market.rotation import run
 
 
 # ---------------------------------------------------------------------------

@@ -3,8 +3,8 @@ import pytest
 
 import yaml
 
-from trader.rotation import apply_hysteresis, apply_override, compose_final, emergency_exits, sticky_symbols, write_universe_atomic
-from trader.rotation import UniverseWriteError
+from trader.market.rotation import apply_hysteresis, apply_override, compose_final, emergency_exits, sticky_symbols, write_universe_atomic
+from trader.market.rotation import UniverseWriteError
 
 
 # ---------------------------------------------------------------------------

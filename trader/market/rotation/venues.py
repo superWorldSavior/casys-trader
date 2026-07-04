@@ -11,20 +11,20 @@ from pathlib import Path
 
 import yaml
 
-from trader.rotation import apply_hysteresis, apply_override, emergency_exits, write_universe_atomic
-from trader.rotation.collectors import (
+from trader.market.rotation import apply_hysteresis, apply_override, emergency_exits, write_universe_atomic
+from trader.market.rotation.collectors import (
     build_plans_fn,
     build_positions_fn,
     sticky_collector,
 )
-from trader.rotation.ledger import log_rotation
-from trader.rotation.schedule import (
+from trader.market.rotation.ledger import log_rotation
+from trader.market.rotation.schedule import (
     analyzable_venues,
     closed_sessions_since,
     load_sessions,
     preopen_venues,
 )
-from trader.rotation.wiring import build_rank_fn, venue_of
+from trader.market.rotation.wiring import build_rank_fn, venue_of
 from trader.market.radar_config import load_radar_params
 
 # Top N candidats radar persistés par venue pour l'override LLM pré-open (configurable plus tard)

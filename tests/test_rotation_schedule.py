@@ -1,8 +1,8 @@
 """Tests TDD pour trader/rotation_schedule.py — gate de déclenchement rotation."""
 
 
-import trader.rotation.schedule as rotation_schedule
-from trader.rotation.schedule import closed_sessions_since, load_sessions, rotation_due
+import trader.market.rotation.schedule as rotation_schedule
+from trader.market.rotation.schedule import closed_sessions_since, load_sessions, rotation_due
 
 _STANDARD_SESSIONS = {
     "TW": {"open": "01:00", "close": "05:30"},
@@ -241,25 +241,25 @@ _SESS = {
 class TestPreopenVenues:
     def test_preopen_inclut_venue_dans_la_fenetre(self):
         """00:30 UTC mardi, fenêtre 90 min → TW (ouvre 01:00) est en pré-open."""
-        from trader.rotation.schedule import preopen_venues
+        from trader.market.rotation.schedule import preopen_venues
 
         assert preopen_venues("2026-06-16T00:30:00+00:00", _SESS, window_minutes=90) == ["TW"]
 
     def test_preopen_exclut_venue_hors_fenetre(self):
         """23:00 UTC → prochaine ouverture TW (01:00 lendemain) à >90 min → vide."""
-        from trader.rotation.schedule import preopen_venues
+        from trader.market.rotation.schedule import preopen_venues
 
         assert preopen_venues("2026-06-16T23:00:00+00:00", _SESS, window_minutes=90) == []
 
     def test_preopen_exclut_venue_deja_ouverte(self):
         """02:00 UTC → TW déjà ouverte (pas pré-open), EU/US trop loin."""
-        from trader.rotation.schedule import preopen_venues
+        from trader.market.rotation.schedule import preopen_venues
 
         assert preopen_venues("2026-06-16T02:00:00+00:00", _SESS, window_minutes=90) == []
 
     def test_preopen_weekend_pas_de_preopen_actions(self):
         """Samedi → aucune venue actions en pré-open (le lundi est à >fenêtre)."""
-        from trader.rotation.schedule import preopen_venues
+        from trader.market.rotation.schedule import preopen_venues
 
         assert preopen_venues("2026-06-20T00:30:00+00:00", _SESS, window_minutes=90) == []
 
@@ -270,7 +270,7 @@ class TestPreopenVenues:
         absent d'open_now ; sans garde explicite, FX remonterait en pré-open de sa
         pseudo-ouverture du lundi. La garde `venue == "FX"` doit l'exclure.
         """
-        from trader.rotation.schedule import preopen_venues
+        from trader.market.rotation.schedule import preopen_venues
 
         sess = {"FX": {"open": "00:00", "close": "22:00"}}
         assert preopen_venues("2026-06-21T23:30:00+00:00", sess, window_minutes=90) == []
@@ -284,14 +284,14 @@ class TestPreopenVenues:
 class TestAnalyzableVenues:
     def test_analyzable_union_ouvertes_et_preopen(self):
         """00:30 UTC mardi : FX ouvert (24/5) + TW en pré-open."""
-        from trader.rotation.schedule import analyzable_venues
+        from trader.market.rotation.schedule import analyzable_venues
 
         result = analyzable_venues("2026-06-16T00:30:00+00:00", _SESS, preopen_window_minutes=90)
         assert result == ["FX", "TW"]
 
     def test_analyzable_egal_open_quand_aucun_preopen(self):
         """02:00 UTC : TW + FX ouverts, aucun pré-open."""
-        from trader.rotation.schedule import analyzable_venues
+        from trader.market.rotation.schedule import analyzable_venues
 
         result = analyzable_venues("2026-06-16T02:00:00+00:00", _SESS, preopen_window_minutes=90)
         assert result == ["FX", "TW"]

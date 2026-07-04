@@ -36,7 +36,6 @@ def test_top_level_packages_have_declared_architecture_roles() -> None:
         "market",
         "planning",
         "reporting",
-        "rotation",
         "runtime",
         "support",
     }
@@ -101,6 +100,18 @@ def test_agent_learnings_are_nested_under_agent() -> None:
     assert (learnings_dir / "embeddings.py").exists()
     assert (learnings_dir / "consolidator.py").exists()
     assert not _has_python_sources(trader_dir / "learnings")
+
+
+def test_rotation_is_nested_under_market() -> None:
+    trader_dir = Path(__file__).resolve().parents[1] / "trader"
+    rotation_dir = trader_dir / "market" / "rotation"
+
+    assert rotation_dir.exists()
+    assert (rotation_dir / "core.py").exists()
+    assert (rotation_dir / "venues.py").exists()
+    assert (rotation_dir / "schedule.py").exists()
+    assert (rotation_dir / "wiring.py").exists()
+    assert not _has_python_sources(trader_dir / "rotation")
 
 
 def test_foundation_packages_do_not_depend_on_higher_layers() -> None:
@@ -331,6 +342,49 @@ def test_learnings_legacy_package_is_virtual() -> None:
     assert LegacyRawLearningsStore is RawLearningsStore
 
 
+def test_rotation_legacy_package_is_virtual() -> None:
+    trader_dir = Path(__file__).resolve().parents[1] / "trader"
+
+    assert not _has_python_sources(trader_dir / "rotation")
+
+    import trader.rotation as legacy_rotation
+    import trader.rotation.schedule as legacy_schedule
+    from trader.market.rotation import run
+    from trader.market.rotation.schedule import rotation_due
+    from trader.rotation import run as legacy_run
+    from trader.rotation.schedule import rotation_due as legacy_rotation_due
+
+    assert getattr(legacy_rotation, "__file__", None) is None
+    assert getattr(legacy_rotation, "__path__", None) == []
+    assert legacy_run is run
+    assert legacy_schedule.rotation_due is rotation_due
+    assert legacy_rotation_due is rotation_due
+
+    namespace: dict[str, object] = {}
+    exec("from trader.rotation import *", namespace)
+    exported = {name for name in namespace if not name.startswith("__")}
+    assert exported == set(legacy_rotation.__all__)
+    assert {"run", "apply_hysteresis", "CoverageError"} <= exported
+    assert {"Any", "import_module", "_CORE_EXPORTS"}.isdisjoint(exported)
+
+
+def test_rotation_python_m_core_smoke_has_no_preimport_warning() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+
+    for module_name in ("trader.market.rotation.core", "trader.rotation.core"):
+        result = subprocess.run(
+            [sys.executable, "-m", module_name, "--help"],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+
+        assert result.returncode == 0, f"{module_name}: {result.stderr}"
+        assert "RuntimeWarning" not in result.stderr
+
+
 def test_internal_code_uses_canonical_interface_imports() -> None:
     repo_root = Path(__file__).resolve().parents[1]
     trader_dir = repo_root / "trader"
@@ -528,6 +582,44 @@ def test_internal_code_uses_canonical_learnings_imports() -> None:
     assert violations == []
 
 
+def test_internal_code_uses_canonical_rotation_imports() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    trader_dir = repo_root / "trader"
+    checked_roots = (trader_dir, repo_root / "scripts")
+    ignored_files = {trader_dir / "__init__.py"}
+    forbidden_direct_modules = {"trader.rotation"}
+    forbidden_from_trader = {"rotation"}
+
+    def _is_forbidden_module(module_name: str) -> bool:
+        return any(
+            module_name == forbidden or module_name.startswith(f"{forbidden}.")
+            for forbidden in forbidden_direct_modules
+        )
+
+    violations: list[str] = []
+    for root in checked_roots:
+        if not root.exists():
+            continue
+        for path in sorted(root.rglob("*.py")):
+            if path in ignored_files:
+                continue
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            rel_path = path.relative_to(repo_root)
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ImportFrom) and node.module and _is_forbidden_module(node.module):
+                    violations.append(f"{rel_path}: from {node.module} import ...")
+                elif isinstance(node, ast.ImportFrom) and node.module == "trader":
+                    forbidden_names = sorted(alias.name for alias in node.names if alias.name in forbidden_from_trader)
+                    if forbidden_names:
+                        violations.append(f"{rel_path}: from trader import {forbidden_names}")
+                elif isinstance(node, ast.Import):
+                    for alias in node.names:
+                        if _is_forbidden_module(alias.name):
+                            violations.append(f"{rel_path}: import {alias.name}")
+
+    assert violations == []
+
+
 def test_legacy_virtual_packages_support_from_trader_and_python_m() -> None:
     import trader
     from trader import config as legacy_config
@@ -554,6 +646,17 @@ def test_legacy_virtual_packages_support_from_trader_and_python_m() -> None:
         "trader.learnings.store",
         "trader.learnings.embeddings",
         "trader.learnings.consolidator",
+        "trader.rotation",
+        "trader.rotation.bench",
+        "trader.rotation.collectors",
+        "trader.rotation.core",
+        "trader.rotation.daemon",
+        "trader.rotation.ledger",
+        "trader.rotation.override",
+        "trader.rotation.schedule",
+        "trader.rotation.state",
+        "trader.rotation.venues",
+        "trader.rotation.wiring",
     ):
         result = subprocess.run(
             [sys.executable, "-m", module_name],
@@ -594,7 +697,7 @@ def test_legacy_flat_module_imports_remain_compatible() -> None:
     assert legacy_learnings_store.__name__ == "trader.agent.learnings.store"
     assert legacy_llm.LlmRouter.__module__ == "trader.agent.llm"
     assert legacy_palette.__name__ == "trader.interfaces.ui.palette"
-    assert legacy_schedule.__name__ == "trader.rotation.schedule"
+    assert legacy_schedule.__name__ == "trader.market.rotation.schedule"
     assert legacy_stats.compute_live_kpis.__module__ == "trader.reporting.stats"
     assert decision_ledger.__name__ == "trader.reporting.decision_ledger"
     assert CockpitApp.__module__ == "trader.interfaces.cockpit.app"

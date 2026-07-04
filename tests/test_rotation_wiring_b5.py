@@ -9,7 +9,7 @@ from __future__ import annotations
 
 class TestBuildMarketContextFromRegime:
     def test_retourne_dict_avec_regime_families(self):
-        from trader.rotation.wiring import build_market_context_from_regime
+        from trader.market.rotation.wiring import build_market_context_from_regime
 
         family_bias = {
             "defense": {"dir": "up", "frac": 0.8, "up": 4, "down": 1, "n": 5},
@@ -23,14 +23,14 @@ class TestBuildMarketContextFromRegime:
 
     def test_retourne_none_si_dict_vide(self):
         """Contrat narrow : None si regime vide (pas d'info à transmettre au LLM)."""
-        from trader.rotation.wiring import build_market_context_from_regime
+        from trader.market.rotation.wiring import build_market_context_from_regime
 
         ctx = build_market_context_from_regime({})
         assert ctx is None
 
     def test_retourne_none_si_aucun_bias(self):
         """Contrat narrow : None si regime vide (pas d'info à transmettre)."""
-        from trader.rotation.wiring import build_market_context_from_regime
+        from trader.market.rotation.wiring import build_market_context_from_regime
 
         ctx = build_market_context_from_regime(None)
         assert ctx is None
@@ -45,7 +45,7 @@ def test_tick_daemon_passe_override_fn_quand_enabled(tmp_path):
     """Smoke test : tick avec override_fn assemblée via build_llm_override_fn mock
     + market_context peuplé → override appelé en pré-open."""
     import json
-    from trader.rotation.venues import tick
+    from trader.market.rotation.venues import tick
 
     config_dir = tmp_path / "cfg"
     state_dir = tmp_path / "state"

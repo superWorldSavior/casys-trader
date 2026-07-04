@@ -212,7 +212,7 @@ def _market_badge(
     ``open_venues`` = codes venue ouverts (EU/US/TW/FX). None → badge neutre,
     pour distinguer « fermé » d'« information de session indisponible ».
     """
-    from trader.rotation.wiring import venue_of
+    from trader.market.rotation.wiring import venue_of
 
     if open_venues is None:
         return Text("·", style=palette["dim"])
@@ -1216,7 +1216,7 @@ def build_universe_panel(
     FX ignoré — pas dans l'univers actif.
     Tolère les états vides.
     """
-    from trader.rotation.wiring import venue_of  # import local pour éviter les cycles
+    from trader.market.rotation.wiring import venue_of  # import local pour éviter les cycles
 
     venues_data = venue_state.get("venues") if isinstance(venue_state.get("venues"), dict) else {}
 

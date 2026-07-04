@@ -6,7 +6,7 @@ from copy import deepcopy
 
 import yaml
 
-from trader.rotation.venues import (
+from trader.market.rotation.venues import (
     _purge_old_radar_cache,
     compose_active_universe,
     due_venues,
@@ -725,7 +725,7 @@ def test_tick_override_preopen_chemin_prompt_reel(tmp_path):
     contre les candidats persistés. Garde anti-régression du contrat candidates↔prompt
     (le bug 'bias' manquant levait KeyError AVANT l'appel LLM → fail-safe silencieux).
     """
-    from trader.rotation.override import make_llm_override_fn
+    from trader.market.rotation.override import make_llm_override_fn
 
     config_dir = tmp_path / "cfg"
     state_dir = tmp_path / "state"
@@ -765,7 +765,7 @@ def test_tick_override_preopen_candidats_legacy_sans_bias(tmp_path):
     vrai prompt (normalisation défensive du bias dans le hook)."""
     import json
 
-    from trader.rotation.override import make_llm_override_fn
+    from trader.market.rotation.override import make_llm_override_fn
 
     config_dir = tmp_path / "cfg"
     state_dir = tmp_path / "state"

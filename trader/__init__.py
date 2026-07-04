@@ -54,15 +54,15 @@ _COMPAT_MODULES = {
     "regime": "trader.market.regime",
     "relevance_gate": "trader.planning.relevance_gate",
     "risk": "trader.execution.risk",
-    "rotation_bench": "trader.rotation.bench",
-    "rotation_collectors": "trader.rotation.collectors",
-    "rotation_daemon": "trader.rotation.daemon",
-    "rotation_ledger": "trader.rotation.ledger",
-    "rotation_override": "trader.rotation.override",
-    "rotation_schedule": "trader.rotation.schedule",
-    "rotation_state": "trader.rotation.state",
-    "rotation_venues": "trader.rotation.venues",
-    "rotation_wiring": "trader.rotation.wiring",
+    "rotation_bench": "trader.market.rotation.bench",
+    "rotation_collectors": "trader.market.rotation.collectors",
+    "rotation_daemon": "trader.market.rotation.daemon",
+    "rotation_ledger": "trader.market.rotation.ledger",
+    "rotation_override": "trader.market.rotation.override",
+    "rotation_schedule": "trader.market.rotation.schedule",
+    "rotation_state": "trader.market.rotation.state",
+    "rotation_venues": "trader.market.rotation.venues",
+    "rotation_wiring": "trader.market.rotation.wiring",
     "stats": "trader.reporting.stats",
     "trade_plan": "trader.planning.trade_plan",
     "tool_usage": "trader.reporting.tool_usage",
@@ -99,6 +99,19 @@ _COMPAT_PACKAGES = {
         "embeddings": "trader.agent.learnings.embeddings",
         "raw_store": "trader.agent.learnings.raw_store",
         "store": "trader.agent.learnings.store",
+    },
+    "rotation": {
+        "__main__": "trader.market.rotation.__main__",
+        "bench": "trader.market.rotation.bench",
+        "collectors": "trader.market.rotation.collectors",
+        "core": "trader.market.rotation.core",
+        "daemon": "trader.market.rotation.daemon",
+        "ledger": "trader.market.rotation.ledger",
+        "override": "trader.market.rotation.override",
+        "schedule": "trader.market.rotation.schedule",
+        "state": "trader.market.rotation.state",
+        "venues": "trader.market.rotation.venues",
+        "wiring": "trader.market.rotation.wiring",
     },
     "cockpit": {
         "__main__": "trader.interfaces.cockpit.__main__",
@@ -167,6 +180,7 @@ _COMPAT_PACKAGE_ALIASES = {
     "commands": "trader.interfaces.cli",
     "learnings": "trader.agent.learnings",
     "queue": "trader.infrastructure.queue",
+    "rotation": "trader.market.rotation",
     "semantic": "trader.domain.semantic",
     "scheduling": "trader.planning",
     "state_db": "trader.infrastructure.state_db",
@@ -253,6 +267,9 @@ class _CompatAliasModule(types.ModuleType):
             extra_names = set(super().__getattribute__("_extra_attrs"))
             if export_names is not None:
                 return sorted(set(export_names) | extra_names)
+            target_all = getattr(self._target(), "__all__", None)
+            if target_all is not None:
+                return sorted(set(target_all) | extra_names)
             return sorted(
                 {target_name for target_name in dir(self._target()) if not target_name.startswith("__")} | extra_names
             )

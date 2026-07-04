@@ -716,7 +716,7 @@ def build_symbol_detail(state: dict, symbol: str, *, palette: Palette, now: date
     sortie → veilles & armé → décisions récentes → historique P&L réalisé →
     learnings. ``now`` injectable pour un rendu déterministe en test.
     """
-    from trader.rotation.wiring import venue_of
+    from trader.market.rotation.wiring import venue_of
 
     now = now or datetime.now(UTC)
     state = state if isinstance(state, dict) else {}

@@ -258,7 +258,7 @@ def build_llm_override_fn(
         override_fn(payload) -> {"add": [...], "remove": [...]}
     """
     from trader.agent import llm
-    from trader.rotation.override import make_llm_override_fn
+    from trader.market.rotation.override import make_llm_override_fn
 
     kw: dict = {"acpx_bin": acpx_bin}
     if spark_model is not None:
@@ -323,8 +323,8 @@ def run_cli(
     from trader.support.config.pool import load_pool
     from trader.market.radar_config import load_radar_params
     from trader.market.radar_data import download_daily_batch
-    from trader.rotation import run
-    from trader.rotation.collectors import (
+    from trader.market.rotation import run
+    from trader.market.rotation.collectors import (
         sticky_collector,
         build_positions_fn,
         build_plans_fn,

@@ -3113,16 +3113,16 @@ def main(
                 # puis compose l'univers actif = sticky ∪ union(marchés ouverts) et l'écrit
                 # SI changé. Pas de cron externe ; état par venue persisté → rattrapage au
                 # redémarrage. Fail-safe : n'interrompt jamais le cycle.
-                from trader.rotation.venues import tick as _rotation_tick
+                from trader.market.rotation.venues import tick as _rotation_tick
                 from trader.market.radar_config import load_radar_params as _load_radar_params
                 try:
                     _radar_params = _load_radar_params(ROOT / "config")
                     _override_fn = None
                     if _radar_params.override_enabled:
-                        from trader.rotation.wiring import build_llm_override_fn as _build_override
+                        from trader.market.rotation.wiring import build_llm_override_fn as _build_override
                         _override_fn = _build_override()
                     # market_context v1 : peuplé depuis le cache de régime si disponible
-                    from trader.rotation.wiring import build_market_context_from_regime as _build_mctx
+                    from trader.market.rotation.wiring import build_market_context_from_regime as _build_mctx
                     _market_context = None
                     _regime_cache_path = STATE_DIR / "last_regime.json"
                     if _regime_cache_path.exists():

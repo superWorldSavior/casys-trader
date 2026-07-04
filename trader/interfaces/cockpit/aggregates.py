@@ -243,7 +243,7 @@ def venue_clock(sessions: dict, now: datetime) -> VenueClock:
 
     FX (24/5) exclue. Sessions vides/malformées → VenueClock() neutre.
     """
-    from trader.rotation.schedule import _close_dt, open_venues
+    from trader.market.rotation.schedule import _close_dt, open_venues
 
     if not isinstance(sessions, dict) or not sessions:
         return VenueClock()
@@ -285,7 +285,7 @@ def open_venue_set(sessions: object, now: datetime) -> "set[str]":
     Utilisé pour le badge marché ouvert/fermé des positions et du drill-down.
     Contrairement à `venue_clock`, inclut FX (24/5) car on peut détenir des paires.
     """
-    from trader.rotation.schedule import open_venues
+    from trader.market.rotation.schedule import open_venues
 
     if not isinstance(sessions, dict) or not sessions:
         return set()

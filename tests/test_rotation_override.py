@@ -1,8 +1,8 @@
-"""Tests TDD pour trader.rotation.override."""
+"""Tests TDD pour trader.market.rotation.override."""
 from __future__ import annotations
 
 
-from trader.rotation.override import (
+from trader.market.rotation.override import (
     build_override_prompt,
     make_llm_override_fn,
     parse_override,
