@@ -1,5 +1,9 @@
 # Phase 3 — `decide` + `execute` via la file durable (Lot A + Lot B, flags orthogonaux)
 
+> **Statut : ✅ LIVRÉ + ACTIVÉ EN PAPER (2026-07-04)** — les 3 flags on, migration
+> validée (`[state-compare] identical=True`). État d'implémentation détaillé au §8.
+> Référence opérationnelle : `docs/reference/task-queue.md`.
+>
 > Sous-phase du chantier task-ledger. Design d'architecture général :
 > `docs/superpowers/specs/2026-07-03-task-ledger-durable-queue-design.md` (§4.1, §4.3bis,
 > §4.4, §4.5, §4.6). Ce document précise le **comment** de la bascule `decide`/`execute → file`.

@@ -199,7 +199,5 @@ parallèle du SQLite → retour arrière sans perte d'état.
 
 - Conception générale + phases : [`../superpowers/specs/2026-07-03-task-ledger-durable-queue-design.md`](../superpowers/specs/2026-07-03-task-ledger-durable-queue-design.md)
 - Conception Phase 3 (decide + execute via file, flags) : [`../superpowers/specs/2026-07-04-phase3-decide-execute-via-file-design.md`](../superpowers/specs/2026-07-04-phase3-decide-execute-via-file-design.md)
-- Plan Phase 1 (migration état SQLite) : [`../superpowers/plans/2026-07-03-task-ledger-phase1-state-migration.md`](../superpowers/plans/2026-07-03-task-ledger-phase1-state-migration.md)
-- Plan d'implémentation Phase 0 : [`../superpowers/plans/2026-07-03-task-ledger-lot-a-phase0.md`](../superpowers/plans/2026-07-03-task-ledger-lot-a-phase0.md)
 - Contexte agent (`now_human`, `market_clocks`) : [`agent-context.md`](agent-context.md)
 - Registre de décisions : [`../decisions/registre-decisions-metier.md`](../decisions/registre-decisions-metier.md)

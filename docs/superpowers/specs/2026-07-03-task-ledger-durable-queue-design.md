@@ -1,8 +1,11 @@
 # File de tâches durable in-process (`task_ledger.db`)
 
 **Date** : 2026-07-03
-**Statut** : 📐 **DESIGN VALIDÉ + RÉVISÉ POST-CODEX** (brainstorming) —
-implémentation non commencée.
+**Statut** : ✅ **LIVRÉ + ACTIVÉ EN PAPER (2026-07-04)** — implémentation complète
+(Phases 0-3, Lot A/B outbox) mergée sur main, 3 flags on en paper, migration
+validée (`[state-compare] identical=True`). Référence **opérationnelle** :
+`docs/reference/task-queue.md`. Ce document reste la **mémoire de conception** (le
+POURQUOI : compromis, décisions) — design initial ci-dessous, conservé pour historique.
 **Approche retenue** : ① Task-ledger SQLite in-process, threads, migration
 *strangler*. Fait-main (zéro dépendance), patterns empruntés au SOTA durable
 execution. **Maximise la réutilisation de l'existant** (§3bis).
@@ -339,7 +342,7 @@ inchangés). Migration one-shot au boot, **idempotente** (correctif safety MAJEU
 ## 6. Migration *strangler* (réversible par flag)
 
 - **Phase 0 — Substrat débranché.** Module `queue/`, `task_ledger.db`, tests. Flag
-  maître `CASYS_QUEUE_ENABLED=0`. *(Plan committé : `2026-07-03-task-ledger-lot-a-phase0.md`.)*
+  maître `CASYS_QUEUE_ENABLED=0`.
 - **Phase 1 — État en SQLite, comportement inchangé** (§5). Mono-thread. →
   **RC-1/2/4 morts ici.**
 - **Phase 2 — File en shadow.** Producteur enfile `refresh_symbol`+`decide`, on
