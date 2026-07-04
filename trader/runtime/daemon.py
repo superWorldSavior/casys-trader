@@ -113,17 +113,6 @@ _OPENING_INTENTS = {"OPEN_LONG", "OPEN_SHORT", "REVERSE", "ADD"}
 _PURE_OPEN_INTENTS = {"OPEN_LONG", "OPEN_SHORT"}
 _RISK_GUARDED_OPENING_INTENTS = {"OPEN_LONG", "OPEN_SHORT", "ADD"}
 _RELATIVE_ORDER_INTENTS = order_admission.RELATIVE_ORDER_INTENTS
-_INFRA_HOLD_REASONS = {
-    "no_decision_in_batch",
-    "model_call_budget_exhausted",
-    "model_call_budget_exhausted_after_context",
-}
-_NON_REVIEW_RATIONALES = {
-    *_INFRA_HOLD_REASONS,
-    "batch_bad_output",
-    "missing_in_batch",
-    "context_loop_blocked",
-}
 
 
 def _llm_exit_reason_for_intent(intent: str) -> str | None:
@@ -147,17 +136,7 @@ def summarize_gross_rejections(decisions: list[dict]) -> dict | None:
 
 
 def _counts_as_llm_review(decision: codex_client.Decision) -> bool:
-    """True seulement si le LLM a vraiment rendu une décision exploitable."""
-    if not (decision.llm_provider or decision.llm_model):
-        return False
-    if decision.llm_error:
-        return False
-    rationale = str(decision.rationale or "")
-    if rationale in _NON_REVIEW_RATIONALES:
-        return False
-    if rationale.startswith(("batch_bad_output:", "codex_bad_output:", "llm_failed:")):
-        return False
-    return True
+    return decision_entries.counts_as_llm_review(decision)
 
 
 # Barres fines (15m) pour coller à la cadence scalping (réveils 5-30 min) et avoir

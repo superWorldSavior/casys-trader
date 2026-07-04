@@ -16,6 +16,14 @@ INFRA_HOLD_REASONS = frozenset(
 )
 
 DOMAIN_NOOP_HOLD_REASONS = frozenset({"nothing_to_close", "add_without_position"})
+NON_REVIEW_RATIONALES = frozenset(
+    {
+        *INFRA_HOLD_REASONS,
+        "batch_bad_output",
+        "missing_in_batch",
+        "context_loop_blocked",
+    }
+)
 
 
 def runtime_tool_audit_fields(domain_tools: dict | None) -> dict:
@@ -90,3 +98,17 @@ def hold_reason_for_decision(*, decision_source: str, rationale: str | None) -> 
     if rationale_text in DOMAIN_NOOP_HOLD_REASONS:
         return rationale_text
     return "hold"
+
+
+def counts_as_llm_review(decision: Decision) -> bool:
+    """True only when the model produced a real exploitable review decision."""
+    if not (decision.llm_provider or decision.llm_model):
+        return False
+    if decision.llm_error:
+        return False
+    rationale = str(decision.rationale or "")
+    if rationale in NON_REVIEW_RATIONALES:
+        return False
+    if rationale.startswith(("batch_bad_output:", "codex_bad_output:", "llm_failed:")):
+        return False
+    return True

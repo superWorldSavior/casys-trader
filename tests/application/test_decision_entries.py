@@ -3,6 +3,7 @@ from __future__ import annotations
 from trader.agent_protocol.types import Decision
 from trader.application.decision_entries import (
     build_decision_entry,
+    counts_as_llm_review,
     hold_reason_for_decision,
     runtime_tool_audit_fields,
 )
@@ -124,3 +125,65 @@ def test_hold_reason_for_decision_distinguishes_infra_and_domain_noops() -> None
         == "add_without_position"
     )
     assert hold_reason_for_decision(decision_source="llm", rationale="wait") == "hold"
+
+
+def test_counts_as_llm_review_requires_real_model_decision_without_failure() -> None:
+    assert (
+        counts_as_llm_review(
+            Decision(
+                symbol="SPY",
+                action="HOLD",
+                quantity=0.0,
+                confidence=0.4,
+                rationale="attente",
+                intent="HOLD",
+                llm_provider="acpx",
+                llm_model="gpt-5.5/medium",
+            )
+        )
+        is True
+    )
+    assert counts_as_llm_review(Decision.hold("SPY", "attente")) is False
+    assert (
+        counts_as_llm_review(
+            Decision(
+                symbol="SPY",
+                action="HOLD",
+                quantity=0.0,
+                confidence=0.0,
+                rationale="no_decision_in_batch",
+                intent="HOLD",
+                llm_provider="acpx",
+            )
+        )
+        is False
+    )
+    assert (
+        counts_as_llm_review(
+            Decision(
+                symbol="SPY",
+                action="HOLD",
+                quantity=0.0,
+                confidence=0.0,
+                rationale="llm_failed:acpx:timeout",
+                intent="HOLD",
+                llm_provider="acpx",
+            )
+        )
+        is False
+    )
+    assert (
+        counts_as_llm_review(
+            Decision(
+                symbol="SPY",
+                action="HOLD",
+                quantity=0.0,
+                confidence=0.0,
+                rationale="attente",
+                intent="HOLD",
+                llm_provider="acpx",
+                llm_error="timeout",
+            )
+        )
+        is False
+    )
