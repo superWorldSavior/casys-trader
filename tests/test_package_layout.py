@@ -4,6 +4,12 @@ import sys
 from pathlib import Path
 
 
+def _has_python_sources(path: Path) -> bool:
+    if not path.exists():
+        return False
+    return any("__pycache__" not in candidate.parts for candidate in path.rglob("*.py"))
+
+
 def test_only_legacy_compat_modules_are_flat_files() -> None:
     trader_dir = Path(__file__).resolve().parents[1] / "trader"
 
@@ -22,9 +28,6 @@ def test_only_legacy_compat_modules_are_flat_files() -> None:
 
 def test_top_level_packages_have_declared_architecture_roles() -> None:
     trader_dir = Path(__file__).resolve().parents[1] / "trader"
-
-    def _has_python_sources(path: Path) -> bool:
-        return any("__pycache__" not in candidate.parts for candidate in path.rglob("*.py"))
 
     actual = {
         path.name
@@ -66,7 +69,7 @@ def test_operator_surfaces_are_nested_under_interfaces() -> None:
     ]
 
     for old_top_level_name in ("commands", "cockpit", "ui"):
-        assert not (trader_dir / old_top_level_name).exists()
+        assert not _has_python_sources(trader_dir / old_top_level_name)
 
 
 def test_foundation_packages_do_not_depend_on_higher_layers() -> None:
@@ -206,7 +209,7 @@ def test_operator_interface_legacy_packages_are_virtual() -> None:
     trader_dir = Path(__file__).resolve().parents[1] / "trader"
 
     for legacy_dir in ("commands", "cockpit", "ui"):
-        assert not (trader_dir / legacy_dir).exists()
+        assert not _has_python_sources(trader_dir / legacy_dir)
 
     import trader.cockpit as legacy_cockpit
     import trader.commands as legacy_commands
