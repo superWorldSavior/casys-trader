@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 import pytest
 
 from trader.runtime import daemon
-from trader.tools.market import Bar, MarketError
+from trader.market.market_data import Bar, MarketError
 from trader.scheduling.scheduler import Scheduler
 
 
@@ -402,7 +402,7 @@ class TestDaemonDecisionDataSourceField:
 
     def _make_fresh_bar(self):
         from datetime import timedelta
-        from trader.tools.market import Bar
+        from trader.market.market_data import Bar
         now = datetime.now(timezone.utc)
         bar_ts = (now - timedelta(minutes=5)).isoformat()
         return Bar(ts=bar_ts, open=100.0, high=101.0, low=99.0, close=100.5, volume=1000.0)
@@ -537,7 +537,7 @@ class TestDaemonDecisionDataSourceField:
     ):
         """F5 : décision HOLD stale doit aussi contenir 'data_source'."""
         from trader.scheduling.scheduler import Scheduler
-        from trader.tools.market import Freshness
+        from trader.market.market_data import Freshness
 
         _write_runtime_config(tmp_path)
         state_dir = tmp_path / "state"
@@ -552,7 +552,7 @@ class TestDaemonDecisionDataSourceField:
                 return "yfinance"
 
         # Forcer assess_freshness à retourner stale pour le fetch runtime
-        import trader.tools.market as market_mod
+        import trader.market.market_data as market_mod
 
         def fake_assess_stale(bars, *, now, max_age_minutes):
             return Freshness(False, "too_old", 9999.0)
@@ -605,8 +605,8 @@ class TestDaemonCompositeF6AllStale:
         Avant F6, CompositeDataSource levait all_sources_failed sur all-stale, et
         le daemon swallowait l'exception → le symbole disparaissait sans trace.
         """
-        from trader.tools.market import Freshness
-        from trader.tools.data_source import CompositeDataSource
+        from trader.market.market_data import Freshness
+        from trader.market.data_source import CompositeDataSource
 
         _write_runtime_config(tmp_path)
         state_dir = tmp_path / "state"
@@ -625,7 +625,7 @@ class TestDaemonCompositeF6AllStale:
         )
 
         # Forcer assess_freshness à dire stale pour toutes les barres
-        import trader.tools.market as market_mod
+        import trader.market.market_data as market_mod
         monkeypatch.setattr(
             market_mod,
             "assess_freshness",

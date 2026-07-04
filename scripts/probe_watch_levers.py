@@ -30,7 +30,7 @@ from pathlib import Path
 
 from trader.agent import client as codex_client
 from trader.agent.context import build_market_cockpit
-from trader.tools.market import Bar
+from trader.domain.market_data import Bar
 
 # Petit sous-ensemble : single = 1 appel/symbole, batch = 1 appel total.
 SYMBOLS = ["BTC-USD", "SPY", "NVDA", "GC=F"]

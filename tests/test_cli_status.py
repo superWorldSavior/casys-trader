@@ -3,7 +3,7 @@ import inspect
 
 from backtest.data import HistoryStore
 from trader.runtime import cli, daemon
-from trader.tools.market import Bar
+from trader.market.market_data import Bar
 
 
 def _history_bar(ts: str, close: float) -> Bar:

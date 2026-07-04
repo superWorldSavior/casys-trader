@@ -15,7 +15,7 @@ import yaml
 
 from trader.agent import llm
 from trader.agent.context import build_market_cockpit
-from trader.tools.market import Bar
+from trader.domain.market_data import Bar
 
 REQUIRED = {"symbol", "action", "quantity", "confidence", "rationale"}
 

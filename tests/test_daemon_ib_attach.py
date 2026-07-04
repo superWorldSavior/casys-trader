@@ -3,8 +3,8 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from trader.runtime import daemon
-from trader.tools import market as market_mod
-from trader.tools.market import Bar, Freshness, MarketError
+from trader.market import market_data as market_mod
+from trader.market.market_data import Bar, Freshness, MarketError
 
 
 def _write_runtime_config(root) -> None:

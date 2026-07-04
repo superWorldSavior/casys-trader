@@ -10,7 +10,7 @@ from __future__ import annotations
 import pytest
 
 from trader.agent.context import build_market_cockpit
-from trader.tools.market import Bar
+from trader.market.market_data import Bar
 
 
 def _fake_bars(close: float = 100.0, n: int = 12) -> list[Bar]:

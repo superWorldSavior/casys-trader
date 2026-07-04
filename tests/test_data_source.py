@@ -2,7 +2,7 @@
 
 import pytest
 
-from trader.tools.market import Bar, MarketError
+from trader.market.market_data import Bar, MarketError
 
 
 # --------------------------------------------------------------------------
@@ -20,15 +20,15 @@ def _make_bar(ts: str = "2026-06-10T10:00:00+00:00") -> Bar:
 class TestDataSourceProtocol:
     def test_yfinance_source_implementes_protocol(self):
         """YFinanceDataSource doit satisfaire DataSource (duck-typing + isinstance Protocol)."""
-        from trader.tools.data_source import DataSource, YFinanceDataSource
+        from trader.market.data_source import DataSource, YFinanceDataSource
         ds = YFinanceDataSource()
         # runtime_checkable → isinstance fonctionne
         assert isinstance(ds, DataSource)
 
     def test_yfinance_get_bars_appelle_market_get_bars(self, monkeypatch):
         """YFinanceDataSource délègue à market.get_bars sans logique propre."""
-        from trader.tools import market
-        from trader.tools.data_source import YFinanceDataSource
+        from trader.market import market_data as market
+        from trader.market.data_source import YFinanceDataSource
 
         bar = _make_bar()
         calls = []
@@ -46,8 +46,8 @@ class TestDataSourceProtocol:
 
     def test_yfinance_get_bars_propage_market_error(self, monkeypatch):
         """MarketError levée par market.get_bars remonte telle quelle."""
-        from trader.tools import market
-        from trader.tools.data_source import YFinanceDataSource
+        from trader.market import market_data as market
+        from trader.market.data_source import YFinanceDataSource
 
         def boom(*_args, **_kwargs):
             raise MarketError("no_data", "SPY: rien")
@@ -60,8 +60,8 @@ class TestDataSourceProtocol:
 
     def test_ibdatasource_implementes_protocol(self):
         """IBDataSource existant doit satisfaire DataSource (pas de régression)."""
-        from trader.tools.data_source import DataSource
-        from trader.tools.ib_source import IBDataSource
+        from trader.market.data_source import DataSource
+        from trader.market.ib_source import IBDataSource
 
         class FakeIB:
             def qualifyContracts(self, _): return []
@@ -99,7 +99,7 @@ class TestCompositeDataSource:
 
     def test_route_exacte_utilise_premiere_source_disponible(self):
         """Symbole exact matché → première source de la route est utilisée."""
-        from trader.tools.data_source import CompositeDataSource
+        from trader.market.data_source import CompositeDataSource
 
         bar = self._fresh_bar()
         src_a = self._source([bar], name="a")
@@ -114,7 +114,7 @@ class TestCompositeDataSource:
 
     def test_route_glob_matche_pattern(self):
         """Pattern glob *.TW matche 2330.TW."""
-        from trader.tools.data_source import CompositeDataSource
+        from trader.market.data_source import CompositeDataSource
 
         bar = self._fresh_bar()
         src = self._source([bar], name="tw")
@@ -127,7 +127,7 @@ class TestCompositeDataSource:
 
     def test_premiere_route_gagne_sur_catch_all(self):
         """Première route qui matche prend la priorité sur * en fin de liste."""
-        from trader.tools.data_source import CompositeDataSource
+        from trader.market.data_source import CompositeDataSource
 
         bar_a = self._fresh_bar()
         bar_b = self._fresh_bar()
@@ -145,7 +145,7 @@ class TestCompositeDataSource:
 
     def test_fallback_sur_exception(self):
         """Si la première source lève MarketError → fallback sur la suivante."""
-        from trader.tools.data_source import CompositeDataSource
+        from trader.market.data_source import CompositeDataSource
 
         bar = self._fresh_bar()
         src_fail = self._source(None, name="fail")
@@ -160,9 +160,9 @@ class TestCompositeDataSource:
 
     def test_fallback_sur_stale(self, monkeypatch):
         """Si la première source retourne des barres stale → fallback sur suivante."""
-        from trader.tools import market
-        from trader.tools.market import Freshness
-        from trader.tools.data_source import CompositeDataSource
+        from trader.market import market_data as market
+        from trader.market.market_data import Freshness
+        from trader.market.data_source import CompositeDataSource
 
         bar_stale = self._bar("2024-01-01T00:00:00+00:00")
         bar_fresh = self._fresh_bar()  # ts dynamique, toujours récent
@@ -189,7 +189,7 @@ class TestCompositeDataSource:
 
     def test_source_manquante_dans_dict_sautee(self):
         """Source nommée dans route mais absente du dict sources → sautée silencieusement."""
-        from trader.tools.data_source import CompositeDataSource
+        from trader.market.data_source import CompositeDataSource
 
         bar = self._fresh_bar()
         src_ok = self._source([bar], name="ok")
@@ -203,7 +203,7 @@ class TestCompositeDataSource:
 
     def test_toutes_sources_en_echec_releve_market_error(self):
         """Toutes les sources en échec → MarketError machine-readable (pas d'exception brute)."""
-        from trader.tools.data_source import CompositeDataSource
+        from trader.market.data_source import CompositeDataSource
 
         src_a = self._source(None, name="a")
         src_b = self._source(None, name="b")
@@ -218,14 +218,14 @@ class TestCompositeDataSource:
 
     def test_last_source_retourne_none_si_symbole_jamais_appele(self):
         """last_source(symbol) → None si jamais appelé pour ce symbole."""
-        from trader.tools.data_source import CompositeDataSource
+        from trader.market.data_source import CompositeDataSource
 
         composite = CompositeDataSource(routes=[], sources={})
         assert composite.last_source("UNKNOWN") is None
 
     def test_symbole_sans_route_levee_market_error(self):
         """Symbole sans aucune route correspondante → MarketError('no_route')."""
-        from trader.tools.data_source import CompositeDataSource
+        from trader.market.data_source import CompositeDataSource
 
         routes = [{"symbols": ["SPY"], "sources": ["a"]}]
         composite = CompositeDataSource(routes=routes, sources={"a": self._source([], name="a")})
@@ -244,7 +244,7 @@ class TestCompositeDisconnect:
 
     def test_disconnect_appelle_disconnect_sur_chaque_source(self):
         """disconnect() doit appeler disconnect() sur les sources qui l'ont."""
-        from trader.tools.data_source import CompositeDataSource
+        from trader.market.data_source import CompositeDataSource
 
         disconnected: list[str] = []
 
@@ -276,7 +276,7 @@ class TestCompositeDisconnect:
 
     def test_disconnect_deduplique_la_meme_source(self):
         """Une même instance référencée sous deux noms n'est déconnectée qu'une fois."""
-        from trader.tools.data_source import CompositeDataSource
+        from trader.market.data_source import CompositeDataSource
 
         disconnected: list[int] = []
 
@@ -302,7 +302,7 @@ class TestCompositeDisconnect:
 
     def test_disconnect_tolerant_si_source_leve(self):
         """disconnect() tolère les exceptions dans les sources (best-effort)."""
-        from trader.tools.data_source import CompositeDataSource
+        from trader.market.data_source import CompositeDataSource
 
         class _Src:
             def get_bars(self, *_a, **_kw):
@@ -331,7 +331,7 @@ class TestDataSourceConfig:
 
     def test_charge_profil_paper_et_construit_composite(self, tmp_path, monkeypatch):
         """Profil paper → CompositeDataSource avec les bonnes routes."""
-        from trader.tools.data_source import load_composite_from_config, YFinanceDataSource
+        from trader.market.data_source import load_composite_from_config, YFinanceDataSource
 
         config_content = """
 profile: paper
@@ -354,7 +354,7 @@ profiles:
             def reqHistoricalData(self, *_, **__): return []
             def disconnect(self): pass
 
-        from trader.tools.ib_source import IBDataSource
+        from trader.market.ib_source import IBDataSource
         available_sources = {
             "yfinance": YFinanceDataSource(),
             "ib": IBDataSource(FakeIB()),
@@ -375,7 +375,7 @@ profiles:
 
     def test_override_profil_via_argument(self, tmp_path):
         """profile_override='prod' force le profil prod indépendamment du défaut YAML."""
-        from trader.tools.data_source import load_composite_from_config, YFinanceDataSource
+        from trader.market.data_source import load_composite_from_config, YFinanceDataSource
 
         config_content = """
 profile: paper
@@ -396,7 +396,7 @@ profiles:
             def reqHistoricalData(self, *_, **__): return []
             def disconnect(self): pass
 
-        from trader.tools.ib_source import IBDataSource
+        from trader.market.ib_source import IBDataSource
         available_sources = {
             "yfinance": YFinanceDataSource(),
             "ib": IBDataSource(FakeIB()),
@@ -411,7 +411,7 @@ profiles:
 
     def test_profil_inconnu_leve_market_error(self, tmp_path):
         """Profil inconnu dans le fichier → MarketError('unknown_profile') fail-fast."""
-        from trader.tools.data_source import load_composite_from_config, YFinanceDataSource
+        from trader.market.data_source import load_composite_from_config, YFinanceDataSource
 
         config_content = """
 profile: inexistant
@@ -428,7 +428,7 @@ profiles:
 
     def test_profil_override_inconnu_leve_market_error(self, tmp_path):
         """Override vers profil inexistant → MarketError('unknown_profile')."""
-        from trader.tools.data_source import load_composite_from_config, YFinanceDataSource
+        from trader.market.data_source import load_composite_from_config, YFinanceDataSource
 
         config_content = """
 profile: paper
@@ -453,7 +453,7 @@ profiles:
         Le registre known_source_names est fourni au démarrage ; alpaca n'y figure pas.
         Cela détecte les fautes de frappe dans la config indépendamment de la connexion.
         """
-        from trader.tools.data_source import load_composite_from_config, YFinanceDataSource
+        from trader.market.data_source import load_composite_from_config, YFinanceDataSource
 
         config_content = """
 profile: paper
@@ -475,7 +475,7 @@ profiles:
 
     def test_yaml_invalide_leve_market_error(self, tmp_path):
         """YAML malformé → MarketError('invalid_config')."""
-        from trader.tools.data_source import load_composite_from_config
+        from trader.market.data_source import load_composite_from_config
 
         cfg_path = self._write_config(tmp_path, "{ invalid yaml: [unclosed")
         with pytest.raises(MarketError) as exc_info:
@@ -484,7 +484,7 @@ profiles:
 
     def test_fichier_absent_leve_market_error(self, tmp_path):
         """Fichier absent → MarketError('config_not_found')."""
-        from trader.tools.data_source import load_composite_from_config
+        from trader.market.data_source import load_composite_from_config
 
         absent = tmp_path / "absent.yaml"
         with pytest.raises(MarketError) as exc_info:
@@ -511,9 +511,9 @@ class TestCompositeF6StaleFallback:
         C'est le daemon (couche métier) qui décide du traitement ; le composite
         retourne toujours des barres si au moins une source en a.
         """
-        from trader.tools import market
-        from trader.tools.market import Freshness
-        from trader.tools.data_source import CompositeDataSource
+        from trader.market import market_data as market
+        from trader.market.market_data import Freshness
+        from trader.market.data_source import CompositeDataSource
 
         bar_stale_a = self._stale_bar()   # ts 2024-01-01 — plus vieux
         bar_stale_b = self._stale_bar2()  # ts 2024-06-01 — moins vieux
@@ -543,9 +543,9 @@ class TestCompositeF6StaleFallback:
 
     def test_mix_stale_exception_retourne_stale(self, monkeypatch):
         """Source 1 lève exception, source 2 retourne stale → retourner les barres stale (pas d'exception)."""
-        from trader.tools import market
-        from trader.tools.market import Freshness
-        from trader.tools.data_source import CompositeDataSource
+        from trader.market import market_data as market
+        from trader.market.market_data import Freshness
+        from trader.market.data_source import CompositeDataSource
 
         bar_stale = self._stale_bar()
 
@@ -573,7 +573,7 @@ class TestCompositeF6StaleFallback:
 
     def test_all_exception_leve_all_sources_failed(self):
         """Toutes sources lèvent exception (aucune barre stale) → MarketError('all_sources_failed')."""
-        from trader.tools.data_source import CompositeDataSource
+        from trader.market.data_source import CompositeDataSource
 
         class SrcFail:
             def get_bars(self, *_a, **_kw):

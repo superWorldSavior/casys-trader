@@ -1,6 +1,6 @@
 from trader.agent.context import resolve_indicator_requests
 from trader.agent.client import IndicatorRequest
-from trader.tools.market import Bar
+from trader.market.market_data import Bar
 
 
 def _bar(index: int, close: float) -> Bar:

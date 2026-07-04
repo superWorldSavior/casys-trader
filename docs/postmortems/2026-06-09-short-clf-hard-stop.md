@@ -44,7 +44,7 @@ exécuter. Filtrer par `code_version.git_commit` (présent dans chaque entrée d
    chaque cycle (~70 s), pas en intra-bar. Sur un spike, la perte réelle
    dépasse le risque planifié. Aggravant **confirmé au niveau code** : le
    daemon tourne en données IB **différées** — `connect_ib` a
-   `market_data_type=3` (delayed) par défaut (`trader/tools/ib_source.py:374`)
+   `market_data_type=3` (delayed) par défaut (`trader/market/ib_source.py`)
    et le daemon ne l'override pas (`trader/daemon.py:1487`). Cohérent avec
    les marks d'equity du daemon à ~86.5 à 16:47 quand Yahoo affichait ~88
    (~15 min de retard). Sans souscription market data, le runtime décide et

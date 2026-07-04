@@ -11,7 +11,7 @@ from trader.planning.indicator_watch import (
     evaluate_indicator_watches,
     normalize_indicator_watch,
 )
-from trader.tools.market import Bar
+from trader.market.market_data import Bar
 
 
 def _bar(ts: str, close: float) -> Bar:

@@ -19,9 +19,9 @@ leur propre page de référence, liés ci-dessous.
 | `fx.yaml` | **taux FX** (paires + fallback) → voir [fx](fx.md) | par devise : `yahoo`, `invert`, `fallback` | `market/fx_rates` |
 | `radar.yaml` | **rotation swing-aware** (D9/D10) | `cap_m` (25), `delta`, `dwell_days` (3), `score_window_bars` (15), `atr_floor`, `amplitude_cap`, `min_coverage`, `emergency_score` | `rotation/*`, `market/radar*` |
 | `regime.yaml` | régime familial + fenêtre d'attribution | `attribution_since`, `exclude_symbols` | `runtime/daemon` (+ `runtime/cli`, `learnings/consolidator`) |
-| `data_sources.yaml` | **profil de données** (paper/prod) + routes de sources | `profile`, `profiles` | `tools/data_source` |
+| `data_sources.yaml` | **profil de données** (paper/prod) + routes de sources | `profile`, `profiles` | `market/data_source` |
 | `sessions.yaml` | horaires/calendriers de séance par place | (par venue) | `rotation/schedule` (`load_sessions`) |
-| `ib_contracts.yaml` | mapping symbole → contrat IB | `contracts` | `tools/ib_source` |
+| `ib_contracts.yaml` | mapping symbole → contrat IB | `contracts` | `market/ib_source` |
 | `symbol_names.yaml` | libellés d'affichage | (par symbole) | `read_models/runtime_state` (`_load_company_names`) |
 | `conviction.yaml` | tilt de conviction **par famille** | (par famille) | `market/radar_config` (`load_conviction`) → `rotation/wiring` |
 

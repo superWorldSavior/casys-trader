@@ -2,7 +2,7 @@ import math
 
 import pytest
 
-from trader.tools.market import Bar, aggregate_bars
+from trader.market.market_data import Bar, aggregate_bars
 
 
 def _bar(index: int, close: float) -> Bar:
@@ -36,7 +36,7 @@ def test_get_bars_jette_les_barres_close_zero_ou_nan(monkeypatch) -> None:
     30/06 : prix 0 → position valorisée $0 → équité -8 k le temps d'un cycle)."""
     import pandas as pd
 
-    from trader.tools import market
+    from trader.market import market_data as market
 
     idx = pd.to_datetime(
         ["2026-06-30 09:00", "2026-06-30 09:15", "2026-06-30 09:30", "2026-06-30 09:45"],
@@ -66,7 +66,7 @@ def test_get_bars_toutes_barres_invalides_leve_no_data(monkeypatch) -> None:
     (comme un df vide), pas une liste de barres fantômes."""
     import pandas as pd
 
-    from trader.tools import market
+    from trader.market import market_data as market
 
     idx = pd.to_datetime(["2026-06-30 09:00", "2026-06-30 09:15"], utc=True)
     df = pd.DataFrame(

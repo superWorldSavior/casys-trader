@@ -4,7 +4,7 @@ import pytest
 
 from trader.runtime import daemon
 from trader.agent.client import Decision
-from trader.tools.market import Bar, MarketError
+from trader.market.market_data import Bar, MarketError
 from trader.scheduling.scheduler import Scheduler
 
 

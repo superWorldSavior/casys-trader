@@ -9,8 +9,8 @@ from pathlib import Path
 from typing import Callable, Protocol, runtime_checkable
 
 from trader.market import fx, fx_rates
-from trader.tools.data_source import DataSource
-from trader.tools import market
+from trader.market import market_data as market
+from trader.market.data_source import DataSource
 
 log = logging.getLogger(__name__)
 

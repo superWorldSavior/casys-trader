@@ -72,7 +72,7 @@ from conftest import write_runtime_config as _runtime_config  # noqa: E402
 
 
 def _flat_bars_factory(now_iso: str):
-    from trader.tools.market import Bar
+    from trader.market.market_data import Bar
 
     def factory(symbol, lookback, interval):
         return [

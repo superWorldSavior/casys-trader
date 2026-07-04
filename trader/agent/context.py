@@ -6,6 +6,7 @@ import math
 from typing import Callable, Iterable
 
 from trader.market import fx as _fx
+from trader.market import market_data as market
 from trader.market.features import (
     DEFAULT_INDICATORS,
     build_indicator_snapshot,
@@ -19,8 +20,6 @@ from trader.semantic.catalog import (
     family_for_symbol,
     normalize_temporal_query,
 )
-from trader.tools import market
-
 COCKPIT_INDICATORS = [
     "return",
     "volatility",

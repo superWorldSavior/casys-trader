@@ -506,7 +506,7 @@ def test_run_cycle_record_recall_apres_tool_round(monkeypatch, tmp_path, make_da
     monkeypatch.setattr(daemon.codex_client, "decide_batch", fake_decide_batch)
 
     def _bars(sym: str, lookback: str, interval: str):
-        from trader.tools.market import Bar
+        from trader.market.market_data import Bar
         return [
             Bar(ts="2026-07-02T09:45:00+00:00", open=100, high=101, low=99, close=100, volume=1000),
             Bar(ts="2026-07-02T10:00:00+00:00", open=100, high=101, low=99, close=100, volume=1000),
@@ -567,7 +567,7 @@ def test_run_cycle_recall_db_corrompu_ne_leve_pas(monkeypatch, tmp_path, make_da
     monkeypatch.setattr(daemon.codex_client, "decide_batch", fake_decide_batch)
 
     def _bars(sym, lookback, interval):
-        from trader.tools.market import Bar
+        from trader.market.market_data import Bar
         return [
             Bar(ts="2026-07-02T09:45:00+00:00", open=100, high=101, low=99, close=100, volume=1000),
             Bar(ts="2026-07-02T10:00:00+00:00", open=100, high=101, low=99, close=100, volume=1000),

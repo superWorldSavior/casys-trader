@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 import yaml
 
-from trader.tools.market import Bar
+from trader.market.market_data import Bar
 from trader.rotation.wiring import (
     venue_of,
     benchmark_ret_for,

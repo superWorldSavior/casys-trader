@@ -5,7 +5,7 @@ from itertools import product
 import pytest
 
 from trader.runtime import daemon
-from trader.tools.market import MarketError
+from trader.market.market_data import MarketError
 from trader.scheduling.scheduler import Scheduler
 
 
@@ -245,7 +245,7 @@ def test_run_cycle_remonte_les_erreurs_de_connexion_ib(monkeypatch, tmp_path) ->
 
 
 def test_ib_maps_couvrent_toutes_les_requetes_de_barres_du_daemon() -> None:
-    from trader.tools.ib_source import INTERVAL_MAP, LOOKBACK_MAP
+    from trader.market.ib_source import INTERVAL_MAP, LOOKBACK_MAP
 
     request_context_intervals = ["15m", "30m", "1h", "4h", "1d"]
     request_context_lookbacks = ["5d", "1mo", "3mo", "6mo", "1y"]

@@ -48,7 +48,7 @@ les utilisaient :
 | `trader/planning/` | Plans de trade, veilles, exit engine, gate de pertinence | compat : `trader.trade_plan`, `trader.indicator_watch`, `trader.exit_engine`, `trader.relevance_gate` |
 | `trader/execution/` | Broker paper, primitives d'ordre/fill, commissions, RiskGate | compat : `trader.tools.execution`, `trader.risk` |
 | `trader/learnings/` | Store SQLite, embeddings, consolidateur | compat : `trader.learnings_store`, `trader.embeddings`, `trader.consolidator` |
-| `trader/market/` | Indicateurs, FX, macro, radar, régime marché, priorisation gross exposure | anciens imports `trader.fx`, `trader.features`, etc. gardés en compat |
+| `trader/market/` | Données marché, sources yfinance/IB, fraîcheur, indicateurs, FX, macro, radar, régime, priorisation gross exposure | compat : `trader.tools.market`, `trader.tools.data_source`, `trader.tools.ib_source`, `trader.fx`, `trader.features`, etc. |
 | `trader/config/` | Loaders de configuration runtime (`pool`, `portfolio`) | retire les loaders transverses de la racine `trader/` |
 | `trader/rotation/` | Rotation d'univers, hot-sets par venue, schedule, override, ledger rotation | `trader.rotation` réexporte l'ancien core |
 | `trader/metadata/` | Métadonnées git/code version | utilisé par runtime et reporting sans cycle |
@@ -74,7 +74,7 @@ Les anciens imports restent compatibles quand ils existaient déjà
 `trader.runtime.code_version`, `trader.process_env`, `trader.stats`,
 `trader.attribution`, `trader.tool_usage`, `trader.tui`), mais les imports internes
 doivent viser les packages neutres ou canoniques (`domain/`, `execution/broker`,
-`metadata/`, `system/`, `commands/`). Les tests `tests/test_package_layout.py`,
+`market/`, `metadata/`, `system/`, `commands/`). Les tests `tests/test_package_layout.py`,
 `tests/test_code_version_imports.py` et `tests/test_runtime_pid_file.py`
 gardent ces frontières.
 

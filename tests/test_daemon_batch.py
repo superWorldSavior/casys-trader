@@ -10,7 +10,7 @@ from trader.application import planner_batch
 from trader.agent.client import ContextResearchRequest, Decision, IndicatorRequest
 from trader.agent_protocol.parsing import parse_batch
 from trader.planning.indicator_watch import summarize_watch
-from trader.tools.market import Bar
+from trader.market.market_data import Bar
 from trader.scheduling.scheduler import Scheduler
 
 _COMMON = dict(

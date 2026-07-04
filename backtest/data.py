@@ -14,7 +14,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from trader.tools.market import Bar
+from trader.domain.market_data import Bar
 
 
 class DataError(Exception):

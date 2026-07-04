@@ -16,7 +16,7 @@ from trader.market.regime import (
     classify_regime,
     multi_horizon_signals,
 )
-from trader.tools.market import Bar
+from trader.market.market_data import Bar
 
 
 # ---------------------------------------------------------------------------

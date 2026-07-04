@@ -65,7 +65,7 @@ def _make_stale_source(now, age_minutes=90.0):
     pour rester dans le cas "rien d'exploitable → HOLD + backoff", le daily doit
     couvrir une séance révolue)."""
     from datetime import timedelta
-    from trader.tools.market import Bar
+    from trader.market.market_data import Bar
 
     class FakeStaleDataSource:
         def get_bars(self, symbol, lookback, interval):
@@ -164,7 +164,7 @@ def test_stale_streak_cappe_a_120_minutes(monkeypatch, tmp_path, patch_batch) ->
 
 def test_stale_streak_reset_quand_data_fraiche(monkeypatch, tmp_path, patch_batch) -> None:
     """Après une donnée fraîche, le streak est remis à 0."""
-    from trader.tools.market import Bar
+    from trader.market.market_data import Bar
 
     _write_runtime_config(tmp_path)
     state_dir = tmp_path / "state"
@@ -363,7 +363,7 @@ def test_streak_vieux_state_corrompu_ne_crashe_pas(tmp_path) -> None:
 # ── MINOR 3 : setup_logging couvre trader.* ─────────────────────────────────
 
 def test_setup_logging_couvre_les_loggers_trader() -> None:
-    """Un log émis par trader.tools.data_source ressort via le handler installé."""
+    """Un log émis par trader.market.data_source ressort via le handler installé."""
     import io
     import logging
     from trader.runtime.logging_setup import setup_logging
@@ -378,12 +378,12 @@ def test_setup_logging_couvre_les_loggers_trader() -> None:
     setup_logging(level=logging.DEBUG, stream=out)
 
     # Émettre un log depuis un module trader.* autre que casys-trader
-    sub_logger = logging.getLogger("trader.tools.data_source")
+    sub_logger = logging.getLogger("trader.market.data_source")
     sub_logger.info("source_fallback test_message_unique_xyz")
 
     output = out.getvalue()
     assert "test_message_unique_xyz" in output, (
-        f"Le log de trader.tools.data_source doit être capturé. Output: {repr(output)}"
+        f"Le log de trader.market.data_source doit être capturé. Output: {repr(output)}"
     )
 
 
@@ -431,7 +431,7 @@ def test_indicator_watch_trigger_reset_streak(monkeypatch, tmp_path, patch_batch
     """Après un backoff stale, un trigger indicator_watch réveille le symbole ;
     la data fraîche qui suit remet le streak à 0."""
     from datetime import timedelta
-    from trader.tools.market import Bar
+    from trader.market.market_data import Bar
 
     _write_runtime_config(tmp_path)
     state_dir = tmp_path / "state"
@@ -478,7 +478,7 @@ def test_run_cycle_nappelle_pas_le_llm_sur_un_stale_sans_prix(
     ne doit PAS coûter un appel LLM perdu : il n'entre pas dans decidable, il retombe
     sur le HOLD stale. Pas de décision fantôme (anti gap silencieux)."""
     from trader.agent.client import Decision
-    from trader.tools.market import Bar
+    from trader.market.market_data import Bar
 
     _write_runtime_config(tmp_path)
     state_dir = tmp_path / "state"
@@ -522,7 +522,7 @@ def test_run_cycle_appelle_le_llm_sur_stale_avec_daily_valide(
     from datetime import timedelta
 
     from trader.agent.client import Decision
-    from trader.tools.market import Bar
+    from trader.market.market_data import Bar
 
     _write_runtime_config(tmp_path)
     state_dir = tmp_path / "state"
@@ -576,7 +576,7 @@ def test_run_cycle_fetch_le_daily_meme_pour_un_symbole_runtime_stale(
     from datetime import timedelta
 
     from trader.agent.client import Decision
-    from trader.tools.market import Bar
+    from trader.market.market_data import Bar
 
     _write_runtime_config(tmp_path)
     state_dir = tmp_path / "state"
@@ -618,7 +618,7 @@ def test_run_cycle_bloque_l_ordre_hors_session_meme_avec_donnees_fraiches(
     from datetime import timedelta
 
     from trader.agent.client import Decision
-    from trader.tools.market import Bar
+    from trader.market.market_data import Bar
 
     _write_runtime_config(tmp_path)
     state_dir = tmp_path / "state"
@@ -661,7 +661,7 @@ def test_run_cycle_ordre_bloque_hors_session_conserve_le_wake_du_llm(
     from datetime import timedelta
 
     from trader.agent.client import Decision
-    from trader.tools.market import Bar
+    from trader.market.market_data import Bar
 
     _write_runtime_config(tmp_path)
     state_dir = tmp_path / "state"

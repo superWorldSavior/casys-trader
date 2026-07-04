@@ -31,7 +31,7 @@ def test_entry_with_snapshot_flows_into_row():
 
 
 def _flat_bars_factory(now_iso: str):
-    from trader.tools.market import Bar
+    from trader.market.market_data import Bar
 
     def factory(symbol, lookback, interval):
         return [

@@ -1,6 +1,6 @@
 from datetime import timedelta
 
-from trader.tools.market import Bar
+from trader.market.market_data import Bar
 
 from backtest.data import HistoryStore
 

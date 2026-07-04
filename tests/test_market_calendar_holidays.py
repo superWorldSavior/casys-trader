@@ -18,7 +18,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 
-from trader.tools.market import (
+from trader.market.market_data import (
     last_completed_session_date,
     most_recent_session_open,
     next_regular_session_open,

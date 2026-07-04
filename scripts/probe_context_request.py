@@ -37,7 +37,7 @@ from trader.agent.context import (
 )
 from trader.market.features import DEFAULT_INDICATORS
 from trader.semantic.catalog import INDICATOR_COLUMNS
-from trader.tools.market import Bar
+from trader.domain.market_data import Bar
 
 SYMBOLS = ["SPY", "QQQ", "NVDA", "CL=F", "BZ=F", "GC=F"]
 WINDOW = 48

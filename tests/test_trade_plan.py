@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 import pytest
 
 import trader.planning.exit_engine as exit_engine
-from trader.tools.market import Bar
+from trader.market.market_data import Bar
 from trader.planning.trade_plan import (
     InvalidExitPlanError,
     TradePlan,

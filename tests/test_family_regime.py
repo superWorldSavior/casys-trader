@@ -46,7 +46,7 @@ def test_famille_unanime() -> None:
 
 
 def _bar(ts: str, close: float):
-    from trader.tools.market import Bar
+    from trader.market.market_data import Bar
 
     return Bar(ts=ts, open=close, high=close, low=close, close=close, volume=0.0)
 

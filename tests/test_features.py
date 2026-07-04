@@ -5,7 +5,7 @@ from trader.market.features import (
     swing_low,
     vwap,
 )
-from trader.tools.market import Bar
+from trader.market.market_data import Bar
 
 
 def _bar(

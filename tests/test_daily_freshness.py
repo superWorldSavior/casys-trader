@@ -7,7 +7,7 @@ la dernière séance de bourse close pour la place du symbole.
 
 from datetime import datetime, timezone
 
-from trader.tools.market import Bar, assess_daily_freshness, last_completed_session_date
+from trader.market.market_data import Bar, assess_daily_freshness, last_completed_session_date
 
 
 def _utc(y, mo, d, h, mi=0):

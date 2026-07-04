@@ -18,7 +18,7 @@ from typing import Any
 
 import pytest
 
-from trader.tools.market import Bar, MarketError
+from trader.market.market_data import Bar, MarketError
 
 
 # ---------------------------------------------------------------------------
@@ -124,7 +124,7 @@ class FakeIB:
 # ---------------------------------------------------------------------------
 
 def _get_source():
-    from trader.tools.ib_source import IBDataSource
+    from trader.market.ib_source import IBDataSource
     return IBDataSource
 
 
@@ -211,43 +211,43 @@ class TestUnitMapping:
     """Tables INTERVAL_MAP et LOOKBACK_MAP exposées comme constantes."""
 
     def test_interval_15m_mappe_sur_15_mins(self) -> None:
-        from trader.tools.ib_source import INTERVAL_MAP
+        from trader.market.ib_source import INTERVAL_MAP
         assert INTERVAL_MAP["15m"] == "15 mins"
 
     def test_interval_30m_mappe_sur_30_mins(self) -> None:
-        from trader.tools.ib_source import INTERVAL_MAP
+        from trader.market.ib_source import INTERVAL_MAP
         assert INTERVAL_MAP["30m"] == "30 mins"
 
     def test_interval_1h_mappe_sur_1_hour(self) -> None:
-        from trader.tools.ib_source import INTERVAL_MAP
+        from trader.market.ib_source import INTERVAL_MAP
         assert INTERVAL_MAP["1h"] == "1 hour"
 
     def test_interval_4h_mappe_sur_4_hours(self) -> None:
-        from trader.tools.ib_source import INTERVAL_MAP
+        from trader.market.ib_source import INTERVAL_MAP
         assert INTERVAL_MAP["4h"] == "4 hours"
 
     def test_interval_1d_mappe_sur_1_day(self) -> None:
-        from trader.tools.ib_source import INTERVAL_MAP
+        from trader.market.ib_source import INTERVAL_MAP
         assert INTERVAL_MAP["1d"] == "1 day"
 
     def test_lookback_5d_mappe_sur_5_D(self) -> None:
-        from trader.tools.ib_source import LOOKBACK_MAP
+        from trader.market.ib_source import LOOKBACK_MAP
         assert LOOKBACK_MAP["5d"] == "5 D"
 
     def test_lookback_1mo_mappe_sur_1_M(self) -> None:
-        from trader.tools.ib_source import LOOKBACK_MAP
+        from trader.market.ib_source import LOOKBACK_MAP
         assert LOOKBACK_MAP["1mo"] == "1 M"
 
     def test_lookback_3mo_mappe_sur_3_M(self) -> None:
-        from trader.tools.ib_source import LOOKBACK_MAP
+        from trader.market.ib_source import LOOKBACK_MAP
         assert LOOKBACK_MAP["3mo"] == "3 M"
 
     def test_lookback_6mo_mappe_sur_6_M(self) -> None:
-        from trader.tools.ib_source import LOOKBACK_MAP
+        from trader.market.ib_source import LOOKBACK_MAP
         assert LOOKBACK_MAP["6mo"] == "6 M"
 
     def test_lookback_1y_mappe_sur_1_Y(self) -> None:
-        from trader.tools.ib_source import LOOKBACK_MAP
+        from trader.market.ib_source import LOOKBACK_MAP
         assert LOOKBACK_MAP["1y"] == "1 Y"
 
     def test_interval_invalide_leve_market_error(self) -> None:
@@ -366,7 +366,7 @@ class TestBarConversion:
 
     def test_assess_freshness_parse_le_ts_correctement(self) -> None:
         """Vérification que le ts produit est parseable par assess_freshness."""
-        from trader.tools.market import assess_freshness
+        from trader.market.market_data import assess_freshness
         ts = datetime(2026, 6, 5, 14, 0, 0, tzinfo=timezone.utc)
         IBDataSource = _get_source()
         ib = FakeIB(bars_result=[_FakeBarData(ts)])
@@ -554,7 +554,7 @@ class TestConnectIBFailSafe:
     """Finding 3 : exception dans reqMarketDataType après connect → MarketError."""
 
     def test_connect_retry_avec_backoff_avant_succes(self, monkeypatch) -> None:
-        from trader.tools import ib_source
+        from trader.market import ib_source
 
         created = []
         sleeps: list[float] = []
@@ -590,7 +590,7 @@ class TestConnectIBFailSafe:
         assert sleeps == [0.25, 0.5]
 
     def test_connect_echoue_proprement_apres_epuisement_des_retries(self, monkeypatch) -> None:
-        from trader.tools import ib_source
+        from trader.market import ib_source
 
         created = []
         sleeps: list[float] = []
@@ -626,7 +626,7 @@ class TestConnectIBFailSafe:
 
     def test_req_market_data_type_exception_leve_ib_connect_failed(self, monkeypatch) -> None:
         """Si reqMarketDataType lève après un connect réussi → MarketError("ib_connect_failed")."""
-        from trader.tools import ib_source
+        from trader.market import ib_source
 
         class _FakeIBConn:
             """Simule un IB qui se connecte mais dont reqMarketDataType explose."""
@@ -650,7 +650,7 @@ class TestLookback1d:
     """Finding 4 : lookback='1d' doit mapper sur '1 D' sans erreur."""
 
     def test_lookback_1d_mappe_sur_1_D(self) -> None:
-        from trader.tools.ib_source import LOOKBACK_MAP
+        from trader.market.ib_source import LOOKBACK_MAP
         assert LOOKBACK_MAP["1d"] == "1 D"
 
     def test_get_bars_avec_lookback_1d_ne_leve_pas(self) -> None:
@@ -673,7 +673,7 @@ def test_integration_reelle_spy_15m() -> None:
     """Test d'intégration : requiert Gateway paper sur 127.0.0.1:4002.
     Activer via : IB_INTEGRATION_TEST=1 uv run pytest tests/test_ib_source.py -k integration
     """
-    from trader.tools.ib_source import IBDataSource, connect_ib
+    from trader.market.ib_source import IBDataSource, connect_ib
     ib = connect_ib(host="127.0.0.1", port=4002, client_id=99)
     try:
         ds = IBDataSource(ib)

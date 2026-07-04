@@ -19,7 +19,7 @@ from trader.agent_protocol.parsing import _decision_from_symbol_calls
 from trader.agent_protocol.types import Decision
 from trader.application.order_admission import qty_from_risk_pct
 from trader.runtime import daemon
-from trader.tools.market import Bar
+from trader.market.market_data import Bar
 from trader.scheduling.scheduler import Scheduler
 
 

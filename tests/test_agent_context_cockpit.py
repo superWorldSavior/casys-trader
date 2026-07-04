@@ -9,7 +9,7 @@ from __future__ import annotations
 import trader.agent.context as agent_context
 import trader.market.regime as regime
 from trader.agent.context import build_market_cockpit
-from trader.tools.market import Bar
+from trader.market.market_data import Bar
 
 
 def _bar(close: float, high: float | None = None, low: float | None = None) -> Bar:

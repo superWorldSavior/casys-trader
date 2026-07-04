@@ -2,7 +2,7 @@ import json
 
 from backtest.data import HistoryStore
 from trader.reporting import decision_bench
-from trader.tools.market import Bar
+from trader.market.market_data import Bar
 
 
 def _bar(ts: str, close: float) -> Bar:

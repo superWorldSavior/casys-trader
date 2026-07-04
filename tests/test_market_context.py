@@ -5,7 +5,7 @@ Sépare deux capacités aujourd'hui mélangées par le verrou stale :
 - execution : passer un ordre (exige prix runtime frais + session tradable + non stale).
 """
 
-from trader.tools import market
+from trader.market import market_data as market
 
 
 def test_runtime_stale_mais_daily_frais_autorise_planning_pas_execution():

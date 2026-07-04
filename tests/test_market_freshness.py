@@ -1,8 +1,8 @@
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
-from trader.tools import market
-from trader.tools.market import Bar, assess_freshness
+from trader.market import market_data as market
+from trader.market.market_data import Bar, assess_freshness
 
 
 def _bar(ts: str, close: float = 100.0) -> Bar:

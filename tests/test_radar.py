@@ -11,7 +11,7 @@ from trader.market.radar import (
     write_snapshot,
 )
 from trader.market.radar_config import RadarParams
-from trader.tools.market import Bar
+from trader.market.market_data import Bar
 
 
 def test_excluded_symbol_not_eligible() -> None:

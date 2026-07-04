@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 from trader.runtime import daemon
 from trader.agent.client import Decision
 from trader.execution.broker import IbkrCommissionModel
-from trader.tools.market import Bar
+from trader.market.market_data import Bar
 from trader.scheduling.scheduler import Scheduler
 
 
@@ -458,7 +458,7 @@ def _fast_main_patches(monkeypatch, tmp_path, state_dir):
     Avec --once et MarketError sur connect_ib, la boucle fait 1 itération :
     try → connect_ib → MarketError → except → _write_status → break → finally.
     """
-    from trader.tools import market
+    from trader.market import market_data as market
 
     monkeypatch.setattr(daemon, "ROOT", tmp_path)
     monkeypatch.setattr(daemon, "STATE_DIR", state_dir)

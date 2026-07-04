@@ -23,7 +23,7 @@ from trader.indicator_watch import (
     evaluate_indicator_watches,
     is_armed_plan,
 )
-from trader.tools import market
+from trader.market import market_data as market
 from trader.trade_plan import InvalidExitPlanError, create_trade_plan_from_order
 
 __all__ = ["PlanReplayResult", "replay_armed_plan"]

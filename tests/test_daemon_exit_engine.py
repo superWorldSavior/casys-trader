@@ -8,7 +8,7 @@ from trader.runtime import daemon
 from trader.agent.client import Decision
 from trader.agent_protocol.parsing import parse_batch
 from trader.execution.broker import Order, SimBroker
-from trader.tools.market import Bar
+from trader.market.market_data import Bar
 from trader.scheduling.scheduler import Scheduler
 from trader.planning.trade_plan import InvalidExitPlanError, TradePlanStore, create_trade_plan, resolve_exit_plan
 
@@ -2780,7 +2780,7 @@ class TestExitChecks5mFreshness:
     def test_freshness_budget_5m_dans_market(self) -> None:
         """freshness_budget_minutes('5m') doit retourner 5+grace, pas 60+grace.
         Vérifie que '5m' est bien dans _INTERVAL_MINUTES de market.py."""
-        from trader.tools.market import freshness_budget_minutes, _FRESHNESS_GRACE_MINUTES
+        from trader.market.market_data import freshness_budget_minutes, _FRESHNESS_GRACE_MINUTES
         budget = freshness_budget_minutes("5m")
         # 5m + 15 grace = 20 min — si 5m absent du dict, on obtiendrait 75 min (défaut 60+15)
         assert budget == 5.0 + _FRESHNESS_GRACE_MINUTES, (

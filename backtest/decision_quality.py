@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from trader.ledger_rotation import read_rows_with_archive
-from trader.tools.market import Bar
+from trader.domain.market_data import Bar
 
 from .data import DataError, HistoryStore
 

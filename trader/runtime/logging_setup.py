@@ -16,7 +16,7 @@ Cela garantit zéro fuite de balises dans les logs non-TTY.
 Couverture des loggers : le handler est installé sur le logger "trader"
 (ancêtre commun de tous les trader.*) ET sur "casys-trader". Les deux
 loggers ont propagate=False pour ne pas doubler vers le root logger.
-Les sous-loggers (trader.tools.data_source, etc.) propagent vers "trader"
+Les sous-loggers (trader.market.data_source, etc.) propagent vers "trader"
 par défaut (propagate=True) et sont donc couverts sans handler supplémentaire.
 """
 

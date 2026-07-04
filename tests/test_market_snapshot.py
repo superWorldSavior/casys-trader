@@ -2,7 +2,7 @@ from dataclasses import fields
 from datetime import datetime, timezone
 
 from trader.application.market_snapshot import MarketSnapshot, build_market_snapshot
-from trader.tools.market import Bar
+from trader.market.market_data import Bar
 
 
 NOW = datetime(2026, 7, 2, 10, 0, tzinfo=timezone.utc)

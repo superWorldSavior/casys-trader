@@ -7,7 +7,7 @@ from trader.semantic.catalog import (
     list_indicators,
     normalize_temporal_query,
 )
-from trader.tools.market import Bar
+from trader.market.market_data import Bar
 
 
 def test_describe_semantic_layer_expose_niveaux_et_familles() -> None:

@@ -9,7 +9,7 @@ from pathlib import Path
 
 import yaml
 
-from trader.tools.market import Bar
+from trader.market.market_data import Bar
 from trader.rotation.collectors import default_override_fn
 
 

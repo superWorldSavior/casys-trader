@@ -37,8 +37,15 @@ from trader.learnings import consolidator
 from trader.learnings import embeddings as embeddings_mod
 from trader.learnings import store as recall_store_mod
 from trader.market import family_regime, fx, macro_calendar, macro_series
+from trader.market import market_data as market
+from trader.market.data_source import (
+    CompositeDataSource,
+    YFinanceDataSource,
+    parse_data_sources_config,
+)
 from trader.market.features import DEFAULT_INDICATORS, build_indicator_snapshot
 from trader.market.gross_priority import PriorityItem, gross_execution_order
+from trader.market.ib_source import IBDataSource, connect_ib
 from trader.planning.exit_engine import evaluate_plan
 from trader.planning import relevance_gate
 from trader.planning.indicator_watch import (
@@ -62,7 +69,7 @@ from trader.reporting import attribution, decision_ledger, meta_performance, sta
 from trader.runtime import ledger_rotation
 from trader.runtime.ib_attach import IBAttachBackoff
 from trader.scheduling import scheduler
-from trader.tools import market, memory as memory_mod, news_feed, portfolio
+from trader.tools import memory as memory_mod, news_feed, portfolio
 from trader.execution.broker import (
     CommissionModel,
     Order,
@@ -70,12 +77,6 @@ from trader.execution.broker import (
     commission_model_from_name,
     round_trip_cost,
 )
-from trader.tools.data_source import (
-    CompositeDataSource,
-    YFinanceDataSource,
-    parse_data_sources_config,
-)
-from trader.tools.ib_source import IBDataSource, connect_ib
 from trader.state_db.broker_factory import (
     bootstrap_state_backend,
     make_broker,

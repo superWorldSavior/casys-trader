@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from trader.tools.market import (
+from trader.market.market_data import (
     _VENUE_BY_SUFFIX,
     _VENUE_BY_SYMBOL,
     clamp_wake_to_session_open,

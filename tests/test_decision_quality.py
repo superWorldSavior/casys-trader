@@ -4,7 +4,7 @@ from datetime import timedelta
 
 import pytest
 
-from trader.tools.market import Bar
+from trader.market.market_data import Bar
 
 import backtest.decision_quality as decision_quality
 from backtest.data import HistoryStore

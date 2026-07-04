@@ -182,6 +182,94 @@ def test_tool_primitive_imports_are_compatibility_aliases() -> None:
     assert LegacySide == Side
 
 
+def test_market_data_imports_are_canonical_with_tools_compatibility() -> None:
+    from trader.market.data_source import CompositeDataSource, DataSource, YFinanceDataSource
+    from trader.market.ib_source import IBDataSource, INTERVAL_MAP, LOOKBACK_MAP, connect_ib
+    from trader.market.market_data import Bar, Freshness, MarketError, assess_freshness
+    from trader.tools.data_source import CompositeDataSource as LegacyCompositeDataSource
+    from trader.tools.data_source import DataSource as LegacyDataSource
+    from trader.tools.data_source import YFinanceDataSource as LegacyYFinanceDataSource
+    from trader.tools.ib_source import IBDataSource as LegacyIBDataSource
+    from trader.tools.ib_source import INTERVAL_MAP as LegacyIntervalMap
+    from trader.tools.ib_source import LOOKBACK_MAP as LegacyLookbackMap
+    from trader.tools.ib_source import connect_ib as legacy_connect_ib
+    from trader.tools.market import Bar as LegacyBar
+    from trader.tools.market import Freshness as LegacyFreshness
+    from trader.tools.market import MarketError as LegacyMarketError
+    from trader.tools.market import assess_freshness as legacy_assess_freshness
+
+    assert LegacyBar is Bar
+    assert LegacyMarketError is MarketError
+    assert LegacyFreshness is Freshness
+    assert legacy_assess_freshness is assess_freshness
+    assert LegacyDataSource is DataSource
+    assert LegacyCompositeDataSource is CompositeDataSource
+    assert LegacyYFinanceDataSource is YFinanceDataSource
+    assert LegacyIBDataSource is IBDataSource
+    assert LegacyIntervalMap is INTERVAL_MAP
+    assert LegacyLookbackMap is LOOKBACK_MAP
+    assert legacy_connect_ib is connect_ib
+
+
+def test_legacy_market_tool_modules_proxy_mutations_to_canonical_modules(monkeypatch) -> None:
+    from trader.market import data_source as canonical_data_source
+    from trader.market import ib_source as canonical_ib_source
+    from trader.market import market_data as canonical_market
+    from trader.tools import data_source as legacy_data_source
+    from trader.tools import ib_source as legacy_ib_source
+    from trader.tools import market as legacy_market
+
+    market_sentinel = object()
+    data_source_sentinel = object()
+    ib_source_sentinel = object()
+
+    monkeypatch.setattr(legacy_market, "_compat_probe", market_sentinel, raising=False)
+    monkeypatch.setattr(legacy_data_source, "_compat_probe", data_source_sentinel, raising=False)
+    monkeypatch.setattr(legacy_ib_source, "_compat_probe", ib_source_sentinel, raising=False)
+
+    assert canonical_market._compat_probe is market_sentinel
+    assert canonical_data_source._compat_probe is data_source_sentinel
+    assert canonical_ib_source._compat_probe is ib_source_sentinel
+
+
+def test_core_packages_do_not_depend_on_legacy_market_tools() -> None:
+    trader_dir = Path(__file__).resolve().parents[1] / "trader"
+    checked_roots = (
+        trader_dir / "agent",
+        trader_dir / "application",
+        trader_dir / "market",
+        trader_dir / "reporting",
+        trader_dir / "runtime",
+    )
+    forbidden_modules = {
+        "trader.tools.data_source",
+        "trader.tools.ib_source",
+        "trader.tools.market",
+    }
+    forbidden_from_tools = {"data_source", "ib_source", "market"}
+
+    violations: list[str] = []
+    for root in checked_roots:
+        for path in sorted(root.rglob("*.py")):
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            rel_path = path.relative_to(trader_dir.parent)
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ImportFrom) and node.module in forbidden_modules:
+                    violations.append(f"{rel_path}: from {node.module} import ...")
+                elif isinstance(node, ast.ImportFrom) and node.module == "trader.tools":
+                    forbidden_names = sorted(
+                        alias.name for alias in node.names if alias.name in forbidden_from_tools
+                    )
+                    if forbidden_names:
+                        violations.append(f"{rel_path}: from trader.tools import {forbidden_names}")
+                elif isinstance(node, ast.Import):
+                    for alias in node.names:
+                        if alias.name in forbidden_modules:
+                            violations.append(f"{rel_path}: import {alias.name}")
+
+    assert violations == []
+
+
 def test_execution_broker_imports_are_canonical_with_tools_compatibility() -> None:
     from trader.execution.broker import (
         Broker,

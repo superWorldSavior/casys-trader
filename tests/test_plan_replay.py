@@ -3,7 +3,7 @@
 from datetime import datetime, timedelta, timezone
 
 from backtest.plan_replay import replay_armed_plan
-from trader.tools.market import Bar
+from trader.market.market_data import Bar
 
 _T0 = datetime(2026, 6, 10, 14, 0, tzinfo=timezone.utc)
 
