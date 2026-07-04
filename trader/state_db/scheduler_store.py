@@ -1,6 +1,6 @@
 """SqliteScheduler — Scheduler sur substrat SQLite.
 
-Implémente la même API que Scheduler (trader/tools/scheduler.py) avec StateDb
+Implémente la même API que Scheduler (trader/scheduling/scheduler.py) avec StateDb
 comme backend. 17 méthodes publiques, parité fidèle avec le backend JSON.
 
 Sémantique cruciale :
@@ -26,7 +26,7 @@ from typing import Iterable, Optional
 
 from trader.state_db.connection import StateDb
 from trader.state_db.shadow import write_json_atomic
-from trader.tools.scheduler import STALE_BACKOFF_MAX_STREAK
+from trader.scheduling.scheduler import STALE_BACKOFF_MAX_STREAK
 
 log = logging.getLogger(__name__)
 

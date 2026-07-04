@@ -12,7 +12,7 @@ from trader.runtime import daemon
 from trader.agent.client import Decision
 from trader.tools.market import Bar
 from trader.tools.memory import LearningsStore
-from trader.tools.scheduler import Scheduler
+from trader.scheduling.scheduler import Scheduler
 
 
 def _write_runtime_config(root) -> None:

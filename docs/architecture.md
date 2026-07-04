@@ -44,6 +44,7 @@ les utilisaient :
 | `trader/agent_protocol/` | Types, prompts, parsing du contrat LLM | utilisé par `trader/agent/client.py` |
 | `trader/agent_tools/` | Package des outils domaine lecture seule | `registry.TOOL_REGISTRY` assemble 9 handlers |
 | `trader/domain/` | Primitives neutres (`Bar`, `MarketError`, `Side`) | évite que `market`/`planning` importent `tools` |
+| `trader/scheduling/` | Réveils globaux/par symbole, stale backoff, veilles persistées | compat : `trader.tools.scheduler` |
 | `trader/planning/` | Plans de trade, veilles, exit engine, gate de pertinence | compat : `trader.trade_plan`, `trader.indicator_watch`, `trader.exit_engine`, `trader.relevance_gate` |
 | `trader/execution/` | Broker paper, primitives d'ordre/fill, commissions, RiskGate | compat : `trader.tools.execution`, `trader.risk` |
 | `trader/learnings/` | Store SQLite, embeddings, consolidateur | compat : `trader.learnings_store`, `trader.embeddings`, `trader.consolidator` |
@@ -68,7 +69,7 @@ suppriment des cycles réels :
 - `system/` porte les helpers de processus utilisés par l'agent et le cockpit.
 
 Les anciens imports restent compatibles quand ils existaient déjà
-(`trader.tools.market.Bar`, `trader.tools.execution.Order`,
+(`trader.tools.market.Bar`, `trader.tools.execution.Order`, `trader.tools.scheduler.Scheduler`,
 `trader.runtime.code_version`, `trader.process_env`), mais les imports internes
 doivent viser les packages neutres ou canoniques (`domain/`, `execution/broker`,
 `metadata/`, `system/`). Les tests `tests/test_package_layout.py`,

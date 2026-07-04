@@ -90,7 +90,7 @@ def test_run_cycle_gate_le_polling_calme_sans_appel_llm(
 
     from trader.runtime import daemon
     from trader.agent.client import Decision
-    from trader.tools.scheduler import Scheduler
+    from trader.scheduling.scheduler import Scheduler
 
     _runtime_config(tmp_path)
     state_dir = tmp_path / "state"
@@ -132,7 +132,7 @@ def test_run_cycle_honore_le_reveil_demande_par_l_agent(
 
     from trader.runtime import daemon
     from trader.agent.client import Decision
-    from trader.tools.scheduler import Scheduler
+    from trader.scheduling.scheduler import Scheduler
 
     _runtime_config(tmp_path)
     state_dir = tmp_path / "state"
@@ -173,7 +173,7 @@ def test_run_cycle_ne_marque_pas_un_echec_llm_comme_revue_periodique(
 
     from trader.runtime import daemon
     from trader.agent.client import Decision
-    from trader.tools.scheduler import Scheduler
+    from trader.scheduling.scheduler import Scheduler
 
     _runtime_config(tmp_path)
     state_dir = tmp_path / "state"

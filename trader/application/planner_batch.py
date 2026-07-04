@@ -12,7 +12,8 @@ import trader.agent_tools as agent_tools
 from trader.agent import client as codex_client
 from trader.agent.context import resolve_indicator_requests
 from trader.planning.indicator_watch import summarize_watch
-from trader.tools import market, scheduler
+from trader.scheduling import scheduler
+from trader.tools import market
 
 log = logging.getLogger(__name__)
 

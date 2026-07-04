@@ -6,7 +6,7 @@ import pytest
 
 from trader.runtime import daemon
 from trader.tools.market import MarketError
-from trader.tools.scheduler import Scheduler
+from trader.scheduling.scheduler import Scheduler
 
 
 def _write_runtime_config(root) -> None:

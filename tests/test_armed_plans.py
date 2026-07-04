@@ -10,7 +10,7 @@ from trader.agent.client import Decision
 from trader.planning.trade_plan import TradePlanStore
 from trader.execution.broker import SimBroker
 from trader.tools.market import Bar
-from trader.tools.scheduler import Scheduler
+from trader.scheduling.scheduler import Scheduler
 
 
 from conftest import write_runtime_config as _runtime_config  # noqa: E402

@@ -25,7 +25,7 @@ import pytest
 from trader.state_db.connection import StateDb
 from trader.state_db.migrations import import_scheduler_from_json
 from trader.state_db.scheduler_store import SqliteScheduler
-from trader.tools.scheduler import Scheduler, STALE_BACKOFF_MAX_STREAK
+from trader.scheduling.scheduler import Scheduler, STALE_BACKOFF_MAX_STREAK
 
 AnyScheduler = Union[Scheduler, SqliteScheduler]
 
@@ -116,7 +116,7 @@ class TestDefaultNextWake:
         assert sqlite_sched.next_wake() is not None
 
     def test_set_next_wake_in(self, sqlite_sched: SqliteScheduler) -> None:
-        returned_iso = sqlite_sched.set_next_wake_in(minutes=30, now=_NOW)
+        sqlite_sched.set_next_wake_in(minutes=30, now=_NOW)
         nxt = sqlite_sched.next_wake()
         assert nxt is not None
         assert abs((nxt - _NOW).total_seconds() - 30 * 60) < 1
@@ -192,7 +192,7 @@ class TestSymbolWake:
         sqlite_sched.clear_symbol_next_wake("UNKNOWN")  # pas d'erreur
 
     def test_set_symbol_next_wake_in(self, sqlite_sched: SqliteScheduler) -> None:
-        returned = sqlite_sched.set_symbol_next_wake_in("MSFT", minutes=20, now=_NOW)
+        sqlite_sched.set_symbol_next_wake_in("MSFT", minutes=20, now=_NOW)
         nxt = sqlite_sched.next_wake("MSFT")
         assert nxt is not None
         assert abs((nxt - _NOW).total_seconds() - 20 * 60) < 1
@@ -806,7 +806,7 @@ class TestShadowJson:
 class TestMakeScheduler:
     def test_make_scheduler_json(self, tmp_path: Path) -> None:
         from trader.state_db.broker_factory import make_scheduler
-        from trader.tools.scheduler import Scheduler
+        from trader.scheduling.scheduler import Scheduler
 
         sched = make_scheduler(state_dir=tmp_path, backend="json")
         assert isinstance(sched, Scheduler)
@@ -841,7 +841,7 @@ class TestMakeScheduler:
 
     def test_make_scheduler_default_is_json(self, tmp_path: Path) -> None:
         from trader.state_db.broker_factory import make_scheduler
-        from trader.tools.scheduler import Scheduler
+        from trader.scheduling.scheduler import Scheduler
 
         sched = make_scheduler(state_dir=tmp_path)
         assert isinstance(sched, Scheduler)

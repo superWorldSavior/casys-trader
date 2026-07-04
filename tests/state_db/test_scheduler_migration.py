@@ -10,7 +10,6 @@ Couvre :
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -166,7 +165,6 @@ class TestImportSchedulerFromJson:
     def test_import_watch_json_round_trip(
         self, db: StateDb, scheduler_json: Path
     ) -> None:
-        data = _rich_scheduler_data()
         import_scheduler_from_json(db, scheduler_json)
         row = db.query_one(
             "SELECT watch_json FROM scheduler_watches WHERE id=?", ("AAPL:watch001",)

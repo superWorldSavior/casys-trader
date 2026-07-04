@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 
 from trader.agent.client import Decision
 from trader.runtime import daemon
-from trader.tools.scheduler import Scheduler, STALE_BACKOFF_MAX_MINUTES, STALE_BACKOFF_MAX_STREAK
+from trader.scheduling.scheduler import Scheduler, STALE_BACKOFF_MAX_MINUTES, STALE_BACKOFF_MAX_STREAK
 
 
 def test_backoff_wake_premier_stale_est_egal_au_defaut(tmp_path) -> None:

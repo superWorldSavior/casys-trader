@@ -173,6 +173,40 @@ def test_execution_package_does_not_depend_on_tools_package() -> None:
     assert violations == []
 
 
+def test_scheduler_imports_are_canonical_with_tools_compatibility() -> None:
+    from trader.scheduling.scheduler import (
+        STALE_BACKOFF_MAX_MINUTES,
+        STALE_BACKOFF_MAX_STREAK,
+        Scheduler,
+    )
+    from trader.tools.scheduler import STALE_BACKOFF_MAX_MINUTES as LegacyMaxMinutes
+    from trader.tools.scheduler import STALE_BACKOFF_MAX_STREAK as LegacyMaxStreak
+    from trader.tools.scheduler import Scheduler as LegacyScheduler
+
+    assert LegacyScheduler is Scheduler
+    assert LegacyMaxMinutes == STALE_BACKOFF_MAX_MINUTES
+    assert LegacyMaxStreak == STALE_BACKOFF_MAX_STREAK
+
+
+def test_scheduling_package_does_not_depend_on_tools_package() -> None:
+    trader_dir = Path(__file__).resolve().parents[1] / "trader"
+    scheduling_dir = trader_dir / "scheduling"
+
+    violations: list[str] = []
+    for path in sorted(scheduling_dir.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        rel_path = path.relative_to(trader_dir.parent)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module and node.module.startswith("trader.tools"):
+                violations.append(f"{rel_path}: from {node.module} import ...")
+            elif isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name.startswith("trader.tools"):
+                        violations.append(f"{rel_path}: import {alias.name}")
+
+    assert violations == []
+
+
 def test_agent_protocol_prompts_do_not_import_agent_context() -> None:
     repo_root = Path(__file__).resolve().parents[1]
     code = (
