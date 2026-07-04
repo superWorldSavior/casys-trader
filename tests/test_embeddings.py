@@ -1,11 +1,11 @@
-"""Tests pour trader/learnings/embeddings.py — TDD Task 1 (learnings-recall-v1)."""
+"""Tests pour trader/agent/learnings/embeddings.py — TDD Task 1 (learnings-recall-v1)."""
 
 from __future__ import annotations
 
 import numpy as np
 import pytest
 
-from trader.learnings.embeddings import EMBEDDING_DIMS, embed_texts
+from trader.agent.learnings.embeddings import EMBEDDING_DIMS, embed_texts
 
 
 # ---------------------------------------------------------------------------

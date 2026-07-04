@@ -12,7 +12,7 @@
 > **Type** : Spec (design — cadrage).
 > **Date** : 2026-07-03 · **Statut** : 🗄️ SUPERSEDED (voir bandeau).
 > **Code concerné** : `trader/runtime/daemon.py` (contexte de décision, `_build_recall_provider`),
-> `trader/learnings/store.py` (FLAIR/MemRL), `trader/learnings/consolidator.py` (digest).
+> `trader/agent/learnings/store.py` (FLAIR/MemRL), `trader/agent/learnings/consolidator.py` (digest).
 > **Dépend de** : task-ledger (1 appel/symbole) pour le ciblage optimal.
 
 ## 1. Problème — deux systèmes de learnings en parallèle

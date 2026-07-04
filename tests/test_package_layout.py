@@ -33,7 +33,6 @@ def test_top_level_packages_have_declared_architecture_roles() -> None:
         "execution",
         "infrastructure",
         "interfaces",
-        "learnings",
         "market",
         "planning",
         "reporting",
@@ -90,6 +89,18 @@ def test_scheduler_is_nested_under_planning() -> None:
 
     assert scheduler_path.exists()
     assert not _has_python_sources(trader_dir / "scheduling")
+
+
+def test_agent_learnings_are_nested_under_agent() -> None:
+    trader_dir = Path(__file__).resolve().parents[1] / "trader"
+    learnings_dir = trader_dir / "agent" / "learnings"
+
+    assert learnings_dir.exists()
+    assert (learnings_dir / "raw_store.py").exists()
+    assert (learnings_dir / "store.py").exists()
+    assert (learnings_dir / "embeddings.py").exists()
+    assert (learnings_dir / "consolidator.py").exists()
+    assert not _has_python_sources(trader_dir / "learnings")
 
 
 def test_foundation_packages_do_not_depend_on_higher_layers() -> None:
@@ -304,6 +315,22 @@ def test_scheduling_legacy_package_is_virtual() -> None:
     assert LegacyScheduler is Scheduler
 
 
+def test_learnings_legacy_package_is_virtual() -> None:
+    trader_dir = Path(__file__).resolve().parents[1] / "trader"
+
+    assert not _has_python_sources(trader_dir / "learnings")
+
+    import trader.learnings as legacy_learnings
+    import trader.learnings.raw_store as legacy_raw_store
+    from trader.agent.learnings.raw_store import RawLearningsStore
+    from trader.learnings.raw_store import RawLearningsStore as LegacyRawLearningsStore
+
+    assert getattr(legacy_learnings, "__file__", None) is None
+    assert getattr(legacy_learnings, "__path__", None) == []
+    assert legacy_raw_store.RawLearningsStore is RawLearningsStore
+    assert LegacyRawLearningsStore is RawLearningsStore
+
+
 def test_internal_code_uses_canonical_interface_imports() -> None:
     repo_root = Path(__file__).resolve().parents[1]
     trader_dir = repo_root / "trader"
@@ -463,6 +490,44 @@ def test_internal_code_uses_canonical_scheduling_imports() -> None:
     assert violations == []
 
 
+def test_internal_code_uses_canonical_learnings_imports() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    trader_dir = repo_root / "trader"
+    checked_roots = (trader_dir, repo_root / "scripts")
+    ignored_files = {trader_dir / "__init__.py"}
+    forbidden_direct_modules = {"trader.learnings"}
+    forbidden_from_trader = {"learnings"}
+
+    def _is_forbidden_module(module_name: str) -> bool:
+        return any(
+            module_name == forbidden or module_name.startswith(f"{forbidden}.")
+            for forbidden in forbidden_direct_modules
+        )
+
+    violations: list[str] = []
+    for root in checked_roots:
+        if not root.exists():
+            continue
+        for path in sorted(root.rglob("*.py")):
+            if path in ignored_files:
+                continue
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            rel_path = path.relative_to(repo_root)
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ImportFrom) and node.module and _is_forbidden_module(node.module):
+                    violations.append(f"{rel_path}: from {node.module} import ...")
+                elif isinstance(node, ast.ImportFrom) and node.module == "trader":
+                    forbidden_names = sorted(alias.name for alias in node.names if alias.name in forbidden_from_trader)
+                    if forbidden_names:
+                        violations.append(f"{rel_path}: from trader import {forbidden_names}")
+                elif isinstance(node, ast.Import):
+                    for alias in node.names:
+                        if _is_forbidden_module(alias.name):
+                            violations.append(f"{rel_path}: import {alias.name}")
+
+    assert violations == []
+
+
 def test_legacy_virtual_packages_support_from_trader_and_python_m() -> None:
     import trader
     from trader import config as legacy_config
@@ -485,6 +550,10 @@ def test_legacy_virtual_packages_support_from_trader_and_python_m() -> None:
         "trader.semantic.catalog",
         "trader.scheduling.scheduler",
         "trader.tools.scheduler",
+        "trader.learnings.raw_store",
+        "trader.learnings.store",
+        "trader.learnings.embeddings",
+        "trader.learnings.consolidator",
     ):
         result = subprocess.run(
             [sys.executable, "-m", module_name],
@@ -501,8 +570,11 @@ def test_legacy_virtual_packages_support_from_trader_and_python_m() -> None:
 def test_legacy_flat_module_imports_remain_compatible() -> None:
     import trader.cockpit_events as legacy_cockpit_events
     import trader.codex_client as legacy_codex_client
+    import trader.consolidator as legacy_consolidator
     import trader.daemon as legacy_daemon
+    import trader.embeddings as legacy_embeddings
     import trader.fx as legacy_fx
+    import trader.learnings_store as legacy_learnings_store
     import trader.llm as legacy_llm
     import trader.palette as legacy_palette
     import trader.rotation_schedule as legacy_schedule
@@ -515,8 +587,11 @@ def test_legacy_flat_module_imports_remain_compatible() -> None:
 
     assert legacy_cockpit_events.__name__ == "trader.interfaces.cockpit.events"
     assert legacy_codex_client.Decision.__module__ == "trader.agent.protocol.types"
+    assert legacy_consolidator.__name__ == "trader.agent.learnings.consolidator"
     assert legacy_daemon.run_cycle.__module__ == "trader.runtime.daemon"
+    assert legacy_embeddings.__name__ == "trader.agent.learnings.embeddings"
     assert legacy_fx.__name__ == "trader.market.fx"
+    assert legacy_learnings_store.__name__ == "trader.agent.learnings.store"
     assert legacy_llm.LlmRouter.__module__ == "trader.agent.llm"
     assert legacy_palette.__name__ == "trader.interfaces.ui.palette"
     assert legacy_schedule.__name__ == "trader.rotation.schedule"
@@ -1062,8 +1137,8 @@ def test_portfolio_imports_are_canonical_with_tools_compatibility() -> None:
 
 def test_agent_memory_and_raw_learnings_imports_are_canonical_with_tools_compatibility() -> None:
     from trader.agent.memory import Memory
-    from trader.learnings.raw_store import LearningsStore
-    from trader.learnings.raw_store import RawLearningsStore
+    from trader.agent.learnings.raw_store import LearningsStore
+    from trader.agent.learnings.raw_store import RawLearningsStore
     from trader.tools.memory import LearningsStore as LegacyLearningsStore
     from trader.tools.memory import Memory as LegacyMemory
     from trader.tools.memory import RawLearningsStore as LegacyRawLearningsStore
@@ -1076,7 +1151,7 @@ def test_agent_memory_and_raw_learnings_imports_are_canonical_with_tools_compati
 
 def test_legacy_memory_tool_module_proxies_mutations_to_canonical_modules(monkeypatch) -> None:
     from trader.agent import memory as canonical_agent_memory
-    from trader.learnings import raw_store as canonical_raw_store
+    from trader.agent.learnings import raw_store as canonical_raw_store
     from trader.tools import memory as legacy_memory
 
     memory_sentinel = object()
@@ -1102,7 +1177,6 @@ def test_runtime_agent_and_learnings_do_not_depend_on_legacy_memory_tool() -> No
     checked_roots = (
         repo_root / "backtest",
         trader_dir / "agent",
-        trader_dir / "learnings",
         trader_dir / "reporting" / "read_models",
         trader_dir / "runtime",
     )

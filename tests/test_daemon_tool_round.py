@@ -442,7 +442,7 @@ def test_run_tool_round_store_absent_unavailable():
 
 def test_build_recall_provider_no_query_no_embedder(tmp_path):
     """Sans 'query' dans les args, l'embedder n'est jamais appelé."""
-    from trader.learnings import store as recall_mod
+    from trader.agent.learnings import store as recall_mod
 
     store = recall_mod.LearningsStore(str(tmp_path / "test.db"))
     embed_calls: list = []
@@ -461,7 +461,7 @@ def test_build_recall_provider_no_query_no_embedder(tmp_path):
 
 def test_run_cycle_record_recall_apres_tool_round(monkeypatch, tmp_path, make_data_source):
     """run_cycle: après une tournée recall_learnings ok, record_recall est tracé dans le store."""
-    from trader.learnings import store as recall_mod
+    from trader.agent.learnings import store as recall_mod
     from tests.conftest import write_runtime_config
 
     write_runtime_config(tmp_path, symbols=["SPY"])
@@ -596,7 +596,7 @@ def test_run_cycle_recall_db_corrompu_ne_leve_pas(monkeypatch, tmp_path, make_da
 
 def test_build_recall_provider_embed_timeout_3s(tmp_path, monkeypatch):
     """Finding 2a : le provider runtime passe timeout_s=3 à l'embedder par défaut."""
-    from trader.learnings import store as recall_mod
+    from trader.agent.learnings import store as recall_mod
 
     store = recall_mod.LearningsStore(str(tmp_path / "test.db"))
     timeouts_seen: list[int] = []
@@ -611,7 +611,7 @@ def test_build_recall_provider_embed_timeout_3s(tmp_path, monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
 
     # Patcher _default_post_json dans le module embeddings (importé au moment de l'appel)
-    import trader.learnings.embeddings as emb_mod
+    import trader.agent.learnings.embeddings as emb_mod
     monkeypatch.setattr(emb_mod, "_default_post_json", spy_post_json)
 
     # Construire le provider APRÈS le patch pour qu'il utilise le spy
@@ -625,7 +625,7 @@ def test_build_recall_provider_embed_timeout_3s(tmp_path, monkeypatch):
 
 def test_build_recall_provider_embed_echoue_degrade_fts(tmp_path, monkeypatch):
     """Finding 2b : échec embed → search appelé avec query_vec=None (dégradation FTS5)."""
-    from trader.learnings import store as recall_mod
+    from trader.agent.learnings import store as recall_mod
 
     store = recall_mod.LearningsStore(str(tmp_path / "test.db"))
     search_calls: list[dict] = []

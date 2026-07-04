@@ -113,7 +113,7 @@ On **branche** la file sur les briques déjà en place ; le nouveau code se limi
 
 | Brique existante | Chemin | Rôle réutilisé |
 |---|---|---|
-| Pattern SQLite WAL+Lock+busy_timeout | `learnings/store.py:26,31,107` | **modèle direct** du `TaskLedger` (copier le pattern, pas réinventer) |
+| Pattern SQLite WAL+Lock+busy_timeout | `agent/learnings/store.py:26,31,107` | **modèle direct** du `TaskLedger` (copier le pattern, pas réinventer) |
 | Interface `Broker` (Protocol) + `SimBroker` | `execution.py:188,201` | backend SQLite **derrière la même interface** ; l'exécution appelle `broker.submit()` inchangé |
 | `TradePlanStore`, `Scheduler` | `trade_plan.py:1010`, `scheduler.py:26` | **API publique identique**, backend SQLite dessous |
 | Réveils intelligents (D7/D8) + `scheduler.json` | `scheduler.py`, `daemon.py` | le **producteur lit le scheduler existant** pour savoir quels symboles enfiler |
@@ -146,7 +146,7 @@ Trois mécanismes superposés :
 ### 4.2 Schéma `task_ledger.db`
 
 WAL + `busy_timeout=5000` + `check_same_thread=False` + `threading.Lock` (pattern
-`learnings/store.py`). **Timestamps en epoch integer (ms UTC)** — jamais de TEXT
+`agent/learnings/store.py`). **Timestamps en epoch integer (ms UTC)** — jamais de TEXT
 comparé lexicographiquement (correctif arch, trous).
 
 ```sql

@@ -8,7 +8,7 @@ from collections.abc import Callable
 from datetime import datetime
 from typing import Protocol
 
-from trader.learnings import embeddings as embeddings_mod
+from trader.agent.learnings import embeddings as embeddings_mod
 
 log = logging.getLogger(__name__)
 

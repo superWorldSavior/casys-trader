@@ -1,9 +1,16 @@
 import json
 from datetime import datetime, timezone
+from pathlib import Path
 
 from trader.agent import llm
-from trader.learnings import consolidator
-from trader.learnings.raw_store import RawLearningsStore
+from trader.agent.learnings import consolidator
+from trader.agent.learnings.raw_store import RawLearningsStore
+
+
+def test_default_state_dir_reste_la_racine_repo_apres_move_agent_learnings() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+
+    assert consolidator._default_state_dir() == repo_root / "state"
 
 
 def _raw(ts: str, symbol: str = "SPY", note: str = "range confirme") -> dict:
@@ -897,7 +904,7 @@ def test_archive_replaced_loggue_warning_si_ioerror(tmp_path) -> None:
     records: list[logging.LogRecord] = []
     handler = logging.Handler()
     handler.emit = records.append  # type: ignore[assignment]
-    mod_logger = logging.getLogger("trader.learnings.consolidator")
+    mod_logger = logging.getLogger("trader.agent.learnings.consolidator")
     mod_logger.addHandler(handler)
     try:
         store.write(v2, watermark="2026-07-02T00:00:00+00:00")

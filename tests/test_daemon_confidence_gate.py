@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from trader.runtime import daemon
 from trader.agent.client import Decision
 from trader.market.market_data import Bar
-from trader.learnings.raw_store import RawLearningsStore
+from trader.agent.learnings.raw_store import RawLearningsStore
 from trader.planning.scheduler import Scheduler
 
 

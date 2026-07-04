@@ -9,7 +9,7 @@
 
 Persistance SQLite (WAL, `busy_timeout=5000`). Une connexion partagée
 (`check_same_thread=False`) protégée par un `threading.Lock`, sur le modèle de
-`learnings/store.py`. Temps injecté (`now_ms`) pour déterminisme. Tous les
+`agent/learnings/store.py`. Temps injecté (`now_ms`) pour déterminisme. Tous les
 timestamps = epoch ms (int).
 
 ### Table `tasks`

@@ -9,7 +9,7 @@
 > `tools-portfolio-boundary`, `tools-memory-boundary`,
 > `interfaces-boundary`, `infrastructure-boundary`,
 > `flat-compat-facades`, `domain-semantic-boundary`,
-> `planning-scheduling-boundary`).
+> `planning-scheduling-boundary`, `agent-learnings-boundary`).
 
 ---
 
@@ -60,13 +60,13 @@ les utilisaient :
 | `trader/application/risk_capacity.py` | Contexte de capacité exposé à l'agent : gross exposure, plafonds buy/sell, quantités natives FX-aware | le daemon injecte le broker, les prix, les FX et la fonction devise |
 | `trader/application/tool_outcomes.py` | Finalisation des outcomes réels des action tools avant persistance des décisions | `reporting.tool_trace` réexporte l'ancien point de compatibilité |
 | `trader/application/watch_scanner.py` | Scan applicatif des indicator/exit watches : fetch des barres, évaluation, cooldown, retrait et réveil symbole | le daemon conserve l'émission d'événements/logs runtime |
-| `trader/agent/` | Contexte agent, mémoire mandat/stratégie, façade planner, transport LLM/acpx | compat virtuelle : `trader.agent_context`, `trader.codex_client`, `trader.llm`, `trader.tools.memory.Memory` |
+| `trader/agent/` | Contexte agent, mémoire mandat/stratégie, mémoire learnings/RAG, façade planner, transport LLM/acpx | compat virtuelle : `trader.agent_context`, `trader.codex_client`, `trader.llm`, `trader.tools.memory.Memory`, `trader.tools.memory.LearningsStore`, `trader.learnings.*`, `trader.learnings_store`, `trader.embeddings`, `trader.consolidator` |
 | `trader/agent/protocol/` | Types, prompts, parsing du contrat LLM | utilisé par `trader/agent/client.py` |
 | `trader/agent/tools/` | Package des outils domaine lecture seule | `registry.TOOL_REGISTRY` assemble 9 handlers |
+| `trader/agent/learnings/` | Buffer brut JSONL, store SQLite recall, embeddings, consolidateur | mémoire machine de l'agent ; `trader.learnings.*` reste virtuel |
 | `trader/domain/` | Primitives neutres (`Bar`, `MarketError`, `Side`) et catalogue sémantique gouverné (`domain/semantic/`) | évite que `market`/`planning` importent `tools` ou un package racine de vocabulaire |
 | `trader/planning/` | Plans de trade, scheduler de réveils, veilles, exit engine, gate de pertinence | compat : `trader.trade_plan`, `trader.indicator_watch`, `trader.exit_engine`, `trader.relevance_gate`, `trader.scheduling.scheduler`, `trader.tools.scheduler` |
 | `trader/execution/` | Contrats `Order`/`Fill`, ports `Broker`/`CommissionModel`, broker paper, commissions, RiskGate, projection portefeuille | contrats/ports : `trader.execution.contracts`, `trader.execution.ports`; compat virtuelle : `trader.tools.execution`, `trader.tools.portfolio`, `trader.risk` |
-| `trader/learnings/` | Buffer brut JSONL, store SQLite recall, embeddings, consolidateur | compat virtuelle : `trader.tools.memory.LearningsStore`, `trader.learnings_store`, `trader.embeddings`, `trader.consolidator` |
 | `trader/market/` | Port `DataSource`, adaptateurs yfinance/IB/composite, fraîcheur, indicateurs, FX, news, macro, radar, régime, priorisation gross exposure | port : `trader.market.ports.DataSource`; compat virtuelle : `trader.tools.market`, `trader.tools.data_source`, `trader.tools.ib_source`, `trader.tools.news_feed`, `trader.fx`, `trader.features`, etc. |
 | `trader/infrastructure/queue/` | File de tâches durable, workers, pools, backpressure | backend technique utilisé par le runtime queue-on ; compat virtuelle : `trader.queue.*` |
 | `trader/infrastructure/state_db/` | Backend SQLite de l'état paper, broker store, outbox | source durable quand `CASYS_STATE_BACKEND=sqlite` ; compat virtuelle : `trader.state_db.*` |
@@ -91,7 +91,7 @@ mais ses packages ne sont pas tous du même niveau :
 | Composition runtime | `runtime/`, `interfaces/cli/`, alias legacy `trader.daemon`/`trader.cli` | peut assembler les dépendances et déclencher les side effects |
 | Services applicatifs | `application/` | orchestre un cas d'usage testable sans être l'entrypoint process |
 | Infrastructure technique | `infrastructure/queue/`, `infrastructure/state_db/` | backends durables et mécaniques ; pas de logique de décision métier |
-| Capacités métier | `market/`, `planning/`, `execution/`, `learnings/`, `rotation/`, `agent/` (`protocol/`, `tools/`) | porte la logique du domaine et ne dépend pas de `runtime/` |
+| Capacités métier | `market/`, `planning/`, `execution/`, `rotation/`, `agent/` (`protocol/`, `tools/`, `learnings/`) | porte la logique du domaine et ne dépend pas de `runtime/` |
 | Primitives transverses | `domain/`, `domain/semantic/`, `support/` | types/catalogues/helpers stables, sans dépendance montante |
 | Read models et surfaces | `reporting/`, `reporting/read_models/`, `interfaces/ui/`, `interfaces/cockpit/` | lit l'état produit par le runtime, ne décide pas à sa place |
 | Compatibilité legacy | alias virtuels de `trader/__init__.py` | délègue vers le canonique ; aucun nouvel import interne ne doit viser ici |
@@ -124,18 +124,19 @@ Les anciens imports restent compatibles quand ils existaient déjà
 `trader.tui`, `trader.commands.stats`,
 `trader.cockpit.app`, `trader.ui.palette`, `trader.queue.ledger`,
 `trader.state_db.connection`, `trader.semantic.catalog`,
-`trader.scheduling.scheduler`). `trader.tools` est fourni par le finder de
+`trader.scheduling.scheduler`, `trader.learnings.raw_store`). `trader.tools` est fourni par le finder de
 compatibilité dans `trader/__init__.py` et ne correspond plus à un dossier
 physique ; `trader.config`, `trader.metadata`, `trader.system`,
 `trader.read_models`, `trader.commands`, `trader.cockpit`, `trader.ui`,
-`trader.queue`, `trader.state_db`, `trader.semantic` et `trader.scheduling`, comme `trader.agent_protocol` et
+`trader.queue`, `trader.state_db`, `trader.semantic`, `trader.scheduling` et `trader.learnings`, comme `trader.agent_protocol` et
 `trader.agent_tools`, sont aussi des packages virtuels de compatibilité. Les
 imports internes
 doivent viser les packages neutres ou canoniques (`domain/`, `execution/broker`,
 `execution/contracts`, `execution/ports`, `market/`, `market/ports`, `support/`,
 `reporting/read_models/`, `agent/protocol/`, `agent/tools/`, `interfaces/cli/`,
 `interfaces/cockpit/`, `interfaces/ui/`, `infrastructure/queue/`,
-`infrastructure/state_db/`, `domain/semantic/`, `planning/scheduler.py`). Les adaptateurs concrets restent dans
+`infrastructure/state_db/`, `domain/semantic/`, `planning/scheduler.py`,
+`agent/learnings/`). Les adaptateurs concrets restent dans
 `execution/broker` et `market/data_source` quand la composition runtime les
 instancie. Les tests `tests/test_package_layout.py`, `tests/test_code_version_imports.py`
 et `tests/test_runtime_pid_file.py` gardent ces frontières.
@@ -453,8 +454,8 @@ Opérateurs valides : `>`, `>=`, `<`, `<=`, `==`, `!=`, `abs>`, `abs>=`, `abs<`,
 | `history.jsonl` | `RuntimeStateWriter.append_cycle_history()` via wrapper daemon | CLI status | Résumé par cycle (equity, n_executed) |
 | `daemon_status.json` | `RuntimeStateWriter.write_status()` via wrapper daemon | cockpit TUI, CLI | Phase courante, PID, decisions_done |
 | `current_report.json` | `RuntimeStateWriter.write_current_report()` via wrapper daemon | cockpit TUI | Rapport complet du cycle en cours |
-| `learnings.jsonl` | `record_decision()` | `trader/learnings/consolidator.py` | Notes runtime de l'agent (bornées) |
-| `learnings_consolidated.json` | `trader/learnings/consolidator.py` | `trader/runtime/daemon.py` (contexte LLM) | Patterns consolidés (≤ seuil bruts → consolidation) |
+| `learnings.jsonl` | `record_decision()` | `trader/agent/learnings/consolidator.py` | Notes runtime de l'agent (bornées) |
+| `learnings_consolidated.json` | `trader/agent/learnings/consolidator.py` | `trader/runtime/daemon.py` (contexte LLM) | Patterns consolidés (≤ seuil bruts → consolidation) |
 | `learnings.db` | `learnings_ingest` + daemon (`recalls`) | outil `recall_learnings` | Store SQLite dérivé : notes scorées par outcome (lift/symbole), embeddings, traces de recall |
 | `archive/*.jsonl.gz` | `trader/runtime/ledger_rotation.py` (démarrage daemon) | `read_rows_with_archive` (analyses) | Mois passés de decisions/events — rotation mensuelle crash-safe |
 | `archive/learnings-*.jsonl` | `RawLearningsStore`/`consolidator` | ingestion recall | Évincés + historique des consolidés — plus rien ne se jette |

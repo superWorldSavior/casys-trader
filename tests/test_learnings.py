@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from trader.learnings.raw_store import RawLearningsStore
+from trader.agent.learnings.raw_store import RawLearningsStore
 
 
 def test_recent_renvoie_les_entrees_dans_lordre_dajout(tmp_path) -> None:
@@ -117,7 +117,7 @@ def test_archive_evicted_loggue_warning_si_ioerror(tmp_path) -> None:
     records: list[logging.LogRecord] = []
     handler = logging.Handler()
     handler.emit = records.append  # type: ignore[assignment]
-    mod_logger = logging.getLogger("trader.learnings.raw_store")
+    mod_logger = logging.getLogger("trader.agent.learnings.raw_store")
     mod_logger.addHandler(handler)
     try:
         # Déclenche une éviction (max_entries=2, on append 3 notes)

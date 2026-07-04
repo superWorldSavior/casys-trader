@@ -16,7 +16,7 @@ from typing import Any
 
 from trader.agent import llm
 from trader.execution.risk import read_min_trade_confidence
-from trader.learnings.raw_store import RawLearningsStore
+from trader.agent.learnings.raw_store import RawLearningsStore
 from trader.reporting import attribution as attribution_mod, meta_performance as meta_performance_mod
 
 log = logging.getLogger(__name__)
@@ -668,11 +668,11 @@ def maybe_consolidate(
 
 
 def _default_state_dir() -> Path:
-    return Path(__file__).resolve().parents[2] / "state"
+    return Path(__file__).resolve().parents[3] / "state"
 
 
 def main(argv: list[str] | None = None) -> int:
-    """CLI d'inspection et run cron : python -m trader.learnings.consolidator --run."""
+    """CLI d'inspection et run cron : python -m trader.agent.learnings.consolidator --run."""
     import argparse
 
     parser = argparse.ArgumentParser(description="Consolidateur des learnings runtime")
@@ -698,7 +698,7 @@ def main(argv: list[str] | None = None) -> int:
     consolidated_store = ConsolidatedLearningsStore(state_dir / "learnings_consolidated.json")
 
     if args.run:
-        _risk_yaml = Path(__file__).resolve().parents[2] / "config" / "risk.yaml"
+        _risk_yaml = Path(__file__).resolve().parents[3] / "config" / "risk.yaml"
         attr = attribution_mod.compute_attribution(
             state_dir,
             since=args.attribution_since,

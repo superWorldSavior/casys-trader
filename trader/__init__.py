@@ -22,13 +22,13 @@ _COMPAT_MODULES = {
     "cli": "trader.runtime.cli",
     "code_version": "trader.support.metadata.code_version",
     "codex_client": "trader.agent.client",
-    "consolidator": "trader.learnings.consolidator",
+    "consolidator": "trader.agent.learnings.consolidator",
     "daemon": "trader.runtime.daemon",
     "decision_audit": "trader.reporting.decision_audit",
     "decision_bench": "trader.reporting.decision_bench",
     "decision_ledger": "trader.reporting.decision_ledger",
     "decision_reason": "trader.reporting.decision_reason",
-    "embeddings": "trader.learnings.embeddings",
+    "embeddings": "trader.agent.learnings.embeddings",
     "exit_engine": "trader.planning.exit_engine",
     "family_regime": "trader.market.family_regime",
     "features": "trader.market.features",
@@ -37,7 +37,7 @@ _COMPAT_MODULES = {
     "gross_priority": "trader.market.gross_priority",
     "ib_attach": "trader.runtime.ib_attach",
     "indicator_watch": "trader.planning.indicator_watch",
-    "learnings_store": "trader.learnings.store",
+    "learnings_store": "trader.agent.learnings.store",
     "ledger_rotation": "trader.runtime.ledger_rotation",
     "llm": "trader.agent.llm",
     "logging_setup": "trader.runtime.logging_setup",
@@ -93,6 +93,12 @@ _COMPAT_PACKAGES = {
         "plans": "trader.agent.tools.plans",
         "registry": "trader.agent.tools.registry",
         "risk": "trader.agent.tools.risk",
+    },
+    "learnings": {
+        "consolidator": "trader.agent.learnings.consolidator",
+        "embeddings": "trader.agent.learnings.embeddings",
+        "raw_store": "trader.agent.learnings.raw_store",
+        "store": "trader.agent.learnings.store",
     },
     "cockpit": {
         "__main__": "trader.interfaces.cockpit.__main__",
@@ -159,6 +165,7 @@ _COMPAT_PACKAGE_ALIASES = {
     "agent_tools": "trader.agent.tools",
     "cockpit": "trader.interfaces.cockpit",
     "commands": "trader.interfaces.cli",
+    "learnings": "trader.agent.learnings",
     "queue": "trader.infrastructure.queue",
     "semantic": "trader.domain.semantic",
     "scheduling": "trader.planning",
@@ -178,8 +185,8 @@ _TOOLS_COMPAT_MODULES = {
 
 _TOOLS_MEMORY_NAMES = {
     "Memory": ("trader.agent.memory", "Memory"),
-    "LearningsStore": ("trader.learnings.raw_store", "LearningsStore"),
-    "RawLearningsStore": ("trader.learnings.raw_store", "RawLearningsStore"),
+    "LearningsStore": ("trader.agent.learnings.raw_store", "LearningsStore"),
+    "RawLearningsStore": ("trader.agent.learnings.raw_store", "RawLearningsStore"),
 }
 
 _TOOLS_COMPAT_EXPORTS = {
@@ -373,7 +380,7 @@ class _CompatToolsMemoryModule(types.ModuleType):
             setattr(importlib.import_module("trader.agent.memory"), "Memory", value)
             return None
         if name in {"LearningsStore", "RawLearningsStore"}:
-            raw_store = importlib.import_module("trader.learnings.raw_store")
+            raw_store = importlib.import_module("trader.agent.learnings.raw_store")
             setattr(raw_store, "LearningsStore", value)
             setattr(raw_store, "RawLearningsStore", value)
             return None
@@ -384,7 +391,7 @@ class _CompatToolsMemoryModule(types.ModuleType):
             delattr(importlib.import_module("trader.agent.memory"), "Memory")
             return None
         if name in {"LearningsStore", "RawLearningsStore"}:
-            raw_store = importlib.import_module("trader.learnings.raw_store")
+            raw_store = importlib.import_module("trader.agent.learnings.raw_store")
             delattr(raw_store, "LearningsStore")
             delattr(raw_store, "RawLearningsStore")
             return None

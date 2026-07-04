@@ -4,7 +4,7 @@
 
 **Goal:** Implémenter le design `docs/superpowers/specs/2026-07-02-learnings-recall-design.md` : store SQLite outcome-weighted (scoring par symbole : lift + shrinkage), retrieval hybride, outil `recall_learnings` dans le registre, trace des injections.
 
-**Architecture:** `trader/embeddings.py` (client OpenAI minimal sur le pattern `_post_json` de `trader/llm.py`) ; `trader/learnings_store.py` (SQLite : schéma, ingestion idempotente, scoring, recherche hybride, table recalls) ; handler dans `trader/agent_tools.py` (pattern des 8 outils existants) ; câblage provider + trace dans `trader/daemon.py` (pattern `_run_tool_round`).
+**Architecture actuelle:** `trader/agent/learnings/embeddings.py` (client OpenAI minimal sur le pattern `_post_json` de `trader/agent/llm.py`) ; `trader/agent/learnings/store.py` (SQLite : schéma, ingestion idempotente, scoring, recherche hybride, table recalls ; ancien `trader.learnings_store` en compat) ; handler dans `trader/agent/tools/learnings.py` ; câblage provider + trace dans `trader/runtime/daemon.py`.
 
 **Tech Stack:** Python 3.11, sqlite3 stdlib (FTS5 vérifié dispo), numpy (déjà présent), urllib via `llm._post_json` (aucune dépendance nouvelle). Embeddings `text-embedding-3-small` (clé `OPENAI_API_KEY` du `.env`).
 
@@ -43,9 +43,9 @@ Comportement : batch par `batch_size`, POST `{base_url}/embeddings` payload `{"m
 
 ---
 
-### Task 2: Store — schéma + ingestion idempotente (`trader/learnings_store.py`)
+### Task 2: Store — schéma + ingestion idempotente (`trader/agent/learnings/store.py`)
 
-**Files:** Create `trader/learnings_store.py` ; Test `tests/test_learnings_store.py`.
+**Files:** Create `trader/agent/learnings/store.py` ; Test `tests/test_learnings_store.py`.
 
 **Interfaces — Produces:**
 ```python
@@ -64,7 +64,7 @@ Ingestion : lit un JSONL (format de `state/archive/learnings-from-ledger.jsonl` 
 
 ### Task 3: Scoring par symbole — lift + shrinkage
 
-**Files:** Modify `trader/learnings_store.py` ; Test append `tests/test_learnings_store.py`.
+**Files:** Modify `trader/agent/learnings/store.py` ; Test append `tests/test_learnings_store.py`.
 
 **Interfaces — Produces:**
 ```python
@@ -87,7 +87,7 @@ Ingestion : lit un JSONL (format de `state/archive/learnings-from-ledger.jsonl` 
 
 ### Task 4: Backfill embeddings + recherche hybride
 
-**Files:** Modify `trader/learnings_store.py` ; Test append.
+**Files:** Modify `trader/agent/learnings/store.py` ; Test append.
 
 **Interfaces — Produces:**
 ```python

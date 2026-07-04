@@ -129,7 +129,7 @@ def _compute_attribution_safe(state_dir: Path) -> dict:
 
 def _load_learnings_safe(state_dir: Path, *, limit: int = 5) -> list[dict]:
     try:
-        from trader.learnings.raw_store import RawLearningsStore
+        from trader.agent.learnings.raw_store import RawLearningsStore
 
         return _safe_list_of_dicts(RawLearningsStore(state_dir / "learnings.jsonl").recent(limit=limit))
     except Exception:
@@ -340,7 +340,7 @@ def _count_pending_learnings_safe(learnings_path: Path, consolidated_path: Path)
                     raw_rows.append(json.loads(line))
                 except Exception:
                     continue
-        from trader.learnings.consolidator import select_new_raw
+        from trader.agent.learnings.consolidator import select_new_raw
 
         return len(select_new_raw(raw_rows, watermark))
     except Exception:

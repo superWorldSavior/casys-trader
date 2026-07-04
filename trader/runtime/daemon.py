@@ -53,9 +53,9 @@ from trader.application import (
 )
 from trader.application.decision_recorder import DecisionRecorder
 from trader.execution.risk import RiskGate, RiskLimits
-from trader.learnings import consolidator
-from trader.learnings import raw_store as raw_learnings
-from trader.learnings import store as recall_store_mod
+from trader.agent.learnings import consolidator
+from trader.agent.learnings import raw_store as raw_learnings
+from trader.agent.learnings import store as recall_store_mod
 from trader.market import family_regime, fx, macro_calendar, macro_series
 from trader.market import market_data as market
 from trader.market.data_source import (

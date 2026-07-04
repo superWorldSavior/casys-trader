@@ -41,7 +41,7 @@ def main(argv: list[str] | None = None) -> int:
     """
     # Charger .env avant de lire les variables d'environnement
     from trader.agent.llm import load_dotenv  # noqa: PLC0415
-    from trader.learnings.store import LearningsStore  # noqa: PLC0415
+    from trader.agent.learnings.store import LearningsStore  # noqa: PLC0415
 
     load_dotenv()
 
@@ -112,7 +112,7 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 1
 
-        from trader.learnings.embeddings import embed_texts  # noqa: PLC0415
+        from trader.agent.learnings.embeddings import embed_texts  # noqa: PLC0415
 
         def _embedder(texts: list[str]) -> list[bytes]:
             return embed_texts(texts, api_key=api_key)

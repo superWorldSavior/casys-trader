@@ -4,13 +4,13 @@
 
 **Goal:** Move agent prompt memory and raw runtime learnings out of `trader.tools.memory` so `tools/` becomes a compatibility layer instead of a mixed architecture bucket.
 
-**Architecture:** `trader.agent.memory` owns mandate/memory Markdown access. `trader.learnings.raw_store` owns the bounded JSONL runtime notes as `RawLearningsStore`, with `LearningsStore` kept as a local/legacy alias. `trader.tools.memory` remains a mutable compatibility facade that routes the old public names to the canonical modules.
+**Architecture:** `trader.agent.memory` owns mandate/memory Markdown access. `trader.agent.learnings.raw_store` owns the bounded JSONL runtime notes as `RawLearningsStore`, with `LearningsStore` kept as a local/legacy alias. `trader.tools.memory` remains a mutable compatibility facade that routes the old public names to the canonical modules.
 
 **Tech Stack:** Python 3.12, pytest, Ruff, existing mutable compatibility-facade pattern.
 
 **Status 2026-07-04:** Delivered. `trader.tools.memory` is now virtualized from
 `trader/__init__.py`; the physical `trader/tools/` package no longer exists.
-Canonical code lives in `trader.agent.memory`, `trader.learnings.raw_store`, and
+Canonical code lives in `trader.agent.memory`, `trader.agent.learnings.raw_store`, and
 `trader.reporting.read_models`.
 
 ---
@@ -24,7 +24,7 @@ Canonical code lives in `trader.agent.memory`, `trader.learnings.raw_store`, and
 
 Add tests proving:
 - `trader.agent.memory.Memory` is canonical.
-- `trader.learnings.raw_store.RawLearningsStore` is canonical.
+- `trader.agent.learnings.raw_store.RawLearningsStore` is canonical.
 - `trader.tools.memory.Memory`, `trader.tools.memory.LearningsStore`, and
   `trader.tools.memory.RawLearningsStore` remain compatible aliases.
 - internal packages no longer import `trader.tools.memory`.
@@ -34,34 +34,34 @@ Add tests proving:
 Run: `uv run pytest -q tests/test_package_layout.py -k "memory or learnings" -vv --tb=short`
 
 Expected before implementation: FAIL because `trader.agent.memory` /
-`trader.learnings.raw_store` do not exist yet and legacy imports remain in
-runtime/learnings/read-models.
+`trader.agent.learnings.raw_store` does not exist yet and legacy imports remain
+in runtime/read-models.
 
 ### Task 2: Canonical Modules And Compatibility Facade
 
 **Files:**
 - Create: `trader/agent/memory.py`
-- Create: `trader/learnings/raw_store.py`
+- Create: `trader/agent/learnings/raw_store.py`
 - Modify: `trader/__init__.py` (`trader.tools.memory` virtual facade)
 - Modify: `trader/agent/__init__.py`
-- Modify: `trader/learnings/__init__.py`
+- Modify: `trader/agent/learnings/__init__.py`
 
 - [x] **Step 1: Move code**
 
 Move `Memory` to `trader.agent.memory`.
-Move the JSONL store to `trader.learnings.raw_store.RawLearningsStore`, and expose `LearningsStore = RawLearningsStore`.
+Move the JSONL store to `trader.agent.learnings.raw_store.RawLearningsStore`, and expose `LearningsStore = RawLearningsStore`.
 
 - [x] **Step 2: Keep legacy imports mutable**
 
 Replace `trader.tools.memory` with a virtual facade that routes `Memory` to
 `trader.agent.memory` and `LearningsStore`/`RawLearningsStore` to
-`trader.learnings.raw_store`.
+`trader.agent.learnings.raw_store`.
 
 ### Task 3: Import Migration And Docs
 
 **Files:**
 - Modify: `trader/runtime/daemon.py`
-- Modify: `trader/learnings/consolidator.py`
+- Modify: `trader/agent/learnings/consolidator.py`
 - Modify: `trader/reporting/read_models/runtime_state.py`
 - Modify: `tests/test_learnings.py`
 - Modify: `tests/test_consolidator.py`
@@ -73,12 +73,12 @@ Replace `trader.tools.memory` with a virtual facade that routes `Memory` to
 
 - [x] **Step 1: Migrate internal imports**
 
-Runtime imports `trader.agent.memory` and `trader.learnings.raw_store`.
+Runtime imports `trader.agent.memory` and `trader.agent.learnings.raw_store`.
 Learnings consolidation and read models import `RawLearningsStore` from the new canonical module.
 
 - [x] **Step 2: Update docs**
 
-Architecture docs and tree snippets should describe `tools/` as compatibility facades and place prompt memory/raw learnings under `agent/` and `learnings/`.
+Architecture docs and tree snippets should describe `tools/` as compatibility facades and place prompt memory/raw learnings under `agent/`.
 
 ### Task 4: Verification And Merge
 

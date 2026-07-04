@@ -81,7 +81,7 @@ Légende : ✅ couvert · 🟡 partiel / dispersé / potentiellement périmé ·
 | Contrat / protocole (prompts + mandat) | `agent/protocol/` (types, prompts, parsing), `mandate/` | ✅ | **`reference/llm-contract.md`** | — |
 | Contexte agent (cockpit) | `agent/context` | ✅ | **`reference/agent-context.md`** | — |
 | Outils domaine (read-only) | `agent/tools/` (9 handlers) | ✅ | **`reference/agent-tools.md`** | — |
-| Mémoire / recall / learnings (RAG) | `learnings/` (store, consolidator, embeddings) | ✅ | **`reference/learnings-rag.md`** | — |
+| Mémoire / recall / learnings (RAG) | `agent/learnings/` (store, consolidator, embeddings) | ✅ | **`reference/learnings-rag.md`** | — |
 | Couche sémantique | `domain/semantic/catalog` | ✅ | **`reference/semantic.md`** | — |
 
 ### Observabilité
