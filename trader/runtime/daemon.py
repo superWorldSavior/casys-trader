@@ -31,7 +31,7 @@ from trader.agent import client as codex_client
 from trader.agent import llm
 from trader.agent import memory as agent_memory
 from trader.agent.context import build_market_cockpit, resolve_indicator_requests
-from trader.application import market_snapshot, order_admission, planner_batch
+from trader.application import cycle_schedule, market_snapshot, order_admission, planner_batch
 from trader.application.decision_recorder import DecisionRecorder
 from trader.execution.risk import RiskGate, RiskLimits
 from trader.learnings import consolidator
@@ -349,13 +349,7 @@ def _bounded_wake_minutes(
     chaque poll, indépendamment). Les flags --min/--max-wake-minutes réactivent
     un bornage si besoin.
     """
-    result = float(value)
-    if minimum is not None:
-        result = max(result, minimum)
-    if maximum is not None:
-        result = min(result, maximum)
-    return result
-
+    return cycle_schedule.bounded_wake_minutes(value, minimum=minimum, maximum=maximum)
 
 def _stale_backoff_wake_minutes(streak: int, *, default_wake_minutes: float) -> float:
     """Next-wake pour un symbole stale avec backoff exponentiel.
@@ -374,20 +368,10 @@ def _stale_backoff_wake_minutes(streak: int, *, default_wake_minutes: float) -> 
       STALE_BACKOFF_MAX_MINUTES = 120.0
       STALE_BACKOFF_MAX_STREAK = 8
     """
-    from trader.scheduling.scheduler import (
-        STALE_BACKOFF_BASE_MULTIPLIER,
-        STALE_BACKOFF_MAX_MINUTES,
-        STALE_BACKOFF_MAX_STREAK,
+    return cycle_schedule.stale_backoff_wake_minutes(
+        streak,
+        default_wake_minutes=default_wake_minutes,
     )
-    # Court-circuit défensif : si streak >= MAX_STREAK, le wake est déjà cappé.
-    # Évite aussi OverflowError sur 2**streak pour des valeurs arbitraires.
-    if streak == 0:
-        return min(default_wake_minutes, STALE_BACKOFF_MAX_MINUTES)
-    if streak >= STALE_BACKOFF_MAX_STREAK:
-        return STALE_BACKOFF_MAX_MINUTES
-    raw = default_wake_minutes * (STALE_BACKOFF_BASE_MULTIPLIER ** streak)
-    return min(raw, STALE_BACKOFF_MAX_MINUTES)
-
 
 def _ensure_default_wake(
     sched: scheduler.Scheduler,
@@ -395,10 +379,11 @@ def _ensure_default_wake(
     now: datetime,
     default_wake_minutes: float,
 ) -> None:
-    current = sched.next_wake()
-    if current is None or current <= now:
-        sched.set_next_wake_in(minutes=default_wake_minutes, now=now)
-
+    cycle_schedule.ensure_default_wake(
+        sched,
+        now=now,
+        default_wake_minutes=default_wake_minutes,
+    )
 
 def _select_due_symbols(
     symbols: list[str],
@@ -408,10 +393,13 @@ def _select_due_symbols(
     bootstrap: bool,
     now: datetime | None = None,
 ) -> list[str]:
-    if once or bootstrap:
-        return symbols
-    return sched.due_symbols(symbols, now=now)
-
+    return cycle_schedule.select_due_symbols(
+        symbols,
+        sched=sched,
+        once=once,
+        bootstrap=bootstrap,
+        now=now,
+    )
 
 def _invalid_intent_reason(decision: codex_client.Decision) -> str | None:
     return order_admission.invalid_intent_reason(
@@ -1394,27 +1382,7 @@ def _earliest_active_watch_expiry_iso(
     réveil immédiat) ou expire — pas retomber sur le défaut global 30 min et
     être re-décidé en aveugle (finding 2026-07-02, confirmé Codex).
     """
-    try:
-        watches = sched.active_indicator_watches(now=now)
-    except Exception:  # noqa: BLE001 - jamais bloquer le scheduling sur ce confort
-        return None
-    expiries: list[datetime] = []
-    for watch in watches:
-        if str(watch.get("symbol")) != sym:
-            continue
-        raw = watch.get("expires_at")
-        if not raw:
-            continue
-        try:
-            dt = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
-        except ValueError:
-            continue
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        if dt > now:
-            expiries.append(dt)
-    return min(expiries).isoformat() if expiries else None
-
+    return cycle_schedule.earliest_active_watch_expiry_iso(sched, sym, now=now)
 
 def _resolve_wake_event(
     event: str,
@@ -1432,23 +1400,13 @@ def _resolve_wake_event(
     redécider) — distinct de propose_indicator_watch = PLAN ARMÉ (exécution
     automatique sans reconsulter).
     """
-    try:
-        if event == "session_open":
-            dt = next_regular_session_open(now, symbol=sym)
-            return dt.isoformat()
-        if event == "macro_event":
-            if macro_next:
-                return macro_next[0]["at"]
-            return None
-        if event == "pre_earnings":
-            # Pas de source earnings disponible en V1 : fail-safe silencieux.
-            # À câbler quand la donnée sera collectée (chantier macro/fondamental).
-            return None
-        # Événement inconnu : fail-safe → cadence globale
-        return None
-    except Exception:  # noqa: BLE001 — jamais de crash sur un réveil non résolu
-        return None
-
+    return cycle_schedule.resolve_wake_event(
+        event,
+        sym,
+        now,
+        macro_next,
+        next_regular_session_open,
+    )
 
 def _apply_decision_schedule(
     *,
@@ -1461,70 +1419,18 @@ def _apply_decision_schedule(
     pending_indicator_watch: dict | None,
     entry: dict,
 ) -> None:
-    if sched is None:
-        return
-    # Annulations puis persistance AVANT de programmer le réveil : l'état des
-    # veilles doit être à jour pour calculer la plus proche expiration.
-    cancel_results: list[dict] = []
-    for watch_id in cancel_watch_ids:
-        watch_id = str(watch_id)
-        if not watch_id.startswith(f"{sym}:"):
-            _append_event(
-                "watch_cancel_rejected",
-                symbol=sym,
-                watch_id=watch_id,
-                reason="not_owned_by_symbol",
-            )
-            cancel_results.append({"watch_id": watch_id, "outcome": "not_owned"})
-            continue
-        sched.remove_indicator_watch(watch_id)
-        _append_event("watch_cancelled_by_agent", symbol=sym, watch_id=watch_id)
-        # INFO même quand la décision est un HOLD (result en DEBUG) : la gestion
-        # de veilles par l'agent doit rester visible en console.
-        log.info("[watch] annulée par l'agent %s %s", sym, watch_id)
-        cancel_results.append({"watch_id": watch_id, "outcome": "cancelled"})
-    if cancel_results:
-        # Audit : le résultat réel des annulations (cancelled/not_owned) est dérivé
-        # dans tool_trace, pas seulement laissé en event (cf. F4 / design §7.2).
-        entry["cancel_watch_results"] = cancel_results
-    if pending_indicator_watch is not None:
-        sched.set_symbol_indicator_watch(sym, pending_indicator_watch)
-        log.info(
-            "[watch] armée %s %s on_trigger=%s expire=%s",
-            sym,
-            pending_indicator_watch.get("id"),
-            pending_indicator_watch.get("on_trigger"),
-            pending_indicator_watch.get("expires_at"),
-        )
-        entry["indicator_watch_created"] = True
-        entry["indicator_watch"] = {
-            "id": pending_indicator_watch["id"],
-            "expires_at": pending_indicator_watch["expires_at"],
-            "logic": pending_indicator_watch["logic"],
-            "on_trigger": pending_indicator_watch["on_trigger"],
-            "conditions": pending_indicator_watch["conditions"],
-        }
-        if "order" in pending_indicator_watch:
-            entry["indicator_watch"]["order"] = pending_indicator_watch["order"]
-
-    # Programmation du réveil (état des veilles à jour) :
-    # Priorité : next_wake_iso (événement calendaire résolu) > next_wake_in_minutes
-    # (timer relatif) > expiration veille > cadence globale (clear).
-    if next_wake_iso is not None:
-        # Réveil événementiel résolu (session_open, macro_event…) : timestamp absolu.
-        sched.set_symbol_next_wake(sym, next_wake_iso)
-    elif next_wake_in_minutes is not None:
-        # L'agent a demandé une cadence explicite : elle prime (autonomie).
-        sched.set_symbol_next_wake_in(sym, minutes=next_wake_in_minutes, now=now)
-    else:
-        watch_wake_iso = _earliest_active_watch_expiry_iso(sched, sym, now=now)
-        if watch_wake_iso is not None:
-            # Une veille est armée : dormir jusqu'à sa plus proche expiration
-            # (le scan pose un réveil immédiat si elle se déclenche avant).
-            sched.set_symbol_next_wake(sym, watch_wake_iso)
-        else:
-            sched.clear_symbol_next_wake(sym)
-
+    cycle_schedule.apply_decision_schedule(
+        sched=sched,
+        sym=sym,
+        now=now,
+        next_wake_in_minutes=next_wake_in_minutes,
+        next_wake_iso=next_wake_iso,
+        cancel_watch_ids=cancel_watch_ids,
+        pending_indicator_watch=pending_indicator_watch,
+        entry=entry,
+        append_event=_append_event,
+        logger=log,
+    )
 
 def _build_recall_provider(
     store: recall_store_mod.LearningsStore,

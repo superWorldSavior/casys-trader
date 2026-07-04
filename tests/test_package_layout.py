@@ -358,6 +358,25 @@ def test_application_uses_market_ports_instead_of_data_source_adapters() -> None
     assert violations == []
 
 
+def test_application_layer_does_not_depend_on_runtime_composition() -> None:
+    trader_dir = Path(__file__).resolve().parents[1] / "trader"
+    application_dir = trader_dir / "application"
+
+    violations: list[str] = []
+    for path in sorted(application_dir.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        rel_path = path.relative_to(trader_dir.parent)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module and node.module.startswith("trader.runtime"):
+                violations.append(f"{rel_path}: from {node.module} import ...")
+            elif isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name.startswith("trader.runtime"):
+                        violations.append(f"{rel_path}: import {alias.name}")
+
+    assert violations == []
+
+
 def test_news_feed_imports_are_canonical_with_tools_compatibility() -> None:
     from trader.market.news_feed import NewsItemsArchive, RawNews, news_snapshot, reset_cache
     from trader.tools.news_feed import NewsItemsArchive as LegacyNewsItemsArchive
