@@ -17,14 +17,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 
-from trader.exit_engine import evaluate_plan
-from trader.indicator_watch import (
+from trader.planning.exit_engine import evaluate_plan
+from trader.planning.indicator_watch import (
     armed_order_price_coherent,
     evaluate_indicator_watches,
     is_armed_plan,
 )
 from trader.market import market_data as market
-from trader.trade_plan import InvalidExitPlanError, create_trade_plan_from_order
+from trader.planning.trade_plan import InvalidExitPlanError, create_trade_plan_from_order
 
 __all__ = ["PlanReplayResult", "replay_armed_plan"]
 

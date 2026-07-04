@@ -115,6 +115,58 @@ def test_legacy_daemon_and_cli_python_m_entrypoints() -> None:
         assert "usage:" in result.stdout
 
 
+def test_internal_backtest_scripts_use_canonical_imports_instead_of_legacy_facades() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    checked_roots = (repo_root / "backtest", repo_root / "scripts")
+    forbidden_direct_modules = {
+        "trader.codex_client",
+        "trader.exit_engine",
+        "trader.indicator_watch",
+        "trader.risk",
+        "trader.tools",
+        "trader.trade_plan",
+        "trader.tui",
+    }
+    forbidden_from_trader = {
+        "codex_client",
+        "exit_engine",
+        "indicator_watch",
+        "risk",
+        "tools",
+        "trade_plan",
+        "tui",
+    }
+
+    def _is_forbidden_module(module_name: str) -> bool:
+        return any(
+            module_name == forbidden or module_name.startswith(f"{forbidden}.")
+            for forbidden in forbidden_direct_modules
+        )
+
+    violations: list[str] = []
+    for root in checked_roots:
+        if not root.exists():
+            continue
+        for path in sorted(root.rglob("*.py")):
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            rel_path = path.relative_to(repo_root)
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ImportFrom) and node.module and _is_forbidden_module(node.module):
+                    violations.append(f"{rel_path}: from {node.module} import ...")
+                elif isinstance(node, ast.ImportFrom) and node.module == "trader":
+                    forbidden_names = sorted(
+                        alias.name for alias in node.names if alias.name in forbidden_from_trader
+                    )
+                    if forbidden_names:
+                        violations.append(f"{rel_path}: from trader import {forbidden_names}")
+                elif isinstance(node, ast.Import):
+                    for alias in node.names:
+                        if _is_forbidden_module(alias.name):
+                            violations.append(f"{rel_path}: import {alias.name}")
+
+    assert violations == []
+
+
 def _module_imports(path: Path, module_name: str) -> bool:
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     for node in ast.walk(tree):
