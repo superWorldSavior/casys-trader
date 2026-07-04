@@ -282,3 +282,44 @@ def test_release_claim_wrong_token_is_noop(tmp_path):
     row = led._conn.execute("SELECT status FROM tasks WHERE id=?",
                              (t["id"],)).fetchone()
     assert row["status"] == "running"
+
+
+# ---------------------------------------------------------------------------
+# count_by_status — API verrouillée (remplace _conn SELECT brut de shadow)
+# ---------------------------------------------------------------------------
+
+def test_count_by_status_dead_with_and_without_kind(tmp_path):
+    """count_by_status retourne le bon décompte par statut et kind.
+
+    Scénario : 1 tâche 'decide' poussée à 'dead' (max_attempts=1),
+    1 tâche 'apply_exits' encore 'pending'.
+    """
+    led = TaskLedger(tmp_path / "q.db")
+    # Tâche qui va mourir (max_attempts=1, priority=0 → claimée en 1ère)
+    led.enqueue(kind="decide", priority=0, scheduled_at_ms=0, now_ms=0,
+                dedup_key="d-dead", partition_key="C1", max_attempts=1)
+    # Tâche pending qui reste vivante (priority=5 → claimée après)
+    led.enqueue(kind="apply_exits", priority=5, scheduled_at_ms=0, now_ms=0,
+                dedup_key="e-pending", partition_key="portfolio")
+
+    # Amène la première tâche (decide, priority=0) à 'dead'
+    t = led.claim(worker_id="w", token="tok", now_ms=1,
+                  lease_ms=1000, free_resources=[])
+    assert t is not None
+    status = led.fail(task_id=t["id"], token="tok", now_ms=2,
+                      error="boom", retryable=True, backoff_base_ms=1000)
+    assert status == "dead"  # pré-condition : 1 tentative épuisée → dead
+
+    # Sans filtre kind : compte toutes les dead (1)
+    assert led.count_by_status("dead") == 1
+
+    # Avec filtre kind exact : 1 dead de kind 'decide'
+    assert led.count_by_status("dead", kind="decide") == 1
+
+    # Avec filtre kind autre : 0 dead de kind 'apply_exits'
+    assert led.count_by_status("dead", kind="apply_exits") == 0
+
+    # Statut 'pending' : 1 (apply_exits) — la tâche decide est dead, pas pending
+    assert led.count_by_status("pending") == 1
+    assert led.count_by_status("pending", kind="decide") == 0
+    assert led.count_by_status("pending", kind="apply_exits") == 1

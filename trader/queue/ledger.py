@@ -69,10 +69,36 @@ class TaskLedger:
     def _conn(self):
         """Accès direct à la connexion sqlite3 sous-jacente.
 
-        Rétro-compat pour shadow.py (dead_count SELECT) et tests Phase 0.
+        # déprécié : lecture brute hors-lock, préférer les méthodes du ledger
+        Rétro-compat pour les tests Phase 0 uniquement.
         NE PAS acquérir de lock ni ouvrir de transaction via cette propriété.
         """
         return self._db._conn
+
+    def count_by_status(self, status: str, *, kind: str | None = None) -> int:
+        """Compte les tâches par statut, optionnellement filtrées par kind.
+
+        Exécuté sous le lock du StateDb (via query_one) — lecture cohérente
+        avec les transactions de enqueue/claim/fail/complete.
+
+        Args:
+            status: Statut exact à filtrer (ex. ``'dead'``, ``'pending'``).
+            kind:   Si fourni, filtre aussi sur la colonne ``kind``.
+
+        Returns:
+            Nombre de tâches correspondantes (int >= 0).
+        """
+        if kind is not None:
+            row = self._db.query_one(
+                "SELECT COUNT(*) FROM tasks WHERE status=? AND kind=?",
+                (status, kind),
+            )
+        else:
+            row = self._db.query_one(
+                "SELECT COUNT(*) FROM tasks WHERE status=?",
+                (status,),
+            )
+        return int(row[0]) if row else 0
 
     # ------------------------------------------------------------------
     # Opérations file
