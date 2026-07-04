@@ -35,6 +35,7 @@ from trader.application import (
     confidence_feedback,
     cycle_schedule,
     execution_eligibility as execution_eligibility_service,
+    exit_bars as exit_bars_service,
     market_snapshot,
     order_admission,
     planner_batch,
@@ -1376,24 +1377,7 @@ def _is_valid_5m_bar(bar: object) -> bool:
     - ts parsable en ISO-8601 (garde temporelle en aval exige un ts valide).
     - high et low sont des flottants finis avec low <= high.
     """
-    try:
-        ts_str = getattr(bar, "ts", None)
-        if ts_str is None:
-            return False
-        parsed = market._parse_ts(str(ts_str))
-        if parsed is None:
-            return False
-        h = getattr(bar, "high", None)
-        lo = getattr(bar, "low", None)
-        if h is None or lo is None:
-            return False
-        if not (math.isfinite(float(h)) and math.isfinite(float(lo))):
-            return False
-        if float(lo) > float(h):
-            return False
-    except Exception:  # noqa: BLE001
-        return False
-    return True
+    return exit_bars_service.is_valid_exit_bar(bar)
 
 
 def _fetch_5m_bars_for_open_plans(
@@ -1416,46 +1400,16 @@ def _fetch_5m_bars_for_open_plans(
     Aucun fetch pour les symboles SANS plan ouvert (coût = 0).
     Toute exception ou résultat invalide/stale → fallback 15m sans jamais bloquer.
     """
-    open_symbols = {plan.symbol for plan in plan_store.open_plans() if plan.symbol in tradable_prices}
-    exit_bars: dict[str, list] = dict(tradable_bars_by_symbol)
-    intervals: dict[str, str] = {sym: DEFAULT_RUNTIME_INTERVAL for sym in tradable_bars_by_symbol}
-
-    freshness_budget = market.freshness_budget_minutes(EXIT_CHECK_INTERVAL)
-
-    for symbol in open_symbols:
-        try:
-            bars_5m = data_source.get_bars(symbol, lookback=EXIT_CHECK_LOOKBACK, interval=EXIT_CHECK_INTERVAL)
-        except Exception as exc:  # noqa: BLE001 — fallback inconditionnelle, ne jamais bloquer une sortie
-            log.warning(
-                "5m bars fetch failed for %s — falling back to %s (%s)",
-                symbol, DEFAULT_RUNTIME_INTERVAL, exc,
-            )
-            continue
-        if not bars_5m:
-            log.warning("5m bars empty for %s — falling back to %s", symbol, DEFAULT_RUNTIME_INTERVAL)
-            continue
-
-        # Valider chaque barre individuellement — rejeter toute barre malformée.
-        valid_bars = [b for b in bars_5m if _is_valid_5m_bar(b)]
-        if not valid_bars:
-            log.warning(
-                "5m bars all invalid for %s — falling back to %s", symbol, DEFAULT_RUNTIME_INTERVAL
-            )
-            continue
-
-        # Contrôle de fraîcheur sur les barres valides (budget propre à l'intervalle 5m).
-        freshness = market.assess_freshness(valid_bars, now=now, max_age_minutes=freshness_budget)
-        if not freshness.fresh:
-            log.debug(
-                "5m bars stale for %s (%s, age=%.1f min) — falling back to %s",
-                symbol, freshness.reason, freshness.age_minutes or 0.0, DEFAULT_RUNTIME_INTERVAL,
-            )
-            continue
-
-        exit_bars[symbol] = valid_bars
-        intervals[symbol] = EXIT_CHECK_INTERVAL
-
-    return exit_bars, intervals
+    return exit_bars_service.fetch_exit_bars_for_open_plans(
+        plan_store=plan_store,
+        data_source=data_source,
+        tradable_bars_by_symbol=tradable_bars_by_symbol,
+        tradable_prices=tradable_prices,
+        now=now,
+        fallback_interval=DEFAULT_RUNTIME_INTERVAL,
+        exit_interval=EXIT_CHECK_INTERVAL,
+        exit_lookback=EXIT_CHECK_LOOKBACK,
+    )
 
 
 def run_cycle(
