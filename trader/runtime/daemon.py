@@ -79,7 +79,8 @@ from trader.planning.trade_plan import (
     validate_exit_plan,
 )
 from trader.metadata import code_version
-from trader.reporting import attribution, decision_ledger, meta_performance, stats
+from trader.read_models import live_kpis
+from trader.reporting import attribution, decision_ledger, meta_performance
 from trader.runtime import ledger_rotation
 from trader.runtime.ib_attach import IBAttachBackoff
 from trader.runtime.state_writer import RuntimeStateWriter
@@ -1511,7 +1512,7 @@ def run_cycle(
         "cockpit": cockpit,
         "stale_market_data": stale_market_data,
         # KPI live injectés pour que l'agent décideur pilote sa performance.
-        "kpis": stats.compute_live_kpis(STATE_DIR),
+        "kpis": live_kpis.compute_live_kpis(STATE_DIR),
         # Attribution décision->résultat : P&L réalisé par trade, calibration de la
         # confidence et coût par raison de sortie. Le signal qui dit à l'agent si
         # ses choix (surtout ses calls confiants) gagnent vraiment.

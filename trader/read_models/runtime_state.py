@@ -93,7 +93,7 @@ def _load_equity_curve(history_path: Path) -> list[float]:
 
 def _compute_live_kpis_safe(state_dir: Path) -> dict:
     try:
-        from trader.reporting.stats import compute_live_kpis
+        from trader.read_models.live_kpis import compute_live_kpis
 
         result = compute_live_kpis(state_dir)
     except Exception:

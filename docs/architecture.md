@@ -70,6 +70,7 @@ les utilisaient :
 | `trader/commands/` | Entry points CLI canoniques (`stats`, `attribution`, `tool_usage`, `tui`) | compat : `python -m trader.stats`, `python -m trader.attribution`, etc. |
 | `trader/system/` | Helpers système neutres (`process_env`) | partagé par agent/cockpit/runtime sans dépendance runtime |
 | `trader/runtime/` | Daemon, CLI, logging, PID file, IB attach, rotation ledger, writers d'état fichier | `trader.daemon` et `trader.cli` sont des packages proxy pour `python -m` |
+| `trader/read_models/live_kpis.py` | Projection live des KPI depuis `state/` pour daemon/cockpit/TUI | `reporting.stats` reste le rendu CLI compatible |
 | `trader/read_models/runtime_state.py` | Lecture tolérante des fichiers `state/` pour TUI/cockpit | ne participe pas aux décisions live |
 | `trader/cockpit/` | App Textual, événements cockpit, supervisor local | `trader.cockpit` reste runnable |
 | `trader/ui/` | Builders Rich purs, TUI textuelle, palette | `trader.tui` reste une façade import/CLI legacy |

@@ -1,7 +1,4 @@
-"""stats — KPI live depuis l'historique d'équité et l'état du broker.
-
-Module pur côté I/O fichier (lecture uniquement). Réutilise backtest.metrics
-pour les calculs. N'importe jamais daemon (pas de cycle circulaire).
+"""stats — reporting/CLI facade for live KPI read models.
 
 CLI : python -m trader.reporting.stats [--json]
 """
@@ -12,167 +9,17 @@ import argparse
 import json
 from pathlib import Path
 
-from backtest.metrics import Metrics, compute_metrics
+from trader.read_models import live_kpis
 
 
 def _compute_model_performance(state_dir: Path) -> list[dict]:
-    path = state_dir / "model_performance.jsonl"
-    if not path.exists():
-        return []
-
-    groups: dict[tuple[str, str], dict] = {}
-    for line in path.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            row = json.loads(line)
-        except Exception:
-            continue
-        provider = str(row.get("llm_provider") or "unknown")
-        model = str(row.get("llm_model") or "unknown")
-        key = (provider, model)
-        group = groups.setdefault(
-            key,
-            {
-                "provider": provider,
-                "model": model,
-                "fills": 0,
-                "symbols": set(),
-                "fallbacks": 0,
-                "first_equity": None,
-                "last_equity": None,
-                "_confidence_sum": 0.0,
-                "_confidence_n": 0,
-            },
-        )
-        group["fills"] += 1
-        if row.get("symbol"):
-            group["symbols"].add(str(row["symbol"]))
-        if row.get("llm_fallback_reason"):
-            group["fallbacks"] += 1
-        if row.get("confidence") is not None:
-            try:
-                group["_confidence_sum"] += float(row["confidence"])
-                group["_confidence_n"] += 1
-            except Exception:
-                pass
-        if row.get("equity") is not None:
-            try:
-                equity = float(row["equity"])
-                if group["first_equity"] is None:
-                    group["first_equity"] = equity
-                group["last_equity"] = equity
-            except Exception:
-                pass
-
-    rows: list[dict] = []
-    for group in groups.values():
-        first_equity = group["first_equity"]
-        last_equity = group["last_equity"]
-        confidence_n = group["_confidence_n"]
-        rows.append(
-            {
-                "provider": group["provider"],
-                "model": group["model"],
-                "fills": group["fills"],
-                "symbols": sorted(group["symbols"]),
-                "fallbacks": group["fallbacks"],
-                "first_equity": first_equity,
-                "last_equity": last_equity,
-                "portfolio_equity_delta": (
-                    None
-                    if first_equity is None or last_equity is None
-                    else last_equity - first_equity
-                ),
-                "avg_confidence": (
-                    None
-                    if confidence_n == 0
-                    else group["_confidence_sum"] / confidence_n
-                ),
-            }
-        )
-    rows.sort(key=lambda row: (row["provider"], row["model"]))
-    return rows
+    """Compatibility wrapper for legacy tests/imports."""
+    return live_kpis.compute_model_performance(state_dir)
 
 
 def compute_live_kpis(state_dir: Path) -> dict:
-    """Calcule les KPI live depuis l'historique + l'état broker.
-
-    Lit :
-      - ``state_dir/history.jsonl``  → courbe d'équité (lignes equity=null ignorées)
-      - ``state_dir/broker.json``    → positions, fills, cash
-      - ``state_dir.parent/config/portfolio.yaml`` → starting_cash
-
-    Tolère les fichiers absents : retourne des valeurs neutres sans lever.
-
-    Retourne un dict machine-readable compact.
-    """
-    # --- starting_equity depuis portfolio.yaml (fallback universe.yaml) ---
-    from trader.config.portfolio import load_starting_cash
-
-    starting_equity: float = load_starting_cash(state_dir.parent / "config")
-
-    # --- Courbe d'équité depuis history.jsonl ---
-    equity_curve: list[tuple[str, float]] = []
-    history_path = state_dir / "history.jsonl"
-    if history_path.exists():
-        for line in history_path.read_text().splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                row = json.loads(line)
-                if row.get("equity") is not None:
-                    equity_curve.append((row["ts"], float(row["equity"])))
-            except Exception:
-                continue
-
-    # --- Broker : fills, positions, cash ---
-    fills: list[dict] = []
-    positions_raw: dict[str, dict] = {}
-    current_cash: float | None = starting_equity
-
-    broker_path = state_dir / "broker.json"
-    if broker_path.exists():
-        try:
-            broker_data = json.loads(broker_path.read_text())
-            fills = broker_data.get("fills", [])
-            positions_raw = broker_data.get("positions", {})
-            current_cash = float(broker_data.get("cash", starting_equity))
-        except Exception:
-            pass
-
-    # --- Dernière equity connue (dernier point non-null de la courbe) ---
-    last_equity: float | None = equity_curve[-1][1] if equity_curve else None
-
-    # --- Positions actives (quantité non nulle) ---
-    positions_list = [
-        {
-            "symbol": v["symbol"],
-            "quantity": v["quantity"],
-            "avg_price": v.get("avg_price", 0.0),
-        }
-        for v in positions_raw.values()
-        if v.get("quantity", 0) != 0
-    ]
-
-    # --- Métriques via backtest.metrics ---
-    metrics: Metrics = compute_metrics(equity_curve, fills, starting_equity)
-
-    return {
-        "equity": last_equity,
-        "cash": current_cash,
-        "total_return": metrics.total_return,
-        "max_drawdown": metrics.max_drawdown,
-        "period_win_rate": metrics.period_win_rate,
-        "volatility": metrics.volatility,
-        "sharpe": metrics.sharpe,
-        "num_trades": metrics.num_trades,
-        "n_positions": len(positions_list),
-        "positions": positions_list,
-        "model_performance": _compute_model_performance(state_dir),
-    }
+    """Compatibility wrapper for the canonical live KPI read model."""
+    return live_kpis.compute_live_kpis(state_dir)
 
 
 def _render_text(kpis: dict) -> str:
@@ -221,7 +68,6 @@ def main() -> None:
     parser.add_argument("--json", action="store_true", help="sortie JSON compact")
     args = parser.parse_args()
 
-    # STATE_DIR = racine repo / "state"
     state_dir = Path(__file__).resolve().parents[2] / "state"
     kpis = compute_live_kpis(state_dir)
 
