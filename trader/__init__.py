@@ -18,9 +18,12 @@ __version__ = "0.1.0"
 
 _COMPAT_MODULES = {
     "agent_context": "trader.agent.context",
+    "attribution": "trader.reporting.attribution",
+    "cli": "trader.runtime.cli",
     "code_version": "trader.support.metadata.code_version",
     "codex_client": "trader.agent.client",
     "consolidator": "trader.learnings.consolidator",
+    "daemon": "trader.runtime.daemon",
     "decision_audit": "trader.reporting.decision_audit",
     "decision_bench": "trader.reporting.decision_bench",
     "decision_ledger": "trader.reporting.decision_ledger",
@@ -60,10 +63,19 @@ _COMPAT_MODULES = {
     "rotation_state": "trader.rotation.state",
     "rotation_venues": "trader.rotation.venues",
     "rotation_wiring": "trader.rotation.wiring",
+    "stats": "trader.reporting.stats",
     "trade_plan": "trader.planning.trade_plan",
+    "tool_usage": "trader.reporting.tool_usage",
     "tool_trace": "trader.reporting.tool_trace",
+    "tui": "trader.interfaces.ui.tui",
     "cockpit_events": "trader.interfaces.cockpit.events",
     "cockpit_supervisor": "trader.interfaces.cockpit.supervisor",
+}
+
+_COMPAT_MODULE_EXTRA_ATTRS = {
+    "attribution": {"main": ("trader.interfaces.cli.attribution", "main")},
+    "stats": {"main": ("trader.interfaces.cli.stats", "main")},
+    "tool_usage": {"main": ("trader.interfaces.cli.tool_usage", "main")},
 }
 
 _COMPAT_PACKAGES = {
@@ -191,12 +203,19 @@ _TOOLS_COMPAT_EXPORTS = {
 class _CompatAliasModule(types.ModuleType):
     """Lazy proxy for historical flat modules moved into capability packages."""
 
-    def __init__(self, alias_name: str, target_name: str, export_names: tuple[str, ...] | None = None) -> None:
+    def __init__(
+        self,
+        alias_name: str,
+        target_name: str,
+        export_names: tuple[str, ...] | None = None,
+        extra_attrs: dict[str, tuple[str, str]] | None = None,
+    ) -> None:
         super().__init__(target_name)
         super().__setattr__("_alias_name", alias_name)
         super().__setattr__("_target_name", target_name)
         super().__setattr__("_target_module", None)
         super().__setattr__("_export_names", export_names)
+        super().__setattr__("_extra_attrs", extra_attrs or {})
         super().__setattr__("__package__", alias_name.rpartition(".")[0])
 
     def _target(self) -> types.ModuleType:
@@ -206,12 +225,25 @@ class _CompatAliasModule(types.ModuleType):
             super().__setattr__("_target_module", target)
         return target
 
+    def _extra_attr(self, name: str):
+        extra_attrs = super().__getattribute__("_extra_attrs")
+        if name not in extra_attrs:
+            raise AttributeError(name)
+        module_name, attr_name = extra_attrs[name]
+        return getattr(importlib.import_module(module_name), attr_name)
+
     def __getattr__(self, name: str):
         if name == "__all__":
             export_names = super().__getattribute__("_export_names")
+            extra_names = set(super().__getattribute__("_extra_attrs"))
             if export_names is not None:
-                return list(export_names)
-            return [target_name for target_name in dir(self._target()) if not target_name.startswith("__")]
+                return sorted(set(export_names) | extra_names)
+            return sorted(
+                {target_name for target_name in dir(self._target()) if not target_name.startswith("__")} | extra_names
+            )
+        extra_attrs = super().__getattribute__("_extra_attrs")
+        if name in extra_attrs:
+            return self._extra_attr(name)
         return getattr(self._target(), name)
 
     def __setattr__(self, name: str, value):
@@ -220,16 +252,28 @@ class _CompatAliasModule(types.ModuleType):
             "_target_name",
             "_target_module",
             "_export_names",
+            "_extra_attrs",
             "_modules",
         }:
             return super().__setattr__(name, value)
+        extra_attrs = super().__getattribute__("_extra_attrs")
+        if name in extra_attrs:
+            module_name, attr_name = extra_attrs[name]
+            setattr(importlib.import_module(module_name), attr_name, value)
+            return None
         setattr(self._target(), name, value)
 
     def __delattr__(self, name: str):
+        extra_attrs = super().__getattribute__("_extra_attrs")
+        if name in extra_attrs:
+            module_name, attr_name = extra_attrs[name]
+            delattr(importlib.import_module(module_name), attr_name)
+            return None
         delattr(self._target(), name)
 
     def __dir__(self) -> list[str]:
-        return sorted(set(super().__dir__()) | set(dir(self._target())))
+        extra_names = set(super().__getattribute__("_extra_attrs"))
+        return sorted(set(super().__dir__()) | set(dir(self._target())) | extra_names)
 
 
 class _CompatToolsPackage(types.ModuleType):
@@ -449,7 +493,11 @@ class _CompatAliasFinder(importlib.abc.MetaPathFinder, importlib.abc.Loader):
             )
 
         old_name = spec.name.rsplit(".", 1)[1]
-        return _CompatAliasModule(spec.name, _COMPAT_MODULES[old_name])
+        return _CompatAliasModule(
+            spec.name,
+            _COMPAT_MODULES[old_name],
+            extra_attrs=_COMPAT_MODULE_EXTRA_ATTRS.get(old_name),
+        )
 
     def exec_module(self, module: types.ModuleType) -> None:
         alias_name = module.__dict__.get("_alias_name")

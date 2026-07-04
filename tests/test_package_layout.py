@@ -15,15 +15,7 @@ def test_only_legacy_compat_modules_are_flat_files() -> None:
 
     flat_files = sorted(path.name for path in trader_dir.glob("*.py"))
 
-    assert flat_files == [
-        "__init__.py",
-        "attribution.py",
-        "cli.py",
-        "daemon.py",
-        "stats.py",
-        "tool_usage.py",
-        "tui.py",
-    ]
+    assert flat_files == ["__init__.py"]
 
 
 def test_top_level_packages_have_declared_architecture_roles() -> None:
@@ -410,6 +402,37 @@ def test_legacy_flat_module_imports_remain_compatible() -> None:
     assert build_view.__module__ == "trader.interfaces.ui.rich_panels"
 
 
+def test_legacy_flat_modules_are_virtual_compatibility_layers() -> None:
+    trader_dir = Path(__file__).resolve().parents[1] / "trader"
+
+    for legacy_module in ("attribution", "cli", "daemon", "stats", "tool_usage", "tui"):
+        assert not (trader_dir / f"{legacy_module}.py").exists()
+
+    import trader.attribution as legacy_attribution
+    import trader.cli as legacy_cli
+    import trader.daemon as legacy_daemon
+    import trader.stats as legacy_stats
+    import trader.tool_usage as legacy_tool_usage
+    import trader.tui as legacy_tui
+    from trader.interfaces.cli import attribution as attribution_cli
+    from trader.interfaces.cli import stats as stats_cli
+    from trader.interfaces.cli import tool_usage as tool_usage_cli
+    from trader.interfaces.ui import tui
+    from trader.reporting import attribution, stats, tool_usage
+    from trader.runtime import cli, daemon
+
+    assert legacy_attribution.compute_attribution is attribution.compute_attribution
+    assert legacy_attribution.main is attribution_cli.main
+    assert legacy_cli.main is cli.main
+    assert legacy_daemon.run_cycle is daemon.run_cycle
+    assert legacy_stats.compute_live_kpis is stats.compute_live_kpis
+    assert legacy_stats.main is stats_cli.main
+    assert legacy_tool_usage.build_report is tool_usage.build_report
+    assert legacy_tool_usage.main is tool_usage_cli.main
+    assert legacy_tui.build_view is tui.build_view
+    assert legacy_tui.main is tui.main
+
+
 def test_legacy_daemon_and_cli_packages_proxy_mutations(monkeypatch, tmp_path) -> None:
     import trader.cli as legacy_cli
     import trader.daemon as legacy_daemon
@@ -517,9 +540,7 @@ def test_runnable_compatibility_facades_delegate_to_interface_command_modules() 
         assert _module_imports(command_path, canonical_module)
         if legacy_package_main_path.exists():
             assert _module_imports(legacy_package_main_path, f"trader.commands.{command_name}")
-        else:
-            assert legacy_module_path.exists(), f"missing legacy module shim for {command_name}"
-            assert _module_imports(legacy_module_path, f"trader.interfaces.cli.{command_name}")
+        assert not legacy_module_path.exists()
 
 
 def test_reporting_command_python_m_entrypoints() -> None:

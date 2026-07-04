@@ -38,8 +38,8 @@ Rien n'est dans le hot-path de décision.
 
 Les anciens raccourcis `python -m trader.stats`, `python -m trader.attribution`
 et `python -m trader.tool_usage`, ainsi que `python -m trader.commands.*`,
-restent supportés, mais ils délèguent aux modules canoniques de
-`trader/interfaces/cli/`.
+restent supportés via les alias virtuels de `trader/__init__.py`, mais ils
+délèguent aux modules canoniques de `trader/interfaces/cli/`.
 
 ## Codes de raison de décision (`decision_reason`)
 
