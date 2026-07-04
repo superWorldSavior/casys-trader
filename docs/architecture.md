@@ -41,6 +41,7 @@ les utilisaient :
 | `trader/application/armed_plans.py` | Résolution applicative des triggers `EXECUTE_ORDER` en décisions armées ou réveils planificateur | contrats `Protocol` locaux pour position/volatilité ; le daemon conserve logs et événements |
 | `trader/application/planner_batch.py` | Batch LLM, budget modèle, tournée d'outils, REQUEST_CONTEXT | appelé via `daemon._batch_decide()` |
 | `trader/application/market_snapshot.py` | Barres runtime/daily/exit, fraîcheur, FX, eligibility, tradable maps | retourne `MarketSnapshot`, le daemon l'unpack |
+| `trader/application/decision_entries.py` | Construction pure des entrées décision runtime avant persistance | source `llm`/`infra`/`armed_plan`, traces d'outils et raisons HOLD sans side effects |
 | `trader/application/decision_recorder.py` | Enrichissement décision, ledger, report, status, event, recall traces | source durable : `state/decisions.jsonl` |
 | `trader/application/cycle_schedule.py` | Politique applicative de réveil : bornes explicites, backoff stale, due symbols, veilles et événements de réveil | le daemon garde des wrappers privés de compatibilité |
 | `trader/application/confidence_feedback.py` | Feedback persistant des rejets de gate confiance vers les learnings de l'agent | le daemon conserve le wrapper privé historique |

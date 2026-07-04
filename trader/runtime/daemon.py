@@ -36,6 +36,7 @@ from trader.application import (
     armed_plans,
     confidence_feedback,
     cycle_schedule,
+    decision_entries,
     execution_eligibility as execution_eligibility_service,
     exit_bars as exit_bars_service,
     gross_feedback,
@@ -555,15 +556,7 @@ def _set_entry_risk_metrics(
 
 
 def _runtime_tool_audit_fields(domain_tools: dict | None) -> dict:
-    tools = domain_tools if isinstance(domain_tools, dict) else {}
-    fields = {
-        "tool_rounds": tools.get("tool_rounds"),
-        "tool_calls": tools.get("tool_calls"),
-    }
-    normalizations = tools.get("normalizations")
-    if normalizations is not None:
-        fields["tool_normalizations"] = normalizations
-    return fields
+    return decision_entries.runtime_tool_audit_fields(domain_tools)
 
 
 
@@ -1843,38 +1836,17 @@ def run_cycle(
 
         effective_quantity = abs(decision.quantity)
 
-        decision_source = (
-            "armed_plan"
-            if sym in armed_plan_ids
-            else ("llm" if decision.llm_provider or decision.llm_model else "infra")
+        entry = decision_entries.build_decision_entry(
+            symbol=sym,
+            decision=decision,
+            effective_quantity=effective_quantity,
+            next_wake_in_minutes=next_wake_in_minutes,
+            next_wake_event_iso=next_wake_event_iso,
+            armed_plan_id=armed_plan_ids.get(sym),
+            armed_plan_order=armed_plan_orders.get(sym),
+            runtime_data_source=runtime_data_source_by_sym.get(sym),
         )
-        armed_plan_order = armed_plan_orders.get(sym)
-        entry = {"symbol": sym, "action": decision.action, "qty": effective_quantity,
-                 **({"armed_plan_id": armed_plan_ids[sym]} if sym in armed_plan_ids else {}),
-                 **({"armed_plan_order": armed_plan_order} if armed_plan_order is not None else {}),
-                 "confidence": decision.confidence, "rationale": decision.rationale,
-                 "next_wake_in_minutes": next_wake_in_minutes,
-                 "next_wake_requested": decision.next_wake_in_minutes,
-                 "next_wake_event": decision.next_wake_event,
-                 "next_wake_event_iso": next_wake_event_iso,
-                 "context_request": decision.context_request,
-                 "intent": decision.intent,
-                 "decision_reason_code": decision.decision_reason_code,
-                 "decision_source": decision_source,
-                 "model_called": decision_source == "llm",
-                 "llm_provider": decision.llm_provider,
-                 "llm_model": decision.llm_model,
-                 "llm_fallback_reason": decision.llm_fallback_reason,
-                 "llm_error": decision.llm_error,
-                 "learning": decision.learning,
-                 "thesis": decision.thesis,
-                 "risk_pct_target": decision.risk_pct_target,
-                 "trade_plan_created": False,
-                 "indicator_watch_created": False,
-                 "indicator_watch_requested": bool(decision.indicator_watch),
-                 "indicator_watch_rejections": [],
-                 "data_source": runtime_data_source_by_sym.get(sym),
-                 **_runtime_tool_audit_fields(decision.domain_tools)}
+        decision_source = str(entry["decision_source"])
         if decision_source == "llm" and sym in held_symbols and _counts_as_llm_review(decision):
             _persist_last_llm_review(
                 plan_store=plan_store,
@@ -1945,11 +1917,10 @@ def run_cycle(
                     bars=tradable_bars_by_symbol.get(sym),
                     entry=entry,
                 )
-            hold_reason = "hold"
-            if decision_source == "infra" and decision.rationale in _INFRA_HOLD_REASONS:
-                hold_reason = decision.rationale
-            elif decision.rationale in {"nothing_to_close", "add_without_position"}:
-                hold_reason = decision.rationale
+            hold_reason = decision_entries.hold_reason_for_decision(
+                decision_source=decision_source,
+                rationale=decision.rationale,
+            )
             record_decision({**entry, "executed": False, "reason": hold_reason})
             continue
 
