@@ -40,6 +40,7 @@ from trader.application import (
     order_admission,
     planner_batch,
     risk_capacity,
+    watch_scanner,
 )
 from trader.application.decision_recorder import DecisionRecorder
 from trader.execution.risk import RiskGate, RiskLimits
@@ -1175,27 +1176,16 @@ def _scan_indicator_watches(
     now: datetime,
     data_source: object,
 ) -> list[dict]:
-    watches = [
-        watch
-        for watch in sched.active_indicator_watches(now=now)
-        if watch.get("symbol") in symbols
-    ]
-    if not watches:
-        return []
+    triggered = watch_scanner.scan_indicator_watches(
+        symbols,
+        sched=sched,
+        now=now,
+        data_source=data_source,
+        is_connection_market_error=_is_connection_market_error,
+        log_warning=log.warning,
+    )
 
-    bars_by_key: dict[tuple[str, str], list] = {}
-    for symbol, interval, lookback in watch_market_requests(watches, universe_symbols=symbols):
-        try:
-            bars_by_key[(symbol, interval)] = data_source.get_bars(symbol, lookback=lookback, interval=interval)
-        except market.MarketError as exc:
-            if _is_connection_market_error(exc):
-                raise
-            log.warning("indicator_watch data unavailable %s/%s: %s", symbol, interval, exc.code)
-
-    triggered = evaluate_indicator_watches(watches, bars_by_key, now=now)
     for event in triggered:
-        sched.remove_indicator_watch(str(event["watch_id"]))
-        sched.set_symbol_next_wake(str(event["symbol"]), now.isoformat())
         _append_event(
             "indicator_watch_triggered",
             symbol=event["symbol"],
