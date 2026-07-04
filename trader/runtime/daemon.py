@@ -38,6 +38,7 @@ from trader.application import (
     execution_eligibility as execution_eligibility_service,
     exit_bars as exit_bars_service,
     gross_feedback,
+    infra_holds,
     learnings_recall,
     market_snapshot,
     order_admission,
@@ -64,7 +65,6 @@ from trader.market.gross_priority import PriorityItem, gross_execution_order
 from trader.market.ib_source import IBDataSource, connect_ib
 from trader.market import news_feed
 from trader.planning.exit_engine import evaluate_plan
-from trader.planning import relevance_gate
 from trader.planning.indicator_watch import (
     armed_order_price_coherent,
     build_indicator_watch,
@@ -1661,59 +1661,27 @@ def run_cycle(
     # Gate de pertinence (D7 étage A) : ne soumettre au LLM que les réveils
     # demandés par l'agent, les événements, ou la revue périodique garantie.
     # Le polling par défaut sur symbole calme ne consomme pas d'appel modèle.
-    activity = relevance_gate.cockpit_activity(cockpit)
-    strong_families = {
-        fam
-        for fam, bias in base_context["regime_families"].items()
-        if (bias.get("frac") or 0.0) >= 0.70
-    }
-    family_of = {
-        member: fam for fam, members in active_families.items() for member in members
-    }
-    agent_wakes = sched.symbols_with_wake() if sched is not None else set()
-    gated_symbols: list[str] = []
-    kept: list[str] = []
-    for sym in decidable:
-        last_seen = _LAST_LLM_AT.get((str(STATE_DIR), sym))
-        hours = None if last_seen is None else (now - last_seen).total_seconds() / 3600.0
-        act = activity.get(sym) or {}
-        needed, gate_reason = relevance_gate.symbol_needs_llm(
-            agent_requested_wake=sym in agent_wakes,
-            has_trigger=bool(triggers_by_symbol.get(sym)),
-            has_position=sym in held_symbols,
-            family_regime_strong=family_of.get(sym) in strong_families,
-            stretched=act.get("stretched"),
-            sig=act.get("sig"),
-            hours_since_last_llm=hours,
-        )
-        if needed:
-            kept.append(sym)
-        else:
-            gated_symbols.append(sym)
+    quiet_gate = infra_holds.quiet_gate_decisions(
+        symbols=decidable,
+        now=now,
+        state_key=str(STATE_DIR),
+        last_llm_at=_LAST_LLM_AT,
+        cockpit=cockpit,
+        regime_families=base_context["regime_families"],
+        active_families=active_families,
+        wake_source=sched,
+        triggers_by_symbol=triggers_by_symbol,
+        held_symbols=held_symbols,
+        runtime_data_source_by_sym=runtime_data_source_by_sym,
+    )
+    gated_symbols = quiet_gate.gated_symbols
     if gated_symbols:
         _log_cycle_progress("[gate] quiet symbols=%s (pas d'appel LLM)", gated_symbols)
-        for sym in gated_symbols:
+        for entry in quiet_gate.entries:
             # Pas de wake par symbole : le gated retombe sur le polling par
             # défaut (un wake posé ici se ferait passer pour un wake agent).
-            record_decision(
-                {
-                    "symbol": sym,
-                    "action": "HOLD",
-                    "qty": 0.0,
-                    "confidence": 0.0,
-                    "rationale": "quiet_gate",
-                    "next_wake_in_minutes": None,
-                    "intent": "HOLD",
-                    "trade_plan_created": False,
-                    "executed": False,
-                    "reason": "quiet_gate",
-                    "decision_reason_code": "NO_EDGE",
-                    "decision_source": "infra",
-                    "model_called": False,
-                    "data_source": runtime_data_source_by_sym.get(sym),
-                }
-            )
-    decidable = kept
+            record_decision(entry)
+    decidable = quiet_gate.kept_symbols
 
     _log_cycle_progress("[batch] deciding symbols=%d/%d", len(decidable), len(symbols_to_decide))
     _write_status(
