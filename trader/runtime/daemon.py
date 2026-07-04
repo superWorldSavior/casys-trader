@@ -31,7 +31,7 @@ from trader.agent import client as codex_client
 from trader.agent import llm
 from trader.agent import memory as agent_memory
 from trader.agent.context import build_market_cockpit, resolve_indicator_requests
-from trader.application import cycle_schedule, market_snapshot, order_admission, planner_batch
+from trader.application import cycle_schedule, market_snapshot, order_admission, planner_batch, risk_capacity
 from trader.application.decision_recorder import DecisionRecorder
 from trader.execution.risk import RiskGate, RiskLimits
 from trader.learnings import consolidator
@@ -452,14 +452,11 @@ def _gross_exposure(
     prices: dict[str, float],
     rate_of: Callable[[str], float] | None = None,
 ) -> float:
-    return sum(
-        abs(pos.quantity * prices.get(symbol, 0.0) * (rate_of(symbol) if rate_of else 1.0))
-        for symbol, pos in broker.positions().items()
-    )
+    return risk_capacity.gross_exposure(broker, prices, rate_of=rate_of)
 
 
 def _finite_positive(value: float | None) -> bool:
-    return value is not None and math.isfinite(value) and value > 0.0
+    return risk_capacity.finite_positive(value)
 
 
 def _side_capacity_usd(
@@ -470,34 +467,13 @@ def _side_capacity_usd(
     limits: RiskLimits,
     equity: float,
 ) -> float:
-    if (
-        side not in {"BUY", "SELL"}
-        or not math.isfinite(current_position_value)
-        or not math.isfinite(gross_exposure)
-        or not math.isfinite(equity)
-        or equity < limits.min_equity
-    ):
-        return 0.0
-
-    max_order = float(limits.max_order_value)
-    position_cap = float(limits.max_position_value)
-    gross_cap_for_symbol = float(limits.max_gross_exposure) - gross_exposure + abs(current_position_value)
-    cap = min(position_cap, gross_cap_for_symbol)
-    if max_order <= 0.0 or cap < 0.0:
-        return 0.0
-
-    sign = 1.0 if side == "BUY" else -1.0
-    if sign > 0.0:
-        lower = -cap - current_position_value
-        upper = cap - current_position_value
-    else:
-        lower = current_position_value - cap
-        upper = current_position_value + cap
-    lower = max(0.0, lower)
-    upper = min(max_order, upper)
-    if upper < lower:
-        return 0.0
-    return max(0.0, upper)
+    return risk_capacity.side_capacity_usd(
+        side=side,
+        current_position_value=current_position_value,
+        gross_exposure=gross_exposure,
+        limits=limits,
+        equity=equity,
+    )
 
 
 def _risk_capacity_context(
@@ -516,64 +492,16 @@ def _risk_capacity_context(
     aussi une quantite maximale par symbole, en tenant compte du plafond de gross
     exposure restant, du plafond par position et du plafond par ordre.
     """
-    positions = broker.positions()
-    per_symbol: dict[str, dict] = {}
-    for symbol in symbols:
-        price = prices.get(symbol)
-        rate = rate_of(symbol)
-        ccy = fx.currency_for(symbol)
-        if not _finite_positive(price) or not _finite_positive(rate):
-            per_symbol[symbol] = {
-                "price": price,
-                "ccy": ccy,
-                "fx_usd": rate,
-                "current_position_value_usd": 0.0,
-                "max_buy_qty": 0.0,
-                "max_buy_notional_native": 0.0,
-                "max_buy_notional_usd": 0.0,
-                "max_sell_qty": 0.0,
-                "max_sell_notional_native": 0.0,
-                "max_sell_notional_usd": 0.0,
-            }
-            continue
-        pos = positions.get(symbol)
-        current_position_value = 0.0 if pos is None else pos.quantity * float(price) * float(rate)
-        buy_usd = _side_capacity_usd(
-            side="BUY",
-            current_position_value=current_position_value,
-            gross_exposure=gross_exposure,
-            limits=limits,
-            equity=equity,
-        )
-        sell_usd = _side_capacity_usd(
-            side="SELL",
-            current_position_value=current_position_value,
-            gross_exposure=gross_exposure,
-            limits=limits,
-            equity=equity,
-        )
-        price_usd = float(price) * float(rate)
-        per_symbol[symbol] = {
-            "price": float(price),
-            "ccy": ccy,
-            "fx_usd": float(rate),
-            "current_position_value_usd": current_position_value,
-            "max_buy_qty": buy_usd / price_usd,
-            "max_buy_notional_native": buy_usd / float(rate),
-            "max_buy_notional_usd": buy_usd,
-            "max_sell_qty": sell_usd / price_usd,
-            "max_sell_notional_native": sell_usd / float(rate),
-            "max_sell_notional_usd": sell_usd,
-        }
-    return {
-        "gross_exposure_usd": gross_exposure,
-        "max_gross_exposure_usd": float(limits.max_gross_exposure),
-        "gross_remaining_usd": max(0.0, float(limits.max_gross_exposure) - gross_exposure),
-        "max_order_value_usd": float(limits.max_order_value),
-        "max_position_value_usd": float(limits.max_position_value),
-        "equity_usd": equity,
-        "per_symbol": per_symbol,
-    }
+    return risk_capacity.risk_capacity_context(
+        symbols=symbols,
+        prices=prices,
+        broker=broker,
+        gross_exposure=gross_exposure,
+        limits=limits,
+        equity=equity,
+        rate_of=rate_of,
+        currency_of=fx.currency_for,
+    )
 
 
 def _attribution_min_entry_confidence(
