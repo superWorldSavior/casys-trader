@@ -1,7 +1,16 @@
 # Learnings recall en PUSH — remplacer le digest ciblé par un recall sémantique
 
+> **⚠️ SUPERSEDED (2026-07-04) par [`docs/reference/agent-knowledge-architecture.md`](../../reference/agent-knowledge-architecture.md).**
+> Le **diagnostic** de ce document reste valide (§1 : deux systèmes de learnings en parallèle,
+> l'agent ne pull jamais, `by_symbol` figé). Mais sa **solution** — pousser le recall de learnings
+> **par symbole** — est **écartée** par le cadre d'architecture : la mémoire d'**Expérience** (③,
+> learnings) ne se pousse pas par symbole, elle travaille en **coulisse** (distiller le `global`,
+> l'attribution, MemRL) ; le vrai push par-symbole = la **Situation** événementielle (②, via
+> l'analyste-news). **Acté** : retrait du `by_symbol`/`raw_recent` du contexte (③ déguisé en ②).
+> Conservé pour trace.
+>
 > **Type** : Spec (design — cadrage).
-> **Date** : 2026-07-03 · **Statut** : 🧭 CADRÉ, non implémenté.
+> **Date** : 2026-07-03 · **Statut** : 🗄️ SUPERSEDED (voir bandeau).
 > **Code concerné** : `trader/runtime/daemon.py` (contexte de décision, `_build_recall_provider`),
 > `trader/learnings/store.py` (FLAIR/MemRL), `trader/learnings/consolidator.py` (digest).
 > **Dépend de** : task-ledger (1 appel/symbole) pour le ciblage optimal.
