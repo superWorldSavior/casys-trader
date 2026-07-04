@@ -351,6 +351,7 @@ def _bounded_wake_minutes(
     """
     return cycle_schedule.bounded_wake_minutes(value, minimum=minimum, maximum=maximum)
 
+
 def _stale_backoff_wake_minutes(streak: int, *, default_wake_minutes: float) -> float:
     """Next-wake pour un symbole stale avec backoff exponentiel.
 
@@ -373,6 +374,7 @@ def _stale_backoff_wake_minutes(streak: int, *, default_wake_minutes: float) -> 
         default_wake_minutes=default_wake_minutes,
     )
 
+
 def _ensure_default_wake(
     sched: scheduler.Scheduler,
     *,
@@ -384,6 +386,7 @@ def _ensure_default_wake(
         now=now,
         default_wake_minutes=default_wake_minutes,
     )
+
 
 def _select_due_symbols(
     symbols: list[str],
@@ -400,6 +403,7 @@ def _select_due_symbols(
         bootstrap=bootstrap,
         now=now,
     )
+
 
 def _invalid_intent_reason(decision: codex_client.Decision) -> str | None:
     return order_admission.invalid_intent_reason(
@@ -1384,6 +1388,7 @@ def _earliest_active_watch_expiry_iso(
     """
     return cycle_schedule.earliest_active_watch_expiry_iso(sched, sym, now=now)
 
+
 def _resolve_wake_event(
     event: str,
     sym: str,
@@ -1408,6 +1413,7 @@ def _resolve_wake_event(
         next_regular_session_open,
     )
 
+
 def _apply_decision_schedule(
     *,
     sched: scheduler.Scheduler | None,
@@ -1431,6 +1437,7 @@ def _apply_decision_schedule(
         append_event=_append_event,
         logger=log,
     )
+
 
 def _build_recall_provider(
     store: recall_store_mod.LearningsStore,
