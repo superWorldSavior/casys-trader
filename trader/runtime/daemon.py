@@ -79,6 +79,7 @@ from trader.metadata import code_version
 from trader.reporting import attribution, decision_ledger, meta_performance, stats
 from trader.runtime import ledger_rotation
 from trader.runtime.ib_attach import IBAttachBackoff
+from trader.runtime.state_writer import RuntimeStateWriter
 from trader.scheduling import scheduler
 from trader.execution import portfolio
 from trader.execution.contracts import Fill, Order
@@ -196,55 +197,32 @@ EXIT_CHECK_LOOKBACK = "1d"
 EXIT_CHECK_WINDOW_BARS = 3
 
 
+def _runtime_state_writer() -> RuntimeStateWriter:
+    return RuntimeStateWriter(STATE_DIR)
+
+
 def _write_json_state(filename: str, payload: dict) -> None:
-    STATE_DIR.mkdir(parents=True, exist_ok=True)
-    (STATE_DIR / filename).write_text(json.dumps(payload, indent=2, ensure_ascii=False))
+    _runtime_state_writer().write_json_state(filename, payload)
 
 
 def _write_status(phase: str, **payload: object) -> None:
-    _write_json_state(
-        "daemon_status.json",
-        {
-            "ts": datetime.now(timezone.utc).isoformat(),
-            "phase": phase,
-            "pid": os.getpid(),
-            **payload,
-        },
-    )
+    _runtime_state_writer().write_status(phase, **payload)
 
 
 def _write_current_report(report: dict) -> None:
-    _write_json_state("current_report.json", report)
+    _runtime_state_writer().write_current_report(report)
 
 
 def _append_event(event: str, **payload: object) -> None:
-    STATE_DIR.mkdir(parents=True, exist_ok=True)
-    row = {"ts": datetime.now(timezone.utc).isoformat(), "event": event, **payload}
-    with (STATE_DIR / "events.jsonl").open("a", encoding="utf-8") as fh:
-        fh.write(json.dumps(row, ensure_ascii=False) + "\n")
+    _runtime_state_writer().append_event(event, **payload)
 
 
 def _append_model_performance(**payload: object) -> None:
-    STATE_DIR.mkdir(parents=True, exist_ok=True)
-    with (STATE_DIR / "model_performance.jsonl").open("a", encoding="utf-8") as fh:
-        fh.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    _runtime_state_writer().append_model_performance(**payload)
 
 
 def _append_cycle_history(report: dict) -> None:
-    pf = report.get("portfolio")
-    n_executed_decisions = sum(1 for d in report.get("decisions", []) if d.get("executed"))
-    n_executed_planned = sum(1 for item in report.get("planned_exits", []) if item.get("executed"))
-    history_row = {
-        "ts": report["ts"],
-        "equity": pf["equity"] if pf is not None else None,
-        "cash": pf["cash"] if pf is not None else None,
-        "n_decisions": len(report.get("decisions", [])),
-        "n_executed": n_executed_decisions + n_executed_planned,
-        "n_planned_exits": len(report.get("planned_exits", [])),
-    }
-    STATE_DIR.mkdir(parents=True, exist_ok=True)
-    with (STATE_DIR / "history.jsonl").open("a", encoding="utf-8") as fh:
-        fh.write(json.dumps(history_row, ensure_ascii=False) + "\n")
+    _runtime_state_writer().append_cycle_history(report)
 
 
 def _build_portfolio_fee_estimator(

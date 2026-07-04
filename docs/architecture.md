@@ -65,7 +65,7 @@ les utilisaient :
 | `trader/reporting/` | Ledger décision, raisons, audit ex-post, attribution, stats, tool usage, meta-performance | alias compat via `trader.__init__` et shims legacy plats |
 | `trader/commands/` | Entry points CLI canoniques (`stats`, `attribution`, `tool_usage`, `tui`) | compat : `python -m trader.stats`, `python -m trader.attribution`, etc. |
 | `trader/system/` | Helpers système neutres (`process_env`) | partagé par agent/cockpit/runtime sans dépendance runtime |
-| `trader/runtime/` | Daemon, CLI, logging, PID file, IB attach, rotation ledger | `trader.daemon` et `trader.cli` sont des packages proxy pour `python -m` |
+| `trader/runtime/` | Daemon, CLI, logging, PID file, IB attach, rotation ledger, writers d'état fichier | `trader.daemon` et `trader.cli` sont des packages proxy pour `python -m` |
 | `trader/read_models/runtime_state.py` | Lecture tolérante des fichiers `state/` pour TUI/cockpit | ne participe pas aux décisions live |
 | `trader/cockpit/` | App Textual, événements cockpit, supervisor local | `trader.cockpit` reste runnable |
 | `trader/ui/` | Builders Rich purs, TUI textuelle, palette | `trader.tui` reste une façade import/CLI legacy |
@@ -272,12 +272,12 @@ performance model.
 ### 3.8 Exécution et persistance
 
 `SimBroker.submit()` → `Fill`. Post-fill :
-- `_append_model_performance()` → `state/model_performance.jsonl`
+- `_append_model_performance()` → `RuntimeStateWriter.append_model_performance()` → `state/model_performance.jsonl`
 - `create_trade_plan()` → `TradePlanStore` (`state/trade_plans.json`)
 - `DecisionRecorder.record()` → `decision_ledger_store.append()` →
   `state/decisions.jsonl`
 - `_apply_decision_schedule()` → Scheduler (next_wake, indicator_watch créée/annulée)
-- `_write_current_report()` → `state/current_report.json`
+- `_write_current_report()` → `RuntimeStateWriter.write_current_report()` → `state/current_report.json`
 
 ---
 
@@ -413,13 +413,13 @@ Opérateurs valides : `>`, `>=`, `<`, `<=`, `==`, `!=`, `abs>`, `abs>=`, `abs<`,
 | Fichier | Écrit par | Lu par | Contenu |
 |---|---|---|---|
 | `decisions.jsonl` | `DecisionRecorder` via `decision_ledger_store.append()` | attribution, CLI, cockpit | Une ligne par décision (action, intent, qty, confidence, rationale, executed, reason…) |
-| `model_performance.jsonl` | `_append_model_performance()` | `trader/reporting/attribution.py` | Une ligne par fill (entrée + sortie) — base des round-trips |
+| `model_performance.jsonl` | `RuntimeStateWriter.append_model_performance()` via wrapper daemon | `trader/reporting/attribution.py` | Une ligne par fill (entrée + sortie) — base des round-trips |
 | `broker.json` | `SimBroker` | `trader/runtime/daemon.py` (reload à chaque cycle) | Positions paper + historique fills |
 | `trade_plans.json` | `TradePlanStore` | `trader/planning/exit_engine.py`, `trader/runtime/daemon.py` | Plans ouverts (hard_stop_price, TPs, trailing, watermarks…) |
-| `events.jsonl` | `_append_event()` | monitoring / debug | Événements runtime (cycle_started, armed_plan_resolved, watch_triggered…) |
-| `history.jsonl` | `_append_cycle_history()` | CLI status | Résumé par cycle (equity, n_executed) |
-| `daemon_status.json` | `_write_status()` | cockpit TUI, CLI | Phase courante, PID, decisions_done |
-| `current_report.json` | `_write_current_report()` | cockpit TUI | Rapport complet du cycle en cours |
+| `events.jsonl` | `RuntimeStateWriter.append_event()` via wrapper daemon | monitoring / debug | Événements runtime (cycle_started, armed_plan_resolved, watch_triggered…) |
+| `history.jsonl` | `RuntimeStateWriter.append_cycle_history()` via wrapper daemon | CLI status | Résumé par cycle (equity, n_executed) |
+| `daemon_status.json` | `RuntimeStateWriter.write_status()` via wrapper daemon | cockpit TUI, CLI | Phase courante, PID, decisions_done |
+| `current_report.json` | `RuntimeStateWriter.write_current_report()` via wrapper daemon | cockpit TUI | Rapport complet du cycle en cours |
 | `learnings.jsonl` | `record_decision()` | `trader/learnings/consolidator.py` | Notes runtime de l'agent (bornées) |
 | `learnings_consolidated.json` | `trader/learnings/consolidator.py` | `trader/runtime/daemon.py` (contexte LLM) | Patterns consolidés (≤ seuil bruts → consolidation) |
 | `learnings.db` | `learnings_ingest` + daemon (`recalls`) | outil `recall_learnings` | Store SQLite dérivé : notes scorées par outcome (lift/symbole), embeddings, traces de recall |
