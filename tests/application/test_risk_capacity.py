@@ -22,7 +22,6 @@ def test_risk_capacity_context_exposes_remaining_gross_as_native_quantity(tmp_pa
         max_risk_per_trade_pct=0.01,
         max_position_value=30_000.0,
         max_gross_exposure=100_000.0,
-        max_orders_per_cycle=5,
         min_equity=50_000.0,
     )
 

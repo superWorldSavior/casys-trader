@@ -21,7 +21,6 @@ def _write_runtime_config(root) -> None:
                 "max_position_value: 20000",
                 "max_gross_exposure: 100000",
                 "max_order_value: 10000",
-                "max_orders_per_cycle: 5",
                 "min_equity: 50000",
             ]
         )

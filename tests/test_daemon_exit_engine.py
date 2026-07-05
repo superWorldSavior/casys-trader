@@ -42,7 +42,6 @@ def _write_runtime_config(
                 f"max_position_value: {max_position_value}",
                 f"max_gross_exposure: {max_gross_exposure}",
                 f"max_order_value: {max_order_value}",
-                "max_orders_per_cycle: 5",
                 "min_equity: 50000",
             ]
         )

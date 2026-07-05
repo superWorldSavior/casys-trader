@@ -29,7 +29,6 @@ def _risk_limits(max_order_value: float = 10_000.0) -> dict:
         "max_position_value": 10_000.0,
         "max_gross_exposure": 10_000.0,
         "max_order_value": max_order_value,
-        "max_orders_per_cycle": 5,
         "min_equity": 0.0,
     }
 
@@ -158,7 +157,6 @@ def test_run_backtest_autorise_sortie_qui_reduit_risque_meme_si_order_value_depa
             "max_position_value": 20_000.0,
             "max_gross_exposure": 20_000.0,
             "max_order_value": 10_000.0,
-            "max_orders_per_cycle": 5,
             "min_equity": 0.0,
         },
         starting_cash=20_000.0,

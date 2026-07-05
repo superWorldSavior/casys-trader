@@ -26,7 +26,6 @@ def _write_runtime_config(root) -> None:
         "max_position_value: 20000\n"
         "max_gross_exposure: 100000\n"
         "max_order_value: 10000\n"
-        "max_orders_per_cycle: 5\n"
         "min_equity: 50000\n"
     )
     (root / "mandate" / "mandate.md").write_text("# Mandat\n")

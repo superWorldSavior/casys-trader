@@ -30,7 +30,6 @@ class RiskLimits:
     max_position_value: float       # $ max par position (valeur absolue)
     max_gross_exposure: float       # $ max exposition brute (somme |positions|)
     max_order_value: float          # $ max par ordre unique
-    max_orders_per_cycle: int       # débit max d'ordres par réveil
     min_equity: float               # equity plancher : sous ce seuil, plus aucun ordre
     max_risk_per_trade_pct: float = 0.01  # % equity risqué si le hard_stop saute
     # Gate de confiance adapté au risque :
@@ -60,7 +59,6 @@ class RiskLimits:
             max_position_value=float(d["max_position_value"]),
             max_gross_exposure=float(d["max_gross_exposure"]),
             max_order_value=float(d["max_order_value"]),
-            max_orders_per_cycle=int(d["max_orders_per_cycle"]),
             min_equity=float(d["min_equity"]),
             max_risk_per_trade_pct=float(d.get("max_risk_per_trade_pct", 0.01)),
             min_trade_confidence=float(d.get("min_trade_confidence", 0.7)),
@@ -79,10 +77,6 @@ class Verdict:
 class RiskGate:
     def __init__(self, limits: RiskLimits):
         self.limits = limits
-        self._orders_this_cycle = 0
-
-    def start_cycle(self) -> None:
-        self._orders_this_cycle = 0
 
     def max_order_quantity_at_price(self, price: float, *, fx_rate: float = 1.0) -> float:
         if not math.isfinite(price) or price <= 0:
@@ -243,9 +237,6 @@ class RiskGate:
         if equity < self.limits.min_equity:
             return Verdict(False, "equity_floor_breached", f"equity={equity:.2f} < {self.limits.min_equity}")
 
-        if self._orders_this_cycle >= self.limits.max_orders_per_cycle:
-            return Verdict(False, "order_rate_exceeded", f"déjà {self._orders_this_cycle} ordres ce cycle")
-
         if order_value > self.limits.max_order_value and not risk_reducing:
             return Verdict(False, "order_value_exceeded", f"{order_value:.2f} > {self.limits.max_order_value}")
 
@@ -257,10 +248,6 @@ class RiskGate:
             return Verdict(False, "gross_exposure_exceeded", f"{projected_gross:.2f} > {self.limits.max_gross_exposure}")
 
         return Verdict(True)
-
-    def record_pass(self) -> None:
-        """À appeler après exécution effective d'un ordre approuvé."""
-        self._orders_this_cycle += 1
 
 
 _DEFAULT_MIN_TRADE_CONFIDENCE = 0.7

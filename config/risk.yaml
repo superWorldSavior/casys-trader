@@ -6,7 +6,6 @@ max_position_value: 30000      # $ max par position (~30% equity : concentration
 max_gross_exposure: 100000     # $ max exposition brute totale
 max_order_value: 10000         # $ max par ordre unique
 max_risk_per_trade_pct: 0.01   # 1% du capital risqué par trade (distance au stop), SI un stop existe
-max_orders_per_cycle: 5        # débit max d'ordres par réveil
 min_equity: 50000              # plancher : sous ce seuil, plus aucun ordre
 
 # --- Mode exploration / calibration (PAPER uniquement) ---

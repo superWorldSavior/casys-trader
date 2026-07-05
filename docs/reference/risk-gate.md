@@ -14,26 +14,24 @@ le gate de confiance côté agent est désactivé, les bornes dures restent).
 
 ```python
 gate = RiskGate(RiskLimits.from_dict(risk_yaml))
-gate.start_cycle()                       # remet à zéro le débit d'ordres du cycle
 verdict = gate.check(order, price, current_position_value=…, gross_exposure=…,
                      equity=…, allow_risk_reduction=…, fx_rate=…)
 if verdict.approved:
-    broker.submit(order); gate.record_pass()
+    broker.submit(order)
 ```
 
 `Verdict(approved: bool, code: str = "ok", context: str = "")` — **premier échec = rejet** (fail-fast).
 `code` est un **code enum** stable (parsable), pas de la prose.
 
-## Les 6 contrôles de `check()` (dans l'ordre d'évaluation)
+## Les 5 contrôles de `check()` (dans l'ordre d'évaluation)
 
 | # | Code de rejet | Condition | Borne (`risk.yaml`) |
 |---|---|---|---|
 | 1 | `non_finite_order` | `order_value` NaN/inf | — (garde-fou : `NaN > x == False` contournerait tout) |
 | 2 | `equity_floor_breached` | `equity < min_equity` | `min_equity` → **plus aucun ordre** sous ce plancher |
-| 3 | `order_rate_exceeded` | `orders_this_cycle ≥ max` | `max_orders_per_cycle` |
-| 4 | `order_value_exceeded` | `order_value > max` (sauf risk-reducing) | `max_order_value` |
-| 5 | `position_value_exceeded` | position projetée `> max` | `max_position_value` |
-| 6 | `gross_exposure_exceeded` | brut projeté `> max` | `max_gross_exposure` |
+| 3 | `order_value_exceeded` | `order_value > max` (sauf risk-reducing) | `max_order_value` |
+| 4 | `position_value_exceeded` | position projetée `> max` | `max_position_value` |
+| 5 | `gross_exposure_exceeded` | brut projeté `> max` | `max_gross_exposure` |
 
 `order_value = |qty| × price × fx_rate` (**FX-aware** : la valeur est bornée en
 USD quel que soit la devise native — cf. chantier FX / incident Realtek).
@@ -76,7 +74,6 @@ Autrement dit : plus tu risques, plus tu dois être confiant.
 | `max_position_value` | $ max par position (abs) | — (requis) |
 | `max_gross_exposure` | $ max exposition brute (Σ\|positions\|) | — (requis) |
 | `max_order_value` | $ max par ordre unique | — (requis) |
-| `max_orders_per_cycle` | débit max d'ordres / réveil | — (requis) |
 | `min_equity` | plancher equity : sous ce seuil, zéro ordre | — (requis) |
 | `max_risk_per_trade_pct` | % equity risqué si le hard_stop saute | `0.01` |
 | `min_trade_confidence` | seuil confiance plancher (risque nul) | `0.7` |
@@ -85,18 +82,11 @@ Autrement dit : plus tu risques, plus tu dois être confiant.
 `read_min_trade_confidence(path)` : lecture **fail-safe** de `min_trade_confidence`
 (défaut 0.7 si fichier absent/illisible/clé invalide) — partagée daemon/tui/consolidator.
 
-## Cycle de vie
-
-- `start_cycle()` — remet à zéro le compteur d'ordres du cycle.
-- `record_pass()` — à appeler **après exécution effective** d'un ordre approuvé
-  (incrémente le débit du cycle).
-
 ## Où c'est branché
 
 `trader/runtime/daemon.py` orchestre : construit le `RiskGate` depuis `risk.yaml`,
-appelle `start_cycle()` au début du cycle, `check()` avant chaque `broker.submit`,
-`record_pass()` après. Les **plans armés** (`EXECUTE_ORDER`) passent aussi par ce
-gate à l'exécution (cf. [décisions D7B/D11](../decisions/registre-decisions-metier.md)).
+appelle `check()` avant chaque `broker.submit`. Les **plans armés** (`EXECUTE_ORDER`)
+passent aussi par ce gate à l'exécution (cf. [décisions D7B/D11](../decisions/registre-decisions-metier.md)).
 
 ## Voir aussi
 

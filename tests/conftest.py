@@ -87,7 +87,7 @@ def write_runtime_config(root, *, symbols=("SPY",)) -> None:
     )
     (root / "config" / "risk.yaml").write_text(
         "max_position_value: 20000\nmax_gross_exposure: 100000\n"
-        "max_order_value: 10000\nmax_orders_per_cycle: 5\nmin_equity: 50000\n"
+        "max_order_value: 10000\nmin_equity: 50000\n"
     )
     (root / "mandate" / "mandate.md").write_text("# Mandat\n")
     (root / "mandate" / "memory.md").write_text("# Memoire\n")

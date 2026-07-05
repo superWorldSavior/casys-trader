@@ -12,7 +12,6 @@ def _gate(*, max_risk_per_trade_pct: float = 0.01) -> RiskGate:
             max_position_value=20_000.0,
             max_gross_exposure=100_000.0,
             max_order_value=10_000.0,
-            max_orders_per_cycle=5,
             min_equity=50_000.0,
             max_risk_per_trade_pct=max_risk_per_trade_pct,
         )
@@ -95,12 +94,34 @@ def test_risk_limits_from_dict_defaut_a_un_pourcent() -> None:
             "max_position_value": 20_000.0,
             "max_gross_exposure": 100_000.0,
             "max_order_value": 10_000.0,
-            "max_orders_per_cycle": 5,
             "min_equity": 50_000.0,
         }
     )
 
     assert limits.max_risk_per_trade_pct == 0.01
+
+
+def test_risk_gate_n_applique_plus_de_cap_count_par_cycle() -> None:
+    limits = RiskLimits.from_dict(
+        {
+            "max_position_value": 20_000.0,
+            "max_gross_exposure": 100_000.0,
+            "max_order_value": 10_000.0,
+            "min_equity": 50_000.0,
+        }
+    )
+    gate = RiskGate(limits)
+    order = Order(symbol="SPY", side="BUY", quantity=1.0, rationale="count removed")
+
+    for _ in range(10):
+        verdict = gate.check(
+            order,
+            100.0,
+            current_position_value=0.0,
+            gross_exposure=0.0,
+            equity=100_000.0,
+        )
+        assert verdict.approved is True
 
 
 # ---------------------------------------------------------------------------
@@ -173,7 +194,6 @@ def test_risk_limits_from_dict_defauts_confidence() -> None:
             "max_position_value": 20_000.0,
             "max_gross_exposure": 100_000.0,
             "max_order_value": 10_000.0,
-            "max_orders_per_cycle": 5,
             "min_equity": 50_000.0,
         }
     )
@@ -191,7 +211,6 @@ def test_check_confidence_desactive_approuve_meme_tres_basse() -> None:
             max_position_value=30_000.0,
             max_gross_exposure=100_000.0,
             max_order_value=10_000.0,
-            max_orders_per_cycle=5,
             min_equity=50_000.0,
             max_risk_per_trade_pct=0.01,
             confidence_gate_enabled=False,
@@ -209,7 +228,6 @@ def test_risk_limits_from_dict_confidence_gate_desactivable() -> None:
             "max_position_value": 20_000.0,
             "max_gross_exposure": 100_000.0,
             "max_order_value": 10_000.0,
-            "max_orders_per_cycle": 5,
             "min_equity": 50_000.0,
             "confidence_gate_enabled": False,
         }
@@ -225,7 +243,6 @@ def test_risk_limits_from_dict_overrides_confidence() -> None:
             "max_position_value": 20_000.0,
             "max_gross_exposure": 100_000.0,
             "max_order_value": 10_000.0,
-            "max_orders_per_cycle": 5,
             "min_equity": 50_000.0,
             "min_trade_confidence": 0.65,
             "full_risk_confidence": 0.85,
@@ -246,7 +263,6 @@ def _base_limits_dict() -> dict:
         "max_position_value": 20_000.0,
         "max_gross_exposure": 100_000.0,
         "max_order_value": 10_000.0,
-        "max_orders_per_cycle": 5,
         "min_equity": 50_000.0,
     }
 
@@ -372,7 +388,6 @@ def _gate_usd(max_order_value: float = 10_000.0, pct: float = 0.01) -> RiskGate:
             max_position_value=200_000.0,
             max_gross_exposure=1_000_000.0,
             max_order_value=max_order_value,
-            max_orders_per_cycle=10,
             min_equity=0.0,
             max_risk_per_trade_pct=pct,
         )

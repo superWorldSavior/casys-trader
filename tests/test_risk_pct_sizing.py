@@ -171,7 +171,6 @@ def _write_runtime_config(root, *, max_risk_per_trade_pct: float = 0.01) -> None
             "max_gross_exposure: 100000",
             "max_order_value: 10000",
             f"max_risk_per_trade_pct: {max_risk_per_trade_pct}",
-            "max_orders_per_cycle: 5",
             "min_equity: 50000",
         ])
     )

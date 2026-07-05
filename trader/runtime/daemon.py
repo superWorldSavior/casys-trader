@@ -1330,7 +1330,6 @@ def _execute_one_cycle_decision(
             fx_rate=ctx.rate_for_symbol(sym),
         )
     if not ctx.dry_run:
-        ctx.gate.record_pass()
         state.gross = _gross_exposure(ctx.broker, ctx.prices, rate_of=ctx.rate_for_symbol)
         if fill is not None:
             latest = portfolio.snapshot(
@@ -1498,7 +1497,6 @@ def run_cycle(
     # (stop optionnel, position bornée par les seuls fusibles notionnels). Défaut
     # True = guardrail D6 préservé (live-safe). Voir spec exploration-basse-confiance.
     require_hard_stop = bool(risk_cfg.get("require_hard_stop", True))
-    gate.start_cycle()
     mem = agent_memory.Memory(ROOT / "mandate" / "mandate.md", ROOT / "mandate" / "memory.md")
     learnings_store = raw_learnings.RawLearningsStore(
         STATE_DIR / "learnings.jsonl",

@@ -94,8 +94,8 @@ Au déclenchement d'un `EXECUTE_ORDER` : si le symbole est `stale` → annulatio
 ### 2.6 RiskGate — limites nominales
 
 `risk.yaml` : `max_position_value`, `max_gross_exposure`, `max_order_value`,
-`max_orders_per_cycle`, `min_equity`. Tout ordre dépassant ces bornes est rejeté
-ou clampé (`order_value_exceeded` → clamp sur `max_order_value` pour les ouvertures).
+`min_equity`. Tout ordre dépassant ces bornes est rejeté ou clampé
+(`order_value_exceeded` → clamp sur `max_order_value` pour les ouvertures).
 
 ---
 
