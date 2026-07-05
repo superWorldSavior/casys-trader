@@ -154,18 +154,25 @@ Répartition runtime :
 - off : `_batch_decide` synchrone (ThreadPoolExecutor), inchangé.
 - on : `dispatch_decide_via_queue` enfile **1 tâche `decide` par symbole**
   (`partition_key=symbole`, `resource=acpx`, `dedup_key=cycle:sym`) ; le `DecidePool`
-  (`task_ledger.db`) les draine, `run_cycle` attend le budget
+  (`task_ledger.db`) les draine, `run_cycle` attend le budget temps
   (`CASYS_DECISION_TIMEOUT_S`, 900 s) puis collecte. Symboles non finis =
   **skippés** (pas de HOLD synthétique) → fin du HOLD-par-saturation. Le nb de
   workers = `CASYS_DECISION_BATCH_PARALLELISM` (même flag, sens différent du mode
   batch). `CASYS_DECISION_BATCH_SIZE` est **sans objet** en queue (grain-symbole) —
-  warning au boot. **Tour d'outils (T4, issue #2)** : avec `CASYS_AGENT_TOOLS` actif,
-  le handler orchestre round(s) d'outils + tour final (`get_indicator_context`,
-  `get_active_plans`, `recall_learnings`, `get_freshness` — 8 calls/symbole/round) ;
-  `CASYS_QUEUE_TOOL_MAX_ROUNDS` (défaut 1) borne les allers-retours LLM ; le fusible
-  d'admission est halvé (pire cas 2 appels/décision) et `model_calls_used` = somme
-  des appels réels remontés en enveloppe. REQUEST_CONTEXT legacy reste désactivé
-  (le tool round moderne est la voie de recherche de contexte). Fin du mode dégradé Lot A.
+  warning au boot. **Tour d'outils / session free-iteration** : avec
+  `CASYS_AGENT_TOOLS` actif, le handler ouvre une session acpx persistante et
+  l'agent demande autant de tournées d'outils que nécessaire, puis décide dès qu'il
+  a assez de contexte (`get_indicator_context`, `get_active_plans`,
+  `recall_learnings`, `get_freshness` — 8 calls/symbole/round). Le code garde
+  seulement un backstop anti-runaway `SESSION_ROUND_BACKSTOP=20`, non exposé comme
+  budget fonctionnel. **No call cap** : pas de limite d'admission par appels en
+  queue ; `model_calls_used` est une métrique d'observabilité, pas une limite. Le
+  coût est borné par le timeout par appel, `ResourcePools` AIMD, le traitement async
+  qui reporte les non-finies, et l'univers borné. Le lease decide session est court
+  (intervalle inter-heartbeat, typiquement `(decision_timeout_s + 30) * 2`) et le
+  worker renouvelle via heartbeat après l'ouverture de session puis après chaque
+  appel modèle. REQUEST_CONTEXT legacy reste désactivé (le tool round moderne est
+  la voie de recherche de contexte). Fin du mode dégradé Lot A.
 
 ### Étage `execute` — `CASYS_QUEUE_EXECUTE_ENABLED` (exige `sqlite`)
 

@@ -952,11 +952,13 @@ def run_cycle(
     triggers_by_symbol: dict[str, list[dict]] = {}
     for trigger in indicator_triggers:
         triggers_by_symbol.setdefault(str(trigger.get("symbol")), []).append(trigger)
+    model_call_limit_for_status = None if queue_decide_enabled else max_model_calls_per_cycle
+    model_call_cap_label = "none(queue)" if queue_decide_enabled else str(max_model_calls_per_cycle)
     _log_cycle_progress(
-        "[cycle] start dry_run=%s due=%d max_model_calls=%d",
+        "[cycle] start dry_run=%s due=%d model_call_cap=%s",
         dry_run,
         len(symbols_to_decide),
-        max_model_calls_per_cycle,
+        model_call_cap_label,
     )
     _write_status(
         "cycle_started",
@@ -966,7 +968,7 @@ def run_cycle(
         decisions_done=0,
         dry_run=dry_run,
         model_calls_used=0,
-        max_model_calls_per_cycle=max_model_calls_per_cycle,
+        max_model_calls_per_cycle=model_call_limit_for_status,
     )
     _append_event("cycle_started", symbols_due=symbols_to_decide, dry_run=dry_run)
 
@@ -1230,7 +1232,7 @@ def run_cycle(
         report=report,
         dry_run=dry_run,
         symbols_total=len(symbols_to_decide),
-        max_model_calls_per_cycle=max_model_calls_per_cycle,
+        max_model_calls_per_cycle=model_call_limit_for_status,
         learnings_store=learnings_store,
         decision_ledger_store=decision_ledger_store,
         refresh_report_portfolio=refresh_report_portfolio,
@@ -1994,12 +1996,15 @@ def run_cycle(
     report["model_calls_used"] = model_calls_used
     refresh_report_portfolio()
     _write_current_report(report)
+    if model_call_limit_for_status is None:
+        calls_label = f"{model_calls_used} (no cap)"
+    else:
+        calls_label = f"{model_calls_used}/{model_call_limit_for_status}"
     _log_cycle_progress(
-        "[cycle] completed decisions=%d executed=%d calls=%d/%d",
+        "[cycle] completed decisions=%d executed=%d calls=%s",
         len(report["decisions"]),
         sum(1 for item in report["decisions"] if item.get("executed")),
-        model_calls_used,
-        max_model_calls_per_cycle,
+        calls_label,
     )
     _write_status(
         "cycle_completed",
@@ -2007,7 +2012,7 @@ def run_cycle(
         decisions_done=len(report["decisions"]),
         symbols_total=len(symbols_to_decide),
         model_calls_used=model_calls_used,
-        max_model_calls_per_cycle=max_model_calls_per_cycle,
+        max_model_calls_per_cycle=model_call_limit_for_status,
         last_decision=report["decisions"][-1] if report["decisions"] else None,
     )
     _append_event("cycle_completed", decisions_done=len(report["decisions"]), model_calls_used=model_calls_used)
@@ -2061,7 +2066,12 @@ def main(
     parser.add_argument("--max-wake-minutes", type=float, default=None, help="borne haute optionnelle du réveil agent (défaut: aucune — l'agent est autonome)")
     parser.add_argument("--max-context-requests-per-symbol", type=int, default=2, help="nombre max de requêtes indicateurs par symbole")
     parser.add_argument("--max-indicators-per-request", type=int, default=4, help="nombre max d'indicateurs par requête")
-    parser.add_argument("--max-model-calls-per-cycle", type=int, default=25, help="fusible coût: appels LLM max par cycle")
+    parser.add_argument(
+        "--max-model-calls-per-cycle",
+        type=int,
+        default=25,
+        help="cap du mode batch legacy uniquement ; ignoré en mode queue/free-iteration (no call cap)",
+    )
     parser.add_argument(
         "--decision-timeout-s",
         type=int,
@@ -2187,7 +2197,7 @@ def main(
     sched = _runtime_state.scheduler
     log.info("daemon démarré (dry_run=%s, once=%s)", dry_run, args.once)
     log.info(
-        "[config] decision_batch_parallelism=%d batch_size=%d max_model_calls_per_cycle=%d decision_timeout_s=%d agent_tools=%s",
+        "[config] decision_batch_parallelism=%d batch_size=%d batch_max_model_calls=%d queue_call_cap=none decision_timeout_s=%d agent_tools=%s",
         args.decision_batch_parallelism,
         args.decision_batch_size,
         args.max_model_calls_per_cycle,

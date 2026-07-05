@@ -77,8 +77,16 @@ class Worker:
             log.debug("[queue.worker] resource miss id=%s resource=%s → unclaim",
                       task["id"], resource)
             return True
+        def heartbeat():
+            return self._ledger.heartbeat(
+                task_id=task["id"],
+                token=token,
+                now_ms=int(self._now_fn() * 1000),
+                lease_ms=self._lease_ms,
+            )
+
         try:
-            result = self._handlers[task["kind"]](task)
+            result = self._handlers[task["kind"]](task, heartbeat=heartbeat)
             finish_now_ms = int(self._now_fn() * 1000)
             _completed = self._ledger.complete(
                 task_id=task["id"], token=token, now_ms=finish_now_ms, result=result

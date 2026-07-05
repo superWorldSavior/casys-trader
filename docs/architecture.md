@@ -314,7 +314,9 @@ Un seul appel `codex_client.decide_batch()` pour tous les symboles dus & frais.
 Round-trip `REQUEST_CONTEXT` optionnel : si le LLM demande des indicateurs
 supplémentaires (`ContextResearchRequest`), `resolve_indicator_requests()` les calcule
 à partir des barres déjà en mémoire et lance un 2e batch sans ré-appeler Codex une
-3e fois. Budget : `max_model_calls_per_cycle` (défaut 25). `trader/runtime/daemon.py`
+3e fois. Budget : `max_model_calls_per_cycle` (défaut 25) en mode batch legacy
+uniquement ; le mode queue/free-iteration n'a pas de cap d'appels et expose seulement
+`model_calls_used` comme métrique. `trader/runtime/daemon.py`
 
 Transport : `AcpxBackend.complete()` (`trader/agent/llm.py`) → `acpx --format quiet --allowed-tools "" --no-terminal exec [prompt]`.
 Sessions jetables (isolation/idempotence). Fallback : `OpenAICompatibleBackend` (Ollama) si `TRADER_OLLAMA_API_KEY` défini.

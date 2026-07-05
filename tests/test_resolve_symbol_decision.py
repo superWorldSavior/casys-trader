@@ -90,6 +90,25 @@ def test_max_rounds_2_enchaine_deux_tournees() -> None:
     assert log == [True, True, False]  # 2 tournées d'outils, puis tour final forcé
 
 
+def test_heartbeat_apres_chaque_call_model_multi_round() -> None:
+    final = Decision.hold("AAPL", "after 2 rounds")
+    call_model, log = _seq_call_model([_tool_request(), _tool_request(), {"AAPL": final}])
+    heartbeat_marks: list[int] = []
+
+    result = resolve_symbol_decision(
+        symbol="AAPL",
+        base_facts={},
+        tool_context=_ctx(),
+        call_model=call_model,
+        max_rounds=2,
+        heartbeat=lambda: heartbeat_marks.append(len(log)),
+    )
+
+    assert result.rationale == "after 2 rounds"
+    assert log == [True, True, False]
+    assert heartbeat_marks == [1, 2, 3]
+
+
 def test_multi_tour_accumule_les_tool_results() -> None:
     # Régression review R3d : chaque round doit voir l'HISTORIQUE complet des tool_results,
     # pas seulement ceux du dernier round.

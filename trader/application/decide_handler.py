@@ -43,7 +43,7 @@ def make_decide_handler(
     codex_client,
     tool_services: "ToolRoundServices | None" = None,
     session_backends: list | None = None,
-) -> Callable[[dict], "str | None"]:
+) -> Callable[..., "str | None"]:
     """Fabrique le handler 'decide' compatible Worker.
 
     Parameters
@@ -58,13 +58,13 @@ def make_decide_handler(
 
     Returns
     -------
-    Callable[[dict], str | None]
+    Callable[..., str | None]
         Handler : reçoit le dict task, retourne l'enveloppe résultat JSON
         (str) → ira dans task.result via ledger.complete(result=...).
         Laisse remonter RetryableError sans l'attraper (le Worker gère le retry).
     """
 
-    def handler(task: dict) -> str:
+    def handler(task: dict, *, heartbeat=None) -> str:
         payload = json.loads(task.get("payload") or "{}")
         symbol: str = payload["symbol"]
         log.debug("[decide_handler] start symbol=%s task_id=%s", symbol, task.get("id"))
@@ -83,6 +83,7 @@ def make_decide_handler(
             symbols_universe=payload.get("symbols_universe"),
             session_backends=session_backends,
             task_id=task_id,
+            heartbeat=heartbeat,
         )
 
         result_json = json.dumps({"decision": asdict(decision), "model_calls": model_calls})

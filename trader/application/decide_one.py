@@ -122,6 +122,7 @@ def decide_one(
     now_fn: Callable[[], datetime] | None = None,
     session_backends: list | None = None,
     task_id: str | None = None,
+    heartbeat: Callable[[], object] | None = None,
 ) -> tuple[Decision, int]:
     """Décide UN symbole via LLM ; expose les erreurs pour retry/backpressure.
 
@@ -198,6 +199,9 @@ def decide_one(
             )
             tool_limits = tool_services.tool_limits()
             def _resolve(session):
+                if heartbeat is not None:
+                    heartbeat()
+
                 def _session_call_model(per_symbol: dict, *, allow_tool_calls: bool):
                     nonlocal calls_made
                     calls_made += 1
@@ -224,6 +228,7 @@ def decide_one(
                     max_rounds=SESSION_ROUND_BACKSTOP,
                     reinject="delta",
                     tool_limits=tool_limits,
+                    heartbeat=heartbeat,
                 )
 
             decision = llm.run_with_session_fallback(

@@ -183,7 +183,10 @@ def _cmd_status(args: argparse.Namespace) -> int:
     print(f"phase: {status.get('phase', 'unknown')}")
     print(f"current_symbol: {status.get('current_symbol')}")
     print(f"progress: {status.get('decisions_done', 0)}/{status.get('symbols_total', 0)}")
-    print(f"model_calls: {status.get('model_calls_used', 0)}/{status.get('max_model_calls_per_cycle')}")
+    calls_used = status.get("model_calls_used", 0)
+    calls_limit = status.get("max_model_calls_per_cycle")
+    calls_text = f"{calls_used}/{calls_limit}" if calls_limit is not None else str(calls_used)
+    print(f"model_calls: {calls_text}")
     print(f"cash: {broker.get('cash') if isinstance(broker, dict) else None}")
     print("positions:", ", ".join(positions.keys()) if positions else "none")
     return 0
@@ -640,7 +643,12 @@ def build_parser() -> argparse.ArgumentParser:
     daemon_parser.add_argument("--max-wake-minutes", type=float, default=240.0)
     daemon_parser.add_argument("--max-context-requests-per-symbol", type=int, default=2)
     daemon_parser.add_argument("--max-indicators-per-request", type=int, default=4)
-    daemon_parser.add_argument("--max-model-calls-per-cycle", type=int, default=25)
+    daemon_parser.add_argument(
+        "--max-model-calls-per-cycle",
+        type=int,
+        default=25,
+        help="cap du mode batch legacy uniquement ; ignoré par la queue/free-iteration (no call cap)",
+    )
     daemon_parser.add_argument(
         "--learning-consolidation-threshold",
         type=int,

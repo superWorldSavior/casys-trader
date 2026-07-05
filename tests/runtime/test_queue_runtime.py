@@ -6,7 +6,6 @@ from pathlib import Path
 import pytest
 
 from trader.agent import llm
-from trader.application.decide_one import SESSION_ROUND_BACKSTOP
 from trader.runtime import queue_runtime
 
 
@@ -267,7 +266,7 @@ def test_start_decide_queue_sans_max_rounds_construit_et_filtre_les_session_back
     assert handler_kwargs[0]["session_backends"] == [acpx_backend]
 
 
-def test_start_decide_queue_passe_un_lease_qui_couvre_le_pire_cas_strict(
+def test_start_decide_queue_passe_un_lease_court_inter_heartbeat(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -307,12 +306,9 @@ def test_start_decide_queue_passe_un_lease_qui_couvre_le_pire_cas_strict(
         ),
     )
 
-    timeout_s = 900
-    rounds = SESSION_ROUND_BACKSTOP
-    backends = 2
-    per_backend_s = (timeout_s + 30) + (rounds + 1) * (timeout_s + 15) + 15
-    worst_case_ms = backends * per_backend_s * 1000
-    assert FakePool.instances[0].lease_ms >= worst_case_ms
+    expected_ms = (900 + 30) * 2 * 1000
+    assert FakePool.instances[0].lease_ms == expected_ms
+    assert FakePool.instances[0].lease_ms < 60 * 60 * 1000
 
 
 def test_start_decide_queue_sans_acpx_backend_leve_runtimeerror(tmp_path: Path, monkeypatch) -> None:

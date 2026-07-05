@@ -28,7 +28,6 @@ class StartablePool(Protocol):
 
 NowMs = Callable[[], int]
 _DEFAULT_DECIDE_LEASE_MS = 1_800_000
-_DECIDE_SESSION_LEASE_MARGIN_FACTOR = 1.25
 
 
 def default_now_ms() -> int:
@@ -42,17 +41,11 @@ def _default_logger() -> logging.Logger:
 def _decide_session_lease_ms(
     *,
     decision_timeout_s: int,
-    max_rounds: int,
-    backend_count: int,
 ) -> int:
     timeout_s = max(int(decision_timeout_s), 1)
-    rounds = max(int(max_rounds), 1)
-    backends = max(int(backend_count), 1)
-    # Pire cas par backend : open=timeout+30, prompts=(max_rounds+1)*(timeout+15),
-    # close=15. Le runner peut recommencer depuis zero sur chaque backend.
-    per_backend_s = (timeout_s + 30) + (rounds + 1) * (timeout_s + 15) + 15
-    worst_case_s = backends * per_backend_s
-    return max(_DEFAULT_DECIDE_LEASE_MS, int(worst_case_s * _DECIDE_SESSION_LEASE_MARGIN_FACTOR * 1000))
+    # Lease court : couvre l'écart entre deux heartbeats (open acpx ou un round)
+    # avec slack, pas le backstop fonctionnel de session.
+    return max(_DEFAULT_DECIDE_LEASE_MS, (timeout_s + 30) * 2 * 1000)
 
 
 def _default_make_decide_handler(
@@ -216,12 +209,8 @@ def start_decide_queue(
                 "[queue_decide] acpx introuvable sur le PATH pour le tour d'outils en file "
                 "(vérifier TRADER_ACPX_BIN)"
             )
-        from trader.application.decide_one import SESSION_ROUND_BACKSTOP
-
         lease_ms = _decide_session_lease_ms(
             decision_timeout_s=decision_timeout_s,
-            max_rounds=SESSION_ROUND_BACKSTOP,
-            backend_count=len(session_backends),
         )
 
     ledger = task_ledger_cls(state_dir / "task_ledger.db")

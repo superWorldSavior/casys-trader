@@ -382,6 +382,25 @@ def test_tool_round_puis_decision_au_tour_2_sort_tot():
     assert decision.domain_tools["tool_rounds"] == 1       # traces mergées (persistance)
 
 
+def test_session_multiround_heartbeat_apres_open_et_chaque_appel_modele():
+    """Session : heartbeat après open_session puis après chaque call_model."""
+    client = _SeqClient([_tool_request(), {SYMBOL: _ok_decision("BUY")}])
+    heartbeats: list[str] = []
+
+    decision, calls = decide_one(
+        **{**_BASE_KWARGS, "agent_tools_enabled": True},
+        codex_client=client,
+        tool_services=_services(),
+        session_backends=_session_backends(),
+        task_id="t",
+        heartbeat=lambda: heartbeats.append("hb"),
+    )
+
+    assert decision.action == "BUY"
+    assert calls == 2
+    assert heartbeats == ["hb", "hb", "hb"]
+
+
 def test_session_prompt_libre_mais_loop_backstop():
     client = _SeqClient([_tool_request(), _tool_request(), {SYMBOL: _ok_decision("BUY")}])
 
@@ -502,6 +521,7 @@ def test_univers_transmis_au_resolver_via_cross_asset():
 
 def test_session_mode_utilise_runner_delta_et_complete_fn(monkeypatch):
     events = []
+    heartbeats = []
 
     class FakeSession:
         def send(self, prompt, *, timeout_s):
@@ -513,6 +533,7 @@ def test_session_mode_utilise_runner_delta_et_complete_fn(monkeypatch):
         return resolve(FakeSession())
 
     def fake_resolve_symbol_decision(**kwargs):
+        assert kwargs["heartbeat"] is heartbeat
         events.append(("resolve", kwargs["max_rounds"], kwargs.get("reinject")))
         response = kwargs["call_model"]({SYMBOL: {"round": 1}}, allow_tool_calls=True)
         return response[SYMBOL]
@@ -539,21 +560,28 @@ def test_session_mode_utilise_runner_delta_et_complete_fn(monkeypatch):
     client = SessionAwareClient()
     backends = [object()]
 
+    def heartbeat():
+        events.append(("heartbeat",))
+        heartbeats.append("hb")
+
     decision, calls = decide_one(
         **{**_BASE_KWARGS, "agent_tools_enabled": True},
         codex_client=client,
         tool_services=_services(),
         session_backends=backends,
         task_id="decide:AAPL",
+        heartbeat=heartbeat,
     )
 
     assert decision.action == "BUY"
     assert calls == 1
     assert events == [
         ("runner", backends, "decide:AAPL", 75),
+        ("heartbeat",),
         ("resolve", SESSION_ROUND_BACKSTOP, "delta"),
         ("send", "session prompt", 9),
     ]
+    assert heartbeats == ["hb"]
     assert client.calls[0]["complete_fn"] is not None
     assert client.calls[0]["allow_tool_calls"] is True
     assert client.calls[0]["max_rounds"] is None

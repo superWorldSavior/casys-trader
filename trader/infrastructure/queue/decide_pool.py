@@ -5,11 +5,9 @@ même TaskLedger et le même ResourcePools (tous deux thread-safe).
 
 Heartbeat / bail
 ----------------
-Le bail par défaut (30 min) est supérieur au timeout decide (15 min).
-Un heartbeat dédié n'est donc pas nécessaire pour cette brique : si le worker
-finit son appel LLM en moins de 30 min, le bail couvre. Sur crash daemon,
-``recover_on_boot`` remet les tâches running → pending. À réviser si le timeout
-decide monte au-delà du bail (ex. bail 30 min, timeout LLM 45 min).
+Le ``Worker`` transmet un callback ``heartbeat`` aux handlers. Les décisions en
+session le déclenchent après l'ouverture acpx puis après chaque appel modèle pour
+renouveler un bail court ; les handlers rapides peuvent l'ignorer.
 """
 from __future__ import annotations
 
@@ -38,7 +36,7 @@ class DecidePool:
     pools:
         ``ResourcePools`` partagé (thread-safe via Condition).
     handlers:
-        ``dict[str, Callable[[dict], str | None]]`` — handlers par kind.
+        ``dict[str, Callable[..., str | None]]`` — handlers par kind.
         Un handler retournant ``None`` écrit ``result=None`` dans la task
         (rétro-compat shadow / no-op).
     num_workers:

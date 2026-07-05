@@ -81,7 +81,7 @@ fix de ~10 lignes qui alimente *les deux* leviers.
   en aveugle » que D13-B prétendait supprimer.
 
 ### 3.4 La décision LLM aujourd'hui
-- **Mode batch** (défaut) : univers → gate → `decidable` → chunks de `batch_size=5`
+- **Mode batch legacy** : univers → gate → `decidable` → chunks de `batch_size=5`
   (`planner_batch.py:267`), parallélisme 3, bornés par `max_model_calls_per_cycle=25`
   (`daemon.py:2720`, `planner_batch.py:281`). Réponse démultiplexée par
   `parse_batch` (`parsing.py:542-574`, isolation par symbole).
@@ -170,8 +170,9 @@ def adaptive_cap(
   invariant testé (§6). Concrètement : `cap_effective` remplace `cap_per_venue`
   dans l'appel `apply_hysteresis` (`venues.py:375`) ; la mécanique interne est
   inchangée.
-- **Fusible coût** : `max_model_calls_per_cycle` passe de 25 à `SAFETY_CAP`
-  (~100) — cohérent avec « fusible seul » ; reste un garde, pas une politique.
+- **Coût queue post-free-iteration** : pas de cap d'appels. `SAFETY_CAP` ne pilote
+  pas l'admission queue ; le coût vivant est borné par timeout + AIMD + async +
+  univers borné, avec `model_calls_used` comme métrique.
 
 Paramètres nouveaux dans `radar.yaml` (calibrables, cf §7) :
 ```yaml
@@ -252,7 +253,7 @@ large en opportunité, appels ciblés par pertinence, profondeur là où ça com
   `regime_families` (chargé dans `tick`, déjà à disposition via Brique 1).
 - `decide_one.py` / `decide_handler` (Brique 3) : flags `allow_*` ON, recall ON,
   budget/tours, multi-tour conditionnel.
-- `daemon.py:2720` : `max_model_calls_per_cycle` défaut → `SAFETY_CAP`.
+- `daemon.py:2720` : le cap reste batch legacy ; ne pas le présenter comme borne queue.
 
 **Inchangés (surface de risque bornée) :** `apply_hysteresis` (logique interne),
 `relevance_gate` (D7), `order_admission`, recording, scheduler, la file Phase 3, le
@@ -359,7 +360,7 @@ prémisses cassent la conception si laissées telles quelles.**
 | 8 | NUANCE | Gate D7 conditions OK (`relevance_gate.py:35-46`, seuil 0.70 `infra_holds.py:58`), mais `periodic_review` passe aussi si `hours_since_last_llm is None` (premier passage), pas que ≥4h. |
 | 9 | **NUANCE** | Le `cockpit` n'est **pas** « barres+indicateurs » (`context.py:122` "no raw bars") et est bâti sur `tradable_symbols` (pas tout l'univers si stale). L'argument §3.5 tient **partiellement** ; ne prouve pas l'absence de perte comparative. |
 | 10 | VRAI | `attractiveness` dispo (`radar.py:129-134` → `venues.py:396-407`). |
-| 11 | VRAI | `max_model_calls_per_cycle=25` (`daemon.py:984`, CLI `:2456`). |
+| 11 | VRAI batch legacy | `max_model_calls_per_cycle=25` (`daemon.py:984`, CLI `:2456`) ; queue/free-iteration = no call cap. |
 
 ### Défis de conception
 - **A — Timing (risque réel).** `tick()` lit `last_regime` **avant** `run_cycle` dans
@@ -380,10 +381,9 @@ prémisses cassent la conception si laissées telles quelles.**
      **déjà capé** → l'utiliser pour élargir le cap est circulaire. Le signal
      d'opportunité (régime **et** radar) doit être mesuré sur le **pool/venue
      complet**, pas sur l'univers capé.
-  2. **Sémantique du fusible.** `max_model_calls` compte des **chunks** en batch
-     (`planner_batch.py:277-281`) mais des **symboles** en queue
-     (`queue_dispatch.py:129-130`) → le fusible ne borne pas la même chose selon le
-     mode. À unifier.
+  2. **Sémantique du coût.** `max_model_calls` compte des **chunks** en batch
+     (`planner_batch.py:277-281`) ; la queue free-iteration n'a pas de cap d'appels.
+     Ne pas réintroduire de limite d'admission par appels en queue.
   3. **Override pré-open.** Garde `free_slots=params.cap_m` (`venues.py:326`) → un
      `cap_effective > 25` rend les ajouts override incohérents (`core.py:155-156`).
      À aligner sur `cap_effective`.

@@ -153,13 +153,15 @@ def test_handler_transmet_session_backends_et_task_id_a_decide_one(monkeypatch):
     monkeypatch.setattr("trader.application.decide_handler.decide_one", spy_decide_one)
 
     session_backends = [object()]
+    heartbeat = lambda: None
     handler = make_decide_handler(codex_client=object(), session_backends=session_backends)
     task = _make_task(_PAYLOAD)
     task["id"] = "task-decide-123"
     task["attempts"] = 2
 
-    result = handler(task)
+    result = handler(task, heartbeat=heartbeat)
 
     assert result is not None
     assert captured["session_backends"] is session_backends
     assert captured["task_id"] == "task-decide-123"
+    assert captured["heartbeat"] is heartbeat
