@@ -443,6 +443,227 @@ def test_acpx_session_close_peut_etre_appele_deux_fois_sans_lever(monkeypatch) -
     assert len(calls) == 2
 
 
+def test_run_with_session_fallback_happy_path_retourne_le_resultat_et_ferme_la_session() -> None:
+    events = []
+
+    class FakeSession:
+        def __init__(self, name):
+            self.name = name
+
+        def close(self):
+            events.append(("close", self.name))
+
+    class FakeBackend:
+        def open_session(self, name, *, timeout_s):
+            events.append(("open", name, timeout_s))
+            return FakeSession(name)
+
+    def resolve(session):
+        events.append(("resolve", session.name))
+        return "DECISION"
+
+    result = llm.run_with_session_fallback(
+        [FakeBackend()],
+        task_id="resolve:SPY",
+        resolve=resolve,
+        open_timeout_s=12,
+    )
+
+    assert result == "DECISION"
+    assert events == [
+        ("open", "resolve:SPY:0", 12),
+        ("resolve", "resolve:SPY:0"),
+        ("close", "resolve:SPY:0"),
+    ]
+
+
+def test_run_with_session_fallback_open_failure_passe_au_backend_suivant() -> None:
+    events = []
+    failure = LlmFailure(
+        provider="acpx",
+        model="gpt-5.5",
+        code="rate_limited",
+        message="quota",
+        retryable=True,
+    )
+
+    class FakeSession:
+        def __init__(self, name):
+            self.name = name
+
+        def close(self):
+            events.append(("close", self.name))
+
+    class FailingOpenBackend:
+        def open_session(self, name, *, timeout_s):
+            events.append(("open", name, timeout_s))
+            return failure
+
+    class WorkingBackend:
+        def open_session(self, name, *, timeout_s):
+            events.append(("open", name, timeout_s))
+            return FakeSession(name)
+
+    def resolve(session):
+        events.append(("resolve", session.name))
+        return "DECISION"
+
+    result = llm.run_with_session_fallback(
+        [FailingOpenBackend(), WorkingBackend()],
+        task_id="resolve:SPY",
+        resolve=resolve,
+        open_timeout_s=12,
+    )
+
+    assert result == "DECISION"
+    assert events == [
+        ("open", "resolve:SPY:0", 12),
+        ("open", "resolve:SPY:1", 12),
+        ("resolve", "resolve:SPY:1"),
+        ("close", "resolve:SPY:1"),
+    ]
+
+
+def test_run_with_session_fallback_provider_down_restart_depuis_zero() -> None:
+    events = []
+    failure = LlmFailure(
+        provider="acpx",
+        model="gpt-5.5",
+        code="rate_limited",
+        message="quota",
+        retryable=True,
+    )
+
+    class FakeSession:
+        def __init__(self, name):
+            self.name = name
+
+        def close(self):
+            events.append(("close", self.name))
+
+    class FakeBackend:
+        def open_session(self, name, *, timeout_s):
+            events.append(("open", name, timeout_s))
+            return FakeSession(name)
+
+    def resolve(session):
+        events.append(("resolve", session.name))
+        if session.name.endswith(":0"):
+            raise llm.SessionProviderDown(failure)
+        return "DECISION"
+
+    result = llm.run_with_session_fallback(
+        [FakeBackend(), FakeBackend()],
+        task_id="resolve:SPY",
+        resolve=resolve,
+        open_timeout_s=12,
+    )
+
+    assert result == "DECISION"
+    assert events == [
+        ("open", "resolve:SPY:0", 12),
+        ("resolve", "resolve:SPY:0"),
+        ("close", "resolve:SPY:0"),
+        ("open", "resolve:SPY:1", 12),
+        ("resolve", "resolve:SPY:1"),
+        ("close", "resolve:SPY:1"),
+    ]
+
+
+def test_run_with_session_fallback_tous_down_retourne_le_dernier_echec() -> None:
+    events = []
+    first_failure = LlmFailure(
+        provider="acpx",
+        model="gpt-5.5",
+        code="rate_limited",
+        message="quota primary",
+        retryable=True,
+    )
+    last_failure = LlmFailure(
+        provider="acpx-claude-sonnet",
+        model="sonnet",
+        code="provider_error",
+        message="fallback down",
+        retryable=True,
+    )
+
+    class FakeSession:
+        def __init__(self, name, failure):
+            self.name = name
+            self.failure = failure
+
+        def close(self):
+            events.append(("close", self.name))
+
+    class FakeBackend:
+        def __init__(self, failure):
+            self.failure = failure
+
+        def open_session(self, name, *, timeout_s):
+            events.append(("open", name, timeout_s))
+            return FakeSession(name, self.failure)
+
+    def resolve(session):
+        events.append(("resolve", session.name))
+        raise llm.SessionProviderDown(session.failure)
+
+    result = llm.run_with_session_fallback(
+        [FakeBackend(first_failure), FakeBackend(last_failure)],
+        task_id="resolve:SPY",
+        resolve=resolve,
+        open_timeout_s=12,
+    )
+
+    assert result is last_failure
+    assert events == [
+        ("open", "resolve:SPY:0", 12),
+        ("resolve", "resolve:SPY:0"),
+        ("close", "resolve:SPY:0"),
+        ("open", "resolve:SPY:1", 12),
+        ("resolve", "resolve:SPY:1"),
+        ("close", "resolve:SPY:1"),
+    ]
+
+
+def test_run_with_session_fallback_court_circuite_si_le_premier_backend_reussit() -> None:
+    events = []
+
+    class FakeSession:
+        def __init__(self, name):
+            self.name = name
+
+        def close(self):
+            events.append(("close", self.name))
+
+    class FirstBackend:
+        def open_session(self, name, *, timeout_s):
+            events.append(("open-primary", name, timeout_s))
+            return FakeSession(name)
+
+    class SecondBackend:
+        def open_session(self, name, *, timeout_s):
+            events.append(("open-fallback", name, timeout_s))
+            return FakeSession(name)
+
+    def resolve(session):
+        events.append(("resolve", session.name))
+        return "PRIMARY_DECISION"
+
+    result = llm.run_with_session_fallback(
+        [FirstBackend(), SecondBackend()],
+        task_id="resolve:SPY",
+        resolve=resolve,
+        open_timeout_s=12,
+    )
+
+    assert result == "PRIMARY_DECISION"
+    assert events == [
+        ("open-primary", "resolve:SPY:0", 12),
+        ("resolve", "resolve:SPY:0"),
+        ("close", "resolve:SPY:0"),
+    ]
+
+
 def test_acpx_backend_isole_et_nettoie_le_process_group(monkeypatch) -> None:
     monkeypatch.setattr("trader.agent.llm.shutil.which", lambda _bin: "/usr/local/bin/acpx")
     popen_calls = []

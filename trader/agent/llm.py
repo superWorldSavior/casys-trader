@@ -454,6 +454,41 @@ class AcpxSession:
             return
 
 
+class SessionProviderDown(Exception):
+    def __init__(self, failure: LlmFailure) -> None:
+        super().__init__(failure.message)
+        self.failure = failure
+
+
+def run_with_session_fallback(
+    backends,
+    *,
+    task_id: str,
+    resolve,
+    open_timeout_s: int,
+) -> object | LlmFailure:
+    last_failure: LlmFailure | None = None
+    for attempt, backend in enumerate(backends):
+        session = backend.open_session(f"{task_id}:{attempt}", timeout_s=open_timeout_s)
+        if isinstance(session, LlmFailure):
+            last_failure = session
+            continue
+        try:
+            return resolve(session)
+        except SessionProviderDown as exc:
+            last_failure = exc.failure
+            continue
+        finally:
+            session.close()
+    return last_failure or LlmFailure(
+        provider="none",
+        model="none",
+        code="no_backend",
+        message="aucun backend LLM configuré",
+        retryable=False,
+    )
+
+
 @dataclass(frozen=True)
 class AcpxBackend:
     provider: str = "acpx"
