@@ -57,10 +57,6 @@ class AgentToolTrace:
     detail: ToolPayload = field(default_factory=dict)
 
 
-class PositionRiskProvider(Protocol):
-    def __call__(self, symbol: str) -> ToolPayload | None: ...
-
-
 class IndicatorResolver(Protocol):
     def __call__(self, requests: list[Any]) -> ToolPayload: ...
 
@@ -84,7 +80,6 @@ class ToolContext:
     market_context_by_symbol: Mapping[str, dict] = field(default_factory=dict)
     active_watches_by_symbol: Mapping[str, list] = field(default_factory=dict)
     attribution: Mapping[str, Any] | None = None
-    position_risk_provider: PositionRiskProvider | None = None
     indicator_resolver: IndicatorResolver | None = None
     learnings_recall_provider: LearningsRecallProvider | None = None
 

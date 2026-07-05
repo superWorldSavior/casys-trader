@@ -264,7 +264,7 @@ def test_get_active_plans_sans_symbole_rend_tout_le_lot():
 
 
 # ---------------------------------------------------------------------------
-# Task 4 : get_position_risk, get_attribution
+# Task 4 : get_attribution
 # ---------------------------------------------------------------------------
 
 
@@ -278,34 +278,7 @@ def _providers_context() -> ToolContext:
             "by_exit_reason": [{"reason": "stop", "n": 4}],
             "by_symbol": [{"symbol": "2330.TW", "n": 2}],
         },
-        position_risk_provider=lambda sym: {"symbol": sym, "qty": 1000.0, "usd_exposure": 1023.0}
-        if sym == "2330.TW" else None,
     )
-
-
-def test_get_position_risk_via_provider():
-    result, trace = agent_tools.execute_tool_call(
-        AgentToolCall(id="c1", tool="get_position_risk", args={"symbol": "2330.TW"}),
-        _providers_context(),
-    )
-    assert trace.outcome == "ok"
-    assert result.result["qty"] == 1000.0
-
-
-def test_get_position_risk_hors_allowlist_rejete_au_handler():
-    result, _ = agent_tools.execute_tool_call(
-        AgentToolCall(id="c1", tool="get_position_risk", args={"symbol": "EVIL"}),
-        _providers_context(),
-    )
-    assert result.ok is True
-    assert result.result == {"symbol": "EVIL", "error": "symbol_not_allowed"}
-
-
-def test_get_position_risk_provider_absent():
-    ctx = ToolContext(now=datetime(2026, 7, 2, tzinfo=UTC), allowed_symbols=frozenset({"2330.TW"}))
-    result, _ = agent_tools.execute_tool_call(
-        AgentToolCall(id="c1", tool="get_position_risk", args={"symbol": "2330.TW"}), ctx)
-    assert result.result == {"symbol": "2330.TW", "error": "unavailable"}
 
 
 def test_get_attribution_scope_summary_et_symbol():

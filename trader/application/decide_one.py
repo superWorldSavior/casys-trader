@@ -97,9 +97,7 @@ def _tool_context_from_facts(
         market_context_by_symbol={symbol: market_ctx} if market_ctx else {},
         active_watches_by_symbol={symbol: list(facts.get("active_watches") or [])},
         attribution=shared_context.get("attribution"),
-        # recent_decisions n'est PLUS un outil : poussé dans les facts (issue #4).
-        # get_position_risk : câblable (issue #4), hors catalogue tant que non branché.
-        position_risk_provider=None,
+        # recent_decisions poussé dans les facts ; get_position_risk retiré (issue #4).
         indicator_resolver=indicator_resolver,
         learnings_recall_provider=learnings_recall_provider,
     )
