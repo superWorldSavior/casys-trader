@@ -465,6 +465,17 @@ def test_pool_tool_round_bout_en_bout(tmp_path):
                 )
             return {sym: _ok_decision(sym, "HOLD") for sym in symbols}
 
+    class _FakeSession:
+        def send(self, prompt, *, timeout_s):
+            raise AssertionError("decide_batch fake ignore complete_fn ; send ne doit pas être appelé")
+
+        def close(self):
+            return None
+
+    class _FakeSessionBackend:
+        def open_session(self, name, *, timeout_s):
+            return _FakeSession()
+
     services = ToolRoundServices(
         get_bars=lambda symbol, lookback="5d", interval="1h": [],
         learnings_recall_provider=None,
@@ -484,7 +495,13 @@ def test_pool_tool_round_bout_en_bout(tmp_path):
     pool = DecidePool(
         ledger=led,
         pools=ResourcePools({"acpx": 1}),
-        handlers={"decide": make_decide_handler(codex_client=_ToolRoundClient(), tool_services=services)},
+        handlers={
+            "decide": make_decide_handler(
+                codex_client=_ToolRoundClient(),
+                tool_services=services,
+                session_backends=[_FakeSessionBackend()],
+            )
+        },
         num_workers=1,
         now_fn=time.time,
     )

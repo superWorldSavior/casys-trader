@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 
+import pytest
+
+from trader.agent import llm
 from trader.runtime import queue_runtime
 
 
@@ -49,12 +53,14 @@ class FakePool:
         handlers: dict[str, object],
         num_workers: int,
         now_fn,
+        lease_ms: int = 1_800_000,
     ) -> None:
         self.ledger = ledger
         self.pools = pools
         self.handlers = handlers
         self.num_workers = num_workers
         self.now_fn = now_fn
+        self.lease_ms = lease_ms
         self.started = False
         FakePool.instances.append(self)
 
@@ -94,15 +100,32 @@ def _reset_fakes() -> None:
     FakePlanStore.instances = []
 
 
-def test_start_decide_queue_builds_ledger_pool_and_handler(tmp_path: Path) -> None:
+def test_start_decide_queue_builds_ledger_pool_and_handler(tmp_path: Path, monkeypatch) -> None:
     _reset_fakes()
     logger = RecordingLogger()
     handler_calls: list[object] = []
-    client = object()
+    build_calls: list[dict] = []
 
-    def make_handler(*, codex_client: object, tool_services: object = None) -> str:
-        handler_calls.append((codex_client, tool_services))
+    class FakeCodexClient:
+        DEFAULT_MODEL = "gpt-5.5"
+
+    client = FakeCodexClient
+
+    def fake_build_default_router_from_env(**kwargs):
+        build_calls.append(kwargs)
+        raise AssertionError("pas de construction session en mode degenere sans outils")
+
+    def make_handler(
+        *,
+        codex_client: object,
+        tool_services: object = None,
+        session_backends: list | None = None,
+    ) -> str:
+        handler_calls.append((codex_client, tool_services, session_backends))
         return "decide-handler"
+
+    monkeypatch.setattr(llm, "build_default_router_from_env", fake_build_default_router_from_env)
+    monkeypatch.setattr(shutil, "which", lambda _bin: "/usr/local/bin/acpx")
 
     runtime = queue_runtime.start_decide_queue(
         enabled=True,
@@ -130,9 +153,248 @@ def test_start_decide_queue_builds_ledger_pool_and_handler(tmp_path: Path) -> No
     assert FakePool.instances[0].handlers == {"decide": "decide-handler"}
     assert FakePool.instances[0].num_workers == 3
     assert FakePool.instances[0].started is True
-    assert handler_calls == [(client, None)]  # tool_services transmis (None par défaut)
+    assert handler_calls == [(client, None, None)]  # tool_services + session_backends transmis
+    assert build_calls == []
     assert logger.infos[0][0] == "[queue_decide] pool démarré num_workers=%d db=%s"
     assert logger.warnings[0][0].startswith("[queue_decide] CASYS_DECISION_BATCH_SIZE=%d IGNORÉ")
+
+
+def test_start_decide_queue_construit_et_filtre_les_session_backends_en_multi_round(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _reset_fakes()
+    logger = RecordingLogger()
+    handler_kwargs: list[dict] = []
+    build_calls: list[dict] = []
+    acpx_backend = llm.AcpxBackend(provider="acpx", model="gpt-5.5")
+    non_session_backend = object()
+
+    class FakeCodexClient:
+        DEFAULT_MODEL = "gpt-5.5"
+
+    class ToolServices:
+        max_rounds = 2
+
+    class FakeRouter:
+        backends = [acpx_backend, non_session_backend]
+
+    def fake_build_default_router_from_env(**kwargs):
+        build_calls.append(kwargs)
+        return FakeRouter()
+
+    def make_handler(**kwargs: object) -> str:
+        handler_kwargs.append(kwargs)
+        return "decide-handler"
+
+    monkeypatch.setattr(llm, "build_default_router_from_env", fake_build_default_router_from_env)
+    monkeypatch.setattr(shutil, "which", lambda _bin: "/usr/local/bin/acpx")
+
+    queue_runtime.start_decide_queue(
+        enabled=True,
+        state_dir=tmp_path,
+        parallelism=3,
+        decision_batch_size=5,
+        default_decision_batch_size=5,
+        codex_client=FakeCodexClient,
+        tool_services=ToolServices(),
+        now_ms_fn=lambda: 12345,
+        logger=logger,
+        factories=queue_runtime.DecideQueueFactories(
+            task_ledger_cls=FakeLedger,
+            resource_pools_cls=FakePools,
+            decide_pool_cls=FakePool,
+            make_decide_handler=make_handler,
+        ),
+    )
+
+    assert build_calls == [{"spark_model": "gpt-5.5"}]
+    assert handler_kwargs[0]["codex_client"] is FakeCodexClient
+    assert handler_kwargs[0]["tool_services"].max_rounds == 2
+    assert handler_kwargs[0]["session_backends"] == [acpx_backend]
+
+
+def test_start_decide_queue_max_rounds_1_construit_et_filtre_les_session_backends(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _reset_fakes()
+    logger = RecordingLogger()
+    handler_kwargs: list[dict] = []
+    build_calls: list[dict] = []
+    acpx_backend = llm.AcpxBackend(provider="acpx", model="gpt-5.5")
+    non_session_backend = object()
+
+    class FakeCodexClient:
+        DEFAULT_MODEL = "gpt-5.5"
+
+    class ToolServices:
+        max_rounds = 1
+
+    class FakeRouter:
+        backends = [acpx_backend, non_session_backend]
+
+    def fake_build_default_router_from_env(**kwargs):
+        build_calls.append(kwargs)
+        return FakeRouter()
+
+    def make_handler(**kwargs: object) -> str:
+        handler_kwargs.append(kwargs)
+        return "decide-handler"
+
+    monkeypatch.setattr(llm, "build_default_router_from_env", fake_build_default_router_from_env)
+    monkeypatch.setattr(shutil, "which", lambda _bin: "/usr/local/bin/acpx")
+
+    queue_runtime.start_decide_queue(
+        enabled=True,
+        state_dir=tmp_path,
+        parallelism=3,
+        decision_batch_size=5,
+        default_decision_batch_size=5,
+        codex_client=FakeCodexClient,
+        tool_services=ToolServices(),
+        now_ms_fn=lambda: 12345,
+        logger=logger,
+        factories=queue_runtime.DecideQueueFactories(
+            task_ledger_cls=FakeLedger,
+            resource_pools_cls=FakePools,
+            decide_pool_cls=FakePool,
+            make_decide_handler=make_handler,
+        ),
+    )
+
+    assert build_calls == [{"spark_model": "gpt-5.5"}]
+    assert handler_kwargs[0]["tool_services"].max_rounds == 1
+    assert handler_kwargs[0]["session_backends"] == [acpx_backend]
+
+
+def test_start_decide_queue_passe_un_lease_qui_couvre_le_pire_cas_strict(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _reset_fakes()
+    logger = RecordingLogger()
+    acpx_backend_1 = llm.AcpxBackend(provider="acpx", model="gpt-5.5")
+    acpx_backend_2 = llm.AcpxBackend(provider="acpx-claude-sonnet", model="claude-sonnet")
+
+    class FakeCodexClient:
+        DEFAULT_MODEL = "gpt-5.5"
+
+    class ToolServices:
+        max_rounds = 1
+
+    class FakeRouter:
+        backends = [acpx_backend_1, acpx_backend_2]
+
+    monkeypatch.setattr(llm, "build_default_router_from_env", lambda **_kwargs: FakeRouter())
+    monkeypatch.setattr(shutil, "which", lambda _bin: "/usr/local/bin/acpx")
+
+    queue_runtime.start_decide_queue(
+        enabled=True,
+        state_dir=tmp_path,
+        parallelism=3,
+        decision_batch_size=5,
+        default_decision_batch_size=5,
+        decision_timeout_s=900,
+        codex_client=FakeCodexClient,
+        tool_services=ToolServices(),
+        now_ms_fn=lambda: 12345,
+        logger=logger,
+        factories=queue_runtime.DecideQueueFactories(
+            task_ledger_cls=FakeLedger,
+            resource_pools_cls=FakePools,
+            decide_pool_cls=FakePool,
+            make_decide_handler=lambda **_kwargs: "decide-handler",
+        ),
+    )
+
+    timeout_s = 900
+    rounds = ToolServices.max_rounds
+    backends = 2
+    per_backend_s = (timeout_s + 30) + (rounds + 1) * (timeout_s + 15) + 15
+    worst_case_ms = backends * per_backend_s * 1000
+    assert FakePool.instances[0].lease_ms >= worst_case_ms
+
+
+def test_start_decide_queue_sans_acpx_backend_leve_runtimeerror(tmp_path: Path, monkeypatch) -> None:
+    _reset_fakes()
+    logger = RecordingLogger()
+
+    class FakeCodexClient:
+        DEFAULT_MODEL = "gpt-5.5"
+
+    class FakeRouter:
+        backends = [object()]
+
+    def fake_build_default_router_from_env(**kwargs):
+        return FakeRouter()
+
+    monkeypatch.setattr(llm, "build_default_router_from_env", fake_build_default_router_from_env)
+
+    with pytest.raises(RuntimeError, match="aucun AcpxBackend"):
+        queue_runtime.start_decide_queue(
+            enabled=True,
+            state_dir=tmp_path,
+            parallelism=3,
+            decision_batch_size=5,
+            default_decision_batch_size=5,
+            codex_client=FakeCodexClient,
+            tool_services=object(),
+            now_ms_fn=lambda: 12345,
+            logger=logger,
+            factories=queue_runtime.DecideQueueFactories(
+                task_ledger_cls=FakeLedger,
+                resource_pools_cls=FakePools,
+                decide_pool_cls=FakePool,
+                make_decide_handler=lambda **_kwargs: "decide-handler",
+            ),
+        )
+
+    assert FakeLedger.instances == []
+    assert FakePool.instances == []
+
+
+def test_start_decide_queue_acpx_backend_sans_binaire_executable_leve_runtimeerror(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _reset_fakes()
+    logger = RecordingLogger()
+    acpx_backend = llm.AcpxBackend(provider="acpx", model="gpt-5.5", acpx_bin="acpx-introuvable")
+
+    class FakeCodexClient:
+        DEFAULT_MODEL = "gpt-5.5"
+
+    class FakeRouter:
+        backends = [acpx_backend]
+
+    def fake_build_default_router_from_env(**kwargs):
+        return FakeRouter()
+
+    monkeypatch.setattr(llm, "build_default_router_from_env", fake_build_default_router_from_env)
+    monkeypatch.setattr(shutil, "which", lambda _bin: None)
+
+    with pytest.raises(RuntimeError, match="acpx introuvable"):
+        queue_runtime.start_decide_queue(
+            enabled=True,
+            state_dir=tmp_path,
+            parallelism=3,
+            decision_batch_size=5,
+            default_decision_batch_size=5,
+            codex_client=FakeCodexClient,
+            tool_services=object(),
+            now_ms_fn=lambda: 12345,
+            logger=logger,
+            factories=queue_runtime.DecideQueueFactories(
+                task_ledger_cls=FakeLedger,
+                resource_pools_cls=FakePools,
+                decide_pool_cls=FakePool,
+                make_decide_handler=lambda **_kwargs: "decide-handler",
+            ),
+        )
+
+    assert FakeLedger.instances == []
+    assert FakePool.instances == []
 
 
 def test_start_execute_queue_requires_sqlite_backend(tmp_path: Path) -> None:

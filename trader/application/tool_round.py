@@ -107,6 +107,7 @@ def resolve_symbol_decision(
     call_model: Callable[..., object],
     max_rounds: int = 1,
     tool_limits=None,
+    reinject: str = "cumul",
 ) -> "codex_client.Decision":
     """Orchestration grain-1 du tour d'outils : round(s) + tour final + merge des traces.
 
@@ -140,6 +141,8 @@ def resolve_symbol_decision(
     """
     if max_rounds < 1:
         raise ValueError("max_rounds doit être >= 1")
+    if reinject not in {"cumul", "delta"}:
+        raise ValueError("reinject doit être 'cumul' ou 'delta'")
 
     per_symbol = {symbol: base_facts}
     accumulated_traces: list[dict] = []
@@ -155,16 +158,20 @@ def resolve_symbol_decision(
         sym_traces = agent_tools.calls_for_symbol(runtime["tool_calls"], symbol)
         accumulated_traces.extend(sym_traces)
         sym_ids = {t["id"] for t in sym_traces}
-        accumulated_results.extend(r for r in results_payload if r["id"] in sym_ids)
-        # Réinjecte l'HISTORIQUE COMPLET des tool_results (pas seulement le dernier
-        # round) : sinon un round ultérieur perdrait le contexte des précédents (review R3d).
-        per_symbol = {symbol: {**base_facts, "tool_results": list(accumulated_results)}}
+        this_round_results = [r for r in results_payload if r["id"] in sym_ids]
+        accumulated_results.extend(this_round_results)
+        # Cumul stateless = historique complet ; delta session = seulement le dernier round,
+        # mais les faits de base restent toujours présents.
+        if reinject == "delta":
+            per_symbol = {symbol: {**base_facts, "tool_results": list(this_round_results)}}
+        else:
+            per_symbol = {symbol: {**base_facts, "tool_results": list(accumulated_results)}}
 
     # Budget de tournées épuisé → tour final, outils interdits (le LLM DOIT décider).
     resp_final = call_model(per_symbol, allow_tool_calls=False)
     if isinstance(resp_final, codex_client.BatchToolCallRequest):
         # Défense en profondeur (design §6.2) : une 2e tournée au tour final est bloquée.
-        return codex_client.Decision.hold(symbol, "tool_loop_blocked")
+        return _finalize(codex_client.Decision.hold(symbol, "tool_loop_blocked"), accumulated_traces, rounds_done)
     return _finalize(_decision_of(resp_final, symbol), accumulated_traces, rounds_done)
 
 

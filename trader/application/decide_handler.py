@@ -42,6 +42,7 @@ def make_decide_handler(
     *,
     codex_client,
     tool_services: "ToolRoundServices | None" = None,
+    session_backends: list | None = None,
 ) -> Callable[[dict], "str | None"]:
     """Fabrique le handler 'decide' compatible Worker.
 
@@ -67,6 +68,7 @@ def make_decide_handler(
         payload = json.loads(task.get("payload") or "{}")
         symbol: str = payload["symbol"]
         log.debug("[decide_handler] start symbol=%s task_id=%s", symbol, task.get("id"))
+        task_id = str(task.get("id"))
 
         decision, model_calls = decide_one(
             symbol=symbol,
@@ -79,6 +81,8 @@ def make_decide_handler(
             codex_client=codex_client,
             tool_services=tool_services,
             symbols_universe=payload.get("symbols_universe"),
+            session_backends=session_backends,
+            task_id=task_id,
         )
 
         result_json = json.dumps({"decision": asdict(decision), "model_calls": model_calls})

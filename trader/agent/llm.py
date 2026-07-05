@@ -8,6 +8,7 @@ JSON métier. Cela garde le fallback fournisseur hors de la stratégie.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import signal
 import shutil
@@ -15,7 +16,7 @@ import subprocess
 import time
 import urllib.error
 import urllib.request
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, is_dataclass, replace
 from pathlib import Path
 from typing import Callable, Protocol
 
@@ -29,6 +30,8 @@ DEFAULT_CONSOLIDATOR_OLLAMA_MODEL = "glm-5.1:cloud"
 DEFAULT_ENV_PATH = Path(__file__).resolve().parents[2] / ".env"
 DEFAULT_RUNTIME_SESSION_LABEL = "casys-trader:runtime-brain"
 DEFAULT_CONSOLIDATOR_SESSION_LABEL = "casys-trader:learning-consolidator"
+
+log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -90,6 +93,77 @@ class LlmRouter:
         )
 
 
+def _acpx_global_flags(acpx_bin: str, *, model: str, timeout_s: int) -> list[str]:
+    return [
+        acpx_bin,
+        "--format", "quiet",
+        "--allowed-tools", "",
+        "--no-terminal",
+        "--non-interactive-permissions", "deny",
+        "--model", model,
+        "--timeout", str(timeout_s),
+    ]
+
+
+def _acpx_agent_part(agent: str | None) -> list[str]:
+    return [] if not agent or agent == "default" else [agent]
+
+
+def build_acpx_session_new_command(
+    name: str,
+    *,
+    acpx_bin: str,
+    model: str,
+    timeout_s: int,
+    agent: str | None = None,
+) -> list[str]:
+    return [
+        *_acpx_global_flags(acpx_bin, model=model, timeout_s=timeout_s),
+        *_acpx_agent_part(agent),
+        "sessions",
+        "new",
+        "-s",
+        name,
+    ]
+
+
+def build_acpx_session_prompt_command(
+    name: str,
+    prompt: str,
+    *,
+    acpx_bin: str,
+    model: str,
+    timeout_s: int,
+    agent: str | None = None,
+) -> list[str]:
+    return [
+        *_acpx_global_flags(acpx_bin, model=model, timeout_s=timeout_s),
+        *_acpx_agent_part(agent),
+        "prompt",
+        "-s",
+        name,
+        prompt,
+    ]
+
+
+def build_acpx_session_close_command(
+    name: str,
+    *,
+    acpx_bin: str,
+    agent: str | None = None,
+) -> list[str]:
+    return [
+        acpx_bin,
+        "--format", "quiet",
+        "--no-terminal",
+        "--non-interactive-permissions", "deny",
+        *_acpx_agent_part(agent),
+        "sessions",
+        "close",
+        name,
+    ]
+
+
 def build_acpx_command(
     prompt: str,
     *,
@@ -99,17 +173,10 @@ def build_acpx_command(
     agent: str | None = None,
     session_label: str | None = None,
 ) -> list[str]:
-    agent_part = [] if not agent or agent == "default" else [agent]
     labeled_prompt = _label_prompt(prompt, session_label=session_label)
     return [
-        acpx_bin,
-        "--format", "quiet",
-        "--allowed-tools", "",
-        "--no-terminal",
-        "--non-interactive-permissions", "deny",
-        "--model", model,
-        "--timeout", str(timeout_s),
-        *agent_part,
+        *_acpx_global_flags(acpx_bin, model=model, timeout_s=timeout_s),
+        *_acpx_agent_part(agent),
         "exec",
         labeled_prompt,
     ]
@@ -202,91 +269,7 @@ def _terminate_process_group(pgid: int, *, grace_s: float = 2.0) -> None:
         return
 
 
-def _codex_acp_pids() -> set[int]:
-    if os.name != "posix":
-        return set()
-
-    try:
-        proc = subprocess.run(
-            ["ps", "-axo", "pid=,command="],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            text=True,
-            check=False,
-            timeout=2.0,
-        )
-    except subprocess.TimeoutExpired:
-        return set()
-    except Exception:  # noqa: BLE001 - observation système best-effort
-        return set()
-
-    if proc.returncode != 0:
-        return set()
-
-    pids: set[int] = set()
-    for line in proc.stdout.splitlines():
-        pid_text, separator, command = line.strip().partition(" ")
-        if not separator:
-            continue
-        executable = command.split(maxsplit=1)[0]
-        if os.path.basename(executable) != "codex-acp":
-            continue
-        try:
-            pids.add(int(pid_text))
-        except ValueError:
-            continue
-    return pids
-
-
-def _process_cwd(pid: int) -> str | None:
-    if os.name != "posix":
-        return None
-
-    try:
-        proc = subprocess.run(
-            ["lsof", "-a", "-d", "cwd", "-p", str(pid), "-Fn"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            text=True,
-            check=False,
-            timeout=2.0,
-        )
-    except subprocess.TimeoutExpired:
-        return None
-    except Exception:  # noqa: BLE001 - observation système best-effort
-        return None
-
-    if proc.returncode != 0:
-        return None
-
-    for line in proc.stdout.splitlines():
-        if line.startswith("n") and len(line) > 1:
-            return os.path.realpath(line[1:])
-    return None
-
-
-def _reap_orphan_bridges(before: set[int], call_cwd: str | None) -> None:
-    try:
-        if call_cwd is None:
-            return
-        leaked_pids = _codex_acp_pids() - before
-        for pid in sorted(leaked_pids):
-            if _process_cwd(pid) != call_cwd:
-                continue
-            try:
-                os.kill(pid, signal.SIGKILL)
-            except (ProcessLookupError, PermissionError):
-                continue
-    except Exception:  # noqa: BLE001 - le reap ne doit jamais casser l'appel LLM
-        return
-
-
 def _run_one_shot_command(command: list[str], *, timeout_s: int) -> subprocess.CompletedProcess[str]:
-    try:
-        call_cwd = os.path.realpath(os.getcwd())
-    except Exception:  # noqa: BLE001 - reap conservateur si cwd introuvable
-        call_cwd = None
-    before = _codex_acp_pids()
     proc = subprocess.Popen(
         command,
         stdout=subprocess.PIPE,
@@ -310,13 +293,159 @@ def _run_one_shot_command(command: list[str], *, timeout_s: int) -> subprocess.C
         raise
     finally:
         _terminate_process_group(proc.pid)
-        _reap_orphan_bridges(before, call_cwd)
 
     return subprocess.CompletedProcess(
         args=command,
         returncode=proc.returncode,
         stdout=stdout,
         stderr=stderr,
+    )
+
+
+def _run_and_parse(
+    command: list[str],
+    *,
+    provider: str,
+    model: str,
+    acpx_bin: str,
+    timeout_s: int,
+) -> LlmCompletion | LlmFailure:
+    if shutil.which(acpx_bin) is None:
+        return LlmFailure(
+            provider=provider,
+            model=model,
+            code="acpx_unavailable",
+            message=f"binaire '{acpx_bin}' introuvable",
+            retryable=True,
+        )
+
+    try:
+        proc = _run_one_shot_command(command, timeout_s=timeout_s + 15)
+    except subprocess.TimeoutExpired:
+        return LlmFailure(
+            provider=provider,
+            model=model,
+            code="timeout",
+            message=f"> {timeout_s}s",
+            retryable=False,
+        )
+    except Exception as exc:  # noqa: BLE001 - frontière fournisseur
+        message = str(exc)
+        return LlmFailure(
+            provider=provider,
+            model=model,
+            code=_failure_code_from_text(message),
+            message=message,
+            retryable=_looks_retryable_provider_error(message),
+        )
+
+    if proc.returncode != 0:
+        message = (proc.stderr or proc.stdout or "")[:500]
+        retryable = _looks_retryable_acpx_error(provider=provider, text=message)
+        return LlmFailure(
+            provider=provider,
+            model=model,
+            code=_failure_code_from_text(message) if retryable else "nonzero_exit",
+            message=f"exit={proc.returncode} {message}",
+            retryable=retryable,
+        )
+
+    return LlmCompletion(provider=provider, model=model, text=proc.stdout)
+
+
+@dataclass(frozen=True)
+class AcpxSession:
+    provider: str
+    model: str
+    acpx_bin: str
+    name: str
+    agent: str | None = None
+
+    def send(self, prompt: str, *, timeout_s: int) -> LlmCompletion | LlmFailure:
+        return _run_and_parse(
+            build_acpx_session_prompt_command(
+                self.name,
+                prompt,
+                acpx_bin=self.acpx_bin,
+                model=self.model,
+                timeout_s=timeout_s,
+                agent=self.agent,
+            ),
+            provider=self.provider,
+            model=self.model,
+            acpx_bin=self.acpx_bin,
+            timeout_s=timeout_s,
+        )
+
+    def close(self) -> None:
+        try:
+            _run_one_shot_command(
+                build_acpx_session_close_command(
+                    self.name,
+                    acpx_bin=self.acpx_bin,
+                    agent=self.agent,
+                ),
+                timeout_s=15,
+            )
+        except Exception as exc:  # noqa: BLE001 - fermeture best-effort, jamais bloquante
+            log.warning("[acpx_session] close failed name=%s: %s", self.name, exc)
+            return
+
+
+class SessionProviderDown(Exception):
+    def __init__(self, failure: LlmFailure) -> None:
+        super().__init__(failure.message)
+        self.failure = failure
+
+
+def session_complete_fn(session):
+    def _complete(prompt: str, timeout_s: int) -> LlmCompletion | LlmFailure:
+        result = session.send(prompt, timeout_s=timeout_s)
+        if isinstance(result, LlmFailure) and result.retryable:
+            raise SessionProviderDown(result)
+        return result
+
+    return _complete
+
+
+def run_with_session_fallback(
+    backends,
+    *,
+    task_id: str,
+    resolve,
+    open_timeout_s: int,
+) -> object | LlmFailure:
+    last_failure: LlmFailure | None = None
+    for attempt, backend in enumerate(backends):
+        session = backend.open_session(f"{task_id}:{attempt}", timeout_s=open_timeout_s)
+        if isinstance(session, LlmFailure):
+            last_failure = session
+            continue
+        try:
+            result = resolve(session)
+            if (
+                attempt > 0
+                and last_failure is not None
+                and is_dataclass(result)
+                and hasattr(result, "llm_fallback_reason")
+                and getattr(result, "llm_fallback_reason") is None
+            ):
+                result = replace(
+                    result,
+                    llm_fallback_reason=f"{last_failure.provider}:{last_failure.code}",
+                )
+            return result
+        except SessionProviderDown as exc:
+            last_failure = exc.failure
+            continue
+        finally:
+            session.close()
+    return last_failure or LlmFailure(
+        provider="none",
+        model="none",
+        code="no_backend",
+        message="aucun backend LLM configuré",
+        retryable=False,
     )
 
 
@@ -328,58 +457,46 @@ class AcpxBackend:
     agent: str | None = None
     session_label: str | None = DEFAULT_RUNTIME_SESSION_LABEL
 
+    def open_session(self, name: str, *, timeout_s: int) -> AcpxSession | LlmFailure:
+        res = _run_and_parse(
+            build_acpx_session_new_command(
+                name,
+                acpx_bin=self.acpx_bin,
+                model=self.model,
+                timeout_s=timeout_s,
+                agent=self.agent,
+            ),
+            provider=self.provider,
+            model=self.model,
+            acpx_bin=self.acpx_bin,
+            timeout_s=timeout_s,
+        )
+        if not isinstance(res, LlmCompletion):
+            return res
+
+        return AcpxSession(
+            provider=self.provider,
+            model=self.model,
+            acpx_bin=self.acpx_bin,
+            name=name,
+            agent=self.agent,
+        )
+
     def complete(self, prompt: str, *, timeout_s: int) -> LlmCompletion | LlmFailure:
-        if shutil.which(self.acpx_bin) is None:
-            return LlmFailure(
-                provider=self.provider,
+        return _run_and_parse(
+            build_acpx_command(
+                prompt,
+                acpx_bin=self.acpx_bin,
                 model=self.model,
-                code="acpx_unavailable",
-                message=f"binaire '{self.acpx_bin}' introuvable",
-                retryable=True,
-            )
-
-        try:
-            proc = _run_one_shot_command(
-                build_acpx_command(
-                    prompt,
-                    acpx_bin=self.acpx_bin,
-                    model=self.model,
-                    timeout_s=timeout_s,
-                    agent=self.agent,
-                    session_label=self.session_label,
-                ),
-                timeout_s=timeout_s + 15,
-            )
-        except subprocess.TimeoutExpired:
-            return LlmFailure(
-                provider=self.provider,
-                model=self.model,
-                code="timeout",
-                message=f"> {timeout_s}s",
-                retryable=False,
-            )
-        except Exception as exc:  # noqa: BLE001 - frontière fournisseur
-            message = str(exc)
-            return LlmFailure(
-                provider=self.provider,
-                model=self.model,
-                code=_failure_code_from_text(message),
-                message=message,
-                retryable=_looks_retryable_provider_error(message),
-            )
-
-        if proc.returncode != 0:
-            message = (proc.stderr or proc.stdout or "")[:500]
-            retryable = _looks_retryable_acpx_error(provider=self.provider, text=message)
-            return LlmFailure(
-                provider=self.provider,
-                model=self.model,
-                code=_failure_code_from_text(message) if retryable else "nonzero_exit",
-                message=f"exit={proc.returncode} {message}",
-                retryable=retryable,
-            )
-
-        return LlmCompletion(provider=self.provider, model=self.model, text=proc.stdout)
+                timeout_s=timeout_s,
+                agent=self.agent,
+                session_label=self.session_label,
+            ),
+            provider=self.provider,
+            model=self.model,
+            acpx_bin=self.acpx_bin,
+            timeout_s=timeout_s,
+        )
 
 
 class OpenAIHttpError(RuntimeError):

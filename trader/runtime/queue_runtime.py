@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import shutil
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -26,6 +27,8 @@ class StartablePool(Protocol):
 
 
 NowMs = Callable[[], int]
+_DEFAULT_DECIDE_LEASE_MS = 1_800_000
+_DECIDE_SESSION_LEASE_MARGIN_FACTOR = 1.25
 
 
 def default_now_ms() -> int:
@@ -36,10 +39,35 @@ def _default_logger() -> logging.Logger:
     return logging.getLogger("casys-trader")
 
 
-def _default_make_decide_handler(*, codex_client: object, tool_services: object = None) -> object:
+def _decide_session_lease_ms(
+    *,
+    decision_timeout_s: int,
+    max_rounds: int,
+    backend_count: int,
+) -> int:
+    timeout_s = max(int(decision_timeout_s), 1)
+    rounds = max(int(max_rounds), 1)
+    backends = max(int(backend_count), 1)
+    # Pire cas par backend : open=timeout+30, prompts=(max_rounds+1)*(timeout+15),
+    # close=15. Le runner peut recommencer depuis zero sur chaque backend.
+    per_backend_s = (timeout_s + 30) + (rounds + 1) * (timeout_s + 15) + 15
+    worst_case_s = backends * per_backend_s
+    return max(_DEFAULT_DECIDE_LEASE_MS, int(worst_case_s * _DECIDE_SESSION_LEASE_MARGIN_FACTOR * 1000))
+
+
+def _default_make_decide_handler(
+    *,
+    codex_client: object,
+    tool_services: object = None,
+    session_backends: list | None = None,
+) -> object:
     from trader.application.decide_handler import make_decide_handler
 
-    return make_decide_handler(codex_client=codex_client, tool_services=tool_services)
+    return make_decide_handler(
+        codex_client=codex_client,
+        tool_services=tool_services,
+        session_backends=session_backends,
+    )
 
 
 def _default_make_execute_order_handler(**kwargs: object) -> object:
@@ -155,6 +183,7 @@ def start_decide_queue(
     decision_batch_size: int,
     default_decision_batch_size: int,
     codex_client: object,
+    decision_timeout_s: int = 900,
     tool_services: object = None,
     now_ms_fn: NowMs = default_now_ms,
     logger: LoggerLike | None = None,
@@ -170,15 +199,45 @@ def start_decide_queue(
     decide_pool_cls = resolved.decide_pool_cls or _default_decide_pool_cls()
     make_decide_handler = resolved.make_decide_handler or _default_make_decide_handler
 
+    session_backends = None
+    lease_ms = _DEFAULT_DECIDE_LEASE_MS
+    if tool_services is not None:
+        from trader.agent import llm
+
+        router = llm.build_default_router_from_env(spark_model=codex_client.DEFAULT_MODEL)
+        session_backends = [b for b in router.backends if isinstance(b, llm.AcpxBackend)]
+        if not session_backends:
+            raise RuntimeError(
+                "[queue_decide] aucun AcpxBackend : le tour d'outils en file requiert un transport acpx "
+                "(vérifier TRADER_ACPX_BIN / provider spark)"
+            )
+        if not any(shutil.which(b.acpx_bin) for b in session_backends):
+            raise RuntimeError(
+                "[queue_decide] acpx introuvable sur le PATH pour le tour d'outils en file "
+                "(vérifier TRADER_ACPX_BIN)"
+            )
+        lease_ms = _decide_session_lease_ms(
+            decision_timeout_s=decision_timeout_s,
+            max_rounds=getattr(tool_services, "max_rounds", 1),
+            backend_count=len(session_backends),
+        )
+
     ledger = task_ledger_cls(state_dir / "task_ledger.db")
     ledger.recover_on_boot(now_ms=now_ms_fn())
     pools = resource_pools_cls({"acpx": parallelism})
     pool = decide_pool_cls(
         ledger=ledger,
         pools=pools,
-        handlers={"decide": make_decide_handler(codex_client=codex_client, tool_services=tool_services)},
+        handlers={
+            "decide": make_decide_handler(
+                codex_client=codex_client,
+                tool_services=tool_services,
+                session_backends=session_backends,
+            )
+        },
         num_workers=parallelism,
         now_fn=time.time,
+        lease_ms=lease_ms,
     )
     pool.start()
     log.info(
@@ -318,6 +377,7 @@ def start_queue_runtimes(
     execute_enabled_raw: bool,
     state_backend: str,
     commission_model: object,
+    decision_timeout_s: int = 900,
     decide_tool_services: object = None,
     now_ms_fn: NowMs = default_now_ms,
     logger: LoggerLike | None = None,
@@ -329,6 +389,7 @@ def start_queue_runtimes(
         decision_batch_size=decision_batch_size,
         default_decision_batch_size=default_decision_batch_size,
         codex_client=codex_client,
+        decision_timeout_s=decision_timeout_s,
         tool_services=decide_tool_services,
         now_ms_fn=now_ms_fn,
         logger=logger,

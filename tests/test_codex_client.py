@@ -39,6 +39,48 @@ def test_decide_batch_renvoie_une_decision_par_symbole_avec_metadonnees() -> Non
     assert result["QQQ"].action == "HOLD"
 
 
+def test_decide_batch_complete_fn_injecte_le_transport_sans_construire_de_router(monkeypatch) -> None:
+    captured = []
+    shared_context = {"cockpit": {"risk": "low"}}
+    per_symbol = {"SPY": {"indicator_triggers": []}}
+
+    def fail_build_router(**kwargs):
+        raise AssertionError("build_default_router_from_env ne doit pas être appelé")
+
+    def complete_fn(prompt: str, timeout_s: int) -> LlmCompletion:
+        captured.append((prompt, timeout_s))
+        return LlmCompletion(
+            provider="session-acpx",
+            model="gpt-5.5/medium",
+            text=(
+                '{"decisions":[{"symbol":"SPY","action":"HOLD","quantity":0,'
+                '"confidence":0.5,"rationale":"attente"}]}'
+            ),
+        )
+
+    monkeypatch.setattr(codex_client.llm, "build_default_router_from_env", fail_build_router)
+
+    result = decide_batch(
+        symbols=["SPY"],
+        mandate="# Mandat",
+        memory="# Memoire",
+        shared_context=shared_context,
+        per_symbol=per_symbol,
+        timeout_s=123,
+        complete_fn=complete_fn,
+    )
+
+    expected_prompt = build_batch_prompt(
+        mandate="# Mandat",
+        memory="# Memoire",
+        shared_context=shared_context,
+        symbols_payload=[{"symbol": "SPY", "indicator_triggers": []}],
+    )
+    assert result["SPY"].action == "HOLD"
+    assert result["SPY"].llm_provider == "session-acpx"
+    assert captured == [(expected_prompt, 123)]
+
+
 def test_prompt_documente_rs_court_rs_daily_et_regime_family_daily() -> None:
     prompt = build_batch_prompt(
         mandate="m",
@@ -449,6 +491,102 @@ def test_build_batch_prompt_avec_flag_expose_le_catalogue():
     assert '"tool_calls"' in prompt
     assert "get_freshness" in prompt
     assert "get_indicator_context" in prompt
+
+
+def test_build_batch_prompt_queue_tool_calls_ne_mentionne_pas_request_context():
+    prompt = codex_client.build_batch_prompt(
+        mandate="m", memory="mem", shared_context={}, symbols_payload=[{"symbol": "2330.TW"}],
+        allow_context_request=False, allow_tool_calls=True,
+    )
+
+    assert "REQUEST_CONTEXT" not in prompt
+    assert '"tool_calls"' in prompt
+    assert "get_indicator_context" in prompt
+
+
+def test_build_batch_prompt_batch_context_request_garde_request_context():
+    prompt = codex_client.build_batch_prompt(
+        mandate="m", memory="mem", shared_context={}, symbols_payload=[{"symbol": "2330.TW"}],
+        allow_context_request=True, allow_tool_calls=True,
+    )
+
+    assert "REQUEST_CONTEXT" in prompt
+
+
+def test_build_batch_prompt_catalogue_borne_par_symbole_parametrable():
+    default_prompt = codex_client.build_batch_prompt(
+        mandate="m", memory="mem", shared_context={}, symbols_payload=[{"symbol": "2330.TW"}],
+        allow_context_request=False, allow_tool_calls=True,
+    )
+    queue_prompt = codex_client.build_batch_prompt(
+        mandate="m", memory="mem", shared_context={}, symbols_payload=[{"symbol": "2330.TW"}],
+        allow_context_request=False, allow_tool_calls=True, max_tool_calls_per_symbol=8,
+    )
+
+    assert "Bornes : 3 appels max par symbole" in default_prompt
+    assert "Bornes : 8 appels max par symbole" in queue_prompt
+
+
+def test_build_batch_prompt_catalogue_max_rounds_1_reste_une_seule_tournee():
+    prompt = codex_client.build_batch_prompt(
+        mandate="m",
+        memory="mem",
+        shared_context={},
+        symbols_payload=[{"symbol": "2330.TW"}],
+        allow_context_request=False,
+        allow_tool_calls=True,
+        max_rounds=1,
+    )
+
+    assert "une seule tournée" in prompt.lower()
+    assert "Après la tournée tu recevras `tool_results`" in prompt
+    assert "toute nouvelle tournée sera bloquée en HOLD" in prompt
+
+
+def test_build_batch_prompt_catalogue_max_rounds_3_est_round_aware():
+    prompt = codex_client.build_batch_prompt(
+        mandate="m",
+        memory="mem",
+        shared_context={},
+        symbols_payload=[{"symbol": "2330.TW"}],
+        allow_context_request=False,
+        allow_tool_calls=True,
+        use_symbol_calls_contract=True,
+        max_rounds=3,
+    )
+    low = prompt.lower()
+
+    assert "jusqu'à 3 tournées" in low
+    assert "à chaque tour" in low
+    assert "au premier tour" not in low
+    assert "une seule tournée" not in low
+    assert "bloquée en hold" not in low
+
+
+def test_decide_batch_transmet_la_borne_catalogue_au_prompt():
+    captured = []
+
+    def complete_fn(prompt: str, timeout_s: int) -> LlmCompletion:
+        captured.append(prompt)
+        return LlmCompletion(
+            provider="acpx",
+            model="gpt-5.5",
+            text='{"tool_calls": [{"id": "c1", "tool": "get_freshness", "args": {"symbols": ["2330.TW"]}}]}',
+        )
+
+    out = codex_client.decide_batch(
+        symbols=["2330.TW"],
+        mandate="m",
+        memory="mem",
+        shared_context={},
+        per_symbol={"2330.TW": {}},
+        allow_tool_calls=True,
+        max_tool_calls_per_symbol=8,
+        complete_fn=complete_fn,
+    )
+
+    assert isinstance(out, codex_client.BatchToolCallRequest)
+    assert "Bornes : 8 appels max par symbole" in captured[0]
 
 
 def test_decide_batch_retourne_la_tournee_quand_le_llm_la_demande(monkeypatch):

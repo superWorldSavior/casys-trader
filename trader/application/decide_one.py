@@ -26,6 +26,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Callable
 
+from trader.agent import llm
 import trader.agent.tools as agent_tools
 from trader.agent.context import build_indicator_resolver
 from trader.agent.protocol.types import Decision
@@ -116,6 +117,8 @@ def decide_one(
     tool_services: ToolRoundServices | None = None,
     symbols_universe: list[str] | None = None,
     now_fn: Callable[[], datetime] | None = None,
+    session_backends: list | None = None,
+    task_id: str | None = None,
 ) -> tuple[Decision, int]:
     """Décide UN symbole via LLM ; expose les erreurs pour retry/backpressure.
 
@@ -170,6 +173,7 @@ def decide_one(
             allow_tool_calls=allow_tool_calls,
             use_symbol_calls_contract=agent_tools_enabled,
             timeout_s=decision_timeout_s,
+            max_rounds=(tool_services.max_rounds if tool_services is not None else 1),
         )
 
     tools_active = agent_tools_enabled and tool_services is not None
@@ -189,14 +193,47 @@ def decide_one(
                 indicator_resolver=resolver,
                 learnings_recall_provider=tool_services.learnings_recall_provider,
             )
-            decision = resolve_symbol_decision(
-                symbol=symbol,
-                base_facts=per_symbol_facts,
-                tool_context=context,
-                call_model=_call_model,
-                max_rounds=tool_services.max_rounds,
-                tool_limits=tool_services.tool_limits(),
+            tool_limits = tool_services.tool_limits()
+            def _resolve(session):
+                def _session_call_model(per_symbol: dict, *, allow_tool_calls: bool):
+                    nonlocal calls_made
+                    calls_made += 1
+                    return codex_client.decide_batch(
+                        symbols=[symbol],
+                        mandate=mandate,
+                        memory=memory,
+                        shared_context=shared_context,
+                        per_symbol=per_symbol,
+                        allow_context_request=False,
+                        allow_tool_calls=allow_tool_calls,
+                        use_symbol_calls_contract=agent_tools_enabled,
+                        timeout_s=decision_timeout_s,
+                        complete_fn=llm.session_complete_fn(session),
+                        max_tool_calls_per_symbol=tool_limits.max_calls_per_symbol,
+                        max_rounds=tool_services.max_rounds,
+                    )
+
+                return resolve_symbol_decision(
+                    symbol=symbol,
+                    base_facts=per_symbol_facts,
+                    tool_context=context,
+                    call_model=_session_call_model,
+                    max_rounds=tool_services.max_rounds,
+                    reinject="delta",
+                    tool_limits=tool_limits,
+                )
+
+            decision = llm.run_with_session_fallback(
+                session_backends,
+                task_id=task_id,
+                resolve=_resolve,
+                open_timeout_s=decision_timeout_s + 15,
             )
+            if isinstance(decision, llm.LlmFailure):
+                raise RetryableError(
+                    decision.code,
+                    is_overload=decision.code in _OVERLOAD_CODES,
+                )
         else:
             # Mode dégradé historique : un seul appel, aucun outil.
             responses = _call_model({symbol: per_symbol_facts}, allow_tool_calls=False)
@@ -210,6 +247,8 @@ def decide_one(
             f"unexpected_response_type:{exc}",
             is_overload=False,
         ) from exc
+    except RetryableError:
+        raise
     except Exception as exc:
         raise RetryableError(
             f"decide_batch_exception:{type(exc).__name__}:{exc}",

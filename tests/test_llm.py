@@ -1,6 +1,9 @@
 import json
 import signal
 import subprocess
+from dataclasses import dataclass
+
+import pytest
 
 import trader.agent.llm as llm
 from trader.agent.llm import (
@@ -11,9 +14,7 @@ from trader.agent.llm import (
     OpenAICompatibleBackend,
     build_acpx_command,
     build_default_router_from_env,
-    _codex_acp_pids,
     _looks_retryable_provider_error,
-    _reap_orphan_bridges,
     _run_one_shot_command,
 )
 
@@ -122,7 +123,6 @@ def test_retryable_provider_error_se_limite_aux_rate_limits_et_quotas() -> None:
 def test_acpx_backend_timeout_est_un_echec_non_retryable(monkeypatch) -> None:
     monkeypatch.setattr("trader.agent.llm.shutil.which", lambda _bin: "/usr/local/bin/acpx")
     monkeypatch.setattr("trader.agent.llm._terminate_process_group", lambda _pid: None)
-    monkeypatch.setattr("trader.agent.llm._codex_acp_pids", lambda: set())
 
     class TimeoutPopen:
         pid = 4242
@@ -150,7 +150,6 @@ def test_acpx_backend_timeout_est_un_echec_non_retryable(monkeypatch) -> None:
 def test_acpx_backend_consolidateur_traite_internal_error_comme_retryable(monkeypatch) -> None:
     monkeypatch.setattr("trader.agent.llm.shutil.which", lambda _bin: "/usr/local/bin/acpx")
     monkeypatch.setattr("trader.agent.llm._terminate_process_group", lambda _pid: None)
-    monkeypatch.setattr("trader.agent.llm._codex_acp_pids", lambda: set())
 
     class InternalErrorPopen:
         pid = 4242
@@ -174,7 +173,6 @@ def test_acpx_backend_consolidateur_traite_internal_error_comme_retryable(monkey
 def test_acpx_backend_runtime_traite_internal_error_comme_retryable(monkeypatch) -> None:
     monkeypatch.setattr("trader.agent.llm.shutil.which", lambda _bin: "/usr/local/bin/acpx")
     monkeypatch.setattr("trader.agent.llm._terminate_process_group", lambda _pid: None)
-    monkeypatch.setattr("trader.agent.llm._codex_acp_pids", lambda: set())
 
     class InternalErrorPopen:
         pid = 4242
@@ -201,7 +199,6 @@ def test_acpx_backend_exit_non_zero_sans_sortie_est_retryable(monkeypatch) -> No
     tomber en fallback au lieu de figer un HOLD sec."""
     monkeypatch.setattr("trader.agent.llm.shutil.which", lambda _bin: "/usr/local/bin/acpx")
     monkeypatch.setattr("trader.agent.llm._terminate_process_group", lambda _pid: None)
-    monkeypatch.setattr("trader.agent.llm._codex_acp_pids", lambda: set())
 
     class EmptyExitPopen:
         pid = 4242
@@ -228,7 +225,6 @@ def test_acpx_backend_exit_non_zero_avec_erreur_explicite_reste_non_retryable(mo
     non-retryable -- on ne doit pas tout rendre retryable."""
     monkeypatch.setattr("trader.agent.llm.shutil.which", lambda _bin: "/usr/local/bin/acpx")
     monkeypatch.setattr("trader.agent.llm._terminate_process_group", lambda _pid: None)
-    monkeypatch.setattr("trader.agent.llm._codex_acp_pids", lambda: set())
 
     class ExplicitErrorPopen:
         pid = 4242
@@ -249,11 +245,596 @@ def test_acpx_backend_exit_non_zero_avec_erreur_explicite_reste_non_retryable(mo
     assert result.code == "nonzero_exit"
 
 
+def test_acpx_session_send_retourne_une_completion_sur_stdout(monkeypatch) -> None:
+    monkeypatch.setattr("trader.agent.llm.shutil.which", lambda _bin: "/usr/local/bin/acpx")
+    calls = []
+
+    def fake_run(command, *, timeout_s):
+        calls.append((command, timeout_s))
+        return subprocess.CompletedProcess(
+            args=command,
+            returncode=0,
+            stdout='{"symbol":"SPY","action":"HOLD"}',
+            stderr="",
+        )
+
+    monkeypatch.setattr("trader.agent.llm._run_one_shot_command", fake_run)
+
+    session = llm.AcpxSession(
+        provider="acpx",
+        model="gpt-5.5/medium",
+        acpx_bin="acpx",
+        name="casys-trader:runtime-brain:0",
+    )
+
+    result = session.send("analyse ce symbole", timeout_s=45)
+
+    assert isinstance(result, LlmCompletion)
+    assert result.provider == "acpx"
+    assert result.model == "gpt-5.5/medium"
+    assert result.text == '{"symbol":"SPY","action":"HOLD"}'
+    assert calls == [
+        (
+            [
+                "acpx",
+                "--format",
+                "quiet",
+                "--allowed-tools",
+                "",
+                "--no-terminal",
+                "--non-interactive-permissions",
+                "deny",
+                "--model",
+                "gpt-5.5/medium",
+                "--timeout",
+                "45",
+                "prompt",
+                "-s",
+                "casys-trader:runtime-brain:0",
+                "analyse ce symbole",
+            ],
+            60,
+        )
+    ]
+
+
+def test_acpx_backend_open_session_cree_une_session_neuve_et_retourne_un_objet(monkeypatch) -> None:
+    monkeypatch.setattr("trader.agent.llm.shutil.which", lambda _bin: "/usr/local/bin/acpx")
+    calls = []
+
+    def fake_run(command, *, timeout_s):
+        calls.append((command, timeout_s))
+        return subprocess.CompletedProcess(args=command, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("trader.agent.llm._run_one_shot_command", fake_run)
+
+    backend = AcpxBackend(provider="acpx", model="gpt-5.5/medium", acpx_bin="acpx")
+
+    result = backend.open_session("casys-trader:runtime-brain:0", timeout_s=30)
+
+    assert isinstance(result, llm.AcpxSession)
+    assert result.provider == "acpx"
+    assert result.model == "gpt-5.5/medium"
+    assert result.acpx_bin == "acpx"
+    assert result.name == "casys-trader:runtime-brain:0"
+    assert result.agent is None
+    assert calls == [
+        (
+            [
+                "acpx",
+                "--format",
+                "quiet",
+                "--allowed-tools",
+                "",
+                "--no-terminal",
+                "--non-interactive-permissions",
+                "deny",
+                "--model",
+                "gpt-5.5/medium",
+                "--timeout",
+                "30",
+                "sessions",
+                "new",
+                "-s",
+                "casys-trader:runtime-brain:0",
+            ],
+            45,
+        )
+    ]
+
+
+def test_acpx_backend_open_session_retourne_l_echec_si_new_echoue(monkeypatch) -> None:
+    monkeypatch.setattr("trader.agent.llm.shutil.which", lambda _bin: "/usr/local/bin/acpx")
+
+    def fake_run(command, *, timeout_s):
+        return subprocess.CompletedProcess(
+            args=command,
+            returncode=1,
+            stdout="",
+            stderr="fatal: configuration invalide\n",
+        )
+
+    monkeypatch.setattr("trader.agent.llm._run_one_shot_command", fake_run)
+
+    backend = AcpxBackend(provider="acpx", model="gpt-5.5/medium", acpx_bin="acpx")
+
+    result = backend.open_session("casys-trader:runtime-brain:0", timeout_s=30)
+
+    assert isinstance(result, LlmFailure)
+    assert result.provider == "acpx"
+    assert result.model == "gpt-5.5/medium"
+    assert result.retryable is False
+    assert result.code == "nonzero_exit"
+
+
+def test_acpx_backend_agent_claude_est_porte_par_session_new_et_prompt(monkeypatch) -> None:
+    monkeypatch.setattr("trader.agent.llm.shutil.which", lambda _bin: "/usr/local/bin/acpx")
+    calls = []
+
+    def fake_run(command, *, timeout_s):
+        calls.append((command, timeout_s))
+        return subprocess.CompletedProcess(args=command, returncode=0, stdout="ok", stderr="")
+
+    monkeypatch.setattr("trader.agent.llm._run_one_shot_command", fake_run)
+
+    backend = AcpxBackend(
+        provider="acpx-claude-sonnet",
+        model="claude-sonnet",
+        acpx_bin="acpx",
+        agent="claude",
+    )
+
+    session = backend.open_session("casys-trader:runtime-brain:0", timeout_s=30)
+    assert isinstance(session, llm.AcpxSession)
+    assert session.agent == "claude"
+
+    result = session.send("analyse ce symbole", timeout_s=12)
+
+    assert isinstance(result, llm.LlmCompletion)
+    assert calls[0][0][-5:] == ["claude", "sessions", "new", "-s", "casys-trader:runtime-brain:0"]
+    assert calls[1][0][-5:] == ["claude", "prompt", "-s", "casys-trader:runtime-brain:0", "analyse ce symbole"]
+
+
+def test_acpx_session_close_envoie_la_commande_de_fermeture(monkeypatch) -> None:
+    calls = []
+
+    def fake_run(command, *, timeout_s):
+        calls.append(command)
+        return subprocess.CompletedProcess(args=command, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("trader.agent.llm._run_one_shot_command", fake_run)
+
+    session = llm.AcpxSession(
+        provider="acpx",
+        model="gpt-5.5/medium",
+        acpx_bin="acpx",
+        name="casys-trader:runtime-brain:0",
+    )
+
+    session.close()
+
+    assert calls == [
+        [
+            "acpx",
+            "--format",
+            "quiet",
+            "--no-terminal",
+            "--non-interactive-permissions",
+            "deny",
+            "sessions",
+            "close",
+            "casys-trader:runtime-brain:0",
+        ]
+    ]
+
+
+def test_acpx_session_close_logge_un_warning_sans_lever(monkeypatch, caplog) -> None:
+    def fake_run(command, *, timeout_s):
+        raise RuntimeError("acpx close failed")
+
+    monkeypatch.setattr("trader.agent.llm._run_one_shot_command", fake_run)
+    caplog.set_level("WARNING", logger="trader.agent.llm")
+
+    session = llm.AcpxSession(
+        provider="acpx",
+        model="gpt-5.5/medium",
+        acpx_bin="acpx",
+        name="casys-trader:runtime-brain:0",
+    )
+
+    session.close()
+
+    assert "acpx close failed" in caplog.text
+    assert "casys-trader:runtime-brain:0" in caplog.text
+
+
+def test_acpx_session_close_peut_etre_appele_deux_fois_sans_lever(monkeypatch) -> None:
+    calls = []
+
+    def fake_run(command, *, timeout_s):
+        calls.append(command)
+        if len(calls) == 2:
+            raise RuntimeError("already closed")
+        return subprocess.CompletedProcess(args=command, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("trader.agent.llm._run_one_shot_command", fake_run)
+
+    session = llm.AcpxSession(
+        provider="acpx",
+        model="gpt-5.5/medium",
+        acpx_bin="acpx",
+        name="casys-trader:runtime-brain:0",
+    )
+
+    session.close()
+    session.close()
+
+    assert len(calls) == 2
+
+
+def test_run_with_session_fallback_happy_path_retourne_le_resultat_et_ferme_la_session() -> None:
+    events = []
+
+    class FakeSession:
+        def __init__(self, name):
+            self.name = name
+
+        def close(self):
+            events.append(("close", self.name))
+
+    class FakeBackend:
+        def open_session(self, name, *, timeout_s):
+            events.append(("open", name, timeout_s))
+            return FakeSession(name)
+
+    def resolve(session):
+        events.append(("resolve", session.name))
+        return "DECISION"
+
+    result = llm.run_with_session_fallback(
+        [FakeBackend()],
+        task_id="resolve:SPY",
+        resolve=resolve,
+        open_timeout_s=12,
+    )
+
+    assert result == "DECISION"
+    assert events == [
+        ("open", "resolve:SPY:0", 12),
+        ("resolve", "resolve:SPY:0"),
+        ("close", "resolve:SPY:0"),
+    ]
+
+
+def test_session_complete_fn_retourne_la_completion_de_la_session() -> None:
+    completion = LlmCompletion(provider="acpx", model="gpt-5.5", text='{"ok":true}')
+    calls = []
+
+    class FakeSession:
+        def send(self, prompt, *, timeout_s):
+            calls.append((prompt, timeout_s))
+            return completion
+
+    complete = llm.session_complete_fn(FakeSession())
+
+    result = complete("prompt", 42)
+
+    assert result is completion
+    assert calls == [("prompt", 42)]
+
+
+def test_session_complete_fn_leve_provider_down_sur_echec_retryable() -> None:
+    failure = LlmFailure(
+        provider="acpx",
+        model="gpt-5.5",
+        code="rate_limited",
+        message="quota",
+        retryable=True,
+    )
+
+    class FakeSession:
+        def send(self, prompt, *, timeout_s):
+            return failure
+
+    complete = llm.session_complete_fn(FakeSession())
+
+    with pytest.raises(llm.SessionProviderDown) as exc_info:
+        complete("prompt", 42)
+
+    assert exc_info.value.failure is failure
+
+
+def test_session_complete_fn_retourne_l_echec_non_retryable() -> None:
+    failure = LlmFailure(
+        provider="acpx",
+        model="gpt-5.5",
+        code="bad_output",
+        message="json invalide",
+        retryable=False,
+    )
+
+    class FakeSession:
+        def send(self, prompt, *, timeout_s):
+            return failure
+
+    complete = llm.session_complete_fn(FakeSession())
+
+    assert complete("prompt", 42) is failure
+
+
+def test_run_with_session_fallback_open_failure_passe_au_backend_suivant() -> None:
+    events = []
+    failure = LlmFailure(
+        provider="acpx",
+        model="gpt-5.5",
+        code="rate_limited",
+        message="quota",
+        retryable=True,
+    )
+
+    class FakeSession:
+        def __init__(self, name):
+            self.name = name
+
+        def close(self):
+            events.append(("close", self.name))
+
+    class FailingOpenBackend:
+        def open_session(self, name, *, timeout_s):
+            events.append(("open", name, timeout_s))
+            return failure
+
+    class WorkingBackend:
+        def open_session(self, name, *, timeout_s):
+            events.append(("open", name, timeout_s))
+            return FakeSession(name)
+
+    def resolve(session):
+        events.append(("resolve", session.name))
+        return "DECISION"
+
+    result = llm.run_with_session_fallback(
+        [FailingOpenBackend(), WorkingBackend()],
+        task_id="resolve:SPY",
+        resolve=resolve,
+        open_timeout_s=12,
+    )
+
+    assert result == "DECISION"
+    assert events == [
+        ("open", "resolve:SPY:0", 12),
+        ("open", "resolve:SPY:1", 12),
+        ("resolve", "resolve:SPY:1"),
+        ("close", "resolve:SPY:1"),
+    ]
+
+
+def test_run_with_session_fallback_provider_down_restart_depuis_zero() -> None:
+    events = []
+    failure = LlmFailure(
+        provider="acpx",
+        model="gpt-5.5",
+        code="rate_limited",
+        message="quota",
+        retryable=True,
+    )
+
+    class FakeSession:
+        def __init__(self, name):
+            self.name = name
+
+        def close(self):
+            events.append(("close", self.name))
+
+    class FakeBackend:
+        def open_session(self, name, *, timeout_s):
+            events.append(("open", name, timeout_s))
+            return FakeSession(name)
+
+    def resolve(session):
+        events.append(("resolve", session.name))
+        if session.name.endswith(":0"):
+            raise llm.SessionProviderDown(failure)
+        return "DECISION"
+
+    result = llm.run_with_session_fallback(
+        [FakeBackend(), FakeBackend()],
+        task_id="resolve:SPY",
+        resolve=resolve,
+        open_timeout_s=12,
+    )
+
+    assert result == "DECISION"
+    assert events == [
+        ("open", "resolve:SPY:0", 12),
+        ("resolve", "resolve:SPY:0"),
+        ("close", "resolve:SPY:0"),
+        ("open", "resolve:SPY:1", 12),
+        ("resolve", "resolve:SPY:1"),
+        ("close", "resolve:SPY:1"),
+    ]
+
+
+def test_run_with_session_fallback_stamp_fallback_reason_sur_dataclass_compatible() -> None:
+    failure = LlmFailure(
+        provider="acpx",
+        model="gpt-5.5",
+        code="rate_limited",
+        message="quota",
+        retryable=True,
+    )
+
+    @dataclass(frozen=True)
+    class DecisionLike:
+        symbol: str
+        llm_fallback_reason: str | None = None
+
+    class FakeSession:
+        def __init__(self, name):
+            self.name = name
+
+        def close(self):
+            return None
+
+    class FakeBackend:
+        def open_session(self, name, *, timeout_s):
+            return FakeSession(name)
+
+    def resolve(session):
+        if session.name.endswith(":0"):
+            raise llm.SessionProviderDown(failure)
+        return DecisionLike(symbol="SPY")
+
+    result = llm.run_with_session_fallback(
+        [FakeBackend(), FakeBackend()],
+        task_id="resolve:SPY",
+        resolve=resolve,
+        open_timeout_s=12,
+    )
+
+    assert isinstance(result, DecisionLike)
+    assert result.llm_fallback_reason == "acpx:rate_limited"
+
+
+def test_run_with_session_fallback_ne_touche_pas_un_objet_sans_fallback_reason() -> None:
+    failure = LlmFailure(
+        provider="acpx",
+        model="gpt-5.5",
+        code="rate_limited",
+        message="quota",
+        retryable=True,
+    )
+
+    @dataclass(frozen=True)
+    class PlainResult:
+        value: str
+
+    class FakeSession:
+        def __init__(self, name):
+            self.name = name
+
+        def close(self):
+            return None
+
+    class FakeBackend:
+        def open_session(self, name, *, timeout_s):
+            return FakeSession(name)
+
+    plain = PlainResult("ok")
+
+    def resolve(session):
+        if session.name.endswith(":0"):
+            raise llm.SessionProviderDown(failure)
+        return plain
+
+    result = llm.run_with_session_fallback(
+        [FakeBackend(), FakeBackend()],
+        task_id="resolve:SPY",
+        resolve=resolve,
+        open_timeout_s=12,
+    )
+
+    assert result is plain
+
+
+def test_run_with_session_fallback_tous_down_retourne_le_dernier_echec() -> None:
+    events = []
+    first_failure = LlmFailure(
+        provider="acpx",
+        model="gpt-5.5",
+        code="rate_limited",
+        message="quota primary",
+        retryable=True,
+    )
+    last_failure = LlmFailure(
+        provider="acpx-claude-sonnet",
+        model="sonnet",
+        code="provider_error",
+        message="fallback down",
+        retryable=True,
+    )
+
+    class FakeSession:
+        def __init__(self, name, failure):
+            self.name = name
+            self.failure = failure
+
+        def close(self):
+            events.append(("close", self.name))
+
+    class FakeBackend:
+        def __init__(self, failure):
+            self.failure = failure
+
+        def open_session(self, name, *, timeout_s):
+            events.append(("open", name, timeout_s))
+            return FakeSession(name, self.failure)
+
+    def resolve(session):
+        events.append(("resolve", session.name))
+        raise llm.SessionProviderDown(session.failure)
+
+    result = llm.run_with_session_fallback(
+        [FakeBackend(first_failure), FakeBackend(last_failure)],
+        task_id="resolve:SPY",
+        resolve=resolve,
+        open_timeout_s=12,
+    )
+
+    assert result is last_failure
+    assert events == [
+        ("open", "resolve:SPY:0", 12),
+        ("resolve", "resolve:SPY:0"),
+        ("close", "resolve:SPY:0"),
+        ("open", "resolve:SPY:1", 12),
+        ("resolve", "resolve:SPY:1"),
+        ("close", "resolve:SPY:1"),
+    ]
+
+
+def test_run_with_session_fallback_court_circuite_si_le_premier_backend_reussit() -> None:
+    events = []
+
+    class FakeSession:
+        def __init__(self, name):
+            self.name = name
+
+        def close(self):
+            events.append(("close", self.name))
+
+    class FirstBackend:
+        def open_session(self, name, *, timeout_s):
+            events.append(("open-primary", name, timeout_s))
+            return FakeSession(name)
+
+    class SecondBackend:
+        def open_session(self, name, *, timeout_s):
+            events.append(("open-fallback", name, timeout_s))
+            return FakeSession(name)
+
+    def resolve(session):
+        events.append(("resolve", session.name))
+        return "PRIMARY_DECISION"
+
+    result = llm.run_with_session_fallback(
+        [FirstBackend(), SecondBackend()],
+        task_id="resolve:SPY",
+        resolve=resolve,
+        open_timeout_s=12,
+    )
+
+    assert result == "PRIMARY_DECISION"
+    assert events == [
+        ("open-primary", "resolve:SPY:0", 12),
+        ("resolve", "resolve:SPY:0"),
+        ("close", "resolve:SPY:0"),
+    ]
+
+
 def test_acpx_backend_isole_et_nettoie_le_process_group(monkeypatch) -> None:
     monkeypatch.setattr("trader.agent.llm.shutil.which", lambda _bin: "/usr/local/bin/acpx")
     popen_calls = []
     cleaned_pids = []
-    pid_snapshots = iter([set(), set()])
 
     class FakePopen:
         pid = 4242
@@ -267,7 +848,6 @@ def test_acpx_backend_isole_et_nettoie_le_process_group(monkeypatch) -> None:
 
     monkeypatch.setattr("trader.agent.llm.subprocess.Popen", FakePopen)
     monkeypatch.setattr("trader.agent.llm._terminate_process_group", lambda pid: cleaned_pids.append(pid))
-    monkeypatch.setattr("trader.agent.llm._codex_acp_pids", lambda: next(pid_snapshots))
 
     result = AcpxBackend().complete("prompt", timeout_s=12)
 
@@ -300,7 +880,6 @@ def test_run_one_shot_nettoie_l_environnement_runtime_pollue(monkeypatch) -> Non
 
     monkeypatch.setattr("trader.agent.llm.subprocess.Popen", FakePopen)
     monkeypatch.setattr("trader.agent.llm._terminate_process_group", lambda _pid: None)
-    monkeypatch.setattr("trader.agent.llm._codex_acp_pids", lambda: set())
 
     result = _run_one_shot_command(["acpx", "exec", "prompt"], timeout_s=12)
 
@@ -312,131 +891,7 @@ def test_run_one_shot_nettoie_l_environnement_runtime_pollue(monkeypatch) -> Non
     assert env["PATH"] == "/opt/homebrew/bin:/usr/bin"
 
 
-def test_codex_acp_pids_filtre_sur_lexecutable_exact(monkeypatch) -> None:
-    calls = []
-
-    class FakeCompleted:
-        returncode = 0
-        stdout = "\n".join(
-            [
-                "101 /usr/bin/python worker.py codex-acp",
-                "102 /opt/tools/codex-acp --stdio",
-                "103 codex-acp --stdio",
-                "104 /tmp/not-codex-acp --stdio",
-            ]
-        )
-
-    def fake_run(command, **kwargs):
-        calls.append((command, kwargs))
-        return FakeCompleted()
-
-    monkeypatch.setattr("trader.agent.llm.subprocess.run", fake_run)
-
-    assert _codex_acp_pids() == {102, 103}
-    assert calls[0][0] == ["ps", "-axo", "pid=,command="]
-    assert calls[0][1]["timeout"] > 0
-
-
-def test_codex_acp_pids_timeout_retourne_vide(monkeypatch) -> None:
-    def raise_timeout(command, **kwargs):
-        raise subprocess.TimeoutExpired(cmd=command, timeout=kwargs["timeout"])
-
-    monkeypatch.setattr("trader.agent.llm.subprocess.run", raise_timeout)
-
-    assert _codex_acp_pids() == set()
-
-
-def test_process_cwd_lsof_parse_un_realpath_et_timeout(monkeypatch) -> None:
-    calls = []
-
-    class FakeCompleted:
-        returncode = 0
-        stdout = "p42\nn/tmp/repo-link\n"
-
-    def fake_run(command, **kwargs):
-        calls.append((command, kwargs))
-        return FakeCompleted()
-
-    monkeypatch.setattr("trader.agent.llm.subprocess.run", fake_run)
-    monkeypatch.setattr("trader.agent.llm.os.path.realpath", lambda path: f"/real{path}")
-
-    assert llm._process_cwd(42) == "/real/tmp/repo-link"
-    assert calls[0][0] == ["lsof", "-a", "-d", "cwd", "-p", "42", "-Fn"]
-    assert calls[0][1]["timeout"] > 0
-
-    def raise_timeout(command, **kwargs):
-        raise subprocess.TimeoutExpired(cmd=command, timeout=kwargs["timeout"])
-
-    monkeypatch.setattr("trader.agent.llm.subprocess.run", raise_timeout)
-
-    assert llm._process_cwd(42) is None
-
-
-def test_reap_orphan_bridges_filtre_le_diff_par_cwd_exact(monkeypatch) -> None:
-    killed = []
-    cwd_by_pid = {
-        2: "/repo",
-        3: "/other-repo",
-        4: None,
-    }
-
-    monkeypatch.setattr("trader.agent.llm._codex_acp_pids", lambda: {1, 2, 3, 4})
-    monkeypatch.setattr("trader.agent.llm._process_cwd", lambda pid: cwd_by_pid[pid])
-    monkeypatch.setattr("trader.agent.llm.os.kill", lambda pid, sig: killed.append((pid, sig)))
-
-    _reap_orphan_bridges({1}, "/repo")
-
-    assert killed == [(2, signal.SIGKILL)]
-
-
-def test_reap_orphan_bridges_exige_une_egalite_cwd_exacte(monkeypatch) -> None:
-    killed = []
-
-    monkeypatch.setattr("trader.agent.llm._codex_acp_pids", lambda: {2})
-    monkeypatch.setattr("trader.agent.llm._process_cwd", lambda _pid: "/repo/worktrees/x")
-    monkeypatch.setattr("trader.agent.llm.os.kill", lambda pid, sig: killed.append((pid, sig)))
-
-    _reap_orphan_bridges(set(), "/repo")
-
-    assert killed == []
-
-
-def test_run_one_shot_reap_uniquement_les_nouveaux_ponts_codex_acp(monkeypatch) -> None:
-    pid_snapshots = iter([{1, 2}, {1, 2, 3, 4}])
-    cleaned_pids = []
-    killed = []
-
-    class FakePopen:
-        pid = 4242
-        returncode = 7
-
-        def __init__(self, command, **kwargs):
-            self.command = command
-
-        def communicate(self, timeout=None):
-            return "STDOUT", "STDERR"
-
-    monkeypatch.setattr("trader.agent.llm.subprocess.Popen", FakePopen)
-    monkeypatch.setattr("trader.agent.llm._terminate_process_group", lambda pid: cleaned_pids.append(pid))
-    monkeypatch.setattr("trader.agent.llm._codex_acp_pids", lambda: next(pid_snapshots))
-    monkeypatch.setattr("trader.agent.llm._process_cwd", lambda _pid: "/repo")
-    monkeypatch.setattr("trader.agent.llm.os.getcwd", lambda: "/repo")
-    monkeypatch.setattr("trader.agent.llm.os.kill", lambda pid, sig: killed.append((pid, sig)))
-
-    result = _run_one_shot_command(["acpx", "exec", "prompt"], timeout_s=12)
-
-    assert result.returncode == 7
-    assert result.stdout == "STDOUT"
-    assert result.stderr == "STDERR"
-    assert cleaned_pids == [4242]
-    assert {pid for pid, _sig in killed} == {3, 4}
-    assert all(sig == signal.SIGKILL for _pid, sig in killed)
-
-
-def test_run_one_shot_ne_tue_aucun_pont_sans_nouveau_pid(monkeypatch) -> None:
-    pid_snapshots = iter([{1, 2}, {1, 2}])
-    killed = []
-
+def test_run_one_shot_ne_sonde_plus_les_ponts_codex_acp(monkeypatch) -> None:
     class FakePopen:
         pid = 4242
         returncode = 0
@@ -447,52 +902,18 @@ def test_run_one_shot_ne_tue_aucun_pont_sans_nouveau_pid(monkeypatch) -> None:
         def communicate(self, timeout=None):
             return "OK", ""
 
+    def fail_if_called():
+        raise AssertionError("le reaper cwd ne doit plus sonder les ponts codex-acp")
+
     monkeypatch.setattr("trader.agent.llm.subprocess.Popen", FakePopen)
     monkeypatch.setattr("trader.agent.llm._terminate_process_group", lambda _pid: None)
-    monkeypatch.setattr("trader.agent.llm._codex_acp_pids", lambda: next(pid_snapshots))
-    monkeypatch.setattr("trader.agent.llm._process_cwd", lambda _pid: "/repo")
-    monkeypatch.setattr("trader.agent.llm.os.getcwd", lambda: "/repo")
-    monkeypatch.setattr("trader.agent.llm.os.kill", lambda pid, sig: killed.append((pid, sig)))
+    monkeypatch.setattr("trader.agent.llm._codex_acp_pids", fail_if_called, raising=False)
 
     result = _run_one_shot_command(["acpx", "exec", "prompt"], timeout_s=12)
 
     assert result.returncode == 0
     assert result.stdout == "OK"
     assert result.stderr == ""
-    assert killed == []
-
-
-def test_run_one_shot_ignore_les_erreurs_de_reap_des_ponts(monkeypatch) -> None:
-    pid_snapshots = iter([{1}, {1, 2}])
-    kill_attempts = []
-
-    class FakePopen:
-        pid = 4242
-        returncode = 0
-
-        def __init__(self, command, **kwargs):
-            self.command = command
-
-        def communicate(self, timeout=None):
-            return "OK", "WARN"
-
-    def raise_process_lookup(pid: int, sig: int) -> None:
-        kill_attempts.append((pid, sig))
-        raise ProcessLookupError
-
-    monkeypatch.setattr("trader.agent.llm.subprocess.Popen", FakePopen)
-    monkeypatch.setattr("trader.agent.llm._terminate_process_group", lambda _pid: None)
-    monkeypatch.setattr("trader.agent.llm._codex_acp_pids", lambda: next(pid_snapshots))
-    monkeypatch.setattr("trader.agent.llm._process_cwd", lambda _pid: "/repo")
-    monkeypatch.setattr("trader.agent.llm.os.getcwd", lambda: "/repo")
-    monkeypatch.setattr("trader.agent.llm.os.kill", raise_process_lookup)
-
-    result = _run_one_shot_command(["acpx", "exec", "prompt"], timeout_s=12)
-
-    assert result.returncode == 0
-    assert result.stdout == "OK"
-    assert result.stderr == "WARN"
-    assert kill_attempts == [(2, signal.SIGKILL)]
 
 
 def test_openai_compatible_backend_appelle_chat_completions() -> None:
@@ -573,6 +994,109 @@ def test_openai_compatible_backend_classe_abonnement_ollama() -> None:
     assert result.retryable is False
     assert result.code == "subscription_required"
     assert "requires a subscription" in result.message
+
+
+def test_build_acpx_session_new_command_cree_une_session_nommee() -> None:
+    cmd = llm.build_acpx_session_new_command(
+        "casys-trader:runtime-brain:0",
+        acpx_bin="acpx",
+        model="gpt-5.5/medium",
+        timeout_s=30,
+    )
+
+    assert cmd == [
+        "acpx",
+        "--format",
+        "quiet",
+        "--allowed-tools",
+        "",
+        "--no-terminal",
+        "--non-interactive-permissions",
+        "deny",
+        "--model",
+        "gpt-5.5/medium",
+        "--timeout",
+        "30",
+        "sessions",
+        "new",
+        "-s",
+        "casys-trader:runtime-brain:0",
+    ]
+
+
+def test_build_acpx_session_prompt_command_envoie_un_prompt_dans_une_session_nommee() -> None:
+    cmd = llm.build_acpx_session_prompt_command(
+        "casys-trader:runtime-brain:0",
+        "analyse ce symbole",
+        acpx_bin="acpx",
+        model="gpt-5.5/medium",
+        timeout_s=45,
+    )
+
+    assert cmd == [
+        "acpx",
+        "--format",
+        "quiet",
+        "--allowed-tools",
+        "",
+        "--no-terminal",
+        "--non-interactive-permissions",
+        "deny",
+        "--model",
+        "gpt-5.5/medium",
+        "--timeout",
+        "45",
+        "prompt",
+        "-s",
+        "casys-trader:runtime-brain:0",
+        "analyse ce symbole",
+    ]
+
+
+def test_build_acpx_session_close_command_ferme_une_session_nommee() -> None:
+    cmd = llm.build_acpx_session_close_command(
+        "casys-trader:runtime-brain:0",
+        acpx_bin="acpx",
+    )
+
+    assert cmd == [
+        "acpx",
+        "--format",
+        "quiet",
+        "--no-terminal",
+        "--non-interactive-permissions",
+        "deny",
+        "sessions",
+        "close",
+        "casys-trader:runtime-brain:0",
+    ]
+
+
+def test_build_acpx_session_commands_peuvent_cibler_un_agent_dedie() -> None:
+    new_cmd = llm.build_acpx_session_new_command(
+        "casys-trader:runtime-brain:0",
+        acpx_bin="acpx",
+        model="claude-sonnet",
+        timeout_s=30,
+        agent="claude",
+    )
+    prompt_cmd = llm.build_acpx_session_prompt_command(
+        "casys-trader:runtime-brain:0",
+        "analyse",
+        acpx_bin="acpx",
+        model="claude-sonnet",
+        timeout_s=30,
+        agent="claude",
+    )
+    close_cmd = llm.build_acpx_session_close_command(
+        "casys-trader:runtime-brain:0",
+        acpx_bin="acpx",
+        agent="claude",
+    )
+
+    assert new_cmd[-5:] == ["claude", "sessions", "new", "-s", "casys-trader:runtime-brain:0"]
+    assert prompt_cmd[-5:] == ["claude", "prompt", "-s", "casys-trader:runtime-brain:0", "analyse"]
+    assert close_cmd[-4:] == ["claude", "sessions", "close", "casys-trader:runtime-brain:0"]
 
 
 def test_build_acpx_command_peut_cibler_un_agent_dedie() -> None:
