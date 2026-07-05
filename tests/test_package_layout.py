@@ -239,6 +239,41 @@ def test_daemon_delegates_data_source_bootstrap_to_runtime_adapter() -> None:
     assert violations == []
 
 
+def test_daemon_delegates_market_rotation_tick_to_runtime_adapter() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    daemon_path = repo_root / "trader" / "runtime" / "daemon.py"
+    adapter_path = repo_root / "trader" / "runtime" / "market_rotation_runtime.py"
+
+    assert adapter_path.exists()
+
+    source = daemon_path.read_text(encoding="utf-8")
+    assert "market_rotation_runtime.tick_market_rotation" in source
+
+    tree = ast.parse(source, filename=str(daemon_path))
+    forbidden_modules = {
+        "trader.market.radar_config",
+        "trader.market.rotation",
+        "trader.market.rotation.venues",
+        "trader.market.rotation.wiring",
+    }
+
+    def _is_forbidden_module(module: str) -> bool:
+        return module in forbidden_modules or any(
+            module.startswith(f"{forbidden}.") for forbidden in forbidden_modules
+        )
+
+    violations: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module and _is_forbidden_module(node.module):
+            violations.append(f"from {node.module} import ...")
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if _is_forbidden_module(alias.name):
+                    violations.append(f"import {alias.name}")
+
+    assert violations == []
+
+
 def test_daemon_delegates_execute_queue_plan_payload_to_application_service() -> None:
     repo_root = Path(__file__).resolve().parents[1]
     daemon_path = repo_root / "trader" / "runtime" / "daemon.py"

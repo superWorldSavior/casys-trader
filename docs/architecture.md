@@ -16,7 +16,7 @@
 > `execute-queue-dispatch`, `execute-queue-plan-payload`,
 > `fill-outcome-accounting`, `fill-plan-effects`,
 > `cycle-finalization`, `queue-runtime-bootstrap`,
-> `data-source-runtime`).
+> `data-source-runtime`, `market-rotation-runtime`).
 
 ---
 
@@ -92,6 +92,7 @@ les utilisaient :
 | `trader/runtime/cycle_finalization.py` | Adaptateur runtime de fin de cycle : consolidation learnings, collecte macro best-effort, cache feedback gross, probes `shadow_queue` et `state_compare` | garde les side effects observabilité/mémoire hors du coeur décisionnel ; contrats `Protocol` locaux pour les dépendances injectées |
 | `trader/runtime/queue_runtime.py` | Bootstrap runtime des pools `decide`/`execute_order` : flags, ledgers, pools, handlers et stack SQLite partagée | garde la queue canonique hors du bloc `main()` tout en laissant `run_cycle()` choisir le chemin queue/synchrone |
 | `trader/runtime/data_source_runtime.py` | Bootstrap et transitions runtime des sources de données : profil composite/direct, IB obligatoire ou dégradé paper, lazy attach et détachement sur échec connexion | garde l'orchestration réseau/adapter hors de `daemon.main()` avec dépendances injectées pour préserver les tests runtime |
+| `trader/runtime/market_rotation_runtime.py` | Adaptateur runtime du tick D10 : charge `radar.yaml`, construit l'override LLM si activé, injecte le cache `last_regime` et appelle `market.rotation.venues.tick()` en fail-safe | évite les imports rotation/radar inline dans `daemon.main()` tout en gardant le daemon propriétaire du cycle |
 | `trader/runtime/` | Daemon, CLI, logging, PID file, IB attach, rotation ledger, writers d'état fichier | compat virtuelle : `python -m trader.daemon`, `python -m trader.cli` |
 | `trader/reporting/read_models/live_kpis.py` | Projection live des KPI depuis `state/` pour daemon/cockpit/TUI | `reporting.stats` rend les KPI ; `interfaces.cli.stats` possède la CLI |
 | `trader/reporting/read_models/runtime_state.py` | Lecture tolérante des fichiers `state/` pour TUI/cockpit | compat virtuelle : `trader.read_models.*` |

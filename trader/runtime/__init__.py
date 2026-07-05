@@ -9,6 +9,7 @@ __all__ = [
     "ib_attach",
     "ledger_rotation",
     "logging_setup",
+    "market_rotation_runtime",
     "pid_file",
     "process_env",
     "queue_runtime",
