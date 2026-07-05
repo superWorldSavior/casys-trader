@@ -63,7 +63,7 @@ Légende : ✅ couvert · 🟡 partiel / dispersé / potentiellement périmé ·
 ### Données
 | Sous-système | Package/module | Réf | Où | Décisions |
 |---|---|---|---|---|
-| Sources marché & fraîcheur | `market/data_source`, `market/market_data`, `market/ib_source` | ✅ | archi §3.2 | — |
+| Sources marché & fraîcheur | `runtime/data_source_runtime`, `market/data_source`, `market/market_data`, `market/ib_source` | ✅ | archi §1.1, §3.2 | — |
 | **Conversion FX** | `market/fx`, `market/fx_rates` | ✅ | **`reference/fx.md`** | chantier FX |
 | Fil d'actu (news) | `market/news_feed` | ✅ | **`reference/news.md`** | — |
 | Macro | `market/macro_calendar`, `market/macro_series` | ✅ | **`reference/macro.md`** | — |

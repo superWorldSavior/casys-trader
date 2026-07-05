@@ -209,6 +209,36 @@ def test_daemon_delegates_queue_pool_bootstrap_to_runtime_adapter() -> None:
     assert violations == []
 
 
+def test_daemon_delegates_data_source_bootstrap_to_runtime_adapter() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    daemon_path = repo_root / "trader" / "runtime" / "daemon.py"
+    adapter_path = repo_root / "trader" / "runtime" / "data_source_runtime.py"
+
+    assert adapter_path.exists()
+
+    source = daemon_path.read_text(encoding="utf-8")
+    assert "data_source_runtime.load_data_source_config" in source
+    assert "data_source_runtime.build_data_source" in source
+    assert "data_source_runtime.maybe_attach_ib" in source
+    assert "data_source_runtime.detach_failed_ib" in source
+
+    tree = ast.parse(source, filename=str(daemon_path))
+    forbidden_calls = {
+        "CompositeDataSource",
+        "IBAttachBackoff",
+        "IBDataSource",
+        "YFinanceDataSource",
+        "connect_ib",
+        "parse_data_sources_config",
+    }
+    violations: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in forbidden_calls:
+            violations.append(f"{node.func.id}(...)")
+
+    assert violations == []
+
+
 def test_daemon_delegates_execute_queue_plan_payload_to_application_service() -> None:
     repo_root = Path(__file__).resolve().parents[1]
     daemon_path = repo_root / "trader" / "runtime" / "daemon.py"

@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 import pytest
 
 from trader.runtime import daemon
+from trader.runtime import data_source_runtime
 from trader.market.market_data import Bar, MarketError
 from trader.planning.scheduler import Scheduler
 
@@ -65,6 +66,65 @@ def _empty_report(now: datetime) -> dict:
 
 class TestDaemonDataSourcesConfig:
     """Config présente → composite utilisé ; config absente → IB direct."""
+
+    def test_main_delegue_le_bootstrap_data_source_au_runtime_module(
+        self, monkeypatch, tmp_path
+    ):
+        """main() garde l'orchestration, le bootstrap concret vit dans runtime/data_source_runtime."""
+        _write_runtime_config(tmp_path)
+        state_dir = tmp_path / "state"
+        now = datetime(2026, 6, 10, 12, 0, tzinfo=timezone.utc)
+        build_calls: list[dict] = []
+        sources_seen: list[object] = []
+
+        class FakeSource:
+            def disconnect(self):
+                pass
+
+        delegated_source = FakeSource()
+
+        def build_data_source(config, **kwargs):
+            build_calls.append({"config": config, "kwargs": kwargs})
+            return data_source_runtime.DataSourceState(
+                data_source=delegated_source,
+                composite_available={},
+                ib_attach_backoff=None,
+            )
+
+        def run_cycle(**kwargs):
+            sources_seen.append(kwargs["data_source"])
+            return _empty_report(now)
+
+        class FakeIB:
+            def disconnect(self):
+                pass
+
+        class FakeIBDS:
+            def __init__(self, ib, *, reconnect_factory=None):
+                self.ib = ib
+
+            def disconnect(self):
+                self.ib.disconnect()
+
+        monkeypatch.setattr(daemon, "ROOT", tmp_path)
+        monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+        monkeypatch.setattr(daemon, "data_source_runtime", data_source_runtime, raising=False)
+        monkeypatch.setattr(data_source_runtime, "build_data_source", build_data_source)
+        monkeypatch.setattr(daemon, "connect_ib", lambda *_args, **_kwargs: FakeIB(), raising=False)
+        monkeypatch.setattr(daemon, "IBDataSource", FakeIBDS, raising=False)
+        monkeypatch.setattr(daemon, "run_cycle", run_cycle)
+
+        daemon.main(["--once"])
+
+        assert sources_seen == [delegated_source]
+        assert len(build_calls) == 1
+        assert build_calls[0]["config"] == data_source_runtime.DataSourceRuntimeConfig(
+            use_composite=False,
+            routes=[],
+            profile="",
+        )
+        assert build_calls[0]["kwargs"]["host"] == "127.0.0.1"
+        assert build_calls[0]["kwargs"]["port"] == 4002
 
     def test_config_presente_construit_composite_et_passe_au_cycle(
         self, monkeypatch, tmp_path

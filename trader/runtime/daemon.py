@@ -20,7 +20,7 @@ import math
 import os
 import sqlite3
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
@@ -81,7 +81,13 @@ from trader.planning.trade_plan import (
 from trader.support.metadata import code_version
 from trader.reporting.read_models import live_kpis
 from trader.reporting import attribution, decision_ledger, meta_performance
-from trader.runtime import cycle_finalization, cycle_scheduling, ledger_rotation, queue_runtime
+from trader.runtime import (
+    cycle_finalization,
+    cycle_scheduling,
+    data_source_runtime,
+    ledger_rotation,
+    queue_runtime,
+)
 from trader.runtime.ib_attach import IBAttachBackoff
 from trader.runtime.state_writer import RuntimeStateWriter
 from trader.planning import scheduler
@@ -2221,26 +2227,19 @@ def main(
     _execute_ledger = _queue_runtimes.execute.ledger
     _execute_pool = _queue_runtimes.execute.pool
 
-    data_source = None
-    _composite_available: dict[str, object] = {}
-    _ib_attach_backoff: IBAttachBackoff | None = None
     _data_sources_cfg = ROOT / "config" / "data_sources.yaml"
-    _use_composite = _data_sources_cfg.exists()
-
-    # F3 : valider la config UNE FOIS avant la boucle — fail-fast explicite
-    # si le fichier est malformé, le profil inconnu, ou une source invalide.
-    # Cette étape ne fait aucune connexion réseau ; les MarketError ici
-    # remontent directement (pas avalées par le except interne de la boucle).
-    _composite_routes: list[dict] = []
-    _composite_profile: str = ""
-    if _use_composite:
-        _composite_profile_override = args.data_profile or None
-        _composite_routes, _composite_profile = parse_data_sources_config(
-            _data_sources_cfg,
-            profile_override=_composite_profile_override,
-            known_source_names=frozenset({"yfinance", "ib"}),
-        )
-        log.info("data_source config validée: profil=%s", _composite_profile)
+    _data_source_config = data_source_runtime.load_data_source_config(
+        config_path=_data_sources_cfg,
+        profile_override=args.data_profile or None,
+        logger=log,
+        parse_config_fn=parse_data_sources_config,
+    )
+    _data_source_state = data_source_runtime.DataSourceState(
+        data_source=None,
+        composite_available={},
+        ib_attach_backoff=None,
+    )
+    data_source = _data_source_state.data_source
 
     try:
         while True:
@@ -2248,125 +2247,37 @@ def main(
             stop_after_iteration = False
             try:
                 if data_source is None:
-                    if _use_composite:
-                        # Config présente : construire composite.
-                        # IB obligatoire en profil prod — si down, cycle sauté.
-                        # IB optionnel en profil paper — si down, on continue sans lui.
-                        _ib_source: IBDataSource | None = None
-                        _ib_required = (_composite_profile == "prod")
-                        # market_data_type : 1 (live) en prod, 3 (delayed) en paper.
-                        # Type 3 = live quand la souscription n'est pas requise (ex. FX
-                        # IDEALPRO), delayed sinon — c'est le comportement IB par défaut.
-                        _mdt = 1 if _composite_profile == "prod" else 3
-                        try:
-                            _ib_obj = connect_ib(
-                                args.ib_host, args.ib_port, args.ib_client_id,
-                                market_data_type=_mdt,
-                            )
-                            try:
-                                _ib_source = IBDataSource(
-                                    _ib_obj,
-                                    reconnect_factory=lambda: connect_ib(
-                                        args.ib_host, args.ib_port, args.ib_client_id,
-                                        market_data_type=_mdt,
-                                    ),
-                                )
-                            except Exception as _ib_ds_exc:  # noqa: BLE001 - frontière config/source IB
-                                _disconnect_quietly(_ib_obj)
-                                if isinstance(_ib_ds_exc, market.MarketError):
-                                    raise
-                                raise market.MarketError(
-                                    "ib_connect_failed",
-                                    f"IBDataSource init failed: {type(_ib_ds_exc).__name__}: {_ib_ds_exc}",
-                                ) from _ib_ds_exc
-                        except market.MarketError as _ib_exc:
-                            if _ib_required:
-                                # Prod : IB obligatoire — remonter l'erreur pour que
-                                # le cycle soit sauté et réessayé au prochain réveil.
-                                raise
-                            log.warning(
-                                "IB indisponible, profil composite sans IB (%s): %s",
-                                _ib_exc.code, _ib_exc.context,
-                            )
-                        available: dict[str, object] = {"yfinance": YFinanceDataSource()}
-                        if _ib_source is not None:
-                            available["ib"] = _ib_source
-                        elif not _ib_required:
-                            _ib_attach_backoff = IBAttachBackoff(
-                                retry_after=timedelta(seconds=args.ib_attach_retry_seconds)
-                            )
-                            _ib_attach_backoff.record_failure(now())
-                        _composite_available = available
-                        data_source = CompositeDataSource(
-                            routes=_composite_routes,
-                            sources=available,
-                        )
-                        log.info(
-                            "data_source=composite profil=%s sources=%s",
-                            _composite_profile, sorted(available),
-                        )
-                    else:
-                        # Comportement actuel inchangé (rétrocompat, config absente).
-                        # market_data_type=3 explicite (delayed, comportement existant).
-                        ib = connect_ib(
-                            args.ib_host, args.ib_port, args.ib_client_id,
-                            market_data_type=3,
-                        )
-                        data_source = IBDataSource(
-                            ib,
-                            reconnect_factory=lambda: connect_ib(
-                                args.ib_host, args.ib_port, args.ib_client_id,
-                                market_data_type=3,
-                            ),
-                        )
+                    _data_source_state = data_source_runtime.build_data_source(
+                        _data_source_config,
+                        host=args.ib_host,
+                        port=args.ib_port,
+                        client_id=args.ib_client_id,
+                        attach_retry_seconds=args.ib_attach_retry_seconds,
+                        now=now(),
+                        connect_ib_fn=connect_ib,
+                        logger=log,
+                        composite_cls=CompositeDataSource,
+                        yfinance_cls=YFinanceDataSource,
+                        ib_data_source_cls=IBDataSource,
+                        backoff_cls=IBAttachBackoff,
+                        disconnect_quietly=_disconnect_quietly,
+                    )
+                    data_source = _data_source_state.data_source
                 loop_now = now()
-                if (
-                    _use_composite
-                    and _composite_profile == "paper"
-                    and data_source is not None
-                    and _ib_attach_backoff is not None
-                    and "ib" not in _composite_available
-                    and _ib_attach_backoff.due(loop_now)
-                ):
-                    try:
-                        _ib_obj = connect_ib(
-                            args.ib_host, args.ib_port, args.ib_client_id,
-                            market_data_type=3,
-                            attempts=1,
-                            backoff_seconds=0.0,
-                        )
-                    except market.MarketError as _ib_exc:
-                        _ib_attach_backoff.record_failure(loop_now)
-                        log.warning(
-                            "ib_attach: IB toujours indisponible (%s): %s",
-                            _ib_exc.code,
-                            _ib_exc.context,
-                        )
-                    else:
-                        try:
-                            _ib_source = IBDataSource(
-                                _ib_obj,
-                                reconnect_factory=lambda: connect_ib(
-                                    args.ib_host, args.ib_port, args.ib_client_id,
-                                    market_data_type=3,
-                                ),
-                            )
-                        except Exception as _ib_ds_exc:  # noqa: BLE001 - frontière config/source IB
-                            _disconnect_quietly(_ib_obj)
-                            _ib_attach_backoff.record_failure(loop_now)
-                            log.warning(
-                                "ib_attach: construction source IB échouée (%s): %s",
-                                type(_ib_ds_exc).__name__,
-                                _ib_ds_exc,
-                            )
-                        else:
-                            _composite_available = {**_composite_available, "ib": _ib_source}
-                            data_source = CompositeDataSource(
-                                routes=_composite_routes,
-                                sources=_composite_available,
-                            )
-                            _ib_attach_backoff.record_success()
-                            log.info("ib_attach: IB rattaché en cours de session")
+                _data_source_state = data_source_runtime.maybe_attach_ib(
+                    _data_source_state,
+                    _data_source_config,
+                    host=args.ib_host,
+                    port=args.ib_port,
+                    client_id=args.ib_client_id,
+                    now=loop_now,
+                    connect_ib_fn=connect_ib,
+                    logger=log,
+                    composite_cls=CompositeDataSource,
+                    ib_data_source_cls=IBDataSource,
+                    disconnect_quietly=_disconnect_quietly,
+                )
+                data_source = _data_source_state.data_source
                 # Veille à deux niveaux — hot-lists par marché (D10). À chaque cycle :
                 # recalcule les venues dont la session vient de clôturer (1 scan radar),
                 # puis compose l'univers actif = sticky ∪ union(marchés ouverts) et l'écrit
@@ -2494,37 +2405,28 @@ def main(
                         wait = sched.seconds_until_wake(symbols)
                         sleep_seconds = min(wait, args.poll)
                         log.info("[sleep] next_check_in=%.0fs next_due_in=%.0fs", sleep_seconds, wait)
-                consume_failed_sources = getattr(data_source, "consume_failed_sources", None)
-                failed_sources = consume_failed_sources() if callable(consume_failed_sources) else {}
-                ib_failure = failed_sources.get("ib") if isinstance(failed_sources, dict) else None
-                if (
-                    _use_composite
-                    and _composite_profile == "paper"
-                    and "ib" in _composite_available
-                    and ib_failure is not None
-                    and _is_connection_market_error(ib_failure)
-                ):
-                    _disconnect_quietly(_composite_available["ib"])
-                    _composite_available = {
-                        name: source
-                        for name, source in _composite_available.items()
-                        if name != "ib"
-                    }
-                    data_source = CompositeDataSource(
-                        routes=_composite_routes,
-                        sources=_composite_available,
-                    )
-                    if _ib_attach_backoff is None:
-                        _ib_attach_backoff = IBAttachBackoff(
-                            retry_after=timedelta(seconds=args.ib_attach_retry_seconds)
-                        )
-                    _ib_attach_backoff.record_failure(loop_now)
-                    log.warning("ib_attach: IB détaché après échec source, profil paper dégradé")
+                _data_source_state = data_source_runtime.detach_failed_ib(
+                    _data_source_state,
+                    _data_source_config,
+                    now=loop_now,
+                    is_connection_market_error=_is_connection_market_error,
+                    disconnect_quietly=_disconnect_quietly,
+                    attach_retry_seconds=args.ib_attach_retry_seconds,
+                    logger=log,
+                    composite_cls=CompositeDataSource,
+                    backoff_cls=IBAttachBackoff,
+                )
+                data_source = _data_source_state.data_source
             except market.MarketError as exc:
                 if data_source is not None:
                     _disconnect_quietly(data_source)
                     data_source = None
-                if _use_composite:
+                    _data_source_state = data_source_runtime.DataSourceState(
+                        data_source=None,
+                        composite_available=_data_source_state.composite_available,
+                        ib_attach_backoff=_data_source_state.ib_attach_backoff,
+                    )
+                if _data_source_config.use_composite:
                     # En mode composite la source est déjà construite — une MarketError
                     # ici vient du cycle lui-même (ex: all_sources_failed). On reset
                     # pour reconstruire au prochain tour.
