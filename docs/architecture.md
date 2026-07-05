@@ -15,7 +15,7 @@
 > `decision-reason-domain`, `tool-usage-readmodel`,
 > `execute-queue-dispatch`, `execute-queue-plan-payload`,
 > `fill-outcome-accounting`, `fill-plan-effects`,
-> `cycle-finalization`).
+> `cycle-finalization`, `queue-runtime-bootstrap`).
 
 ---
 
@@ -89,6 +89,7 @@ les utilisaient :
 | `trader/interfaces/cli/` | Entry points CLI canoniques (`stats`, `attribution`, `tool_usage`, `tui`) | compat virtuelle : `python -m trader.commands.stats`, `python -m trader.stats`, etc. |
 | `trader/runtime/cycle_scheduling.py` | Adaptateur runtime wake/watch : délègue la politique à `application/cycle_schedule.py` et `application/watch_scanner.py`, puis émet events/logs et compat wrappers | évite que `daemon.py` réimporte directement la glue applicative |
 | `trader/runtime/cycle_finalization.py` | Adaptateur runtime de fin de cycle : consolidation learnings, collecte macro best-effort, cache feedback gross, probes `shadow_queue` et `state_compare` | garde les side effects observabilité/mémoire hors du coeur décisionnel ; contrats `Protocol` locaux pour les dépendances injectées |
+| `trader/runtime/queue_runtime.py` | Bootstrap runtime des pools `decide`/`execute_order` : flags, ledgers, pools, handlers et stack SQLite partagée | garde la queue canonique hors du bloc `main()` tout en laissant `run_cycle()` choisir le chemin queue/synchrone |
 | `trader/runtime/` | Daemon, CLI, logging, PID file, IB attach, rotation ledger, writers d'état fichier | compat virtuelle : `python -m trader.daemon`, `python -m trader.cli` |
 | `trader/reporting/read_models/live_kpis.py` | Projection live des KPI depuis `state/` pour daemon/cockpit/TUI | `reporting.stats` rend les KPI ; `interfaces.cli.stats` possède la CLI |
 | `trader/reporting/read_models/runtime_state.py` | Lecture tolérante des fichiers `state/` pour TUI/cockpit | compat virtuelle : `trader.read_models.*` |

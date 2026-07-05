@@ -176,6 +176,39 @@ def test_daemon_delegates_execute_queue_dispatch_to_application_service() -> Non
     assert violations == []
 
 
+def test_daemon_delegates_queue_pool_bootstrap_to_runtime_adapter() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    daemon_path = repo_root / "trader" / "runtime" / "daemon.py"
+    adapter_path = repo_root / "trader" / "runtime" / "queue_runtime.py"
+
+    assert adapter_path.exists()
+
+    source = daemon_path.read_text(encoding="utf-8")
+    assert "queue_runtime.start_queue_runtimes" in source
+
+    tree = ast.parse(source, filename=str(daemon_path))
+    forbidden_modules = {
+        "trader.application.decide_handler",
+        "trader.application.execute_order_handler",
+        "trader.infrastructure.queue.decide_pool",
+        "trader.infrastructure.queue.ledger",
+        "trader.infrastructure.queue.pools",
+        "trader.infrastructure.state_db.broker_store",
+        "trader.infrastructure.state_db.connection",
+        "trader.infrastructure.state_db.trade_plan_store",
+    }
+    violations: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module in forbidden_modules:
+            violations.append(f"from {node.module} import ...")
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name in forbidden_modules:
+                    violations.append(f"import {alias.name}")
+
+    assert violations == []
+
+
 def test_daemon_delegates_execute_queue_plan_payload_to_application_service() -> None:
     repo_root = Path(__file__).resolve().parents[1]
     daemon_path = repo_root / "trader" / "runtime" / "daemon.py"

@@ -81,7 +81,7 @@ from trader.planning.trade_plan import (
 from trader.support.metadata import code_version
 from trader.reporting.read_models import live_kpis
 from trader.reporting import attribution, decision_ledger, meta_performance
-from trader.runtime import cycle_finalization, cycle_scheduling, ledger_rotation
+from trader.runtime import cycle_finalization, cycle_scheduling, ledger_rotation, queue_runtime
 from trader.runtime.ib_attach import IBAttachBackoff
 from trader.runtime.state_writer import RuntimeStateWriter
 from trader.planning import scheduler
@@ -2199,93 +2199,27 @@ def main(
     )
     bootstrap = args.bootstrap_all
 
-    # Boot du pool decide-via-file (CASYS_QUEUE_DECIDE_ENABLED).
-    # DB dédiée (task_ledger.db) — ne partage PAS casys.db pour isoler la file.
-    # Si le flag est off, _task_ledger et _decide_pool restent None et le
-    # comportement de run_cycle est STRICTEMENT inchangé (branche else).
-    _queue_decide_enabled = _env_int("CASYS_QUEUE_DECIDE_ENABLED", 0) == 1
-    _task_ledger = None
-    _decide_pool = None
-    if _queue_decide_enabled:
-        from trader.infrastructure.queue.ledger import TaskLedger as _TaskLedger
-        from trader.infrastructure.queue.pools import ResourcePools as _ResourcePools
-        from trader.infrastructure.queue.decide_pool import DecidePool as _DecidePool
-        from trader.application.decide_handler import make_decide_handler as _make_handler
-        # NB : en mode queue, CASYS_DECISION_BATCH_PARALLELISM change de sens — il ne
-        # règle plus la concurrence d'un batch mais le NOMBRE DE WORKERS persistants du
-        # pool (= taille du pool acpx). Même flag, sémantique distincte du mode batch.
-        _parallelism = args.decision_batch_parallelism
-        _task_ledger = _TaskLedger(STATE_DIR / "task_ledger.db")
-        _task_ledger.recover_on_boot(now_ms=int(time.time() * 1000))
-        _decide_pools_obj = _ResourcePools({"acpx": _parallelism})
-        _decide_pool = _DecidePool(
-            ledger=_task_ledger,
-            pools=_decide_pools_obj,
-            handlers={"decide": _make_handler(codex_client=codex_client)},
-            num_workers=_parallelism,
-            now_fn=time.time,
-        )
-        _decide_pool.start()
-        log.info(
-            "[queue_decide] pool démarré num_workers=%d db=%s",
-            _parallelism,
-            _task_ledger.path,
-        )
-        if args.decision_batch_size != DEFAULT_DECISION_BATCH_SIZE:
-            log.warning(
-                "[queue_decide] CASYS_DECISION_BATCH_SIZE=%d IGNORÉ en mode queue "
-                "(grain-symbole : 1 tâche = 1 symbole, pas de chunk). Sans effet.",
-                args.decision_batch_size,
-            )
-
-    # Boot du pool execute-via-file (CASYS_QUEUE_EXECUTE_ENABLED).
-    # Requiert backend=sqlite : execute_order_unit partage casys.db avec broker/plan/ledger.
-    # Si flag off ou backend != sqlite, _execute_ledger et _execute_pool restent None
-    # → run_cycle utilise broker.submit synchrone STRICTEMENT inchangé.
-    _state_backend = os.getenv("CASYS_STATE_BACKEND", "json").lower()
-    _queue_execute_enabled_raw = _env_int("CASYS_QUEUE_EXECUTE_ENABLED", 0) == 1
-    _queue_execute_enabled = _queue_execute_enabled_raw and _state_backend == "sqlite"
-    if _queue_execute_enabled_raw and not _queue_execute_enabled:
-        log.warning(
-            "[queue_execute] CASYS_QUEUE_EXECUTE_ENABLED=1 ignoré — requiert CASYS_STATE_BACKEND=sqlite"
-        )
-    _execute_ledger = None
-    _execute_pool = None
-    if _queue_execute_enabled:
-        from trader.infrastructure.state_db.connection import open_state_db as _open_exec_db  # noqa: PLC0415
-        from trader.infrastructure.state_db.broker_store import SqliteBroker as _ExecBroker  # noqa: PLC0415
-        from trader.infrastructure.state_db.trade_plan_store import SqliteTradePlanStore as _ExecPlanStore  # noqa: PLC0415
-        from trader.infrastructure.queue.ledger import TaskLedger as _ExecLedger  # noqa: PLC0415
-        from trader.infrastructure.queue.pools import ResourcePools as _ExecPools  # noqa: PLC0415
-        from trader.infrastructure.queue.decide_pool import DecidePool as _ExecPool  # noqa: PLC0415
-        from trader.application.execute_order_handler import (  # noqa: PLC0415
-            make_execute_order_handler as _make_exec_handler,
-        )
-        _exec_db = _open_exec_db(STATE_DIR / "casys.db")
-        _exec_broker = _ExecBroker(
-            _exec_db,
-            commission_model=commission_model,
-            json_path=STATE_DIR / "broker.json",
-        )
-        _exec_plan_store = _ExecPlanStore(_exec_db, json_path=STATE_DIR / "trade_plans.json")
-        _execute_ledger = _ExecLedger(_exec_db)
-        _execute_ledger.recover_on_boot(now_ms=int(time.time() * 1000))
-        _execute_pool = _ExecPool(
-            ledger=_execute_ledger,
-            pools=_ExecPools({"portfolio": 1}),
-            handlers={
-                "execute_order": _make_exec_handler(
-                    db=_exec_db,
-                    broker=_exec_broker,
-                    plan_store=_exec_plan_store,
-                    ledger=_execute_ledger,
-                )
-            },
-            num_workers=1,
-            now_fn=time.time,
-        )
-        _execute_pool.start()
-        log.info("[queue_execute] pool démarré db=%s", _execute_ledger.path)
+    # Boot des pools queue-via-file. La construction concrète vit côté runtime :
+    # - decide : DB dédiée task_ledger.db, workers persistants acpx ;
+    # - execute : nécessite sqlite et partage casys.db avec broker/plan/ledger.
+    _queue_runtimes = queue_runtime.start_queue_runtimes(
+        state_dir=STATE_DIR,
+        decide_enabled=_env_int("CASYS_QUEUE_DECIDE_ENABLED", 0) == 1,
+        decision_parallelism=args.decision_batch_parallelism,
+        decision_batch_size=args.decision_batch_size,
+        default_decision_batch_size=DEFAULT_DECISION_BATCH_SIZE,
+        codex_client=codex_client,
+        execute_enabled_raw=_env_int("CASYS_QUEUE_EXECUTE_ENABLED", 0) == 1,
+        state_backend=os.getenv("CASYS_STATE_BACKEND", "json"),
+        commission_model=commission_model,
+        logger=log,
+    )
+    _queue_decide_enabled = _queue_runtimes.decide.enabled
+    _task_ledger = _queue_runtimes.decide.ledger
+    _decide_pool = _queue_runtimes.decide.pool
+    _queue_execute_enabled = _queue_runtimes.execute.enabled
+    _execute_ledger = _queue_runtimes.execute.ledger
+    _execute_pool = _queue_runtimes.execute.pool
 
     data_source = None
     _composite_available: dict[str, object] = {}

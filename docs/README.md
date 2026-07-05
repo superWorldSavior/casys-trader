@@ -45,7 +45,7 @@ Légende : ✅ couvert · 🟡 partiel / dispersé / potentiellement périmé ·
 | Enregistrement décision | `application/decision_recorder` | ✅ | archi §3.8, §8 | — |
 | Finalisation fin de cycle | `runtime/cycle_finalization` | ✅ | archi §1.1, §2 ; `reference/task-queue.md` | queue paper activée |
 | Gate de pertinence (coût) | `planning/relevance_gate` | ✅ | archi §3.4 | D7A |
-| **File de tâches durable** | `infrastructure/queue/*` (ledger, pools, worker), `application/{queue_dispatch,execute_queue_dispatch,execute_queue_plan}` | ✅ | **`reference/task-queue.md`** | queue paper activée |
+| **File de tâches durable** | `runtime/queue_runtime`, `infrastructure/queue/*` (ledger, pools, worker), `application/{queue_dispatch,execute_queue_dispatch,execute_queue_plan}` | ✅ | **`reference/task-queue.md`** | queue paper activée |
 
 ### Actions & exécution
 | Sous-système | Package/module | Réf | Où | Décisions |

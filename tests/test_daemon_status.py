@@ -591,5 +591,59 @@ def test_main_supprime_pid_file_au_shutdown_propre(monkeypatch, tmp_path) -> Non
     pid_path = state_dir / "daemon.pid"
     assert not pid_path.exists(), "daemon.pid doit être supprimé au shutdown"
 
+
+def test_main_transmet_les_flags_queue_au_bootstrap_runtime(monkeypatch, tmp_path) -> None:
+    """main() garde la lecture env/CLI, queue_runtime possède la construction concrète."""
+    from trader.runtime import queue_runtime
+
+    _write_runtime_config(tmp_path)
+    state_dir = tmp_path / "state"
+    _fast_main_patches(monkeypatch, tmp_path, state_dir)
+    captured: list[dict] = []
+    stopped: list[str] = []
+
+    class FakePool:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+        def stop(self) -> None:
+            stopped.append(self.name)
+
+    def start_queue_runtimes(**kwargs):
+        captured.append(kwargs)
+        return queue_runtime.QueueRuntimes(
+            decide=queue_runtime.DecideQueueRuntime(
+                enabled=True,
+                ledger=object(),
+                pool=FakePool("decide"),
+            ),
+            execute=queue_runtime.ExecuteQueueRuntime(
+                enabled=True,
+                ledger=object(),
+                pool=FakePool("execute"),
+            ),
+        )
+
+    monkeypatch.setenv("CASYS_QUEUE_DECIDE_ENABLED", "1")
+    monkeypatch.setenv("CASYS_QUEUE_EXECUTE_ENABLED", "1")
+    monkeypatch.setenv("CASYS_STATE_BACKEND", "sqlite")
+    monkeypatch.setattr(daemon, "bootstrap_state_backend", lambda **_kwargs: None)
+    monkeypatch.setattr(daemon, "make_scheduler", lambda *, state_dir, backend: Scheduler(state_dir / "scheduler.json"))
+    monkeypatch.setattr(daemon.queue_runtime, "start_queue_runtimes", start_queue_runtimes)
+
+    daemon.main(["--once", "--decision-batch-parallelism", "4", "--decision-batch-size", "7"])
+
+    assert len(captured) == 1
+    call = captured[0]
+    assert call["state_dir"] == state_dir
+    assert call["decide_enabled"] is True
+    assert call["execute_enabled_raw"] is True
+    assert call["state_backend"] == "sqlite"
+    assert call["decision_parallelism"] == 4
+    assert call["decision_batch_size"] == 7
+    assert call["default_decision_batch_size"] == daemon.DEFAULT_DECISION_BATCH_SIZE
+    assert call["codex_client"] is daemon.codex_client
+    assert stopped == ["decide", "execute"]
+
     pid_path = state_dir / "daemon.pid"
     assert not pid_path.exists(), "daemon.pid doit être supprimé au shutdown"
