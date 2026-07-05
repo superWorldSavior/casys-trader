@@ -34,10 +34,11 @@ def test_planner_batch_module_expose_batch_decide() -> None:
     assert callable(planner_batch.batch_decide)
 
 
-def _write_runtime_config(root) -> None:
+def _write_runtime_config(root, *, symbols=("SPY",)) -> None:
     (root / "config").mkdir()
     (root / "mandate").mkdir()
-    (root / "config" / "universe.yaml").write_text("starting_cash: 100000\nsymbols:\n  - SPY\n")
+    symbols_yaml = "".join(f"  - {symbol}\n" for symbol in symbols)
+    (root / "config" / "universe.yaml").write_text(f"starting_cash: 100000\nsymbols:\n{symbols_yaml}")
     (root / "config" / "risk.yaml").write_text(
         "\n".join(
             [
@@ -51,6 +52,240 @@ def _write_runtime_config(root) -> None:
     )
     (root / "mandate" / "mandate.md").write_text("# Mandat\n")
     (root / "mandate" / "memory.md").write_text("# Memoire\n")
+
+
+def _fresh_data_source(make_data_source, now: datetime):
+    return make_data_source(
+        lambda symbol, lookback, interval: [
+            Bar(
+                ts=now.isoformat() if interval != "1d" else now.date().isoformat(),
+                open=100.0,
+                high=101.0,
+                low=99.0,
+                close=100.0,
+                volume=1000.0,
+            )
+        ]
+    )
+
+
+def _decision_entry_for_test(decision: Decision, *, price: float, executed: bool = True) -> dict:
+    return {
+        "symbol": decision.symbol,
+        "action": decision.action,
+        "qty": abs(decision.quantity),
+        "confidence": decision.confidence,
+        "rationale": decision.rationale,
+        "intent": decision.intent,
+        "executed": executed,
+        "reason": "ok" if executed else decision.rationale,
+        "price": price,
+        "trade_plan_created": False,
+        "decision_source": "llm",
+        "model_called": True,
+    }
+
+
+def _install_queue_decide_stream(monkeypatch, stream_events, trace: list[tuple]):
+    import trader.application.queue_dispatch as queue_dispatch
+
+    def fake_iter_decide_results_via_queue(**_kwargs):
+        for sym, decision, calls in stream_events:
+            trace.append(("decision_ready", sym))
+            yield sym, decision, calls
+
+    def fake_dispatch_decide_via_queue(**_kwargs):
+        decisions = {}
+        undecided = set()
+        model_calls = 0
+        for sym, decision, calls in stream_events:
+            trace.append(("decision_ready", sym))
+            if decision is None:
+                undecided.add(sym)
+            else:
+                decisions[sym] = decision
+                model_calls += calls
+        return decisions, model_calls, undecided
+
+    monkeypatch.setattr(queue_dispatch, "iter_decide_results_via_queue", fake_iter_decide_results_via_queue)
+    monkeypatch.setattr(queue_dispatch, "dispatch_decide_via_queue", fake_dispatch_decide_via_queue)
+
+
+def _install_tracing_decision_executor(monkeypatch, trace: list[tuple]):
+    def fake_execute_one_cycle_decision(*, sym, index, total, decision, state, ctx):
+        trace.append(("execute", sym, decision.intent, state.gross))
+        if decision.intent in {"CLOSE", "REDUCE"}:
+            state.gross = 0.0
+            trace.append(("refresh_after_exit", sym, state.gross))
+        ctx.record_decision(
+            _decision_entry_for_test(
+                decision,
+                price=ctx.prices[sym],
+                executed=decision.action != "HOLD",
+            )
+        )
+        return state
+
+    monkeypatch.setattr(daemon, "_execute_one_cycle_decision", fake_execute_one_cycle_decision)
+
+
+def _seed_long_position(state_dir, symbol: str, *, quantity: float = 10.0, price: float = 100.0) -> None:
+    broker = daemon.SimBroker(state_dir / "broker.json", starting_cash=100_000.0)
+    broker.submit(
+        daemon.Order(symbol=symbol, side="BUY", quantity=quantity),
+        price,
+        "2026-06-15T13:00:00+00:00",
+        dry_run=False,
+    )
+
+
+def test_queue_decide_streams_ready_reducer_before_slow_opening_finishes(
+    monkeypatch,
+    tmp_path,
+    make_data_source,
+) -> None:
+    _write_runtime_config(tmp_path, symbols=("SPY", "QQQ"))
+    state_dir = tmp_path / "state"
+    _seed_long_position(state_dir, "SPY", quantity=10.0)
+    now = datetime(2026, 6, 15, 14, 30, tzinfo=timezone.utc)
+    trace: list[tuple] = []
+    reduce_decision = Decision(
+        symbol="SPY",
+        action="HOLD",
+        quantity=0.0,
+        confidence=0.8,
+        rationale="reduce now",
+        intent="REDUCE",
+        resolve_from_position=True,
+        reduce_fraction=0.5,
+    )
+    open_decision = Decision(
+        symbol="QQQ",
+        action="BUY",
+        quantity=1.0,
+        confidence=0.7,
+        rationale="open later",
+        intent="OPEN_LONG",
+        exit_plan={"hard_stop": {"type": "price", "price": 95.0}},
+    )
+
+    monkeypatch.setattr(daemon, "ROOT", tmp_path)
+    monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+    _install_queue_decide_stream(
+        monkeypatch,
+        [("SPY", reduce_decision, 1), ("QQQ", open_decision, 1)],
+        trace,
+    )
+    _install_tracing_decision_executor(monkeypatch, trace)
+
+    daemon.run_cycle(
+        dry_run=False,
+        now=now,
+        symbols_filter=["SPY", "QQQ"],
+        sched=Scheduler(state_dir / "scheduler.json"),
+        data_source=_fresh_data_source(make_data_source, now),
+        queue_decide_enabled=True,
+        task_ledger=object(),
+    )
+
+    assert trace.index(("execute", "SPY", "REDUCE", 1000.0)) < trace.index(("decision_ready", "QQQ"))
+    assert trace.index(("refresh_after_exit", "SPY", 0.0)) < trace.index(("execute", "QQQ", "OPEN_LONG", 0.0))
+
+
+def test_queue_decide_buffers_reverse_until_collection_is_exhausted(
+    monkeypatch,
+    tmp_path,
+    make_data_source,
+) -> None:
+    _write_runtime_config(tmp_path, symbols=("SPY", "QQQ"))
+    state_dir = tmp_path / "state"
+    _seed_long_position(state_dir, "SPY", quantity=10.0)
+    now = datetime(2026, 6, 15, 14, 30, tzinfo=timezone.utc)
+    trace: list[tuple] = []
+    reverse_decision = Decision(
+        symbol="SPY",
+        action="HOLD",
+        quantity=5.0,
+        confidence=0.9,
+        rationale="flip",
+        intent="REVERSE",
+        resolve_from_position=True,
+        exit_plan={"hard_stop": {"type": "price", "price": 105.0}},
+    )
+    hold_decision = Decision.hold("QQQ", "wait")
+
+    monkeypatch.setattr(daemon, "ROOT", tmp_path)
+    monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+    _install_queue_decide_stream(
+        monkeypatch,
+        [("SPY", reverse_decision, 1), ("QQQ", hold_decision, 1)],
+        trace,
+    )
+    _install_tracing_decision_executor(monkeypatch, trace)
+
+    daemon.run_cycle(
+        dry_run=False,
+        now=now,
+        symbols_filter=["SPY", "QQQ"],
+        sched=Scheduler(state_dir / "scheduler.json"),
+        data_source=_fresh_data_source(make_data_source, now),
+        queue_decide_enabled=True,
+        task_ledger=object(),
+    )
+
+    assert trace.index(("decision_ready", "SPY")) < trace.index(("decision_ready", "QQQ"))
+    assert trace.index(("decision_ready", "QQQ")) < trace.index(("execute", "SPY", "REVERSE", 1000.0))
+
+
+def test_queue_decide_executes_buffered_openings_by_gross_merit_order(
+    monkeypatch,
+    tmp_path,
+    make_data_source,
+) -> None:
+    _write_runtime_config(tmp_path, symbols=("LOW", "HIGH"))
+    state_dir = tmp_path / "state"
+    now = datetime(2026, 6, 15, 14, 30, tzinfo=timezone.utc)
+    trace: list[tuple] = []
+    low_conf = Decision(
+        symbol="LOW",
+        action="BUY",
+        quantity=1.0,
+        confidence=0.2,
+        rationale="weak open",
+        intent="OPEN_LONG",
+        exit_plan={"hard_stop": {"type": "price", "price": 95.0}},
+    )
+    high_conf = Decision(
+        symbol="HIGH",
+        action="BUY",
+        quantity=1.0,
+        confidence=0.95,
+        rationale="strong open",
+        intent="OPEN_LONG",
+        exit_plan={"hard_stop": {"type": "price", "price": 95.0}},
+    )
+
+    monkeypatch.setattr(daemon, "ROOT", tmp_path)
+    monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+    _install_queue_decide_stream(
+        monkeypatch,
+        [("LOW", low_conf, 1), ("HIGH", high_conf, 1)],
+        trace,
+    )
+    _install_tracing_decision_executor(monkeypatch, trace)
+
+    daemon.run_cycle(
+        dry_run=False,
+        now=now,
+        symbols_filter=["LOW", "HIGH"],
+        sched=Scheduler(state_dir / "scheduler.json"),
+        data_source=_fresh_data_source(make_data_source, now),
+        queue_decide_enabled=True,
+        task_ledger=object(),
+    )
+
+    executed_symbols = [item[1] for item in trace if item[0] == "execute"]
+    assert executed_symbols == ["HIGH", "LOW"]
 
 
 def test_execute_one_cycle_decision_records_hold_without_mutating_state() -> None:

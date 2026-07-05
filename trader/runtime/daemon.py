@@ -437,6 +437,20 @@ def _resolve_position_aware_decision(
     return order_admission.resolve_position_aware_decision(decision, position_quantity)
 
 
+def _resolve_decision_for_execution_routing(
+    *,
+    symbol: str,
+    decision: codex_client.Decision,
+    broker: object,
+) -> codex_client.Decision:
+    """Résout les intents relatifs avant routage stream/buffer."""
+    if decision.resolve_from_position or decision.intent in _RELATIVE_ORDER_INTENTS:
+        raw_pos = broker.positions().get(symbol)
+        pos_qty = raw_pos.quantity if raw_pos is not None else 0.0
+        return _resolve_position_aware_decision(decision, pos_qty)
+    return decision
+
+
 def _merge_gate_feedback(
     reason: str | None,
     context: str | None,
@@ -1843,6 +1857,39 @@ def run_cycle(
     # Ils sont EXCLUS du fallback HOLD synthétique
     # ci-dessous (FIX 2). En mode batch, reste vide (comportement inchangé).
     undecided_symbols: set[str] = set()
+    decisions_by_symbol: dict[str, codex_client.Decision] = {}
+    streamed_decision_symbols: set[str] = set()
+    buffered_opening_symbols: set[str] = set()
+
+    execution_state = DecisionExecutionState(snap=snap, gross=gross)
+    execution_ctx = DecisionExecutionContext(
+        now=now,
+        min_wake_minutes=min_wake_minutes,
+        max_wake_minutes=max_wake_minutes,
+        macro_next=_cycle_macro_next,
+        broker=broker,
+        plan_store=plan_store,
+        gate=gate,
+        sched=sched,
+        prices=prices,
+        execution_eligibility=execution_eligibility,
+        tradable_bars_by_symbol=tradable_bars_by_symbol,
+        data_age_by_symbol=data_age_by_symbol,
+        runtime_data_source_by_sym=runtime_data_source_by_sym,
+        armed_plan_ids=armed_plan_ids,
+        armed_plan_orders=armed_plan_orders,
+        armed_reference_volatilities=armed_reference_volatilities,
+        held_symbols=held_symbols,
+        cockpit=cockpit,
+        runtime_interval=runtime_interval,
+        starting_equity=starting_equity,
+        require_hard_stop=require_hard_stop,
+        dry_run=dry_run,
+        queue_execute_enabled=queue_execute_enabled,
+        execute_ledger=execute_ledger,
+        record_decision=record_decision,
+        rate_for_symbol=_rate,
+    )
 
     if queue_decide_enabled and task_ledger is not None:
         # Mode file : enfile 1 tâche par symbole et collecte via polling.
@@ -1851,7 +1898,7 @@ def run_cycle(
             _active_watch_summaries_by_symbol,
             build_symbol_facts,
         )
-        from trader.application.queue_dispatch import dispatch_decide_via_queue
+        from trader.application.queue_dispatch import iter_decide_results_via_queue
         from trader.application.recent_decisions import recent_decisions_by_symbol
         _last_review = _last_review_by_symbol(plan_store, decidable)
         # Push anti-répétition : N dernières décisions authentiques par symbole (même
@@ -1876,9 +1923,13 @@ def run_cycle(
             }
             for sym in decidable
         }
-        # Mode queue : l'admission n'est pas capée par appels ; le dispatch attend
-        # les états terminaux, ResourcePools/AIMD borne la pression provider.
-        decisions_by_symbol, model_calls_used, undecided_symbols = dispatch_decide_via_queue(
+        # Mode queue : l'admission n'est pas capée par appels ; l'itérateur rend
+        # chaque symbole dès son état terminal, ResourcePools/AIMD borne la pression provider.
+        stream_index_by_symbol = {
+            sym: index
+            for index, sym in enumerate(symbols_to_decide, start=1)
+        }
+        for sym, decision, calls in iter_decide_results_via_queue(
             ledger=task_ledger,
             decidable=decidable,
             mandate=mandate_txt,
@@ -1892,7 +1943,34 @@ def run_cycle(
             # Univers d'analyse du cycle → resolver d'indicateurs du tour d'outils
             # (filtre dur + paires cross-asset, spec §5 W5).
             symbols_universe=analysis_symbols,
-        )
+        ):
+            if decision is None:
+                undecided_symbols.add(sym)
+                continue
+            model_calls_used += calls
+            routed_decision = _resolve_decision_for_execution_routing(
+                symbol=sym,
+                decision=decision,
+                broker=broker,
+            )
+            decisions_by_symbol[sym] = routed_decision
+            if _counts_as_llm_review(routed_decision):
+                _LAST_LLM_AT[(str(STATE_DIR), sym)] = now
+            if routed_decision.intent in _OPENING_INTENTS:
+                buffered_opening_symbols.add(sym)
+                continue
+
+            execution_state = _execute_one_cycle_decision(
+                sym=sym,
+                index=stream_index_by_symbol.get(sym, len(streamed_decision_symbols) + 1),
+                total=len(symbols_to_decide),
+                decision=routed_decision,
+                state=execution_state,
+                ctx=execution_ctx,
+            )
+            snap = execution_state.snap
+            gross = execution_state.gross
+            streamed_decision_symbols.add(sym)
     else:
         # Mode batch classique — comportement STRICTEMENT inchangé (flag off).
         decisions_by_symbol, model_calls_used = _batch_decide(
@@ -1946,38 +2024,11 @@ def run_cycle(
 
     symbols_to_decide = gross_execution_order([_gross_priority_item(sym) for sym in symbols_to_decide])
 
-    execution_state = DecisionExecutionState(snap=snap, gross=gross)
-    execution_ctx = DecisionExecutionContext(
-        now=now,
-        min_wake_minutes=min_wake_minutes,
-        max_wake_minutes=max_wake_minutes,
-        macro_next=_cycle_macro_next,
-        broker=broker,
-        plan_store=plan_store,
-        gate=gate,
-        sched=sched,
-        prices=prices,
-        execution_eligibility=execution_eligibility,
-        tradable_bars_by_symbol=tradable_bars_by_symbol,
-        data_age_by_symbol=data_age_by_symbol,
-        runtime_data_source_by_sym=runtime_data_source_by_sym,
-        armed_plan_ids=armed_plan_ids,
-        armed_plan_orders=armed_plan_orders,
-        armed_reference_volatilities=armed_reference_volatilities,
-        held_symbols=held_symbols,
-        cockpit=cockpit,
-        runtime_interval=runtime_interval,
-        starting_equity=starting_equity,
-        require_hard_stop=require_hard_stop,
-        dry_run=dry_run,
-        queue_execute_enabled=queue_execute_enabled,
-        execute_ledger=execute_ledger,
-        record_decision=record_decision,
-        rate_for_symbol=_rate,
-    )
-
     gated_set = set(gated_symbols)
     for index, sym in enumerate(symbols_to_decide, start=1):
+        if sym in streamed_decision_symbols:
+            # Déjà exécuté/enregistré au fil de l'eau en mode queue decide.
+            continue
         if sym in gated_set:
             # Déjà tracé quiet_gate — ne pas générer un second HOLD
             # "no_decision_in_batch" (doublon ledger, faux HOLD agent).
