@@ -1309,6 +1309,18 @@ def test_meta_performance_projection_is_read_model_canonical() -> None:
     assert reporting_meta_performance._AUDIT_CACHE is read_model_meta_performance._AUDIT_CACHE
 
 
+def test_decision_audit_engine_is_audit_package_canonical() -> None:
+    from trader.reporting import decision_audit as reporting_decision_audit
+    from trader.reporting.audit import decision_quality
+
+    assert reporting_decision_audit.audit_rows is decision_quality.audit_rows
+    assert reporting_decision_audit.refresh_audit_payload is decision_quality.refresh_audit_payload
+    assert reporting_decision_audit.summarize_audited_rows is decision_quality.summarize_audited_rows
+    assert reporting_decision_audit.load_prices_yfinance is decision_quality.load_prices_yfinance
+    assert reporting_decision_audit.parse_ts is decision_quality.parse_ts
+    assert reporting_decision_audit.parse_horizon is decision_quality.parse_horizon
+
+
 def test_market_and_planning_use_domain_primitives_instead_of_tools() -> None:
     trader_dir = Path(__file__).resolve().parents[1] / "trader"
     checked_roots = (trader_dir / "market", trader_dir / "planning")

@@ -14,7 +14,8 @@ from trader.market import market_data as market
 from trader.market.features import DEFAULT_INDICATORS, build_indicator_snapshot, compute_indicator_values
 from trader.runtime import daemon, ledger_rotation
 from trader.domain.semantic.catalog import FAMILIES, describe_semantic_layer, find_indicators, list_indicators, normalize_temporal_query
-from trader.reporting import attribution, decision_audit, decision_bench, decision_ledger
+from trader.reporting import attribution, decision_bench, decision_ledger
+from trader.reporting.audit import decision_quality as decision_audit
 
 _DAEMON_FLAGS = {
     "--live",

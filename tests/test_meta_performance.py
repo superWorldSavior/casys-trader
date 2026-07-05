@@ -2,7 +2,7 @@ import json
 import os
 from pathlib import Path
 
-from trader.reporting import decision_audit
+from trader.reporting.audit import decision_quality as decision_audit
 from trader.reporting.read_models import meta_performance
 
 

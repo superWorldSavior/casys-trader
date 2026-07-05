@@ -14,7 +14,7 @@ from typing import Any, Callable
 from trader.agent import llm
 from trader.agent.context import build_market_cockpit
 from trader.market import family_regime
-from trader.reporting import decision_audit
+from trader.reporting.audit import decision_quality as decision_audit
 
 VALID_ACTIONS = {"BUY", "SELL", "HOLD"}
 DEFAULT_VERDICTS = {"good", "bad", "missed", "neutral"}

@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from trader.reporting import decision_audit
+from trader.reporting.audit import decision_quality as decision_audit
 
 DEFAULT_HORIZONS = ("1h", "4h", "1d")
 
