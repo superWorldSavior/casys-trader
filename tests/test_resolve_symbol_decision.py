@@ -6,6 +6,8 @@ traces dans domain_tools, blocage tool-loop au tour final, multi-tour (max_round
 """
 from datetime import datetime, timezone
 
+import pytest
+
 import trader.agent.tools as agent_tools
 from trader.agent import client as codex_client
 from trader.application.tool_round import resolve_symbol_decision
@@ -83,3 +85,27 @@ def test_max_rounds_2_enchaine_deux_tournees() -> None:
     assert result.rationale == "after 2 rounds"
     assert result.domain_tools["tool_rounds"] == 2
     assert log == [True, True, False]  # 2 tournées d'outils, puis tour final forcé
+
+
+def test_multi_tour_accumule_les_tool_results() -> None:
+    # Régression review R3d : chaque round doit voir l'HISTORIQUE complet des tool_results,
+    # pas seulement ceux du dernier round.
+    captured: list[dict] = []
+    responses = [_tool_request(), _tool_request(), {"AAPL": Decision.hold("AAPL", "done")}]
+    it = iter(responses)
+
+    def call_model(per_symbol, *, allow_tool_calls):
+        captured.append(dict(per_symbol["AAPL"]))
+        return next(it)
+
+    resolve_symbol_decision(symbol="AAPL", base_facts={}, tool_context=_ctx(), call_model=call_model, max_rounds=2)
+
+    assert "tool_results" not in captured[0]           # round 1 : rien encore
+    assert len(captured[1]["tool_results"]) == 1        # round 2 voit le round 1
+    assert len(captured[2]["tool_results"]) == 2        # tour final voit rounds 1 + 2 (cumul)
+
+
+def test_max_rounds_invalide_leve_valueerror() -> None:
+    call_model, _log = _seq_call_model([])
+    with pytest.raises(ValueError):
+        resolve_symbol_decision(symbol="AAPL", base_facts={}, tool_context=_ctx(), call_model=call_model, max_rounds=0)

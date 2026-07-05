@@ -143,6 +143,7 @@ def resolve_symbol_decision(
 
     per_symbol = {symbol: base_facts}
     accumulated_traces: list[dict] = []
+    accumulated_results: list[dict] = []
     rounds_done = 0
 
     for _ in range(max_rounds):
@@ -154,8 +155,10 @@ def resolve_symbol_decision(
         sym_traces = agent_tools.calls_for_symbol(runtime["tool_calls"], symbol)
         accumulated_traces.extend(sym_traces)
         sym_ids = {t["id"] for t in sym_traces}
-        sym_results = [r for r in results_payload if r["id"] in sym_ids]
-        per_symbol = {symbol: {**base_facts, "tool_results": sym_results}}
+        accumulated_results.extend(r for r in results_payload if r["id"] in sym_ids)
+        # Réinjecte l'HISTORIQUE COMPLET des tool_results (pas seulement le dernier
+        # round) : sinon un round ultérieur perdrait le contexte des précédents (review R3d).
+        per_symbol = {symbol: {**base_facts, "tool_results": list(accumulated_results)}}
 
     # Budget de tournées épuisé → tour final, outils interdits (le LLM DOIT décider).
     resp_final = call_model(per_symbol, allow_tool_calls=False)
@@ -173,12 +176,20 @@ def _decision_of(resp, symbol: str) -> "codex_client.Decision":
         candidate = resp.get(symbol)
         if isinstance(candidate, codex_client.Decision):
             return candidate
+        if isinstance(candidate, codex_client.ContextResearchRequest):
+            # Ne devrait pas arriver (allow_context_request=False en queue) ; rendre le
+            # cas explicite plutôt que de le masquer en "missing_in_batch" (review R4).
+            return codex_client.Decision.hold(symbol, "unexpected_context_request")
     return codex_client.Decision.hold(symbol, "missing_in_batch")
 
 
 def _finalize(decision: "codex_client.Decision", traces: list[dict], rounds: int) -> "codex_client.Decision":
-    """Attache les traces d'outils accumulées au `domain_tools` de la décision (si round)."""
-    if not traces:
+    """Attache les traces d'outils au `domain_tools` de la décision dès qu'un round a eu lieu.
+
+    Conditionné sur `rounds` (pas sur `traces`) pour rester fidèle au batch : un round qui
+    n'a produit aucune trace pour ce symbole reporte quand même `tool_rounds` (review R2).
+    """
+    if rounds == 0:
         return decision
     runtime_payload = {"tool_rounds": rounds, "tool_calls": traces}
     return replace(

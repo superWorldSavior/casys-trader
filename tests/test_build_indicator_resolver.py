@@ -5,6 +5,8 @@ worker de file. UN seul comportement — chaque requête fetch via `get_bars`,
 aucun cache de cycle (pas de `bars_by_symbol` exposé). Le filtre d'univers
 (`symbols`) reste respecté.
 """
+import pytest
+
 from trader.agent.client import IndicatorRequest
 from trader.agent.context import build_indicator_resolver
 from trader.market.market_data import Bar
@@ -42,3 +44,9 @@ def test_filtre_les_symboles_hors_univers() -> None:
 
     assert calls == []
     assert result["requests"] == []
+
+
+def test_get_bars_none_leve_valueerror() -> None:
+    # Review R5 : get_bars=None ne doit PAS retomber en silence sur market.get_bars.
+    with pytest.raises(ValueError):
+        build_indicator_resolver(symbols=["SPY"], get_bars=None, max_requests=2, max_indicators=4)

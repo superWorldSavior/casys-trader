@@ -417,6 +417,10 @@ def build_indicator_resolver(
     max_requests, max_indicators, default_window:
         Bornes du resolve (bootables, mêmes valeurs que REQUEST_CONTEXT batch).
     """
+    if get_bars is None:
+        # Sans ce guard, resolve_indicator_requests retomberait en silence sur
+        # market.get_bars — exactement le footgun que le contrat veut interdire (review R5).
+        raise ValueError("get_bars requis (fetch-first) : pas de fallback implicite (AX #7)")
 
     def _resolver(requests: Iterable[object]) -> dict:
         return resolve_indicator_requests(
