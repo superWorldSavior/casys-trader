@@ -157,6 +157,25 @@ def test_daemon_delegates_planned_exit_logic_to_application_service() -> None:
     assert violations == []
 
 
+def test_daemon_delegates_execute_queue_dispatch_to_application_service() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    daemon_path = repo_root / "trader" / "runtime" / "daemon.py"
+
+    tree = ast.parse(daemon_path.read_text(encoding="utf-8"), filename=str(daemon_path))
+    violations: list[str] = []
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "enqueue"
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "execute_ledger"
+        ):
+            violations.append("daemon.py: execute_ledger.enqueue(...)")
+
+    assert violations == []
+
+
 def test_decision_reason_vocabulary_is_domain_canonical() -> None:
     repo_root = Path(__file__).resolve().parents[1]
     canonical_path = repo_root / "trader" / "domain" / "decision_reason.py"

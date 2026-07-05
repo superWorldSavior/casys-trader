@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 
 from trader.runtime import daemon
 from trader.agent.client import Decision
-from trader.execution.broker import IbkrCommissionModel
+from trader.execution.broker import IbkrCommissionModel, SimBroker
 from trader.market.market_data import Bar
 from trader.planning.scheduler import Scheduler
 
@@ -350,6 +350,79 @@ def test_run_cycle_bloque_decision_sur_donnees_marche_perimees(monkeypatch, tmp_
         "data_age_minutes": 120.0,
     }
     assert json.loads((state_dir / "broker.json").read_text())["fills"] == []
+
+
+def test_run_cycle_queue_execute_fail_closed_reason_from_dispatcher(
+    monkeypatch,
+    tmp_path,
+    patch_batch,
+    make_data_source,
+) -> None:
+    _write_runtime_config(tmp_path)
+    state_dir = tmp_path / "state"
+    now = datetime(2026, 6, 5, 14, 30, tzinfo=timezone.utc)
+    captured: dict = {}
+
+    monkeypatch.setattr(daemon, "ROOT", tmp_path)
+    monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+    data_source = make_data_source(
+        lambda symbol, lookback, interval: [
+            Bar(
+                ts=now.isoformat(),
+                open=100.0,
+                high=101.0,
+                low=99.0,
+                close=100.0,
+                volume=1000.0,
+            )
+        ]
+    )
+    patch_batch(
+        lambda **kwargs: Decision(
+            symbol=kwargs["symbol"],
+            action="BUY",
+            quantity=1.0,
+            confidence=0.95,
+            rationale="queue timeout regression",
+            intent="OPEN_LONG",
+            exit_plan={"hard_stop": {"type": "price", "price": 95.0}},
+            llm_provider="acpx",
+            llm_model="gpt-5.5/medium",
+        )
+    )
+
+    def fake_dispatch(**kwargs):
+        captured.update(kwargs)
+        return daemon.execute_queue_dispatch.ExecuteQueueOutcome(
+            task_id=123,
+            terminal="timeout",
+            reason="queue_execute_timeout",
+            late_execution_risk=True,
+        )
+
+    monkeypatch.setattr(
+        daemon.execute_queue_dispatch,
+        "dispatch_execute_order_via_queue",
+        fake_dispatch,
+    )
+
+    report = daemon.run_cycle(
+        dry_run=False,
+        now=now,
+        symbols_filter=["SPY"],
+        sched=Scheduler(state_dir / "scheduler.json"),
+        data_source=data_source,
+        queue_execute_enabled=True,
+        execute_ledger=object(),
+    )
+
+    assert captured["symbol"] == "SPY"
+    assert captured["intent"] == "OPEN_LONG"
+    assert captured["cycle_id"] == now.isoformat()
+    decision = next(d for d in report["decisions"] if d["symbol"] == "SPY")
+    assert decision["executed"] is False
+    assert decision["reason"] == "queue_execute_timeout"
+    assert SimBroker(state_dir / "broker.json").positions() == {}
 
 
 def test_run_cycle_garde_tradable_une_barre_horaire_de_59_minutes(

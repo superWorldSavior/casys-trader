@@ -44,7 +44,7 @@ Légende : ✅ couvert · 🟡 partiel / dispersé / potentiellement périmé ·
 | Contexte marché (snapshot) | `application/market_snapshot` | ✅ | archi §3.2-3.3 | — |
 | Enregistrement décision | `application/decision_recorder` | ✅ | archi §3.8, §8 | — |
 | Gate de pertinence (coût) | `planning/relevance_gate` | ✅ | archi §3.4 | D7A |
-| **File de tâches durable** | `infrastructure/queue/*` (ledger, pools, worker) | ✅ | **`reference/task-queue.md`** | queue paper activée |
+| **File de tâches durable** | `infrastructure/queue/*` (ledger, pools, worker), `application/{queue_dispatch,execute_queue_dispatch}` | ✅ | **`reference/task-queue.md`** | queue paper activée |
 
 ### Actions & exécution
 | Sous-système | Package/module | Réf | Où | Décisions |

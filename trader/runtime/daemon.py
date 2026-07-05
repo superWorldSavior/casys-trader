@@ -37,6 +37,7 @@ from trader.application import (
     confidence_feedback,
     decision_entries,
     decision_watches,
+    execute_queue_dispatch,
     execution_eligibility as execution_eligibility_service,
     exit_bars as exit_bars_service,
     gross_feedback,
@@ -83,7 +84,7 @@ from trader.runtime.ib_attach import IBAttachBackoff
 from trader.runtime.state_writer import RuntimeStateWriter
 from trader.planning import scheduler
 from trader.execution import portfolio
-from trader.execution.contracts import Fill, Order
+from trader.execution.contracts import Order
 from trader.execution.broker import (
     SimBroker,
     commission_model_from_name,
@@ -2149,113 +2150,31 @@ def run_cycle(
                     )
                     _exec_plan_dict = asdict(_pre_plan)
 
-            _exec_payload = json.dumps({
-                "order": {
-                    "symbol": sym,
-                    "side": decision.action,
-                    "quantity": effective_quantity,
-                    "rationale": decision.rationale,
-                },
-                "price": prices[sym],
-                "ts": now.isoformat(),
-                "fx_rate": _rate(sym),
-                "dry_run": dry_run,
-                "plan_to_upsert": _exec_plan_dict,
-                "symbol_to_close": _exec_sym_close,
-            })
-            _exec_now_ms = int(time.time() * 1000)
             # FIX 4 — dedup_key STABLE par (cycle, sym, intent) pour idempotence
             # d'enqueue : un re-enqueue après crash du cycle retourne None (pas de
             # doublon). partition_key="portfolio" : au plus un execute_order running
             # à la fois (sérialisation accès broker).
-            _exec_dedup_key = f"exec:{now.isoformat()}:{sym}:{decision.intent}"
-            _exec_tid = execute_ledger.enqueue(
-                kind="execute_order",
-                priority=0,
-                scheduled_at_ms=_exec_now_ms,
-                now_ms=_exec_now_ms,
-                resource="portfolio",
-                partition_key="portfolio",
-                dedup_key=_exec_dedup_key,
-                payload=_exec_payload,
+            _exec_outcome = execute_queue_dispatch.dispatch_execute_order_via_queue(
+                ledger=execute_ledger,
+                symbol=sym,
+                side=decision.action,
+                quantity=effective_quantity,
+                rationale=decision.rationale,
+                price=prices[sym],
+                ts=now.isoformat(),
+                fx_rate=_rate(sym),
+                dry_run=dry_run,
+                plan_to_upsert=_exec_plan_dict,
+                symbol_to_close=_exec_sym_close,
+                cycle_id=now.isoformat(),
+                intent=decision.intent,
+                budget_s=_EXECUTE_POLL_BUDGET_S,
             )
-            if _exec_tid is None:
-                log.error("[queue_execute] enqueue None sym=%s — skip", sym)
+            if _exec_outcome.reason is not None:
                 apply_default_schedule_after_blocked()
-                record_decision({**entry, "executed": False, "reason": "queue_execute_enqueue_failed"})
+                record_decision({**entry, "executed": False, "reason": _exec_outcome.reason})
                 continue
-
-            fill = None
-            # FIX 2 — tracking de l'état terminal pour fail-closed post-boucle.
-            # "done"      → task complétée, fill décodé depuis result (ou None si dry_run)
-            # "dead"      → retries épuisés — FAIL-CLOSED : NE PAS loguer executed=True
-            # "not_found" → task disparue (purge/crash) — FAIL-CLOSED
-            # "timeout"   → budget expiré sans état terminal — FAIL-CLOSED
-            #               (tâche toujours active : risque d'exécution tardive documenté)
-            _exec_terminal: str = "timeout"  # défaut = timeout (else-clause)
-            _exec_deadline = time.time() + _EXECUTE_POLL_BUDGET_S
-            while time.time() < _exec_deadline:
-                _exec_task = execute_ledger.get(_exec_tid)
-                if _exec_task is None:
-                    log.warning("[queue_execute] task introuvable id=%s sym=%s", _exec_tid, sym)
-                    _exec_terminal = "not_found"
-                    break
-                _exec_status = _exec_task.get("status")
-                if _exec_status == "done":
-                    _exec_result = _exec_task.get("result")
-                    if _exec_result:
-                        try:
-                            fill = Fill(**json.loads(_exec_result))
-                        except Exception as _fill_exc:  # noqa: BLE001
-                            log.warning("[queue_execute] désérialisation fill sym=%s: %s", sym, _fill_exc)
-                    _exec_terminal = "done"
-                    break
-                if _exec_status == "dead":
-                    log.warning("[queue_execute] task dead sym=%s id=%s", sym, _exec_tid)
-                    _exec_terminal = "dead"
-                    break
-                time.sleep(0.05)
-            else:
-                log.warning("[queue_execute] budget épuisé sym=%s budget_s=%s", sym, _EXECUTE_POLL_BUDGET_S)
-                # _exec_terminal reste "timeout" (valeur par défaut)
-
-            # FIX 2 — FAIL-CLOSED : tout état non-terminal et non-done → NE PAS loguer
-            # executed=True. L'ordre ne doit pas apparaître comme « exécuté » en cas
-            # d'échec ou de timeout (l'ordre pourrait encore partir plus tard — warning).
-            if _exec_terminal == "dead":
-                apply_default_schedule_after_blocked()
-                record_decision({**entry, "executed": False, "reason": "queue_execute_dead"})
-                continue
-            if _exec_terminal == "not_found":
-                apply_default_schedule_after_blocked()
-                record_decision({**entry, "executed": False, "reason": "queue_execute_not_found"})
-                continue
-            if _exec_terminal == "timeout":
-                # RISQUE RÉSIDUEL : la tâche est toujours pending/running — l'ordre PEUT
-                # encore s'exécuter après ce cycle. On ne peut pas l'annuler depuis ici.
-                # Fail-closed minimal : ne pas loguer executed=True, logger un warning clair.
-                log.warning(
-                    "[queue_execute] FAIL-CLOSED sym=%s — budget expiré sans état terminal "
-                    "(tâche id=%s toujours active, ordre peut encore s'exécuter plus tard — "
-                    "risque résiduel d'exécution tardive non géré dans ce cycle)",
-                    sym, _exec_tid,
-                )
-                apply_default_schedule_after_blocked()
-                record_decision({**entry, "executed": False, "reason": "queue_execute_timeout"})
-                continue
-            # _exec_terminal == "done" — fail-closed si fill absent en non-dry_run.
-            # Cas : task done MAIS result=NULL ou JSON invalide (bug UoW ou purge race).
-            # En dry_run result=None est normal ; en non-dry_run il signale une anomalie.
-            if fill is None and not dry_run:
-                log.error(
-                    "[queue_execute] FAIL-CLOSED sym=%s id=%s — task done sans fill décodable "
-                    "(result=%r) — ordre non confirmé, executed=False",
-                    sym, _exec_tid,
-                    (execute_ledger.get(_exec_tid) or {}).get("result"),
-                )
-                apply_default_schedule_after_blocked()
-                record_decision({**entry, "executed": False, "reason": "queue_execute_no_fill"})
-                continue
+            fill = _exec_outcome.fill
         else:
             fill = broker.submit(order, prices[sym], now.isoformat(), dry_run=dry_run, fx_rate=_rate(sym))
         if not dry_run:

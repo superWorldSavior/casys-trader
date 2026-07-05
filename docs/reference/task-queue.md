@@ -1,7 +1,7 @@
 # Référence — File de tâches durable (task-ledger)
 
 > **Type** : Reference (Diátaxis).
-> **Code** : primitives `infrastructure/queue/ledger`, `infrastructure/queue/pools`, `infrastructure/queue/worker` ; intégration `runtime/daemon`, handlers `application/decide_handler` + `application/execute_order_handler`, backend `infrastructure/state_db/*` (outbox). Les anciens imports `trader.queue.*` et `trader.state_db.*` restent compatibles via alias virtuels.
+> **Code** : primitives `infrastructure/queue/ledger`, `infrastructure/queue/pools`, `infrastructure/queue/worker` ; dispatchers `application/queue_dispatch` + `application/execute_queue_dispatch` ; intégration `runtime/daemon`, handlers `application/decide_handler` + `application/execute_order_handler`, backend `infrastructure/state_db/*` (outbox). Les anciens imports `trader.queue.*` et `trader.state_db.*` restent compatibles via alias virtuels.
 > **Statut** : ✅ **Phase 3 ACTIVÉE en paper (2026-07-04)** — les 3 flags on (`CASYS_STATE_BACKEND=sqlite`, `CASYS_QUEUE_DECIDE_ENABLED`, `CASYS_QUEUE_EXECUTE_ENABLED`), migration d'état validée, `[state-compare] identical=True`. Les chemins synchrones historiques restent présents comme fallback (flags off) jusqu'au gommage strangler. Voir la section « Pipeline » ci-dessous.
 > **Rôle** : file durable qui découple la production des tâches de leur traitement (durabilité, reprise, idempotence, backpressure).
 
@@ -156,9 +156,10 @@ combinaisons sont valides et testées.
 ### Étage `execute` — `CASYS_QUEUE_EXECUTE_ENABLED` (exige `sqlite`)
 
 - off : `SimBroker.submit` synchrone dans `run_cycle`, inchangé.
-- on : `run_cycle` enfile **1 tâche `execute_order`** par ordre retenu
-  (`resource=portfolio`, sérialisé), le worker exécute **submit + plan + `done` dans
-  UNE transaction SQLite** (outbox, `execute_order_unit`). Le Fill est écrit **dans
+- on : `run_cycle` pré-calcule les plans atomiques puis délègue à
+  `application.execute_queue_dispatch`, qui enfile **1 tâche `execute_order`** par
+  ordre retenu (`resource=portfolio`, sérialisé). Le worker exécute **submit +
+  plan + `done` dans UNE transaction SQLite** (outbox, `execute_order_unit`). Le Fill est écrit **dans
   la même tx** (`complete_in_tx`) → aucune perte de fill au crash. Fencing (`SELECT
   status/token` avant submit) → aucun double-fill au rejeu. `dead`/timeout →
   **fail-closed** (`executed=False`, jamais loggé « ok »). `dedup_key`
