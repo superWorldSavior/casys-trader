@@ -15,7 +15,6 @@ def _gate(*, confidence_gate_enabled: bool = True) -> RiskGate:
             max_position_value=100_000.0,
             max_gross_exposure=100_000.0,
             max_order_value=100_000.0,
-            max_orders_per_cycle=5,
             min_equity=10_000.0,
             max_risk_per_trade_pct=0.01,
             min_trade_confidence=0.7,
@@ -263,7 +262,6 @@ def test_assess_final_risk_gate_maps_order_value_rejection() -> None:
                 max_position_value=100_000.0,
                 max_gross_exposure=100_000.0,
                 max_order_value=1_000.0,
-                max_orders_per_cycle=5,
                 min_equity=10_000.0,
             )
         ),
@@ -297,7 +295,6 @@ def test_assess_final_risk_gate_allows_reduce_through_order_value_cap() -> None:
                 max_position_value=100_000.0,
                 max_gross_exposure=100_000.0,
                 max_order_value=100.0,
-                max_orders_per_cycle=5,
                 min_equity=10_000.0,
             )
         ),
@@ -328,7 +325,6 @@ def test_assess_final_risk_gate_uses_fx_for_existing_position_value() -> None:
                 max_position_value=4_000.0,
                 max_gross_exposure=100_000.0,
                 max_order_value=100_000.0,
-                max_orders_per_cycle=5,
                 min_equity=10_000.0,
             )
         ),

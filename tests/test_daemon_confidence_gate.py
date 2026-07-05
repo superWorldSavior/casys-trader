@@ -29,7 +29,6 @@ def _write_runtime_config(root) -> None:
                 "max_gross_exposure: 100000",
                 "max_order_value: 10000",
                 "max_risk_per_trade_pct: 0.01",
-                "max_orders_per_cycle: 5",
                 "min_equity: 50000",
             ]
         )
@@ -251,7 +250,6 @@ def _enable_exploration(root) -> None:
                 "max_gross_exposure: 100000",
                 "max_order_value: 10000",
                 "max_risk_per_trade_pct: 0.01",
-                "max_orders_per_cycle: 5",
                 "min_equity: 50000",
                 "confidence_gate_enabled: false",
                 "require_hard_stop: false",

@@ -142,7 +142,6 @@ def run_backtest(
 
         for ts in timeline:
             prices = _current_prices(history, symbols, ts)
-            gate.start_cycle()
 
             for symbol, price in prices.items():
                 portfolio, _cash, equity, positions, position_prices = _portfolio_snapshot(broker, history, ts, prices)
@@ -185,7 +184,6 @@ def run_backtest(
                 fill = broker.submit(order, price, ts, dry_run=False)
                 if fill is None:
                     continue
-                gate.record_pass()
                 trade = {
                     "ts": fill.ts,
                     "symbol": fill.symbol,

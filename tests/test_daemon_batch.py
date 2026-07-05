@@ -1,9 +1,11 @@
 """Tests du helper batch _batch_decide (budget d'appels modèle honoré)."""
 
+from dataclasses import replace
 import threading
 import time
 import logging
-from datetime import datetime, timezone
+from types import SimpleNamespace
+from datetime import datetime, timedelta, timezone
 
 from trader.runtime import daemon
 from trader.application import planner_batch
@@ -33,23 +35,600 @@ def test_planner_batch_module_expose_batch_decide() -> None:
     assert callable(planner_batch.batch_decide)
 
 
-def _write_runtime_config(root) -> None:
+def _write_runtime_config(root, *, symbols=("SPY",)) -> None:
     (root / "config").mkdir()
     (root / "mandate").mkdir()
-    (root / "config" / "universe.yaml").write_text("starting_cash: 100000\nsymbols:\n  - SPY\n")
+    symbols_yaml = "".join(f"  - {symbol}\n" for symbol in symbols)
+    (root / "config" / "universe.yaml").write_text(f"starting_cash: 100000\nsymbols:\n{symbols_yaml}")
     (root / "config" / "risk.yaml").write_text(
         "\n".join(
             [
                 "max_position_value: 20000",
                 "max_gross_exposure: 100000",
                 "max_order_value: 10000",
-                "max_orders_per_cycle: 5",
                 "min_equity: 50000",
             ]
         )
     )
     (root / "mandate" / "mandate.md").write_text("# Mandat\n")
     (root / "mandate" / "memory.md").write_text("# Memoire\n")
+
+
+def _fresh_data_source(make_data_source, now: datetime):
+    return make_data_source(
+        lambda symbol, lookback, interval: [
+            Bar(
+                ts=now.isoformat() if interval != "1d" else now.date().isoformat(),
+                open=100.0,
+                high=101.0,
+                low=99.0,
+                close=100.0,
+                volume=1000.0,
+            )
+        ]
+    )
+
+
+def _open_long_decision(symbol: str, *, confidence: float, rationale: str | None = None) -> Decision:
+    return Decision(
+        symbol=symbol,
+        action="BUY",
+        quantity=1.0,
+        confidence=confidence,
+        rationale=rationale or f"open {symbol}",
+        intent="OPEN_LONG",
+        exit_plan={"hard_stop": {"type": "price", "price": 95.0}},
+    )
+
+
+def _decision_entry_for_test(decision: Decision, *, price: float, executed: bool = True) -> dict:
+    return {
+        "symbol": decision.symbol,
+        "action": decision.action,
+        "qty": abs(decision.quantity),
+        "confidence": decision.confidence,
+        "rationale": decision.rationale,
+        "intent": decision.intent,
+        "executed": executed,
+        "reason": "ok" if executed else decision.rationale,
+        "price": price,
+        "trade_plan_created": False,
+        "decision_source": "llm",
+        "model_called": True,
+    }
+
+
+def _install_queue_decide_stream(monkeypatch, stream_events, trace: list[tuple]):
+    import trader.application.queue_dispatch as queue_dispatch
+
+    def fake_iter_decide_results_via_queue(**_kwargs):
+        for sym, decision, calls in stream_events:
+            trace.append(("decision_ready", sym))
+            yield sym, decision, calls
+
+    def fake_dispatch_decide_via_queue(**_kwargs):
+        decisions = {}
+        undecided = set()
+        model_calls = 0
+        for sym, decision, calls in stream_events:
+            trace.append(("decision_ready", sym))
+            if decision is None:
+                undecided.add(sym)
+            else:
+                decisions[sym] = decision
+                model_calls += calls
+        return decisions, model_calls, undecided
+
+    monkeypatch.setattr(queue_dispatch, "iter_decide_results_via_queue", fake_iter_decide_results_via_queue)
+    monkeypatch.setattr(queue_dispatch, "dispatch_decide_via_queue", fake_dispatch_decide_via_queue)
+
+
+def _install_tracing_decision_executor(monkeypatch, trace: list[tuple]):
+    def fake_execute_one_cycle_decision(*, sym, index, total, decision, state, ctx):
+        trace.append(("execute", sym, decision.intent, state.gross))
+        if decision.intent in {"CLOSE", "REDUCE"}:
+            state.gross = 0.0
+            trace.append(("refresh_after_exit", sym, state.gross))
+        ctx.record_decision(
+            _decision_entry_for_test(
+                decision,
+                price=ctx.prices[sym],
+                executed=decision.action != "HOLD",
+            )
+        )
+        return state
+
+    monkeypatch.setattr(daemon, "_execute_one_cycle_decision", fake_execute_one_cycle_decision)
+
+
+def _seed_long_position(state_dir, symbol: str, *, quantity: float = 10.0, price: float = 100.0) -> None:
+    broker = daemon.SimBroker(state_dir / "broker.json", starting_cash=100_000.0)
+    broker.submit(
+        daemon.Order(symbol=symbol, side="BUY", quantity=quantity),
+        price,
+        "2026-06-15T13:00:00+00:00",
+        dry_run=False,
+    )
+
+
+def test_queue_decide_streams_ready_reducer_before_slow_opening_finishes(
+    monkeypatch,
+    tmp_path,
+    make_data_source,
+) -> None:
+    _write_runtime_config(tmp_path, symbols=("SPY", "QQQ"))
+    state_dir = tmp_path / "state"
+    _seed_long_position(state_dir, "SPY", quantity=10.0)
+    now = datetime(2026, 6, 15, 14, 30, tzinfo=timezone.utc)
+    trace: list[tuple] = []
+    reduce_decision = Decision(
+        symbol="SPY",
+        action="HOLD",
+        quantity=0.0,
+        confidence=0.8,
+        rationale="reduce now",
+        intent="REDUCE",
+        resolve_from_position=True,
+        reduce_fraction=0.5,
+    )
+    open_decision = Decision(
+        symbol="QQQ",
+        action="BUY",
+        quantity=1.0,
+        confidence=0.7,
+        rationale="open later",
+        intent="OPEN_LONG",
+        exit_plan={"hard_stop": {"type": "price", "price": 95.0}},
+    )
+
+    monkeypatch.setattr(daemon, "ROOT", tmp_path)
+    monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+    _install_queue_decide_stream(
+        monkeypatch,
+        [("SPY", reduce_decision, 1), ("QQQ", open_decision, 1)],
+        trace,
+    )
+    _install_tracing_decision_executor(monkeypatch, trace)
+
+    daemon.run_cycle(
+        dry_run=False,
+        now=now,
+        symbols_filter=["SPY", "QQQ"],
+        sched=Scheduler(state_dir / "scheduler.json"),
+        data_source=_fresh_data_source(make_data_source, now),
+        queue_decide_enabled=True,
+        task_ledger=object(),
+    )
+
+    assert trace.index(("execute", "SPY", "REDUCE", 1000.0)) < trace.index(("decision_ready", "QQQ"))
+    assert trace.index(("refresh_after_exit", "SPY", 0.0)) < trace.index(("execute", "QQQ", "OPEN_LONG", 0.0))
+
+
+def test_queue_decide_buffers_reverse_until_collection_is_exhausted(
+    monkeypatch,
+    tmp_path,
+    make_data_source,
+) -> None:
+    _write_runtime_config(tmp_path, symbols=("SPY", "QQQ"))
+    state_dir = tmp_path / "state"
+    _seed_long_position(state_dir, "SPY", quantity=10.0)
+    now = datetime(2026, 6, 15, 14, 30, tzinfo=timezone.utc)
+    trace: list[tuple] = []
+    reverse_decision = Decision(
+        symbol="SPY",
+        action="HOLD",
+        quantity=5.0,
+        confidence=0.9,
+        rationale="flip",
+        intent="REVERSE",
+        resolve_from_position=True,
+        exit_plan={"hard_stop": {"type": "price", "price": 105.0}},
+    )
+    hold_decision = Decision.hold("QQQ", "wait")
+
+    monkeypatch.setattr(daemon, "ROOT", tmp_path)
+    monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+    _install_queue_decide_stream(
+        monkeypatch,
+        [("SPY", reverse_decision, 1), ("QQQ", hold_decision, 1)],
+        trace,
+    )
+    _install_tracing_decision_executor(monkeypatch, trace)
+
+    daemon.run_cycle(
+        dry_run=False,
+        now=now,
+        symbols_filter=["SPY", "QQQ"],
+        sched=Scheduler(state_dir / "scheduler.json"),
+        data_source=_fresh_data_source(make_data_source, now),
+        queue_decide_enabled=True,
+        task_ledger=object(),
+    )
+
+    assert trace.index(("decision_ready", "SPY")) < trace.index(("decision_ready", "QQQ"))
+    assert trace.index(("decision_ready", "QQQ")) < trace.index(("execute", "SPY", "REVERSE", 1000.0))
+
+
+def test_queue_decide_executes_buffered_openings_by_gross_merit_order(
+    monkeypatch,
+    tmp_path,
+    make_data_source,
+) -> None:
+    _write_runtime_config(tmp_path, symbols=("LOW", "HIGH"))
+    state_dir = tmp_path / "state"
+    now = datetime(2026, 6, 15, 14, 30, tzinfo=timezone.utc)
+    trace: list[tuple] = []
+    low_conf = _open_long_decision("LOW", confidence=0.2, rationale="weak open")
+    high_conf = _open_long_decision("HIGH", confidence=0.95, rationale="strong open")
+
+    monkeypatch.setattr(daemon, "ROOT", tmp_path)
+    monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+    _install_queue_decide_stream(
+        monkeypatch,
+        [("LOW", low_conf, 1), ("HIGH", high_conf, 1)],
+        trace,
+    )
+    _install_tracing_decision_executor(monkeypatch, trace)
+
+    daemon.run_cycle(
+        dry_run=False,
+        now=now,
+        symbols_filter=["LOW", "HIGH"],
+        sched=Scheduler(state_dir / "scheduler.json"),
+        data_source=_fresh_data_source(make_data_source, now),
+        queue_decide_enabled=True,
+        task_ledger=object(),
+    )
+
+    executed_symbols = [item[1] for item in trace if item[0] == "execute"]
+    assert executed_symbols == ["HIGH", "LOW"]
+
+
+def test_queue_decide_buffered_opening_order_is_deterministic_for_same_input(
+    monkeypatch,
+    tmp_path,
+    make_data_source,
+) -> None:
+    now = datetime(2026, 6, 15, 14, 30, tzinfo=timezone.utc)
+
+    def run_once(root) -> list[str]:
+        root.mkdir()
+        _write_runtime_config(root, symbols=("LOW", "HIGH", "MID"))
+        state_dir = root / "state"
+        trace: list[tuple] = []
+        low_conf = _open_long_decision("LOW", confidence=0.2, rationale="weak open")
+        high_conf = _open_long_decision("HIGH", confidence=0.95, rationale="strong open")
+        mid_conf = _open_long_decision("MID", confidence=0.7, rationale="mid open")
+        monkeypatch.setattr(daemon, "ROOT", root)
+        monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+        _install_queue_decide_stream(
+            monkeypatch,
+            [("LOW", low_conf, 1), ("HIGH", high_conf, 1), ("MID", mid_conf, 1)],
+            trace,
+        )
+        _install_tracing_decision_executor(monkeypatch, trace)
+
+        daemon.run_cycle(
+            dry_run=False,
+            now=now,
+            symbols_filter=["LOW", "HIGH", "MID"],
+            sched=Scheduler(state_dir / "scheduler.json"),
+            data_source=_fresh_data_source(make_data_source, now),
+            queue_decide_enabled=True,
+            task_ledger=object(),
+        )
+        return [item[1] for item in trace if item[0] == "execute"]
+
+    assert run_once(tmp_path / "one") == ["HIGH", "MID", "LOW"]
+    assert run_once(tmp_path / "two") == ["HIGH", "MID", "LOW"]
+
+
+class _DryRunDoneExecuteLedger:
+    def __init__(self) -> None:
+        self.enqueued: list[dict] = []
+
+    def enqueue(self, **kwargs):
+        self.enqueued.append(kwargs)
+        return len(self.enqueued)
+
+    def get(self, task_id: int):
+        return {"id": task_id, "status": "done", "result": None}
+
+
+def test_queue_execute_enqueues_buffered_openings_once_with_stable_dedup_key(
+    monkeypatch,
+    tmp_path,
+    make_data_source,
+) -> None:
+    _write_runtime_config(tmp_path, symbols=("LOW", "HIGH"))
+    state_dir = tmp_path / "state"
+    now = datetime(2026, 6, 15, 14, 30, tzinfo=timezone.utc)
+    ledger = _DryRunDoneExecuteLedger()
+    low_conf = _open_long_decision("LOW", confidence=0.91, rationale="weak open")
+    high_conf = _open_long_decision("HIGH", confidence=0.95, rationale="strong open")
+
+    monkeypatch.setattr(daemon, "ROOT", tmp_path)
+    monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+    _install_queue_decide_stream(
+        monkeypatch,
+        [("LOW", low_conf, 1), ("HIGH", high_conf, 1)],
+        [],
+    )
+
+    daemon.run_cycle(
+        dry_run=True,
+        now=now,
+        symbols_filter=["LOW", "HIGH"],
+        sched=Scheduler(state_dir / "scheduler.json"),
+        data_source=_fresh_data_source(make_data_source, now),
+        queue_decide_enabled=True,
+        task_ledger=object(),
+        queue_execute_enabled=True,
+        execute_ledger=ledger,
+    )
+
+    dedup_keys = [item["dedup_key"] for item in ledger.enqueued]
+    assert dedup_keys == [
+        f"exec:{now.isoformat()}:HIGH:OPEN_LONG",
+        f"exec:{now.isoformat()}:LOW:OPEN_LONG",
+    ]
+    assert len(dedup_keys) == len(set(dedup_keys))
+
+
+def test_opening_execute_timeout_stops_remaining_buffered_openings_as_undecided(
+    monkeypatch,
+    tmp_path,
+    make_data_source,
+) -> None:
+    _write_runtime_config(tmp_path, symbols=("LOW", "HIGH", "MID"))
+    state_dir = tmp_path / "state"
+    now = datetime(2026, 6, 15, 14, 30, tzinfo=timezone.utc)
+    dispatched_symbols: list[str] = []
+    low_conf = _open_long_decision("LOW", confidence=0.91, rationale="weak open")
+    high_conf = _open_long_decision("HIGH", confidence=0.95, rationale="strong open")
+    mid_conf = _open_long_decision("MID", confidence=0.93, rationale="mid open")
+
+    def fake_dispatch(**kwargs):
+        dispatched_symbols.append(kwargs["symbol"])
+        return daemon.execute_queue_dispatch.ExecuteQueueOutcome(
+            task_id=123,
+            terminal="timeout",
+            reason="queue_execute_timeout",
+            late_execution_risk=True,
+        )
+
+    monkeypatch.setattr(daemon, "ROOT", tmp_path)
+    monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+    _install_queue_decide_stream(
+        monkeypatch,
+        [("LOW", low_conf, 1), ("HIGH", high_conf, 1), ("MID", mid_conf, 1)],
+        [],
+    )
+    monkeypatch.setattr(
+        daemon.execute_queue_dispatch,
+        "dispatch_execute_order_via_queue",
+        fake_dispatch,
+    )
+
+    report = daemon.run_cycle(
+        dry_run=False,
+        now=now,
+        symbols_filter=["LOW", "HIGH", "MID"],
+        sched=Scheduler(state_dir / "scheduler.json"),
+        data_source=_fresh_data_source(make_data_source, now),
+        queue_decide_enabled=True,
+        task_ledger=object(),
+        queue_execute_enabled=True,
+        execute_ledger=object(),
+    )
+
+    assert dispatched_symbols == ["HIGH"]
+    assert [(d["symbol"], d["executed"], d["reason"]) for d in report["decisions"]] == [
+        ("HIGH", False, "queue_execute_timeout")
+    ]
+    assert daemon.SimBroker(state_dir / "broker.json").positions() == {}
+
+
+def test_openings_deferred_by_execute_timeout_are_redecided_next_cycle(
+    monkeypatch,
+    tmp_path,
+    make_data_source,
+) -> None:
+    _write_runtime_config(tmp_path, symbols=("LOW", "HIGH", "MID"))
+    state_dir = tmp_path / "state"
+    now = datetime(2026, 6, 15, 14, 30, tzinfo=timezone.utc)
+    sched = Scheduler(state_dir / "scheduler.json")
+    decisions = {
+        "LOW": replace(
+            _open_long_decision("LOW", confidence=0.91, rationale="weak open"),
+            llm_provider="acpx",
+            llm_model="gpt-5.5/medium",
+        ),
+        "HIGH": replace(
+            _open_long_decision("HIGH", confidence=0.95, rationale="strong open"),
+            llm_provider="acpx",
+            llm_model="gpt-5.5/medium",
+        ),
+        "MID": replace(
+            _open_long_decision("MID", confidence=0.93, rationale="mid open"),
+            llm_provider="acpx",
+            llm_model="gpt-5.5/medium",
+        ),
+    }
+    decidable_by_cycle: list[list[str]] = []
+
+    def fake_iter_decide_results_via_queue(**kwargs):
+        decidable = list(kwargs["decidable"])
+        decidable_by_cycle.append(decidable)
+        for sym in decidable:
+            yield sym, decisions[sym], 1
+
+    def fake_dispatch(**_kwargs):
+        return daemon.execute_queue_dispatch.ExecuteQueueOutcome(
+            task_id=123,
+            terminal="timeout",
+            reason="queue_execute_timeout",
+            late_execution_risk=False,
+        )
+
+    monkeypatch.setattr(daemon, "ROOT", tmp_path)
+    monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+    import trader.application.queue_dispatch as queue_dispatch
+    monkeypatch.setattr(queue_dispatch, "iter_decide_results_via_queue", fake_iter_decide_results_via_queue)
+    monkeypatch.setattr(daemon.execute_queue_dispatch, "dispatch_execute_order_via_queue", fake_dispatch)
+
+    daemon.run_cycle(
+        dry_run=False,
+        now=now,
+        symbols_filter=["LOW", "HIGH", "MID"],
+        sched=sched,
+        data_source=_fresh_data_source(make_data_source, now),
+        queue_decide_enabled=True,
+        task_ledger=object(),
+        queue_execute_enabled=True,
+        execute_ledger=object(),
+    )
+    daemon.run_cycle(
+        dry_run=False,
+        now=now + timedelta(minutes=1),
+        symbols_filter=["LOW", "HIGH", "MID"],
+        sched=sched,
+        data_source=_fresh_data_source(make_data_source, now + timedelta(minutes=1)),
+        queue_decide_enabled=True,
+        task_ledger=object(),
+        queue_execute_enabled=True,
+        execute_ledger=object(),
+    )
+
+    assert decidable_by_cycle[0] == ["LOW", "HIGH", "MID"]
+    assert {"LOW", "HIGH", "MID"} <= set(decidable_by_cycle[1])
+
+
+def test_execute_one_cycle_decision_records_hold_without_mutating_state() -> None:
+    records: list[dict] = []
+    snap = SimpleNamespace(equity=100_000.0)
+    state = daemon.DecisionExecutionState(snap=snap, gross=1234.0)
+    ctx = daemon.DecisionExecutionContext(
+        now=_COMMON["now"],
+        min_wake_minutes=None,
+        max_wake_minutes=None,
+        macro_next=None,
+        broker=SimpleNamespace(positions=lambda: {}),
+        plan_store=SimpleNamespace(),
+        gate=SimpleNamespace(),
+        sched=None,
+        prices={"SPY": 100.0},
+        execution_eligibility={},
+        tradable_bars_by_symbol={},
+        data_age_by_symbol={},
+        runtime_data_source_by_sym={},
+        armed_plan_ids={},
+        armed_plan_orders={},
+        armed_reference_volatilities={},
+        held_symbols=set(),
+        cockpit={},
+        runtime_interval="15m",
+        starting_equity=100_000.0,
+        require_hard_stop=True,
+        dry_run=True,
+        queue_execute_enabled=False,
+        execute_ledger=None,
+        record_decision=records.append,
+        rate_for_symbol=lambda _symbol: 1.0,
+    )
+
+    new_state = daemon._execute_one_cycle_decision(
+        sym="SPY",
+        index=1,
+        total=1,
+        decision=Decision.hold("SPY", "no_decision_in_batch"),
+        state=state,
+        ctx=ctx,
+    )
+
+    assert new_state is state
+    assert new_state.snap is snap
+    assert new_state.gross == 1234.0
+    assert len(records) == 1
+    assert records[0]["symbol"] == "SPY"
+    assert records[0]["executed"] is False
+    assert records[0]["reason"] == "no_decision_in_batch"
+
+
+def test_execute_one_cycle_decision_refreshes_state_snap_after_confirmed_fill(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from trader.execution import portfolio
+
+    records: list[dict] = []
+    broker = daemon.SimBroker(tmp_path / "broker.json", starting_cash=100_000.0)
+    old_snap = portfolio.snapshot(broker, lambda _symbol: 100.0, 100_000.0)
+    state = daemon.DecisionExecutionState(snap=old_snap, gross=0.0)
+
+    class ApprovingGate:
+        limits = SimpleNamespace(max_risk_per_trade_pct=0.01)
+
+        def max_quantity_at_risk(self, *_args, **_kwargs) -> float:
+            return 1_000.0
+
+        def check_confidence(self, *_args, **_kwargs):
+            return SimpleNamespace(approved=True, code="ok", context="")
+
+        def check(self, *_args, **_kwargs):
+            return SimpleNamespace(approved=True, code="ok", context="")
+
+    monkeypatch.setattr(daemon, "_append_model_performance", lambda **_payload: None)
+    ctx = daemon.DecisionExecutionContext(
+        now=_COMMON["now"],
+        min_wake_minutes=None,
+        max_wake_minutes=None,
+        macro_next=None,
+        broker=broker,
+        plan_store=SimpleNamespace(),
+        gate=ApprovingGate(),
+        sched=None,
+        prices={"SPY": 100.0},
+        execution_eligibility={"SPY": {"execution": {"enabled": True, "reason": "tradable"}}},
+        tradable_bars_by_symbol={},
+        data_age_by_symbol={},
+        runtime_data_source_by_sym={},
+        armed_plan_ids={},
+        armed_plan_orders={},
+        armed_reference_volatilities={},
+        held_symbols=set(),
+        cockpit={},
+        runtime_interval="15m",
+        starting_equity=100_000.0,
+        require_hard_stop=False,
+        dry_run=False,
+        queue_execute_enabled=False,
+        execute_ledger=None,
+        record_decision=records.append,
+        rate_for_symbol=lambda _symbol: 1.0,
+    )
+
+    new_state = daemon._execute_one_cycle_decision(
+        sym="SPY",
+        index=1,
+        total=1,
+        decision=Decision(
+            symbol="SPY",
+            action="BUY",
+            quantity=1.0,
+            confidence=0.95,
+            rationale="snap refresh",
+            intent="OPEN_LONG",
+        ),
+        state=state,
+        ctx=ctx,
+    )
+
+    assert new_state is state
+    assert new_state.snap is not old_snap
+    assert [holding.symbol for holding in new_state.snap.holdings] == ["SPY"]
+    assert new_state.gross == 100.0
+    assert records[0]["executed"] is True
 
 
 def test_execution_blocked_reason_gate_les_ordres_hors_execution() -> None:

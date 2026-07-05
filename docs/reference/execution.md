@@ -48,6 +48,15 @@ quand plusieurs ordres se présentent au même cycle et que le plafond d'exposit
 brute (`max_gross_exposure`) est contraint, l'ordre de passage est fixé (pas de
 biais d'itération). Cf. historique `git log` (design gross-budget-allocator livré).
 
+Sous l'itération libre (streaming, cf. [task-queue](task-queue.md)), cet ordre
+s'applique à la **phase des ouvertures** : les sorties (`CLOSE`/`REDUCE`) sont
+exécutées au fil de l'eau (elles libèrent de la marge), puis les ouvertures
+bufferisées passent par `gross_execution_order` en voyant la marge refreshée →
+l'arbitrage au mérite (réducteurs d'abord, puis conviction décroissante) est
+préservé. Le budget des ouvertures est le RiskGate/marge : le cap de débit
+`max_orders_per_cycle` a été retiré (redondant avec les bornes $, qui restent la
+safety capital).
+
 ## Broker / passage d'ordres — `execution/broker`
 
 Modèle d'ordre + commissions.

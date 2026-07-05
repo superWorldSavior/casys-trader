@@ -47,6 +47,7 @@ from trader.interfaces.cockpit.overview import (
     _holding_pnl,
     _holding_symbol,
     _metric_cell,
+    _model_calls_label,
     _next_tp_label,
     _plan_for_symbol,
     _plan_qty_label,
@@ -158,13 +159,18 @@ def build_status_line(
     curve = [v for v in (_safe_float(x, default=None) for x in (state.get("equity_curve") or [])) if v is not None]
     spark = sparkline(curve[-24:]) if len(curve) >= 2 else ""
 
-    used = daemon_status.get("model_calls_used")
-    max_calls = daemon_status.get("max_model_calls_per_cycle")
-    llm = f"LLM {used}/{max_calls}" if used is not None and max_calls is not None else "LLM —"
+    llm = f"LLM {_model_calls_label(daemon_status)}"
 
     done = daemon_status.get("decisions_done")
     total = daemon_status.get("symbols_total")
-    cycle_running = isinstance(total, int) and total > 0 and isinstance(done, int) and done < total
+    phase = str(daemon_status.get("phase") or "")
+    cycle_running = (
+        phase != "cycle_completed"
+        and isinstance(total, int)
+        and total > 0
+        and isinstance(done, int)
+        and done < total
+    )
 
     clock = venue_clock(state.get("sessions") or {}, now)
     venue_bits: list[tuple[str, str]] = []

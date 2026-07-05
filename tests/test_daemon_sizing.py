@@ -36,7 +36,6 @@ def test_gate_order_value_cap_is_currency_correct():
         max_risk_per_trade_pct=0.01,
         max_position_value=50_000.0,
         max_gross_exposure=200_000.0,
-        max_orders_per_cycle=10,
         min_equity=0.0,
     ))
     assert fx.currency_for("2379.TW") == "TWD"
@@ -75,7 +74,6 @@ def test_risk_capacity_context_expose_le_plafond_gross_restant_en_quantite_nativ
         max_risk_per_trade_pct=0.01,
         max_position_value=30_000.0,
         max_gross_exposure=100_000.0,
-        max_orders_per_cycle=5,
         min_equity=50_000.0,
     )
     gross = daemon._gross_exposure(broker, prices, rate_of=rate_of)
@@ -116,7 +114,6 @@ def _write_config_with_fx(root, *, symbols=("SPY",)) -> None:
         "max_gross_exposure: 100000\n"
         "max_order_value: 10000\n"
         "max_risk_per_trade_pct: 0.01\n"
-        "max_orders_per_cycle: 5\n"
         "min_equity: 50000\n"
     )
     # fx.yaml avec uniquement USD (SPY est USD — pas de conversion)
