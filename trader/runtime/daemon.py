@@ -146,6 +146,7 @@ _EXECUTE_POLL_BUDGET_S: float = 10.0
 class DecisionExecutionState:
     snap: object
     gross: float
+    opening_batch_timed_out: bool = False
 
 
 @dataclass(frozen=True)
@@ -1314,6 +1315,8 @@ def _execute_one_cycle_decision(
             budget_s=_EXECUTE_POLL_BUDGET_S,
         )
         if _exec_outcome.reason is not None:
+            if _exec_outcome.terminal == "timeout" and decision.intent in _OPENING_INTENTS:
+                state.opening_batch_timed_out = True
             apply_default_schedule_after_blocked()
             ctx.record_decision({**entry, "executed": False, "reason": _exec_outcome.reason})
             return state
@@ -2085,10 +2088,15 @@ def run_cycle(
             _log_cycle_progress("[decision %d/%d] %s skipped no_price", index, len(symbols_to_decide), sym)
             continue
 
-        # FIX 2 : en mode queue, les symboles non décidés ce cycle (skippés
-        # dead/budget) sont EXCLUS du fallback HOLD synthétique —
-        # ils seront redécidés au prochain cycle. Le mode batch garde son comportement
-        # (HOLD no_decision_in_batch) via undecided_symbols = set() initialisé plus haut.
+        decision = decisions_by_symbol.get(sym)
+        if execution_state.opening_batch_timed_out and decision is not None and decision.intent in _OPENING_INTENTS:
+            undecided_symbols.add(sym)
+
+        # FIX 2 : les symboles non décidés ce cycle (skippés dead/budget côté
+        # decide queue, ou ouvertures retenues après timeout d'ouverture côté
+        # execute queue) sont EXCLUS du fallback HOLD synthétique — ils seront
+        # redécidés au prochain cycle. Le mode batch garde son comportement
+        # historique (HOLD no_decision_in_batch) via undecided_symbols vide.
         if sym in undecided_symbols:
             _log_cycle_progress(
                 "[decision %d/%d] %s queue_decide_deferred — aucun HOLD synthétique",
@@ -2097,7 +2105,7 @@ def run_cycle(
             _append_event("queue_decide_deferred", symbol=sym, cycle_id=now.isoformat())
             continue
 
-        decision = decisions_by_symbol.get(sym) or codex_client.Decision.hold(sym, "no_decision_in_batch")
+        decision = decision or codex_client.Decision.hold(sym, "no_decision_in_batch")
         execution_state = _execute_one_cycle_decision(
             sym=sym,
             index=index,
