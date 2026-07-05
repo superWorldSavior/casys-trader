@@ -1,5 +1,4 @@
 # tests/queue/test_worker.py
-import pytest
 from trader.queue.ledger import TaskLedger
 from trader.queue.pools import ResourcePools
 from trader.queue.worker import Worker, RetryableError

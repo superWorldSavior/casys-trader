@@ -1,5 +1,4 @@
 """Tests — schema_migrations + apply_migrations (signature list[str] par migration)."""
-import pytest
 from trader.state_db.connection import StateDb
 
 

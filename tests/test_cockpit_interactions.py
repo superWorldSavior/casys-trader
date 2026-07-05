@@ -120,7 +120,7 @@ async def test_flux_filtre_regex_et_classes(tmp_path, monkeypatch):
          "action": "HOLD"},
         {"ts": "2026-07-03T01:00:02Z", "event": "cycle_completed", "decisions_done": 0},
     ]
-    events.write_text("\n".join(json.dumps(l) for l in lines) + "\n", encoding="utf-8")
+    events.write_text("\n".join(json.dumps(line) for line in lines) + "\n", encoding="utf-8")
 
     app = CockpitApp()
     async with app.run_test(size=(200, 50)) as pilot:

@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 
 from trader.state_db.broker_factory import make_broker
-from trader.execution.broker import NoCommissionModel, Order, SimBroker
+from trader.execution.broker import NoCommissionModel, SimBroker
 from trader.state_db.broker_store import SqliteBroker
 
 
@@ -203,7 +203,7 @@ def test_make_broker_sqlite_regenerates_shadow_at_boot(tmp_path: Path) -> None:
     _broker_json_fixture(tmp_path, cash=42_000.0)
 
     # 1er boot : migre + crée broker.json
-    b1 = make_broker(
+    make_broker(
         state_dir=tmp_path,
         starting_cash=100_000.0,
         commission_model=_NO_COMMISSION,

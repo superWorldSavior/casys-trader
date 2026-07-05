@@ -21,7 +21,7 @@ from pathlib import Path
 
 import pytest
 
-from trader.planning.trade_plan import TradePlan, TrailingStop
+from trader.planning.trade_plan import TradePlan
 from trader.queue.ledger import TaskLedger
 from trader.state_db.broker_store import SqliteBroker
 from trader.state_db.connection import StateDb
@@ -296,8 +296,6 @@ class TestAtomicite:
         cash_before = broker.cash()
 
         # Injection de l'échec dans upsert_in_tx
-        original_upsert_in_tx = plan_store.upsert_in_tx
-
         def _failing_upsert_in_tx(cur, plan):
             raise RuntimeError("injected plan failure")
 
@@ -517,7 +515,7 @@ class TestPrecondition:
         db2 = _make_db(tmp_path, name="other3.db")
         ledger2 = TaskLedger(db2)
         # Enfile + claime une tâche sur db2 pour avoir un task_id valide
-        tid2 = ledger2.enqueue(kind="x", priority=1, scheduled_at_ms=0, now_ms=0, dedup_key="pre-l2")
+        assert ledger2.enqueue(kind="x", priority=1, scheduled_at_ms=0, now_ms=0, dedup_key="pre-l2") is not None
         task2 = ledger2.claim(worker_id="w", token="tok-l2", now_ms=1, lease_ms=60_000, free_resources=[])
 
         with pytest.raises(RuntimeError, match="ledger._db is not db"):
@@ -680,9 +678,9 @@ class TestIdempotence:
         db = _make_db(tmp_path)
         ledger = TaskLedger(db)
 
-        tid = ledger.enqueue(
+        assert ledger.enqueue(
             kind="execute", priority=1, scheduled_at_ms=0, now_ms=0, dedup_key="idem-1"
-        )
+        ) is not None
         task = ledger.claim(
             worker_id="w", token="tok-idem", now_ms=1, lease_ms=60_000, free_resources=[]
         )
@@ -710,9 +708,9 @@ class TestIdempotence:
         db = _make_db(tmp_path)
         ledger = TaskLedger(db)
 
-        tid = ledger.enqueue(
+        assert ledger.enqueue(
             kind="execute", priority=1, scheduled_at_ms=0, now_ms=0, dedup_key="idem-2"
-        )
+        ) is not None
         task = ledger.claim(
             worker_id="w", token="real-tok", now_ms=1, lease_ms=60_000, free_resources=[]
         )
@@ -773,9 +771,9 @@ class TestRetroCompat:
     def test_complete_public_marks_done(self, tmp_path: Path) -> None:
         db = _make_db(tmp_path)
         ledger = TaskLedger(db)
-        tid = ledger.enqueue(
+        assert ledger.enqueue(
             kind="x", priority=1, scheduled_at_ms=0, now_ms=0, dedup_key="rc-1"
-        )
+        ) is not None
         task = ledger.claim(
             worker_id="w", token="tok-rc", now_ms=1, lease_ms=60_000, free_resources=[]
         )

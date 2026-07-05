@@ -17,10 +17,10 @@ from pathlib import Path
 from rich.console import Console
 from textual.widgets import ContentSwitcher, Static
 
-_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
-
 import trader.cockpit.app as cockpit_module
 from trader.cockpit import CockpitApp
+
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 
 # ---------------------------------------------------------------------------

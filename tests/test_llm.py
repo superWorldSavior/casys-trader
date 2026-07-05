@@ -1,5 +1,4 @@
 import json
-import signal
 import subprocess
 from dataclasses import dataclass
 

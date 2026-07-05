@@ -1,5 +1,4 @@
 import sqlite3
-import pytest
 from trader.queue.ledger import TaskLedger
 
 

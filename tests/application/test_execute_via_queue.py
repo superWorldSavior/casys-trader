@@ -30,7 +30,6 @@ from trader.state_db.broker_store import SqliteBroker
 from trader.state_db.connection import StateDb
 from trader.state_db.migrations import import_broker_from_json, import_trade_plans_from_json
 from trader.state_db.trade_plan_store import SqliteTradePlanStore
-from trader.execution.broker import Fill
 
 
 # ---------------------------------------------------------------------------
@@ -585,7 +584,6 @@ class TestAddAtomique:
         pool = _make_pool(ledger, handler)
 
         from trader.state_db.trade_plan_store import SqliteTradePlanStore
-        original_upsert_in_tx = SqliteTradePlanStore.upsert_in_tx
 
         def _failing_upsert_in_tx(self, cur, plan):
             raise RuntimeError("injected upsert failure")

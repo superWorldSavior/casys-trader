@@ -7,12 +7,6 @@ from pathlib import Path
 
 import pytest
 
-from trader.planning.trade_plan import (
-    ProfitProtection,
-    TakeProfit,
-    TradePlan,
-    TrailingStop,
-)
 from trader.state_db.connection import StateDb
 from trader.state_db.migrations import (
     TRADE_PLANS_MIGRATION,

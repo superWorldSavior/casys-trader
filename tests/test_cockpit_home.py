@@ -259,7 +259,6 @@ async def test_home_pane_remplace_overview(tmp_path, monkeypatch):
 def test_home_tuiles_sans_champs_runtime():
     """Anti-redondance (spec §8.6) : phase/LLM/cycle/source vivent dans le statut,
     plus jamais dans les tuiles."""
-    from datetime import timedelta
 
     from trader.cockpit.home import build_activity_tile, build_plans_tile, build_portfolio_summary
     from trader.cockpit.aggregates import activity_buckets

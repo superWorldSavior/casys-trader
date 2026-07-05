@@ -25,7 +25,6 @@ from trader.planning.trade_plan import (
     TradePlan,
     TradePlanStore,
     TrailingStop,
-    trade_plan_from_dict,
 )
 from trader.state_db.connection import StateDb
 from trader.state_db.migrations import import_trade_plans_from_json
@@ -569,7 +568,6 @@ class TestNonFiniteParity:
         sqlite_store: SqliteTradePlanStore,
     ) -> None:
         """reference_volatility=NaN et trailing_stop.trail_value=Inf → None dans les deux backends."""
-        import math
 
         plan = TradePlan(
             id="NAN-1",
@@ -733,7 +731,7 @@ class TestMakeTradePlanStore:
         )
 
         # Premier boot : import + backup du JSON + shadow régénéré
-        store = make_trade_plan_store(state_dir=tmp_path, backend="sqlite")
+        make_trade_plan_store(state_dir=tmp_path, backend="sqlite")
 
         # Le shadow doit exister
         assert json_path.exists(), "Le shadow doit être régénéré au boot"
