@@ -6,10 +6,11 @@
 > `python -m trader.interfaces.cli.attribution`,
 > `python -m trader.interfaces.cli.tool_usage`.
 
-Presque tout est **ex-post et lecture-seule**, chacun sur sa source : `attribution`
-lit `model_performance.jsonl` ; `stats` calcule/rend les KPI projetés par
-`reporting/read_models/live_kpis.py` ; `tool_usage` rend la projection calculée
-par `reporting/read_models/tool_usage.py` ; `meta_performance` lit
+Presque tout est **ex-post et lecture-seule**, chacun sur sa source :
+`reporting/read_models/attribution.py` lit `model_performance.jsonl` ;
+`stats` calcule/rend les KPI projetés par `reporting/read_models/live_kpis.py` ;
+`tool_usage` rend la projection calculée par
+`reporting/read_models/tool_usage.py` ; `meta_performance` lit
 `decision_audit.json`.
 **Exception** : `decision_ledger`
 **écrit** — c'est lui qui PRODUIT `decisions.jsonl` (`append`/`replace_all`/`seed`).
@@ -19,7 +20,7 @@ Rien n'est dans le hot-path de décision.
 
 | Module | Rôle |
 |---|---|
-| `attribution` | Reconstruit/rend les **round-trips** (trades clôturés) depuis `model_performance.jsonl`, rattachés au plan via `source_plan_id`; la CLI canonique vit dans `interfaces.cli.attribution`. |
+| `read_models.attribution` / `attribution` | Read model canonique des **round-trips** (trades clôturés) depuis `model_performance.jsonl`, rattachés au plan via `source_plan_id`; `reporting.attribution` garde la façade/rendu et la CLI canonique vit dans `interfaces.cli.attribution`. |
 | `decision_audit` | **Audit ex-post** des décisions loggées (classification, cohérence, cas anormaux). |
 | `decision_bench` | **Bench contrefactuel** de modèles sur des lignes de décision auditées (compare des modèles a posteriori). |
 | `meta_performance` | Payload **compact de méta-performance** pour l'agent runtime + le consolidateur (réinjecté au contexte). |

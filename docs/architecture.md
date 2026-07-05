@@ -88,7 +88,7 @@ les utilisaient :
 | `trader/infrastructure/state_db/` | Backend SQLite de l'état paper, broker store, outbox | source durable quand `CASYS_STATE_BACKEND=sqlite` ; compat virtuelle : `trader.state_db.*` |
 | `trader/market/rotation/` | Rotation d'univers, hot-sets par venue, schedule, override, ledger rotation | compat virtuelle : `trader.rotation.*`, `trader.rotation_*` |
 | `trader/support/` | Helpers support stables : config (`pool`, `portfolio`), metadata git/code version, process env | compat virtuelle : `trader.config.*`, `trader.metadata.*`, `trader.system.*` |
-| `trader/reporting/` | Ledger décision, audit ex-post, attribution, stats, tool usage, meta-performance, read models | analyse/rendu ex-post ; `reporting.decision_reason` et `reporting.tool_usage` gardent les façades de compatibilité/rendu |
+| `trader/reporting/` | Ledger décision, audit ex-post, façades attribution/stats/tool usage, meta-performance, read models | analyse/rendu ex-post ; `reporting.decision_reason`, `reporting.attribution` et `reporting.tool_usage` gardent les façades de compatibilité/rendu |
 | `trader/interfaces/cli/` | Entry points CLI canoniques (`stats`, `attribution`, `tool_usage`, `tui`) | compat virtuelle : `python -m trader.commands.stats`, `python -m trader.stats`, etc. |
 | `trader/runtime/cycle_scheduling.py` | Adaptateur runtime wake/watch : délègue la politique à `application/cycle_schedule.py` et `application/watch_scanner.py`, puis émet events/logs et compat wrappers | évite que `daemon.py` réimporte directement la glue applicative |
 | `trader/runtime/cycle_dispatch.py` | Adaptateur runtime d'appel `run_cycle()` : porte le paquet de paramètres CLI/env/queue/consolidation et le forwarde depuis `daemon.main()` | évite deux appels `run_cycle(...)` dupliqués dans `main()` et garde le contrat runtime testable |
@@ -101,6 +101,7 @@ les utilisaient :
 | `trader/runtime/runtime_shutdown.py` | Adaptateur runtime de shutdown best-effort : arrêt pools queue, disconnect data source, release pid file | garde le `finally` de `daemon.main()` court et préserve la règle "ne jamais bloquer la sortie" |
 | `trader/runtime/` | Daemon, CLI, logging, PID file, IB attach, rotation ledger, writers d'état fichier | compat virtuelle : `python -m trader.daemon`, `python -m trader.cli` |
 | `trader/reporting/read_models/live_kpis.py` | Projection live des KPI depuis `state/` pour daemon/cockpit/TUI | `reporting.stats` rend les KPI ; `interfaces.cli.stats` possède la CLI |
+| `trader/reporting/read_models/attribution.py` | Projection ex-post des round-trips depuis `model_performance.jsonl` | `reporting.attribution` rend le rapport ; le daemon et le consolidateur lisent ce read model canonique |
 | `trader/reporting/read_models/runtime_state.py` | Lecture tolérante des fichiers `state/` pour TUI/cockpit | compat virtuelle : `trader.read_models.*` |
 | `trader/reporting/read_models/tool_usage.py` | Projection ex-post des traces d'outils et de leur qualité forward depuis le ledger décision | `reporting.tool_usage` rend le rapport ; `interfaces.cli.tool_usage` possède la CLI |
 | `trader/interfaces/cockpit/` | App Textual, événements cockpit, supervisor local | `trader.cockpit` reste runnable via compat virtuelle |
@@ -482,7 +483,7 @@ Opérateurs valides : `>`, `>=`, `<`, `<=`, `==`, `!=`, `abs>`, `abs>=`, `abs<`,
 | Fichier | Écrit par | Lu par | Contenu |
 |---|---|---|---|
 | `decisions.jsonl` | `DecisionRecorder` via `decision_ledger_store.append()` | attribution, CLI, cockpit | Une ligne par décision (action, intent, qty, confidence, rationale, executed, reason…) |
-| `model_performance.jsonl` | `RuntimeStateWriter.append_model_performance()` via wrapper daemon | `trader/reporting/attribution.py` | Une ligne par fill (entrée + sortie) — base des round-trips |
+| `model_performance.jsonl` | `RuntimeStateWriter.append_model_performance()` via wrapper daemon | `trader/reporting/read_models/attribution.py` | Une ligne par fill (entrée + sortie) — base des round-trips |
 | `broker.json` | `SimBroker` | `trader/runtime/daemon.py` (reload à chaque cycle) | Positions paper + historique fills |
 | `trade_plans.json` | `TradePlanStore` | `trader/planning/exit_engine.py`, `trader/runtime/daemon.py` | Plans ouverts (hard_stop_price, TPs, trailing, watermarks…) |
 | `events.jsonl` | `RuntimeStateWriter.append_event()` via wrapper daemon | monitoring / debug | Événements runtime (cycle_started, armed_plan_resolved, watch_triggered…) |

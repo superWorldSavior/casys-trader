@@ -80,7 +80,8 @@ from trader.planning.trade_plan import (
 )
 from trader.support.metadata import code_version
 from trader.reporting.read_models import live_kpis
-from trader.reporting import attribution, decision_ledger, meta_performance
+from trader.reporting import decision_ledger, meta_performance
+from trader.reporting.read_models import attribution
 from trader.runtime import (
     cycle_finalization,
     cycle_dispatch,

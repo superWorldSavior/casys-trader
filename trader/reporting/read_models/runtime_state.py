@@ -116,7 +116,7 @@ def _read_min_trade_confidence_safe() -> float:
 
 def _compute_attribution_safe(state_dir: Path) -> dict:
     try:
-        from trader.reporting.attribution import compute_attribution
+        from trader.reporting.read_models.attribution import compute_attribution
 
         result = compute_attribution(
             state_dir,

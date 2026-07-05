@@ -1288,6 +1288,18 @@ def test_attribution_cli_owner_is_command_module() -> None:
     assert not hasattr(reporting_attribution, "main")
 
 
+def test_attribution_projection_is_read_model_canonical() -> None:
+    import trader.attribution as legacy_attribution
+    from trader.reporting import attribution as reporting_attribution
+    from trader.reporting.read_models import attribution as read_model_attribution
+
+    assert reporting_attribution.compute_round_trips is read_model_attribution.compute_round_trips
+    assert reporting_attribution.compute_attribution is read_model_attribution.compute_attribution
+    assert reporting_attribution.compute_hard_stop_diagnostics is read_model_attribution.compute_hard_stop_diagnostics
+    assert legacy_attribution.compute_attribution is read_model_attribution.compute_attribution
+    assert legacy_attribution.render_text is reporting_attribution.render_text
+
+
 def test_market_and_planning_use_domain_primitives_instead_of_tools() -> None:
     trader_dir = Path(__file__).resolve().parents[1] / "trader"
     checked_roots = (trader_dir / "market", trader_dir / "planning")
