@@ -36,10 +36,19 @@ def _default_logger() -> logging.Logger:
     return logging.getLogger("casys-trader")
 
 
-def _default_make_decide_handler(*, codex_client: object, tool_services: object = None) -> object:
+def _default_make_decide_handler(
+    *,
+    codex_client: object,
+    tool_services: object = None,
+    session_backends: list | None = None,
+) -> object:
     from trader.application.decide_handler import make_decide_handler
 
-    return make_decide_handler(codex_client=codex_client, tool_services=tool_services)
+    return make_decide_handler(
+        codex_client=codex_client,
+        tool_services=tool_services,
+        session_backends=session_backends,
+    )
 
 
 def _default_make_execute_order_handler(**kwargs: object) -> object:
@@ -169,6 +178,16 @@ def start_decide_queue(
     resource_pools_cls = resolved.resource_pools_cls or _default_resource_pools_cls()
     decide_pool_cls = resolved.decide_pool_cls or _default_decide_pool_cls()
     make_decide_handler = resolved.make_decide_handler or _default_make_decide_handler
+    session_backends = None
+    if getattr(tool_services, "max_rounds", 1) > 1:
+        try:
+            from trader.agent import llm
+
+            router = llm.build_default_router_from_env(spark_model=codex_client.DEFAULT_MODEL)
+            session_backends = [b for b in router.backends if isinstance(b, llm.AcpxBackend)] or None
+        except Exception:  # noqa: BLE001 - session optionnelle, boot stateless en fallback
+            log.warning("[queue_decide] session_backends indisponibles → mode stateless", exc_info=True)
+            session_backends = None
 
     ledger = task_ledger_cls(state_dir / "task_ledger.db")
     ledger.recover_on_boot(now_ms=now_ms_fn())
@@ -176,7 +195,13 @@ def start_decide_queue(
     pool = decide_pool_cls(
         ledger=ledger,
         pools=pools,
-        handlers={"decide": make_decide_handler(codex_client=codex_client, tool_services=tool_services)},
+        handlers={
+            "decide": make_decide_handler(
+                codex_client=codex_client,
+                tool_services=tool_services,
+                session_backends=session_backends,
+            )
+        },
         num_workers=parallelism,
         now_fn=time.time,
     )

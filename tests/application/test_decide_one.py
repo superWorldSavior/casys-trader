@@ -19,6 +19,7 @@ from dataclasses import replace
 
 import pytest
 
+from trader.agent import llm
 from trader.agent.protocol.types import Decision
 from trader.application.decide_one import decide_one
 from trader.queue.worker import RetryableError
@@ -411,3 +412,168 @@ def test_univers_transmis_au_resolver_via_cross_asset():
 
     assert "SPY" in fetched           # le symbole est fetché
     assert "QQQ" in fetched           # la paire de famille (univers) aussi
+
+
+def test_session_mode_utilise_runner_delta_et_complete_fn(monkeypatch):
+    events = []
+
+    class FakeSession:
+        def send(self, prompt, *, timeout_s):
+            events.append(("send", prompt, timeout_s))
+            return llm.LlmCompletion(provider="acpx", model="gpt-5.5", text="{}")
+
+    def fake_run_with_session_fallback(backends, *, task_id, resolve, open_timeout_s):
+        events.append(("runner", backends, task_id, open_timeout_s))
+        return resolve(FakeSession())
+
+    def fake_resolve_symbol_decision(**kwargs):
+        events.append(("resolve", kwargs["max_rounds"], kwargs.get("reinject")))
+        response = kwargs["call_model"]({SYMBOL: {"round": 1}}, allow_tool_calls=True)
+        return response[SYMBOL]
+
+    class SessionAwareClient:
+        def __init__(self):
+            self.calls = []
+
+        def decide_batch(self, *, symbols, **kwargs):
+            self.calls.append({"symbols": list(symbols), **kwargs})
+            assert callable(kwargs["complete_fn"])
+            kwargs["complete_fn"]("session prompt", 9)
+            return {SYMBOL: _ok_decision("BUY")}
+
+    monkeypatch.setattr(
+        "trader.application.decide_one.llm.run_with_session_fallback",
+        fake_run_with_session_fallback,
+    )
+    monkeypatch.setattr(
+        "trader.application.decide_one.resolve_symbol_decision",
+        fake_resolve_symbol_decision,
+    )
+
+    client = SessionAwareClient()
+    backends = [object()]
+
+    decision, calls = decide_one(
+        **{**_BASE_KWARGS, "agent_tools_enabled": True},
+        codex_client=client,
+        tool_services=_services(max_rounds=2),
+        session_backends=backends,
+        task_id="decide:AAPL",
+    )
+
+    assert decision.action == "BUY"
+    assert calls == 1
+    assert events == [
+        ("runner", backends, "decide:AAPL", 75),
+        ("resolve", 2, "delta"),
+        ("send", "session prompt", 9),
+    ]
+    assert client.calls[0]["complete_fn"] is not None
+    assert client.calls[0]["allow_tool_calls"] is True
+    assert client.calls[0]["timeout_s"] == 60
+
+
+def test_max_rounds_1_reste_sur_le_chemin_stateless(monkeypatch):
+    events = []
+
+    def fake_run_with_session_fallback(*args, **kwargs):
+        events.append(("runner",))
+        return _ok_decision("BUY")
+
+    def fake_resolve_symbol_decision(**kwargs):
+        events.append(("resolve", kwargs.get("reinject", "cumul")))
+        response = kwargs["call_model"]({SYMBOL: {"stateless": True}}, allow_tool_calls=False)
+        return response[SYMBOL]
+
+    monkeypatch.setattr(
+        "trader.application.decide_one.llm.run_with_session_fallback",
+        fake_run_with_session_fallback,
+    )
+    monkeypatch.setattr(
+        "trader.application.decide_one.resolve_symbol_decision",
+        fake_resolve_symbol_decision,
+    )
+
+    client = _FakeClient({SYMBOL: _ok_decision("BUY")})
+
+    decision, calls = decide_one(
+        **{**_BASE_KWARGS, "agent_tools_enabled": True},
+        codex_client=client,
+        tool_services=_services(max_rounds=1),
+        session_backends=[object()],
+        task_id="decide:AAPL",
+    )
+
+    assert decision.action == "BUY"
+    assert calls == 1
+    assert events == [("resolve", "cumul")]
+    assert "complete_fn" not in client.calls[0]
+
+
+def test_session_backends_none_reste_sur_le_chemin_stateless_en_multi_round(monkeypatch):
+    events = []
+
+    def fake_run_with_session_fallback(*args, **kwargs):
+        events.append(("runner",))
+        return _ok_decision("BUY")
+
+    def fake_resolve_symbol_decision(**kwargs):
+        events.append(("resolve", kwargs.get("reinject", "cumul"), kwargs["max_rounds"]))
+        response = kwargs["call_model"]({SYMBOL: {"stateless": True}}, allow_tool_calls=False)
+        return response[SYMBOL]
+
+    monkeypatch.setattr(
+        "trader.application.decide_one.llm.run_with_session_fallback",
+        fake_run_with_session_fallback,
+    )
+    monkeypatch.setattr(
+        "trader.application.decide_one.resolve_symbol_decision",
+        fake_resolve_symbol_decision,
+    )
+
+    client = _FakeClient({SYMBOL: _ok_decision("BUY")})
+
+    decision, calls = decide_one(
+        **{**_BASE_KWARGS, "agent_tools_enabled": True},
+        codex_client=client,
+        tool_services=_services(max_rounds=2),
+        session_backends=None,
+        task_id="decide:AAPL",
+    )
+
+    assert decision.action == "BUY"
+    assert calls == 1
+    assert events == [("resolve", "cumul", 2)]
+    assert "complete_fn" not in client.calls[0]
+
+
+def test_session_mode_tous_backends_down_leve_retryable(monkeypatch):
+    failure = llm.LlmFailure(
+        provider="acpx",
+        model="gpt-5.5",
+        code="provider_error",
+        message="internal error",
+        retryable=True,
+    )
+
+    def fake_run_with_session_fallback(*args, **kwargs):
+        return failure
+
+    monkeypatch.setattr(
+        "trader.application.decide_one.llm.run_with_session_fallback",
+        fake_run_with_session_fallback,
+    )
+
+    client = _FakeClient({SYMBOL: _ok_decision("BUY")})
+
+    with pytest.raises(RetryableError) as exc_info:
+        decide_one(
+            **{**_BASE_KWARGS, "agent_tools_enabled": True},
+            codex_client=client,
+            tool_services=_services(max_rounds=2),
+            session_backends=[object()],
+            task_id="decide:AAPL",
+        )
+
+    assert exc_info.value.is_overload is True
+    assert "provider_error" in str(exc_info.value)
