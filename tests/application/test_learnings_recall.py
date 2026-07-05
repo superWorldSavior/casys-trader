@@ -26,7 +26,7 @@ def test_recall_provider_skips_embedding_without_query_and_caps_limit() -> None:
         embed_calls.append(texts)
         return [b"vec"]
 
-    provider = build_recall_provider(store, NOW, embedder=embedder)
+    provider = build_recall_provider(store, lambda: NOW, embedder=embedder)
 
     assert provider({"symbol": "SPY", "limit": 99}) == {"rows": [{"id": 1, "note": "ok"}]}
     assert embed_calls == []
@@ -51,7 +51,7 @@ def test_recall_provider_embeds_query_once_per_cycle(monkeypatch) -> None:
         return [b"cached-vector"]
 
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
-    provider = build_recall_provider(store, NOW, embedder=embedder)
+    provider = build_recall_provider(store, lambda: NOW, embedder=embedder)
 
     provider({"query": "momentum", "limit": 2})
     provider({"query": "momentum", "limit": 2})
@@ -69,7 +69,7 @@ def test_recall_provider_default_embedder_uses_short_timeout(monkeypatch) -> Non
         return [b"default-vector"]
 
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
-    provider = build_recall_provider(store, NOW, default_embedder=embedder)
+    provider = build_recall_provider(store, lambda: NOW, default_embedder=embedder)
 
     provider({"query": "breakout"})
 
@@ -87,7 +87,7 @@ def test_recall_provider_default_embedder_is_resolved_at_build_time(monkeypatch)
     monkeypatch.setattr(learnings_recall.embeddings_mod, "embed_texts", embedder)
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
 
-    provider = build_recall_provider(store, NOW)
+    provider = build_recall_provider(store, lambda: NOW)
 
     provider({"query": "breakout"})
 
@@ -104,7 +104,7 @@ def test_recall_provider_degrades_to_fts_when_embedding_fails(monkeypatch) -> No
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
     provider = build_recall_provider(
         store,
-        NOW,
+        lambda: NOW,
         embedder=failing_embedder,
         log_warning=lambda *args: warnings.append(args),
     )
@@ -113,3 +113,22 @@ def test_recall_provider_degrades_to_fts_when_embedding_fails(monkeypatch) -> No
     assert store.search_calls[0]["query_vec"] is None
     assert store.search_calls[0]["text_query"] == "momentum"
     assert warnings
+
+
+def test_now_fn_est_evalue_a_chaque_appel() -> None:
+    """Invariant T3 : la borne temporelle suit now_fn (provider longue durée, mode queue),
+    elle n'est pas figée à la construction."""
+    seen_nows = []
+
+    class _Store:
+        def search(self, *, query_vec, text_query, symbol, family, limit, now):
+            seen_nows.append(now)
+            return []
+
+    ticks = iter([NOW, NOW.replace(hour=23)])
+    provider = build_recall_provider(_Store(), lambda: next(ticks))
+
+    provider({"symbol": "AAPL"})
+    provider({"symbol": "AAPL"})
+
+    assert seen_nows == [NOW, NOW.replace(hour=23)]  # deux appels, deux bornes

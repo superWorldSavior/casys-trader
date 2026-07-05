@@ -36,14 +36,19 @@ EnvGetter = Callable[[str], str | None]
 
 def build_recall_provider(
     store: RecallSearchStore,
-    now: datetime,
+    now_fn: Callable[[], datetime],
     *,
     embedder: TextEmbedder | None = None,
     default_embedder: TextEmbedder | None = None,
     env_get: EnvGetter = os.getenv,
     log_warning: WarningLogger | None = None,
 ) -> Callable[[dict], dict]:
-    """Build a run-local recall provider with embedding cache and FTS fallback."""
+    """Build a recall provider with embedding cache and FTS fallback.
+
+    ``now_fn`` (pas un ``now`` figé) : le provider peut vivre le temps d'un cycle
+    (batch — l'appelant passe ``lambda: now``) OU tout le run (worker de file, boot) ;
+    la borne temporelle de la recherche est évaluée à CHAQUE appel. Un seul régime.
+    """
     use_default_embedder = embedder is None
     if use_default_embedder:
         selected_embedder = default_embedder or embeddings_mod.embed_texts
@@ -81,7 +86,7 @@ def build_recall_provider(
             symbol=args.get("symbol"),
             family=args.get("family"),
             limit=limit,
-            now=now,
+            now=now_fn(),
         )
         return {"rows": rows}
 

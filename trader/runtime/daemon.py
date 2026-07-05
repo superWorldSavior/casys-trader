@@ -839,7 +839,7 @@ def _build_recall_provider(
     """
     return learnings_recall.build_recall_provider(
         store,
-        now,
+        lambda: now,  # provider per-cycle : la borne temporelle reste celle du cycle
         embedder=embedder,
         log_warning=log.warning,
     )
@@ -2187,6 +2187,10 @@ def main(
     )
     bootstrap = args.bootstrap_all
 
+    # Ref partagée vers le data_source courant : les workers de file la lisent via
+    # make_indirect_get_bars(handle.get) — jamais de capture de l'objet (remplacé en run).
+    _ds_handle = data_source_runtime.DataSourceHandle()
+
     # Boot des pools queue-via-file. La construction concrète vit côté runtime :
     # - decide : DB dédiée task_ledger.db, workers persistants acpx ;
     # - execute : nécessite sqlite et partage casys.db avec broker/plan/ledger.
@@ -2223,13 +2227,23 @@ def main(
     )
     data_source = _data_source_state.data_source
 
+    def _adopt_data_source_state(state: data_source_runtime.DataSourceState) -> None:
+        """Point de synchro UNIQUE : locals de la boucle + handle partagé des workers.
+
+        Toute réassignation de data_source passe ici — impossible d'oublier le handle.
+        """
+        nonlocal _data_source_state, data_source
+        _data_source_state = state
+        data_source = state.data_source
+        _ds_handle.set(state.data_source)
+
     try:
         while True:
             sleep_seconds: float | None = None
             stop_after_iteration = False
             try:
                 if data_source is None:
-                    _data_source_state = data_source_runtime.build_data_source(
+                    _adopt_data_source_state(data_source_runtime.build_data_source(
                         _data_source_config,
                         host=args.ib_host,
                         port=args.ib_port,
@@ -2243,10 +2257,14 @@ def main(
                         ib_data_source_cls=IBDataSource,
                         backoff_cls=IBAttachBackoff,
                         disconnect_quietly=_disconnect_quietly,
-                    )
-                    data_source = _data_source_state.data_source
+                        # Anti-429 : borne les fetchs yahoo concurrents (workers de file).
+                        # Sans effet sur le cycle (fetchs séquentiels ≤ 1 concurrent).
+                        throttle_by_source={
+                            "yfinance": _env_int("CASYS_YFINANCE_FETCH_CONCURRENCY", 4),
+                        },
+                    ))
                 loop_now = now()
-                _data_source_state = data_source_runtime.maybe_attach_ib(
+                _adopt_data_source_state(data_source_runtime.maybe_attach_ib(
                     _data_source_state,
                     _data_source_config,
                     host=args.ib_host,
@@ -2258,8 +2276,7 @@ def main(
                     composite_cls=CompositeDataSource,
                     ib_data_source_cls=IBDataSource,
                     disconnect_quietly=_disconnect_quietly,
-                )
-                data_source = _data_source_state.data_source
+                ))
                 market_rotation_runtime.tick_market_rotation(
                     config_dir=ROOT / "config",
                     state_dir=STATE_DIR,
@@ -2339,7 +2356,7 @@ def main(
                         wait = sched.seconds_until_wake(symbols)
                         sleep_seconds = min(wait, args.poll)
                         log.info("[sleep] next_check_in=%.0fs next_due_in=%.0fs", sleep_seconds, wait)
-                _data_source_state = data_source_runtime.detach_failed_ib(
+                _adopt_data_source_state(data_source_runtime.detach_failed_ib(
                     _data_source_state,
                     _data_source_config,
                     now=loop_now,
@@ -2349,17 +2366,15 @@ def main(
                     logger=log,
                     composite_cls=CompositeDataSource,
                     backoff_cls=IBAttachBackoff,
-                )
-                data_source = _data_source_state.data_source
+                ))
             except market.MarketError as exc:
                 if data_source is not None:
                     _disconnect_quietly(data_source)
-                    data_source = None
-                    _data_source_state = data_source_runtime.DataSourceState(
+                    _adopt_data_source_state(data_source_runtime.DataSourceState(
                         data_source=None,
                         composite_available=_data_source_state.composite_available,
                         ib_attach_backoff=_data_source_state.ib_attach_backoff,
-                    )
+                    ))
                 if _data_source_config.use_composite:
                     # En mode composite la source est déjà construite — une MarketError
                     # ici vient du cycle lui-même (ex: all_sources_failed). On reset

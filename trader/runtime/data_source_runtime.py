@@ -11,6 +11,7 @@ from typing import Callable, Protocol
 from trader.market import market_data as market
 from trader.market.data_source import (
     CompositeDataSource,
+    ThrottledDataSource,
     YFinanceDataSource,
     parse_data_sources_config,
 )
@@ -47,6 +48,29 @@ class DataSourceState:
     data_source: object | None
     composite_available: dict[str, object]
     ib_attach_backoff: BackoffLike | None
+
+
+class DataSourceHandle:
+    """Référence partagée vers le data_source COURANT (lifecycle piloté par main()).
+
+    Le daemon reconstruit, remplace ou annule `data_source` en cours de run
+    (build/attach IB/detach/erreur) : c'est une variable locale de sa boucle, que
+    les workers de file ne peuvent pas capturer sans figer une ref périmée. Le
+    handle expose la ref COURANTE — à composer avec `make_indirect_get_bars(handle.get)`
+    côté worker (spec queue tool-round §5.2).
+
+    L'échange de référence est une affectation d'attribut, atomique sous le GIL —
+    pas de verrou nécessaire (la thread-safety des fetchs vit dans la source, §5.1).
+    """
+
+    def __init__(self) -> None:
+        self._current: object | None = None
+
+    def set(self, data_source: object | None) -> None:
+        self._current = data_source
+
+    def get(self) -> object | None:
+        return self._current
 
 
 def _default_logger() -> logging.Logger:
@@ -112,6 +136,8 @@ def build_data_source(
     ib_data_source_cls: type = IBDataSource,
     backoff_cls: type = IBAttachBackoff,
     disconnect_quietly: DisconnectFn = _disconnect_noop,
+    throttle_by_source: dict[str, int] | None = None,
+    throttle_cls: type = ThrottledDataSource,
 ) -> DataSourceState:
     log = logger or _default_logger()
     if not config.use_composite:
@@ -170,6 +196,19 @@ def build_data_source(
     elif not ib_required:
         backoff = backoff_cls(retry_after=timedelta(seconds=attach_retry_seconds))
         backoff.record_failure(now)
+
+    # Throttle par-source (spec queue tool-round §5.3, Codex A4) : le 429 est
+    # par-fournisseur → chaque source nommée dans throttle_by_source est enveloppée,
+    # le mécanisme reste agnostique (seule la limite est de la config). NB : une
+    # source IB rattachée en cours de run (maybe_attach_ib) n'est pas enveloppée —
+    # IB a son propre pacing natif ; le throttle vise les APIs HTTP type yahoo.
+    if throttle_by_source:
+        available = {
+            name: throttle_cls(source, max_concurrent=throttle_by_source[name])
+            if name in throttle_by_source
+            else source
+            for name, source in available.items()
+        }
 
     data_source = composite_cls(routes=config.routes, sources=available)
     log.info("data_source=composite profil=%s sources=%s", config.profile, sorted(available))
