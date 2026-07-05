@@ -1358,7 +1358,12 @@ def run_cycle(
             build_symbol_facts,
         )
         from trader.application.queue_dispatch import dispatch_decide_via_queue
+        from trader.application.recent_decisions import recent_decisions_by_symbol
         _last_review = _last_review_by_symbol(plan_store, decidable)
+        # Push anti-répétition : N dernières décisions authentiques par symbole (même
+        # sans position ouverte, là où _last_review ne couvre que les plans ouverts).
+        # Une seule lecture du ledger, groupée.
+        _recent_decisions = recent_decisions_by_symbol(decision_ledger_store, symbols=decidable)
         _active_watches = _active_watch_summaries_by_symbol(
             sched=sched, symbols=decidable, now=now,
         )
@@ -1372,6 +1377,7 @@ def run_cycle(
                     active_watches_by_symbol=_active_watches,
                     market_context_by_symbol=execution_eligibility,
                     last_review_by_symbol=_last_review,
+                    recent_decisions_by_symbol=_recent_decisions,
                 ),
             }
             for sym in decidable

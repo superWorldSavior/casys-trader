@@ -97,7 +97,8 @@ def _tool_context_from_facts(
         market_context_by_symbol={symbol: market_ctx} if market_ctx else {},
         active_watches_by_symbol={symbol: list(facts.get("active_watches") or [])},
         attribution=shared_context.get("attribution"),
-        # Parité batch : risk / recent_decisions non câblés (issue #4).
+        # recent_decisions n'est PLUS un outil (pull) : poussé dans les facts (issue #4).
+        # get_position_risk reste à câbler (issue #4, suite).
         position_risk_provider=None,
         recent_decisions_provider=None,
         indicator_resolver=indicator_resolver,
