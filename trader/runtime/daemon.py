@@ -85,7 +85,7 @@ from trader.runtime import (
     cycle_finalization,
     cycle_scheduling,
     data_source_runtime,
-    ledger_rotation,
+    daemon_bootstrap,
     market_rotation_runtime,
     queue_runtime,
 )
@@ -2159,42 +2159,20 @@ def main(
         log.error("daemon déjà vivant (pid file %s) — refus de démarrer un doublon", _pid_file)
         return 1
 
-    # D-c : rotation mensuelle des ledgers JSONL au démarrage, avant la boucle
-    # et avant toute création de DecisionLedgerStore (le cache d'IDs sera
-    # initialisé sur le fichier vif déjà tourné).
-    _archive_dir = STATE_DIR / "archive"
-    _rotation_now = now()
-    for _rot_path, _rot_ts_key in (
-        (STATE_DIR / decision_ledger.DEFAULT_LEDGER_FILENAME, "cycle_ts"),
-        (STATE_DIR / "events.jsonl", "ts"),
-    ):
-        try:
-            _rot_result = ledger_rotation.rotate_monthly(
-                _rot_path, _archive_dir, now=_rotation_now, ts_key=_rot_ts_key
-            )
-            if _rot_result["archived"]:
-                log.info(
-                    "[rotation] %s : archived=%d kept=%d files=%s",
-                    _rot_path.name,
-                    _rot_result["archived"],
-                    _rot_result["kept"],
-                    _rot_result["files"],
-                )
-        except Exception as _rot_exc:  # noqa: BLE001
-            log.warning("[rotation] échec sur %s : %s", _rot_path.name, _rot_exc)
-
-    # Bootstrap ordonné du backend SQLite AVANT toute lecture d'état ou rotation :
-    # migrations + import JSON idempotents + 3 shadows régénérés depuis la DB.
-    # No-op si backend="json". Doit précéder make_scheduler et run_cycle.
-    from trader.support.config.portfolio import load_starting_cash as _load_starting_cash
-    bootstrap_state_backend(
+    # Bootstrap ordonné AVANT toute lecture d'état ou rotation runtime :
+    # rotation mensuelle JSONL, bootstrap SQLite/shadows, puis scheduler.
+    _state_backend = os.getenv("CASYS_STATE_BACKEND", "json")
+    _runtime_state = daemon_bootstrap.bootstrap_runtime_state(
         state_dir=STATE_DIR,
-        starting_cash=_load_starting_cash(ROOT / "config"),
+        config_dir=ROOT / "config",
+        state_backend=_state_backend,
         commission_model=commission_model,
-        backend=os.getenv("CASYS_STATE_BACKEND", "json"),
+        now=now(),
+        logger=log,
+        bootstrap_state_backend_fn=bootstrap_state_backend,
+        make_scheduler_fn=make_scheduler,
     )
-
-    sched = make_scheduler(state_dir=STATE_DIR, backend=os.getenv("CASYS_STATE_BACKEND", "json"))
+    sched = _runtime_state.scheduler
     log.info("daemon démarré (dry_run=%s, once=%s)", dry_run, args.once)
     log.info(
         "[config] decision_batch_parallelism=%d batch_size=%d max_model_calls_per_cycle=%d decision_timeout_s=%d agent_tools=%s",
@@ -2217,7 +2195,7 @@ def main(
         default_decision_batch_size=DEFAULT_DECISION_BATCH_SIZE,
         codex_client=codex_client,
         execute_enabled_raw=_env_int("CASYS_QUEUE_EXECUTE_ENABLED", 0) == 1,
-        state_backend=os.getenv("CASYS_STATE_BACKEND", "json"),
+        state_backend=_state_backend,
         commission_model=commission_model,
         logger=log,
     )

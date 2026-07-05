@@ -16,7 +16,8 @@
 > `execute-queue-dispatch`, `execute-queue-plan-payload`,
 > `fill-outcome-accounting`, `fill-plan-effects`,
 > `cycle-finalization`, `queue-runtime-bootstrap`,
-> `data-source-runtime`, `market-rotation-runtime`).
+> `data-source-runtime`, `market-rotation-runtime`,
+> `daemon-bootstrap`).
 
 ---
 
@@ -90,6 +91,7 @@ les utilisaient :
 | `trader/interfaces/cli/` | Entry points CLI canoniques (`stats`, `attribution`, `tool_usage`, `tui`) | compat virtuelle : `python -m trader.commands.stats`, `python -m trader.stats`, etc. |
 | `trader/runtime/cycle_scheduling.py` | Adaptateur runtime wake/watch : délègue la politique à `application/cycle_schedule.py` et `application/watch_scanner.py`, puis émet events/logs et compat wrappers | évite que `daemon.py` réimporte directement la glue applicative |
 | `trader/runtime/cycle_finalization.py` | Adaptateur runtime de fin de cycle : consolidation learnings, collecte macro best-effort, cache feedback gross, probes `shadow_queue` et `state_compare` | garde les side effects observabilité/mémoire hors du coeur décisionnel ; contrats `Protocol` locaux pour les dépendances injectées |
+| `trader/runtime/daemon_bootstrap.py` | Adaptateur runtime de démarrage : rotation mensuelle des ledgers, bootstrap du backend état, chargement cash initial et construction scheduler | garde les side effects de boot hors de `daemon.main()` avec factories injectées pour préserver les tests runtime |
 | `trader/runtime/queue_runtime.py` | Bootstrap runtime des pools `decide`/`execute_order` : flags, ledgers, pools, handlers et stack SQLite partagée | garde la queue canonique hors du bloc `main()` tout en laissant `run_cycle()` choisir le chemin queue/synchrone |
 | `trader/runtime/data_source_runtime.py` | Bootstrap et transitions runtime des sources de données : profil composite/direct, IB obligatoire ou dégradé paper, lazy attach et détachement sur échec connexion | garde l'orchestration réseau/adapter hors de `daemon.main()` avec dépendances injectées pour préserver les tests runtime |
 | `trader/runtime/market_rotation_runtime.py` | Adaptateur runtime du tick D10 : charge `radar.yaml`, construit l'override LLM si activé, injecte le cache `last_regime` et appelle `market.rotation.venues.tick()` en fail-safe | évite les imports rotation/radar inline dans `daemon.main()` tout en gardant le daemon propriétaire du cycle |

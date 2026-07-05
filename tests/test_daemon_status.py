@@ -592,6 +592,43 @@ def test_main_supprime_pid_file_au_shutdown_propre(monkeypatch, tmp_path) -> Non
     assert not pid_path.exists(), "daemon.pid doit être supprimé au shutdown"
 
 
+def test_main_delegue_le_bootstrap_state_au_runtime_module(monkeypatch, tmp_path) -> None:
+    """main() garde env/CLI, daemon_bootstrap possède rotation ledger + state backend."""
+    from trader.runtime import daemon_bootstrap
+
+    _write_runtime_config(tmp_path)
+    state_dir = tmp_path / "state"
+    fixed_now = datetime(2026, 7, 5, 10, 0, tzinfo=timezone.utc)
+    _fast_main_patches(monkeypatch, tmp_path, state_dir)
+    captured: list[dict] = []
+
+    def bootstrap_runtime_state(**kwargs):
+        captured.append(kwargs)
+        return daemon_bootstrap.RuntimeStateBootstrap(
+            scheduler=Scheduler(state_dir / "scheduler.json"),
+            archive_dir=state_dir / "archive",
+        )
+
+    monkeypatch.setenv("CASYS_STATE_BACKEND", "sqlite")
+    monkeypatch.setattr(daemon.daemon_bootstrap, "bootstrap_runtime_state", bootstrap_runtime_state)
+
+    daemon.main(["--once"], now_fn=lambda: fixed_now)
+
+    assert len(captured) == 1
+    call = captured[0]
+    assert call["state_dir"] == state_dir
+    assert call["config_dir"] == tmp_path / "config"
+    assert call["state_backend"] == "sqlite"
+    assert isinstance(call["commission_model"], IbkrCommissionModel)
+    assert call["now"] == fixed_now
+    assert call["logger"] is daemon.log
+    assert call["bootstrap_state_backend_fn"] is daemon.bootstrap_state_backend
+    assert call["make_scheduler_fn"] is daemon.make_scheduler
+
+    pid_path = state_dir / "daemon.pid"
+    assert not pid_path.exists(), "daemon.pid doit être supprimé au shutdown"
+
+
 def test_main_transmet_les_flags_queue_au_bootstrap_runtime(monkeypatch, tmp_path) -> None:
     """main() garde la lecture env/CLI, queue_runtime possède la construction concrète."""
     from trader.runtime import queue_runtime

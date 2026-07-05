@@ -274,6 +274,41 @@ def test_daemon_delegates_market_rotation_tick_to_runtime_adapter() -> None:
     assert violations == []
 
 
+def test_daemon_delegates_state_bootstrap_to_runtime_adapter() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    daemon_path = repo_root / "trader" / "runtime" / "daemon.py"
+    adapter_path = repo_root / "trader" / "runtime" / "daemon_bootstrap.py"
+
+    assert adapter_path.exists()
+
+    source = daemon_path.read_text(encoding="utf-8")
+    assert "daemon_bootstrap.bootstrap_runtime_state" in source
+
+    tree = ast.parse(source, filename=str(daemon_path))
+    main_nodes = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "main"]
+    assert len(main_nodes) == 1
+    main_tree = main_nodes[0]
+    forbidden_calls = {
+        "bootstrap_state_backend",
+        "load_starting_cash",
+        "make_scheduler",
+        "rotate_monthly",
+    }
+    violations: list[str] = []
+    for node in ast.walk(main_tree):
+        if isinstance(node, ast.Call):
+            if isinstance(node.func, ast.Name) and node.func.id in forbidden_calls:
+                violations.append(f"{node.func.id}(...)")
+            elif isinstance(node.func, ast.Attribute) and node.func.attr in forbidden_calls:
+                violations.append(f"{node.func.attr}(...)")
+        elif isinstance(node, ast.ImportFrom) and node.module == "trader.runtime":
+            for alias in node.names:
+                if alias.name == "ledger_rotation":
+                    violations.append("from trader.runtime import ledger_rotation")
+
+    assert violations == []
+
+
 def test_daemon_delegates_execute_queue_plan_payload_to_application_service() -> None:
     repo_root = Path(__file__).resolve().parents[1]
     daemon_path = repo_root / "trader" / "runtime" / "daemon.py"

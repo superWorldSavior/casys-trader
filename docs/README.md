@@ -67,8 +67,8 @@ Légende : ✅ couvert · 🟡 partiel / dispersé / potentiellement périmé ·
 | **Conversion FX** | `market/fx`, `market/fx_rates` | ✅ | **`reference/fx.md`** | chantier FX |
 | Fil d'actu (news) | `market/news_feed` | ✅ | **`reference/news.md`** | — |
 | Macro | `market/macro_calendar`, `market/macro_series` | ✅ | **`reference/macro.md`** | — |
-| Cycle de vie / rotation | `runtime/ledger_rotation`, `reporting/decision_ledger` | ✅ | archi §12 | — |
-| État persistant | `state/*.jsonl`, `trade_plans.json`, `scheduler.json`, `infrastructure/state_db/*` | ✅ | archi §8, `reference/task-queue.md` | — |
+| Cycle de vie / rotation | `runtime/daemon_bootstrap`, `runtime/ledger_rotation`, `reporting/decision_ledger` | ✅ | archi §1.1, §12 | — |
+| État persistant | `runtime/daemon_bootstrap`, `state/*.jsonl`, `trade_plans.json`, `scheduler.json`, `infrastructure/state_db/*` | ✅ | archi §1.1, §8, `reference/task-queue.md` | — |
 
 ### Univers & régime
 | Sous-système | Package/module | Réf | Où | Décisions |
