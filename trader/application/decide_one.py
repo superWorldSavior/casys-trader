@@ -192,6 +192,7 @@ def decide_one(
                 indicator_resolver=resolver,
                 learnings_recall_provider=tool_services.learnings_recall_provider,
             )
+            tool_limits = tool_services.tool_limits()
             def _resolve(session):
                 def _session_call_model(per_symbol: dict, *, allow_tool_calls: bool):
                     nonlocal calls_made
@@ -207,6 +208,7 @@ def decide_one(
                         use_symbol_calls_contract=agent_tools_enabled,
                         timeout_s=decision_timeout_s,
                         complete_fn=llm.session_complete_fn(session),
+                        max_tool_calls_per_symbol=tool_limits.max_calls_per_symbol,
                     )
 
                 return resolve_symbol_decision(
@@ -216,7 +218,7 @@ def decide_one(
                     call_model=_session_call_model,
                     max_rounds=tool_services.max_rounds,
                     reinject="delta",
-                    tool_limits=tool_services.tool_limits(),
+                    tool_limits=tool_limits,
                 )
 
             decision = llm.run_with_session_fallback(

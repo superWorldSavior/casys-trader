@@ -198,25 +198,29 @@ def start_decide_queue(
     resource_pools_cls = resolved.resource_pools_cls or _default_resource_pools_cls()
     decide_pool_cls = resolved.decide_pool_cls or _default_decide_pool_cls()
     make_decide_handler = resolved.make_decide_handler or _default_make_decide_handler
-    from trader.agent import llm
 
-    router = llm.build_default_router_from_env(spark_model=codex_client.DEFAULT_MODEL)
-    session_backends = [b for b in router.backends if isinstance(b, llm.AcpxBackend)]
-    if not session_backends:
-        raise RuntimeError(
-            "[queue_decide] aucun AcpxBackend : le tour d'outils en file requiert un transport acpx "
-            "(vérifier TRADER_ACPX_BIN / provider spark)"
+    session_backends = None
+    lease_ms = _DEFAULT_DECIDE_LEASE_MS
+    if tool_services is not None:
+        from trader.agent import llm
+
+        router = llm.build_default_router_from_env(spark_model=codex_client.DEFAULT_MODEL)
+        session_backends = [b for b in router.backends if isinstance(b, llm.AcpxBackend)]
+        if not session_backends:
+            raise RuntimeError(
+                "[queue_decide] aucun AcpxBackend : le tour d'outils en file requiert un transport acpx "
+                "(vérifier TRADER_ACPX_BIN / provider spark)"
+            )
+        if not any(shutil.which(b.acpx_bin) for b in session_backends):
+            raise RuntimeError(
+                "[queue_decide] acpx introuvable sur le PATH pour le tour d'outils en file "
+                "(vérifier TRADER_ACPX_BIN)"
+            )
+        lease_ms = _decide_session_lease_ms(
+            decision_timeout_s=decision_timeout_s,
+            max_rounds=getattr(tool_services, "max_rounds", 1),
+            backend_count=len(session_backends),
         )
-    if not any(shutil.which(b.acpx_bin) for b in session_backends):
-        raise RuntimeError(
-            "[queue_decide] acpx introuvable sur le PATH pour le tour d'outils en file "
-            "(vérifier TRADER_ACPX_BIN)"
-        )
-    lease_ms = _decide_session_lease_ms(
-        decision_timeout_s=decision_timeout_s,
-        max_rounds=getattr(tool_services, "max_rounds", 1),
-        backend_count=len(session_backends),
-    )
 
     ledger = task_ledger_cls(state_dir / "task_ledger.db")
     ledger.recover_on_boot(now_ms=now_ms_fn())

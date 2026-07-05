@@ -155,6 +155,7 @@ def decide_batch(
     allow_context_request: bool = False,
     allow_tool_calls: bool = False,
     use_symbol_calls_contract: bool = False,
+    max_tool_calls_per_symbol: int = 3,
     llm_router: llm.LlmRouter | None = None,
     complete_fn: Callable[[str, int], llm.LlmCompletion | llm.LlmFailure] | None = None,
 ) -> dict[str, Decision | ContextResearchRequest] | BatchToolCallRequest:
@@ -173,6 +174,7 @@ def decide_batch(
         allow_context_request=allow_context_request,
         allow_tool_calls=allow_tool_calls,
         use_symbol_calls_contract=use_symbol_calls_contract,
+        max_tool_calls_per_symbol=max_tool_calls_per_symbol,
     )
     if complete_fn is not None:
         completion = complete_fn(prompt, timeout_s)

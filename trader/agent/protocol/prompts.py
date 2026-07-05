@@ -200,6 +200,24 @@ _DECISION_GUIDANCE = (
 )
 
 
+def _decision_guidance(*, allow_context_request: bool) -> str:
+    if allow_context_request:
+        return _DECISION_GUIDANCE
+    return _DECISION_GUIDANCE.replace(
+        "# Semantic layer\n"
+        "Les indicateurs fiables sont calculés par le code. Le prompt expose "
+        "`context.cockpit` (compact, sans barres brutes). Si ce cockpit ne suffit pas, "
+        "demande un complément borné via REQUEST_CONTEXT ; le daemon injectera "
+        "`context.research` avec les indicateurs calculés, et `context.prior_rationale` "
+        "(ta demande initiale) pour reprendre ton raisonnement sans repartir de zéro.\n\n",
+        "# Semantic layer\n"
+        "Les indicateurs fiables sont calculés par le code. Le prompt expose "
+        "`context.cockpit` (compact, sans barres brutes). Si ce cockpit ne suffit pas, "
+        "utilise une tournée `tool_calls` avec get_indicator_context ; le daemon injectera "
+        "les résultats via `tool_results` pour reprendre ton raisonnement sans repartir de zéro.\n\n",
+    )
+
+
 def build_prompt(*, mandate: str, memory: str, context: dict, allow_context_request: bool = False) -> str:
     """Assemble le prompt. Le COMPORTEMENT vit dans `mandate`/`memory` (boucle 1),
     pas en dur ici."""
@@ -210,7 +228,7 @@ def build_prompt(*, mandate: str, memory: str, context: dict, allow_context_requ
         "en continu.\n\n"
         f"# Mandat\n{mandate}\n\n"
         f"# Mémoire / stratégie\n{memory}\n\n"
-        f"{_DECISION_GUIDANCE}"
+        f"{_decision_guidance(allow_context_request=allow_context_request)}"
         f"# Contexte marché et portefeuille (JSON)\n{json.dumps(context, ensure_ascii=False)}\n\n"
         f"# Contrat de sortie\n{output_contract}\n"
     )
@@ -491,6 +509,21 @@ _TOOL_CATALOG = (
 )
 
 
+def _tool_catalog(*, allow_context_request: bool, max_tool_calls_per_symbol: int = 3) -> str:
+    catalog = _TOOL_CATALOG.replace(
+        "Bornes : 3 appels max par symbole, 24 par lot.",
+        f"Bornes : {max_tool_calls_per_symbol} appels max par symbole, 24 par lot.",
+    )
+    if allow_context_request:
+        return catalog
+    return catalog.replace(
+        "NB : get_indicator_context est la voie moderne de REQUEST_CONTEXT (les deux marchent) —\n"
+        "préfère la tournée d'outils, qui te donne AUSSI plans/risque/attribution/mémoire en un tour.\n\n",
+        "NB : pour compléter le cockpit, utilise get_indicator_context via `tool_calls` ;\n"
+        "la tournée d'outils te donne AUSSI plans/risque/attribution/mémoire en un tour.\n\n",
+    )
+
+
 def build_batch_prompt(
     *,
     mandate: str,
@@ -500,6 +533,7 @@ def build_batch_prompt(
     allow_context_request: bool = False,
     allow_tool_calls: bool = False,
     use_symbol_calls_contract: bool = False,
+    max_tool_calls_per_symbol: int = 3,
 ) -> str:
     """Prompt batch : contexte PARTAGÉ (cockpit/portefeuille/KPI/attribution/learnings)
     envoyé UNE fois, puis la liste des symboles à décider -> un seul appel modèle."""
@@ -516,9 +550,9 @@ def build_batch_prompt(
         "de la liste.\n\n"
         f"# Mandat\n{mandate}\n\n"
         f"# Mémoire / stratégie\n{memory}\n\n"
-        f"{_DECISION_GUIDANCE}"
+        f"{_decision_guidance(allow_context_request=allow_context_request)}"
         f"{_indicator_watch_vocabulary()}"
-        f"{_TOOL_CATALOG if allow_tool_calls else ''}"
+        f"{_tool_catalog(allow_context_request=allow_context_request, max_tool_calls_per_symbol=max_tool_calls_per_symbol) if allow_tool_calls else ''}"
         f"# Contexte partagé (JSON)\n{json.dumps(shared_context, ensure_ascii=False)}\n\n"
         f"# Symboles à décider (JSON)\n{json.dumps(symbols_payload, ensure_ascii=False)}\n\n"
         f"# Contrat de sortie\n{contract}\n"

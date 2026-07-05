@@ -377,6 +377,7 @@ def test_tool_round_puis_decision_finale_compte_2_appels():
     assert client.calls[0]["allow_tool_calls"] is True     # round : outils autorisés
     assert client.calls[1]["allow_tool_calls"] is False    # tour final : interdits
     assert all(c["allow_context_request"] is False for c in client.calls)  # Q4 : pas de legacy
+    assert all(c["max_tool_calls_per_symbol"] == 8 for c in client.calls)
     assert client.calls[1]["per_symbol"][SYMBOL]["tool_results"]  # résultats réinjectés
     assert decision.domain_tools["tool_rounds"] == 1       # traces mergées (persistance)
 

@@ -1,6 +1,7 @@
 import json
 import signal
 import subprocess
+from dataclasses import dataclass
 
 import pytest
 
@@ -652,6 +653,88 @@ def test_run_with_session_fallback_provider_down_restart_depuis_zero() -> None:
         ("resolve", "resolve:SPY:1"),
         ("close", "resolve:SPY:1"),
     ]
+
+
+def test_run_with_session_fallback_stamp_fallback_reason_sur_dataclass_compatible() -> None:
+    failure = LlmFailure(
+        provider="acpx",
+        model="gpt-5.5",
+        code="rate_limited",
+        message="quota",
+        retryable=True,
+    )
+
+    @dataclass(frozen=True)
+    class DecisionLike:
+        symbol: str
+        llm_fallback_reason: str | None = None
+
+    class FakeSession:
+        def __init__(self, name):
+            self.name = name
+
+        def close(self):
+            return None
+
+    class FakeBackend:
+        def open_session(self, name, *, timeout_s):
+            return FakeSession(name)
+
+    def resolve(session):
+        if session.name.endswith(":0"):
+            raise llm.SessionProviderDown(failure)
+        return DecisionLike(symbol="SPY")
+
+    result = llm.run_with_session_fallback(
+        [FakeBackend(), FakeBackend()],
+        task_id="resolve:SPY",
+        resolve=resolve,
+        open_timeout_s=12,
+    )
+
+    assert isinstance(result, DecisionLike)
+    assert result.llm_fallback_reason == "acpx:rate_limited"
+
+
+def test_run_with_session_fallback_ne_touche_pas_un_objet_sans_fallback_reason() -> None:
+    failure = LlmFailure(
+        provider="acpx",
+        model="gpt-5.5",
+        code="rate_limited",
+        message="quota",
+        retryable=True,
+    )
+
+    @dataclass(frozen=True)
+    class PlainResult:
+        value: str
+
+    class FakeSession:
+        def __init__(self, name):
+            self.name = name
+
+        def close(self):
+            return None
+
+    class FakeBackend:
+        def open_session(self, name, *, timeout_s):
+            return FakeSession(name)
+
+    plain = PlainResult("ok")
+
+    def resolve(session):
+        if session.name.endswith(":0"):
+            raise llm.SessionProviderDown(failure)
+        return plain
+
+    result = llm.run_with_session_fallback(
+        [FakeBackend(), FakeBackend()],
+        task_id="resolve:SPY",
+        resolve=resolve,
+        open_timeout_s=12,
+    )
+
+    assert result is plain
 
 
 def test_run_with_session_fallback_tous_down_retourne_le_dernier_echec() -> None:

@@ -105,19 +105,15 @@ def test_start_decide_queue_builds_ledger_pool_and_handler(tmp_path: Path, monke
     logger = RecordingLogger()
     handler_calls: list[object] = []
     build_calls: list[dict] = []
-    acpx_backend = llm.AcpxBackend(provider="acpx", model="gpt-5.5")
 
     class FakeCodexClient:
         DEFAULT_MODEL = "gpt-5.5"
-
-    class FakeRouter:
-        backends = [acpx_backend]
 
     client = FakeCodexClient
 
     def fake_build_default_router_from_env(**kwargs):
         build_calls.append(kwargs)
-        return FakeRouter()
+        raise AssertionError("pas de construction session en mode degenere sans outils")
 
     def make_handler(
         *,
@@ -157,8 +153,8 @@ def test_start_decide_queue_builds_ledger_pool_and_handler(tmp_path: Path, monke
     assert FakePool.instances[0].handlers == {"decide": "decide-handler"}
     assert FakePool.instances[0].num_workers == 3
     assert FakePool.instances[0].started is True
-    assert handler_calls == [(client, None, [acpx_backend])]  # tool_services + session_backends transmis
-    assert build_calls == [{"spark_model": "gpt-5.5"}]
+    assert handler_calls == [(client, None, None)]  # tool_services + session_backends transmis
+    assert build_calls == []
     assert logger.infos[0][0] == "[queue_decide] pool démarré num_workers=%d db=%s"
     assert logger.warnings[0][0].startswith("[queue_decide] CASYS_DECISION_BATCH_SIZE=%d IGNORÉ")
 

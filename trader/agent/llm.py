@@ -16,7 +16,7 @@ import subprocess
 import time
 import urllib.error
 import urllib.request
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, is_dataclass, replace
 from pathlib import Path
 from typing import Callable, Protocol
 
@@ -422,7 +422,19 @@ def run_with_session_fallback(
             last_failure = session
             continue
         try:
-            return resolve(session)
+            result = resolve(session)
+            if (
+                attempt > 0
+                and last_failure is not None
+                and is_dataclass(result)
+                and hasattr(result, "llm_fallback_reason")
+                and getattr(result, "llm_fallback_reason") is None
+            ):
+                result = replace(
+                    result,
+                    llm_fallback_reason=f"{last_failure.provider}:{last_failure.code}",
+                )
+            return result
         except SessionProviderDown as exc:
             last_failure = exc.failure
             continue

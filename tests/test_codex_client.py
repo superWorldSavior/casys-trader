@@ -493,6 +493,66 @@ def test_build_batch_prompt_avec_flag_expose_le_catalogue():
     assert "get_indicator_context" in prompt
 
 
+def test_build_batch_prompt_queue_tool_calls_ne_mentionne_pas_request_context():
+    prompt = codex_client.build_batch_prompt(
+        mandate="m", memory="mem", shared_context={}, symbols_payload=[{"symbol": "2330.TW"}],
+        allow_context_request=False, allow_tool_calls=True,
+    )
+
+    assert "REQUEST_CONTEXT" not in prompt
+    assert '"tool_calls"' in prompt
+    assert "get_indicator_context" in prompt
+
+
+def test_build_batch_prompt_batch_context_request_garde_request_context():
+    prompt = codex_client.build_batch_prompt(
+        mandate="m", memory="mem", shared_context={}, symbols_payload=[{"symbol": "2330.TW"}],
+        allow_context_request=True, allow_tool_calls=True,
+    )
+
+    assert "REQUEST_CONTEXT" in prompt
+
+
+def test_build_batch_prompt_catalogue_borne_par_symbole_parametrable():
+    default_prompt = codex_client.build_batch_prompt(
+        mandate="m", memory="mem", shared_context={}, symbols_payload=[{"symbol": "2330.TW"}],
+        allow_context_request=False, allow_tool_calls=True,
+    )
+    queue_prompt = codex_client.build_batch_prompt(
+        mandate="m", memory="mem", shared_context={}, symbols_payload=[{"symbol": "2330.TW"}],
+        allow_context_request=False, allow_tool_calls=True, max_tool_calls_per_symbol=8,
+    )
+
+    assert "Bornes : 3 appels max par symbole" in default_prompt
+    assert "Bornes : 8 appels max par symbole" in queue_prompt
+
+
+def test_decide_batch_transmet_la_borne_catalogue_au_prompt():
+    captured = []
+
+    def complete_fn(prompt: str, timeout_s: int) -> LlmCompletion:
+        captured.append(prompt)
+        return LlmCompletion(
+            provider="acpx",
+            model="gpt-5.5",
+            text='{"tool_calls": [{"id": "c1", "tool": "get_freshness", "args": {"symbols": ["2330.TW"]}}]}',
+        )
+
+    out = codex_client.decide_batch(
+        symbols=["2330.TW"],
+        mandate="m",
+        memory="mem",
+        shared_context={},
+        per_symbol={"2330.TW": {}},
+        allow_tool_calls=True,
+        max_tool_calls_per_symbol=8,
+        complete_fn=complete_fn,
+    )
+
+    assert isinstance(out, codex_client.BatchToolCallRequest)
+    assert "Bornes : 8 appels max par symbole" in captured[0]
+
+
 def test_decide_batch_retourne_la_tournee_quand_le_llm_la_demande(monkeypatch):
     class _Router:
         def complete(self, prompt, *, timeout_s):

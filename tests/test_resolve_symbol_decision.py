@@ -71,6 +71,9 @@ def test_tool_loop_bloque_au_tour_final() -> None:
 
     assert result.action == "HOLD"
     assert result.rationale == "tool_loop_blocked"
+    assert result.domain_tools is not None
+    assert result.domain_tools["tool_rounds"] == 1
+    assert any(tc["tool"] == "get_active_plans" for tc in result.domain_tools["tool_calls"])
     assert log == [True, False]
 
 
