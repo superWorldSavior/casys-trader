@@ -2,7 +2,15 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from trader.execution.contracts import Fill
+
+
+@dataclass(frozen=True)
+class FillAccounting:
+    model_performance: dict
+    entry_updates: dict
 
 
 def llm_exit_reason_for_intent(intent: str | None) -> str | None:
@@ -10,8 +18,7 @@ def llm_exit_reason_for_intent(intent: str | None) -> str | None:
     return "llm_exit" if intent in {"CLOSE", "REDUCE", "REVERSE"} else None
 
 
-def apply_fill_accounting(
-    entry: dict,
+def build_fill_accounting(
     *,
     fill: Fill,
     symbol: str,
@@ -26,8 +33,8 @@ def apply_fill_accounting(
     equity: float,
     cash: float,
     position_quantity: float,
-) -> dict:
-    """Return model-performance payload and enrich the runtime decision entry."""
+) -> FillAccounting:
+    """Return model-performance payload and decision-entry updates."""
     payload = {
         "ts": fill.ts,
         "symbol": symbol,
@@ -51,9 +58,13 @@ def apply_fill_accounting(
     if exit_reason is not None:
         payload["exit_reason"] = exit_reason
 
-    entry["model_performance_logged"] = True
-    entry["commission"] = fill.commission
-    entry["commission_currency"] = fill.commission_currency
-    entry["commission_model"] = fill.commission_model
-    entry["fx_rate"] = fill.fx_rate
-    return payload
+    return FillAccounting(
+        model_performance=payload,
+        entry_updates={
+            "model_performance_logged": True,
+            "commission": fill.commission,
+            "commission_currency": fill.commission_currency,
+            "commission_model": fill.commission_model,
+            "fx_rate": fill.fx_rate,
+        },
+    )

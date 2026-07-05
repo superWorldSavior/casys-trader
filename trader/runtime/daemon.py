@@ -2080,8 +2080,7 @@ def run_cycle(
             if fill is not None:
                 latest = portfolio.snapshot(broker, lambda s: prices.get(s, 0.0), starting_equity, fx_rate_of=_rate)
                 final_position = broker.positions().get(sym)
-                model_performance_payload = fill_outcome.apply_fill_accounting(
-                    entry,
+                fill_accounting = fill_outcome.build_fill_accounting(
                     fill=fill,
                     symbol=sym,
                     action=decision.action,
@@ -2096,7 +2095,8 @@ def run_cycle(
                     cash=latest.cash,
                     position_quantity=0.0 if final_position is None else final_position.quantity,
                 )
-                _append_model_performance(**model_performance_payload)
+                _append_model_performance(**fill_accounting.model_performance)
+                entry.update(fill_accounting.entry_updates)
             if fill is not None and decision.intent in {"CLOSE", "REVERSE"}:
                 # En mode queue, UoW a déjà fermé l'ancien plan via symbol_to_close.
                 if not queue_execute_enabled:

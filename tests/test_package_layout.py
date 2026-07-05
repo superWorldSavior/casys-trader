@@ -206,9 +206,9 @@ def test_daemon_delegates_fill_accounting_to_application_service() -> None:
     assert service_path.exists()
 
     source = daemon_path.read_text(encoding="utf-8")
-    assert "fill_outcome.apply_fill_accounting" in source
+    assert "fill_outcome.build_fill_accounting" in source
 
-    post_fill_block = source.split("model_performance_payload = fill_outcome.apply_fill_accounting", 1)[1]
+    post_fill_block = source.split("fill_accounting = fill_outcome.build_fill_accounting", 1)[1]
     post_fill_block = post_fill_block.split("if fill is not None and decision.intent in", 1)[0]
     forbidden = (
         'entry["model_performance_logged"]',
@@ -221,6 +221,9 @@ def test_daemon_delegates_fill_accounting_to_application_service() -> None:
     violations = [snippet for snippet in forbidden if snippet in post_fill_block]
 
     assert violations == []
+    append_index = post_fill_block.index("_append_model_performance(**fill_accounting.model_performance)")
+    update_index = post_fill_block.index("entry.update(fill_accounting.entry_updates)")
+    assert append_index < update_index
 
 
 def test_decision_reason_vocabulary_is_domain_canonical() -> None:
