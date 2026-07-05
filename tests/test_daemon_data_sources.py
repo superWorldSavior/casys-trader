@@ -6,6 +6,7 @@ import pytest
 
 from trader.runtime import daemon
 from trader.runtime import data_source_runtime
+from trader.runtime import market_rotation_runtime
 from trader.market.market_data import Bar, MarketError
 from trader.planning.scheduler import Scheduler
 
@@ -125,6 +126,48 @@ class TestDaemonDataSourcesConfig:
         )
         assert build_calls[0]["kwargs"]["host"] == "127.0.0.1"
         assert build_calls[0]["kwargs"]["port"] == 4002
+
+    def test_main_delegue_le_tick_rotation_au_runtime_module(
+        self, monkeypatch, tmp_path
+    ):
+        """main() garde le cycle, le tick rotation/radar vit dans runtime/market_rotation_runtime."""
+        _write_runtime_config(tmp_path)
+        state_dir = tmp_path / "state"
+        now = datetime(2026, 6, 10, 12, 0, tzinfo=timezone.utc)
+        rotation_calls: list[dict] = []
+
+        class FakeSource:
+            def disconnect(self):
+                pass
+
+        def build_data_source(_config, **_kwargs):
+            return data_source_runtime.DataSourceState(
+                data_source=FakeSource(),
+                composite_available={},
+                ib_attach_backoff=None,
+            )
+
+        def run_cycle(**_kwargs):
+            return _empty_report(now)
+
+        def tick_market_rotation(**kwargs):
+            rotation_calls.append(kwargs)
+
+        monkeypatch.setattr(daemon, "ROOT", tmp_path)
+        monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+        monkeypatch.setattr(daemon, "data_source_runtime", data_source_runtime, raising=False)
+        monkeypatch.setattr(data_source_runtime, "build_data_source", build_data_source)
+        monkeypatch.setattr(daemon, "market_rotation_runtime", market_rotation_runtime, raising=False)
+        monkeypatch.setattr(market_rotation_runtime, "tick_market_rotation", tick_market_rotation)
+        monkeypatch.setattr(daemon, "run_cycle", run_cycle)
+
+        daemon.main(["--once"], now_fn=lambda: now)
+
+        assert len(rotation_calls) == 1
+        assert rotation_calls[0]["config_dir"] == tmp_path / "config"
+        assert rotation_calls[0]["state_dir"] == state_dir
+        assert rotation_calls[0]["loop_now"] == now
+        assert rotation_calls[0]["logger"] is daemon.log
 
     def test_config_presente_construit_composite_et_passe_au_cycle(
         self, monkeypatch, tmp_path

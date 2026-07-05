@@ -73,7 +73,7 @@ Légende : ✅ couvert · 🟡 partiel / dispersé / potentiellement périmé ·
 ### Univers & régime
 | Sous-système | Package/module | Réf | Où | Décisions |
 |---|---|---|---|---|
-| Radar / rotation / hot-sets | `market/rotation/*` (core, venues, collectors, schedule, override, wiring) | ✅ | **`reference/universe-rotation.md`** | D9, D10, D13 |
+| Radar / rotation / hot-sets | `runtime/market_rotation_runtime`, `market/rotation/*` (core, venues, collectors, schedule, override, wiring) | ✅ | **`reference/universe-rotation.md`**, archi §1.1 | D9, D10, D13 |
 | Régime (marché + familial) | `market/regime`, `market/family_regime` | ✅ | **`reference/regime.md`** | D2 |
 | Config univers & portefeuille | `config/*.yaml`, `support/config/pool`, `support/config/portfolio` | ✅ | **`reference/config.md`** | D9/D10/D13 |
 
