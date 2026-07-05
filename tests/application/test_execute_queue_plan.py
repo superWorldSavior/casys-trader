@@ -81,6 +81,13 @@ def test_build_execute_queue_plan_payload_close_only_closes_existing_symbol() ->
     assert payload.plan_to_upsert is None
 
 
+def test_build_execute_queue_plan_payload_empty_exit_plan_does_not_create_plan() -> None:
+    payload = _payload(runtime_exit_plan={}, entry_context=None)
+
+    assert payload.symbol_to_close is None
+    assert payload.plan_to_upsert is None
+
+
 def test_build_execute_queue_plan_payload_add_projects_position_and_preserves_review() -> None:
     review = {"ts": "2026-07-05T07:55:00+00:00", "action": "HOLD"}
     previous = create_trade_plan_from_order(

@@ -43,7 +43,7 @@ def build_execute_queue_plan_payload(
 ) -> ExecuteQueuePlanPayload:
     """Prepare the queue UoW payload without enqueuing or mutating stores."""
     symbol_to_close = symbol if intent in {"CLOSE", "REVERSE", "ADD"} else None
-    if runtime_exit_plan is None:
+    if not runtime_exit_plan:
         return ExecuteQueuePlanPayload(plan_to_upsert=None, symbol_to_close=symbol_to_close)
 
     if intent in {"OPEN_LONG", "OPEN_SHORT"}:
