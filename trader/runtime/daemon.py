@@ -2229,6 +2229,7 @@ def main(
         execute_enabled_raw=_env_int("CASYS_QUEUE_EXECUTE_ENABLED", 0) == 1,
         state_backend=_state_backend,
         commission_model=commission_model,
+        decision_timeout_s=args.decision_timeout_s,
         decide_tool_services=_decide_tool_services,
         logger=log,
     )

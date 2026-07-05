@@ -13,9 +13,7 @@ from trader.agent.llm import (
     OpenAICompatibleBackend,
     build_acpx_command,
     build_default_router_from_env,
-    _codex_acp_pids,
     _looks_retryable_provider_error,
-    _reap_orphan_bridges,
     _run_one_shot_command,
 )
 
@@ -124,7 +122,6 @@ def test_retryable_provider_error_se_limite_aux_rate_limits_et_quotas() -> None:
 def test_acpx_backend_timeout_est_un_echec_non_retryable(monkeypatch) -> None:
     monkeypatch.setattr("trader.agent.llm.shutil.which", lambda _bin: "/usr/local/bin/acpx")
     monkeypatch.setattr("trader.agent.llm._terminate_process_group", lambda _pid: None)
-    monkeypatch.setattr("trader.agent.llm._codex_acp_pids", lambda: set())
 
     class TimeoutPopen:
         pid = 4242
@@ -152,7 +149,6 @@ def test_acpx_backend_timeout_est_un_echec_non_retryable(monkeypatch) -> None:
 def test_acpx_backend_consolidateur_traite_internal_error_comme_retryable(monkeypatch) -> None:
     monkeypatch.setattr("trader.agent.llm.shutil.which", lambda _bin: "/usr/local/bin/acpx")
     monkeypatch.setattr("trader.agent.llm._terminate_process_group", lambda _pid: None)
-    monkeypatch.setattr("trader.agent.llm._codex_acp_pids", lambda: set())
 
     class InternalErrorPopen:
         pid = 4242
@@ -176,7 +172,6 @@ def test_acpx_backend_consolidateur_traite_internal_error_comme_retryable(monkey
 def test_acpx_backend_runtime_traite_internal_error_comme_retryable(monkeypatch) -> None:
     monkeypatch.setattr("trader.agent.llm.shutil.which", lambda _bin: "/usr/local/bin/acpx")
     monkeypatch.setattr("trader.agent.llm._terminate_process_group", lambda _pid: None)
-    monkeypatch.setattr("trader.agent.llm._codex_acp_pids", lambda: set())
 
     class InternalErrorPopen:
         pid = 4242
@@ -203,7 +198,6 @@ def test_acpx_backend_exit_non_zero_sans_sortie_est_retryable(monkeypatch) -> No
     tomber en fallback au lieu de figer un HOLD sec."""
     monkeypatch.setattr("trader.agent.llm.shutil.which", lambda _bin: "/usr/local/bin/acpx")
     monkeypatch.setattr("trader.agent.llm._terminate_process_group", lambda _pid: None)
-    monkeypatch.setattr("trader.agent.llm._codex_acp_pids", lambda: set())
 
     class EmptyExitPopen:
         pid = 4242
@@ -230,7 +224,6 @@ def test_acpx_backend_exit_non_zero_avec_erreur_explicite_reste_non_retryable(mo
     non-retryable -- on ne doit pas tout rendre retryable."""
     monkeypatch.setattr("trader.agent.llm.shutil.which", lambda _bin: "/usr/local/bin/acpx")
     monkeypatch.setattr("trader.agent.llm._terminate_process_group", lambda _pid: None)
-    monkeypatch.setattr("trader.agent.llm._codex_acp_pids", lambda: set())
 
     class ExplicitErrorPopen:
         pid = 4242
@@ -434,11 +427,12 @@ def test_acpx_session_close_envoie_la_commande_de_fermeture(monkeypatch) -> None
     ]
 
 
-def test_acpx_session_close_avale_les_erreurs_de_run(monkeypatch) -> None:
+def test_acpx_session_close_logge_un_warning_sans_lever(monkeypatch, caplog) -> None:
     def fake_run(command, *, timeout_s):
         raise RuntimeError("acpx close failed")
 
     monkeypatch.setattr("trader.agent.llm._run_one_shot_command", fake_run)
+    caplog.set_level("WARNING", logger="trader.agent.llm")
 
     session = llm.AcpxSession(
         provider="acpx",
@@ -448,6 +442,9 @@ def test_acpx_session_close_avale_les_erreurs_de_run(monkeypatch) -> None:
     )
 
     session.close()
+
+    assert "acpx close failed" in caplog.text
+    assert "casys-trader:runtime-brain:0" in caplog.text
 
 
 def test_acpx_session_close_peut_etre_appele_deux_fois_sans_lever(monkeypatch) -> None:
@@ -755,7 +752,6 @@ def test_acpx_backend_isole_et_nettoie_le_process_group(monkeypatch) -> None:
     monkeypatch.setattr("trader.agent.llm.shutil.which", lambda _bin: "/usr/local/bin/acpx")
     popen_calls = []
     cleaned_pids = []
-    pid_snapshots = iter([set(), set()])
 
     class FakePopen:
         pid = 4242
@@ -769,7 +765,6 @@ def test_acpx_backend_isole_et_nettoie_le_process_group(monkeypatch) -> None:
 
     monkeypatch.setattr("trader.agent.llm.subprocess.Popen", FakePopen)
     monkeypatch.setattr("trader.agent.llm._terminate_process_group", lambda pid: cleaned_pids.append(pid))
-    monkeypatch.setattr("trader.agent.llm._codex_acp_pids", lambda: next(pid_snapshots))
 
     result = AcpxBackend().complete("prompt", timeout_s=12)
 
@@ -802,7 +797,6 @@ def test_run_one_shot_nettoie_l_environnement_runtime_pollue(monkeypatch) -> Non
 
     monkeypatch.setattr("trader.agent.llm.subprocess.Popen", FakePopen)
     monkeypatch.setattr("trader.agent.llm._terminate_process_group", lambda _pid: None)
-    monkeypatch.setattr("trader.agent.llm._codex_acp_pids", lambda: set())
 
     result = _run_one_shot_command(["acpx", "exec", "prompt"], timeout_s=12)
 
@@ -814,131 +808,7 @@ def test_run_one_shot_nettoie_l_environnement_runtime_pollue(monkeypatch) -> Non
     assert env["PATH"] == "/opt/homebrew/bin:/usr/bin"
 
 
-def test_codex_acp_pids_filtre_sur_lexecutable_exact(monkeypatch) -> None:
-    calls = []
-
-    class FakeCompleted:
-        returncode = 0
-        stdout = "\n".join(
-            [
-                "101 /usr/bin/python worker.py codex-acp",
-                "102 /opt/tools/codex-acp --stdio",
-                "103 codex-acp --stdio",
-                "104 /tmp/not-codex-acp --stdio",
-            ]
-        )
-
-    def fake_run(command, **kwargs):
-        calls.append((command, kwargs))
-        return FakeCompleted()
-
-    monkeypatch.setattr("trader.agent.llm.subprocess.run", fake_run)
-
-    assert _codex_acp_pids() == {102, 103}
-    assert calls[0][0] == ["ps", "-axo", "pid=,command="]
-    assert calls[0][1]["timeout"] > 0
-
-
-def test_codex_acp_pids_timeout_retourne_vide(monkeypatch) -> None:
-    def raise_timeout(command, **kwargs):
-        raise subprocess.TimeoutExpired(cmd=command, timeout=kwargs["timeout"])
-
-    monkeypatch.setattr("trader.agent.llm.subprocess.run", raise_timeout)
-
-    assert _codex_acp_pids() == set()
-
-
-def test_process_cwd_lsof_parse_un_realpath_et_timeout(monkeypatch) -> None:
-    calls = []
-
-    class FakeCompleted:
-        returncode = 0
-        stdout = "p42\nn/tmp/repo-link\n"
-
-    def fake_run(command, **kwargs):
-        calls.append((command, kwargs))
-        return FakeCompleted()
-
-    monkeypatch.setattr("trader.agent.llm.subprocess.run", fake_run)
-    monkeypatch.setattr("trader.agent.llm.os.path.realpath", lambda path: f"/real{path}")
-
-    assert llm._process_cwd(42) == "/real/tmp/repo-link"
-    assert calls[0][0] == ["lsof", "-a", "-d", "cwd", "-p", "42", "-Fn"]
-    assert calls[0][1]["timeout"] > 0
-
-    def raise_timeout(command, **kwargs):
-        raise subprocess.TimeoutExpired(cmd=command, timeout=kwargs["timeout"])
-
-    monkeypatch.setattr("trader.agent.llm.subprocess.run", raise_timeout)
-
-    assert llm._process_cwd(42) is None
-
-
-def test_reap_orphan_bridges_filtre_le_diff_par_cwd_exact(monkeypatch) -> None:
-    killed = []
-    cwd_by_pid = {
-        2: "/repo",
-        3: "/other-repo",
-        4: None,
-    }
-
-    monkeypatch.setattr("trader.agent.llm._codex_acp_pids", lambda: {1, 2, 3, 4})
-    monkeypatch.setattr("trader.agent.llm._process_cwd", lambda pid: cwd_by_pid[pid])
-    monkeypatch.setattr("trader.agent.llm.os.kill", lambda pid, sig: killed.append((pid, sig)))
-
-    _reap_orphan_bridges({1}, "/repo")
-
-    assert killed == [(2, signal.SIGKILL)]
-
-
-def test_reap_orphan_bridges_exige_une_egalite_cwd_exacte(monkeypatch) -> None:
-    killed = []
-
-    monkeypatch.setattr("trader.agent.llm._codex_acp_pids", lambda: {2})
-    monkeypatch.setattr("trader.agent.llm._process_cwd", lambda _pid: "/repo/worktrees/x")
-    monkeypatch.setattr("trader.agent.llm.os.kill", lambda pid, sig: killed.append((pid, sig)))
-
-    _reap_orphan_bridges(set(), "/repo")
-
-    assert killed == []
-
-
-def test_run_one_shot_reap_uniquement_les_nouveaux_ponts_codex_acp(monkeypatch) -> None:
-    pid_snapshots = iter([{1, 2}, {1, 2, 3, 4}])
-    cleaned_pids = []
-    killed = []
-
-    class FakePopen:
-        pid = 4242
-        returncode = 7
-
-        def __init__(self, command, **kwargs):
-            self.command = command
-
-        def communicate(self, timeout=None):
-            return "STDOUT", "STDERR"
-
-    monkeypatch.setattr("trader.agent.llm.subprocess.Popen", FakePopen)
-    monkeypatch.setattr("trader.agent.llm._terminate_process_group", lambda pid: cleaned_pids.append(pid))
-    monkeypatch.setattr("trader.agent.llm._codex_acp_pids", lambda: next(pid_snapshots))
-    monkeypatch.setattr("trader.agent.llm._process_cwd", lambda _pid: "/repo")
-    monkeypatch.setattr("trader.agent.llm.os.getcwd", lambda: "/repo")
-    monkeypatch.setattr("trader.agent.llm.os.kill", lambda pid, sig: killed.append((pid, sig)))
-
-    result = _run_one_shot_command(["acpx", "exec", "prompt"], timeout_s=12)
-
-    assert result.returncode == 7
-    assert result.stdout == "STDOUT"
-    assert result.stderr == "STDERR"
-    assert cleaned_pids == [4242]
-    assert {pid for pid, _sig in killed} == {3, 4}
-    assert all(sig == signal.SIGKILL for _pid, sig in killed)
-
-
-def test_run_one_shot_ne_tue_aucun_pont_sans_nouveau_pid(monkeypatch) -> None:
-    pid_snapshots = iter([{1, 2}, {1, 2}])
-    killed = []
-
+def test_run_one_shot_ne_sonde_plus_les_ponts_codex_acp(monkeypatch) -> None:
     class FakePopen:
         pid = 4242
         returncode = 0
@@ -949,52 +819,18 @@ def test_run_one_shot_ne_tue_aucun_pont_sans_nouveau_pid(monkeypatch) -> None:
         def communicate(self, timeout=None):
             return "OK", ""
 
+    def fail_if_called():
+        raise AssertionError("le reaper cwd ne doit plus sonder les ponts codex-acp")
+
     monkeypatch.setattr("trader.agent.llm.subprocess.Popen", FakePopen)
     monkeypatch.setattr("trader.agent.llm._terminate_process_group", lambda _pid: None)
-    monkeypatch.setattr("trader.agent.llm._codex_acp_pids", lambda: next(pid_snapshots))
-    monkeypatch.setattr("trader.agent.llm._process_cwd", lambda _pid: "/repo")
-    monkeypatch.setattr("trader.agent.llm.os.getcwd", lambda: "/repo")
-    monkeypatch.setattr("trader.agent.llm.os.kill", lambda pid, sig: killed.append((pid, sig)))
+    monkeypatch.setattr("trader.agent.llm._codex_acp_pids", fail_if_called, raising=False)
 
     result = _run_one_shot_command(["acpx", "exec", "prompt"], timeout_s=12)
 
     assert result.returncode == 0
     assert result.stdout == "OK"
     assert result.stderr == ""
-    assert killed == []
-
-
-def test_run_one_shot_ignore_les_erreurs_de_reap_des_ponts(monkeypatch) -> None:
-    pid_snapshots = iter([{1}, {1, 2}])
-    kill_attempts = []
-
-    class FakePopen:
-        pid = 4242
-        returncode = 0
-
-        def __init__(self, command, **kwargs):
-            self.command = command
-
-        def communicate(self, timeout=None):
-            return "OK", "WARN"
-
-    def raise_process_lookup(pid: int, sig: int) -> None:
-        kill_attempts.append((pid, sig))
-        raise ProcessLookupError
-
-    monkeypatch.setattr("trader.agent.llm.subprocess.Popen", FakePopen)
-    monkeypatch.setattr("trader.agent.llm._terminate_process_group", lambda _pid: None)
-    monkeypatch.setattr("trader.agent.llm._codex_acp_pids", lambda: next(pid_snapshots))
-    monkeypatch.setattr("trader.agent.llm._process_cwd", lambda _pid: "/repo")
-    monkeypatch.setattr("trader.agent.llm.os.getcwd", lambda: "/repo")
-    monkeypatch.setattr("trader.agent.llm.os.kill", raise_process_lookup)
-
-    result = _run_one_shot_command(["acpx", "exec", "prompt"], timeout_s=12)
-
-    assert result.returncode == 0
-    assert result.stdout == "OK"
-    assert result.stderr == "WARN"
-    assert kill_attempts == [(2, signal.SIGKILL)]
 
 
 def test_openai_compatible_backend_appelle_chat_completions() -> None:

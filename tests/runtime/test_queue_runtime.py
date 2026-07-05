@@ -53,12 +53,14 @@ class FakePool:
         handlers: dict[str, object],
         num_workers: int,
         now_fn,
+        lease_ms: int = 1_800_000,
     ) -> None:
         self.ledger = ledger
         self.pools = pools
         self.handlers = handlers
         self.num_workers = num_workers
         self.now_fn = now_fn
+        self.lease_ms = lease_ms
         self.started = False
         FakePool.instances.append(self)
 
@@ -268,6 +270,49 @@ def test_start_decide_queue_max_rounds_1_construit_et_filtre_les_session_backend
     assert build_calls == [{"spark_model": "gpt-5.5"}]
     assert handler_kwargs[0]["tool_services"].max_rounds == 1
     assert handler_kwargs[0]["session_backends"] == [acpx_backend]
+
+
+def test_start_decide_queue_passe_un_lease_adapte_aux_sessions_longues(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _reset_fakes()
+    logger = RecordingLogger()
+    acpx_backend_1 = llm.AcpxBackend(provider="acpx", model="gpt-5.5")
+    acpx_backend_2 = llm.AcpxBackend(provider="acpx-claude-sonnet", model="claude-sonnet")
+
+    class FakeCodexClient:
+        DEFAULT_MODEL = "gpt-5.5"
+
+    class ToolServices:
+        max_rounds = 1
+
+    class FakeRouter:
+        backends = [acpx_backend_1, acpx_backend_2]
+
+    monkeypatch.setattr(llm, "build_default_router_from_env", lambda **_kwargs: FakeRouter())
+    monkeypatch.setattr(shutil, "which", lambda _bin: "/usr/local/bin/acpx")
+
+    queue_runtime.start_decide_queue(
+        enabled=True,
+        state_dir=tmp_path,
+        parallelism=3,
+        decision_batch_size=5,
+        default_decision_batch_size=5,
+        decision_timeout_s=900,
+        codex_client=FakeCodexClient,
+        tool_services=ToolServices(),
+        now_ms_fn=lambda: 12345,
+        logger=logger,
+        factories=queue_runtime.DecideQueueFactories(
+            task_ledger_cls=FakeLedger,
+            resource_pools_cls=FakePools,
+            decide_pool_cls=FakePool,
+            make_decide_handler=lambda **_kwargs: "decide-handler",
+        ),
+    )
+
+    assert FakePool.instances[0].lease_ms > 1_800_000
 
 
 def test_start_decide_queue_sans_acpx_backend_leve_runtimeerror(tmp_path: Path, monkeypatch) -> None:

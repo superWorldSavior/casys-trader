@@ -68,7 +68,7 @@ def make_decide_handler(
         payload = json.loads(task.get("payload") or "{}")
         symbol: str = payload["symbol"]
         log.debug("[decide_handler] start symbol=%s task_id=%s", symbol, task.get("id"))
-        task_id = f"{task.get('id')}#{int(task.get('attempts') or 0)}"
+        task_id = str(task.get("id"))
 
         decision, model_calls = decide_one(
             symbol=symbol,

@@ -162,4 +162,4 @@ def test_handler_transmet_session_backends_et_task_id_a_decide_one(monkeypatch):
 
     assert result is not None
     assert captured["session_backends"] is session_backends
-    assert captured["task_id"] == "task-decide-123#2"
+    assert captured["task_id"] == "task-decide-123"
