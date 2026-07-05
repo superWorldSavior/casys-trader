@@ -152,7 +152,7 @@ def test_pool_3_taches_decide_done_avec_result(tmp_path):
     assert len(rows) == 3
     for row in rows:
         assert row["result"] is not None, "result ne doit pas être NULL"
-        data = json.loads(row["result"])
+        data = json.loads(row["result"])["decision"]  # enveloppe T4
         assert data["action"] in ("BUY", "SELL", "HOLD")
         assert "symbol" in data
 

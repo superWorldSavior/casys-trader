@@ -100,8 +100,8 @@ def test_start_decide_queue_builds_ledger_pool_and_handler(tmp_path: Path) -> No
     handler_calls: list[object] = []
     client = object()
 
-    def make_handler(*, codex_client: object) -> str:
-        handler_calls.append(codex_client)
+    def make_handler(*, codex_client: object, tool_services: object = None) -> str:
+        handler_calls.append((codex_client, tool_services))
         return "decide-handler"
 
     runtime = queue_runtime.start_decide_queue(
@@ -130,7 +130,7 @@ def test_start_decide_queue_builds_ledger_pool_and_handler(tmp_path: Path) -> No
     assert FakePool.instances[0].handlers == {"decide": "decide-handler"}
     assert FakePool.instances[0].num_workers == 3
     assert FakePool.instances[0].started is True
-    assert handler_calls == [client]
+    assert handler_calls == [(client, None)]  # tool_services transmis (None par défaut)
     assert logger.infos[0][0] == "[queue_decide] pool démarré num_workers=%d db=%s"
     assert logger.warnings[0][0].startswith("[queue_decide] CASYS_DECISION_BATCH_SIZE=%d IGNORÉ")
 

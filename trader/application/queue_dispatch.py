@@ -59,6 +59,7 @@ def dispatch_decide_via_queue(
     budget_s: float,
     now_fn: Callable[[], float],
     max_model_calls: int = 999,
+    symbols_universe: list[str] | None = None,
 ) -> tuple[dict[str, Decision], int, set[str]]:
     """Enfile les décisions grain-symbole et collecte les résultats via polling.
 
@@ -98,7 +99,9 @@ def dispatch_decide_via_queue(
         ``(decisions_by_symbol, model_calls_used, undecided_symbols)`` où :
 
         - ``decisions_by_symbol`` : décisions collectées ce cycle.
-        - ``model_calls_used`` : nombre de tâches ``done`` (décisions réussies).
+        - ``model_calls_used`` : appels LLM réellement consommés (somme des
+          ``model_calls`` remontés par les handlers ; 1/décision sans round,
+          2+/décision avec tour d'outils).
         - ``undecided_symbols`` : symboles non décidés ce cycle = reportés par
           le fusible + skippés (dead / budget épuisé / task introuvable).
           Ces symboles ne doivent PAS recevoir un HOLD synthétique — ils seront
@@ -126,8 +129,13 @@ def dispatch_decide_via_queue(
     # FIX 1 : on n'enfile qu'au plus `max_model_calls` symboles ce cycle.
     # Les symboles au-delà sont reportés (undecided) sans enfilage — ils
     # reviendront décidables au tick suivant (pas de HOLD synthétique).
-    admitted = decidable[:max_model_calls]
-    deferred_by_cap = set(decidable[max_model_calls:])
+    # Tour d'outils (T4) : pire cas 2 appels/décision (round + final) → le
+    # fusible admet moitié moins de symboles, comme le batch (planner_batch
+    # `budget // 2`). Plancher 1 : en queue, 0 admis = report infini (≠ batch
+    # qui rend un HOLD budget-exhausted).
+    effective_cap = max(1, max_model_calls // 2) if agent_tools_enabled else max_model_calls
+    admitted = decidable[:effective_cap]
+    deferred_by_cap = set(decidable[effective_cap:])
     if deferred_by_cap:
         log.info(
             "[queue_dispatch] fusible max_model_calls=%d : %d symboles reportés au cycle suivant",
@@ -145,6 +153,7 @@ def dispatch_decide_via_queue(
             "per_symbol_facts": symbol_facts_by_sym.get(sym, {}),
             "decision_timeout_s": decision_timeout_s,
             "agent_tools_enabled": agent_tools_enabled,
+            "symbols_universe": symbols_universe or [],
         }
         dedup_key = f"{cycle_id}:{sym}"
         tid = ledger.enqueue(
@@ -187,6 +196,7 @@ def dispatch_decide_via_queue(
     # -----------------------------------------------------------------------
     deadline = now_fn() + budget_s
     decisions_by_symbol: dict[str, Decision] = {}
+    model_calls_by_sym: dict[str, int] = {}
     pending_syms = set(task_ids)
     # Symboles enfilés mais non résolus (dead/budget) — seront dans undecided.
     skipped_syms: set[str] = set()
@@ -212,11 +222,21 @@ def dispatch_decide_via_queue(
                 if result_json:
                     try:
                         data = json.loads(result_json)
-                        decisions_by_symbol[sym] = Decision(**data)
+                        # Enveloppe T4 {"decision": ..., "model_calls": n} ;
+                        # rétro-compat : ancien format plat = asdict(Decision) direct.
+                        if isinstance(data, dict) and "decision" in data:
+                            decision_data = data["decision"]
+                            calls = int(data.get("model_calls") or 1)
+                        else:
+                            decision_data = data
+                            calls = 1
+                        decisions_by_symbol[sym] = Decision(**decision_data)
+                        model_calls_by_sym[sym] = calls
                         log.debug(
-                            "[queue_dispatch] collected sym=%s action=%s",
+                            "[queue_dispatch] collected sym=%s action=%s calls=%d",
                             sym,
                             decisions_by_symbol[sym].action,
+                            calls,
                         )
                     except Exception as exc:  # noqa: BLE001 — skip au lieu de bloquer
                         log.warning(
@@ -255,7 +275,9 @@ def dispatch_decide_via_queue(
     # run_cycle EXCLUT ces symboles du fallback HOLD synthétique en mode queue.
     undecided_symbols = deferred_by_cap | skipped_syms
 
-    model_calls_used = len(decisions_by_symbol)
+    # T4 : appels LLM réellement consommés (2 par décision avec tour d'outils),
+    # remontés par le handler dans l'enveloppe — plus len(decisions).
+    model_calls_used = sum(model_calls_by_sym.values())
     log.info(
         "[queue_dispatch] cycle=%s symbols=%d decided=%d undecided=%d (deferred=%d skipped=%d)",
         cycle_id,

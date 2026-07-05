@@ -69,7 +69,9 @@ def test_handler_retourne_decision_json_buy():
     result = handler(_make_task(_PAYLOAD))
 
     assert result is not None
-    data = json.loads(result)
+    envelope = json.loads(result)
+    assert envelope["model_calls"] == 1  # mode dégradé : un appel
+    data = envelope["decision"]
     assert data["symbol"] == SYMBOL
     assert data["action"] == "BUY"
     assert data["confidence"] == 0.8
@@ -92,7 +94,9 @@ def test_handler_hold_delibere_retourne_json_sans_exception():
     handler = make_decide_handler(codex_client=client)
     result = handler(_make_task(_PAYLOAD))
 
-    data = json.loads(result)
+    envelope = json.loads(result)
+    assert envelope["model_calls"] == 1  # mode dégradé : un appel
+    data = envelope["decision"]
     assert data["action"] == "HOLD"
     assert data["llm_error"] is None
 

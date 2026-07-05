@@ -36,10 +36,10 @@ def _default_logger() -> logging.Logger:
     return logging.getLogger("casys-trader")
 
 
-def _default_make_decide_handler(*, codex_client: object) -> object:
+def _default_make_decide_handler(*, codex_client: object, tool_services: object = None) -> object:
     from trader.application.decide_handler import make_decide_handler
 
-    return make_decide_handler(codex_client=codex_client)
+    return make_decide_handler(codex_client=codex_client, tool_services=tool_services)
 
 
 def _default_make_execute_order_handler(**kwargs: object) -> object:
@@ -155,6 +155,7 @@ def start_decide_queue(
     decision_batch_size: int,
     default_decision_batch_size: int,
     codex_client: object,
+    tool_services: object = None,
     now_ms_fn: NowMs = default_now_ms,
     logger: LoggerLike | None = None,
     factories: DecideQueueFactories | None = None,
@@ -175,7 +176,7 @@ def start_decide_queue(
     pool = decide_pool_cls(
         ledger=ledger,
         pools=pools,
-        handlers={"decide": make_decide_handler(codex_client=codex_client)},
+        handlers={"decide": make_decide_handler(codex_client=codex_client, tool_services=tool_services)},
         num_workers=parallelism,
         now_fn=time.time,
     )
@@ -251,6 +252,61 @@ def start_execute_queue(
     )
 
 
+def build_decide_tool_services(
+    *,
+    get_data_source: Callable[[], object],
+    learnings_db_path: Path,
+    max_context_requests_per_symbol: int,
+    max_indicators_per_request: int,
+    max_rounds: int = 1,
+    logger: LoggerLike | None = None,
+) -> object | None:
+    """Construit les ToolRoundServices du pool decide au boot (spec §4).
+
+    - ``get_bars`` : indirection vers le data_source COURANT (handle) — jamais de
+      capture (la ref est remplacée en cours de run).
+    - recall : LearningsStore ouvert au boot si ``learnings.db`` existe (SQLite
+      locké, thread-safe) ; ``now_fn`` dynamique — la borne temporelle suit
+      chaque appel. ⚠️ si la db n'existe pas ENCORE au boot, recall restera
+      indisponible jusqu'au prochain redémarrage (limitation documentée).
+
+    Retourne ``None`` si ``max_rounds < 1`` (garde-fou config).
+    """
+    from datetime import datetime, timezone
+
+    from trader.agent.learnings.store import LearningsStore
+    from trader.application.decide_one import ToolRoundServices
+    from trader.application.learnings_recall import build_recall_provider
+    from trader.market.data_source import make_indirect_get_bars
+
+    log = logger or _default_logger()
+    if max_rounds < 1:
+        log.warning("[queue_decide] tool max_rounds=%d invalide (<1) — outils désactivés", max_rounds)
+        return None
+
+    recall_provider = None
+    if learnings_db_path.exists():
+        try:
+            store = LearningsStore(str(learnings_db_path))
+            recall_provider = build_recall_provider(
+                store,
+                lambda: datetime.now(timezone.utc),
+                log_warning=log.warning,
+            )
+        except Exception as exc:  # noqa: BLE001 — recall optionnel, jamais bloquant au boot
+            log.warning("[queue_decide] LearningsStore indisponible (%s) — recall désactivé", exc)
+    else:
+        log.info("[queue_decide] learnings.db absent au boot — recall indisponible ce run")
+
+    return ToolRoundServices(
+        get_bars=make_indirect_get_bars(get_data_source),
+        learnings_recall_provider=recall_provider,
+        max_context_requests_per_symbol=max_context_requests_per_symbol,
+        max_indicators_per_request=max_indicators_per_request,
+        max_rounds=max_rounds,
+    )
+
+
 def start_queue_runtimes(
     *,
     state_dir: Path,
@@ -262,6 +318,7 @@ def start_queue_runtimes(
     execute_enabled_raw: bool,
     state_backend: str,
     commission_model: object,
+    decide_tool_services: object = None,
     now_ms_fn: NowMs = default_now_ms,
     logger: LoggerLike | None = None,
 ) -> QueueRuntimes:
@@ -272,6 +329,7 @@ def start_queue_runtimes(
         decision_batch_size=decision_batch_size,
         default_decision_batch_size=default_decision_batch_size,
         codex_client=codex_client,
+        tool_services=decide_tool_services,
         now_ms_fn=now_ms_fn,
         logger=logger,
     )

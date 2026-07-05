@@ -1390,6 +1390,9 @@ def run_cycle(
             budget_s=float(decision_timeout_s),
             now_fn=time.time,
             max_model_calls=max_model_calls_per_cycle,
+            # Univers d'analyse du cycle → resolver d'indicateurs du tour d'outils
+            # (filtre dur + paires cross-asset, spec §5 W5).
+            symbols_universe=analysis_symbols,
         )
     else:
         # Mode batch classique — comportement STRICTEMENT inchangé (flag off).
@@ -2191,6 +2194,17 @@ def main(
     # make_indirect_get_bars(handle.get) — jamais de capture de l'objet (remplacé en run).
     _ds_handle = data_source_runtime.DataSourceHandle()
 
+    # Services du tour d'outils grain-1 (spec queue tool-round §4, issue #2) :
+    # construits au boot, consommés par le handler decide quand agent_tools_enabled.
+    _decide_tool_services = queue_runtime.build_decide_tool_services(
+        get_data_source=_ds_handle.get,
+        learnings_db_path=STATE_DIR / "learnings.db",
+        max_context_requests_per_symbol=args.max_context_requests_per_symbol,
+        max_indicators_per_request=args.max_indicators_per_request,
+        max_rounds=_env_int("CASYS_QUEUE_TOOL_MAX_ROUNDS", 1),
+        logger=log,
+    )
+
     # Boot des pools queue-via-file. La construction concrète vit côté runtime :
     # - decide : DB dédiée task_ledger.db, workers persistants acpx ;
     # - execute : nécessite sqlite et partage casys.db avec broker/plan/ledger.
@@ -2204,6 +2218,7 @@ def main(
         execute_enabled_raw=_env_int("CASYS_QUEUE_EXECUTE_ENABLED", 0) == 1,
         state_backend=_state_backend,
         commission_model=commission_model,
+        decide_tool_services=_decide_tool_services,
         logger=log,
     )
     _queue_decide_enabled = _queue_runtimes.decide.enabled

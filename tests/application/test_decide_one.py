@@ -78,7 +78,7 @@ def _synthetic_hold(code: str) -> Decision:
 def test_succes_buy_retourne_decision():
     """SUCCÈS BUY → decide_one retourne la Decision BUY sans exception."""
     client = _FakeClient({SYMBOL: _ok_decision("BUY")})
-    result = decide_one(**_BASE_KWARGS, codex_client=client)
+    result, _calls = decide_one(**_BASE_KWARGS, codex_client=client)
     assert result.action == "BUY"
     assert result.symbol == SYMBOL
     assert result.llm_error is None
@@ -87,7 +87,7 @@ def test_succes_buy_retourne_decision():
 def test_succes_sell_retourne_decision():
     """SUCCÈS SELL → decide_one retourne la Decision SELL sans exception."""
     client = _FakeClient({SYMBOL: _ok_decision("SELL")})
-    result = decide_one(**_BASE_KWARGS, codex_client=client)
+    result, _calls = decide_one(**_BASE_KWARGS, codex_client=client)
     assert result.action == "SELL"
 
 
@@ -107,7 +107,7 @@ def test_hold_delibere_retourne_decision_sans_exception():
     )
     assert hold.llm_error is None  # invariant du test
     client = _FakeClient({SYMBOL: hold})
-    result = decide_one(**_BASE_KWARGS, codex_client=client)
+    result, _calls = decide_one(**_BASE_KWARGS, codex_client=client)
     assert result.action == "HOLD"
     assert result.llm_error is None
 
@@ -279,7 +279,7 @@ def test_hold_delibere_via_parse_batch_retourne_decision_sans_exception():
         ' "confidence": 0.3, "rationale": "pas de signal", "decision_reason_code": "NO_EDGE"}]}'
     )
     client = _ParsePassthroughClient(llm_text)
-    result = decide_one(**_BASE_KWARGS, codex_client=client)
+    result, _calls = decide_one(**_BASE_KWARGS, codex_client=client)
     assert result.action == "HOLD"
     assert result.llm_error is None  # HOLD délibéré — pas estampillé
 
@@ -298,3 +298,116 @@ def test_provider_error_leve_retryable_overload():
     with pytest.raises(RetryableError) as exc_info:
         decide_one(**_BASE_KWARGS, codex_client=client)
     assert exc_info.value.is_overload is True
+
+
+# ---------------------------------------------------------------------------
+# Tour d'outils grain-1 (T4 — spec queue tool-round, issue #2)
+# ---------------------------------------------------------------------------
+
+from trader.agent.protocol.types import BatchToolCallRequest  # noqa: E402
+from trader.application.decide_one import ToolRoundServices  # noqa: E402
+
+
+class _SeqClient:
+    """Client mock séquentiel : une réponse par appel, kwargs enregistrés."""
+
+    def __init__(self, responses):
+        self._responses = list(responses)
+        self.calls: list[dict] = []
+
+    def decide_batch(self, *, symbols, **kwargs):
+        self.calls.append({"symbols": list(symbols), **kwargs})
+        return self._responses.pop(0)
+
+
+def _services(**over) -> ToolRoundServices:
+    base = dict(
+        get_bars=lambda symbol, lookback="5d", interval="1h": [],
+        learnings_recall_provider=None,
+        max_context_requests_per_symbol=2,
+        max_indicators_per_request=4,
+    )
+    base.update(over)
+    return ToolRoundServices(**base)
+
+
+def _tool_request() -> BatchToolCallRequest:
+    return BatchToolCallRequest(
+        calls=[{"id": "c1", "tool": "get_active_plans", "args": {"symbol": SYMBOL}}]
+    )
+
+
+def test_tool_round_puis_decision_finale_compte_2_appels():
+    """Round d'outils + tour final : 2 appels, flags corrects, tool_results réinjectés."""
+    client = _SeqClient([_tool_request(), {SYMBOL: _ok_decision("BUY")}])
+    kwargs = {
+        **_BASE_KWARGS,
+        "agent_tools_enabled": True,
+        "per_symbol_facts": {"active_watches": [{"id": "w1", "kind": "stop"}]},
+    }
+
+    decision, calls = decide_one(**kwargs, codex_client=client, tool_services=_services())
+
+    assert decision.action == "BUY"
+    assert calls == 2
+    assert client.calls[0]["allow_tool_calls"] is True     # round : outils autorisés
+    assert client.calls[1]["allow_tool_calls"] is False    # tour final : interdits
+    assert all(c["allow_context_request"] is False for c in client.calls)  # Q4 : pas de legacy
+    assert client.calls[1]["per_symbol"][SYMBOL]["tool_results"]  # résultats réinjectés
+    assert decision.domain_tools["tool_rounds"] == 1       # traces mergées (persistance)
+
+
+def test_sans_tool_services_mode_degrade_un_appel():
+    """tool_services=None → mode dégradé historique : 1 appel, aucun outil au prompt."""
+    client = _FakeClient({SYMBOL: _ok_decision("BUY")})
+
+    decision, calls = decide_one(
+        **{**_BASE_KWARGS, "agent_tools_enabled": True}, codex_client=client
+    )
+
+    assert decision.action == "BUY"
+    assert calls == 1
+    assert client.calls[0]["allow_tool_calls"] is False
+
+
+def test_erreur_llm_au_tour_final_leve_retryable():
+    """HOLD synthétique (llm_error) rendu APRÈS le round → RetryableError, comme sans round."""
+    client = _SeqClient([_tool_request(), {SYMBOL: _synthetic_hold("timeout")}])
+    kwargs = {**_BASE_KWARGS, "agent_tools_enabled": True}
+
+    with pytest.raises(RetryableError) as exc:
+        decide_one(**kwargs, codex_client=client, tool_services=_services())
+    assert exc.value.is_overload is False
+
+
+def test_univers_transmis_au_resolver_via_cross_asset():
+    """symbols_universe (payload) alimente le resolver : la paire de FAMILLE est fetchée.
+
+    SPY/QQQ = même famille (indices) — un indicateur cross-asset (relative_strength)
+    déclenche le fetch de la paire, preuve que l'univers du payload atteint le resolver.
+    """
+    fetched: list[str] = []
+
+    def spy_get_bars(symbol, lookback="5d", interval="1h"):
+        fetched.append(symbol)
+        return []
+
+    request = BatchToolCallRequest(
+        calls=[{
+            "id": "c1",
+            "tool": "get_indicator_context",
+            "args": {"symbol": "SPY", "indicators": ["relative_strength"], "timeframe": "1h"},
+        }]
+    )
+    client = _SeqClient([request, {"SPY": replace(_ok_decision("HOLD"), symbol="SPY")}])
+    kwargs = {**_BASE_KWARGS, "symbol": "SPY", "agent_tools_enabled": True}
+
+    decide_one(
+        **kwargs,
+        codex_client=client,
+        tool_services=_services(get_bars=spy_get_bars),
+        symbols_universe=["SPY", "QQQ"],
+    )
+
+    assert "SPY" in fetched           # le symbole est fetché
+    assert "QQQ" in fetched           # la paire de famille (univers) aussi
