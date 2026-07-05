@@ -163,16 +163,15 @@ def test_fail_retryable_backoff_then_dead(tmp_path):
 # FIX A — rollback sur exception : la connexion reste utilisable
 # ---------------------------------------------------------------------------
 
-def test_enqueue_rollback_on_constraint_leaves_db_usable(tmp_path):
-    """Un enqueue qui viole uniq_active_kind_partition doit rollback proprement
-    et laisser la connexion utilisable pour un claim immédiat."""
+def test_enqueue_partition_conflict_returns_none_and_leaves_db_usable(tmp_path):
+    """Un enqueue qui viole uniq_active_kind_partition retourne None sans casser la connexion."""
     led = TaskLedger(tmp_path / "q.db")
     led.enqueue(kind="decide", priority=5, scheduled_at_ms=0, now_ms=0,
                 dedup_key="d1", partition_key="AAPL")
     # dedup_key différent mais même kind+partition → viole uniq_active_kind_partition
-    with pytest.raises(sqlite3.IntegrityError):
-        led.enqueue(kind="decide", priority=5, scheduled_at_ms=0, now_ms=0,
-                    dedup_key="d2", partition_key="AAPL")
+    tid = led.enqueue(kind="decide", priority=5, scheduled_at_ms=0, now_ms=0,
+                      dedup_key="d2", partition_key="AAPL")
+    assert tid is None
     # Sans rollback la transaction reste ouverte et BEGIN IMMEDIATE du claim échoue
     t = led.claim(worker_id="w", token="tok", now_ms=1, lease_ms=1000,
                   free_resources=[])

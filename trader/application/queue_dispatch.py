@@ -105,10 +105,9 @@ def dispatch_decide_via_queue(
     # -----------------------------------------------------------------------
     # 1. Purge des tâches decide périmées (cycles précédents)
     # -----------------------------------------------------------------------
-    # L'index uniq_active_kind_partition (kind, partition_key) WHERE status IN
-    # ('pending','running') bloquerait l'enfilage si une tâche de même partition
-    # du cycle précédent est encore active. On la supprime d'abord.
-    stale_deleted = ledger.delete_stale_decide(current_cycle_id=cycle_id)
+    # Les pending d'anciens cycles sont supprimées ; un running vivant reste en
+    # place et bloque sa partition, ce qui reporte simplement le symbole.
+    stale_deleted = ledger.delete_stale_decide(current_cycle_id=cycle_id, now_ms=now_ms)
     if stale_deleted:
         log.debug(
             "[queue_dispatch] purged stale decide tasks cycle=%s deleted=%d",
@@ -120,6 +119,7 @@ def dispatch_decide_via_queue(
     # 2. Enfilage — 1 tâche par symbole décidable
     # -----------------------------------------------------------------------
     task_ids: dict[str, int] = {}
+    enqueue_skipped_syms: set[str] = set()
     for sym in decidable:
         payload = {
             "symbol": sym,
@@ -162,10 +162,11 @@ def dispatch_decide_via_queue(
                 )
             else:
                 log.warning(
-                    "[queue_dispatch] enqueue returned None mais task introuvable sym=%s dedup=%s",
+                    "[queue_dispatch] enqueue skipped sym=%s dedup=%s — active partition or missing dedup",
                     sym,
                     dedup_key,
                 )
+                enqueue_skipped_syms.add(sym)
 
     # -----------------------------------------------------------------------
     # 3. Collecte — polling jusqu'à done/dead ou budget épuisé
@@ -175,7 +176,7 @@ def dispatch_decide_via_queue(
     model_calls_by_sym: dict[str, int] = {}
     pending_syms = set(task_ids)
     # Symboles enfilés mais non résolus (dead/budget) — seront dans undecided.
-    skipped_syms: set[str] = set()
+    skipped_syms: set[str] = set(enqueue_skipped_syms)
 
     while pending_syms and now_fn() < deadline:
         resolved = set()

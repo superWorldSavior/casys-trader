@@ -172,7 +172,14 @@ def resolve_symbol_decision(
     if isinstance(resp_final, codex_client.BatchToolCallRequest):
         # Défense en profondeur (design §6.2) : une 2e tournée au tour final est bloquée.
         return _finalize(codex_client.Decision.hold(symbol, "tool_loop_blocked"), accumulated_traces, rounds_done)
-    return _finalize(_decision_of(resp_final, symbol), accumulated_traces, rounds_done)
+    final_decision = _decision_of(resp_final, symbol)
+    if (
+        final_decision.llm_error == "tool_loop"
+        and final_decision.action == "HOLD"
+        and final_decision.rationale == "tool_loop_blocked"
+    ):
+        final_decision = codex_client.Decision.hold(symbol, "tool_loop_blocked")
+    return _finalize(final_decision, accumulated_traces, rounds_done)
 
 
 def _decision_of(resp, symbol: str) -> "codex_client.Decision":

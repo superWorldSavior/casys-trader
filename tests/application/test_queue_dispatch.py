@@ -4,7 +4,7 @@ Cas couverts :
   1. Happy path : 3 symboles, pool mocké déterministe → 3 Decisions retournées.
   2. Symbole dont la tâche devient dead → absent du résultat (model_calls=0).
   3. Budget écoulé (mock now_fn qui saute le temps) → non-finies skippées.
-  4. Purge stale : tâches decide pending/running d'un cycle précédent supprimées.
+  4. Purge stale : pending vieux supprimés ; running vieux supprimés seulement si lease expiré.
   5. Nouvelles méthodes ledger : get(task_id) et delete_stale_decide.
   6. build_symbol_facts : comportement identique à _symbol_facts de batch_decide.
 """
@@ -122,7 +122,7 @@ def test_ledger_delete_stale_decide_supprime_pending_precedent(tmp_path):
         partition_key="AAPL-exit",
     )
 
-    deleted = led.delete_stale_decide(current_cycle_id="cycle-1")
+    deleted = led.delete_stale_decide(current_cycle_id="cycle-1", now_ms=now_ms + 1)
 
     assert deleted == 1  # seule la tâche decide du cycle-0 est supprimée
     assert led.count_by_status("pending", kind="decide") == 0
@@ -153,15 +153,15 @@ def test_ledger_delete_stale_decide_preserve_current_cycle(tmp_path):
         resource="acpx",
     )
 
-    deleted = led.delete_stale_decide(current_cycle_id="cycle-1")
+    deleted = led.delete_stale_decide(current_cycle_id="cycle-1", now_ms=now_ms + 1)
 
     assert deleted == 1
     # AAPL (cycle-1) préservé, MSFT (cycle-0) supprimé
     assert led.count_by_status("pending", kind="decide") == 1
 
 
-def test_ledger_delete_stale_decide_supprime_running_precedent(tmp_path):
-    """delete_stale_decide supprime aussi les decide running d'un cycle précédent."""
+def test_ledger_delete_stale_decide_preserve_running_precedent_non_expire(tmp_path):
+    """delete_stale_decide ne supprime jamais un decide running au bail vivant."""
     led = TaskLedger(tmp_path / "q.db")
     now_ms = int(time.time() * 1000)
 
@@ -178,7 +178,30 @@ def test_ledger_delete_stale_decide_supprime_running_precedent(tmp_path):
     led.claim(worker_id="w1", token="t1", now_ms=now_ms + 1,
                lease_ms=60_000, free_resources=["acpx"])
 
-    deleted = led.delete_stale_decide(current_cycle_id="cycle-1")
+    deleted = led.delete_stale_decide(current_cycle_id="cycle-1", now_ms=now_ms + 2)
+
+    assert deleted == 0
+    assert led.count_by_status("running", kind="decide") == 1
+
+
+def test_ledger_delete_stale_decide_supprime_running_precedent_expire(tmp_path):
+    """delete_stale_decide supprime un decide running d'un cycle précédent si son lease est expiré."""
+    led = TaskLedger(tmp_path / "q.db")
+    now_ms = int(time.time() * 1000)
+
+    led.enqueue(
+        kind="decide",
+        priority=0,
+        scheduled_at_ms=now_ms,
+        now_ms=now_ms,
+        dedup_key="cycle-0:AAPL",
+        partition_key="AAPL",
+        resource="acpx",
+    )
+    led.claim(worker_id="w1", token="t1", now_ms=now_ms + 1,
+               lease_ms=10, free_resources=["acpx"])
+
+    deleted = led.delete_stale_decide(current_cycle_id="cycle-1", now_ms=now_ms + 12)
 
     assert deleted == 1
     assert led.count_by_status("running", kind="decide") == 0
@@ -449,6 +472,62 @@ def test_dispatch_purges_stale_previous_cycle(tmp_path):
     ).fetchall()
     dedup_keys = {r["dedup_key"] for r in rows}
     assert dedup_keys == {"cycle-1:AAPL", "cycle-1:MSFT"}
+
+
+def test_dispatch_reporte_symbole_inflight_vivant_sans_crash(tmp_path):
+    """Un running vivant d'un ancien cycle bloque la partition et reporte le symbole."""
+    led = TaskLedger(tmp_path / "q.db")
+    start = 1_000_000.0
+    now_ms = int(start * 1000)
+
+    old_tid = led.enqueue(
+        kind="decide",
+        priority=0,
+        scheduled_at_ms=now_ms,
+        now_ms=now_ms,
+        dedup_key="cycle-0:AAPL",
+        partition_key="AAPL",
+        resource="acpx",
+        payload=json.dumps(_base_payload("AAPL")),
+    )
+    assert old_tid is not None
+    claimed = led.claim(worker_id="w1", token="t1", now_ms=now_ms + 1,
+                        lease_ms=60_000, free_resources=["acpx"])
+    assert claimed is not None
+
+    call_count = [0]
+
+    def jumping_now():
+        call_count[0] += 1
+        if call_count[0] <= 2:
+            return start
+        return start + 9999.0
+
+    decisions, model_calls, undecided = dispatch_decide_via_queue(
+        ledger=led,
+        decidable=["AAPL", "MSFT"],
+        mandate="m",
+        memory="m",
+        shared_context={},
+        symbol_facts_by_sym={"AAPL": {}, "MSFT": {}},
+        decision_timeout_s=60,
+        agent_tools_enabled=False,
+        cycle_id="cycle-1",
+        budget_s=30.0,
+        now_fn=jumping_now,
+    )
+
+    assert decisions == {}
+    assert model_calls == 0
+    assert undecided == {"AAPL", "MSFT"}
+
+    rows = led._conn.execute(
+        "SELECT dedup_key, partition_key, status FROM tasks WHERE kind='decide' ORDER BY id"
+    ).fetchall()
+    assert [(r["dedup_key"], r["partition_key"], r["status"]) for r in rows] == [
+        ("cycle-0:AAPL", "AAPL", "running"),
+        ("cycle-1:MSFT", "MSFT", "pending"),
+    ]
 
 
 # ---------------------------------------------------------------------------

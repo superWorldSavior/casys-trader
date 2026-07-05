@@ -416,6 +416,26 @@ def test_session_backstop_force_tour_final_apres_20_demandes_outils():
     assert all(c["max_rounds"] is None for c in client.calls)
 
 
+def test_session_tool_loop_parse_au_tour_final_est_terminal_sans_retry():
+    """Au tour final session, tool_calls parsés en tool_loop_blocked ne doivent pas retry."""
+    parsed_blocked = replace(Decision.hold(SYMBOL, "tool_loop_blocked"), llm_error="tool_loop")
+    client = _SeqClient([_tool_request()] * SESSION_ROUND_BACKSTOP + [{SYMBOL: parsed_blocked}])
+
+    decision, calls = decide_one(
+        **{**_BASE_KWARGS, "agent_tools_enabled": True},
+        codex_client=client,
+        tool_services=_services(),
+        session_backends=_session_backends(),
+        task_id="t",
+    )
+
+    assert decision.action == "HOLD"
+    assert decision.rationale == "tool_loop_blocked"
+    assert decision.llm_error is None
+    assert calls == SESSION_ROUND_BACKSTOP + 1
+    assert client.calls[-1]["allow_tool_calls"] is False
+
+
 def test_sans_tool_services_mode_degrade_un_appel():
     """tool_services=None → mode dégradé historique : 1 appel, aucun outil au prompt."""
     client = _FakeClient({SYMBOL: _ok_decision("BUY")})

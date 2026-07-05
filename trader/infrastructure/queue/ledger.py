@@ -6,6 +6,7 @@ shadow/tests). Temps injecté (now_ms) pour déterminisme. Timestamps = epoch ms
 from __future__ import annotations
 
 import logging
+import sqlite3
 from pathlib import Path
 
 from trader.infrastructure.state_db.connection import StateDb
@@ -113,20 +114,31 @@ class TaskLedger:
         l'INSERT est ignoré et retourne ``None``.
         Retourne l'``id`` (int) de la nouvelle ligne, ou ``None`` sur conflit.
         """
-        with self._db.transaction() as cur:
-            row = cur.execute(
-                """INSERT INTO tasks(kind, dedup_key, partition_key, resource,
-                        priority, payload, status, attempts, max_attempts,
-                        scheduled_at, enqueued_seq, parent_id, created_at, updated_at)
-                   VALUES(?,?,?,?,?,?, 'pending', 0, ?, ?, ?, ?, ?, ?)
-                   ON CONFLICT(dedup_key) DO NOTHING
-                   RETURNING id""",
-                (kind, dedup_key, partition_key, resource, priority, payload,
-                 max_attempts, scheduled_at_ms, now_ms, parent_id, now_ms, now_ms),
-            ).fetchone()
-            if row:
-                log.debug("[queue.ledger] enqueue kind=%s dedup=%s", kind, dedup_key)
-            return int(row["id"]) if row else None
+        try:
+            with self._db.transaction() as cur:
+                row = cur.execute(
+                    """INSERT INTO tasks(kind, dedup_key, partition_key, resource,
+                            priority, payload, status, attempts, max_attempts,
+                            scheduled_at, enqueued_seq, parent_id, created_at, updated_at)
+                       VALUES(?,?,?,?,?,?, 'pending', 0, ?, ?, ?, ?, ?, ?)
+                       ON CONFLICT(dedup_key) DO NOTHING
+                       RETURNING id""",
+                    (kind, dedup_key, partition_key, resource, priority, payload,
+                     max_attempts, scheduled_at_ms, now_ms, parent_id, now_ms, now_ms),
+                ).fetchone()
+                if row:
+                    log.debug("[queue.ledger] enqueue kind=%s dedup=%s", kind, dedup_key)
+                return int(row["id"]) if row else None
+        except sqlite3.IntegrityError as exc:
+            if "tasks.kind, tasks.partition_key" in str(exc):
+                log.debug(
+                    "[queue.ledger] enqueue partition conflict kind=%s partition=%s dedup=%s",
+                    kind,
+                    partition_key,
+                    dedup_key,
+                )
+                return None
+            raise
 
     def claim(self, *, worker_id, token, now_ms, lease_ms, free_resources):
         """Tente de passer la tâche la plus prioritaire en 'running'.
@@ -296,13 +308,14 @@ class TaskLedger:
         row = self._db.query_one("SELECT * FROM tasks WHERE id=?", (task_id,))
         return dict(row) if row else None
 
-    def delete_stale_decide(self, current_cycle_id: str) -> int:
-        """Supprime les tâches 'decide' pending/running d'un cycle précédent.
+    def delete_stale_decide(self, current_cycle_id: str, *, now_ms: int) -> int:
+        """Supprime les tâches 'decide' périmées d'un cycle précédent.
 
         Seules les tâches dont ``dedup_key`` ne commence PAS par
-        ``{current_cycle_id}:`` sont supprimées. Libère l'index
-        ``uniq_active_kind_partition`` pour que les nouvelles tâches du cycle
-        courant puissent être enfilées sans conflit de partition.
+        ``{current_cycle_id}:`` sont candidates. Les ``pending`` sont supprimées
+        car jamais démarrées ; les ``running`` le sont seulement si leur bail est
+        expiré (``lease_expires_at < now_ms``). Un ``running`` vivant reste en
+        place et continue de protéger sa partition.
 
         Retourne le nombre de lignes supprimées.
         """
@@ -311,9 +324,12 @@ class TaskLedger:
             n = cur.execute(
                 """DELETE FROM tasks
                    WHERE kind='decide'
-                     AND status IN ('pending', 'running')
-                     AND (dedup_key IS NULL OR dedup_key NOT LIKE ?)""",
-                (pattern,),
+                     AND (dedup_key IS NULL OR dedup_key NOT LIKE ?)
+                     AND (
+                       status='pending'
+                       OR (status='running' AND lease_expires_at < ?)
+                     )""",
+                (pattern, now_ms),
             ).rowcount
             if n > 0:
                 log.info(
