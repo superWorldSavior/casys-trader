@@ -192,54 +192,43 @@ def decide_one(
                 indicator_resolver=resolver,
                 learnings_recall_provider=tool_services.learnings_recall_provider,
             )
-            session_mode = tool_services.max_rounds > 1 and session_backends and task_id
-            if session_mode:
-                def _resolve(session):
-                    def _session_call_model(per_symbol: dict, *, allow_tool_calls: bool):
-                        nonlocal calls_made
-                        calls_made += 1
-                        return codex_client.decide_batch(
-                            symbols=[symbol],
-                            mandate=mandate,
-                            memory=memory,
-                            shared_context=shared_context,
-                            per_symbol=per_symbol,
-                            allow_context_request=False,
-                            allow_tool_calls=allow_tool_calls,
-                            use_symbol_calls_contract=agent_tools_enabled,
-                            timeout_s=decision_timeout_s,
-                            complete_fn=llm.session_complete_fn(session),
-                        )
-
-                    return resolve_symbol_decision(
-                        symbol=symbol,
-                        base_facts=per_symbol_facts,
-                        tool_context=context,
-                        call_model=_session_call_model,
-                        max_rounds=tool_services.max_rounds,
-                        reinject="delta",
-                        tool_limits=tool_services.tool_limits(),
+            def _resolve(session):
+                def _session_call_model(per_symbol: dict, *, allow_tool_calls: bool):
+                    nonlocal calls_made
+                    calls_made += 1
+                    return codex_client.decide_batch(
+                        symbols=[symbol],
+                        mandate=mandate,
+                        memory=memory,
+                        shared_context=shared_context,
+                        per_symbol=per_symbol,
+                        allow_context_request=False,
+                        allow_tool_calls=allow_tool_calls,
+                        use_symbol_calls_contract=agent_tools_enabled,
+                        timeout_s=decision_timeout_s,
+                        complete_fn=llm.session_complete_fn(session),
                     )
 
-                decision = llm.run_with_session_fallback(
-                    session_backends,
-                    task_id=task_id,
-                    resolve=_resolve,
-                    open_timeout_s=decision_timeout_s + 15,
-                )
-                if isinstance(decision, llm.LlmFailure):
-                    raise RetryableError(
-                        decision.code,
-                        is_overload=decision.code in _OVERLOAD_CODES,
-                    )
-            else:
-                decision = resolve_symbol_decision(
+                return resolve_symbol_decision(
                     symbol=symbol,
                     base_facts=per_symbol_facts,
                     tool_context=context,
-                    call_model=_call_model,
+                    call_model=_session_call_model,
                     max_rounds=tool_services.max_rounds,
+                    reinject="delta",
                     tool_limits=tool_services.tool_limits(),
+                )
+
+            decision = llm.run_with_session_fallback(
+                session_backends,
+                task_id=task_id,
+                resolve=_resolve,
+                open_timeout_s=decision_timeout_s + 15,
+            )
+            if isinstance(decision, llm.LlmFailure):
+                raise RetryableError(
+                    decision.code,
+                    is_overload=decision.code in _OVERLOAD_CODES,
                 )
         else:
             # Mode dégradé historique : un seul appel, aucun outil.
