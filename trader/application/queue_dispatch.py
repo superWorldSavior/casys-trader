@@ -62,6 +62,7 @@ def dispatch_decide_via_queue(
     max_model_calls: int = 999,
     symbols_universe: list[str] | None = None,
     tools_active: bool = False,
+    max_rounds: int = 1,
 ) -> tuple[dict[str, Decision], int, set[str]]:
     """Enfile les décisions grain-symbole et collecte les résultats via polling.
 
@@ -131,16 +132,15 @@ def dispatch_decide_via_queue(
     # FIX 1 : on n'enfile qu'au plus `max_model_calls` symboles ce cycle.
     # Les symboles au-delà sont reportés (undecided) sans enfilage — ils
     # reviendront décidables au tick suivant (pas de HOLD synthétique).
-    # Tour d'outils (T4) : pire cas 2 appels/décision (round + final) → le
-    # fusible admet moitié moins de symboles, comme le batch (planner_batch
-    # `budget // 2`). Halvé UNIQUEMENT si le round est réellement câblé
+    # Tour d'outils (T4) : pire cas max_rounds+1 appels/décision (rounds + final).
+    # Divisé UNIQUEMENT si le round est réellement câblé
     # (tools_active = agent_tools ET services boot présents — review T4 E4a).
     # max_model_calls < 1 = fusible fermé : rien n'est admis (sémantique
     # d'origine préservée) ; sinon plancher 1 en mode tools (0 = report infini).
     if max_model_calls < 1:
         effective_cap = 0
     elif tools_active:
-        effective_cap = max(1, max_model_calls // 2)
+        effective_cap = max(1, max_model_calls // (max(int(max_rounds), 1) + 1))
     else:
         effective_cap = max_model_calls
     admitted = decidable[:effective_cap]

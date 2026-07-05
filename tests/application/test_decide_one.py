@@ -382,6 +382,22 @@ def test_tool_round_puis_decision_finale_compte_2_appels():
     assert decision.domain_tools["tool_rounds"] == 1       # traces mergées (persistance)
 
 
+def test_tool_round_transmet_max_rounds_au_prompt_client():
+    client = _SeqClient([_tool_request(), _tool_request(), {SYMBOL: _ok_decision("BUY")}])
+
+    decision, calls = decide_one(
+        **{**_BASE_KWARGS, "agent_tools_enabled": True},
+        codex_client=client,
+        tool_services=_services(max_rounds=2),
+        session_backends=_session_backends(),
+        task_id="t",
+    )
+
+    assert decision.action == "BUY"
+    assert calls == 3
+    assert all(c["max_rounds"] == 2 for c in client.calls)
+
+
 def test_sans_tool_services_mode_degrade_un_appel():
     """tool_services=None → mode dégradé historique : 1 appel, aucun outil au prompt."""
     client = _FakeClient({SYMBOL: _ok_decision("BUY")})

@@ -719,7 +719,16 @@ def test_fusible_halve_si_tools_active(tmp_path):
     # 5 décidables, cap=4, tools actifs → pire cas 2 appels/décision → 2 admis.
     led = _dispatch_enqueue_only(
         tmp_path, ["S1", "S2", "S3", "S4", "S5"],
-        agent_tools_enabled=True, tools_active=True, max_model_calls=4,
+        agent_tools_enabled=True, tools_active=True, max_model_calls=4, max_rounds=1,
+    )
+    assert led.count_by_status("pending", kind="decide") == 2
+
+
+def test_fusible_divise_par_max_rounds_plus_un_si_tools_active(tmp_path):
+    # 6 décidables, cap=8, max_rounds=3 → pire cas 4 appels/décision → 2 admis.
+    led = _dispatch_enqueue_only(
+        tmp_path, ["S1", "S2", "S3", "S4", "S5", "S6"],
+        agent_tools_enabled=True, tools_active=True, max_model_calls=8, max_rounds=3,
     )
     assert led.count_by_status("pending", kind="decide") == 2
 

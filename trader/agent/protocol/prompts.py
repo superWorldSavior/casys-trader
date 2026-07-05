@@ -374,7 +374,12 @@ def _batch_compact_contract() -> str:
     return _batch_final_contract() + _BATCH_COMPACT_SUFFIX
 
 
-def _symbol_calls_final_contract(allow_tool_calls: bool = False) -> str:
+def _round_label(max_rounds: int) -> str:
+    rounds = max(int(max_rounds), 1)
+    return "une seule tournée" if rounds == 1 else f"jusqu'à {rounds} tournées"
+
+
+def _symbol_calls_final_contract(allow_tool_calls: bool = False, max_rounds: int = 1) -> str:
     """Contrat de sortie « action tools par symbole ».
 
     Au 1er passage (`allow_tool_calls`), l'agent garde le choix : émettre d'abord
@@ -383,14 +388,24 @@ def _symbol_calls_final_contract(allow_tool_calls: bool = False) -> str:
     plus de tournée — la réponse `decisions` est imposée.
     """
     if allow_tool_calls:
-        head = (
-            "Au PREMIER tour, tu choisis librement : soit tu émets d'abord une "
-            "tournée d'outils lecture-seule "
-            '{"tool_calls":[...]}'
-            " (cf. « Outils domaine » ci-dessus) pour aller chercher le contexte "
-            "qui te manque, soit tu rends directement le contrat final ci-dessous. "
-            "Après une tournée, tu rendras le contrat final.\n"
-        )
+        if max(int(max_rounds), 1) == 1:
+            head = (
+                "Au PREMIER tour, tu choisis librement : soit tu émets d'abord une "
+                "tournée d'outils lecture-seule "
+                '{"tool_calls":[...]}'
+                " (cf. « Outils domaine » ci-dessus) pour aller chercher le contexte "
+                "qui te manque, soit tu rends directement le contrat final ci-dessous. "
+                "Après une tournée, tu rendras le contrat final.\n"
+            )
+        else:
+            head = (
+                "Au PREMIER tour, tu choisis librement : soit tu émets d'abord "
+                f"{_round_label(max_rounds)} d'outils lecture-seule "
+                '{"tool_calls":[...]}'
+                " (cf. « Outils domaine » ci-dessus) pour aller chercher le contexte "
+                "qui te manque, soit tu rends directement le contrat final ci-dessous. "
+                "Quand tu as assez de contexte, rends le contrat final.\n"
+            )
     else:
         head = (
             'Réponds UNIQUEMENT par {"decisions":[...]} ci-dessous'
@@ -509,11 +524,29 @@ _TOOL_CATALOG = (
 )
 
 
-def _tool_catalog(*, allow_context_request: bool, max_tool_calls_per_symbol: int = 3) -> str:
+def _tool_catalog(
+    *,
+    allow_context_request: bool,
+    max_tool_calls_per_symbol: int = 3,
+    max_rounds: int = 1,
+) -> str:
+    rounds = max(int(max_rounds), 1)
     catalog = _TOOL_CATALOG.replace(
         "Bornes : 3 appels max par symbole, 24 par lot.",
         f"Bornes : {max_tool_calls_per_symbol} appels max par symbole, 24 par lot.",
     )
+    if rounds > 1:
+        catalog = catalog.replace(
+            "# Outils domaine (OPTIONNELS — une seule tournée)",
+            f"# Outils domaine (OPTIONNELS — {_round_label(rounds)})",
+        ).replace(
+            "UNE tournée d'outils lecture-seule en répondant À LA PLACE du contrat final :",
+            f"{_round_label(rounds)} d'outils lecture-seule avant de rendre le contrat final :",
+        ).replace(
+            "Après la tournée tu recevras `tool_results` par symbole et tu DEVRAS rendre le contrat final\n"
+            "(toute nouvelle tournée sera bloquée en HOLD).\n",
+            "Après chaque tournée tu recevras `tool_results` par symbole. Au tour final, plus aucune tournée n'est acceptée.\n",
+        )
     if allow_context_request:
         return catalog
     return catalog.replace(
@@ -534,11 +567,12 @@ def build_batch_prompt(
     allow_tool_calls: bool = False,
     use_symbol_calls_contract: bool = False,
     max_tool_calls_per_symbol: int = 3,
+    max_rounds: int = 1,
 ) -> str:
     """Prompt batch : contexte PARTAGÉ (cockpit/portefeuille/KPI/attribution/learnings)
     envoyé UNE fois, puis la liste des symboles à décider -> un seul appel modèle."""
     if use_symbol_calls_contract:
-        contract = _symbol_calls_final_contract(allow_tool_calls)
+        contract = _symbol_calls_final_contract(allow_tool_calls, max_rounds=max_rounds)
     else:
         contract = _batch_compact_contract() if allow_context_request else _batch_final_contract()
     return (
@@ -552,7 +586,7 @@ def build_batch_prompt(
         f"# Mémoire / stratégie\n{memory}\n\n"
         f"{_decision_guidance(allow_context_request=allow_context_request)}"
         f"{_indicator_watch_vocabulary()}"
-        f"{_tool_catalog(allow_context_request=allow_context_request, max_tool_calls_per_symbol=max_tool_calls_per_symbol) if allow_tool_calls else ''}"
+        f"{_tool_catalog(allow_context_request=allow_context_request, max_tool_calls_per_symbol=max_tool_calls_per_symbol, max_rounds=max_rounds) if allow_tool_calls else ''}"
         f"# Contexte partagé (JSON)\n{json.dumps(shared_context, ensure_ascii=False)}\n\n"
         f"# Symboles à décider (JSON)\n{json.dumps(symbols_payload, ensure_ascii=False)}\n\n"
         f"# Contrat de sortie\n{contract}\n"

@@ -927,6 +927,7 @@ def run_cycle(
     agent_tools_enabled: bool = False,
     queue_decide_enabled: bool = False,
     decide_tools_active: bool = False,  # tool round réellement câblé (services boot présents)
+    decide_tool_max_rounds: int = 1,
     task_ledger=None,  # TaskLedger | None (task_ledger.db — dédié decide)
     queue_execute_enabled: bool = False,
     execute_ledger=None,  # TaskLedger | None (casys.db — partagé broker/plan/ledger)
@@ -1403,6 +1404,7 @@ def run_cycle(
             # Fusible halvé UNIQUEMENT si le tour d'outils est réellement câblé
             # (review T4 E4a : agent_tools sans services = mode dégradé 1 appel).
             tools_active=agent_tools_enabled and decide_tools_active,
+            max_rounds=decide_tool_max_rounds,
         )
     else:
         # Mode batch classique — comportement STRICTEMENT inchangé (flag off).
@@ -2355,6 +2357,7 @@ def main(
                     agent_tools_enabled=args.agent_tools,
                     queue_decide_enabled=_queue_decide_enabled,
                     decide_tools_active=_decide_tool_services is not None,
+                    decide_tool_max_rounds=getattr(_decide_tool_services, "max_rounds", 1),
                     task_ledger=_task_ledger,
                     queue_execute_enabled=_queue_execute_enabled,
                     execute_ledger=_execute_ledger,

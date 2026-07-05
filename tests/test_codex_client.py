@@ -527,6 +527,40 @@ def test_build_batch_prompt_catalogue_borne_par_symbole_parametrable():
     assert "Bornes : 8 appels max par symbole" in queue_prompt
 
 
+def test_build_batch_prompt_catalogue_max_rounds_1_reste_une_seule_tournee():
+    prompt = codex_client.build_batch_prompt(
+        mandate="m",
+        memory="mem",
+        shared_context={},
+        symbols_payload=[{"symbol": "2330.TW"}],
+        allow_context_request=False,
+        allow_tool_calls=True,
+        max_rounds=1,
+    )
+
+    assert "une seule tournée" in prompt.lower()
+    assert "Après la tournée tu recevras `tool_results`" in prompt
+    assert "toute nouvelle tournée sera bloquée en HOLD" in prompt
+
+
+def test_build_batch_prompt_catalogue_max_rounds_3_est_round_aware():
+    prompt = codex_client.build_batch_prompt(
+        mandate="m",
+        memory="mem",
+        shared_context={},
+        symbols_payload=[{"symbol": "2330.TW"}],
+        allow_context_request=False,
+        allow_tool_calls=True,
+        use_symbol_calls_contract=True,
+        max_rounds=3,
+    )
+    low = prompt.lower()
+
+    assert "jusqu'à 3 tournées" in low
+    assert "une seule tournée" not in low
+    assert "bloquée en hold" not in low
+
+
 def test_decide_batch_transmet_la_borne_catalogue_au_prompt():
     captured = []
 

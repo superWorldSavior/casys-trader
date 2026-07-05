@@ -173,6 +173,7 @@ def decide_one(
             allow_tool_calls=allow_tool_calls,
             use_symbol_calls_contract=agent_tools_enabled,
             timeout_s=decision_timeout_s,
+            max_rounds=(tool_services.max_rounds if tool_services is not None else 1),
         )
 
     tools_active = agent_tools_enabled and tool_services is not None
@@ -209,6 +210,7 @@ def decide_one(
                         timeout_s=decision_timeout_s,
                         complete_fn=llm.session_complete_fn(session),
                         max_tool_calls_per_symbol=tool_limits.max_calls_per_symbol,
+                        max_rounds=tool_services.max_rounds,
                     )
 
                 return resolve_symbol_decision(
