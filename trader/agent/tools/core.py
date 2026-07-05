@@ -61,10 +61,6 @@ class PositionRiskProvider(Protocol):
     def __call__(self, symbol: str) -> ToolPayload | None: ...
 
 
-class RecentDecisionsProvider(Protocol):
-    def __call__(self, symbol: str | None, limit: int) -> list[JsonObject]: ...
-
-
 class IndicatorResolver(Protocol):
     def __call__(self, requests: list[Any]) -> ToolPayload: ...
 
@@ -89,7 +85,6 @@ class ToolContext:
     active_watches_by_symbol: Mapping[str, list] = field(default_factory=dict)
     attribution: Mapping[str, Any] | None = None
     position_risk_provider: PositionRiskProvider | None = None
-    recent_decisions_provider: RecentDecisionsProvider | None = None
     indicator_resolver: IndicatorResolver | None = None
     learnings_recall_provider: LearningsRecallProvider | None = None
 

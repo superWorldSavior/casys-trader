@@ -4,7 +4,6 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from trader import agent_tools  # noqa: F401 — utilisé dans les tâches 2+
-from trader.agent.tools.attribution import _MAX_DECISION_ROWS
 from trader.agent.tools.core import _MAX_RAW_CALLS, _SCRUB_ID_LEN
 from trader.agent.tools.indicators import _MAX_INDICATOR_MATCHES
 from trader.agent.tools import (
@@ -265,7 +264,7 @@ def test_get_active_plans_sans_symbole_rend_tout_le_lot():
 
 
 # ---------------------------------------------------------------------------
-# Task 4 : get_position_risk, get_attribution, get_recent_decisions
+# Task 4 : get_position_risk, get_attribution
 # ---------------------------------------------------------------------------
 
 
@@ -281,10 +280,6 @@ def _providers_context() -> ToolContext:
         },
         position_risk_provider=lambda sym: {"symbol": sym, "qty": 1000.0, "usd_exposure": 1023.0}
         if sym == "2330.TW" else None,
-        recent_decisions_provider=lambda sym, limit: [
-            {"cycle_ts": "2026-07-02T01:20:51Z", "symbol": sym or "2330.TW", "action": "HOLD",
-             "reason": "quiet_gate", "executed": False}
-        ][:limit],
     )
 
 
@@ -330,14 +325,6 @@ def test_get_attribution_scope_invalide():
     )
     assert isinstance(trace, AgentToolTrace)
     assert trace.detail["reason"] == "invalid_args"
-
-
-def test_get_recent_decisions_borne_la_limite():
-    result, _ = agent_tools.execute_tool_call(
-        AgentToolCall(id="c1", tool="get_recent_decisions", args={"symbol": "2330.TW", "limit": 999}),
-        _providers_context(),
-    )
-    assert len(result.result["rows"]) <= _MAX_DECISION_ROWS
 
 
 # ---------------------------------------------------------------------------
