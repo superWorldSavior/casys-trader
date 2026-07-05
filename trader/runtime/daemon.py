@@ -1383,8 +1383,8 @@ def run_cycle(
             }
             for sym in decidable
         }
-        # Mode queue : l'admission n'est pas capée par appels ; budget_s borne
-        # la collecte du cycle, ResourcePools/AIMD borne la pression provider.
+        # Mode queue : l'admission n'est pas capée par appels ; le dispatch attend
+        # les états terminaux, ResourcePools/AIMD borne la pression provider.
         decisions_by_symbol, model_calls_used, undecided_symbols = dispatch_decide_via_queue(
             ledger=task_ledger,
             decidable=decidable,
@@ -1395,7 +1395,6 @@ def run_cycle(
             decision_timeout_s=decision_timeout_s,
             agent_tools_enabled=agent_tools_enabled,
             cycle_id=now.isoformat(),
-            budget_s=float(decision_timeout_s),
             now_fn=time.time,
             # Univers d'analyse du cycle → resolver d'indicateurs du tour d'outils
             # (filtre dur + paires cross-asset, spec §5 W5).

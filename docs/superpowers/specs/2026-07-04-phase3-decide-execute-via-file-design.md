@@ -147,7 +147,7 @@ présents comme fallback (flags off).
 **Lot A (decide via file) — MERGÉ `main` (d7a3fe2), flag `CASYS_QUEUE_DECIDE_ENABLED` off.**
 `decide_one` (expose les erreurs, y compris HOLD de parsing, via `RetryableError`) + `DecidePool`
 (backoff ancré sur la fin de l'appel, `stop()`/`start()` guardés) + `dispatch_decide_via_queue`
-(purge stale par `cycle_id` → enqueue des décidables → poll budget temps → **skippés exclus
+(purge stale par `cycle_id` → enqueue des décidables → attente des états terminaux → **skippés exclus
 du fallback HOLD** = fin du HOLD-par-saturation ; mode batch inchangé) + `build_symbol_facts`
 factorisé. 6 reviews Codex. **Re-check final du mode queue PAS encore tourné (pileup acpx) → à faire
 avant activation.**

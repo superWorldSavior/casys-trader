@@ -154,8 +154,8 @@ Répartition runtime :
 - off : `_batch_decide` synchrone (ThreadPoolExecutor), inchangé.
 - on : `dispatch_decide_via_queue` enfile **1 tâche `decide` par symbole**
   (`partition_key=symbole`, `resource=acpx`, `dedup_key=cycle:sym`) ; le `DecidePool`
-  (`task_ledger.db`) les draine, `run_cycle` attend le budget temps
-  (`CASYS_DECISION_TIMEOUT_S`, 900 s) puis collecte. Symboles non finis =
+  (`task_ledger.db`) les draine, `run_cycle` attend les états terminaux puis
+  collecte. Symboles `dead` ou `running` au lease expiré =
   **skippés** (pas de HOLD synthétique) → fin du HOLD-par-saturation. Le nb de
   workers = `CASYS_DECISION_BATCH_PARALLELISM` (même flag, sens différent du mode
   batch). `CASYS_DECISION_BATCH_SIZE` est **sans objet** en queue (grain-symbole) —

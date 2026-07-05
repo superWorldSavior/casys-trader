@@ -56,7 +56,6 @@ def dispatch_decide_via_queue(
     decision_timeout_s: int,
     agent_tools_enabled: bool,
     cycle_id: str,
-    budget_s: float,
     now_fn: Callable[[], float],
     symbols_universe: list[str] | None = None,
 ) -> tuple[dict[str, Decision], int, set[str]]:
@@ -80,9 +79,6 @@ def dispatch_decide_via_queue(
     cycle_id:
         Identifiant unique du cycle courant (ex. ``now.isoformat()``).
         Préfixe les dedup_keys : ``{cycle_id}:{sym}``.
-    budget_s:
-        Budget de collecte total en secondes (= CASYS_DECISION_TIMEOUT_S).
-        Les symboles non résolus dans ce délai sont skippés.
     now_fn:
         ``Callable[[], float]`` retournant epoch secondes. Injectable pour les tests.
 
@@ -96,9 +92,9 @@ def dispatch_decide_via_queue(
           ``model_calls`` remontés par les handlers ; 1/décision sans round,
           2+/décision avec tour d'outils).
         - ``undecided_symbols`` : symboles non décidés ce cycle = skippés
-          (dead / budget épuisé / task introuvable). Ces symboles ne doivent
-          PAS recevoir un HOLD synthétique — ils seront redécidés au prochain
-          cycle.
+          (dead / lease expiré / task introuvable). Ces symboles ne doivent
+          PAS recevoir un HOLD synthétique — ils seront redécidés quand la file
+          les rendra à nouveau admissibles.
     """
     now_ms = int(now_fn() * 1000)
 
@@ -169,17 +165,17 @@ def dispatch_decide_via_queue(
                 enqueue_skipped_syms.add(sym)
 
     # -----------------------------------------------------------------------
-    # 3. Collecte — polling jusqu'à done/dead ou budget épuisé
+    # 3. Collecte — polling jusqu'à état terminal
     # -----------------------------------------------------------------------
-    deadline = now_fn() + budget_s
     decisions_by_symbol: dict[str, Decision] = {}
     model_calls_by_sym: dict[str, int] = {}
     pending_syms = set(task_ids)
-    # Symboles enfilés mais non résolus (dead/budget) — seront dans undecided.
+    # Symboles non résolus (dead/lease expiré/introuvable) — seront dans undecided.
     skipped_syms: set[str] = set(enqueue_skipped_syms)
 
-    while pending_syms and now_fn() < deadline:
+    while pending_syms:
         resolved = set()
+        poll_now_ms = int(now_fn() * 1000)
         for sym in pending_syms:
             tid = task_ids[sym]
             task = ledger.get(tid)
@@ -233,24 +229,23 @@ def dispatch_decide_via_queue(
                 )
                 skipped_syms.add(sym)
                 resolved.add(sym)
+            elif status == "running":
+                lease_expires_at = task.get("lease_expires_at")
+                if lease_expires_at is not None and int(lease_expires_at) < poll_now_ms:
+                    log.warning(
+                        "[queue_dispatch] task lease expiré sym=%s task_id=%s — skip",
+                        sym,
+                        tid,
+                    )
+                    skipped_syms.add(sym)
+                    resolved.add(sym)
 
         pending_syms -= resolved
 
         if pending_syms:
-            remaining = deadline - now_fn()
-            if remaining > 0:
-                _time.sleep(min(_POLL_SLEEP_S, remaining))
+            _time.sleep(_POLL_SLEEP_S)
 
-    # Symboles encore en attente au budget épuisé → skip avec warning
-    for sym in pending_syms:
-        log.warning(
-            "[queue_dispatch] budget épuisé sym=%s budget_s=%.1f — skip",
-            sym,
-            budget_s,
-        )
-        skipped_syms.add(sym)
-
-    # FIX 2 : undecided = skippés (dead/budget/introuvable).
+    # FIX 2 : undecided = skippés (dead/lease expiré/introuvable).
     # run_cycle EXCLUT ces symboles du fallback HOLD synthétique en mode queue.
     undecided_symbols = set(skipped_syms)
 
