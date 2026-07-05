@@ -20,7 +20,7 @@ import math
 import os
 import sqlite3
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
@@ -147,6 +147,7 @@ class DecisionExecutionState:
     snap: object
     gross: float
     opening_batch_timed_out: bool = False
+    deferred_opening_symbols: set[str] = field(default_factory=set)
 
 
 @dataclass(frozen=True)
@@ -1314,9 +1315,19 @@ def _execute_one_cycle_decision(
             intent=decision.intent,
             budget_s=_EXECUTE_POLL_BUDGET_S,
         )
+        entry.update(
+            {
+                "queue_task_id": _exec_outcome.task_id,
+                "queue_terminal": _exec_outcome.terminal,
+                "queue_late_execution_risk": _exec_outcome.late_execution_risk,
+                "queue_abandoned": _exec_outcome.abandoned,
+            }
+        )
         if _exec_outcome.reason is not None:
-            if _exec_outcome.terminal == "timeout" and decision.intent in _OPENING_INTENTS:
-                state.opening_batch_timed_out = True
+            if decision.intent in _OPENING_INTENTS:
+                state.deferred_opening_symbols.add(sym)
+                if _exec_outcome.terminal == "timeout":
+                    state.opening_batch_timed_out = True
             apply_default_schedule_after_blocked()
             ctx.record_decision({**entry, "executed": False, "reason": _exec_outcome.reason})
             return state
@@ -1862,7 +1873,6 @@ def run_cycle(
     decisions_by_symbol: dict[str, codex_client.Decision] = {}
     streamed_decision_symbols: set[str] = set()
     buffered_opening_symbols: set[str] = set()
-    deferred_opening_symbols: set[str] = set()
 
     execution_state = DecisionExecutionState(snap=snap, gross=gross)
     execution_ctx = DecisionExecutionContext(
@@ -2083,7 +2093,7 @@ def run_cycle(
         decision = decisions_by_symbol.get(sym)
         if execution_state.opening_batch_timed_out and decision is not None and decision.intent in _OPENING_INTENTS:
             undecided_symbols.add(sym)
-            deferred_opening_symbols.add(sym)
+            execution_state.deferred_opening_symbols.add(sym)
 
         # FIX 2 : les symboles non décidés ce cycle (skippés dead/budget côté
         # decide queue, ou ouvertures retenues après timeout d'ouverture côté
@@ -2115,7 +2125,7 @@ def run_cycle(
     # ouvertures différées doivent rester périodic_review au cycle suivant, pas
     # quiet_gate pendant 4h.
     for sym in decidable:
-        if sym in deferred_opening_symbols:
+        if sym in execution_state.deferred_opening_symbols:
             continue
         decision = decisions_by_symbol.get(sym)
         if decision is not None and _counts_as_llm_review(decision):

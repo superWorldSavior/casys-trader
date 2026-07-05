@@ -23,6 +23,16 @@ from trader.interfaces.ui.rich_panels import _format_datetime
 from trader.interfaces.cockpit import aggregates as _aggregates
 
 
+def _model_calls_label(daemon_status: dict) -> str:
+    used = daemon_status.get("model_calls_used")
+    limit = daemon_status.get("max_model_calls_per_cycle")
+    if used is None:
+        return "—"
+    if limit is None:
+        return str(used)
+    return f"{used}/{limit}"
+
+
 def _build_attention_line(
     state: dict, *, kill_active: bool, palette: Palette = PALETTE_DARK
 ) -> Text:
@@ -53,9 +63,7 @@ def _build_attention_line(
     done = daemon_status.get("decisions_done")
     total = daemon_status.get("symbols_total")
     progress = f"{done}/{total}" if done is not None and total is not None else "—"
-    used = daemon_status.get("model_calls_used")
-    limit = daemon_status.get("max_model_calls_per_cycle")
-    calls = f"{used}/{limit}" if used is not None and limit is not None else "—"
+    calls = _model_calls_label(daemon_status)
     learnings_pending = state.get("learnings_pending_count") or 0
     halted = state.get("halted")
 
@@ -524,13 +532,7 @@ def _build_decisions_overview_tile(
     selected_rows = _select_decision_rows(decisions, recent_decisions, limit=6)
     source_rows = _decision_source_rows(decisions, recent_decisions)
     risk_count = _count_risk_rows(recent_decisions)
-    calls_used = daemon_status.get("model_calls_used")
-    calls_max = daemon_status.get("max_model_calls_per_cycle")
-    calls = (
-        f"{calls_used}/{calls_max}"
-        if calls_used is not None and calls_max is not None
-        else "—"
-    )
+    calls = _model_calls_label(daemon_status)
     action_counts = {
         action: sum(
             1
@@ -890,9 +892,7 @@ def _build_logs_overview_tile(
     done = daemon_status.get("decisions_done")
     total = daemon_status.get("symbols_total")
     progress = f"{done}/{total}" if done is not None and total is not None else "—"
-    calls_used = daemon_status.get("model_calls_used")
-    calls_max = daemon_status.get("max_model_calls_per_cycle")
-    calls = f"{calls_used}/{calls_max}" if calls_used is not None and calls_max is not None else "—"
+    calls = _model_calls_label(daemon_status)
     stale_values = [
         int(value)
         for value in stale_streaks.values()

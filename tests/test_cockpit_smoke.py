@@ -966,6 +966,30 @@ def test_attention_strip_resume_les_alertes_operationnelles() -> None:
     assert "learn 9" in rendered
 
 
+def test_attention_strip_affiche_les_appels_queue_sans_cap() -> None:
+    from trader.cockpit import _build_attention_line
+    from trader.ui.palette import PALETTE_LIGHT
+
+    state = {
+        "portfolio": {"holdings": []},
+        "armed_plans": [],
+        "indicator_watches": [],
+        "recent_decisions": [],
+        "daemon_status": {
+            "phase": "cycle_completed",
+            "decisions_done": 1,
+            "symbols_total": 3,
+            "model_calls_used": 3,
+            "max_model_calls_per_cycle": None,
+        },
+    }
+
+    rendered = _build_attention_line(state, kill_active=False, palette=PALETTE_LIGHT).plain
+
+    assert "LLM 3" in rendered
+    assert "LLM —" not in rendered
+
+
 async def test_cockpit_v2_pane_center_existe(tmp_path, monkeypatch):
     """Le layout v2 expose un pane central."""
     _make_minimal_state(tmp_path)

@@ -62,6 +62,34 @@ def test_status_line_cycle_absent_hors_batch():
     assert "cycle 0/0" not in line.plain
 
 
+def test_status_line_queue_mode_affiche_les_appels_sans_faux_cycle_actif():
+    from trader.cockpit.home import build_status_line
+
+    state = {
+        **STATE,
+        "daemon_status": {
+            "phase": "cycle_completed",
+            "model_calls_used": 3,
+            "max_model_calls_per_cycle": None,
+            "decisions_done": 1,
+            "symbols_total": 3,
+        },
+    }
+
+    line = build_status_line(
+        state,
+        kill_active=False,
+        palette=PALETTE_LIGHT,
+        width=300,
+        now=NOW,
+        vital=FakeVital(),
+    )
+
+    assert "LLM 3" in line.plain
+    assert "LLM —" not in line.plain
+    assert "cycle 1/3" not in line.plain
+
+
 def test_attention_line_ras_et_anomalies():
     from trader.cockpit.home import build_attention_text
 

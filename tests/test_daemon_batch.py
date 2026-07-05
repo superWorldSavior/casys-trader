@@ -501,7 +501,7 @@ def test_openings_deferred_by_execute_timeout_are_redecided_next_cycle(
     )
 
     assert decidable_by_cycle[0] == ["LOW", "HIGH", "MID"]
-    assert {"LOW", "MID"} <= set(decidable_by_cycle[1])
+    assert {"LOW", "HIGH", "MID"} <= set(decidable_by_cycle[1])
 
 
 def test_execute_one_cycle_decision_records_hold_without_mutating_state() -> None:

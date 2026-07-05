@@ -421,6 +421,10 @@ def test_run_cycle_queue_execute_fail_closed_reason_from_dispatcher(
     decision = next(d for d in report["decisions"] if d["symbol"] == "SPY")
     assert decision["executed"] is False
     assert decision["reason"] == "queue_execute_timeout"
+    assert decision["queue_task_id"] == 123
+    assert decision["queue_terminal"] == "timeout"
+    assert decision["queue_late_execution_risk"] is True
+    assert decision["queue_abandoned"] is False
     assert SimBroker(state_dir / "broker.json").positions() == {}
 
 
