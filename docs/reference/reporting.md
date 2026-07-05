@@ -25,7 +25,7 @@ Rien n'est dans le hot-path de décision.
 | `bench.decision_bench` / `decision_bench` | Moteur canonique de **bench contrefactuel** de modèles sur des lignes de décision auditées; `reporting.decision_bench` garde la façade de compatibilité. |
 | `read_models.meta_performance` / `meta_performance` | Read model canonique du payload **compact de méta-performance** depuis `decision_audit.json`; `reporting.meta_performance` garde la façade de compatibilité. |
 | `stats` | Helpers de reporting des **KPI live** calculés par `reporting/read_models/live_kpis.py`; la CLI canonique vit dans `interfaces.cli.stats`. |
-| `decision_ledger` | Journal durable des décisions (schéma versionné). |
+| `ledger.decision_ledger` / `decision_ledger` | Write-side canonique du journal durable des décisions (schéma versionné); `reporting.decision_ledger` garde la façade de compatibilité. |
 | `decision_reason` | Façade de compatibilité vers `trader.domain.decision_reason`, vocabulaire canonique des `decision_reason_code`. |
 | `tool_trace` / `tool_usage` | Traces des tournées d'outils domaine du LLM ; projection canonique dans `reporting/read_models/tool_usage.py`, façade/rendu dans `reporting.tool_usage`. |
 

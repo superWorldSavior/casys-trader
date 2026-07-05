@@ -1,7 +1,7 @@
 import json
 from datetime import datetime, timezone
 
-from trader.reporting import decision_ledger
+from trader.reporting.ledger import decision_ledger
 from trader.application.decision_recorder import DecisionRecorder
 
 

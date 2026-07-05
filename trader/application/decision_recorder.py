@@ -9,7 +9,7 @@ from datetime import datetime
 from typing import Any, Protocol, TypeAlias
 
 from trader.application.tool_outcomes import finalize_action_tool_outcomes
-from trader.reporting import decision_ledger
+from trader.reporting.ledger import decision_ledger
 
 log = logging.getLogger(__name__)
 

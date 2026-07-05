@@ -1334,6 +1334,21 @@ def test_decision_bench_engine_is_bench_package_canonical() -> None:
     assert reporting_decision_bench.render_summary is bench_decision_bench.render_summary
 
 
+def test_decision_ledger_store_is_ledger_package_canonical() -> None:
+    from trader.reporting import decision_ledger as reporting_decision_ledger
+    from trader.reporting.ledger import decision_ledger as ledger_decision_ledger
+
+    assert reporting_decision_ledger.DecisionLedgerStore is ledger_decision_ledger.DecisionLedgerStore
+    assert reporting_decision_ledger.build_decision_row is ledger_decision_ledger.build_decision_row
+    assert reporting_decision_ledger.build_legacy_event_row is ledger_decision_ledger.build_legacy_event_row
+    assert reporting_decision_ledger.seed_existing_reports is ledger_decision_ledger.seed_existing_reports
+    assert reporting_decision_ledger.seed_existing_events is ledger_decision_ledger.seed_existing_events
+    assert reporting_decision_ledger.backfill_code_versions is ledger_decision_ledger.backfill_code_versions
+    assert reporting_decision_ledger.DEFAULT_LEDGER_FILENAME is ledger_decision_ledger.DEFAULT_LEDGER_FILENAME
+    assert reporting_decision_ledger._decision_id is ledger_decision_ledger._decision_id
+    assert reporting_decision_ledger.code_version is ledger_decision_ledger.code_version
+
+
 def test_market_and_planning_use_domain_primitives_instead_of_tools() -> None:
     trader_dir = Path(__file__).resolve().parents[1] / "trader"
     checked_roots = (trader_dir / "market", trader_dir / "planning")

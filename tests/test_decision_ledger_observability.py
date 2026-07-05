@@ -1,4 +1,4 @@
-from trader.reporting import decision_ledger
+from trader.reporting.ledger import decision_ledger
 
 
 def test_decision_row_expose_source_modele_et_ordre_arme() -> None:

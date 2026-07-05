@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from trader.reporting import decision_ledger
+from trader.reporting.ledger import decision_ledger
 from trader.market import news_feed as nf
 
 NOW = datetime(2026, 6, 23, 12, 0, tzinfo=timezone.utc)

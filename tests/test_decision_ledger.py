@@ -1,6 +1,6 @@
 import json
 
-from trader.reporting import decision_ledger
+from trader.reporting.ledger import decision_ledger
 
 
 def _report(decisions: list[dict] | None = None) -> dict:

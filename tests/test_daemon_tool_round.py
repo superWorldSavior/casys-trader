@@ -355,7 +355,7 @@ def test_budget_mode_tournee_limite_les_chunks(monkeypatch):
 
 def test_ledger_row_persiste_les_traces():
     """decision_ledger construit runtime.tool_rounds / runtime.tool_calls."""
-    from trader.reporting import decision_ledger
+    from trader.reporting.ledger import decision_ledger
 
     # build_decision_row(report, decision, *, sequence, source) — le ts vient
     # de report.get("ts") ou decision.get("ts") ; symbol de decision.get("symbol").

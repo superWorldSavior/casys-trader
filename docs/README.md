@@ -92,7 +92,7 @@ Légende : ✅ couvert · 🟡 partiel / dispersé / potentiellement périmé ·
 | Sous-système | Package/module | Réf | Où | Décisions |
 |---|---|---|---|---|
 | Cockpit TUI | `interfaces/cockpit/` (app, supervisor, events), `interfaces/ui/`, `reporting/read_models/runtime_state` | ✅ | **`reference/cockpit.md`** | — |
-| Attribution / performance | `reporting/` (attribution, meta_performance, decision_audit, decision_bench, stats, tool_usage) + `reporting/audit/decision_quality` + `reporting/bench/decision_bench` + `reporting/read_models/{attribution,live_kpis,meta_performance,tool_usage}` | ✅ | **`reference/reporting.md`** | — |
+| Attribution / performance | `reporting/` (attribution, meta_performance, decision_audit, decision_bench, decision_ledger, stats, tool_usage) + `reporting/audit/decision_quality` + `reporting/bench/decision_bench` + `reporting/ledger/decision_ledger` + `reporting/read_models/{attribution,live_kpis,meta_performance,tool_usage}` | ✅ | **`reference/reporting.md`** | — |
 | Commandes opérateur | `interfaces/cli/` + alias virtuels legacy `trader.commands.*`, `trader.stats`, `trader.attribution`, `trader.tool_usage`, `trader.tui` | ✅ | archi §1.1, **`reference/reporting.md`** | — |
 | Logging | `runtime/logging_setup` (`CASYS_LOG_LEVEL`, museler ib_async) | ✅ | archi §10.1 | — |
 
