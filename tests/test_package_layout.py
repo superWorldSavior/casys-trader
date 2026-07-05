@@ -226,6 +226,31 @@ def test_daemon_delegates_fill_accounting_to_application_service() -> None:
     assert append_index < update_index
 
 
+def test_daemon_delegates_fill_plan_effects_to_application_service() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    daemon_path = repo_root / "trader" / "runtime" / "daemon.py"
+    service_path = repo_root / "trader" / "application" / "fill_plan_effects.py"
+
+    assert service_path.exists()
+
+    source = daemon_path.read_text(encoding="utf-8")
+    assert "fill_plan_effects.apply_filled_plan_effects" in source
+    assert "def _create_plan_for_final_position" not in source
+
+    post_fill_block = source.split("_append_model_performance(**fill_accounting.model_performance)", 1)[1]
+    post_fill_block = post_fill_block.split("if fill is not None and decision.intent in _OPENING_INTENTS:", 1)[0]
+    forbidden = (
+        "plan_store.close_symbol(sym)",
+        "plan_store.sync_symbol_quantity(",
+        "create_trade_plan_from_order(",
+        'entry["trade_plan_created"]',
+        'entry["trade_plan"]',
+    )
+    violations = [snippet for snippet in forbidden if snippet in post_fill_block]
+
+    assert violations == []
+
+
 def test_decision_reason_vocabulary_is_domain_canonical() -> None:
     repo_root = Path(__file__).resolve().parents[1]
     canonical_path = repo_root / "trader" / "domain" / "decision_reason.py"

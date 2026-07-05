@@ -20,7 +20,6 @@ import math
 import os
 import sqlite3
 import time
-from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable
@@ -41,6 +40,7 @@ from trader.application import (
     execute_queue_plan,
     execution_eligibility as execution_eligibility_service,
     fill_outcome,
+    fill_plan_effects,
     exit_bars as exit_bars_service,
     gross_feedback,
     infra_holds,
@@ -73,8 +73,6 @@ from trader.planning.trade_plan import (
     InvalidExitPlanError,
     TradePlan,
     TradePlanStore,
-    create_trade_plan,
-    create_trade_plan_from_order,
     resolve_exit_plan,
     validate_exit_plan,
 )
@@ -542,42 +540,6 @@ def _set_entry_risk_metrics(
 
 def _runtime_tool_audit_fields(domain_tools: dict | None) -> dict:
     return decision_entries.runtime_tool_audit_fields(domain_tools)
-
-
-
-def _create_plan_for_final_position(
-    *,
-    broker: SimBroker,
-    plan_store: TradePlanStore,
-    symbol: str,
-    price: float,
-    opened_at: str,
-    raw_exit_plan: dict,
-    reference_volatility: float | None = None,
-    llm_provider: str | None = None,
-    llm_model: str | None = None,
-    llm_fallback_reason: str | None = None,
-    llm_confidence: float | None = None,
-) -> TradePlan | None:
-    position = broker.positions().get(symbol)
-    if position is None or position.quantity == 0:
-        return None
-    plan = create_trade_plan(
-        symbol=symbol,
-        side="LONG" if position.quantity > 0 else "SHORT",
-        quantity=abs(position.quantity),
-        entry_price=position.avg_price or price,
-        opened_at=opened_at,
-        raw_exit_plan=raw_exit_plan,
-        reference_volatility=reference_volatility,
-        llm_provider=llm_provider,
-        llm_model=llm_model,
-        llm_fallback_reason=llm_fallback_reason,
-        llm_confidence=llm_confidence,
-    )
-    plan_store.upsert(plan)
-    return plan
-
 
 def _clamp_exit_quantity(
     *,
@@ -2097,24 +2059,12 @@ def run_cycle(
                 )
                 _append_model_performance(**fill_accounting.model_performance)
                 entry.update(fill_accounting.entry_updates)
-            if fill is not None and decision.intent in {"CLOSE", "REVERSE"}:
-                # En mode queue, UoW a déjà fermé l'ancien plan via symbol_to_close.
-                if not queue_execute_enabled:
-                    plan_store.close_symbol(sym)
-            if fill is not None and decision.intent == "REDUCE":
-                final_position = broker.positions().get(sym)
-                plan_store.sync_symbol_quantity(sym, 0.0 if final_position is None else abs(final_position.quantity))
-            if (
-                fill is not None
-                and runtime_exit_plan
-                and decision.intent in _OPENING_INTENTS
-            ):
-                # §13.7 — contexte d'entrée durable capturé dans le TradePlan : la thèse
-                # (rationale LLM) et un snapshot du contexte au tir, réinjectables au réveil.
-                _entry_age = data_age_by_symbol.get(sym)
-                entry_meta = {
-                    "entry_thesis": decision.rationale,
-                    "entry_context": {
+                plan_entry_context: dict = {}
+                if runtime_exit_plan and decision.intent in _OPENING_INTENTS:
+                    # §13.7 — contexte d'entrée durable capturé dans le TradePlan : la thèse
+                    # (rationale LLM) et un snapshot du contexte au tir, réinjectables au réveil.
+                    _entry_age = data_age_by_symbol.get(sym)
+                    plan_entry_context = {
                         "price": prices[sym],
                         "runtime_interval": runtime_interval,
                         "data_age_m": None if _entry_age is None else int(round(_entry_age)),
@@ -2122,80 +2072,27 @@ def run_cycle(
                         "daily_as_of": (
                             (execution_eligibility.get(sym) or {}).get("planning") or {}
                         ).get("daily_as_of"),
-                    },
-                }
-                if decision.intent == "REVERSE":
-                    if not queue_execute_enabled:
-                        # Mode synchrone : créer + upsert le plan post-fill.
-                        created_plan = _create_plan_for_final_position(
-                            broker=broker,
-                            plan_store=plan_store,
-                            symbol=sym,
-                            price=prices[sym],
-                            opened_at=fill.ts,
-                            raw_exit_plan=runtime_exit_plan,
-                            reference_volatility=reference_volatility,
-                            llm_provider=decision.llm_provider,
-                            llm_model=decision.llm_model,
-                            llm_fallback_reason=decision.llm_fallback_reason,
-                            llm_confidence=decision.confidence,
-                        )
-                        entry["trade_plan_created"] = created_plan is not None
-                        if created_plan is not None:
-                            created_plan = replace(created_plan, **entry_meta)
-                            plan_store.upsert(created_plan)
-                            entry["trade_plan"] = _plan_snapshot(created_plan)
-                    else:
-                        # FIX 4 (daemon) — Mode queue : UoW a déjà fermé l'ancien plan
-                        # ET créé le nouveau atomiquement (symbol_to_close + plan_to_upsert).
-                        # Pas de double-upsert ni de _create_plan_for_final_position.
-                        entry["trade_plan_created"] = True
-                        _rv_new_plans = [p for p in plan_store.open_plans() if p.symbol == sym]
-                        if _rv_new_plans:
-                            entry["trade_plan"] = _plan_snapshot(_rv_new_plans[-1])
-                else:
-                    plan_quantity = effective_quantity
-                    plan_entry_price = prices[sym]
-                    add_previous_plan: TradePlan | None = None
-                    if decision.intent == "ADD":
-                        final_position = broker.positions().get(sym)
-                        plan_quantity = 0.0 if final_position is None else abs(final_position.quantity)
-                        if final_position is not None and final_position.avg_price > 0.0:
-                            plan_entry_price = final_position.avg_price
-                        add_previous_plan = next(
-                            (plan for plan in plan_store.open_plans() if plan.symbol == sym),
-                            None,
-                        )
-                        # En mode queue, UoW a déjà fermé l'ancien plan ADD via symbol_to_close.
-                        if not queue_execute_enabled:
-                            plan_store.close_symbol(sym)
-                    plan = create_trade_plan_from_order(
-                        symbol=sym,
-                        order_side=decision.action,
-                        quantity=plan_quantity,
-                        entry_price=plan_entry_price,
-                        opened_at=fill.ts,
-                        raw_exit_plan=runtime_exit_plan,
-                        reference_volatility=reference_volatility,
-                        llm_provider=decision.llm_provider,
-                        llm_model=decision.llm_model,
-                        llm_fallback_reason=decision.llm_fallback_reason,
-                        llm_confidence=decision.confidence,
-                    )
-                    plan = replace(plan, **entry_meta)
-                    if add_previous_plan is not None and add_previous_plan.last_llm_review is not None:
-                        plan = replace(plan, last_llm_review=copy.deepcopy(add_previous_plan.last_llm_review))
-                    # En mode queue + OPEN_LONG/OPEN_SHORT : plan déjà upsert par UoW.
-                    # En mode queue + ADD : plan pré-calculé ET upsert par UoW (FIX 3 —
-                    # close + upsert atomiques → plus de crash window sans plan). Le
-                    # `plan` local ci-dessus sert uniquement au reporting entry["trade_plan"].
-                    # REDUCE : sync_symbol_quantity reste hors UoW (compromis documenté :
-                    # ajustement de quantité ; plan stale possible sur crash — acceptable
-                    # pour l'instant, à noter comme dette technique).
-                    if not queue_execute_enabled:
-                        plan_store.upsert(plan)
-                    entry["trade_plan_created"] = True
-                    entry["trade_plan"] = _plan_snapshot(plan)
+                    }
+                fill_plan_effects.apply_filled_plan_effects(
+                    entry=entry,
+                    broker=broker,
+                    plan_store=plan_store,
+                    symbol=sym,
+                    action=decision.action,
+                    intent=decision.intent,
+                    quantity=effective_quantity,
+                    price=prices[sym],
+                    opened_at=fill.ts,
+                    runtime_exit_plan=runtime_exit_plan,
+                    reference_volatility=reference_volatility,
+                    llm_provider=decision.llm_provider,
+                    llm_model=decision.llm_model,
+                    llm_fallback_reason=decision.llm_fallback_reason,
+                    llm_confidence=decision.confidence,
+                    queue_execute_enabled=queue_execute_enabled,
+                    entry_thesis=decision.rationale,
+                    entry_context=plan_entry_context,
+                )
             if fill is not None and decision.intent in _OPENING_INTENTS:
                 post_entry_wake = market.freshness_budget_minutes(runtime_interval, grace_minutes=0.0)
                 if next_wake_in_minutes is None or next_wake_in_minutes > post_entry_wake:
