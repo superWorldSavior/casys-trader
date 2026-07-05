@@ -8,7 +8,8 @@ from pathlib import Path
 
 from backtest.decision_quality import BAND
 
-from trader.reporting.tool_usage import build_report, render_cli
+from trader.reporting.read_models.tool_usage import build_report
+from trader.reporting.renderers.tool_usage import render_cli
 
 STATE_DIR = Path("state")
 DEFAULT_LEDGER = STATE_DIR / "decisions.jsonl"

@@ -6,7 +6,8 @@ import argparse
 import json
 from pathlib import Path
 
-from trader.reporting.stats import compute_live_kpis, render_text
+from trader.reporting.read_models.live_kpis import compute_live_kpis
+from trader.reporting.renderers.live_kpis import render_text
 
 DEFAULT_STATE_DIR = Path(__file__).resolve().parents[2] / "state"
 

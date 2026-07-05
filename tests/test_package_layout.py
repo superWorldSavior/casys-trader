@@ -1206,19 +1206,20 @@ def _module_imports(path: Path, module_name: str) -> bool:
 def test_runnable_compatibility_facades_delegate_to_interface_command_modules() -> None:
     trader_dir = Path(__file__).resolve().parents[1] / "trader"
     command_modules = {
-        "attribution": "trader.reporting.attribution",
-        "stats": "trader.reporting.stats",
-        "tool_usage": "trader.reporting.tool_usage",
-        "tui": "trader.interfaces.ui.tui",
+        "attribution": ("trader.reporting.attribution",),
+        "stats": ("trader.reporting.read_models.live_kpis", "trader.reporting.renderers.live_kpis"),
+        "tool_usage": ("trader.reporting.read_models.tool_usage", "trader.reporting.renderers.tool_usage"),
+        "tui": ("trader.interfaces.ui.tui",),
     }
 
-    for command_name, canonical_module in command_modules.items():
+    for command_name, canonical_modules in command_modules.items():
         command_path = trader_dir / "interfaces" / "cli" / f"{command_name}.py"
         legacy_package_main_path = trader_dir / command_name / "__main__.py"
         legacy_module_path = trader_dir / f"{command_name}.py"
 
         assert command_path.exists(), f"missing canonical command module for {command_name}"
-        assert _module_imports(command_path, canonical_module)
+        for canonical_module in canonical_modules:
+            assert _module_imports(command_path, canonical_module)
         if legacy_package_main_path.exists():
             assert _module_imports(legacy_package_main_path, f"trader.commands.{command_name}")
         assert not legacy_module_path.exists()
@@ -1270,6 +1271,16 @@ def test_tool_usage_report_projection_is_read_model_canonical() -> None:
     assert reporting_tool_usage.risk_observability is read_model_tool_usage.risk_observability
     assert legacy_tool_usage.build_report is read_model_tool_usage.build_report
     assert legacy_tool_usage.render_cli is reporting_tool_usage.render_cli
+
+
+def test_reporting_renderers_are_canonical() -> None:
+    from trader.reporting import stats as reporting_stats
+    from trader.reporting import tool_usage as reporting_tool_usage
+    from trader.reporting.renderers import live_kpis as live_kpis_renderer
+    from trader.reporting.renderers import tool_usage as tool_usage_renderer
+
+    assert reporting_stats.render_text is live_kpis_renderer.render_text
+    assert reporting_tool_usage.render_cli is tool_usage_renderer.render_cli
 
 
 def test_stats_cli_owner_is_command_module() -> None:

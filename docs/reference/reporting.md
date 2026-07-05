@@ -8,9 +8,10 @@
 
 Presque tout est **ex-post et lecture-seule**, chacun sur sa source :
 `reporting/read_models/attribution.py` lit `model_performance.jsonl` ;
-`stats` calcule/rend les KPI projetés par `reporting/read_models/live_kpis.py` ;
-`tool_usage` rend la projection calculée par
-`reporting/read_models/tool_usage.py` ; `reporting/read_models/meta_performance.py`
+`reporting/read_models/live_kpis.py` projette les KPI et
+`reporting/renderers/live_kpis.py` les rend pour l'opérateur ;
+`reporting/read_models/tool_usage.py` projette l'usage des outils et
+`reporting/renderers/tool_usage.py` le rend ; `reporting/read_models/meta_performance.py`
 lit `decision_audit.json`.
 **Exception** : `decision_ledger`
 **écrit** — c'est lui qui PRODUIT `decisions.jsonl` (`append`/`replace_all`/`seed`).
@@ -24,10 +25,10 @@ Rien n'est dans le hot-path de décision.
 | `audit.decision_quality` / `decision_audit` | Moteur canonique d'**audit ex-post** des décisions loggées (classification, cohérence, cas anormaux); `reporting.decision_audit` garde la façade de compatibilité. |
 | `bench.decision_bench` / `decision_bench` | Moteur canonique de **bench contrefactuel** de modèles sur des lignes de décision auditées; `reporting.decision_bench` garde la façade de compatibilité. |
 | `read_models.meta_performance` / `meta_performance` | Read model canonique du payload **compact de méta-performance** depuis `decision_audit.json`; `reporting.meta_performance` garde la façade de compatibilité. |
-| `stats` | Helpers de reporting des **KPI live** calculés par `reporting/read_models/live_kpis.py`; la CLI canonique vit dans `interfaces.cli.stats`. |
+| `read_models.live_kpis` / `renderers.live_kpis` / `stats` | Projection canonique des **KPI live** depuis `state/`, puis rendu opérateur; `reporting.stats` garde la façade de compatibilité et la CLI canonique vit dans `interfaces.cli.stats`. |
 | `ledger.decision_ledger` / `decision_ledger` | Write-side canonique du journal durable des décisions (schéma versionné); `reporting.decision_ledger` garde la façade de compatibilité. |
 | `decision_reason` | Façade de compatibilité vers `trader.domain.decision_reason`, vocabulaire canonique des `decision_reason_code`. |
-| `tool_trace` / `tool_usage` | Traces des tournées d'outils domaine du LLM ; projection canonique dans `reporting/read_models/tool_usage.py`, façade/rendu dans `reporting.tool_usage`. |
+| `tool_trace` / `read_models.tool_usage` / `renderers.tool_usage` / `tool_usage` | Traces des tournées d'outils domaine du LLM ; projection canonique dans `reporting/read_models/tool_usage.py`, rendu dans `reporting/renderers/tool_usage.py`, façade dans `reporting.tool_usage`. |
 
 ## Flux typiques
 
