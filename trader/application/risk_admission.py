@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Protocol
+from typing import Protocol, cast
 
 from trader.application import order_admission
+from trader.domain.orders import Side
+from trader.execution.contracts import Order
 
 _PURE_OPEN_INTENTS = {"OPEN_LONG", "OPEN_SHORT"}
 _RISK_GUARDED_OPENING_INTENTS = {"OPEN_LONG", "OPEN_SHORT", "ADD"}
@@ -40,6 +42,20 @@ class RiskAdmissionGate(Protocol):
     ) -> _RiskVerdictLike: ...
 
 
+class FinalRiskGate(Protocol):
+    def check(
+        self,
+        order: Order,
+        price: float,
+        *,
+        current_position_value: float,
+        gross_exposure: float,
+        equity: float,
+        allow_risk_reduction: bool = False,
+        fx_rate: float = 1.0,
+    ) -> _RiskVerdictLike: ...
+
+
 @dataclass(frozen=True)
 class RiskAdmissionRequest:
     action: str
@@ -63,6 +79,29 @@ class RiskAdmissionResult:
     reason: str | None = None
     context: str | None = None
     entry_updates: dict[str, object] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class FinalRiskGateRequest:
+    symbol: str
+    action: str
+    quantity: float
+    rationale: str
+    intent: str | None
+    price: float
+    position_quantity: float
+    gross_exposure: float
+    equity: float
+    fx_rate: float = 1.0
+
+
+@dataclass(frozen=True)
+class FinalRiskGateResult:
+    approved: bool
+    order: Order
+    reason: str | None = None
+    code: str = "ok"
+    context: str = ""
 
 
 def _set_risk_metrics(
@@ -222,3 +261,37 @@ def assess_risk_admission(
             )
 
     return RiskAdmissionResult(True, quantity, entry_updates=updates)
+
+
+def assess_final_risk_gate(
+    request: FinalRiskGateRequest,
+    *,
+    gate: FinalRiskGate,
+) -> FinalRiskGateResult:
+    """Build the executable order and evaluate the final deterministic risk gate."""
+    order = Order(
+        symbol=request.symbol,
+        side=cast(Side, request.action),
+        quantity=request.quantity,
+        rationale=request.rationale,
+    )
+    current_position_value = request.position_quantity * request.price * request.fx_rate
+    allow_risk_reduction = request.intent in {"REDUCE", "CLOSE"}
+    verdict = gate.check(
+        order,
+        request.price,
+        current_position_value=current_position_value,
+        gross_exposure=request.gross_exposure,
+        equity=request.equity,
+        allow_risk_reduction=allow_risk_reduction,
+        fx_rate=request.fx_rate,
+    )
+    if not verdict.approved:
+        return FinalRiskGateResult(
+            False,
+            order,
+            reason=f"risk:{verdict.code}",
+            code=verdict.code,
+            context=verdict.context,
+        )
+    return FinalRiskGateResult(True, order)

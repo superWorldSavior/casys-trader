@@ -1800,29 +1800,39 @@ def run_cycle(
             record_decision(blocked_entry)
             continue
 
-        order = Order(symbol=sym, side=decision.action, quantity=effective_quantity, rationale=decision.rationale)
-        cur_pos_value = (pos.quantity * prices[sym] * _rate(sym)) if pos else 0.0
-        allow_risk_reduction = decision.intent in {"REDUCE", "CLOSE"}
-        verdict = gate.check(
-            order,
-            prices[sym],
-            current_position_value=cur_pos_value,
-            gross_exposure=gross,
-            equity=snap.equity,
-            allow_risk_reduction=allow_risk_reduction,
-            fx_rate=_rate(sym),
+        final_risk_outcome = risk_admission.assess_final_risk_gate(
+            risk_admission.FinalRiskGateRequest(
+                symbol=sym,
+                action=decision.action,
+                quantity=effective_quantity,
+                rationale=decision.rationale,
+                intent=decision.intent,
+                price=prices[sym],
+                position_quantity=0.0 if pos is None else pos.quantity,
+                gross_exposure=gross,
+                equity=snap.equity,
+                fx_rate=_rate(sym),
+            ),
+            gate=gate,
         )
-
-        if not verdict.approved:
+        order = final_risk_outcome.order
+        if not final_risk_outcome.approved:
             _log_cycle_progress(
                 "[risk] %s rejected code=%s qty=%s price=%s",
                 sym,
-                verdict.code,
+                final_risk_outcome.code,
                 order.quantity,
                 round(prices[sym], 6),
             )
             apply_default_schedule_after_blocked()
-            record_decision({**entry, "executed": False, "reason": f"risk:{verdict.code}", "context": verdict.context})
+            record_decision(
+                {
+                    **entry,
+                    "executed": False,
+                    "reason": final_risk_outcome.reason,
+                    "context": final_risk_outcome.context,
+                }
+            )
             continue
 
         if queue_execute_enabled and execute_ledger is not None:

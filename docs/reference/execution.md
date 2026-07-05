@@ -5,7 +5,7 @@
 > **Rôle** : le chemin d'un ordre approuvé jusqu'au fill, et la vue portefeuille.
 
 Après la décision LLM, un ordre passe par :
-admission intent/exit → admission risque → [risk gate](risk-gate.md) final →
+admission intent/exit → admission risque + [risk gate](risk-gate.md) final →
 ordre d'exécution gross-fair → broker → portefeuille.
 
 ## Admission intent/exit — `application/order_admission` (helpers purs)
@@ -25,16 +25,20 @@ décision d'ordre :
 ## Admission risque — `application/risk_admission`
 
 `assess_risk_admission(request, gate=...)` regroupe l'admission risque des
-ouvertures sans prendre d'effet durable :
+ouvertures sans prendre d'effet durable. `assess_final_risk_gate(request,
+gate=...)` construit l'`Order` et applique le `RiskGate.check(...)` final :
 
 | Élément | Rôle |
 |---|---|
 | `RiskAdmissionRequest` | contexte runtime minimal : action/intent, quantité, prix, equity, position, stop, FX, confiance |
 | `RiskAdmissionGate` | `Protocol` local exposant `max_quantity_at_risk(...)`, `check_confidence(...)` et `limits.max_risk_per_trade_pct` |
 | `RiskAdmissionResult` | verdict, quantité possiblement dérivée, champs de décision à persister, raison/contexte de rejet |
+| `FinalRiskGateRequest` | contexte du gate final : ordre, prix, position, gross, equity, FX |
+| `FinalRiskGate` | `Protocol` local exposant `check(...)` |
+| `FinalRiskGateResult` | `Order` exécutable + verdict/reason/context du gate final |
 
 Le daemon conserve le logging, le scheduling, l'écriture `decisions.jsonl`, le
-broker et le `RiskGate.check(...)` final.
+broker et les effets sur les plans.
 
 ## Budget gross — `market/gross_priority`
 
