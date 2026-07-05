@@ -15,8 +15,6 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
-import pytest
-
 from trader.queue.shadow import ShadowQueueProbe
 
 
@@ -317,10 +315,8 @@ def test_report_contains_all_required_fields(tmp_path):
 
 
 # ── Note : placement fin-de-cycle (FIX 1) ───────────────────────────────────
-# Le branchement daemon.py est un test d'intégration système hors périmètre
-# unitaire (run_cycle nécessite data_source, broker, etc.). La vérification
-# s'effectue en lisant le code : le bloc shadow est positionné APRÈS
-# _LAST_GROSS_REJECTIONS, juste avant `return report`, soit en fin de
-# run_cycle, pas entre _batch_decide et l'exécution des ordres.
-# Test de non-régression : grep "CASYS_SHADOW_QUEUE_ENABLED" dans daemon.py
-# doit n'apparaître QU'À la fin du fichier (après _LAST_GROSS_REJECTIONS).
+# Le branchement daemon.py est couvert par
+# tests/test_daemon_learnings.py::test_run_cycle_transmet_les_flags_de_finalisation_cycle.
+# La sonde shadow reste déclenchée après les décisions via
+# runtime.cycle_finalization.finalize_cycle, pas entre _batch_decide et
+# l'exécution des ordres.

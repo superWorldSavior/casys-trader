@@ -43,6 +43,7 @@ Légende : ✅ couvert · 🟡 partiel / dispersé / potentiellement périmé ·
 | Batch LLM / planificateur | `application/planner_batch` | ✅ | archi §3.6 | D7 |
 | Contexte marché (snapshot) | `application/market_snapshot` | ✅ | archi §3.2-3.3 | — |
 | Enregistrement décision | `application/decision_recorder` | ✅ | archi §3.8, §8 | — |
+| Finalisation fin de cycle | `runtime/cycle_finalization` | ✅ | archi §1.1, §2 ; `reference/task-queue.md` | queue paper activée |
 | Gate de pertinence (coût) | `planning/relevance_gate` | ✅ | archi §3.4 | D7A |
 | **File de tâches durable** | `infrastructure/queue/*` (ledger, pools, worker), `application/{queue_dispatch,execute_queue_dispatch,execute_queue_plan}` | ✅ | **`reference/task-queue.md`** | queue paper activée |
 

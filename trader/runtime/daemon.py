@@ -80,7 +80,7 @@ from trader.planning.trade_plan import (
 from trader.support.metadata import code_version
 from trader.reporting.read_models import live_kpis
 from trader.reporting import attribution, decision_ledger, meta_performance
-from trader.runtime import cycle_scheduling, ledger_rotation
+from trader.runtime import cycle_finalization, cycle_scheduling, ledger_rotation
 from trader.runtime.ib_attach import IBAttachBackoff
 from trader.runtime.state_writer import RuntimeStateWriter
 from trader.planning import scheduler
@@ -1985,90 +1985,33 @@ def run_cycle(
         last_decision=report["decisions"][-1] if report["decisions"] else None,
     )
     _append_event("cycle_completed", decisions_done=len(report["decisions"]), model_calls_used=model_calls_used)
-    consolidation_result = consolidator.maybe_consolidate(
-        learnings_store,
-        consolidated_learnings_store,
-        threshold=learning_consolidation_threshold,
-        acpx_bin=consolidator_acpx_bin,
-        acpx_agent=consolidator_acpx_agent,
-        model=consolidator_model,
-        timeout_s=consolidator_timeout_s,
-        attribution=attribution_payload,
-        meta_performance=meta_performance_payload,
+    cycle_finalization.finalize_cycle(
+        state_dir=STATE_DIR,
+        now=now,
+        report=report,
+        decidable_symbols=list(decidable),
+        decided_symbols=list(decisions_by_symbol.keys()),
+        learning=cycle_finalization.LearningConsolidationRequest(
+            raw_store=learnings_store,
+            consolidated_store=consolidated_learnings_store,
+            threshold=learning_consolidation_threshold,
+            acpx_bin=consolidator_acpx_bin,
+            acpx_agent=consolidator_acpx_agent,
+            model=consolidator_model,
+            timeout_s=consolidator_timeout_s,
+            attribution=attribution_payload,
+            meta_performance=meta_performance_payload,
+            consolidate=consolidator.maybe_consolidate,
+        ),
+        gross_rejection_cache=_LAST_GROSS_REJECTIONS,
+        summarize_gross_rejections=summarize_gross_rejections,
+        collect_macro=macro_series.maybe_collect,
+        shadow_queue_enabled=os.getenv("CASYS_SHADOW_QUEUE_ENABLED", "0") == "1",
+        state_backend=os.getenv("CASYS_STATE_BACKEND", "json"),
+        write_current_report=_write_current_report,
+        append_event=_append_event,
+        logger=log,
     )
-    if consolidation_result.get("triggered"):
-        report["learning_consolidation"] = consolidation_result
-        _write_current_report(report)
-        _append_event("learning_consolidated", **consolidation_result)
-    # Collecte macro quotidienne best-effort (DBnomics, zéro clé API).
-    # Ne touche jamais au chemin de décision : avalée silencieusement si elle échoue.
-    try:
-        _macro_collect_result = macro_series.maybe_collect(STATE_DIR, now)
-        if _macro_collect_result.get("triggered"):
-            log.debug(
-                "macro_series: collected=%s skipped=%s errors=%s",
-                _macro_collect_result.get("collected", 0),
-                _macro_collect_result.get("skipped", 0),
-                _macro_collect_result.get("errors", 0),
-            )
-    except Exception:  # noqa: BLE001 — best-effort total, jamais d'impact cycle
-        pass
-    # Mémorise les rejets gross de CE cycle pour les réinjecter au prochain (None
-    # si aucun → efface un éventuel feedback périmé).
-    _LAST_GROSS_REJECTIONS[str(STATE_DIR)] = summarize_gross_rejections(report["decisions"])
-
-    # Shadow queue (CASYS_SHADOW_QUEUE_ENABLED=1) — placement FIN de cycle :
-    # ne retarde JAMAIS l'exécution des ordres (FIX 1).
-    # Fire-and-forget : le résultat est loggué, jamais utilisé pour décider.
-    # Source indépendante : decidable_symbols = symboles passés au LLM ;
-    # decided_symbols = décisions effectives (LLM + armés).
-    if os.getenv("CASYS_SHADOW_QUEUE_ENABLED", "0") == "1":
-        try:
-            from trader.infrastructure.queue.shadow import ShadowQueueProbe
-            _shadow_probe = ShadowQueueProbe(STATE_DIR / "shadow_queue.db")
-            _shadow_result = _shadow_probe.run(
-                cycle_ts=now.isoformat(),
-                decidable_symbols=list(decidable),
-                decided_symbols=list(decisions_by_symbol.keys()),
-                now_ms=int(now.timestamp() * 1000),
-            )
-            log.info(
-                "[shadow-queue] rapport cycle=%s identical=%s missing=%s decided_vs_decidable=%s",
-                now.isoformat(),
-                _shadow_result.get("identical"),
-                _shadow_result.get("missing") or "[]",
-                _shadow_result.get("decided_vs_decidable"),
-            )
-        except Exception as _shadow_exc:  # noqa: BLE001
-            log.warning("[shadow-queue] échec sonde: %s", _shadow_exc)
-
-    # State-compare (obs migration SQLite) — best-effort, FIN de cycle, jamais
-    # d'impact décision. Sous backend sqlite, le shadow JSON coexiste avec les
-    # tables : on mesure la dérive json↔sqlite à chaud (filet de la bascule).
-    if os.getenv("CASYS_STATE_BACKEND", "json").lower() == "sqlite":
-        try:
-            from trader.infrastructure.state_db.compare import compare_backends
-            _cmp = compare_backends(STATE_DIR)
-            _cmp_broker = _cmp.get("broker", {})
-            _cmp_sched = _cmp.get("scheduler", {})
-            log.info(
-                "[state-compare] cycle=%s identical=%s cash=%s positions=%d "
-                "plans=%d wakes=%d watches=%d stale=%d",
-                now.isoformat(),
-                _cmp.get("identical"),
-                (_cmp_broker.get("cash") or {}).get("identical"),
-                len(_cmp_broker.get("positions_diff") or []),
-                len(_cmp.get("trade_plans", {}).get("diff") or []),
-                len(_cmp_sched.get("wakes_diff") or []),
-                len(_cmp_sched.get("watches_diff") or []),
-                len(_cmp_sched.get("stale_diff") or []),
-            )
-            if not _cmp.get("identical"):
-                log.warning(
-                    "[state-compare] DIVERGENCE cycle=%s détail=%s", now.isoformat(), _cmp
-                )
-        except Exception as _cmp_exc:  # noqa: BLE001 — best-effort, jamais d'impact cycle
-            log.warning("[state-compare] échec: %s", _cmp_exc)
 
     return report
 

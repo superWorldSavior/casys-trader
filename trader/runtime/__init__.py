@@ -3,6 +3,7 @@
 __all__ = [
     "cli",
     "code_version",
+    "cycle_finalization",
     "daemon",
     "ib_attach",
     "ledger_rotation",

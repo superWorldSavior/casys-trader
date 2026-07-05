@@ -313,6 +313,47 @@ def test_run_cycle_declenche_le_consolidateur_en_fin_de_cycle(
     assert attribution_calls == [(state_dir, None, ())]
 
 
+def test_run_cycle_transmet_les_flags_de_finalisation_cycle(
+    monkeypatch,
+    tmp_path,
+    patch_batch,
+    make_data_source,
+) -> None:
+    _write_runtime_config(tmp_path)
+    state_dir = tmp_path / "state"
+    sched = Scheduler(state_dir / "scheduler.json")
+    now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
+    captured: list[dict] = []
+
+    def decide(**kwargs):
+        return Decision.hold(kwargs["symbol"], "attente")
+
+    def finalize_cycle(**kwargs):
+        captured.append(kwargs)
+
+    monkeypatch.setenv("CASYS_SHADOW_QUEUE_ENABLED", "1")
+    monkeypatch.setenv("CASYS_STATE_BACKEND", "sqlite")
+    monkeypatch.setattr(daemon, "ROOT", tmp_path)
+    monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+    monkeypatch.setattr(daemon.cycle_finalization, "finalize_cycle", finalize_cycle)
+    data_source = make_data_source(_bars)
+    patch_batch(decide)
+
+    daemon.run_cycle(dry_run=True, now=now, symbols_filter=["SPY"], sched=sched, data_source=data_source)
+
+    assert len(captured) == 1
+    call = captured[0]
+    assert call["state_dir"] == state_dir
+    assert call["shadow_queue_enabled"] is True
+    assert call["state_backend"] == "sqlite"
+    assert call["decidable_symbols"] == ["SPY"]
+    assert call["decided_symbols"] == ["SPY"]
+    assert call["gross_rejection_cache"] is daemon._LAST_GROSS_REJECTIONS
+    assert call["summarize_gross_rejections"] is daemon.summarize_gross_rejections
+    assert call["collect_macro"] is daemon.macro_series.maybe_collect
+    assert call["learning"].consolidate is daemon.consolidator.maybe_consolidate
+
+
 def test_run_cycle_injecte_guardrails_et_regime_families(
     monkeypatch,
     tmp_path,

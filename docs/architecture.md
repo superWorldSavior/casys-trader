@@ -14,7 +14,8 @@
 > `learnings-selection-readmodel`, `planned-exits-boundary`,
 > `decision-reason-domain`, `tool-usage-readmodel`,
 > `execute-queue-dispatch`, `execute-queue-plan-payload`,
-> `fill-outcome-accounting`, `fill-plan-effects`).
+> `fill-outcome-accounting`, `fill-plan-effects`,
+> `cycle-finalization`).
 
 ---
 
@@ -86,6 +87,7 @@ les utilisaient :
 | `trader/reporting/` | Ledger décision, audit ex-post, attribution, stats, tool usage, meta-performance, read models | analyse/rendu ex-post ; `reporting.decision_reason` et `reporting.tool_usage` gardent les façades de compatibilité/rendu |
 | `trader/interfaces/cli/` | Entry points CLI canoniques (`stats`, `attribution`, `tool_usage`, `tui`) | compat virtuelle : `python -m trader.commands.stats`, `python -m trader.stats`, etc. |
 | `trader/runtime/cycle_scheduling.py` | Adaptateur runtime wake/watch : délègue la politique à `application/cycle_schedule.py` et `application/watch_scanner.py`, puis émet events/logs et compat wrappers | évite que `daemon.py` réimporte directement la glue applicative |
+| `trader/runtime/cycle_finalization.py` | Adaptateur runtime de fin de cycle : consolidation learnings, collecte macro best-effort, cache feedback gross, probes `shadow_queue` et `state_compare` | garde les side effects observabilité/mémoire hors du coeur décisionnel ; contrats `Protocol` locaux pour les dépendances injectées |
 | `trader/runtime/` | Daemon, CLI, logging, PID file, IB attach, rotation ledger, writers d'état fichier | compat virtuelle : `python -m trader.daemon`, `python -m trader.cli` |
 | `trader/reporting/read_models/live_kpis.py` | Projection live des KPI depuis `state/` pour daemon/cockpit/TUI | `reporting.stats` rend les KPI ; `interfaces.cli.stats` possède la CLI |
 | `trader/reporting/read_models/runtime_state.py` | Lecture tolérante des fichiers `state/` pour TUI/cockpit | compat virtuelle : `trader.read_models.*` |
@@ -210,6 +212,11 @@ run_cycle()                                     [trader/runtime/daemon.py]
          ├─ DecisionRecorder.record() → decisions.jsonl + current_report/status
          └─ _apply_decision_schedule() → Scheduler (next_wake, indicator_watch)
 ```
+
+Fin de cycle, après les décisions : `cycle_finalization.finalize_cycle()`
+consolide les learnings si le seuil est atteint, lance la collecte macro
+best-effort, mémorise les rejets gross pour le cycle suivant, puis exécute les
+probes `shadow_queue`/`state_compare` sans jamais influencer la décision courante.
 
 ---
 
