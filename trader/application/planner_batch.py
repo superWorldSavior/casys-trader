@@ -11,6 +11,7 @@ from typing import Callable
 import trader.agent.tools as agent_tools
 from trader.agent import client as codex_client
 from trader.agent.context import resolve_indicator_requests
+from trader.application.tool_round import merge_domain_tools, run_one_round
 from trader.market import market_data as market
 from trader.planning.indicator_watch import summarize_watch
 from trader.planning import scheduler
@@ -92,64 +93,8 @@ def _run_tool_round(
         indicator_resolver=indicator_resolver,
         learnings_recall_provider=learnings_recall_provider,
     )
-    results, traces = agent_tools.execute_tool_round(
-        request.calls,
-        context=context,
-        limits=agent_tools.ToolRoundLimits(),
-        allowed_tools=frozenset(agent_tools.TOOL_REGISTRY),
-    )
-    results_prompt = agent_tools.results_prompt_payload(results)
-    runtime = agent_tools.round_runtime_payload(traces, rounds=1)
-
-    # Enrichir le detail des appels recall_learnings avec les note_ids retournés.
-    # Ces ids sont stockés dans le trace durable (decisions.jsonl runtime.tool_calls)
-    # et utilisés par record_decision pour appeler store.record_recall (design §4.4).
-    #
-    # Association PAR POSITION : results et tool_calls sont ordonnés 1:1,
-    # sauf une éventuelle trace sentinel "[sentinel]" en tête de tc_list
-    # (OUTCOME_TRUNCATED, id="[sentinel]") sans résultat correspondant.
-    tc_list = runtime["tool_calls"]
-    sentinel_offset = 1 if (tc_list and tc_list[0].get("id") == "[sentinel]") else 0
-    for pos, tc in enumerate(tc_list[sentinel_offset:]):
-        if tc["tool"] == "recall_learnings" and tc["outcome"] == agent_tools.OUTCOME_OK:
-            r = results[pos] if pos < len(results) else None
-            if r and r.ok and isinstance(r.result, dict):
-                rows = r.result.get("rows", [])
-                note_ids = [row["id"] for row in rows if isinstance(row, dict) and isinstance(row.get("id"), int)]
-                tc["detail"] = {**tc["detail"], "note_ids": note_ids}
-
-    return results_prompt, runtime
-
-
-def _merge_domain_tools(
-    *,
-    decision_domain_tools: dict | None,
-    runtime_payload: dict,
-    symbol_tool_traces: list[dict],
-) -> dict:
-    final_tool_calls = []
-    final_rounds = 0
-    final_normalizations = None
-    if isinstance(decision_domain_tools, dict):
-        raw_final_tool_calls = decision_domain_tools.get("tool_calls")
-        if isinstance(raw_final_tool_calls, list):
-            final_tool_calls = list(raw_final_tool_calls)
-        final_normalizations = decision_domain_tools.get("normalizations")
-        try:
-            final_rounds = int(decision_domain_tools.get("tool_rounds") or 0)
-        except (TypeError, ValueError):
-            final_rounds = 0
-    try:
-        runtime_rounds = int(runtime_payload.get("tool_rounds") or 0)
-    except (TypeError, ValueError):
-        runtime_rounds = 0
-    merged = {
-        "tool_rounds": max(runtime_rounds, final_rounds),
-        "tool_calls": [*symbol_tool_traces, *final_tool_calls],
-    }
-    if final_normalizations is not None:
-        merged["normalizations"] = final_normalizations
-    return merged
+    # Exécution + enrichissement note_ids factorisés (partagé avec le grain-1 queue).
+    return run_one_round(request, context=context)
 
 
 def build_symbol_facts(
@@ -384,7 +329,7 @@ def batch_decide(
                     sym_traces = agent_tools.calls_for_symbol(trace_calls, sym)
                     decision = replace(
                         decision,
-                        domain_tools=_merge_domain_tools(
+                        domain_tools=merge_domain_tools(
                             decision_domain_tools=decision.domain_tools,
                             runtime_payload=runtime_payload,
                             symbol_tool_traces=sym_traces,
