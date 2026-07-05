@@ -28,6 +28,8 @@ def recent_decisions_by_symbol(
     AVANT le tronquage, sinon ils mangeraient le budget des vraies décisions. Les
     symboles sans décision authentique sont omis du résultat.
     """
+    if limit <= 0:
+        return {}  # review P2 : rows[-0:] == tout — un limit nul/négatif = rien demandé.
     wanted = set(symbols)
     grouped: dict[str, list[dict]] = {sym: [] for sym in symbols}
     # read_all rend l'ordre chronologique croissant (append-only).
@@ -36,7 +38,7 @@ def recent_decisions_by_symbol(
         if sym in wanted and not _is_synthetic_hold(row):
             grouped[sym].append(row)
     return {
-        sym: [_compact(r) for r in reversed(rows[-max(0, limit):])]
+        sym: [_compact(r) for r in reversed(rows[-limit:])]
         for sym, rows in grouped.items()
         if rows
     }

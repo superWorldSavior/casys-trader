@@ -73,3 +73,10 @@ def test_ne_fuit_pas_les_blobs_et_tronque_le_rationale():
 
     assert "decision" not in r and "market_snapshot" not in r
     assert len(r["rationale"]) <= 201 and r["rationale"].endswith("…")
+
+
+def test_limit_zero_ou_negatif_ne_retourne_rien():
+    # Review P2 : rows[-0:] == tout ; un limit <= 0 doit rendre {} (rien demandé).
+    store = _FakeStore([_row("AAPL", "BUY"), _row("AAPL", "SELL")])
+    assert recent_decisions_by_symbol(store, symbols=["AAPL"], limit=0) == {}
+    assert recent_decisions_by_symbol(store, symbols=["AAPL"], limit=-1) == {}
