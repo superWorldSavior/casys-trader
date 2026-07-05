@@ -21,12 +21,13 @@ AX §5 (Fast Fail Early) : les tâches stale des cycles précédents sont purgé
 avant l'enfilage pour libérer l'index uniq_active_kind_partition.
 AX §6 (Deterministic Outputs) : now_fn injectable pour déterminisme des tests.
 
-COMPROMIS MODE QUEUE — DÉCISION DÉGRADÉE (Lot A) :
-  Le handler decide_handler appelle decide_batch avec allow_context_request=False
-  et allow_tool_calls=False, ce qui désactive : REQUEST_CONTEXT, tool round,
-  recall_learnings.  La parité complète avec le mode batch (context_request,
-  tools, recall) est une itération future hors périmètre Lot A.
-  Source : decide_one.py, decide_handler.make_decide_handler.
+TOUR D'OUTILS (T4, issue #2) : quand agent_tools est actif ET que les services
+boot sont câblés (tools_active), le handler orchestre le tour d'outils grain-1
+(get_indicator_context / get_active_plans / recall_learnings / get_freshness) —
+fin du mode dégradé Lot A. Le fusible d'admission est halvé (pire cas 2 appels
+LLM par décision) et model_calls_used = somme des appels réels remontés par les
+handlers dans l'enveloppe résultat.
+Source : decide_one.py (ToolRoundServices), decide_handler.make_decide_handler.
 """
 
 from __future__ import annotations
@@ -60,6 +61,7 @@ def dispatch_decide_via_queue(
     now_fn: Callable[[], float],
     max_model_calls: int = 999,
     symbols_universe: list[str] | None = None,
+    tools_active: bool = False,
 ) -> tuple[dict[str, Decision], int, set[str]]:
     """Enfile les décisions grain-symbole et collecte les résultats via polling.
 
@@ -131,9 +133,16 @@ def dispatch_decide_via_queue(
     # reviendront décidables au tick suivant (pas de HOLD synthétique).
     # Tour d'outils (T4) : pire cas 2 appels/décision (round + final) → le
     # fusible admet moitié moins de symboles, comme le batch (planner_batch
-    # `budget // 2`). Plancher 1 : en queue, 0 admis = report infini (≠ batch
-    # qui rend un HOLD budget-exhausted).
-    effective_cap = max(1, max_model_calls // 2) if agent_tools_enabled else max_model_calls
+    # `budget // 2`). Halvé UNIQUEMENT si le round est réellement câblé
+    # (tools_active = agent_tools ET services boot présents — review T4 E4a).
+    # max_model_calls < 1 = fusible fermé : rien n'est admis (sémantique
+    # d'origine préservée) ; sinon plancher 1 en mode tools (0 = report infini).
+    if max_model_calls < 1:
+        effective_cap = 0
+    elif tools_active:
+        effective_cap = max(1, max_model_calls // 2)
+    else:
+        effective_cap = max_model_calls
     admitted = decidable[:effective_cap]
     deferred_by_cap = set(decidable[effective_cap:])
     if deferred_by_cap:
@@ -226,7 +235,9 @@ def dispatch_decide_via_queue(
                         # rétro-compat : ancien format plat = asdict(Decision) direct.
                         if isinstance(data, dict) and "decision" in data:
                             decision_data = data["decision"]
-                            calls = int(data.get("model_calls") or 1)
+                            # Clamp >=1 (E4c) : la valeur vient de la DB, ne pas
+                            # laisser un 0/négatif fausser le fusible.
+                            calls = max(1, int(data.get("model_calls") or 1))
                         else:
                             decision_data = data
                             calls = 1
@@ -279,9 +290,10 @@ def dispatch_decide_via_queue(
     # remontés par le handler dans l'enveloppe — plus len(decisions).
     model_calls_used = sum(model_calls_by_sym.values())
     log.info(
-        "[queue_dispatch] cycle=%s symbols=%d decided=%d undecided=%d (deferred=%d skipped=%d)",
+        "[queue_dispatch] cycle=%s symbols=%d decided=%d calls=%d undecided=%d (deferred=%d skipped=%d)",
         cycle_id,
         len(decidable),
+        len(decisions_by_symbol),
         model_calls_used,
         len(undecided_symbols),
         len(deferred_by_cap),

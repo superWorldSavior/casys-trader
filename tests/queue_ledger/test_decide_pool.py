@@ -438,3 +438,76 @@ def test_idle_worker_ne_depend_pas_du_time_sleep_global(monkeypatch, tmp_path):
         assert pool._threads and all(t.is_alive() for t in pool._threads)
     finally:
         pool.stop(timeout_s=1.0)
+
+
+# ---------------------------------------------------------------------------
+# 10 : intégration bout-en-bout T4 — pool réel + handler réel + tour d'outils
+# ---------------------------------------------------------------------------
+
+
+def test_pool_tool_round_bout_en_bout(tmp_path):
+    """Pool réel + handler réel + tool_services : round d'outils exécuté dans le
+    worker, décision finale collectée avec traces + model_calls=2 (review T4 E7)."""
+    from trader.agent.protocol.types import BatchToolCallRequest
+    from trader.application.decide_one import ToolRoundServices
+
+    class _ToolRoundClient:
+        """1er appel → tournée d'outils ; 2e appel → décision finale."""
+
+        def __init__(self):
+            self.n = 0
+
+        def decide_batch(self, *, symbols, **kwargs):
+            self.n += 1
+            if self.n == 1:
+                return BatchToolCallRequest(
+                    calls=[{"id": "c1", "tool": "get_active_plans", "args": {"symbol": SYMBOL}}]
+                )
+            return {sym: _ok_decision(sym, "HOLD") for sym in symbols}
+
+    services = ToolRoundServices(
+        get_bars=lambda symbol, lookback="5d", interval="1h": [],
+        learnings_recall_provider=None,
+        max_context_requests_per_symbol=2,
+        max_indicators_per_request=4,
+    )
+    led = TaskLedger(tmp_path / "ledger.db")
+    now_ms = int(time.time() * 1000)
+    _enqueue_decide(
+        led, SYMBOL, now_ms,
+        payload_override={
+            "agent_tools_enabled": True,
+            "per_symbol_facts": {"active_watches": [{"id": "w1", "kind": "stop"}]},
+            "symbols_universe": [SYMBOL],
+        },
+    )
+    pool = DecidePool(
+        ledger=led,
+        pools=ResourcePools({"acpx": 1}),
+        handlers={"decide": make_decide_handler(codex_client=_ToolRoundClient(), tool_services=services)},
+        num_workers=1,
+        now_fn=time.time,
+    )
+    pool.start()
+    try:
+        deadline = time.time() + 5.0
+        row = None
+        while time.time() < deadline:
+            candidate = led._conn.execute(
+                "SELECT status, result FROM tasks WHERE kind='decide'"
+            ).fetchone()
+            if candidate is not None and candidate["status"] == "done":
+                row = candidate
+                break
+            time.sleep(0.02)
+    finally:
+        pool.stop(timeout_s=2.0)
+
+    assert row is not None, "tâche non 'done' dans les 5 s"
+    envelope = json.loads(row["result"])
+    assert envelope["model_calls"] == 2                     # round + tour final
+    decision = envelope["decision"]
+    assert decision["action"] == "HOLD"
+    assert decision["domain_tools"]["tool_rounds"] == 1     # traces mergées
+    tools_called = [tc["tool"] for tc in decision["domain_tools"]["tool_calls"]]
+    assert "get_active_plans" in tools_called

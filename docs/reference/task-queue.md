@@ -159,8 +159,13 @@ Répartition runtime :
   **skippés** (pas de HOLD synthétique) → fin du HOLD-par-saturation. Le nb de
   workers = `CASYS_DECISION_BATCH_PARALLELISM` (même flag, sens différent du mode
   batch). `CASYS_DECISION_BATCH_SIZE` est **sans objet** en queue (grain-symbole) —
-  warning au boot. ⚠️ **Mode dégradé connu (Lot A)** : le handler décide sans
-  `context_request` / tool round / `recall_learnings` (parité future, hors périmètre).
+  warning au boot. **Tour d'outils (T4, issue #2)** : avec `CASYS_AGENT_TOOLS` actif,
+  le handler orchestre round(s) d'outils + tour final (`get_indicator_context`,
+  `get_active_plans`, `recall_learnings`, `get_freshness` — 8 calls/symbole/round) ;
+  `CASYS_QUEUE_TOOL_MAX_ROUNDS` (défaut 1) borne les allers-retours LLM ; le fusible
+  d'admission est halvé (pire cas 2 appels/décision) et `model_calls_used` = somme
+  des appels réels remontés en enveloppe. REQUEST_CONTEXT legacy reste désactivé
+  (le tool round moderne est la voie de recherche de contexte). Fin du mode dégradé Lot A.
 
 ### Étage `execute` — `CASYS_QUEUE_EXECUTE_ENABLED` (exige `sqlite`)
 

@@ -1,4 +1,5 @@
-"""Handler de décision grain-symbole — 1 symbole = 1 appel LLM = 1 Decision.
+"""Handler de décision grain-symbole — 1 symbole = 1 Decision (1 appel LLM,
+ou round(s) d'outils + tour final quand le tour d'outils est actif).
 
 Contrairement à batch_decide (qui absorbe les erreurs LLM en HOLD synthétique),
 decide_one EXPOSE les erreurs via RetryableError pour que le worker les gère

@@ -926,6 +926,7 @@ def run_cycle(
     commission_model: CommissionModel | None = None,
     agent_tools_enabled: bool = False,
     queue_decide_enabled: bool = False,
+    decide_tools_active: bool = False,  # tool round réellement câblé (services boot présents)
     task_ledger=None,  # TaskLedger | None (task_ledger.db — dédié decide)
     queue_execute_enabled: bool = False,
     execute_ledger=None,  # TaskLedger | None (casys.db — partagé broker/plan/ledger)
@@ -1393,6 +1394,9 @@ def run_cycle(
             # Univers d'analyse du cycle → resolver d'indicateurs du tour d'outils
             # (filtre dur + paires cross-asset, spec §5 W5).
             symbols_universe=analysis_symbols,
+            # Fusible halvé UNIQUEMENT si le tour d'outils est réellement câblé
+            # (review T4 E4a : agent_tools sans services = mode dégradé 1 appel).
+            tools_active=agent_tools_enabled and decide_tools_active,
         )
     else:
         # Mode batch classique — comportement STRICTEMENT inchangé (flag off).
@@ -1428,7 +1432,8 @@ def run_cycle(
             _LAST_LLM_AT[(str(STATE_DIR), sym)] = now
     if armed_decisions:
         decisions_by_symbol = {**decisions_by_symbol, **armed_decisions}
-    _log_cycle_progress("[batch] decided=%d model_calls=%d", len(decisions_by_symbol), model_calls_used)
+    # "[decide]" : commun batch/queue (E7 — le libellé [batch] mentait en mode queue).
+    _log_cycle_progress("[decide] decided=%d model_calls=%d", len(decisions_by_symbol), model_calls_used)
 
     # Admission gross équitable sans clamp (spec 2026-06-30) : on réordonne
     # l'exécution — réducteurs d'abord (ils libèrent de la marge), puis ouvertures
@@ -2342,6 +2347,7 @@ def main(
                     commission_model=commission_model,
                     agent_tools_enabled=args.agent_tools,
                     queue_decide_enabled=_queue_decide_enabled,
+                    decide_tools_active=_decide_tool_services is not None,
                     task_ledger=_task_ledger,
                     queue_execute_enabled=_queue_execute_enabled,
                     execute_ledger=_execute_ledger,

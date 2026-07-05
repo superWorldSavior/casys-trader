@@ -251,10 +251,28 @@ borner la concurrence des fetchs, **agnostique à la source** (yahoo remplaçabl
 
 ## 8. Budget & fusibles
 
-- Tool round = **jusqu'à 2 appels acpx** par décision (round + final), comme le batch.
-- `max_model_calls_per_cycle` et le budget de collecte (`CASYS_DECISION_TIMEOUT_S`,
-  `queue_dispatch.py:186`) doivent tenir compte du doublement. Le fusible reste **borné**.
-- `ToolRoundLimits` (24/3) inchangé → pas d'explosion d'appels d'outils.
+- Tool round = **jusqu'à 2 appels acpx** par décision (round + final) avec `max_rounds=1`
+  (défaut) ; `CASYS_QUEUE_TOOL_MAX_ROUNDS` borne les allers-retours.
+- Fusible d'admission **halvé uniquement si le round est réellement câblé**
+  (`tools_active` = agent_tools ET services boot — review T4 E4a) ; `max_model_calls<1`
+  = fusible fermé (0 admis). `model_calls_used` = somme des appels réels remontés en
+  enveloppe (clampés ≥1).
+- Bornes d'outils **grain-1 : 24 calls/round, 8/symbole** (vs 24/3 calibré batch chunk) —
+  les outils s'exécutent localement, ce relèvement ne coûte aucun appel acpx.
+- Limitation notée (E4b) : les tâches dead/budget-expired ne remontent pas leur coût
+  réel (appels déjà consommés invisibles du fusible) — à mesurer en observation.
+
+## 8bis. État d'implémentation (2026-07-05)
+
+**LIVRÉ sur `feat/queue-decide-tool-round`** — T1 (primitives, mergé main) ; T2
+(data_source thread-safe I/O-hors-verrou + indirection + `ThrottledDataSource`) ; T3
+(`DataSourceHandle` + synchro unique, throttle branché `CASYS_YFINANCE_FETCH_CONCURRENCY`,
+recall `now_fn`) ; T4 (câblage bout-en-bout : services boot → handler → `decide_one`
+outillé, enveloppe `model_calls`, univers payload, fusible corrigé). 4 reviews Codex
+exhaustives intégrées (T1/T2/T3/T4). Timeout fetch curl_cffi = issue #9 ; sessions
+éphémères multi-tour profond = issue #10 ; risk/recent_decisions = issue #4.
+⚠️ Déploiement : redémarrer le daemon après merge (code_version) sinon l'ancien
+mode dégradé continue de tourner.
 
 ## 9. Risques & points ouverts
 

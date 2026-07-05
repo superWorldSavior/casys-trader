@@ -689,3 +689,64 @@ def test_flag_off_no_ledger_in_signature():
     assert sig.parameters["task_ledger"].default is None, (
         "task_ledger doit défaut à None"
     )
+
+
+# ---------------------------------------------------------------------------
+# Fusible × tour d'outils (review T4 E4a) — halvé seulement si tools_active
+# ---------------------------------------------------------------------------
+
+
+def _dispatch_enqueue_only(tmp_path, symbols, **over):
+    """Dispatch sans pool (budget immédiatement expiré) : ne teste que l'enfilage."""
+    led = TaskLedger(tmp_path / "q.db")
+    start = 1_000_000.0
+    ticks = [0]
+
+    def jumping_now():
+        ticks[0] += 1
+        return start if ticks[0] <= 2 else start + 9999.0
+
+    kwargs = dict(
+        ledger=led,
+        decidable=symbols,
+        mandate="m",
+        memory="m",
+        shared_context={},
+        symbol_facts_by_sym={sym: {} for sym in symbols},
+        decision_timeout_s=60,
+        agent_tools_enabled=False,
+        cycle_id="cycle-tools-cap",
+        budget_s=30.0,
+        now_fn=jumping_now,
+    )
+    kwargs.update(over)
+    dispatch_decide_via_queue(**kwargs)
+    return led
+
+
+def test_fusible_halve_si_tools_active(tmp_path):
+    # 5 décidables, cap=4, tools actifs → pire cas 2 appels/décision → 2 admis.
+    led = _dispatch_enqueue_only(
+        tmp_path, ["S1", "S2", "S3", "S4", "S5"],
+        agent_tools_enabled=True, tools_active=True, max_model_calls=4,
+    )
+    assert led.count_by_status("pending", kind="decide") == 2
+
+
+def test_fusible_non_halve_si_tools_sans_services(tmp_path):
+    # E4a : agent_tools actif MAIS services absents (tools_active=False) → mode
+    # dégradé 1 appel → le cap plein s'applique (pas de budget gaspillé).
+    led = _dispatch_enqueue_only(
+        tmp_path, ["S1", "S2", "S3", "S4", "S5"],
+        agent_tools_enabled=True, tools_active=False, max_model_calls=4,
+    )
+    assert led.count_by_status("pending", kind="decide") == 4
+
+
+def test_fusible_zero_ferme_tout(tmp_path):
+    # max_model_calls=0 = fusible fermé, même avec tools (pas de plancher 1).
+    led = _dispatch_enqueue_only(
+        tmp_path, ["S1", "S2"],
+        agent_tools_enabled=True, tools_active=True, max_model_calls=0,
+    )
+    assert led.count_by_status("pending", kind="decide") == 0
