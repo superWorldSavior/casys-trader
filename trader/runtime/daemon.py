@@ -1339,6 +1339,7 @@ def _execute_one_cycle_decision(
                 ctx.starting_equity,
                 fx_rate_of=ctx.rate_for_symbol,
             )
+            state.snap = latest
             final_position = ctx.broker.positions().get(sym)
             fill_accounting = fill_outcome.build_fill_accounting(
                 fill=fill,
@@ -1863,6 +1864,7 @@ def run_cycle(
     decisions_by_symbol: dict[str, codex_client.Decision] = {}
     streamed_decision_symbols: set[str] = set()
     buffered_opening_symbols: set[str] = set()
+    deferred_opening_symbols: set[str] = set()
 
     execution_state = DecisionExecutionState(snap=snap, gross=gross)
     execution_ctx = DecisionExecutionContext(
@@ -1957,8 +1959,6 @@ def run_cycle(
                 broker=broker,
             )
             decisions_by_symbol[sym] = routed_decision
-            if _counts_as_llm_review(routed_decision):
-                _LAST_LLM_AT[(str(STATE_DIR), sym)] = now
             if routed_decision.intent in _OPENING_INTENTS:
                 buffered_opening_symbols.add(sym)
                 continue
@@ -2000,12 +2000,6 @@ def run_cycle(
             agent_tools_enabled=agent_tools_enabled,
             learnings_recall_provider=_recall_provider,
         )
-    # revue effective seulement si le modèle a réellement statué (review Codex :
-    # un échec/budget à 0 ne doit pas compter comme revue périodique)
-    for sym in decidable:
-        decision = decisions_by_symbol.get(sym)
-        if decision is not None and _counts_as_llm_review(decision):
-            _LAST_LLM_AT[(str(STATE_DIR), sym)] = now
     if armed_decisions:
         decisions_by_symbol = {**decisions_by_symbol, **armed_decisions}
     # "[decide]" : commun batch/queue (E7 — le libellé [batch] mentait en mode queue).
@@ -2091,6 +2085,7 @@ def run_cycle(
         decision = decisions_by_symbol.get(sym)
         if execution_state.opening_batch_timed_out and decision is not None and decision.intent in _OPENING_INTENTS:
             undecided_symbols.add(sym)
+            deferred_opening_symbols.add(sym)
 
         # FIX 2 : les symboles non décidés ce cycle (skippés dead/budget côté
         # decide queue, ou ouvertures retenues après timeout d'ouverture côté
@@ -2116,6 +2111,17 @@ def run_cycle(
         )
         snap = execution_state.snap
         gross = execution_state.gross
+
+    # Revue effective seulement si le modèle a réellement statué ET si la
+    # décision n'a pas été reportée par le stop de batch d'ouvertures. Les
+    # ouvertures différées doivent rester périodic_review au cycle suivant, pas
+    # quiet_gate pendant 4h.
+    for sym in decidable:
+        if sym in deferred_opening_symbols:
+            continue
+        decision = decisions_by_symbol.get(sym)
+        if decision is not None and _counts_as_llm_review(decision):
+            _LAST_LLM_AT[(str(STATE_DIR), sym)] = now
 
     report["model_calls_used"] = model_calls_used
     refresh_report_portfolio()

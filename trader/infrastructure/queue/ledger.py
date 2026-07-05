@@ -255,6 +255,27 @@ class TaskLedger:
             log.warning("[queue.ledger] dead id=%s error=%s", task_id, error)
             return "dead"
 
+    def abandon(self, *, task_id: int, now_ms: int, error: str) -> bool:
+        """Abandonne une tâche active que le daemon ne doit plus laisser exécuter.
+
+        Utilisé par execute_queue_dispatch après timeout: une tâche encore
+        ``pending`` ou ``running`` passe en ``dead`` et perd son claim. Si un
+        worker arrive ensuite au fence pré-submit, ``status != 'running'`` le
+        fait échouer avant toute écriture broker. Les tâches déjà terminales ne
+        sont pas modifiées.
+        """
+        with self._db.transaction() as cur:
+            n = cur.execute(
+                """UPDATE tasks
+                   SET status='dead', error=?, updated_at=?,
+                       claim_token=NULL, claimed_by=NULL, lease_expires_at=NULL
+                   WHERE id=? AND status IN ('pending','running')""",
+                (error, now_ms, task_id),
+            ).rowcount
+            if n:
+                log.warning("[queue.ledger] abandon id=%s error=%s", task_id, error)
+            return n == 1
+
     def heartbeat(self, *, task_id, token, now_ms, lease_ms):
         """Prolonge le bail d'une tâche en cours d'exécution.
 

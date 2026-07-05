@@ -20,10 +20,12 @@ from pathlib import Path
 import pytest
 
 from trader.application.execute_order_handler import make_execute_order_handler
+from trader.application.execute_queue_dispatch import dispatch_execute_order_via_queue
 from trader.planning.trade_plan import TradePlan
 from trader.queue.decide_pool import DecidePool
 from trader.queue.ledger import TaskLedger
 from trader.queue.pools import ResourcePools
+from trader.queue.worker import Worker
 from trader.state_db.broker_store import SqliteBroker
 from trader.state_db.connection import StateDb
 from trader.state_db.migrations import import_broker_from_json, import_trade_plans_from_json
@@ -449,6 +451,49 @@ class TestFailClosed:
             "fill doit être None pour déclencher le guard queue_execute_no_fill "
             "(task done sans result → pas de confirmation d'exécution)"
         )
+
+    def test_timeout_abandoned_task_is_not_submitted_later_by_worker(self, tmp_path: Path) -> None:
+        """Timeout daemon → tâche abandonnée ; worker tardif ne soumet rien au broker."""
+        db, broker, plan_store, ledger = _make_stack(tmp_path)
+        handler = make_execute_order_handler(db=db, broker=broker, plan_store=plan_store, ledger=ledger)
+        worker = Worker(
+            ledger,
+            ResourcePools({"portfolio": 1}),
+            {"execute_order": handler},
+            worker_id="late-worker",
+        )
+        cash_before = broker.cash()
+        clock_values = iter([10.0, 10.0, 10.2])
+
+        outcome = dispatch_execute_order_via_queue(
+            ledger=ledger,
+            symbol="AAPL",
+            side="BUY",
+            quantity=5.0,
+            rationale="late submit fence",
+            price=100.0,
+            ts="2026-07-05T08:00:00+00:00",
+            fx_rate=1.0,
+            dry_run=False,
+            plan_to_upsert=None,
+            symbol_to_close=None,
+            cycle_id="2026-07-05T08:00:00+00:00",
+            intent="OPEN_LONG",
+            budget_s=0.1,
+            now_fn=lambda: next(clock_values, 10.2),
+            sleep_fn=lambda _seconds: None,
+        )
+
+        assert outcome.terminal == "timeout"
+        assert outcome.abandoned is True
+        assert outcome.late_execution_risk is False
+        assert worker.run_once(now_ms=10_300, token="late-token") is False
+        assert broker.cash() == pytest.approx(cash_before)
+        assert broker.positions() == {}
+        task = ledger.get(outcome.task_id)
+        assert task is not None
+        assert task["status"] == "dead"
+        assert task["error"] == "queue_execute_timeout"
 
 
 # ---------------------------------------------------------------------------

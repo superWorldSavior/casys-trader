@@ -12,6 +12,7 @@ class _FakeLedger:
         self.enqueue_result = enqueue_result
         self.task_results = list(task_results or [])
         self.enqueued: list[dict] = []
+        self.abandoned: list[dict] = []
 
     def enqueue(self, **kwargs):
         self.enqueued.append(kwargs)
@@ -21,6 +22,10 @@ class _FakeLedger:
         if self.task_results:
             return self.task_results.pop(0)
         return {"id": task_id, "status": "pending", "result": None}
+
+    def abandon(self, **kwargs):
+        self.abandoned.append(kwargs)
+        return True
 
 
 def _dispatch(ledger: _FakeLedger, **overrides):
@@ -94,8 +99,12 @@ def test_execute_queue_dispatch_timeout_maps_fail_closed_reason() -> None:
 
     assert outcome.terminal == "timeout"
     assert outcome.reason == "queue_execute_timeout"
-    assert outcome.late_execution_risk is True
+    assert outcome.late_execution_risk is False
     assert outcome.fill is None
+    assert outcome.abandoned is True
+    assert ledger.abandoned == [
+        {"task_id": 7, "now_ms": 10200, "error": "queue_execute_timeout"}
+    ]
 
 
 def test_execute_queue_dispatch_done_without_fill_is_fail_closed_for_live_order() -> None:

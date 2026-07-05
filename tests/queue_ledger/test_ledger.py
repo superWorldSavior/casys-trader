@@ -155,6 +155,41 @@ def test_fail_retryable_backoff_then_dead(tmp_path):
     assert status2 == "dead"                    # plus de tentative disponible
 
 
+def test_abandon_marks_active_task_dead_and_clears_claim(tmp_path):
+    led = TaskLedger(tmp_path / "q.db")
+    tid = led.enqueue(kind="execute_order", priority=0, scheduled_at_ms=0, now_ms=0,
+                      dedup_key="exec-1", partition_key="portfolio", resource="portfolio")
+    assert tid is not None
+    task = led.claim(worker_id="w", token="tok", now_ms=1, lease_ms=1000,
+                     free_resources=["portfolio"])
+    assert task is not None
+
+    assert led.abandon(task_id=task["id"], now_ms=2, error="queue_execute_timeout") is True
+
+    row = led.get(task["id"])
+    assert row["status"] == "dead"
+    assert row["error"] == "queue_execute_timeout"
+    assert row["claim_token"] is None
+    assert row["claimed_by"] is None
+    assert row["lease_expires_at"] is None
+
+
+def test_abandon_does_not_touch_done_task(tmp_path):
+    led = TaskLedger(tmp_path / "q.db")
+    tid = led.enqueue(kind="execute_order", priority=0, scheduled_at_ms=0, now_ms=0,
+                      dedup_key="exec-done", partition_key="portfolio", resource="portfolio")
+    assert tid is not None
+    task = led.claim(worker_id="w", token="tok", now_ms=1, lease_ms=1000,
+                     free_resources=["portfolio"])
+    assert task is not None
+    assert led.complete(task_id=task["id"], token="tok", now_ms=2) is True
+
+    assert led.abandon(task_id=task["id"], now_ms=3, error="queue_execute_timeout") is False
+
+    row = led.get(task["id"])
+    assert row["status"] == "done"
+
+
 # ---------------------------------------------------------------------------
 # Task 7 — heartbeat + recover_on_boot
 # ---------------------------------------------------------------------------

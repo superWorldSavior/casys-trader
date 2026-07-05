@@ -31,6 +31,7 @@ class ExecuteQueueOutcome:
     reason: str | None = None
     raw_result: str | None = None
     late_execution_risk: bool = False
+    abandoned: bool = False
 
 
 def dispatch_execute_order_via_queue(
@@ -129,15 +130,41 @@ def dispatch_execute_order_via_queue(
         log.warning("[queue_execute] budget épuisé sym=%s budget_s=%s", symbol, budget_s)
 
     reason = _fail_closed_reason(terminal=terminal, fill=fill, dry_run=dry_run)
-    late_execution_risk = terminal == "timeout"
-    if late_execution_risk:
-        log.warning(
-            "[queue_execute] FAIL-CLOSED sym=%s — budget expiré sans état terminal "
-            "(tâche id=%s toujours active, ordre peut encore s'exécuter plus tard — "
-            "risque résiduel d'exécution tardive non géré dans ce cycle)",
-            symbol,
-            task_id,
-        )
+    abandoned = False
+    if terminal == "timeout":
+        abandon = getattr(ledger, "abandon", None)
+        if callable(abandon):
+            try:
+                abandoned = bool(
+                    abandon(
+                        task_id=task_id,
+                        now_ms=int(now_fn() * 1000),
+                        error=reason or "queue_execute_timeout",
+                    )
+                )
+            except Exception as exc:  # noqa: BLE001 — fail-closed, mais signaler le risque résiduel
+                log.error(
+                    "[queue_execute] abandon échoué sym=%s id=%s: %s",
+                    symbol,
+                    task_id,
+                    exc,
+                )
+        if abandoned:
+            log.warning(
+                "[queue_execute] FAIL-CLOSED sym=%s — budget expiré, tâche id=%s abandonnée "
+                "avant soumission tardive",
+                symbol,
+                task_id,
+            )
+        else:
+            log.warning(
+                "[queue_execute] FAIL-CLOSED sym=%s — budget expiré sans état terminal "
+                "(tâche id=%s toujours active, ordre peut encore s'exécuter plus tard — "
+                "risque résiduel d'exécution tardive non géré dans ce cycle)",
+                symbol,
+                task_id,
+            )
+    late_execution_risk = terminal == "timeout" and not abandoned
     if reason == "queue_execute_no_fill":
         log.error(
             "[queue_execute] FAIL-CLOSED sym=%s id=%s — task done sans fill décodable "
@@ -154,6 +181,7 @@ def dispatch_execute_order_via_queue(
         reason=reason,
         raw_result=raw_result,
         late_execution_risk=late_execution_risk,
+        abandoned=abandoned,
     )
 
 

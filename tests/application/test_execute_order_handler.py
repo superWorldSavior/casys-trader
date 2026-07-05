@@ -248,6 +248,26 @@ class TestException:
         # Cash inchangé (rollback)
         assert broker.cash() == pytest.approx(100_000.0)
 
+    def test_abandoned_running_task_is_fenced_before_submit(self, tmp_path: Path) -> None:
+        """Tâche claimée puis abandonnée par timeout daemon → aucun submit tardif."""
+        db, broker, plan_store, ledger = _make_stack(tmp_path)
+        task = _enqueue_and_claim(ledger, dedup="abandoned-running")
+        handler = make_execute_order_handler(db=db, broker=broker, plan_store=plan_store, ledger=ledger)
+        cash_before = broker.cash()
+
+        payload = _make_task_payload()
+        task["payload"] = json.dumps(payload)
+        assert ledger.abandon(task_id=task["id"], now_ms=2, error="queue_execute_timeout") is True
+
+        with pytest.raises(RuntimeError, match="status='dead'"):
+            handler(task)
+
+        assert broker.cash() == pytest.approx(cash_before)
+        assert broker.positions() == {}
+        row = db.query_one("SELECT status, error FROM tasks WHERE id=?", (task["id"],))
+        assert row["status"] == "dead"
+        assert row["error"] == "queue_execute_timeout"
+
 
 # ---------------------------------------------------------------------------
 # Classe 3 — Fill atomique (FIX 1) : fill dans task.result après UoW

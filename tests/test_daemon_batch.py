@@ -1,10 +1,11 @@
 """Tests du helper batch _batch_decide (budget d'appels modèle honoré)."""
 
+from dataclasses import replace
 import threading
 import time
 import logging
 from types import SimpleNamespace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from trader.runtime import daemon
 from trader.application import planner_batch
@@ -429,6 +430,81 @@ def test_opening_execute_timeout_stops_remaining_buffered_openings_as_undecided(
     assert daemon.SimBroker(state_dir / "broker.json").positions() == {}
 
 
+def test_openings_deferred_by_execute_timeout_are_redecided_next_cycle(
+    monkeypatch,
+    tmp_path,
+    make_data_source,
+) -> None:
+    _write_runtime_config(tmp_path, symbols=("LOW", "HIGH", "MID"))
+    state_dir = tmp_path / "state"
+    now = datetime(2026, 6, 15, 14, 30, tzinfo=timezone.utc)
+    sched = Scheduler(state_dir / "scheduler.json")
+    decisions = {
+        "LOW": replace(
+            _open_long_decision("LOW", confidence=0.91, rationale="weak open"),
+            llm_provider="acpx",
+            llm_model="gpt-5.5/medium",
+        ),
+        "HIGH": replace(
+            _open_long_decision("HIGH", confidence=0.95, rationale="strong open"),
+            llm_provider="acpx",
+            llm_model="gpt-5.5/medium",
+        ),
+        "MID": replace(
+            _open_long_decision("MID", confidence=0.93, rationale="mid open"),
+            llm_provider="acpx",
+            llm_model="gpt-5.5/medium",
+        ),
+    }
+    decidable_by_cycle: list[list[str]] = []
+
+    def fake_iter_decide_results_via_queue(**kwargs):
+        decidable = list(kwargs["decidable"])
+        decidable_by_cycle.append(decidable)
+        for sym in decidable:
+            yield sym, decisions[sym], 1
+
+    def fake_dispatch(**_kwargs):
+        return daemon.execute_queue_dispatch.ExecuteQueueOutcome(
+            task_id=123,
+            terminal="timeout",
+            reason="queue_execute_timeout",
+            late_execution_risk=False,
+        )
+
+    monkeypatch.setattr(daemon, "ROOT", tmp_path)
+    monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+    import trader.application.queue_dispatch as queue_dispatch
+    monkeypatch.setattr(queue_dispatch, "iter_decide_results_via_queue", fake_iter_decide_results_via_queue)
+    monkeypatch.setattr(daemon.execute_queue_dispatch, "dispatch_execute_order_via_queue", fake_dispatch)
+
+    daemon.run_cycle(
+        dry_run=False,
+        now=now,
+        symbols_filter=["LOW", "HIGH", "MID"],
+        sched=sched,
+        data_source=_fresh_data_source(make_data_source, now),
+        queue_decide_enabled=True,
+        task_ledger=object(),
+        queue_execute_enabled=True,
+        execute_ledger=object(),
+    )
+    daemon.run_cycle(
+        dry_run=False,
+        now=now + timedelta(minutes=1),
+        symbols_filter=["LOW", "HIGH", "MID"],
+        sched=sched,
+        data_source=_fresh_data_source(make_data_source, now + timedelta(minutes=1)),
+        queue_decide_enabled=True,
+        task_ledger=object(),
+        queue_execute_enabled=True,
+        execute_ledger=object(),
+    )
+
+    assert decidable_by_cycle[0] == ["LOW", "HIGH", "MID"]
+    assert {"LOW", "MID"} <= set(decidable_by_cycle[1])
+
+
 def test_execute_one_cycle_decision_records_hold_without_mutating_state() -> None:
     records: list[dict] = []
     snap = SimpleNamespace(equity=100_000.0)
@@ -478,6 +554,85 @@ def test_execute_one_cycle_decision_records_hold_without_mutating_state() -> Non
     assert records[0]["symbol"] == "SPY"
     assert records[0]["executed"] is False
     assert records[0]["reason"] == "no_decision_in_batch"
+
+
+def test_execute_one_cycle_decision_refreshes_state_snap_after_confirmed_fill(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from trader.execution import portfolio
+
+    records: list[dict] = []
+    broker = daemon.SimBroker(tmp_path / "broker.json", starting_cash=100_000.0)
+    old_snap = portfolio.snapshot(broker, lambda _symbol: 100.0, 100_000.0)
+    state = daemon.DecisionExecutionState(snap=old_snap, gross=0.0)
+
+    class ApprovingGate:
+        limits = SimpleNamespace(max_risk_per_trade_pct=0.01)
+
+        def max_quantity_at_risk(self, *_args, **_kwargs) -> float:
+            return 1_000.0
+
+        def check_confidence(self, *_args, **_kwargs):
+            return SimpleNamespace(approved=True, code="ok", context="")
+
+        def check(self, *_args, **_kwargs):
+            return SimpleNamespace(approved=True, code="ok", context="")
+
+        def record_pass(self) -> None:
+            return None
+
+    monkeypatch.setattr(daemon, "_append_model_performance", lambda **_payload: None)
+    ctx = daemon.DecisionExecutionContext(
+        now=_COMMON["now"],
+        min_wake_minutes=None,
+        max_wake_minutes=None,
+        macro_next=None,
+        broker=broker,
+        plan_store=SimpleNamespace(),
+        gate=ApprovingGate(),
+        sched=None,
+        prices={"SPY": 100.0},
+        execution_eligibility={"SPY": {"execution": {"enabled": True, "reason": "tradable"}}},
+        tradable_bars_by_symbol={},
+        data_age_by_symbol={},
+        runtime_data_source_by_sym={},
+        armed_plan_ids={},
+        armed_plan_orders={},
+        armed_reference_volatilities={},
+        held_symbols=set(),
+        cockpit={},
+        runtime_interval="15m",
+        starting_equity=100_000.0,
+        require_hard_stop=False,
+        dry_run=False,
+        queue_execute_enabled=False,
+        execute_ledger=None,
+        record_decision=records.append,
+        rate_for_symbol=lambda _symbol: 1.0,
+    )
+
+    new_state = daemon._execute_one_cycle_decision(
+        sym="SPY",
+        index=1,
+        total=1,
+        decision=Decision(
+            symbol="SPY",
+            action="BUY",
+            quantity=1.0,
+            confidence=0.95,
+            rationale="snap refresh",
+            intent="OPEN_LONG",
+        ),
+        state=state,
+        ctx=ctx,
+    )
+
+    assert new_state is state
+    assert new_state.snap is not old_snap
+    assert [holding.symbol for holding in new_state.snap.holdings] == ["SPY"]
+    assert new_state.gross == 100.0
+    assert records[0]["executed"] is True
 
 
 def test_execution_blocked_reason_gate_les_ordres_hors_execution() -> None:
