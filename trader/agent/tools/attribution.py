@@ -1,11 +1,15 @@
-"""Attribution and recent decision tool handlers."""
+"""Attribution tool handlers.
+
+`get_recent_decisions` a été retiré : les décisions récentes sont désormais
+POUSSÉES dans les faits par-symbole (`recent_decisions`, issue #4) plutôt qu'un
+outil pull — anti-répétition permanente sans que l'agent ait à la demander.
+"""
 
 from __future__ import annotations
 
 from trader.agent.tools.core import AgentToolCall, ToolContext, ToolSpec
 
 _ATTRIBUTION_SCOPES = {"summary", "confidence", "exit_reason", "symbol"}
-_MAX_DECISION_ROWS = 10
 
 
 def _validate_get_attribution(args: dict) -> str | None:
@@ -33,29 +37,6 @@ def _handle_get_attribution(call: AgentToolCall, context: ToolContext) -> dict:
     return {"rows": rows}
 
 
-def _validate_get_recent_decisions(args: dict) -> str | None:
-    symbol = args.get("symbol")
-    if symbol is not None and not isinstance(symbol, str):
-        return "symbol: str ou absent"
-    limit = args.get("limit")
-    if limit is not None and (not isinstance(limit, int) or limit < 1):
-        return "limit: entier >= 1 ou absent"
-    return None
-
-
-def _handle_get_recent_decisions(call: AgentToolCall, context: ToolContext) -> dict:
-    if context.recent_decisions_provider is None:
-        return {"error": "unavailable", "rows": []}
-    limit = min(int(call.args.get("limit") or 5), _MAX_DECISION_ROWS)
-    rows = context.recent_decisions_provider(call.args.get("symbol"), limit)
-    return {"rows": rows}
-
-
 SPECS = [
     ToolSpec(name="get_attribution", validate_args=_validate_get_attribution, handler=_handle_get_attribution),
-    ToolSpec(
-        name="get_recent_decisions",
-        validate_args=_validate_get_recent_decisions,
-        handler=_handle_get_recent_decisions,
-    ),
 ]

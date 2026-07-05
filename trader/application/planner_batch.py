@@ -86,10 +86,8 @@ def _run_tool_round(
         market_context_by_symbol={s: v for s, v in market_contexts.items() if s in chunk_set},
         active_watches_by_symbol={s: v for s, v in active_watches_by_symbol.items() if s in chunk_set},
         attribution=shared_context.get("attribution"),
-        # V0 : providers lourds non câblés — répondent "unavailable" proprement.
-        # À brancher quand la mesure d'usage le justifie (Phase 2+).
+        # get_position_risk câblable (issue #4), hors catalogue tant que non branché.
         position_risk_provider=None,
-        recent_decisions_provider=None,
         indicator_resolver=indicator_resolver,
         learnings_recall_provider=learnings_recall_provider,
     )

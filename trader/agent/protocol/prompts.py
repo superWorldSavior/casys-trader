@@ -479,7 +479,6 @@ _TOOL_CATALOG = (
     "Bornes : 3 appels max par symbole, 24 par lot. Outils :\n"
     "- get_freshness{symbols:[…]} : exécution/planification/âge des données par symbole\n"
     "- get_active_plans{symbol?,limit?} : veilles et plans armés actifs (corrige au lieu d'empiler)\n"
-    "- get_position_risk{symbol} : position, exposition USD, bornes de risque\n"
     "- get_attribution{scope:summary|confidence|exit_reason|symbol, symbol?} : perf attribuée compacte\n"
     "- describe_data{} : cube sémantique (timeframes/lookbacks valides, windows, indicateurs)\n"
     "- find_indicators{concept} : cherche des indicateurs par concept (momentum, volatilité, …)\n"
