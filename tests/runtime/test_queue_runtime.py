@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from trader.agent import llm
+from trader.application.decide_one import SESSION_ROUND_BACKSTOP
 from trader.runtime import queue_runtime
 
 
@@ -159,7 +160,7 @@ def test_start_decide_queue_builds_ledger_pool_and_handler(tmp_path: Path, monke
     assert logger.warnings[0][0].startswith("[queue_decide] CASYS_DECISION_BATCH_SIZE=%d IGNORÉ")
 
 
-def test_start_decide_queue_construit_et_filtre_les_session_backends_en_multi_round(
+def test_start_decide_queue_construit_et_filtre_les_session_backends(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -174,7 +175,7 @@ def test_start_decide_queue_construit_et_filtre_les_session_backends_en_multi_ro
         DEFAULT_MODEL = "gpt-5.5"
 
     class ToolServices:
-        max_rounds = 2
+        pass
 
     class FakeRouter:
         backends = [acpx_backend, non_session_backend]
@@ -210,11 +211,10 @@ def test_start_decide_queue_construit_et_filtre_les_session_backends_en_multi_ro
 
     assert build_calls == [{"spark_model": "gpt-5.5"}]
     assert handler_kwargs[0]["codex_client"] is FakeCodexClient
-    assert handler_kwargs[0]["tool_services"].max_rounds == 2
     assert handler_kwargs[0]["session_backends"] == [acpx_backend]
 
 
-def test_start_decide_queue_max_rounds_1_construit_et_filtre_les_session_backends(
+def test_start_decide_queue_sans_max_rounds_construit_et_filtre_les_session_backends(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -229,7 +229,7 @@ def test_start_decide_queue_max_rounds_1_construit_et_filtre_les_session_backend
         DEFAULT_MODEL = "gpt-5.5"
 
     class ToolServices:
-        max_rounds = 1
+        pass
 
     class FakeRouter:
         backends = [acpx_backend, non_session_backend]
@@ -264,7 +264,6 @@ def test_start_decide_queue_max_rounds_1_construit_et_filtre_les_session_backend
     )
 
     assert build_calls == [{"spark_model": "gpt-5.5"}]
-    assert handler_kwargs[0]["tool_services"].max_rounds == 1
     assert handler_kwargs[0]["session_backends"] == [acpx_backend]
 
 
@@ -281,7 +280,7 @@ def test_start_decide_queue_passe_un_lease_qui_couvre_le_pire_cas_strict(
         DEFAULT_MODEL = "gpt-5.5"
 
     class ToolServices:
-        max_rounds = 1
+        pass
 
     class FakeRouter:
         backends = [acpx_backend_1, acpx_backend_2]
@@ -309,7 +308,7 @@ def test_start_decide_queue_passe_un_lease_qui_couvre_le_pire_cas_strict(
     )
 
     timeout_s = 900
-    rounds = ToolServices.max_rounds
+    rounds = SESSION_ROUND_BACKSTOP
     backends = 2
     per_backend_s = (timeout_s + 30) + (rounds + 1) * (timeout_s + 15) + 15
     worst_case_ms = backends * per_backend_s * 1000

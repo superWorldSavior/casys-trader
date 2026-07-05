@@ -2207,7 +2207,6 @@ def main(
         learnings_db_path=STATE_DIR / "learnings.db",
         max_context_requests_per_symbol=args.max_context_requests_per_symbol,
         max_indicators_per_request=args.max_indicators_per_request,
-        max_rounds=_env_int("CASYS_QUEUE_TOOL_MAX_ROUNDS", 1),
         logger=log,
     )
 

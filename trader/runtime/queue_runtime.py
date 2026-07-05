@@ -216,9 +216,11 @@ def start_decide_queue(
                 "[queue_decide] acpx introuvable sur le PATH pour le tour d'outils en file "
                 "(vérifier TRADER_ACPX_BIN)"
             )
+        from trader.application.decide_one import SESSION_ROUND_BACKSTOP
+
         lease_ms = _decide_session_lease_ms(
             decision_timeout_s=decision_timeout_s,
-            max_rounds=getattr(tool_services, "max_rounds", 1),
+            max_rounds=SESSION_ROUND_BACKSTOP,
             backend_count=len(session_backends),
         )
 
@@ -317,7 +319,6 @@ def build_decide_tool_services(
     learnings_db_path: Path,
     max_context_requests_per_symbol: int,
     max_indicators_per_request: int,
-    max_rounds: int = 1,
     logger: LoggerLike | None = None,
 ) -> object | None:
     """Construit les ToolRoundServices du pool decide au boot (spec §4).
@@ -329,7 +330,8 @@ def build_decide_tool_services(
       chaque appel. ⚠️ si la db n'existe pas ENCORE au boot, recall restera
       indisponible jusqu'au prochain redémarrage (limitation documentée).
 
-    Retourne ``None`` si ``max_rounds < 1`` (garde-fou config).
+    Le nombre de tournées en session est libre côté prompt ; le code applique
+    seulement ``SESSION_ROUND_BACKSTOP`` dans decide_one.
     """
     from datetime import datetime, timezone
 
@@ -339,9 +341,6 @@ def build_decide_tool_services(
     from trader.market.data_source import make_indirect_get_bars
 
     log = logger or _default_logger()
-    if max_rounds < 1:
-        log.warning("[queue_decide] tool max_rounds=%d invalide (<1) — outils désactivés", max_rounds)
-        return None
 
     recall_provider = None
     if learnings_db_path.exists():
@@ -362,7 +361,6 @@ def build_decide_tool_services(
         learnings_recall_provider=recall_provider,
         max_context_requests_per_symbol=max_context_requests_per_symbol,
         max_indicators_per_request=max_indicators_per_request,
-        max_rounds=max_rounds,
     )
 
 
