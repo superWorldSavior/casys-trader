@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import fnmatch
 import logging
+import threading
 from pathlib import Path
+from typing import Callable
 
 from trader.domain.market_data import Bar, MarketError
 from trader.market.ports import DataSource as DataSource
@@ -84,6 +86,10 @@ class CompositeDataSource:
         self._sources = sources
         self._last_source: dict[str, str] = {}
         self._failed_sources_since_last_check: dict[str, MarketError] = {}
+        # Thread-safety (W3) : le daemon et N workers de file peuvent appeler get_bars /
+        # consume_failed_sources en parallèle. Verrou LOCAL à l'objet (≠ permit de file) →
+        # sérialise les mutations d'état, sans risque de deadlock avec la ressource acpx.
+        self._lock = threading.Lock()
 
     # ------------------------------------------------------------------
     # API publique
@@ -96,6 +102,13 @@ class CompositeDataSource:
         interval: str = "1h",
     ) -> list[Bar]:
         """Retourne les barres pour symbol en essayant les sources dans l'ordre.
+
+        Thread-safety (W3) : l'I/O réseau (`source.get_bars`) se fait **hors verrou** —
+        les fetchs concurrents (daemon + N workers de file) tournent en parallèle et un
+        hang réseau n'en gèle qu'un. Seules les mutations d'état partagé (`_last_source`,
+        `_failed_sources`) passent par un verrou COURT (quelques µs), via `_mark_served` /
+        `_mark_failed` / `consume_failed_sources`. Le verrou est local à l'objet (≠ permit
+        de file) → aucune acquisition imbriquée avec `acpx`, pas de deadlock (spec §5.1).
 
         Raises:
             MarketError("no_route"):          aucune route ne matche symbol.
@@ -133,7 +146,7 @@ class CompositeDataSource:
                     exc if isinstance(exc, MarketError)
                     else MarketError("source_error", f"{symbol}@{name}: {exc}")
                 )
-                self._failed_sources_since_last_check[name] = last_error
+                self._mark_failed(name, last_error)
                 log.warning(
                     '{"event":"source_fallback","symbol":"%s","source":"%s",'
                     '"reason":"exception","code":"%s"}',
@@ -161,7 +174,7 @@ class CompositeDataSource:
                 continue
 
             # Succès
-            self._last_source[symbol] = name
+            self._mark_served(symbol, name)
             return bars
 
         # F6 : si au moins une source a retourné des barres (même stale) → les retourner.
@@ -169,7 +182,7 @@ class CompositeDataSource:
         # c'est hors-séance ou une vraie panne.
         if best_stale is not None:
             stale_name, stale_bars = best_stale
-            self._last_source[symbol] = stale_name
+            self._mark_served(symbol, stale_name)
             return stale_bars
 
         # Aucune barre disponible du tout (toutes les sources ont levé exception)
@@ -182,13 +195,25 @@ class CompositeDataSource:
 
     def last_source(self, symbol: str) -> str | None:
         """Retourne le nom de la source qui a servi symbol lors du dernier appel."""
-        return self._last_source.get(symbol)
+        with self._lock:
+            return self._last_source.get(symbol)
+
+    def _mark_served(self, symbol: str, name: str) -> None:
+        """Enregistre la source qui a servi symbol (verrou court, hors I/O)."""
+        with self._lock:
+            self._last_source[symbol] = name
+
+    def _mark_failed(self, name: str, error: MarketError) -> None:
+        """Enregistre l'échec d'une source depuis le dernier relevé (verrou court, hors I/O)."""
+        with self._lock:
+            self._failed_sources_since_last_check[name] = error
 
     def consume_failed_sources(self) -> dict[str, MarketError]:
         """Retourne et vide les dernières erreurs par source depuis le dernier relevé."""
-        failed = dict(self._failed_sources_since_last_check)
-        self._failed_sources_since_last_check.clear()
-        return failed
+        with self._lock:
+            failed = dict(self._failed_sources_since_last_check)
+            self._failed_sources_since_last_check.clear()
+            return failed
 
     def disconnect(self) -> None:
         """Déconnecte chaque source unique qui expose disconnect().
@@ -221,6 +246,34 @@ class CompositeDataSource:
                 if symbol == pattern or fnmatch.fnmatch(symbol, pattern):
                     return list(route["sources"])
         return None
+
+
+# ---------------------------------------------------------------------------
+# Indirection thread-safe pour le worker de file (grain-1 queue)
+# ---------------------------------------------------------------------------
+
+def make_indirect_get_bars(
+    get_data_source: Callable[[], "DataSource | None"],
+) -> Callable[..., list[Bar]]:
+    """Adapte un data_source à référence VARIABLE en un `get_bars` stable et injectable.
+
+    Le daemon (re)construit ou annule `data_source` en cours de run (reconnexion,
+    reconfiguration) et le pool de workers démarre avant sa première construction : on
+    ne capture donc jamais l'objet, on lit la ref COURANTE via `get_data_source`. `None`
+    (pas encore prêt / déconnecté) → `MarketError`, absorbée en 'unavailable' côté outil
+    par `resolve_indicator_requests`.
+
+    La thread-safety est assurée en amont par le verrou interne de `CompositeDataSource`
+    (le point d'entrée réel en paper) ; ce helper ne gère QUE le cycle de vie de la ref.
+    """
+
+    def get_bars(symbol: str, lookback: str = "5d", interval: str = "1h") -> list[Bar]:
+        source = get_data_source()
+        if source is None:
+            raise MarketError("data_source_unavailable", "aucun data_source courant")
+        return source.get_bars(symbol, lookback=lookback, interval=interval)
+
+    return get_bars
 
 
 # ---------------------------------------------------------------------------
