@@ -3,6 +3,7 @@
 import threading
 import time
 import logging
+from types import SimpleNamespace
 from datetime import datetime, timezone
 
 from trader.runtime import daemon
@@ -50,6 +51,57 @@ def _write_runtime_config(root) -> None:
     )
     (root / "mandate" / "mandate.md").write_text("# Mandat\n")
     (root / "mandate" / "memory.md").write_text("# Memoire\n")
+
+
+def test_execute_one_cycle_decision_records_hold_without_mutating_state() -> None:
+    records: list[dict] = []
+    snap = SimpleNamespace(equity=100_000.0)
+    state = daemon.DecisionExecutionState(snap=snap, gross=1234.0)
+    ctx = daemon.DecisionExecutionContext(
+        now=_COMMON["now"],
+        min_wake_minutes=None,
+        max_wake_minutes=None,
+        macro_next=None,
+        broker=SimpleNamespace(positions=lambda: {}),
+        plan_store=SimpleNamespace(),
+        gate=SimpleNamespace(),
+        sched=None,
+        prices={"SPY": 100.0},
+        execution_eligibility={},
+        tradable_bars_by_symbol={},
+        data_age_by_symbol={},
+        runtime_data_source_by_sym={},
+        armed_plan_ids={},
+        armed_plan_orders={},
+        armed_reference_volatilities={},
+        held_symbols=set(),
+        cockpit={},
+        runtime_interval="15m",
+        starting_equity=100_000.0,
+        require_hard_stop=True,
+        dry_run=True,
+        queue_execute_enabled=False,
+        execute_ledger=None,
+        record_decision=records.append,
+        rate_for_symbol=lambda _symbol: 1.0,
+    )
+
+    new_state = daemon._execute_one_cycle_decision(
+        sym="SPY",
+        index=1,
+        total=1,
+        decision=Decision.hold("SPY", "no_decision_in_batch"),
+        state=state,
+        ctx=ctx,
+    )
+
+    assert new_state is state
+    assert new_state.snap is snap
+    assert new_state.gross == 1234.0
+    assert len(records) == 1
+    assert records[0]["symbol"] == "SPY"
+    assert records[0]["executed"] is False
+    assert records[0]["reason"] == "no_decision_in_batch"
 
 
 def test_execution_blocked_reason_gate_les_ordres_hors_execution() -> None:

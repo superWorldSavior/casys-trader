@@ -389,7 +389,7 @@ def test_daemon_delegates_execute_queue_plan_payload_to_application_service() ->
     source = daemon_path.read_text(encoding="utf-8")
     assert "execute_queue_plan.build_execute_queue_plan_payload" in source
 
-    queue_block = source.split("if queue_execute_enabled and execute_ledger is not None:", 1)[1]
+    queue_block = source.split("if ctx.queue_execute_enabled and ctx.execute_ledger is not None:", 1)[1]
     queue_block = queue_block.split("fill = _exec_outcome.fill", 1)[0]
     forbidden = (
         "create_trade_plan_from_order(",

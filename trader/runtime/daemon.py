@@ -20,6 +20,7 @@ import math
 import os
 import sqlite3
 import time
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
@@ -139,6 +140,42 @@ def evaluate_plan(*args: object, **kwargs: object) -> object:
 # Budget de polling pour execute_order via la file (secondes).
 # L'exécution est locale et synchrone (pool in-process) — 10 s est généreux.
 _EXECUTE_POLL_BUDGET_S: float = 10.0
+
+
+@dataclass
+class DecisionExecutionState:
+    snap: object
+    gross: float
+
+
+@dataclass(frozen=True)
+class DecisionExecutionContext:
+    now: datetime
+    min_wake_minutes: float | None
+    max_wake_minutes: float | None
+    macro_next: dict | None
+    broker: object
+    plan_store: object
+    gate: RiskGate
+    sched: scheduler.Scheduler | None
+    prices: dict[str, float]
+    execution_eligibility: dict[str, dict]
+    tradable_bars_by_symbol: dict[str, list]
+    data_age_by_symbol: dict[str, float]
+    runtime_data_source_by_sym: dict[str, object]
+    armed_plan_ids: dict[str, str]
+    armed_plan_orders: dict[str, dict]
+    armed_reference_volatilities: dict[str, float | None]
+    held_symbols: set[str]
+    cockpit: dict
+    runtime_interval: str
+    starting_equity: float
+    require_hard_stop: bool
+    dry_run: bool
+    queue_execute_enabled: bool
+    execute_ledger: object
+    record_decision: Callable[[dict], None]
+    rate_for_symbol: Callable[[str], float]
 
 
 def summarize_gross_rejections(decisions: list[dict]) -> dict | None:
@@ -897,6 +934,462 @@ def _fetch_5m_bars_for_open_plans(
     )
 
 
+def _execute_one_cycle_decision(
+    *,
+    sym: str,
+    index: int,
+    total: int,
+    decision: codex_client.Decision,
+    state: DecisionExecutionState,
+    ctx: DecisionExecutionContext,
+) -> DecisionExecutionState:
+    _res_log = log.debug if decision.action == "HOLD" else log.info
+    _res_log(
+        "[decision %d/%d] %s result action=%s qty=%s intent=%s wake=%s confidence=%.2f provider=%s model=%s fallback=%s",
+        index,
+        total,
+        sym,
+        decision.action,
+        decision.quantity,
+        decision.intent,
+        decision.next_wake_in_minutes,
+        decision.confidence,
+        decision.llm_provider,
+        decision.llm_model,
+        decision.llm_fallback_reason,
+    )
+
+    next_wake_in_minutes = None
+    if decision.next_wake_in_minutes is not None:
+        next_wake_in_minutes = _bounded_wake_minutes(
+            decision.next_wake_in_minutes,
+            minimum=ctx.min_wake_minutes,
+            maximum=ctx.max_wake_minutes,
+        )
+
+    if decision.resolve_from_position or decision.intent in _RELATIVE_ORDER_INTENTS:
+        raw_pos = ctx.broker.positions().get(sym)
+        pos_qty = raw_pos.quantity if raw_pos is not None else 0.0
+        decision = _resolve_position_aware_decision(decision, pos_qty)
+
+    next_wake_event_iso: str | None = None
+    if decision.next_wake_event is not None:
+        next_wake_event_iso = _resolve_wake_event(
+            event=decision.next_wake_event,
+            sym=sym,
+            now=ctx.now,
+            macro_next=ctx.macro_next,
+            next_regular_session_open=market.next_regular_session_open,
+        )
+
+    effective_quantity = abs(decision.quantity)
+
+    entry = decision_entries.build_decision_entry(
+        symbol=sym,
+        decision=decision,
+        effective_quantity=effective_quantity,
+        next_wake_in_minutes=next_wake_in_minutes,
+        next_wake_event_iso=next_wake_event_iso,
+        armed_plan_id=ctx.armed_plan_ids.get(sym),
+        armed_plan_order=ctx.armed_plan_orders.get(sym),
+        runtime_data_source=ctx.runtime_data_source_by_sym.get(sym),
+    )
+    decision_source = str(entry["decision_source"])
+    if decision_source == "llm" and sym in ctx.held_symbols and _counts_as_llm_review(decision):
+        _persist_last_llm_review(
+            plan_store=ctx.plan_store,
+            symbol=sym,
+            now=ctx.now,
+            decision=decision,
+        )
+
+    reference_volatility: float | None = None
+    runtime_exit_plan = decision.exit_plan
+    entry["exit_plan"] = copy.deepcopy(decision.exit_plan) if decision.exit_plan else None
+    watch_preparation = decision_watches.prepare_decision_indicator_watch(
+        decision.indicator_watch,
+        symbol=sym,
+        now=ctx.now,
+        scheduling_enabled=ctx.sched is not None,
+    )
+    entry.update(watch_preparation.entry_updates)
+    if watch_preparation.rejections:
+        log.warning(
+            "indicator_watch rejets %s: %d conditions %s",
+            sym,
+            len(watch_preparation.rejections),
+            [r["reason"] for r in watch_preparation.rejections],
+        )
+    pending_indicator_watch = watch_preparation.pending_watch
+
+    def apply_decision_schedule() -> None:
+        _apply_decision_schedule(
+            sched=ctx.sched,
+            sym=sym,
+            now=ctx.now,
+            next_wake_in_minutes=next_wake_in_minutes,
+            next_wake_iso=next_wake_event_iso,
+            cancel_watch_ids=decision.cancel_watch_ids,
+            pending_indicator_watch=pending_indicator_watch,
+            entry=entry,
+        )
+
+    def apply_default_schedule_after_blocked() -> None:
+        if ctx.sched is not None:
+            ctx.sched.clear_symbol_next_wake(sym)
+
+    if (
+        decision.action in {"BUY", "SELL"}
+        and effective_quantity == 0
+        and decision.risk_pct_target is None
+    ):
+        _log_cycle_progress("[decision %d/%d] %s blocked zero_quantity_order", index, total, sym)
+        apply_default_schedule_after_blocked()
+        ctx.record_decision({**entry, "executed": False, "reason": "zero_quantity_order"})
+        return state
+
+    if decision.action == "HOLD" or (effective_quantity == 0 and decision.risk_pct_target is None):
+        apply_decision_schedule()
+        if decision.amend_exit:
+            _apply_amend_exit(
+                plan_store=ctx.plan_store,
+                symbol=sym,
+                amend_exit=decision.amend_exit,
+                bars=ctx.tradable_bars_by_symbol.get(sym),
+                entry=entry,
+            )
+        hold_reason = decision_entries.hold_reason_for_decision(
+            decision_source=decision_source,
+            rationale=decision.rationale,
+        )
+        ctx.record_decision({**entry, "executed": False, "reason": hold_reason})
+        return state
+
+    invalid_intent = _invalid_intent_reason(decision)
+    if invalid_intent is not None:
+        _log_cycle_progress("[decision %d/%d] %s blocked %s", index, total, sym, invalid_intent)
+        apply_default_schedule_after_blocked()
+        ctx.record_decision({**entry, "executed": False, "reason": invalid_intent})
+        return state
+
+    execution_blocked = _execution_blocked_reason(
+        ctx.execution_eligibility,
+        sym,
+        fail_closed=decision.intent in _OPENING_INTENTS,
+    )
+    if execution_blocked is not None:
+        _log_cycle_progress(
+            "[execution] %s ordre bloqué (%s) — watch/wake conservés", sym, execution_blocked
+        )
+        apply_decision_schedule()
+        ctx.record_decision({**entry, "executed": False, "reason": execution_blocked})
+        return state
+
+    if runtime_exit_plan and decision.intent in _OPENING_INTENTS:
+        if sym in ctx.armed_reference_volatilities:
+            reference_volatility = ctx.armed_reference_volatilities[sym]
+        else:
+            reference_volatility = _reference_volatility_for_symbol(
+                sym,
+                entry_price=ctx.prices[sym],
+                cockpit=ctx.cockpit,
+                tradable_bars_by_symbol=ctx.tradable_bars_by_symbol,
+            )
+        try:
+            if decision.intent in _PURE_OPEN_INTENTS and sym not in ctx.armed_plan_ids:
+                intent_side = "LONG" if decision.intent == "OPEN_LONG" else "SHORT"
+                runtime_exit_plan, _trace = resolve_exit_plan(
+                    runtime_exit_plan,
+                    entry_price=ctx.prices[sym],
+                    side=intent_side,
+                    reference_volatility=reference_volatility,
+                    bars=ctx.tradable_bars_by_symbol.get(sym),
+                )
+            elif decision.intent == "ADD":
+                intent_side = "LONG" if decision.action == "BUY" else "SHORT"
+                runtime_exit_plan, _trace = resolve_exit_plan(
+                    runtime_exit_plan,
+                    entry_price=ctx.prices[sym],
+                    side=intent_side,
+                    reference_volatility=reference_volatility,
+                    bars=ctx.tradable_bars_by_symbol.get(sym),
+                )
+            else:
+                validate_exit_plan(
+                    runtime_exit_plan,
+                    reference_volatility=reference_volatility,
+                )
+        except InvalidExitPlanError as exc:
+            _log_cycle_progress(
+                "[decision %d/%d] %s blocked invalid_exit_plan:%s",
+                index,
+                total,
+                sym,
+                exc,
+            )
+            apply_default_schedule_after_blocked()
+            ctx.record_decision({**entry, "executed": False, "reason": f"invalid_exit_plan:{exc}"})
+            return state
+        hard_stop_price = _hard_stop_price(runtime_exit_plan)
+        if (
+            decision.intent in _RISK_GUARDED_OPENING_INTENTS
+            and hard_stop_price is not None
+            and _hard_stop_wrong_side(decision.intent, ctx.prices[sym], hard_stop_price, action=decision.action)
+        ):
+            _log_cycle_progress(
+                "[decision %d/%d] %s blocked invalid_exit_plan:hard_stop_wrong_side",
+                index,
+                total,
+                sym,
+            )
+            apply_default_schedule_after_blocked()
+            ctx.record_decision({**entry, "executed": False, "reason": "invalid_exit_plan:hard_stop_wrong_side"})
+            return state
+
+    pos = ctx.broker.positions().get(sym)
+    clamped_quantity, exit_block_reason = _clamp_exit_quantity(
+        intent=decision.intent,
+        action=decision.action,
+        quantity=effective_quantity,
+        position_quantity=0.0 if pos is None else pos.quantity,
+    )
+    if exit_block_reason is not None:
+        _log_cycle_progress("[decision %d/%d] %s blocked %s", index, total, sym, exit_block_reason)
+        apply_default_schedule_after_blocked()
+        ctx.record_decision({**entry, "executed": False, "reason": exit_block_reason})
+        return state
+    if clamped_quantity != effective_quantity:
+        entry.setdefault("requested_qty", effective_quantity)
+        effective_quantity = clamped_quantity
+        entry["qty"] = effective_quantity
+    if effective_quantity == 0 and decision.risk_pct_target is None:
+        _log_cycle_progress("[decision %d/%d] %s hold zero_exit_quantity", index, total, sym)
+        apply_default_schedule_after_blocked()
+        ctx.record_decision({**entry, "executed": False, "reason": "zero_exit_quantity"})
+        return state
+
+    risk_outcome = risk_admission.assess_risk_admission(
+        risk_admission.RiskAdmissionRequest(
+            action=decision.action,
+            intent=decision.intent,
+            quantity=effective_quantity,
+            price=ctx.prices[sym],
+            equity=state.snap.equity,
+            confidence=decision.confidence,
+            runtime_exit_plan=runtime_exit_plan,
+            risk_pct_target=decision.risk_pct_target,
+            position_quantity=0.0 if pos is None else pos.quantity,
+            position_avg_price=0.0 if pos is None else pos.avg_price,
+            require_hard_stop=ctx.require_hard_stop,
+            fx_rate=ctx.rate_for_symbol(sym),
+        ),
+        gate=ctx.gate,
+    )
+    effective_quantity = risk_outcome.quantity
+    entry.update(risk_outcome.entry_updates)
+    if not risk_outcome.approved:
+        reason = risk_outcome.reason or "risk:rejected"
+        if reason == "risk:risk_sizing_needs_stop":
+            _log_cycle_progress("[risk] %s rejected code=risk_sizing_needs_stop", sym)
+        elif reason == "risk:missing_hard_stop":
+            _log_cycle_progress("[risk] %s rejected code=missing_hard_stop", sym)
+        elif reason == "risk:risk_per_trade_exceeded":
+            _log_cycle_progress(
+                "[risk] %s rejected code=risk_per_trade_exceeded qty=%s max_qty=%s",
+                sym,
+                entry.get("risk_total_position_qty", effective_quantity),
+                entry.get("max_risk_qty"),
+            )
+        elif reason == "zero_risk_quantity":
+            _log_cycle_progress("[decision %d/%d] %s hold zero_risk_quantity", index, total, sym)
+        elif reason.startswith("risk:"):
+            _log_cycle_progress(
+                "[risk] %s rejected code=%s confidence=%s",
+                sym,
+                reason.removeprefix("risk:"),
+                decision.confidence,
+            )
+        else:
+            _log_cycle_progress("[decision %d/%d] %s blocked %s", index, total, sym, reason)
+        apply_default_schedule_after_blocked()
+        blocked_entry = {**entry, "executed": False, "reason": reason}
+        if risk_outcome.context is not None:
+            blocked_entry["context"] = risk_outcome.context
+        ctx.record_decision(blocked_entry)
+        return state
+
+    final_risk_outcome = risk_admission.assess_final_risk_gate(
+        risk_admission.FinalRiskGateRequest(
+            symbol=sym,
+            action=decision.action,
+            quantity=effective_quantity,
+            rationale=decision.rationale,
+            intent=decision.intent,
+            price=ctx.prices[sym],
+            position_quantity=0.0 if pos is None else pos.quantity,
+            gross_exposure=state.gross,
+            equity=state.snap.equity,
+            fx_rate=ctx.rate_for_symbol(sym),
+        ),
+        gate=ctx.gate,
+    )
+    order = final_risk_outcome.order
+    if not final_risk_outcome.approved:
+        _log_cycle_progress(
+            "[risk] %s rejected code=%s qty=%s price=%s",
+            sym,
+            final_risk_outcome.code,
+            order.quantity,
+            round(ctx.prices[sym], 6),
+        )
+        apply_default_schedule_after_blocked()
+        ctx.record_decision(
+            {
+                **entry,
+                "executed": False,
+                "reason": final_risk_outcome.reason,
+                "context": final_risk_outcome.context,
+            }
+        )
+        return state
+
+    if ctx.queue_execute_enabled and ctx.execute_ledger is not None:
+        _exec_entry_context = None
+        if runtime_exit_plan is not None and decision.intent in {"OPEN_LONG", "OPEN_SHORT", "ADD", "REVERSE"}:
+            _exec_entry_age = ctx.data_age_by_symbol.get(sym)
+            _exec_entry_context = entry_context.build_trade_entry_context(
+                price=ctx.prices[sym],
+                runtime_interval=ctx.runtime_interval,
+                data_age_minutes=_exec_entry_age,
+                session_open=bool(market.session_snapshot(sym, now=ctx.now).get("open")),
+                daily_as_of=((ctx.execution_eligibility.get(sym) or {}).get("planning") or {}).get("daily_as_of"),
+            )
+        _exec_plan_payload = execute_queue_plan.build_execute_queue_plan_payload(
+            plan_reader=ctx.plan_store,
+            symbol=sym,
+            action=decision.action,
+            intent=decision.intent,
+            quantity=effective_quantity,
+            price=ctx.prices[sym],
+            opened_at=ctx.now.isoformat(),
+            runtime_exit_plan=runtime_exit_plan,
+            reference_volatility=reference_volatility,
+            rationale=decision.rationale,
+            entry_context=_exec_entry_context,
+            position_quantity=0.0 if pos is None else pos.quantity,
+            position_avg_price=0.0 if pos is None else pos.avg_price,
+            llm_provider=decision.llm_provider,
+            llm_model=decision.llm_model,
+            llm_fallback_reason=decision.llm_fallback_reason,
+            llm_confidence=decision.confidence,
+        )
+        _exec_outcome = execute_queue_dispatch.dispatch_execute_order_via_queue(
+            ledger=ctx.execute_ledger,
+            symbol=sym,
+            side=decision.action,
+            quantity=effective_quantity,
+            rationale=decision.rationale,
+            price=ctx.prices[sym],
+            ts=ctx.now.isoformat(),
+            fx_rate=ctx.rate_for_symbol(sym),
+            dry_run=ctx.dry_run,
+            plan_to_upsert=_exec_plan_payload.plan_to_upsert,
+            symbol_to_close=_exec_plan_payload.symbol_to_close,
+            cycle_id=ctx.now.isoformat(),
+            intent=decision.intent,
+            budget_s=_EXECUTE_POLL_BUDGET_S,
+        )
+        if _exec_outcome.reason is not None:
+            apply_default_schedule_after_blocked()
+            ctx.record_decision({**entry, "executed": False, "reason": _exec_outcome.reason})
+            return state
+        fill = _exec_outcome.fill
+    else:
+        fill = ctx.broker.submit(
+            order,
+            ctx.prices[sym],
+            ctx.now.isoformat(),
+            dry_run=ctx.dry_run,
+            fx_rate=ctx.rate_for_symbol(sym),
+        )
+    if not ctx.dry_run:
+        ctx.gate.record_pass()
+        state.gross = _gross_exposure(ctx.broker, ctx.prices, rate_of=ctx.rate_for_symbol)
+        if fill is not None:
+            latest = portfolio.snapshot(
+                ctx.broker,
+                lambda s: ctx.prices.get(s, 0.0),
+                ctx.starting_equity,
+                fx_rate_of=ctx.rate_for_symbol,
+            )
+            final_position = ctx.broker.positions().get(sym)
+            fill_accounting = fill_outcome.build_fill_accounting(
+                fill=fill,
+                symbol=sym,
+                action=decision.action,
+                intent=decision.intent,
+                quantity=effective_quantity,
+                price=ctx.prices[sym],
+                confidence=decision.confidence,
+                llm_provider=decision.llm_provider,
+                llm_model=decision.llm_model,
+                llm_fallback_reason=decision.llm_fallback_reason,
+                equity=latest.equity,
+                cash=latest.cash,
+                position_quantity=0.0 if final_position is None else final_position.quantity,
+            )
+            _append_model_performance(**fill_accounting.model_performance)
+            entry.update(fill_accounting.entry_updates)
+            plan_entry_context: dict = {}
+            if runtime_exit_plan and decision.intent in _OPENING_INTENTS:
+                _entry_age = ctx.data_age_by_symbol.get(sym)
+                plan_entry_context = entry_context.build_trade_entry_context(
+                    price=ctx.prices[sym],
+                    runtime_interval=ctx.runtime_interval,
+                    data_age_minutes=_entry_age,
+                    session_open=bool(market.session_snapshot(sym, now=ctx.now).get("open")),
+                    daily_as_of=((ctx.execution_eligibility.get(sym) or {}).get("planning") or {}).get("daily_as_of"),
+                )
+            fill_plan_effects.apply_filled_plan_effects(
+                entry=entry,
+                broker=ctx.broker,
+                plan_store=ctx.plan_store,
+                symbol=sym,
+                action=decision.action,
+                intent=decision.intent,
+                quantity=effective_quantity,
+                price=ctx.prices[sym],
+                opened_at=fill.ts,
+                runtime_exit_plan=runtime_exit_plan,
+                reference_volatility=reference_volatility,
+                llm_provider=decision.llm_provider,
+                llm_model=decision.llm_model,
+                llm_fallback_reason=decision.llm_fallback_reason,
+                llm_confidence=decision.confidence,
+                queue_execute_enabled=ctx.queue_execute_enabled,
+                entry_thesis=decision.rationale,
+                entry_context=plan_entry_context,
+            )
+        if fill is not None and decision.intent in _OPENING_INTENTS:
+            post_entry_wake = market.freshness_budget_minutes(ctx.runtime_interval, grace_minutes=0.0)
+            if next_wake_in_minutes is None or next_wake_in_minutes > post_entry_wake:
+                next_wake_in_minutes = post_entry_wake
+                entry["next_wake_in_minutes"] = next_wake_in_minutes
+                entry["post_entry_review_scheduled"] = True
+    _log_cycle_progress(
+        "[order] %s %s qty=%s price=%s executed=%s plan=%s",
+        sym,
+        decision.action,
+        effective_quantity,
+        round(ctx.prices[sym], 6),
+        not ctx.dry_run,
+        entry["trade_plan_created"],
+    )
+    apply_decision_schedule()
+    ctx.record_decision({**entry, "executed": not ctx.dry_run, "reason": "ok", "price": ctx.prices[sym]})
+    return state
+
+
 def run_cycle(
     *,
     dry_run: bool,
@@ -1453,6 +1946,36 @@ def run_cycle(
 
     symbols_to_decide = gross_execution_order([_gross_priority_item(sym) for sym in symbols_to_decide])
 
+    execution_state = DecisionExecutionState(snap=snap, gross=gross)
+    execution_ctx = DecisionExecutionContext(
+        now=now,
+        min_wake_minutes=min_wake_minutes,
+        max_wake_minutes=max_wake_minutes,
+        macro_next=_cycle_macro_next,
+        broker=broker,
+        plan_store=plan_store,
+        gate=gate,
+        sched=sched,
+        prices=prices,
+        execution_eligibility=execution_eligibility,
+        tradable_bars_by_symbol=tradable_bars_by_symbol,
+        data_age_by_symbol=data_age_by_symbol,
+        runtime_data_source_by_sym=runtime_data_source_by_sym,
+        armed_plan_ids=armed_plan_ids,
+        armed_plan_orders=armed_plan_orders,
+        armed_reference_volatilities=armed_reference_volatilities,
+        held_symbols=held_symbols,
+        cockpit=cockpit,
+        runtime_interval=runtime_interval,
+        starting_equity=starting_equity,
+        require_hard_stop=require_hard_stop,
+        dry_run=dry_run,
+        queue_execute_enabled=queue_execute_enabled,
+        execute_ledger=execute_ledger,
+        record_decision=record_decision,
+        rate_for_symbol=_rate,
+    )
+
     gated_set = set(gated_symbols)
     for index, sym in enumerate(symbols_to_decide, start=1):
         if sym in gated_set:
@@ -1524,473 +2047,16 @@ def run_cycle(
             continue
 
         decision = decisions_by_symbol.get(sym) or codex_client.Decision.hold(sym, "no_decision_in_batch")
-        # Trades (action != HOLD) à l'INFO ; HOLD en DEBUG pour désengorger la
-        # console (le compte reste visible via [batch] decided / [cycle] completed).
-        _res_log = log.debug if decision.action == "HOLD" else log.info
-        _res_log(
-            "[decision %d/%d] %s result action=%s qty=%s intent=%s wake=%s confidence=%.2f provider=%s model=%s fallback=%s",
-            index,
-            len(symbols_to_decide),
-            sym,
-            decision.action,
-            decision.quantity,
-            decision.intent,
-            decision.next_wake_in_minutes,
-            decision.confidence,
-            decision.llm_provider,
-            decision.llm_model,
-            decision.llm_fallback_reason,
-        )
-
-        next_wake_in_minutes = None
-        if decision.next_wake_in_minutes is not None:
-            next_wake_in_minutes = _bounded_wake_minutes(
-                decision.next_wake_in_minutes,
-                minimum=min_wake_minutes,
-                maximum=max_wake_minutes,
-            )
-
-        # L2/R3 : résoudre les intents relatifs depuis la position au portefeuille.
-        # Le flag parser reste informatif ; l'invariant aval est forcé ici.
-        if decision.resolve_from_position or decision.intent in _RELATIVE_ORDER_INTENTS:
-            raw_pos = broker.positions().get(sym)
-            pos_qty = raw_pos.quantity if raw_pos is not None else 0.0
-            decision = _resolve_position_aware_decision(decision, pos_qty)
-
-        # L5 : résolution d'un réveil événementiel (session_open / macro_event / pre_earnings).
-        # Retourne None si l'événement est inconnu ou non résolu → fail-safe cadence globale.
-        next_wake_event_iso: str | None = None
-        if decision.next_wake_event is not None:
-            next_wake_event_iso = _resolve_wake_event(
-                event=decision.next_wake_event,
-                sym=sym,
-                now=now,
-                macro_next=_cycle_macro_next,
-                next_regular_session_open=market.next_regular_session_open,
-            )
-
-        effective_quantity = abs(decision.quantity)
-
-        entry = decision_entries.build_decision_entry(
-            symbol=sym,
+        execution_state = _execute_one_cycle_decision(
+            sym=sym,
+            index=index,
+            total=len(symbols_to_decide),
             decision=decision,
-            effective_quantity=effective_quantity,
-            next_wake_in_minutes=next_wake_in_minutes,
-            next_wake_event_iso=next_wake_event_iso,
-            armed_plan_id=armed_plan_ids.get(sym),
-            armed_plan_order=armed_plan_orders.get(sym),
-            runtime_data_source=runtime_data_source_by_sym.get(sym),
+            state=execution_state,
+            ctx=execution_ctx,
         )
-        decision_source = str(entry["decision_source"])
-        if decision_source == "llm" and sym in held_symbols and _counts_as_llm_review(decision):
-            _persist_last_llm_review(
-                plan_store=plan_store,
-                symbol=sym,
-                now=now,
-                decision=decision,
-            )
-
-        reference_volatility: float | None = None
-        runtime_exit_plan = decision.exit_plan
-        # Trace le plan de sortie BRUT (avant résolution) pour diagnostiquer les
-        # rejets invalid_exit_plan:hard_stop_* sans fouiller decision_audit.json.
-        # deepcopy : normalize_exit_plan/resolve peuvent muter la structure.
-        entry["exit_plan"] = copy.deepcopy(decision.exit_plan) if decision.exit_plan else None
-        watch_preparation = decision_watches.prepare_decision_indicator_watch(
-            decision.indicator_watch,
-            symbol=sym,
-            now=now,
-            scheduling_enabled=sched is not None,
-        )
-        entry.update(watch_preparation.entry_updates)
-        if watch_preparation.rejections:
-            log.warning(
-                "indicator_watch rejets %s: %d conditions %s",
-                sym,
-                len(watch_preparation.rejections),
-                [r["reason"] for r in watch_preparation.rejections],
-            )
-        pending_indicator_watch = watch_preparation.pending_watch
-
-        def apply_decision_schedule() -> None:
-            _apply_decision_schedule(
-                sched=sched,
-                sym=sym,
-                now=now,
-                next_wake_in_minutes=next_wake_in_minutes,
-                next_wake_iso=next_wake_event_iso,
-                cancel_watch_ids=decision.cancel_watch_ids,
-                pending_indicator_watch=pending_indicator_watch,
-                entry=entry,
-            )
-
-        def apply_default_schedule_after_blocked() -> None:
-            if sched is not None:
-                sched.clear_symbol_next_wake(sym)
-
-        if (
-            decision.action in {"BUY", "SELL"}
-            and effective_quantity == 0
-            and decision.risk_pct_target is None
-        ):
-            _log_cycle_progress("[decision %d/%d] %s blocked zero_quantity_order", index, len(symbols_to_decide), sym)
-            apply_default_schedule_after_blocked()
-            record_decision({**entry, "executed": False, "reason": "zero_quantity_order"})
-            continue
-
-        # L1 — si risk_pct_target est fourni, qty=0 est un placeholder : ne pas traiter comme HOLD.
-        if decision.action == "HOLD" or (effective_quantity == 0 and decision.risk_pct_target is None):
-            # Pas de 2e ligne "hold" : la ligne result ci-dessus (DEBUG pour HOLD)
-            # porte déjà l'action.
-            apply_decision_schedule()
-            # L3 — amend_exit : l'agent peut ajuster son plan ouvert même en HOLD
-            # (remonter le stop, déplacer un TP, reserer le trailing). No-op si pas
-            # de plan ouvert ou résolution impossible — never throws.
-            if decision.amend_exit:
-                _apply_amend_exit(
-                    plan_store=plan_store,
-                    symbol=sym,
-                    amend_exit=decision.amend_exit,
-                    bars=tradable_bars_by_symbol.get(sym),
-                    entry=entry,
-                )
-            hold_reason = decision_entries.hold_reason_for_decision(
-                decision_source=decision_source,
-                rationale=decision.rationale,
-            )
-            record_decision({**entry, "executed": False, "reason": hold_reason})
-            continue
-
-        invalid_intent = _invalid_intent_reason(decision)
-        if invalid_intent is not None:
-            _log_cycle_progress("[decision %d/%d] %s blocked %s", index, len(symbols_to_decide), sym, invalid_intent)
-            apply_default_schedule_after_blocked()
-            record_decision({**entry, "executed": False, "reason": invalid_intent})
-            continue
-
-        # §13.5 — garde déterministe d'exécution : marché fermé / runtime stale / pas
-        # de prix => aucun ordre ne part (le LLM a pu décider, l'infra ne fille pas une
-        # exécution irréaliste). On APPLIQUE le scheduling non-exécutif du LLM
-        # (next_wake + indicator_watch) comme pour un HOLD : la veille/le réveil sont
-        # réellement conservés. Le RiskGate reste le fusible séparé sur le risque/montant.
-        # Fail-closed pour les ouvertures (invariant §10) ; fail-open pour les sorties.
-        execution_blocked = _execution_blocked_reason(
-            execution_eligibility,
-            sym,
-            fail_closed=decision.intent in _OPENING_INTENTS,
-        )
-        if execution_blocked is not None:
-            _log_cycle_progress(
-                "[execution] %s ordre bloqué (%s) — watch/wake conservés", sym, execution_blocked
-            )
-            apply_decision_schedule()
-            record_decision({**entry, "executed": False, "reason": execution_blocked})
-            continue
-
-        if runtime_exit_plan and decision.intent in _OPENING_INTENTS:
-            if sym in armed_reference_volatilities:
-                reference_volatility = armed_reference_volatilities[sym]
-            else:
-                reference_volatility = _reference_volatility_for_symbol(
-                    sym,
-                    entry_price=prices[sym],
-                    cockpit=cockpit,
-                    tradable_bars_by_symbol=tradable_bars_by_symbol,
-                )
-            try:
-                if decision.intent in _PURE_OPEN_INTENTS and sym not in armed_plan_ids:
-                    intent_side = "LONG" if decision.intent == "OPEN_LONG" else "SHORT"
-                    runtime_exit_plan, _trace = resolve_exit_plan(
-                        runtime_exit_plan,
-                        entry_price=prices[sym],
-                        side=intent_side,
-                        reference_volatility=reference_volatility,
-                        bars=tradable_bars_by_symbol.get(sym),
-                    )
-                elif decision.intent == "ADD":
-                    intent_side = "LONG" if decision.action == "BUY" else "SHORT"
-                    runtime_exit_plan, _trace = resolve_exit_plan(
-                        runtime_exit_plan,
-                        entry_price=prices[sym],
-                        side=intent_side,
-                        reference_volatility=reference_volatility,
-                        bars=tradable_bars_by_symbol.get(sym),
-                    )
-                else:
-                    validate_exit_plan(
-                        runtime_exit_plan,
-                        reference_volatility=reference_volatility,
-                    )
-            except InvalidExitPlanError as exc:
-                _log_cycle_progress(
-                    "[decision %d/%d] %s blocked invalid_exit_plan:%s",
-                    index,
-                    len(symbols_to_decide),
-                    sym,
-                    exc,
-                )
-                apply_default_schedule_after_blocked()
-                record_decision({**entry, "executed": False, "reason": f"invalid_exit_plan:{exc}"})
-                continue
-            hard_stop_price = _hard_stop_price(runtime_exit_plan)
-            if (
-                decision.intent in _RISK_GUARDED_OPENING_INTENTS
-                and hard_stop_price is not None
-                and _hard_stop_wrong_side(decision.intent, prices[sym], hard_stop_price, action=decision.action)
-            ):
-                _log_cycle_progress(
-                    "[decision %d/%d] %s blocked invalid_exit_plan:hard_stop_wrong_side",
-                    index,
-                    len(symbols_to_decide),
-                    sym,
-                )
-                apply_default_schedule_after_blocked()
-                record_decision({**entry, "executed": False, "reason": "invalid_exit_plan:hard_stop_wrong_side"})
-                continue
-
-        pos = broker.positions().get(sym)
-        clamped_quantity, exit_block_reason = _clamp_exit_quantity(
-            intent=decision.intent,
-            action=decision.action,
-            quantity=effective_quantity,
-            position_quantity=0.0 if pos is None else pos.quantity,
-        )
-        if exit_block_reason is not None:
-            _log_cycle_progress("[decision %d/%d] %s blocked %s", index, len(symbols_to_decide), sym, exit_block_reason)
-            apply_default_schedule_after_blocked()
-            record_decision({**entry, "executed": False, "reason": exit_block_reason})
-            continue
-        if clamped_quantity != effective_quantity:
-            entry.setdefault("requested_qty", effective_quantity)
-            effective_quantity = clamped_quantity
-            entry["qty"] = effective_quantity
-        # L1 — risk_pct_target : qty=0 est un placeholder, pas un zero_exit.
-        if effective_quantity == 0 and decision.risk_pct_target is None:
-            _log_cycle_progress("[decision %d/%d] %s hold zero_exit_quantity", index, len(symbols_to_decide), sym)
-            apply_default_schedule_after_blocked()
-            record_decision({**entry, "executed": False, "reason": "zero_exit_quantity"})
-            continue
-
-        risk_outcome = risk_admission.assess_risk_admission(
-            risk_admission.RiskAdmissionRequest(
-                action=decision.action,
-                intent=decision.intent,
-                quantity=effective_quantity,
-                price=prices[sym],
-                equity=snap.equity,
-                confidence=decision.confidence,
-                runtime_exit_plan=runtime_exit_plan,
-                risk_pct_target=decision.risk_pct_target,
-                position_quantity=0.0 if pos is None else pos.quantity,
-                position_avg_price=0.0 if pos is None else pos.avg_price,
-                require_hard_stop=require_hard_stop,
-                fx_rate=_rate(sym),
-            ),
-            gate=gate,
-        )
-        effective_quantity = risk_outcome.quantity
-        entry.update(risk_outcome.entry_updates)
-        if not risk_outcome.approved:
-            reason = risk_outcome.reason or "risk:rejected"
-            if reason == "risk:risk_sizing_needs_stop":
-                _log_cycle_progress("[risk] %s rejected code=risk_sizing_needs_stop", sym)
-            elif reason == "risk:missing_hard_stop":
-                _log_cycle_progress("[risk] %s rejected code=missing_hard_stop", sym)
-            elif reason == "risk:risk_per_trade_exceeded":
-                _log_cycle_progress(
-                    "[risk] %s rejected code=risk_per_trade_exceeded qty=%s max_qty=%s",
-                    sym,
-                    entry.get("risk_total_position_qty", effective_quantity),
-                    entry.get("max_risk_qty"),
-                )
-            elif reason == "zero_risk_quantity":
-                _log_cycle_progress("[decision %d/%d] %s hold zero_risk_quantity", index, len(symbols_to_decide), sym)
-            elif reason.startswith("risk:"):
-                _log_cycle_progress(
-                    "[risk] %s rejected code=%s confidence=%s",
-                    sym,
-                    reason.removeprefix("risk:"),
-                    decision.confidence,
-                )
-            else:
-                _log_cycle_progress("[decision %d/%d] %s blocked %s", index, len(symbols_to_decide), sym, reason)
-            apply_default_schedule_after_blocked()
-            blocked_entry = {**entry, "executed": False, "reason": reason}
-            if risk_outcome.context is not None:
-                blocked_entry["context"] = risk_outcome.context
-            record_decision(blocked_entry)
-            continue
-
-        final_risk_outcome = risk_admission.assess_final_risk_gate(
-            risk_admission.FinalRiskGateRequest(
-                symbol=sym,
-                action=decision.action,
-                quantity=effective_quantity,
-                rationale=decision.rationale,
-                intent=decision.intent,
-                price=prices[sym],
-                position_quantity=0.0 if pos is None else pos.quantity,
-                gross_exposure=gross,
-                equity=snap.equity,
-                fx_rate=_rate(sym),
-            ),
-            gate=gate,
-        )
-        order = final_risk_outcome.order
-        if not final_risk_outcome.approved:
-            _log_cycle_progress(
-                "[risk] %s rejected code=%s qty=%s price=%s",
-                sym,
-                final_risk_outcome.code,
-                order.quantity,
-                round(prices[sym], 6),
-            )
-            apply_default_schedule_after_blocked()
-            record_decision(
-                {
-                    **entry,
-                    "executed": False,
-                    "reason": final_risk_outcome.reason,
-                    "context": final_risk_outcome.context,
-                }
-            )
-            continue
-
-        if queue_execute_enabled and execute_ledger is not None:
-            # ----------------------------------------------------------------
-            # Mode outbox : broker + plan + task done dans UNE transaction SQLite.
-            # La préparation du payload atomique plan_to_upsert/symbol_to_close
-            # vit côté application ; le daemon conserve uniquement le contexte
-            # runtime nécessaire et l'enqueue/polling délégué au dispatcher.
-            # ----------------------------------------------------------------
-            _exec_entry_context = None
-            if runtime_exit_plan is not None and decision.intent in {"OPEN_LONG", "OPEN_SHORT", "ADD", "REVERSE"}:
-                _exec_entry_age = data_age_by_symbol.get(sym)
-                _exec_entry_context = entry_context.build_trade_entry_context(
-                    price=prices[sym],
-                    runtime_interval=runtime_interval,
-                    data_age_minutes=_exec_entry_age,
-                    session_open=bool(market.session_snapshot(sym, now=now).get("open")),
-                    daily_as_of=((execution_eligibility.get(sym) or {}).get("planning") or {}).get("daily_as_of"),
-                )
-            _exec_plan_payload = execute_queue_plan.build_execute_queue_plan_payload(
-                plan_reader=plan_store,
-                symbol=sym,
-                action=decision.action,
-                intent=decision.intent,
-                quantity=effective_quantity,
-                price=prices[sym],
-                opened_at=now.isoformat(),
-                runtime_exit_plan=runtime_exit_plan,
-                reference_volatility=reference_volatility,
-                rationale=decision.rationale,
-                entry_context=_exec_entry_context,
-                position_quantity=0.0 if pos is None else pos.quantity,
-                position_avg_price=0.0 if pos is None else pos.avg_price,
-                llm_provider=decision.llm_provider,
-                llm_model=decision.llm_model,
-                llm_fallback_reason=decision.llm_fallback_reason,
-                llm_confidence=decision.confidence,
-            )
-            # FIX 4 — dedup_key STABLE par (cycle, sym, intent) pour idempotence
-            # d'enqueue : un re-enqueue après crash du cycle retourne None (pas de
-            # doublon). partition_key="portfolio" : au plus un execute_order running
-            # à la fois (sérialisation accès broker).
-            _exec_outcome = execute_queue_dispatch.dispatch_execute_order_via_queue(
-                ledger=execute_ledger,
-                symbol=sym,
-                side=decision.action,
-                quantity=effective_quantity,
-                rationale=decision.rationale,
-                price=prices[sym],
-                ts=now.isoformat(),
-                fx_rate=_rate(sym),
-                dry_run=dry_run,
-                plan_to_upsert=_exec_plan_payload.plan_to_upsert,
-                symbol_to_close=_exec_plan_payload.symbol_to_close,
-                cycle_id=now.isoformat(),
-                intent=decision.intent,
-                budget_s=_EXECUTE_POLL_BUDGET_S,
-            )
-            if _exec_outcome.reason is not None:
-                apply_default_schedule_after_blocked()
-                record_decision({**entry, "executed": False, "reason": _exec_outcome.reason})
-                continue
-            fill = _exec_outcome.fill
-        else:
-            fill = broker.submit(order, prices[sym], now.isoformat(), dry_run=dry_run, fx_rate=_rate(sym))
-        if not dry_run:
-            gate.record_pass()
-            gross = _gross_exposure(broker, prices, rate_of=_rate)
-            if fill is not None:
-                latest = portfolio.snapshot(broker, lambda s: prices.get(s, 0.0), starting_equity, fx_rate_of=_rate)
-                final_position = broker.positions().get(sym)
-                fill_accounting = fill_outcome.build_fill_accounting(
-                    fill=fill,
-                    symbol=sym,
-                    action=decision.action,
-                    intent=decision.intent,
-                    quantity=effective_quantity,
-                    price=prices[sym],
-                    confidence=decision.confidence,
-                    llm_provider=decision.llm_provider,
-                    llm_model=decision.llm_model,
-                    llm_fallback_reason=decision.llm_fallback_reason,
-                    equity=latest.equity,
-                    cash=latest.cash,
-                    position_quantity=0.0 if final_position is None else final_position.quantity,
-                )
-                _append_model_performance(**fill_accounting.model_performance)
-                entry.update(fill_accounting.entry_updates)
-                plan_entry_context: dict = {}
-                if runtime_exit_plan and decision.intent in _OPENING_INTENTS:
-                    # §13.7 — contexte d'entrée durable capturé dans le TradePlan : la thèse
-                    # (rationale LLM) et un snapshot du contexte au tir, réinjectables au réveil.
-                    _entry_age = data_age_by_symbol.get(sym)
-                    plan_entry_context = entry_context.build_trade_entry_context(
-                        price=prices[sym],
-                        runtime_interval=runtime_interval,
-                        data_age_minutes=_entry_age,
-                        session_open=bool(market.session_snapshot(sym, now=now).get("open")),
-                        daily_as_of=((execution_eligibility.get(sym) or {}).get("planning") or {}).get("daily_as_of"),
-                    )
-                fill_plan_effects.apply_filled_plan_effects(
-                    entry=entry,
-                    broker=broker,
-                    plan_store=plan_store,
-                    symbol=sym,
-                    action=decision.action,
-                    intent=decision.intent,
-                    quantity=effective_quantity,
-                    price=prices[sym],
-                    opened_at=fill.ts,
-                    runtime_exit_plan=runtime_exit_plan,
-                    reference_volatility=reference_volatility,
-                    llm_provider=decision.llm_provider,
-                    llm_model=decision.llm_model,
-                    llm_fallback_reason=decision.llm_fallback_reason,
-                    llm_confidence=decision.confidence,
-                    queue_execute_enabled=queue_execute_enabled,
-                    entry_thesis=decision.rationale,
-                    entry_context=plan_entry_context,
-                )
-            if fill is not None and decision.intent in _OPENING_INTENTS:
-                post_entry_wake = market.freshness_budget_minutes(runtime_interval, grace_minutes=0.0)
-                if next_wake_in_minutes is None or next_wake_in_minutes > post_entry_wake:
-                    next_wake_in_minutes = post_entry_wake
-                    entry["next_wake_in_minutes"] = next_wake_in_minutes
-                    entry["post_entry_review_scheduled"] = True
-        _log_cycle_progress(
-            "[order] %s %s qty=%s price=%s executed=%s plan=%s",
-            sym,
-            decision.action,
-            effective_quantity,
-            round(prices[sym], 6),
-            not dry_run,
-            entry["trade_plan_created"],
-        )
-        apply_decision_schedule()
-        record_decision({**entry, "executed": not dry_run, "reason": "ok", "price": prices[sym]})
+        snap = execution_state.snap
+        gross = execution_state.gross
 
     report["model_calls_used"] = model_calls_used
     refresh_report_portfolio()
