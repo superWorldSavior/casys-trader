@@ -28,7 +28,7 @@ class StartablePool(Protocol):
 
 NowMs = Callable[[], int]
 _DEFAULT_DECIDE_LEASE_MS = 1_800_000
-_DECIDE_SESSION_LEASE_MARGIN_FACTOR = 1.5
+_DECIDE_SESSION_LEASE_MARGIN_FACTOR = 1.25
 
 
 def default_now_ms() -> int:
@@ -48,10 +48,10 @@ def _decide_session_lease_ms(
     timeout_s = max(int(decision_timeout_s), 1)
     rounds = max(int(max_rounds), 1)
     backends = max(int(backend_count), 1)
-    # Un provider peut consommer (max_rounds + 1) prompts de timeout+15s ; le
-    # runner peut recommencer depuis zero sur chaque backend. La marge 50% couvre
-    # open/close, scheduler et petite latence système sans réduire le bail legacy.
-    worst_case_s = (rounds + 1) * (timeout_s + 15) * backends
+    # Pire cas par backend : open=timeout+30, prompts=(max_rounds+1)*(timeout+15),
+    # close=15. Le runner peut recommencer depuis zero sur chaque backend.
+    per_backend_s = (timeout_s + 30) + (rounds + 1) * (timeout_s + 15) + 15
+    worst_case_s = backends * per_backend_s
     return max(_DEFAULT_DECIDE_LEASE_MS, int(worst_case_s * _DECIDE_SESSION_LEASE_MARGIN_FACTOR * 1000))
 
 

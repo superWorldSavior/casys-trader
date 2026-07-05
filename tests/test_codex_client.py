@@ -557,6 +557,8 @@ def test_build_batch_prompt_catalogue_max_rounds_3_est_round_aware():
     low = prompt.lower()
 
     assert "jusqu'à 3 tournées" in low
+    assert "à chaque tour" in low
+    assert "au premier tour" not in low
     assert "une seule tournée" not in low
     assert "bloquée en hold" not in low
 

@@ -268,7 +268,7 @@ def test_start_decide_queue_max_rounds_1_construit_et_filtre_les_session_backend
     assert handler_kwargs[0]["session_backends"] == [acpx_backend]
 
 
-def test_start_decide_queue_passe_un_lease_adapte_aux_sessions_longues(
+def test_start_decide_queue_passe_un_lease_qui_couvre_le_pire_cas_strict(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -308,7 +308,12 @@ def test_start_decide_queue_passe_un_lease_adapte_aux_sessions_longues(
         ),
     )
 
-    assert FakePool.instances[0].lease_ms > 1_800_000
+    timeout_s = 900
+    rounds = ToolServices.max_rounds
+    backends = 2
+    per_backend_s = (timeout_s + 30) + (rounds + 1) * (timeout_s + 15) + 15
+    worst_case_ms = backends * per_backend_s * 1000
+    assert FakePool.instances[0].lease_ms >= worst_case_ms
 
 
 def test_start_decide_queue_sans_acpx_backend_leve_runtimeerror(tmp_path: Path, monkeypatch) -> None:

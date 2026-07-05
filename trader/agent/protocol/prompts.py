@@ -399,12 +399,12 @@ def _symbol_calls_final_contract(allow_tool_calls: bool = False, max_rounds: int
             )
         else:
             head = (
-                "Au PREMIER tour, tu choisis librement : soit tu émets d'abord "
-                f"{_round_label(max_rounds)} d'outils lecture-seule "
+                f"À chaque tour ({_round_label(max_rounds)}), tu choisis librement : soit tu demandes "
+                "des outils lecture-seule "
                 '{"tool_calls":[...]}'
                 " (cf. « Outils domaine » ci-dessus) pour aller chercher le contexte "
                 "qui te manque, soit tu rends directement le contrat final ci-dessous. "
-                "Quand tu as assez de contexte, rends le contrat final.\n"
+                "Au tour final imposé, plus aucun outil n'est accepté.\n"
             )
     else:
         head = (
