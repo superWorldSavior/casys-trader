@@ -118,6 +118,142 @@ class _SequencedLedger:
         return task
 
 
+class _ScriptedIterLedger:
+    def __init__(self, states_by_symbol: dict[str, list[dict]]):
+        self._next_id = 1
+        self._task_id_by_symbol: dict[str, int] = {}
+        self._symbol_by_id: dict[int, str] = {}
+        self._states_by_symbol = {
+            sym: list(states)
+            for sym, states in states_by_symbol.items()
+        }
+
+    def delete_stale_decide(self, *, current_cycle_id: str, now_ms: int) -> int:
+        return 0
+
+    def enqueue(self, *, kind, priority, scheduled_at_ms, now_ms, dedup_key=None,
+                partition_key=None, resource=None, payload=None, max_attempts=3, parent_id=None):
+        task_id = self._next_id
+        self._next_id += 1
+        sym = str(partition_key)
+        self._task_id_by_symbol[sym] = task_id
+        self._symbol_by_id[task_id] = sym
+        return task_id
+
+    def get(self, task_id: int) -> dict | None:
+        sym = self._symbol_by_id[task_id]
+        states = self._states_by_symbol[sym]
+        task = dict(states.pop(0) if states else {"status": "done"})
+        if task.get("missing"):
+            return None
+        task.setdefault("id", task_id)
+        task.setdefault("partition_key", sym)
+        if task.get("status") == "done" and "result" not in task:
+            task["result"] = _decision_result_json(sym, calls=int(task.get("calls", 1)))
+        return task
+
+
+def _iter_events(ledger, symbols: list[str]):
+    return queue_dispatch_mod.iter_decide_results_via_queue(
+        ledger=ledger,
+        decidable=symbols,
+        mandate="m",
+        memory="m",
+        shared_context={},
+        symbol_facts_by_sym={sym: {} for sym in symbols},
+        decision_timeout_s=60,
+        agent_tools_enabled=False,
+        cycle_id="cycle-iter",
+        now_fn=lambda: 2.0,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Tests itérateur événementiel decide queue
+# ---------------------------------------------------------------------------
+
+
+def test_iter_decide_results_yields_done_before_slow_symbol_finishes(monkeypatch):
+    """Une décision terminale est yieldée avant que le symbole lent ne termine."""
+    sleeps: list[float] = []
+    monkeypatch.setattr(queue_dispatch_mod._time, "sleep", lambda seconds: sleeps.append(seconds))
+
+    events = _iter_events(
+        _ScriptedIterLedger(
+            {
+                "FAST": [{"status": "done", "calls": 2}],
+                "SLOW": [{"status": "pending"}, {"status": "done"}],
+            }
+        ),
+        ["SLOW", "FAST"],
+    )
+
+    sym, decision, calls = next(events)
+
+    assert sym == "FAST"
+    assert isinstance(decision, Decision)
+    assert decision.symbol == "FAST"
+    assert calls == 2
+    assert sleeps == []
+
+    assert [(sym, decision.symbol if decision else None, calls) for sym, decision, calls in events] == [
+        ("SLOW", "SLOW", 1),
+    ]
+    assert sleeps == [0.1]
+
+
+def test_iter_decide_results_yields_ready_symbols_in_stable_sorted_order():
+    """Les terminaux d'une même passe sortent dans l'ordre trié des symboles."""
+    symbols = ["MSFT", "AAPL", "GOOG"]
+    events = list(
+        _iter_events(
+            _ScriptedIterLedger({sym: [{"status": "done"}] for sym in symbols}),
+            symbols,
+        )
+    )
+
+    assert [sym for sym, _decision, _calls in events] == ["AAPL", "GOOG", "MSFT"]
+
+
+def test_iter_decide_results_running_expired_lease_yields_undecided_event():
+    """Un running au lease expiré yield un event undecided sans HOLD synthétique."""
+    events = list(
+        _iter_events(
+            _ScriptedIterLedger(
+                {
+                    "EXPIRED": [
+                        {"status": "running", "lease_expires_at": 1_000},
+                    ],
+                }
+            ),
+            ["EXPIRED"],
+        )
+    )
+
+    assert events == [("EXPIRED", None, 0)]
+
+
+def test_iter_decide_results_never_yields_same_symbol_twice():
+    """Même si la task reste visible en done, un symbole terminal ne sort qu'une fois."""
+    events = list(
+        _iter_events(
+            _ScriptedIterLedger(
+                {
+                    "ONCE": [
+                        {"status": "done"},
+                        {"status": "done"},
+                    ],
+                }
+            ),
+            ["ONCE"],
+        )
+    )
+
+    assert [(sym, decision.symbol if decision else None, calls) for sym, decision, calls in events] == [
+        ("ONCE", "ONCE", 1),
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Tests ledger — méthodes ajoutées
 # ---------------------------------------------------------------------------

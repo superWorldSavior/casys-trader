@@ -34,7 +34,7 @@ from __future__ import annotations
 import json
 import logging
 import time as _time
-from typing import Callable
+from typing import Callable, Iterator
 
 from trader.agent.protocol.types import Decision
 
@@ -46,7 +46,7 @@ _POLL_SLEEP_S: float = 0.1
 _POLL_SLEEP_MAX_S: float = 0.5
 
 
-def dispatch_decide_via_queue(
+def _enqueue_decide_tasks(
     *,
     ledger,
     decidable: list[str],
@@ -59,44 +59,8 @@ def dispatch_decide_via_queue(
     cycle_id: str,
     now_fn: Callable[[], float],
     symbols_universe: list[str] | None = None,
-) -> tuple[dict[str, Decision], int, set[str]]:
-    """Enfile les décisions grain-symbole et collecte les résultats via polling.
-
-    Parameters
-    ----------
-    ledger:
-        ``TaskLedger`` dédié à la file decide (``task_ledger.db``).
-    decidable:
-        Liste des symboles à décider ce cycle (déjà priorisés en amont).
-    mandate, memory, shared_context:
-        Contexte partagé transmis tel quel au handler decide.
-    symbol_facts_by_sym:
-        Faits pré-construits par ``build_symbol_facts`` (+ indicator_triggers),
-        un dict par symbole. Clé = symbole.
-    decision_timeout_s:
-        Plafond de l'appel LLM interne (passé dans le payload).
-    agent_tools_enabled:
-        Transmis au handler (use_symbol_calls_contract).
-    cycle_id:
-        Identifiant unique du cycle courant (ex. ``now.isoformat()``).
-        Préfixe les dedup_keys : ``{cycle_id}:{sym}``.
-    now_fn:
-        ``Callable[[], float]`` retournant epoch secondes. Injectable pour les tests.
-
-    Returns
-    -------
-    tuple[dict[str, Decision], int, set[str]]
-        ``(decisions_by_symbol, model_calls_used, undecided_symbols)`` où :
-
-        - ``decisions_by_symbol`` : décisions collectées ce cycle.
-        - ``model_calls_used`` : appels LLM réellement consommés (somme des
-          ``model_calls`` remontés par les handlers ; 1/décision sans round,
-          2+/décision avec tour d'outils).
-        - ``undecided_symbols`` : symboles non décidés ce cycle = skippés
-          (dead / lease expiré / task introuvable). Ces symboles ne doivent
-          PAS recevoir un HOLD synthétique — ils seront redécidés quand la file
-          les rendra à nouveau admissibles.
-    """
+) -> tuple[dict[str, int], set[str]]:
+    """Purge les stale puis enfile une tâche decide par symbole admissible."""
     now_ms = int(now_fn() * 1000)
 
     # -----------------------------------------------------------------------
@@ -165,20 +129,63 @@ def dispatch_decide_via_queue(
                 )
                 enqueue_skipped_syms.add(sym)
 
+    return task_ids, enqueue_skipped_syms
+
+
+def iter_decide_results_via_queue(
+    *,
+    ledger,
+    decidable: list[str],
+    mandate: str,
+    memory: str,
+    shared_context: dict,
+    symbol_facts_by_sym: dict[str, dict],
+    decision_timeout_s: int,
+    agent_tools_enabled: bool,
+    cycle_id: str,
+    now_fn: Callable[[], float],
+    symbols_universe: list[str] | None = None,
+) -> Iterator[tuple[str, Decision | None, int]]:
+    """Yield les résultats de décisions dès que leur tâche atteint un terminal.
+
+    Chaque événement vaut ``(sym, decision, model_calls)``. ``decision is None``
+    signifie undecided : enqueue impossible, tâche introuvable, dead, lease expiré
+    ou résultat terminal impossible à désérialiser. Aucun HOLD synthétique n'est
+    produit ici.
+    """
+    task_ids, enqueue_skipped_syms = _enqueue_decide_tasks(
+        ledger=ledger,
+        decidable=decidable,
+        mandate=mandate,
+        memory=memory,
+        shared_context=shared_context,
+        symbol_facts_by_sym=symbol_facts_by_sym,
+        decision_timeout_s=decision_timeout_s,
+        agent_tools_enabled=agent_tools_enabled,
+        cycle_id=cycle_id,
+        now_fn=now_fn,
+        symbols_universe=symbols_universe,
+    )
+
     # -----------------------------------------------------------------------
     # 3. Collecte — polling jusqu'à état terminal
     # -----------------------------------------------------------------------
-    decisions_by_symbol: dict[str, Decision] = {}
-    model_calls_by_sym: dict[str, int] = {}
     pending_syms = set(task_ids)
-    # Symboles non résolus (dead/lease expiré/introuvable) — seront dans undecided.
-    skipped_syms: set[str] = set(enqueue_skipped_syms)
+    processed_syms: set[str] = set()
     poll_sleep_s = _POLL_SLEEP_S
+
+    for sym in sorted(enqueue_skipped_syms):
+        processed_syms.add(sym)
+        yield sym, None, 0
 
     while pending_syms:
         resolved = set()
         poll_now_ms = int(now_fn() * 1000)
-        for sym in pending_syms:
+        for sym in sorted(pending_syms):
+            if sym in processed_syms:
+                resolved.add(sym)
+                continue
+
             tid = task_ids[sym]
             task = ledger.get(tid)
             if task is None:
@@ -187,50 +194,54 @@ def dispatch_decide_via_queue(
                     sym,
                     tid,
                 )
-                skipped_syms.add(sym)
+                processed_syms.add(sym)
                 resolved.add(sym)
+                yield sym, None, 0
                 continue
 
             status = task.get("status")
             if status == "done":
                 result_json = task.get("result")
-                if result_json:
-                    try:
-                        data = json.loads(result_json)
-                        # Enveloppe T4 {"decision": ..., "model_calls": n} ;
-                        # rétro-compat : ancien format plat = asdict(Decision) direct.
-                        if isinstance(data, dict) and "decision" in data:
-                            decision_data = data["decision"]
-                            # Clamp >=1 (E4c) : la valeur vient de la DB, ne pas
-                            # laisser un 0/négatif fausser le fusible.
-                            calls = max(1, int(data.get("model_calls") or 1))
-                        else:
-                            decision_data = data
-                            calls = 1
-                        decisions_by_symbol[sym] = Decision(**decision_data)
-                        model_calls_by_sym[sym] = calls
-                        log.debug(
-                            "[queue_dispatch] collected sym=%s action=%s calls=%d",
-                            sym,
-                            decisions_by_symbol[sym].action,
-                            calls,
-                        )
-                    except Exception as exc:  # noqa: BLE001 — skip au lieu de bloquer
-                        log.warning(
-                            "[queue_dispatch] désérialisation Decision échouée sym=%s: %s",
-                            sym,
-                            exc,
-                        )
-                        skipped_syms.add(sym)
-                resolved.add(sym)
+                try:
+                    data = json.loads(result_json) if result_json else None
+                    # Enveloppe T4 {"decision": ..., "model_calls": n} ;
+                    # rétro-compat : ancien format plat = asdict(Decision) direct.
+                    if isinstance(data, dict) and "decision" in data:
+                        decision_data = data["decision"]
+                        # Clamp >=1 (E4c) : la valeur vient de la DB, ne pas
+                        # laisser un 0/négatif fausser le fusible.
+                        calls = max(1, int(data.get("model_calls") or 1))
+                    else:
+                        decision_data = data
+                        calls = 1
+                    decision = Decision(**decision_data)
+                    log.debug(
+                        "[queue_dispatch] collected sym=%s action=%s calls=%d",
+                        sym,
+                        decision.action,
+                        calls,
+                    )
+                    processed_syms.add(sym)
+                    resolved.add(sym)
+                    yield sym, decision, calls
+                except Exception as exc:  # noqa: BLE001 — skip au lieu de bloquer
+                    log.warning(
+                        "[queue_dispatch] désérialisation Decision échouée sym=%s: %s",
+                        sym,
+                        exc,
+                    )
+                    processed_syms.add(sym)
+                    resolved.add(sym)
+                    yield sym, None, 0
             elif status == "dead":
                 log.warning(
                     "[queue_dispatch] task dead sym=%s task_id=%s — skip",
                     sym,
                     tid,
                 )
-                skipped_syms.add(sym)
+                processed_syms.add(sym)
                 resolved.add(sym)
+                yield sym, None, 0
             elif status == "running":
                 lease_expires_at = task.get("lease_expires_at")
                 if lease_expires_at is not None and int(lease_expires_at) < poll_now_ms:
@@ -239,8 +250,9 @@ def dispatch_decide_via_queue(
                         sym,
                         tid,
                     )
-                    skipped_syms.add(sym)
+                    processed_syms.add(sym)
                     resolved.add(sym)
+                    yield sym, None, 0
 
         pending_syms -= resolved
 
@@ -250,6 +262,81 @@ def dispatch_decide_via_queue(
             _time.sleep(poll_sleep_s)
             if not resolved:
                 poll_sleep_s = min(_POLL_SLEEP_MAX_S, poll_sleep_s * 2)
+
+
+def dispatch_decide_via_queue(
+    *,
+    ledger,
+    decidable: list[str],
+    mandate: str,
+    memory: str,
+    shared_context: dict,
+    symbol_facts_by_sym: dict[str, dict],
+    decision_timeout_s: int,
+    agent_tools_enabled: bool,
+    cycle_id: str,
+    now_fn: Callable[[], float],
+    symbols_universe: list[str] | None = None,
+) -> tuple[dict[str, Decision], int, set[str]]:
+    """Enfile les décisions grain-symbole et collecte les résultats via polling.
+
+    Parameters
+    ----------
+    ledger:
+        ``TaskLedger`` dédié à la file decide (``task_ledger.db``).
+    decidable:
+        Liste des symboles à décider ce cycle (déjà priorisés en amont).
+    mandate, memory, shared_context:
+        Contexte partagé transmis tel quel au handler decide.
+    symbol_facts_by_sym:
+        Faits pré-construits par ``build_symbol_facts`` (+ indicator_triggers),
+        un dict par symbole. Clé = symbole.
+    decision_timeout_s:
+        Plafond de l'appel LLM interne (passé dans le payload).
+    agent_tools_enabled:
+        Transmis au handler (use_symbol_calls_contract).
+    cycle_id:
+        Identifiant unique du cycle courant (ex. ``now.isoformat()``).
+        Préfixe les dedup_keys : ``{cycle_id}:{sym}``.
+    now_fn:
+        ``Callable[[], float]`` retournant epoch secondes. Injectable pour les tests.
+
+    Returns
+    -------
+    tuple[dict[str, Decision], int, set[str]]
+        ``(decisions_by_symbol, model_calls_used, undecided_symbols)`` où :
+
+        - ``decisions_by_symbol`` : décisions collectées ce cycle.
+        - ``model_calls_used`` : appels LLM réellement consommés (somme des
+          ``model_calls`` remontés par les handlers ; 1/décision sans round,
+          2+/décision avec tour d'outils).
+        - ``undecided_symbols`` : symboles non décidés ce cycle = skippés
+          (dead / lease expiré / task introuvable). Ces symboles ne doivent
+          PAS recevoir un HOLD synthétique — ils seront redécidés quand la file
+          les rendra à nouveau admissibles.
+    """
+    decisions_by_symbol: dict[str, Decision] = {}
+    model_calls_by_sym: dict[str, int] = {}
+    skipped_syms: set[str] = set()
+
+    for sym, decision, calls in iter_decide_results_via_queue(
+        ledger=ledger,
+        decidable=decidable,
+        mandate=mandate,
+        memory=memory,
+        shared_context=shared_context,
+        symbol_facts_by_sym=symbol_facts_by_sym,
+        decision_timeout_s=decision_timeout_s,
+        agent_tools_enabled=agent_tools_enabled,
+        cycle_id=cycle_id,
+        now_fn=now_fn,
+        symbols_universe=symbols_universe,
+    ):
+        if decision is None:
+            skipped_syms.add(sym)
+            continue
+        decisions_by_symbol[sym] = decision
+        model_calls_by_sym[sym] = calls
 
     # FIX 2 : undecided = skippés (dead/lease expiré/introuvable).
     # run_cycle EXCLUT ces symboles du fallback HOLD synthétique en mode queue.
