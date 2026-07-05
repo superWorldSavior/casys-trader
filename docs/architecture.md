@@ -56,6 +56,7 @@ les utilisaient :
 | `trader/application/cycle_schedule.py` | Politique applicative de réveil : bornes explicites, backoff stale, due symbols, veilles et événements de réveil | le daemon garde des wrappers privés de compatibilité |
 | `trader/application/confidence_feedback.py` | Feedback persistant des rejets de gate confiance vers les learnings de l'agent | le daemon conserve le wrapper privé historique |
 | `trader/application/execution_eligibility.py` | Classification execution/planning par symbole et raison de blocage d'exécution | utilisé par `market_snapshot` et wrappers privés du daemon |
+| `trader/application/entry_context.py` | Construction pure du snapshot durable `entry_context` attaché aux TradePlans | utilisé par le chemin direct post-fill et le payload execute queue |
 | `trader/application/execute_queue_dispatch.py` | Producteur/collecteur applicatif des tâches `execute_order` en mode queue : payload, dedup, polling, décodage fill et raisons fail-closed | le daemon garde l'enregistrement de décision |
 | `trader/application/execute_queue_plan.py` | Préparation pure du payload atomique `plan_to_upsert` / `symbol_to_close` pour le mode execute queue | contrat `Protocol` local pour lire les plans ouverts ; le daemon fournit le contexte runtime |
 | `trader/application/exit_bars.py` | Fetch/validation des barres fines de sortie et calcul high/low de fenêtre pour plans ouverts | branché comme `exit_bars_fetcher` dans `market_snapshot`, wrappers privés du daemon |

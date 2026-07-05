@@ -36,6 +36,7 @@ from trader.application import (
     confidence_feedback,
     decision_entries,
     decision_watches,
+    entry_context,
     execute_queue_dispatch,
     execute_queue_plan,
     execution_eligibility as execution_eligibility_service,
@@ -1845,15 +1846,13 @@ def run_cycle(
             _exec_entry_context = None
             if runtime_exit_plan is not None and decision.intent in {"OPEN_LONG", "OPEN_SHORT", "ADD", "REVERSE"}:
                 _exec_entry_age = data_age_by_symbol.get(sym)
-                _exec_entry_context = {
-                    "price": prices[sym],
-                    "runtime_interval": runtime_interval,
-                    "data_age_m": None if _exec_entry_age is None else int(round(_exec_entry_age)),
-                    "session_open": bool(market.session_snapshot(sym, now=now).get("open")),
-                    "daily_as_of": (
-                        (execution_eligibility.get(sym) or {}).get("planning") or {}
-                    ).get("daily_as_of"),
-                }
+                _exec_entry_context = entry_context.build_trade_entry_context(
+                    price=prices[sym],
+                    runtime_interval=runtime_interval,
+                    data_age_minutes=_exec_entry_age,
+                    session_open=bool(market.session_snapshot(sym, now=now).get("open")),
+                    daily_as_of=((execution_eligibility.get(sym) or {}).get("planning") or {}).get("daily_as_of"),
+                )
             _exec_plan_payload = execute_queue_plan.build_execute_queue_plan_payload(
                 plan_reader=plan_store,
                 symbol=sym,
@@ -1928,15 +1927,13 @@ def run_cycle(
                     # §13.7 — contexte d'entrée durable capturé dans le TradePlan : la thèse
                     # (rationale LLM) et un snapshot du contexte au tir, réinjectables au réveil.
                     _entry_age = data_age_by_symbol.get(sym)
-                    plan_entry_context = {
-                        "price": prices[sym],
-                        "runtime_interval": runtime_interval,
-                        "data_age_m": None if _entry_age is None else int(round(_entry_age)),
-                        "session_open": bool(market.session_snapshot(sym, now=now).get("open")),
-                        "daily_as_of": (
-                            (execution_eligibility.get(sym) or {}).get("planning") or {}
-                        ).get("daily_as_of"),
-                    }
+                    plan_entry_context = entry_context.build_trade_entry_context(
+                        price=prices[sym],
+                        runtime_interval=runtime_interval,
+                        data_age_minutes=_entry_age,
+                        session_open=bool(market.session_snapshot(sym, now=now).get("open")),
+                        daily_as_of=((execution_eligibility.get(sym) or {}).get("planning") or {}).get("daily_as_of"),
+                    )
                 fill_plan_effects.apply_filled_plan_effects(
                     entry=entry,
                     broker=broker,
