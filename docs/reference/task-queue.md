@@ -188,6 +188,28 @@ Répartition runtime :
   `exec:{cycle}:{sym}:{intent}`. Si `CASYS_STATE_BACKEND != sqlite`, le flag est
   ignoré avec warning (broker/plan/ledger doivent partager la même `casys.db`).
 
+### Orchestration decide → execute (streaming, sous itération libre)
+
+Sous l'itération libre (décisions de durée variable), `run_cycle` ne collecte plus
+tout le lot avant d'exécuter — sinon l'exécution serait otage du symbole le plus
+lent. À la place :
+
+- **Collecte événementielle** : `dispatch_decide` expose `iter_decide_results_via_queue`
+  qui **yield chaque décision dès son état terminal** (done → décision, dead/lease-expiré
+  → `undecided`), sans attendre le reste. `budget_s` a été supprimé (doublon du timeout
+  par appel) : on **attend jusqu'à terminal**, un worker mort expire vite (lease court +
+  heartbeat par round), un résultat tardif est collecté, plus jeté.
+- **Sorties streamées** : `CLOSE`/`REDUCE` (intent **résolu** position-aware) → exécutées
+  **immédiatement**, refresh marge — libèrent de la marge sans attendre le lot.
+- **Ouvertures bufferisées** : `OPEN_*`/`ADD`/`REVERSE` (REVERSE = ouverture, jamais
+  streamé) → exécutées ensuite en `gross_execution_order` (arbitrage au mérite préservé,
+  voit la marge refreshée par les sorties). Budget des ouvertures = le RiskGate/marge (le
+  cap de count `max_orders_per_cycle` a été retiré : les bornes $ sont la safety).
+- **Garde timeout** : un `execute_order` timeouté est **abandonné** (`ledger.abandon` →
+  `dead`) ; le **fence early** de l'UoW empêche toute soumission tardive au broker. Course
+  done/abandon fermée (relecture + crédit du fill). Une **ouverture** timeoutée stoppe le
+  reste du batch d'ouvertures (`undecided`).
+
 ### Observabilité
 
 - **`[state-compare]`** (fin de cycle, sous sqlite) : `compare_backends` compare
