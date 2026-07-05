@@ -199,6 +199,10 @@ class TestDaemonDataSourcesConfig:
             dispatch_calls.append(kwargs)
             return _empty_report(now)
 
+        monkeypatch.setenv("CASYS_STATE_BACKEND", "sqlite")
+        monkeypatch.setenv("CASYS_QUEUE_DECIDE_ENABLED", "1")
+        monkeypatch.setenv("CASYS_QUEUE_EXECUTE_ENABLED", "1")
+        monkeypatch.setenv("CASYS_AGENT_TOOLS_ENABLED", "1")
         monkeypatch.setattr(daemon, "ROOT", tmp_path)
         monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
         monkeypatch.setattr(daemon, "data_source_runtime", data_source_runtime, raising=False)
@@ -219,9 +223,9 @@ class TestDaemonDataSourcesConfig:
         context = call["context"]
         assert context.dry_run is True
         assert context.data_source is delegated_source
-        assert context.queue_decide_enabled is False
-        assert context.queue_execute_enabled is False
-        assert context.agent_tools_enabled is False
+        assert context.queue_decide_enabled is True
+        assert context.queue_execute_enabled is True
+        assert context.agent_tools_enabled is True
 
     def test_config_presente_construit_composite_et_passe_au_cycle(
         self, monkeypatch, tmp_path
