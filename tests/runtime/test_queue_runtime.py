@@ -159,6 +159,32 @@ def test_start_decide_queue_builds_ledger_pool_and_handler(tmp_path: Path, monke
     assert logger.warnings[0][0].startswith("[queue_decide] CASYS_DECISION_BATCH_SIZE=%d IGNORÉ")
 
 
+def test_start_decide_queue_refuse_parallelism_zero(tmp_path: Path) -> None:
+    _reset_fakes()
+
+    class FakeCodexClient:
+        DEFAULT_MODEL = "gpt-5.5"
+
+    with pytest.raises(ValueError, match="au moins 1 worker"):
+        queue_runtime.start_decide_queue(
+            enabled=True,
+            state_dir=tmp_path,
+            parallelism=0,
+            decision_batch_size=5,
+            default_decision_batch_size=5,
+            codex_client=FakeCodexClient,
+            factories=queue_runtime.DecideQueueFactories(
+                task_ledger_cls=FakeLedger,
+                resource_pools_cls=FakePools,
+                decide_pool_cls=FakePool,
+                make_decide_handler=lambda **_kwargs: "decide-handler",
+            ),
+        )
+
+    assert FakeLedger.instances == []
+    assert FakePool.instances == []
+
+
 def test_start_decide_queue_construit_et_filtre_les_session_backends(
     tmp_path: Path,
     monkeypatch,

@@ -185,6 +185,9 @@ def start_decide_queue(
     if not enabled:
         return DecideQueueRuntime(enabled=False)
 
+    if int(parallelism) < 1:
+        raise ValueError("[queue_decide] le pool decide requiert au moins 1 worker")
+
     log = logger or _default_logger()
     resolved = factories or DecideQueueFactories.defaults()
     task_ledger_cls = resolved.task_ledger_cls or _default_task_ledger_cls()

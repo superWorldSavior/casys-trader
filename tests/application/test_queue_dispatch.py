@@ -18,6 +18,7 @@ from datetime import datetime, timezone
 
 from trader.agent.protocol.types import Decision
 from trader.application.decide_handler import make_decide_handler
+import trader.application.queue_dispatch as queue_dispatch_mod
 from trader.application.queue_dispatch import dispatch_decide_via_queue
 from trader.queue.decide_pool import DecidePool
 from trader.queue.ledger import TaskLedger
@@ -75,6 +76,46 @@ class _FakeClient:
         if self._raise_exc is not None:
             raise self._raise_exc
         return {sym: self._responses.get(sym, _ok_decision(sym)) for sym in symbols}
+
+
+class _SequencedLedger:
+    def __init__(self):
+        self._next_id = 1
+        self._dedup_by_id: dict[int, str] = {}
+        self._symbol_by_id: dict[int, str] = {}
+        self._states_by_id: dict[int, list[str]] = {}
+        self._last_state_by_id: dict[int, str] = {}
+
+    def delete_stale_decide(self, *, current_cycle_id: str, now_ms: int) -> int:
+        return 0
+
+    def enqueue(self, *, kind, priority, scheduled_at_ms, now_ms, dedup_key=None,
+                partition_key=None, resource=None, payload=None, max_attempts=3, parent_id=None):
+        task_id = self._next_id
+        self._next_id += 1
+        self._dedup_by_id[task_id] = str(dedup_key)
+        self._symbol_by_id[task_id] = str(partition_key)
+        if partition_key == "A":
+            states = ["pending", "pending", "done"]
+        else:
+            states = ["pending", "pending", "pending", "done"]
+        self._states_by_id[task_id] = states
+        self._last_state_by_id[task_id] = states[0]
+        return task_id
+
+    def get(self, task_id: int) -> dict:
+        states = self._states_by_id[task_id]
+        state = states.pop(0) if states else self._last_state_by_id[task_id]
+        self._last_state_by_id[task_id] = state
+        task = {
+            "id": task_id,
+            "status": state,
+            "dedup_key": self._dedup_by_id[task_id],
+            "partition_key": self._symbol_by_id[task_id],
+        }
+        if state == "done":
+            task["result"] = _decision_result_json(self._symbol_by_id[task_id])
+        return task
 
 
 # ---------------------------------------------------------------------------
@@ -468,6 +509,30 @@ def test_dispatch_running_lease_expire_devient_undecided_sans_hang(tmp_path):
     assert decisions == {}
     assert model_calls == 0
     assert undecided == {"EXPIRED"}
+
+
+def test_dispatch_poll_sleep_backoff_puis_reset(monkeypatch):
+    """Le poll ralentit quand rien ne bouge, puis revient à 0.1s dès résolution."""
+    sleeps: list[float] = []
+    monkeypatch.setattr(queue_dispatch_mod._time, "sleep", lambda seconds: sleeps.append(seconds))
+
+    decisions, model_calls, undecided = dispatch_decide_via_queue(
+        ledger=_SequencedLedger(),
+        decidable=["A", "B"],
+        mandate="m",
+        memory="m",
+        shared_context={},
+        symbol_facts_by_sym={"A": {}, "B": {}},
+        decision_timeout_s=60,
+        agent_tools_enabled=False,
+        cycle_id="cycle-backoff",
+        now_fn=lambda: 1_000_000.0,
+    )
+
+    assert set(decisions) == {"A", "B"}
+    assert model_calls == 2
+    assert undecided == set()
+    assert sleeps == [0.1, 0.2, 0.1]
 
 
 # ---------------------------------------------------------------------------

@@ -43,6 +43,7 @@ log = logging.getLogger(__name__)
 # Intervalle de pause entre deux polls de collecte (secondes).
 # Petit devant la latence LLM (>10s) ; évite le spin sans retarder la réponse.
 _POLL_SLEEP_S: float = 0.1
+_POLL_SLEEP_MAX_S: float = 0.5
 
 
 def dispatch_decide_via_queue(
@@ -172,6 +173,7 @@ def dispatch_decide_via_queue(
     pending_syms = set(task_ids)
     # Symboles non résolus (dead/lease expiré/introuvable) — seront dans undecided.
     skipped_syms: set[str] = set(enqueue_skipped_syms)
+    poll_sleep_s = _POLL_SLEEP_S
 
     while pending_syms:
         resolved = set()
@@ -242,8 +244,12 @@ def dispatch_decide_via_queue(
 
         pending_syms -= resolved
 
+        if resolved:
+            poll_sleep_s = _POLL_SLEEP_S
         if pending_syms:
-            _time.sleep(_POLL_SLEEP_S)
+            _time.sleep(poll_sleep_s)
+            if not resolved:
+                poll_sleep_s = min(_POLL_SLEEP_MAX_S, poll_sleep_s * 2)
 
     # FIX 2 : undecided = skippés (dead/lease expiré/introuvable).
     # run_cycle EXCLUT ces symboles du fallback HOLD synthétique en mode queue.
