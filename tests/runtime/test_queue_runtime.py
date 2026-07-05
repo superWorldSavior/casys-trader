@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 
 import pytest
@@ -126,6 +127,7 @@ def test_start_decide_queue_builds_ledger_pool_and_handler(tmp_path: Path, monke
         return "decide-handler"
 
     monkeypatch.setattr(llm, "build_default_router_from_env", fake_build_default_router_from_env)
+    monkeypatch.setattr(shutil, "which", lambda _bin: "/usr/local/bin/acpx")
 
     runtime = queue_runtime.start_decide_queue(
         enabled=True,
@@ -188,6 +190,7 @@ def test_start_decide_queue_construit_et_filtre_les_session_backends_en_multi_ro
         return "decide-handler"
 
     monkeypatch.setattr(llm, "build_default_router_from_env", fake_build_default_router_from_env)
+    monkeypatch.setattr(shutil, "which", lambda _bin: "/usr/local/bin/acpx")
 
     queue_runtime.start_decide_queue(
         enabled=True,
@@ -242,6 +245,7 @@ def test_start_decide_queue_max_rounds_1_construit_et_filtre_les_session_backend
         return "decide-handler"
 
     monkeypatch.setattr(llm, "build_default_router_from_env", fake_build_default_router_from_env)
+    monkeypatch.setattr(shutil, "which", lambda _bin: "/usr/local/bin/acpx")
 
     queue_runtime.start_decide_queue(
         enabled=True,
@@ -282,6 +286,49 @@ def test_start_decide_queue_sans_acpx_backend_leve_runtimeerror(tmp_path: Path, 
     monkeypatch.setattr(llm, "build_default_router_from_env", fake_build_default_router_from_env)
 
     with pytest.raises(RuntimeError, match="aucun AcpxBackend"):
+        queue_runtime.start_decide_queue(
+            enabled=True,
+            state_dir=tmp_path,
+            parallelism=3,
+            decision_batch_size=5,
+            default_decision_batch_size=5,
+            codex_client=FakeCodexClient,
+            tool_services=object(),
+            now_ms_fn=lambda: 12345,
+            logger=logger,
+            factories=queue_runtime.DecideQueueFactories(
+                task_ledger_cls=FakeLedger,
+                resource_pools_cls=FakePools,
+                decide_pool_cls=FakePool,
+                make_decide_handler=lambda **_kwargs: "decide-handler",
+            ),
+        )
+
+    assert FakeLedger.instances == []
+    assert FakePool.instances == []
+
+
+def test_start_decide_queue_acpx_backend_sans_binaire_executable_leve_runtimeerror(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _reset_fakes()
+    logger = RecordingLogger()
+    acpx_backend = llm.AcpxBackend(provider="acpx", model="gpt-5.5", acpx_bin="acpx-introuvable")
+
+    class FakeCodexClient:
+        DEFAULT_MODEL = "gpt-5.5"
+
+    class FakeRouter:
+        backends = [acpx_backend]
+
+    def fake_build_default_router_from_env(**kwargs):
+        return FakeRouter()
+
+    monkeypatch.setattr(llm, "build_default_router_from_env", fake_build_default_router_from_env)
+    monkeypatch.setattr(shutil, "which", lambda _bin: None)
+
+    with pytest.raises(RuntimeError, match="acpx introuvable"):
         queue_runtime.start_decide_queue(
             enabled=True,
             state_dir=tmp_path,

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import shutil
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -186,6 +187,11 @@ def start_decide_queue(
         raise RuntimeError(
             "[queue_decide] aucun AcpxBackend : le tour d'outils en file requiert un transport acpx "
             "(vérifier TRADER_ACPX_BIN / provider spark)"
+        )
+    if not any(shutil.which(b.acpx_bin) for b in session_backends):
+        raise RuntimeError(
+            "[queue_decide] acpx introuvable sur le PATH pour le tour d'outils en file "
+            "(vérifier TRADER_ACPX_BIN)"
         )
 
     ledger = task_ledger_cls(state_dir / "task_ledger.db")

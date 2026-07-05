@@ -156,9 +156,10 @@ def test_handler_transmet_session_backends_et_task_id_a_decide_one(monkeypatch):
     handler = make_decide_handler(codex_client=object(), session_backends=session_backends)
     task = _make_task(_PAYLOAD)
     task["id"] = "task-decide-123"
+    task["attempts"] = 2
 
     result = handler(task)
 
     assert result is not None
     assert captured["session_backends"] is session_backends
-    assert captured["task_id"] == "task-decide-123"
+    assert captured["task_id"] == "task-decide-123#2"

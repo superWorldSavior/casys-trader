@@ -113,7 +113,7 @@ def test_multi_tour_accumule_les_tool_results() -> None:
     assert len(captured[2]["tool_results"]) == 2        # tour final voit rounds 1 + 2 (cumul)
 
 
-def test_multi_tour_delta_reinjecte_seulement_le_round_courant_sans_base_facts() -> None:
+def test_multi_tour_delta_reinjecte_base_facts_et_seulement_le_round_courant() -> None:
     captured: list[dict] = []
     responses = [_tool_request(), _tool_request(), {"AAPL": Decision.hold("AAPL", "done")}]
     it = iter(responses)
@@ -132,10 +132,33 @@ def test_multi_tour_delta_reinjecte_seulement_le_round_courant_sans_base_facts()
     )
 
     assert captured[0] == {"base_marker": "kept"}
-    assert set(captured[1]) == {"tool_results"}
+    assert captured[1]["base_marker"] == "kept"
     assert len(captured[1]["tool_results"]) == 1
-    assert set(captured[2]) == {"tool_results"}
+    assert captured[2]["base_marker"] == "kept"
     assert len(captured[2]["tool_results"]) == 1
+
+
+def test_delta_safe_max_rounds_1_payload_final_identique_au_cumul() -> None:
+    def capture_final(reinject: str) -> dict:
+        captured: list[dict] = []
+        responses = [_tool_request(), {"AAPL": Decision.hold("AAPL", "done")}]
+        it = iter(responses)
+
+        def call_model(per_symbol, *, allow_tool_calls):
+            captured.append(dict(per_symbol["AAPL"]))
+            return next(it)
+
+        resolve_symbol_decision(
+            symbol="AAPL",
+            base_facts={"base_marker": "kept"},
+            tool_context=_ctx(),
+            call_model=call_model,
+            max_rounds=1,
+            reinject=reinject,
+        )
+        return captured[1]
+
+    assert capture_final("delta") == capture_final("cumul")
 
 
 def test_max_rounds_invalide_leve_valueerror() -> None:

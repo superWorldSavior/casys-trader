@@ -160,10 +160,10 @@ def resolve_symbol_decision(
         sym_ids = {t["id"] for t in sym_traces}
         this_round_results = [r for r in results_payload if r["id"] in sym_ids]
         accumulated_results.extend(this_round_results)
-        # Réinjecte l'HISTORIQUE COMPLET des tool_results (pas seulement le dernier
-        # round) : sinon un round ultérieur perdrait le contexte des précédents (review R3d).
+        # Cumul stateless = historique complet ; delta session = seulement le dernier round,
+        # mais les faits de base restent toujours présents.
         if reinject == "delta":
-            per_symbol = {symbol: {"tool_results": list(this_round_results)}}
+            per_symbol = {symbol: {**base_facts, "tool_results": list(this_round_results)}}
         else:
             per_symbol = {symbol: {**base_facts, "tool_results": list(accumulated_results)}}
 

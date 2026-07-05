@@ -68,6 +68,7 @@ def make_decide_handler(
         payload = json.loads(task.get("payload") or "{}")
         symbol: str = payload["symbol"]
         log.debug("[decide_handler] start symbol=%s task_id=%s", symbol, task.get("id"))
+        task_id = f"{task.get('id')}#{int(task.get('attempts') or 0)}"
 
         decision, model_calls = decide_one(
             symbol=symbol,
@@ -81,7 +82,7 @@ def make_decide_handler(
             tool_services=tool_services,
             symbols_universe=payload.get("symbols_universe"),
             session_backends=session_backends,
-            task_id=task.get("id"),
+            task_id=task_id,
         )
 
         result_json = json.dumps({"decision": asdict(decision), "model_calls": model_calls})

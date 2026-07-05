@@ -102,17 +102,23 @@ def _acpx_global_flags(acpx_bin: str, *, model: str, timeout_s: int) -> list[str
     ]
 
 
-def build_acpx_session_ensure_command(
+def _acpx_agent_part(agent: str | None) -> list[str]:
+    return [] if not agent or agent == "default" else [agent]
+
+
+def build_acpx_session_new_command(
     name: str,
     *,
     acpx_bin: str,
     model: str,
     timeout_s: int,
+    agent: str | None = None,
 ) -> list[str]:
     return [
         *_acpx_global_flags(acpx_bin, model=model, timeout_s=timeout_s),
+        *_acpx_agent_part(agent),
         "sessions",
-        "ensure",
+        "new",
         "-s",
         name,
     ]
@@ -125,9 +131,11 @@ def build_acpx_session_prompt_command(
     acpx_bin: str,
     model: str,
     timeout_s: int,
+    agent: str | None = None,
 ) -> list[str]:
     return [
         *_acpx_global_flags(acpx_bin, model=model, timeout_s=timeout_s),
+        *_acpx_agent_part(agent),
         "prompt",
         "-s",
         name,
@@ -135,12 +143,18 @@ def build_acpx_session_prompt_command(
     ]
 
 
-def build_acpx_session_close_command(name: str, *, acpx_bin: str) -> list[str]:
+def build_acpx_session_close_command(
+    name: str,
+    *,
+    acpx_bin: str,
+    agent: str | None = None,
+) -> list[str]:
     return [
         acpx_bin,
         "--format", "quiet",
         "--no-terminal",
         "--non-interactive-permissions", "deny",
+        *_acpx_agent_part(agent),
         "sessions",
         "close",
         name,
@@ -156,11 +170,10 @@ def build_acpx_command(
     agent: str | None = None,
     session_label: str | None = None,
 ) -> list[str]:
-    agent_part = [] if not agent or agent == "default" else [agent]
     labeled_prompt = _label_prompt(prompt, session_label=session_label)
     return [
         *_acpx_global_flags(acpx_bin, model=model, timeout_s=timeout_s),
-        *agent_part,
+        *_acpx_agent_part(agent),
         "exec",
         labeled_prompt,
     ]
@@ -428,6 +441,7 @@ class AcpxSession:
     model: str
     acpx_bin: str
     name: str
+    agent: str | None = None
 
     def send(self, prompt: str, *, timeout_s: int) -> LlmCompletion | LlmFailure:
         return _run_and_parse(
@@ -437,6 +451,7 @@ class AcpxSession:
                 acpx_bin=self.acpx_bin,
                 model=self.model,
                 timeout_s=timeout_s,
+                agent=self.agent,
             ),
             provider=self.provider,
             model=self.model,
@@ -447,7 +462,11 @@ class AcpxSession:
     def close(self) -> None:
         try:
             _run_one_shot_command(
-                build_acpx_session_close_command(self.name, acpx_bin=self.acpx_bin),
+                build_acpx_session_close_command(
+                    self.name,
+                    acpx_bin=self.acpx_bin,
+                    agent=self.agent,
+                ),
                 timeout_s=15,
             )
         except Exception:  # noqa: BLE001 - fermeture best-effort, jamais bloquante
@@ -509,11 +528,12 @@ class AcpxBackend:
 
     def open_session(self, name: str, *, timeout_s: int) -> AcpxSession | LlmFailure:
         res = _run_and_parse(
-            build_acpx_session_ensure_command(
+            build_acpx_session_new_command(
                 name,
                 acpx_bin=self.acpx_bin,
                 model=self.model,
                 timeout_s=timeout_s,
+                agent=self.agent,
             ),
             provider=self.provider,
             model=self.model,
@@ -528,6 +548,7 @@ class AcpxBackend:
             model=self.model,
             acpx_bin=self.acpx_bin,
             name=name,
+            agent=self.agent,
         )
 
     def complete(self, prompt: str, *, timeout_s: int) -> LlmCompletion | LlmFailure:
