@@ -20,7 +20,7 @@ import math
 import os
 import sqlite3
 import time
-from dataclasses import asdict, replace
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable
@@ -38,6 +38,7 @@ from trader.application import (
     decision_entries,
     decision_watches,
     execute_queue_dispatch,
+    execute_queue_plan,
     execution_eligibility as execution_eligibility_service,
     exit_bars as exit_bars_service,
     gross_feedback,
@@ -2010,146 +2011,41 @@ def run_cycle(
         if queue_execute_enabled and execute_ledger is not None:
             # ----------------------------------------------------------------
             # Mode outbox : broker + plan + task done dans UNE transaction SQLite.
-            # Plan pré-calculé pour OPEN_LONG/OPEN_SHORT ; symbol_to_close pour
-            # CLOSE/REVERSE/ADD (UoW ferme l'ancien plan).
-            # Pour REVERSE/ADD : le NOUVEAU plan est créé en run_cycle post-fill
-            # (nécessite la position post-fill).  Pour REDUCE : sync_symbol_quantity
-            # reste dans run_cycle (non couvert par UoW).
+            # La préparation du payload atomique plan_to_upsert/symbol_to_close
+            # vit côté application ; le daemon conserve uniquement le contexte
+            # runtime nécessaire et l'enqueue/polling délégué au dispatcher.
             # ----------------------------------------------------------------
-            _exec_plan_dict: dict | None = None
-            _exec_sym_close: str | None = None
-
-            if decision.intent in {"CLOSE", "REVERSE", "ADD"}:
-                _exec_sym_close = sym
-
-            if runtime_exit_plan and decision.intent in {"OPEN_LONG", "OPEN_SHORT"}:
-                _pre_entry_age = data_age_by_symbol.get(sym)
-                _pre_plan = create_trade_plan_from_order(
-                    symbol=sym,
-                    order_side=decision.action,
-                    quantity=effective_quantity,
-                    entry_price=prices[sym],
-                    opened_at=now.isoformat(),
-                    raw_exit_plan=runtime_exit_plan,
-                    reference_volatility=reference_volatility,
-                    llm_provider=decision.llm_provider,
-                    llm_model=decision.llm_model,
-                    llm_fallback_reason=decision.llm_fallback_reason,
-                    llm_confidence=decision.confidence,
-                )
-                _pre_plan = replace(
-                    _pre_plan,
-                    entry_thesis=decision.rationale,
-                    entry_context={
-                        "price": prices[sym],
-                        "runtime_interval": runtime_interval,
-                        "data_age_m": None if _pre_entry_age is None else int(round(_pre_entry_age)),
-                        "session_open": bool(market.session_snapshot(sym, now=now).get("open")),
-                        "daily_as_of": (
-                            (execution_eligibility.get(sym) or {}).get("planning") or {}
-                        ).get("daily_as_of"),
-                    },
-                )
-                _exec_plan_dict = asdict(_pre_plan)
-            elif runtime_exit_plan and decision.intent == "ADD":
-                # FIX 3 — ADD : pré-calculer le NOUVEAU plan (quantité projetée
-                # post-fill) et le passer avec symbol_to_close → UoW ferme l'ancien
-                # ET ouvre le nouveau dans la même transaction (atomicité garantie).
-                # En cas de crash entre le close et un upsert hors-UoW, la position
-                # serait sans plan (pas de stop/TP).
-                _add_pos_qty = 0.0 if pos is None else pos.quantity
-                _add_avg_price = (
-                    0.0 if (pos is None or pos.avg_price <= 0.0) else pos.avg_price
-                )
-                _add_total_qty, _add_avg = _projected_add_risk_basis(
-                    action=decision.action,
-                    add_quantity=effective_quantity,
-                    add_price=prices[sym],
-                    position_quantity=_add_pos_qty,
-                    position_avg_price=_add_avg_price,
-                )
-                if _add_total_qty > 0:
-                    _prev_add_plan_for_pre = next(
-                        (p for p in plan_store.open_plans() if p.symbol == sym), None
-                    )
-                    _pre_entry_age = data_age_by_symbol.get(sym)
-                    _pre_plan = create_trade_plan_from_order(
-                        symbol=sym,
-                        order_side=decision.action,
-                        quantity=_add_total_qty,
-                        entry_price=_add_avg,
-                        opened_at=now.isoformat(),
-                        raw_exit_plan=runtime_exit_plan,
-                        reference_volatility=reference_volatility,
-                        llm_provider=decision.llm_provider,
-                        llm_model=decision.llm_model,
-                        llm_fallback_reason=decision.llm_fallback_reason,
-                        llm_confidence=decision.confidence,
-                    )
-                    _pre_plan = replace(
-                        _pre_plan,
-                        entry_thesis=decision.rationale,
-                        entry_context={
-                            "price": prices[sym],
-                            "runtime_interval": runtime_interval,
-                            "data_age_m": None if _pre_entry_age is None else int(round(_pre_entry_age)),
-                            "session_open": bool(market.session_snapshot(sym, now=now).get("open")),
-                            "daily_as_of": (
-                                (execution_eligibility.get(sym) or {}).get("planning") or {}
-                            ).get("daily_as_of"),
-                        },
-                    )
-                    if (
-                        _prev_add_plan_for_pre is not None
-                        and _prev_add_plan_for_pre.last_llm_review is not None
-                    ):
-                        _pre_plan = replace(
-                            _pre_plan,
-                            last_llm_review=copy.deepcopy(_prev_add_plan_for_pre.last_llm_review),
-                        )
-                    _exec_plan_dict = asdict(_pre_plan)
-
-            elif runtime_exit_plan and decision.intent == "REVERSE":
-                # FIX 4 (daemon) — REVERSE : pré-calculer le NOUVEAU plan (jambe open)
-                # et le passer avec symbol_to_close → UoW ferme l'ancien ET ouvre le
-                # nouveau dans la même transaction (atomicité garantie).
-                # La quantité du nouveau plan = jambe open uniquement (≠ effective_quantity
-                # qui inclut la jambe close).
-                _rv_open_qty = _reverse_open_quantity(
-                    action=decision.action,
-                    quantity=effective_quantity,
-                    position_quantity=0.0 if pos is None else pos.quantity,
-                )
-                if _rv_open_qty > 0 and runtime_exit_plan:
-                    _pre_entry_age = data_age_by_symbol.get(sym)
-                    _pre_plan = create_trade_plan_from_order(
-                        symbol=sym,
-                        order_side=decision.action,
-                        quantity=_rv_open_qty,
-                        entry_price=prices[sym],
-                        opened_at=now.isoformat(),
-                        raw_exit_plan=runtime_exit_plan,
-                        reference_volatility=reference_volatility,
-                        llm_provider=decision.llm_provider,
-                        llm_model=decision.llm_model,
-                        llm_fallback_reason=decision.llm_fallback_reason,
-                        llm_confidence=decision.confidence,
-                    )
-                    _pre_plan = replace(
-                        _pre_plan,
-                        entry_thesis=decision.rationale,
-                        entry_context={
-                            "price": prices[sym],
-                            "runtime_interval": runtime_interval,
-                            "data_age_m": None if _pre_entry_age is None else int(round(_pre_entry_age)),
-                            "session_open": bool(market.session_snapshot(sym, now=now).get("open")),
-                            "daily_as_of": (
-                                (execution_eligibility.get(sym) or {}).get("planning") or {}
-                            ).get("daily_as_of"),
-                        },
-                    )
-                    _exec_plan_dict = asdict(_pre_plan)
-
+            _exec_entry_context = None
+            if runtime_exit_plan is not None and decision.intent in {"OPEN_LONG", "OPEN_SHORT", "ADD", "REVERSE"}:
+                _exec_entry_age = data_age_by_symbol.get(sym)
+                _exec_entry_context = {
+                    "price": prices[sym],
+                    "runtime_interval": runtime_interval,
+                    "data_age_m": None if _exec_entry_age is None else int(round(_exec_entry_age)),
+                    "session_open": bool(market.session_snapshot(sym, now=now).get("open")),
+                    "daily_as_of": (
+                        (execution_eligibility.get(sym) or {}).get("planning") or {}
+                    ).get("daily_as_of"),
+                }
+            _exec_plan_payload = execute_queue_plan.build_execute_queue_plan_payload(
+                plan_reader=plan_store,
+                symbol=sym,
+                action=decision.action,
+                intent=decision.intent,
+                quantity=effective_quantity,
+                price=prices[sym],
+                opened_at=now.isoformat(),
+                runtime_exit_plan=runtime_exit_plan,
+                reference_volatility=reference_volatility,
+                rationale=decision.rationale,
+                entry_context=_exec_entry_context,
+                position_quantity=0.0 if pos is None else pos.quantity,
+                position_avg_price=0.0 if pos is None else pos.avg_price,
+                llm_provider=decision.llm_provider,
+                llm_model=decision.llm_model,
+                llm_fallback_reason=decision.llm_fallback_reason,
+                llm_confidence=decision.confidence,
+            )
             # FIX 4 — dedup_key STABLE par (cycle, sym, intent) pour idempotence
             # d'enqueue : un re-enqueue après crash du cycle retourne None (pas de
             # doublon). partition_key="portfolio" : au plus un execute_order running
@@ -2164,8 +2060,8 @@ def run_cycle(
                 ts=now.isoformat(),
                 fx_rate=_rate(sym),
                 dry_run=dry_run,
-                plan_to_upsert=_exec_plan_dict,
-                symbol_to_close=_exec_sym_close,
+                plan_to_upsert=_exec_plan_payload.plan_to_upsert,
+                symbol_to_close=_exec_plan_payload.symbol_to_close,
                 cycle_id=now.isoformat(),
                 intent=decision.intent,
                 budget_s=_EXECUTE_POLL_BUDGET_S,

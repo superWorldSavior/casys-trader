@@ -176,6 +176,28 @@ def test_daemon_delegates_execute_queue_dispatch_to_application_service() -> Non
     assert violations == []
 
 
+def test_daemon_delegates_execute_queue_plan_payload_to_application_service() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    daemon_path = repo_root / "trader" / "runtime" / "daemon.py"
+    service_path = repo_root / "trader" / "application" / "execute_queue_plan.py"
+
+    assert service_path.exists()
+
+    source = daemon_path.read_text(encoding="utf-8")
+    assert "execute_queue_plan.build_execute_queue_plan_payload" in source
+
+    queue_block = source.split("if queue_execute_enabled and execute_ledger is not None:", 1)[1]
+    queue_block = queue_block.split("fill = _exec_outcome.fill", 1)[0]
+    forbidden = (
+        "create_trade_plan_from_order(",
+        "_projected_add_risk_basis(",
+        "_reverse_open_quantity(",
+    )
+    violations = [call for call in forbidden if call in queue_block]
+
+    assert violations == []
+
+
 def test_decision_reason_vocabulary_is_domain_canonical() -> None:
     repo_root = Path(__file__).resolve().parents[1]
     canonical_path = repo_root / "trader" / "domain" / "decision_reason.py"
