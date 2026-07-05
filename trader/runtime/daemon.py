@@ -83,6 +83,7 @@ from trader.reporting.read_models import live_kpis
 from trader.reporting import attribution, decision_ledger, meta_performance
 from trader.runtime import (
     cycle_finalization,
+    cycle_dispatch,
     cycle_scheduling,
     data_source_runtime,
     daemon_bootstrap,
@@ -2278,34 +2279,38 @@ def main(
                 )
                 due_symbols = _select_due_symbols(symbols, sched=sched, once=args.once, bootstrap=bootstrap, now=loop_now)
                 bootstrap = False
+                cycle_context = cycle_dispatch.RunCycleRuntimeContext(
+                    dry_run=dry_run,
+                    sched=sched,
+                    data_source=data_source,
+                    default_wake_minutes=args.default_wake_minutes,
+                    min_wake_minutes=args.min_wake_minutes,
+                    max_wake_minutes=args.max_wake_minutes,
+                    max_context_requests_per_symbol=args.max_context_requests_per_symbol,
+                    max_indicators_per_request=args.max_indicators_per_request,
+                    max_model_calls_per_cycle=args.max_model_calls_per_cycle,
+                    indicator_triggers=indicator_triggers,
+                    learning_consolidation_threshold=args.learning_consolidation_threshold,
+                    consolidator_acpx_bin=args.consolidator_acpx_bin,
+                    consolidator_acpx_agent=args.consolidator_acpx_agent,
+                    consolidator_model=args.consolidator_model,
+                    consolidator_timeout_s=args.consolidator_timeout_s,
+                    decision_timeout_s=args.decision_timeout_s,
+                    decision_batch_size=args.decision_batch_size,
+                    decision_batch_parallelism=args.decision_batch_parallelism,
+                    commission_model=commission_model,
+                    agent_tools_enabled=args.agent_tools,
+                    queue_decide_enabled=_queue_decide_enabled,
+                    task_ledger=_task_ledger,
+                    queue_execute_enabled=_queue_execute_enabled,
+                    execute_ledger=_execute_ledger,
+                )
                 if not due_symbols:
-                    report = run_cycle(
-                        dry_run=dry_run,
+                    report = cycle_dispatch.dispatch_run_cycle(
+                        run_cycle_fn=run_cycle,
+                        context=cycle_context,
                         now=loop_now,
                         symbols_filter=[],
-                        sched=sched,
-                        data_source=data_source,
-                        default_wake_minutes=args.default_wake_minutes,
-                        min_wake_minutes=args.min_wake_minutes,
-                        max_wake_minutes=args.max_wake_minutes,
-                        max_context_requests_per_symbol=args.max_context_requests_per_symbol,
-                        max_indicators_per_request=args.max_indicators_per_request,
-                        max_model_calls_per_cycle=args.max_model_calls_per_cycle,
-                        indicator_triggers=indicator_triggers,
-                        learning_consolidation_threshold=args.learning_consolidation_threshold,
-                        consolidator_acpx_bin=args.consolidator_acpx_bin,
-                        consolidator_acpx_agent=args.consolidator_acpx_agent,
-                        consolidator_model=args.consolidator_model,
-                        consolidator_timeout_s=args.consolidator_timeout_s,
-                        decision_timeout_s=args.decision_timeout_s,
-                        decision_batch_size=args.decision_batch_size,
-                        decision_batch_parallelism=args.decision_batch_parallelism,
-                        commission_model=commission_model,
-                        agent_tools_enabled=args.agent_tools,
-                        queue_decide_enabled=_queue_decide_enabled,
-                        task_ledger=_task_ledger,
-                        queue_execute_enabled=_queue_execute_enabled,
-                        execute_ledger=_execute_ledger,
                     )
                     if report.get("planned_exits") or report.get("decisions") or report.get("exit_watch_triggers"):
                         log.debug("cycle actif sans symbole dû: %s", json.dumps(report, ensure_ascii=False))
@@ -2316,33 +2321,11 @@ def main(
                     sleep_seconds = min(wait, args.poll)
                     log.debug("aucun symbole dû — pause %.0fs", sleep_seconds)
                 else:
-                    report = run_cycle(
-                        dry_run=dry_run,
+                    report = cycle_dispatch.dispatch_run_cycle(
+                        run_cycle_fn=run_cycle,
+                        context=cycle_context,
                         now=loop_now,
                         symbols_filter=due_symbols,
-                        sched=sched,
-                        data_source=data_source,
-                        default_wake_minutes=args.default_wake_minutes,
-                        min_wake_minutes=args.min_wake_minutes,
-                        max_wake_minutes=args.max_wake_minutes,
-                        max_context_requests_per_symbol=args.max_context_requests_per_symbol,
-                        max_indicators_per_request=args.max_indicators_per_request,
-                        max_model_calls_per_cycle=args.max_model_calls_per_cycle,
-                        indicator_triggers=indicator_triggers,
-                        learning_consolidation_threshold=args.learning_consolidation_threshold,
-                        consolidator_acpx_bin=args.consolidator_acpx_bin,
-                        consolidator_acpx_agent=args.consolidator_acpx_agent,
-                        consolidator_model=args.consolidator_model,
-                        consolidator_timeout_s=args.consolidator_timeout_s,
-                        decision_timeout_s=args.decision_timeout_s,
-                        decision_batch_size=args.decision_batch_size,
-                        decision_batch_parallelism=args.decision_batch_parallelism,
-                        commission_model=commission_model,
-                        agent_tools_enabled=args.agent_tools,
-                        queue_decide_enabled=_queue_decide_enabled,
-                        task_ledger=_task_ledger,
-                        queue_execute_enabled=_queue_execute_enabled,
-                        execute_ledger=_execute_ledger,
                     )
                     log.debug("cycle: %s", json.dumps(report, ensure_ascii=False))
                     STATE_DIR.mkdir(parents=True, exist_ok=True)

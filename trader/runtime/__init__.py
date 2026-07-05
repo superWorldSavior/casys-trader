@@ -3,6 +3,7 @@
 __all__ = [
     "cli",
     "code_version",
+    "cycle_dispatch",
     "cycle_finalization",
     "data_source_runtime",
     "daemon_bootstrap",

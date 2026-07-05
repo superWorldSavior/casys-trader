@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 import pytest
 
 from trader.runtime import daemon
+from trader.runtime import cycle_dispatch
 from trader.runtime import data_source_runtime
 from trader.runtime import market_rotation_runtime
 from trader.market.market_data import Bar, MarketError
@@ -168,6 +169,59 @@ class TestDaemonDataSourcesConfig:
         assert rotation_calls[0]["state_dir"] == state_dir
         assert rotation_calls[0]["loop_now"] == now
         assert rotation_calls[0]["logger"] is daemon.log
+
+    def test_main_delegue_run_cycle_au_runtime_dispatcher(
+        self, monkeypatch, tmp_path
+    ):
+        """main() prépare le contexte runtime, cycle_dispatch possède l'appel run_cycle."""
+        _write_runtime_config(tmp_path)
+        state_dir = tmp_path / "state"
+        now = datetime(2026, 6, 10, 12, 0, tzinfo=timezone.utc)
+        dispatch_calls: list[dict] = []
+
+        class FakeSource:
+            def disconnect(self):
+                pass
+
+        delegated_source = FakeSource()
+
+        def build_data_source(_config, **_kwargs):
+            return data_source_runtime.DataSourceState(
+                data_source=delegated_source,
+                composite_available={},
+                ib_attach_backoff=None,
+            )
+
+        def run_cycle(**_kwargs):
+            raise AssertionError("run_cycle doit passer par cycle_dispatch")
+
+        def dispatch_run_cycle(**kwargs):
+            dispatch_calls.append(kwargs)
+            return _empty_report(now)
+
+        monkeypatch.setattr(daemon, "ROOT", tmp_path)
+        monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+        monkeypatch.setattr(daemon, "data_source_runtime", data_source_runtime, raising=False)
+        monkeypatch.setattr(data_source_runtime, "build_data_source", build_data_source)
+        monkeypatch.setattr(daemon, "market_rotation_runtime", market_rotation_runtime, raising=False)
+        monkeypatch.setattr(market_rotation_runtime, "tick_market_rotation", lambda **_kwargs: None)
+        monkeypatch.setattr(daemon, "cycle_dispatch", cycle_dispatch, raising=False)
+        monkeypatch.setattr(cycle_dispatch, "dispatch_run_cycle", dispatch_run_cycle)
+        monkeypatch.setattr(daemon, "run_cycle", run_cycle)
+
+        daemon.main(["--once"], now_fn=lambda: now)
+
+        assert len(dispatch_calls) == 1
+        call = dispatch_calls[0]
+        assert call["run_cycle_fn"] is run_cycle
+        assert call["now"] == now
+        assert call["symbols_filter"] == ["SPY"]
+        context = call["context"]
+        assert context.dry_run is True
+        assert context.data_source is delegated_source
+        assert context.queue_decide_enabled is False
+        assert context.queue_execute_enabled is False
+        assert context.agent_tools_enabled is False
 
     def test_config_presente_construit_composite_et_passe_au_cycle(
         self, monkeypatch, tmp_path
