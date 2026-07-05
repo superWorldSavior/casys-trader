@@ -13,7 +13,8 @@
 > `market-rotation-boundary`, `wake-watch-runtime-glue`,
 > `learnings-selection-readmodel`, `planned-exits-boundary`,
 > `decision-reason-domain`, `tool-usage-readmodel`,
-> `execute-queue-dispatch`, `execute-queue-plan-payload`).
+> `execute-queue-dispatch`, `execute-queue-plan-payload`,
+> `fill-outcome-accounting`).
 
 ---
 
@@ -57,6 +58,7 @@ les utilisaient :
 | `trader/application/execute_queue_dispatch.py` | Producteur/collecteur applicatif des tâches `execute_order` en mode queue : payload, dedup, polling, décodage fill et raisons fail-closed | le daemon garde l'enregistrement de décision |
 | `trader/application/execute_queue_plan.py` | Préparation pure du payload atomique `plan_to_upsert` / `symbol_to_close` pour le mode execute queue | contrat `Protocol` local pour lire les plans ouverts ; le daemon fournit le contexte runtime |
 | `trader/application/exit_bars.py` | Fetch/validation des barres fines de sortie et calcul high/low de fenêtre pour plans ouverts | branché comme `exit_bars_fetcher` dans `market_snapshot`, wrappers privés du daemon |
+| `trader/application/fill_outcome.py` | Accounting post-fill des décisions exécutées : payload `model_performance`, raison de sortie LLM, champs commission/fx de l'entrée décision | le daemon garde le snapshot portefeuille et l'écriture durable |
 | `trader/application/gross_feedback.py` | Feedback applicatif des ouvertures rejetées par le plafond gross exposure | le daemon garde un wrapper public historique |
 | `trader/application/infra_holds.py` | Construction applicative des HOLD infra (`quiet_gate`, `stale_market_data`) sans appel modèle | contrats `Protocol` locaux pour wakes/clamp session ; le daemon garde scheduler, log et persistance |
 | `trader/application/learnings_recall.py` | Provider applicatif de recall mémoire : cache embeddings, timeout court, fallback FTS | contrats `Protocol` pour store et embedder |

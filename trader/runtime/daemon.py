@@ -40,6 +40,7 @@ from trader.application import (
     execute_queue_dispatch,
     execute_queue_plan,
     execution_eligibility as execution_eligibility_service,
+    fill_outcome,
     exit_bars as exit_bars_service,
     gross_feedback,
     infra_holds,
@@ -117,7 +118,7 @@ _RELATIVE_ORDER_INTENTS = order_admission.RELATIVE_ORDER_INTENTS
 
 def _llm_exit_reason_for_intent(intent: str) -> str | None:
     """Libellé déterministe pour les sorties pilotées par le LLM."""
-    return "llm_exit" if intent in {"CLOSE", "REDUCE", "REVERSE"} else None
+    return fill_outcome.llm_exit_reason_for_intent(intent)
 
 
 def evaluate_plan(*args: object, **kwargs: object) -> object:
@@ -2079,32 +2080,23 @@ def run_cycle(
             if fill is not None:
                 latest = portfolio.snapshot(broker, lambda s: prices.get(s, 0.0), starting_equity, fx_rate_of=_rate)
                 final_position = broker.positions().get(sym)
-                llm_exit_reason = _llm_exit_reason_for_intent(decision.intent)
-                _append_model_performance(
-                    ts=fill.ts,
+                model_performance_payload = fill_outcome.apply_fill_accounting(
+                    entry,
+                    fill=fill,
                     symbol=sym,
                     action=decision.action,
                     intent=decision.intent,
-                    **({"exit_reason": llm_exit_reason} if llm_exit_reason is not None else {}),
                     quantity=effective_quantity,
                     price=prices[sym],
-                    commission=fill.commission,
-                    commission_currency=fill.commission_currency,
-                    commission_model=fill.commission_model,
-                    fx_rate=fill.fx_rate,
                     confidence=decision.confidence,
-                    llm_provider=decision.llm_provider or "unknown",
-                    llm_model=decision.llm_model or "unknown",
+                    llm_provider=decision.llm_provider,
+                    llm_model=decision.llm_model,
                     llm_fallback_reason=decision.llm_fallback_reason,
                     equity=latest.equity,
                     cash=latest.cash,
                     position_quantity=0.0 if final_position is None else final_position.quantity,
                 )
-                entry["model_performance_logged"] = True
-                entry["commission"] = fill.commission
-                entry["commission_currency"] = fill.commission_currency
-                entry["commission_model"] = fill.commission_model
-                entry["fx_rate"] = fill.fx_rate
+                _append_model_performance(**model_performance_payload)
             if fill is not None and decision.intent in {"CLOSE", "REVERSE"}:
                 # En mode queue, UoW a déjà fermé l'ancien plan via symbol_to_close.
                 if not queue_execute_enabled:

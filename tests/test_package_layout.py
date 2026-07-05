@@ -198,6 +198,31 @@ def test_daemon_delegates_execute_queue_plan_payload_to_application_service() ->
     assert violations == []
 
 
+def test_daemon_delegates_fill_accounting_to_application_service() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    daemon_path = repo_root / "trader" / "runtime" / "daemon.py"
+    service_path = repo_root / "trader" / "application" / "fill_outcome.py"
+
+    assert service_path.exists()
+
+    source = daemon_path.read_text(encoding="utf-8")
+    assert "fill_outcome.apply_fill_accounting" in source
+
+    post_fill_block = source.split("model_performance_payload = fill_outcome.apply_fill_accounting", 1)[1]
+    post_fill_block = post_fill_block.split("if fill is not None and decision.intent in", 1)[0]
+    forbidden = (
+        'entry["model_performance_logged"]',
+        'entry["commission"]',
+        'entry["commission_currency"]',
+        'entry["commission_model"]',
+        'entry["fx_rate"]',
+        "commission_currency=fill.commission_currency",
+    )
+    violations = [snippet for snippet in forbidden if snippet in post_fill_block]
+
+    assert violations == []
+
+
 def test_decision_reason_vocabulary_is_domain_canonical() -> None:
     repo_root = Path(__file__).resolve().parents[1]
     canonical_path = repo_root / "trader" / "domain" / "decision_reason.py"
