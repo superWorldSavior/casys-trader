@@ -21,7 +21,7 @@ import pytest
 
 from trader.agent import llm
 from trader.agent.protocol.types import Decision
-from trader.application.decide_one import decide_one
+from trader.application.decide_one import SESSION_ROUND_BACKSTOP, decide_one
 from trader.queue.worker import RetryableError
 
 SYMBOL = "AAPL"
@@ -355,8 +355,8 @@ def _tool_request() -> BatchToolCallRequest:
     )
 
 
-def test_tool_round_puis_decision_finale_compte_2_appels():
-    """Round d'outils + tour final : 2 appels, flags corrects, tool_results réinjectés."""
+def test_tool_round_puis_decision_au_tour_2_sort_tot():
+    """Round d'outils + décision au tour suivant : sortie tôt, sans tour final forcé."""
     client = _SeqClient([_tool_request(), {SYMBOL: _ok_decision("BUY")}])
     kwargs = {
         **_BASE_KWARGS,
@@ -375,27 +375,84 @@ def test_tool_round_puis_decision_finale_compte_2_appels():
     assert decision.action == "BUY"
     assert calls == 2
     assert client.calls[0]["allow_tool_calls"] is True     # round : outils autorisés
-    assert client.calls[1]["allow_tool_calls"] is False    # tour final : interdits
+    assert client.calls[1]["allow_tool_calls"] is True     # l'agent décide librement au tour 2
     assert all(c["allow_context_request"] is False for c in client.calls)  # Q4 : pas de legacy
     assert all(c["max_tool_calls_per_symbol"] == 8 for c in client.calls)
     assert client.calls[1]["per_symbol"][SYMBOL]["tool_results"]  # résultats réinjectés
     assert decision.domain_tools["tool_rounds"] == 1       # traces mergées (persistance)
 
 
-def test_tool_round_transmet_max_rounds_au_prompt_client():
+def test_session_multiround_heartbeat_apres_open_et_chaque_appel_modele():
+    """Session : heartbeat après open_session puis après chaque call_model."""
+    client = _SeqClient([_tool_request(), {SYMBOL: _ok_decision("BUY")}])
+    heartbeats: list[str] = []
+
+    decision, calls = decide_one(
+        **{**_BASE_KWARGS, "agent_tools_enabled": True},
+        codex_client=client,
+        tool_services=_services(),
+        session_backends=_session_backends(),
+        task_id="t",
+        heartbeat=lambda: heartbeats.append("hb"),
+    )
+
+    assert decision.action == "BUY"
+    assert calls == 2
+    assert heartbeats == ["hb", "hb", "hb"]
+
+
+def test_session_prompt_libre_mais_loop_backstop():
     client = _SeqClient([_tool_request(), _tool_request(), {SYMBOL: _ok_decision("BUY")}])
 
     decision, calls = decide_one(
         **{**_BASE_KWARGS, "agent_tools_enabled": True},
         codex_client=client,
-        tool_services=_services(max_rounds=2),
+        tool_services=_services(),
         session_backends=_session_backends(),
         task_id="t",
     )
 
     assert decision.action == "BUY"
     assert calls == 3
-    assert all(c["max_rounds"] == 2 for c in client.calls)
+    assert all(c["max_rounds"] is None for c in client.calls)
+
+
+def test_session_backstop_force_tour_final_apres_20_demandes_outils():
+    client = _SeqClient([_tool_request()] * (SESSION_ROUND_BACKSTOP + 1))
+
+    decision, calls = decide_one(
+        **{**_BASE_KWARGS, "agent_tools_enabled": True},
+        codex_client=client,
+        tool_services=_services(),
+        session_backends=_session_backends(),
+        task_id="t",
+    )
+
+    assert decision.action == "HOLD"
+    assert decision.rationale == "tool_loop_blocked"
+    assert calls == SESSION_ROUND_BACKSTOP + 1
+    assert [c["allow_tool_calls"] for c in client.calls] == [True] * SESSION_ROUND_BACKSTOP + [False]
+    assert all(c["max_rounds"] is None for c in client.calls)
+
+
+def test_session_tool_loop_parse_au_tour_final_est_terminal_sans_retry():
+    """Au tour final session, tool_calls parsés en tool_loop_blocked ne doivent pas retry."""
+    parsed_blocked = replace(Decision.hold(SYMBOL, "tool_loop_blocked"), llm_error="tool_loop")
+    client = _SeqClient([_tool_request()] * SESSION_ROUND_BACKSTOP + [{SYMBOL: parsed_blocked}])
+
+    decision, calls = decide_one(
+        **{**_BASE_KWARGS, "agent_tools_enabled": True},
+        codex_client=client,
+        tool_services=_services(),
+        session_backends=_session_backends(),
+        task_id="t",
+    )
+
+    assert decision.action == "HOLD"
+    assert decision.rationale == "tool_loop_blocked"
+    assert decision.llm_error is None
+    assert calls == SESSION_ROUND_BACKSTOP + 1
+    assert client.calls[-1]["allow_tool_calls"] is False
 
 
 def test_sans_tool_services_mode_degrade_un_appel():
@@ -464,6 +521,7 @@ def test_univers_transmis_au_resolver_via_cross_asset():
 
 def test_session_mode_utilise_runner_delta_et_complete_fn(monkeypatch):
     events = []
+    heartbeats = []
 
     class FakeSession:
         def send(self, prompt, *, timeout_s):
@@ -475,6 +533,7 @@ def test_session_mode_utilise_runner_delta_et_complete_fn(monkeypatch):
         return resolve(FakeSession())
 
     def fake_resolve_symbol_decision(**kwargs):
+        assert kwargs["heartbeat"] is heartbeat
         events.append(("resolve", kwargs["max_rounds"], kwargs.get("reinject")))
         response = kwargs["call_model"]({SYMBOL: {"round": 1}}, allow_tool_calls=True)
         return response[SYMBOL]
@@ -501,23 +560,31 @@ def test_session_mode_utilise_runner_delta_et_complete_fn(monkeypatch):
     client = SessionAwareClient()
     backends = [object()]
 
+    def heartbeat():
+        events.append(("heartbeat",))
+        heartbeats.append("hb")
+
     decision, calls = decide_one(
         **{**_BASE_KWARGS, "agent_tools_enabled": True},
         codex_client=client,
-        tool_services=_services(max_rounds=2),
+        tool_services=_services(),
         session_backends=backends,
         task_id="decide:AAPL",
+        heartbeat=heartbeat,
     )
 
     assert decision.action == "BUY"
     assert calls == 1
     assert events == [
         ("runner", backends, "decide:AAPL", 75),
-        ("resolve", 2, "delta"),
+        ("heartbeat",),
+        ("resolve", SESSION_ROUND_BACKSTOP, "delta"),
         ("send", "session prompt", 9),
     ]
+    assert heartbeats == ["hb"]
     assert client.calls[0]["complete_fn"] is not None
     assert client.calls[0]["allow_tool_calls"] is True
+    assert client.calls[0]["max_rounds"] is None
     assert client.calls[0]["timeout_s"] == 60
 
 
@@ -563,7 +630,7 @@ def test_max_rounds_1_avec_session_backends_utilise_session_mode(monkeypatch):
     decision, calls = decide_one(
         **{**_BASE_KWARGS, "agent_tools_enabled": True},
         codex_client=client,
-        tool_services=_services(max_rounds=1),
+        tool_services=_services(),
         session_backends=backends,
         task_id="decide:AAPL",
     )
@@ -572,10 +639,11 @@ def test_max_rounds_1_avec_session_backends_utilise_session_mode(monkeypatch):
     assert calls == 1
     assert events == [
         ("runner", backends, "decide:AAPL", 75),
-        ("resolve", 1, "delta"),
+        ("resolve", SESSION_ROUND_BACKSTOP, "delta"),
         ("send", "session prompt", 9),
     ]
     assert client.calls[0]["complete_fn"] is not None
+    assert client.calls[0]["max_rounds"] is None
 
 
 def test_session_mode_tous_backends_down_leve_retryable(monkeypatch):
@@ -601,7 +669,7 @@ def test_session_mode_tous_backends_down_leve_retryable(monkeypatch):
         decide_one(
             **{**_BASE_KWARGS, "agent_tools_enabled": True},
             codex_client=client,
-            tool_services=_services(max_rounds=2),
+            tool_services=_services(),
             session_backends=[object()],
             task_id="decide:AAPL",
         )

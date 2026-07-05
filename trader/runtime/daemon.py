@@ -926,8 +926,6 @@ def run_cycle(
     commission_model: CommissionModel | None = None,
     agent_tools_enabled: bool = False,
     queue_decide_enabled: bool = False,
-    decide_tools_active: bool = False,  # tool round réellement câblé (services boot présents)
-    decide_tool_max_rounds: int = 1,
     task_ledger=None,  # TaskLedger | None (task_ledger.db — dédié decide)
     queue_execute_enabled: bool = False,
     execute_ledger=None,  # TaskLedger | None (casys.db — partagé broker/plan/ledger)
@@ -954,11 +952,13 @@ def run_cycle(
     triggers_by_symbol: dict[str, list[dict]] = {}
     for trigger in indicator_triggers:
         triggers_by_symbol.setdefault(str(trigger.get("symbol")), []).append(trigger)
+    model_call_limit_for_status = None if queue_decide_enabled else max_model_calls_per_cycle
+    model_call_cap_label = "none(queue)" if queue_decide_enabled else str(max_model_calls_per_cycle)
     _log_cycle_progress(
-        "[cycle] start dry_run=%s due=%d max_model_calls=%d",
+        "[cycle] start dry_run=%s due=%d model_call_cap=%s",
         dry_run,
         len(symbols_to_decide),
-        max_model_calls_per_cycle,
+        model_call_cap_label,
     )
     _write_status(
         "cycle_started",
@@ -968,7 +968,7 @@ def run_cycle(
         decisions_done=0,
         dry_run=dry_run,
         model_calls_used=0,
-        max_model_calls_per_cycle=max_model_calls_per_cycle,
+        max_model_calls_per_cycle=model_call_limit_for_status,
     )
     _append_event("cycle_started", symbols_due=symbols_to_decide, dry_run=dry_run)
 
@@ -1232,7 +1232,7 @@ def run_cycle(
         report=report,
         dry_run=dry_run,
         symbols_total=len(symbols_to_decide),
-        max_model_calls_per_cycle=max_model_calls_per_cycle,
+        max_model_calls_per_cycle=model_call_limit_for_status,
         learnings_store=learnings_store,
         decision_ledger_store=decision_ledger_store,
         refresh_report_portfolio=refresh_report_portfolio,
@@ -1346,8 +1346,8 @@ def run_cycle(
     # = ceux qui ont des barres (runtime non-stale + daily des stale-analysables). Sans
     # ça, un stale qui demande du contexte sur lui-même reçoit un research vide.
     analysis_symbols = sorted(analysis_bars_by_symbol)
-    # undecided_symbols : symboles non décidés en mode queue (reportés par le
-    # fusible + skippés dead/budget). Ils sont EXCLUS du fallback HOLD synthétique
+    # undecided_symbols : symboles non décidés en mode queue (skippés dead/budget).
+    # Ils sont EXCLUS du fallback HOLD synthétique
     # ci-dessous (FIX 2). En mode batch, reste vide (comportement inchangé).
     undecided_symbols: set[str] = set()
 
@@ -1383,8 +1383,8 @@ def run_cycle(
             }
             for sym in decidable
         }
-        # FIX 1 : passe max_model_calls_per_cycle pour borner le nombre d'appels
-        # LLM par cycle (fusible coût acpx). Les symboles au-delà sont reportés.
+        # Mode queue : l'admission n'est pas capée par appels ; le dispatch attend
+        # les états terminaux, ResourcePools/AIMD borne la pression provider.
         decisions_by_symbol, model_calls_used, undecided_symbols = dispatch_decide_via_queue(
             ledger=task_ledger,
             decidable=decidable,
@@ -1395,16 +1395,10 @@ def run_cycle(
             decision_timeout_s=decision_timeout_s,
             agent_tools_enabled=agent_tools_enabled,
             cycle_id=now.isoformat(),
-            budget_s=float(decision_timeout_s),
             now_fn=time.time,
-            max_model_calls=max_model_calls_per_cycle,
             # Univers d'analyse du cycle → resolver d'indicateurs du tour d'outils
             # (filtre dur + paires cross-asset, spec §5 W5).
             symbols_universe=analysis_symbols,
-            # Fusible halvé UNIQUEMENT si le tour d'outils est réellement câblé
-            # (review T4 E4a : agent_tools sans services = mode dégradé 1 appel).
-            tools_active=agent_tools_enabled and decide_tools_active,
-            max_rounds=decide_tool_max_rounds,
         )
     else:
         # Mode batch classique — comportement STRICTEMENT inchangé (flag off).
@@ -1517,8 +1511,8 @@ def run_cycle(
             _log_cycle_progress("[decision %d/%d] %s skipped no_price", index, len(symbols_to_decide), sym)
             continue
 
-        # FIX 2 : en mode queue, les symboles non décidés ce cycle (reportés par le
-        # fusible ou skippés dead/budget) sont EXCLUS du fallback HOLD synthétique —
+        # FIX 2 : en mode queue, les symboles non décidés ce cycle (skippés
+        # dead/budget) sont EXCLUS du fallback HOLD synthétique —
         # ils seront redécidés au prochain cycle. Le mode batch garde son comportement
         # (HOLD no_decision_in_batch) via undecided_symbols = set() initialisé plus haut.
         if sym in undecided_symbols:
@@ -2001,12 +1995,15 @@ def run_cycle(
     report["model_calls_used"] = model_calls_used
     refresh_report_portfolio()
     _write_current_report(report)
+    if model_call_limit_for_status is None:
+        calls_label = f"{model_calls_used} (no cap)"
+    else:
+        calls_label = f"{model_calls_used}/{model_call_limit_for_status}"
     _log_cycle_progress(
-        "[cycle] completed decisions=%d executed=%d calls=%d/%d",
+        "[cycle] completed decisions=%d executed=%d calls=%s",
         len(report["decisions"]),
         sum(1 for item in report["decisions"] if item.get("executed")),
-        model_calls_used,
-        max_model_calls_per_cycle,
+        calls_label,
     )
     _write_status(
         "cycle_completed",
@@ -2014,7 +2011,7 @@ def run_cycle(
         decisions_done=len(report["decisions"]),
         symbols_total=len(symbols_to_decide),
         model_calls_used=model_calls_used,
-        max_model_calls_per_cycle=max_model_calls_per_cycle,
+        max_model_calls_per_cycle=model_call_limit_for_status,
         last_decision=report["decisions"][-1] if report["decisions"] else None,
     )
     _append_event("cycle_completed", decisions_done=len(report["decisions"]), model_calls_used=model_calls_used)
@@ -2068,7 +2065,12 @@ def main(
     parser.add_argument("--max-wake-minutes", type=float, default=None, help="borne haute optionnelle du réveil agent (défaut: aucune — l'agent est autonome)")
     parser.add_argument("--max-context-requests-per-symbol", type=int, default=2, help="nombre max de requêtes indicateurs par symbole")
     parser.add_argument("--max-indicators-per-request", type=int, default=4, help="nombre max d'indicateurs par requête")
-    parser.add_argument("--max-model-calls-per-cycle", type=int, default=25, help="fusible coût: appels LLM max par cycle")
+    parser.add_argument(
+        "--max-model-calls-per-cycle",
+        type=int,
+        default=25,
+        help="cap du mode batch legacy uniquement ; ignoré en mode queue/free-iteration (no call cap)",
+    )
     parser.add_argument(
         "--decision-timeout-s",
         type=int,
@@ -2194,7 +2196,7 @@ def main(
     sched = _runtime_state.scheduler
     log.info("daemon démarré (dry_run=%s, once=%s)", dry_run, args.once)
     log.info(
-        "[config] decision_batch_parallelism=%d batch_size=%d max_model_calls_per_cycle=%d decision_timeout_s=%d agent_tools=%s",
+        "[config] decision_batch_parallelism=%d batch_size=%d batch_max_model_calls=%d queue_call_cap=none decision_timeout_s=%d agent_tools=%s",
         args.decision_batch_parallelism,
         args.decision_batch_size,
         args.max_model_calls_per_cycle,
@@ -2214,7 +2216,6 @@ def main(
         learnings_db_path=STATE_DIR / "learnings.db",
         max_context_requests_per_symbol=args.max_context_requests_per_symbol,
         max_indicators_per_request=args.max_indicators_per_request,
-        max_rounds=_env_int("CASYS_QUEUE_TOOL_MAX_ROUNDS", 1),
         logger=log,
     )
 
@@ -2356,8 +2357,6 @@ def main(
                     commission_model=commission_model,
                     agent_tools_enabled=args.agent_tools,
                     queue_decide_enabled=_queue_decide_enabled,
-                    decide_tools_active=_decide_tool_services is not None,
-                    decide_tool_max_rounds=getattr(_decide_tool_services, "max_rounds", 1),
                     task_ledger=_task_ledger,
                     queue_execute_enabled=_queue_execute_enabled,
                     execute_ledger=_execute_ledger,

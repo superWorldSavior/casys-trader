@@ -21,7 +21,7 @@ def test_services_construits_sans_learnings_db(tmp_path):
     services = _build(tmp_path)
     assert isinstance(services, ToolRoundServices)
     assert services.learnings_recall_provider is None
-    assert services.max_rounds == 1
+    assert not hasattr(services, "max_rounds")
 
 
 def test_get_bars_suit_le_handle(tmp_path):
@@ -36,8 +36,13 @@ def test_get_bars_suit_le_handle(tmp_path):
     assert services.get_bars("SPY") == [("bar", "SPY")]
 
 
-def test_max_rounds_invalide_desactive_les_outils(tmp_path):
-    assert _build(tmp_path, max_rounds=0) is None
+def test_services_n_acceptent_plus_max_rounds(tmp_path):
+    try:
+        _build(tmp_path, max_rounds=0)
+    except TypeError as exc:
+        assert "max_rounds" in str(exc)
+    else:
+        raise AssertionError("build_decide_tool_services ne doit plus accepter max_rounds")
 
 
 def test_tool_limits_grain_1(tmp_path):

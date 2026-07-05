@@ -51,6 +51,35 @@ def test_cli_status_json_expose_les_fichiers_runtime(monkeypatch, tmp_path, caps
     assert payload["current_report"]["decisions"][0]["symbol"] == "SPY"
 
 
+def test_cli_status_model_calls_sans_cap_affiche_metric_seule(monkeypatch, tmp_path, capsys) -> None:
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+    (state_dir / "daemon_status.json").write_text(
+        json.dumps({"model_calls_used": 7, "decisions_done": 0, "symbols_total": 0})
+    )
+    (state_dir / "broker.json").write_text(json.dumps({"cash": 1000.0, "positions": {}}))
+
+    assert cli.main(["status"]) == 0
+
+    out = capsys.readouterr().out
+    assert "model_calls: 7\n" in out
+    assert "model_calls: 7/" not in out
+
+
+def test_cli_daemon_help_ne_vend_pas_max_model_calls_comme_fusible(capsys) -> None:
+    parser = cli.build_parser()
+
+    try:
+        parser.parse_args(["daemon", "--help"])
+    except SystemExit as exc:
+        assert exc.code == 0
+
+    out = capsys.readouterr().out
+    assert "fusible" not in out.lower()
+    assert "batch legacy" in out.lower()
+
+
 def test_cli_decisions_seed_existing_puis_liste_json(monkeypatch, tmp_path, capsys) -> None:
     state_dir = tmp_path / "state"
     state_dir.mkdir()

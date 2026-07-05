@@ -563,6 +563,27 @@ def test_build_batch_prompt_catalogue_max_rounds_3_est_round_aware():
     assert "bloquée en hold" not in low
 
 
+def test_build_batch_prompt_catalogue_max_rounds_none_est_libre_sans_nombre():
+    prompt = codex_client.build_batch_prompt(
+        mandate="m",
+        memory="mem",
+        shared_context={},
+        symbols_payload=[{"symbol": "2330.TW"}],
+        allow_context_request=False,
+        allow_tool_calls=True,
+        use_symbol_calls_contract=True,
+        max_rounds=None,
+    )
+    low = prompt.lower()
+
+    assert "autant de tournées d'outils que nécessaire" in low
+    assert "dès que tu as assez de contexte" in low
+    assert "tour final imposé" in low
+    assert "une seule tournée" not in low
+    assert "jusqu'à 2 tournées" not in low
+    assert "jusqu'à 3 tournées" not in low
+
+
 def test_decide_batch_transmet_la_borne_catalogue_au_prompt():
     captured = []
 

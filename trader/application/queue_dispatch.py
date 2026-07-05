@@ -22,11 +22,10 @@ avant l'enfilage pour libérer l'index uniq_active_kind_partition.
 AX §6 (Deterministic Outputs) : now_fn injectable pour déterminisme des tests.
 
 TOUR D'OUTILS (T4, issue #2) : quand agent_tools est actif ET que les services
-boot sont câblés (tools_active), le handler orchestre le tour d'outils grain-1
+boot sont câblés côté handler, celui-ci orchestre le tour d'outils grain-1
 (get_indicator_context / get_active_plans / recall_learnings / get_freshness) —
-fin du mode dégradé Lot A. Le fusible d'admission est halvé (pire cas 2 appels
-LLM par décision) et model_calls_used = somme des appels réels remontés par les
-handlers dans l'enveloppe résultat.
+fin du mode dégradé Lot A. Le dispatch enfile tous les symboles décidables ;
+model_calls_used reste une métrique d'observabilité issue des enveloppes handler.
 Source : decide_one.py (ToolRoundServices), decide_handler.make_decide_handler.
 """
 
@@ -44,6 +43,7 @@ log = logging.getLogger(__name__)
 # Intervalle de pause entre deux polls de collecte (secondes).
 # Petit devant la latence LLM (>10s) ; évite le spin sans retarder la réponse.
 _POLL_SLEEP_S: float = 0.1
+_POLL_SLEEP_MAX_S: float = 0.5
 
 
 def dispatch_decide_via_queue(
@@ -57,12 +57,8 @@ def dispatch_decide_via_queue(
     decision_timeout_s: int,
     agent_tools_enabled: bool,
     cycle_id: str,
-    budget_s: float,
     now_fn: Callable[[], float],
-    max_model_calls: int = 999,
     symbols_universe: list[str] | None = None,
-    tools_active: bool = False,
-    max_rounds: int = 1,
 ) -> tuple[dict[str, Decision], int, set[str]]:
     """Enfile les décisions grain-symbole et collecte les résultats via polling.
 
@@ -84,17 +80,8 @@ def dispatch_decide_via_queue(
     cycle_id:
         Identifiant unique du cycle courant (ex. ``now.isoformat()``).
         Préfixe les dedup_keys : ``{cycle_id}:{sym}``.
-    budget_s:
-        Budget de collecte total en secondes (= CASYS_DECISION_TIMEOUT_S).
-        Les symboles non résolus dans ce délai sont skippés.
     now_fn:
         ``Callable[[], float]`` retournant epoch secondes. Injectable pour les tests.
-    max_model_calls:
-        Nombre maximum de tâches enfilées ce cycle (fusible coût acpx).
-        Les symboles au-delà de la limite sont REPORTÉS (non enfilés) — ils
-        reviendront décidables au tick suivant.  Ordre = ordre de ``decidable``
-        (déjà priorisé en amont, AX §6 déterminisme).  Défaut 999 = pas de
-        limite effective (rétrocompatibilité si non passé).
 
     Returns
     -------
@@ -105,20 +92,19 @@ def dispatch_decide_via_queue(
         - ``model_calls_used`` : appels LLM réellement consommés (somme des
           ``model_calls`` remontés par les handlers ; 1/décision sans round,
           2+/décision avec tour d'outils).
-        - ``undecided_symbols`` : symboles non décidés ce cycle = reportés par
-          le fusible + skippés (dead / budget épuisé / task introuvable).
-          Ces symboles ne doivent PAS recevoir un HOLD synthétique — ils seront
-          redécidés au prochain cycle.
+        - ``undecided_symbols`` : symboles non décidés ce cycle = skippés
+          (dead / lease expiré / task introuvable). Ces symboles ne doivent
+          PAS recevoir un HOLD synthétique — ils seront redécidés quand la file
+          les rendra à nouveau admissibles.
     """
     now_ms = int(now_fn() * 1000)
 
     # -----------------------------------------------------------------------
     # 1. Purge des tâches decide périmées (cycles précédents)
     # -----------------------------------------------------------------------
-    # L'index uniq_active_kind_partition (kind, partition_key) WHERE status IN
-    # ('pending','running') bloquerait l'enfilage si une tâche de même partition
-    # du cycle précédent est encore active. On la supprime d'abord.
-    stale_deleted = ledger.delete_stale_decide(current_cycle_id=cycle_id)
+    # Les pending d'anciens cycles sont supprimées ; un running vivant reste en
+    # place et bloque sa partition, ce qui reporte simplement le symbole.
+    stale_deleted = ledger.delete_stale_decide(current_cycle_id=cycle_id, now_ms=now_ms)
     if stale_deleted:
         log.debug(
             "[queue_dispatch] purged stale decide tasks cycle=%s deleted=%d",
@@ -127,33 +113,11 @@ def dispatch_decide_via_queue(
         )
 
     # -----------------------------------------------------------------------
-    # 2. Enfilage — 1 tâche par symbole, dans la limite du fusible
+    # 2. Enfilage — 1 tâche par symbole décidable
     # -----------------------------------------------------------------------
-    # FIX 1 : on n'enfile qu'au plus `max_model_calls` symboles ce cycle.
-    # Les symboles au-delà sont reportés (undecided) sans enfilage — ils
-    # reviendront décidables au tick suivant (pas de HOLD synthétique).
-    # Tour d'outils (T4) : pire cas max_rounds+1 appels/décision (rounds + final).
-    # Divisé UNIQUEMENT si le round est réellement câblé
-    # (tools_active = agent_tools ET services boot présents — review T4 E4a).
-    # max_model_calls < 1 = fusible fermé : rien n'est admis (sémantique
-    # d'origine préservée) ; sinon plancher 1 en mode tools (0 = report infini).
-    if max_model_calls < 1:
-        effective_cap = 0
-    elif tools_active:
-        effective_cap = max(1, max_model_calls // (max(int(max_rounds), 1) + 1))
-    else:
-        effective_cap = max_model_calls
-    admitted = decidable[:effective_cap]
-    deferred_by_cap = set(decidable[effective_cap:])
-    if deferred_by_cap:
-        log.info(
-            "[queue_dispatch] fusible max_model_calls=%d : %d symboles reportés au cycle suivant",
-            max_model_calls,
-            len(deferred_by_cap),
-        )
-
     task_ids: dict[str, int] = {}
-    for sym in admitted:
+    enqueue_skipped_syms: set[str] = set()
+    for sym in decidable:
         payload = {
             "symbol": sym,
             "mandate": mandate,
@@ -195,23 +159,25 @@ def dispatch_decide_via_queue(
                 )
             else:
                 log.warning(
-                    "[queue_dispatch] enqueue returned None mais task introuvable sym=%s dedup=%s",
+                    "[queue_dispatch] enqueue skipped sym=%s dedup=%s — active partition or missing dedup",
                     sym,
                     dedup_key,
                 )
+                enqueue_skipped_syms.add(sym)
 
     # -----------------------------------------------------------------------
-    # 3. Collecte — polling jusqu'à done/dead ou budget épuisé
+    # 3. Collecte — polling jusqu'à état terminal
     # -----------------------------------------------------------------------
-    deadline = now_fn() + budget_s
     decisions_by_symbol: dict[str, Decision] = {}
     model_calls_by_sym: dict[str, int] = {}
     pending_syms = set(task_ids)
-    # Symboles enfilés mais non résolus (dead/budget) — seront dans undecided.
-    skipped_syms: set[str] = set()
+    # Symboles non résolus (dead/lease expiré/introuvable) — seront dans undecided.
+    skipped_syms: set[str] = set(enqueue_skipped_syms)
+    poll_sleep_s = _POLL_SLEEP_S
 
-    while pending_syms and now_fn() < deadline:
+    while pending_syms:
         resolved = set()
+        poll_now_ms = int(now_fn() * 1000)
         for sym in pending_syms:
             tid = task_ids[sym]
             task = ledger.get(tid)
@@ -265,38 +231,40 @@ def dispatch_decide_via_queue(
                 )
                 skipped_syms.add(sym)
                 resolved.add(sym)
+            elif status == "running":
+                lease_expires_at = task.get("lease_expires_at")
+                if lease_expires_at is not None and int(lease_expires_at) < poll_now_ms:
+                    log.warning(
+                        "[queue_dispatch] task lease expiré sym=%s task_id=%s — skip",
+                        sym,
+                        tid,
+                    )
+                    skipped_syms.add(sym)
+                    resolved.add(sym)
 
         pending_syms -= resolved
 
+        if resolved:
+            poll_sleep_s = _POLL_SLEEP_S
         if pending_syms:
-            remaining = deadline - now_fn()
-            if remaining > 0:
-                _time.sleep(min(_POLL_SLEEP_S, remaining))
+            _time.sleep(poll_sleep_s)
+            if not resolved:
+                poll_sleep_s = min(_POLL_SLEEP_MAX_S, poll_sleep_s * 2)
 
-    # Symboles encore en attente au budget épuisé → skip avec warning
-    for sym in pending_syms:
-        log.warning(
-            "[queue_dispatch] budget épuisé sym=%s budget_s=%.1f — skip",
-            sym,
-            budget_s,
-        )
-        skipped_syms.add(sym)
-
-    # FIX 2 : undecided = reportés par le fusible + skippés (dead/budget/introuvable).
+    # FIX 2 : undecided = skippés (dead/lease expiré/introuvable).
     # run_cycle EXCLUT ces symboles du fallback HOLD synthétique en mode queue.
-    undecided_symbols = deferred_by_cap | skipped_syms
+    undecided_symbols = set(skipped_syms)
 
     # T4 : appels LLM réellement consommés (2 par décision avec tour d'outils),
     # remontés par le handler dans l'enveloppe — plus len(decisions).
     model_calls_used = sum(model_calls_by_sym.values())
     log.info(
-        "[queue_dispatch] cycle=%s symbols=%d decided=%d calls=%d undecided=%d (deferred=%d skipped=%d)",
+        "[queue_dispatch] cycle=%s symbols=%d decided=%d calls=%d undecided=%d skipped=%d",
         cycle_id,
         len(decidable),
         len(decisions_by_symbol),
         model_calls_used,
         len(undecided_symbols),
-        len(deferred_by_cap),
         len(skipped_syms),
     )
     return decisions_by_symbol, model_calls_used, undecided_symbols

@@ -108,6 +108,7 @@ def resolve_symbol_decision(
     max_rounds: int = 1,
     tool_limits=None,
     reinject: str = "cumul",
+    heartbeat: Callable[[], object] | None = None,
 ) -> "codex_client.Decision":
     """Orchestration grain-1 du tour d'outils : round(s) + tour final + merge des traces.
 
@@ -149,8 +150,13 @@ def resolve_symbol_decision(
     accumulated_results: list[dict] = []
     rounds_done = 0
 
+    def _heartbeat() -> None:
+        if heartbeat is not None:
+            heartbeat()
+
     for _ in range(max_rounds):
         resp = call_model(per_symbol, allow_tool_calls=True)
+        _heartbeat()
         if not isinstance(resp, codex_client.BatchToolCallRequest):
             return _finalize(_decision_of(resp, symbol), accumulated_traces, rounds_done)
         results_payload, runtime = run_one_round(resp, context=tool_context, limits=tool_limits)
@@ -169,10 +175,18 @@ def resolve_symbol_decision(
 
     # Budget de tournées épuisé → tour final, outils interdits (le LLM DOIT décider).
     resp_final = call_model(per_symbol, allow_tool_calls=False)
+    _heartbeat()
     if isinstance(resp_final, codex_client.BatchToolCallRequest):
         # Défense en profondeur (design §6.2) : une 2e tournée au tour final est bloquée.
         return _finalize(codex_client.Decision.hold(symbol, "tool_loop_blocked"), accumulated_traces, rounds_done)
-    return _finalize(_decision_of(resp_final, symbol), accumulated_traces, rounds_done)
+    final_decision = _decision_of(resp_final, symbol)
+    if (
+        final_decision.llm_error == "tool_loop"
+        and final_decision.action == "HOLD"
+        and final_decision.rationale == "tool_loop_blocked"
+    ):
+        final_decision = codex_client.Decision.hold(symbol, "tool_loop_blocked")
+    return _finalize(final_decision, accumulated_traces, rounds_done)
 
 
 def _decision_of(resp, symbol: str) -> "codex_client.Decision":

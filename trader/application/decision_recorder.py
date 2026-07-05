@@ -41,7 +41,7 @@ class DecisionRecorder:
     report: ReportPayload
     dry_run: bool
     symbols_total: int
-    max_model_calls_per_cycle: int
+    max_model_calls_per_cycle: int | None
     learnings_store: LearningAppender
     decision_ledger_store: DecisionLedgerAppender
     refresh_report_portfolio: Callable[[], None]

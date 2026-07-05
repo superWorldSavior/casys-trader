@@ -249,14 +249,12 @@ borner la concurrence des fetchs, **agnostique à la source** (yahoo remplaçabl
 - **T7** — Équivalence : même symbole, mêmes données → décision queue ≈ décision batch,
   traces + note_ids de recall persistés (`recalls`).
 
-## 8. Budget & fusibles
+## 8. Budget & observabilité
 
-- Tool round = **jusqu'à 2 appels acpx** par décision (round + final) avec `max_rounds=1`
-  (défaut) ; `CASYS_QUEUE_TOOL_MAX_ROUNDS` borne les allers-retours.
-- Fusible d'admission **halvé uniquement si le round est réellement câblé**
-  (`tools_active` = agent_tools ET services boot — review T4 E4a) ; `max_model_calls<1`
-  = fusible fermé (0 admis). `model_calls_used` = somme des appels réels remontés en
-  enveloppe (clampés ≥1).
+- Note post-free-iteration : le mode queue n'a plus de cap d'appels ni de knob
+  runtime pour limiter les tours. La session a un backstop anti-runaway de code,
+  l'agent itère librement, et `model_calls_used` est une métrique remontée en
+  enveloppe (clampée ≥1), pas un fusible.
 - Bornes d'outils **grain-1 : 24 calls/round, 8/symbole** (vs 24/3 calibré batch chunk) —
   les outils s'exécutent localement, ce relèvement ne coûte aucun appel acpx.
 - Limitation notée (E4b) : les tâches dead/budget-expired ne remontent pas leur coût

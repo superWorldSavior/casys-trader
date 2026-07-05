@@ -41,6 +41,10 @@ log = logging.getLogger(__name__)
 # retryable avec decrease M au même titre que rate_limited/quota_exceeded.
 _OVERLOAD_CODES: frozenset[str] = frozenset({"rate_limited", "quota_exceeded", "provider_error"})
 
+# Garde-fou anti-runaway, PAS un budget fonctionnel : l'agent s'arrête de
+# lui-même en 1-3 tours normalement.
+SESSION_ROUND_BACKSTOP = 20
+
 
 class _UnexpectedResponse(Exception):
     """Type de réponse inattendu de decide_batch (contrat cassé) — interne."""
@@ -58,7 +62,6 @@ class ToolRoundServices:
     learnings_recall_provider: Callable[[dict], dict] | None
     max_context_requests_per_symbol: int
     max_indicators_per_request: int
-    max_rounds: int = 1  # allers-retours LLM (1 appel acpx chacun) ; >1 = multi-tour
     # Bornes d'outils PAR round. Les 24/3 de ToolRoundLimits sont calibrés batch
     # (chunk de 5 symboles) ; en grain-1, 8 calls pour LE symbole décidé — les
     # outils s'exécutent localement, ce relèvement ne coûte aucun appel acpx.
@@ -119,6 +122,7 @@ def decide_one(
     now_fn: Callable[[], datetime] | None = None,
     session_backends: list | None = None,
     task_id: str | None = None,
+    heartbeat: Callable[[], object] | None = None,
 ) -> tuple[Decision, int]:
     """Décide UN symbole via LLM ; expose les erreurs pour retry/backpressure.
 
@@ -173,7 +177,7 @@ def decide_one(
             allow_tool_calls=allow_tool_calls,
             use_symbol_calls_contract=agent_tools_enabled,
             timeout_s=decision_timeout_s,
-            max_rounds=(tool_services.max_rounds if tool_services is not None else 1),
+            max_rounds=1,
         )
 
     tools_active = agent_tools_enabled and tool_services is not None
@@ -195,6 +199,9 @@ def decide_one(
             )
             tool_limits = tool_services.tool_limits()
             def _resolve(session):
+                if heartbeat is not None:
+                    heartbeat()
+
                 def _session_call_model(per_symbol: dict, *, allow_tool_calls: bool):
                     nonlocal calls_made
                     calls_made += 1
@@ -210,7 +217,7 @@ def decide_one(
                         timeout_s=decision_timeout_s,
                         complete_fn=llm.session_complete_fn(session),
                         max_tool_calls_per_symbol=tool_limits.max_calls_per_symbol,
-                        max_rounds=tool_services.max_rounds,
+                        max_rounds=None,
                     )
 
                 return resolve_symbol_decision(
@@ -218,9 +225,10 @@ def decide_one(
                     base_facts=per_symbol_facts,
                     tool_context=context,
                     call_model=_session_call_model,
-                    max_rounds=tool_services.max_rounds,
+                    max_rounds=SESSION_ROUND_BACKSTOP,
                     reinject="delta",
                     tool_limits=tool_limits,
+                    heartbeat=heartbeat,
                 )
 
             decision = llm.run_with_session_fallback(

@@ -87,7 +87,7 @@ def test_worker_handler_result_ecrit_dans_ledger(tmp_path):
     pools = ResourcePools({})
     led.enqueue(kind="decide", priority=0, scheduled_at_ms=0, now_ms=0, dedup_key="d1")
 
-    w = Worker(led, pools, {"decide": lambda task: "resultat_test"}, worker_id="w1")
+    w = Worker(led, pools, {"decide": lambda task, *, heartbeat=None: "resultat_test"}, worker_id="w1")
     assert w.run_once(now_ms=1, token="t1") is True
 
     row = led._conn.execute("SELECT status, result FROM tasks WHERE id=1").fetchone()
@@ -101,7 +101,7 @@ def test_worker_noop_handler_result_none(tmp_path):
     pools = ResourcePools({})
     led.enqueue(kind="decide", priority=0, scheduled_at_ms=0, now_ms=0, dedup_key="d1")
 
-    w = Worker(led, pools, {"decide": lambda task: None}, worker_id="w1")
+    w = Worker(led, pools, {"decide": lambda task, *, heartbeat=None: None}, worker_id="w1")
     assert w.run_once(now_ms=1, token="t1") is True
 
     row = led._conn.execute("SELECT status, result FROM tasks WHERE id=1").fetchone()
@@ -261,7 +261,7 @@ def test_backoff_ancre_sur_finish_now_ms(tmp_path):
     def fake_now() -> float:
         return clock[0]
 
-    def slow_handler(task):
+    def slow_handler(task, *, heartbeat=None):
         clock[0] += ADVANCE_S  # avance l'horloge pendant le "traitement"
         raise RetryableError("timeout LLM simulé")
 
@@ -322,7 +322,7 @@ def test_stop_thread_bloque_reste_reference(tmp_path):
     pools = ResourcePools({})
     led.enqueue(kind="decide", priority=0, scheduled_at_ms=0, now_ms=0, dedup_key="d1")
 
-    def blocking_handler(task):
+    def blocking_handler(task, *, heartbeat=None):
         entered.set()   # signale que le handler est entré
         unblock.wait()  # bloque jusqu'au nettoyage du test
         return "done"
@@ -372,7 +372,7 @@ def test_start_leve_si_threads_encore_vivants(tmp_path):
     pools = ResourcePools({})
     led.enqueue(kind="decide", priority=0, scheduled_at_ms=0, now_ms=0, dedup_key="d1")
 
-    def blocking_handler(task):
+    def blocking_handler(task, *, heartbeat=None):
         entered.set()
         unblock.wait()
         return "done"
@@ -426,7 +426,7 @@ def test_idle_worker_ne_depend_pas_du_time_sleep_global(monkeypatch, tmp_path):
     pool = DecidePool(
         ledger=led,
         pools=pools,
-        handlers={"decide": lambda task: "done"},
+        handlers={"decide": lambda task, *, heartbeat=None: "done"},
         num_workers=1,
         now_fn=time.time,
     )

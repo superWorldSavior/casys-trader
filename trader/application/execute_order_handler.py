@@ -1,6 +1,6 @@
 """Handler execute_order — exécution atomique d'un ordre via le TaskLedger.
 
-``make_execute_order_handler`` retourne un ``Callable[[dict], None]``
+``make_execute_order_handler`` retourne un handler ``handler(task, *, heartbeat=None)``
 compatible avec ``Worker.run_once`` (``DecidePool`` ou pool équivalent).
 
 Atomicité (outbox transactionnel)
@@ -47,7 +47,7 @@ def make_execute_order_handler(
     plan_store: "SqliteTradePlanStore",
     ledger: "TaskLedger",
     now_fn: Callable[[], float] = time.time,
-) -> Callable[[dict], "str | None"]:
+) -> Callable[..., "str | None"]:
     """Fabrique un handler ``execute_order`` pour ``Worker.run_once``.
 
     Précondition : ``broker._db``, ``plan_store._db`` et ``ledger._db`` doivent
@@ -74,7 +74,7 @@ def make_execute_order_handler(
     Le Worker appellera ensuite ``complete(result=None)`` → no-op (fencing).
     """
 
-    def handler(task: dict) -> "str | None":
+    def handler(task: dict, *, heartbeat=None) -> "str | None":
         payload = json.loads(task["payload"])
 
         # --- Decode order ---

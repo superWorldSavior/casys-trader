@@ -130,7 +130,8 @@ présents comme fallback (flags off).
   `execute_order` refait la revalidation *finale* (cash/prix au moment du submit). Bien séparer
   arbitrage (cycle) vs revalidation (worker).
 - **Coût acpx** (grain-symbole, +appels) : atténué réveils intelligents + prompt caching ; à
-  mesurer flag-on. Fusible `max_model_calls_per_cycle` borné dans `dispatch_decide_via_queue`.
+  mesurer flag-on. Note post-free-iteration : le mode queue n'a plus de cap d'appels ;
+  `model_calls_used` est une métrique, et le coût est borné par timeout + AIMD + async.
 - **Mode queue Lot A = décision dégradée (sans context_request / tools / recall)** :
   `decide_handler` appelle `decide_batch(allow_context_request=False, allow_tool_calls=False)`,
   ce qui désactive `REQUEST_CONTEXT`, le tool round, et `recall_learnings`.
@@ -146,7 +147,7 @@ présents comme fallback (flags off).
 **Lot A (decide via file) — MERGÉ `main` (d7a3fe2), flag `CASYS_QUEUE_DECIDE_ENABLED` off.**
 `decide_one` (expose les erreurs, y compris HOLD de parsing, via `RetryableError`) + `DecidePool`
 (backoff ancré sur la fin de l'appel, `stop()`/`start()` guardés) + `dispatch_decide_via_queue`
-(purge stale par `cycle_id` → enqueue borné par `max_model_calls` → poll budget → **skippés exclus
+(purge stale par `cycle_id` → enqueue des décidables → attente des états terminaux → **skippés exclus
 du fallback HOLD** = fin du HOLD-par-saturation ; mode batch inchangé) + `build_symbol_facts`
 factorisé. 6 reviews Codex. **Re-check final du mode queue PAS encore tourné (pileup acpx) → à faire
 avant activation.**

@@ -28,7 +28,6 @@ class StartablePool(Protocol):
 
 NowMs = Callable[[], int]
 _DEFAULT_DECIDE_LEASE_MS = 1_800_000
-_DECIDE_SESSION_LEASE_MARGIN_FACTOR = 1.25
 
 
 def default_now_ms() -> int:
@@ -42,17 +41,11 @@ def _default_logger() -> logging.Logger:
 def _decide_session_lease_ms(
     *,
     decision_timeout_s: int,
-    max_rounds: int,
-    backend_count: int,
 ) -> int:
     timeout_s = max(int(decision_timeout_s), 1)
-    rounds = max(int(max_rounds), 1)
-    backends = max(int(backend_count), 1)
-    # Pire cas par backend : open=timeout+30, prompts=(max_rounds+1)*(timeout+15),
-    # close=15. Le runner peut recommencer depuis zero sur chaque backend.
-    per_backend_s = (timeout_s + 30) + (rounds + 1) * (timeout_s + 15) + 15
-    worst_case_s = backends * per_backend_s
-    return max(_DEFAULT_DECIDE_LEASE_MS, int(worst_case_s * _DECIDE_SESSION_LEASE_MARGIN_FACTOR * 1000))
+    # Lease court : couvre l'écart entre deux heartbeats (open acpx ou un round)
+    # avec slack, pas le backstop fonctionnel de session.
+    return max(_DEFAULT_DECIDE_LEASE_MS, (timeout_s + 30) * 2 * 1000)
 
 
 def _default_make_decide_handler(
@@ -192,6 +185,9 @@ def start_decide_queue(
     if not enabled:
         return DecideQueueRuntime(enabled=False)
 
+    if int(parallelism) < 1:
+        raise ValueError("[queue_decide] le pool decide requiert au moins 1 worker")
+
     log = logger or _default_logger()
     resolved = factories or DecideQueueFactories.defaults()
     task_ledger_cls = resolved.task_ledger_cls or _default_task_ledger_cls()
@@ -218,8 +214,6 @@ def start_decide_queue(
             )
         lease_ms = _decide_session_lease_ms(
             decision_timeout_s=decision_timeout_s,
-            max_rounds=getattr(tool_services, "max_rounds", 1),
-            backend_count=len(session_backends),
         )
 
     ledger = task_ledger_cls(state_dir / "task_ledger.db")
@@ -317,7 +311,6 @@ def build_decide_tool_services(
     learnings_db_path: Path,
     max_context_requests_per_symbol: int,
     max_indicators_per_request: int,
-    max_rounds: int = 1,
     logger: LoggerLike | None = None,
 ) -> object | None:
     """Construit les ToolRoundServices du pool decide au boot (spec §4).
@@ -329,7 +322,8 @@ def build_decide_tool_services(
       chaque appel. ⚠️ si la db n'existe pas ENCORE au boot, recall restera
       indisponible jusqu'au prochain redémarrage (limitation documentée).
 
-    Retourne ``None`` si ``max_rounds < 1`` (garde-fou config).
+    Le nombre de tournées en session est libre côté prompt ; le code applique
+    seulement ``SESSION_ROUND_BACKSTOP`` dans decide_one.
     """
     from datetime import datetime, timezone
 
@@ -339,9 +333,6 @@ def build_decide_tool_services(
     from trader.market.data_source import make_indirect_get_bars
 
     log = logger or _default_logger()
-    if max_rounds < 1:
-        log.warning("[queue_decide] tool max_rounds=%d invalide (<1) — outils désactivés", max_rounds)
-        return None
 
     recall_provider = None
     if learnings_db_path.exists():
@@ -362,7 +353,6 @@ def build_decide_tool_services(
         learnings_recall_provider=recall_provider,
         max_context_requests_per_symbol=max_context_requests_per_symbol,
         max_indicators_per_request=max_indicators_per_request,
-        max_rounds=max_rounds,
     )
 
 

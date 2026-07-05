@@ -159,7 +159,33 @@ def test_start_decide_queue_builds_ledger_pool_and_handler(tmp_path: Path, monke
     assert logger.warnings[0][0].startswith("[queue_decide] CASYS_DECISION_BATCH_SIZE=%d IGNORÉ")
 
 
-def test_start_decide_queue_construit_et_filtre_les_session_backends_en_multi_round(
+def test_start_decide_queue_refuse_parallelism_zero(tmp_path: Path) -> None:
+    _reset_fakes()
+
+    class FakeCodexClient:
+        DEFAULT_MODEL = "gpt-5.5"
+
+    with pytest.raises(ValueError, match="au moins 1 worker"):
+        queue_runtime.start_decide_queue(
+            enabled=True,
+            state_dir=tmp_path,
+            parallelism=0,
+            decision_batch_size=5,
+            default_decision_batch_size=5,
+            codex_client=FakeCodexClient,
+            factories=queue_runtime.DecideQueueFactories(
+                task_ledger_cls=FakeLedger,
+                resource_pools_cls=FakePools,
+                decide_pool_cls=FakePool,
+                make_decide_handler=lambda **_kwargs: "decide-handler",
+            ),
+        )
+
+    assert FakeLedger.instances == []
+    assert FakePool.instances == []
+
+
+def test_start_decide_queue_construit_et_filtre_les_session_backends(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -174,7 +200,7 @@ def test_start_decide_queue_construit_et_filtre_les_session_backends_en_multi_ro
         DEFAULT_MODEL = "gpt-5.5"
 
     class ToolServices:
-        max_rounds = 2
+        pass
 
     class FakeRouter:
         backends = [acpx_backend, non_session_backend]
@@ -210,11 +236,10 @@ def test_start_decide_queue_construit_et_filtre_les_session_backends_en_multi_ro
 
     assert build_calls == [{"spark_model": "gpt-5.5"}]
     assert handler_kwargs[0]["codex_client"] is FakeCodexClient
-    assert handler_kwargs[0]["tool_services"].max_rounds == 2
     assert handler_kwargs[0]["session_backends"] == [acpx_backend]
 
 
-def test_start_decide_queue_max_rounds_1_construit_et_filtre_les_session_backends(
+def test_start_decide_queue_sans_max_rounds_construit_et_filtre_les_session_backends(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -229,7 +254,7 @@ def test_start_decide_queue_max_rounds_1_construit_et_filtre_les_session_backend
         DEFAULT_MODEL = "gpt-5.5"
 
     class ToolServices:
-        max_rounds = 1
+        pass
 
     class FakeRouter:
         backends = [acpx_backend, non_session_backend]
@@ -264,11 +289,10 @@ def test_start_decide_queue_max_rounds_1_construit_et_filtre_les_session_backend
     )
 
     assert build_calls == [{"spark_model": "gpt-5.5"}]
-    assert handler_kwargs[0]["tool_services"].max_rounds == 1
     assert handler_kwargs[0]["session_backends"] == [acpx_backend]
 
 
-def test_start_decide_queue_passe_un_lease_qui_couvre_le_pire_cas_strict(
+def test_start_decide_queue_passe_un_lease_court_inter_heartbeat(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -281,7 +305,7 @@ def test_start_decide_queue_passe_un_lease_qui_couvre_le_pire_cas_strict(
         DEFAULT_MODEL = "gpt-5.5"
 
     class ToolServices:
-        max_rounds = 1
+        pass
 
     class FakeRouter:
         backends = [acpx_backend_1, acpx_backend_2]
@@ -308,12 +332,9 @@ def test_start_decide_queue_passe_un_lease_qui_couvre_le_pire_cas_strict(
         ),
     )
 
-    timeout_s = 900
-    rounds = ToolServices.max_rounds
-    backends = 2
-    per_backend_s = (timeout_s + 30) + (rounds + 1) * (timeout_s + 15) + 15
-    worst_case_ms = backends * per_backend_s * 1000
-    assert FakePool.instances[0].lease_ms >= worst_case_ms
+    expected_ms = (900 + 30) * 2 * 1000
+    assert FakePool.instances[0].lease_ms == expected_ms
+    assert FakePool.instances[0].lease_ms < 60 * 60 * 1000
 
 
 def test_start_decide_queue_sans_acpx_backend_leve_runtimeerror(tmp_path: Path, monkeypatch) -> None:

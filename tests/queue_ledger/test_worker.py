@@ -17,7 +17,7 @@ def test_worker_runs_handler_and_completes(tmp_path):
                 dedup_key="d", partition_key="C1", resource="acpx",
                 payload='{"chunk": ["AAPL"]}')
     seen = []
-    handlers = {"decide": lambda task: seen.append(task["dedup_key"])}
+    handlers = {"decide": lambda task, *, heartbeat=None: seen.append(task["dedup_key"])}
     w = Worker(led, pools, handlers, worker_id="w1")
     assert w.run_once(now_ms=1, token="tok1") is True
     assert seen == ["d"]
@@ -26,12 +26,43 @@ def test_worker_runs_handler_and_completes(tmp_path):
     assert "acpx" in pools.free_resources()            # ressource relâchée
 
 
+def test_worker_passe_heartbeat_au_handler_et_renouvelle_le_lease(tmp_path):
+    led, pools = _setup(tmp_path)
+    led.enqueue(kind="decide", priority=5, scheduled_at_ms=0, now_ms=0,
+                dedup_key="d", partition_key="C1", resource="acpx")
+    heartbeat_calls = []
+    original_heartbeat = led.heartbeat
+
+    def spy_heartbeat(**kwargs):
+        heartbeat_calls.append(kwargs)
+        return original_heartbeat(**kwargs)
+
+    led.heartbeat = spy_heartbeat  # type: ignore[method-assign]
+
+    ticks = iter([2.0, 3.0])
+
+    def now_fn():
+        return next(ticks)
+
+    def handler(task, *, heartbeat=None):
+        assert heartbeat is not None
+        assert heartbeat() is True
+        return "ok"
+
+    w = Worker(led, pools, {"decide": handler}, worker_id="w1", lease_ms=1_000, now_fn=now_fn)
+
+    assert w.run_once(now_ms=1, token="tok1") is True
+    assert heartbeat_calls == [
+        {"task_id": 1, "token": "tok1", "now_ms": 2000, "lease_ms": 1000}
+    ]
+
+
 def test_worker_retryable_error_requeues(tmp_path):
     led, pools = _setup(tmp_path)
     led.enqueue(kind="decide", priority=5, scheduled_at_ms=0, now_ms=0,
                 dedup_key="d", partition_key="C1", resource="acpx", max_attempts=3)
 
-    def boom(task):
+    def boom(task, *, heartbeat=None):
         raise RetryableError("overload")
 
     w = Worker(led, pools, {"decide": boom}, worker_id="w1")
@@ -46,7 +77,7 @@ def test_worker_returns_false_when_resource_saturated(tmp_path):
     led.enqueue(kind="decide", priority=5, scheduled_at_ms=0, now_ms=0,
                 dedup_key="d", partition_key="C1", resource="acpx")
     pools.try_acquire("acpx")                            # sature acpx
-    w = Worker(led, pools, {"decide": lambda t: None}, worker_id="w1")
+    w = Worker(led, pools, {"decide": lambda t, *, heartbeat=None: None}, worker_id="w1")
     assert w.run_once(now_ms=1, token="tok1") is False  # rien de claimable
 
 
@@ -59,7 +90,7 @@ def test_worker_retryable_no_overload_flag_keeps_limit(tmp_path):
                 dedup_key="d", partition_key="C1", resource="acpx", max_attempts=3)
     initial_limit = pools.effective_limit("acpx")
 
-    def boom(task):
+    def boom(task, *, heartbeat=None):
         raise RetryableError("timeout réseau")  # is_overload=False par défaut
 
     w = Worker(led, pools, {"decide": boom}, worker_id="w1")
@@ -77,7 +108,7 @@ def test_worker_retryable_with_overload_flag_lowers_limit(tmp_path):
                 dedup_key="d", partition_key="C1", resource="acpx", max_attempts=3)
     initial_limit = pools.effective_limit("acpx")  # 4
 
-    def boom(task):
+    def boom(task, *, heartbeat=None):
         raise RetryableError("rate limit externe", is_overload=True)
 
     w = Worker(led, pools, {"decide": boom}, worker_id="w1")

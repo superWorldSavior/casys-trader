@@ -63,7 +63,7 @@ class ShadowQueueProbe:
     # Handler no-op
     # ------------------------------------------------------------------
 
-    def _noop_handler(self, task: dict) -> None:
+    def _noop_handler(self, task: dict, *, heartbeat=None) -> None:
         """Collecte le symbole du payload sans rien faire d'autre."""
         try:
             payload = json.loads(task.get("payload") or "{}")
