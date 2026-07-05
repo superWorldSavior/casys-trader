@@ -1,16 +1,17 @@
 # Référence — Exécution : admission, budget gross, broker, portefeuille
 
 > **Type** : Reference (Diátaxis).
-> **Code** : `application/order_admission`, `market/gross_priority`, `execution/broker`, `execution/portfolio`
+> **Code** : `application/order_admission`, `application/risk_admission`, `market/gross_priority`, `execution/broker`, `execution/portfolio`
 > **Rôle** : le chemin d'un ordre approuvé jusqu'au fill, et la vue portefeuille.
 
-Après la décision LLM et le [risk gate](risk-gate.md), un ordre passe par :
-admission (helpers purs) → ordre d'exécution gross-fair → broker → portefeuille.
+Après la décision LLM, un ordre passe par :
+admission intent/exit → admission risque → [risk gate](risk-gate.md) final →
+ordre d'exécution gross-fair → broker → portefeuille.
 
-## Admission — `application/order_admission` (helpers purs)
+## Admission intent/exit — `application/order_admission` (helpers purs)
 
-Aucune I/O, aucune orchestration (le daemon orchestre) — juste des fonctions pures
-d'aide à la décision d'ordre :
+Aucune I/O, aucune orchestration runtime — juste des fonctions pures d'aide à la
+décision d'ordre :
 
 | Fonction | Rôle |
 |---|---|
@@ -20,6 +21,20 @@ d'aide à la décision d'ordre :
 | `reverse_open_quantity(action, quantity, position_quantity)` | quantité d'ouverture après un REVERSE |
 | `risk_pct_for_quantity(quantity, stop_distance, equity)` | % equity risqué (distance au stop) |
 | `set_entry_risk_metrics(...)` | pose les métriques de risque d'entrée sur la décision |
+
+## Admission risque — `application/risk_admission`
+
+`assess_risk_admission(request, gate=...)` regroupe l'admission risque des
+ouvertures sans prendre d'effet durable :
+
+| Élément | Rôle |
+|---|---|
+| `RiskAdmissionRequest` | contexte runtime minimal : action/intent, quantité, prix, equity, position, stop, FX, confiance |
+| `RiskAdmissionGate` | `Protocol` local exposant `max_quantity_at_risk(...)`, `check_confidence(...)` et `limits.max_risk_per_trade_pct` |
+| `RiskAdmissionResult` | verdict, quantité possiblement dérivée, champs de décision à persister, raison/contexte de rejet |
+
+Le daemon conserve le logging, le scheduling, l'écriture `decisions.jsonl`, le
+broker et le `RiskGate.check(...)` final.
 
 ## Budget gross — `market/gross_priority`
 

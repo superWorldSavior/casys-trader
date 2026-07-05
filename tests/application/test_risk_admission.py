@@ -1,0 +1,215 @@
+import pytest
+
+from trader.application.risk_admission import RiskAdmissionRequest, assess_risk_admission
+from trader.execution.risk import RiskGate, RiskLimits
+
+
+def _gate(*, confidence_gate_enabled: bool = True) -> RiskGate:
+    return RiskGate(
+        RiskLimits(
+            max_position_value=100_000.0,
+            max_gross_exposure=100_000.0,
+            max_order_value=100_000.0,
+            max_orders_per_cycle=5,
+            min_equity=10_000.0,
+            max_risk_per_trade_pct=0.01,
+            min_trade_confidence=0.7,
+            full_risk_confidence=0.9,
+            confidence_gate_enabled=confidence_gate_enabled,
+        )
+    )
+
+
+def test_assess_risk_admission_derives_quantity_from_risk_pct() -> None:
+    result = assess_risk_admission(
+        RiskAdmissionRequest(
+            action="BUY",
+            intent="OPEN_LONG",
+            quantity=0.0,
+            price=100.0,
+            equity=100_000.0,
+            confidence=0.95,
+            runtime_exit_plan={"hard_stop": {"type": "price", "price": 95.0}},
+            risk_pct_target=0.005,
+            position_quantity=0.0,
+            position_avg_price=0.0,
+            require_hard_stop=True,
+            fx_rate=1.0,
+        ),
+        gate=_gate(),
+    )
+
+    assert result.approved is True
+    assert result.quantity == pytest.approx(100.0)
+    assert result.reason is None
+    assert result.entry_updates["qty"] == pytest.approx(100.0)
+    assert result.entry_updates["risk_pct_target"] == pytest.approx(0.005)
+    assert result.entry_updates["risk_qty_derived"] is True
+    assert result.entry_updates["risk_clamped"] is False
+    assert result.entry_updates["risk_unbounded_no_stop"] is False
+    assert result.entry_updates["stop_distance"] == pytest.approx(5.0)
+    assert result.entry_updates["risk_pct"] == pytest.approx(0.005)
+    assert result.entry_updates["max_risk_qty"] == pytest.approx(200.0)
+
+
+def test_assess_risk_admission_blocks_risk_pct_without_stop() -> None:
+    result = assess_risk_admission(
+        RiskAdmissionRequest(
+            action="BUY",
+            intent="OPEN_LONG",
+            quantity=0.0,
+            price=100.0,
+            equity=100_000.0,
+            confidence=0.95,
+            runtime_exit_plan=None,
+            risk_pct_target=0.005,
+            position_quantity=0.0,
+            position_avg_price=0.0,
+            require_hard_stop=True,
+            fx_rate=1.0,
+        ),
+        gate=_gate(),
+    )
+
+    assert result.approved is False
+    assert result.quantity == 0.0
+    assert result.reason == "risk:risk_sizing_needs_stop"
+    assert result.context is None
+    assert result.entry_updates == {}
+
+
+def test_assess_risk_admission_uses_projected_add_risk_basis() -> None:
+    result = assess_risk_admission(
+        RiskAdmissionRequest(
+            action="BUY",
+            intent="ADD",
+            quantity=200.0,
+            price=120.0,
+            equity=100_000.0,
+            confidence=0.95,
+            runtime_exit_plan={"hard_stop": {"type": "price", "price": 100.0}},
+            risk_pct_target=None,
+            position_quantity=10.0,
+            position_avg_price=100.0,
+            require_hard_stop=True,
+            fx_rate=1.0,
+        ),
+        gate=_gate(),
+    )
+
+    assert result.approved is False
+    assert result.reason == "risk:risk_per_trade_exceeded"
+    assert result.entry_updates["risk_total_position_qty"] == pytest.approx(210.0)
+    assert result.entry_updates["risk_entry_price"] == pytest.approx(119.0476190476)
+    assert result.entry_updates["stop_distance"] == pytest.approx(19.0476190476)
+    assert result.entry_updates["risk_pct"] == pytest.approx(0.04)
+    assert result.entry_updates["max_risk_qty"] == pytest.approx(52.5)
+    assert result.context == (
+        "risk_qty=210.0 max_qty=52.50000000 risk_pct=0.04000000000000001 "
+        "limit=0.01"
+    )
+
+
+def test_assess_risk_admission_keeps_add_order_quantity_when_projected_risk_passes() -> None:
+    result = assess_risk_admission(
+        RiskAdmissionRequest(
+            action="BUY",
+            intent="ADD",
+            quantity=10.0,
+            price=120.0,
+            equity=100_000.0,
+            confidence=0.95,
+            runtime_exit_plan={"hard_stop": {"type": "price", "price": 100.0}},
+            risk_pct_target=None,
+            position_quantity=10.0,
+            position_avg_price=100.0,
+            require_hard_stop=True,
+            fx_rate=1.0,
+        ),
+        gate=_gate(),
+    )
+
+    assert result.approved is True
+    assert result.quantity == pytest.approx(10.0)
+    assert result.entry_updates["risk_total_position_qty"] == pytest.approx(20.0)
+    assert result.entry_updates["risk_entry_price"] == pytest.approx(110.0)
+    assert result.entry_updates["risk_pct"] == pytest.approx(0.002)
+
+
+def test_assess_risk_admission_traces_reverse_without_confidence_or_max_risk_gate() -> None:
+    result = assess_risk_admission(
+        RiskAdmissionRequest(
+            action="SELL",
+            intent="REVERSE",
+            quantity=300.0,
+            price=100.0,
+            equity=100_000.0,
+            confidence=0.01,
+            runtime_exit_plan={"hard_stop": {"type": "price", "price": 95.0}},
+            risk_pct_target=None,
+            position_quantity=100.0,
+            position_avg_price=100.0,
+            require_hard_stop=True,
+            fx_rate=1.0,
+        ),
+        gate=_gate(),
+    )
+
+    assert result.approved is True
+    assert result.quantity == pytest.approx(300.0)
+    assert result.entry_updates["risk_clamped"] is False
+    assert result.entry_updates["risk_unbounded_no_stop"] is False
+    assert result.entry_updates["stop_distance"] == pytest.approx(5.0)
+    assert result.entry_updates["risk_pct"] == pytest.approx(0.01)
+    assert "max_risk_qty" not in result.entry_updates
+
+
+def test_assess_risk_admission_blocks_missing_hard_stop_when_required() -> None:
+    result = assess_risk_admission(
+        RiskAdmissionRequest(
+            action="BUY",
+            intent="OPEN_LONG",
+            quantity=10.0,
+            price=100.0,
+            equity=100_000.0,
+            confidence=0.95,
+            runtime_exit_plan={"take_profits": [{"name": "tp1", "price": 105.0, "fraction": 1.0}]},
+            risk_pct_target=None,
+            position_quantity=0.0,
+            position_avg_price=0.0,
+            require_hard_stop=True,
+            fx_rate=1.0,
+        ),
+        gate=_gate(),
+    )
+
+    assert result.approved is False
+    assert result.reason == "risk:missing_hard_stop"
+    assert result.entry_updates["risk_unbounded_no_stop"] is True
+    assert result.entry_updates["stop_distance"] is None
+    assert result.entry_updates["risk_pct"] is None
+
+
+def test_assess_risk_admission_keeps_unbounded_open_when_stop_optional() -> None:
+    result = assess_risk_admission(
+        RiskAdmissionRequest(
+            action="BUY",
+            intent="OPEN_LONG",
+            quantity=10.0,
+            price=100.0,
+            equity=100_000.0,
+            confidence=0.05,
+            runtime_exit_plan=None,
+            risk_pct_target=None,
+            position_quantity=0.0,
+            position_avg_price=0.0,
+            require_hard_stop=False,
+            fx_rate=1.0,
+        ),
+        gate=_gate(confidence_gate_enabled=False),
+    )
+
+    assert result.approved is True
+    assert result.quantity == 10.0
+    assert result.entry_updates["risk_unbounded_no_stop"] is True
+    assert result.entry_updates["risk_pct"] is None

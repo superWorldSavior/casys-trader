@@ -51,7 +51,7 @@ Légende : ✅ couvert · 🟡 partiel / dispersé / potentiellement périmé ·
 |---|---|---|---|---|
 | **Risk gate** | `execution/risk` | ✅ | **`reference/risk-gate.md`** | — |
 | Plans armés (EXECUTE_ORDER) | `planning/indicator_watch`, `planning/trade_plan`, `runtime/daemon` | ✅ | archi §3.5, §4.3 ; registre | D7B, D11, D12 |
-| Admission d'ordre | `application/order_admission` | ✅ | **`reference/execution.md`** | — |
+| Admission d'ordre | `application/order_admission`, `application/risk_admission` | ✅ | **`reference/execution.md`** | — |
 | Accounting post-fill | `application/fill_outcome`, `runtime/daemon` writer | ✅ | archi §1.1, §8 | — |
 | Effets plans post-fill | `application/fill_plan_effects`, `planning/trade_plan` | ✅ | archi §1.1, §4 | — |
 | Allocateur budget gross | `market/gross_priority` | ✅ | **`reference/execution.md`** | — |

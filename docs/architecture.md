@@ -63,7 +63,8 @@ les utilisaient :
 | `trader/application/gross_feedback.py` | Feedback applicatif des ouvertures rejetées par le plafond gross exposure | le daemon garde un wrapper public historique |
 | `trader/application/infra_holds.py` | Construction applicative des HOLD infra (`quiet_gate`, `stale_market_data`) sans appel modèle | contrats `Protocol` locaux pour wakes/clamp session ; le daemon garde scheduler, log et persistance |
 | `trader/application/learnings_recall.py` | Provider applicatif de recall mémoire : cache embeddings, timeout court, fallback FTS | contrats `Protocol` pour store et embedder |
-| `trader/application/order_admission.py` | Helpers purs d'admission : intent, résolution position-aware, clamp sortie, stop, risk metrics | l'orchestration RiskGate/broker reste dans `trader/runtime/daemon.py` |
+| `trader/application/order_admission.py` | Helpers purs d'admission : intent, résolution position-aware, clamp sortie, stop, risk metrics | réutilisé par `risk_admission`, `planned_exits` et les payloads queue |
+| `trader/application/risk_admission.py` | Admission risque des ouvertures : sizing `risk_pct`, métriques d'entrée, plafond de risque par trade et gate de confiance | contrat `Protocol` local pour le gate ; le daemon garde logging, recorder, broker et scheduling |
 | `trader/application/planned_exits.py` | Exécution applicative déterministe des sorties planifiées : évaluation des plans ouverts, clamp sortie, garde d'exécution, mutation broker/plan-store et payload performance | le daemon conserve `_apply_planned_exits()` et `_plan_snapshot()` comme wrappers privés |
 | `trader/application/plan_review.py` | Persistance et réinjection du dernier verdict LLM sur les plans ouverts | le daemon conserve les wrappers privés historiques |
 | `trader/application/reference_volatility.py` | Calcul de volatilité de référence pour résoudre stops/trailings en multiples de volatilité | le daemon conserve les wrappers privés monkeypatchables |
@@ -312,10 +313,12 @@ Pour chaque décision (`trader/runtime/daemon.py`) :
 
 Les helpers purs de cette admission vivent dans
 `trader/application/order_admission.py` : intent, hard-stop, clamp de sortie,
-quantité ouverte d'un reverse, et métriques de risque d'entrée. L'orchestration
-complète reste volontairement dans `trader/runtime/daemon.py` pour préserver l'ordre exact des
-side effects : scheduling, recorder, `RiskGate`, broker, trade plans et
-performance model.
+quantité ouverte d'un reverse, et métriques de risque d'entrée. L'admission
+risque des ouvertures vit dans `trader/application/risk_admission.py` : sizing
+`risk_pct`, métriques `risk_unbounded_no_stop`/`risk_pct`, plafond
+`max_risk_per_trade_pct` et gate de confiance via un `Protocol` local. Le daemon
+conserve l'ordre exact des side effects : scheduling, recorder, broker, trade
+plans et performance model.
 
 ### 3.8 Exécution et persistance
 

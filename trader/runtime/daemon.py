@@ -51,6 +51,7 @@ from trader.application import (
     planned_exits as planned_exits_service,
     planner_batch,
     reference_volatility as reference_volatility_service,
+    risk_admission,
     risk_capacity,
 )
 from trader.application.decision_recorder import DecisionRecorder
@@ -488,54 +489,6 @@ def _hard_stop_wrong_side(
     action: str | None = None,
 ) -> bool:
     return order_admission.hard_stop_wrong_side(intent, entry_price, stop_price, action=action)
-
-
-def _reverse_open_quantity(*, action: str, quantity: float, position_quantity: float) -> float:
-    return order_admission.reverse_open_quantity(
-        action=action,
-        quantity=quantity,
-        position_quantity=position_quantity,
-    )
-
-
-def _projected_add_risk_basis(
-    *,
-    action: str,
-    add_quantity: float,
-    add_price: float,
-    position_quantity: float,
-    position_avg_price: float,
-) -> tuple[float, float]:
-    return order_admission.projected_add_risk_basis(
-        action=action,
-        add_quantity=add_quantity,
-        add_price=add_price,
-        position_quantity=position_quantity,
-        position_avg_price=position_avg_price,
-    )
-
-
-def _risk_pct_for_quantity(quantity: float, stop_distance: float | None, equity: float) -> float | None:
-    return order_admission.risk_pct_for_quantity(quantity, stop_distance, equity)
-
-
-def _loss_distance_to_stop(intent: str | None, entry_price: float, stop_price: float) -> float:
-    return order_admission.loss_distance_to_stop(intent, entry_price, stop_price)
-
-
-def _set_entry_risk_metrics(
-    entry: dict,
-    *,
-    quantity: float,
-    stop_distance: float | None,
-    equity: float,
-) -> None:
-    order_admission.set_entry_risk_metrics(
-        entry,
-        quantity=quantity,
-        stop_distance=stop_distance,
-        equity=equity,
-    )
 
 
 def _runtime_tool_audit_fields(domain_tools: dict | None) -> dict:
@@ -1797,154 +1750,55 @@ def run_cycle(
             record_decision({**entry, "executed": False, "reason": "zero_exit_quantity"})
             continue
 
-        pure_open = decision.intent in _PURE_OPEN_INTENTS
-        risk_guarded_open = decision.intent in _RISK_GUARDED_OPENING_INTENTS
-        trace_risk = pure_open or decision.intent == "REVERSE"
-        trace_risk = trace_risk or decision.intent == "ADD"
-        open_stop_distance: float | None = None
-        if trace_risk:
-            hard_stop_price = _hard_stop_price(runtime_exit_plan)
-            # L1 — sizing en risque : dériver effective_quantity depuis risk_pct_target.
-            # Requiert un hard_stop résolu ; rejeté sinon (même si require_hard_stop=False).
-            # Logique : qty = risk_pct_target × equity / (|entry − stop| × fx_rate).
-            # Le gate max_risk_per_trade_pct reste le fusible (cf. vérification ci-dessous).
-            if pure_open and decision.risk_pct_target is not None:
-                if hard_stop_price is None:
-                    _log_cycle_progress("[risk] %s rejected code=risk_sizing_needs_stop", sym)
-                    apply_default_schedule_after_blocked()
-                    record_decision({**entry, "executed": False, "reason": "risk:risk_sizing_needs_stop"})
-                    continue
-                _l1_stop_dist_native = abs(prices[sym] - hard_stop_price)
-                _l1_derived_qty = order_admission.qty_from_risk_pct(
-                    decision.risk_pct_target,
-                    snap.equity,
-                    _l1_stop_dist_native,
-                    fx_rate=_rate(sym),
+        risk_outcome = risk_admission.assess_risk_admission(
+            risk_admission.RiskAdmissionRequest(
+                action=decision.action,
+                intent=decision.intent,
+                quantity=effective_quantity,
+                price=prices[sym],
+                equity=snap.equity,
+                confidence=decision.confidence,
+                runtime_exit_plan=runtime_exit_plan,
+                risk_pct_target=decision.risk_pct_target,
+                position_quantity=0.0 if pos is None else pos.quantity,
+                position_avg_price=0.0 if pos is None else pos.avg_price,
+                require_hard_stop=require_hard_stop,
+                fx_rate=_rate(sym),
+            ),
+            gate=gate,
+        )
+        effective_quantity = risk_outcome.quantity
+        entry.update(risk_outcome.entry_updates)
+        if not risk_outcome.approved:
+            reason = risk_outcome.reason or "risk:rejected"
+            if reason == "risk:risk_sizing_needs_stop":
+                _log_cycle_progress("[risk] %s rejected code=risk_sizing_needs_stop", sym)
+            elif reason == "risk:missing_hard_stop":
+                _log_cycle_progress("[risk] %s rejected code=missing_hard_stop", sym)
+            elif reason == "risk:risk_per_trade_exceeded":
+                _log_cycle_progress(
+                    "[risk] %s rejected code=risk_per_trade_exceeded qty=%s max_qty=%s",
+                    sym,
+                    entry.get("risk_total_position_qty", effective_quantity),
+                    entry.get("max_risk_qty"),
                 )
-                effective_quantity = _l1_derived_qty
-                entry["qty"] = effective_quantity
-                entry["risk_pct_target"] = decision.risk_pct_target
-                entry["risk_qty_derived"] = True
-            risk_quantity = effective_quantity
-            risk_entry_price = prices[sym]
-            if decision.intent == "REVERSE":
-                # REVERSE est tracé mais PAS clampé au risque (dette connue).
-                risk_quantity = _reverse_open_quantity(
-                    action=decision.action,
-                    quantity=effective_quantity,
-                    position_quantity=0.0 if pos is None else pos.quantity,
-                )
-            elif decision.intent == "ADD":
-                risk_quantity, risk_entry_price = _projected_add_risk_basis(
-                    action=decision.action,
-                    add_quantity=effective_quantity,
-                    add_price=prices[sym],
-                    position_quantity=0.0 if pos is None else pos.quantity,
-                    position_avg_price=0.0 if pos is None else pos.avg_price,
-                )
-                entry["risk_total_position_qty"] = risk_quantity
-                entry["risk_entry_price"] = risk_entry_price
-            entry["risk_clamped"] = False
-            entry["risk_unbounded_no_stop"] = hard_stop_price is None
-            if hard_stop_price is None:
-                _set_entry_risk_metrics(
-                    entry,
-                    quantity=risk_quantity,
-                    stop_distance=None,
-                    equity=snap.equity,
-                )
-                if risk_guarded_open and require_hard_stop:
-                    # Guardrail humain rendu déterministe (mandate/guardrails.json,
-                    # D6 du registre) : pas d'ouverture sans hard_stop, quelle que
-                    # soit la confiance. REVERSE reste tracé non bloqué (dette connue).
-                    # Désactivable en paper (require_hard_stop=false) : stop optionnel.
-                    _log_cycle_progress(
-                        "[risk] %s rejected code=missing_hard_stop", sym
-                    )
-                    apply_default_schedule_after_blocked()
-                    record_decision(
-                        {**entry, "executed": False, "reason": "risk:missing_hard_stop"}
-                    )
-                    continue
-            else:
-                risk_stop_intent = (
-                    "OPEN_LONG"
-                    if decision.intent == "ADD" and decision.action == "BUY"
-                    else "OPEN_SHORT"
-                    if decision.intent == "ADD" and decision.action == "SELL"
-                    else decision.intent
-                )
-                open_stop_distance = _loss_distance_to_stop(
-                    risk_stop_intent,
-                    risk_entry_price,
-                    hard_stop_price,
-                )
-                _set_entry_risk_metrics(
-                    entry,
-                    quantity=risk_quantity,
-                    stop_distance=open_stop_distance,
-                    equity=snap.equity,
-                )
-                if risk_guarded_open and open_stop_distance > 0.0:
-                    max_risk_quantity = gate.max_quantity_at_risk(
-                        snap.equity,
-                        risk_entry_price,
-                        hard_stop_price,
-                        fx_rate=_rate(sym),
-                    )
-                    entry["max_risk_qty"] = max_risk_quantity
-                    if max_risk_quantity <= 0:
-                        _log_cycle_progress("[decision %d/%d] %s hold zero_risk_quantity", index, len(symbols_to_decide), sym)
-                        apply_default_schedule_after_blocked()
-                        record_decision({**entry, "executed": False, "reason": "zero_risk_quantity"})
-                        continue
-                    if risk_quantity > max_risk_quantity:
-                        _log_cycle_progress(
-                            "[risk] %s rejected code=risk_per_trade_exceeded qty=%s max_qty=%s",
-                            sym,
-                            risk_quantity,
-                            max_risk_quantity,
-                        )
-                        apply_default_schedule_after_blocked()
-                        record_decision(
-                            {
-                                **entry,
-                                "executed": False,
-                                "reason": "risk:risk_per_trade_exceeded",
-                                "context": (
-                                    f"risk_qty={risk_quantity} max_qty={max_risk_quantity:.8f} "
-                                    f"risk_pct={entry.get('risk_pct')} "
-                                    f"limit={gate.limits.max_risk_per_trade_pct}"
-                                ),
-                            }
-                        )
-                        continue
-
-            if risk_guarded_open and effective_quantity == 0:
+            elif reason == "zero_risk_quantity":
                 _log_cycle_progress("[decision %d/%d] %s hold zero_risk_quantity", index, len(symbols_to_decide), sym)
-                apply_default_schedule_after_blocked()
-                record_decision({**entry, "executed": False, "reason": "zero_risk_quantity"})
-                continue
-
-            if risk_guarded_open:
-                # Gate de confiance adapté au risque (ouvertures pures uniquement).
-                # REDUCE/CLOSE/REVERSE : réduire le risque doit toujours rester possible.
-                conf_verdict = gate.check_confidence(
+            elif reason.startswith("risk:"):
+                _log_cycle_progress(
+                    "[risk] %s rejected code=%s confidence=%s",
+                    sym,
+                    reason.removeprefix("risk:"),
                     decision.confidence,
-                    entry.get("risk_pct"),
                 )
-                if not conf_verdict.approved:
-                    _log_cycle_progress(
-                        "[risk] %s rejected code=%s confidence=%s",
-                        sym,
-                        conf_verdict.code,
-                        decision.confidence,
-                    )
-                    apply_default_schedule_after_blocked()
-                    record_decision(
-                        {**entry, "executed": False, "reason": f"risk:{conf_verdict.code}", "context": conf_verdict.context}
-                    )
-                    continue
+            else:
+                _log_cycle_progress("[decision %d/%d] %s blocked %s", index, len(symbols_to_decide), sym, reason)
+            apply_default_schedule_after_blocked()
+            blocked_entry = {**entry, "executed": False, "reason": reason}
+            if risk_outcome.context is not None:
+                blocked_entry["context"] = risk_outcome.context
+            record_decision(blocked_entry)
+            continue
 
         order = Order(symbol=sym, side=decision.action, quantity=effective_quantity, rationale=decision.rationale)
         cur_pos_value = (pos.quantity * prices[sym] * _rate(sym)) if pos else 0.0
