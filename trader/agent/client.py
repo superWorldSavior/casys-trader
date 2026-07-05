@@ -20,6 +20,7 @@ HOLD. On ne trade JAMAIS sur une réponse douteuse.
 from __future__ import annotations
 
 from dataclasses import replace
+from typing import Callable
 
 from trader.agent import llm
 from trader.agent.protocol.parsing import (
@@ -155,6 +156,7 @@ def decide_batch(
     allow_tool_calls: bool = False,
     use_symbol_calls_contract: bool = False,
     llm_router: llm.LlmRouter | None = None,
+    complete_fn: Callable[[str, int], llm.LlmCompletion | llm.LlmFailure] | None = None,
 ) -> dict[str, Decision | ContextResearchRequest] | BatchToolCallRequest:
     """UN seul appel modèle pour TOUS les symboles dus : le contexte partagé n'est
     envoyé qu'une fois (vs N fois en mode par-symbole). Isolation per-élément +
@@ -172,8 +174,11 @@ def decide_batch(
         allow_tool_calls=allow_tool_calls,
         use_symbol_calls_contract=use_symbol_calls_contract,
     )
-    router = llm_router or llm.build_default_router_from_env(acpx_bin=acpx_bin, spark_model=model)
-    completion = router.complete(prompt, timeout_s=timeout_s)
+    if complete_fn is not None:
+        completion = complete_fn(prompt, timeout_s)
+    else:
+        router = llm_router or llm.build_default_router_from_env(acpx_bin=acpx_bin, spark_model=model)
+        completion = router.complete(prompt, timeout_s=timeout_s)
     if isinstance(completion, llm.LlmFailure):
         return {sym: _hold_from_llm_failure(sym, completion) for sym in symbols}
     if allow_tool_calls:

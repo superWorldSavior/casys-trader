@@ -460,6 +460,16 @@ class SessionProviderDown(Exception):
         self.failure = failure
 
 
+def session_complete_fn(session):
+    def _complete(prompt: str, timeout_s: int) -> LlmCompletion | LlmFailure:
+        result = session.send(prompt, timeout_s=timeout_s)
+        if isinstance(result, LlmFailure) and result.retryable:
+            raise SessionProviderDown(result)
+        return result
+
+    return _complete
+
+
 def run_with_session_fallback(
     backends,
     *,

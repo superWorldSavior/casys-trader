@@ -2,6 +2,8 @@ import json
 import signal
 import subprocess
 
+import pytest
+
 import trader.agent.llm as llm
 from trader.agent.llm import (
     AcpxBackend,
@@ -475,6 +477,62 @@ def test_run_with_session_fallback_happy_path_retourne_le_resultat_et_ferme_la_s
         ("resolve", "resolve:SPY:0"),
         ("close", "resolve:SPY:0"),
     ]
+
+
+def test_session_complete_fn_retourne_la_completion_de_la_session() -> None:
+    completion = LlmCompletion(provider="acpx", model="gpt-5.5", text='{"ok":true}')
+    calls = []
+
+    class FakeSession:
+        def send(self, prompt, *, timeout_s):
+            calls.append((prompt, timeout_s))
+            return completion
+
+    complete = llm.session_complete_fn(FakeSession())
+
+    result = complete("prompt", 42)
+
+    assert result is completion
+    assert calls == [("prompt", 42)]
+
+
+def test_session_complete_fn_leve_provider_down_sur_echec_retryable() -> None:
+    failure = LlmFailure(
+        provider="acpx",
+        model="gpt-5.5",
+        code="rate_limited",
+        message="quota",
+        retryable=True,
+    )
+
+    class FakeSession:
+        def send(self, prompt, *, timeout_s):
+            return failure
+
+    complete = llm.session_complete_fn(FakeSession())
+
+    with pytest.raises(llm.SessionProviderDown) as exc_info:
+        complete("prompt", 42)
+
+    assert exc_info.value.failure is failure
+
+
+def test_session_complete_fn_retourne_l_echec_non_retryable() -> None:
+    failure = LlmFailure(
+        provider="acpx",
+        model="gpt-5.5",
+        code="bad_output",
+        message="json invalide",
+        retryable=False,
+    )
+
+    class FakeSession:
+        def send(self, prompt, *, timeout_s):
+            return failure
+
+    complete = llm.session_complete_fn(FakeSession())
+
+    assert complete("prompt", 42) is failure
 
 
 def test_run_with_session_fallback_open_failure_passe_au_backend_suivant() -> None:

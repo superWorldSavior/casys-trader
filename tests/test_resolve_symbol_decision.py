@@ -98,14 +98,59 @@ def test_multi_tour_accumule_les_tool_results() -> None:
         captured.append(dict(per_symbol["AAPL"]))
         return next(it)
 
-    resolve_symbol_decision(symbol="AAPL", base_facts={}, tool_context=_ctx(), call_model=call_model, max_rounds=2)
+    resolve_symbol_decision(
+        symbol="AAPL",
+        base_facts={"base_marker": "kept"},
+        tool_context=_ctx(),
+        call_model=call_model,
+        max_rounds=2,
+    )
 
     assert "tool_results" not in captured[0]           # round 1 : rien encore
+    assert captured[1]["base_marker"] == "kept"
     assert len(captured[1]["tool_results"]) == 1        # round 2 voit le round 1
+    assert captured[2]["base_marker"] == "kept"
     assert len(captured[2]["tool_results"]) == 2        # tour final voit rounds 1 + 2 (cumul)
+
+
+def test_multi_tour_delta_reinjecte_seulement_le_round_courant_sans_base_facts() -> None:
+    captured: list[dict] = []
+    responses = [_tool_request(), _tool_request(), {"AAPL": Decision.hold("AAPL", "done")}]
+    it = iter(responses)
+
+    def call_model(per_symbol, *, allow_tool_calls):
+        captured.append(dict(per_symbol["AAPL"]))
+        return next(it)
+
+    resolve_symbol_decision(
+        symbol="AAPL",
+        base_facts={"base_marker": "kept"},
+        tool_context=_ctx(),
+        call_model=call_model,
+        max_rounds=2,
+        reinject="delta",
+    )
+
+    assert captured[0] == {"base_marker": "kept"}
+    assert set(captured[1]) == {"tool_results"}
+    assert len(captured[1]["tool_results"]) == 1
+    assert set(captured[2]) == {"tool_results"}
+    assert len(captured[2]["tool_results"]) == 1
 
 
 def test_max_rounds_invalide_leve_valueerror() -> None:
     call_model, _log = _seq_call_model([])
     with pytest.raises(ValueError):
         resolve_symbol_decision(symbol="AAPL", base_facts={}, tool_context=_ctx(), call_model=call_model, max_rounds=0)
+
+
+def test_reinject_inconnu_leve_valueerror() -> None:
+    call_model, _log = _seq_call_model([])
+    with pytest.raises(ValueError):
+        resolve_symbol_decision(
+            symbol="AAPL",
+            base_facts={},
+            tool_context=_ctx(),
+            call_model=call_model,
+            reinject="mystere",
+        )

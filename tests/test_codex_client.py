@@ -39,6 +39,48 @@ def test_decide_batch_renvoie_une_decision_par_symbole_avec_metadonnees() -> Non
     assert result["QQQ"].action == "HOLD"
 
 
+def test_decide_batch_complete_fn_injecte_le_transport_sans_construire_de_router(monkeypatch) -> None:
+    captured = []
+    shared_context = {"cockpit": {"risk": "low"}}
+    per_symbol = {"SPY": {"indicator_triggers": []}}
+
+    def fail_build_router(**kwargs):
+        raise AssertionError("build_default_router_from_env ne doit pas être appelé")
+
+    def complete_fn(prompt: str, timeout_s: int) -> LlmCompletion:
+        captured.append((prompt, timeout_s))
+        return LlmCompletion(
+            provider="session-acpx",
+            model="gpt-5.5/medium",
+            text=(
+                '{"decisions":[{"symbol":"SPY","action":"HOLD","quantity":0,'
+                '"confidence":0.5,"rationale":"attente"}]}'
+            ),
+        )
+
+    monkeypatch.setattr(codex_client.llm, "build_default_router_from_env", fail_build_router)
+
+    result = decide_batch(
+        symbols=["SPY"],
+        mandate="# Mandat",
+        memory="# Memoire",
+        shared_context=shared_context,
+        per_symbol=per_symbol,
+        timeout_s=123,
+        complete_fn=complete_fn,
+    )
+
+    expected_prompt = build_batch_prompt(
+        mandate="# Mandat",
+        memory="# Memoire",
+        shared_context=shared_context,
+        symbols_payload=[{"symbol": "SPY", "indicator_triggers": []}],
+    )
+    assert result["SPY"].action == "HOLD"
+    assert result["SPY"].llm_provider == "session-acpx"
+    assert captured == [(expected_prompt, 123)]
+
+
 def test_prompt_documente_rs_court_rs_daily_et_regime_family_daily() -> None:
     prompt = build_batch_prompt(
         mandate="m",
