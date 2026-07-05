@@ -226,6 +226,33 @@ def test_build_direct_ib_uses_delayed_market_data_type() -> None:
     assert calls[-1] == {"args": ("10.0.0.2", 4003, 44), "kwargs": {"market_data_type": 3}}
 
 
+def test_build_direct_ib_disconnects_opened_ib_when_source_build_fails() -> None:
+    ib_obj = object()
+    disconnected: list[object] = []
+
+    def connect_ib(*_args: object, **_kwargs: object) -> object:
+        return ib_obj
+
+    class FailingIBDataSource:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            raise RuntimeError("contracts config broken")
+
+    with pytest.raises(RuntimeError, match="contracts config broken"):
+        data_source_runtime.build_data_source(
+            data_source_runtime.DataSourceRuntimeConfig(use_composite=False, routes=[], profile=""),
+            host="10.0.0.2",
+            port=4003,
+            client_id=44,
+            attach_retry_seconds=300.0,
+            now=NOW,
+            connect_ib_fn=connect_ib,
+            ib_data_source_cls=FailingIBDataSource,
+            disconnect_quietly=disconnected.append,
+        )
+
+    assert disconnected == [ib_obj]
+
+
 def test_maybe_attach_ib_adds_source_when_backoff_due() -> None:
     logger = RecordingLogger()
     backoff = FakeBackoff(retry_after=timedelta(seconds=300))

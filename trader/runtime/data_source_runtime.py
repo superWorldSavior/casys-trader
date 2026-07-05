@@ -116,8 +116,8 @@ def build_data_source(
     log = logger or _default_logger()
     if not config.use_composite:
         ib = connect_ib_fn(host, port, client_id, market_data_type=3)
-        return DataSourceState(
-            data_source=_make_ib_source(
+        try:
+            data_source = _make_ib_source(
                 ib_obj=ib,
                 host=host,
                 port=port,
@@ -125,7 +125,12 @@ def build_data_source(
                 market_data_type=3,
                 connect_ib_fn=connect_ib_fn,
                 ib_data_source_cls=ib_data_source_cls,
-            ),
+            )
+        except Exception:
+            disconnect_quietly(ib)
+            raise
+        return DataSourceState(
+            data_source=data_source,
             composite_available={},
             ib_attach_backoff=None,
         )
