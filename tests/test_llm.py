@@ -249,6 +249,200 @@ def test_acpx_backend_exit_non_zero_avec_erreur_explicite_reste_non_retryable(mo
     assert result.code == "nonzero_exit"
 
 
+def test_acpx_session_send_retourne_une_completion_sur_stdout(monkeypatch) -> None:
+    monkeypatch.setattr("trader.agent.llm.shutil.which", lambda _bin: "/usr/local/bin/acpx")
+    calls = []
+
+    def fake_run(command, *, timeout_s):
+        calls.append((command, timeout_s))
+        return subprocess.CompletedProcess(
+            args=command,
+            returncode=0,
+            stdout='{"symbol":"SPY","action":"HOLD"}',
+            stderr="",
+        )
+
+    monkeypatch.setattr("trader.agent.llm._run_one_shot_command", fake_run)
+
+    session = llm.AcpxSession(
+        provider="acpx",
+        model="gpt-5.5/medium",
+        acpx_bin="acpx",
+        name="casys-trader:runtime-brain:0",
+    )
+
+    result = session.send("analyse ce symbole", timeout_s=45)
+
+    assert isinstance(result, LlmCompletion)
+    assert result.provider == "acpx"
+    assert result.model == "gpt-5.5/medium"
+    assert result.text == '{"symbol":"SPY","action":"HOLD"}'
+    assert calls == [
+        (
+            [
+                "acpx",
+                "--format",
+                "quiet",
+                "--allowed-tools",
+                "",
+                "--no-terminal",
+                "--non-interactive-permissions",
+                "deny",
+                "--model",
+                "gpt-5.5/medium",
+                "--timeout",
+                "45",
+                "prompt",
+                "-s",
+                "casys-trader:runtime-brain:0",
+                "analyse ce symbole",
+            ],
+            60,
+        )
+    ]
+
+
+def test_acpx_backend_open_session_assure_la_session_et_retourne_un_objet(monkeypatch) -> None:
+    monkeypatch.setattr("trader.agent.llm.shutil.which", lambda _bin: "/usr/local/bin/acpx")
+    calls = []
+
+    def fake_run(command, *, timeout_s):
+        calls.append((command, timeout_s))
+        return subprocess.CompletedProcess(args=command, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("trader.agent.llm._run_one_shot_command", fake_run)
+
+    backend = AcpxBackend(provider="acpx", model="gpt-5.5/medium", acpx_bin="acpx")
+
+    result = backend.open_session("casys-trader:runtime-brain:0", timeout_s=30)
+
+    assert isinstance(result, llm.AcpxSession)
+    assert result.provider == "acpx"
+    assert result.model == "gpt-5.5/medium"
+    assert result.acpx_bin == "acpx"
+    assert result.name == "casys-trader:runtime-brain:0"
+    assert calls == [
+        (
+            [
+                "acpx",
+                "--format",
+                "quiet",
+                "--allowed-tools",
+                "",
+                "--no-terminal",
+                "--non-interactive-permissions",
+                "deny",
+                "--model",
+                "gpt-5.5/medium",
+                "--timeout",
+                "30",
+                "sessions",
+                "ensure",
+                "-s",
+                "casys-trader:runtime-brain:0",
+            ],
+            45,
+        )
+    ]
+
+
+def test_acpx_backend_open_session_retourne_l_echec_si_ensure_echoue(monkeypatch) -> None:
+    monkeypatch.setattr("trader.agent.llm.shutil.which", lambda _bin: "/usr/local/bin/acpx")
+
+    def fake_run(command, *, timeout_s):
+        return subprocess.CompletedProcess(
+            args=command,
+            returncode=1,
+            stdout="",
+            stderr="fatal: configuration invalide\n",
+        )
+
+    monkeypatch.setattr("trader.agent.llm._run_one_shot_command", fake_run)
+
+    backend = AcpxBackend(provider="acpx", model="gpt-5.5/medium", acpx_bin="acpx")
+
+    result = backend.open_session("casys-trader:runtime-brain:0", timeout_s=30)
+
+    assert isinstance(result, LlmFailure)
+    assert result.provider == "acpx"
+    assert result.model == "gpt-5.5/medium"
+    assert result.retryable is False
+    assert result.code == "nonzero_exit"
+
+
+def test_acpx_session_close_envoie_la_commande_de_fermeture(monkeypatch) -> None:
+    calls = []
+
+    def fake_run(command, *, timeout_s):
+        calls.append(command)
+        return subprocess.CompletedProcess(args=command, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("trader.agent.llm._run_one_shot_command", fake_run)
+
+    session = llm.AcpxSession(
+        provider="acpx",
+        model="gpt-5.5/medium",
+        acpx_bin="acpx",
+        name="casys-trader:runtime-brain:0",
+    )
+
+    session.close()
+
+    assert calls == [
+        [
+            "acpx",
+            "--format",
+            "quiet",
+            "--no-terminal",
+            "--non-interactive-permissions",
+            "deny",
+            "sessions",
+            "close",
+            "casys-trader:runtime-brain:0",
+        ]
+    ]
+
+
+def test_acpx_session_close_avale_les_erreurs_de_run(monkeypatch) -> None:
+    def fake_run(command, *, timeout_s):
+        raise RuntimeError("acpx close failed")
+
+    monkeypatch.setattr("trader.agent.llm._run_one_shot_command", fake_run)
+
+    session = llm.AcpxSession(
+        provider="acpx",
+        model="gpt-5.5/medium",
+        acpx_bin="acpx",
+        name="casys-trader:runtime-brain:0",
+    )
+
+    session.close()
+
+
+def test_acpx_session_close_peut_etre_appele_deux_fois_sans_lever(monkeypatch) -> None:
+    calls = []
+
+    def fake_run(command, *, timeout_s):
+        calls.append(command)
+        if len(calls) == 2:
+            raise RuntimeError("already closed")
+        return subprocess.CompletedProcess(args=command, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("trader.agent.llm._run_one_shot_command", fake_run)
+
+    session = llm.AcpxSession(
+        provider="acpx",
+        model="gpt-5.5/medium",
+        acpx_bin="acpx",
+        name="casys-trader:runtime-brain:0",
+    )
+
+    session.close()
+    session.close()
+
+    assert len(calls) == 2
+
+
 def test_acpx_backend_isole_et_nettoie_le_process_group(monkeypatch) -> None:
     monkeypatch.setattr("trader.agent.llm.shutil.which", lambda _bin: "/usr/local/bin/acpx")
     popen_calls = []
@@ -573,6 +767,82 @@ def test_openai_compatible_backend_classe_abonnement_ollama() -> None:
     assert result.retryable is False
     assert result.code == "subscription_required"
     assert "requires a subscription" in result.message
+
+
+def test_build_acpx_session_ensure_command_assure_une_session_nommee() -> None:
+    cmd = llm.build_acpx_session_ensure_command(
+        "casys-trader:runtime-brain:0",
+        acpx_bin="acpx",
+        model="gpt-5.5/medium",
+        timeout_s=30,
+    )
+
+    assert cmd == [
+        "acpx",
+        "--format",
+        "quiet",
+        "--allowed-tools",
+        "",
+        "--no-terminal",
+        "--non-interactive-permissions",
+        "deny",
+        "--model",
+        "gpt-5.5/medium",
+        "--timeout",
+        "30",
+        "sessions",
+        "ensure",
+        "-s",
+        "casys-trader:runtime-brain:0",
+    ]
+
+
+def test_build_acpx_session_prompt_command_envoie_un_prompt_dans_une_session_nommee() -> None:
+    cmd = llm.build_acpx_session_prompt_command(
+        "casys-trader:runtime-brain:0",
+        "analyse ce symbole",
+        acpx_bin="acpx",
+        model="gpt-5.5/medium",
+        timeout_s=45,
+    )
+
+    assert cmd == [
+        "acpx",
+        "--format",
+        "quiet",
+        "--allowed-tools",
+        "",
+        "--no-terminal",
+        "--non-interactive-permissions",
+        "deny",
+        "--model",
+        "gpt-5.5/medium",
+        "--timeout",
+        "45",
+        "prompt",
+        "-s",
+        "casys-trader:runtime-brain:0",
+        "analyse ce symbole",
+    ]
+
+
+def test_build_acpx_session_close_command_ferme_une_session_nommee() -> None:
+    cmd = llm.build_acpx_session_close_command(
+        "casys-trader:runtime-brain:0",
+        acpx_bin="acpx",
+    )
+
+    assert cmd == [
+        "acpx",
+        "--format",
+        "quiet",
+        "--no-terminal",
+        "--non-interactive-permissions",
+        "deny",
+        "sessions",
+        "close",
+        "casys-trader:runtime-brain:0",
+    ]
 
 
 def test_build_acpx_command_peut_cibler_un_agent_dedie() -> None:
