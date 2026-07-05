@@ -2220,6 +2220,15 @@ def main(
         logger=log,
         parse_config_fn=parse_data_sources_config,
     )
+    # Validé une fois à la frontière (AX #5) : une valeur <1 ferait lever
+    # ThrottledDataSource en pleine boucle (crash-loop) — fallback explicite.
+    _yf_fetch_concurrency = _env_int("CASYS_YFINANCE_FETCH_CONCURRENCY", 4)
+    if _yf_fetch_concurrency < 1:
+        log.warning(
+            "CASYS_YFINANCE_FETCH_CONCURRENCY=%d invalide (<1) — fallback 4",
+            _yf_fetch_concurrency,
+        )
+        _yf_fetch_concurrency = 4
     _data_source_state = data_source_runtime.DataSourceState(
         data_source=None,
         composite_available={},
@@ -2259,9 +2268,7 @@ def main(
                         disconnect_quietly=_disconnect_quietly,
                         # Anti-429 : borne les fetchs yahoo concurrents (workers de file).
                         # Sans effet sur le cycle (fetchs séquentiels ≤ 1 concurrent).
-                        throttle_by_source={
-                            "yfinance": _env_int("CASYS_YFINANCE_FETCH_CONCURRENCY", 4),
-                        },
+                        throttle_by_source={"yfinance": _yf_fetch_concurrency},
                     ))
                 loop_now = now()
                 _adopt_data_source_state(data_source_runtime.maybe_attach_ib(
@@ -2401,6 +2408,9 @@ def main(
         # Shutdown best-effort : pools queue, source data, puis suppression du
         # pid file seulement s'il contient encore NOTRE pid (jamais celui d'un
         # successeur, cf bug Maj+X cockpit).
+        # Le handle est invalidé AVANT le disconnect : un worker retardataire lit
+        # None (-> unavailable) plutôt qu'une source déconnectée.
+        _ds_handle.set(None)
         runtime_shutdown.shutdown_runtime_resources(
             decide_pool=_decide_pool,
             execute_pool=_execute_pool,
