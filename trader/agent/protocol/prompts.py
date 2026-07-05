@@ -481,7 +481,6 @@ _TOOL_CATALOG = (
     "- get_active_plans{symbol?,limit?} : veilles et plans armés actifs (corrige au lieu d'empiler)\n"
     "- get_position_risk{symbol} : position, exposition USD, bornes de risque\n"
     "- get_attribution{scope:summary|confidence|exit_reason|symbol, symbol?} : perf attribuée compacte\n"
-    "- get_recent_decisions{symbol?,limit?} : dernières décisions et blocages du ledger\n"
     "- describe_data{} : cube sémantique (timeframes/lookbacks valides, windows, indicateurs)\n"
     "- find_indicators{concept} : cherche des indicateurs par concept (momentum, volatilité, …)\n"
     "- get_indicator_context{symbol,indicators:[…],timeframe?,lookback?,window?,as_of?} : cube indicateurs borné\n"

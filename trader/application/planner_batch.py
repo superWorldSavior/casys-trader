@@ -105,11 +105,11 @@ def build_symbol_facts(
     active_watches_by_symbol: dict[str, list],
     market_context_by_symbol: "dict[str, dict] | None" = None,
     last_review_by_symbol: "dict[str, dict] | None" = None,
+    recent_decisions_by_symbol: "dict[str, list] | None" = None,
 ) -> dict:
     """Construit les faits par-symbole réinjectés dans le payload de décision.
 
     Réutilisable par le producteur de file (queue_dispatch) et batch_decide.
-    Comportement IDENTIQUE à l'ancienne closure ``_symbol_facts`` de batch_decide.
 
     Returns
     -------
@@ -117,6 +117,9 @@ def build_symbol_facts(
         Contient toujours data_age_m, session, active_watches.
         Contient execution/planning si market_context_by_symbol[sym] est fourni.
         Contient last_llm_review si last_review_by_symbol[sym] est fourni.
+        Contient recent_decisions si recent_decisions_by_symbol[sym] est non vide —
+        les N dernières décisions authentiques POUSSÉES (anti-répétition, même sans
+        position ouverte, là où last_llm_review ne couvre que les plans ouverts).
     """
     age = data_age_by_symbol.get(sym)
     facts: dict = {
@@ -131,6 +134,9 @@ def build_symbol_facts(
     review = (last_review_by_symbol or {}).get(sym)
     if review:
         facts["last_llm_review"] = review
+    recent = (recent_decisions_by_symbol or {}).get(sym)
+    if recent:
+        facts["recent_decisions"] = recent
     return facts
 
 
