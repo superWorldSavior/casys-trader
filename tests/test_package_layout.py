@@ -1321,6 +1321,19 @@ def test_decision_audit_engine_is_audit_package_canonical() -> None:
     assert reporting_decision_audit.parse_horizon is decision_quality.parse_horizon
 
 
+def test_decision_bench_engine_is_bench_package_canonical() -> None:
+    from trader.reporting import decision_bench as reporting_decision_bench
+    from trader.reporting.bench import decision_bench as bench_decision_bench
+
+    assert reporting_decision_bench.ModelSpec is bench_decision_bench.ModelSpec
+    assert reporting_decision_bench.ModelCompletion is bench_decision_bench.ModelCompletion
+    assert reporting_decision_bench.parse_model_specs is bench_decision_bench.parse_model_specs
+    assert reporting_decision_bench.select_cases is bench_decision_bench.select_cases
+    assert reporting_decision_bench.run_bench is bench_decision_bench.run_bench
+    assert reporting_decision_bench.dry_run_payload is bench_decision_bench.dry_run_payload
+    assert reporting_decision_bench.render_summary is bench_decision_bench.render_summary
+
+
 def test_market_and_planning_use_domain_primitives_instead_of_tools() -> None:
     trader_dir = Path(__file__).resolve().parents[1] / "trader"
     checked_roots = (trader_dir / "market", trader_dir / "planning")

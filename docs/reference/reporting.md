@@ -22,7 +22,7 @@ Rien n'est dans le hot-path de décision.
 |---|---|
 | `read_models.attribution` / `attribution` | Read model canonique des **round-trips** (trades clôturés) depuis `model_performance.jsonl`, rattachés au plan via `source_plan_id`; `reporting.attribution` garde la façade/rendu et la CLI canonique vit dans `interfaces.cli.attribution`. |
 | `audit.decision_quality` / `decision_audit` | Moteur canonique d'**audit ex-post** des décisions loggées (classification, cohérence, cas anormaux); `reporting.decision_audit` garde la façade de compatibilité. |
-| `decision_bench` | **Bench contrefactuel** de modèles sur des lignes de décision auditées (compare des modèles a posteriori). |
+| `bench.decision_bench` / `decision_bench` | Moteur canonique de **bench contrefactuel** de modèles sur des lignes de décision auditées; `reporting.decision_bench` garde la façade de compatibilité. |
 | `read_models.meta_performance` / `meta_performance` | Read model canonique du payload **compact de méta-performance** depuis `decision_audit.json`; `reporting.meta_performance` garde la façade de compatibilité. |
 | `stats` | Helpers de reporting des **KPI live** calculés par `reporting/read_models/live_kpis.py`; la CLI canonique vit dans `interfaces.cli.stats`. |
 | `decision_ledger` | Journal durable des décisions (schéma versionné). |
