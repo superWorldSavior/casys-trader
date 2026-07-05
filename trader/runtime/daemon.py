@@ -84,6 +84,7 @@ from trader.reporting import attribution, decision_ledger, meta_performance
 from trader.runtime import (
     cycle_finalization,
     cycle_dispatch,
+    cycle_reporting,
     cycle_scheduling,
     data_source_runtime,
     daemon_bootstrap,
@@ -2312,11 +2313,12 @@ def main(
                         now=loop_now,
                         symbols_filter=[],
                     )
-                    if report.get("planned_exits") or report.get("decisions") or report.get("exit_watch_triggers"):
+                    if cycle_reporting.persist_cycle_report(
+                        report,
+                        writer=_runtime_state_writer(),
+                        only_if_active=True,
+                    ):
                         log.debug("cycle actif sans symbole dû: %s", json.dumps(report, ensure_ascii=False))
-                        STATE_DIR.mkdir(parents=True, exist_ok=True)
-                        (STATE_DIR / "last_report.json").write_text(json.dumps(report, indent=2, ensure_ascii=False))
-                        _append_cycle_history(report)
                     wait = sched.seconds_until_wake(symbols)
                     sleep_seconds = min(wait, args.poll)
                     log.debug("aucun symbole dû — pause %.0fs", sleep_seconds)
@@ -2328,11 +2330,7 @@ def main(
                         symbols_filter=due_symbols,
                     )
                     log.debug("cycle: %s", json.dumps(report, ensure_ascii=False))
-                    STATE_DIR.mkdir(parents=True, exist_ok=True)
-                    (STATE_DIR / "last_report.json").write_text(json.dumps(report, indent=2, ensure_ascii=False))
-
-                    # Historique d'équité : une ligne JSON compacte par cycle actif (append).
-                    _append_cycle_history(report)
+                    cycle_reporting.persist_cycle_report(report, writer=_runtime_state_writer())
 
                     if args.once:
                         stop_after_iteration = True

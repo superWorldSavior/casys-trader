@@ -10,12 +10,14 @@ def test_runtime_state_writer_writes_json_snapshots_and_status(tmp_path) -> None
 
     writer.write_json_state("custom.json", {"message": "café"})
     writer.write_current_report({"phase": "live"})
+    writer.write_last_report({"phase": "settled"})
     writer.write_status("deciding", current_symbol="SPY")
 
     custom_raw = (tmp_path / "custom.json").read_text(encoding="utf-8")
     assert custom_raw == '{\n  "message": "café"\n}'
     assert json.loads(custom_raw) == {"message": "café"}
     assert json.loads((tmp_path / "current_report.json").read_text(encoding="utf-8")) == {"phase": "live"}
+    assert json.loads((tmp_path / "last_report.json").read_text(encoding="utf-8")) == {"phase": "settled"}
     assert json.loads((tmp_path / "daemon_status.json").read_text(encoding="utf-8")) == {
         "ts": now.isoformat(),
         "phase": "deciding",

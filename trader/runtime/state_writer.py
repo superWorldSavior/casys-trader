@@ -34,6 +34,9 @@ class RuntimeStateWriter:
     def write_current_report(self, report: dict) -> None:
         self.write_json_state("current_report.json", report)
 
+    def write_last_report(self, report: dict) -> None:
+        self.write_json_state("last_report.json", report)
+
     def append_event(self, event: str, **payload: object) -> None:
         self.state_dir.mkdir(parents=True, exist_ok=True)
         row = {"ts": self.now_fn().isoformat(), "event": event, **payload}

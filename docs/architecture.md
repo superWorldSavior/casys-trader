@@ -17,7 +17,7 @@
 > `fill-outcome-accounting`, `fill-plan-effects`,
 > `cycle-finalization`, `queue-runtime-bootstrap`,
 > `data-source-runtime`, `market-rotation-runtime`,
-> `daemon-bootstrap`, `cycle-dispatch`).
+> `daemon-bootstrap`, `cycle-dispatch`, `cycle-reporting`).
 
 ---
 
@@ -91,6 +91,7 @@ les utilisaient :
 | `trader/interfaces/cli/` | Entry points CLI canoniques (`stats`, `attribution`, `tool_usage`, `tui`) | compat virtuelle : `python -m trader.commands.stats`, `python -m trader.stats`, etc. |
 | `trader/runtime/cycle_scheduling.py` | Adaptateur runtime wake/watch : délègue la politique à `application/cycle_schedule.py` et `application/watch_scanner.py`, puis émet events/logs et compat wrappers | évite que `daemon.py` réimporte directement la glue applicative |
 | `trader/runtime/cycle_dispatch.py` | Adaptateur runtime d'appel `run_cycle()` : porte le paquet de paramètres CLI/env/queue/consolidation et le forwarde depuis `daemon.main()` | évite deux appels `run_cycle(...)` dupliqués dans `main()` et garde le contrat runtime testable |
+| `trader/runtime/cycle_reporting.py` | Adaptateur runtime de persistance post-cycle : `last_report.json` + `history.jsonl`, avec règle no-due active-only | garde les writes de reporting hors de la boucle `main()` et centralise la condition "cycle actif" |
 | `trader/runtime/cycle_finalization.py` | Adaptateur runtime de fin de cycle : consolidation learnings, collecte macro best-effort, cache feedback gross, probes `shadow_queue` et `state_compare` | garde les side effects observabilité/mémoire hors du coeur décisionnel ; contrats `Protocol` locaux pour les dépendances injectées |
 | `trader/runtime/daemon_bootstrap.py` | Adaptateur runtime de démarrage : rotation mensuelle des ledgers, bootstrap du backend état, chargement cash initial et construction scheduler | garde les side effects de boot hors de `daemon.main()` avec factories injectées pour préserver les tests runtime |
 | `trader/runtime/queue_runtime.py` | Bootstrap runtime des pools `decide`/`execute_order` : flags, ledgers, pools, handlers et stack SQLite partagée | garde la queue canonique hors du bloc `main()` tout en laissant `run_cycle()` choisir le chemin queue/synchrone |

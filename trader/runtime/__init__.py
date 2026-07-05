@@ -5,6 +5,7 @@ __all__ = [
     "code_version",
     "cycle_dispatch",
     "cycle_finalization",
+    "cycle_reporting",
     "data_source_runtime",
     "daemon_bootstrap",
     "daemon",
