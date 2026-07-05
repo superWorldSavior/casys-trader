@@ -277,6 +277,52 @@ def make_indirect_get_bars(
 
 
 # ---------------------------------------------------------------------------
+# Throttle agnostique des fetchs (décorateur par-source)
+# ---------------------------------------------------------------------------
+
+_DEFAULT_THROTTLE_ACQUIRE_TIMEOUT_S = 30.0
+
+
+class ThrottledDataSource:
+    """Décorateur `DataSource` : borne la concurrence des fetchs, agnostique à la source.
+
+    Enveloppe N'IMPORTE quelle source (yfinance, IB, future) et limite le nombre de
+    `get_bars` simultanés via un `BoundedSemaphore` local. Le mécanisme est générique ;
+    seule la limite `max_concurrent` dépend du fournisseur — le 429 est par-fournisseur,
+    donc on throttle PAR source (spec §5.3, Codex A4), pas le composite en bloc.
+
+    - Verrou local (≠ `ResourcePools` de file) → pas de violation « une ressource de file
+      par tâche », pas de deadlock avec `acpx` (spec §5.1, Codex A3).
+    - Un hang consomme 1 permit sur N. ⚠️ Tant que le timeout de fetch (#9) n'existe pas,
+      un hang garde son permit — dégradation **bornée à 1/N**, pas un gel global.
+    - Saturation (aucun permit libre en `acquire_timeout_s`) → `MarketError("data_source_throttled")`
+      plutôt qu'un blocage indéfini (Codex A2).
+    - Délègue `disconnect` (le composite / `detach_failed_ib` l'appellent) ; `last_source`
+      et `consume_failed_sources` vivent sur le composite non enveloppé (Codex A1 adapté à A4).
+    """
+
+    def __init__(self, inner: object, *, max_concurrent: int, acquire_timeout_s: float = _DEFAULT_THROTTLE_ACQUIRE_TIMEOUT_S) -> None:
+        if max_concurrent < 1:
+            raise ValueError("max_concurrent doit être >= 1")
+        self._inner = inner
+        self._sem = threading.BoundedSemaphore(max_concurrent)
+        self._acquire_timeout_s = acquire_timeout_s
+
+    def get_bars(self, symbol: str, lookback: str = "5d", interval: str = "1h") -> list[Bar]:
+        if not self._sem.acquire(timeout=self._acquire_timeout_s):
+            raise MarketError("data_source_throttled", f"{symbol}: throttle saturé (>{self._acquire_timeout_s}s)")
+        try:
+            return self._inner.get_bars(symbol, lookback, interval)
+        finally:
+            self._sem.release()
+
+    def disconnect(self) -> None:
+        disconnect = getattr(self._inner, "disconnect", None)
+        if callable(disconnect):
+            disconnect()
+
+
+# ---------------------------------------------------------------------------
 # Loader config YAML
 # ---------------------------------------------------------------------------
 
