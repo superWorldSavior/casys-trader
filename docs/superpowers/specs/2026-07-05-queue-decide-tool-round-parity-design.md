@@ -170,10 +170,12 @@ fetch yahoo lent n'est pas régulé → à surveiller (le coût peut monter, cf 
 
 ## 6. Changements par fichier
 
-1. **`build_indicator_resolver` (nouveau, factory)** — retourne un resolver qui appelle
-   `resolve_indicator_requests(reqs, bars_by_symbol={}, symbols=<univers>, market_get_bars=<wrapper>.get_bars, max_requests=…, max_indicators=…, cached_interval/lookback=…)`.
-   `bars_by_symbol={}` = fetch-first ; bornes bootables (`daemon.py:149-150,946-947`) ;
-   `<wrapper>` = data_source thread-safe (§5.1).
+1. **`build_indicator_resolver` (nouveau, factory) — ✅ FAIT (T1a).** Contrat **étroit
+   fetch-first** (AX #7/#9) : `build_indicator_resolver(*, symbols, get_bars, max_requests,
+   max_indicators, default_window=48)` → resolver `(requests)->ToolPayload`. `get_bars` **requis**
+   (pas de défaut = pas de footgun), `bars_by_symbol` **non exposé** (toujours `{}` en interne :
+   un seul comportement, pas de « second régime » implicite). Le **batch garde sa closure**
+   (il a un vrai cache) — pas de réutilisation forcée (YAGNI). `context.py`, 2 tests verts.
 2. **`data_source` thread-safe + getter (§5.1/5.2)** — wrapper `threading.Lock` autour de
    `get_bars` (`data_source.py`), + un **getter** `Callable[[], DataSource | None]` (le pool
    démarre avant la construction → ne pas capturer l'objet ; lire la ref courante, `None` →

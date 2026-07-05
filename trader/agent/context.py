@@ -384,3 +384,49 @@ def resolve_indicator_requests(
         "truncated": len(all_requests) > max_requests,
         "requests": resolved,
     }
+
+
+def build_indicator_resolver(
+    *,
+    symbols: list[str],
+    get_bars: Callable[..., list[object]],
+    max_requests: int,
+    max_indicators: int,
+    default_window: int = 48,
+) -> Callable[[Iterable[object]], dict]:
+    """Fabrique un resolver d'indicateurs *fetch-first* pour le worker de file.
+
+    Contrat étroit (AX #7 Explicit, #9 Narrow) : UN seul comportement — chaque
+    requête est résolue en fetchant les barres via ``get_bars`` (aucun cache de
+    cycle, à la différence du mode batch qui réutilise ``tradable_bars_by_symbol``).
+    Le mode queue n'a jamais de cache pré-chargé, donc ``bars_by_symbol`` n'est
+    pas exposé et il n'y a pas de « second régime » implicite.
+
+    Le resolver retourné a la signature ``(requests) -> ToolPayload`` exigée par
+    le Protocol ``IndicatorResolver`` (``agent/tools/core.py``) : il se branche
+    tel quel dans ``ToolContext.indicator_resolver``.
+
+    Parameters
+    ----------
+    symbols:
+        Univers du cycle (requis) — filtre dur + calcul des paires cross-asset.
+    get_bars:
+        Fetcher de barres (requis, pas de défaut) — typiquement
+        ``data_source.get_bars`` enveloppé thread-safe. Requis explicitement :
+        sans lui, aucune barre ne serait résolue (footgun AX évité).
+    max_requests, max_indicators, default_window:
+        Bornes du resolve (bootables, mêmes valeurs que REQUEST_CONTEXT batch).
+    """
+
+    def _resolver(requests: Iterable[object]) -> dict:
+        return resolve_indicator_requests(
+            requests,
+            {},
+            symbols=symbols,
+            max_requests=max_requests,
+            max_indicators=max_indicators,
+            default_window=default_window,
+            market_get_bars=get_bars,
+        )
+
+    return _resolver
