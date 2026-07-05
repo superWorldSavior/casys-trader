@@ -18,8 +18,8 @@ from trader.agent import llm
 from trader.agent.learnings.selection import _parse_ts, pending_raw_count, select_new_raw
 from trader.agent.learnings.raw_store import RawLearningsStore
 from trader.execution.risk import read_min_trade_confidence
-from trader.reporting import meta_performance as meta_performance_mod
 from trader.reporting.read_models import attribution as attribution_mod
+from trader.reporting.read_models import meta_performance as meta_performance_mod
 
 log = logging.getLogger(__name__)
 

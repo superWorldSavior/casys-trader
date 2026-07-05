@@ -2,7 +2,8 @@ import json
 import os
 from pathlib import Path
 
-from trader.reporting import decision_audit, meta_performance
+from trader.reporting import decision_audit
+from trader.reporting.read_models import meta_performance
 
 
 def _row(symbol: str, action: str, reason_code: str) -> dict:

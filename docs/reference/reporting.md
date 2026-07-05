@@ -10,8 +10,8 @@ Presque tout est **ex-post et lecture-seule**, chacun sur sa source :
 `reporting/read_models/attribution.py` lit `model_performance.jsonl` ;
 `stats` calcule/rend les KPI projetés par `reporting/read_models/live_kpis.py` ;
 `tool_usage` rend la projection calculée par
-`reporting/read_models/tool_usage.py` ; `meta_performance` lit
-`decision_audit.json`.
+`reporting/read_models/tool_usage.py` ; `reporting/read_models/meta_performance.py`
+lit `decision_audit.json`.
 **Exception** : `decision_ledger`
 **écrit** — c'est lui qui PRODUIT `decisions.jsonl` (`append`/`replace_all`/`seed`).
 Rien n'est dans le hot-path de décision.
@@ -23,7 +23,7 @@ Rien n'est dans le hot-path de décision.
 | `read_models.attribution` / `attribution` | Read model canonique des **round-trips** (trades clôturés) depuis `model_performance.jsonl`, rattachés au plan via `source_plan_id`; `reporting.attribution` garde la façade/rendu et la CLI canonique vit dans `interfaces.cli.attribution`. |
 | `decision_audit` | **Audit ex-post** des décisions loggées (classification, cohérence, cas anormaux). |
 | `decision_bench` | **Bench contrefactuel** de modèles sur des lignes de décision auditées (compare des modèles a posteriori). |
-| `meta_performance` | Payload **compact de méta-performance** pour l'agent runtime + le consolidateur (réinjecté au contexte). |
+| `read_models.meta_performance` / `meta_performance` | Read model canonique du payload **compact de méta-performance** depuis `decision_audit.json`; `reporting.meta_performance` garde la façade de compatibilité. |
 | `stats` | Helpers de reporting des **KPI live** calculés par `reporting/read_models/live_kpis.py`; la CLI canonique vit dans `interfaces.cli.stats`. |
 | `decision_ledger` | Journal durable des décisions (schéma versionné). |
 | `decision_reason` | Façade de compatibilité vers `trader.domain.decision_reason`, vocabulaire canonique des `decision_reason_code`. |
@@ -37,7 +37,7 @@ Rien n'est dans le hot-path de décision.
 | « Les décisions sont-elles cohérentes ? » | `decision_audit` |
 | « Un autre modèle aurait-il mieux fait ? » | `decision_bench` (sur audit) |
 | « KPI live (equity, P&L, win rate) ? » | `stats` → cockpit |
-| « L'agent voit-il sa propre perf passée ? » | `meta_performance` → contexte LLM |
+| « L'agent voit-il sa propre perf passée ? » | `read_models.meta_performance` → contexte LLM |
 
 Les anciens raccourcis `python -m trader.stats`, `python -m trader.attribution`
 et `python -m trader.tool_usage`, ainsi que `python -m trader.commands.*`,

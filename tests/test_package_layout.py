@@ -1300,6 +1300,15 @@ def test_attribution_projection_is_read_model_canonical() -> None:
     assert legacy_attribution.render_text is reporting_attribution.render_text
 
 
+def test_meta_performance_projection_is_read_model_canonical() -> None:
+    from trader.reporting import meta_performance as reporting_meta_performance
+    from trader.reporting.read_models import meta_performance as read_model_meta_performance
+
+    assert reporting_meta_performance.compute_meta_performance is read_model_meta_performance.compute_meta_performance
+    assert reporting_meta_performance.DEFAULT_HORIZONS is read_model_meta_performance.DEFAULT_HORIZONS
+    assert reporting_meta_performance._AUDIT_CACHE is read_model_meta_performance._AUDIT_CACHE
+
+
 def test_market_and_planning_use_domain_primitives_instead_of_tools() -> None:
     trader_dir = Path(__file__).resolve().parents[1] / "trader"
     checked_roots = (trader_dir / "market", trader_dir / "planning")
