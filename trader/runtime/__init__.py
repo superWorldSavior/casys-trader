@@ -16,4 +16,5 @@ __all__ = [
     "pid_file",
     "process_env",
     "queue_runtime",
+    "runtime_shutdown",
 ]

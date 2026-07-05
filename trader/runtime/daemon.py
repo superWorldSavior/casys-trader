@@ -90,6 +90,7 @@ from trader.runtime import (
     daemon_bootstrap,
     market_rotation_runtime,
     queue_runtime,
+    runtime_shutdown,
 )
 from trader.runtime.ib_attach import IBAttachBackoff
 from trader.runtime.state_writer import RuntimeStateWriter
@@ -2382,26 +2383,19 @@ def main(
             if sleep_seconds is not None:
                 sleep(sleep_seconds)
     finally:
-        if _decide_pool is not None:
-            try:
-                _decide_pool.stop()
-                log.info("[queue_decide] pool arrêté")
-            except Exception:  # noqa: BLE001 — best-effort, ne jamais bloquer la sortie
-                pass
-        if _execute_pool is not None:
-            try:
-                _execute_pool.stop()
-                log.info("[queue_execute] pool arrêté")
-            except Exception:  # noqa: BLE001 — best-effort, ne jamais bloquer la sortie
-                pass
-        if data_source is not None:
-            _disconnect_quietly(data_source)
-        # Suppression du pid file au shutdown propre — seulement s'il contient
-        # encore NOTRE pid (jamais celui d'un successeur, cf bug Maj+X cockpit).
-        try:
-            release_pid_file(pid_file=_pid_file, pid=os.getpid())
-        except Exception:  # noqa: BLE001 — best-effort, ne jamais bloquer la sortie
-            pass
+        # Shutdown best-effort : pools queue, source data, puis suppression du
+        # pid file seulement s'il contient encore NOTRE pid (jamais celui d'un
+        # successeur, cf bug Maj+X cockpit).
+        runtime_shutdown.shutdown_runtime_resources(
+            decide_pool=_decide_pool,
+            execute_pool=_execute_pool,
+            data_source=data_source,
+            pid_file=_pid_file,
+            pid=os.getpid(),
+            disconnect_quietly=_disconnect_quietly,
+            release_pid_file=release_pid_file,
+            logger=log,
+        )
 
 
 if __name__ == "__main__":
