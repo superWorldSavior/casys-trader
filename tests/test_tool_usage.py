@@ -1,7 +1,14 @@
 import pytest
 
 from trader.reporting.tool_trace import TOOLS, summarize_tools
-from trader.reporting.tool_usage import build_report, clamp_count, domain_tool_usage, risk_observability, tool_usage_rates, tool_vs_quality
+from trader.reporting.read_models.tool_usage import (
+    build_report,
+    clamp_count,
+    domain_tool_usage,
+    risk_observability,
+    tool_usage_rates,
+    tool_vs_quality,
+)
 
 
 def _trace(
@@ -316,7 +323,7 @@ def test_build_report_integre_les_agregats_risque(monkeypatch, tmp_path) -> None
             "unavailable_symbols": [],
         }
 
-    monkeypatch.setattr("trader.reporting.tool_usage.score_from_ledger", fake_score_from_ledger)
+    monkeypatch.setattr("trader.reporting.read_models.tool_usage.score_from_ledger", fake_score_from_ledger)
 
     report = build_report(tmp_path / "decisions.jsonl")
 

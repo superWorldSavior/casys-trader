@@ -963,6 +963,18 @@ def test_tool_usage_cli_owner_is_command_module() -> None:
     assert not hasattr(reporting_tool_usage, "main")
 
 
+def test_tool_usage_report_projection_is_read_model_canonical() -> None:
+    import trader.tool_usage as legacy_tool_usage
+    from trader.reporting import tool_usage as reporting_tool_usage
+    from trader.reporting.read_models import tool_usage as read_model_tool_usage
+
+    assert reporting_tool_usage.build_report is read_model_tool_usage.build_report
+    assert reporting_tool_usage.domain_tool_usage is read_model_tool_usage.domain_tool_usage
+    assert reporting_tool_usage.risk_observability is read_model_tool_usage.risk_observability
+    assert legacy_tool_usage.build_report is read_model_tool_usage.build_report
+    assert legacy_tool_usage.render_cli is reporting_tool_usage.render_cli
+
+
 def test_stats_cli_owner_is_command_module() -> None:
     from trader.commands import stats as command_stats
     from trader.reporting import stats as reporting_stats

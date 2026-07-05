@@ -8,7 +8,9 @@
 
 Presque tout est **ex-post et lecture-seule**, chacun sur sa source : `attribution`
 lit `model_performance.jsonl` ; `stats` calcule/rend les KPI projetés par
-`reporting/read_models/live_kpis.py` ; `meta_performance` lit `decision_audit.json`.
+`reporting/read_models/live_kpis.py` ; `tool_usage` rend la projection calculée
+par `reporting/read_models/tool_usage.py` ; `meta_performance` lit
+`decision_audit.json`.
 **Exception** : `decision_ledger`
 **écrit** — c'est lui qui PRODUIT `decisions.jsonl` (`append`/`replace_all`/`seed`).
 Rien n'est dans le hot-path de décision.
@@ -24,7 +26,7 @@ Rien n'est dans le hot-path de décision.
 | `stats` | Helpers de reporting des **KPI live** calculés par `reporting/read_models/live_kpis.py`; la CLI canonique vit dans `interfaces.cli.stats`. |
 | `decision_ledger` | Journal durable des décisions (schéma versionné). |
 | `decision_reason` | Façade de compatibilité vers `trader.domain.decision_reason`, vocabulaire canonique des `decision_reason_code`. |
-| `tool_trace` / `tool_usage` | Traces des tournées d'outils domaine du LLM. |
+| `tool_trace` / `tool_usage` | Traces des tournées d'outils domaine du LLM ; projection canonique dans `reporting/read_models/tool_usage.py`, façade/rendu dans `reporting.tool_usage`. |
 
 ## Flux typiques
 

@@ -12,7 +12,7 @@
 > `planning-scheduling-boundary`, `agent-learnings-boundary`,
 > `market-rotation-boundary`, `wake-watch-runtime-glue`,
 > `learnings-selection-readmodel`, `planned-exits-boundary`,
-> `decision-reason-domain`).
+> `decision-reason-domain`, `tool-usage-readmodel`).
 
 ---
 
@@ -76,12 +76,13 @@ les utilisaient :
 | `trader/infrastructure/state_db/` | Backend SQLite de l'état paper, broker store, outbox | source durable quand `CASYS_STATE_BACKEND=sqlite` ; compat virtuelle : `trader.state_db.*` |
 | `trader/market/rotation/` | Rotation d'univers, hot-sets par venue, schedule, override, ledger rotation | compat virtuelle : `trader.rotation.*`, `trader.rotation_*` |
 | `trader/support/` | Helpers support stables : config (`pool`, `portfolio`), metadata git/code version, process env | compat virtuelle : `trader.config.*`, `trader.metadata.*`, `trader.system.*` |
-| `trader/reporting/` | Ledger décision, audit ex-post, attribution, stats, tool usage, meta-performance, read models | analyse/rendu ex-post ; `reporting.decision_reason` reste une façade de compatibilité vers `domain.decision_reason` |
+| `trader/reporting/` | Ledger décision, audit ex-post, attribution, stats, tool usage, meta-performance, read models | analyse/rendu ex-post ; `reporting.decision_reason` et `reporting.tool_usage` gardent les façades de compatibilité/rendu |
 | `trader/interfaces/cli/` | Entry points CLI canoniques (`stats`, `attribution`, `tool_usage`, `tui`) | compat virtuelle : `python -m trader.commands.stats`, `python -m trader.stats`, etc. |
 | `trader/runtime/cycle_scheduling.py` | Adaptateur runtime wake/watch : délègue la politique à `application/cycle_schedule.py` et `application/watch_scanner.py`, puis émet events/logs et compat wrappers | évite que `daemon.py` réimporte directement la glue applicative |
 | `trader/runtime/` | Daemon, CLI, logging, PID file, IB attach, rotation ledger, writers d'état fichier | compat virtuelle : `python -m trader.daemon`, `python -m trader.cli` |
 | `trader/reporting/read_models/live_kpis.py` | Projection live des KPI depuis `state/` pour daemon/cockpit/TUI | `reporting.stats` rend les KPI ; `interfaces.cli.stats` possède la CLI |
 | `trader/reporting/read_models/runtime_state.py` | Lecture tolérante des fichiers `state/` pour TUI/cockpit | compat virtuelle : `trader.read_models.*` |
+| `trader/reporting/read_models/tool_usage.py` | Projection ex-post des traces d'outils et de leur qualité forward depuis le ledger décision | `reporting.tool_usage` rend le rapport ; `interfaces.cli.tool_usage` possède la CLI |
 | `trader/interfaces/cockpit/` | App Textual, événements cockpit, supervisor local | `trader.cockpit` reste runnable via compat virtuelle |
 | `trader/interfaces/ui/` | Builders Rich purs, TUI textuelle, palette | `trader.ui.*` et `trader.tui` restent des façades import/CLI legacy virtuelles |
 | `trader/__init__.py` | Finder de compatibilité import/CLI | `trader.tools.*`, `trader.commands.*`, `trader.cockpit.*`, `trader.ui.*`, `trader.daemon`, `trader.cli`, `trader.stats`, `trader.attribution`, `trader.tool_usage` et `trader.tui` sont virtuels |
