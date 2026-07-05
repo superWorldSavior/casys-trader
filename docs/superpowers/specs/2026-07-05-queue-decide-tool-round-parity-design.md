@@ -168,6 +168,30 @@ toute exception en résultat compact (`core.py:223-235`) → aucune surcharge ya
 `Worker.on_overload`. **Voulu** en V1 (on ne veut pas que yahoo baisse le pool `acpx`), mais un
 fetch yahoo lent n'est pas régulé → à surveiller (le coût peut monter, cf §9).
 
+### 5.3 Throttle agnostique + timeout fetch (avis Codex, 2026-07-05)
+
+Objectif métier (Erwan) : `get_indicator_context` doit devenir **fréquent et accessible** →
+borner la concurrence des fetchs, **agnostique à la source** (yahoo remplaçable). Décision B
+(thread-safety) faite ; le throttle est une **addition** validée en revue Codex :
+
+- **Décorateur `ThrottledDataSource(inner, *, max_concurrent)`** implémentant le port
+  `DataSource` (`ports.py`), avec un `BoundedSemaphore` local (≠ ressource de file → pas de
+  deadlock W1, Codex A3). Agnostique : le mécanisme est générique, seule la limite dépend du
+  fournisseur.
+- **Par-source, pas global** (Codex A4) : le 429 est fournisseur-spécifique → envelopper les
+  sources **concrètes** dans le dict `sources` (`yfinance = ThrottledDataSource(YFinance…, …)`),
+  pas le composite en bloc.
+- **Déléguer explicitement** `last_source` / `consume_failed_sources` / `disconnect` (Codex A1) —
+  le daemon les appelle (`daemon.py:2759,264`) ; sinon reporting/détachement IB/fermeture cassés.
+- **Sémaphore bloquant AVEC timeout** (Codex A2) : `acquire(timeout=…)` → `MarketError("data_source_throttled")`,
+  pas de blocage indéfini ni de `blocking=False` pur (dégrade trop vite en unavailable).
+- **⚠️ Timeout de fetch PRIORITAIRE** (Codex A6) : `market.get_bars` appelle
+  `yf.Ticker(...).history(...)` **sans timeout** (`market_data.py:644`). Avec throttle, un hang
+  garde un permit *ad vitam*. → **traiter le timeout fetch AVANT/AVEC le throttle**, sinon
+  augmenter l'usage de `get_indicator_context` amplifie le risque de gel.
+- **Token bucket** (débit/minute) : plus juste pour l'anti-429 strict, mais **différé** —
+  `sémaphore + timeout + métriques` d'abord ; token bucket seulement si les 429 persistent (A5).
+
 ## 6. Changements par fichier
 
 1. **`build_indicator_resolver` (nouveau, factory) — ✅ FAIT (T1a).** Contrat **étroit
