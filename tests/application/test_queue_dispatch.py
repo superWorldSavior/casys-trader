@@ -12,11 +12,7 @@ from __future__ import annotations
 
 import json
 import time
-from dataclasses import asdict, replace
 from datetime import datetime, timezone
-from unittest.mock import MagicMock
-
-import pytest
 
 from trader.agent.protocol.types import Decision
 from trader.application.decide_handler import make_decide_handler
@@ -24,7 +20,6 @@ from trader.application.queue_dispatch import dispatch_decide_via_queue
 from trader.queue.decide_pool import DecidePool
 from trader.queue.ledger import TaskLedger
 from trader.queue.pools import ResourcePools
-from trader.queue.worker import RetryableError, Worker
 
 
 # ---------------------------------------------------------------------------
@@ -168,7 +163,6 @@ def test_ledger_delete_stale_decide_preserve_current_cycle(tmp_path):
 def test_ledger_delete_stale_decide_supprime_running_precedent(tmp_path):
     """delete_stale_decide supprime aussi les decide running d'un cycle précédent."""
     led = TaskLedger(tmp_path / "q.db")
-    pools = ResourcePools({"acpx": 1})
     now_ms = int(time.time() * 1000)
 
     led.enqueue(
@@ -465,7 +459,6 @@ def test_dispatch_purges_stale_previous_cycle(tmp_path):
 def test_flag_off_uses_batch_decide(monkeypatch):
     """Quand queue_decide_enabled=False, run_cycle appelle _batch_decide (spy)."""
     import trader.runtime.daemon as daemon_mod
-    from unittest.mock import patch
 
     batch_called = []
 
@@ -604,13 +597,11 @@ def test_dispatch_undecided_not_in_decisions(tmp_path):
     Ce test vérifie le contrat retourné — run_cycle doit utiliser undecided
     pour ne PAS générer de HOLD synthétique pour ces symboles.
     """
-    client = _FakeClient(raise_exc=RuntimeError("LLM indisponible"))
     sym_dead = "DEADX"
     sym_ok = "OKX"
 
     led = TaskLedger(tmp_path / "q.db")
     pools = ResourcePools({"acpx": 2})
-    handlers = {"decide": make_decide_handler(codex_client=_FakeClient({sym_ok: _ok_decision(sym_ok)}))}
 
     # Pool avec handler OK pour sym_ok, mais client crée erreur pour DEADX.
     # Astuce : make_decide_handler reçoit un client unique → on crée 2 handlers
