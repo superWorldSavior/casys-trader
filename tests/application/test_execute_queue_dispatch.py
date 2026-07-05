@@ -8,24 +8,33 @@ from trader.execution.broker import Fill
 
 
 class _FakeLedger:
-    def __init__(self, *, enqueue_result: int | None = 7, task_results: list[dict | None] | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        enqueue_result: int | None = 7,
+        task_results: list[dict | None] | None = None,
+        abandon_result: bool = True,
+    ) -> None:
         self.enqueue_result = enqueue_result
         self.task_results = list(task_results or [])
+        self.abandon_result = abandon_result
         self.enqueued: list[dict] = []
         self.abandoned: list[dict] = []
+        self.get_calls: list[int] = []
 
     def enqueue(self, **kwargs):
         self.enqueued.append(kwargs)
         return self.enqueue_result
 
     def get(self, task_id: int):
+        self.get_calls.append(task_id)
         if self.task_results:
             return self.task_results.pop(0)
         return {"id": task_id, "status": "pending", "result": None}
 
     def abandon(self, **kwargs):
         self.abandoned.append(kwargs)
-        return True
+        return self.abandon_result
 
 
 def _dispatch(ledger: _FakeLedger, **overrides):
@@ -105,6 +114,47 @@ def test_execute_queue_dispatch_timeout_maps_fail_closed_reason() -> None:
     assert ledger.abandoned == [
         {"task_id": 7, "now_ms": 10200, "error": "queue_execute_timeout"}
     ]
+
+
+def test_execute_queue_dispatch_timeout_race_reloads_done_task_after_failed_abandon() -> None:
+    fill = Fill(symbol="AAPL", side="BUY", quantity=5.0, price=100.0, ts="2026-07-05T08:00:00+00:00")
+    clock_values = iter([10.0, 10.0, 10.0, 10.2, 10.2])
+    ledger = _FakeLedger(
+        task_results=[
+            {"id": 7, "status": "pending", "result": None},
+            {"id": 7, "status": "done", "result": json.dumps(asdict(fill))},
+        ],
+        abandon_result=False,
+    )
+
+    outcome = _dispatch(ledger, budget_s=0.1, now_fn=lambda: next(clock_values, 10.2))
+
+    assert outcome.terminal == "done"
+    assert outcome.reason is None
+    assert outcome.fill == fill
+    assert outcome.late_execution_risk is False
+    assert outcome.abandoned is False
+    assert ledger.get_calls == [7, 7]
+
+
+def test_execute_queue_dispatch_failed_abandon_still_running_remains_late_timeout() -> None:
+    clock_values = iter([10.0, 10.0, 10.0, 10.2, 10.2])
+    ledger = _FakeLedger(
+        task_results=[
+            {"id": 7, "status": "pending", "result": None},
+            {"id": 7, "status": "running", "result": None},
+        ],
+        abandon_result=False,
+    )
+
+    outcome = _dispatch(ledger, budget_s=0.1, now_fn=lambda: next(clock_values, 10.2))
+
+    assert outcome.terminal == "timeout"
+    assert outcome.reason == "queue_execute_timeout"
+    assert outcome.fill is None
+    assert outcome.late_execution_risk is True
+    assert outcome.abandoned is False
+    assert ledger.get_calls == [7, 7]
 
 
 def test_execute_queue_dispatch_done_without_fill_is_fail_closed_for_live_order() -> None:

@@ -109,13 +109,7 @@ def dispatch_execute_order_via_queue(
 
         status = task.get("status")
         if status == "done":
-            raw_value = task.get("result")
-            raw_result = raw_value if isinstance(raw_value, str) else None
-            if raw_result:
-                try:
-                    fill = Fill(**json.loads(raw_result))
-                except Exception as exc:  # noqa: BLE001
-                    log.warning("[queue_execute] désérialisation fill sym=%s: %s", symbol, exc)
+            raw_result, fill = _read_fill_result(task, symbol=symbol)
             terminal = "done"
             break
         if status == "dead":
@@ -129,17 +123,17 @@ def dispatch_execute_order_via_queue(
     else:
         log.warning("[queue_execute] budget épuisé sym=%s budget_s=%s", symbol, budget_s)
 
-    reason = _fail_closed_reason(terminal=terminal, fill=fill, dry_run=dry_run)
     abandoned = False
     if terminal == "timeout":
         abandon = getattr(ledger, "abandon", None)
+        timeout_reason = _fail_closed_reason(terminal=terminal, fill=fill, dry_run=dry_run)
         if callable(abandon):
             try:
                 abandoned = bool(
                     abandon(
                         task_id=task_id,
                         now_ms=int(now_fn() * 1000),
-                        error=reason or "queue_execute_timeout",
+                        error=timeout_reason or "queue_execute_timeout",
                     )
                 )
             except Exception as exc:  # noqa: BLE001 — fail-closed, mais signaler le risque résiduel
@@ -157,13 +151,31 @@ def dispatch_execute_order_via_queue(
                 task_id,
             )
         else:
-            log.warning(
-                "[queue_execute] FAIL-CLOSED sym=%s — budget expiré sans état terminal "
-                "(tâche id=%s toujours active, ordre peut encore s'exécuter plus tard — "
-                "risque résiduel d'exécution tardive non géré dans ce cycle)",
-                symbol,
-                task_id,
-            )
+            try:
+                refreshed = ledger.get(task_id)
+            except Exception as exc:  # noqa: BLE001 — fail-closed si la relecture échoue
+                refreshed = None
+                log.error("[queue_execute] reload après abandon échoué sym=%s id=%s: %s", symbol, task_id, exc)
+            if refreshed is not None and refreshed.get("status") == "done":
+                raw_result, fill = _read_fill_result(refreshed, symbol=symbol)
+                terminal = "done"
+                log.warning(
+                    "[queue_execute] timeout race résolue sym=%s id=%s — tâche devenue done "
+                    "entre le dernier poll et abandon",
+                    symbol,
+                    task_id,
+                )
+            else:
+                status = refreshed.get("status") if refreshed is not None else "missing"
+                log.warning(
+                    "[queue_execute] FAIL-CLOSED sym=%s — budget expiré sans état terminal "
+                    "(tâche id=%s status=%s, ordre peut encore s'exécuter plus tard — "
+                    "risque résiduel d'exécution tardive non géré dans ce cycle)",
+                    symbol,
+                    task_id,
+                    status,
+                )
+    reason = _fail_closed_reason(terminal=terminal, fill=fill, dry_run=dry_run)
     late_execution_risk = terminal == "timeout" and not abandoned
     if reason == "queue_execute_no_fill":
         log.error(
@@ -183,6 +195,18 @@ def dispatch_execute_order_via_queue(
         late_execution_risk=late_execution_risk,
         abandoned=abandoned,
     )
+
+
+def _read_fill_result(task: dict, *, symbol: str) -> tuple[str | None, Fill | None]:
+    raw_value = task.get("result")
+    raw_result = raw_value if isinstance(raw_value, str) else None
+    fill = None
+    if raw_result:
+        try:
+            fill = Fill(**json.loads(raw_result))
+        except Exception as exc:  # noqa: BLE001
+            log.warning("[queue_execute] désérialisation fill sym=%s: %s", symbol, exc)
+    return raw_result, fill
 
 
 def _fail_closed_reason(*, terminal: ExecuteQueueTerminal, fill: Fill | None, dry_run: bool) -> str | None:
