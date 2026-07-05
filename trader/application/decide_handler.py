@@ -20,7 +20,7 @@ Format du résultat (task.result) — ENVELOPPE depuis T4 :
     {"decision": {...asdict(Decision)...}, "model_calls": int}
 
 ``model_calls`` = appels LLM réellement consommés (1 sans round, 2+ avec tour
-d'outils) — consommé par queue_dispatch pour un fusible juste. Le lecteur
+d'outils) — consommé par queue_dispatch pour l'observabilité. Le lecteur
 (queue_dispatch) accepte aussi l'ancien format plat (rétro-compat transitoire).
 
 RetryableError levée par decide_one remonte telle quelle vers le Worker, qui

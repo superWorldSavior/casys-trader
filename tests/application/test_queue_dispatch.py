@@ -494,16 +494,22 @@ def test_flag_off_uses_batch_decide(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Test 6 (FIX 1) : fusible max_model_calls — au plus N tâches enfilées
+# Test 6 : admission sans cap par appels — tous les décidables sont enfilés
 # ---------------------------------------------------------------------------
 
 
-def test_dispatch_max_model_calls_limits_enqueued(tmp_path):
-    """5 décidables, max_model_calls=2 → exactement 2 tâches enfilées, 3 reportées.
+def test_dispatch_signature_ne_thread_plus_le_cap_appels():
+    """Le dispatch queue ne porte plus de budget d'admission par appels."""
+    import inspect
 
-    Les 3 symboles non enfilés figurent dans undecided_symbols et aucune
-    décision n'est produite pour eux (pas de HOLD synthétique).
-    """
+    params = inspect.signature(dispatch_decide_via_queue).parameters
+    assert "max_model_calls" not in params
+    assert "tools_active" not in params
+    assert "max_rounds" not in params
+
+
+def test_dispatch_enfile_tous_les_decidables(tmp_path):
+    """5 décidables → 5 tâches enfilées ; les non-finies restent undecided."""
     symbols = ["S1", "S2", "S3", "S4", "S5"]
     led = TaskLedger(tmp_path / "q.db")
 
@@ -530,26 +536,18 @@ def test_dispatch_max_model_calls_limits_enqueued(tmp_path):
         cycle_id="cycle-cap",
         budget_s=30.0,
         now_fn=jumping_now,
-        max_model_calls=2,
     )
 
-    # Seulement 2 tâches enfilées (les 2 premiers selon l'ordre de decidable)
-    assert led.count_by_status("pending", kind="decide") == 2, (
-        "attendu 2 tâches pending (fusible max_model_calls=2)"
-    )
-    # Tous les 5 symboles sont undecided :
-    # - 2 enfilés mais budget expiré → pending_syms → skipped → undecided
-    # - 3 non enfilés (deferred par cap) → undecided
+    assert led.count_by_status("pending", kind="decide") == 5
     assert undecided == set(symbols), (
-        f"les 5 symboles doivent être dans undecided (budget expiré + cap), got {undecided}"
+        f"les 5 symboles doivent être undecided quand le budget temps expire, got {undecided}"
     )
-    # Aucune décision produite
     assert decisions == {}
     assert model_calls == 0
 
 
-def test_dispatch_max_model_calls_admitted_syms_are_first_in_order(tmp_path):
-    """max_model_calls=2 : les 2 PREMIERS de decidable sont enfilés (ordre déterministe)."""
+def test_dispatch_enfile_les_symboles_dans_l_ordre_decidable(tmp_path):
+    """L'ordre d'enfilage reste l'ordre de decidable (déterminisme)."""
     symbols = ["PRIO1", "PRIO2", "LOW3", "LOW4", "LOW5"]
     led = TaskLedger(tmp_path / "q.db")
 
@@ -574,16 +572,13 @@ def test_dispatch_max_model_calls_admitted_syms_are_first_in_order(tmp_path):
         cycle_id="cycle-order",
         budget_s=30.0,
         now_fn=jumping_now,
-        max_model_calls=2,
     )
 
     rows = led._conn.execute(
-        "SELECT partition_key FROM tasks WHERE kind='decide'"
+        "SELECT partition_key FROM tasks WHERE kind='decide' ORDER BY id"
     ).fetchall()
-    admitted_syms = {r["partition_key"] for r in rows}
-    assert admitted_syms == {"PRIO1", "PRIO2"}, (
-        f"attendu {{PRIO1, PRIO2}} enfilés, got {admitted_syms}"
-    )
+    admitted_syms = [r["partition_key"] for r in rows]
+    assert admitted_syms == symbols
 
 
 # ---------------------------------------------------------------------------
@@ -683,7 +678,7 @@ def test_flag_off_no_ledger_in_signature():
 
 
 # ---------------------------------------------------------------------------
-# Fusible × tour d'outils (review T4 E4a) — halvé seulement si tools_active
+# Admission queue : pas de halving/outils, seulement l'enfilage complet
 # ---------------------------------------------------------------------------
 
 
@@ -715,38 +710,14 @@ def _dispatch_enqueue_only(tmp_path, symbols, **over):
     return led
 
 
-def test_fusible_halve_si_tools_active(tmp_path):
-    # 5 décidables, cap=4, tools actifs → pire cas 2 appels/décision → 2 admis.
+def test_agent_tools_enabled_ne_change_pas_l_admission(tmp_path):
     led = _dispatch_enqueue_only(
         tmp_path, ["S1", "S2", "S3", "S4", "S5"],
-        agent_tools_enabled=True, tools_active=True, max_model_calls=4, max_rounds=1,
+        agent_tools_enabled=True,
     )
+    assert led.count_by_status("pending", kind="decide") == 5
+
+
+def test_budget_temps_expire_reporte_mais_n_empeche_pas_l_enfilage(tmp_path):
+    led = _dispatch_enqueue_only(tmp_path, ["S1", "S2"], agent_tools_enabled=True)
     assert led.count_by_status("pending", kind="decide") == 2
-
-
-def test_fusible_divise_par_max_rounds_plus_un_si_tools_active(tmp_path):
-    # 6 décidables, cap=8, max_rounds=3 → pire cas 4 appels/décision → 2 admis.
-    led = _dispatch_enqueue_only(
-        tmp_path, ["S1", "S2", "S3", "S4", "S5", "S6"],
-        agent_tools_enabled=True, tools_active=True, max_model_calls=8, max_rounds=3,
-    )
-    assert led.count_by_status("pending", kind="decide") == 2
-
-
-def test_fusible_non_halve_si_tools_sans_services(tmp_path):
-    # E4a : agent_tools actif MAIS services absents (tools_active=False) → mode
-    # dégradé 1 appel → le cap plein s'applique (pas de budget gaspillé).
-    led = _dispatch_enqueue_only(
-        tmp_path, ["S1", "S2", "S3", "S4", "S5"],
-        agent_tools_enabled=True, tools_active=False, max_model_calls=4,
-    )
-    assert led.count_by_status("pending", kind="decide") == 4
-
-
-def test_fusible_zero_ferme_tout(tmp_path):
-    # max_model_calls=0 = fusible fermé, même avec tools (pas de plancher 1).
-    led = _dispatch_enqueue_only(
-        tmp_path, ["S1", "S2"],
-        agent_tools_enabled=True, tools_active=True, max_model_calls=0,
-    )
-    assert led.count_by_status("pending", kind="decide") == 0

@@ -33,8 +33,6 @@ class RunCycleRuntimeContext:
     commission_model: object
     agent_tools_enabled: bool
     queue_decide_enabled: bool
-    decide_tools_active: bool
-    decide_tool_max_rounds: int
     task_ledger: object | None
     queue_execute_enabled: bool
     execute_ledger: object | None
@@ -71,8 +69,6 @@ def dispatch_run_cycle(
         commission_model=context.commission_model,
         agent_tools_enabled=context.agent_tools_enabled,
         queue_decide_enabled=context.queue_decide_enabled,
-        decide_tools_active=context.decide_tools_active,
-        decide_tool_max_rounds=context.decide_tool_max_rounds,
         task_ledger=context.task_ledger,
         queue_execute_enabled=context.queue_execute_enabled,
         execute_ledger=context.execute_ledger,
