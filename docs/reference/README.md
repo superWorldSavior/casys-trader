@@ -19,6 +19,7 @@
 | Sujet | Page | Source principale |
 |---|---|---|
 | Contrat prompts / JSON / mandat | [`llm-contract.md`](llm-contract.md) | `agent/protocol`, `mandate/` |
+| CODEX_HOME isolé du daemon | [`codex-home-isole.md`](codex-home-isole.md) | `ops/codex-home`, `support/system/process_env` |
 | Domain tools et action tools | [`agent-tools.md`](agent-tools.md) | `agent/tools`, parser/compiler |
 | Contexte agent | [`agent-context.md`](agent-context.md) | `agent/context` |
 | Mémoire learnings / RAG | [`learnings-rag.md`](learnings-rag.md) | `agent/learnings`, `state/learnings*` |
