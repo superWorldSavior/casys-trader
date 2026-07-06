@@ -104,6 +104,9 @@ def countdown(target: object, *, now: datetime, prefix: str = "") -> str:
     expires_at = target if isinstance(target, datetime) else parse_ts(target)
     if expires_at is None:
         return "—"
+    # normalise naive → UTC pour éviter TypeError quand now est aware
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=UTC)
     total_secs = int((expires_at - now).total_seconds())
     if total_secs < -30:
         return "expired"

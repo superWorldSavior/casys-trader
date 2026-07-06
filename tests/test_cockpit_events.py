@@ -313,6 +313,57 @@ def test_read_new_lines_plusieurs_lignes_dont_partielle(tmp_path):
     assert off == expected_consumed
 
 
+def test_read_new_lines_gros_fichier_lit_la_queue(tmp_path):
+    """Fichier > 1 MiB : le premier appel retourne les DERNIÈRES lignes, pas les premières."""
+    from trader.cockpit.events import _READ_CHUNK_SIZE, _TAIL_LINES_INIT
+
+    f = tmp_path / "events.jsonl"
+    # ~72 octets/ligne × 16 000 ≈ 1.15 MiB
+    n_lines = 16_000
+    content = "".join(
+        f'{{"event":"cycle_started","ts":"2026-06-10T01:00:00+00:00","seq":{i}}}\n'
+        for i in range(n_lines)
+    )
+    f.write_text(content, encoding="utf-8")
+    size = f.stat().st_size
+    assert size > _READ_CHUNK_SIZE, "le fichier doit dépasser 1 MiB pour valider le tail"
+
+    result, new_offset = read_new_lines(f, offset=0)
+
+    assert len(result) == _TAIL_LINES_INIT
+    # Dernière ligne = fin du fichier
+    assert result[-1]["seq"] == n_lines - 1
+    # Première ligne retournée ≠ début du fichier
+    assert result[0]["seq"] != 0
+    # Offset avancé jusqu'à la fin du fichier
+    assert new_offset == size
+
+
+def test_read_new_lines_gros_fichier_incremental_apres_init(tmp_path):
+    """Après le premier appel sur un gros fichier, le poll incrémental retourne exactement la nouvelle ligne."""
+    from trader.cockpit.events import _READ_CHUNK_SIZE
+
+    f = tmp_path / "events.jsonl"
+    n_lines = 16_000
+    content = "".join(
+        f'{{"event":"cycle_started","ts":"2026-06-10T01:00:00+00:00","seq":{i}}}\n'
+        for i in range(n_lines)
+    )
+    f.write_text(content, encoding="utf-8")
+    assert f.stat().st_size > _READ_CHUNK_SIZE
+
+    _, offset = read_new_lines(f, offset=0)
+    assert offset == f.stat().st_size
+
+    with f.open("a", encoding="utf-8") as fh:
+        fh.write('{"event":"cycle_completed","seq":99999}\n')
+
+    result2, offset2 = read_new_lines(f, offset=offset)
+    assert len(result2) == 1
+    assert result2[0]["seq"] == 99999
+    assert offset2 == f.stat().st_size
+
+
 def test_armed_plan_cancelled_formate_dedie() -> None:
     # review Codex (D7 étage B) : une annulation de plan armé est un signal
     # opérateur — pas un event générique OTHER.

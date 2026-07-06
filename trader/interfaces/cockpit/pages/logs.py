@@ -227,11 +227,23 @@ def _read_new_text_lines(path: Path, offset: int) -> tuple[list[str], int]:
         size = path.stat().st_size
         if size == 0:
             return [], 0
+        _CHUNK_SIZE = 1 * 1024 * 1024
         is_init = (offset == 0) or (size < offset)
-        read_offset = 0 if is_init else offset
+        if is_init:
+            tail_start = max(0, size - _CHUNK_SIZE)
+        else:
+            tail_start = offset
         with path.open("rb") as fh:
-            fh.seek(read_offset)
-            raw = fh.read(1 * 1024 * 1024)
+            fh.seek(tail_start)
+            raw = fh.read(_CHUNK_SIZE)
+        if is_init and tail_start > 0:
+            first_nl = raw.find(b"\n")
+            if first_nl == -1:
+                return [], tail_start + len(raw)
+            raw = raw[first_nl + 1 :]
+            read_offset = tail_start + first_nl + 1
+        else:
+            read_offset = tail_start
         last_newline = raw.rfind(b"\n")
         if last_newline == -1:
             return [], read_offset

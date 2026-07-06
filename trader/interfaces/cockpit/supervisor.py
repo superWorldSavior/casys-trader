@@ -15,6 +15,7 @@ Rotation daemon_console.log :
 """
 from __future__ import annotations
 
+import errno
 import fcntl
 import json
 import os
@@ -227,7 +228,20 @@ def launch_daemon(
     lock_path = pid_file.parent / "daemon.lock"
     lock_path.parent.mkdir(parents=True, exist_ok=True)
 
-    lock_fh = lock_path.open("w", encoding="utf-8")
+    # O_NOFOLLOW : refuse de suivre un symlink (ex. daemon.lock → config/risk.yaml
+    # tronquerait la cible). O_CREAT crée le fichier s'il est absent.
+    try:
+        _lock_fd = os.open(
+            str(lock_path),
+            os.O_CREAT | os.O_WRONLY | os.O_NOFOLLOW,
+            0o600,
+        )
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            # lock_path est un symlink — refus de suivre pour ne pas altérer la cible.
+            return LaunchResult(launched=False, reason="lock_is_symlink")
+        raise
+    lock_fh = os.fdopen(_lock_fd, "w", encoding="utf-8")
     try:
         fcntl.flock(lock_fh, fcntl.LOCK_EX)
 
@@ -305,16 +319,14 @@ def _pid_from_status(status_file: Path | None) -> int | None:
 def stop_daemon(*, pid_file: Path, status_file: Path | None = None) -> StopResult:
     """Envoie SIGINT au daemon après vérification d'identité. Jamais SIGKILL.
 
-    Source du pid : daemon.pid, sinon fallback daemon_status.json (le daemon
-    y réécrit son pid à chaque cycle). Le fallback couvre le cas où un daemon
-    doublon a écrasé puis supprimé daemon.pid à son arrêt, laissant le daemon
-    légitime vivant mais inarrêtable depuis le cockpit (Maj+X / Q).
+    Candidats pid (ordonnés, dédupliqués) : pid_file PUIS status_file.
+    Pour chaque candidat, le premier qui passe _is_daemon_pid reçoit SIGINT.
+    Invariant : un pid qui échoue le check d'identité ne reçoit JAMAIS de signal.
 
-    Vérifie que le process cible :
-    (a) existe (os.kill(pid, 0))
-    (b) contient "trader.daemon" dans sa cmdline (_get_cmdline)
-
-    Si l'identité ne correspond pas → refus de signaler (identity_mismatch).
+    Ce double-fallback couvre le scénario :
+      - pid_file contient un pid STALE B (mort ou process étranger)
+      - daemon_status.json pointe le vrai daemon vivant A
+    → stop envoie SIGINT à A, pas à B.
 
     Args:
         pid_file: Chemin vers state/daemon.pid.
@@ -324,30 +336,46 @@ def stop_daemon(*, pid_file: Path, status_file: Path | None = None) -> StopResul
         StopResult(stopped=True, reason="sigint_sent") si signal envoyé,
         StopResult(stopped=False) sinon.
     """
-    pid: int | None = None
+    # Construire la liste ordonnée et dédupliquée des candidats pid
+    candidates: list[int] = []
+    seen: set[int] = set()
+
+    # Source 1 : pid_file
     if pid_file.exists():
         try:
-            pid = int(pid_file.read_text(encoding="utf-8").strip())
+            pid_val = int(pid_file.read_text(encoding="utf-8").strip())
+            if pid_val not in seen:
+                candidates.append(pid_val)
+                seen.add(pid_val)
         except (ValueError, OSError):
-            pid = None
-    if pid is None:
-        pid = _pid_from_status(status_file)
-    if pid is None:
+            pass
+
+    # Source 2 : status_file (fallback — réécrit à chaque cycle daemon)
+    pid_status = _pid_from_status(status_file)
+    if pid_status is not None and pid_status not in seen:
+        candidates.append(pid_status)
+        seen.add(pid_status)
+
+    if not candidates:
         return StopResult(stopped=False, reason="no_daemon")
 
-    # Vérifie existence
-    try:
-        os.kill(pid, 0)
-    except (ProcessLookupError, PermissionError):
-        return StopResult(stopped=False, pid=pid, reason="pid_dead")
+    # Premier candidat passant le check d'identité reçoit SIGINT.
+    # Un candidat qui échoue n'est JAMAIS signalé (invariant conservé).
+    for pid in candidates:
+        if _is_daemon_pid(pid):
+            os.kill(pid, _signal.SIGINT)
+            return StopResult(stopped=True, pid=pid, reason="sigint_sent")
 
-    # Vérifie identité
-    if _DAEMON_MARKER not in _get_cmdline(pid):
-        return StopResult(stopped=False, pid=pid, reason="identity_mismatch")
+    # Aucun candidat n'a passé le check — affiner la raison d'échec
+    for pid in candidates:
+        try:
+            os.kill(pid, 0)
+            # Vivant mais identité étrangère
+            return StopResult(stopped=False, pid=pid, reason="identity_mismatch")
+        except (ProcessLookupError, PermissionError):
+            pass
 
-    # Envoie SIGINT
-    os.kill(pid, _signal.SIGINT)
-    return StopResult(stopped=True, pid=pid, reason="sigint_sent")
+    return StopResult(stopped=False, pid=candidates[0], reason="pid_dead")
 
 
 # ---------------------------------------------------------------------------
@@ -358,6 +386,14 @@ def stop_daemon(*, pid_file: Path, status_file: Path | None = None) -> StopResul
 def toggle_kill_switch(*, kill_file: Path) -> bool:
     """Toggle le fichier KILL.
 
+    Suppression : os.unlink opère sur le chemin lui-même sans jamais suivre les
+    symlinks (os.path.islink documente ce comportement) — un lien KILL → cible
+    arbitraire supprime uniquement le lien, la cible n'est pas touchée.
+
+    Création : os.open avec O_CREAT|O_EXCL|O_NOFOLLOW — atomique (pas de TOCTOU
+    entre deux cockpits) et sans suivi de symlink. Si FileExistsError (race), le
+    kill-switch est déjà actif → retourne True sans crash.
+
     Args:
         kill_file: Chemin vers le fichier KILL racine du repo.
 
@@ -365,8 +401,22 @@ def toggle_kill_switch(*, kill_file: Path) -> bool:
         True si le kill-switch est maintenant actif (fichier créé),
         False s'il a été retiré.
     """
-    if kill_file.exists():
-        kill_file.unlink()
+    path_str = str(kill_file)
+
+    # lexists ne suit pas les symlinks : un lien mort ou vivant vaut True
+    if os.path.lexists(path_str):
+        # Suppression. os.unlink est toujours no-follow : il opère sur le chemin
+        # lui-même. os.path.islink(path_str) serait True pour un symlink ici —
+        # dans tous les cas la cible n'est jamais modifiée.
+        os.unlink(path_str)
         return False
-    kill_file.touch()
-    return True
+
+    # Création atomique no-follow
+    try:
+        fd = os.open(path_str, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW)
+        os.close(fd)
+        return True
+    except FileExistsError:
+        # Race : un autre cockpit a créé le fichier entre lexists et open.
+        # Le kill-switch est actif.
+        return True

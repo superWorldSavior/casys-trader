@@ -113,10 +113,16 @@ def journal_entries(state: dict, *, now: datetime, limit: int = 8) -> list[Journ
     """Dernières décisions, rationale d'abord — l'ordre reste chronologique desc."""
     decisions = _safe_list_of_dicts(state.get("decisions"))
     recent = _safe_list_of_dicts(state.get("recent_decisions"))
-    seen: set[str] = set()
+    seen: set[tuple[str, str, str, str, str]] = set()
     merged: list[dict] = []
     for row in [*decisions, *reversed(recent)]:
-        key = f"{row.get('cycle_ts') or row.get('ts')}|{row.get('symbol')}|{row.get('action')}"
+        key = (
+            str(row.get("cycle_ts") or row.get("ts") or ""),
+            str(row.get("sequence") or ""),
+            str(row.get("symbol") or ""),
+            str(row.get("action") or ""),
+            str(row.get("reason") or row.get("rationale") or ""),
+        )
         if key in seen:
             continue
         seen.add(key)
@@ -190,7 +196,8 @@ def next_to_fire(state: dict, *, now: datetime, limit: int = 6) -> list[FireItem
         )
     wake_at = f.parse_ts(state.get("default_next_wake"))
     if wake_at is not None and wake_at > now:
-        due = len(_safe_list_of_dicts(state.get("symbols_due") if isinstance(state.get("symbols_due"), list) else []))
+        _symbols_due_raw = state.get("symbols_due")
+        due = len(_symbols_due_raw) if isinstance(_symbols_due_raw, list) else 0
         due_count = sum(
             1 for ts in f.safe_dict(state.get("symbol_wakes")).values()
             if (parsed := f.parse_ts(ts)) is not None and parsed <= wake_at

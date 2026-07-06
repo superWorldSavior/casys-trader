@@ -185,14 +185,29 @@ def read_new_lines(path: Path, offset: int) -> tuple[list[dict[str, Any]], int]:
         if size == 0:
             return [], 0
 
-        # Troncature détectée ou premier appel → repositionne au début
+        # Troncature détectée ou premier appel → lit la queue du fichier
         is_init = (offset == 0) or (size < offset)
-        read_offset = 0 if is_init else offset
+
+        if is_init:
+            # Seek à la queue pour ne pas servir les vieux événements
+            tail_start = max(0, size - _READ_CHUNK_SIZE)
+        else:
+            tail_start = offset
 
         # --- Lecture bornée : au maximum _READ_CHUNK_SIZE octets ---
         with path.open("rb") as fh:
-            fh.seek(read_offset)
+            fh.seek(tail_start)
             raw = fh.read(_READ_CHUNK_SIZE)
+
+        # Si on a seeké en milieu de fichier, la 1re séquence peut être une ligne partielle → la jeter
+        if is_init and tail_start > 0:
+            first_nl = raw.find(b"\n")
+            if first_nl == -1:
+                return [], tail_start + len(raw)
+            raw = raw[first_nl + 1 :]
+            read_offset = tail_start + first_nl + 1
+        else:
+            read_offset = tail_start
 
         # --- Ne consommer que jusqu'au dernier '\n' ---
         # Si raw ne contient pas de '\n', il n'y a aucune ligne complète.

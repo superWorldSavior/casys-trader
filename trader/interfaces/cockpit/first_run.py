@@ -59,8 +59,29 @@ def _check_ib_gateway(host: str, port: int, *, timeout: float = 0.4) -> bool:
         return False
 
 
-def preflight_checks(root: Path, *, state_dir: Path | None = None) -> list[PreflightCheck]:
-    """Checks réels du premier lancement. Lecture seule, jamais d'exception."""
+_STATE_HISTORY_FILES = (
+    "decisions.jsonl",
+    "current_report.json",
+    "last_report.json",
+    "broker.json",
+    "trade_plans.json",
+)
+
+
+def has_state_history(state_dir: Path) -> bool:
+    """True si au moins un fichier d'état connu existe dans *state_dir*."""
+    return any((state_dir / name).exists() for name in _STATE_HISTORY_FILES)
+
+
+def preflight_checks(
+    root: Path, *, state_dir: Path | None = None, skip_ib: bool = False
+) -> list[PreflightCheck]:
+    """Checks réels du premier lancement. Lecture seule, jamais d'exception.
+
+    ``skip_ib=True`` — insère une ligne IB placeholder "… checking" sans faire
+    le DNS/socket (utile pour rendre l'UI immédiatement puis lancer le vrai
+    check dans un worker thread).
+    """
     checks: list[PreflightCheck] = []
 
     config_dir = root / "config"
@@ -90,33 +111,36 @@ def preflight_checks(root: Path, *, state_dir: Path | None = None) -> list[Prefl
     )
 
     state_dir = state_dir if state_dir is not None else root / "state"
-    has_history = (state_dir / "decisions.jsonl").exists() or (state_dir / "current_report.json").exists()
+    history = has_state_history(state_dir)
     checks.append(
         PreflightCheck(
             "state",
             ok=True,
             detail=(
                 "existing history found — resuming"
-                if has_history
+                if history
                 else "fresh — no history yet, this is a first run"
             ),
         )
     )
 
-    host = os.getenv("CASYS_IB_HOST", "127.0.0.1")
-    try:
-        port = int(os.getenv("CASYS_IB_PORT", "4002"))
-    except ValueError:
-        port = 4002
-    ib_ok = _check_ib_gateway(host, port)
-    checks.append(
-        PreflightCheck(
-            "IB Gateway",
-            ok=ib_ok,
-            detail=f"{host}:{port} reachable" if ib_ok else "",
-            error_detail=f"{host}:{port} unreachable — start IB Gateway / TWS and enable the API",
+    if skip_ib:
+        checks.append(PreflightCheck("IB Gateway", ok=True, detail="… checking"))
+    else:
+        host = os.getenv("CASYS_IB_HOST", "127.0.0.1")
+        try:
+            port = int(os.getenv("CASYS_IB_PORT", "4002"))
+        except ValueError:
+            port = 4002
+        ib_ok = _check_ib_gateway(host, port)
+        checks.append(
+            PreflightCheck(
+                "IB Gateway",
+                ok=ib_ok,
+                detail=f"{host}:{port} reachable" if ib_ok else "",
+                error_detail=f"{host}:{port} unreachable — start IB Gateway / TWS and enable the API",
+            )
         )
-    )
     return checks
 
 
@@ -231,12 +255,25 @@ class FirstRunScreen(Screen[None]):
     def on_mount(self) -> None:
         root: Path = getattr(self.app, "_root", Path.cwd())
         state_dir: Path | None = getattr(self.app, "_state_dir", None)
+        # Rendu immédiat sans IB (pas de DNS/socket) ; IB mis à jour par worker thread.
         self.query_one("#preflight-panel", Static).update(
-            build_preflight_body(preflight_checks(root, state_dir=state_dir))
+            build_preflight_body(preflight_checks(root, state_dir=state_dir, skip_ib=True))
         )
         self._render_cta()
         self._render_footer()
         self.set_interval(0.55, self._blink)
+        self.run_worker(lambda: self._worker_ib_check(root, state_dir), thread=True)
+
+    def _worker_ib_check(self, root: Path, state_dir: Path | None) -> None:
+        """Thread worker — fait le check IB réel et met à jour le panel."""
+        body = build_preflight_body(preflight_checks(root, state_dir=state_dir, skip_ib=False))
+        try:
+            self.call_from_thread(self._update_preflight_panel, body)
+        except Exception:
+            pass  # app déjà terminée (test teardown ou exit rapide)
+
+    def _update_preflight_panel(self, body: object) -> None:
+        self.query_one("#preflight-panel", Static).update(body)
 
     def _blink(self) -> None:
         self._cursor_on = not self._cursor_on
@@ -260,6 +297,10 @@ class FirstRunScreen(Screen[None]):
         text.append(" quit", style=CASYS_DIM)
         text.append("        docs: how-to/run-the-daemon.md", style=CASYS_FAINT)
         self.query_one("#first-run-footer", Static).update(text)
+
+    def key_escape(self) -> None:
+        """Ferme l'écran sans rien lancer — le cockpit normal apparaît (binding later)."""
+        self.dismiss(None)
 
     def action_start_daemon(self) -> None:
         self.app.action_start_daemon()  # type: ignore[attr-defined]

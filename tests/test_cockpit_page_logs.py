@@ -171,6 +171,29 @@ async def test_q_without_daemon_exits_directly(tmp_path, monkeypatch):
     assert app.return_value is None  # sortie propre, pas de modal
 
 
+def test_read_new_text_lines_gros_fichier_lit_la_queue(tmp_path):
+    """_read_new_text_lines sur un fichier > 1 MiB retourne la queue, pas le début."""
+    from trader.interfaces.cockpit.pages.logs import _read_new_text_lines
+
+    f = tmp_path / "agent_trace.log"
+    # ~72 octets/ligne × 16 000 ≈ 1.15 MiB
+    n_lines = 16_000
+    content = "".join(f"[agent] line {i} " + "x" * 50 + "\n" for i in range(n_lines))
+    f.write_text(content, encoding="utf-8")
+    size = f.stat().st_size
+    assert size > 1 * 1024 * 1024
+
+    result, new_offset = _read_new_text_lines(f, offset=0)
+
+    assert len(result) > 0
+    # Dernière ligne = fin du fichier
+    assert f"line {n_lines - 1}" in result[-1]
+    # Début du fichier absent des résultats
+    assert not any("line 0 " in line for line in result)
+    # Offset à la fin
+    assert new_offset == size
+
+
 async def test_s_calls_launch_daemon(tmp_path, monkeypatch):
     _patch_paths(monkeypatch, tmp_path)
     (tmp_path / "decisions.jsonl").write_text("{}\n", encoding="utf-8")
