@@ -72,6 +72,11 @@ def test_classify_watch_triggered():
     assert classify_event(ev) == EventClass.WATCH
 
 
+def test_classify_watch_expired():
+    ev = {"event": "indicator_watch_expired", "symbol": "AAPL"}
+    assert classify_event(ev) == EventClass.WATCH
+
+
 def test_classify_learning_consolidated():
     ev = {"event": "learning_consolidated", "triggered": True}
     assert classify_event(ev) == EventClass.LEARNING
@@ -99,7 +104,8 @@ def test_classify_unknown_falls_back_to_other():
 # ---------------------------------------------------------------------------
 
 
-def test_format_event_line_decision_executed():
+def test_format_event_line_decision_executed(monkeypatch):
+    monkeypatch.setenv("CASYS_DISPLAY_TZ", "UTC")
     ev = {
         "ts": "2026-06-10T10:01:02+00:00",
         "event": "decision_recorded",
@@ -112,7 +118,7 @@ def test_format_event_line_decision_executed():
     assert isinstance(line, EventLine)
     assert "AAPL" in line.text
     assert "BUY" in line.text
-    assert "10:01" in line.text
+    assert "2026-06-10 10:01:02 +00:00" in line.text
     assert line.markup_class == EventClass.DECISION_EXECUTED
 
 
@@ -126,6 +132,19 @@ def test_format_event_line_cycle_started():
     line = format_event_line(ev)
     assert "cycle" in line.text.lower()
     assert line.markup_class == EventClass.CYCLE
+
+
+def test_format_event_line_convertit_l_utc_en_timezone_affichage(monkeypatch):
+    monkeypatch.setenv("CASYS_DISPLAY_TZ", "Asia/Taipei")
+    ev = {
+        "ts": "2026-07-06T04:53:13+00:00",
+        "event": "cycle_started",
+        "symbols_due": ["2379.TW", "2633.TW"],
+    }
+
+    line = format_event_line(ev)
+
+    assert line.text.startswith("2026-07-06 12:53:13 +08:00")
 
 
 def test_format_event_line_risk_reject():
@@ -151,6 +170,22 @@ def test_format_event_line_watch():
     }
     line = format_event_line(ev)
     assert "NG=F" in line.text
+    assert line.markup_class == EventClass.WATCH
+
+
+def test_format_event_line_watch_expired(monkeypatch):
+    monkeypatch.setenv("CASYS_DISPLAY_TZ", "Asia/Taipei")
+    ev = {
+        "ts": "2026-07-06T04:53:13+00:00",
+        "event": "indicator_watch_expired",
+        "symbol": "2379.TW",
+        "watch_id": "2379.TW:old",
+        "on_trigger": "WAKE",
+    }
+
+    line = format_event_line(ev)
+
+    assert line.text == "2026-07-06 12:53:13 +08:00 ⚑ watch expired — 2379.TW (WAKE)"
     assert line.markup_class == EventClass.WATCH
 
 

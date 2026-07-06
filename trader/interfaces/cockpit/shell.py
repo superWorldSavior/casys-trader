@@ -164,6 +164,18 @@ def _kpi_cell(label: str, value: Text) -> Text:
 _KPI_DROP_ORDER = ("llm", "cycle", "unrealized", "cash")
 
 
+def _next_scheduler_wake(state: dict, *, now: datetime) -> datetime | None:
+    wakes: list[datetime] = []
+    for raw in (state.get("default_next_wake"), *f.safe_dict(state.get("symbol_wakes")).values()):
+        parsed = f.parse_ts(raw)
+        if parsed is not None:
+            wakes.append(parsed)
+    if not wakes:
+        return None
+    future = [wake for wake in wakes if wake > now]
+    return min(future) if future else max(wakes)
+
+
 def build_kpi_band(state: dict, *, now: datetime, width: int | None = None) -> Table:
     """Bande KPI : EQUITY · CASH · UNREALIZED · CYCLE · NEXT WAKE · LLM.
 
@@ -196,7 +208,7 @@ def build_kpi_band(state: dict, *, now: datetime, width: int | None = None) -> T
         cycle_value.append("idle", style=CASYS_FAINT)
 
     wake_value = Text(
-        f.countdown(state.get("default_next_wake"), now=now, prefix="in "),
+        f.countdown(_next_scheduler_wake(state, now=now), now=now, prefix="in "),
         style=CASYS_ACCENT,
     )
 

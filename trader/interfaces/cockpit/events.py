@@ -9,10 +9,13 @@ N'écrit RIEN.
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
+from datetime import datetime
 from enum import Enum, auto
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 
 class EventClass(Enum):
@@ -56,7 +59,14 @@ def classify_event(event: dict[str, Any]) -> EventClass:
 
     if event_type in ("cycle_started", "cycle_completed"):
         return EventClass.CYCLE
-    if event_type in ("indicator_watch_triggered", "armed_plan_cancelled"):
+    if event_type in (
+        "indicator_watch_triggered",
+        "indicator_watch_expired",
+        "indicator_watch_created",
+        "armed_plan_created",
+        "armed_plan_expired",
+        "armed_plan_cancelled",
+    ):
         return EventClass.WATCH
     if event_type == "learning_consolidated":
         return EventClass.LEARNING
@@ -76,14 +86,40 @@ def classify_event(event: dict[str, Any]) -> EventClass:
     return EventClass.OTHER
 
 
+def _display_tz() -> ZoneInfo | None:
+    name = os.getenv("CASYS_DISPLAY_TZ") or os.getenv("TZ")
+    if not name:
+        return None
+    try:
+        return ZoneInfo(name)
+    except ZoneInfoNotFoundError:
+        return None
+
+
+def _fmt_offset(dt: datetime) -> str:
+    offset = dt.utcoffset()
+    if offset is None:
+        return ""
+    total_minutes = int(offset.total_seconds() // 60)
+    sign = "+" if total_minutes >= 0 else "-"
+    total_minutes = abs(total_minutes)
+    hours, minutes = divmod(total_minutes, 60)
+    return f"{sign}{hours:02d}:{minutes:02d}"
+
+
 def _fmt_ts(ts: str) -> str:
-    """Extrait HH:MM:SS depuis un timestamp ISO, retourne '?' en cas d'erreur."""
+    """Timestamp ISO → date/heure locale d'affichage avec offset explicite."""
     if not ts:
         return "?"
     try:
-        return ts[11:19]  # HH:MM:SS
+        candidate = f"{ts[:-1]}+00:00" if ts.endswith("Z") else ts
+        parsed = datetime.fromisoformat(candidate)
+        local = parsed.astimezone(_display_tz()) if parsed.tzinfo is not None else parsed
+        offset = _fmt_offset(local)
+        suffix = f" {offset}" if offset else ""
+        return f"{local:%Y-%m-%d %H:%M:%S}{suffix}"
     except Exception:
-        return ts[:8]
+        return ts[:19]
 
 
 def format_event_line(event: dict[str, Any]) -> EventLine:
@@ -135,6 +171,24 @@ def _format_event_line_inner(event: dict[str, Any]) -> EventLine:
         symbol = str(event.get("symbol", "?"))
         trigger = str(event.get("on_trigger", ""))
         text = f"{ts} ⚑ watch fired — {symbol} ({trigger})"
+
+    elif event_type == "indicator_watch_expired":
+        symbol = str(event.get("symbol", "?"))
+        trigger = str(event.get("on_trigger", ""))
+        text = f"{ts} ⚑ watch expired — {symbol} ({trigger})"
+
+    elif event_type == "indicator_watch_created":
+        symbol = str(event.get("symbol", "?"))
+        trigger = str(event.get("on_trigger", ""))
+        text = f"{ts} ⚑ watch armed — {symbol} ({trigger})"
+
+    elif event_type == "armed_plan_created":
+        symbol = str(event.get("symbol", "?"))
+        text = f"{ts} ⚑ armed order armed — {symbol}"
+
+    elif event_type == "armed_plan_expired":
+        symbol = str(event.get("symbol", "?"))
+        text = f"{ts} ⚑ armed order expired — {symbol}"
 
     elif event_type == "armed_plan_cancelled":
         symbol = str(event.get("symbol", "?"))

@@ -412,6 +412,11 @@ def _select_due_symbols(
     )
 
 
+def _has_open_trade_plans(*, state_dir: Path, backend: str) -> bool:
+    plan_store = make_trade_plan_store(state_dir=state_dir, backend=backend)
+    return bool(plan_store.open_plans())
+
+
 def _invalid_intent_reason(decision: codex_client.Decision) -> str | None:
     return order_admission.invalid_intent_reason(
         action=decision.action,
@@ -2521,6 +2526,11 @@ def main(
                 )
                 due_symbols = _select_due_symbols(symbols, sched=sched, once=args.once, bootstrap=bootstrap, now=loop_now)
                 bootstrap = False
+                state_backend = os.getenv("CASYS_STATE_BACKEND", "json")
+                protection_cycle_due = bool(
+                    not due_symbols
+                    and _has_open_trade_plans(state_dir=STATE_DIR, backend=state_backend)
+                )
                 cycle_context = cycle_dispatch.RunCycleRuntimeContext(
                     dry_run=dry_run,
                     sched=sched,
@@ -2548,7 +2558,7 @@ def main(
                     queue_execute_enabled=_queue_execute_enabled,
                     execute_ledger=_execute_ledger,
                 )
-                if not due_symbols:
+                if not due_symbols and not protection_cycle_due:
                     wait = sched.seconds_until_wake(symbols)
                     sleep_seconds = args.poll if wait <= 0 else min(wait, args.poll)
                     model_cap = None if _queue_decide_enabled else args.max_model_calls_per_cycle
@@ -2565,11 +2575,12 @@ def main(
                     )
                     log.debug("aucun symbole dû — pause %.0fs", sleep_seconds)
                 else:
+                    symbols_filter = due_symbols if due_symbols else []
                     report = cycle_dispatch.dispatch_run_cycle(
                         run_cycle_fn=run_cycle,
                         context=cycle_context,
                         now=loop_now,
-                        symbols_filter=due_symbols,
+                        symbols_filter=symbols_filter,
                     )
                     log.debug("cycle: %s", json.dumps(report, ensure_ascii=False))
                     cycle_reporting.persist_cycle_report(report, writer=_runtime_state_writer())

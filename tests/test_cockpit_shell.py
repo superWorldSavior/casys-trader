@@ -250,6 +250,21 @@ def test_kpi_band_contents():
     assert "in 14m" in rendered
 
 
+def test_kpi_band_next_wake_uses_next_future_symbol_wake_when_global_expired():
+    state = _state_sample()
+    state["default_next_wake"] = "2026-07-06T01:00:00+00:00"
+    state["symbol_wakes"] = {
+        "OLD.TW": "2026-07-06T01:30:00+00:00",
+        "NEXT.TW": "2026-07-06T02:31:28+00:00",
+        "LATER.TW": "2026-07-06T03:01:28+00:00",
+    }
+
+    rendered = _render(build_kpi_band(state, now=NOW), width=160)
+
+    assert "in 30m" in rendered
+    assert "expired" not in rendered
+
+
 def test_footer_contextual_groups():
     home = _render(build_footer("home"), width=200)
     assert "1-8" in home and "scroll journal" in home and "kill-switch" in home and "help" in home

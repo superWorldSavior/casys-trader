@@ -1406,7 +1406,7 @@ def test_budget_un_fait_un_seul_batch_et_request_context_devient_hold(monkeypatc
     assert decisions["QQQ"].action == "HOLD"
 
 
-def test_veille_armee_sans_next_wake_dort_jusqu_a_expiration(tmp_path) -> None:
+def test_veille_armee_sans_next_wake_dort_jusqu_a_expiration(monkeypatch, tmp_path) -> None:
     """Finding 2026-07-02 (confirmé Codex) : une veille armée sans next_wake ne
     doit PLUS effacer le timer (→ défaut 30 min → re-décision aveugle), mais
     poser le réveil à l'expiration de la veille."""
@@ -1414,6 +1414,8 @@ def test_veille_armee_sans_next_wake_dort_jusqu_a_expiration(tmp_path) -> None:
 
     sched = Scheduler(tmp_path / "scheduler.json")
     now = datetime(2026, 7, 2, 10, 0, tzinfo=timezone.utc)
+    events: list[tuple[str, dict]] = []
+    monkeypatch.setattr(daemon, "_append_event", lambda event, **payload: events.append((event, payload)))
     watch = {
         "id": "AIR.PA:w1",
         "symbol": "AIR.PA",
@@ -1432,6 +1434,17 @@ def test_veille_armee_sans_next_wake_dort_jusqu_a_expiration(tmp_path) -> None:
         entry={"indicator_watch_created": False},
     )
 
+    assert events == [
+        (
+            "armed_plan_created",
+            {
+                "symbol": "AIR.PA",
+                "watch_id": "AIR.PA:w1",
+                "on_trigger": "EXECUTE_ORDER",
+                "expires_at": "2026-07-02T13:00:00+00:00",
+            },
+        )
+    ]
     # Le symbole dort jusqu'à l'expiration de la veille, PAS le défaut global.
     assert sched.next_wake("AIR.PA") == datetime(2026, 7, 2, 13, 0, tzinfo=timezone.utc)
     # Donc il n'est PAS dû avant (exclu du batch périodique de re-décision).
