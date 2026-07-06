@@ -326,7 +326,7 @@ def test_armed_plan_cancelled_formate_dedie() -> None:
 
     line = format_event_line(event)
 
-    assert "plan armé annulé" in line.text
+    assert "armed order cancelled" in line.text
     assert "SPY" in line.text
     assert "stop_incoherent" in line.text
     assert classify_event(event) == EventClass.WATCH  # même famille que les triggers

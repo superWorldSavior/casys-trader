@@ -224,6 +224,14 @@ class CockpitApp(App):
         # La page qui devient visible repart du dernier état connu.
         if self._last_state is not None:
             self._update_page(page_key, self._last_state)
+        # Focus dans la page : ses BINDINGS (p/b/u, w/r, o…) s'activent via la
+        # chaîne de focus ; les tables gardent leurs flèches/enter.
+        try:
+            page = self.query_one(f"#{PAGE_BY_KEY[page_key].widget_id}")
+            focusables = [w for w in page.query("*") if w.can_focus]
+            (focusables[0] if focusables else page).focus()
+        except Exception:
+            pass
 
     def action_show_page(self, page_key: str) -> None:
         self._set_active_page(page_key)

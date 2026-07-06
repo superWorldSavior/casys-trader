@@ -12,24 +12,31 @@ from trader.interfaces.cockpit.app import CockpitApp
 OUT = Path(sys.argv[1] if len(sys.argv) > 1 else "state/screenshots")
 OUT.mkdir(parents=True, exist_ok=True)
 
+_PAGES = [
+    ("2", "portfolio"),
+    ("3", "decisions"),
+    ("4", "plans"),
+    ("5", "health"),
+    ("6", "logs"),
+    ("7", "universe"),
+    ("8", "settings"),
+]
+
 
 async def main() -> None:
     app = CockpitApp()
     async with app.run_test(size=(200, 52)) as pilot:
         await pilot.pause()
         await asyncio.sleep(3.0)
-        await pilot.press("escape")
-        await asyncio.sleep(1.0)
         app.save_screenshot(filename="home.svg", path=str(OUT))
-        for key, name in [("2", "portfolio"), ("3", "decisions"), ("4", "plans"),
-                          ("5", "observability"), ("6", "logs")]:
+        for key, name in _PAGES:
             await pilot.press(key)
             await asyncio.sleep(0.8)
             app.save_screenshot(filename=f"{name}.svg", path=str(OUT))
         await pilot.press("1")
-        await pilot.press("d")
-        await asyncio.sleep(2.0)
-        app.save_screenshot(filename="home-alt-theme.svg", path=str(OUT))
+        await pilot.press("question_mark")
+        await asyncio.sleep(0.5)
+        app.save_screenshot(filename="help.svg", path=str(OUT))
 
 
 if __name__ == "__main__":
