@@ -402,7 +402,7 @@ class PortfolioPage(ResizeRefresh, Static):
         ("VALUE $", 8),
         ("P&L $", 7),
         ("P&L %", 7),
-        ("STOP", 6),
+        ("STOP LEFT", 9),
         ("DATA", 10),
     )
     _active_drops: frozenset[str] | None = None
@@ -477,7 +477,7 @@ class PortfolioPage(ResizeRefresh, Static):
                 "VALUE $": Text(f"${notional:,.0f}" if notional else "—", style=CASYS_FG),
                 "P&L $": Text(f.fmt_signed(pnl), style=pnl_style),
                 "P&L %": Text(f"{pnl_pct_val:+.1f}%", style=pnl_style),
-                "STOP": Text(stop_str, style=CASYS_DIM),
+                "STOP LEFT": Text(stop_str, style=CASYS_DIM),
                 "DATA": _data_cell(state, symbol),
             }
             table.add_row(
