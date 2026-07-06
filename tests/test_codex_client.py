@@ -136,6 +136,44 @@ def test_prompt_precise_cash_available_net_des_shorts() -> None:
     assert "produit des shorts" in prompt.lower()
 
 
+def test_prompt_ne_transforme_pas_cash_ou_gross_en_strategie() -> None:
+    prompt = build_batch_prompt(
+        mandate="m",
+        memory="mem",
+        shared_context={},
+        symbols_payload=[],
+    )
+    low = prompt.lower()
+
+    assert "`max_buy_qty`" in prompt
+    assert "`max_sell_qty`" in prompt
+    assert "capacité d'exécution" in low
+    assert "max_position_value" not in prompt
+    assert "max_gross_exposure" not in prompt
+    assert "gross_remaining_usd" not in prompt
+    assert "hold au lieu" not in low
+    assert "sois plus sélectif" not in low
+    assert "raisonne d'abord" not in low
+
+
+def test_prompt_distingue_devise_native_quantite_et_cash_usd() -> None:
+    prompt = build_batch_prompt(
+        mandate="m",
+        memory="mem",
+        shared_context={},
+        symbols_payload=[],
+    )
+    low = prompt.lower()
+
+    assert "prix et niveaux" in low
+    assert "devise native du titre" in low
+    assert "`quantity` est un nombre d'unités du titre" in prompt
+    assert "portefeuille global" in low
+    assert "cash" in low
+    assert "usd" in low
+    assert "ta `quantity` sont dans cette MÊME devise" not in prompt
+
+
 def test_contrat_decision_requiert_un_reason_code_structure() -> None:
     assert "decision_reason_code" in codex_client._DECISION_KEYS
 
