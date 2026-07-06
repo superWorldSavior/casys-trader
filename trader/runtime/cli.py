@@ -18,6 +18,7 @@ from trader.reporting.audit import decision_quality as decision_audit
 from trader.reporting.bench import decision_bench
 from trader.reporting import attribution
 from trader.reporting.ledger import decision_ledger
+from trader.reporting.read_models import decision_flags
 
 _DAEMON_FLAGS = {
     "--live",
@@ -204,6 +205,31 @@ def _cmd_decisions_list(args: argparse.Namespace) -> int:
                 f"{row.get('action')} intent={row.get('intent')} "
                 f"reason={row.get('reason')} price={row.get('price')}"
             )
+    return 0
+
+
+def _cmd_decisions_flags(args: argparse.Namespace) -> int:
+    store = decision_ledger.DecisionLedgerStore(daemon.STATE_DIR / decision_ledger.DEFAULT_LEDGER_FILENAME)
+    rows = store.read_all(symbol=args.symbol)
+    flags = decision_flags.collect_flags(
+        rows,
+        symbol=args.symbol,
+        code=args.code,
+        limit=args.limit,
+    )
+    if args.json:
+        _print_json(flags)
+        return 0
+
+    for flag in flags:
+        context = flag.get("context")
+        context_text = f" context={context}" if context is not None else ""
+        print(
+            f"{flag.get('cycle_ts')} {flag.get('symbol')} {flag.get('tool')} "
+            f"outcome={flag.get('outcome')} code={flag.get('code')} "
+            f"field={flag.get('field')} executed={flag.get('executed')} "
+            f"reason={flag.get('reason')}{context_text}"
+        )
     return 0
 
 
@@ -688,6 +714,13 @@ def build_parser() -> argparse.ArgumentParser:
     decisions_list.add_argument("--limit", type=int)
     decisions_list.add_argument("--json", action="store_true")
     decisions_list.set_defaults(func=_cmd_decisions_list)
+
+    decisions_flags = decisions_sub.add_parser("flags", help="liste les flags décisionnels persistés")
+    decisions_flags.add_argument("--symbol")
+    decisions_flags.add_argument("--code")
+    decisions_flags.add_argument("--limit", type=int)
+    decisions_flags.add_argument("--json", action="store_true")
+    decisions_flags.set_defaults(func=_cmd_decisions_flags)
 
     decisions_seed = decisions_sub.add_parser("seed-existing", help="récupère les décisions des rapports existants")
     decisions_seed.add_argument("--json", action="store_true")

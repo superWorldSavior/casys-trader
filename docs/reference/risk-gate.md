@@ -60,12 +60,14 @@ required = min_trade_confidence
 
 Autrement dit : plus tu risques, plus tu dois être confiant.
 
-## Sizing (helpers, ne rejettent pas — bornent)
+## Sizing (helpers, ne rejettent pas — informent)
 
 - `max_order_quantity_at_price(price, fx_rate)` — quantité max telle que
   `order_value ≤ max_order_value` (FX-aware, boucle de sûreté anti-arrondi).
-- `max_quantity_at_risk(…)` — quantité max telle que la perte au `hard_stop`
-  ≤ `max_risk_per_trade_pct × equity`.
+- `max_quantity_at_risk(…)` — quantité de référence telle que la perte au
+  `hard_stop` ≤ `max_risk_per_trade_pct × equity`. Un dépassement est tracé en
+  `risk_warnings`, sans bloquer l'ordre ; les fusibles notionnels restent dans
+  `RiskGate.check()`.
 
 ## Config — `config/risk.yaml`
 

@@ -24,6 +24,20 @@ def test_sim_broker_cloture_un_long_sans_garder_position_zero(tmp_path) -> None:
     assert broker.positions() == {}
 
 
+def test_sim_broker_elimine_la_poussiere_flottante_sur_cloture_fractionnee(tmp_path) -> None:
+    broker = SimBroker(tmp_path / "broker.json", starting_cash=100_000)
+
+    broker.submit(Order("2330.TW", "BUY", 20.0), 2425.0, "t1", dry_run=False, fx_rate=0.031)
+    broker.submit(Order("2330.TW", "SELL", 10.0), 2455.0, "t2", dry_run=False, fx_rate=0.031)
+    broker.submit(Order("2330.TW", "SELL", 6.66666667), 2450.0, "t3", dry_run=False, fx_rate=0.031)
+    broker.submit(Order("2330.TW", "SELL", 3.33333333), 2480.0, "t4", dry_run=False, fx_rate=0.031)
+
+    assert broker.positions() == {}
+    persisted = json.loads((tmp_path / "broker.json").read_text())
+    assert persisted["positions"]["2330.TW"]["quantity"] == 0.0
+    assert persisted["positions"]["2330.TW"]["avg_price"] == 0.0
+
+
 def test_sim_broker_deduit_la_commission_ibkr_us_etf(tmp_path) -> None:
     broker = SimBroker(
         tmp_path / "broker.json",

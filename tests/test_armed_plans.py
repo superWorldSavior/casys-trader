@@ -314,10 +314,10 @@ def test_plan_arme_incoherent_avec_le_stop_reveille_le_planificateur(
     assert "stop_incoherent" in events
 
 
-def test_plan_arme_trop_risque_est_refuse_sans_clamp(
+def test_plan_arme_trop_risque_trace_warning_puis_fusible_notionnel(
     monkeypatch, tmp_path, patch_batch, make_data_source
 ) -> None:
-    # qty énorme : le runtime refuse, mais ne modifie pas la taille choisie.
+    # qty énorme : le budget risque est seulement tracé ; le plafond notionnel refuse.
     trigger = _armed_trigger(stop_price=95.0)
     trigger["order"]["qty"] = 5_000.0  # 5000 × 5 de stop_distance = 25000 >> 1% equity
     report, llm_calls = _run(monkeypatch, tmp_path, patch_batch, make_data_source, trigger)
@@ -325,9 +325,10 @@ def test_plan_arme_trop_risque_est_refuse_sans_clamp(
     assert llm_calls == []
     entry = report["decisions"][0]
     assert entry["executed"] is False
-    assert entry["reason"] == "risk:risk_per_trade_exceeded"
+    assert entry["reason"] == "risk:order_value_exceeded"
     assert entry["qty"] == 5_000.0
     assert entry.get("risk_clamped") is False
+    assert entry["risk_warnings"][0]["code"] == "risk_per_trade_exceeded"
     assert "requested_qty" not in entry
 
 

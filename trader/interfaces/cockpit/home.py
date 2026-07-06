@@ -679,6 +679,7 @@ class HomePane(Static):
     #home-decisions { width: 2fr; height: 100%; border: solid $primary; }
     #home-plans { width: 2fr; height: 100%; border: solid $primary; }
     #home-flux { width: 3fr; height: 100%; }
+    #home-agent-trace { width: 3fr; height: 100%; }
     """
 
     _current_palette: Palette = PALETTE_LIGHT
@@ -686,7 +687,7 @@ class HomePane(Static):
     def compose(self) -> ComposeResult:
         # Import tardif OBLIGATOIRE : app.py importe home.py en tête de module,
         # un import module-level de app ici créerait un cycle.
-        from trader.interfaces.cockpit.app import FluxPane
+        from trader.interfaces.cockpit.app import FluxPane, HomeAgentTracePane
 
         with Horizontal(id="home-top-row"):
             with Vertical(id="home-portfolio"):
@@ -697,6 +698,7 @@ class HomePane(Static):
         with Horizontal(id="home-bottom-row"):
             yield PlansTable(id="home-plans")
             yield FluxPane(id="home-flux")
+            yield HomeAgentTracePane(id="home-agent-trace")
 
     def update_state(
         self, state: dict, kill_active: bool

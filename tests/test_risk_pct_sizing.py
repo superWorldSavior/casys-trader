@@ -158,7 +158,13 @@ def test_qty_from_risk_pct_nan_inputs_return_zero() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _write_runtime_config(root, *, max_risk_per_trade_pct: float = 0.01) -> None:
+def _write_runtime_config(
+    root,
+    *,
+    max_risk_per_trade_pct: float = 0.01,
+    max_position_value: float = 20_000,
+    max_order_value: float = 10_000,
+) -> None:
     (root / "config").mkdir(exist_ok=True)
     (root / "mandate").mkdir(exist_ok=True)
     (root / "config" / "universe.yaml").write_text(
@@ -166,9 +172,9 @@ def _write_runtime_config(root, *, max_risk_per_trade_pct: float = 0.01) -> None
     )
     (root / "config" / "risk.yaml").write_text(
         "\n".join([
-            "max_position_value: 20000",
+            f"max_position_value: {max_position_value}",
             "max_gross_exposure: 100000",
-            "max_order_value: 10000",
+            f"max_order_value: {max_order_value}",
             f"max_risk_per_trade_pct: {max_risk_per_trade_pct}",
             "min_equity: 50000",
         ])
@@ -295,14 +301,19 @@ def test_daemon_risk_pct_derives_qty_and_executes(monkeypatch, tmp_path, make_da
     assert spy_dec.get("risk_qty_derived") is True
 
 
-def test_daemon_risk_pct_exceeds_max_risk_rejected(monkeypatch, tmp_path, make_data_source) -> None:
-    """risk_pct > max_risk_per_trade_pct → qty dérivée dépasse le fusible → rejeté.
+def test_daemon_risk_pct_exceeds_max_risk_traced_without_blocking(monkeypatch, tmp_path, make_data_source) -> None:
+    """risk_pct > max_risk_per_trade_pct → qty dérivée + warning, pas rejet risk.
 
     risk_pct=0.02 (2%), max_risk_per_trade_pct=0.01 (1%).
     qty dérivée = 0.02 * 100k / 5 = 400 > max_risk_qty = 0.01 * 100k / 5 = 200.
-    → rejeté risk_per_trade_exceeded.
+    → warning risk_per_trade_exceeded, les autres fusibles restent responsables.
     """
-    _write_runtime_config(tmp_path, max_risk_per_trade_pct=0.01)
+    _write_runtime_config(
+        tmp_path,
+        max_risk_per_trade_pct=0.01,
+        max_position_value=100_000,
+        max_order_value=100_000,
+    )
     state_dir = tmp_path / "state"
     now = datetime(2026, 6, 5, 14, 30, tzinfo=timezone.utc)
 
@@ -335,6 +346,8 @@ def test_daemon_risk_pct_exceeds_max_risk_rejected(monkeypatch, tmp_path, make_d
     decisions = report["decisions"]
     spy_dec = next((d for d in decisions if d["symbol"] == "SPY"), None)
     assert spy_dec is not None
+    # Avec dry_run=True, executed=False même si tous les gates passent.
     assert spy_dec.get("executed") is False
-    reason = spy_dec.get("reason") or ""
-    assert "risk" in reason, f"raison inattendue : {reason}"
+    assert spy_dec.get("reason") == "ok"
+    assert spy_dec.get("qty") == pytest.approx(400.0)
+    assert spy_dec["risk_warnings"][0]["code"] == "risk_per_trade_exceeded"

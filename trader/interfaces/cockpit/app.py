@@ -21,6 +21,7 @@ rien n'est lancé sans confirmation explicite — « Plus tard » / Échap n'agi
 Écriture autorisée (UNIQUEMENT ces fichiers) :
     state/daemon.pid          — PID du daemon au lancement
     state/daemon_console.log  — stdout/stderr du daemon (append)
+    state/agent_trace.log     — trace séparée des appels/outcomes agent
     KILL                      — fichier kill-switch (toggle)
 
 Usage :
@@ -174,10 +175,11 @@ _build_overview_panel = _cockpit_overview._build_overview_panel
 # ---------------------------------------------------------------------------
 # Chemins
 # ---------------------------------------------------------------------------
-_ROOT = Path(__file__).resolve().parents[2]
+_ROOT = Path(__file__).resolve().parents[3]
 _STATE_DIR = _ROOT / "state"
 _CONFIG_DIR = str(_ROOT)
 _EVENTS_FILE = _STATE_DIR / "events.jsonl"
+_AGENT_TRACE_FILE = _STATE_DIR / "agent_trace.log"
 _KILL_FILE = _ROOT / "KILL"
 
 # Buffer maximum pour le panneau events
@@ -641,6 +643,130 @@ class FluxPane(LogsPane):
     pane_title = "[bold]Flux live[/bold]  [dim]f:scroll  F:classes  /:regex[/dim]"
 
 
+def _read_new_text_lines(path: Path, offset: int) -> tuple[list[str], int]:
+    try:
+        if not path.exists():
+            return [], 0
+        size = path.stat().st_size
+        if size == 0:
+            return [], 0
+        is_init = (offset == 0) or (size < offset)
+        read_offset = 0 if is_init else offset
+        with path.open("rb") as fh:
+            fh.seek(read_offset)
+            raw = fh.read(1 * 1024 * 1024)
+        last_newline = raw.rfind(b"\n")
+        if last_newline == -1:
+            return [], read_offset
+        complete_raw = raw[: last_newline + 1]
+        new_offset = read_offset + len(complete_raw)
+        lines = [
+            raw_line.decode("utf-8", errors="replace").strip()
+            for raw_line in complete_raw.split(b"\n")
+            if raw_line.strip()
+        ]
+        if is_init and len(lines) > _MAX_EVENT_LINES:
+            lines = lines[-_MAX_EVENT_LINES:]
+        return lines, new_offset
+    except Exception:
+        return [], 0
+
+
+class AgentTracePane(Static):
+    """Trace live des appels/outcomes agent, séparée des events daemon."""
+
+    log_widget_id: str = "agent-trace-log"
+    pane_title: str = "[bold]Agent[/bold]  [dim]tools/outcomes[/dim]"
+
+    _offset: int = 0
+    _auto_scroll: bool = True
+    _last_file_status: str = "ok"
+    _current_palette: Palette = PALETTE_LIGHT
+    _backlog_loaded: bool = False
+
+    DEFAULT_CSS = """
+    AgentTracePane,
+    HomeAgentTracePane {
+        height: 100%;
+        border: solid $primary;
+    }
+    AgentTracePane RichLog,
+    HomeAgentTracePane RichLog {
+        height: 1fr;
+    }
+    """
+
+    def __init__(self, **kwargs: object) -> None:
+        super().__init__(**kwargs)
+        self._buffer: deque[str] = deque(maxlen=_MAX_EVENT_LINES)
+
+    def compose(self) -> ComposeResult:
+        yield Static(self.pane_title, id=f"{self.log_widget_id}-title")
+        yield RichLog(
+            id=self.log_widget_id,
+            highlight=False,
+            markup=False,
+            max_lines=_MAX_EVENT_LINES,
+        )
+
+    def on_mount(self) -> None:
+        self.call_after_refresh(self._load_initial_backlog)
+
+    def _load_initial_backlog(self) -> None:
+        if self._backlog_loaded:
+            return
+        self._backlog_loaded = True
+        try:
+            trace_path: Path = self.app._agent_trace_file  # type: ignore[attr-defined]
+        except AttributeError:
+            import trader.interfaces.cockpit as _mod
+
+            trace_path = _mod._AGENT_TRACE_FILE
+        self.poll_trace(trace_path)
+
+    def _write_line(self, log: RichLog, line: str) -> None:
+        style = self._current_palette["status_accent"] if line.startswith("[agent]") else self._current_palette["dim"]
+        log.write(Text(line, style=style))
+
+    def poll_trace(self, trace_path: Path) -> None:
+        log: RichLog = self.query_one(f"#{self.log_widget_id}", RichLog)
+
+        if not trace_path.exists():
+            if self._last_file_status != "absent":
+                self._last_file_status = "absent"
+                log.write(Text(f"[agent] {trace_path.name} absent — en attente…", style="dim"))
+            return
+
+        if self._last_file_status == "absent":
+            self._last_file_status = "ok"
+            log.write(Text(f"[agent] {trace_path.name} disponible", style="dim"))
+
+        lines, new_offset = _read_new_text_lines(trace_path, self._offset)
+        self._offset = new_offset
+        if not lines:
+            return
+
+        for line in lines:
+            self._buffer.append(line)
+            self._write_line(log, line)
+
+        if self._auto_scroll:
+            log.scroll_end(animate=False)
+
+    def toggle_scroll(self) -> None:
+        self._auto_scroll = not self._auto_scroll
+        log: RichLog = self.query_one(f"#{self.log_widget_id}", RichLog)
+        status = "repris" if self._auto_scroll else "pausé"
+        log.write(Text(f"[scroll {status}]", style="dim italic"))
+
+
+class HomeAgentTracePane(AgentTracePane):
+    """Trace agent compacte de la home, ids distincts de la page Logs."""
+
+    log_widget_id = "home-agent-trace-log"
+    pane_title = "[bold]Agent[/bold]  [dim]outils[/dim]"
+
+
 # Alias de rétrocompatibilité — anciens tests qui importent EventsPane
 EventsPane = LogsPane
 
@@ -899,18 +1025,26 @@ class CockpitApp(App):
     }
     #decisions-page,
     #plans-page,
-    #observability-page,
-    #logs-page {
+    #observability-page {
         width: 100%;
         height: 100%;
         layout: vertical;
     }
+    #logs-page {
+        width: 100%;
+        height: 100%;
+        layout: horizontal;
+    }
     #decisions-page DecisionsPane,
     #plans-page ArmedPlansPane,
-    #observability-page UniversePane,
-    #logs-page LogsPane {
+    #observability-page UniversePane {
         height: 100%;
         width: 100%;
+    }
+    #logs-page LogsPane,
+    #logs-page AgentTracePane {
+        height: 100%;
+        width: 1fr;
     }
     .cockpit-page {
         width: 100%;
@@ -924,7 +1058,8 @@ class CockpitApp(App):
     .glass HomePane #home-activity,
     .glass HomePane #home-decisions,
     .glass HomePane #home-plans,
-    .glass #home-flux {
+    .glass #home-flux,
+    .glass #home-agent-trace {
         border: round #8ec07c 40%;
         background: #1d2021 35%;
     }
@@ -973,8 +1108,9 @@ class CockpitApp(App):
                     yield ArmedPlansPane(id="armed-plans-pane")
                 with Vertical(id="observability-page", classes="cockpit-page"):
                     yield UniversePane(id="universe-pane")
-                with Vertical(id="logs-page", classes="cockpit-page"):
+                with Horizontal(id="logs-page", classes="cockpit-page"):
                     yield LogsPane(id="logs-pane")
+                    yield AgentTracePane(id="agent-trace-pane")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -989,6 +1125,7 @@ class CockpitApp(App):
         # Expose le chemin events sur self pour que LogsPane._load_initial_backlog
         # puisse le résoudre même quand _EVENTS_FILE est monkeypatché en test.
         self._events_file = _EVENTS_FILE
+        self._agent_trace_file = _AGENT_TRACE_FILE
 
         # Polling état toutes les 2 s (via worker thread — I/O hors UI loop)
         self.set_interval(2.0, self._schedule_refresh_state)
@@ -1085,6 +1222,15 @@ class CockpitApp(App):
             flux_pane._current_palette = palette
         except Exception:
             pass
+        for pane_id, cls in [
+            ("#agent-trace-pane", AgentTracePane),
+            ("#home-agent-trace", HomeAgentTracePane),
+        ]:
+            try:
+                agent_pane = self.query_one(pane_id, cls)  # type: ignore[arg-type]
+                agent_pane._current_palette = palette
+            except Exception:
+                pass
 
     def _schedule_refresh_state(self) -> None:
         """Démarre le worker de refresh dans un thread dédié."""
@@ -1141,14 +1287,26 @@ class CockpitApp(App):
             pass  # tolérant — widgets restent à leur dernier état
 
     def _poll_events(self) -> None:
-        """Lit les nouvelles lignes d'events.jsonl et les ajoute au LogsPane."""
+        """Lit les nouvelles lignes events + trace agent et les ajoute aux panes."""
+        events_path = getattr(self, "_events_file", _EVENTS_FILE)
+        agent_trace_path = getattr(self, "_agent_trace_file", _AGENT_TRACE_FILE)
         try:
             logs_pane: LogsPane = self.query_one("#logs-pane", LogsPane)
-            logs_pane.poll_events(_EVENTS_FILE)
+            logs_pane.poll_events(events_path)
         except Exception:
             pass
         try:
-            self.query_one("#home-flux").poll_events(_EVENTS_FILE)
+            self.query_one("#home-flux").poll_events(events_path)
+        except Exception:
+            pass
+        try:
+            agent_pane: AgentTracePane = self.query_one("#agent-trace-pane", AgentTracePane)
+            agent_pane.poll_trace(agent_trace_path)
+        except Exception:
+            pass
+        try:
+            home_agent_pane: HomeAgentTracePane = self.query_one("#home-agent-trace", HomeAgentTracePane)
+            home_agent_pane.poll_trace(agent_trace_path)
         except Exception:
             pass
 
@@ -1161,6 +1319,14 @@ class CockpitApp(App):
 
     def action_toggle_scroll(self) -> None:
         for pane_id, cls in [("#logs-pane", LogsPane), ("#home-flux", FluxPane)]:
+            try:
+                self.query_one(pane_id, cls).toggle_scroll()
+            except Exception:
+                pass
+        for pane_id, cls in [
+            ("#agent-trace-pane", AgentTracePane),
+            ("#home-agent-trace", HomeAgentTracePane),
+        ]:
             try:
                 self.query_one(pane_id, cls).toggle_scroll()
             except Exception:

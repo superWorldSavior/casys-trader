@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Protocol, TypeAlias
 
 from trader.application.tool_outcomes import finalize_action_tool_outcomes
@@ -19,6 +21,89 @@ StatusWriter: TypeAlias = Callable[..., None]
 EventAppender: TypeAlias = Callable[..., None]
 NewsSnapshotProvider: TypeAlias = Callable[[str, datetime], ReportPayload]
 MergeGateFeedback: TypeAlias = Callable[[object, object, object], str | None]
+
+
+def _entry_price(decision_entry: DecisionEntry, report: ReportPayload, symbol: str) -> float | None:
+    raw = decision_entry.get("price")
+    if raw is None:
+        prices = report.get("prices")
+        if isinstance(prices, dict):
+            raw = prices.get(symbol)
+    if raw is None:
+        return None
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def _compact_json(value: Any) -> str:
+    try:
+        return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    except (TypeError, ValueError):
+        return repr(value)
+
+
+def _model_label(decision_entry: DecisionEntry) -> str:
+    provider = decision_entry.get("llm_provider")
+    model = decision_entry.get("llm_model")
+    if provider and model:
+        return f"{provider}:{model}"
+    if model:
+        return str(model)
+    if provider:
+        return str(provider)
+    return "-"
+
+
+def _agent_trace_source(decision_entry: DecisionEntry) -> str:
+    source = decision_entry.get("decision_source")
+    if source:
+        return str(source)
+    if decision_entry.get("armed_plan_id"):
+        return "armed_plan"
+    return "daemon"
+
+
+def _agent_trace_lines(decision_entry: DecisionEntry, cycle_ts: str) -> list[str]:
+    calls = decision_entry.get("tool_calls")
+    tool_calls = calls if isinstance(calls, list) else []
+    source = _agent_trace_source(decision_entry)
+    if not (decision_entry.get("model_called") or tool_calls or source == "armed_plan"):
+        return []
+
+    symbol = str(decision_entry.get("symbol") or "")
+    lines = [
+        (
+            f"[agent] ts={cycle_ts} symbol={symbol} source={source} model={_model_label(decision_entry)} "
+            f"action={decision_entry.get('action')} intent={decision_entry.get('intent')} "
+            f"reason={decision_entry.get('reason')} executed={decision_entry.get('executed')} "
+            f"tools={len(tool_calls)} rounds={decision_entry.get('tool_rounds', 0)}"
+        )
+    ]
+    lines.extend(
+        (
+            f"[agent-tool] ts={cycle_ts} symbol={symbol} id={call.get('id')} "
+            f"tool={call.get('tool')} outcome={call.get('outcome')} "
+            f"args={_compact_json(call.get('args', {}))} detail={_compact_json(call.get('detail', {}))}"
+        )
+        for call in tool_calls
+        if isinstance(call, dict)
+    )
+    return lines
+
+
+def _append_agent_trace(path: Path, decision_entry: DecisionEntry, cycle_ts: str) -> None:
+    lines = _agent_trace_lines(decision_entry, cycle_ts)
+    if not lines:
+        return
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as fh:
+            for line in lines:
+                fh.write(f"{line}\n")
+    except OSError as exc:
+        log.warning("agent_trace_write failed path=%s: %s", path, exc)
 
 
 class LearningAppender(Protocol):
@@ -54,12 +139,18 @@ class DecisionRecorder:
     recall_store: RecallRecorder | None = None
     merge_gate_feedback: MergeGateFeedback | None = None
     model_calls_used_getter: Callable[[], int] = lambda: 0
+    agent_trace_path: Path | None = None
 
     def record(self, decision_entry: DecisionEntry) -> None:
         symbol = str(decision_entry["symbol"])
+        price = _entry_price(decision_entry, self.report, symbol)
+        if price is not None:
+            decision_entry["price"] = price
         # Réécrit l'outcome des action tools finaux avec le résultat réel de la
         # décision (le brut naît "ok"). Ne touche pas les outils de tournée (recall).
         decision_entry["tool_calls"] = finalize_action_tool_outcomes(decision_entry)
+        if self.agent_trace_path is not None:
+            _append_agent_trace(self.agent_trace_path, decision_entry, str(self.report.get("ts") or ""))
         decision_entry.setdefault("news", self.news_snapshot(symbol, self.now))
         news = decision_entry.get("news")
         if isinstance(news, dict) and "macro_next" not in news:

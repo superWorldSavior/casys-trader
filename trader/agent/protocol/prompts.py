@@ -272,8 +272,10 @@ _SYMBOL_CALLS_FINAL_CONTRACT = (
     "fournir risk_pct (ex: 0.005 = 0.5 % de l'equity) et omettre qty : le daemon "
     "dérive qty = risk_pct × equity / (distance_stop × fx_rate). "
     "Hors OPEN_LONG/OPEN_SHORT, risk_pct est ignoré et la qty/fraction requise garde la main. "
-    "Requiert un hard_stop dans exit (OBLIGATOIRE sans quoi l'ordre est rejeté). "
-    "Le gate max_risk_per_trade_pct reste le fusible : si risk_pct > limite, l'ordre est rejeté. "
+    "Si tu fournis risk_pct sans qty, un hard_stop est nécessaire pour dériver la quantité ; "
+    "avec qty explicite, le hard_stop reste recommandé mais n'est pas requis en mode exploration. "
+    "max_risk_per_trade_pct est une borne indicative : si le risque calculé la dépasse, "
+    "le daemon signale un warning sans bloquer l'ordre. "
     "qty explicite prime toujours sur risk_pct (Explicit Over Implicit). "
     '`thesis` est OPTIONNEL : {setup:"<setup court>", horizon:"intraday|swing|position", '
     "invalidation:\"<condition d'invalidation>\"} — tag structuré persisté pour l'attribution "
@@ -342,9 +344,9 @@ def _exit_plan_contract() -> str:
         '{type:"volatility_multiple", multiple:<requis, >0>, min_pct?, max_pct?} ou '
         '{type:"structural", anchor:"swing_low|swing_high|vwap", '
         "window:<requis, >0>, buffer_pct?|buffer_atr?, min_pct?, max_pct?}.\n"
-        "min_pct/max_pct sont des bornes de validation : si ton niveau résolu sort de "
-        "ces bornes, l'ordre est rejeté. Le daemon ne déplace jamais le hard_stop "
-        "pour le faire rentrer dans une borne.\n"
+        "min_pct/max_pct sont des bornes indicatives : si ton niveau résolu sort de "
+        "ces bornes, l'écart est signalé en warning, pas rejeté. Le daemon ne déplace jamais "
+        "le hard_stop pour le faire rentrer dans une borne.\n"
         "Pour un stop structural swing_low/swing_high en fenêtre 24 ou 48, le "
         "cockpit te donne la distance du swing BRUT (sl24/sl48 sous le prix, "
         "sh24/sh48 au-dessus, fraction du prix, mêmes barres que la résolution au "
@@ -492,8 +494,9 @@ def _indicator_watch_vocabulary() -> str:
         '`take_profits[]` peut utiliser {type:"risk_multiple", r:<requis, >0>, fraction?}. '
         "Le hard_stop relatif est résolu en prix au déclenchement sur barres FRAÎCHES, puis les TP en R aussi — "
         "vrai pour percent, volatility_multiple ET structural, à égalité. "
-        "min_pct/max_pct sont des bornes de validation : si ton niveau résolu sort de "
-        "ces bornes, l'ordre est rejeté ; le daemon ne déplace jamais le hard_stop. "
+        "min_pct/max_pct sont des bornes indicatives : si ton niveau résolu sort de "
+        "ces bornes, l'écart est signalé en warning, pas rejeté ; le daemon ne déplace jamais "
+        "le hard_stop. "
         "Pour structural, window est en barres du timeframe runtime ; pour "
         "swing_low/high en fenêtre 24/48 le cockpit donne la distance du swing "
         "BRUT (sl24/sl48, sh24/sh48, fraction du prix) — centre min_pct/max_pct "

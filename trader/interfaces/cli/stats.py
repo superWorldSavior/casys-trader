@@ -9,7 +9,7 @@ from pathlib import Path
 from trader.reporting.read_models.live_kpis import compute_live_kpis
 from trader.reporting.renderers.live_kpis import render_text
 
-DEFAULT_STATE_DIR = Path(__file__).resolve().parents[2] / "state"
+DEFAULT_STATE_DIR = Path(__file__).resolve().parents[3] / "state"
 
 
 def main(argv: list[str] | None = None) -> None:

@@ -79,7 +79,14 @@ def _order_trace(row: dict) -> dict:
 
     runtime = _runtime(row)
     detail = {"reason": row.get("reason")}
-    for field in ("risk_pct", "stop_distance", "risk_clamped", "risk_unbounded_no_stop"):
+    for field in (
+        "risk_pct",
+        "stop_distance",
+        "risk_clamped",
+        "risk_unbounded_no_stop",
+        "risk_warnings",
+        "exit_plan_warnings",
+    ):
         if field in runtime:
             detail[field] = runtime.get(field)
 

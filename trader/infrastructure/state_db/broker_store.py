@@ -21,6 +21,7 @@ from trader.infrastructure.state_db.shadow import write_json_atomic
 from trader.execution.contracts import Commission, Fill, Order, Position
 from trader.execution.broker import (
     NoCommissionModel,
+    POSITION_EPSILON,
     compute_fill_effect,
 )
 
@@ -61,10 +62,11 @@ class SqliteBroker:
         return float(row["cash"])
 
     def positions(self) -> dict[str, Position]:
-        """Retourne les positions non-nulles (filtre quantity != 0)."""
+        """Retourne les positions non-nulles (filtre aussi la poussière float)."""
         rows = self._db.query_all(
             "SELECT symbol, quantity, avg_price"
-            " FROM broker_positions WHERE quantity != 0"
+            " FROM broker_positions WHERE ABS(quantity) > ?",
+            (POSITION_EPSILON,),
         )
         return {
             r["symbol"]: Position(
@@ -243,14 +245,18 @@ class SqliteBroker:
         pos_rows = self._db.query_all(
             "SELECT symbol, quantity, avg_price FROM broker_positions ORDER BY symbol"
         )
-        positions = {
-            r["symbol"]: {
+        positions = {}
+        for r in pos_rows:
+            quantity = float(r["quantity"])
+            avg_price = float(r["avg_price"])
+            if abs(quantity) <= POSITION_EPSILON:
+                quantity = 0.0
+                avg_price = 0.0
+            positions[r["symbol"]] = {
                 "symbol": r["symbol"],
-                "quantity": r["quantity"],
-                "avg_price": r["avg_price"],
+                "quantity": quantity,
+                "avg_price": avg_price,
             }
-            for r in pos_rows
-        }
 
         fill_rows = self._db.query_all(
             "SELECT symbol, side, quantity, price, ts,"

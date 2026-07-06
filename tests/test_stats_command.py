@@ -1,6 +1,13 @@
 import json
+from pathlib import Path
 
 from trader.commands import stats
+
+
+def test_stats_command_utilise_le_state_du_repo() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+
+    assert stats.DEFAULT_STATE_DIR == repo_root / "state"
 
 
 def test_stats_command_prints_json_from_live_kpis(monkeypatch, capsys) -> None:

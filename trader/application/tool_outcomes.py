@@ -40,6 +40,26 @@ def action_tool_outcome(tool: str, entry: dict) -> str | None:
     return None
 
 
+def action_tool_detail(tool: str, entry: dict, call: dict) -> dict | None:
+    """Return final persisted detail for one action-tool call."""
+    if tool == "propose_order":
+        warnings = []
+        for field in ("risk_warnings", "exit_plan_warnings"):
+            value = entry.get(field)
+            if isinstance(value, list):
+                warnings.extend(value)
+        if not warnings:
+            return None
+        detail = dict(call.get("detail") or {}) if isinstance(call.get("detail"), dict) else {}
+        detail["warnings"] = warnings
+        return detail
+    if tool == "amend_exit" and entry.get("amend_exit_warnings"):
+        detail = dict(call.get("detail") or {}) if isinstance(call.get("detail"), dict) else {}
+        detail["warnings"] = entry["amend_exit_warnings"]
+        return detail
+    return None
+
+
 def finalize_action_tool_outcomes(entry: dict) -> list[dict] | None:
     """Rewrite final action-tool outcomes with actual decision results.
 
@@ -52,7 +72,12 @@ def finalize_action_tool_outcomes(entry: dict) -> list[dict] | None:
     finalized: list[dict] = []
     for call in calls:
         if isinstance(call, dict) and call.get("tool") in ACTION_TOOLS:
-            finalized.append({**call, "outcome": action_tool_outcome(call["tool"], entry)})
+            tool = call["tool"]
+            updated = {**call, "outcome": action_tool_outcome(tool, entry)}
+            detail = action_tool_detail(tool, entry, call)
+            if detail is not None:
+                updated["detail"] = detail
+            finalized.append(updated)
         else:
             finalized.append(call)
     return finalized

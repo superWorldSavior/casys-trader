@@ -75,6 +75,61 @@ def test_ne_fuit_pas_les_blobs_et_tronque_le_rationale():
     assert len(r["rationale"]) <= 201 and r["rationale"].endswith("…")
 
 
+def test_ne_pousse_pas_les_flags_acceptes_dans_le_feedback_agent():
+    warning = {
+        "code": "risk_per_trade_exceeded",
+        "field": "max_risk_per_trade_pct",
+        "risk_pct": 0.015,
+        "limit": 0.01,
+        "context": "risk_qty=300 max_qty=200 risk_pct=0.015 limit=0.01",
+    }
+    store = _FakeStore([
+        _row(
+            "AAPL",
+            "BUY",
+            runtime={
+                "risk_warnings": [warning],
+                "tool_calls": [
+                    {
+                        "tool": "propose_order",
+                        "outcome": "executed",
+                        "detail": {"warnings": [warning]},
+                    }
+                ],
+            },
+        )
+    ])
+
+    r = recent_decisions_by_symbol(store, symbols=["AAPL"])["AAPL"][0]
+
+    assert "flags" not in r
+
+
+def test_compacte_les_flags_de_refus_pour_feedback_agent():
+    store = _FakeStore([
+        _row(
+            "AAPL",
+            "BUY",
+            executed=False,
+            reason="risk:order_value_exceeded",
+            context="order_value=12000 max_order_value=10000",
+            runtime={},
+        )
+    ])
+
+    r = recent_decisions_by_symbol(store, symbols=["AAPL"])["AAPL"][0]
+
+    assert r["context"] == "order_value=12000 max_order_value=10000"
+    assert r["flags"] == [
+        {
+            "tool": "propose_order",
+            "outcome": "blocked",
+            "code": "order_value_exceeded",
+            "context": "order_value=12000 max_order_value=10000",
+        }
+    ]
+
+
 def test_limit_zero_ou_negatif_ne_retourne_rien():
     # Review P2 : rows[-0:] == tout ; un limit <= 0 doit rendre {} (rien demandé).
     store = _FakeStore([_row("AAPL", "BUY"), _row("AAPL", "SELL")])

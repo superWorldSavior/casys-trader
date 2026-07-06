@@ -330,9 +330,13 @@ Pour chaque décision (`trader/runtime/daemon.py`) :
 | Intent valide vs action | `invalid_intent` |
 | Exit_plan parsable | `invalid_exit_plan:*` |
 | `hard_stop` du bon côté | `invalid_exit_plan:hard_stop_wrong_side` |
-| Ouverture sans stop → bloqué | `risk:missing_hard_stop` |
-| Confiance ≥ seuil adaptatif | `risk:confidence_below_required` |
 | RiskGate.check() | `risk:order_value_exceeded`, `risk:gross_exposure_exceeded`, etc. |
+
+`max_risk_per_trade_pct` et les bornes relatives du `hard_stop` sont des
+repères informatifs : le daemon trace des warnings, mais ne bloque pas l'ordre
+pour les faire respecter. `require_hard_stop` et `confidence_gate_enabled`
+peuvent encore être réactivés par configuration, mais le profil exploration les
+désactive.
 
 `resolve_exit_plan()` est appliqué aux entrées directes `OPEN_LONG`/`OPEN_SHORT`
 (unification avec les armés, D11).

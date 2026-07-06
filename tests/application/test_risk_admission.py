@@ -82,7 +82,7 @@ def test_assess_risk_admission_blocks_risk_pct_without_stop() -> None:
     assert result.entry_updates == {}
 
 
-def test_assess_risk_admission_uses_projected_add_risk_basis() -> None:
+def test_assess_risk_admission_warns_projected_add_risk_budget_without_blocking() -> None:
     result = assess_risk_admission(
         RiskAdmissionRequest(
             action="BUY",
@@ -101,17 +101,28 @@ def test_assess_risk_admission_uses_projected_add_risk_basis() -> None:
         gate=_gate(),
     )
 
-    assert result.approved is False
-    assert result.reason == "risk:risk_per_trade_exceeded"
+    assert result.approved is True
+    assert result.reason is None
     assert result.entry_updates["risk_total_position_qty"] == pytest.approx(210.0)
     assert result.entry_updates["risk_entry_price"] == pytest.approx(119.0476190476)
     assert result.entry_updates["stop_distance"] == pytest.approx(19.0476190476)
     assert result.entry_updates["risk_pct"] == pytest.approx(0.04)
     assert result.entry_updates["max_risk_qty"] == pytest.approx(52.5)
-    assert result.context == (
-        "risk_qty=210.0 max_qty=52.50000000 risk_pct=0.04000000000000001 "
-        "limit=0.01"
-    )
+    assert result.context is None
+    assert result.entry_updates["risk_warnings"] == [
+        {
+            "code": "risk_per_trade_exceeded",
+            "field": "max_risk_per_trade_pct",
+            "risk_qty": 210.0,
+            "max_qty": pytest.approx(52.5),
+            "risk_pct": pytest.approx(0.04),
+            "limit": 0.01,
+            "context": (
+                "risk_qty=210.0 max_qty=52.50000000 risk_pct=0.04000000000000001 "
+                "limit=0.01"
+            ),
+        }
+    ]
 
 
 def test_assess_risk_admission_keeps_add_order_quantity_when_projected_risk_passes() -> None:

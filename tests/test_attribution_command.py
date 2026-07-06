@@ -1,6 +1,13 @@
 import json
+from pathlib import Path
 
 from trader.commands import attribution
+
+
+def test_attribution_command_utilise_le_state_du_repo() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+
+    assert attribution.DEFAULT_STATE_DIR == repo_root / "state"
 
 
 ATTRIBUTION_PAYLOAD = {

@@ -417,22 +417,50 @@ def test_resolve_exit_plan_normalise_alias_hard_stop_avant_resolution() -> None:
 
 
 @pytest.mark.parametrize(
-    ("hard_stop", "expected_error"),
+    ("hard_stop", "expected_stop", "expected_warning", "expected_field", "expected_limit"),
     [
-        ({"type": "percent", "percent": 0.01, "min_pct": 0.03}, "hard_stop_below_min_pct"),
-        ({"type": "percent", "percent": 0.10, "max_pct": 0.04}, "hard_stop_above_max_pct"),
+        (
+            {"type": "percent", "percent": 0.01, "min_pct": 0.03},
+            99.0,
+            "hard_stop_below_min_pct",
+            "min_pct",
+            3.0,
+        ),
+        (
+            {"type": "percent", "percent": 0.10, "max_pct": 0.04},
+            90.0,
+            "hard_stop_above_max_pct",
+            "max_pct",
+            4.0,
+        ),
     ],
 )
-def test_resolve_exit_plan_refuse_hard_stop_percent_hors_bornes_sans_clamp(
+def test_resolve_exit_plan_trace_hard_stop_percent_hors_bornes_sans_bloquer(
     hard_stop: dict,
-    expected_error: str,
+    expected_stop: float,
+    expected_warning: str,
+    expected_field: str,
+    expected_limit: float,
 ) -> None:
-    with pytest.raises(InvalidExitPlanError, match=expected_error):
-        resolve_exit_plan(
-            {"hard_stop": hard_stop},
-            entry_price=100.0,
-            side="LONG",
-        )
+    resolved, trace = resolve_exit_plan(
+        {"hard_stop": hard_stop},
+        entry_price=100.0,
+        side="LONG",
+    )
+
+    assert resolved is not None
+    assert resolved["hard_stop"] == {"type": "price", "price": expected_stop}
+    validate_exit_plan(resolved)
+    assert trace["hard_stop"]["warnings"] == [
+        {
+            "code": expected_warning,
+            "field": expected_field,
+            "distance": abs(100.0 - expected_stop),
+            "distance_pct": abs(100.0 - expected_stop) / 100.0,
+            "limit_distance": expected_limit,
+            "limit_pct": expected_limit / 100.0,
+        }
+    ]
 
 
 @pytest.mark.parametrize(
@@ -519,32 +547,53 @@ def test_resolve_exit_plan_hard_stop_structural_buffer_atr() -> None:
 
 
 @pytest.mark.parametrize(
-    ("hard_stop", "expected_error"),
+    ("hard_stop", "structural_low", "expected_warning", "expected_field", "expected_limit"),
     [
         (
             {"type": "structural", "anchor": "swing_low", "window": 1, "min_pct": 0.05},
+            98.0,
             "hard_stop_below_min_pct",
+            "min_pct",
+            5.0,
         ),
         (
             {"type": "structural", "anchor": "swing_low", "window": 1, "max_pct": 0.08},
+            80.0,
             "hard_stop_above_max_pct",
+            "max_pct",
+            8.0,
         ),
     ],
 )
-def test_resolve_exit_plan_refuse_hard_stop_structural_hors_bornes_sans_clamp(
+def test_resolve_exit_plan_trace_hard_stop_structural_hors_bornes_sans_bloquer(
     hard_stop: dict,
-    expected_error: str,
+    structural_low: float,
+    expected_warning: str,
+    expected_field: str,
+    expected_limit: float,
 ) -> None:
-    structural_low = 98.0 if "min_pct" in hard_stop else 80.0
     bars = [_bar("t1", 100.0, high=101.0, low=structural_low)]
 
-    with pytest.raises(InvalidExitPlanError, match=expected_error):
-        resolve_exit_plan(
-            {"hard_stop": hard_stop},
-            entry_price=100.0,
-            side="LONG",
-            bars=bars,
-        )
+    resolved, trace = resolve_exit_plan(
+        {"hard_stop": hard_stop},
+        entry_price=100.0,
+        side="LONG",
+        bars=bars,
+    )
+
+    assert resolved is not None
+    assert resolved["hard_stop"] == {"type": "price", "price": structural_low}
+    validate_exit_plan(resolved)
+    assert trace["hard_stop"]["warnings"] == [
+        {
+            "code": expected_warning,
+            "field": expected_field,
+            "distance": 100.0 - structural_low,
+            "distance_pct": (100.0 - structural_low) / 100.0,
+            "limit_distance": expected_limit,
+            "limit_pct": expected_limit / 100.0,
+        }
+    ]
 
 
 def test_resolve_exit_plan_refuse_structural_mauvais_cote() -> None:

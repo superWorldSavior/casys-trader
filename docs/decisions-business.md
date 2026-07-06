@@ -56,9 +56,10 @@ Garde « marché live » : la dernière barre 15m doit dater de moins de 40 min
 `stale_market_data` → exclusion du tradable + backoff exponentiel du réveil
 (2× par défaut, cap 120 min). Un symbole stale ne reçoit jamais d'ordre.
 
-### 2.2 Gate de confiance adaptatif au risque
+### 2.2 Confiance et budget de risque
 
-`RiskGate.check_confidence()` (`risk.py:125`) :
+`RiskGate.check_confidence()` (`risk.py`) reste disponible quand
+`confidence_gate_enabled=true` :
 
 ```
 required = min_trade_confidence + (full_risk_confidence − min_trade_confidence)
@@ -68,17 +69,17 @@ required = min_trade_confidence + (full_risk_confidence − min_trade_confidence
 Défauts : `min_trade_confidence = 0.7`, `full_risk_confidence = 0.9`,
 `max_risk_per_trade_pct = 1 %`.
 
-Risque non borné (pas de stop) → `full_risk_confidence` exigée.
-Le gate ne s'applique qu'aux ouvertures pures (`OPEN_LONG`/`OPEN_SHORT`).
-`REDUCE`/`CLOSE` restent toujours possibles (réduire le risque ne doit jamais
-être bloqué).
+En profil exploration, `confidence_gate_enabled=false` : la confiance est
+persistée pour calibration, pas utilisée pour bloquer. De même,
+`max_risk_per_trade_pct` produit un `risk_warnings` si dépassé, sans refuser
+l'ordre ; les plafonds notionnels restent les fusibles.
 
-### 2.3 Garde missing_hard_stop
+### 2.3 Hard stop manquant
 
-Toute ouverture (`OPEN_LONG`/`OPEN_SHORT`) sans `hard_stop` est **rejetée**,
-quelle que soit la confiance. Guardrail humain gravé dans `mandate/guardrails.json`
-et enforced en code `daemon.py:1944`. REVERSE : tracé mais non bloqué par ce garde
-(**backlog à corriger** — pas un choix intentionnel, cf. §8).
+En profil exploration, `require_hard_stop=false` : une ouverture avec `qty`
+explicite peut passer sans hard_stop, bornée par les plafonds notionnels. Un
+`risk_pct` sans `qty` garde besoin d'un hard_stop, car la quantité ne peut pas
+être dérivée sans distance de risque.
 
 ### 2.4 Garde wrong-side stop
 

@@ -24,6 +24,8 @@ from trader.execution.ports import Broker as Broker
 from trader.execution.ports import CommissionModel as CommissionModel
 from trader.market import fx
 
+POSITION_EPSILON = 1e-9
+
 
 class NoCommissionModel:
     def calculate(self, order: Order, price: float) -> Commission:
@@ -176,8 +178,14 @@ def compute_fill_effect(
       - retournement (old_qty * new_qty < 0)    → prix d'exécution
       - réduction sans retournement             → avg_price inchangé
     """
+    if abs(old_quantity) <= POSITION_EPSILON:
+        old_quantity = 0.0
+        old_avg_price = 0.0
+
     signed = order.quantity if order.side == "BUY" else -order.quantity
     new_qty = old_quantity + signed
+    if abs(new_qty) <= POSITION_EPSILON:
+        new_qty = 0.0
 
     if new_qty == 0:
         new_avg_price = 0.0
@@ -255,7 +263,11 @@ class SimBroker:
         return fill
 
     def positions(self) -> dict[str, Position]:
-        return {s: Position(**p) for s, p in self._state.positions.items() if p["quantity"] != 0}
+        return {
+            s: Position(**p)
+            for s, p in self._state.positions.items()
+            if abs(float(p["quantity"])) > POSITION_EPSILON
+        }
 
     def cash(self) -> float:
         return self._state.cash

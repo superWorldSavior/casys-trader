@@ -105,7 +105,8 @@ def test_exit_plan_contract_immediat_autorise_relatif_sans_rappel_llm() -> None:
     assert "sans rappel LLM" in contract
     assert 'type:"price"' in contract
     assert "pass-through" in contract
-    assert "min_pct/max_pct sont des bornes de validation" in contract
+    assert "min_pct/max_pct sont des bornes indicatives" in contract
+    assert "signalé en warning, pas rejeté" in contract
     assert "ne déplace jamais le hard_stop" in contract
 
 
@@ -122,7 +123,8 @@ def test_section_plans_armes_documente_hard_stop_relatif_et_take_profit_en_r() -
     assert "barres FRAÎCHES" in armed_contract
     assert "window est en barres du timeframe runtime" in armed_contract
     assert "niveau d'invalidation chartiste" in armed_contract
-    assert "min_pct/max_pct sont des bornes de validation" in armed_contract
+    assert "min_pct/max_pct sont des bornes indicatives" in armed_contract
+    assert "signalé en warning, pas rejeté" in armed_contract
     assert "ne déplace jamais le hard_stop" in armed_contract
     assert "swing_low" in armed_contract
     assert "swing_high" in armed_contract

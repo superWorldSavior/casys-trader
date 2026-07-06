@@ -176,6 +176,21 @@ def test_order_trace_inclut_les_champs_risque_runtime() -> None:
     }
 
 
+def test_order_trace_inclut_les_warnings_exit_plan_runtime() -> None:
+    warnings = [{"code": "hard_stop_above_max_pct", "field": "max_pct"}]
+    summary = _summary(
+        {
+            "action": "BUY",
+            "intent": "OPEN_LONG",
+            "executed": True,
+            "reason": "ok",
+            "runtime": {"exit_plan_warnings": warnings},
+        }
+    )
+
+    assert _entry(summary, "order")["detail"]["exit_plan_warnings"] == warnings
+
+
 def test_order_blocked() -> None:
     summary = _summary(
         {

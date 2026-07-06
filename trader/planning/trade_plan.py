@@ -372,21 +372,67 @@ def validate_exit_plan(
                 raise InvalidExitPlanError("profit_protection_move_stop_to_unsupported")
 
 
-def _validate_distance_pct_bounds(
+def _distance_pct_warning(
+    *,
+    code: str,
+    field: str,
+    distance: float,
+    entry_price: float,
+    limit_pct: float,
+    limit_distance: float,
+) -> dict:
+    return {
+        "code": code,
+        "field": field,
+        "distance": distance,
+        "distance_pct": distance / entry_price,
+        "limit_distance": limit_distance,
+        "limit_pct": limit_pct,
+    }
+
+
+def _distance_pct_bound_warnings(
     *,
     distance: float,
     entry_price: float,
     raw: dict,
-) -> None:
+) -> list[dict]:
+    warnings: list[dict] = []
     tolerance = max(abs(distance), abs(entry_price), 1.0) * 1e-12
     if raw.get("min_pct") is not None:
-        min_distance = _bounded_fraction(raw["min_pct"], "hard_stop_min_pct") * entry_price
+        min_pct = _bounded_fraction(raw["min_pct"], "hard_stop_min_pct")
+        min_distance = min_pct * entry_price
         if distance + tolerance < min_distance:
-            raise InvalidExitPlanError("hard_stop_below_min_pct")
+            warnings.append(
+                _distance_pct_warning(
+                    code="hard_stop_below_min_pct",
+                    field="min_pct",
+                    distance=distance,
+                    entry_price=entry_price,
+                    limit_pct=min_pct,
+                    limit_distance=min_distance,
+                )
+            )
     if raw.get("max_pct") is not None:
-        max_distance = _bounded_fraction(raw["max_pct"], "hard_stop_max_pct") * entry_price
+        max_pct = _bounded_fraction(raw["max_pct"], "hard_stop_max_pct")
+        max_distance = max_pct * entry_price
         if distance - tolerance > max_distance:
-            raise InvalidExitPlanError("hard_stop_above_max_pct")
+            warnings.append(
+                _distance_pct_warning(
+                    code="hard_stop_above_max_pct",
+                    field="max_pct",
+                    distance=distance,
+                    entry_price=entry_price,
+                    limit_pct=max_pct,
+                    limit_distance=max_distance,
+                )
+            )
+    return warnings
+
+
+def _attach_trace_warnings(trace: dict, warnings: list[dict]) -> None:
+    if warnings:
+        trace["warnings"] = warnings
 
 
 def _copy_trace_fields(trace: dict, raw: dict, fields: tuple[str, ...]) -> None:
@@ -436,7 +482,7 @@ def resolve_exit_plan(
             elif hard_stop_type == "percent":
                 percent = _bounded_fraction(hard_stop.get("percent"), "hard_stop_percent")
                 distance = entry_price_value * percent
-                _validate_distance_pct_bounds(
+                warnings = _distance_pct_bound_warnings(
                     distance=distance,
                     entry_price=entry_price_value,
                     raw=hard_stop,
@@ -458,13 +504,14 @@ def resolve_exit_plan(
                     "resolved_price": resolved_stop,
                 }
                 _copy_trace_fields(trace["hard_stop"], hard_stop, ("min_pct", "max_pct"))
+                _attach_trace_warnings(trace["hard_stop"], warnings)
             elif hard_stop_type == "volatility_multiple":
                 if reference_volatility is None:
                     raise InvalidExitPlanError("hard_stop_volatility_unavailable")
                 volatility = _positive_float(reference_volatility, "reference_volatility")
                 multiple = _positive_float(hard_stop.get("multiple"), "hard_stop_multiple")
                 distance = volatility * multiple
-                _validate_distance_pct_bounds(
+                warnings = _distance_pct_bound_warnings(
                     distance=distance,
                     entry_price=entry_price_value,
                     raw=hard_stop,
@@ -491,6 +538,7 @@ def resolve_exit_plan(
                     hard_stop,
                     ("source", "timeframe", "window", "min_pct", "max_pct"),
                 )
+                _attach_trace_warnings(trace["hard_stop"], warnings)
             elif hard_stop_type == "structural":
                 if not bars:
                     raise InvalidExitPlanError("hard_stop_bars_unavailable")
@@ -526,7 +574,7 @@ def resolve_exit_plan(
                 )
                 if distance <= 0:
                     raise InvalidExitPlanError("hard_stop_structural_wrong_side")
-                _validate_distance_pct_bounds(
+                warnings = _distance_pct_bound_warnings(
                     distance=distance,
                     entry_price=entry_price_value,
                     raw=hard_stop,
@@ -557,6 +605,7 @@ def resolve_exit_plan(
                     hard_stop,
                     ("min_pct", "max_pct"),
                 )
+                _attach_trace_warnings(trace["hard_stop"], warnings)
         else:
             resolved_stop = float(hard_stop)
             stop_distance = abs(entry_price_value - resolved_stop)
@@ -930,6 +979,7 @@ def apply_amend_exit(
     amend: dict,
     *,
     bars: list | None = None,
+    trace_out: dict | None = None,
 ) -> TradePlan:
     """Patche les champs de sortie d'un TradePlan ouvert via un dict amend normalisé.
 
@@ -953,13 +1003,16 @@ def apply_amend_exit(
     if "take_profits" in amend and "hard_stop" not in amend and plan.hard_stop_price is not None:
         resolve_input = {**amend, "hard_stop": {"type": "price", "price": plan.hard_stop_price}}
 
-    resolved, _ = resolve_exit_plan(
+    resolved, trace = resolve_exit_plan(
         resolve_input,
         entry_price=plan.entry_price,
         side=plan.side,
         reference_volatility=plan.reference_volatility,
         bars=bars,
     )
+    if trace_out is not None:
+        trace_out.clear()
+        trace_out.update(trace)
 
     if resolved is None:
         return plan

@@ -950,6 +950,16 @@ def _fetch_5m_bars_for_open_plans(
     )
 
 
+def _capture_exit_plan_trace(entry: dict, trace: dict) -> None:
+    if not trace:
+        return
+    entry["exit_plan_trace"] = copy.deepcopy(trace)
+    hard_stop = trace.get("hard_stop") if isinstance(trace, dict) else None
+    warnings = hard_stop.get("warnings") if isinstance(hard_stop, dict) else None
+    if isinstance(warnings, list) and warnings:
+        entry["exit_plan_warnings"] = copy.deepcopy(warnings)
+
+
 def _execute_one_cycle_decision(
     *,
     sym: str,
@@ -1114,22 +1124,24 @@ def _execute_one_cycle_decision(
         try:
             if decision.intent in _PURE_OPEN_INTENTS and sym not in ctx.armed_plan_ids:
                 intent_side = "LONG" if decision.intent == "OPEN_LONG" else "SHORT"
-                runtime_exit_plan, _trace = resolve_exit_plan(
+                runtime_exit_plan, exit_trace = resolve_exit_plan(
                     runtime_exit_plan,
                     entry_price=ctx.prices[sym],
                     side=intent_side,
                     reference_volatility=reference_volatility,
                     bars=ctx.tradable_bars_by_symbol.get(sym),
                 )
+                _capture_exit_plan_trace(entry, exit_trace)
             elif decision.intent == "ADD":
                 intent_side = "LONG" if decision.action == "BUY" else "SHORT"
-                runtime_exit_plan, _trace = resolve_exit_plan(
+                runtime_exit_plan, exit_trace = resolve_exit_plan(
                     runtime_exit_plan,
                     entry_price=ctx.prices[sym],
                     side=intent_side,
                     reference_volatility=reference_volatility,
                     bars=ctx.tradable_bars_by_symbol.get(sym),
                 )
+                _capture_exit_plan_trace(entry, exit_trace)
             else:
                 validate_exit_plan(
                     runtime_exit_plan,
@@ -1203,6 +1215,16 @@ def _execute_one_cycle_decision(
     )
     effective_quantity = risk_outcome.quantity
     entry.update(risk_outcome.entry_updates)
+    risk_warnings = entry.get("risk_warnings")
+    if isinstance(risk_warnings, list):
+        for warning in risk_warnings:
+            if isinstance(warning, dict) and warning.get("code") == "risk_per_trade_exceeded":
+                _log_cycle_progress(
+                    "[risk] %s warning code=risk_per_trade_exceeded qty=%s max_qty=%s",
+                    sym,
+                    warning.get("risk_qty"),
+                    warning.get("max_qty"),
+                )
     if not risk_outcome.approved:
         reason = risk_outcome.reason or "risk:rejected"
         if reason == "risk:risk_sizing_needs_stop":
@@ -1765,6 +1787,7 @@ def run_cycle(
         recall_store=_recall_store,
         merge_gate_feedback=_merge_gate_feedback,
         model_calls_used_getter=lambda: model_calls_used,
+        agent_trace_path=STATE_DIR / "agent_trace.log",
     )
     record_decision = recorder.record
 

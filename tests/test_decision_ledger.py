@@ -168,6 +168,35 @@ def test_build_decision_row_propage_les_champs_risque_runtime() -> None:
     assert row["runtime"]["risk_unbounded_no_stop"] is False
 
 
+def test_build_decision_row_propage_context_et_warnings_exit_plan_runtime() -> None:
+    decision = _decision(action="BUY")
+    trace = {
+        "hard_stop": {
+            "spec_type": "percent",
+            "warnings": [{"code": "hard_stop_above_max_pct", "field": "max_pct"}],
+        }
+    }
+    warnings = trace["hard_stop"]["warnings"]
+    decision.update(
+        {
+            "intent": "OPEN_LONG",
+            "qty": 10.0,
+            "executed": True,
+            "reason": "ok",
+            "context": "hard_stop_pct=0.10 max_pct=0.04",
+            "exit_plan_trace": trace,
+            "exit_plan_warnings": warnings,
+        }
+    )
+    report = _report([decision])
+
+    row = decision_ledger.build_decision_row(report, decision, sequence=0, source="daemon")
+
+    assert row["context"] == "hard_stop_pct=0.10 max_pct=0.04"
+    assert row["runtime"]["exit_plan_trace"] == trace
+    assert row["runtime"]["exit_plan_warnings"] == warnings
+
+
 def test_build_decision_row_propage_les_nouveaux_champs_audit_runtime() -> None:
     decision = _decision(action="BUY")
     decision.update(

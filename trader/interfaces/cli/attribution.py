@@ -8,7 +8,7 @@ from pathlib import Path
 
 from trader.reporting.attribution import compute_attribution, render_text
 
-DEFAULT_STATE_DIR = Path(__file__).resolve().parents[2] / "state"
+DEFAULT_STATE_DIR = Path(__file__).resolve().parents[3] / "state"
 
 
 def main(argv: list[str] | None = None) -> None:

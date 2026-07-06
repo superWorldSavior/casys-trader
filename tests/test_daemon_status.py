@@ -59,6 +59,7 @@ def test_run_cycle_ecrit_un_statut_et_un_rapport_courant(monkeypatch, tmp_path, 
     assert status["symbols_total"] == 1
     assert status["last_decision"]["symbol"] == "SPY"
     assert [d["symbol"] for d in current_report["decisions"]] == ["SPY"]
+    assert current_report["decisions"][0]["price"] == 100.0
     assert any(json.loads(line)["event"] == "decision_recorded" for line in events)
 
 

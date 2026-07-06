@@ -64,7 +64,7 @@ _CROSS_ASSET_INDICATORS = {"relative_strength", "spread_zscore"}
 # Fenêtres de swing exposées au LLM. Elles correspondent aux `window` que
 # l'agent emploie réellement pour ses hard_stop structurels (audit decisions :
 # 24 et 48). Donner la distance résolue ICI évite que l'agent borne min/max_pct
-# à l'aveugle et fasse rejeter son ordre (invalid_exit_plan:hard_stop_*_pct).
+# à l'aveugle et génère des warnings hard_stop_*_pct inutiles.
 _SWING_WINDOWS = (24, 48)
 
 

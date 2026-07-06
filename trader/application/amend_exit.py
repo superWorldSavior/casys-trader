@@ -35,8 +35,9 @@ def apply_amend_exit_to_open_plan(
         return
 
     plan = open_plans[0]
+    trace: dict = {}
     try:
-        patched = apply_amend_exit(plan, amend_exit, bars=bars)
+        patched = apply_amend_exit(plan, amend_exit, bars=bars, trace_out=trace)
     except (InvalidExitPlanError, ValueError) as exc:
         entry["amend_exit_applied"] = False
         entry["amend_exit_reason"] = f"resolve_failed:{exc}"
@@ -49,3 +50,8 @@ def apply_amend_exit_to_open_plan(
 
     plan_store.upsert(patched)
     entry["amend_exit_applied"] = True
+    if trace:
+        entry["amend_exit_trace"] = copy.deepcopy(trace)
+        hard_stop_warnings = (trace.get("hard_stop") or {}).get("warnings")
+        if hard_stop_warnings:
+            entry["amend_exit_warnings"] = copy.deepcopy(hard_stop_warnings)

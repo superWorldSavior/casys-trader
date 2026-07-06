@@ -66,6 +66,42 @@ def test_apply_amend_exit_to_open_plan_patches_store(tmp_path) -> None:
     assert store.open_plans()[0].hard_stop_price == pytest.approx(97.5)
 
 
+def test_apply_amend_exit_to_open_plan_applies_hard_stop_hors_borne_with_warning(tmp_path) -> None:
+    store = _store_with_plan(tmp_path, _plan("SPY", hard_stop_price=95.0))
+    entry: dict = {}
+    amend_exit = {
+        "hard_stop": {
+            "type": "structural",
+            "anchor": "swing_low",
+            "window": 1,
+            "max_pct": 0.08,
+        }
+    }
+
+    apply_amend_exit_to_open_plan(
+        plan_store=store,
+        symbol="SPY",
+        amend_exit=amend_exit,
+        bars=[{"ts": "t1", "open": 100.0, "high": 101.0, "low": 80.0, "close": 100.0, "volume": 1000.0}],
+        entry=entry,
+    )
+
+    assert entry["amend_exit_applied"] is True
+    assert "amend_exit_reason" not in entry
+    assert store.open_plans()[0].hard_stop_price == pytest.approx(80.0)
+    assert entry["amend_exit_warnings"] == [
+        {
+            "code": "hard_stop_above_max_pct",
+            "field": "max_pct",
+            "distance": 20.0,
+            "distance_pct": 0.2,
+            "limit_distance": 8.0,
+            "limit_pct": 0.08,
+        }
+    ]
+    assert entry["amend_exit_trace"]["hard_stop"]["warnings"] == entry["amend_exit_warnings"]
+
+
 def test_apply_amend_exit_to_open_plan_records_resolve_failed(tmp_path) -> None:
     store = _store_with_plan(tmp_path, _plan("SPY", hard_stop_price=None))
     entry: dict = {}

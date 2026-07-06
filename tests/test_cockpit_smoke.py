@@ -67,6 +67,15 @@ def _render(renderable, *, width: int = 120) -> str:
 # ---------------------------------------------------------------------------
 
 
+def test_cockpit_utilise_la_racine_repo_pour_state() -> None:
+    """Le cockpit live doit lire le state du repo, pas trader/state."""
+    repo_root = Path(__file__).resolve().parents[1]
+
+    assert cockpit_module._ROOT == repo_root
+    assert cockpit_module._STATE_DIR == repo_root / "state"
+    assert cockpit_module._CONFIG_DIR == str(repo_root)
+
+
 async def test_cockpit_app_monte_avec_les_deux_panes(tmp_path, monkeypatch):
     """L'app Textual monte sans exception et les panneaux principaux sont dans le DOM."""
     _make_minimal_state(tmp_path)
@@ -1107,6 +1116,41 @@ async def test_events_pane_backlog_charge_apres_layout(tmp_path, monkeypatch):
         assert logs_pane._backlog_loaded is True
         # L'offset doit avoir avancé (les 5 lignes ont été lues)
         assert logs_pane._offset > 0
+
+
+async def test_cockpit_agent_trace_backlog_charge_logs_page_et_dashboard(tmp_path, monkeypatch):
+    """La trace agent a son propre flux, affiché page Logs et dashboard."""
+    from trader.cockpit import AgentTracePane, HomeAgentTracePane
+
+    _make_minimal_state(tmp_path)
+    events_file = tmp_path / "events.jsonl"
+    agent_trace_file = tmp_path / "agent_trace.log"
+    events_file.write_text("", encoding="utf-8")
+    agent_trace_file.write_text(
+        "\n".join(
+            [
+                "[agent] ts=2026-07-02T10:00:00+00:00 symbol=SPY source=llm model=acpx:gpt-5.5 action=HOLD intent=HOLD reason=hold executed=False tools=1 rounds=0",
+                '[agent-tool] ts=2026-07-02T10:00:00+00:00 symbol=SPY id=SPY:0 tool=set_next_wake outcome=applied args={"minutes":30} detail={"requested":30}',
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(cockpit_module, "_STATE_DIR", tmp_path)
+    monkeypatch.setattr(cockpit_module, "_EVENTS_FILE", events_file)
+    monkeypatch.setattr(cockpit_module, "_AGENT_TRACE_FILE", agent_trace_file)
+    monkeypatch.setattr(cockpit_module, "_KILL_FILE", tmp_path / "KILL")
+
+    app = CockpitApp()
+    async with app.run_test(size=(220, 60)) as pilot:
+        await pilot.pause()
+        logs_agent = app.query_one("#agent-trace-pane", AgentTracePane)
+        home_agent = app.query_one("#home-agent-trace", HomeAgentTracePane)
+
+        assert logs_agent._backlog_loaded is True
+        assert home_agent._backlog_loaded is True
+        assert logs_agent._offset > 0
+        assert home_agent._offset > 0
 
 
 # ---------------------------------------------------------------------------

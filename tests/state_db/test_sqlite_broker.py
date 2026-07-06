@@ -114,6 +114,35 @@ class TestParite:
         assert "AAPL" not in sim.positions()
         assert "AAPL" not in sqlite.positions()
 
+    def test_position_poussiere_pas_dans_positions_api(self, tmp_path: Path) -> None:
+        """positions() filtre aussi les résidus float déjà présents en table."""
+        db, sqlite = _make_sqlite_broker(tmp_path)
+        with db.transaction() as cur:
+            cur.execute(
+                "INSERT INTO broker_positions(symbol, quantity, avg_price) VALUES (?,?,?)",
+                ("2330.TW", 4.440892098500626e-16, 2425.0),
+            )
+
+        assert "2330.TW" not in sqlite.positions()
+
+    def test_position_poussiere_fractionnee_cloture_comme_zero(self, tmp_path: Path) -> None:
+        """Même cas live 2330.TW : 20 - 10 - 6.66666667 - 3.33333333."""
+        sim = _make_sim_broker(tmp_path / "sim")
+        _, sqlite = _make_sqlite_broker(tmp_path / "sq")
+        orders = [
+            (Order("2330.TW", "BUY", 20.0), 2425.0, "t1", 0.031),
+            (Order("2330.TW", "SELL", 10.0), 2455.0, "t2", 0.031),
+            (Order("2330.TW", "SELL", 6.66666667), 2450.0, "t3", 0.031),
+            (Order("2330.TW", "SELL", 3.33333333), 2480.0, "t4", 0.031),
+        ]
+
+        for order, price, ts, fx_rate in orders:
+            sim.submit(order, price, ts, dry_run=False, fx_rate=fx_rate)
+            sqlite.submit(order, price, ts, dry_run=False, fx_rate=fx_rate)
+
+        assert "2330.TW" not in sim.positions()
+        assert "2330.TW" not in sqlite.positions()
+
     def test_parity_with_fx_rate(self, tmp_path: Path) -> None:
         """Parité sur un symbole TWD (fx_rate != 1.0)."""
         sim = _make_sim_broker(tmp_path / "sim")
@@ -327,6 +356,21 @@ class TestShadowJson:
         assert broker.positions() == {}         # API filtre
         assert "AAPL" in shadow["positions"]    # shadow = toutes les lignes
         assert shadow["positions"]["AAPL"]["quantity"] == pytest.approx(0.0)
+
+    def test_shadow_normalise_position_poussiere(self, tmp_path: Path) -> None:
+        """Un shadow régénéré depuis une table stale ne réexpose pas la poussière."""
+        db, broker, json_path = self._make_broker_with_shadow(tmp_path)
+        with db.transaction() as cur:
+            cur.execute(
+                "INSERT INTO broker_positions(symbol, quantity, avg_price) VALUES (?,?,?)",
+                ("2330.TW", 4.440892098500626e-16, 2425.0),
+            )
+
+        broker.regenerate_shadow()
+
+        shadow = json.loads(json_path.read_text())
+        assert shadow["positions"]["2330.TW"]["quantity"] == 0.0
+        assert shadow["positions"]["2330.TW"]["avg_price"] == 0.0
 
     def test_shadow_fills_match_table(self, tmp_path: Path) -> None:
         """broker.json.fills == les fills de broker_fills (dans l'ordre)."""

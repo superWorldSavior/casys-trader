@@ -8,6 +8,7 @@ délibéré) — anti-répétition + cohérence, même sans position. Le row du 
 from __future__ import annotations
 
 _MAX_RATIONALE_LEN = 200
+_MAX_FLAGS = 5
 DEFAULT_LIMIT = 3
 
 
@@ -57,7 +58,7 @@ def _compact(row: dict) -> dict:
     rationale = row.get("rationale")
     if isinstance(rationale, str) and len(rationale) > _MAX_RATIONALE_LEN:
         rationale = rationale[:_MAX_RATIONALE_LEN] + "…"
-    return {
+    compact = {
         "cycle_ts": row.get("cycle_ts"),
         "action": row.get("action"),
         "intent": row.get("intent"),
@@ -67,3 +68,88 @@ def _compact(row: dict) -> dict:
         "reason": row.get("reason"),
         "rationale": rationale,
     }
+    if not row.get("executed"):
+        context = _decision_context(row)
+        if context is not None:
+            compact["context"] = context
+        flags = _compact_flags(row)
+        if flags:
+            compact["flags"] = flags
+    return compact
+
+
+def _runtime(row: dict) -> dict:
+    runtime = row.get("runtime")
+    return runtime if isinstance(runtime, dict) else {}
+
+
+def _decision_context(row: dict) -> object | None:
+    if row.get("context") is not None:
+        return row.get("context")
+    decision = row.get("decision")
+    if isinstance(decision, dict):
+        return decision.get("context")
+    return None
+
+
+def _reason_flag_code(reason: object) -> str | None:
+    if reason is None:
+        return None
+    text = str(reason)
+    if text in {"", "ok", "hold"}:
+        return None
+    return text.split(":", 1)[1] if ":" in text else text
+
+
+def _flag_tool_for_row(row: dict) -> str:
+    return "propose_order" if row.get("action") in {"BUY", "SELL"} else "decision"
+
+
+def _compact_flags(row: dict) -> list[dict]:
+    runtime = _runtime(row)
+    flags: list[dict] = []
+    seen: set[tuple[object, object, object]] = set()
+
+    def add_flag(*, tool: str, outcome: object, warning: object) -> None:
+        if not isinstance(warning, dict):
+            return
+        code = warning.get("code")
+        key = (tool, outcome, code)
+        if key in seen:
+            return
+        seen.add(key)
+        flag = {
+            "tool": tool,
+            "outcome": outcome,
+            "code": code,
+        }
+        for field in ("field", "risk_pct", "limit", "distance_pct", "limit_pct", "context"):
+            if warning.get(field) is not None:
+                flag[field] = warning[field]
+        flags.append(flag)
+
+    for call in runtime.get("tool_calls") or []:
+        if not isinstance(call, dict):
+            continue
+        detail = call.get("detail")
+        if not isinstance(detail, dict):
+            continue
+        for warning in detail.get("warnings") or []:
+            add_flag(tool=str(call.get("tool") or "tool"), outcome=call.get("outcome"), warning=warning)
+
+    for warning in runtime.get("risk_warnings") or []:
+        add_flag(tool="propose_order", outcome="executed" if row.get("executed") else "blocked", warning=warning)
+
+    for warning in runtime.get("exit_plan_warnings") or []:
+        add_flag(tool="propose_order", outcome="executed" if row.get("executed") else "blocked", warning=warning)
+
+    if not row.get("executed"):
+        code = _reason_flag_code(row.get("reason"))
+        if code is not None and row.get("action") in {"BUY", "SELL"}:
+            add_flag(
+                tool=_flag_tool_for_row(row),
+                outcome="blocked",
+                warning={"code": code, "context": _decision_context(row)},
+            )
+
+    return flags[:_MAX_FLAGS]

@@ -115,6 +115,12 @@ def _set_risk_metrics(
     updates["risk_pct"] = order_admission.risk_pct_for_quantity(quantity, stop_distance, equity)
 
 
+def _append_risk_warning(updates: dict[str, object], warning: dict[str, object]) -> None:
+    warnings = updates.setdefault("risk_warnings", [])
+    if isinstance(warnings, list):
+        warnings.append(warning)
+
+
 def _risk_stop_intent(intent: str | None, action: str) -> str | None:
     if intent != "ADD":
         return intent
@@ -230,12 +236,17 @@ def assess_risk_admission(
                     f"risk_pct={updates.get('risk_pct')} "
                     f"limit={gate.limits.max_risk_per_trade_pct}"
                 )
-                return RiskAdmissionResult(
-                    False,
-                    quantity,
-                    reason="risk:risk_per_trade_exceeded",
-                    context=context,
-                    entry_updates=updates,
+                _append_risk_warning(
+                    updates,
+                    {
+                        "code": "risk_per_trade_exceeded",
+                        "field": "max_risk_per_trade_pct",
+                        "risk_qty": risk_quantity,
+                        "max_qty": max_risk_quantity,
+                        "risk_pct": updates.get("risk_pct"),
+                        "limit": gate.limits.max_risk_per_trade_pct,
+                        "context": context,
+                    },
                 )
 
     if risk_guarded_open and quantity == 0:
