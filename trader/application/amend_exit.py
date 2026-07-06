@@ -18,6 +18,14 @@ class TradePlanStoreLike(Protocol):
     def upsert(self, plan: TradePlan) -> None: ...
 
 
+def _current_decision_price(entry: dict) -> float | None:
+    try:
+        price = float(entry.get("price"))
+    except (TypeError, ValueError):
+        return None
+    return price if price > 0 else None
+
+
 def apply_amend_exit_to_open_plan(
     *,
     plan_store: TradePlanStoreLike,
@@ -37,7 +45,13 @@ def apply_amend_exit_to_open_plan(
     plan = open_plans[0]
     trace: dict = {}
     try:
-        patched = apply_amend_exit(plan, amend_exit, bars=bars, trace_out=trace)
+        patched = apply_amend_exit(
+            plan,
+            amend_exit,
+            bars=bars,
+            reference_price=_current_decision_price(entry),
+            trace_out=trace,
+        )
     except (InvalidExitPlanError, ValueError) as exc:
         entry["amend_exit_applied"] = False
         entry["amend_exit_reason"] = f"resolve_failed:{exc}"

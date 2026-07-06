@@ -315,3 +315,52 @@ class TestDaemonApplyAmendExit:
         assert "resolve_failed" in entry["amend_exit_reason"]
         # Le plan n'est pas modifié
         assert store.open_plans()[0].hard_stop_price is None
+
+    def test_patch_stop_structurel_protege_gain_dans_store(self) -> None:
+        plan = _plan("BAER.SW", entry_price=70.34, hard_stop_price=72.45, quantity=80.0)
+        store, _ = _store_with_plan(plan)
+        entry = {"price": 74.04}
+        bars = [
+            {"ts": "t1", "open": 73.8, "high": 74.2, "low": 72.7, "close": 74.0},
+            {"ts": "t2", "open": 74.0, "high": 74.3, "low": 72.8, "close": 74.04},
+        ]
+
+        daemon._apply_amend_exit(
+            plan_store=store,
+            symbol="BAER.SW",
+            amend_exit={
+                "hard_stop": {
+                    "type": "structural",
+                    "anchor": "swing_low",
+                    "window": 2,
+                    "buffer_pct": 0.002,
+                }
+            },
+            bars=bars,
+            entry=entry,
+        )
+
+        assert entry["amend_exit_applied"] is True
+        assert entry.get("amend_exit_reason") is None
+        assert store.open_plans()[0].hard_stop_price == pytest.approx(72.7 - 70.34 * 0.002)
+
+    def test_stop_structurel_protecteur_reste_borne_par_prix_courant(self) -> None:
+        plan = _plan("BAER.SW", entry_price=70.34, hard_stop_price=72.45, quantity=80.0)
+        store, _ = _store_with_plan(plan)
+        entry = {"price": 74.04}
+        bars = [
+            {"ts": "t1", "open": 74.2, "high": 74.5, "low": 74.3, "close": 74.4},
+            {"ts": "t2", "open": 74.4, "high": 74.6, "low": 74.35, "close": 74.5},
+        ]
+
+        daemon._apply_amend_exit(
+            plan_store=store,
+            symbol="BAER.SW",
+            amend_exit={"hard_stop": {"type": "structural", "anchor": "swing_low", "window": 2}},
+            bars=bars,
+            entry=entry,
+        )
+
+        assert entry["amend_exit_applied"] is False
+        assert entry["amend_exit_reason"] == "resolve_failed:hard_stop_structural_wrong_side"
+        assert store.open_plans()[0].hard_stop_price == pytest.approx(72.45)

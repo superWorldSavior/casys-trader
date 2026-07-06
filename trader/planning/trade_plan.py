@@ -448,12 +448,18 @@ def resolve_exit_plan(
     side: PositionSide,
     reference_volatility: float | None = None,
     bars: list | None = None,
+    protective_reference_price: float | None = None,
 ) -> tuple[dict | None, dict]:
     if raw_exit_plan is None:
         return None, {}
     raw_exit_plan = normalize_exit_plan(raw_exit_plan)
 
     entry_price_value = _positive_float(entry_price, "entry_price")
+    protective_reference = (
+        None
+        if protective_reference_price is None
+        else _positive_float(protective_reference_price, "protective_reference_price")
+    )
     if side not in {"LONG", "SHORT"}:
         raise InvalidExitPlanError("side_unsupported")
 
@@ -548,7 +554,7 @@ def resolve_exit_plan(
                 if level is None:
                     raise InvalidExitPlanError("hard_stop_level_unavailable")
                 level_value = float(level)
-                if (
+                if protective_reference is None and (
                     (side == "LONG" and level_value >= entry_price_value)
                     or (side == "SHORT" and level_value <= entry_price_value)
                 ):
@@ -567,23 +573,30 @@ def resolve_exit_plan(
                     buffer = 0.0
 
                 raw_stop = level_value - buffer if side == "LONG" else level_value + buffer
-                distance = (
+                side_reference = (
+                    entry_price_value if protective_reference is None else protective_reference
+                )
+                side_distance = (
+                    side_reference - raw_stop
+                    if side == "LONG"
+                    else raw_stop - side_reference
+                )
+                if side_distance <= 0:
+                    raise InvalidExitPlanError("hard_stop_structural_wrong_side")
+                distance = abs(entry_price_value - raw_stop)
+                initial_distance = (
                     entry_price_value - raw_stop
                     if side == "LONG"
                     else raw_stop - entry_price_value
                 )
-                if distance <= 0:
+                if protective_reference is None and initial_distance <= 0:
                     raise InvalidExitPlanError("hard_stop_structural_wrong_side")
                 warnings = _distance_pct_bound_warnings(
                     distance=distance,
                     entry_price=entry_price_value,
                     raw=hard_stop,
                 )
-                resolved_stop = (
-                    entry_price_value - distance
-                    if side == "LONG"
-                    else entry_price_value + distance
-                )
+                resolved_stop = raw_stop
                 if resolved_stop <= 0:
                     raise InvalidExitPlanError("hard_stop_resolved_non_positive")
                 resolved["hard_stop"] = {"type": "price", "price": resolved_stop}
@@ -598,6 +611,8 @@ def resolve_exit_plan(
                     "clamped": False,
                     "resolved_price": resolved_stop,
                 }
+                if protective_reference is not None:
+                    trace["hard_stop"]["protective_reference_price"] = protective_reference
                 if volatility is not None:
                     trace["hard_stop"]["reference_volatility"] = volatility
                 _copy_trace_fields(
@@ -979,6 +994,7 @@ def apply_amend_exit(
     amend: dict,
     *,
     bars: list | None = None,
+    reference_price: float | None = None,
     trace_out: dict | None = None,
 ) -> TradePlan:
     """Patche les champs de sortie d'un TradePlan ouvert via un dict amend normalisé.
@@ -1009,6 +1025,7 @@ def apply_amend_exit(
         side=plan.side,
         reference_volatility=plan.reference_volatility,
         bars=bars,
+        protective_reference_price=reference_price,
     )
     if trace_out is not None:
         trace_out.clear()

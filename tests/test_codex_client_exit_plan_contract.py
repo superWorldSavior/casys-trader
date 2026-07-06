@@ -363,6 +363,23 @@ def test_batch_contract_tools_par_symbole_remplace_le_schema_legacy_visible() ->
     assert 'Chaque <obj>: {"symbol":"<SYM>","action"' not in prompt
 
 
+def test_symbol_calls_contract_expose_une_grammaire_trading_canonique() -> None:
+    prompt = _symbol_calls_final_prompt_from_decide_batch()
+
+    assert "Typologie trading officielle" in prompt
+    assert "position intent = changer l'exposition" in prompt
+    assert "exit rule = règle attachée à une position ouverte" in prompt
+    assert "review wake = reconsultation par le LLM" in prompt
+    assert "armed plan = exécution daemon sans reconsultation" in prompt
+    assert "propose_order = position intent" in prompt
+    assert "amend_exit = exit rule" in prompt
+    assert "set_next_wake = review wake" in prompt
+    assert "propose_indicator_watch = armed plan" in prompt
+    assert "Grammaire canonique de sortie" in prompt
+    assert "stop/tp/trail/protect sont les noms officiels" in prompt
+    assert "aliases acceptés" not in prompt
+
+
 def test_symbol_calls_contract_laisse_l_agent_pull_au_premier_tour() -> None:
     """AX : au 1er passage (allow_tool_calls), le contrat symbol_calls ne DOIT PAS
     interdire la tournée read-only. L'agent choisit lui-même : tool_calls d'abord,
@@ -394,6 +411,9 @@ def test_symbol_calls_contract_documente_amend_exit_sans_propose_order() -> None
     assert "amend_exit" in prompt
     assert "sans propose_order" in prompt.lower()
     assert "amend_exit + propose_order" in prompt
+    assert "stop/tp/trail/protect sont des règles de sortie" in prompt
+    assert "un stop structurel peut aussi protéger un gain" in prompt
+    assert "du bon côté du prix courant" in prompt
 
 
 def test_batch_parse_reduce_fraction_sans_side_produit_resolve_from_position() -> None:

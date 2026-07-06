@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from pathlib import Path
 
 from trader import agent_tools  # noqa: F401 — utilisé dans les tâches 2+
 from trader.agent.tools.core import _MAX_RAW_CALLS, _SCRUB_ID_LEN
 from trader.agent.tools.indicators import _MAX_INDICATOR_MATCHES
+from trader.agent.tools.registry import TOOL_REGISTRY
 from trader.agent.tools import (
     AgentToolCall,
     AgentToolTrace,
@@ -28,6 +30,18 @@ def test_agent_tools_package_expose_public_registry():
     assert "get_freshness" in agent_tools.TOOL_REGISTRY
     assert ToolPayload.__origin__ is dict
     assert "ok" in ToolOutcome.__args__
+
+
+def test_reference_agent_tools_liste_les_read_only_tools_du_registry() -> None:
+    doc = Path("docs/reference/agent-tools.md").read_text(encoding="utf-8")
+    section = doc.split("## Action tools finaux par symbole", 1)[0]
+    documented = {
+        line.split("`", 2)[1]
+        for line in section.splitlines()
+        if line.startswith("| `")
+    }
+
+    assert documented == set(TOOL_REGISTRY)
 
 
 def test_agent_tools_package_all_reste_une_api_publique_compacte():
