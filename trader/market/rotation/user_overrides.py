@@ -118,68 +118,83 @@ def save_user_overrides(universe_path: str | Path, overrides: UserOverrides) -> 
     """
     path = Path(universe_path)
     with universe_write_lock(path):
-        try:
-            existing = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-        except Exception:
-            existing = {}
-        if not isinstance(existing, dict):
-            existing = {}
+        _write_overrides_locked(path, overrides)
 
-        data: dict = {"symbols": existing.get("symbols") or []}
-        for key, value in existing.items():
-            if key not in ("symbols", "overrides"):
-                data[key] = value
-        block = overrides_block(overrides)
-        if block is not None:
-            data["overrides"] = block
 
-        fd, tmp_path = tempfile.mkstemp(dir=path.parent)
+def _write_overrides_locked(path: Path, overrides: UserOverrides) -> None:
+    """Corps de l'écriture — appelant DÉJÀ détenteur du lock (flock non réentrant)."""
+    try:
+        existing = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except Exception:
+        existing = {}
+    if not isinstance(existing, dict):
+        existing = {}
+
+    data: dict = {"symbols": existing.get("symbols") or []}
+    for key, value in existing.items():
+        if key not in ("symbols", "overrides"):
+            data[key] = value
+    block = overrides_block(overrides)
+    if block is not None:
+        data["overrides"] = block
+
+    fd, tmp_path = tempfile.mkstemp(dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            yaml.safe_dump(data, fh, default_flow_style=False, sort_keys=False)
+        os.replace(tmp_path, path)
+    except Exception:
         try:
-            with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                yaml.safe_dump(data, fh, default_flow_style=False, sort_keys=False)
-            os.replace(tmp_path, path)
-        except Exception:
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
-            raise
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
+def _mutate_overrides(universe_path: str | Path, mutate) -> UserOverrides:
+    """Read-modify-write ENTIÈREMENT sous lock — deux cockpits ne peuvent pas
+    s'écraser mutuellement un pin/ban concurrent."""
+    path = Path(universe_path)
+    with universe_write_lock(path):
+        updated = mutate(load_user_overrides(path))
+        _write_overrides_locked(path, updated)
+    return updated
 
 
 def pin_symbol(universe_path: str | Path, symbol: str) -> UserOverrides:
     """Pin ``symbol`` (le retire du ban s'il y était). Retourne l'état final."""
-    current = load_user_overrides(universe_path)
     symbol = symbol.strip()
-    updated = UserOverrides(
-        pin=_clean_symbols([*current.pin, symbol]),
-        ban=tuple(s for s in current.ban if s != symbol),
+    return _mutate_overrides(
+        universe_path,
+        lambda current: UserOverrides(
+            pin=_clean_symbols([*current.pin, symbol]),
+            ban=tuple(s for s in current.ban if s != symbol),
+        ),
     )
-    save_user_overrides(universe_path, updated)
-    return updated
 
 
 def ban_symbol(universe_path: str | Path, symbol: str) -> UserOverrides:
     """Ban ``symbol`` (le retire du pin s'il y était). Retourne l'état final."""
-    current = load_user_overrides(universe_path)
     symbol = symbol.strip()
-    updated = UserOverrides(
-        pin=tuple(s for s in current.pin if s != symbol),
-        ban=_clean_symbols([*current.ban, symbol]),
+    return _mutate_overrides(
+        universe_path,
+        lambda current: UserOverrides(
+            pin=tuple(s for s in current.pin if s != symbol),
+            ban=_clean_symbols([*current.ban, symbol]),
+        ),
     )
-    save_user_overrides(universe_path, updated)
-    return updated
 
 
 def clear_override(universe_path: str | Path, symbol: str) -> UserOverrides:
     """Retire ``symbol`` du pin ET du ban (undo). Retourne l'état final."""
-    current = load_user_overrides(universe_path)
     symbol = symbol.strip()
-    updated = UserOverrides(
-        pin=tuple(s for s in current.pin if s != symbol),
-        ban=tuple(s for s in current.ban if s != symbol),
+    return _mutate_overrides(
+        universe_path,
+        lambda current: UserOverrides(
+            pin=tuple(s for s in current.pin if s != symbol),
+            ban=tuple(s for s in current.ban if s != symbol),
+        ),
     )
-    save_user_overrides(universe_path, updated)
-    return updated
 
 
 def apply_user_overrides(

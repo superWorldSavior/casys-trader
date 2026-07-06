@@ -156,9 +156,13 @@ def test_is_batch_row_llm() -> None:
 
 
 def test_is_stale_row() -> None:
-    state = {"stale_market_data": {"SPY": {"data_age_minutes": 480}}}
-    assert _is_stale_row(state, {"symbol": "SPY"}) is True
-    assert _is_stale_row(state, {"symbol": "AAPL"}) is False
+    """Stale = propriété de la DÉCISION (reason), pas de l'état marché courant :
+    une décision stale reste filtrable même quand le flux redevient frais."""
+    assert _is_stale_row({}, {"symbol": "SPY", "reason": "stale_market_data"}) is True
+    assert _is_stale_row({}, {"symbol": "SPY", "reason": "stale"}) is True
+    # symbole actuellement stale mais décision normale → PAS stale
+    state = {"stale_market_data": {"AAPL": {"data_age_minutes": 480}}}
+    assert _is_stale_row(state, {"symbol": "AAPL", "reason": "hold"}) is False
 
 
 # ---------------------------------------------------------------------------
@@ -198,9 +202,11 @@ def test_filter_rows_risk() -> None:
 
 
 def test_filter_rows_stale() -> None:
-    state = {"stale_market_data": {"SPY": {}}}
-    rows = [_make_decision("SPY"), _make_decision("AAPL")]
-    result = _filter_rows(rows, "stale", state)
+    rows = [
+        {**_make_decision("SPY"), "reason": "stale_market_data"},
+        _make_decision("AAPL"),
+    ]
+    result = _filter_rows(rows, "stale", {})
     assert len(result) == 1 and result[0]["symbol"] == "SPY"
 
 
@@ -555,6 +561,8 @@ async def test_decisions_page_update_state_ne_crash_pas(
 
     app = CockpitApp()
     async with app.run_test(size=(220, 60)) as pilot:
+        await pilot.pause()
+        await pilot.press("escape")  # ferme le preflight (daemon non vivant)
         await pilot.press("3")
         await pilot.pause()
 
@@ -588,6 +596,8 @@ async def test_decisions_page_filter_bindings(
 
     app = CockpitApp()
     async with app.run_test(size=(220, 60)) as pilot:
+        await pilot.pause()
+        await pilot.press("escape")  # ferme le preflight (daemon non vivant)
         await pilot.press("3")
         await pilot.pause()
 

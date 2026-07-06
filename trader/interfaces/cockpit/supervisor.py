@@ -319,7 +319,7 @@ def _pid_from_status(status_file: Path | None) -> int | None:
 def stop_daemon(*, pid_file: Path, status_file: Path | None = None) -> StopResult:
     """Envoie SIGINT au daemon après vérification d'identité. Jamais SIGKILL.
 
-    Candidats pid (ordonnés, dédupliqués) : pid_file PUIS status_file.
+    Candidats pid (ordonnés, dédupliqués) : status_file PUIS pid_file.
     Pour chaque candidat, le premier qui passe _is_daemon_pid reçoit SIGINT.
     Invariant : un pid qui échoue le check d'identité ne reçoit JAMAIS de signal.
 
@@ -336,11 +336,19 @@ def stop_daemon(*, pid_file: Path, status_file: Path | None = None) -> StopResul
         StopResult(stopped=True, reason="sigint_sent") si signal envoyé,
         StopResult(stopped=False) sinon.
     """
-    # Construire la liste ordonnée et dédupliquée des candidats pid
+    # Construire la liste ordonnée et dédupliquée des candidats pid.
+    # status_file D'ABORD : écrit par le daemon lui-même à chaque phase, c'est
+    # la source la plus fraîche. Un daemon.pid stale pointant vers un AUTRE
+    # daemon casys vivant (autre worktree) passerait le check d'identité —
+    # l'ordre status→pid_file évite de SIGINT le mauvais process.
     candidates: list[int] = []
     seen: set[int] = set()
 
-    # Source 1 : pid_file
+    pid_status = _pid_from_status(status_file)
+    if pid_status is not None:
+        candidates.append(pid_status)
+        seen.add(pid_status)
+
     if pid_file.exists():
         try:
             pid_val = int(pid_file.read_text(encoding="utf-8").strip())
@@ -349,12 +357,6 @@ def stop_daemon(*, pid_file: Path, status_file: Path | None = None) -> StopResul
                 seen.add(pid_val)
         except (ValueError, OSError):
             pass
-
-    # Source 2 : status_file (fallback — réécrit à chaque cycle daemon)
-    pid_status = _pid_from_status(status_file)
-    if pid_status is not None and pid_status not in seen:
-        candidates.append(pid_status)
-        seen.add(pid_status)
 
     if not candidates:
         return StopResult(stopped=False, reason="no_daemon")

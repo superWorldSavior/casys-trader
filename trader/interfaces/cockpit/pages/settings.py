@@ -154,6 +154,11 @@ _HEADERS: dict[str, str] = {
 }
 
 
+# Seuls fichiers que le cockpit a le droit d'écrire — whitelist STRICTE
+# (pas de garde par exclusion : "./risk" contournerait un `!= "risk"`).
+_WRITABLE_YAML_FILES = frozenset({"portfolio", "radar"})
+
+
 def write_yaml_atomic(config_dir: Path, yaml_file: str, updates: dict[str, Any]) -> None:
     """Écrit yaml_file.yaml avec les mises à jour, atomiquement.
 
@@ -161,8 +166,11 @@ def write_yaml_atomic(config_dir: Path, yaml_file: str, updates: dict[str, Any])
     Les commentaires existants sont perdus ; un en-tête statique est réinjecté.
     risk.yaml n'est JAMAIS écrit par cette fonction (vérification défensive).
     """
-    if yaml_file == "risk":
-        raise ValueError("risk.yaml is read-only — the cockpit must never write it")
+    if yaml_file not in _WRITABLE_YAML_FILES:
+        raise ValueError(
+            f"{yaml_file!r} is not writable by the cockpit — "
+            f"allowed: {sorted(_WRITABLE_YAML_FILES)} (risk.yaml is read-only by design)"
+        )
 
     path = config_dir / f"{yaml_file}.yaml"
     data = _load_yaml_safe(path)
@@ -706,4 +714,7 @@ class SettingsPage(Static):
                 original = source.get(row.key)
                 if str(value) != str(original):
                     self._pending[row.key] = value
+                else:
+                    # retaper la valeur d'origine annule le pending existant
+                    self._pending.pop(row.key, None)
         self._cancel_edit()

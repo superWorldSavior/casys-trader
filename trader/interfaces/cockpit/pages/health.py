@@ -161,8 +161,10 @@ def build_sources(state: dict, *, now: datetime) -> RenderableType:
     grid.add_column(no_wrap=True)            # détail
 
     def _add(name: str, detail: str) -> None:
+        # puce NEUTRE : la source est CONFIGURÉE — le cockpit n'a pas de
+        # preuve de santé live (fast fail : ne pas afficher un ✓ non prouvé)
         grid.add_row(
-            Text("✓", style=CASYS_SUCCESS),
+            Text("·", style=CASYS_DIM),
             Text(name, style=CASYS_MUTED),
             Text(detail, style=CASYS_DIM),
         )

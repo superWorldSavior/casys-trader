@@ -192,7 +192,12 @@ def _build_left_column(
             else:
                 act_style = CASYS_DIM
 
-            effect_style = CASYS_SUCCESS if kind == "fill" else (CASYS_ERROR if kind == "risk" else CASYS_DIM)
+            if kind == "fill":
+                effect_style = CASYS_ERROR if act == "SELL" else CASYS_SUCCESS
+            elif kind == "risk":
+                effect_style = CASYS_ERROR
+            else:
+                effect_style = CASYS_DIM
             conf_str = f".{int(conf * 100):02d}" if conf is not None else "— "
 
             dec_grid.add_row(

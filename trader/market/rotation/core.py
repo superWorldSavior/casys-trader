@@ -397,7 +397,10 @@ def run(
     final = apply_user_overrides(
         final, pin=user_overrides.pin, ban=user_overrides.ban, sticky=sticky
     )
-    write_universe_atomic(universe_path, final)
+    if final:
+        write_universe_atomic(universe_path, final)
+    # final vidé par un ban → on garde le fichier (fusible non-vide) ;
+    # le ban reste effectif via la lecture daemon (effective_universe_symbols).
     save_rotation_state(state_dir, advance_state(state, hot, last_valid=final, rotation_at=as_of))
     log_rotation(
         ledger_path,

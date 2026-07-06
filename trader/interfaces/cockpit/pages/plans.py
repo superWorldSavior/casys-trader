@@ -58,15 +58,8 @@ def _price_fmt(value: float | None) -> str:
 
 
 def _stop_pct(plan: dict, ref: float | None) -> float | None:
-    """Distance au stop en % (signée : négative pour LONG sous prix, positive pour SHORT au-dessus).
-
-    Utilise le prix courant (ref) comme référence, pas le prix d'entrée.
-    Formule neutre : (stop - ref) / ref * 100 — correspondance exacte avec l'affichage spec.
-    """
-    stop = _safe_float(plan.get("hard_stop_price"), default=None)
-    if stop is None or not ref:
-        return None
-    return (stop - ref) / ref * 100.0
+    """Position du stop vs prix en % brut — délègue à format.stop_distance_pct."""
+    return f.stop_distance_pct(plan, ref)
 
 
 def _tp_label(plan: dict) -> str:

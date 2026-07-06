@@ -79,11 +79,16 @@ def _sort_holdings(holdings: list[dict], sort_mode: int) -> list[dict]:
 
 
 def _data_cell(state: dict, symbol: str) -> Text:
-    """DATA column: ● (success, fresh) or ▲ Xh (warning, stale)."""
-    age_m = f.staleness_age_m(state, symbol)
-    if age_m is None:
+    """DATA column: ● (success, fresh) or ▲ Xh (warning, stale).
+
+    La staleness se juge par symbol_is_stale (présence de la clé) — une
+    entrée stale sans âge affiche ▲ seul, jamais un faux ● fresh.
+    """
+    if not f.symbol_is_stale(state, symbol):
         return Text("●", style=CASYS_SUCCESS)
-    return Text(f"▲ {f.age_m(age_m)}", style=CASYS_WARNING)
+    age_m = f.staleness_age_m(state, symbol)
+    label = f"▲ {f.age_m(age_m)}" if age_m is not None else "▲"
+    return Text(label, style=CASYS_WARNING)
 
 
 def _fmt_qty(qty: float) -> str:

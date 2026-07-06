@@ -75,16 +75,19 @@ def _is_risk_row(row: dict) -> bool:
     return reason.startswith("risk:") or reason.startswith("blocked_")
 
 
-def _is_stale_row(state: dict, row: dict) -> bool:
-    symbol = _safe_str(row.get("symbol"))
-    stale = f.safe_dict(state.get("stale_market_data"))
-    return symbol in stale
+def _is_stale_row(state: dict, row: dict) -> bool:  # noqa: ARG001 — signature stable
+    """Stale = propriété de la DÉCISION (reason), pas de l'état marché courant."""
+    return _safe_str(row.get("reason")).startswith("stale")
 
 
 def _is_batch_row(row: dict) -> bool:
-    """Ligne infra_hold sans appel LLM — candidate au regroupement batch."""
+    """HOLD infra sans appel LLM — candidate au regroupement batch.
+
+    La valeur réelle du ledger est "infra" (application/infra_holds.py) ;
+    "infra_hold" accepté par tolérance.
+    """
     return (
-        _safe_str(row.get("decision_source")) == "infra_hold"
+        _safe_str(row.get("decision_source")) in ("infra", "infra_hold")
         and not row.get("model_called", True)
     )
 
@@ -209,9 +212,18 @@ def build_filter_chips(counts: dict[str, int], active_filter: str) -> Text:
     return text
 
 
-def build_mix_24h(state: dict) -> RenderableType:
-    """Barres buy/sell/hold des 50 dernières décisions."""
+def build_mix_24h(state: dict, *, now: datetime | None = None) -> RenderableType:
+    """Barres buy/sell/hold des décisions des dernières 24 h."""
+    from datetime import timedelta
+
     rows = _safe_list_of_dicts(state.get("recent_decisions"))
+    if now is not None:
+        floor = now - timedelta(hours=24)
+        rows = [
+            r
+            for r in rows
+            if (ts := f.parse_ts(r.get("cycle_ts") or r.get("ts"))) is not None and ts >= floor
+        ]
     total = max(len(rows), 1)
     buy = sum(1 for r in rows if _safe_str(r.get("action")).upper() == "BUY")
     sell = sum(1 for r in rows if _safe_str(r.get("action")).upper() == "SELL")
@@ -757,7 +769,8 @@ class DecisionsPage(Static):
         try:
             self._last_state = state
             self._refresh_ledger()
-            self.query_one("#mix-body", Static).update(build_mix_24h(state))
+            now = datetime.now(UTC)
+            self.query_one("#mix-body", Static).update(build_mix_24h(state, now=now))
             self.query_one("#risk-body", Static).update(build_risk_gate(state))
             self.query_one("#model-body", Static).update(build_model_panel(state))
         except Exception:

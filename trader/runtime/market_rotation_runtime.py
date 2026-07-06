@@ -90,11 +90,20 @@ def load_effective_universe(universe_path, state_dir) -> list:
     pas réécrit le fichier ; une position ouverte bannie reste gérée. Jamais
     d'exception.
     """
-    from trader.market.rotation.collectors import build_positions_fn
+    from trader.market.rotation.collectors import (
+        build_plans_fn,
+        build_positions_fn,
+        sticky_collector,
+    )
     from trader.market.rotation.user_overrides import effective_universe_symbols
 
     try:
-        positions = set(build_positions_fn(state_dir)().keys())
+        # même composition que la rotation : positions ouvertes ∪ plans ouverts
+        # (un ban ne doit pas non plus orpheliner un plan armé sans position)
+        sticky = sticky_collector(
+            positions_fn=build_positions_fn(state_dir),
+            plans_fn=build_plans_fn(state_dir),
+        )
     except Exception:  # noqa: BLE001 — collector fail-safe
-        positions = set()
-    return effective_universe_symbols(universe_path, positions=positions)
+        sticky = set()
+    return effective_universe_symbols(universe_path, positions=sticky)

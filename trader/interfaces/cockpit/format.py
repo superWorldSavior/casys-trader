@@ -249,9 +249,10 @@ def equity_curve(state: dict) -> list[float]:
 
 
 def symbol_is_stale(state: dict, symbol: str) -> bool:
+    """PRÉSENCE de la clé dans stale_market_data = stale (même entrée vide)."""
     stale_market_data = safe_dict(state.get("stale_market_data"))
     stale_streaks = safe_dict(state.get("stale_streaks"))
-    return bool(stale_market_data.get(symbol)) or (
+    return symbol in stale_market_data or (
         (_safe_float(stale_streaks.get(symbol), default=0.0) or 0.0) > 0.0
     )
 
@@ -283,13 +284,16 @@ def plan_for_symbol(trade_plans: list[dict], symbol: str) -> dict:
 
 
 def stop_distance_pct(plan: dict, reference: float | None) -> float | None:
-    """Distance signée au stop en % (négatif = sous le prix pour un LONG)."""
+    """Position du stop vs prix en % BRUT : (stop − ref) / ref.
+
+    Convention du design (uniforme sur toutes les pages) : négatif = stop
+    sous le prix (LONG typique), positif = stop au-dessus (SHORT typique).
+    La proximité du stop se juge sur ``abs()``.
+    """
     stop = _safe_float(plan.get("hard_stop_price"), default=None)
     if stop is None or not reference:
         return None
-    side = str(plan.get("side") or "LONG").upper()
-    direction = -1.0 if side == "SHORT" else 1.0
-    return (stop - reference) / reference * 100.0 * direction
+    return (stop - reference) / reference * 100.0
 
 
 def protect_label(plan: dict) -> str:
