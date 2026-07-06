@@ -626,7 +626,11 @@ class SettingsPage(Static):
         self._render_all()
 
     def action_write_settings(self) -> None:
-        """Écriture atomique des fichiers yaml modifiés."""
+        """Écriture atomique des fichiers yaml modifiés.
+
+        Un fichier qui échoue GARDE ses pending (rien n'est perdu en silence)
+        et l'échec est notifié ; les fichiers écrits sont notifiés et purgés.
+        """
         if self._editing or not self._pending:
             return
         # Regrouper par fichier yaml
@@ -639,9 +643,21 @@ class SettingsPage(Static):
         for yaml_file, updates in by_file.items():
             try:
                 write_yaml_atomic(_CONFIG_DIR, yaml_file, updates)
+            except Exception as exc:  # noqa: BLE001 — l'échec doit être VISIBLE
+                try:
+                    self.app.notify(
+                        f"write failed for config/{yaml_file}.yaml: {exc} — changes kept pending",
+                        severity="warning",
+                    )
+                except Exception:
+                    pass
+                continue
+            for key in updates:
+                self._pending.pop(key, None)
+            try:
+                self.app.notify(f"config/{yaml_file}.yaml written — {len(updates)} change(s)")
             except Exception:
                 pass
-        self._pending.clear()
         self._reload_config()
         self._render_all()
 

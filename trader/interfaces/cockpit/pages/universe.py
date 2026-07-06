@@ -751,16 +751,28 @@ class UniversePage(Static):
             except Exception:
                 pass
 
+    def _apply_override(self, verb: str, write_fn, symbol: str) -> None:
+        """Écrit l'override et donne un feedback EXPLICITE (succès comme échec)."""
+        try:
+            write_fn(self._universe_path(), symbol)
+        except Exception as exc:  # noqa: BLE001 — l'échec doit être VISIBLE
+            try:
+                self.app.notify(f"{verb} {symbol} failed: {exc}", severity="warning")
+            except Exception:
+                pass
+            return
+        self._refresh_overrides_panel()
+        try:
+            self.app.notify(f"{symbol} {verb} — written to config/universe.yaml")
+        except Exception:
+            pass
+
     def action_pin_selected(self) -> None:
         """p — épingle le symbole sous le curseur."""
         symbol = self._selected_symbol()
         if not symbol:
             return
-        try:
-            pin_symbol(self._universe_path(), symbol)
-            self._refresh_overrides_panel()
-        except Exception:
-            pass
+        self._apply_override("pinned", pin_symbol, symbol)
 
     def action_ban_selected(self) -> None:
         """b — bannit le symbole sous le curseur (modal si position ouverte)."""
@@ -772,27 +784,15 @@ class UniversePage(Static):
 
             def _on_confirm(confirmed: bool) -> None:
                 if confirmed:
-                    try:
-                        ban_symbol(self._universe_path(), symbol)
-                        self._refresh_overrides_panel()
-                    except Exception:
-                        pass
+                    self._apply_override("banned", ban_symbol, symbol)
 
             self.app.push_screen(ConfirmBanHeld(symbol), _on_confirm)
         else:
-            try:
-                ban_symbol(self._universe_path(), symbol)
-                self._refresh_overrides_panel()
-            except Exception:
-                pass
+            self._apply_override("banned", ban_symbol, symbol)
 
     def action_undo_selected(self) -> None:
         """u — supprime l'override (pin ou ban) du symbole sous le curseur."""
         symbol = self._selected_symbol()
         if not symbol:
             return
-        try:
-            clear_override(self._universe_path(), symbol)
-            self._refresh_overrides_panel()
-        except Exception:
-            pass
+        self._apply_override("cleared", clear_override, symbol)
