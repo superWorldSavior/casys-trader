@@ -12,14 +12,14 @@ from trader.interfaces.cockpit.app import CockpitApp
 OUT = Path(sys.argv[1] if len(sys.argv) > 1 else "state/screenshots")
 OUT.mkdir(parents=True, exist_ok=True)
 
+# Rév. 3 : 7 pages (Plans fusionnée dans Decisions).
 _PAGES = [
     ("2", "portfolio"),
     ("3", "decisions"),
-    ("4", "plans"),
-    ("5", "health"),
-    ("6", "logs"),
-    ("7", "universe"),
-    ("8", "settings"),
+    ("4", "health"),
+    ("5", "logs"),
+    ("6", "universe"),
+    ("7", "settings"),
 ]
 
 
