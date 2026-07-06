@@ -255,6 +255,11 @@ class FirstRunScreen(Screen[None]):
     def on_mount(self) -> None:
         root: Path = getattr(self.app, "_root", Path.cwd())
         state_dir: Path | None = getattr(self.app, "_state_dir", None)
+        self._resuming = has_state_history(state_dir if state_dir is not None else root / "state")
+        if self._resuming:
+            # resume : les ghost panels « no positions yet » seraient faux
+            for ghost in self.query(".fr-ghost"):
+                ghost.display = False
         # Rendu immédiat sans IB (pas de DNS/socket) ; IB mis à jour par worker thread.
         self.query_one("#preflight-panel", Static).update(
             build_preflight_body(preflight_checks(root, state_dir=state_dir, skip_ib=True))
@@ -282,7 +287,12 @@ class FirstRunScreen(Screen[None]):
     def _render_cta(self) -> None:
         text = Text()
         text.append("▸ press s to start the daemon", style=f"bold {CASYS_ACCENT}")
-        text.append(" — the first cycle runs dry and begins writing state/", style=CASYS_DIM)
+        hint = (
+            " — resumes from existing state/"
+            if getattr(self, "_resuming", False)
+            else " — the first cycle runs dry and begins writing state/"
+        )
+        text.append(hint, style=CASYS_DIM)
         text.append("▮" if self._cursor_on else " ", style=CASYS_ACCENT)
         self.query_one("#first-run-cta", Static).update(text)
 
@@ -291,6 +301,8 @@ class FirstRunScreen(Screen[None]):
         text.append("s", style=f"bold {CASYS_ACCENT}")
         text.append(" start daemon", style=CASYS_DIM)
         text.append("  │  ", style="#332c23")
+        text.append("esc", style=f"bold {CASYS_ACCENT}")
+        text.append(" skip · ", style=CASYS_DIM)
         text.append("?", style=f"bold {CASYS_ACCENT}")
         text.append(" help · ", style=CASYS_DIM)
         text.append("q", style=f"bold {CASYS_ACCENT}")

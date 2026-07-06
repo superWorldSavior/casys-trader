@@ -236,20 +236,17 @@ class CockpitApp(App):
     # ------------------------------------------------------------------
 
     def _maybe_first_run(self) -> None:
-        """Écran preflight au premier lancement (jamais de démarrage implicite).
+        """Écran preflight quand le daemon n'est pas vivant (jamais de démarrage implicite).
 
-        Conditions : daemon jamais démarré ET aucun historique dans state/.
-        ``--preflight`` force l'affichage (prévisualisation / captures).
+        Affiché si le daemon est arrêté ou n'a jamais tourné — les checks
+        (IB Gateway…) se font AVANT de presser ``s`` ; ``esc`` passe
+        directement au cockpit. ``--preflight`` force l'affichage.
         """
-        from trader.interfaces.cockpit.first_run import has_state_history
-
         if self._force_preflight:
             self.push_screen(FirstRunScreen())
             return
         vital = daemon_vital_state(_STATE_DIR / "daemon_status.json")
-        if vital.status != "never_started":
-            return
-        if has_state_history(_STATE_DIR):
+        if vital.status == "alive":
             return
         self.push_screen(FirstRunScreen())
 

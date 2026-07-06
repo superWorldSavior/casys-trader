@@ -347,12 +347,31 @@ async def test_first_run_screen_on_fresh_state(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_no_first_run_when_history_exists(tmp_path, monkeypatch):
+async def test_no_preflight_when_daemon_alive(tmp_path, monkeypatch):
+    """Daemon vivant → le cockpit monte directement, pas de preflight."""
     _patch_paths(monkeypatch, tmp_path)
     (tmp_path / "decisions.jsonl").write_text("{}\n", encoding="utf-8")
+    _write_daemon_alive(tmp_path, monkeypatch)
     app = CockpitApp()
     async with app.run_test(size=(160, 44)) as pilot:
         await pilot.pause()
+        await pilot.pause()
+        assert not isinstance(app.screen, FirstRunScreen)
+
+
+async def test_preflight_when_daemon_stopped_despite_history(tmp_path, monkeypatch):
+    """Daemon arrêté (même avec historique) → preflight, esc passe au cockpit."""
+    _patch_paths(monkeypatch, tmp_path)
+    (tmp_path / "decisions.jsonl").write_text("{}\n", encoding="utf-8")
+    (tmp_path / "daemon_status.json").write_text('{"pid": 99999}', encoding="utf-8")
+    stopped = DaemonVitalState(status="stopped", since_seconds=None, battement_old=False)
+    monkeypatch.setattr(cockpit_module, "daemon_vital_state", lambda _p: stopped)
+    app = CockpitApp()
+    async with app.run_test(size=(160, 44)) as pilot:
+        await pilot.pause()
+        await pilot.pause()
+        assert isinstance(app.screen, FirstRunScreen)
+        await pilot.press("escape")
         await pilot.pause()
         assert not isinstance(app.screen, FirstRunScreen)
 
