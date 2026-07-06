@@ -256,9 +256,12 @@ def _build_exit_plan_panel(
         if stop is not None:
             stop_text = Text()
             stop_text.append(f.fmt_compact(stop, decimals=2), style=CASYS_MUTED)
-            dist = f.stop_distance_pct(plan, price)
-            if dist is not None:
-                stop_text.append(f"  {dist:+.1f}%", style=CASYS_ERROR)
+            left_pct = f.stop_left_pct(plan, price)
+            if left_pct is not None:
+                stop_text.append(f"  left {left_pct:.1f}%", style=CASYS_ERROR)
+            entry_risk_pct = f.stop_entry_risk_pct(plan)
+            if entry_risk_pct is not None:
+                stop_text.append(f" · entry risk {entry_risk_pct:.1f}%", style=CASYS_FAINT)
             ep_grid.add_row(Text("hard stop", style=CASYS_FAINT), stop_text)
 
         # take-profits

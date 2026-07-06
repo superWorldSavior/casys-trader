@@ -254,6 +254,13 @@ def test_body_shows_exit_plan() -> None:
     assert "4,700" in rendered
 
 
+def test_body_exit_plan_labels_stop_left_and_entry_risk() -> None:
+    rendered = _render(build_symbol_body(_STATE_FULL, SYMBOL, now=NOW), width=160)
+
+    assert "left 2.6%" in rendered
+    assert "entry risk 8.6%" in rendered
+
+
 def test_body_shows_amend_rejected_warning() -> None:
     rendered = _render(build_symbol_body(_STATE_FULL, SYMBOL, now=NOW), width=140)
     assert "amend rejected" in rendered

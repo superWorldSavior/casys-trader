@@ -273,6 +273,8 @@ def build_positions_rows(state: dict, sort_mode: int = 0) -> list[dict]:
         last = _safe_float(holding.get("last_price"), default=None)
         plan = f.plan_for_symbol(trade_plans, symbol)
         stop_dist = f.stop_distance_pct(plan, last) if plan else None
+        stop_left = f.stop_left_pct(plan, last) if plan else None
+        stop_entry_risk = f.stop_entry_risk_pct(plan) if plan else None
         rows.append(
             {
                 "symbol": symbol,
@@ -284,6 +286,8 @@ def build_positions_rows(state: dict, sort_mode: int = 0) -> list[dict]:
                 "pnl": pnl,
                 "pnl_pct": pnl_pct_val,
                 "stop_dist": stop_dist,
+                "stop_left_pct": stop_left,
+                "stop_entry_risk_pct": stop_entry_risk,
                 "is_stale": f.symbol_is_stale(state, symbol),
                 "data_age_m": f.staleness_age_m(state, symbol),
             }
@@ -380,7 +384,7 @@ class PortfolioPage(ResizeRefresh, Static):
         ("VALUE $", 8),
         ("P&L $", 7),
         ("P&L %", 7),
-        ("STOP", 6),
+        ("STOP LEFT", 9),
         ("DATA", 10),
     )
     _active_drops: frozenset[str] | None = None
@@ -433,8 +437,8 @@ class PortfolioPage(ResizeRefresh, Static):
             pnl_style = CASYS_SUCCESS if pnl >= 0 else CASYS_ERROR
 
             plan = f.plan_for_symbol(trade_plans, symbol)
-            stop_dist = f.stop_distance_pct(plan, last) if plan else None
-            stop_str = f"{stop_dist:+.1f}%" if stop_dist is not None else "—"
+            stop_left = f.stop_left_pct(plan, last) if plan else None
+            stop_str = f"{stop_left:.1f}%" if stop_left is not None else "—"
 
             if side_long:
                 gross_long += notional
@@ -451,7 +455,7 @@ class PortfolioPage(ResizeRefresh, Static):
                 "VALUE $": Text(f"${notional:,.0f}" if notional else "—", style=CASYS_FG),
                 "P&L $": Text(f.fmt_signed(pnl), style=pnl_style),
                 "P&L %": Text(f"{pnl_pct_val:+.1f}%", style=pnl_style),
-                "STOP": Text(stop_str, style=CASYS_DIM),
+                "STOP LEFT": Text(stop_str, style=CASYS_DIM),
                 "DATA": _data_cell(state, symbol),
             }
             table.add_row(

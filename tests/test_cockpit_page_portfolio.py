@@ -455,6 +455,39 @@ def test_build_positions_rows_stop_for_plan():
     assert aapl["stop_dist"] is not None
 
 
+def test_build_positions_rows_distinguishes_stop_left_from_entry_risk():
+    from trader.interfaces.cockpit.pages.portfolio import build_positions_rows
+
+    state = {
+        "portfolio": {
+            "holdings": [
+                {
+                    "symbol": "1326.TW",
+                    "quantity": 3000,
+                    "avg_price": 69.0,
+                    "last_price": 67.4,
+                    "unrealized_pnl_net": -159.87,
+                    "fx_rate": 0.031178871385847216,
+                }
+            ]
+        },
+        "prices": {"1326.TW": 67.4},
+        "trade_plans": [
+            {
+                "symbol": "1326.TW",
+                "side": "LONG",
+                "entry_price": 69.0,
+                "hard_stop_price": 66.9,
+            }
+        ],
+    }
+
+    row = build_positions_rows(state)[0]
+
+    assert row["stop_left_pct"] == pytest.approx(0.7418, abs=0.01)
+    assert row["stop_entry_risk_pct"] == pytest.approx(3.0435, abs=0.01)
+
+
 def test_build_positions_rows_no_stop_without_plan():
     from trader.interfaces.cockpit.pages.portfolio import build_positions_rows
 

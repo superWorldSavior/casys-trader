@@ -296,6 +296,21 @@ def stop_distance_pct(plan: dict, reference: float | None) -> float | None:
     return (stop - reference) / reference * 100.0
 
 
+def stop_left_pct(plan: dict, reference: float | None) -> float | None:
+    """Distance restante jusqu'au stop, en pourcentage absolu du prix courant."""
+    distance = stop_distance_pct(plan, reference)
+    return abs(distance) if distance is not None else None
+
+
+def stop_entry_risk_pct(plan: dict) -> float | None:
+    """Distance stop vs entrée, en pourcentage absolu du prix d'entrée."""
+    stop = _safe_float(plan.get("hard_stop_price"), default=None)
+    entry = _safe_float(plan.get("entry_price"), default=None)
+    if stop is None or not entry:
+        return None
+    return abs((stop - entry) / entry * 100.0)
+
+
 def protect_label(plan: dict) -> str:
     """PROTECT du design : "trail 3.5%" / "prot 0.5R" / "breakeven" / "—"."""
     trailing = plan.get("trailing_stop")

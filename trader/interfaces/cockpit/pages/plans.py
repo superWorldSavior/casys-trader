@@ -217,7 +217,7 @@ def build_exit_plans(state: dict, *, now: datetime) -> RenderableType:
     grid.add_column(no_wrap=True, width=1)              # L/S
     grid.add_column(no_wrap=True, width=6, justify="right")   # QTY
     grid.add_column(no_wrap=True, width=8, justify="right")   # ENTRY
-    grid.add_column(no_wrap=True, width=14)             # STOP (price + pct)
+    grid.add_column(no_wrap=True, width=28)             # STOP (price + left + entry risk)
     grid.add_column(no_wrap=True, width=15)             # TAKE-PROFIT
     grid.add_column(no_wrap=True, width=11)             # PROTECT
     grid.add_column(no_wrap=True)                       # REVIEWED
@@ -245,9 +245,10 @@ def build_exit_plans(state: dict, *, now: datetime) -> RenderableType:
         )
         entry = _safe_float(plan.get("entry_price"), default=None)
 
-        # STOP : prix + pct
+        # STOP : prix, distance restante, puis risque initial depuis l'entrée.
         ref = f.price_for_symbol(state, sym) or entry
-        pct = _stop_pct(plan, ref)
+        left_pct = f.stop_left_pct(plan, ref)
+        entry_risk_pct = f.stop_entry_risk_pct(plan)
         rejected = sym in amend_rejected
         pct_style = CASYS_ERROR if rejected else CASYS_DIM
 
@@ -255,8 +256,10 @@ def build_exit_plans(state: dict, *, now: datetime) -> RenderableType:
         stop_raw = _safe_float(plan.get("hard_stop_price"), default=None)
         if stop_raw is not None:
             stop_text.append(_price_fmt(stop_raw), style=CASYS_MUTED)
-            if pct is not None:
-                stop_text.append(f" {pct:+.1f}%", style=pct_style)
+            if left_pct is not None:
+                stop_text.append(f" left {left_pct:.1f}%", style=pct_style)
+            if entry_risk_pct is not None:
+                stop_text.append(f" entry {entry_risk_pct:.1f}%", style=CASYS_FAINT)
         else:
             stop_text.append("—", style=CASYS_DIM)
 

@@ -367,6 +367,28 @@ def test_build_exit_plans_short():
     assert "S" in rendered  # side Short
 
 
+def test_build_exit_plans_labels_stop_left_and_entry_risk():
+    state = {
+        "trade_plans": [
+            {
+                "symbol": "1326.TW",
+                "side": "LONG",
+                "quantity": 3000,
+                "remaining_quantity": 3000,
+                "entry_price": 69.0,
+                "hard_stop_price": 66.9,
+                "take_profits": [{"price": 73.0}],
+            }
+        ],
+        "prices": {"1326.TW": 67.4},
+    }
+
+    rendered = _render(build_exit_plans(state, now=NOW), width=180)
+
+    assert "left 0.7%" in rendered
+    assert "entry 3.0%" in rendered
+
+
 def test_build_exit_plans_sorted_by_distance():
     """Plans triés : stop le plus proche (distance abs min) d'abord."""
     state = {
