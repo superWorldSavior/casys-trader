@@ -56,7 +56,13 @@ from trader.interfaces.cockpit.pages.plans import PlansPage
 from trader.interfaces.cockpit.pages.portfolio import PortfolioPage
 from trader.interfaces.cockpit.pages.settings import SettingsPage
 from trader.interfaces.cockpit.pages.universe import UniversePage
-from trader.interfaces.cockpit.shell import CockpitFooter, KpiBand, NavItem, NavRail
+from trader.interfaces.cockpit.shell import (
+    AlertBanner,
+    CockpitFooter,
+    KpiBand,
+    NavItem,
+    NavRail,
+)
 from trader.interfaces.cockpit.supervisor import daemon_vital_state
 from trader.interfaces.ui.palette import PALETTE_CASYS, Palette
 from trader.reporting.read_models.runtime_state import load_runtime_state
@@ -205,6 +211,7 @@ class CockpitApp(App):
         yield rail
         with Vertical(id="main"):
             yield KpiBand(id="kpi-band")
+            yield AlertBanner(id="alert-banner")
             with ContentSwitcher(id="page-switcher", initial="home-page"):
                 for page in PAGES:
                     widget_cls = _PAGE_WIDGETS[page.key]
@@ -337,6 +344,14 @@ class CockpitApp(App):
             pass
         try:
             self.query_one("#kpi-band", KpiBand).update_state(state, now=now)
+        except Exception:
+            pass
+        try:
+            from trader.interfaces.cockpit.derive import rail_vitals
+
+            self.query_one("#alert-banner", AlertBanner).update_state(
+                rail_vitals(state, vital=vital, kill_active=kill_active, now=now)
+            )
         except Exception:
             pass
         self._update_page(self._active_page_key, state)

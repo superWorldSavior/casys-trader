@@ -473,3 +473,64 @@ async def test_force_preflight_shows_screen_despite_history(tmp_path, monkeypatc
         await pilot.pause()
         assert isinstance(app.screen, FirstRunScreen)
         await pilot.press("escape")
+
+
+def test_alert_banner_states():
+    """Bandeau : None si vivant ; stopped/never/KILL/HALT avec priorité."""
+    from trader.interfaces.cockpit.derive import RailVitals
+    from trader.interfaces.cockpit.shell import build_alert_banner
+
+    alive = RailVitals(running=True, vital_status="alive")
+    assert build_alert_banner(alive) is None
+
+    stopped = RailVitals(vital_status="stopped")
+    rendered = _render(build_alert_banner(stopped), width=120)
+    assert "daemon stopped" in rendered
+    assert "nothing is trading or watching" in rendered
+
+    never = RailVitals(vital_status="never_started")
+    assert "never started" in _render(build_alert_banner(never), width=120)
+
+    killed = RailVitals(vital_status="alive", kill_active=True)
+    rendered = _render(build_alert_banner(killed), width=120)
+    assert "KILL ENGAGED" in rendered
+
+    halted = RailVitals(vital_status="alive", halted="risk_gate")
+    assert "HALT risk_gate" in _render(build_alert_banner(halted), width=120)
+
+    # priorité : KILL avant HALT avant stopped
+    worst = RailVitals(vital_status="stopped", kill_active=True, halted="x")
+    assert "KILL" in _render(build_alert_banner(worst), width=120)
+
+
+async def test_alert_banner_visible_when_daemon_stopped(tmp_path, monkeypatch):
+    from trader.interfaces.cockpit.shell import AlertBanner
+
+    _patch_paths(monkeypatch, tmp_path)
+    (tmp_path / "decisions.jsonl").write_text("{}\n", encoding="utf-8")
+    stopped = DaemonVitalState(status="stopped", since_seconds=None, battement_old=False)
+    monkeypatch.setattr(cockpit_module, "daemon_vital_state", lambda _p: stopped)
+    app = CockpitApp()
+    async with app.run_test(size=(160, 44)) as pilot:
+        await pilot.pause()
+        await pilot.press("escape")  # ferme le preflight
+        await pilot.pause()
+        await pilot.pause()
+        banner = app.query_one("#alert-banner", AlertBanner)
+        # le refresh 2s a pu ne pas encore tourner — force un apply
+        app._apply_state({"dry_run": True}, False)
+        assert banner.has_class("visible")
+
+
+async def test_alert_banner_hidden_when_alive(tmp_path, monkeypatch):
+    from trader.interfaces.cockpit.shell import AlertBanner
+
+    _patch_paths(monkeypatch, tmp_path)
+    (tmp_path / "decisions.jsonl").write_text("{}\n", encoding="utf-8")
+    _write_daemon_alive(tmp_path, monkeypatch)
+    app = CockpitApp()
+    async with app.run_test(size=(160, 44)) as pilot:
+        await pilot.pause()
+        app._apply_state({"dry_run": True}, False)
+        banner = app.query_one("#alert-banner", AlertBanner)
+        assert not banner.has_class("visible")

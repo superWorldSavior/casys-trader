@@ -376,6 +376,54 @@ class KpiBand(Static):
             self.update_state(state)
 
 
+def build_alert_banner(vitals: RailVitals) -> Text | None:
+    """Bandeau d'alerte sous la bande KPI — None si tout est nominal.
+
+    Priorité : KILL > HALT > daemon off. Une seule ligne, pleine largeur.
+    """
+    if vitals.kill_active:
+        text = Text(" !! KILL ENGAGED ", style="bold white on red")
+        text.append(" all orders are blocked — ", style=CASYS_ERROR)
+        text.append("k", style=f"bold {CASYS_ACCENT}")
+        text.append(" to release", style=CASYS_ERROR)
+        return text
+    if vitals.halted:
+        text = Text(f" ▲ HALT {vitals.halted} ", style="bold white on red")
+        text.append(" the engine refused to run — check health (5)", style=CASYS_WARNING)
+        return text
+    if vitals.vital_status == "alive":
+        return None
+    text = Text()
+    if vitals.vital_status == "stopped":
+        text.append(" ● daemon stopped ", style=f"bold {CASYS_ERROR}")
+        text.append("— nothing is trading or watching · ", style=CASYS_DIM)
+    else:
+        text.append(" ○ daemon never started ", style=f"bold {CASYS_ERROR}")
+        text.append("— ", style=CASYS_DIM)
+    text.append("s", style=f"bold {CASYS_ACCENT}")
+    text.append(" to start", style=CASYS_DIM)
+    return text
+
+
+class AlertBanner(Static):
+    """Bandeau d'état critique (daemon off / KILL / HALT), masqué si nominal."""
+
+    DEFAULT_CSS = """
+    AlertBanner {
+        height: 1;
+        display: none;
+        background: #2d1e19;
+    }
+    AlertBanner.visible { display: block; }
+    """
+
+    def update_state(self, vitals: RailVitals) -> None:
+        banner = build_alert_banner(vitals)
+        self.set_class(banner is not None, "visible")
+        if banner is not None:
+            self.update(banner)
+
+
 class CockpitFooter(Static):
     """Footer contextuel — remplace le Footer Textual standard."""
 
