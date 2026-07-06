@@ -1477,20 +1477,13 @@ def run_cycle(
     now = now or datetime.now(timezone.utc)
     universe_cfg = _load_yaml(ROOT / "config" / "universe.yaml")
     risk_cfg = _load_yaml(ROOT / "config" / "risk.yaml")
-    # Pin/ban cockpit appliqués à la LECTURE : le ban prend effet dès le cycle
-    # suivant, même si la rotation n'a pas réécrit universe.yaml. Une position
-    # ouverte bannie reste gérée (jamais éjectée de l'analyse).
-    from trader.market.rotation.collectors import build_positions_fn
-    from trader.market.rotation.user_overrides import effective_universe_symbols
-
-    try:
-        _open_positions = set(build_positions_fn(ROOT / "state")().keys())
-    except Exception:
-        _open_positions = set()
+    # Pin/ban cockpit appliqués à la LECTURE (via l'adaptateur rotation) : le
+    # ban prend effet dès le cycle suivant, même si la rotation n'a pas réécrit
+    # universe.yaml. Une position ouverte bannie reste gérée.
     universe_cfg = {
         **(universe_cfg or {}),
-        "symbols": effective_universe_symbols(
-            ROOT / "config" / "universe.yaml", positions=_open_positions
+        "symbols": market_rotation_runtime.load_effective_universe(
+            ROOT / "config" / "universe.yaml", ROOT / "state"
         ),
     }
     regime_path = ROOT / "config" / "regime.yaml"
@@ -2500,17 +2493,8 @@ def main(
                 )
                 # Pin/ban cockpit appliqués à la lecture (parité run_cycle) :
                 # un ban retire les réveils du scheduler dès la prochaine boucle.
-                from trader.market.rotation.collectors import build_positions_fn as _positions_fn
-                from trader.market.rotation.user_overrides import (
-                    effective_universe_symbols as _effective_universe,
-                )
-
-                try:
-                    _held = set(_positions_fn(STATE_DIR)().keys())
-                except Exception:
-                    _held = set()
-                symbols = _effective_universe(
-                    ROOT / "config" / "universe.yaml", positions=_held
+                symbols = market_rotation_runtime.load_effective_universe(
+                    ROOT / "config" / "universe.yaml", STATE_DIR
                 )
                 sched.reconcile_universe(symbols)
                 cycle_scheduling.expire_indicator_watches(

@@ -80,3 +80,21 @@ def tick_market_rotation(
         )
     except Exception:  # noqa: BLE001 - rotation must never bring down the daemon
         log.exception("rotation tick (D10) échouée")
+
+
+def load_effective_universe(universe_path, state_dir) -> list:
+    """``symbols:`` de universe.yaml avec pin/ban cockpit appliqués à la lecture.
+
+    Adaptateur pour le daemon (qui ne doit pas importer trader.market.rotation
+    directement) : le ban prend effet au cycle suivant même si la rotation n'a
+    pas réécrit le fichier ; une position ouverte bannie reste gérée. Jamais
+    d'exception.
+    """
+    from trader.market.rotation.collectors import build_positions_fn
+    from trader.market.rotation.user_overrides import effective_universe_symbols
+
+    try:
+        positions = set(build_positions_fn(state_dir)().keys())
+    except Exception:  # noqa: BLE001 — collector fail-safe
+        positions = set()
+    return effective_universe_symbols(universe_path, positions=positions)
