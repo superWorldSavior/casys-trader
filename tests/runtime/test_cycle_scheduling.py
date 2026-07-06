@@ -184,6 +184,24 @@ def test_expire_indicator_watches_emits_regular_and_armed_events(tmp_path) -> No
     )
 
     assert [item["id"] for item in expired] == ["SPY:regular", "QQQ:armed"]
+    assert cycle_scheduling.wake_reasons_from_expired_watches(expired, now=now) == [
+        {
+            "symbol": "SPY",
+            "reason": "watch_expired",
+            "watch_id": "SPY:regular",
+            "on_trigger": "WAKE",
+            "expires_at": "2026-06-05T13:00:00+00:00",
+            "observed_at": now.isoformat(),
+        },
+        {
+            "symbol": "QQQ",
+            "reason": "armed_plan_expired",
+            "watch_id": "QQQ:armed",
+            "on_trigger": "EXECUTE_ORDER",
+            "expires_at": "2026-06-05T13:00:00+00:00",
+            "observed_at": now.isoformat(),
+        },
+    ]
     assert events == [
         (
             "indicator_watch_expired",

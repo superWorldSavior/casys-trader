@@ -226,6 +226,57 @@ class TestDaemonDataSourcesConfig:
         assert context.queue_execute_enabled is True
         assert context.agent_tools_enabled is True
 
+    def test_main_ne_dispatch_pas_de_cycle_quand_aucun_symbole_n_est_du(
+        self, monkeypatch, tmp_path
+    ):
+        """Si le scheduler dort, la boucle surveille les veilles sans lancer de cycle vide."""
+        _write_runtime_config(tmp_path)
+        state_dir = tmp_path / "state"
+        now = datetime(2026, 6, 10, 12, 0, tzinfo=timezone.utc)
+        Scheduler(state_dir / "scheduler.json").set_symbol_next_wake(
+            "SPY",
+            "2026-06-10T13:00:00+00:00",
+        )
+        dispatch_calls: list[dict] = []
+        sleeps: list[float] = []
+
+        class FakeSource:
+            def disconnect(self):
+                pass
+
+        delegated_source = FakeSource()
+
+        def build_data_source(_config, **_kwargs):
+            return data_source_runtime.DataSourceState(
+                data_source=delegated_source,
+                composite_available={},
+                ib_attach_backoff=None,
+            )
+
+        def dispatch_run_cycle(**kwargs):
+            dispatch_calls.append(kwargs)
+            return _empty_report(now)
+
+        def sleep(seconds: float) -> None:
+            sleeps.append(seconds)
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr(daemon, "ROOT", tmp_path)
+        monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+        monkeypatch.setattr(daemon, "data_source_runtime", data_source_runtime, raising=False)
+        monkeypatch.setattr(data_source_runtime, "build_data_source", build_data_source)
+        monkeypatch.setattr(daemon, "market_rotation_runtime", market_rotation_runtime, raising=False)
+        monkeypatch.setattr(market_rotation_runtime, "tick_market_rotation", lambda **_kwargs: None)
+        monkeypatch.setattr(daemon, "cycle_dispatch", cycle_dispatch, raising=False)
+        monkeypatch.setattr(cycle_dispatch, "dispatch_run_cycle", dispatch_run_cycle)
+        monkeypatch.setattr(daemon.time, "sleep", sleep)
+
+        with pytest.raises(KeyboardInterrupt):
+            daemon.main(["--poll", "0.01"], now_fn=lambda: now)
+
+        assert dispatch_calls == []
+        assert sleeps == [0.01]
+
     def test_config_presente_construit_composite_et_passe_au_cycle(
         self, monkeypatch, tmp_path
     ):

@@ -2,8 +2,8 @@
 
 **Date** : 2026-07-02
 **Status** : spec approuvée pour spike (décision Erwan) ; à exécuter AVANT les outils d'action
-**Amont** : `2026-06-29-agent-domain-tools-design.md` (couche d'outils, §4 non-goals
-reportait MCP), `docs/specs/2026-07-02-acpx-fork-upstream-inventory.md` (#366
+**Amont** : `docs/reference/agent-tools.md` (couche d'outils livrée ; la spec
+historique 2026-06-29 reportait MCP), `docs/superpowers/specs/2026-07-02-acpx-fork-upstream-inventory.md` (#366
 schema/tools upstream), état actuel : protocole-maison JSON-en-prose livré et actif.
 
 ---

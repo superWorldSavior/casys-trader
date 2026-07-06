@@ -49,18 +49,28 @@ CASYS_IB_HOST=127.0.0.1 CASYS_IB_PORT=4002 CASYS_IB_CLIENT_ID=17 ./run.sh --once
 trader/
   runtime/           daemon, CLI, logging, version, IB attach
   agent/             contexte agent, mémoire mandat, client Codex, transport LLM/acpx
+    protocol/        prompts, parsing, types du contrat LLM
+    tools/           domain tools exposés au LLM
+    learnings/       buffer brut JSONL, consolidation, recall SQLite
+  application/       services du cycle runtime extraits du daemon
   planning/          plans, veilles indicateurs, exit engine, relevance gate
   execution/         RiskGate et contraintes d'ordre
-  application/       services du cycle runtime extraits du daemon
-  reporting/         ledger, attribution, stats, audit décisionnel
   market/            indicateurs, FX, macro, radar, régime
-  learnings/         buffer brut JSONL, consolidation, recall SQLite
-  tools/             façades de compatibilité legacy vers les packages ci-dessus
+    rotation/        radar, hot-sets, hystérésis, overrides
+  reporting/         ledgers, attribution, stats, audit, read models
+  infrastructure/    queue durable, backend état SQLite
+  interfaces/        CLI, cockpit Textual, builders UI
+  domain/            primitives et catalogues métier neutres
+  support/           config, metadata, helpers process
 backtest/                            <- backtest maison (SimBroker + yfinance)
 config/  universe.yaml  risk.yaml
 mandate/ mandate.md  memory.md      <- définis en boucle 1
 skills/  skills dispo (dev + runtime)
-docs/specs/                          <- design de référence
+docs/reference/                       <- références canoniques runtime
+docs/how-to/                          <- procédures opérateur
+docs/decisions/                       <- registre des décisions métier
+docs/superpowers/specs/               <- specs historiques / design livré
+docs/superpowers/plans/               <- plans de refacto et traces de chantier
 ```
 
 ## Backtest maison (`backtest/`)
@@ -180,12 +190,15 @@ Le daemon importe les mêmes fonctions Python et expose seulement
 
 ## Réveils par timer ou indicateurs
 
+Source canonique détaillée : [`docs/reference/wake-scheduler.md`](docs/reference/wake-scheduler.md).
+
 À chaque décision, l'agent peut choisir un simple `next_wake_in_minutes` ou poser
 une `indicator_watch`. Une watch contient une combinaison `all|any` de conditions
 sur indicateurs déterministes, chacune avec son `symbol`, `indicator`, `op`,
 `value`, `interval` (`15m`, `30m`, `1h`, `4h`, `1d`), `lookback`, `window` et
-`as_of`. Elle a un `ttl_minutes` : après expiration, elle est purgée et le symbole
-retombe sur son timer normal.
+`as_of`. Elle a un `ttl_minutes` : tant qu'elle est active, le symbole dort hors
+du cycle périodique. À l'expiration, elle est purgée et le symbole est réveillé
+immédiatement pour que l'agent re-décide.
 
 Le daemon scanne ces watches au poll sans appeler Codex. Si une combinaison
 déclenche, la watch est retirée, le symbole devient dû immédiatement, et le

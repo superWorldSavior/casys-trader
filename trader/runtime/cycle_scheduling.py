@@ -187,9 +187,11 @@ def expire_indicator_watches(
     event_appender = append_event or _noop_event
     info_logger = log_info or _noop_log
     for item in expired:
-        symbol = str(item.get("symbol"))
+        symbol = str(item.get("symbol") or "")
         watch_id = str(item.get("id") or "")
         on_trigger = item.get("on_trigger")
+        if symbol:
+            sched.set_symbol_next_wake(symbol, now.isoformat())
         event_appender(
             "armed_plan_expired" if on_trigger == "EXECUTE_ORDER" else "indicator_watch_expired",
             symbol=symbol,
@@ -198,9 +200,30 @@ def expire_indicator_watches(
             expires_at=item.get("expires_at"),
         )
         info_logger(
-            "[watch] expirée %s %s on_trigger=%s (TTL atteint → réveil déjà calé, l'agent re-décide)",
+            "[watch] expirée %s %s on_trigger=%s (TTL atteint → réveil immédiat)",
             symbol,
             watch_id,
             on_trigger,
         )
     return expired
+
+
+def wake_reasons_from_expired_watches(expired: list[dict], *, now: datetime) -> list[dict]:
+    reasons: list[dict] = []
+    observed_at = now.isoformat()
+    for item in expired:
+        symbol = str(item.get("symbol") or "")
+        if not symbol:
+            continue
+        on_trigger = item.get("on_trigger")
+        reasons.append(
+            {
+                "symbol": symbol,
+                "reason": "armed_plan_expired" if on_trigger == "EXECUTE_ORDER" else "watch_expired",
+                "watch_id": str(item.get("id") or ""),
+                "on_trigger": on_trigger,
+                "expires_at": item.get("expires_at"),
+                "observed_at": observed_at,
+            }
+        )
+    return reasons

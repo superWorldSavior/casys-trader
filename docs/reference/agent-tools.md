@@ -74,12 +74,12 @@ Action tools acceptés :
 |---|---|---|
 | `propose_order` | `action` / `quantity` / `intent` + `exit_plan` | compile une intention (`intent` OPEN_LONG/OPEN_SHORT/REDUCE/CLOSE/REVERSE) ; le daemon valide puis RiskGate/broker. Options : `thesis` (L6), side/qty position-aware (L2, ci-dessous) |
 | `amend_exit` | — *(nouveau, L3)* | patche le plan de sortie d'une position **déjà ouverte** (`hard_stop`/`tp`/`trail`/`protect`, même vocabulaire compact que `propose_order.exit`) sans fermer/rouvrir ; no-op tracé si pas de plan ouvert. Peut coexister avec `calls:[]` (HOLD + gestion active) |
-| `set_next_wake` | `next_wake_in_minutes` | planifie la **reconsultation** du symbole : `{minutes}` (timer) OU `{on: session_open\|macro_event\|pre_earnings}` (événement calendaire, L5) |
+| `set_next_wake` | `next_wake_in_minutes` | planifie la **reconsultation** du symbole : `{minutes}` (timer), `{on: session_open\|macro_event\|pre_earnings}` (événement calendaire) ou `{when:<condition>}` (réveil-sur-indicateur, compilé en `WAKE`) |
 | `propose_indicator_watch` | `indicator_watch` | pose une veille/plan armé via le scheduler (`WAKE` = réveil de reconsultation ; `EXECUTE_ORDER` = **plan armé** exécuté sans reconsulter) |
 | `cancel_watch` | `cancel_watch_ids` | annule seulement les veilles possédées par le symbole |
 | `record_learning` | `learning` | borne et persiste une note runtime |
 
-**Réveil vs plan armé** : `set_next_wake` = **reconsultation** (l'agent reprend la main pour redécider) ; `propose_indicator_watch{on_trigger:EXECUTE_ORDER}` = **automatisation** (le daemon exécute sans reconsulter l'agent). Aujourd'hui le réveil-sur-indicateur passe par `propose_indicator_watch{WAKE}` — non encore fusionné dans `set_next_wake` (backlog).
+**Réveil vs plan armé** : `set_next_wake` = **reconsultation** (l'agent reprend la main pour redécider). Avec `{when:<condition>}`, il est compilé en `indicator_watch{on_trigger:WAKE}`. `propose_indicator_watch{on_trigger:EXECUTE_ORDER}` = **automatisation** (le daemon exécute sans reconsulter l'agent). `set_next_wake{when}` et `propose_indicator_watch` dans la même décision sont rejetés comme ambigus.
 
 **Side de `propose_order`** : `OPEN_LONG`→BUY et `OPEN_SHORT`→SELL sont déduits
 automatiquement. **`CLOSE`/`REDUCE`/`REVERSE` dérivent aussi la side depuis la
@@ -150,4 +150,4 @@ frère `context_request` s'exerce, le câblage est vérifié vivant. Cf. discuss
 paradigme push-complet dans le registre / analyses.
 
 ## Voir aussi
-- [RAG / learnings](learnings-rag.md) · [reporting](reporting.md) · Architecture §10.
+- [Scheduler / watches](wake-scheduler.md) · [RAG / learnings](learnings-rag.md) · [reporting](reporting.md) · Architecture §10.

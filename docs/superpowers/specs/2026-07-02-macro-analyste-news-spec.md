@@ -3,7 +3,7 @@
 **Date** : 2026-07-02
 **Status** : P1a LIVRÉ 2026-07-02 (news_items persist + macro_calendar FOMC + macro_next payload + macro_series DBnomics — testés, câblés daemon) ; P2 analyste-news EN ATTENTE de stock d'items (~2-3 semaines).
 **Amont** : `2026-07-02-macro-fundamental-design-sketch.md` (architecture 3 étages,
-phasage réordonné), `docs/specs/2026-07-02-macro-data-sources.md` (sources),
+phasage réordonné), `docs/superpowers/specs/2026-07-02-macro-data-sources.md` (sources),
 pattern consolidateur (`trader/consolidator.py`) et news-feed
 (`trader/tools/news_feed.py`).
 

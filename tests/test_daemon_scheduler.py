@@ -219,6 +219,40 @@ def test_scan_indicator_watches_reveille_le_symbole_declenche(monkeypatch, tmp_p
     assert sched.next_wake("SPY") == now
 
 
+def test_expiration_indicator_watch_reveille_immediatement_le_symbole(tmp_path) -> None:
+    state_dir = tmp_path / "state"
+    sched = Scheduler(state_dir / "scheduler.json")
+    now = datetime(2026, 6, 5, 12, 10, tzinfo=timezone.utc)
+    sched.set_next_wake("2026-06-05T13:00:00+00:00")
+    sched.set_symbol_indicator_watch(
+        "SPY",
+        {
+            "id": "spy-watch",
+            "symbol": "SPY",
+            "created_at": "2026-06-05T12:00:00+00:00",
+            "expires_at": "2026-06-05T12:05:00+00:00",
+            "logic": "all",
+            "on_trigger": "WAKE",
+            "conditions": [
+                {
+                    "symbol": "SPY",
+                    "indicator": "return",
+                    "op": ">",
+                    "value": 0.05,
+                    "interval": "15m",
+                    "window": 3,
+                }
+            ],
+        },
+    )
+
+    expired = daemon.cycle_scheduling.expire_indicator_watches(sched, now=now)
+
+    assert expired[0]["symbol"] == "SPY"
+    assert sched.next_wake("SPY") == now
+    assert sched.due_symbols(["SPY"], now=now) == ["SPY"]
+
+
 def test_scan_indicator_watches_charge_les_pairs_cross_asset(monkeypatch, tmp_path, patch_batch, make_data_source) -> None:
     state_dir = tmp_path / "state"
     sched = Scheduler(state_dir / "scheduler.json")
@@ -301,3 +335,43 @@ def test_run_cycle_injecte_les_indicator_triggers_dans_le_contexte(monkeypatch, 
 
     assert captured_context["indicator_triggers"] == [trigger]
     assert report["indicator_triggers"] == [trigger]
+
+
+def test_run_cycle_injecte_les_wake_reasons_dans_le_contexte(monkeypatch, tmp_path, patch_batch, make_data_source) -> None:
+    _write_runtime_config(tmp_path)
+    state_dir = tmp_path / "state"
+    sched = Scheduler(state_dir / "scheduler.json")
+    now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
+    captured_context: dict = {}
+
+    monkeypatch.setattr(daemon, "ROOT", tmp_path)
+    monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+    data_source = make_data_source(lambda symbol, lookback, interval: [
+        Bar(ts=now.isoformat(), open=100.0, high=101.0, low=99.0, close=100.0, volume=1000.0)
+    ])
+
+    def decide(**kwargs) -> Decision:
+        captured_context.update(kwargs["context"])
+        return Decision.hold(kwargs["symbol"], "raison de reveil inspectee")
+
+    patch_batch(decide)
+
+    wake_reason = {
+        "symbol": "SPY",
+        "reason": "watch_expired",
+        "watch_id": "SPY:old-watch",
+        "on_trigger": "WAKE",
+        "expires_at": "2026-06-05T11:59:00+00:00",
+        "observed_at": now.isoformat(),
+    }
+    report = daemon.run_cycle(
+        dry_run=True,
+        now=now,
+        symbols_filter=["SPY"],
+        sched=sched,
+        data_source=data_source,
+        wake_reasons=[wake_reason],
+    )
+
+    assert captured_context["wake_reasons"] == [wake_reason]
+    assert report["wake_reasons"] == [wake_reason]
