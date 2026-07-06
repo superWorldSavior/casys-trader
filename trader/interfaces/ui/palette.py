@@ -156,46 +156,6 @@ PALETTE_LIGHT: Palette = {
 }
 
 # ---------------------------------------------------------------------------
-# PALETTE_INK — sombre gruvbox (cockpit « mode Gonzo », thème par défaut).
-# PALETTE_DARK reste la palette historique de tui.py : NE PAS Y TOUCHER.
-# ---------------------------------------------------------------------------
-PALETTE_INK: Palette = {
-    "border_default": "#665c54",
-    "border_attribution": "#665c54",
-    "border_learnings": "#665c54",
-    "border_plans": "#665c54",
-    "border_watches": "#665c54",
-    "border_llm_activity": "#665c54",
-    "equity_line": "#8ec07c",
-    "equity_dim": "#928374",
-    "kpi_sharpe_ok": "#b8bb26",
-    "kpi_sharpe_bad": "#fb4934",
-    "kpi_default": "#83a598",
-    "kpi_vol_warn": "#d79921",
-    "pnl_positive": "#b8bb26",
-    "pnl_negative": "#fb4934",
-    "symbol_bold": "bold #83a598",
-    "action_buy": "#b8bb26",
-    "action_sell": "#fb4934",
-    "action_hold": "#928374",
-    "learning_symbol": "bold #83a598",
-    "dim": "#928374",
-    "status_equity": "bold #ebdbb2",
-    "status_accent": "#83a598",
-    "status_phase": "#d3869b",
-    "status_nominal": "#b8bb26",
-    "event_decision_exec": "bold #b8bb26",
-    "event_risk_reject": "bold #fb4934",
-    "event_stale": "#928374",
-    "event_hold": "#a89984",
-    "event_watch": "bold #8ec07c",
-    "event_learning": "#83a598",
-    "event_cycle": "#7c6f64",
-    "event_error": "bold #d79921",
-    "event_other": "#928374",
-}
-
-# ---------------------------------------------------------------------------
 # PALETTE_CASYS — thème signature unique du cockpit (dark-amber).
 #
 # Règle sémantique : vert/rouge réservés au P&L, au side (L/S) et à buy/sell ;

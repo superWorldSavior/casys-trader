@@ -361,3 +361,83 @@ async def test_no_first_run_when_history_exists(tmp_path, monkeypatch):
 async def test_theme_cycle_is_gone():
     assert not hasattr(cockpit_module, "_THEME_CYCLE")
     assert not any(b.key == "d" for b in CockpitApp.BINDINGS)
+
+
+def test_app_paths_point_to_repo_root():
+    """_ROOT/_STATE_DIR/_CONFIG_DIR pointent la racine du repo (invariant porté du smoke legacy)."""
+    from pathlib import Path
+
+    root = Path(cockpit_module.__file__).resolve().parents[3]
+    assert Path(cockpit_module._ROOT) == root
+    assert Path(cockpit_module._STATE_DIR) == root / "state"
+    assert Path(cockpit_module._CONFIG_DIR) == root
+
+
+async def test_ctrl_c_with_alive_daemon_opens_confirm_quit(tmp_path, monkeypatch):
+    from trader.interfaces.cockpit.modals import ConfirmQuit
+
+    _patch_paths(monkeypatch, tmp_path)
+    (tmp_path / "decisions.jsonl").write_text("{}\n", encoding="utf-8")
+    _write_daemon_alive(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        "trader.interfaces.cockpit.supervisor.daemon_vital_state",
+        lambda _p: DaemonVitalState(status="alive", since_seconds=1.0, battement_old=False),
+    )
+    app = CockpitApp()
+    async with app.run_test(size=(160, 44)) as pilot:
+        await pilot.pause()
+        await pilot.press("ctrl+c")
+        await pilot.pause()
+        assert isinstance(app.screen, ConfirmQuit)
+        await pilot.press("escape")
+
+
+async def test_confirm_quit_exits_even_if_stop_daemon_raises(tmp_path, monkeypatch):
+    """stop_daemon lève → app.exit() quand même (pas de cockpit zombie)."""
+    _patch_paths(monkeypatch, tmp_path)
+    (tmp_path / "decisions.jsonl").write_text("{}\n", encoding="utf-8")
+    (tmp_path / "daemon_status.json").write_text('{"pid": 4242}', encoding="utf-8")
+    _write_daemon_alive(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        "trader.interfaces.cockpit.supervisor.daemon_vital_state",
+        lambda _p: DaemonVitalState(status="alive", since_seconds=1.0, battement_old=False),
+    )
+
+    def _boom(**_kwargs):
+        raise RuntimeError("stop failed")
+
+    monkeypatch.setattr("trader.interfaces.cockpit.supervisor.stop_daemon", _boom)
+    app = CockpitApp()
+    async with app.run_test(size=(160, 44)) as pilot:
+        await pilot.pause()
+        await pilot.press("q")
+        await pilot.pause()
+        await pilot.click("#confirm-quit-stop")
+        await pilot.pause()
+    assert app._exit  # sorti malgré l'erreur
+
+
+async def test_confirm_quit_keep_daemon_exits_without_stopping(tmp_path, monkeypatch):
+    """« Quit, keep daemon » : le cockpit sort, stop_daemon jamais appelé."""
+    _patch_paths(monkeypatch, tmp_path)
+    (tmp_path / "decisions.jsonl").write_text("{}\n", encoding="utf-8")
+    (tmp_path / "daemon_status.json").write_text('{"pid": 4242}', encoding="utf-8")
+    _write_daemon_alive(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        "trader.interfaces.cockpit.supervisor.daemon_vital_state",
+        lambda _p: DaemonVitalState(status="alive", since_seconds=1.0, battement_old=False),
+    )
+    calls: list = []
+    monkeypatch.setattr(
+        "trader.interfaces.cockpit.supervisor.stop_daemon",
+        lambda **kwargs: calls.append(kwargs),
+    )
+    app = CockpitApp()
+    async with app.run_test(size=(160, 44)) as pilot:
+        await pilot.pause()
+        await pilot.press("q")
+        await pilot.pause()
+        await pilot.click("#confirm-quit-only")
+        await pilot.pause()
+    assert app._exit
+    assert calls == []  # le daemon survit

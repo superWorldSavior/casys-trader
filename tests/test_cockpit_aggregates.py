@@ -25,14 +25,6 @@ def test_decision_status_priorites():
     assert decision_status({"action": "BUY"}) == "signal"
 
 
-def test_decision_status_identique_a_overview():
-    """Anti-régression : overview délègue au même code."""
-    from trader.cockpit import aggregates, overview
-
-    row = {"reason": "risk:x", "action": "SELL"}
-    assert overview._decision_status(row) == aggregates.decision_status(row)
-
-
 def test_parse_ts_z_et_naif_et_invalide():
     from trader.cockpit.aggregates import parse_ts
 
