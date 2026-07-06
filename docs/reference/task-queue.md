@@ -168,7 +168,9 @@ Répartition runtime :
   budget fonctionnel. **No call cap** : pas de limite d'admission par appels en
   queue ; `model_calls_used` est une métrique d'observabilité, pas une limite. Le
   coût est borné par le timeout par appel, `ResourcePools` AIMD, le traitement async
-  qui reporte les non-finies, et l'univers borné. Le lease decide session est court
+  qui reporte les non-finies, et l'univers borné. Le timeout est piloté par
+  `CASYS_DECISION_TIMEOUT_S` (`.env` paper : 240 s au 2026-07-06 ; défaut code :
+  900 s). Le lease decide session est court
   (intervalle inter-heartbeat, typiquement `(decision_timeout_s + 30) * 2`) et le
   worker renouvelle via heartbeat après l'ouverture de session puis après chaque
   appel modèle. REQUEST_CONTEXT legacy reste désactivé (le tool round moderne est

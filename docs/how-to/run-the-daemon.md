@@ -37,6 +37,8 @@ Si le daemon est en phase `deciding_batch` (`ThreadPoolExecutor` + `proc.communi
 **le SIGINT ne l'interrompt PAS** — `shutdown(wait=True)` attend la fin des appels
 LLM en vol (jusqu'à `decision_timeout_s`, défaut 900 s). Le daemon meurt en ~1-2 s
 seulement quand il est **hors batch** (pause inter-cycle, phase ≠ `deciding_batch`).
+En paper local, `.env` peut réduire ce plafond via `CASYS_DECISION_TIMEOUT_S`
+(240 s au 2026-07-06) pour éviter qu'un appel `acpx` silencieux immobilise un cycle.
 
 **Restart robuste** : envoyer SIGINT, puis boucler tant que vivant en re-signalant
 dès que `phase != "deciding_batch"` (le main thread est alors en `sleep`,
