@@ -29,7 +29,7 @@ from textual.containers import Vertical, VerticalScroll
 from textual.widgets import DataTable, Static
 
 from trader.interfaces.cockpit import format as f
-from trader.interfaces.cockpit.pages._shared import ResizeRefresh, PANEL_CSS
+from trader.interfaces.cockpit.pages._shared import preserve_cursor, ResizeRefresh, PANEL_CSS
 from trader.interfaces.ui.palette import (
     CASYS_ACCENT,
     CASYS_DIM,
@@ -758,9 +758,10 @@ class DecisionsPage(ResizeRefresh, Static):
 
             table = self.query_one("#ledger-table", DataTable)
             self._rebuild_columns()
-            self._row_map = populate_ledger_table(
-                table, grouped, state, now=now, drop_source=bool(self._drop_source)
-            )
+            with preserve_cursor(table):
+                self._row_map = populate_ledger_table(
+                    table, grouped, state, now=now, drop_source=bool(self._drop_source)
+                )
 
             total = len(all_rows)
             self.query_one("#ledger-panel").border_title = (

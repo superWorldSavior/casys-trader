@@ -20,7 +20,7 @@ from textual.widgets import Static
 
 from trader.interfaces.cockpit import format as f
 from trader.interfaces.cockpit.derive import equity_snapshot, exposure, positions_by_pnl
-from trader.interfaces.cockpit.pages._shared import ResizeRefresh, PANEL_CSS, SymbolTable
+from trader.interfaces.cockpit.pages._shared import PANEL_CSS, ResizeRefresh, SymbolTable, preserve_cursor
 from trader.interfaces.ui.palette import (
     CASYS_ACCENT,
     CASYS_DIM,
@@ -418,6 +418,10 @@ class PortfolioPage(ResizeRefresh, Static):
         table = self.query_one("#positions-table", SymbolTable)
         self._rebuild_columns()
         drops = self._active_drops or frozenset()
+        with preserve_cursor(table):
+            self._populate_positions(table, state, drops)
+
+    def _populate_positions(self, table: SymbolTable, state: dict, drops: frozenset[str]) -> None:
         table.clear()
 
         holdings = _sort_holdings(positions_by_pnl(state), self._sort_mode)

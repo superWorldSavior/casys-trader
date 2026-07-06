@@ -599,3 +599,34 @@ async def test_adaptive_columns_full_on_wide_terminal(tmp_path, monkeypatch):
         page.update_state({"portfolio": {"holdings": []}})
         await pilot.pause()
         assert page._active_drops == frozenset()
+
+
+async def test_cursor_survives_refresh(tmp_path, monkeypatch):
+    """Le curseur ne saute plus en tête quand le refresh 2 s repopule la table."""
+    from trader.interfaces.cockpit.pages.portfolio import PortfolioPage
+
+    _patch_paths(monkeypatch, tmp_path)
+    (tmp_path / "decisions.jsonl").write_text("{}\n", encoding="utf-8")
+    _write_daemon_alive(tmp_path, monkeypatch)
+    state = {"portfolio": {"holdings": [
+        {"symbol": s, "quantity": 10, "last_price": 100.0, "avg_price": 99.0,
+         "fx_rate": 1.0, "unrealized_pnl_net": float(i)}
+        for i, s in enumerate(["AAA", "BBB", "CCC", "DDD"])
+    ]}}
+    app = CockpitApp()
+    async with app.run_test(size=(160, 44)) as pilot:
+        await pilot.pause()
+        app._last_state = state
+        await pilot.press("2")
+        await pilot.pause()
+        page = app.query_one("#portfolio-page", PortfolioPage)
+        page.update_state(state)
+        await pilot.pause()
+        table = page.query_one("#positions-table")
+        table.focus()
+        await pilot.press("down", "down")  # curseur sur la 3e ligne
+        before = table.cursor_row
+        assert before == 2
+        page.update_state(state)  # simule le refresh périodique
+        await pilot.pause()
+        assert table.cursor_row == before

@@ -6,8 +6,11 @@ DataTable de base (Enter → drill-down), courbe d'équité braille, CSS panel.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+
 from rich.console import RenderableType
 from rich.text import Text
+from textual.coordinate import Coordinate
 from textual.message import Message
 from textual.widgets import DataTable
 
@@ -53,6 +56,49 @@ class ResizeRefresh:
                     pass
 
         self._resize_timer = self.set_timer(0.15, _rerender)  # type: ignore[attr-defined]
+
+
+@contextmanager
+def preserve_cursor(table: DataTable):
+    """Préserve le curseur (et le scroll) d'un DataTable à travers un repopulate.
+
+    Le refresh périodique fait ``clear()`` + ``add_row`` : sans ça, la ligne
+    sélectionnée saute en tête toutes les 2 s. La ligne est retrouvée par sa
+    row key (stable : "SYMBOL|…") ; si elle a disparu, curseur inchangé.
+    """
+    key = None
+    scroll_y = 0.0
+    try:
+        if table.row_count and table.cursor_row is not None:
+            key, _ = table.coordinate_to_cell_key(Coordinate(table.cursor_row, 0))
+            scroll_y = table.scroll_y
+    except Exception:
+        key = None
+    yield
+    if key is None:
+        return
+    try:
+        index = table.get_row_index(key)
+        table.move_cursor(row=index, animate=False)
+        table.scroll_y = min(scroll_y, table.max_scroll_y)
+    except Exception:
+        pass  # ligne disparue (position fermée…) — curseur par défaut
+
+
+def rows_available(widget, *, reserved: int = 0, minimum: int = 3) -> int:
+    """Nombre de lignes de contenu qui tiennent dans la hauteur du widget.
+
+    ``reserved`` : lignes déjà consommées (bordures/padding sont retirés par
+    Textual dans content_size ; réserver headers/footnotes internes).
+    Retourne au moins ``minimum`` (taille inconnue au premier rendu → défaut).
+    """
+    try:
+        height = widget.content_size.height
+    except Exception:
+        height = 0
+    if height <= 0:
+        return minimum
+    return max(minimum, height - reserved)
 
 
 class SymbolChosen(Message):

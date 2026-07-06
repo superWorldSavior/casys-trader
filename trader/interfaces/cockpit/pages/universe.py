@@ -30,7 +30,7 @@ from textual.coordinate import Coordinate
 from textual.widgets import Static
 
 from trader.interfaces.cockpit import format as f
-from trader.interfaces.cockpit.pages._shared import ResizeRefresh, PANEL_CSS, SymbolTable
+from trader.interfaces.cockpit.pages._shared import preserve_cursor, ResizeRefresh, PANEL_CSS, SymbolTable
 from trader.interfaces.ui.palette import (
     CASYS_ACCENT,
     CASYS_DIM,
@@ -708,13 +708,15 @@ class UniversePage(ResizeRefresh, Static):
         # Table
         try:
             self._rebuild_columns()
-            _populate_universe_table(
-                self.query_one("#universe-table", SymbolTable),
-                state,
-                overrides=overrides,
-                now=now,
-                drops=self._active_drops or frozenset(),
-            )
+            table = self.query_one("#universe-table", SymbolTable)
+            with preserve_cursor(table):
+                _populate_universe_table(
+                    table,
+                    state,
+                    overrides=overrides,
+                    now=now,
+                    drops=self._active_drops or frozenset(),
+                )
         except Exception:
             pass
 
@@ -782,13 +784,15 @@ class UniversePage(ResizeRefresh, Static):
             try:
                 now = datetime.now(UTC)
                 self._rebuild_columns()
-                _populate_universe_table(
-                    self.query_one("#universe-table", SymbolTable),
-                    self._last_state,
-                    overrides=overrides,
-                    now=now,
-                    drops=self._active_drops or frozenset(),
-                )
+                table = self.query_one("#universe-table", SymbolTable)
+                with preserve_cursor(table):
+                    _populate_universe_table(
+                        table,
+                        self._last_state,
+                        overrides=overrides,
+                        now=now,
+                        drops=self._active_drops or frozenset(),
+                    )
             except Exception:
                 pass
 
