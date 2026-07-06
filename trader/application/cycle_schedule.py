@@ -159,6 +159,15 @@ def apply_decision_schedule(
 
     if pending_indicator_watch is not None:
         sched.set_symbol_indicator_watch(sym, pending_indicator_watch)
+        event_appender(
+            "armed_plan_created"
+            if pending_indicator_watch.get("on_trigger") == "EXECUTE_ORDER"
+            else "indicator_watch_created",
+            symbol=sym,
+            watch_id=pending_indicator_watch.get("id"),
+            on_trigger=pending_indicator_watch.get("on_trigger"),
+            expires_at=pending_indicator_watch.get("expires_at"),
+        )
         watch_logger.info(
             "[watch] armée %s %s on_trigger=%s expire=%s",
             sym,

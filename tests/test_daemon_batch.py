@@ -925,6 +925,15 @@ def test_apply_decision_schedule_annule_les_watches_avant_de_reposer(monkeypatch
     assert ("remove", "SPY:old-watch") in operations
     assert events == [
         ("watch_cancelled_by_agent", {"symbol": "SPY", "watch_id": "SPY:old-watch"}),
+        (
+            "indicator_watch_created",
+            {
+                "symbol": "SPY",
+                "watch_id": "new-watch",
+                "on_trigger": "WAKE",
+                "expires_at": "2026-06-15T15:00:00+00:00",
+            },
+        ),
     ]
     assert operations.index(("remove", "SPY:old-watch")) < operations.index(("set", "new-watch"))
     assert entry["indicator_watch_created"] is True

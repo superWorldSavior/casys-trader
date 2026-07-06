@@ -1,0 +1,46 @@
+# Références canoniques
+
+> **Type** : Reference (Diátaxis).
+> Ces pages décrivent le comportement actuel du système. Après livraison d'un
+> plan ou d'une spec, c'est ici que le comportement runtime doit être consolidé.
+
+## Runtime & décision
+
+| Sujet | Page | Source principale |
+|---|---|---|
+| Orchestration, timers, veilles, plans armés | [`wake-scheduler.md`](wake-scheduler.md) | `planning/scheduler`, `planning/indicator_watch`, `runtime/cycle_scheduling` |
+| File de tâches durable | [`task-queue.md`](task-queue.md) | `infrastructure/queue`, `runtime/queue_runtime` |
+| Exécution, broker, admission, budget | [`execution.md`](execution.md) | `application/order_admission`, `execution/*` |
+| Risk gate | [`risk-gate.md`](risk-gate.md) | `execution/risk.py`, `config/risk.yaml` |
+| Reporting, audit, attribution, ledgers | [`reporting.md`](reporting.md) | `reporting/*` |
+
+## LLM & agent
+
+| Sujet | Page | Source principale |
+|---|---|---|
+| Contrat prompts / JSON / mandat | [`llm-contract.md`](llm-contract.md) | `agent/protocol`, `mandate/` |
+| Domain tools et action tools | [`agent-tools.md`](agent-tools.md) | `agent/tools`, parser/compiler |
+| Contexte agent | [`agent-context.md`](agent-context.md) | `agent/context` |
+| Mémoire learnings / RAG | [`learnings-rag.md`](learnings-rag.md) | `agent/learnings`, `state/learnings*` |
+| Architecture de connaissance agent | [`agent-knowledge-architecture.md`](agent-knowledge-architecture.md) | cadre stable de connaissance |
+| Couche sémantique | [`semantic.md`](semantic.md) | `domain/semantic`, indicateurs gouvernés |
+
+## Marché, données & config
+
+| Sujet | Page | Source principale |
+|---|---|---|
+| Configuration | [`config.md`](config.md) | `config/*.yaml`, `support/config` |
+| Univers, radar, rotation | [`universe-rotation.md`](universe-rotation.md) | `market/rotation`, `market/radar*` |
+| Régime | [`regime.md`](regime.md) | `market/regime`, `market/family_regime` |
+| FX | [`fx.md`](fx.md) | `market/fx`, `market/fx_rates` |
+| News | [`news.md`](news.md) | `market/news_feed` |
+| Macro | [`macro.md`](macro.md) | `market/macro_*` |
+
+## Surfaces opérateur
+
+| Sujet | Page | Source principale |
+|---|---|---|
+| Cockpit TUI | [`cockpit.md`](cockpit.md) | `interfaces/cockpit`, `reporting/read_models/runtime_state` |
+
+Règle de maintenance : une référence fausse est pire qu'une référence absente.
+Lire le code courant, vérifier les champs d'état, puis seulement éditer la page.

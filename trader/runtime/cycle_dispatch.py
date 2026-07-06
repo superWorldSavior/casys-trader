@@ -36,6 +36,7 @@ class RunCycleRuntimeContext:
     task_ledger: object | None
     queue_execute_enabled: bool
     execute_ledger: object | None
+    wake_reasons: list | None = None
 
 
 def dispatch_run_cycle(
@@ -58,6 +59,7 @@ def dispatch_run_cycle(
         max_indicators_per_request=context.max_indicators_per_request,
         max_model_calls_per_cycle=context.max_model_calls_per_cycle,
         indicator_triggers=context.indicator_triggers,
+        wake_reasons=context.wake_reasons or [],
         learning_consolidation_threshold=context.learning_consolidation_threshold,
         consolidator_acpx_bin=context.consolidator_acpx_bin,
         consolidator_acpx_agent=context.consolidator_acpx_agent,

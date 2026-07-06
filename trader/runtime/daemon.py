@@ -1458,6 +1458,7 @@ def run_cycle(
     runtime_lookback: str = DEFAULT_RUNTIME_LOOKBACK,
     max_learnings_in_context: int = 10,
     indicator_triggers: list[dict] | None = None,
+    wake_reasons: list[dict] | None = None,
     learning_consolidation_threshold: int = DEFAULT_LEARNING_CONSOLIDATION_THRESHOLD,
     consolidator_acpx_bin: str | None = None,
     consolidator_acpx_agent: str | None = None,
@@ -1477,6 +1478,15 @@ def run_cycle(
     now = now or datetime.now(timezone.utc)
     universe_cfg = _load_yaml(ROOT / "config" / "universe.yaml")
     risk_cfg = _load_yaml(ROOT / "config" / "risk.yaml")
+    # Pin/ban cockpit appliqués à la LECTURE (via l'adaptateur rotation) : le
+    # ban prend effet dès le cycle suivant, même si la rotation n'a pas réécrit
+    # universe.yaml. Une position ouverte bannie reste gérée.
+    universe_cfg = {
+        **(universe_cfg or {}),
+        "symbols": market_rotation_runtime.load_effective_universe(
+            ROOT / "config" / "universe.yaml", ROOT / "state"
+        ),
+    }
     regime_path = ROOT / "config" / "regime.yaml"
     regime_cfg = _load_yaml(regime_path) if regime_path.exists() else {}
     regime_cfg = regime_cfg or {}
@@ -1495,6 +1505,12 @@ def run_cycle(
     triggers_by_symbol: dict[str, list[dict]] = {}
     for trigger in indicator_triggers:
         triggers_by_symbol.setdefault(str(trigger.get("symbol")), []).append(trigger)
+    wake_reasons = wake_reasons or []
+    wake_reasons_by_symbol: dict[str, list[dict]] = {}
+    for reason in wake_reasons:
+        symbol = str(reason.get("symbol") or "")
+        if symbol:
+            wake_reasons_by_symbol.setdefault(symbol, []).append(reason)
     model_call_limit_for_status = None if queue_decide_enabled else max_model_calls_per_cycle
     model_call_cap_label = "none(queue)" if queue_decide_enabled else str(max_model_calls_per_cycle)
     _log_cycle_progress(
@@ -1749,6 +1765,7 @@ def run_cycle(
         "planned_exits": planned_exits,
         "exit_watch_triggers": exit_watch_triggers,
         "indicator_triggers": indicator_triggers,
+        "wake_reasons": wake_reasons,
         "decisions": [],
         "portfolio": snap.as_context(fee_estimator=portfolio_fee_estimator),
         "prices": {s: round(p, 4) for s, p in prices.items()},
@@ -1947,6 +1964,7 @@ def run_cycle(
         symbol_facts_by_sym = {
             sym: {
                 "indicator_triggers": triggers_by_symbol.get(sym, []),
+                "wake_reasons": wake_reasons_by_symbol.get(sym, []),
                 **build_symbol_facts(
                     sym,
                     data_age_by_symbol=data_age_by_symbol,
@@ -2013,6 +2031,7 @@ def run_cycle(
             memory=memory_txt,
             shared_context=base_context,
             triggers_by_symbol=triggers_by_symbol,
+            wake_reasons_by_symbol=wake_reasons_by_symbol,
             tradable_bars_by_symbol=analysis_bars_by_symbol,
             tradable_symbols=analysis_symbols,
             runtime_interval=runtime_interval,
@@ -2482,14 +2501,19 @@ def main(
                     loop_now=loop_now,
                     logger=log,
                 )
-                symbols = _load_yaml(ROOT / "config" / "universe.yaml")["symbols"]
+                # Pin/ban cockpit appliqués à la lecture (parité run_cycle) :
+                # un ban retire les réveils du scheduler dès la prochaine boucle.
+                symbols = market_rotation_runtime.load_effective_universe(
+                    ROOT / "config" / "universe.yaml", STATE_DIR
+                )
                 sched.reconcile_universe(symbols)
-                cycle_scheduling.expire_indicator_watches(
+                expired_watches = cycle_scheduling.expire_indicator_watches(
                     sched,
                     now=loop_now,
                     append_event=_append_event,
                     log_info=log.info,
                 )
+                wake_reasons = cycle_scheduling.wake_reasons_from_expired_watches(expired_watches, now=loop_now)
                 indicator_triggers = (
                     []
                     if args.once or bootstrap
@@ -2508,6 +2532,7 @@ def main(
                     max_indicators_per_request=args.max_indicators_per_request,
                     max_model_calls_per_cycle=args.max_model_calls_per_cycle,
                     indicator_triggers=indicator_triggers,
+                    wake_reasons=wake_reasons,
                     learning_consolidation_threshold=args.learning_consolidation_threshold,
                     consolidator_acpx_bin=args.consolidator_acpx_bin,
                     consolidator_acpx_agent=args.consolidator_acpx_agent,
@@ -2524,20 +2549,20 @@ def main(
                     execute_ledger=_execute_ledger,
                 )
                 if not due_symbols:
-                    report = cycle_dispatch.dispatch_run_cycle(
-                        run_cycle_fn=run_cycle,
-                        context=cycle_context,
-                        now=loop_now,
-                        symbols_filter=[],
-                    )
-                    if cycle_reporting.persist_cycle_report(
-                        report,
-                        writer=_runtime_state_writer(),
-                        only_if_active=True,
-                    ):
-                        log.debug("cycle actif sans symbole dû: %s", json.dumps(report, ensure_ascii=False))
                     wait = sched.seconds_until_wake(symbols)
-                    sleep_seconds = min(wait, args.poll)
+                    sleep_seconds = args.poll if wait <= 0 else min(wait, args.poll)
+                    model_cap = None if _queue_decide_enabled else args.max_model_calls_per_cycle
+                    _write_status(
+                        "idle_waiting_for_wake",
+                        current_symbol=None,
+                        symbols_due=[],
+                        symbols_total=0,
+                        decisions_done=0,
+                        dry_run=dry_run,
+                        model_calls_used=0,
+                        max_model_calls_per_cycle=model_cap,
+                        next_due_in_seconds=wait,
+                    )
                     log.debug("aucun symbole dû — pause %.0fs", sleep_seconds)
                 else:
                     report = cycle_dispatch.dispatch_run_cycle(

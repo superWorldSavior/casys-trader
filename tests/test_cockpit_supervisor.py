@@ -559,6 +559,106 @@ def test_stop_daemon_fallback_status_identite_etrangere_refuse(tmp_path, monkeyp
     assert real_signals == []
 
 
+# ---------------------------------------------------------------------------
+# stop_daemon — finding BLOQUANT : pid_file stale + status_file valide
+# ---------------------------------------------------------------------------
+
+
+def test_stop_daemon_pid_file_stale_sigint_vers_status(tmp_path, monkeypatch):
+    """pid_file contient un pid STALE (mort) ; status_file a le vrai daemon vivant
+    → SIGINT envoyé au pid du status, jamais au pid stale."""
+    pid_file = tmp_path / "daemon.pid"
+    status_file = tmp_path / "daemon_status.json"
+
+    stale_pid = 11111
+    real_pid = 22222
+
+    pid_file.write_text(str(stale_pid), encoding="utf-8")
+    status_file.write_text(json.dumps({"pid": real_pid}), encoding="utf-8")
+
+    signals_sent = []
+    monkeypatch.setattr("trader.cockpit.supervisor.os.kill", lambda p, s: signals_sent.append((p, s)))
+    # _is_daemon_pid monkeypatché directement : seul real_pid passe
+    monkeypatch.setattr("trader.cockpit.supervisor._is_daemon_pid", lambda pid: pid == real_pid)
+
+    result = stop_daemon(pid_file=pid_file, status_file=status_file)
+
+    assert result.stopped is True
+    assert result.pid == real_pid
+    real_signals = [(p, s) for p, s in signals_sent if s != 0]
+    assert real_signals == [(real_pid, signal.SIGINT)]
+    # Jamais de signal (même signal 0) au pid stale
+    assert all(p != stale_pid for p, _ in real_signals)
+
+
+# ---------------------------------------------------------------------------
+# toggle_kill_switch — finding MAJEUR : symlink safety
+# ---------------------------------------------------------------------------
+
+
+def test_toggle_kill_switch_symlink_retire_lien_sans_toucher_cible(tmp_path):
+    """KILL est un symlink vers une cible existante → le lien est retiré, la cible intacte."""
+    target = tmp_path / "important_file"
+    target.write_text("DO NOT TOUCH", encoding="utf-8")
+    kill_file = tmp_path / "KILL"
+    kill_file.symlink_to(target)
+
+    result = toggle_kill_switch(kill_file=kill_file)
+
+    assert result is False
+    assert not kill_file.exists()
+    assert not kill_file.is_symlink()  # symlink lui-même supprimé
+    assert target.exists()
+    assert target.read_text(encoding="utf-8") == "DO NOT TOUCH"
+
+
+def test_toggle_kill_switch_fileexistserror_race_retourne_true(tmp_path, monkeypatch):
+    """FileExistsError lors de la création (race entre deux cockpits) → True sans crash."""
+    kill_file = tmp_path / "KILL"
+
+    # Simuler la race : os.open lève FileExistsError même si lexists=False
+    monkeypatch.setattr("trader.cockpit.supervisor.os.open", lambda *a, **kw: (_ for _ in ()).throw(FileExistsError("race")))
+
+    result = toggle_kill_switch(kill_file=kill_file)
+    assert result is True
+
+
+# ---------------------------------------------------------------------------
+# launch_daemon — finding MAJEUR : lock symlink no-follow
+# ---------------------------------------------------------------------------
+
+
+def test_launch_daemon_lock_symlink_ne_tronque_pas_cible(tmp_path, monkeypatch):
+    """state/daemon.lock est un symlink vers un fichier → la cible n'est pas modifiée,
+    launch retourne launched=False avec une reason parlante."""
+    pid_file = tmp_path / "daemon.pid"
+    log_file = tmp_path / "daemon_console.log"
+    root = tmp_path
+
+    target = tmp_path / "important_config"
+    target.write_text("DO NOT TOUCH", encoding="utf-8")
+
+    lock_path = tmp_path / "daemon.lock"  # pid_file.parent / "daemon.lock"
+    lock_path.symlink_to(target)
+
+    popen_calls = []
+
+    class FakePopen:
+        def __init__(self, *a, **kw):
+            popen_calls.append(kw)
+            self.pid = 99999
+
+    monkeypatch.setattr("trader.cockpit.supervisor.subprocess.Popen", FakePopen)
+
+    result = launch_daemon(pid_file=pid_file, log_file=log_file, root=root)
+
+    assert result.launched is False
+    assert result.reason  # reason non vide
+    assert "symlink" in result.reason  # parlante
+    assert target.read_text(encoding="utf-8") == "DO NOT TOUCH"  # cible intacte
+    assert popen_calls == []  # Popen jamais appelé
+
+
 def test_claim_pid_file_refuse_si_daemon_vivant_etranger(tmp_path, monkeypatch):
     """Un daemon vivant et identifié détient le pid file → claim refusé (anti-doublon)."""
     pid_file = tmp_path / "daemon.pid"

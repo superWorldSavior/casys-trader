@@ -60,6 +60,16 @@ def test_cycle_schedule_applies_watch_then_expiry_wake(tmp_path) -> None:
         append_event=lambda event, **payload: events.append((event, payload)),
     )
 
-    assert events == []
+    assert events == [
+        (
+            "armed_plan_created",
+            {
+                "symbol": "AIR.PA",
+                "watch_id": "AIR.PA:w1",
+                "on_trigger": "EXECUTE_ORDER",
+                "expires_at": "2026-07-02T13:00:00+00:00",
+            },
+        )
+    ]
     assert entry["indicator_watch_created"] is True
     assert sched.next_wake("AIR.PA") == datetime(2026, 7, 2, 13, 0, tzinfo=timezone.utc)

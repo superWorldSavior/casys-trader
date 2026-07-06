@@ -33,6 +33,25 @@ demande des indicateurs supplémentaires, cette fonction les calcule dans les li
 (`max_requests`, `max_indicators`) et les réinjecte au 2e passage de décision. Borné
 pour maîtriser le coût (cf. `application/planner_batch`).
 
+## Faits par symbole
+
+Le batch LLM reçoit aussi un payload `per_symbol` assemblé dans
+`application/planner_batch.py`. Ces champs ne sont visibles que par le symbole
+concerné :
+
+| Champ | Sens |
+|---|---|
+| `data_age_m`, `session` | fraîcheur et session du symbole |
+| `active_watches` | veilles/plans armés encore actifs |
+| `indicator_triggers` | conditions de watch/exit_watch qui viennent de se réaliser |
+| `wake_reasons` | raisons de réveil sans condition déclenchée, notamment `watch_expired` et `armed_plan_expired` |
+| `execution`, `planning` | éligibilité marché/exécution si disponible |
+| `last_llm_review`, `recent_decisions` | mémoire courte anti-répétition |
+
+`indicator_triggers` dit "une condition s'est réalisée". `wake_reasons` dit
+"le scheduler t'a réveillé pour réviser un état", par exemple parce que le TTL
+d'une veille est terminé.
+
 ## Horodatage (`now`, `now_human`, `market_clocks`)
 
 Trois repères temporels, tous dérivés d'un `now` **UTC-aware**
@@ -54,8 +73,8 @@ daemon opéré depuis n'importe quel fuseau (ex. Taiwan) produit donc le même c
 
 ## Invariant
 
-Le cockpit porte des **faits** (régime, devise/fx) ; l'âge data et la session sont
-ajoutés séparément (`planner_batch`). La prose stratégique vit dans le
+Le cockpit porte des **faits** (régime, devise/fx) ; l'âge data, la session, les
+triggers et les raisons de réveil sont ajoutés séparément (`planner_batch`). La prose stratégique vit dans le
 [mandat](llm-contract.md), pas ici (AX « code over instructions »).
 
 ## Voir aussi

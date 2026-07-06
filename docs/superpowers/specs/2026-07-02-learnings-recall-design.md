@@ -2,9 +2,9 @@
 
 **Date** : 2026-07-02
 **Status** : V1 implémentée (store + outil + trace) ; phases ③ decay calibré/MemRL et ④ bench à venir
-**Amont** : `docs/specs/2026-07-02-agent-data-lifecycle.md` (§ learnings),
-`docs/specs/2026-07-02-learnings-memory-sota.md` (SOTA + décisions),
-`docs/superpowers/specs/2026-06-29-agent-domain-tools-design.md` (la couche d'outils hôte).
+**Amont** : `docs/superpowers/specs/2026-07-02-agent-data-lifecycle.md` (§ learnings),
+`docs/superpowers/specs/2026-07-02-learnings-memory-sota.md` (SOTA + décisions),
+`docs/reference/agent-tools.md` (la couche d'outils hôte livrée).
 
 ---
 

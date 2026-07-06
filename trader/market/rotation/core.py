@@ -168,6 +168,11 @@ class UniverseWriteError(ValueError):
 def write_universe_atomic(path: str, symbols: list[str]) -> None:
     """Écrit {"symbols": [...]} dans path de manière atomique via tempfile + os.replace.
 
+    La rotation ne possède que la clé ``symbols`` : toute autre clé du fichier
+    (dont le bloc ``overrides:`` pin/ban du cockpit — voir user_overrides.py)
+    est préservée telle quelle. Le read-modify-write est sérialisé avec le
+    cockpit via ``universe_write_lock``.
+
     Args:
         path: chemin du fichier de destination.
         symbols: liste non vide de symboles.
@@ -175,22 +180,35 @@ def write_universe_atomic(path: str, symbols: list[str]) -> None:
     Raises:
         UniverseWriteError: si symbols est vide.
     """
+    from trader.market.rotation.user_overrides import universe_write_lock
+
     if not symbols:
         raise UniverseWriteError("symbols ne peut pas être vide")
 
-    directory = os.path.dirname(os.path.abspath(path))
-    fd, tmp_path = tempfile.mkstemp(dir=directory)
-    try:
-        with os.fdopen(fd, "w") as f:
-            yaml.safe_dump({"symbols": symbols}, f)
-        os.replace(tmp_path, path)
-    except Exception:
-        # Nettoyer le fichier temporaire en cas d'erreur
+    with universe_write_lock(path):
+        data: dict = {"symbols": symbols}
         try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        raise
+            existing = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
+            if isinstance(existing, dict):
+                for key, value in existing.items():
+                    if key != "symbols":
+                        data[key] = value
+        except Exception:
+            pass  # fichier absent/corrompu → rien à préserver
+
+        directory = os.path.dirname(os.path.abspath(path))
+        fd, tmp_path = tempfile.mkstemp(dir=directory)
+        try:
+            with os.fdopen(fd, "w") as f:
+                yaml.safe_dump(data, f, sort_keys=False)
+            os.replace(tmp_path, path)
+        except Exception:
+            # Nettoyer le fichier temporaire en cas d'erreur
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
 
 
 def emergency_exits(
@@ -372,6 +390,13 @@ def run(
 
     # 7. écriture atomique + état + ledger
     # C. advance_state avec last_valid=final (hot non-sticky uniquement dans current_hot_set)
+    # Pin/ban cockpit appliqués aussi sur ce chemin legacy (parité avec venues.tick)
+    from trader.market.rotation.user_overrides import apply_user_overrides, load_user_overrides
+
+    user_overrides = load_user_overrides(universe_path)
+    final = apply_user_overrides(
+        final, pin=user_overrides.pin, ban=user_overrides.ban, sticky=sticky
+    )
     write_universe_atomic(universe_path, final)
     save_rotation_state(state_dir, advance_state(state, hot, last_valid=final, rotation_at=as_of))
     log_rotation(

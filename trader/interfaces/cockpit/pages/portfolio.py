@@ -1,0 +1,475 @@
+"""portfolio — page 2 du cockpit casys (positions, exposition, trades fermés).
+
+Grille 1fr | 44 cols : POSITIONS (SymbolTable avec drill-down, tri cycling) à
+gauche ; EXPOSURE · FX → USD · CLOSED TRADES empilés à droite.
+
+Builders PURS : (state[, now]) → renderable, sans I/O, sans horloge implicite.
+"""
+
+from __future__ import annotations
+
+from datetime import datetime, timezone
+
+from rich.console import Group, RenderableType
+from rich.table import Table
+from rich.text import Text
+from textual.app import ComposeResult
+from textual.binding import Binding
+from textual.containers import Vertical, VerticalScroll
+from textual.widgets import Static
+
+from trader.interfaces.cockpit import format as f
+from trader.interfaces.cockpit.derive import equity_snapshot, exposure, positions_by_pnl
+from trader.interfaces.cockpit.pages._shared import PANEL_CSS, SymbolTable
+from trader.interfaces.ui.palette import (
+    CASYS_ACCENT,
+    CASYS_DIM,
+    CASYS_ERROR,
+    CASYS_FAINT,
+    CASYS_FG,
+    CASYS_HAIRLINE,
+    CASYS_MUTED,
+    CASYS_SUCCESS,
+    CASYS_WARNING,
+)
+from trader.reporting.read_models.runtime_state import _safe_float, _safe_list_of_dicts
+
+UTC = timezone.utc
+
+_SORT_LABELS = ("by |P&L|", "by value", "by %")
+_N_SORT_MODES = 3
+
+_MONTHS = (
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+)
+
+
+# ---------------------------------------------------------------------------
+# Pure helpers (local — format.py untouched)
+# ---------------------------------------------------------------------------
+
+
+def _pnl_pct(holding: dict) -> float:
+    """P&L% = unrealized net USD / cost basis USD (signed)."""
+    pnl = f.holding_pnl(holding)
+    qty = f.holding_quantity(holding)
+    avg = _safe_float(holding.get("avg_price"), default=None)
+    fx_rate = _safe_float(holding.get("fx_rate"), default=1.0) or 1.0
+    cost = abs(qty * (avg or 0.0) * fx_rate)
+    return (pnl / cost * 100.0) if cost > 0 else 0.0
+
+
+def _fmt_date_exit(ts: object) -> str:
+    """exit_ts ISO → "03 Jul" locale-independent / "—" si invalide."""
+    parsed = f.parse_ts(ts)
+    if parsed is None:
+        return "—"
+    return f"{parsed.day:02d} {_MONTHS[parsed.month - 1]}"
+
+
+def _sort_holdings(holdings: list[dict], sort_mode: int) -> list[dict]:
+    """Sort: 0 = |P&L| desc, 1 = notional value desc, 2 = |P&L%| desc."""
+    if sort_mode == 1:
+        return sorted(holdings, key=lambda h: f.holding_notional(h), reverse=True)
+    if sort_mode == 2:
+        return sorted(holdings, key=lambda h: abs(_pnl_pct(h)), reverse=True)
+    # Default: |P&L|
+    return sorted(holdings, key=lambda h: abs(f.holding_pnl(h)), reverse=True)
+
+
+def _data_cell(state: dict, symbol: str) -> Text:
+    """DATA column: ● (success, fresh) or ▲ Xh (warning, stale)."""
+    age_m = f.staleness_age_m(state, symbol)
+    if age_m is None:
+        return Text("●", style=CASYS_SUCCESS)
+    return Text(f"▲ {f.age_m(age_m)}", style=CASYS_WARNING)
+
+
+def _fmt_qty(qty: float) -> str:
+    abs_qty = abs(qty)
+    if abs_qty == int(abs_qty):
+        return f"{int(abs_qty):,}"
+    return f"{abs_qty:g}"
+
+
+# ---------------------------------------------------------------------------
+# EXPOSURE builder (pure, no `now` needed)
+# ---------------------------------------------------------------------------
+
+
+def build_exposure(state: dict) -> RenderableType:
+    """EXPOSURE : barres long/short signées + par venue, rel. au gross."""
+    try:
+        exp = exposure(state)
+    except Exception:
+        return Text("exposure data unavailable", style=f"italic {CASYS_FAINT}")
+
+    snap = equity_snapshot(state)
+    gross = max(exp.gross, 1.0)
+
+    grid = Table.grid(padding=(0, 1))
+    grid.add_column(width=5, no_wrap=True)       # label
+    grid.add_column(min_width=18, no_wrap=True)  # bar
+    grid.add_column(width=7, no_wrap=True)       # $ value
+
+    bar_long = f.bar(exp.long_usd, gross, width=18)
+    grid.add_row(
+        Text("long", style=CASYS_SUCCESS),
+        Text(bar_long, style=CASYS_SUCCESS),
+        Text(f"${exp.long_usd / 1000:.1f}k", style=CASYS_MUTED),
+    )
+    bar_short = f.bar(exp.short_usd, gross, width=18)
+    grid.add_row(
+        Text("short", style=CASYS_ERROR),
+        Text(bar_short, style=CASYS_ERROR),
+        Text(f"${exp.short_usd / 1000:.1f}k", style=CASYS_MUTED),
+    )
+
+    # Net / gross footnote
+    net = exp.net
+    equity_val = max(snap.equity, 1.0)
+    gross_pct = exp.gross / equity_val * 100.0
+    net_label = "long" if net >= 0 else "short"
+    nl_style = CASYS_SUCCESS if net >= 0 else CASYS_ERROR
+    net_footnote = Text()
+    net_footnote.append("net ", style=CASYS_DIM)
+    net_footnote.append(f"{net_label} ${abs(net) / 1000:.1f}k", style=nl_style)
+    net_footnote.append(f" · gross {gross_pct:.0f}% of equity", style=CASYS_DIM)
+
+    # Venue breakdown
+    parts: list[RenderableType] = [grid, net_footnote]
+    venue_items = sorted(
+        ((v, a) for v, a in exp.by_venue.items() if v != "?" and a > 0),
+        key=lambda x: x[1],
+        reverse=True,
+    )
+    if venue_items:
+        vgrid = Table.grid(padding=(0, 1))
+        vgrid.add_column(width=5, no_wrap=True)
+        vgrid.add_column(min_width=18, no_wrap=True)
+        vgrid.add_column(width=7, no_wrap=True)
+        for venue, amt in venue_items:
+            vgrid.add_row(
+                Text(venue, style=CASYS_DIM),
+                Text(f.bar(amt, gross, width=18), style=CASYS_ACCENT),
+                Text(f"${amt / 1000:.1f}k", style=CASYS_MUTED),
+            )
+        parts.append(vgrid)
+
+    return Group(*parts)
+
+
+# ---------------------------------------------------------------------------
+# FX → USD builder (pure)
+# ---------------------------------------------------------------------------
+
+
+def build_fx(state: dict, *, now: datetime) -> RenderableType:
+    """FX → USD : taux actuels + horodatage de refresh (state["ts"])."""
+    fx_rates: dict = f.safe_dict(state.get("fx_rates"))
+    non_usd = {k: v for k, v in fx_rates.items() if k != "USD"}
+    if not non_usd:
+        return Text("FX data not available", style=f"italic {CASYS_FAINT}")
+
+    row = Table.grid(padding=(0, 2))
+    for _ in non_usd:
+        row.add_column(no_wrap=True)
+    cells = []
+    for ccy, rate in non_usd.items():
+        cell = Text()
+        cell.append(ccy, style=CASYS_FAINT)
+        rate_str = f"{float(rate):.4f}" if rate is not None else "?"
+        cell.append(f" {rate_str}", style=CASYS_MUTED)
+        cells.append(cell)
+    row.add_row(*cells)
+
+    ts_label = f.hhmm(state.get("ts"))
+    if ts_label == "—":
+        ts_label = now.strftime("%H:%M")
+    footnote = Text(
+        f"refreshed {ts_label} UTC · P&L is always net of fees, in USD",
+        style=CASYS_FAINT,
+    )
+    return Group(row, footnote)
+
+
+# ---------------------------------------------------------------------------
+# CLOSED TRADES builder (pure)
+# ---------------------------------------------------------------------------
+
+
+def build_closed_trades(state: dict, *, now: datetime) -> RenderableType:
+    """CLOSED TRADES — récents : grille DATE/SYM/dir/P&L$/DUR + footer stats."""
+    trips = _safe_list_of_dicts(state.get("recent_trips"))
+    if not trips:
+        attribution = f.safe_dict(state.get("attribution"))
+        trips = _safe_list_of_dicts(attribution.get("recent_trips"))
+
+    attribution = f.safe_dict(state.get("attribution"))
+
+    if not trips:
+        return Text("no closed trades yet", style=f"italic {CASYS_FAINT}")
+
+    grid = Table.grid(padding=(0, 1))
+    grid.add_column(width=6, no_wrap=True)    # DATE
+    grid.add_column(width=9, no_wrap=True)    # SYM
+    grid.add_column(width=2, no_wrap=True)    # dir
+    grid.add_column(width=6, no_wrap=True)    # P&L $
+    grid.add_column(no_wrap=True)             # DUR
+
+    for trip in trips[:8]:
+        symbol = str(trip.get("symbol") or "—")
+        side = str(trip.get("side") or "LONG").upper()
+        side_long = side == "LONG"
+        pnl = _safe_float(trip.get("pnl"), default=0.0) or 0.0
+        pnl_style = CASYS_SUCCESS if pnl >= 0 else CASYS_ERROR
+        holding_m = trip.get("holding_minutes")
+
+        grid.add_row(
+            Text(_fmt_date_exit(trip.get("exit_ts")), style=CASYS_FAINT),
+            Text(symbol, style=f"bold {CASYS_FG}"),
+            Text("L" if side_long else "S", style=CASYS_SUCCESS if side_long else CASYS_ERROR),
+            Text(f.fmt_signed(pnl), style=pnl_style),
+            Text(f.duration_m(holding_m), style=CASYS_FAINT),
+        )
+
+    realized_pnl = _safe_float(attribution.get("realized_pnl"), default=0.0) or 0.0
+    total_fees = _safe_float(attribution.get("total_commissions"), default=0.0) or 0.0
+    n_closed = int(attribution.get("n_closed_trades") or 0)
+
+    sep = Text("─" * 38, style=CASYS_HAIRLINE)
+    footer = Text()
+    footer.append("realized ", style=CASYS_DIM)
+    footer.append(f.fmt_signed_money(realized_pnl), style=CASYS_SUCCESS if realized_pnl >= 0 else CASYS_ERROR)
+    footer.append(f" · fees ${total_fees:,.0f}", style=CASYS_DIM)
+    footer.append(f" · {n_closed} trips", style=CASYS_DIM)
+
+    return Group(grid, sep, footer)
+
+
+# ---------------------------------------------------------------------------
+# Positions row data (pure builder, testable without UI)
+# ---------------------------------------------------------------------------
+
+
+def build_positions_rows(state: dict, sort_mode: int = 0) -> list[dict]:
+    """Données structurées des lignes de position (sans Rich/Textual)."""
+    holdings = _sort_holdings(positions_by_pnl(state), sort_mode)
+    trade_plans = _safe_list_of_dicts(state.get("trade_plans"))
+    rows: list[dict] = []
+    for holding in holdings:
+        symbol = f.holding_symbol(holding)
+        qty = f.holding_quantity(holding)
+        pnl = f.holding_pnl(holding)
+        pnl_pct_val = _pnl_pct(holding)
+        notional = f.holding_notional(holding)
+        avg = _safe_float(holding.get("avg_price"), default=None)
+        last = _safe_float(holding.get("last_price"), default=None)
+        plan = f.plan_for_symbol(trade_plans, symbol)
+        stop_dist = f.stop_distance_pct(plan, last) if plan else None
+        rows.append(
+            {
+                "symbol": symbol,
+                "side": "L" if qty >= 0 else "S",
+                "qty": qty,
+                "avg": avg,
+                "last": last,
+                "notional": notional,
+                "pnl": pnl,
+                "pnl_pct": pnl_pct_val,
+                "stop_dist": stop_dist,
+                "is_stale": f.symbol_is_stale(state, symbol),
+                "data_age_m": f.staleness_age_m(state, symbol),
+            }
+        )
+    return rows
+
+
+# ---------------------------------------------------------------------------
+# Widget
+# ---------------------------------------------------------------------------
+
+
+class PortfolioPage(Static):
+    """Page 2 — Portfolio : positions complètes, exposition, trades fermés.
+
+    Binding ``o`` : cycle tri |P&L| → value → %.
+    Enter sur une ligne : drill-down symbole (SymbolChosen → app.py).
+    """
+
+    BINDINGS = [
+        Binding("o", "cycle_sort", "sort |pnl| / value / %", show=False),
+    ]
+
+    DEFAULT_CSS = (
+        PANEL_CSS
+        + """
+    PortfolioPage {
+        layout: horizontal;
+        height: 100%;
+        padding: 1 2 0 2;
+    }
+    PortfolioPage #positions-panel {
+        width: 1fr;
+        height: 100%;
+        margin-right: 1;
+    }
+    PortfolioPage #positions-table {
+        height: 1fr;
+    }
+    PortfolioPage #positions-footer { height: auto; }
+    PortfolioPage #portfolio-right {
+        width: 44;
+        height: 100%;
+        layout: vertical;
+    }
+    PortfolioPage #exposure-panel {
+        height: 14;
+        margin-bottom: 1;
+    }
+    PortfolioPage #fx-panel {
+        height: 6;
+        margin-bottom: 1;
+    }
+    PortfolioPage #closed-panel {
+        height: 1fr;
+    }
+    PortfolioPage .casys-panel Static { height: auto; }
+    """
+    )
+
+    _sort_mode: int = 0
+    _last_state: dict | None = None
+
+    def compose(self) -> ComposeResult:
+        with VerticalScroll(id="positions-panel", classes="casys-panel") as pos:
+            pos.border_title = "POSITIONS — sorted by |P&L|"
+            yield SymbolTable(id="positions-table")
+            yield Static(id="positions-footer")
+        with Vertical(id="portfolio-right"):
+            with VerticalScroll(id="exposure-panel", classes="casys-panel") as exp:
+                exp.border_title = "EXPOSURE"
+                yield Static(id="exposure-body")
+            with VerticalScroll(id="fx-panel", classes="casys-panel") as fx_w:
+                fx_w.border_title = "FX → USD"
+                yield Static(id="fx-body")
+            with VerticalScroll(id="closed-panel", classes="casys-panel") as ct:
+                ct.border_title = "CLOSED TRADES — recent"
+                yield Static(id="closed-body")
+
+    def on_mount(self) -> None:
+        table = self.query_one("#positions-table", SymbolTable)
+        table.add_column("SYM", width=9)
+        table.add_column("", width=2)        # side L/S
+        table.add_column("QTY", width=7)
+        table.add_column("AVG", width=8)
+        table.add_column("LAST", width=8)
+        table.add_column("VALUE $", width=8)
+        table.add_column("P&L $", width=7)
+        table.add_column("P&L %", width=7)
+        table.add_column("STOP", width=6)
+        table.add_column("DATA", width=10)
+
+    def _refresh_positions(self, state: dict) -> None:
+        """Repopule la SymbolTable + footer depuis l'état courant."""
+        table = self.query_one("#positions-table", SymbolTable)
+        table.clear()
+
+        holdings = _sort_holdings(positions_by_pnl(state), self._sort_mode)
+        trade_plans = _safe_list_of_dicts(state.get("trade_plans"))
+
+        gross_long = gross_short = unrealized_total = 0.0
+
+        for idx, holding in enumerate(holdings):
+            symbol = f.holding_symbol(holding)
+            qty = f.holding_quantity(holding)
+            side_long = qty >= 0
+            pnl = f.holding_pnl(holding)
+            pnl_pct_val = _pnl_pct(holding)
+            notional = f.holding_notional(holding)
+            avg = _safe_float(holding.get("avg_price"), default=None)
+            last = _safe_float(holding.get("last_price"), default=None)
+            pnl_style = CASYS_SUCCESS if pnl >= 0 else CASYS_ERROR
+
+            plan = f.plan_for_symbol(trade_plans, symbol)
+            stop_dist = f.stop_distance_pct(plan, last) if plan else None
+            stop_str = f"{stop_dist:+.1f}%" if stop_dist is not None else "—"
+
+            if side_long:
+                gross_long += notional
+            else:
+                gross_short += notional
+            unrealized_total += pnl
+
+            table.add_row(
+                Text(symbol, style=f"bold {CASYS_FG}"),
+                Text("L" if side_long else "S", style=CASYS_SUCCESS if side_long else CASYS_ERROR),
+                Text(_fmt_qty(qty), style=CASYS_MUTED),
+                Text(f.fmt_compact(avg, decimals=2), style=CASYS_DIM),
+                Text(f.fmt_compact(last, decimals=2), style=CASYS_MUTED),
+                Text(f"${notional:,.0f}" if notional else "—", style=CASYS_FG),
+                Text(f.fmt_signed(pnl), style=pnl_style),
+                Text(f"{pnl_pct_val:+.1f}%", style=pnl_style),
+                Text(stop_str, style=CASYS_DIM),
+                _data_cell(state, symbol),
+                key=f"{symbol}|{idx}",
+            )
+
+        n = len(holdings)
+        label = _SORT_LABELS[self._sort_mode]
+        pos_panel = self.query_one("#positions-panel", VerticalScroll)
+        pos_panel.border_title = (
+            f"POSITIONS — {n} · sorted {label}" if n else "POSITIONS"
+        )
+
+        gross = gross_long + gross_short
+        net_long = gross_long - gross_short
+        footer = Text()
+        footer.append(f"{n} positions", style=CASYS_DIM)
+        footer.append(" · gross ", style=CASYS_DIM)
+        footer.append(f"${gross / 1000:.1f}k" if gross else "$0", style=CASYS_MUTED)
+        footer.append(" · net long ", style=CASYS_DIM)
+        footer.append(
+            f"${net_long / 1000:.1f}k",
+            style=CASYS_SUCCESS if net_long >= 0 else CASYS_ERROR,
+        )
+        footer.append(" · unrealized ", style=CASYS_DIM)
+        footer.append(
+            f.fmt_signed(unrealized_total),
+            style=CASYS_SUCCESS if unrealized_total >= 0 else CASYS_ERROR,
+        )
+        footer.append(" · enter inspect symbol", style=CASYS_FAINT)
+        self.query_one("#positions-footer", Static).update(footer)
+
+    def update_state(self, state: dict) -> None:
+        """Pull pur depuis le read model — jamais d'exception (état partiel toléré)."""
+        now = datetime.now(UTC)
+        self._last_state = state
+        try:
+            self._refresh_positions(state)
+        except Exception:
+            pass
+        try:
+            self.query_one("#exposure-body", Static).update(build_exposure(state))
+        except Exception:
+            pass
+        try:
+            self.query_one("#fx-body", Static).update(build_fx(state, now=now))
+        except Exception:
+            pass
+        try:
+            self.query_one("#closed-body", Static).update(
+                build_closed_trades(state, now=now)
+            )
+        except Exception:
+            pass
+
+    def action_cycle_sort(self) -> None:
+        """Cycle: |P&L| → value → % → |P&L|"""
+        self._sort_mode = (self._sort_mode + 1) % _N_SORT_MODES
+        if self._last_state is not None:
+            try:
+                self._refresh_positions(self._last_state)
+            except Exception:
+                pass

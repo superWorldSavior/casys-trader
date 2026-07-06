@@ -346,3 +346,13 @@ def test_build_learnings_avec_light_ne_plante_pas() -> None:
     result = _build_learnings_panel(learnings, palette=PALETTE_LIGHT)
     output = _render(result)
     assert output is not None
+
+
+def test_palette_casys_complete() -> None:
+    """PALETTE_CASYS (thème unique du cockpit) couvre toutes les clés canoniques."""
+    from trader.ui.palette import ALL_PALETTE_KEYS, PALETTE_CASYS
+
+    missing = set(ALL_PALETTE_KEYS) - set(PALETTE_CASYS.keys())
+    assert not missing, f"Clés manquantes dans PALETTE_CASYS : {missing}"
+    extra = set(PALETTE_CASYS.keys()) - set(ALL_PALETTE_KEYS)
+    assert not extra, f"Clés en trop dans PALETTE_CASYS : {extra}"

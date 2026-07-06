@@ -52,8 +52,9 @@ CASYS_LOG_LEVEL=DEBUG   # dans .env, puis relancer le daemon
 ## Events structurés (`events.jsonl`)
 
 Machine-readable, non affecté par `CASYS_LOG_LEVEL`. Lu par le cockpit. Events
-notables : `armed_plan_resolved/cancelled/expired`, `indicator_watch_triggered`,
-`watch_cancelled_by_agent`, `context_resolved`, `cycle_started/completed`.
+notables : `indicator_watch_created/triggered/expired`,
+`armed_plan_created/resolved/cancelled/expired`, `watch_cancelled_by_agent`,
+`context_resolved`, `cycle_started/completed`.
 
 ## Voir aussi
 - [Lancer le daemon](run-the-daemon.md) · Architecture §10.1 (logging).

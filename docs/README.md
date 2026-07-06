@@ -4,7 +4,7 @@ Point d'entrée de la doc. Deux choses ici : **où vit chaque type de doc**
 (cadre Diátaxis) et **la carte de couverture** (quel sous-système est
 documenté, où, et quels trous restent).
 
-> Statut carte : **v2 — 2026-07-03**, alignée sur le refacto capability-based
+> Statut carte : **v3 — 2026-07-06**, alignée sur le refacto capability-based
 > (packages `trader/<capacité>/`). Les `🟡`/`❌` sont un backlog priorisé ;
 > corriger une ligne = ouvrir la doc citée.
 
@@ -14,20 +14,43 @@ documenté, où, et quels trous restent).
 
 | Quadrant | Dossier | Contenu | Question |
 |---|---|---|---|
-| **Reference** | `docs/reference/` | Ce que fait chaque sous-système **aujourd'hui** : comportement, invariants, garde-fous, codes | « comment ça marche *maintenant* ? » |
+| **Reference** | [`docs/reference/`](reference/README.md) | Ce que fait chaque sous-système **aujourd'hui** : comportement, invariants, garde-fous, codes | « comment ça marche *maintenant* ? » |
 | **Explanation** | `docs/architecture.md` | Le cycle de bout en bout, le pourquoi | « pourquoi comme ça ? » |
-| **How-to** | `docs/how-to/` | Runbooks : déployer, relancer, mesurer, lire les logs | « comment je fais X ? » |
-| **Décisions (ADR)** | `docs/decisions/registre-decisions-metier.md` | Journal D1-D12, datées, immuables | « quelle décision, pourquoi ? » |
-| **Postmortems** | `docs/postmortems/` | Incidents + fix | « qu'est-ce qui a cassé ? » |
-| **Specs / plans** | `docs/specs/`, `docs/superpowers/` | Intention de conception au moment T | « comment on l'a conçu ? » |
-| **Recherche** | `docs/research/` | Explorations | « qu'a-t-on exploré ? » |
+| **How-to** | [`docs/how-to/`](how-to/README.md) | Runbooks : déployer, relancer, mesurer, lire les logs | « comment je fais X ? » |
+| **Décisions (ADR)** | [`docs/decisions/`](decisions/README.md) | Journal D1-D14, datées, immuables | « quelle décision, pourquoi ? » |
+| **Postmortems** | [`docs/postmortems/`](postmortems/README.md) | Incidents + fix | « qu'est-ce qui a cassé ? » |
+| **Specs / plans** | [`docs/superpowers/`](superpowers/README.md) | Intention de conception au moment T | « comment on l'a conçu ? » |
 
-`architecture.md` (§1-13) couvre bien la Reference+Explanation du **cœur runtime**.
-Les **trous** ci-dessous obtiennent une page `reference/` dédiée ; les runbooks
-`how-to/` (quadrant entier absent) sont à créer.
+### Règles de consolidation
 
-Pages `reference/` écrites : [`risk-gate`](reference/risk-gate.md), [`fx`](reference/fx.md), [`cockpit`](reference/cockpit.md), [`reporting`](reference/reporting.md), [`config`](reference/config.md), [`learnings-rag`](reference/learnings-rag.md), [`agent-tools`](reference/agent-tools.md), [`macro`](reference/macro.md), [`llm-contract`](reference/llm-contract.md), [`universe-rotation`](reference/universe-rotation.md), [`execution`](reference/execution.md), [`news`](reference/news.md), [`regime`](reference/regime.md), [`agent-context`](reference/agent-context.md), [`semantic`](reference/semantic.md), [`task-queue`](reference/task-queue.md).
-Pages `how-to/` écrites : [`run-the-daemon`](how-to/run-the-daemon.md), [`read-logs`](how-to/read-logs.md), [`measure-and-replay`](how-to/measure-and-replay.md).
+- `docs/reference/` porte la vérité runtime **canonique** : comportement actuel,
+  invariants, champs d'état, codes et limites.
+- `docs/architecture.md` explique le cycle de bout en bout et renvoie aux pages
+  `reference/` pour les détails ; il ne doit plus devenir le seul endroit où vit
+  un sous-système.
+- `docs/how-to/` contient les procédures opérateur ; il lie vers `reference/`
+  au lieu de recopier les invariants.
+- `docs/decisions/` est immuable : pourquoi on a tranché, pas une page runtime
+  à corriger à chaque refacto.
+- `docs/superpowers/specs/` et `docs/superpowers/plans/` sont historiques :
+  après livraison, consolider le comportement dans `reference/` et garder le
+  plan comme trace de chantier.
+
+`architecture.md` (§1-13) couvre l'explication du **cœur runtime**. Les sujets
+transverses ou fréquemment diagnostiqués ont une page `reference/` dédiée.
+
+Index de dossiers : [`reference`](reference/README.md), [`how-to`](how-to/README.md),
+[`decisions`](decisions/README.md), [`postmortems`](postmortems/README.md),
+[`superpowers`](superpowers/README.md).
+
+### Documents racine
+
+| Document | Rôle | Source de vérité |
+|---|---|---|
+| [`architecture.md`](architecture.md) | Explication bout-en-bout du cycle runtime | Code + pages `reference/` |
+| [`decisions-business.md`](decisions-business.md) | Synthèse lisible des décisions métier | [`decisions/registre-decisions-metier.md`](decisions/registre-decisions-metier.md) |
+| [`etat-systeme.md`](etat-systeme.md) | État vivant / snapshot opérateur | À vérifier contre `state/` et le process live avant décision |
+| [`README.md`](README.md) | Index Diátaxis + carte de couverture | Cette page |
 
 ---
 
@@ -39,7 +62,7 @@ Légende : ✅ couvert · 🟡 partiel / dispersé / potentiellement périmé ·
 | Sous-système | Package/module | Réf | Où | Décisions |
 |---|---|---|---|---|
 | Orchestration du cycle | `runtime/daemon` | ✅ | archi §2-3 | D7 |
-| Sélection des dus / veilles | `planning/scheduler`, `planning/indicator_watch` | ✅ | archi §3.1, §7 | D7, D9, D10 |
+| Sélection des dus / veilles | `planning/scheduler`, `planning/indicator_watch` | ✅ | **`reference/wake-scheduler.md`**, archi §3.1, §7 | D7, D9, D10 |
 | Batch LLM / planificateur | `application/planner_batch` | ✅ | archi §3.6 | D7 |
 | Contexte marché (snapshot) | `application/market_snapshot` | ✅ | archi §3.2-3.3 | — |
 | Enregistrement décision | `application/decision_recorder` | ✅ | archi §3.8, §8 | — |
@@ -51,7 +74,7 @@ Légende : ✅ couvert · 🟡 partiel / dispersé / potentiellement périmé ·
 | Sous-système | Package/module | Réf | Où | Décisions |
 |---|---|---|---|---|
 | **Risk gate** | `execution/risk` | ✅ | **`reference/risk-gate.md`** | — |
-| Plans armés (EXECUTE_ORDER) | `planning/indicator_watch`, `planning/trade_plan`, `runtime/daemon` | ✅ | archi §3.5, §4.3 ; registre | D7B, D11, D12 |
+| Plans armés (EXECUTE_ORDER) | `planning/indicator_watch`, `planning/trade_plan`, `runtime/daemon` | ✅ | **`reference/wake-scheduler.md`**, archi §3.5, §4.3 ; registre | D7B, D11, D12 |
 | Admission d'ordre | `application/order_admission`, `application/risk_admission` | ✅ | **`reference/execution.md`** | — |
 | Accounting post-fill | `application/fill_outcome`, `runtime/daemon` writer | ✅ | archi §1.1, §8 | — |
 | Effets plans post-fill | `application/fill_plan_effects`, `planning/trade_plan` | ✅ | archi §1.1, §4 | — |
@@ -102,6 +125,7 @@ Légende : ✅ couvert · 🟡 partiel / dispersé / potentiellement périmé ·
 | Déployer / relancer / arrêter le daemon (superviseur, SIGINT hors-batch) | ✅ | `how-to/run-the-daemon.md` |
 | Lire les logs (Gonzo `make logs`, `CASYS_LOG_LEVEL=DEBUG`, Dstl8.Lite) | ✅ | `how-to/read-logs.md` |
 | Mesurer (`measure_d7.py`) & rejouer des plans (`plan_replay`) | ✅ | `how-to/measure-and-replay.md` |
+| Configurer l'apparence cockpit terminal | ✅ | `how-to/cockpit-glass.md` |
 
 ---
 
@@ -111,15 +135,17 @@ Les 5 trous prioritaires identifiés à la v2 sont comblés :
 
 1. ~~Risk gate~~ ✅ [`reference/risk-gate.md`](reference/risk-gate.md)
 2. ~~Conversion FX~~ ✅ [`reference/fx.md`](reference/fx.md)
-3. ~~Runbooks how-to~~ ✅ [`how-to/`](how-to/) (run-the-daemon, read-logs, measure-and-replay)
+3. ~~Runbooks how-to~~ ✅ [`how-to/`](how-to/README.md) (run-the-daemon, read-logs, measure-and-replay, cockpit-glass)
 4. ~~Cockpit & attribution~~ ✅ [`cockpit`](reference/cockpit.md) · [`reporting`](reference/reporting.md)
 5. ~~Config univers/portefeuille~~ ✅ [`reference/config.md`](reference/config.md)
 
-**Couverture complète ✅ (2026-07-03)** — tous les sous-systèmes de la carte ont
-désormais une page `reference/` **fact-checkée** (16 pages reference + 3 how-to).
-Nouveau sous-système documenté : `infrastructure/queue/*` (file de tâches durable
-branchée au daemon en paper). Maintenir : quand un module change, mettre
-à jour sa page (lire code → éditer → re-fact-check si substantiel).
+**Couverture complète ✅ (2026-07-03, consolidée v3 le 2026-07-06)** — tous les
+sous-systèmes de la carte ont désormais une page `reference/` **fact-checkée**
+(18 pages reference + index ; 4 how-to + index). Nouveaux sous-systèmes documentés depuis la v2 :
+`infrastructure/queue/*` (file de tâches durable branchée au daemon en paper) et
+`planning/scheduler` / `planning/indicator_watch` (réveils, watches, plans armés).
+Maintenir : quand un module change, mettre à jour sa page (lire code → éditer →
+re-fact-check si substantiel).
 
 Méthode : lire le code → écrire la page `reference/` (comportement/invariants/codes)
 → passer la ligne ✅ dans la carte. Un fact-check Codex de chaque réf vs le code

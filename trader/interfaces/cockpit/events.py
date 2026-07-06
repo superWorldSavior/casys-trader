@@ -99,6 +99,7 @@ def format_event_line(event: dict[str, Any]) -> EventLine:
 
 
 def _format_event_line_inner(event: dict[str, Any]) -> EventLine:
+    """Glyphes du design casys : · hold — ▲/▼ fills — ✗ risk — ⚑ watch — ◇ learning — ▶/■ cycles."""
     event_type = str(event.get("event", "?"))
     ts = _fmt_ts(str(event.get("ts", "")))
     cls = classify_event(event)
@@ -107,37 +108,44 @@ def _format_event_line_inner(event: dict[str, Any]) -> EventLine:
         symbols = event.get("symbols_due", [])
         n = len(symbols) if isinstance(symbols, list) else "?"
         dry = " [dry]" if event.get("dry_run") else ""
-        text = f"{ts} ▶ cycle démarré{dry} — {n} symboles"
+        text = f"{ts} ▶ cycle started{dry} — {n} symbols"
 
     elif event_type == "cycle_completed":
         done = event.get("decisions_done", "?")
         calls = event.get("model_calls_used", "?")
-        text = f"{ts} ■ cycle terminé — {done} décisions, {calls} appels LLM"
+        text = f"{ts} ■ cycle done — {done} decisions, {calls} LLM calls"
 
     elif event_type == "decision_recorded":
         symbol = str(event.get("symbol", "?"))
-        action = str(event.get("action", "?"))
+        action = str(event.get("action", "?")).upper()
         reason = str(event.get("reason", ""))
         executed = event.get("executed", False)
-        exec_flag = " ✓" if executed else ""
-        reason_str = f" [{reason}]" if reason and reason not in ("ok", "hold") else ""
-        text = f"{ts} {action} {symbol}{exec_flag}{reason_str}"
+        if executed:
+            glyph = "▼" if action == "SELL" else "▲"
+            text = f"{ts} {glyph} {symbol} {action} filled"
+        elif reason.startswith("risk:"):
+            text = f"{ts} ✗ {symbol} {action} — risk gate: {reason.removeprefix('risk:')}"
+        elif reason.startswith("stale"):
+            text = f"{ts} ▲ {symbol} stale — decision skipped"
+        else:
+            reason_str = f" [{reason}]" if reason and reason not in ("ok", "hold") else ""
+            text = f"{ts} · {symbol} {action}{reason_str}"
 
     elif event_type == "indicator_watch_triggered":
         symbol = str(event.get("symbol", "?"))
         trigger = str(event.get("on_trigger", ""))
-        text = f"{ts} watch — {symbol} ({trigger})"
+        text = f"{ts} ⚑ watch fired — {symbol} ({trigger})"
 
     elif event_type == "armed_plan_cancelled":
         symbol = str(event.get("symbol", "?"))
         reason = str(event.get("reason", "")).removeprefix("armed_plan_cancelled:")
-        text = f"{ts} plan armé annulé — {symbol} [{reason or '?'}]"
+        text = f"{ts} ⚑ armed order cancelled — {symbol} [{reason or '?'}]"
 
     elif event_type == "learning_consolidated":
         n = event.get("new_raw_count", "?")
         written = event.get("written", False)
-        written_str = " → écrit" if written else ""
-        text = f"{ts} learnings consolidés — {n} raws{written_str}"
+        written_str = " → written" if written else ""
+        text = f"{ts} ◇ learnings consolidated — {n} raw{written_str}"
 
     else:
         extra_keys = [k for k in event if k not in ("ts", "event")][:3]
@@ -177,14 +185,29 @@ def read_new_lines(path: Path, offset: int) -> tuple[list[dict[str, Any]], int]:
         if size == 0:
             return [], 0
 
-        # Troncature détectée ou premier appel → repositionne au début
+        # Troncature détectée ou premier appel → lit la queue du fichier
         is_init = (offset == 0) or (size < offset)
-        read_offset = 0 if is_init else offset
+
+        if is_init:
+            # Seek à la queue pour ne pas servir les vieux événements
+            tail_start = max(0, size - _READ_CHUNK_SIZE)
+        else:
+            tail_start = offset
 
         # --- Lecture bornée : au maximum _READ_CHUNK_SIZE octets ---
         with path.open("rb") as fh:
-            fh.seek(read_offset)
+            fh.seek(tail_start)
             raw = fh.read(_READ_CHUNK_SIZE)
+
+        # Si on a seeké en milieu de fichier, la 1re séquence peut être une ligne partielle → la jeter
+        if is_init and tail_start > 0:
+            first_nl = raw.find(b"\n")
+            if first_nl == -1:
+                return [], tail_start + len(raw)
+            raw = raw[first_nl + 1 :]
+            read_offset = tail_start + first_nl + 1
+        else:
+            read_offset = tail_start
 
         # --- Ne consommer que jusqu'au dernier '\n' ---
         # Si raw ne contient pas de '\n', il n'y a aucune ligne complète.

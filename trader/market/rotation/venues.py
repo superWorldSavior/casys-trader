@@ -12,6 +12,7 @@ from pathlib import Path
 import yaml
 
 from trader.market.rotation import apply_hysteresis, apply_override, emergency_exits, write_universe_atomic
+from trader.market.rotation.user_overrides import apply_user_overrides, load_user_overrides
 from trader.market.rotation.collectors import (
     build_plans_fn,
     build_positions_fn,
@@ -349,6 +350,10 @@ def tick(
         save_venue_state(state_dir, state)
 
     final = compose_active_universe(state, open_v, sticky=sticky, fx_cap=fx_cap)
+    user_overrides = load_user_overrides(config_path / "universe.yaml")
+    final = apply_user_overrides(
+        final, pin=user_overrides.pin, ban=user_overrides.ban, sticky=sticky
+    )
     written = write_universe_if_changed(str(config_path / "universe.yaml"), final)
     return {"dues": dues, "open": open_v, "final": final, "written": written}
 

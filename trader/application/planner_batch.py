@@ -152,6 +152,7 @@ def batch_decide(
     max_model_calls: int,
     now: datetime,
     data_age_by_symbol: dict[str, float],
+    wake_reasons_by_symbol: dict[str, list[dict]] | None = None,
     sched: scheduler.Scheduler | None = None,
     last_review_by_symbol: dict[str, dict] | None = None,
     market_context_by_symbol: dict[str, dict] | None = None,
@@ -179,10 +180,12 @@ def batch_decide(
 
     reviews = last_review_by_symbol or {}
     market_contexts = market_context_by_symbol or {}
+    wake_reasons = wake_reasons_by_symbol or {}
 
     per_symbol = {
         sym: {
             "indicator_triggers": triggers_by_symbol.get(sym, []),
+            "wake_reasons": wake_reasons.get(sym, []),
             **build_symbol_facts(
                 sym,
                 data_age_by_symbol=data_age_by_symbol,
@@ -401,6 +404,7 @@ def batch_decide(
             context_requests[sym] = _context_request_summary(req, resolved=len(research["requests"]))
             per_symbol2[sym] = {
                 "indicator_triggers": triggers_by_symbol.get(sym, []),
+                "wake_reasons": wake_reasons.get(sym, []),
                 **build_symbol_facts(
                     sym,
                     data_age_by_symbol=data_age_by_symbol,

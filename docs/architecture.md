@@ -462,6 +462,8 @@ Override LLM : l'agent peut ajouter/retirer des symboles avec raison loggée
 
 ## 7. Veille / réveils — indicator_watch
 
+> Source canonique des invariants runtime : [`reference/wake-scheduler.md`](reference/wake-scheduler.md).
+
 `trader/planning/indicator_watch.py` — cube `symbol × indicator × timeframe × op × value`.
 
 Trois modes de déclenchement :
@@ -471,6 +473,14 @@ Trois modes de déclenchement :
 | `WAKE` | Réveille le cycle pour ce symbole | Veille simple |
 | `WAKE_WITH_ORDER_INTENT` | Réveille + signale une intention d'ordre | Pré-validation |
 | `EXECUTE_ORDER` | Exécute l'ordre SANS re-appel LLM | Plan armé D7B |
+
+Un symbole avec `indicator_watch` active ne repasse pas dans le cycle périodique
+normal : son `next_wake` est calé sur l'expiration de la veille. Le daemon scanne
+les veilles au poll sans appel LLM ; au déclenchement ou à l'expiration, la veille
+est retirée et le symbole est réveillé immédiatement (`next_wake = now`) pour que
+le cycle suivant le prenne dans `due_symbols`. Les conditions réellement
+déclenchées arrivent au LLM via `context.indicator_triggers`; les expirations TTL
+arrivent via `context.wake_reasons` (`watch_expired` / `armed_plan_expired`).
 
 **INVARIANT ATOMIQUE** : une seule condition rejetée → toute la veille est rejetée
 (jamais de watch amputée). `trader/planning/indicator_watch.py`
@@ -567,7 +577,7 @@ La `Decision` inclut : `action`, `quantity`, `confidence`, `rationale`, `intent`
 
 ## 10. Outils domaine — la tournée d'outils du LLM (2026-07-02)
 
-Design : `docs/superpowers/specs/2026-06-29-agent-domain-tools-design.md`.
+Référence canonique : `docs/reference/agent-tools.md`.
 Flag : `CASYS_AGENT_TOOLS_ENABLED=1` (actif ; visible au startup dans le log
 `[config] … agent_tools=True`).
 
@@ -634,7 +644,7 @@ place tant que la mesure n'a pas tranché.
 
 ## 12. Gestion des données — rotation et archives (2026-07-02)
 
-Doc : `docs/specs/2026-07-02-agent-data-lifecycle.md`.
+Doc : `docs/superpowers/specs/2026-07-02-agent-data-lifecycle.md`.
 
 - **Rotation mensuelle** (`ledger_rotation`, au démarrage du daemon) :
   decisions/events des mois passés → `state/archive/<stem>-YYYY-MM.jsonl.gz`.
@@ -651,7 +661,7 @@ Doc : `docs/specs/2026-07-02-agent-data-lifecycle.md`.
 ## 13. Collecte macro/news — P1a (en livraison 2026-07-02)
 
 Spec : `docs/superpowers/specs/2026-07-02-macro-analyste-news-spec.md` ;
-sources : `docs/specs/2026-07-02-macro-data-sources.md`.
+sources : `docs/superpowers/specs/2026-07-02-macro-data-sources.md`.
 Items de news persistés + calendrier FOMC/CPI (`macro_next` par décision) +
 séries macro quotidiennes via DBnomics (zéro clé). Tout attribution-first ;
 l'analyste-news (LLM offline, brief quotidien borné) viendra quand le stock

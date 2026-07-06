@@ -67,8 +67,9 @@ croissant linéairement avec le risque planifié —
 
 - **Données différées** : décision Erwan — pas d'abonnement en paper.
   **Futures CME retirés de l'univers de calibration** (commit `70ad1b9`),
-  retour en prod avec souscription IB temps réel. Spec data multi-sources :
-  `docs/superpowers/specs/2026-06-10-data-source-abstraction-design.md`.
+  retour en prod avec souscription IB temps réel. La spec data multi-sources
+  historique a été retirée du repo ; l'état courant est dans `docs/architecture.md`
+  (§3.2) et `docs/reference/config.md` (`data_sources.yaml`).
 - **Slippage des stops : CORRIGÉ** (commit `5ce1746`) — stops/TP/trailing
   détectés sur les extrêmes (high/low) de la dernière barre, fill
   conservateur jamais meilleur que le niveau, garde temporelle (un extrême

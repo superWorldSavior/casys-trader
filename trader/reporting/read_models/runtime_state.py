@@ -196,6 +196,29 @@ def _load_scheduler_data_safe(scheduler_path: Path, *, now: datetime | None = No
         return [], {}
 
 
+def _load_scheduler_wakes_safe(scheduler_path: Path) -> tuple[str | None, dict]:
+    """Lit scheduler.json, retourne (default_next_wake, symbol_wakes).
+
+    default_next_wake : ISO str du prochain réveil global, None si absent.
+    symbol_wakes      : dict {symbol: ISO str du prochain réveil}.
+    Tolérant : retourne (None, {}) si absent/corrompu.
+    """
+    try:
+        raw = json.loads(scheduler_path.read_text(encoding="utf-8"))
+        if not isinstance(raw, dict):
+            return None, {}
+        # legacy : Scheduler._load_state promeut next_wake → default_next_wake
+        default_next_wake = raw.get("default_next_wake") or raw.get("next_wake")
+        default_next_wake = str(default_next_wake) if default_next_wake else None
+        symbols = raw.get("symbols") or {}
+        if not isinstance(symbols, dict):
+            symbols = {}
+        symbol_wakes = {str(k): str(v) for k, v in symbols.items() if v}
+        return default_next_wake, symbol_wakes
+    except Exception:
+        return None, {}
+
+
 def _load_indicator_watches_safe(scheduler_path: Path) -> list[dict]:
     """Raccourci : ne retourne que les watches."""
     watches, _ = _load_scheduler_data_safe(scheduler_path)
@@ -440,6 +463,7 @@ def load_runtime_state(
     learnings = _load_learnings_safe(state_dir_path)
     trade_plans = _load_trade_plans_safe(state_dir_path / "trade_plans.json")
     indicator_watches, stale_streaks = _load_scheduler_data_safe(state_dir_path / "scheduler.json")
+    default_next_wake, symbol_wakes = _load_scheduler_wakes_safe(state_dir_path / "scheduler.json")
     recent_decisions = _tail_decisions_safe(state_dir_path / "decisions.jsonl", n=50)
     consolidation_status = _load_consolidation_status_safe(state_dir_path / "learnings_consolidation_status.json")
     learnings_pending_count = _count_pending_learnings_safe(
@@ -469,6 +493,9 @@ def load_runtime_state(
         "armed_plans": [w for w in indicator_watches if _is_armed_plan(w)],
         "indicator_watches": indicator_watches,
         "stale_streaks": stale_streaks,
+        # réveils du scheduler : countdown NEXT WAKE (global) + par symbole
+        "default_next_wake": default_next_wake,
+        "symbol_wakes": symbol_wakes,
         "recent_decisions": recent_decisions,
         "consolidation_status": consolidation_status,
         "learnings_pending_count": learnings_pending_count,

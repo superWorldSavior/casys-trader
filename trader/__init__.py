@@ -118,8 +118,6 @@ _COMPAT_PACKAGES = {
         "aggregates": "trader.interfaces.cockpit.aggregates",
         "app": "trader.interfaces.cockpit.app",
         "events": "trader.interfaces.cockpit.events",
-        "home": "trader.interfaces.cockpit.home",
-        "overview": "trader.interfaces.cockpit.overview",
         "supervisor": "trader.interfaces.cockpit.supervisor",
     },
     "commands": {
