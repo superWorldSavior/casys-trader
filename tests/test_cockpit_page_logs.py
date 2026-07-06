@@ -124,9 +124,9 @@ async def test_logs_class_and_regex_filters(tmp_path, monkeypatch):
         await pilot.pause()
         pane = app.query_one("#events-panel", LogsPane)
         pane.set_filters({EventClass.DECISION_EXECUTED}, None)
-        assert [l for l in pane._buffer if pane._passes(l)][0].markup_class is EventClass.DECISION_EXECUTED
+        assert [ln for ln in pane._buffer if pane._passes(ln)][0].markup_class is EventClass.DECISION_EXECUTED
         pane.set_filters(None, "1326")
-        passing = [l for l in pane._buffer if pane._passes(l)]
+        passing = [ln for ln in pane._buffer if pane._passes(ln)]
         assert len(passing) == 1
         assert "1326.TW" in passing[0].text
         # regex invalide → ignorée, pas d'exception
