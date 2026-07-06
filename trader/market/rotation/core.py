@@ -168,6 +168,9 @@ class UniverseWriteError(ValueError):
 def write_universe_atomic(path: str, symbols: list[str]) -> None:
     """Écrit {"symbols": [...]} dans path de manière atomique via tempfile + os.replace.
 
+    Le bloc ``overrides:`` (pin/ban cockpit — voir user_overrides.py) est
+    préservé tel quel : la rotation ne possède que la clé ``symbols``.
+
     Args:
         path: chemin du fichier de destination.
         symbols: liste non vide de symboles.
@@ -178,11 +181,19 @@ def write_universe_atomic(path: str, symbols: list[str]) -> None:
     if not symbols:
         raise UniverseWriteError("symbols ne peut pas être vide")
 
+    data: dict = {"symbols": symbols}
+    try:
+        existing = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
+        if isinstance(existing, dict) and isinstance(existing.get("overrides"), dict):
+            data["overrides"] = existing["overrides"]
+    except Exception:
+        pass  # fichier absent/corrompu → pas d'overrides à préserver
+
     directory = os.path.dirname(os.path.abspath(path))
     fd, tmp_path = tempfile.mkstemp(dir=directory)
     try:
         with os.fdopen(fd, "w") as f:
-            yaml.safe_dump({"symbols": symbols}, f)
+            yaml.safe_dump(data, f, sort_keys=False)
         os.replace(tmp_path, path)
     except Exception:
         # Nettoyer le fichier temporaire en cas d'erreur

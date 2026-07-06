@@ -195,5 +195,65 @@ PALETTE_INK: Palette = {
     "event_other": "#928374",
 }
 
+# ---------------------------------------------------------------------------
+# PALETTE_CASYS — thème signature unique du cockpit (dark-amber).
+#
+# Règle sémantique : vert/rouge réservés au P&L, au side (L/S) et à buy/sell ;
+# ambre #e5c07b = attention ; #FFB86F est la SEULE teinte structurelle
+# (titres, nav active, countdowns, sélection). Une seule couleur de bordure :
+# l'identité d'un panneau vient de son titre, pas de sa bordure.
+# ---------------------------------------------------------------------------
+PALETTE_CASYS: Palette = {
+    "border_default": "#332c23",
+    "border_attribution": "#332c23",
+    "border_learnings": "#332c23",
+    "border_plans": "#332c23",
+    "border_watches": "#332c23",
+    "border_llm_activity": "#332c23",
+    "equity_line": "#FFB86F",
+    "equity_dim": "#6b6157",
+    "kpi_sharpe_ok": "#a5c98c",
+    "kpi_sharpe_bad": "#e87f66",
+    "kpi_default": "#d5c3b5",
+    "kpi_vol_warn": "#e5c07b",
+    "pnl_positive": "#a5c98c",
+    "pnl_negative": "#e87f66",
+    "symbol_bold": "bold #f5f0ea",
+    "action_buy": "#a5c98c",
+    "action_sell": "#e87f66",
+    "action_hold": "#8d8177",
+    "learning_symbol": "bold #d5c3b5",
+    "dim": "#8d8177",
+    "status_equity": "bold #f5f0ea",
+    "status_accent": "#FFB86F",
+    "status_phase": "#FFB86F",
+    "status_nominal": "#a5c98c",
+    "event_decision_exec": "bold #a5c98c",
+    "event_risk_reject": "bold #e87f66",
+    "event_stale": "#e5c07b",
+    "event_hold": "#d5c3b5",
+    "event_watch": "#FFB86F",
+    "event_learning": "#d5c3b5",
+    "event_cycle": "#6b6157",
+    "event_error": "#e5c07b",
+    "event_other": "#8d8177",
+}
+
+# Tokens casys hors Palette TypedDict — partagés par le shell et les pages.
+CASYS_ACCENT = "#FFB86F"  # seule teinte structurelle
+CASYS_FG = "#f5f0ea"
+CASYS_MUTED = "#d5c3b5"
+CASYS_DIM = "#8d8177"  # texte secondaire
+CASYS_FAINT = "#6b6157"  # en-têtes de colonnes, footnotes
+CASYS_SUCCESS = "#a5c98c"
+CASYS_ERROR = "#e87f66"
+CASYS_WARNING = "#e5c07b"  # stale / attention — jamais structurel
+CASYS_BORDER = "#332c23"  # LA couleur de bordure des panneaux
+CASYS_HAIRLINE = "#26211b"  # séparateurs internes
+CASYS_METER_EMPTY = "#3a332b"  # portion vide des meters ▮
+CASYS_BG = "#0f0e0c"  # screen
+CASYS_SURFACE = "#14110e"  # rail
+CASYS_PANEL = "#1a1815"  # barre fenêtre / footer
+
 # Ensemble canonique de toutes les clés valides
 ALL_PALETTE_KEYS: tuple[str, ...] = tuple(PALETTE_DARK.keys())
