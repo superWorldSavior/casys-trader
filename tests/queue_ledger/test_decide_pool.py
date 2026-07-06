@@ -466,7 +466,7 @@ def test_pool_tool_round_bout_en_bout(tmp_path):
             return {sym: _ok_decision(sym, "HOLD") for sym in symbols}
 
     class _FakeSession:
-        def send(self, prompt, *, timeout_s):
+        def send(self, prompt, *, timeout_s, call_ctx=None):
             raise AssertionError("decide_batch fake ignore complete_fn ; send ne doit pas être appelé")
 
         def close(self):

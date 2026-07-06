@@ -1,0 +1,16 @@
+# CODEX_HOME isolé pour le daemon casys-trader.
+# But : sessions de décision propres et déterministes — AUCUN plugin, skill
+# (superpowers) ni MCP. Ils polluaient le contrat de sortie JSON (prose
+# "j'utilise la compétence superpowers..." -> parse_error) et alourdissaient
+# le bootstrap. Auth partagée via symlink auth.json.
+model = "gpt-5.5"
+model_reasoning_effort = "xhigh"
+approval_policy = "never"
+sandbox_mode = "danger-full-access"
+service_tier = "default"
+
+[notice]
+hide_full_access_warning = true
+
+[projects."/Users/erwanpesle/Documents/GitHub/casys-trader"]
+trust_level = "trusted"

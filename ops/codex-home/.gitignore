@@ -1,0 +1,7 @@
+# CODEX_HOME isolé du daemon : on versionne SEULEMENT config.toml.
+# Auth (secret) et rollouts générés restent hors git.
+auth.json
+sessions/
+history/
+tmp/
+*.log

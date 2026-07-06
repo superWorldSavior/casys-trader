@@ -119,9 +119,13 @@ def test_retryable_provider_error_se_limite_aux_rate_limits_et_quotas() -> None:
     assert not _looks_retryable_provider_error("erreur fournisseur generique")
 
 
-def test_acpx_backend_timeout_est_un_echec_non_retryable(monkeypatch) -> None:
+def test_acpx_backend_timeout_est_retryable_et_cape_par_appel(monkeypatch) -> None:
+    """Un timeout d'appel est TRANSITOIRE → retryable (incident AMCR 2026-07-06),
+    et le subprocess est tué au cap par-appel (150s) et non au budget total (900s)."""
     monkeypatch.setattr("trader.agent.llm.shutil.which", lambda _bin: "/usr/local/bin/acpx")
     monkeypatch.setattr("trader.agent.llm._terminate_process_group", lambda _pid: None)
+
+    seen: dict[str, float | None] = {"timeout": None}
 
     class TimeoutPopen:
         pid = 4242
@@ -131,6 +135,9 @@ def test_acpx_backend_timeout_est_un_echec_non_retryable(monkeypatch) -> None:
             self.command = command
 
         def communicate(self, timeout=None):
+            # 1er appel = le budget réel ; le 2e (cleanup post-kill) vaut 1s.
+            if seen["timeout"] is None:
+                seen["timeout"] = timeout
             raise subprocess.TimeoutExpired(cmd=self.command, timeout=timeout)
 
         def kill(self):
@@ -143,7 +150,49 @@ def test_acpx_backend_timeout_est_un_echec_non_retryable(monkeypatch) -> None:
     assert isinstance(result, LlmFailure)
     assert result.provider == "acpx"
     assert result.code == "timeout"
-    assert result.retryable is False
+    assert result.retryable is True
+    # budget par-appel = min(900, cap 150) → subprocess tué à 150 + 15 grace.
+    assert seen["timeout"] == 150 + 15
+    assert result.message == "> 150s"
+
+
+def test_per_call_timeout_cap_configurable(monkeypatch) -> None:
+    monkeypatch.delenv("CASYS_ACPX_CALL_TIMEOUT_S", raising=False)
+    assert llm._per_call_timeout_cap_s() == 150
+    monkeypatch.setenv("CASYS_ACPX_CALL_TIMEOUT_S", "90")
+    assert llm._per_call_timeout_cap_s() == 90
+    monkeypatch.setenv("CASYS_ACPX_CALL_TIMEOUT_S", "pas-un-int")
+    assert llm._per_call_timeout_cap_s() == 150
+
+
+def test_acpx_call_journalise_session_pid_outcome(monkeypatch, caplog) -> None:
+    """Le journal [acpx_call] porte session/pid/outcome pour tracer chaque appel."""
+    monkeypatch.setattr("trader.agent.llm.shutil.which", lambda _bin: "/usr/local/bin/acpx")
+    monkeypatch.setattr("trader.agent.llm._terminate_process_group", lambda _pid: None)
+
+    class OkPopen:
+        pid = 7777
+        returncode = 0
+
+        def __init__(self, command, **kwargs):
+            self.command = command
+
+        def communicate(self, timeout=None):
+            return ('{"AMCR": {}}', "")
+
+    monkeypatch.setattr("trader.agent.llm.subprocess.Popen", OkPopen)
+
+    session = llm.AcpxSession(
+        provider="acpx", model="gpt-5.5", acpx_bin="acpx", name="304:0"
+    )
+    with caplog.at_level("INFO", logger="trader.agent.llm"):
+        session.send("prompt", timeout_s=240, call_ctx={"symbol": "AMCR"})
+
+    line = next(m for m in caplog.messages if m.startswith("[acpx_call]"))
+    assert "session=304:0" in line
+    assert "symbol=AMCR" in line
+    assert "pid=7777" in line
+    assert "outcome=ok" in line
 
 
 def test_acpx_backend_consolidateur_traite_internal_error_comme_retryable(monkeypatch) -> None:
@@ -248,7 +297,7 @@ def test_acpx_session_send_retourne_une_completion_sur_stdout(monkeypatch) -> No
     monkeypatch.setattr("trader.agent.llm.shutil.which", lambda _bin: "/usr/local/bin/acpx")
     calls = []
 
-    def fake_run(command, *, timeout_s):
+    def fake_run(command, *, timeout_s, on_pid=None):
         calls.append((command, timeout_s))
         return subprocess.CompletedProcess(
             args=command,
@@ -301,7 +350,7 @@ def test_acpx_backend_open_session_cree_une_session_neuve_et_retourne_un_objet(m
     monkeypatch.setattr("trader.agent.llm.shutil.which", lambda _bin: "/usr/local/bin/acpx")
     calls = []
 
-    def fake_run(command, *, timeout_s):
+    def fake_run(command, *, timeout_s, on_pid=None):
         calls.append((command, timeout_s))
         return subprocess.CompletedProcess(args=command, returncode=0, stdout="", stderr="")
 
@@ -345,7 +394,7 @@ def test_acpx_backend_open_session_cree_une_session_neuve_et_retourne_un_objet(m
 def test_acpx_backend_open_session_retourne_l_echec_si_new_echoue(monkeypatch) -> None:
     monkeypatch.setattr("trader.agent.llm.shutil.which", lambda _bin: "/usr/local/bin/acpx")
 
-    def fake_run(command, *, timeout_s):
+    def fake_run(command, *, timeout_s, on_pid=None):
         return subprocess.CompletedProcess(
             args=command,
             returncode=1,
@@ -370,7 +419,7 @@ def test_acpx_backend_agent_claude_est_porte_par_session_new_et_prompt(monkeypat
     monkeypatch.setattr("trader.agent.llm.shutil.which", lambda _bin: "/usr/local/bin/acpx")
     calls = []
 
-    def fake_run(command, *, timeout_s):
+    def fake_run(command, *, timeout_s, on_pid=None):
         calls.append((command, timeout_s))
         return subprocess.CompletedProcess(args=command, returncode=0, stdout="ok", stderr="")
 
@@ -397,7 +446,7 @@ def test_acpx_backend_agent_claude_est_porte_par_session_new_et_prompt(monkeypat
 def test_acpx_session_close_envoie_la_commande_de_fermeture(monkeypatch) -> None:
     calls = []
 
-    def fake_run(command, *, timeout_s):
+    def fake_run(command, *, timeout_s, on_pid=None):
         calls.append(command)
         return subprocess.CompletedProcess(args=command, returncode=0, stdout="", stderr="")
 
@@ -428,7 +477,7 @@ def test_acpx_session_close_envoie_la_commande_de_fermeture(monkeypatch) -> None
 
 
 def test_acpx_session_close_logge_un_warning_sans_lever(monkeypatch, caplog) -> None:
-    def fake_run(command, *, timeout_s):
+    def fake_run(command, *, timeout_s, on_pid=None):
         raise RuntimeError("acpx close failed")
 
     monkeypatch.setattr("trader.agent.llm._run_one_shot_command", fake_run)
@@ -450,7 +499,7 @@ def test_acpx_session_close_logge_un_warning_sans_lever(monkeypatch, caplog) -> 
 def test_acpx_session_close_peut_etre_appele_deux_fois_sans_lever(monkeypatch) -> None:
     calls = []
 
-    def fake_run(command, *, timeout_s):
+    def fake_run(command, *, timeout_s, on_pid=None):
         calls.append(command)
         if len(calls) == 2:
             raise RuntimeError("already closed")
@@ -510,7 +559,7 @@ def test_session_complete_fn_retourne_la_completion_de_la_session() -> None:
     calls = []
 
     class FakeSession:
-        def send(self, prompt, *, timeout_s):
+        def send(self, prompt, *, timeout_s, call_ctx=None):
             calls.append((prompt, timeout_s))
             return completion
 
@@ -532,7 +581,7 @@ def test_session_complete_fn_leve_provider_down_sur_echec_retryable() -> None:
     )
 
     class FakeSession:
-        def send(self, prompt, *, timeout_s):
+        def send(self, prompt, *, timeout_s, call_ctx=None):
             return failure
 
     complete = llm.session_complete_fn(FakeSession())
@@ -553,7 +602,7 @@ def test_session_complete_fn_retourne_l_echec_non_retryable() -> None:
     )
 
     class FakeSession:
-        def send(self, prompt, *, timeout_s):
+        def send(self, prompt, *, timeout_s, call_ctx=None):
             return failure
 
     complete = llm.session_complete_fn(FakeSession())

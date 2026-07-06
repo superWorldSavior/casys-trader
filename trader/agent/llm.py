@@ -33,6 +33,44 @@ DEFAULT_CONSOLIDATOR_SESSION_LABEL = "casys-trader:learning-consolidator"
 
 log = logging.getLogger(__name__)
 
+# Plafond par-appel du subprocess acpx, DÉCOUPLÉ du budget-décision (lease).
+# Un appel LLM normal fait 30-90s ; un tour figé (provider muet après
+# task_started, cf incident AMCR 2026-07-06) resterait pendu jusqu'au budget
+# total. Ce cap coupe l'appel individuel bien avant, sans toucher au lease.
+_DEFAULT_PER_CALL_TIMEOUT_CAP_S = 150
+
+
+def _per_call_timeout_cap_s() -> int:
+    """Cap par-appel subprocess acpx (secondes), env ``CASYS_ACPX_CALL_TIMEOUT_S``."""
+    raw = os.getenv("CASYS_ACPX_CALL_TIMEOUT_S")
+    if raw is None:
+        return _DEFAULT_PER_CALL_TIMEOUT_CAP_S
+    try:
+        return max(int(raw), 1)
+    except ValueError:
+        return _DEFAULT_PER_CALL_TIMEOUT_CAP_S
+
+
+def _log_acpx_call(
+    *, session, symbol, pid, provider, timeout_s: int, dur_s: float, outcome: str
+) -> None:
+    """Journal de vie d'un appel acpx : 1 ligne structurée par subprocess.
+
+    Champs : session (=task_id:attempt) · symbol · pid · timeout appliqué ·
+    durée réelle · issue (ok|timeout|nonzero|nonzero_retryable|error|unavailable).
+    Corrélable au ledger par ``session`` (préfixe = task_id).
+    """
+    log.info(
+        "[acpx_call] session=%s symbol=%s pid=%s provider=%s timeout_s=%s dur_s=%.1f outcome=%s",
+        session or "-",
+        symbol or "-",
+        pid if pid is not None else "-",
+        provider,
+        timeout_s,
+        dur_s,
+        outcome,
+    )
+
 
 @dataclass(frozen=True)
 class LlmCompletion:
@@ -269,7 +307,9 @@ def _terminate_process_group(pgid: int, *, grace_s: float = 2.0) -> None:
         return
 
 
-def _run_one_shot_command(command: list[str], *, timeout_s: int) -> subprocess.CompletedProcess[str]:
+def _run_one_shot_command(
+    command: list[str], *, timeout_s: int, on_pid: Callable[[int], None] | None = None
+) -> subprocess.CompletedProcess[str]:
     proc = subprocess.Popen(
         command,
         stdout=subprocess.PIPE,
@@ -278,6 +318,8 @@ def _run_one_shot_command(command: list[str], *, timeout_s: int) -> subprocess.C
         start_new_session=os.name == "posix",
         env=sanitized_runtime_env(),
     )
+    if on_pid is not None:
+        on_pid(proc.pid)
     try:
         stdout, stderr = proc.communicate(timeout=timeout_s)
     except subprocess.TimeoutExpired:
@@ -309,8 +351,20 @@ def _run_and_parse(
     model: str,
     acpx_bin: str,
     timeout_s: int,
+    call_ctx: dict | None = None,
 ) -> LlmCompletion | LlmFailure:
+    ctx = call_ctx or {}
+    session = ctx.get("session")
+    symbol = ctx.get("symbol")
+    # Budget par-appel = min(budget demandé, cap transport). Le cap coupe un
+    # appel figé sans attendre le budget-décision total (fenêtre opaque).
+    budget_s = min(int(timeout_s), _per_call_timeout_cap_s())
+
     if shutil.which(acpx_bin) is None:
+        _log_acpx_call(
+            session=session, symbol=symbol, pid=None, provider=provider,
+            timeout_s=budget_s, dur_s=0.0, outcome="unavailable",
+        )
         return LlmFailure(
             provider=provider,
             model=model,
@@ -319,18 +373,34 @@ def _run_and_parse(
             retryable=True,
         )
 
+    pid_holder: dict[str, int | None] = {"pid": None}
+    started = time.monotonic()
     try:
-        proc = _run_one_shot_command(command, timeout_s=timeout_s + 15)
+        proc = _run_one_shot_command(
+            command,
+            timeout_s=budget_s + 15,
+            on_pid=lambda p: pid_holder.__setitem__("pid", p),
+        )
     except subprocess.TimeoutExpired:
+        _log_acpx_call(
+            session=session, symbol=symbol, pid=pid_holder["pid"], provider=provider,
+            timeout_s=budget_s, dur_s=time.monotonic() - started, outcome="timeout",
+        )
         return LlmFailure(
             provider=provider,
             model=model,
             code="timeout",
-            message=f"> {timeout_s}s",
-            retryable=False,
+            message=f"> {budget_s}s",
+            # Un tour figé (provider muet) est TRANSITOIRE : rejouer. L'incident
+            # AMCR 2026-07-06 s'est résolu au retry post-restart.
+            retryable=True,
         )
     except Exception as exc:  # noqa: BLE001 - frontière fournisseur
         message = str(exc)
+        _log_acpx_call(
+            session=session, symbol=symbol, pid=pid_holder["pid"], provider=provider,
+            timeout_s=budget_s, dur_s=time.monotonic() - started, outcome="error",
+        )
         return LlmFailure(
             provider=provider,
             model=model,
@@ -339,9 +409,15 @@ def _run_and_parse(
             retryable=_looks_retryable_provider_error(message),
         )
 
+    dur_s = time.monotonic() - started
     if proc.returncode != 0:
         message = (proc.stderr or proc.stdout or "")[:500]
         retryable = _looks_retryable_acpx_error(provider=provider, text=message)
+        _log_acpx_call(
+            session=session, symbol=symbol, pid=pid_holder["pid"], provider=provider,
+            timeout_s=budget_s, dur_s=dur_s,
+            outcome="nonzero_retryable" if retryable else "nonzero",
+        )
         return LlmFailure(
             provider=provider,
             model=model,
@@ -350,6 +426,10 @@ def _run_and_parse(
             retryable=retryable,
         )
 
+    _log_acpx_call(
+        session=session, symbol=symbol, pid=pid_holder["pid"], provider=provider,
+        timeout_s=budget_s, dur_s=dur_s, outcome="ok",
+    )
     return LlmCompletion(provider=provider, model=model, text=proc.stdout)
 
 
@@ -361,7 +441,9 @@ class AcpxSession:
     name: str
     agent: str | None = None
 
-    def send(self, prompt: str, *, timeout_s: int) -> LlmCompletion | LlmFailure:
+    def send(
+        self, prompt: str, *, timeout_s: int, call_ctx: dict | None = None
+    ) -> LlmCompletion | LlmFailure:
         return _run_and_parse(
             build_acpx_session_prompt_command(
                 self.name,
@@ -375,6 +457,7 @@ class AcpxSession:
             model=self.model,
             acpx_bin=self.acpx_bin,
             timeout_s=timeout_s,
+            call_ctx={**(call_ctx or {}), "session": self.name},
         )
 
     def close(self) -> None:
@@ -398,9 +481,9 @@ class SessionProviderDown(Exception):
         self.failure = failure
 
 
-def session_complete_fn(session):
+def session_complete_fn(session, call_ctx: dict | None = None):
     def _complete(prompt: str, timeout_s: int) -> LlmCompletion | LlmFailure:
-        result = session.send(prompt, timeout_s=timeout_s)
+        result = session.send(prompt, timeout_s=timeout_s, call_ctx=call_ctx)
         if isinstance(result, LlmFailure) and result.retryable:
             raise SessionProviderDown(result)
         return result
@@ -470,6 +553,7 @@ class AcpxBackend:
             model=self.model,
             acpx_bin=self.acpx_bin,
             timeout_s=timeout_s,
+            call_ctx={"session": name},
         )
         if not isinstance(res, LlmCompletion):
             return res
@@ -496,6 +580,7 @@ class AcpxBackend:
             model=self.model,
             acpx_bin=self.acpx_bin,
             timeout_s=timeout_s,
+            call_ctx={"session": self.session_label},
         )
 
 
