@@ -83,6 +83,8 @@ def test_succes_buy_retourne_decision():
     assert result.action == "BUY"
     assert result.symbol == SYMBOL
     assert result.llm_error is None
+    assert client.calls[0]["use_symbol_calls_contract"] is True
+    assert client.calls[0]["allow_tool_calls"] is False
 
 
 def test_succes_sell_retourne_decision():

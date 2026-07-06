@@ -6,7 +6,7 @@ Couvre le chemin complet bout-en-bout :
   - Fill récupéré via ledger.get(task_id)["result"] (JSON — écrit atomiquement par UoW)
   - Broker + plan + task atomiques : si rollback → aucune des 3 écritures persiste
   - FIX 1 : fill dans task.result atomiquement (pas de _patch_result)
-  - FIX 3 : ADD via queue → close + upsert nouveau plan atomiques dans UoW
+  - FIX 3 : SCALE_IN via queue → close + upsert nouveau plan atomiques dans UoW
 
 AX §11 Test-First Invariants : atomicité est l'invariant prioritaire.
 """
@@ -521,16 +521,16 @@ class TestFlagOff:
 
 
 # ---------------------------------------------------------------------------
-# Classe 4 — FIX 3 : ADD via queue → close + upsert nouveau plan atomiques
+# Classe 4 — FIX 3 : SCALE_IN via queue → close + upsert nouveau plan atomiques
 # ---------------------------------------------------------------------------
 
 
 class TestAddAtomique:
-    """FIX 3 : en mode queue, ADD ferme l'ancien plan ET insère le nouveau
+    """FIX 3 : en mode queue, SCALE_IN ferme l'ancien plan ET insère le nouveau
     dans la même UoW. Pas de fenêtre crash entre le close et l'upsert."""
 
     def test_add_closes_old_plan_and_inserts_new_atomically(self, tmp_path: Path) -> None:
-        """ADD via queue : ancien plan fermé ET nouveau plan créé atomiquement."""
+        """SCALE_IN via queue : ancien plan fermé ET nouveau plan créé atomiquement."""
         db, broker, plan_store, ledger = _make_stack(tmp_path)
 
         # Pré-insère un plan AAPL long
@@ -541,7 +541,7 @@ class TestAddAtomique:
         handler = make_execute_order_handler(db=db, broker=broker, plan_store=plan_store, ledger=ledger)
         pool = _make_pool(ledger, handler)
 
-        # Nouveau plan ADD : close l'ancien ET upsert le nouveau atomiquement
+        # Nouveau plan SCALE_IN : close l'ancien ET upsert le nouveau atomiquement
         new_plan = _simple_plan("AAPL-new-add")
         from dataclasses import asdict as _asdict
         pool.start()
@@ -573,7 +573,7 @@ class TestAddAtomique:
     def test_add_uow_exception_rolls_back_close_and_upsert(
         self, tmp_path: Path, monkeypatch
     ) -> None:
-        """ADD via queue : exception sur upsert → rollback du close aussi (atomicité)."""
+        """SCALE_IN via queue : exception sur upsert → rollback du close aussi (atomicité)."""
         db, broker, plan_store, ledger = _make_stack(tmp_path)
 
         old_plan = _simple_plan("AAPL-old-rb")

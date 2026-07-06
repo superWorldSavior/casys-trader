@@ -7,6 +7,8 @@ import logging
 from types import SimpleNamespace
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from trader.runtime import daemon
 from trader.application import planner_batch
 from trader.agent.client import ContextResearchRequest, Decision, IndicatorRequest
@@ -113,7 +115,7 @@ def _install_queue_decide_stream(monkeypatch, stream_events, trace: list[tuple])
         for sym, decision, calls in stream_events:
             trace.append(("decision_ready", sym))
             if decision is None:
-                undecided.add(sym)
+                undecided.scale_in(sym)
             else:
                 decisions[sym] = decision
                 model_calls += calls
@@ -204,7 +206,7 @@ def test_queue_decide_streams_ready_reducer_before_slow_opening_finishes(
     assert trace.index(("refresh_after_exit", "SPY", 0.0)) < trace.index(("execute", "QQQ", "OPEN_LONG", 0.0))
 
 
-def test_queue_decide_buffers_reverse_until_collection_is_exhausted(
+def test_queue_decide_buffers_flip_until_collection_is_exhausted(
     monkeypatch,
     tmp_path,
     make_data_source,
@@ -214,13 +216,13 @@ def test_queue_decide_buffers_reverse_until_collection_is_exhausted(
     _seed_long_position(state_dir, "SPY", quantity=10.0)
     now = datetime(2026, 6, 15, 14, 30, tzinfo=timezone.utc)
     trace: list[tuple] = []
-    reverse_decision = Decision(
+    flip_decision = Decision(
         symbol="SPY",
         action="HOLD",
         quantity=5.0,
         confidence=0.9,
         rationale="flip",
-        intent="REVERSE",
+        intent="FLIP",
         resolve_from_position=True,
         exit_plan={"hard_stop": {"type": "price", "price": 105.0}},
     )
@@ -230,7 +232,7 @@ def test_queue_decide_buffers_reverse_until_collection_is_exhausted(
     monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
     _install_queue_decide_stream(
         monkeypatch,
-        [("SPY", reverse_decision, 1), ("QQQ", hold_decision, 1)],
+        [("SPY", flip_decision, 1), ("QQQ", hold_decision, 1)],
         trace,
     )
     _install_tracing_decision_executor(monkeypatch, trace)
@@ -246,7 +248,7 @@ def test_queue_decide_buffers_reverse_until_collection_is_exhausted(
     )
 
     assert trace.index(("decision_ready", "SPY")) < trace.index(("decision_ready", "QQQ"))
-    assert trace.index(("decision_ready", "QQQ")) < trace.index(("execute", "SPY", "REVERSE", 1000.0))
+    assert trace.index(("decision_ready", "QQQ")) < trace.index(("execute", "SPY", "FLIP", 1000.0))
 
 
 def test_queue_decide_executes_buffered_openings_by_gross_merit_order(
@@ -553,6 +555,96 @@ def test_execute_one_cycle_decision_records_hold_without_mutating_state() -> Non
     assert records[0]["symbol"] == "SPY"
     assert records[0]["executed"] is False
     assert records[0]["reason"] == "no_decision_in_batch"
+
+
+def test_execute_one_cycle_decision_uses_current_price_for_protective_structural_exit_update(
+    tmp_path,
+) -> None:
+    from trader.planning.trade_plan import TradePlanStore, create_trade_plan
+
+    records: list[dict] = []
+    store = TradePlanStore(tmp_path / "plans.json")
+    store.upsert(
+        create_trade_plan(
+            symbol="INGA.AS",
+            side="LONG",
+            quantity=45.0,
+            entry_price=27.450000762939453,
+            opened_at="2026-07-01T09:33:53.439732+00:00",
+            raw_exit_plan={"hard_stop": 28.24},
+        )
+    )
+    state = daemon.DecisionExecutionState(snap=SimpleNamespace(equity=100_000.0), gross=0.0)
+    current_price = 28.495
+    ctx = daemon.DecisionExecutionContext(
+        now=_COMMON["now"],
+        min_wake_minutes=None,
+        max_wake_minutes=None,
+        macro_next=None,
+        broker=SimpleNamespace(positions=lambda: {}),
+        plan_store=store,
+        gate=SimpleNamespace(),
+        sched=None,
+        prices={"INGA.AS": current_price},
+        execution_eligibility={},
+        tradable_bars_by_symbol={
+            "INGA.AS": [
+                Bar(
+                    ts="2026-07-06T12:45:00+00:00",
+                    open=28.45,
+                    high=28.55,
+                    low=28.065,
+                    close=current_price,
+                    volume=1000.0,
+                )
+            ]
+        },
+        data_age_by_symbol={},
+        runtime_data_source_by_sym={},
+        armed_plan_ids={},
+        armed_plan_orders={},
+        armed_reference_volatilities={},
+        held_symbols={"INGA.AS"},
+        cockpit={},
+        runtime_interval="15m",
+        starting_equity=100_000.0,
+        require_hard_stop=True,
+        dry_run=True,
+        queue_execute_enabled=False,
+        execute_ledger=None,
+        record_decision=records.append,
+        rate_for_symbol=lambda _symbol: 1.0,
+    )
+    decision = Decision(
+        symbol="INGA.AS",
+        action="HOLD",
+        quantity=0.0,
+        confidence=0.84,
+        rationale="protect runner",
+        intent="HOLD",
+        exit_update={
+            "hard_stop": {
+                "type": "structural",
+                "anchor": "swing_low",
+                "window": 48,
+                "buffer_pct": 0.002,
+            }
+        },
+    )
+
+    daemon._execute_one_cycle_decision(
+        sym="INGA.AS",
+        index=1,
+        total=1,
+        decision=decision,
+        state=state,
+        ctx=ctx,
+    )
+
+    assert records[0]["price"] == pytest.approx(current_price)
+    assert records[0]["exit_update_applied"] is True
+    assert "exit_update_reason" not in records[0]
+    assert store.open_plans()[0].hard_stop_price == pytest.approx(28.065 - 27.450000762939453 * 0.002)
 
 
 def test_execute_one_cycle_decision_refreshes_state_snap_after_confirmed_fill(
@@ -1508,15 +1600,15 @@ def _make_pending_reduce(
     )
 
 
-def _make_pending_reverse(symbol: str = "SPY", qty: float = 20.0) -> Decision:
-    """Decision REVERSE sans side (resolve_from_position=True, qty = nouvelle jambe)."""
+def _make_pending_flip(symbol: str = "SPY", qty: float = 20.0) -> Decision:
+    """Decision FLIP sans side (resolve_from_position=True, qty = nouvelle jambe)."""
     return Decision(
         symbol=symbol,
         action="HOLD",
         quantity=qty,
         confidence=0.8,
         rationale="flip position",
-        intent="REVERSE",
+        intent="FLIP",
         resolve_from_position=True,
     )
 
@@ -1568,18 +1660,18 @@ def test_resolve_reduce_qty_abs_depasse_position_est_clampee() -> None:
     assert resolved.quantity == 10.0  # clampé à |pos|
 
 
-def test_resolve_reverse_sur_long_position_derive_side_sell() -> None:
-    """L2 : REVERSE sur position longue → SELL fermeture + nouvelle jambe."""
-    dec = _make_pending_reverse(qty=20.0)
+def test_resolve_flip_sur_long_position_derive_side_sell() -> None:
+    """L2 : FLIP sur position longue → SELL fermeture + nouvelle jambe."""
+    dec = _make_pending_flip(qty=20.0)
     resolved = daemon._resolve_position_aware_decision(dec, position_quantity=10.0)
 
     assert resolved.action == "SELL"
     assert resolved.quantity == 30.0
 
 
-def test_resolve_reverse_deja_resolu_est_idempotent() -> None:
-    """L2/R3 : un REVERSE déjà résolu ne double pas la jambe de fermeture."""
-    dec = _make_pending_reverse(qty=20.0)
+def test_resolve_flip_deja_resolu_est_idempotent() -> None:
+    """L2/R3 : un FLIP déjà résolu ne double pas la jambe de fermeture."""
+    dec = _make_pending_flip(qty=20.0)
     once = daemon._resolve_position_aware_decision(dec, position_quantity=10.0)
     twice = daemon._resolve_position_aware_decision(once, position_quantity=10.0)
 
@@ -1588,9 +1680,9 @@ def test_resolve_reverse_deja_resolu_est_idempotent() -> None:
     assert twice.quantity == 30.0
 
 
-def test_resolve_reverse_sur_short_position_derive_side_buy() -> None:
-    """L2 : REVERSE sur position courte → BUY fermeture + nouvelle jambe."""
-    dec = _make_pending_reverse(qty=20.0)
+def test_resolve_flip_sur_short_position_derive_side_buy() -> None:
+    """L2 : FLIP sur position courte → BUY fermeture + nouvelle jambe."""
+    dec = _make_pending_flip(qty=20.0)
     resolved = daemon._resolve_position_aware_decision(dec, position_quantity=-5.0)
 
     assert resolved.action == "BUY"
@@ -1606,15 +1698,15 @@ def test_resolve_no_position_produit_nothing_to_close() -> None:
     assert resolved.rationale == "nothing_to_close"
 
 
-def test_resolve_relative_add_force_la_resolution_meme_sans_flag() -> None:
+def test_resolve_relative_scale_in_force_la_resolution_meme_sans_flag() -> None:
     """Défense aval : un Decision relatif construit à la main repasse par la dérivation."""
     dec = Decision(
         symbol="SPY",
         action="SELL",
         quantity=3.0,
         confidence=0.9,
-        rationale="add explicite incoherent",
-        intent="ADD",
+        rationale="scale_in explicite incoherent",
+        intent="SCALE_IN",
         resolve_from_position=False,
     )
     resolved = daemon._resolve_position_aware_decision(dec, position_quantity=10.0)
@@ -1644,25 +1736,25 @@ def test_resolve_relative_close_sans_position_force_le_fusible_meme_sans_flag() 
 
 
 # ---------------------------------------------------------------------------
-# L4 — ADD intent : _resolve_position_aware_decision (tests unitaires purs)
+# L4 — SCALE_IN intent : _resolve_position_aware_decision (tests unitaires purs)
 # ---------------------------------------------------------------------------
 
-def _make_pending_add(symbol: str = "SPY", qty: float = 5.0) -> Decision:
-    """Decision ADD sans side (resolve_from_position=True, qty = renforcement)."""
+def _make_pending_scale_in(symbol: str = "SPY", qty: float = 5.0) -> Decision:
+    """Decision SCALE_IN sans side (resolve_from_position=True, qty = renforcement)."""
     return Decision(
         symbol=symbol,
         action="HOLD",
         quantity=qty,
         confidence=0.8,
         rationale="scale-in conviction",
-        intent="ADD",  # type: ignore[arg-type]
+        intent="SCALE_IN",  # type: ignore[arg-type]
         resolve_from_position=True,
     )
 
 
-def test_resolve_add_long_position_produit_buy() -> None:
-    """L4 : ADD sur position longue → action=BUY (même sens), qty conservée."""
-    dec = _make_pending_add(qty=5.0)
+def test_resolve_scale_in_long_position_produit_buy() -> None:
+    """L4 : SCALE_IN sur position longue → action=BUY (même sens), qty conservée."""
+    dec = _make_pending_scale_in(qty=5.0)
     resolved = daemon._resolve_position_aware_decision(dec, position_quantity=10.0)
 
     assert resolved.action == "BUY"
@@ -1670,9 +1762,9 @@ def test_resolve_add_long_position_produit_buy() -> None:
     assert resolved.resolve_from_position is False
 
 
-def test_resolve_add_short_position_produit_sell() -> None:
-    """L4 : ADD sur position courte → action=SELL (même sens), qty conservée."""
-    dec = _make_pending_add(qty=3.0)
+def test_resolve_scale_in_short_position_produit_sell() -> None:
+    """L4 : SCALE_IN sur position courte → action=SELL (même sens), qty conservée."""
+    dec = _make_pending_scale_in(qty=3.0)
     resolved = daemon._resolve_position_aware_decision(dec, position_quantity=-8.0)
 
     assert resolved.action == "SELL"
@@ -1685,34 +1777,34 @@ def test_parse_side_explicite_relative_est_ignoree_puis_derivee_depuis_position(
     {"decisions": [
       {"symbol": "SPY", "confidence": 0.8, "rationale": "renforce long",
        "decision_reason_code": "ENTRY_SIGNAL",
-       "calls": [{"tool": "propose_order", "args": {"intent": "ADD", "side": "SELL", "qty": 3}}]},
+       "calls": [{"tool": "strategy_entry", "args": {"direction": "long", "qty": 3}}]},
       {"symbol": "QQQ", "confidence": 0.8, "rationale": "flip short",
        "decision_reason_code": "REVERSAL",
-       "calls": [{"tool": "propose_order", "args": {"intent": "REVERSE", "side": "SELL", "qty": 4}}]}
+       "calls": [{"tool": "strategy_entry", "args": {"direction": "long", "qty": 4}}]}
     ]}
     """
     parsed = parse_batch(raw, ["SPY", "QQQ"], allow_context_request=False)
 
-    add = daemon._resolve_position_aware_decision(parsed["SPY"], position_quantity=10.0)
-    reverse = daemon._resolve_position_aware_decision(parsed["QQQ"], position_quantity=-6.0)
+    scale_in = daemon._resolve_position_aware_decision(parsed["SPY"], position_quantity=10.0)
+    flip = daemon._resolve_position_aware_decision(parsed["QQQ"], position_quantity=-6.0)
 
-    assert add.action == "BUY"
-    assert add.quantity == 3.0
-    assert reverse.action == "BUY"
-    assert reverse.quantity == 10.0
+    assert scale_in.action == "BUY"
+    assert scale_in.quantity == 3.0
+    assert flip.action == "BUY"
+    assert flip.quantity == 10.0
 
 
-def test_resolve_add_sans_position_produit_add_without_position() -> None:
-    """L4 fail-safe : ADD sans position ouverte → HOLD 'add_without_position'."""
-    dec = _make_pending_add(qty=5.0)
+def test_resolve_scale_in_sans_position_produit_scale_in_without_position() -> None:
+    """L4 fail-safe : SCALE_IN sans position ouverte → HOLD 'scale_in_without_position'."""
+    dec = _make_pending_scale_in(qty=5.0)
     resolved = daemon._resolve_position_aware_decision(dec, position_quantity=0.0)
 
     assert resolved.action == "HOLD"
-    assert resolved.rationale == "add_without_position"
+    assert resolved.rationale == "scale_in_without_position"
 
 
-def test_resolve_add_ne_casse_pas_resolve_close_l2() -> None:
-    """L4 invariant : l'ajout de ADD ne doit pas altérer la résolution CLOSE (L2).
+def test_resolve_scale_in_ne_casse_pas_resolve_close_l2() -> None:
+    """L4 invariant : l'ajout de SCALE_IN ne doit pas altérer la résolution CLOSE (L2).
     CLOSE sur position longue → SELL qty=|pos| (comportement L2 inchangé)."""
     dec = _make_pending_close()
     resolved = daemon._resolve_position_aware_decision(dec, position_quantity=10.0)

@@ -121,8 +121,8 @@ def test_hold_reason_for_decision_distinguishes_infra_and_domain_noops() -> None
     assert hold_reason_for_decision(decision_source="llm", rationale="no_decision_in_batch") == "hold"
     assert hold_reason_for_decision(decision_source="llm", rationale="nothing_to_close") == "nothing_to_close"
     assert (
-        hold_reason_for_decision(decision_source="armed_plan", rationale="add_without_position")
-        == "add_without_position"
+        hold_reason_for_decision(decision_source="armed_plan", rationale="scale_in_without_position")
+        == "scale_in_without_position"
     )
     assert hold_reason_for_decision(decision_source="llm", rationale="wait") == "hold"
 

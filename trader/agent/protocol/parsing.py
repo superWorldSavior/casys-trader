@@ -12,9 +12,10 @@ from trader.agent.protocol.types import (
     Decision,
     IndicatorRequest,
 )
+from trader.agent.protocol.strategy_language import compile_strategy_call
 
 _DECISION_KEYS = {"symbol", "action", "quantity", "confidence", "rationale", "decision_reason_code"}
-_LEGACY_DECISION_FIELDS = {
+_INLINE_DECISION_FIELDS = {
     "action",
     "quantity",
     "qty",
@@ -28,7 +29,7 @@ _LEGACY_DECISION_FIELDS = {
 MAX_LEARNING_CHARS = 1000  # borne la note pour ne pas faire exploser le prompt/store
 MAX_THESIS_FIELD_CHARS = 200  # borne chaque champ texte du thesis tag
 _THESIS_VALID_HORIZONS = frozenset({"intraday", "swing", "position"})
-_RELATIVE_ORDER_INTENTS = frozenset({"CLOSE", "REDUCE", "REVERSE", "ADD"})
+_RELATIVE_ORDER_INTENTS = frozenset({"CLOSE", "REDUCE", "FLIP", "SCALE_IN"})
 
 
 def _normalize_thesis(value: object) -> dict | None:
@@ -121,7 +122,7 @@ def _decision_from_dict(data: dict, symbol: str) -> Decision:
         has_reduce_fraction = data.get("_reduce_fraction") is not None
         if (
             quantity < 0.0
-            or intent in {"REVERSE", "ADD"}
+            or intent in {"FLIP", "SCALE_IN"}
             and quantity <= 0.0
             or intent == "REDUCE"
             and quantity <= 0.0
@@ -155,7 +156,7 @@ def _decision_from_dict(data: dict, symbol: str) -> Decision:
         cancel_watch_ids=_cancel_watch_ids(data),
         learning=_normalize_learning(data.get("learning")),
         decision_reason_code=_decision_reason_code(data),
-        amend_exit=_optional_dict(data, "amend_exit"),
+        exit_update=_optional_dict(data, "exit_update"),
         resolve_from_position=resolve_from_position,
         domain_tools=({"normalizations": normalizations} if normalizations else None),
     )
@@ -306,8 +307,8 @@ def _action_for_order_tool(args: dict) -> str:
 
 
 def _decision_from_symbol_calls(data: dict, symbol: str) -> Decision:
-    if any(field in data for field in _LEGACY_DECISION_FIELDS):
-        raise ValueError("mixed_legacy_and_tools")
+    if any(field in data for field in _INLINE_DECISION_FIELDS):
+        raise ValueError("mixed_inline_decision_and_tools")
     calls = data.get("calls")
     if not isinstance(calls, list):
         raise ValueError("calls_must_be_list")
@@ -324,13 +325,15 @@ def _decision_from_symbol_calls(data: dict, symbol: str) -> Decision:
     traces: list[dict] = []
     cancel_ids: list[str] = []
     next_wake_event: str | None = None
-    # L1 — sizing en risque : extrait de propose_order.args{"risk_pct":...}
+    # L1 — sizing en risque : extrait de l'action d'entrée.
     risk_pct_target_local: float | None = None
     # L5-unify — set_next_wake{when} : coexistence avec propose_indicator_watch
     wake_when_used: bool = False
     propose_indicator_watch_used: bool = False
-    propose_order_used: bool = False
-    amend_exit_used: bool = False
+    position_order_used: bool = False
+    exit_rule_used: bool = False
+    public_position_tool: str | None = None
+    public_exit_tool_used: bool = False
 
     for index, raw in enumerate(calls):
         if not isinstance(raw, dict):
@@ -341,11 +344,14 @@ def _decision_from_symbol_calls(data: dict, symbol: str) -> Decision:
         args = _tool_args(raw)
         call_id = _tool_call_id(symbol, index, raw)
         traces.append({"id": call_id, "tool": tool, "args": args, "outcome": "ok", "detail": {}})
-
-        if tool == "propose_order":
-            propose_order_used = True
+        compiled = compile_strategy_call(tool, args)
+        primitive = compiled.primitive
+        args = dict(compiled.args)
+        if primitive == "position_order":
+            position_order_used = True
+            public_position_tool = compiled.public_tool
             intent = str(args.get("intent") or "").upper()
-            if intent not in {"OPEN_LONG", "OPEN_SHORT", "REDUCE", "CLOSE", "REVERSE", "ADD"}:
+            if intent not in {"OPEN_LONG", "OPEN_SHORT", "REDUCE", "CLOSE", "FLIP", "SCALE_IN"}:
                 raise ValueError("order_intent_invalid")
             risk_pct_raw = args.get("risk_pct")
             if risk_pct_raw is not None and intent not in {"OPEN_LONG", "OPEN_SHORT"}:
@@ -353,11 +359,12 @@ def _decision_from_symbol_calls(data: dict, symbol: str) -> Decision:
                     {"field": "risk_pct", "reason": "risk_pct_only_used_for_open_intents"}
                 )
 
+            strategy_entry_position_aware = compiled.position_aware and intent in {"OPEN_LONG", "OPEN_SHORT"}
             needs_position_resolve = False
             reduce_fraction: float | None = None
-            if intent in _RELATIVE_ORDER_INTENTS:
+            if intent in _RELATIVE_ORDER_INTENTS or compiled.position_aware:
                 ignored_side_fields = [field for field in ("side", "action") if args.get(field) is not None]
-                if ignored_side_fields:
+                if ignored_side_fields and not strategy_entry_position_aware:
                     traces[-1]["detail"].setdefault("ignored_fields", []).append(
                         {
                             "fields": ignored_side_fields,
@@ -365,7 +372,7 @@ def _decision_from_symbol_calls(data: dict, symbol: str) -> Decision:
                         }
                     )
                 needs_position_resolve = True
-                action = "HOLD"  # Provisoire — remplacé par le daemon depuis la position
+                action = _action_for_order_tool(args) if strategy_entry_position_aware else "HOLD"
                 if intent == "REDUCE":
                     frac = args.get("fraction")
                     if frac is not None:
@@ -379,11 +386,19 @@ def _decision_from_symbol_calls(data: dict, symbol: str) -> Decision:
             if qty_raw is not None and float(qty_raw) <= 0.0:
                 raise ValueError("order_qty_must_be_positive")
             if needs_position_resolve:
-                if intent == "CLOSE":
+                if strategy_entry_position_aware:
+                    if qty_raw is not None:
+                        qty = float(qty_raw)
+                    elif risk_pct_raw is not None:
+                        qty = 0.0
+                        risk_pct_target_local = float(risk_pct_raw)
+                    else:
+                        raise ValueError("order_qty_required")
+                elif intent == "CLOSE":
                     qty = 0.0  # Dérivé de |position| dans le daemon
                 elif intent == "REDUCE":
                     qty = float(qty_raw) if qty_raw is not None else 0.0
-                else:  # REVERSE / ADD : qty requise (jambe cible ou renforcement)
+                else:  # FLIP / SCALE_IN : qty requise (jambe cible ou renforcement)
                     if qty_raw is None:
                         raise ValueError("order_qty_required")
                     qty = float(qty_raw)
@@ -409,7 +424,7 @@ def _decision_from_symbol_calls(data: dict, symbol: str) -> Decision:
                 decision["_resolve_from_position"] = True
                 if reduce_fraction is not None:
                     decision["_reduce_fraction"] = reduce_fraction
-        elif tool == "set_next_wake":
+        elif primitive == "set_next_wake":
             on_event = args.get("on")
             minutes = args.get("minutes")
             when = args.get("when")
@@ -433,28 +448,28 @@ def _decision_from_symbol_calls(data: dict, symbol: str) -> Decision:
                 decision["next_wake_in_minutes"] = float(minutes)
             else:
                 raise ValueError("wake_minutes_required")
-        elif tool == "record_learning":
+        elif primitive == "record_learning":
             decision["learning"] = _normalize_learning(args.get("note"))
-        elif tool == "propose_indicator_watch":
+        elif primitive == "propose_indicator_watch":
             watch = args.get("watch")
             decision["indicator_watch"] = dict(watch) if isinstance(watch, dict) else dict(args)
             propose_indicator_watch_used = True
-        elif tool == "cancel_watch":
+        elif primitive == "cancel_watch":
             raw_ids = args.get("ids") or args.get("watch_ids")
             if raw_ids is None and isinstance(args.get("id"), str):
                 raw_ids = [args["id"]]
             if not isinstance(raw_ids, list):
                 raise ValueError("cancel_watch_ids_required")
             cancel_ids.extend(str(wid) for wid in raw_ids if isinstance(wid, str))
-        elif tool == "amend_exit":
-            amend_exit_used = True
+        elif primitive == "exit_rule":
+            exit_rule_used = True
+            if compiled.public_tool == "strategy_exit":
+                public_exit_tool_used = True
             # L3 — patch du plan de sortie ouvert. Réutilise _compact_exit_plan
-            # (même vocabulaire que propose_order.exit : stop/tp/trail/protect).
-            amend = _compact_exit_plan(args)
-            if amend:
-                decision["amend_exit"] = amend
-        else:
-            raise ValueError(f"unknown_action_tool:{tool}")
+            # (même vocabulaire compact que strategy_entry.exit).
+            update = _compact_exit_plan(args)
+            if update:
+                decision["exit_update"] = update
 
     decision["cancel_watch_ids"] = cancel_ids
     # Coexistence : set_next_wake{when} et propose_indicator_watch écrivent tous deux
@@ -462,8 +477,10 @@ def _decision_from_symbol_calls(data: dict, symbol: str) -> Decision:
     # laisser le dernier gagner (AX : Explicit Over Implicit).
     if wake_when_used and propose_indicator_watch_used:
         raise ValueError("wake_when_conflicts_with_propose_indicator_watch")
-    if propose_order_used and amend_exit_used:
-        raise ValueError("amend_exit_conflicts_with_propose_order")
+    if position_order_used and exit_rule_used:
+        if public_exit_tool_used and public_position_tool is not None:
+            raise ValueError(f"strategy_exit_conflicts_with_{public_position_tool}")
+        raise ValueError("strategy_exit_conflicts_with_position_order")
     resolve_from_position = decision.pop("_resolve_from_position", False)
     reduce_fraction_val = decision.get("_reduce_fraction")
     parsed = _decision_from_dict(decision, symbol)
@@ -483,7 +500,10 @@ def _decision_from_symbol_calls(data: dict, symbol: str) -> Decision:
 
 
 def parse_decision(raw_text: str, symbol: str) -> Decision:
-    return _decision_from_dict(_extract_json(raw_text), symbol)
+    data = _extract_json(raw_text)
+    if "calls" in data:
+        return _decision_from_symbol_calls(data, symbol)
+    return _decision_from_dict(data, symbol)
 
 
 def _indicator_requests_from(data: dict, symbol: str) -> list[IndicatorRequest]:
@@ -511,6 +531,8 @@ def _indicator_requests_from(data: dict, symbol: str) -> list[IndicatorRequest]:
 def _response_from_dict(data: dict, symbol: str) -> Decision | ContextResearchRequest:
     if not isinstance(data, dict):
         raise ValueError("élément non-objet")
+    if "calls" in data:
+        return _decision_from_symbol_calls(data, symbol)
     action = str(data.get("action", "")).upper()
     if action in {"REQUEST_CONTEXT", "NEEDS_CONTEXT"} or data.get("needs_context") is True:
         return ContextResearchRequest(

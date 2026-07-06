@@ -363,15 +363,15 @@ def test_finalize_reecrit_les_vrais_outcomes_des_action_tools() -> None:
         "next_wake_in_minutes": 30.0,
         "indicator_watch_created": True,
         "cancel_watch_results": [{"watch_id": "SPY:a", "outcome": "cancelled"}],
-        "amend_exit_applied": True,
+        "exit_update_applied": True,
         "tool_calls": [
-            {"id": "1", "tool": "propose_order", "outcome": "ok"},
+            {"id": "1", "tool": "strategy_entry", "outcome": "ok"},
             {"id": "2", "tool": "set_next_wake", "outcome": "ok"},
             {"id": "3", "tool": "propose_indicator_watch", "outcome": "ok"},
             {"id": "4", "tool": "record_learning", "outcome": "ok"},
             {"id": "5", "tool": "cancel_watch", "outcome": "ok"},
             {"id": "6", "tool": "recall_learnings", "outcome": "ok"},
-            {"id": "7", "tool": "amend_exit", "outcome": "ok"},
+            {"id": "7", "tool": "strategy_exit", "outcome": "ok"},
         ],
     }
 
@@ -396,14 +396,14 @@ def test_finalize_marque_blocked_clamped_rejected() -> None:
         "next_wake_in_minutes": 60.0,
         "indicator_watch_created": False,
         "cancel_watch_results": [{"watch_id": "X:a", "outcome": "not_owned"}],
-        "amend_exit_applied": False,
-        "amend_exit_reason": "resolve_failed:bad_stop",
+        "exit_update_applied": False,
+        "exit_update_reason": "resolve_failed:bad_stop",
         "tool_calls": [
-            {"id": "1", "tool": "propose_order", "outcome": "ok"},
+            {"id": "1", "tool": "strategy_entry", "outcome": "ok"},
             {"id": "2", "tool": "set_next_wake", "outcome": "ok"},
             {"id": "3", "tool": "propose_indicator_watch", "outcome": "ok"},
             {"id": "5", "tool": "cancel_watch", "outcome": "ok"},
-            {"id": "6", "tool": "amend_exit", "outcome": "ok"},
+            {"id": "6", "tool": "strategy_exit", "outcome": "ok"},
         ],
     }
 

@@ -44,6 +44,33 @@ def test_reference_agent_tools_liste_les_read_only_tools_du_registry() -> None:
     assert documented == set(TOOL_REGISTRY)
 
 
+def test_reference_agent_tools_expose_les_actions_pine_like_publiques() -> None:
+    doc = Path("docs/reference/agent-tools.md").read_text(encoding="utf-8")
+    action_section = doc.split("## Action tools finaux par symbole", 1)[1]
+    action_table = action_section.split("Action tools acceptés :", 1)[1].split(
+        "**Grammaire Pine-like JSON officielle**",
+        1,
+    )[0]
+    documented = {
+        line.split("`", 2)[1]
+        for line in action_table.splitlines()
+        if line.startswith("| `")
+    }
+
+    assert documented == {
+        "strategy_entry",
+        "strategy_exit",
+        "strategy_close",
+        "set_next_wake",
+        "propose_indicator_watch",
+        "cancel_watch",
+        "record_learning",
+    }
+    assert "`propose_order`" not in action_table
+    assert "`exit_update`" not in action_table
+    assert "`exit_update` reste un\nchamp interne" in action_section
+
+
 def test_agent_tools_package_all_reste_une_api_publique_compacte():
     import trader.agent.tools as agent_tools
     from trader.agent.tools.freshness import _handle_get_freshness

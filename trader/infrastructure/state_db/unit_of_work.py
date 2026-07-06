@@ -53,7 +53,7 @@ def execute_order_unit(
          token mismatch (ROLLBACK total, rien écrit).
       1. submit_in_tx  — écrit positions/cash/fill (no-op si dry_run=True).
       2. plan          — close_symbol_in_tx ET/OU upsert_in_tx (si fourni,
-         uniquement si dry_run=False). Les deux peuvent coexister (REVERSE :
+         uniquement si dry_run=False). Les deux peuvent coexister (FLIP :
          ferme l'ancien plan PUIS ouvre le nouveau dans la même transaction).
       3. complete_in_tx — passe la tâche à 'done' ; vérifie retour=True.
 
@@ -80,7 +80,7 @@ def execute_order_unit(
                          est quand même complétée (évite le re-play).
         plan_to_upsert:  TradePlan à upsert après le fill (uniquement si
                          dry_run=False). Compatible avec symbol_to_close
-                         (REVERSE : les deux s'appliquent, close avant upsert).
+                         (FLIP : les deux s'appliquent, close avant upsert).
         symbol_to_close: Symbole dont fermer tous les plans ouverts (uniquement
                          si dry_run=False). Compatible avec plan_to_upsert.
         task_id:         ID de la tâche ledger à compléter.
@@ -142,11 +142,11 @@ def execute_order_unit(
         # FIX 3 — dry_run : pas de mutation plan.
         # submit_in_tx est déjà no-op en dry_run ; on protège aussi le plan.
         if not dry_run:
-            # FIX 4 — REVERSE = close ET upsert dans la même UoW (non exclusifs).
+            # FIX 4 — FLIP = close ET upsert dans la même UoW (non exclusifs).
             # Étape 2a — close (si fourni)
             if symbol_to_close is not None:
                 plan_store.close_symbol_in_tx(cur, symbol_to_close)
-            # Étape 2b — upsert (si fourni) — s'applique APRÈS le close pour REVERSE
+            # Étape 2b — upsert (si fourni) — s'applique APRÈS le close pour FLIP
             if plan_to_upsert is not None:
                 plan_store.upsert_in_tx(cur, plan_to_upsert)
 

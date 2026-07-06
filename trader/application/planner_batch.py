@@ -257,7 +257,7 @@ def batch_decide(
                     per_symbol={sym: per_symbol_payload[sym] for sym in chunk},
                     allow_context_request=allow_context_request,
                     allow_tool_calls=agent_tools_enabled and allow_context_request,
-                    use_symbol_calls_contract=agent_tools_enabled,
+                    use_symbol_calls_contract=True,
                     timeout_s=decision_timeout_s,
                 )
             except Exception as exc:  # noqa: BLE001
@@ -305,7 +305,7 @@ def batch_decide(
                     per_symbol=per_symbol_round2,
                     allow_context_request=False,
                     allow_tool_calls=False,
-                    use_symbol_calls_contract=agent_tools_enabled,
+                    use_symbol_calls_contract=True,
                     timeout_s=decision_timeout_s,
                 )
             except Exception as exc:  # noqa: BLE001

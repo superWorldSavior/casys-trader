@@ -32,7 +32,7 @@ from trader.agent import llm
 from trader.agent import memory as agent_memory
 from trader.agent.context import build_market_cockpit, resolve_indicator_requests
 from trader.application import (
-    amend_exit as amend_exit_service,
+    exit_update as exit_update_service,
     armed_plans,
     confidence_feedback,
     decision_entries,
@@ -121,9 +121,9 @@ log = logging.getLogger("casys-trader")
 # de logguer la même erreur indéfiniment. Réinitialisable dans les tests.
 _RECALL_STORE_FAILED: bool = False
 
-_OPENING_INTENTS = {"OPEN_LONG", "OPEN_SHORT", "REVERSE", "ADD"}
+_OPENING_INTENTS = {"OPEN_LONG", "OPEN_SHORT", "FLIP", "SCALE_IN"}
 _PURE_OPEN_INTENTS = {"OPEN_LONG", "OPEN_SHORT"}
-_RISK_GUARDED_OPENING_INTENTS = {"OPEN_LONG", "OPEN_SHORT", "ADD"}
+_RISK_GUARDED_OPENING_INTENTS = {"OPEN_LONG", "OPEN_SHORT", "SCALE_IN"}
 _RELATIVE_ORDER_INTENTS = order_admission.RELATIVE_ORDER_INTENTS
 
 
@@ -429,17 +429,17 @@ def _resolve_position_aware_decision(
     decision: codex_client.Decision,
     position_quantity: float,
 ) -> codex_client.Decision:
-    """Dérive action + qty depuis la position pour CLOSE/REDUCE/REVERSE/ADD sans side.
+    """Dérive action + qty depuis la position pour CLOSE/REDUCE/FLIP/SCALE_IN sans side.
 
     Fail-safe absolu : position_quantity == 0 → HOLD.
-      - CLOSE/REDUCE/REVERSE sans position → 'nothing_to_close'
-      - ADD sans position → 'add_without_position'
+      - CLOSE/REDUCE/FLIP sans position → 'nothing_to_close'
+      - SCALE_IN sans position → 'scale_in_without_position'
     Les intents relatifs repassent toujours par cette dérivation, même si le
     Decision a été construit à la main avec resolve_from_position=False.
 
     Side :
-      - CLOSE/REDUCE/REVERSE → côté OPPOSÉ à la position (clôture/retournement).
-      - ADD → côté IDENTIQUE à la position (renforcement dans le même sens).
+      - CLOSE/REDUCE/FLIP → côté OPPOSÉ à la position (clôture/retournement).
+      - SCALE_IN → côté IDENTIQUE à la position (renforcement dans le même sens).
     """
     return order_admission.resolve_position_aware_decision(decision, position_quantity)
 
@@ -591,20 +591,22 @@ def _plan_snapshot(plan: TradePlan) -> dict:
     return planned_exits_service.plan_snapshot(plan)
 
 
-def _apply_amend_exit(
+def _apply_exit_update(
     *,
     plan_store: TradePlanStore,
     symbol: str,
-    amend_exit: dict,
+    exit_update: dict,
     bars: list | None,
     entry: dict,
+    current_price: float | None = None,
 ) -> None:
-    amend_exit_service.apply_amend_exit_to_open_plan(
+    exit_update_service.apply_exit_update_to_open_plan(
         plan_store=plan_store,
         symbol=symbol,
-        amend_exit=amend_exit,
+        exit_update=exit_update,
         bars=bars,
         entry=entry,
+        current_price=current_price,
     )
 
 
@@ -669,7 +671,7 @@ def _execution_blocked_reason(
     stale, pas de prix), sinon None. Le RiskGate déterministe reste le fusible séparé.
 
     Symbole non classé (absent de `execution_eligibility`) : `fail_closed=True` =>
-    bloqué (`execution:unclassified`), pour les OUVERTURES/REVERSE (invariant §10
+    bloqué (`execution:unclassified`), pour les OUVERTURES/FLIP (invariant §10
     "aucun ordre d'ouverture sans execution.enabled=true"). `fail_closed=False`
     (défaut) => non bloqué, pour ne jamais empêcher une SORTIE de protection par
     manque d'info."""
@@ -1025,6 +1027,8 @@ def _execute_one_cycle_decision(
         armed_plan_order=ctx.armed_plan_orders.get(sym),
         runtime_data_source=ctx.runtime_data_source_by_sym.get(sym),
     )
+    if sym in ctx.prices:
+        entry["price"] = ctx.prices[sym]
     decision_source = str(entry["decision_source"])
     if decision_source == "llm" and sym in ctx.held_symbols and _counts_as_llm_review(decision):
         _persist_last_llm_review(
@@ -1081,13 +1085,14 @@ def _execute_one_cycle_decision(
 
     if decision.action == "HOLD" or (effective_quantity == 0 and decision.risk_pct_target is None):
         apply_decision_schedule()
-        if decision.amend_exit:
-            _apply_amend_exit(
+        if decision.exit_update:
+            _apply_exit_update(
                 plan_store=ctx.plan_store,
                 symbol=sym,
-                amend_exit=decision.amend_exit,
+                exit_update=decision.exit_update,
                 bars=ctx.tradable_bars_by_symbol.get(sym),
                 entry=entry,
+                current_price=ctx.prices.get(sym),
             )
         hold_reason = decision_entries.hold_reason_for_decision(
             decision_source=decision_source,
@@ -1137,7 +1142,7 @@ def _execute_one_cycle_decision(
                     bars=ctx.tradable_bars_by_symbol.get(sym),
                 )
                 _capture_exit_plan_trace(entry, exit_trace)
-            elif decision.intent == "ADD":
+            elif decision.intent == "SCALE_IN":
                 intent_side = "LONG" if decision.action == "BUY" else "SHORT"
                 runtime_exit_plan, exit_trace = resolve_exit_plan(
                     runtime_exit_plan,
@@ -1298,7 +1303,7 @@ def _execute_one_cycle_decision(
 
     if ctx.queue_execute_enabled and ctx.execute_ledger is not None:
         _exec_entry_context = None
-        if runtime_exit_plan is not None and decision.intent in {"OPEN_LONG", "OPEN_SHORT", "ADD", "REVERSE"}:
+        if runtime_exit_plan is not None and decision.intent in {"OPEN_LONG", "OPEN_SHORT", "SCALE_IN", "FLIP"}:
             _exec_entry_age = ctx.data_age_by_symbol.get(sym)
             _exec_entry_context = entry_context.build_trade_entry_context(
                 price=ctx.prices[sym],

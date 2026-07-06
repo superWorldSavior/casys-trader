@@ -125,7 +125,7 @@ def test_section_plans_armes_documente_hard_stop_relatif_et_take_profit_en_r() -
     assert "niveau d'invalidation chartiste" in armed_contract
     assert "min_pct/max_pct sont des bornes indicatives" in armed_contract
     assert "signalé en warning, pas rejeté" in armed_contract
-    assert "ne déplace jamais le hard_stop" in armed_contract
+    assert "ne déplace jamais le stop" in armed_contract
     assert "swing_low" in armed_contract
     assert "swing_high" in armed_contract
     assert "vwap" in armed_contract
@@ -139,7 +139,7 @@ def test_batch_contract_ne_privilegie_aucune_forme_de_hard_stop_relatif() -> Non
     décrit factuellement (non recalibré au tir) — le choix reste à l'agent."""
     prompt = _batch_prompt_from_decide_batch()
 
-    assert "hard_stop peut être en prix OU relatif" in prompt
+    assert "`exit.stop` peut être en prix OU relatif" in prompt
     # plus aucune recommandation d'une forme particulière
     assert "RECOMMANDE volatility_multiple" not in prompt
     # les trois formes présentées à égalité, résolues au tir
@@ -158,7 +158,7 @@ def test_section_hard_stop_arme_ne_contient_aucun_terme_directif() -> None:
     armed = codex_client._indicator_watch_vocabulary()
     # borne le bloc hard_stop : de son intro jusqu'à la mention du TTL (exclut la
     # ligne « préfère un plan armé à un réveil court », biais D7 assumé hors scope)
-    start = armed.index("Le hard_stop relatif est résolu")
+    start = armed.index("Le stop relatif est résolu")
     end = armed.index("TTL max 4 h", start)
     stop_block = armed[start:end].lower()
 
@@ -210,9 +210,9 @@ def test_batch_parse_compile_calls_par_symbole_en_decision_interne() -> None:
           "decision_reason_code": "ENTRY_SIGNAL",
           "calls": [
             {
-              "tool": "propose_order",
+              "tool": "strategy_entry",
               "args": {
-                "intent": "OPEN_LONG",
+                "direction": "long",
                 "qty": 20,
                 "exit": {
                   "stop": {"struct": "swing_low", "window": 24, "buffer_pct": 0.004},
@@ -250,7 +250,7 @@ def test_batch_parse_compile_calls_par_symbole_en_decision_interne() -> None:
     }
     assert parsed.domain_tools is not None
     assert [call["tool"] for call in parsed.domain_tools["tool_calls"]] == [
-        "propose_order",
+        "strategy_entry",
         "set_next_wake",
         "record_learning",
     ]
@@ -274,13 +274,155 @@ def test_batch_parse_calls_vides_signifie_hold_explicite() -> None:
     assert parsed.domain_tools == {"tool_rounds": 0, "tool_calls": []}
 
 
+def test_batch_parse_strategy_entry_compile_en_open_long() -> None:
+    raw = """
+    {"decisions": [
+      {"symbol": "SPY", "confidence": 0.82, "rationale": "breakout",
+       "decision_reason_code": "ENTRY_SIGNAL",
+       "calls": [{"tool": "strategy_entry", "args": {
+         "id": "long",
+         "direction": "long",
+         "qty": 20,
+         "exit": {"id": "bracket", "limit": 110.0, "stop": 95.0}
+       }}]}
+    ]}
+    """
+    parsed = codex_client.parse_batch(raw, ["SPY"], allow_context_request=False)["SPY"]
+
+    assert parsed.action == "BUY"
+    assert parsed.intent == "OPEN_LONG"
+    assert parsed.quantity == 20.0
+    assert parsed.resolve_from_position is True
+    assert parsed.exit_plan == {
+        "hard_stop": 95.0,
+        "take_profits": [{"type": "price", "price": 110.0, "fraction": 1.0, "name": "bracket"}],
+    }
+    assert parsed.domain_tools is not None
+    assert parsed.domain_tools["tool_calls"][0]["tool"] == "strategy_entry"
+
+
+def test_batch_parse_strategy_exit_compile_en_exit_update_limit_only() -> None:
+    raw = """
+    {"decisions": [
+      {"symbol": "SPY", "confidence": 0.7, "rationale": "scale-out",
+       "decision_reason_code": "EXIT_SIGNAL",
+       "calls": [{"tool": "strategy_exit", "args": {
+         "id": "tp1",
+         "from_entry": "long",
+         "limit": 112.0,
+         "qty_percent": 50
+       }}]}
+    ]}
+    """
+    parsed = codex_client.parse_batch(raw, ["SPY"], allow_context_request=False)["SPY"]
+
+    assert parsed.action == "HOLD"
+    assert parsed.intent == "HOLD"
+    assert parsed.exit_update == {
+        "take_profits": [{"type": "price", "price": 112.0, "fraction": 0.5, "name": "tp1"}],
+    }
+    assert parsed.domain_tools is not None
+    assert parsed.domain_tools["tool_calls"][0]["tool"] == "strategy_exit"
+
+
+def test_batch_parse_strategy_exit_rejette_bracket_partiel_non_supporte() -> None:
+    raw = """
+    {"decisions": [
+      {"symbol": "SPY", "confidence": 0.7, "rationale": "partial bracket",
+       "decision_reason_code": "EXIT_SIGNAL",
+       "calls": [{"tool": "strategy_exit", "args": {
+         "id": "tp1",
+         "limit": 112.0,
+         "stop": 96.0,
+         "qty_percent": 50
+       }}]}
+    ]}
+    """
+    parsed = codex_client.parse_batch(raw, ["SPY"], allow_context_request=False)["SPY"]
+
+    assert parsed.action == "HOLD"
+    assert "partial_bracket_exit_not_supported" in parsed.rationale
+
+
+def test_batch_parse_strategy_exit_rejette_stop_partiel_non_supporte() -> None:
+    raw = """
+    {"decisions": [
+      {"symbol": "SPY", "confidence": 0.7, "rationale": "partial stop",
+       "decision_reason_code": "EXIT_SIGNAL",
+       "calls": [{"tool": "strategy_exit", "args": {
+         "id": "stop-half",
+         "stop": 96.0,
+         "qty_percent": 50
+       }}]}
+    ]}
+    """
+    parsed = codex_client.parse_batch(raw, ["SPY"], allow_context_request=False)["SPY"]
+
+    assert parsed.action == "HOLD"
+    assert "partial_stop_exit_not_supported" in parsed.rationale
+
+
+def test_batch_parse_strategy_exit_rejette_conflit_avec_strategy_entry() -> None:
+    raw = """
+    {"decisions": [
+      {"symbol": "SPY", "confidence": 0.7, "rationale": "mixed",
+       "decision_reason_code": "ENTRY_SIGNAL",
+       "calls": [
+         {"tool": "strategy_entry", "args": {"direction": "long", "qty": 10}},
+         {"tool": "strategy_exit", "args": {"limit": 112.0}}
+       ]}
+    ]}
+    """
+    parsed = codex_client.parse_batch(raw, ["SPY"], allow_context_request=False)["SPY"]
+
+    assert parsed.action == "HOLD"
+    assert "strategy_exit_conflicts_with_strategy_entry" in parsed.rationale
+    assert "strategy_exit_conflicts_with_position_order" not in parsed.rationale
+
+
+def test_batch_parse_strategy_close_compile_en_close_position_aware() -> None:
+    raw = """
+    {"decisions": [
+      {"symbol": "SPY", "confidence": 0.7, "rationale": "invalidated",
+       "decision_reason_code": "EXIT_SIGNAL",
+       "calls": [{"tool": "strategy_close", "args": {"id": "long"}}]}
+    ]}
+    """
+    parsed = codex_client.parse_batch(raw, ["SPY"], allow_context_request=False)["SPY"]
+
+    assert parsed.action == "HOLD"
+    assert parsed.intent == "CLOSE"
+    assert parsed.quantity == 0.0
+    assert parsed.resolve_from_position is True
+    assert parsed.domain_tools is not None
+    assert parsed.domain_tools["tool_calls"][0]["tool"] == "strategy_close"
+
+
+def test_batch_parse_strategy_close_qty_percent_compile_en_reduce_fraction() -> None:
+    raw = """
+    {"decisions": [
+      {"symbol": "SPY", "confidence": 0.7, "rationale": "scale down",
+       "decision_reason_code": "EXIT_SIGNAL",
+       "calls": [{"tool": "strategy_close", "args": {"qty_percent": 50}}]}
+    ]}
+    """
+    parsed = codex_client.parse_batch(raw, ["SPY"], allow_context_request=False)["SPY"]
+
+    assert parsed.action == "HOLD"
+    assert parsed.intent == "REDUCE"
+    assert parsed.resolve_from_position is True
+    assert parsed.reduce_fraction == 0.5
+    assert parsed.domain_tools is not None
+    assert parsed.domain_tools["tool_calls"][0]["tool"] == "strategy_close"
+
+
 def test_batch_parse_close_avec_side_explicite_ignore_side_et_resout_position() -> None:
-    """Relative intents ignorent la side fournie et dérivent depuis la position."""
+    """strategy_close dérive depuis la position et ignore les champs side/action."""
     raw = """
     {"decisions": [
       {"symbol": "SPY", "confidence": 0.7, "rationale": "these invalidee",
        "decision_reason_code": "EXIT_SIGNAL",
-       "calls": [{"tool": "propose_order", "args": {"intent": "CLOSE", "side": "SELL", "qty": 10}}]}
+       "calls": [{"tool": "strategy_close", "args": {"side": "SELL"}}]}
     ]}
     """
     parsed = codex_client.parse_batch(raw, ["SPY"], allow_context_request=False)["SPY"]
@@ -293,12 +435,12 @@ def test_batch_parse_close_avec_side_explicite_ignore_side_et_resout_position() 
 
 def test_batch_parse_close_sans_side_produit_resolve_from_position() -> None:
     """L2 : CLOSE sans side → resolve_from_position=True ; le daemon résout depuis la
-    position au lieu de tomber en HOLD dès le parsing. qty=10 ignoré (dérivé de |pos|)."""
+    position au lieu de tomber en HOLD dès le parsing."""
     raw = """
     {"decisions": [
       {"symbol": "SPY", "confidence": 0.7, "rationale": "these invalidee",
        "decision_reason_code": "EXIT_SIGNAL",
-       "calls": [{"tool": "propose_order", "args": {"intent": "CLOSE", "qty": 10}}]}
+       "calls": [{"tool": "strategy_close", "args": {}}]}
     ]}
     """
     parsed = codex_client.parse_batch(raw, ["SPY"], allow_context_request=False)["SPY"]
@@ -308,7 +450,7 @@ def test_batch_parse_close_sans_side_produit_resolve_from_position() -> None:
     # action=HOLD provisoire — le daemon le remplacera par BUY ou SELL
 
 
-def test_batch_parse_rejette_melange_legacy_et_calls() -> None:
+def test_batch_parse_rejette_melange_inline_et_calls() -> None:
     raw = """
     {"decisions": [
       {"symbol": "SPY", "action": "BUY", "quantity": 1, "confidence": 0.8,
@@ -319,15 +461,15 @@ def test_batch_parse_rejette_melange_legacy_et_calls() -> None:
     parsed = codex_client.parse_batch(raw, ["SPY"], allow_context_request=False)["SPY"]
 
     assert parsed.action == "HOLD"
-    assert "mixed_legacy_and_tools" in parsed.rationale
+    assert "mixed_inline_decision_and_tools" in parsed.rationale
 
 
-def test_batch_parse_protege_intent_relatif_legacy_avec_action_explicite() -> None:
-    """Un intent position-aware legacy ignore action et passe en résolution position."""
+def test_batch_parse_protege_intent_relatif_inline_avec_action_explicite() -> None:
+    """Un intent position-aware inline ignore action et passe en résolution position."""
     raw = """
     {"decisions": [
       {"symbol": "SPY", "action": "SELL", "quantity": 20, "confidence": 0.8,
-       "rationale": "legacy reverse", "intent": "REVERSE",
+       "rationale": "inline flip", "intent": "FLIP",
        "decision_reason_code": "REVERSAL"}
     ]}
     """
@@ -335,18 +477,20 @@ def test_batch_parse_protege_intent_relatif_legacy_avec_action_explicite() -> No
     parsed = codex_client.parse_batch(raw, ["SPY"], allow_context_request=False)["SPY"]
 
     assert parsed.action == "HOLD"
-    assert parsed.intent == "REVERSE"
+    assert parsed.intent == "FLIP"
     assert parsed.quantity == 20.0
     assert parsed.resolve_from_position is True
 
 
 def test_batch_contract_documente_voir_et_corriger_ses_plans() -> None:
     """L'agent doit savoir qu'il VOIT ses plans actifs (`active_watches`) et peut
-    les CORRIGER (`cancel_watch_ids` = annuler + reposer), au lieu d'empiler."""
+    les CORRIGER (`cancel_watch` = annuler + reposer), au lieu d'empiler."""
     prompt = _batch_prompt_from_decide_batch()
 
     assert "active_watches" in prompt
-    assert "cancel_watch_ids" in prompt
+    assert "cancel_watch" in prompt
+    assert "cancel_watch_ids" not in prompt
+    assert "propose_indicator_watch" in prompt
     low = prompt.lower()
     assert "annul" in low and "repose" in low  # corriger = annuler + reposer
 
@@ -355,28 +499,37 @@ def test_batch_contract_tools_par_symbole_remplace_le_schema_legacy_visible() ->
     prompt = _symbol_calls_prompt_from_decide_batch()
 
     assert '"calls":[' in prompt
-    assert "propose_order" in prompt
-    assert "protect" in prompt
-    assert "lock_r" in prompt
+    assert "strategy_entry" in prompt
+    assert "strategy_exit" in prompt
+    assert "strategy_close" in prompt
     assert '"action":"BUY|SELL|HOLD"' not in prompt
     assert '"exit_plan":<object|null>' not in prompt
     assert 'Chaque <obj>: {"symbol":"<SYM>","action"' not in prompt
+    assert "propose_order" not in prompt
+    assert "exit_update" not in prompt
 
 
 def test_symbol_calls_contract_expose_une_grammaire_trading_canonique() -> None:
     prompt = _symbol_calls_final_prompt_from_decide_batch()
 
-    assert "Typologie trading officielle" in prompt
+    assert "Grammaire Pine-like JSON officielle" in prompt
+    assert "MCP JSON inspiré de Pine Script" in prompt
+    assert "strategy.entry/strategy.exit/strategy.close" in prompt
+    assert "jamais du code Pine Script" in prompt
     assert "position intent = changer l'exposition" in prompt
     assert "exit rule = règle attachée à une position ouverte" in prompt
     assert "review wake = reconsultation par le LLM" in prompt
     assert "armed plan = exécution daemon sans reconsultation" in prompt
-    assert "propose_order = position intent" in prompt
-    assert "amend_exit = exit rule" in prompt
+    assert "strategy_entry = position intent" in prompt
+    assert "strategy_exit = exit rule" in prompt
+    assert "strategy_close = sortie marché immédiate" in prompt
     assert "set_next_wake = review wake" in prompt
     assert "propose_indicator_watch = armed plan" in prompt
-    assert "Grammaire canonique de sortie" in prompt
-    assert "stop/tp/trail/protect sont les noms officiels" in prompt
+    assert "strategy.exit Pine" in prompt
+    assert "même sens = renforcement" in prompt
+    assert "sens opposé = retournement" in prompt
+    assert "limit+stop dans strategy_exit = bracket de sortie" in prompt
+    assert "ne combine pas strategy_entry et strategy_exit sur le même symbole" in prompt
     assert "aliases acceptés" not in prompt
 
 
@@ -392,26 +545,29 @@ def test_symbol_calls_contract_laisse_l_agent_pull_au_premier_tour() -> None:
 
 
 def test_symbol_calls_contract_documente_l2_position_aware() -> None:
-    """L2 : le prompt doit indiquer que CLOSE/REDUCE dérivent side+qty de la position,
-    et que REVERSE dérive la side (qty cible reste requise)."""
+    """L2 : le prompt doit indiquer que strategy_close dérive side+qty de la position."""
     prompt = _symbol_calls_prompt_from_decide_batch()
 
-    assert "CLOSE" in prompt
-    assert "REDUCE" in prompt
-    assert "REVERSE" in prompt
-    assert "inutile de fournir side/action" in prompt
-    assert "ignorée" in prompt
+    assert "strategy_close" in prompt
+    assert "sortie marché immédiate" in prompt
+    assert "Sans taille, ferme toute la position" in prompt
+    assert "qty_percent<100 réduit une fraction" in prompt
+    assert "qty réduit une quantité absolue" in prompt
+    assert "side/action" not in prompt
     assert "il est rejeté" not in prompt
-    assert "fraction" in prompt  # REDUCE accepte fraction
+    assert "fraction" in prompt
 
 
-def test_symbol_calls_contract_documente_amend_exit_sans_propose_order() -> None:
+def test_symbol_calls_contract_documente_strategy_exit_pine_like() -> None:
     prompt = _symbol_calls_prompt_from_decide_batch()
 
-    assert "amend_exit" in prompt
-    assert "sans propose_order" in prompt.lower()
-    assert "amend_exit + propose_order" in prompt
-    assert "stop/tp/trail/protect sont des règles de sortie" in prompt
+    assert "strategy_exit" in prompt
+    assert "from_entry" in prompt
+    assert "qty_percent" in prompt
+    assert "limit+stop dans strategy_exit = bracket de sortie" in prompt
+    assert "partial_bracket_exit_not_supported" in prompt
+    assert "qty_percent ne s'applique qu'à limit seul" in prompt
+    assert "partial_stop_exit_not_supported" in prompt
     assert "un stop structurel peut aussi protéger un gain" in prompt
     assert "du bon côté du prix courant" in prompt
 
@@ -423,7 +579,7 @@ def test_batch_parse_reduce_fraction_sans_side_produit_resolve_from_position() -
     {"decisions": [
       {"symbol": "SPY", "confidence": 0.7, "rationale": "scale-out",
        "decision_reason_code": "EXIT_SIGNAL",
-       "calls": [{"tool": "propose_order", "args": {"intent": "REDUCE", "fraction": 0.5}}]}
+       "calls": [{"tool": "strategy_close", "args": {"qty_percent": 50}}]}
     ]}
     """
     parsed = codex_client.parse_batch(raw, ["SPY"], allow_context_request=False)["SPY"]
@@ -433,19 +589,19 @@ def test_batch_parse_reduce_fraction_sans_side_produit_resolve_from_position() -
     assert parsed.reduce_fraction == 0.5
 
 
-@pytest.mark.parametrize("fraction", [-0.1, 0.0, 1.2])
-def test_batch_parse_reduce_fraction_hors_borne_tombe_en_hold(fraction: float) -> None:
+@pytest.mark.parametrize("qty_percent", [-10, 0, 120])
+def test_batch_parse_reduce_fraction_hors_borne_tombe_en_hold(qty_percent: int) -> None:
     raw = f"""
     {{"decisions": [
       {{"symbol": "SPY", "confidence": 0.7, "rationale": "scale-out",
        "decision_reason_code": "EXIT_SIGNAL",
-       "calls": [{{"tool": "propose_order", "args": {{"intent": "REDUCE", "fraction": {fraction}}}}}]}}
+       "calls": [{{"tool": "strategy_close", "args": {{"qty_percent": {qty_percent}}}}}]}}
     ]}}
     """
     parsed = codex_client.parse_batch(raw, ["SPY"], allow_context_request=False)["SPY"]
 
     assert parsed.action == "HOLD"
-    assert "reduce_fraction_out_of_range" in parsed.rationale
+    assert "qty_percent_out_of_range" in parsed.rationale
 
 
 def test_batch_parse_reduce_qty_abs_sans_side_produit_resolve_from_position() -> None:
@@ -455,7 +611,7 @@ def test_batch_parse_reduce_qty_abs_sans_side_produit_resolve_from_position() ->
     {"decisions": [
       {"symbol": "SPY", "confidence": 0.7, "rationale": "scale-out partiel",
        "decision_reason_code": "EXIT_SIGNAL",
-       "calls": [{"tool": "propose_order", "args": {"intent": "REDUCE", "qty": 5}}]}
+       "calls": [{"tool": "strategy_close", "args": {"qty": 5}}]}
     ]}
     """
     parsed = codex_client.parse_batch(raw, ["SPY"], allow_context_request=False)["SPY"]
@@ -466,31 +622,29 @@ def test_batch_parse_reduce_qty_abs_sans_side_produit_resolve_from_position() ->
     assert parsed.quantity == 5.0
 
 
-def test_batch_parse_reverse_sans_side_avec_qty_produit_resolve_from_position() -> None:
-    """L2 : REVERSE sans side mais avec qty → resolve_from_position=True.
-    qty de la nouvelle jambe est conservée ; le daemon dérivera la side."""
+def test_batch_parse_strategy_entry_opposee_prepare_flip_position_aware() -> None:
+    """strategy_entry prépare un changement d'exposition ; le daemon dérivera FLIP si position opposée."""
     raw = """
     {"decisions": [
       {"symbol": "SPY", "confidence": 0.8, "rationale": "flip position",
        "decision_reason_code": "REVERSAL",
-       "calls": [{"tool": "propose_order", "args": {"intent": "REVERSE", "qty": 20}}]}
+       "calls": [{"tool": "strategy_entry", "args": {"direction": "short", "qty": 20}}]}
     ]}
     """
     parsed = codex_client.parse_batch(raw, ["SPY"], allow_context_request=False)["SPY"]
 
     assert parsed.resolve_from_position is True
-    assert parsed.intent == "REVERSE"
+    assert parsed.intent == "OPEN_SHORT"
     assert parsed.quantity == 20.0
 
 
-def test_batch_parse_reverse_sans_side_ni_qty_tombe_en_hold() -> None:
-    """L2 : REVERSE sans qty reste une erreur — la jambe cible est ambiguë.
-    Pas de résolution possible → HOLD tracé."""
+def test_batch_parse_strategy_entry_sans_qty_tombe_en_hold() -> None:
+    """strategy_entry sans qty/risk_pct ne peut pas dimensionner la jambe cible."""
     raw = """
     {"decisions": [
       {"symbol": "SPY", "confidence": 0.8, "rationale": "flip position",
        "decision_reason_code": "REVERSAL",
-       "calls": [{"tool": "propose_order", "args": {"intent": "REVERSE"}}]}
+       "calls": [{"tool": "strategy_entry", "args": {"direction": "short"}}]}
     ]}
     """
     parsed = codex_client.parse_batch(raw, ["SPY"], allow_context_request=False)["SPY"]
@@ -499,37 +653,37 @@ def test_batch_parse_reverse_sans_side_ni_qty_tombe_en_hold() -> None:
     assert "order_qty_required" in parsed.rationale
 
 
-@pytest.mark.parametrize("intent,side,qty", [
-    ("REVERSE", "SELL", 20),
-    ("ADD", "SELL", 5),
+@pytest.mark.parametrize("direction,qty,expected_intent", [
+    ("short", 20, "OPEN_SHORT"),
+    ("long", 5, "OPEN_LONG"),
 ])
-def test_batch_parse_relative_intent_avec_side_explicite_ignore_side_et_resout_position(
-    intent: str,
-    side: str,
+def test_batch_parse_strategy_entry_position_aware(
+    direction: str,
     qty: int,
+    expected_intent: str,
 ) -> None:
     raw = """
     {"decisions": [
       {"symbol": "SPY", "confidence": 0.7, "rationale": "relative intent",
        "decision_reason_code": "REVERSAL",
-       "calls": [{"tool": "propose_order", "args": {"intent": "%s", "side": "%s", "qty": %d}}]}
+       "calls": [{"tool": "strategy_entry", "args": {"direction": "%s", "qty": %d}}]}
     ]}
-    """ % (intent, side, qty)
+    """ % (direction, qty)
     parsed = codex_client.parse_batch(raw, ["SPY"], allow_context_request=False)["SPY"]
 
-    assert parsed.action == "HOLD"
-    assert parsed.intent == intent
+    assert parsed.action in {"BUY", "SELL"}
+    assert parsed.intent == expected_intent
     assert parsed.quantity == pytest.approx(qty)
     assert parsed.resolve_from_position is True
 
 
 @pytest.mark.parametrize("qty", [0, -1])
-def test_batch_parse_propose_order_rejette_qty_non_positive(qty: int) -> None:
+def test_batch_parse_strategy_entry_rejette_qty_non_positive(qty: int) -> None:
     raw = """
     {"decisions": [
       {"symbol": "SPY", "confidence": 0.7, "rationale": "bad qty",
        "decision_reason_code": "ENTRY_SIGNAL",
-       "calls": [{"tool": "propose_order", "args": {"intent": "OPEN_LONG", "qty": %d}}]}
+       "calls": [{"tool": "strategy_entry", "args": {"direction": "long", "qty": %d}}]}
     ]}
     """ % qty
     parsed = codex_client.parse_batch(raw, ["SPY"], allow_context_request=False)["SPY"]
@@ -538,30 +692,29 @@ def test_batch_parse_propose_order_rejette_qty_non_positive(qty: int) -> None:
     assert "order_qty_must_be_positive" in parsed.rationale
 
 
-def test_batch_parse_add_sans_side_produit_resolve_from_position() -> None:
-    """L4 : ADD sans side → resolve_from_position=True, qty conservée.
-    Le daemon dérivera side = même sens que la position (BUY si long, SELL si short)."""
+def test_batch_parse_strategy_entry_prepare_scale_in_position_aware() -> None:
+    """strategy_entry dans le même sens prépare un SCALE_IN dans l'admission position-aware."""
     raw = """
     {"decisions": [
       {"symbol": "SPY", "confidence": 0.75, "rationale": "renforcement breakout",
        "decision_reason_code": "ENTRY_SIGNAL",
-       "calls": [{"tool": "propose_order", "args": {"intent": "ADD", "qty": 5}}]}
+       "calls": [{"tool": "strategy_entry", "args": {"direction": "long", "qty": 5}}]}
     ]}
     """
     parsed = codex_client.parse_batch(raw, ["SPY"], allow_context_request=False)["SPY"]
 
     assert parsed.resolve_from_position is True
-    assert parsed.intent == "ADD"
+    assert parsed.intent == "OPEN_LONG"
     assert parsed.quantity == 5.0
 
 
-def test_batch_parse_add_sans_qty_tombe_en_hold() -> None:
-    """L4 : ADD sans qty est une erreur — la taille du renforcement est requise."""
+def test_batch_parse_strategy_entry_sans_qty_tombe_en_hold_aussi_pour_scale_in() -> None:
+    """strategy_entry sans qty/risk_pct reste une erreur avant résolution SCALE_IN."""
     raw = """
     {"decisions": [
       {"symbol": "SPY", "confidence": 0.75, "rationale": "renforcement",
        "decision_reason_code": "ENTRY_SIGNAL",
-       "calls": [{"tool": "propose_order", "args": {"intent": "ADD"}}]}
+       "calls": [{"tool": "strategy_entry", "args": {"direction": "long"}}]}
     ]}
     """
     parsed = codex_client.parse_batch(raw, ["SPY"], allow_context_request=False)["SPY"]
@@ -570,14 +723,14 @@ def test_batch_parse_add_sans_qty_tombe_en_hold() -> None:
     assert "order_qty_required" in parsed.rationale
 
 
-def test_batch_parse_add_avec_exit_plan_preserve_exit_plan() -> None:
-    """L4 : ADD peut fournir un exit_plan (stop combiné) — il est conservé."""
+def test_batch_parse_strategy_entry_avec_exit_plan_preserve_exit_plan() -> None:
+    """strategy_entry peut fournir un exit_plan (stop combiné) — il est conservé."""
     raw = """
     {"decisions": [
       {"symbol": "SPY", "confidence": 0.8, "rationale": "pyramiding",
        "decision_reason_code": "ENTRY_SIGNAL",
-       "calls": [{"tool": "propose_order", "args": {
-         "intent": "ADD", "qty": 3,
+       "calls": [{"tool": "strategy_entry", "args": {
+         "direction": "long", "qty": 3,
          "exit": {"stop": {"price": 145.0}}
        }}]}
     ]}
@@ -585,7 +738,7 @@ def test_batch_parse_add_avec_exit_plan_preserve_exit_plan() -> None:
     parsed = codex_client.parse_batch(raw, ["SPY"], allow_context_request=False)["SPY"]
 
     assert parsed.resolve_from_position is True
-    assert parsed.intent == "ADD"
+    assert parsed.intent == "OPEN_LONG"
     assert parsed.exit_plan is not None
     assert parsed.exit_plan["hard_stop"]["price"] == 145.0
 

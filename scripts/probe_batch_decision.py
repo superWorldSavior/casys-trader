@@ -43,7 +43,7 @@ def main() -> None:
         "Réponds UNIQUEMENT par un objet JSON: {\"decisions\": [ "
         '{"symbol": "<SYM>", "action": "BUY|SELL|HOLD", "quantity": <number>, '
         '"confidence": <0..1>, "rationale": "<court>", '
-        '"intent": "OPEN_LONG|OPEN_SHORT|REDUCE|CLOSE|REVERSE|HOLD", '
+        '"intent": "OPEN_LONG|OPEN_SHORT|REDUCE|CLOSE|FLIP|HOLD", '
         '"learning": <string|null>} ] }\n'
         "Un élément par symbole, dans l'ordre du cockpit. Pas de texte autour.\n\n"
         f"# Cockpit\n{json.dumps(cockpit, ensure_ascii=False)}\n"

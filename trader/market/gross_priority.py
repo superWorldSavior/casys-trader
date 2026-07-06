@@ -21,7 +21,7 @@ import math
 from dataclasses import dataclass
 
 _REDUCING_INTENTS = frozenset({"CLOSE", "REDUCE"})
-_OPENING_INTENTS = frozenset({"OPEN_LONG", "OPEN_SHORT", "REVERSE", "ADD"})
+_OPENING_INTENTS = frozenset({"OPEN_LONG", "OPEN_SHORT", "FLIP", "SCALE_IN"})
 
 
 @dataclass(frozen=True)

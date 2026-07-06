@@ -201,7 +201,7 @@ lent. À la place :
   heartbeat par round), un résultat tardif est collecté, plus jeté.
 - **Sorties streamées** : `CLOSE`/`REDUCE` (intent **résolu** position-aware) → exécutées
   **immédiatement**, refresh marge — libèrent de la marge sans attendre le lot.
-- **Ouvertures bufferisées** : `OPEN_*`/`ADD`/`REVERSE` (REVERSE = ouverture, jamais
+- **Ouvertures bufferisées** : `OPEN_*`/`SCALE_IN`/`FLIP` (FLIP = ouverture, jamais
   streamé) → exécutées ensuite en `gross_execution_order` (arbitrage au mérite préservé,
   voit la marge refreshée par les sorties). Budget des ouvertures = le RiskGate/marge (le
   cap de count `max_orders_per_cycle` a été retiré : les bornes $ sont la safety).

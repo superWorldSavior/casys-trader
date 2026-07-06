@@ -1,7 +1,8 @@
 # Domain tools via serveur MCP daemon-owned — spec de spike
 
 **Date** : 2026-07-02
-**Status** : spec approuvée pour spike (décision Erwan) ; à exécuter AVANT les outils d'action
+**Status** : historique / partiellement supersédée ; le contrat courant des
+outils livrés est `docs/reference/agent-tools.md`
 **Amont** : `docs/reference/agent-tools.md` (couche d'outils livrée ; la spec
 historique 2026-06-29 reportait MCP), `docs/superpowers/specs/2026-07-02-acpx-fork-upstream-inventory.md` (#366
 schema/tools upstream), état actuel : protocole-maison JSON-en-prose livré et actif.
@@ -88,10 +89,9 @@ tient).
 
 ## 7. Si le spike réussit — plan de généralisation
 
-1. Porter les 6 autres outils lecture-seule en MCP.
-2. Coder les outils d'ACTION (Phases 4-5 du design agent-tools) DIRECTEMENT en
-   MCP (set_next_wake, propose_indicator_watch, cancel_watch, record_learning,
-   puis propose_order) — jamais dans le protocole-maison.
+1. Porter les autres outils lecture-seule en MCP.
+2. Porter les outils d'ACTION du contrat courant (`docs/reference/agent-tools.md`)
+   DIRECTEMENT en MCP — jamais dans le protocole-maison.
 3. Retirer le protocole-maison JSON (`_TOOL_CATALOG`, `parse_batch_or_tool_calls`,
    la tournée `_run_tool_round`) une fois la parité mesurée.
 4. Garder le `TOOL_REGISTRY` et les `ToolContext`/handlers : SEULE la couche de

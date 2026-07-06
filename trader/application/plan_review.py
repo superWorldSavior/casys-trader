@@ -31,7 +31,7 @@ def llm_review_verdict(intent: str) -> str:
         return "intact"
     if intent == "REDUCE":
         return "fragile"
-    if intent in {"CLOSE", "REVERSE"}:
+    if intent in {"CLOSE", "FLIP"}:
         return "invalidated"
     return "fragile"
 

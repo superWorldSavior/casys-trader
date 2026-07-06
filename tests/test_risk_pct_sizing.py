@@ -27,9 +27,9 @@ from trader.planning.scheduler import Scheduler
 # ---------------------------------------------------------------------------
 
 
-def _symbol_call_data(*, intent: str = "OPEN_LONG", exit_plan: dict | None = None, **extra_args) -> dict:
-    """Construit un élément 'decisions[n]' avec propose_order dans calls."""
-    args: dict = {"intent": intent, **extra_args}
+def _symbol_call_data(*, direction: str = "long", exit_plan: dict | None = None, **extra_args) -> dict:
+    """Construit un élément 'decisions[n]' avec strategy_entry dans calls."""
+    args: dict = {"direction": direction, **extra_args}
     if exit_plan is not None:
         args["exit"] = exit_plan
     return {
@@ -37,7 +37,17 @@ def _symbol_call_data(*, intent: str = "OPEN_LONG", exit_plan: dict | None = Non
         "confidence": 0.85,
         "rationale": "test",
         "decision_reason_code": "ENTRY_SIGNAL",
-        "calls": [{"tool": "propose_order", "args": args}],
+        "calls": [{"tool": "strategy_entry", "args": args}],
+    }
+
+
+def _strategy_close_data(**extra_args) -> dict:
+    return {
+        "symbol": "SPY",
+        "confidence": 0.85,
+        "rationale": "test",
+        "decision_reason_code": "EXIT_SIGNAL",
+        "calls": [{"tool": "strategy_close", "args": extra_args}],
     }
 
 
@@ -87,11 +97,11 @@ def test_parse_no_qty_no_risk_pct_raises() -> None:
 
 
 def test_parse_risk_pct_hors_open_est_ignore_si_qty_presente() -> None:
-    """REVERSE + qty + risk_pct : risk_pct est superflu, pas bloquant."""
-    data = _symbol_call_data(intent="REVERSE", qty=12, risk_pct=0.005)
+    """REDUCE + qty + risk_pct : risk_pct est superflu, pas bloquant."""
+    data = _strategy_close_data(qty=12, risk_pct=0.005)
     dec = _decision_from_symbol_calls(data, "SPY")
 
-    assert dec.intent == "REVERSE"
+    assert dec.intent == "REDUCE"
     assert dec.quantity == pytest.approx(12.0)
     assert dec.resolve_from_position is True
     assert dec.risk_pct_target is None
@@ -99,7 +109,7 @@ def test_parse_risk_pct_hors_open_est_ignore_si_qty_presente() -> None:
 
 def test_parse_close_side_risk_pct_sans_qty_ignore_champs_superflus() -> None:
     """CLOSE dérive side+qty depuis la position et ignore side/risk_pct."""
-    data = _symbol_call_data(intent="CLOSE", side="SELL", risk_pct=0.005)
+    data = _strategy_close_data(side="SELL", risk_pct=0.005)
     dec = _decision_from_symbol_calls(data, "SPY")
 
     assert dec.action == "HOLD"

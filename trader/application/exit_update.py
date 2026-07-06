@@ -1,4 +1,4 @@
-"""Application service for fail-safe exit-plan amendments."""
+"""Application service for fail-safe exit-plan updates."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from typing import Protocol
 from trader.planning.trade_plan import (
     InvalidExitPlanError,
     TradePlan,
-    apply_amend_exit,
+    apply_exit_update,
 )
 
 
@@ -26,46 +26,47 @@ def _current_decision_price(entry: dict) -> float | None:
     return price if price > 0 else None
 
 
-def apply_amend_exit_to_open_plan(
+def apply_exit_update_to_open_plan(
     *,
     plan_store: TradePlanStoreLike,
     symbol: str,
-    amend_exit: dict,
+    exit_update: dict,
     bars: list | None,
     entry: dict,
+    current_price: float | None = None,
 ) -> None:
-    """Apply an amend_exit request to the symbol's open plan and trace the result."""
-    entry["amend_exit"] = copy.deepcopy(amend_exit)
+    """Apply an exit_update request to the symbol's open plan and trace the result."""
+    entry["exit_update"] = copy.deepcopy(exit_update)
     open_plans = [p for p in plan_store.open_plans() if p.symbol == symbol]
     if not open_plans:
-        entry["amend_exit_applied"] = False
-        entry["amend_exit_reason"] = "no_open_plan"
+        entry["exit_update_applied"] = False
+        entry["exit_update_reason"] = "no_open_plan"
         return
 
     plan = open_plans[0]
     trace: dict = {}
     try:
-        patched = apply_amend_exit(
+        patched = apply_exit_update(
             plan,
-            amend_exit,
+            exit_update,
             bars=bars,
-            reference_price=_current_decision_price(entry),
+            reference_price=current_price if current_price is not None else _current_decision_price(entry),
             trace_out=trace,
         )
     except (InvalidExitPlanError, ValueError) as exc:
-        entry["amend_exit_applied"] = False
-        entry["amend_exit_reason"] = f"resolve_failed:{exc}"
+        entry["exit_update_applied"] = False
+        entry["exit_update_reason"] = f"resolve_failed:{exc}"
         return
 
     if patched is plan:
-        entry["amend_exit_applied"] = False
-        entry["amend_exit_reason"] = "empty_amend"
+        entry["exit_update_applied"] = False
+        entry["exit_update_reason"] = "empty_update"
         return
 
     plan_store.upsert(patched)
-    entry["amend_exit_applied"] = True
+    entry["exit_update_applied"] = True
     if trace:
-        entry["amend_exit_trace"] = copy.deepcopy(trace)
+        entry["exit_update_trace"] = copy.deepcopy(trace)
         hard_stop_warnings = (trace.get("hard_stop") or {}).get("warnings")
         if hard_stop_warnings:
-            entry["amend_exit_warnings"] = copy.deepcopy(hard_stop_warnings)
+            entry["exit_update_warnings"] = copy.deepcopy(hard_stop_warnings)

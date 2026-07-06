@@ -55,8 +55,8 @@ def _short_ts(row: dict, now: datetime) -> str:
     return ts.strftime("%a %H:%M")
 
 
-def _amend_rejected_info(rows: list[dict]) -> tuple[str, str] | None:
-    """Scan decisions (latest-first) for a rejected amend_exit tool call.
+def _exit_update_rejected_info(rows: list[dict]) -> tuple[str, str] | None:
+    """Scan decisions (latest-first) for a rejected exit_update tool call.
 
     Returns (time_str, warning_code) or None.
     """
@@ -65,7 +65,7 @@ def _amend_rejected_info(rows: list[dict]) -> tuple[str, str] | None:
         for call in _safe_list_of_dicts(rt.get("tool_calls")):
             if not isinstance(call, dict):
                 continue
-            if call.get("tool") == "amend_exit" and call.get("outcome") == "rejected":
+            if call.get("tool") == "strategy_exit" and call.get("outcome") == "rejected":
                 detail = f.safe_dict(call.get("detail"))
                 warnings = detail.get("warnings") or []
                 code = ""
@@ -238,7 +238,7 @@ def _build_exit_plan_panel(
     symbol: str,
     rows: list[dict],
 ) -> RenderableType:
-    """EXIT PLAN: hard stop + take profits + amend rejected warning."""
+    """EXIT PLAN: hard stop + take profits + exit update rejected warning."""
     trade_plans = _safe_list_of_dicts(state.get("trade_plans"))
     plan = f.plan_for_symbol(trade_plans, symbol)
 
@@ -292,13 +292,13 @@ def _build_exit_plan_panel(
 
         ep_parts: list[RenderableType] = [ep_grid]
 
-        # amend rejected warning
-        amend = _amend_rejected_info(rows)
-        if amend is not None:
-            time_str, code = amend
+        # exit update rejected warning
+        exit_update = _exit_update_rejected_info(rows)
+        if exit_update is not None:
+            time_str, code = exit_update
             warn = Text()
             warn.append("▲ ", style=CASYS_WARNING)
-            warn.append(f"{time_str} amend rejected", style=CASYS_WARNING)
+            warn.append(f"{time_str} exit update rejected", style=CASYS_WARNING)
             if code:
                 warn.append(f" — {code}", style=CASYS_WARNING)
             ep_parts.append(warn)

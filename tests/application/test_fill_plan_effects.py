@@ -138,7 +138,7 @@ def test_apply_filled_plan_effects_preserves_review_when_sync_add_replaces_plan(
     review = {"ts": "2026-07-05T07:55:00+00:00", "action": "HOLD"}
     entry, store = _apply(
         plan_store=_PlanStore([_plan(review=review)]),
-        intent="ADD",
+        intent="SCALE_IN",
         action="BUY",
         quantity=2.0,
         broker=_Broker({"SPY": Position("SPY", quantity=5.0, avg_price=96.0)}),
@@ -156,7 +156,7 @@ def test_apply_filled_plan_effects_preserves_review_when_sync_add_replaces_plan(
 def test_apply_filled_plan_effects_sync_reverse_creates_plan_from_final_position() -> None:
     entry, store = _apply(
         plan_store=_PlanStore([_plan()]),
-        intent="REVERSE",
+        intent="FLIP",
         action="SELL",
         quantity=7.0,
         price=101.0,
@@ -185,7 +185,7 @@ def test_apply_filled_plan_effects_queue_reverse_reports_existing_atomic_plan() 
 
     entry, store = _apply(
         plan_store=_PlanStore([queued_plan]),
-        intent="REVERSE",
+        intent="FLIP",
         action="SELL",
         queue_execute_enabled=True,
         broker=_Broker({"SPY": Position("SPY", quantity=-3.0, avg_price=101.0)}),
@@ -219,7 +219,7 @@ def test_apply_filled_plan_effects_queue_add_reports_plan_without_local_close_or
 
     entry, store = _apply(
         plan_store=_PlanStore([queued_plan]),
-        intent="ADD",
+        intent="SCALE_IN",
         action="BUY",
         quantity=2.0,
         queue_execute_enabled=True,

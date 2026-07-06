@@ -214,10 +214,10 @@ Le LLM peut alors :
 
 - ne rien changer si la thèse est intacte ;
 - ajuster `next_wake` ou poser une `exit_watch` ;
-- demander `CLOSE`, `REDUCE` ou `REVERSE` si la thèse casse ;
+- demander `CLOSE`, `REDUCE` ou `FLIP` si la thèse casse ;
 - demander une modification de plan si un canal `plan_update` est ajouté plus tard.
 
-En v1, piloter le trade peut rester limité à `CLOSE` / `REDUCE` / `REVERSE` +
+En v1, piloter le trade peut rester limité à `CLOSE` / `REDUCE` / `FLIP` +
 veille. Modifier hard stop / TP existants demande un champ explicite nouveau, à
 ne pas cacher dans une décision ambiguë.
 
@@ -326,7 +326,7 @@ Gater sur `session.open` (marché fermé ⇒ pas de `submit`, sorties mécanique
 ### Hors cœur — chantiers séparés à prioriser APRÈS mesure
 - **§13.6 préflight D12** : EN DISCUSSION (amende D7B). Replay `preflight_reasons` en place pour mesurer avant câblage.
 - **§13.7 enrichir `TradePlan`** : ✅ `last_llm_review` (persisté + réinjecté), `entry_thesis` + `entry_context`
-  (peuplés au fill OPEN **et** REVERSE), GO Codex. `entry_decision_id` ajouté au schéma mais **non peuplé en V1**
+  (peuplés au fill OPEN **et** FLIP), GO Codex. `entry_decision_id` ajouté au schéma mais **non peuplé en V1**
   (nécessite le `sequence` ledger exact, à câbler avec le préflight). `preflight_decision_id` : **PAS fait** (lié au préflight §13.6).
 - **§13.8 calendrier fériés/demi-séances MULTI-PLACES** : ✅ **fait** via `exchange_calendars` (offline,
   16/17 places + alias XTAI pour `.TWO`, early closes, lunar TW jusqu'à 2049), GO Codex. Limitation V1 :

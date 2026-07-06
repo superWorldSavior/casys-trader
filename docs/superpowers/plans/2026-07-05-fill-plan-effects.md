@@ -9,8 +9,8 @@ sur `TradePlan` vers un service applicatif testable.
 
 - Ajouter `trader/application/fill_plan_effects.py`.
 - Déplacer les effets déterministes après fill :
-  close sur `CLOSE` / `REVERSE`, sync quantité sur `REDUCE`, création/snapshot
-  de plan pour `OPEN_LONG` / `OPEN_SHORT` / `ADD` / `REVERSE`.
+  close sur `CLOSE` / `FLIP`, sync quantité sur `REDUCE`, création/snapshot
+  de plan pour `OPEN_LONG` / `OPEN_SHORT` / `SCALE_IN` / `FLIP`.
 - Préserver le mode queue canon : pas de double close/upsert quand l'UoW a déjà
   appliqué `symbol_to_close` / `plan_to_upsert`.
 - Garder dans le daemon le contexte runtime concret et le scheduling post-entry.

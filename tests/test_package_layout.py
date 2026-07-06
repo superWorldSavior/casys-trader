@@ -393,8 +393,8 @@ def test_daemon_delegates_execute_queue_plan_payload_to_application_service() ->
     queue_block = queue_block.split("fill = _exec_outcome.fill", 1)[0]
     forbidden = (
         "create_trade_plan_from_order(",
-        "_projected_add_risk_basis(",
-        "_reverse_open_quantity(",
+        "_projected_scale_in_risk_basis(",
+        "_flip_open_quantity(",
     )
     violations = [call for call in forbidden if call in queue_block]
 

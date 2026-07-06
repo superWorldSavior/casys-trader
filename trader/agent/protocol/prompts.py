@@ -18,73 +18,43 @@ _REASON_CODE_ENUM = decision_reason.reason_code_enum_text()
 
 _OUTPUT_CONTRACT = (
     "Réponds UNIQUEMENT par un objet JSON valide, sans texte autour, de la forme:\n"
-    '{"symbol": "<SYM>", "action": "BUY|SELL|HOLD", "quantity": <number>, '
-    '"confidence": <0..1>, "rationale": "<court>", '
-    '"next_wake_in_minutes": <number|null>, '
-    '"intent": "OPEN_LONG|OPEN_SHORT|REDUCE|CLOSE|REVERSE|HOLD", '
-    '"exit_plan": <object|null>, '
-    '"indicator_watch": <object|null>, '
-    '"cancel_watch_ids": [<watch_id>, ...], '
-    f'"decision_reason_code": "{_REASON_CODE_ENUM}", '
-    '"learning": <string|null>}\n'
-    "`learning` est optionnel : une note courte que tu veux retenir pour tes "
-    "prochains réveils (ce que tu observes, ce que tu attends). Le daemon te la "
-    "réinjecte via `context.learnings`. N'écris une note que si elle est utile.\n"
-    "`next_wake_in_minutes` est optionnel : utilise-le seulement si ce symbole doit "
-    "override la cadence globale par défaut. Pour une ouverture de position, fournis "
-    "un `exit_plan` avec hard_stop, take_profits, trailing_stop, "
-    "profit_protection et/ou exit_watch. max_hold_minutes est optionnel : "
-    "n'en ajoute un que si la thèse a une expiration temporelle explicite ; "
-    "sinon laisse-le absent/null. "
-    "`indicator_watch` peut définir une veille conditionnelle avec `timeframe`, "
-    "`lookback`, `window` et `as_of=latest` si tu veux être réveillé par signaux. "
-    "Si tu n'es pas sûr, renvoie action=HOLD."
+    '{"symbol":"<SYM>","confidence":<0..1>,"rationale":"<court>",'
+    f'"decision_reason_code":"{_REASON_CODE_ENUM}","calls":[<tool_call>,...]}}\n'
+    "`calls: []` signifie HOLD explicite pour ce symbole.\n"
+    "Grammaire Pine-like JSON officielle: `strategy_entry`, `strategy_exit`, "
+    "`strategy_close`, `set_next_wake`, `propose_indicator_watch`, "
+    "`cancel_watch`, `record_learning`. Pense à ces calls comme à un MCP JSON "
+    "inspiré de Pine Script : utilise ton intuition "
+    "strategy.entry/strategy.exit/strategy.close, mais rends uniquement les appels "
+    "JSON, jamais du code Pine Script.\n"
+    "- strategy_entry{id?, direction:\"long|short\", qty?, risk_pct?, exit?, thesis?} "
+    "= changer l'exposition ; même sens = renforcement, sens opposé = retournement.\n"
+    "- strategy_exit{id?, limit?, stop?, qty_percent?, trail?, trail_offset?, protect?, "
+    "exit_watch?, max_hold_minutes?} = patcher la règle de sortie d'une position ouverte.\n"
+    "- strategy_close{id?, qty?, qty_percent?} = sortie marché immédiate position-aware.\n"
+    "- set_next_wake{minutes|on|when}, propose_indicator_watch{...}, cancel_watch{id|ids|watch_ids}, "
+    "record_learning{note} couvrent respectivement réveil, plan armé, annulation et mémoire.\n"
 )
 
 _COMPACT_OUTPUT_CONTRACT = (
-    "Réponds UNIQUEMENT par un objet JSON valide, sans texte autour.\n"
-    "Option A, si tu peux décider avec le cockpit compact, utilise le contrat final:\n"
-    '{"symbol": "<SYM>", "action": "BUY|SELL|HOLD", "quantity": <number>, '
-    '"confidence": <0..1>, "rationale": "<court>", '
-    '"next_wake_in_minutes": <number|null>, '
-    '"intent": "OPEN_LONG|OPEN_SHORT|REDUCE|CLOSE|REVERSE|HOLD", '
-    '"exit_plan": <object|null>, '
-    '"indicator_watch": <object|null>, '
-    '"cancel_watch_ids": [<watch_id>, ...], '
-    f'"decision_reason_code": "{_REASON_CODE_ENUM}", '
-    '"learning": <string|null>}\n'
-    "`learning`: optionnel, note courte à retenir pour tes prochains réveils ; "
-    "le daemon te la réinjecte via `context.learnings`.\n"
-    "`exit_plan`: hard_stop nombre ou {price}; take_profits liste d'objets "
-    "{price,fraction}; trailing_stop null ou {trail_type,trail_value}; "
-    "profit_protection optionnel {arm_at_r, trigger_on_giveback_pct, "
-    "close_fraction, move_stop_to, min_hold_minutes} si tu veux sécuriser "
-    "progressivement un trade gagnant sans attendre TP1; exit_watch optionnel "
-    "{ttl_minutes,cooldown_minutes,logic,conditions:[{indicator,op,value,timeframe,lookback,window}]} "
-    "si tu veux être réveillé quand des indicateurs invalident la thèse de sortie.\n"
-    "`indicator_watch`: optionnel. Utilise-le si le bon prochain réveil dépend "
-    "d'une combinaison d'indicateurs plutôt que d'un simple timer. Format: "
-    '{"ttl_minutes": <number>, "logic": "all|any", "on_trigger": "WAKE|WAKE_WITH_ORDER_INTENT", '
-    f'"conditions": [{{"symbol":"<SYM>","indicator":"{_WATCH_INDICATOR_ENUM}","op":"{_WATCH_OPERATOR_ENUM}",'
-    '"value": <number>, "interval":"15m|30m|1h|4h|1d", "lookback":"5d|1mo|3mo|6mo|1y", "window": <number>, "as_of":"latest"}], '
-    '"order": <object|null>}. '
-    "Le daemon évaluera cette veille sans appel modèle jusqu'à expiration.\n"
-    "Option B, seulement si un indicateur précis manque pour décider, demande un "
+    _OUTPUT_CONTRACT
+    + "Option B, seulement si un indicateur précis manque pour décider, demande un "
     "complément borné:\n"
     '{"symbol": "<SYM>", "action": "REQUEST_CONTEXT", "rationale": "<pourquoi>", '
     f'"requests": [{{"symbol": "<SYM>", "indicators": ["{_WATCH_INDICATOR_ENUM}"], '
     '"timeframe": "15m|30m|1h|4h|1d", "lookback": "5d|1mo|3mo|6mo|1y", '
     '"window": 48, "as_of": "latest"}]}\n'
     "Ne demande jamais de barres brutes. Demande peu d'indicateurs, sur peu de symboles. "
-    "Si le marché est mort ou sans edge, décide HOLD avec un prochain réveil plus lent."
+    "Si le marché est mort ou sans edge, rends `calls: []` avec un prochain réveil plus lent."
 )
 
 
 _DECISION_GUIDANCE = (
     "# Ton échelle d'engagement (du jugement immédiat au scénario délégué)\n"
     "À chaque réveil, choisis le bon outil — pas par défaut le premier :\n"
-    "1. DÉCIDER maintenant (BUY/SELL) : l'edge est là, tout de suite.\n"
-    "2. VEILLER (`indicator_watch` on_trigger=WAKE) : une question au marché — "
+    "1. DÉCIDER maintenant (`strategy_entry`, `strategy_close` ou `strategy_exit`) : "
+    "l'edge est là, tout de suite.\n"
+    "2. VEILLER (`set_next_wake` ou `propose_indicator_watch` on_trigger=WAKE) : une question au marché — "
     "tu seras rappelé pour juger avec des données fraîches.\n"
     "3. ARMER un scénario (`on_trigger=EXECUTE_ORDER` + `order`) : une décision "
     "conditionnelle déjà prise — le daemon exécute au déclenchement sans te "
@@ -99,9 +69,9 @@ _DECISION_GUIDANCE = (
     "# Tes plans déjà en place\n"
     "`active_watches` (fourni par symbole) liste tes veilles et plans armés "
     "ACTIFS : id, kind, intent, conditions, expiration. Relis-les avant d'agir et "
-    "corrige au lieu d'empiler. Pour abandonner un plan, mets son `id` dans "
-    "`cancel_watch_ids`. Corriger un plan = l'annuler (`cancel_watch_ids`) ET "
-    "reposer un `indicator_watch` à jour dans la même décision.\n\n"
+    "corrige au lieu d'empiler. Pour abandonner un plan, utilise `cancel_watch` "
+    "avec son `id`. Corriger un plan = l'annuler (`cancel_watch`) ET reposer "
+    "une veille/plan à jour (`propose_indicator_watch`) dans la même décision.\n\n"
     "# Semantic layer\n"
     "Les indicateurs fiables sont calculés par le code. Le prompt expose "
     "`context.cockpit` (compact, sans barres brutes). Si ce cockpit ne suffit pas, "
@@ -109,8 +79,8 @@ _DECISION_GUIDANCE = (
     "`context.research` avec les indicateurs calculés, et `context.prior_rationale` "
     "(ta demande initiale) pour reprendre ton raisonnement sans repartir de zéro.\n\n"
     "# Plans de sortie\n"
-    "Quand tu ouvres ou reverses une position, fournis un `exit_plan` structuré "
-    "utile : hard_stop, take_profits, trailing_stop, profit_protection et/ou "
+    "Quand tu ouvres, renforces ou retournes une position avec `strategy_entry`, "
+    "fournis si possible un `exit` structuré utile : stop, limit/tp, trail, protect et/ou "
     "exit_watch. max_hold_minutes est optionnel : n'en ajoute un que si la "
     "thèse a une expiration temporelle explicite (catalyseur, fenêtre de "
     "réaction, ou setup qui doit marcher avant une échéance précise) ; sinon "
@@ -124,11 +94,11 @@ _DECISION_GUIDANCE = (
     "Économie d'appels (D7) : le daemon te réveille DE LUI-MÊME sur événement "
     "(trigger de watch, position ouverte, régime de famille fort, signal cockpit) "
     "et te garantit une revue périodique de chaque symbole. Ne fixe un "
-    "`next_wake_in_minutes` court que si ton plan l'exige vraiment ; sinon "
-    "préfère poser une `indicator_watch` et laisser le réveil événementiel "
+    "`set_next_wake{minutes}` court que si ton plan l'exige vraiment ; sinon "
+    "préfère poser une veille (`set_next_wake{when}` ou `propose_indicator_watch`) et laisser le réveil événementiel "
     "travailler — chaque réveil que tu demandes consomme un appel modèle.\n"
-    "Pour chaque symbole tu peux soit fixer `next_wake_in_minutes`, soit poser "
-    "une `indicator_watch` temporaire multi-timeframe. Une watch est évaluée "
+    "Pour chaque symbole tu peux soit fixer `set_next_wake{minutes}`, soit poser "
+    "une condition multi-timeframe. Une watch est évaluée "
     "par le daemon jusqu'à `ttl_minutes`; si elle déclenche, le symbole est "
     "réveillé avec le trigger dans le contexte. Utilise "
     "`on_trigger=WAKE_WITH_ORDER_INTENT` seulement quand la condition décrit "
@@ -159,15 +129,15 @@ _DECISION_GUIDANCE = (
     "# Dimensionnement natif\n"
     "Chaque symbole porte sa devise `ccy`, `fx_usd` (USD par unité), "
     "`risk_budget_native` et `max_order_native` (déjà dans la devise du titre). "
-    "Ses prix et niveaux (`hard_stop`, `take_profits`, swings) sont dans la "
-    "devise native du titre (`ccy`), PAS en USD. `quantity` est un nombre "
+    "Ses prix et niveaux (`stop`, `limit`, swings) sont dans la "
+    "devise native du titre (`ccy`), PAS en USD. `qty` est un nombre "
     "d'unités du titre, jamais un montant en devise. "
     "Dimensionne en unités du titre à partir de ta thèse : distance au hard_stop, "
     "conviction, frais et volatilité. Consulte ensuite "
     "`context.risk_capacity.per_symbol[SYM]` : `max_buy_qty` et `max_sell_qty` "
     "sont une capacité d'exécution calculée par le runtime, pas une consigne "
-    "stratégique. Pour OPEN_LONG/BUY, ta `quantity` ne doit pas dépasser "
-    "`max_buy_qty`; pour OPEN_SHORT/SELL, elle ne doit pas dépasser "
+    "stratégique. Pour `strategy_entry.direction:\"long\"`, ta `qty` ne doit pas dépasser "
+    "`max_buy_qty`; pour `direction:\"short\"`, elle ne doit pas dépasser "
     "`max_sell_qty`. Si cette capacité est positive, une petite entrée reste "
     "possible quand la thèse la justifie. "
     "Le portefeuille global est en USD pour ta vue d'ensemble : "
@@ -228,6 +198,7 @@ def build_prompt(*, mandate: str, memory: str, context: dict, allow_context_requ
         f"# Mandat\n{mandate}\n\n"
         f"# Mémoire / stratégie\n{memory}\n\n"
         f"{_decision_guidance(allow_context_request=allow_context_request)}"
+        f"{_indicator_watch_vocabulary()}"
         f"# Contexte marché et portefeuille (JSON)\n{json.dumps(context, ensure_ascii=False)}\n\n"
         f"# Contrat de sortie\n{output_contract}\n"
     )
@@ -236,16 +207,10 @@ def build_prompt(*, mandate: str, memory: str, context: dict, allow_context_requ
 _BATCH_FINAL_CONTRACT = (
     'Réponds UNIQUEMENT par {"decisions": [ <obj>, ... ]} avec EXACTEMENT une entrée '
     "par symbole listé.\n"
-    'Chaque <obj>: {"symbol":"<SYM>","action":"BUY|SELL|HOLD","quantity":<number>,'
-    '"confidence":<0..1>,"rationale":"<court>","next_wake_in_minutes":<number|null>,'
-    '"intent":"OPEN_LONG|OPEN_SHORT|REDUCE|CLOSE|REVERSE|HOLD","exit_plan":<object|null>,'
-    '"indicator_watch":<object|null>,"cancel_watch_ids":[<watch_id>,...],'
-    f'"decision_reason_code":"{_REASON_CODE_ENUM}","learning":<string|null>}}\n'
-    "Pour une ouverture, fournis un `exit_plan` conforme au schéma ci-dessous "
-    "(hard_stop, take_profits, trailing_stop, profit_protection et/ou exit_watch). "
-    "max_hold_minutes est optionnel : seulement si la thèse a une expiration "
-    "temporelle explicite. `learning` optionnel : note "
-    "à retenir, réinjectée via context.learnings. Si tu n'es pas sûr -> action=HOLD."
+    'Chaque <obj>: {"symbol":"<SYM>","confidence":<0..1>,"rationale":"<court>",'
+    f'"decision_reason_code":"{_REASON_CODE_ENUM}","calls":[<tool_call>,...]}}\n'
+    "`calls: []` signifie HOLD explicite. Utilise la grammaire Pine-like JSON "
+    "`strategy_entry` / `strategy_exit` / `strategy_close` pour les décisions de trading."
 )
 
 _SYMBOL_CALLS_FINAL_CONTRACT = (
@@ -256,45 +221,47 @@ _SYMBOL_CALLS_FINAL_CONTRACT = (
     "`calls: []` signifie HOLD explicite pour ce symbole. Ne mélange pas `calls` "
     "avec les anciens champs métier.\n"
     "Action tools finaux autorisés par symbole:\n"
-    "Typologie trading officielle: position intent = changer l'exposition; "
+    "Grammaire Pine-like JSON officielle: position intent = changer l'exposition; "
     "exit rule = règle attachée à une position ouverte; "
     "review wake = reconsultation par le LLM; "
     "armed plan = exécution daemon sans reconsultation.\n"
-    "Mapping: propose_order = position intent; amend_exit = exit rule; "
-    "set_next_wake = review wake; propose_indicator_watch = armed plan; "
+    "Pense à ces calls comme à un MCP JSON inspiré de Pine Script : utilise ton intuition "
+    "strategy.entry/strategy.exit/strategy.close, mais rends uniquement les appels JSON ci-dessous, "
+    "jamais du code Pine Script.\n"
+    "Mapping: strategy_entry = position intent; strategy_exit = exit rule; "
+    "strategy_close = sortie marché immédiate; set_next_wake = review wake; propose_indicator_watch = armed plan; "
     "cancel_watch annule une veille ou un plan armé; record_learning note un apprentissage.\n"
-    "- propose_order{intent:OPEN_LONG|OPEN_SHORT|REDUCE|CLOSE|REVERSE|ADD, qty?, risk_pct?, fraction?, exit?, thesis?} : "
-    "position intent; le daemon reste seul exécuteur et applique execution/exit/RiskGate. "
-    "OPEN_LONG→BUY, OPEN_SHORT→SELL dérivent la side automatiquement. "
-    "CLOSE/REDUCE/REVERSE/ADD dérivent aussi la side depuis ta position au portefeuille : "
-    "inutile de fournir side/action pour ces intents; si tu la fournis, elle est ignorée "
-    "et la side est quand même dérivée de la position. "
-    "CLOSE ferme toute la position (omets qty) ; "
-    "REDUCE réduit de fraction (ex: fraction:0.5) OU d'une qty absolue ; "
-    "REVERSE dérive la side mais qty de la nouvelle jambe reste requise. "
-    "ADD renforce la position dans son sens (long→BUY, short→SELL), qty requise ; "
-    "fail-safe : ADD sans position ouverte → rejeté (add_without_position). "
-    "Sizing : pour OPEN_LONG/OPEN_SHORT, au lieu de calculer qty toi-même, tu peux "
+    "- strategy_entry{id?, direction:\"long|short\", qty?, risk_pct?, exit?, thesis?} : "
+    "entrée Pine-like; le daemon reste seul exécuteur et applique execution/exit/RiskGate. "
+    "direction long→BUY et short→SELL; si une position existe déjà, même sens = renforcement, "
+    "sens opposé = retournement. "
+    "Sizing : au lieu de calculer qty toi-même, tu peux "
     "fournir risk_pct (ex: 0.005 = 0.5 % de l'equity) et omettre qty : le daemon "
     "dérive qty = risk_pct × equity / (distance_stop × fx_rate). "
-    "Hors OPEN_LONG/OPEN_SHORT, risk_pct est ignoré et la qty/fraction requise garde la main. "
     "Si tu fournis risk_pct sans qty, un hard_stop est nécessaire pour dériver la quantité ; "
+    "risk_pct sans qty est réservé à une nouvelle entrée flat ; pour renforcer/retourner une position existante, fournis qty. "
     "avec qty explicite, le hard_stop reste recommandé mais n'est pas requis en mode exploration. "
     "max_risk_per_trade_pct est une borne indicative : si le risque calculé la dépasse, "
     "le daemon signale un warning sans bloquer l'ordre. "
     "qty explicite prime toujours sur risk_pct (Explicit Over Implicit). "
+    "Pour une nouvelle entrée avec bracket/protection, mets les règles dans strategy_entry.exit ; "
+    "ne combine pas strategy_entry et strategy_exit sur le même symbole. "
     '`thesis` est OPTIONNEL : {setup:"<setup court>", horizon:"intraday|swing|position", '
     "invalidation:\"<condition d'invalidation>\"} — tag structuré persisté pour l'attribution "
     "et la boucle d'apprentissage. N'en ajoute un que si la thèse est claire.\n"
-    "- amend_exit{stop?, tp?, trail?, protect?} : exit rule; patche le plan de sortie du symbole "
-    "déjà ouvert (remonte le stop au break-even, déplace un TP, reserre le trailing). "
-    "Même grammaire canonique que propose_order.exit. "
-    "Sur position ouverte, stop/tp/trail/protect sont des règles de sortie : un stop "
-    "structurel peut aussi protéger un gain sous un swing récent, tant que le niveau "
-    "résolu reste du bon côté du prix courant. "
+    "- strategy_exit{id?, from_entry?, limit?, stop?, qty_percent?, trail?, trail_offset?, protect?, exit_watch?, max_hold_minutes?} : "
+    "strategy.exit Pine-like; patche le plan de sortie du symbole déjà ouvert. "
+    "limit+stop dans strategy_exit = bracket de sortie (TP + stop), pas un stop-limit. "
+    "qty_percent omis = 100; pour l'instant qty_percent ne s'applique qu'à limit seul pour un scale-out; "
+    "limit+stop avec qty_percent<100 est rejeté pour l'instant "
+    "partial_bracket_exit_not_supported tant que la réservation/OCA partielle n'est pas native. "
+    "stop avec qty_percent<100 est rejeté partial_stop_exit_not_supported. "
+    "Sur position ouverte, un stop structurel peut aussi protéger un gain sous un swing récent, "
+    "tant que le niveau résolu reste du bon côté du prix courant. "
     "No-op tracé si pas de plan ouvert. "
-    "Utilise-le sans propose_order sur ce symbole ; amend_exit + propose_order est rejeté. "
-    "`calls:[{amend_exit}]` = HOLD + ajustement de gestion actif.\n"
+    "`calls:[{strategy_exit}]` = HOLD + ajustement de gestion actif.\n"
+    "- strategy_close{id?, qty?, qty_percent?} : sortie marché immédiate. "
+    "Sans taille, ferme toute la position ; qty_percent<100 réduit une fraction ; qty réduit une quantité absolue.\n"
     '- set_next_wake{minutes} OU {on:"session_open"|"macro_event"|"pre_earnings"} OU {when:<condition>, ttl_minutes?} : '
     "planifie la prochaine RECONSULTATION du symbole (l'agent reprend la main pour redécider). "
     "minutes = timer fixe (ex: 15 après une entrée) ; "
@@ -312,18 +279,17 @@ _SYMBOL_CALLS_FINAL_CONTRACT = (
     "- propose_indicator_watch{...} : pose une veille/plan armé avec le vocabulaire des veilles.\n"
     "- cancel_watch{id|ids|watch_ids} : annule uniquement tes veilles du symbole.\n"
     "- record_learning{note} : note courte bornée pour la mémoire runtime.\n"
-    "Grammaire canonique de sortie: stop/tp/trail/protect sont les noms officiels. "
-    "stop = prix ou {struct:\"swing_low|swing_high|vwap\",window,buffer_pct?}; "
-    "tp = [{r|price,fraction?,after_fill?}]; "
-    "trail = {type:\"price|percent|volatility_multiple\",value}; "
+    "strategy.exit Pine: limit = take-profit absolu; stop = stop absolu ou "
+    "{struct:\"swing_low|swing_high|vwap\",window,buffer_pct?}; "
+    "trail = {type:\"price|percent|volatility_multiple\",value} ou trail_offset; "
     "protect = {arm_r,giveback,close_fraction?,lock_r?,min_hold_minutes?}; "
-    "exit_watch et max_hold_minutes restent des règles optionnelles de review/temps. "
-    "`protect.lock_r` verrouille le stop à +N R (0 = breakeven); "
+    "from_entry cible l'entrée/plan courant; exit_watch et max_hold_minutes restent des règles optionnelles de review/temps. "
+    "protect.lock_r verrouille le stop à +N R (0 = breakeven); "
     "Exemple compact: "
     '{"symbol":"DASH","confidence":0.74,"rationale":"breakout propre",'
-    f'"decision_reason_code":"ENTRY_SIGNAL","calls":[{{"tool":"propose_order","args":'
-    '{"intent":"OPEN_LONG","qty":20,"exit":{"stop":{"struct":"swing_low","window":24},'
-    '"tp":[{"r":1.4,"fraction":0.5}],"protect":{"arm_r":1.0,"giveback":0.35,"lock_r":0.25}}}}},'
+    f'"decision_reason_code":"ENTRY_SIGNAL","calls":[{{"tool":"strategy_entry","args":'
+    '{"id":"long","direction":"long","qty":20,"exit":{"id":"bracket","limit":78.5,'
+    '"stop":{"struct":"swing_low","window":24},"protect":{"arm_r":1.0,"giveback":0.35,"lock_r":0.25}}}}},'
     '{"tool":"set_next_wake","args":{"minutes":15}}]}'
 )
 
@@ -366,7 +332,7 @@ def _exit_plan_contract() -> str:
         "{price:<requis, >0>, fraction:<optionnel, >0>} "
         'OU {type:"risk_multiple", r:<requis, >0>, fraction?}. '
         "Les TP en R sont résolus au tir depuis la distance du hard_stop.\n"
-        'Pour REVERSE, garde un hard_stop prix résolu: nombre > 0 OU {type:"price", price:<requis, >0>}.\n'
+        'Pour FLIP, garde un hard_stop prix résolu: nombre > 0 OU {type:"price", price:<requis, >0>}.\n'
         f'`trailing_stop`: null OU {{trail_type:"{trail_type_enum}", '
         "trail_value:<requis, >0>}. "
         "`trail_type` doit être exactement l'un de cet enum. "
@@ -378,7 +344,7 @@ def _exit_plan_contract() -> str:
 
 
 def _batch_final_contract() -> str:
-    return f"{_BATCH_FINAL_CONTRACT}\n{_exit_plan_contract()}"
+    return _SYMBOL_CALLS_FINAL_CONTRACT + _symbol_calls_exit_details()
 
 
 def _batch_compact_contract() -> str:
@@ -390,6 +356,32 @@ def _round_label(max_rounds: int | None) -> str:
         return "autant de tournées d'outils que nécessaire"
     rounds = max(int(max_rounds), 1)
     return "une seule tournée" if rounds == 1 else f"jusqu'à {rounds} tournées"
+
+
+def _symbol_calls_exit_details() -> str:
+    trail_type_enum = "|".join(trade_plan.TRAILING_STOP_TRAIL_TYPES)
+    return (
+        "\nDétails des règles de sortie compactes pour `strategy_entry.exit` et `strategy_exit`:\n"
+        '`stop`: nombre > 0 OU objet {type:"price|percent|volatility_multiple|structural", ...}. '
+        '`type:"price"` passe tel quel ; tout stop relatif est résolu mécaniquement au tir. '
+        "percent/volatility_multiple/structural suivent ce même mécanisme. "
+        "Schéma relatif: "
+        '{type:"percent", percent:<0..1>, min_pct?, max_pct?} ou '
+        '{type:"volatility_multiple", multiple:<requis, >0>, min_pct?, max_pct?} ou '
+        '{type:"structural", anchor:"swing_low|swing_high|vwap", window:<requis, >0>, '
+        "buffer_pct?|buffer_atr?, min_pct?, max_pct?}. "
+        'Raccourci accepté: {struct:"swing_low|swing_high|vwap", window, buffer_pct?}.\n'
+        "`limit`: take-profit absolu. `tp`: liste d'objets "
+        "{r:<risk multiple>, fraction?} ou {price:<prix>, fraction?, name?}. "
+        '`take_profits`: liste d\'OBJETS {price:<requis, >0>, fraction:<optionnel, >0>} '
+        'OU {type:"risk_multiple", r:<requis, >0>, fraction?}. '
+        "Les TP en R sont résolus depuis la distance du stop.\n"
+        f'`trail`: null OU {{type:"{trail_type_enum}", value:<requis, >0>}}; '
+        "`trail_offset` accepte la même unité via trail_type/offset_type. "
+        "Unités trail_value: percent = fraction (0.004 = 0.4%); "
+        "price = distance absolue en prix; volatility_multiple = multiple de la volatilité récente. "
+        "Sans enabled_after, le trail ne s'arme qu'une fois en profit au moins égal au trail.\n"
+    )
 
 
 def _symbol_calls_final_contract(allow_tool_calls: bool = False, max_rounds: int | None = 1) -> str:
@@ -434,7 +426,7 @@ def _symbol_calls_final_contract(allow_tool_calls: bool = False, max_rounds: int
             'Réponds UNIQUEMENT par {"decisions":[...]} ci-dessous'
             " : c'est le tour final, plus aucune tournée d'outils n'est acceptée.\n"
         )
-    return head + _SYMBOL_CALLS_FINAL_CONTRACT
+    return head + _SYMBOL_CALLS_FINAL_CONTRACT + _symbol_calls_exit_details()
 
 
 def _indicator_watch_vocabulary() -> str:
@@ -489,23 +481,25 @@ def _indicator_watch_vocabulary() -> str:
         "Toute condition dont l'`indicator` ou l'`op` sort de ces listes est rejetée.\n"
         "# Plans armés (EXECUTE_ORDER)\n"
         '`on_trigger:"EXECUTE_ORDER"` arme un scénario d\'entrée que le daemon '
-        "exécutera au déclenchement SANS re-appel modèle : fournis `order` = "
-        '{"intent":"OPEN_LONG|OPEN_SHORT","qty":<number>,"confidence":<0..1>,'
-        '"exit_plan":{"hard_stop":{"type":"price|percent|volatility_multiple|structural",...},...},"rationale":"..."}. '
-        "Contrat strict à l'armement : hard_stop peut être en prix OU relatif, "
-        "hard_stop requis, qty>0, "
+        "exécutera au déclenchement SANS re-appel modèle : fournis `order` en "
+        "forme Pine-like `strategy_entry` = "
+        '{"direction":"long|short","qty":<number>,"confidence":<0..1>,'
+        '"exit":{"stop":{"type":"price|percent|volatility_multiple|structural",...},'
+        '"limit":<number?>},"rationale":"..."}. '
+        "Contrat strict à l'armement : `exit.stop` peut être en prix OU relatif, "
+        "stop requis, qty>0, "
         "confidence explicite — sinon la watch est dégradée en WAKE_WITH_ORDER_INTENT "
         "(l'ordre repassera par toi). Schéma relatif armé : "
-        '`hard_stop` {type:"percent", percent:<0..1>, min_pct?, max_pct?} ou '
+        '`stop` {type:"percent", percent:<0..1>, min_pct?, max_pct?} ou '
         '{type:"volatility_multiple", multiple:<requis, >0>, min_pct?, max_pct?} ou '
         '{type:"structural", anchor:"swing_low|swing_high|vwap", '
         "window:<requis, >0>, buffer_pct?|buffer_atr?, min_pct?, max_pct?}; "
-        '`take_profits[]` peut utiliser {type:"risk_multiple", r:<requis, >0>, fraction?}. '
-        "Le hard_stop relatif est résolu en prix au déclenchement sur barres FRAÎCHES, puis les TP en R aussi — "
+        '`tp[]` peut utiliser {type:"risk_multiple", r:<requis, >0>, fraction?}. '
+        "Le stop relatif est résolu en prix au déclenchement sur barres FRAÎCHES, puis les TP en R aussi — "
         "vrai pour percent, volatility_multiple ET structural, à égalité. "
         "min_pct/max_pct sont des bornes indicatives : si ton niveau résolu sort de "
         "ces bornes, l'écart est signalé en warning, pas rejeté ; le daemon ne déplace jamais "
-        "le hard_stop. "
+        "le stop. "
         "Pour structural, window est en barres du timeframe runtime ; pour "
         "swing_low/high en fenêtre 24/48 le cockpit donne la distance du swing "
         "BRUT (sl24/sl48, sh24/sh48, fraction du prix) — centre min_pct/max_pct "
@@ -610,10 +604,10 @@ def build_batch_prompt(
 ) -> str:
     """Prompt batch : contexte PARTAGÉ (cockpit/portefeuille/KPI/attribution/learnings)
     envoyé UNE fois, puis la liste des symboles à décider -> un seul appel modèle."""
-    if use_symbol_calls_contract:
-        contract = _symbol_calls_final_contract(allow_tool_calls, max_rounds=max_rounds)
-    else:
-        contract = _batch_compact_contract() if allow_context_request else _batch_final_contract()
+    # Le contrat batch canonique est toujours symbol_calls. Le paramètre
+    # `use_symbol_calls_contract` reste dans la signature pour compat d'appel,
+    # mais ne réactive pas l'ancien schéma inline action/quantity/exit_plan.
+    contract = _symbol_calls_final_contract(allow_tool_calls, max_rounds=max_rounds)
     return (
         "Tu es le PLANIFICATEUR d'un système de trading paper : tu conçois des "
         "scénarios — entrées armées, veilles, plans de sortie — que le daemon "

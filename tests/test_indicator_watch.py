@@ -362,6 +362,32 @@ def test_execute_order_avec_plan_valide_est_arme() -> None:
     assert order["exit_plan"]["hard_stop"]["price"] == 88.1
 
 
+def test_execute_order_accepte_order_strategy_entry_pine_like() -> None:
+    now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
+    pine_order = {
+        "direction": "short",
+        "qty": 50,
+        "confidence": 0.85,
+        "exit": {"id": "bracket", "stop": {"type": "price", "price": 88.1}, "limit": 80.0},
+        "rationale": "cassure énergie",
+    }
+
+    result = build_indicator_watch(_armed_raw(pine_order), owner_symbol="CL=F", now=now)
+
+    watch = result.watch
+    assert watch is not None
+    assert watch["on_trigger"] == "EXECUTE_ORDER"
+    order = watch["order"]
+    assert order["intent"] == "OPEN_SHORT"
+    assert order["action"] == "SELL"
+    assert order["qty"] == 50.0
+    assert order["confidence"] == 0.85
+    assert order["exit_plan"] == {
+        "hard_stop": {"type": "price", "price": 88.1},
+        "take_profits": [{"type": "price", "price": 80.0, "fraction": 1.0, "name": "bracket"}],
+    }
+
+
 def test_execute_order_avec_hard_stop_relatif_est_arme() -> None:
     now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
 
@@ -427,7 +453,7 @@ def test_execute_order_qty_ou_intent_invalides_degrade() -> None:
     assert result.watch["on_trigger"] == "WAKE_WITH_ORDER_INTENT"
 
     bad_intent = _valid_order()
-    bad_intent["intent"] = "REVERSE"  # seuls OPEN_LONG/OPEN_SHORT sont armables
+    bad_intent["intent"] = "FLIP"  # seuls OPEN_LONG/OPEN_SHORT sont armables
     result = build_indicator_watch(_armed_raw(bad_intent), owner_symbol="CL=F", now=now)
     assert result.watch["on_trigger"] == "WAKE_WITH_ORDER_INTENT"
 

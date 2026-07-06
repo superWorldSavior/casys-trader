@@ -41,13 +41,18 @@ def test_flag_off_ne_passe_jamais_allow_tool_calls(monkeypatch):
     seen = []
 
     def _fake_decide_batch(**kwargs):
-        seen.append(kwargs.get("allow_tool_calls", False))
+        seen.append(
+            {
+                "allow_tool_calls": kwargs.get("allow_tool_calls", False),
+                "use_symbol_calls_contract": kwargs.get("use_symbol_calls_contract"),
+            }
+        )
         return {sym: _hold(sym) for sym in kwargs["symbols"]}
 
     monkeypatch.setattr(daemon.codex_client, "decide_batch", _fake_decide_batch)
     decisions, calls = daemon._batch_decide(**_kwargs())  # défaut : agent_tools_enabled=False
     assert calls == 1
-    assert seen == [False]
+    assert seen == [{"allow_tool_calls": False, "use_symbol_calls_contract": True}]
     assert decisions["2330.TW"].action == "HOLD"
 
 
@@ -95,8 +100,8 @@ def test_tournee_preserve_les_traces_action_tools_du_tour_final(monkeypatch):
             )
         action_trace = {
             "id": "2330.TW:0",
-            "tool": "propose_order",
-            "args": {"intent": "OPEN_LONG"},
+            "tool": "strategy_entry",
+            "args": {"direction": "long"},
             "outcome": "ok",
             "detail": {},
         }
@@ -119,7 +124,7 @@ def test_tournee_preserve_les_traces_action_tools_du_tour_final(monkeypatch):
     assert calls == 2
     dt = decisions["2330.TW"].domain_tools
     assert dt["tool_rounds"] == 1
-    assert [call["tool"] for call in dt["tool_calls"]] == ["get_freshness", "propose_order"]
+    assert [call["tool"] for call in dt["tool_calls"]] == ["get_freshness", "strategy_entry"]
 
 
 def test_tournee_preserve_les_normalizations_du_tour_final(monkeypatch):

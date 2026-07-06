@@ -15,6 +15,8 @@ _WARNING_FIELDS = (
     "context",
 )
 
+_ORDER_ACTION_TOOLS = {"strategy_entry", "strategy_close"}
+
 
 def _runtime(row: dict) -> dict:
     runtime = row.get("runtime")
@@ -44,7 +46,18 @@ def _reason_flag_code(reason: object) -> str | None:
 
 
 def _flag_tool_for_row(row: dict) -> str:
-    return "propose_order" if row.get("action") in {"BUY", "SELL"} else "decision"
+    runtime = _runtime(row)
+    for call in runtime.get("tool_calls") or []:
+        if isinstance(call, dict) and call.get("tool") in _ORDER_ACTION_TOOLS:
+            return str(call["tool"])
+    intent = str(row.get("intent") or "").upper()
+    if intent in {"CLOSE", "REDUCE"}:
+        return "strategy_close"
+    if intent in {"FLIP", "SCALE_IN"}:
+        return "strategy_entry"
+    if row.get("action") in {"BUY", "SELL"}:
+        return "strategy_entry"
+    return "decision"
 
 
 def _flag_key(flag: dict) -> tuple[object, ...]:
@@ -124,7 +137,7 @@ def extract_flags(row: dict) -> list[dict]:
             flags,
             seen,
             row=row,
-            tool="propose_order",
+            tool=_flag_tool_for_row(row),
             outcome=_default_order_outcome(row),
             source="risk_warnings",
             warning=warning,
@@ -135,7 +148,7 @@ def extract_flags(row: dict) -> list[dict]:
             flags,
             seen,
             row=row,
-            tool="propose_order",
+            tool=_flag_tool_for_row(row),
             outcome=_default_order_outcome(row),
             source="exit_plan_warnings",
             warning=warning,

@@ -329,10 +329,97 @@ def _armed_hard_stop_is_specified(exit_plan: object) -> bool:
     return False
 
 
+def _pine_qty_percent_fraction(raw: dict) -> float | None:
+    if raw.get("qty_percent") is None:
+        return None
+    try:
+        fraction = float(raw["qty_percent"]) / 100.0
+    except (TypeError, ValueError):
+        return None
+    return fraction if math.isfinite(fraction) and 0.0 < fraction <= 1.0 else None
+
+
+def _pine_armed_exit_to_exit_plan(raw: object) -> dict | None:
+    if not isinstance(raw, dict):
+        return None
+    out: dict = {}
+    stop = raw.get("stop")
+    if stop is None:
+        stop = raw.get("hard_stop")
+    if stop is None:
+        stop = raw.get("sl")
+    if stop is not None:
+        out["hard_stop"] = stop
+    if raw.get("limit") is not None:
+        take_profit = {
+            "type": "price",
+            "price": raw["limit"],
+            "fraction": _pine_qty_percent_fraction(raw) or 1.0,
+        }
+        if raw.get("id") is not None:
+            take_profit["name"] = raw["id"]
+        out["take_profits"] = [take_profit]
+    elif raw.get("tp") is not None:
+        out["take_profits"] = raw["tp"]
+    elif raw.get("take_profits") is not None:
+        out["take_profits"] = raw["take_profits"]
+    if raw.get("trail") is not None:
+        out["trailing_stop"] = raw["trail"]
+    elif raw.get("trail_offset") is not None:
+        out["trailing_stop"] = {
+            "trail_type": raw.get("trail_type") or raw.get("offset_type") or "price",
+            "trail_value": raw["trail_offset"],
+        }
+    if raw.get("protect") is not None:
+        out["profit_protection"] = raw["protect"]
+    if raw.get("exit_watch") is not None:
+        out["exit_watch"] = raw["exit_watch"]
+    if raw.get("max_hold_minutes") is not None:
+        out["max_hold_minutes"] = raw["max_hold_minutes"]
+    return out or None
+
+
+def _strategy_entry_armed_order(raw: dict) -> dict | None:
+    args: dict | None = None
+    if raw.get("tool") == "strategy_entry" and isinstance(raw.get("args"), dict):
+        args = dict(raw["args"])
+    elif isinstance(raw.get("strategy_entry"), dict):
+        args = dict(raw["strategy_entry"])
+    elif isinstance(raw.get("entry"), dict):
+        args = dict(raw["entry"])
+    elif any(raw.get(key) is not None for key in ("direction", "side", "exit", "stop", "limit")):
+        args = dict(raw)
+    if args is None:
+        return None
+    for key in ("confidence", "rationale"):
+        if args.get(key) is None and raw.get(key) is not None:
+            args[key] = raw[key]
+    direction = str(args.get("direction") or args.get("side") or "").lower().replace("strategy.", "")
+    if direction in {"long", "buy"}:
+        intent = "OPEN_LONG"
+    elif direction in {"short", "sell"}:
+        intent = "OPEN_SHORT"
+    else:
+        return None
+    exit_raw = args.get("exit")
+    if exit_raw is None and any(
+        args.get(key) is not None for key in ("stop", "hard_stop", "sl", "limit", "tp", "take_profits", "trail")
+    ):
+        exit_raw = args
+    return {
+        "intent": intent,
+        "qty": args.get("qty", args.get("quantity")),
+        "confidence": args.get("confidence"),
+        "exit_plan": _pine_armed_exit_to_exit_plan(exit_raw),
+        "rationale": args.get("rationale"),
+    }
+
+
 def normalize_armed_order(raw: object) -> dict | None:
     """Ordre armable ou None. L'action est DÉRIVÉE de l'intent (pas de mismatch)."""
     if not isinstance(raw, dict):
         return None
+    raw = _strategy_entry_armed_order(raw) or raw
     intent = str(raw.get("intent") or "").upper()
     action = _ARMABLE_INTENTS.get(intent)
     if action is None:

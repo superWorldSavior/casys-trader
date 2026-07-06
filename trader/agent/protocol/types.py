@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 
 Action = Literal["BUY", "SELL", "HOLD"]
-Intent = Literal["OPEN_LONG", "OPEN_SHORT", "REDUCE", "CLOSE", "REVERSE", "HOLD", "ADD"]
+Intent = Literal["OPEN_LONG", "OPEN_SHORT", "REDUCE", "CLOSE", "FLIP", "HOLD", "SCALE_IN"]
 
 
 @dataclass(frozen=True)
@@ -26,11 +26,9 @@ class Decision:
     learning: str | None = None  # note runtime que l'agent veut retenir (boucle de feedback)
     thesis: dict | None = None  # L6 tag structuré {setup, horizon, invalidation} — persisté pour attribution RAG
     domain_tools: dict | None = None  # traces tournée d'outils (runtime.tool_*)
-    amend_exit: dict | None = (
-        None  # L3 — patch plan de sortie ouvert (hard_stop?, take_profits?, trailing_stop?, profit_protection?)
-    )
+    exit_update: dict | None = None  # Interne — patch plan de sortie ouvert compilé depuis strategy_exit.
     decision_reason_code: str = "UNKNOWN"
-    resolve_from_position: bool = False  # CLOSE/REDUCE/REVERSE sans side : dériver depuis la position
+    resolve_from_position: bool = False  # CLOSE/REDUCE/FLIP sans side : dériver depuis la position
     position_resolved: bool = False  # True une fois action/qty dérivées depuis la position
     reduce_fraction: float | None = None  # REDUCE : fraction de la position à réduire (0.5 = moitié)
     llm_provider: str | None = None

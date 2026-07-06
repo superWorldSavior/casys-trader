@@ -95,6 +95,26 @@ def test_prompt_documente_rs_court_rs_daily_et_regime_family_daily() -> None:
     assert "~45 min" not in prompt
 
 
+def test_build_prompt_single_expose_la_grammaire_pine_like_calls() -> None:
+    prompt = codex_client.build_prompt(
+        mandate="m",
+        memory="mem",
+        context={"cockpit": {}},
+        allow_context_request=False,
+    )
+
+    assert '"calls":[<tool_call>,...]' in prompt
+    assert "MCP JSON inspiré de Pine Script" in prompt
+    assert "strategy_entry" in prompt
+    assert "strategy_exit" in prompt
+    assert "strategy_close" in prompt
+    assert '"action": "BUY|SELL|HOLD"' not in prompt
+    assert '"action":"BUY|SELL|HOLD"' not in prompt
+    assert '"exit_plan": <object|null>' not in prompt
+    assert '"indicator_watch": <object|null>' not in prompt
+    assert "cancel_watch_ids" not in prompt
+
+
 def test_prompt_demande_un_reason_code_structure() -> None:
     prompt = build_batch_prompt(
         mandate="m",
@@ -167,7 +187,7 @@ def test_prompt_distingue_devise_native_quantite_et_cash_usd() -> None:
 
     assert "prix et niveaux" in low
     assert "devise native du titre" in low
-    assert "`quantity` est un nombre d'unités du titre" in prompt
+    assert "`qty` est un nombre d'unités du titre" in prompt
     assert "portefeuille global" in low
     assert "cash" in low
     assert "usd" in low
@@ -316,6 +336,25 @@ def test_parse_decision_accepte_next_wake_in_minutes_optionnel() -> None:
     )
 
     assert decision.next_wake_in_minutes == 45.0
+
+
+def test_parse_decision_accepte_le_contrat_single_calls() -> None:
+    decision = parse_decision(
+        '{"symbol":"SPY","confidence":0.8,"rationale":"breakout",'
+        '"decision_reason_code":"ENTRY_SIGNAL",'
+        '"calls":[{"tool":"strategy_entry","args":{"direction":"long","qty":10,'
+        '"exit":{"stop":95,"limit":105}}}]}',
+        "SPY",
+    )
+
+    assert decision.action == "BUY"
+    assert decision.quantity == 10.0
+    assert decision.intent == "OPEN_LONG"
+    assert decision.exit_plan == {
+        "hard_stop": 95,
+        "take_profits": [{"type": "price", "price": 105, "fraction": 1.0}],
+    }
+    assert decision.domain_tools["tool_calls"][0]["tool"] == "strategy_entry"
 
 
 def test_parse_decision_accepte_intent_et_exit_plan() -> None:

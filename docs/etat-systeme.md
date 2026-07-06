@@ -4,7 +4,7 @@
 > mécanismes dans `docs/architecture.md` ; décisions métier dans
 > `docs/decisions/registre-decisions-metier.md`.
 
-**Dernière mise à jour : 2026-07-04**
+**Dernière mise à jour : 2026-07-06**
 
 ## Ce qui tourne
 
@@ -28,16 +28,18 @@
 
 ## Capacités de l'agent (brain runtime)
 
-- **Cockpit compact poussé** (faits code-calculés) + **9 outils en pull**
-  (flag actif) : fraîcheur, plans armés, risque de position, attribution,
-  décisions récentes, cube d'indicateurs, découverte sémantique ×2, et
-  **`recall_learnings`** — sa mémoire pondérée par les résultats réels
+- **Cockpit compact poussé** (faits code-calculés) + **7 outils en pull**
+  (flag actif) : fraîcheur, plans armés, attribution, cube d'indicateurs,
+  découverte sémantique ×2, et **`recall_learnings`** — sa mémoire pondérée
+  par les résultats réels
   (2 091 notes scorées, win rate historique 34 %, dispersion 3-100 % par
   symbole). Une tournée max, tout tracé.
-- **Outils d'action LIVRÉS + LIVE en paper** (Phase 6) : `propose_order`
-  (OPEN/CLOSE/REDUCE/REVERSE/ADD, sizing par `risk_pct`), `amend_exit`,
-  `set_next_wake` — le daemon reste seul exécuteur (exécution/exit-plan/RiskGate
-  inchangés). Réf : `docs/reference/agent-tools.md`.
+- **Outils d'action LIVRÉS + LIVE en paper** (Phase 6) :
+  grammaire Pine-like JSON publique `strategy_entry`, `strategy_exit`,
+  `strategy_close`, plus `set_next_wake`, `propose_indicator_watch`,
+  `cancel_watch`, `record_learning` — le daemon reste seul exécuteur
+  (compilation interne vers Decision/exit-plan/RiskGate inchangée). Réf :
+  `docs/reference/agent-tools.md`.
 - **Horodatage** : `now_human` (jour + heure UTC) + `market_clocks` (heure locale
   de chaque place, tri ouest→est) — lève l'ambiguïté jour/session, y compris piloté
   depuis Taiwan (cf. `docs/reference/agent-context.md`).

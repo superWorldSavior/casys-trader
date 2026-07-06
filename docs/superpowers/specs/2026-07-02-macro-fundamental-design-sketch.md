@@ -57,9 +57,9 @@ Quelques dizaines d'octets. PAS d'analyse, PAS de brief dans le push.
   (croissance, marges, dette, risques signalés au MD&A) + verdict de
   fraîcheur (date du filing).
 
-Même contrat que les 9 outils existants : lecture seule, bornés, tracés dans
-`runtime.tool_calls` → **l'usage et l'utilité seront mesurables par
-l'attribution**, comme le recall.
+Même contrat que les outils read-only courants (`docs/reference/agent-tools.md`) :
+lecture seule, bornés, tracés dans `runtime.tool_calls` → **l'usage et
+l'utilité seront mesurables par l'attribution**, comme le recall.
 
 ### 2.3 Attribution-first, comme toujours
 

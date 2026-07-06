@@ -8,12 +8,20 @@ from dataclasses import replace
 from trader.agent.protocol.types import Action, Decision
 from trader.planning.trade_plan import InvalidExitPlanError, normalize_exit_plan
 
-VALID_INTENTS = {"OPEN_LONG", "OPEN_SHORT", "REDUCE", "CLOSE", "REVERSE", "HOLD", "ADD"}
+VALID_INTENTS = {"OPEN_LONG", "OPEN_SHORT", "REDUCE", "CLOSE", "FLIP", "HOLD", "SCALE_IN"}
 ACTION_INTENTS = {
-    "BUY": {"OPEN_LONG", "REDUCE", "CLOSE", "REVERSE", "ADD"},
-    "SELL": {"OPEN_SHORT", "REDUCE", "CLOSE", "REVERSE", "ADD"},
+    "BUY": {"OPEN_LONG", "REDUCE", "CLOSE", "FLIP", "SCALE_IN"},
+    "SELL": {"OPEN_SHORT", "REDUCE", "CLOSE", "FLIP", "SCALE_IN"},
 }
-RELATIVE_ORDER_INTENTS = {"CLOSE", "REDUCE", "REVERSE", "ADD"}
+RELATIVE_ORDER_INTENTS = {"CLOSE", "REDUCE", "FLIP", "SCALE_IN"}
+
+
+def _entry_action_for_intent(intent: str | None) -> Action | None:
+    if intent == "OPEN_LONG":
+        return "BUY"
+    if intent == "OPEN_SHORT":
+        return "SELL"
+    return None
 
 
 def invalid_intent_reason(
@@ -42,11 +50,20 @@ def resolve_position_aware_decision(
     if decision.position_resolved:
         return decision
 
+    entry_action = _entry_action_for_intent(intent)
     if not decision.resolve_from_position and intent not in RELATIVE_ORDER_INTENTS:
         return decision
 
     if position_quantity == 0.0:
-        reason = "add_without_position" if intent == "ADD" else "nothing_to_close"
+        if entry_action is not None:
+            return replace(
+                decision,
+                action=entry_action,
+                resolve_from_position=False,
+                position_resolved=True,
+                reduce_fraction=None,
+            )
+        reason = "scale_in_without_position" if intent == "SCALE_IN" else "nothing_to_close"
         return replace(
             decision,
             action="HOLD",
@@ -58,9 +75,42 @@ def resolve_position_aware_decision(
             rationale=reason,
         )
 
-    if intent == "ADD":
-        add_side: Action = "BUY" if position_quantity > 0 else "SELL"
-        return replace(decision, action=add_side, resolve_from_position=False, position_resolved=True)
+    if entry_action is not None:
+        signed_entry = 1.0 if entry_action == "BUY" else -1.0
+        if decision.quantity <= 0.0:
+            return replace(
+                decision,
+                action="HOLD",
+                quantity=0.0,
+                intent="HOLD",
+                resolve_from_position=False,
+                position_resolved=True,
+                reduce_fraction=None,
+                rationale="strategy_entry_existing_position_needs_qty",
+            )
+        if position_quantity * signed_entry > 0.0:
+            return replace(
+                decision,
+                action=entry_action,
+                intent="SCALE_IN",
+                resolve_from_position=False,
+                position_resolved=True,
+                reduce_fraction=None,
+            )
+        flip_side: Action = "SELL" if position_quantity > 0 else "BUY"
+        return replace(
+            decision,
+            action=flip_side,
+            quantity=abs(position_quantity) + decision.quantity,
+            intent="FLIP",
+            resolve_from_position=False,
+            position_resolved=True,
+            reduce_fraction=None,
+        )
+
+    if intent == "SCALE_IN":
+        scale_in_side: Action = "BUY" if position_quantity > 0 else "SELL"
+        return replace(decision, action=scale_in_side, resolve_from_position=False, position_resolved=True)
 
     side: Action = "SELL" if position_quantity > 0 else "BUY"
     pos_abs = abs(position_quantity)
@@ -73,7 +123,7 @@ def resolve_position_aware_decision(
         else:
             qty = decision.quantity
         qty = min(qty, pos_abs)
-    elif intent == "REVERSE":
+    elif intent == "FLIP":
         qty = pos_abs + decision.quantity
     else:
         return replace(
@@ -135,7 +185,7 @@ def hard_stop_wrong_side(
 ) -> bool:
     if not math.isfinite(entry_price) or not math.isfinite(stop_price):
         return False
-    if intent == "ADD":
+    if intent == "SCALE_IN":
         if action == "BUY":
             return stop_price >= entry_price
         if action == "SELL":
@@ -164,38 +214,38 @@ def loss_distance_to_stop(intent: str | None, entry_price: float, stop_price: fl
     return abs(entry_price - stop_price)
 
 
-def reverse_open_quantity(*, action: str, quantity: float, position_quantity: float) -> float:
+def flip_open_quantity(*, action: str, quantity: float, position_quantity: float) -> float:
     signed_order = quantity if action == "BUY" else -quantity
     if position_quantity != 0 and position_quantity * signed_order < 0:
         return max(0.0, abs(signed_order) - abs(position_quantity))
     return quantity
 
 
-def projected_add_risk_basis(
+def projected_scale_in_risk_basis(
     *,
     action: str,
-    add_quantity: float,
-    add_price: float,
+    scale_in_quantity: float,
+    scale_in_price: float,
     position_quantity: float,
     position_avg_price: float,
 ) -> tuple[float, float]:
-    """Return projected absolute quantity and average price for ADD risk checks."""
-    signed_add = add_quantity if action == "BUY" else -add_quantity
-    projected_quantity = position_quantity + signed_add
+    """Return projected absolute quantity and average price for SCALE_IN risk checks."""
+    signed_scale_in = scale_in_quantity if action == "BUY" else -scale_in_quantity
+    projected_quantity = position_quantity + signed_scale_in
     total_quantity = abs(projected_quantity)
     if total_quantity <= 0.0:
-        return 0.0, add_price
+        return 0.0, scale_in_price
     if (
         position_quantity != 0.0
-        and position_quantity * signed_add > 0.0
+        and position_quantity * signed_scale_in > 0.0
         and math.isfinite(position_avg_price)
         and position_avg_price > 0.0
-        and math.isfinite(add_price)
-        and add_price > 0.0
+        and math.isfinite(scale_in_price)
+        and scale_in_price > 0.0
     ):
-        total_cost = position_avg_price * abs(position_quantity) + add_price * abs(signed_add)
+        total_cost = position_avg_price * abs(position_quantity) + scale_in_price * abs(signed_scale_in)
         return total_quantity, total_cost / total_quantity
-    return total_quantity, add_price
+    return total_quantity, scale_in_price
 
 
 def risk_pct_for_quantity(quantity: float, stop_distance: float | None, equity: float) -> float | None:

@@ -35,7 +35,7 @@ def test_decisions_flags_command_prints_json(monkeypatch, tmp_path, capsys) -> N
             "intent": "OPEN_LONG",
             "executed": True,
             "reason": "ok",
-            "tool": "propose_order",
+            "tool": "strategy_entry",
             "outcome": "executed",
             "source": "exit_plan_warnings",
             "code": "hard_stop_above_max_pct",
@@ -60,7 +60,7 @@ def test_decisions_flags_command_prints_text(monkeypatch, tmp_path, capsys) -> N
         "runtime": {
             "tool_calls": [
                 {
-                    "tool": "propose_order",
+                    "tool": "strategy_entry",
                     "outcome": "blocked",
                     "detail": {
                         "warnings": [
@@ -80,6 +80,6 @@ def test_decisions_flags_command_prints_text(monkeypatch, tmp_path, capsys) -> N
     assert cli.main(["decisions", "flags"]) == 0
 
     out = capsys.readouterr().out
-    assert "SPY propose_order outcome=blocked" in out
+    assert "SPY strategy_entry outcome=blocked" in out
     assert "code=order_value_exceeded" in out
     assert "context=order_value=12000 max_order_value=10000" in out

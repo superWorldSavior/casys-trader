@@ -91,7 +91,7 @@ def test_ne_pousse_pas_les_flags_acceptes_dans_le_feedback_agent():
                 "risk_warnings": [warning],
                 "tool_calls": [
                     {
-                        "tool": "propose_order",
+                        "tool": "strategy_entry",
                         "outcome": "executed",
                         "detail": {"warnings": [warning]},
                     }
@@ -122,12 +122,31 @@ def test_compacte_les_flags_de_refus_pour_feedback_agent():
     assert r["context"] == "order_value=12000 max_order_value=10000"
     assert r["flags"] == [
         {
-            "tool": "propose_order",
+            "tool": "strategy_entry",
             "outcome": "blocked",
             "code": "order_value_exceeded",
             "context": "order_value=12000 max_order_value=10000",
         }
     ]
+
+
+def test_compacte_flip_et_scale_in_comme_strategy_entry_sans_trace_outil():
+    for intent in ("FLIP", "SCALE_IN"):
+        store = _FakeStore([
+            _row(
+                "AAPL",
+                "BUY",
+                intent=intent,
+                executed=False,
+                reason="risk:gross_exposure_exceeded",
+                runtime={},
+            )
+        ])
+
+        r = recent_decisions_by_symbol(store, symbols=["AAPL"])["AAPL"][0]
+
+        assert r["flags"][0]["tool"] == "strategy_entry"
+        assert r["flags"][0]["code"] == "gross_exposure_exceeded"
 
 
 def test_limit_zero_ou_negatif_ne_retourne_rien():

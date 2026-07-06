@@ -10,7 +10,7 @@ from trader.domain.orders import Side
 from trader.execution.contracts import Order
 
 _PURE_OPEN_INTENTS = {"OPEN_LONG", "OPEN_SHORT"}
-_RISK_GUARDED_OPENING_INTENTS = {"OPEN_LONG", "OPEN_SHORT", "ADD"}
+_RISK_GUARDED_OPENING_INTENTS = {"OPEN_LONG", "OPEN_SHORT", "SCALE_IN"}
 
 
 class _RiskLimitsLike(Protocol):
@@ -122,7 +122,7 @@ def _append_risk_warning(updates: dict[str, object], warning: dict[str, object])
 
 
 def _risk_stop_intent(intent: str | None, action: str) -> str | None:
-    if intent != "ADD":
+    if intent != "SCALE_IN":
         return intent
     if action == "BUY":
         return "OPEN_LONG"
@@ -140,7 +140,7 @@ def assess_risk_admission(
     intent = request.intent
     pure_open = intent in _PURE_OPEN_INTENTS
     risk_guarded_open = intent in _RISK_GUARDED_OPENING_INTENTS
-    trace_risk = pure_open or intent == "REVERSE" or intent == "ADD"
+    trace_risk = pure_open or intent == "FLIP" or intent == "SCALE_IN"
     if not trace_risk:
         return RiskAdmissionResult(True, request.quantity)
 
@@ -170,17 +170,17 @@ def assess_risk_admission(
 
     risk_quantity = quantity
     risk_entry_price = request.price
-    if intent == "REVERSE":
-        risk_quantity = order_admission.reverse_open_quantity(
+    if intent == "FLIP":
+        risk_quantity = order_admission.flip_open_quantity(
             action=request.action,
             quantity=quantity,
             position_quantity=request.position_quantity,
         )
-    elif intent == "ADD":
-        risk_quantity, risk_entry_price = order_admission.projected_add_risk_basis(
+    elif intent == "SCALE_IN":
+        risk_quantity, risk_entry_price = order_admission.projected_scale_in_risk_basis(
             action=request.action,
-            add_quantity=quantity,
-            add_price=request.price,
+            scale_in_quantity=quantity,
+            scale_in_price=request.price,
             position_quantity=request.position_quantity,
             position_avg_price=request.position_avg_price,
         )

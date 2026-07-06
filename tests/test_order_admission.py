@@ -4,7 +4,7 @@ from trader.application.order_admission import (
     VALID_INTENTS,
     clamp_exit_quantity,
     invalid_intent_reason,
-    projected_add_risk_basis,
+    projected_scale_in_risk_basis,
     resolve_position_aware_decision,
 )
 
@@ -70,41 +70,117 @@ def test_resolve_position_aware_decision_fails_closed_without_position() -> None
     assert resolved.rationale == "nothing_to_close"
 
 
+def test_resolve_strategy_entry_long_ouvre_si_flat() -> None:
+    decision = Decision(
+        symbol="SPY",
+        action="BUY",
+        quantity=5.0,
+        confidence=0.8,
+        rationale="entry",
+        intent="OPEN_LONG",
+        resolve_from_position=True,
+    )
+
+    resolved = resolve_position_aware_decision(decision, position_quantity=0.0)
+
+    assert resolved.action == "BUY"
+    assert resolved.intent == "OPEN_LONG"
+    assert resolved.quantity == 5.0
+    assert resolved.position_resolved is True
+
+
+def test_resolve_strategy_entry_long_renforce_si_deja_long() -> None:
+    decision = Decision(
+        symbol="SPY",
+        action="BUY",
+        quantity=3.0,
+        confidence=0.8,
+        rationale="scale in",
+        intent="OPEN_LONG",
+        resolve_from_position=True,
+    )
+
+    resolved = resolve_position_aware_decision(decision, position_quantity=10.0)
+
+    assert resolved.action == "BUY"
+    assert resolved.intent == "SCALE_IN"
+    assert resolved.quantity == 3.0
+    assert resolved.position_resolved is True
+
+
+def test_resolve_strategy_entry_long_reverse_si_deja_short() -> None:
+    decision = Decision(
+        symbol="SPY",
+        action="BUY",
+        quantity=4.0,
+        confidence=0.8,
+        rationale="flip long",
+        intent="OPEN_LONG",
+        resolve_from_position=True,
+    )
+
+    resolved = resolve_position_aware_decision(decision, position_quantity=-6.0)
+
+    assert resolved.action == "BUY"
+    assert resolved.intent == "FLIP"
+    assert resolved.quantity == 10.0
+    assert resolved.position_resolved is True
+
+
+def test_resolve_strategy_entry_existing_position_needs_explicit_qty() -> None:
+    decision = Decision(
+        symbol="SPY",
+        action="BUY",
+        quantity=0.0,
+        confidence=0.8,
+        rationale="risk sized add",
+        intent="OPEN_LONG",
+        resolve_from_position=True,
+        risk_pct_target=0.005,
+    )
+
+    resolved = resolve_position_aware_decision(decision, position_quantity=10.0)
+
+    assert resolved.action == "HOLD"
+    assert resolved.intent == "HOLD"
+    assert resolved.rationale == "strategy_entry_existing_position_needs_qty"
+
+
 # ---------------------------------------------------------------------------
-# L4 — ADD dans VALID_INTENTS / ACTION_INTENTS
+# L4 — SCALE_IN dans VALID_INTENTS / ACTION_INTENTS
 # ---------------------------------------------------------------------------
 
 
 def test_add_est_dans_valid_intents() -> None:
-    """L4 : ADD doit être reconnu comme un intent valide."""
-    assert "ADD" in VALID_INTENTS
+    """L4 : SCALE_IN doit être reconnu comme un intent valide."""
+    assert "SCALE_IN" in VALID_INTENTS
 
 
 def test_add_est_dans_action_intents_buy() -> None:
-    """L4 : ADD est valide pour BUY (renforcement long)."""
-    assert "ADD" in ACTION_INTENTS["BUY"]
+    """L4 : SCALE_IN est valide pour BUY (renforcement long)."""
+    assert "SCALE_IN" in ACTION_INTENTS["BUY"]
 
 
 def test_add_est_dans_action_intents_sell() -> None:
-    """L4 : ADD est valide pour SELL (renforcement short)."""
-    assert "ADD" in ACTION_INTENTS["SELL"]
+    """L4 : SCALE_IN est valide pour SELL (renforcement short)."""
+    assert "SCALE_IN" in ACTION_INTENTS["SELL"]
 
 
 def test_invalid_intent_reason_accepte_add_buy() -> None:
-    """L4 : ADD + BUY après résolution de position → pas d'invalid_intent."""
-    assert invalid_intent_reason(action="BUY", quantity=5.0, intent="ADD") is None
+    """L4 : SCALE_IN + BUY après résolution de position → pas d'invalid_intent."""
+    assert invalid_intent_reason(action="BUY", quantity=5.0, intent="SCALE_IN") is None
 
 
 def test_invalid_intent_reason_accepte_add_sell() -> None:
-    """L4 : ADD + SELL après résolution de position → pas d'invalid_intent."""
-    assert invalid_intent_reason(action="SELL", quantity=3.0, intent="ADD") is None
+    """L4 : SCALE_IN + SELL après résolution de position → pas d'invalid_intent."""
+    assert invalid_intent_reason(action="SELL", quantity=3.0, intent="SCALE_IN") is None
 
 
-def test_projected_add_risk_basis_weighted_average_for_same_side_add() -> None:
-    quantity, average_price = projected_add_risk_basis(
+def test_projected_scale_in_risk_basis_weighted_average_for_same_side_add() -> None:
+    quantity, average_price = projected_scale_in_risk_basis(
         action="BUY",
-        add_quantity=4.0,
-        add_price=120.0,
+        scale_in_quantity=4.0,
+        scale_in_price=120.0,
         position_quantity=6.0,
         position_avg_price=100.0,
     )
@@ -113,11 +189,11 @@ def test_projected_add_risk_basis_weighted_average_for_same_side_add() -> None:
     assert average_price == 108.0
 
 
-def test_projected_add_risk_basis_uses_add_price_when_crossing_position() -> None:
-    quantity, average_price = projected_add_risk_basis(
+def test_projected_scale_in_risk_basis_uses_scale_in_price_when_crossing_position() -> None:
+    quantity, average_price = projected_scale_in_risk_basis(
         action="SELL",
-        add_quantity=8.0,
-        add_price=95.0,
+        scale_in_quantity=8.0,
+        scale_in_price=95.0,
         position_quantity=3.0,
         position_avg_price=100.0,
     )
@@ -126,11 +202,11 @@ def test_projected_add_risk_basis_uses_add_price_when_crossing_position() -> Non
     assert average_price == 95.0
 
 
-def test_projected_add_risk_basis_uses_add_price_when_reducing_position() -> None:
-    quantity, average_price = projected_add_risk_basis(
+def test_projected_scale_in_risk_basis_uses_scale_in_price_when_reducing_position() -> None:
+    quantity, average_price = projected_scale_in_risk_basis(
         action="SELL",
-        add_quantity=2.0,
-        add_price=95.0,
+        scale_in_quantity=2.0,
+        scale_in_price=95.0,
         position_quantity=6.0,
         position_avg_price=100.0,
     )
@@ -139,11 +215,11 @@ def test_projected_add_risk_basis_uses_add_price_when_reducing_position() -> Non
     assert average_price == 95.0
 
 
-def test_projected_add_risk_basis_keeps_add_price_when_position_nets_to_zero() -> None:
-    quantity, average_price = projected_add_risk_basis(
+def test_projected_scale_in_risk_basis_keeps_scale_in_price_when_position_nets_to_zero() -> None:
+    quantity, average_price = projected_scale_in_risk_basis(
         action="BUY",
-        add_quantity=3.0,
-        add_price=101.0,
+        scale_in_quantity=3.0,
+        scale_in_price=101.0,
         position_quantity=-3.0,
         position_avg_price=90.0,
     )

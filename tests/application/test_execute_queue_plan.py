@@ -105,7 +105,7 @@ def test_build_execute_queue_plan_payload_add_projects_position_and_preserves_re
 
     payload = _payload(
         plan_reader=_PlanReader([previous]),
-        intent="ADD",
+        intent="SCALE_IN",
         action="BUY",
         quantity=2.0,
         price=105.0,
@@ -124,7 +124,7 @@ def test_build_execute_queue_plan_payload_add_projects_position_and_preserves_re
 
 def test_build_execute_queue_plan_payload_reverse_keeps_only_opening_leg_quantity() -> None:
     payload = _payload(
-        intent="REVERSE",
+        intent="FLIP",
         action="SELL",
         quantity=7.0,
         price=101.0,

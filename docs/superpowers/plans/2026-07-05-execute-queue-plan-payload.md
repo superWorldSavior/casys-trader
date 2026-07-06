@@ -12,7 +12,7 @@ vers un service applicatif pur.
 - Garder le daemon responsable du contexte runtime concret
   (`price`, `runtime_interval`, fraîcheur, session, daily-as-of).
 - Garder `execute_queue_dispatch.py` responsable de l'enqueue/poll/fill/fail-closed.
-- Couvrir OPEN, CLOSE, ADD et REVERSE par tests unitaires.
+- Couvrir OPEN, CLOSE, SCALE_IN et FLIP par tests unitaires.
 - Ajouter un garde de layout empêchant le retour du pré-calcul de plans dans le bloc queue du daemon.
 
 ## Hors périmètre

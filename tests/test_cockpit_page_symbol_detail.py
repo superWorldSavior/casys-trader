@@ -20,7 +20,7 @@ import trader.interfaces.cockpit.app as cockpit_module
 from trader.interfaces.cockpit.app import CockpitApp
 from trader.interfaces.cockpit.pages.symbol_detail import (
     SymbolDetailScreen,
-    _amend_rejected_info,
+    _exit_update_rejected_info,
     _earnings_label,
     _realized_total,
     _short_ts,
@@ -159,7 +159,7 @@ _STATE_FULL: dict = {
             "runtime": {
                 "tool_calls": [
                     {
-                        "tool": "amend_exit",
+                        "tool": "strategy_exit",
                         "outcome": "rejected",
                         "detail": {"warnings": [{"code": "hard_stop_above_max_pct"}]},
                     }
@@ -261,9 +261,9 @@ def test_body_exit_plan_labels_stop_left_and_entry_risk() -> None:
     assert "entry risk 8.6%" in rendered
 
 
-def test_body_shows_amend_rejected_warning() -> None:
+def test_body_shows_exit_update_rejected_warning() -> None:
     rendered = _render(build_symbol_body(_STATE_FULL, SYMBOL, now=NOW), width=140)
-    assert "amend rejected" in rendered
+    assert "exit update rejected" in rendered
     assert "hard_stop_above_max_pct" in rendered
 
 
@@ -339,14 +339,14 @@ def test_short_ts_missing_returns_dash() -> None:
     assert _short_ts({}, NOW) == "—"
 
 
-def test_amend_rejected_info_found() -> None:
+def test_exit_update_rejected_info_found() -> None:
     rows = [
         {
             "cycle_ts": "2026-07-06T02:01:00+00:00",
             "runtime": {
                 "tool_calls": [
                     {
-                        "tool": "amend_exit",
+                        "tool": "strategy_exit",
                         "outcome": "rejected",
                         "detail": {"warnings": [{"code": "my_code"}]},
                     }
@@ -354,26 +354,26 @@ def test_amend_rejected_info_found() -> None:
             },
         }
     ]
-    result = _amend_rejected_info(rows)
+    result = _exit_update_rejected_info(rows)
     assert result is not None
     time_str, code = result
     assert "02:01" in time_str
     assert code == "my_code"
 
 
-def test_amend_rejected_info_not_found() -> None:
+def test_exit_update_rejected_info_not_found() -> None:
     rows = [
         {
             "runtime": {
-                "tool_calls": [{"tool": "amend_exit", "outcome": "applied", "detail": {}}]
+                "tool_calls": [{"tool": "strategy_exit", "outcome": "applied", "detail": {}}]
             }
         }
     ]
-    assert _amend_rejected_info(rows) is None
+    assert _exit_update_rejected_info(rows) is None
 
 
-def test_amend_rejected_info_empty() -> None:
-    assert _amend_rejected_info([]) is None
+def test_exit_update_rejected_info_empty() -> None:
+    assert _exit_update_rejected_info([]) is None
 
 
 def test_earnings_label_hours() -> None:

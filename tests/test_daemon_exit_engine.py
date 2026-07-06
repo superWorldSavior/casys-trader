@@ -17,7 +17,7 @@ from trader.planning.trade_plan import TradePlanStore, create_trade_plan, resolv
 def test_llm_exit_reason_for_model_performance_tague_uniquement_les_sorties() -> None:
     assert daemon._llm_exit_reason_for_intent("CLOSE") == "llm_exit"
     assert daemon._llm_exit_reason_for_intent("REDUCE") == "llm_exit"
-    assert daemon._llm_exit_reason_for_intent("REVERSE") == "llm_exit"
+    assert daemon._llm_exit_reason_for_intent("FLIP") == "llm_exit"
     assert daemon._llm_exit_reason_for_intent("OPEN_LONG") is None
     assert daemon._llm_exit_reason_for_intent("OPEN_SHORT") is None
 
@@ -1322,7 +1322,7 @@ def test_run_cycle_ne_clamp_pas_reverse_trop_gros(
             quantity=50.0,
             confidence=0.8,
             rationale="reverse trop gros",
-            intent="REVERSE"),
+            intent="FLIP"),
     )
 
     report = daemon.run_cycle(
@@ -1364,7 +1364,7 @@ def test_run_cycle_reverse_position_aware_long_vers_short_utilise_qty_totale(
             quantity=20.0,
             confidence=0.8,
             rationale="reverse target short 20",
-            intent="REVERSE",
+            intent="FLIP",
             resolve_from_position=True,
             exit_plan={"hard_stop": {"type": "price", "price": 105.0}}),
     )
@@ -1407,7 +1407,7 @@ def test_run_cycle_reverse_position_aware_short_vers_long_utilise_qty_totale(
             quantity=12.0,
             confidence=0.8,
             rationale="reverse target long 12",
-            intent="REVERSE",
+            intent="FLIP",
             resolve_from_position=True,
             exit_plan={"hard_stop": {"type": "price", "price": 95.0}}),
     )
@@ -1450,7 +1450,7 @@ def test_run_cycle_add_sans_hard_stop_est_rejete(
             quantity=5.0,
             confidence=0.95,
             rationale="add sans stop",
-            intent="ADD",
+            intent="SCALE_IN",
             resolve_from_position=True),
     )
 
@@ -1491,7 +1491,7 @@ def test_run_cycle_add_depassement_risque_est_trace_sans_bloquer(
             quantity=200.0,
             confidence=0.95,
             rationale="add trop risque",
-            intent="ADD",
+            intent="SCALE_IN",
             resolve_from_position=True,
             exit_plan={"hard_stop": {"type": "price", "price": 90.0}}),
     )
@@ -1535,7 +1535,7 @@ def test_run_cycle_add_long_rejette_hard_stop_du_mauvais_cote(
             quantity=5.0,
             confidence=0.95,
             rationale="add avec stop du mauvais cote",
-            intent="ADD",
+            intent="SCALE_IN",
             resolve_from_position=True,
             exit_plan={"hard_stop": {"type": "price", "price": 120.0}}),
     )
@@ -1577,7 +1577,7 @@ def test_run_cycle_add_long_accepte_hard_stop_du_bon_cote(
             quantity=5.0,
             confidence=0.95,
             rationale="add avec stop protecteur",
-            intent="ADD",
+            intent="SCALE_IN",
             resolve_from_position=True,
             exit_plan={"hard_stop": {"type": "price", "price": 98.0}}),
     )
@@ -1621,7 +1621,7 @@ def test_run_cycle_add_trace_petit_ajout_si_risque_position_totale_depasse(
             quantity=1.0,
             confidence=0.95,
             rationale="petit add mais risque total au prix moyen",
-            intent="ADD",
+            intent="SCALE_IN",
             resolve_from_position=True,
             exit_plan={"hard_stop": {"type": "price", "price": 41.0}}),
     )
@@ -1731,7 +1731,7 @@ def test_run_cycle_close_direct_sans_position_passe_par_fusible_position_aware(
 
 @pytest.mark.parametrize(
     ("intent", "reason"),
-    [("CLOSE", "nothing_to_close"), ("ADD", "add_without_position")],
+    [("CLOSE", "nothing_to_close"), ("SCALE_IN", "scale_in_without_position")],
 )
 def test_resolve_position_aware_hold_preserve_les_metadonnees_llm(intent: str, reason: str) -> None:
     decision = Decision(
@@ -2016,7 +2016,7 @@ def test_run_cycle_reverse_cree_un_plan_sur_la_position_nette_finale(monkeypatch
             quantity=10.0,
             confidence=0.8,
             rationale="reverse",
-            intent="REVERSE",
+            intent="FLIP",
             exit_plan={"hard_stop": {"type": "price", "price": 105.0}}),
     )
 
@@ -2034,7 +2034,7 @@ def test_run_cycle_reverse_cree_un_plan_sur_la_position_nette_finale(monkeypatch
     assert len(plans) == 1
     assert plans[0].side == "SHORT"
     assert plans[0].quantity == 10.0
-    # §13.7 — le chemin REVERSE enrichit aussi le contexte d'entrée.
+    # §13.7 — le chemin FLIP enrichit aussi le contexte d'entrée.
     assert plans[0].entry_thesis == "reverse"
     assert plans[0].entry_context is not None
     assert plans[0].entry_context["price"] == 102.0
@@ -2125,7 +2125,7 @@ def test_run_cycle_add_resynchronise_le_plan_sur_position_totale(monkeypatch, tm
             quantity=5.0,
             confidence=0.9,
             rationale="add with tighter plan",
-            intent="ADD",
+            intent="SCALE_IN",
             resolve_from_position=True,
             exit_plan={"hard_stop": {"type": "price", "price": 97.0}}),
     )

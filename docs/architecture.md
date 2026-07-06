@@ -49,7 +49,7 @@ les utilisaient :
 
 | Zone | Rôle | Notes |
 |---|---|---|
-| `trader/application/amend_exit.py` | Application fail-safe des amendements de plan ouvert demandés par l'agent | contrat `Protocol` local pour le store, le daemon conserve un wrapper historique |
+| `trader/application/exit_update.py` | Application fail-safe des mises à jour de plan ouvert compilées depuis `strategy_exit` | contrat `Protocol` local pour le store, le daemon conserve un wrapper privé |
 | `trader/application/armed_plans.py` | Résolution applicative des triggers `EXECUTE_ORDER` en décisions armées ou réveils planificateur | contrats `Protocol` locaux pour position/volatilité ; le daemon conserve logs et événements |
 | `trader/application/planner_batch.py` | Batch LLM, budget modèle, tournée d'outils, REQUEST_CONTEXT | appelé via `daemon._batch_decide()` |
 | `trader/application/market_snapshot.py` | Barres runtime/daily/exit, fraîcheur, FX, eligibility, tradable maps | retourne `MarketSnapshot`, le daemon l'unpack |
@@ -57,6 +57,7 @@ les utilisaient :
 | `trader/application/decision_watches.py` | Préparation pure des `indicator_watch` demandées par une décision | le daemon garde logging et application scheduler |
 | `trader/application/decision_recorder.py` | Enrichissement décision, ledger, report, status, event, recall traces | source durable : `state/decisions.jsonl` |
 | `trader/application/cycle_schedule.py` | Politique applicative de réveil : bornes explicites, backoff stale, due symbols, veilles et événements de réveil | le daemon garde des wrappers privés de compatibilité |
+| `trader/agent/protocol/strategy_language.py` | Compilateur du langage agent Pine-like canonique (`strategy_entry`/`strategy_exit`/`strategy_close`) | `parsing.py` consomme ses primitives ; les anciens action tools sont rejetés |
 | `trader/application/confidence_feedback.py` | Feedback persistant des rejets de gate confiance vers les learnings de l'agent | le daemon conserve le wrapper privé historique |
 | `trader/application/execution_eligibility.py` | Classification execution/planning par symbole et raison de blocage d'exécution | utilisé par `market_snapshot` et wrappers privés du daemon |
 | `trader/application/entry_context.py` | Construction pure du snapshot durable `entry_context` attaché aux TradePlans | utilisé par le chemin direct post-fill et le payload execute queue |
@@ -64,7 +65,7 @@ les utilisaient :
 | `trader/application/execute_queue_plan.py` | Préparation pure du payload atomique `plan_to_upsert` / `symbol_to_close` pour le mode execute queue | contrat `Protocol` local pour lire les plans ouverts ; le daemon fournit le contexte runtime |
 | `trader/application/exit_bars.py` | Fetch/validation des barres fines de sortie et calcul high/low de fenêtre pour plans ouverts | branché comme `exit_bars_fetcher` dans `market_snapshot`, wrappers privés du daemon |
 | `trader/application/fill_outcome.py` | Accounting post-fill des décisions exécutées : payload `model_performance`, raison de sortie LLM, champs commission/fx de l'entrée décision | le daemon garde le snapshot portefeuille et l'écriture durable |
-| `trader/application/fill_plan_effects.py` | Effets post-fill sur les plans : close/sync des sorties, création/snapshot des plans d'ouverture, ADD et REVERSE | le daemon fournit contexte runtime et conserve le scheduling post-entry |
+| `trader/application/fill_plan_effects.py` | Effets post-fill sur les plans : close/sync des sorties, création/snapshot des plans d'ouverture, SCALE_IN et FLIP | le daemon fournit contexte runtime et conserve le scheduling post-entry |
 | `trader/application/gross_feedback.py` | Feedback applicatif des ouvertures rejetées par le plafond gross exposure | le daemon garde un wrapper public historique |
 | `trader/application/infra_holds.py` | Construction applicative des HOLD infra (`quiet_gate`, `stale_market_data`) sans appel modèle | contrats `Protocol` locaux pour wakes/clamp session ; le daemon garde scheduler, log et persistance |
 | `trader/application/learnings_recall.py` | Provider applicatif de recall mémoire : cache embeddings, timeout court, fallback FTS | contrats `Protocol` pour store et embedder |
@@ -293,8 +294,10 @@ ou revue périodique garantie (4 h). Sinon → `quiet_gate` (HOLD sans appel).
 
 ### 3.5 Plans armés — exécution sans LLM (D7 étage B)
 
-Les `indicator_watch` à `on_trigger: EXECUTE_ORDER` portent un `order` complet
-(intent, qty, confidence, exit_plan). Au déclenchement,
+Les `indicator_watch` à `on_trigger: EXECUTE_ORDER` acceptent côté agent un
+`order` Pine-like (`direction`, `qty`, `confidence`, `exit`). À l'armement,
+`planning/indicator_watch.py` le compile en ordre interne
+(`intent`, `qty`, `confidence`, `exit_plan`). Au déclenchement,
 `trader/application/armed_plans.py` résout le cas d'usage et le daemon émet les
 logs/événements retournés :
 1. `resolve_exit_plan()` — résolution late-binding du stop/TP sur vol fraîche (D11)
@@ -389,7 +392,7 @@ barres `ts >= plan.opened_at` comptent. `trader/runtime/daemon.py`
 
 ### 4.2 Sortie discrétionnaire LLM
 
-`intent: CLOSE | REDUCE | REVERSE` → tag `exit_reason = "llm_exit"` (`trader/runtime/daemon.py`).
+`intent: CLOSE | REDUCE | FLIP` → tag `exit_reason = "llm_exit"` (`trader/runtime/daemon.py`).
 Raison : le LLM voit un changement de thèse avant le hard_stop.
 `plan_store.close_symbol()` à la clôture.
 
@@ -570,8 +573,10 @@ La réponse texte du LLM est traduite en `Decision` (dataclass frozen).
 Fail-safe : toute erreur (timeout, JSON invalide, clé manquante) → `Decision.hold(sym, reason)`.
 Le LLM ne trade jamais sur une réponse douteuse.
 
-La `Decision` inclut : `action`, `quantity`, `confidence`, `rationale`, `intent`,
-`exit_plan`, `indicator_watch`, `cancel_watch_ids`, `next_wake_in_minutes`, `learning`.
+Le contrat LLM visible est `calls` Pine-like. La projection interne `Decision`
+inclut ensuite : `action`, `quantity`, `confidence`, `rationale`, `intent`,
+`exit_plan`, `exit_update`, `indicator_watch`, `cancel_watch_ids`,
+`next_wake_in_minutes`, `learning`.
 
 ---
 
@@ -592,10 +597,10 @@ Le LLM reçoit UN prompt et peut répondre soit le contrat final, soit
 (`--allowed-tools` reste `""`) : le daemon parse, valide contre
 `agent.tools.TOOL_REGISTRY` (allowlist Python) et exécute — lecture seule.
 
-Registre (9) : `get_freshness`, `get_active_plans`, `get_position_risk`,
-`get_attribution`, `get_recent_decisions`, `get_indicator_context`
+Registre read-only (7) : `get_freshness`, `get_indicator_context`
 (voie moderne de REQUEST_CONTEXT), `describe_data`, `find_indicators`
-(découverte du cube sémantique TraderNexus), `recall_learnings` (mémoire, §11).
+(découverte du cube sémantique TraderNexus), `get_active_plans`,
+`get_attribution`, `recall_learnings` (mémoire, §11).
 
 Garde-fous : budgets 24 appels/lot et 3/symbole, cap 32 calls sérialisés
 (sentinel `truncated`), args scrubbed (profondeur/longueur), contexte borné au
@@ -603,9 +608,13 @@ chunk (pas de fuite inter-chunks), budget modèle réservé (2 appels/chunk en
 mode tournée). Tout est tracé dans `runtime.tool_calls` du ledger → dérivable
 par `tool_trace.summarize_tools` et `tool_usage` (section `domain_usage`).
 
-Outils d'ACTION (set_next_wake, propose_indicator_watch, cancel_watch,
-record_learning, puis propose_order) : Phases 4-5, non implémentées — notes de
-design en mémoire projet.
+Outils d'ACTION : le contrat public par symbole expose une grammaire Pine-like
+JSON (`strategy_entry`, `strategy_exit`, `strategy_close`) plus
+`set_next_wake`, `propose_indicator_watch`, `cancel_watch`, `record_learning`.
+`strategy_language.py` compile ces appels en primitives de stratégie ; le parser
+les projette ensuite vers `Decision`, `exit_plan`, `exit_update`, veilles et
+learnings. Les anciens action tools ne sont plus acceptés par le runtime ; les
+anciens états sont traités par migration avant lecture durable.
 
 ## 10.1 Logging et dépendances du refactor
 

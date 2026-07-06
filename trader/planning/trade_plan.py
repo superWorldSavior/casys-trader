@@ -989,35 +989,35 @@ def trade_plan_from_dict(raw: dict) -> TradePlan:
     )
 
 
-def apply_amend_exit(
+def apply_exit_update(
     plan: TradePlan,
-    amend: dict,
+    update: dict,
     *,
     bars: list | None = None,
     reference_price: float | None = None,
     trace_out: dict | None = None,
 ) -> TradePlan:
-    """Patche les champs de sortie d'un TradePlan ouvert via un dict amend normalisé.
+    """Patche les champs de sortie d'un TradePlan ouvert via un dict update normalisé.
 
-    `amend` est issu de `_compact_exit_plan` (clés internes : hard_stop?, take_profits?,
-    trailing_stop?, profit_protection?). Seuls les champs PRÉSENTS dans `amend` sont
+    `update` est issu de `_compact_exit_plan` (clés internes : hard_stop?, take_profits?,
+    trailing_stop?, profit_protection?). Seuls les champs PRÉSENTS dans `update` sont
     patchés ; les autres champs du plan restent inchangés.
 
-    Pour les TP en risk_multiple sans hard_stop dans l'amend, utilise le
+    Pour les TP en risk_multiple sans hard_stop dans l'update, utilise le
     `plan.hard_stop_price` existant comme référence de distance (injection transparente).
 
     Raises:
         InvalidExitPlanError: si la résolution du stop/TP échoue (bars manquants pour
             structural, stop_distance introuvable pour risk_multiple, etc.).
     """
-    if not amend:
+    if not update:
         return plan
 
-    # Pour résoudre les TP en risk_multiple sans hard_stop dans l'amend,
+    # Pour résoudre les TP en risk_multiple sans hard_stop dans l'update,
     # injecte le stop existant du plan comme référence de distance.
-    resolve_input = dict(amend)
-    if "take_profits" in amend and "hard_stop" not in amend and plan.hard_stop_price is not None:
-        resolve_input = {**amend, "hard_stop": {"type": "price", "price": plan.hard_stop_price}}
+    resolve_input = dict(update)
+    if "take_profits" in update and "hard_stop" not in update and plan.hard_stop_price is not None:
+        resolve_input = {**update, "hard_stop": {"type": "price", "price": plan.hard_stop_price}}
 
     resolved, trace = resolve_exit_plan(
         resolve_input,
@@ -1036,10 +1036,10 @@ def apply_amend_exit(
 
     patches: dict = {}
 
-    if "hard_stop" in amend:
+    if "hard_stop" in update:
         patches["hard_stop_price"] = _parse_price(resolved.get("hard_stop"))
 
-    if "take_profits" in amend:
+    if "take_profits" in update:
         raw_tps = resolved.get("take_profits") or []
         quantity = plan.remaining_quantity
         remaining_fraction = 1.0
@@ -1065,10 +1065,10 @@ def apply_amend_exit(
         new_tp_names = {tp.name for tp in new_tps}
         patches["filled_take_profits"] = [n for n in plan.filled_take_profits if n in new_tp_names]
 
-    if "trailing_stop" in amend:
+    if "trailing_stop" in update:
         patches["trailing_stop"] = _trailing_from_dict(resolved.get("trailing_stop"))
 
-    if "profit_protection" in amend:
+    if "profit_protection" in update:
         patches["profit_protection"] = _profit_protection_from_raw(resolved.get("profit_protection"))
 
     if not patches:

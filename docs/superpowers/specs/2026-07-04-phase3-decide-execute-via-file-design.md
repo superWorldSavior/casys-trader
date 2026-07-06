@@ -164,7 +164,7 @@ intégrés) :
 - **Précondition StateDb** : `raise RuntimeError` dur (pas un warning) si broker/plan_store/ledger
   n'ont pas la MÊME instance `StateDb` (atomicité jamais silencieusement rompue).
 - **`dry_run`** : aucune mutation broker NI plan (`if not dry_run`) ; task complétée quand même.
-- **Atomicité par intent** : OPEN (submit+upsert), CLOSE (submit+close), **REVERSE et ADD**
+- **Atomicité par intent** : OPEN (submit+upsert), CLOSE (submit+close), **FLIP et SCALE_IN**
   (submit + close ancien plan + upsert nouveau plan) — tous dans **UNE** transaction (le nouveau
   plan est pré-calculé dans run_cycle et passé au UoW via `symbol_to_close` + `plan_to_upsert`).
 - **`dead`/timeout** : run_cycle exige `status='done'` + fill décodé pour poursuivre ; `dead` →

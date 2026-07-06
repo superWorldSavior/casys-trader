@@ -1,7 +1,7 @@
 """TDD L6 — thesis tag (attribution structurée).
 
 Plan:
-- thesis dans propose_order.args (pas au level décision : un HOLD n'a pas de thèse)
+- thesis dans strategy_entry.args (pas au level décision : un HOLD n'a pas de thèse)
 - Validation fail-safe : malformé → None, partiel → borné
 - Persisté dans Decision.thesis puis dans la row ledger
 """
@@ -77,14 +77,14 @@ def test_normalize_thesis_setup_vide_retourne_none() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Parsing — thesis extrait de propose_order.args
+# Parsing — thesis extrait de strategy_entry.args
 # ---------------------------------------------------------------------------
 
 
 def _batch_with_thesis(thesis: object | None = None) -> str:
     import json
 
-    args: dict = {"intent": "OPEN_LONG", "qty": 10}
+    args: dict = {"direction": "long", "qty": 10}
     if thesis is not None:
         args["thesis"] = thesis
     payload = {
@@ -94,7 +94,7 @@ def _batch_with_thesis(thesis: object | None = None) -> str:
                 "confidence": 0.8,
                 "rationale": "momentum propre",
                 "decision_reason_code": "ENTRY_SIGNAL",
-                "calls": [{"tool": "propose_order", "args": args}],
+                "calls": [{"tool": "strategy_entry", "args": args}],
             }
         ]
     }
@@ -130,7 +130,7 @@ def test_parse_thesis_horizon_invalide_ne_fait_pas_tomber_la_decision() -> None:
     assert parsed.thesis is None
 
 
-def test_parse_hold_explicite_sans_propose_order_thesis_none() -> None:
+def test_parse_hold_explicite_sans_strategy_entry_thesis_none() -> None:
     import json
 
     payload = json.dumps({

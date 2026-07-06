@@ -139,8 +139,8 @@ def decide_one(
     decision_timeout_s
         Plafond de CHAQUE appel LLM (en secondes).
     agent_tools_enabled
-        Active use_symbol_calls_contract=True et, si tool_services est fourni,
-        le tour d'outils grain-1 (spec queue tool-round).
+        Active, si tool_services est fourni, le tour d'outils grain-1
+        (spec queue tool-round). Le contrat de sortie reste toujours symbol_calls.
     codex_client
         Module ou objet exposant decide_batch — injectable pour les tests.
     tool_services
@@ -173,9 +173,9 @@ def decide_one(
             memory=memory,
             shared_context=shared_context,
             per_symbol=per_symbol,
-            allow_context_request=False,  # Q4 : tool round moderne seul, pas de legacy
+            allow_context_request=False,
             allow_tool_calls=allow_tool_calls,
-            use_symbol_calls_contract=agent_tools_enabled,
+            use_symbol_calls_contract=True,
             timeout_s=decision_timeout_s,
             max_rounds=1,
         )
@@ -213,7 +213,7 @@ def decide_one(
                         per_symbol=per_symbol,
                         allow_context_request=False,
                         allow_tool_calls=allow_tool_calls,
-                        use_symbol_calls_contract=agent_tools_enabled,
+                        use_symbol_calls_contract=True,
                         timeout_s=decision_timeout_s,
                         complete_fn=llm.session_complete_fn(session),
                         max_tool_calls_per_symbol=tool_limits.max_calls_per_symbol,

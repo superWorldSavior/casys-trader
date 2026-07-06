@@ -477,12 +477,12 @@ def test_build_detail_panel_with_tool_calls() -> None:
         "AAPL",
         tool_calls=[
             {"tool": "set_next_wake", "outcome": "applied", "detail": {}},
-            {"tool": "amend_exit", "outcome": "rejected", "detail": {"warnings": [{"code": "hard_stop_above_max_pct"}]}},
+            {"tool": "strategy_exit", "outcome": "rejected", "detail": {"warnings": [{"code": "hard_stop_above_max_pct"}]}},
         ],
     )
     rendered = _render(build_detail_panel(row, now=_NOW))
     assert "set_next_wake" in rendered
-    assert "amend_exit" in rendered
+    assert "strategy_exit" in rendered
     assert "hard_stop_above_max_pct" in rendered
 
 

@@ -4,19 +4,20 @@ from __future__ import annotations
 
 ACTION_TOOLS = frozenset(
     {
-        "propose_order",
+        "strategy_entry",
+        "strategy_exit",
+        "strategy_close",
         "set_next_wake",
         "propose_indicator_watch",
         "record_learning",
         "cancel_watch",
-        "amend_exit",
     }
 )
 
 
 def action_tool_outcome(tool: str, entry: dict) -> str | None:
     """Return the final persisted outcome for one action-tool call."""
-    if tool == "propose_order":
+    if tool in {"strategy_entry", "strategy_close"}:
         return "executed" if entry.get("executed") else "blocked"
     if tool == "set_next_wake":
         return "applied" if entry.get("next_wake_in_minutes") == entry.get("next_wake_requested") else "clamped"
@@ -30,10 +31,10 @@ def action_tool_outcome(tool: str, entry: dict) -> str | None:
             return "noop"
         rejected = any(isinstance(result, dict) and result.get("outcome") == "not_owned" for result in results)
         return "rejected" if rejected else "cancelled"
-    if tool == "amend_exit":
-        if entry.get("amend_exit_applied"):
+    if tool == "strategy_exit":
+        if entry.get("exit_update_applied"):
             return "applied"
-        reason = str(entry.get("amend_exit_reason") or "")
+        reason = str(entry.get("exit_update_reason") or "")
         if reason.startswith("resolve_failed"):
             return "rejected"
         return "noop"
@@ -42,7 +43,7 @@ def action_tool_outcome(tool: str, entry: dict) -> str | None:
 
 def action_tool_detail(tool: str, entry: dict, call: dict) -> dict | None:
     """Return final persisted detail for one action-tool call."""
-    if tool == "propose_order":
+    if tool in {"strategy_entry", "strategy_close"}:
         warnings = []
         for field in ("risk_warnings", "exit_plan_warnings"):
             value = entry.get(field)
@@ -53,10 +54,16 @@ def action_tool_detail(tool: str, entry: dict, call: dict) -> dict | None:
         detail = dict(call.get("detail") or {}) if isinstance(call.get("detail"), dict) else {}
         detail["warnings"] = warnings
         return detail
-    if tool == "amend_exit" and entry.get("amend_exit_warnings"):
+    if tool == "strategy_exit":
         detail = dict(call.get("detail") or {}) if isinstance(call.get("detail"), dict) else {}
-        detail["warnings"] = entry["amend_exit_warnings"]
-        return detail
+        reason = entry.get("exit_update_reason")
+        if reason:
+            detail["reason"] = reason
+        if entry.get("exit_update_applied") is not None:
+            detail["exit_update_applied"] = entry["exit_update_applied"]
+        if entry.get("exit_update_warnings"):
+            detail["warnings"] = entry["exit_update_warnings"]
+        return detail or None
     return None
 
 

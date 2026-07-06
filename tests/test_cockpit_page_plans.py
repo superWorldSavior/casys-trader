@@ -3,7 +3,7 @@
 Couvre :
 - Builders purs avec states synthétiques (déterministes, now fixe)
 - Cas limites : état vide, valeurs None, listes vides
-- Détection amend_exit rejeté par symbole
+- Détection strategy_exit rejeté par symbole
 - Montage Textual (touche 4 → PlansPage visible + panneaux présents)
 """
 
@@ -15,8 +15,7 @@ from datetime import datetime, timezone
 import trader.interfaces.cockpit.app as cockpit_module
 from trader.interfaces.cockpit.app import CockpitApp
 from trader.interfaces.cockpit.pages.plans import (
-    PlansPage,
-    _amend_rejected_symbols,
+    _exit_update_rejected_symbols,
     _price_fmt,
     _stop_pct,
     _tp_label,
@@ -145,15 +144,15 @@ def test_tp_label_round_prices():
 
 
 # ---------------------------------------------------------------------------
-# amend rejected detection
+# exit update rejected detection
 # ---------------------------------------------------------------------------
 
 
-def test_amend_rejected_symbols_empty():
-    assert _amend_rejected_symbols({}) == set()
+def test_exit_update_rejected_symbols_empty():
+    assert _exit_update_rejected_symbols({}) == set()
 
 
-def test_amend_rejected_detects_rejected():
+def test_exit_update_rejected_detects_rejected():
     state = {
         "recent_decisions": [
             {
@@ -161,17 +160,17 @@ def test_amend_rejected_detects_rejected():
                 "cycle_ts": "2026-07-06T02:01:00+00:00",
                 "runtime": {
                     "tool_calls": [
-                        {"tool": "amend_exit", "outcome": "rejected"},
+                        {"tool": "strategy_exit", "outcome": "rejected"},
                     ]
                 },
             }
         ]
     }
-    result = _amend_rejected_symbols(state)
+    result = _exit_update_rejected_symbols(state)
     assert "3443.TW" in result
 
 
-def test_amend_rejected_ignores_applied():
+def test_exit_update_rejected_ignores_applied():
     state = {
         "recent_decisions": [
             {
@@ -179,37 +178,37 @@ def test_amend_rejected_ignores_applied():
                 "cycle_ts": "2026-07-06T02:00:00+00:00",
                 "runtime": {
                     "tool_calls": [
-                        {"tool": "amend_exit", "outcome": "applied"},
+                        {"tool": "strategy_exit", "outcome": "applied"},
                     ]
                 },
             }
         ]
     }
-    result = _amend_rejected_symbols(state)
+    result = _exit_update_rejected_symbols(state)
     assert "ABBV" not in result
 
 
-def test_amend_rejected_last_wins():
+def test_exit_update_rejected_last_wins():
     """La plus récente décision par symbole détermine l'état."""
     state = {
         "recent_decisions": [
             {
                 "symbol": "SYM",
                 "cycle_ts": "2026-07-06T01:00:00+00:00",
-                "runtime": {"tool_calls": [{"tool": "amend_exit", "outcome": "rejected"}]},
+                "runtime": {"tool_calls": [{"tool": "strategy_exit", "outcome": "rejected"}]},
             },
             {
                 "symbol": "SYM",
                 "cycle_ts": "2026-07-06T02:00:00+00:00",
-                "runtime": {"tool_calls": [{"tool": "amend_exit", "outcome": "applied"}]},
+                "runtime": {"tool_calls": [{"tool": "strategy_exit", "outcome": "applied"}]},
             },
         ]
     }
-    result = _amend_rejected_symbols(state)
+    result = _exit_update_rejected_symbols(state)
     assert "SYM" not in result  # applied est plus récent → pas rejected
 
 
-def test_amend_rejected_ignores_other_tools():
+def test_exit_update_rejected_ignores_other_tools():
     state = {
         "recent_decisions": [
             {
@@ -217,14 +216,14 @@ def test_amend_rejected_ignores_other_tools():
                 "cycle_ts": "2026-07-06T01:00:00+00:00",
                 "runtime": {
                     "tool_calls": [
-                        {"tool": "propose_order", "outcome": "rejected"},
+                        {"tool": "strategy_entry", "outcome": "rejected"},
                         {"tool": "set_next_wake", "outcome": "applied"},
                     ]
                 },
             }
         ]
     }
-    result = _amend_rejected_symbols(state)
+    result = _exit_update_rejected_symbols(state)
     assert "XYZ" not in result
 
 
@@ -321,7 +320,7 @@ def test_build_exit_plans_with_plan():
     assert "every open position" in rendered
 
 
-def test_build_exit_plans_amend_rejected():
+def test_build_exit_plans_exit_update_rejected():
     state = {
         "trade_plans": [
             {
@@ -338,13 +337,13 @@ def test_build_exit_plans_amend_rejected():
             {
                 "symbol": "3443.TW",
                 "cycle_ts": "2026-07-06T02:01:00+00:00",
-                "runtime": {"tool_calls": [{"tool": "amend_exit", "outcome": "rejected"}]},
+                "runtime": {"tool_calls": [{"tool": "strategy_exit", "outcome": "rejected"}]},
             }
         ],
     }
     rendered = _render(build_exit_plans(state, now=NOW))
     assert "3443.TW" in rendered
-    assert "amend rejected" in rendered
+    assert "exit update rejected" in rendered
 
 
 def test_build_exit_plans_short():

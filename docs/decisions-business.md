@@ -195,7 +195,7 @@ l'auto-renforcement des HOLD). `consolidator.py:build_context_learnings`
   passent désormais par `resolve_exit_plan`, mais un stop absolu `type:"price"` trop
   serré fourni directement par le LLM n'est pas recalibré. Recommandation : forcer
   le relatif en direct.
-- **REVERSE sans stop** : `REVERSE` n'est pas bloqué par `missing_hard_stop`
+- **FLIP sans stop** : `FLIP` n'est pas bloqué par `missing_hard_stop`
   (`daemon.py:1934`) — **à corriger** (backlog, pas un choix intentionnel confirmé
   par analyse Codex).
 - **`last_llm_at` volatile** : réinitialisé au restart → le gate de revue périodique

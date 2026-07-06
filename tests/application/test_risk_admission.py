@@ -86,7 +86,7 @@ def test_assess_risk_admission_warns_projected_add_risk_budget_without_blocking(
     result = assess_risk_admission(
         RiskAdmissionRequest(
             action="BUY",
-            intent="ADD",
+            intent="SCALE_IN",
             quantity=200.0,
             price=120.0,
             equity=100_000.0,
@@ -129,7 +129,7 @@ def test_assess_risk_admission_keeps_add_order_quantity_when_projected_risk_pass
     result = assess_risk_admission(
         RiskAdmissionRequest(
             action="BUY",
-            intent="ADD",
+            intent="SCALE_IN",
             quantity=10.0,
             price=120.0,
             equity=100_000.0,
@@ -155,7 +155,7 @@ def test_assess_risk_admission_traces_reverse_without_confidence_or_max_risk_gat
     result = assess_risk_admission(
         RiskAdmissionRequest(
             action="SELL",
-            intent="REVERSE",
+            intent="FLIP",
             quantity=300.0,
             price=100.0,
             equity=100_000.0,
@@ -324,7 +324,7 @@ def test_assess_final_risk_gate_uses_fx_for_existing_position_value() -> None:
             action="BUY",
             quantity=100.0,
             rationale="would exceed position cap after fx",
-            intent="ADD",
+            intent="SCALE_IN",
             price=800.0,
             position_quantity=100.0,
             gross_exposure=2_480.0,

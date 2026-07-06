@@ -42,7 +42,7 @@ def build_execute_queue_plan_payload(
     llm_confidence: float | None,
 ) -> ExecuteQueuePlanPayload:
     """Prepare the queue UoW payload without enqueuing or mutating stores."""
-    symbol_to_close = symbol if intent in {"CLOSE", "REVERSE", "ADD"} else None
+    symbol_to_close = symbol if intent in {"CLOSE", "FLIP", "SCALE_IN"} else None
     if not runtime_exit_plan:
         return ExecuteQueuePlanPayload(plan_to_upsert=None, symbol_to_close=symbol_to_close)
 
@@ -64,11 +64,11 @@ def build_execute_queue_plan_payload(
         )
         return ExecuteQueuePlanPayload(plan_to_upsert=asdict(plan), symbol_to_close=symbol_to_close)
 
-    if intent == "ADD":
-        total_quantity, avg_price = order_admission.projected_add_risk_basis(
+    if intent == "SCALE_IN":
+        total_quantity, avg_price = order_admission.projected_scale_in_risk_basis(
             action=action,
-            add_quantity=quantity,
-            add_price=price,
+            scale_in_quantity=quantity,
+            scale_in_price=price,
             position_quantity=position_quantity,
             position_avg_price=position_avg_price,
         )
@@ -94,8 +94,8 @@ def build_execute_queue_plan_payload(
             plan = replace(plan, last_llm_review=copy.deepcopy(previous_plan.last_llm_review))
         return ExecuteQueuePlanPayload(plan_to_upsert=asdict(plan), symbol_to_close=symbol_to_close)
 
-    if intent == "REVERSE":
-        open_quantity = order_admission.reverse_open_quantity(
+    if intent == "FLIP":
+        open_quantity = order_admission.flip_open_quantity(
             action=action,
             quantity=quantity,
             position_quantity=position_quantity,

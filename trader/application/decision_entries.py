@@ -15,7 +15,7 @@ INFRA_HOLD_REASONS = frozenset(
     }
 )
 
-DOMAIN_NOOP_HOLD_REASONS = frozenset({"nothing_to_close", "add_without_position"})
+DOMAIN_NOOP_HOLD_REASONS = frozenset({"nothing_to_close", "scale_in_without_position"})
 NON_REVIEW_RATIONALES = frozenset(
     {
         *INFRA_HOLD_REASONS,

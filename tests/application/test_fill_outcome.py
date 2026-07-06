@@ -7,9 +7,9 @@ from trader.execution.contracts import Fill
 def test_llm_exit_reason_tags_only_llm_driven_exits() -> None:
     assert llm_exit_reason_for_intent("CLOSE") == "llm_exit"
     assert llm_exit_reason_for_intent("REDUCE") == "llm_exit"
-    assert llm_exit_reason_for_intent("REVERSE") == "llm_exit"
+    assert llm_exit_reason_for_intent("FLIP") == "llm_exit"
     assert llm_exit_reason_for_intent("OPEN_LONG") is None
-    assert llm_exit_reason_for_intent("ADD") is None
+    assert llm_exit_reason_for_intent("SCALE_IN") is None
     assert llm_exit_reason_for_intent("HOLD") is None
 
 

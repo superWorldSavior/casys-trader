@@ -15,10 +15,10 @@ décision d'ordre :
 
 | Fonction | Rôle |
 |---|---|
-| `invalid_intent_reason(action, quantity, intent)` | valide l'`intent` (OPEN_LONG/SHORT, CLOSE, REVERSE…) **vs l'action** (BUY/SELL) |
+| `invalid_intent_reason(action, quantity, intent)` | valide l'`intent` (OPEN_LONG/SHORT, CLOSE, FLIP…) **vs l'action** (BUY/SELL) |
 | `hard_stop_price(raw_exit_plan)` | extrait le prix de hard_stop du plan de sortie |
 | `hard_stop_wrong_side(intent, entry, stop)` | garde : stop du mauvais côté (long avec stop au-dessus…) |
-| `reverse_open_quantity(action, quantity, position_quantity)` | quantité d'ouverture après un REVERSE |
+| `flip_open_quantity(action, quantity, position_quantity)` | quantité d'ouverture après un FLIP |
 | `risk_pct_for_quantity(quantity, stop_distance, equity)` | % equity risqué (distance au stop) |
 | `set_entry_risk_metrics(...)` | pose les métriques de risque d'entrée sur la décision |
 

@@ -40,7 +40,7 @@ def test_llm_review_verdict_maps_intents_to_thesis_status() -> None:
     assert llm_review_verdict("HOLD") == "intact"
     assert llm_review_verdict("REDUCE") == "fragile"
     assert llm_review_verdict("CLOSE") == "invalidated"
-    assert llm_review_verdict("REVERSE") == "invalidated"
+    assert llm_review_verdict("FLIP") == "invalidated"
     assert llm_review_verdict("OPEN_LONG") == "fragile"
 
 

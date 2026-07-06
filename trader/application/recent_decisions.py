@@ -10,6 +10,7 @@ from __future__ import annotations
 _MAX_RATIONALE_LEN = 200
 _MAX_FLAGS = 5
 DEFAULT_LIMIT = 3
+_ORDER_ACTION_TOOLS = {"strategy_entry", "strategy_close"}
 
 
 class _LedgerReadStore:  # Protocol minimal (évite le couplage au store concret)
@@ -102,7 +103,18 @@ def _reason_flag_code(reason: object) -> str | None:
 
 
 def _flag_tool_for_row(row: dict) -> str:
-    return "propose_order" if row.get("action") in {"BUY", "SELL"} else "decision"
+    runtime = _runtime(row)
+    for call in runtime.get("tool_calls") or []:
+        if isinstance(call, dict) and call.get("tool") in _ORDER_ACTION_TOOLS:
+            return str(call["tool"])
+    intent = str(row.get("intent") or "").upper()
+    if intent in {"CLOSE", "REDUCE"}:
+        return "strategy_close"
+    if intent in {"FLIP", "SCALE_IN"}:
+        return "strategy_entry"
+    if row.get("action") in {"BUY", "SELL"}:
+        return "strategy_entry"
+    return "decision"
 
 
 def _compact_flags(row: dict) -> list[dict]:
@@ -138,10 +150,10 @@ def _compact_flags(row: dict) -> list[dict]:
             add_flag(tool=str(call.get("tool") or "tool"), outcome=call.get("outcome"), warning=warning)
 
     for warning in runtime.get("risk_warnings") or []:
-        add_flag(tool="propose_order", outcome="executed" if row.get("executed") else "blocked", warning=warning)
+        add_flag(tool=_flag_tool_for_row(row), outcome="executed" if row.get("executed") else "blocked", warning=warning)
 
     for warning in runtime.get("exit_plan_warnings") or []:
-        add_flag(tool="propose_order", outcome="executed" if row.get("executed") else "blocked", warning=warning)
+        add_flag(tool=_flag_tool_for_row(row), outcome="executed" if row.get("executed") else "blocked", warning=warning)
 
     if not row.get("executed"):
         code = _reason_flag_code(row.get("reason"))

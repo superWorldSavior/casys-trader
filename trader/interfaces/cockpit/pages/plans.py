@@ -76,11 +76,11 @@ def _tp_label(plan: dict) -> str:
     return f"{_price_fmt(prices[0])} → {_price_fmt(prices[1])}"
 
 
-def _amend_rejected_symbols(state: dict) -> set[str]:
-    """Symboles dont la dernière tentative amend_exit enregistrée a été rejetée.
+def _exit_update_rejected_symbols(state: dict) -> set[str]:
+    """Symboles dont la dernière tentative exit_update enregistrée a été rejetée.
 
     Lit state["recent_decisions"] et cherche le tool_call le plus récent
-    (par cycle_ts) avec tool=="amend_exit" par symbole.
+    (par cycle_ts) avec tool=="strategy_exit" par symbole.
     """
     latest: dict[str, tuple[str, str]] = {}  # sym → (cycle_ts, outcome)
     for row in _safe_list_of_dicts(state.get("recent_decisions")):
@@ -90,7 +90,7 @@ def _amend_rejected_symbols(state: dict) -> set[str]:
         cycle_ts = str(row.get("cycle_ts") or row.get("ts") or "")
         runtime = f.safe_dict(row.get("runtime"))
         for call in _safe_list_of_dicts(runtime.get("tool_calls")):
-            if str(call.get("tool") or "") != "amend_exit":
+            if str(call.get("tool") or "") != "strategy_exit":
                 continue
             outcome = str(call.get("outcome") or "")
             existing = latest.get(sym)
@@ -99,14 +99,14 @@ def _amend_rejected_symbols(state: dict) -> set[str]:
     return {sym for sym, (_, outcome) in latest.items() if outcome == "rejected"}
 
 
-def _reviewed_cell(plan: dict, amend_rejected: set[str]) -> tuple[str, str]:
+def _reviewed_cell(plan: dict, exit_update_rejected: set[str]) -> tuple[str, str]:
     """(label, style) pour la colonne REVIEWED.
 
-    Priorité : amend_rejected > last_llm_review > absent.
+    Priorité : exit_update_rejected > last_llm_review > absent.
     """
     sym = str(plan.get("symbol") or "")
-    if sym in amend_rejected:
-        return "▲ amend rejected", CASYS_WARNING
+    if sym in exit_update_rejected:
+        return "▲ exit update rejected", CASYS_WARNING
     review = f.safe_dict(plan.get("last_llm_review"))
     ts = review.get("ts")
     if ts:
@@ -210,7 +210,7 @@ def build_armed(state: dict, *, now: datetime, limit: int | None = None) -> Rend
 def build_exit_plans(state: dict, *, now: datetime) -> RenderableType:
     """EXIT PLANS triés par distance au stop (la plus courte d'abord)."""
     plans = _safe_list_of_dicts(state.get("trade_plans"))
-    amend_rejected = _amend_rejected_symbols(state)
+    exit_update_rejected = _exit_update_rejected_symbols(state)
 
     if not plans:
         return Text(
@@ -257,7 +257,7 @@ def build_exit_plans(state: dict, *, now: datetime) -> RenderableType:
         ref = f.price_for_symbol(state, sym) or entry
         left_pct = f.stop_left_pct(plan, ref)
         entry_risk_pct = f.stop_entry_risk_pct(plan)
-        rejected = sym in amend_rejected
+        rejected = sym in exit_update_rejected
         pct_style = CASYS_ERROR if rejected else CASYS_DIM
 
         stop_text = Text()
@@ -280,7 +280,7 @@ def build_exit_plans(state: dict, *, now: datetime) -> RenderableType:
         protect_style = CASYS_MUTED if protect != "—" else CASYS_DIM
 
         # REVIEWED
-        rev_label, rev_style = _reviewed_cell(plan, amend_rejected)
+        rev_label, rev_style = _reviewed_cell(plan, exit_update_rejected)
 
         grid.add_row(
             Text(sym, style=f"bold {CASYS_FG}"),
@@ -296,7 +296,7 @@ def build_exit_plans(state: dict, *, now: datetime) -> RenderableType:
     footnote = Text()
     footnote.append("every open position carries a resolved hard stop · ", style=CASYS_FAINT)
     footnote.append("▲", style=CASYS_WARNING)
-    footnote.append(" = last amend attempt rejected by guardrails", style=CASYS_FAINT)
+    footnote.append(" = last exit update attempt rejected by guardrails", style=CASYS_FAINT)
     return Group(grid, Text(""), footnote)
 
 
@@ -312,7 +312,7 @@ def build_exit_plans_compact(
     if not plans:
         return Text("no exit plans — every position needs a stop", style=f"italic {CASYS_FAINT}")
 
-    amend_rejected = _amend_rejected_symbols(state)
+    exit_update_rejected = _exit_update_rejected_symbols(state)
     plans_sorted = sorted(plans, key=lambda p: _stop_distance_sort_key(p, state))
     shown = plans_sorted if limit is None else plans_sorted[:limit]
 
@@ -330,11 +330,11 @@ def build_exit_plans_compact(
 
         ref = f.price_for_symbol(state, sym) or _safe_float(plan.get("entry_price"), default=None)
         left_pct = f.stop_left_pct(plan, ref)
-        rejected = sym in amend_rejected
+        rejected = sym in exit_update_rejected
         stop_str = f"{left_pct:.1f}%" if left_pct is not None else "—"
         stop_style = CASYS_ERROR if (rejected or (left_pct is not None and abs(left_pct) <= 3.0)) else CASYS_DIM
 
-        rev_label, rev_style = _reviewed_cell(plan, amend_rejected)
+        rev_label, rev_style = _reviewed_cell(plan, exit_update_rejected)
         tail = Text()
         tail.append(_tp_label(plan), style=CASYS_DIM)
         tail.append("  ", style=CASYS_DIM)

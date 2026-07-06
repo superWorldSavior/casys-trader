@@ -16,7 +16,7 @@ def test_summarize_extrait_les_ouvertures_recalees_gross() -> None:
 
 def test_summarize_compte_add_comme_augmentation_exposition() -> None:
     decisions = [
-        {"symbol": "A", "intent": "ADD", "reason": "risk:gross_exposure_exceeded"},
+        {"symbol": "A", "intent": "SCALE_IN", "reason": "risk:gross_exposure_exceeded"},
         {"symbol": "B", "intent": "OPEN_LONG", "reason": "risk:gross_exposure_exceeded"},
     ]
 

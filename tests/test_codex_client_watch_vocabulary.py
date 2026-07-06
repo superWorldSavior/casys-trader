@@ -75,10 +75,10 @@ def test_single_request_context_contract_liste_les_indicateurs_canoniques_valide
         assert indicator in contract, f"indicateur REQUEST_CONTEXT single manquant: {indicator}"
 
 
-def test_batch_request_context_contract_liste_les_indicateurs_canoniques_valides() -> None:
-    contract = _request_context_contract(_batch_prompt())
-    for indicator in DEFAULT_INDICATORS:
-        assert indicator in contract, f"indicateur REQUEST_CONTEXT batch manquant: {indicator}"
+def test_batch_prompt_n_expose_plus_request_context_inline() -> None:
+    prompt = _batch_prompt()
+    assert '"action": "REQUEST_CONTEXT"' not in prompt
+    assert '"action":"REQUEST_CONTEXT"' not in prompt
 
 
 def test_guidance_decrit_request_context_avec_indicators_pluriel() -> None:
@@ -91,7 +91,9 @@ def test_guidance_decrit_les_plans_armes_execute_order() -> None:
     # D7 étage B : le contrat agent expose EXECUTE_ORDER et ses exigences
     prompt = _batch_prompt()
     assert "EXECUTE_ORDER" in prompt
-    assert "hard_stop" in prompt  # stop obligatoire à l'armement
+    assert "strategy_entry" in prompt
+    assert '"direction":"long|short"' in prompt
+    assert '"exit":{"stop"' in prompt
     assert "sans re-appel" in prompt.lower()
 
 

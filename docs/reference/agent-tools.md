@@ -45,13 +45,15 @@ Format agent visible :
       "decision_reason_code": "ENTRY_SIGNAL",
       "calls": [
         {
-          "tool": "propose_order",
+          "tool": "strategy_entry",
           "args": {
-            "intent": "OPEN_LONG",
+            "id": "long",
+            "direction": "long",
             "qty": 20,
             "exit": {
+              "id": "bracket",
+              "limit": 78.5,
               "stop": {"struct": "swing_low", "window": 24},
-              "tp": [{"r": 1.4, "fraction": 0.5}],
               "protect": {"arm_r": 1.0, "giveback": 0.35, "lock_r": 0.25}
             }
           }
@@ -70,54 +72,70 @@ Action tools acceptés :
 
 | Tool | Remplace | Effet réel |
 |---|---|---|
-| `propose_order` | `action` / `quantity` / `intent` + `exit_plan` | `position intent` : compile une intention (`intent` OPEN_LONG/OPEN_SHORT/REDUCE/CLOSE/REVERSE/ADD) ; le daemon valide puis RiskGate/broker. Options : `thesis` (L6), side/qty position-aware (L2, ci-dessous) |
-| `amend_exit` | — *(nouveau, L3)* | `exit rule` : patche le plan de sortie d'une position **déjà ouverte** (`stop`/`tp`/`trail`/`protect`, même grammaire canonique que `propose_order.exit`) sans fermer/rouvrir ; no-op tracé si pas de plan ouvert. Peut coexister avec `calls:[]` (HOLD + gestion active) |
+| `strategy_entry` | `direction` / `qty` ou `risk_pct` / `exit` | `position intent` Pine-like : `direction:"long|short"` ouvre si flat, renforce si même sens, retourne si sens opposé ; le daemon compile ensuite vers `action` / `intent` / `exit_plan` internes puis valide via RiskGate/broker. Options : `qty`, `risk_pct`, `exit`, `thesis` |
+| `strategy_exit` | plan de sortie / amendement de sortie | `exit rule` : patche le plan de sortie d'une position **déjà ouverte** (`limit`, `stop`, `trail`, `protect`, `exit_watch`) sans fermer/rouvrir ; no-op tracé si pas de plan ouvert. Peut coexister avec `calls:[]` (HOLD + gestion active) |
+| `strategy_close` | fermeture / réduction position-aware | sortie marché immédiate : sans taille ferme toute la position ; `qty_percent<100` réduit une fraction ; `qty` réduit une quantité absolue |
 | `set_next_wake` | `next_wake_in_minutes` | planifie la **reconsultation** du symbole : `{minutes}` (timer), `{on: session_open\|macro_event\|pre_earnings}` (événement calendaire) ou `{when:<condition>}` (réveil-sur-indicateur, compilé en `WAKE`) |
 | `propose_indicator_watch` | `indicator_watch` | pose une veille/plan armé via le scheduler (`WAKE` = réveil de reconsultation ; `EXECUTE_ORDER` = **plan armé** exécuté sans reconsulter) |
-| `cancel_watch` | `cancel_watch_ids` | annule seulement les veilles possédées par le symbole |
+| `cancel_watch` | `id` / `ids` / `watch_ids` | annule seulement les veilles possédées par le symbole |
 | `record_learning` | `learning` | borne et persiste une note runtime |
 
-**Typologie trading officielle** :
+**Grammaire Pine-like JSON officielle** :
 
-- `position intent` = changer l'exposition (`propose_order`) : ouvrir, renforcer,
-  réduire, fermer ou retourner une position.
-- `exit rule` = règle attachée à une position ouverte (`propose_order.exit` à
-  l'entrée, puis `amend_exit` pour patcher) : stop, TP, trailing, protection de
-  gain, review/temps.
+- `position intent` = changer l'exposition (`strategy_entry`) : ouvrir une
+  nouvelle jambe longue ou short.
+- `exit rule` = règle attachée à une position ouverte (`strategy_entry.exit` à
+  l'entrée, puis `strategy_exit` pour patcher) : stop, TP, trailing, protection
+  de gain, review/temps.
+- `strategy_close` = sortie marché immédiate position-aware : fermer ou réduire
+  l'exposition existante sans fournir de side/action.
 - `review wake` = reconsultation par le LLM (`set_next_wake`) : timer, événement
   calendaire ou condition indicateur qui réveille l'agent.
 - `armed plan` = exécution daemon sans reconsultation (`propose_indicator_watch`
   en `EXECUTE_ORDER`) : scénario armé qui repasse quand même par les gates
   déterministes.
 
-**Modèle de sortie** : à terme, `stop`, `tp`, `trail` et `protect` doivent se
-lire comme des règles de sortie composées d'un déclencheur et d'une action. Le
-protocole garde encore des champs distincts pour compatibilité, mais ils portent
-la même famille de logique : un `tp` peut être en R ou en prix, un `stop` peut
-être structurel ou absolu, et un `amend_exit.stop` sur position déjà ouverte peut
-servir de protection de gain sous un swing récent. Dans ce dernier cas, le daemon
-accepte un stop au-dessus de l'entrée d'un long seulement s'il reste sous le prix
-courant ; symétriquement, un short doit garder le stop au-dessus du prix courant.
+**Modèle de sortie** : l'inspiration publique est `strategy.exit` de Pine Script,
+mais en JSON MCP plutôt qu'en script. `strategy_exit.limit` = take-profit absolu,
+`strategy_exit.stop` = stop absolu ou structurel, et `limit+stop` dans
+`strategy_exit` signifie **bracket de sortie** (TP + stop), pas stop-limit.
+`qty_percent` omis = 100 %. Pour l'instant, `qty_percent` ne s'applique qu'à
+`limit` seul pour un scale-out. `limit+stop` avec `qty_percent<100` est rejeté
+pour l'instant
+(`partial_bracket_exit_not_supported`) tant que la réservation/OCA partielle
+n'est pas native ; `stop` avec `qty_percent<100` est rejeté
+(`partial_stop_exit_not_supported`). Un `strategy_exit.stop` sur position déjà
+ouverte peut aussi servir de protection de gain sous un swing récent. Dans ce
+dernier cas, le daemon accepte un stop au-dessus de l'entrée d'un long seulement
+s'il reste sous le prix courant ; symétriquement, un short doit garder le stop
+au-dessus du prix courant.
 
 **Réveil vs plan armé** : `set_next_wake` = **reconsultation** (l'agent reprend la main pour redécider). Avec `{when:<condition>}`, il est compilé en `indicator_watch{on_trigger:WAKE}`. `propose_indicator_watch{on_trigger:EXECUTE_ORDER}` = **automatisation** (le daemon exécute sans reconsulter l'agent). `set_next_wake{when}` et `propose_indicator_watch` dans la même décision sont rejetés comme ambigus.
 
-**Side de `propose_order`** : `OPEN_LONG`→BUY et `OPEN_SHORT`→SELL sont déduits
-automatiquement. **`CLOSE`/`REDUCE`/`REVERSE` dérivent aussi la side depuis la
-position au portefeuille (L2, Phase 6)** : `CLOSE` ferme toute la position (qty
-omise ou ignorée) ; `REDUCE` accepte `fraction:0.5` ou `qty` absolue ; `REVERSE`
-dérive la side mais requiert `qty` (nouvelle jambe). Si `side:BUY|SELL` est fourni
-explicitement, il est utilisé tel quel (compat). Fail-safe : position=0 → HOLD
-tracé `nothing_to_close`.
+**Position-aware** : `strategy_entry.direction:"long"` déduit BUY et
+`direction:"short"` déduit SELL. Si le symbole est flat, l'intention interne
+reste `OPEN_LONG`/`OPEN_SHORT`. Si la position existe déjà dans le même sens, le
+daemon compile en renforcement interne (`SCALE_IN`) ; si elle existe dans l'autre sens,
+il compile en retournement interne (`FLIP`). `risk_pct` sans `qty` est réservé
+à une nouvelle entrée flat ; pour renforcer/retourner une position existante,
+fournis `qty`. `strategy_close` dérive la side depuis la position au portefeuille :
+sans taille il ferme toute la position ; avec `qty_percent<100` il réduit une
+fraction ; avec `qty` il réduit une quantité absolue. Fail-safe : position=0 →
+HOLD tracé `nothing_to_close`.
+Pour une nouvelle entrée avec bracket/protection, les règles de sortie vont dans
+`strategy_entry.exit`. `strategy_exit` est réservé aux positions déjà ouvertes ;
+`strategy_entry + strategy_exit` sur le même symbole est rejeté.
 
-**`thesis` de `propose_order`** *(optionnel, L6)* : `{setup, horizon:"intraday|swing|position",
+**`thesis` de `strategy_entry`** *(optionnel, L6)* : `{setup, horizon:"intraday|swing|position",
 invalidation}` — tag **structuré** persisté sur la décision (`decisions.jsonl`) pour
 l'attribution et le RAG learnings (corréler setup → résultat). Fail-safe : un thesis
 malformé/partiel est ignoré (jamais de décision cassée). Branchement RAG = backlog.
 
-Vocabulaire compact de `propose_order.args.exit` :
+Vocabulaire compact de `strategy_entry.args.exit` et `strategy_exit.args` :
 
 | Compact | Interne |
 |---|---|
+| `limit` | `take_profits[{type:"price", price, fraction}]` |
 | `stop` | `hard_stop` |
 | `tp[{r,...}]` | `take_profits[{type:"risk_multiple", r,...}]` |
 | `trail{type,value}` | `trailing_stop{trail_type, trail_value}` |
@@ -125,11 +143,11 @@ Vocabulaire compact de `propose_order.args.exit` :
 | `protect.giveback` | `profit_protection.trigger_on_giveback_pct` |
 | `protect.lock_r` | remonte le stop à `entry +/- lock_r * R` au déclenchement |
 
-**Compat cachée** : le parser conserve des aliases historiques (`hard_stop`,
-`stop_loss`, `sl`, `take_profits`, `profit_protection`, `after_r`,
-`enabled_after_r`, `activate_after_r`, `protect_r`, `lock_in_r`) pour absorber les
-réponses LLM et les traces legacy. Ils ne sont pas le vocabulaire recommandé :
-la forme agent officielle reste `stop`, `tp`, `trail`, `protect`.
+**Contrat strict** : les seuls action tools d'ordre/sortie acceptés au runtime
+sont `strategy_entry`, `strategy_exit` et `strategy_close`. `exit_update` reste un
+champ interne de décision/ledger produit par `strategy_exit`, pas un outil agent.
+Les anciens états doivent être migrés avant d'être relus comme historique
+durable.
 
 **OCO ratchet (L7)** : un take-profit avec `after_fill:"move_stop_to_tp"` déplace le
 `hard_stop` au niveau du TP au moment du fill (monotone — ne rétrograde jamais un stop

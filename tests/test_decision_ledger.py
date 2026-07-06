@@ -207,7 +207,10 @@ def test_build_decision_row_propage_les_nouveaux_champs_audit_runtime() -> None:
             "next_wake_event_iso": "2026-06-09T13:30:00+00:00",
             "risk_pct_target": 0.005,
             "risk_qty_derived": True,
-            "amend_exit": {"hard_stop": 97.0},
+            "exit_update": {"hard_stop": 97.0},
+            "exit_update_applied": True,
+            "exit_update_trace": {"hard_stop": {"resolved_price": 97.0}},
+            "exit_update_warnings": [{"code": "hard_stop_below_min_pct"}],
         }
     )
     report = _report([decision])
@@ -218,7 +221,11 @@ def test_build_decision_row_propage_les_nouveaux_champs_audit_runtime() -> None:
     assert row["runtime"]["next_wake_event_iso"] == "2026-06-09T13:30:00+00:00"
     assert row["runtime"]["risk_pct_target"] == 0.005
     assert row["runtime"]["risk_qty_derived"] is True
-    assert row["runtime"]["amend_exit"] is True
+    assert row["runtime"]["exit_update"] is True
+    assert row["runtime"]["exit_update_applied"] is True
+    assert row["runtime"]["exit_update_reason"] is None
+    assert row["runtime"]["exit_update_trace"] == {"hard_stop": {"resolved_price": 97.0}}
+    assert row["runtime"]["exit_update_warnings"] == [{"code": "hard_stop_below_min_pct"}]
 
 
 def test_build_decision_row_propage_data_source_runtime() -> None:

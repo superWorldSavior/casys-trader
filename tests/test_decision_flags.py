@@ -30,7 +30,7 @@ def test_extract_flags_deduplique_tool_detail_et_runtime_warning() -> None:
             "tool_calls": [
                 {
                     "id": "call-1",
-                    "tool": "propose_order",
+                    "tool": "strategy_entry",
                     "outcome": "executed",
                     "detail": {"warnings": [warning]},
                 }
@@ -47,7 +47,7 @@ def test_extract_flags_deduplique_tool_detail_et_runtime_warning() -> None:
             "intent": "OPEN_LONG",
             "executed": True,
             "reason": "ok",
-            "tool": "propose_order",
+            "tool": "strategy_entry",
             "outcome": "executed",
             "source": "tool_call",
             "code": "risk_per_trade_exceeded",
@@ -100,13 +100,44 @@ def test_extract_flags_cree_un_flag_de_refus_sans_warning_outil() -> None:
             "intent": "OPEN_LONG",
             "executed": False,
             "reason": "risk:order_value_exceeded",
-            "tool": "propose_order",
+            "tool": "strategy_entry",
             "outcome": "blocked",
             "source": "decision_reason",
             "code": "order_value_exceeded",
             "context": "order_value=12000 max_order_value=10000",
         }
     ]
+
+
+def test_extract_flags_route_les_sorties_position_aware_vers_strategy_close() -> None:
+    row = _row(
+        action="SELL",
+        intent="CLOSE",
+        executed=False,
+        reason="risk:nothing_to_close",
+        runtime={},
+    )
+
+    flags = extract_flags(row)
+
+    assert flags[0]["tool"] == "strategy_close"
+    assert flags[0]["code"] == "nothing_to_close"
+
+
+def test_extract_flags_route_flip_et_scale_in_vers_strategy_entry() -> None:
+    for intent in ("FLIP", "SCALE_IN"):
+        row = _row(
+            action="BUY",
+            intent=intent,
+            executed=False,
+            reason="risk:gross_exposure_exceeded",
+            runtime={},
+        )
+
+        flags = extract_flags(row)
+
+        assert flags[0]["tool"] == "strategy_entry"
+        assert flags[0]["code"] == "gross_exposure_exceeded"
 
 
 def test_extract_flags_ignore_hold_quiet_gate_synthetique() -> None:

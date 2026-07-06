@@ -6,8 +6,8 @@ Direction : services au boot (pas de barres dans le payload). Prêt à coder apr
 **Issue** : #2 (prérequis technique de #1 « Brique 3 — analyse individuelle enrichie »).
 **Branche/worktree** : `feat/queue-decide-tool-round` (`.claude/worktrees/queue-decide-tool-round`).
 **Décisions (§11)** : Q1 = **B propre (resolver-service au boot)** · Q2 = **(a) mécanique
-complète extensible, multi-tour paramétrable** · Q3 = **`None`** (issue #4) · Q4 = **tool
-round moderne seul** (pas de `ContextResearchRequest` legacy).
+complète extensible, multi-tour paramétrable** · Q3 = **registre read-only courant
+seulement** · Q4 = **tool round moderne seul** (pas de `ContextResearchRequest` legacy).
 **Fact-check** : V1 Codex intégré (§10) ; V2 sur cette révision à faire avant GO.
 
 ---
@@ -46,7 +46,8 @@ au lieu de closures par cycle, orchestration de round **paramétrable en nombre 
   Brique 3. Ici on construit la **mécanique** qui la rend triviale (paramètre `max_rounds`),
   on ne l'active pas au-delà de la parité batch. `ToolRoundLimits` = 24 calls / 3 par
   symbole (`core.py:191-196`) inchangé.
-- Câbler `get_position_risk` / `get_recent_decisions` (= `None` même en batch, issue #4).
+- Réintroduire les anciens placeholders `get_position_risk` / `get_recent_decisions`
+  (hors registre courant ; voir `docs/reference/agent-tools.md`).
 - Toucher le mode batch (inchangé).
 
 ## 3. Cartographie de l'existant (source de vérité)
@@ -113,7 +114,8 @@ Le `ToolContext` du worker se compose de **deux sources** :
      `planner_batch.py:256`.
    - `learnings_recall_provider` : service-factory au boot (store `_recall_store` **SQLite locké**
      `store.py` + `now_fn` **dynamique**, pas un `now` figé).
-   - `get_position_risk`/`get_recent_decisions` restent `None` (issue #4, orthogonal).
+   - Les anciens placeholders `get_position_risk`/`get_recent_decisions` restent hors
+     registre courant (orthogonal).
 
 Le handler orchestre ensuite `run_tool_round` + tour final (factorisé de
 `planner_batch.py:326-388`) **sur 1 symbole**, paramétrable `max_rounds` (défaut 1).
@@ -344,7 +346,8 @@ intégrés ci-dessus. Résumé :
   `data_source` singleton ; fetch frais ; pas de barres dans le payload. + ressource `yahoo`.
 - **Q2 → (a) mécanique complète et extensible.** Orchestration `max_rounds` paramétrable
   (défaut 1 = parité batch) ; la **politique** multi-tour approfondi reste #1 Brique 3.
-- **Q3 → `None`.** `get_position_risk`/`get_recent_decisions` non câblés (issue #4).
+- **Q3 → registre read-only courant seulement.** `get_position_risk`/`get_recent_decisions`
+  restent hors registre courant (orthogonal).
 - **Q4 → tool round moderne seul.** `allow_tool_calls=True`, `allow_context_request=False` ;
   pas de `ContextResearchRequest` legacy (`get_indicator_context` = voie moderne, `prompts.py:491`).
 

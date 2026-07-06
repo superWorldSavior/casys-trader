@@ -26,8 +26,9 @@ des symboles à décider. Ordre d'assemblage :
 6. `_TOOL_CATALOG` — **seulement si** `allow_tool_calls` (cf. [agent-tools](agent-tools.md)).
 7. `# Contexte partagé (JSON)` — `shared_context`.
 8. `# Symboles à décider (JSON)` — `symbols_payload`.
-9. `# Contrat de sortie` — `_batch_compact_contract()` si `allow_context_request`
-   (l'agent peut demander plus de contexte), sinon `_batch_final_contract()`.
+9. `# Contrat de sortie` — contrat final `symbol_calls` canonique. Le flag
+   `use_symbol_calls_contract` reste accepté pour compatibilité d'appel mais ne
+   réactive plus l'ancien schéma inline.
 
 Enums injectés (source de vérité côté code) : indicateurs de veille
 (`DEFAULT_INDICATORS`), opérateurs (`WATCH_VALID_OPERATORS`), codes de raison
@@ -35,13 +36,20 @@ Enums injectés (source de vérité côté code) : indicateurs de veille
 
 ## Le contrat de sortie
 
-JSON strict par symbole : `action`, `quantity`, `confidence`, `intent`, `rationale`,
-`exit_plan` (hard_stop **fortement recommandé, PAS obligatoire** — l'agent choisit
-son niveau), `next_wake_in_minutes`, `indicator_watch` (veille/plan armé),
-`cancel_watch_ids`, `learning` (note apprise, `string|null`), `decision_reason_code`.
+JSON strict par symbole :
+`{"symbol","confidence","rationale","decision_reason_code","calls":[...]}`.
+`calls: []` signifie HOLD explicite.
 
-**Alternative** : `action: "REQUEST_CONTEXT"` — un objet entier (pas un champ) qui
-retourne une `ContextResearchRequest` pour demander plus d'indicateurs.
+La grammaire de trading publique est Pine-like JSON :
+`strategy_entry`, `strategy_exit`, `strategy_close`, plus
+`set_next_wake`, `propose_indicator_watch`, `cancel_watch`, `record_learning`.
+Le parser compile ces calls vers les primitives internes `Decision`
+(`action`, `quantity`, `intent`, `exit_plan`, `exit_update`, veilles, learnings).
+
+Le chemin moderne de recherche de contexte passe par les tool rounds read-only
+(`get_indicator_context`, `get_active_plans`, etc.). Le chemin single-symbol garde
+encore `REQUEST_CONTEXT` en compatibilité parser, mais le batch/queue runtime expose
+la grammaire `calls`.
 
 Parsé/validé par `agent/protocol/parsing` → toute réponse douteuse **dégrade en
 HOLD** (fail-safe, cf. `codex_client`).

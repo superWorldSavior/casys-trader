@@ -15,7 +15,7 @@ class FillAccounting:
 
 def llm_exit_reason_for_intent(intent: str | None) -> str | None:
     """Deterministic label for exits requested by the LLM."""
-    return "llm_exit" if intent in {"CLOSE", "REDUCE", "REVERSE"} else None
+    return "llm_exit" if intent in {"CLOSE", "REDUCE", "FLIP"} else None
 
 
 def build_fill_accounting(

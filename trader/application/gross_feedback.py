@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 
 GROSS_REJECT_REASON = "risk:gross_exposure_exceeded"
-OPENING_INTENTS = frozenset({"OPEN_LONG", "OPEN_SHORT", "REVERSE", "ADD"})
+OPENING_INTENTS = frozenset({"OPEN_LONG", "OPEN_SHORT", "FLIP", "SCALE_IN"})
 
 
 def summarize_gross_rejections(decisions: Sequence[Mapping[str, object]]) -> dict | None:

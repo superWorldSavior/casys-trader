@@ -10,7 +10,7 @@ from trader.application import planned_exits
 from trader.execution.contracts import Position
 from trader.planning.trade_plan import TradePlan, create_trade_plan, create_trade_plan_from_order
 
-OPENING_INTENTS = {"OPEN_LONG", "OPEN_SHORT", "REVERSE", "ADD"}
+OPENING_INTENTS = {"OPEN_LONG", "OPEN_SHORT", "FLIP", "SCALE_IN"}
 
 
 class PositionReader(Protocol):
@@ -54,7 +54,7 @@ def apply_filled_plan_effects(
     entry_context: dict,
 ) -> None:
     """Apply trade-plan mutations and decision-entry snapshots after a fill."""
-    if intent in {"CLOSE", "REVERSE"} and not queue_execute_enabled:
+    if intent in {"CLOSE", "FLIP"} and not queue_execute_enabled:
         plan_store.close_symbol(symbol)
 
     if intent == "REDUCE":
@@ -72,8 +72,8 @@ def apply_filled_plan_effects(
         "entry_context": copy.deepcopy(dict(entry_context)),
     }
 
-    if intent == "REVERSE":
-        _apply_reverse_plan_effects(
+    if intent == "FLIP":
+        _apply_flip_plan_effects(
             entry=entry,
             broker=broker,
             plan_store=plan_store,
@@ -94,7 +94,7 @@ def apply_filled_plan_effects(
     plan_quantity = quantity
     plan_entry_price = price
     add_previous_plan: TradePlan | None = None
-    if intent == "ADD":
+    if intent == "SCALE_IN":
         final_position = broker.positions().get(symbol)
         plan_quantity = 0.0 if final_position is None else abs(final_position.quantity)
         if final_position is not None and final_position.avg_price > 0.0:
@@ -125,7 +125,7 @@ def apply_filled_plan_effects(
     entry["trade_plan"] = planned_exits.plan_snapshot(plan)
 
 
-def _apply_reverse_plan_effects(
+def _apply_flip_plan_effects(
     *,
     entry: dict,
     broker: PositionReader,

@@ -10,7 +10,7 @@ Couvre :
   - Précondition StateDb (FIX 2) : dbs différents → RuntimeError immédiat,
     aucune écriture.
   - dry_run (FIX 3) : aucune écriture broker NI plan, task complétée.
-  - REVERSE = close + upsert (FIX 4) : les deux dans la même UoW, atomicité
+  - FLIP = close + upsert (FIX 4) : les deux dans la même UoW, atomicité
     garantie (exception sur upsert rollback aussi le close).
   - Idempotence : complete_in_tx sur tâche déjà 'done' = sans effet (fencing).
   - Rétro-compat : submit/upsert/close_symbol/complete publics inchangés.
@@ -536,19 +536,19 @@ class TestPrecondition:
 
 
 # ---------------------------------------------------------------------------
-# Classe 5 — REVERSE = close + upsert dans la même UoW (FIX 4)
+# Classe 5 — FLIP = close + upsert dans la même UoW (FIX 4)
 # ---------------------------------------------------------------------------
 
 
 class TestReverse:
     """FIX 4 : symbol_to_close ET plan_to_upsert non exclusifs.
 
-    REVERSE ferme l'ancien plan PUIS ouvre le nouveau dans la même transaction.
+    FLIP ferme l'ancien plan PUIS ouvre le nouveau dans la même transaction.
     Exception sur l'upsert rollback aussi le close.
     """
 
     def test_reverse_close_and_upsert_atomically(self, tmp_path: Path) -> None:
-        """REVERSE : ancien plan fermé ET nouveau plan créé dans la même UoW."""
+        """FLIP : ancien plan fermé ET nouveau plan créé dans la même UoW."""
         db, broker, plan_store, ledger = _make_stack(tmp_path)
 
         # Pré-insère un plan LONG AAPL (position courante)
@@ -557,7 +557,7 @@ class TestReverse:
 
         task_id, token = _enqueue_and_claim(ledger, dedup="reverse-1")
 
-        # Nouveau plan SHORT (après REVERSE)
+        # Nouveau plan SHORT (après FLIP)
         new_plan = TradePlan(
             id="AAPL-short-new",
             symbol="AAPL",
@@ -581,7 +581,7 @@ class TestReverse:
             llm_fallback_reason=None,
             llm_confidence=0.80,
             last_llm_review=None,
-            entry_thesis="REVERSE thesis",
+            entry_thesis="FLIP thesis",
             entry_decision_id="dec-rev-001",
             entry_context=None,
         )
@@ -620,7 +620,7 @@ class TestReverse:
     def test_reverse_exception_on_upsert_rolls_back_close(
         self, tmp_path: Path, monkeypatch
     ) -> None:
-        """Exception sur upsert rollback aussi le close : atomicité REVERSE garantie."""
+        """Exception sur upsert rollback aussi le close : atomicité FLIP garantie."""
         db, broker, plan_store, ledger = _make_stack(tmp_path)
 
         # Pré-insère un plan LONG AAPL
@@ -631,11 +631,11 @@ class TestReverse:
         cash_before = broker.cash()
 
         def _failing_upsert_in_tx(cur, plan):
-            raise RuntimeError("injected upsert fail on REVERSE")
+            raise RuntimeError("injected upsert fail on FLIP")
 
         monkeypatch.setattr(plan_store, "upsert_in_tx", _failing_upsert_in_tx)
 
-        with pytest.raises(RuntimeError, match="injected upsert fail on REVERSE"):
+        with pytest.raises(RuntimeError, match="injected upsert fail on FLIP"):
             execute_order_unit(
                 db=db,
                 broker=broker,
