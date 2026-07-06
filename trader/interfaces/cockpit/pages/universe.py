@@ -660,7 +660,6 @@ class UniversePage(ResizeRefresh, Static):
         height: 100%;
     }
     UniversePage #universe-right {
-        width: 46;
         height: 100%;
     }
     UniversePage #rotation-panel { height: auto; margin-bottom: 1; }
@@ -685,7 +684,7 @@ class UniversePage(ResizeRefresh, Static):
         with VerticalScroll(id="universe-left", classes="casys-panel") as panel:
             panel.border_title = f"UNIVERSE — {0} symbols · 0 venues"
             yield SymbolTable(id="universe-table")
-        with Vertical(id="universe-right"):
+        with Vertical(id="universe-right", classes="right-col"):
             with VerticalScroll(id="rotation-panel", classes="casys-panel") as rot:
                 rot.border_title = "ROTATION — automatic"
                 yield Static(id="rotation-body")

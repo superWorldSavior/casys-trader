@@ -764,8 +764,8 @@ def test_build_next_to_fire_adaptive_limit():
 # ---------------------------------------------------------------------------
 
 
-async def test_plans_page_mounts_via_key_4(tmp_path, monkeypatch):
-    """La touche 4 navigue vers la PlansPage qui doit monter sans crash."""
+async def test_playbook_mounts_in_decisions(tmp_path, monkeypatch):
+    """Rév. 3 : le playbook (armed/exits/watches/next-to-fire) vit sur la page decisions."""
     _make_minimal_state(tmp_path)
     _patch_paths(monkeypatch, tmp_path)
     (tmp_path / "decisions.jsonl").write_text("{}\n", encoding="utf-8")
@@ -773,21 +773,19 @@ async def test_plans_page_mounts_via_key_4(tmp_path, monkeypatch):
     app = CockpitApp()
     async with app.run_test(size=(220, 60)) as pilot:
         await pilot.pause()
-        await pilot.press("4")
+        await pilot.press("3")
         await pilot.pause()
-        assert app._active_page_key == "plans"
-        plans_page = app.query_one("#plans-page", PlansPage)
-        assert plans_page.display is True
-        # Les panneaux doivent être dans le DOM
+        assert app._active_page_key == "decisions"
         assert app.query_one("#armed-panel") is not None
-        assert app.query_one("#exit-plans-panel") is not None
-        assert app.query_one("#watches-panel") is not None
-        assert app.query_one("#exit-watches-panel") is not None
-        assert app.query_one("#fire-panel") is not None
+        assert app.query_one("#exits-panel") is not None
+        assert app.query_one("#playbook-watches-panel") is not None
+        assert app.query_one("#playbook-fire-panel") is not None
 
 
-async def test_plans_page_update_state_etat_vide(tmp_path, monkeypatch):
-    """update_state avec state vide ne plante pas."""
+async def test_playbook_update_state_etat_vide(tmp_path, monkeypatch):
+    """update_state du playbook avec états partiels ne plante pas."""
+    from trader.interfaces.cockpit.pages.decisions import DecisionsPage
+
     _make_minimal_state(tmp_path)
     _patch_paths(monkeypatch, tmp_path)
     (tmp_path / "decisions.jsonl").write_text("{}\n", encoding="utf-8")
@@ -795,43 +793,42 @@ async def test_plans_page_update_state_etat_vide(tmp_path, monkeypatch):
     app = CockpitApp()
     async with app.run_test(size=(220, 60)) as pilot:
         await pilot.pause()
-        await pilot.press("4")
+        await pilot.press("3")
         await pilot.pause()
-        page = app.query_one("#plans-page", PlansPage)
-        # update_state avec des states partiels ne doit jamais lever d'exception
+        page = app.query_one("#decisions-page", DecisionsPage)
         page.update_state({})
         page.update_state({"indicator_watches": None, "trade_plans": None})
         page.update_state({"indicator_watches": [], "trade_plans": []})
 
 
-async def test_plans_page_update_state_with_full_data(tmp_path, monkeypatch):
-    """update_state avec données complètes met à jour les titres des panneaux."""
+async def test_playbook_update_state_with_full_data(tmp_path, monkeypatch):
+    """Titres du playbook mis à jour depuis les données armed/exits."""
+    from trader.interfaces.cockpit.pages.decisions import DecisionsPage
+
     _make_minimal_state(tmp_path)
     _patch_paths(monkeypatch, tmp_path)
     (tmp_path / "decisions.jsonl").write_text("{}\n", encoding="utf-8")
 
     state = {
+        "armed_plans": [
+            {
+                "symbol": "TEST",
+                "on_trigger": "EXECUTE_ORDER",
+                "expires_at": FUTURE,
+                "logic": "all",
+                "conditions": [{"indicator": "RS", "op": ">", "value": 50, "timeframe": "1h"}],
+                "order": {"action": "BUY", "qty": 5},
+            }
+        ],
         "indicator_watches": [
             {
                 "symbol": "TEST",
                 "on_trigger": "EXECUTE_ORDER",
                 "expires_at": FUTURE,
                 "logic": "all",
-                "conditions": [
-                    {"indicator": "RS", "op": ">", "value": 50, "timeframe": "1h"}
-                ],
+                "conditions": [{"indicator": "RS", "op": ">", "value": 50, "timeframe": "1h"}],
                 "order": {"action": "BUY", "qty": 5},
-            },
-            {
-                "symbol": "WATCH",
-                "on_trigger": "WAKE",
-                "expires_at": FUTURE,
-                "created_at": "2026-07-06T00:00:00+00:00",
-                "logic": "all",
-                "conditions": [
-                    {"indicator": "z", "op": "<=", "value": 1.0, "timeframe": "1h"}
-                ],
-            },
+            }
         ],
         "trade_plans": [
             {
@@ -849,23 +846,11 @@ async def test_plans_page_update_state_with_full_data(tmp_path, monkeypatch):
     app = CockpitApp()
     async with app.run_test(size=(220, 60)) as pilot:
         await pilot.pause()
-        await pilot.press("4")
+        await pilot.press("3")
         await pilot.pause()
-        page = app.query_one("#plans-page", PlansPage)
-        # fige l'état de l'app : le mixin ResizeRefresh re-rend depuis
-        # app._last_state — sans ça le refresh périodique écrase les données
+        page = app.query_one("#decisions-page", DecisionsPage)
         app._last_state = state
         page.update_state(state)
         await pilot.pause()
-
-        # Titre ARMED doit être "ARMED — 1"
-        armed_panel = app.query_one("#armed-panel")
-        assert "1" in (armed_panel.border_title or "")
-
-        # Titre EXIT PLANS contient le count
-        ep_panel = app.query_one("#exit-plans-panel")
-        assert "1" in (ep_panel.border_title or "")
-
-        # Titre WATCHES contient le count
-        wt_panel = app.query_one("#watches-panel")
-        assert "1" in (wt_panel.border_title or "")
+        assert "1" in (app.query_one("#armed-panel").border_title or "")
+        assert "1" in (app.query_one("#exits-panel").border_title or "")

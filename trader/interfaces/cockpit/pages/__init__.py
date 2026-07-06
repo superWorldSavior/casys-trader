@@ -19,15 +19,15 @@ class PageSpec:
     widget_id: str
 
 
+# Révision 3 : Plans fusionnée dans Decisions (playbook à droite) → 7 pages.
 PAGES: tuple[PageSpec, ...] = (
     PageSpec("home", 1, "home", "home-page"),
     PageSpec("portfolio", 2, "portfolio", "portfolio-page"),
     PageSpec("decisions", 3, "decisions", "decisions-page"),
-    PageSpec("plans", 4, "plans", "plans-page"),
-    PageSpec("health", 5, "health", "health-page"),
-    PageSpec("logs", 6, "logs", "logs-page"),
-    PageSpec("universe", 7, "universe", "universe-page"),
-    PageSpec("settings", 8, "settings", "settings-page"),
+    PageSpec("health", 4, "health", "health-page"),
+    PageSpec("logs", 5, "logs", "logs-page"),
+    PageSpec("universe", 6, "universe", "universe-page"),
+    PageSpec("settings", 7, "settings", "settings-page"),
 )
 
 PAGE_BY_KEY = {page.key: page for page in PAGES}

@@ -310,7 +310,7 @@ async def test_app_mounts_shell_with_casys_theme(tmp_path, monkeypatch):
         assert app.query_one("#nav-rail") is not None
         assert app.query_one("#kpi-band") is not None
         assert app.query_one("#cockpit-footer") is not None
-        for key in ("home", "portfolio", "decisions", "plans", "health", "logs", "universe", "settings"):
+        for key in ("home", "portfolio", "decisions", "health", "logs", "universe", "settings"):
             assert app.query_one(f"#{key}-page") is not None
 
 
@@ -322,7 +322,7 @@ async def test_app_number_keys_navigate_all_pages(tmp_path, monkeypatch):
     async with app.run_test(size=(160, 44)) as pilot:
         await pilot.pause()
         assert app._active_page_key == "home"
-        for number, key in zip("23456781", ("portfolio", "decisions", "plans", "health", "logs", "universe", "settings", "home")):
+        for number, key in zip("2345671", ("portfolio", "decisions", "health", "logs", "universe", "settings", "home")):
             await pilot.press(number)
             assert app._active_page_key == key
 
@@ -564,7 +564,7 @@ async def test_adaptive_columns_drop_on_narrow_terminal(tmp_path, monkeypatch):
     (tmp_path / "decisions.jsonl").write_text("{}\n", encoding="utf-8")
     _write_daemon_alive(tmp_path, monkeypatch)
     app = CockpitApp()
-    async with app.run_test(size=(90, 26)) as pilot:
+    async with app.run_test(size=(70, 26)) as pilot:
         await pilot.pause()
         await pilot.press("2")
         await pilot.pause()

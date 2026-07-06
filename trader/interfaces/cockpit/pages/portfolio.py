@@ -227,14 +227,15 @@ def build_closed_trades(
     if not trips:
         return Text("no closed trades yet", style=f"italic {CASYS_FAINT}")
 
+    reason_w = 12 if wide else 10
     grid = Table.grid(padding=(0, 1))
-    grid.add_column(width=6, no_wrap=True)    # DATE
-    grid.add_column(width=9, no_wrap=True)    # SYM
-    grid.add_column(width=1, no_wrap=True)    # dir
-    grid.add_column(width=6, no_wrap=True)    # P&L $
-    grid.add_column(width=12, no_wrap=True)   # REASON
+    grid.add_column(width=6, no_wrap=True)         # DATE
+    grid.add_column(width=9, no_wrap=True)         # SYM
+    grid.add_column(width=1, no_wrap=True)         # dir
+    grid.add_column(width=9, justify="right", no_wrap=True)  # P&L $ (montant net, jusqu'à ±99,999)
+    grid.add_column(width=reason_w, no_wrap=True)  # REASON
     if wide:
-        grid.add_column(width=5, no_wrap=True)  # DUR
+        grid.add_column(width=5, no_wrap=True)     # DUR
 
     for trip in trips[:limit]:
         symbol = str(trip.get("symbol") or "—")
@@ -243,7 +244,7 @@ def build_closed_trades(
         pnl = _safe_float(trip.get("pnl"), default=0.0) or 0.0
         pnl_style = CASYS_SUCCESS if pnl >= 0 else CASYS_ERROR
         holding_m = trip.get("holding_minutes")
-        reason_raw = str(trip.get("exit_reason") or "—")[:12]
+        reason_raw = str(trip.get("exit_reason") or "—")[:reason_w]
 
         row_cells: list[Text] = [
             Text(_fmt_date_exit(trip.get("exit_ts")), style=CASYS_FAINT),
@@ -346,7 +347,6 @@ class PortfolioPage(ResizeRefresh, Static):
     }
     PortfolioPage #positions-footer { height: auto; }
     PortfolioPage #portfolio-right {
-        width: 44;
         height: 100%;
         layout: vertical;
     }
@@ -374,7 +374,7 @@ class PortfolioPage(ResizeRefresh, Static):
             pos.border_title = "POSITIONS — sorted by |P&L|"
             yield SymbolTable(id="positions-table")
             yield Static(id="positions-footer")
-        with Vertical(id="portfolio-right"):
+        with Vertical(id="portfolio-right", classes="right-col"):
             with VerticalScroll(id="exposure-panel", classes="casys-panel") as exp:
                 exp.border_title = "EXPOSURE"
                 yield Static(id="exposure-body")
@@ -530,7 +530,8 @@ class PortfolioPage(ResizeRefresh, Static):
         try:
             closed_panel = self.query_one("#closed-panel", VerticalScroll)
             _limit = rows_available(closed_panel, reserved=3, minimum=4)
-            _wide = (closed_panel.content_size.width or 40) >= 36
+            # DUR n'apparaît que si les 5 colonnes principales + DUR tiennent (~47 cols)
+            _wide = (closed_panel.content_size.width or 40) >= 48
             self.query_one("#closed-body", Static).update(
                 build_closed_trades(state, now=now, limit=_limit, wide=_wide)
             )

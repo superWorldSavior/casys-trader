@@ -52,7 +52,6 @@ from trader.interfaces.cockpit.pages.decisions import DecisionsPage
 from trader.interfaces.cockpit.pages.health import HealthPage
 from trader.interfaces.cockpit.pages.home import HomePage
 from trader.interfaces.cockpit.pages.logs import AgentTracePane, LogsPage, LogsPane
-from trader.interfaces.cockpit.pages.plans import PlansPage
 from trader.interfaces.cockpit.pages.portfolio import PortfolioPage
 from trader.interfaces.cockpit.pages.settings import SettingsPage
 from trader.interfaces.cockpit.pages.universe import UniversePage
@@ -102,7 +101,6 @@ _PAGE_WIDGETS = {
     "home": HomePage,
     "portfolio": PortfolioPage,
     "decisions": DecisionsPage,
-    "plans": PlansPage,
     "health": HealthPage,
     "logs": LogsPage,
     "universe": UniversePage,
@@ -124,7 +122,7 @@ class CockpitApp(App):
     # largeur : -compact < 110 ≤ -medium < 140 ≤ -wide · hauteur : -short < 30 ≤ -tall.
     # Le CSS d'app (prioritaire sur les DEFAULT_CSS des pages) adapte les
     # layouts sans toucher aux modules.
-    HORIZONTAL_BREAKPOINTS = [(0, "-compact"), (110, "-medium"), (140, "-wide")]
+    HORIZONTAL_BREAKPOINTS = [(0, "-compact"), (120, "-medium"), (140, "-wide")]
     VERTICAL_BREAKPOINTS = [(0, "-short"), (30, "-tall")]
 
     CSS = """
@@ -150,14 +148,25 @@ class CockpitApp(App):
         scrollbar-background: #14110e;
     }
 
-    /* ---- medium (110-139 cols) : colonnes droites fixes compressées ---- */
-    Screen.-medium PortfolioPage #portfolio-right { width: 34; }
-    Screen.-medium PlansPage #plans-right { width: 36; }
-    Screen.-medium UniversePage #universe-right { width: 36; }
-    Screen.-medium DecisionsPage #decisions-right { width: 32; }
+    /* ---- Règle colonne droite (Rév. 3) : largeur FIXE, centralisée ----
+       ≥140 = 46 · 120-139 = 40 · <120 = cachée (t la réaffiche). Une seule
+       classe .right-col, pas de CSS par page. */
+    .right-col { width: 46; height: 100%; }
+    Screen.-medium .right-col { width: 40; }
+    Screen.-compact .right-col { display: none; }
 
-    /* ---- compact (<110 cols) : la donnée principale garde toute la largeur,
-       la colonne secondaire passe dessous (scroll interne) ---- */
+    /* `t` inverse la visibilité : masque la colonne en large, la révèle
+       (empilée sous le contenu) en compact. */
+    Screen.aside-toggle.-wide .right-col,
+    Screen.aside-toggle.-medium .right-col { display: none; }
+    Screen.aside-toggle.-compact PortfolioPage,
+    Screen.aside-toggle.-compact DecisionsPage,
+    Screen.aside-toggle.-compact UniversePage { layout: vertical; }
+    Screen.aside-toggle.-compact .right-col {
+        display: block; width: 100%; height: 16; overflow-y: auto;
+    }
+
+    /* ---- compact (<120 cols) : rail réduit, logs/home empilés ---- */
     Screen.-compact NavRail { width: 6; min-width: 6; max-width: 6; }
     Screen.-compact HomePage { layout: vertical; }
     Screen.-compact HomePage #journal-panel { width: 100%; height: 2fr; margin-right: 0; }
@@ -165,31 +174,18 @@ class CockpitApp(App):
     Screen.-compact HomePage #home-right > .casys-panel {
         width: 1fr; height: 100%; margin-bottom: 0; margin-right: 1;
     }
-    Screen.-compact PortfolioPage { layout: vertical; }
-    Screen.-compact PortfolioPage #positions-panel { height: 1fr; }
-    Screen.-compact PortfolioPage #portfolio-right {
-        width: 100%; height: 14; overflow-y: auto;
-    }
-    Screen.-compact PlansPage { layout: vertical; }
-    Screen.-compact PlansPage #plans-left { height: 1fr; }
-    Screen.-compact PlansPage #plans-right { width: 100%; height: 14; overflow-y: auto; }
-    Screen.-compact UniversePage { layout: vertical; }
-    Screen.-compact UniversePage #universe-left { height: 1fr; }
-    Screen.-compact UniversePage #universe-right { width: 100%; height: 14; overflow-y: auto; }
-    Screen.-compact DecisionsPage { layout: vertical; }
-    Screen.-compact DecisionsPage #ledger-section { height: 1fr; }
-    Screen.-compact DecisionsPage #decisions-right { width: 100%; height: 12; overflow-y: auto; }
+    Screen.-compact PortfolioPage #positions-panel { width: 100%; }
+    Screen.-compact UniversePage #universe-left { width: 100%; }
+    Screen.-compact DecisionsPage #ledger-section { width: 100%; }
     Screen.-compact SettingsPage { layout: vertical; }
     Screen.-compact HealthPage { layout: vertical; }
     Screen.-compact LogsPage { layout: vertical; }
     Screen.-compact LogsPage #events-panel { width: 100%; height: 2fr; margin-right: 0; }
     Screen.-compact LogsPage #agent-trace-panel { width: 100%; height: 1fr; }
 
-    /* ---- short (<30 lignes) : les bandes secondaires du stacking compact
-       rendent la hauteur au contenu principal ---- */
+    /* ---- short (<30 lignes) : bande droite compacte moins haute ---- */
     Screen.-short.-compact HomePage #home-right { height: 10; }
-    Screen.-short.-compact PortfolioPage #portfolio-right { height: 9; }
-    Screen.-short.-compact PlansPage #plans-right { height: 9; }
+    Screen.-short.aside-toggle.-compact .right-col { height: 10; }
     Screen.-short.-compact UniversePage #universe-right { height: 9; }
     Screen.-short.-compact DecisionsPage #decisions-right { height: 8; }
     Screen.-short NavRail #rail-brand { display: none; }
@@ -207,6 +203,7 @@ class CockpitApp(App):
         Binding("F", "filter_classes", "classes", show=False),
         Binding("slash", "filter_regex", "regex", show=False),
         Binding("question_mark", "help", "help", show=False),
+        Binding("t", "toggle_aside", "toggle side column", show=False),
         *(
             Binding(str(page.number), f"show_page('{page.key}')", page.label, show=False)
             for page in PAGES
@@ -441,6 +438,17 @@ class CockpitApp(App):
     # ------------------------------------------------------------------
     # Aide
     # ------------------------------------------------------------------
+
+    def action_toggle_aside(self) -> None:
+        """`t` : inverse la visibilité de la colonne droite (playbook / right stack).
+
+        Cachée par défaut sous 120 cols ; `t` la révèle (empilée). Au-dessus,
+        `t` la cache pour donner toute la largeur au contenu principal.
+        """
+        try:
+            self.screen.toggle_class("aside-toggle")
+        except Exception:
+            pass
 
     def action_help(self) -> None:
         self.push_screen(HelpOverlay())

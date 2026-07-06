@@ -560,11 +560,12 @@ async def test_decisions_page_mounts(tmp_path: Path, monkeypatch: pytest.MonkeyP
         assert app._active_page_key == "decisions"
         assert app.query_one("#decisions-page").display is True
 
-        # Panneaux requis par la spec
+        # Ledger (gauche) + playbook (droite, Rév. 3 : ex-page Plans fusionnée)
         assert app.query_one("#ledger-panel") is not None
-        assert app.query_one("#mix-panel") is not None
-        assert app.query_one("#risk-panel") is not None
-        assert app.query_one("#model-panel") is not None
+        assert app.query_one("#armed-panel") is not None
+        assert app.query_one("#exits-panel") is not None
+        assert app.query_one("#playbook-watches-panel") is not None
+        assert app.query_one("#playbook-fire-panel") is not None
         assert app.query_one("#filter-chips-bar") is not None
         assert app.query_one("#detail-scroll") is not None
 

@@ -22,7 +22,9 @@ from textual.containers import Vertical, VerticalScroll
 from textual.widgets import Static
 
 from trader.interfaces.cockpit import format as f
-from trader.interfaces.cockpit.pages._shared import ResizeRefresh, PANEL_CSS, rows_available
+from trader.interfaces.cockpit.pages._shared import PANEL_CSS, ResizeRefresh, rows_available
+# RISK GATE + MODEL ont déménagé ici (Rév. 3) — builders réutilisés depuis decisions
+from trader.interfaces.cockpit.pages.decisions import build_model_panel, build_risk_gate
 from trader.interfaces.ui.palette import (
     CASYS_DIM,
     CASYS_FAINT,
@@ -369,7 +371,7 @@ class HealthPage(ResizeRefresh, Static):
     )
 
     def compose(self) -> ComposeResult:
-        # Colonne 1 — DATA FRESHNESS · FX RATES
+        # Colonne 1 — DATA FRESHNESS · FX RATES · RISK GATE
         with Vertical(classes="health-col"):
             with VerticalScroll(id="freshness-panel", classes="casys-panel") as p:
                 p.border_title = "DATA FRESHNESS"
@@ -377,7 +379,10 @@ class HealthPage(ResizeRefresh, Static):
             with VerticalScroll(id="fx-panel", classes="casys-panel") as p:
                 p.border_title = "FX RATES"
                 yield Static(id="fx-body")
-        # Colonne 2 — SOURCES · LLM
+            with VerticalScroll(id="risk-panel", classes="casys-panel") as p:
+                p.border_title = "RISK GATE"
+                yield Static(id="risk-body")
+        # Colonne 2 — SOURCES · LLM · MODEL
         with Vertical(classes="health-col-mid"):
             with VerticalScroll(id="sources-panel", classes="casys-panel") as p:
                 p.border_title = "SOURCES"
@@ -385,6 +390,9 @@ class HealthPage(ResizeRefresh, Static):
             with VerticalScroll(id="llm-panel", classes="casys-panel") as p:
                 p.border_title = "LLM"
                 yield Static(id="llm-body")
+            with VerticalScroll(id="model-panel", classes="casys-panel") as p:
+                p.border_title = "MODEL"
+                yield Static(id="model-body")
         # Colonne 3 — LEARNINGS · UNIVERSE
         with Vertical(classes="health-col"):
             with VerticalScroll(id="learnings-h-panel", classes="casys-panel") as p:
@@ -420,6 +428,14 @@ class HealthPage(ResizeRefresh, Static):
             pass
         try:
             self.query_one("#llm-body", Static).update(build_llm(state, now=now))
+        except Exception:
+            pass
+        try:
+            self.query_one("#risk-body", Static).update(build_risk_gate(state))
+        except Exception:
+            pass
+        try:
+            self.query_one("#model-body", Static).update(build_model_panel(state))
         except Exception:
             pass
         try:

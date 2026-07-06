@@ -103,7 +103,7 @@ async def test_logs_backlog_loads_and_cycles_hidden_by_default(tmp_path, monkeyp
     app = CockpitApp()
     async with app.run_test(size=(160, 44)) as pilot:
         await pilot.pause()
-        await pilot.press("6")
+        await pilot.press("5")
         await pilot.pause()
         pane = app.query_one("#events-panel", LogsPane)
         assert pane._backlog_loaded is True
@@ -120,7 +120,7 @@ async def test_logs_class_and_regex_filters(tmp_path, monkeypatch):
     app = CockpitApp()
     async with app.run_test(size=(160, 44)) as pilot:
         await pilot.pause()
-        await pilot.press("6")
+        await pilot.press("5")
         await pilot.pause()
         pane = app.query_one("#events-panel", LogsPane)
         pane.set_filters({EventClass.DECISION_EXECUTED}, None)

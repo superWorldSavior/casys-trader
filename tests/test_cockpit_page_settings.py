@@ -474,7 +474,7 @@ async def test_settings_page_monte_sans_crash(tmp_path, monkeypatch):
     app = CockpitApp()
     async with app.run_test(size=(220, 60)) as pilot:
         # Naviguer vers la page settings (touche 8)
-        await pilot.press("8")
+        await pilot.press("7")
         await pilot.pause()
         # Les panneaux principaux doivent être dans le DOM
         assert app.query_one("#runtime-panel") is not None
@@ -493,7 +493,7 @@ async def test_settings_page_monte_avec_yaml_reels(tmp_path, monkeypatch):
 
     app = CockpitApp()
     async with app.run_test(size=(220, 60)) as pilot:
-        await pilot.press("8")
+        await pilot.press("7")
         await pilot.pause()
         page = app.query_one("#settings-page", SettingsPage)
         assert page is not None
@@ -528,7 +528,7 @@ async def test_settings_page_risk_panel_non_editable(tmp_path, monkeypatch):
 
     app = CockpitApp()
     async with app.run_test(size=(220, 60)) as pilot:
-        await pilot.press("8")
+        await pilot.press("7")
         await pilot.pause()
         page = app.query_one("#settings-page", SettingsPage)
         # Simuler un pending (sans passer par risk.yaml)
@@ -550,7 +550,7 @@ async def test_settings_page_pending_banner_visible_quand_pending(tmp_path, monk
 
     app = CockpitApp()
     async with app.run_test(size=(220, 60)) as pilot:
-        await pilot.press("8")
+        await pilot.press("7")
         await pilot.pause()
         page = app.query_one("#settings-page", SettingsPage)
         from textual.widgets import Static

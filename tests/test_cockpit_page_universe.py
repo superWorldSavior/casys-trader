@@ -549,7 +549,7 @@ async def test_universe_page_monte(tmp_path: Path, monkeypatch) -> None:
     app = CockpitApp()
     async with app.run_test(size=(220, 60)) as pilot:
         # Naviguer vers la page 7
-        await pilot.press("7")
+        await pilot.press("6")
         await pilot.pause()
         page = app.query_one("#universe-page", UniversePage)
         assert page is not None
@@ -575,7 +575,7 @@ async def test_universe_page_panneaux_droits_existent(tmp_path: Path, monkeypatc
 
     app = CockpitApp()
     async with app.run_test(size=(220, 60)) as pilot:
-        await pilot.press("7")
+        await pilot.press("6")
         await pilot.pause()
         assert app.query_one("#rotation-body") is not None
         assert app.query_one("#hotset-body") is not None
@@ -589,7 +589,7 @@ async def test_universe_page_update_state_avec_symboles(tmp_path: Path, monkeypa
 
     app = CockpitApp()
     async with app.run_test(size=(220, 60)) as pilot:
-        await pilot.press("7")
+        await pilot.press("6")
         await pilot.pause()
         page = app.query_one("#universe-page", UniversePage)
         state = _minimal_state(
@@ -612,7 +612,7 @@ async def test_universe_page_write_path_pin(tmp_path: Path, monkeypatch) -> None
 
     app = CockpitApp()
     async with app.run_test(size=(220, 60)) as pilot:
-        await pilot.press("7")
+        await pilot.press("6")
         await pilot.pause()
         page = app.query_one("#universe-page", UniversePage)
 

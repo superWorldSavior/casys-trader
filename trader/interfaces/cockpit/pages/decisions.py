@@ -29,7 +29,14 @@ from textual.containers import Vertical, VerticalScroll
 from textual.widgets import DataTable, Static
 
 from trader.interfaces.cockpit import format as f
-from trader.interfaces.cockpit.pages._shared import preserve_cursor, ResizeRefresh, PANEL_CSS
+from trader.interfaces.cockpit.pages._shared import PANEL_CSS, ResizeRefresh, preserve_cursor
+from trader.interfaces.cockpit.pages.plans import (
+    build_armed,
+    build_exit_plans_compact,
+    build_exit_watches,
+    build_next_to_fire_plans,
+    build_watches,
+)
 from trader.interfaces.ui.palette import (
     CASYS_ACCENT,
     CASYS_DIM,
@@ -596,7 +603,12 @@ def populate_ledger_table(
 
 
 class DecisionsPage(ResizeRefresh, Static):
-    """Page 3 — Decisions ledger + MIX / RISK GATE / MODEL."""
+    """Page 3 — Decisions : ledger (passé) à gauche · playbook (futur) à droite.
+
+    Révision 3 : fusion de l'ancienne page Plans. Le playbook empile ARMED ·
+    EXITS (compact) · WATCHES · NEXT TO FIRE — le détail complet d'un plan
+    reste dans le drill-down symbole. RISK GATE + MODEL vivent sur Health.
+    """
 
     BINDINGS = [
         Binding("a", "filter_all", show=False),
@@ -641,12 +653,14 @@ class DecisionsPage(ResizeRefresh, Static):
         padding: 0 1;
     }
     DecisionsPage #decisions-right {
-        width: 40;
         height: 100%;
     }
-    DecisionsPage #mix-panel { height: auto; margin-bottom: 1; }
-    DecisionsPage #risk-panel { height: auto; margin-bottom: 1; }
-    DecisionsPage #model-panel { height: 1fr; }
+    /* Playbook : chaque section bornée + scroll interne, EXITS = table
+       principale (1fr). Sans plafond, 20 ordres armés cacheraient le reste. */
+    DecisionsPage #armed-panel { height: auto; max-height: 35%; min-height: 4; margin-bottom: 1; }
+    DecisionsPage #exits-panel { height: 1fr; min-height: 5; margin-bottom: 1; }
+    DecisionsPage #playbook-watches-panel { height: auto; max-height: 30%; min-height: 4; margin-bottom: 1; }
+    DecisionsPage #playbook-fire-panel { height: auto; max-height: 25%; min-height: 4; }
     DecisionsPage .casys-panel Static { height: auto; }
     """
     )
@@ -670,17 +684,20 @@ class DecisionsPage(ResizeRefresh, Static):
                     ds.border_title = "DETAIL"
                     yield Static("", id="ledger-detail")
             yield Static("", id="ledger-footer")
-        # Colonne droite : 3 panneaux empilés
-        with Vertical(id="decisions-right"):
-            with VerticalScroll(id="mix-panel", classes="casys-panel") as mix:
-                mix.border_title = "MIX — 24h"
-                yield Static("", id="mix-body")
-            with VerticalScroll(id="risk-panel", classes="casys-panel") as risk:
-                risk.border_title = "RISK GATE"
-                yield Static("", id="risk-body")
-            with VerticalScroll(id="model-panel", classes="casys-panel") as model:
-                model.border_title = "MODEL"
-                yield Static("", id="model-body")
+        # Colonne droite : PLAYBOOK (futur) — armed · exits · watches · next to fire
+        with Vertical(id="decisions-right", classes="right-col"):
+            with VerticalScroll(id="armed-panel", classes="casys-panel") as armed:
+                armed.border_title = "ARMED"
+                yield Static("", id="armed-body")
+            with VerticalScroll(id="exits-panel", classes="casys-panel") as exits:
+                exits.border_title = "EXITS — by stop distance"
+                yield Static("", id="exits-body")
+            with VerticalScroll(id="playbook-watches-panel", classes="casys-panel") as wt:
+                wt.border_title = "WATCHES"
+                yield Static("", id="playbook-watches-body")
+            with VerticalScroll(id="playbook-fire-panel", classes="casys-panel") as fire:
+                fire.border_title = "NEXT TO FIRE"
+                yield Static("", id="playbook-fire-body")
 
     _drop_source: bool | None = None
 
@@ -811,13 +828,36 @@ class DecisionsPage(ResizeRefresh, Static):
     # ------------------------------------------------------------------
 
     def update_state(self, state: dict) -> None:
-        """Met à jour tous les panneaux avec le nouvel état. Ne lève jamais d'exception."""
+        """Met à jour ledger + playbook. Ne lève jamais d'exception."""
         try:
             self._last_state = state
             self._refresh_ledger()
-            now = datetime.now(UTC)
-            self.query_one("#mix-body", Static).update(build_mix_24h(state, now=now))
-            self.query_one("#risk-body", Static).update(build_risk_gate(state))
-            self.query_one("#model-body", Static).update(build_model_panel(state))
         except Exception:
             pass
+        now = datetime.now(UTC)
+        for panel_id, body_id, builder, kw in (
+            ("armed-panel", "armed-body", build_armed, {}),
+            ("exits-panel", "exits-body", build_exit_plans_compact, {"limit": None}),
+            ("playbook-watches-panel", "playbook-watches-body", build_watches, {}),
+            ("playbook-fire-panel", "playbook-fire-body", build_next_to_fire_plans, {}),
+        ):
+            try:
+                self.query_one(f"#{body_id}", Static).update(builder(state, now=now, **kw))
+            except Exception:
+                pass
+        # WATCHES du playbook fusionne veilles simples + exit watches
+        try:
+            watches = build_watches(state, now=now)
+            exit_w = build_exit_watches(state, now=now)
+            self.query_one("#playbook-watches-body", Static).update(Group(watches, Text(""), exit_w))
+        except Exception:
+            pass
+        # Titres dynamiques
+        for panel_id, title in (
+            ("armed-panel", f"ARMED — {len(_safe_list_of_dicts(state.get('armed_plans')))}"),
+            ("exits-panel", f"EXITS — {len(_safe_list_of_dicts(state.get('trade_plans')))} · by stop distance"),
+        ):
+            try:
+                self.query_one(f"#{panel_id}").border_title = title
+            except Exception:
+                pass

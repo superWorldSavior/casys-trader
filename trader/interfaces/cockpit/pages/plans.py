@@ -300,6 +300,59 @@ def build_exit_plans(state: dict, *, now: datetime) -> RenderableType:
     return Group(grid, Text(""), footnote)
 
 
+def build_exit_plans_compact(
+    state: dict, *, now: datetime, limit: int | None = None
+) -> RenderableType:
+    """EXITS compact pour le playbook (colonne 46) : `sym side stop% · tp · badge`.
+
+    Le détail complet (ENTRY/QTY/PROTECT/REVIEWED) reste dans le drill-down
+    symbole (Enter). Trié par distance au stop, la plus courte d'abord.
+    """
+    plans = _safe_list_of_dicts(state.get("trade_plans"))
+    if not plans:
+        return Text("no exit plans — every position needs a stop", style=f"italic {CASYS_FAINT}")
+
+    amend_rejected = _amend_rejected_symbols(state)
+    plans_sorted = sorted(plans, key=lambda p: _stop_distance_sort_key(p, state))
+    shown = plans_sorted if limit is None else plans_sorted[:limit]
+
+    grid = Table.grid(padding=(0, 1))
+    grid.add_column(no_wrap=True, width=9)   # SYM
+    grid.add_column(no_wrap=True, width=1)   # L/S
+    grid.add_column(no_wrap=True, width=7, justify="right")  # stop %
+    grid.add_column(no_wrap=True)            # tp · badge
+
+    for plan in shown:
+        sym = str(plan.get("symbol") or "—")
+        side = str(plan.get("side") or "LONG").upper()
+        side_char = "S" if side == "SHORT" else "L"
+        side_style = CASYS_ERROR if side_char == "S" else CASYS_SUCCESS
+
+        ref = f.price_for_symbol(state, sym) or _safe_float(plan.get("entry_price"), default=None)
+        left_pct = f.stop_left_pct(plan, ref)
+        rejected = sym in amend_rejected
+        stop_str = f"{left_pct:.1f}%" if left_pct is not None else "—"
+        stop_style = CASYS_ERROR if (rejected or (left_pct is not None and abs(left_pct) <= 3.0)) else CASYS_DIM
+
+        rev_label, rev_style = _reviewed_cell(plan, amend_rejected)
+        tail = Text()
+        tail.append(_tp_label(plan), style=CASYS_DIM)
+        tail.append("  ", style=CASYS_DIM)
+        tail.append(rev_label, style=rev_style)
+
+        grid.add_row(
+            Text(sym, style=f"bold {CASYS_FG}"),
+            Text(side_char, style=side_style),
+            Text(stop_str, style=stop_style, justify="right"),
+            tail,
+        )
+
+    parts: list[RenderableType] = [grid]
+    if limit is not None and len(plans_sorted) > limit:
+        parts.append(Text(f"+ {len(plans_sorted) - limit} more — enter for detail", style=CASYS_FAINT))
+    return Group(*parts)
+
+
 def build_watches(state: dict, *, now: datetime, limit: int | None = None) -> RenderableType:
     """Panneau WATCHES : veilles non-armées avec barre TTL.
 
@@ -435,12 +488,14 @@ class PlansPage(ResizeRefresh, Static):
         padding: 1 2 0 2;
     }
     PlansPage #plans-left {
-        width: 1fr;
+        width: 5fr;
         height: 100%;
         margin-right: 1;
     }
     PlansPage #plans-right {
-        width: 46;
+        width: 3fr;
+        min-width: 46;
+        max-width: 68;
         height: 100%;
     }
     PlansPage #armed-panel    { height: auto; max-height: 14; margin-bottom: 1; }

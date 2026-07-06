@@ -240,8 +240,7 @@ def build_kpi_band(state: dict, *, now: datetime, width: int | None = None) -> T
 _FOOTER_CONTEXT: dict[str, tuple[tuple[str, str], ...]] = {
     "home": (("j/k", "scroll journal"), ("enter", "inspect symbol")),
     "portfolio": (("o", "sort |pnl| / value / %"), ("enter", "inspect symbol")),
-    "decisions": (("b/s/h", "filter action"), ("/", "regex"), ("enter", "expand")),
-    "plans": (("enter", "inspect symbol"),),
+    "decisions": (("b/s/h", "filter"), ("enter", "expand"), ("t", "playbook")),
     "health": (),
     "logs": (("c", "cycles"), ("f", "follow"), ("F", "classes"), ("/", "regex")),
     "universe": (("p", "pin"), ("b", "ban"), ("u", "undo override")),

@@ -535,7 +535,7 @@ async def test_health_page_mounts_with_all_panels(tmp_path, monkeypatch):
     app = CockpitApp()
     async with app.run_test(size=(220, 60)) as pilot:
         await pilot.pause()
-        await pilot.press("5")
+        await pilot.press("4")  # Rév. 3 : health passe en page 4 (plans fusionnée)
         await pilot.pause()
 
         assert app._active_page_key == "health"
@@ -543,7 +543,7 @@ async def test_health_page_mounts_with_all_panels(tmp_path, monkeypatch):
         health = app.query_one("#health-page", HealthPage)
         assert health.display is True
 
-        # Les 6 panneaux doivent être dans le DOM
+        # 6 panneaux d'origine + RISK GATE / MODEL déménagés depuis Decisions
         from textual.containers import VerticalScroll
         assert app.query_one("#freshness-panel", VerticalScroll) is not None
         assert app.query_one("#fx-panel", VerticalScroll) is not None
@@ -551,6 +551,8 @@ async def test_health_page_mounts_with_all_panels(tmp_path, monkeypatch):
         assert app.query_one("#llm-panel", VerticalScroll) is not None
         assert app.query_one("#learnings-h-panel", VerticalScroll) is not None
         assert app.query_one("#universe-h-panel", VerticalScroll) is not None
+        assert app.query_one("#risk-panel", VerticalScroll) is not None
+        assert app.query_one("#model-panel", VerticalScroll) is not None
 
 
 async def test_health_page_update_state_empty_no_crash(tmp_path, monkeypatch):
@@ -562,7 +564,7 @@ async def test_health_page_update_state_empty_no_crash(tmp_path, monkeypatch):
     app = CockpitApp()
     async with app.run_test(size=(220, 60)) as pilot:
         await pilot.pause()
-        await pilot.press("5")
+        await pilot.press("4")
         await pilot.pause()
 
         health = app.query_one("#health-page", HealthPage)
@@ -591,7 +593,7 @@ async def test_health_page_update_state_full(tmp_path, monkeypatch):
     app = CockpitApp()
     async with app.run_test(size=(220, 60)) as pilot:
         await pilot.pause()
-        await pilot.press("5")
+        await pilot.press("4")
         await pilot.pause()
 
         health = app.query_one("#health-page", HealthPage)
