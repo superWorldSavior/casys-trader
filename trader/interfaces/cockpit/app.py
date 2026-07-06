@@ -166,14 +166,10 @@ class CockpitApp(App):
         display: block; width: 100%; height: 16; overflow-y: auto;
     }
 
-    /* ---- compact (<120 cols) : rail réduit, logs/home empilés ---- */
+    /* ---- compact (<120 cols) : rail réduit, colonnes droites cachées ---- */
     Screen.-compact NavRail { width: 6; min-width: 6; max-width: 6; }
-    Screen.-compact HomePage { layout: vertical; }
-    Screen.-compact HomePage #journal-panel { width: 100%; height: 2fr; margin-right: 0; }
-    Screen.-compact HomePage #home-right { width: 100%; height: 16; layout: horizontal; }
-    Screen.-compact HomePage #home-right > .casys-panel {
-        width: 1fr; height: 100%; margin-bottom: 0; margin-right: 1;
-    }
+    Screen.-compact HomePage #journal-panel { width: 100%; margin-right: 0; }
+    Screen.aside-toggle.-compact HomePage #home-body { layout: vertical; }
     Screen.-compact PortfolioPage #positions-panel { width: 100%; }
     Screen.-compact UniversePage #universe-left { width: 100%; }
     Screen.-compact DecisionsPage #ledger-section { width: 100%; }
@@ -184,7 +180,6 @@ class CockpitApp(App):
     Screen.-compact LogsPage #agent-trace-panel { width: 100%; height: 1fr; }
 
     /* ---- short (<30 lignes) : bande droite compacte moins haute ---- */
-    Screen.-short.-compact HomePage #home-right { height: 10; }
     Screen.-short.aside-toggle.-compact .right-col { height: 10; }
     Screen.-short.-compact UniversePage #universe-right { height: 9; }
     Screen.-short.-compact DecisionsPage #decisions-right { height: 8; }

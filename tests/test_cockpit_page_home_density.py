@@ -311,3 +311,65 @@ async def test_home_page_positions_limit_adapts_to_height(tmp_path, monkeypatch)
         limit = rows_available(positions_panel, reserved=1, minimum=4)
         # Sur un écran de 80 lignes le panneau a forcément plus de 4 lignes dispo
         assert limit >= 4
+
+
+# ---------------------------------------------------------------------------
+# Home v2 (Rév. 3) — AGENT NOW strip + TODAY
+# ---------------------------------------------------------------------------
+
+
+def test_agent_now_visible_when_active():
+    from datetime import datetime, timezone
+
+    from trader.interfaces.cockpit.pages.home import build_agent_now
+
+    now = datetime(2026, 7, 6, 8, 0, tzinfo=timezone.utc)
+    state = {
+        "daemon_status": {"phase": "deciding", "current_symbol": "FRE.DE",
+                          "decisions_done": 2, "symbols_total": 5},
+        "recent_decisions": [{"symbol": "FRE.DE", "action": "BUY"}],
+        "default_next_wake": "2026-07-06T08:23:00+00:00",
+    }
+    strip = build_agent_now(state, now=now)
+    assert strip is not None
+    from rich.console import Console
+    console = Console(width=160)
+    with console.capture() as cap:
+        console.print(strip)
+    text = cap.get()
+    # au moins le symbole en cours et la phase
+    assert "FRE.DE" in text or "deciding" in text
+
+
+def test_agent_now_collapses_when_idle():
+    from datetime import datetime, timezone
+
+    from trader.interfaces.cockpit.pages.home import build_agent_now
+
+    now = datetime(2026, 7, 6, 8, 0, tzinfo=timezone.utc)
+    state = {"daemon_status": {"phase": "cycle_completed", "current_symbol": None}}
+    assert build_agent_now(state, now=now) is None
+
+
+def test_today_counts_fills_and_decisions():
+    from datetime import datetime, timezone
+
+    from rich.console import Console
+
+    from trader.interfaces.cockpit.pages.home import build_today
+
+    now = datetime(2026, 7, 6, 8, 30, tzinfo=timezone.utc)
+    state = {"recent_decisions": [
+        {"cycle_ts": "2026-07-06T07:57:00+00:00", "symbol": "CARL", "action": "BUY",
+         "executed": True, "price": 949.4, "model_called": True},
+        {"cycle_ts": "2026-07-06T08:02:00+00:00", "symbol": "FRE.DE", "action": "HOLD",
+         "executed": False, "model_called": True},
+        {"cycle_ts": "2026-07-05T23:00:00+00:00", "symbol": "OLD", "action": "SELL",
+         "executed": True},  # hier → exclu
+    ]}
+    console = Console(width=60)
+    with console.capture() as cap:
+        console.print(build_today(state, now=now))
+    text = cap.get()
+    assert "1 fills" in text       # seul CARL aujourd'hui
+    assert "2 decisions" in text   # CARL + FRE.DE (OLD exclu)
