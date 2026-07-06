@@ -215,7 +215,9 @@ def decide_one(
                         allow_tool_calls=allow_tool_calls,
                         use_symbol_calls_contract=True,
                         timeout_s=decision_timeout_s,
-                        complete_fn=llm.session_complete_fn(session),
+                        complete_fn=llm.session_complete_fn(
+                            session, call_ctx={"task_id": task_id, "symbol": symbol}
+                        ),
                         max_tool_calls_per_symbol=tool_limits.max_calls_per_symbol,
                         max_rounds=None,
                     )

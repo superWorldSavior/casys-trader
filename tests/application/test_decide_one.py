@@ -335,7 +335,7 @@ def _services(**over) -> ToolRoundServices:
 
 
 class _FakeSession:
-    def send(self, prompt, *, timeout_s):
+    def send(self, prompt, *, timeout_s, call_ctx=None):
         raise AssertionError("decide_batch fake ignore complete_fn ; send ne doit pas être appelé")
 
     def close(self):
@@ -526,7 +526,7 @@ def test_session_mode_utilise_runner_delta_et_complete_fn(monkeypatch):
     heartbeats = []
 
     class FakeSession:
-        def send(self, prompt, *, timeout_s):
+        def send(self, prompt, *, timeout_s, call_ctx=None):
             events.append(("send", prompt, timeout_s))
             return llm.LlmCompletion(provider="acpx", model="gpt-5.5", text="{}")
 
@@ -594,7 +594,7 @@ def test_max_rounds_1_avec_session_backends_utilise_session_mode(monkeypatch):
     events = []
 
     class FakeSession:
-        def send(self, prompt, *, timeout_s):
+        def send(self, prompt, *, timeout_s, call_ctx=None):
             events.append(("send", prompt, timeout_s))
             return llm.LlmCompletion(provider="acpx", model="gpt-5.5", text="{}")
 
