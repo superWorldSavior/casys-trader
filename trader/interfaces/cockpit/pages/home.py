@@ -97,7 +97,7 @@ def build_journal(state: dict, *, now: datetime, limit: int = 8) -> RenderableTy
     return Group(*parts)
 
 
-def build_equity_summary(state: dict) -> RenderableType:
+def build_equity_summary(state: dict, *, width: int = 40) -> RenderableType:
     snap = equity_snapshot(state)
     headline = Text()
     headline.append(f.fmt_money(snap.equity), style=f"bold {CASYS_FG}")
@@ -105,10 +105,12 @@ def build_equity_summary(state: dict) -> RenderableType:
         style = CASYS_SUCCESS if snap.return_pct >= 0 else CASYS_ERROR
         headline.append(f" {f.fmt_pct(snap.return_pct, decimals=2)}", style=style)
     headline.append(f" · cash {snap.cash_pct:.0f}%", style=CASYS_FAINT)
-    return Group(headline, build_equity_chart(f.equity_curve(state), width=40, height=5))
+    return Group(
+        headline, build_equity_chart(f.equity_curve(state), width=max(20, width), height=5)
+    )
 
 
-def build_home_positions(state: dict, *, limit: int = 7) -> RenderableType:
+def build_home_positions(state: dict, *, limit: int = 7, bar_width: int = 8) -> RenderableType:
     """sym bold · L/S · barre P&L signée · USD signé ; « + N more — press 2 »."""
     holdings = positions_by_pnl(state)
     if not holdings:
@@ -129,7 +131,7 @@ def build_home_positions(state: dict, *, limit: int = 7) -> RenderableType:
         grid.add_row(
             Text(f.holding_symbol(holding), style=f"bold {CASYS_FG}"),
             Text("L" if side_long else "S", style=CASYS_SUCCESS if side_long else CASYS_ERROR),
-            Text(f.signed_bar(pnl, max_abs, width=8), style=pnl_style),
+            Text(f.signed_bar(pnl, max_abs, width=bar_width), style=pnl_style),
             Text(f.fmt_signed(pnl), style=pnl_style),
         )
     parts: list[RenderableType] = [grid]
@@ -138,10 +140,14 @@ def build_home_positions(state: dict, *, limit: int = 7) -> RenderableType:
     return Group(*parts)
 
 
-def build_next_to_fire(state: dict, *, now: datetime, limit: int = 6) -> RenderableType:
+def build_next_to_fire(
+    state: dict, *, now: datetime, limit: int = 6, width: int = 38
+) -> RenderableType:
+    """Le countdown a priorité : la condition est clippée à la place restante."""
     items = next_to_fire(state, now=now, limit=limit)
     if not items:
         return Text("nothing armed, nothing watched", style=f"italic {CASYS_FAINT}")
+    detail_width = max(8, width - 9 - 5 - 4)  # sym(9) + countdown(5) + paddings
     grid = Table.grid(padding=(0, 1))
     grid.add_column(no_wrap=True, width=9)
     grid.add_column(no_wrap=True, overflow="ellipsis")
@@ -149,7 +155,7 @@ def build_next_to_fire(state: dict, *, now: datetime, limit: int = 6) -> Rendera
     for item in items:
         grid.add_row(
             Text(item.label, style=f"bold {CASYS_FG}" if item.kind != "wake" else CASYS_DIM),
-            Text(item.detail, style=CASYS_DIM),
+            Text(f.clip(item.detail, limit=detail_width), style=CASYS_DIM),
             Text(item.countdown, style=CASYS_ACCENT),
         )
     return grid
@@ -199,14 +205,34 @@ class HomePage(Static):
                 yield Static(id="fire-body")
 
     def update_state(self, state: dict) -> None:
+        self._last_state = state
         now = datetime.now(UTC)
         self.query_one("#journal-body", Static).update(build_journal(state, now=now))
-        self.query_one("#equity-body", Static).update(build_equity_summary(state))
+        equity_panel = self.query_one("#equity-panel", VerticalScroll)
+        chart_width = max(20, (equity_panel.size.width or 44) - 4)
+        self.query_one("#equity-body", Static).update(
+            build_equity_summary(state, width=chart_width)
+        )
         holdings = positions_by_pnl(state)
         positions_panel = self.query_one("#positions-panel", VerticalScroll)
         positions_panel.border_title = f"POSITIONS — {len(holdings)}" if holdings else "POSITIONS"
-        self.query_one("#positions-body", Static).update(build_home_positions(state))
-        self.query_one("#fire-body", Static).update(build_next_to_fire(state, now=now))
+        # sym(9) + side(1) + montant(~7) + paddings(~7) — le reste pour la barre
+        bar_width = max(4, min(8, (positions_panel.size.width or 44) - 24))
+        self.query_one("#positions-body", Static).update(
+            build_home_positions(state, bar_width=bar_width)
+        )
+        fire_panel = self.query_one("#fire-panel", VerticalScroll)
+        self.query_one("#fire-body", Static).update(
+            build_next_to_fire(state, now=now, width=max(24, (fire_panel.size.width or 42) - 4))
+        )
+
+    def on_resize(self) -> None:
+        state = getattr(self, "_last_state", None)
+        if state is not None:
+            try:
+                self.update_state(state)
+            except Exception:
+                pass
 
     def scroll_journal(self, delta: int) -> None:
         """j/k : défilement du journal."""

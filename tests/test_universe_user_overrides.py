@@ -239,3 +239,76 @@ def test_tick_ban_on_sticky_symbol_keeps_it_managed(tmp_path):
     )
 
     assert "ZZZ.TW" in result["final"]
+
+
+# ---------------------------------------------------------------------------
+# Fixes review Codex : préservation des clés tierces, lecture effective, lock
+# ---------------------------------------------------------------------------
+
+
+def test_save_preserves_third_party_keys(tmp_path):
+    """Un universe.yaml legacy (starting_cash) ne perd aucune clé au pin."""
+    path = tmp_path / "universe.yaml"
+    path.write_text("starting_cash: 50000\nsymbols: [SPY]\n", encoding="utf-8")
+
+    pin_symbol(path, "PANW")
+
+    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    assert data["starting_cash"] == 50000
+    assert data["symbols"] == ["SPY"]
+    assert data["overrides"] == {"pin": ["PANW"]}
+
+
+def test_rotation_write_preserves_third_party_keys(tmp_path):
+    path = tmp_path / "universe.yaml"
+    path.write_text("starting_cash: 50000\nsymbols: [SPY]\n", encoding="utf-8")
+
+    write_universe_atomic(str(path), ["AAPL"])
+
+    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    assert data["starting_cash"] == 50000
+    assert data["symbols"] == ["AAPL"]
+
+
+def test_effective_universe_symbols_applies_ban_at_read(tmp_path):
+    """Filet lecture daemon : le ban agit même si la rotation n'a rien réécrit."""
+    from trader.market.rotation.user_overrides import effective_universe_symbols
+
+    path = tmp_path / "universe.yaml"
+    path.write_text("symbols: [SPY, AAPL]\n", encoding="utf-8")
+    ban_symbol(path, "AAPL")
+    pin_symbol(path, "PANW")
+
+    assert effective_universe_symbols(path) == ["SPY", "PANW"]
+    # position ouverte sur le banni → reste gérée
+    assert effective_universe_symbols(path, positions={"AAPL"}) == ["SPY", "AAPL", "PANW"]
+    # fichier absent → jamais d'exception
+    assert effective_universe_symbols(tmp_path / "missing.yaml") == []
+
+
+def test_ban_of_last_symbol_still_effective_at_read(tmp_path):
+    """Le scénario bloquant de la review : ban du dernier symbole non-sticky.
+
+    L'univers écrit ne peut pas être vidé (fusible), mais la LECTURE effective
+    doit refléter le ban → le daemon n'analyse plus le symbole.
+    """
+    from trader.market.rotation.user_overrides import effective_universe_symbols
+
+    path = tmp_path / "universe.yaml"
+    path.write_text("symbols: [AAPL]\n", encoding="utf-8")
+    ban_symbol(path, "AAPL")
+
+    assert effective_universe_symbols(path) == []
+    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    assert data["symbols"] == ["AAPL"]  # le fichier garde le fusible non-vide
+
+
+def test_universe_write_lock_serializes(tmp_path):
+    from trader.market.rotation.user_overrides import universe_write_lock
+
+    path = tmp_path / "universe.yaml"
+    with universe_write_lock(path):
+        assert (tmp_path / "universe.yaml.lock").exists()
+    # réentrant après libération
+    with universe_write_lock(path):
+        pass

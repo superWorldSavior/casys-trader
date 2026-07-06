@@ -207,7 +207,8 @@ def _load_scheduler_wakes_safe(scheduler_path: Path) -> tuple[str | None, dict]:
         raw = json.loads(scheduler_path.read_text(encoding="utf-8"))
         if not isinstance(raw, dict):
             return None, {}
-        default_next_wake = raw.get("default_next_wake")
+        # legacy : Scheduler._load_state promeut next_wake → default_next_wake
+        default_next_wake = raw.get("default_next_wake") or raw.get("next_wake")
         default_next_wake = str(default_next_wake) if default_next_wake else None
         symbols = raw.get("symbols") or {}
         if not isinstance(symbols, dict):

@@ -13,10 +13,12 @@ rien ne démarre sans un ``s`` explicite.
 
 Écriture autorisée (UNIQUEMENT ces fichiers) :
     state/daemon.pid          — PID du daemon au lancement
+    state/daemon.lock         — verrou anti-double-lancement (flock)
     state/daemon_console.log  — stdout/stderr du daemon (append)
     state/agent_trace.log     — trace séparée des appels/outcomes agent
     KILL                      — fichier kill-switch (toggle)
     config/universe.yaml      — bloc overrides: (pin/ban, page Universe)
+    config/universe.yaml.lock — verrou du read-modify-write overrides
     config/*.yaml             — écritures explicites de la page Settings (w)
 
 Usage :
@@ -112,6 +114,11 @@ class CockpitApp(App):
 
     TITLE = "casys cockpit"
 
+    # Classes de breakpoint posées sur le Screen selon la largeur du terminal :
+    # -compact < 110 ≤ -medium < 140 ≤ -wide. Le CSS d'app (prioritaire sur les
+    # DEFAULT_CSS des pages) adapte les layouts sans toucher aux modules.
+    HORIZONTAL_BREAKPOINTS = [(0, "-compact"), (110, "-medium"), (140, "-wide")]
+
     CSS = """
     Screen {
         layout: horizontal;
@@ -129,6 +136,42 @@ class CockpitApp(App):
         width: 100%;
         height: 100%;
     }
+    * {
+        scrollbar-size: 1 1;
+        scrollbar-color: #332c23;
+        scrollbar-background: #14110e;
+    }
+
+    /* ---- medium (110-139 cols) : colonnes droites fixes compressées ---- */
+    Screen.-medium PortfolioPage #portfolio-right { width: 34; }
+    Screen.-medium PlansPage #plans-right { width: 36; }
+    Screen.-medium UniversePage #universe-right { width: 36; }
+    Screen.-medium DecisionsPage #decisions-right { width: 32; }
+
+    /* ---- compact (<110 cols) : la donnée principale garde toute la largeur,
+       la colonne secondaire passe dessous (scroll interne) ---- */
+    Screen.-compact NavRail { width: 6; min-width: 6; max-width: 6; }
+    Screen.-compact HomePage { layout: vertical; }
+    Screen.-compact HomePage #journal-panel { width: 100%; height: 2fr; margin-right: 0; }
+    Screen.-compact HomePage #home-right { width: 100%; height: 16; layout: horizontal; }
+    Screen.-compact HomePage #home-right > .casys-panel {
+        width: 1fr; height: 100%; margin-bottom: 0; margin-right: 1;
+    }
+    Screen.-compact PortfolioPage { layout: vertical; }
+    Screen.-compact PortfolioPage #portfolio-right {
+        width: 100%; height: 14; overflow-y: auto;
+    }
+    Screen.-compact PlansPage { layout: vertical; }
+    Screen.-compact PlansPage #plans-right { width: 100%; height: 14; overflow-y: auto; }
+    Screen.-compact UniversePage { layout: vertical; }
+    Screen.-compact UniversePage #universe-right { width: 100%; height: 14; overflow-y: auto; }
+    Screen.-compact DecisionsPage { layout: vertical; }
+    Screen.-compact DecisionsPage #decisions-right { width: 100%; height: 12; overflow-y: auto; }
+    Screen.-compact SettingsPage { layout: vertical; }
+    Screen.-compact HealthPage { layout: vertical; }
+    Screen.-compact LogsPage { layout: vertical; }
+    Screen.-compact LogsPage #events-panel { width: 100%; height: 2fr; margin-right: 0; }
+    Screen.-compact LogsPage #agent-trace-panel { width: 100%; height: 1fr; }
     """
 
     BINDINGS = [
@@ -190,13 +233,12 @@ class CockpitApp(App):
 
     def _maybe_first_run(self) -> None:
         """Écran preflight au premier lancement (jamais de démarrage implicite)."""
+        from trader.interfaces.cockpit.first_run import has_state_history
+
         vital = daemon_vital_state(_STATE_DIR / "daemon_status.json")
         if vital.status != "never_started":
             return
-        has_history = (_STATE_DIR / "decisions.jsonl").exists() or (
-            _STATE_DIR / "current_report.json"
-        ).exists()
-        if has_history:
+        if has_state_history(_STATE_DIR):
             return
         self.push_screen(FirstRunScreen())
 
@@ -258,7 +300,11 @@ class CockpitApp(App):
         return PALETTE_CASYS
 
     def _schedule_refresh_state(self) -> None:
-        self.run_worker(self._load_state_worker, thread=True)
+        # exclusive : un refresh lent ne peut pas réappliquer un état périmé
+        # par-dessus un refresh plus récent (le précédent est annulé).
+        self.run_worker(
+            self._load_state_worker, thread=True, exclusive=True, group="state-refresh"
+        )
 
     def _load_state_worker(self) -> None:
         try:
@@ -382,8 +428,11 @@ class CockpitApp(App):
         except Exception:
             _pid = None
 
-        async def _on_confirm(confirmed: bool) -> None:
-            if not confirmed:
+        async def _on_confirm(choice: str | None) -> None:
+            if choice is None:
+                return
+            if choice == "quit-only":
+                self.exit()  # le daemon survit au cockpit (pattern superviseur)
                 return
             try:
                 result = stop_daemon(

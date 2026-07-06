@@ -67,11 +67,15 @@ class ConfirmStop(_ConfirmModal):
                 yield Button("Cancel", id="confirm-stop-no", variant="default")
 
 
-class ConfirmQuit(_ConfirmModal):
-    """Confirmation de sortie quand un daemon est vivant."""
+class ConfirmQuit(ModalScreen["str | None"]):
+    """Sortie quand un daemon est vivant : le daemon peut lui survivre.
 
-    _confirm_button_id = "confirm-quit-stop"
-    DEFAULT_CSS = _confirm_modal_css("ConfirmQuit", border="$warning", width=60)
+    Retourne "stop-quit" (arrêter le daemon puis quitter), "quit-only"
+    (quitter, le daemon continue) ou None (annuler).
+    """
+
+    BINDINGS = [Binding("escape", "cancel", "Cancel", show=False)]
+    DEFAULT_CSS = _confirm_modal_css("ConfirmQuit", border="$warning", width=72)
 
     def __init__(self, pid: int | None = None, **kwargs: object) -> None:
         super().__init__(**kwargs)
@@ -80,10 +84,22 @@ class ConfirmQuit(_ConfirmModal):
     def compose(self) -> ComposeResult:
         pid_info = f" (PID {self._pid})" if self._pid else ""
         with Vertical():
-            yield Label(f"Quit — the live engine will also be stopped{pid_info}.")
+            yield Label(f"The daemon is running{pid_info} — it can survive the cockpit.")
             with Horizontal():
+                yield Button("Quit, keep daemon", id="confirm-quit-only", variant="primary")
                 yield Button("Stop and quit", id="confirm-quit-stop", variant="warning")
                 yield Button("Cancel", id="confirm-quit-cancel", variant="default")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "confirm-quit-stop":
+            self.dismiss("stop-quit")
+        elif event.button.id == "confirm-quit-only":
+            self.dismiss("quit-only")
+        else:
+            self.dismiss(None)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
 
 
 class ConfirmKill(_ConfirmModal):

@@ -66,8 +66,12 @@ def build_rail_nav(
     *,
     active_key: str,
     health_alerts: int = 0,
+    compact: bool = False,
 ) -> Text:
-    """Items de nav — actif : ▎ accent + bold ; badge ▲N sur l'item health."""
+    """Items de nav — actif : ▎ accent + bold ; badge ▲N sur l'item health.
+
+    ``compact`` (rail < 10 cols) : numéros seuls, badge réduit à ▲.
+    """
     text = Text()
     for index, item in enumerate(items):
         if index:
@@ -76,14 +80,36 @@ def build_rail_nav(
         marker = "▎" if active else " "
         style = f"bold {CASYS_ACCENT}" if active else CASYS_DIM
         text.append(marker, style=CASYS_ACCENT if active else "")
-        text.append(f"{item.number} {item.label}", style=style)
+        label = str(item.number) if compact else f"{item.number} {item.label}"
+        text.append(label, style=style)
         if item.key == "health" and health_alerts:
-            text.append(f" ▲{health_alerts}", style=CASYS_WARNING)
+            text.append("▲" if compact else f" ▲{health_alerts}", style=CASYS_WARNING)
     return text
 
 
-def build_rail_vitals(vitals: RailVitals) -> Text:
-    """Bloc bas du rail — un vital par ligne."""
+def build_rail_vitals(vitals: RailVitals, *, compact: bool = False) -> Text:
+    """Bloc bas du rail — un vital par ligne. ``compact`` : glyphes seuls."""
+    if compact:
+        # largeur intérieure 5 (rail 6 − bordure) : glyphes seuls, sans marge
+        text = Text()
+        if vitals.vital_status == "alive":
+            style = f"bold {CASYS_WARNING}" if vitals.heartbeat_old else CASYS_SUCCESS
+            text.append("●", style=style)
+        elif vitals.vital_status == "stopped":
+            text.append("●", style=f"bold {CASYS_ERROR}")
+        else:
+            text.append("○", style=CASYS_DIM)
+        text.append("\n")
+        text.append("DRY" if vitals.dry_run else "LIV", style=CASYS_WARNING if vitals.dry_run else CASYS_SUCCESS)
+        text.append("\n")
+        if vitals.kill_active:
+            text.append("!K!", style="bold white on red")
+        else:
+            text.append("k○", style=CASYS_FAINT)
+        text.append("\n")
+        text.append(vitals.clock_utc[:5], style=CASYS_FAINT)
+        return text
+
     text = Text()
 
     if vitals.vital_status == "alive":
@@ -134,8 +160,16 @@ def _kpi_cell(label: str, value: Text) -> Text:
     return cell
 
 
-def build_kpi_band(state: dict, *, now: datetime) -> Table:
-    """Bande KPI 6 cellules : EQUITY · CASH · UNREALIZED · CYCLE · NEXT WAKE · LLM."""
+# Ordre de drop quand la largeur manque (EQUITY et NEXT WAKE toujours gardés).
+_KPI_DROP_ORDER = ("llm", "cycle", "unrealized", "cash")
+
+
+def build_kpi_band(state: dict, *, now: datetime, width: int | None = None) -> Table:
+    """Bande KPI : EQUITY · CASH · UNREALIZED · CYCLE · NEXT WAKE · LLM.
+
+    ``width`` (colonnes disponibles) : en dessous de ~19 cols par cellule,
+    les cellules les moins critiques sont retirées (ordre _KPI_DROP_ORDER).
+    """
     snap = equity_snapshot(state)
     cycle: CycleProgress = cycle_progress(state)
 
@@ -168,17 +202,25 @@ def build_kpi_band(state: dict, *, now: datetime) -> Table:
 
     llm_value = Text(llm_calls_label(state), style=CASYS_MUTED)
 
+    cells: list[tuple[str, Text]] = [
+        ("equity", equity_value),
+        ("cash", cash_value),
+        ("unrealized", unrealized_value),
+        ("cycle", cycle_value),
+        ("next wake", wake_value),
+        ("llm", llm_value),
+    ]
+    if width:
+        keep = max(2, min(6, width // 19))
+        for drop in _KPI_DROP_ORDER:
+            if len(cells) <= keep:
+                break
+            cells = [(key, value) for key, value in cells if key != drop]
+
     grid = Table.grid(expand=True, padding=(0, 2))
-    for _ in range(6):
+    for _ in cells:
         grid.add_column(ratio=1, no_wrap=True)
-    grid.add_row(
-        _kpi_cell("equity", equity_value),
-        _kpi_cell("cash", cash_value),
-        _kpi_cell("unrealized", unrealized_value),
-        _kpi_cell("cycle", cycle_value),
-        _kpi_cell("next wake", wake_value),
-        _kpi_cell("llm", llm_value),
-    )
+    grid.add_row(*(_kpi_cell(key, value) for key, value in cells))
     return grid
 
 
@@ -266,15 +308,36 @@ class NavRail(Static):
         self._active_key = key
         self._render_nav()
 
+    def _compact(self) -> bool:
+        return 0 < self.size.width < 10
+
     def update_state(self, state: dict, *, vital, kill_active: bool, now: datetime | None = None) -> None:
         from trader.interfaces.cockpit.derive import health_alert_count, rail_vitals
 
         now = now or datetime.now(UTC)
         self._health_alerts = health_alert_count(state, kill_active=kill_active, now=now)
         self._render_nav()
+        vitals = rail_vitals(state, vital=vital, kill_active=kill_active, now=now)
         self.query_one("#rail-vitals", Static).update(
-            build_rail_vitals(rail_vitals(state, vital=vital, kill_active=kill_active, now=now))
+            build_rail_vitals(vitals, compact=self._compact())
         )
+        self._last_vitals = vitals
+
+    def on_resize(self) -> None:
+        self._render_nav()
+        vitals = getattr(self, "_last_vitals", None)
+        if vitals is not None:
+            try:
+                self.query_one("#rail-vitals", Static).update(
+                    build_rail_vitals(vitals, compact=self._compact())
+                )
+            except Exception:
+                pass
+        brand = build_rail_brand() if not self._compact() else Text(" ▘", style=f"bold {CASYS_ACCENT}")
+        try:
+            self.query_one("#rail-brand", Static).update(brand)
+        except Exception:
+            pass
 
     def _render_nav(self) -> None:
         try:
@@ -282,7 +345,12 @@ class NavRail(Static):
         except Exception:
             return
         nav.update(
-            build_rail_nav(self._items, active_key=self._active_key, health_alerts=self._health_alerts)
+            build_rail_nav(
+                self._items,
+                active_key=self._active_key,
+                health_alerts=self._health_alerts,
+                compact=self._compact(),
+            )
         )
 
 
@@ -298,7 +366,14 @@ class KpiBand(Static):
     """
 
     def update_state(self, state: dict, *, now: datetime | None = None) -> None:
-        self.update(build_kpi_band(state, now=now or datetime.now(UTC)))
+        self._last_state = state
+        width = self.size.width or None
+        self.update(build_kpi_band(state, now=now or datetime.now(UTC), width=width))
+
+    def on_resize(self) -> None:
+        state = getattr(self, "_last_state", None)
+        if state is not None:
+            self.update_state(state)
 
 
 class CockpitFooter(Static):

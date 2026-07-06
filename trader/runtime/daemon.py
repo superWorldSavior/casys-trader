@@ -1477,6 +1477,22 @@ def run_cycle(
     now = now or datetime.now(timezone.utc)
     universe_cfg = _load_yaml(ROOT / "config" / "universe.yaml")
     risk_cfg = _load_yaml(ROOT / "config" / "risk.yaml")
+    # Pin/ban cockpit appliqués à la LECTURE : le ban prend effet dès le cycle
+    # suivant, même si la rotation n'a pas réécrit universe.yaml. Une position
+    # ouverte bannie reste gérée (jamais éjectée de l'analyse).
+    from trader.market.rotation.collectors import build_positions_fn
+    from trader.market.rotation.user_overrides import effective_universe_symbols
+
+    try:
+        _open_positions = set(build_positions_fn(ROOT / "state")().keys())
+    except Exception:
+        _open_positions = set()
+    universe_cfg = {
+        **(universe_cfg or {}),
+        "symbols": effective_universe_symbols(
+            ROOT / "config" / "universe.yaml", positions=_open_positions
+        ),
+    }
     regime_path = ROOT / "config" / "regime.yaml"
     regime_cfg = _load_yaml(regime_path) if regime_path.exists() else {}
     regime_cfg = regime_cfg or {}
@@ -2482,7 +2498,20 @@ def main(
                     loop_now=loop_now,
                     logger=log,
                 )
-                symbols = _load_yaml(ROOT / "config" / "universe.yaml")["symbols"]
+                # Pin/ban cockpit appliqués à la lecture (parité run_cycle) :
+                # un ban retire les réveils du scheduler dès la prochaine boucle.
+                from trader.market.rotation.collectors import build_positions_fn as _positions_fn
+                from trader.market.rotation.user_overrides import (
+                    effective_universe_symbols as _effective_universe,
+                )
+
+                try:
+                    _held = set(_positions_fn(STATE_DIR)().keys())
+                except Exception:
+                    _held = set()
+                symbols = _effective_universe(
+                    ROOT / "config" / "universe.yaml", positions=_held
+                )
                 sched.reconcile_universe(symbols)
                 cycle_scheduling.expire_indicator_watches(
                     sched,
