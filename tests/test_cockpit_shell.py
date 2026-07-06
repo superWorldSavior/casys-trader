@@ -441,3 +441,16 @@ async def test_confirm_quit_keep_daemon_exits_without_stopping(tmp_path, monkeyp
         await pilot.pause()
     assert app._exit
     assert calls == []  # le daemon survit
+
+
+async def test_force_preflight_shows_screen_despite_history(tmp_path, monkeypatch):
+    """--preflight force l'écran même avec un daemon vivant et de l'historique."""
+    _patch_paths(monkeypatch, tmp_path)
+    (tmp_path / "decisions.jsonl").write_text("{}\n", encoding="utf-8")
+    _write_daemon_alive(tmp_path, monkeypatch)
+    app = CockpitApp(force_preflight=True)
+    async with app.run_test(size=(160, 44)) as pilot:
+        await pilot.pause()
+        await pilot.pause()
+        assert isinstance(app.screen, FirstRunScreen)
+        await pilot.press("escape")

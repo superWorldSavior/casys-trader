@@ -196,6 +196,10 @@ class CockpitApp(App):
     _last_kill_active: bool = False
     _active_page_key: str = "home"
 
+    def __init__(self, *, force_preflight: bool = False, **kwargs: object) -> None:
+        super().__init__(**kwargs)
+        self._force_preflight = force_preflight
+
     def compose(self) -> ComposeResult:
         rail = NavRail(id="nav-rail")
         yield rail
@@ -232,9 +236,16 @@ class CockpitApp(App):
     # ------------------------------------------------------------------
 
     def _maybe_first_run(self) -> None:
-        """Écran preflight au premier lancement (jamais de démarrage implicite)."""
+        """Écran preflight au premier lancement (jamais de démarrage implicite).
+
+        Conditions : daemon jamais démarré ET aucun historique dans state/.
+        ``--preflight`` force l'affichage (prévisualisation / captures).
+        """
         from trader.interfaces.cockpit.first_run import has_state_history
 
+        if self._force_preflight:
+            self.push_screen(FirstRunScreen())
+            return
         vital = daemon_vital_state(_STATE_DIR / "daemon_status.json")
         if vital.status != "never_started":
             return
@@ -500,8 +511,13 @@ class CockpitApp(App):
 
 
 def main() -> None:
-    """Lance le cockpit. Quitter avec q ou Ctrl+C."""
-    app = CockpitApp()
+    """Lance le cockpit. Quitter avec q ou Ctrl+C.
+
+    ``--preflight`` : force l'écran de premier lancement (prévisualisation).
+    """
+    import sys
+
+    app = CockpitApp(force_preflight="--preflight" in sys.argv[1:])
     app.run()
 
 
