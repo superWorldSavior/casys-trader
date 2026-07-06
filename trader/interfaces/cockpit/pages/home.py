@@ -23,7 +23,7 @@ from trader.interfaces.cockpit.derive import (
     next_to_fire,
     positions_by_pnl,
 )
-from trader.interfaces.cockpit.pages._shared import ResizeRefresh, PANEL_CSS, build_equity_chart
+from trader.interfaces.cockpit.pages._shared import ResizeRefresh, PANEL_CSS, build_equity_chart, rows_available
 from trader.interfaces.ui.palette import (
     CASYS_ACCENT,
     CASYS_DIM,
@@ -207,23 +207,39 @@ class HomePage(ResizeRefresh, Static):
     def update_state(self, state: dict) -> None:
         self._last_state = state
         now = datetime.now(UTC)
-        self.query_one("#journal-body", Static).update(build_journal(state, now=now))
+
+        # — Journal : généreux, une entrée ≈ 4-6 lignes, ne pas plafonner à 8
+        journal_panel = self.query_one("#journal-panel", VerticalScroll)
+        journal_limit = max(8, rows_available(journal_panel) // 4)
+        self.query_one("#journal-body", Static).update(
+            build_journal(state, now=now, limit=journal_limit)
+        )
+
         equity_panel = self.query_one("#equity-panel", VerticalScroll)
         chart_width = max(20, (equity_panel.size.width or 44) - 4)
         self.query_one("#equity-body", Static).update(
             build_equity_summary(state, width=chart_width)
         )
+
         holdings = positions_by_pnl(state)
         positions_panel = self.query_one("#positions-panel", VerticalScroll)
         positions_panel.border_title = f"POSITIONS — {len(holdings)}" if holdings else "POSITIONS"
         # sym(9) + side(1) + montant(~7) + paddings(~7) — le reste pour la barre
         bar_width = max(4, min(8, (positions_panel.size.width or 44) - 24))
+        pos_limit = rows_available(positions_panel, reserved=1, minimum=4)
         self.query_one("#positions-body", Static).update(
-            build_home_positions(state, bar_width=bar_width)
+            build_home_positions(state, limit=pos_limit, bar_width=bar_width)
         )
+
         fire_panel = self.query_one("#fire-panel", VerticalScroll)
+        fire_limit = rows_available(fire_panel, reserved=0, minimum=3)
         self.query_one("#fire-body", Static).update(
-            build_next_to_fire(state, now=now, width=max(24, (fire_panel.size.width or 42) - 4))
+            build_next_to_fire(
+                state,
+                now=now,
+                limit=fire_limit,
+                width=max(24, (fire_panel.size.width or 42) - 4),
+            )
         )
 
     def scroll_journal(self, delta: int) -> None:

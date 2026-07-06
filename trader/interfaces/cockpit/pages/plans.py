@@ -23,7 +23,7 @@ from trader.interfaces.cockpit.derive import (
     next_to_fire,
     plain_watches,
 )
-from trader.interfaces.cockpit.pages._shared import ResizeRefresh, PANEL_CSS
+from trader.interfaces.cockpit.pages._shared import ResizeRefresh, PANEL_CSS, rows_available
 from trader.interfaces.ui.palette import (
     CASYS_ACCENT,
     CASYS_DIM,
@@ -127,8 +127,12 @@ def _stop_distance_sort_key(plan: dict, state: dict) -> float:
 # ---------------------------------------------------------------------------
 
 
-def build_armed(state: dict, *, now: datetime) -> RenderableType:
-    """Panneau ARMED : 1 ligne par EXECUTE_ORDER watch + footnote."""
+def build_armed(state: dict, *, now: datetime, limit: int | None = None) -> RenderableType:
+    """Panneau ARMED : 1 ligne par EXECUTE_ORDER watch + footnote.
+
+    ``limit`` est calculé dans update_state via rows_available — adapter à la
+    hauteur réelle du panneau.
+    """
     footnote = Text(
         "armed orders execute without a new LLM call when their trigger fires"
         " — the risk gate still applies",
@@ -145,8 +149,10 @@ def build_armed(state: dict, *, now: datetime) -> RenderableType:
             footnote,
         )
 
+    total = len(armed)
+    shown = armed[:limit] if limit is not None else armed
     rows: list[RenderableType] = []
-    for watch in armed:
+    for watch in shown:
         sym = str(watch.get("symbol") or "—")
         order = f.safe_dict(watch.get("order"))
         action = str(order.get("action") or order.get("intent") or "ORDER").upper()
@@ -194,6 +200,8 @@ def build_armed(state: dict, *, now: datetime) -> RenderableType:
 
         rows.append(line)
 
+    if limit is not None and total > limit:
+        rows.append(Text(f"+ {total - limit} more", style=CASYS_FAINT))
     rows.append(Text(""))
     rows.append(footnote)
     return Group(*rows)
@@ -292,8 +300,11 @@ def build_exit_plans(state: dict, *, now: datetime) -> RenderableType:
     return Group(grid, Text(""), footnote)
 
 
-def build_watches(state: dict, *, now: datetime) -> RenderableType:
-    """Panneau WATCHES : veilles non-armées avec barre TTL."""
+def build_watches(state: dict, *, now: datetime, limit: int | None = None) -> RenderableType:
+    """Panneau WATCHES : veilles non-armées avec barre TTL.
+
+    ``limit`` adaptatif via rows_available depuis update_state (reserved=1 footnote).
+    """
     watches = plain_watches(state)
     active = [
         w for w in watches
@@ -310,13 +321,16 @@ def build_watches(state: dict, *, now: datetime) -> RenderableType:
             footnote,
         )
 
+    total = len(active)
+    shown = active[:limit] if limit is not None else active
+
     grid = Table.grid(padding=(0, 1))
     grid.add_column(no_wrap=True, width=9)                    # SYM
     grid.add_column(no_wrap=True)                             # condition
     grid.add_column(no_wrap=True, width=10)                   # TTL bar
     grid.add_column(no_wrap=True, width=5, justify="right")   # countdown
 
-    for watch in active:
+    for watch in shown:
         sym = str(watch.get("symbol") or "—")
         cond = f.condition_summary(
             watch.get("conditions"), watch.get("logic"), max_items=2, limit=32
@@ -332,13 +346,20 @@ def build_watches(state: dict, *, now: datetime) -> RenderableType:
             Text(cd, style=CASYS_ACCENT),
         )
 
-    return Group(grid, footnote)
+    parts: list[RenderableType] = [grid]
+    if limit is not None and total > limit:
+        parts.append(Text(f"+ {total - limit} more", style=CASYS_FAINT))
+    parts.append(footnote)
+    return Group(*parts)
 
 
-def build_exit_watches(state: dict, *, now: datetime) -> RenderableType:
-    """EXIT WATCHES : exit_watch de chaque trade_plan (non expiré)."""
+def build_exit_watches(state: dict, *, now: datetime, limit: int | None = None) -> RenderableType:
+    """EXIT WATCHES : exit_watch de chaque trade_plan (non expiré).
+
+    ``limit`` adaptatif via rows_available depuis update_state.
+    """
     plans = _safe_list_of_dicts(state.get("trade_plans"))
-    rows: list[RenderableType] = []
+    lines: list[RenderableType] = []
 
     for plan in plans:
         exit_watch = f.safe_dict(plan.get("exit_watch"))
@@ -357,16 +378,24 @@ def build_exit_watches(state: dict, *, now: datetime) -> RenderableType:
         line.append(f"{sym:<9}", style=f"bold {CASYS_FG}")
         line.append(f"{cond}", style=CASYS_DIM)
         line.append(f"  {cd}", style=CASYS_ACCENT)
-        rows.append(line)
+        lines.append(line)
 
-    if not rows:
+    if not lines:
         return Text("no exit watches", style=f"italic {CASYS_FAINT}")
-    return Group(*rows)
+    total = len(lines)
+    shown = lines[:limit] if limit is not None else lines
+    result: list[RenderableType] = list(shown)
+    if limit is not None and total > limit:
+        result.append(Text(f"+ {total - limit} more", style=CASYS_FAINT))
+    return Group(*result)
 
 
-def build_next_to_fire_plans(state: dict, *, now: datetime) -> RenderableType:
-    """NEXT TO FIRE (dérivé de derive.next_to_fire) : 2 colonnes countdown | description."""
-    items = next_to_fire(state, now=now, limit=8)
+def build_next_to_fire_plans(state: dict, *, now: datetime, limit: int = 8) -> RenderableType:
+    """NEXT TO FIRE (dérivé de derive.next_to_fire) : 2 colonnes countdown | description.
+
+    ``limit`` adaptatif via rows_available depuis update_state.
+    """
+    items = next_to_fire(state, now=now, limit=limit)
     if not items:
         return Text("nothing armed, nothing watched", style=f"italic {CASYS_FAINT}")
 
@@ -443,13 +472,21 @@ class PlansPage(ResizeRefresh, Static):
                 yield Static(id="fire-body")
 
     def update_state(self, state: dict) -> None:  # noqa: C901
-        """Met à jour tous les panneaux depuis state — jamais d'exception."""
+        """Met à jour tous les panneaux depuis state — jamais d'exception.
+
+        Les limites d'affichage sont calculées via rows_available(panneau) pour
+        être adaptatives à la hauteur réelle du terminal. Le « + N more » n'est
+        émis que quand il y a réellement plus d'éléments que de place.
+        """
         now = datetime.now(UTC)
         try:
             armed = armed_watches(state)
             panel = self.query_one("#armed-panel", VerticalScroll)
             panel.border_title = f"ARMED — {len(armed)}" if armed else "ARMED — 0"
-            self.query_one("#armed-body", Static).update(build_armed(state, now=now))
+            armed_limit = rows_available(panel, reserved=2, minimum=3)
+            self.query_one("#armed-body", Static).update(
+                build_armed(state, now=now, limit=armed_limit)
+            )
         except Exception:  # état partiel toléré
             pass
 
@@ -479,20 +516,27 @@ class PlansPage(ResizeRefresh, Static):
                 if active_count
                 else "WATCHES"
             )
-            self.query_one("#watches-body", Static).update(build_watches(state, now=now))
-        except Exception:
-            pass
-
-        try:
-            self.query_one("#exit-watches-body", Static).update(
-                build_exit_watches(state, now=now)
+            watches_limit = rows_available(panel, reserved=1, minimum=3)
+            self.query_one("#watches-body", Static).update(
+                build_watches(state, now=now, limit=watches_limit)
             )
         except Exception:
             pass
 
         try:
+            ew_panel = self.query_one("#exit-watches-panel", VerticalScroll)
+            ew_limit = rows_available(ew_panel, reserved=0, minimum=3)
+            self.query_one("#exit-watches-body", Static).update(
+                build_exit_watches(state, now=now, limit=ew_limit)
+            )
+        except Exception:
+            pass
+
+        try:
+            fire_panel = self.query_one("#fire-panel", VerticalScroll)
+            fire_limit = rows_available(fire_panel, reserved=0, minimum=3)
             self.query_one("#fire-body", Static).update(
-                build_next_to_fire_plans(state, now=now)
+                build_next_to_fire_plans(state, now=now, limit=fire_limit)
             )
         except Exception:
             pass

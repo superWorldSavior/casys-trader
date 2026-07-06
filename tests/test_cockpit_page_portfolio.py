@@ -410,6 +410,133 @@ def test_build_closed_trades_side_long():
     assert "+80" in rendered
 
 
+def test_build_closed_trades_shows_reason():
+    from trader.interfaces.cockpit.pages.portfolio import build_closed_trades
+
+    state = {
+        "recent_trips": [
+            {
+                "symbol": "AAPL",
+                "side": "LONG",
+                "pnl": 50.0,
+                "exit_ts": "2026-07-05T14:00:00+00:00",
+                "holding_minutes": 120.0,
+                "exit_reason": "take_profit",
+            }
+        ],
+        "attribution": {},
+    }
+    rendered = _render(build_closed_trades(state, now=NOW))
+    assert "take_profit" in rendered
+
+
+def test_build_closed_trades_reason_missing_shows_dash():
+    from trader.interfaces.cockpit.pages.portfolio import build_closed_trades
+
+    state = {
+        "recent_trips": [
+            {
+                "symbol": "MSFT",
+                "side": "LONG",
+                "pnl": 30.0,
+                "exit_ts": "2026-07-05T14:00:00+00:00",
+            }
+        ],
+        "attribution": {},
+    }
+    rendered = _render(build_closed_trades(state, now=NOW))
+    assert "MSFT" in rendered
+    assert "—" in rendered  # exit_reason fallback
+
+
+def test_build_closed_trades_reason_clipped_to_12():
+    from trader.interfaces.cockpit.pages.portfolio import build_closed_trades
+
+    long_reason = "very_long_exit_reason_string"
+    state = {
+        "recent_trips": [
+            {
+                "symbol": "X",
+                "side": "LONG",
+                "pnl": 10.0,
+                "exit_ts": "2026-07-05T14:00:00+00:00",
+                "exit_reason": long_reason,
+            }
+        ],
+        "attribution": {},
+    }
+    rendered = _render(build_closed_trades(state, now=NOW))
+    assert long_reason not in rendered           # full string absent
+    assert long_reason[:12] in rendered          # clipped version present
+
+
+def test_build_closed_trades_medium_drops_dur():
+    from trader.interfaces.cockpit.pages.portfolio import build_closed_trades
+
+    state = {
+        "recent_trips": [
+            {
+                "symbol": "AAPL",
+                "side": "LONG",
+                "pnl": 50.0,
+                "exit_ts": "2026-07-05T14:00:00+00:00",
+                "holding_minutes": 120.0,
+                "exit_reason": "hard_stop",
+            }
+        ],
+        "attribution": {},
+    }
+    wide_rendered = _render(build_closed_trades(state, now=NOW, wide=True))
+    medium_rendered = _render(build_closed_trades(state, now=NOW, wide=False))
+    # DUR "2h00" visible in wide, absent in medium
+    assert "2h00" in wide_rendered
+    assert "2h00" not in medium_rendered
+    # REASON present in both layouts
+    assert "hard_stop" in wide_rendered
+    assert "hard_stop" in medium_rendered
+
+
+def test_build_closed_trades_limit():
+    from trader.interfaces.cockpit.pages.portfolio import build_closed_trades
+
+    trips = [
+        {
+            "symbol": f"SYM{i}",
+            "side": "LONG",
+            "pnl": float(i * 10),
+            "exit_ts": "2026-07-05T14:00:00+00:00",
+            "exit_reason": "hard_stop",
+        }
+        for i in range(10)
+    ]
+    state = {"recent_trips": trips, "attribution": {}}
+    rendered = _render(build_closed_trades(state, now=NOW, limit=3))
+    assert "SYM0" in rendered
+    assert "SYM2" in rendered
+    assert "SYM9" not in rendered  # beyond limit
+
+
+def test_build_closed_trades_limit_default_shows_all_when_few():
+    from trader.interfaces.cockpit.pages.portfolio import build_closed_trades
+
+    trips = [
+        {
+            "symbol": f"T{i}",
+            "side": "LONG",
+            "pnl": 10.0,
+            "exit_ts": "2026-07-05T14:00:00+00:00",
+            "exit_reason": "take_profit",
+        }
+        for i in range(3)
+    ]
+    state = {"recent_trips": trips, "attribution": {}}
+    rendered = _render(build_closed_trades(state, now=NOW, limit=20))
+    # All 3 trips visible (limit > count)
+    assert "T0" in rendered
+    assert "T1" in rendered
+    assert "T2" in rendered
+
+
 # ---------------------------------------------------------------------------
 # build_positions_rows (pure)
 # ---------------------------------------------------------------------------

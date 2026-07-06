@@ -625,6 +625,141 @@ def test_build_next_to_fire_with_watches():
 
 
 # ---------------------------------------------------------------------------
+# Adaptive limits — build_armed / build_watches / build_exit_watches / fire
+# ---------------------------------------------------------------------------
+
+
+def test_build_armed_limit_truncates():
+    """limit=1 avec 3 watches armées → 1 affichée + '+ 2 more'."""
+    state = {
+        "indicator_watches": [
+            {
+                "symbol": f"ARM{i}",
+                "on_trigger": "EXECUTE_ORDER",
+                "expires_at": FUTURE,
+                "logic": "and",
+                "conditions": [
+                    {"indicator": "breakout", "op": ">=", "value": 1, "timeframe": "1h"}
+                ],
+                "order": {"action": "BUY", "qty": 1},
+            }
+            for i in range(3)
+        ]
+    }
+    rendered = _render(build_armed(state, now=NOW, limit=1))
+    assert "ARM0" in rendered
+    assert "ARM1" not in rendered
+    assert "+ 2 more" in rendered
+
+
+def test_build_armed_no_truncation_when_fits():
+    """Quand limit >= len(armed), aucun '+ N more'."""
+    state = {
+        "indicator_watches": [
+            {
+                "symbol": "A1",
+                "on_trigger": "EXECUTE_ORDER",
+                "expires_at": FUTURE,
+                "logic": "and",
+                "conditions": [],
+                "order": {"action": "BUY", "qty": 1},
+            }
+        ]
+    }
+    rendered = _render(build_armed(state, now=NOW, limit=5))
+    assert "A1" in rendered
+    assert "more" not in rendered
+
+
+def test_build_watches_limit_truncates():
+    """limit=1 avec 3 watches actives → 1 affichée + '+ 2 more'."""
+    state = {
+        "indicator_watches": [
+            {
+                "symbol": f"WATCH{i}",
+                "on_trigger": "WAKE",
+                "expires_at": FUTURE,
+                "created_at": "2026-07-06T00:00:00+00:00",
+                "logic": "all",
+                "conditions": [
+                    {"indicator": "z", "op": "<=", "value": 1.0, "timeframe": "1h"}
+                ],
+            }
+            for i in range(3)
+        ]
+    }
+    rendered = _render(build_watches(state, now=NOW, limit=1))
+    assert "WATCH0" in rendered
+    assert "WATCH1" not in rendered
+    assert "+ 2 more" in rendered
+
+
+def test_build_watches_no_truncation_when_fits():
+    """Quand limit >= active watches, aucun '+ N more'."""
+    state = {
+        "indicator_watches": [
+            {
+                "symbol": "W1",
+                "on_trigger": "WAKE",
+                "expires_at": FUTURE,
+                "created_at": "2026-07-06T00:00:00+00:00",
+                "logic": "all",
+                "conditions": [],
+            }
+        ]
+    }
+    rendered = _render(build_watches(state, now=NOW, limit=10))
+    assert "W1" in rendered
+    assert "more" not in rendered
+
+
+def test_build_exit_watches_limit_truncates():
+    """limit=1 avec 3 exit watches → 1 affichée + '+ 2 more'."""
+    state = {
+        "trade_plans": [
+            {
+                "symbol": f"EW{i}",
+                "exit_watch": {
+                    "logic": "or",
+                    "conditions": [
+                        {"indicator": "z", "op": "<=", "value": 1.0, "timeframe": "1h"}
+                    ],
+                    "expires_at": FUTURE,
+                },
+            }
+            for i in range(3)
+        ]
+    }
+    rendered = _render(build_exit_watches(state, now=NOW, limit=1))
+    assert "EW0" in rendered
+    assert "EW1" not in rendered
+    assert "+ 2 more" in rendered
+
+
+def test_build_next_to_fire_adaptive_limit():
+    """build_next_to_fire_plans accepte limit comme paramètre explicite."""
+    state = {
+        "indicator_watches": [
+            {
+                "symbol": f"SYM{i}",
+                "on_trigger": "WAKE",
+                "expires_at": FUTURE,
+                "created_at": "2026-07-06T00:00:00+00:00",
+                "logic": "all",
+                "conditions": [],
+            }
+            for i in range(5)
+        ]
+    }
+    rendered_small = _render(build_next_to_fire_plans(state, now=NOW, limit=2))
+    rendered_large = _render(build_next_to_fire_plans(state, now=NOW, limit=10))
+    # Avec limit=10 on voit plus de symboles qu'avec limit=2
+    count_small = rendered_small.count("SYM")
+    count_large = rendered_large.count("SYM")
+    assert count_large >= count_small
+
+
+# ---------------------------------------------------------------------------
 # PlansPage widget — test de montage Textual
 # ---------------------------------------------------------------------------
 

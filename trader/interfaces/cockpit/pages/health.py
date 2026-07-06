@@ -22,7 +22,7 @@ from textual.containers import Vertical, VerticalScroll
 from textual.widgets import Static
 
 from trader.interfaces.cockpit import format as f
-from trader.interfaces.cockpit.pages._shared import ResizeRefresh, PANEL_CSS
+from trader.interfaces.cockpit.pages._shared import ResizeRefresh, PANEL_CSS, rows_available
 from trader.interfaces.ui.palette import (
     CASYS_DIM,
     CASYS_FAINT,
@@ -62,11 +62,14 @@ def _symbols_by_venue(state: dict) -> dict[str, list[str]]:
 # ---------------------------------------------------------------------------
 
 
-def build_freshness(state: dict, *, now: datetime) -> RenderableType:
+def build_freshness(
+    state: dict, *, now: datetime, stale_limit: int | None = None
+) -> RenderableType:
     """DATA FRESHNESS : un rang par venue, ● live ou ▲ stale + âge.
 
-    Seuls les symboles présents dans state["stale_market_data"] sont stales ;
-    les absents sont fresh (le dict ne contient que les stales).
+    Quand ``stale_limit`` (calculé par rows_available dans update_state) laisse
+    de la place après les lignes de venue + la footnote, chaque symbole stale
+    est listé individuellement trié par âge décroissant.
     """
     stale_data = f.safe_dict(state.get("stale_market_data"))
     by_venue = _symbols_by_venue(state)
@@ -83,6 +86,8 @@ def build_freshness(state: dict, *, now: datetime) -> RenderableType:
     grid.add_column(no_wrap=True)           # detail
 
     has_stale = False
+    stale_by_venue: dict[str, list[tuple[str, float | None]]] = {}
+
     for venue in sorted_venues:
         syms = by_venue.get(venue, [])
         stale_syms = [s for s in syms if s in stale_data]
@@ -98,6 +103,9 @@ def build_freshness(state: dict, *, now: datetime) -> RenderableType:
             age_str = f.age_m(max_age) if max_age is not None else "?"
             detail = f"{total} symbols · {age_str} old"
             venue_style = CASYS_DIM
+            stale_by_venue[venue] = [
+                (s, f.staleness_age_m(state, s)) for s in stale_syms
+            ]
         else:
             badge = Text("● live", style=CASYS_SUCCESS)
             detail = f"{total} symbols · fresh"
@@ -110,6 +118,31 @@ def build_freshness(state: dict, *, now: datetime) -> RenderableType:
         )
 
     parts: list[RenderableType] = [grid]
+
+    # Liste individuelle des symboles stales quand la hauteur le permet
+    if has_stale and stale_limit is not None:
+        used = len(sorted_venues) + 1  # lignes venue + footnote
+        sym_budget = max(0, stale_limit - used)
+        if sym_budget >= 1:
+            all_stale: list[tuple[str, float | None]] = []
+            for venue in sorted_venues:
+                all_stale.extend(stale_by_venue.get(venue, []))
+            all_stale.sort(key=lambda x: x[1] if x[1] is not None else 0.0, reverse=True)
+            shown_stale = all_stale[:sym_budget]
+
+            sym_grid = Table.grid(padding=(0, 1))
+            sym_grid.add_column(no_wrap=True, width=5)   # indent
+            sym_grid.add_column(no_wrap=True, width=12)  # symbol
+            sym_grid.add_column(no_wrap=True)            # age
+            for sym, age in shown_stale:
+                age_str = f.age_m(age) if age is not None else "?"
+                sym_grid.add_row(
+                    Text(""),
+                    Text(sym, style=CASYS_FAINT),
+                    Text(age_str, style=CASYS_WARNING),
+                )
+            parts.append(sym_grid)
+
     if has_stale:
         parts.append(
             Text(
@@ -221,8 +254,12 @@ def build_llm(state: dict, *, now: datetime) -> RenderableType:
     return grid
 
 
-def build_learnings(state: dict, *, now: datetime) -> RenderableType:
-    """LEARNINGS : pending count · consolidation status · 3 dernières notes."""
+def build_learnings(state: dict, *, now: datetime, limit: int = 3) -> RenderableType:
+    """LEARNINGS : pending count · consolidation status · N dernières notes.
+
+    ``limit`` est calculé dans update_state via rows_available (reserved=1 pour
+    la headline). Minimum 3 par défaut.
+    """
     pending = state.get("learnings_pending_count")
     consolidation = f.safe_dict(state.get("consolidation_status"))
     notes = _safe_list_of_dicts(state.get("learnings"))
@@ -247,7 +284,7 @@ def build_learnings(state: dict, *, now: datetime) -> RenderableType:
     headline.append(last_str, style=CASYS_FAINT)
 
     parts: list[RenderableType] = [headline]
-    for entry in notes[:3]:
+    for entry in notes[:limit]:
         sym = str(entry.get("symbol") or "").strip()
         note = str(entry.get("note") or "").strip()
         if not note:
@@ -326,6 +363,8 @@ class HealthPage(ResizeRefresh, Static):
     }
     HealthPage .casys-panel { height: auto; margin-bottom: 1; }
     HealthPage .casys-panel Static { height: auto; }
+    HealthPage #freshness-panel { height: 1fr; }
+    HealthPage #learnings-h-panel { height: 1fr; }
     """
     )
 
@@ -356,10 +395,16 @@ class HealthPage(ResizeRefresh, Static):
                 yield Static(id="universe-h-body")
 
     def update_state(self, state: dict) -> None:  # noqa: PLR0912
+        """Met à jour tous les panneaux. Les limites adaptatives sont calculées
+        via rows_available pour FRESHNESS (1fr → liste les stales individuels
+        quand il y a de la place) et LEARNINGS (1fr → N notes selon hauteur).
+        """
         now = datetime.now(UTC)
         try:
+            freshness_panel = self.query_one("#freshness-panel", VerticalScroll)
+            freshness_limit = rows_available(freshness_panel, reserved=0, minimum=3)
             self.query_one("#freshness-body", Static).update(
-                build_freshness(state, now=now)
+                build_freshness(state, now=now, stale_limit=freshness_limit)
             )
         except Exception:
             pass
@@ -378,8 +423,10 @@ class HealthPage(ResizeRefresh, Static):
         except Exception:
             pass
         try:
+            learnings_panel = self.query_one("#learnings-h-panel", VerticalScroll)
+            learnings_limit = rows_available(learnings_panel, reserved=1, minimum=3)
             self.query_one("#learnings-h-body", Static).update(
-                build_learnings(state, now=now)
+                build_learnings(state, now=now, limit=learnings_limit)
             )
         except Exception:
             pass

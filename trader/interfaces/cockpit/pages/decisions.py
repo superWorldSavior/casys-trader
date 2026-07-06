@@ -256,7 +256,11 @@ def build_mix_24h(state: dict, *, now: datetime | None = None) -> RenderableType
 
 
 def build_risk_gate(state: dict) -> RenderableType:
-    """Rejets récents + caps lus de config/risk.yaml."""
+    """Rejets récents + TOUTES les caps de config/risk.yaml (pas de troncature).
+
+    Chaque clé de risk.yaml est affichée avec un label lisible et un formatage
+    adapté ($ pour les notionnels, % pour les seuils, on/off pour les booleans).
+    """
     rows = _safe_list_of_dicts(state.get("recent_decisions"))
     risk_n = sum(1 for r in rows if _is_risk_row(r))
 
@@ -269,29 +273,53 @@ def build_risk_gate(state: dict) -> RenderableType:
         )
 
     caps = _load_risk_caps()
-    cap_fragments: list[str] = []
-    if caps.get("max_gross_exposure"):
-        cap_fragments.append(f"gross cap ${caps['max_gross_exposure']:,.0f}")
-    if caps.get("max_position_value"):
-        cap_fragments.append(f"per-symbol ${caps['max_position_value']:,.0f}")
-    if caps.get("max_order_value"):
-        cap_fragments.append(f"order ${caps['max_order_value']:,.0f}")
-    if caps.get("max_risk_per_trade_pct") is not None:
-        pct = (_safe_float(caps["max_risk_per_trade_pct"], default=0.0) or 0.0) * 100
-        cap_fragments.append(f"risk/trade {pct:.1f}%")
 
-    cap_line = Text()
-    if cap_fragments:
-        cap_line.append("active caps — ", style=CASYS_FAINT)
-        cap_line.append(", ".join(cap_fragments), style=CASYS_DIM)
-        cap_line.append(" (config/risk.yaml)", style=CASYS_FAINT)
+    _NICE_LABELS: dict[str, str] = {
+        "max_gross_exposure": "gross cap",
+        "max_position_value": "per-symbol cap",
+        "max_order_value": "order max",
+        "max_risk_per_trade_pct": "risk/trade",
+        "min_equity": "min equity",
+        "confidence_gate_enabled": "conf gate",
+        "require_hard_stop": "hard stop req",
+        "min_trade_confidence": "min conf",
+        "full_risk_confidence": "full-risk conf",
+    }
+    _DOLLAR_KEYS = {"max_gross_exposure", "max_position_value", "max_order_value", "min_equity"}
+    _PCT_KEYS = {"max_risk_per_trade_pct", "min_trade_confidence", "full_risk_confidence"}
+
+    if caps:
+        parts.append(Text("active caps  (config/risk.yaml)", style=CASYS_FAINT))
+        cap_grid = Table.grid(padding=(0, 1))
+        cap_grid.add_column(no_wrap=True, width=16)
+        cap_grid.add_column(no_wrap=True)
+        for key, value in caps.items():
+            label = _NICE_LABELS.get(key, key.replace("_", " "))
+            if isinstance(value, bool):
+                val_str = "on" if value else "off"
+                val_style = CASYS_SUCCESS if value else CASYS_DIM
+            elif key in _DOLLAR_KEYS:
+                val_str = f"${(_safe_float(value, default=0.0) or 0.0):,.0f}"
+                val_style = CASYS_MUTED
+            elif key in _PCT_KEYS:
+                val_str = f"{(_safe_float(value, default=0.0) or 0.0) * 100:.1f}%"
+                val_style = CASYS_MUTED
+            else:
+                val_str = str(value)
+                val_style = CASYS_MUTED
+            cap_grid.add_row(
+                Text(label, style=CASYS_FAINT),
+                Text(val_str, style=val_style),
+            )
+        parts.append(cap_grid)
     else:
-        cap_line.append(
-            "active caps — max gross exposure · per-symbol cap"
-            " · session gate · order size vs equity (config/risk.yaml)",
-            style=CASYS_FAINT,
+        parts.append(
+            Text(
+                "active caps — max gross exposure · per-symbol cap"
+                " · session gate · order size vs equity (config/risk.yaml)",
+                style=CASYS_FAINT,
+            )
         )
-    parts.append(cap_line)
     return Group(*parts)
 
 
@@ -604,7 +632,7 @@ class DecisionsPage(ResizeRefresh, Static):
     }
     DecisionsPage #detail-scroll {
         height: auto;
-        max-height: 15;
+        max-height: 40%;
         margin-top: 1;
         display: none;
     }

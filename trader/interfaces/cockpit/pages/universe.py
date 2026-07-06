@@ -30,7 +30,7 @@ from textual.coordinate import Coordinate
 from textual.widgets import Static
 
 from trader.interfaces.cockpit import format as f
-from trader.interfaces.cockpit.pages._shared import preserve_cursor, ResizeRefresh, PANEL_CSS, SymbolTable
+from trader.interfaces.cockpit.pages._shared import preserve_cursor, rows_available, ResizeRefresh, PANEL_CSS, SymbolTable
 from trader.interfaces.ui.palette import (
     CASYS_ACCENT,
     CASYS_DIM,
@@ -58,7 +58,63 @@ from trader.reporting.read_models.runtime_state import _safe_float, _safe_list_o
 _VENUE_ORDER = ["TW", "EU", "US"]
 _VENUE_DISPLAY = {"TW": "TPE", "EU": "EU", "US": "US", "FX": "FX"}
 _HOTSET_SIZE = 5
-_PREVIEW_ROWS = 8  # lignes visibles par venue avant "N more"
+_PREVIEW_ROWS = 8  # fallback quand la hauteur est inconnue (premier rendu)
+
+# Colonnes normales (largeur ≤ 110)
+_UNIVERSE_COLUMNS: tuple[tuple[str, int], ...] = (
+    ("SYM", 10),
+    ("NAME", 20),
+    ("STATE", 10),
+    ("POS", 3),
+    ("LAST DECISION", 18),
+    ("WAKE", 7),
+    ("DATA", 8),
+)
+
+# Colonnes larges (largeur > 110) : NAME et LAST DECISION élargis
+_UNIVERSE_COLUMNS_WIDE: tuple[tuple[str, int], ...] = (
+    ("SYM", 10),
+    ("NAME", 28),
+    ("STATE", 10),
+    ("POS", 3),
+    ("LAST DECISION", 22),
+    ("WAKE", 7),
+    ("DATA", 8),
+)
+
+
+def _columns_for_width(width: int) -> tuple[tuple[str, int], ...]:
+    """Retourne la définition des colonnes selon la largeur de la table."""
+    return _UNIVERSE_COLUMNS_WIDE if width > 110 else _UNIVERSE_COLUMNS
+
+
+def _distribute_rows(total: int, counts: list[int], minimum: int = 3) -> list[int]:
+    """Distribue ``total`` lignes entre N venues proportionnellement.
+
+    Chaque venue obtient au moins ``min(minimum, count)`` lignes. L'excédent
+    est réparti proportionnellement à la demande résiduelle. Résultat plafonné
+    au count réel de chaque venue (zéro gaspillage).
+    """
+    n = len(counts)
+    if n == 0:
+        return []
+    # Allocation de base : min(minimum, count) pour chaque venue
+    allocs = [min(minimum, c) for c in counts]
+    remaining = total - sum(allocs)
+    if remaining <= 0:
+        return allocs
+    demands = [max(0, counts[i] - allocs[i]) for i in range(n)]
+    total_demand = sum(demands)
+    if total_demand == 0:
+        return allocs  # toutes les venues sont déjà satisfaites
+    # Distribution proportionnelle
+    extras = [round(demands[i] / total_demand * remaining) for i in range(n)]
+    # Correction de la dérive d'arrondi sur la venue la plus grande
+    diff = remaining - sum(extras)
+    if diff != 0:
+        idx = max(range(n), key=lambda i: counts[i])
+        extras[idx] = max(0, extras[idx] + diff)
+    return [allocs[i] + min(extras[i], demands[i]) for i in range(n)]
 
 
 def _venue_of_safe(symbol: str) -> str:
@@ -97,6 +153,7 @@ def build_symbol_rows(
     overrides: UserOverrides,
     *,
     now: datetime,
+    name_col_width: int = 20,
 ) -> list[SymbolRowData]:
     """Construit les données tabulaires pour la universe table. PUR."""
     universe_symbols = list(state.get("universe_symbols") or [])
@@ -149,8 +206,8 @@ def build_symbol_rows(
         for sym in sorted(syms, key=_sort):
             override_status = overrides.status_of(sym)
             name = str(company_map.get(sym) or "")
-            if len(name) > 20:
-                name = name[:19] + "…"
+            if len(name) > name_col_width:
+                name = name[: name_col_width - 1] + "…"
 
             if override_status == "pinned":
                 state_label = "pinned"
@@ -386,17 +443,6 @@ def _read_last_rotation(ledger_path: Path) -> dict | None:
     return None
 
 
-_UNIVERSE_COLUMNS: tuple[tuple[str, int], ...] = (
-    ("SYM", 10),
-    ("NAME", 20),
-    ("STATE", 10),
-    ("POS", 3),
-    ("LAST DECISION", 18),
-    ("WAKE", 7),
-    ("DATA", 8),
-)
-
-
 def _populate_universe_table(
     table: SymbolTable,
     state: dict,
@@ -404,8 +450,15 @@ def _populate_universe_table(
     overrides: UserOverrides,
     now: datetime,
     drops: frozenset[str] = frozenset(),
+    limits_per_venue: dict[str, int] | None = None,
+    name_col_width: int = 20,
 ) -> None:
-    """Efface et repopule la DataTable depuis l'état courant."""
+    """Efface et repopule la DataTable depuis l'état courant.
+
+    ``limits_per_venue`` : nombre de lignes à afficher par venue (calculé dans
+    update_state via _distribute_rows). Si None, repli sur _PREVIEW_ROWS.
+    ``name_col_width`` : largeur max du nom avant ellipsis (20 ou 28 selon palier).
+    """
     n_cols = len(_UNIVERSE_COLUMNS) - len(drops)
     table.clear()
 
@@ -475,14 +528,16 @@ def _populate_universe_table(
             key=f"—|header_{venue}",
         )
 
-        preview = sorted_syms[:_PREVIEW_ROWS]
-        remaining = sorted_syms[_PREVIEW_ROWS:]
+        # Limite adaptative : limits_per_venue[venue] si fourni, sinon _PREVIEW_ROWS
+        limit = (limits_per_venue or {}).get(venue, _PREVIEW_ROWS)
+        preview = sorted_syms[:limit]
+        remaining = sorted_syms[limit:]
 
         for sym in preview:
             override_status = overrides.status_of(sym)
             name = str(company_map.get(sym) or "")
-            if len(name) > 20:
-                name = name[:19] + "…"
+            if len(name) > name_col_width:
+                name = name[: name_col_width - 1] + "…"
 
             if override_status == "pinned":
                 state_cell = Text("⚑ pinned", style=CASYS_ACCENT)
@@ -616,6 +671,10 @@ class UniversePage(ResizeRefresh, Static):
     )
 
     _last_state: dict | None = None
+    _active_drops: frozenset[str] | None = None
+    _active_columns: tuple | None = None
+    _active_limits: dict | None = None
+    _active_name_col_width: int = 20
 
     def _universe_path(self) -> Path:
         """Chemin vers config/universe.yaml. Patchable en test via l'app._root."""
@@ -638,12 +697,14 @@ class UniversePage(ResizeRefresh, Static):
                 yield Static(id="overrides-body")
 
     # Drop en largeur décroissante : NAME (déco) puis LAST DECISION.
+    # Le palier wide (>110) ne droppe rien — les colonnes sont élargies via
+    # _columns_for_width ; les drops s'appliquent aux largeurs inférieures.
     _COLUMN_DROPS: tuple[tuple[int, frozenset[str]], ...] = (
         (92, frozenset()),
         (70, frozenset({"NAME"})),
         (0, frozenset({"NAME", "LAST DECISION"})),
     )
-    _active_drops: frozenset[str] | None = None
+    # _active_drops et _active_columns déclarés en classe ci-dessus.
 
     def on_mount(self) -> None:
         self._rebuild_columns(force=True)
@@ -658,15 +719,52 @@ class UniversePage(ResizeRefresh, Static):
         return self._COLUMN_DROPS[-1][1]
 
     def _rebuild_columns(self, *, force: bool = False) -> None:
+        """Reconstruit les colonnes si le palier largeur a changé."""
         drops = self._drops_for_width()
-        if not force and drops == self._active_drops:
+        table = self.query_one("#universe-table", SymbolTable)
+        width = table.size.width or 0
+        columns = _columns_for_width(width)
+        if not force and drops == self._active_drops and columns == self._active_columns:
             return
         self._active_drops = drops
-        table = self.query_one("#universe-table", SymbolTable)
+        self._active_columns = columns
         table.clear(columns=True)
-        for name, width in _UNIVERSE_COLUMNS:
+        for name, w in columns:
             if name not in drops:
-                table.add_column(name, width=width)
+                table.add_column(name, width=w)
+
+    def _compute_adaptive_params(
+        self, state: dict, table: SymbolTable
+    ) -> tuple[dict[str, int], int]:
+        """Calcule les limites par venue et la largeur du nom adaptées à la hauteur courante.
+
+        Appelé dans update_state après _rebuild_columns — self._active_columns est à jour.
+        """
+        # Compter les symboles par venue
+        sym_by_venue_count: dict[str, int] = {}
+        for sym in list(state.get("universe_symbols") or []):
+            v = _venue_of_safe(sym)
+            sym_by_venue_count[v] = sym_by_venue_count.get(v, 0) + 1
+
+        active = [v for v in _VENUE_ORDER if sym_by_venue_count.get(v, 0) > 0]
+        n_headers = len(active)
+
+        # reserved = 1 (header colonnes DataTable) + 1 par groupe venue
+        total_data = rows_available(
+            table,
+            reserved=1 + n_headers,
+            minimum=max(3, n_headers * 3),
+        )
+        counts_list = [sym_by_venue_count.get(v, 0) for v in active]
+        allocs = _distribute_rows(total_data, counts_list, minimum=3)
+        limits = dict(zip(active, allocs))
+
+        # Largeur de la colonne NAME depuis les colonnes actives
+        name_col_width = next(
+            (w for nm, w in (self._active_columns or _UNIVERSE_COLUMNS) if nm == "NAME"),
+            20,
+        )
+        return limits, name_col_width
 
     def on_key(self, event: events.Key) -> None:
         """j/k : défilement clavier dans la table (en plus des flèches)."""
@@ -705,10 +803,13 @@ class UniversePage(ResizeRefresh, Static):
         except Exception:
             pass
 
-        # Table
+        # Table — colonnes + limites adaptatives
         try:
             self._rebuild_columns()
             table = self.query_one("#universe-table", SymbolTable)
+            limits, name_col_width = self._compute_adaptive_params(state, table)
+            self._active_limits = limits
+            self._active_name_col_width = name_col_width
             with preserve_cursor(table):
                 _populate_universe_table(
                     table,
@@ -716,6 +817,8 @@ class UniversePage(ResizeRefresh, Static):
                     overrides=overrides,
                     now=now,
                     drops=self._active_drops or frozenset(),
+                    limits_per_venue=limits,
+                    name_col_width=name_col_width,
                 )
         except Exception:
             pass
@@ -792,6 +895,8 @@ class UniversePage(ResizeRefresh, Static):
                         overrides=overrides,
                         now=now,
                         drops=self._active_drops or frozenset(),
+                        limits_per_venue=self._active_limits,
+                        name_col_width=self._active_name_col_width,
                     )
             except Exception:
                 pass

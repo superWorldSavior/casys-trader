@@ -20,7 +20,7 @@ from textual.widgets import Static
 
 from trader.interfaces.cockpit import format as f
 from trader.interfaces.cockpit.derive import equity_snapshot, exposure, positions_by_pnl
-from trader.interfaces.cockpit.pages._shared import PANEL_CSS, ResizeRefresh, SymbolTable, preserve_cursor
+from trader.interfaces.cockpit.pages._shared import PANEL_CSS, ResizeRefresh, SymbolTable, preserve_cursor, rows_available
 from trader.interfaces.ui.palette import (
     CASYS_ACCENT,
     CASYS_DIM,
@@ -204,8 +204,19 @@ def build_fx(state: dict, *, now: datetime) -> RenderableType:
 # ---------------------------------------------------------------------------
 
 
-def build_closed_trades(state: dict, *, now: datetime) -> RenderableType:
-    """CLOSED TRADES — récents : grille DATE/SYM/dir/P&L$/DUR + footer stats."""
+def build_closed_trades(
+    state: dict,
+    *,
+    now: datetime,
+    limit: int = 8,
+    wide: bool = True,
+) -> RenderableType:
+    """CLOSED TRADES — récents : grille DATE/SYM/dir/P&L$/REASON[/DUR] + footer stats.
+
+    wide=True  (panel ≥ 36 usable cols): include DUR column.
+    wide=False (narrower panel):         drop DUR to keep REASON visible.
+    limit: max rows, computed adaptively in update_state via rows_available().
+    """
     trips = _safe_list_of_dicts(state.get("recent_trips"))
     if not trips:
         attribution = f.safe_dict(state.get("attribution"))
@@ -219,25 +230,31 @@ def build_closed_trades(state: dict, *, now: datetime) -> RenderableType:
     grid = Table.grid(padding=(0, 1))
     grid.add_column(width=6, no_wrap=True)    # DATE
     grid.add_column(width=9, no_wrap=True)    # SYM
-    grid.add_column(width=2, no_wrap=True)    # dir
+    grid.add_column(width=1, no_wrap=True)    # dir
     grid.add_column(width=6, no_wrap=True)    # P&L $
-    grid.add_column(no_wrap=True)             # DUR
+    grid.add_column(width=12, no_wrap=True)   # REASON
+    if wide:
+        grid.add_column(width=5, no_wrap=True)  # DUR
 
-    for trip in trips[:8]:
+    for trip in trips[:limit]:
         symbol = str(trip.get("symbol") or "—")
         side = str(trip.get("side") or "LONG").upper()
         side_long = side == "LONG"
         pnl = _safe_float(trip.get("pnl"), default=0.0) or 0.0
         pnl_style = CASYS_SUCCESS if pnl >= 0 else CASYS_ERROR
         holding_m = trip.get("holding_minutes")
+        reason_raw = str(trip.get("exit_reason") or "—")[:12]
 
-        grid.add_row(
+        row_cells: list[Text] = [
             Text(_fmt_date_exit(trip.get("exit_ts")), style=CASYS_FAINT),
             Text(symbol, style=f"bold {CASYS_FG}"),
             Text("L" if side_long else "S", style=CASYS_SUCCESS if side_long else CASYS_ERROR),
             Text(f.fmt_signed(pnl), style=pnl_style),
-            Text(f.duration_m(holding_m), style=CASYS_FAINT),
-        )
+            Text(reason_raw, style=CASYS_DIM),
+        ]
+        if wide:
+            row_cells.append(Text(f.duration_m(holding_m), style=CASYS_FAINT))
+        grid.add_row(*row_cells)
 
     realized_pnl = _safe_float(attribution.get("realized_pnl"), default=0.0) or 0.0
     total_fees = _safe_float(attribution.get("total_commissions"), default=0.0) or 0.0
@@ -334,7 +351,8 @@ class PortfolioPage(ResizeRefresh, Static):
         layout: vertical;
     }
     PortfolioPage #exposure-panel {
-        height: 14;
+        height: auto;
+        min-height: 8;
         margin-bottom: 1;
     }
     PortfolioPage #fx-panel {
@@ -384,7 +402,7 @@ class PortfolioPage(ResizeRefresh, Static):
         ("VALUE $", 8),
         ("P&L $", 7),
         ("P&L %", 7),
-        ("STOP LEFT", 9),
+        ("STOP", 6),
         ("DATA", 10),
     )
     _active_drops: frozenset[str] | None = None
@@ -459,7 +477,7 @@ class PortfolioPage(ResizeRefresh, Static):
                 "VALUE $": Text(f"${notional:,.0f}" if notional else "—", style=CASYS_FG),
                 "P&L $": Text(f.fmt_signed(pnl), style=pnl_style),
                 "P&L %": Text(f"{pnl_pct_val:+.1f}%", style=pnl_style),
-                "STOP LEFT": Text(stop_str, style=CASYS_DIM),
+                "STOP": Text(stop_str, style=CASYS_DIM),
                 "DATA": _data_cell(state, symbol),
             }
             table.add_row(
@@ -510,8 +528,11 @@ class PortfolioPage(ResizeRefresh, Static):
         except Exception:
             pass
         try:
+            closed_panel = self.query_one("#closed-panel", VerticalScroll)
+            _limit = rows_available(closed_panel, reserved=3, minimum=4)
+            _wide = (closed_panel.content_size.width or 40) >= 36
             self.query_one("#closed-body", Static).update(
-                build_closed_trades(state, now=now)
+                build_closed_trades(state, now=now, limit=_limit, wide=_wide)
             )
         except Exception:
             pass

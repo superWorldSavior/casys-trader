@@ -17,7 +17,9 @@ import trader.interfaces.cockpit.app as cockpit_module
 from trader.interfaces.cockpit.app import CockpitApp
 from trader.interfaces.cockpit.pages.universe import (
     UniversePage,
+    _distribute_rows,
     _next_venue_close_utc,
+    _populate_universe_table,
     _read_last_rotation,
     build_hot_set_panel,
     build_overrides_panel,
@@ -633,3 +635,161 @@ async def test_universe_page_write_path_pin(tmp_path: Path, monkeypatch) -> None
 
         ov = load_user_overrides(config_dir / "universe.yaml")
         assert "3443.TW" in ov.pin
+
+
+# ---------------------------------------------------------------------------
+# _distribute_rows — distribution adaptative
+# ---------------------------------------------------------------------------
+
+
+def test_distribute_rows_proportional() -> None:
+    """Les venues avec plus de symboles obtiennent plus de lignes."""
+    result = _distribute_rows(30, [15, 10, 5], minimum=3)
+    assert result[0] >= result[1] >= result[2]
+    assert all(r >= 3 for r in result)
+
+
+def test_distribute_rows_all_fit() -> None:
+    """Quand le total dépasse la somme des counts, tout le monde est satisfait."""
+    counts = [8, 6, 4]
+    result = _distribute_rows(50, counts, minimum=3)
+    assert result == counts
+
+
+def test_distribute_rows_minimum_capped_by_count() -> None:
+    """Le minimum est plafonné au count réel (pas de lignes vides allouées)."""
+    result = _distribute_rows(20, [2, 2, 2], minimum=3)
+    assert result == [2, 2, 2]
+
+
+def test_distribute_rows_tight() -> None:
+    """Allocation serrée : chaque venue obtient au moins minimum, total respecté."""
+    result = _distribute_rows(12, [10, 8, 6], minimum=3)
+    assert sum(result) <= 12
+    assert all(r >= 3 for r in result)
+    # TW reçoit le plus
+    assert result[0] >= result[1]
+
+
+def test_distribute_rows_empty() -> None:
+    """Liste vide → liste vide."""
+    assert _distribute_rows(20, [], minimum=3) == []
+
+
+def test_distribute_rows_single_venue() -> None:
+    """Une seule venue → obtient tout, plafonné à son count."""
+    result = _distribute_rows(20, [5], minimum=3)
+    assert result == [5]
+
+
+# ---------------------------------------------------------------------------
+# _populate_universe_table — MockTable (sans Textual)
+# ---------------------------------------------------------------------------
+
+
+class _MockTable:
+    """Substitut minimal de SymbolTable pour les tests purs de _populate_universe_table."""
+
+    def __init__(self) -> None:
+        self.row_keys: list[str] = []
+
+    def clear(self, columns: bool = False) -> None:
+        self.row_keys = []
+
+    def add_column(self, name: str, width: int | None = None) -> None:
+        pass
+
+    def add_row(self, *cells, key: str | None = None) -> None:
+        if key:
+            self.row_keys.append(key)
+
+
+def test_populate_no_more_row_when_limits_cover_all() -> None:
+    """Quand limits_per_venue >= count pour chaque venue, aucune ligne '+ N more'."""
+    state = _minimal_state(
+        symbols=["3443.TW", "6488.TWO", "AAPL", "BN.PA"],
+        hotlist=["3443.TW"],
+        scores={"3443.TW": 0.8},
+    )
+    table = _MockTable()
+    _populate_universe_table(
+        table,
+        state,
+        overrides=UserOverrides(),
+        now=NOW,
+        drops=frozenset(),
+        limits_per_venue={"TW": 20, "EU": 20, "US": 20},
+    )
+    more_keys = [k for k in table.row_keys if k.startswith("—|more_")]
+    assert more_keys == [], f"unexpected more rows: {more_keys}"
+
+
+def test_populate_more_row_when_limit_exceeded() -> None:
+    """Quand limit < count, une ligne '+ N more' apparaît avec le bon résidu."""
+    symbols = [f"SYM{i}.TW" for i in range(10)]
+    state = _minimal_state(symbols=symbols, hotlist=[], scores={})
+    table = _MockTable()
+    _populate_universe_table(
+        table,
+        state,
+        overrides=UserOverrides(),
+        now=NOW,
+        drops=frozenset(),
+        limits_per_venue={"TW": 4},
+    )
+    more_keys = [k for k in table.row_keys if k.startswith("—|more_")]
+    assert len(more_keys) == 1
+    sym_keys = [k for k in table.row_keys if not k.startswith("—|")]
+    assert len(sym_keys) == 4
+
+
+def test_populate_no_more_row_exact_fit() -> None:
+    """Quand limit == count exact, pas de ligne 'more'."""
+    symbols = ["A.TW", "B.TW", "C.TW"]
+    state = _minimal_state(symbols=symbols, hotlist=[], scores={})
+    table = _MockTable()
+    _populate_universe_table(
+        table,
+        state,
+        overrides=UserOverrides(),
+        now=NOW,
+        drops=frozenset(),
+        limits_per_venue={"TW": 3},
+    )
+    more_keys = [k for k in table.row_keys if k.startswith("—|more_")]
+    assert more_keys == []
+
+
+# ---------------------------------------------------------------------------
+# build_symbol_rows — name_col_width adaptatif
+# ---------------------------------------------------------------------------
+
+
+def test_build_symbol_rows_name_col_width_28_no_truncation() -> None:
+    """name_col_width=28 : un nom de 25 chars n'est PAS tronqué (il tient dans 28)."""
+    state = _minimal_state(symbols=["3443.TW"], hotlist=[], scores={})
+    state["company_map"]["3443.TW"] = "A" * 25
+    rows = build_symbol_rows(state, UserOverrides(), now=NOW, name_col_width=28)
+    tw_row = next(r for r in rows if r.symbol == "3443.TW")
+    assert len(tw_row.name) == 25
+    assert "…" not in tw_row.name
+
+
+def test_build_symbol_rows_name_col_width_28_truncates_at_28() -> None:
+    """name_col_width=28 : un nom de 35 chars est tronqué à 27 + '…'."""
+    state = _minimal_state(symbols=["3443.TW"], hotlist=[], scores={})
+    state["company_map"]["3443.TW"] = "A" * 35
+    rows = build_symbol_rows(state, UserOverrides(), now=NOW, name_col_width=28)
+    tw_row = next(r for r in rows if r.symbol == "3443.TW")
+    assert len(tw_row.name) <= 28
+    assert "…" in tw_row.name
+
+
+def test_build_symbol_rows_name_default_still_truncates_at_20() -> None:
+    """Par défaut (name_col_width=20), un nom de 30 chars est tronqué à <= 20."""
+    state = _minimal_state(symbols=["3443.TW"], hotlist=[], scores={})
+    state["company_map"]["3443.TW"] = "A" * 30
+    rows = build_symbol_rows(state, UserOverrides(), now=NOW)
+    tw_row = next(r for r in rows if r.symbol == "3443.TW")
+    assert len(tw_row.name) <= 20
+    assert "…" in tw_row.name

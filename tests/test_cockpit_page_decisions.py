@@ -377,6 +377,25 @@ def test_build_risk_gate_shows_caps() -> None:
     assert "config/risk.yaml" in rendered
 
 
+def test_build_risk_gate_shows_all_known_caps() -> None:
+    """Toutes les caps connues de risk.yaml sont listées sans troncature."""
+    rendered = _render(build_risk_gate({}))
+    # Les caps que risk.yaml contient effectivement
+    assert "gross cap" in rendered
+    assert "per-symbol cap" in rendered
+    assert "order max" in rendered
+    assert "min equity" in rendered
+    assert "conf gate" in rendered
+    assert "hard stop req" in rendered
+
+
+def test_build_risk_gate_booleans_formatted() -> None:
+    """Les booleans sont affichés 'on'/'off'."""
+    rendered = _render(build_risk_gate({}))
+    # confidence_gate_enabled: false → 'off'
+    assert "off" in rendered
+
+
 # ---------------------------------------------------------------------------
 # build_model_panel
 # ---------------------------------------------------------------------------

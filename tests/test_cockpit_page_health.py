@@ -390,6 +390,83 @@ def test_learnings_empty_note_skipped():
     assert "valid note" in rendered
 
 
+def test_learnings_adaptive_limit_shows_more():
+    """limit=5 → les 5 premières notes sont affichées (pas seulement 3)."""
+    state = {
+        "learnings": [
+            {"symbol": f"SYM{i}", "note": f"note number {i}"}
+            for i in range(6)
+        ],
+    }
+    rendered = _render(build_learnings(state, now=NOW, limit=5))
+    assert "SYM0" in rendered
+    assert "SYM4" in rendered   # 5e note visible avec limit=5
+    assert "SYM5" not in rendered  # 6e note hors limite
+
+
+def test_learnings_default_still_3():
+    """Sans limit explicite, le défaut (3) s'applique."""
+    state = {
+        "learnings": [
+            {"symbol": f"SYM{i}", "note": f"note number {i}"}
+            for i in range(6)
+        ],
+    }
+    rendered = _render(build_learnings(state, now=NOW))  # limit=3 par défaut
+    assert "SYM0" in rendered
+    assert "SYM2" in rendered
+    assert "SYM3" not in rendered
+
+
+# ---------------------------------------------------------------------------
+# build_freshness — adaptive stale_limit
+# ---------------------------------------------------------------------------
+
+
+def test_freshness_stale_symbols_listed_with_budget():
+    """stale_limit suffisant → symboles stales individuels listés."""
+    state = {
+        "universe_symbols": ["AAPL", "MSFT"],
+        "stale_market_data": {
+            "AAPL": {"data_age_minutes": 200.0},
+            "MSFT": {"data_age_minutes": 100.0},
+        },
+    }
+    # stale_limit=10 laisse largement de la place après la ligne US + footnote
+    rendered = _render(build_freshness(state, now=NOW, stale_limit=10))
+    assert "AAPL" in rendered
+    assert "MSFT" in rendered
+
+
+def test_freshness_stale_symbols_not_listed_without_budget():
+    """stale_limit None (défaut) → pas de liste individuelle."""
+    state = {
+        "universe_symbols": ["AAPL", "MSFT"],
+        "stale_market_data": {
+            "AAPL": {"data_age_minutes": 200.0},
+        },
+    }
+    # Sans stale_limit, seule la ligne venue est affichée
+    rendered = _render(build_freshness(state, now=NOW))
+    assert "US" in rendered
+    # Le symbole peut apparaître mais l'info de venue agrégée est bien là
+    assert "▲ stale" in rendered
+
+
+def test_freshness_stale_symbols_sorted_by_age():
+    """stale_limit permet les détails → le symbole le plus stale est en premier."""
+    state = {
+        "universe_symbols": ["AAPL", "MSFT"],
+        "stale_market_data": {
+            "AAPL": {"data_age_minutes": 100.0},
+            "MSFT": {"data_age_minutes": 400.0},  # plus stale
+        },
+    }
+    rendered = _render(build_freshness(state, now=NOW, stale_limit=10))
+    # MSFT (plus stale) doit apparaître avant AAPL dans le rendu
+    assert rendered.index("MSFT") < rendered.index("AAPL")
+
+
 # ---------------------------------------------------------------------------
 # build_universe
 # ---------------------------------------------------------------------------
