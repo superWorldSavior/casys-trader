@@ -23,7 +23,7 @@ from trader.interfaces.cockpit.derive import (
     next_to_fire,
     plain_watches,
 )
-from trader.interfaces.cockpit.pages._shared import PANEL_CSS
+from trader.interfaces.cockpit.pages._shared import ResizeRefresh, PANEL_CSS
 from trader.interfaces.ui.palette import (
     CASYS_ACCENT,
     CASYS_DIM,
@@ -391,7 +391,7 @@ def build_next_to_fire_plans(state: dict, *, now: datetime) -> RenderableType:
 # ---------------------------------------------------------------------------
 
 
-class PlansPage(Static):
+class PlansPage(ResizeRefresh, Static):
     """Page 4 — Plans : ordres armés · plans de sortie · veilles actives."""
 
     DEFAULT_CSS = (

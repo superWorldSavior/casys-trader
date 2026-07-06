@@ -549,3 +549,53 @@ async def test_alert_banner_hidden_when_alive(tmp_path, monkeypatch):
         app._apply_state({"dry_run": True}, False)
         banner = app.query_one("#alert-banner", AlertBanner)
         assert not banner.has_class("visible")
+
+
+async def test_adaptive_columns_drop_on_narrow_terminal(tmp_path, monkeypatch):
+    """En terminal étroit, portfolio droppe AVG/VALUE et decisions droppe SOURCE."""
+    from trader.interfaces.cockpit.pages.decisions import DecisionsPage
+    from trader.interfaces.cockpit.pages.portfolio import PortfolioPage
+
+    _patch_paths(monkeypatch, tmp_path)
+    (tmp_path / "decisions.jsonl").write_text("{}\n", encoding="utf-8")
+    _write_daemon_alive(tmp_path, monkeypatch)
+    app = CockpitApp()
+    async with app.run_test(size=(90, 26)) as pilot:
+        await pilot.pause()
+        await pilot.press("2")
+        await pilot.pause()
+        page = app.query_one("#portfolio-page", PortfolioPage)
+        page.update_state({"portfolio": {"holdings": [
+            {"symbol": "WELL", "quantity": 15, "last_price": 235.87, "avg_price": 224.0,
+             "fx_rate": 1.0, "unrealized_pnl_net": 170.0},
+        ]}})
+        await pilot.pause()
+        assert page._active_drops  # au moins AVG droppée
+        assert "AVG" in page._active_drops
+
+        await pilot.press("3")
+        await pilot.pause()
+        dec = app.query_one("#decisions-page", DecisionsPage)
+        dec.update_state({"recent_decisions": [
+            {"cycle_ts": "2026-07-06T02:00:00+00:00", "symbol": "WELL", "action": "HOLD",
+             "confidence": 0.7, "reason": "hold", "decision_source": "llm", "model_called": True},
+        ]})
+        await pilot.pause()
+        assert dec._drop_source is True
+
+
+async def test_adaptive_columns_full_on_wide_terminal(tmp_path, monkeypatch):
+    from trader.interfaces.cockpit.pages.portfolio import PortfolioPage
+
+    _patch_paths(monkeypatch, tmp_path)
+    (tmp_path / "decisions.jsonl").write_text("{}\n", encoding="utf-8")
+    _write_daemon_alive(tmp_path, monkeypatch)
+    app = CockpitApp()
+    async with app.run_test(size=(200, 50)) as pilot:
+        await pilot.pause()
+        await pilot.press("2")
+        await pilot.pause()
+        page = app.query_one("#portfolio-page", PortfolioPage)
+        page.update_state({"portfolio": {"holdings": []}})
+        await pilot.pause()
+        assert page._active_drops == frozenset()

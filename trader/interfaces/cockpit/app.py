@@ -120,10 +120,12 @@ class CockpitApp(App):
 
     TITLE = "casys cockpit"
 
-    # Classes de breakpoint posées sur le Screen selon la largeur du terminal :
-    # -compact < 110 ≤ -medium < 140 ≤ -wide. Le CSS d'app (prioritaire sur les
-    # DEFAULT_CSS des pages) adapte les layouts sans toucher aux modules.
+    # Classes de breakpoint posées sur le Screen selon la taille du terminal :
+    # largeur : -compact < 110 ≤ -medium < 140 ≤ -wide · hauteur : -short < 30 ≤ -tall.
+    # Le CSS d'app (prioritaire sur les DEFAULT_CSS des pages) adapte les
+    # layouts sans toucher aux modules.
     HORIZONTAL_BREAKPOINTS = [(0, "-compact"), (110, "-medium"), (140, "-wide")]
+    VERTICAL_BREAKPOINTS = [(0, "-short"), (30, "-tall")]
 
     CSS = """
     Screen {
@@ -164,20 +166,33 @@ class CockpitApp(App):
         width: 1fr; height: 100%; margin-bottom: 0; margin-right: 1;
     }
     Screen.-compact PortfolioPage { layout: vertical; }
+    Screen.-compact PortfolioPage #positions-panel { height: 1fr; }
     Screen.-compact PortfolioPage #portfolio-right {
         width: 100%; height: 14; overflow-y: auto;
     }
     Screen.-compact PlansPage { layout: vertical; }
+    Screen.-compact PlansPage #plans-left { height: 1fr; }
     Screen.-compact PlansPage #plans-right { width: 100%; height: 14; overflow-y: auto; }
     Screen.-compact UniversePage { layout: vertical; }
+    Screen.-compact UniversePage #universe-left { height: 1fr; }
     Screen.-compact UniversePage #universe-right { width: 100%; height: 14; overflow-y: auto; }
     Screen.-compact DecisionsPage { layout: vertical; }
+    Screen.-compact DecisionsPage #ledger-section { height: 1fr; }
     Screen.-compact DecisionsPage #decisions-right { width: 100%; height: 12; overflow-y: auto; }
     Screen.-compact SettingsPage { layout: vertical; }
     Screen.-compact HealthPage { layout: vertical; }
     Screen.-compact LogsPage { layout: vertical; }
     Screen.-compact LogsPage #events-panel { width: 100%; height: 2fr; margin-right: 0; }
     Screen.-compact LogsPage #agent-trace-panel { width: 100%; height: 1fr; }
+
+    /* ---- short (<30 lignes) : les bandes secondaires du stacking compact
+       rendent la hauteur au contenu principal ---- */
+    Screen.-short.-compact HomePage #home-right { height: 10; }
+    Screen.-short.-compact PortfolioPage #portfolio-right { height: 9; }
+    Screen.-short.-compact PlansPage #plans-right { height: 9; }
+    Screen.-short.-compact UniversePage #universe-right { height: 9; }
+    Screen.-short.-compact DecisionsPage #decisions-right { height: 8; }
+    Screen.-short NavRail #rail-brand { display: none; }
     """
 
     BINDINGS = [

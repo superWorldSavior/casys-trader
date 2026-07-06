@@ -23,7 +23,7 @@ from trader.interfaces.cockpit.derive import (
     next_to_fire,
     positions_by_pnl,
 )
-from trader.interfaces.cockpit.pages._shared import PANEL_CSS, build_equity_chart
+from trader.interfaces.cockpit.pages._shared import ResizeRefresh, PANEL_CSS, build_equity_chart
 from trader.interfaces.ui.palette import (
     CASYS_ACCENT,
     CASYS_DIM,
@@ -161,7 +161,7 @@ def build_next_to_fire(
     return grid
 
 
-class HomePage(Static):
+class HomePage(ResizeRefresh, Static):
     """Page 1 — Decision Journal."""
 
     DEFAULT_CSS = (
@@ -225,14 +225,6 @@ class HomePage(Static):
         self.query_one("#fire-body", Static).update(
             build_next_to_fire(state, now=now, width=max(24, (fire_panel.size.width or 42) - 4))
         )
-
-    def on_resize(self) -> None:
-        state = getattr(self, "_last_state", None)
-        if state is not None:
-            try:
-                self.update_state(state)
-            except Exception:
-                pass
 
     def scroll_journal(self, delta: int) -> None:
         """j/k : défilement du journal."""

@@ -29,7 +29,7 @@ from textual.containers import Vertical, VerticalScroll
 from textual.widgets import DataTable, Static
 
 from trader.interfaces.cockpit import format as f
-from trader.interfaces.cockpit.pages._shared import PANEL_CSS
+from trader.interfaces.cockpit.pages._shared import ResizeRefresh, PANEL_CSS
 from trader.interfaces.ui.palette import (
     CASYS_ACCENT,
     CASYS_DIM,
@@ -470,6 +470,7 @@ def populate_ledger_table(
     state: dict,
     *,
     now: datetime,
+    drop_source: bool = False,
 ) -> dict[str, dict]:
     """Peuple le DataTable et retourne {row_key → row_dict}.
 
@@ -552,10 +553,10 @@ def populate_ledger_table(
             )
 
         row_key = f"{cycle_ts or ''}|{symbol}|{idx}"
-        table.add_row(
-            utc_text, sym_text, act_text, conf_text, source_text, effect_text,
-            key=row_key,
-        )
+        cells = [utc_text, sym_text, act_text, conf_text, source_text, effect_text]
+        if drop_source:
+            cells.pop(4)
+        table.add_row(*cells, key=row_key)
         row_map[row_key] = row
 
     return row_map
@@ -566,7 +567,7 @@ def populate_ledger_table(
 # ---------------------------------------------------------------------------
 
 
-class DecisionsPage(Static):
+class DecisionsPage(ResizeRefresh, Static):
     """Page 3 — Decisions ledger + MIX / RISK GATE / MODEL."""
 
     BINDINGS = [
@@ -653,14 +654,27 @@ class DecisionsPage(Static):
                 model.border_title = "MODEL"
                 yield Static("", id="model-body")
 
+    _drop_source: bool | None = None
+
     def on_mount(self) -> None:
         """Configure les colonnes du DataTable après le montage."""
+        self._rebuild_columns(force=True)
+
+    def _rebuild_columns(self, *, force: bool = False) -> None:
+        """SOURCE saute sous ~80 cols (EFFECT garde la place de respirer)."""
         table = self.query_one("#ledger-table", DataTable)
+        width = table.size.width or 0
+        drop_source = 0 < width < 80
+        if not force and drop_source == self._drop_source:
+            return
+        self._drop_source = drop_source
+        table.clear(columns=True)
         table.add_column(Text("UTC", style=CASYS_FAINT), width=8)
         table.add_column(Text("SYM", style=CASYS_FAINT), width=10)
         table.add_column(Text("ACT", style=CASYS_FAINT), width=5)
         table.add_column(Text("CONF", style=CASYS_FAINT), width=5)
-        table.add_column(Text("SOURCE", style=CASYS_FAINT), width=15)
+        if not drop_source:
+            table.add_column(Text("SOURCE", style=CASYS_FAINT), width=15)
         table.add_column(Text("EFFECT", style=CASYS_FAINT))
 
     # ------------------------------------------------------------------
@@ -743,7 +757,10 @@ class DecisionsPage(Static):
             )
 
             table = self.query_one("#ledger-table", DataTable)
-            self._row_map = populate_ledger_table(table, grouped, state, now=now)
+            self._rebuild_columns()
+            self._row_map = populate_ledger_table(
+                table, grouped, state, now=now, drop_source=bool(self._drop_source)
+            )
 
             total = len(all_rows)
             self.query_one("#ledger-panel").border_title = (

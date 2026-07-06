@@ -695,6 +695,9 @@ async def test_plans_page_update_state_with_full_data(tmp_path, monkeypatch):
         await pilot.press("4")
         await pilot.pause()
         page = app.query_one("#plans-page", PlansPage)
+        # fige l'état de l'app : le mixin ResizeRefresh re-rend depuis
+        # app._last_state — sans ça le refresh périodique écrase les données
+        app._last_state = state
         page.update_state(state)
         await pilot.pause()
 

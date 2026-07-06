@@ -30,7 +30,7 @@ from textual.coordinate import Coordinate
 from textual.widgets import Static
 
 from trader.interfaces.cockpit import format as f
-from trader.interfaces.cockpit.pages._shared import PANEL_CSS, SymbolTable
+from trader.interfaces.cockpit.pages._shared import ResizeRefresh, PANEL_CSS, SymbolTable
 from trader.interfaces.ui.palette import (
     CASYS_ACCENT,
     CASYS_DIM,
@@ -386,14 +386,27 @@ def _read_last_rotation(ledger_path: Path) -> dict | None:
     return None
 
 
+_UNIVERSE_COLUMNS: tuple[tuple[str, int], ...] = (
+    ("SYM", 10),
+    ("NAME", 20),
+    ("STATE", 10),
+    ("POS", 3),
+    ("LAST DECISION", 18),
+    ("WAKE", 7),
+    ("DATA", 8),
+)
+
+
 def _populate_universe_table(
     table: SymbolTable,
     state: dict,
     *,
     overrides: UserOverrides,
     now: datetime,
+    drops: frozenset[str] = frozenset(),
 ) -> None:
     """Efface et repopule la DataTable depuis l'état courant."""
+    n_cols = len(_UNIVERSE_COLUMNS) - len(drops)
     table.clear()
 
     universe_symbols = list(state.get("universe_symbols") or [])
@@ -458,7 +471,7 @@ def _populate_universe_table(
 
         table.add_row(
             header,
-            Text(""), Text(""), Text(""), Text(""), Text(""), Text(""),
+            *(Text("") for _ in range(n_cols - 1)),
             key=f"—|header_{venue}",
         )
 
@@ -528,14 +541,17 @@ def _populate_universe_table(
             else:
                 data_cell = Text("● fresh", style=CASYS_SUCCESS)
 
+            cells = {
+                "SYM": Text(sym, style=f"bold {CASYS_FG}"),
+                "NAME": Text(name, style=CASYS_DIM),
+                "STATE": state_cell,
+                "POS": pos_cell,
+                "LAST DECISION": dec_cell,
+                "WAKE": wake_cell,
+                "DATA": data_cell,
+            }
             table.add_row(
-                Text(sym, style=f"bold {CASYS_FG}"),
-                Text(name, style=CASYS_DIM),
-                state_cell,
-                pos_cell,
-                dec_cell,
-                wake_cell,
-                data_cell,
+                *(cell for col, cell in cells.items() if col not in drops),
                 key=f"{sym}|{venue}",
             )
 
@@ -549,7 +565,7 @@ def _populate_universe_table(
                 )
             table.add_row(
                 more,
-                Text(""), Text(""), Text(""), Text(""), Text(""), Text(""),
+                *(Text("") for _ in range(n_cols - 1)),
                 key=f"—|more_{venue}",
             )
 
@@ -559,7 +575,7 @@ def _populate_universe_table(
 # ---------------------------------------------------------------------------
 
 
-class UniversePage(Static):
+class UniversePage(ResizeRefresh, Static):
     """Page 7 — Universe : tableau de l'univers avec write path pin/ban.
 
     Bindings p/b/u actifs sur le symbole sous le curseur de la DataTable.
@@ -621,15 +637,36 @@ class UniversePage(Static):
                 ov.border_title = "OVERRIDES — yours"
                 yield Static(id="overrides-body")
 
+    # Drop en largeur décroissante : NAME (déco) puis LAST DECISION.
+    _COLUMN_DROPS: tuple[tuple[int, frozenset[str]], ...] = (
+        (92, frozenset()),
+        (70, frozenset({"NAME"})),
+        (0, frozenset({"NAME", "LAST DECISION"})),
+    )
+    _active_drops: frozenset[str] | None = None
+
     def on_mount(self) -> None:
+        self._rebuild_columns(force=True)
+
+    def _drops_for_width(self) -> frozenset[str]:
+        width = self.query_one("#universe-table", SymbolTable).size.width or 0
+        if width <= 0:
+            return frozenset()
+        for threshold, drops in self._COLUMN_DROPS:
+            if width >= threshold:
+                return drops
+        return self._COLUMN_DROPS[-1][1]
+
+    def _rebuild_columns(self, *, force: bool = False) -> None:
+        drops = self._drops_for_width()
+        if not force and drops == self._active_drops:
+            return
+        self._active_drops = drops
         table = self.query_one("#universe-table", SymbolTable)
-        table.add_column("SYM", width=10)
-        table.add_column("NAME", width=20)
-        table.add_column("STATE", width=10)
-        table.add_column("POS", width=3)
-        table.add_column("LAST DECISION", width=18)
-        table.add_column("WAKE", width=7)
-        table.add_column("DATA", width=8)
+        table.clear(columns=True)
+        for name, width in _UNIVERSE_COLUMNS:
+            if name not in drops:
+                table.add_column(name, width=width)
 
     def on_key(self, event: events.Key) -> None:
         """j/k : défilement clavier dans la table (en plus des flèches)."""
@@ -670,11 +707,13 @@ class UniversePage(Static):
 
         # Table
         try:
+            self._rebuild_columns()
             _populate_universe_table(
                 self.query_one("#universe-table", SymbolTable),
                 state,
                 overrides=overrides,
                 now=now,
+                drops=self._active_drops or frozenset(),
             )
         except Exception:
             pass
@@ -742,11 +781,13 @@ class UniversePage(Static):
         if self._last_state is not None:
             try:
                 now = datetime.now(UTC)
+                self._rebuild_columns()
                 _populate_universe_table(
                     self.query_one("#universe-table", SymbolTable),
                     self._last_state,
                     overrides=overrides,
                     now=now,
+                    drops=self._active_drops or frozenset(),
                 )
             except Exception:
                 pass

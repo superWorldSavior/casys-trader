@@ -27,6 +27,34 @@ PANEL_CSS = """
 """
 
 
+class ResizeRefresh:
+    """Mixin pages : re-rend depuis le dernier état connu quand la taille change.
+
+    Débouncé (150 ms) — Textual émet un resize par étape de drag. À mixer
+    AVANT Static : ``class XPage(ResizeRefresh, Static)``.
+    """
+
+    _resize_timer = None
+
+    def on_resize(self) -> None:
+        if self._resize_timer is not None:
+            try:
+                self._resize_timer.stop()
+            except Exception:
+                pass
+
+        def _rerender() -> None:
+            self._resize_timer = None
+            state = getattr(self.app, "_last_state", None)
+            if state is not None:
+                try:
+                    self.update_state(state)  # type: ignore[attr-defined]
+                except Exception:
+                    pass
+
+        self._resize_timer = self.set_timer(0.15, _rerender)  # type: ignore[attr-defined]
+
+
 class SymbolChosen(Message):
     """Une ligne portant un symbole a été validée (Enter)."""
 

@@ -42,7 +42,7 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.widgets import Input, Static
 
-from trader.interfaces.cockpit.pages._shared import PANEL_CSS
+from trader.interfaces.cockpit.pages._shared import ResizeRefresh, PANEL_CSS
 from trader.interfaces.ui.palette import (
     CASYS_ACCENT,
     CASYS_DIM,
@@ -447,7 +447,7 @@ class _NonFocusableScroll(VerticalScroll):
     can_focus = False
 
 
-class SettingsPage(Static):
+class SettingsPage(ResizeRefresh, Static):
     """Page 8 — Settings : écritures yaml explicites via w/r."""
 
     can_focus = True

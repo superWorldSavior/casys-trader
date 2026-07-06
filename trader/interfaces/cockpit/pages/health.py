@@ -22,7 +22,7 @@ from textual.containers import Vertical, VerticalScroll
 from textual.widgets import Static
 
 from trader.interfaces.cockpit import format as f
-from trader.interfaces.cockpit.pages._shared import PANEL_CSS
+from trader.interfaces.cockpit.pages._shared import ResizeRefresh, PANEL_CSS
 from trader.interfaces.ui.palette import (
     CASYS_DIM,
     CASYS_FAINT,
@@ -304,7 +304,7 @@ def build_universe(state: dict, *, now: datetime) -> RenderableType:
 # ---------------------------------------------------------------------------
 
 
-class HealthPage(Static):
+class HealthPage(ResizeRefresh, Static):
     """Page 5 — Health : fraîcheur des données, sources, LLM, learnings, univers."""
 
     DEFAULT_CSS = (

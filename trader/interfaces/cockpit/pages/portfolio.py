@@ -20,7 +20,7 @@ from textual.widgets import Static
 
 from trader.interfaces.cockpit import format as f
 from trader.interfaces.cockpit.derive import equity_snapshot, exposure, positions_by_pnl
-from trader.interfaces.cockpit.pages._shared import PANEL_CSS, SymbolTable
+from trader.interfaces.cockpit.pages._shared import ResizeRefresh, PANEL_CSS, SymbolTable
 from trader.interfaces.ui.palette import (
     CASYS_ACCENT,
     CASYS_DIM,
@@ -296,7 +296,7 @@ def build_positions_rows(state: dict, sort_mode: int = 0) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 
-class PortfolioPage(Static):
+class PortfolioPage(ResizeRefresh, Static):
     """Page 2 — Portfolio : positions complètes, exposition, trades fermés.
 
     Binding ``o`` : cycle tri |P&L| → value → %.
@@ -363,22 +363,57 @@ class PortfolioPage(Static):
                 ct.border_title = "CLOSED TRADES — recent"
                 yield Static(id="closed-body")
 
+    # Jeux de colonnes par largeur décroissante : (seuil_min, clés droppées).
+    # Les moins décisionnelles partent d'abord : AVG, puis VALUE, puis QTY.
+    _COLUMN_DROPS: tuple[tuple[int, frozenset[str]], ...] = (
+        (95, frozenset()),
+        (85, frozenset({"AVG"})),
+        (75, frozenset({"AVG", "VALUE $"})),
+        (0, frozenset({"AVG", "VALUE $", "QTY"})),
+    )
+    _ALL_COLUMNS: tuple[tuple[str, int], ...] = (
+        ("SYM", 9),
+        ("", 2),  # side L/S
+        ("QTY", 7),
+        ("AVG", 8),
+        ("LAST", 8),
+        ("VALUE $", 8),
+        ("P&L $", 7),
+        ("P&L %", 7),
+        ("STOP", 6),
+        ("DATA", 10),
+    )
+    _active_drops: frozenset[str] | None = None
+
     def on_mount(self) -> None:
+        self._rebuild_columns(force=True)
+
+    def _drops_for_width(self) -> frozenset[str]:
+        width = self.query_one("#positions-table", SymbolTable).size.width or 0
+        if width <= 0:
+            return frozenset()
+        for threshold, drops in self._COLUMN_DROPS:
+            if width >= threshold:
+                return drops
+        return self._COLUMN_DROPS[-1][1]
+
+    def _rebuild_columns(self, *, force: bool = False) -> None:
+        """Reconstruit les colonnes si le jeu adapté à la largeur a changé."""
+        drops = self._drops_for_width()
+        if not force and drops == self._active_drops:
+            return
+        self._active_drops = drops
         table = self.query_one("#positions-table", SymbolTable)
-        table.add_column("SYM", width=9)
-        table.add_column("", width=2)        # side L/S
-        table.add_column("QTY", width=7)
-        table.add_column("AVG", width=8)
-        table.add_column("LAST", width=8)
-        table.add_column("VALUE $", width=8)
-        table.add_column("P&L $", width=7)
-        table.add_column("P&L %", width=7)
-        table.add_column("STOP", width=6)
-        table.add_column("DATA", width=10)
+        table.clear(columns=True)
+        for name, width in self._ALL_COLUMNS:
+            if name not in drops:
+                table.add_column(name, width=width)
 
     def _refresh_positions(self, state: dict) -> None:
         """Repopule la SymbolTable + footer depuis l'état courant."""
         table = self.query_one("#positions-table", SymbolTable)
+        self._rebuild_columns()
+        drops = self._active_drops or frozenset()
         table.clear()
 
         holdings = _sort_holdings(positions_by_pnl(state), self._sort_mode)
@@ -407,17 +442,20 @@ class PortfolioPage(Static):
                 gross_short += notional
             unrealized_total += pnl
 
+            cells: dict[str, Text] = {
+                "SYM": Text(symbol, style=f"bold {CASYS_FG}"),
+                "": Text("L" if side_long else "S", style=CASYS_SUCCESS if side_long else CASYS_ERROR),
+                "QTY": Text(_fmt_qty(qty), style=CASYS_MUTED),
+                "AVG": Text(f.fmt_compact(avg, decimals=2), style=CASYS_DIM),
+                "LAST": Text(f.fmt_compact(last, decimals=2), style=CASYS_MUTED),
+                "VALUE $": Text(f"${notional:,.0f}" if notional else "—", style=CASYS_FG),
+                "P&L $": Text(f.fmt_signed(pnl), style=pnl_style),
+                "P&L %": Text(f"{pnl_pct_val:+.1f}%", style=pnl_style),
+                "STOP": Text(stop_str, style=CASYS_DIM),
+                "DATA": _data_cell(state, symbol),
+            }
             table.add_row(
-                Text(symbol, style=f"bold {CASYS_FG}"),
-                Text("L" if side_long else "S", style=CASYS_SUCCESS if side_long else CASYS_ERROR),
-                Text(_fmt_qty(qty), style=CASYS_MUTED),
-                Text(f.fmt_compact(avg, decimals=2), style=CASYS_DIM),
-                Text(f.fmt_compact(last, decimals=2), style=CASYS_MUTED),
-                Text(f"${notional:,.0f}" if notional else "—", style=CASYS_FG),
-                Text(f.fmt_signed(pnl), style=pnl_style),
-                Text(f"{pnl_pct_val:+.1f}%", style=pnl_style),
-                Text(stop_str, style=CASYS_DIM),
-                _data_cell(state, symbol),
+                *(cell for name, cell in cells.items() if name not in drops),
                 key=f"{symbol}|{idx}",
             )
 
