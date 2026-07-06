@@ -123,6 +123,19 @@ def test_prompt_ne_pousse_pas_un_max_hold_par_defaut() -> None:
     assert "fournis autant que possible" not in low
 
 
+def test_prompt_precise_cash_available_net_des_shorts() -> None:
+    prompt = build_batch_prompt(
+        mandate="m",
+        memory="mem",
+        shared_context={},
+        symbols_payload=[],
+    )
+
+    assert "cash_available" in prompt
+    assert "cash_ledger" in prompt
+    assert "produit des shorts" in prompt.lower()
+
+
 def test_contrat_decision_requiert_un_reason_code_structure() -> None:
     assert "decision_reason_code" in codex_client._DECISION_KEYS
 

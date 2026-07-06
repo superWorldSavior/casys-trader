@@ -10,7 +10,7 @@ import yaml
 
 @dataclass(frozen=True)
 class RadarParams:
-    cap_m: int = 25
+    cap_m: int = 50
     delta: float = 0.05
     dwell_days: int = 3
     score_window_bars: int = 15  # horizon du score (~3 semaines daily), distinct du dwell

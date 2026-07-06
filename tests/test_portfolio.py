@@ -100,6 +100,29 @@ def test_as_context_fx_rate_usd_par_defaut() -> None:
     assert holding["fx_rate"] == pytest.approx(1.0, rel=1e-9)
 
 
+def test_as_context_expose_cash_disponible_net_des_shorts() -> None:
+    """Le cash broker garde le produit du short, mais le contexte expose aussi
+    un cash disponible net de l'obligation de rachat."""
+    snap = Snapshot(
+        cash=115_000.0,
+        holdings=[
+            Holding("AAPL", quantity=10.0, avg_price=100.0, last_price=100.0),
+            Holding("SPY", quantity=-50.0, avg_price=300.0, last_price=280.0),
+        ],
+        starting_equity=100_000.0,
+    )
+
+    context = snap.as_context()
+
+    assert context["cash"] == 115_000.0
+    assert context["cash_ledger"] == 115_000.0
+    assert context["cash_available"] == 101_000.0
+    assert context["short_exposure_usd"] == 14_000.0
+    assert context["long_exposure_usd"] == 1_000.0
+    assert context["gross_exposure_usd"] == 15_000.0
+    assert context["net_exposure_usd"] == -13_000.0
+
+
 class _Pos:
     def __init__(self, symbol: str, quantity: float, avg_price: float) -> None:
         self.symbol = symbol

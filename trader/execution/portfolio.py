@@ -53,6 +53,26 @@ class Snapshot:
         return sum(h.market_value for h in self.holdings)
 
     @property
+    def long_exposure(self) -> float:
+        return sum(h.market_value for h in self.holdings if h.market_value > 0.0)
+
+    @property
+    def short_exposure(self) -> float:
+        return sum(abs(h.market_value) for h in self.holdings if h.market_value < 0.0)
+
+    @property
+    def gross_exposure(self) -> float:
+        return self.long_exposure + self.short_exposure
+
+    @property
+    def net_exposure(self) -> float:
+        return self.long_exposure - self.short_exposure
+
+    @property
+    def cash_available(self) -> float:
+        return self.cash - self.short_exposure
+
+    @property
     def equity(self) -> float:
         return self.cash + self.positions_value
 
@@ -96,8 +116,14 @@ class Snapshot:
             holdings.append(item)
         return {
             "cash": round(self.cash, 2),
+            "cash_ledger": round(self.cash, 2),
+            "cash_available": round(self.cash_available, 2),
             "equity": round(self.equity, 2),
             "total_return_pct": round(self.total_return * 100, 4),
+            "long_exposure_usd": round(self.long_exposure, 2),
+            "short_exposure_usd": round(self.short_exposure, 2),
+            "gross_exposure_usd": round(self.gross_exposure, 2),
+            "net_exposure_usd": round(self.net_exposure, 2),
             "holdings": holdings,
         }
 

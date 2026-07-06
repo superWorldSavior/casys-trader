@@ -10,6 +10,15 @@
 Ce contexte est injecté **une fois** dans le prompt batch (cf.
 [llm-contract](llm-contract.md)) : faits calculés par le code, pas de prose (AX).
 
+## `portfolio` — cash ledger vs cash libre
+
+`portfolio.cash`/`portfolio.cash_ledger` est le ledger broker paper. Une vente
+short crédite ce ledger, comme une comptabilité de fill, mais ce montant ne doit
+pas être lu comme du cash mobilisable. `portfolio.cash_available` retire
+l'exposition short courante (`short_exposure_usd`) et sert à l'affichage humain.
+Pour dimensionner une nouvelle ouverture, l'agent lit surtout
+`risk_capacity.gross_remaining_usd` et les plafonds `max_*_qty`.
+
 ## `build_market_cockpit(...)`
 
 Construit le `cockpit` : par symbole, prix, indicateurs **15m + daily**, régime,

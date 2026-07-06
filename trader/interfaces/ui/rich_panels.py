@@ -80,6 +80,17 @@ def _holding_round_trip_fee_for_display(holding: dict) -> float | None:
     return _safe_float(holding.get("round_trip_fee"), default=None)
 
 
+def _holding_notional_usd(holding: dict) -> float:
+    qty = _safe_float(holding.get("quantity"), default=0.0) or 0.0
+    price = _safe_float(holding.get("last_price"), default=None)
+    if price is None:
+        price = _safe_float(holding.get("current_price"), default=None)
+    if price is None:
+        price = _safe_float(holding.get("avg_price"), default=0.0) or 0.0
+    fx_rate = _safe_float(holding.get("fx_rate"), default=1.0) or 1.0
+    return abs(qty) * price * fx_rate
+
+
 def _fmt_number(value: Any, decimals: int = 2, *, default: str = "n/a") -> str:
     number = _safe_float(value, default=None)
     return default if number is None else f"{number:.{decimals}f}"
@@ -1519,9 +1530,17 @@ def build_view(
     # ------------------------------------------------------------------
     # Panel header — équité, cash, rendement, mode
     # ------------------------------------------------------------------
-    cash = _safe_float(portfolio.get("cash"), default=None)
+    cash_ledger = _safe_float(portfolio.get("cash_ledger") or portfolio.get("cash"), default=None)
+    if cash_ledger is None:
+        cash_ledger = _safe_float(kpis.get("cash"), default=0.0) or 0.0
+    cash = _safe_float(portfolio.get("cash_available"), default=None)
     if cash is None:
-        cash = _safe_float(kpis.get("cash"), default=0.0) or 0.0
+        short_exposure = sum(
+            _holding_notional_usd(h)
+            for h in holdings
+            if (_safe_float(h.get("quantity"), default=0.0) or 0.0) < 0.0
+        )
+        cash = cash_ledger - short_exposure
     equity = _safe_float(portfolio.get("equity"), default=None)
     if equity is None:
         equity = _safe_float(kpis.get("equity"), default=0.0) or 0.0
@@ -1575,7 +1594,7 @@ def build_view(
         ("Équité $ : ", "bold"),
         (f"${equity:,.2f}", f"bold {palette['kpi_default']}"),
         (f"  {inline_curve}   " if inline_curve else "   ", palette["kpi_default"]),
-        ("Cash $ : ", "bold"),
+        ("Cash libre $ : ", "bold"),
         (f"${cash:,.2f}   ", palette["kpi_default"]),
         ("Rendement : ", "bold"),
         (f"{ret_pct:+.2f}%   ", ret_style),

@@ -46,7 +46,7 @@ def test_defaults_and_overrides(tmp_path) -> None:
 def test_missing_file_yields_documented_defaults(tmp_path) -> None:
     params = load_radar_params(tmp_path)
 
-    assert params.cap_m == 25
+    assert params.cap_m == 50
     assert params.min_coverage == 0.8
 
 

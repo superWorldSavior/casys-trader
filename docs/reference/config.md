@@ -17,7 +17,7 @@ leur propre page de référence, liés ci-dessous.
 | `portfolio.yaml` | capital de départ paper | `starting_cash` (100000) | `support/config/portfolio` (`load_starting_cash`) |
 | `risk.yaml` | **bornes du risk gate** → voir [risk-gate](risk-gate.md) | `max_position_value` (30k), `max_gross_exposure`, `max_order_value`, `min_equity`, `max_risk_per_trade_pct` (0.01), `confidence_gate_enabled` (false), `require_hard_stop` (false) | `execution/risk` |
 | `fx.yaml` | **taux FX** (paires + fallback) → voir [fx](fx.md) | par devise : `yahoo`, `invert`, `fallback` | `market/fx_rates` |
-| `radar.yaml` | **rotation swing-aware** (D9/D10) | `cap_m` (25), `delta`, `dwell_days` (3), `score_window_bars` (15), `atr_floor`, `amplitude_cap`, `min_coverage`, `emergency_score` | `market/rotation/*`, `market/radar*` |
+| `radar.yaml` | **rotation swing-aware** (D9/D10) | `cap_m` (50), `delta`, `dwell_days` (3), `score_window_bars` (15), `atr_floor`, `amplitude_cap`, `min_coverage`, `emergency_score` | `market/rotation/*`, `market/radar*` |
 | `regime.yaml` | régime familial + fenêtre d'attribution | `attribution_since`, `exclude_symbols` | `runtime/daemon` (+ `runtime/cli`, `agent/learnings/consolidator`) |
 | `data_sources.yaml` | **profil de données** (paper/prod) + routes de sources | `profile`, `profiles` | `market/data_source` |
 | `sessions.yaml` | horaires/calendriers de séance par place | (par venue) | `market/rotation/schedule` (`load_sessions`) |

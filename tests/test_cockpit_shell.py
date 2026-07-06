@@ -178,7 +178,9 @@ def test_equity_snapshot_values():
     assert snap.equity == 100053.0
     assert snap.return_pct == pytest.approx(5.35)
     assert snap.unrealized == pytest.approx(95.0)
-    assert snap.cash_pct == pytest.approx(78.14, abs=0.1)
+    assert snap.cash_ledger == pytest.approx(78187.0)
+    assert snap.cash_available == pytest.approx(74008.2, abs=0.1)
+    assert snap.cash_pct == pytest.approx(73.97, abs=0.1)
 
 
 def test_cycle_progress_running():
@@ -245,6 +247,8 @@ def test_kpi_band_contents():
     rendered = _render(build_kpi_band(_state_sample(), now=NOW), width=160)
     assert "EQUITY" in rendered
     assert "$100,053" in rendered
+    assert "CASH FREE" in rendered
+    assert "$74,008" in rendered
     assert "+5.35%" in rendered
     assert "4/5" in rendered
     assert "in 14m" in rendered

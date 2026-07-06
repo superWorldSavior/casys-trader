@@ -1118,11 +1118,11 @@ def test_garde_fou_2_symbole_preopen_dans_univers_est_due_scheduler(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_update_venue_ranking_persiste_top40_candidats(tmp_path):
-    """Après update_venue_ranking avec 50 items, candidates a 40 entrées triées
+def test_update_venue_ranking_persiste_top50_candidats(tmp_path):
+    """Après update_venue_ranking avec 60 items, candidates a 50 entrées triées
     avec les vrais scores (pas 0.0)."""
     state = empty_venue_state()
-    venue_ranked = [_item(f"SYM{i:02d}", 50.0 - i) for i in range(50)]
+    venue_ranked = [_item(f"SYM{i:02d}", 60.0 - i) for i in range(60)]
     as_of = "2026-06-17T05:30:00+00:00"
 
     result = update_venue_ranking(
@@ -1137,7 +1137,7 @@ def test_update_venue_ranking_persiste_top40_candidats(tmp_path):
     )
 
     candidates = result["venues"]["TW"]["candidates"]
-    assert len(candidates) == 40, "top 40 attendu"
+    assert len(candidates) == 50, "top 50 attendu"
     # tri desc par attractivité préservé
     scores = [c["attractiveness"] for c in candidates]
     assert scores == sorted(scores, reverse=True), "candidats doivent être triés desc"

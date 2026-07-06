@@ -29,7 +29,7 @@ from trader.market.rotation.wiring import build_rank_fn, venue_of
 from trader.market.radar_config import load_radar_params
 
 # Top N candidats radar persistés par venue pour l'override LLM pré-open (configurable plus tard)
-OVERRIDE_CANDIDATES_TOP = 40
+OVERRIDE_CANDIDATES_TOP = 50
 
 # Rétention des fichiers radar_cache (en jours). Fichiers YYYY-MM-DD.json plus vieux = purgés.
 RADAR_CACHE_RETENTION_DAYS = 30

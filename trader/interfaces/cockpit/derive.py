@@ -24,26 +24,46 @@ from trader.reporting.read_models.runtime_state import _safe_float, _safe_list_o
 class EquitySnapshot:
     equity: float = 0.0
     cash: float = 0.0
+    cash_available: float = 0.0
+    cash_ledger: float = 0.0
     cash_pct: float = 0.0
     return_pct: float = 0.0  # en points de %
     pnl_usd: float = 0.0
     unrealized: float = 0.0
 
 
+def _cash_available_from_holdings(portfolio: dict, kpis: dict) -> tuple[float, float]:
+    cash_ledger = _safe_float(
+        portfolio.get("cash_ledger") or portfolio.get("cash") or kpis.get("cash"),
+        default=0.0,
+    ) or 0.0
+    explicit_available = _safe_float(portfolio.get("cash_available"), default=None)
+    if explicit_available is not None:
+        return explicit_available, cash_ledger
+
+    short_exposure = 0.0
+    for holding in _safe_list_of_dicts(portfolio.get("holdings")):
+        if f.holding_quantity(holding) < 0:
+            short_exposure += f.holding_notional(holding)
+    return cash_ledger - short_exposure, cash_ledger
+
+
 def equity_snapshot(state: dict) -> EquitySnapshot:
     portfolio = f.safe_dict(state.get("portfolio"))
     kpis = f.safe_dict(state.get("kpis"))
     equity = _safe_float(portfolio.get("equity") or kpis.get("equity"), default=0.0) or 0.0
-    cash = _safe_float(portfolio.get("cash") or kpis.get("cash"), default=0.0) or 0.0
-    starting = _safe_float(state.get("starting_cash"), default=cash) or cash
+    cash_available, cash_ledger = _cash_available_from_holdings(portfolio, kpis)
+    starting = _safe_float(state.get("starting_cash"), default=cash_ledger) or cash_ledger
     return_pct = _safe_float(portfolio.get("total_return_pct"), default=None)
     if return_pct is None:
         return_pct = (_safe_float(kpis.get("total_return"), default=0.0) or 0.0) * 100.0
     holdings = _safe_list_of_dicts(portfolio.get("holdings"))
     return EquitySnapshot(
         equity=equity,
-        cash=cash,
-        cash_pct=(cash / equity * 100.0) if equity else 0.0,
+        cash=cash_available,
+        cash_available=cash_available,
+        cash_ledger=cash_ledger,
+        cash_pct=(cash_available / equity * 100.0) if equity else 0.0,
         return_pct=return_pct,
         pnl_usd=equity - starting,
         unrealized=sum(f.holding_pnl(h) for h in holdings),

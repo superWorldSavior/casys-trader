@@ -129,7 +129,7 @@ def test_build_view_avec_etat_complet_retourne_un_renderable() -> None:
     assert "AAPL" in output
     assert "TSLA" in output
     assert "Équité $" in output
-    assert "Cash $" in output
+    assert "Cash libre $" in output
     assert "$102,500.00" in output
     assert "$85,000.00" in output
     assert "PnL latent USD" in output
@@ -284,6 +284,32 @@ def test_build_view_total_latent_utilise_le_net_et_detaille_les_frais() -> None:
     assert "PnL latent USD" in output
     assert "+47.00" in output
     assert "dont frais -3.00" in output
+
+
+def test_build_view_affiche_cash_disponible_quand_present() -> None:
+    state = {
+        **_FULL_STATE,
+        "portfolio": {
+            **_FULL_STATE["portfolio"],
+            "cash": 115_000.0,
+            "cash_available": 101_000.0,
+            "holdings": [
+                {
+                    "symbol": "SPY",
+                    "quantity": -50.0,
+                    "avg_price": 300.0,
+                    "last_price": 280.0,
+                    "unrealized_pnl": 1_000.0,
+                }
+            ],
+        },
+    }
+
+    output = _render_plain(build_view(state), width=220)
+
+    assert "Cash libre $" in output
+    assert "$101,000.00" in output
+    assert "$115,000.00" not in output
 
 
 def test_attribution_affiche_le_realise_net_avec_frais_et_brut_secondaires() -> None:
