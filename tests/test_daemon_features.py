@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from trader.runtime import daemon
+from trader.runtime.worker_cycle_context import WorkerCycleContextHandle
 from trader.agent.client import Decision
 from trader.market.market_data import Bar, MarketError
 from trader.planning.trade_plan import TakeProfit, TradePlan, TradePlanStore
@@ -170,24 +171,7 @@ def test_run_cycle_met_a_jour_le_snapshot_des_plans_ouverts(
     def decide(**kwargs) -> Decision:
         return Decision.hold(kwargs["symbol"], "attente")
 
-    class Snapshot:
-        def __init__(self) -> None:
-            self.plans: list[dict] | None = None
-            self.raw_plans: list[TradePlan] | None = None
-            self.as_of: str | None = None
-
-        def update(
-            self,
-            plans: list[dict],
-            *,
-            as_of: str | None = None,
-            raw_plans: list[TradePlan] | None = None,
-        ) -> None:
-            self.plans = plans
-            self.raw_plans = raw_plans
-            self.as_of = as_of
-
-    snapshot = Snapshot()
+    worker_context = WorkerCycleContextHandle()
     monkeypatch.setattr(daemon, "ROOT", tmp_path)
     monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
     patch_batch(decide)
@@ -199,12 +183,13 @@ def test_run_cycle_met_a_jour_le_snapshot_des_plans_ouverts(
         symbols_filter=["SPY"],
         sched=Scheduler(state_dir / "scheduler.json"),
         data_source=data_source,
-        plan_snapshot=snapshot,
+        worker_cycle_context=worker_context,
     )
 
-    assert snapshot.as_of == now.isoformat()
-    assert snapshot.raw_plans == [plan]
-    assert snapshot.plans == [
+    published = worker_context.current_for_cycle(now.isoformat())
+    assert published.as_of == now.isoformat()
+    assert list(published.open_plans.raw_plans) == [plan]
+    assert list(published.open_plans.rows) == [
         {
             "id": "plan-spy",
             "symbol": "SPY",
@@ -232,6 +217,8 @@ def test_run_cycle_met_a_jour_le_snapshot_des_plans_ouverts(
             "entry_thesis": "breakout propre",
         }
     ]
+    assert published.exit_validation.prices_by_symbol["SPY"] == 100.0
+    assert [bar.close for bar in published.exit_validation.bars_by_symbol["SPY"]] == [100.0] * 32
 
 
 def test_plan_to_context_dict_borne_les_champs_textes_du_plan() -> None:

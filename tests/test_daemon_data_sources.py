@@ -8,6 +8,7 @@ from trader.runtime import daemon
 from trader.runtime import cycle_dispatch
 from trader.runtime import data_source_runtime
 from trader.runtime import market_rotation_runtime
+from trader.runtime.worker_cycle_context import WorkerCycleContextHandle
 from trader.market.market_data import Bar, MarketError
 from trader.planning.scheduler import Scheduler
 
@@ -232,9 +233,7 @@ class TestDaemonDataSourcesConfig:
 
         assert len(tool_service_calls) == 1
         tool_call = tool_service_calls[0]
-        assert tool_call["get_open_raw_plans"].__name__ == "get_raw"
-        assert tool_call["get_open_raw_plans"].__self__ is tool_call["get_open_plans"].__self__
-        assert isinstance(tool_call["exit_validation_snapshot"], data_source_runtime.ExitValidationSnapshotHandle)
+        assert isinstance(tool_call["worker_cycle_context"], WorkerCycleContextHandle)
         assert queue_runtime_calls[0]["decide_tool_services"] is tool_services
         assert len(dispatch_calls) == 1
         call = dispatch_calls[0]
@@ -247,7 +246,7 @@ class TestDaemonDataSourcesConfig:
         assert context.queue_decide_enabled is True
         assert context.queue_execute_enabled is True
         assert context.agent_tools_enabled is True
-        assert context.exit_validation_snapshot is tool_call["exit_validation_snapshot"]
+        assert context.worker_cycle_context is tool_call["worker_cycle_context"]
 
     def test_main_ne_dispatch_pas_de_cycle_quand_aucun_symbole_n_est_du(
         self, monkeypatch, tmp_path

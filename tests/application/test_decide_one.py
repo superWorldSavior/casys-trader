@@ -309,6 +309,13 @@ def test_provider_error_leve_retryable_overload():
 
 from trader.agent.protocol.types import BatchToolCallRequest  # noqa: E402
 from trader.application.decide_one import ToolRoundServices  # noqa: E402
+from trader.runtime.worker_cycle_context import (  # noqa: E402
+    ExitValidationInputs,
+    OpenPlansSnapshot,
+    WorkerCycleContext,
+    WorkerCycleContextHandle,
+)
+from trader.runtime.queue_runtime import build_decide_tool_services  # noqa: E402
 
 
 class _SeqClient:
@@ -351,6 +358,39 @@ def _session_backends() -> list:
     return [_FakeSessionBackend()]
 
 
+def _published_cycle_context(
+    *,
+    cycle_id: str,
+    rows: tuple[dict, ...] = (),
+    raw_plans: tuple[object, ...] = (),
+    bars_by_symbol: dict[str, list] | None = None,
+    prices_by_symbol: dict[str, float] | None = None,
+) -> WorkerCycleContextHandle:
+    handle = WorkerCycleContextHandle()
+    handle.publish(
+        WorkerCycleContext(
+            cycle_id=cycle_id,
+            as_of=cycle_id,
+            open_plans=OpenPlansSnapshot(rows=rows, raw_plans=raw_plans),
+            exit_validation=ExitValidationInputs(
+                bars_by_symbol=bars_by_symbol or {},
+                prices_by_symbol=prices_by_symbol or {},
+            ),
+        )
+    )
+    return handle
+
+
+def _cycle_services(tmp_path, handle: WorkerCycleContextHandle) -> ToolRoundServices:
+    return build_decide_tool_services(
+        get_data_source=lambda: None,
+        worker_cycle_context=handle,
+        learnings_db_path=tmp_path / "learnings.db",
+        max_context_requests_per_symbol=2,
+        max_indicators_per_request=4,
+    )
+
+
 def _tool_request() -> BatchToolCallRequest:
     return BatchToolCallRequest(
         calls=[{"id": "c1", "tool": "get_active_plans", "args": {"symbol": SYMBOL}}]
@@ -384,17 +424,21 @@ def test_tool_round_puis_decision_au_tour_2_sort_tot():
     assert decision.domain_tools["tool_rounds"] == 1       # traces mergées (persistance)
 
 
-def test_tool_context_recoit_open_plans_provider():
+def test_tool_context_recoit_open_plans_du_worker_cycle_context():
     client = _SeqClient([BatchToolCallRequest(calls=[{"id": "c1", "tool": "get_active_plans", "args": {}}]), {SYMBOL: _ok_decision("HOLD")}])
-    provider = lambda: [
-        {"id": "plan-aapl", "symbol": SYMBOL},
-        {"id": "plan-msft", "symbol": "MSFT"},
-    ]
+    handle = _published_cycle_context(
+        cycle_id="cycle-1",
+        rows=(
+            {"id": "plan-aapl", "symbol": SYMBOL},
+            {"id": "plan-msft", "symbol": "MSFT"},
+        ),
+    )
 
     decision, calls = decide_one(
         **{**_BASE_KWARGS, "agent_tools_enabled": True},
         codex_client=client,
-        tool_services=_services(open_plans_provider=provider),
+        tool_services=_services(worker_cycle_context=handle),
+        cycle_id="cycle-1",
         session_backends=_session_backends(),
         task_id="t",
     )
@@ -404,6 +448,107 @@ def test_tool_context_recoit_open_plans_provider():
     assert calls == 2
     assert tool_result["ok"] is True
     assert [row["symbol"] for row in tool_result["result"]["rows"]] == [SYMBOL, "MSFT"]
+
+
+def test_get_active_plans_cycle_mismatch_devient_tool_error_sans_lire_le_cycle_courant():
+    handle = _published_cycle_context(
+        cycle_id="cycle-2",
+        rows=({"id": "plan-msft", "symbol": "MSFT"},),
+    )
+    client = _SeqClient([
+        BatchToolCallRequest(calls=[{"id": "c1", "tool": "get_active_plans", "args": {}}]),
+        {SYMBOL: _ok_decision("HOLD")},
+    ])
+
+    decision, calls = decide_one(
+        **{**_BASE_KWARGS, "agent_tools_enabled": True},
+        codex_client=client,
+        tool_services=_services(worker_cycle_context=handle),
+        cycle_id="cycle-1",
+        session_backends=_session_backends(),
+        task_id="t",
+    )
+
+    tool_result = client.calls[1]["per_symbol"][SYMBOL]["tool_results"][0]
+    assert decision.action == "HOLD"
+    assert calls == 2
+    assert tool_result["ok"] is False
+    assert "CycleContextUnavailable" in tool_result["error"]
+    assert "plan-msft" not in str(tool_result)
+
+
+def test_strategy_exit_cycle_mismatch_fail_closed_avant_correction_llm(tmp_path):
+    handle = _published_cycle_context(cycle_id="cycle-2", raw_plans=(object(),))
+    first_decision = replace(
+        _ok_decision("HOLD"),
+        exit_update={"hard_stop": {"type": "structural", "anchor": "swing_low"}},
+    )
+    client = _SeqClient([{SYMBOL: first_decision}, {SYMBOL: _ok_decision("HOLD")}])
+
+    decision, calls = decide_one(
+        **{**_BASE_KWARGS, "agent_tools_enabled": True},
+        codex_client=client,
+        tool_services=_cycle_services(tmp_path, handle),
+        cycle_id="cycle-1",
+        session_backends=_session_backends(),
+        task_id="t",
+    )
+
+    feedback = client.calls[1]["per_symbol"][SYMBOL]["tool_results"][0]
+    assert decision.action == "HOLD"
+    assert calls == 2
+    assert feedback == {
+        "id": f"validation:strategy_exit:{SYMBOL}:1",
+        "tool": "strategy_exit",
+        "ok": False,
+        "error": "cycle_context_unavailable",
+    }
+
+
+def test_strategy_exit_cycle_match_valide_sur_contexte_worker_sans_refetch(monkeypatch, tmp_path):
+    from trader.application.exit_update import ExitUpdateValidation
+
+    raw_plan = object()
+    runtime_bars = [("runtime", SYMBOL)]
+    validation = ExitUpdateValidation(would_apply=False, reason="resolve_failed:test", warnings=[])
+    calls: dict[str, object] = {}
+    handle = _published_cycle_context(
+        cycle_id="cycle-1",
+        raw_plans=(raw_plan,),
+        bars_by_symbol={SYMBOL: runtime_bars},
+        prices_by_symbol={SYMBOL: 432.1},
+    )
+    first_decision = replace(
+        _ok_decision("HOLD"),
+        exit_update={"hard_stop": {"mode": "structural"}},
+    )
+    client = _SeqClient([{SYMBOL: first_decision}, {SYMBOL: _ok_decision("HOLD")}])
+
+    def fake_validate_exit_update(**kwargs):
+        calls["validate"] = kwargs
+        return validation
+
+    monkeypatch.setattr("trader.application.exit_update.validate_exit_update", fake_validate_exit_update)
+
+    decision, model_calls = decide_one(
+        **{**_BASE_KWARGS, "agent_tools_enabled": True},
+        codex_client=client,
+        tool_services=_cycle_services(tmp_path, handle),
+        cycle_id="cycle-1",
+        session_backends=_session_backends(),
+        task_id="t",
+    )
+
+    validate_call = calls["validate"]
+    feedback = client.calls[1]["per_symbol"][SYMBOL]["tool_results"][0]
+    assert decision.action == "HOLD"
+    assert model_calls == 2
+    assert validate_call["plan_store"].open_plans() == [raw_plan]
+    assert validate_call["symbol"] == SYMBOL
+    assert validate_call["exit_update"] == {"hard_stop": {"mode": "structural"}}
+    assert validate_call["bars"] == runtime_bars
+    assert validate_call["current_price"] == 432.1
+    assert feedback["error"] == "resolve_failed:test"
 
 
 def test_session_multiround_heartbeat_apres_open_et_chaque_appel_modele():

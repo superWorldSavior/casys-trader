@@ -73,52 +73,6 @@ class DataSourceHandle:
         return self._current
 
 
-class PlanSnapshotHandle:
-    """Référence partagée vers les TradePlans ouverts visibles par les workers."""
-
-    def __init__(self) -> None:
-        self._plans: list = []
-        self._raw_plans: list = []
-        self._as_of: str | None = None
-
-    def update(self, plans: list, *, as_of: str | None = None, raw_plans: list | None = None) -> None:
-        self._plans = plans
-        self._raw_plans = raw_plans or []
-        self._as_of = as_of
-
-    def get(self) -> list:
-        return self._plans
-
-    def get_raw(self) -> list:
-        return self._raw_plans
-
-    def as_of(self) -> str | None:
-        return self._as_of
-
-
-class ExitValidationSnapshotHandle:
-    """Référence partagée vers les inputs runtime utilisés pour valider strategy_exit."""
-
-    def __init__(self) -> None:
-        self._bars_by_symbol: dict[str, list] = {}
-        self._prices: dict[str, float] = {}
-        self._as_of: str | None = None
-
-    def update(self, *, bars_by_symbol: dict[str, list], prices: dict[str, float], as_of: str | None = None) -> None:
-        self._bars_by_symbol = bars_by_symbol
-        self._prices = prices
-        self._as_of = as_of
-
-    def get_bars(self, symbol: str) -> list | None:
-        return self._bars_by_symbol.get(symbol)
-
-    def get_price(self, symbol: str) -> float | None:
-        return self._prices.get(symbol)
-
-    def as_of(self) -> str | None:
-        return self._as_of
-
-
 def _default_logger() -> logging.Logger:
     return logging.getLogger("casys-trader")
 

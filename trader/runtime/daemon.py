@@ -99,6 +99,7 @@ from trader.runtime import (
     market_rotation_runtime,
     queue_runtime,
     runtime_shutdown,
+    worker_cycle_context as worker_cycle_context_runtime,
 )
 from trader.runtime.ib_attach import IBAttachBackoff
 from trader.runtime.state_writer import RuntimeStateWriter
@@ -1010,11 +1011,11 @@ def run_cycle(
     task_ledger=None,  # TaskLedger | None (task_ledger.db — dédié decide)
     queue_execute_enabled: bool = False,
     execute_ledger=None,  # TaskLedger | None (casys.db — partagé broker/plan/ledger)
-    plan_snapshot: object | None = None,
-    exit_validation_snapshot: object | None = None,
+    worker_cycle_context: object | None = None,
 ) -> dict:
     """Exécute UN cycle. Retourne un rapport structuré (machine-readable)."""
     now = now or datetime.now(timezone.utc)
+    cycle_id = now.isoformat()
     universe_cfg = _load_yaml(ROOT / "config" / "universe.yaml")
     risk_cfg = _load_yaml(ROOT / "config" / "risk.yaml")
     # Pin/ban cockpit appliqués à la LECTURE (via l'adaptateur rotation) : le
@@ -1080,13 +1081,11 @@ def run_cycle(
         state_dir=STATE_DIR,
         backend=os.getenv("CASYS_STATE_BACKEND", "json"),
     )
-    if plan_snapshot is not None:
-        _raw_plans = plan_store.open_plans()
-        plan_snapshot.update(
-            [_plan_to_context_dict(plan) for plan in _raw_plans],
-            as_of=now.isoformat(),
-            raw_plans=_raw_plans,
-        )
+    _cycle_raw_open_plans: tuple[object, ...] = ()
+    _cycle_open_plan_rows: tuple[dict, ...] = ()
+    if worker_cycle_context is not None:
+        _cycle_raw_open_plans = tuple(plan_store.open_plans())
+        _cycle_open_plan_rows = tuple(_plan_to_context_dict(plan) for plan in _cycle_raw_open_plans)
     gate = RiskGate(RiskLimits.from_dict(risk_cfg))
     # Paper/exploration : si False, une ouverture SANS hard_stop n'est plus rejetée
     # (stop optionnel, position bornée par les seuls fusibles notionnels). Défaut
@@ -1126,7 +1125,7 @@ def run_cycle(
     if _kill_switch_active():
         _log_cycle_progress("[cycle] halted kill_switch")
         report = {
-            "ts": now.isoformat(),
+            "ts": cycle_id,
             "halted": "kill_switch",
             "decisions": [],
             "symbols_due": symbols_to_decide,
@@ -1166,11 +1165,20 @@ def run_cycle(
     execution_eligibility = snapshot.execution_eligibility
     exit_bars_by_symbol = snapshot.exit_bars_by_symbol
     exit_intervals_by_symbol = snapshot.exit_intervals_by_symbol
-    if exit_validation_snapshot is not None:
-        exit_validation_snapshot.update(
-            bars_by_symbol=tradable_bars_by_symbol,
-            prices=prices,
-            as_of=now.isoformat(),
+    if worker_cycle_context is not None:
+        worker_cycle_context.publish(
+            worker_cycle_context_runtime.WorkerCycleContext(
+                cycle_id=cycle_id,
+                as_of=cycle_id,
+                open_plans=worker_cycle_context_runtime.OpenPlansSnapshot(
+                    rows=_cycle_open_plan_rows,
+                    raw_plans=_cycle_raw_open_plans,
+                ),
+                exit_validation=worker_cycle_context_runtime.ExitValidationInputs(
+                    bars_by_symbol=dict(tradable_bars_by_symbol),
+                    prices_by_symbol=dict(prices),
+                ),
+            )
         )
     _log_cycle_progress(
         "[market] loaded ok=%d missing=%d",
@@ -1256,7 +1264,7 @@ def run_cycle(
     )
     meta_performance_payload = meta_performance.compute_meta_performance(STATE_DIR)
     base_context = {
-        "now": now.isoformat(),
+        "now": cycle_id,
         "now_human": market.human_clock(now),
         "market_clocks": market.market_clocks(now, symbols),
         "portfolio": snap.as_context(fee_estimator=portfolio_fee_estimator),
@@ -1311,7 +1319,7 @@ def run_cycle(
         base_context["gross_budget_feedback"] = _gross_feedback
 
     report: dict = {
-        "ts": now.isoformat(),
+        "ts": cycle_id,
         "dry_run": dry_run,
         "code_version": code_version.current_code_version(ROOT),
         "symbols_due": symbols_to_decide,
@@ -1548,7 +1556,7 @@ def run_cycle(
             symbol_facts_by_sym=symbol_facts_by_sym,
             decision_timeout_s=decision_timeout_s,
             agent_tools_enabled=agent_tools_enabled,
-            cycle_id=now.isoformat(),
+            cycle_id=cycle_id,
             now_fn=time.time,
             # Univers d'analyse du cycle → resolver d'indicateurs du tour d'outils
             # (filtre dur + paires cross-asset, spec §5 W5).
@@ -1703,7 +1711,7 @@ def run_cycle(
                 "[decision %d/%d] %s queue_decide_deferred — aucun HOLD synthétique",
                 index, len(symbols_to_decide), sym,
             )
-            _append_event("queue_decide_deferred", symbol=sym, cycle_id=now.isoformat())
+            _append_event("queue_decide_deferred", symbol=sym, cycle_id=cycle_id)
             continue
 
         decision = decision or codex_client.Decision.hold(sym, "no_decision_in_batch")
@@ -1945,17 +1953,13 @@ def main(
     # Ref partagée vers le data_source courant : les workers de file la lisent via
     # make_indirect_get_bars(handle.get) — jamais de capture de l'objet (remplacé en run).
     _ds_handle = data_source_runtime.DataSourceHandle()
-    _plan_snapshot = data_source_runtime.PlanSnapshotHandle()
-    _exit_validation_snapshot = data_source_runtime.ExitValidationSnapshotHandle()
+    _worker_cycle_context = worker_cycle_context_runtime.WorkerCycleContextHandle()
 
     # Services du tour d'outils grain-1 (spec queue tool-round §4, issue #2) :
     # construits au boot, consommés par le handler decide quand agent_tools_enabled.
     _decide_tool_services = queue_runtime.build_decide_tool_services(
         get_data_source=_ds_handle.get,
-        get_open_plans=_plan_snapshot.get,
-        get_open_raw_plans=_plan_snapshot.get_raw,
-        get_open_plans_as_of=_plan_snapshot.as_of,
-        exit_validation_snapshot=_exit_validation_snapshot,
+        worker_cycle_context=_worker_cycle_context,
         learnings_db_path=STATE_DIR / "learnings.db",
         max_context_requests_per_symbol=args.max_context_requests_per_symbol,
         max_indicators_per_request=args.max_indicators_per_request,
@@ -2114,8 +2118,7 @@ def main(
                     task_ledger=_task_ledger,
                     queue_execute_enabled=_queue_execute_enabled,
                     execute_ledger=_execute_ledger,
-                    plan_snapshot=_plan_snapshot,
-                    exit_validation_snapshot=_exit_validation_snapshot,
+                    worker_cycle_context=_worker_cycle_context,
                 )
                 if not due_symbols and not protection_cycle_due:
                     wait = sched.seconds_until_wake(symbols)

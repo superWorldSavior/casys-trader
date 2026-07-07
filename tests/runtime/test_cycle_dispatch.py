@@ -19,8 +19,7 @@ def test_dispatch_run_cycle_forwarde_le_contexte_runtime() -> None:
     data_source = object()
     task_ledger = object()
     execute_ledger = object()
-    plan_snapshot = object()
-    exit_validation_snapshot = object()
+    worker_cycle_context = object()
 
     def run_cycle_fn(**kwargs):
         calls.append(kwargs)
@@ -52,8 +51,7 @@ def test_dispatch_run_cycle_forwarde_le_contexte_runtime() -> None:
         task_ledger=task_ledger,
         queue_execute_enabled=True,
         execute_ledger=execute_ledger,
-        plan_snapshot=plan_snapshot,
-        exit_validation_snapshot=exit_validation_snapshot,
+        worker_cycle_context=worker_cycle_context,
     )
 
     report = cycle_dispatch.dispatch_run_cycle(
@@ -93,7 +91,6 @@ def test_dispatch_run_cycle_forwarde_le_contexte_runtime() -> None:
             "task_ledger": task_ledger,
             "queue_execute_enabled": True,
             "execute_ledger": execute_ledger,
-            "plan_snapshot": plan_snapshot,
-            "exit_validation_snapshot": exit_validation_snapshot,
+            "worker_cycle_context": worker_cycle_context,
         }
     ]

@@ -26,11 +26,6 @@ class StartablePool(Protocol):
     def stop(self) -> None: ...
 
 
-class ExitValidationSnapshotLike(Protocol):
-    def get_bars(self, symbol: str) -> list | None: ...
-    def get_price(self, symbol: str) -> float | None: ...
-
-
 NowMs = Callable[[], int]
 _DEFAULT_DECIDE_LEASE_MS = 1_800_000
 
@@ -173,17 +168,6 @@ class QueueRuntimes:
     execute: ExecuteQueueRuntime
 
 
-class _SnapshotPlanStore:
-    def __init__(self, plans: list) -> None:
-        self._plans = plans
-
-    def open_plans(self) -> list:
-        return self._plans
-
-    def upsert(self, _plan: object) -> None:
-        return None
-
-
 def start_decide_queue(
     *,
     enabled: bool,
@@ -324,10 +308,7 @@ def start_execute_queue(
 def build_decide_tool_services(
     *,
     get_data_source: Callable[[], object],
-    get_open_plans: Callable[[], list] | None = None,
-    get_open_raw_plans: Callable[[], list] | None = None,
-    get_open_plans_as_of: Callable[[], str | None] | None = None,
-    exit_validation_snapshot: ExitValidationSnapshotLike | None = None,
+    worker_cycle_context: object | None = None,
     learnings_db_path: Path,
     max_context_requests_per_symbol: int,
     max_indicators_per_request: int,
@@ -351,9 +332,10 @@ def build_decide_tool_services(
 
     from trader.agent.learnings.store import LearningsStore
     from trader.application.decide_one import ToolRoundServices
-    from trader.application.exit_update import validate_exit_update
+    from trader.application.exit_update import ExitUpdateValidation, validate_exit_update
     from trader.application.learnings_recall import build_recall_provider
     from trader.market.data_source import make_indirect_get_bars
+    from trader.runtime.worker_cycle_context import CycleContextUnavailable, SnapshotTradePlanStore
 
     log = logger or _default_logger()
     _get_bars = make_indirect_get_bars(get_data_source)
@@ -372,29 +354,32 @@ def build_decide_tool_services(
     else:
         log.info("[queue_decide] learnings.db absent au boot — recall indisponible ce run")
 
-    action_validator = None
-    if get_open_raw_plans is not None and exit_validation_snapshot is not None:
-        # Scope intentionally limited to strategy_exit dry-run validation. Entry/close
-        # capital risk gates depend on daemon-side portfolio state and stay out of this worker hook.
-        def action_validator(symbol: str, exit_update: dict):
-            bars = exit_validation_snapshot.get_bars(symbol)
-            current_price = exit_validation_snapshot.get_price(symbol)
-            return validate_exit_update(
-                plan_store=_SnapshotPlanStore(get_open_raw_plans()),
-                symbol=symbol,
-                exit_update=exit_update,
-                bars=bars,
-                current_price=current_price,
-            )
+    action_validator_factory = None
+    if worker_cycle_context is not None:
+        def action_validator_factory(cycle_id: str | None):
+            def action_validator(symbol: str, exit_update: dict) -> ExitUpdateValidation:
+                try:
+                    return validate_exit_update(
+                        plan_store=SnapshotTradePlanStore(
+                            worker_cycle_context.get_raw_open_plans(cycle_id)
+                        ),
+                        symbol=symbol,
+                        exit_update=exit_update,
+                        bars=worker_cycle_context.get_exit_validation_bars(symbol, cycle_id),
+                        current_price=worker_cycle_context.get_exit_validation_price(symbol, cycle_id),
+                    )
+                except CycleContextUnavailable:
+                    return ExitUpdateValidation(False, "cycle_context_unavailable", [])
+
+            return action_validator
 
     return ToolRoundServices(
         get_bars=_get_bars,
         learnings_recall_provider=recall_provider,
         max_context_requests_per_symbol=max_context_requests_per_symbol,
         max_indicators_per_request=max_indicators_per_request,
-        open_plans_provider=get_open_plans,
-        open_plans_as_of_provider=get_open_plans_as_of,
-        action_validator=action_validator,
+        worker_cycle_context=worker_cycle_context,
+        action_validator_factory=action_validator_factory,
     )
 
 

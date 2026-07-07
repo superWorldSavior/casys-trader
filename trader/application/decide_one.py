@@ -62,9 +62,9 @@ class ToolRoundServices:
     learnings_recall_provider: Callable[[dict], dict] | None
     max_context_requests_per_symbol: int
     max_indicators_per_request: int
-    open_plans_provider: Callable[[], list] | None = None
-    open_plans_as_of_provider: Callable[[], str | None] | None = None
+    worker_cycle_context: object | None = None
     action_validator: Callable[[str, dict], "ExitUpdateValidation"] | None = None
+    action_validator_factory: Callable[[str | None], Callable[[str, dict], "ExitUpdateValidation"] | None] | None = None
     # Bornes d'outils PAR round. Les 24/3 de ToolRoundLimits sont calibrés batch
     # (chunk de 5 symboles) ; en grain-1, 8 calls pour LE symbole décidé — les
     # outils s'exécutent localement, ce relèvement ne coûte aucun appel acpx.
@@ -114,6 +114,37 @@ def _tool_context_from_facts(
     )
 
 
+def _open_plans_provider_for_cycle(
+    tool_services: ToolRoundServices,
+    cycle_id: str | None,
+) -> Callable[[], list] | None:
+    handle = tool_services.worker_cycle_context
+    if handle is None:
+        return None
+    return lambda: handle.get_open_plan_rows(cycle_id)
+
+
+def _open_plans_as_of_provider_for_cycle(
+    tool_services: ToolRoundServices,
+    cycle_id: str | None,
+) -> Callable[[], str | None] | None:
+    handle = tool_services.worker_cycle_context
+    if handle is None:
+        return None
+    return lambda: handle.get_open_plans_as_of(cycle_id)
+
+
+def _action_validator_for_cycle(
+    tool_services: ToolRoundServices,
+    cycle_id: str | None,
+) -> Callable[[str, dict], "ExitUpdateValidation"] | None:
+    if tool_services.action_validator is not None:
+        return tool_services.action_validator
+    if tool_services.action_validator_factory is None:
+        return None
+    return tool_services.action_validator_factory(cycle_id)
+
+
 def decide_one(
     *,
     symbol: str,
@@ -126,6 +157,7 @@ def decide_one(
     codex_client,
     tool_services: ToolRoundServices | None = None,
     symbols_universe: list[str] | None = None,
+    cycle_id: str | None = None,
     now_fn: Callable[[], datetime] | None = None,
     session_backends: list | None = None,
     task_id: str | None = None,
@@ -203,10 +235,11 @@ def decide_one(
                 now=(now_fn or (lambda: datetime.now(timezone.utc)))(),
                 indicator_resolver=resolver,
                 learnings_recall_provider=tool_services.learnings_recall_provider,
-                open_plans_provider=tool_services.open_plans_provider,
-                open_plans_as_of_provider=tool_services.open_plans_as_of_provider,
+                open_plans_provider=_open_plans_provider_for_cycle(tool_services, cycle_id),
+                open_plans_as_of_provider=_open_plans_as_of_provider_for_cycle(tool_services, cycle_id),
             )
             tool_limits = tool_services.tool_limits()
+            action_validator = _action_validator_for_cycle(tool_services, cycle_id)
             def _resolve(session):
                 if heartbeat is not None:
                     heartbeat()
@@ -240,7 +273,7 @@ def decide_one(
                     reinject="delta",
                     tool_limits=tool_limits,
                     heartbeat=heartbeat,
-                    action_validator=tool_services.action_validator,
+                    action_validator=action_validator,
                 )
 
             decision = llm.run_with_session_fallback(

@@ -91,6 +91,7 @@ def _enqueue_decide_tasks(
             "decision_timeout_s": decision_timeout_s,
             "agent_tools_enabled": agent_tools_enabled,
             "symbols_universe": symbols_universe or [],
+            "cycle_id": cycle_id,
         }
         dedup_key = f"{cycle_id}:{sym}"
         tid = ledger.enqueue(

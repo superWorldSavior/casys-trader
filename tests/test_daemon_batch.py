@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from trader.runtime import daemon
-from trader.runtime import data_source_runtime
+from trader.runtime.worker_cycle_context import WorkerCycleContextHandle
 from trader.application import planner_batch
 from trader.agent.client import ContextResearchRequest, Decision, IndicatorRequest
 from trader.agent.protocol.parsing import parse_batch
@@ -76,7 +76,7 @@ def test_run_cycle_alimente_snapshot_validation_exit_avec_inputs_runtime(monkeyp
     _write_runtime_config(tmp_path, symbols=("SPY",))
     state_dir = tmp_path / "state"
     now = datetime(2026, 6, 15, 14, 30, tzinfo=timezone.utc)
-    handle = data_source_runtime.ExitValidationSnapshotHandle()
+    handle = WorkerCycleContextHandle()
 
     monkeypatch.setattr(daemon, "ROOT", tmp_path)
     monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
@@ -92,12 +92,13 @@ def test_run_cycle_alimente_snapshot_validation_exit_avec_inputs_runtime(monkeyp
         symbols_filter=["SPY"],
         sched=Scheduler(state_dir / "scheduler.json"),
         data_source=_fresh_data_source(make_data_source, now),
-        exit_validation_snapshot=handle,
+        worker_cycle_context=handle,
     )
 
-    assert handle.as_of() == now.isoformat()
-    assert handle.get_price("SPY") == 100.0
-    bars = handle.get_bars("SPY")
+    published = handle.current_for_cycle(now.isoformat())
+    assert published.as_of == now.isoformat()
+    assert published.exit_validation.prices_by_symbol["SPY"] == 100.0
+    bars = published.exit_validation.bars_by_symbol.get("SPY")
     assert bars is not None
     assert [bar.close for bar in bars] == [100.0]
 

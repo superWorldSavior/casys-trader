@@ -184,15 +184,19 @@ Répartition runtime :
 | Service | Rôle |
 |---|---|
 | `get_bars` | wrapper indirect vers la data source courante, sans capture d'objet runtime |
-| `open_plans_provider` | provider global des `TradePlan` ouverts sérialisés pour `get_active_plans` |
-| `open_plans_as_of_provider` | horodatage du snapshot renvoyé dans `{rows, as_of}` |
-| `action_validator` | dry-run pré-exécution des `strategy_exit` proposés par l'agent |
+| `worker_cycle_context` | handle unique du contexte de cycle publié atomiquement pour les workers |
 
-Le daemon possède le snapshot partagé via `PlanSnapshotHandle`. À chaque cycle,
-il charge `plan_store.open_plans()`, stocke les vrais plans dans
-`PlanSnapshotHandle.get_raw()` et la version contexte dans `get()`, avec `as_of`.
-Le handler `get_active_plans` lit `get()` : sa portée est globale, puis `symbol`
-filtre si demandé.
+Le daemon possède le contexte partagé via `WorkerCycleContextHandle`. À chaque
+cycle, `run_cycle` définit `cycle_id = now.isoformat()`, construit
+`WorkerCycleContext(cycle_id, as_of, open_plans, exit_validation)` puis le publie
+en une fois. Le payload `decide` transporte ce `cycle_id`; `decide_one` fabrique
+les closures `get_active_plans` et `strategy_exit` bornées à ce cycle.
+
+Le handler `get_active_plans` lit `OpenPlansSnapshot.rows` : sa portée est
+globale, puis `symbol` filtre si demandé. Si un worker lent demande un cycle qui
+n'est plus courant, le handle lève `CycleContextUnavailable`; le runner d'outils
+le transforme en tool error au lieu de lire le cycle N+1. Le validateur
+`strategy_exit` échoue fermé avec `cycle_context_unavailable`.
 
 Frontière de validation :
 

@@ -27,6 +27,7 @@ _PAYLOAD = {
     "per_symbol_facts": {"data_age_m": 5},
     "decision_timeout_s": 60,
     "agent_tools_enabled": False,
+    "cycle_id": "2026-07-07T09:00:00+08:00",
 }
 
 
@@ -168,3 +169,4 @@ def test_handler_transmet_session_backends_et_task_id_a_decide_one(monkeypatch):
     assert captured["session_backends"] is session_backends
     assert captured["task_id"] == "task-decide-123"
     assert captured["heartbeat"] is heartbeat
+    assert captured["cycle_id"] == "2026-07-07T09:00:00+08:00"

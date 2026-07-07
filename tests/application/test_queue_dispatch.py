@@ -254,6 +254,49 @@ def test_iter_decide_results_never_yields_same_symbol_twice():
     ]
 
 
+def test_enqueue_decide_payload_contient_cycle_id() -> None:
+    class CaptureLedger:
+        def __init__(self) -> None:
+            self.payloads: list[dict] = []
+
+        def delete_stale_decide(self, *, current_cycle_id: str, now_ms: int) -> int:
+            return 0
+
+        def enqueue(self, *, payload=None, **_kwargs):
+            self.payloads.append(json.loads(payload))
+            return len(self.payloads)
+
+    ledger = CaptureLedger()
+
+    queue_dispatch_mod._enqueue_decide_tasks(
+        ledger=ledger,
+        decidable=["SPY"],
+        mandate="mandate",
+        memory="memory",
+        shared_context={},
+        symbol_facts_by_sym={"SPY": {}},
+        decision_timeout_s=60,
+        agent_tools_enabled=True,
+        cycle_id="2026-07-07T09:00:00+08:00",
+        now_fn=lambda: 1.0,
+        symbols_universe=["SPY"],
+    )
+
+    assert ledger.payloads == [
+        {
+            "symbol": "SPY",
+            "mandate": "mandate",
+            "memory": "memory",
+            "shared_context": {},
+            "per_symbol_facts": {},
+            "decision_timeout_s": 60,
+            "agent_tools_enabled": True,
+            "symbols_universe": ["SPY"],
+            "cycle_id": "2026-07-07T09:00:00+08:00",
+        }
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Tests ledger — méthodes ajoutées
 # ---------------------------------------------------------------------------

@@ -10,6 +10,7 @@ Format exact du payload (JSON encodé dans task["payload"]) :
       "per_symbol_facts":    dict,         # faits calculés pour ce symbole uniquement
       "decision_timeout_s":  int,          # plafond d'appel LLM (secondes)
       "agent_tools_enabled": bool,         # True → use_symbol_calls_contract=True (+ tools si services)
+      "cycle_id":            str,          # identifiant du cycle publiant les snapshots worker
       "symbols_universe":    list[str]?    # univers du cycle (resolver d'indicateurs, optionnel)
     }
 
@@ -81,6 +82,7 @@ def make_decide_handler(
             codex_client=codex_client,
             tool_services=tool_services,
             symbols_universe=payload.get("symbols_universe"),
+            cycle_id=payload.get("cycle_id"),
             session_backends=session_backends,
             task_id=task_id,
             heartbeat=heartbeat,
