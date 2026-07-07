@@ -70,6 +70,16 @@ def _open_sqlite_plans(state_dir):
     return [TradePlan.model_validate(item) for item in raw.get("plans", [])]
 
 
+def _broker_positions(state_dir):
+    db_path = state_dir / "casys.db"
+    if db_path.exists():
+        from trader.state_db.broker_store import SqliteBroker
+        from trader.state_db.connection import open_state_db
+
+        return SqliteBroker(open_state_db(db_path)).positions()
+    return SimBroker(state_dir / "broker.json").positions()
+
+
 def _seed_trade_plan(state_dir, plan: TradePlan) -> None:
     path = state_dir / "trade_plans.json"
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -121,7 +131,7 @@ def test_run_cycle_execute_les_sorties_planifiees_avant_codex(monkeypatch, tmp_p
     assert report["planned_exits"][0]["reason"] == "take_profit:tp1"
     assert report["planned_exits"][0]["executed"] is True
     assert codex_calls == 1
-    assert SimBroker(state_dir / "broker.json").positions()["SPY"].quantity == 5.0
+    assert _broker_positions(state_dir)["SPY"].quantity == 5.0
 
 
 def test_apply_planned_exits_preserve_daemon_monkeypatch_hooks(monkeypatch, tmp_path) -> None:
@@ -298,7 +308,7 @@ def test_run_cycle_ne_sort_pas_hors_session_meme_si_tp_atteint(monkeypatch, tmp_
     assert pe["executed"] is False
     assert pe["reason"] == "execution:session_closed"
     # La position n'a PAS été réduite : la sortie repartira au prochain cycle exécutable.
-    assert SimBroker(state_dir / "broker.json").positions()["SPY"].quantity == 10.0
+    assert _broker_positions(state_dir)["SPY"].quantity == 10.0
 
 
 def test_run_cycle_clamp_les_sorties_planifiees_sur_position_broker(monkeypatch, tmp_path, patch_batch, make_data_source) -> None:
@@ -336,7 +346,7 @@ def test_run_cycle_clamp_les_sorties_planifiees_sur_position_broker(monkeypatch,
     assert report["planned_exits"][0]["reason"] == "take_profit:tp1"
     assert report["planned_exits"][0]["requested_quantity"] == 10.0
     assert report["planned_exits"][0]["quantity"] == 5.0
-    assert SimBroker(state_dir / "broker.json").positions() == {}
+    assert _broker_positions(state_dir) == {}
     assert _open_sqlite_plans(state_dir) == []
 
 
@@ -393,7 +403,7 @@ def test_run_cycle_exit_watch_reveille_agent_sans_sortie_auto(monkeypatch, tmp_p
     assert report["exit_watch_triggers"][0]["symbol"] == "SPY"
     assert report["exit_watch_triggers"][0]["source"] == "exit_watch"
     assert contexts[0]["indicator_triggers"][0]["source"] == "exit_watch"
-    assert SimBroker(state_dir / "broker.json").positions()["SPY"].quantity == 10.0
+    assert _broker_positions(state_dir)["SPY"].quantity == 10.0
 
 
 def test_run_cycle_persiste_un_plan_apres_ouverture(monkeypatch, tmp_path, patch_batch, make_data_source) -> None:
@@ -647,7 +657,7 @@ def test_run_cycle_cloture_le_plan_quand_codex_ferme_la_position(monkeypatch, tm
 
     assert report["decisions"][0]["executed"] is True
     assert _open_sqlite_plans(state_dir) == []
-    assert SimBroker(state_dir / "broker.json").positions() == {}
+    assert _broker_positions(state_dir) == {}
     rows = [
         json.loads(line)
         for line in (state_dir / "model_performance.jsonl").read_text(encoding="utf-8").splitlines()
@@ -692,7 +702,7 @@ def test_run_cycle_autorise_close_qui_reduit_le_risque_meme_si_ordre_depasse_max
 
     assert report["decisions"][0]["executed"] is True
     assert report["decisions"][0]["reason"] == "ok"
-    assert SimBroker(state_dir / "broker.json").positions() == {}
+    assert _broker_positions(state_dir) == {}
 
 
 def test_run_cycle_rejette_order_value_sans_modifier_quantite_agent(
@@ -742,7 +752,7 @@ def test_run_cycle_rejette_order_value_sans_modifier_quantite_agent(
     assert decision["reason"] == "risk:order_value_exceeded"
     assert decision["qty"] == 101.0
     assert "requested_qty" not in decision
-    assert "SPY" not in SimBroker(state_dir / "broker.json").positions()
+    assert "SPY" not in _broker_positions(state_dir)
 
 
 def test_run_cycle_rejette_order_value_prix_non_binaire_sans_modifier_quantite_agent(
@@ -783,7 +793,7 @@ def test_run_cycle_rejette_order_value_prix_non_binaire_sans_modifier_quantite_a
     assert decision["reason"] == "risk:order_value_exceeded"
     assert decision["qty"] == 5_000.0
     assert "requested_qty" not in decision
-    assert "SPY" not in SimBroker(state_dir / "broker.json").positions()
+    assert "SPY" not in _broker_positions(state_dir)
 
 
 def test_run_cycle_warn_open_long_quand_risque_depasse_un_pourcent_sans_bloquer(
@@ -829,7 +839,7 @@ def test_run_cycle_warn_open_long_quand_risque_depasse_un_pourcent_sans_bloquer(
     assert decision["risk_pct"] > 0.01
     assert decision["risk_warnings"][0]["code"] == "risk_per_trade_exceeded"
     assert decision["risk_warnings"][0]["field"] == "max_risk_per_trade_pct"
-    assert SimBroker(state_dir / "broker.json").positions()["SPY"].quantity == pytest.approx(300.0)
+    assert _broker_positions(state_dir)["SPY"].quantity == pytest.approx(300.0)
 
 
 def test_run_cycle_warn_hard_stop_direct_trop_loin_sans_bloquer(
@@ -879,7 +889,7 @@ def test_run_cycle_warn_hard_stop_direct_trop_loin_sans_bloquer(
         }
     ]
     assert decision["exit_plan_trace"]["hard_stop"]["warnings"] == decision["exit_plan_warnings"]
-    assert SimBroker(state_dir / "broker.json").positions()["SPY"].quantity == pytest.approx(10.0)
+    assert _broker_positions(state_dir)["SPY"].quantity == pytest.approx(10.0)
 
 
 def test_run_cycle_rejette_open_long_si_hard_stop_est_du_mauvais_cote(
@@ -918,7 +928,7 @@ def test_run_cycle_rejette_open_long_si_hard_stop_est_du_mauvais_cote(
     decision = report["decisions"][0]
     assert decision["executed"] is False
     assert decision["reason"] == "invalid_exit_plan:hard_stop_wrong_side"
-    assert SimBroker(state_dir / "broker.json").positions() == {}
+    assert _broker_positions(state_dir) == {}
 
 
 def test_run_cycle_accepte_open_long_si_hard_stop_est_du_bon_cote(
@@ -959,7 +969,7 @@ def test_run_cycle_accepte_open_long_si_hard_stop_est_du_bon_cote(
     assert decision["reason"] == "ok"
     assert decision["risk_clamped"] is False
     assert decision["stop_distance"] == pytest.approx(2.0)
-    assert SimBroker(state_dir / "broker.json").positions()["SPY"].quantity == 10.0
+    assert _broker_positions(state_dir)["SPY"].quantity == 10.0
 
 
 def test_run_cycle_resout_hard_stop_volatilite_direct_avant_risque(
@@ -1066,7 +1076,7 @@ def test_run_cycle_rejette_stop_direct_volatilite_si_volatilite_indisponible(
     assert decision["executed"] is False
     assert decision["reason"] == "invalid_exit_plan:hard_stop_volatility_unavailable"
     assert decision["reason"] != "risk:missing_hard_stop"
-    assert "SPY" not in SimBroker(state_dir / "broker.json").positions()
+    assert "SPY" not in _broker_positions(state_dir)
 
 
 def test_run_cycle_direct_persiste_take_profit_risk_multiple_resolu(
@@ -1196,7 +1206,7 @@ def test_run_cycle_rejette_open_sans_hard_stop_meme_confiant(
     assert decision["risk_unbounded_no_stop"] is True
     assert decision["risk_pct"] is None
     assert decision["stop_distance"] is None
-    assert "SPY" not in SimBroker(state_dir / "broker.json").positions()
+    assert "SPY" not in _broker_positions(state_dir)
 
 
 def test_run_cycle_rejette_risque_avant_order_value_sans_modifier_quantite_agent(
@@ -1240,7 +1250,7 @@ def test_run_cycle_rejette_risque_avant_order_value_sans_modifier_quantite_agent
     assert decision["risk_clamped"] is False
     assert decision["risk_pct"] > 0.01
     assert decision["risk_warnings"][0]["code"] == "risk_per_trade_exceeded"
-    assert "SPY" not in SimBroker(state_dir / "broker.json").positions()
+    assert "SPY" not in _broker_positions(state_dir)
 
 
 def test_run_cycle_rejette_si_position_value_depasse_sans_clamp_order_value(
@@ -1283,7 +1293,7 @@ def test_run_cycle_rejette_si_position_value_depasse_sans_clamp_order_value(
     assert decision["reason"] == "risk:position_value_exceeded"
     assert "requested_qty" not in decision
     assert decision["qty"] == 120.0
-    assert SimBroker(state_dir / "broker.json").positions()["SPY"].quantity == 50.0
+    assert _broker_positions(state_dir)["SPY"].quantity == 50.0
 
 
 def test_run_cycle_rejette_si_gross_exposure_depasse_sans_clamp_order_value(
@@ -1326,8 +1336,8 @@ def test_run_cycle_rejette_si_gross_exposure_depasse_sans_clamp_order_value(
     assert decision["reason"] == "risk:gross_exposure_exceeded"
     assert "requested_qty" not in decision
     assert decision["qty"] == 120.0
-    assert "SPY" not in SimBroker(state_dir / "broker.json").positions()
-    assert SimBroker(state_dir / "broker.json").positions()["QQQ"].quantity == 50.0
+    assert "SPY" not in _broker_positions(state_dir)
+    assert _broker_positions(state_dir)["QQQ"].quantity == 50.0
 
 
 def test_run_cycle_ne_clamp_pas_reverse_trop_gros(
@@ -1369,7 +1379,7 @@ def test_run_cycle_ne_clamp_pas_reverse_trop_gros(
     assert decision["reason"] == "risk:order_value_exceeded"
     assert "requested_qty" not in decision
     assert decision["qty"] == 200.0
-    assert SimBroker(state_dir / "broker.json").positions()["SPY"].quantity == 150.0
+    assert _broker_positions(state_dir)["SPY"].quantity == 150.0
 
 
 def test_run_cycle_reverse_position_aware_long_vers_short_utilise_qty_totale(
@@ -1412,7 +1422,7 @@ def test_run_cycle_reverse_position_aware_long_vers_short_utilise_qty_totale(
     assert decision["action"] == "SELL"
     assert decision["qty"] == 30.0
     assert decision["reason"] == "ok"
-    assert SimBroker(state_dir / "broker.json").positions()["SPY"].quantity == -20.0
+    assert _broker_positions(state_dir)["SPY"].quantity == -20.0
 
 
 def test_run_cycle_reverse_position_aware_short_vers_long_utilise_qty_totale(
@@ -1455,7 +1465,7 @@ def test_run_cycle_reverse_position_aware_short_vers_long_utilise_qty_totale(
     assert decision["action"] == "BUY"
     assert decision["qty"] == 20.0
     assert decision["reason"] == "ok"
-    assert SimBroker(state_dir / "broker.json").positions()["SPY"].quantity == 12.0
+    assert _broker_positions(state_dir)["SPY"].quantity == 12.0
 
 
 def test_run_cycle_add_sans_hard_stop_est_rejete(
@@ -1496,7 +1506,7 @@ def test_run_cycle_add_sans_hard_stop_est_rejete(
     decision = report["decisions"][0]
     assert decision["reason"] == "risk:missing_hard_stop"
     assert decision["executed"] is False
-    assert SimBroker(state_dir / "broker.json").positions()["SPY"].quantity == 10.0
+    assert _broker_positions(state_dir)["SPY"].quantity == 10.0
 
 
 def test_run_cycle_add_depassement_risque_est_trace_sans_bloquer(
@@ -1540,7 +1550,7 @@ def test_run_cycle_add_depassement_risque_est_trace_sans_bloquer(
     assert decision["executed"] is True
     assert decision["risk_pct"] > 0.01
     assert decision["risk_warnings"][0]["code"] == "risk_per_trade_exceeded"
-    assert SimBroker(state_dir / "broker.json").positions()["SPY"].quantity == pytest.approx(210.0)
+    assert _broker_positions(state_dir)["SPY"].quantity == pytest.approx(210.0)
 
 
 def test_run_cycle_add_long_rejette_hard_stop_du_mauvais_cote(
@@ -1582,7 +1592,7 @@ def test_run_cycle_add_long_rejette_hard_stop_du_mauvais_cote(
     decision = report["decisions"][0]
     assert decision["reason"] == "invalid_exit_plan:hard_stop_wrong_side"
     assert decision["executed"] is False
-    assert SimBroker(state_dir / "broker.json").positions()["SPY"].quantity == 10.0
+    assert _broker_positions(state_dir)["SPY"].quantity == 10.0
 
 
 def test_run_cycle_add_long_accepte_hard_stop_du_bon_cote(
@@ -1626,7 +1636,7 @@ def test_run_cycle_add_long_accepte_hard_stop_du_bon_cote(
     assert decision["executed"] is True
     assert decision["stop_distance"] == pytest.approx(2.0)
     assert decision["risk_pct"] == pytest.approx(0.0003)
-    assert SimBroker(state_dir / "broker.json").positions()["SPY"].quantity == 15.0
+    assert _broker_positions(state_dir)["SPY"].quantity == 15.0
 
 
 def test_run_cycle_add_trace_petit_ajout_si_risque_position_totale_depasse(
@@ -1671,7 +1681,7 @@ def test_run_cycle_add_trace_petit_ajout_si_risque_position_totale_depasse(
     assert decision["qty"] == pytest.approx(1.0)
     assert decision["risk_pct"] > 0.01
     assert decision["risk_warnings"][0]["code"] == "risk_per_trade_exceeded"
-    assert SimBroker(state_dir / "broker.json").positions()["SPY"].quantity == pytest.approx(101.0)
+    assert _broker_positions(state_dir)["SPY"].quantity == pytest.approx(101.0)
 
 
 def test_run_cycle_legacy_relative_ignored_fields_arrivent_dans_runtime_ledger(
@@ -1757,7 +1767,7 @@ def test_run_cycle_close_direct_sans_position_passe_par_fusible_position_aware(
     decision = report["decisions"][0]
     assert decision["reason"] == "nothing_to_close"
     assert decision["executed"] is False
-    assert SimBroker(state_dir / "broker.json").positions() == {}
+    assert _broker_positions(state_dir) == {}
 
 
 @pytest.mark.parametrize(
@@ -1826,7 +1836,7 @@ def test_run_cycle_clamp_close_trop_grand_pour_ne_pas_reverser(monkeypatch, tmp_
 
     assert report["decisions"][0]["executed"] is True
     assert report["decisions"][0]["qty"] == 100.0
-    assert SimBroker(state_dir / "broker.json").positions() == {}
+    assert _broker_positions(state_dir) == {}
 
 
 def test_run_cycle_attribue_les_sorties_planifiees_au_modele_createur(monkeypatch, tmp_path, patch_batch, make_data_source) -> None:
@@ -1971,7 +1981,7 @@ def test_run_cycle_rejette_un_exit_plan_invalide_avant_fill(monkeypatch, tmp_pat
 
     assert report["decisions"][0]["executed"] is False
     assert report["decisions"][0]["reason"].startswith("invalid_exit_plan")
-    assert SimBroker(state_dir / "broker.json").positions() == {}
+    assert _broker_positions(state_dir) == {}
 
 
 def test_run_cycle_ne_replanifie_pas_un_ordre_bloque(monkeypatch, tmp_path, patch_batch, make_data_source) -> None:
@@ -2059,7 +2069,7 @@ def test_run_cycle_reverse_cree_un_plan_sur_la_position_nette_finale(monkeypatch
         data_source=data_source,
     )
 
-    pos = SimBroker(state_dir / "broker.json").positions()["SPY"]
+    pos = _broker_positions(state_dir)["SPY"]
     plans = _open_sqlite_plans(state_dir)
     assert pos.quantity == -10.0
     assert len(plans) == 1
@@ -2171,7 +2181,7 @@ def test_run_cycle_add_resynchronise_le_plan_sur_position_totale(monkeypatch, tm
     )
 
     decision = report["decisions"][0]
-    pos = SimBroker(state_dir / "broker.json").positions()["SPY"]
+    pos = _broker_positions(state_dir)["SPY"]
     plans = _open_sqlite_plans(state_dir)
     assert decision["reason"] == "ok"
     assert decision["trade_plan_created"] is True

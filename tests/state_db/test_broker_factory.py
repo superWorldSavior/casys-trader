@@ -126,6 +126,7 @@ def test_make_broker_sqlite_fresh_no_json(tmp_path: Path) -> None:
     assert isinstance(broker, SqliteBroker)
     assert broker.cash() == pytest.approx(50_000.0)
     assert broker.positions() == {}
+    assert not (tmp_path / "broker.json").exists()
 
 
 # ---------------------------------------------------------------------------
@@ -189,20 +190,14 @@ def test_make_broker_sqlite_idempotent(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Test 7 — make_broker(sqlite) régénère le shadow au boot (FIX 3)
+# Test 7 — make_broker(sqlite) n'écrit plus de shadow au boot
 # ---------------------------------------------------------------------------
 
 
-def test_make_broker_sqlite_regenerates_shadow_at_boot(tmp_path: Path) -> None:
-    """make_broker(sqlite) régénère broker.json depuis SQLite au boot.
-
-    Scénario : DB SQLite déjà peuplée (1er appel make_broker), broker.json supprimé
-    (simule crash entre COMMIT et shadow write), 2e appel make_broker → broker.json
-    recréé et reflète l'état des tables.
-    """
+def test_make_broker_sqlite_does_not_regenerate_shadow_at_boot(tmp_path: Path) -> None:
+    """make_broker(sqlite) ne recrée pas broker.json quand SQLite est déjà peuplé."""
     _broker_json_fixture(tmp_path, cash=42_000.0)
 
-    # 1er boot : migre + crée broker.json
     make_broker(
         state_dir=tmp_path,
         starting_cash=100_000.0,
@@ -212,28 +207,22 @@ def test_make_broker_sqlite_regenerates_shadow_at_boot(tmp_path: Path) -> None:
     json_path = tmp_path / "broker.json"
     assert json_path.exists()
 
-    # Simule crash : supprime le shadow
     json_path.unlink()
 
-    # 2e boot : shadow absent → regenerate_shadow doit le recréer
     b2 = make_broker(
         state_dir=tmp_path,
         starting_cash=100_000.0,
         commission_model=_NO_COMMISSION,
         backend="sqlite",
     )
-    assert json_path.exists(), "make_broker(sqlite) doit régénérer broker.json au boot"
-
-    shadow = json.loads(json_path.read_text())
-    assert shadow["cash"] == pytest.approx(b2.cash())
-    assert shadow["cash"] == pytest.approx(42_000.0)
+    assert not json_path.exists()
+    assert b2.cash() == pytest.approx(42_000.0)
 
 
-def test_make_broker_sqlite_regenerates_stale_shadow(tmp_path: Path) -> None:
-    """make_broker(sqlite) écrase un broker.json stale avec l'état réel de la DB."""
+def test_make_broker_sqlite_does_not_overwrite_stale_shadow(tmp_path: Path) -> None:
+    """make_broker(sqlite) n'écrit plus dans broker.json même s'il est stale."""
     _broker_json_fixture(tmp_path, cash=42_000.0)
 
-    # 1er boot : migre
     make_broker(
         state_dir=tmp_path,
         starting_cash=100_000.0,
@@ -243,15 +232,14 @@ def test_make_broker_sqlite_regenerates_stale_shadow(tmp_path: Path) -> None:
 
     # Injecter un shadow stale
     json_path = tmp_path / "broker.json"
-    json_path.write_text(json.dumps({"cash": 0.0, "positions": {}, "fills": []}))
+    stale = {"cash": 0.0, "positions": {}, "fills": []}
+    json_path.write_text(json.dumps(stale))
 
-    # 2e boot : regenerate_shadow corrige
     b2 = make_broker(
         state_dir=tmp_path,
         starting_cash=100_000.0,
         commission_model=_NO_COMMISSION,
         backend="sqlite",
     )
-    shadow = json.loads(json_path.read_text())
-    assert shadow["cash"] == pytest.approx(b2.cash())
-    assert shadow["cash"] == pytest.approx(42_000.0)
+    assert json.loads(json_path.read_text()) == stale
+    assert b2.cash() == pytest.approx(42_000.0)

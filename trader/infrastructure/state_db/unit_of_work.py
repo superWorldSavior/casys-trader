@@ -2,8 +2,7 @@
 
 Ouvre UNE transaction SQLite : fence → submit_in_tx → plan (close et/ou upsert)
 → complete_in_tx. Si N'IMPORTE quelle étape lève → ROLLBACK total (pas de fill
-sans plan, pas de cash muté sans task done). Après COMMIT réussi : shadows
-best-effort hors transaction (broker.json + trade_plans.json).
+sans plan, pas de cash muté sans task done).
 
 Précondition (élevée en erreur dure) : broker, plan_store et ledger doivent
 partager le MÊME StateDb (db). Sinon RuntimeError levée AVANT d'ouvrir la
@@ -57,9 +56,6 @@ def execute_order_unit(
       3. complete_in_tx — passe la tâche à 'done' ; vérifie retour=True.
 
     Si N'IMPORTE quelle étape lève → ROLLBACK complet de la transaction.
-    Après COMMIT réussi : shadows broker.json et trade_plans.json régénérés
-    best-effort hors transaction.
-
     Préconditions (erreur dure avant ouverture de la transaction) :
         broker._db, plan_store._db et ledger._db doivent tous être la même
         instance que ``db``. Si ce n'est pas le cas, RuntimeError levée avant
@@ -170,11 +166,5 @@ def execute_order_unit(
         dry_run,
         fill,
     )
-
-    # Shadow broker best-effort hors transaction (après COMMIT réussi).
-    try:
-        broker.regenerate_shadow()
-    except Exception as exc:
-        log.warning("[unit_of_work] broker shadow échec: %s", exc)
 
     return fill

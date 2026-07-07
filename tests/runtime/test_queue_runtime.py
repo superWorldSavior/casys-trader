@@ -76,10 +76,9 @@ class FakeDb:
 class FakeBroker:
     instances: list["FakeBroker"] = []
 
-    def __init__(self, db: FakeDb, *, commission_model: object, json_path: Path) -> None:
+    def __init__(self, db: FakeDb, *, commission_model: object) -> None:
         self.db = db
         self.commission_model = commission_model
-        self.json_path = json_path
         FakeBroker.instances.append(self)
 
 
@@ -487,7 +486,6 @@ def test_start_execute_queue_builds_shared_sqlite_stack(tmp_path: Path) -> None:
     assert opened_paths == [tmp_path / "casys.db"]
     assert FakeBroker.instances[0].db is db
     assert FakeBroker.instances[0].commission_model is commission_model
-    assert FakeBroker.instances[0].json_path == tmp_path / "broker.json"
     assert FakePlanStore.instances[0].db is db
     assert runtime.ledger is FakeLedger.instances[0]
     assert FakeLedger.instances[0].path_or_db is db

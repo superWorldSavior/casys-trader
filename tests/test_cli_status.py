@@ -79,6 +79,47 @@ def test_cli_status_json_expose_trade_plans_depuis_sqlite(monkeypatch, tmp_path,
     assert [plan["symbol"] for plan in payload["trade_plans"]["plans"]] == ["SPY"]
 
 
+def test_cli_status_json_expose_broker_et_scheduler_depuis_sqlite_sans_shadow(
+    monkeypatch,
+    tmp_path,
+    capsys,
+) -> None:
+    from trader.execution.broker import Order
+    from trader.infrastructure.state_db.broker_store import SqliteBroker
+    from trader.infrastructure.state_db.connection import open_state_db
+    from trader.infrastructure.state_db.migrations import import_broker_from_json, import_scheduler_from_json
+    from trader.infrastructure.state_db.scheduler_store import SqliteScheduler
+
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+    db = open_state_db(state_dir / "casys.db")
+    import_broker_from_json(db, state_dir / "_absent_broker.json", starting_cash=100_000.0)
+    import_scheduler_from_json(db, state_dir / "_absent_scheduler.json")
+    broker = SqliteBroker(db)
+    broker.submit(Order("SPY", "BUY", 3.0), 100.0, "2026-06-10T10:00:00+00:00", dry_run=False)
+    scheduler = SqliteScheduler(db)
+    scheduler.set_default_next_wake("2026-06-10T12:00:00+00:00")
+    scheduler.set_symbol_next_wake("SPY", "2026-06-10T11:30:00+00:00")
+    scheduler.set_stale_streak("SPY", 2)
+
+    assert cli.main(["status", "--json"]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert not (state_dir / "broker.json").exists()
+    assert not (state_dir / "scheduler.json").exists()
+    assert payload["broker"]["cash"] == 99_700.0
+    assert payload["broker"]["positions"]["SPY"] == {
+        "symbol": "SPY",
+        "quantity": 3.0,
+        "avg_price": 100.0,
+    }
+    assert payload["broker"]["fills"][0]["symbol"] == "SPY"
+    assert payload["scheduler"]["default_next_wake"] == "2026-06-10T12:00:00+00:00"
+    assert payload["scheduler"]["symbols"] == {"SPY": "2026-06-10T11:30:00+00:00"}
+    assert payload["scheduler"]["stale_streaks"] == {"SPY": 2}
+
+
 def test_cli_status_model_calls_sans_cap_affiche_metric_seule(monkeypatch, tmp_path, capsys) -> None:
     state_dir = tmp_path / "state"
     state_dir.mkdir()

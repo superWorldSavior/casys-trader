@@ -70,6 +70,51 @@ def _read_state_json(filename: str) -> object | None:
     return json.loads(path.read_text())
 
 
+def _read_broker_state() -> object | None:
+    db_path = daemon.STATE_DIR / "casys.db"
+    if db_path.exists():
+        try:
+            from trader.infrastructure.state_db.broker_store import SqliteBroker
+            from trader.infrastructure.state_db.connection import open_state_db
+
+            broker = SqliteBroker(open_state_db(db_path))
+            return {
+                "cash": broker.cash(),
+                "positions": {
+                    symbol: {
+                        "symbol": position.symbol,
+                        "quantity": position.quantity,
+                        "avg_price": position.avg_price,
+                    }
+                    for symbol, position in broker.positions().items()
+                },
+                "fills": broker.fills(),
+            }
+        except Exception:
+            return None
+    return _read_state_json("broker.json")
+
+
+def _read_scheduler_state() -> object | None:
+    db_path = daemon.STATE_DIR / "casys.db"
+    if db_path.exists():
+        try:
+            from trader.infrastructure.state_db.connection import open_state_db
+            from trader.infrastructure.state_db.scheduler_store import SqliteScheduler
+
+            scheduler = SqliteScheduler(open_state_db(db_path))
+            default_next_wake, symbol_wakes = scheduler.wakes()
+            return {
+                "default_next_wake": default_next_wake,
+                "symbols": symbol_wakes,
+                "stale_streaks": scheduler.stale_streaks(),
+                "indicator_watches": scheduler.watches(),
+            }
+        except Exception:
+            return None
+    return _read_state_json("scheduler.json")
+
+
 def _read_trade_plans_state() -> object | None:
     db_path = daemon.STATE_DIR / "casys.db"
     if db_path.exists():
@@ -184,8 +229,8 @@ def _cmd_status(args: argparse.Namespace) -> int:
         "daemon_status": _read_state_json("daemon_status.json"),
         "current_report": _read_state_json("current_report.json"),
         "last_report": _read_state_json("last_report.json"),
-        "broker": _read_state_json("broker.json"),
-        "scheduler": _read_state_json("scheduler.json"),
+        "broker": _read_broker_state(),
+        "scheduler": _read_scheduler_state(),
         "trade_plans": _read_trade_plans_state(),
     }
     if args.json:

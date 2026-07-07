@@ -4,20 +4,13 @@ Implémente le port Broker (trader/execution/ports.py) avec StateDb comme
 backend. L'état est déjà présent dans les tables (via import_broker_from_json)
 avant l'instanciation — pas de starting_cash ici.
 
-Double-write shadow JSON atomique (broker.json) après chaque submit, pour les
-lecteurs hors-store qui lisent le JSON directement (cockpit, read_models, CLI…).
-Le shadow est optionnel : si json_path est None, il est skippé.
-
 Logging : [state_db] (getLogger(__name__), %-style).
 """
 from __future__ import annotations
 
 import logging
-from pathlib import Path
-from typing import Optional
 
 from trader.infrastructure.state_db.connection import StateDb
-from trader.infrastructure.state_db.shadow import write_json_atomic
 from trader.execution.contracts import Commission, Fill, Order, Position
 from trader.execution.broker import (
     NoCommissionModel,
@@ -34,19 +27,15 @@ class SqliteBroker:
     Args:
         db:               StateDb ouverte avec BROKER_MIGRATION appliquée.
         commission_model: modèle de commission (défaut : NoCommissionModel).
-        json_path:        chemin du shadow JSON (ex. state/broker.json).
-                          Si None, pas de double-write shadow.
     """
 
     def __init__(
         self,
         db: StateDb,
         commission_model=None,
-        json_path: Optional[Path] = None,
     ) -> None:
         self._db = db
         self._commission_model = commission_model or NoCommissionModel()
-        self._json_path = Path(json_path) if json_path is not None else None
 
     # ------------------------------------------------------------------
     # Protocol Broker
@@ -77,6 +66,28 @@ class SqliteBroker:
             for r in rows
         }
 
+    def fills(self) -> list[dict]:
+        """Retourne les fills dans le format ``broker.json`` historique."""
+        rows = self._db.query_all(
+            "SELECT symbol, side, quantity, price, ts,"
+            " commission, commission_currency, commission_model, fx_rate"
+            " FROM broker_fills ORDER BY seq"
+        )
+        return [
+            {
+                "symbol": r["symbol"],
+                "side": r["side"],
+                "quantity": r["quantity"],
+                "price": r["price"],
+                "ts": r["ts"],
+                "commission": r["commission"],
+                "commission_currency": r["commission_currency"],
+                "commission_model": r["commission_model"],
+                "fx_rate": r["fx_rate"],
+            }
+            for r in rows
+        ]
+
     def submit(
         self,
         order: Order,
@@ -89,21 +100,13 @@ class SqliteBroker:
 
         dry_run=True (défaut Safe) : ne mute rien, retourne None.
         dry_run=False : mutation position+cash+fill atomique en une transaction SQLite
-                        (délègue à submit_in_tx) ; puis double-write shadow JSON
-                        (hors transaction, best-effort).
+                        (délègue à submit_in_tx).
         """
         if dry_run:
             return None
 
         with self._db.transaction() as cur:
             fill = self.submit_in_tx(cur, order, price, ts, dry_run=False, fx_rate=fx_rate)
-
-        # Double-write shadow JSON (hors transaction — best-effort)
-        if self._json_path is not None:
-            try:
-                self._write_shadow()
-            except Exception as exc:
-                log.warning("[state_db] shadow échec broker.json: %s", exc)
 
         return fill
 
@@ -119,7 +122,7 @@ class SqliteBroker:
     ) -> Fill | None:
         """Variante transactionnelle de submit : écrit sur un curseur fourni.
 
-        N'ouvre PAS de transaction, n'écrit PAS le shadow.
+        N'ouvre PAS de transaction.
         À appeler exclusivement depuis l'intérieur d'un bloc ``with db.transaction() as cur:``.
 
         dry_run=True : calcule le fill, ne mute rien, retourne None.
@@ -208,77 +211,3 @@ class SqliteBroker:
         )
 
         return fill
-
-    # ------------------------------------------------------------------
-    # Shadow helpers
-    # ------------------------------------------------------------------
-
-    def regenerate_shadow(self) -> None:
-        """Régénère le shadow broker.json depuis les tables SQLite.
-
-        Idempotent et sûr au boot : rattrape un shadow absent ou stale suite à
-        un crash entre le COMMIT SQLite et le double-write shadow JSON.
-        No-op si json_path est None.
-        """
-        if self._json_path is None:
-            return
-        try:
-            self._write_shadow()
-        except Exception as exc:
-            log.warning("[state_db] regenerate_shadow échec: %s", exc)
-            raise
-
-    def _write_shadow(self) -> None:
-        """Reconstruit le shadow broker.json depuis les tables et l'écrit atomiquement.
-
-        Format identique à broker.json (SimBroker) :
-          { "cash": float,
-            "positions": {symbol: {symbol, quantity, avg_price}, ...},  # TOUTES
-            "fills":   [{symbol, side, quantity, price, ts, ...}, ...] }
-
-        Positions q==0 INCLUSES dans le shadow (identique à SimBroker._save).
-        """
-        cash_row = self._db.query_one("SELECT cash FROM broker_state WHERE id=1")
-        cash = float(cash_row["cash"]) if cash_row is not None else 0.0
-
-        # TOUTES les positions (y compris quantity=0) — pas de filtre, ordre déterministe
-        pos_rows = self._db.query_all(
-            "SELECT symbol, quantity, avg_price FROM broker_positions ORDER BY symbol"
-        )
-        positions = {}
-        for r in pos_rows:
-            quantity = float(r["quantity"])
-            avg_price = float(r["avg_price"])
-            if abs(quantity) <= POSITION_EPSILON:
-                quantity = 0.0
-                avg_price = 0.0
-            positions[r["symbol"]] = {
-                "symbol": r["symbol"],
-                "quantity": quantity,
-                "avg_price": avg_price,
-            }
-
-        fill_rows = self._db.query_all(
-            "SELECT symbol, side, quantity, price, ts,"
-            " commission, commission_currency, commission_model, fx_rate"
-            " FROM broker_fills ORDER BY seq"
-        )
-        fills = [
-            {
-                "symbol": r["symbol"],
-                "side": r["side"],
-                "quantity": r["quantity"],
-                "price": r["price"],
-                "ts": r["ts"],
-                "commission": r["commission"],
-                "commission_currency": r["commission_currency"],
-                "commission_model": r["commission_model"],
-                "fx_rate": r["fx_rate"],
-            }
-            for r in fill_rows
-        ]
-
-        write_json_atomic(
-            self._json_path,
-            {"cash": cash, "positions": positions, "fills": fills},
-        )

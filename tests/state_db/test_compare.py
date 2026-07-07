@@ -49,13 +49,23 @@ def _clear_registry_for(paths: list[Path]) -> None:
 
 
 def _bootstrap(tmp_path: Path, cash: float = 50_000.0) -> None:
-    """Bootstrap un state_dir SQLite depuis zéro avec un broker.json initial."""
+    """Bootstrap un state_dir SQLite depuis des JSON legacy explicites."""
     broker_json = {
         "cash": cash,
         "positions": {},
         "fills": [],
     }
     (tmp_path / "broker.json").write_text(json.dumps(broker_json))
+    (tmp_path / "scheduler.json").write_text(
+        json.dumps(
+            {
+                "default_next_wake": None,
+                "symbols": {},
+                "stale_streaks": {},
+                "indicator_watches": {},
+            }
+        )
+    )
 
     db_path = tmp_path / "casys.db"
     _clear_registry_for([db_path])
@@ -224,11 +234,10 @@ def test_compare_wake_time_divergence(tmp_path: Path) -> None:
 
     from trader.state_db.scheduler_store import SqliteScheduler
 
-    sched = SqliteScheduler(db, json_path=tmp_path / "scheduler.json")
+    sched = SqliteScheduler(db)
     sched.set_symbol_next_wake("AAPL.US", "2026-07-04T10:00:00+00:00")
-    # SQLite = 10:00, shadow scheduler.json aussi = 10:00
 
-    # Modifier manuellement scheduler.json pour avoir une heure différente
+    # Écrire manuellement scheduler.json pour avoir une heure différente
     sched_path = tmp_path / "scheduler.json"
     sched_data = json.loads(sched_path.read_text())
     sched_data["symbols"]["AAPL.US"] = "2026-07-04T11:00:00+00:00"  # 11:00 ≠ 10:00
@@ -324,7 +333,7 @@ def test_compare_watch_expires_divergence(tmp_path: Path) -> None:
 
     from trader.state_db.scheduler_store import SqliteScheduler
 
-    sched = SqliteScheduler(db, json_path=tmp_path / "scheduler.json")
+    sched = SqliteScheduler(db)
 
     # Crée une watch avec expires_at dans le futur (T1)
     future1 = (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat()
@@ -336,13 +345,12 @@ def test_compare_watch_expires_divergence(tmp_path: Path) -> None:
     }
     sched.set_symbol_indicator_watch("AAPL.US", watch)
     # SQLite colonne expires_at = canonical(T1) ; watch_json = {expires_at: T1}
-    # Shadow scheduler.json synchronisé avec T1
 
-    # Modifier scheduler.json : changer expires_at de la watch vers T2 (différent)
+    # Écrire scheduler.json : même watch, mais expires_at T2 (différent)
     future2 = (datetime.now(timezone.utc) + timedelta(hours=4)).isoformat()
     sched_path = tmp_path / "scheduler.json"
     sched_data = json.loads(sched_path.read_text())
-    watch_data = sched_data["indicator_watches"]["w-test-001"]
+    watch_data = dict(watch)
     watch_data["expires_at"] = future2
     sched_data["indicator_watches"]["w-test-001"] = watch_data
     sched_path.write_text(json.dumps(sched_data))
@@ -383,7 +391,7 @@ def test_compare_expired_watch_divergence(tmp_path: Path) -> None:
 
     from trader.state_db.scheduler_store import SqliteScheduler
 
-    sched = SqliteScheduler(db, json_path=tmp_path / "scheduler.json")
+    sched = SqliteScheduler(db)
 
     # Crée une watch avec expires_at dans le PASSÉ (déjà expirée)
     past = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
@@ -394,13 +402,7 @@ def test_compare_expired_watch_divergence(tmp_path: Path) -> None:
         "expires_at": past,
     }
     sched.set_symbol_indicator_watch("BN.PA", watch)
-    # SQLite a la watch expirée ; shadow JSON aussi
-
-    # Supprimer la watch du scheduler.json pour simuler une divergence
-    sched_path = tmp_path / "scheduler.json"
-    sched_data = json.loads(sched_path.read_text())
-    del sched_data["indicator_watches"]["w-expired-001"]
-    sched_path.write_text(json.dumps(sched_data))
+    # SQLite a la watch expirée ; scheduler.json reste vide pour simuler une divergence.
 
     try:
         result = compare_backends(tmp_path)

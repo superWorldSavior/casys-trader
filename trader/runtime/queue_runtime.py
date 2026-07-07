@@ -275,7 +275,7 @@ def start_execute_queue(
     make_execute_order_handler = resolved.make_execute_order_handler or _default_make_execute_order_handler
 
     db = open_state_db(state_dir / "casys.db")
-    broker = sqlite_broker_cls(db, commission_model=commission_model, json_path=state_dir / "broker.json")
+    broker = sqlite_broker_cls(db, commission_model=commission_model)
     plan_store = sqlite_plan_store_cls(db)
     ledger = task_ledger_cls(db)
     ledger.recover_on_boot(now_ms=now_ms_fn())

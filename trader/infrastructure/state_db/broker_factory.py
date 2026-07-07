@@ -47,11 +47,11 @@ def bootstrap_state_backend(
     commission_model,
     backend: str = "json",
 ) -> None:
-    """Amorce ordonné du backend SQLite : migrations + import JSON + 3 shadows.
+    """Amorce ordonné du backend SQLite : migrations + import JSON.
 
     Doit être appelé UNE FOIS en début de process (dans main()), AVANT toute
-    lecture d'état ou rotation, pour garantir que les shadows JSON sont frais et
-    que les 3 stores partagent la même connexion SQLite (via open_state_db).
+    lecture d'état ou rotation, pour garantir que les stores partagent la même
+    connexion SQLite (via open_state_db).
 
     Si ``backend != "sqlite"``, cette fonction est un no-op strict (aucun fichier
     créé, aucune connexion ouverte).
@@ -75,9 +75,6 @@ def bootstrap_state_backend(
         import_trade_plans_from_json,
         import_scheduler_from_json,
     )
-    from trader.infrastructure.state_db.broker_store import SqliteBroker
-    from trader.infrastructure.state_db.scheduler_store import SqliteScheduler
-
     db_path = state_dir / "casys.db"
     db = open_state_db(db_path)
 
@@ -95,11 +92,7 @@ def bootstrap_state_backend(
     import_trade_plans_from_json(db, state_dir / "trade_plans.json")
     import_scheduler_from_json(db, state_dir / "scheduler.json")
 
-    # 2. Régénère les shadows encore actifs depuis SQLite.
-    SqliteBroker(db, commission_model=commission_model, json_path=state_dir / "broker.json").regenerate_shadow()
-    SqliteScheduler(db, json_path=state_dir / "scheduler.json").regenerate_shadow()
-
-    log.info("[bootstrap] state_backend sqlite amorcé (shadows broker/scheduler régénérés)")
+    log.info("[bootstrap] state_backend sqlite amorcé")
 
 
 def make_broker(
@@ -143,15 +136,11 @@ def make_broker(
         from trader.infrastructure.state_db.broker_store import SqliteBroker
 
         db_path = state_dir / "casys.db"
-        json_path = state_dir / "broker.json"
 
         log.debug("[broker_factory] backend=sqlite → open_state_db(%s)", db_path)
         db = open_state_db(db_path)
-        import_broker_from_json(db, json_path, starting_cash=starting_cash)
-        broker = SqliteBroker(db, commission_model=commission_model, json_path=json_path)
-        # Rattrape un shadow stale/absent depuis SQLite au boot (crash entre COMMIT et shadow write)
-        broker.regenerate_shadow()
-        return broker
+        import_broker_from_json(db, state_dir / "broker.json", starting_cash=starting_cash)
+        return SqliteBroker(db, commission_model=commission_model)
 
     raise ValueError(
         f"CASYS_STATE_BACKEND inconnu : {backend!r}. Valeurs acceptées : {_VALID_BACKENDS}"
@@ -239,17 +228,13 @@ def make_scheduler(
         from trader.infrastructure.state_db.scheduler_store import SqliteScheduler  # noqa: PLC0415
 
         db_path = state_dir / "casys.db"
-        json_path = state_dir / "scheduler.json"
 
         log.debug(
             "[broker_factory] scheduler backend=sqlite → open_state_db(%s)", db_path
         )
         db = open_state_db(db_path)
-        import_scheduler_from_json(db, json_path)
-        store = SqliteScheduler(db, json_path=json_path)
-        # Rattrape un shadow stale/absent depuis SQLite au boot
-        store.regenerate_shadow()
-        return store
+        import_scheduler_from_json(db, state_dir / "scheduler.json")
+        return SqliteScheduler(db)
 
     raise ValueError(
         f"CASYS_STATE_BACKEND inconnu : {backend!r}. Valeurs acceptées : {_VALID_BACKENDS}"

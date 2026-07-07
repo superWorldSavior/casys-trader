@@ -29,6 +29,26 @@ def _write_runtime_config(root) -> None:
     (root / "mandate" / "memory.md").write_text("# Memoire\n")
 
 
+def _broker_positions(state_dir):
+    db_path = state_dir / "casys.db"
+    if db_path.exists():
+        from trader.state_db.broker_store import SqliteBroker
+        from trader.state_db.connection import open_state_db
+
+        return SqliteBroker(open_state_db(db_path)).positions()
+    return SimBroker(state_dir / "broker.json").positions()
+
+
+def _broker_fills(state_dir):
+    db_path = state_dir / "casys.db"
+    if db_path.exists():
+        from trader.state_db.broker_store import SqliteBroker
+        from trader.state_db.connection import open_state_db
+
+        return SqliteBroker(open_state_db(db_path)).fills()
+    return json.loads((state_dir / "broker.json").read_text())["fills"]
+
+
 def test_run_cycle_ecrit_un_statut_et_un_rapport_courant(monkeypatch, tmp_path, patch_batch, make_data_source) -> None:
     _write_runtime_config(tmp_path)
     state_dir = tmp_path / "state"
@@ -349,7 +369,7 @@ def test_run_cycle_bloque_decision_sur_donnees_marche_perimees(monkeypatch, tmp_
         "stale_reason": "too_old",
         "data_age_minutes": 120.0,
     }
-    assert json.loads((state_dir / "broker.json").read_text())["fills"] == []
+    assert _broker_fills(state_dir) == []
 
 
 def test_run_cycle_queue_execute_fail_closed_reason_from_dispatcher(
@@ -426,7 +446,7 @@ def test_run_cycle_queue_execute_fail_closed_reason_from_dispatcher(
     assert decision["queue_terminal"] == "timeout"
     assert decision["queue_late_execution_risk"] is True
     assert decision["queue_abandoned"] is False
-    assert SimBroker(state_dir / "broker.json").positions() == {}
+    assert _broker_positions(state_dir) == {}
 
 
 def test_run_cycle_garde_tradable_une_barre_horaire_de_59_minutes(

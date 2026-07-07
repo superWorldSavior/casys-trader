@@ -18,7 +18,6 @@ import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Union
-from unittest.mock import patch
 
 import pytest
 
@@ -89,7 +88,7 @@ def db(tmp_path: Path) -> StateDb:
 
 @pytest.fixture()
 def sqlite_sched(db: StateDb, tmp_path: Path) -> SqliteScheduler:
-    return SqliteScheduler(db, json_path=tmp_path / "scheduler.json")
+    return SqliteScheduler(db)
 
 
 @pytest.fixture()
@@ -315,6 +314,34 @@ class TestStaleStreaks:
 
         assert sqlite_sched.get_stale_streak("AAPL") == json_sched.get_stale_streak("AAPL")
         assert sqlite_sched.get_stale_streak("MSFT") == json_sched.get_stale_streak("MSFT")
+
+    def test_stale_streaks_getter_returns_shadow_shape(
+        self, sqlite_sched: SqliteScheduler
+    ) -> None:
+        sqlite_sched.set_stale_streak("AAPL", 4)
+        sqlite_sched.set_stale_streak("MSFT", 1)
+
+        assert sqlite_sched.stale_streaks() == {"AAPL": 4, "MSFT": 1}
+
+
+class TestReadModelGetters:
+    def test_wakes_getter_returns_default_and_symbol_wakes(
+        self, sqlite_sched: SqliteScheduler
+    ) -> None:
+        sqlite_sched.set_default_next_wake(_future(60))
+        sqlite_sched.set_symbol_next_wake("SPY", _future(30))
+
+        assert sqlite_sched.wakes() == (_future(60), {"SPY": _future(30)})
+
+    def test_watches_getter_returns_indicator_watches_dict_in_insert_order(
+        self, sqlite_sched: SqliteScheduler
+    ) -> None:
+        w_spy = _wake_watch("SPY:001", "SPY", _future(60))
+        w_qqq = _wake_watch("QQQ:001", "QQQ", _future(60))
+        sqlite_sched.set_symbol_indicator_watch("SPY", w_spy)
+        sqlite_sched.set_symbol_indicator_watch("QQQ", w_qqq)
+
+        assert sqlite_sched.watches() == {"SPY:001": w_spy, "QQQ:001": w_qqq}
 
 
 # ---------------------------------------------------------------------------
@@ -603,25 +630,6 @@ class TestRemoveIndicatorWatch:
         js = json_sched.active_indicator_watches(now=_NOW)
         assert [a["id"] for a in sq] == [a["id"] for a in js]
 
-    # FIX 3 — remove inexistant ne doit PAS réécrire le shadow
-    def test_remove_nonexistent_does_not_rewrite_shadow(
-        self, sqlite_sched: SqliteScheduler
-    ) -> None:
-        """remove d'un id inexistant → _write_shadow NON appelé."""
-        with patch.object(sqlite_sched, "_write_shadow") as mock_write:
-            sqlite_sched.remove_indicator_watch("nonexistent-id")
-            mock_write.assert_not_called()
-
-    def test_remove_existing_does_rewrite_shadow(
-        self, sqlite_sched: SqliteScheduler
-    ) -> None:
-        """remove d'un id existant → _write_shadow appelé."""
-        w = _wake_watch("SPY:001", "SPY", _future(60))
-        sqlite_sched.set_symbol_indicator_watch("SPY", w)
-        with patch.object(sqlite_sched, "_write_shadow") as mock_write:
-            sqlite_sched.remove_indicator_watch("SPY:001")
-            mock_write.assert_called_once()
-
 
 # ---------------------------------------------------------------------------
 # reconcile_universe
@@ -710,91 +718,30 @@ class TestReconcileUniverse:
 
 
 # ---------------------------------------------------------------------------
-# Shadow JSON
+# Shadow supprimé
 # ---------------------------------------------------------------------------
 
 
-class TestShadowJson:
-    def test_shadow_written_after_set_default_next_wake(
-        self, sqlite_sched: SqliteScheduler, tmp_path: Path
-    ) -> None:
-        sqlite_sched.set_default_next_wake(_future(30))
-        shadow = json.loads((tmp_path / "scheduler.json").read_text())
-        assert shadow["default_next_wake"] is not None
-        assert "+00:00" in shadow["default_next_wake"]
+class TestNoShadow:
+    def test_constructor_rejects_json_path(self, db: StateDb, tmp_path: Path) -> None:
+        with pytest.raises(TypeError):
+            SqliteScheduler(db, json_path=tmp_path / "scheduler.json")  # type: ignore[call-arg]
 
-    def test_shadow_written_after_set_symbol_next_wake(
-        self, sqlite_sched: SqliteScheduler, tmp_path: Path
-    ) -> None:
-        sqlite_sched.set_symbol_next_wake("SPY", _future(30))
-        shadow = json.loads((tmp_path / "scheduler.json").read_text())
-        assert "SPY" in shadow["symbols"]
+    def test_regenerate_shadow_api_removed(self) -> None:
+        assert not hasattr(SqliteScheduler, "regenerate_shadow")
 
-    def test_shadow_written_after_set_stale_streak(
+    def test_no_shadow_written_after_mutations(
         self, sqlite_sched: SqliteScheduler, tmp_path: Path
     ) -> None:
-        sqlite_sched.set_stale_streak("AAPL", 3)
-        shadow = json.loads((tmp_path / "scheduler.json").read_text())
-        assert shadow["stale_streaks"]["AAPL"] == 3
-
-    def test_shadow_mirrors_watches(
-        self, sqlite_sched: SqliteScheduler, tmp_path: Path
-    ) -> None:
-        w = _wake_watch("SPY:001", "SPY", _future(60))
-        sqlite_sched.set_symbol_indicator_watch("SPY", w)
-        shadow = json.loads((tmp_path / "scheduler.json").read_text())
-        assert "SPY:001" in shadow["indicator_watches"]
-
-    def test_shadow_has_correct_format(
-        self, sqlite_sched: SqliteScheduler, tmp_path: Path
-    ) -> None:
-        """Format shadow identique à scheduler.json (Scheduler)."""
         sqlite_sched.set_default_next_wake(_future(60))
         sqlite_sched.set_symbol_next_wake("SPY", _future(30))
         sqlite_sched.set_stale_streak("AAPL", 2)
-        sqlite_sched.set_symbol_indicator_watch(
-            "SPY", _wake_watch("SPY:001", "SPY", _future(60))
-        )
-
-        shadow = json.loads((tmp_path / "scheduler.json").read_text())
-        assert set(shadow.keys()) >= {"default_next_wake", "symbols", "stale_streaks", "indicator_watches"}
-        assert isinstance(shadow["symbols"], dict)
-        assert isinstance(shadow["stale_streaks"], dict)
-        assert isinstance(shadow["indicator_watches"], dict)
-
-    def test_shadow_purged_after_active_watches(
-        self, sqlite_sched: SqliteScheduler, tmp_path: Path
-    ) -> None:
-        """Shadow mis à jour quand active_indicator_watches purge des expirées."""
-        w_active = _wake_watch("SPY:active", "SPY", _future(30))
-        w_expired = _wake_watch("MSFT:expired", "MSFT", _past(30))
-        sqlite_sched.set_symbol_indicator_watch("SPY", w_active)
-        sqlite_sched.set_symbol_indicator_watch("MSFT", w_expired)
-
+        sqlite_sched.set_symbol_indicator_watch("SPY", _wake_watch("SPY:001", "SPY", _future(60)))
         sqlite_sched.active_indicator_watches(now=_NOW)
-        shadow = json.loads((tmp_path / "scheduler.json").read_text())
-        assert "MSFT:expired" not in shadow["indicator_watches"]
-        assert "SPY:active" in shadow["indicator_watches"]
+        sqlite_sched.pop_expired_indicator_watches(now=_NOW)
+        sqlite_sched.remove_indicator_watch("SPY:001")
+        sqlite_sched.reconcile_universe(["SPY"])
 
-    def test_regenerate_shadow_from_db(
-        self, sqlite_sched: SqliteScheduler, tmp_path: Path, db: StateDb
-    ) -> None:
-        """regenerate_shadow() reconstruit le shadow depuis SQLite."""
-        sqlite_sched.set_default_next_wake(_future(30))
-        # Effacer le shadow
-        (tmp_path / "scheduler.json").unlink(missing_ok=True)
-        # Régénérer
-        sqlite_sched.regenerate_shadow()
-        shadow = json.loads((tmp_path / "scheduler.json").read_text())
-        assert shadow["default_next_wake"] is not None
-
-    def test_shadow_none_json_path_no_write(
-        self, db: StateDb, tmp_path: Path
-    ) -> None:
-        """SqliteScheduler sans json_path → pas de fichier écrit."""
-        sched_no_shadow = SqliteScheduler(db, json_path=None)
-        sched_no_shadow.set_default_next_wake(_future(30))
-        # Aucun fichier créé
         assert not (tmp_path / "scheduler.json").exists()
 
 
@@ -816,6 +763,7 @@ class TestMakeScheduler:
 
         sched = make_scheduler(state_dir=tmp_path, backend="sqlite")
         assert isinstance(sched, SqliteScheduler)
+        assert not (tmp_path / "scheduler.json").exists()
 
     def test_make_scheduler_sqlite_with_existing_json(self, tmp_path: Path) -> None:
         from trader.state_db.broker_factory import make_scheduler
@@ -832,6 +780,28 @@ class TestMakeScheduler:
 
         assert isinstance(sched, SqliteScheduler)
         assert sched.has_symbol_wake("SPY")
+
+    def test_make_scheduler_sqlite_does_not_regenerate_shadow_at_boot(
+        self, tmp_path: Path
+    ) -> None:
+        from trader.state_db.broker_factory import make_scheduler
+
+        data = {
+            "default_next_wake": _future(60),
+            "symbols": {"SPY": _future(30)},
+            "stale_streaks": {},
+            "indicator_watches": {},
+        }
+        json_path = tmp_path / "scheduler.json"
+        json_path.write_text(json.dumps(data))
+        make_scheduler(state_dir=tmp_path, backend="sqlite")
+        json_path.unlink()
+
+        sched = make_scheduler(state_dir=tmp_path, backend="sqlite")
+
+        assert isinstance(sched, SqliteScheduler)
+        assert sched.has_symbol_wake("SPY")
+        assert not json_path.exists()
 
     def test_make_scheduler_bogus_raises(self, tmp_path: Path) -> None:
         from trader.state_db.broker_factory import make_scheduler

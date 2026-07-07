@@ -33,14 +33,13 @@ def _make_sim_broker(tmp_path: Path, starting_cash: float = 100_000.0) -> SimBro
 def _make_sqlite_broker(
     tmp_path: Path,
     starting_cash: float = 100_000.0,
-    json_path: Path | None = None,
     commission_model=None,
 ) -> tuple[StateDb, SqliteBroker]:
     """Crée un SqliteBroker neuf via import_broker_from_json (pas de JSON source)."""
     db = StateDb(tmp_path / "casys.db")
     # Broker neuf : import d'un JSON absent → insert starting_cash
     import_broker_from_json(db, tmp_path / "_absent_.json", starting_cash=starting_cash)
-    broker = SqliteBroker(db, commission_model=commission_model, json_path=json_path)
+    broker = SqliteBroker(db, commission_model=commission_model)
     return db, broker
 
 
@@ -99,6 +98,38 @@ class TestParite:
             sim.submit(order, price, ts, dry_run=False, fx_rate=fx_rate)
             sqlite.submit(order, price, ts, dry_run=False, fx_rate=fx_rate)
             _assert_brokers_equal(sim, sqlite)
+
+    def test_fills_getter_returns_broker_json_shape_from_sqlite(self, tmp_path: Path) -> None:
+        """fills() retourne les fills au même format que broker.json."""
+        _, sqlite = _make_sqlite_broker(tmp_path / "sq")
+
+        sqlite.submit(Order("AAPL", "BUY", 10.0), 150.0, "t1", dry_run=False)
+        sqlite.submit(Order("AAPL", "SELL", 4.0), 155.0, "t2", dry_run=False)
+
+        assert sqlite.fills() == [
+            {
+                "symbol": "AAPL",
+                "side": "BUY",
+                "quantity": 10.0,
+                "price": 150.0,
+                "ts": "t1",
+                "commission": 0.0,
+                "commission_currency": "USD",
+                "commission_model": "none",
+                "fx_rate": 1.0,
+            },
+            {
+                "symbol": "AAPL",
+                "side": "SELL",
+                "quantity": 4.0,
+                "price": 155.0,
+                "ts": "t2",
+                "commission": 0.0,
+                "commission_currency": "USD",
+                "commission_model": "none",
+                "fx_rate": 1.0,
+            },
+        ]
 
     def test_position_zero_not_in_positions_api(self, tmp_path: Path) -> None:
         """positions() filtre les q==0 (même comportement que SimBroker)."""
@@ -316,183 +347,28 @@ class TestTransactionRollback:
 
 
 # ---------------------------------------------------------------------------
-# Classe 4 — Shadow JSON
+# Classe 4 — Shadow supprimé
 # ---------------------------------------------------------------------------
 
 
-class TestShadowJson:
-    def _make_broker_with_shadow(
-        self, tmp_path: Path
-    ) -> tuple[StateDb, SqliteBroker, Path]:
-        json_path = tmp_path / "broker.json"
-        db, broker = _make_sqlite_broker(tmp_path, json_path=json_path)
-        return db, broker, json_path
+class TestNoShadow:
+    def test_constructor_rejects_json_path(self, tmp_path: Path) -> None:
+        db, _ = _make_sqlite_broker(tmp_path)
 
-    def test_shadow_written_after_submit(self, tmp_path: Path) -> None:
-        """broker.json est créé après le premier submit."""
-        _, broker, json_path = self._make_broker_with_shadow(tmp_path)
-        assert not json_path.exists()  # pas encore écrit
-        broker.submit(Order("AAPL", "BUY", 10.0), 150.0, "t1", dry_run=False)
-        assert json_path.exists()
+        with pytest.raises(TypeError):
+            SqliteBroker(db, json_path=tmp_path / "broker.json")  # type: ignore[call-arg]
 
-    def test_shadow_cash_mirrors_table(self, tmp_path: Path) -> None:
-        """broker.json.cash == broker_state.cash après submit."""
-        db, broker, json_path = self._make_broker_with_shadow(tmp_path)
-        broker.submit(Order("AAPL", "BUY", 10.0), 150.0, "t1", dry_run=False)
+    def test_regenerate_shadow_api_removed(self) -> None:
+        assert not hasattr(SqliteBroker, "regenerate_shadow")
 
-        shadow = json.loads(json_path.read_text())
-        assert shadow["cash"] == pytest.approx(broker.cash())
+    def test_no_shadow_written_after_submit(self, tmp_path: Path) -> None:
+        db, broker = _make_sqlite_broker(tmp_path)
 
-    def test_shadow_positions_includes_zero_qty(self, tmp_path: Path) -> None:
-        """broker.json.positions inclut les positions q==0 (toutes les lignes)."""
-        db, broker, json_path = self._make_broker_with_shadow(tmp_path)
-
-        # Ouvrir et fermer AAPL → q=0 en table
         broker.submit(Order("AAPL", "BUY", 5.0), 100.0, "t1", dry_run=False)
         broker.submit(Order("AAPL", "SELL", 5.0), 105.0, "t2", dry_run=False)
 
-        shadow = json.loads(json_path.read_text())
-        # positions() filtre q==0, mais le shadow doit l'inclure
-        assert broker.positions() == {}         # API filtre
-        assert "AAPL" in shadow["positions"]    # shadow = toutes les lignes
-        assert shadow["positions"]["AAPL"]["quantity"] == pytest.approx(0.0)
-
-    def test_shadow_normalise_position_poussiere(self, tmp_path: Path) -> None:
-        """Un shadow régénéré depuis une table stale ne réexpose pas la poussière."""
-        db, broker, json_path = self._make_broker_with_shadow(tmp_path)
-        with db.transaction() as cur:
-            cur.execute(
-                "INSERT INTO broker_positions(symbol, quantity, avg_price) VALUES (?,?,?)",
-                ("2330.TW", 4.440892098500626e-16, 2425.0),
-            )
-
-        broker.regenerate_shadow()
-
-        shadow = json.loads(json_path.read_text())
-        assert shadow["positions"]["2330.TW"]["quantity"] == 0.0
-        assert shadow["positions"]["2330.TW"]["avg_price"] == 0.0
-
-    def test_shadow_fills_match_table(self, tmp_path: Path) -> None:
-        """broker.json.fills == les fills de broker_fills (dans l'ordre)."""
-        db, broker, json_path = self._make_broker_with_shadow(tmp_path)
-
-        broker.submit(Order("AAPL", "BUY", 10.0), 150.0, "t1", dry_run=False)
-        broker.submit(Order("AAPL", "SELL", 5.0), 155.0, "t2", dry_run=False)
-
-        shadow = json.loads(json_path.read_text())
-        db_fills = db.query_all("SELECT * FROM broker_fills ORDER BY seq")
-
-        assert len(shadow["fills"]) == len(db_fills)
-        for sf, df in zip(shadow["fills"], db_fills):
-            assert sf["symbol"] == df["symbol"]
-            assert sf["side"] == df["side"]
-            assert sf["quantity"] == pytest.approx(df["quantity"])
-            assert sf["price"] == pytest.approx(df["price"])
-            assert sf["ts"] == df["ts"]
-
-    def test_shadow_matches_sim_broker_format(self, tmp_path: Path) -> None:
-        """Format du shadow JSON identique à broker.json de SimBroker."""
-        # SimBroker
-        sim = SimBroker(tmp_path / "sim" / "broker.json", starting_cash=100_000.0)
-
-        # SqliteBroker avec shadow
-        json_path = tmp_path / "sqlite" / "broker.json"
-        _, sqlite = _make_sqlite_broker(
-            tmp_path / "sqlite", json_path=json_path
-        )
-
-        # Même séquence sur les deux
-        order = Order("MSFT", "BUY", 2.0)
-        sim.submit(order, 100.0, "t1", dry_run=False)
-        sqlite.submit(order, 100.0, "t1", dry_run=False)
-
-        sim_state = json.loads((tmp_path / "sim" / "broker.json").read_text())
-        sqlite_shadow = json.loads(json_path.read_text())
-
-        # Même structure de top-level
-        assert set(sim_state.keys()) == set(sqlite_shadow.keys())
-
-        # Cash identique
-        assert sqlite_shadow["cash"] == pytest.approx(sim_state["cash"])
-
-        # Positions identiques (clés et valeurs)
-        assert set(sqlite_shadow["positions"].keys()) == set(sim_state["positions"].keys())
-        for sym in sim_state["positions"]:
-            sp = sim_state["positions"][sym]
-            sq = sqlite_shadow["positions"][sym]
-            assert sq["quantity"] == pytest.approx(sp["quantity"])
-            assert sq["avg_price"] == pytest.approx(sp["avg_price"])
-
-        # Fills : même nombre, mêmes données clés
-        assert len(sqlite_shadow["fills"]) == len(sim_state["fills"])
-        for sf, qf in zip(sim_state["fills"], sqlite_shadow["fills"]):
-            assert qf["symbol"] == sf["symbol"]
-            assert qf["side"] == sf["side"]
-            assert qf["quantity"] == pytest.approx(sf["quantity"])
-            assert qf["price"] == pytest.approx(sf["price"])
-
-    def test_no_shadow_without_json_path(self, tmp_path: Path) -> None:
-        """Sans json_path, pas de fichier shadow écrit."""
-        db, broker = _make_sqlite_broker(tmp_path)
-        broker.submit(Order("AAPL", "BUY", 5.0), 100.0, "t1", dry_run=False)
-        # Aucun .json créé dans tmp_path (hors db)
-        json_files = list(tmp_path.glob("*.json"))
-        assert json_files == []
-
-
-# ---------------------------------------------------------------------------
-# Classe 5 — regenerate_shadow (FIX 3)
-# ---------------------------------------------------------------------------
-
-
-class TestRegenerateShadow:
-    def test_regenerate_shadow_creates_json_from_tables(self, tmp_path: Path) -> None:
-        """regenerate_shadow() crée broker.json miroir des tables (sans submit)."""
-        json_path = tmp_path / "broker.json"
-        db, broker = _make_sqlite_broker(tmp_path, json_path=json_path)
-
-        # Soumettre un ordre pour muter les tables
-        broker.submit(Order("MSFT", "BUY", 5.0), 200.0, "t1", dry_run=False)
-
-        # Supprimer le shadow (simule crash après COMMIT avant shadow-write)
-        json_path.unlink()
-        assert not json_path.exists()
-
-        # regenerate_shadow doit le recréer
-        broker.regenerate_shadow()
-        assert json_path.exists()
-
-        shadow = json.loads(json_path.read_text())
-        assert shadow["cash"] == pytest.approx(broker.cash())
-        assert "MSFT" in shadow["positions"]
-        assert shadow["positions"]["MSFT"]["quantity"] == pytest.approx(5.0)
-
-    def test_regenerate_shadow_noop_without_json_path(self, tmp_path: Path) -> None:
-        """regenerate_shadow() sans json_path = no-op (pas d'exception)."""
-        db, broker = _make_sqlite_broker(tmp_path, json_path=None)
-        broker.submit(Order("AAPL", "BUY", 2.0), 100.0, "t1", dry_run=False)
-        # Doit passer sans erreur
-        broker.regenerate_shadow()
-        json_files = list(tmp_path.glob("*.json"))
-        assert json_files == []
-
-    def test_regenerate_shadow_overrides_stale_json(self, tmp_path: Path) -> None:
-        """regenerate_shadow() écrase un broker.json stale avec les données des tables."""
-        json_path = tmp_path / "broker.json"
-        db, broker = _make_sqlite_broker(tmp_path, json_path=json_path)
-
-        # État réel dans les tables
-        broker.submit(Order("GOOG", "BUY", 3.0), 180.0, "t1", dry_run=False)
-
-        # Écrire un JSON stale (données erronées)
-        json_path.write_text(json.dumps({"cash": 9999.0, "positions": {}, "fills": []}))
-
-        # regenerate_shadow doit corriger
-        broker.regenerate_shadow()
-
-        shadow = json.loads(json_path.read_text())
-        assert shadow["cash"] == pytest.approx(broker.cash())
-        assert "GOOG" in shadow["positions"]
+        assert db.query_all("SELECT * FROM broker_fills ORDER BY seq")
+        assert not (tmp_path / "broker.json").exists()
 
 
 # ---------------------------------------------------------------------------

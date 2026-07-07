@@ -107,8 +107,26 @@ def compute_live_kpis(state_dir: Path) -> dict:
     positions_raw: dict[str, dict] = {}
     current_cash: float | None = starting_equity
 
-    broker_path = state_dir / "broker.json"
-    if broker_path.exists():
+    db_path = state_dir / "casys.db"
+    if db_path.exists():
+        try:
+            from trader.infrastructure.state_db.broker_store import SqliteBroker
+            from trader.infrastructure.state_db.connection import open_state_db
+
+            broker = SqliteBroker(open_state_db(db_path))
+            fills = broker.fills()
+            positions_raw = {
+                symbol: {
+                    "symbol": position.symbol,
+                    "quantity": position.quantity,
+                    "avg_price": position.avg_price,
+                }
+                for symbol, position in broker.positions().items()
+            }
+            current_cash = broker.cash()
+        except Exception:
+            pass
+    elif (broker_path := state_dir / "broker.json").exists():
         try:
             broker_data = json.loads(broker_path.read_text())
             fills = broker_data.get("fills", [])

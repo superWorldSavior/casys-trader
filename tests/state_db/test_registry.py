@@ -4,7 +4,7 @@ Couverture :
     - open_state_db : même chemin → même instance (identité)
     - open_state_db : chemins différents → instances différentes
     - open_state_db : chemin relatif vs absolu équivalent → même instance
-    - bootstrap_state_backend(sqlite) : shadows broker/scheduler créés, pas trade_plans.json
+    - bootstrap_state_backend(sqlite) : casys.db créé, aucun shadow régénéré
     - bootstrap_state_backend(sqlite) : idempotent (2 appels consécutifs OK)
     - bootstrap_state_backend(json) : no-op (aucun fichier .db créé)
 """
@@ -82,8 +82,8 @@ def test_open_state_db_relative_vs_absolute_same_instance(tmp_path: Path) -> Non
 # ---------------------------------------------------------------------------
 
 
-def test_bootstrap_sqlite_creates_only_active_shadows(tmp_path: Path) -> None:
-    """bootstrap_state_backend(sqlite) régénère broker/scheduler, pas trade_plans.json."""
+def test_bootstrap_sqlite_creates_db_without_shadows(tmp_path: Path) -> None:
+    """bootstrap_state_backend(sqlite) crée casys.db sans écrire broker/scheduler JSON."""
     db_path = tmp_path / "casys.db"
     _clear_registry_for([db_path])
     try:
@@ -95,52 +95,47 @@ def test_bootstrap_sqlite_creates_only_active_shadows(tmp_path: Path) -> None:
         )
 
         assert (tmp_path / "casys.db").exists(), "casys.db doit être créé"
-        assert (tmp_path / "broker.json").exists(), "broker.json (shadow) doit être créé"
+        assert not (tmp_path / "broker.json").exists(), "broker.json ne doit plus être écrit"
         assert not (tmp_path / "trade_plans.json").exists(), "trade_plans.json ne doit plus être créé"
-        assert (tmp_path / "scheduler.json").exists(), "scheduler.json (shadow) doit être créé"
-
-        # Vérifier que le shadow broker contient le bon cash
-        broker_shadow = json.loads((tmp_path / "broker.json").read_text())
-        assert broker_shadow["cash"] == pytest.approx(50_000.0)
-        assert broker_shadow["positions"] == {}
-        assert broker_shadow["fills"] == []
+        assert not (tmp_path / "scheduler.json").exists(), "scheduler.json ne doit plus être écrit"
     finally:
         _clear_registry_for([db_path])
 
 
 def test_bootstrap_sqlite_idempotent(tmp_path: Path) -> None:
     """bootstrap_state_backend(sqlite) peut être appelé deux fois sans erreur ni doublon."""
+    from trader.state_db.broker_store import SqliteBroker
+
     db_path = tmp_path / "casys.db"
     _clear_registry_for([db_path])
     try:
-        # Premier appel
         bootstrap_state_backend(
             state_dir=tmp_path,
             starting_cash=50_000.0,
             commission_model=None,
             backend="sqlite",
         )
-        shadow_1 = json.loads((tmp_path / "broker.json").read_text())
-
-        # Deuxième appel — doit être un no-op silencieux
         bootstrap_state_backend(
             state_dir=tmp_path,
             starting_cash=50_000.0,
             commission_model=None,
             backend="sqlite",
         )
-        shadow_2 = json.loads((tmp_path / "broker.json").read_text())
 
-        assert shadow_1["cash"] == pytest.approx(shadow_2["cash"])
-        assert shadow_1["positions"] == shadow_2["positions"]
+        broker = SqliteBroker(open_state_db(db_path))
+        assert broker.cash() == pytest.approx(50_000.0)
+        assert broker.positions() == {}
+        assert not (tmp_path / "broker.json").exists()
+        assert not (tmp_path / "scheduler.json").exists()
     finally:
         _clear_registry_for([db_path])
 
 
-def test_bootstrap_sqlite_shadow_reflects_real_cash(tmp_path: Path) -> None:
-    """Le shadow broker.json reflète le cash réel de la DB après bootstrap."""
+def test_bootstrap_sqlite_imports_legacy_broker_json_without_rewriting_shadow(tmp_path: Path) -> None:
+    """Le boot importe broker.json existant dans SQLite sans le régénérer."""
+    from trader.state_db.broker_store import SqliteBroker
+
     db_path = tmp_path / "casys.db"
-    # Pré-existant : un broker.json avec du cash spécifique
     broker_json = {
         "cash": 123_456.78,
         "positions": {},
@@ -155,10 +150,11 @@ def test_bootstrap_sqlite_shadow_reflects_real_cash(tmp_path: Path) -> None:
             commission_model=None,
             backend="sqlite",
         )
-        shadow = json.loads((tmp_path / "broker.json").read_text())
-        assert shadow["cash"] == pytest.approx(123_456.78), (
-            "Le shadow doit refléter le cash importé depuis broker.json, pas starting_cash"
+        broker = SqliteBroker(open_state_db(db_path))
+        assert broker.cash() == pytest.approx(123_456.78), (
+            "SQLite doit refléter le cash importé depuis broker.json, pas starting_cash"
         )
+        assert json.loads((tmp_path / "broker.json").read_text()) == broker_json
     finally:
         _clear_registry_for([db_path])
 

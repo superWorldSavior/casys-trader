@@ -189,6 +189,19 @@ def _load_scheduler_data_safe(scheduler_path: Path, *, now: datetime | None = No
     Tolérant : retourne ([], {}) si absent/corrompu.
     """
     now = now or datetime.now(UTC)
+    db_path = scheduler_path.parent / "casys.db"
+    if db_path.exists():
+        try:
+            from trader.infrastructure.state_db.connection import open_state_db
+            from trader.infrastructure.state_db.scheduler_store import SqliteScheduler
+
+            scheduler = SqliteScheduler(open_state_db(db_path))
+            candidates = [v for v in scheduler.watches().values() if isinstance(v, dict)]
+            watches = [w for w in candidates if not _watch_is_expired(w, now)]
+            return watches, scheduler.stale_streaks()
+        except Exception:
+            return [], {}
+
     try:
         raw = json.loads(scheduler_path.read_text(encoding="utf-8"))
         if not isinstance(raw, dict):
@@ -216,6 +229,16 @@ def _load_scheduler_wakes_safe(scheduler_path: Path) -> tuple[str | None, dict]:
     symbol_wakes      : dict {symbol: ISO str du prochain réveil}.
     Tolérant : retourne (None, {}) si absent/corrompu.
     """
+    db_path = scheduler_path.parent / "casys.db"
+    if db_path.exists():
+        try:
+            from trader.infrastructure.state_db.connection import open_state_db
+            from trader.infrastructure.state_db.scheduler_store import SqliteScheduler
+
+            return SqliteScheduler(open_state_db(db_path)).wakes()
+        except Exception:
+            return None, {}
+
     try:
         raw = json.loads(scheduler_path.read_text(encoding="utf-8"))
         if not isinstance(raw, dict):
@@ -323,6 +346,16 @@ def _load_consolidation_status_safe(status_path: Path) -> dict | None:
 
 def _load_fills_safe(broker_path: Path, *, limit: int = 100) -> list[dict]:
     """Lit les fills depuis state/broker.json. Retourne [] si absent/corrompu."""
+    db_path = broker_path.parent / "casys.db"
+    if db_path.exists():
+        try:
+            from trader.infrastructure.state_db.broker_store import SqliteBroker
+            from trader.infrastructure.state_db.connection import open_state_db
+
+            return _safe_list_of_dicts(SqliteBroker(open_state_db(db_path)).fills()[-limit:])
+        except Exception:
+            return []
+
     try:
         raw = json.loads(broker_path.read_text(encoding="utf-8"))
         if not isinstance(raw, dict):

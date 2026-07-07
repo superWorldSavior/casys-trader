@@ -13,7 +13,6 @@ Sémantique cruciale :
 - Timestamps canonicalisés UTC (+00:00) pour que WHERE expires_at <= :now lexical
   soit correct (Global Constraints §1d).
 
-Double-write shadow JSON atomique (scheduler.json) après chaque mutation.
 Logging : [state_db] (getLogger(__name__), %-style).
 """
 from __future__ import annotations
@@ -21,11 +20,9 @@ from __future__ import annotations
 import json
 import logging
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
-from typing import Iterable, Optional
+from typing import Iterable
 
 from trader.infrastructure.state_db.connection import StateDb
-from trader.infrastructure.state_db.shadow import write_json_atomic
 from trader.planning.scheduler import STALE_BACKOFF_MAX_STREAK
 
 log = logging.getLogger(__name__)
@@ -63,13 +60,10 @@ class SqliteScheduler:
 
     Args:
         db:        StateDb ouverte avec SCHEDULER_MIGRATION appliquée.
-        json_path: chemin du shadow JSON (ex. state/scheduler.json).
-                   Si None, pas de double-write shadow.
     """
 
-    def __init__(self, db: StateDb, json_path: Optional[Path] = None) -> None:
+    def __init__(self, db: StateDb) -> None:
         self._db = db
-        self._json_path = Path(json_path) if json_path is not None else None
 
     # ------------------------------------------------------------------
     # Helper interne identique à Scheduler._parse
@@ -103,10 +97,6 @@ class SqliteScheduler:
                 " ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                 (canon,),
             )
-        try:
-            self._write_shadow()
-        except Exception as exc:
-            log.warning("[state_db] shadow échec set_default_next_wake: %s", exc)
 
     def set_next_wake_in(self, *, minutes: float, now: datetime | None = None) -> str:
         now = now or datetime.now(timezone.utc)
@@ -132,19 +122,11 @@ class SqliteScheduler:
                 " ON CONFLICT(symbol) DO UPDATE SET when_iso=excluded.when_iso",
                 (symbol, canon),
             )
-        try:
-            self._write_shadow()
-        except Exception as exc:
-            log.warning("[state_db] shadow échec set_symbol_next_wake: %s", exc)
 
     def clear_symbol_next_wake(self, symbol: str) -> None:
         """Retire l'override d'un symbole ; il suit alors le défaut global."""
         with self._db.transaction() as cur:
             cur.execute("DELETE FROM scheduler_symbol_wake WHERE symbol=?", (symbol,))
-        try:
-            self._write_shadow()
-        except Exception as exc:
-            log.warning("[state_db] shadow échec clear_symbol_next_wake: %s", exc)
 
     def set_symbol_next_wake_in(
         self,
@@ -238,10 +220,6 @@ class SqliteScheduler:
                 " ON CONFLICT(symbol) DO UPDATE SET streak=excluded.streak",
                 (symbol, bounded),
             )
-        try:
-            self._write_shadow()
-        except Exception as exc:
-            log.warning("[state_db] shadow échec set_stale_streak: %s", exc)
 
     def reset_stale_streak(self, symbol: str) -> None:
         """Remet le streak à 0 (appeler dès qu'une donnée fraîche est reçue)."""
@@ -249,10 +227,24 @@ class SqliteScheduler:
             cur.execute(
                 "DELETE FROM scheduler_stale_streaks WHERE symbol=?", (symbol,)
             )
-        try:
-            self._write_shadow()
-        except Exception as exc:
-            log.warning("[state_db] shadow échec reset_stale_streak: %s", exc)
+
+    def stale_streaks(self) -> dict[str, int]:
+        """Retourne les stale streaks dans le format ``scheduler.json`` historique."""
+        rows = self._db.query_all(
+            "SELECT symbol, streak FROM scheduler_stale_streaks ORDER BY symbol"
+        )
+        return {r["symbol"]: int(r["streak"]) for r in rows}
+
+    def wakes(self) -> tuple[str | None, dict[str, str]]:
+        """Retourne (default_next_wake, symbol_wakes) depuis SQLite."""
+        row = self._db.query_one(
+            "SELECT value FROM scheduler_meta WHERE key='default_next_wake'"
+        )
+        default_next_wake = row["value"] if row else None
+        sym_rows = self._db.query_all(
+            "SELECT symbol, when_iso FROM scheduler_symbol_wake ORDER BY symbol"
+        )
+        return default_next_wake, {r["symbol"]: r["when_iso"] for r in sym_rows}
 
     # ------------------------------------------------------------------
     # Indicator watches
@@ -304,10 +296,6 @@ class SqliteScheduler:
                 (watch_id, symbol, watch.get("created_at"), expires_at, on_trigger, watch_json_str),
             )
         log.debug("[state_db] set_symbol_indicator_watch %s id=%s", symbol, watch_id)
-        try:
-            self._write_shadow()
-        except Exception as exc:
-            log.warning("[state_db] shadow échec set_symbol_indicator_watch: %s", exc)
 
     def active_indicator_watches(self, now: datetime | None = None) -> list[dict]:
         """Retourne les watches NON expirées et purge silencieusement les expirées.
@@ -315,7 +303,6 @@ class SqliteScheduler:
         Sémantique : scheduler.py:173-188.
         - Lit les NON expirées (expires_at IS NULL OR expires_at > now).
         - Purge les expirées en best-effort (DELETE dans une transaction séparée).
-        - Régénère le shadow si quelque chose a été purgé.
         - NE PAS confondre avec pop_expired_indicator_watches.
         """
         now_dt = now or datetime.now(timezone.utc)
@@ -338,13 +325,17 @@ class SqliteScheduler:
                     " WHERE expires_at IS NOT NULL AND expires_at <= ?",
                     (now_s,),
                 )
-                deleted = cur.rowcount
-            if deleted:
-                self._write_shadow()
         except Exception as exc:
             log.warning("[state_db] active_indicator_watches purge: %s", exc)
 
         return active
+
+    def watches(self) -> dict[str, dict]:
+        """Retourne les indicator watches dans le format ``scheduler.json`` historique."""
+        rows = self._db.query_all(
+            "SELECT id, watch_json FROM scheduler_watches ORDER BY seq"
+        )
+        return {r["id"]: json.loads(r["watch_json"]) for r in rows}
 
     def pop_expired_indicator_watches(self, now: datetime | None = None) -> list[dict]:
         """Retire et retourne les veilles expirées (`expires_at <= now`).
@@ -374,23 +365,11 @@ class SqliteScheduler:
                     (now_s,),
                 )
 
-        if expired:
-            try:
-                self._write_shadow()
-            except Exception as exc:
-                log.warning("[state_db] shadow échec pop_expired: %s", exc)
-
         return expired
 
     def remove_indicator_watch(self, watch_id: str) -> None:
         with self._db.transaction() as cur:
             cur.execute("DELETE FROM scheduler_watches WHERE id=?", (watch_id,))
-            deleted = cur.rowcount
-        if deleted:
-            try:
-                self._write_shadow()
-            except Exception as exc:
-                log.warning("[state_db] shadow échec remove_indicator_watch: %s", exc)
 
     # ------------------------------------------------------------------
     # Reconciliation univers
@@ -400,21 +379,16 @@ class SqliteScheduler:
         """Purge tout état lié à un symbole absent de l'univers courant.
 
         DELETE des symboles hors-univers sur symbol_wake + stale_streaks + watches,
-        en UNE transaction, idempotent (ne régénère le shadow que si changement —
-        préserve le comportement « ne sauvegarde que si changement » du JSON).
+        en UNE transaction, idempotent.
         """
         universe = list(set(symbols))
-        total_deleted = 0
 
         if not universe:
             # Univers vide → tout supprimer
             with self._db.transaction() as cur:
                 cur.execute("DELETE FROM scheduler_symbol_wake")
-                total_deleted += cur.rowcount
                 cur.execute("DELETE FROM scheduler_stale_streaks")
-                total_deleted += cur.rowcount
                 cur.execute("DELETE FROM scheduler_watches")
-                total_deleted += cur.rowcount
         else:
             placeholders = ",".join("?" * len(universe))
             with self._db.transaction() as cur:
@@ -422,85 +396,11 @@ class SqliteScheduler:
                     f"DELETE FROM scheduler_symbol_wake WHERE symbol NOT IN ({placeholders})",  # noqa: S608
                     universe,
                 )
-                total_deleted += cur.rowcount
                 cur.execute(
                     f"DELETE FROM scheduler_stale_streaks WHERE symbol NOT IN ({placeholders})",  # noqa: S608
                     universe,
                 )
-                total_deleted += cur.rowcount
                 cur.execute(
                     f"DELETE FROM scheduler_watches WHERE symbol NOT IN ({placeholders})",  # noqa: S608
                     universe,
                 )
-                total_deleted += cur.rowcount
-
-        if total_deleted:
-            try:
-                self._write_shadow()
-            except Exception as exc:
-                log.warning("[state_db] shadow échec reconcile_universe: %s", exc)
-
-    # ------------------------------------------------------------------
-    # Shadow helpers
-    # ------------------------------------------------------------------
-
-    def regenerate_shadow(self) -> None:
-        """Régénère le shadow scheduler.json depuis les tables SQLite.
-
-        Idempotent et sûr au boot : rattrape un shadow absent ou stale suite à
-        un crash entre le COMMIT SQLite et le double-write shadow JSON.
-        No-op si json_path est None.
-        """
-        if self._json_path is None:
-            return
-        try:
-            self._write_shadow()
-        except Exception as exc:
-            log.warning("[state_db] regenerate_shadow scheduler échec: %s", exc)
-            raise
-
-    def _write_shadow(self) -> None:
-        """Reconstruit le shadow scheduler.json depuis les tables et l'écrit atomiquement.
-
-        Format identique à scheduler.json (Scheduler) :
-          { "default_next_wake": ISO|null,
-            "symbols": {sym → iso, ...},
-            "stale_streaks": {sym → int, ...},
-            "indicator_watches": {id → watch_dict, ...} }
-
-        Watches triées par seq (ordre d'insertion — correctif Codex #4).
-        Propage les exceptions — les appelants la wrappent en best-effort.
-        No-op si json_path est None.
-        """
-        if self._json_path is None:
-            return
-
-        row = self._db.query_one(
-            "SELECT value FROM scheduler_meta WHERE key='default_next_wake'"
-        )
-        default_next_wake = row["value"] if row else None
-
-        sym_rows = self._db.query_all(
-            "SELECT symbol, when_iso FROM scheduler_symbol_wake ORDER BY symbol"
-        )
-        symbols = {r["symbol"]: r["when_iso"] for r in sym_rows}
-
-        streak_rows = self._db.query_all(
-            "SELECT symbol, streak FROM scheduler_stale_streaks ORDER BY symbol"
-        )
-        stale_streaks = {r["symbol"]: r["streak"] for r in streak_rows}
-
-        watch_rows = self._db.query_all(
-            "SELECT id, watch_json FROM scheduler_watches ORDER BY seq"
-        )
-        indicator_watches = {r["id"]: json.loads(r["watch_json"]) for r in watch_rows}
-
-        write_json_atomic(
-            self._json_path,
-            {
-                "default_next_wake": default_next_wake,
-                "symbols": symbols,
-                "stale_streaks": stale_streaks,
-                "indicator_watches": indicator_watches,
-            },
-        )

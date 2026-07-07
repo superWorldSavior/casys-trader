@@ -34,6 +34,16 @@ def _open_plans(state_dir):
     return [TradePlan.model_validate(item) for item in raw.get("plans", [])]
 
 
+def _broker_positions(state_dir):
+    db_path = state_dir / "casys.db"
+    if db_path.exists():
+        from trader.state_db.broker_store import SqliteBroker
+        from trader.state_db.connection import open_state_db
+
+        return SqliteBroker(open_state_db(db_path)).positions()
+    return SimBroker(state_dir / "broker.json").positions()
+
+
 def _bars_at(now_iso: str):
     def factory(symbol, lookback, interval):
         return [
@@ -141,7 +151,7 @@ def test_plan_arme_execute_sans_appel_llm(monkeypatch, tmp_path, patch_batch, ma
     assert entry["reason"] == "ok"
     assert entry["armed_plan_id"] == "SPY:abc123"
     assert entry["llm_provider"] is None
-    assert SimBroker(tmp_path / "state" / "broker.json").positions()["SPY"].quantity == 10.0
+    assert _broker_positions(tmp_path / "state")["SPY"].quantity == 10.0
     plans = _open_plans(tmp_path / "state")
     assert len(plans) == 1
     assert plans[0].hard_stop_price == 95.0
@@ -257,7 +267,7 @@ def test_plan_arme_structural_sans_barres_au_tir_est_annule(
 
     assert llm_calls == ["SPY"]
     assert report["decisions"][0]["executed"] is False
-    assert "SPY" not in SimBroker(tmp_path / "state" / "broker.json").positions()
+    assert "SPY" not in _broker_positions(tmp_path / "state")
     events = (tmp_path / "state" / "events.jsonl").read_text(encoding="utf-8")
     assert "armed_plan_cancelled:exit_unresolved:hard_stop_bars_unavailable" in events
     # L'événement d'annulation porte l'exit_plan BRUT armé (observabilité :
@@ -314,7 +324,7 @@ def test_plan_arme_annule_si_volatilite_indisponible_au_tir(
     assert llm_calls == ["SPY"]
     entry = report["decisions"][0]
     assert entry["executed"] is False
-    assert "SPY" not in SimBroker(tmp_path / "state" / "broker.json").positions()
+    assert "SPY" not in _broker_positions(tmp_path / "state")
     events = (tmp_path / "state" / "events.jsonl").read_text(encoding="utf-8")
     assert "armed_plan_cancelled" in events
     assert "armed_plan_cancelled:exit_unresolved:hard_stop_volatility_unavailable" in events
@@ -333,7 +343,7 @@ def test_plan_arme_incoherent_avec_le_stop_reveille_le_planificateur(
     assert llm_calls == ["SPY"]  # un appel : le planificateur est informé
     entry = report["decisions"][0]
     assert entry["executed"] is False  # le faux LLM répond HOLD
-    assert "SPY" not in SimBroker(tmp_path / "state" / "broker.json").positions()
+    assert "SPY" not in _broker_positions(tmp_path / "state")
     # télémétrie : l'annulation est tracée en événement
     events = (tmp_path / "state" / "events.jsonl").read_text(encoding="utf-8")
     assert "armed_plan_cancelled" in events
@@ -391,7 +401,7 @@ def test_plan_arme_sur_position_existante_reveille_le_planificateur(
     )
 
     assert llm_calls == ["SPY"]  # réveil planificateur, pas d'exécution aveugle
-    assert SimBroker(state_dir / "broker.json").positions()["SPY"].quantity == 5.0  # inchangée
+    assert _broker_positions(state_dir)["SPY"].quantity == 5.0  # inchangée
     events = (state_dir / "events.jsonl").read_text(encoding="utf-8")
     assert "position_exists" in events
 
@@ -482,6 +492,6 @@ def test_deux_plans_du_meme_symbole_au_meme_cycle_reveillent_le_planificateur(
     )
 
     assert llm_calls == ["SPY"]  # le planificateur arbitre, pas le hasard
-    assert "SPY" not in SimBroker(state_dir / "broker.json").positions()
+    assert "SPY" not in _broker_positions(state_dir)
     events = (state_dir / "events.jsonl").read_text(encoding="utf-8")
     assert "armed_plan_conflict" in events

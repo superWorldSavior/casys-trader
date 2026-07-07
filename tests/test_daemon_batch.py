@@ -59,6 +59,16 @@ def _write_runtime_config(root, *, symbols=("SPY",)) -> None:
     (root / "mandate" / "memory.md").write_text("# Memoire\n")
 
 
+def _broker_positions(state_dir):
+    db_path = state_dir / "casys.db"
+    if db_path.exists():
+        from trader.state_db.broker_store import SqliteBroker
+        from trader.state_db.connection import open_state_db
+
+        return SqliteBroker(open_state_db(db_path)).positions()
+    return daemon.SimBroker(state_dir / "broker.json").positions()
+
+
 def _fresh_data_source(make_data_source, now: datetime):
     return make_data_source(
         lambda symbol, lookback, interval: [
@@ -462,7 +472,7 @@ def test_opening_execute_timeout_stops_remaining_buffered_openings_as_undecided(
     assert [(d["symbol"], d["executed"], d["reason"]) for d in report["decisions"]] == [
         ("HIGH", False, "queue_execute_timeout")
     ]
-    assert daemon.SimBroker(state_dir / "broker.json").positions() == {}
+    assert _broker_positions(state_dir) == {}
 
 
 def test_openings_deferred_by_execute_timeout_are_redecided_next_cycle(
