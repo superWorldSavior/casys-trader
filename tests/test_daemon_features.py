@@ -1,4 +1,5 @@
 import logging
+import json
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -7,7 +8,7 @@ from trader.runtime import daemon
 from trader.runtime.worker_cycle_context import WorkerCycleContextHandle
 from trader.agent.client import Decision
 from trader.market.market_data import Bar, MarketError
-from trader.planning.trade_plan import TakeProfit, TradePlan, TradePlanStore
+from trader.planning.trade_plan import TakeProfit, TradePlan
 from trader.planning.scheduler import Scheduler
 
 
@@ -29,6 +30,12 @@ def _write_runtime_config(root) -> None:
     )
     (root / "mandate" / "mandate.md").write_text("# Mandat\n")
     (root / "mandate" / "memory.md").write_text("# Memoire\n")
+
+
+def _seed_trade_plan(state_dir, plan: TradePlan) -> None:
+    path = state_dir / "trade_plans.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"plans": [plan.model_dump()]}, indent=2), encoding="utf-8")
 
 
 def test_global_plans_summary_rend_un_resume_compact_global(tmp_path) -> None:
@@ -153,7 +160,7 @@ def test_run_cycle_met_a_jour_le_snapshot_des_plans_ouverts(
         entry_thesis="breakout propre",
         entry_context={"large": "noise"},
     )
-    TradePlanStore(state_dir / "trade_plans.json").upsert(plan)
+    _seed_trade_plan(state_dir, plan)
 
     def bars(symbol: str, lookback: str, interval: str) -> list[Bar]:
         return [

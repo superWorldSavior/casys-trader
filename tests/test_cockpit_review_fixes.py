@@ -167,6 +167,11 @@ def test_has_state_history_trade_plans(tmp_path):
     assert has_state_history(tmp_path) is True
 
 
+def test_has_state_history_casys_db(tmp_path):
+    (tmp_path / "casys.db").write_bytes(b"SQLite format 3\0")
+    assert has_state_history(tmp_path) is True
+
+
 # ---------------------------------------------------------------------------
 # 4b. FirstRunScreen — escape → dismiss (cockpit normal apparaît)
 # ---------------------------------------------------------------------------

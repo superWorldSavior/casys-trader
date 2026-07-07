@@ -342,6 +342,81 @@ def test_daemon_delegates_queue_pool_bootstrap_to_runtime_adapter() -> None:
     assert violations == []
 
 
+def test_state_db_trade_plan_store_imports_domain_not_planning() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    module_path = repo_root / "trader" / "infrastructure" / "state_db" / "trade_plan_store.py"
+    source = module_path.read_text(encoding="utf-8")
+    tree = ast.parse(source, filename=str(module_path))
+
+    forbidden = "trader.planning.trade_plan"
+    violations: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module == forbidden:
+            violations.append(f"from {forbidden} import ...")
+        elif isinstance(node, ast.Import):
+            violations.extend(f"import {alias.name}" for alias in node.names if alias.name == forbidden)
+
+    assert "TradePlan.model_validate(raw)" in source
+    assert "trade_plan_from_dict" not in source
+    assert violations == []
+
+
+def test_state_db_infrastructure_does_not_import_planning_trade_plan() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    state_db_dir = repo_root / "trader" / "infrastructure" / "state_db"
+    forbidden = "trader.planning.trade_plan"
+    violations: list[str] = []
+
+    for module_path in state_db_dir.glob("*.py"):
+        tree = ast.parse(module_path.read_text(encoding="utf-8"), filename=str(module_path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module == forbidden:
+                violations.append(f"{module_path.name}: from {forbidden} import ...")
+            elif isinstance(node, ast.Import):
+                violations.extend(
+                    f"{module_path.name}: import {alias.name}"
+                    for alias in node.names
+                    if alias.name == forbidden
+                )
+
+    assert violations == []
+
+
+def test_execute_order_handler_uses_domain_trade_plan_validation() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    module_path = repo_root / "trader" / "application" / "execute" / "execute_order_handler.py"
+    source = module_path.read_text(encoding="utf-8")
+    tree = ast.parse(source, filename=str(module_path))
+
+    forbidden = "trader.planning.trade_plan"
+    violations: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module == forbidden:
+            violations.append(f"from {forbidden} import ...")
+        elif isinstance(node, ast.Import):
+            violations.extend(f"import {alias.name}" for alias in node.names if alias.name == forbidden)
+
+    assert "trade_plan_from_dict" not in source
+    assert violations == []
+
+
+def test_migrations_own_legacy_trade_plan_decoder() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    module_path = repo_root / "trader" / "infrastructure" / "state_db" / "migrations.py"
+    source = module_path.read_text(encoding="utf-8")
+    tree = ast.parse(source, filename=str(module_path))
+
+    forbidden_imports: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module == "trader.planning.trade_plan":
+            forbidden_imports.append("from trader.planning.trade_plan import ...")
+
+    assert "def _plan_from_legacy_dict" in source
+    assert "def _tp_from_legacy_dict" in source
+    assert "trade_plan_from_dict" not in source
+    assert forbidden_imports == []
+
+
 def test_daemon_delegates_data_source_bootstrap_to_runtime_adapter() -> None:
     repo_root = Path(__file__).resolve().parents[1]
     daemon_path = repo_root / "trader" / "runtime" / "daemon.py"

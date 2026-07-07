@@ -12,13 +12,14 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 
+from trader.domain.trade_plan import TakeProfit, TradePlan
 from trader.infrastructure.state_db.connection import StateDb
 from trader.infrastructure.state_db.trade_plan_store import plan_to_columns
-from trader.planning.trade_plan import trade_plan_from_dict
 
 log = logging.getLogger(__name__)
 
@@ -206,6 +207,96 @@ TRADE_PLANS_MIGRATION: tuple[int, list[str]] = (
 )
 
 
+def _tp_from_legacy_dict(raw: dict) -> TakeProfit:
+    return TakeProfit(
+        name=str(raw["name"]),
+        price=float(raw["price"]),
+        fraction=float(raw["fraction"]),
+        quantity=float(raw["quantity"]),
+        after_fill=str(raw.get("after_fill", "")),
+    )
+
+
+def _plan_from_legacy_dict(raw: dict) -> TradePlan:
+    raw_reference_volatility = raw.get("reference_volatility")
+    reference_volatility = (
+        None if raw_reference_volatility is None else float(raw_reference_volatility)
+    )
+    if reference_volatility is not None and not math.isfinite(reference_volatility):
+        reference_volatility = None
+
+    trailing_stop = None
+    raw_trailing = raw.get("trailing_stop")
+    if isinstance(raw_trailing, dict) and raw_trailing.get("trail_value") is not None:
+        trail_value = float(raw_trailing["trail_value"])
+        if math.isfinite(trail_value):
+            trailing_stop = {
+                "enabled_after": raw_trailing.get("enabled_after"),
+                "trail_type": raw_trailing["trail_type"],
+                "trail_value": trail_value,
+                "trail_floored": bool(raw_trailing.get("trail_floored", False)),
+            }
+
+    profit_protection = None
+    raw_protection = raw.get("profit_protection")
+    if isinstance(raw_protection, dict) and raw_protection.get("enabled", True) is not False:
+        move_stop_to = str(raw_protection.get("move_stop_to", "breakeven"))
+        if move_stop_to not in {"breakeven", "none"}:
+            move_stop_to = "breakeven"
+        profit_protection = {
+            "enabled": True,
+            "arm_at_r": float(raw_protection.get("arm_at_r", 0.5)),
+            "trigger_on_giveback_pct": float(raw_protection.get("trigger_on_giveback_pct", 0.4)),
+            "close_fraction": float(raw_protection.get("close_fraction", 1.0 / 3.0)),
+            "move_stop_to": move_stop_to,
+            "min_hold_minutes": float(raw_protection.get("min_hold_minutes", 10.0)),
+            "lock_r": (
+                None if raw_protection.get("lock_r") is None else float(raw_protection["lock_r"])
+            ),
+            "triggered": bool(raw_protection.get("triggered", False)),
+        }
+
+    return TradePlan(
+        id=str(raw["id"]),
+        symbol=str(raw["symbol"]),
+        side=raw["side"],
+        quantity=float(raw["quantity"]),
+        remaining_quantity=float(raw["remaining_quantity"]),
+        entry_price=float(raw["entry_price"]),
+        opened_at=str(raw["opened_at"]),
+        reference_volatility=reference_volatility,
+        hard_stop_price=None if raw.get("hard_stop_price") is None else float(raw["hard_stop_price"]),
+        take_profits=[_tp_from_legacy_dict(tp) for tp in raw.get("take_profits", [])],
+        trailing_stop=trailing_stop,
+        max_hold_minutes=None if raw.get("max_hold_minutes") is None else float(raw["max_hold_minutes"]),
+        high_watermark=None if raw.get("high_watermark") is None else float(raw["high_watermark"]),
+        low_watermark=None if raw.get("low_watermark") is None else float(raw["low_watermark"]),
+        filled_take_profits=[str(name) for name in raw.get("filled_take_profits", [])],
+        profit_protection=profit_protection,
+        exit_watch=(dict(raw["exit_watch"]) if isinstance(raw.get("exit_watch"), dict) else None),
+        llm_provider=None if raw.get("llm_provider") is None else str(raw["llm_provider"]),
+        llm_model=None if raw.get("llm_model") is None else str(raw["llm_model"]),
+        llm_fallback_reason=(
+            None
+            if raw.get("llm_fallback_reason") is None
+            else str(raw["llm_fallback_reason"])
+        ),
+        llm_confidence=None if raw.get("llm_confidence") is None else float(raw["llm_confidence"]),
+        last_llm_review=(
+            dict(raw["last_llm_review"])
+            if isinstance(raw.get("last_llm_review"), dict)
+            else None
+        ),
+        entry_thesis=None if raw.get("entry_thesis") is None else str(raw["entry_thesis"]),
+        entry_decision_id=(
+            None if raw.get("entry_decision_id") is None else str(raw["entry_decision_id"])
+        ),
+        entry_context=(
+            dict(raw["entry_context"]) if isinstance(raw.get("entry_context"), dict) else None
+        ),
+    )
+
+
 def import_trade_plans_from_json(db: StateDb, json_path: Path) -> None:
     """Migration one-shot idempotente : importe trade_plans.json dans les tables SQLite.
 
@@ -239,7 +330,7 @@ def import_trade_plans_from_json(db: StateDb, json_path: Path) -> None:
     # 2. Import atomique dans la base (sentinel inclus dans la même transaction)
     with db.transaction() as cur:
         for seq, plan_dict in enumerate(plans_raw, start=1):
-            plan = trade_plan_from_dict(plan_dict)
+            plan = _plan_from_legacy_dict(plan_dict)
             cols = plan_to_columns(plan, seq)
             cur.execute(
                 """INSERT INTO trade_plans(

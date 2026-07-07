@@ -9,20 +9,17 @@ Couvre :
 from __future__ import annotations
 
 import json
-import tempfile
-from pathlib import Path
-
 import pytest
 
 from trader.agent import client as codex_client
 from trader.planning.trade_plan import (
     InvalidExitPlanError,
     TradePlan,
-    TradePlanStore,
     apply_exit_update,
     create_trade_plan,
 )
 from trader.runtime import daemon
+from tests.plan_store_fakes import MemoryTradePlanStore
 
 
 # ---------------------------------------------------------------------------
@@ -50,17 +47,10 @@ def _plan(
     )
 
 
-def _store_with_plan(plan: TradePlan) -> tuple[TradePlanStore, Path]:
-    # On passe un chemin qui n'existe PAS encore : TradePlanStore._load() retourne
-    # {"plans": []} pour un fichier absent, évitant JSONDecodeError sur fichier vide.
-    import os
-    tmp = tempfile.NamedTemporaryFile(suffix=".json", delete=False)
-    tmp_path = Path(tmp.name)
-    tmp.close()
-    os.unlink(tmp_path)  # supprime le fichier vide
-    store = TradePlanStore(tmp_path)
+def _store_with_plan(plan: TradePlan) -> MemoryTradePlanStore:
+    store = MemoryTradePlanStore()
     store.upsert(plan)
-    return store, tmp_path
+    return store
 
 
 def _parse_calls(calls_json: list[dict], symbol: str = "SPY") -> codex_client.Decision:
@@ -241,8 +231,7 @@ class TestDaemonApplyExitUpdate:
     """daemon._apply_exit_update — no-op si pas de plan, patch sinon."""
 
     def test_noop_si_pas_de_plan(self) -> None:
-        _, tmp_path = _store_with_plan(_plan("AAPL"))  # plan pour un AUTRE symbole
-        store = TradePlanStore(tmp_path)
+        store = _store_with_plan(_plan("AAPL"))  # plan pour un AUTRE symbole
         entry: dict = {}
 
         daemon._apply_exit_update(
@@ -262,7 +251,7 @@ class TestDaemonApplyExitUpdate:
 
     def test_patch_hard_stop_dans_store(self) -> None:
         plan = _plan("SPY", hard_stop_price=95.0)
-        store, _ = _store_with_plan(plan)
+        store = _store_with_plan(plan)
         entry: dict = {}
 
         daemon._apply_exit_update(
@@ -280,7 +269,7 @@ class TestDaemonApplyExitUpdate:
 
     def test_patch_protect_dans_store(self) -> None:
         plan = _plan("SPY")
-        store, _ = _store_with_plan(plan)
+        store = _store_with_plan(plan)
         entry: dict = {}
 
         daemon._apply_exit_update(
@@ -299,7 +288,7 @@ class TestDaemonApplyExitUpdate:
     def test_resolve_failed_est_un_noop_trace(self) -> None:
         """Résolution impossible → pas d'erreur propagée, entry tracé."""
         plan = _plan("SPY", hard_stop_price=None)
-        store, _ = _store_with_plan(plan)
+        store = _store_with_plan(plan)
         entry: dict = {}
 
         # TP en R sans stop_distance → InvalidExitPlanError
@@ -318,7 +307,7 @@ class TestDaemonApplyExitUpdate:
 
     def test_patch_stop_structurel_protege_gain_dans_store(self) -> None:
         plan = _plan("BAER.SW", entry_price=70.34, hard_stop_price=72.45, quantity=80.0)
-        store, _ = _store_with_plan(plan)
+        store = _store_with_plan(plan)
         entry = {"price": 74.04}
         bars = [
             {"ts": "t1", "open": 73.8, "high": 74.2, "low": 72.7, "close": 74.0},
@@ -346,7 +335,7 @@ class TestDaemonApplyExitUpdate:
 
     def test_stop_structurel_protecteur_reste_borne_par_prix_courant(self) -> None:
         plan = _plan("BAER.SW", entry_price=70.34, hard_stop_price=72.45, quantity=80.0)
-        store, _ = _store_with_plan(plan)
+        store = _store_with_plan(plan)
         entry = {"price": 74.04}
         bars = [
             {"ts": "t1", "open": 74.2, "high": 74.5, "low": 74.3, "close": 74.4},

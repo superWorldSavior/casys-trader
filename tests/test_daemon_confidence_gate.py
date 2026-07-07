@@ -13,6 +13,26 @@ from trader.agent.client import Decision
 from trader.market.market_data import Bar
 from trader.agent.learnings.raw_store import RawLearningsStore
 from trader.planning.scheduler import Scheduler
+from trader.domain.trade_plan import TradePlan
+
+
+def _open_plans(state_dir):
+    db_path = state_dir / "casys.db"
+    if db_path.exists():
+        from trader.state_db.connection import open_state_db
+        from trader.state_db.trade_plan_store import SqliteTradePlanStore
+
+        try:
+            return SqliteTradePlanStore(open_state_db(db_path)).open_plans()
+        except Exception:
+            pass
+    path = state_dir / "trade_plans.json"
+    if not path.exists():
+        return []
+    import json
+
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    return [TradePlan.model_validate(item) for item in raw.get("plans", [])]
 
 
 def _write_runtime_config(root) -> None:
@@ -352,8 +372,6 @@ def test_run_cycle_ouverture_enrichit_le_tradeplan_avec_le_contexte_d_entree(
 ) -> None:
     """§13.7 — au fill d'ouverture, le TradePlan capture la thèse (rationale) et le
     contexte d'entrée (prix, runtime interval, data age, session, daily as-of)."""
-    from trader.planning.trade_plan import TradePlanStore
-
     _write_runtime_config(tmp_path)
     state_dir = tmp_path / "state"
     now = datetime(2026, 6, 5, 14, 30, tzinfo=timezone.utc)  # vendredi, séance US ouverte
@@ -376,7 +394,7 @@ def test_run_cycle_ouverture_enrichit_le_tradeplan_avec_le_contexte_d_entree(
         sched=Scheduler(state_dir / "scheduler.json"), data_source=data_source,
     )
 
-    plans = TradePlanStore(state_dir / "trade_plans.json").open_plans()
+    plans = _open_plans(state_dir)
     assert len(plans) == 1
     plan = plans[0]
     assert plan.entry_thesis == "test gate confiance"

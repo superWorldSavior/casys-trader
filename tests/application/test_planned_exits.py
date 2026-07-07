@@ -6,7 +6,8 @@ import pytest
 
 from trader.execution.broker import Order, SimBroker
 from trader.market.market_data import Bar
-from trader.planning.trade_plan import TradePlanStore, create_trade_plan
+from trader.planning.trade_plan import create_trade_plan
+from tests.plan_store_fakes import MemoryTradePlanStore
 
 
 def test_planned_exits_executes_take_profit_and_records_performance(tmp_path) -> None:
@@ -16,7 +17,7 @@ def test_planned_exits_executes_take_profit_and_records_performance(tmp_path) ->
     now = datetime(2026, 6, 5, 14, 30, tzinfo=timezone.utc)
     broker = SimBroker(state_dir / "broker.json", starting_cash=100_000)
     broker.submit(Order("SPY", "BUY", 10.0), 100.0, "2026-06-05T14:00:00+00:00", dry_run=False)
-    plan_store = TradePlanStore(state_dir / "trade_plans.json")
+    plan_store = MemoryTradePlanStore()
     plan_store.upsert(
         create_trade_plan(
             symbol="SPY",

@@ -330,7 +330,6 @@ def test_run_cycle_transmet_les_flags_de_finalisation_cycle(
     def finalize_cycle(**kwargs):
         captured.append(kwargs)
 
-    monkeypatch.setenv("CASYS_SHADOW_QUEUE_ENABLED", "1")
     monkeypatch.setenv("CASYS_STATE_BACKEND", "sqlite")
     monkeypatch.setattr(daemon, "ROOT", tmp_path)
     monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
@@ -343,7 +342,7 @@ def test_run_cycle_transmet_les_flags_de_finalisation_cycle(
     assert len(captured) == 1
     call = captured[0]
     assert call["state_dir"] == state_dir
-    assert call["shadow_queue_enabled"] is True
+    assert "shadow_queue_enabled" not in call
     assert call["state_backend"] == "sqlite"
     assert call["decidable_symbols"] == ["SPY"]
     assert call["decided_symbols"] == ["SPY"]

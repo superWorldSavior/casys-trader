@@ -2,11 +2,11 @@
 
 Factories disponibles :
     make_broker            → SimBroker (json) ou SqliteBroker (sqlite)
-    make_trade_plan_store  → TradePlanStore (json) ou SqliteTradePlanStore (sqlite)
+    make_trade_plan_store  → SqliteTradePlanStore (sqlite)
     make_scheduler         → Scheduler (json) ou SqliteScheduler (sqlite)
 
 Valeurs backend acceptées (insensibles à la casse) :
-    "json"   (défaut) → stores JSON, comportement strictement inchangé.
+    "json"   (défaut) → broker/scheduler JSON ; plans JSON supprimés.
     "sqlite"          → stores SQLite (migration one-shot idempotente au boot).
 
 Usage (daemon.py) ::
@@ -34,8 +34,6 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-
-from trader.planning.trade_plan import TradePlanStore
 
 log = logging.getLogger(__name__)
 
@@ -78,7 +76,6 @@ def bootstrap_state_backend(
         import_scheduler_from_json,
     )
     from trader.infrastructure.state_db.broker_store import SqliteBroker
-    from trader.infrastructure.state_db.trade_plan_store import SqliteTradePlanStore
     from trader.infrastructure.state_db.scheduler_store import SqliteScheduler
 
     db_path = state_dir / "casys.db"
@@ -98,12 +95,11 @@ def bootstrap_state_backend(
     import_trade_plans_from_json(db, state_dir / "trade_plans.json")
     import_scheduler_from_json(db, state_dir / "scheduler.json")
 
-    # 2. Régénère les 3 shadows depuis SQLite (rattrape crash entre COMMIT et shadow write)
+    # 2. Régénère les shadows encore actifs depuis SQLite.
     SqliteBroker(db, commission_model=commission_model, json_path=state_dir / "broker.json").regenerate_shadow()
-    SqliteTradePlanStore(db, json_path=state_dir / "trade_plans.json").regenerate_shadow()
     SqliteScheduler(db, json_path=state_dir / "scheduler.json").regenerate_shadow()
 
-    log.info("[bootstrap] state_backend sqlite amorcé (shadows régénérés)")
+    log.info("[bootstrap] state_backend sqlite amorcé (shadows broker/scheduler régénérés)")
 
 
 def make_broker(
@@ -165,16 +161,15 @@ def make_broker(
 def make_trade_plan_store(
     *,
     state_dir: Path,
-    backend: str = "json",
+    backend: str = "sqlite",
 ):
-    """Construit et retourne un TradePlanStore selon *backend*.
+    """Construit et retourne le store de plans selon *backend*.
 
     Args:
         state_dir: répertoire d'état (ex. ROOT / "state").
-        backend:   "json" (défaut) ou "sqlite". Toute autre valeur → ValueError.
+        backend:   "sqlite" (défaut). "json" fast-fail. Toute autre valeur → ValueError.
 
     Returns:
-        TradePlanStore       si backend == "json".
         SqliteTradePlanStore si backend == "sqlite".
 
     Raises:
@@ -184,11 +179,9 @@ def make_trade_plan_store(
     backend = backend.lower()
 
     if backend == "json":
-        log.debug(
-            "[broker_factory] trade_plan backend=json → TradePlanStore(%s)",
-            state_dir / "trade_plans.json",
+        raise NotImplementedError(
+            "trade plan JSON backend supprimé; utiliser CASYS_STATE_BACKEND=sqlite"
         )
-        return TradePlanStore(state_dir / "trade_plans.json")
 
     if backend == "sqlite":
         from trader.infrastructure.state_db.connection import open_state_db
@@ -203,10 +196,7 @@ def make_trade_plan_store(
         )
         db = open_state_db(db_path)
         import_trade_plans_from_json(db, json_path)
-        store = SqliteTradePlanStore(db, json_path=json_path)
-        # Rattrape un shadow stale/absent depuis SQLite au boot
-        store.regenerate_shadow()
-        return store
+        return SqliteTradePlanStore(db)
 
     raise ValueError(
         f"CASYS_STATE_BACKEND inconnu : {backend!r}. Valeurs acceptées : {_VALID_BACKENDS}"

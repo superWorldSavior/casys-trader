@@ -51,6 +51,34 @@ def test_cli_status_json_expose_les_fichiers_runtime(monkeypatch, tmp_path, caps
     assert payload["current_report"]["decisions"][0]["symbol"] == "SPY"
 
 
+def test_cli_status_json_expose_trade_plans_depuis_sqlite(monkeypatch, tmp_path, capsys) -> None:
+    from trader.infrastructure.state_db.connection import open_state_db
+    from trader.planning.trade_plan import create_trade_plan
+    from trader.state_db.migrations import import_trade_plans_from_json
+    from trader.state_db.trade_plan_store import SqliteTradePlanStore
+
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+    db = open_state_db(state_dir / "casys.db")
+    import_trade_plans_from_json(db, state_dir / "_absent_trade_plans.json")
+    SqliteTradePlanStore(db).upsert(
+        create_trade_plan(
+            symbol="SPY",
+            side="LONG",
+            quantity=1.0,
+            entry_price=100.0,
+            opened_at="2026-06-10T10:00:00Z",
+            raw_exit_plan={"hard_stop": 95.0},
+        )
+    )
+
+    assert cli.main(["status", "--json"]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert [plan["symbol"] for plan in payload["trade_plans"]["plans"]] == ["SPY"]
+
+
 def test_cli_status_model_calls_sans_cap_affiche_metric_seule(monkeypatch, tmp_path, capsys) -> None:
     state_dir = tmp_path / "state"
     state_dir.mkdir()

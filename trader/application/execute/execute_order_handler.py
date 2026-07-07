@@ -31,6 +31,8 @@ import logging
 import time
 from typing import TYPE_CHECKING, Callable
 
+from trader.domain.trade_plan import TradePlan
+
 if TYPE_CHECKING:
     from trader.infrastructure.state_db.connection import StateDb
     from trader.infrastructure.state_db.broker_store import SqliteBroker
@@ -90,8 +92,7 @@ def make_execute_order_handler(
         # --- Decode plan (optional) ---
         plan_to_upsert = None
         if payload.get("plan_to_upsert") is not None:
-            from trader.planning.trade_plan import trade_plan_from_dict  # noqa: PLC0415
-            plan_to_upsert = trade_plan_from_dict(payload["plan_to_upsert"])
+            plan_to_upsert = TradePlan.model_validate(payload["plan_to_upsert"])
 
         symbol_to_close: str | None = payload.get("symbol_to_close") or None
 

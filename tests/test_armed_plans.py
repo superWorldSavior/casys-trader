@@ -8,13 +8,30 @@ import pytest
 from trader.runtime import daemon
 from trader.application.execute import cycle_decision
 from trader.agent.client import Decision
-from trader.planning.trade_plan import TradePlanStore
+from trader.domain.trade_plan import TradePlan
 from trader.execution.broker import SimBroker
 from trader.market.market_data import Bar
 from trader.planning.scheduler import Scheduler
 
 
 from conftest import write_runtime_config as _runtime_config  # noqa: E402
+
+
+def _open_plans(state_dir):
+    db_path = state_dir / "casys.db"
+    if db_path.exists():
+        from trader.state_db.connection import open_state_db
+        from trader.state_db.trade_plan_store import SqliteTradePlanStore
+
+        try:
+            return SqliteTradePlanStore(open_state_db(db_path)).open_plans()
+        except Exception:
+            pass
+    path = state_dir / "trade_plans.json"
+    if not path.exists():
+        return []
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    return [TradePlan.model_validate(item) for item in raw.get("plans", [])]
 
 
 def _bars_at(now_iso: str):
@@ -125,7 +142,7 @@ def test_plan_arme_execute_sans_appel_llm(monkeypatch, tmp_path, patch_batch, ma
     assert entry["armed_plan_id"] == "SPY:abc123"
     assert entry["llm_provider"] is None
     assert SimBroker(tmp_path / "state" / "broker.json").positions()["SPY"].quantity == 10.0
-    plans = TradePlanStore(tmp_path / "state" / "trade_plans.json").open_plans()
+    plans = _open_plans(tmp_path / "state")
     assert len(plans) == 1
     assert plans[0].hard_stop_price == 95.0
 
@@ -160,7 +177,7 @@ def test_plan_arme_resout_hard_stop_volatilite_au_tir(
     assert llm_calls == []
     entry = report["decisions"][0]
     assert entry["executed"] is True
-    plans = TradePlanStore(tmp_path / "state" / "trade_plans.json").open_plans()
+    plans = _open_plans(tmp_path / "state")
     assert len(plans) == 1
     assert plans[0].hard_stop_price == pytest.approx(97.0)
     assert plans[0].hard_stop_price != 95.0
@@ -207,7 +224,7 @@ def test_plan_arme_resout_hard_stop_structural_sur_barres_fraiches(
 
     assert llm_calls == []
     assert report["decisions"][0]["executed"] is True
-    plans = TradePlanStore(tmp_path / "state" / "trade_plans.json").open_plans()
+    plans = _open_plans(tmp_path / "state")
     assert len(plans) == 1
     assert plans[0].hard_stop_price == pytest.approx(93.0)
     events = [
@@ -272,7 +289,7 @@ def test_plan_arme_persiste_take_profit_risk_multiple_resolu(
 
     assert llm_calls == []
     assert report["decisions"][0]["executed"] is True
-    plans = TradePlanStore(tmp_path / "state" / "trade_plans.json").open_plans()
+    plans = _open_plans(tmp_path / "state")
     assert len(plans) == 1
     assert plans[0].hard_stop_price == pytest.approx(97.0)
     assert len(plans[0].take_profits) == 1

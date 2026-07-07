@@ -1,6 +1,6 @@
-"""SqliteTradePlanStore — TradePlanStore sur substrat SQLite.
+"""SqliteTradePlanStore — persistance TradePlan sur substrat SQLite.
 
-API publique identique à TradePlanStore (trader/planning/trade_plan.py) :
+API publique persistée :
     open_plans()  → list[TradePlan]
     upsert(plan)
     close(id)
@@ -12,7 +12,6 @@ Fonctions pures de mapping (utilisées aussi par import_trade_plans_from_json) :
     plan_to_columns(plan, seq) → dict
     row_to_plan(row)           → TradePlan
 
-Double-write shadow JSON atomique (trade_plans.json) après chaque mutation.
 L'ordre d'open_plans() est préservé via la colonne seq (ORDER BY seq).
 
 Logging : [state_db] (getLogger(__name__), %-style).
@@ -21,12 +20,9 @@ from __future__ import annotations
 
 import json
 import logging
-from pathlib import Path
-from typing import Optional
 
+from trader.domain.trade_plan import TradePlan
 from trader.infrastructure.state_db.connection import StateDb
-from trader.infrastructure.state_db.shadow import write_json_atomic
-from trader.planning.trade_plan import TradePlan, trade_plan_from_dict
 
 log = logging.getLogger(__name__)
 
@@ -43,9 +39,7 @@ def plan_to_columns(plan: TradePlan, seq: int) -> dict:
     Le JSON NULL Python → chaîne "null" (TEXT), pas SQL NULL.
 
     Non-finis scalaires (NaN, Inf) → NULL en colonne REAL, relu None par sqlite3.
-    Ce comportement est une parité fonctionnelle avec le backend JSON :
-    trade_plan_from_dict normalise aussi les non-finis scalaires → None.
-    Ce n'est pas un round-trip byte-exact mais une parité fonctionnelle.
+    Ce comportement conserve la normalisation historique des plans persistés.
 
     Args:
         plan: TradePlan frozen à convertir.
@@ -89,8 +83,8 @@ def plan_to_columns(plan: TradePlan, seq: int) -> dict:
 def row_to_plan(row) -> TradePlan:
     """Reconstruit un TradePlan depuis une ligne SQLite (Row ou dict).
 
-    Désérialise les colonnes *_json, reconstruit le dict complet, puis délègue
-    à trade_plan_from_dict pour la construction du dataclass.
+    Désérialise les colonnes *_json, reconstruit le dict complet, puis valide
+    directement le contrat domaine persistant.
 
     Round-trip garanti : row_to_plan(plan_to_columns(p, seq)).model_dump() == p.model_dump().
     """
@@ -130,7 +124,7 @@ def row_to_plan(row) -> TradePlan:
         "last_llm_review": _load("last_llm_review_json"),
         "entry_context": _load("entry_context_json"),
     }
-    return trade_plan_from_dict(raw)
+    return TradePlan.model_validate(raw)
 
 
 # ---------------------------------------------------------------------------
@@ -192,18 +186,11 @@ class SqliteTradePlanStore:
     """TradePlanStore sur substrat SQLite (même API publique que TradePlanStore).
 
     Args:
-        db:        StateDb ouverte avec TRADE_PLANS_MIGRATION appliquée.
-        json_path: chemin du shadow JSON (ex. state/trade_plans.json).
-                   Si None, pas de double-write shadow.
+        db: StateDb ouverte avec TRADE_PLANS_MIGRATION appliquée.
     """
 
-    def __init__(
-        self,
-        db: StateDb,
-        json_path: Optional[Path] = None,
-    ) -> None:
+    def __init__(self, db: StateDb) -> None:
         self._db = db
-        self._json_path = Path(json_path) if json_path is not None else None
 
     # ------------------------------------------------------------------
     # API publique (identique à TradePlanStore)
@@ -223,10 +210,6 @@ class SqliteTradePlanStore:
         """
         with self._db.transaction() as cur:
             self.upsert_in_tx(cur, plan)
-        try:
-            self._write_shadow()
-        except Exception as exc:
-            log.warning("[state_db] shadow échec trade_plans.json: %s", exc)
 
     def upsert_in_tx(self, cur, plan: TradePlan) -> None:
         """Variante transactionnelle de upsert : écrit sur un curseur fourni.
@@ -247,20 +230,12 @@ class SqliteTradePlanStore:
         with self._db.transaction() as cur:
             cur.execute("DELETE FROM trade_plans WHERE id=?", (plan_id,))
         log.debug("[state_db] close plan %s", plan_id)
-        try:
-            self._write_shadow()
-        except Exception as exc:
-            log.warning("[state_db] shadow échec trade_plans.json: %s", exc)
 
     def close_symbol(self, symbol: str) -> None:
         """Supprime tous les plans du symbole."""
         with self._db.transaction() as cur:
             self.close_symbol_in_tx(cur, symbol)
         log.debug("[state_db] close_symbol %s", symbol)
-        try:
-            self._write_shadow()
-        except Exception as exc:
-            log.warning("[state_db] shadow échec trade_plans.json: %s", exc)
 
     def close_symbol_in_tx(self, cur, symbol: str) -> None:
         """Variante transactionnelle de close_symbol : écrit sur un curseur fourni.
@@ -280,10 +255,6 @@ class SqliteTradePlanStore:
         with self._db.transaction() as cur:
             cur.execute("DELETE FROM trade_plans")
         log.debug("[state_db] clear trade_plans")
-        try:
-            self._write_shadow()
-        except Exception as exc:
-            log.warning("[state_db] shadow échec trade_plans.json: %s", exc)
 
     def sync_symbol_quantity(self, symbol: str, remaining_quantity: float) -> None:
         """Synchronise la quantité totale restante du symbole avec le broker.
@@ -341,47 +312,4 @@ class SqliteTradePlanStore:
 
         log.debug(
             "[state_db] sync_symbol_quantity %s remaining=%.4f", symbol, remaining_quantity
-        )
-        try:
-            self._write_shadow()
-        except Exception as exc:
-            log.warning("[state_db] shadow échec trade_plans.json: %s", exc)
-
-    # ------------------------------------------------------------------
-    # Shadow helpers
-    # ------------------------------------------------------------------
-
-    def regenerate_shadow(self) -> None:
-        """Régénère le shadow trade_plans.json depuis les tables SQLite.
-
-        Idempotent et sûr au boot : rattrape un shadow absent ou stale suite à
-        un crash entre le COMMIT SQLite et le double-write shadow JSON.
-        No-op si json_path est None.
-        """
-        if self._json_path is None:
-            return
-        try:
-            self._write_shadow()
-        except Exception as exc:
-            log.warning("[state_db] regenerate_shadow trade_plans échec: %s", exc)
-            raise
-
-    def _write_shadow(self) -> None:
-        """Reconstruit le shadow trade_plans.json depuis les tables et l'écrit atomiquement.
-
-        Format identique à trade_plans.json (TradePlanStore) :
-          {"plans": [plan.model_dump(), ...]}
-
-        Propage les exceptions (pas de swallow) — les appelants de write (upsert,
-        close, close_symbol, clear, sync_symbol_quantity) la wrappent en best-effort.
-        regenerate_shadow() appelle directement ici pour fail-fast au boot.
-
-        No-op si json_path est None.
-        """
-        if self._json_path is None:
-            return
-        plans = self.open_plans()
-        write_json_atomic(
-            self._json_path,
-            {"plans": [p.model_dump() for p in plans]},
         )

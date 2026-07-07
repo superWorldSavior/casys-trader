@@ -82,6 +82,35 @@ def test_load_trade_plans_safe_retourne_liste_avec_fichier_valide(tmp_path) -> N
     assert plans[0]["symbol"] == "AAPL"
 
 
+def test_load_trade_plans_safe_prefere_sqlite_quand_casys_db_existe(tmp_path) -> None:
+    from trader.infrastructure.state_db.connection import open_state_db
+    from trader.planning.trade_plan import create_trade_plan
+    from trader.state_db.migrations import import_trade_plans_from_json
+    from trader.state_db.trade_plan_store import SqliteTradePlanStore
+    from trader.tui import _load_trade_plans_safe
+
+    db = open_state_db(tmp_path / "casys.db")
+    import_trade_plans_from_json(db, tmp_path / "_absent_trade_plans.json")
+    SqliteTradePlanStore(db).upsert(
+        create_trade_plan(
+            symbol="MSFT",
+            side="LONG",
+            quantity=2.0,
+            entry_price=300.0,
+            opened_at="2026-06-10T10:00:00Z",
+            raw_exit_plan={"hard_stop": 285.0},
+        )
+    )
+    (tmp_path / "trade_plans.json").write_text(
+        '{"plans": [{"symbol": "STALE", "id": "stale"}]}',
+        encoding="utf-8",
+    )
+
+    plans = _load_trade_plans_safe(tmp_path / "trade_plans.json")
+
+    assert [plan["symbol"] for plan in plans] == ["MSFT"]
+
+
 def test_load_trade_plans_safe_retourne_vide_si_fichier_absent(tmp_path) -> None:
     from trader.tui import _load_trade_plans_safe
 

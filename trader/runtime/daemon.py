@@ -89,10 +89,10 @@ from trader.market import news_feed
 from trader.planning.trade_plan import (
     InvalidExitPlanError,
     TradePlan,
-    TradePlanStore,
     resolve_exit_plan,
     validate_exit_plan,
 )
+from trader.planning.protocols import TradePlanStoreLike
 from trader.support.metadata import code_version
 from trader.reporting.read_models import attribution, live_kpis, meta_performance
 from trader.reporting.ledger import decision_ledger
@@ -564,7 +564,7 @@ def _plan_snapshot(plan: TradePlan) -> dict:
 
 def _apply_exit_update(
     *,
-    plan_store: TradePlanStore,
+    plan_store: TradePlanStoreLike,
     symbol: str,
     exit_update: dict,
     bars: list | None,
@@ -587,7 +587,7 @@ def _llm_review_verdict(decision: codex_client.Decision) -> str:
 
 def _persist_last_llm_review(
     *,
-    plan_store: TradePlanStore,
+    plan_store: TradePlanStoreLike,
     symbol: str,
     now: datetime,
     decision: codex_client.Decision,
@@ -601,7 +601,7 @@ def _persist_last_llm_review(
 
 
 def _last_review_by_symbol(
-    plan_store: TradePlanStore, symbols: list[str]
+    plan_store: TradePlanStoreLike, symbols: list[str]
 ) -> dict[str, dict]:
     """Mapping {symbole: last_llm_review} pour les plans ouverts du périmètre qui
     portent une revue. Narrow contract : on ne passe pas le store entier au batch,
@@ -689,7 +689,7 @@ def _reference_volatility_for_symbol(
 def _apply_planned_exits(
     *,
     broker: SimBroker,
-    plan_store: TradePlanStore,
+    plan_store: TradePlanStoreLike,
     prices: dict[str, float],
     bars_by_symbol: dict[str, list] | None = None,
     bars_intervals_by_symbol: dict[str, str] | None = None,
@@ -729,7 +729,7 @@ def _exit_watch_cooldown_elapsed(watch: dict, *, now: datetime) -> bool:
 
 def _scan_exit_watches(
     *,
-    plan_store: TradePlanStore,
+    plan_store: TradePlanStoreLike,
     bars_by_symbol: dict[str, list],
     symbols: list[str],
     now: datetime,
@@ -955,7 +955,7 @@ def _is_valid_5m_bar(bar: object) -> bool:
 
 def _fetch_5m_bars_for_open_plans(
     *,
-    plan_store: TradePlanStore,
+    plan_store: TradePlanStoreLike,
     data_source: object,
     tradable_bars_by_symbol: dict[str, list],
     tradable_prices: dict[str, float],
@@ -1082,11 +1082,11 @@ def run_cycle(
         state_dir=STATE_DIR,
         starting_cash=starting_equity,
         commission_model=commission_model,
-        backend=os.getenv("CASYS_STATE_BACKEND", "json"),
+        backend=os.getenv("CASYS_STATE_BACKEND", "sqlite"),
     )
     plan_store = make_trade_plan_store(
         state_dir=STATE_DIR,
-        backend=os.getenv("CASYS_STATE_BACKEND", "json"),
+        backend=os.getenv("CASYS_STATE_BACKEND", "sqlite"),
     )
     _cycle_raw_open_plans: tuple[object, ...] = ()
     _cycle_open_plan_rows: tuple[dict, ...] = ()
@@ -1788,8 +1788,7 @@ def run_cycle(
         gross_rejection_cache=_LAST_GROSS_REJECTIONS,
         summarize_gross_rejections=summarize_gross_rejections,
         collect_macro=macro_series.maybe_collect,
-        shadow_queue_enabled=os.getenv("CASYS_SHADOW_QUEUE_ENABLED", "0") == "1",
-        state_backend=os.getenv("CASYS_STATE_BACKEND", "json"),
+        state_backend=os.getenv("CASYS_STATE_BACKEND", "sqlite"),
         write_current_report=_write_current_report,
         append_event=_append_event,
         logger=log,
@@ -1934,7 +1933,7 @@ def main(
 
     # Bootstrap ordonné AVANT toute lecture d'état ou rotation runtime :
     # rotation mensuelle JSONL, bootstrap SQLite/shadows, puis scheduler.
-    _state_backend = os.getenv("CASYS_STATE_BACKEND", "json")
+    _state_backend = os.getenv("CASYS_STATE_BACKEND", "sqlite")
     _runtime_state = daemon_bootstrap.bootstrap_runtime_state(
         state_dir=STATE_DIR,
         config_dir=ROOT / "config",
@@ -2094,7 +2093,7 @@ def main(
                 )
                 due_symbols = _select_due_symbols(symbols, sched=sched, once=args.once, bootstrap=bootstrap, now=loop_now)
                 bootstrap = False
-                state_backend = os.getenv("CASYS_STATE_BACKEND", "json")
+                state_backend = os.getenv("CASYS_STATE_BACKEND", "sqlite")
                 protection_cycle_due = bool(
                     not due_symbols
                     and _has_open_trade_plans(state_dir=STATE_DIR, backend=state_backend)

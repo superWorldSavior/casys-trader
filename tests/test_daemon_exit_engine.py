@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from trader.domain.trade_plan import TradePlan
 from trader.runtime import daemon
 from trader.application.execute import cycle_decision
 from trader.agent.client import Decision
@@ -12,7 +13,8 @@ from trader.execution.broker import Order, SimBroker
 from trader.market.market_data import Bar
 from trader.planning.exit_engine import ExitEvaluation, ExitSignal
 from trader.planning.scheduler import Scheduler
-from trader.planning.trade_plan import TradePlanStore, create_trade_plan, resolve_exit_plan
+from trader.planning.trade_plan import create_trade_plan, resolve_exit_plan
+from tests.plan_store_fakes import MemoryTradePlanStore
 
 
 def test_llm_exit_reason_for_model_performance_tague_uniquement_les_sorties() -> None:
@@ -51,13 +53,39 @@ def _write_runtime_config(
     (root / "mandate" / "memory.md").write_text("# Memoire\n")
 
 
+def _open_sqlite_plans(state_dir):
+    db_path = state_dir / "casys.db"
+    if db_path.exists():
+        from trader.state_db.connection import open_state_db
+        from trader.state_db.trade_plan_store import SqliteTradePlanStore
+
+        try:
+            return SqliteTradePlanStore(open_state_db(db_path)).open_plans()
+        except Exception:
+            pass
+    path = state_dir / "trade_plans.json"
+    if not path.exists():
+        return []
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    return [TradePlan.model_validate(item) for item in raw.get("plans", [])]
+
+
+def _seed_trade_plan(state_dir, plan: TradePlan) -> None:
+    path = state_dir / "trade_plans.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    raw = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {"plans": []}
+    plans = [item for item in raw.get("plans", []) if item.get("id") != plan.id]
+    plans.append(plan.model_dump())
+    path.write_text(json.dumps({"plans": plans}, indent=2), encoding="utf-8")
+
+
 def test_run_cycle_execute_les_sorties_planifiees_avant_codex(monkeypatch, tmp_path, patch_batch, make_data_source) -> None:
     _write_runtime_config(tmp_path)
     state_dir = tmp_path / "state"
     now = datetime(2026, 6, 5, 14, 30, tzinfo=timezone.utc)
     broker = SimBroker(state_dir / "broker.json", starting_cash=100_000)
     broker.submit(Order("SPY", "BUY", 10.0), 100.0, "2026-06-05T14:00:00+00:00", dry_run=False)
-    TradePlanStore(state_dir / "trade_plans.json").upsert(
+    _seed_trade_plan(state_dir,
         create_trade_plan(
             symbol="SPY",
             side="LONG",
@@ -101,7 +129,7 @@ def test_apply_planned_exits_preserve_daemon_monkeypatch_hooks(monkeypatch, tmp_
     now = datetime(2026, 6, 5, 14, 30, tzinfo=timezone.utc)
     broker = SimBroker(state_dir / "broker.json", starting_cash=100_000)
     broker.submit(Order("SPY", "BUY", 10.0), 100.0, "2026-06-05T14:00:00+00:00", dry_run=False)
-    plan_store = TradePlanStore(state_dir / "trade_plans.json")
+    plan_store = MemoryTradePlanStore()
     plan_store.upsert(
         create_trade_plan(
             symbol="SPY",
@@ -187,7 +215,7 @@ def test_run_cycle_persiste_fx_rate_sur_sortie_planifiee_non_usd(
         dry_run=False,
         fx_rate=expected_rate,
     )
-    TradePlanStore(state_dir / "trade_plans.json").upsert(
+    _seed_trade_plan(state_dir,
         create_trade_plan(
             symbol="2379.TW",
             side="LONG",
@@ -241,7 +269,7 @@ def test_run_cycle_ne_sort_pas_hors_session_meme_si_tp_atteint(monkeypatch, tmp_
     now = datetime(2026, 6, 13, 12, 0, tzinfo=timezone.utc)  # samedi → session US fermée
     broker = SimBroker(state_dir / "broker.json", starting_cash=100_000)
     broker.submit(Order("SPY", "BUY", 10.0), 100.0, "2026-06-12T20:00:00+00:00", dry_run=False)
-    TradePlanStore(state_dir / "trade_plans.json").upsert(
+    _seed_trade_plan(state_dir,
         create_trade_plan(
             symbol="SPY",
             side="LONG",
@@ -279,7 +307,7 @@ def test_run_cycle_clamp_les_sorties_planifiees_sur_position_broker(monkeypatch,
     now = datetime(2026, 6, 5, 14, 30, tzinfo=timezone.utc)
     broker = SimBroker(state_dir / "broker.json", starting_cash=100_000)
     broker.submit(Order("SPY", "BUY", 5.0), 100.0, "2026-06-05T14:00:00+00:00", dry_run=False)
-    TradePlanStore(state_dir / "trade_plans.json").upsert(
+    _seed_trade_plan(state_dir,
         create_trade_plan(
             symbol="SPY",
             side="LONG",
@@ -309,7 +337,7 @@ def test_run_cycle_clamp_les_sorties_planifiees_sur_position_broker(monkeypatch,
     assert report["planned_exits"][0]["requested_quantity"] == 10.0
     assert report["planned_exits"][0]["quantity"] == 5.0
     assert SimBroker(state_dir / "broker.json").positions() == {}
-    assert TradePlanStore(state_dir / "trade_plans.json").open_plans() == []
+    assert _open_sqlite_plans(state_dir) == []
 
 
 def test_run_cycle_exit_watch_reveille_agent_sans_sortie_auto(monkeypatch, tmp_path, patch_batch, make_data_source) -> None:
@@ -318,7 +346,7 @@ def test_run_cycle_exit_watch_reveille_agent_sans_sortie_auto(monkeypatch, tmp_p
     now = datetime(2026, 6, 5, 12, 20, tzinfo=timezone.utc)
     broker = SimBroker(state_dir / "broker.json", starting_cash=100_000)
     broker.submit(Order("SPY", "BUY", 10.0), 100.0, "2026-06-05T12:00:00+00:00", dry_run=False)
-    TradePlanStore(state_dir / "trade_plans.json").upsert(
+    _seed_trade_plan(state_dir,
         create_trade_plan(
             symbol="SPY",
             side="LONG",
@@ -402,7 +430,7 @@ def test_run_cycle_persiste_un_plan_apres_ouverture(monkeypatch, tmp_path, patch
     assert report["portfolio"]["holdings"][0]["quantity"] == 10.0
     current_report = json.loads((state_dir / "current_report.json").read_text(encoding="utf-8"))
     assert current_report["portfolio"]["holdings"][0]["symbol"] == "SPY"
-    plans = TradePlanStore(state_dir / "trade_plans.json").open_plans()
+    plans = _open_sqlite_plans(state_dir)
     assert len(plans) == 1
     assert plans[0].hard_stop_price == 95.0
 
@@ -449,8 +477,7 @@ def test_run_cycle_persiste_last_llm_review_sur_position_ouverte(
     now = datetime(2026, 6, 5, 12, 15, tzinfo=timezone.utc)
     broker = SimBroker(state_dir / "broker.json", starting_cash=100_000)
     broker.submit(Order("SPY", "BUY", 10.0), 100.0, "2026-06-05T12:00:00+00:00", dry_run=False)
-    store = TradePlanStore(state_dir / "trade_plans.json")
-    store.upsert(
+    _seed_trade_plan(state_dir,
         create_trade_plan(
             symbol="SPY",
             side="LONG",
@@ -485,7 +512,7 @@ def test_run_cycle_persiste_last_llm_review_sur_position_ouverte(
         data_source=data_source,
     )
 
-    review = TradePlanStore(state_dir / "trade_plans.json").open_plans()[0].last_llm_review
+    review = _open_sqlite_plans(state_dir)[0].last_llm_review
     assert review == {
         "ts": now.isoformat(),
         "verdict": "intact",
@@ -538,7 +565,7 @@ def test_run_cycle_persiste_reference_volatility_pour_trailing_multiple(
     )
 
     assert report["decisions"][0]["trade_plan_created"] is True
-    plans = TradePlanStore(state_dir / "trade_plans.json").open_plans()
+    plans = _open_sqlite_plans(state_dir)
     assert len(plans) == 1
     assert plans[0].reference_volatility is not None
     assert plans[0].reference_volatility > 0
@@ -585,8 +612,7 @@ def test_run_cycle_cloture_le_plan_quand_codex_ferme_la_position(monkeypatch, tm
     now = datetime(2026, 6, 5, 14, 30, tzinfo=timezone.utc)
     broker = SimBroker(state_dir / "broker.json", starting_cash=100_000)
     broker.submit(Order("SPY", "BUY", 10.0), 100.0, "2026-06-05T11:00:00+00:00", dry_run=False)
-    store = TradePlanStore(state_dir / "trade_plans.json")
-    store.upsert(
+    _seed_trade_plan(state_dir,
         create_trade_plan(
             symbol="SPY",
             side="LONG",
@@ -620,7 +646,7 @@ def test_run_cycle_cloture_le_plan_quand_codex_ferme_la_position(monkeypatch, tm
     )
 
     assert report["decisions"][0]["executed"] is True
-    assert TradePlanStore(state_dir / "trade_plans.json").open_plans() == []
+    assert _open_sqlite_plans(state_dir) == []
     assert SimBroker(state_dir / "broker.json").positions() == {}
     rows = [
         json.loads(line)
@@ -987,7 +1013,7 @@ def test_run_cycle_resout_hard_stop_volatilite_direct_avant_risque(
     )
 
     decision = report["decisions"][0]
-    plans = TradePlanStore(state_dir / "trade_plans.json").open_plans()
+    plans = _open_sqlite_plans(state_dir)
     assert decision["executed"] is True
     assert decision["reason"] == "ok"
     assert decision["risk_unbounded_no_stop"] is False
@@ -1080,7 +1106,7 @@ def test_run_cycle_direct_persiste_take_profit_risk_multiple_resolu(
     )
 
     decision = report["decisions"][0]
-    plans = TradePlanStore(state_dir / "trade_plans.json").open_plans()
+    plans = _open_sqlite_plans(state_dir)
     assert decision["executed"] is True
     assert plans[0].hard_stop_price == pytest.approx(97.0)
     assert len(plans[0].take_profits) == 1
@@ -1123,7 +1149,7 @@ def test_run_cycle_resout_hard_stop_structural_direct_depuis_barres_fraiches(
     )
 
     decision = report["decisions"][0]
-    plans = TradePlanStore(state_dir / "trade_plans.json").open_plans()
+    plans = _open_sqlite_plans(state_dir)
     assert decision["executed"] is True
     assert decision["risk_unbounded_no_stop"] is False
     assert plans[0].hard_stop_price == pytest.approx(94.0)
@@ -1873,7 +1899,7 @@ def test_main_historise_les_sorties_planifiees_meme_sans_symbole_du(monkeypatch,
     sched.set_next_wake("2099-01-01T00:00:00+00:00")
     broker = SimBroker(state_dir / "broker.json", starting_cash=100_000)
     broker.submit(Order("SPY", "BUY", 10.0), 100.0, "2026-06-05T11:00:00+00:00", dry_run=False)
-    TradePlanStore(state_dir / "trade_plans.json").upsert(
+    _seed_trade_plan(state_dir,
         create_trade_plan(
             symbol="SPY",
             side="LONG",
@@ -1999,7 +2025,7 @@ def test_run_cycle_reverse_cree_un_plan_sur_la_position_nette_finale(monkeypatch
     now = datetime(2026, 6, 5, 14, 30, tzinfo=timezone.utc)
     broker = SimBroker(state_dir / "broker.json", starting_cash=100_000)
     broker.submit(Order("SPY", "BUY", 10.0), 100.0, "2026-06-05T11:00:00+00:00", dry_run=False)
-    TradePlanStore(state_dir / "trade_plans.json").upsert(
+    _seed_trade_plan(state_dir,
         create_trade_plan(
             symbol="SPY",
             side="LONG",
@@ -2034,7 +2060,7 @@ def test_run_cycle_reverse_cree_un_plan_sur_la_position_nette_finale(monkeypatch
     )
 
     pos = SimBroker(state_dir / "broker.json").positions()["SPY"]
-    plans = TradePlanStore(state_dir / "trade_plans.json").open_plans()
+    plans = _open_sqlite_plans(state_dir)
     assert pos.quantity == -10.0
     assert len(plans) == 1
     assert plans[0].side == "SHORT"
@@ -2056,7 +2082,7 @@ def test_run_cycle_reduce_resynchronise_le_plan_sur_position_restante(monkeypatc
     now = datetime(2026, 6, 5, 14, 30, tzinfo=timezone.utc)
     broker = SimBroker(state_dir / "broker.json", starting_cash=100_000)
     broker.submit(Order("SPY", "BUY", 10.0), 100.0, "2026-06-05T11:00:00+00:00", dry_run=False)
-    TradePlanStore(state_dir / "trade_plans.json").upsert(
+    _seed_trade_plan(state_dir,
         create_trade_plan(
             symbol="SPY",
             side="LONG",
@@ -2089,7 +2115,7 @@ def test_run_cycle_reduce_resynchronise_le_plan_sur_position_restante(monkeypatc
         data_source=data_source,
     )
 
-    plans = TradePlanStore(state_dir / "trade_plans.json").open_plans()
+    plans = _open_sqlite_plans(state_dir)
     assert plans[0].remaining_quantity == 6.0
     assert plans[0].take_profits[0].quantity == 6.0
 
@@ -2105,7 +2131,7 @@ def test_run_cycle_add_resynchronise_le_plan_sur_position_totale(monkeypatch, tm
         "action": "HOLD",
         "rationale": "thesis intacte",
     }
-    TradePlanStore(state_dir / "trade_plans.json").upsert(
+    _seed_trade_plan(state_dir,
         create_trade_plan(
             symbol="SPY",
             side="LONG",
@@ -2146,7 +2172,7 @@ def test_run_cycle_add_resynchronise_le_plan_sur_position_totale(monkeypatch, tm
 
     decision = report["decisions"][0]
     pos = SimBroker(state_dir / "broker.json").positions()["SPY"]
-    plans = TradePlanStore(state_dir / "trade_plans.json").open_plans()
+    plans = _open_sqlite_plans(state_dir)
     assert decision["reason"] == "ok"
     assert decision["trade_plan_created"] is True
     assert decision["post_entry_review_scheduled"] is True
@@ -2250,7 +2276,7 @@ def test_run_cycle_planned_exit_hard_stop_contient_niveaux_et_fill(
     broker = SimBroker(state_dir / "broker.json", starting_cash=100_000)
     # Simulation du short CL=F du post-mortem
     broker.submit(Order("SPY", "SELL", 10.0), 86.71, "2026-06-09T16:09:45+00:00", dry_run=False)
-    TradePlanStore(state_dir / "trade_plans.json").upsert(
+    _seed_trade_plan(state_dir,
         create_trade_plan(
             symbol="SPY",
             side="SHORT",
@@ -2308,7 +2334,7 @@ def test_run_cycle_planned_exit_fill_price_est_stop_quand_spike_revenu(
     now = datetime(2026, 6, 9, 16, 48, tzinfo=timezone.utc)
     broker = SimBroker(state_dir / "broker.json", starting_cash=100_000)
     broker.submit(Order("SPY", "SELL", 10.0), 86.71, "2026-06-09T16:09:45+00:00", dry_run=False)
-    TradePlanStore(state_dir / "trade_plans.json").upsert(
+    _seed_trade_plan(state_dir,
         create_trade_plan(
             symbol="SPY",
             side="SHORT",
@@ -2362,7 +2388,7 @@ class TestGardeTemporelleBarre:
         plan_opened_at = "2026-06-09T17:05:00+00:00"
         broker = SimBroker(state_dir / "broker.json", starting_cash=100_000)
         broker.submit(Order("SPY", "SELL", 10.0), 86.71, plan_opened_at, dry_run=False)
-        TradePlanStore(state_dir / "trade_plans.json").upsert(
+        _seed_trade_plan(state_dir,
             create_trade_plan(
                 symbol="SPY",
                 side="SHORT",
@@ -2407,7 +2433,7 @@ class TestGardeTemporelleBarre:
         plan_opened_at = "2026-06-09T17:05:00+00:00"
         broker = SimBroker(state_dir / "broker.json", starting_cash=100_000)
         broker.submit(Order("SPY", "SELL", 10.0), 86.71, plan_opened_at, dry_run=False)
-        TradePlanStore(state_dir / "trade_plans.json").upsert(
+        _seed_trade_plan(state_dir,
             create_trade_plan(
                 symbol="SPY",
                 side="SHORT",
@@ -2451,7 +2477,7 @@ class TestGardeTemporelleBarre:
         plan_opened_at = "2026-06-09T17:00:00+00:00"
         broker = SimBroker(state_dir / "broker.json", starting_cash=100_000)
         broker.submit(Order("SPY", "SELL", 10.0), 86.71, plan_opened_at, dry_run=False)
-        TradePlanStore(state_dir / "trade_plans.json").upsert(
+        _seed_trade_plan(state_dir,
             create_trade_plan(
                 symbol="SPY",
                 side="SHORT",
@@ -2502,7 +2528,7 @@ class TestCheminBloqueObservabilite:
         SimBroker(state_dir / "broker.json", starting_cash=100_000)
         # Position broker = 0 → _clamp_exit_quantity retourne "no_position_to_reduce"
         # (pas de submit de position initiale volontairement : SimBroker initialise broker.json)
-        TradePlanStore(state_dir / "trade_plans.json").upsert(
+        _seed_trade_plan(state_dir,
             create_trade_plan(
                 symbol="SPY",
                 side="LONG",
@@ -2547,10 +2573,9 @@ class TestExitChecks5mBars:
 
     def _setup_state(self, tmp_path, state_dir, *, opened_at: str, symbol: str = "SPY") -> None:
         from trader.execution.broker import Order, SimBroker
-        from trader.planning.trade_plan import TradePlanStore, create_trade_plan
         broker = SimBroker(state_dir / "broker.json", starting_cash=100_000)
         broker.submit(Order(symbol, "BUY", 10.0), 100.0, opened_at, dry_run=False)
-        TradePlanStore(state_dir / "trade_plans.json").upsert(
+        _seed_trade_plan(state_dir,
             create_trade_plan(
                 symbol=symbol,
                 side="LONG",
@@ -2709,17 +2734,15 @@ class TestExitChecks5mBars:
 
         # SPY : plan LONG, stop 95, barre 5m low=94.5 → déclenché, interval='5m'
         from trader.execution.broker import Order, SimBroker
-        from trader.planning.trade_plan import TradePlanStore, create_trade_plan
         broker = SimBroker(state_dir / "broker.json", starting_cash=100_000)
         broker.submit(Order("SPY", "BUY", 10.0), 100.0, opened_at, dry_run=False)
         broker.submit(Order("QQQ", "BUY", 5.0), 200.0, opened_at, dry_run=False)
-        store = TradePlanStore(state_dir / "trade_plans.json")
-        store.upsert(create_trade_plan(
+        _seed_trade_plan(state_dir, create_trade_plan(
             symbol="SPY", side="LONG", quantity=10.0, entry_price=100.0,
             opened_at=opened_at, raw_exit_plan={"hard_stop": 95.0},
         ))
         # QQQ : plan LONG, stop 180, fetch 5m échoue → fallback 15m, barre 15m low=178 → déclenché
-        store.upsert(create_trade_plan(
+        _seed_trade_plan(state_dir, create_trade_plan(
             symbol="QQQ", side="LONG", quantity=5.0, entry_price=200.0,
             opened_at=opened_at, raw_exit_plan={"hard_stop": 180.0},
         ))
@@ -2770,10 +2793,9 @@ class TestExitChecks5mValidation:
 
     def _setup_long_spy(self, state_dir, *, opened_at: str) -> None:
         from trader.execution.broker import Order, SimBroker
-        from trader.planning.trade_plan import TradePlanStore, create_trade_plan
         broker = SimBroker(state_dir / "broker.json", starting_cash=100_000)
         broker.submit(Order("SPY", "BUY", 10.0), 100.0, opened_at, dry_run=False)
-        TradePlanStore(state_dir / "trade_plans.json").upsert(
+        _seed_trade_plan(state_dir,
             create_trade_plan(
                 symbol="SPY", side="LONG", quantity=10.0, entry_price=100.0,
                 opened_at=opened_at, raw_exit_plan={"hard_stop": 95.0},
@@ -2864,10 +2886,9 @@ class TestExitChecks5mFreshness:
 
     def _setup_long_spy(self, state_dir, *, opened_at: str) -> None:
         from trader.execution.broker import Order, SimBroker
-        from trader.planning.trade_plan import TradePlanStore, create_trade_plan
         broker = SimBroker(state_dir / "broker.json", starting_cash=100_000)
         broker.submit(Order("SPY", "BUY", 10.0), 100.0, opened_at, dry_run=False)
-        TradePlanStore(state_dir / "trade_plans.json").upsert(
+        _seed_trade_plan(state_dir,
             create_trade_plan(
                 symbol="SPY", side="LONG", quantity=10.0, entry_price=100.0,
                 opened_at=opened_at, raw_exit_plan={"hard_stop": 95.0},
@@ -2933,10 +2954,9 @@ class TestExitChecks5mAggregation:
 
     def _setup_long_spy(self, state_dir, *, opened_at: str, stop: float = 95.0) -> None:
         from trader.execution.broker import Order, SimBroker
-        from trader.planning.trade_plan import TradePlanStore, create_trade_plan
         broker = SimBroker(state_dir / "broker.json", starting_cash=100_000)
         broker.submit(Order("SPY", "BUY", 10.0), 100.0, opened_at, dry_run=False)
-        TradePlanStore(state_dir / "trade_plans.json").upsert(
+        _seed_trade_plan(state_dir,
             create_trade_plan(
                 symbol="SPY", side="LONG", quantity=10.0, entry_price=100.0,
                 opened_at=opened_at, raw_exit_plan={"hard_stop": stop},
@@ -3033,10 +3053,9 @@ class TestExitChecks5mMinor:
 
     def _setup_long_spy(self, state_dir, *, opened_at: str, stop: float = 95.0) -> None:
         from trader.execution.broker import Order, SimBroker
-        from trader.planning.trade_plan import TradePlanStore, create_trade_plan
         broker = SimBroker(state_dir / "broker.json", starting_cash=100_000)
         broker.submit(Order("SPY", "BUY", 10.0), 100.0, opened_at, dry_run=False)
-        TradePlanStore(state_dir / "trade_plans.json").upsert(
+        _seed_trade_plan(state_dir,
             create_trade_plan(
                 symbol="SPY", side="LONG", quantity=10.0, entry_price=100.0,
                 opened_at=opened_at, raw_exit_plan={"hard_stop": stop},

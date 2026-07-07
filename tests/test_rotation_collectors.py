@@ -109,16 +109,40 @@ class TestBuildPlansFn:
         fn = build_plans_fn(tmp_path)
         assert callable(fn)
 
-    def test_lit_le_fichier_ecrit_par_le_daemon(self, tmp_path: Path):
-        """build_plans_fn doit lire le MÊME fichier que le daemon écrit
-        (trade_plans.json, daemon.py). Sinon la branche plans du sticky est morte
-        et un trade plan ne devient jamais sticky (régression D10)."""
+    def test_ignore_le_shadow_json_si_casys_db_absent(self, tmp_path: Path):
+        """Le collecteur prod lit casys.db ; sans DB, le shadow JSON ne fait pas foi."""
         from trader.market.rotation.collectors import build_plans_fn
-        from trader.planning.trade_plan import TradePlanStore, create_trade_plan
+        from trader.planning.trade_plan import create_trade_plan
 
-        # Le daemon écrit STATE_DIR / "trade_plans.json".
-        store = TradePlanStore(tmp_path / "trade_plans.json")
-        store.upsert(
+        (tmp_path / "trade_plans.json").write_text(
+            '{"plans": ['
+            + create_trade_plan(
+                symbol="SPY",
+                side="LONG",
+                quantity=10.0,
+                entry_price=100.0,
+                opened_at="2026-06-05T12:00:00+00:00",
+                raw_exit_plan={"hard_stop": 95.0},
+            ).model_dump_json()
+            + "]}",
+            encoding="utf-8",
+        )
+
+        plans = build_plans_fn(tmp_path)()
+
+        assert plans == []
+
+    def test_lit_les_plans_depuis_sqlite_si_casys_db_existe(self, tmp_path: Path):
+        """En prod SQLite, le collecteur sticky lit casys.db sans dépendre du shadow JSON."""
+        from trader.infrastructure.state_db.connection import open_state_db
+        from trader.planning.trade_plan import create_trade_plan
+        from trader.state_db.migrations import import_trade_plans_from_json
+        from trader.state_db.trade_plan_store import SqliteTradePlanStore
+        from trader.market.rotation.collectors import build_plans_fn
+
+        db = open_state_db(tmp_path / "casys.db")
+        import_trade_plans_from_json(db, tmp_path / "_absent_trade_plans.json")
+        SqliteTradePlanStore(db).upsert(
             create_trade_plan(
                 symbol="SPY",
                 side="LONG",

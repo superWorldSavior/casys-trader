@@ -4,8 +4,8 @@ import json
 from dataclasses import asdict, is_dataclass
 from typing import Any
 
+from trader.domain.trade_plan import TradePlan
 from trader.execution.contracts import Commission, Fill, Order, Position
-from trader.planning.trade_plan import trade_plan_from_dict
 
 
 def _domain_dump(value: Any) -> dict:
@@ -141,7 +141,7 @@ POSITION_JSON = {
 
 
 def test_trade_plan_round_trip_serializes_byte_exact() -> None:
-    plan = trade_plan_from_dict(TRADE_PLAN_JSON)
+    plan = TradePlan.model_validate(TRADE_PLAN_JSON)
 
     serialized = _domain_dump(plan)
 

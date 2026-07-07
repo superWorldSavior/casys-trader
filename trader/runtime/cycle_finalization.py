@@ -23,21 +23,6 @@ class MacroCollector(Protocol):
     def __call__(self, state_dir: Path, now: datetime) -> Mapping[str, object]: ...
 
 
-class ShadowProbe(Protocol):
-    def run(
-        self,
-        *,
-        cycle_ts: str,
-        decidable_symbols: list[str],
-        decided_symbols: list[str],
-        now_ms: int,
-    ) -> Mapping[str, object]: ...
-
-
-class ShadowProbeFactory(Protocol):
-    def __call__(self, db_path: Path) -> ShadowProbe: ...
-
-
 class StateComparator(Protocol):
     def __call__(self, state_dir: Path) -> Mapping[str, object]: ...
 
@@ -63,12 +48,6 @@ class LearningConsolidationRequest:
 
 def _default_logger() -> logging.Logger:
     return logging.getLogger("casys-trader")
-
-
-def default_shadow_probe_factory(db_path: Path) -> ShadowProbe:
-    from trader.infrastructure.queue.shadow import ShadowQueueProbe
-
-    return ShadowQueueProbe(db_path)
 
 
 def default_state_comparator(state_dir: Path) -> Mapping[str, object]:
@@ -138,44 +117,6 @@ def remember_gross_rejections(
     return summary
 
 
-def run_shadow_queue_probe(
-    *,
-    state_dir: Path,
-    now: datetime,
-    decidable_symbols: Sequence[str],
-    decided_symbols: Sequence[str],
-    enabled: bool,
-    shadow_probe_factory: ShadowProbeFactory | None = None,
-    logger: LoggerLike | None = None,
-) -> dict | None:
-    if not enabled:
-        return None
-
-    log = logger or _default_logger()
-    factory = shadow_probe_factory or default_shadow_probe_factory
-    try:
-        probe = factory(state_dir / "shadow_queue.db")
-        result = dict(
-            probe.run(
-                cycle_ts=now.isoformat(),
-                decidable_symbols=list(decidable_symbols),
-                decided_symbols=list(decided_symbols),
-                now_ms=int(now.timestamp() * 1000),
-            )
-        )
-        log.info(
-            "[shadow-queue] rapport cycle=%s identical=%s missing=%s decided_vs_decidable=%s",
-            now.isoformat(),
-            result.get("identical"),
-            result.get("missing") or "[]",
-            result.get("decided_vs_decidable"),
-        )
-        return result
-    except Exception as exc:  # noqa: BLE001 - observation only
-        log.warning("[shadow-queue] échec sonde: %s", exc)
-        return None
-
-
 def compare_state_backend(
     *,
     state_dir: Path,
@@ -228,12 +169,10 @@ def finalize_cycle(
     gross_rejection_cache: MutableMapping[str, dict | None],
     summarize_gross_rejections: GrossRejectionSummarizer,
     collect_macro: MacroCollector,
-    shadow_queue_enabled: bool,
     state_backend: str,
     write_current_report: ReportWriter,
     append_event: EventAppender,
     logger: LoggerLike | None = None,
-    shadow_probe_factory: ShadowProbeFactory | None = None,
     compare_backends: StateComparator | None = None,
 ) -> None:
     log = logger or _default_logger()
@@ -251,15 +190,6 @@ def finalize_cycle(
         decisions=report["decisions"],
         gross_rejection_cache=gross_rejection_cache,
         summarize_gross_rejections=summarize_gross_rejections,
-    )
-    run_shadow_queue_probe(
-        state_dir=state_dir,
-        now=now,
-        decidable_symbols=decidable_symbols,
-        decided_symbols=decided_symbols,
-        enabled=shadow_queue_enabled,
-        shadow_probe_factory=shadow_probe_factory,
-        logger=log,
     )
     compare_state_backend(
         state_dir=state_dir,

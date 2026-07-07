@@ -3,10 +3,8 @@
 from __future__ import annotations
 
 import copy
-import json
 import math
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Literal
 
 from .indicator_watch import normalize_indicator_watch
@@ -792,16 +790,6 @@ def create_trade_plan_from_order(
     )
 
 
-def _take_profit_from_dict(raw: dict) -> TakeProfit:
-    return TakeProfit(
-        name=str(raw["name"]),
-        price=float(raw["price"]),
-        fraction=float(raw["fraction"]),
-        quantity=float(raw["quantity"]),
-        after_fill=str(raw.get("after_fill", "")),
-    )
-
-
 def _trailing_from_dict(raw: dict | None) -> TrailingStop | None:
     if raw is None:
         return None
@@ -876,56 +864,6 @@ def _normalize_exit_watch(
     if raw.get("last_triggered_at"):
         watch["last_triggered_at"] = str(raw["last_triggered_at"])
     return watch
-
-
-def trade_plan_from_dict(raw: dict) -> TradePlan:
-    trailing_stop = _trailing_from_dict(raw.get("trailing_stop"))
-    profit_protection = _profit_protection_from_raw(raw.get("profit_protection"))
-    raw_reference_volatility = raw.get("reference_volatility")
-    reference_volatility = (
-        None if raw_reference_volatility is None else float(raw_reference_volatility)
-    )
-    if reference_volatility is not None and not math.isfinite(reference_volatility):
-        reference_volatility = None
-    return TradePlan(
-        id=str(raw["id"]),
-        symbol=str(raw["symbol"]),
-        side=raw["side"],
-        quantity=float(raw["quantity"]),
-        remaining_quantity=float(raw["remaining_quantity"]),
-        entry_price=float(raw["entry_price"]),
-        opened_at=str(raw["opened_at"]),
-        reference_volatility=reference_volatility,
-        hard_stop_price=None if raw.get("hard_stop_price") is None else float(raw["hard_stop_price"]),
-        take_profits=[_take_profit_from_dict(tp) for tp in raw.get("take_profits", [])],
-        trailing_stop=trailing_stop,
-        max_hold_minutes=None if raw.get("max_hold_minutes") is None else float(raw["max_hold_minutes"]),
-        high_watermark=None if raw.get("high_watermark") is None else float(raw["high_watermark"]),
-        low_watermark=None if raw.get("low_watermark") is None else float(raw["low_watermark"]),
-        filled_take_profits=[str(name) for name in raw.get("filled_take_profits", [])],
-        profit_protection=profit_protection,
-        exit_watch=(dict(raw["exit_watch"]) if isinstance(raw.get("exit_watch"), dict) else None),
-        llm_provider=None if raw.get("llm_provider") is None else str(raw["llm_provider"]),
-        llm_model=None if raw.get("llm_model") is None else str(raw["llm_model"]),
-        llm_fallback_reason=(
-            None
-            if raw.get("llm_fallback_reason") is None
-            else str(raw["llm_fallback_reason"])
-        ),
-        llm_confidence=None if raw.get("llm_confidence") is None else float(raw["llm_confidence"]),
-        last_llm_review=(
-            dict(raw["last_llm_review"])
-            if isinstance(raw.get("last_llm_review"), dict)
-            else None
-        ),
-        entry_thesis=None if raw.get("entry_thesis") is None else str(raw["entry_thesis"]),
-        entry_decision_id=(
-            None if raw.get("entry_decision_id") is None else str(raw["entry_decision_id"])
-        ),
-        entry_context=(
-            dict(raw["entry_context"]) if isinstance(raw.get("entry_context"), dict) else None
-        ),
-    )
 
 
 def apply_exit_update(
@@ -1015,83 +953,3 @@ def apply_exit_update(
 
     return plan.model_copy(update=patches)
 
-
-class TradePlanStore:
-    def __init__(self, state_path: str | Path):
-        self.state_path = Path(state_path)
-
-    def _load(self) -> dict:
-        if not self.state_path.exists():
-            return {"plans": []}
-        return json.loads(self.state_path.read_text())
-
-    def _save(self, data: dict) -> None:
-        self.state_path.parent.mkdir(parents=True, exist_ok=True)
-        self.state_path.write_text(json.dumps(data, indent=2, ensure_ascii=False))
-
-    def clear(self) -> None:
-        self._save({"plans": []})
-
-    def open_plans(self) -> list[TradePlan]:
-        return [trade_plan_from_dict(raw) for raw in self._load().get("plans", [])]
-
-    def upsert(self, plan: TradePlan) -> None:
-        data = self._load()
-        plans = [raw for raw in data.get("plans", []) if raw.get("id") != plan.id]
-        plans.append(plan.model_dump())
-        self._save({"plans": plans})
-
-    def close(self, plan_id: str) -> None:
-        data = self._load()
-        plans = [raw for raw in data.get("plans", []) if raw.get("id") != plan_id]
-        self._save({"plans": plans})
-
-    def close_symbol(self, symbol: str) -> None:
-        data = self._load()
-        plans = [raw for raw in data.get("plans", []) if raw.get("symbol") != symbol]
-        self._save({"plans": plans})
-
-    def sync_symbol_quantity(self, symbol: str, remaining_quantity: float) -> None:
-        if remaining_quantity <= 0:
-            self.close_symbol(symbol)
-            return
-
-        data = self._load()
-        raw_plans = list(data.get("plans", []))
-        symbol_plans = [
-            trade_plan_from_dict(raw)
-            for raw in raw_plans
-            if raw.get("symbol") == symbol
-        ]
-        total_remaining = sum(plan.remaining_quantity for plan in symbol_plans)
-        if total_remaining <= 0:
-            self.close_symbol(symbol)
-            return
-
-        ratio = remaining_quantity / total_remaining
-        updated: list[dict] = []
-        for raw in raw_plans:
-            if raw.get("symbol") != symbol:
-                updated.append(raw)
-                continue
-
-            plan = trade_plan_from_dict(raw)
-            new_remaining = round(plan.remaining_quantity * ratio, 8)
-            if new_remaining <= 0:
-                continue
-            take_profits = [
-                tp
-                if tp.name in plan.filled_take_profits
-                else tp.model_copy(update={"quantity": round(tp.quantity * ratio, 8)})
-                for tp in plan.take_profits
-            ]
-            updated.append(
-                plan.model_copy(
-                    update={
-                        "remaining_quantity": new_remaining,
-                        "take_profits": take_profits,
-                    }
-                ).model_dump()
-            )
-
-        self._save({"plans": updated})

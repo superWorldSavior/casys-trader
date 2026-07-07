@@ -10,7 +10,7 @@ Couverture :
         - État identique (JSON shadow ↔ SQLite) → identical=True, exit 0
         - Divergence cash broker (JSON modifié post-import) → identical=False
         - Divergence scheduler.symbols : même symbole, heure différente → identical=False
-        - Divergence trade_plans : ordre différent → identical=False
+        - trade_plans : clé compat stable, pas de lecture/comparaison du shadow JSON
         - Divergence watches : expires_at différent côté JSON → identical=False
         - Divergence scheduler.symbols_with_wake (symbole absent côté SQLite) → identical=False
         - CLI exit code : 0 si identical, 1 sinon
@@ -166,7 +166,7 @@ def test_compare_identical_states(tmp_path: Path) -> None:
     assert result["broker"]["cash"]["identical"] is True
     assert result["broker"]["positions_diff"] == []
     assert result["broker"]["fills_diff"] == {}
-    assert result["trade_plans"]["diff"] == []
+    assert result["trade_plans"] == {"identical": True}
     assert result["scheduler"]["wakes_diff"] == []
     assert result["scheduler"]["watches_diff"] == []
     assert result["scheduler"]["stale_diff"] == []
@@ -202,7 +202,7 @@ def test_compare_divergent_broker_cash(tmp_path: Path) -> None:
     assert abs(result["broker"]["cash"]["sqlite"] - 50_000.0) < 1e-6
 
     # Aucune divergence sur plans ou scheduler (non modifiés)
-    assert result["trade_plans"]["diff"] == []
+    assert result["trade_plans"] == {"identical": True}
     assert result["scheduler"]["wakes_diff"] == []
 
 
@@ -255,36 +255,30 @@ def test_compare_wake_time_divergence(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# FIX 2 — Divergence trade_plans : ordre différent (faux négatif corrigé)
+# FIX 2 — trade_plans : compat key seulement, plus de comparaison JSON
 # ---------------------------------------------------------------------------
 
 
-def test_compare_plan_order_divergence(tmp_path: Path) -> None:
-    """Mêmes plans mais dans un ordre différent → identical=False.
-
-    Faux négatif de l'ancienne version (comparait par id, ignorait l'ordre/seq).
-    La nouvelle version compare la liste ordonnée position par position.
-    """
+def test_compare_ignore_plan_shadow_divergence(tmp_path: Path) -> None:
+    """Le shadow trade_plans.json n'est plus comparé : SQLite est la vérité."""
     _bootstrap(tmp_path, cash=50_000.0)
 
     db_path = tmp_path / "casys.db"
     db = open_state_db(db_path)
 
+    from trader.domain.trade_plan import TradePlan
     from trader.state_db.trade_plan_store import SqliteTradePlanStore
-    from trader.planning.trade_plan import trade_plan_from_dict
 
-    plans_store = SqliteTradePlanStore(db, json_path=tmp_path / "trade_plans.json")
-    plan_a = trade_plan_from_dict(_minimal_plan_dict("plan-A", "AAPL.US"))
-    plan_b = trade_plan_from_dict(_minimal_plan_dict("plan-B", "BN.PA"))
+    plans_store = SqliteTradePlanStore(db)
+    plan_a = TradePlan.model_validate(_minimal_plan_dict("plan-A", "AAPL.US"))
+    plan_b = TradePlan.model_validate(_minimal_plan_dict("plan-B", "BN.PA"))
     plans_store.upsert(plan_a)  # seq=1
     plans_store.upsert(plan_b)  # seq=2
-    # SQLite : A, B ; shadow JSON : A, B
-
-    # Inverser l'ordre dans trade_plans.json
+    # SQLite : A, B ; shadow JSON stale : B, A
     plans_path = tmp_path / "trade_plans.json"
-    plans_data = json.loads(plans_path.read_text())
-    plans_data["plans"] = list(reversed(plans_data["plans"]))  # B, A
-    plans_path.write_text(json.dumps(plans_data))
+    plans_path.write_text(
+        json.dumps({"plans": [_minimal_plan_dict("plan-B", "BN.PA"), _minimal_plan_dict("plan-A", "AAPL.US")]})
+    )
 
     try:
         result = compare_backends(tmp_path)
@@ -292,15 +286,23 @@ def test_compare_plan_order_divergence(tmp_path: Path) -> None:
         close_all_state_dbs()
         _clear_registry_for([db_path])
 
-    assert result["identical"] is False, (
-        "Ordre différent des plans → identical doit être False"
-    )
-    assert result["trade_plans"]["diff"], "trade_plans.diff doit être non vide"
-    # Position 0 doit différer (JSON:B vs SQLite:A)
-    first_diff = result["trade_plans"]["diff"][0]
-    assert first_diff["position"] == 0
-    assert first_diff["json"]["symbol"] == "BN.PA"
-    assert first_diff["sqlite"]["symbol"] == "AAPL.US"
+    assert result["identical"] is True
+    assert result["trade_plans"] == {"identical": True}
+
+
+def test_compare_does_not_require_trade_plans_json(tmp_path: Path) -> None:
+    """compare lit encore broker/scheduler JSON, mais plus trade_plans.json."""
+    _bootstrap(tmp_path, cash=50_000.0)
+    (tmp_path / "trade_plans.json").unlink(missing_ok=True)
+
+    try:
+        result = compare_backends(tmp_path)
+    finally:
+        close_all_state_dbs()
+        _clear_registry_for([tmp_path / "casys.db"])
+
+    assert result["identical"] is True
+    assert result["trade_plans"] == {"identical": True}
 
 
 # ---------------------------------------------------------------------------
@@ -534,8 +536,7 @@ def test_compare_result_structure(tmp_path: Path) -> None:
 
     # Structure trade_plans
     assert "trade_plans" in result
-    assert "diff" in result["trade_plans"]
-    assert isinstance(result["trade_plans"]["diff"], list)
+    assert result["trade_plans"] == {"identical": True}
 
     # Structure scheduler
     assert "scheduler" in result

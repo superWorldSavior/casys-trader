@@ -23,7 +23,7 @@ if TYPE_CHECKING:
     from trader.infrastructure.state_db.trade_plan_store import SqliteTradePlanStore
     from trader.infrastructure.queue.ledger import TaskLedger
     from trader.execution.contracts import Fill, Order
-    from trader.planning.trade_plan import TradePlan
+    from trader.domain.trade_plan import TradePlan
 
 log = logging.getLogger(__name__)
 
@@ -171,14 +171,10 @@ def execute_order_unit(
         fill,
     )
 
-    # Shadows best-effort hors transaction (après COMMIT réussi)
+    # Shadow broker best-effort hors transaction (après COMMIT réussi).
     try:
         broker.regenerate_shadow()
     except Exception as exc:
         log.warning("[unit_of_work] broker shadow échec: %s", exc)
-    try:
-        plan_store.regenerate_shadow()
-    except Exception as exc:
-        log.warning("[unit_of_work] plan_store shadow échec: %s", exc)
 
     return fill

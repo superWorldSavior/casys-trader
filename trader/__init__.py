@@ -137,7 +137,6 @@ _COMPAT_PACKAGES = {
         "decide_pool": "trader.infrastructure.queue.decide_pool",
         "ledger": "trader.infrastructure.queue.ledger",
         "pools": "trader.infrastructure.queue.pools",
-        "shadow": "trader.infrastructure.queue.shadow",
         "worker": "trader.infrastructure.queue.worker",
     },
     "read_models": {

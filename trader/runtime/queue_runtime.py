@@ -276,7 +276,7 @@ def start_execute_queue(
 
     db = open_state_db(state_dir / "casys.db")
     broker = sqlite_broker_cls(db, commission_model=commission_model, json_path=state_dir / "broker.json")
-    plan_store = sqlite_plan_store_cls(db, json_path=state_dir / "trade_plans.json")
+    plan_store = sqlite_plan_store_cls(db)
     ledger = task_ledger_cls(db)
     ledger.recover_on_boot(now_ms=now_ms_fn())
     pool = decide_pool_cls(

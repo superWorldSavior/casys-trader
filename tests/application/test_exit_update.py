@@ -4,7 +4,8 @@ import pytest
 
 from trader.application.exit import exit_update as exit_update_service
 from trader.application.exit.exit_update import apply_exit_update_to_open_plan
-from trader.planning.trade_plan import TradePlan, TradePlanStore, create_trade_plan
+from trader.planning.trade_plan import TradePlan, create_trade_plan
+from tests.plan_store_fakes import MemoryTradePlanStore
 
 
 def _plan(
@@ -23,14 +24,14 @@ def _plan(
     )
 
 
-def _store_with_plan(tmp_path, plan: TradePlan) -> TradePlanStore:
-    store = TradePlanStore(tmp_path / "trade_plans.json")
+def _store_with_plan(tmp_path, plan: TradePlan) -> MemoryTradePlanStore:
+    store = MemoryTradePlanStore()
     store.upsert(plan)
     return store
 
 
 def _validate_without_store_write(
-    store: TradePlanStore,
+    store: MemoryTradePlanStore,
     *,
     symbol: str,
     exit_update: dict,

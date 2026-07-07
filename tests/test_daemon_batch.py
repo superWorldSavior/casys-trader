@@ -17,6 +17,8 @@ from trader.agent.protocol.parsing import parse_batch
 from trader.planning.indicator_watch import summarize_watch
 from trader.market.market_data import Bar
 from trader.planning.scheduler import Scheduler
+from trader.planning.trade_plan import create_trade_plan
+from tests.plan_store_fakes import MemoryTradePlanStore
 
 _COMMON = dict(
     mandate="",
@@ -592,10 +594,8 @@ def test_execute_one_cycle_decision_records_hold_without_mutating_state() -> Non
 def test_execute_one_cycle_decision_uses_current_price_for_protective_structural_exit_update(
     tmp_path,
 ) -> None:
-    from trader.planning.trade_plan import TradePlanStore, create_trade_plan
-
     records: list[dict] = []
-    store = TradePlanStore(tmp_path / "plans.json")
+    store = MemoryTradePlanStore()
     store.upsert(
         create_trade_plan(
             symbol="INGA.AS",
@@ -928,9 +928,8 @@ def test_batch_decide_reinjecte_last_llm_review_dans_les_deux_batches(monkeypatc
 def test_last_review_by_symbol_filtre_plans_sans_review_et_hors_perimetre(tmp_path) -> None:
     # Mapping symbole -> dernier verdict LLM, restreint aux plans ouverts du batch
     # courant qui PORTENT une review (narrow contract : on ne passe pas le store entier).
-    from trader.planning.trade_plan import TradePlanStore, create_trade_plan
 
-    store = TradePlanStore(tmp_path / "plans.json")
+    store = MemoryTradePlanStore()
 
     def _plan(sym: str, review: dict | None = None):
         plan = create_trade_plan(

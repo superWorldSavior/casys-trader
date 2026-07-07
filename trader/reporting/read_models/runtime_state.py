@@ -137,10 +137,23 @@ def _load_learnings_safe(state_dir: Path, *, limit: int = 5) -> list[dict]:
 
 
 def _load_trade_plans_safe(plans_path: Path) -> list[dict]:
-    """Lit state/trade_plans.json, retourne la liste des plans ouverts.
+    """Lit les plans ouverts depuis SQLite, avec fallback JSON de tests.
 
-    Tolérant : retourne [] si fichier absent, corrompu ou sans clé 'plans'.
+    ``casys.db`` est la vérité si présent. Si la base est absente, conserve la
+    lecture du shadow ``trade_plans.json`` pour les fixtures et vieux états.
     """
+    state_dir = plans_path.parent
+    db_path = state_dir / "casys.db"
+    if db_path.exists():
+        try:
+            from trader.infrastructure.state_db.connection import open_state_db
+            from trader.infrastructure.state_db.trade_plan_store import SqliteTradePlanStore
+
+            db = open_state_db(db_path)
+            return [p.model_dump() for p in SqliteTradePlanStore(db).open_plans()]
+        except Exception:
+            return []
+
     try:
         raw = json.loads(plans_path.read_text(encoding="utf-8"))
         if not isinstance(raw, dict):

@@ -137,9 +137,9 @@ class TestImportTradePlansFromJson:
         plan = row_to_plan(rows[0])
 
         # Le round-trip doit être exact via model_dump
-        from trader.planning.trade_plan import trade_plan_from_dict
+        from trader.domain.trade_plan import TradePlan
 
-        original = trade_plan_from_dict(rich)
+        original = TradePlan.model_validate(rich)
         assert plan.model_dump() == original.model_dump()
 
     def test_import_seq_preserves_order(self, db: StateDb, tmp_path: Path) -> None:

@@ -1,28 +1,23 @@
-"""Tests TDD — SqliteTradePlanStore (parité JSON ↔ SQLite, shadow, factory).
+"""Tests TDD — SqliteTradePlanStore (mapping SQLite, factory, mutations).
 
 Couvre :
 - Round-trip d'un plan riche (tous les sous-objets, dump identique).
-- Parité SqliteTradePlanStore ↔ TradePlanStore sur une séquence complète :
-  upsert ×3, close, close_symbol, sync partiel, sync→0.
-  open_plans() identiques après chaque op (ordre inclus).
+- Séquence complète : upsert ×3, close, close_symbol, sync partiel, sync→0.
+- open_plans() stable après chaque op (ordre inclus).
 - sync_symbol_quantity : rescale TP non remplis, conserve remplis,
   remaining→0 ferme le symbole, en UNE transaction.
-- Shadow trade_plans.json = miroir exact après chaque mutation.
-- make_trade_plan_store : json/sqlite/bogus.
+- make_trade_plan_store : json fast-fail/sqlite/bogus.
 """
 from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Union
-
 import pytest
 
 from trader.planning.trade_plan import (
     ProfitProtection,
     TakeProfit,
     TradePlan,
-    TradePlanStore,
     TrailingStop,
 )
 from trader.state_db.connection import StateDb
@@ -32,8 +27,6 @@ from trader.state_db.trade_plan_store import (
     plan_to_columns,
     row_to_plan,
 )
-
-AnyStore = Union[TradePlanStore, SqliteTradePlanStore]
 
 # ---------------------------------------------------------------------------
 # Fixtures helpers
@@ -131,12 +124,7 @@ def db(tmp_path: Path) -> StateDb:
 @pytest.fixture()
 def sqlite_store(db: StateDb, tmp_path: Path) -> SqliteTradePlanStore:
     import_trade_plans_from_json(db, tmp_path / "trade_plans.json")  # absent → vide
-    return SqliteTradePlanStore(db, json_path=tmp_path / "trade_plans.json")
-
-
-@pytest.fixture()
-def json_store(tmp_path: Path) -> TradePlanStore:
-    return TradePlanStore(tmp_path / "plans_json.json")
+    return SqliteTradePlanStore(db)
 
 
 # ---------------------------------------------------------------------------
@@ -361,14 +349,12 @@ class TestSyncSymbolQuantity:
 
 
 # ---------------------------------------------------------------------------
-# Parité JSON ↔ SQLite (séquence complète)
+# Opérations SQLite (séquence complète)
 # ---------------------------------------------------------------------------
 
 
-class TestPariteJsonSqlite:
-    """Même séquence d'opérations sur les 2 backends → open_plans() identiques."""
-
-    def _run_sequence(self, store: AnyStore) -> list[list[dict]]:
+class TestSqliteSequence:
+    def _run_sequence(self, store: SqliteTradePlanStore) -> list[list[dict]]:
         """Exécute la séquence et retourne les snapshots open_plans après chaque op."""
         snapshots: list[list[dict]] = []
 
@@ -415,24 +401,25 @@ class TestPariteJsonSqlite:
 
         return snapshots
 
-    def test_parite_json_sqlite(
+    def test_sequence_complete(
         self,
-        json_store: TradePlanStore,
         sqlite_store: SqliteTradePlanStore,
     ) -> None:
-        json_snaps = self._run_sequence(json_store)
         sqlite_snaps = self._run_sequence(sqlite_store)
 
-        assert len(json_snaps) == len(sqlite_snaps)
-        for i, (js, ss) in enumerate(zip(json_snaps, sqlite_snaps)):
-            assert js == ss, f"Snapshot {i} diffère :\n  JSON:   {js}\n  SQLite: {ss}"
+        assert sqlite_snaps[-1] == []
+        assert [snap[0]["id"] for snap in sqlite_snaps[:4]] == [
+            "AAPL-1",
+            "AAPL-1",
+            "AAPL-1",
+            "MSFT-1",
+        ]
 
-    def test_parite_with_take_profits(
+    def test_sync_with_take_profits(
         self,
-        json_store: TradePlanStore,
         sqlite_store: SqliteTradePlanStore,
     ) -> None:
-        """Parité sur sync avec TP remplis et non remplis."""
+        """sync avec TP remplis et non remplis."""
         plan = _plan(
             "AAPL-1",
             "AAPL",
@@ -445,110 +432,43 @@ class TestPariteJsonSqlite:
             filled_take_profits=["tp1"],
         )
 
-        for store in (json_store, sqlite_store):
-            store.upsert(plan)
-            store.sync_symbol_quantity("AAPL", 5.0)
+        sqlite_store.upsert(plan)
+        sqlite_store.sync_symbol_quantity("AAPL", 5.0)
 
-        json_plans = [_dump(p) for p in json_store.open_plans()]
         sqlite_plans = [_dump(p) for p in sqlite_store.open_plans()]
-        assert json_plans == sqlite_plans
+        assert sqlite_plans[0]["remaining_quantity"] == pytest.approx(5.0)
+        assert sqlite_plans[0]["take_profits"][0]["quantity"] == pytest.approx(3.0)
+        assert sqlite_plans[0]["take_profits"][1]["quantity"] == pytest.approx(3.5)
 
 
 # ---------------------------------------------------------------------------
-# Shadow
+# Shadow supprimé
 # ---------------------------------------------------------------------------
 
 
-class TestShadow:
-    def test_shadow_written_after_upsert(
-        self, sqlite_store: SqliteTradePlanStore, tmp_path: Path
-    ) -> None:
-        plan = _plan("P1", "AAPL")
-        sqlite_store.upsert(plan)
-
-        shadow_path = tmp_path / "trade_plans.json"
-        assert shadow_path.exists(), "Shadow doit exister après upsert"
-        data = json.loads(shadow_path.read_text())
-        assert len(data["plans"]) == 1
-        assert data["plans"][0]["id"] == "P1"
-
-    def test_shadow_mirrors_open_plans(
-        self, sqlite_store: SqliteTradePlanStore, tmp_path: Path
-    ) -> None:
-        """Shadow JSON == model_dump de open_plans()."""
-        sqlite_store.upsert(_rich_plan("P1"))
-        sqlite_store.upsert(_plan("P2", "MSFT"))
-
-        shadow_path = tmp_path / "trade_plans.json"
-        data = json.loads(shadow_path.read_text())
-        expected = [_dump(p) for p in sqlite_store.open_plans()]
-        assert data["plans"] == expected
-
-    def test_shadow_updated_after_close(
-        self, sqlite_store: SqliteTradePlanStore, tmp_path: Path
-    ) -> None:
-        sqlite_store.upsert(_plan("P1", "AAPL"))
-        sqlite_store.upsert(_plan("P2", "MSFT"))
-        sqlite_store.close("P1")
-
-        shadow_path = tmp_path / "trade_plans.json"
-        data = json.loads(shadow_path.read_text())
-        assert len(data["plans"]) == 1
-        assert data["plans"][0]["id"] == "P2"
-
-    def test_regenerate_shadow_creates_file(self, db: StateDb, tmp_path: Path) -> None:
-        """regenerate_shadow() peut créer le shadow depuis SQLite si absent."""
-        import_trade_plans_from_json(db, tmp_path / "tp_absent.json")
-        store = SqliteTradePlanStore(db, json_path=tmp_path / "trade_plans_regen.json")
-        store.upsert(_plan("P1", "AAPL"))
-
-        # Supprimer manuellement le shadow
-        shadow_path = tmp_path / "trade_plans_regen.json"
-        shadow_path.unlink()
-
-        store.regenerate_shadow()
-        assert shadow_path.exists()
-        data = json.loads(shadow_path.read_text())
-        assert len(data["plans"]) == 1
-
-    def test_no_shadow_if_json_path_none(self, db: StateDb, tmp_path: Path) -> None:
-        """Sans json_path, aucun fichier JSON shadow écrit (no-op silencieux)."""
+class TestNoShadow:
+    def test_constructor_rejects_json_path(self, db: StateDb, tmp_path: Path) -> None:
         import_trade_plans_from_json(db, tmp_path / "absent.json")
-        store = SqliteTradePlanStore(db, json_path=None)
-        store.upsert(_plan("P1", "AAPL"))
-        json_files = [f for f in tmp_path.iterdir() if f.suffix == ".json"]
-        assert json_files == [], f"Aucun fichier JSON ne doit être créé, trouvé: {json_files}"
 
-    def test_shadow_after_close_symbol(
+        with pytest.raises(TypeError):
+            SqliteTradePlanStore(db, json_path=tmp_path / "trade_plans.json")  # type: ignore[call-arg]
+
+    def test_regenerate_shadow_api_removed(self) -> None:
+        assert not hasattr(SqliteTradePlanStore, "regenerate_shadow")
+
+    def test_no_shadow_written_after_mutations(
         self, sqlite_store: SqliteTradePlanStore, tmp_path: Path
     ) -> None:
-        """Shadow est miroir exact après close_symbol."""
-        sqlite_store.upsert(_plan("AAPL-1", "AAPL"))
+        shadow_path = tmp_path / "trade_plans.json"
+
+        sqlite_store.upsert(_plan("AAPL-1", "AAPL", quantity=10.0, remaining_quantity=10.0))
         sqlite_store.upsert(_plan("AAPL-2", "AAPL"))
-        sqlite_store.upsert(_plan("MSFT-1", "MSFT"))
-        sqlite_store.close_symbol("AAPL")
-
-        shadow_path = tmp_path / "trade_plans.json"
-        data = json.loads(shadow_path.read_text())
-        assert len(data["plans"]) == 1
-        assert data["plans"][0]["id"] == "MSFT-1"
-        expected = [_dump(p) for p in sqlite_store.open_plans()]
-        assert data["plans"] == expected
-
-    def test_shadow_after_sync_symbol_quantity(
-        self, sqlite_store: SqliteTradePlanStore, tmp_path: Path
-    ) -> None:
-        """Shadow est miroir exact après sync_symbol_quantity (rescale partiel)."""
-        plan = _plan("AAPL-1", "AAPL", quantity=10.0, remaining_quantity=10.0)
-        sqlite_store.upsert(plan)
         sqlite_store.sync_symbol_quantity("AAPL", 6.0)
+        sqlite_store.close("AAPL-2")
+        sqlite_store.close_symbol("AAPL")
+        sqlite_store.clear()
 
-        shadow_path = tmp_path / "trade_plans.json"
-        data = json.loads(shadow_path.read_text())
-        assert len(data["plans"]) == 1
-        assert data["plans"][0]["remaining_quantity"] == pytest.approx(6.0)
-        expected = [_dump(p) for p in sqlite_store.open_plans()]
-        assert data["plans"] == expected
+        assert not shadow_path.exists()
 
 
 # ---------------------------------------------------------------------------
@@ -557,20 +477,17 @@ class TestShadow:
 
 
 class TestNonFiniteParity:
-    """Non-finis scalaires (NaN/Inf) → None après round-trip : parité JSON ↔ SQLite.
+    """Non-finis scalaires (NaN/Inf) → None après round-trip SQLite.
 
     SQLite : float('nan') en colonne REAL → NULL → None (sqlite3 adapter).
-    JSON   : json.dumps sérialise NaN/Inf (allow_nan=True par défaut) →
-             trade_plan_from_dict normalise les non-finis → None.
-    C'est une parité fonctionnelle, pas un round-trip byte-exact.
+    C'est une normalisation fonctionnelle, pas un round-trip byte-exact.
     """
 
     def test_non_finite_scalars_parity(
         self,
-        json_store: TradePlanStore,
         sqlite_store: SqliteTradePlanStore,
     ) -> None:
-        """reference_volatility=NaN et trailing_stop.trail_value=Inf → None dans les deux backends."""
+        """reference_volatility=NaN et trailing_stop.trail_value=Inf → None."""
 
         plan = TradePlan(
             id="NAN-1",
@@ -605,23 +522,14 @@ class TestNonFiniteParity:
             entry_context=None,
         )
 
-        json_store.upsert(plan)
         sqlite_store.upsert(plan)
 
-        json_plans = json_store.open_plans()
         sqlite_plans = sqlite_store.open_plans()
 
-        assert len(json_plans) == 1
         assert len(sqlite_plans) == 1
 
-        # Les deux backends normalisent les non-finis → None
-        assert json_plans[0].reference_volatility is None, "JSON: NaN doit devenir None"
         assert sqlite_plans[0].reference_volatility is None, "SQLite: NaN doit devenir None"
-        assert json_plans[0].trailing_stop is None, "JSON: trail_value=Inf → trailing_stop None"
         assert sqlite_plans[0].trailing_stop is None, "SQLite: trail_value=Inf → trailing_stop None"
-
-        # Parité exacte entre les deux backends
-        assert _dump(json_plans[0]) == _dump(sqlite_plans[0])
 
 
 # ---------------------------------------------------------------------------
@@ -668,11 +576,11 @@ class TestRollback:
 
 
 class TestMakeTradePlanStore:
-    def test_json_backend_returns_json_store(self, tmp_path: Path) -> None:
+    def test_json_backend_fast_fails(self, tmp_path: Path) -> None:
         from trader.state_db.broker_factory import make_trade_plan_store
 
-        store = make_trade_plan_store(state_dir=tmp_path, backend="json")
-        assert isinstance(store, TradePlanStore)
+        with pytest.raises(NotImplementedError, match="trade plan JSON backend supprimé"):
+            make_trade_plan_store(state_dir=tmp_path, backend="json")
 
     def test_sqlite_backend_returns_sqlite_store(self, tmp_path: Path) -> None:
         from trader.state_db.broker_factory import make_trade_plan_store
@@ -691,14 +599,6 @@ class TestMakeTradePlanStore:
 
         with pytest.raises(ValueError, match="CASYS_STATE_BACKEND inconnu"):
             make_trade_plan_store(state_dir=tmp_path, backend="bogus")
-
-    def test_json_store_functional(self, tmp_path: Path) -> None:
-        from trader.state_db.broker_factory import make_trade_plan_store
-
-        store = make_trade_plan_store(state_dir=tmp_path, backend="json")
-        plan = _plan("P1", "AAPL")
-        store.upsert(plan)
-        assert len(store.open_plans()) == 1
 
     def test_sqlite_store_functional(self, tmp_path: Path) -> None:
         from trader.state_db.broker_factory import make_trade_plan_store
@@ -723,20 +623,19 @@ class TestMakeTradePlanStore:
         assert len(plans) == 1
         assert plans[0].id == "OLD-P1"
 
-    def test_sqlite_regenerates_shadow_at_boot(self, tmp_path: Path) -> None:
-        """regenerate_shadow() appelé au boot : shadow JSON créé depuis SQLite."""
+    def test_sqlite_does_not_regenerate_trade_plan_shadow_at_boot(self, tmp_path: Path) -> None:
+        """Le boot SQLite n'écrit plus trade_plans.json depuis les tables."""
         from trader.state_db.broker_factory import make_trade_plan_store
 
-        # Préparer un trade_plans.json
         json_path = tmp_path / "trade_plans.json"
         json_path.write_text(
             json.dumps({"plans": [_dump(_plan("P1", "AAPL"))]}, indent=2)
         )
 
-        # Premier boot : import + backup du JSON + shadow régénéré
         make_trade_plan_store(state_dir=tmp_path, backend="sqlite")
+        json_path.unlink()
 
-        # Le shadow doit exister
-        assert json_path.exists(), "Le shadow doit être régénéré au boot"
-        data = json.loads(json_path.read_text())
-        assert len(data["plans"]) == 1
+        store = make_trade_plan_store(state_dir=tmp_path, backend="sqlite")
+
+        assert not json_path.exists()
+        assert [plan.id for plan in store.open_plans()] == ["P1"]

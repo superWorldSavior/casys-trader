@@ -4,7 +4,7 @@ Couverture :
     - open_state_db : même chemin → même instance (identité)
     - open_state_db : chemins différents → instances différentes
     - open_state_db : chemin relatif vs absolu équivalent → même instance
-    - bootstrap_state_backend(sqlite) : 3 shadows créés (broker.json, trade_plans.json, scheduler.json)
+    - bootstrap_state_backend(sqlite) : shadows broker/scheduler créés, pas trade_plans.json
     - bootstrap_state_backend(sqlite) : idempotent (2 appels consécutifs OK)
     - bootstrap_state_backend(json) : no-op (aucun fichier .db créé)
 """
@@ -82,8 +82,8 @@ def test_open_state_db_relative_vs_absolute_same_instance(tmp_path: Path) -> Non
 # ---------------------------------------------------------------------------
 
 
-def test_bootstrap_sqlite_creates_three_shadows(tmp_path: Path) -> None:
-    """bootstrap_state_backend(sqlite) régénère les 3 shadows JSON depuis SQLite."""
+def test_bootstrap_sqlite_creates_only_active_shadows(tmp_path: Path) -> None:
+    """bootstrap_state_backend(sqlite) régénère broker/scheduler, pas trade_plans.json."""
     db_path = tmp_path / "casys.db"
     _clear_registry_for([db_path])
     try:
@@ -96,7 +96,7 @@ def test_bootstrap_sqlite_creates_three_shadows(tmp_path: Path) -> None:
 
         assert (tmp_path / "casys.db").exists(), "casys.db doit être créé"
         assert (tmp_path / "broker.json").exists(), "broker.json (shadow) doit être créé"
-        assert (tmp_path / "trade_plans.json").exists(), "trade_plans.json (shadow) doit être créé"
+        assert not (tmp_path / "trade_plans.json").exists(), "trade_plans.json ne doit plus être créé"
         assert (tmp_path / "scheduler.json").exists(), "scheduler.json (shadow) doit être créé"
 
         # Vérifier que le shadow broker contient le bon cash

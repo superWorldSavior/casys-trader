@@ -1,6 +1,6 @@
 """compare — outil shadow-compare json↔sqlite (pur lecture).
 
-Compare les états broker, trade_plans et scheduler entre les stores JSON et les
+Compare les états broker et scheduler entre les stores JSON et les
 stores SQLite d'un même state_dir. Machine-readable (dict structuré), pas de prose.
 
 API publique :
@@ -17,7 +17,7 @@ Contrainte fondamentale : le compare est PUR (read-only).
 
 Dimensions comparées :
 - broker   : cash (≈1e-9), TOUTES les positions (q=0 incluses), fills (séquence)
-- plans    : liste ORDONNÉE (open_plans order, asdict par position)
+- plans    : clé compat uniquement, SQLite est la vérité
 - scheduler: wakes par symbole {sym→heure}, default_next_wake, stale streaks,
              TOUTES les watches (actives ET expirées) par id, expires_at normalisé
 
@@ -31,8 +31,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from trader.infrastructure.state_db.connection import open_state_db
-from trader.infrastructure.state_db.trade_plan_store import row_to_plan
-from trader.planning.trade_plan import trade_plan_from_dict
 
 log = logging.getLogger(__name__)
 
@@ -85,7 +83,7 @@ def compare_backends(state_dir: str | Path) -> dict:
     - broker.cash       : abs(json − sqlite) < 1e-9
     - broker.positions  : TOUTES les positions (q=0 incluses), par symbole
     - broker.fills      : séquence complète dans l'ordre d'insertion
-    - trade_plans       : liste ORDONNÉE (position par position via asdict)
+    - trade_plans       : clé compat uniquement, plus de comparaison JSON
     - scheduler.wakes   : {symbol: heure normalisée} + default_next_wake
     - scheduler.stale   : streaks par symbole
     - scheduler.watches : TOUTES les watches (actives ET expirées), comparées par id,
@@ -100,9 +98,7 @@ def compare_backends(state_dir: str | Path) -> dict:
             "positions_diff": [{"symbol": str, "json": {...}, "sqlite": {...}}, ...],
             "fills_diff": {} | {"json_count": int, "sqlite_count": int},
           },
-          "trade_plans": {
-            "diff": [{"position": int, "json": dict|None, "sqlite": dict|None}, ...],
-          },
+          "trade_plans": {"identical": True},
           "scheduler": {
             "wakes_diff":   [{"field": str, "json": ..., "sqlite": ...}, ...],
             "watches_diff": [{"id": str, "json": dict|None, "sqlite": dict|None}, ...],
@@ -121,7 +117,6 @@ def compare_backends(state_dir: str | Path) -> dict:
     state_dir = Path(state_dir)
     db_path = state_dir / "casys.db"
     json_broker_path = state_dir / "broker.json"
-    json_plans_path = state_dir / "trade_plans.json"
     json_sched_path = state_dir / "scheduler.json"
 
     # ------------------------------------------------------------------
@@ -156,7 +151,7 @@ def compare_backends(state_dir: str | Path) -> dict:
         )
 
     # Vérification fichiers JSON requis
-    for json_path in (json_broker_path, json_plans_path, json_sched_path):
+    for json_path in (json_broker_path, json_sched_path):
         if not json_path.exists():
             raise RuntimeError(f"compare: fichier JSON requis absent: {json_path}")
 
@@ -178,9 +173,6 @@ def compare_backends(state_dir: str | Path) -> dict:
     }
 
     json_fills: list[dict] = json_broker_raw.get("fills", [])
-
-    json_plans_raw = json.loads(json_plans_path.read_text())
-    json_plans_list: list[dict] = json_plans_raw.get("plans", [])
 
     json_sched_raw: dict = json.loads(json_sched_path.read_text())
     json_sched_raw.setdefault("default_next_wake", None)
@@ -240,10 +232,6 @@ def compare_backends(state_dir: str | Path) -> dict:
         " FROM broker_fills ORDER BY seq"
     )
     sqlite_fills: list[dict] = [dict(r) for r in fill_rows]
-
-    # Plans (ordonnés par seq)
-    plan_rows = db.query_all("SELECT * FROM trade_plans ORDER BY seq")
-    sqlite_plans_list: list[dict] = [row_to_plan(r).model_dump() for r in plan_rows]
 
     # Scheduler — wakes par symbole
     sym_wake_rows = db.query_all(
@@ -328,20 +316,6 @@ def compare_backends(state_dir: str | Path) -> dict:
     }
 
     # ------------------------------------------------------------------
-    # Comparaison trade_plans (liste ordonnée par position)
-    # ------------------------------------------------------------------
-
-    # Parse JSON plans via trade_plan_from_dict pour comparaison homogène avec SQLite
-    json_plans_parsed: list[dict] = [trade_plan_from_dict(p).model_dump() for p in json_plans_list]
-
-    plans_diff: list[dict] = []
-    for i in range(max(len(json_plans_parsed), len(sqlite_plans_list), 1)):
-        j_plan = json_plans_parsed[i] if i < len(json_plans_parsed) else None
-        s_plan = sqlite_plans_list[i] if i < len(sqlite_plans_list) else None
-        if j_plan != s_plan:
-            plans_diff.append({"position": i, "json": j_plan, "sqlite": s_plan})
-
-    # ------------------------------------------------------------------
     # Comparaison scheduler
     # ------------------------------------------------------------------
 
@@ -393,7 +367,6 @@ def compare_backends(state_dir: str | Path) -> dict:
         cash_identical
         and not positions_diff
         and fills_identical
-        and not plans_diff
         and not wakes_diff
         and not stale_diff
         and not watches_diff
@@ -405,9 +378,7 @@ def compare_backends(state_dir: str | Path) -> dict:
             "positions_diff": positions_diff,
             "fills_diff": fills_diff,
         },
-        "trade_plans": {
-            "diff": plans_diff,
-        },
+        "trade_plans": {"identical": True},
         "scheduler": {
             "wakes_diff": wakes_diff,
             "watches_diff": watches_diff,

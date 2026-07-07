@@ -7,10 +7,8 @@ from trader.market.market_data import Bar
 from trader.planning.trade_plan import (
     InvalidExitPlanError,
     TradePlan,
-    TradePlanStore,
     create_trade_plan,
     resolve_exit_plan,
-    trade_plan_from_dict,
     validate_exit_plan,
 )
 
@@ -30,6 +28,16 @@ def _bar(
         close=close,
         volume=volume,
     )
+
+
+def _trade_plan_store(tmp_path):
+    from trader.state_db.connection import open_state_db
+    from trader.state_db.migrations import import_trade_plans_from_json
+    from trader.state_db.trade_plan_store import SqliteTradePlanStore
+
+    db = open_state_db(tmp_path / "casys.db")
+    import_trade_plans_from_json(db, tmp_path / "_absent_trade_plans.json")
+    return SqliteTradePlanStore(db)
 
 
 def _exit_plan() -> dict:
@@ -856,8 +864,8 @@ def test_create_trade_plan_refuse_reference_volatility_non_finie() -> None:
         )
 
 
-def test_trade_plan_from_dict_ignore_les_non_finis_au_reload() -> None:
-    plan = trade_plan_from_dict(
+def test_trade_plan_model_validate_ignore_les_non_finis_au_reload() -> None:
+    plan = TradePlan.model_validate(
         {
             "id": "SPY-nonfinite",
             "symbol": "SPY",
@@ -880,7 +888,7 @@ def test_trade_plan_from_dict_ignore_les_non_finis_au_reload() -> None:
 
 
 def test_trade_plan_store_persiste_reference_volatility(tmp_path) -> None:
-    store = TradePlanStore(tmp_path / "plans.json")
+    store = _trade_plan_store(tmp_path)
     plan = create_trade_plan(
         symbol="SPY",
         side="LONG",
@@ -895,7 +903,7 @@ def test_trade_plan_store_persiste_reference_volatility(tmp_path) -> None:
 
     store.upsert(plan)
 
-    reloaded = TradePlanStore(tmp_path / "plans.json").open_plans()[0]
+    reloaded = _trade_plan_store(tmp_path).open_plans()[0]
     assert reloaded.reference_volatility == pytest.approx(1.25)
     assert reloaded == plan
 
@@ -971,7 +979,7 @@ def test_create_trade_plan_ne_clampe_pas_sans_volatilite_reference() -> None:
 
 
 def test_trade_plan_store_persiste_les_plans_ouverts(tmp_path) -> None:
-    store = TradePlanStore(tmp_path / "plans.json")
+    store = _trade_plan_store(tmp_path)
     plan = create_trade_plan(
         symbol="SPY",
         side="LONG",
@@ -983,12 +991,12 @@ def test_trade_plan_store_persiste_les_plans_ouverts(tmp_path) -> None:
 
     store.upsert(plan)
 
-    reloaded = TradePlanStore(tmp_path / "plans.json").open_plans()
+    reloaded = _trade_plan_store(tmp_path).open_plans()
     assert reloaded == [plan]
 
 
 def test_trade_plan_store_persiste_profit_protection(tmp_path) -> None:
-    store = TradePlanStore(tmp_path / "plans.json")
+    store = _trade_plan_store(tmp_path)
     plan = create_trade_plan(
         symbol="SPY",
         side="LONG",
@@ -1000,12 +1008,12 @@ def test_trade_plan_store_persiste_profit_protection(tmp_path) -> None:
 
     store.upsert(plan)
 
-    reloaded = TradePlanStore(tmp_path / "plans.json").open_plans()[0]
+    reloaded = _trade_plan_store(tmp_path).open_plans()[0]
     assert reloaded.profit_protection == plan.profit_protection
 
 
 def test_trade_plan_store_persiste_exit_watch(tmp_path) -> None:
-    store = TradePlanStore(tmp_path / "plans.json")
+    store = _trade_plan_store(tmp_path)
     plan = create_trade_plan(
         symbol="SPY",
         side="LONG",
@@ -1022,12 +1030,12 @@ def test_trade_plan_store_persiste_exit_watch(tmp_path) -> None:
 
     store.upsert(plan)
 
-    reloaded = TradePlanStore(tmp_path / "plans.json").open_plans()[0]
+    reloaded = _trade_plan_store(tmp_path).open_plans()[0]
     assert reloaded.exit_watch == plan.exit_watch
 
 
 def test_trade_plan_store_persiste_last_llm_review(tmp_path) -> None:
-    store = TradePlanStore(tmp_path / "plans.json")
+    store = _trade_plan_store(tmp_path)
     plan = create_trade_plan(
         symbol="SPY",
         side="LONG",
@@ -1049,12 +1057,12 @@ def test_trade_plan_store_persiste_last_llm_review(tmp_path) -> None:
 
     store.upsert(plan)
 
-    reloaded = TradePlanStore(tmp_path / "plans.json").open_plans()[0]
+    reloaded = _trade_plan_store(tmp_path).open_plans()[0]
     assert reloaded.last_llm_review == plan.last_llm_review
 
 
 def test_trade_plan_store_persiste_le_contexte_d_entree(tmp_path) -> None:
-    store = TradePlanStore(tmp_path / "plans.json")
+    store = _trade_plan_store(tmp_path)
     plan = create_trade_plan(
         symbol="SPY",
         side="LONG",
@@ -1079,14 +1087,14 @@ def test_trade_plan_store_persiste_le_contexte_d_entree(tmp_path) -> None:
 
     store.upsert(plan)
 
-    reloaded = TradePlanStore(tmp_path / "plans.json").open_plans()[0]
+    reloaded = _trade_plan_store(tmp_path).open_plans()[0]
     assert reloaded.entry_thesis == "cassure du range haut sur volume"
     assert reloaded.entry_decision_id == "2026-06-05T12:00:00+00:00|0|SPY"
     assert reloaded.entry_context == plan.entry_context
 
 
 def test_trade_plan_store_cloture_un_plan(tmp_path) -> None:
-    store = TradePlanStore(tmp_path / "plans.json")
+    store = _trade_plan_store(tmp_path)
     plan = TradePlan(
         id="SPY-2026",
         symbol="SPY",

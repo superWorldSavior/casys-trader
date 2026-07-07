@@ -83,13 +83,12 @@ def build_positions_fn(state_dir: str | Path) -> Callable[[], dict]:
 
 
 def build_plans_fn(state_dir: str | Path) -> Callable[[], list]:
-    """Retourne une closure qui lit les plans ouverts depuis TradePlanStore.
+    """Retourne une closure qui lit les plans ouverts depuis SQLite.
 
-    Lit ``trade_plans.json`` — le MÊME fichier que celui écrit par le daemon
-    (``daemon.py``). Si absent ou corrompu, retourne [] sans lever.
+    Lit ``casys.db``. Si la base est absente ou illisible, retourne [] sans lever.
 
     Args:
-        state_dir: Répertoire contenant ``trade_plans.json``.
+        state_dir: Répertoire contenant ``casys.db``.
 
     Returns:
         Callable[[], list[TradePlan]]
@@ -98,9 +97,14 @@ def build_plans_fn(state_dir: str | Path) -> Callable[[], list]:
 
     def _plans() -> list:
         try:
-            from trader.planning.trade_plan import TradePlanStore
+            db_path = state_dir / "casys.db"
+            if not db_path.exists():
+                return []
+            from trader.infrastructure.state_db.connection import open_state_db
+            from trader.infrastructure.state_db.trade_plan_store import SqliteTradePlanStore
 
-            store = TradePlanStore(state_dir / "trade_plans.json")
+            db = open_state_db(db_path)
+            store = SqliteTradePlanStore(db)
             return store.open_plans()
         except Exception:
             return []

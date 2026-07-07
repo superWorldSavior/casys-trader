@@ -12,7 +12,8 @@ from trader.application.execute.cycle_decision import (
     execute_one_cycle_decision,
 )
 from trader.market.market_data import Bar
-from trader.planning.trade_plan import TradePlanStore, create_trade_plan
+from trader.planning.trade_plan import create_trade_plan
+from tests.plan_store_fakes import MemoryTradePlanStore
 
 
 _NOW = datetime(2026, 6, 15, 14, 30, tzinfo=timezone.utc)
@@ -77,7 +78,7 @@ def test_execute_one_cycle_decision_records_hold_without_mutating_state() -> Non
 
 def test_execute_one_cycle_decision_applies_exit_update_with_current_price(tmp_path) -> None:
     records: list[dict] = []
-    store = TradePlanStore(tmp_path / "plans.json")
+    store = MemoryTradePlanStore()
     store.upsert(
         create_trade_plan(
             symbol="INGA.AS",

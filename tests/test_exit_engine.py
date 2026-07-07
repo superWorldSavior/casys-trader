@@ -2,9 +2,10 @@ from datetime import datetime, timezone
 
 import pytest
 
+from trader.domain.trade_plan import TradePlan
 import trader.planning.exit_engine as exit_engine
 from trader.planning.exit_engine import evaluate_plan
-from trader.planning.trade_plan import create_trade_plan, trade_plan_from_dict
+from trader.planning.trade_plan import create_trade_plan
 
 
 def _plan():
@@ -721,7 +722,7 @@ class TestTrailingVolatilityLegacy:
             "filled_take_profits": [],
         }
         raw.update(overrides)
-        return trade_plan_from_dict(raw)
+        return TradePlan.model_validate(raw)
 
     def test_volatility_multiple_sans_reference_rechargee_ne_leve_pas(self) -> None:
         plan = self._plan()

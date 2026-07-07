@@ -15,7 +15,7 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
-from trader.queue.shadow import ShadowQueueProbe
+from trader.infrastructure.queue.shadow import ShadowQueueProbe
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────────

@@ -65,6 +65,7 @@ _STATE_HISTORY_FILES = (
     "last_report.json",
     "broker.json",
     "trade_plans.json",
+    "casys.db",
 )
 
 

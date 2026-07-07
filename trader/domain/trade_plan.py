@@ -101,3 +101,20 @@ class TradePlan(BaseModel):
     @classmethod
     def _coerce_non_finite_optional_float(cls, value: object) -> object:
         return _none_if_not_finite(value)
+
+    @field_validator("trailing_stop", mode="before")
+    @classmethod
+    def _drop_non_finite_trailing_stop(cls, value: object) -> object:
+        if value is None:
+            return None
+        if isinstance(value, TrailingStop):
+            return None if not math.isfinite(value.trail_value) else value
+        if not isinstance(value, dict):
+            return value
+        raw_trail_value = value.get("trail_value")
+        if raw_trail_value is None:
+            return None
+        trail_value = _none_if_not_finite(raw_trail_value)
+        if trail_value is None:
+            return None
+        return {**value, "trail_value": trail_value}

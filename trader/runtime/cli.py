@@ -70,6 +70,20 @@ def _read_state_json(filename: str) -> object | None:
     return json.loads(path.read_text())
 
 
+def _read_trade_plans_state() -> object | None:
+    db_path = daemon.STATE_DIR / "casys.db"
+    if db_path.exists():
+        try:
+            from trader.infrastructure.state_db.connection import open_state_db
+            from trader.infrastructure.state_db.trade_plan_store import SqliteTradePlanStore
+
+            db = open_state_db(db_path)
+            return {"plans": [p.model_dump() for p in SqliteTradePlanStore(db).open_plans()]}
+        except Exception:
+            return {"plans": []}
+    return _read_state_json("trade_plans.json")
+
+
 def _load_regime_filters(args: argparse.Namespace) -> tuple[str | None, tuple[str, ...]]:
     if getattr(args, "all_regimes", False):
         return args.since, tuple(args.exclude_symbol or ())
@@ -172,7 +186,7 @@ def _cmd_status(args: argparse.Namespace) -> int:
         "last_report": _read_state_json("last_report.json"),
         "broker": _read_state_json("broker.json"),
         "scheduler": _read_state_json("scheduler.json"),
-        "trade_plans": _read_state_json("trade_plans.json"),
+        "trade_plans": _read_trade_plans_state(),
     }
     if args.json:
         _print_json(payload)
