@@ -26,10 +26,13 @@ class StartablePool(Protocol):
     def stop(self) -> None: ...
 
 
+class ExitValidationSnapshotLike(Protocol):
+    def get_bars(self, symbol: str) -> list | None: ...
+    def get_price(self, symbol: str) -> float | None: ...
+
+
 NowMs = Callable[[], int]
 _DEFAULT_DECIDE_LEASE_MS = 1_800_000
-_ACTION_VALIDATION_DAILY_LOOKBACK = "1y"
-_ACTION_VALIDATION_DAILY_INTERVAL = "1d"
 
 
 def default_now_ms() -> int:
@@ -324,6 +327,7 @@ def build_decide_tool_services(
     get_open_plans: Callable[[], list] | None = None,
     get_open_raw_plans: Callable[[], list] | None = None,
     get_open_plans_as_of: Callable[[], str | None] | None = None,
+    exit_validation_snapshot: ExitValidationSnapshotLike | None = None,
     learnings_db_path: Path,
     max_context_requests_per_symbol: int,
     max_indicators_per_request: int,
@@ -333,6 +337,8 @@ def build_decide_tool_services(
 
     - ``get_bars`` : indirection vers le data_source COURANT (handle) — jamais de
       capture (la ref est remplacée en cours de run).
+    - ``action_validator`` : dry-run strategy_exit sur les mêmes barres/prix que
+      le daemon utilisera pour appliquer la décision du cycle.
     - recall : LearningsStore ouvert au boot si ``learnings.db`` existe (SQLite
       locké, thread-safe) ; ``now_fn`` dynamique — la borne temporelle suit
       chaque appel. ⚠️ si la db n'existe pas ENCORE au boot, recall restera
@@ -345,7 +351,7 @@ def build_decide_tool_services(
 
     from trader.agent.learnings.store import LearningsStore
     from trader.application.decide_one import ToolRoundServices
-    from trader.application.exit_update import ExitUpdateValidation, validate_exit_update
+    from trader.application.exit_update import validate_exit_update
     from trader.application.learnings_recall import build_recall_provider
     from trader.market.data_source import make_indirect_get_bars
 
@@ -367,35 +373,19 @@ def build_decide_tool_services(
         log.info("[queue_decide] learnings.db absent au boot — recall indisponible ce run")
 
     action_validator = None
-    if get_open_raw_plans is not None:
+    if get_open_raw_plans is not None and exit_validation_snapshot is not None:
         # Scope intentionally limited to strategy_exit dry-run validation. Entry/close
         # capital risk gates depend on daemon-side portfolio state and stay out of this worker hook.
         def action_validator(symbol: str, exit_update: dict):
-            try:
-                bars = _get_bars(
-                    symbol,
-                    lookback=_ACTION_VALIDATION_DAILY_LOOKBACK,
-                    interval=_ACTION_VALIDATION_DAILY_INTERVAL,
-                )
-            except Exception:  # noqa: BLE001 - validation reste best-effort; le dry-run gère bars=None
-                bars = None
-            validation = validate_exit_update(
+            bars = exit_validation_snapshot.get_bars(symbol)
+            current_price = exit_validation_snapshot.get_price(symbol)
+            return validate_exit_update(
                 plan_store=_SnapshotPlanStore(get_open_raw_plans()),
                 symbol=symbol,
                 exit_update=exit_update,
                 bars=bars,
+                current_price=current_price,
             )
-            reason = str(validation.reason or "")
-            if (
-                validation.would_apply is False
-                and "hard_stop_bars_unavailable" in reason
-                and not bars
-            ):
-                # Worker-side validation uses best-effort daily bars and no daemon cycle price.
-                # If structural stop resolution only failed because worker bars are missing,
-                # abstain to avoid a false rejection; the daemon will decide with cycle bars.
-                return ExitUpdateValidation(would_apply=True, reason=None, warnings=validation.warnings)
-            return validation
 
     return ToolRoundServices(
         get_bars=_get_bars,

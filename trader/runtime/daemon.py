@@ -1011,6 +1011,7 @@ def run_cycle(
     queue_execute_enabled: bool = False,
     execute_ledger=None,  # TaskLedger | None (casys.db — partagé broker/plan/ledger)
     plan_snapshot: object | None = None,
+    exit_validation_snapshot: object | None = None,
 ) -> dict:
     """Exécute UN cycle. Retourne un rapport structuré (machine-readable)."""
     now = now or datetime.now(timezone.utc)
@@ -1165,6 +1166,12 @@ def run_cycle(
     execution_eligibility = snapshot.execution_eligibility
     exit_bars_by_symbol = snapshot.exit_bars_by_symbol
     exit_intervals_by_symbol = snapshot.exit_intervals_by_symbol
+    if exit_validation_snapshot is not None:
+        exit_validation_snapshot.update(
+            bars_by_symbol=tradable_bars_by_symbol,
+            prices=prices,
+            as_of=now.isoformat(),
+        )
     _log_cycle_progress(
         "[market] loaded ok=%d missing=%d",
         len(prices),
@@ -1939,6 +1946,7 @@ def main(
     # make_indirect_get_bars(handle.get) — jamais de capture de l'objet (remplacé en run).
     _ds_handle = data_source_runtime.DataSourceHandle()
     _plan_snapshot = data_source_runtime.PlanSnapshotHandle()
+    _exit_validation_snapshot = data_source_runtime.ExitValidationSnapshotHandle()
 
     # Services du tour d'outils grain-1 (spec queue tool-round §4, issue #2) :
     # construits au boot, consommés par le handler decide quand agent_tools_enabled.
@@ -1947,6 +1955,7 @@ def main(
         get_open_plans=_plan_snapshot.get,
         get_open_raw_plans=_plan_snapshot.get_raw,
         get_open_plans_as_of=_plan_snapshot.as_of,
+        exit_validation_snapshot=_exit_validation_snapshot,
         learnings_db_path=STATE_DIR / "learnings.db",
         max_context_requests_per_symbol=args.max_context_requests_per_symbol,
         max_indicators_per_request=args.max_indicators_per_request,
@@ -2106,6 +2115,7 @@ def main(
                     queue_execute_enabled=_queue_execute_enabled,
                     execute_ledger=_execute_ledger,
                     plan_snapshot=_plan_snapshot,
+                    exit_validation_snapshot=_exit_validation_snapshot,
                 )
                 if not due_symbols and not protection_cycle_due:
                     wait = sched.seconds_until_wake(symbols)

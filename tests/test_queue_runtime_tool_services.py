@@ -54,16 +54,27 @@ def test_get_open_plans_provider_est_propage(tmp_path):
     assert services.open_plans_as_of_provider is get_open_plans_as_of
 
 
-def test_action_validator_valide_strategy_exit_sur_snapshot_brut_et_daily_bars(tmp_path, monkeypatch):
+class _ExitValidationSnapshot:
+    def __init__(self, *, bars_by_symbol=None, prices=None) -> None:
+        self.bars_by_symbol = bars_by_symbol or {}
+        self.prices = prices or {}
+
+    def get_bars(self, symbol: str):
+        return self.bars_by_symbol.get(symbol)
+
+    def get_price(self, symbol: str):
+        return self.prices.get(symbol)
+
+
+def test_action_validator_valide_strategy_exit_sur_snapshot_runtime_sans_refetch(tmp_path, monkeypatch):
     raw_plan = object()
-    daily_bars = [("daily", "SPY")]
+    runtime_bars = [("runtime", "SPY")]
     validation = ExitUpdateValidation(would_apply=False, reason="resolve_failed:test", warnings=[])
     calls: dict[str, object] = {}
 
     class _DS:
         def get_bars(self, symbol, lookback="5d", interval="1h"):
-            calls["bars"] = (symbol, lookback, interval)
-            return daily_bars
+            raise AssertionError("action_validator must not refetch bars")
 
     def fake_validate_exit_update(**kwargs):
         calls["validate"] = kwargs
@@ -75,21 +86,25 @@ def test_action_validator_valide_strategy_exit_sur_snapshot_brut_et_daily_bars(t
         tmp_path,
         get_data_source=lambda: _DS(),
         get_open_raw_plans=lambda: [raw_plan],
+        exit_validation_snapshot=_ExitValidationSnapshot(
+            bars_by_symbol={"SPY": runtime_bars},
+            prices={"SPY": 432.1},
+        ),
     )
 
     assert services.action_validator is not None
     result = services.action_validator("SPY", {"hard_stop": {"mode": "structural"}})
 
     assert result is validation
-    assert calls["bars"] == ("SPY", "1y", "1d")
     validate_call = calls["validate"]
     assert validate_call["plan_store"].open_plans() == [raw_plan]
     assert validate_call["symbol"] == "SPY"
     assert validate_call["exit_update"] == {"hard_stop": {"mode": "structural"}}
-    assert validate_call["bars"] == daily_bars
+    assert validate_call["bars"] == runtime_bars
+    assert validate_call["current_price"] == 432.1
 
 
-def test_action_validator_s_abstient_si_rejet_structural_vient_de_bars_worker_absentes(tmp_path, monkeypatch):
+def test_action_validator_rejete_si_bars_runtime_absentes_dans_snapshot(tmp_path, monkeypatch):
     validation = ExitUpdateValidation(
         would_apply=False,
         reason="resolve_failed:hard_stop_bars_unavailable",
@@ -98,7 +113,7 @@ def test_action_validator_s_abstient_si_rejet_structural_vient_de_bars_worker_ab
 
     class _DS:
         def get_bars(self, symbol, lookback="5d", interval="1h"):
-            raise RuntimeError("daily unavailable in worker")
+            raise AssertionError("action_validator must not refetch bars")
 
     def fake_validate_exit_update(**kwargs):
         assert kwargs["bars"] is None
@@ -110,21 +125,23 @@ def test_action_validator_s_abstient_si_rejet_structural_vient_de_bars_worker_ab
         tmp_path,
         get_data_source=lambda: _DS(),
         get_open_raw_plans=lambda: [object()],
+        exit_validation_snapshot=_ExitValidationSnapshot(),
     )
 
     result = services.action_validator("SPY", {"hard_stop": {"type": "structural", "anchor": "swing_low"}})
 
-    assert result.would_apply is True
-    assert result.reason is None
+    assert result is validation
+    assert result.would_apply is False
+    assert result.reason == "resolve_failed:hard_stop_bars_unavailable"
     assert result.warnings == []
 
 
-def test_action_validator_garde_rejet_fiable_no_open_plan_meme_sans_bars_worker(tmp_path, monkeypatch):
+def test_action_validator_garde_rejet_fiable_no_open_plan_meme_sans_bars_runtime(tmp_path, monkeypatch):
     validation = ExitUpdateValidation(would_apply=False, reason="no_open_plan", warnings=[])
 
     class _DS:
         def get_bars(self, symbol, lookback="5d", interval="1h"):
-            return None
+            raise AssertionError("action_validator must not refetch bars")
 
     def fake_validate_exit_update(**kwargs):
         assert kwargs["bars"] is None
@@ -136,6 +153,7 @@ def test_action_validator_garde_rejet_fiable_no_open_plan_meme_sans_bars_worker(
         tmp_path,
         get_data_source=lambda: _DS(),
         get_open_raw_plans=lambda: [],
+        exit_validation_snapshot=_ExitValidationSnapshot(),
     )
 
     result = services.action_validator("SPY", {"hard_stop": {"type": "structural", "anchor": "swing_low"}})
@@ -143,6 +161,15 @@ def test_action_validator_garde_rejet_fiable_no_open_plan_meme_sans_bars_worker(
     assert result is validation
     assert result.would_apply is False
     assert result.reason == "no_open_plan"
+
+
+def test_action_validator_absent_sans_snapshot_validation_exit(tmp_path):
+    services = _build(
+        tmp_path,
+        get_open_raw_plans=lambda: [object()],
+    )
+
+    assert services.action_validator is None
 
 
 def test_services_n_acceptent_plus_max_rounds(tmp_path):

@@ -235,6 +235,41 @@ def test_exit_update_invalide_reinjecte_feedback_et_reboucle() -> None:
     }
 
 
+def test_exit_update_hard_stop_bars_unavailable_reinjecte_feedback_et_reboucle() -> None:
+    captured: list[dict] = []
+    responses = [
+        {"AAPL": _exit_update_decision("invalid", "structural")},
+        {"AAPL": Decision.hold("AAPL", "corrected")},
+    ]
+    it = iter(responses)
+
+    def call_model(per_symbol, *, allow_tool_calls):
+        captured.append(dict(per_symbol["AAPL"]))
+        return next(it)
+
+    def action_validator(symbol: str, exit_update: dict):
+        return SimpleNamespace(would_apply=False, reason="resolve_failed:hard_stop_bars_unavailable")
+
+    result = resolve_symbol_decision(
+        symbol="AAPL",
+        base_facts={"base_marker": "kept"},
+        tool_context=_ctx(),
+        call_model=call_model,
+        action_validator=action_validator,
+        max_rounds=3,
+    )
+
+    assert result.rationale == "corrected"
+    assert captured[1]["tool_results"] == [
+        {
+            "id": "validation:strategy_exit:AAPL:1",
+            "tool": "strategy_exit",
+            "ok": False,
+            "error": "resolve_failed:hard_stop_bars_unavailable",
+        }
+    ]
+
+
 def test_exit_update_corrige_valide_finalize_au_round_suivant() -> None:
     corrected = _exit_update_decision("corrected", "absolute")
     responses = [

@@ -96,6 +96,29 @@ class PlanSnapshotHandle:
         return self._as_of
 
 
+class ExitValidationSnapshotHandle:
+    """Référence partagée vers les inputs runtime utilisés pour valider strategy_exit."""
+
+    def __init__(self) -> None:
+        self._bars_by_symbol: dict[str, list] = {}
+        self._prices: dict[str, float] = {}
+        self._as_of: str | None = None
+
+    def update(self, *, bars_by_symbol: dict[str, list], prices: dict[str, float], as_of: str | None = None) -> None:
+        self._bars_by_symbol = bars_by_symbol
+        self._prices = prices
+        self._as_of = as_of
+
+    def get_bars(self, symbol: str) -> list | None:
+        return self._bars_by_symbol.get(symbol)
+
+    def get_price(self, symbol: str) -> float | None:
+        return self._prices.get(symbol)
+
+    def as_of(self) -> str | None:
+        return self._as_of
+
+
 def _default_logger() -> logging.Logger:
     return logging.getLogger("casys-trader")
 
