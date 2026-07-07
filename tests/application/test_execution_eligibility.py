@@ -6,7 +6,7 @@ from trader.market.market_data import Bar
 
 
 def test_build_execution_eligibility_separates_planning_from_stale_execution() -> None:
-    from trader.application.execution_eligibility import build_execution_eligibility
+    from trader.application.cycle.execution_eligibility import build_execution_eligibility
 
     now = datetime(2026, 6, 15, 14, 30, tzinfo=timezone.utc)
 
@@ -27,7 +27,7 @@ def test_build_execution_eligibility_separates_planning_from_stale_execution() -
 
 
 def test_execution_blocked_reason_fails_closed_only_when_requested() -> None:
-    from trader.application.execution_eligibility import execution_blocked_reason
+    from trader.application.cycle.execution_eligibility import execution_blocked_reason
 
     eligibility = {
         "OK": {"execution": {"enabled": True, "reason": "tradable"}},

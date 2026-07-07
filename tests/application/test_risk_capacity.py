@@ -5,7 +5,7 @@ from trader.execution.risk import RiskLimits
 
 
 def test_risk_capacity_context_exposes_remaining_gross_as_native_quantity(tmp_path) -> None:
-    from trader.application import risk_capacity
+    from trader.application.execute import risk_capacity
 
     broker = SimBroker(tmp_path / "broker.json", starting_cash=100_000.0)
     broker.submit(
@@ -47,7 +47,7 @@ def test_risk_capacity_context_exposes_remaining_gross_as_native_quantity(tmp_pa
 
 
 def test_gross_exposure_keeps_legacy_native_mode_without_rate(tmp_path) -> None:
-    from trader.application import risk_capacity
+    from trader.application.execute import risk_capacity
 
     broker = SimBroker(tmp_path / "broker.json", starting_cash=100_000.0)
     broker.submit(

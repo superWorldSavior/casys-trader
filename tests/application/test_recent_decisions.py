@@ -1,5 +1,5 @@
 """Tests — recent_decisions_by_symbol (issue #4, push) : groupage, filtre, compactage."""
-from trader.application.recent_decisions import recent_decisions_by_symbol
+from trader.application.decide.recent_decisions import recent_decisions_by_symbol
 
 
 class _FakeStore:

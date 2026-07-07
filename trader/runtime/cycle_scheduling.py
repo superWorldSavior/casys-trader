@@ -6,7 +6,10 @@ import logging
 from datetime import datetime
 from typing import Callable
 
-from trader.application import cycle_schedule, watch_scanner
+from trader.application.cycle import (
+    cycle_schedule,
+    watch_scanner,
+)
 from trader.market import market_data as market
 from trader.planning.scheduler import Scheduler
 

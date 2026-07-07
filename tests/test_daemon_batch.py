@@ -11,7 +11,7 @@ import pytest
 
 from trader.runtime import daemon
 from trader.runtime.worker_cycle_context import WorkerCycleContextHandle
-from trader.application import planner_batch
+from trader.application.decide import planner_batch
 from trader.agent.client import ContextResearchRequest, Decision, IndicatorRequest
 from trader.agent.protocol.parsing import parse_batch
 from trader.planning.indicator_watch import summarize_watch
@@ -133,7 +133,7 @@ def _decision_entry_for_test(decision: Decision, *, price: float, executed: bool
 
 
 def _install_queue_decide_stream(monkeypatch, stream_events, trace: list[tuple]):
-    import trader.application.queue_dispatch as queue_dispatch
+    import trader.application.decide.queue_dispatch as queue_dispatch
 
     def fake_iter_decide_results_via_queue(**_kwargs):
         for sym, decision, calls in stream_events:
@@ -507,7 +507,7 @@ def test_openings_deferred_by_execute_timeout_are_redecided_next_cycle(
 
     monkeypatch.setattr(daemon, "ROOT", tmp_path)
     monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
-    import trader.application.queue_dispatch as queue_dispatch
+    import trader.application.decide.queue_dispatch as queue_dispatch
     monkeypatch.setattr(queue_dispatch, "iter_decide_results_via_queue", fake_iter_decide_results_via_queue)
     monkeypatch.setattr(daemon.execute_queue_dispatch, "dispatch_execute_order_via_queue", fake_dispatch)
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from dataclasses import asdict
 
-from trader.application.execute_queue_dispatch import dispatch_execute_order_via_queue
+from trader.application.execute.execute_queue_dispatch import dispatch_execute_order_via_queue
 from trader.execution.broker import Fill
 
 

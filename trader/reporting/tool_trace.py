@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from trader.application import tool_outcomes
+from trader.application.record import tool_outcomes
 
 TOOLS = ["context_request", "indicator_watch", "next_wake", "order", "learning"]
 _ACTION_TOOLS = tool_outcomes.ACTION_TOOLS

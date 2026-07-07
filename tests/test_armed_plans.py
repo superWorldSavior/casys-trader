@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 import pytest
 
 from trader.runtime import daemon
-from trader.application import cycle_decision
+from trader.application.execute import cycle_decision
 from trader.agent.client import Decision
 from trader.planning.trade_plan import TradePlanStore
 from trader.execution.broker import SimBroker

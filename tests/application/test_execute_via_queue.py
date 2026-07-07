@@ -19,8 +19,8 @@ from pathlib import Path
 
 import pytest
 
-from trader.application.execute_order_handler import make_execute_order_handler
-from trader.application.execute_queue_dispatch import dispatch_execute_order_via_queue
+from trader.application.execute.execute_order_handler import make_execute_order_handler
+from trader.application.execute.execute_queue_dispatch import dispatch_execute_order_via_queue
 from trader.planning.trade_plan import TradePlan
 from trader.queue.decide_pool import DecidePool
 from trader.queue.ledger import TaskLedger

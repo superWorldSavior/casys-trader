@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from trader.application.decision_watches import prepare_decision_indicator_watch
+from trader.application.record.decision_watches import prepare_decision_indicator_watch
 from trader.planning.indicator_watch import WATCH_REJECT_UNKNOWN_INDICATOR
 
 

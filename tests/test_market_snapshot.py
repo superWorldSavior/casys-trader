@@ -1,7 +1,7 @@
 from dataclasses import fields
 from datetime import datetime, timezone
 
-from trader.application.market_snapshot import MarketSnapshot, build_market_snapshot
+from trader.application.cycle.market_snapshot import MarketSnapshot, build_market_snapshot
 from trader.market.market_data import Bar
 
 

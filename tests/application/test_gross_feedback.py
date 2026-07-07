@@ -1,4 +1,4 @@
-from trader.application.gross_feedback import summarize_gross_rejections
+from trader.application.record.gross_feedback import summarize_gross_rejections
 
 
 def test_summarize_gross_rejections_reports_rejected_opening_symbols() -> None:

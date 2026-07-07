@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from trader.application.armed_plans import (
+from trader.application.exit.armed_plans import (
     ArmedPlanEvent,
     resolve_armed_plan_triggers,
 )

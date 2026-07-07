@@ -1,4 +1,4 @@
-from trader.application.entry_context import build_trade_entry_context
+from trader.application.execute.entry_context import build_trade_entry_context
 
 
 def test_build_trade_entry_context_rounds_data_age() -> None:

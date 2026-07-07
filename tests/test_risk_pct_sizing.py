@@ -16,7 +16,7 @@ import pytest
 
 from trader.agent.protocol.parsing import _decision_from_symbol_calls
 from trader.agent.protocol.types import Decision
-from trader.application.order_admission import qty_from_risk_pct
+from trader.application.execute.order_admission import qty_from_risk_pct
 from trader.runtime import daemon
 from trader.market.market_data import Bar
 from trader.planning.scheduler import Scheduler

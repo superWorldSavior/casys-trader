@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from trader.runtime import daemon
-from trader.application import cycle_decision
+from trader.application.execute import cycle_decision
 from trader.agent.client import Decision
 from trader.agent.protocol.parsing import parse_batch
 from trader.execution.broker import Order, SimBroker

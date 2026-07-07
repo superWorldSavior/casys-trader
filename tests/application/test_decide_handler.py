@@ -14,7 +14,7 @@ from dataclasses import replace
 import pytest
 
 from trader.agent.protocol.types import Decision
-from trader.application.decide_handler import make_decide_handler
+from trader.application.decide.decide_handler import make_decide_handler
 from trader.queue.worker import RetryableError
 
 SYMBOL = "AAPL"
@@ -151,7 +151,7 @@ def test_handler_transmet_session_backends_et_task_id_a_decide_one(monkeypatch):
         captured.update(kwargs)
         return _ok_decision("BUY"), 1
 
-    monkeypatch.setattr("trader.application.decide_handler.decide_one", spy_decide_one)
+    monkeypatch.setattr("trader.application.decide.decide_handler.decide_one", spy_decide_one)
 
     session_backends = [object()]
 

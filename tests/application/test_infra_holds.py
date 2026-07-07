@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from trader.application.infra_holds import quiet_gate_decisions, stale_market_hold_decision
+from trader.application.cycle.infra_holds import quiet_gate_decisions, stale_market_hold_decision
 
 
 NOW = datetime(2026, 7, 4, 12, 0, tzinfo=timezone.utc)

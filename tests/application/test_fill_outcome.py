@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from trader.application.fill_outcome import build_fill_accounting, llm_exit_reason_for_intent
+from trader.application.execute.fill_outcome import build_fill_accounting, llm_exit_reason_for_intent
 from trader.execution.contracts import Fill
 
 

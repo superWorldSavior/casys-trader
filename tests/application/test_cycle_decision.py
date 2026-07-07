@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from trader.agent.client import Decision
-from trader.application.cycle_decision import (
+from trader.application.execute.cycle_decision import (
     DecisionExecutionContext,
     DecisionExecutionState,
     execute_one_cycle_decision,

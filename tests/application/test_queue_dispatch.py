@@ -17,9 +17,9 @@ from dataclasses import asdict
 from datetime import datetime, timezone
 
 from trader.agent.protocol.types import Decision
-from trader.application.decide_handler import make_decide_handler
-import trader.application.queue_dispatch as queue_dispatch_mod
-from trader.application.queue_dispatch import dispatch_decide_via_queue
+from trader.application.decide.decide_handler import make_decide_handler
+import trader.application.decide.queue_dispatch as queue_dispatch_mod
+from trader.application.decide.queue_dispatch import dispatch_decide_via_queue
 from trader.queue.decide_pool import DecidePool
 from trader.queue.ledger import TaskLedger
 from trader.queue.pools import ResourcePools
@@ -450,13 +450,13 @@ def test_ledger_delete_stale_decide_supprime_running_precedent_expire(tmp_path):
 
 def test_build_symbol_facts_champs_de_base(tmp_path):
     """build_symbol_facts retourne data_age_m, session, active_watches."""
-    from trader.application.planner_batch import build_symbol_facts
+    from trader.application.decide.planner_batch import build_symbol_facts
     from unittest.mock import patch
 
     now = datetime(2026, 7, 4, 10, 0, tzinfo=timezone.utc)
     mock_session = {"status": "open", "venue": "NYSE"}
 
-    with patch("trader.application.planner_batch.market") as mock_market:
+    with patch("trader.application.decide.planner_batch.market") as mock_market:
         mock_market.session_context.return_value = mock_session
         facts = build_symbol_facts(
             "AAPL",
@@ -474,7 +474,7 @@ def test_build_symbol_facts_champs_de_base(tmp_path):
 
 def test_build_symbol_facts_avec_market_context_et_review():
     """build_symbol_facts intègre execution/planning et last_llm_review."""
-    from trader.application.planner_batch import build_symbol_facts
+    from trader.application.decide.planner_batch import build_symbol_facts
     from unittest.mock import patch
 
     now = datetime(2026, 7, 4, 10, 0, tzinfo=timezone.utc)
@@ -482,7 +482,7 @@ def test_build_symbol_facts_avec_market_context_et_review():
     mc = {"execution": {"enabled": True}, "planning": {"enabled": True}}
     review = {"action": "BUY", "confidence": 0.9}
 
-    with patch("trader.application.planner_batch.market") as mock_market:
+    with patch("trader.application.decide.planner_batch.market") as mock_market:
         mock_market.session_context.return_value = {}
         facts = build_symbol_facts(
             "AAPL",

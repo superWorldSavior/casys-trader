@@ -2,7 +2,7 @@ from __future__ import annotations
 
 
 def test_merge_gate_feedback_appends_confidence_context_to_agent_note() -> None:
-    from trader.application.confidence_feedback import merge_gate_feedback
+    from trader.application.record.confidence_feedback import merge_gate_feedback
 
     note = merge_gate_feedback(
         "risk:confidence_below_required",
@@ -16,7 +16,7 @@ def test_merge_gate_feedback_appends_confidence_context_to_agent_note() -> None:
 
 
 def test_merge_gate_feedback_preserves_unrelated_notes() -> None:
-    from trader.application.confidence_feedback import merge_gate_feedback
+    from trader.application.record.confidence_feedback import merge_gate_feedback
 
     assert merge_gate_feedback("ok", "ctx", "garde") == "garde"
     assert merge_gate_feedback("ok", None, None) is None

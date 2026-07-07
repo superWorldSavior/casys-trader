@@ -8,7 +8,7 @@ finalisé). Ce test la verrouille : quand tu ajoutes un action tool à
 et pense à `build_decision_row` pour l'audit durable.
 """
 from trader.agent import client as codex_client
-from trader.application import tool_outcomes
+from trader.application.record import tool_outcomes
 from trader.reporting import tool_trace
 
 # Les action tools FINAUX (par symbole) reconnus par le contrat symbol_calls.

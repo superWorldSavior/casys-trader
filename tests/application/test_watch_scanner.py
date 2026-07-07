@@ -109,7 +109,7 @@ def _exit_watch_plan(
 
 
 def test_scan_indicator_watches_triggers_and_wakes_symbol(tmp_path) -> None:
-    from trader.application.watch_scanner import scan_indicator_watches
+    from trader.application.cycle.watch_scanner import scan_indicator_watches
 
     sched = Scheduler(tmp_path / "scheduler.json")
     now = datetime(2026, 6, 5, 12, 10, tzinfo=timezone.utc)
@@ -131,7 +131,7 @@ def test_scan_indicator_watches_triggers_and_wakes_symbol(tmp_path) -> None:
 
 
 def test_scan_indicator_watches_ignores_non_connection_market_errors(tmp_path) -> None:
-    from trader.application.watch_scanner import scan_indicator_watches
+    from trader.application.cycle.watch_scanner import scan_indicator_watches
 
     sched = Scheduler(tmp_path / "scheduler.json")
     now = datetime(2026, 6, 5, 12, 10, tzinfo=timezone.utc)
@@ -155,7 +155,7 @@ def test_scan_indicator_watches_ignores_non_connection_market_errors(tmp_path) -
 def test_scan_indicator_watches_reraises_connection_market_errors(tmp_path) -> None:
     import pytest
 
-    from trader.application.watch_scanner import scan_indicator_watches
+    from trader.application.cycle.watch_scanner import scan_indicator_watches
 
     sched = Scheduler(tmp_path / "scheduler.json")
     now = datetime(2026, 6, 5, 12, 10, tzinfo=timezone.utc)
@@ -172,7 +172,7 @@ def test_scan_indicator_watches_reraises_connection_market_errors(tmp_path) -> N
 
 
 def test_scan_exit_watches_reuses_runtime_bars_and_persists_cooldown() -> None:
-    from trader.application.watch_scanner import scan_exit_watches
+    from trader.application.cycle.watch_scanner import scan_exit_watches
 
     now = datetime(2026, 6, 5, 12, 10, tzinfo=timezone.utc)
     plan_store = _PlanStore([_exit_watch_plan()])
@@ -202,7 +202,7 @@ def test_scan_exit_watches_reuses_runtime_bars_and_persists_cooldown() -> None:
 
 
 def test_scan_exit_watches_dry_run_does_not_persist_cooldown() -> None:
-    from trader.application.watch_scanner import scan_exit_watches
+    from trader.application.cycle.watch_scanner import scan_exit_watches
 
     now = datetime(2026, 6, 5, 12, 10, tzinfo=timezone.utc)
     plan_store = _PlanStore([_exit_watch_plan()])
@@ -227,7 +227,7 @@ def test_scan_exit_watches_dry_run_does_not_persist_cooldown() -> None:
 
 
 def test_scan_exit_watches_skips_cooldown_without_fetch() -> None:
-    from trader.application.watch_scanner import scan_exit_watches
+    from trader.application.cycle.watch_scanner import scan_exit_watches
 
     now = datetime(2026, 6, 5, 12, 10, tzinfo=timezone.utc)
     plan_store = _PlanStore([_exit_watch_plan(last_triggered_at="2026-06-05T12:00:00+00:00")])
@@ -249,7 +249,7 @@ def test_scan_exit_watches_skips_cooldown_without_fetch() -> None:
 
 
 def test_scan_exit_watches_fetches_missing_timeframe() -> None:
-    from trader.application.watch_scanner import scan_exit_watches
+    from trader.application.cycle.watch_scanner import scan_exit_watches
 
     now = datetime(2026, 6, 5, 12, 10, tzinfo=timezone.utc)
     plan_store = _PlanStore([_exit_watch_plan(interval="1h")])
@@ -277,7 +277,7 @@ def test_scan_exit_watches_fetches_missing_timeframe() -> None:
 def test_scan_exit_watches_market_error_classification() -> None:
     import pytest
 
-    from trader.application.watch_scanner import scan_exit_watches
+    from trader.application.cycle.watch_scanner import scan_exit_watches
 
     now = datetime(2026, 6, 5, 12, 10, tzinfo=timezone.utc)
     plan_store = _PlanStore([_exit_watch_plan(interval="1h")])

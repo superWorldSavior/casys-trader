@@ -1,5 +1,5 @@
 from trader.agent.protocol.types import Decision
-from trader.application.order_admission import (
+from trader.application.execute.order_admission import (
     ACTION_INTENTS,
     VALID_INTENTS,
     clamp_exit_quantity,

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from trader.agent.protocol.types import Decision
-from trader.application.decision_entries import (
+from trader.application.record.decision_entries import (
     build_decision_entry,
     counts_as_llm_review,
     hold_reason_for_decision,

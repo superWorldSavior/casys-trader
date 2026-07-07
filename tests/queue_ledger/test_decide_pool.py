@@ -20,7 +20,7 @@ from dataclasses import replace
 import pytest
 
 from trader.agent.protocol.types import Decision
-from trader.application.decide_handler import make_decide_handler
+from trader.application.decide.decide_handler import make_decide_handler
 from trader.queue.decide_pool import DecidePool
 from trader.queue.ledger import TaskLedger
 from trader.queue.pools import ResourcePools
@@ -449,7 +449,7 @@ def test_pool_tool_round_bout_en_bout(tmp_path):
     """Pool réel + handler réel + tool_services : round d'outils exécuté dans le
     worker, décision finale collectée avec traces + model_calls=2 (review T4 E7)."""
     from trader.agent.protocol.types import BatchToolCallRequest
-    from trader.application.decide_one import ToolRoundServices
+    from trader.application.decide.decide_one import ToolRoundServices
 
     class _ToolRoundClient:
         """1er appel → tournée d'outils ; 2e appel → décision finale."""

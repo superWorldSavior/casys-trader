@@ -2,7 +2,7 @@ import json
 from datetime import datetime, timezone
 
 from trader.reporting.ledger import decision_ledger
-from trader.application.decision_recorder import DecisionRecorder
+from trader.application.record.decision_recorder import DecisionRecorder
 
 
 class FakeLearnings:

@@ -10,7 +10,7 @@ from pathlib import Path
 
 import json
 
-from trader.application.strategy_language_migration import (
+from trader.application.migration.strategy_language_migration import (
     migrate_json_file,
     migrate_jsonl_file,
     migrate_strategy_language_value,

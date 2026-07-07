@@ -1,7 +1,7 @@
 """Push des décisions récentes dans les facts par-symbole (issue #4, pivot push)."""
 from datetime import datetime, timezone
 
-from trader.application.planner_batch import build_symbol_facts
+from trader.application.decide.planner_batch import build_symbol_facts
 
 _NOW = datetime(2026, 7, 5, tzinfo=timezone.utc)
 

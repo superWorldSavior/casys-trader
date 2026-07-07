@@ -25,7 +25,7 @@ class _DataSource:
 
 
 def test_fetch_exit_bars_uses_fresh_valid_5m_for_open_tradable_plans() -> None:
-    from trader.application.exit_bars import fetch_exit_bars_for_open_plans
+    from trader.application.exit.exit_bars import fetch_exit_bars_for_open_plans
 
     now = datetime(2026, 6, 15, 14, 30, tzinfo=timezone.utc)
     fallback_bar = Bar(ts=now.isoformat(), open=99.0, high=101.0, low=98.0, close=100.0, volume=10.0)
@@ -47,7 +47,7 @@ def test_fetch_exit_bars_uses_fresh_valid_5m_for_open_tradable_plans() -> None:
 
 
 def test_fetch_exit_bars_falls_back_when_5m_bars_are_invalid() -> None:
-    from trader.application.exit_bars import fetch_exit_bars_for_open_plans
+    from trader.application.exit.exit_bars import fetch_exit_bars_for_open_plans
 
     now = datetime(2026, 6, 15, 14, 30, tzinfo=timezone.utc)
     fallback_bar = Bar(ts=now.isoformat(), open=99.0, high=101.0, low=98.0, close=100.0, volume=10.0)
@@ -67,14 +67,14 @@ def test_fetch_exit_bars_falls_back_when_5m_bars_are_invalid() -> None:
 
 
 def test_bar_ts_after_plan_open_preserves_fail_open_parse_errors() -> None:
-    from trader.application.exit_bars import bar_ts_after_plan_open
+    from trader.application.exit.exit_bars import bar_ts_after_plan_open
 
     assert bar_ts_after_plan_open("NOT_A_DATE", "2026-06-10T11:52:00+00:00") is True
     assert bar_ts_after_plan_open("2026-06-10T11:45:00+00:00", "NOT_A_DATE") is True
 
 
 def test_exit_bar_extremes_aggregate_recent_5m_bars_after_plan_open() -> None:
-    from trader.application.exit_bars import exit_bar_extremes
+    from trader.application.exit.exit_bars import exit_bar_extremes
 
     bars = [
         Bar(ts="2026-06-10T11:45:00+00:00", open=99.0, high=110.0, low=90.0, close=99.0, volume=10.0),
@@ -96,7 +96,7 @@ def test_exit_bar_extremes_aggregate_recent_5m_bars_after_plan_open() -> None:
 
 
 def test_exit_bar_extremes_uses_only_last_fallback_bar_after_plan_open() -> None:
-    from trader.application.exit_bars import exit_bar_extremes
+    from trader.application.exit.exit_bars import exit_bar_extremes
 
     bars = [
         Bar(ts="2026-06-10T12:00:00+00:00", open=99.0, high=110.0, low=90.0, close=99.0, volume=10.0),
@@ -116,7 +116,7 @@ def test_exit_bar_extremes_uses_only_last_fallback_bar_after_plan_open() -> None
 
 
 def test_exit_bar_extremes_ignores_last_fallback_bar_before_plan_open() -> None:
-    from trader.application.exit_bars import exit_bar_extremes
+    from trader.application.exit.exit_bars import exit_bar_extremes
 
     bars = [
         Bar(ts="2026-06-10T11:45:00+00:00", open=99.0, high=110.0, low=90.0, close=99.0, volume=10.0),

@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from trader.application import learnings_recall
-from trader.application.learnings_recall import build_recall_provider
+from trader.application.decide import learnings_recall
+from trader.application.decide.learnings_recall import build_recall_provider
 
 
 NOW = datetime(2026, 7, 4, 12, 0, tzinfo=timezone.utc)

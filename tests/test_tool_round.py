@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import trader.agent.tools as agent_tools
-from trader.application.tool_round import run_one_round
+from trader.application.decide.tool_round import run_one_round
 
 
 def test_enrichit_les_note_ids_de_recall_learnings() -> None:

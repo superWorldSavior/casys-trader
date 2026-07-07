@@ -11,7 +11,7 @@ import pytest
 
 import trader.agent.tools as agent_tools
 from trader.agent import client as codex_client
-from trader.application.tool_round import resolve_symbol_decision
+from trader.application.decide.tool_round import resolve_symbol_decision
 
 Decision = codex_client.Decision
 BatchToolCallRequest = codex_client.BatchToolCallRequest

@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from trader.application import exit_update as exit_update_service
-from trader.application.exit_update import apply_exit_update_to_open_plan
+from trader.application.exit import exit_update as exit_update_service
+from trader.application.exit.exit_update import apply_exit_update_to_open_plan
 from trader.planning.trade_plan import TradePlan, TradePlanStore, create_trade_plan
 
 

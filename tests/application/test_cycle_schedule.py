@@ -6,7 +6,7 @@ from trader.planning.scheduler import Scheduler, STALE_BACKOFF_MAX_MINUTES
 
 
 def test_cycle_schedule_exposes_wake_policies_from_application_layer(tmp_path) -> None:
-    from trader.application import cycle_schedule
+    from trader.application.cycle import cycle_schedule
 
     sched = Scheduler(tmp_path / "scheduler.json")
     now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
@@ -34,7 +34,7 @@ def test_cycle_schedule_exposes_wake_policies_from_application_layer(tmp_path) -
 
 
 def test_cycle_schedule_applies_watch_then_expiry_wake(tmp_path) -> None:
-    from trader.application import cycle_schedule
+    from trader.application.cycle import cycle_schedule
 
     sched = Scheduler(tmp_path / "scheduler.json")
     now = datetime(2026, 7, 2, 10, 0, tzinfo=timezone.utc)

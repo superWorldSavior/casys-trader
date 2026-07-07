@@ -282,7 +282,7 @@ def test_hold_tool_loop_blocked_defaults_sains(monkeypatch):
 def test_contexte_run_tool_round_filtre_au_chunk(monkeypatch):
     """_run_tool_round ne livre pas les données des symboles hors chunk au ToolContext."""
     from trader import agent_tools
-    from trader.application import planner_batch
+    from trader.application.decide import planner_batch
 
     captured: list[agent_tools.ToolContext] = []
     real_execute = agent_tools.execute_tool_round

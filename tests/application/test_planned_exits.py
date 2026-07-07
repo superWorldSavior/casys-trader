@@ -10,7 +10,7 @@ from trader.planning.trade_plan import TradePlanStore, create_trade_plan
 
 
 def test_planned_exits_executes_take_profit_and_records_performance(tmp_path) -> None:
-    from trader.application.planned_exits import apply_planned_exits
+    from trader.application.exit.planned_exits import apply_planned_exits
 
     state_dir = tmp_path / "state"
     now = datetime(2026, 6, 5, 14, 30, tzinfo=timezone.utc)

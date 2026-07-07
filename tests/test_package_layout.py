@@ -19,11 +19,30 @@ def _assert_application_submodule_layout(application_dir: Path, submodule: str, 
         shim_path = application_dir / f"{module}.py"
 
         assert new_path.exists()
-        assert shim_path.exists()
-        assert f"trader.application.{submodule}.{module}" in shim_path.read_text(encoding="utf-8")
+        assert not shim_path.exists()
 
 
-def test_application_migration_modules_are_nested_with_legacy_shims() -> None:
+def test_application_package_has_only_canonical_subpackages() -> None:
+    application_dir = Path(__file__).resolve().parents[1] / "trader" / "application"
+
+    entries = {
+        path.name
+        for path in application_dir.iterdir()
+        if path.name != "__pycache__"
+    }
+
+    assert entries == {
+        "__init__.py",
+        "cycle",
+        "decide",
+        "execute",
+        "exit",
+        "migration",
+        "record",
+    }
+
+
+def test_application_migration_modules_are_nested_without_legacy_shims() -> None:
     application_dir = Path(__file__).resolve().parents[1] / "trader" / "application"
 
     _assert_application_submodule_layout(
@@ -35,7 +54,7 @@ def test_application_migration_modules_are_nested_with_legacy_shims() -> None:
     )
 
 
-def test_application_record_modules_are_nested_with_legacy_shims() -> None:
+def test_application_record_modules_are_nested_without_legacy_shims() -> None:
     application_dir = Path(__file__).resolve().parents[1] / "trader" / "application"
 
     _assert_application_submodule_layout(
@@ -53,7 +72,7 @@ def test_application_record_modules_are_nested_with_legacy_shims() -> None:
     )
 
 
-def test_application_cycle_modules_are_nested_with_legacy_shims() -> None:
+def test_application_cycle_modules_are_nested_without_legacy_shims() -> None:
     application_dir = Path(__file__).resolve().parents[1] / "trader" / "application"
 
     _assert_application_submodule_layout(
@@ -69,7 +88,7 @@ def test_application_cycle_modules_are_nested_with_legacy_shims() -> None:
     )
 
 
-def test_application_decide_modules_are_nested_with_legacy_shims() -> None:
+def test_application_decide_modules_are_nested_without_legacy_shims() -> None:
     application_dir = Path(__file__).resolve().parents[1] / "trader" / "application"
 
     _assert_application_submodule_layout(
@@ -87,7 +106,7 @@ def test_application_decide_modules_are_nested_with_legacy_shims() -> None:
     )
 
 
-def test_application_exit_modules_are_nested_with_legacy_shims() -> None:
+def test_application_exit_modules_are_nested_without_legacy_shims() -> None:
     application_dir = Path(__file__).resolve().parents[1] / "trader" / "application"
 
     _assert_application_submodule_layout(
@@ -104,7 +123,7 @@ def test_application_exit_modules_are_nested_with_legacy_shims() -> None:
     )
 
 
-def test_application_execute_modules_are_nested_with_legacy_shims() -> None:
+def test_application_execute_modules_are_nested_without_legacy_shims() -> None:
     application_dir = Path(__file__).resolve().parents[1] / "trader" / "application"
 
     _assert_application_submodule_layout(
@@ -302,8 +321,8 @@ def test_daemon_delegates_queue_pool_bootstrap_to_runtime_adapter() -> None:
 
     tree = ast.parse(source, filename=str(daemon_path))
     forbidden_modules = {
-        "trader.application.decide_handler",
-        "trader.application.execute_order_handler",
+        "trader.application.decide.decide_handler",
+        "trader.application.execute.execute_order_handler",
         "trader.infrastructure.queue.decide_pool",
         "trader.infrastructure.queue.ledger",
         "trader.infrastructure.queue.pools",

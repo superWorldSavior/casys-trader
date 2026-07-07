@@ -1,6 +1,6 @@
 import pytest
 
-from trader.application.risk_admission import (
+from trader.application.execute.risk_admission import (
     FinalRiskGateRequest,
     RiskAdmissionRequest,
     assess_final_risk_gate,
