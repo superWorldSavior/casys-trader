@@ -36,6 +36,7 @@ class RunCycleRuntimeContext:
     task_ledger: object | None
     queue_execute_enabled: bool
     execute_ledger: object | None
+    plan_snapshot: object | None = None
     wake_reasons: list | None = None
 
 
@@ -74,4 +75,5 @@ def dispatch_run_cycle(
         task_ledger=context.task_ledger,
         queue_execute_enabled=context.queue_execute_enabled,
         execute_ledger=context.execute_ledger,
+        plan_snapshot=context.plan_snapshot,
     )

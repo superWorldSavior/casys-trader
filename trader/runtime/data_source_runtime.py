@@ -73,6 +73,24 @@ class DataSourceHandle:
         return self._current
 
 
+class PlanSnapshotHandle:
+    """Référence partagée vers les TradePlans ouverts visibles par les workers."""
+
+    def __init__(self) -> None:
+        self._plans: list = []
+        self._as_of: str | None = None
+
+    def update(self, plans: list, *, as_of: str | None = None) -> None:
+        self._plans = plans
+        self._as_of = as_of
+
+    def get(self) -> list:
+        return self._plans
+
+    def as_of(self) -> str | None:
+        return self._as_of
+
+
 def _default_logger() -> logging.Logger:
     return logging.getLogger("casys-trader")
 

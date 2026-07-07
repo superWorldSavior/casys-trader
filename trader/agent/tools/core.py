@@ -65,6 +65,14 @@ class LearningsRecallProvider(Protocol):
     def __call__(self, query: JsonObject) -> ToolPayload: ...
 
 
+class OpenPlansProvider(Protocol):
+    def __call__(self) -> list: ...
+
+
+class OpenPlansAsOfProvider(Protocol):
+    def __call__(self) -> str | None: ...
+
+
 @dataclass(frozen=True)
 class ToolContext:
     """Contexte étroit construit par le daemon pour LE cycle courant.
@@ -82,6 +90,8 @@ class ToolContext:
     attribution: Mapping[str, Any] | None = None
     indicator_resolver: IndicatorResolver | None = None
     learnings_recall_provider: LearningsRecallProvider | None = None
+    open_plans_provider: OpenPlansProvider | None = field(default=None)
+    open_plans_as_of_provider: OpenPlansAsOfProvider | None = field(default=None)
 
 
 @dataclass(frozen=True)

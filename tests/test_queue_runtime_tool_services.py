@@ -36,6 +36,23 @@ def test_get_bars_suit_le_handle(tmp_path):
     assert services.get_bars("SPY") == [("bar", "SPY")]
 
 
+def test_get_open_plans_provider_est_propage(tmp_path):
+    def get_open_plans() -> list:
+        return [{"id": "plan-spy", "symbol": "SPY"}]
+
+    def get_open_plans_as_of() -> str:
+        return "2026-07-05T08:00:00+00:00"
+
+    services = _build(
+        tmp_path,
+        get_open_plans=get_open_plans,
+        get_open_plans_as_of=get_open_plans_as_of,
+    )
+
+    assert services.open_plans_provider is get_open_plans
+    assert services.open_plans_as_of_provider is get_open_plans_as_of
+
+
 def test_services_n_acceptent_plus_max_rounds(tmp_path):
     try:
         _build(tmp_path, max_rounds=0)

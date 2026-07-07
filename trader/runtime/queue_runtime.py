@@ -308,6 +308,8 @@ def start_execute_queue(
 def build_decide_tool_services(
     *,
     get_data_source: Callable[[], object],
+    get_open_plans: Callable[[], list] | None = None,
+    get_open_plans_as_of: Callable[[], str | None] | None = None,
     learnings_db_path: Path,
     max_context_requests_per_symbol: int,
     max_indicators_per_request: int,
@@ -353,6 +355,8 @@ def build_decide_tool_services(
         learnings_recall_provider=recall_provider,
         max_context_requests_per_symbol=max_context_requests_per_symbol,
         max_indicators_per_request=max_indicators_per_request,
+        open_plans_provider=get_open_plans,
+        open_plans_as_of_provider=get_open_plans_as_of,
     )
 
 

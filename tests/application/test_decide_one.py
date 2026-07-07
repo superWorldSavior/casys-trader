@@ -384,6 +384,28 @@ def test_tool_round_puis_decision_au_tour_2_sort_tot():
     assert decision.domain_tools["tool_rounds"] == 1       # traces mergées (persistance)
 
 
+def test_tool_context_recoit_open_plans_provider():
+    client = _SeqClient([BatchToolCallRequest(calls=[{"id": "c1", "tool": "get_active_plans", "args": {}}]), {SYMBOL: _ok_decision("HOLD")}])
+    provider = lambda: [
+        {"id": "plan-aapl", "symbol": SYMBOL},
+        {"id": "plan-msft", "symbol": "MSFT"},
+    ]
+
+    decision, calls = decide_one(
+        **{**_BASE_KWARGS, "agent_tools_enabled": True},
+        codex_client=client,
+        tool_services=_services(open_plans_provider=provider),
+        session_backends=_session_backends(),
+        task_id="t",
+    )
+
+    tool_result = client.calls[1]["per_symbol"][SYMBOL]["tool_results"][0]
+    assert decision.action == "HOLD"
+    assert calls == 2
+    assert tool_result["ok"] is True
+    assert [row["symbol"] for row in tool_result["result"]["rows"]] == [SYMBOL, "MSFT"]
+
+
 def test_session_multiround_heartbeat_apres_open_et_chaque_appel_modele():
     """Session : heartbeat après open_session puis après chaque call_model."""
     client = _SeqClient([_tool_request(), {SYMBOL: _ok_decision("BUY")}])

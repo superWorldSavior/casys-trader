@@ -20,7 +20,7 @@ import math
 import os
 import sqlite3
 import time
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
@@ -110,6 +110,7 @@ from trader.infrastructure.state_db.broker_factory import (
     make_scheduler,
     make_trade_plan_store,
 )
+from trader.planning.indicator_watch import is_armed_plan
 
 ROOT = Path(__file__).resolve().parents[2]
 STATE_DIR = ROOT / "state"
@@ -125,6 +126,8 @@ _OPENING_INTENTS = {"OPEN_LONG", "OPEN_SHORT", "FLIP", "SCALE_IN"}
 _PURE_OPEN_INTENTS = {"OPEN_LONG", "OPEN_SHORT"}
 _RISK_GUARDED_OPENING_INTENTS = {"OPEN_LONG", "OPEN_SHORT", "SCALE_IN"}
 _RELATIVE_ORDER_INTENTS = order_admission.RELATIVE_ORDER_INTENTS
+_PLAN_ENTRY_THESIS_MAX_CHARS = 500
+_LAST_LLM_REVIEW_KEYS = ("ts", "verdict", "action", "intent", "llm_provider", "llm_model")
 
 
 def _llm_exit_reason_for_intent(intent: str) -> str | None:
@@ -817,6 +820,63 @@ def _active_watch_summaries_by_symbol(
     return planner_batch._active_watch_summaries_by_symbol(sched=sched, symbols=symbols, now=now)
 
 
+def _global_plans_summary(sched: scheduler.Scheduler | None, now: datetime) -> list[dict]:
+    if sched is None:
+        return []
+    try:
+        summaries: list[dict] = []
+        for watch in sched.active_indicator_watches(now=now):
+            armed = is_armed_plan(watch)
+            item = {
+                "symbol": watch.get("symbol"),
+                "id": watch.get("id"),
+                "kind": "armed" if armed else "wake",
+            }
+            if armed:
+                order = watch.get("order")
+                if isinstance(order, dict) and order.get("intent") is not None:
+                    item["intent"] = order.get("intent")
+            summaries.append(item)
+        return summaries
+    except Exception:
+        log.warning(
+            "[plans_summary] échec construction résumé global (conscience d'état dégradée)",
+            exc_info=True,
+        )
+        return []
+
+
+def _bounded_plan_text(value: str | None, *, max_chars: int) -> str | None:
+    if value is None:
+        return None
+    return str(value)[:max_chars]
+
+
+def _compact_last_llm_review(review: dict | None) -> dict | None:
+    if not isinstance(review, dict):
+        return None
+    compact = {
+        key: review[key]
+        for key in _LAST_LLM_REVIEW_KEYS
+        if key in review and review[key] is None or isinstance(review.get(key), str)
+    }
+    return compact or None
+
+
+def _plan_to_context_dict(plan: TradePlan) -> dict:
+    return {
+        "id": plan.id,
+        "symbol": plan.symbol,
+        "side": plan.side,
+        "entry_price": plan.entry_price,
+        "hard_stop_price": plan.hard_stop_price,
+        "take_profits": [asdict(take_profit) for take_profit in plan.take_profits],
+        "remaining_quantity": plan.remaining_quantity,
+        "last_llm_review": _compact_last_llm_review(plan.last_llm_review),
+        "entry_thesis": _bounded_plan_text(plan.entry_thesis, max_chars=_PLAN_ENTRY_THESIS_MAX_CHARS),
+    }
+
+
 def _earliest_active_watch_expiry_iso(
     sched: scheduler.Scheduler, sym: str, *, now: datetime
 ) -> str | None:
@@ -1483,6 +1543,7 @@ def run_cycle(
     task_ledger=None,  # TaskLedger | None (task_ledger.db — dédié decide)
     queue_execute_enabled: bool = False,
     execute_ledger=None,  # TaskLedger | None (casys.db — partagé broker/plan/ledger)
+    plan_snapshot: object | None = None,
 ) -> dict:
     """Exécute UN cycle. Retourne un rapport structuré (machine-readable)."""
     now = now or datetime.now(timezone.utc)
@@ -1551,6 +1612,11 @@ def run_cycle(
         state_dir=STATE_DIR,
         backend=os.getenv("CASYS_STATE_BACKEND", "json"),
     )
+    if plan_snapshot is not None:
+        plan_snapshot.update(
+            [_plan_to_context_dict(plan) for plan in plan_store.open_plans()],
+            as_of=now.isoformat(),
+        )
     gate = RiskGate(RiskLimits.from_dict(risk_cfg))
     # Paper/exploration : si False, une ouverture SANS hard_stop n'est plus rejetée
     # (stop optionnel, position bornée par les seuls fusibles notionnels). Défaut
@@ -1733,6 +1799,7 @@ def run_cycle(
         },
         "cockpit": cockpit,
         "stale_market_data": stale_market_data,
+        "active_plans_summary": _global_plans_summary(sched, now),
         # KPI live injectés pour que l'agent décideur pilote sa performance.
         "kpis": live_kpis.compute_live_kpis(STATE_DIR),
         # Attribution décision->résultat : P&L réalisé par trade, calibration de la
@@ -2399,11 +2466,14 @@ def main(
     # Ref partagée vers le data_source courant : les workers de file la lisent via
     # make_indirect_get_bars(handle.get) — jamais de capture de l'objet (remplacé en run).
     _ds_handle = data_source_runtime.DataSourceHandle()
+    _plan_snapshot = data_source_runtime.PlanSnapshotHandle()
 
     # Services du tour d'outils grain-1 (spec queue tool-round §4, issue #2) :
     # construits au boot, consommés par le handler decide quand agent_tools_enabled.
     _decide_tool_services = queue_runtime.build_decide_tool_services(
         get_data_source=_ds_handle.get,
+        get_open_plans=_plan_snapshot.get,
+        get_open_plans_as_of=_plan_snapshot.as_of,
         learnings_db_path=STATE_DIR / "learnings.db",
         max_context_requests_per_symbol=args.max_context_requests_per_symbol,
         max_indicators_per_request=args.max_indicators_per_request,
@@ -2562,6 +2632,7 @@ def main(
                     task_ledger=_task_ledger,
                     queue_execute_enabled=_queue_execute_enabled,
                     execute_ledger=_execute_ledger,
+                    plan_snapshot=_plan_snapshot,
                 )
                 if not due_symbols and not protection_cycle_due:
                     wait = sched.seconds_until_wake(symbols)

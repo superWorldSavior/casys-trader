@@ -44,6 +44,28 @@ def test_reference_agent_tools_liste_les_read_only_tools_du_registry() -> None:
     assert documented == set(TOOL_REGISTRY)
 
 
+def test_prompts_documentent_les_trois_niveaux_plans_watches() -> None:
+    from trader.agent.protocol import prompts
+
+    assert "active_watches" in prompts._DECISION_GUIDANCE
+    assert "context.active_plans_summary" in prompts._DECISION_GUIDANCE
+    assert "get_active_plans" in prompts._DECISION_GUIDANCE
+    assert "détail local" in prompts._DECISION_GUIDANCE
+    assert "résumé global" in prompts._DECISION_GUIDANCE
+    assert "détail global" in prompts._DECISION_GUIDANCE
+    assert "N'appelle `get_active_plans` QUE si" in prompts._DECISION_GUIDANCE
+    assert "ta vue locale ne suffisent pas" in prompts._DECISION_GUIDANCE
+
+
+def test_catalogue_et_reference_decrivent_get_active_plans_comme_tradeplans_globaux() -> None:
+    from trader.agent.protocol import prompts
+
+    doc = Path("docs/reference/agent-tools.md").read_text(encoding="utf-8")
+
+    assert "détail complet TradePlans ouverts (portée globale)" in prompts._TOOL_CATALOG
+    assert "| `get_active_plans` | `plans` | détail complet TradePlans ouverts (portée globale) |" in doc
+
+
 def test_reference_agent_tools_expose_les_actions_pine_like_publiques() -> None:
     doc = Path("docs/reference/agent-tools.md").read_text(encoding="utf-8")
     action_section = doc.split("## Action tools finaux par symbole", 1)[1]
@@ -255,6 +277,21 @@ def _full_context() -> ToolContext:
     )
 
 
+def _plans_provider_context() -> ToolContext:
+    return ToolContext(
+        now=datetime(2026, 7, 2, 10, 0, tzinfo=UTC),
+        allowed_symbols=frozenset({"2330.TW"}),
+        active_watches_by_symbol={
+            "2330.TW": [{"watch_id": "2330.TW:w1", "kind": "indicator_watch"}],
+        },
+        open_plans_provider=lambda: [
+            {"id": "plan-2330", "symbol": "2330.TW", "side": "LONG"},
+            {"id": "plan-saf", "symbol": "SAF.PA", "side": "SHORT"},
+        ],
+        open_plans_as_of_provider=lambda: "2026-07-02T10:00:00+00:00",
+    )
+
+
 def test_get_freshness_rend_execution_planning_et_age():
     result, trace = agent_tools.execute_tool_call(
         AgentToolCall(id="c1", tool="get_freshness", args={"symbols": ["2330.TW"]}),
@@ -286,7 +323,37 @@ def test_get_freshness_valide_ses_args():
     assert trace.detail["reason"] == "invalid_args"
 
 
-def test_get_active_plans_filtre_par_symbole_et_limite():
+def test_get_active_plans_avec_provider_rend_des_plans_pas_des_watches():
+    result, _ = agent_tools.execute_tool_call(
+        AgentToolCall(id="c1", tool="get_active_plans", args={"symbol": "2330.TW"}),
+        _plans_provider_context(),
+    )
+
+    assert result.result["rows"] == [{"id": "plan-2330", "symbol": "2330.TW", "side": "LONG"}]
+    assert result.result["as_of"] == "2026-07-02T10:00:00+00:00"
+
+
+def test_get_active_plans_avec_provider_sans_symbole_est_global():
+    result, _ = agent_tools.execute_tool_call(
+        AgentToolCall(id="c1", tool="get_active_plans", args={}),
+        _plans_provider_context(),
+    )
+
+    assert [row["symbol"] for row in result.result["rows"]] == ["2330.TW", "SAF.PA"]
+    assert result.result["as_of"] == "2026-07-02T10:00:00+00:00"
+
+
+def test_get_active_plans_avec_provider_filtre_par_symbole():
+    result, _ = agent_tools.execute_tool_call(
+        AgentToolCall(id="c1", tool="get_active_plans", args={"symbol": "SAF.PA"}),
+        _plans_provider_context(),
+    )
+
+    assert result.result["rows"] == [{"id": "plan-saf", "symbol": "SAF.PA", "side": "SHORT"}]
+    assert result.result["as_of"] == "2026-07-02T10:00:00+00:00"
+
+
+def test_get_active_plans_fallback_watches_filtre_par_symbole_et_limite():
     result, _ = agent_tools.execute_tool_call(
         AgentToolCall(id="c1", tool="get_active_plans", args={"symbol": "2330.TW", "limit": 1}),
         _full_context(),
@@ -294,14 +361,16 @@ def test_get_active_plans_filtre_par_symbole_et_limite():
     rows = result.result["rows"]
     assert len(rows) == 1
     assert rows[0]["watch_id"] == "2330.TW:w1"
+    assert result.result["as_of"] is None
 
 
-def test_get_active_plans_sans_symbole_rend_tout_le_lot():
+def test_get_active_plans_fallback_watches_sans_symbole_rend_tout_le_lot():
     result, _ = agent_tools.execute_tool_call(
         AgentToolCall(id="c1", tool="get_active_plans", args={}),
         _full_context(),
     )
     assert len(result.result["rows"]) == 1
+    assert result.result["as_of"] is None
 
 
 # ---------------------------------------------------------------------------

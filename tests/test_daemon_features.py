@@ -1,3 +1,4 @@
+import logging
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -5,6 +6,7 @@ import pytest
 from trader.runtime import daemon
 from trader.agent.client import Decision
 from trader.market.market_data import Bar, MarketError
+from trader.planning.trade_plan import TakeProfit, TradePlan, TradePlanStore
 from trader.planning.scheduler import Scheduler
 
 
@@ -26,6 +28,236 @@ def _write_runtime_config(root) -> None:
     )
     (root / "mandate" / "mandate.md").write_text("# Mandat\n")
     (root / "mandate" / "memory.md").write_text("# Memoire\n")
+
+
+def test_global_plans_summary_rend_un_resume_compact_global(tmp_path) -> None:
+    now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
+    sched = Scheduler(tmp_path / "scheduler.json")
+    sched.set_symbol_indicator_watch(
+        "SPY",
+        {
+            "id": "armed-spy",
+            "symbol": "SPY",
+            "on_trigger": "EXECUTE_ORDER",
+            "order": {"intent": "OPEN_LONG"},
+            "conditions": [{"indicator": "rsi", "op": "<", "value": 30}],
+            "logic": "all",
+            "expires_at": (now + timedelta(hours=1)).isoformat(),
+        },
+    )
+    sched.set_symbol_indicator_watch(
+        "QQQ",
+        {
+            "id": "wake-qqq",
+            "symbol": "QQQ",
+            "on_trigger": "WAKE",
+            "conditions": [{"indicator": "macd", "op": ">", "value": 0}],
+            "logic": "all",
+            "expires_at": (now + timedelta(hours=1)).isoformat(),
+        },
+    )
+
+    summary = daemon._global_plans_summary(sched, now)
+
+    assert summary == [
+        {"symbol": "SPY", "id": "armed-spy", "kind": "armed", "intent": "OPEN_LONG"},
+        {"symbol": "QQQ", "id": "wake-qqq", "kind": "wake"},
+    ]
+    assert all("conditions" not in item for item in summary)
+    assert daemon._global_plans_summary(None, now) == []
+
+
+def test_global_plans_summary_loggue_les_erreurs_sans_lever(caplog) -> None:
+    now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
+
+    class BrokenScheduler:
+        def active_indicator_watches(self, *, now):
+            raise RuntimeError("scheduler broken")
+
+    with caplog.at_level(logging.WARNING, logger="casys-trader"):
+        summary = daemon._global_plans_summary(BrokenScheduler(), now)
+
+    assert summary == []
+    assert "[plans_summary] échec construction résumé global" in caplog.text
+    assert "conscience d'état dégradée" in caplog.text
+
+
+def test_run_cycle_injecte_toujours_active_plans_summary_sched_none(
+    monkeypatch,
+    tmp_path,
+    patch_batch,
+    make_data_source,
+) -> None:
+    _write_runtime_config(tmp_path)
+    state_dir = tmp_path / "state"
+    now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
+    contexts: list[dict] = []
+
+    def bars(symbol: str, lookback: str, interval: str) -> list[Bar]:
+        return [
+            Bar(
+                ts=(now - timedelta(minutes=10)).isoformat(),
+                open=100.0,
+                high=101.0,
+                low=99.0,
+                close=100.0,
+                volume=1000.0,
+            )
+            for _ in range(32)
+        ]
+
+    def decide(**kwargs) -> Decision:
+        contexts.append(kwargs["context"])
+        return Decision.hold(kwargs["symbol"], "attente")
+
+    monkeypatch.setattr(daemon, "ROOT", tmp_path)
+    monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+    patch_batch(decide)
+    data_source = make_data_source(bars)
+
+    daemon.run_cycle(dry_run=True, now=now, symbols_filter=["SPY"], sched=None, data_source=data_source)
+
+    assert contexts
+    assert contexts[0]["active_plans_summary"] == []
+
+
+def test_run_cycle_met_a_jour_le_snapshot_des_plans_ouverts(
+    monkeypatch,
+    tmp_path,
+    patch_batch,
+    make_data_source,
+) -> None:
+    _write_runtime_config(tmp_path)
+    state_dir = tmp_path / "state"
+    now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
+    plan = TradePlan(
+        id="plan-spy",
+        symbol="SPY",
+        side="LONG",
+        quantity=10.0,
+        remaining_quantity=6.0,
+        entry_price=100.0,
+        opened_at=now.isoformat(),
+        hard_stop_price=95.0,
+        take_profits=[TakeProfit(name="tp1", price=110.0, fraction=0.5, quantity=3.0)],
+        last_llm_review={
+            "ts": now.isoformat(),
+            "verdict": "intact",
+            "action": "HOLD",
+            "intent": "HOLD",
+            "llm_provider": "acpx",
+            "llm_model": "gpt-5",
+            "rationale": "tenir",
+        },
+        entry_thesis="breakout propre",
+        entry_context={"large": "noise"},
+    )
+    TradePlanStore(state_dir / "trade_plans.json").upsert(plan)
+
+    def bars(symbol: str, lookback: str, interval: str) -> list[Bar]:
+        return [
+            Bar(
+                ts=(now - timedelta(minutes=10)).isoformat(),
+                open=100.0,
+                high=101.0,
+                low=99.0,
+                close=100.0,
+                volume=1000.0,
+            )
+            for _ in range(32)
+        ]
+
+    def decide(**kwargs) -> Decision:
+        return Decision.hold(kwargs["symbol"], "attente")
+
+    class Snapshot:
+        def __init__(self) -> None:
+            self.plans: list[dict] | None = None
+            self.as_of: str | None = None
+
+        def update(self, plans: list[dict], *, as_of: str | None = None) -> None:
+            self.plans = plans
+            self.as_of = as_of
+
+    snapshot = Snapshot()
+    monkeypatch.setattr(daemon, "ROOT", tmp_path)
+    monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+    patch_batch(decide)
+    data_source = make_data_source(bars)
+
+    daemon.run_cycle(
+        dry_run=True,
+        now=now,
+        symbols_filter=["SPY"],
+        sched=Scheduler(state_dir / "scheduler.json"),
+        data_source=data_source,
+        plan_snapshot=snapshot,
+    )
+
+    assert snapshot.as_of == now.isoformat()
+    assert snapshot.plans == [
+        {
+            "id": "plan-spy",
+            "symbol": "SPY",
+            "side": "LONG",
+            "entry_price": 100.0,
+            "hard_stop_price": 95.0,
+            "take_profits": [
+                {
+                    "name": "tp1",
+                    "price": 110.0,
+                    "fraction": 0.5,
+                    "quantity": 3.0,
+                    "after_fill": "",
+                }
+            ],
+            "remaining_quantity": 6.0,
+            "last_llm_review": {
+                "ts": now.isoformat(),
+                "verdict": "intact",
+                "action": "HOLD",
+                "intent": "HOLD",
+                "llm_provider": "acpx",
+                "llm_model": "gpt-5",
+            },
+            "entry_thesis": "breakout propre",
+        }
+    ]
+
+
+def test_plan_to_context_dict_borne_les_champs_textes_du_plan() -> None:
+    long_text = "x" * 700
+    plan = TradePlan(
+        id="plan-long",
+        symbol="SPY",
+        side="LONG",
+        quantity=10.0,
+        remaining_quantity=10.0,
+        entry_price=100.0,
+        opened_at="2026-06-05T12:00:00+00:00",
+        last_llm_review={
+            "ts": "2026-06-05T12:10:00+00:00",
+            "verdict": "intact",
+            "action": "HOLD",
+            "intent": "HOLD",
+            "llm_provider": "acpx",
+            "llm_model": "gpt-5",
+            "blob": {"huge": long_text},
+        },
+        entry_thesis=long_text,
+    )
+
+    payload = daemon._plan_to_context_dict(plan)
+
+    assert payload["entry_thesis"] == "x" * 500
+    assert payload["last_llm_review"] == {
+        "ts": "2026-06-05T12:10:00+00:00",
+        "verdict": "intact",
+        "action": "HOLD",
+        "intent": "HOLD",
+        "llm_provider": "acpx",
+        "llm_model": "gpt-5",
+    }
 
 
 def test_run_cycle_utilise_la_source_injectee_sans_appeler_market_get_bars(

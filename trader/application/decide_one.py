@@ -62,6 +62,8 @@ class ToolRoundServices:
     learnings_recall_provider: Callable[[dict], dict] | None
     max_context_requests_per_symbol: int
     max_indicators_per_request: int
+    open_plans_provider: Callable[[], list] | None = None
+    open_plans_as_of_provider: Callable[[], str | None] | None = None
     # Bornes d'outils PAR round. Les 24/3 de ToolRoundLimits sont calibrés batch
     # (chunk de 5 symboles) ; en grain-1, 8 calls pour LE symbole décidé — les
     # outils s'exécutent localement, ce relèvement ne coûte aucun appel acpx.
@@ -83,6 +85,8 @@ def _tool_context_from_facts(
     now: datetime,
     indicator_resolver,
     learnings_recall_provider,
+    open_plans_provider=None,
+    open_plans_as_of_provider=None,
 ) -> "agent_tools.ToolContext":
     """Reconstruit le ToolContext mono-symbole depuis les snapshots du payload.
 
@@ -104,6 +108,8 @@ def _tool_context_from_facts(
         # recent_decisions poussé dans les facts ; get_position_risk retiré (issue #4).
         indicator_resolver=indicator_resolver,
         learnings_recall_provider=learnings_recall_provider,
+        open_plans_provider=open_plans_provider,
+        open_plans_as_of_provider=open_plans_as_of_provider,
     )
 
 
@@ -196,6 +202,8 @@ def decide_one(
                 now=(now_fn or (lambda: datetime.now(timezone.utc)))(),
                 indicator_resolver=resolver,
                 learnings_recall_provider=tool_services.learnings_recall_provider,
+                open_plans_provider=tool_services.open_plans_provider,
+                open_plans_as_of_provider=tool_services.open_plans_as_of_provider,
             )
             tool_limits = tool_services.tool_limits()
             def _resolve(session):

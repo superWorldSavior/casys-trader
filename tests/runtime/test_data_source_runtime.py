@@ -71,6 +71,23 @@ def _config(*, profile: str = "paper") -> data_source_runtime.DataSourceRuntimeC
     )
 
 
+def test_plan_snapshot_handle_est_vide_par_defaut_et_remplace_les_plans() -> None:
+    handle = data_source_runtime.PlanSnapshotHandle()
+
+    assert handle.get() == []
+    assert handle.as_of() is None
+
+    first = [{"id": "plan-1", "symbol": "SPY"}]
+    handle.update(first, as_of="2026-07-05T08:00:00+00:00")
+    assert handle.get() == first
+    assert handle.as_of() == "2026-07-05T08:00:00+00:00"
+
+    second = [{"id": "plan-2", "symbol": "QQQ"}]
+    handle.update(second, as_of="2026-07-05T08:05:00+00:00")
+    assert handle.get() == second
+    assert handle.as_of() == "2026-07-05T08:05:00+00:00"
+
+
 def test_load_data_source_config_absent_skips_parser(tmp_path: Path) -> None:
     def parse_config_fn(*_args: object, **_kwargs: object) -> tuple[list[dict], str]:
         raise AssertionError("parser should not be called")

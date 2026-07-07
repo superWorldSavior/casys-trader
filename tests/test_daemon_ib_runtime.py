@@ -77,7 +77,17 @@ def test_main_ouvre_une_connexion_ib_par_cycle_et_la_ferme_en_finally(monkeypatc
     monkeypatch.setattr(daemon, "IBDataSource", FakeIBDataSource, raising=False)
     monkeypatch.setattr(daemon, "run_cycle", run_cycle)
 
-    daemon.main(["--once", "--ib-host", "10.0.0.2", "--ib-port", "4003", "--ib-client-id", "44"])
+    daemon.main([
+        "--once",
+        "--ib-host",
+        "10.0.0.2",
+        "--ib-port",
+        "4003",
+        "--ib-client-id",
+        "44",
+        "--decision-timeout-s",
+        "900",
+    ])
 
     assert events == [
         ("connect", "10.0.0.2", 4003, 44),

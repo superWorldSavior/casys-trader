@@ -24,7 +24,7 @@ acceptés en compat cachée, mais ne sont pas exposés dans ce contrat.
 | `get_indicator_context` | `indicators` | contexte indicateurs d'un symbole |
 | `describe_data` | `indicators` | décrit les données/indicateurs disponibles |
 | `find_indicators` | `indicators` | recherche d'indicateurs (couche sémantique) |
-| `get_active_plans` | `plans` | plans armés / veilles actives |
+| `get_active_plans` | `plans` | détail complet TradePlans ouverts (portée globale) |
 | `get_attribution` | `attribution` | attribution d'un trade / round-trip |
 | `recall_learnings` | `learnings` | rappel sémantique de learnings (cf. [RAG](learnings-rag.md)) |
 
