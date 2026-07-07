@@ -242,6 +242,31 @@ tranche** :
   feedback de correction ; l'invariant « `tool_results` = context tool exécuté »
   est rompu par un rejet d'action injecté synthétiquement (acceptable, à documenter).
 
+### Piste design « contexte plans/watches à 3 niveaux » (proposée 2026-07-07)
+
+Constat : en grain-1 (queue), on injecte aujourd'hui le **global détaillé**
+(portefeuille + « plans armés actifs » de TOUS les symboles) dans **chaque** appel
+per-symbole → redondant et coûteux (répété N fois/cycle), à l'envers de la bonne
+répartition. Direction retenue (Erwan) : injecter le détail *du symbole en cours*
++ un outil pour consulter le reste à la demande.
+
+**Piège** : le global sert la **conscience d'état** (anti-doublon/OCO — « relis-les
+avant d'agir et corrige au lieu d'empiler », cf. chantier OCO). Le mettre
+*uniquement* derrière un outil rend la conscience conditionnelle à ce que l'agent
+pense à l'appeler → non fiable, risque de re-armer des doublons.
+
+**Design cible = 3 niveaux** (pas 2) :
+| Niveau | Contenu | Mécanisme |
+|---|---|---|
+| Détail local | plan + watches **du symbole décidé** | injecté (per-symbole) |
+| Résumé global | liste **compacte** des plans/veilles armés (symbole + intent + id, **sans** conditions) | injecté (léger → garde la conscience d'état) |
+| Détail global | plan/veille complet de n'importe quel symbole | **outil** `get_active_plans` *réparé* (vrais plans, portée globale) à la demande |
+
+Bénéfice : lean contexte per-symbole **sans** sacrifier l'anti-doublon. Ceci
+transforme le « retirer/renommer `get_active_plans` » ci-dessus en « **réparer**
+`get_active_plans` » : vrais TradePlans (pas watches) + portée globale (pas
+`{symbol}` en grain-1) — il devient l'outil du niveau 3.
+
 ### Nettoyages annexes (opportunistes, indépendants)
 - `no_open_plan` → `"rejected"` ; `record_learning` outcome réel ; renommer/clarifier
   `get_active_plans` ; unifier les deux systèmes de traces ; (plus tard) migrer les
