@@ -183,6 +183,20 @@ def test_finalize_action_tool_outcomes_keeps_noop_and_missing_calls_stable() -> 
     assert finalize_action_tool_outcomes({"tool_calls": [{"id": "2", "tool": "strategy_exit", "outcome": "ok"}]}) == [
         {"id": "2", "tool": "strategy_exit", "outcome": "noop"}
     ]
+    assert finalize_action_tool_outcomes(
+        {
+            "exit_update_applied": False,
+            "exit_update_reason": "no_open_plan",
+            "tool_calls": [{"id": "3", "tool": "strategy_exit", "outcome": "ok"}],
+        }
+    ) == [
+        {
+            "id": "3",
+            "tool": "strategy_exit",
+            "outcome": "rejected",
+            "detail": {"reason": "no_open_plan", "exit_update_applied": False},
+        }
+    ]
 
 
 def test_action_tool_contract_lists_all_final_action_tools() -> None:

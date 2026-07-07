@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from trader.runtime import daemon
+from trader.application import cycle_decision
 from trader.agent.client import Decision
 from trader.agent.protocol.parsing import parse_batch
 from trader.execution.broker import Order, SimBroker
@@ -959,7 +960,11 @@ def test_run_cycle_resout_hard_stop_volatilite_direct_avant_risque(
 
     monkeypatch.setattr(daemon, "ROOT", tmp_path)
     monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
-    monkeypatch.setattr(daemon, "_reference_volatility_for_symbol", fresh_volatility)
+    monkeypatch.setattr(
+        cycle_decision.reference_volatility_service,
+        "reference_volatility_for_symbol",
+        fresh_volatility,
+    )
     data_source = make_data_source(lambda symbol, lookback, interval: [
         Bar(ts=now.isoformat(), open=100.0, high=101.0, low=99.0, close=100.0, volume=1000.0)
     ])

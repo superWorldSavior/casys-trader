@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 import pytest
 
 from trader.runtime import daemon
+from trader.application import cycle_decision
 from trader.agent.client import Decision
 from trader.planning.trade_plan import TradePlanStore
 from trader.execution.broker import SimBroker
@@ -145,7 +146,11 @@ def test_plan_arme_resout_hard_stop_volatilite_au_tir(
         )
         return 2.0
 
-    monkeypatch.setattr(daemon, "_reference_volatility_for_symbol", fresh_volatility)
+    monkeypatch.setattr(
+        cycle_decision.reference_volatility_service,
+        "reference_volatility_for_symbol",
+        fresh_volatility,
+    )
     trigger = _armed_trigger(
         exit_plan={"hard_stop": {"type": "volatility_multiple", "multiple": 1.5}},
     )
@@ -222,7 +227,11 @@ def test_plan_arme_structural_sans_barres_au_tir_est_annule(
         tradable_bars_by_symbol.pop(symbol, None)
         return None
 
-    monkeypatch.setattr(daemon, "_reference_volatility_for_symbol", remove_fresh_bars)
+    monkeypatch.setattr(
+        cycle_decision.reference_volatility_service,
+        "reference_volatility_for_symbol",
+        remove_fresh_bars,
+    )
     trigger = _armed_trigger(
         exit_plan={"hard_stop": {"type": "structural", "anchor": "swing_low", "window": 3}},
     )

@@ -379,14 +379,15 @@ def test_daemon_delegates_shutdown_to_runtime_adapter() -> None:
     assert violations == []
 
 
-def test_daemon_delegates_execute_queue_plan_payload_to_application_service() -> None:
+def test_cycle_decision_delegates_execute_queue_plan_payload_to_application_service() -> None:
     repo_root = Path(__file__).resolve().parents[1]
-    daemon_path = repo_root / "trader" / "runtime" / "daemon.py"
+    cycle_decision_path = repo_root / "trader" / "application" / "cycle_decision.py"
     service_path = repo_root / "trader" / "application" / "execute_queue_plan.py"
 
+    assert cycle_decision_path.exists()
     assert service_path.exists()
 
-    source = daemon_path.read_text(encoding="utf-8")
+    source = cycle_decision_path.read_text(encoding="utf-8")
     assert "execute_queue_plan.build_execute_queue_plan_payload" in source
 
     queue_block = source.split("if ctx.queue_execute_enabled and ctx.execute_ledger is not None:", 1)[1]
@@ -401,14 +402,15 @@ def test_daemon_delegates_execute_queue_plan_payload_to_application_service() ->
     assert violations == []
 
 
-def test_daemon_delegates_fill_accounting_to_application_service() -> None:
+def test_cycle_decision_delegates_fill_accounting_to_application_service() -> None:
     repo_root = Path(__file__).resolve().parents[1]
-    daemon_path = repo_root / "trader" / "runtime" / "daemon.py"
+    cycle_decision_path = repo_root / "trader" / "application" / "cycle_decision.py"
     service_path = repo_root / "trader" / "application" / "fill_outcome.py"
 
+    assert cycle_decision_path.exists()
     assert service_path.exists()
 
-    source = daemon_path.read_text(encoding="utf-8")
+    source = cycle_decision_path.read_text(encoding="utf-8")
     assert "fill_outcome.build_fill_accounting" in source
 
     post_fill_block = source.split("fill_accounting = fill_outcome.build_fill_accounting", 1)[1]
@@ -424,23 +426,24 @@ def test_daemon_delegates_fill_accounting_to_application_service() -> None:
     violations = [snippet for snippet in forbidden if snippet in post_fill_block]
 
     assert violations == []
-    append_index = post_fill_block.index("_append_model_performance(**fill_accounting.model_performance)")
+    append_index = post_fill_block.index("ctx.append_model_performance(**fill_accounting.model_performance)")
     update_index = post_fill_block.index("entry.update(fill_accounting.entry_updates)")
     assert append_index < update_index
 
 
-def test_daemon_delegates_fill_plan_effects_to_application_service() -> None:
+def test_cycle_decision_delegates_fill_plan_effects_to_application_service() -> None:
     repo_root = Path(__file__).resolve().parents[1]
-    daemon_path = repo_root / "trader" / "runtime" / "daemon.py"
+    cycle_decision_path = repo_root / "trader" / "application" / "cycle_decision.py"
     service_path = repo_root / "trader" / "application" / "fill_plan_effects.py"
 
+    assert cycle_decision_path.exists()
     assert service_path.exists()
 
-    source = daemon_path.read_text(encoding="utf-8")
+    source = cycle_decision_path.read_text(encoding="utf-8")
     assert "fill_plan_effects.apply_filled_plan_effects" in source
     assert "def _create_plan_for_final_position" not in source
 
-    post_fill_block = source.split("_append_model_performance(**fill_accounting.model_performance)", 1)[1]
+    post_fill_block = source.split("ctx.append_model_performance(**fill_accounting.model_performance)", 1)[1]
     post_fill_block = post_fill_block.split("if fill is not None and decision.intent in _OPENING_INTENTS:", 1)[0]
     forbidden = (
         "plan_store.close_symbol(sym)",

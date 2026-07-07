@@ -35,7 +35,7 @@ def action_tool_outcome(tool: str, entry: dict) -> str | None:
         if entry.get("exit_update_applied"):
             return "applied"
         reason = str(entry.get("exit_update_reason") or "")
-        if reason.startswith("resolve_failed"):
+        if reason == "no_open_plan" or reason.startswith("resolve_failed"):
             return "rejected"
         return "noop"
     return None
