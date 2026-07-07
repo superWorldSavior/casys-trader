@@ -10,6 +10,120 @@ def _has_python_sources(path: Path) -> bool:
     return any("__pycache__" not in candidate.parts for candidate in path.rglob("*.py"))
 
 
+def _assert_application_submodule_layout(application_dir: Path, submodule: str, modules: list[str]) -> None:
+    submodule_dir = application_dir / submodule
+
+    assert (submodule_dir / "__init__.py").exists()
+    for module in modules:
+        new_path = submodule_dir / f"{module}.py"
+        shim_path = application_dir / f"{module}.py"
+
+        assert new_path.exists()
+        assert shim_path.exists()
+        assert f"trader.application.{submodule}.{module}" in shim_path.read_text(encoding="utf-8")
+
+
+def test_application_migration_modules_are_nested_with_legacy_shims() -> None:
+    application_dir = Path(__file__).resolve().parents[1] / "trader" / "application"
+
+    _assert_application_submodule_layout(
+        application_dir,
+        "migration",
+        [
+            "strategy_language_migration",
+        ],
+    )
+
+
+def test_application_record_modules_are_nested_with_legacy_shims() -> None:
+    application_dir = Path(__file__).resolve().parents[1] / "trader" / "application"
+
+    _assert_application_submodule_layout(
+        application_dir,
+        "record",
+        [
+            "decision_recorder",
+            "decision_entries",
+            "decision_watches",
+            "tool_outcomes",
+            "plan_review",
+            "confidence_feedback",
+            "gross_feedback",
+        ],
+    )
+
+
+def test_application_cycle_modules_are_nested_with_legacy_shims() -> None:
+    application_dir = Path(__file__).resolve().parents[1] / "trader" / "application"
+
+    _assert_application_submodule_layout(
+        application_dir,
+        "cycle",
+        [
+            "cycle_schedule",
+            "execution_eligibility",
+            "infra_holds",
+            "market_snapshot",
+            "watch_scanner",
+        ],
+    )
+
+
+def test_application_decide_modules_are_nested_with_legacy_shims() -> None:
+    application_dir = Path(__file__).resolve().parents[1] / "trader" / "application"
+
+    _assert_application_submodule_layout(
+        application_dir,
+        "decide",
+        [
+            "planner_batch",
+            "decide_one",
+            "decide_handler",
+            "tool_round",
+            "queue_dispatch",
+            "recent_decisions",
+            "learnings_recall",
+        ],
+    )
+
+
+def test_application_exit_modules_are_nested_with_legacy_shims() -> None:
+    application_dir = Path(__file__).resolve().parents[1] / "trader" / "application"
+
+    _assert_application_submodule_layout(
+        application_dir,
+        "exit",
+        [
+            "planned_exits",
+            "fill_plan_effects",
+            "exit_bars",
+            "exit_update",
+            "armed_plans",
+            "reference_volatility",
+        ],
+    )
+
+
+def test_application_execute_modules_are_nested_with_legacy_shims() -> None:
+    application_dir = Path(__file__).resolve().parents[1] / "trader" / "application"
+
+    _assert_application_submodule_layout(
+        application_dir,
+        "execute",
+        [
+            "cycle_decision",
+            "order_admission",
+            "risk_admission",
+            "risk_capacity",
+            "fill_outcome",
+            "entry_context",
+            "execute_queue_dispatch",
+            "execute_queue_plan",
+            "execute_order_handler",
+        ],
+    )
+
+
 def test_only_legacy_compat_modules_are_flat_files() -> None:
     trader_dir = Path(__file__).resolve().parents[1] / "trader"
 
@@ -139,7 +253,7 @@ def test_daemon_delegates_watch_schedule_glue_to_runtime_adapter() -> None:
 def test_daemon_delegates_planned_exit_logic_to_application_service() -> None:
     repo_root = Path(__file__).resolve().parents[1]
     daemon_path = repo_root / "trader" / "runtime" / "daemon.py"
-    planned_exits_path = repo_root / "trader" / "application" / "planned_exits.py"
+    planned_exits_path = repo_root / "trader" / "application" / "exit" / "planned_exits.py"
 
     assert planned_exits_path.exists()
 
@@ -381,8 +495,8 @@ def test_daemon_delegates_shutdown_to_runtime_adapter() -> None:
 
 def test_cycle_decision_delegates_execute_queue_plan_payload_to_application_service() -> None:
     repo_root = Path(__file__).resolve().parents[1]
-    cycle_decision_path = repo_root / "trader" / "application" / "cycle_decision.py"
-    service_path = repo_root / "trader" / "application" / "execute_queue_plan.py"
+    cycle_decision_path = repo_root / "trader" / "application" / "execute" / "cycle_decision.py"
+    service_path = repo_root / "trader" / "application" / "execute" / "execute_queue_plan.py"
 
     assert cycle_decision_path.exists()
     assert service_path.exists()
@@ -404,8 +518,8 @@ def test_cycle_decision_delegates_execute_queue_plan_payload_to_application_serv
 
 def test_cycle_decision_delegates_fill_accounting_to_application_service() -> None:
     repo_root = Path(__file__).resolve().parents[1]
-    cycle_decision_path = repo_root / "trader" / "application" / "cycle_decision.py"
-    service_path = repo_root / "trader" / "application" / "fill_outcome.py"
+    cycle_decision_path = repo_root / "trader" / "application" / "execute" / "cycle_decision.py"
+    service_path = repo_root / "trader" / "application" / "execute" / "fill_outcome.py"
 
     assert cycle_decision_path.exists()
     assert service_path.exists()
@@ -433,8 +547,8 @@ def test_cycle_decision_delegates_fill_accounting_to_application_service() -> No
 
 def test_cycle_decision_delegates_fill_plan_effects_to_application_service() -> None:
     repo_root = Path(__file__).resolve().parents[1]
-    cycle_decision_path = repo_root / "trader" / "application" / "cycle_decision.py"
-    service_path = repo_root / "trader" / "application" / "fill_plan_effects.py"
+    cycle_decision_path = repo_root / "trader" / "application" / "execute" / "cycle_decision.py"
+    service_path = repo_root / "trader" / "application" / "exit" / "fill_plan_effects.py"
 
     assert cycle_decision_path.exists()
     assert service_path.exists()

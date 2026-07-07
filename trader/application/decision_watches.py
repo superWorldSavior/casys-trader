@@ -1,35 +1,7 @@
-"""Prepare decision-requested indicator watches for runtime scheduling."""
+"""Compatibility shim for trader.application.record.decision_watches."""
 
-from __future__ import annotations
+import sys as _sys
+from trader.application.record import decision_watches as _impl
+from trader.application.record.decision_watches import *  # noqa: F401,F403
 
-from dataclasses import dataclass
-from datetime import datetime
-
-from trader.planning.indicator_watch import build_indicator_watch
-
-
-@dataclass(frozen=True)
-class DecisionIndicatorWatchPreparation:
-    pending_watch: dict | None
-    entry_updates: dict[str, object]
-    rejections: list[dict]
-
-
-def prepare_decision_indicator_watch(
-    raw_watch: object,
-    *,
-    symbol: str,
-    now: datetime,
-    scheduling_enabled: bool,
-) -> DecisionIndicatorWatchPreparation:
-    """Normalize a decision watch and expose the audit updates for the ledger entry."""
-    if not raw_watch:
-        return DecisionIndicatorWatchPreparation(pending_watch=None, entry_updates={}, rejections=[])
-
-    result = build_indicator_watch(raw_watch, owner_symbol=symbol, now=now)
-    pending_watch = result.watch if scheduling_enabled else None
-    return DecisionIndicatorWatchPreparation(
-        pending_watch=pending_watch,
-        entry_updates={"indicator_watch_rejections": result.rejections},
-        rejections=result.rejections,
-    )
+_sys.modules[__name__] = _impl

@@ -1,22 +1,7 @@
-"""Feedback helpers for gross exposure rejections."""
+"""Compatibility shim for trader.application.record.gross_feedback."""
 
-from __future__ import annotations
+import sys as _sys
+from trader.application.record import gross_feedback as _impl
+from trader.application.record.gross_feedback import *  # noqa: F401,F403
 
-from collections.abc import Mapping, Sequence
-
-GROSS_REJECT_REASON = "risk:gross_exposure_exceeded"
-OPENING_INTENTS = frozenset({"OPEN_LONG", "OPEN_SHORT", "FLIP", "SCALE_IN"})
-
-
-def summarize_gross_rejections(decisions: Sequence[Mapping[str, object]]) -> dict | None:
-    """Summarize opening decisions rejected by the gross exposure gate."""
-    symbols = sorted(
-        str(decision.get("symbol"))
-        for decision in decisions
-        if decision.get("reason") == GROSS_REJECT_REASON
-        and decision.get("intent") in OPENING_INTENTS
-        and decision.get("symbol")
-    )
-    if not symbols:
-        return None
-    return {"rejected_opens": len(symbols), "symbols": symbols}
+_sys.modules[__name__] = _impl

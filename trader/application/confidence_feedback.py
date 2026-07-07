@@ -1,15 +1,7 @@
-"""Feedback helpers for confidence-gated decisions."""
+"""Compatibility shim for trader.application.record.confidence_feedback."""
 
-from __future__ import annotations
+import sys as _sys
+from trader.application.record import confidence_feedback as _impl
+from trader.application.record.confidence_feedback import *  # noqa: F401,F403
 
-
-def merge_gate_feedback(
-    reason: str | None,
-    context: str | None,
-    note: str | None,
-) -> str | None:
-    """Append confidence-gate context to the learning note when useful."""
-    if reason == "risk:confidence_below_required" and context:
-        feedback = f"[gate confiance] rejet — {context}"
-        return f"{note}\n{feedback}" if note else feedback
-    return note
+_sys.modules[__name__] = _impl
