@@ -33,7 +33,7 @@ from trader.agent.protocol.types import Decision
 from trader.application.decide.tool_round import resolve_symbol_decision
 from trader.infrastructure.queue.worker import RetryableError
 
-log = logging.getLogger("trader.application.decide_one")
+log = logging.getLogger("trader.application.decide.one")
 
 # Codes LLM signalant une surcharge de la ressource acpx/fournisseur.
 # → is_overload=True : le pool AIMD réduit M (M×0.5).

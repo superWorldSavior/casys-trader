@@ -49,7 +49,7 @@ def test_application_migration_modules_are_nested_without_legacy_shims() -> None
         application_dir,
         "migration",
         [
-            "strategy_language_migration",
+            "strategy_language",
         ],
     )
 
@@ -79,13 +79,34 @@ def test_application_cycle_modules_are_nested_without_legacy_shims() -> None:
         application_dir,
         "cycle",
         [
-            "cycle_schedule",
-            "execution_eligibility",
+            "schedule",
             "infra_holds",
             "market_snapshot",
             "watch_scanner",
         ],
     )
+
+
+def test_market_execution_eligibility_is_canonical_low_layer_module() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    trader_dir = repo_root / "trader"
+    module_path = trader_dir / "market" / "execution_eligibility.py"
+
+    assert module_path.exists()
+    assert not (trader_dir / "application" / "cycle" / "execution_eligibility.py").exists()
+
+    tree = ast.parse(module_path.read_text(encoding="utf-8"), filename=str(module_path))
+    violations: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module:
+            if node.module.startswith(("trader.application", "trader.runtime")):
+                violations.append(f"from {node.module} import ...")
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name.startswith(("trader.application", "trader.runtime")):
+                    violations.append(f"import {alias.name}")
+
+    assert violations == []
 
 
 def test_application_decide_modules_are_nested_without_legacy_shims() -> None:
@@ -96,12 +117,11 @@ def test_application_decide_modules_are_nested_without_legacy_shims() -> None:
         "decide",
         [
             "planner_batch",
-            "decide_one",
-            "decide_handler",
+            "one",
+            "handler",
             "tool_round",
             "queue_dispatch",
             "recent_decisions",
-            "learnings_recall",
         ],
     )
 
@@ -118,9 +138,30 @@ def test_application_exit_modules_are_nested_without_legacy_shims() -> None:
             "exit_bars",
             "exit_update",
             "armed_plans",
-            "reference_volatility",
         ],
     )
+
+
+def test_market_volatility_is_canonical_low_layer_module() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    trader_dir = repo_root / "trader"
+    module_path = trader_dir / "market" / "volatility.py"
+
+    assert module_path.exists()
+    assert not (trader_dir / "application" / "exit" / "reference_volatility.py").exists()
+
+    tree = ast.parse(module_path.read_text(encoding="utf-8"), filename=str(module_path))
+    violations: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module:
+            if node.module.startswith(("trader.application", "trader.runtime")):
+                violations.append(f"from {node.module} import ...")
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name.startswith(("trader.application", "trader.runtime")):
+                    violations.append(f"import {alias.name}")
+
+    assert violations == []
 
 
 def test_application_execute_modules_are_nested_without_legacy_shims() -> None:
@@ -136,9 +177,9 @@ def test_application_execute_modules_are_nested_without_legacy_shims() -> None:
             "risk_capacity",
             "fill_outcome",
             "entry_context",
-            "execute_queue_dispatch",
-            "execute_queue_plan",
-            "execute_order_handler",
+            "queue_dispatch",
+            "queue_plan",
+            "order_handler",
         ],
     )
 
@@ -232,6 +273,8 @@ def test_agent_learnings_are_nested_under_agent() -> None:
     assert (learnings_dir / "store.py").exists()
     assert (learnings_dir / "embeddings.py").exists()
     assert (learnings_dir / "consolidator.py").exists()
+    assert (learnings_dir / "recall_provider.py").exists()
+    assert not (trader_dir / "application" / "decide" / "learnings_recall.py").exists()
     assert not _has_python_sources(trader_dir / "learnings")
 
 
@@ -321,8 +364,8 @@ def test_daemon_delegates_queue_pool_bootstrap_to_runtime_adapter() -> None:
 
     tree = ast.parse(source, filename=str(daemon_path))
     forbidden_modules = {
-        "trader.application.decide.decide_handler",
-        "trader.application.execute.execute_order_handler",
+        "trader.application.decide.handler",
+        "trader.application.execute.order_handler",
         "trader.infrastructure.queue.decide_pool",
         "trader.infrastructure.queue.ledger",
         "trader.infrastructure.queue.pools",
@@ -384,7 +427,7 @@ def test_state_db_infrastructure_does_not_import_planning_trade_plan() -> None:
 
 def test_execute_order_handler_uses_domain_trade_plan_validation() -> None:
     repo_root = Path(__file__).resolve().parents[1]
-    module_path = repo_root / "trader" / "application" / "execute" / "execute_order_handler.py"
+    module_path = repo_root / "trader" / "application" / "execute" / "order_handler.py"
     source = module_path.read_text(encoding="utf-8")
     tree = ast.parse(source, filename=str(module_path))
 
@@ -590,13 +633,13 @@ def test_daemon_delegates_shutdown_to_runtime_adapter() -> None:
 def test_cycle_decision_delegates_execute_queue_plan_payload_to_application_service() -> None:
     repo_root = Path(__file__).resolve().parents[1]
     cycle_decision_path = repo_root / "trader" / "application" / "execute" / "cycle_decision.py"
-    service_path = repo_root / "trader" / "application" / "execute" / "execute_queue_plan.py"
+    service_path = repo_root / "trader" / "application" / "execute" / "queue_plan.py"
 
     assert cycle_decision_path.exists()
     assert service_path.exists()
 
     source = cycle_decision_path.read_text(encoding="utf-8")
-    assert "execute_queue_plan.build_execute_queue_plan_payload" in source
+    assert "queue_plan.build_execute_queue_plan_payload" in source
 
     queue_block = source.split("if ctx.queue_execute_enabled and ctx.execute_ledger is not None:", 1)[1]
     queue_block = queue_block.split("fill = _exec_outcome.fill", 1)[0]

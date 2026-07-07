@@ -10,7 +10,7 @@ from typing import Callable, Literal
 
 from trader.execution.contracts import Fill
 
-log = logging.getLogger("trader.application.execute_queue_dispatch")
+log = logging.getLogger("trader.application.execute.queue_dispatch")
 
 _POLL_SLEEP_S: float = 0.05
 

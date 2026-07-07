@@ -21,7 +21,7 @@ import pytest
 
 from trader.agent import llm
 from trader.agent.protocol.types import Decision
-from trader.application.decide.decide_one import SESSION_ROUND_BACKSTOP, decide_one
+from trader.application.decide.one import SESSION_ROUND_BACKSTOP, decide_one
 from trader.queue.worker import RetryableError
 
 SYMBOL = "AAPL"
@@ -308,7 +308,7 @@ def test_provider_error_leve_retryable_overload():
 # ---------------------------------------------------------------------------
 
 from trader.agent.protocol.types import BatchToolCallRequest  # noqa: E402
-from trader.application.decide.decide_one import ToolRoundServices  # noqa: E402
+from trader.application.decide.one import ToolRoundServices  # noqa: E402
 from trader.runtime.worker_cycle_context import (  # noqa: E402
     ExitValidationInputs,
     OpenPlansSnapshot,
@@ -722,11 +722,11 @@ def test_session_mode_utilise_runner_delta_et_complete_fn(monkeypatch):
             return {SYMBOL: _ok_decision("BUY")}
 
     monkeypatch.setattr(
-        "trader.application.decide.decide_one.llm.run_with_session_fallback",
+        "trader.application.decide.one.llm.run_with_session_fallback",
         fake_run_with_session_fallback,
     )
     monkeypatch.setattr(
-        "trader.application.decide.decide_one.resolve_symbol_decision",
+        "trader.application.decide.one.resolve_symbol_decision",
         fake_resolve_symbol_decision,
     )
 
@@ -789,11 +789,11 @@ def test_max_rounds_1_avec_session_backends_utilise_session_mode(monkeypatch):
             return {SYMBOL: _ok_decision("BUY")}
 
     monkeypatch.setattr(
-        "trader.application.decide.decide_one.llm.run_with_session_fallback",
+        "trader.application.decide.one.llm.run_with_session_fallback",
         fake_run_with_session_fallback,
     )
     monkeypatch.setattr(
-        "trader.application.decide.decide_one.resolve_symbol_decision",
+        "trader.application.decide.one.resolve_symbol_decision",
         fake_resolve_symbol_decision,
     )
 
@@ -832,7 +832,7 @@ def test_session_mode_tous_backends_down_leve_retryable(monkeypatch):
         return failure
 
     monkeypatch.setattr(
-        "trader.application.decide.decide_one.llm.run_with_session_fallback",
+        "trader.application.decide.one.llm.run_with_session_fallback",
         fake_run_with_session_fallback,
     )
 

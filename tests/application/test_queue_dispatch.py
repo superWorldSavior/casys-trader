@@ -17,7 +17,7 @@ from dataclasses import asdict
 from datetime import datetime, timezone
 
 from trader.agent.protocol.types import Decision
-from trader.application.decide.decide_handler import make_decide_handler
+from trader.application.decide.handler import make_decide_handler
 import trader.application.decide.queue_dispatch as queue_dispatch_mod
 from trader.application.decide.queue_dispatch import dispatch_decide_via_queue
 from trader.queue.decide_pool import DecidePool

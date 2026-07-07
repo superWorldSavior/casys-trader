@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from trader.application.execute.execute_queue_dispatch import dispatch_execute_order_via_queue
+from trader.application.execute.queue_dispatch import dispatch_execute_order_via_queue
 from trader.execution.broker import Fill
 
 

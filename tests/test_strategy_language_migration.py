@@ -1,6 +1,6 @@
 import json
 
-from trader.application.migration.strategy_language_migration import (
+from trader.application.migration.strategy_language import (
     migrate_jsonl_file,
     migrate_strategy_language_value,
 )

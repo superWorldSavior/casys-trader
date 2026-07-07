@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Callable, Protocol
 
-from trader.application.cycle.execution_eligibility import (
+from trader.market.execution_eligibility import (
     execution_blocked_reason as default_execution_blocked_reason,
 )
 from trader.application.exit.exit_bars import exit_bar_extremes

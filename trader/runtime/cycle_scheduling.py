@@ -7,7 +7,7 @@ from datetime import datetime
 from typing import Callable
 
 from trader.application.cycle import (
-    cycle_schedule,
+    schedule as cycle_schedule,
     watch_scanner,
 )
 from trader.market import market_data as market

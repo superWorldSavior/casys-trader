@@ -34,9 +34,9 @@ import logging
 from dataclasses import asdict
 from typing import Callable
 
-from trader.application.decide.decide_one import ToolRoundServices, decide_one
+from trader.application.decide.one import ToolRoundServices, decide_one
 
-log = logging.getLogger("trader.application.decide_handler")
+log = logging.getLogger("trader.application.decide.handler")
 
 
 def make_decide_handler(

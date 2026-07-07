@@ -8,7 +8,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable, Protocol, runtime_checkable
 
-from trader.application.cycle.execution_eligibility import build_execution_eligibility
+from trader.market.execution_eligibility import build_execution_eligibility
 from trader.market import fx, fx_rates
 from trader.market import market_data as market
 from trader.market.ports import DataSource

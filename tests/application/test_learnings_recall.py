@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from trader.application.decide import learnings_recall
-from trader.application.decide.learnings_recall import build_recall_provider
+from trader.agent.learnings import recall_provider
+from trader.agent.learnings.recall_provider import build_recall_provider
 
 
 NOW = datetime(2026, 7, 4, 12, 0, tzinfo=timezone.utc)
@@ -84,7 +84,7 @@ def test_recall_provider_default_embedder_is_resolved_at_build_time(monkeypatch)
         embed_calls.append({"texts": texts, "kwargs": kwargs})
         return [b"patched-vector"]
 
-    monkeypatch.setattr(learnings_recall.embeddings_mod, "embed_texts", embedder)
+    monkeypatch.setattr(recall_provider.embeddings_mod, "embed_texts", embedder)
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
 
     provider = build_recall_provider(store, lambda: NOW)

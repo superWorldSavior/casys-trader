@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-from trader.application.execute.execute_order_handler import make_execute_order_handler
+from trader.application.execute.order_handler import make_execute_order_handler
 from trader.planning.trade_plan import TradePlan
 from trader.queue.ledger import TaskLedger
 from trader.state_db.broker_store import SqliteBroker

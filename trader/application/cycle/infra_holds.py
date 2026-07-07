@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Mapping, Protocol
 
-from trader.application.cycle.cycle_schedule import stale_backoff_wake_minutes
+from trader.application.cycle.schedule import stale_backoff_wake_minutes
 from trader.planning import relevance_gate
 
 

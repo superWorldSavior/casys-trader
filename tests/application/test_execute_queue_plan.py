@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from trader.application.execute.execute_queue_plan import build_execute_queue_plan_payload
+from trader.application.execute.queue_plan import build_execute_queue_plan_payload
 from trader.planning.trade_plan import TradePlan, create_trade_plan_from_order
 
 

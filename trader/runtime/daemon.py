@@ -30,9 +30,9 @@ from trader.agent import client as codex_client
 from trader.agent import llm
 from trader.agent import memory as agent_memory
 from trader.agent.context import build_market_cockpit, resolve_indicator_requests
+from trader.agent.learnings import recall_provider
 from trader.application.decide import (
     planner_batch,
-    learnings_recall,
 )
 from trader.application.execute import (
     order_admission,
@@ -40,8 +40,8 @@ from trader.application.execute import (
     risk_capacity,
     fill_outcome,
     entry_context,
-    execute_queue_dispatch,
-    execute_queue_plan,
+    queue_dispatch as execute_queue_dispatch,
+    queue_plan,
 )
 from trader.application.exit import (
     planned_exits as planned_exits_service,
@@ -49,10 +49,8 @@ from trader.application.exit import (
     exit_bars as exit_bars_service,
     exit_update as exit_update_service,
     armed_plans,
-    reference_volatility as reference_volatility_service,
 )
 from trader.application.cycle import (
-    execution_eligibility as execution_eligibility_service,
     infra_holds,
     market_snapshot,
 )
@@ -76,7 +74,9 @@ from trader.agent.learnings import consolidator
 from trader.agent.learnings import raw_store as raw_learnings
 from trader.agent.learnings import store as recall_store_mod
 from trader.market import family_regime, fx, macro_calendar, macro_series
+from trader.market import execution_eligibility as execution_eligibility_service
 from trader.market import market_data as market
+from trader.market import volatility as reference_volatility_service
 from trader.market.data_source import (
     CompositeDataSource,
     YFinanceDataSource,
@@ -925,7 +925,7 @@ def _build_recall_provider(
     Le provider retourne ``{"rows": [...]}`` — le handler re-tronque à ≤ 8.
     Sans OPENAI_API_KEY ou sans query, la recherche tombe en mode FTS5+facettes.
     """
-    return learnings_recall.build_recall_provider(
+    return recall_provider.build_recall_provider(
         store,
         lambda: now,  # provider per-cycle : la borne temporelle reste celle du cycle
         embedder=embedder,

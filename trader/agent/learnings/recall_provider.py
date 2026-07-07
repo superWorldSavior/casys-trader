@@ -10,7 +10,7 @@ from typing import Protocol
 
 from trader.agent.learnings import embeddings as embeddings_mod
 
-log = logging.getLogger("trader.application.learnings_recall")
+log = logging.getLogger("trader.agent.learnings.recall_provider")
 
 
 class RecallSearchStore(Protocol):

@@ -54,7 +54,7 @@ def _default_make_decide_handler(
     tool_services: object = None,
     session_backends: list | None = None,
 ) -> object:
-    from trader.application.decide.decide_handler import make_decide_handler
+    from trader.application.decide.handler import make_decide_handler
 
     return make_decide_handler(
         codex_client=codex_client,
@@ -64,7 +64,7 @@ def _default_make_decide_handler(
 
 
 def _default_make_execute_order_handler(**kwargs: object) -> object:
-    from trader.application.execute.execute_order_handler import make_execute_order_handler
+    from trader.application.execute.order_handler import make_execute_order_handler
 
     return make_execute_order_handler(**kwargs)
 
@@ -330,10 +330,10 @@ def build_decide_tool_services(
     """
     from datetime import datetime, timezone
 
+    from trader.agent.learnings.recall_provider import build_recall_provider
     from trader.agent.learnings.store import LearningsStore
-    from trader.application.decide.decide_one import ToolRoundServices
+    from trader.application.decide.one import ToolRoundServices
     from trader.application.exit.exit_update import ExitUpdateValidation, validate_exit_update
-    from trader.application.decide.learnings_recall import build_recall_provider
     from trader.market.data_source import make_indirect_get_bars
     from trader.runtime.worker_cycle_context import CycleContextUnavailable, SnapshotTradePlanStore
 

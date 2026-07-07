@@ -39,7 +39,7 @@ if TYPE_CHECKING:
     from trader.infrastructure.state_db.trade_plan_store import SqliteTradePlanStore
     from trader.infrastructure.queue.ledger import TaskLedger
 
-log = logging.getLogger("trader.application.execute_order_handler")
+log = logging.getLogger("trader.application.execute.order_handler")
 
 
 def make_execute_order_handler(
