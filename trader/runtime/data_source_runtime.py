@@ -78,14 +78,19 @@ class PlanSnapshotHandle:
 
     def __init__(self) -> None:
         self._plans: list = []
+        self._raw_plans: list = []
         self._as_of: str | None = None
 
-    def update(self, plans: list, *, as_of: str | None = None) -> None:
+    def update(self, plans: list, *, as_of: str | None = None, raw_plans: list | None = None) -> None:
         self._plans = plans
+        self._raw_plans = raw_plans or []
         self._as_of = as_of
 
     def get(self) -> list:
         return self._plans
+
+    def get_raw(self) -> list:
+        return self._raw_plans
 
     def as_of(self) -> str | None:
         return self._as_of

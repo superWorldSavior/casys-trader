@@ -75,16 +75,20 @@ def test_plan_snapshot_handle_est_vide_par_defaut_et_remplace_les_plans() -> Non
     handle = data_source_runtime.PlanSnapshotHandle()
 
     assert handle.get() == []
+    assert handle.get_raw() == []
     assert handle.as_of() is None
 
     first = [{"id": "plan-1", "symbol": "SPY"}]
-    handle.update(first, as_of="2026-07-05T08:00:00+00:00")
+    raw_first = [object()]
+    handle.update(first, as_of="2026-07-05T08:00:00+00:00", raw_plans=raw_first)
     assert handle.get() == first
+    assert handle.get_raw() == raw_first
     assert handle.as_of() == "2026-07-05T08:00:00+00:00"
 
     second = [{"id": "plan-2", "symbol": "QQQ"}]
     handle.update(second, as_of="2026-07-05T08:05:00+00:00")
     assert handle.get() == second
+    assert handle.get_raw() == []
     assert handle.as_of() == "2026-07-05T08:05:00+00:00"
 
 

@@ -173,10 +173,18 @@ def test_run_cycle_met_a_jour_le_snapshot_des_plans_ouverts(
     class Snapshot:
         def __init__(self) -> None:
             self.plans: list[dict] | None = None
+            self.raw_plans: list[TradePlan] | None = None
             self.as_of: str | None = None
 
-        def update(self, plans: list[dict], *, as_of: str | None = None) -> None:
+        def update(
+            self,
+            plans: list[dict],
+            *,
+            as_of: str | None = None,
+            raw_plans: list[TradePlan] | None = None,
+        ) -> None:
             self.plans = plans
+            self.raw_plans = raw_plans
             self.as_of = as_of
 
     snapshot = Snapshot()
@@ -195,6 +203,7 @@ def test_run_cycle_met_a_jour_le_snapshot_des_plans_ouverts(
     )
 
     assert snapshot.as_of == now.isoformat()
+    assert snapshot.raw_plans == [plan]
     assert snapshot.plans == [
         {
             "id": "plan-spy",

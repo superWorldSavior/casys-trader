@@ -1,6 +1,7 @@
 """T4 — build_decide_tool_services : services du tour d'outils construits au boot."""
 from pathlib import Path
 
+from trader.application.exit_update import ExitUpdateValidation
 from trader.application.decide_one import ToolRoundServices
 from trader.runtime.queue_runtime import build_decide_tool_services
 
@@ -51,6 +52,97 @@ def test_get_open_plans_provider_est_propage(tmp_path):
 
     assert services.open_plans_provider is get_open_plans
     assert services.open_plans_as_of_provider is get_open_plans_as_of
+
+
+def test_action_validator_valide_strategy_exit_sur_snapshot_brut_et_daily_bars(tmp_path, monkeypatch):
+    raw_plan = object()
+    daily_bars = [("daily", "SPY")]
+    validation = ExitUpdateValidation(would_apply=False, reason="resolve_failed:test", warnings=[])
+    calls: dict[str, object] = {}
+
+    class _DS:
+        def get_bars(self, symbol, lookback="5d", interval="1h"):
+            calls["bars"] = (symbol, lookback, interval)
+            return daily_bars
+
+    def fake_validate_exit_update(**kwargs):
+        calls["validate"] = kwargs
+        return validation
+
+    monkeypatch.setattr("trader.application.exit_update.validate_exit_update", fake_validate_exit_update)
+
+    services = _build(
+        tmp_path,
+        get_data_source=lambda: _DS(),
+        get_open_raw_plans=lambda: [raw_plan],
+    )
+
+    assert services.action_validator is not None
+    result = services.action_validator("SPY", {"hard_stop": {"mode": "structural"}})
+
+    assert result is validation
+    assert calls["bars"] == ("SPY", "1y", "1d")
+    validate_call = calls["validate"]
+    assert validate_call["plan_store"].open_plans() == [raw_plan]
+    assert validate_call["symbol"] == "SPY"
+    assert validate_call["exit_update"] == {"hard_stop": {"mode": "structural"}}
+    assert validate_call["bars"] == daily_bars
+
+
+def test_action_validator_s_abstient_si_rejet_structural_vient_de_bars_worker_absentes(tmp_path, monkeypatch):
+    validation = ExitUpdateValidation(
+        would_apply=False,
+        reason="resolve_failed:hard_stop_bars_unavailable",
+        warnings=[],
+    )
+
+    class _DS:
+        def get_bars(self, symbol, lookback="5d", interval="1h"):
+            raise RuntimeError("daily unavailable in worker")
+
+    def fake_validate_exit_update(**kwargs):
+        assert kwargs["bars"] is None
+        return validation
+
+    monkeypatch.setattr("trader.application.exit_update.validate_exit_update", fake_validate_exit_update)
+
+    services = _build(
+        tmp_path,
+        get_data_source=lambda: _DS(),
+        get_open_raw_plans=lambda: [object()],
+    )
+
+    result = services.action_validator("SPY", {"hard_stop": {"type": "structural", "anchor": "swing_low"}})
+
+    assert result.would_apply is True
+    assert result.reason is None
+    assert result.warnings == []
+
+
+def test_action_validator_garde_rejet_fiable_no_open_plan_meme_sans_bars_worker(tmp_path, monkeypatch):
+    validation = ExitUpdateValidation(would_apply=False, reason="no_open_plan", warnings=[])
+
+    class _DS:
+        def get_bars(self, symbol, lookback="5d", interval="1h"):
+            return None
+
+    def fake_validate_exit_update(**kwargs):
+        assert kwargs["bars"] is None
+        return validation
+
+    monkeypatch.setattr("trader.application.exit_update.validate_exit_update", fake_validate_exit_update)
+
+    services = _build(
+        tmp_path,
+        get_data_source=lambda: _DS(),
+        get_open_raw_plans=lambda: [],
+    )
+
+    result = services.action_validator("SPY", {"hard_stop": {"type": "structural", "anchor": "swing_low"}})
+
+    assert result is validation
+    assert result.would_apply is False
+    assert result.reason == "no_open_plan"
 
 
 def test_services_n_acceptent_plus_max_rounds(tmp_path):

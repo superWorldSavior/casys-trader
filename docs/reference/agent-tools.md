@@ -108,7 +108,10 @@ n'est pas native ; `stop` avec `qty_percent<100` est rejeté
 ouverte peut aussi servir de protection de gain sous un swing récent. Dans ce
 dernier cas, le daemon accepte un stop au-dessus de l'entrée d'un long seulement
 s'il reste sous le prix courant ; symétriquement, un short doit garder le stop
-au-dessus du prix courant.
+au-dessus du prix courant. En mode feedback pré-exécution, l'agent peut recevoir
+un `tool_results` `{tool:"strategy_exit", ok:false, error:<reason>}` de validation pré-exécution ;
+il doit alors corriger dans la même réponse (stop en prix absolu ou retrait de la
+contrainte non résolvable).
 
 **Réveil vs plan armé** : `set_next_wake` = **reconsultation** (l'agent reprend la main pour redécider). Avec `{when:<condition>}`, il est compilé en `indicator_watch{on_trigger:WAKE}`. `propose_indicator_watch{on_trigger:EXECUTE_ORDER}` = **automatisation** (le daemon exécute sans reconsulter l'agent). `set_next_wake{when}` et `propose_indicator_watch` dans la même décision sont rejetés comme ambigus.
 

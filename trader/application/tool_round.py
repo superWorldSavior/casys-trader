@@ -109,6 +109,8 @@ def resolve_symbol_decision(
     tool_limits=None,
     reinject: str = "cumul",
     heartbeat: Callable[[], object] | None = None,
+    action_validator: Callable | None = None,
+    max_action_corrections: int = 2,
 ) -> "codex_client.Decision":
     """Orchestration grain-1 du tour d'outils : round(s) + tour final + merge des traces.
 
@@ -149,6 +151,7 @@ def resolve_symbol_decision(
     accumulated_traces: list[dict] = []
     accumulated_results: list[dict] = []
     rounds_done = 0
+    correction_attempts = 0
 
     def _heartbeat() -> None:
         if heartbeat is not None:
@@ -158,7 +161,26 @@ def resolve_symbol_decision(
         resp = call_model(per_symbol, allow_tool_calls=True)
         _heartbeat()
         if not isinstance(resp, codex_client.BatchToolCallRequest):
-            return _finalize(_decision_of(resp, symbol), accumulated_traces, rounds_done)
+            decision = _decision_of(resp, symbol)
+            if (
+                action_validator is not None
+                and decision.exit_update is not None
+                and correction_attempts < max_action_corrections
+            ):
+                validation = action_validator(symbol, decision.exit_update)
+                if not validation.would_apply:
+                    correction_attempts += 1
+                    feedback = [
+                        {
+                            "id": f"validation:strategy_exit:{symbol}:{correction_attempts}",
+                            "tool": "strategy_exit",
+                            "ok": False,
+                            "error": validation.reason,
+                        }
+                    ]
+                    per_symbol = {symbol: {**base_facts, "tool_results": feedback}}
+                    continue
+            return _finalize(decision, accumulated_traces, rounds_done)
         results_payload, runtime = run_one_round(resp, context=tool_context, limits=tool_limits)
         rounds_done += 1
         sym_traces = agent_tools.calls_for_symbol(runtime["tool_calls"], symbol)

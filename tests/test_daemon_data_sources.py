@@ -177,12 +177,15 @@ class TestDaemonDataSourcesConfig:
         state_dir = tmp_path / "state"
         now = datetime(2026, 6, 10, 12, 0, tzinfo=timezone.utc)
         dispatch_calls: list[dict] = []
+        tool_service_calls: list[dict] = []
+        queue_runtime_calls: list[dict] = []
 
         class FakeSource:
             def disconnect(self):
                 pass
 
         delegated_source = FakeSource()
+        tool_services = object()
 
         def build_data_source(_config, **_kwargs):
             return data_source_runtime.DataSourceState(
@@ -198,6 +201,17 @@ class TestDaemonDataSourcesConfig:
             dispatch_calls.append(kwargs)
             return _empty_report(now)
 
+        def build_decide_tool_services(**kwargs):
+            tool_service_calls.append(kwargs)
+            return tool_services
+
+        def start_queue_runtimes(**kwargs):
+            queue_runtime_calls.append(kwargs)
+            return daemon.queue_runtime.QueueRuntimes(
+                decide=daemon.queue_runtime.DecideQueueRuntime(enabled=True),
+                execute=daemon.queue_runtime.ExecuteQueueRuntime(enabled=True),
+            )
+
         monkeypatch.setenv("CASYS_STATE_BACKEND", "sqlite")
         monkeypatch.setenv("CASYS_QUEUE_DECIDE_ENABLED", "1")
         monkeypatch.setenv("CASYS_QUEUE_EXECUTE_ENABLED", "1")
@@ -211,9 +225,16 @@ class TestDaemonDataSourcesConfig:
         monkeypatch.setattr(daemon, "cycle_dispatch", cycle_dispatch, raising=False)
         monkeypatch.setattr(cycle_dispatch, "dispatch_run_cycle", dispatch_run_cycle)
         monkeypatch.setattr(daemon, "run_cycle", run_cycle)
+        monkeypatch.setattr(daemon.queue_runtime, "build_decide_tool_services", build_decide_tool_services)
+        monkeypatch.setattr(daemon.queue_runtime, "start_queue_runtimes", start_queue_runtimes)
 
         daemon.main(["--once"], now_fn=lambda: now)
 
+        assert len(tool_service_calls) == 1
+        tool_call = tool_service_calls[0]
+        assert tool_call["get_open_raw_plans"].__name__ == "get_raw"
+        assert tool_call["get_open_raw_plans"].__self__ is tool_call["get_open_plans"].__self__
+        assert queue_runtime_calls[0]["decide_tool_services"] is tool_services
         assert len(dispatch_calls) == 1
         call = dispatch_calls[0]
         assert call["run_cycle_fn"] is run_cycle

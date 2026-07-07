@@ -556,8 +556,12 @@ def test_session_mode_utilise_runner_delta_et_complete_fn(monkeypatch):
         events.append(("runner", backends, task_id, open_timeout_s))
         return resolve(FakeSession())
 
+    def action_validator(symbol: str, exit_update: dict):
+        raise AssertionError("ce test vérifie seulement la propagation du callable")
+
     def fake_resolve_symbol_decision(**kwargs):
         assert kwargs["heartbeat"] is heartbeat
+        assert kwargs["action_validator"] is action_validator
         events.append(("resolve", kwargs["max_rounds"], kwargs.get("reinject")))
         response = kwargs["call_model"]({SYMBOL: {"round": 1}}, allow_tool_calls=True)
         return response[SYMBOL]
@@ -591,7 +595,7 @@ def test_session_mode_utilise_runner_delta_et_complete_fn(monkeypatch):
     decision, calls = decide_one(
         **{**_BASE_KWARGS, "agent_tools_enabled": True},
         codex_client=client,
-        tool_services=_services(),
+        tool_services=_services(action_validator=action_validator),
         session_backends=backends,
         task_id="decide:AAPL",
         heartbeat=heartbeat,

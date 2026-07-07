@@ -1080,9 +1080,11 @@ def run_cycle(
         backend=os.getenv("CASYS_STATE_BACKEND", "json"),
     )
     if plan_snapshot is not None:
+        _raw_plans = plan_store.open_plans()
         plan_snapshot.update(
-            [_plan_to_context_dict(plan) for plan in plan_store.open_plans()],
+            [_plan_to_context_dict(plan) for plan in _raw_plans],
             as_of=now.isoformat(),
+            raw_plans=_raw_plans,
         )
     gate = RiskGate(RiskLimits.from_dict(risk_cfg))
     # Paper/exploration : si False, une ouverture SANS hard_stop n'est plus rejetée
@@ -1943,6 +1945,7 @@ def main(
     _decide_tool_services = queue_runtime.build_decide_tool_services(
         get_data_source=_ds_handle.get,
         get_open_plans=_plan_snapshot.get,
+        get_open_raw_plans=_plan_snapshot.get_raw,
         get_open_plans_as_of=_plan_snapshot.as_of,
         learnings_db_path=STATE_DIR / "learnings.db",
         max_context_requests_per_symbol=args.max_context_requests_per_symbol,

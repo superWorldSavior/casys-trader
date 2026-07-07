@@ -64,6 +64,7 @@ class ToolRoundServices:
     max_indicators_per_request: int
     open_plans_provider: Callable[[], list] | None = None
     open_plans_as_of_provider: Callable[[], str | None] | None = None
+    action_validator: Callable[[str, dict], "ExitUpdateValidation"] | None = None
     # Bornes d'outils PAR round. Les 24/3 de ToolRoundLimits sont calibrés batch
     # (chunk de 5 symboles) ; en grain-1, 8 calls pour LE symbole décidé — les
     # outils s'exécutent localement, ce relèvement ne coûte aucun appel acpx.
@@ -239,6 +240,7 @@ def decide_one(
                     reinject="delta",
                     tool_limits=tool_limits,
                     heartbeat=heartbeat,
+                    action_validator=tool_services.action_validator,
                 )
 
             decision = llm.run_with_session_fallback(

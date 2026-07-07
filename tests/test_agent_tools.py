@@ -66,6 +66,22 @@ def test_catalogue_et_reference_decrivent_get_active_plans_comme_tradeplans_glob
     assert "| `get_active_plans` | `plans` | détail complet TradePlans ouverts (portée globale) |" in doc
 
 
+def test_tool_catalogue_documente_feedback_validation_strategy_exit() -> None:
+    from trader.agent.protocol import prompts
+
+    assert "strategy_exit avec ok:false" in prompts._TOOL_CATALOG
+    assert "validation pré-exécution" in prompts._TOOL_CATALOG
+    assert "Tu n'as PAS besoin de redemander le plan" in prompts._TOOL_CATALOG
+
+
+def test_reference_agent_tools_documente_feedback_validation_strategy_exit() -> None:
+    doc = Path("docs/reference/agent-tools.md").read_text(encoding="utf-8")
+
+    assert '{tool:"strategy_exit", ok:false, error:<reason>}' in doc
+    assert "validation pré-exécution" in doc
+    assert "corriger dans la même réponse" in doc
+
+
 def test_reference_agent_tools_expose_les_actions_pine_like_publiques() -> None:
     doc = Path("docs/reference/agent-tools.md").read_text(encoding="utf-8")
     action_section = doc.split("## Action tools finaux par symbole", 1)[1]

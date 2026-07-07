@@ -5,6 +5,7 @@ traces dans domain_tools, blocage tool-loop au tour final, multi-tour (max_round
 `call_model` est un stub séquentiel pilotant les réponses du LLM.
 """
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 import pytest
 
@@ -38,6 +39,18 @@ def _seq_call_model(responses: list):
 
 def _tool_request() -> BatchToolCallRequest:
     return BatchToolCallRequest(calls=[{"id": "c1", "tool": "get_active_plans", "args": {"symbol": "AAPL"}}])
+
+
+def _exit_update_decision(rationale: str, marker: str) -> Decision:
+    return Decision(
+        symbol="AAPL",
+        action="HOLD",
+        quantity=0.0,
+        confidence=0.6,
+        rationale=rationale,
+        intent="HOLD",
+        exit_update={"hard_stop": {"mode": marker}},
+    )
 
 
 def test_decision_directe_sans_round() -> None:
@@ -181,6 +194,129 @@ def test_delta_safe_max_rounds_1_payload_final_identique_au_cumul() -> None:
         return captured[1]
 
     assert capture_final("delta") == capture_final("cumul")
+
+
+def test_exit_update_invalide_reinjecte_feedback_et_reboucle() -> None:
+    captured: list[dict] = []
+    responses = [
+        {"AAPL": _exit_update_decision("invalid", "structural")},
+        {"AAPL": Decision.hold("AAPL", "corrected")},
+    ]
+    it = iter(responses)
+
+    def call_model(per_symbol, *, allow_tool_calls):
+        captured.append(dict(per_symbol["AAPL"]))
+        return next(it)
+
+    def action_validator(symbol: str, exit_update: dict):
+        return SimpleNamespace(would_apply=False, reason="resolve_failed:structural_unavailable")
+
+    result = resolve_symbol_decision(
+        symbol="AAPL",
+        base_facts={"base_marker": "kept"},
+        tool_context=_ctx(),
+        call_model=call_model,
+        action_validator=action_validator,
+        max_rounds=3,
+    )
+
+    assert result.rationale == "corrected"
+    assert len(captured) == 2
+    assert captured[1] == {
+        "base_marker": "kept",
+        "tool_results": [
+            {
+                "id": "validation:strategy_exit:AAPL:1",
+                "tool": "strategy_exit",
+                "ok": False,
+                "error": "resolve_failed:structural_unavailable",
+            }
+        ],
+    }
+
+
+def test_exit_update_corrige_valide_finalize_au_round_suivant() -> None:
+    corrected = _exit_update_decision("corrected", "absolute")
+    responses = [
+        {"AAPL": _exit_update_decision("invalid", "structural")},
+        {"AAPL": corrected},
+    ]
+    it = iter(responses)
+    validations: list[tuple[str, dict]] = []
+
+    def call_model(per_symbol, *, allow_tool_calls):
+        return next(it)
+
+    def action_validator(symbol: str, exit_update: dict):
+        validations.append((symbol, exit_update))
+        would_apply = len(validations) == 2
+        return SimpleNamespace(would_apply=would_apply, reason=None if would_apply else "resolve_failed:first")
+
+    result = resolve_symbol_decision(
+        symbol="AAPL",
+        base_facts={},
+        tool_context=_ctx(),
+        call_model=call_model,
+        action_validator=action_validator,
+        max_rounds=3,
+    )
+
+    assert result is corrected
+    assert validations == [
+        ("AAPL", {"hard_stop": {"mode": "structural"}}),
+        ("AAPL", {"hard_stop": {"mode": "absolute"}}),
+    ]
+
+
+def test_exit_update_invalide_fallthrough_apres_max_action_corrections() -> None:
+    third = _exit_update_decision("still invalid", "third")
+    responses = [
+        {"AAPL": _exit_update_decision("invalid 1", "first")},
+        {"AAPL": _exit_update_decision("invalid 2", "second")},
+        {"AAPL": third},
+    ]
+    it = iter(responses)
+    captured: list[dict] = []
+    validations: list[dict] = []
+
+    def call_model(per_symbol, *, allow_tool_calls):
+        captured.append(dict(per_symbol["AAPL"]))
+        return next(it)
+
+    def action_validator(symbol: str, exit_update: dict):
+        validations.append(exit_update)
+        return SimpleNamespace(would_apply=False, reason=f"resolve_failed:{len(validations)}")
+
+    result = resolve_symbol_decision(
+        symbol="AAPL",
+        base_facts={},
+        tool_context=_ctx(),
+        call_model=call_model,
+        action_validator=action_validator,
+        max_rounds=5,
+        max_action_corrections=2,
+    )
+
+    assert result is third
+    assert len(captured) == 3
+    assert len(validations) == 2
+    assert captured[1]["tool_results"][0]["id"] == "validation:strategy_exit:AAPL:1"
+    assert captured[2]["tool_results"][0]["id"] == "validation:strategy_exit:AAPL:2"
+
+
+def test_exit_update_sans_action_validator_ne_reboucle_pas() -> None:
+    decision = _exit_update_decision("invalid but unchecked", "structural")
+    call_model, log = _seq_call_model([{"AAPL": decision}])
+
+    result = resolve_symbol_decision(
+        symbol="AAPL",
+        base_facts={},
+        tool_context=_ctx(),
+        call_model=call_model,
+    )
+
+    assert result is decision
+    assert log == [True]
 
 
 def test_max_rounds_invalide_leve_valueerror() -> None:
