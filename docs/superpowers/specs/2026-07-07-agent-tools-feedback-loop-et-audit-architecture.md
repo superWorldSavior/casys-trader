@@ -147,9 +147,18 @@ Pine-like isolée et idempotente (`strategy_language_migration.py`).
   `"no_open_plan"`).
 - `record_learning` → **toujours `"applied"`** (`tool_outcomes.py:27`), non corrélé
   au succès réel du store.
-- `get_active_plans` **renvoie les watches, pas les TradePlans**
-  (`agent/tools/plans.py:20`) — nom trompeur ; les plans réels ne sont exposés à
-  aucun outil LLM.
+- `get_active_plans` est **doublement cassé** : (a) *mal nommé* — il renvoie
+  `context.active_watches_by_symbol`, donc les **watches**, pas les TradePlans
+  (`agent/tools/plans.py:20-27`) ; (b) *redondant* — les plans actifs sont **déjà
+  injectés directement** dans le contexte de décision (positions via
+  `portfolio.snapshot`, `daemon.py:1674,1788`, enrichies de `hard_stop`/
+  `take_profit`/`entry_price` + `last_llm_review`). Vérifié empiriquement sur le
+  prompt réel d'APD : `hard_stop`×42, `take_profit`×18, `avg_price`×68,
+  `last_llm_review` présent. → l'outil n'apporte rien pour sa fonction supposée ;
+  **à retirer ou renommer `get_active_watches`**. Corollaire pour le feedback
+  loop : l'agent **a déjà son plan** ; ce qui lui manque n'est pas le plan mais le
+  **résultat de son action** (applied/rejected) — le feedback à réinjecter est
+  donc minimal (`{tool, ok, error}`), pas un re-dump du plan.
 - **Deux systèmes de traces** parallèles : `reporting/tool_trace.py:9` (legacy
   synthétique depuis `runtime.*`) vs `runtime.tool_calls` (structuré) → double
   comptage d'usage.
