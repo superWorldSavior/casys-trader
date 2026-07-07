@@ -159,6 +159,22 @@ Pine-like isolée et idempotente (`strategy_language_migration.py`).
   loop : l'agent **a déjà son plan** ; ce qui lui manque n'est pas le plan mais le
   **résultat de son action** (applied/rejected) — le feedback à réinjecter est
   donc minimal (`{tool, ok, error}`), pas un re-dump du plan.
+
+  **Portée per-symbole vs global** (précision 2026-07-07) : l'injection couvre les
+  DEUX niveaux — (i) per-symbole : plan + watches détaillés du symbole décidé ;
+  (ii) global : positions valorisées du portefeuille (`portfolio.snapshot`,
+  toutes positions) **+** une section « plans armés ACTIFS » (id, kind, intent,
+  conditions, expiration) fournie pour la **conscience d'état** (« relis-les avant
+  d'agir et corrige au lieu d'empiler » — cf. chantier OCO/conscience d'état).
+  Donc une vue globale watch+plans n'est **pas manquante**, elle est *injectée*.
+  Ce qui est cassé, c'est l'**outil** `get_active_plans` : en grain-1 (queue), son
+  `ToolContext` ne reçoit que le symbole en cours (`decide_one.py:102`,
+  `active_watches_by_symbol={symbol: …}`) → il ne peut même pas servir de
+  consultation globale, et fait doublon avec l'injection. **Réserve** : non
+  vérifié si la section « plans armés » est *exhaustive* (tout le portefeuille) ou
+  bornée au périmètre du cycle ; si elle venait à être tronquée (gros
+  portefeuille), un outil de consultation à la demande — `get_active_plans`
+  *réparé* (vrais plans + portée globale) — redeviendrait pertinent.
 - **Deux systèmes de traces** parallèles : `reporting/tool_trace.py:9` (legacy
   synthétique depuis `runtime.*`) vs `runtime.tool_calls` (structuré) → double
   comptage d'usage.
