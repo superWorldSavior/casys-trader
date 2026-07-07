@@ -65,14 +65,21 @@ def _exit_update_rejected_info(rows: list[dict]) -> tuple[str, str] | None:
         for call in _safe_list_of_dicts(rt.get("tool_calls")):
             if not isinstance(call, dict):
                 continue
-            if call.get("tool") == "strategy_exit" and call.get("outcome") == "rejected":
-                detail = f.safe_dict(call.get("detail"))
-                warnings = detail.get("warnings") or []
-                code = ""
-                if warnings:
-                    first = warnings[0]
-                    code = str(first.get("code") if isinstance(first, dict) else first)
-                return f.decision_time(row), code
+            if call.get("tool") != "strategy_exit":
+                continue
+            # Premier strategy_exit rencontré = le PLUS RÉCENT : il fixe l'état
+            # courant de l'exit. S'il a réussi (applied), un rejet antérieur est
+            # résolu → aucun warning. Ne pas scanner au-delà, sinon un vieux rejet
+            # resterait affiché après une ré-application réussie (bug de fraîcheur).
+            if call.get("outcome") != "rejected":
+                return None
+            detail = f.safe_dict(call.get("detail"))
+            warnings = detail.get("warnings") or []
+            code = ""
+            if warnings:
+                first = warnings[0]
+                code = str(first.get("code") if isinstance(first, dict) else first)
+            return f.decision_time(row), code
     return None
 
 

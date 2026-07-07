@@ -376,6 +376,36 @@ def test_exit_update_rejected_info_empty() -> None:
     assert _exit_update_rejected_info([]) is None
 
 
+def _exit_row(cycle_ts: str, outcome: str) -> dict:
+    return {
+        "cycle_ts": cycle_ts,
+        "runtime": {
+            "tool_calls": [
+                {"tool": "strategy_exit", "outcome": outcome, "detail": {}}
+            ]
+        },
+    }
+
+
+def test_exit_update_rejected_info_resolved_by_later_applied() -> None:
+    """Un rejet ancien SUIVI d'une ré-application réussie ne doit plus alerter
+    (bug de fraîcheur : le warning restait affiché après résolution)."""
+    rows = [
+        _exit_row("2026-07-06T20:29:00+00:00", "rejected"),  # ancien rejet
+        _exit_row("2026-07-06T20:59:00+00:00", "applied"),   # ré-appliqué depuis
+    ]
+    assert _exit_update_rejected_info(rows) is None
+
+
+def test_exit_update_rejected_info_latest_is_rejected() -> None:
+    """Un applied ancien puis un rejet récent : c'est le dernier état qui compte."""
+    rows = [
+        _exit_row("2026-07-06T20:29:00+00:00", "applied"),
+        _exit_row("2026-07-06T20:59:00+00:00", "rejected"),  # dernier = rejet
+    ]
+    assert _exit_update_rejected_info(rows) is not None
+
+
 def test_earnings_label_hours() -> None:
     rows = [{"news": {"earnings_in_h": 12.0}}]
     assert _earnings_label(rows) == "in 12h"
