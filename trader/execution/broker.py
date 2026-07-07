@@ -232,11 +232,11 @@ class SimBroker:
     def submit(self, order: Order, price: float, ts: str, dry_run: bool = True, fx_rate: float = 1.0) -> Fill | None:
         commission = self._commission_model.calculate(order, price)
         fill = Fill(
-            order.symbol,
-            order.side,
-            order.quantity,
-            price,
-            ts,
+            symbol=order.symbol,
+            side=order.side,
+            quantity=order.quantity,
+            price=price,
+            ts=ts,
             commission=commission.amount,
             commission_currency=commission.currency,
             commission_model=commission.model,
@@ -258,7 +258,7 @@ class SimBroker:
         pos["avg_price"] = new_avg_price
         self._state.positions[order.symbol] = pos
         self._state.cash -= cash_delta_total
-        self._state.fills.append(asdict(fill))
+        self._state.fills.append(fill.model_dump())
         self._save()
         return fill
 

@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import replace
-
 from trader.application.execute.execute_queue_plan import build_execute_queue_plan_payload
 from trader.planning.trade_plan import TradePlan, create_trade_plan_from_order
 
@@ -101,7 +99,7 @@ def test_build_execute_queue_plan_payload_add_projects_position_and_preserves_re
         llm_model="gpt-5.5/medium",
         llm_confidence=0.7,
     )
-    previous = replace(previous, last_llm_review=review)
+    previous = previous.model_copy(update={"last_llm_review": review})
 
     payload = _payload(
         plan_reader=_PlanReader([previous]),

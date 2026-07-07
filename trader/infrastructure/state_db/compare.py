@@ -27,9 +27,12 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
+
+from trader.infrastructure.state_db.connection import open_state_db
+from trader.infrastructure.state_db.trade_plan_store import row_to_plan
+from trader.planning.trade_plan import trade_plan_from_dict
 
 log = logging.getLogger(__name__)
 
@@ -115,11 +118,6 @@ def compare_backends(state_dir: str | Path) -> dict:
     Raises:
         RuntimeError: casys.db absent, sentinels manquants, ou fichier JSON requis absent.
     """
-    # Imports locaux — évite dépendances circulaires et imports lourds au top-level
-    from trader.infrastructure.state_db.connection import open_state_db
-    from trader.infrastructure.state_db.trade_plan_store import row_to_plan
-    from trader.planning.trade_plan import trade_plan_from_dict
-
     state_dir = Path(state_dir)
     db_path = state_dir / "casys.db"
     json_broker_path = state_dir / "broker.json"
@@ -245,7 +243,7 @@ def compare_backends(state_dir: str | Path) -> dict:
 
     # Plans (ordonnés par seq)
     plan_rows = db.query_all("SELECT * FROM trade_plans ORDER BY seq")
-    sqlite_plans_list: list[dict] = [asdict(row_to_plan(r)) for r in plan_rows]
+    sqlite_plans_list: list[dict] = [row_to_plan(r).model_dump() for r in plan_rows]
 
     # Scheduler — wakes par symbole
     sym_wake_rows = db.query_all(
@@ -334,7 +332,7 @@ def compare_backends(state_dir: str | Path) -> dict:
     # ------------------------------------------------------------------
 
     # Parse JSON plans via trade_plan_from_dict pour comparaison homogène avec SQLite
-    json_plans_parsed: list[dict] = [asdict(trade_plan_from_dict(p)) for p in json_plans_list]
+    json_plans_parsed: list[dict] = [trade_plan_from_dict(p).model_dump() for p in json_plans_list]
 
     plans_diff: list[dict] = []
     for i in range(max(len(json_plans_parsed), len(sqlite_plans_list), 1)):

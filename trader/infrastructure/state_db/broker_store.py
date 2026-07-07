@@ -138,11 +138,11 @@ class SqliteBroker:
         """
         commission: Commission = self._commission_model.calculate(order, price)
         fill = Fill(
-            order.symbol,
-            order.side,
-            order.quantity,
-            price,
-            ts,
+            symbol=order.symbol,
+            side=order.side,
+            quantity=order.quantity,
+            price=price,
+            ts=ts,
             commission=commission.amount,
             commission_currency=commission.currency,
             commission_model=commission.model,

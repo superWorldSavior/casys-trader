@@ -20,7 +20,6 @@ import math
 import os
 import sqlite3
 import time
-from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
@@ -839,7 +838,7 @@ def _plan_to_context_dict(plan: TradePlan) -> dict:
         "side": plan.side,
         "entry_price": plan.entry_price,
         "hard_stop_price": plan.hard_stop_price,
-        "take_profits": [asdict(take_profit) for take_profit in plan.take_profits],
+        "take_profits": [take_profit.model_dump() for take_profit in plan.take_profits],
         "remaining_quantity": plan.remaining_quantity,
         "last_llm_review": _compact_last_llm_review(plan.last_llm_review),
         "entry_thesis": _bounded_plan_text(plan.entry_thesis, max_chars=_PLAN_ENTRY_THESIS_MAX_CHARS),

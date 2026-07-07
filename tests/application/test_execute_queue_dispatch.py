@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from dataclasses import asdict
 
 from trader.application.execute.execute_queue_dispatch import dispatch_execute_order_via_queue
 from trader.execution.broker import Fill
@@ -62,7 +61,7 @@ def _dispatch(ledger: _FakeLedger, **overrides):
 
 def test_execute_queue_dispatch_done_returns_fill_and_enqueues_stable_payload() -> None:
     fill = Fill(symbol="AAPL", side="BUY", quantity=5.0, price=100.0, ts="2026-07-05T08:00:00+00:00")
-    ledger = _FakeLedger(task_results=[{"id": 7, "status": "done", "result": json.dumps(asdict(fill))}])
+    ledger = _FakeLedger(task_results=[{"id": 7, "status": "done", "result": json.dumps(fill.model_dump())}])
 
     outcome = _dispatch(ledger)
 
@@ -122,7 +121,7 @@ def test_execute_queue_dispatch_timeout_race_reloads_done_task_after_failed_aban
     ledger = _FakeLedger(
         task_results=[
             {"id": 7, "status": "pending", "result": None},
-            {"id": 7, "status": "done", "result": json.dumps(asdict(fill))},
+            {"id": 7, "status": "done", "result": json.dumps(fill.model_dump())},
         ],
         abandon_result=False,
     )

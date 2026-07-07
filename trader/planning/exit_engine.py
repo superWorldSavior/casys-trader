@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import datetime
 
 from trader.domain.orders import Side
@@ -119,7 +119,7 @@ def _update_watermarks(
     effective_low = price if bar_low is None else min(price, bar_low)
     high = effective_high if plan.high_watermark is None else max(plan.high_watermark, effective_high)
     low = effective_low if plan.low_watermark is None else min(plan.low_watermark, effective_low)
-    return replace(plan, high_watermark=high, low_watermark=low)
+    return plan.model_copy(update={"high_watermark": high, "low_watermark": low})
 
 
 def _trailing_enabled(plan: TradePlan) -> bool:
@@ -257,11 +257,12 @@ def _profit_protection_signal(plan: TradePlan, *, price: float, now: datetime) -
         hard_stop = _lock_r_stop(plan, protection.lock_r)
     elif protection.move_stop_to == "breakeven":
         hard_stop = _breakeven_stop(plan)
-    updated = replace(
-        plan,
-        remaining_quantity=remaining,
-        hard_stop_price=hard_stop,
-        profit_protection=replace(protection, triggered=True),
+    updated = plan.model_copy(
+        update={
+            "remaining_quantity": remaining,
+            "hard_stop_price": hard_stop,
+            "profit_protection": protection.model_copy(update={"triggered": True}),
+        }
     )
     return ExitEvaluation(
         updated_plan=updated,
@@ -281,7 +282,7 @@ def _signal(plan: TradePlan, quantity: float, reason: str, fill_price: float | N
 
 
 def _close(plan: TradePlan, reason: str, fill_price: float | None = None) -> ExitEvaluation:
-    updated = replace(plan, remaining_quantity=0.0)
+    updated = plan.model_copy(update={"remaining_quantity": 0.0})
     return ExitEvaluation(
         updated_plan=updated,
         signal=_signal(plan, plan.remaining_quantity, reason, fill_price=fill_price),
@@ -342,11 +343,12 @@ def evaluate_plan(
                 hard_stop = max(hard_stop, tp.price)
             else:  # SHORT
                 hard_stop = min(hard_stop, tp.price)
-        updated = replace(
-            plan,
-            remaining_quantity=remaining,
-            filled_take_profits=filled,
-            hard_stop_price=hard_stop,
+        updated = plan.model_copy(
+            update={
+                "remaining_quantity": remaining,
+                "filled_take_profits": filled,
+                "hard_stop_price": hard_stop,
+            }
         )
         return ExitEvaluation(
             updated_plan=updated,

@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import json
-from dataclasses import asdict
 from pathlib import Path
 
 import pytest
@@ -137,11 +136,11 @@ class TestImportTradePlansFromJson:
         assert len(rows) == 1
         plan = row_to_plan(rows[0])
 
-        # Le round-trip doit être exact via asdict
+        # Le round-trip doit être exact via model_dump
         from trader.planning.trade_plan import trade_plan_from_dict
 
         original = trade_plan_from_dict(rich)
-        assert asdict(plan) == asdict(original)
+        assert plan.model_dump() == original.model_dump()
 
     def test_import_seq_preserves_order(self, db: StateDb, tmp_path: Path) -> None:
         """seq assigné dans l'ordre d'apparition dans le JSON."""

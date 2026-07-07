@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Protocol
 
@@ -17,6 +16,8 @@ class DecisionLike(Protocol):
 class TradePlanLike(Protocol):
     symbol: str
     last_llm_review: dict | None
+
+    def model_copy(self, *, update: dict) -> "TradePlanLike": ...
 
 
 class TradePlanStoreLike(Protocol):
@@ -56,7 +57,7 @@ def persist_last_llm_review(
     }
     for plan in plan_store.open_plans():
         if plan.symbol == symbol:
-            plan_store.upsert(replace(plan, last_llm_review=review))
+            plan_store.upsert(plan.model_copy(update={"last_llm_review": review}))
 
 
 def last_review_by_symbol(

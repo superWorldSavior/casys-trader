@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import json
 import time
-from dataclasses import asdict
 from pathlib import Path
 
 import pytest
@@ -186,7 +185,7 @@ class TestExecuteViaQueue:
         pool.start()
         try:
             plan = _simple_plan("AAPL-via-queue")
-            tid = _enqueue_order(ledger, plan_to_upsert=asdict(plan))
+            tid = _enqueue_order(ledger, plan_to_upsert=plan.model_dump())
             task = _poll_done(ledger, tid)
 
             assert task is not None
@@ -543,7 +542,6 @@ class TestAddAtomique:
 
         # Nouveau plan SCALE_IN : close l'ancien ET upsert le nouveau atomiquement
         new_plan = _simple_plan("AAPL-new-add")
-        from dataclasses import asdict as _asdict
         pool.start()
         try:
             tid = _enqueue_order(
@@ -551,7 +549,7 @@ class TestAddAtomique:
                 side="BUY",
                 quantity=5.0,
                 symbol_to_close="AAPL",      # ferme l'ancien plan
-                plan_to_upsert=_asdict(new_plan),  # ouvre le nouveau plan
+                plan_to_upsert=new_plan.model_dump(),  # ouvre le nouveau plan
             )
             task = _poll_done(ledger, tid)
 
@@ -590,7 +588,6 @@ class TestAddAtomique:
 
         monkeypatch.setattr(SqliteTradePlanStore, "upsert_in_tx", _failing_upsert_in_tx)
 
-        from dataclasses import asdict as _asdict
         new_plan = _simple_plan("AAPL-new-rb")
         pool.start()
         try:
@@ -609,7 +606,7 @@ class TestAddAtomique:
                     "fx_rate": 1.0,
                     "dry_run": False,
                     "symbol_to_close": "AAPL",
-                    "plan_to_upsert": _asdict(new_plan),
+                    "plan_to_upsert": new_plan.model_dump(),
                 }),
             )
             assert tid is not None

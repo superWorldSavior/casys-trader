@@ -23,6 +23,12 @@ class PlanStub:
     symbol: str
     last_llm_review: dict | None = None
 
+    def model_copy(self, *, update: dict) -> "PlanStub":
+        return PlanStub(
+            symbol=update.get("symbol", self.symbol),
+            last_llm_review=update.get("last_llm_review", self.last_llm_review),
+        )
+
 
 class PlanStoreStub:
     def __init__(self, plans: list[PlanStub]) -> None:

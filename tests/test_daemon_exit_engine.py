@@ -2106,16 +2106,17 @@ def test_run_cycle_add_resynchronise_le_plan_sur_position_totale(monkeypatch, tm
         "rationale": "thesis intacte",
     }
     TradePlanStore(state_dir / "trade_plans.json").upsert(
-        replace(
-            create_trade_plan(
-                symbol="SPY",
-                side="LONG",
-                quantity=10.0,
-                entry_price=100.0,
-                opened_at="2026-06-05T11:00:00+00:00",
-                raw_exit_plan={"hard_stop": {"type": "price", "price": 94.0}},
-            ),
-            last_llm_review=last_review,
+        create_trade_plan(
+            symbol="SPY",
+            side="LONG",
+            quantity=10.0,
+            entry_price=100.0,
+            opened_at="2026-06-05T11:00:00+00:00",
+            raw_exit_plan={"hard_stop": {"type": "price", "price": 94.0}},
+        ).model_copy(
+            update={
+                "last_llm_review": last_review,
+            }
         )
     )
 

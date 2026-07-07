@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import asdict
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -154,7 +153,7 @@ def execute_order_unit(
         # FIX 1 — Fill atomique : sérialise le fill ET passe-le à complete_in_tx
         # DANS LA MÊME TRANSACTION. Ainsi task 'done' ET result=<fill JSON> sont
         # atomiques — un crash post-commit garantit les deux présents ensemble.
-        _fill_result: str | None = json.dumps(asdict(fill)) if fill is not None else None
+        _fill_result: str | None = json.dumps(fill.model_dump()) if fill is not None else None
         completed = ledger.complete_in_tx(
             cur, task_id=task_id, token=token, now_ms=now_ms, result=_fill_result
         )

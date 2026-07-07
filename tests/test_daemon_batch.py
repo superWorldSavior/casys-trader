@@ -928,8 +928,6 @@ def test_batch_decide_reinjecte_last_llm_review_dans_les_deux_batches(monkeypatc
 def test_last_review_by_symbol_filtre_plans_sans_review_et_hors_perimetre(tmp_path) -> None:
     # Mapping symbole -> dernier verdict LLM, restreint aux plans ouverts du batch
     # courant qui PORTENT une review (narrow contract : on ne passe pas le store entier).
-    from dataclasses import replace
-
     from trader.planning.trade_plan import TradePlanStore, create_trade_plan
 
     store = TradePlanStore(tmp_path / "plans.json")
@@ -943,7 +941,7 @@ def test_last_review_by_symbol_filtre_plans_sans_review_et_hors_perimetre(tmp_pa
             opened_at="2026-06-05T12:00:00+00:00",
             raw_exit_plan={"hard_stop": 95.0},
         )
-        return plan if review is None else replace(plan, last_llm_review=review)
+        return plan if review is None else plan.model_copy(update={"last_llm_review": review})
 
     review = {"ts": "2026-06-05T12:15:00+00:00", "verdict": "intact"}
     store.upsert(_plan("SPY", review))

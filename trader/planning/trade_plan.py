@@ -5,24 +5,24 @@ from __future__ import annotations
 import copy
 import json
 import math
-from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
 
 from .indicator_watch import normalize_indicator_watch
+from trader.domain.trade_plan import (
+    TRAILING_STOP_TRAIL_TYPES,
+    MoveStopTo,
+    PositionSide,
+    ProfitProtection,
+    TakeProfit,
+    TradePlan,
+    TrailingStop,
+    TrailingStopTrailType,
+)
 from trader.market.features import swing_high, swing_low, vwap
 
-PositionSide = Literal["LONG", "SHORT"]
-MoveStopTo = Literal["breakeven", "none"]
-TrailingStopTrailType = Literal["price", "percent", "volatility_multiple"]
 StructuralHardStopAnchor = Literal["swing_low", "swing_high", "vwap"]
-
-TRAILING_STOP_TRAIL_TYPES: tuple[TrailingStopTrailType, ...] = (
-    "price",
-    "percent",
-    "volatility_multiple",
-)
 STRUCTURAL_HARD_STOP_ANCHORS: tuple[StructuralHardStopAnchor, ...] = (
     "swing_low",
     "swing_high",
@@ -37,67 +37,6 @@ STRUCTURAL_HARD_STOP_LEVELS = {
 
 class InvalidExitPlanError(ValueError):
     """Raised when an agent-provided exit plan cannot be enforced safely."""
-
-
-@dataclass(frozen=True)
-class TakeProfit:
-    name: str
-    price: float
-    fraction: float
-    quantity: float
-    after_fill: str = ""
-
-
-@dataclass(frozen=True)
-class TrailingStop:
-    enabled_after: str | None
-    trail_type: TrailingStopTrailType
-    trail_value: float
-    trail_floored: bool = False
-
-
-@dataclass(frozen=True)
-class ProfitProtection:
-    enabled: bool = True
-    arm_at_r: float = 0.5
-    trigger_on_giveback_pct: float = 0.4
-    close_fraction: float = 1.0 / 3.0
-    move_stop_to: MoveStopTo = "breakeven"
-    min_hold_minutes: float = 10.0
-    lock_r: float | None = None
-    triggered: bool = False
-
-
-@dataclass(frozen=True)
-class TradePlan:
-    id: str
-    symbol: str
-    side: PositionSide
-    quantity: float
-    remaining_quantity: float
-    entry_price: float
-    opened_at: str
-    reference_volatility: float | None = None
-    hard_stop_price: float | None = None
-    take_profits: list[TakeProfit] = field(default_factory=list)
-    trailing_stop: TrailingStop | None = None
-    max_hold_minutes: float | None = None
-    high_watermark: float | None = None
-    low_watermark: float | None = None
-    filled_take_profits: list[str] = field(default_factory=list)
-    profit_protection: ProfitProtection | None = None
-    exit_watch: dict | None = None
-    llm_provider: str | None = None
-    llm_model: str | None = None
-    llm_fallback_reason: str | None = None
-    llm_confidence: float | None = None
-    last_llm_review: dict | None = None
-    # §13.7 — contexte d'entrée durable (le contexte du trade vit dans TradePlan, pas
-    # dans une session LLM jetable) : thèse courte, id de la décision d'entrée, et
-    # snapshot du contexte au tir (prix, runtime interval, data age, session, daily as-of).
-    entry_thesis: str | None = None
-    entry_decision_id: str | None = None
-    entry_context: dict | None = None
 
 
 def _parse_price(raw: object) -> float | None:
@@ -1074,7 +1013,7 @@ def apply_exit_update(
     if not patches:
         return plan
 
-    return replace(plan, **patches)
+    return plan.model_copy(update=patches)
 
 
 class TradePlanStore:
@@ -1099,7 +1038,7 @@ class TradePlanStore:
     def upsert(self, plan: TradePlan) -> None:
         data = self._load()
         plans = [raw for raw in data.get("plans", []) if raw.get("id") != plan.id]
-        plans.append(asdict(plan))
+        plans.append(plan.model_dump())
         self._save({"plans": plans})
 
     def close(self, plan_id: str) -> None:
@@ -1143,9 +1082,16 @@ class TradePlanStore:
             take_profits = [
                 tp
                 if tp.name in plan.filled_take_profits
-                else replace(tp, quantity=round(tp.quantity * ratio, 8))
+                else tp.model_copy(update={"quantity": round(tp.quantity * ratio, 8)})
                 for tp in plan.take_profits
             ]
-            updated.append(asdict(replace(plan, remaining_quantity=new_remaining, take_profits=take_profits)))
+            updated.append(
+                plan.model_copy(
+                    update={
+                        "remaining_quantity": new_remaining,
+                        "take_profits": take_profits,
+                    }
+                ).model_dump()
+            )
 
         self._save({"plans": updated})

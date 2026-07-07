@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import copy
-from dataclasses import asdict, dataclass, replace
+from dataclasses import dataclass
 from typing import Mapping, Protocol
 
 import trader.application.execute.order_admission as order_admission
@@ -62,7 +62,7 @@ def build_execute_queue_plan_payload(
             llm_fallback_reason=llm_fallback_reason,
             llm_confidence=llm_confidence,
         )
-        return ExecuteQueuePlanPayload(plan_to_upsert=asdict(plan), symbol_to_close=symbol_to_close)
+        return ExecuteQueuePlanPayload(plan_to_upsert=plan.model_dump(), symbol_to_close=symbol_to_close)
 
     if intent == "SCALE_IN":
         total_quantity, avg_price = order_admission.projected_scale_in_risk_basis(
@@ -91,8 +91,8 @@ def build_execute_queue_plan_payload(
         )
         previous_plan = _open_plan_for_symbol(plan_reader, symbol)
         if previous_plan is not None and previous_plan.last_llm_review is not None:
-            plan = replace(plan, last_llm_review=copy.deepcopy(previous_plan.last_llm_review))
-        return ExecuteQueuePlanPayload(plan_to_upsert=asdict(plan), symbol_to_close=symbol_to_close)
+            plan = plan.model_copy(update={"last_llm_review": copy.deepcopy(previous_plan.last_llm_review)})
+        return ExecuteQueuePlanPayload(plan_to_upsert=plan.model_dump(), symbol_to_close=symbol_to_close)
 
     if intent == "FLIP":
         open_quantity = order_admission.flip_open_quantity(
@@ -117,7 +117,7 @@ def build_execute_queue_plan_payload(
             llm_fallback_reason=llm_fallback_reason,
             llm_confidence=llm_confidence,
         )
-        return ExecuteQueuePlanPayload(plan_to_upsert=asdict(plan), symbol_to_close=symbol_to_close)
+        return ExecuteQueuePlanPayload(plan_to_upsert=plan.model_dump(), symbol_to_close=symbol_to_close)
 
     return ExecuteQueuePlanPayload(plan_to_upsert=None, symbol_to_close=symbol_to_close)
 
@@ -151,10 +151,11 @@ def _build_plan(
         llm_fallback_reason=llm_fallback_reason,
         llm_confidence=llm_confidence,
     )
-    return replace(
-        plan,
-        entry_thesis=rationale,
-        entry_context=copy.deepcopy(dict(entry_context or {})),
+    return plan.model_copy(
+        update={
+            "entry_thesis": rationale,
+            "entry_context": copy.deepcopy(dict(entry_context or {})),
+        }
     )
 
 

@@ -13,7 +13,6 @@ Cas couverts :
 from __future__ import annotations
 
 import json
-from dataclasses import asdict
 from pathlib import Path
 
 import pytest
@@ -184,7 +183,7 @@ class TestHappyPath:
         handler = make_execute_order_handler(db=db, broker=broker, plan_store=plan_store, ledger=ledger)
 
         plan = _simple_plan("AAPL-test")
-        payload = _make_task_payload(plan_to_upsert=asdict(plan))
+        payload = _make_task_payload(plan_to_upsert=plan.model_dump())
         task["payload"] = json.dumps(payload)
 
         result = handler(task)

@@ -35,6 +35,8 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
+from trader.planning.trade_plan import TradePlanStore
+
 log = logging.getLogger(__name__)
 
 _VALID_BACKENDS = ("json", "sqlite")
@@ -182,8 +184,6 @@ def make_trade_plan_store(
     backend = backend.lower()
 
     if backend == "json":
-        from trader.planning.trade_plan import TradePlanStore  # import local
-
         log.debug(
             "[broker_factory] trade_plan backend=json → TradePlanStore(%s)",
             state_dir / "trade_plans.json",

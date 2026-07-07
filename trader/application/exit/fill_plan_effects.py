@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import copy
-from dataclasses import replace
 from typing import Protocol
 
 from trader.application.exit.planned_exits import plan_snapshot
@@ -116,9 +115,9 @@ def apply_filled_plan_effects(
         llm_fallback_reason=llm_fallback_reason,
         llm_confidence=llm_confidence,
     )
-    plan = replace(plan, **entry_meta)
+    plan = plan.model_copy(update=entry_meta)
     if add_previous_plan is not None and add_previous_plan.last_llm_review is not None:
-        plan = replace(plan, last_llm_review=copy.deepcopy(add_previous_plan.last_llm_review))
+        plan = plan.model_copy(update={"last_llm_review": copy.deepcopy(add_previous_plan.last_llm_review)})
     if not queue_execute_enabled:
         plan_store.upsert(plan)
     entry["trade_plan_created"] = True
@@ -163,7 +162,7 @@ def _apply_flip_plan_effects(
     )
     entry["trade_plan_created"] = created_plan is not None
     if created_plan is not None:
-        created_plan = replace(created_plan, **entry_meta)
+        created_plan = created_plan.model_copy(update=entry_meta)
         plan_store.upsert(created_plan)
         entry["trade_plan"] = plan_snapshot(created_plan)
 

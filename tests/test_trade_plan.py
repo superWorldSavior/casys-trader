@@ -1,4 +1,3 @@
-from dataclasses import replace
 from datetime import datetime, timezone
 
 import pytest
@@ -1037,14 +1036,15 @@ def test_trade_plan_store_persiste_last_llm_review(tmp_path) -> None:
         opened_at="2026-06-05T12:00:00+00:00",
         raw_exit_plan={"hard_stop": 95.0},
     )
-    plan = replace(
-        plan,
-        last_llm_review={
-            "ts": "2026-06-05T12:15:00+00:00",
-            "verdict": "intact",
-            "action": "HOLD",
-            "intent": "HOLD",
-        },
+    plan = plan.model_copy(
+        update={
+            "last_llm_review": {
+                "ts": "2026-06-05T12:15:00+00:00",
+                "verdict": "intact",
+                "action": "HOLD",
+                "intent": "HOLD",
+            },
+        }
     )
 
     store.upsert(plan)
@@ -1063,17 +1063,18 @@ def test_trade_plan_store_persiste_le_contexte_d_entree(tmp_path) -> None:
         opened_at="2026-06-05T12:00:00+00:00",
         raw_exit_plan={"hard_stop": 95.0},
     )
-    plan = replace(
-        plan,
-        entry_thesis="cassure du range haut sur volume",
-        entry_decision_id="2026-06-05T12:00:00+00:00|0|SPY",
-        entry_context={
-            "price": 100.0,
-            "runtime_interval": "15m",
-            "data_age_m": 3,
-            "session": {"open": True},
-            "daily_as_of": "2026-06-04",
-        },
+    plan = plan.model_copy(
+        update={
+            "entry_thesis": "cassure du range haut sur volume",
+            "entry_decision_id": "2026-06-05T12:00:00+00:00|0|SPY",
+            "entry_context": {
+                "price": 100.0,
+                "runtime_interval": "15m",
+                "data_age_m": 3,
+                "session": {"open": True},
+                "daily_as_of": "2026-06-04",
+            },
+        }
     )
 
     store.upsert(plan)

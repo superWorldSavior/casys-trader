@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import replace
-
 from trader.application.exit.fill_plan_effects import apply_filled_plan_effects
 from trader.execution.contracts import Position
 from trader.planning.trade_plan import TradePlan, create_trade_plan
@@ -64,7 +62,7 @@ def _plan(symbol: str = "SPY", *, review: dict | None = None) -> TradePlan:
         opened_at="2026-07-05T07:00:00+00:00",
         raw_exit_plan=_exit_plan(),
     )
-    return plan if review is None else replace(plan, last_llm_review=review)
+    return plan if review is None else plan.model_copy(update={"last_llm_review": review})
 
 
 def _apply(**overrides) -> tuple[dict, _PlanStore]:

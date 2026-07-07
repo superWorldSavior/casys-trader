@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Callable, Protocol
 
@@ -21,6 +20,8 @@ class TradePlanLike(Protocol):
     id: str
     symbol: str
     exit_watch: dict | None
+
+    def model_copy(self, *, update: dict) -> "TradePlanLike": ...
 
 
 class TradePlanStoreLike(Protocol):
@@ -138,5 +139,5 @@ def scan_exit_watches(
         if not dry_run:
             watch = dict(plan.exit_watch or {})
             watch["last_triggered_at"] = now.astimezone(timezone.utc).isoformat()
-            plan_store.upsert(replace(plan, exit_watch=watch))
+            plan_store.upsert(plan.model_copy(update={"exit_watch": watch}))
     return enriched

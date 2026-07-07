@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Optional
 
@@ -55,7 +54,7 @@ def plan_to_columns(plan: TradePlan, seq: int) -> dict:
     Returns:
         dict prêt pour sqlite3 named parameters (:col).
     """
-    d = asdict(plan)
+    d = plan.model_dump()
     return {
         "id": d["id"],
         "seq": seq,
@@ -93,7 +92,7 @@ def row_to_plan(row) -> TradePlan:
     Désérialise les colonnes *_json, reconstruit le dict complet, puis délègue
     à trade_plan_from_dict pour la construction du dataclass.
 
-    Round-trip garanti : asdict(row_to_plan(plan_to_columns(p, seq))) == asdict(p).
+    Round-trip garanti : row_to_plan(plan_to_columns(p, seq)).model_dump() == p.model_dump().
     """
     d = dict(row)
 
@@ -323,13 +322,14 @@ class SqliteTradePlanStore:
                     take_profits = [
                         tp
                         if tp.name in plan.filled_take_profits
-                        else replace(tp, quantity=round(tp.quantity * ratio, 8))
+                        else tp.model_copy(update={"quantity": round(tp.quantity * ratio, 8)})
                         for tp in plan.take_profits
                     ]
-                    updated = replace(
-                        plan,
-                        remaining_quantity=new_remaining,
-                        take_profits=take_profits,
+                    updated = plan.model_copy(
+                        update={
+                            "remaining_quantity": new_remaining,
+                            "take_profits": take_profits,
+                        }
                     )
                     cols = plan_to_columns(updated, int(row["seq"]))
                     cur.execute(
@@ -370,7 +370,7 @@ class SqliteTradePlanStore:
         """Reconstruit le shadow trade_plans.json depuis les tables et l'écrit atomiquement.
 
         Format identique à trade_plans.json (TradePlanStore) :
-          {"plans": [asdict(plan), ...]}
+          {"plans": [plan.model_dump(), ...]}
 
         Propage les exceptions (pas de swallow) — les appelants de write (upsert,
         close, close_symbol, clear, sync_symbol_quantity) la wrappent en best-effort.
@@ -383,5 +383,5 @@ class SqliteTradePlanStore:
         plans = self.open_plans()
         write_json_atomic(
             self._json_path,
-            {"plans": [asdict(p) for p in plans]},
+            {"plans": [p.model_dump() for p in plans]},
         )

@@ -1,7 +1,7 @@
 """Tests TDD — SqliteTradePlanStore (parité JSON ↔ SQLite, shadow, factory).
 
 Couvre :
-- Round-trip d'un plan riche (tous les sous-objets, asdict identique).
+- Round-trip d'un plan riche (tous les sous-objets, dump identique).
 - Parité SqliteTradePlanStore ↔ TradePlanStore sur une séquence complète :
   upsert ×3, close, close_symbol, sync partiel, sync→0.
   open_plans() identiques après chaque op (ordre inclus).
@@ -13,7 +13,6 @@ Couvre :
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Union
 
@@ -39,6 +38,10 @@ AnyStore = Union[TradePlanStore, SqliteTradePlanStore]
 # ---------------------------------------------------------------------------
 # Fixtures helpers
 # ---------------------------------------------------------------------------
+
+
+def _dump(plan: TradePlan) -> dict:
+    return plan.model_dump()
 
 
 def _plan(
@@ -143,7 +146,7 @@ def json_store(tmp_path: Path) -> TradePlanStore:
 
 class TestRoundTrip:
     def test_round_trip_minimal_plan(self, db: StateDb) -> None:
-        """Plan minimal (pas de sous-objets) → asdict identique après colonnes→row→plan."""
+        """Plan minimal (pas de sous-objets) → dump identique après colonnes→row→plan."""
         plan = _plan()
         cols = plan_to_columns(plan, seq=1)
         # Simuler une row via query
@@ -174,7 +177,7 @@ class TestRoundTrip:
         row = db.query_one("SELECT * FROM trade_plans WHERE id=?", (plan.id,))
         assert row is not None
         retrieved = row_to_plan(row)
-        assert asdict(retrieved) == asdict(plan)
+        assert _dump(retrieved) == _dump(plan)
 
     def test_round_trip_rich_plan(self, sqlite_store: SqliteTradePlanStore) -> None:
         """Plan riche (trailing, profit_protection, exit_watch, take_profits, etc.) → round-trip exact."""
@@ -182,7 +185,7 @@ class TestRoundTrip:
         sqlite_store.upsert(plan)
         plans = sqlite_store.open_plans()
         assert len(plans) == 1
-        assert asdict(plans[0]) == asdict(plan)
+        assert _dump(plans[0]) == _dump(plan)
 
     def test_round_trip_filled_take_profits(self, sqlite_store: SqliteTradePlanStore) -> None:
         """filled_take_profits non vide → conservé exactement."""
@@ -195,7 +198,7 @@ class TestRoundTrip:
         sqlite_store.upsert(plan)
         retrieved = sqlite_store.open_plans()[0]
         assert retrieved.filled_take_profits == ["tp1"]
-        assert asdict(retrieved) == asdict(plan)
+        assert _dump(retrieved) == _dump(plan)
 
     def test_round_trip_none_optional_fields(self, sqlite_store: SqliteTradePlanStore) -> None:
         """Plan avec tous les champs optionnels à None → round-trip exact."""
@@ -209,7 +212,7 @@ class TestRoundTrip:
         )
         sqlite_store.upsert(plan)
         retrieved = sqlite_store.open_plans()[0]
-        assert asdict(retrieved) == asdict(plan)
+        assert _dump(retrieved) == _dump(plan)
         assert retrieved.trailing_stop is None
         assert retrieved.profit_protection is None
         assert retrieved.exit_watch is None
@@ -238,7 +241,7 @@ class TestSqliteTradePlanStoreOps:
         sqlite_store.upsert(p1)
         sqlite_store.upsert(p2)
         # Re-upsert P1 avec une nouvelle valeur → doit aller en fin
-        p1_updated = replace(p1, high_watermark=999.0)
+        p1_updated = p1.model_copy(update={"high_watermark": 999.0})
         sqlite_store.upsert(p1_updated)
 
         plans = sqlite_store.open_plans()
@@ -370,7 +373,7 @@ class TestPariteJsonSqlite:
         snapshots: list[list[dict]] = []
 
         def snap():
-            snapshots.append([asdict(p) for p in store.open_plans()])
+            snapshots.append([_dump(p) for p in store.open_plans()])
 
         p1 = _plan("AAPL-1", "AAPL", quantity=10.0)
         p2 = _plan("MSFT-1", "MSFT", quantity=8.0)
@@ -385,7 +388,7 @@ class TestPariteJsonSqlite:
         snap()
 
         # re-upsert p1 (modifié) → déplacé en fin
-        store.upsert(replace(p1, high_watermark=110.0))
+        store.upsert(p1.model_copy(update={"high_watermark": 110.0}))
         snap()
 
         # close plan
@@ -446,8 +449,8 @@ class TestPariteJsonSqlite:
             store.upsert(plan)
             store.sync_symbol_quantity("AAPL", 5.0)
 
-        json_plans = [asdict(p) for p in json_store.open_plans()]
-        sqlite_plans = [asdict(p) for p in sqlite_store.open_plans()]
+        json_plans = [_dump(p) for p in json_store.open_plans()]
+        sqlite_plans = [_dump(p) for p in sqlite_store.open_plans()]
         assert json_plans == sqlite_plans
 
 
@@ -472,13 +475,13 @@ class TestShadow:
     def test_shadow_mirrors_open_plans(
         self, sqlite_store: SqliteTradePlanStore, tmp_path: Path
     ) -> None:
-        """Shadow JSON == asdict de open_plans()."""
+        """Shadow JSON == model_dump de open_plans()."""
         sqlite_store.upsert(_rich_plan("P1"))
         sqlite_store.upsert(_plan("P2", "MSFT"))
 
         shadow_path = tmp_path / "trade_plans.json"
         data = json.loads(shadow_path.read_text())
-        expected = [asdict(p) for p in sqlite_store.open_plans()]
+        expected = [_dump(p) for p in sqlite_store.open_plans()]
         assert data["plans"] == expected
 
     def test_shadow_updated_after_close(
@@ -529,7 +532,7 @@ class TestShadow:
         data = json.loads(shadow_path.read_text())
         assert len(data["plans"]) == 1
         assert data["plans"][0]["id"] == "MSFT-1"
-        expected = [asdict(p) for p in sqlite_store.open_plans()]
+        expected = [_dump(p) for p in sqlite_store.open_plans()]
         assert data["plans"] == expected
 
     def test_shadow_after_sync_symbol_quantity(
@@ -544,7 +547,7 @@ class TestShadow:
         data = json.loads(shadow_path.read_text())
         assert len(data["plans"]) == 1
         assert data["plans"][0]["remaining_quantity"] == pytest.approx(6.0)
-        expected = [asdict(p) for p in sqlite_store.open_plans()]
+        expected = [_dump(p) for p in sqlite_store.open_plans()]
         assert data["plans"] == expected
 
 
@@ -618,7 +621,7 @@ class TestNonFiniteParity:
         assert sqlite_plans[0].trailing_stop is None, "SQLite: trail_value=Inf → trailing_stop None"
 
         # Parité exacte entre les deux backends
-        assert asdict(json_plans[0]) == asdict(sqlite_plans[0])
+        assert _dump(json_plans[0]) == _dump(sqlite_plans[0])
 
 
 # ---------------------------------------------------------------------------
@@ -712,7 +715,7 @@ class TestMakeTradePlanStore:
         # Créer un trade_plans.json pré-existant
         json_path = tmp_path / "trade_plans.json"
         json_path.write_text(
-            json.dumps({"plans": [asdict(_plan("OLD-P1", "AAPL"))]}, indent=2)
+            json.dumps({"plans": [_dump(_plan("OLD-P1", "AAPL"))]}, indent=2)
         )
 
         store = make_trade_plan_store(state_dir=tmp_path, backend="sqlite")
@@ -727,7 +730,7 @@ class TestMakeTradePlanStore:
         # Préparer un trade_plans.json
         json_path = tmp_path / "trade_plans.json"
         json_path.write_text(
-            json.dumps({"plans": [asdict(_plan("P1", "AAPL"))]}, indent=2)
+            json.dumps({"plans": [_dump(_plan("P1", "AAPL"))]}, indent=2)
         )
 
         # Premier boot : import + backup du JSON + shadow régénéré
