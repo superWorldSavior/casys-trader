@@ -5,8 +5,10 @@
 
 `build_market_cockpit` construit le dict **`cockpit`** — **une clé** du
 `shared_context`. Le `shared_context` complet est assemblé dans `runtime/daemon`
-(il ajoute `now`, `now_human`, `market_clocks`, `portfolio`, `risk_limits`/`risk_capacity`, `kpis`, `attribution`,
-`meta_performance`, `learnings`, `regime_families`, `semantic`, `stale_market_data`).
+(il ajoute `now`, `now_human`, `market_clocks`, `portfolio`,
+`risk_limits`/`risk_capacity`, `kpis`, `attribution`, `meta_performance`,
+`learnings`, `regime_families`, `semantic`, `stale_market_data`,
+`active_plans_summary`).
 Ce contexte est injecté **une fois** dans le prompt batch (cf.
 [llm-contract](llm-contract.md)) : faits calculés par le code, pas de prose (AX).
 
@@ -56,6 +58,20 @@ concerné :
 | `wake_reasons` | raisons de réveil sans condition déclenchée, notamment `watch_expired` et `armed_plan_expired` |
 | `execution`, `planning` | éligibilité marché/exécution si disponible |
 | `last_llm_review`, `recent_decisions` | mémoire courte anti-répétition |
+
+## Plans et veilles — 3 niveaux
+
+Le contexte plans/watches est volontairement étagé :
+
+| Niveau | Champ / outil | Portée | Contenu |
+|---|---|---|---|
+| Détail local | `per_symbol[sym].active_watches` | symbole décidé seulement | veilles et plans armés actifs du symbole, avec conditions et expiration |
+| Résumé global | `shared_context.active_plans_summary` | portefeuille | résumé compact construit par `runtime/daemon._global_plans_summary` : `symbol`, `id`, `kind` (`armed`/`wake`) et `intent` si disponible, sans conditions |
+| Détail global | `get_active_plans` | portefeuille, à la demande | vrais `TradePlan` ouverts sérialisés, retour `{rows, as_of}` ; `symbol` filtre mais ne limite pas au symbole courant |
+
+Le résumé global sert surtout d'anti-doublon/OCO avant d'empiler des scénarios.
+L'outil `get_active_plans` ne sert que si le détail local et ce résumé global ne
+suffisent pas.
 
 `indicator_triggers` dit "une condition s'est réalisée". `wake_reasons` dit
 "le scheduler t'a réveillé pour réviser un état", par exemple parce que le TTL

@@ -31,6 +31,21 @@ acceptés en compat cachée, mais ne sont pas exposés dans ce contrat.
 Chaque outil = un `ToolSpec(name, validate_args, handler)` enregistré dans
 `TOOL_REGISTRY` (`agent/tools/registry`).
 
+### `get_active_plans`
+
+`get_active_plans{symbol?, limit?}` retourne toujours un objet
+`{"rows": [...], "as_of": ...}`.
+
+En queue runtime (mode prod), `rows` vient de `ToolContext.open_plans_provider` :
+ce sont de vrais `TradePlan` ouverts sérialisés, pas les watches locales. La
+portée est volontairement globale pour permettre la conscience portefeuille ;
+`symbol` est un filtre optionnel, pas une limite implicite au symbole courant.
+`limit` est plafonné à 20. `as_of` reprend l'horodatage du snapshot de plans.
+
+Sans provider (fallback batch), le handler retombe sur `active_watches_by_symbol`
+et rend des watches avec `as_of: null`. Ce mode est compatibilité/dégradé ; la
+référence opératoire est le provider global de plans ouverts.
+
 ## Action tools finaux par symbole
 
 Format agent visible :
@@ -73,7 +88,7 @@ Action tools acceptés :
 | Tool | Remplace | Effet réel |
 |---|---|---|
 | `strategy_entry` | `direction` / `qty` ou `risk_pct` / `exit` | `position intent` Pine-like : `direction:"long|short"` ouvre si flat, renforce si même sens, retourne si sens opposé ; le daemon compile ensuite vers `action` / `intent` / `exit_plan` internes puis valide via RiskGate/broker. Options : `qty`, `risk_pct`, `exit`, `thesis` |
-| `strategy_exit` | plan de sortie / amendement de sortie | `exit rule` : patche le plan de sortie d'une position **déjà ouverte** (`limit`, `stop`, `trail`, `protect`, `exit_watch`) sans fermer/rouvrir ; no-op tracé si pas de plan ouvert. Peut coexister avec `calls:[]` (HOLD + gestion active) |
+| `strategy_exit` | plan de sortie / amendement de sortie | `exit rule` : patche le plan de sortie d'une position **déjà ouverte** (`limit`, `stop`, `trail`, `protect`, `exit_watch`) sans fermer/rouvrir ; rejet tracé si pas de plan ouvert. Peut coexister avec `calls:[]` (HOLD + gestion active) |
 | `strategy_close` | fermeture / réduction position-aware | sortie marché immédiate : sans taille ferme toute la position ; `qty_percent<100` réduit une fraction ; `qty` réduit une quantité absolue |
 | `set_next_wake` | `next_wake_in_minutes` | planifie la **reconsultation** du symbole : `{minutes}` (timer), `{on: session_open\|macro_event\|pre_earnings}` (événement calendaire) ou `{when:<condition>}` (réveil-sur-indicateur, compilé en `WAKE`) |
 | `propose_indicator_watch` | `indicator_watch` | pose une veille/plan armé via le scheduler (`WAKE` = réveil de reconsultation ; `EXECUTE_ORDER` = **plan armé** exécuté sans reconsulter) |
@@ -111,7 +126,11 @@ s'il reste sous le prix courant ; symétriquement, un short doit garder le stop
 au-dessus du prix courant. En mode feedback pré-exécution, l'agent peut recevoir
 un `tool_results` `{tool:"strategy_exit", ok:false, error:<reason>}` de validation pré-exécution ;
 il doit alors corriger dans la même réponse (stop en prix absolu ou retrait de la
-contrainte non résolvable).
+contrainte non résolvable). Cette boucle ne concerne que `strategy_exit`, est
+bornée à 2 corrections, puis le runtime laisse la décision finale suivre le
+chemin normal. L'agent n'a pas besoin de redemander le plan : il est déjà dans
+son contexte (`active_watches`, `active_plans_summary` ou `get_active_plans` si
+le détail global a été demandé).
 
 **Réveil vs plan armé** : `set_next_wake` = **reconsultation** (l'agent reprend la main pour redécider). Avec `{when:<condition>}`, il est compilé en `indicator_watch{on_trigger:WAKE}`. `propose_indicator_watch{on_trigger:EXECUTE_ORDER}` = **automatisation** (le daemon exécute sans reconsulter l'agent). `set_next_wake{when}` et `propose_indicator_watch` dans la même décision sont rejetés comme ambigus.
 
@@ -174,9 +193,12 @@ rejeté ou hors budget (le LLM voit ce qui s'est passé).
 
 ## Où c'est branché (gates)
 
-- Offert **seulement au 1er passage** de décision (`allow_tool_calls =
-  agent_tools_enabled AND allow_context_request`), pas après un `REQUEST_CONTEXT`
-  ni au tour final.
+- En batch legacy, offert **seulement au 1er passage** de décision
+  (`allow_tool_calls = agent_tools_enabled AND allow_context_request`), pas après
+  un `REQUEST_CONTEXT` ni au tour final.
+- En queue grain-1, `resolve_symbol_decision` peut enchaîner des rounds dans une
+  session acpx persistante jusqu'à décision finale ; le backstop est technique,
+  pas un budget fonctionnel.
 - En mode `use_symbol_calls_contract` (le langage `calls:[...]`), le contrat du
   **1er tour laisse le choix** à l'agent : émettre `{"tool_calls":[...]}` (pull
   read-only) OU rendre directement `{"decisions":[...]}` ; le tour final impose

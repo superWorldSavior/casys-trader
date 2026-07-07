@@ -51,6 +51,24 @@ Le chemin moderne de recherche de contexte passe par les tool rounds read-only
 encore `REQUEST_CONTEXT` en compatibilité parser, mais le batch/queue runtime expose
 la grammaire `calls`.
 
+### Feedback pré-exécution `strategy_exit`
+
+En queue grain-1, un `strategy_exit` final est dry-run avant application. Si ce
+dry-run serait rejeté, le modèle reçoit dans la même session un
+`tool_results` d'action en erreur :
+
+```json
+{"tool": "strategy_exit", "ok": false, "error": "<reason>"}
+```
+
+Ce feedback n'est pas une exécution partielle : c'est une validation
+pré-exécution. L'agent doit corriger sa réponse suivante (par exemple prix de
+stop absolu au lieu d'un stop structurel non résolvable) ou retirer la contrainte.
+Il n'a pas besoin de redemander le plan : le plan ouvert est déjà visible via le
+contexte local/global, et `get_active_plans` ne sert qu'à récupérer un détail
+global manquant. La boucle est bornée à 2 corrections ; `strategy_entry` et
+`strategy_close` restent validés par les gates daemon, hors de ce feedback.
+
 Parsé/validé par `agent/protocol/parsing` → toute réponse douteuse **dégrade en
 HOLD** (fail-safe, cf. `codex_client`).
 

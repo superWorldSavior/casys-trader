@@ -49,7 +49,8 @@ les utilisaient :
 
 | Zone | Rôle | Notes |
 |---|---|---|
-| `trader/application/exit_update.py` | Application fail-safe des mises à jour de plan ouvert compilées depuis `strategy_exit` | contrat `Protocol` local pour le store, le daemon conserve un wrapper privé |
+| `trader/application/exit_update.py` | Application fail-safe des mises à jour de plan ouvert compilées depuis `strategy_exit` | `ExitUpdateResult` décrit l'application persistante ; `validate_exit_update` est le dry-run pur utilisé par le worker |
+| `trader/application/cycle_decision.py` | Application d'une décision symbole pendant un cycle | contient `execute_one_cycle_decision`, `DecisionExecutionContext` et `DecisionExecutionState` ; le daemon réexporte `_execute_one_cycle_decision` comme alias de compatibilité |
 | `trader/application/armed_plans.py` | Résolution applicative des triggers `EXECUTE_ORDER` en décisions armées ou réveils planificateur | contrats `Protocol` locaux pour position/volatilité ; le daemon conserve logs et événements |
 | `trader/application/planner_batch.py` | Batch LLM, budget modèle, tournée d'outils, REQUEST_CONTEXT | appelé via `daemon._batch_decide()` |
 | `trader/application/market_snapshot.py` | Barres runtime/daily/exit, fraîcheur, FX, eligibility, tradable maps | retourne `MarketSnapshot`, le daemon l'unpack |
@@ -79,7 +80,7 @@ les utilisaient :
 | `trader/application/watch_scanner.py` | Scan applicatif des indicator/exit watches : fetch des barres, évaluation, cooldown, retrait et réveil symbole | le daemon conserve l'émission d'événements/logs runtime |
 | `trader/agent/` | Contexte agent, mémoire mandat/stratégie, mémoire learnings/RAG, façade planner, transport LLM/acpx | compat virtuelle : `trader.agent_context`, `trader.codex_client`, `trader.llm`, `trader.tools.memory.Memory`, `trader.tools.memory.LearningsStore`, `trader.learnings.*`, `trader.learnings_store`, `trader.embeddings`, `trader.consolidator` |
 | `trader/agent/protocol/` | Types, prompts, parsing du contrat LLM | utilisé par `trader/agent/client.py` |
-| `trader/agent/tools/` | Package des outils domaine lecture seule | `registry.TOOL_REGISTRY` assemble 9 handlers |
+| `trader/agent/tools/` | Package des outils domaine lecture seule | `registry.TOOL_REGISTRY` assemble les 7 outils read-only exposés au LLM |
 | `trader/agent/learnings/` | Buffer brut JSONL, sélection pure, store SQLite recall, embeddings, consolidateur | mémoire machine de l'agent ; `trader.learnings.*` reste virtuel |
 | `trader/domain/` | Primitives neutres (`Bar`, `MarketError`, `Side`), vocabulaire partagé des `decision_reason_code` et catalogue sémantique gouverné (`domain/semantic/`) | évite que `market`/`planning`/`agent` importent `tools` ou `reporting` pour accéder à un vocabulaire métier |
 | `trader/planning/` | Plans de trade, scheduler de réveils, veilles, exit engine, gate de pertinence | compat : `trader.trade_plan`, `trader.indicator_watch`, `trader.exit_engine`, `trader.relevance_gate`, `trader.scheduling.scheduler`, `trader.tools.scheduler` |
@@ -277,12 +278,17 @@ Le `base_context` injecté au LLM contient (`trader/runtime/daemon.py`) :
 - `regime_families` — biais directionnel calculé par famille thématique (D2)
 - `learnings` — guardrails + patterns consolidés (D6)
 - `stale_market_data` — liste des symboles exclus ce cycle
+- `active_plans_summary` — résumé global compact des veilles/plans actifs
+  (`symbol`, `id`, `kind`, `intent` sans conditions) pour conscience d'état
+  anti-doublon/OCO
 - `semantic.requestable_indicator_ids` — indicateurs disponibles via REQUEST_CONTEXT
 
 Faits calculés par le code et injectés (principe AX : pas de prose) :
 - `data_age_m` (âge réel en min des barres) — `trader/runtime/daemon.py`
 - `session` (état de la séance par place) — `market.session_snapshot()`
-- `active_watches` (résumé des veilles actives par symbole)
+- `active_watches` (détail local des veilles/plans actifs par symbole, avec
+  conditions) ; le détail global complet des `TradePlan` ouverts passe par
+  l'outil `get_active_plans` (`{rows, as_of}`)
 
 ### 3.4 Gate de pertinence (D7 étage A)
 
@@ -592,9 +598,11 @@ seulement l'API publique d'exécution ; les validateurs/handlers privés restent
 dans leurs modules propriétaires.
 
 Le LLM reçoit UN prompt et peut répondre soit le contrat final, soit
-`{"tool_calls": [...]}` — UNE tournée max, puis décision finale obligatoire
-(sinon HOLD `tool_loop_blocked`). Les outils ne passent PAS par acpx
-(`--allowed-tools` reste `""`) : le daemon parse, valide contre
+`{"tool_calls": [...]}`. En batch legacy, une seule tournée read-only est offerte
+avant décision finale. En queue grain-1, `application.tool_round.resolve_symbol_decision`
+peut enchaîner des rounds dans une session acpx persistante, puis force une
+décision finale au backstop. Les outils ne passent PAS par acpx
+(`--allowed-tools` reste `""`) : le daemon/worker parse, valide contre
 `agent.tools.TOOL_REGISTRY` (allowlist Python) et exécute — lecture seule.
 
 Registre read-only (7) : `get_freshness`, `get_indicator_context`
@@ -602,11 +610,12 @@ Registre read-only (7) : `get_freshness`, `get_indicator_context`
 (découverte du cube sémantique TraderNexus), `get_active_plans`,
 `get_attribution`, `recall_learnings` (mémoire, §11).
 
-Garde-fous : budgets 24 appels/lot et 3/symbole, cap 32 calls sérialisés
-(sentinel `truncated`), args scrubbed (profondeur/longueur), contexte borné au
-chunk (pas de fuite inter-chunks), budget modèle réservé (2 appels/chunk en
-mode tournée). Tout est tracé dans `runtime.tool_calls` du ledger → dérivable
-par `tool_trace.summarize_tools` et `tool_usage` (section `domain_usage`).
+Garde-fous : budgets 24 appels/round et 3/symbole en batch legacy
+(24/8 en queue grain-1), cap 32 calls sérialisés (sentinel `truncated`), args
+scrubbed (profondeur/longueur), contexte borné au chunk ou au symbole, budget
+modèle réservé en batch. Tout est tracé dans `runtime.tool_calls` du ledger →
+dérivable par `tool_trace.summarize_tools` et `tool_usage` (section
+`domain_usage`).
 
 Outils d'ACTION : le contrat public par symbole expose une grammaire Pine-like
 JSON (`strategy_entry`, `strategy_exit`, `strategy_close`) plus
@@ -615,6 +624,13 @@ JSON (`strategy_entry`, `strategy_exit`, `strategy_close`) plus
 les projette ensuite vers `Decision`, `exit_plan`, `exit_update`, veilles et
 learnings. Les anciens action tools ne sont plus acceptés par le runtime ; les
 anciens états sont traités par migration avant lecture durable.
+
+`strategy_exit` a un feedback pré-exécution en queue : le worker lance
+`validate_exit_update` en dry-run via `ToolRoundServices.action_validator`. Si le
+patch de sortie est rejeté par ce dry-run, il réinjecte `tool_results` avec
+`ok:false` dans la même session (2 corrections max). L'application persistante reste
+`apply_exit_update_to_open_plan` dans `application/cycle_decision.py` après la
+décision finale ; un plan inexistant donne désormais un outcome `rejected`.
 
 ## 10.1 Logging et dépendances du refactor
 

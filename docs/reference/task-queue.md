@@ -1,7 +1,7 @@
 # Référence — File de tâches durable (task-ledger)
 
 > **Type** : Reference (Diátaxis).
-> **Code** : primitives `infrastructure/queue/ledger`, `infrastructure/queue/pools`, `infrastructure/queue/worker` ; dispatchers `application/queue_dispatch` + `application/execute_queue_dispatch`, payload plans `application/execute_queue_plan` ; bootstrap runtime `runtime/queue_runtime`, orchestration `runtime/daemon`, handlers `application/decide_handler` + `application/execute_order_handler`, backend `infrastructure/state_db/*` (outbox). Les anciens imports `trader.queue.*` et `trader.state_db.*` restent compatibles via alias virtuels.
+> **Code** : primitives `infrastructure/queue/ledger`, `infrastructure/queue/pools`, `infrastructure/queue/worker` ; dispatchers `application/queue_dispatch` + `application/execute_queue_dispatch`, payload plans `application/execute_queue_plan` ; bootstrap runtime `runtime/queue_runtime` + `runtime/data_source_runtime`, orchestration `runtime/daemon`, handlers `application/decide_handler` + `application/execute_order_handler`, backend `infrastructure/state_db/*` (outbox). Les anciens imports `trader.queue.*` et `trader.state_db.*` restent compatibles via alias virtuels.
 > **Statut** : ✅ **Phase 3 ACTIVÉE en paper (2026-07-04)** — les 3 flags on (`CASYS_STATE_BACKEND=sqlite`, `CASYS_QUEUE_DECIDE_ENABLED`, `CASYS_QUEUE_EXECUTE_ENABLED`), migration d'état validée, `[state-compare] identical=True`. Les chemins synchrones historiques restent présents comme fallback (flags off) jusqu'au gommage strangler. Voir la section « Pipeline » ci-dessous.
 > **Rôle** : file durable qui découple la production des tâches de leur traitement (durabilité, reprise, idempotence, backpressure).
 
@@ -175,6 +175,40 @@ Répartition runtime :
   worker renouvelle via heartbeat après l'ouverture de session puis après chaque
   appel modèle. REQUEST_CONTEXT legacy reste désactivé (le tool round moderne est
   la voie de recherche de contexte). Fin du mode dégradé Lot A.
+
+### Services tool-round grain-1
+
+`runtime/queue_runtime.build_decide_tool_services()` construit un
+`ToolRoundServices` injecté au handler `decide` :
+
+| Service | Rôle |
+|---|---|
+| `get_bars` | wrapper indirect vers la data source courante, sans capture d'objet runtime |
+| `open_plans_provider` | provider global des `TradePlan` ouverts sérialisés pour `get_active_plans` |
+| `open_plans_as_of_provider` | horodatage du snapshot renvoyé dans `{rows, as_of}` |
+| `action_validator` | dry-run pré-exécution des `strategy_exit` proposés par l'agent |
+
+Le daemon possède le snapshot partagé via `PlanSnapshotHandle`. À chaque cycle,
+il charge `plan_store.open_plans()`, stocke les vrais plans dans
+`PlanSnapshotHandle.get_raw()` et la version contexte dans `get()`, avec `as_of`.
+Le handler `get_active_plans` lit `get()` : sa portée est globale, puis `symbol`
+filtre si demandé.
+
+Frontière de validation :
+
+- `application.exit_update.validate_exit_update()` est un dry-run pur : il lit un
+  store snapshot, résout l'update, mais n'appelle jamais `upsert`.
+- `application.exit_update.apply_exit_update_to_open_plan()` reste le chemin
+  persistant côté daemon après décision finale.
+- `action_validator` ne couvre que `strategy_exit`. Les entrées et sorties marché
+  (`strategy_entry`, `strategy_close`) restent sous les gates du daemon
+  (`cycle_decision`/risk/broker).
+- Si le worker n'a pas les barres daily nécessaires et que le seul rejet serait
+  `hard_stop_bars_unavailable`, il s'abstient pour éviter un faux rejet ; le
+  daemon tranchera avec les barres du cycle.
+- Si le dry-run rejetterait réellement le `strategy_exit`, `resolve_symbol_decision`
+  réinjecte un `tool_results` `{tool:"strategy_exit", ok:false, error:<reason>}`
+  dans la même session, jusqu'à 2 corrections avant fall-through.
 
 ### Étage `execute` — `CASYS_QUEUE_EXECUTE_ENABLED` (exige `sqlite`)
 
