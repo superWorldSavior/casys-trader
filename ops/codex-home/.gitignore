@@ -1,7 +1,6 @@
-# CODEX_HOME isolé du daemon : on versionne SEULEMENT config.toml.
-# Auth (secret) et rollouts générés restent hors git.
-auth.json
-sessions/
-history/
-tmp/
-*.log
+# CODEX_HOME isolé du daemon : on ne versionne QUE config.toml.
+# Tout le reste (auth secret + runtime généré par codex : sessions, caches,
+# sqlite goals/logs/state, skills, shell_snapshots, installation_id…) est ignoré.
+*
+!.gitignore
+!config.toml
