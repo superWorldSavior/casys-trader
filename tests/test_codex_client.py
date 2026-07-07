@@ -338,6 +338,78 @@ def test_parse_decision_accepte_next_wake_in_minutes_optionnel() -> None:
     assert decision.next_wake_in_minutes == 45.0
 
 
+def test_parse_decision_payload_valide_reste_identique_avec_coercions_legacy() -> None:
+    decision = parse_decision(
+        '{"symbol":123,"action":"buy","quantity":"10","confidence":"0.8",'
+        '"rationale":42,"intent":"open_long","next_wake_in_minutes":"15",'
+        '"exit_plan":{"hard_stop":95},"indicator_watch":{"ttl_minutes":30},'
+        '"cancel_watch_ids":["w1",2,"w2"],"learning":"  note utile  ",'
+        '"decision_reason_code":"entry_signal","extra_llm_field":"ignore"}',
+        "SPY",
+    )
+
+    assert decision == codex_client.Decision(
+        symbol="123",
+        action="BUY",
+        quantity=10.0,
+        confidence=0.8,
+        rationale="42",
+        next_wake_in_minutes=15.0,
+        intent="OPEN_LONG",
+        exit_plan={"hard_stop": 95},
+        indicator_watch={"ttl_minutes": 30},
+        cancel_watch_ids=["w1", "w2"],
+        learning="note utile",
+        decision_reason_code="ENTRY_SIGNAL",
+    )
+
+
+def test_parse_decision_champ_manquant_devient_hold_parse_error_lisible() -> None:
+    decision = parse_decision(
+        '{"symbol":"SPY","action":"BUY","confidence":0.7,"rationale":"breakout"}',
+        "SPY",
+    )
+
+    assert decision.action == "HOLD"
+    assert decision.llm_error == "parse_error:invalid_payload"
+    assert "quantity" in decision.rationale
+    assert "required" in decision.rationale.lower()
+
+
+def test_parse_decision_type_faux_devient_hold_parse_error_lisible() -> None:
+    decision = parse_decision(
+        '{"symbol":"SPY","action":"BUY","quantity":"beaucoup",'
+        '"confidence":0.7,"rationale":"breakout"}',
+        "SPY",
+    )
+
+    assert decision.action == "HOLD"
+    assert decision.llm_error == "parse_error:invalid_payload"
+    assert "quantity" in decision.rationale
+    assert "number" in decision.rationale.lower()
+
+
+def test_parse_decision_action_inconnue_devient_hold_parse_error_lisible() -> None:
+    decision = parse_decision(
+        '{"symbol":"SPY","action":"WAIT","quantity":0,"confidence":0.7,'
+        '"rationale":"patience"}',
+        "SPY",
+    )
+
+    assert decision.action == "HOLD"
+    assert decision.llm_error == "parse_error:invalid_payload"
+    assert "action" in decision.rationale
+    assert "WAIT" in decision.rationale
+
+
+def test_parse_decision_json_partiel_devient_hold_parse_error() -> None:
+    decision = parse_decision('{"symbol":"SPY","action":"BUY"', "SPY")
+
+    assert decision.action == "HOLD"
+    assert decision.llm_error == "parse_error:invalid_json"
+    assert "invalid_json" in decision.rationale
+
+
 def test_parse_decision_accepte_le_contrat_single_calls() -> None:
     decision = parse_decision(
         '{"symbol":"SPY","confidence":0.8,"rationale":"breakout",'

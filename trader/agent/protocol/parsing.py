@@ -5,7 +5,19 @@ from __future__ import annotations
 import json
 from dataclasses import replace
 
+from pydantic import ValidationError
+
 from trader.domain import decision_reason
+from trader.agent.protocol.llm_schema import (
+    INLINE_DECISION_FIELDS,
+    RELATIVE_ORDER_INTENTS,
+    LlmBatchPayload,
+    LlmBatchToolCallsPayload,
+    LlmContextRequestPayload,
+    LlmDecisionPayload,
+    LlmIndicatorRequestPayload,
+    LlmSymbolCallsPayload,
+)
 from trader.agent.protocol.types import (
     BatchToolCallRequest,
     ContextResearchRequest,
@@ -15,21 +27,11 @@ from trader.agent.protocol.types import (
 from trader.agent.protocol.strategy_language import compile_strategy_call
 
 _DECISION_KEYS = {"symbol", "action", "quantity", "confidence", "rationale", "decision_reason_code"}
-_INLINE_DECISION_FIELDS = {
-    "action",
-    "quantity",
-    "qty",
-    "intent",
-    "exit_plan",
-    "indicator_watch",
-    "cancel_watch_ids",
-    "next_wake_in_minutes",
-    "learning",
-}
+_INLINE_DECISION_FIELDS = set(INLINE_DECISION_FIELDS)
 MAX_LEARNING_CHARS = 1000  # borne la note pour ne pas faire exploser le prompt/store
 MAX_THESIS_FIELD_CHARS = 200  # borne chaque champ texte du thesis tag
 _THESIS_VALID_HORIZONS = frozenset({"intraday", "swing", "position"})
-_RELATIVE_ORDER_INTENTS = frozenset({"CLOSE", "REDUCE", "FLIP", "SCALE_IN"})
+_RELATIVE_ORDER_INTENTS = RELATIVE_ORDER_INTENTS
 
 
 def _normalize_thesis(value: object) -> dict | None:
@@ -76,6 +78,29 @@ def _extract_json(text: str) -> dict:
     return json.loads(text[start : end + 1])
 
 
+def _format_validation_error(error: ValidationError) -> str:
+    parts: list[str] = []
+    for item in error.errors(include_url=False):
+        loc = ".".join(str(part) for part in item.get("loc", ())) or "payload"
+        msg = str(item.get("msg") or "invalid value")
+        parts.append(f"{loc}: {msg}")
+    return "; ".join(parts) or str(error)
+
+
+def _format_parse_error(error: Exception) -> str:
+    if isinstance(error, ValidationError):
+        return _format_validation_error(error)
+    return str(error)
+
+
+def _invalid_payload_hold(symbol: str, error: Exception) -> Decision:
+    return _hold_parse_error(
+        symbol,
+        f"parse_error:invalid_payload: {_format_parse_error(error)}",
+        "parse_error:invalid_payload",
+    )
+
+
 def _optional_float(data: dict, key: str) -> float | None:
     if data.get(key) is None:
         return None
@@ -107,9 +132,9 @@ def _decision_reason_code(data: dict) -> str:
     return decision_reason.normalize_reason_code(data.get("decision_reason_code"))
 
 
-def _decision_from_dict(data: dict, symbol: str) -> Decision:
-    if not isinstance(data, dict):
-        raise ValueError("élément non-objet")
+def _decision_from_dict(data: dict | LlmDecisionPayload, symbol: str) -> Decision:
+    payload = data if isinstance(data, LlmDecisionPayload) else LlmDecisionPayload.model_validate(data)
+    data = payload.to_legacy_dict()
     missing = _DECISION_KEYS - data.keys()
     blocking_missing = missing - {"decision_reason_code"}
     if blocking_missing:
@@ -306,12 +331,10 @@ def _action_for_order_tool(args: dict) -> str:
     raise ValueError("order_side_required")
 
 
-def _decision_from_symbol_calls(data: dict, symbol: str) -> Decision:
-    if any(field in data for field in _INLINE_DECISION_FIELDS):
-        raise ValueError("mixed_inline_decision_and_tools")
+def _decision_from_symbol_calls(data: dict | LlmSymbolCallsPayload, symbol: str) -> Decision:
+    payload = data if isinstance(data, LlmSymbolCallsPayload) else LlmSymbolCallsPayload.model_validate(data)
+    data = payload.to_legacy_dict()
     calls = data.get("calls")
-    if not isinstance(calls, list):
-        raise ValueError("calls_must_be_list")
 
     decision: dict = {
         "symbol": symbol,
@@ -500,29 +523,30 @@ def _decision_from_symbol_calls(data: dict, symbol: str) -> Decision:
 
 
 def parse_decision(raw_text: str, symbol: str) -> Decision:
-    data = _extract_json(raw_text)
-    if "calls" in data:
-        return _decision_from_symbol_calls(data, symbol)
-    return _decision_from_dict(data, symbol)
+    try:
+        data = _extract_json(raw_text)
+    except (ValueError, json.JSONDecodeError) as e:
+        return _hold_parse_error(symbol, f"parse_error:invalid_json: {e}", "parse_error:invalid_json")
+    try:
+        if "calls" in data:
+            return _decision_from_symbol_calls(LlmSymbolCallsPayload.model_validate(data), symbol)
+        return _decision_from_dict(LlmDecisionPayload.model_validate(data), symbol)
+    except (ValidationError, ValueError, TypeError) as e:
+        return _invalid_payload_hold(symbol, e)
 
 
-def _indicator_requests_from(data: dict, symbol: str) -> list[IndicatorRequest]:
-    raw_requests = data.get("requests") or data.get("indicator_requests") or []
+def _indicator_requests_from(data: dict | LlmContextRequestPayload, symbol: str) -> list[IndicatorRequest]:
+    payload = data if isinstance(data, LlmContextRequestPayload) else LlmContextRequestPayload.model_validate(data)
     requests: list[IndicatorRequest] = []
-    for item in raw_requests:
-        if not isinstance(item, dict):
-            continue
-        indicators = item.get("indicators") or item.get("names") or item.get("indicator") or []
-        if isinstance(indicators, str):
-            indicators = [indicators]
+    for item in payload.indicator_payloads():
         requests.append(
             IndicatorRequest(
-                symbol=str(item.get("symbol") or symbol),
-                indicators=[str(name) for name in indicators],
-                timeframe=str(item.get("timeframe") or item.get("interval") or "1h"),
-                lookback=(None if item.get("lookback") is None else str(item["lookback"])),
-                window=int(item.get("window") or 48),
-                as_of=str(item.get("as_of") or "latest"),
+                symbol=str(item.symbol or symbol),
+                indicators=[str(name) for name in item.indicators],
+                timeframe=str(item.timeframe or "1h"),
+                lookback=(None if item.lookback is None else str(item.lookback)),
+                window=int(item.window or 48),
+                as_of=str(item.as_of or "latest"),
             )
         )
     return requests
@@ -532,20 +556,27 @@ def _response_from_dict(data: dict, symbol: str) -> Decision | ContextResearchRe
     if not isinstance(data, dict):
         raise ValueError("élément non-objet")
     if "calls" in data:
-        return _decision_from_symbol_calls(data, symbol)
-    action = str(data.get("action", "")).upper()
-    if action in {"REQUEST_CONTEXT", "NEEDS_CONTEXT"} or data.get("needs_context") is True:
+        return _decision_from_symbol_calls(LlmSymbolCallsPayload.model_validate(data), symbol)
+    if LlmContextRequestPayload.is_context_request(data):
+        payload = LlmContextRequestPayload.model_validate(data)
         return ContextResearchRequest(
-            symbol=str(data.get("symbol") or symbol),
-            rationale=str(data.get("rationale") or ""),
-            requests=_indicator_requests_from(data, symbol),
-            next_wake_in_minutes=_optional_float(data, "next_wake_in_minutes"),
+            symbol=str(payload.symbol or symbol),
+            rationale=payload.rationale,
+            requests=_indicator_requests_from(payload, symbol),
+            next_wake_in_minutes=payload.next_wake_in_minutes,
         )
-    return _decision_from_dict(data, symbol)
+    return _decision_from_dict(LlmDecisionPayload.model_validate(data), symbol)
 
 
 def parse_decision_or_context_request(raw_text: str, symbol: str) -> Decision | ContextResearchRequest:
-    return _response_from_dict(_extract_json(raw_text), symbol)
+    try:
+        data = _extract_json(raw_text)
+    except (ValueError, json.JSONDecodeError) as e:
+        return _hold_parse_error(symbol, f"parse_error:invalid_json: {e}", "parse_error:invalid_json")
+    try:
+        return _response_from_dict(data, symbol)
+    except (ValidationError, ValueError, TypeError) as e:
+        return _invalid_payload_hold(symbol, e)
 
 
 def _hold_parse_error(symbol: str, reason: str, llm_error: str) -> Decision:
@@ -553,6 +584,7 @@ def _hold_parse_error(symbol: str, reason: str, llm_error: str) -> Decision:
 
     Codes llm_error par cas :
       parse_error:invalid_json       — JSON global invalide ou absent
+      parse_error:invalid_payload    — payload single invalide après extraction
       parse_error:bad_decisions_field — champ decisions présent mais non-list
       tool_loop                      — tool_calls sans decisions (tour final)
       parse_error:corrupt_element    — élément decisions malformé (parse individuel)
@@ -566,15 +598,18 @@ def _parse_batch_data(
 ) -> dict[str, Decision | ContextResearchRequest]:
     """Corps de parse_batch sur un dict déjà extrait. Isolation per-élément."""
     by_symbol: dict[str, Decision | ContextResearchRequest] = {}
-    decisions = data.get("decisions")
-    if not isinstance(decisions, list):
+    try:
+        batch = LlmBatchPayload.model_validate(data)
+    except ValidationError:
         # tool_calls SANS clé decisions au tour final → raison explicite (défense
         # en profondeur). Mais `decisions` présent-et-malformé reste un
         # batch_bad_output : ne pas le masquer en tool_loop_blocked.
-        raw_calls = data.get("tool_calls")
-        if decisions is None and isinstance(raw_calls, list) and any(isinstance(c, dict) for c in raw_calls):
+        raw_decisions = data.get("decisions") if isinstance(data, dict) else None
+        raw_calls = data.get("tool_calls") if isinstance(data, dict) else None
+        if raw_decisions is None and isinstance(raw_calls, list) and any(isinstance(c, dict) for c in raw_calls):
             return {sym: _hold_parse_error(sym, "tool_loop_blocked", "tool_loop") for sym in symbols}
         return {sym: _hold_parse_error(sym, "batch_bad_output", "parse_error:bad_decisions_field") for sym in symbols}
+    decisions = batch.decisions
 
     requested = set(symbols)
     for element in decisions:
@@ -583,13 +618,17 @@ def _parse_batch_data(
             continue  # symbole hors périmètre ou élément non-objet -> ignoré
         try:
             if isinstance(element, dict) and "calls" in element:
-                by_symbol[sym] = _decision_from_symbol_calls(element, sym)
+                by_symbol[sym] = _decision_from_symbol_calls(LlmSymbolCallsPayload.model_validate(element), sym)
             elif allow_context_request:
                 by_symbol[sym] = _response_from_dict(element, sym)
             else:
-                by_symbol[sym] = _decision_from_dict(element, sym)
+                by_symbol[sym] = _decision_from_dict(LlmDecisionPayload.model_validate(element), sym)
         except Exception as e:  # noqa: BLE001 - isolation per-élément
-            by_symbol[sym] = _hold_parse_error(sym, f"batch_bad_output: {e}", "parse_error:corrupt_element")
+            by_symbol[sym] = _hold_parse_error(
+                sym,
+                f"batch_bad_output: {_format_parse_error(e)}",
+                "parse_error:corrupt_element",
+            )
 
     for sym in symbols:
         by_symbol.setdefault(sym, _hold_parse_error(sym, "missing_in_batch", "parse_error:missing_symbol"))
@@ -618,9 +657,10 @@ def parse_batch_or_tool_calls(
         data = _extract_json(raw_text)
     except (ValueError, json.JSONDecodeError):
         return {sym: _hold_parse_error(sym, "batch_bad_output", "parse_error:invalid_json") for sym in symbols}
-    raw_calls = data.get("tool_calls")
-    if isinstance(raw_calls, list):
-        calls = [c for c in raw_calls if isinstance(c, dict)]
-        if calls:
-            return BatchToolCallRequest(calls=calls)
+    try:
+        calls = LlmBatchToolCallsPayload.model_validate(data).tool_calls
+    except ValidationError:
+        calls = []
+    if calls:
+        return BatchToolCallRequest(calls=calls)
     return _parse_batch_data(data, symbols, allow_context_request=allow_context_request)
