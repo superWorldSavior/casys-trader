@@ -238,42 +238,6 @@ def build_rank_fn(
 
 
 # ---------------------------------------------------------------------------
-# build_llm_override_fn
-# ---------------------------------------------------------------------------
-
-def build_llm_override_fn(
-    *,
-    acpx_bin: str = "acpx",
-    spark_model: str | None = None,
-    timeout_s: int = 120,
-) -> Callable:
-    """Construit une override_fn câblée sur le router LLM réel.
-
-    Args:
-        acpx_bin: chemin vers le binaire acpx.
-        spark_model: modèle Spark (None → défaut du router).
-        timeout_s: timeout transmis au LLM.
-
-    Returns:
-        override_fn(payload) -> {"add": [...], "remove": [...]}
-    """
-    from trader.agent import llm
-    from trader.market.rotation.override import make_llm_override_fn
-
-    kw: dict = {"acpx_bin": acpx_bin}
-    if spark_model is not None:
-        kw["spark_model"] = spark_model
-
-    router = llm.build_default_router_from_env(**kw)
-
-    def _complete(prompt: str, *, timeout_s: int) -> str:
-        result = router.complete(prompt, timeout_s=timeout_s)
-        return getattr(result, "text", "")  # LlmFailure n'a pas .text -> ""
-
-    return make_llm_override_fn(_complete, timeout_s=timeout_s)
-
-
-# ---------------------------------------------------------------------------
 # build_market_context_from_regime
 # ---------------------------------------------------------------------------
 
@@ -305,6 +269,8 @@ def run_cli(
     fetch_fn: Callable[[list[str]], dict[str, list]] | None = None,
     override_fn: Callable[[Any], dict] | None = None,
     sticky_fn: Callable[[], set[str]] | None = None,
+    build_override_fn: Callable[[], Callable[[Any], dict]] | None = None,
+    build_sticky_fn: Callable[[str | Path], Callable[[], set[str]]] | None = None,
     as_of: str | None = None,
 ) -> dict:
     """Point d'entrée prod de la rotation : charge config, injecte les dépendances, exécute run().
@@ -315,6 +281,9 @@ def run_cli(
         fetch_fn: callable réseau injecté (None → download_daily_batch).
         override_fn: callable override agent (None → default_override_fn).
         sticky_fn: callable sticky (None → sticky_collector depuis state_dir).
+        build_override_fn: factory concrète injectée depuis runtime si l'override
+            LLM doit être activé.
+        build_sticky_fn: factory concrète injectée depuis runtime pour lire l'état.
         as_of: date ISO 8601 (None → date.today()).
 
     Returns:
@@ -324,12 +293,7 @@ def run_cli(
     from trader.market.radar_config import load_radar_params
     from trader.market.radar_data import download_daily_batch
     from trader.market.rotation import run
-    from trader.market.rotation.collectors import (
-        sticky_collector,
-        build_positions_fn,
-        build_plans_fn,
-        default_override_fn,
-    )
+    from trader.market.rotation.collectors import default_override_fn
 
     config_dir = str(config_dir)
     state_dir = str(state_dir)
@@ -347,15 +311,11 @@ def run_cli(
     rank_fn = build_rank_fn(config_dir, fetch_fn=fetch_fn, as_of=as_of)
 
     if sticky_fn is None:
-        def sticky_fn():
-            return sticky_collector(
-                positions_fn=build_positions_fn(state_dir),
-                plans_fn=build_plans_fn(state_dir),
-            )
+        sticky_fn = build_sticky_fn(state_dir) if build_sticky_fn is not None else set
 
     if override_fn is None:
-        if params.override_enabled:
-            override_fn = build_llm_override_fn()
+        if params.override_enabled and build_override_fn is not None:
+            override_fn = build_override_fn()
         else:
             override_fn = default_override_fn
 

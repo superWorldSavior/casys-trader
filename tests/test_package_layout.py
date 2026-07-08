@@ -22,6 +22,26 @@ def _assert_application_submodule_layout(application_dir: Path, submodule: str, 
         assert not shim_path.exists()
 
 
+def test_market_rotation_layer_has_no_high_level_dependencies() -> None:
+    rotation_dir = Path(__file__).resolve().parents[1] / "trader" / "market" / "rotation"
+    forbidden_fragments = (
+        "trader.execution",
+        "trader.infrastructure",
+        "trader.agent",
+    )
+
+    violations: list[str] = []
+    for source_path in sorted(rotation_dir.rglob("*.py")):
+        if "__pycache__" in source_path.parts:
+            continue
+        source = source_path.read_text(encoding="utf-8")
+        for fragment in forbidden_fragments:
+            if fragment in source:
+                violations.append(f"{source_path.relative_to(rotation_dir)}: {fragment}")
+
+    assert violations == []
+
+
 def test_application_package_has_only_canonical_subpackages() -> None:
     application_dir = Path(__file__).resolve().parents[1] / "trader" / "application"
 

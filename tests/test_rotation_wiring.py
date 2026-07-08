@@ -318,53 +318,6 @@ class TestBuildRankFnGapAdverse:
 
 
 # ---------------------------------------------------------------------------
-# build_llm_override_fn
-# ---------------------------------------------------------------------------
-
-class TestBuildLlmOverrideFn:
-    """Tests pour build_llm_override_fn — factory câblant router LLM réel."""
-
-    def test_returns_callable(self, monkeypatch):
-        """build_llm_override_fn retourne un callable."""
-        from trader.agent import llm as llm_module
-
-        class _FakeCompletion:
-            text = '{"add":[],"remove":[]}'
-
-        class _FakeRouter:
-            def complete(self, prompt, *, timeout_s):
-                return _FakeCompletion()
-
-        monkeypatch.setattr(llm_module, "build_default_router_from_env", lambda **kw: _FakeRouter())
-
-        from trader.market.rotation.wiring import build_llm_override_fn
-
-        fn = build_llm_override_fn()
-        assert callable(fn)
-
-    def test_override_fn_parses_llm_response(self, monkeypatch):
-        """Avec un router fake renvoyant du JSON, override_fn produit le bon dict."""
-        from trader.agent import llm as llm_module
-
-        _JSON = '{"add":[],"remove":[]}'
-
-        class _FakeCompletion:
-            text = _JSON
-
-        class _FakeRouter:
-            def complete(self, prompt, *, timeout_s):
-                return _FakeCompletion()
-
-        monkeypatch.setattr(llm_module, "build_default_router_from_env", lambda **kw: _FakeRouter())
-
-        from trader.market.rotation.wiring import build_llm_override_fn
-
-        fn = build_llm_override_fn()
-        result = fn({"ranked": [], "default_hot": []})
-        assert result == {"add": [], "remove": []}
-
-
-# ---------------------------------------------------------------------------
 # run_cli — câblage override_enabled
 # ---------------------------------------------------------------------------
 
@@ -420,64 +373,50 @@ def _fake_fetch(symbols: list[str]) -> dict[str, list[Bar]]:
 class TestRunCliOverrideWiring:
     """Tests du câblage override_fn dans run_cli selon override_enabled."""
 
-    def test_override_disabled_uses_default_fn_not_router(self, tmp_path, monkeypatch):
-        """override_enabled=false + override_fn=None → default_override_fn, router JAMAIS construit."""
-        from trader.agent import llm as llm_module
-
-        def _must_not_be_called(**kw):
-            raise AssertionError("build_default_router_from_env NE DOIT PAS être appelé")
-
-        monkeypatch.setattr(llm_module, "build_default_router_from_env", _must_not_be_called)
-
+    def test_override_disabled_uses_default_fn_not_factory(self, tmp_path):
+        """override_enabled=false + override_fn=None → default_override_fn, factory JAMAIS construite."""
         from trader.market.rotation.wiring import run_cli
 
         config_dir = _make_config_for_override(tmp_path, override_enabled=False)
         state_dir = tmp_path / "state"
         state_dir.mkdir()
+        factory_calls = []
 
-        # Ne doit pas lever — le router ne doit pas être construit
+        def _must_not_be_called():
+            factory_calls.append(True)
+            raise AssertionError("build_override_fn NE DOIT PAS être appelée")
+
         result = run_cli(
             config_dir,
             state_dir,
             fetch_fn=_fake_fetch,
             sticky_fn=lambda: set(),
+            build_override_fn=_must_not_be_called,
             as_of="2026-06-15",
         )
         assert result["written"] is True
+        assert factory_calls == []
 
-    def test_override_enabled_builds_router(self, tmp_path, monkeypatch):
-        """override_enabled=true + override_fn=None → build_default_router_from_env est appelé."""
-        from trader.agent import llm as llm_module
-
-        _JSON = '{"add":[],"remove":[]}'
-
-        class _FakeCompletion:
-            text = _JSON
-
-        class _FakeRouter:
-            def complete(self, prompt, *, timeout_s):
-                return _FakeCompletion()
-
-        router_calls = []
-
-        def _fake_build(**kw):
-            router_calls.append(kw)
-            return _FakeRouter()
-
-        monkeypatch.setattr(llm_module, "build_default_router_from_env", _fake_build)
-
+    def test_override_enabled_builds_injected_override(self, tmp_path):
+        """override_enabled=true + override_fn=None → build_override_fn injectée est appelée."""
         from trader.market.rotation.wiring import run_cli
 
         config_dir = _make_config_for_override(tmp_path, override_enabled=True)
         state_dir = tmp_path / "state"
         state_dir.mkdir()
+        factory_calls = []
+
+        def _fake_build():
+            factory_calls.append(True)
+            return lambda _payload: {"add": [], "remove": []}
 
         result = run_cli(
             config_dir,
             state_dir,
             fetch_fn=_fake_fetch,
             sticky_fn=lambda: set(),
+            build_override_fn=_fake_build,
             as_of="2026-06-15",
         )
         assert result["written"] is True
-        assert len(router_calls) >= 1, "build_default_router_from_env doit avoir été appelé"
+        assert len(factory_calls) >= 1, "build_override_fn doit avoir été appelée"

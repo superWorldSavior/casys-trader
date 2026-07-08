@@ -436,7 +436,7 @@ def main(argv: list[str] | None = None) -> int:
         parser.print_help()
         return 0
 
-    from .wiring import run_cli
+    from trader.runtime.market_rotation_runtime import run_cli
 
     result = run_cli(args.config_dir, args.state_dir)
     print(json.dumps(result, ensure_ascii=False))

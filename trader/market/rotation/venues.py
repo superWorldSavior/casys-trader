@@ -13,11 +13,6 @@ import yaml
 
 from trader.market.rotation import apply_hysteresis, apply_override, emergency_exits, write_universe_atomic
 from trader.market.rotation.user_overrides import apply_user_overrides, load_user_overrides
-from trader.market.rotation.collectors import (
-    build_plans_fn,
-    build_positions_fn,
-    sticky_collector,
-)
 from trader.market.rotation.ledger import log_rotation
 from trader.market.rotation.schedule import (
     analyzable_venues,
@@ -271,13 +266,7 @@ def tick(
     open_v = analyzable_venues(
         now_iso, sessions, preopen_window_minutes=params.preopen_window_minutes
     )
-    if sticky_fn is None:
-        sticky = sticky_collector(
-            positions_fn=build_positions_fn(state_dir),
-            plans_fn=build_plans_fn(state_dir),
-        )
-    else:
-        sticky = sticky_fn()
+    sticky = sticky_fn() if sticky_fn is not None else set()
 
     # Hook override pré-open par venue (B3/B4)
     # Un appel LLM max par venue par jour, seulement si override_enabled

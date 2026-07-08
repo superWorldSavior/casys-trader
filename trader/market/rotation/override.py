@@ -1,8 +1,7 @@
 """Override LLM de la rotation — surcharge tracée du default_hot.
 
 Usage (prod) :
-    from trader.agent.llm import LlmRouter
-    override_fn = make_llm_override_fn(LlmRouter().complete)
+    le runtime injecte une fonction ``complete(prompt, timeout_s=...)`` concrète.
 
 Usage (test) :
     override_fn = make_llm_override_fn(lambda prompt, *, timeout_s: '{"add":[],"remove":[]}')

@@ -80,14 +80,14 @@ class TestStickyCollector:
 class TestBuildPositionsFn:
     def test_empty_state_dir_returns_empty_dict(self, tmp_path: Path):
         """Aucun broker.json → closure retourne {} sans lever."""
-        from trader.market.rotation.collectors import build_positions_fn
+        from trader.runtime.market_rotation_runtime import build_positions_fn
 
         fn = build_positions_fn(tmp_path)
         result = fn()
         assert result == {}
 
     def test_returns_callable(self, tmp_path: Path):
-        from trader.market.rotation.collectors import build_positions_fn
+        from trader.runtime.market_rotation_runtime import build_positions_fn
 
         fn = build_positions_fn(tmp_path)
         assert callable(fn)
@@ -96,7 +96,7 @@ class TestBuildPositionsFn:
 class TestBuildPlansFn:
     def test_empty_state_dir_returns_empty_list(self, tmp_path: Path):
         """Aucun plans.json → closure retourne [] sans lever."""
-        from trader.market.rotation.collectors import build_plans_fn
+        from trader.runtime.market_rotation_runtime import build_plans_fn
 
         fn = build_plans_fn(tmp_path)
         result = fn()
@@ -104,14 +104,14 @@ class TestBuildPlansFn:
         assert list(result) == []
 
     def test_returns_callable(self, tmp_path: Path):
-        from trader.market.rotation.collectors import build_plans_fn
+        from trader.runtime.market_rotation_runtime import build_plans_fn
 
         fn = build_plans_fn(tmp_path)
         assert callable(fn)
 
     def test_ignore_le_shadow_json_si_casys_db_absent(self, tmp_path: Path):
         """Le collecteur prod lit casys.db ; sans DB, le shadow JSON ne fait pas foi."""
-        from trader.market.rotation.collectors import build_plans_fn
+        from trader.runtime.market_rotation_runtime import build_plans_fn
         from trader.planning.trade_plan import create_trade_plan
 
         (tmp_path / "trade_plans.json").write_text(
@@ -138,7 +138,7 @@ class TestBuildPlansFn:
         from trader.planning.trade_plan import create_trade_plan
         from trader.state_db.migrations import import_trade_plans_from_json
         from trader.state_db.trade_plan_store import SqliteTradePlanStore
-        from trader.market.rotation.collectors import build_plans_fn
+        from trader.runtime.market_rotation_runtime import build_plans_fn
 
         db = open_state_db(tmp_path / "casys.db")
         import_trade_plans_from_json(db, tmp_path / "_absent_trade_plans.json")
