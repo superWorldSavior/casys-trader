@@ -20,20 +20,22 @@ from trader.cockpit import CockpitApp
 
 from trader.interfaces.cockpit.pages.decisions import (
     DecisionsPage,
-    _count_filters,
-    _filter_rows,
     _fmt_conf,
-    _group_into_ledger_rows,
     _has_detail,
-    _is_batch_row,
-    _is_risk_row,
-    _is_stale_row,
     build_detail_panel,
     build_filter_chips,
     build_ledger_footer,
     build_mix_24h,
     build_model_panel,
     build_risk_gate,
+)
+from trader.reporting.read_models.decision_filters import (
+    _count_filters,
+    _filter_rows,
+    _group_into_ledger_rows,
+    _is_batch_row,
+    _is_risk_row,
+    _is_stale_row,
 )
 
 UTC = timezone.utc

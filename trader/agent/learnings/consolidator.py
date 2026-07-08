@@ -10,31 +10,52 @@ from __future__ import annotations
 import json
 import logging
 import os
-from datetime import datetime, timezone
+from importlib import import_module
 from pathlib import Path
 from typing import Any
 
 from trader.agent import llm
+from trader.agent.learnings.consolidation_prompt import build_consolidation_prompt
+from trader.agent.learnings.consolidation_stores import (
+    DEFAULT_MAX_BY_SYMBOL,
+    DEFAULT_MAX_GLOBAL,
+    ConsolidatedLearningsStore,
+    ConsolidationStatusStore,
+    empty_consolidated,
+    normalize_consolidated,
+)
 from trader.agent.learnings.selection import _parse_ts, pending_raw_count, select_new_raw
 from trader.agent.learnings.raw_store import RawLearningsStore
-from trader.execution.risk import read_min_trade_confidence
-from trader.reporting.read_models import attribution as attribution_mod
-from trader.reporting.read_models import meta_performance as meta_performance_mod
 
 log = logging.getLogger(__name__)
 
 DEFAULT_RAW_MAX_ENTRIES = 200
 DEFAULT_CONSOLIDATION_THRESHOLD = 50
-DEFAULT_MAX_GLOBAL = 10
-DEFAULT_MAX_BY_SYMBOL = 5
 DEFAULT_CONSOLIDATOR_PROVIDER = "consolidator"
 DEFAULT_CONSOLIDATOR_ACPX_AGENT = "codex"
 DEFAULT_CONSOLIDATOR_MODEL = "gpt-5.5"
 DEFAULT_CONSOLIDATOR_TIMEOUT_S = 240
 
-
-def empty_consolidated() -> dict:
-    return {"watermark": None, "global": [], "by_symbol": {}}
+__all__ = [
+    "DEFAULT_CONSOLIDATION_THRESHOLD",
+    "DEFAULT_CONSOLIDATOR_ACPX_AGENT",
+    "DEFAULT_CONSOLIDATOR_MODEL",
+    "DEFAULT_CONSOLIDATOR_PROVIDER",
+    "DEFAULT_CONSOLIDATOR_TIMEOUT_S",
+    "DEFAULT_MAX_BY_SYMBOL",
+    "DEFAULT_MAX_GLOBAL",
+    "DEFAULT_RAW_MAX_ENTRIES",
+    "ConsolidatedLearningsStore",
+    "ConsolidationStatusStore",
+    "build_consolidation_prompt",
+    "build_consolidator_router_from_env",
+    "build_context_learnings",
+    "consolidate_payload",
+    "empty_consolidated",
+    "load_guardrails",
+    "maybe_consolidate",
+    "normalize_consolidated",
+]
 
 
 def _max_ts(rows: list[dict]) -> str | None:
@@ -43,162 +64,6 @@ def _max_ts(rows: list[dict]) -> str | None:
     if not valid:
         return None
     return max(valid).isoformat()
-
-
-def _normalize_entry(item: Any) -> dict | None:
-    if not isinstance(item, dict):
-        return None
-    note = str(item.get("note") or "").strip()
-    if not note:
-        return None
-    entry = {"note": note}
-    robustness = str(item.get("robustness") or "").strip()
-    if robustness:
-        entry["robustness"] = robustness
-    return entry
-
-
-def _normalize_entries(items: Any, *, limit: int) -> list[dict]:
-    if not isinstance(items, list):
-        return []
-    entries: list[dict] = []
-    for item in items:
-        entry = _normalize_entry(item)
-        if entry is not None:
-            entries.append(entry)
-        if len(entries) >= limit:
-            break
-    return entries
-
-
-def normalize_consolidated(payload: Any, *, watermark: str | None) -> dict | None:
-    if not isinstance(payload, dict):
-        return None
-    by_symbol_raw = payload.get("by_symbol", {})
-    if not isinstance(by_symbol_raw, dict):
-        return None
-
-    by_symbol: dict[str, list[dict]] = {}
-    for raw_symbol, items in by_symbol_raw.items():
-        symbol = str(raw_symbol).strip()
-        if not symbol:
-            continue
-        entries = _normalize_entries(items, limit=DEFAULT_MAX_BY_SYMBOL)
-        if entries:
-            by_symbol[symbol] = entries
-
-    return {
-        "watermark": watermark,
-        "global": _normalize_entries(payload.get("global", []), limit=DEFAULT_MAX_GLOBAL),
-        "by_symbol": by_symbol,
-    }
-
-
-class ConsolidatedLearningsStore:
-    def __init__(self, path: str | Path, *, history_path: str | Path | None = None):
-        self.path = Path(path)
-        # Historique append-only des versions remplacées : chaque consolidation
-        # écrase les ~15 slots — sans historique, impossible d'auditer ce qui a
-        # été broyé ni de récupérer une note (chantier learnings 2026-07-02).
-        self.history_path = (
-            Path(history_path)
-            if history_path is not None
-            else self.path.parent / "archive" / f"{self.path.stem}-history.jsonl"
-        )
-
-    def read(self) -> dict:
-        if not self.path.exists():
-            return empty_consolidated()
-        try:
-            payload = json.loads(self.path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            return empty_consolidated()
-        normalized = normalize_consolidated(payload, watermark=payload.get("watermark"))
-        return normalized or empty_consolidated()
-
-    def write(self, payload: dict, *, watermark: str | None) -> None:
-        normalized = normalize_consolidated(payload, watermark=watermark)
-        if normalized is None:
-            raise ValueError("invalid consolidated learnings payload")
-        self._archive_replaced(replaced_by_watermark=normalized.get("watermark"))
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self.path.with_suffix(self.path.suffix + ".tmp")
-        tmp.write_text(json.dumps(normalized, ensure_ascii=False, indent=2), encoding="utf-8")
-        os.replace(tmp, self.path)
-
-    def _archive_replaced(self, *, replaced_by_watermark: str | None) -> None:
-        """Historise la version courante avant écrasement. Best-effort : un échec
-        d'archive ne doit jamais bloquer la consolidation."""
-        if not self.path.exists():
-            return
-        try:
-            previous = json.loads(self.path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            return
-        entry = {
-            "archived_at": datetime.now(timezone.utc).isoformat(),
-            "replaced_by_watermark": replaced_by_watermark,
-            "payload": previous,
-        }
-        try:
-            self.history_path.parent.mkdir(parents=True, exist_ok=True)
-            with self.history_path.open("a", encoding="utf-8") as f:
-                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
-        except OSError as exc:
-            log.warning("historisation consolidé non écrite %s (%s)", self.history_path, exc)
-
-
-class ConsolidationStatusStore:
-    def __init__(self, path: str | Path):
-        self.path = Path(path)
-
-    def read(self) -> dict:
-        if not self.path.exists():
-            return {}
-        try:
-            payload = json.loads(self.path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            return {}
-        return payload if isinstance(payload, dict) else {}
-
-    def write_failure(
-        self,
-        *,
-        consolidated_watermark: str | None,
-        raw_watermark: str | None,
-        new_raw_count: int,
-        error: dict,
-    ) -> None:
-        payload = {
-            "last_failure": {
-                "consolidated_watermark": consolidated_watermark,
-                "raw_watermark": raw_watermark,
-                "new_raw_count": new_raw_count,
-                "error_code": str(error.get("error_code") or "unknown"),
-                "error_message": str(error.get("error_message") or "")[:500],
-                "provider": error.get("provider"),
-                "model": error.get("model"),
-            }
-        }
-        optional_fields = (
-            "requested_model",
-            "output_preview",
-            "output_tail",
-            "output_length",
-        )
-        for field in optional_fields:
-            if field in error:
-                payload["last_failure"][field] = error[field]
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self.path.with_suffix(self.path.suffix + ".tmp")
-        tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-        os.replace(tmp, self.path)
-
-    def clear(self) -> None:
-        try:
-            self.path.unlink()
-        except FileNotFoundError:
-            return
 
 
 def _has_consolidated(payload: dict) -> bool:
@@ -259,60 +124,6 @@ def build_context_learnings(
     if guardrails:
         context["guardrails"] = guardrails
     return context
-
-
-def build_consolidation_prompt(
-    current: dict,
-    new_raw: list[dict],
-    *,
-    attribution: dict | None = None,
-    meta_performance: dict | None = None,
-) -> str:
-    payload = {
-        "current_consolidated": current,
-        "new_raw_learnings": new_raw,
-        "attribution": attribution,
-        "meta_performance": meta_performance,
-        "schema": {
-            "global": [{"note": "string", "robustness": "optional string"}],
-            "by_symbol": {"SYMBOL": [{"note": "string", "robustness": "optional string"}]},
-        },
-        "limits": {"global": DEFAULT_MAX_GLOBAL, "by_symbol": DEFAULT_MAX_BY_SYMBOL},
-    }
-    return (
-        "Tu es le consolidateur machine de casys-trader.\n"
-        "Objectif : produire un résumé actionnable, équilibré et non redondant.\n"
-        "Règles strictes :\n"
-        "1. ANCRE dans les RÉSULTATS. Les notes brutes sont du contexte, pas une "
-        "preuve. Mets `robustness:\"high\"` seulement si l'attribution confirme le "
-        "pattern avec au moins 3 occurrences distinctes ET un P&L cohérent.\n"
-        "2. ÉQUILIBRE entrée / sortie / coût. Les patterns d'ENTRÉE POSITIFS disent "
-        "quand AGIR et viennent des trades GAGNANTS de l'attribution "
-        "(CLOSE/take_profit/max_hold). Ajoute des patterns de GESTION DE SORTIE "
-        "quand un `exit_reason` coûte dans `by_exit_reason` (lis `total_pnl` comme "
-        "net et `total_commission` comme commission, ex. trailing_stop). Ajoute des "
-        "patterns de COÛT si `total_commissions` ronge une part notable de "
-        "`realized_gross_pnl`.\n"
-        "3. Lis les stats META comme descriptives, pas comme des règles. "
-        "`meta_performance` groupe les décisions par action et `reason_code`; "
-        "un `HOLD missed` élevé signale une catégorie d'abstention à expliquer "
-        "(ex. attendre pullback qui rate le move), pas une obligation de trader.\n"
-        "4. QUOTA anti-abstention : AU MOINS 3 règles `global` doivent être des "
-        "conditions d'ACTION positives ; AU PLUS 4 règles d'abstention dans "
-        "`global`.\n"
-        "5. ANTI-REDONDANCE : une règle `by_symbol` n'est gardée que si elle dit "
-        "quelque chose de SPÉCIFIQUE au symbole, absent du `global`. Interdit de "
-        "reformuler une règle globale par symbole.\n"
-        "6. Garde les limites : fusionne les abstentions redondantes, omets ce qui "
-        "répète `current_consolidated`, respecte DEFAULT_MAX_GLOBAL et "
-        "DEFAULT_MAX_BY_SYMBOL, et retourne une sortie JSON pure {global, by_symbol} "
-        "sans markdown.\n"
-        "7. TRANSPORT STRICT : Ne produis aucun message de statut, aucune explication, "
-        "aucun appel outil, aucun markdown. Réponds par un seul message assistant "
-        "contenant uniquement du JSON pur conforme au schema, car stdout est parsé "
-        "automatiquement.\n\n"
-        f"{json.dumps(payload, ensure_ascii=False, indent=2)}"
-    )
 
 
 def _clean_optional(value: str | None) -> str | None:
@@ -661,12 +472,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--acpx-agent", default=None, help="agent acpx du consolidateur")
     parser.add_argument("--model", default=None, help="modèle du consolidateur")
     parser.add_argument("--timeout-s", type=int, default=DEFAULT_CONSOLIDATOR_TIMEOUT_S, help="timeout LLM en secondes")
-    parser.add_argument("--attribution-since", default=None, help="borne since déjà filtrée au régime")
+    parser.add_argument("--attribution-since", default=None, help="borne since deja filtree au regime")
     parser.add_argument(
         "--exclude-symbol",
         action="append",
         default=[],
-        help="symbole à exclure de l'attribution ; répétable",
+        help="symbole a exclure de l'attribution ; repetable",
     )
     args = parser.parse_args(argv)
 
@@ -675,14 +486,13 @@ def main(argv: list[str] | None = None) -> int:
     consolidated_store = ConsolidatedLearningsStore(state_dir / "learnings_consolidated.json")
 
     if args.run:
-        _risk_yaml = Path(__file__).resolve().parents[3] / "config" / "risk.yaml"
-        attr = attribution_mod.compute_attribution(
-            state_dir,
-            since=args.attribution_since,
+        consolidation_inputs = import_module("trader.runtime.consolidation_inputs")
+        attr, meta = consolidation_inputs.build_consolidation_inputs(
+            state_dir=state_dir,
+            risk_yaml_path=Path(__file__).resolve().parents[3] / "config" / "risk.yaml",
+            attribution_since=args.attribution_since,
             exclude_symbols=tuple(args.exclude_symbol),
-            min_entry_confidence=read_min_trade_confidence(_risk_yaml),
         )
-        meta = meta_performance_mod.compute_meta_performance(state_dir)
         result = maybe_consolidate(
             raw_store,
             consolidated_store,

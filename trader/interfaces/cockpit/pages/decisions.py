@@ -47,6 +47,12 @@ from trader.interfaces.ui.palette import (
     CASYS_SUCCESS,
     CASYS_WARNING,
 )
+from trader.reporting.read_models.decision_filters import (
+    _count_filters,
+    _filter_rows,
+    _group_into_ledger_rows,
+    _is_risk_row,
+)
 from trader.reporting.read_models.runtime_state import _safe_float, _safe_list_of_dicts
 
 UTC = timezone.utc
@@ -69,104 +75,12 @@ def _load_risk_caps() -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Helpers locaux purs
+# Helpers UI locaux
 # ---------------------------------------------------------------------------
 
 
 def _safe_str(value: object) -> str:
     return str(value or "")
-
-
-def _is_risk_row(row: dict) -> bool:
-    reason = _safe_str(row.get("reason"))
-    return reason.startswith("risk:") or reason.startswith("blocked_")
-
-
-def _is_stale_row(state: dict, row: dict) -> bool:  # noqa: ARG001 — signature stable
-    """Stale = propriété de la DÉCISION (reason), pas de l'état marché courant."""
-    return _safe_str(row.get("reason")).startswith("stale")
-
-
-def _is_batch_row(row: dict) -> bool:
-    """HOLD infra sans appel LLM — candidate au regroupement batch.
-
-    La valeur réelle du ledger est "infra" (application/infra_holds.py) ;
-    "infra_hold" accepté par tolérance.
-    """
-    return (
-        _safe_str(row.get("decision_source")) in ("infra", "infra_hold")
-        and not row.get("model_called", True)
-    )
-
-
-def _filter_rows(rows: list[dict], active_filter: str, state: dict) -> list[dict]:
-    if active_filter == "buy":
-        return [r for r in rows if _safe_str(r.get("action")).upper() == "BUY"]
-    if active_filter == "sell":
-        return [r for r in rows if _safe_str(r.get("action")).upper() == "SELL"]
-    if active_filter == "hold":
-        return [r for r in rows if _safe_str(r.get("action")).upper() == "HOLD"]
-    if active_filter == "risk":
-        return [r for r in rows if _is_risk_row(r)]
-    if active_filter == "stale":
-        return [r for r in rows if _is_stale_row(state, r)]
-    return rows  # "all"
-
-
-def _count_filters(rows: list[dict], state: dict) -> dict[str, int]:
-    return {
-        "all": len(rows),
-        "buy": sum(1 for r in rows if _safe_str(r.get("action")).upper() == "BUY"),
-        "sell": sum(1 for r in rows if _safe_str(r.get("action")).upper() == "SELL"),
-        "hold": sum(1 for r in rows if _safe_str(r.get("action")).upper() == "HOLD"),
-        "risk": sum(1 for r in rows if _is_risk_row(r)),
-        "stale": sum(1 for r in rows if _is_stale_row(state, r)),
-    }
-
-
-def _group_into_ledger_rows(rows: list[dict]) -> list[dict]:
-    """Regroupe les séquences infra_hold ≥ 3 d'un même cycle en une batch row."""
-    if not rows:
-        return []
-    result: list[dict] = []
-    i = 0
-    while i < len(rows):
-        row = rows[i]
-        if not _is_batch_row(row):
-            result.append(row)
-            i += 1
-            continue
-        # Collecter les lignes batch consécutives du même cycle
-        cycle_ts = row.get("cycle_ts") or row.get("ts", "")
-        batch: list[dict] = [row]
-        j = i + 1
-        while j < len(rows):
-            nxt = rows[j]
-            nxt_ts = nxt.get("cycle_ts") or nxt.get("ts", "")
-            if _is_batch_row(nxt) and nxt_ts == cycle_ts:
-                batch.append(nxt)
-                j += 1
-            else:
-                break
-        if len(batch) >= 3:
-            llm_n = sum(1 for r in batch if r.get("model_called", False))
-            quiet_n = len(batch) - llm_n
-            result.append(
-                {
-                    "_is_batch_summary": True,
-                    "cycle_ts": cycle_ts,
-                    "symbol": "— batch",
-                    "action": "HOLD",
-                    "decision_source": "heuristic",
-                    "reason": (
-                        f"{len(batch)} due — {llm_n} LLM calls, {quiet_n} quiet holds"
-                    ),
-                }
-            )
-        else:
-            result.extend(batch)
-        i = j
-    return result
 
 
 def _fmt_conf(conf: object) -> str:

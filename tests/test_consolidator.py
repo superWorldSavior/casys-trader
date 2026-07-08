@@ -4,13 +4,28 @@ from pathlib import Path
 
 from trader.agent import llm
 from trader.agent.learnings import consolidator
+from trader.agent.learnings import consolidation_prompt, consolidation_stores
 from trader.agent.learnings.raw_store import RawLearningsStore
+from trader.runtime import consolidation_inputs
 
 
 def test_default_state_dir_reste_la_racine_repo_apres_move_agent_learnings() -> None:
     repo_root = Path(__file__).resolve().parents[1]
 
     assert consolidator._default_state_dir() == repo_root / "state"
+
+
+def test_consolidator_ne_depend_pas_execution_ni_reporting() -> None:
+    source = Path(consolidator.__file__).read_text(encoding="utf-8")
+
+    assert "trader.execution" not in source
+    assert "trader.reporting" not in source
+
+
+def test_consolidator_reexporte_les_stores_et_le_prompt_scindes() -> None:
+    assert consolidator.ConsolidatedLearningsStore is consolidation_stores.ConsolidatedLearningsStore
+    assert consolidator.ConsolidationStatusStore is consolidation_stores.ConsolidationStatusStore
+    assert consolidator.build_consolidation_prompt is consolidation_prompt.build_consolidation_prompt
 
 
 def _raw(ts: str, symbol: str = "SPY", note: str = "range confirme") -> dict:
@@ -787,26 +802,57 @@ def test_main_run_declenche_la_consolidation_sur_un_state_tmp(monkeypatch, tmp_p
     raw_store = RawLearningsStore(state_dir / "learnings.jsonl", max_entries=200)
     raw_store.append(symbol="SPY", note="brut 1", now=datetime(2026, 6, 8, 10, tzinfo=timezone.utc))
     raw_store.append(symbol="QQQ", note="brut 2", now=datetime(2026, 6, 8, 10, 1, tzinfo=timezone.utc))
+    support_calls: list[dict] = []
+    prompts: list[dict] = []
+    attribution = {"n_closed_trades": 2, "regime": {"since": "2026-06-01", "excluded_symbols": ["QQQ"]}}
+    meta_performance = {"available": True, "samples": 5}
 
     class Router:
         def complete(self, prompt: str, *, timeout_s: int):
-            assert '"attribution"' in prompt
+            prompts.append(json.loads(prompt.rsplit("\n\n", 1)[1]))
             return llm.LlmCompletion(
                 provider="test",
                 model="stub",
                 text=json.dumps({"global": [{"note": "agir quand le signal confirme"}], "by_symbol": {}}),
             )
 
+    def build_inputs(**kwargs):
+        support_calls.append(kwargs)
+        return attribution, meta_performance
+
     monkeypatch.setattr(
         consolidator,
         "build_consolidator_router_from_env",
         lambda **kwargs: Router(),
     )
+    monkeypatch.setattr(consolidation_inputs, "build_consolidation_inputs", build_inputs)
 
-    exit_code = consolidator.main(["--run", "--state-dir", str(state_dir), "--threshold", "2"])
+    exit_code = consolidator.main(
+        [
+            "--run",
+            "--state-dir",
+            str(state_dir),
+            "--threshold",
+            "2",
+            "--attribution-since",
+            "2026-06-01",
+            "--exclude-symbol",
+            "QQQ",
+        ]
+    )
     output = json.loads(capsys.readouterr().out)
 
     assert exit_code == 0
+    assert support_calls == [
+        {
+            "state_dir": state_dir,
+            "risk_yaml_path": Path(consolidator.__file__).resolve().parents[3] / "config" / "risk.yaml",
+            "attribution_since": "2026-06-01",
+            "exclude_symbols": ("QQQ",),
+        }
+    ]
+    assert prompts[0]["attribution"] == attribution
+    assert prompts[0]["meta_performance"] == meta_performance
     assert output == {"triggered": True, "new_raw_count": 2, "written": True}
     saved = consolidator.ConsolidatedLearningsStore(state_dir / "learnings_consolidated.json").read()
     assert saved["global"] == [{"note": "agir quand le signal confirme"}]

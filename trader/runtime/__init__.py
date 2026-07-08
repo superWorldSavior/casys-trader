@@ -3,6 +3,7 @@
 __all__ = [
     "cli",
     "code_version",
+    "consolidation_inputs",
     "cycle_dispatch",
     "cycle_finalization",
     "cycle_reporting",
