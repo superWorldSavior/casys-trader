@@ -22,6 +22,32 @@ def _assert_application_submodule_layout(application_dir: Path, submodule: str, 
         assert not shim_path.exists()
 
 
+def _domain_import_violations(paths: list[Path], repo_root: Path) -> list[str]:
+    violations: list[str] = []
+    for path in paths:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        rel_path = path.relative_to(repo_root)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom):
+                if node.level > 0 or node.module is None:
+                    continue
+                module = node.module
+                root = module.split(".", 1)[0]
+                if module.startswith("trader.") and not module.startswith("trader.domain"):
+                    violations.append(f"{rel_path}: from {module} import ...")
+                elif root != "trader" and root not in sys.stdlib_module_names:
+                    violations.append(f"{rel_path}: from {module} import ...")
+            elif isinstance(node, ast.Import):
+                for alias in node.names:
+                    module = alias.name
+                    root = module.split(".", 1)[0]
+                    if module.startswith("trader.") and not module.startswith("trader.domain"):
+                        violations.append(f"{rel_path}: import {module}")
+                    elif root != "trader" and root not in sys.stdlib_module_names:
+                        violations.append(f"{rel_path}: import {module}")
+    return violations
+
+
 def test_market_rotation_layer_has_no_high_level_dependencies() -> None:
     rotation_dir = Path(__file__).resolve().parents[1] / "trader" / "market" / "rotation"
     forbidden_fragments = (
@@ -304,6 +330,62 @@ def test_semantic_catalog_is_nested_under_domain() -> None:
     assert semantic_dir.exists()
     assert (semantic_dir / "catalog.py").exists()
     assert not _has_python_sources(trader_dir / "semantic")
+
+
+def test_contract_value_types_are_domain_canonical_with_public_facades() -> None:
+    from dataclasses import asdict, is_dataclass, replace
+
+    repo_root = Path(__file__).resolve().parents[1]
+    trader_dir = repo_root / "trader"
+    domain_paths = [
+        trader_dir / "domain" / "decisions.py",
+        trader_dir / "domain" / "strategy_language.py",
+        trader_dir / "domain" / "risk.py",
+    ]
+
+    for path in domain_paths:
+        assert path.exists()
+
+    assert "from trader.domain.decisions import *" in (
+        trader_dir / "agent" / "protocol" / "types.py"
+    ).read_text(encoding="utf-8")
+    assert "from trader.domain.strategy_language import *" in (
+        trader_dir / "agent" / "protocol" / "strategy_language.py"
+    ).read_text(encoding="utf-8")
+    execution_risk_source = (trader_dir / "execution" / "risk.py").read_text(encoding="utf-8")
+    assert "from trader.domain.risk import RiskLimits" in execution_risk_source
+    assert "from trader.domain.risk import Verdict" in execution_risk_source
+
+    import trader.agent.protocol.strategy_language as strategy_facade
+    import trader.agent.protocol.types as types_facade
+    import trader.domain.decisions as domain_decisions
+    import trader.domain.risk as domain_risk
+    import trader.domain.strategy_language as domain_strategy
+    import trader.execution.risk as execution_risk
+
+    assert types_facade.Decision is domain_decisions.Decision
+    assert types_facade.IndicatorRequest is domain_decisions.IndicatorRequest
+    assert types_facade.ContextResearchRequest is domain_decisions.ContextResearchRequest
+    assert types_facade.BatchToolCallRequest is domain_decisions.BatchToolCallRequest
+    assert strategy_facade.CompiledStrategyCall is domain_strategy.CompiledStrategyCall
+    assert strategy_facade.compile_strategy_call is domain_strategy.compile_strategy_call
+    assert execution_risk.RiskLimits is domain_risk.RiskLimits
+    assert execution_risk.Verdict is domain_risk.Verdict
+    assert execution_risk.RiskGate.__module__ == "trader.execution.risk"
+
+    decision = domain_decisions.Decision.hold("SPY", "wait")
+    assert is_dataclass(decision)
+    assert domain_decisions.Decision.__dataclass_params__.frozen is True
+    assert domain_decisions.IndicatorRequest.__dataclass_params__.frozen is True
+    assert domain_decisions.ContextResearchRequest.__dataclass_params__.frozen is True
+    assert domain_decisions.BatchToolCallRequest.__dataclass_params__.frozen is True
+    assert domain_strategy.CompiledStrategyCall.__dataclass_params__.frozen is True
+    assert domain_risk.RiskLimits.__dataclass_params__.frozen is True
+    assert domain_risk.Verdict.__dataclass_params__.frozen is True
+    assert asdict(decision)["intent"] == "HOLD"
+    assert replace(decision, confidence=0.5).confidence == 0.5
+
+    assert _domain_import_violations(domain_paths, repo_root) == []
 
 
 def test_pure_planning_calculations_are_nested_under_domain_with_facades() -> None:
@@ -1100,6 +1182,7 @@ def test_legacy_agent_packages_are_virtual_compatibility_layers(monkeypatch) -> 
 
     import trader.agent_protocol as legacy_protocol
     import trader.agent_tools as legacy_tools
+    from trader.domain.decisions import IndicatorRequest as DomainIndicatorRequest
     from trader.agent.protocol.parsing import parse_batch
     from trader.agent.protocol import IndicatorRequest
     from trader.agent.tools import core, registry
@@ -1110,7 +1193,7 @@ def test_legacy_agent_packages_are_virtual_compatibility_layers(monkeypatch) -> 
     assert getattr(legacy_protocol, "__path__", None) == []
     assert getattr(legacy_tools, "__file__", None) is None
     assert getattr(legacy_tools, "__path__", None) == []
-    assert IndicatorRequest.__module__ == "trader.agent.protocol.types"
+    assert IndicatorRequest is DomainIndicatorRequest
     assert legacy_parse_batch is parse_batch
     assert legacy_tools.TOOL_REGISTRY is registry.TOOL_REGISTRY
     assert LegacyToolContext is core.ToolContext
@@ -1586,12 +1669,13 @@ def test_legacy_flat_module_imports_remain_compatible() -> None:
     import trader.stats as legacy_stats
     from trader.cockpit import CockpitApp
     from trader import decision_ledger
+    from trader.domain.decisions import Decision as DomainDecision
     from trader.indicator_watch import WATCH_VALID_OPERATORS
     from trader.risk import RiskGate
     from trader.tui import build_view
 
     assert legacy_cockpit_events.__name__ == "trader.interfaces.cockpit.events"
-    assert legacy_codex_client.Decision.__module__ == "trader.agent.protocol.types"
+    assert legacy_codex_client.Decision is DomainDecision
     assert legacy_consolidator.__name__ == "trader.agent.learnings.consolidator"
     assert legacy_daemon.run_cycle.__module__ == "trader.runtime.daemon"
     assert legacy_embeddings.__name__ == "trader.agent.learnings.embeddings"
@@ -1605,7 +1689,7 @@ def test_legacy_flat_module_imports_remain_compatible() -> None:
     assert CockpitApp.__module__ == "trader.interfaces.cockpit.app"
     assert ">" in WATCH_VALID_OPERATORS
     assert RiskGate.__module__ == "trader.execution.risk"
-    assert build_view.__module__ == "trader.interfaces.ui.rich_panels"
+    assert build_view.__module__ == "trader.interfaces.ui.panels.dashboard"
 
 
 def test_legacy_flat_modules_are_virtual_compatibility_layers() -> None:
@@ -2521,8 +2605,9 @@ def test_agent_protocol_type_import_stays_light() -> None:
 import sys
 
 from trader.agent.protocol import IndicatorRequest
+from trader.domain.decisions import IndicatorRequest as DomainIndicatorRequest
 
-assert IndicatorRequest.__module__ == "trader.agent.protocol.types"
+assert IndicatorRequest is DomainIndicatorRequest
 loaded = set(sys.modules)
 for name in (
     "trader.market",
