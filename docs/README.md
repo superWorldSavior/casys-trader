@@ -4,7 +4,7 @@ Point d'entrée de la doc. Deux choses ici : **où vit chaque type de doc**
 (cadre Diátaxis) et **la carte de couverture** (quel sous-système est
 documenté, où, et quels trous restent).
 
-> Statut carte : **v3 — 2026-07-06**, alignée sur le refacto capability-based
+> Statut carte : **v4 — 2026-07-08**, alignée sur la migration clean architecture (domain/ pur, adaptateurs → infrastructure/, façades, protocols.py) — puis le refacto capability-based
 > (packages `trader/<capacité>/`). Les `🟡`/`❌` sont un backlog priorisé ;
 > corriger une ligne = ouvrir la doc citée.
 
@@ -63,9 +63,9 @@ Légende : ✅ couvert · 🟡 partiel / dispersé / potentiellement périmé ·
 |---|---|---|---|---|
 | Orchestration du cycle | `runtime/daemon` | ✅ | archi §2-3 | D7 |
 | Sélection des dus / veilles | `planning/scheduler`, `planning/indicator_watch` | ✅ | **`reference/wake-scheduler.md`**, archi §3.1, §7 | D7, D9, D10 |
-| Batch LLM / planificateur | `application/planner_batch` | ✅ | archi §3.6 | D7 |
-| Contexte marché (snapshot) | `application/market_snapshot` | ✅ | archi §3.2-3.3 | — |
-| Enregistrement décision | `application/decision_recorder` | ✅ | archi §3.8, §8 | — |
+| Batch LLM / planificateur | `application/decide/planner_batch` | ✅ | archi §3.6 | D7 |
+| Contexte marché (snapshot) | `application/cycle/market_snapshot` | ✅ | archi §3.2-3.3 | — |
+| Enregistrement décision | `application/record/decision_recorder` | ✅ | archi §3.8, §8 | — |
 | Finalisation fin de cycle | `runtime/cycle_finalization` | ✅ | archi §1.1, §2 ; `reference/task-queue.md` | queue paper activée |
 | Gate de pertinence (coût) | `planning/relevance_gate` | ✅ | archi §3.4 | D7A |
 | **File de tâches durable** | `runtime/queue_runtime`, `infrastructure/queue/*` (ledger, pools, worker), `application/{queue_dispatch,execute_queue_dispatch,execute_queue_plan}` | ✅ | **`reference/task-queue.md`** | queue paper activée |
@@ -75,10 +75,10 @@ Légende : ✅ couvert · 🟡 partiel / dispersé / potentiellement périmé ·
 |---|---|---|---|---|
 | **Risk gate** | `execution/risk` | ✅ | **`reference/risk-gate.md`** | — |
 | Plans armés (EXECUTE_ORDER) | `planning/indicator_watch`, `planning/trade_plan`, `runtime/daemon` | ✅ | **`reference/wake-scheduler.md`**, archi §3.5, §4.3 ; registre | D7B, D11, D12 |
-| Admission d'ordre | `application/order_admission`, `application/risk_admission` | ✅ | **`reference/execution.md`** | — |
-| Accounting post-fill | `application/fill_outcome`, `runtime/daemon` writer | ✅ | archi §1.1, §8 | — |
-| Effets plans post-fill | `application/fill_plan_effects`, `planning/trade_plan` | ✅ | archi §1.1, §4 | — |
-| Allocateur budget gross | `market/gross_priority` | ✅ | **`reference/execution.md`** | — |
+| Admission d'ordre | `application/execute/order_admission`, `application/execute/risk_admission` | ✅ | **`reference/execution.md`** | — |
+| Accounting post-fill | `application/execute/fill_outcome`, `runtime/daemon` writer | ✅ | archi §1.1, §8 | — |
+| Effets plans post-fill | `application/exit/fill_plan_effects`, `planning/trade_plan` | ✅ | archi §1.1, §4 | — |
+| Allocateur budget gross | `domain/market/gross_priority` | ✅ | **`reference/execution.md`** | — |
 | Exécution / broker | `execution/broker`, `execution/portfolio` | ✅ | **`reference/execution.md`** | — |
 | Sorties automatiques | `planning/exit_engine` | ✅ | archi §4 | — |
 | Stops & résolution au tir | `planning/exit_engine` (`resolve_exit_plan`) | ✅ | archi §5 | D11 |
@@ -86,10 +86,10 @@ Légende : ✅ couvert · 🟡 partiel / dispersé / potentiellement périmé ·
 ### Données
 | Sous-système | Package/module | Réf | Où | Décisions |
 |---|---|---|---|---|
-| Sources marché & fraîcheur | `runtime/data_source_runtime`, `market/data_source`, `market/market_data`, `market/ib_source` | ✅ | archi §1.1, §3.2 | — |
-| **Conversion FX** | `market/fx`, `market/fx_rates` | ✅ | **`reference/fx.md`** | chantier FX |
-| Fil d'actu (news) | `market/news_feed` | ✅ | **`reference/news.md`** | — |
-| Macro | `market/macro_calendar`, `market/macro_series` | ✅ | **`reference/macro.md`** | — |
+| Sources marché & fraîcheur | `runtime/data_source_runtime`, `infrastructure/market_sources/data_source`, `market/market_data`, `infrastructure/market_sources/ib_source` | ✅ | archi §1.1, §3.2 | — |
+| **Conversion FX** | `domain/market/fx`, `infrastructure/market_sources/fx_rates` | ✅ | **`reference/fx.md`** | chantier FX |
+| Fil d'actu (news) | `infrastructure/market_sources/news_feed` | ✅ | **`reference/news.md`** | — |
+| Macro | `market/macro_calendar`, `infrastructure/market_sources/macro_series` | ✅ | **`reference/macro.md`** | — |
 | Cycle de vie / rotation | `runtime/daemon_bootstrap`, `runtime/cycle_dispatch`, `runtime/cycle_reporting`, `runtime/runtime_shutdown`, `runtime/ledger_rotation`, `reporting/decision_ledger` | ✅ | archi §1.1, §12 | — |
 | État persistant | `runtime/daemon_bootstrap`, `state/*.jsonl`, `trade_plans.json`, `scheduler.json`, `infrastructure/state_db/*` | ✅ | archi §1.1, §8, `reference/task-queue.md` | — |
 
@@ -97,7 +97,7 @@ Légende : ✅ couvert · 🟡 partiel / dispersé / potentiellement périmé ·
 | Sous-système | Package/module | Réf | Où | Décisions |
 |---|---|---|---|---|
 | Radar / rotation / hot-sets | `runtime/market_rotation_runtime`, `market/rotation/*` (core, venues, collectors, schedule, override, wiring) | ✅ | **`reference/universe-rotation.md`**, archi §1.1 | D9, D10, D13 |
-| Régime (marché + familial) | `market/regime`, `market/family_regime` | ✅ | **`reference/regime.md`** | D2 |
+| Régime (marché + familial) | `domain/market/regime`, `domain/market/family_regime` | ✅ | **`reference/regime.md`** | D2 |
 | Config univers & portefeuille | `config/*.yaml`, `support/config/pool`, `support/config/portfolio` | ✅ | **`reference/config.md`** | D9/D10/D13 |
 
 ### LLM & agent

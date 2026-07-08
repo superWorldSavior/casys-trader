@@ -26,7 +26,7 @@ Pour dimensionner une nouvelle ouverture, l'agent lit surtout
 Construit le `cockpit` : par symbole, prix, indicateurs **15m + daily**, régime,
 signaux HTF, distances swing, frais, **devise/fx/budgets** — compacté
 (`_compact_price`, arrondis). ⚠️ **`data_age_m` et `session` ne viennent PAS d'ici** :
-ils sont calculés par `application/planner_batch._symbol_facts()` et injectés
+ils sont calculés par `application/decide/planner_batch._symbol_facts()` et injectés
 séparément par symbole (`per_symbol_payload`).
 
 - `_swing_distances_pct(...)` — distances aux niveaux swing en **fraction du prix**
@@ -42,12 +42,12 @@ by-design).
 Résout une **demande de contexte bornée** (`REQUEST_CONTEXT`) : quand l'agent
 demande des indicateurs supplémentaires, cette fonction les calcule dans les limites
 (`max_requests`, `max_indicators`) et les réinjecte au 2e passage de décision. Borné
-pour maîtriser le coût (cf. `application/planner_batch`).
+pour maîtriser le coût (cf. `application/decide/planner_batch`).
 
 ## Faits par symbole
 
 Le batch LLM reçoit aussi un payload `per_symbol` assemblé dans
-`application/planner_batch.py`. Ces champs ne sont visibles que par le symbole
+`application/decide/planner_batch.py`. Ces champs ne sont visibles que par le symbole
 concerné :
 
 | Champ | Sens |

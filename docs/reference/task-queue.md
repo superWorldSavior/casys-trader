@@ -1,7 +1,7 @@
 # Référence — File de tâches durable (task-ledger)
 
 > **Type** : Reference (Diátaxis).
-> **Code** : primitives `infrastructure/queue/ledger`, `infrastructure/queue/pools`, `infrastructure/queue/worker` ; dispatchers `application/queue_dispatch` + `application/execute_queue_dispatch`, payload plans `application/execute_queue_plan` ; bootstrap runtime `runtime/queue_runtime` + `runtime/data_source_runtime`, orchestration `runtime/daemon`, handlers `application/decide_handler` + `application/execute_order_handler`, backend `infrastructure/state_db/*` (outbox). Les anciens imports `trader.queue.*` et `trader.state_db.*` restent compatibles via alias virtuels.
+> **Code** : primitives `infrastructure/queue/ledger`, `infrastructure/queue/pools`, `infrastructure/queue/worker` ; dispatchers `application/decide/queue_dispatch` + `application/execute/queue_dispatch`, payload plans `application/execute/queue_plan` ; bootstrap runtime `runtime/queue_runtime` + `runtime/data_source_runtime`, orchestration `runtime/daemon`, handlers `application/decide/handler` + `application/execute/order_handler`, backend `infrastructure/state_db/*` (outbox). Les anciens imports `trader.queue.*` et `trader.state_db.*` restent compatibles via alias virtuels.
 > **Statut** : ✅ **Phase 3 ACTIVÉE en paper (2026-07-04)** — les 3 flags on (`CASYS_STATE_BACKEND=sqlite`, `CASYS_QUEUE_DECIDE_ENABLED`, `CASYS_QUEUE_EXECUTE_ENABLED`), migration d'état validée, `[state-compare] identical=True`. Les chemins synchrones historiques restent présents comme fallback (flags off) jusqu'au gommage strangler. Voir la section « Pipeline » ci-dessous.
 > **Rôle** : file durable qui découple la production des tâches de leur traitement (durabilité, reprise, idempotence, backpressure).
 

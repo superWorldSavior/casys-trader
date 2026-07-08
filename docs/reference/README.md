@@ -10,7 +10,7 @@
 |---|---|---|
 | Orchestration, timers, veilles, plans armés | [`wake-scheduler.md`](wake-scheduler.md) | `planning/scheduler`, `planning/indicator_watch`, `runtime/cycle_scheduling` |
 | File de tâches durable | [`task-queue.md`](task-queue.md) | `infrastructure/queue`, `runtime/queue_runtime` |
-| Exécution, broker, admission, budget | [`execution.md`](execution.md) | `application/order_admission`, `execution/*` |
+| Exécution, broker, admission, budget | [`execution.md`](execution.md) | `application/execute/order_admission`, `execution/*` |
 | Risk gate | [`risk-gate.md`](risk-gate.md) | `execution/risk.py`, `config/risk.yaml` |
 | Reporting, audit, attribution, ledgers | [`reporting.md`](reporting.md) | `reporting/*` |
 
@@ -32,9 +32,9 @@
 |---|---|---|
 | Configuration | [`config.md`](config.md) | `config/*.yaml`, `support/config` |
 | Univers, radar, rotation | [`universe-rotation.md`](universe-rotation.md) | `market/rotation`, `market/radar*` |
-| Régime | [`regime.md`](regime.md) | `market/regime`, `market/family_regime` |
-| FX | [`fx.md`](fx.md) | `market/fx`, `market/fx_rates` |
-| News | [`news.md`](news.md) | `market/news_feed` |
+| Régime | [`regime.md`](regime.md) | `domain/market/regime`, `domain/market/family_regime` |
+| FX | [`fx.md`](fx.md) | `domain/market/fx`, `infrastructure/market_sources/fx_rates` |
+| News | [`news.md`](news.md) | `infrastructure/market_sources/news_feed` |
 | Macro | [`macro.md`](macro.md) | `market/macro_*` |
 
 ## Surfaces opérateur

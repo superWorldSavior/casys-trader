@@ -1,12 +1,12 @@
 # Référence — Régime : marché & familles
 
 > **Type** : Reference (Diátaxis).
-> **Code** : `trader/market/regime` (classifieur), `trader/market/family_regime` (biais familial) · **Décisions** : D2
+> **Code** : `trader/domain/market/regime` (classifieur), `trader/domain/market/family_regime` (biais familial) · **Décisions** : D2
 
 Deux briques **déterministes** (0 LLM) : un classifieur de régime par symbole, et
 un biais de régime cross-asset par famille thématique.
 
-## Classifieur de régime — `market/regime`
+## Classifieur de régime — `domain/market/regime`
 
 `MarketRegime` : classification **déterministe** de l'état de marché d'un symbole à
 partir de ses indicateurs. Composantes classées séparément :
@@ -20,7 +20,7 @@ partir de ses indicateurs. Composantes classées séparément :
 
 Pur (indicateurs → labels), rejouable, sans dépendance temps/hasard.
 
-## Biais familial — `market/family_regime` (D2)
+## Biais familial — `domain/market/family_regime` (D2)
 
 Biais de régime **cross-asset par famille thématique** (énergie, défense, semis…) :
 

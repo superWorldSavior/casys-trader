@@ -1,7 +1,7 @@
 # Référence — Conversion FX
 
 > **Type** : Reference (Diátaxis).
-> **Code** : `trader/market/fx.py` (pur) + `trader/market/fx_rates.py` (I/O) · **Config** : `config/fx.yaml`
+> **Code** : `trader/domain/market/fx.py` (pur) + `trader/infrastructure/market_sources/fx_rates.py` (I/O) · **Config** : `config/fx.yaml`
 > **Rôle** : tout est valorisé et sizé en **base USD**. L'analyse reste native.
 
 ## Principe (invariant)

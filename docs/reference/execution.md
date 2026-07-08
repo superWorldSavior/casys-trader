@@ -1,14 +1,14 @@
 # Référence — Exécution : admission, budget gross, broker, portefeuille
 
 > **Type** : Reference (Diátaxis).
-> **Code** : `application/order_admission`, `application/risk_admission`, `market/gross_priority`, `execution/broker`, `execution/portfolio`
+> **Code** : `application/execute/order_admission`, `application/execute/risk_admission`, `domain/market/gross_priority`, `execution/broker`, `execution/portfolio`
 > **Rôle** : le chemin d'un ordre approuvé jusqu'au fill, et la vue portefeuille.
 
 Après la décision LLM, un ordre passe par :
 admission intent/exit → admission risque + [risk gate](risk-gate.md) final →
 ordre d'exécution gross-fair → broker → portefeuille.
 
-## Admission intent/exit — `application/order_admission` (helpers purs)
+## Admission intent/exit — `application/execute/order_admission` (helpers purs)
 
 Aucune I/O, aucune orchestration runtime — juste des fonctions pures d'aide à la
 décision d'ordre :
@@ -22,7 +22,7 @@ décision d'ordre :
 | `risk_pct_for_quantity(quantity, stop_distance, equity)` | % equity risqué (distance au stop) |
 | `set_entry_risk_metrics(...)` | pose les métriques de risque d'entrée sur la décision |
 
-## Admission risque — `application/risk_admission`
+## Admission risque — `application/execute/risk_admission`
 
 `assess_risk_admission(request, gate=...)` regroupe l'admission risque des
 ouvertures sans prendre d'effet durable. `assess_final_risk_gate(request,
@@ -40,7 +40,7 @@ gate=...)` construit l'`Order` et applique le `RiskGate.check(...)` final :
 Le daemon conserve le logging, le scheduling, l'écriture `decisions.jsonl`, le
 broker et les effets sur les plans.
 
-## Budget gross — `market/gross_priority`
+## Budget gross — `domain/market/gross_priority`
 
 `gross_execution_order(items: list[PriorityItem]) -> list[str]` : **ordre
 d'exécution déterministe** des décisions pour une admission gross **équitable** —

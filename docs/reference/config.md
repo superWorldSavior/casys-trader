@@ -16,12 +16,12 @@ leur propre page de référence, liés ci-dessous.
 | `pool.yaml` | **pool Tier-1** source du radar + exclusions dures | `symbols`, `hard_exclusions` | `support/config/pool` (`load_pool`) |
 | `portfolio.yaml` | capital de départ paper | `starting_cash` (100000) | `support/config/portfolio` (`load_starting_cash`) |
 | `risk.yaml` | **bornes du risk gate** → voir [risk-gate](risk-gate.md) | `max_position_value` (10k), `max_gross_exposure`, `max_order_value`, `min_equity`, `max_risk_per_trade_pct` (0.01), `confidence_gate_enabled` (false), `require_hard_stop` (false) | `execution/risk` |
-| `fx.yaml` | **taux FX** (paires + fallback) → voir [fx](fx.md) | par devise : `yahoo`, `invert`, `fallback` | `market/fx_rates` |
+| `fx.yaml` | **taux FX** (paires + fallback) → voir [fx](fx.md) | par devise : `yahoo`, `invert`, `fallback` | `infrastructure/market_sources/fx_rates` |
 | `radar.yaml` | **rotation swing-aware** (D9/D10) | `cap_m` (50), `delta`, `dwell_days` (3), `score_window_bars` (15), `atr_floor`, `amplitude_cap`, `min_coverage`, `emergency_score` | `market/rotation/*`, `market/radar*` |
 | `regime.yaml` | régime familial + fenêtre d'attribution | `attribution_since`, `exclude_symbols` | `runtime/daemon` (+ `runtime/cli`, `agent/learnings/consolidator`) |
-| `data_sources.yaml` | **profil de données** (paper/prod) + routes de sources | `profile`, `profiles` | `market/data_source` |
+| `data_sources.yaml` | **profil de données** (paper/prod) + routes de sources | `profile`, `profiles` | `infrastructure/market_sources/data_source` |
 | `sessions.yaml` | horaires/calendriers de séance par place | (par venue) | `market/rotation/schedule` (`load_sessions`) |
-| `ib_contracts.yaml` | mapping symbole → contrat IB | `contracts` | `market/ib_source` |
+| `ib_contracts.yaml` | mapping symbole → contrat IB | `contracts` | `infrastructure/market_sources/ib_source` |
 | `symbol_names.yaml` | libellés d'affichage | (par symbole) | `reporting/read_models/runtime_state` (`_load_company_names`) |
 | `conviction.yaml` | tilt de conviction **par famille** | (par famille) | `market/radar_config` (`load_conviction`) → `market/rotation/wiring` |
 

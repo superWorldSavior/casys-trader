@@ -1,8 +1,8 @@
 # Référence — Scheduler, réveils et watches
 
 > **Type** : Reference (Diátaxis).
-> **Code** : `trader/planning/scheduler.py`, `trader/application/cycle_schedule.py`,
-> `trader/application/watch_scanner.py`, `trader/runtime/cycle_scheduling.py`
+> **Code** : `trader/planning/scheduler.py`, `trader/application/cycle/schedule.py`,
+> `trader/application/cycle/watch_scanner.py`, `trader/runtime/cycle_scheduling.py`
 > **État** : `state/scheduler.json`
 > **Rôle** : source canonique des timers, réveils par symbole, veilles
 > indicateur, plans armés et backoff stale.

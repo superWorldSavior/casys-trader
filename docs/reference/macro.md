@@ -1,7 +1,7 @@
 # Référence — Données macro (calendrier + séries)
 
 > **Type** : Reference (Diátaxis).
-> **Code** : `trader/market/macro_calendar`, `trader/market/macro_series` · **Phase** : P1a (collecte, en livraison 2026-07-02)
+> **Code** : `trader/market/macro_calendar`, `trader/infrastructure/market_sources/macro_series` · **Phase** : P1a (collecte, en livraison 2026-07-02)
 > **Spec** : chantier macro/fondamental (`docs/superpowers/specs/2026-07-02-macro-*`)
 
 Deux briques de **collecte** macro, distinctes. Phase P1a = persister la donnée ;
@@ -21,7 +21,7 @@ l'avance).
 - Scraper **trimestriel** → `state/macro_calendar.json` pour CPI/NFP/BCE/FOMC N+1.
 - Exposé au contexte via `macro_next` (prochain événement macro).
 
-## Séries — `market/macro_series`
+## Séries — `infrastructure/market_sources/macro_series`
 
 Collecte **quotidienne** de séries macro via **DBnomics** (thread de fond).
 
@@ -39,4 +39,4 @@ vue par le LLM en décision** (comme le fil news : phase attribution d'abord,
 promotion après mesure). Voir la carte de couverture et le registre pour la suite.
 
 ## Voir aussi
-- [Config](config.md) (`data_sources.yaml`, `sessions.yaml`) · fil news (`market/news_feed`).
+- [Config](config.md) (`data_sources.yaml`, `sessions.yaml`) · fil news (`infrastructure/market_sources/news_feed`).

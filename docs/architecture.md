@@ -3,6 +3,22 @@
 > Ce document décrit l'architecture technique du daemon de trading paper piloté par LLM.
 > **Généré par analyse statique du code — à re-vérifier si l'architecture évolue.**
 >
+> **⚡ Migration CLEAN ARCHITECTURE livrée le 2026-07-08** (~32 commits). La structure est alignée sur :
+> - **`domain/`** = cœur PUR (zéro I/O) : types (Pydantic + dataclasses) + calculs. Packages :
+>   `domain/market/{features,regime,family_regime,volatility,fx,sessions,execution_eligibility,gross_priority}`,
+>   `domain/planning/{exit_engine,exit_plan_spec,relevance_gate,scheduling,watches}`, `domain/learnings/scoring`,
+>   `domain/{trade_plan,contracts,orders,decisions,risk,strategy_language,llm,market_data,semantic}`.
+> - **`application/`** = use-cases, 6 sous-modules `decide/ execute/ exit/ cycle/ record/ migration/` (plus de fichiers plats).
+> - **`infrastructure/`** = adaptateurs I/O : `state_db/` (SQLite + `sim_broker`, `scheduler_json`, `learnings_store`),
+>   `market_sources/` (data_source, ib_source, fx_rates, macro_series, news_feed, radar_data, market_data_yf),
+>   `llm/` (acpx_backend, openai_backend), `queue/`.
+> - **`interfaces/`** UI · **`runtime/`** composition root (daemon allégé, `run_cycle` découpé).
+>
+> Les anciens modules `market/`, `planning/`, `agent/llm.py`, `execution/broker.py` sont désormais des **FAÇADES**
+> ré-exportant depuis `domain/`/`infrastructure/` (importeurs inchangés). Ports = `Protocol` regroupés par module dans
+> `<module>/protocols.py` (convention ; plus de `ports.py`). SQLite = source unique (plus de shadow JSON).
+> **Inversions de dépendance toutes cassées** (dépendances vers l'intérieur ; domaine pur vérifié par test_package_layout).
+>
 > Refactor modulaire en place sur `main` par tranches compatibles.
 > Les tranches récentes sont suivies dans `docs/superpowers/plans/`
 > (`tools-market-data-boundary`, `tools-news-feed-boundary`,
@@ -49,50 +65,50 @@ les utilisaient :
 
 | Zone | Rôle | Notes |
 |---|---|---|
-| `trader/application/exit_update.py` | Application fail-safe des mises à jour de plan ouvert compilées depuis `strategy_exit` | `ExitUpdateResult` décrit l'application persistante ; `validate_exit_update` est le dry-run pur utilisé par le worker |
-| `trader/application/cycle_decision.py` | Application d'une décision symbole pendant un cycle | contient `execute_one_cycle_decision`, `DecisionExecutionContext` et `DecisionExecutionState` ; le daemon réexporte `_execute_one_cycle_decision` comme alias de compatibilité |
-| `trader/application/armed_plans.py` | Résolution applicative des triggers `EXECUTE_ORDER` en décisions armées ou réveils planificateur | contrats `Protocol` locaux pour position/volatilité ; le daemon conserve logs et événements |
-| `trader/application/planner_batch.py` | Batch LLM, budget modèle, tournée d'outils, REQUEST_CONTEXT | appelé via `daemon._batch_decide()` |
-| `trader/application/market_snapshot.py` | Barres runtime/daily/exit, fraîcheur, FX, eligibility, tradable maps | retourne `MarketSnapshot`, le daemon l'unpack |
-| `trader/application/decision_entries.py` | Construction pure des entrées décision runtime avant persistance | source `llm`/`infra`/`armed_plan`, traces d'outils et raisons HOLD sans side effects |
-| `trader/application/decision_watches.py` | Préparation pure des `indicator_watch` demandées par une décision | le daemon garde logging et application scheduler |
-| `trader/application/decision_recorder.py` | Enrichissement décision, ledger, report, status, event, recall traces | source durable : `state/decisions.jsonl` |
-| `trader/application/cycle_schedule.py` | Politique applicative de réveil : bornes explicites, backoff stale, due symbols, veilles et événements de réveil | le daemon garde des wrappers privés de compatibilité |
+| `trader/application/exit/exit_update.py` | Application fail-safe des mises à jour de plan ouvert compilées depuis `strategy_exit` | `ExitUpdateResult` décrit l'application persistante ; `validate_exit_update` est le dry-run pur utilisé par le worker |
+| `trader/application/execute/cycle_decision.py` | Application d'une décision symbole pendant un cycle | contient `execute_one_cycle_decision`, `DecisionExecutionContext` et `DecisionExecutionState` ; le daemon réexporte `_execute_one_cycle_decision` comme alias de compatibilité |
+| `trader/application/exit/armed_plans.py` | Résolution applicative des triggers `EXECUTE_ORDER` en décisions armées ou réveils planificateur | contrats `Protocol` locaux pour position/volatilité ; le daemon conserve logs et événements |
+| `trader/application/decide/planner_batch.py` | Batch LLM, budget modèle, tournée d'outils, REQUEST_CONTEXT | appelé via `daemon._batch_decide()` |
+| `trader/application/cycle/market_snapshot.py` | Barres runtime/daily/exit, fraîcheur, FX, eligibility, tradable maps | retourne `MarketSnapshot`, le daemon l'unpack |
+| `trader/application/record/decision_entries.py` | Construction pure des entrées décision runtime avant persistance | source `llm`/`infra`/`armed_plan`, traces d'outils et raisons HOLD sans side effects |
+| `trader/application/record/decision_watches.py` | Préparation pure des `indicator_watch` demandées par une décision | le daemon garde logging et application scheduler |
+| `trader/application/record/decision_recorder.py` | Enrichissement décision, ledger, report, status, event, recall traces | source durable : `state/decisions.jsonl` |
+| `trader/application/cycle/schedule.py` | Politique applicative de réveil : bornes explicites, backoff stale, due symbols, veilles et événements de réveil | le daemon garde des wrappers privés de compatibilité |
 | `trader/agent/protocol/strategy_language.py` | Compilateur du langage agent Pine-like canonique (`strategy_entry`/`strategy_exit`/`strategy_close`) | `parsing.py` consomme ses primitives ; les anciens action tools sont rejetés |
-| `trader/application/confidence_feedback.py` | Feedback persistant des rejets de gate confiance vers les learnings de l'agent | le daemon conserve le wrapper privé historique |
+| `trader/application/record/confidence_feedback.py` | Feedback persistant des rejets de gate confiance vers les learnings de l'agent | le daemon conserve le wrapper privé historique |
 | `trader/application/execution_eligibility.py` | Classification execution/planning par symbole et raison de blocage d'exécution | utilisé par `market_snapshot` et wrappers privés du daemon |
-| `trader/application/entry_context.py` | Construction pure du snapshot durable `entry_context` attaché aux TradePlans | utilisé par le chemin direct post-fill et le payload execute queue |
-| `trader/application/execute_queue_dispatch.py` | Producteur/collecteur applicatif des tâches `execute_order` en mode queue : payload, dedup, polling, décodage fill et raisons fail-closed | le daemon garde l'enregistrement de décision |
-| `trader/application/execute_queue_plan.py` | Préparation pure du payload atomique `plan_to_upsert` / `symbol_to_close` pour le mode execute queue | contrat `Protocol` local pour lire les plans ouverts ; le daemon fournit le contexte runtime |
-| `trader/application/exit_bars.py` | Fetch/validation des barres fines de sortie et calcul high/low de fenêtre pour plans ouverts | branché comme `exit_bars_fetcher` dans `market_snapshot`, wrappers privés du daemon |
-| `trader/application/fill_outcome.py` | Accounting post-fill des décisions exécutées : payload `model_performance`, raison de sortie LLM, champs commission/fx de l'entrée décision | le daemon garde le snapshot portefeuille et l'écriture durable |
-| `trader/application/fill_plan_effects.py` | Effets post-fill sur les plans : close/sync des sorties, création/snapshot des plans d'ouverture, SCALE_IN et FLIP | le daemon fournit contexte runtime et conserve le scheduling post-entry |
-| `trader/application/gross_feedback.py` | Feedback applicatif des ouvertures rejetées par le plafond gross exposure | le daemon garde un wrapper public historique |
-| `trader/application/infra_holds.py` | Construction applicative des HOLD infra (`quiet_gate`, `stale_market_data`) sans appel modèle | contrats `Protocol` locaux pour wakes/clamp session ; le daemon garde scheduler, log et persistance |
+| `trader/application/execute/entry_context.py` | Construction pure du snapshot durable `entry_context` attaché aux TradePlans | utilisé par le chemin direct post-fill et le payload execute queue |
+| `trader/application/execute/queue_dispatch.py` | Producteur/collecteur applicatif des tâches `execute_order` en mode queue : payload, dedup, polling, décodage fill et raisons fail-closed | le daemon garde l'enregistrement de décision |
+| `trader/application/execute/queue_plan.py` | Préparation pure du payload atomique `plan_to_upsert` / `symbol_to_close` pour le mode execute queue | contrat `Protocol` local pour lire les plans ouverts ; le daemon fournit le contexte runtime |
+| `trader/application/exit/exit_bars.py` | Fetch/validation des barres fines de sortie et calcul high/low de fenêtre pour plans ouverts | branché comme `exit_bars_fetcher` dans `market_snapshot`, wrappers privés du daemon |
+| `trader/application/execute/fill_outcome.py` | Accounting post-fill des décisions exécutées : payload `model_performance`, raison de sortie LLM, champs commission/fx de l'entrée décision | le daemon garde le snapshot portefeuille et l'écriture durable |
+| `trader/application/exit/fill_plan_effects.py` | Effets post-fill sur les plans : close/sync des sorties, création/snapshot des plans d'ouverture, SCALE_IN et FLIP | le daemon fournit contexte runtime et conserve le scheduling post-entry |
+| `trader/application/record/gross_feedback.py` | Feedback applicatif des ouvertures rejetées par le plafond gross exposure | le daemon garde un wrapper public historique |
+| `trader/application/cycle/infra_holds.py` | Construction applicative des HOLD infra (`quiet_gate`, `stale_market_data`) sans appel modèle | contrats `Protocol` locaux pour wakes/clamp session ; le daemon garde scheduler, log et persistance |
 | `trader/application/learnings_recall.py` | Provider applicatif de recall mémoire : cache embeddings, timeout court, fallback FTS | contrats `Protocol` pour store et embedder |
-| `trader/application/order_admission.py` | Helpers purs d'admission : intent, résolution position-aware, clamp sortie, stop, risk metrics | réutilisé par `risk_admission`, `planned_exits` et les payloads queue |
-| `trader/application/risk_admission.py` | Admission risque : sizing `risk_pct`, métriques d'entrée, plafond par trade, gate de confiance et `RiskGate.check()` final | contrats `Protocol` locaux pour le gate ; le daemon garde logging, recorder, broker et scheduling |
-| `trader/application/planned_exits.py` | Exécution applicative déterministe des sorties planifiées : évaluation des plans ouverts, clamp sortie, garde d'exécution, mutation broker/plan-store et payload performance | le daemon conserve `_apply_planned_exits()` et `_plan_snapshot()` comme wrappers privés |
-| `trader/application/plan_review.py` | Persistance et réinjection du dernier verdict LLM sur les plans ouverts | le daemon conserve les wrappers privés historiques |
+| `trader/application/execute/order_admission.py` | Helpers purs d'admission : intent, résolution position-aware, clamp sortie, stop, risk metrics | réutilisé par `risk_admission`, `planned_exits` et les payloads queue |
+| `trader/application/execute/risk_admission.py` | Admission risque : sizing `risk_pct`, métriques d'entrée, plafond par trade, gate de confiance et `RiskGate.check()` final | contrats `Protocol` locaux pour le gate ; le daemon garde logging, recorder, broker et scheduling |
+| `trader/application/exit/planned_exits.py` | Exécution applicative déterministe des sorties planifiées : évaluation des plans ouverts, clamp sortie, garde d'exécution, mutation broker/plan-store et payload performance | le daemon conserve `_apply_planned_exits()` et `_plan_snapshot()` comme wrappers privés |
+| `trader/application/record/plan_review.py` | Persistance et réinjection du dernier verdict LLM sur les plans ouverts | le daemon conserve les wrappers privés historiques |
 | `trader/application/reference_volatility.py` | Calcul de volatilité de référence pour résoudre stops/trailings en multiples de volatilité | le daemon conserve les wrappers privés monkeypatchables |
-| `trader/application/risk_capacity.py` | Contexte de capacité exposé à l'agent : gross exposure, plafonds buy/sell, quantités natives FX-aware | le daemon injecte le broker, les prix, les FX et la fonction devise |
-| `trader/application/tool_outcomes.py` | Finalisation des outcomes réels des action tools avant persistance des décisions | `reporting.tool_trace` réexporte l'ancien point de compatibilité |
-| `trader/application/watch_scanner.py` | Scan applicatif des indicator/exit watches : fetch des barres, évaluation, cooldown, retrait et réveil symbole | le daemon conserve l'émission d'événements/logs runtime |
+| `trader/application/execute/risk_capacity.py` | Contexte de capacité exposé à l'agent : gross exposure, plafonds buy/sell, quantités natives FX-aware | le daemon injecte le broker, les prix, les FX et la fonction devise |
+| `trader/application/record/tool_outcomes.py` | Finalisation des outcomes réels des action tools avant persistance des décisions | `reporting.tool_trace` réexporte l'ancien point de compatibilité |
+| `trader/application/cycle/watch_scanner.py` | Scan applicatif des indicator/exit watches : fetch des barres, évaluation, cooldown, retrait et réveil symbole | le daemon conserve l'émission d'événements/logs runtime |
 | `trader/agent/` | Contexte agent, mémoire mandat/stratégie, mémoire learnings/RAG, façade planner, transport LLM/acpx | compat virtuelle : `trader.agent_context`, `trader.codex_client`, `trader.llm`, `trader.tools.memory.Memory`, `trader.tools.memory.LearningsStore`, `trader.learnings.*`, `trader.learnings_store`, `trader.embeddings`, `trader.consolidator` |
 | `trader/agent/protocol/` | Types, prompts, parsing du contrat LLM | utilisé par `trader/agent/client.py` |
 | `trader/agent/tools/` | Package des outils domaine lecture seule | `registry.TOOL_REGISTRY` assemble les 7 outils read-only exposés au LLM |
 | `trader/agent/learnings/` | Buffer brut JSONL, sélection pure, store SQLite recall, embeddings, consolidateur | mémoire machine de l'agent ; `trader.learnings.*` reste virtuel |
 | `trader/domain/` | Primitives neutres (`Bar`, `MarketError`, `Side`), vocabulaire partagé des `decision_reason_code` et catalogue sémantique gouverné (`domain/semantic/`) | évite que `market`/`planning`/`agent` importent `tools` ou `reporting` pour accéder à un vocabulaire métier |
 | `trader/planning/` | Plans de trade, scheduler de réveils, veilles, exit engine, gate de pertinence | compat : `trader.trade_plan`, `trader.indicator_watch`, `trader.exit_engine`, `trader.relevance_gate`, `trader.scheduling.scheduler`, `trader.tools.scheduler` |
-| `trader/execution/` | Contrats `Order`/`Fill`, ports `Broker`/`CommissionModel`, broker paper, commissions, RiskGate, projection portefeuille | contrats/ports : `trader.execution.contracts`, `trader.execution.ports`; compat virtuelle : `trader.tools.execution`, `trader.tools.portfolio`, `trader.risk` |
-| `trader/market/` | Port `DataSource`, adaptateurs yfinance/IB/composite, fraîcheur, indicateurs, FX, news, macro, radar, régime, priorisation gross exposure | port : `trader.market.ports.DataSource`; compat virtuelle : `trader.tools.market`, `trader.tools.data_source`, `trader.tools.ib_source`, `trader.tools.news_feed`, `trader.fx`, `trader.features`, etc. |
+| `trader/execution/` | Contrats `Order`/`Fill`, ports `Broker`/`CommissionModel`, broker paper, commissions, RiskGate, projection portefeuille | contrats/ports : `trader.execution.contracts`, `trader.execution.protocols`; compat virtuelle : `trader.tools.execution`, `trader.tools.portfolio`, `trader.risk` |
+| `trader/market/` | Port `DataSource`, adaptateurs yfinance/IB/composite, fraîcheur, indicateurs, FX, news, macro, radar, régime, priorisation gross exposure | port : `trader.market.protocols.DataSource`; compat virtuelle : `trader.tools.market`, `trader.tools.data_source`, `trader.tools.ib_source`, `trader.tools.news_feed`, `trader.fx`, `trader.features`, etc. |
 | `trader/infrastructure/queue/` | File de tâches durable, workers, pools, backpressure | backend technique utilisé par le runtime queue-on ; compat virtuelle : `trader.queue.*` |
 | `trader/infrastructure/state_db/` | Backend SQLite de l'état paper, broker store, outbox | source durable quand `CASYS_STATE_BACKEND=sqlite` ; compat virtuelle : `trader.state_db.*` |
 | `trader/market/rotation/` | Rotation d'univers, hot-sets par venue, schedule, override, ledger rotation | compat virtuelle : `trader.rotation.*`, `trader.rotation_*` |
 | `trader/support/` | Helpers support stables : config (`pool`, `portfolio`), metadata git/code version, process env | compat virtuelle : `trader.config.*`, `trader.metadata.*`, `trader.system.*` |
 | `trader/reporting/` | Façades attribution/audit/bench/ledger/stats/tool usage/meta-performance, read models, renderers | analyse/rendu ex-post ; `reporting.decision_reason`, `reporting.attribution`, `reporting.decision_audit`, `reporting.decision_bench`, `reporting.decision_ledger`, `reporting.meta_performance`, `reporting.stats` et `reporting.tool_usage` gardent les façades de compatibilité/rendu |
 | `trader/interfaces/cli/` | Entry points CLI canoniques (`stats`, `attribution`, `tool_usage`, `tui`) | compat virtuelle : `python -m trader.commands.stats`, `python -m trader.stats`, etc. |
-| `trader/runtime/cycle_scheduling.py` | Adaptateur runtime wake/watch : délègue la politique à `application/cycle_schedule.py` et `application/watch_scanner.py`, puis émet events/logs et compat wrappers | évite que `daemon.py` réimporte directement la glue applicative |
+| `trader/runtime/cycle_scheduling.py` | Adaptateur runtime wake/watch : délègue la politique à `application/cycle/schedule.py` et `application/cycle/watch_scanner.py`, puis émet events/logs et compat wrappers | évite que `daemon.py` réimporte directement la glue applicative |
 | `trader/runtime/cycle_dispatch.py` | Adaptateur runtime d'appel `run_cycle()` : porte le paquet de paramètres CLI/env/queue/consolidation et le forwarde depuis `daemon.main()` | évite deux appels `run_cycle(...)` dupliqués dans `main()` et garde le contrat runtime testable |
 | `trader/runtime/cycle_reporting.py` | Adaptateur runtime de persistance post-cycle : `last_report.json` + `history.jsonl`, avec règle no-due active-only | garde les writes de reporting hors de la boucle `main()` et centralise la condition "cycle actif" |
 | `trader/runtime/cycle_finalization.py` | Adaptateur runtime de fin de cycle : consolidation learnings, collecte macro best-effort, cache feedback gross, probes `shadow_queue` et `state_compare` | garde les side effects observabilité/mémoire hors du coeur décisionnel ; contrats `Protocol` locaux pour les dépendances injectées |
@@ -168,12 +184,12 @@ physique ; `trader.config`, `trader.metadata`, `trader.system`,
 `trader.agent_tools`, sont aussi des packages virtuels de compatibilité. Les
 imports internes
 doivent viser les packages neutres ou canoniques (`domain/`, `execution/broker`,
-`execution/contracts`, `execution/ports`, `market/`, `market/ports`, `support/`,
+`execution/contracts`, `execution/protocols`, `market/`, `market/protocols`, `support/`,
 `reporting/read_models/`, `agent/protocol/`, `agent/tools/`, `interfaces/cli/`,
 `interfaces/cockpit/`, `interfaces/ui/`, `infrastructure/queue/`,
 `infrastructure/state_db/`, `domain/semantic/`, `planning/scheduler.py`,
 `agent/learnings/`, `market/rotation/`, `domain/decision_reason.py`). Les adaptateurs concrets restent dans
-`execution/broker` et `market/data_source` quand la composition runtime les
+`execution/broker` et `infrastructure/market_sources/data_source` quand la composition runtime les
 instancie. Les tests `tests/test_package_layout.py`, `tests/test_code_version_imports.py`
 et `tests/test_runtime_pid_file.py` gardent ces frontières.
 
@@ -255,7 +271,7 @@ L'univers actif est généré par la rotation (D9/D10) à chaque cycle :
 
 ### 3.2 Chargement des barres & fraîcheur
 
-`trader/application/market_snapshot.py` construit le snapshot du cycle :
+`trader/application/cycle/market_snapshot.py` construit le snapshot du cycle :
 barres 15m / 5j (runtime décisionnel) + barres 1j / 1y (cockpit daily).
 `market.assess_freshness()` est le garde « marché live » : une dernière barre trop
 vieille (> 40 min par défaut) → `stale_market_data` → le symbole
@@ -304,7 +320,7 @@ Les `indicator_watch` à `on_trigger: EXECUTE_ORDER` acceptent côté agent un
 `order` Pine-like (`direction`, `qty`, `confidence`, `exit`). À l'armement,
 `planning/indicator_watch.py` le compile en ordre interne
 (`intent`, `qty`, `confidence`, `exit_plan`). Au déclenchement,
-`trader/application/armed_plans.py` résout le cas d'usage et le daemon émet les
+`trader/application/exit/armed_plans.py` résout le cas d'usage et le daemon émet les
 logs/événements retournés :
 1. `resolve_exit_plan()` — résolution late-binding du stop/TP sur vol fraîche (D11)
 2. `armed_order_price_coherent()` — vérif que le prix n'a pas déjà franchi le stop
@@ -317,7 +333,7 @@ Le scénario validé crée une `Decision` directement, sans appel LLM.
 
 Un seul appel `codex_client.decide_batch()` pour tous les symboles dus & frais.
 `daemon._batch_decide()` est un wrapper de compatibilité vers
-`trader/application/planner_batch.py`. Le contexte partagé est envoyé une fois
+`trader/application/decide/planner_batch.py`. Le contexte partagé est envoyé une fois
 (économie D7).
 
 Round-trip `REQUEST_CONTEXT` optionnel : si le LLM demande des indicateurs
@@ -351,9 +367,9 @@ désactive.
 (unification avec les armés, D11).
 
 Les helpers purs de cette admission vivent dans
-`trader/application/order_admission.py` : intent, hard-stop, clamp de sortie,
+`trader/application/execute/order_admission.py` : intent, hard-stop, clamp de sortie,
 quantité ouverte d'un reverse, et métriques de risque d'entrée. L'admission
-risque des ouvertures vit dans `trader/application/risk_admission.py` : sizing
+risque des ouvertures vit dans `trader/application/execute/risk_admission.py` : sizing
 `risk_pct`, métriques `risk_unbounded_no_stop`/`risk_pct`, plafond
 `max_risk_per_trade_pct`, gate de confiance et `RiskGate.check()` final via des
 `Protocol` locaux. Le daemon conserve l'ordre exact des side effects :
@@ -526,7 +542,7 @@ Opérateurs valides : `>`, `>=`, `<`, `<=`, `==`, `!=`, `abs>`, `abs>=`, `abs<`,
 | `learnings.db` | `learnings_ingest` + daemon (`recalls`) | outil `recall_learnings` | Store SQLite dérivé : notes scorées par outcome (lift/symbole), embeddings, traces de recall |
 | `archive/*.jsonl.gz` | `trader/runtime/ledger_rotation.py` (démarrage daemon) | `read_rows_with_archive` (analyses) | Mois passés de decisions/events — rotation mensuelle crash-safe |
 | `archive/learnings-*.jsonl` | `RawLearningsStore`/`consolidator` | ingestion recall | Évincés + historique des consolidés — plus rien ne se jette |
-| `news_items/YYYY-MM-DD.jsonl` | `market/news_feed` (P1a) | futur analyste-news | Items de news persistés (dédup uuid, purge 60 j) |
+| `news_items/YYYY-MM-DD.jsonl` | `infrastructure/market_sources/news_feed` (P1a) | futur analyste-news | Items de news persistés (dédup uuid, purge 60 j) |
 | `macro_calendar.json` + `macro_series/` | `macro_calendar`/`macro_series` (P1a) | payload d'attribution | Dates FOMC/CPI + séries macro quotidiennes (DBnomics) |
 
 **Scheduler** (`state/scheduler.json`) : next_wake par symbole, indicator_watches,
@@ -629,7 +645,7 @@ anciens états sont traités par migration avant lecture durable.
 `validate_exit_update` en dry-run via `ToolRoundServices.action_validator`. Si le
 patch de sortie est rejeté par ce dry-run, il réinjecte `tool_results` avec
 `ok:false` dans la même session (2 corrections max). L'application persistante reste
-`apply_exit_update_to_open_plan` dans `application/cycle_decision.py` après la
+`apply_exit_update_to_open_plan` dans `application/execute/cycle_decision.py` après la
 décision finale ; un plan inexistant donne désormais un outcome `rejected`.
 
 ## 10.1 Logging et dépendances du refactor
