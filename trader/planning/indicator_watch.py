@@ -9,8 +9,14 @@ import operator
 from datetime import datetime, timedelta, timezone
 from typing import Callable, NamedTuple
 
+from .armed_order import (
+    ARMED_ORDER_MAX_TTL_MINUTES,
+    armed_order_price_coherent as armed_order_price_coherent,
+    normalize_armed_order,
+)
+from .watch_evaluator import evaluate_indicator_watches as evaluate_indicator_watches
 from trader.domain.semantic.catalog import FAMILIES, INDICATOR_LABEL_VALUES, family_for_symbol, label_to_value, normalize_temporal_query
-from trader.market.features import DEFAULT_INDICATORS, build_indicator_snapshot, compute_indicator_values
+from trader.market.features import DEFAULT_INDICATORS
 
 _OPS: dict[str, Callable[[float, float], bool]] = {
     ">": operator.gt,
@@ -51,10 +57,6 @@ WATCH_VALID_OPERATORS: tuple[str, ...] = tuple(_OPS) + tuple(_ABS_OPS)
 class IndicatorWatchResult(NamedTuple):
     watch: dict | None
     rejections: list[dict]
-
-
-def _parse_dt(raw: str | None) -> datetime | None:
-    return datetime.fromisoformat(raw) if raw else None
 
 
 def _bounded_int(value: object, *, default: int, minimum: int, maximum: int) -> int:
@@ -211,14 +213,6 @@ def _condition_from_raw(raw: object, *, owner_symbol: str) -> tuple[dict | None,
 
 
 
-# --- D7 étage B : plans armés (EXECUTE_ORDER) -------------------------------
-# Le LLM arme un scénario d'entrée complet ; le daemon exécute au déclenchement
-# SANS re-appel modèle. Contrat strict à l'armement (fast-fail) : intent
-# OPEN_LONG/OPEN_SHORT, qty > 0, confidence 0..1 explicite, hard_stop spécifié.
-
-_ARMABLE_INTENTS = {"OPEN_LONG": "BUY", "OPEN_SHORT": "SELL"}
-
-
 def is_armed_plan(watch: dict) -> bool:
     """Prédicat UNIQUE « plan armé » (source de vérité pour daemon/scheduler/tui)."""
     return str(watch.get("on_trigger")) == "EXECUTE_ORDER" and isinstance(watch.get("order"), dict)
@@ -259,216 +253,6 @@ def summarize_watch(watch: dict) -> dict:
     summary["conditions"] = _summarize_watch_conditions(watch.get("conditions"))
     return summary
 
-
-# Cap TTL des plans armés = 240 min, aligné sur la revue périodique garantie du
-# gate (4 h) : l'expiration de watch étant SILENCIEUSE, un TTL plus court
-# forcerait des réveils de ré-armement ou laisserait des trous désarmés. La
-# fraîcheur est protégée par les checks au DÉCLENCHEMENT (stop franchi,
-# position existante, stale), pas par l'horloge.
-ARMED_ORDER_MAX_TTL_MINUTES = 240.0
-
-
-def _armed_hard_stop_price(exit_plan: object) -> float | None:
-    """Prix du hard_stop via le normaliseur commun (mêmes alias qu'à l'exécution :
-    stop_loss/stop/sl) — pas de parsing parallèle qui divergerait en silence."""
-    if not isinstance(exit_plan, dict):
-        return None
-    from .trade_plan import InvalidExitPlanError, normalize_exit_plan
-
-    try:
-        normalized = normalize_exit_plan(exit_plan)
-    except InvalidExitPlanError:
-        return None
-    if not normalized:
-        return None
-    hard_stop = normalized.get("hard_stop")
-    if isinstance(hard_stop, dict):
-        if hard_stop.get("type", "price") != "price":
-            return None
-        raw = hard_stop.get("price")
-    else:
-        raw = hard_stop
-    try:
-        price = float(raw)
-    except (TypeError, ValueError):
-        return None
-    return price if math.isfinite(price) and price > 0 else None
-
-
-def _armed_hard_stop_is_specified(exit_plan: object) -> bool:
-    if not isinstance(exit_plan, dict):
-        return False
-    sentinel = object()
-    hard_stop = exit_plan.get("hard_stop", sentinel)
-    if hard_stop is sentinel:
-        for alias in ("stop_loss", "stop", "sl"):
-            if alias in exit_plan:
-                hard_stop = exit_plan[alias]
-                break
-    if hard_stop is sentinel:
-        return False
-    if not isinstance(hard_stop, dict):
-        try:
-            price = float(hard_stop)
-        except (TypeError, ValueError):
-            return False
-        return math.isfinite(price) and price > 0
-    hard_stop_type = str(hard_stop.get("type", "price"))
-    if hard_stop_type == "price":
-        try:
-            price = float(hard_stop.get("price"))
-        except (TypeError, ValueError):
-            return False
-        return math.isfinite(price) and price > 0
-    if hard_stop_type == "percent":
-        return hard_stop.get("percent") is not None
-    if hard_stop_type == "volatility_multiple":
-        return hard_stop.get("multiple") is not None
-    if hard_stop_type == "structural":
-        return hard_stop.get("anchor") is not None
-    return False
-
-
-def _pine_qty_percent_fraction(raw: dict) -> float | None:
-    if raw.get("qty_percent") is None:
-        return None
-    try:
-        fraction = float(raw["qty_percent"]) / 100.0
-    except (TypeError, ValueError):
-        return None
-    return fraction if math.isfinite(fraction) and 0.0 < fraction <= 1.0 else None
-
-
-def _pine_armed_exit_to_exit_plan(raw: object) -> dict | None:
-    if not isinstance(raw, dict):
-        return None
-    out: dict = {}
-    stop = raw.get("stop")
-    if stop is None:
-        stop = raw.get("hard_stop")
-    if stop is None:
-        stop = raw.get("sl")
-    if stop is not None:
-        out["hard_stop"] = stop
-    if raw.get("limit") is not None:
-        take_profit = {
-            "type": "price",
-            "price": raw["limit"],
-            "fraction": _pine_qty_percent_fraction(raw) or 1.0,
-        }
-        if raw.get("id") is not None:
-            take_profit["name"] = raw["id"]
-        out["take_profits"] = [take_profit]
-    elif raw.get("tp") is not None:
-        out["take_profits"] = raw["tp"]
-    elif raw.get("take_profits") is not None:
-        out["take_profits"] = raw["take_profits"]
-    if raw.get("trail") is not None:
-        out["trailing_stop"] = raw["trail"]
-    elif raw.get("trail_offset") is not None:
-        out["trailing_stop"] = {
-            "trail_type": raw.get("trail_type") or raw.get("offset_type") or "price",
-            "trail_value": raw["trail_offset"],
-        }
-    if raw.get("protect") is not None:
-        out["profit_protection"] = raw["protect"]
-    if raw.get("exit_watch") is not None:
-        out["exit_watch"] = raw["exit_watch"]
-    if raw.get("max_hold_minutes") is not None:
-        out["max_hold_minutes"] = raw["max_hold_minutes"]
-    return out or None
-
-
-def _strategy_entry_armed_order(raw: dict) -> dict | None:
-    args: dict | None = None
-    if raw.get("tool") == "strategy_entry" and isinstance(raw.get("args"), dict):
-        args = dict(raw["args"])
-    elif isinstance(raw.get("strategy_entry"), dict):
-        args = dict(raw["strategy_entry"])
-    elif isinstance(raw.get("entry"), dict):
-        args = dict(raw["entry"])
-    elif any(raw.get(key) is not None for key in ("direction", "side", "exit", "stop", "limit")):
-        args = dict(raw)
-    if args is None:
-        return None
-    for key in ("confidence", "rationale"):
-        if args.get(key) is None and raw.get(key) is not None:
-            args[key] = raw[key]
-    direction = str(args.get("direction") or args.get("side") or "").lower().replace("strategy.", "")
-    if direction in {"long", "buy"}:
-        intent = "OPEN_LONG"
-    elif direction in {"short", "sell"}:
-        intent = "OPEN_SHORT"
-    else:
-        return None
-    exit_raw = args.get("exit")
-    if exit_raw is None and any(
-        args.get(key) is not None for key in ("stop", "hard_stop", "sl", "limit", "tp", "take_profits", "trail")
-    ):
-        exit_raw = args
-    return {
-        "intent": intent,
-        "qty": args.get("qty", args.get("quantity")),
-        "confidence": args.get("confidence"),
-        "exit_plan": _pine_armed_exit_to_exit_plan(exit_raw),
-        "rationale": args.get("rationale"),
-    }
-
-
-def normalize_armed_order(raw: object) -> dict | None:
-    """Ordre armable ou None. L'action est DÉRIVÉE de l'intent (pas de mismatch)."""
-    if not isinstance(raw, dict):
-        return None
-    raw = _strategy_entry_armed_order(raw) or raw
-    intent = str(raw.get("intent") or "").upper()
-    action = _ARMABLE_INTENTS.get(intent)
-    if action is None:
-        return None
-    try:
-        qty = float(raw.get("qty") if raw.get("qty") is not None else raw.get("quantity"))
-    except (TypeError, ValueError):
-        return None
-    if not math.isfinite(qty) or qty <= 0:
-        return None
-    exit_plan = raw.get("exit_plan")
-    if not _armed_hard_stop_is_specified(exit_plan):
-        return None
-    from .trade_plan import InvalidExitPlanError, validate_exit_plan
-
-    try:
-        validate_exit_plan(exit_plan, allow_unresolved=True)
-    except InvalidExitPlanError:
-        return None
-    try:
-        confidence = float(raw.get("confidence"))
-    except (TypeError, ValueError):
-        return None
-    if not math.isfinite(confidence) or not 0.0 <= confidence <= 1.0:
-        return None
-    order = {
-        "intent": intent,
-        "action": action,
-        "qty": qty,
-        "confidence": confidence,
-        "exit_plan": exit_plan,
-    }
-    if raw.get("rationale"):
-        order["rationale"] = str(raw["rationale"])[:500]
-    return order
-
-
-def armed_order_price_coherent(order: dict, *, price: float) -> bool:
-    """Le prix au déclenchement est-il du bon côté du hard_stop ?
-
-    Un plan armé peut se déclencher loin du prix imaginé à l'armement ; si le
-    prix a déjà franchi le stop, ouvrir = position instantanément stoppable.
-    """
-    stop = _armed_hard_stop_price(order.get("exit_plan"))
-    if stop is None or not math.isfinite(price):
-        return False
-    if order.get("intent") == "OPEN_LONG":
-        return price > stop
-    return price < stop
 
 def build_indicator_watch(
     raw: object,
@@ -603,95 +387,3 @@ def watch_market_requests(
                 for peer in _same_family_symbols(symbol, universe_symbols):
                     add(peer, interval, lookback)
     return requests
-
-
-def _compare(actual: float | None, op: str, threshold: float) -> bool:
-    if actual is None:
-        return False
-    if op in _ABS_OPS:
-        return _ABS_OPS[op](abs(actual), threshold)
-    return _OPS[op](actual, threshold)
-
-
-def _evaluate_condition(
-    condition: dict,
-    bars: list[object],
-    bars_by_key: dict[tuple[str, str], list[object]],
-) -> dict:
-    indicator = str(condition["indicator"])
-    try:
-        window = int(condition.get("window") or 48)
-        if indicator in _CROSS_ASSET_INDICATORS:
-            interval = str(condition.get("interval") or "1h")
-            bars_by_symbol = {
-                symbol: symbol_bars
-                for (symbol, key_interval), symbol_bars in bars_by_key.items()
-                if key_interval == interval
-            }
-            snapshot = build_indicator_snapshot(
-                bars_by_symbol,
-                symbols=list(bars_by_symbol),
-                names=[indicator],
-                window=window,
-            )
-            values = snapshot.get(str(condition["symbol"]), {"indicators": {}})["indicators"]
-        else:
-            values = compute_indicator_values(
-                bars,
-                names=[indicator],
-                window=window,
-            )
-    except Exception:
-        actual = None
-    else:
-        actual = values.get(indicator)
-    threshold = float(condition["value"])
-    op = str(condition["op"])
-    matched = _compare(actual, op, threshold)
-    return {
-        "symbol": condition["symbol"],
-        "indicator": indicator,
-        "op": op,
-        "value": threshold,
-        "actual": actual,
-        "interval": condition.get("interval"),
-        "window": condition.get("window"),
-        "matched": matched,
-    }
-
-
-def evaluate_indicator_watches(
-    watches: list[dict],
-    bars_by_key: dict[tuple[str, str], list[object]],
-    *,
-    now: datetime,
-) -> list[dict]:
-    """Evaluate watches against already fetched market bars."""
-    triggered: list[dict] = []
-    for watch in watches:
-        expires_at = _parse_dt(watch.get("expires_at"))
-        if expires_at is not None and expires_at <= now:
-            continue
-        evaluations = []
-        for condition in watch.get("conditions", []):
-            key = (str(condition.get("symbol")), str(condition.get("interval") or "1h"))
-            evaluations.append(_evaluate_condition(condition, bars_by_key.get(key, []), bars_by_key))
-        if not evaluations:
-            continue
-        logic = str(watch.get("logic") or "all").lower()
-        is_triggered = any(item["matched"] for item in evaluations) if logic == "any" else all(item["matched"] for item in evaluations)
-        if not is_triggered:
-            continue
-        event = {
-            "watch_id": watch["id"],
-            "symbol": watch["symbol"],
-            "logic": logic,
-            "on_trigger": _normalize_on_trigger(watch.get("on_trigger")),
-            "matched": evaluations,
-        }
-        if "order" in watch:
-            event["order"] = watch["order"]
-        if watch.get("rationale"):
-            event["rationale"] = watch["rationale"]
-        triggered.append(event)
-    return triggered

@@ -1,7 +1,4 @@
-"""market — lecture des données marché.
-
-v1 : yfinance (gratuit, US listed). Derrière une interface stable pour pouvoir
-swapper vers une autre source (IB, LEAN, Polygon) plus tard.
+"""market — calculs purs autour des données marché.
 
 Contrat : entrées minimales (symbole, lookback, interval), sortie machine-readable.
 Aucune décision ici — uniquement de la donnée brute.
@@ -10,7 +7,6 @@ Aucune décision ici — uniquement de la donnée brute.
 from __future__ import annotations
 
 import functools
-import math
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -27,13 +23,6 @@ except ImportError:
 
 
 @dataclass(frozen=True)
-class Quote:
-    symbol: str
-    price: float
-    ts: str
-
-
-@dataclass(frozen=True)
 class Freshness:
     """Verdict de fraîcheur d'une série de barres. `fresh=False` => ne pas trader."""
 
@@ -43,7 +32,7 @@ class Freshness:
 
 
 # Tolérance d'horloge : une barre légèrement « dans le futur » (désync d'horloge
-# entre yfinance et l'hôte) reste acceptable ; au-delà c'est une donnée invalide.
+# entre fournisseur de données et l'hôte) reste acceptable ; au-delà c'est invalide.
 _CLOCK_SKEW_TOLERANCE_MINUTES = 5.0
 _INTERVAL_MINUTES = {
     "5m": 5.0,
@@ -101,7 +90,7 @@ def assess_freshness(bars: list[Bar], *, now: datetime, max_age_minutes: float) 
 _MARKET_TZ = ZoneInfo("America/New_York")
 _SESSION_OPEN_HOUR = 9
 _SESSION_OPEN_MINUTE = 30
-# Place de cotation par suffixe yfinance → (tz, open_h, open_m, close_h, close_m).
+# Place de cotation par suffixe Yahoo-style → (tz, open_h, open_m, close_h, close_m).
 # Le FX (=X) n'est volontairement PAS mappé : marché ~24h/5, le calendrier US
 # par défaut reste le comportement historique le moins faux pour le réveil.
 _Venue = tuple[ZoneInfo, int, int, int, int]
@@ -128,7 +117,7 @@ _VENUE_BY_SYMBOL: dict[str, _Venue] = {
     "^FCHI": (ZoneInfo("Europe/Paris"), 9, 0, 17, 30),  # CAC 40 — coté à Paris
 }
 
-# Mapping suffixe Yahoo Finance → code MIC exchange_calendars.
+# Mapping suffixe Yahoo-style → code MIC exchange_calendars.
 # TPEx (.TWO) suit les mêmes jours fériés que TWSE (.TW) → même MIC XTAI.
 _VENUE_MIC: dict[str, str] = {
     ".TW": "XTAI",
@@ -457,8 +446,8 @@ def assess_daily_freshness(
     if (ts_utc - now_utc).total_seconds() / 60.0 > _CLOCK_SKEW_TOLERANCE_MINUTES:
         return Freshness(False, "future_ts", None)
     # On compare la date du LABEL de séance (composante date du timestamp, qu'il
-    # soit à minuit local ou UTC), PAS l'instant en UTC : un daily yfinance étiqueté
-    # minuit local (ex. +08:00 Taipei) reculerait d'un jour si on reprojetait en UTC.
+    # soit à minuit local ou UTC), PAS l'instant en UTC : un daily étiqueté minuit
+    # local (ex. +08:00 Taipei) reculerait d'un jour si on reprojetait en UTC.
     if ts.date() >= last_completed_session_date(now_utc, symbol=symbol):
         return Freshness(True, None, None)
     return Freshness(False, "stale_session", None)
@@ -630,57 +619,6 @@ def aggregate_bars(
     return aggregated
 
 
-def get_bars(symbol: str, lookback: str = "5d", interval: str = "1h") -> list[Bar]:
-    """Barres OHLCV. lookback ex: '1d','5d','1mo'; interval ex: '1h','1d'.
-
-    Lève MarketError(code='no_data'|'fetch_failed') en cas d'échec — jamais de
-    retour silencieux vide ambigu.
-    """
-    import yfinance as yf
-
-    source_interval = "1h" if interval == "4h" else interval
-
-    try:
-        df = yf.Ticker(symbol).history(period=lookback, interval=source_interval, auto_adjust=False)
-    except Exception as e:  # noqa: BLE001 — frontière externe
-        raise MarketError("fetch_failed", f"{symbol}: {e}") from e
-
-    if df is None or df.empty:
-        raise MarketError("no_data", f"{symbol} (lookback={lookback}, interval={interval})")
-
-    bars: list[Bar] = []
-    for idx, row in df.iterrows():
-        close = float(row["Close"])
-        # yfinance renvoie par moments des barres à close 0/NaN (titres peu
-        # liquides, intraday). Ce n'est PAS un prix : on la jette ici, à la
-        # source, sinon elle empoisonne valorisation/sizing/décision (falaise
-        # d'équité STMN.SW 30/06). La fraîcheur ne checke que l'âge, pas la valeur.
-        if not math.isfinite(close) or close <= 0.0:
-            continue
-        bars.append(
-            Bar(
-                ts=idx.isoformat(),
-                open=float(row["Open"]),
-                high=float(row["High"]),
-                low=float(row["Low"]),
-                close=close,
-                volume=float(row["Volume"]),
-            )
-        )
-    if not bars:
-        raise MarketError("no_data", f"{symbol}: toutes les barres invalides (close 0/NaN)")
-    if source_interval == interval:
-        return bars
-    return aggregate_bars(bars, target_interval=interval, source_interval=source_interval)
-
-
-def get_quote(symbol: str) -> Quote:
-    """Dernier prix connu (close de la dernière barre intraday)."""
-    bars = get_bars(symbol, lookback="1d", interval="1h")
-    last = bars[-1]
-    return Quote(symbol=symbol, price=last.close, ts=last.ts)
-
-
 def classify_symbol_context(
     *,
     runtime_interval: str,
@@ -729,3 +667,8 @@ def classify_symbol_context(
             "next_session_open": next_session_open,
         },
     }
+
+
+# Façade de rétrocompatibilité : les importeurs historiques continuent de viser
+# trader.market.market_data, tandis que l'I/O fournisseur vit dans market_data_yf.
+from trader.market.market_data_yf import Quote, get_bars, get_quote  # noqa: E402
