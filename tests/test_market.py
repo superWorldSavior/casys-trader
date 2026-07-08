@@ -2,6 +2,7 @@ import math
 
 import pytest
 
+from trader.infrastructure.market_sources.yahoo_client import RawBar
 from trader.market.market_data import Bar, aggregate_bars
 
 
@@ -16,73 +17,46 @@ def _bar(index: int, close: float) -> Bar:
     )
 
 
-def _patch_yf(monkeypatch, df) -> None:
-    import yfinance
-
-    class _FakeTicker:
-        def __init__(self, symbol: str) -> None:
-            self.symbol = symbol
-
-        def history(self, **kwargs):
-            return df
-
-    monkeypatch.setattr(yfinance, "Ticker", _FakeTicker)
+def _raw(ts: str, close: float) -> RawBar:
+    return RawBar(ts=ts, open=1.0, high=1.0, low=1.0, close=close, volume=1.0)
 
 
-def test_get_bars_jette_les_barres_close_zero_ou_nan(monkeypatch) -> None:
-    """yfinance crache par moments des barres à close=0/NaN (titres EU peu
+def test_get_bars_jette_les_barres_close_zero_ou_nan() -> None:
+    """Yahoo crache par moments des barres à close=0/NaN (titres EU peu
     liquides, intraday). Une telle barre n'est PAS un prix : get_bars doit la
     jeter, sinon elle empoisonne la valorisation (falaise d'équité STMN.SW,
-    30/06 : prix 0 → position valorisée $0 → équité -8 k le temps d'un cycle)."""
-    import pandas as pd
+    30/06 : prix 0 → position valorisée $0 → équité -8 k le temps d'un cycle).
 
+    NB : `yahoo_client` traduit un `null` Yahoo en NaN sans juger ; c'est CE
+    filtre-ci, l'unique juge de validité, qui la rejette (via le seam `fetch`)."""
     from trader.market import market_data as market
 
-    idx = pd.to_datetime(
-        ["2026-06-30 09:00", "2026-06-30 09:15", "2026-06-30 09:30", "2026-06-30 09:45"],
-        utc=True,
-    )
-    df = pd.DataFrame(
-        {
-            "Open": [100.0, 0.0, 101.0, 102.0],
-            "High": [101.0, 0.0, 102.0, 103.0],
-            "Low": [99.0, 0.0, 100.0, 101.0],
-            "Close": [100.5, 0.0, math.nan, 102.5],  # barres 2 et 3 = pourries
-            "Volume": [10.0, 0.0, 12.0, 13.0],
-        },
-        index=idx,
-    )
-    _patch_yf(monkeypatch, df)
+    raw = [
+        _raw("2026-06-30T09:00:00+00:00", 100.5),
+        _raw("2026-06-30T09:15:00+00:00", 0.0),  # barres 2 et 3 = pourries
+        _raw("2026-06-30T09:30:00+00:00", math.nan),
+        _raw("2026-06-30T09:45:00+00:00", 102.5),
+    ]
 
-    bars = market.get_bars("STMN.SW", lookback="1d", interval="15m")
+    bars = market.get_bars("STMN.SW", lookback="1d", interval="15m", fetch=lambda s, lb, iv: raw)
 
     closes = [b.close for b in bars]
     assert closes == [100.5, 102.5]  # 0 et NaN jetées
     assert all(c > 0 and math.isfinite(c) for c in closes)
 
 
-def test_get_bars_toutes_barres_invalides_leve_no_data(monkeypatch) -> None:
+def test_get_bars_toutes_barres_invalides_leve_no_data() -> None:
     """Si TOUTES les barres sont à 0/NaN, c'est de la donnée morte → no_data
-    (comme un df vide), pas une liste de barres fantômes."""
-    import pandas as pd
-
+    (comme une réponse sans barre), pas une liste de barres fantômes."""
     from trader.market import market_data as market
 
-    idx = pd.to_datetime(["2026-06-30 09:00", "2026-06-30 09:15"], utc=True)
-    df = pd.DataFrame(
-        {
-            "Open": [0.0, 0.0],
-            "High": [0.0, 0.0],
-            "Low": [0.0, 0.0],
-            "Close": [0.0, math.nan],
-            "Volume": [0.0, 0.0],
-        },
-        index=idx,
-    )
-    _patch_yf(monkeypatch, df)
+    raw = [
+        _raw("2026-06-30T09:00:00+00:00", 0.0),
+        _raw("2026-06-30T09:15:00+00:00", math.nan),
+    ]
 
     with pytest.raises(market.MarketError) as exc:
-        market.get_bars("STMN.SW", lookback="1d", interval="15m")
+        market.get_bars("STMN.SW", lookback="1d", interval="15m", fetch=lambda s, lb, iv: raw)
     assert exc.value.code == "no_data"
 
 

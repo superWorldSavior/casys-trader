@@ -1,11 +1,19 @@
-"""Frontière I/O Yahoo Finance pour les données marché."""
+"""Frontière I/O Yahoo Finance pour les données marché.
+
+L'accès réseau brut vit dans `yahoo_client` (endpoint public v8 chart, urllib) ;
+ce module garde la seule logique métier : rejet des barres non exploitables et
+agrégation 4h. `yahoo_client` traduit `null`→NaN sans jamais juger une barre, si
+bien que « qu'est-ce qu'un prix valide » reste décidé ici, à un seul endroit.
+"""
 
 from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from typing import Callable, Sequence
 
 from trader.domain.market_data import Bar, MarketError
+from trader.infrastructure.market_sources.yahoo_client import RawBar, fetch_ohlc
 
 
 @dataclass(frozen=True)
@@ -15,27 +23,25 @@ class Quote:
     ts: str
 
 
-def get_bars(symbol: str, lookback: str = "5d", interval: str = "1h") -> list[Bar]:
+def get_bars(
+    symbol: str,
+    lookback: str = "5d",
+    interval: str = "1h",
+    *,
+    fetch: Callable[[str, str, str], Sequence[RawBar]] = fetch_ohlc,
+) -> list[Bar]:
     """Barres OHLCV. lookback ex: '1d','5d','1mo'; interval ex: '1h','1d'.
 
-    Lève MarketError(code='no_data'|'fetch_failed') en cas d'échec — jamais de
-    retour silencieux vide ambigu.
+    `fetch` (transport injectable, défaut = Yahoo v8) lève lui-même
+    MarketError('fetch_failed'|'no_data') — jamais de retour silencieux vide.
     """
-    import yfinance as yf
-
     source_interval = "1h" if interval == "4h" else interval
 
-    try:
-        df = yf.Ticker(symbol).history(period=lookback, interval=source_interval, auto_adjust=False)
-    except Exception as e:  # noqa: BLE001 — frontière externe
-        raise MarketError("fetch_failed", f"{symbol}: {e}") from e
-
-    if df is None or df.empty:
-        raise MarketError("no_data", f"{symbol} (lookback={lookback}, interval={interval})")
+    raw = fetch(symbol, lookback, source_interval)
 
     bars: list[Bar] = []
-    for idx, row in df.iterrows():
-        close = float(row["Close"])
+    for rb in raw:
+        close = rb.close
         # Yahoo renvoie par moments des barres à close 0/NaN (titres peu
         # liquides, intraday). Ce n'est PAS un prix : on la jette ici, à la
         # source, sinon elle empoisonne valorisation/sizing/décision (falaise
@@ -44,12 +50,12 @@ def get_bars(symbol: str, lookback: str = "5d", interval: str = "1h") -> list[Ba
             continue
         bars.append(
             Bar(
-                ts=idx.isoformat(),
-                open=float(row["Open"]),
-                high=float(row["High"]),
-                low=float(row["Low"]),
+                ts=rb.ts,
+                open=rb.open,
+                high=rb.high,
+                low=rb.low,
                 close=close,
-                volume=float(row["Volume"]),
+                volume=rb.volume,
             )
         )
     if not bars:
