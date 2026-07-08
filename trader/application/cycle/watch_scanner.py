@@ -8,7 +8,7 @@ from typing import Callable, Protocol
 
 from trader.market import market_data as market
 from trader.planning.indicator_watch import evaluate_indicator_watches, watch_market_requests
-from trader.planning.scheduler import Scheduler
+from trader.planning.protocols import SchedulerLike
 
 log = logging.getLogger("trader.application.watch_scanner")
 
@@ -51,7 +51,7 @@ def exit_watch_cooldown_elapsed(watch: dict, *, now: datetime) -> bool:
 def scan_indicator_watches(
     symbols: list[str],
     *,
-    sched: Scheduler,
+    sched: SchedulerLike,
     now: datetime,
     data_source: object,
     is_connection_market_error: MarketErrorClassifier = _default_connection_error,

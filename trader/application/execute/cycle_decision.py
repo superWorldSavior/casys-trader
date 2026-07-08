@@ -27,7 +27,7 @@ from trader.execution.risk import RiskGate
 import trader.market.execution_eligibility as execution_eligibility_service
 from trader.market import market_data as market
 import trader.market.volatility as reference_volatility_service
-from trader.planning import scheduler
+from trader.planning.protocols import SchedulerLike
 from trader.planning.trade_plan import InvalidExitPlanError, resolve_exit_plan, validate_exit_plan
 
 _OPENING_INTENTS = {"OPEN_LONG", "OPEN_SHORT", "FLIP", "SCALE_IN"}
@@ -62,7 +62,7 @@ class DecisionExecutionContext:
     broker: object
     plan_store: object
     gate: RiskGate
-    sched: scheduler.Scheduler | None
+    sched: SchedulerLike | None
     prices: dict[str, float]
     execution_eligibility: dict[str, dict]
     tradable_bars_by_symbol: dict[str, list]

@@ -11,7 +11,7 @@ from trader.application.cycle import (
     watch_scanner,
 )
 from trader.market import market_data as market
-from trader.planning.scheduler import Scheduler
+from trader.planning.protocols import SchedulerLike
 
 EventAppender = Callable[..., None]
 LogCallable = Callable[..., None]
@@ -35,7 +35,7 @@ def stale_backoff_wake_minutes(streak: int, *, default_wake_minutes: float) -> f
 
 
 def ensure_default_wake(
-    sched: Scheduler,
+    sched: SchedulerLike,
     *,
     now: datetime,
     default_wake_minutes: float,
@@ -46,7 +46,7 @@ def ensure_default_wake(
 def select_due_symbols(
     symbols: list[str],
     *,
-    sched: Scheduler,
+    sched: SchedulerLike,
     once: bool,
     bootstrap: bool,
     now: datetime | None = None,
@@ -104,7 +104,7 @@ def scan_exit_watches(
 def scan_indicator_watches(
     symbols: list[str],
     *,
-    sched: Scheduler,
+    sched: SchedulerLike,
     now: datetime,
     data_source: object,
     is_connection_market_error: MarketErrorClassifier,
@@ -138,7 +138,7 @@ def scan_indicator_watches(
     return triggered
 
 
-def earliest_active_watch_expiry_iso(sched: Scheduler, sym: str, *, now: datetime) -> str | None:
+def earliest_active_watch_expiry_iso(sched: SchedulerLike, sym: str, *, now: datetime) -> str | None:
     return cycle_schedule.earliest_active_watch_expiry_iso(sched, sym, now=now)
 
 
@@ -154,7 +154,7 @@ def resolve_wake_event(
 
 def apply_decision_schedule(
     *,
-    sched: Scheduler | None,
+    sched: SchedulerLike | None,
     sym: str,
     now: datetime,
     next_wake_in_minutes: float | None,
@@ -180,7 +180,7 @@ def apply_decision_schedule(
 
 
 def expire_indicator_watches(
-    sched: Scheduler,
+    sched: SchedulerLike,
     *,
     now: datetime,
     append_event: EventAppender | None = None,

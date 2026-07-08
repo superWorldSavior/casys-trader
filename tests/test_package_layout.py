@@ -354,12 +354,135 @@ def test_pure_planning_calculations_are_nested_under_domain_with_facades() -> No
     assert violations == []
 
 
-def test_scheduler_is_nested_under_planning() -> None:
+def test_scheduler_json_backend_is_nested_under_state_db_with_planning_facade() -> None:
     trader_dir = Path(__file__).resolve().parents[1] / "trader"
-    scheduler_path = trader_dir / "planning" / "scheduler.py"
+    facade_path = trader_dir / "planning" / "scheduler.py"
+    backend_path = trader_dir / "infrastructure" / "state_db" / "scheduler_json.py"
 
-    assert scheduler_path.exists()
+    assert facade_path.exists()
+    assert backend_path.exists()
     assert not _has_python_sources(trader_dir / "scheduling")
+
+    facade_tree = ast.parse(facade_path.read_text(encoding="utf-8"), filename=str(facade_path))
+    backend_tree = ast.parse(backend_path.read_text(encoding="utf-8"), filename=str(backend_path))
+
+    facade_classes = [node.name for node in ast.walk(facade_tree) if isinstance(node, ast.ClassDef)]
+    backend_classes = [node.name for node in ast.walk(backend_tree) if isinstance(node, ast.ClassDef)]
+
+    assert "Scheduler" not in facade_classes
+    assert "Scheduler" in backend_classes
+    assert "from trader.infrastructure.state_db.scheduler_json import Scheduler" in facade_path.read_text(
+        encoding="utf-8"
+    )
+
+
+def test_scheduler_consumers_depend_on_schedulerlike_not_planning_scheduler_class() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    checked_paths = [
+        repo_root / "trader" / "runtime" / "cycle_scheduling.py",
+        repo_root / "trader" / "runtime" / "daemon.py",
+        repo_root / "trader" / "application" / "cycle" / "schedule.py",
+        repo_root / "trader" / "application" / "cycle" / "watch_scanner.py",
+        repo_root / "trader" / "application" / "decide" / "planner_batch.py",
+        repo_root / "trader" / "application" / "execute" / "cycle_decision.py",
+    ]
+
+    violations: list[str] = []
+    for module_path in checked_paths:
+        source = module_path.read_text(encoding="utf-8")
+        tree = ast.parse(source, filename=str(module_path))
+        rel_path = module_path.relative_to(repo_root)
+
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom):
+                if node.module == "trader.planning.scheduler" and any(
+                    alias.name == "Scheduler" for alias in node.names
+                ):
+                    violations.append(f"{rel_path}: from trader.planning.scheduler import Scheduler")
+                if node.module == "trader.infrastructure.state_db.scheduler_json" and any(
+                    alias.name == "Scheduler" for alias in node.names
+                ):
+                    violations.append(
+                        f"{rel_path}: from trader.infrastructure.state_db.scheduler_json import Scheduler"
+                    )
+                if node.module == "trader.planning" and any(
+                    alias.name == "scheduler" for alias in node.names
+                ):
+                    violations.append(f"{rel_path}: from trader.planning import scheduler")
+            elif isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name in {
+                        "trader.infrastructure.state_db.scheduler_json",
+                        "trader.planning.scheduler",
+                    }:
+                        violations.append(f"{rel_path}: import {alias.name}")
+            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                annotations = [
+                    *(arg.annotation for arg in [*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs]),
+                    node.args.vararg.annotation if node.args.vararg else None,
+                    node.args.kwarg.annotation if node.args.kwarg else None,
+                    node.returns,
+                ]
+                for annotation in annotations:
+                    if _annotation_mentions_scheduler_class(annotation):
+                        violations.append(f"{rel_path}: {node.name} annotates Scheduler")
+            elif isinstance(node, ast.AnnAssign):
+                if _annotation_mentions_scheduler_class(node.annotation):
+                    violations.append(f"{rel_path}: variable annotates Scheduler")
+
+    assert violations == []
+
+
+def test_schedulerlike_protocol_is_satisfied_by_json_and_sqlite_schedulers() -> None:
+    from trader.infrastructure.state_db.scheduler_json import Scheduler
+    from trader.infrastructure.state_db.scheduler_store import SqliteScheduler
+    from trader.planning.protocols import SchedulerLike
+
+    protocol_methods = {
+        name
+        for name, value in SchedulerLike.__dict__.items()
+        if callable(value) and not name.startswith("_")
+    }
+
+    assert protocol_methods == {
+        "active_indicator_watches",
+        "clear_symbol_next_wake",
+        "due_symbols",
+        "get_stale_streak",
+        "next_wake",
+        "pop_expired_indicator_watches",
+        "reconcile_universe",
+        "remove_indicator_watch",
+        "reset_stale_streak",
+        "seconds_until_wake",
+        "set_next_wake_in",
+        "set_stale_streak",
+        "set_symbol_indicator_watch",
+        "set_symbol_next_wake",
+        "set_symbol_next_wake_in",
+    }
+    assert protocol_methods <= {
+        name for name, value in Scheduler.__dict__.items() if callable(value) and not name.startswith("_")
+    }
+    assert protocol_methods <= {
+        name for name, value in SqliteScheduler.__dict__.items() if callable(value) and not name.startswith("_")
+    }
+
+
+def _annotation_mentions_scheduler_class(annotation: ast.AST | None) -> bool:
+    if annotation is None:
+        return False
+    for node in ast.walk(annotation):
+        if isinstance(node, ast.Name) and node.id == "Scheduler":
+            return True
+        if (
+            isinstance(node, ast.Attribute)
+            and node.attr == "Scheduler"
+            and isinstance(node.value, ast.Name)
+            and node.value.id == "scheduler"
+        ):
+            return True
+    return False
 
 
 def test_agent_learnings_are_nested_under_agent() -> None:

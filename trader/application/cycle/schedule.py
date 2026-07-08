@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from typing import Callable
 
 from trader.domain.planning.scheduling import stale_backoff_wake_minutes
-from trader.planning.scheduler import Scheduler
+from trader.planning.protocols import SchedulerLike
 
 EventAppender = Callable[..., None]
 
@@ -27,7 +27,7 @@ def bounded_wake_minutes(value: float, *, minimum: float | None = None, maximum:
 
 
 def ensure_default_wake(
-    sched: Scheduler,
+    sched: SchedulerLike,
     *,
     now: datetime,
     default_wake_minutes: float,
@@ -40,7 +40,7 @@ def ensure_default_wake(
 def select_due_symbols(
     symbols: list[str],
     *,
-    sched: Scheduler,
+    sched: SchedulerLike,
     once: bool,
     bootstrap: bool,
     now: datetime | None = None,
@@ -51,7 +51,7 @@ def select_due_symbols(
 
 
 def earliest_active_watch_expiry_iso(
-    sched: Scheduler,
+    sched: SchedulerLike,
     sym: str,
     *,
     now: datetime,
@@ -108,7 +108,7 @@ def _noop_event_appender(_event: str, **_payload: object) -> None:
 
 def apply_decision_schedule(
     *,
-    sched: Scheduler | None,
+    sched: SchedulerLike | None,
     sym: str,
     now: datetime,
     next_wake_in_minutes: float | None,

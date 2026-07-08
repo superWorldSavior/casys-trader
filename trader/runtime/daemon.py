@@ -92,7 +92,7 @@ from trader.planning.trade_plan import (
     resolve_exit_plan,
     validate_exit_plan,
 )
-from trader.planning.protocols import TradePlanStoreLike
+from trader.planning.protocols import SchedulerLike, TradePlanStoreLike
 from trader.support.metadata import code_version
 from trader.reporting.read_models import attribution, live_kpis, meta_performance
 from trader.reporting.ledger import decision_ledger
@@ -110,7 +110,6 @@ from trader.runtime import (
 )
 from trader.runtime.ib_attach import IBAttachBackoff
 from trader.runtime.state_writer import RuntimeStateWriter
-from trader.planning import scheduler
 from trader.execution import portfolio
 from trader.execution.contracts import Order
 from trader.execution.broker import (
@@ -354,7 +353,7 @@ def _stale_backoff_wake_minutes(streak: int, *, default_wake_minutes: float) -> 
 
 
 def _ensure_default_wake(
-    sched: scheduler.Scheduler,
+    sched: SchedulerLike,
     *,
     now: datetime,
     default_wake_minutes: float,
@@ -369,7 +368,7 @@ def _ensure_default_wake(
 def _select_due_symbols(
     symbols: list[str],
     *,
-    sched: scheduler.Scheduler,
+    sched: SchedulerLike,
     once: bool,
     bootstrap: bool,
     now: datetime | None = None,
@@ -755,7 +754,7 @@ def _scan_exit_watches(
 def _scan_indicator_watches(
     symbols: list[str],
     *,
-    sched: scheduler.Scheduler,
+    sched: SchedulerLike,
     now: datetime,
     data_source: object,
 ) -> list[dict]:
@@ -781,14 +780,14 @@ def _context_request_summary(
 
 def _active_watch_summaries_by_symbol(
     *,
-    sched: scheduler.Scheduler | None,
+    sched: SchedulerLike | None,
     symbols: list[str],
     now: datetime,
 ) -> dict[str, list[dict]]:
     return planner_batch._active_watch_summaries_by_symbol(sched=sched, symbols=symbols, now=now)
 
 
-def _global_plans_summary(sched: scheduler.Scheduler | None, now: datetime) -> list[dict]:
+def _global_plans_summary(sched: SchedulerLike | None, now: datetime) -> list[dict]:
     if sched is None:
         return []
     try:
@@ -846,7 +845,7 @@ def _plan_to_context_dict(plan: TradePlan) -> dict:
 
 
 def _earliest_active_watch_expiry_iso(
-    sched: scheduler.Scheduler, sym: str, *, now: datetime
+    sched: SchedulerLike, sym: str, *, now: datetime
 ) -> str | None:
     """Plus proche expiration (ISO) des veilles actives du symbole, ou None.
 
@@ -885,7 +884,7 @@ def _resolve_wake_event(
 
 def _apply_decision_schedule(
     *,
-    sched: scheduler.Scheduler | None,
+    sched: SchedulerLike | None,
     sym: str,
     now: datetime,
     next_wake_in_minutes: float | None,
@@ -990,7 +989,7 @@ def run_cycle(
     dry_run: bool,
     now: datetime | None = None,
     symbols_filter: list[str] | None = None,
-    sched: scheduler.Scheduler | None = None,
+    sched: SchedulerLike | None = None,
     data_source: object,
     default_wake_minutes: float = 30.0,
     min_wake_minutes: float | None = None,

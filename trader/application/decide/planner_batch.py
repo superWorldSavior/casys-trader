@@ -14,7 +14,7 @@ from trader.agent.context import resolve_indicator_requests
 from trader.application.decide.tool_round import merge_domain_tools, run_one_round
 from trader.market import market_data as market
 from trader.planning.indicator_watch import summarize_watch
-from trader.planning import scheduler
+from trader.planning.protocols import SchedulerLike
 
 log = logging.getLogger("trader.application.planner_batch")
 
@@ -43,7 +43,7 @@ def _context_request_summary(
 
 def _active_watch_summaries_by_symbol(
     *,
-    sched: scheduler.Scheduler | None,
+    sched: SchedulerLike | None,
     symbols: list[str],
     now: datetime,
 ) -> dict[str, list[dict]]:
@@ -153,7 +153,7 @@ def batch_decide(
     now: datetime,
     data_age_by_symbol: dict[str, float],
     wake_reasons_by_symbol: dict[str, list[dict]] | None = None,
-    sched: scheduler.Scheduler | None = None,
+    sched: SchedulerLike | None = None,
     last_review_by_symbol: dict[str, dict] | None = None,
     market_context_by_symbol: dict[str, dict] | None = None,
     decision_timeout_s: int = 900,

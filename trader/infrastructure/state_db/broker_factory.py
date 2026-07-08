@@ -214,7 +214,7 @@ def make_scheduler(
     backend = backend.lower()
 
     if backend == "json":
-        from trader.planning.scheduler import Scheduler  # import local — pas de circular dep  # noqa: PLC0415
+        from trader.infrastructure.state_db.scheduler_json import Scheduler  # noqa: PLC0415
 
         log.debug(
             "[broker_factory] scheduler backend=json → Scheduler(%s)",
