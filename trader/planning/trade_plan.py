@@ -6,7 +6,6 @@ import copy
 import math
 from datetime import datetime, timezone
 
-from . import exit_plan_spec as _exit_plan_spec
 from .exit_plan_spec import (
     STRUCTURAL_HARD_STOP_ANCHORS,
     InvalidExitPlanError,
@@ -22,6 +21,7 @@ from .exit_plan_spec import (
     validate_exit_plan as _validate_exit_plan,
 )
 from .indicator_watch import normalize_indicator_watch
+from trader.domain.planning import exit_plan_spec as _domain_exit_plan_spec
 from trader.domain.trade_plan import (
     TRAILING_STOP_TRAIL_TYPES,
     MoveStopTo,
@@ -58,7 +58,9 @@ def validate_exit_plan(
     reference_volatility: float | None = None,
     allow_unresolved: bool = False,
 ) -> None:
-    _exit_plan_spec.TRAILING_STOP_TRAIL_TYPES = TRAILING_STOP_TRAIL_TYPES
+    # Propage un éventuel monkeypatch de TRAILING_STOP_TRAIL_TYPES (tests qui patchent
+    # ce module) vers le module domaine qui exécute réellement la validation.
+    _domain_exit_plan_spec.TRAILING_STOP_TRAIL_TYPES = TRAILING_STOP_TRAIL_TYPES
     return _validate_exit_plan(
         raw_exit_plan,
         reference_volatility=reference_volatility,

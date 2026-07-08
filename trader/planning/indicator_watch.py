@@ -9,6 +9,7 @@ import operator
 from datetime import datetime, timedelta, timezone
 from typing import Callable, NamedTuple
 
+from trader.domain.planning.watches import is_armed_plan
 from .armed_order import (
     ARMED_ORDER_MAX_TTL_MINUTES,
     armed_order_price_coherent as armed_order_price_coherent,
@@ -209,15 +210,6 @@ def _condition_from_raw(raw: object, *, owner_symbol: str) -> tuple[dict | None,
         },
         None,
     )
-
-
-
-
-def is_armed_plan(watch: dict) -> bool:
-    """Prédicat UNIQUE « plan armé » (source de vérité pour daemon/scheduler/tui)."""
-    return str(watch.get("on_trigger")) == "EXECUTE_ORDER" and isinstance(watch.get("order"), dict)
-
-
 def _summarize_watch_conditions(conditions: object) -> list[dict]:
     if not isinstance(conditions, list):
         return []

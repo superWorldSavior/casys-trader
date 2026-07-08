@@ -277,6 +277,72 @@ def test_semantic_catalog_is_nested_under_domain() -> None:
     assert not _has_python_sources(trader_dir / "semantic")
 
 
+def test_pure_planning_calculations_are_nested_under_domain_with_facades() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    trader_dir = repo_root / "trader"
+    domain_planning_dir = trader_dir / "domain" / "planning"
+
+    expected_modules = {
+        "__init__.py",
+        "exit_engine.py",
+        "exit_plan_spec.py",
+        "relevance_gate.py",
+        "watches.py",
+    }
+    assert {path.name for path in domain_planning_dir.glob("*.py")} == expected_modules
+
+    for module_name in ("exit_engine", "exit_plan_spec", "relevance_gate"):
+        facade_path = trader_dir / "planning" / f"{module_name}.py"
+        assert facade_path.exists()
+        source = facade_path.read_text(encoding="utf-8")
+        assert f"from trader.domain.planning.{module_name} import *" in source
+
+    indicator_watch_source = (trader_dir / "planning" / "indicator_watch.py").read_text(encoding="utf-8")
+    assert "from trader.domain.planning.watches import is_armed_plan" in indicator_watch_source
+
+    import trader.domain.planning.exit_engine as domain_exit_engine
+    import trader.domain.planning.exit_plan_spec as domain_exit_plan_spec
+    import trader.domain.planning.relevance_gate as domain_relevance_gate
+    import trader.domain.planning.watches as domain_watches
+    import trader.planning.exit_engine as planning_exit_engine
+    import trader.planning.exit_plan_spec as planning_exit_plan_spec
+    import trader.planning.relevance_gate as planning_relevance_gate
+    from trader.planning.indicator_watch import is_armed_plan
+
+    assert planning_exit_engine.evaluate_plan is domain_exit_engine.evaluate_plan
+    assert planning_relevance_gate.symbol_needs_llm is domain_relevance_gate.symbol_needs_llm
+    assert planning_exit_plan_spec.normalize_exit_plan is domain_exit_plan_spec.normalize_exit_plan
+    assert planning_exit_plan_spec._positive_float is domain_exit_plan_spec._positive_float
+    assert is_armed_plan is domain_watches.is_armed_plan
+
+    forbidden_prefixes = (
+        "trader.agent",
+        "trader.application",
+        "trader.execution",
+        "trader.infrastructure",
+        "trader.interfaces",
+        "trader.market",
+        "trader.planning",
+        "trader.reporting",
+        "trader.runtime",
+        "trader.tools",
+    )
+    violations: list[str] = []
+    for path in sorted(domain_planning_dir.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        rel_path = path.relative_to(repo_root)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module:
+                if node.module.startswith(forbidden_prefixes):
+                    violations.append(f"{rel_path}: from {node.module} import ...")
+            elif isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name.startswith(forbidden_prefixes):
+                        violations.append(f"{rel_path}: import {alias.name}")
+
+    assert violations == []
+
+
 def test_scheduler_is_nested_under_planning() -> None:
     trader_dir = Path(__file__).resolve().parents[1] / "trader"
     scheduler_path = trader_dir / "planning" / "scheduler.py"
