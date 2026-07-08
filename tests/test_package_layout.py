@@ -107,23 +107,26 @@ def test_application_cycle_modules_are_nested_without_legacy_shims() -> None:
     )
 
 
-def test_market_execution_eligibility_is_canonical_low_layer_module() -> None:
+def test_market_execution_eligibility_is_canonical_domain_module_with_market_facade() -> None:
     repo_root = Path(__file__).resolve().parents[1]
     trader_dir = repo_root / "trader"
-    module_path = trader_dir / "market" / "execution_eligibility.py"
+    module_path = trader_dir / "domain" / "market" / "execution_eligibility.py"
+    facade_path = trader_dir / "market" / "execution_eligibility.py"
 
     assert module_path.exists()
+    assert facade_path.exists()
     assert not (trader_dir / "application" / "cycle" / "execution_eligibility.py").exists()
+    assert "from trader.domain.market.execution_eligibility import *" in facade_path.read_text(encoding="utf-8")
 
     tree = ast.parse(module_path.read_text(encoding="utf-8"), filename=str(module_path))
     violations: list[str] = []
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom) and node.module:
-            if node.module.startswith(("trader.application", "trader.runtime")):
+            if node.module.startswith(("trader.application", "trader.runtime", "trader.infrastructure", "trader.market", "trader.planning")):
                 violations.append(f"from {node.module} import ...")
         elif isinstance(node, ast.Import):
             for alias in node.names:
-                if alias.name.startswith(("trader.application", "trader.runtime")):
+                if alias.name.startswith(("trader.application", "trader.runtime", "trader.infrastructure", "trader.market", "trader.planning")):
                     violations.append(f"import {alias.name}")
 
     assert violations == []

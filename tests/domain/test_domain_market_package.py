@@ -12,6 +12,44 @@ MOVED_MODULES = (
     "volatility",
     "fx",
     "gross_priority",
+    "execution_eligibility",
+)
+
+MARKET_DATA_IMPORT_STAR_EXPORTS = (
+    "annotations",
+    "functools",
+    "Iterable",
+    "dataclass",
+    "datetime",
+    "timedelta",
+    "timezone",
+    "ZoneInfo",
+    "Bar",
+    "MarketError",
+    "Freshness",
+    "freshness_budget_minutes",
+    "assess_freshness",
+    "human_clock",
+    "market_clocks",
+    "session_context",
+    "session_snapshot",
+    "PRE_OPEN_LEAD_MINUTES",
+    "OPEN_GRACE_MINUTES",
+    "next_regular_session_open",
+    "most_recent_session_open",
+    "last_completed_session_date",
+    "assess_daily_freshness",
+    "clamp_wake_to_session_open",
+    "aggregate_bars",
+    "classify_symbol_context",
+    "Quote",
+    "get_bars",
+    "get_quote",
+)
+SESSION_EXPORTS = tuple(
+    name
+    for name in MARKET_DATA_IMPORT_STAR_EXPORTS
+    if name not in {"Quote", "get_bars", "get_quote"}
 )
 
 FORBIDDEN_DOMAIN_IMPORT_PREFIXES = (
@@ -59,3 +97,30 @@ def test_domain_market_modules_do_not_import_outer_layers() -> None:
                     assert not import_name.startswith(FORBIDDEN_DOMAIN_IMPORT_PREFIXES), (
                         f"{module_path} imports forbidden outer module {import_name}"
                     )
+
+
+def test_market_sessions_move_preserves_exchange_calendar_and_import_star_surface() -> None:
+    sessions_path = Path("trader/domain/market/sessions.py")
+    facade_path = Path("trader/market/market_data.py")
+
+    assert sessions_path.exists()
+    sessions_source = sessions_path.read_text(encoding="utf-8")
+    assert "import exchange_calendars as _ec" in sessions_source
+    assert "trader.market.market_data_yf" not in sessions_source
+    assert "from trader.domain.market_data import Bar, MarketError" in sessions_source
+
+    facade_source = facade_path.read_text(encoding="utf-8")
+    assert "from trader.domain.market.sessions import *" in facade_source
+    assert "from trader.market.market_data_yf import Quote, get_bars, get_quote" in facade_source
+
+    sessions = importlib.import_module("trader.domain.market.sessions")
+    market_data = importlib.import_module("trader.market.market_data")
+
+    assert tuple(sessions.__all__) == SESSION_EXPORTS
+    assert tuple(market_data.__all__) == MARKET_DATA_IMPORT_STAR_EXPORTS
+    assert {name for name in market_data.__all__} == {
+        name for name in vars(market_data) if not name.startswith("_")
+    }
+    assert market_data.session_snapshot is sessions.session_snapshot
+    assert market_data.Bar is sessions.Bar
+    assert "Quote" not in sessions.__all__
