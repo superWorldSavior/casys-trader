@@ -14,7 +14,7 @@ from typing import Callable, Literal, Protocol, cast
 from trader.agent.client import Decision
 from trader.execution.broker import SimBroker
 from trader.execution.contracts import Order, Position
-from trader.execution.ports import CommissionModel
+from trader.execution.protocols import CommissionModel
 from trader.execution.risk import RiskGate, RiskLimits
 
 
