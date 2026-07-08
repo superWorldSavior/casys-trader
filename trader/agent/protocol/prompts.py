@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 
 from trader.market.features import DEFAULT_INDICATORS
 from trader.planning import trade_plan
@@ -196,6 +197,26 @@ def _decision_guidance(*, allow_context_request: bool) -> str:
     )
 
 
+def _exec_guidance() -> str:
+    """Consigne d'exec — présente UNIQUEMENT si l'exec en cage est activé.
+
+    Gaté sur le même flag que le transport (``CASYS_AGENT_EXEC``) : sans lui,
+    l'outil python n'existe pas côté agent, donc l'annoncer le pousserait à
+    appeler un outil absent et à casser le contrat de sortie JSON.
+    """
+    if os.getenv("CASYS_AGENT_EXEC", "").strip().lower() not in {"1", "true", "yes", "on"}:
+        return ""
+    return (
+        "# Calcul déterministe\n"
+        "Tu disposes d'un python EN CAGE (réseau coupé, écriture confinée) pour tes "
+        "calculs. Pour tout NOMBRE que tu poserais sinon de tête et qu'aucun indicateur "
+        "fourni ne donne (z-score, corrélation, distance en ATR à un niveau, stats sur "
+        "les barres), calcule-le en python plutôt que l'estimer. Les exécutions sont des "
+        "tours intermédiaires : ta réponse FINALE reste un objet JSON pur, sans texte "
+        "autour.\n\n"
+    )
+
+
 def build_prompt(*, mandate: str, memory: str, context: dict, allow_context_request: bool = False) -> str:
     """Assemble le prompt. Le COMPORTEMENT vit dans `mandate`/`memory` (boucle 1),
     pas en dur ici."""
@@ -207,6 +228,7 @@ def build_prompt(*, mandate: str, memory: str, context: dict, allow_context_requ
         f"# Mandat\n{mandate}\n\n"
         f"# Mémoire / stratégie\n{memory}\n\n"
         f"{_decision_guidance(allow_context_request=allow_context_request)}"
+        f"{_exec_guidance()}"
         f"{_indicator_watch_vocabulary()}"
         f"# Contexte marché et portefeuille (JSON)\n{json.dumps(context, ensure_ascii=False)}\n\n"
         f"# Contrat de sortie\n{output_contract}\n"
@@ -630,6 +652,7 @@ def build_batch_prompt(
         f"# Mandat\n{mandate}\n\n"
         f"# Mémoire / stratégie\n{memory}\n\n"
         f"{_decision_guidance(allow_context_request=allow_context_request)}"
+        f"{_exec_guidance()}"
         f"{_indicator_watch_vocabulary()}"
         f"{_tool_catalog(allow_context_request=allow_context_request, max_tool_calls_per_symbol=max_tool_calls_per_symbol, max_rounds=max_rounds) if allow_tool_calls else ''}"
         f"# Contexte partagé (JSON)\n{json.dumps(shared_context, ensure_ascii=False)}\n\n"
