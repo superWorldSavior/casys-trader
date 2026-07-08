@@ -5,12 +5,15 @@ Pas d'I/O réseau, pas d'état global. Entrées typées, sorties déterministes.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from datetime import date
 from pathlib import Path
 from typing import Any
 
 from trader.market.features import compute_indicator_values
+
+log = logging.getLogger("trader.market.rotation.wiring")
 
 # ---------------------------------------------------------------------------
 # venue_of
@@ -311,7 +314,15 @@ def run_cli(
     rank_fn = build_rank_fn(config_dir, fetch_fn=fetch_fn, as_of=as_of)
 
     if sticky_fn is None:
-        sticky_fn = build_sticky_fn(state_dir) if build_sticky_fn is not None else set
+        if build_sticky_fn is not None:
+            sticky_fn = build_sticky_fn(state_dir)
+        else:
+            log.warning(
+                "[rotation] run_cli sans sticky_fn ni build_sticky_fn — positions/plans "
+                "ouverts NON protégés du rebalancement (attendu uniquement en test/dry-run ; "
+                "le chemin prod passe par runtime.run_cli qui injecte build_sticky_fn)"
+            )
+            sticky_fn = set
 
     if override_fn is None:
         if params.override_enabled and build_override_fn is not None:

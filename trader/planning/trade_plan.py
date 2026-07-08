@@ -8,23 +8,29 @@ from datetime import datetime, timezone
 
 from . import exit_plan_spec as _exit_plan_spec
 from .exit_plan_spec import (
+    STRUCTURAL_HARD_STOP_ANCHORS,
     InvalidExitPlanError,
     StructuralHardStopAnchor,
     _bounded_float,
     _bounded_fraction,
+    _non_negative_float,
     _positive_float,
     _positive_int,
+    _validate_optional_pct_bounds,
+    _validate_structural_hard_stop,
     normalize_exit_plan,
     validate_exit_plan as _validate_exit_plan,
 )
 from .indicator_watch import normalize_indicator_watch
 from trader.domain.trade_plan import (
     TRAILING_STOP_TRAIL_TYPES,
+    MoveStopTo,
     PositionSide,
     ProfitProtection,
     TakeProfit,
     TradePlan,
     TrailingStop,
+    TrailingStopTrailType,
 )
 from trader.market.features import swing_high, swing_low, vwap
 
