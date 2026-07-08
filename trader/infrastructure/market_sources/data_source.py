@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Callable
 
 from trader.domain.market_data import Bar, MarketError
-from trader.market.ports import DataSource as DataSource
+from trader.market.protocols import DataSource as DataSource
 
 log = logging.getLogger(__name__)
 

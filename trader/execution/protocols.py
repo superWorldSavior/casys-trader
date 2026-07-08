@@ -1,4 +1,4 @@
-"""Execution ports implemented by broker adapters."""
+"""Execution protocols implemented by broker adapters."""
 
 from __future__ import annotations
 

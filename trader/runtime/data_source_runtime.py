@@ -17,11 +17,7 @@ from trader.market.data_source import (
 )
 from trader.market.ib_source import IBDataSource, connect_ib
 from trader.runtime.ib_attach import IBAttachBackoff
-
-
-class LoggerLike(Protocol):
-    def info(self, *args: object) -> None: ...
-    def warning(self, *args: object) -> None: ...
+from trader.runtime.protocols import LoggerLike
 
 
 class BackoffLike(Protocol):

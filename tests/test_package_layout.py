@@ -1947,7 +1947,7 @@ def test_market_data_imports_are_canonical_with_tools_compatibility() -> None:
     from trader.market.data_source import CompositeDataSource, DataSource as AdapterDataSource, YFinanceDataSource
     from trader.market.ib_source import IBDataSource, INTERVAL_MAP, LOOKBACK_MAP, connect_ib
     from trader.market.market_data import Bar, Freshness, MarketError, assess_freshness
-    from trader.market.ports import DataSource
+    from trader.market.protocols import DataSource
     from trader.tools.data_source import CompositeDataSource as LegacyCompositeDataSource
     from trader.tools.data_source import DataSource as LegacyDataSource
     from trader.tools.data_source import YFinanceDataSource as LegacyYFinanceDataSource
@@ -1972,6 +1972,53 @@ def test_market_data_imports_are_canonical_with_tools_compatibility() -> None:
     assert LegacyIntervalMap is INTERVAL_MAP
     assert LegacyLookbackMap is LOOKBACK_MAP
     assert legacy_connect_ib is connect_ib
+
+
+def test_shared_protocols_use_protocols_modules_instead_of_ports_modules() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    checked_roots = (
+        repo_root / "trader",
+        repo_root / "tests",
+        repo_root / "backtest",
+    )
+    forbidden_modules = {
+        f"trader.{package}.ports"
+        for package in ("execution", "market")
+    }
+
+    violations: list[str] = []
+    for root in checked_roots:
+        for path in sorted(root.rglob("*.py")):
+            if "__pycache__" in path.parts:
+                continue
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            rel_path = path.relative_to(repo_root)
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ImportFrom) and node.module in forbidden_modules:
+                    violations.append(f"{rel_path}: from {node.module} import ...")
+                elif isinstance(node, ast.Import):
+                    for alias in node.names:
+                        if alias.name in forbidden_modules:
+                            violations.append(f"{rel_path}: import {alias.name}")
+
+    assert violations == []
+
+
+def test_shared_protocols_have_no_legacy_ports_modules() -> None:
+    from trader.execution.protocols import Broker, CommissionModel
+    from trader.market.protocols import DataSource
+
+    assert Broker.__module__ == "trader.execution.protocols"
+    assert CommissionModel.__module__ == "trader.execution.protocols"
+    assert DataSource.__module__ == "trader.market.protocols"
+
+    repo_root = Path(__file__).resolve().parents[1]
+    ports_paths = (
+        repo_root / "trader" / "execution" / "ports.py",
+        repo_root / "trader" / "market" / "ports.py",
+    )
+
+    assert [path.relative_to(repo_root) for path in ports_paths if path.exists()] == []
 
 
 def test_legacy_market_tool_modules_proxy_mutations_to_canonical_modules(monkeypatch) -> None:
@@ -2149,8 +2196,8 @@ def test_execution_broker_imports_are_canonical_with_tools_compatibility() -> No
     from trader.execution.contracts import Fill as CanonicalFill
     from trader.execution.contracts import Order as CanonicalOrder
     from trader.execution.contracts import Position as CanonicalPosition
-    from trader.execution.ports import Broker as CanonicalBroker
-    from trader.execution.ports import CommissionModel as CanonicalCommissionModel
+    from trader.execution.protocols import Broker as CanonicalBroker
+    from trader.execution.protocols import CommissionModel as CanonicalCommissionModel
     from trader.tools.execution import Broker as LegacyBroker
     from trader.tools.execution import Commission as LegacyCommission
     from trader.tools.execution import CommissionModel as LegacyCommissionModel
@@ -2182,6 +2229,62 @@ def test_execution_broker_imports_are_canonical_with_tools_compatibility() -> No
     assert LegacyPosition is Position
     assert LegacySide is Side
     assert LegacySimBroker is SimBroker
+
+
+def test_planned_exits_uses_canonical_trade_plan_store_protocol() -> None:
+    from trader.application.exit import planned_exits
+    from trader.planning.protocols import TradePlanStoreLike
+
+    assert planned_exits.TradePlanStoreLike is TradePlanStoreLike
+
+    path = Path(__file__).resolve().parents[1] / "trader" / "application" / "exit" / "planned_exits.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    local_protocols = [
+        node.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ClassDef) and node.name == "TradePlanStoreLike"
+    ]
+
+    assert local_protocols == []
+
+
+def test_runtime_protocols_are_canonical_and_not_redeclared() -> None:
+    from trader.runtime.protocols import (
+        CycleReportWriter,
+        LoggerLike,
+        RecoverableLedger,
+        StartablePool,
+        Stoppable,
+    )
+
+    assert {"debug", "info", "warning", "exception"} <= set(LoggerLike.__dict__)
+    assert "stop" in Stoppable.__dict__
+    assert {"write_last_report", "append_cycle_history"} <= set(CycleReportWriter.__dict__)
+    assert "recover_on_boot" in RecoverableLedger.__dict__
+    assert {"start", "stop"} <= set(StartablePool.__dict__)
+
+    repo_root = Path(__file__).resolve().parents[1]
+    runtime_dir = repo_root / "trader" / "runtime"
+    canonical_path = runtime_dir / "protocols.py"
+    shared_protocols = {
+        "LoggerLike",
+        "Stoppable",
+        "CycleReportWriter",
+        "RecoverableLedger",
+        "StartablePool",
+    }
+
+    violations: list[str] = []
+    for path in sorted(runtime_dir.rglob("*.py")):
+        if "__pycache__" in path.parts or path == canonical_path:
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        rel_path = path.relative_to(repo_root)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ClassDef) and node.name in shared_protocols:
+                violations.append(f"{rel_path}: class {node.name}")
+
+    assert violations == []
 
 
 def test_application_uses_execution_contracts_and_ports_instead_of_broker_adapter() -> None:

@@ -8,11 +8,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable, Mapping, MutableMapping, Protocol, Sequence
 
-
-class LoggerLike(Protocol):
-    def debug(self, *args: object) -> None: ...
-    def info(self, *args: object) -> None: ...
-    def warning(self, *args: object) -> None: ...
+from trader.runtime.protocols import LoggerLike
 
 
 class LearningConsolidator(Protocol):

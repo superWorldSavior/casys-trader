@@ -11,7 +11,7 @@ from typing import Callable, Protocol, runtime_checkable
 from trader.market.execution_eligibility import build_execution_eligibility
 from trader.market import fx, fx_rates
 from trader.market import market_data as market
-from trader.market.ports import DataSource
+from trader.market.protocols import DataSource
 
 log = logging.getLogger("trader.application.market_snapshot")
 

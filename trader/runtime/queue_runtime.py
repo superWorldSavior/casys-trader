@@ -7,23 +7,9 @@ import shutil
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Protocol
+from typing import Callable
 
-
-class LoggerLike(Protocol):
-    def info(self, *args: object) -> None: ...
-    def warning(self, *args: object) -> None: ...
-
-
-class RecoverableLedger(Protocol):
-    path: object
-
-    def recover_on_boot(self, *, now_ms: int) -> None: ...
-
-
-class StartablePool(Protocol):
-    def start(self) -> None: ...
-    def stop(self) -> None: ...
+from trader.runtime.protocols import LoggerLike, RecoverableLedger, StartablePool
 
 
 NowMs = Callable[[], int]

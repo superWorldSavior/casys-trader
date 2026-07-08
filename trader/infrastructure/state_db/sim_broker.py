@@ -12,7 +12,7 @@ from trader.execution.commission import (
     compute_fill_effect,
 )
 from trader.execution.contracts import Fill, Order, Position
-from trader.execution.ports import CommissionModel
+from trader.execution.protocols import CommissionModel
 
 
 @dataclass

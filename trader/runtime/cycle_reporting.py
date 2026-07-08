@@ -2,13 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Protocol
-
-
-class CycleReportWriter(Protocol):
-    def write_last_report(self, report: dict) -> None: ...
-
-    def append_cycle_history(self, report: dict) -> None: ...
+from trader.runtime.protocols import CycleReportWriter
 
 
 def has_cycle_activity(report: dict) -> bool:

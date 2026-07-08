@@ -6,20 +6,16 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Callable, Protocol
+from typing import Callable
 
 from trader.reporting.ledger import decision_ledger
 from trader.runtime import ledger_rotation
+from trader.runtime.protocols import LoggerLike
 from trader.support.config.portfolio import load_starting_cash
 from trader.infrastructure.state_db.broker_factory import (
     bootstrap_state_backend,
     make_scheduler,
 )
-
-
-class LoggerLike(Protocol):
-    def info(self, *args: object) -> None: ...
-    def warning(self, *args: object) -> None: ...
 
 
 RotateMonthlyFn = Callable[..., dict]

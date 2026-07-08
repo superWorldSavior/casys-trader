@@ -5,13 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Callable, Protocol
 
-
-class LoggerLike(Protocol):
-    def info(self, *args: object) -> None: ...
-
-
-class Stoppable(Protocol):
-    def stop(self) -> None: ...
+from trader.runtime.protocols import LoggerLike, Stoppable
 
 
 DisconnectFn = Callable[[object], None]

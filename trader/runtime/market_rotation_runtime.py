@@ -6,11 +6,9 @@ import json
 import logging
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Protocol
+from typing import Any, Callable
 
-
-class LoggerLike(Protocol):
-    def exception(self, *args: object) -> None: ...
+from trader.runtime.protocols import LoggerLike
 
 
 LoadRadarParamsFn = Callable[[Path], object]

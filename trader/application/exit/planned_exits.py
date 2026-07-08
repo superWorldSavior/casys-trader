@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Callable, Protocol
 
+from trader.planning.protocols import TradePlanStoreLike
 from trader.market.execution_eligibility import (
     execution_blocked_reason as default_execution_blocked_reason,
 )
@@ -35,18 +36,6 @@ class BrokerLike(Protocol):
         dry_run: bool = False,
         fx_rate: float = 1.0,
     ): ...
-
-
-class TradePlanStoreLike(Protocol):
-    def open_plans(self) -> list[TradePlan]: ...
-
-    def upsert(self, plan: TradePlan) -> None: ...
-
-    def close(self, plan_id: str) -> None: ...
-
-    def close_symbol(self, symbol: str) -> None: ...
-
-    def sync_symbol_quantity(self, symbol: str, quantity: float) -> None: ...
 
 
 def _noop_model_performance(**_payload: object) -> None:

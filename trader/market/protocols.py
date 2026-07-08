@@ -1,4 +1,4 @@
-"""Market data ports used by application services."""
+"""Market data protocols used by application services."""
 
 from __future__ import annotations
 
@@ -14,8 +14,8 @@ class DataSource(Protocol):
     """Minimal OHLCV bars source contract.
 
     Implementations may be live adapters, composites, or tests fakes. Connection
-    lifecycle stays outside the port unless a concrete adapter exposes optional
-    methods such as ``disconnect``.
+    lifecycle stays outside the contract unless a concrete adapter exposes
+    optional methods such as ``disconnect``.
     """
 
     def get_bars(

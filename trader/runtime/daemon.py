@@ -115,7 +115,7 @@ from trader.execution.broker import (
     commission_model_from_name,
     round_trip_cost,
 )
-from trader.execution.ports import CommissionModel
+from trader.execution.protocols import CommissionModel
 from trader.infrastructure.state_db.broker_factory import (
     bootstrap_state_backend,
     make_broker,

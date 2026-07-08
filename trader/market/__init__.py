@@ -12,7 +12,7 @@ __all__ = [
     "macro_series",
     "market_data",
     "news_feed",
-    "ports",
+    "protocols",
     "radar",
     "radar_config",
     "radar_data",

@@ -6,7 +6,7 @@ import math
 from dataclasses import dataclass
 
 from trader.execution.contracts import Commission, CommissionModelName, Order
-from trader.execution.ports import CommissionModel
+from trader.execution.protocols import CommissionModel
 from trader.market import fx
 
 POSITION_EPSILON = 1e-9

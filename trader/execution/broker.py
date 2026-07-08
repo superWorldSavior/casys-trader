@@ -16,8 +16,8 @@ from trader.execution.contracts import CommissionModelName as CommissionModelNam
 from trader.execution.contracts import Fill as Fill
 from trader.execution.contracts import Order as Order
 from trader.execution.contracts import Position as Position
-from trader.execution.ports import Broker as Broker
-from trader.execution.ports import CommissionModel as CommissionModel
+from trader.execution.protocols import Broker as Broker
+from trader.execution.protocols import CommissionModel as CommissionModel
 from trader.infrastructure.state_db.sim_broker import SimBroker as SimBroker
 
 __all__ = [
