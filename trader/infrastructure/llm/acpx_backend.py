@@ -61,21 +61,75 @@ def _log_acpx_call(
     )
 
 
+_AGENT_EXEC_ENV = "CASYS_AGENT_EXEC"
+_AGENT_EXEC_CWD_ENV = "CASYS_AGENT_EXEC_CWD"
+_AGENT_EXEC_TRUE = {"1", "true", "yes", "on"}
+
+
+def agent_exec_enabled() -> bool:
+    """Autoriser l'agent à exécuter du code dans le sandbox Codex (opt-in, défaut OFF).
+
+    OFF (défaut) : Codex tourne sans aucun outil natif (``--allowed-tools ""``) —
+    le contrat pur-texte historique, aucun changement de comportement.
+    ON (``CASYS_AGENT_EXEC=1``) : les outils natifs (dont shell/python) sont
+    activés, mis EN CAGE par le ``sandbox_mode = "workspace-write"`` du CODEX_HOME
+    (réseau coupé, écriture confinée au cwd scratch). Lu par process → prend effet
+    au redémarrage du daemon. Rollback = retirer le flag (aucun redeploy).
+    """
+    return os.getenv(_AGENT_EXEC_ENV, "").strip().lower() in _AGENT_EXEC_TRUE
+
+
+def agent_exec_scratch_dir() -> str:
+    """Workspace inscriptible pour l'exec en cage — JAMAIS le repo. Fail-close.
+
+    En workspace-write, l'unique racine inscriptible est le cwd : il doit donc
+    être un dossier jetable sous CODEX_HOME (runtime isolé, gitignoré).
+
+    FAIL-CLOSE (finding review) : exige un ``CODEX_HOME`` ABSOLU. Sans lui, non
+    seulement le scratch retomberait dans le repo, mais surtout ``acpx`` chargerait
+    ``~/.codex/config.toml`` (``danger-full-access``) → exec activé SANS cage. On
+    refuse donc de construire la commande plutôt que d'exécuter hors sandbox — le
+    daemon retombe alors en HOLD fail-safe, jamais en exec non confiné.
+
+    ``CASYS_AGENT_EXEC_CWD`` (override) doit résoudre SOUS CODEX_HOME (realpath),
+    sinon rejet : impossible de pointer le workspace inscriptible vers le repo.
+    """
+    codex_home = os.getenv("CODEX_HOME", "").strip()
+    if not codex_home or not os.path.isabs(codex_home):
+        raise RuntimeError(
+            f"{_AGENT_EXEC_ENV}=1 exige un CODEX_HOME absolu : c'est lui qui porte "
+            "la cage sandbox_mode=workspace-write. Absent → acpx retombe sur "
+            "~/.codex (danger-full-access) = AUCUNE cage. Exec refusé (fail-close)."
+        )
+    home_real = os.path.realpath(codex_home)
+    override = os.getenv(_AGENT_EXEC_CWD_ENV, "").strip()
+    if override:
+        base = os.path.realpath(override)
+        if base != home_real and not base.startswith(home_real + os.sep):
+            raise RuntimeError(
+                f"{_AGENT_EXEC_CWD_ENV} doit résoudre sous CODEX_HOME ({home_real}) "
+                f"— refusé pour interdire un workspace inscriptible hors cage : {base!r}"
+            )
+    else:
+        base = os.path.join(home_real, "calc-scratch")
+    os.makedirs(base, exist_ok=True)
+    return base
+
+
 def _acpx_global_flags(acpx_bin: str, *, model: str, timeout_s: int) -> list[str]:
-    return [
-        acpx_bin,
-        "--format",
-        "quiet",
-        "--allowed-tools",
-        "",
-        "--no-terminal",
-        "--non-interactive-permissions",
-        "deny",
-        "--model",
-        model,
-        "--timeout",
-        str(timeout_s),
-    ]
+    flags = [acpx_bin, "--format", "quiet"]
+    if agent_exec_enabled():
+        # Outils natifs activés (exec/python), cage = seatbelt workspace-write du
+        # CODEX_HOME. Le cwd scratch fixe la seule racine inscriptible hors repo.
+        # --approve-all : la frontière de sécurité est le sandbox OS, pas l'ACP
+        # (validé end-to-end : write-hors-cwd + réseau bloqués sous cette config).
+        flags += ["--approve-all", "--cwd", agent_exec_scratch_dir(), "--no-terminal"]
+    else:
+        # Défaut : zéro outil natif → contrat de sortie JSON pur-texte préservé
+        # (ordre des flags byte-identique à l'historique, aucune régression).
+        flags += ["--allowed-tools", "", "--no-terminal", "--non-interactive-permissions", "deny"]
+    flags += ["--model", model, "--timeout", str(timeout_s)]
+    return flags
 
 
 def _acpx_agent_part(agent: str | None) -> list[str]:

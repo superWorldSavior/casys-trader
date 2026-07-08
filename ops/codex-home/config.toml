@@ -6,7 +6,12 @@
 model = "gpt-5.5"
 model_reasoning_effort = "xhigh"
 approval_policy = "never"
-sandbox_mode = "danger-full-access"
+# Cage OS pour l'exécution de code par l'agent (opt-in CASYS_AGENT_EXEC) :
+# workspace-write = réseau COUPÉ + écriture confinée au cwd (un scratch jetable,
+# jamais le repo). Lecture système encore permise, mais réseau off => aucune
+# exfiltration possible. Inerte tant que l'exec est désactivé (aucun outil natif).
+# Ne PAS remettre danger-full-access : ça désactiverait le seatbelt.
+sandbox_mode = "workspace-write"
 service_tier = "default"
 
 [notice]

@@ -1380,3 +1380,48 @@ def test_trader_acpx_bin_nisolation_pas_le_consolidateur(monkeypatch) -> None:
     assert backend.acpx_bin == "/opt/review/acpx", (
         f"Le bin consolidateur ne doit pas être écrasé par TRADER_ACPX_BIN ; got {backend.acpx_bin!r}"
     )
+
+
+def test_acpx_exec_off_par_defaut_garde_le_contrat_pur_texte(monkeypatch) -> None:
+    """Sans CASYS_AGENT_EXEC : zéro outil natif, comportement historique inchangé."""
+    monkeypatch.delenv("CASYS_AGENT_EXEC", raising=False)
+    cmd = build_acpx_command("hi", acpx_bin="acpx", model="gpt-5.5", timeout_s=60)
+    assert "--allowed-tools" in cmd
+    assert cmd[cmd.index("--allowed-tools") + 1] == ""  # aucun outil
+    assert "--non-interactive-permissions" in cmd
+    assert "--approve-all" not in cmd
+    assert "--cwd" not in cmd
+
+
+def test_acpx_exec_on_active_les_outils_et_cage_le_cwd_sur_un_scratch(monkeypatch, tmp_path) -> None:
+    """CASYS_AGENT_EXEC=1 + CODEX_HOME : outils natifs + cwd = scratch sous CODEX_HOME."""
+    codex_home = tmp_path / "codex-home"
+    codex_home.mkdir()
+    monkeypatch.setenv("CASYS_AGENT_EXEC", "1")
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    monkeypatch.delenv("CASYS_AGENT_EXEC_CWD", raising=False)
+    cmd = build_acpx_command("hi", acpx_bin="acpx", model="gpt-5.5", timeout_s=60)
+    assert "--allowed-tools" not in cmd  # outils natifs (exec/python) disponibles
+    assert "--approve-all" in cmd
+    scratch = cmd[cmd.index("--cwd") + 1]
+    assert scratch == str(codex_home / "calc-scratch")  # sous CODEX_HOME, pas le repo
+    assert (codex_home / "calc-scratch").is_dir()  # créé par agent_exec_scratch_dir()
+
+
+def test_acpx_exec_on_sans_codex_home_fail_close(monkeypatch) -> None:
+    """Sans CODEX_HOME, l'exec serait NON confiné (~/.codex danger-full-access) → refus."""
+    monkeypatch.setenv("CASYS_AGENT_EXEC", "1")
+    monkeypatch.delenv("CODEX_HOME", raising=False)
+    with pytest.raises(RuntimeError, match="CODEX_HOME"):
+        build_acpx_command("hi", acpx_bin="acpx", model="gpt-5.5", timeout_s=60)
+
+
+def test_acpx_exec_cwd_hors_codex_home_est_refuse(monkeypatch, tmp_path) -> None:
+    """Un CASYS_AGENT_EXEC_CWD hors CODEX_HOME (ex: le repo) est rejeté."""
+    codex_home = tmp_path / "codex-home"
+    codex_home.mkdir()
+    monkeypatch.setenv("CASYS_AGENT_EXEC", "1")
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    monkeypatch.setenv("CASYS_AGENT_EXEC_CWD", str(tmp_path / "elsewhere"))
+    with pytest.raises(RuntimeError, match="CODEX_HOME"):
+        build_acpx_command("hi", acpx_bin="acpx", model="gpt-5.5", timeout_s=60)
