@@ -12,7 +12,7 @@ import logging
 
 from trader.infrastructure.state_db.connection import StateDb
 from trader.execution.contracts import Commission, Fill, Order, Position
-from trader.execution.broker import (
+from trader.execution.commission import (
     NoCommissionModel,
     POSITION_EPSILON,
     compute_fill_effect,

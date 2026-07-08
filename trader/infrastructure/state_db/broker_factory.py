@@ -35,6 +35,8 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
+from trader.infrastructure.state_db.sim_broker import SimBroker
+
 log = logging.getLogger(__name__)
 
 _VALID_BACKENDS = ("json", "sqlite")
@@ -121,8 +123,6 @@ def make_broker(
     backend = backend.lower()
 
     if backend == "json":
-        from trader.execution.broker import SimBroker  # import local — pas de circular dep
-
         log.debug("[broker_factory] backend=json → SimBroker(%s)", state_dir / "broker.json")
         return SimBroker(
             state_dir / "broker.json",
