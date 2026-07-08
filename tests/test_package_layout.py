@@ -388,6 +388,32 @@ def test_contract_value_types_are_domain_canonical_with_public_facades() -> None
     assert _domain_import_violations(domain_paths, repo_root) == []
 
 
+def test_min_trade_confidence_reader_has_single_config_source(monkeypatch, tmp_path) -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    risk_source = (repo_root / "trader" / "execution" / "risk.py").read_text(encoding="utf-8")
+
+    import trader.execution.risk as execution_risk
+    from trader.interfaces.ui import tui
+    from trader.reporting.read_models import runtime_state
+    from trader.support.config import risk as config_risk
+
+    assert "def read_min_trade_confidence" not in risk_source
+    assert execution_risk.read_min_trade_confidence is config_risk.read_min_trade_confidence
+
+    seen_paths: list[Path] = []
+
+    def fake_read_min_trade_confidence(path: Path) -> float:
+        seen_paths.append(path)
+        return 0.61
+
+    monkeypatch.setattr(runtime_state, "read_min_trade_confidence", fake_read_min_trade_confidence)
+    monkeypatch.setattr(runtime_state, "_ROOT", tmp_path)
+
+    assert runtime_state._read_min_trade_confidence_safe() == 0.61
+    assert seen_paths == [tmp_path / "config" / "risk.yaml"]
+    assert tui._read_min_trade_confidence_safe is runtime_state._read_min_trade_confidence_safe
+
+
 def test_pure_planning_calculations_are_nested_under_domain_with_facades() -> None:
     repo_root = Path(__file__).resolve().parents[1]
     trader_dir = repo_root / "trader"

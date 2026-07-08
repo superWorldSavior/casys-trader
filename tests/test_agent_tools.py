@@ -24,9 +24,19 @@ UTC = timezone.utc
 def test_agent_tools_package_expose_public_registry():
     import trader.agent.tools as agent_tools
     from trader.agent.tools import core, registry
+    from trader.agent.tools.protocols import (
+        IndicatorResolver,
+        LearningsRecallProvider,
+        OpenPlansAsOfProvider,
+        OpenPlansProvider,
+    )
 
     assert agent_tools.TOOL_REGISTRY is registry.TOOL_REGISTRY
     assert core.ToolContext is agent_tools.ToolContext
+    assert core.IndicatorResolver is IndicatorResolver
+    assert core.OpenPlansProvider is OpenPlansProvider
+    assert agent_tools.LearningsRecallProvider is LearningsRecallProvider
+    assert agent_tools.OpenPlansAsOfProvider is OpenPlansAsOfProvider
     assert "get_freshness" in agent_tools.TOOL_REGISTRY
     assert ToolPayload.__origin__ is dict
     assert "ok" in ToolOutcome.__args__

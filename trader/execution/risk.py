@@ -11,11 +11,11 @@ machine-readable : approuvé, ou rejeté avec un `code` + `context`.
 from __future__ import annotations
 
 import math
-from pathlib import Path
 
 from trader.domain.risk import RiskLimits as RiskLimits
 from trader.domain.risk import Verdict as Verdict
 from trader.execution.contracts import Order
+from trader.support.config.risk import read_min_trade_confidence as read_min_trade_confidence
 
 
 class RiskGate:
@@ -192,27 +192,3 @@ class RiskGate:
             return Verdict(False, "gross_exposure_exceeded", f"{projected_gross:.2f} > {self.limits.max_gross_exposure}")
 
         return Verdict(True)
-
-
-_DEFAULT_MIN_TRADE_CONFIDENCE = 0.7
-
-
-def read_min_trade_confidence(risk_yaml_path: Path) -> float:
-    """Lit min_trade_confidence depuis config/risk.yaml.
-
-    Fail-safe : retourne _DEFAULT_MIN_TRADE_CONFIDENCE si le fichier est absent,
-    illisible ou si la clé est manquante/invalide. Permet de ne pas dupliquer la
-    lecture yaml dans daemon, tui et consolidator.
-    """
-    try:
-        import yaml  # import local : yaml peut ne pas être disponible dans tous les contextes
-
-        raw = yaml.safe_load(risk_yaml_path.read_text(encoding="utf-8"))
-        if isinstance(raw, dict):
-            value = raw.get("min_trade_confidence", _DEFAULT_MIN_TRADE_CONFIDENCE)
-            parsed = float(value)
-            if math.isfinite(parsed) and 0.0 <= parsed <= 1.0:
-                return parsed
-    except Exception:
-        pass
-    return _DEFAULT_MIN_TRADE_CONFIDENCE

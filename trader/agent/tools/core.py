@@ -5,7 +5,14 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Literal, Protocol, TypeAlias
+from typing import Any, Literal, TypeAlias
+
+from trader.agent.tools.protocols import (
+    IndicatorResolver,
+    LearningsRecallProvider,
+    OpenPlansAsOfProvider,
+    OpenPlansProvider,
+)
 
 JsonObject: TypeAlias = dict[str, Any]
 ToolArgs: TypeAlias = JsonObject
@@ -55,22 +62,6 @@ class AgentToolTrace:
     args: ToolArgs
     outcome: ToolOutcome
     detail: ToolPayload = field(default_factory=dict)
-
-
-class IndicatorResolver(Protocol):
-    def __call__(self, requests: list[Any]) -> ToolPayload: ...
-
-
-class LearningsRecallProvider(Protocol):
-    def __call__(self, query: JsonObject) -> ToolPayload: ...
-
-
-class OpenPlansProvider(Protocol):
-    def __call__(self) -> list: ...
-
-
-class OpenPlansAsOfProvider(Protocol):
-    def __call__(self) -> str | None: ...
 
 
 @dataclass(frozen=True)

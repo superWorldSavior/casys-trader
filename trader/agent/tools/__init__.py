@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from trader.agent.tools import core as core
+from trader.agent.tools import protocols as protocols
 from trader.agent.tools import registry as registry
 from trader.agent.tools.core import (
     OUTCOME_BUDGET_EXHAUSTED,
@@ -13,9 +14,7 @@ from trader.agent.tools.core import (
     AgentToolCall,
     AgentToolResult,
     AgentToolTrace,
-    IndicatorResolver,
     JsonObject,
-    LearningsRecallProvider,
     ToolContext,
     ToolArgs,
     ToolOutcome,
@@ -28,6 +27,12 @@ from trader.agent.tools.core import (
     results_prompt_payload,
     round_runtime_payload,
     validate_tool_call,
+)
+from trader.agent.tools.protocols import (
+    IndicatorResolver,
+    LearningsRecallProvider,
+    OpenPlansAsOfProvider,
+    OpenPlansProvider,
 )
 from trader.agent.tools.registry import TOOL_REGISTRY
 
@@ -44,6 +49,8 @@ __all__ = [
     "IndicatorResolver",
     "JsonObject",
     "LearningsRecallProvider",
+    "OpenPlansAsOfProvider",
+    "OpenPlansProvider",
     "ToolArgs",
     "ToolContext",
     "ToolOutcome",
@@ -54,6 +61,7 @@ __all__ = [
     "core",
     "execute_tool_call",
     "execute_tool_round",
+    "protocols",
     "registry",
     "results_prompt_payload",
     "round_runtime_payload",

@@ -28,16 +28,47 @@ assert "trader.runtime" not in loaded, sorted(
     assert result.returncode == 0, result.stderr
 
 
-def test_runtime_code_version_import_remains_a_metadata_shim() -> None:
+def test_runtime_code_version_and_process_env_proxies_are_removed() -> None:
     repo_root = Path(__file__).resolve().parents[1]
-    code = """
-from trader.support.metadata import code_version as metadata_code_version
-from trader.runtime import code_version as runtime_code_version
 
-assert runtime_code_version.SCHEMA_VERSION == metadata_code_version.SCHEMA_VERSION
-assert runtime_code_version.MAX_DIRTY_FILES == metadata_code_version.MAX_DIRTY_FILES
-assert runtime_code_version.current_code_version is metadata_code_version.current_code_version
-assert runtime_code_version.historical_code_version is metadata_code_version.historical_code_version
+    assert not (repo_root / "trader" / "runtime" / "code_version.py").exists()
+    assert not (repo_root / "trader" / "runtime" / "process_env.py").exists()
+
+    code = """
+import ast
+from pathlib import Path
+
+import trader.runtime as runtime
+
+repo_root = Path.cwd()
+runtime_exports = set(runtime.__all__)
+assert "code_version" not in runtime_exports
+assert "process_env" not in runtime_exports
+
+expected_imports = {
+    "trader/runtime/daemon.py": {
+        "trader.support.metadata": {"code_version"},
+    },
+    "trader/runtime/cli.py": {
+        "trader.support.metadata": {"code_version"},
+    },
+    "trader/interfaces/cockpit/supervisor.py": {
+        "trader.support.system.process_env": {"sanitized_runtime_env"},
+    },
+}
+
+for rel_path, expected_modules in expected_imports.items():
+    tree = ast.parse((repo_root / rel_path).read_text())
+    imports = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            imports.setdefault(node.module, set()).update(alias.name for alias in node.names)
+
+    for module, names in expected_modules.items():
+        assert names <= imports.get(module, set()), (rel_path, imports)
+
+    forbidden_modules = {"trader.runtime.code_version", "trader.runtime.process_env"}
+    assert forbidden_modules.isdisjoint(imports), (rel_path, imports)
 """
     result = subprocess.run(
         [sys.executable, "-c", code],

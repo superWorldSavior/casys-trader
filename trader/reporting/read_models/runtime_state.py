@@ -11,6 +11,10 @@ from typing import Any
 import yaml
 
 from trader.planning.indicator_watch import is_armed_plan as _is_armed_plan
+from trader.support.config.risk import (
+    DEFAULT_MIN_TRADE_CONFIDENCE,
+    read_min_trade_confidence,
+)
 
 # Racine du repo (quatre niveaux au-dessus de ce fichier)
 _ROOT = Path(__file__).resolve().parents[3]
@@ -102,16 +106,11 @@ def _compute_live_kpis_safe(state_dir: Path) -> dict:
 
 
 def _read_min_trade_confidence_safe() -> float:
-    """Lit min_trade_confidence depuis config/risk.yaml. Fail-safe → 0.7."""
+    """Lit min_trade_confidence depuis config/risk.yaml via le lecteur canonique."""
     try:
-        raw = yaml.safe_load((_ROOT / "config" / "risk.yaml").read_text(encoding="utf-8"))
-        if isinstance(raw, dict):
-            value = float(raw.get("min_trade_confidence", 0.7))
-            if 0.0 <= value <= 1.0:
-                return value
+        return read_min_trade_confidence(_ROOT / "config" / "risk.yaml")
     except Exception:
-        pass
-    return 0.7
+        return DEFAULT_MIN_TRADE_CONFIDENCE
 
 
 def _compute_attribution_safe(state_dir: Path) -> dict:

@@ -2,7 +2,6 @@
 
 __all__ = [
     "cli",
-    "code_version",
     "consolidation_inputs",
     "cycle_dispatch",
     "cycle_finalization",
@@ -15,7 +14,6 @@ __all__ = [
     "logging_setup",
     "market_rotation_runtime",
     "pid_file",
-    "process_env",
     "queue_runtime",
     "runtime_shutdown",
 ]
