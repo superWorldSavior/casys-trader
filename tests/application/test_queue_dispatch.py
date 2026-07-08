@@ -841,17 +841,6 @@ def test_dispatch_reporte_symbole_inflight_vivant_sans_crash(tmp_path):
 
 def test_flag_off_uses_batch_decide(monkeypatch):
     """Quand queue_decide_enabled=False, run_cycle appelle _batch_decide (spy)."""
-    import trader.runtime.daemon as daemon_mod
-
-    batch_called = []
-
-    def fake_batch_decide(**kwargs):
-        batch_called.append(kwargs["decidable"])
-        return ({}, 0)
-
-    # On patch _batch_decide dans le module daemon
-    monkeypatch.setattr(daemon_mod, "_batch_decide", fake_batch_decide)
-
     from trader.runtime.daemon import run_cycle
     from unittest.mock import MagicMock
 
@@ -860,7 +849,6 @@ def test_flag_off_uses_batch_decide(monkeypatch):
     ds.get_bars.return_value = []
     ds.get_price.return_value = None
 
-    # run_cycle sans flag → doit appeler _batch_decide
     # On ne peut pas vraiment exécuter un cycle complet ici car trop de dépendances,
     # mais on vérifie que la signature de run_cycle accepte queue_decide_enabled.
     import inspect

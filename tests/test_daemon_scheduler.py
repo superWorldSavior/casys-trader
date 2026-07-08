@@ -1,9 +1,23 @@
 from datetime import datetime, timezone
 
 from trader.runtime import daemon
+from trader.runtime import cycle_scheduling
 from trader.agent.client import Decision
 from trader.market.market_data import Bar
 from trader.planning.scheduler import Scheduler
+
+
+def _scan_indicator_watches(symbols: list[str], *, sched, now, data_source) -> list[dict]:
+    return cycle_scheduling.scan_indicator_watches(
+        symbols,
+        sched=sched,
+        now=now,
+        data_source=data_source,
+        is_connection_market_error=daemon._is_connection_market_error,
+        log_warning=daemon.log.warning,
+        append_event=daemon._append_event,
+        log_cycle_progress=daemon._log_cycle_progress,
+    )
 
 
 def _write_runtime_config(root) -> None:
@@ -127,7 +141,7 @@ def test_select_due_symbols_respecte_le_scheduler_au_demarrage_incremental(tmp_p
     sched.set_next_wake("2026-06-05T12:30:00+00:00")
     now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
 
-    due = daemon._select_due_symbols(["SPY", "QQQ"], sched=sched, once=False, bootstrap=False, now=now)
+    due = cycle_scheduling.select_due_symbols(["SPY", "QQQ"], sched=sched, once=False, bootstrap=False, now=now)
 
     assert due == []
 
@@ -137,10 +151,10 @@ def test_select_due_symbols_peut_forcer_un_bootstrap_explicitement(tmp_path) -> 
     sched.set_next_wake("2026-06-05T12:30:00+00:00")
     now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
 
-    due = daemon._select_due_symbols(["SPY", "QQQ"], sched=sched, once=False, bootstrap=True, now=now)
+    due = cycle_scheduling.select_due_symbols(["SPY", "QQQ"], sched=sched, once=False, bootstrap=True, now=now)
 
     assert due == ["SPY", "QQQ"]
-    assert daemon._select_due_symbols(["SPY", "QQQ"], sched=sched, once=False, bootstrap=False, now=now) == []
+    assert cycle_scheduling.select_due_symbols(["SPY", "QQQ"], sched=sched, once=False, bootstrap=False, now=now) == []
 
 
 def test_run_cycle_persiste_une_indicator_watch_de_decision(monkeypatch, tmp_path, patch_batch, make_data_source) -> None:
@@ -212,7 +226,7 @@ def test_scan_indicator_watches_reveille_le_symbole_declenche(monkeypatch, tmp_p
         Bar(ts="t3", open=110.0, high=111.0, low=109.0, close=110.0, volume=1000.0),
     ])
 
-    triggered = daemon._scan_indicator_watches(["SPY"], sched=sched, now=now, data_source=data_source)
+    triggered = _scan_indicator_watches(["SPY"], sched=sched, now=now, data_source=data_source)
 
     assert triggered[0]["symbol"] == "SPY"
     assert sched.active_indicator_watches(now=now) == []
@@ -290,7 +304,7 @@ def test_scan_indicator_watches_charge_les_pairs_cross_asset(monkeypatch, tmp_pa
     monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
     data_source = make_data_source(get_bars)
 
-    triggered = daemon._scan_indicator_watches(["SPY", "QQQ", "DIA"], sched=sched, now=now, data_source=data_source)
+    triggered = _scan_indicator_watches(["SPY", "QQQ", "DIA"], sched=sched, now=now, data_source=data_source)
 
     assert [event["symbol"] for event in triggered] == ["SPY"]
     assert set(calls) == {"SPY", "QQQ", "DIA"}

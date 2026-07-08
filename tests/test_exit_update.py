@@ -3,7 +3,7 @@
 Couvre :
 1. Parsing (agent_protocol/parsing.py) — strategy_exit dans calls
 2. apply_exit_update (planning/trade_plan.py) — patch d'un TradePlan ouvert
-3. Intégration daemon (_apply_exit_update) — no-op si pas de plan, patch sinon
+3. Intégration exit_update service — no-op si pas de plan, patch sinon
 """
 
 from __future__ import annotations
@@ -12,13 +12,13 @@ import json
 import pytest
 
 from trader.agent import client as codex_client
+from trader.application.exit import exit_update as exit_update_service
 from trader.planning.trade_plan import (
     InvalidExitPlanError,
     TradePlan,
     apply_exit_update,
     create_trade_plan,
 )
-from trader.runtime import daemon
 from tests.plan_store_fakes import MemoryTradePlanStore
 
 
@@ -224,17 +224,17 @@ class TestApplyExitUpdate:
 
 
 # ===========================================================================
-# Section 3 : Intégration daemon._apply_exit_update
+# Section 3 : Intégration exit_update_service.apply_exit_update_to_open_plan
 # ===========================================================================
 
 class TestDaemonApplyExitUpdate:
-    """daemon._apply_exit_update — no-op si pas de plan, patch sinon."""
+    """exit_update_service.apply_exit_update_to_open_plan — no-op si pas de plan, patch sinon."""
 
     def test_noop_si_pas_de_plan(self) -> None:
         store = _store_with_plan(_plan("AAPL"))  # plan pour un AUTRE symbole
         entry: dict = {}
 
-        daemon._apply_exit_update(
+        exit_update_service.apply_exit_update_to_open_plan(
             plan_store=store,
             symbol="SPY",  # pas de plan SPY dans le store
             exit_update={"hard_stop": 97.0},
@@ -254,7 +254,7 @@ class TestDaemonApplyExitUpdate:
         store = _store_with_plan(plan)
         entry: dict = {}
 
-        daemon._apply_exit_update(
+        exit_update_service.apply_exit_update_to_open_plan(
             plan_store=store,
             symbol="SPY",
             exit_update={"hard_stop": 97.5},
@@ -272,7 +272,7 @@ class TestDaemonApplyExitUpdate:
         store = _store_with_plan(plan)
         entry: dict = {}
 
-        daemon._apply_exit_update(
+        exit_update_service.apply_exit_update_to_open_plan(
             plan_store=store,
             symbol="SPY",
             exit_update={"profit_protection": {"arm_at_r": 1.0, "trigger_on_giveback_pct": 0.3}},
@@ -292,7 +292,7 @@ class TestDaemonApplyExitUpdate:
         entry: dict = {}
 
         # TP en R sans stop_distance → InvalidExitPlanError
-        daemon._apply_exit_update(
+        exit_update_service.apply_exit_update_to_open_plan(
             plan_store=store,
             symbol="SPY",
             exit_update={"take_profits": [{"type": "risk_multiple", "r": 2.0}]},
@@ -314,7 +314,7 @@ class TestDaemonApplyExitUpdate:
             {"ts": "t2", "open": 74.0, "high": 74.3, "low": 72.8, "close": 74.04},
         ]
 
-        daemon._apply_exit_update(
+        exit_update_service.apply_exit_update_to_open_plan(
             plan_store=store,
             symbol="BAER.SW",
             exit_update={
@@ -342,7 +342,7 @@ class TestDaemonApplyExitUpdate:
             {"ts": "t2", "open": 74.4, "high": 74.6, "low": 74.35, "close": 74.5},
         ]
 
-        daemon._apply_exit_update(
+        exit_update_service.apply_exit_update_to_open_plan(
             plan_store=store,
             symbol="BAER.SW",
             exit_update={"hard_stop": {"type": "structural", "anchor": "swing_low", "window": 2}},

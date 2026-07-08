@@ -58,6 +58,20 @@ def test_router_fallback_sur_echec_retryable() -> None:
     assert fallback.calls == 1
 
 
+def test_llm_backends_sont_des_exports_facade_depuis_infrastructure() -> None:
+    assert LlmRouter.__module__ == "trader.agent.llm"
+    assert LlmCompletion.__module__ == "trader.domain.llm"
+    assert LlmFailure.__module__ == "trader.domain.llm"
+    assert llm.LlmCompletion is LlmCompletion
+    assert llm.LlmFailure is LlmFailure
+
+    assert AcpxBackend.__module__ == "trader.infrastructure.llm.acpx_backend"
+    assert llm.AcpxSession.__module__ == "trader.infrastructure.llm.acpx_backend"
+    assert build_acpx_command.__module__ == "trader.infrastructure.llm.acpx_backend"
+    assert _run_one_shot_command.__module__ == "trader.infrastructure.llm.acpx_backend"
+    assert OpenAICompatibleBackend.__module__ == "trader.infrastructure.llm.openai_backend"
+
+
 def test_router_ne_fallback_pas_sur_echec_non_retryable() -> None:
     primary = StubBackend(
         LlmFailure(
@@ -122,8 +136,8 @@ def test_retryable_provider_error_se_limite_aux_rate_limits_et_quotas() -> None:
 def test_acpx_backend_timeout_est_retryable_et_cape_par_appel(monkeypatch) -> None:
     """Un timeout d'appel est TRANSITOIRE → retryable (incident AMCR 2026-07-06),
     et le subprocess est tué au cap par-appel (150s) et non au budget total (900s)."""
-    monkeypatch.setattr("trader.agent.llm.shutil.which", lambda _bin: "/usr/local/bin/acpx")
-    monkeypatch.setattr("trader.agent.llm._terminate_process_group", lambda _pid: None)
+    monkeypatch.setattr("trader.infrastructure.llm.acpx_backend.shutil.which", lambda _bin: "/usr/local/bin/acpx")
+    monkeypatch.setattr("trader.infrastructure.llm.acpx_backend._terminate_process_group", lambda _pid: None)
 
     seen: dict[str, float | None] = {"timeout": None}
 
@@ -143,7 +157,7 @@ def test_acpx_backend_timeout_est_retryable_et_cape_par_appel(monkeypatch) -> No
         def kill(self):
             return None
 
-    monkeypatch.setattr("trader.agent.llm.subprocess.Popen", TimeoutPopen)
+    monkeypatch.setattr("trader.infrastructure.llm.acpx_backend.subprocess.Popen", TimeoutPopen)
 
     result = AcpxBackend().complete("prompt", timeout_s=900)
 
@@ -167,8 +181,8 @@ def test_per_call_timeout_cap_configurable(monkeypatch) -> None:
 
 def test_acpx_call_journalise_session_pid_outcome(monkeypatch, caplog) -> None:
     """Le journal [acpx_call] porte session/pid/outcome pour tracer chaque appel."""
-    monkeypatch.setattr("trader.agent.llm.shutil.which", lambda _bin: "/usr/local/bin/acpx")
-    monkeypatch.setattr("trader.agent.llm._terminate_process_group", lambda _pid: None)
+    monkeypatch.setattr("trader.infrastructure.llm.acpx_backend.shutil.which", lambda _bin: "/usr/local/bin/acpx")
+    monkeypatch.setattr("trader.infrastructure.llm.acpx_backend._terminate_process_group", lambda _pid: None)
 
     class OkPopen:
         pid = 7777
@@ -180,12 +194,12 @@ def test_acpx_call_journalise_session_pid_outcome(monkeypatch, caplog) -> None:
         def communicate(self, timeout=None):
             return ('{"AMCR": {}}', "")
 
-    monkeypatch.setattr("trader.agent.llm.subprocess.Popen", OkPopen)
+    monkeypatch.setattr("trader.infrastructure.llm.acpx_backend.subprocess.Popen", OkPopen)
 
     session = llm.AcpxSession(
         provider="acpx", model="gpt-5.5", acpx_bin="acpx", name="304:0"
     )
-    with caplog.at_level("INFO", logger="trader.agent.llm"):
+    with caplog.at_level("INFO", logger="trader.infrastructure.llm.acpx_backend"):
         session.send("prompt", timeout_s=240, call_ctx={"symbol": "AMCR"})
 
     line = next(m for m in caplog.messages if m.startswith("[acpx_call]"))
@@ -196,8 +210,8 @@ def test_acpx_call_journalise_session_pid_outcome(monkeypatch, caplog) -> None:
 
 
 def test_acpx_backend_consolidateur_traite_internal_error_comme_retryable(monkeypatch) -> None:
-    monkeypatch.setattr("trader.agent.llm.shutil.which", lambda _bin: "/usr/local/bin/acpx")
-    monkeypatch.setattr("trader.agent.llm._terminate_process_group", lambda _pid: None)
+    monkeypatch.setattr("trader.infrastructure.llm.acpx_backend.shutil.which", lambda _bin: "/usr/local/bin/acpx")
+    monkeypatch.setattr("trader.infrastructure.llm.acpx_backend._terminate_process_group", lambda _pid: None)
 
     class InternalErrorPopen:
         pid = 4242
@@ -209,7 +223,7 @@ def test_acpx_backend_consolidateur_traite_internal_error_comme_retryable(monkey
         def communicate(self, timeout=None):
             return "", "Internal error\n"
 
-    monkeypatch.setattr("trader.agent.llm.subprocess.Popen", InternalErrorPopen)
+    monkeypatch.setattr("trader.infrastructure.llm.acpx_backend.subprocess.Popen", InternalErrorPopen)
 
     result = AcpxBackend(provider="consolidator", model="gpt-5.5/high").complete("prompt", timeout_s=240)
 
@@ -219,8 +233,8 @@ def test_acpx_backend_consolidateur_traite_internal_error_comme_retryable(monkey
 
 
 def test_acpx_backend_runtime_traite_internal_error_comme_retryable(monkeypatch) -> None:
-    monkeypatch.setattr("trader.agent.llm.shutil.which", lambda _bin: "/usr/local/bin/acpx")
-    monkeypatch.setattr("trader.agent.llm._terminate_process_group", lambda _pid: None)
+    monkeypatch.setattr("trader.infrastructure.llm.acpx_backend.shutil.which", lambda _bin: "/usr/local/bin/acpx")
+    monkeypatch.setattr("trader.infrastructure.llm.acpx_backend._terminate_process_group", lambda _pid: None)
 
     class InternalErrorPopen:
         pid = 4242
@@ -232,7 +246,7 @@ def test_acpx_backend_runtime_traite_internal_error_comme_retryable(monkeypatch)
         def communicate(self, timeout=None):
             return "", "Internal error\n"
 
-    monkeypatch.setattr("trader.agent.llm.subprocess.Popen", InternalErrorPopen)
+    monkeypatch.setattr("trader.infrastructure.llm.acpx_backend.subprocess.Popen", InternalErrorPopen)
 
     result = AcpxBackend(provider="acpx", model="gpt-5.5").complete("prompt", timeout_s=240)
 
@@ -245,8 +259,8 @@ def test_acpx_backend_exit_non_zero_sans_sortie_est_retryable(monkeypatch) -> No
     """exit!=0 acpx SANS aucune sortie (stderr+stdout vides) = blip provider
     transitoire (quota/dispo qui hoquette), donc retryable -> le routeur peut
     tomber en fallback au lieu de figer un HOLD sec."""
-    monkeypatch.setattr("trader.agent.llm.shutil.which", lambda _bin: "/usr/local/bin/acpx")
-    monkeypatch.setattr("trader.agent.llm._terminate_process_group", lambda _pid: None)
+    monkeypatch.setattr("trader.infrastructure.llm.acpx_backend.shutil.which", lambda _bin: "/usr/local/bin/acpx")
+    monkeypatch.setattr("trader.infrastructure.llm.acpx_backend._terminate_process_group", lambda _pid: None)
 
     class EmptyExitPopen:
         pid = 4242
@@ -258,7 +272,7 @@ def test_acpx_backend_exit_non_zero_sans_sortie_est_retryable(monkeypatch) -> No
         def communicate(self, timeout=None):
             return "", ""
 
-    monkeypatch.setattr("trader.agent.llm.subprocess.Popen", EmptyExitPopen)
+    monkeypatch.setattr("trader.infrastructure.llm.acpx_backend.subprocess.Popen", EmptyExitPopen)
 
     result = AcpxBackend(provider="acpx", model="gpt-5.5").complete("prompt", timeout_s=240)
 
@@ -271,8 +285,8 @@ def test_acpx_backend_exit_non_zero_avec_erreur_explicite_reste_non_retryable(mo
     """Garde-fou : un exit!=0 avec un message d'erreur explicite et NON transitoire
     (ni rate-limit, ni internal-error, ni sortie vide) reste un nonzero_exit
     non-retryable -- on ne doit pas tout rendre retryable."""
-    monkeypatch.setattr("trader.agent.llm.shutil.which", lambda _bin: "/usr/local/bin/acpx")
-    monkeypatch.setattr("trader.agent.llm._terminate_process_group", lambda _pid: None)
+    monkeypatch.setattr("trader.infrastructure.llm.acpx_backend.shutil.which", lambda _bin: "/usr/local/bin/acpx")
+    monkeypatch.setattr("trader.infrastructure.llm.acpx_backend._terminate_process_group", lambda _pid: None)
 
     class ExplicitErrorPopen:
         pid = 4242
@@ -284,7 +298,7 @@ def test_acpx_backend_exit_non_zero_avec_erreur_explicite_reste_non_retryable(mo
         def communicate(self, timeout=None):
             return "", "fatal: configuration invalide\n"
 
-    monkeypatch.setattr("trader.agent.llm.subprocess.Popen", ExplicitErrorPopen)
+    monkeypatch.setattr("trader.infrastructure.llm.acpx_backend.subprocess.Popen", ExplicitErrorPopen)
 
     result = AcpxBackend(provider="acpx", model="gpt-5.5").complete("prompt", timeout_s=240)
 
@@ -294,7 +308,7 @@ def test_acpx_backend_exit_non_zero_avec_erreur_explicite_reste_non_retryable(mo
 
 
 def test_acpx_session_send_retourne_une_completion_sur_stdout(monkeypatch) -> None:
-    monkeypatch.setattr("trader.agent.llm.shutil.which", lambda _bin: "/usr/local/bin/acpx")
+    monkeypatch.setattr("trader.infrastructure.llm.acpx_backend.shutil.which", lambda _bin: "/usr/local/bin/acpx")
     calls = []
 
     def fake_run(command, *, timeout_s, on_pid=None):
@@ -306,7 +320,7 @@ def test_acpx_session_send_retourne_une_completion_sur_stdout(monkeypatch) -> No
             stderr="",
         )
 
-    monkeypatch.setattr("trader.agent.llm._run_one_shot_command", fake_run)
+    monkeypatch.setattr("trader.infrastructure.llm.acpx_backend._run_one_shot_command", fake_run)
 
     session = llm.AcpxSession(
         provider="acpx",
@@ -347,14 +361,14 @@ def test_acpx_session_send_retourne_une_completion_sur_stdout(monkeypatch) -> No
 
 
 def test_acpx_backend_open_session_cree_une_session_neuve_et_retourne_un_objet(monkeypatch) -> None:
-    monkeypatch.setattr("trader.agent.llm.shutil.which", lambda _bin: "/usr/local/bin/acpx")
+    monkeypatch.setattr("trader.infrastructure.llm.acpx_backend.shutil.which", lambda _bin: "/usr/local/bin/acpx")
     calls = []
 
     def fake_run(command, *, timeout_s, on_pid=None):
         calls.append((command, timeout_s))
         return subprocess.CompletedProcess(args=command, returncode=0, stdout="", stderr="")
 
-    monkeypatch.setattr("trader.agent.llm._run_one_shot_command", fake_run)
+    monkeypatch.setattr("trader.infrastructure.llm.acpx_backend._run_one_shot_command", fake_run)
 
     backend = AcpxBackend(provider="acpx", model="gpt-5.5/medium", acpx_bin="acpx")
 
@@ -392,7 +406,7 @@ def test_acpx_backend_open_session_cree_une_session_neuve_et_retourne_un_objet(m
 
 
 def test_acpx_backend_open_session_retourne_l_echec_si_new_echoue(monkeypatch) -> None:
-    monkeypatch.setattr("trader.agent.llm.shutil.which", lambda _bin: "/usr/local/bin/acpx")
+    monkeypatch.setattr("trader.infrastructure.llm.acpx_backend.shutil.which", lambda _bin: "/usr/local/bin/acpx")
 
     def fake_run(command, *, timeout_s, on_pid=None):
         return subprocess.CompletedProcess(
@@ -402,7 +416,7 @@ def test_acpx_backend_open_session_retourne_l_echec_si_new_echoue(monkeypatch) -
             stderr="fatal: configuration invalide\n",
         )
 
-    monkeypatch.setattr("trader.agent.llm._run_one_shot_command", fake_run)
+    monkeypatch.setattr("trader.infrastructure.llm.acpx_backend._run_one_shot_command", fake_run)
 
     backend = AcpxBackend(provider="acpx", model="gpt-5.5/medium", acpx_bin="acpx")
 
@@ -416,14 +430,14 @@ def test_acpx_backend_open_session_retourne_l_echec_si_new_echoue(monkeypatch) -
 
 
 def test_acpx_backend_agent_claude_est_porte_par_session_new_et_prompt(monkeypatch) -> None:
-    monkeypatch.setattr("trader.agent.llm.shutil.which", lambda _bin: "/usr/local/bin/acpx")
+    monkeypatch.setattr("trader.infrastructure.llm.acpx_backend.shutil.which", lambda _bin: "/usr/local/bin/acpx")
     calls = []
 
     def fake_run(command, *, timeout_s, on_pid=None):
         calls.append((command, timeout_s))
         return subprocess.CompletedProcess(args=command, returncode=0, stdout="ok", stderr="")
 
-    monkeypatch.setattr("trader.agent.llm._run_one_shot_command", fake_run)
+    monkeypatch.setattr("trader.infrastructure.llm.acpx_backend._run_one_shot_command", fake_run)
 
     backend = AcpxBackend(
         provider="acpx-claude-sonnet",
@@ -450,7 +464,7 @@ def test_acpx_session_close_envoie_la_commande_de_fermeture(monkeypatch) -> None
         calls.append(command)
         return subprocess.CompletedProcess(args=command, returncode=0, stdout="", stderr="")
 
-    monkeypatch.setattr("trader.agent.llm._run_one_shot_command", fake_run)
+    monkeypatch.setattr("trader.infrastructure.llm.acpx_backend._run_one_shot_command", fake_run)
 
     session = llm.AcpxSession(
         provider="acpx",
@@ -480,8 +494,8 @@ def test_acpx_session_close_logge_un_warning_sans_lever(monkeypatch, caplog) -> 
     def fake_run(command, *, timeout_s, on_pid=None):
         raise RuntimeError("acpx close failed")
 
-    monkeypatch.setattr("trader.agent.llm._run_one_shot_command", fake_run)
-    caplog.set_level("WARNING", logger="trader.agent.llm")
+    monkeypatch.setattr("trader.infrastructure.llm.acpx_backend._run_one_shot_command", fake_run)
+    caplog.set_level("WARNING", logger="trader.infrastructure.llm.acpx_backend")
 
     session = llm.AcpxSession(
         provider="acpx",
@@ -505,7 +519,7 @@ def test_acpx_session_close_peut_etre_appele_deux_fois_sans_lever(monkeypatch) -
             raise RuntimeError("already closed")
         return subprocess.CompletedProcess(args=command, returncode=0, stdout="", stderr="")
 
-    monkeypatch.setattr("trader.agent.llm._run_one_shot_command", fake_run)
+    monkeypatch.setattr("trader.infrastructure.llm.acpx_backend._run_one_shot_command", fake_run)
 
     session = llm.AcpxSession(
         provider="acpx",
@@ -880,7 +894,7 @@ def test_run_with_session_fallback_court_circuite_si_le_premier_backend_reussit(
 
 
 def test_acpx_backend_isole_et_nettoie_le_process_group(monkeypatch) -> None:
-    monkeypatch.setattr("trader.agent.llm.shutil.which", lambda _bin: "/usr/local/bin/acpx")
+    monkeypatch.setattr("trader.infrastructure.llm.acpx_backend.shutil.which", lambda _bin: "/usr/local/bin/acpx")
     popen_calls = []
     cleaned_pids = []
 
@@ -894,8 +908,8 @@ def test_acpx_backend_isole_et_nettoie_le_process_group(monkeypatch) -> None:
         def communicate(self, timeout=None):
             return "OK", ""
 
-    monkeypatch.setattr("trader.agent.llm.subprocess.Popen", FakePopen)
-    monkeypatch.setattr("trader.agent.llm._terminate_process_group", lambda pid: cleaned_pids.append(pid))
+    monkeypatch.setattr("trader.infrastructure.llm.acpx_backend.subprocess.Popen", FakePopen)
+    monkeypatch.setattr("trader.infrastructure.llm.acpx_backend._terminate_process_group", lambda pid: cleaned_pids.append(pid))
 
     result = AcpxBackend().complete("prompt", timeout_s=12)
 
@@ -926,8 +940,8 @@ def test_run_one_shot_nettoie_l_environnement_runtime_pollue(monkeypatch) -> Non
         def communicate(self, timeout=None):
             return "OK", ""
 
-    monkeypatch.setattr("trader.agent.llm.subprocess.Popen", FakePopen)
-    monkeypatch.setattr("trader.agent.llm._terminate_process_group", lambda _pid: None)
+    monkeypatch.setattr("trader.infrastructure.llm.acpx_backend.subprocess.Popen", FakePopen)
+    monkeypatch.setattr("trader.infrastructure.llm.acpx_backend._terminate_process_group", lambda _pid: None)
 
     result = _run_one_shot_command(["acpx", "exec", "prompt"], timeout_s=12)
 
@@ -953,9 +967,9 @@ def test_run_one_shot_ne_sonde_plus_les_ponts_codex_acp(monkeypatch) -> None:
     def fail_if_called():
         raise AssertionError("le reaper cwd ne doit plus sonder les ponts codex-acp")
 
-    monkeypatch.setattr("trader.agent.llm.subprocess.Popen", FakePopen)
-    monkeypatch.setattr("trader.agent.llm._terminate_process_group", lambda _pid: None)
-    monkeypatch.setattr("trader.agent.llm._codex_acp_pids", fail_if_called, raising=False)
+    monkeypatch.setattr("trader.infrastructure.llm.acpx_backend.subprocess.Popen", FakePopen)
+    monkeypatch.setattr("trader.infrastructure.llm.acpx_backend._terminate_process_group", lambda _pid: None)
+    monkeypatch.setattr("trader.infrastructure.llm.acpx_backend._codex_acp_pids", fail_if_called, raising=False)
 
     result = _run_one_shot_command(["acpx", "exec", "prompt"], timeout_s=12)
 

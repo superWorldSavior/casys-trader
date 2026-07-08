@@ -38,7 +38,6 @@ from trader.application.execute import (
     order_admission,
     risk_admission,
     risk_capacity,
-    fill_outcome,
     entry_context,
     queue_dispatch as execute_queue_dispatch,
     queue_plan,
@@ -47,7 +46,6 @@ from trader.application.exit import (
     planned_exits as planned_exits_service,
     fill_plan_effects,
     exit_bars as exit_bars_service,
-    exit_update as exit_update_service,
     armed_plans,
 )
 from trader.application.cycle import (
@@ -140,11 +138,6 @@ _PLAN_ENTRY_THESIS_MAX_CHARS = 500
 _LAST_LLM_REVIEW_KEYS = ("ts", "verdict", "action", "intent", "llm_provider", "llm_model")
 
 
-def _llm_exit_reason_for_intent(intent: str) -> str | None:
-    """Libellé déterministe pour les sorties pilotées par le LLM."""
-    return fill_outcome.llm_exit_reason_for_intent(intent)
-
-
 def evaluate_plan(*args: object, **kwargs: object) -> object:
     """Legacy daemon monkeypatch hook for planned-exit evaluation."""
     return planned_exits_service.evaluate_plan(*args, **kwargs)
@@ -158,10 +151,6 @@ def summarize_gross_rejections(decisions: list[dict]) -> dict | None:
     partagé et peut être plus sélectif. Retourne None s'il n'y a rien à signaler.
     """
     return gross_feedback.summarize_gross_rejections(decisions)
-
-
-def _counts_as_llm_review(decision: codex_client.Decision) -> bool:
-    return decision_entries.counts_as_llm_review(decision)
 
 
 # Barres fines (15m) pour coller à la cadence scalping (réveils 5-30 min) et avoir
@@ -316,102 +305,9 @@ def _kill_switch_active() -> bool:
     return (ROOT / "KILL").exists()
 
 
-def _bounded_wake_minutes(
-    value: float, *, minimum: float | None = None, maximum: float | None = None
-) -> float:
-    """Réveil demandé par l'agent, borné SEULEMENT si une borne est fournie.
-
-    Par défaut (minimum/maximum=None) la valeur passe intacte : l'agent est
-    autonome sur sa cadence de re-décision (les sorties restent vérifiées à
-    chaque poll, indépendamment). Les flags --min/--max-wake-minutes réactivent
-    un bornage si besoin.
-    """
-    return cycle_scheduling.bounded_wake_minutes(value, minimum=minimum, maximum=maximum)
-
-
-def _stale_backoff_wake_minutes(streak: int, *, default_wake_minutes: float) -> float:
-    """Next-wake pour un symbole stale avec backoff exponentiel.
-
-    Tous les chemins sont cappés à STALE_BACKOFF_MAX_MINUTES, y compris streak=0.
-    Cela évite qu'un --default-wake-minutes élevé (ex. 240) dépasse le cap.
-
-    streak=0 → min(default, cap)
-    streak=N → min(default * 2^N, cap)
-
-    Le streak est borné à STALE_BACKOFF_MAX_STREAK avant appel (voir Scheduler)
-    pour éviter tout OverflowError sur 2**streak.
-
-    Constantes dans trader/planning/scheduler.py :
-      STALE_BACKOFF_BASE_MULTIPLIER = 2
-      STALE_BACKOFF_MAX_MINUTES = 120.0
-      STALE_BACKOFF_MAX_STREAK = 8
-    """
-    return cycle_scheduling.stale_backoff_wake_minutes(
-        streak,
-        default_wake_minutes=default_wake_minutes,
-    )
-
-
-def _ensure_default_wake(
-    sched: SchedulerLike,
-    *,
-    now: datetime,
-    default_wake_minutes: float,
-) -> None:
-    cycle_scheduling.ensure_default_wake(
-        sched,
-        now=now,
-        default_wake_minutes=default_wake_minutes,
-    )
-
-
-def _select_due_symbols(
-    symbols: list[str],
-    *,
-    sched: SchedulerLike,
-    once: bool,
-    bootstrap: bool,
-    now: datetime | None = None,
-) -> list[str]:
-    return cycle_scheduling.select_due_symbols(
-        symbols,
-        sched=sched,
-        once=once,
-        bootstrap=bootstrap,
-        now=now,
-    )
-
-
 def _has_open_trade_plans(*, state_dir: Path, backend: str) -> bool:
     plan_store = make_trade_plan_store(state_dir=state_dir, backend=backend)
     return bool(plan_store.open_plans())
-
-
-def _invalid_intent_reason(decision: codex_client.Decision) -> str | None:
-    return order_admission.invalid_intent_reason(
-        action=decision.action,
-        quantity=decision.quantity,
-        intent=decision.intent,
-    )
-
-
-def _resolve_position_aware_decision(
-    decision: codex_client.Decision,
-    position_quantity: float,
-) -> codex_client.Decision:
-    """Dérive action + qty depuis la position pour CLOSE/REDUCE/FLIP/SCALE_IN sans side.
-
-    Fail-safe absolu : position_quantity == 0 → HOLD.
-      - CLOSE/REDUCE/FLIP sans position → 'nothing_to_close'
-      - SCALE_IN sans position → 'scale_in_without_position'
-    Les intents relatifs repassent toujours par cette dérivation, même si le
-    Decision a été construit à la main avec resolve_from_position=False.
-
-    Side :
-      - CLOSE/REDUCE/FLIP → côté OPPOSÉ à la position (clôture/retournement).
-      - SCALE_IN → côté IDENTIQUE à la position (renforcement dans le même sens).
-    """
-    return order_admission.resolve_position_aware_decision(decision, position_quantity)
 
 
 def _resolve_decision_for_execution_routing(
@@ -424,82 +320,8 @@ def _resolve_decision_for_execution_routing(
     if decision.resolve_from_position or decision.intent in _RELATIVE_ORDER_INTENTS:
         raw_pos = broker.positions().get(symbol)
         pos_qty = raw_pos.quantity if raw_pos is not None else 0.0
-        return _resolve_position_aware_decision(decision, pos_qty)
+        return order_admission.resolve_position_aware_decision(decision, pos_qty)
     return decision
-
-
-def _merge_gate_feedback(
-    reason: str | None,
-    context: str | None,
-    note: str | None,
-) -> str | None:
-    """Fusionne le feedback du gate de confiance avec le learning de l'agent.
-
-    Quand une ouverture est rejetée faute de confiance, le seuil exact raté (porté
-    par `context`, ex. 'confidence=0.58 required=0.7000') ne remonte jamais à
-    l'agent : au mieux il devine qu'il a été refusé, sans savoir de combien. On
-    l'append aux learnings relus au prochain réveil pour qu'il calibre sa confiance
-    au lieu de re-proposer un ordre voué au même rejet. Retourne la note finale à
-    persister, ou None s'il n'y a rien à enregistrer.
-    """
-    return confidence_feedback.merge_gate_feedback(reason, context, note)
-
-
-def _gross_exposure(
-    broker: SimBroker,
-    prices: dict[str, float],
-    rate_of: Callable[[str], float] | None = None,
-) -> float:
-    return risk_capacity.gross_exposure(broker, prices, rate_of=rate_of)
-
-
-def _finite_positive(value: float | None) -> bool:
-    return risk_capacity.finite_positive(value)
-
-
-def _side_capacity_usd(
-    *,
-    side: str,
-    current_position_value: float,
-    gross_exposure: float,
-    limits: RiskLimits,
-    equity: float,
-) -> float:
-    return risk_capacity.side_capacity_usd(
-        side=side,
-        current_position_value=current_position_value,
-        gross_exposure=gross_exposure,
-        limits=limits,
-        equity=equity,
-    )
-
-
-def _risk_capacity_context(
-    *,
-    symbols: list[str],
-    prices: dict[str, float],
-    broker: SimBroker,
-    gross_exposure: float,
-    limits: RiskLimits,
-    equity: float,
-    rate_of: Callable[[str], float],
-) -> dict:
-    """Expose les plafonds de sizing que le LLM doit respecter avant RiskGate.
-
-    `max_order_native` du cockpit est un montant en devise native. Ici on ajoute
-    aussi une quantite maximale par symbole, en tenant compte du plafond de gross
-    exposure restant, du plafond par position et du plafond par ordre.
-    """
-    return risk_capacity.risk_capacity_context(
-        symbols=symbols,
-        prices=prices,
-        broker=broker,
-        gross_exposure=gross_exposure,
-        limits=limits,
-        equity=equity,
-        rate_of=rate_of,
-        currency_of=fx.currency_for,
-    )
 
 
 def _attribution_min_entry_confidence(
@@ -514,277 +336,6 @@ def _attribution_min_entry_confidence(
     if not confidence_gate_enabled:
         return None
     return float(risk_cfg.get("min_trade_confidence", 0.7))
-
-
-def _hard_stop_price(raw_exit_plan: dict | None) -> float | None:
-    return order_admission.hard_stop_price(raw_exit_plan)
-
-
-def _hard_stop_wrong_side(
-    intent: str | None,
-    entry_price: float,
-    stop_price: float,
-    *,
-    action: str | None = None,
-) -> bool:
-    return order_admission.hard_stop_wrong_side(intent, entry_price, stop_price, action=action)
-
-
-def _runtime_tool_audit_fields(domain_tools: dict | None) -> dict:
-    return decision_entries.runtime_tool_audit_fields(domain_tools)
-
-def _clamp_exit_quantity(
-    *,
-    intent: str | None,
-    action: str,
-    quantity: float,
-    position_quantity: float,
-) -> tuple[float, str | None]:
-    return order_admission.clamp_exit_quantity(
-        intent=intent,
-        action=action,
-        quantity=quantity,
-        position_quantity=position_quantity,
-    )
-
-
-def _bar_ts_after_plan_open(bar_ts: str, opened_at: str | None) -> bool:
-    """Return True when bar_ts >= opened_at (bar started at or after plan entry).
-
-    Parsing failures on either side are treated as True (extremes applied) so
-    that old plans without a parseable opened_at keep the current behaviour.
-    """
-    return exit_bars_service.bar_ts_after_plan_open(bar_ts, opened_at)
-
-
-def _plan_snapshot(plan: TradePlan) -> dict:
-    return planned_exits_service.plan_snapshot(plan)
-
-
-def _apply_exit_update(
-    *,
-    plan_store: TradePlanStoreLike,
-    symbol: str,
-    exit_update: dict,
-    bars: list | None,
-    entry: dict,
-    current_price: float | None = None,
-) -> None:
-    exit_update_service.apply_exit_update_to_open_plan(
-        plan_store=plan_store,
-        symbol=symbol,
-        exit_update=exit_update,
-        bars=bars,
-        entry=entry,
-        current_price=current_price,
-    )
-
-
-def _llm_review_verdict(decision: codex_client.Decision) -> str:
-    return plan_review.llm_review_verdict(decision.intent)
-
-
-def _persist_last_llm_review(
-    *,
-    plan_store: TradePlanStoreLike,
-    symbol: str,
-    now: datetime,
-    decision: codex_client.Decision,
-) -> None:
-    plan_review.persist_last_llm_review(
-        plan_store=plan_store,
-        symbol=symbol,
-        now=now,
-        decision=decision,
-    )
-
-
-def _last_review_by_symbol(
-    plan_store: TradePlanStoreLike, symbols: list[str]
-) -> dict[str, dict]:
-    """Mapping {symbole: last_llm_review} pour les plans ouverts du périmètre qui
-    portent une revue. Narrow contract : on ne passe pas le store entier au batch,
-    juste le dernier verdict à réinjecter (continuité de thèse au réveil)."""
-    return plan_review.last_review_by_symbol(plan_store, symbols)
-
-
-def _build_execution_eligibility(
-    symbols: list[str],
-    *,
-    stale_market_data: dict[str, dict],
-    prices: dict[str, float],
-    daily_bars_by_symbol: dict[str, list],
-    data_age_by_symbol: dict[str, float],
-    now: datetime,
-    runtime_interval: str,
-) -> dict[str, dict]:
-    """Classifie chaque symbole en {execution, planning} (design §5.1) depuis l'état
-    du cycle. execution gate les ordres (runtime frais + prix présent + session
-    ouverte) ; planning autorise l'analyse/veille dès que le daily est présent (jugé
-    frais par séance complétée), même runtime stale."""
-    return execution_eligibility_service.build_execution_eligibility(
-        symbols,
-        stale_market_data=stale_market_data,
-        prices=prices,
-        daily_bars_by_symbol=daily_bars_by_symbol,
-        data_age_by_symbol=data_age_by_symbol,
-        now=now,
-        runtime_interval=runtime_interval,
-    )
-
-
-def _execution_blocked_reason(
-    execution_eligibility: dict[str, dict], symbol: str, *, fail_closed: bool = False
-) -> str | None:
-    """Garde déterministe d'exécution (§13.5) : raison `execution:<reason>` si
-    l'exécution est explicitement interdite pour ce symbole (session fermée, runtime
-    stale, pas de prix), sinon None. Le RiskGate déterministe reste le fusible séparé.
-
-    Symbole non classé (absent de `execution_eligibility`) : `fail_closed=True` =>
-    bloqué (`execution:unclassified`), pour les OUVERTURES/FLIP (invariant §10
-    "aucun ordre d'ouverture sans execution.enabled=true"). `fail_closed=False`
-    (défaut) => non bloqué, pour ne jamais empêcher une SORTIE de protection par
-    manque d'info."""
-    return execution_eligibility_service.execution_blocked_reason(
-        execution_eligibility,
-        symbol,
-        fail_closed=fail_closed,
-    )
-
-
-def _positive_finite_float(raw: object) -> float | None:
-    return reference_volatility_service.positive_finite_float(raw)
-
-
-def _cockpit_vol_fraction(cockpit: dict, symbol: str) -> float | None:
-    return reference_volatility_service.cockpit_vol_fraction(cockpit, symbol)
-
-
-def _feature_vol_fraction(
-    symbol: str,
-    tradable_bars_by_symbol: dict[str, list],
-) -> float | None:
-    return reference_volatility_service.feature_vol_fraction(
-        symbol,
-        tradable_bars_by_symbol,
-    )
-
-
-def _reference_volatility_for_symbol(
-    symbol: str,
-    *,
-    entry_price: float,
-    cockpit: dict,
-    tradable_bars_by_symbol: dict[str, list],
-) -> float | None:
-    return reference_volatility_service.reference_volatility_for_symbol(
-        symbol,
-        entry_price=entry_price,
-        cockpit=cockpit,
-        tradable_bars_by_symbol=tradable_bars_by_symbol,
-    )
-
-
-def _apply_planned_exits(
-    *,
-    broker: SimBroker,
-    plan_store: TradePlanStoreLike,
-    prices: dict[str, float],
-    bars_by_symbol: dict[str, list] | None = None,
-    bars_intervals_by_symbol: dict[str, str] | None = None,
-    valuation_prices: dict[str, float] | None = None,
-    now: datetime,
-    dry_run: bool,
-    starting_equity: float,
-    execution_eligibility: dict[str, dict] | None = None,
-    rate_fn: Callable[[str], float] | None = None,
-) -> list[dict]:
-    return planned_exits_service.apply_planned_exits(
-        broker=broker,
-        plan_store=plan_store,
-        prices=prices,
-        bars_by_symbol=bars_by_symbol,
-        bars_intervals_by_symbol=bars_intervals_by_symbol,
-        valuation_prices=valuation_prices,
-        now=now,
-        dry_run=dry_run,
-        starting_equity=starting_equity,
-        execution_eligibility=execution_eligibility,
-        rate_fn=rate_fn,
-        runtime_interval=DEFAULT_RUNTIME_INTERVAL,
-        exit_check_interval=EXIT_CHECK_INTERVAL,
-        exit_check_window_bars=EXIT_CHECK_WINDOW_BARS,
-        append_model_performance=_append_model_performance,
-        evaluate_plan_fn=evaluate_plan,
-        clamp_exit_quantity_fn=_clamp_exit_quantity,
-        execution_blocked_reason_fn=_execution_blocked_reason,
-        plan_snapshot_fn=_plan_snapshot,
-    )
-
-
-def _exit_watch_cooldown_elapsed(watch: dict, *, now: datetime) -> bool:
-    return cycle_scheduling.exit_watch_cooldown_elapsed(watch, now=now)
-
-
-def _scan_exit_watches(
-    *,
-    plan_store: TradePlanStoreLike,
-    bars_by_symbol: dict[str, list],
-    symbols: list[str],
-    now: datetime,
-    dry_run: bool,
-    bars_interval: str,
-    data_source: object,
-) -> list[dict]:
-    return cycle_scheduling.scan_exit_watches(
-        plan_store=plan_store,
-        bars_by_symbol=bars_by_symbol,
-        symbols=symbols,
-        now=now,
-        dry_run=dry_run,
-        bars_interval=bars_interval,
-        data_source=data_source,
-        is_connection_market_error=_is_connection_market_error,
-        log_warning=log.warning,
-        append_event=_append_event,
-        log_cycle_progress=_log_cycle_progress,
-    )
-
-
-def _scan_indicator_watches(
-    symbols: list[str],
-    *,
-    sched: SchedulerLike,
-    now: datetime,
-    data_source: object,
-) -> list[dict]:
-    return cycle_scheduling.scan_indicator_watches(
-        symbols,
-        sched=sched,
-        now=now,
-        data_source=data_source,
-        is_connection_market_error=_is_connection_market_error,
-        log_warning=log.warning,
-        append_event=_append_event,
-        log_cycle_progress=_log_cycle_progress,
-    )
-
-
-def _context_request_summary(
-    req: codex_client.ContextResearchRequest,
-    *,
-    resolved: int,
-) -> dict:
-    return planner_batch._context_request_summary(req, resolved=resolved)
-
-
-def _active_watch_summaries_by_symbol(
-    *,
-    sched: SchedulerLike | None,
-    symbols: list[str],
-    now: datetime,
-) -> dict[str, list[dict]]:
-    return planner_batch._active_watch_summaries_by_symbol(sched=sched, symbols=symbols, now=now)
 
 
 def _global_plans_summary(sched: SchedulerLike | None, now: datetime) -> list[dict]:
@@ -844,69 +395,6 @@ def _plan_to_context_dict(plan: TradePlan) -> dict:
     }
 
 
-def _earliest_active_watch_expiry_iso(
-    sched: SchedulerLike, sym: str, *, now: datetime
-) -> str | None:
-    """Plus proche expiration (ISO) des veilles actives du symbole, ou None.
-
-    Une veille armée EST le mécanisme de réveil du symbole : il doit dormir
-    jusqu'à ce qu'elle se déclenche (`_scan_indicator_watches` pose alors un
-    réveil immédiat) ou expire — pas retomber sur le défaut global 30 min et
-    être re-décidé en aveugle (finding 2026-07-02, confirmé Codex).
-    """
-    return cycle_scheduling.earliest_active_watch_expiry_iso(sched, sym, now=now)
-
-
-def _resolve_wake_event(
-    event: str,
-    sym: str,
-    now: datetime,
-    macro_next: list[dict],
-    next_regular_session_open: Callable,
-) -> str | None:
-    """Résout un événement calendaire en timestamp ISO absolu.
-
-    Retourne None si l'événement est inconnu, non résolu, ou si les données
-    sont absentes. Jamais d'exception : fail-safe total.
-
-    Rôle : set_next_wake = RECONSULTATION (l'agent reprend la main pour
-    redécider) — distinct de propose_indicator_watch = PLAN ARMÉ (exécution
-    automatique sans reconsulter).
-    """
-    return cycle_scheduling.resolve_wake_event(
-        event,
-        sym,
-        now,
-        macro_next,
-        next_regular_session_open,
-    )
-
-
-def _apply_decision_schedule(
-    *,
-    sched: SchedulerLike | None,
-    sym: str,
-    now: datetime,
-    next_wake_in_minutes: float | None,
-    next_wake_iso: str | None = None,
-    cancel_watch_ids: list[str],
-    pending_indicator_watch: dict | None,
-    entry: dict,
-) -> None:
-    cycle_scheduling.apply_decision_schedule(
-        sched=sched,
-        sym=sym,
-        now=now,
-        next_wake_in_minutes=next_wake_in_minutes,
-        next_wake_iso=next_wake_iso,
-        cancel_watch_ids=cancel_watch_ids,
-        pending_indicator_watch=pending_indicator_watch,
-        entry=entry,
-        append_event=_append_event,
-        logger=log,
-    )
-
-
 def _build_recall_provider(
     store: recall_store_mod.LearningsStore,
     now: datetime,
@@ -929,58 +417,6 @@ def _build_recall_provider(
         lambda: now,  # provider per-cycle : la borne temporelle reste celle du cycle
         embedder=embedder,
         log_warning=log.warning,
-    )
-
-
-def _run_tool_round(*args, **kwargs):
-    return planner_batch._run_tool_round(*args, **kwargs)
-
-
-def _batch_decide(**kwargs):
-    kwargs.setdefault("indicator_request_resolver", resolve_indicator_requests)
-    kwargs.setdefault("event_appender", _append_event)
-    return planner_batch.batch_decide(**kwargs)
-
-
-def _is_valid_5m_bar(bar: object) -> bool:
-    """Retourne True si la barre est utilisable pour les checks de sortie.
-
-    Critères :
-    - ts parsable en ISO-8601 (garde temporelle en aval exige un ts valide).
-    - high et low sont des flottants finis avec low <= high.
-    """
-    return exit_bars_service.is_valid_exit_bar(bar)
-
-
-def _fetch_5m_bars_for_open_plans(
-    *,
-    plan_store: TradePlanStoreLike,
-    data_source: object,
-    tradable_bars_by_symbol: dict[str, list],
-    tradable_prices: dict[str, float],
-    now: datetime,
-) -> tuple[dict[str, list], dict[str, str]]:
-    """Fetche et valide des barres 5m pour les symboles ayant un plan ouvert.
-
-    Retourne :
-      - exit_bars_by_symbol : tradable_bars_by_symbol enrichi avec les barres 5m
-        VALIDES et FRAÎCHES pour chaque symbole réussi ; fallback sur les 15m sinon.
-      - intervals_by_symbol : intervalle réellement utilisé par symbole ('5m' ou '15m').
-
-    Validation par barre : ts parsable, high/low finis et cohérents (low ≤ high).
-    Fraîcheur : assess_freshness appliqué avec budget propre à '5m'.
-    Aucun fetch pour les symboles SANS plan ouvert (coût = 0).
-    Toute exception ou résultat invalide/stale → fallback 15m sans jamais bloquer.
-    """
-    return exit_bars_service.fetch_exit_bars_for_open_plans(
-        plan_store=plan_store,
-        data_source=data_source,
-        tradable_bars_by_symbol=tradable_bars_by_symbol,
-        tradable_prices=tradable_prices,
-        now=now,
-        fallback_interval=DEFAULT_RUNTIME_INTERVAL,
-        exit_interval=EXIT_CHECK_INTERVAL,
-        exit_lookback=EXIT_CHECK_LOOKBACK,
     )
 
 
@@ -1155,8 +591,13 @@ def run_cycle(
         daily_lookback=COCKPIT_DAILY_LOOKBACK,
         daily_interval=COCKPIT_DAILY_INTERVAL,
         is_connection_market_error=_is_connection_market_error,
-        execution_eligibility_builder=_build_execution_eligibility,
-        exit_bars_fetcher=_fetch_5m_bars_for_open_plans,
+        execution_eligibility_builder=execution_eligibility_service.build_execution_eligibility,
+        exit_bars_fetcher=lambda **kwargs: exit_bars_service.fetch_exit_bars_for_open_plans(
+            **kwargs,
+            fallback_interval=DEFAULT_RUNTIME_INTERVAL,
+            exit_interval=EXIT_CHECK_INTERVAL,
+            exit_lookback=EXIT_CHECK_LOOKBACK,
+        ),
     )
     prices = snapshot.prices
     stale_market_data = snapshot.stale_market_data
@@ -1194,7 +635,7 @@ def run_cycle(
     if stale_market_data:
         _log_cycle_progress("[market] stale symbols=%s", sorted(stale_market_data))
 
-    planned_exits = _apply_planned_exits(
+    planned_exits = planned_exits_service.apply_planned_exits(
         broker=broker,
         plan_store=plan_store,
         prices=tradable_prices,
@@ -1206,11 +647,19 @@ def run_cycle(
         starting_equity=starting_equity,
         execution_eligibility=execution_eligibility,
         rate_fn=_rate,
+        runtime_interval=DEFAULT_RUNTIME_INTERVAL,
+        exit_check_interval=EXIT_CHECK_INTERVAL,
+        exit_check_window_bars=EXIT_CHECK_WINDOW_BARS,
+        append_model_performance=_append_model_performance,
+        evaluate_plan_fn=evaluate_plan,
+        clamp_exit_quantity_fn=order_admission.clamp_exit_quantity,
+        execution_blocked_reason_fn=execution_eligibility_service.execution_blocked_reason,
+        plan_snapshot_fn=planned_exits_service.plan_snapshot,
     )
     if planned_exits:
         _log_cycle_progress("[exit] planned exits=%d", len(planned_exits))
 
-    exit_watch_triggers = _scan_exit_watches(
+    exit_watch_triggers = cycle_scheduling.scan_exit_watches(
         plan_store=plan_store,
         bars_by_symbol=tradable_bars_by_symbol,
         symbols=tradable_symbols,
@@ -1218,6 +667,10 @@ def run_cycle(
         dry_run=dry_run,
         bars_interval=runtime_interval,
         data_source=data_source,
+        is_connection_market_error=_is_connection_market_error,
+        log_warning=log.warning,
+        append_event=_append_event,
+        log_cycle_progress=_log_cycle_progress,
     )
     if exit_watch_triggers:
         indicator_triggers = [*indicator_triggers, *exit_watch_triggers]
@@ -1275,7 +728,7 @@ def run_cycle(
         "market_clocks": market.market_clocks(now, symbols),
         "portfolio": snap.as_context(fee_estimator=portfolio_fee_estimator),
         "risk_limits": risk_cfg,
-        "risk_capacity": _risk_capacity_context(
+        "risk_capacity": risk_capacity.risk_capacity_context(
             symbols=[symbol for symbol in symbols if symbol in prices],
             prices=prices,
             broker=broker,
@@ -1283,6 +736,7 @@ def run_cycle(
             limits=gate.limits,
             equity=snap.equity,
             rate_of=_rate,
+            currency_of=fx.currency_for,
         ),
         "semantic": {
             "requestable_indicator_ids": DEFAULT_INDICATORS,
@@ -1369,14 +823,14 @@ def run_cycle(
         macro_next=_cycle_macro_next,
         now=now,
         recall_store=_recall_store,
-        merge_gate_feedback=_merge_gate_feedback,
+        merge_gate_feedback=confidence_feedback.merge_gate_feedback,
         model_calls_used_getter=lambda: model_calls_used,
         agent_trace_path=STATE_DIR / "agent_trace.log",
     )
     record_decision = recorder.record
 
     if sched is not None:
-        _ensure_default_wake(sched, now=now, default_wake_minutes=default_wake_minutes)
+        cycle_scheduling.ensure_default_wake(sched, now=now, default_wake_minutes=default_wake_minutes)
 
     # §13.4 — décidables : runtime frais avec prix (exécution possible) OU planning
     # autorisé (daily valide → analyse swing même runtime stale) OU position ouverte
@@ -1414,7 +868,7 @@ def run_cycle(
         positions=broker.positions() if _has_armed_triggers else {},
         cockpit=cockpit,
         tradable_bars_by_symbol=tradable_bars_by_symbol,
-        reference_volatility_for_symbol=_reference_volatility_for_symbol,
+        reference_volatility_for_symbol=reference_volatility_service.reference_volatility_for_symbol,
     )
     for progress in armed_resolution.progress_logs:
         _log_cycle_progress(progress.message, *progress.args)
@@ -1518,17 +972,16 @@ def run_cycle(
         # Mode file : enfile 1 tâche par symbole et collecte via polling.
         # Le pool DecidePool tourne en arrière-plan (démarré dans main()).
         from trader.application.decide.planner_batch import (
-            _active_watch_summaries_by_symbol,
             build_symbol_facts,
         )
         from trader.application.decide.queue_dispatch import iter_decide_results_via_queue
         from trader.application.decide.recent_decisions import recent_decisions_by_symbol
-        _last_review = _last_review_by_symbol(plan_store, decidable)
+        _last_review = plan_review.last_review_by_symbol(plan_store, decidable)
         # Push anti-répétition : N dernières décisions authentiques par symbole (même
         # sans position ouverte, là où _last_review ne couvre que les plans ouverts).
         # Une seule lecture du ledger, groupée.
         _recent_decisions = recent_decisions_by_symbol(decision_ledger_store, symbols=decidable)
-        _active_watches = _active_watch_summaries_by_symbol(
+        _active_watches = planner_batch._active_watch_summaries_by_symbol(
             sched=sched, symbols=decidable, now=now,
         )
         symbol_facts_by_sym = {
@@ -1595,7 +1048,7 @@ def run_cycle(
             streamed_decision_symbols.add(sym)
     else:
         # Mode batch classique — comportement STRICTEMENT inchangé (flag off).
-        decisions_by_symbol, model_calls_used = _batch_decide(
+        decisions_by_symbol, model_calls_used = planner_batch.batch_decide(
             decidable=decidable,
             mandate=mandate_txt,
             memory=memory_txt,
@@ -1612,13 +1065,15 @@ def run_cycle(
             now=now,
             data_age_by_symbol=data_age_by_symbol,
             sched=sched,
-            last_review_by_symbol=_last_review_by_symbol(plan_store, decidable),
+            last_review_by_symbol=plan_review.last_review_by_symbol(plan_store, decidable),
             market_context_by_symbol=execution_eligibility,
             decision_timeout_s=decision_timeout_s,
             decision_batch_size=decision_batch_size,
             decision_batch_parallelism=decision_batch_parallelism,
             agent_tools_enabled=agent_tools_enabled,
             learnings_recall_provider=_recall_provider,
+            indicator_request_resolver=resolve_indicator_requests,
+            event_appender=_append_event,
         )
     if armed_decisions:
         decisions_by_symbol = {**decisions_by_symbol, **armed_decisions}
@@ -1740,7 +1195,7 @@ def run_cycle(
         if sym in execution_state.deferred_opening_symbols:
             continue
         decision = decisions_by_symbol.get(sym)
-        if decision is not None and _counts_as_llm_review(decision):
+        if decision is not None and decision_entries.counts_as_llm_review(decision):
             _LAST_LLM_AT[(str(STATE_DIR), sym)] = now
 
     report["model_calls_used"] = model_calls_used
@@ -2088,9 +1543,24 @@ def main(
                 indicator_triggers = (
                     []
                     if args.once or bootstrap
-                    else _scan_indicator_watches(symbols, sched=sched, now=loop_now, data_source=data_source)
+                    else cycle_scheduling.scan_indicator_watches(
+                        symbols,
+                        sched=sched,
+                        now=loop_now,
+                        data_source=data_source,
+                        is_connection_market_error=_is_connection_market_error,
+                        log_warning=log.warning,
+                        append_event=_append_event,
+                        log_cycle_progress=_log_cycle_progress,
+                    )
                 )
-                due_symbols = _select_due_symbols(symbols, sched=sched, once=args.once, bootstrap=bootstrap, now=loop_now)
+                due_symbols = cycle_scheduling.select_due_symbols(
+                    symbols,
+                    sched=sched,
+                    once=args.once,
+                    bootstrap=bootstrap,
+                    now=loop_now,
+                )
                 bootstrap = False
                 state_backend = os.getenv("CASYS_STATE_BACKEND", "sqlite")
                 protection_cycle_due = bool(

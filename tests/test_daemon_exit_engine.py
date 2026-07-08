@@ -6,10 +6,14 @@ import pytest
 
 from trader.domain.trade_plan import TradePlan
 from trader.runtime import daemon
+from trader.application.decide import planner_batch
 from trader.application.execute import cycle_decision
+from trader.application.execute import order_admission, risk_capacity, fill_outcome
+from trader.application.exit import planned_exits as planned_exits_service
 from trader.agent.client import Decision
 from trader.agent.protocol.parsing import parse_batch
 from trader.execution.broker import Order, SimBroker
+from trader.market import volatility as reference_volatility_service
 from trader.market.market_data import Bar
 from trader.planning.exit_engine import ExitEvaluation, ExitSignal
 from trader.planning.scheduler import Scheduler
@@ -18,11 +22,11 @@ from tests.plan_store_fakes import MemoryTradePlanStore
 
 
 def test_llm_exit_reason_for_model_performance_tague_uniquement_les_sorties() -> None:
-    assert daemon._llm_exit_reason_for_intent("CLOSE") == "llm_exit"
-    assert daemon._llm_exit_reason_for_intent("REDUCE") == "llm_exit"
-    assert daemon._llm_exit_reason_for_intent("FLIP") == "llm_exit"
-    assert daemon._llm_exit_reason_for_intent("OPEN_LONG") is None
-    assert daemon._llm_exit_reason_for_intent("OPEN_SHORT") is None
+    assert fill_outcome.llm_exit_reason_for_intent("CLOSE") == "llm_exit"
+    assert fill_outcome.llm_exit_reason_for_intent("REDUCE") == "llm_exit"
+    assert fill_outcome.llm_exit_reason_for_intent("FLIP") == "llm_exit"
+    assert fill_outcome.llm_exit_reason_for_intent("OPEN_LONG") is None
+    assert fill_outcome.llm_exit_reason_for_intent("OPEN_SHORT") is None
 
 
 def _write_runtime_config(
@@ -134,7 +138,7 @@ def test_run_cycle_execute_les_sorties_planifiees_avant_codex(monkeypatch, tmp_p
     assert _broker_positions(state_dir)["SPY"].quantity == 5.0
 
 
-def test_apply_planned_exits_preserve_daemon_monkeypatch_hooks(monkeypatch, tmp_path) -> None:
+def test_apply_planned_exits_uses_injected_runtime_hooks(tmp_path) -> None:
     state_dir = tmp_path / "state"
     now = datetime(2026, 6, 5, 14, 30, tzinfo=timezone.utc)
     broker = SimBroker(state_dir / "broker.json", starting_cash=100_000)
@@ -164,19 +168,7 @@ def test_apply_planned_exits_preserve_daemon_monkeypatch_hooks(monkeypatch, tmp_
             close_plan=True,
         )
 
-    monkeypatch.setattr(daemon, "evaluate_plan", fake_evaluate_plan)
-    monkeypatch.setattr(
-        daemon,
-        "_clamp_exit_quantity",
-        lambda **kwargs: (4.0, None),
-    )
-    monkeypatch.setattr(
-        daemon,
-        "_execution_blocked_reason",
-        lambda execution_eligibility, symbol, *, fail_closed=False: "execution:patched_block",
-    )
-
-    entries = daemon._apply_planned_exits(
+    entries = planned_exits_service.apply_planned_exits(
         broker=broker,
         plan_store=plan_store,
         prices={"SPY": 100.0},
@@ -184,6 +176,14 @@ def test_apply_planned_exits_preserve_daemon_monkeypatch_hooks(monkeypatch, tmp_
         dry_run=False,
         starting_equity=100_000.0,
         execution_eligibility={"SPY": {"execution": {"enabled": True}}},
+        runtime_interval=daemon.DEFAULT_RUNTIME_INTERVAL,
+        exit_check_interval=daemon.EXIT_CHECK_INTERVAL,
+        exit_check_window_bars=daemon.EXIT_CHECK_WINDOW_BARS,
+        evaluate_plan_fn=fake_evaluate_plan,
+        clamp_exit_quantity_fn=lambda **kwargs: (4.0, None),
+        execution_blocked_reason_fn=(
+            lambda execution_eligibility, symbol, *, fail_closed=False: "execution:patched_block"
+        ),
     )
 
     assert entries == [
@@ -587,7 +587,7 @@ def test_reference_volatility_prefere_vol_daily_et_trace_stop_hors_borne_sans_re
         "rows": [["SPY", 0.01, 0.08]],
     }
 
-    reference_volatility = daemon._reference_volatility_for_symbol(
+    reference_volatility = reference_volatility_service.reference_volatility_for_symbol(
         "SPY",
         entry_price=100.0,
         cockpit=cockpit,
@@ -1047,8 +1047,8 @@ def test_run_cycle_rejette_stop_direct_volatilite_si_volatilite_indisponible(
     monkeypatch.setattr(daemon, "ROOT", tmp_path)
     monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
     monkeypatch.setattr(
-        daemon,
-        "_reference_volatility_for_symbol",
+        cycle_decision.reference_volatility_service,
+        "reference_volatility_for_symbol",
         lambda symbol, *, entry_price, cockpit, tradable_bars_by_symbol: None,
     )
     data_source = make_data_source(lambda symbol, lookback, interval: [
@@ -1708,7 +1708,7 @@ def test_run_cycle_legacy_relative_ignored_fields_arrivent_dans_runtime_ledger(
 
     monkeypatch.setattr(daemon, "ROOT", tmp_path)
     monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
-    monkeypatch.setattr(daemon, "_batch_decide", fake_batch_decide)
+    monkeypatch.setattr(planner_batch, "batch_decide", fake_batch_decide)
 
     report = daemon.run_cycle(
         dry_run=False,
@@ -1791,7 +1791,7 @@ def test_resolve_position_aware_hold_preserve_les_metadonnees_llm(intent: str, r
         next_wake_event="session_open",
     )
 
-    resolved = daemon._resolve_position_aware_decision(decision, 0.0)
+    resolved = order_admission.resolve_position_aware_decision(decision, 0.0)
 
     assert resolved.action == "HOLD"
     assert resolved.quantity == 0.0
@@ -3160,7 +3160,7 @@ def test_gross_exposure_fx_blind_sans_rate_of_retourne_natif(tmp_path) -> None:
     broker.submit(Order("2379.TW", "BUY", 100.0), 800.0, "2026-06-24T09:00:00+00:00", dry_run=False)
 
     prices = {"2379.TW": 820.0}
-    gross = daemon._gross_exposure(broker, prices)
+    gross = risk_capacity.gross_exposure(broker, prices)
 
     assert gross == pytest.approx(100.0 * 820.0, rel=1e-9)
 
@@ -3174,8 +3174,8 @@ def test_gross_exposure_fx_aware_twd_convergi_en_usd(tmp_path) -> None:
     prices = {"2379.TW": 820.0}
     twd_rate = 0.031
 
-    gross_native = daemon._gross_exposure(broker, prices)
-    gross_usd = daemon._gross_exposure(broker, prices, rate_of=lambda sym: twd_rate)
+    gross_native = risk_capacity.gross_exposure(broker, prices)
+    gross_usd = risk_capacity.gross_exposure(broker, prices, rate_of=lambda sym: twd_rate)
 
     assert gross_usd == pytest.approx(gross_native * twd_rate, rel=1e-9)
     # Sanity : la valeur USD doit être ~32× plus petite que la valeur native
@@ -3192,7 +3192,7 @@ def test_gross_exposure_fx_multi_position_somme_en_usd(tmp_path) -> None:
     prices = {"AAPL": 210.0, "2379.TW": 820.0}
     rates = {"AAPL": 1.0, "2379.TW": 0.031}
 
-    gross = daemon._gross_exposure(broker, prices, rate_of=lambda sym: rates.get(sym, 1.0))
+    gross = risk_capacity.gross_exposure(broker, prices, rate_of=lambda sym: rates.get(sym, 1.0))
 
     expected = abs(10.0 * 210.0 * 1.0) + abs(50.0 * 820.0 * 0.031)
     assert gross == pytest.approx(expected, rel=1e-9)

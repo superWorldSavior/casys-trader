@@ -262,13 +262,39 @@ def test_infrastructure_backends_are_nested_under_infrastructure() -> None:
 
     assert infrastructure_dir.exists()
     assert sorted(path.name for path in infrastructure_dir.iterdir() if path.is_dir() and path.name != "__pycache__") == [
+        "llm",
         "market_sources",
         "queue",
         "state_db",
     ]
 
-    for old_top_level_name in ("market_sources", "queue", "state_db"):
+    for old_top_level_name in ("llm", "market_sources", "queue", "state_db"):
         assert not _has_python_sources(trader_dir / old_top_level_name)
+
+
+def test_llm_infrastructure_does_not_import_agent_port_facade() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    llm_infra_dir = repo_root / "trader" / "infrastructure" / "llm"
+    domain_contract_path = repo_root / "trader" / "domain" / "llm.py"
+
+    assert llm_infra_dir.exists()
+    assert (llm_infra_dir / "acpx_backend.py").exists()
+    assert (llm_infra_dir / "openai_backend.py").exists()
+    assert domain_contract_path.exists()
+
+    violations: list[str] = []
+    for path in sorted(llm_infra_dir.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        rel_path = path.relative_to(repo_root)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module == "trader.agent.llm":
+                violations.append(f"{rel_path}: from trader.agent.llm import ...")
+            elif isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name == "trader.agent.llm" or alias.name.startswith("trader.agent.llm."):
+                        violations.append(f"{rel_path}: import {alias.name}")
+
+    assert violations == []
 
 
 def test_semantic_catalog_is_nested_under_domain() -> None:

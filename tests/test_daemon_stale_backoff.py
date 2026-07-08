@@ -5,36 +5,37 @@ from datetime import datetime, timezone
 
 from trader.agent.client import Decision
 from trader.runtime import daemon
+from trader.runtime import cycle_scheduling
 from trader.planning.scheduler import Scheduler, STALE_BACKOFF_MAX_MINUTES, STALE_BACKOFF_MAX_STREAK
 
 
 def test_backoff_wake_premier_stale_est_egal_au_defaut(tmp_path) -> None:
     """streak=0 → next_wake = default (pas de doublement au premier stale)."""
-    result = daemon._stale_backoff_wake_minutes(streak=0, default_wake_minutes=30.0)
+    result = cycle_scheduling.stale_backoff_wake_minutes(streak=0, default_wake_minutes=30.0)
     assert result == 30.0
 
 
 def test_backoff_wake_doublee_au_second_stale(tmp_path) -> None:
     """streak=1 → 30 * 2^1 = 60."""
-    result = daemon._stale_backoff_wake_minutes(streak=1, default_wake_minutes=30.0)
+    result = cycle_scheduling.stale_backoff_wake_minutes(streak=1, default_wake_minutes=30.0)
     assert result == 60.0
 
 
 def test_backoff_wake_triple_stale(tmp_path) -> None:
     """streak=2 → 30 * 2^2 = 120."""
-    result = daemon._stale_backoff_wake_minutes(streak=2, default_wake_minutes=30.0)
+    result = cycle_scheduling.stale_backoff_wake_minutes(streak=2, default_wake_minutes=30.0)
     assert result == 120.0
 
 
 def test_backoff_wake_cap_a_120_minutes(tmp_path) -> None:
     """streak=10 → capp à STALE_BACKOFF_MAX_MINUTES=120."""
-    result = daemon._stale_backoff_wake_minutes(streak=10, default_wake_minutes=30.0)
+    result = cycle_scheduling.stale_backoff_wake_minutes(streak=10, default_wake_minutes=30.0)
     assert result == STALE_BACKOFF_MAX_MINUTES
 
 
 def test_backoff_wake_cap_avec_defaut_petit(tmp_path) -> None:
     """Avec default=5min, streak=5 → 5*32=160 → cappé à 120."""
-    result = daemon._stale_backoff_wake_minutes(streak=5, default_wake_minutes=5.0)
+    result = cycle_scheduling.stale_backoff_wake_minutes(streak=5, default_wake_minutes=5.0)
     assert result == STALE_BACKOFF_MAX_MINUTES
 
 
@@ -281,7 +282,7 @@ def test_stale_sans_scheduler_ne_plante_pas(monkeypatch, tmp_path, patch_batch) 
 
 def test_backoff_wake_default_superieur_au_cap_est_ramene_au_cap(tmp_path) -> None:
     """streak=0, default=240 → cappé à STALE_BACKOFF_MAX_MINUTES (120), pas 240."""
-    result = daemon._stale_backoff_wake_minutes(streak=0, default_wake_minutes=240.0)
+    result = cycle_scheduling.stale_backoff_wake_minutes(streak=0, default_wake_minutes=240.0)
     assert result == STALE_BACKOFF_MAX_MINUTES, (
         f"Attendu {STALE_BACKOFF_MAX_MINUTES}, obtenu {result} — le cap doit s'appliquer même à streak=0"
     )
@@ -324,7 +325,7 @@ def test_backoff_streak_max_constant_exported() -> None:
 def test_backoff_wake_streak_enorme_pas_overflow() -> None:
     """Un streak arbitrairement grand (ex. 9999) ne provoque pas d'OverflowError."""
     # Prouvé au REPL : 30 * 2**9999 → OverflowError sur float
-    result = daemon._stale_backoff_wake_minutes(streak=9999, default_wake_minutes=30.0)
+    result = cycle_scheduling.stale_backoff_wake_minutes(streak=9999, default_wake_minutes=30.0)
     assert result == STALE_BACKOFF_MAX_MINUTES
 
 
@@ -355,7 +356,7 @@ def test_streak_vieux_state_corrompu_ne_crashe_pas(tmp_path) -> None:
     streak = sched.get_stale_streak("SPY")
     assert streak == STALE_BACKOFF_MAX_STREAK
     # Et le calcul de wake ne doit pas overflow
-    wake = daemon._stale_backoff_wake_minutes(streak=streak, default_wake_minutes=30.0)
+    wake = cycle_scheduling.stale_backoff_wake_minutes(streak=streak, default_wake_minutes=30.0)
     assert wake == STALE_BACKOFF_MAX_MINUTES
 
 

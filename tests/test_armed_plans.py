@@ -311,8 +311,8 @@ def test_plan_arme_annule_si_volatilite_indisponible_au_tir(
     monkeypatch, tmp_path, patch_batch, make_data_source
 ) -> None:
     monkeypatch.setattr(
-        daemon,
-        "_reference_volatility_for_symbol",
+        cycle_decision.reference_volatility_service,
+        "reference_volatility_for_symbol",
         lambda symbol, *, entry_price, cockpit, tradable_bars_by_symbol: None,
     )
     trigger = _armed_trigger(

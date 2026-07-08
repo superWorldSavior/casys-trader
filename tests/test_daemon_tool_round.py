@@ -6,6 +6,8 @@ from datetime import datetime, timezone
 
 from trader.agent import client as codex_client
 from trader.agent.protocol.parsing import parse_batch
+from trader.application.decide import planner_batch
+from trader.application.record import decision_entries
 from trader.runtime import daemon
 
 UTC = timezone.utc
@@ -37,6 +39,12 @@ def _hold(sym):
     return codex_client.Decision.hold(sym, "test")
 
 
+def _batch_decide(**kwargs):
+    kwargs.setdefault("indicator_request_resolver", daemon.resolve_indicator_requests)
+    kwargs.setdefault("event_appender", daemon._append_event)
+    return planner_batch.batch_decide(**kwargs)
+
+
 def test_flag_off_ne_passe_jamais_allow_tool_calls(monkeypatch):
     seen = []
 
@@ -50,7 +58,7 @@ def test_flag_off_ne_passe_jamais_allow_tool_calls(monkeypatch):
         return {sym: _hold(sym) for sym in kwargs["symbols"]}
 
     monkeypatch.setattr(daemon.codex_client, "decide_batch", _fake_decide_batch)
-    decisions, calls = daemon._batch_decide(**_kwargs())  # défaut : agent_tools_enabled=False
+    decisions, calls = _batch_decide(**_kwargs())  # défaut : agent_tools_enabled=False
     assert calls == 1
     assert seen == [{"allow_tool_calls": False, "use_symbol_calls_contract": True}]
     assert decisions["2330.TW"].action == "HOLD"
@@ -69,7 +77,7 @@ def test_flag_on_tournee_puis_decision_finale(monkeypatch):
         return {sym: _hold(sym) for sym in kwargs["symbols"]}
 
     monkeypatch.setattr(daemon.codex_client, "decide_batch", _fake_decide_batch)
-    decisions, calls = daemon._batch_decide(**_kwargs(), agent_tools_enabled=True)
+    decisions, calls = _batch_decide(**_kwargs(), agent_tools_enabled=True)
 
     assert calls == 2  # la tournée consomme un appel modèle + le tour final
     final_kwargs = calls_seen[-1]
@@ -119,7 +127,7 @@ def test_tournee_preserve_les_traces_action_tools_du_tour_final(monkeypatch):
         }
 
     monkeypatch.setattr(daemon.codex_client, "decide_batch", _fake_decide_batch)
-    decisions, calls = daemon._batch_decide(**_kwargs(), agent_tools_enabled=True)
+    decisions, calls = _batch_decide(**_kwargs(), agent_tools_enabled=True)
 
     assert calls == 2
     dt = decisions["2330.TW"].domain_tools
@@ -145,10 +153,10 @@ def test_tournee_preserve_les_normalizations_du_tour_final(monkeypatch):
         return parse_batch(raw, kwargs["symbols"], allow_context_request=False)
 
     monkeypatch.setattr(daemon.codex_client, "decide_batch", _fake_decide_batch)
-    decisions, calls = daemon._batch_decide(**_kwargs(), agent_tools_enabled=True)
+    decisions, calls = _batch_decide(**_kwargs(), agent_tools_enabled=True)
 
     assert calls == 2
-    audit = daemon._runtime_tool_audit_fields(decisions["2330.TW"].domain_tools)
+    audit = decision_entries.runtime_tool_audit_fields(decisions["2330.TW"].domain_tools)
     normalizations = audit["tool_normalizations"]
     assert normalizations[0]["code"] == "relative_intent_position_resolved"
     assert normalizations[0]["ignored_fields"] == ["action"]
@@ -161,7 +169,7 @@ def test_flag_on_seconde_tournee_bloquee_en_hold(monkeypatch):
             calls=[{"id": "c1", "tool": "get_freshness", "args": {"symbols": ["2330.TW"]}}])
 
     monkeypatch.setattr(daemon.codex_client, "decide_batch", _fake_decide_batch)
-    decisions, calls = daemon._batch_decide(**_kwargs(), agent_tools_enabled=True)
+    decisions, calls = _batch_decide(**_kwargs(), agent_tools_enabled=True)
     assert decisions["2330.TW"].action == "HOLD"
     assert decisions["2330.TW"].rationale == "tool_loop_blocked"
     # Le blocage consomme bien 2 appels modèle (tournée + tour final bloqué).
@@ -199,7 +207,7 @@ def test_indicator_resolver_passe_les_bornes(monkeypatch):
         return {sym: _hold(sym) for sym in kwargs["symbols"]}
 
     monkeypatch.setattr(daemon.codex_client, "decide_batch", _fake_decide_batch)
-    daemon._batch_decide(
+    _batch_decide(
         **_kwargs(
             max_context_requests_per_symbol=2,
             max_indicators_per_request=4,
@@ -235,7 +243,7 @@ def test_multi_symboles_chunk_filtrage_per_symbol(monkeypatch):
         return {sym: _hold(sym) for sym in kwargs["symbols"]}
 
     monkeypatch.setattr(daemon.codex_client, "decide_batch", _fake_decide_batch)
-    daemon._batch_decide(
+    _batch_decide(
         **_kwargs(
             decidable=["A", "B"],
             data_age_by_symbol={"A": 5.0, "B": 10.0},
@@ -269,7 +277,7 @@ def test_hold_tool_loop_blocked_defaults_sains(monkeypatch):
         )
 
     monkeypatch.setattr(daemon.codex_client, "decide_batch", _fake_decide_batch)
-    decisions, _ = daemon._batch_decide(**_kwargs(), agent_tools_enabled=True)
+    decisions, _ = _batch_decide(**_kwargs(), agent_tools_enabled=True)
     d = decisions["2330.TW"]
     assert d.action == "HOLD"
     assert d.rationale == "tool_loop_blocked"
@@ -298,7 +306,7 @@ def test_contexte_run_tool_round_filtre_au_chunk(monkeypatch):
     request = codex_client.BatchToolCallRequest(
         calls=[{"id": "c1", "tool": "get_freshness", "args": {"symbols": ["A"]}}]
     )
-    daemon._run_tool_round(
+    planner_batch._run_tool_round(
         request,
         chunk=["A"],
         now=NOW,
@@ -336,7 +344,7 @@ def test_budget_mode_tournee_limite_les_chunks(monkeypatch):
         return {sym: _hold(sym) for sym in kwargs["symbols"]}
 
     monkeypatch.setattr(daemon.codex_client, "decide_batch", _fake_decide_batch)
-    decisions, calls = daemon._batch_decide(
+    decisions, calls = _batch_decide(
         **_kwargs(
             decidable=["A", "B", "C", "D"],
             data_age_by_symbol={"A": 1.0, "B": 2.0, "C": 3.0, "D": 4.0},
@@ -400,7 +408,7 @@ def test_run_tool_round_recall_note_ids_in_trace():
     request = codex_client.BatchToolCallRequest(
         calls=[{"id": "r1", "tool": "recall_learnings", "args": {"symbol": "2330.TW"}}],
     )
-    _, runtime_payload = daemon._run_tool_round(
+    _, runtime_payload = planner_batch._run_tool_round(
         request,
         chunk=["2330.TW"],
         now=NOW,
@@ -426,7 +434,7 @@ def test_run_tool_round_store_absent_unavailable():
     request = codex_client.BatchToolCallRequest(
         calls=[{"id": "r1", "tool": "recall_learnings", "args": {"symbol": "2330.TW"}}],
     )
-    results_payload, _ = daemon._run_tool_round(
+    results_payload, _ = planner_batch._run_tool_round(
         request,
         chunk=["2330.TW"],
         now=NOW,
@@ -680,7 +688,7 @@ def test_run_tool_round_recall_note_ids_par_position_deux_calls_meme_id(tmp_path
             {"id": "dup", "tool": "recall_learnings", "args": {"symbol": "B"}},
         ],
     )
-    _, runtime_payload = daemon._run_tool_round(
+    _, runtime_payload = planner_batch._run_tool_round(
         request,
         chunk=["A", "B"],
         now=NOW,

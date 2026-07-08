@@ -10,6 +10,8 @@ from datetime import datetime, timezone
 
 from trader.runtime import daemon
 from trader.agent.client import Decision
+from trader.application.decide import planner_batch
+from trader.application.record import confidence_feedback
 from trader.market.market_data import Bar
 from trader.agent.learnings.raw_store import RawLearningsStore
 from trader.planning.scheduler import Scheduler
@@ -85,7 +87,7 @@ def test_run_cycle_rejette_ouverture_confidence_insuffisante(
 
     monkeypatch.setattr(daemon, "ROOT", tmp_path)
     monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
-    monkeypatch.setattr(daemon, "_batch_decide", fake_batch_decide)
+    monkeypatch.setattr(planner_batch, "batch_decide", fake_batch_decide)
     data_source = make_data_source(
         lambda symbol, lookback, interval: [
             Bar(ts=now.isoformat(), open=100.0, high=101.0, low=99.0, close=100.0, volume=1000.0)
@@ -107,7 +109,7 @@ def test_run_cycle_rejette_ouverture_confidence_insuffisante(
 
 def test_merge_gate_feedback_fusionne_avec_le_learning_de_lagent() -> None:
     """Sur rejet de confiance, le seuil raté est appendé au learning de l'agent."""
-    out = daemon._merge_gate_feedback(
+    out = confidence_feedback.merge_gate_feedback(
         "risk:confidence_below_required",
         "confidence=0.58 required=0.7000 planned_risk_pct=0.005",
         "je tente un long sur cassure",
@@ -119,7 +121,7 @@ def test_merge_gate_feedback_fusionne_avec_le_learning_de_lagent() -> None:
 
 def test_merge_gate_feedback_trace_le_rejet_meme_sans_learning() -> None:
     """Rejet sans learning agent → on enregistre quand même le feedback du gate."""
-    out = daemon._merge_gate_feedback(
+    out = confidence_feedback.merge_gate_feedback(
         "risk:confidence_below_required",
         "confidence=0.58 required=0.7000",
         None,
@@ -129,10 +131,10 @@ def test_merge_gate_feedback_trace_le_rejet_meme_sans_learning() -> None:
 
 def test_merge_gate_feedback_laisse_les_autres_cas_intacts() -> None:
     """Hors rejet de confiance (ou sans contexte), la note de l'agent passe telle quelle."""
-    assert daemon._merge_gate_feedback("ok", "ctx", "garde") == "garde"
-    assert daemon._merge_gate_feedback("ok", None, None) is None
+    assert confidence_feedback.merge_gate_feedback("ok", "ctx", "garde") == "garde"
+    assert confidence_feedback.merge_gate_feedback("ok", None, None) is None
     # fail-safe : rejet de confiance mais contexte manquant → note inchangée
-    assert daemon._merge_gate_feedback("risk:confidence_below_required", None, "x") == "x"
+    assert confidence_feedback.merge_gate_feedback("risk:confidence_below_required", None, "x") == "x"
 
 
 def test_run_cycle_rejet_confiance_injecte_le_feedback_dans_les_learnings(
@@ -160,7 +162,7 @@ def test_run_cycle_rejet_confiance_injecte_le_feedback_dans_les_learnings(
 
     monkeypatch.setattr(daemon, "ROOT", tmp_path)
     monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
-    monkeypatch.setattr(daemon, "_batch_decide", fake_batch_decide)
+    monkeypatch.setattr(planner_batch, "batch_decide", fake_batch_decide)
     data_source = make_data_source(
         lambda symbol, lookback, interval: [
             Bar(ts=now.isoformat(), open=100.0, high=101.0, low=99.0, close=100.0, volume=1000.0)
@@ -198,7 +200,7 @@ def test_run_cycle_approuve_ouverture_confidence_suffisante(
 
     monkeypatch.setattr(daemon, "ROOT", tmp_path)
     monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
-    monkeypatch.setattr(daemon, "_batch_decide", fake_batch_decide)
+    monkeypatch.setattr(planner_batch, "batch_decide", fake_batch_decide)
     data_source = make_data_source(
         lambda symbol, lookback, interval: [
             Bar(ts=now.isoformat(), open=100.0, high=101.0, low=99.0, close=100.0, volume=1000.0)
@@ -241,7 +243,7 @@ def test_run_cycle_rejette_ouverture_sans_hard_stop(
 
     monkeypatch.setattr(daemon, "ROOT", tmp_path)
     monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
-    monkeypatch.setattr(daemon, "_batch_decide", fake_batch_decide)
+    monkeypatch.setattr(planner_batch, "batch_decide", fake_batch_decide)
     data_source = make_data_source(
         lambda symbol, lookback, interval: [
             Bar(ts=now.isoformat(), open=100.0, high=101.0, low=99.0, close=100.0, volume=1000.0)
@@ -294,7 +296,7 @@ def test_run_cycle_gate_confiance_off_laisse_passer_confiance_basse(
 
     monkeypatch.setattr(daemon, "ROOT", tmp_path)
     monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
-    monkeypatch.setattr(daemon, "_batch_decide", fake_batch_decide)
+    monkeypatch.setattr(planner_batch, "batch_decide", fake_batch_decide)
     data_source = make_data_source(
         lambda symbol, lookback, interval: [
             Bar(ts=now.isoformat(), open=100.0, high=101.0, low=99.0, close=100.0, volume=1000.0)
@@ -330,7 +332,7 @@ def test_run_cycle_require_hard_stop_false_laisse_passer_sans_stop(
 
     monkeypatch.setattr(daemon, "ROOT", tmp_path)
     monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
-    monkeypatch.setattr(daemon, "_batch_decide", fake_batch_decide)
+    monkeypatch.setattr(planner_batch, "batch_decide", fake_batch_decide)
     data_source = make_data_source(
         lambda symbol, lookback, interval: [
             Bar(ts=now.isoformat(), open=100.0, high=101.0, low=99.0, close=100.0, volume=1000.0)
@@ -382,7 +384,7 @@ def test_run_cycle_ouverture_enrichit_le_tradeplan_avec_le_contexte_d_entree(
 
     monkeypatch.setattr(daemon, "ROOT", tmp_path)
     monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
-    monkeypatch.setattr(daemon, "_batch_decide", fake_batch_decide)
+    monkeypatch.setattr(planner_batch, "batch_decide", fake_batch_decide)
     data_source = make_data_source(
         lambda symbol, lookback, interval: [
             Bar(ts=now.isoformat(), open=100.0, high=101.0, low=99.0, close=100.0, volume=1000.0)

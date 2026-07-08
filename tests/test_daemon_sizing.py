@@ -14,6 +14,8 @@ import pytest
 
 from trader.runtime import daemon
 from trader.agent.client import Decision
+from trader.application.decide import planner_batch
+from trader.application.execute import risk_capacity
 from trader.execution.risk import RiskGate, RiskLimits
 from trader.market import fx
 from trader.execution.broker import Order, SimBroker
@@ -76,9 +78,9 @@ def test_risk_capacity_context_expose_le_plafond_gross_restant_en_quantite_nativ
         max_gross_exposure=100_000.0,
         min_equity=50_000.0,
     )
-    gross = daemon._gross_exposure(broker, prices, rate_of=rate_of)
+    gross = risk_capacity.gross_exposure(broker, prices, rate_of=rate_of)
 
-    context = daemon._risk_capacity_context(
+    context = risk_capacity.risk_capacity_context(
         symbols=["2892.TW"],
         prices=prices,
         broker=broker,
@@ -86,6 +88,7 @@ def test_risk_capacity_context_expose_le_plafond_gross_restant_en_quantite_nativ
         limits=limits,
         equity=98_700.0,
         rate_of=rate_of,
+        currency_of=fx.currency_for,
     )
 
     expected_remaining_usd = 7_500.0
@@ -161,7 +164,7 @@ def test_run_cycle_rejette_quantite_native_sur_proposee(monkeypatch, tmp_path, m
 
     monkeypatch.setattr(daemon, "ROOT", tmp_path)
     monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
-    monkeypatch.setattr(daemon, "_batch_decide", fake_batch_decide)
+    monkeypatch.setattr(planner_batch, "batch_decide", fake_batch_decide)
 
     data_source = make_data_source(
         lambda symbol, lookback, interval: [
@@ -204,7 +207,7 @@ def test_run_cycle_fx_rates_dans_le_rapport(monkeypatch, tmp_path, make_data_sou
 
     monkeypatch.setattr(daemon, "ROOT", tmp_path)
     monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
-    monkeypatch.setattr(daemon, "_batch_decide", lambda **kw: (
+    monkeypatch.setattr(planner_batch, "batch_decide", lambda **kw: (
         {sym: Decision.hold(sym, "hold") for sym in kw["decidable"]}, 0
     ))
 
@@ -257,7 +260,7 @@ def test_run_cycle_persiste_fx_rate_dans_model_performance_non_usd(
 
     monkeypatch.setattr(daemon, "ROOT", tmp_path)
     monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
-    monkeypatch.setattr(daemon, "_batch_decide", fake_batch_decide)
+    monkeypatch.setattr(planner_batch, "batch_decide", fake_batch_decide)
 
     def bars(symbol: str, lookback: str, interval: str):
         close = 32.0 if symbol == "TWD=X" else 870.0

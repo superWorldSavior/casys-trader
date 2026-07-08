@@ -16,6 +16,7 @@ import pytest
 
 from trader.agent.protocol.parsing import _decision_from_symbol_calls
 from trader.agent.protocol.types import Decision
+from trader.application.decide import planner_batch
 from trader.application.execute.order_admission import qty_from_risk_pct
 from trader.runtime import daemon
 from trader.market.market_data import Bar
@@ -229,7 +230,7 @@ def test_daemon_risk_pct_no_stop_rejected(monkeypatch, tmp_path, make_data_sourc
 
     monkeypatch.setattr(daemon, "ROOT", tmp_path)
     monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
-    monkeypatch.setattr(daemon, "_batch_decide", fake_batch_decide)
+    monkeypatch.setattr(planner_batch, "batch_decide", fake_batch_decide)
 
     report = daemon.run_cycle(
         dry_run=True,
@@ -281,7 +282,7 @@ def test_daemon_risk_pct_derives_qty_and_executes(monkeypatch, tmp_path, make_da
 
     monkeypatch.setattr(daemon, "ROOT", tmp_path)
     monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
-    monkeypatch.setattr(daemon, "_batch_decide", fake_batch_decide)
+    monkeypatch.setattr(planner_batch, "batch_decide", fake_batch_decide)
 
     report = daemon.run_cycle(
         dry_run=True,
@@ -343,7 +344,7 @@ def test_daemon_risk_pct_exceeds_max_risk_traced_without_blocking(monkeypatch, t
 
     monkeypatch.setattr(daemon, "ROOT", tmp_path)
     monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
-    monkeypatch.setattr(daemon, "_batch_decide", fake_batch_decide)
+    monkeypatch.setattr(planner_batch, "batch_decide", fake_batch_decide)
 
     report = daemon.run_cycle(
         dry_run=True,

@@ -1,6 +1,6 @@
 """StateDb — connexion SQLite partagée (WAL + Lock) pour les stores d'état.
 
-Pattern identique à trader/agent/learnings/store.py (check_same_thread=False,
+Pattern identique à trader/infrastructure/state_db/learnings_store.py (check_same_thread=False,
 busy_timeout=5000, row_factory=Row) et trader/infrastructure/queue/ledger.py (threading.Lock).
 """
 from __future__ import annotations

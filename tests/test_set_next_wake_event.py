@@ -102,7 +102,7 @@ def test_parse_no_minutes_no_on_raises() -> None:
 
 def test_resolve_session_open_returns_next_session_iso() -> None:
     """session_open → appelle next_regular_session_open et retourne l'ISO."""
-    from trader.runtime.daemon import _resolve_wake_event
+    from trader.runtime import cycle_scheduling
 
     now = _now()
     expected_iso = "2026-07-04T09:30:00+00:00"
@@ -113,7 +113,7 @@ def test_resolve_session_open_returns_next_session_iso() -> None:
         calls.append(("next_regular_session_open", symbol))
         return datetime.fromisoformat(expected_iso)
 
-    result = _resolve_wake_event(
+    result = cycle_scheduling.resolve_wake_event(
         event="session_open",
         sym="AAPL",
         now=now,
@@ -127,14 +127,14 @@ def test_resolve_session_open_returns_next_session_iso() -> None:
 
 def test_resolve_macro_event_with_data_returns_first_at() -> None:
     """macro_event + macro_next non vide → retourne l'at du premier événement."""
-    from trader.runtime.daemon import _resolve_wake_event
+    from trader.runtime import cycle_scheduling
 
     macro_next = [
         {"event": "FOMC", "at": "2026-07-29T18:00:00Z", "in_h": 470.0},
         {"event": "CPI", "at": "2026-08-12T12:30:00Z", "in_h": 800.0},
     ]
 
-    result = _resolve_wake_event(
+    result = cycle_scheduling.resolve_wake_event(
         event="macro_event",
         sym="SPY",
         now=_now(),
@@ -147,9 +147,9 @@ def test_resolve_macro_event_with_data_returns_first_at() -> None:
 
 def test_resolve_macro_event_empty_macro_next_returns_none() -> None:
     """macro_event + macro_next vide → None (fail-safe)."""
-    from trader.runtime.daemon import _resolve_wake_event
+    from trader.runtime import cycle_scheduling
 
-    result = _resolve_wake_event(
+    result = cycle_scheduling.resolve_wake_event(
         event="macro_event",
         sym="SPY",
         now=_now(),
@@ -162,9 +162,9 @@ def test_resolve_macro_event_empty_macro_next_returns_none() -> None:
 
 def test_resolve_pre_earnings_no_data_returns_none() -> None:
     """pre_earnings → None (aucune donnée earnings disponible encore)."""
-    from trader.runtime.daemon import _resolve_wake_event
+    from trader.runtime import cycle_scheduling
 
-    result = _resolve_wake_event(
+    result = cycle_scheduling.resolve_wake_event(
         event="pre_earnings",
         sym="AAPL",
         now=_now(),
@@ -177,9 +177,9 @@ def test_resolve_pre_earnings_no_data_returns_none() -> None:
 
 def test_resolve_unknown_event_returns_none() -> None:
     """Événement inconnu → None (fail-safe, pas d'erreur)."""
-    from trader.runtime.daemon import _resolve_wake_event
+    from trader.runtime import cycle_scheduling
 
-    result = _resolve_wake_event(
+    result = cycle_scheduling.resolve_wake_event(
         event="unknown_future_event",
         sym="SPY",
         now=_now(),
@@ -192,12 +192,12 @@ def test_resolve_unknown_event_returns_none() -> None:
 
 def test_resolve_session_open_exception_returns_none() -> None:
     """Si next_regular_session_open lève → None (fail-safe)."""
-    from trader.runtime.daemon import _resolve_wake_event
+    from trader.runtime import cycle_scheduling
 
     def broken_session(now_arg: datetime, *, symbol: str) -> datetime:
         raise RuntimeError("aucun calendrier")
 
-    result = _resolve_wake_event(
+    result = cycle_scheduling.resolve_wake_event(
         event="session_open",
         sym="AAPL",
         now=_now(),
@@ -215,14 +215,14 @@ def test_resolve_session_open_exception_returns_none() -> None:
 
 def test_apply_decision_schedule_next_wake_iso_sets_absolute_wake(tmp_path) -> None:
     """next_wake_iso → set_symbol_next_wake (non relatif)."""
-    from trader.runtime.daemon import _apply_decision_schedule
+    from trader.runtime import cycle_scheduling
     from trader.planning.scheduler import Scheduler
 
     sched = Scheduler(tmp_path / "scheduler.json")
     now = _now()
     target_iso = "2026-07-04T09:30:00+00:00"
 
-    _apply_decision_schedule(
+    cycle_scheduling.apply_decision_schedule(
         sched=sched,
         sym="AAPL",
         now=now,
@@ -240,13 +240,13 @@ def test_apply_decision_schedule_next_wake_iso_sets_absolute_wake(tmp_path) -> N
 
 def test_apply_decision_schedule_minutes_still_works(tmp_path) -> None:
     """next_wake_iso=None + next_wake_in_minutes → comportement existant inchangé."""
-    from trader.runtime.daemon import _apply_decision_schedule
+    from trader.runtime import cycle_scheduling
     from trader.planning.scheduler import Scheduler
 
     sched = Scheduler(tmp_path / "scheduler.json")
     now = _now()
 
-    _apply_decision_schedule(
+    cycle_scheduling.apply_decision_schedule(
         sched=sched,
         sym="SPY",
         now=now,
@@ -265,14 +265,14 @@ def test_apply_decision_schedule_minutes_still_works(tmp_path) -> None:
 
 def test_apply_decision_schedule_iso_takes_precedence_over_minutes(tmp_path) -> None:
     """Si next_wake_iso ET next_wake_in_minutes → next_wake_iso prime."""
-    from trader.runtime.daemon import _apply_decision_schedule
+    from trader.runtime import cycle_scheduling
     from trader.planning.scheduler import Scheduler
 
     sched = Scheduler(tmp_path / "scheduler.json")
     now = _now()
     target_iso = "2026-07-04T09:30:00+00:00"
 
-    _apply_decision_schedule(
+    cycle_scheduling.apply_decision_schedule(
         sched=sched,
         sym="AAPL",
         now=now,

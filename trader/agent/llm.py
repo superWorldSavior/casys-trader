@@ -1,26 +1,20 @@
-"""Transport LLM agnostique pour le brain trading.
+"""Port LLM agnostique pour le brain trading.
 
-Le module ne connaît pas le schéma de décision. Il expose seulement une API
-`prompt -> texte` avec métadonnées fournisseur, puis `codex_client` valide le
-JSON métier. Cela garde le fallback fournisseur hors de la stratégie.
+Le module ne connaît pas le schéma de décision. Il expose le contrat
+`prompt -> texte` avec métadonnées fournisseur, le router de fallback et la
+factory d'environnement. Les adaptateurs I/O vivent sous
+``trader.infrastructure.llm`` et sont ré-exportés ici par compatibilité.
 """
 
 from __future__ import annotations
 
-import json
-import logging
+import importlib
 import os
-import signal
-import shutil
-import subprocess
-import time
-import urllib.error
-import urllib.request
-from dataclasses import dataclass, is_dataclass, replace
+from dataclasses import replace
 from pathlib import Path
-from typing import Callable, Protocol
+from typing import Protocol
 
-from trader.support.system.process_env import sanitized_runtime_env
+from trader.domain.llm import LlmCompletion, LlmFailure
 
 DEFAULT_SPARK_MODEL = "gpt-5.5"
 DEFAULT_SPARK_FALLBACK_MODEL = "gpt-5.3-codex-spark"
@@ -30,64 +24,6 @@ DEFAULT_CONSOLIDATOR_OLLAMA_MODEL = "glm-5.1:cloud"
 DEFAULT_ENV_PATH = Path(__file__).resolve().parents[2] / ".env"
 DEFAULT_RUNTIME_SESSION_LABEL = "casys-trader:runtime-brain"
 DEFAULT_CONSOLIDATOR_SESSION_LABEL = "casys-trader:learning-consolidator"
-
-log = logging.getLogger(__name__)
-
-# Plafond par-appel du subprocess acpx, DÉCOUPLÉ du budget-décision (lease).
-# Un appel LLM normal fait 30-90s ; un tour figé (provider muet après
-# task_started, cf incident AMCR 2026-07-06) resterait pendu jusqu'au budget
-# total. Ce cap coupe l'appel individuel bien avant, sans toucher au lease.
-_DEFAULT_PER_CALL_TIMEOUT_CAP_S = 150
-
-
-def _per_call_timeout_cap_s() -> int:
-    """Cap par-appel subprocess acpx (secondes), env ``CASYS_ACPX_CALL_TIMEOUT_S``."""
-    raw = os.getenv("CASYS_ACPX_CALL_TIMEOUT_S")
-    if raw is None:
-        return _DEFAULT_PER_CALL_TIMEOUT_CAP_S
-    try:
-        return max(int(raw), 1)
-    except ValueError:
-        return _DEFAULT_PER_CALL_TIMEOUT_CAP_S
-
-
-def _log_acpx_call(
-    *, session, symbol, pid, provider, timeout_s: int, dur_s: float, outcome: str
-) -> None:
-    """Journal de vie d'un appel acpx : 1 ligne structurée par subprocess.
-
-    Champs : session (=task_id:attempt) · symbol · pid · timeout appliqué ·
-    durée réelle · issue (ok|timeout|nonzero|nonzero_retryable|error|unavailable).
-    Corrélable au ledger par ``session`` (préfixe = task_id).
-    """
-    log.info(
-        "[acpx_call] session=%s symbol=%s pid=%s provider=%s timeout_s=%s dur_s=%.1f outcome=%s",
-        session or "-",
-        symbol or "-",
-        pid if pid is not None else "-",
-        provider,
-        timeout_s,
-        dur_s,
-        outcome,
-    )
-
-
-@dataclass(frozen=True)
-class LlmCompletion:
-    provider: str
-    model: str
-    text: str
-    fallback_reason: str | None = None
-
-
-@dataclass(frozen=True)
-class LlmFailure:
-    provider: str
-    model: str
-    code: str
-    message: str
-    retryable: bool
-    fallback_reason: str | None = None
 
 
 class LlmBackend(Protocol):
@@ -131,550 +67,6 @@ class LlmRouter:
         )
 
 
-def _acpx_global_flags(acpx_bin: str, *, model: str, timeout_s: int) -> list[str]:
-    return [
-        acpx_bin,
-        "--format", "quiet",
-        "--allowed-tools", "",
-        "--no-terminal",
-        "--non-interactive-permissions", "deny",
-        "--model", model,
-        "--timeout", str(timeout_s),
-    ]
-
-
-def _acpx_agent_part(agent: str | None) -> list[str]:
-    return [] if not agent or agent == "default" else [agent]
-
-
-def build_acpx_session_new_command(
-    name: str,
-    *,
-    acpx_bin: str,
-    model: str,
-    timeout_s: int,
-    agent: str | None = None,
-) -> list[str]:
-    return [
-        *_acpx_global_flags(acpx_bin, model=model, timeout_s=timeout_s),
-        *_acpx_agent_part(agent),
-        "sessions",
-        "new",
-        "-s",
-        name,
-    ]
-
-
-def build_acpx_session_prompt_command(
-    name: str,
-    prompt: str,
-    *,
-    acpx_bin: str,
-    model: str,
-    timeout_s: int,
-    agent: str | None = None,
-) -> list[str]:
-    return [
-        *_acpx_global_flags(acpx_bin, model=model, timeout_s=timeout_s),
-        *_acpx_agent_part(agent),
-        "prompt",
-        "-s",
-        name,
-        prompt,
-    ]
-
-
-def build_acpx_session_close_command(
-    name: str,
-    *,
-    acpx_bin: str,
-    agent: str | None = None,
-) -> list[str]:
-    return [
-        acpx_bin,
-        "--format", "quiet",
-        "--no-terminal",
-        "--non-interactive-permissions", "deny",
-        *_acpx_agent_part(agent),
-        "sessions",
-        "close",
-        name,
-    ]
-
-
-def build_acpx_command(
-    prompt: str,
-    *,
-    acpx_bin: str,
-    model: str,
-    timeout_s: int,
-    agent: str | None = None,
-    session_label: str | None = None,
-) -> list[str]:
-    labeled_prompt = _label_prompt(prompt, session_label=session_label)
-    return [
-        *_acpx_global_flags(acpx_bin, model=model, timeout_s=timeout_s),
-        *_acpx_agent_part(agent),
-        "exec",
-        labeled_prompt,
-    ]
-
-
-def _clean_optional(value: str | None) -> str | None:
-    cleaned = str(value or "").strip()
-    return cleaned or None
-
-
-def _label_prompt(prompt: str, *, session_label: str | None) -> str:
-    cleaned = _clean_optional(session_label)
-    if cleaned is None:
-        return prompt
-    return f"[{cleaned}]\n{prompt}"
-
-
-def _default_acpx_session_label(provider: str) -> str | None:
-    if provider == "consolidator":
-        return DEFAULT_CONSOLIDATOR_SESSION_LABEL
-    if provider == "acpx":
-        return DEFAULT_RUNTIME_SESSION_LABEL
-    return None
-
-
-def _env_session_label(provider: str) -> str | None:
-    if provider == "consolidator":
-        return _env("TRADER_CONSOLIDATOR_ACPX_SESSION_LABEL", "TRADER_ACPX_SESSION_LABEL")
-    return _env("TRADER_ACPX_SESSION_LABEL")
-
-
-def _looks_retryable_provider_error(text: str) -> bool:
-    """Vrai uniquement quand le fournisseur refuse de servir pour rate-limit/quota."""
-    lowered = text.lower()
-    needles = (
-        "429",
-        "rate limit",
-        "rate_limit",
-        "quota",
-        "credit",
-        "credits",
-        "insufficient_quota",
-    )
-    return any(needle in lowered for needle in needles)
-
-
-def _looks_retryable_acpx_error(*, provider: str, text: str) -> bool:
-    if _looks_retryable_provider_error(text):
-        return True
-    if "internal error" in text.lower():
-        return True
-    # exit!=0 sans aucune sortie (stderr+stdout vides) = échec provider
-    # transitoire (blip quota/dispo) qu'acpx remonte muet sous --format quiet ;
-    # on le rend retryable pour autoriser le fallback plutôt qu'un HOLD sec.
-    if not text.strip():
-        return True
-    return False
-
-
-def _failure_code_from_text(text: str) -> str:
-    lowered = text.lower()
-    if "429" in lowered or "rate limit" in lowered or "rate_limit" in lowered:
-        return "rate_limited"
-    if "quota" in lowered or "credit" in lowered or "insufficient_quota" in lowered:
-        return "quota_exceeded"
-    if "timeout" in lowered or "timed out" in lowered:
-        return "timeout"
-    return "provider_error"
-
-
-def _terminate_process_group(pgid: int, *, grace_s: float = 2.0) -> None:
-    if os.name != "posix":
-        return
-    try:
-        os.killpg(pgid, signal.SIGTERM)
-    except (ProcessLookupError, PermissionError):
-        return
-
-    deadline = time.monotonic() + grace_s
-    while time.monotonic() < deadline:
-        try:
-            os.killpg(pgid, 0)
-        except (ProcessLookupError, PermissionError):
-            return
-        time.sleep(0.05)
-
-    try:
-        os.killpg(pgid, signal.SIGKILL)
-    except (ProcessLookupError, PermissionError):
-        return
-
-
-def _run_one_shot_command(
-    command: list[str], *, timeout_s: int, on_pid: Callable[[int], None] | None = None
-) -> subprocess.CompletedProcess[str]:
-    proc = subprocess.Popen(
-        command,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        start_new_session=os.name == "posix",
-        env=sanitized_runtime_env(),
-    )
-    if on_pid is not None:
-        on_pid(proc.pid)
-    try:
-        stdout, stderr = proc.communicate(timeout=timeout_s)
-    except subprocess.TimeoutExpired:
-        _terminate_process_group(proc.pid)
-        try:
-            proc.kill()
-        except ProcessLookupError:
-            pass
-        try:
-            proc.communicate(timeout=1)
-        except subprocess.TimeoutExpired:
-            pass
-        raise
-    finally:
-        _terminate_process_group(proc.pid)
-
-    return subprocess.CompletedProcess(
-        args=command,
-        returncode=proc.returncode,
-        stdout=stdout,
-        stderr=stderr,
-    )
-
-
-def _run_and_parse(
-    command: list[str],
-    *,
-    provider: str,
-    model: str,
-    acpx_bin: str,
-    timeout_s: int,
-    call_ctx: dict | None = None,
-) -> LlmCompletion | LlmFailure:
-    ctx = call_ctx or {}
-    session = ctx.get("session")
-    symbol = ctx.get("symbol")
-    # Budget par-appel = min(budget demandé, cap transport). Le cap coupe un
-    # appel figé sans attendre le budget-décision total (fenêtre opaque).
-    budget_s = min(int(timeout_s), _per_call_timeout_cap_s())
-
-    if shutil.which(acpx_bin) is None:
-        _log_acpx_call(
-            session=session, symbol=symbol, pid=None, provider=provider,
-            timeout_s=budget_s, dur_s=0.0, outcome="unavailable",
-        )
-        return LlmFailure(
-            provider=provider,
-            model=model,
-            code="acpx_unavailable",
-            message=f"binaire '{acpx_bin}' introuvable",
-            retryable=True,
-        )
-
-    pid_holder: dict[str, int | None] = {"pid": None}
-    started = time.monotonic()
-    try:
-        proc = _run_one_shot_command(
-            command,
-            timeout_s=budget_s + 15,
-            on_pid=lambda p: pid_holder.__setitem__("pid", p),
-        )
-    except subprocess.TimeoutExpired:
-        _log_acpx_call(
-            session=session, symbol=symbol, pid=pid_holder["pid"], provider=provider,
-            timeout_s=budget_s, dur_s=time.monotonic() - started, outcome="timeout",
-        )
-        return LlmFailure(
-            provider=provider,
-            model=model,
-            code="timeout",
-            message=f"> {budget_s}s",
-            # Un tour figé (provider muet) est TRANSITOIRE : rejouer. L'incident
-            # AMCR 2026-07-06 s'est résolu au retry post-restart.
-            retryable=True,
-        )
-    except Exception as exc:  # noqa: BLE001 - frontière fournisseur
-        message = str(exc)
-        _log_acpx_call(
-            session=session, symbol=symbol, pid=pid_holder["pid"], provider=provider,
-            timeout_s=budget_s, dur_s=time.monotonic() - started, outcome="error",
-        )
-        return LlmFailure(
-            provider=provider,
-            model=model,
-            code=_failure_code_from_text(message),
-            message=message,
-            retryable=_looks_retryable_provider_error(message),
-        )
-
-    dur_s = time.monotonic() - started
-    if proc.returncode != 0:
-        message = (proc.stderr or proc.stdout or "")[:500]
-        retryable = _looks_retryable_acpx_error(provider=provider, text=message)
-        _log_acpx_call(
-            session=session, symbol=symbol, pid=pid_holder["pid"], provider=provider,
-            timeout_s=budget_s, dur_s=dur_s,
-            outcome="nonzero_retryable" if retryable else "nonzero",
-        )
-        return LlmFailure(
-            provider=provider,
-            model=model,
-            code=_failure_code_from_text(message) if retryable else "nonzero_exit",
-            message=f"exit={proc.returncode} {message}",
-            retryable=retryable,
-        )
-
-    _log_acpx_call(
-        session=session, symbol=symbol, pid=pid_holder["pid"], provider=provider,
-        timeout_s=budget_s, dur_s=dur_s, outcome="ok",
-    )
-    return LlmCompletion(provider=provider, model=model, text=proc.stdout)
-
-
-@dataclass(frozen=True)
-class AcpxSession:
-    provider: str
-    model: str
-    acpx_bin: str
-    name: str
-    agent: str | None = None
-
-    def send(
-        self, prompt: str, *, timeout_s: int, call_ctx: dict | None = None
-    ) -> LlmCompletion | LlmFailure:
-        return _run_and_parse(
-            build_acpx_session_prompt_command(
-                self.name,
-                prompt,
-                acpx_bin=self.acpx_bin,
-                model=self.model,
-                timeout_s=timeout_s,
-                agent=self.agent,
-            ),
-            provider=self.provider,
-            model=self.model,
-            acpx_bin=self.acpx_bin,
-            timeout_s=timeout_s,
-            call_ctx={**(call_ctx or {}), "session": self.name},
-        )
-
-    def close(self) -> None:
-        try:
-            _run_one_shot_command(
-                build_acpx_session_close_command(
-                    self.name,
-                    acpx_bin=self.acpx_bin,
-                    agent=self.agent,
-                ),
-                timeout_s=15,
-            )
-        except Exception as exc:  # noqa: BLE001 - fermeture best-effort, jamais bloquante
-            log.warning("[acpx_session] close failed name=%s: %s", self.name, exc)
-            return
-
-
-class SessionProviderDown(Exception):
-    def __init__(self, failure: LlmFailure) -> None:
-        super().__init__(failure.message)
-        self.failure = failure
-
-
-def session_complete_fn(session, call_ctx: dict | None = None):
-    def _complete(prompt: str, timeout_s: int) -> LlmCompletion | LlmFailure:
-        result = session.send(prompt, timeout_s=timeout_s, call_ctx=call_ctx)
-        if isinstance(result, LlmFailure) and result.retryable:
-            raise SessionProviderDown(result)
-        return result
-
-    return _complete
-
-
-def run_with_session_fallback(
-    backends,
-    *,
-    task_id: str,
-    resolve,
-    open_timeout_s: int,
-) -> object | LlmFailure:
-    last_failure: LlmFailure | None = None
-    for attempt, backend in enumerate(backends):
-        session = backend.open_session(f"{task_id}:{attempt}", timeout_s=open_timeout_s)
-        if isinstance(session, LlmFailure):
-            last_failure = session
-            continue
-        try:
-            result = resolve(session)
-            if (
-                attempt > 0
-                and last_failure is not None
-                and is_dataclass(result)
-                and hasattr(result, "llm_fallback_reason")
-                and getattr(result, "llm_fallback_reason") is None
-            ):
-                result = replace(
-                    result,
-                    llm_fallback_reason=f"{last_failure.provider}:{last_failure.code}",
-                )
-            return result
-        except SessionProviderDown as exc:
-            last_failure = exc.failure
-            continue
-        finally:
-            session.close()
-    return last_failure or LlmFailure(
-        provider="none",
-        model="none",
-        code="no_backend",
-        message="aucun backend LLM configuré",
-        retryable=False,
-    )
-
-
-@dataclass(frozen=True)
-class AcpxBackend:
-    provider: str = "acpx"
-    model: str = DEFAULT_SPARK_MODEL
-    acpx_bin: str = "acpx"
-    agent: str | None = None
-    session_label: str | None = DEFAULT_RUNTIME_SESSION_LABEL
-
-    def open_session(self, name: str, *, timeout_s: int) -> AcpxSession | LlmFailure:
-        res = _run_and_parse(
-            build_acpx_session_new_command(
-                name,
-                acpx_bin=self.acpx_bin,
-                model=self.model,
-                timeout_s=timeout_s,
-                agent=self.agent,
-            ),
-            provider=self.provider,
-            model=self.model,
-            acpx_bin=self.acpx_bin,
-            timeout_s=timeout_s,
-            call_ctx={"session": name},
-        )
-        if not isinstance(res, LlmCompletion):
-            return res
-
-        return AcpxSession(
-            provider=self.provider,
-            model=self.model,
-            acpx_bin=self.acpx_bin,
-            name=name,
-            agent=self.agent,
-        )
-
-    def complete(self, prompt: str, *, timeout_s: int) -> LlmCompletion | LlmFailure:
-        return _run_and_parse(
-            build_acpx_command(
-                prompt,
-                acpx_bin=self.acpx_bin,
-                model=self.model,
-                timeout_s=timeout_s,
-                agent=self.agent,
-                session_label=self.session_label,
-            ),
-            provider=self.provider,
-            model=self.model,
-            acpx_bin=self.acpx_bin,
-            timeout_s=timeout_s,
-            call_ctx={"session": self.session_label},
-        )
-
-
-class OpenAIHttpError(RuntimeError):
-    def __init__(self, status: int, body: str) -> None:
-        super().__init__(body)
-        self.status = status
-        self.body = body
-
-
-def _post_json(url: str, payload: dict, headers: dict, timeout_s: int) -> dict:
-    request = urllib.request.Request(
-        url,
-        data=json.dumps(payload).encode("utf-8"),
-        headers=headers,
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=timeout_s) as response:
-            return json.loads(response.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        body = exc.read().decode("utf-8", errors="replace")
-        raise OpenAIHttpError(exc.code, body) from exc
-    except urllib.error.URLError as exc:
-        raise OpenAIHttpError(0, str(exc)) from exc
-
-
-def _http_error_from_exception(exc: Exception) -> OpenAIHttpError | None:
-    if isinstance(exc, OpenAIHttpError):
-        return exc
-    try:
-        data = json.loads(str(exc))
-    except json.JSONDecodeError:
-        return None
-    status = data.get("status")
-    if isinstance(status, int):
-        return OpenAIHttpError(status, str(data.get("body") or data))
-    return None
-
-
-def _classify_openai_error(exc: Exception) -> tuple[str, bool, str]:
-    http_error = _http_error_from_exception(exc)
-    if http_error is None:
-        message = str(exc)
-        return _failure_code_from_text(message), _looks_retryable_provider_error(message), message
-
-    lowered_body = http_error.body.lower()
-    if "requires a subscription" in lowered_body or "upgrade for access" in lowered_body:
-        return "subscription_required", False, http_error.body
-    if http_error.status == 429:
-        return "rate_limited", True, http_error.body
-    if http_error.status in {408, 500, 502, 503, 504} or http_error.status == 0:
-        return "provider_error", False, http_error.body
-    if http_error.status in {401, 403}:
-        return "auth_failed", False, http_error.body
-    if http_error.status == 404:
-        return "model_not_found", False, http_error.body
-    return "request_failed", False, http_error.body
-
-
-@dataclass(frozen=True)
-class OpenAICompatibleBackend:
-    provider: str
-    api_key: str
-    base_url: str
-    model: str
-    post_json: Callable[[str, dict, dict, int], dict] = _post_json
-
-    def complete(self, prompt: str, *, timeout_s: int) -> LlmCompletion | LlmFailure:
-        url = f"{self.base_url.rstrip('/')}/chat/completions"
-        payload = {
-            "model": self.model,
-            "messages": [{"role": "user", "content": prompt}],
-            "temperature": 0,
-        }
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-        }
-        try:
-            response = self.post_json(url, payload, headers, timeout_s)
-            content = response["choices"][0]["message"]["content"]
-        except Exception as exc:  # noqa: BLE001 - frontière fournisseur
-            code, retryable, message = _classify_openai_error(exc)
-            return LlmFailure(
-                provider=self.provider,
-                model=self.model,
-                code=code,
-                message=message[:500],
-                retryable=retryable,
-            )
-        return LlmCompletion(provider=self.provider, model=self.model, text=str(content))
-
-
 def load_dotenv(path: str | Path | None = DEFAULT_ENV_PATH, *, override: bool = False) -> None:
     if path is None:
         return
@@ -708,6 +100,25 @@ def _ollama_env(provider: str, suffix: str, *fallback_names: str, default: str |
     return _env(*names, default=default)
 
 
+def _clean_optional(value: str | None) -> str | None:
+    cleaned = str(value or "").strip()
+    return cleaned or None
+
+
+def _default_acpx_session_label(provider: str) -> str | None:
+    if provider == "consolidator":
+        return DEFAULT_CONSOLIDATOR_SESSION_LABEL
+    if provider == "acpx":
+        return DEFAULT_RUNTIME_SESSION_LABEL
+    return None
+
+
+def _env_session_label(provider: str) -> str | None:
+    if provider == "consolidator":
+        return _env("TRADER_CONSOLIDATOR_ACPX_SESSION_LABEL", "TRADER_ACPX_SESSION_LABEL")
+    return _env("TRADER_ACPX_SESSION_LABEL")
+
+
 def build_default_router_from_env(
     *,
     env_path: str | Path | None = DEFAULT_ENV_PATH,
@@ -718,6 +129,9 @@ def build_default_router_from_env(
     acpx_agent: str | None = None,
     acpx_session_label: str | None = None,
 ) -> LlmRouter:
+    from trader.infrastructure.llm.acpx_backend import AcpxBackend
+    from trader.infrastructure.llm.openai_backend import OpenAICompatibleBackend
+
     load_dotenv(env_path)
     # TRADER_ACPX_BIN prime sur le paramètre pour le provider de trading — mais PAS
     # pour le consolidateur dont le binaire est résolu en amont via
@@ -793,3 +207,55 @@ def build_default_router_from_env(
             )
         )
     return LlmRouter(backends)
+
+
+_LAZY_EXPORT_MODULES = {
+    "AcpxBackend": "trader.infrastructure.llm.acpx_backend",
+    "AcpxSession": "trader.infrastructure.llm.acpx_backend",
+    "SessionProviderDown": "trader.infrastructure.llm.acpx_backend",
+    "build_acpx_command": "trader.infrastructure.llm.acpx_backend",
+    "build_acpx_session_close_command": "trader.infrastructure.llm.acpx_backend",
+    "build_acpx_session_new_command": "trader.infrastructure.llm.acpx_backend",
+    "build_acpx_session_prompt_command": "trader.infrastructure.llm.acpx_backend",
+    "run_with_session_fallback": "trader.infrastructure.llm.acpx_backend",
+    "session_complete_fn": "trader.infrastructure.llm.acpx_backend",
+    "_per_call_timeout_cap_s": "trader.infrastructure.llm.acpx_backend",
+    "_run_and_parse": "trader.infrastructure.llm.acpx_backend",
+    "_run_one_shot_command": "trader.infrastructure.llm.acpx_backend",
+    "_terminate_process_group": "trader.infrastructure.llm.acpx_backend",
+    "OpenAICompatibleBackend": "trader.infrastructure.llm.openai_backend",
+    "OpenAIHttpError": "trader.infrastructure.llm.openai_backend",
+    "_classify_openai_error": "trader.infrastructure.llm.openai_backend",
+    "_http_error_from_exception": "trader.infrastructure.llm.openai_backend",
+    "_post_json": "trader.infrastructure.llm.openai_backend",
+    "_failure_code_from_text": "trader.infrastructure.llm._errors",
+    "_looks_retryable_provider_error": "trader.infrastructure.llm._errors",
+}
+
+
+def __getattr__(name: str):
+    module_name = _LAZY_EXPORT_MODULES.get(name)
+    if module_name is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    value = getattr(importlib.import_module(module_name), name)
+    globals()[name] = value
+    return value
+
+
+__all__ = [
+    "DEFAULT_CONSOLIDATOR_OLLAMA_MODEL",
+    "DEFAULT_CONSOLIDATOR_SESSION_LABEL",
+    "DEFAULT_ENV_PATH",
+    "DEFAULT_OLLAMA_BASE_URL",
+    "DEFAULT_OLLAMA_MODEL",
+    "DEFAULT_RUNTIME_SESSION_LABEL",
+    "DEFAULT_SPARK_FALLBACK_MODEL",
+    "DEFAULT_SPARK_MODEL",
+    "LlmBackend",
+    "LlmCompletion",
+    "LlmFailure",
+    "LlmRouter",
+    "build_default_router_from_env",
+    "load_dotenv",
+    *_LAZY_EXPORT_MODULES,
+]

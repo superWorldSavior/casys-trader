@@ -10,10 +10,14 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from trader.runtime import daemon
+from trader.runtime import cycle_scheduling
 from trader.runtime.worker_cycle_context import WorkerCycleContextHandle
 from trader.application.decide import planner_batch
+from trader.application.execute import order_admission
+from trader.application.record import plan_review
 from trader.agent.client import ContextResearchRequest, Decision, IndicatorRequest
 from trader.agent.protocol.parsing import parse_batch
+from trader.market import execution_eligibility as execution_eligibility_service
 from trader.planning.indicator_watch import summarize_watch
 from trader.market.market_data import Bar
 from trader.planning.scheduler import Scheduler
@@ -34,6 +38,18 @@ _COMMON = dict(
     now=datetime(2026, 6, 15, 14, 30, tzinfo=timezone.utc),
     data_age_by_symbol={},
 )
+
+
+def _batch_decide(**kwargs):
+    kwargs.setdefault("indicator_request_resolver", daemon.resolve_indicator_requests)
+    kwargs.setdefault("event_appender", daemon._append_event)
+    return planner_batch.batch_decide(**kwargs)
+
+
+def _apply_decision_schedule(**kwargs) -> None:
+    kwargs.setdefault("append_event", daemon._append_event)
+    kwargs.setdefault("logger", daemon.log)
+    cycle_scheduling.apply_decision_schedule(**kwargs)
 
 
 def test_planner_batch_module_expose_batch_decide() -> None:
@@ -772,22 +788,22 @@ def test_execution_blocked_reason_gate_les_ordres_hors_execution() -> None:
         "CLOSED": {"execution": {"enabled": False, "reason": "session_closed"}},
         "STALE": {"execution": {"enabled": False, "reason": "runtime_stale"}},
     }
-    assert daemon._execution_blocked_reason(elig, "OK") is None
-    assert daemon._execution_blocked_reason(elig, "CLOSED") == "execution:session_closed"
-    assert daemon._execution_blocked_reason(elig, "STALE") == "execution:runtime_stale"
+    assert execution_eligibility_service.execution_blocked_reason(elig, "OK") is None
+    assert execution_eligibility_service.execution_blocked_reason(elig, "CLOSED") == "execution:session_closed"
+    assert execution_eligibility_service.execution_blocked_reason(elig, "STALE") == "execution:runtime_stale"
     # Symbole hors classification (cas anormal) : fail-open par défaut (sorties de
     # protection), fail-closed pour les ouvertures (invariant §10).
-    assert daemon._execution_blocked_reason(elig, "UNKNOWN") is None
-    assert daemon._execution_blocked_reason(elig, "UNKNOWN", fail_closed=True) == "execution:unclassified"
+    assert execution_eligibility_service.execution_blocked_reason(elig, "UNKNOWN") is None
+    assert execution_eligibility_service.execution_blocked_reason(elig, "UNKNOWN", fail_closed=True) == "execution:unclassified"
     # Un symbole classé exécutable n'est jamais bloqué, même en fail_closed.
-    assert daemon._execution_blocked_reason(elig, "OK", fail_closed=True) is None
+    assert execution_eligibility_service.execution_blocked_reason(elig, "OK", fail_closed=True) is None
 
 
 def test_build_execution_eligibility_separe_planning_et_execution_pour_un_stale() -> None:
     # §13.2 branchée : un symbole runtime-stale mais au daily présent (frais) →
     # execution interdite (runtime_stale), planning autorisé (daily_context_fresh).
     now = datetime(2026, 6, 15, 14, 30, tzinfo=timezone.utc)  # séance US ouverte
-    elig = daemon._build_execution_eligibility(
+    elig = execution_eligibility_service.build_execution_eligibility(
         ["STALE"],
         stale_market_data={
             "STALE": {"last_bar_ts": "2026-06-12T20:00:00+00:00", "data_age_minutes": 4000.0}
@@ -823,7 +839,7 @@ def test_batch_decide_injecte_age_data_et_session_par_symbole(monkeypatch) -> No
         "data_age_by_symbol": {"SPY": 9.6},
     }
 
-    decisions, n = daemon._batch_decide(decidable=["SPY", "QQQ"], max_model_calls=1, **common)
+    decisions, n = _batch_decide(decidable=["SPY", "QQQ"], max_model_calls=1, **common)
 
     assert captured["SPY"]["data_age_m"] == 10  # arrondi à la minute entière
     # session_context enrichi : ouvert → depuis combien de temps + combien avant cloche.
@@ -832,26 +848,6 @@ def test_batch_decide_injecte_age_data_et_session_par_symbole(monkeypatch) -> No
     assert captured["SPY"]["session"]["to_close_m"] == 330    # 20h00 - 14h30 UTC close
     assert "next_open" not in captured["SPY"]["session"]
     assert captured["QQQ"]["data_age_m"] is None  # âge inconnu = inconnu, pas 0
-
-
-def test_daemon_batch_decide_wrapper_delegue_au_module_application(monkeypatch) -> None:
-    captured: dict = {}
-
-    def fake_batch_decide(**kwargs):
-        captured.update(kwargs)
-        return {"SPY": Decision.hold("SPY", "module")}, 0
-
-    monkeypatch.setattr(planner_batch, "batch_decide", fake_batch_decide)
-
-    decisions, calls = daemon._batch_decide(
-        decidable=["SPY"],
-        max_model_calls=1,
-        **_COMMON,
-    )
-
-    assert calls == 0
-    assert decisions["SPY"].rationale == "module"
-    assert captured["decidable"] == ["SPY"]
 
 
 def test_batch_decide_injecte_last_llm_review_du_plan_ouvert(monkeypatch) -> None:
@@ -867,7 +863,7 @@ def test_batch_decide_injecte_last_llm_review_du_plan_ouvert(monkeypatch) -> Non
     monkeypatch.setattr(daemon.codex_client, "decide_batch", fake_batch)
     review = {"ts": "2026-06-15T13:00:00+00:00", "verdict": "fragile", "action": "HOLD"}
 
-    daemon._batch_decide(
+    _batch_decide(
         decidable=["SPY", "QQQ"],
         max_model_calls=1,
         last_review_by_symbol={"SPY": review},
@@ -893,7 +889,7 @@ def test_batch_decide_injecte_le_market_context_execution_planning(monkeypatch) 
         "planning": {"enabled": True, "reason": "daily_context_fresh"},
     }
 
-    daemon._batch_decide(
+    _batch_decide(
         decidable=["SPY"],
         max_model_calls=1,
         market_context_by_symbol={"SPY": mc},
@@ -923,7 +919,7 @@ def test_batch_decide_reinjecte_last_llm_review_dans_les_deux_batches(monkeypatc
     monkeypatch.setattr(daemon, "resolve_indicator_requests", fake_resolve)
     review = {"ts": "2026-06-15T13:00:00+00:00", "verdict": "fragile"}
 
-    daemon._batch_decide(
+    _batch_decide(
         decidable=["SPY"],
         max_model_calls=2,
         last_review_by_symbol={"SPY": review},
@@ -957,7 +953,7 @@ def test_last_review_by_symbol_filtre_plans_sans_review_et_hors_perimetre(tmp_pa
     store.upsert(_plan("QQQ"))  # plan ouvert mais sans review
     store.upsert(_plan("IWM", review))  # review mais hors du batch décidé
 
-    out = daemon._last_review_by_symbol(store, ["SPY", "QQQ"])
+    out = plan_review.last_review_by_symbol(store, ["SPY", "QQQ"])
 
     assert out == {"SPY": review}
 
@@ -989,7 +985,7 @@ def test_batch_decide_expose_les_active_watches_du_symbole_seulement(monkeypatch
 
     monkeypatch.setattr(daemon.codex_client, "decide_batch", fake_batch)
 
-    daemon._batch_decide(
+    _batch_decide(
         decidable=["SPY"],
         max_model_calls=1,
         sched=sched,
@@ -1000,8 +996,7 @@ def test_batch_decide_expose_les_active_watches_du_symbole_seulement(monkeypatch
 
 
 def test_apply_decision_schedule_annule_les_watches_avant_de_reposer(monkeypatch) -> None:
-    apply_fn = getattr(daemon, "_apply_decision_schedule", None)
-    assert apply_fn is not None
+    apply_fn = _apply_decision_schedule
     now = datetime(2026, 6, 15, 14, 30, tzinfo=timezone.utc)
     operations: list[tuple[str, str]] = []
     events: list[tuple[str, dict]] = []
@@ -1091,7 +1086,7 @@ def test_apply_decision_schedule_loggue_cancel_et_arm_en_info(monkeypatch, caplo
     monkeypatch.setattr(daemon, "_append_event", lambda event, **payload: None)
     caplog.set_level(logging.INFO, logger="casys-trader")
 
-    daemon._apply_decision_schedule(
+    _apply_decision_schedule(
         sched=NoopScheduler(),
         sym="SPY",
         now=now,
@@ -1147,7 +1142,7 @@ def test_apply_decision_schedule_rejette_l_annulation_d_une_watch_autre_symbole(
     )
 
     entry: dict = {}
-    daemon._apply_decision_schedule(
+    _apply_decision_schedule(
         sched=RecordingScheduler(),
         sym="SYM",
         now=now,
@@ -1224,7 +1219,7 @@ def test_run_cycle_applique_cancel_watch_ids_avant_nouvelle_veille(
 
     monkeypatch.setattr(daemon, "ROOT", tmp_path)
     monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
-    monkeypatch.setattr(daemon, "_batch_decide", fake_batch_decide)
+    monkeypatch.setattr(planner_batch, "batch_decide", fake_batch_decide)
     monkeypatch.setattr(
         daemon,
         "_append_event",
@@ -1261,7 +1256,7 @@ def test_budget_zero_ne_fait_aucun_appel_et_tout_hold(monkeypatch) -> None:
         return {}
 
     monkeypatch.setattr(daemon.codex_client, "decide_batch", fake_batch)
-    decisions, n = daemon._batch_decide(decidable=["SPY", "QQQ"], max_model_calls=0, **_COMMON)
+    decisions, n = _batch_decide(decidable=["SPY", "QQQ"], max_model_calls=0, **_COMMON)
 
     assert calls["n"] == 0
     assert n == 0
@@ -1279,7 +1274,7 @@ def test_batch_decide_passe_le_plafond_decisionnel_900s_par_defaut(monkeypatch) 
 
     monkeypatch.setattr(daemon.codex_client, "decide_batch", fake_batch)
 
-    decisions, n = daemon._batch_decide(decidable=["SPY", "QQQ"], max_model_calls=1, **_COMMON)
+    decisions, n = _batch_decide(decidable=["SPY", "QQQ"], max_model_calls=1, **_COMMON)
 
     assert n == 1
     assert decisions["SPY"].action == "HOLD"
@@ -1306,7 +1301,7 @@ def test_batch_decide_decoupe_les_decisions_en_chunks_paralleles_bornes(monkeypa
 
     monkeypatch.setattr(daemon.codex_client, "decide_batch", fake_batch)
 
-    decisions, n = daemon._batch_decide(
+    decisions, n = _batch_decide(
         decidable=symbols,
         max_model_calls=10,
         decision_batch_size=5,
@@ -1351,7 +1346,7 @@ def test_batch_decide_ne_depasse_pas_le_budget_appels_en_chunks(monkeypatch) -> 
 
     monkeypatch.setattr(daemon.codex_client, "decide_batch", fake_batch)
 
-    decisions, n = daemon._batch_decide(
+    decisions, n = _batch_decide(
         decidable=symbols,
         max_model_calls=2,
         decision_batch_size=5,
@@ -1382,7 +1377,7 @@ def test_batch_decide_passe_le_plafond_custom_aux_deux_appels(monkeypatch) -> No
 
     monkeypatch.setattr(daemon.codex_client, "decide_batch", fake_batch)
 
-    decisions, n = daemon._batch_decide(
+    decisions, n = _batch_decide(
         decidable=["SPY"],
         max_model_calls=2,
         decision_timeout_s=333,
@@ -1418,7 +1413,7 @@ def test_batch_decide_attache_context_request_apres_round_trip(monkeypatch) -> N
     monkeypatch.setattr(daemon.codex_client, "decide_batch", fake_batch)
     monkeypatch.setattr(daemon, "resolve_indicator_requests", fake_resolve_indicator_requests)
 
-    decisions, n = daemon._batch_decide(decidable=["SPY", "QQQ"], max_model_calls=2, **_COMMON)
+    decisions, n = _batch_decide(decidable=["SPY", "QQQ"], max_model_calls=2, **_COMMON)
 
     assert n == 2
     assert calls == [True, False]
@@ -1463,7 +1458,7 @@ def test_batch_decide_reinjecte_active_watches_apres_request_context(monkeypatch
     monkeypatch.setattr(daemon.codex_client, "decide_batch", fake_batch)
     monkeypatch.setattr(daemon, "resolve_indicator_requests", fake_resolve_indicator_requests)
 
-    daemon._batch_decide(
+    _batch_decide(
         decidable=["SPY"],
         max_model_calls=2,
         sched=sched,
@@ -1487,7 +1482,7 @@ def test_run_cycle_passe_les_parametres_decisionnels_a_batch_decide(monkeypatch,
 
     monkeypatch.setattr(daemon, "ROOT", tmp_path)
     monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
-    monkeypatch.setattr(daemon, "_batch_decide", fake_batch_decide)
+    monkeypatch.setattr(planner_batch, "batch_decide", fake_batch_decide)
     data_source = make_data_source(lambda symbol, lookback, interval: [
         Bar(ts=now.isoformat(), open=100.0, high=101.0, low=99.0, close=100.0, volume=1000.0)
     ])
@@ -1523,7 +1518,7 @@ def test_budget_un_fait_un_seul_batch_et_request_context_devient_hold(monkeypatc
         }
 
     monkeypatch.setattr(daemon.codex_client, "decide_batch", fake_batch)
-    decisions, n = daemon._batch_decide(decidable=["SPY", "QQQ"], max_model_calls=1, **_COMMON)
+    decisions, n = _batch_decide(decidable=["SPY", "QQQ"], max_model_calls=1, **_COMMON)
 
     assert calls["n"] == 1  # pas de 2e batch
     assert n == 1
@@ -1555,7 +1550,7 @@ def test_veille_armee_sans_next_wake_dort_jusqu_a_expiration(monkeypatch, tmp_pa
         "on_trigger": "EXECUTE_ORDER",
         "conditions": [{"indicator": "return", "op": ">", "value": 0.01, "timeframe": "1h"}],
     }
-    daemon._apply_decision_schedule(
+    _apply_decision_schedule(
         sched=sched,
         sym="AIR.PA",
         now=now,
@@ -1592,7 +1587,7 @@ def test_hold_sans_veille_ni_wake_reste_sur_le_defaut(tmp_path) -> None:
     sched = Scheduler(tmp_path / "scheduler.json")
     now = datetime(2026, 7, 2, 10, 0, tzinfo=timezone.utc)
     sched.set_symbol_next_wake_in("SPY", minutes=99, now=now)  # un timer préexistant
-    daemon._apply_decision_schedule(
+    _apply_decision_schedule(
         sched=sched,
         sym="SPY",
         now=now,
@@ -1655,7 +1650,7 @@ def _make_pending_flip(symbol: str = "SPY", qty: float = 20.0) -> Decision:
 def test_resolve_close_long_position_produit_sell() -> None:
     """L2 : CLOSE sur position longue (qty=10) → action=SELL, qty=10."""
     dec = _make_pending_close()
-    resolved = daemon._resolve_position_aware_decision(dec, position_quantity=10.0)
+    resolved = order_admission.resolve_position_aware_decision(dec, position_quantity=10.0)
 
     assert resolved.action == "SELL"
     assert resolved.quantity == 10.0
@@ -1665,7 +1660,7 @@ def test_resolve_close_long_position_produit_sell() -> None:
 def test_resolve_close_short_position_produit_buy() -> None:
     """L2 : CLOSE sur position courte (qty=-8) → action=BUY, qty=8."""
     dec = _make_pending_close()
-    resolved = daemon._resolve_position_aware_decision(dec, position_quantity=-8.0)
+    resolved = order_admission.resolve_position_aware_decision(dec, position_quantity=-8.0)
 
     assert resolved.action == "BUY"
     assert resolved.quantity == 8.0
@@ -1675,7 +1670,7 @@ def test_resolve_close_short_position_produit_buy() -> None:
 def test_resolve_reduce_fraction_sur_long_position() -> None:
     """L2 : REDUCE fraction=0.5 sur position=10 → SELL 5."""
     dec = _make_pending_reduce(fraction=0.5)
-    resolved = daemon._resolve_position_aware_decision(dec, position_quantity=10.0)
+    resolved = order_admission.resolve_position_aware_decision(dec, position_quantity=10.0)
 
     assert resolved.action == "SELL"
     assert resolved.quantity == 5.0
@@ -1684,7 +1679,7 @@ def test_resolve_reduce_fraction_sur_long_position() -> None:
 def test_resolve_reduce_qty_abs_sur_long_position() -> None:
     """L2 : REDUCE qty=3 (abs) sans fraction → SELL 3, clampé à |pos|."""
     dec = _make_pending_reduce(qty=3.0)
-    resolved = daemon._resolve_position_aware_decision(dec, position_quantity=10.0)
+    resolved = order_admission.resolve_position_aware_decision(dec, position_quantity=10.0)
 
     assert resolved.action == "SELL"
     assert resolved.quantity == 3.0
@@ -1693,7 +1688,7 @@ def test_resolve_reduce_qty_abs_sur_long_position() -> None:
 def test_resolve_reduce_qty_abs_depasse_position_est_clampee() -> None:
     """L2 fail-safe : qty > |pos| → clampé à |pos|, pas d'ordre oversized."""
     dec = _make_pending_reduce(qty=15.0)
-    resolved = daemon._resolve_position_aware_decision(dec, position_quantity=10.0)
+    resolved = order_admission.resolve_position_aware_decision(dec, position_quantity=10.0)
 
     assert resolved.action == "SELL"
     assert resolved.quantity == 10.0  # clampé à |pos|
@@ -1702,7 +1697,7 @@ def test_resolve_reduce_qty_abs_depasse_position_est_clampee() -> None:
 def test_resolve_flip_sur_long_position_derive_side_sell() -> None:
     """L2 : FLIP sur position longue → SELL fermeture + nouvelle jambe."""
     dec = _make_pending_flip(qty=20.0)
-    resolved = daemon._resolve_position_aware_decision(dec, position_quantity=10.0)
+    resolved = order_admission.resolve_position_aware_decision(dec, position_quantity=10.0)
 
     assert resolved.action == "SELL"
     assert resolved.quantity == 30.0
@@ -1711,8 +1706,8 @@ def test_resolve_flip_sur_long_position_derive_side_sell() -> None:
 def test_resolve_flip_deja_resolu_est_idempotent() -> None:
     """L2/R3 : un FLIP déjà résolu ne double pas la jambe de fermeture."""
     dec = _make_pending_flip(qty=20.0)
-    once = daemon._resolve_position_aware_decision(dec, position_quantity=10.0)
-    twice = daemon._resolve_position_aware_decision(once, position_quantity=10.0)
+    once = order_admission.resolve_position_aware_decision(dec, position_quantity=10.0)
+    twice = order_admission.resolve_position_aware_decision(once, position_quantity=10.0)
 
     assert twice == once
     assert twice.action == "SELL"
@@ -1722,7 +1717,7 @@ def test_resolve_flip_deja_resolu_est_idempotent() -> None:
 def test_resolve_flip_sur_short_position_derive_side_buy() -> None:
     """L2 : FLIP sur position courte → BUY fermeture + nouvelle jambe."""
     dec = _make_pending_flip(qty=20.0)
-    resolved = daemon._resolve_position_aware_decision(dec, position_quantity=-5.0)
+    resolved = order_admission.resolve_position_aware_decision(dec, position_quantity=-5.0)
 
     assert resolved.action == "BUY"
     assert resolved.quantity == 25.0
@@ -1731,7 +1726,7 @@ def test_resolve_flip_sur_short_position_derive_side_buy() -> None:
 def test_resolve_no_position_produit_nothing_to_close() -> None:
     """L2 fail-safe ABSOLU : pas de position → HOLD 'nothing_to_close', jamais d'ordre."""
     dec = _make_pending_close()
-    resolved = daemon._resolve_position_aware_decision(dec, position_quantity=0.0)
+    resolved = order_admission.resolve_position_aware_decision(dec, position_quantity=0.0)
 
     assert resolved.action == "HOLD"
     assert resolved.rationale == "nothing_to_close"
@@ -1748,7 +1743,7 @@ def test_resolve_relative_scale_in_force_la_resolution_meme_sans_flag() -> None:
         intent="SCALE_IN",
         resolve_from_position=False,
     )
-    resolved = daemon._resolve_position_aware_decision(dec, position_quantity=10.0)
+    resolved = order_admission.resolve_position_aware_decision(dec, position_quantity=10.0)
 
     assert resolved.action == "BUY"
     assert resolved.quantity == 3.0
@@ -1766,7 +1761,7 @@ def test_resolve_relative_close_sans_position_force_le_fusible_meme_sans_flag() 
         intent="CLOSE",
         resolve_from_position=False,
     )
-    resolved = daemon._resolve_position_aware_decision(dec, position_quantity=0.0)
+    resolved = order_admission.resolve_position_aware_decision(dec, position_quantity=0.0)
 
     assert resolved.action == "HOLD"
     assert resolved.quantity == 0.0
@@ -1794,7 +1789,7 @@ def _make_pending_scale_in(symbol: str = "SPY", qty: float = 5.0) -> Decision:
 def test_resolve_scale_in_long_position_produit_buy() -> None:
     """L4 : SCALE_IN sur position longue → action=BUY (même sens), qty conservée."""
     dec = _make_pending_scale_in(qty=5.0)
-    resolved = daemon._resolve_position_aware_decision(dec, position_quantity=10.0)
+    resolved = order_admission.resolve_position_aware_decision(dec, position_quantity=10.0)
 
     assert resolved.action == "BUY"
     assert resolved.quantity == 5.0
@@ -1804,7 +1799,7 @@ def test_resolve_scale_in_long_position_produit_buy() -> None:
 def test_resolve_scale_in_short_position_produit_sell() -> None:
     """L4 : SCALE_IN sur position courte → action=SELL (même sens), qty conservée."""
     dec = _make_pending_scale_in(qty=3.0)
-    resolved = daemon._resolve_position_aware_decision(dec, position_quantity=-8.0)
+    resolved = order_admission.resolve_position_aware_decision(dec, position_quantity=-8.0)
 
     assert resolved.action == "SELL"
     assert resolved.quantity == 3.0
@@ -1824,8 +1819,8 @@ def test_parse_side_explicite_relative_est_ignoree_puis_derivee_depuis_position(
     """
     parsed = parse_batch(raw, ["SPY", "QQQ"], allow_context_request=False)
 
-    scale_in = daemon._resolve_position_aware_decision(parsed["SPY"], position_quantity=10.0)
-    flip = daemon._resolve_position_aware_decision(parsed["QQQ"], position_quantity=-6.0)
+    scale_in = order_admission.resolve_position_aware_decision(parsed["SPY"], position_quantity=10.0)
+    flip = order_admission.resolve_position_aware_decision(parsed["QQQ"], position_quantity=-6.0)
 
     assert scale_in.action == "BUY"
     assert scale_in.quantity == 3.0
@@ -1836,7 +1831,7 @@ def test_parse_side_explicite_relative_est_ignoree_puis_derivee_depuis_position(
 def test_resolve_scale_in_sans_position_produit_scale_in_without_position() -> None:
     """L4 fail-safe : SCALE_IN sans position ouverte → HOLD 'scale_in_without_position'."""
     dec = _make_pending_scale_in(qty=5.0)
-    resolved = daemon._resolve_position_aware_decision(dec, position_quantity=0.0)
+    resolved = order_admission.resolve_position_aware_decision(dec, position_quantity=0.0)
 
     assert resolved.action == "HOLD"
     assert resolved.rationale == "scale_in_without_position"
@@ -1846,7 +1841,7 @@ def test_resolve_scale_in_ne_casse_pas_resolve_close_l2() -> None:
     """L4 invariant : l'ajout de SCALE_IN ne doit pas altérer la résolution CLOSE (L2).
     CLOSE sur position longue → SELL qty=|pos| (comportement L2 inchangé)."""
     dec = _make_pending_close()
-    resolved = daemon._resolve_position_aware_decision(dec, position_quantity=10.0)
+    resolved = order_admission.resolve_position_aware_decision(dec, position_quantity=10.0)
 
     assert resolved.action == "SELL"
     assert resolved.quantity == 10.0
