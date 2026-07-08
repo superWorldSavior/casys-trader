@@ -13,6 +13,7 @@ ADAPTER_MODULES = {
     "macro_series": ("collect_daily", "maybe_collect", "_extract_last_observation"),
     "radar_data": ("fetch_daily", "download_daily_batch", "CoverageError"),
     "ib_source": ("IBDataSource", "connect_ib", "INTERVAL_MAP", "LOOKBACK_MAP"),
+    "news_feed": ("RawNews", "NewsItemsArchive", "set_default_news_archive", "build_snapshot", "news_snapshot"),
 }
 
 MARKET_IO_EXCEPTIONS = set(ADAPTER_MODULES) | {"news_feed"}
@@ -29,6 +30,33 @@ def test_market_source_adapters_live_under_infrastructure_with_market_facades() 
         assert facade is infra
         for public_name in public_names:
             assert getattr(facade, public_name) is getattr(infra, public_name)
+
+
+def test_news_feed_market_facade_reexports_complete_infrastructure_adapter() -> None:
+    infra = importlib.import_module("trader.infrastructure.market_sources.news_feed")
+    facade = importlib.import_module("trader.market.news_feed")
+
+    exported_names = sorted(name for name in dir(infra) if not name.startswith("__"))
+    assert facade.__all__ == exported_names
+    for name in exported_names:
+        assert getattr(facade, name) is getattr(infra, name)
+
+
+def test_news_feed_infrastructure_adapter_does_not_import_application_or_runtime() -> None:
+    path = Path(__file__).resolve().parents[1] / "trader" / "infrastructure" / "market_sources" / "news_feed.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+
+    violations: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name.startswith(("trader.application", "trader.runtime")):
+                    violations.append(f"import {alias.name}")
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            if node.module.startswith(("trader.application", "trader.runtime")):
+                violations.append(f"from {node.module} import ...")
+
+    assert violations == []
 
 
 def test_market_domain_modules_do_not_import_external_market_io_clients() -> None:
