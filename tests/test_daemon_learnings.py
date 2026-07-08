@@ -352,6 +352,45 @@ def test_run_cycle_transmet_les_flags_de_finalisation_cycle(
     assert call["learning"].consolidate is daemon.consolidator.maybe_consolidate
 
 
+def test_run_cycle_utilise_le_process_state_injecte_pour_le_feedback_gross(
+    monkeypatch,
+    tmp_path,
+    patch_batch,
+    make_data_source,
+) -> None:
+    _write_runtime_config(tmp_path)
+    state_dir = tmp_path / "state"
+    sched = Scheduler(state_dir / "scheduler.json")
+    now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
+    process_state = daemon.CycleProcessState()
+    captured: list[dict] = []
+
+    def decide(**kwargs):
+        return Decision.hold(kwargs["symbol"], "attente")
+
+    def finalize_cycle(**kwargs):
+        captured.append(kwargs)
+
+    monkeypatch.setenv("CASYS_STATE_BACKEND", "sqlite")
+    monkeypatch.setattr(daemon, "ROOT", tmp_path)
+    monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+    monkeypatch.setattr(daemon.cycle_finalization, "finalize_cycle", finalize_cycle)
+    data_source = make_data_source(_bars)
+    patch_batch(decide)
+
+    daemon.run_cycle(
+        dry_run=True,
+        now=now,
+        symbols_filter=["SPY"],
+        sched=sched,
+        data_source=data_source,
+        process_state=process_state,
+    )
+
+    assert len(captured) == 1
+    assert captured[0]["gross_rejection_cache"] is process_state.last_gross_rejections
+
+
 def test_run_cycle_injecte_guardrails_et_regime_families(
     monkeypatch,
     tmp_path,

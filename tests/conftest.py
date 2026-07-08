@@ -1,10 +1,26 @@
 """Helpers de test partagés."""
 
 import logging
+import os
 
 import pytest
 
 from trader.runtime import daemon
+
+
+_AGENT_EXEC_ENV_KEYS = ("CASYS_AGENT_EXEC", "CASYS_AGENT_EXEC_CWD", "CODEX_HOME")
+
+
+@pytest.fixture(autouse=True)
+def _restore_agent_exec_env():
+    """Isole les tests de daemon.main(), qui charge .env dans os.environ."""
+    snapshot = {key: os.environ.get(key) for key in _AGENT_EXEC_ENV_KEYS}
+    yield
+    for key, value in snapshot.items():
+        if value is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = value
 
 
 @pytest.fixture(autouse=True)

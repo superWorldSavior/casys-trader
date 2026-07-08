@@ -237,7 +237,7 @@ class TestDaemonDataSourcesConfig:
         assert queue_runtime_calls[0]["decide_tool_services"] is tool_services
         assert len(dispatch_calls) == 1
         call = dispatch_calls[0]
-        assert call["run_cycle_fn"] is run_cycle
+        assert callable(call["run_cycle_fn"])
         assert call["now"] == now
         assert call["symbols_filter"] == ["SPY"]
         context = call["context"]

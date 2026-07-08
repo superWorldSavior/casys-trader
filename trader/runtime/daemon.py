@@ -20,6 +20,7 @@ import math
 import os
 import sqlite3
 import time
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
@@ -168,12 +169,21 @@ DEFAULT_LEARNING_CONSOLIDATION_THRESHOLD = consolidator.DEFAULT_CONSOLIDATION_TH
 DEFAULT_DECISION_BATCH_SIZE = planner_batch.DEFAULT_DECISION_BATCH_SIZE
 DEFAULT_DECISION_BATCH_PARALLELISM = planner_batch.DEFAULT_DECISION_BATCH_PARALLELISM
 
-# D7 étage A — dernier passage LLM par (state_dir, symbole), pour la revue
-# périodique garantie du gate de pertinence. Volatile : reset au restart.
-_LAST_LLM_AT: dict[tuple[str, str], object] = {}
-# Feedback gross d'un cycle au suivant (process daemon long-vivant, comme
-# _LAST_LLM_AT). Keyé par STATE_DIR. Best-effort : vidé au redémarrage.
-_LAST_GROSS_REJECTIONS: dict[str, dict | None] = {}
+@dataclass
+class CycleProcessState:
+    # D7 étage A — dernier passage LLM par (state_dir, symbole), pour la revue
+    # périodique garantie du gate de pertinence. Volatile : reset au restart.
+    last_llm_at: dict[tuple[str, str], object] = field(default_factory=dict)
+    # Feedback gross d'un cycle au suivant (process daemon long-vivant, comme
+    # last_llm_at). Keyé par STATE_DIR. Best-effort : vidé au redémarrage.
+    last_gross_rejections: dict[str, dict | None] = field(default_factory=dict)
+
+
+_DEFAULT_CYCLE_PROCESS_STATE = CycleProcessState()
+# Alias legacy conservés pour les tests/appels directs existants : ils pointent
+# vers l'état process par défaut utilisé quand run_cycle est appelé hors main().
+_LAST_LLM_AT = _DEFAULT_CYCLE_PROCESS_STATE.last_llm_at
+_LAST_GROSS_REJECTIONS = _DEFAULT_CYCLE_PROCESS_STATE.last_gross_rejections
 # Intervalle fin pour les checks de sortie (stop/TP/trailing).
 # Fetché uniquement pour les symboles ayant un plan ouvert.
 EXIT_CHECK_INTERVAL = "5m"
@@ -420,6 +430,83 @@ def _build_recall_provider(
     )
 
 
+def _build_base_context(
+    *,
+    cycle_id: str,
+    now: datetime,
+    symbols: list[str],
+    snap: object,
+    portfolio_fee_estimator: Callable[[str, float, float, float], float | None] | None,
+    risk_cfg: dict,
+    prices: dict[str, float],
+    broker: object,
+    gross: float,
+    gate_limits: RiskLimits,
+    rate_for_symbol: Callable[[str], float],
+    cockpit: dict,
+    stale_market_data: dict,
+    sched: SchedulerLike | None,
+    state_dir: Path,
+    root: Path,
+    attribution_payload: dict,
+    meta_performance_payload: dict,
+    consolidated_learnings_store: object,
+    learnings_store: object,
+    max_learnings_in_context: int,
+    daily_bars_by_symbol: dict,
+    active_families: object,
+    requestable_indicator_ids: object,
+) -> dict:
+    return {
+        "now": cycle_id,
+        "now_human": market.human_clock(now),
+        "market_clocks": market.market_clocks(now, symbols),
+        "portfolio": snap.as_context(fee_estimator=portfolio_fee_estimator),
+        "risk_limits": risk_cfg,
+        "risk_capacity": risk_capacity.risk_capacity_context(
+            symbols=[symbol for symbol in symbols if symbol in prices],
+            prices=prices,
+            broker=broker,
+            gross_exposure=gross,
+            limits=gate_limits,
+            equity=snap.equity,
+            rate_of=rate_for_symbol,
+            currency_of=fx.currency_for,
+        ),
+        "semantic": {
+            "requestable_indicator_ids": requestable_indicator_ids,
+        },
+        "cockpit": cockpit,
+        "stale_market_data": stale_market_data,
+        "active_plans_summary": _global_plans_summary(sched, now),
+        # KPI live injectés pour que l'agent décideur pilote sa performance.
+        "kpis": live_kpis.compute_live_kpis(state_dir),
+        # Attribution décision->résultat : P&L réalisé par trade, calibration de la
+        # confidence et coût par raison de sortie. Le signal qui dit à l'agent si
+        # ses choix (surtout ses calls confiants) gagnent vraiment.
+        "attribution": attribution_payload,
+        # Stats ex-post des décisions agent (dont HOLD missed), groupées par
+        # action/reason_code. Descriptif uniquement : l'agent garde le jugement.
+        "meta_performance": meta_performance_payload,
+        # Boucle de feedback (D6) : guardrails humains nommés à part ; dès qu'un
+        # consolidé existe, les bruts ne sont plus réinjectés (anti auto-renforcement).
+        "learnings": consolidator.build_context_learnings(
+            consolidated_learnings_store.read(),
+            raw_recent=learnings_store.recent(limit=max_learnings_in_context),
+            guardrails=consolidator.load_guardrails(root / "mandate" / "guardrails.json"),
+        ),
+        # Biais de régime cross-asset par famille thématique (D2) : le code
+        # calcule la synthèse directionnelle, l'agent juge l'opportunité.
+        "regime_families": family_regime.compute_family_bias(
+            {
+                sym: family_regime.momentum_from_bars(bars)
+                for sym, bars in daily_bars_by_symbol.items()
+            },
+            active_families,
+        ),
+    }
+
+
 def run_cycle(
     *,
     dry_run: bool,
@@ -454,8 +541,10 @@ def run_cycle(
     queue_execute_enabled: bool = False,
     execute_ledger=None,  # TaskLedger | None (casys.db — partagé broker/plan/ledger)
     worker_cycle_context: object | None = None,
+    process_state: CycleProcessState | None = None,
 ) -> dict:
     """Exécute UN cycle. Retourne un rapport structuré (machine-readable)."""
+    process_state = process_state or _DEFAULT_CYCLE_PROCESS_STATE
     now = now or datetime.now(timezone.utc)
     cycle_id = now.isoformat()
     universe_cfg = _load_yaml(ROOT / "config" / "universe.yaml")
@@ -722,59 +811,37 @@ def run_cycle(
         ),
     )
     meta_performance_payload = meta_performance.compute_meta_performance(STATE_DIR)
-    base_context = {
-        "now": cycle_id,
-        "now_human": market.human_clock(now),
-        "market_clocks": market.market_clocks(now, symbols),
-        "portfolio": snap.as_context(fee_estimator=portfolio_fee_estimator),
-        "risk_limits": risk_cfg,
-        "risk_capacity": risk_capacity.risk_capacity_context(
-            symbols=[symbol for symbol in symbols if symbol in prices],
-            prices=prices,
-            broker=broker,
-            gross_exposure=gross,
-            limits=gate.limits,
-            equity=snap.equity,
-            rate_of=_rate,
-            currency_of=fx.currency_for,
-        ),
-        "semantic": {
-            "requestable_indicator_ids": DEFAULT_INDICATORS,
-        },
-        "cockpit": cockpit,
-        "stale_market_data": stale_market_data,
-        "active_plans_summary": _global_plans_summary(sched, now),
-        # KPI live injectés pour que l'agent décideur pilote sa performance.
-        "kpis": live_kpis.compute_live_kpis(STATE_DIR),
-        # Attribution décision->résultat : P&L réalisé par trade, calibration de la
-        # confidence et coût par raison de sortie. Le signal qui dit à l'agent si
-        # ses choix (surtout ses calls confiants) gagnent vraiment.
-        "attribution": attribution_payload,
-        # Stats ex-post des décisions agent (dont HOLD missed), groupées par
-        # action/reason_code. Descriptif uniquement : l'agent garde le jugement.
-        "meta_performance": meta_performance_payload,
-        # Boucle de feedback (D6) : guardrails humains nommés à part ; dès qu'un
-        # consolidé existe, les bruts ne sont plus réinjectés (anti auto-renforcement).
-        "learnings": consolidator.build_context_learnings(
-            consolidated_learnings_store.read(),
-            raw_recent=learnings_store.recent(limit=max_learnings_in_context),
-            guardrails=consolidator.load_guardrails(ROOT / "mandate" / "guardrails.json"),
-        ),
-        # Biais de régime cross-asset par famille thématique (D2) : le code
-        # calcule la synthèse directionnelle, l'agent juge l'opportunité.
-        "regime_families": family_regime.compute_family_bias(
-            {
-                sym: family_regime.momentum_from_bars(bars)
-                for sym, bars in daily_bars_by_symbol.items()
-            },
-            active_families,
-        ),
-    }
+    base_context = _build_base_context(
+        cycle_id=cycle_id,
+        now=now,
+        symbols=symbols,
+        snap=snap,
+        portfolio_fee_estimator=portfolio_fee_estimator,
+        risk_cfg=risk_cfg,
+        prices=prices,
+        broker=broker,
+        gross=gross,
+        gate_limits=gate.limits,
+        rate_for_symbol=_rate,
+        cockpit=cockpit,
+        stale_market_data=stale_market_data,
+        sched=sched,
+        state_dir=STATE_DIR,
+        root=ROOT,
+        attribution_payload=attribution_payload,
+        meta_performance_payload=meta_performance_payload,
+        consolidated_learnings_store=consolidated_learnings_store,
+        learnings_store=learnings_store,
+        max_learnings_in_context=max_learnings_in_context,
+        daily_bars_by_symbol=daily_bars_by_symbol,
+        active_families=active_families,
+        requestable_indicator_ids=DEFAULT_INDICATORS,
+    )
 
     # Feedback léger du cycle précédent : si des ouvertures ont été recalées faute
     # de marge gross, on le signale à l'agent (marge partagée entre tous les
     # symboles) — présent seulement si non vide.
-    _gross_feedback = _LAST_GROSS_REJECTIONS.get(str(STATE_DIR))
+    _gross_feedback = process_state.last_gross_rejections.get(str(STATE_DIR))
     if _gross_feedback:
         base_context["gross_budget_feedback"] = _gross_feedback
 
@@ -891,7 +958,7 @@ def run_cycle(
         symbols=decidable,
         now=now,
         state_key=str(STATE_DIR),
-        last_llm_at=_LAST_LLM_AT,
+        last_llm_at=process_state.last_llm_at,
         cockpit=cockpit,
         regime_families=base_context["regime_families"],
         active_families=active_families,
@@ -1196,7 +1263,7 @@ def run_cycle(
             continue
         decision = decisions_by_symbol.get(sym)
         if decision is not None and decision_entries.counts_as_llm_review(decision):
-            _LAST_LLM_AT[(str(STATE_DIR), sym)] = now
+            process_state.last_llm_at[(str(STATE_DIR), sym)] = now
 
     report["model_calls_used"] = model_calls_used
     refresh_report_portfolio()
@@ -1239,7 +1306,7 @@ def run_cycle(
             meta_performance=meta_performance_payload,
             consolidate=consolidator.maybe_consolidate,
         ),
-        gross_rejection_cache=_LAST_GROSS_REJECTIONS,
+        gross_rejection_cache=process_state.last_gross_rejections,
         summarize_gross_rejections=summarize_gross_rejections,
         collect_macro=macro_series.maybe_collect,
         state_backend=os.getenv("CASYS_STATE_BACKEND", "sqlite"),
@@ -1251,16 +1318,7 @@ def run_cycle(
     return report
 
 
-def main(
-    argv: list[str] | None = None,
-    *,
-    now_fn: Callable[[], datetime] | None = None,
-    sleep_fn: Callable[[float], None] | None = None,
-) -> None:
-    # Charge le .env AVANT l'argparse pour que les defaults _env_int/_env
-    # (CASYS_DECISION_BATCH_PARALLELISM, etc.) le voient. override=False ⇒
-    # une var déjà posée en CLI/inline reste prioritaire.
-    llm.load_dotenv()
+def _build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="casys-trader daemon (boucle runtime)")
     parser.add_argument("--live", action="store_true", help="exécute réellement les ordres (défaut: dry-run)")
     parser.add_argument("--once", action="store_true", help="un seul cycle puis sortie")
@@ -1353,6 +1411,20 @@ def main(
         choices=["none", "ibkr"],
         help="modèle de frais appliqué au SimBroker live (défaut/env TRADER_COMMISSION_MODEL: ibkr)",
     )
+    return parser
+
+
+def main(
+    argv: list[str] | None = None,
+    *,
+    now_fn: Callable[[], datetime] | None = None,
+    sleep_fn: Callable[[float], None] | None = None,
+) -> None:
+    # Charge le .env AVANT l'argparse pour que les defaults _env_int/_env
+    # (CASYS_DECISION_BATCH_PARALLELISM, etc.) le voient. override=False ⇒
+    # une var déjà posée en CLI/inline reste prioritaire.
+    llm.load_dotenv()
+    parser = _build_arg_parser()
     args = parser.parse_args(argv)
     if not math.isfinite(args.ib_attach_retry_seconds) or args.ib_attach_retry_seconds <= 0:
         parser.error("--ib-attach-retry-seconds doit être > 0")
@@ -1409,6 +1481,14 @@ def main(
         args.agent_tools,
     )
     bootstrap = args.bootstrap_all
+    process_state = CycleProcessState(
+        last_llm_at=_LAST_LLM_AT,
+        last_gross_rejections=_LAST_GROSS_REJECTIONS,
+    )
+    cycle_run = run_cycle
+
+    def _run_cycle_with_process_state(**kwargs):
+        return cycle_run(**kwargs, process_state=process_state)
 
     # Ref partagée vers le data_source courant : les workers de file la lisent via
     # make_indirect_get_bars(handle.get) — jamais de capture de l'objet (remplacé en run).
@@ -1614,7 +1694,7 @@ def main(
                 else:
                     symbols_filter = due_symbols if due_symbols else []
                     report = cycle_dispatch.dispatch_run_cycle(
-                        run_cycle_fn=run_cycle,
+                        run_cycle_fn=_run_cycle_with_process_state,
                         context=cycle_context,
                         now=loop_now,
                         symbols_filter=symbols_filter,

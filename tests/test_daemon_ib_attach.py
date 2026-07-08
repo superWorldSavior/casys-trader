@@ -90,6 +90,7 @@ def test_main_transmet_horloge_injectee_a_run_cycle(monkeypatch, tmp_path) -> No
     _write_data_sources_config(tmp_path, profile="paper")
     state_dir = tmp_path / "state"
     t0 = datetime(2026, 6, 15, 8, 0, tzinfo=timezone.utc)
+    process_states: list[object] = []
 
     class FakeIB:
         def disconnect(self) -> None:
@@ -100,6 +101,7 @@ def test_main_transmet_horloge_injectee_a_run_cycle(monkeypatch, tmp_path) -> No
 
     def run_cycle(**kwargs):
         assert kwargs["now"] == t0
+        process_states.append(kwargs["process_state"])
         return _empty_report(t0)
 
     monkeypatch.setattr(daemon, "ROOT", tmp_path)
@@ -108,6 +110,8 @@ def test_main_transmet_horloge_injectee_a_run_cycle(monkeypatch, tmp_path) -> No
     monkeypatch.setattr(daemon, "run_cycle", run_cycle)
 
     daemon.main(["--once"], now_fn=lambda: t0, sleep_fn=lambda _seconds: None)
+    assert len(process_states) == 1
+    assert isinstance(process_states[0], daemon.CycleProcessState)
 
 
 def test_paper_ib_attach_backoff_ne_relance_pas_avant_echeance(monkeypatch, tmp_path) -> None:
