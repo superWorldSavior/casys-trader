@@ -180,10 +180,6 @@ class CycleProcessState:
 
 
 _DEFAULT_CYCLE_PROCESS_STATE = CycleProcessState()
-# Alias legacy conservés pour les tests/appels directs existants : ils pointent
-# vers l'état process par défaut utilisé quand run_cycle est appelé hors main().
-_LAST_LLM_AT = _DEFAULT_CYCLE_PROCESS_STATE.last_llm_at
-_LAST_GROSS_REJECTIONS = _DEFAULT_CYCLE_PROCESS_STATE.last_gross_rejections
 # Intervalle fin pour les checks de sortie (stop/TP/trailing).
 # Fetché uniquement pour les symboles ayant un plan ouvert.
 EXIT_CHECK_INTERVAL = "5m"
@@ -1481,10 +1477,7 @@ def main(
         args.agent_tools,
     )
     bootstrap = args.bootstrap_all
-    process_state = CycleProcessState(
-        last_llm_at=_LAST_LLM_AT,
-        last_gross_rejections=_LAST_GROSS_REJECTIONS,
-    )
+    process_state = _DEFAULT_CYCLE_PROCESS_STATE
     cycle_run = run_cycle
 
     def _run_cycle_with_process_state(**kwargs):

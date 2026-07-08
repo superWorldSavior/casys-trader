@@ -62,7 +62,8 @@ def test_quiet_gate_decision_has_news_key(monkeypatch, tmp_path, patch_batch, ma
     monkeypatch.setattr(daemon, "ROOT", tmp_path)
     monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
     # LLM vu il y a 1h → quiet_gate s'applique (pas d'appel LLM)
-    daemon._LAST_LLM_AT[(str(state_dir), "SPY")] = now.replace(hour=11)
+    process_state = daemon.CycleProcessState()
+    process_state.last_llm_at[(str(state_dir), "SPY")] = now.replace(hour=11)
 
     # Patcher news_feed.news_snapshot pour ne pas appeler yfinance
     nf.reset_cache()
@@ -89,6 +90,7 @@ def test_quiet_gate_decision_has_news_key(monkeypatch, tmp_path, patch_batch, ma
         symbols_filter=["SPY"],
         sched=Scheduler(state_dir / "scheduler.json"),
         data_source=data_source,
+        process_state=process_state,
     )
 
     assert len(report["decisions"]) == 1

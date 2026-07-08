@@ -8,13 +8,17 @@ import pytest
 from trader.runtime import daemon
 
 
-_AGENT_EXEC_ENV_KEYS = ("CASYS_AGENT_EXEC", "CASYS_AGENT_EXEC_CWD", "CODEX_HOME")
+_DAEMON_MAIN_AGENT_EXEC_ENV_KEYS = ("CASYS_AGENT_EXEC", "CASYS_AGENT_EXEC_CWD", "CODEX_HOME")
 
 
 @pytest.fixture(autouse=True)
-def _restore_agent_exec_env():
-    """Isole les tests de daemon.main(), qui charge .env dans os.environ."""
-    snapshot = {key: os.environ.get(key) for key in _AGENT_EXEC_ENV_KEYS}
+def _restore_daemon_main_agent_exec_env():
+    """Restaure les clés agent-exec que daemon.main() peut charger depuis .env.
+
+    Couvre CASYS_AGENT_EXEC, CASYS_AGENT_EXEC_CWD et CODEX_HOME afin qu'un test
+    appelant daemon.main() ne pollue pas l'environnement des tests suivants.
+    """
+    snapshot = {key: os.environ.get(key) for key in _DAEMON_MAIN_AGENT_EXEC_ENV_KEYS}
     yield
     for key, value in snapshot.items():
         if value is None:

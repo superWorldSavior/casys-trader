@@ -231,3 +231,8 @@ def test_cycle_process_state_uses_independent_mutable_defaults() -> None:
 
     assert second.last_llm_at == {}
     assert second.last_gross_rejections == {}
+
+
+def test_cycle_process_state_replaces_legacy_module_globals() -> None:
+    assert not hasattr(daemon, "_LAST_LLM_AT")
+    assert not hasattr(daemon, "_LAST_GROSS_REJECTIONS")

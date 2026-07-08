@@ -99,7 +99,8 @@ def test_run_cycle_gate_le_polling_calme_sans_appel_llm(
     monkeypatch.setattr(daemon, "ROOT", tmp_path)
     monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
     # le LLM a vu SPY il y a 1h -> revue périodique pas due
-    daemon._LAST_LLM_AT[(str(state_dir), "SPY")] = now.replace(hour=11)
+    process_state = daemon.CycleProcessState()
+    process_state.last_llm_at[(str(state_dir), "SPY")] = now.replace(hour=11)
 
     batches: list[list[str]] = []
 
@@ -116,6 +117,7 @@ def test_run_cycle_gate_le_polling_calme_sans_appel_llm(
         symbols_filter=["SPY"],
         sched=Scheduler(state_dir / "scheduler.json"),
         data_source=data_source,
+        process_state=process_state,
     )
 
     # aucun appel LLM ; la décision quiet_gate est tracée UNE SEULE fois
@@ -140,7 +142,8 @@ def test_run_cycle_honore_le_reveil_demande_par_l_agent(
 
     monkeypatch.setattr(daemon, "ROOT", tmp_path)
     monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
-    daemon._LAST_LLM_AT[(str(state_dir), "SPY")] = now.replace(hour=11)
+    process_state = daemon.CycleProcessState()
+    process_state.last_llm_at[(str(state_dir), "SPY")] = now.replace(hour=11)
 
     sched = Scheduler(state_dir / "scheduler.json")
     # l'agent avait demandé un réveil (échu) -> il doit être honoré malgré le calme
@@ -161,6 +164,7 @@ def test_run_cycle_honore_le_reveil_demande_par_l_agent(
         symbols_filter=["SPY"],
         sched=sched,
         data_source=data_source,
+        process_state=process_state,
     )
 
     assert decided == ["SPY"]
@@ -181,6 +185,7 @@ def test_run_cycle_ne_marque_pas_un_echec_llm_comme_revue_periodique(
 
     monkeypatch.setattr(daemon, "ROOT", tmp_path)
     monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+    process_state = daemon.CycleProcessState()
 
     def decide(**kwargs):
         return Decision(
@@ -204,6 +209,7 @@ def test_run_cycle_ne_marque_pas_un_echec_llm_comme_revue_periodique(
         symbols_filter=["SPY"],
         sched=Scheduler(state_dir / "scheduler.json"),
         data_source=data_source,
+        process_state=process_state,
     )
 
-    assert (str(state_dir), "SPY") not in daemon._LAST_LLM_AT
+    assert (str(state_dir), "SPY") not in process_state.last_llm_at

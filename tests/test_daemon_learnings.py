@@ -322,6 +322,7 @@ def test_run_cycle_transmet_les_flags_de_finalisation_cycle(
     state_dir = tmp_path / "state"
     sched = Scheduler(state_dir / "scheduler.json")
     now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
+    process_state = daemon.CycleProcessState()
     captured: list[dict] = []
 
     def decide(**kwargs):
@@ -337,7 +338,14 @@ def test_run_cycle_transmet_les_flags_de_finalisation_cycle(
     data_source = make_data_source(_bars)
     patch_batch(decide)
 
-    daemon.run_cycle(dry_run=True, now=now, symbols_filter=["SPY"], sched=sched, data_source=data_source)
+    daemon.run_cycle(
+        dry_run=True,
+        now=now,
+        symbols_filter=["SPY"],
+        sched=sched,
+        data_source=data_source,
+        process_state=process_state,
+    )
 
     assert len(captured) == 1
     call = captured[0]
@@ -346,7 +354,7 @@ def test_run_cycle_transmet_les_flags_de_finalisation_cycle(
     assert call["state_backend"] == "sqlite"
     assert call["decidable_symbols"] == ["SPY"]
     assert call["decided_symbols"] == ["SPY"]
-    assert call["gross_rejection_cache"] is daemon._LAST_GROSS_REJECTIONS
+    assert call["gross_rejection_cache"] is process_state.last_gross_rejections
     assert call["summarize_gross_rejections"] is daemon.summarize_gross_rejections
     assert call["collect_macro"] is daemon.macro_series.maybe_collect
     assert call["learning"].consolidate is daemon.consolidator.maybe_consolidate
