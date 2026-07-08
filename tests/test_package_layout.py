@@ -259,11 +259,12 @@ def test_infrastructure_backends_are_nested_under_infrastructure() -> None:
 
     assert infrastructure_dir.exists()
     assert sorted(path.name for path in infrastructure_dir.iterdir() if path.is_dir() and path.name != "__pycache__") == [
+        "market_sources",
         "queue",
         "state_db",
     ]
 
-    for old_top_level_name in ("queue", "state_db"):
+    for old_top_level_name in ("market_sources", "queue", "state_db"):
         assert not _has_python_sources(trader_dir / old_top_level_name)
 
 
