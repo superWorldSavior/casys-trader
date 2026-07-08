@@ -409,7 +409,7 @@ def import_scheduler_from_json(db: StateDb, json_path: Path) -> None:
     - Backup horodaté SEULEMENT après commit réussi (valider-avant-rename).
     """
     # Import local pour éviter les dépendances circulaires au top-level
-    from trader.planning.scheduler import STALE_BACKOFF_MAX_STREAK  # noqa: PLC0415
+    from trader.domain.planning.scheduling import STALE_BACKOFF_MAX_STREAK  # noqa: PLC0415
 
     db.apply_migrations([SCHEDULER_MIGRATION])
     _ensure_state_imports(db)

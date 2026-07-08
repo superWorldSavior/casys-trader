@@ -22,8 +22,8 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Iterable
 
+from trader.domain.planning.scheduling import STALE_BACKOFF_MAX_STREAK
 from trader.infrastructure.state_db.connection import StateDb
-from trader.planning.scheduler import STALE_BACKOFF_MAX_STREAK
 
 log = logging.getLogger(__name__)
 

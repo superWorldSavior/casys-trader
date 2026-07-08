@@ -6,5 +6,6 @@ __all__ = [
     "ib_source",
     "macro_series",
     "market_data_yf",
+    "news_feed",
     "radar_data",
 ]

@@ -14,13 +14,12 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterable
 
-# Backoff stale — constantes explicites (AX : pas de defaults magiques)
-STALE_BACKOFF_BASE_MULTIPLIER: int = 2
-STALE_BACKOFF_MAX_MINUTES: float = 120.0
-# Streak max persisté : au-delà le wake est déjà cappé (2^2 * 30min = 120min).
-# Borne défensive pour éviter OverflowError sur float (2**9999) et garder
-# scheduler.json lisible. Valeur 8 = marge confortable au-delà du cap réel.
-STALE_BACKOFF_MAX_STREAK: int = 8
+from trader.domain.planning.scheduling import (
+    STALE_BACKOFF_BASE_MULTIPLIER,
+    STALE_BACKOFF_MAX_MINUTES,
+    STALE_BACKOFF_MAX_STREAK,
+    stale_backoff_wake_minutes,
+)
 
 
 class Scheduler:

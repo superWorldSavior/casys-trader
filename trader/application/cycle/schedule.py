@@ -10,12 +10,8 @@ import logging
 from datetime import datetime, timezone
 from typing import Callable
 
-from trader.planning.scheduler import (
-    STALE_BACKOFF_BASE_MULTIPLIER,
-    STALE_BACKOFF_MAX_MINUTES,
-    STALE_BACKOFF_MAX_STREAK,
-    Scheduler,
-)
+from trader.domain.planning.scheduling import stale_backoff_wake_minutes
+from trader.planning.scheduler import Scheduler
 
 EventAppender = Callable[..., None]
 
@@ -28,16 +24,6 @@ def bounded_wake_minutes(value: float, *, minimum: float | None = None, maximum:
     if maximum is not None:
         result = min(result, maximum)
     return result
-
-
-def stale_backoff_wake_minutes(streak: int, *, default_wake_minutes: float) -> float:
-    """Return the stale-data backoff wake delay, capped defensively."""
-    if streak == 0:
-        return min(default_wake_minutes, STALE_BACKOFF_MAX_MINUTES)
-    if streak >= STALE_BACKOFF_MAX_STREAK:
-        return STALE_BACKOFF_MAX_MINUTES
-    raw = default_wake_minutes * (STALE_BACKOFF_BASE_MULTIPLIER**streak)
-    return min(raw, STALE_BACKOFF_MAX_MINUTES)
 
 
 def ensure_default_wake(

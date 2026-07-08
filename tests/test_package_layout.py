@@ -290,6 +290,7 @@ def test_pure_planning_calculations_are_nested_under_domain_with_facades() -> No
         "exit_engine.py",
         "exit_plan_spec.py",
         "relevance_gate.py",
+        "scheduling.py",
         "watches.py",
     }
     assert {path.name for path in domain_planning_dir.glob("*.py")} == expected_modules
@@ -306,16 +307,23 @@ def test_pure_planning_calculations_are_nested_under_domain_with_facades() -> No
     import trader.domain.planning.exit_engine as domain_exit_engine
     import trader.domain.planning.exit_plan_spec as domain_exit_plan_spec
     import trader.domain.planning.relevance_gate as domain_relevance_gate
+    import trader.domain.planning.scheduling as domain_scheduling
     import trader.domain.planning.watches as domain_watches
+    import trader.application.cycle.schedule as cycle_schedule
     import trader.planning.exit_engine as planning_exit_engine
     import trader.planning.exit_plan_spec as planning_exit_plan_spec
     import trader.planning.relevance_gate as planning_relevance_gate
+    import trader.planning.scheduler as planning_scheduler
     from trader.planning.indicator_watch import is_armed_plan
 
     assert planning_exit_engine.evaluate_plan is domain_exit_engine.evaluate_plan
     assert planning_relevance_gate.symbol_needs_llm is domain_relevance_gate.symbol_needs_llm
     assert planning_exit_plan_spec.normalize_exit_plan is domain_exit_plan_spec.normalize_exit_plan
     assert planning_exit_plan_spec._positive_float is domain_exit_plan_spec._positive_float
+    assert planning_scheduler.STALE_BACKOFF_BASE_MULTIPLIER == domain_scheduling.STALE_BACKOFF_BASE_MULTIPLIER
+    assert planning_scheduler.STALE_BACKOFF_MAX_MINUTES == domain_scheduling.STALE_BACKOFF_MAX_MINUTES
+    assert planning_scheduler.STALE_BACKOFF_MAX_STREAK == domain_scheduling.STALE_BACKOFF_MAX_STREAK
+    assert cycle_schedule.stale_backoff_wake_minutes is domain_scheduling.stale_backoff_wake_minutes
     assert is_armed_plan is domain_watches.is_armed_plan
 
     forbidden_prefixes = (
@@ -511,6 +519,30 @@ def test_state_db_infrastructure_does_not_import_planning_trade_plan() -> None:
                     for alias in node.names
                     if alias.name == forbidden
                 )
+
+    assert violations == []
+
+
+def test_infrastructure_imports_stale_backoff_policy_from_domain_not_scheduler_facade() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    infrastructure_dir = repo_root / "trader" / "infrastructure"
+    forbidden = "trader.planning.scheduler"
+    violations: list[str] = []
+
+    for module_path in infrastructure_dir.rglob("*.py"):
+        tree = ast.parse(module_path.read_text(encoding="utf-8"), filename=str(module_path))
+        rel_path = module_path.relative_to(repo_root)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module == forbidden:
+                stale_imports = [
+                    alias.name
+                    for alias in node.names
+                    if alias.name.startswith("STALE_BACKOFF_")
+                ]
+                if stale_imports:
+                    violations.append(
+                        f"{rel_path}: from {forbidden} import {', '.join(stale_imports)}"
+                    )
 
     assert violations == []
 
