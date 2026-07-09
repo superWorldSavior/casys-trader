@@ -6,6 +6,14 @@
 pattern news-feed consolidé dans `docs/reference/news.md`,
 couche d'outils consolidée dans `docs/reference/agent-tools.md`.
 
+> **Statut 2026-07-09 : partiellement superseded.** Les collecteurs, l'analyste
+> offline, les briefs bornés/sourcés et l'attribution-first restent valides. La
+> partie **Exposition à l'agent** est raffinée par
+> `docs/superpowers/specs/2026-07-09-universe-intelligence-pass-design.md` :
+> les briefs analyste deviennent un `situation_state` consommé par la passe
+> univers/PM, qui produit ensuite le mandat et le contexte symbole pour l'agent
+> de trading.
+
 ## 1. Intention
 
 Couvrir le pan manquant : macro (taux, inflation, calendrier éco) et

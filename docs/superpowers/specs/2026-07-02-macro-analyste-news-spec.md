@@ -1,11 +1,22 @@
 # Analyste-news quotidien + calendriers macro (P1-P2 de l'axe macro)
 
 **Date** : 2026-07-02
-**Status** : P1a LIVRÉ 2026-07-02 (news_items persist + macro_calendar FOMC + macro_next payload + macro_series DBnomics — testés, câblés daemon) ; P2 analyste-news EN ATTENTE de stock d'items (~2-3 semaines).
+**Status** : P1a LIVRÉ 2026-07-02 (news_items persist + macro_calendar FOMC + macro_next payload + macro_series DBnomics — testés, câblés daemon) ; P2 analyste-news RELANCÉ 2026-07-09 en architecture clean.
 **Amont** : `2026-07-02-macro-fundamental-design-sketch.md` (architecture 3 étages,
 phasage réordonné), `docs/superpowers/specs/2026-07-02-macro-data-sources.md` (sources),
-pattern consolidateur (`trader/consolidator.py`) et news-feed
-(`trader/tools/news_feed.py`).
+pattern consolidateur (`trader/agent/learnings/consolidator.py`) et news-feed
+(`trader/infrastructure/market_sources/news_feed.py`).
+
+> Mise à jour 2026-07-09 : ne pas créer `trader/news_analyst.py`. L'agent
+> analyste est découpé en couches :
+> - domaine pur : `trader/domain/situation/`
+> - cas d'usage : `trader/application/analyst/`
+> - stockage : `trader/infrastructure/state_db/situation_brief_store.py`
+> - adaptateur LLM : `trader/agent/news_macro/`
+>
+> Le brief est la source de situation court terme. Le RAG/causalité n'est pas
+> un prérequis de P2 : il vient après, en index dérivé et auditable des briefs,
+> news_items, décisions et outcomes.
 
 ## 1. Périmètre
 
@@ -48,7 +59,7 @@ les items nouveaux dans `state/news_items/YYYY-MM-DD.jsonl` :
 dédup par uuid par jour. Hygiène habituelle : append-only, un fichier/jour,
 purge >60 j (même mécanique que radar_cache).
 
-### 3.2 Le job analyste : `trader/news_analyst.py`
+### 3.2 Le job analyste : cas d'usage `application/analyst`
 
 - **Déclenchement** : pattern consolidateur — évalué en fin de cycle daemon,
   exécute si (a) dernier brief > 20 h OU (b) jamais de brief aujourd'hui et
@@ -57,9 +68,10 @@ purge >60 j (même mécanique que radar_cache).
 - **Entrée** : les items du jour (+ veille si premier run) depuis
   `state/news_items/`, groupés par famille (via `family_for_symbol`) +
   le `macro_next` courant.
-- **LLM** : le routeur existant (`llm.build_default_router_from_env`, profil
-  consolidateur — spark avec fallback), prompt de distillation avec contrat
-  JSON strict (pattern `_parse_consolidated_json_from_text` réutilisable).
+- **LLM** : adaptateur `trader/agent/news_macro/`, routeur existant
+  (`llm.build_default_router_from_env`, profil consolidateur — spark avec
+  fallback), prompt de distillation avec contrat JSON strict (pattern de
+  parsing robuste du consolidateur, mais sans dépendre du module learnings).
 - **Sortie** : `state/news_briefs/YYYY-MM-DD.json` :
 
 ```json
@@ -77,6 +89,95 @@ purge >60 j (même mécanique que radar_cache).
   chaque point CITE ses uuids sources (auditables vers news_items). Toute
   version remplacée est historisée (append `news_briefs-history.jsonl` —
   leçon du chantier learnings : rien ne s'écrase sans trace).
+
+### 3.2.1 Contrat clean/hexagonal
+
+- `domain/situation` définit `SituationPoint` et `NewsMacroBrief` : types purs,
+  normalisation, bornes, aucune I/O, aucun LLM.
+- `application/analyst/news_macro.py` orchestre : construire une requête,
+  appeler un port `NewsMacroAnalyst`, écrire via un port `NewsMacroBriefRepository`.
+- `infrastructure/state_db/situation_brief_store.py` écrit/lit
+  `state/news_briefs/YYYY-MM-DD.json` et historise les remplacements.
+- `agent/news_macro/` est un adaptateur sortant : prompt, extraction JSON,
+  appel LLM. Il ne choisit pas quand tourner et ne touche pas au disque.
+- Pas de framework agent externe en P2 : l'agent analyste est un port
+  applicatif + un adaptateur LLM via le `LlmRouter` existant (ACPX en transport
+  principal aujourd'hui, remplaçable demain).
+
+### 3.2.2 Sources et outils autorisés
+
+L'analyste macro/news est un **compresseur de situation temporelle**. Il ne
+navigue pas librement, ne choisit pas l'univers, ne trade pas et ne gère pas le
+portefeuille. Il transforme des artefacts locaux, datés et sourcés en brief.
+
+Sources P2 autorisées, en lecture seule :
+
+| Source | Chemin / producteur | Usage par l'analyste |
+|---|---|---|
+| **News brutes** | `state/news_items/YYYY-MM-DD.jsonl` produit par `infrastructure/market_sources/news_feed` | Détecter changements de narration, événements idiosyncratiques, signaux faibles/forts. Fenêtre V1 : aujourd'hui + veille si premier run. |
+| **Calendrier macro** | `state/macro_calendar.json` + `macro_next` calculé par `market/macro_calendar` | Situer les risques proches : FOMC, CPI/NFP, BCE, etc. |
+| **Séries macro** | `state/macro_series/*.jsonl` produit par `infrastructure/market_sources/macro_series` | Lire le dernier niveau connu et, quand historique suffisant, une variation/direction. P2 peut commencer avec snapshot simple. |
+| **Scope symbole/famille** | `candidate_symbols` fourni par le cas d'usage + `family_for_symbol` | Grouper les news par famille/symbole sans décider du scope de trading. Le scope vient de la rotation/radar/sticky, pas de l'analyste. |
+| **Futur fondamentaux** | futurs artefacts `state/fundamental_items/`, filings, earnings, guidance briefs | Distinguer macro/famille vs idiosyncratique entreprise. Hors P2 strict, mais le contrat de brief prévoit déjà `symbols`. |
+
+Anti-circularité hotlist :
+
+Le radar ne doit pas être le **seul gate informationnel**. Sinon une news ou un
+changement macro qui précède le prix peut être manqué parce que le symbole n'est
+pas encore dans la shortlist quant. Mais l'analyste ne doit pas non plus faire
+une analyse profonde de tout le pool. On découpe donc en trois anneaux :
+
+1. **Anneau large — situation globale** : l'analyste lit macro, calendrier,
+   séries et narrations par zone/famille. Pas de zoom entreprise exhaustif.
+2. **Anneau event/news scout — pool observable** : le code lit les news déjà
+   collectées sur un périmètre large, calcule la fraîcheur (`new_uuid_since_last_brief`,
+   `last_published_at`, `item_count_24h/72h`) et remonte des
+   `event_candidates`. C'est du filtrage peu coûteux, pas une étude société.
+3. **Anneau profond — candidats bornés** : l'analyse symbolique/fondamentale est
+   limitée à `candidate_symbols = radar_candidates ∪ event_candidates ∪ sticky
+   ∪ positions/plans/watches ∪ macro_family_representatives`.
+
+L'agent univers consomme ensuite `baseline quant + event candidates + brief
+analyste + portefeuille` pour décider du mandat/hotlist finale. Donc l'analyste
+peut faire entrer un symbole dans la conversation via un événement frais, mais
+il ne modifie jamais directement `universe.yaml`.
+
+Règle de fraîcheur entreprise :
+
+- si un symbole n'a **aucune news nouvelle** depuis le dernier brief, on réutilise
+  son résumé précédent jusqu'à expiration TTL ; pas de nouvel appel LLM profond ;
+- si un symbole a des news nouvelles mais faibles, il peut rester en watch/context
+  sans entrer dans la hotlist ;
+- si un symbole hors shortlist a une news forte, l'analyste émet un
+  `out_of_scope_alert`, qui devient un input du prochain passage univers.
+
+Outils côté code :
+
+- `NewsItemsReader` cible : lit les JSONL par fenêtre temporelle, déduplique par
+  `uuid`, garde `fetched_at`, `published_at`, `symbol`, `publisher`, `link`.
+- `MacroContextReader` cible : charge `macro_next` + derniers points
+  `macro_series`.
+- `CandidateScopeReader` cible : lit `venue_state`, `rotation_ledger`, sticky,
+  positions/plans/watches, news freshness et représentants de familles macro,
+  puis fournit `candidate_symbols` borné avec une provenance par symbole
+  (`radar|event|sticky|position|watch|macro_family`).
+- `family_for_symbol` : enrichissement déterministe famille, aucun LLM.
+- `NewsMacroAnalyst` : port applicatif unique ; l'adaptateur LLM reçoit un JSON
+  borné et doit rendre un `NewsMacroBrief`.
+- `NewsMacroBriefStore` : persistance et historisation.
+
+Outils explicitement interdits en P2 runtime :
+
+- navigation web libre / scraping ad hoc depuis le prompt ;
+- accès direct au broker, sizing, risk gate ou décisions d'ordre ;
+- modification de `universe.yaml` ou de la hotlist ;
+- appel à `recall_learnings` depuis l'analyste macro/news. Les learnings de
+  trading peuvent être joints plus tard par l'univers/trader, pas par le
+  compresseur de news.
+
+ACPX workflows : autorisés seulement comme **runner offline/replay** ou
+adaptateur expérimental derrière `NewsMacroAnalyst`. Le chemin prod garde le
+cas d'usage Python testable.
 
 ### 3.3 Exposition P2 : attribution-first
 
@@ -96,6 +197,9 @@ registre d'outils, servant le brief du jour depuis le store — après mesure.
 - L'analyste ne voit que les items collectés (pas de navigation libre).
 - Briefs bornés, datés, sourcés (uuids), historisés.
 - Chaque étage mesurable avant promotion (attribution-first strict).
+- Causalité : un brief émet des hypothèses de situation, pas des vérités
+  causales. Toute hypothèse causalement réutilisable doit garder ses sources et
+  les outcomes qui la confirment/contredisent.
 
 ## 5. Tests clés (pour le plan)
 
@@ -106,6 +210,9 @@ registre d'outils, servant le brief du jour depuis le store — après mesure.
   cycle, parsing strict avec réparation, bornes du brief appliquées,
   historisation de la version remplacée.
 - brief_ref loggé par décision ; absent si aucun brief du jour.
+- store de brief : write/read, historisation, `brief_ref`.
+- contrat de domaine : borne des sections, nettoyage des points, rejet des
+  payloads sans `as_of` / `valid_until`.
 
 ## 6. Décisions prises / à confirmer en début d'implémentation
 
@@ -128,3 +235,40 @@ déclenchement best-effort quotidien par le daemon (pattern consolidateur).
 **P2 — analyste : différé au stock** (~2-3 semaines d'items).
 Le scraping des calendriers (Fed/BLS/BCE) reste offline et optionnel en V1 —
 les dates 2026 sont connues et versionnées.
+
+## 8. RAG / causalité — phase post-P2
+
+Le RAG n'est pas le premier livrable de l'analyste macro. Le premier livrable
+doit produire un historique de briefs propre, sourcé et jointable aux décisions.
+Ensuite seulement, on peut créer un index dérivé.
+
+Décision 2026-07-09 : ne pas introduire de nouvelle lib RAG/agent. Le repo a
+déjà le pattern `learnings.db` : SQLite WAL, FTS5, embeddings pré-calculés,
+recherche hybride, scoring par outcome, traces d'injection. On réutilise ce
+pattern technique, mais on garde une frontière métier stricte :
+
+- `learnings.db` reste la mémoire de trading : ce que nos décisions/fills ont
+  appris.
+- `situation_memory.db` (nom cible) devient la mémoire de situation :
+  macro/news/régime/entreprise, dérivée des briefs et reliée aux outcomes.
+- Les archives canoniques restent les JSON/JSONL (`news_items`, `news_briefs`,
+  décisions, fills). La base SQLite est reconstructible, jamais source de vérité
+  unique.
+- Pas de factorisation prématurée : on ne crée un module RAG générique qu'après
+  deux implémentations vivantes (`learnings` + `situation`) avec des besoins
+  réellement communs.
+
+Design cible :
+
+- **Corpus** : `news_items`, `news_briefs`, `decisions`, `fills/outcomes`,
+  familles/régimes, et plus tard fondamentaux/earnings/filings.
+- **Index V1** : SQLite FTS ou table dérivée proche de `learnings.db`, avec des
+  lignes `situation_note` sourcées (`brief_ref`, `source_uuids`, zone, famille,
+  symboles, horizon, signal weak/strong).
+- **Causalité** : stocker des `causal_hypotheses`, pas des règles. Chaque ligne
+  porte `hypothesis`, `support_count`, `contradict_count`, `source_refs`,
+  `outcome_refs`, `last_seen`, `confidence`.
+- **Consommation** : l'univers peut utiliser ces hypothèses pour expliquer la
+  hotlist ; le trader ne les reçoit que comme contexte borné et attribuable.
+- **Garde-fou** : aucune hypothèse ne modifie l'allocation ou le risque sans
+  passage par une mesure d'attribution explicite.
