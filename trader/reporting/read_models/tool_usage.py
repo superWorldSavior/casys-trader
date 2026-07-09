@@ -8,6 +8,7 @@ from typing import Any
 
 from backtest.decision_quality import BAND, score_from_ledger
 
+from trader.reporting.read_models.protocols import DecisionQualityScorer
 from trader.reporting.tool_trace import TOOLS, summarize_tools
 
 
@@ -185,8 +186,10 @@ def build_report(
     band: float = BAND,
     days_buffer: int = 1,
     output_path: str | Path = "state/last_tool_usage.json",
+    score_decisions: DecisionQualityScorer | None = None,
 ) -> dict[str, Any]:
-    data = score_from_ledger(ledger, band=band, days_buffer=days_buffer)
+    scorer = score_decisions or score_from_ledger
+    data = scorer(ledger, band=band, days_buffer=days_buffer)
     traces, indexed = _traces_by_decision_id(data["judgeable"])
     usage = tool_usage_rates(traces)
     clamps = clamp_count(traces)

@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from trader.domain import decision_reason
+from trader.reporting.audit.protocols import PriceHistoryLoader
 
 
 def parse_ts(raw: Any) -> datetime | None:
@@ -355,3 +356,35 @@ def load_prices_yfinance(
                 rows.append({"ts": idx.isoformat(), "close": float(row["Close"])})
         prices[symbol] = rows
     return prices
+
+
+def price_window_for_audit_rows(rows: list[dict], *, horizons: list[str]) -> dict[str, object] | None:
+    parsed_times = [parse_ts(row.get("cycle_ts")) for row in rows]
+    valid_times = [ts for ts in parsed_times if ts is not None]
+    if not rows or not valid_times:
+        return None
+    max_horizon = max((parse_horizon(horizon) for horizon in horizons), default=timedelta())
+    return {
+        "symbols": sorted({str(row.get("symbol")) for row in rows if row.get("symbol")}),
+        "start": (min(valid_times) - timedelta(days=1)).date().isoformat(),
+        "end": (max(valid_times) + max_horizon + timedelta(days=1)).date().isoformat(),
+    }
+
+
+def load_prices_for_audit(
+    rows: list[dict],
+    *,
+    horizons: list[str],
+    interval: str,
+    load_prices: PriceHistoryLoader | None = None,
+) -> dict[str, list[dict]]:
+    request = price_window_for_audit_rows(rows, horizons=horizons)
+    if request is None:
+        return {}
+    loader = load_prices or load_prices_yfinance
+    return loader(
+        list(request["symbols"]),
+        start=str(request["start"]),
+        end=str(request["end"]),
+        interval=interval,
+    )

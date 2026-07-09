@@ -2010,6 +2010,20 @@ def test_decision_ledger_store_is_ledger_package_canonical() -> None:
     assert reporting_decision_ledger.code_version is ledger_decision_ledger.code_version
 
 
+def test_reporting_protocols_are_colocated_under_reporting() -> None:
+    from trader.reporting.audit.protocols import PriceHistoryLoader
+    from trader.reporting.bench.protocols import BenchHistory, ModelBenchCompleter
+    from trader.reporting.ledger.protocols import DecisionLedgerAppender, DecisionLedgerReader
+    from trader.reporting.read_models.protocols import DecisionQualityScorer
+
+    assert PriceHistoryLoader.__module__ == "trader.reporting.audit.protocols"
+    assert BenchHistory.__module__ == "trader.reporting.bench.protocols"
+    assert ModelBenchCompleter.__module__ == "trader.reporting.bench.protocols"
+    assert DecisionLedgerAppender.__module__ == "trader.reporting.ledger.protocols"
+    assert DecisionLedgerReader.__module__ == "trader.reporting.ledger.protocols"
+    assert DecisionQualityScorer.__module__ == "trader.reporting.read_models.protocols"
+
+
 def test_market_and_planning_use_domain_primitives_instead_of_tools() -> None:
     trader_dir = Path(__file__).resolve().parents[1] / "trader"
     checked_roots = (trader_dir / "market", trader_dir / "planning")

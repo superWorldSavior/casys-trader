@@ -12,6 +12,7 @@ from typing import Any, Protocol, TypeAlias
 
 from trader.application.record.tool_outcomes import finalize_action_tool_outcomes
 from trader.reporting.ledger import decision_ledger
+from trader.reporting.ledger.protocols import DecisionLedgerAppender
 
 log = logging.getLogger("trader.application.decision_recorder")
 
@@ -108,11 +109,6 @@ def _append_agent_trace(path: Path, decision_entry: DecisionEntry, cycle_ts: str
 
 class LearningAppender(Protocol):
     def append(self, *, symbol: str, note: str, now: datetime, **extra: object) -> object:
-        ...
-
-
-class DecisionLedgerAppender(Protocol):
-    def append(self, row: ReportPayload) -> object:
         ...
 
 

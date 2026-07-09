@@ -2,4 +2,4 @@
 
 from __future__ import annotations
 
-__all__ = ["decision_ledger"]
+__all__ = ["decision_ledger", "protocols"]

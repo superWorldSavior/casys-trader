@@ -76,6 +76,33 @@ def test_hold_pendant_un_move_est_missed_pas_bad() -> None:
     assert metrics["nonbad_known_pct"] == 100.0  # une abstention n'est pas un trade raté
 
 
+def test_load_prices_for_audit_utilise_un_loader_injecte() -> None:
+    captured: dict[str, object] = {}
+    rows = [
+        {"cycle_ts": "2026-06-08T10:00:00+00:00", "symbol": "SPY"},
+        {"cycle_ts": "2026-06-08T11:00:00+00:00", "symbol": "QQQ"},
+    ]
+
+    def load_prices(symbols, *, start, end, interval):
+        captured.update({"symbols": symbols, "start": start, "end": end, "interval": interval})
+        return {"SPY": [{"ts": "2026-06-08T11:00:00+00:00", "close": 101.0}]}
+
+    prices = decision_audit.load_prices_for_audit(
+        rows,
+        horizons=["1h", "1d"],
+        interval="1h",
+        load_prices=load_prices,
+    )
+
+    assert captured == {
+        "symbols": ["QQQ", "SPY"],
+        "start": "2026-06-07",
+        "end": "2026-06-10",
+        "interval": "1h",
+    }
+    assert prices == {"SPY": [{"ts": "2026-06-08T11:00:00+00:00", "close": 101.0}]}
+
+
 def test_audit_rows_groupe_la_qualite_par_action_et_reason_code() -> None:
     rows = [
         {**_row("PULLBACK", "HOLD"), "decision_reason_code": "WAITING_PULLBACK"},

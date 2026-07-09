@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import json
-from datetime import timedelta
 from typing import Sequence
 
 import yaml
@@ -661,15 +660,12 @@ def _cmd_decisions_audit(args: argparse.Namespace) -> int:
     store = decision_ledger.DecisionLedgerStore(daemon.STATE_DIR / decision_ledger.DEFAULT_LEDGER_FILENAME)
     rows = store.read_all(symbol=args.symbol, limit=args.limit)
     horizons = _parse_csv_arg(args.horizons)
-    parsed_times = [decision_audit.parse_ts(row.get("cycle_ts")) for row in rows]
-    valid_times = [ts for ts in parsed_times if ts is not None]
-    prices: dict[str, list[dict]] = {}
-    if rows and valid_times:
-        max_horizon = max((decision_audit.parse_horizon(horizon) for horizon in horizons), default=timedelta())
-        start = (min(valid_times) - timedelta(days=1)).date().isoformat()
-        end = (max(valid_times) + max_horizon + timedelta(days=1)).date().isoformat()
-        symbols = sorted({str(row.get("symbol")) for row in rows if row.get("symbol")})
-        prices = decision_audit.load_prices_yfinance(symbols, start=start, end=end, interval=args.interval)
+    prices = decision_audit.load_prices_for_audit(
+        rows,
+        horizons=horizons,
+        interval=args.interval,
+        load_prices=decision_audit.load_prices_yfinance,
+    )
 
     result = decision_audit.audit_rows(
         rows,

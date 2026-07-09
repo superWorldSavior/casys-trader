@@ -330,3 +330,37 @@ def test_build_report_integre_les_agregats_risque(monkeypatch, tmp_path) -> None
     assert report["risk"]["mean_risk_pct"] == pytest.approx(0.0075)
     assert report["risk"]["risk_clamped_count"] == 1
     assert report["risk"]["risk_unbounded_no_stop_count"] == 1
+
+
+def test_build_report_accepte_un_scorer_injecte(tmp_path) -> None:
+    captured: dict[str, object] = {}
+
+    def score_decisions(ledger, *, band, days_buffer):
+        captured.update({"ledger": ledger, "band": band, "days_buffer": days_buffer})
+        return {
+            "judgeable": [],
+            "scored_rows": [],
+            "ledger_rows": [],
+            "window": ("2026-06-01", "2026-06-08"),
+            "exclusions": {},
+            "unavailable_symbols": [],
+        }
+
+    report = build_report(
+        tmp_path / "decisions.jsonl",
+        band=0.03,
+        days_buffer=4,
+        score_decisions=score_decisions,
+    )
+
+    assert captured == {
+        "ledger": tmp_path / "decisions.jsonl",
+        "band": 0.03,
+        "days_buffer": 4,
+    }
+    assert report["counts"] == {
+        "ledger": 0,
+        "judgeable": 0,
+        "scored_rows": 0,
+        "joined_decisions": 0,
+    }

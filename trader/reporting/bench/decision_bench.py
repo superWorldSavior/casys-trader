@@ -9,12 +9,13 @@ import json
 import math
 import os
 import time
-from typing import Any, Callable
+from typing import Any
 
 from trader.agent import llm
 from trader.agent.context import build_market_cockpit
 from trader.market import family_regime
 from trader.reporting.audit import decision_quality as decision_audit
+from trader.reporting.bench.protocols import BenchHistory, ModelBenchCompleter
 
 VALID_ACTIONS = {"BUY", "SELL", "HOLD"}
 DEFAULT_VERDICTS = {"good", "bad", "missed", "neutral"}
@@ -49,7 +50,7 @@ class ModelBenchFailure:
     latency_s: float
 
 
-CompleteFn = Callable[[ModelSpec, str, int], ModelCompletion | ModelBenchFailure]
+CompleteFn = ModelBenchCompleter
 
 
 def _unique_symbols(symbols: list[str] | tuple[str, ...]) -> list[str]:
@@ -211,7 +212,7 @@ def build_prompt(cases: list[dict], *, horizon: str, threshold_pct: float) -> st
 def reconstruct_case_contexts(
     cases: list[dict],
     *,
-    history: Any,
+    history: BenchHistory,
     symbols: list[str],
     interval: str,
     lookback_bars: int,
@@ -289,7 +290,7 @@ def load_reconstruction_history(
     symbols: list[str],
     interval: str,
     padding_days: int,
-) -> tuple[Any, dict]:
+) -> tuple[BenchHistory, dict]:
     """Charge un historique as-of symbole par symbole pour isoler les trous data."""
     from backtest.data import DataError, HistoryStore
 
@@ -333,7 +334,7 @@ def load_reconstruction_history(
 def _maybe_reconstruct_cases(
     cases: list[dict],
     *,
-    context_history: Any | None,
+    context_history: BenchHistory | None,
     context_symbols: list[str] | None,
     context_interval: str,
     context_lookback_bars: int,
@@ -536,7 +537,7 @@ def run_bench(
     timeout_s: int,
     symbol: str | None = None,
     include_original: bool = True,
-    context_history: Any | None = None,
+    context_history: BenchHistory | None = None,
     context_symbols: list[str] | None = None,
     context_interval: str = "15m",
     context_lookback_bars: int = 160,

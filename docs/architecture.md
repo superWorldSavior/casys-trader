@@ -16,7 +16,8 @@
 >
 > Les anciens modules `market/`, `planning/`, `agent/llm.py`, `execution/broker.py` sont désormais des **FAÇADES**
 > ré-exportant depuis `domain/`/`infrastructure/` (importeurs inchangés). Ports = `Protocol` regroupés par module dans
-> `<module>/protocols.py` (convention ; plus de `ports.py`). SQLite = source unique (plus de shadow JSON).
+> `<module>/protocols.py` (convention ; plus de `ports.py`) ; `trader/reporting/*/protocols.py` garde les ports
+> reporting colocalisés avec les moteurs/read models concernés. SQLite = source unique (plus de shadow JSON).
 > **Inversions de dépendance toutes cassées** (dépendances vers l'intérieur ; domaine pur vérifié par test_package_layout).
 >
 > Refactor modulaire en place sur `main` par tranches compatibles.
@@ -106,7 +107,7 @@ les utilisaient :
 | `trader/infrastructure/state_db/` | Backend SQLite de l'état paper, broker store, outbox | source durable quand `CASYS_STATE_BACKEND=sqlite` ; compat virtuelle : `trader.state_db.*` |
 | `trader/market/rotation/` | Rotation d'univers, hot-sets par venue, schedule, override, ledger rotation | compat virtuelle : `trader.rotation.*`, `trader.rotation_*` |
 | `trader/support/` | Helpers support stables : config (`pool`, `portfolio`), metadata git/code version, process env | compat virtuelle : `trader.config.*`, `trader.metadata.*`, `trader.system.*` |
-| `trader/reporting/` | Façades attribution/audit/bench/ledger/stats/tool usage/meta-performance, read models, renderers | analyse/rendu ex-post ; `reporting.decision_reason`, `reporting.attribution`, `reporting.decision_audit`, `reporting.decision_bench`, `reporting.decision_ledger`, `reporting.meta_performance`, `reporting.stats` et `reporting.tool_usage` gardent les façades de compatibilité/rendu |
+| `trader/reporting/` | Façades attribution/audit/bench/ledger/stats/tool usage/meta-performance, read models, renderers, protocols colocalisés | analyse/rendu ex-post ; `reporting.decision_reason`, `reporting.attribution`, `reporting.decision_audit`, `reporting.decision_bench`, `reporting.decision_ledger`, `reporting.meta_performance`, `reporting.stats` et `reporting.tool_usage` gardent les façades de compatibilité/rendu ; les ports partagés vivent sous `reporting/{audit,bench,ledger,read_models}/protocols.py` |
 | `trader/interfaces/cli/` | Entry points CLI canoniques (`stats`, `attribution`, `tool_usage`, `tui`) | compat virtuelle : `python -m trader.commands.stats`, `python -m trader.stats`, etc. |
 | `trader/runtime/cycle_scheduling.py` | Adaptateur runtime wake/watch : délègue la politique à `application/cycle/schedule.py` et `application/cycle/watch_scanner.py`, puis émet events/logs et compat wrappers | évite que `daemon.py` réimporte directement la glue applicative |
 | `trader/runtime/cycle_dispatch.py` | Adaptateur runtime d'appel `run_cycle()` : porte le paquet de paramètres CLI/env/queue/consolidation et le forwarde depuis `daemon.main()` | évite deux appels `run_cycle(...)` dupliqués dans `main()` et garde le contrat runtime testable |
