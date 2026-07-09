@@ -20,6 +20,15 @@ def test_cli_indicators_list_json(capsys) -> None:
     assert "efficiency_ratio" in names
 
 
+def test_cli_dashboards_list_json(capsys) -> None:
+    main(["dashboards", "list", "--json"])
+
+    out = json.loads(capsys.readouterr().out)
+    assert out["index"]["path"] == "state/dashboards.html"
+    assert out["portfolio_timeline"]["command"] == "casys-trader dashboards portfolio"
+    assert out["decisions"]["url"] == "http://127.0.0.1:8137/decisions_dashboard.html"
+
+
 def test_cli_semantic_describe_expose_axes_temporels(capsys) -> None:
     main(["semantic", "describe", "--json"])
 

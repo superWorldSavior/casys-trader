@@ -1,6 +1,6 @@
 # casys-trader — raccourcis. Lance `make` (ou `make help`) pour la liste.
 .DEFAULT_GOAL := help
-.PHONY: help watch live once test logs live-logs
+.PHONY: help watch live once test logs live-logs dash dash-portfolio dash-decisions dash-list
 
 help:  ## Affiche cette aide
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -21,6 +21,18 @@ logs:  ## Lit les logs du daemon dans Gonzo (TUI ; touche 'd' → dashboard web 
 live-logs:  ## Démarre le daemon DÉTACHÉ (supervisé, anti-doublon) puis ouvre les logs ; quitter Gonzo NE tue PAS le daemon.
 	@uv run python -c "from pathlib import Path; from trader.cockpit.supervisor import launch_daemon as L; r=L(pid_file=Path('state/daemon.pid'), log_file=Path('state/daemon_console.log'), root=Path('.'), status_file=Path('state/daemon_status.json')); print('daemon:', r.reason, '(pid', r.pid, ')')"
 	gonzo -f state/daemon_console.log --follow
+
+dash:  ## Régénère tous les dashboards HTML/PNG (index: state/dashboards.html)
+	uv run casys-trader dashboards all
+
+dash-portfolio:  ## Régénère seulement les dashboards portefeuille
+	uv run casys-trader dashboards portfolio
+
+dash-decisions:  ## Régénère seulement les dashboards décisions
+	uv run casys-trader dashboards decisions
+
+dash-list:  ## Liste les dashboards locaux et leurs URLs
+	uv run casys-trader dashboards list
 
 test:  ## Lance toute la suite de tests
 	uv run pytest -q

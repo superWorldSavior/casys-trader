@@ -78,14 +78,28 @@ def test_application_package_has_only_canonical_subpackages() -> None:
     }
 
     assert entries == {
+        "analyst",
         "__init__.py",
         "cycle",
         "decide",
         "execute",
         "exit",
         "migration",
+        "portfolio",
         "record",
     }
+
+
+def test_application_analyst_modules_are_nested_without_legacy_shims() -> None:
+    application_dir = Path(__file__).resolve().parents[1] / "trader" / "application"
+
+    _assert_application_submodule_layout(
+        application_dir,
+        "analyst",
+        [
+            "news_macro",
+        ],
+    )
 
 
 def test_application_migration_modules_are_nested_without_legacy_shims() -> None:
@@ -275,6 +289,7 @@ def test_operator_surfaces_are_nested_under_interfaces() -> None:
     assert sorted(path.name for path in interfaces_dir.iterdir() if path.is_dir() and path.name != "__pycache__") == [
         "cli",
         "cockpit",
+        "dashboards",
         "ui",
     ]
 

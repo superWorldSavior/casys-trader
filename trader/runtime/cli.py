@@ -252,6 +252,136 @@ def _cmd_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def _dashboard_url(path: object) -> str:
+    return f"http://127.0.0.1:8137/{getattr(path, 'name', path)}"
+
+
+def _dashboard_paths_payload() -> dict[str, dict[str, str]]:
+    return {
+        "index": {
+            "path": "state/dashboards.html",
+            "url": "http://127.0.0.1:8137/dashboards.html",
+            "command": "casys-trader dashboards all",
+        },
+        "portfolio_timeline": {
+            "path": "state/portfolio_timeline.html",
+            "url": "http://127.0.0.1:8137/portfolio_timeline.html",
+            "command": "casys-trader dashboards portfolio",
+        },
+        "portfolio_allocation": {
+            "path": "state/allocation_dashboard.html",
+            "url": "http://127.0.0.1:8137/allocation_dashboard.html",
+            "command": "casys-trader dashboards portfolio",
+        },
+        "decisions": {
+            "path": "state/decisions_dashboard.html",
+            "url": "http://127.0.0.1:8137/decisions_dashboard.html",
+            "command": "casys-trader dashboards decisions",
+        },
+        "decision_charts": {
+            "path": "state/charts/01_allocation_familles.png",
+            "url": "http://127.0.0.1:8137/charts/01_allocation_familles.png",
+            "command": "casys-trader dashboards decisions",
+        },
+    }
+
+
+def _print_dashboard_paths(paths: dict[str, dict[str, str]]) -> None:
+    print("Dashboards locaux")
+    for name, info in paths.items():
+        print(f"- {name}: {info['path']}")
+        print(f"  {info['url']}")
+        print(f"  regen: {info['command']}")
+
+
+def _cmd_dashboards_list(args: argparse.Namespace) -> int:
+    payload = _dashboard_paths_payload()
+    if args.json:
+        _print_json(payload)
+    else:
+        _print_dashboard_paths(payload)
+    return 0
+
+
+def _render_dashboard_index() -> object:
+    from trader.interfaces.dashboards import index
+
+    return index.render_index()
+
+
+def _cmd_dashboards_portfolio(args: argparse.Namespace) -> int:
+    from trader.interfaces.dashboards import portfolio_allocation, portfolio_timeline
+
+    allocation = portfolio_allocation.build_and_render()
+    timeline = portfolio_timeline.build_and_render()
+    index_result = _render_dashboard_index()
+    if args.json:
+        _print_json(
+            {
+                "index": str(index_result.html_path),
+                "allocation": {"html": str(allocation.html_path), "png": str(allocation.png_path)},
+                "timeline": {"html": str(timeline.html_path), "png": str(timeline.png_path)},
+            }
+        )
+    else:
+        print(f"OK — portefeuille régénéré ({allocation.positions_count} positions, {timeline.fills_count} fills)")
+        print(f"  Index    : {index_result.html_path}  ({_dashboard_url(index_result.html_path)})")
+        print(f"  Snapshot : {allocation.html_path}  ({_dashboard_url(allocation.html_path)})")
+        print(f"  Temps    : {timeline.html_path}  ({_dashboard_url(timeline.html_path)})")
+    return 0
+
+
+def _cmd_dashboards_decisions(args: argparse.Namespace) -> int:
+    from trader.interfaces.dashboards import decision_charts, decision_dashboard
+
+    dashboard = decision_dashboard.build_and_render()
+    charts = decision_charts.build_and_render()
+    index_result = _render_dashboard_index()
+    if args.json:
+        _print_json(
+            {
+                "index": str(index_result.html_path),
+                "decisions": {"html": str(dashboard.html_path), "rows": dashboard.rows_count},
+                "charts": [str(path) for path in charts.paths],
+            }
+        )
+    else:
+        print(f"OK — décisions régénérées ({dashboard.rows_count} décisions)")
+        print(f"  Index      : {index_result.html_path}  ({_dashboard_url(index_result.html_path)})")
+        print(f"  Interactif : {dashboard.html_path}  ({_dashboard_url(dashboard.html_path)})")
+        for path in charts.paths:
+            print(f"  Chart      : {path}")
+    return 0
+
+
+def _cmd_dashboards_all(args: argparse.Namespace) -> int:
+    from trader.interfaces.dashboards import decision_charts, decision_dashboard, portfolio_allocation, portfolio_timeline
+
+    allocation = portfolio_allocation.build_and_render()
+    timeline = portfolio_timeline.build_and_render()
+    dashboard = decision_dashboard.build_and_render()
+    charts = decision_charts.build_and_render()
+    index_result = _render_dashboard_index()
+    if args.json:
+        _print_json(
+            {
+                "index": str(index_result.html_path),
+                "allocation": {"html": str(allocation.html_path), "png": str(allocation.png_path)},
+                "timeline": {"html": str(timeline.html_path), "png": str(timeline.png_path)},
+                "decisions": {"html": str(dashboard.html_path), "rows": dashboard.rows_count},
+                "charts": [str(path) for path in charts.paths],
+            }
+        )
+    else:
+        print("OK — tous les dashboards régénérés")
+        print(f"  Index      : {index_result.html_path}  ({_dashboard_url(index_result.html_path)})")
+        print(f"  Snapshot   : {allocation.html_path}")
+        print(f"  Temps      : {timeline.html_path}")
+        print(f"  Décisions  : {dashboard.html_path}")
+        print(f"  Charts PNG : {', '.join(str(path) for path in charts.paths)}")
+    return 0
+
+
 def _cmd_decisions_list(args: argparse.Namespace) -> int:
     store = decision_ledger.DecisionLedgerStore(daemon.STATE_DIR / decision_ledger.DEFAULT_LEDGER_FILENAME)
     rows = store.read_all(symbol=args.symbol, limit=args.limit)
@@ -752,6 +882,24 @@ def build_parser() -> argparse.ArgumentParser:
     status = sub.add_parser("status", help="état courant du daemon")
     status.add_argument("--json", action="store_true")
     status.set_defaults(func=_cmd_status)
+
+    dashboards = sub.add_parser("dashboards", help="dashboards HTML/PNG locaux")
+    dashboards_sub = dashboards.add_subparsers(dest="dashboards_command", required=True)
+    dashboards_list = dashboards_sub.add_parser("list", help="liste les dashboards et chemins locaux")
+    dashboards_list.add_argument("--json", action="store_true")
+    dashboards_list.set_defaults(func=_cmd_dashboards_list)
+
+    dashboards_portfolio = dashboards_sub.add_parser("portfolio", help="régénère les dashboards portefeuille")
+    dashboards_portfolio.add_argument("--json", action="store_true")
+    dashboards_portfolio.set_defaults(func=_cmd_dashboards_portfolio)
+
+    dashboards_decisions = dashboards_sub.add_parser("decisions", help="régénère les dashboards décisions")
+    dashboards_decisions.add_argument("--json", action="store_true")
+    dashboards_decisions.set_defaults(func=_cmd_dashboards_decisions)
+
+    dashboards_all = dashboards_sub.add_parser("all", help="régénère tous les dashboards")
+    dashboards_all.add_argument("--json", action="store_true")
+    dashboards_all.set_defaults(func=_cmd_dashboards_all)
 
     diagnostics = sub.add_parser("diagnostics", help="diagnostics post-mortem")
     diagnostics_sub = diagnostics.add_subparsers(dest="diagnostics_command", required=True)
