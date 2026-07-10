@@ -24,9 +24,10 @@ from trader.interfaces.cockpit.pages.universe import (
     build_hot_set_panel,
     build_overrides_panel,
     build_rotation_panel,
-    build_symbol_rows,
+    build_symbol_rows as legacy_build_symbol_rows,
     build_universe_pipeline_panel,
 )
+from trader.interfaces.cockpit.projections.universe import build_symbol_rows
 from trader.market.rotation.user_overrides import (
     UserOverrides,
     ban_symbol,
@@ -37,6 +38,10 @@ from trader.market.rotation.user_overrides import (
 
 UTC_TZ = UTC
 NOW = datetime(2026, 7, 6, 3, 0, 0, tzinfo=UTC_TZ)
+
+
+def test_page_preserves_the_historical_symbol_projection_import() -> None:
+    assert legacy_build_symbol_rows is build_symbol_rows
 
 
 # ---------------------------------------------------------------------------

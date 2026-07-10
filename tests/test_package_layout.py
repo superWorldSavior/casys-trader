@@ -1581,6 +1581,54 @@ def test_support_and_read_model_legacy_packages_are_virtual() -> None:
     assert legacy_compute_live_kpis is compute_live_kpis
 
 
+def test_cockpit_universe_projection_is_canonical_and_textual_free() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    cockpit_dir = repo_root / "trader" / "interfaces" / "cockpit"
+    projection_path = cockpit_dir / "projections" / "universe.py"
+    page_path = cockpit_dir / "pages" / "universe.py"
+
+    assert projection_path.exists()
+    projection_source = projection_path.read_text(encoding="utf-8")
+    assert "textual" not in projection_source
+    assert "rich." not in projection_source
+
+    page_source = page_path.read_text(encoding="utf-8")
+    page_tree = ast.parse(page_source, filename=str(page_path))
+    page_definitions = {
+        node.name
+        for node in ast.walk(page_tree)
+        if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    assert page_definitions.isdisjoint(
+        {"SymbolRowData", "build_symbol_rows", "_venue_of_safe"}
+    )
+
+    populate = next(
+        node
+        for node in page_tree.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name == "_populate_universe_table"
+    )
+    populate_calls = {
+        node.func.id
+        for node in ast.walk(populate)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    assert "build_symbol_rows" in populate_calls
+    assert "_safe_float" not in populate_calls
+
+    from trader.interfaces.cockpit.pages import universe as page
+    from trader.interfaces.cockpit.projections.universe import (
+        SymbolRowData,
+        build_symbol_rows,
+        venue_of_safe,
+    )
+
+    assert page.SymbolRowData is SymbolRowData
+    assert page.build_symbol_rows is build_symbol_rows
+    assert page._venue_of_safe is venue_of_safe
+
+
 def test_operator_interface_legacy_packages_are_virtual() -> None:
     trader_dir = Path(__file__).resolve().parents[1] / "trader"
 

@@ -17,7 +17,6 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import NamedTuple
 
 from rich.console import Group, RenderableType
 from rich.table import Table
@@ -31,6 +30,11 @@ from textual.widgets import Static
 
 from trader.interfaces.cockpit import format as f
 from trader.interfaces.cockpit.pages._shared import preserve_cursor, rows_available, ResizeRefresh, PANEL_CSS, SymbolTable
+from trader.interfaces.cockpit.projections.universe import (
+    SymbolRowData,
+    build_symbol_rows,
+    venue_of_safe as _venue_of_safe,
+)
 from trader.interfaces.ui.palette import (
     CASYS_ACCENT,
     CASYS_DIM,
@@ -115,164 +119,6 @@ def _distribute_rows(total: int, counts: list[int], minimum: int = 3) -> list[in
         idx = max(range(n), key=lambda i: counts[i])
         extras[idx] = max(0, extras[idx] + diff)
     return [allocs[i] + min(extras[i], demands[i]) for i in range(n)]
-
-
-def _venue_of_safe(symbol: str) -> str:
-    """Heuristique venue depuis le suffixe yfinance. Jamais d'exception."""
-    try:
-        from trader.market.rotation.wiring import venue_of
-
-        return venue_of(symbol)
-    except Exception:
-        return "?"
-
-
-# ---------------------------------------------------------------------------
-# Builders PURS — (state, ..., now) → RenderableType, jamais d'I/O
-# ---------------------------------------------------------------------------
-
-
-class SymbolRowData(NamedTuple):
-    """Données d'une ligne du tableau (pure, testable sans Textual)."""
-
-    symbol: str
-    venue: str
-    name: str
-    state_label: str  # "hot" | "pinned" | "pool" | "banned"
-    pos: str  # "L" | "S" | "—"
-    last_decision: str
-    last_decision_action: str  # "BUY" | "SELL" | "HOLD" | "deciding" | "excluded" | "—"
-    wake_text: str
-    wake_urgent: bool  # True si < 2h → accent
-    data_text: str
-    data_stale: bool
-
-
-def build_symbol_rows(
-    state: dict,
-    overrides: UserOverrides,
-    *,
-    now: datetime,
-    name_col_width: int = 20,
-) -> list[SymbolRowData]:
-    """Construit les données tabulaires pour la universe table. PUR."""
-    universe_symbols = list(state.get("universe_symbols") or [])
-    venue_state_raw = f.safe_dict(state.get("venue_state"))
-    venues_raw = f.safe_dict(venue_state_raw.get("venues"))
-    company_map = f.safe_dict(state.get("company_map"))
-    current_symbol = str(f.safe_dict(state.get("daemon_status")).get("current_symbol") or "")
-    recent = _safe_list_of_dicts(state.get("recent_decisions"))
-    symbol_wakes = f.safe_dict(state.get("symbol_wakes"))
-    stale_data = f.safe_dict(state.get("stale_market_data"))
-
-    holdings_by_sym = {
-        f.holding_symbol(h): h
-        for h in _safe_list_of_dicts(f.safe_dict(state.get("portfolio")).get("holdings"))
-    }
-
-    # Dernière décision par symbole (ordre chronologique desc)
-    last_dec_by_sym: dict[str, dict] = {}
-    for row in reversed(recent):
-        sym_k = str(row.get("symbol") or "")
-        if sym_k and sym_k not in last_dec_by_sym:
-            last_dec_by_sym[sym_k] = row
-
-    # Première expiration de watch par symbole
-    watch_by_sym: dict[str, datetime] = {}
-    for watch in _safe_list_of_dicts(state.get("indicator_watches")):
-        sym_w = str(watch.get("symbol") or "")
-        exp = f.parse_ts(watch.get("expires_at"))
-        if sym_w and exp and (sym_w not in watch_by_sym or exp < watch_by_sym[sym_w]):
-            watch_by_sym[sym_w] = exp
-
-    # Groupement par venue
-    sym_by_venue: dict[str, list[str]] = {v: [] for v in _VENUE_ORDER}
-    for sym in universe_symbols:
-        venue = _venue_of_safe(sym)
-        sym_by_venue.setdefault(venue, []).append(sym)
-
-    rows: list[SymbolRowData] = []
-    for venue in _VENUE_ORDER:
-        syms = sym_by_venue.get(venue, [])
-        if not syms:
-            continue
-        venue_info = f.safe_dict(venues_raw.get(venue))
-        hotlist = set(venue_info.get("hotlist") or [])
-        scores = f.safe_dict(venue_info.get("scores"))
-
-        def _sort(s: str, _h: set = hotlist, _sc: dict = scores) -> tuple:
-            return (0 if s in _h else 1, -(_safe_float(_sc.get(s), default=0.0) or 0.0))
-
-        for sym in sorted(syms, key=_sort):
-            override_status = overrides.status_of(sym)
-            name = str(company_map.get(sym) or "")
-            if len(name) > name_col_width:
-                name = name[: name_col_width - 1] + "…"
-
-            if override_status == "pinned":
-                state_label = "pinned"
-            elif override_status == "banned":
-                state_label = "banned"
-            elif sym in hotlist:
-                state_label = "hot"
-            else:
-                state_label = "pool"
-
-            holding = holdings_by_sym.get(sym)
-            if holding:
-                qty = f.holding_quantity(holding)
-                pos = "L" if qty > 0 else ("S" if qty < 0 else "—")
-            else:
-                pos = "—"
-
-            if sym == current_symbol:
-                dec_text, dec_action = "deciding now ▸", "deciding"
-            elif override_status == "banned":
-                dec_text, dec_action = "excluded", "excluded"
-            else:
-                dec = last_dec_by_sym.get(sym)
-                if dec:
-                    action = str(dec.get("action") or "").upper()
-                    ts = f.hhmm(dec.get("cycle_ts") or dec.get("ts"))
-                    conf = _safe_float(dec.get("confidence"), default=None)
-                    conf_part = f" .{int(conf * 100):02d}" if conf is not None else ""
-                    dec_text = f"{ts} {action}{conf_part}"
-                    dec_action = action
-                else:
-                    dec_text, dec_action = "—", "—"
-
-            wake_ts_raw = symbol_wakes.get(sym)
-            wake_dt = f.parse_ts(wake_ts_raw) if wake_ts_raw else watch_by_sym.get(sym)
-            if wake_dt and wake_dt > now:
-                wake_text = f.countdown(wake_dt, now=now)
-                wake_urgent = (wake_dt - now).total_seconds() < 7200
-            else:
-                wake_text, wake_urgent = "—", False
-
-            stale_entry = f.safe_dict(stale_data.get(sym))
-            if stale_entry:
-                age_min = _safe_float(stale_entry.get("data_age_minutes"), default=None)
-                data_text = f"▲ {f.age_m(age_min)}" if age_min is not None else "▲ ?"
-                data_stale = True
-            else:
-                data_text, data_stale = "● fresh", False
-
-            rows.append(
-                SymbolRowData(
-                    symbol=sym,
-                    venue=venue,
-                    name=name,
-                    state_label=state_label,
-                    pos=pos,
-                    last_decision=dec_text,
-                    last_decision_action=dec_action,
-                    wake_text=wake_text,
-                    wake_urgent=wake_urgent,
-                    data_text=data_text,
-                    data_stale=data_stale,
-                )
-            )
-    return rows
 
 
 def build_overrides_panel(overrides: UserOverrides) -> RenderableType:
@@ -637,6 +483,69 @@ def _read_last_rotation(ledger_path: Path) -> dict | None:
     return None
 
 
+def _decision_cell(row: SymbolRowData) -> Text:
+    if row.last_decision_action == "deciding":
+        return Text(row.last_decision, style=CASYS_ACCENT)
+    if row.last_decision_action == "excluded":
+        return Text(row.last_decision, style=CASYS_FAINT)
+    if row.last_decision == "—":
+        return Text("—", style=CASYS_FAINT)
+
+    action = row.last_decision_action
+    action_style = (
+        CASYS_SUCCESS
+        if action == "BUY"
+        else (CASYS_ERROR if action == "SELL" else CASYS_DIM)
+    )
+    marker = f" {action}"
+    timestamp, separator, suffix = row.last_decision.partition(marker)
+    if not separator:
+        return Text(row.last_decision, style=action_style)
+
+    cell = Text()
+    cell.append(f"{timestamp} ", style=CASYS_DIM)
+    cell.append(action, style=action_style)
+    if suffix:
+        cell.append(suffix, style=CASYS_DIM)
+    return cell
+
+
+def _symbol_row_cells(row: SymbolRowData) -> dict[str, Text]:
+    state_cell = {
+        "pinned": Text("⚑ pinned", style=CASYS_ACCENT),
+        "banned": Text("✕ banned", style=CASYS_ERROR),
+        "hot": Text("hot ●", style=CASYS_ACCENT),
+        "pool": Text("pool", style=CASYS_DIM),
+    }.get(row.state_label, Text(row.state_label, style=CASYS_DIM))
+    pos_cell = Text(
+        row.pos,
+        style=(
+            CASYS_SUCCESS
+            if row.pos == "L"
+            else (CASYS_ERROR if row.pos == "S" else CASYS_FAINT)
+        ),
+    )
+    return {
+        "SYM": Text(row.symbol, style=f"bold {CASYS_FG}"),
+        "NAME": Text(row.name, style=CASYS_DIM),
+        "STATE": state_cell,
+        "POS": pos_cell,
+        "LAST DECISION": _decision_cell(row),
+        "WAKE": Text(
+            row.wake_text,
+            style=(
+                CASYS_ACCENT
+                if row.wake_urgent
+                else (CASYS_DIM if row.wake_text != "—" else CASYS_FAINT)
+            ),
+        ),
+        "DATA": Text(
+            row.data_text,
+            style=CASYS_WARNING if row.data_stale else CASYS_SUCCESS,
+        ),
+    }
+
+
 def _populate_universe_table(
     table: SymbolTable,
     state: dict,
@@ -656,158 +565,56 @@ def _populate_universe_table(
     n_cols = len(_UNIVERSE_COLUMNS) - len(drops)
     table.clear()
 
-    universe_symbols = list(state.get("universe_symbols") or [])
-    venue_state_raw = f.safe_dict(state.get("venue_state"))
-    venues_raw = f.safe_dict(venue_state_raw.get("venues"))
-    company_map = f.safe_dict(state.get("company_map"))
-    current_symbol = str(f.safe_dict(state.get("daemon_status")).get("current_symbol") or "")
-    recent = _safe_list_of_dicts(state.get("recent_decisions"))
-    symbol_wakes = f.safe_dict(state.get("symbol_wakes"))
-    stale_data = f.safe_dict(state.get("stale_market_data"))
-    open_list = list(state.get("open_venues_list") or [])
-    sessions = f.safe_dict(state.get("sessions"))
-
-    holdings_by_sym = {
-        f.holding_symbol(h): h
-        for h in _safe_list_of_dicts(f.safe_dict(state.get("portfolio")).get("holdings"))
+    rows = build_symbol_rows(
+        state,
+        overrides,
+        now=now,
+        name_col_width=name_col_width,
+    )
+    rows_by_venue: dict[str, list[SymbolRowData]] = {
+        venue: [] for venue in _VENUE_ORDER
     }
+    for row in rows:
+        rows_by_venue.setdefault(row.venue, []).append(row)
 
-    last_dec_by_sym: dict[str, dict] = {}
-    for row in reversed(recent):
-        sym_k = str(row.get("symbol") or "")
-        if sym_k and sym_k not in last_dec_by_sym:
-            last_dec_by_sym[sym_k] = row
+    active_venues = [venue for venue in _VENUE_ORDER if rows_by_venue.get(venue)]
+    open_venues = set(state.get("open_venues_list") or [])
+    sessions = f.safe_dict(state.get("sessions"))
+    last_venue_index = len(active_venues) - 1
 
-    watch_by_sym: dict[str, datetime] = {}
-    for watch in _safe_list_of_dicts(state.get("indicator_watches")):
-        sym_w = str(watch.get("symbol") or "")
-        exp = f.parse_ts(watch.get("expires_at"))
-        if sym_w and exp and (sym_w not in watch_by_sym or exp < watch_by_sym[sym_w]):
-            watch_by_sym[sym_w] = exp
-
-    sym_by_venue: dict[str, list[str]] = {v: [] for v in _VENUE_ORDER}
-    for sym in universe_symbols:
-        venue = _venue_of_safe(sym)
-        sym_by_venue.setdefault(venue, []).append(sym)
-
-    active_venues = [v for v in _VENUE_ORDER if sym_by_venue.get(v)]
-    last_venue_idx = len(active_venues) - 1
-
-    for venue_idx, venue in enumerate(active_venues):
-        syms = sym_by_venue.get(venue, [])
-        venue_info = f.safe_dict(venues_raw.get(venue))
-        hotlist = set(venue_info.get("hotlist") or [])
-        scores = f.safe_dict(venue_info.get("scores"))
-
-        def _sk(s: str, _h: set = hotlist, _sc: dict = scores) -> tuple:
-            return (0 if s in _h else 1, -(_safe_float(_sc.get(s), default=0.0) or 0.0))
-
-        sorted_syms = sorted(syms, key=_sk)
-
-        # Venue header row
+    for venue_index, venue in enumerate(active_venues):
+        venue_rows = rows_by_venue[venue]
         venue_display = _VENUE_DISPLAY.get(venue, venue)
-        is_open = venue in open_list
         header = Text()
-        header.append(f"{venue_display} — {len(syms)} · ", style=CASYS_FAINT)
-        if is_open:
+        header.append(f"{venue_display} — {len(venue_rows)} · ", style=CASYS_FAINT)
+        if venue in open_venues:
             header.append("● open", style=CASYS_SUCCESS)
         else:
-            sess = f.safe_dict(sessions.get(venue))
-            open_time = str(sess.get("open") or "?")
-            header.append(f"○ opens {open_time}", style=CASYS_FAINT)
-
+            session = f.safe_dict(sessions.get(venue))
+            header.append(
+                f"○ opens {str(session.get('open') or '?')}",
+                style=CASYS_FAINT,
+            )
         table.add_row(
             header,
             *(Text("") for _ in range(n_cols - 1)),
             key=f"—|header_{venue}",
         )
 
-        # Limite adaptative : limits_per_venue[venue] si fourni, sinon _PREVIEW_ROWS
         limit = (limits_per_venue or {}).get(venue, _PREVIEW_ROWS)
-        preview = sorted_syms[:limit]
-        remaining = sorted_syms[limit:]
-
-        for sym in preview:
-            override_status = overrides.status_of(sym)
-            name = str(company_map.get(sym) or "")
-            if len(name) > name_col_width:
-                name = name[: name_col_width - 1] + "…"
-
-            if override_status == "pinned":
-                state_cell = Text("⚑ pinned", style=CASYS_ACCENT)
-            elif override_status == "banned":
-                state_cell = Text("✕ banned", style=CASYS_ERROR)
-            elif sym in hotlist:
-                state_cell = Text("hot ●", style=CASYS_ACCENT)
-            else:
-                state_cell = Text("pool", style=CASYS_DIM)
-
-            holding = holdings_by_sym.get(sym)
-            if holding:
-                qty = f.holding_quantity(holding)
-                if qty > 0:
-                    pos_cell = Text("L", style=CASYS_SUCCESS)
-                elif qty < 0:
-                    pos_cell = Text("S", style=CASYS_ERROR)
-                else:
-                    pos_cell = Text("—", style=CASYS_FAINT)
-            else:
-                pos_cell = Text("—", style=CASYS_FAINT)
-
-            if sym == current_symbol:
-                dec_cell = Text("deciding now ▸", style=CASYS_ACCENT)
-            elif override_status == "banned":
-                dec_cell = Text("excluded", style=CASYS_FAINT)
-            else:
-                dec = last_dec_by_sym.get(sym)
-                if dec:
-                    action = str(dec.get("action") or "").upper()
-                    ts = f.hhmm(dec.get("cycle_ts") or dec.get("ts"))
-                    conf = _safe_float(dec.get("confidence"), default=None)
-                    aStyle = CASYS_SUCCESS if action == "BUY" else (CASYS_ERROR if action == "SELL" else CASYS_DIM)
-                    dec_cell = Text()
-                    dec_cell.append(f"{ts} ", style=CASYS_DIM)
-                    dec_cell.append(action, style=aStyle)
-                    if conf is not None:
-                        dec_cell.append(f" .{int(conf * 100):02d}", style=CASYS_DIM)
-                else:
-                    dec_cell = Text("—", style=CASYS_FAINT)
-
-            wake_ts_raw = symbol_wakes.get(sym)
-            wake_dt = f.parse_ts(wake_ts_raw) if wake_ts_raw else watch_by_sym.get(sym)
-            if wake_dt and wake_dt > now:
-                cd = f.countdown(wake_dt, now=now)
-                urgent = (wake_dt - now).total_seconds() < 7200
-                wake_cell = Text(cd, style=CASYS_ACCENT if urgent else CASYS_DIM)
-            else:
-                wake_cell = Text("—", style=CASYS_FAINT)
-
-            stale_entry = f.safe_dict(stale_data.get(sym))
-            if stale_entry:
-                age_min = _safe_float(stale_entry.get("data_age_minutes"), default=None)
-                data_str = f"▲ {f.age_m(age_min)}" if age_min is not None else "▲ ?"
-                data_cell = Text(data_str, style=CASYS_WARNING)
-            else:
-                data_cell = Text("● fresh", style=CASYS_SUCCESS)
-
-            cells = {
-                "SYM": Text(sym, style=f"bold {CASYS_FG}"),
-                "NAME": Text(name, style=CASYS_DIM),
-                "STATE": state_cell,
-                "POS": pos_cell,
-                "LAST DECISION": dec_cell,
-                "WAKE": wake_cell,
-                "DATA": data_cell,
-            }
+        preview = venue_rows[:limit]
+        remaining = venue_rows[limit:]
+        for row in preview:
+            cells = _symbol_row_cells(row)
             table.add_row(
-                *(cell for col, cell in cells.items() if col not in drops),
-                key=f"{sym}|{venue}",
+                *(cell for column, cell in cells.items() if column not in drops),
+                key=f"{row.symbol}|{venue}",
             )
 
         if remaining:
             more = Text()
             more.append(f"+ {len(remaining)} more {venue_display}", style=CASYS_FAINT)
-            if venue_idx == last_venue_idx:
+            if venue_index == last_venue_index:
                 more.append(
                     " · positions are always decided on, even out of the hot-set",
                     style=CASYS_FAINT,
