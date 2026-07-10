@@ -827,6 +827,45 @@ def test_universe_filesystem_adapters_are_canonical_with_rotation_facades() -> N
     assert legacy_write_universe_if_changed is write_universe_if_changed
 
 
+def test_daemon_agent_context_and_process_state_are_runtime_canonical() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    runtime_dir = repo_root / "trader" / "runtime"
+    daemon_path = runtime_dir / "daemon.py"
+
+    assert (runtime_dir / "agent_cycle_context.py").exists()
+    assert (runtime_dir / "cycle_process_state.py").exists()
+
+    daemon_tree = ast.parse(
+        daemon_path.read_text(encoding="utf-8"), filename=str(daemon_path)
+    )
+    daemon_definitions = {
+        node.name
+        for node in ast.walk(daemon_tree)
+        if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    assert daemon_definitions.isdisjoint(
+        {
+            "CycleProcessState",
+            "_global_plans_summary",
+            "_plan_to_context_dict",
+            "_build_base_context",
+        }
+    )
+
+    from trader.runtime import daemon
+    from trader.runtime.agent_cycle_context import (
+        build_base_context,
+        global_plans_summary,
+        plan_to_context_dict,
+    )
+    from trader.runtime.cycle_process_state import CycleProcessState
+
+    assert daemon._build_base_context is build_base_context
+    assert daemon._global_plans_summary is global_plans_summary
+    assert daemon._plan_to_context_dict is plan_to_context_dict
+    assert daemon.CycleProcessState is CycleProcessState
+
+
 def test_daemon_delegates_watch_schedule_glue_to_runtime_adapter() -> None:
     repo_root = Path(__file__).resolve().parents[1]
     daemon_path = repo_root / "trader" / "runtime" / "daemon.py"

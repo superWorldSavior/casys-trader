@@ -19,7 +19,6 @@ import math
 import os
 import sqlite3
 import time
-from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
@@ -37,7 +36,6 @@ from trader.application.decide import (
 from trader.application.execute import (
     order_admission,
     queue_dispatch as execute_queue_dispatch,  # noqa: F401 - legacy daemon facade
-    risk_capacity,
 )
 from trader.application.exit import (
     planned_exits as planned_exits_service,
@@ -66,7 +64,7 @@ from trader.execution.risk import RiskGate, RiskLimits
 from trader.agent.learnings import consolidator
 from trader.agent.learnings import raw_store as raw_learnings
 from trader.agent.learnings import store as recall_store_mod
-from trader.market import family_regime, fx, macro_calendar, macro_series
+from trader.market import family_regime, fx, macro_calendar, macro_series  # noqa: F401
 from trader.market import execution_eligibility as execution_eligibility_service
 from trader.market import market_data as market
 from trader.market import volatility as reference_volatility_service
@@ -79,13 +77,15 @@ from trader.market.features import DEFAULT_INDICATORS
 from trader.market.gross_priority import PriorityItem, gross_execution_order
 from trader.market.ib_source import IBDataSource, connect_ib
 from trader.market import news_feed
-from trader.planning.trade_plan import (
-    TradePlan,
-)
 from trader.planning.protocols import SchedulerLike
 from trader.support.metadata import code_version
-from trader.reporting.read_models import attribution, live_kpis, meta_performance
+from trader.reporting.read_models import attribution, meta_performance
 from trader.reporting.ledger import decision_ledger
+from trader.runtime.agent_cycle_context import (
+    build_base_context as _build_base_context,
+    global_plans_summary as _global_plans_summary,  # noqa: F401 - legacy daemon hook
+    plan_to_context_dict as _plan_to_context_dict,
+)
 from trader.runtime import (
     cycle_finalization,
     cycle_dispatch,
@@ -100,6 +100,7 @@ from trader.runtime import (
     universe_intelligence_runtime,
     worker_cycle_context as worker_cycle_context_runtime,
 )
+from trader.runtime.cycle_process_state import CycleProcessState
 from trader.runtime.ib_attach import IBAttachBackoff
 from trader.runtime.state_writer import RuntimeStateWriter
 from trader.execution import portfolio
@@ -116,7 +117,6 @@ from trader.infrastructure.state_db.broker_factory import (
     make_scheduler,
     make_trade_plan_store,
 )
-from trader.planning.indicator_watch import is_armed_plan
 
 ROOT = Path(__file__).resolve().parents[2]
 STATE_DIR = ROOT / "state"
@@ -127,10 +127,6 @@ log = logging.getLogger("casys-trader")
 # Posé à True dès le premier échec ; ne pas réessayer à chaque cycle pour éviter
 # de logguer la même erreur indéfiniment. Réinitialisable dans les tests.
 _RECALL_STORE_FAILED: bool = False
-
-_PLAN_ENTRY_THESIS_MAX_CHARS = 500
-_LAST_LLM_REVIEW_KEYS = ("ts", "verdict", "action", "intent", "llm_provider", "llm_model")
-
 
 def evaluate_plan(*args: object, **kwargs: object) -> object:
     """Legacy daemon monkeypatch hook for planned-exit evaluation."""
@@ -161,16 +157,6 @@ DEFAULT_IB_CLIENT_ID = 17
 DEFAULT_LEARNING_CONSOLIDATION_THRESHOLD = consolidator.DEFAULT_CONSOLIDATION_THRESHOLD
 DEFAULT_DECISION_BATCH_SIZE = planner_batch.DEFAULT_DECISION_BATCH_SIZE
 DEFAULT_DECISION_BATCH_PARALLELISM = planner_batch.DEFAULT_DECISION_BATCH_PARALLELISM
-
-@dataclass
-class CycleProcessState:
-    # D7 étage A — dernier passage LLM par (state_dir, symbole), pour la revue
-    # périodique garantie du gate de pertinence. Volatile : reset au restart.
-    last_llm_at: dict[tuple[str, str], object] = field(default_factory=dict)
-    # Feedback gross d'un cycle au suivant (process daemon long-vivant, comme
-    # last_llm_at). Keyé par STATE_DIR. Best-effort : vidé au redémarrage.
-    last_gross_rejections: dict[str, dict | None] = field(default_factory=dict)
-
 
 _DEFAULT_CYCLE_PROCESS_STATE = CycleProcessState()
 # Intervalle fin pour les checks de sortie (stop/TP/trailing).
@@ -337,63 +323,6 @@ def _attribution_min_entry_confidence(
     return float(risk_cfg.get("min_trade_confidence", 0.7))
 
 
-def _global_plans_summary(sched: SchedulerLike | None, now: datetime) -> list[dict]:
-    if sched is None:
-        return []
-    try:
-        summaries: list[dict] = []
-        for watch in sched.active_indicator_watches(now=now):
-            armed = is_armed_plan(watch)
-            item = {
-                "symbol": watch.get("symbol"),
-                "id": watch.get("id"),
-                "kind": "armed" if armed else "wake",
-            }
-            if armed:
-                order = watch.get("order")
-                if isinstance(order, dict) and order.get("intent") is not None:
-                    item["intent"] = order.get("intent")
-            summaries.append(item)
-        return summaries
-    except Exception:
-        log.warning(
-            "[plans_summary] échec construction résumé global (conscience d'état dégradée)",
-            exc_info=True,
-        )
-        return []
-
-
-def _bounded_plan_text(value: str | None, *, max_chars: int) -> str | None:
-    if value is None:
-        return None
-    return str(value)[:max_chars]
-
-
-def _compact_last_llm_review(review: dict | None) -> dict | None:
-    if not isinstance(review, dict):
-        return None
-    compact = {
-        key: review[key]
-        for key in _LAST_LLM_REVIEW_KEYS
-        if key in review and review[key] is None or isinstance(review.get(key), str)
-    }
-    return compact or None
-
-
-def _plan_to_context_dict(plan: TradePlan) -> dict:
-    return {
-        "id": plan.id,
-        "symbol": plan.symbol,
-        "side": plan.side,
-        "entry_price": plan.entry_price,
-        "hard_stop_price": plan.hard_stop_price,
-        "take_profits": [take_profit.model_dump() for take_profit in plan.take_profits],
-        "remaining_quantity": plan.remaining_quantity,
-        "last_llm_review": _compact_last_llm_review(plan.last_llm_review),
-        "entry_thesis": _bounded_plan_text(plan.entry_thesis, max_chars=_PLAN_ENTRY_THESIS_MAX_CHARS),
-    }
-
-
 def _build_recall_provider(
     store: recall_store_mod.LearningsStore,
     now: datetime,
@@ -417,83 +346,6 @@ def _build_recall_provider(
         embedder=embedder,
         log_warning=log.warning,
     )
-
-
-def _build_base_context(
-    *,
-    cycle_id: str,
-    now: datetime,
-    symbols: list[str],
-    snap: object,
-    portfolio_fee_estimator: Callable[[str, float, float, float], float | None] | None,
-    risk_cfg: dict,
-    prices: dict[str, float],
-    broker: object,
-    gross: float,
-    gate_limits: RiskLimits,
-    rate_for_symbol: Callable[[str], float],
-    cockpit: dict,
-    stale_market_data: dict,
-    sched: SchedulerLike | None,
-    state_dir: Path,
-    root: Path,
-    attribution_payload: dict,
-    meta_performance_payload: dict,
-    consolidated_learnings_store: object,
-    learnings_store: object,
-    max_learnings_in_context: int,
-    daily_bars_by_symbol: dict,
-    active_families: object,
-    requestable_indicator_ids: object,
-) -> dict:
-    return {
-        "now": cycle_id,
-        "now_human": market.human_clock(now),
-        "market_clocks": market.market_clocks(now, symbols),
-        "portfolio": snap.as_context(fee_estimator=portfolio_fee_estimator),
-        "risk_limits": risk_cfg,
-        "risk_capacity": risk_capacity.risk_capacity_context(
-            symbols=[symbol for symbol in symbols if symbol in prices],
-            prices=prices,
-            broker=broker,
-            gross_exposure=gross,
-            limits=gate_limits,
-            equity=snap.equity,
-            rate_of=rate_for_symbol,
-            currency_of=fx.currency_for,
-        ),
-        "semantic": {
-            "requestable_indicator_ids": requestable_indicator_ids,
-        },
-        "cockpit": cockpit,
-        "stale_market_data": stale_market_data,
-        "active_plans_summary": _global_plans_summary(sched, now),
-        # KPI live injectés pour que l'agent décideur pilote sa performance.
-        "kpis": live_kpis.compute_live_kpis(state_dir),
-        # Attribution décision->résultat : P&L réalisé par trade, calibration de la
-        # confidence et coût par raison de sortie. Le signal qui dit à l'agent si
-        # ses choix (surtout ses calls confiants) gagnent vraiment.
-        "attribution": attribution_payload,
-        # Stats ex-post des décisions agent (dont HOLD missed), groupées par
-        # action/reason_code. Descriptif uniquement : l'agent garde le jugement.
-        "meta_performance": meta_performance_payload,
-        # Boucle de feedback (D6) : guardrails humains nommés à part ; dès qu'un
-        # consolidé existe, les bruts ne sont plus réinjectés (anti auto-renforcement).
-        "learnings": consolidator.build_context_learnings(
-            consolidated_learnings_store.read(),
-            raw_recent=learnings_store.recent(limit=max_learnings_in_context),
-            guardrails=consolidator.load_guardrails(root / "mandate" / "guardrails.json"),
-        ),
-        # Biais de régime cross-asset par famille thématique (D2) : le code
-        # calcule la synthèse directionnelle, l'agent juge l'opportunité.
-        "regime_families": family_regime.compute_family_bias(
-            {
-                sym: family_regime.momentum_from_bars(bars)
-                for sym, bars in daily_bars_by_symbol.items()
-            },
-            active_families,
-        ),
-    }
 
 
 def run_cycle(

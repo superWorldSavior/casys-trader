@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import argparse
 import pytest
 
-from trader.runtime import daemon
+from trader.runtime import agent_cycle_context, daemon
 
 
 def test_build_base_context_preserve_payload_and_evaluation_order(monkeypatch, tmp_path) -> None:
@@ -61,23 +61,27 @@ def test_build_base_context_preserve_payload_and_evaluation_order(monkeypatch, t
         assert kwargs["limits"] is gate_limits
         assert kwargs["equity"] == snap.equity
         assert kwargs["rate_of"] is rate_for_symbol
-        assert kwargs["currency_of"] is daemon.fx.currency_for
+        assert kwargs["currency_of"] is agent_cycle_context.fx.currency_for
         return {"capacity": "context"}
 
-    monkeypatch.setattr(daemon.risk_capacity, "risk_capacity_context", risk_capacity_context)
     monkeypatch.setattr(
-        daemon,
-        "_global_plans_summary",
+        agent_cycle_context.risk_capacity,
+        "risk_capacity_context",
+        risk_capacity_context,
+    )
+    monkeypatch.setattr(
+        agent_cycle_context,
+        "global_plans_summary",
         lambda received_sched, received_now: calls.append("plans_summary")
         or [{"sched": received_sched is sched, "now": received_now.isoformat()}],
     )
     monkeypatch.setattr(
-        daemon.live_kpis,
+        agent_cycle_context.live_kpis,
         "compute_live_kpis",
         lambda state_dir: calls.append("live_kpis") or {"state_dir": str(state_dir)},
     )
     monkeypatch.setattr(
-        daemon.consolidator,
+        agent_cycle_context.consolidator,
         "load_guardrails",
         lambda path: calls.append("load_guardrails") or {"guardrails_path": str(path)},
     )
@@ -89,9 +93,13 @@ def test_build_base_context_preserve_payload_and_evaluation_order(monkeypatch, t
         assert guardrails == {"guardrails_path": str(tmp_path / "mandate" / "guardrails.json")}
         return {"learnings": "context"}
 
-    monkeypatch.setattr(daemon.consolidator, "build_context_learnings", build_context_learnings)
     monkeypatch.setattr(
-        daemon.family_regime,
+        agent_cycle_context.consolidator,
+        "build_context_learnings",
+        build_context_learnings,
+    )
+    monkeypatch.setattr(
+        agent_cycle_context.family_regime,
         "momentum_from_bars",
         lambda bars: calls.append(f"momentum:{bars[0]}") or f"momentum:{bars[0]}",
     )
@@ -105,9 +113,13 @@ def test_build_base_context_preserve_payload_and_evaluation_order(monkeypatch, t
         assert active_families == ("equity",)
         return {"regime": "context"}
 
-    monkeypatch.setattr(daemon.family_regime, "compute_family_bias", compute_family_bias)
+    monkeypatch.setattr(
+        agent_cycle_context.family_regime,
+        "compute_family_bias",
+        compute_family_bias,
+    )
 
-    context = daemon._build_base_context(
+    context = agent_cycle_context.build_base_context(
         cycle_id=cycle_id,
         now=now,
         symbols=["SPY", "QQQ", "MISSING"],
