@@ -1693,6 +1693,56 @@ def test_cockpit_decision_projection_is_canonical_and_textual_free() -> None:
     )
 
 
+def test_cockpit_portfolio_projection_is_canonical_and_textual_free() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    cockpit_dir = repo_root / "trader" / "interfaces" / "cockpit"
+    projection_path = cockpit_dir / "projections" / "portfolio.py"
+    page_path = cockpit_dir / "pages" / "portfolio.py"
+
+    assert projection_path.exists()
+    projection_source = projection_path.read_text(encoding="utf-8")
+    assert "textual" not in projection_source
+    assert "rich." not in projection_source
+
+    page_source = page_path.read_text(encoding="utf-8")
+    page_tree = ast.parse(page_source, filename=str(page_path))
+    page_definitions = {
+        node.name
+        for node in ast.walk(page_tree)
+        if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    assert page_definitions.isdisjoint(
+        {
+            "PortfolioPositionsProjection",
+            "PositionRow",
+            "_pnl_pct",
+            "_sort_holdings",
+            "build_positions_rows",
+        }
+    )
+
+    populate = next(
+        node
+        for node in ast.walk(page_tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "_populate_positions"
+    )
+    populate_calls = {
+        node.func.id
+        for node in ast.walk(populate)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    assert "project_portfolio_positions" in populate_calls
+    assert "_safe_float" not in populate_calls
+    assert "positions_by_pnl" not in page_source
+
+    from trader.interfaces.cockpit.pages import portfolio as page
+    from trader.interfaces.cockpit.projections import portfolio as projection
+
+    assert page._pnl_pct is projection.pnl_pct
+    assert page._sort_holdings is projection.sort_holdings
+    assert page.build_positions_rows is projection.build_positions_rows
+
+
 def test_cockpit_uses_support_coercion_instead_of_private_reporting_helpers() -> None:
     repo_root = Path(__file__).resolve().parents[1]
     cockpit_dir = repo_root / "trader" / "interfaces" / "cockpit"

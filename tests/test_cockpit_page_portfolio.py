@@ -2,7 +2,8 @@
 
 Couvre :
 - Helpers purs : _pnl_pct, _sort_holdings, _data_cell, _fmt_date_exit
-- Builders purs : build_exposure, build_fx, build_closed_trades, build_positions_rows
+- Projections pures : build_positions_rows, project_portfolio_positions
+- Builders Rich purs : build_exposure, build_fx, build_closed_trades
 - Widget Textual : montage des panneaux, binding o cycle sort, état vide toléré
 """
 
@@ -164,6 +165,15 @@ def test_sort_by_pct():
     ]
     result = _sort_holdings(holdings, sort_mode=2)
     assert result[0]["symbol"] == "B"  # |−3%| > |+0.5%|
+
+
+def test_page_position_helpers_are_canonical_projection_aliases():
+    from trader.interfaces.cockpit.pages import portfolio as page
+    from trader.interfaces.cockpit.projections import portfolio as projection
+
+    assert page._pnl_pct is projection.pnl_pct
+    assert page._sort_holdings is projection.sort_holdings
+    assert page.build_positions_rows is projection.build_positions_rows
 
 
 def test_data_cell_fresh():
@@ -640,6 +650,56 @@ def test_build_positions_rows_pnl_pct():
     aapl = next(r for r in rows if r["symbol"] == "AAPL")
     # pnl_pct = 100 / (10 * 200 * 1.0) * 100 = 5.0%
     assert abs(aapl["pnl_pct"] - 5.0) < 0.01
+
+
+def test_project_portfolio_positions_composes_rows_and_aggregates():
+    from trader.interfaces.cockpit.projections.portfolio import (
+        project_portfolio_positions,
+    )
+
+    projection = project_portfolio_positions(_STATE_BASE)
+
+    assert [row.symbol for row in projection.rows] == ["2330.TW", "AAPL"]
+    assert projection.gross_long == pytest.approx(4425.0)
+    assert projection.gross_short == 0.0
+    assert projection.gross == pytest.approx(4425.0)
+    assert projection.net_long == pytest.approx(4425.0)
+    assert projection.unrealized_total == pytest.approx(-55.0)
+
+
+def test_project_portfolio_positions_splits_long_and_short_exposure():
+    from trader.interfaces.cockpit.projections.portfolio import (
+        project_portfolio_positions,
+    )
+
+    state = {
+        "portfolio": {
+            "holdings": [
+                {
+                    "symbol": "LONG",
+                    "quantity": 2,
+                    "last_price": 100.0,
+                    "fx_rate": 1.0,
+                    "unrealized_pnl_net": 10.0,
+                },
+                {
+                    "symbol": "SHORT",
+                    "quantity": -3,
+                    "last_price": 50.0,
+                    "fx_rate": 1.0,
+                    "unrealized_pnl_net": -5.0,
+                },
+            ]
+        }
+    }
+
+    projection = project_portfolio_positions(state)
+
+    assert projection.gross_long == 200.0
+    assert projection.gross_short == 150.0
+    assert projection.gross == 350.0
+    assert projection.net_long == 50.0
+    assert projection.unrealized_total == 5.0
 
 
 # ---------------------------------------------------------------------------

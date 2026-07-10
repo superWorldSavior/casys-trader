@@ -19,8 +19,14 @@ from textual.containers import Vertical, VerticalScroll
 from textual.widgets import Static
 
 from trader.interfaces.cockpit import format as f
-from trader.interfaces.cockpit.derive import equity_snapshot, exposure, positions_by_pnl
+from trader.interfaces.cockpit.derive import equity_snapshot, exposure
 from trader.interfaces.cockpit.pages._shared import PANEL_CSS, ResizeRefresh, SymbolTable, preserve_cursor, rows_available
+from trader.interfaces.cockpit.projections.portfolio import (
+    build_positions_rows,  # noqa: F401 - historical page export
+    pnl_pct as _pnl_pct,  # noqa: F401 - historical page export
+    project_portfolio_positions,
+    sort_holdings as _sort_holdings,  # noqa: F401 - historical page export
+)
 from trader.interfaces.ui.palette import (
     CASYS_ACCENT,
     CASYS_DIM,
@@ -53,32 +59,12 @@ _MONTHS = (
 # ---------------------------------------------------------------------------
 
 
-def _pnl_pct(holding: dict) -> float:
-    """P&L% = unrealized net USD / cost basis USD (signed)."""
-    pnl = f.holding_pnl(holding)
-    qty = f.holding_quantity(holding)
-    avg = _safe_float(holding.get("avg_price"), default=None)
-    fx_rate = _safe_float(holding.get("fx_rate"), default=1.0) or 1.0
-    cost = abs(qty * (avg or 0.0) * fx_rate)
-    return (pnl / cost * 100.0) if cost > 0 else 0.0
-
-
 def _fmt_date_exit(ts: object) -> str:
     """exit_ts ISO → "03 Jul" locale-independent / "—" si invalide."""
     parsed = f.parse_ts(ts)
     if parsed is None:
         return "—"
     return f"{parsed.day:02d} {_MONTHS[parsed.month - 1]}"
-
-
-def _sort_holdings(holdings: list[dict], sort_mode: int) -> list[dict]:
-    """Sort: 0 = |P&L| desc, 1 = notional value desc, 2 = |P&L%| desc."""
-    if sort_mode == 1:
-        return sorted(holdings, key=lambda h: f.holding_notional(h), reverse=True)
-    if sort_mode == 2:
-        return sorted(holdings, key=lambda h: abs(_pnl_pct(h)), reverse=True)
-    # Default: |P&L|
-    return sorted(holdings, key=lambda h: abs(f.holding_pnl(h)), reverse=True)
 
 
 def _data_cell(state: dict, symbol: str) -> Text:
@@ -275,48 +261,6 @@ def build_closed_trades(
 
 
 # ---------------------------------------------------------------------------
-# Positions row data (pure builder, testable without UI)
-# ---------------------------------------------------------------------------
-
-
-def build_positions_rows(state: dict, sort_mode: int = 0) -> list[dict]:
-    """Données structurées des lignes de position (sans Rich/Textual)."""
-    holdings = _sort_holdings(positions_by_pnl(state), sort_mode)
-    trade_plans = _safe_list_of_dicts(state.get("trade_plans"))
-    rows: list[dict] = []
-    for holding in holdings:
-        symbol = f.holding_symbol(holding)
-        qty = f.holding_quantity(holding)
-        pnl = f.holding_pnl(holding)
-        pnl_pct_val = _pnl_pct(holding)
-        notional = f.holding_notional(holding)
-        avg = _safe_float(holding.get("avg_price"), default=None)
-        last = _safe_float(holding.get("last_price"), default=None)
-        plan = f.plan_for_symbol(trade_plans, symbol)
-        stop_dist = f.stop_distance_pct(plan, last) if plan else None
-        stop_left = f.stop_left_pct(plan, last) if plan else None
-        stop_entry_risk = f.stop_entry_risk_pct(plan) if plan else None
-        rows.append(
-            {
-                "symbol": symbol,
-                "side": "L" if qty >= 0 else "S",
-                "qty": qty,
-                "avg": avg,
-                "last": last,
-                "notional": notional,
-                "pnl": pnl,
-                "pnl_pct": pnl_pct_val,
-                "stop_dist": stop_dist,
-                "stop_left_pct": stop_left,
-                "stop_entry_risk_pct": stop_entry_risk,
-                "is_stale": f.symbol_is_stale(state, symbol),
-                "data_age_m": f.staleness_age_m(state, symbol),
-            }
-        )
-    return rows
-
-
-# ---------------------------------------------------------------------------
 # Widget
 # ---------------------------------------------------------------------------
 
@@ -445,71 +389,57 @@ class PortfolioPage(ResizeRefresh, Static):
     def _populate_positions(self, table: SymbolTable, state: dict, drops: frozenset[str]) -> None:
         table.clear()
 
-        holdings = _sort_holdings(positions_by_pnl(state), self._sort_mode)
-        trade_plans = _safe_list_of_dicts(state.get("trade_plans"))
+        projection = project_portfolio_positions(state, self._sort_mode)
 
-        gross_long = gross_short = unrealized_total = 0.0
-
-        for idx, holding in enumerate(holdings):
-            symbol = f.holding_symbol(holding)
-            qty = f.holding_quantity(holding)
-            side_long = qty >= 0
-            pnl = f.holding_pnl(holding)
-            pnl_pct_val = _pnl_pct(holding)
-            notional = f.holding_notional(holding)
-            avg = _safe_float(holding.get("avg_price"), default=None)
-            last = _safe_float(holding.get("last_price"), default=None)
-            pnl_style = CASYS_SUCCESS if pnl >= 0 else CASYS_ERROR
-
-            plan = f.plan_for_symbol(trade_plans, symbol)
-            stop_left = f.stop_left_pct(plan, last) if plan else None
-            stop_str = f"{stop_left:.1f}%" if stop_left is not None else "—"
-
-            if side_long:
-                gross_long += notional
-            else:
-                gross_short += notional
-            unrealized_total += pnl
+        for idx, row in enumerate(projection.rows):
+            side_long = row.side == "L"
+            pnl_style = CASYS_SUCCESS if row.pnl >= 0 else CASYS_ERROR
+            stop_str = (
+                f"{row.stop_left_pct:.1f}%"
+                if row.stop_left_pct is not None
+                else "—"
+            )
 
             cells: dict[str, Text] = {
-                "SYM": Text(symbol, style=f"bold {CASYS_FG}"),
+                "SYM": Text(row.symbol, style=f"bold {CASYS_FG}"),
                 "": Text("L" if side_long else "S", style=CASYS_SUCCESS if side_long else CASYS_ERROR),
-                "QTY": Text(_fmt_qty(qty), style=CASYS_MUTED),
-                "AVG": Text(f.fmt_compact(avg, decimals=2), style=CASYS_DIM),
-                "LAST": Text(f.fmt_compact(last, decimals=2), style=CASYS_MUTED),
-                "VALUE $": Text(f"${notional:,.0f}" if notional else "—", style=CASYS_FG),
-                "P&L $": Text(f.fmt_signed(pnl), style=pnl_style),
-                "P&L %": Text(f"{pnl_pct_val:+.1f}%", style=pnl_style),
+                "QTY": Text(_fmt_qty(row.qty), style=CASYS_MUTED),
+                "AVG": Text(f.fmt_compact(row.avg, decimals=2), style=CASYS_DIM),
+                "LAST": Text(f.fmt_compact(row.last, decimals=2), style=CASYS_MUTED),
+                "VALUE $": Text(f"${row.notional:,.0f}" if row.notional else "—", style=CASYS_FG),
+                "P&L $": Text(f.fmt_signed(row.pnl), style=pnl_style),
+                "P&L %": Text(f"{row.pnl_pct:+.1f}%", style=pnl_style),
                 "STOP LEFT": Text(stop_str, style=CASYS_DIM),
-                "DATA": _data_cell(state, symbol),
+                "DATA": _data_cell(state, row.symbol),
             }
             table.add_row(
                 *(cell for name, cell in cells.items() if name not in drops),
-                key=f"{symbol}|{idx}",
+                key=f"{row.symbol}|{idx}",
             )
 
-        n = len(holdings)
+        n = len(projection.rows)
         label = _SORT_LABELS[self._sort_mode]
         pos_panel = self.query_one("#positions-panel", VerticalScroll)
         pos_panel.border_title = (
             f"POSITIONS — {n} · sorted {label}" if n else "POSITIONS"
         )
 
-        gross = gross_long + gross_short
-        net_long = gross_long - gross_short
         footer = Text()
         footer.append(f"{n} positions", style=CASYS_DIM)
         footer.append(" · gross ", style=CASYS_DIM)
-        footer.append(f"${gross / 1000:.1f}k" if gross else "$0", style=CASYS_MUTED)
+        footer.append(
+            f"${projection.gross / 1000:.1f}k" if projection.gross else "$0",
+            style=CASYS_MUTED,
+        )
         footer.append(" · net long ", style=CASYS_DIM)
         footer.append(
-            f"${net_long / 1000:.1f}k",
-            style=CASYS_SUCCESS if net_long >= 0 else CASYS_ERROR,
+            f"${projection.net_long / 1000:.1f}k",
+            style=CASYS_SUCCESS if projection.net_long >= 0 else CASYS_ERROR,
         )
         footer.append(" · unrealized ", style=CASYS_DIM)
         footer.append(
-            f.fmt_signed(unrealized_total),
-            style=CASYS_SUCCESS if unrealized_total >= 0 else CASYS_ERROR,
+            f.fmt_signed(projection.unrealized_total),
+            style=CASYS_SUCCESS if projection.unrealized_total >= 0 else CASYS_ERROR,
         )
         footer.append(" · enter inspect symbol", style=CASYS_FAINT)
         self.query_one("#positions-footer", Static).update(footer)
