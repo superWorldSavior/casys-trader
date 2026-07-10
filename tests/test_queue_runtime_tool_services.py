@@ -19,10 +19,11 @@ def _build(tmp_path: Path, **over):
 
 
 def test_services_construits_sans_learnings_db(tmp_path):
-    # learnings.db absent au boot → recall indisponible, mais services utilisables.
+    # Le store dérivé est créé au boot afin que le worker puisse l'alimenter ensuite.
     services = _build(tmp_path)
     assert isinstance(services, ToolRoundServices)
-    assert services.learnings_recall_provider is None
+    assert callable(services.learnings_recall_provider)
+    assert (tmp_path / "learnings.db").exists()
     assert not hasattr(services, "max_rounds")
     assert not hasattr(services, "open_plans_provider")
     assert not hasattr(services, "open_plans_as_of_provider")

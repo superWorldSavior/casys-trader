@@ -32,6 +32,7 @@ def test_shutdown_runtime_resources_stops_pools_disconnects_and_releases_pid() -
     releases: list[tuple[Path, int]] = []
 
     runtime_shutdown.shutdown_runtime_resources(
+        learning_sync_runner=FakePool(calls, "learnings"),
         universe_intelligence_runner=FakePool(calls, "universe"),
         news_macro_runner=FakePool(calls, "news_macro"),
         decide_pool=FakePool(calls, "decide"),
@@ -44,9 +45,10 @@ def test_shutdown_runtime_resources_stops_pools_disconnects_and_releases_pid() -
         logger=logger,
     )
 
-    assert calls == ["universe", "news_macro", "decide", "execute", "disconnect"]
+    assert calls == ["learnings", "universe", "news_macro", "decide", "execute", "disconnect"]
     assert releases == [(Path("daemon.pid"), 4242)]
     assert logger.infos == [
+        ("[learnings_sync] runner arrêté",),
         ("[universe_intelligence] runner arrêté",),
         ("[news_macro] runner arrêté",),
         ("[queue_decide] pool arrêté",),

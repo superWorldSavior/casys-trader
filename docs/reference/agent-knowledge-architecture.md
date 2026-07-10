@@ -23,16 +23,17 @@ re-empiler les bacs.
 | **Nature** | niveau (skill) | info + état | épisodique |
 | **Durée de vie** | lente | **périssable** | cumulative |
 | **Source** | mandat, guardrails, `global` | fil d'actu, macro, **analyste** | `learnings.db` + FLAIR |
-| **Injection** | push permanent (cadrage) | brief borné à l'agent univers, puis tranche utile par symbole | **coulisse** (nourrit ①, attribution, MemRL) |
+| **Injection** | push permanent (cadrage) | brief borné à l'agent univers, puis tranche utile par symbole | retrieval borné au moment de décider + attribution/MemRL en coulisse |
 
 - **① Compétence** — « comment trader » est **transversal** : gérer un stop, lire un régime,
   reconnaître un setup ne dépend pas du symbole. Il n'existe pas de « manière de trader AAPL »,
   seulement une manière de trader **un setup**.
 - **② Situation** — le contexte **par nom** est **événementiel** : news, macro, géopolitique,
   catalyseurs. C'est la matière réellement spécifique-symbole.
-- **③ Expérience** — la mémoire des trades passés, pondérée par le résultat (FLAIR). Faible
-  volume par nom → sa valeur est en **agrégé** (distiller ①) et en **attribution**, pas en push
-  par symbole.
+- **③ Expérience** — la mémoire des trades passés, pondérée par le résultat (FLAIR) et
+  par l'utilité de ses rappels (MemRL). Elle n'est jamais une règle permanente
+  par nom : le runtime en récupère au plus deux, d'abord sur le symbole puis sur
+  sa famille, au moment précis de décider.
 
 ## Les 3 lois transverses
 
@@ -55,10 +56,10 @@ re-empiler les bacs.
 
 ## Ce que le cadre tranche
 
-- **③ n'est jamais poussé par symbole.** Il travaille en coulisse : distiller ① (le `global`),
-  l'attribution, MemRL. → le **recall-push de learnings**
-  ([`../superpowers/specs/2026-07-03-learnings-recall-push-design.md`](../superpowers/specs/2026-07-03-learnings-recall-push-design.md))
-  est **déprioritisé** (diagnostic juste, solution écartée).
+- **③ n'est jamais stocké comme règle permanente par symbole.** Un retrieval
+  automatique très borné (2 notes, symbole puis famille) est admis au moment de
+  décider ; le détail reste pull via `recall_learnings`. Attribution et MemRL
+  travaillent ensuite en coulisse.
 - **① reste** (le `global` = compétence générale ; guardrails ; mandat).
 - **Le `by_symbol` disparaît** du contexte : c'était ③ déguisé en ② — une « règle de trading par
   nom » qui n'existe pas. (`raw_recent` idem : ni ciblé, ni un état.)
@@ -84,10 +85,10 @@ re-empiler les bacs.
    Pas de recall historique avant d'avoir mesuré ce chemin présent.
 2. **Nettoyage acté (③ → coulisse)** : retirer `by_symbol` + `raw_recent` du contexte, garder
    `global` + guardrails. Trivial, indépendant.
-3. **③ (recall/FLAIR/MemRL)** : reste vivant mais **en arrière-plan**
-   (distillation du `global`, attribution). FLAIR reranke le RAG learnings ;
-   MemRL n'est pas encore implémenté. Pour ②, le futur retrieval vise d'abord
-   l'agent univers et ne devient jamais un décideur.
+3. **③ (recall/FLAIR/MemRL)** : maintenance et attribution restent en
+   **arrière-plan** ; deux expériences maximum entrent dans le cockpit symbole.
+   FLAIR et MemRL rerankent le RAG learnings. Pour ②, le futur retrieval vise
+   d'abord l'agent univers et ne devient jamais un décideur.
 
 ## Voir aussi
 

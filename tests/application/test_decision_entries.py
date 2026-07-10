@@ -114,6 +114,9 @@ def test_runtime_tool_audit_fields_keeps_shape_for_non_dict_and_normalizations()
         "tool_calls": [],
         "tool_normalizations": [],
     }
+    assert runtime_tool_audit_fields(
+        {"automatic_recall": {"note_ids": [1, 2], "mode": "automatic_push"}}
+    )["automatic_recall"] == {"note_ids": [1, 2], "mode": "automatic_push"}
 
 
 def test_hold_reason_for_decision_distinguishes_infra_and_domain_noops() -> None:

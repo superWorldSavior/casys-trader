@@ -118,7 +118,34 @@ def test_schema_recalls_colonnes(tmp_path: Path) -> None:
     conn = sqlite3.connect(str(tmp_path / "learnings.db"))
     cols = {row[1] for row in conn.execute("PRAGMA table_info(recalls)")}
     conn.close()
-    assert {"id", "decision_id", "note_ids", "ts"}.issubset(cols)
+    assert {
+        "id",
+        "decision_id",
+        "note_ids",
+        "ts",
+        "verdict",
+        "reward",
+        "forward_return",
+        "evaluated_at",
+    }.issubset(cols)
+
+
+def test_schema_migre_les_colonnes_memrl_additives(tmp_path: Path) -> None:
+    db_path = tmp_path / "legacy.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute("CREATE TABLE notes (id INTEGER PRIMARY KEY, note TEXT, q_value REAL)")
+    conn.execute(
+        "CREATE TABLE recalls (id INTEGER PRIMARY KEY, decision_id TEXT, note_ids TEXT, ts TEXT)"
+    )
+    conn.commit()
+    conn.close()
+
+    store = LearningsStore(db_path)
+    notes_cols = {row[1] for row in store._conn.execute("PRAGMA table_info(notes)")}
+    recalls_cols = {row[1] for row in store._conn.execute("PRAGMA table_info(recalls)")}
+
+    assert "q_updates" in notes_cols
+    assert {"verdict", "reward", "forward_return", "evaluated_at"} <= recalls_cols
 
 
 def test_count_initial_zero(tmp_path: Path) -> None:
@@ -431,6 +458,30 @@ def test_apply_verdicts_fichier_absent_retourne_zero(tmp_path: Path) -> None:
     store = LearningsStore(tmp_path / "learnings.db")
     n = store.apply_verdicts(tmp_path / "absent.json")
     assert n == 0
+
+
+def test_apply_verdicts_only_missing_necrase_pas_un_outcome_live(tmp_path: Path) -> None:
+    jsonl = tmp_path / "test.jsonl"
+    _write_jsonl(jsonl, [_ROWS[0]])
+    store = LearningsStore(tmp_path / "learnings.db")
+    store.ingest_jsonl(jsonl, source="test")
+    store._conn.execute(
+        "UPDATE notes SET verdict='LOSS', forward_return=-0.02"
+    )
+    store._conn.commit()
+    bootstrap = tmp_path / "bootstrap.json"
+    _make_bootstrap_json(
+        bootstrap,
+        {_ROWS[0]["decision_id"]: {"verdict": "WIN", "forward_return": 0.05}},
+    )
+
+    updated = store.apply_verdicts(bootstrap, only_missing=True)
+    row = store._conn.execute(
+        "SELECT verdict, forward_return FROM notes"
+    ).fetchone()
+
+    assert updated == 0
+    assert tuple(row) == ("LOSS", -0.02)
 
 
 # --- compute_outcome_scores ---
@@ -820,6 +871,71 @@ def test_record_recall_ts_renseigne(tmp_path: Path) -> None:
     ).fetchone()
     assert row is not None
     assert row[0] and len(row[0]) > 0, "ts doit être non vide"
+
+
+def test_apply_recall_outcome_met_a_jour_q_value_une_seule_fois(tmp_path: Path) -> None:
+    store = _setup_scoring_store(tmp_path)
+    note_id = store._conn.execute("SELECT id FROM notes ORDER BY id LIMIT 1").fetchone()[0]
+    store.record_recall(decision_id="rewarded-decision", note_ids=[note_id])
+
+    first = store.apply_recall_outcome(
+        decision_id="rewarded-decision",
+        verdict="WIN",
+        reward=1.0,
+        forward_return=0.02,
+        evaluated_at="2026-07-10T00:00:00+00:00",
+        alpha=0.1,
+    )
+    second = store.apply_recall_outcome(
+        decision_id="rewarded-decision",
+        verdict="LOSS",
+        reward=-1.0,
+        forward_return=-0.02,
+        evaluated_at="2026-07-11T00:00:00+00:00",
+        alpha=0.1,
+    )
+
+    row = store._conn.execute(
+        "SELECT q_value, q_updates FROM notes WHERE id=?",
+        (note_id,),
+    ).fetchone()
+    assert first["notes_updated"] == 1
+    assert second["notes_updated"] == 0
+    assert tuple(row) == (0.1, 1)
+
+
+def test_search_memrl_departage_des_notes_equivalentes(tmp_path: Path) -> None:
+    rows = [
+        {**_ROWS[0], "decision_id": "memrl-positive", "note": "même setup", "symbol": "SPY"},
+        {**_ROWS[0], "decision_id": "memrl-negative", "note": "même setup", "symbol": "SPY"},
+    ]
+    jsonl = tmp_path / "memrl.jsonl"
+    _write_jsonl(jsonl, rows)
+    store = LearningsStore(tmp_path / "learnings.db")
+    store.ingest_jsonl(jsonl, source="test")
+    note_ids = [row[0] for row in store._conn.execute("SELECT id FROM notes ORDER BY id")]
+    for decision_id, note_id, reward, verdict in (
+        ("later-win", note_ids[0], 1.0, "WIN"),
+        ("later-loss", note_ids[1], -1.0, "LOSS"),
+    ):
+        store.record_recall(decision_id=decision_id, note_ids=[note_id])
+        store.apply_recall_outcome(
+            decision_id=decision_id,
+            verdict=verdict,
+            reward=reward,
+            forward_return=0.01 * reward,
+            evaluated_at="2026-07-10T00:00:00+00:00",
+        )
+
+    result = store.search(
+        symbol="SPY",
+        limit=2,
+        now=datetime(2026, 7, 10, tzinfo=timezone.utc),
+    )
+
+    assert [row["id"] for row in result] == note_ids
+    assert result[0]["q_value"] == 0.1
+    assert result[1]["q_value"] == -0.1
 
 
 # ---------------------------------------------------------------------------

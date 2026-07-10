@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from datetime import datetime, timezone
 
 from trader.agent import client as codex_client
@@ -62,6 +63,39 @@ def test_flag_off_ne_passe_jamais_allow_tool_calls(monkeypatch):
     assert calls == 1
     assert seen == [{"allow_tool_calls": False, "use_symbol_calls_contract": True}]
     assert decisions["2330.TW"].action == "HOLD"
+
+
+def test_batch_injecte_et_trace_deux_experiences_flair_max(monkeypatch):
+    seen: dict = {}
+
+    def _fake_decide_batch(**kwargs):
+        seen.update(kwargs["per_symbol"]["2330.TW"])
+        return {
+            "2330.TW": replace(
+                _hold("2330.TW"),
+                llm_provider="acpx",
+                llm_model="terra",
+            )
+        }
+
+    monkeypatch.setattr(daemon.codex_client, "decide_batch", _fake_decide_batch)
+    provider = lambda _args: {  # noqa: E731 - stub compact du provider
+        "rows": [
+            {"id": 10, "note": "a", "q_value": 0.3},
+            {"id": 11, "note": "b", "q_value": -0.2},
+            {"id": 12, "note": "c", "q_value": 0.9},
+        ]
+    }
+
+    decisions, calls = _batch_decide(
+        **_kwargs(),
+        learnings_recall_provider=provider,
+    )
+
+    assert calls == 1
+    assert [row["id"] for row in seen["flair_experience"]["rows"]] == [10, 11]
+    trace = decisions["2330.TW"].domain_tools["automatic_recall"]
+    assert trace["note_ids"] == [10, 11]
 
 
 def test_flag_on_tournee_puis_decision_finale(monkeypatch):

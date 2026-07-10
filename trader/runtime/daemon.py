@@ -70,6 +70,7 @@ from trader.market import volatility as reference_volatility_service
 from trader.market.data_source import (
     CompositeDataSource,
     YFinanceDataSource,
+    make_indirect_get_bars,
     parse_data_sources_config,
 )
 from trader.market.features import DEFAULT_INDICATORS
@@ -95,6 +96,7 @@ from trader.runtime import (
     daemon_bootstrap,
     decision_dispatch_runtime,
     market_rotation_runtime,
+    learnings_sync_runtime,
     news_macro_runtime,
     queue_runtime,
     runtime_shutdown,
@@ -478,13 +480,12 @@ def run_cycle(
         STATE_DIR / decision_ledger.DEFAULT_LEDGER_FILENAME
     )
 
-    # Store SQLite de recall des learnings (dérivé reconstructible, paresseux).
-    # Si learnings.db est absent, provider=None → l'outil répond "unavailable".
-    # La création du .db reste le job du script d'ingestion (Task 7).
+    # Store SQLite dérivé, toujours ouvrable/créable. Le worker de maintenance
+    # l'alimente en arrière-plan ; les readers voient les commits via WAL.
     _learnings_db_path = STATE_DIR / "learnings.db"
     _recall_store: recall_store_mod.LearningsStore | None = None
     global _RECALL_STORE_FAILED
-    if _learnings_db_path.exists() and not _RECALL_STORE_FAILED:
+    if not _RECALL_STORE_FAILED:
         try:
             _recall_store = recall_store_mod.LearningsStore(str(_learnings_db_path))
         except (sqlite3.Error, OSError) as _store_exc:
@@ -1282,6 +1283,11 @@ def main(
     # make_indirect_get_bars(handle.get) — jamais de capture de l'objet (remplacé en run).
     _ds_handle = data_source_runtime.DataSourceHandle()
     _worker_cycle_context = worker_cycle_context_runtime.WorkerCycleContextHandle()
+    _learning_sync_runner = learnings_sync_runtime.LearningSyncRunner(
+        state_dir=STATE_DIR,
+        get_bars=make_indirect_get_bars(_ds_handle.get),
+        logger=log,
+    )
 
     # Services du tour d'outils grain-1 (spec queue tool-round §4, issue #2) :
     # construits au boot, consommés par le handler decide quand agent_tools_enabled.
@@ -1552,6 +1558,7 @@ def main(
                         loop_now=loop_now,
                         logger=log,
                     )
+                    _learning_sync_runner.trigger(reason="post_cycle")
                 _adopt_data_source_state(data_source_runtime.detach_failed_ib(
                     _data_source_state,
                     _data_source_config,
@@ -1601,6 +1608,7 @@ def main(
         # None (-> unavailable) plutôt qu'une source déconnectée.
         _ds_handle.set(None)
         runtime_shutdown.shutdown_runtime_resources(
+            learning_sync_runner=_learning_sync_runner,
             company_intelligence_runner=_company_intelligence_runner,
             universe_intelligence_runner=_universe_intelligence_runner,
             news_macro_runner=_news_macro_runner,

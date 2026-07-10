@@ -8,6 +8,10 @@ from typing import Callable, Iterator
 
 from trader.agent.protocol.types import Decision
 from trader.application.decide import planner_batch, queue_dispatch, recent_decisions
+from trader.application.decide.learning_context import (
+    attach_auto_recall_trace,
+    build_auto_learning_recall,
+)
 from trader.application.execute.cycle_decision import DecisionExecutionState
 from trader.application.record import plan_review
 from trader.planning.protocols import SchedulerLike
@@ -175,6 +179,17 @@ def _dispatch_via_queue(
         symbols=request.decidable,
         now=request.now,
     )
+    auto_recall_by_symbol = {
+        symbol: recall
+        for symbol in request.decidable
+        if (
+            recall := build_auto_learning_recall(
+                request.learnings_recall_provider,
+                symbol=symbol,
+            )
+        )
+        is not None
+    }
     symbol_facts_by_symbol = {
         symbol: {
             "indicator_triggers": request.triggers_by_symbol.get(symbol, []),
@@ -191,6 +206,11 @@ def _dispatch_via_queue(
                 bar_timeframe_by_symbol=request.analysis_timeframe_by_symbol,
                 company_context_by_symbol=request.company_context_by_symbol,
                 mandate_context_by_symbol=request.mandate_context_by_symbol,
+            ),
+            **(
+                {"flair_experience": auto_recall_by_symbol[symbol]}
+                if symbol in auto_recall_by_symbol
+                else {}
             ),
         }
         for symbol in request.decidable
@@ -221,9 +241,17 @@ def _dispatch_via_queue(
             undecided_symbols.add(symbol)
             continue
         request.model_call_counter.used += calls
+        traced_decision = (
+            attach_auto_recall_trace(
+                decision,
+                auto_recall_by_symbol.get(symbol),
+            )
+            if decision.llm_provider or decision.llm_model
+            else decision
+        )
         routed_decision = resolve_decision_for_routing(
             symbol=symbol,
-            decision=decision,
+            decision=traced_decision,
             broker=request.broker,
         )
         decisions_by_symbol[symbol] = routed_decision

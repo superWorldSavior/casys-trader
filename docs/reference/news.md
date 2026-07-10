@@ -280,13 +280,14 @@ permettent ensuite de relier sélection, usage et outcome.
   FTS5 dérivé et reconstructible.
 - `SituationMemoryStore.search()` existe, mais aucun agent runtime ne l'appelle
   encore : ce n'est donc pas un RAG actif de bout en bout.
-- Le RAG `learnings.db` est une pile différente, exposée via
-  `recall_learnings` au trader symbole lorsque les agent-tools sont actifs et la
-  base disponible.
+- Le RAG `learnings.db` est une pile différente. Le trader reçoit au plus deux
+  expériences automatiquement et peut approfondir via `recall_learnings` lorsque
+  les agent-tools sont actifs.
 - **FLAIR** (pas FLARE) pondère les learnings selon leurs outcomes. Dans la
   mémoire de situation, `outcome_score` reste actuellement neutre.
-- MemRL n'est pas encore actif : `q_value` est un emplacement de schéma sans
-  updater ni utilisation dans le ranking.
+- MemRL est actif sur cette pile **learnings** : les recalls sont reliés aux
+  outcomes différés et `q_value` contribue au ranking avec shrinkage.
+- MemRL n'est pas encore actif sur `situation_memory.db` ni chez l'agent Univers.
 
 ### Décision
 
@@ -303,8 +304,9 @@ FLAIR et MemRL ne remplacent pas le retrieval :
 - retrieval/FTS répond à « quelles situations passées sont pertinentes ? » ;
 - dans la future mémoire de situation, FLAIR répondra à « lesquelles ont été
   confirmées par les outcomes ? » ;
-- MemRL répondra à « quels rappels ont réellement aidé les décisions de l'agent
-  univers ? » une fois les injections et récompenses tracées.
+- pour la future mémoire de situation, MemRL répondra à « quels rappels ont
+  réellement aidé les décisions de l'agent univers ? » une fois ses injections
+  et récompenses tracées. Ce chemin est distinct du MemRL learnings déjà actif.
 
 Un challenger ne doit pas être dupliqué directement comme document RAG. Son
 évaluation va dans le ledger d'observabilité et référence les UUID des news. S'il

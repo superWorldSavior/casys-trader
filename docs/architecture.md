@@ -581,7 +581,7 @@ Opérateurs valides : `>`, `>=`, `<`, `<=`, `==`, `!=`, `abs>`, `abs>=`, `abs<`,
 | `current_report.json` | `RuntimeStateWriter.write_current_report()` via wrapper daemon | cockpit TUI | Rapport complet du cycle en cours |
 | `learnings.jsonl` | `record_decision()` | `trader/agent/learnings/consolidator.py` | Notes runtime de l'agent (bornées) |
 | `learnings_consolidated.json` | `trader/agent/learnings/consolidator.py` | `trader/runtime/daemon.py` (contexte LLM) | Patterns consolidés (≤ seuil bruts → consolidation) |
-| `learnings.db` | `learnings_ingest` + daemon (`recalls`) | outil `recall_learnings` | Store SQLite dérivé : notes scorées par outcome (lift/symbole), embeddings, traces de recall |
+| `learnings.db` | worker `learnings_sync` + `learnings_ingest` manuel | push borné + outil `recall_learnings` | Store SQLite dérivé : embeddings, FLAIR, traces/rewards et Q-values MemRL |
 | `archive/*.jsonl.gz` | `trader/runtime/ledger_rotation.py` (démarrage daemon) | `read_rows_with_archive` (analyses) | Mois passés de decisions/events — rotation mensuelle crash-safe |
 | `archive/learnings-*.jsonl` | `RawLearningsStore`/`consolidator` | ingestion recall | Évincés + historique des consolidés — plus rien ne se jette |
 | `news_items/YYYY-MM-DD.jsonl` | `infrastructure/market_sources/news_feed` | scout + analyste-news | Items de news persistés (dédup uuid, purge 60 j), couverture symbole partielle |
@@ -719,20 +719,21 @@ pour cette tranche.
 
 Design : `docs/superpowers/specs/2026-07-02-learnings-recall-design.md`.
 
-Chaîne : les learnings ne se jettent plus (archives §8) → `learnings_ingest`
-construit `state/learnings.db` (SQLite dérivé, reconstructible : notes +
+Chaîne : les learnings ne se jettent plus (archives §8) → le worker best-effort
+du daemon (ou `learnings_ingest` manuellement) maintient `state/learnings.db`
+(SQLite dérivé, reconstructible : notes +
 facettes + FTS5 + embeddings OpenAI pré-calculés) → scoring FLAIR normalisé
 par symbole (lift vs base rate + shrinkage bayésien ; verdicts issus du
-forward via `decision_quality`) → l'outil `recall_learnings{symbol?|family?|
-query?}` sert un hybride facettes → FTS5+cosine → RRF → outcome×decay
+forward via `decision_quality`) → un push automatique sert au plus deux notes
+symbole/famille et l'outil `recall_learnings{symbol?|family?|query?}` approfondit
+via un hybride facettes → FTS5+cosine → RRF → FLAIR+decay+MemRL
 (~2-8 ms local, +~3 s max si embed de query OpenAI, dégradation FTS sinon).
 
-La table `recalls` trace quelles notes ont servi quelle décision
-(note_ids × decision_id) — c'est le flux qui alimentera MemRL (Q-value) et le
-bench A/B `decision_bench`. En queue `decision_focus_v1`, seuls les guardrails
-et learnings globaux consolidés restent poussés ; les anciens slots
-`by_symbol` sont remplacés par le recall FLAIR à la demande. MemRL n'est pas
-encore actif.
+La table `recalls` trace quelles notes ont servi quelle décision. Après maturité,
+le worker applique `Q ← Q + 0.1 × (reward − Q)` ; `q_updates` shrinke son poids
+dans le ranking. En queue `decision_focus_v1`, les anciens slots permanents
+`by_symbol` restent supprimés : `flair_experience` est un retrieval épisodique
+borné, complété à la demande par l'outil.
 
 ## 12. Gestion des données — rotation et archives (2026-07-02)
 

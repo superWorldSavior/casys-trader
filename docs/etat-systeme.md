@@ -102,8 +102,9 @@
 3. **Exploiter l'observabilité livrée** — read model du funnel scope → brief →
    run univers → activation → décision/outcome ; mesurer avant tout retrieval de
    `situation_memory.db`.
-4. **MemRL + decay calibré** (phase ③ recall) — attend le volume de `recalls` ;
-   MemRL situation attend en plus les traces de retrieval/reward.
+4. **Calibrer MemRL learnings** — le reward différé et le ranking shrinké sont
+   actifs ; observer le volume de `recalls`, la distribution des Q-values et le
+   bench. MemRL situation attend toujours ses propres traces retrieval/reward.
 5. **Patch rétention sessions acpx** (fork) — règle les 1,3 Go de ~/.acpx.
 6. PRs upstream acpx (2 branches `fix/*` prêtes) ; EODHD ~60 €/mois si le
    calendrier earnings EU/TW prospectif manque à l'analyste.

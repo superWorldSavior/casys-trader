@@ -35,6 +35,9 @@ def runtime_tool_audit_fields(domain_tools: dict | None) -> dict:
     normalizations = tools.get("normalizations")
     if normalizations is not None:
         fields["tool_normalizations"] = normalizations
+    automatic_recall = tools.get("automatic_recall")
+    if automatic_recall is not None:
+        fields["automatic_recall"] = automatic_recall
     return fields
 
 

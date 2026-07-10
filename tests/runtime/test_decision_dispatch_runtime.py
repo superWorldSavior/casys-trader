@@ -214,3 +214,43 @@ def test_queue_dispatch_streams_reducers_and_buffers_openings() -> None:
         ),
         ("resolve", "OPEN", broker),
     ]
+
+
+def test_queue_dispatch_injecte_et_trace_le_recall_automatique() -> None:
+    decision = Decision(
+        symbol="SPY",
+        action="HOLD",
+        quantity=0.0,
+        confidence=0.7,
+        rationale="wait",
+        intent="HOLD",
+        llm_provider="acpx",
+        llm_model="terra",
+    )
+    captured: dict = {}
+
+    def queue_results_iterator(**kwargs):
+        captured.update(kwargs["symbol_facts_by_sym"]["SPY"])
+        yield "SPY", decision, 1
+
+    result = dispatch_decisions(
+        _request(
+            queue_decide_enabled=True,
+            task_ledger=object(),
+            learnings_recall_provider=lambda _args: {
+                "rows": [{"id": 42, "note": "ancien breakout", "q_value": 0.4}]
+            },
+        ),
+        resolve_decision_for_routing=lambda **kwargs: kwargs["decision"],
+        execute_decision=lambda **kwargs: kwargs["state"],
+        queue_results_iterator=queue_results_iterator,
+        last_review_loader=lambda *_args, **_kwargs: {},
+        recent_decisions_loader=lambda *_args, **_kwargs: {},
+        active_watches_builder=lambda **_kwargs: {},
+        symbol_facts_builder=lambda _symbol, **_kwargs: {},
+    )
+
+    assert captured["flair_experience"]["rows"][0]["id"] == 42
+    trace = result.decisions_by_symbol["SPY"].domain_tools["automatic_recall"]
+    assert trace["note_ids"] == [42]
+    assert trace["mode"] == "automatic_push"

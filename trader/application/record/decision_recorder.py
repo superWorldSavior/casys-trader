@@ -84,6 +84,12 @@ def _agent_trace_lines(decision_entry: DecisionEntry, cycle_ts: str) -> list[str
             f"tools={len(tool_calls)} rounds={decision_entry.get('tool_rounds', 0)}"
         )
     ]
+    automatic_recall = decision_entry.get("automatic_recall")
+    if isinstance(automatic_recall, dict):
+        lines.append(
+            f"[agent-memory] ts={cycle_ts} symbol={symbol} kind=flair_experience "
+            f"detail={_compact_json(automatic_recall)}"
+        )
     lines.extend(
         (
             f"[agent-tool] ts={cycle_ts} symbol={symbol} id={call.get('id')} "
@@ -248,6 +254,21 @@ class DecisionRecorder:
         if not cycle_ts or not symbol:
             return
         decision_id = decision_ledger._decision_id(cycle_ts, sequence, symbol)
+        automatic_recall = decision_entry.get("automatic_recall")
+        if isinstance(automatic_recall, dict):
+            note_ids = [
+                note_id
+                for note_id in automatic_recall.get("note_ids", [])
+                if isinstance(note_id, int)
+            ]
+            if note_ids:
+                try:
+                    self.recall_store.record_recall(
+                        decision_id=decision_id,
+                        note_ids=note_ids,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("record automatic recall failed: %s", exc)
         for tool_call in decision_entry.get("tool_calls") or []:
             if tool_call.get("tool") != "recall_learnings" or tool_call.get("outcome") != "ok":
                 continue

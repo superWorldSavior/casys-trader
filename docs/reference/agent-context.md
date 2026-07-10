@@ -94,6 +94,7 @@ concerné :
 | `structure` | seulement pour le symbole décidé : timeframe des barres, fraîcheur/compte, prix, swings exacts 24/48, ATR normalisé et volume relatif |
 | `company_intelligence` | tranche fraîche micro/news du symbole, avec couverture et autorité de recherche |
 | `universe_mandate` | raison de sélection et posture émises par Univers, sans autorité d'exécution |
+| `flair_experience` | au plus 2 expériences historiques, symbole puis famille, classées FLAIR + MemRL |
 
 ## Plans et veilles — 3 niveaux
 
@@ -115,8 +116,11 @@ suffisent pas.
 - `company_intelligence` + `universe_mandate` portent la situation courante du nom.
 - Les anciens slots `learnings.by_symbol` ne sont plus poussés en queue : une
   expérience historique n'est pas une situation actuelle.
-- `recall_learnings` rend à la demande les expériences pertinentes du RAG FLAIR,
-  pondérées par outcome. MemRL n'est pas encore actif (`q_value` réservé).
+- `flair_experience` pousse automatiquement au plus deux expériences bornées ;
+  elles sont explicitement historiques et ne remplacent jamais les faits frais.
+- `recall_learnings` permet d'approfondir à la demande avec une query de setup.
+  FLAIR pondère l'outcome propre de la note ; MemRL pondère l'utilité observée de
+  ses rappels dans des décisions ultérieures.
 
 `indicator_triggers` dit "une condition s'est réalisée". `wake_reasons` dit
 "le scheduler t'a réveillé pour réviser un état", par exemple parce que le TTL

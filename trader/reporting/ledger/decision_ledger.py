@@ -161,6 +161,7 @@ def build_decision_row(
             "tool_rounds": decision.get("tool_rounds"),
             "tool_calls": decision.get("tool_calls"),
             "tool_normalizations": decision.get("tool_normalizations"),
+            "automatic_recall": decision.get("automatic_recall"),
             "cancel_watch_results": decision.get("cancel_watch_results"),
         },
         "news": _as_dict(decision.get("news")),

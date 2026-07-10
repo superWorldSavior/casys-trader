@@ -306,10 +306,9 @@ def build_decide_tool_services(
       capture (la ref est remplacée en cours de run).
     - ``action_validator`` : dry-run strategy_exit sur les mêmes barres/prix que
       le daemon utilisera pour appliquer la décision du cycle.
-    - recall : LearningsStore ouvert au boot si ``learnings.db`` existe (SQLite
-      locké, thread-safe) ; ``now_fn`` dynamique — la borne temporelle suit
-      chaque appel. ⚠️ si la db n'existe pas ENCORE au boot, recall restera
-      indisponible jusqu'au prochain redémarrage (limitation documentée).
+    - recall : LearningsStore ouvert/créé au boot (SQLite locké, thread-safe) ;
+      ``now_fn`` dynamique — la borne temporelle suit chaque appel. Le worker
+      FLAIR peut donc peupler le store après le boot sans redémarrer le pool.
 
     Le nombre de tournées en session est libre côté prompt ; le code applique
     seulement ``SESSION_ROUND_BACKSTOP`` dans decide_one.
@@ -327,18 +326,15 @@ def build_decide_tool_services(
     _get_bars = make_indirect_get_bars(get_data_source)
 
     recall_provider = None
-    if learnings_db_path.exists():
-        try:
-            store = LearningsStore(str(learnings_db_path))
-            recall_provider = build_recall_provider(
-                store,
-                lambda: datetime.now(timezone.utc),
-                log_warning=log.warning,
-            )
-        except Exception as exc:  # noqa: BLE001 — recall optionnel, jamais bloquant au boot
-            log.warning("[queue_decide] LearningsStore indisponible (%s) — recall désactivé", exc)
-    else:
-        log.info("[queue_decide] learnings.db absent au boot — recall indisponible ce run")
+    try:
+        store = LearningsStore(str(learnings_db_path))
+        recall_provider = build_recall_provider(
+            store,
+            lambda: datetime.now(timezone.utc),
+            log_warning=log.warning,
+        )
+    except Exception as exc:  # noqa: BLE001 — recall optionnel, jamais bloquant au boot
+        log.warning("[queue_decide] LearningsStore indisponible (%s) — recall désactivé", exc)
 
     action_validator_factory = None
     if worker_cycle_context is not None:

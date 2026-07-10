@@ -38,7 +38,13 @@ def shutdown_runtime_resources(
     release_pid_file: ReleasePidFileFn,
     logger: LoggerLike,
     company_intelligence_runner: Stoppable | None = None,
+    learning_sync_runner: Stoppable | None = None,
 ) -> None:
+    _stop_pool(
+        learning_sync_runner,
+        message="[learnings_sync] runner arrêté",
+        logger=logger,
+    )
     _stop_pool(
         company_intelligence_runner,
         message="[company_intelligence] runtime arrêté",

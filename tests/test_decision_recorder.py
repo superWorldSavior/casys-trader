@@ -188,6 +188,7 @@ def test_decision_recorder_writes_agent_trace_to_separate_file(tmp_path, caplog)
         "portfolio": {"equity": 100000.0},
     }
 
+    recall_store = FakeRecallStore()
     recorder = DecisionRecorder(
         report=report,
         dry_run=True,
@@ -202,7 +203,7 @@ def test_decision_recorder_writes_agent_trace_to_separate_file(tmp_path, caplog)
         news_snapshot=lambda symbol, now: {"coverage": "none"},
         macro_next=None,
         now=datetime(2026, 7, 2, 10, 0, tzinfo=timezone.utc),
-        recall_store=None,
+        recall_store=recall_store,
         agent_trace_path=state_dir / "agent_trace.log",
     )
 
@@ -229,6 +230,11 @@ def test_decision_recorder_writes_agent_trace_to_separate_file(tmp_path, caplog)
                 "detail": {"requested": 30},
             }
         ],
+        "automatic_recall": {
+            "note_ids": [42, 43],
+            "mode": "automatic_push",
+            "symbol": "SPY",
+        },
         "next_wake_in_minutes": 30,
         "next_wake_requested": 30,
     })
@@ -239,9 +245,19 @@ def test_decision_recorder_writes_agent_trace_to_separate_file(tmp_path, caplog)
         "model=acpx:gpt-5.5 action=HOLD intent=HOLD reason=hold "
         "executed=False tools=1 rounds=0"
     )
-    assert trace_lines[1] == (
+    assert trace_lines[1].startswith(
+        "[agent-memory] ts=2026-07-02T10:00:00+00:00 symbol=SPY "
+        "kind=flair_experience detail="
+    )
+    assert trace_lines[2] == (
         "[agent-tool] ts=2026-07-02T10:00:00+00:00 symbol=SPY id=SPY:0 "
         'tool=set_next_wake outcome=applied args={"minutes":30} detail={"requested":30}'
     )
+    assert recall_store.calls == [
+        {
+            "decision_id": "2026-07-02T10:00:00+00:00|0|SPY",
+            "note_ids": [42, 43],
+        }
+    ]
     assert not any("[agent]" in record.getMessage() for record in caplog.records)
     assert not any("[agent-tool]" in record.getMessage() for record in caplog.records)

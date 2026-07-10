@@ -55,6 +55,7 @@ CREATE TABLE IF NOT EXISTS notes (
     forward_return  REAL,
     outcome_score   REAL,       -- FLAIR v1
     q_value         REAL,       -- MemRL (phase ③)
+    q_updates       INTEGER NOT NULL DEFAULT 0,
     embedding       BLOB        -- OpenAI float32 LE, pré-calculé batch
 )
 """
@@ -99,7 +100,11 @@ CREATE TABLE IF NOT EXISTS recalls (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     decision_id TEXT,
     note_ids    TEXT,       -- JSON array d'entiers
-    ts          TEXT
+    ts          TEXT,
+    verdict     TEXT,
+    reward      REAL,
+    forward_return REAL,
+    evaluated_at TEXT
 )
 """
 
@@ -121,7 +126,25 @@ def _create_schema(conn: sqlite3.Connection) -> None:
     conn.execute(_TRIGGER_AD)
     conn.execute(_TRIGGER_AU)
     conn.execute(_DDL_RECALLS)
+    _ensure_column(conn, "notes", "q_updates", "INTEGER NOT NULL DEFAULT 0")
+    _ensure_column(conn, "recalls", "verdict", "TEXT")
+    _ensure_column(conn, "recalls", "reward", "REAL")
+    _ensure_column(conn, "recalls", "forward_return", "REAL")
+    _ensure_column(conn, "recalls", "evaluated_at", "TEXT")
     conn.commit()
+
+
+def _ensure_column(
+    conn: sqlite3.Connection,
+    table: str,
+    column: str,
+    declaration: str,
+) -> None:
+    """Apply additive SQLite migrations to existing derived stores."""
+
+    columns = {str(row[1]) for row in conn.execute(f"PRAGMA table_info({table})")}
+    if column not in columns:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}")
 
 
 class LearningsStore:
@@ -152,6 +175,21 @@ class LearningsStore:
         with self._lock:
             row = self._conn.execute("SELECT COUNT(*) FROM notes").fetchone()
         return int(row[0])
+
+    def count_missing_embeddings(self) -> int:
+        """Nombre de notes encore privées de vecteur."""
+
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT COUNT(*) FROM notes WHERE embedding IS NULL"
+            ).fetchone()
+        return int(row[0])
+
+    def close(self) -> None:
+        """Ferme explicitement la connexion des workers courts."""
+
+        with self._lock:
+            self._conn.close()
 
     # ------------------------------------------------------------------
     # Ingestion
@@ -248,7 +286,12 @@ class LearningsStore:
     # Scoring FLAIR
     # ------------------------------------------------------------------
 
-    def apply_verdicts(self, bootstrap_json: "str | Path") -> int:
+    def apply_verdicts(
+        self,
+        bootstrap_json: "str | Path",
+        *,
+        only_missing: bool = False,
+    ) -> int:
         """Met à jour verdict et forward_return à partir du fichier de bootstrap FLAIR.
 
         Format attendu : fichier JSON produit par scripts/learnings_outcome_bootstrap.py,
@@ -270,12 +313,14 @@ class LearningsStore:
                 decision_id = item.get("decision_id")
                 if not decision_id:
                     continue
+                missing_clause = " AND verdict IS NULL" if only_missing else ""
                 cursor = self._conn.execute(
-                    """
+                    f"""
                     UPDATE notes
                        SET verdict        = :verdict,
                            forward_return = :forward_return
                      WHERE decision_id = :decision_id
+                     {missing_clause}
                     """,
                     {
                         "decision_id": str(decision_id),
@@ -330,7 +375,12 @@ class LearningsStore:
     # Embeddings
     # ------------------------------------------------------------------
 
-    def backfill_embeddings(self, embedder: Callable[[list[str]], list[bytes]]) -> int:
+    def backfill_embeddings(
+        self,
+        embedder: Callable[[list[str]], list[bytes]],
+        *,
+        limit: int | None = None,
+    ) -> int:
         """Embède les notes sans embedding (embedding IS NULL).
 
         L'``embedder`` est un callable ``list[str] → list[bytes]`` (injectable
@@ -338,10 +388,16 @@ class LearningsStore:
         Seules les notes avec ``note IS NOT NULL AND embedding IS NULL`` sont traitées.
         Retourne le nombre de notes embeddées.
         """
+        sql = (
+            "SELECT id, note FROM notes "
+            "WHERE embedding IS NULL AND note IS NOT NULL ORDER BY id"
+        )
+        params: tuple = ()
+        if limit is not None:
+            sql += " LIMIT ?"
+            params = (max(0, int(limit)),)
         with self._lock:
-            rows = self._conn.execute(
-                "SELECT id, note FROM notes WHERE embedding IS NULL AND note IS NOT NULL"
-            ).fetchall()
+            rows = self._conn.execute(sql, params).fetchall()
 
         if not rows:
             return 0
@@ -375,6 +431,8 @@ class LearningsStore:
         limit: int = 8,
         now: datetime | None = None,
         tau_days: float = 30.0,
+        memrl_weight: float = 0.2,
+        memrl_shrinkage_k: float = 5.0,
     ) -> list[dict]:
         """Recherche hybride : facettes + FTS5 BM25 + cosine numpy + fusion RRF.
 
@@ -384,7 +442,7 @@ class LearningsStore:
         3. Classement cosine brute-force si ``query_vec`` fourni.
         4. Fusion RRF (k=60) des deux classements.
         4b. Si une query est fournie, restriction à l'union FTS ∪ cosine matchés.
-        5. Score final = rrf + outcome_score + exp(−age_days/τ) − 1.
+        5. Score final = RRF + FLAIR + fraîcheur + Q-value MemRL shrinkée.
         6. Retourne les ``limit`` meilleurs résultats, note tronquée à 240 c.
         """
         if now is None:
@@ -423,6 +481,7 @@ class LearningsStore:
             base_rows = self._conn.execute(
                 f"""
                 SELECT id, ts, symbol, family, verdict, outcome_score,
+                       q_value, q_updates,
                        embedding, valid_from, note
                 FROM notes
                 WHERE {base_where}
@@ -509,7 +568,12 @@ class LearningsStore:
                 age_days = 0.0
 
             freshness = math.exp(-age_days / tau_days) - 1.0
-            final_score = rrf + outcome_score + freshness
+            q_value = float(row.get("q_value") or 0.0)
+            q_updates = max(int(row.get("q_updates") or 0), 0)
+            q_confidence = q_updates / (q_updates + max(memrl_shrinkage_k, 1e-9))
+            q_decay = math.exp(-age_days / tau_days)
+            memrl_score = float(memrl_weight) * q_value * q_confidence * q_decay
+            final_score = rrf + outcome_score + freshness + memrl_score
             # Tri descendant : on stocke le négatif + note_id comme tie-breaker
             scored.append((-final_score, note_id))
 
@@ -521,6 +585,7 @@ class LearningsStore:
         for _, note_id in top:
             row = candidates[note_id]
             note_text = row.get("note") or ""
+            row_q_updates = max(int(row.get("q_updates") or 0), 0)
             result.append(
                 {
                     "id": note_id,
@@ -528,6 +593,8 @@ class LearningsStore:
                     "symbol": row.get("symbol"),
                     "verdict": row.get("verdict") or "UNKNOWN",
                     "outcome_score": row.get("outcome_score"),
+                    "q_value": row.get("q_value"),
+                    "q_updates": row_q_updates,
                     "note": note_text[:240],
                 }
             )
@@ -551,3 +618,131 @@ class LearningsStore:
                 (decision_id, json.dumps(note_ids), ts),
             )
             self._conn.commit()
+
+    def pending_outcome_notes(
+        self,
+        *,
+        mature_before: str | None = None,
+        limit: int = 64,
+    ) -> list[dict]:
+        """Return notes whose original decision has not received a verdict yet."""
+
+        with self._lock:
+            sql = """
+                SELECT id, decision_id, ts, symbol, action, executed, note
+                FROM notes
+                WHERE verdict IS NULL
+            """
+            params: list[object] = []
+            if mature_before is not None:
+                sql += " AND ts <= ?"
+                params.append(mature_before)
+            sql += " ORDER BY ts DESC, id DESC LIMIT ?"
+            params.append(max(0, int(limit)))
+            rows = self._conn.execute(sql, tuple(params)).fetchall()
+        return [dict(row) for row in rows]
+
+    def update_note_outcomes(self, rows: list[dict]) -> int:
+        """Persist mature FLAIR outcomes by note id."""
+
+        updated = 0
+        with self._lock:
+            for row in rows:
+                cursor = self._conn.execute(
+                    """
+                    UPDATE notes
+                    SET verdict = ?, forward_return = ?
+                    WHERE id = ? AND verdict IS NULL
+                    """,
+                    (row.get("verdict"), row.get("forward_return"), row.get("id")),
+                )
+                updated += max(int(cursor.rowcount), 0)
+            self._conn.commit()
+        return updated
+
+    def pending_recall_decision_ids(
+        self,
+        *,
+        mature_before: str | None = None,
+        limit: int = 64,
+    ) -> list[str]:
+        """Return recalled decisions that still need a delayed MemRL reward."""
+
+        with self._lock:
+            sql = """
+                SELECT decision_id, MIN(id) AS first_id
+                FROM recalls
+                WHERE evaluated_at IS NULL AND decision_id IS NOT NULL
+            """
+            params: list[object] = []
+            if mature_before is not None:
+                sql += " AND ts <= ?"
+                params.append(mature_before)
+            sql += " GROUP BY decision_id ORDER BY first_id DESC LIMIT ?"
+            params.append(max(0, int(limit)))
+            rows = self._conn.execute(sql, tuple(params)).fetchall()
+        return [str(row["decision_id"]) for row in rows if row["decision_id"]]
+
+    def apply_recall_outcome(
+        self,
+        *,
+        decision_id: str,
+        verdict: str,
+        reward: float | None,
+        forward_return: float | None,
+        evaluated_at: str,
+        alpha: float = 0.1,
+    ) -> dict:
+        """Apply one delayed decision reward to every note recalled for it."""
+
+        learning_rate = min(max(float(alpha), 0.0), 1.0)
+        note_ids: set[int] = set()
+        with self._lock:
+            recall_rows = self._conn.execute(
+                "SELECT id, note_ids FROM recalls WHERE decision_id=? AND evaluated_at IS NULL",
+                (decision_id,),
+            ).fetchall()
+            for recall_row in recall_rows:
+                try:
+                    raw_ids = json.loads(recall_row["note_ids"] or "[]")
+                except json.JSONDecodeError:
+                    raw_ids = []
+                note_ids.update(note_id for note_id in raw_ids if isinstance(note_id, int))
+
+            if recall_rows:
+                self._conn.execute(
+                    """
+                    UPDATE recalls
+                    SET verdict=?, reward=?, forward_return=?, evaluated_at=?
+                    WHERE decision_id=? AND evaluated_at IS NULL
+                    """,
+                    (
+                        verdict,
+                        None if reward is None else float(reward),
+                        forward_return,
+                        evaluated_at,
+                        decision_id,
+                    ),
+                )
+
+            notes_updated = 0
+            for note_id in sorted(note_ids) if reward is not None else []:
+                row = self._conn.execute(
+                    "SELECT q_value FROM notes WHERE id=?",
+                    (note_id,),
+                ).fetchone()
+                if row is None:
+                    continue
+                old_q = float(row["q_value"] or 0.0)
+                new_q = old_q + learning_rate * (float(reward) - old_q)
+                cursor = self._conn.execute(
+                    "UPDATE notes SET q_value=?, q_updates=q_updates+1 WHERE id=?",
+                    (new_q, note_id),
+                )
+                notes_updated += max(int(cursor.rowcount), 0)
+            self._conn.commit()
+        return {
+            "recalls_updated": len(recall_rows),
+            "notes_updated": notes_updated,
+            "note_ids": sorted(note_ids),
+        }
