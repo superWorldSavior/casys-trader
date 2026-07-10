@@ -1,5 +1,12 @@
 """Pure contracts for candidate-scope and universe intelligence."""
 
+from trader.domain.universe.candidate_scope import (
+    RADAR_CANDIDATES_TOP,
+    candidate_run_ids,
+    compose_candidate_pool,
+    merge_news_challengers,
+    retained_news_challengers,
+)
 from trader.domain.universe.intelligence import (
     DEFAULT_MAX_SITUATION_POINTS,
     DEFAULT_MAX_SITUATION_TEXT_CHARS,
@@ -17,6 +24,14 @@ from trader.domain.universe.news_challengers import (
     NewsChallengerSelection,
     select_news_challengers,
 )
+from trader.domain.universe.selection import (
+    apply_hysteresis,
+    apply_override,
+    compose_active_universe,
+    compose_final,
+    emergency_exits,
+    sticky_symbols,
+)
 
 __all__ = [
     "DEFAULT_MAX_SITUATION_POINTS",
@@ -24,12 +39,23 @@ __all__ = [
     "NewsChallenger",
     "NewsChallengerEvidence",
     "NewsChallengerSelection",
+    "RADAR_CANDIDATES_TOP",
     "UNCLASSIFIED_FAMILY",
     "UniverseSituationContext",
+    "apply_hysteresis",
+    "apply_override",
     "build_family_snapshot",
     "build_global_family_board",
     "candidate_scope_id",
+    "candidate_run_ids",
+    "compose_active_universe",
+    "compose_candidate_pool",
+    "compose_final",
+    "emergency_exits",
     "enrich_candidates_with_family",
     "project_brief_to_universe_context",
+    "merge_news_challengers",
+    "retained_news_challengers",
     "select_news_challengers",
+    "sticky_symbols",
 ]

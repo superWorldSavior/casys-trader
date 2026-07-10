@@ -661,6 +661,57 @@ def test_rotation_is_nested_under_market() -> None:
     assert not _has_python_sources(trader_dir / "rotation")
 
 
+def test_universe_rotation_policies_are_canonical_domain_and_application_modules() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    selection_path = repo_root / "trader" / "domain" / "universe" / "selection.py"
+    candidate_scope_path = repo_root / "trader" / "domain" / "universe" / "candidate_scope.py"
+    activation_path = repo_root / "trader" / "application" / "universe" / "activation.py"
+    scope_rotation_path = repo_root / "trader" / "application" / "universe" / "scope_rotation.py"
+
+    assert (
+        _domain_import_violations(
+            [selection_path, candidate_scope_path],
+            repo_root,
+        )
+        == []
+    )
+
+    for application_path in (activation_path, scope_rotation_path):
+        application_source = application_path.read_text(encoding="utf-8")
+        assert "trader.runtime" not in application_source
+        assert "trader.infrastructure" not in application_source
+        assert "trader.market" not in application_source
+
+    from trader.application.universe.activation import validate_prepared_hotlist
+    from trader.application.universe.scope_rotation import (
+        refresh_preopen_candidate_scope,
+        update_venue_ranking,
+    )
+    from trader.domain.universe.selection import (
+        apply_hysteresis,
+        compose_active_universe,
+    )
+    from trader.market.rotation import apply_hysteresis as legacy_apply_hysteresis
+    from trader.market.rotation.venues import (
+        compose_active_universe as legacy_compose_active_universe,
+    )
+    from trader.market.rotation.venues import (
+        validate_prepared_hotlist as legacy_validate_prepared_hotlist,
+    )
+    from trader.market.rotation.venues import (
+        refresh_preopen_candidate_scope as legacy_refresh_preopen_candidate_scope,
+    )
+    from trader.market.rotation.venues import (
+        update_venue_ranking as legacy_update_venue_ranking,
+    )
+
+    assert legacy_apply_hysteresis is apply_hysteresis
+    assert legacy_compose_active_universe is compose_active_universe
+    assert legacy_validate_prepared_hotlist is validate_prepared_hotlist
+    assert legacy_refresh_preopen_candidate_scope is refresh_preopen_candidate_scope
+    assert legacy_update_venue_ranking is update_venue_ranking
+
+
 def test_daemon_delegates_watch_schedule_glue_to_runtime_adapter() -> None:
     repo_root = Path(__file__).resolve().parents[1]
     daemon_path = repo_root / "trader" / "runtime" / "daemon.py"
