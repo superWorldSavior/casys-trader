@@ -2633,12 +2633,61 @@ def test_attribution_projection_is_read_model_canonical() -> None:
     import trader.attribution as legacy_attribution
     from trader.reporting import attribution as reporting_attribution
     from trader.reporting.read_models import attribution as read_model_attribution
+    from trader.reporting.read_models import hard_stop_diagnostics, trade_history
 
-    assert reporting_attribution.compute_round_trips is read_model_attribution.compute_round_trips
+    assert read_model_attribution.compute_round_trips is trade_history.compute_round_trips
+    assert (
+        read_model_attribution.compute_hard_stop_diagnostics
+        is hard_stop_diagnostics.compute_hard_stop_diagnostics
+    )
+    assert (
+        read_model_attribution.select_hard_stop_symbols
+        is hard_stop_diagnostics.select_hard_stop_symbols
+    )
+    assert (
+        read_model_attribution._filter_regime_trips
+        is trade_history.filter_regime_trips
+    )
+    assert reporting_attribution.compute_round_trips is trade_history.compute_round_trips
     assert reporting_attribution.compute_attribution is read_model_attribution.compute_attribution
-    assert reporting_attribution.compute_hard_stop_diagnostics is read_model_attribution.compute_hard_stop_diagnostics
+    assert (
+        reporting_attribution.compute_hard_stop_diagnostics
+        is hard_stop_diagnostics.compute_hard_stop_diagnostics
+    )
     assert legacy_attribution.compute_attribution is read_model_attribution.compute_attribution
     assert legacy_attribution.render_text is reporting_attribution.render_text
+
+
+def test_attribution_read_models_have_single_responsibility_boundaries() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    read_models_dir = repo_root / "trader" / "reporting" / "read_models"
+    attribution_path = read_models_dir / "attribution.py"
+    trade_history_path = read_models_dir / "trade_history.py"
+    hard_stop_path = read_models_dir / "hard_stop_diagnostics.py"
+
+    assert trade_history_path.exists()
+    assert hard_stop_path.exists()
+
+    attribution_source = attribution_path.read_text(encoding="utf-8")
+    attribution_tree = ast.parse(attribution_source, filename=str(attribution_path))
+    attribution_definitions = {
+        node.name
+        for node in ast.walk(attribution_tree)
+        if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    assert attribution_definitions.isdisjoint(
+        {
+            "_OpenLeg",
+            "compute_hard_stop_diagnostics",
+            "compute_round_trips",
+            "select_hard_stop_symbols",
+        }
+    )
+
+    hard_stop_source = hard_stop_path.read_text(encoding="utf-8")
+    assert "from trader.reporting.read_models import attribution" not in hard_stop_source
+    assert "from trader.reporting.read_models.attribution" not in hard_stop_source
+    assert "from trader.reporting.read_models.trade_history import" in hard_stop_source
 
 
 def test_meta_performance_projection_is_read_model_canonical() -> None:
