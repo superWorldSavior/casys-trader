@@ -2,4 +2,4 @@
 
 from __future__ import annotations
 
-__all__ = ["allocation_dashboard", "timeline_dashboard"]
+__all__ = ["allocation_dashboard", "snapshot", "timeline_dashboard"]

@@ -1,6 +1,6 @@
 import pytest
 
-from trader.execution.portfolio import Holding, Snapshot
+from trader.domain.portfolio.snapshot import Holding, Snapshot
 
 
 def test_as_context_ajoute_le_pnl_latent_net_quand_un_estimateur_frais_est_fourni() -> None:

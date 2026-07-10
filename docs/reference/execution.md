@@ -1,7 +1,7 @@
 # Référence — Exécution : admission, budget gross, broker, portefeuille
 
 > **Type** : Reference (Diátaxis).
-> **Code** : `application/execute/order_admission`, `application/execute/risk_admission`, `domain/market/gross_priority`, `execution/broker`, `execution/portfolio`
+> **Code** : `application/execute`, `application/portfolio/snapshot`, `domain/execution`, `domain/market/gross_priority`, `infrastructure/brokers`, `infrastructure/state_db`
 > **Rôle** : le chemin d'un ordre approuvé jusqu'au fill, et la vue portefeuille.
 
 Après la décision LLM, un ordre passe par :
@@ -57,29 +57,36 @@ préservé. Le budget des ouvertures est le RiskGate/marge : le cap de débit
 `max_orders_per_cycle` a été retiré (redondant avec les bornes $, qui restent la
 safety capital).
 
-## Broker / passage d'ordres — `execution/broker`
+## Broker / passage d'ordres
 
 Modèle d'ordre + commissions.
 
 | Type | Rôle |
 |---|---|
-| `Order` | ordre (`symbol`, `side`, `quantity`, `rationale`) |
-| `Fill` | exécution (prix, quantité, `fx_rate` estampillé) |
-| `Commission` / `CommissionModel` (Protocol) | modèle de frais |
-| `NoCommissionModel` | frais nuls (test) |
-| `IbkrCommissionModel` | barème IBKR (planchers par place, cf. incident TW/Realtek) |
+| `domain/contracts.py` | `Order`, `Fill`, `Commission`, `Position` et nom du modèle |
+| `application/execute/protocols.py` | ports `Broker` et `CommissionModel` attendus par l'application |
+| `domain/execution/fill_accounting.py` | effet pur d'un fill sur position, prix moyen et cash |
+| `infrastructure/brokers/commission_models.py` | modèles `none` et approximation IBKR |
+| `infrastructure/state_db/sim_broker.py` | adaptateur paper JSON |
+| `infrastructure/state_db/broker_store.py` | adaptateur paper SQLite canonique |
 
 Le modèle de commission est sélectionné par config (`TRADER_COMMISSION_MODEL`,
 défaut `ibkr`). Les frais rendent le P&L **net** (cf. conscience-frais, `be_ref_bps`).
 
-`tools/execution` reste une façade de compatibilité pour les imports historiques.
-Les imports internes nouveaux doivent viser `execution/broker`.
+`execution/broker`, `execution/commission`, `execution/contracts`,
+`execution/protocols` et `tools/execution` sont des façades de compatibilité.
+Les nouveaux imports internes visent directement le propriétaire indiqué dans
+le tableau ci-dessus.
 
-## Portefeuille — `execution/portfolio`
+## Portefeuille
 
-`snapshot(...) -> Snapshot` : vue **agrégée** — positions valorisées (`Holding`),
-équité, cash, P&L net, KPI. Valorisation **en USD** (`quantity × last_price ×
-fx_rate`, cf. [fx](fx.md)). Consommé par le cockpit et le contexte agent.
+`domain/portfolio/snapshot.py` porte `Holding`, `Snapshot` et leurs agrégats purs.
+`application/portfolio/snapshot.py` assemble cette vue depuis le port minimal
+`PortfolioReader`, les prix et les FX injectés. La valorisation reste **en USD**
+(`quantity × last_price × fx_rate`, cf. [fx](fx.md)).
+
+`execution/portfolio` et `tools/portfolio` conservent les imports historiques,
+mais ne portent plus de logique.
 
 ## Voir aussi
 - [Risk gate](risk-gate.md) (fusible en amont) · [FX](fx.md) · [reporting](reporting.md).

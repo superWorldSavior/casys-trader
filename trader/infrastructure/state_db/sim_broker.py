@@ -6,9 +6,9 @@ import json
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+from trader.application.execute.protocols import CommissionModel
 from trader.domain.contracts import Fill, Order, Position
 from trader.domain.execution.fill_accounting import POSITION_EPSILON, compute_fill_effect
-from trader.execution.protocols import CommissionModel
 from trader.infrastructure.brokers.commission_models import NoCommissionModel
 
 

@@ -11,7 +11,7 @@ from trader.market.execution_eligibility import (
 )
 from trader.application.exit.exit_bars import exit_bar_extremes
 from trader.application.execute.order_admission import clamp_exit_quantity as default_clamp_exit_quantity
-from trader.execution import portfolio
+from trader.application.portfolio import snapshot as portfolio
 from trader.domain.contracts import Order
 from trader.planning.exit_engine import ExitEvaluation, evaluate_plan
 from trader.planning.trade_plan import TradePlan

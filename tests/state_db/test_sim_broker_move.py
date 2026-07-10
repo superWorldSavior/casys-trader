@@ -85,7 +85,7 @@ def test_broker_factory_imports_json_broker_from_infrastructure_top_level() -> N
     assert violations == []
 
 
-def test_commission_and_sim_broker_do_not_import_runtime_or_application() -> None:
+def test_commission_and_sim_broker_only_import_application_ports() -> None:
     repo_root = Path(__file__).resolve().parents[2]
     checked_modules = [
         repo_root / "trader" / "domain" / "execution" / "fill_accounting.py",
@@ -99,6 +99,7 @@ def test_commission_and_sim_broker_do_not_import_runtime_or_application() -> Non
         "trader.reporting",
         "trader.runtime",
     )
+    allowed_application_modules = {"trader.application.execute.protocols"}
     violations: list[str] = []
 
     for module_path in checked_modules:
@@ -106,7 +107,10 @@ def test_commission_and_sim_broker_do_not_import_runtime_or_application() -> Non
         rel_path = module_path.relative_to(repo_root)
         for node in ast.walk(tree):
             if isinstance(node, ast.ImportFrom) and node.module:
-                if node.module.startswith(forbidden_prefixes):
+                if (
+                    node.module.startswith(forbidden_prefixes)
+                    and node.module not in allowed_application_modules
+                ):
                     violations.append(f"{rel_path}: from {node.module} import ...")
             elif isinstance(node, ast.Import):
                 for alias in node.names:

@@ -2907,11 +2907,15 @@ def test_shared_protocols_use_protocols_modules_instead_of_ports_modules() -> No
 
 
 def test_shared_protocols_have_no_legacy_ports_modules() -> None:
+    from trader.application.execute.protocols import Broker as CanonicalBroker
+    from trader.application.execute.protocols import CommissionModel as CanonicalCommissionModel
     from trader.execution.protocols import Broker, CommissionModel
     from trader.market.protocols import DataSource
 
-    assert Broker.__module__ == "trader.execution.protocols"
-    assert CommissionModel.__module__ == "trader.execution.protocols"
+    assert Broker is CanonicalBroker
+    assert CommissionModel is CanonicalCommissionModel
+    assert Broker.__module__ == "trader.application.execute.protocols"
+    assert CommissionModel.__module__ == "trader.application.execute.protocols"
     assert DataSource.__module__ == "trader.market.protocols"
 
     repo_root = Path(__file__).resolve().parents[1]
@@ -3098,8 +3102,8 @@ def test_execution_broker_imports_are_canonical_with_tools_compatibility() -> No
     from trader.domain.contracts import Fill as CanonicalFill
     from trader.domain.contracts import Order as CanonicalOrder
     from trader.domain.contracts import Position as CanonicalPosition
-    from trader.execution.protocols import Broker as CanonicalBroker
-    from trader.execution.protocols import CommissionModel as CanonicalCommissionModel
+    from trader.application.execute.protocols import Broker as CanonicalBroker
+    from trader.application.execute.protocols import CommissionModel as CanonicalCommissionModel
     from trader.tools.execution import Broker as LegacyBroker
     from trader.tools.execution import Commission as LegacyCommission
     from trader.tools.execution import CommissionModel as LegacyCommissionModel
@@ -3219,11 +3223,27 @@ def test_application_uses_execution_contracts_and_ports_instead_of_broker_adapte
 
 
 def test_portfolio_imports_are_canonical_with_tools_compatibility() -> None:
-    from trader.execution.portfolio import Holding, Snapshot, snapshot
+    repo_root = Path(__file__).resolve().parents[1]
+    facade_path = repo_root / "trader" / "execution" / "portfolio.py"
+    facade_tree = ast.parse(
+        facade_path.read_text(encoding="utf-8"),
+        filename=str(facade_path),
+    )
+
+    assert not any(isinstance(node, (ast.ClassDef, ast.FunctionDef)) for node in facade_tree.body)
+
+    from trader.application.portfolio.snapshot import snapshot
+    from trader.domain.portfolio.snapshot import Holding, Snapshot
+    from trader.execution.portfolio import Holding as FacadeHolding
+    from trader.execution.portfolio import Snapshot as FacadeSnapshot
+    from trader.execution.portfolio import snapshot as facade_snapshot
     from trader.tools.portfolio import Holding as LegacyHolding
     from trader.tools.portfolio import Snapshot as LegacySnapshot
     from trader.tools.portfolio import snapshot as legacy_snapshot
 
+    assert FacadeHolding is Holding
+    assert FacadeSnapshot is Snapshot
+    assert facade_snapshot is snapshot
     assert LegacyHolding is Holding
     assert LegacySnapshot is Snapshot
     assert legacy_snapshot is snapshot

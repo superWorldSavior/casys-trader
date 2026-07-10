@@ -22,7 +22,7 @@ import trader.application.exit.fill_plan_effects as fill_plan_effects
 import trader.application.record.decision_entries as decision_entries
 import trader.application.record.decision_watches as decision_watches
 import trader.application.record.plan_review as plan_review
-from trader.execution import portfolio
+from trader.application.portfolio import snapshot as portfolio
 from trader.domain.execution.risk_gate import RiskGate
 import trader.market.execution_eligibility as execution_eligibility_service
 from trader.market import market_data as market
