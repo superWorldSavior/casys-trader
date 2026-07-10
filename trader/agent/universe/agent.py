@@ -11,7 +11,7 @@ from trader.agent.universe.prompt import build_universe_prompt, parse_universe_c
 from trader.application.universe import UniverseAgentDecision, UniverseCompositionRequest
 
 DEFAULT_UNIVERSE_AGENT_TIMEOUT_S = 120
-DEFAULT_UNIVERSE_AGENT_MODEL = llm.DEFAULT_SPARK_MODEL
+DEFAULT_UNIVERSE_AGENT_MODEL = llm.DEFAULT_ANALYST_MODEL
 DEFAULT_UNIVERSE_AGENT_SESSION_LABEL = "casys-trader:universe-agent"
 
 

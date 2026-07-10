@@ -1287,7 +1287,7 @@ def test_build_default_router_from_env_configure_acpx_puis_ollama(monkeypatch) -
     router = build_default_router_from_env()
 
     assert [backend.provider for backend in router.backends] == ["acpx", "acpx-claude-sonnet", "ollama-cloud"]
-    assert router.backends[0].model == "gpt-5.6-sol"
+    assert router.backends[0].model == "gpt-5.6-terra"
     assert router.backends[2].model == "nemotron-3-nano:30b-cloud"
 
 
@@ -1332,7 +1332,7 @@ def test_trade_router_3_tiers_dans_lordre(monkeypatch) -> None:
 
     providers = [b.provider for b in router.backends]
     assert providers == ["acpx", "acpx-claude-sonnet", "ollama-cloud"]
-    assert router.backends[0].model == "gpt-5.6-sol"
+    assert router.backends[0].model == "gpt-5.6-terra"
     assert router.backends[1].model == "sonnet"
     assert router.backends[1].agent == "claude"
     assert router.backends[2].provider == "ollama-cloud"

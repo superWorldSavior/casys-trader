@@ -2,12 +2,17 @@ import json
 
 from trader.agent import llm
 from trader.agent.news_macro import (
+    DEFAULT_NEWS_MACRO_ANALYST_MODEL,
     DEFAULT_NEWS_MACRO_ANALYST_TIMEOUT_S,
     LlmNewsMacroAnalyst,
     build_news_macro_prompt,
     parse_news_macro_completion,
 )
 from trader.application.analyst import NewsMacroAnalysisRequest
+
+
+def test_news_macro_keeps_its_analyst_model_default() -> None:
+    assert DEFAULT_NEWS_MACRO_ANALYST_MODEL == "gpt-5.6-sol"
 
 
 def test_news_macro_prompt_contains_bounded_contract() -> None:

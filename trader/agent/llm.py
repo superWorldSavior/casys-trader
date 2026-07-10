@@ -19,7 +19,11 @@ from trader.domain.llm import (
     LlmRouter as LlmRouter,
 )
 
-DEFAULT_SPARK_MODEL = "gpt-5.6-sol"
+DEFAULT_TRADER_MODEL = "gpt-5.6-terra"
+DEFAULT_ANALYST_MODEL = "gpt-5.6-sol"
+# Compatibility name for callers that still describe the primary trader model
+# as "spark". Role-specific agents must use DEFAULT_ANALYST_MODEL explicitly.
+DEFAULT_SPARK_MODEL = DEFAULT_TRADER_MODEL
 DEFAULT_SPARK_FALLBACK_MODEL = "gpt-5.3-codex-spark"
 DEFAULT_OLLAMA_BASE_URL = "https://ollama.com/v1"
 DEFAULT_OLLAMA_MODEL = "nemotron-3-nano:30b-cloud"
@@ -211,6 +215,7 @@ def __getattr__(name: str):
 
 __all__ = [
     "DEFAULT_CONSOLIDATOR_OLLAMA_MODEL",
+    "DEFAULT_ANALYST_MODEL",
     "DEFAULT_CONSOLIDATOR_SESSION_LABEL",
     "DEFAULT_ENV_PATH",
     "DEFAULT_OLLAMA_BASE_URL",
@@ -218,6 +223,7 @@ __all__ = [
     "DEFAULT_RUNTIME_SESSION_LABEL",
     "DEFAULT_SPARK_FALLBACK_MODEL",
     "DEFAULT_SPARK_MODEL",
+    "DEFAULT_TRADER_MODEL",
     "LlmBackend",
     "LlmCompletion",
     "LlmFailure",

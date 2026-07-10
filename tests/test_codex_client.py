@@ -325,7 +325,7 @@ def test_parse_batch_json_global_invalide_tout_en_hold() -> None:
 
 
 def test_default_model_utilise_modele_acpx_annonce() -> None:
-    assert DEFAULT_MODEL == "gpt-5.6-sol"
+    assert DEFAULT_MODEL == "gpt-5.6-terra"
 
 
 def test_parse_decision_accepte_next_wake_in_minutes_optionnel() -> None:

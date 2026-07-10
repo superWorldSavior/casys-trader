@@ -104,9 +104,11 @@ def build_llm_override_fn(
     from trader.agent import llm
     from trader.market.rotation.override import make_llm_override_fn
 
-    kw: dict[str, Any] = {"acpx_bin": acpx_bin}
-    if spark_model is not None:
-        kw["spark_model"] = spark_model
+    kw: dict[str, Any] = {
+        "acpx_bin": acpx_bin,
+        # Rotation/universe is an analyst role, not the per-symbol trader.
+        "spark_model": spark_model or llm.DEFAULT_ANALYST_MODEL,
+    }
 
     router = llm.build_default_router_from_env(**kw)
 

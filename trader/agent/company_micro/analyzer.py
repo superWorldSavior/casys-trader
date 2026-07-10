@@ -13,7 +13,7 @@ from trader.domain.company import CompanyIntelligenceBrief, SelectionView
 
 DEFAULT_COMPANY_MICRO_SESSION_LABEL = "casys-trader:company-micro-analyst"
 DEFAULT_COMPANY_MICRO_TIMEOUT_S = 240
-DEFAULT_COMPANY_MICRO_MODEL = llm.DEFAULT_SPARK_MODEL
+DEFAULT_COMPANY_MICRO_MODEL = llm.DEFAULT_ANALYST_MODEL
 
 
 class CompanyMicroAnalystError(RuntimeError):

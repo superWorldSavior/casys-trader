@@ -6,6 +6,7 @@ import pytest
 
 from trader.agent import llm
 from trader.agent.universe import (
+    DEFAULT_UNIVERSE_AGENT_MODEL,
     LlmUniverseAgent,
     UniverseAgentError,
     build_universe_router_from_env,
@@ -14,6 +15,10 @@ from trader.agent.universe import (
 )
 from trader.application.universe import build_universe_composition_request
 from trader.domain.universe import UniverseSituationContext
+
+
+def test_universe_keeps_its_analyst_model_default() -> None:
+    assert DEFAULT_UNIVERSE_AGENT_MODEL == "gpt-5.6-sol"
 
 
 def _request():

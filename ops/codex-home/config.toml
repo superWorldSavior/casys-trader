@@ -3,7 +3,7 @@
 # (superpowers) ni MCP. Ils polluaient le contrat de sortie JSON (prose
 # "j'utilise la compétence superpowers..." -> parse_error) et alourdissaient
 # le bootstrap. Auth partagée via symlink auth.json.
-model = "gpt-5.5"
+model = "gpt-5.6-terra"
 model_reasoning_effort = "xhigh"
 approval_policy = "never"
 # Cage OS pour l'exécution de code par l'agent (opt-in CASYS_AGENT_EXEC) :

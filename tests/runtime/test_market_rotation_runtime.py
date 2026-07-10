@@ -27,6 +27,8 @@ class RecordingLogger:
 def test_build_llm_override_fn_returns_callable(monkeypatch) -> None:
     from trader.agent import llm as llm_module
 
+    captured = {}
+
     class _FakeCompletion:
         text = '{"add":[],"remove":[]}'
 
@@ -34,11 +36,16 @@ def test_build_llm_override_fn_returns_callable(monkeypatch) -> None:
         def complete(self, prompt, *, timeout_s):
             return _FakeCompletion()
 
-    monkeypatch.setattr(llm_module, "build_default_router_from_env", lambda **kw: _FakeRouter())
+    def build_router(**kwargs):
+        captured.update(kwargs)
+        return _FakeRouter()
+
+    monkeypatch.setattr(llm_module, "build_default_router_from_env", build_router)
 
     fn = market_rotation_runtime.build_llm_override_fn()
 
     assert callable(fn)
+    assert captured["spark_model"] == "gpt-5.6-sol"
 
 
 def test_build_llm_override_fn_parses_llm_response(monkeypatch) -> None:

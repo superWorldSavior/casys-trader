@@ -70,9 +70,9 @@ from trader.agent.protocol.types import (
     Intent as Intent,
 )
 
-# Modèle du brain runtime : Codex Spark 5.3 (famille rapide) à effort medium.
-# Spark = faible latence, adapté à un agent en veille qui décide à chaque réveil.
-DEFAULT_MODEL = llm.DEFAULT_SPARK_MODEL
+# Modèle du brain runtime. Son choix reste distinct des analystes spécialisés ;
+# l'effort est imposé à xhigh par le CODEX_HOME de l'app.
+DEFAULT_MODEL = llm.DEFAULT_TRADER_MODEL
 
 
 def build_command(prompt: str, *, acpx_bin: str, model: str, timeout_s: int) -> list[str]:

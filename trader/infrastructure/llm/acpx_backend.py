@@ -22,7 +22,7 @@ log = logging.getLogger(__name__)
 
 # Defaults duplicated here intentionally: the adapter must be directly importable
 # without asking the agent facade to import infrastructure while it is still loading.
-_DEFAULT_ACPX_MODEL = "gpt-5.6-sol"
+_DEFAULT_ACPX_MODEL = "gpt-5.6-terra"
 _DEFAULT_RUNTIME_SESSION_LABEL = "casys-trader:runtime-brain"
 _DEFAULT_ACPX_CODEX_HOME = Path(__file__).resolve().parents[3] / "ops" / "codex-home"
 _REQUIRED_ACPX_REASONING_EFFORT = "xhigh"

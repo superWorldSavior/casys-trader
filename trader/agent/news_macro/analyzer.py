@@ -18,7 +18,7 @@ from trader.domain.situation import NewsMacroBrief, SituationPoint, SituationSec
 
 DEFAULT_NEWS_MACRO_ANALYST_SESSION_LABEL = "casys-trader:macro-news-analyst"
 DEFAULT_NEWS_MACRO_ANALYST_TIMEOUT_S = 240
-DEFAULT_NEWS_MACRO_ANALYST_MODEL = llm.DEFAULT_SPARK_MODEL
+DEFAULT_NEWS_MACRO_ANALYST_MODEL = llm.DEFAULT_ANALYST_MODEL
 
 
 class NewsMacroAnalystError(RuntimeError):

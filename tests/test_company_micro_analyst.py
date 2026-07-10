@@ -1,7 +1,7 @@
 import json
 
 from trader.agent import llm
-from trader.agent.company_micro import LlmCompanyMicroAnalyst, build_company_micro_prompt
+from trader.agent.company_micro import DEFAULT_COMPANY_MICRO_MODEL, LlmCompanyMicroAnalyst, build_company_micro_prompt
 from trader.agent.company_micro.prompt import parse_company_micro_completion
 from trader.application.analyst.company_micro import CompanyMicroAnalysisRequest
 from trader.domain.company import CompanyEvidenceItem, CompanyEvidenceSnapshot, IssuerIdentity
@@ -65,6 +65,10 @@ def _completion(*, source_ref: str = "fixture:AAPL:10-Q") -> str:
             "source_refs": [source_ref],
         }
     )
+
+
+def test_company_micro_keeps_its_analyst_model_default() -> None:
+    assert DEFAULT_COMPANY_MICRO_MODEL == "gpt-5.6-sol"
 
 
 def test_company_micro_prompt_contains_bounded_authority_and_evidence() -> None:
