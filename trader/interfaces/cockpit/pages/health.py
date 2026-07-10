@@ -26,11 +26,13 @@ from trader.interfaces.cockpit.pages._shared import PANEL_CSS, ResizeRefresh, ro
 # RISK GATE + MODEL ont déménagé ici (Rév. 3) — builders réutilisés depuis decisions
 from trader.interfaces.cockpit.pages.decisions import build_model_panel, build_risk_gate
 from trader.interfaces.cockpit.projections.health import (
-    VENUE_DISPLAY as _VENUE_DISPLAY,
-    VENUE_ORDER as _VENUE_ORDER,
     project_freshness,
+    project_fx_rates,
+    project_learnings,
+    project_llm_health,
     project_sources,
-    symbols_by_venue as _symbols_by_venue,
+    project_universe_health,
+    symbols_by_venue as _symbols_by_venue,  # noqa: F401 - historical page export
 )
 from trader.interfaces.ui.palette import (
     CASYS_DIM,
@@ -39,11 +41,6 @@ from trader.interfaces.ui.palette import (
     CASYS_SUCCESS,
     CASYS_WARNING,
 )
-from trader.support.coercion import (
-    dict_list as _safe_list_of_dicts,
-    finite_float as _safe_float,
-)
-
 UTC = timezone.utc
 
 # ---------------------------------------------------------------------------
@@ -131,25 +128,20 @@ def build_freshness(
 
 def build_fx_rates(state: dict, *, now: datetime) -> RenderableType:
     """FX RATES : EUR / CHF / TWD sur une ligne."""
-    fx = f.safe_dict(state.get("fx_rates"))
-    if not fx:
+    del now
+    projection = project_fx_rates(state)
+    if not projection.source_available:
         return Text("fx rates unavailable", style=f"italic {CASYS_FAINT}")
 
-    _SHOW = ("EUR", "CHF", "TWD")
-    row = Text()
-    first = True
-    for key in _SHOW:
-        rate = _safe_float(fx.get(key), default=None)
-        if rate is None:
-            continue
-        if not first:
-            row.append("    ")
-        row.append(f"{key} ", style=CASYS_FAINT)
-        row.append(f"{rate:.4f}", style=CASYS_MUTED)
-        first = False
-
-    if first:
+    if not projection.rows:
         return Text("no fx rates", style=f"italic {CASYS_FAINT}")
+
+    row = Text()
+    for index, rate_row in enumerate(projection.rows):
+        if index:
+            row.append("    ")
+        row.append(f"{rate_row.currency} ", style=CASYS_FAINT)
+        row.append(f"{rate_row.rate:.4f}", style=CASYS_MUTED)
     return row
 
 
@@ -186,31 +178,20 @@ def build_sources(state: dict, *, now: datetime) -> RenderableType:
 
 def build_llm(state: dict, *, now: datetime) -> RenderableType:
     """LLM : calls this cycle / total, fallbacks → on error → HOLD."""
-    status = f.safe_dict(state.get("daemon_status"))
-    kpis = f.safe_dict(state.get("kpis"))
-    model_perf = _safe_list_of_dicts(kpis.get("model_performance"))
-
-    calls_cycle = _safe_float(status.get("model_calls_used"), default=None)
-    total_fills = sum(int(mp.get("fills") or 0) for mp in model_perf)
-    total_fallbacks = sum(int(mp.get("fallbacks") or 0) for mp in model_perf)
-
-    if calls_cycle is not None and total_fills:
-        calls_str = f"{int(calls_cycle)} this cycle · {total_fills} total"
-    elif calls_cycle is not None:
-        calls_str = f"{int(calls_cycle)} this cycle"
-    else:
-        calls_str = "—"
-
-    fallbacks_str = f"{total_fallbacks} · on error → HOLD"
+    del now
+    projection = project_llm_health(state)
 
     grid = Table.grid(padding=(0, 1))
     grid.add_column(no_wrap=True, width=11)
     grid.add_column(no_wrap=True)
 
-    grid.add_row(Text("calls", style=CASYS_FAINT), Text(calls_str, style=CASYS_MUTED))
+    grid.add_row(
+        Text("calls", style=CASYS_FAINT),
+        Text(projection.calls_label, style=CASYS_MUTED),
+    )
     grid.add_row(
         Text("fallbacks", style=CASYS_FAINT),
-        Text(fallbacks_str, style=CASYS_MUTED),
+        Text(projection.fallbacks_label, style=CASYS_MUTED),
     )
     return grid
 
@@ -221,39 +202,26 @@ def build_learnings(state: dict, *, now: datetime, limit: int = 3) -> Renderable
     ``limit`` est calculé dans update_state via rows_available (reserved=1 pour
     la headline). Minimum 3 par défaut.
     """
-    pending = state.get("learnings_pending_count")
-    consolidation = f.safe_dict(state.get("consolidation_status"))
-    notes = _safe_list_of_dicts(state.get("learnings"))
-
-    pending_str = str(pending) if pending is not None else "?"
-
-    if consolidation:
-        phase = str(
-            consolidation.get("phase")
-            or consolidation.get("status")
-            or "idle"
-        )
-        last_ts = consolidation.get("last_run_ts") or consolidation.get("ts")
-        last_str = f"   (last {f.hhmm(last_ts)})" if last_ts else ""
-        status_str = f"consolidation {phase}"
-    else:
-        status_str = "consolidation idle"
-        last_str = ""
+    del now
+    projection = project_learnings(state)
 
     headline = Text()
-    headline.append(f"{pending_str} raw · {status_str}", style=CASYS_MUTED)
-    headline.append(last_str, style=CASYS_FAINT)
+    headline.append(
+        f"{projection.pending_label} raw · {projection.consolidation_label}",
+        style=CASYS_MUTED,
+    )
+    if projection.last_run_label:
+        headline.append(
+            f"   (last {projection.last_run_label})",
+            style=CASYS_FAINT,
+        )
 
     parts: list[RenderableType] = [headline]
-    for entry in notes[:limit]:
-        sym = str(entry.get("symbol") or "").strip()
-        note = str(entry.get("note") or "").strip()
-        if not note:
-            continue
-        prefix = f"· {sym}: " if sym else "· "
+    for row in projection.notes[:limit]:
+        prefix = f"· {row.symbol}: " if row.symbol else "· "
         line = Text()
         line.append(prefix, style=CASYS_DIM)
-        line.append(f.clip(note, limit=52), style=CASYS_DIM)
+        line.append(f.clip(row.note, limit=52), style=CASYS_DIM)
         parts.append(line)
 
     if len(parts) == 1:
@@ -265,34 +233,21 @@ def build_learnings(state: dict, *, now: datetime, limit: int = 3) -> Renderable
 
 def build_universe(state: dict, *, now: datetime) -> RenderableType:
     """UNIVERSE : total symbols · répartition par venue · hot-set."""
-    by_venue = _symbols_by_venue(state)
-    venue_state = f.safe_dict(state.get("venue_state"))
-    venues_data = f.safe_dict(venue_state.get("venues"))
-
-    total = sum(len(v) for v in by_venue.values())
-    venue_parts: list[str] = []
-    for v in _VENUE_ORDER:
-        n = len(by_venue.get(v, []))
-        if n:
-            venue_parts.append(f"{_VENUE_DISPLAY.get(v, v)} {n}")
-    for v in sorted(k for k in by_venue if k not in _VENUE_ORDER):
-        venue_parts.append(f"{v} {len(by_venue[v])}")
-
-    symbols_str = (f"{total} · " + " / ".join(venue_parts)) if venue_parts else str(total)
-
-    hot_total = 0
-    for vdata in venues_data.values():
-        if isinstance(vdata, dict):
-            hot_total += len(vdata.get("hotlist") or [])
-
-    hotset_str = f"{hot_total} rotating" if hot_total else "—"
+    del now
+    projection = project_universe_health(state)
 
     grid = Table.grid(padding=(0, 1))
     grid.add_column(no_wrap=True, width=11)
     grid.add_column(no_wrap=True)
 
-    grid.add_row(Text("symbols", style=CASYS_FAINT), Text(symbols_str, style=CASYS_MUTED))
-    grid.add_row(Text("hot-set", style=CASYS_FAINT), Text(hotset_str, style=CASYS_MUTED))
+    grid.add_row(
+        Text("symbols", style=CASYS_FAINT),
+        Text(projection.symbols_label, style=CASYS_MUTED),
+    )
+    grid.add_row(
+        Text("hot-set", style=CASYS_FAINT),
+        Text(projection.hotset_label, style=CASYS_MUTED),
+    )
 
     return grid
 

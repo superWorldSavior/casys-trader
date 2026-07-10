@@ -129,6 +129,7 @@ def test_application_analyst_modules_are_nested_without_legacy_shims() -> None:
         application_dir,
         "analyst",
         [
+            "company_micro",
             "news_macro",
         ],
     )
@@ -1882,7 +1883,11 @@ def test_cockpit_health_projection_is_canonical_and_textual_free() -> None:
 
     builders_to_projection = {
         "build_freshness": "project_freshness",
+        "build_fx_rates": "project_fx_rates",
+        "build_learnings": "project_learnings",
+        "build_llm": "project_llm_health",
         "build_sources": "project_sources",
+        "build_universe": "project_universe_health",
     }
     for function_name, projection_name in builders_to_projection.items():
         builder = next(

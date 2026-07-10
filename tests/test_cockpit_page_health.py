@@ -232,6 +232,20 @@ def test_fx_rates_missing_keys():
     assert "CHF" not in rendered
 
 
+def test_project_fx_rates_preserves_supported_display_order():
+    from trader.interfaces.cockpit.projections.health import project_fx_rates
+
+    projection = project_fx_rates(
+        {"fx_rates": {"USD": 1.0, "TWD": 0.0312, "EUR": 1.14}}
+    )
+
+    assert projection.source_available is True
+    assert [(row.currency, row.rate) for row in projection.rows] == [
+        ("EUR", 1.14),
+        ("TWD", 0.0312),
+    ]
+
+
 # ---------------------------------------------------------------------------
 # build_sources
 # ---------------------------------------------------------------------------
@@ -365,6 +379,28 @@ def test_llm_zero_calls():
     assert "0 this cycle" in rendered
 
 
+def test_project_llm_health_tolerates_and_sums_numeric_counters():
+    from trader.interfaces.cockpit.projections.health import project_llm_health
+
+    projection = project_llm_health(
+        {
+            "daemon_status": {"model_calls_used": "4"},
+            "kpis": {
+                "model_performance": [
+                    {"fills": "10", "fallbacks": 2},
+                    {"fills": 5, "fallbacks": "3"},
+                ]
+            },
+        }
+    )
+
+    assert projection.calls_this_cycle == 4
+    assert projection.total_fills == 15
+    assert projection.total_fallbacks == 5
+    assert projection.calls_label == "4 this cycle · 15 total"
+    assert projection.fallbacks_label == "5 · on error → HOLD"
+
+
 # ---------------------------------------------------------------------------
 # build_learnings
 # ---------------------------------------------------------------------------
@@ -465,6 +501,31 @@ def test_learnings_default_still_3():
     assert "SYM0" in rendered
     assert "SYM2" in rendered
     assert "SYM3" not in rendered
+
+
+def test_project_learnings_filters_empty_notes_and_normalizes_status():
+    from trader.interfaces.cockpit.projections.health import project_learnings
+
+    projection = project_learnings(
+        {
+            "learnings_pending_count": 2,
+            "consolidation_status": {
+                "status": "running",
+                "ts": "2026-07-06T00:05:00+00:00",
+            },
+            "learnings": [
+                {"symbol": "AAPL", "note": ""},
+                {"symbol": "MSFT", "note": "  keep this  "},
+            ],
+        }
+    )
+
+    assert projection.pending_label == "2"
+    assert projection.consolidation_label == "consolidation running"
+    assert projection.last_run_label == "00:05"
+    assert [(row.symbol, row.note) for row in projection.notes] == [
+        ("MSFT", "keep this")
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -568,6 +629,30 @@ def test_universe_fx_symbols_excluded():
     rendered = _render(build_universe(state, now=NOW))
     # Total = 1 (AAPL uniquement)
     assert "1 ·" in rendered
+
+
+def test_project_universe_health_composes_ordered_counts_and_hotset():
+    from trader.interfaces.cockpit.projections.health import (
+        project_universe_health,
+    )
+
+    projection = project_universe_health(
+        {
+            "universe_symbols": ["AAPL", "BN.PA", "2330.TW", "EURUSD=X"],
+            "venue_state": {
+                "venues": {
+                    "TW": {"hotlist": ["2330.TW"]},
+                    "US": {"hotlist": ["AAPL"]},
+                }
+            },
+        }
+    )
+
+    assert projection.total_symbols == 3
+    assert projection.venue_counts == (("TPE", 1), ("EU", 1), ("US", 1))
+    assert projection.symbols_label == "3 · TPE 1 / EU 1 / US 1"
+    assert projection.hot_total == 2
+    assert projection.hotset_label == "2 rotating"
 
 
 # ---------------------------------------------------------------------------
