@@ -1406,6 +1406,11 @@ def test_acpx_exec_on_active_les_outils_et_cage_le_cwd_sur_un_scratch(monkeypatc
     scratch = cmd[cmd.index("--cwd") + 1]
     assert scratch == str(codex_home / "calc-scratch")  # sous CODEX_HOME, pas le repo
     assert (codex_home / "calc-scratch").is_dir()  # créé par agent_exec_scratch_dir()
+    runtime_instructions = (codex_home / "calc-scratch" / "AGENTS.md").read_text()
+    assert "not repository incident investigations" in runtime_instructions
+    assert "Do not inspect filesystem content" in runtime_instructions
+    assert "deterministic numerical calculations" in runtime_instructions
+    assert "pure JSON object" in runtime_instructions
 
 
 def test_acpx_exec_on_sans_codex_home_fail_close(monkeypatch) -> None:

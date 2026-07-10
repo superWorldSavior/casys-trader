@@ -99,6 +99,7 @@ def _write_candidate_scope(
     candidates=None,
     baseline=None,
     as_of="2026-07-09T08:00:00+00:00",
+    scope_phase=None,
 ) -> str:
     if candidates is None:
         candidates = [
@@ -117,6 +118,8 @@ def _write_candidate_scope(
         "default_hotlist": baseline,
         "sticky_context_at_close": [],
     }
+    if scope_phase is not None:
+        record["scope_phase"] = scope_phase
     CandidateScopeStore(state_dir / "candidate_scopes").append(record)
     (state_dir / "venue_state.json").write_text(
         json.dumps(
@@ -187,6 +190,29 @@ def test_tick_news_macro_analysis_writes_jsonl_and_indexes_memory(tmp_path) -> N
     )
     assert latest_file.exists()
     assert SituationMemoryStore(state_dir / "situation_memory.db").count() == 1
+
+
+def test_tick_news_macro_analysis_waits_for_preopen_child_scope(tmp_path) -> None:
+    state_dir = tmp_path / "state"
+    config_dir = tmp_path / "config"
+    state_dir.mkdir()
+    config_dir.mkdir()
+    _write_candidate_scope(state_dir, scope_phase="close")
+    analyst = FakeAnalyst()
+
+    result = news_macro_runtime.tick_news_macro_analysis(
+        config_dir=config_dir,
+        state_dir=state_dir,
+        loop_now=datetime(2026, 7, 9, 9, 0, tzinfo=timezone.utc),
+        analyst=analyst,
+        venues=("EU",),
+    )
+
+    assert analyst.requests == []
+    assert result["triggered"] == []
+    assert result["skipped"] == [
+        {"venue": "EU", "reason": "awaiting_preopen_scope"}
+    ]
 
 
 def test_tick_news_macro_analysis_refreshes_active_brief_when_candidate_scope_changes(tmp_path) -> None:

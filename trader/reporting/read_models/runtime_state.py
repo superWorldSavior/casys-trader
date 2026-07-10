@@ -645,6 +645,12 @@ def _scope_pipeline_entry(
         "id": scope_id,
         "id_short": _short_pipeline_id(scope_id),
         "as_of": payload.get("as_of") or payload.get("last_close_at"),
+        "phase": payload.get("scope_phase") or "legacy",
+        "parent_scope_id": payload.get("parent_candidate_scope_id"),
+        "parent_scope_id_short": _short_pipeline_id(
+            payload.get("parent_candidate_scope_id")
+        ),
+        "parent_close_at": payload.get("parent_close_at"),
         "candidate_run_ids": _safe_string_list(payload.get("candidate_run_ids")),
         "candidate_count": len(candidates),
         "baseline_hotlist_count": len(hotlist),
@@ -966,6 +972,9 @@ def load_runtime_state(
     universe_pipeline = _load_universe_pipeline_safe(state_dir_path, venue_state)
     radar_score_audit = load_state(state_dir_path / "radar_score_audit.json")
     radar_score_bench = load_state(state_dir_path / "radar_score_bench.json")
+    global_family_board = load_state(
+        state_dir_path / "global_family_boards" / "current.json"
+    )
     universe_symbols = _load_universe_symbols_safe(_effective_config_dir)
     company_map = _load_company_names(_effective_config_dir)
     return {
@@ -997,6 +1006,9 @@ def load_runtime_state(
         "universe_pipeline": universe_pipeline,
         "radar_score_audit": radar_score_audit if isinstance(radar_score_audit, dict) else {},
         "radar_score_bench": radar_score_bench if isinstance(radar_score_bench, dict) else {},
+        "global_family_board": (
+            global_family_board if isinstance(global_family_board, dict) else {}
+        ),
         "open_venues_list": open_venues_list,
         "sessions": sessions,
         "universe_symbols": universe_symbols,

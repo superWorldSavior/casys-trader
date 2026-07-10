@@ -35,10 +35,12 @@ Collecte **quotidienne** de séries macro via **DBnomics** (thread de fond).
 
 ## Analyste macro/news
 
-Après la rotation, un runner asynchrone single-flight construit un brief par
-venue à partir du calendrier, des derniers points de séries, des headlines
-globales disponibles et des news du pool candidat. Les briefs sont appendus dans
-`state/news_briefs/*.jsonl` puis indexés dans `situation_memory.db` comme dérivé.
+Après la création du scope final à T-90 du pré-open, un runner asynchrone
+single-flight construit un brief par venue à partir du calendrier, des derniers
+points de séries, des headlines globales disponibles et des news du pool candidat,
+y compris l'overnight. Le parent quantitatif de clôture est ignoré par ce runner.
+Les briefs sont appendus dans `state/news_briefs/*.jsonl` puis indexés dans
+`situation_memory.db` comme dérivé.
 
 Ce brief est un constat sourcé. L'analyste ne choisit pas les candidats et ne
 compose pas la hotlist. L'agent univers reste seul propriétaire de la sélection

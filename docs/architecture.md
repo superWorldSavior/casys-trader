@@ -116,7 +116,7 @@ les utilisaient :
 | `trader/runtime/daemon_bootstrap.py` | Adaptateur runtime de démarrage : rotation mensuelle des ledgers, bootstrap du backend état, chargement cash initial et construction scheduler | garde les side effects de boot hors de `daemon.main()` avec factories injectées pour préserver les tests runtime |
 | `trader/runtime/queue_runtime.py` | Bootstrap runtime des pools `decide`/`execute_order` : flags, ledgers, pools, handlers et stack SQLite partagée | garde la queue canonique hors du bloc `main()` tout en laissant `run_cycle()` choisir le chemin queue/synchrone |
 | `trader/runtime/data_source_runtime.py` | Bootstrap et transitions runtime des sources de données : profil composite/direct, IB obligatoire ou dégradé paper, lazy attach et détachement sur échec connexion | garde l'orchestration réseau/adapter hors de `daemon.main()` avec dépendances injectées pour préserver les tests runtime |
-| `trader/runtime/market_rotation_runtime.py` | Adaptateur runtime du tick D10/D15 : charge `radar.yaml`, persiste les scopes de clôture, relit les projections univers exactes, injecte le snapshot `last_regime` typé et appelle `market.rotation.venues.tick()` en fail-safe | l'ancien override synchrone reste une compatibilité ; le chemin prod active une préparation async au pré-open |
+| `trader/runtime/market_rotation_runtime.py` | Adaptateur runtime du tick D10/D15 : charge `radar.yaml`, persiste les parents close et enfants finaux pré-open, relit les projections univers exactes, injecte le snapshot `last_regime` typé et appelle `market.rotation.venues.tick()` en fail-safe | l'ancien override synchrone reste une compatibilité ; le chemin prod prépare à T-90 et active à T-15 |
 | `trader/runtime/news_macro_runtime.py` | Runner async single-flight de briefs macro/news par venue et `candidate_scope_id` | best-effort, kill switch dédié, aucun blocage du cycle |
 | `trader/runtime/universe_intelligence_runtime.py` | Runner async coalescent de sélection hotlist par venue, projection bornée du brief et écriture d'une préparation exacte par scope | l'activation reste synchrone et déterministe au pré-open ; les erreurs sont observables et retombent sur la baseline |
 | `trader/runtime/runtime_shutdown.py` | Adaptateur runtime de shutdown best-effort : arrêt pools queue, disconnect data source, release pid file | garde le `finally` de `daemon.main()` court et préserve la règle "ne jamais bloquer la sortie" |
@@ -549,7 +549,8 @@ Opérateurs valides : `>`, `>=`, `<`, `<=`, `==`, `!=`, `abs>`, `abs>=`, `abs<`,
 | `macro_calendar.json` + `macro_series/` | `macro_calendar`/`macro_series` | attribution + analyste-news | Dates fusionnées avec fallback versionné + séries macro quotidiennes (DBnomics), potentiellement absentes/stales |
 | `news_briefs/YYYY-MM-DD.jsonl` | `runtime/news_macro_runtime` | agent univers + index de situation | Briefs append-only par venue, sourcés et liés au `candidate_scope_id` exact |
 | `news_challenger_runs/YYYY-MM-DD.jsonl` | `runtime/news_challenger_runtime` | audit/replay | Couverture partielle, rejets agrégés, challengers et `candidate_run_id` |
-| `candidate_scopes/YYYY-MM-DD.jsonl` | rotation à la clôture | analyste + agent univers | Snapshot immuable du pool, baseline, sticky de contexte et identifiants de run |
+| `candidate_scopes/YYYY-MM-DD.jsonl` | rotation close + pré-open | analyste + agent univers | Parent quantitatif close puis enfant final pré-open immuables, avec filiation, pool, baseline, sticky et identifiants de run |
+| `global_family_boards/YYYY-MM-DD.jsonl` | `runtime/universe_intelligence_runtime` | trois agents univers + cockpit | Comparaison dérivée des familles TW/EU/US, appendue sur changement matériel ; contexte uniquement, aucune autorité d'allocation |
 | `universe_runs/YYYY-MM-DD.jsonl` | `runtime/universe_intelligence_runtime` | audit + activation | Attente/erreur/succès, brief, couverture, sélection et `agent_run_id` |
 | `universe_prepared/<scope-hash>.json` | `UniverseRunStore` | activation pré-open | Projection atomique reconstructible pour un `candidate_scope_id` exact |
 | `situation_memory.db` | ingestion des briefs | aucun consommateur runtime actuellement | Index FTS5 dérivé ; retrieval de situation non activé |
@@ -714,17 +715,19 @@ Spec : `docs/superpowers/specs/2026-07-02-macro-analyste-news-spec.md` ;
 sources : `docs/superpowers/specs/2026-07-02-macro-data-sources.md`.
 Items de news persistés + calendrier FOMC/CPI (`macro_next` par décision) +
 séries macro quotidiennes via DBnomics (zéro clé). À chaque clôture de venue, la
-rotation persiste le pool `top 40 + challengers` sous un `candidate_scope_id`.
-L'analyste async produit le brief exact de ce scope ; l'agent univers async en
-consomme une projection bornée et prépare sa propre hotlist. Le pré-open active
-seulement la préparation du même scope, sinon la baseline avec une raison de
-fallback explicite. Les sticky sont ajoutés ensuite hors quota.
+rotation persiste un parent quantitatif top 40. À T-90 du pré-open, elle fusionne
+les challengers, notamment overnight, et persiste un enfant final lié au parent.
+L'analyste async produit le brief exact de cet enfant ; l'agent univers async en
+consomme une projection bornée ainsi qu'un `GlobalFamilyBoard` commun comparatif,
+sans quotas ni capital, et prépare sa propre hotlist. À T-15, le runtime
+active seulement la préparation du même scope, sinon la baseline avec une raison
+de fallback explicite. Les sticky sont ajoutés ensuite hors quota.
 
 Les deux runners sont activés par défaut et coupés séparément avec
 `CASYS_NEWS_MACRO_ANALYST_ENABLED=0` et
 `CASYS_UNIVERSE_INTELLIGENCE_ENABLED=0`. Ils sont fail-open et ne bloquent jamais
 le daemon. Un état live ancien ne crée pas ces artefacts rétroactivement : il faut
-un daemon actif et la prochaine clôture de chaque venue.
+un daemon actif, la prochaine clôture puis le prochain pré-open de chaque venue.
 
 La couverture reste déclarée partielle : news symboles limitées au corpus local,
 aucune source globale indépendante garantie, calendrier local/fallback et séries

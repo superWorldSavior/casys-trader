@@ -28,6 +28,11 @@ from trader.market.radar_config import load_radar_params
 # hors de ce quota et le pool composé n'a pas de cap global.
 RADAR_CANDIDATES_TOP = 40
 
+# Le scope final est fabriqué sur toute la fenêtre de préparation (90 min par
+# défaut), mais la hotlist agent n'est activée qu'à l'approche du gong. Cela
+# laisse aux deux runners async le temps de produire brief puis sélection.
+UNIVERSE_ACTIVATION_WINDOW_MINUTES = 15
+
 # Rétention des fichiers radar_cache (en jours). Fichiers YYYY-MM-DD.json plus vieux = purgés.
 RADAR_CACHE_RETENTION_DAYS = 30
 
@@ -260,8 +265,9 @@ def tick(
             Si None, pas d'override (rotation 100 % déterministe).
         prepared_universe_fn: lecteur pur d'une sélection agent préparée hors du
             chemin daemon. Quand présent, il remplace l'appel LLM synchrone.
-        candidate_scope_observer: callback best-effort appelé après chaque close
-            avec le snapshot candidat immuable à persister hors ``venue_state``.
+        candidate_scope_observer: callback best-effort appelé pour chaque parent
+            de clôture et chaque enfant final pré-open à persister hors
+            ``venue_state``.
         radar_score_audit_observer: callback best-effort qui persiste le comparatif
             score courant vs shadow. Sa sortie ne participe jamais à la sélection.
         market_context: dict optionnel transmis au payload override (v1 : regime_families).
@@ -275,7 +281,12 @@ def tick(
     sticky = sticky_fn() if sticky_fn is not None else set()
 
     dues = due_venues(now_iso, state, sessions)
-    if dues:
+    preopen_v = preopen_venues(now_iso, sessions, window_minutes=params.preopen_window_minutes)
+    # La persistance canonique est la frontière qui permet aux runners async de
+    # consommer le scope. Les appels unitaires/legacy sans observer conservent
+    # donc leur comportement historique et ne fabriquent pas un enfant orphelin.
+    preopen_scope_venues = preopen_v if candidate_scope_observer is not None else []
+    if dues or preopen_scope_venues:
         if rank_fn is not None:
             scan_fn = rank_fn
         else:
@@ -323,28 +334,40 @@ def tick(
                 dwell_days=params.dwell_days,
                 emergency_floor=params.emergency_score,
                 sticky=sticky,
+                # La clôture fige uniquement le parent quantitatif. Les news
+                # arrivées après le gong seront fusionnées dans l'enfant pré-open.
+                news_challenger_fn=None,
+                as_of=now_iso,
+            )
+            state = _observe_candidate_scope(
+                state,
+                venue=venue,
+                as_of=now_iso,
+                observer=candidate_scope_observer,
+            )
+
+        for venue in preopen_scope_venues:
+            venue_ranked = [
+                item
+                for item in rank_obj["ranked"]
+                if venue_of(item["symbol"]) == venue
+            ]
+            state, scope_changed = refresh_preopen_candidate_scope(
+                state,
+                venue,
+                venue_ranked,
+                cap_per_venue=params.cap_m,
+                sticky=sticky,
                 news_challenger_fn=news_challenger_fn,
                 as_of=now_iso,
             )
-            if candidate_scope_observer is not None:
-                observation_status = "persisted"
-                observation_ref = None
-                observation_error = None
-                try:
-                    venue_entry = state.get("venues", {}).get(venue, {})
-                    observation_ref = candidate_scope_observer(
-                        {"venue": venue, "as_of": now_iso, **dict(venue_entry)}
-                    )
-                except Exception as exc:  # noqa: BLE001 - rotation remains fail-safe
-                    observation_status = "error"
-                    observation_error = exc.__class__.__name__
-                venues = dict(state.get("venues", {}))
-                venue_entry = dict(venues.get(venue, {}))
-                venue_entry["candidate_scope_observation_status"] = observation_status
-                venue_entry["candidate_scope_observation_ref"] = observation_ref
-                venue_entry["candidate_scope_observation_error"] = observation_error
-                venues[venue] = venue_entry
-                state = {**state, "venues": venues}
+            if scope_changed:
+                state = _observe_candidate_scope(
+                    state,
+                    venue=venue,
+                    as_of=now_iso,
+                    observer=candidate_scope_observer,
+                )
         save_venue_state(state_dir, state)
 
     open_v = analyzable_venues(
@@ -354,10 +377,21 @@ def tick(
     # préparée hors boucle ; ``override_fn`` reste une compatibilité synchrone.
     if (prepared_universe_fn is not None or override_fn is not None) and params.override_enabled:
         now_date = now_iso[:10]  # YYYY-MM-DD
-        preopen_v = preopen_venues(now_iso, sessions, window_minutes=params.preopen_window_minutes)
         ledger_path = Path(state_dir) / "rotation_ledger.jsonl"
+        activation_v = preopen_venues(
+            now_iso,
+            sessions,
+            window_minutes=(
+                min(
+                    params.preopen_window_minutes,
+                    UNIVERSE_ACTIVATION_WINDOW_MINUTES,
+                )
+                if candidate_scope_observer is not None
+                else params.preopen_window_minutes
+            ),
+        )
 
-        for venue in preopen_v:
+        for venue in activation_v:
             venue_meta = state.get("venues", {}).get(venue, {})
             candidate_scope_id = str(venue_meta.get("candidate_scope_id") or "").strip()
             if prepared_universe_fn is not None:
@@ -396,17 +430,22 @@ def tick(
 
             if prepared_universe_fn is not None:
                 prepared = None
-                try:
-                    prepared = prepared_universe_fn(
-                        venue=venue,
-                        candidate_scope_id=candidate_scope_id,
-                        candidates=candidates,
-                        default_hot=default_hotlist,
-                        sticky=sticky,
-                        as_of=now_iso,
-                    )
-                except Exception:  # noqa: BLE001 - activation must remain fail-safe
-                    fallback_reason = "prepared_reader_error"
+                if venue_meta.get("scope_phase") == "close":
+                    # Le parent reste un fallback quantitatif valide, mais ne
+                    # doit jamais être pris pour une préparation intelligente.
+                    fallback_reason = "preopen_scope_missing"
+                else:
+                    try:
+                        prepared = prepared_universe_fn(
+                            venue=venue,
+                            candidate_scope_id=candidate_scope_id,
+                            candidates=candidates,
+                            default_hot=default_hotlist,
+                            sticky=sticky,
+                            as_of=now_iso,
+                        )
+                    except Exception:  # noqa: BLE001 - activation must remain fail-safe
+                        fallback_reason = "prepared_reader_error"
                 if isinstance(prepared, dict):
                     agent_run_id = prepared.get("agent_run_id")
                     brief_ref = prepared.get("brief_ref")
@@ -630,20 +669,7 @@ def update_venue_ranking(
     )
     hotlist = [symbol for symbol in default_hot if symbol not in evicted]
     scope_id = candidate_scope_id(venue, candidates, hotlist, as_of)
-    candidate_run_id_values = {
-        str(run_id).strip()
-        for run_id in observed_candidate_run_ids
-        if str(run_id).strip()
-    }
-    candidate_run_id_values.update(
-        {
-            str(metadata.get("candidate_run_id") or "").strip()
-            for candidate in candidates
-            for metadata in [candidate.get("metadata")]
-            if isinstance(metadata, dict) and str(metadata.get("candidate_run_id") or "").strip()
-        }
-    )
-    candidate_run_ids = sorted(candidate_run_id_values)
+    candidate_run_ids = _candidate_run_ids(candidates, observed_candidate_run_ids)
 
     old_hot_set = set(old_hotlist)
     dwell = {
@@ -657,7 +683,9 @@ def update_venue_ranking(
     next_venues = dict(venues) if isinstance(venues, dict) else {}
     next_venues[venue] = {
         "schema_version": 1,
+        "scope_phase": "close",
         "candidate_scope_id": scope_id,
+        "candidate_scope_as_of": as_of,
         "candidate_run_ids": candidate_run_ids,
         "candidates": candidates,
         # default_hotlist = déterministe pur (base hystérésis + ledger alpha)
@@ -672,6 +700,161 @@ def update_venue_ranking(
     }
     next_state["venues"] = next_venues
     return next_state
+
+
+def refresh_preopen_candidate_scope(
+    state,
+    venue,
+    venue_ranked,
+    *,
+    cap_per_venue,
+    sticky=frozenset(),
+    news_challenger_fn=None,
+    as_of,
+) -> tuple[dict, bool]:
+    """Create a stable final pre-open child from the latest close parent.
+
+    Hysteresis and dwell remain close-time concerns.  Pre-open only refreshes
+    the top-40 radar pool, merges fresh-news challengers and derives a valid
+    deterministic fallback from the close baseline.
+    """
+
+    venues = state.get("venues", {})
+    previous = venues.get(venue, {}) if isinstance(venues, dict) else {}
+    if not isinstance(previous, dict) or not previous:
+        return state, False
+
+    previous_phase = str(previous.get("scope_phase") or "").strip().lower()
+    if previous_phase == "preopen":
+        parent_scope_id = str(previous.get("parent_candidate_scope_id") or "").strip()
+        parent_close_at = str(previous.get("parent_close_at") or "").strip()
+        parent_default_hotlist = list(previous.get("parent_default_hotlist") or [])
+    else:
+        parent_scope_id = str(previous.get("candidate_scope_id") or "").strip()
+        parent_close_at = str(previous.get("last_close_at") or "").strip()
+        parent_default_hotlist = list(
+            previous.get("default_hotlist", previous.get("hotlist", [])) or []
+        )
+    if not parent_scope_id:
+        return state, False
+
+    radar_symbols = {
+        str(item.get("symbol") or "").strip()
+        for item in venue_ranked[:RADAR_CANDIDATES_TOP]
+        if isinstance(item, dict) and item.get("symbol")
+    }
+    news_challengers = []
+    observed_run_ids: list[str] = []
+    if news_challenger_fn is not None:
+        try:
+            news_challengers = news_challenger_fn(
+                venue=venue,
+                venue_ranked=venue_ranked,
+                radar_symbols=radar_symbols,
+            ) or []
+            run_ids_by_venue = getattr(news_challenger_fn, "candidate_run_ids", {})
+            if isinstance(run_ids_by_venue, dict):
+                run_id = str(run_ids_by_venue.get(venue) or "").strip()
+                if run_id:
+                    observed_run_ids.append(run_id)
+        except Exception:  # noqa: BLE001 - the deterministic fallback remains valid
+            news_challengers = []
+
+    retained = _retained_news_challengers(previous, venue_ranked, as_of=as_of)
+    candidates = _compose_candidate_pool(
+        venue_ranked,
+        _merge_news_challengers(news_challengers, retained),
+    )
+    if not candidates:
+        return state, False
+    pool = {str(item.get("symbol") or "").strip() for item in candidates}
+    baseline = [
+        symbol
+        for symbol in parent_default_hotlist
+        if symbol in pool and symbol not in sticky
+    ][:cap_per_venue]
+    for item in venue_ranked:
+        symbol = str(item.get("symbol") or "").strip()
+        if len(baseline) >= cap_per_venue:
+            break
+        if symbol in pool and symbol not in sticky and symbol not in baseline:
+            baseline.append(symbol)
+
+    material_signature = candidate_scope_id(
+        venue,
+        candidates,
+        baseline,
+        "preopen-parent:"
+        f"{parent_scope_id}:sticky:{','.join(sorted(str(symbol) for symbol in sticky))}",
+    )
+    if (
+        previous_phase == "preopen"
+        and previous.get("scope_input_signature") == material_signature
+        and previous.get("parent_candidate_scope_id") == parent_scope_id
+    ):
+        return state, False
+
+    scope_id = candidate_scope_id(venue, candidates, baseline, as_of)
+    ranked_scores = {
+        str(item.get("symbol") or "").strip(): item.get("attractiveness")
+        for item in venue_ranked
+        if isinstance(item, dict) and item.get("symbol")
+    }
+    candidate_run_ids = _candidate_run_ids(candidates, observed_run_ids)
+    next_entry = {
+        **previous,
+        "schema_version": 1,
+        "scope_phase": "preopen",
+        "candidate_scope_id": scope_id,
+        "candidate_scope_as_of": as_of,
+        "scope_input_signature": material_signature,
+        "parent_candidate_scope_id": parent_scope_id,
+        "parent_close_at": parent_close_at,
+        "parent_default_hotlist": parent_default_hotlist,
+        "candidate_run_ids": candidate_run_ids,
+        "candidates": candidates,
+        "default_hotlist": baseline,
+        "hotlist": baseline,
+        "scores": {
+            symbol: ranked_scores[symbol]
+            for symbol in baseline
+            if symbol in ranked_scores
+        },
+        # Dwell belongs to the close parent and is intentionally not advanced.
+        "dwell": dict(previous.get("dwell") or {}),
+        "sticky_context_at_close": sorted(sticky),
+        "sticky_context_at_scope": sorted(sticky),
+        "last_preopen_scope_at": as_of,
+        "stale": False,
+    }
+    next_state = dict(state)
+    next_venues = dict(venues)
+    next_venues[venue] = next_entry
+    next_state["venues"] = next_venues
+    return next_state, True
+
+
+def _observe_candidate_scope(state, *, venue, as_of, observer) -> dict:
+    """Persist one current scope and expose observer failures in venue state."""
+
+    if observer is None:
+        return state
+    observation_status = "persisted"
+    observation_ref = None
+    observation_error = None
+    try:
+        venue_entry = state.get("venues", {}).get(venue, {})
+        observation_ref = observer({"venue": venue, "as_of": as_of, **dict(venue_entry)})
+    except Exception as exc:  # noqa: BLE001 - rotation remains fail-safe
+        observation_status = "error"
+        observation_error = exc.__class__.__name__
+    venues = dict(state.get("venues", {}))
+    venue_entry = dict(venues.get(venue, {}))
+    venue_entry["candidate_scope_observation_status"] = observation_status
+    venue_entry["candidate_scope_observation_ref"] = observation_ref
+    venue_entry["candidate_scope_observation_error"] = observation_error
+    venues[venue] = venue_entry
+    return {**state, "venues": venues}
 
 
 def _compose_candidate_pool(venue_ranked, news_challengers) -> list[dict]:
@@ -734,6 +917,24 @@ def _compose_candidate_pool(venue_ranked, news_challengers) -> list[dict]:
     return candidates
 
 
+def _candidate_run_ids(candidates, observed_run_ids) -> list[str]:
+    values = {
+        str(run_id).strip()
+        for run_id in observed_run_ids
+        if str(run_id).strip()
+    }
+    values.update(
+        {
+            str(metadata.get("candidate_run_id") or "").strip()
+            for candidate in candidates
+            for metadata in [candidate.get("metadata")]
+            if isinstance(metadata, dict)
+            and str(metadata.get("candidate_run_id") or "").strip()
+        }
+    )
+    return sorted(values)
+
+
 def _merge_news_challengers(current, retained) -> list[dict]:
     """Keep current selection order and append only non-refreshed retained symbols."""
 
@@ -761,11 +962,6 @@ def _retained_news_challengers(previous, venue_ranked, *, as_of) -> list[dict]:
         for item in venue_ranked
         if isinstance(item, dict) and item.get("symbol")
     }
-    radar_symbols = {
-        str(item.get("symbol") or "").strip()
-        for item in venue_ranked[:RADAR_CANDIDATES_TOP]
-        if isinstance(item, dict) and item.get("symbol")
-    }
     retained: list[dict] = []
     for candidate in previous.get("candidates", []) if isinstance(previous, dict) else []:
         if not isinstance(candidate, dict):
@@ -776,7 +972,7 @@ def _retained_news_challengers(previous, venue_ranked, *, as_of) -> list[dict]:
         if "fresh_news" not in sources:
             continue
         symbol = str(candidate.get("symbol") or "").strip()
-        if not symbol or symbol not in eligible_symbols or symbol in radar_symbols:
+        if not symbol or symbol not in eligible_symbols:
             continue
         fresh_news = candidate.get("fresh_news")
         if not isinstance(fresh_news, dict):

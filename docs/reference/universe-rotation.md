@@ -24,15 +24,20 @@ news_items + ranking éligible complet
   -> scout fresh-news
   -> tous les challengers qualifiés hors top 40
 
-clôture venue -> top 40 radar ∪ challengers
-  -> pool candidat immuable (`candidate_scope_id`)
-  -> analyste macro/news async -> brief du même scope
+clôture venue -> top 40 radar
+  -> parent quantitatif immuable (`scope_phase=close`)
+
+pré-open T-90 -> ranking radar rafraîchi + scout fresh-news overnight
+  -> top 40 radar ∪ tous les challengers qualifiés
+  -> enfant final immuable (`scope_phase=preopen`, parent close tracé)
+  -> analyste macro/news async -> brief du même scope final
 
 pool candidat + brief + régime disponible + sticky de contexte
+  + GlobalFamilyBoard comparatif TW/EU/US
   -> agent univers async
   -> projection préparée du même scope
 
-pré-open venue -> activation exacte ou baseline + fallback_reason
+pré-open T-15 -> activation exacte ou baseline + fallback_reason
   -> hotlist choisie (<= 25 non-sticky)
 
 hotlist choisie + sticky
@@ -114,8 +119,9 @@ close-to-close bruts, sans coûts ni sizing.
 
 ## 2. Scout fresh-news — challengers hors top 40
 
-Le scout lit les news locales récentes, attribue chaque titre directement à un
-émetteur et peut faire entrer un symbole situé sous le top 40 dans le pool.
+Le scout lit les news locales récentes au pré-open, donc aussi celles publiées
+après la clôture, attribue chaque titre directement à un émetteur et peut faire
+entrer un symbole situé sous le top 40 dans le pool final de session.
 
 Un challenger doit toujours rester dans le ranking radar éligible complet : la
 news contourne l'heuristique de rang, jamais l'éligibilité technique. Il garde sa
@@ -148,8 +154,9 @@ par inertie.
 
 ## 4. Agent univers — préparation et composition de la hotlist
 
-Après la clôture de chaque venue, le runner d'univers reçoit le pool candidat, la
-baseline, les sticky comme contexte non retirable, le contexte de marché
+Après la création de l'enfant final au pré-open, le runner d'univers reçoit le
+pool candidat, la baseline du parent close, les sticky comme contexte non
+retirable, le contexte de marché
 **lorsqu'il est disponible**, et la projection bornée du brief macro/news. Il
 compose la hotlist effective hors de la boucle synchrone du daemon.
 
@@ -187,6 +194,20 @@ les nouvelles familles candidates ; après 96 h il est marqué stale et ses vale
 ne sont plus injectées. L'attractivité moyenne, le biais, le statut news et le
 statut régime de chaque famille restent visibles séparément.
 
+### 4.1 GlobalFamilyBoard — comparaison, jamais allocation
+
+Avant les trois passes agent, le runtime construit un board commun depuis le
+dernier enfant pré-open disponible de `TW`, `EU` et `US` et son brief exact. Pour
+chaque famille et chaque venue, il expose le rang radar **dans la venue**, les
+comptes candidats/baseline/challengers, les biais, la fraîcheur du scope et au
+plus deux observations analyste bornées avec directions, signaux et sources.
+
+Les scores bruts ne deviennent pas un classement global : les familles restent
+comparées dans leur contexte de venue. Le contrat du board porte explicitement
+`role=comparative_context_not_capital_allocation`. Il ne fixe ni quota de places,
+ni capital, ni sizing, et ne fusionne pas les trois agents en un allocateur.
+Chaque agent univers demeure seul décideur de sa propre hotlist locale.
+
 Les deux passes LLM sont activées par défaut et peuvent être coupées
 indépendamment :
 
@@ -195,8 +216,8 @@ indépendamment :
 
 Ces switches sont fail-open pour le trading : la rotation conserve la baseline.
 Sur un état live antérieur à ce pipeline, aucun scope/brief/run n'apparaît
-rétroactivement ; il faut un daemon actif et la prochaine clôture de la venue pour
-matérialiser le premier `candidate_scope_id`, puis les préparations async.
+rétroactivement ; il faut un daemon actif, un parent de clôture puis la fenêtre
+pré-open de la venue pour matérialiser l'enfant final et les préparations async.
 
 ## 5. Sticky — composition après la décision agent
 
@@ -214,10 +235,13 @@ fait.
 
 ## 6. Rotation par venue et univers actif
 
-Les états TW, EU et US sont recalculés à la clôture de leur propre session. Cette
-clôture persiste un scope immuable ; les runners préparent ensuite hors boucle. Au
-pré-open de la même venue, seule la projection portant le même
-`candidate_scope_id` peut être activée, une fois de manière idempotente.
+Les états TW, EU et US figent à la clôture de leur propre session un parent
+quantitatif. Sur la fenêtre pré-open de 90 minutes, le runtime crée un enfant
+final `top 40 + challengers overnight`, sans réappliquer hystérésis ni incrémenter
+`dwell`. Si les inputs matériels n'ont pas changé, l'identifiant est réutilisé et
+aucun nouveau scope n'est appendu. Les runners préparent cet enfant hors boucle.
+Dans les 15 dernières minutes, seule la projection portant son
+`candidate_scope_id` exact peut être activée, de manière idempotente.
 `analyzable_venues()` expose les venues ouvertes ou dans la fenêtre pré-open.
 Pendant le chevauchement EU/US, l'univers actif prend l'union des hotlists
 concernées ; les sticky d'une venue fermée restent présents.
@@ -225,6 +249,8 @@ concernées ; les sticky d'une venue fermée restent présents.
 `state/venue_state.json` garde par venue :
 
 - `candidates` : snapshot courant du pool top 40 + challengers ;
+- `scope_phase`, `parent_candidate_scope_id`, `parent_close_at` : phase et
+  filiation close -> pré-open ;
 - `default_hotlist` : baseline déterministe ;
 - `hotlist` : sélection effective après agent ou fallback ;
 - `scores`, `dwell`, `last_close_at`, `last_override_at` ;
@@ -234,18 +260,24 @@ concernées ; les sticky d'une venue fermée restent présents.
 
 ## 7. Observabilité et mémoire
 
-Le pipeline conserve cinq surfaces complémentaires :
+Le pipeline conserve six surfaces complémentaires :
 
 - `state/news_challenger_runs/*.jsonl` : chaque run scout, sa couverture partielle,
   ses rejets agrégés, ses challengers et `candidate_run_id` ;
-- `state/candidate_scopes/*.jsonl` : snapshot immuable de clôture et
-  `candidate_scope_id`, plus cache courant par venue ;
+- `state/candidate_scopes/*.jsonl` : parents de clôture et enfants finaux
+  pré-open immuables, avec phase, filiation et cache courant par venue ;
 - `state/universe_runs/*.jsonl` : attentes, erreurs ou réussite de l'agent,
   `agent_run_id`, brief, couverture et sélection ;
 - `state/universe_prepared/<sha256(candidate_scope_id)>.json` : projection exacte
   relue au pré-open ;
 - `state/rotation_ledger.jsonl` : activation, sélection finale, sticky,
   `fallback_used` et `fallback_reason`.
+
+Le contexte cross-venue ajoute
+`state/global_family_boards/YYYY-MM-DD.jsonl` et sa projection `current.json`.
+Un nouveau board n'est appendu que si scopes, briefs ou contenu famille ont
+matériellement changé ; chaque run univers conserve son `board_id`, sa couverture
+et la référence de persistance.
 
 L'audit radar ajoute deux surfaces sans effet décisionnel :
 `state/radar_score_audit.json` pour le shadow live et
@@ -259,6 +291,9 @@ univers, au même titre que le brief courant. L'agent reste le décideur.
 ## Fail-safe
 
 - panne scout : top 40 radar seulement ;
+- enfant pré-open absent : parent quantitatif utilisé avec
+  `fallback_reason=preopen_scope_missing`, sans faire passer le parent pour une
+  préparation agent ;
 - panne analyste : brief précédent actif ou contexte explicitement absent ;
 - brief absent ou d'un autre scope : `brief_missing` / `brief_scope_mismatch`,
   aucune sélection préparée recyclée ;
@@ -270,7 +305,7 @@ univers, au même titre que le brief courant. L'agent reste le décideur.
 - panne agent univers : `default_hotlist` déterministe ;
 - aucune de ces pannes ne retire les sticky.
 
-Le cockpit expose une ligne par venue pour `scope → scout → brief → agent →
+Le cockpit expose le `GFB` commun puis une ligne par venue pour `scope → scout → brief → agent →
 activation`. Il affiche séparément une réussite agent et un fallback
 d'activation, ainsi que provider/modèle et fallback entre backends lorsqu'il y en
 a un. Les cinq symboles montrés dans le panneau hot-set sont un aperçu, jamais la

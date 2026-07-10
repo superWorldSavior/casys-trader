@@ -850,6 +850,42 @@ def test_batch_decide_injecte_age_data_et_session_par_symbole(monkeypatch) -> No
     assert captured["QQQ"]["data_age_m"] is None  # âge inconnu = inconnu, pas 0
 
 
+def test_batch_decide_injecte_structure_exacte_du_symbole(monkeypatch) -> None:
+    captured: dict = {}
+    bars = [
+        Bar(
+            ts=f"2026-06-15T{hour:02d}:00:00+00:00",
+            open=100.0 + hour,
+            high=102.0 + hour,
+            low=99.0 + hour,
+            close=101.0 + hour,
+            volume=100.0 * hour,
+        )
+        for hour in range(1, 6)
+    ]
+
+    def fake_batch(*, per_symbol, **kwargs):
+        captured.update(per_symbol)
+        return {sym: Decision.hold(sym, "x") for sym in per_symbol}
+
+    monkeypatch.setattr(daemon.codex_client, "decide_batch", fake_batch)
+    _batch_decide(
+        decidable=["SPY"],
+        max_model_calls=1,
+        **{
+            **_COMMON,
+            "tradable_bars_by_symbol": {"SPY": bars},
+            "bar_timeframe_by_symbol": {"SPY": "15m"},
+        },
+    )
+
+    structure = captured["SPY"]["structure"]
+    assert structure["timeframe"] == "15m"
+    assert structure["price"] == 106.0
+    assert structure["swing_low_24"] == 100.0
+    assert structure["swing_high_24"] == 107.0
+
+
 def test_batch_decide_injecte_last_llm_review_du_plan_ouvert(monkeypatch) -> None:
     # Continuité de thèse : le dernier verdict LLM persisté (last_llm_review d'un
     # TradePlan ouvert) est réinjecté dans le contexte par symbole au réveil — le
@@ -1472,12 +1508,13 @@ def test_run_cycle_passe_les_parametres_decisionnels_a_batch_decide(monkeypatch,
     _write_runtime_config(tmp_path)
     state_dir = tmp_path / "state"
     now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
-    captured: dict[str, int] = {}
+    captured: dict[str, object] = {}
 
     def fake_batch_decide(**kwargs):
         captured["decision_timeout_s"] = kwargs["decision_timeout_s"]
         captured["decision_batch_size"] = kwargs["decision_batch_size"]
         captured["decision_batch_parallelism"] = kwargs["decision_batch_parallelism"]
+        captured["bar_timeframe_by_symbol"] = kwargs["bar_timeframe_by_symbol"]
         return {sym: Decision.hold(sym, "attente") for sym in kwargs["decidable"]}, 1
 
     monkeypatch.setattr(daemon, "ROOT", tmp_path)
@@ -1501,6 +1538,7 @@ def test_run_cycle_passe_les_parametres_decisionnels_a_batch_decide(monkeypatch,
     assert captured["decision_timeout_s"] == 444
     assert captured["decision_batch_size"] == 7
     assert captured["decision_batch_parallelism"] == 2
+    assert captured["bar_timeframe_by_symbol"] == {"SPY": "15m"}
 
 
 def test_budget_un_fait_un_seul_batch_et_request_context_devient_hold(monkeypatch) -> None:

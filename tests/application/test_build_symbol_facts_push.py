@@ -2,6 +2,7 @@
 from datetime import datetime, timezone
 
 from trader.application.decide.planner_batch import build_symbol_facts
+from trader.market.market_data import Bar
 
 _NOW = datetime(2026, 7, 5, tzinfo=timezone.utc)
 
@@ -35,3 +36,35 @@ def test_retrocompat_sans_le_param():
     facts = build_symbol_facts("AAPL", **_base())
     assert "recent_decisions" not in facts
     assert facts["data_age_m"] == 3
+
+
+def test_pousse_structure_exacte_seulement_pour_le_symbole_decide():
+    bars = [
+        Bar(
+            ts=f"2026-07-05T0{index}:00:00+00:00",
+            open=100.0 + index,
+            high=102.0 + index,
+            low=99.0 + index,
+            close=101.0 + index,
+            volume=100.0 * index,
+        )
+        for index in range(1, 6)
+    ]
+
+    facts = build_symbol_facts(
+        "AAPL",
+        **_base(
+            bars_by_symbol={"AAPL": bars, "MSFT": bars},
+            bar_timeframe_by_symbol={"AAPL": "15m", "MSFT": "1d"},
+        ),
+    )
+
+    structure = facts["structure"]
+    assert structure["timeframe"] == "15m"
+    assert structure["bar_as_of"] == "2026-07-05T05:00:00+00:00"
+    assert structure["bars_available"] == 5
+    assert structure["price"] == 106.0
+    assert structure["swing_low_24"] == 100.0
+    assert structure["swing_high_24"] == 107.0
+    assert structure["atr_pct_14"] is not None
+    assert structure["relative_volume_20"] == 5.0 / 2.5

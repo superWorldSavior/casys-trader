@@ -169,14 +169,20 @@ déterministes + CLI JSON. Le prompt runtime reste compact : le daemon envoie un
 `sz`) et pas les barres brutes. Si le modèle veut creuser, il appelle
 `get_indicator_context` (ou renvoie le legacy `REQUEST_CONTEXT`) ; le daemon
 calcule localement tous les indicateurs gouvernés demandés, puis reprend la
-décision. Le catalogue fini (14 indicateurs) est la borne naturelle ; seuls les
+décision. Le catalogue fini (16 indicateurs) est la borne naturelle ; seuls les
 tool calls/fetchs restent bornés. Un cap opérateur explicite plus bas reste
 possible et sa troncature est signalée dans le résultat.
 
 Le catalogue inclut aussi des signaux de chandeliers japonais et d'analyse
 chartiste sous forme numérique compacte : `candlestick_signal`,
 `candle_body_ratio`, `candle_wick_skew`, `chart_breakout`, `trend_slope`,
-`range_position`.
+`range_position`, plus `atr_pct` pour la distance de risque normalisée et
+`relative_volume` pour la confirmation de volume sur la fenêtre demandée.
+
+Pour le symbole effectivement décidé, le payload compact `structure` ajoute les
+ancres exactes utiles au calcul (`swing_low/high` 24/48), le timestamp/nombre de
+barres, `atr_pct_14` et `relative_volume_20`. Ces faits ne gonflent pas toutes les
+lignes du cockpit global.
 
 L'axe temporel est explicite : les requêtes suivent le cube
 `symbol × indicator × timeframe × lookback × window × as_of`. Timeframes

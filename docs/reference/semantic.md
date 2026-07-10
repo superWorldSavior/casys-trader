@@ -29,5 +29,11 @@ catégoriels en valeurs. Utilisée par les outils domaine (`find_indicators`,
 Le catalogue est **gouverné** : source unique de vérité pour les noms/familles
 d'indicateurs (évite les alias ambigus — principe AX « no verb overlap »).
 
+Le catalogue comporte notamment `atr_pct` (average true range divisé par le
+dernier close) et `relative_volume` (volume de la dernière barre divisé par la
+moyenne positive des barres précédentes de la fenêtre). Ce dernier est un ratio
+rolling générique, pas encore une normalisation par heure de séance ; cette
+limite reste explicite pour ne pas surinterpréter les pics d'ouverture intraday.
+
 ## Voir aussi
 - [Domain tools](agent-tools.md) · [Contexte agent](agent-context.md) · [Contrat LLM](llm-contract.md) (vocabulaire veilles).

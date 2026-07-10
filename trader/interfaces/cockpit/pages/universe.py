@@ -387,9 +387,31 @@ def build_universe_pipeline_panel(state: dict) -> RenderableType:
     pipeline = f.safe_dict(state.get("universe_pipeline"))
     score_audit = f.safe_dict(state.get("radar_score_audit"))
     score_bench = f.safe_dict(state.get("radar_score_bench"))
+    family_board = f.safe_dict(state.get("global_family_board"))
     grid = Table.grid(padding=(0, 1))
     grid.add_column(no_wrap=True, width=4)
     grid.add_column()
+
+    if family_board:
+        board_status = str(family_board.get("status") or "unavailable")
+        coverage = f.safe_dict(family_board.get("coverage"))
+        scope_count = len(coverage.get("scope_venues") or [])
+        brief_count = len(coverage.get("active_brief_venues") or [])
+        board_line = Text()
+        board_line.append(board_status, style=_pipeline_status_style(board_status))
+        board_id = str(family_board.get("board_id") or "").strip()
+        board_id_short = str(family_board.get("board_id_short") or "").strip()
+        if not board_id_short and board_id:
+            board_id_short = board_id[-8:]
+        if board_id_short:
+            board_line.append(f" #{board_id_short}", style=CASYS_DIM)
+        board_line.append(
+            f" · scopes {scope_count}/3 · briefs {brief_count}/3",
+            style=CASYS_MUTED,
+        )
+        board_line.append(" · context only", style=CASYS_SUCCESS)
+        grid.add_row(Text("GFB", style=f"bold {CASYS_FG}"), board_line)
+        grid.add_row(Text(""), Text("·", style=CASYS_FAINT))
 
     component_balance = f.safe_dict(score_audit.get("global_component_balance"))
     if score_audit:
@@ -444,6 +466,13 @@ def build_universe_pipeline_panel(state: dict) -> RenderableType:
         scope_line.append(scope_status, style=_pipeline_status_style(scope_status))
         if scope_status == "ready":
             scope_line.append(_pipeline_id(scope), style=CASYS_DIM)
+            phase = str(scope.get("phase") or "legacy")
+            scope_line.append(f" · {phase}", style=CASYS_MUTED)
+            if phase == "preopen":
+                scope_line.append(
+                    _pipeline_id(scope, "parent_scope_id_short"),
+                    style=CASYS_DIM,
+                )
         if _pipeline_count(scope, "candidate_count"):
             scope_line.append(
                 f" · {_pipeline_count(scope, 'candidate_count')} cand"

@@ -91,6 +91,9 @@ def tick_news_macro_analysis(
             if scope_error:
                 log.warning("news macro analyst scope unavailable for %s: %s", venue, scope_error)
             continue
+        if str(venue_scope.get("scope_phase") or "").strip().lower() == "close":
+            skipped.append({"venue": venue, "reason": "awaiting_preopen_scope"})
+            continue
         venue_news = tuple(
             _filter_news_for_venue(
                 news_items,
@@ -119,6 +122,8 @@ def tick_news_macro_analysis(
             "candidate_symbols": list(candidate_symbols),
             "candidate_scope_id": scope_id,
             "candidate_scope_as_of": venue_scope.get("as_of"),
+            "candidate_scope_phase": venue_scope.get("scope_phase") or "legacy",
+            "parent_candidate_scope_id": venue_scope.get("parent_candidate_scope_id"),
             "coverage": _coverage_metadata(
                 state_path=state_path,
                 now=now,
@@ -533,6 +538,10 @@ def _candidate_scope_for_venue(
             "candidate_scope_id": str(current.get("candidate_scope_id") or "").strip(),
             "as_of": str(current.get("as_of") or "").strip(),
             "candidate_run_ids": list(current.get("candidate_run_ids") or []),
+            "scope_phase": str(current.get("scope_phase") or "").strip(),
+            "parent_candidate_scope_id": str(
+                current.get("parent_candidate_scope_id") or ""
+            ).strip(),
         }
 
     try:
@@ -547,7 +556,11 @@ def _candidate_scope_for_venue(
         for symbol in venue_state.get("default_hotlist") or venue_state.get("hotlist") or []
         if str(symbol).strip()
     ]
-    scope_as_of = str(venue_state.get("last_close_at") or "legacy").strip()
+    scope_as_of = str(
+        venue_state.get("candidate_scope_as_of")
+        or venue_state.get("last_close_at")
+        or "legacy"
+    ).strip()
     scope_id = str(venue_state.get("candidate_scope_id") or "").strip()
     if not records or not scope_id:
         return {
@@ -571,6 +584,10 @@ def _candidate_scope_for_venue(
         "candidate_scope_id": scope_id,
         "as_of": scope_as_of,
         "candidate_run_ids": list(venue_state.get("candidate_run_ids") or []),
+        "scope_phase": str(venue_state.get("scope_phase") or "").strip(),
+        "parent_candidate_scope_id": str(
+            venue_state.get("parent_candidate_scope_id") or ""
+        ).strip(),
         "venue": venue,
     }
     try:

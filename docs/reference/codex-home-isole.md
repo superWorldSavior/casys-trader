@@ -83,6 +83,13 @@ ordre : la sortie finale reste du JSON pur, puis le daemon valide et exécute vi
 ses domain tools et le `RiskGate`. Un script libre ne devient pas non plus une
 watch persistante ; les watches restent dans le vocabulaire sémantique gouverné.
 
+Le scratch étant physiquement sous la racine Git, la découverte hiérarchique de
+Codex peut aussi voir le `AGENTS.md` du dépôt. Pour empêcher qu'une décision
+normale soit prise pour une investigation et déclenche des recherches de fichiers,
+`agent_exec_scratch_dir()` matérialise atomiquement un `calc-scratch/AGENTS.md`
+plus spécifique : aucune exploration du filesystem, exec réservé aux calculs
+numériques fournis par le contexte, aucune écriture et JSON final obligatoire.
+
 ## Mise en place / reproduction
 
 ```bash
@@ -103,6 +110,8 @@ Le `.env.example` documente la variable.
 ```bash
 # Les rollouts du daemon atterrissent dans le home isolé (et plus dans ~/.codex) :
 find ops/codex-home/sessions -name '*.jsonl' -newermt "<heure restart>"
+# Les instructions runtime terminales ont été matérialisées :
+sed -n '1,120p' ops/codex-home/calc-scratch/AGENTS.md
 # Et ne contiennent plus la contamination :
 grep -rl 'superpowers' ops/codex-home/sessions   # → attendu : vide
 ```

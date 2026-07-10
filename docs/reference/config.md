@@ -61,8 +61,8 @@ et peut être réglé avec `TRADER_UNIVERSE_MODEL`,
 
 Dans les deux cas, la rotation reste fail-open et utilise sa baseline
 déterministe. Réactiver le code ne backfill pas un ancien état : il faut un daemon
-actif et attendre la prochaine clôture de chaque venue pour matérialiser le scope,
-le brief et le run correspondants.
+actif et attendre la prochaine clôture puis le prochain pré-open de chaque venue
+pour matérialiser le parent, le scope final, le brief et le run correspondants.
 
 ## Piège univers
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol, runtime_checkable
 
 from trader.domain.universe import (
@@ -31,6 +31,7 @@ class UniverseCompositionRequest:
     market_context: dict[str, Any]
     situation_context: UniverseSituationContext
     family_snapshot: dict[str, dict[str, Any]]
+    global_family_board: dict[str, Any] = field(default_factory=dict)
     retrieval_refs: tuple[str, ...] = ()
     retrieval_status: str = "not_enabled"
 
@@ -49,6 +50,7 @@ class UniverseCompositionRequest:
             "market_context": _json_copy(self.market_context),
             "situation_context": self.situation_context.to_dict(),
             "family_snapshot": _json_copy(self.family_snapshot),
+            "global_family_board": _json_copy(self.global_family_board),
             "retrieval_refs": list(self.retrieval_refs),
             "retrieval_status": self.retrieval_status,
         }
@@ -98,6 +100,7 @@ def build_universe_composition_request(
     sticky: Iterable[str],
     market_context: Mapping[str, Any] | None,
     situation_context: UniverseSituationContext,
+    global_family_board: Mapping[str, Any] | None = None,
     retrieval_refs: Iterable[str] = (),
     retrieval_status: str = "not_enabled",
 ) -> UniverseCompositionRequest:
@@ -138,6 +141,11 @@ def build_universe_composition_request(
         raise ValueError("retrieval_refs_must_be_empty_when_not_enabled")
     if normalized_retrieval_status != "not_enabled":
         raise ValueError("retrieval_status_not_supported")
+    normalized_global_family_board = dict(global_family_board or {})
+    if normalized_global_family_board and normalized_global_family_board.get(
+        "role"
+    ) != "comparative_context_not_capital_allocation":
+        raise ValueError("global_family_board_role_invalid")
 
     snapshot = build_family_snapshot(enriched, normalized_baseline, normalized_sticky)
     normalized_market_context = dict(market_context or {})
@@ -174,6 +182,7 @@ def build_universe_composition_request(
         market_context=_json_copy(normalized_market_context),
         situation_context=situation_context,
         family_snapshot=snapshot,
+        global_family_board=_json_copy(normalized_global_family_board),
         retrieval_refs=normalized_retrieval_refs,
         retrieval_status=normalized_retrieval_status,
     )

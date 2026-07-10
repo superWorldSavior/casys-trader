@@ -15,6 +15,8 @@ DEFAULT_INDICATORS = [
     "return",
     "volatility",
     "ohlc_volatility",
+    "atr_pct",
+    "relative_volume",
     "z_score",
     "efficiency_ratio",
     "autocorrelation",
@@ -166,6 +168,52 @@ def _ohlc_volatility(bars: list[object]) -> float | None:
     if not estimates:
         return None
     return math.sqrt(mean(estimates))
+
+
+def _atr_pct(bars: list[object]) -> float | None:
+    """Average true range normalized by the latest close.
+
+    Normalizing makes the value comparable across currencies and price scales.
+    The first bar uses its own high-low range; subsequent bars also include gaps
+    from the previous close.
+    """
+    if not bars:
+        return None
+    true_ranges: list[float] = []
+    previous_close: float | None = None
+    for bar in bars:
+        high = _attr(bar, "high")
+        low = _attr(bar, "low")
+        close = _attr(bar, "close")
+        if not all(math.isfinite(value) for value in (high, low, close)) or high < low:
+            previous_close = close if math.isfinite(close) else previous_close
+            continue
+        candidates = [high - low]
+        if previous_close is not None and math.isfinite(previous_close):
+            candidates.extend((abs(high - previous_close), abs(low - previous_close)))
+        true_ranges.append(max(candidates))
+        previous_close = close
+    latest_close = _attr(bars[-1], "close")
+    if not true_ranges or not math.isfinite(latest_close) or latest_close <= 0:
+        return None
+    return mean(true_ranges) / latest_close
+
+
+def _relative_volume(bars: list[object]) -> float | None:
+    """Latest bar volume divided by the positive rolling baseline before it."""
+    if len(bars) < 2:
+        return None
+    latest = _attr(bars[-1], "volume")
+    if not math.isfinite(latest) or latest < 0:
+        return None
+    baseline = [
+        volume
+        for bar in bars[:-1]
+        if math.isfinite(volume := _attr(bar, "volume")) and volume > 0
+    ]
+    if not baseline:
+        return None
+    return latest / mean(baseline)
 
 
 def _candle_body_ratio(bars: list[object]) -> float | None:
@@ -331,6 +379,10 @@ def compute_indicator_values(
             values[name] = _round(_volatility(closes))
         elif name == "ohlc_volatility":
             values[name] = _round(_ohlc_volatility(selected))
+        elif name == "atr_pct":
+            values[name] = _round(_atr_pct(selected))
+        elif name == "relative_volume":
+            values[name] = _round(_relative_volume(selected))
         elif name == "z_score":
             values[name] = _round(_z_score(closes))
         elif name == "efficiency_ratio":

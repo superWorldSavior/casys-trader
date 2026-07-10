@@ -39,6 +39,7 @@ def test_list_indicators_expose_indicateurs_gouvernes() -> None:
 
     assert {"return", "volatility", "z_score", "efficiency_ratio", "autocorrelation", "spread_zscore"} <= names
     assert {"candlestick_signal", "chart_breakout", "trend_slope", "range_position"} <= names
+    assert {"atr_pct", "relative_volume"} <= names
     assert all("description" in item for item in indicators)
 
 
@@ -111,6 +112,14 @@ def test_find_indicators_recherche_chandeliers_et_chartisme() -> None:
 
     assert "candlestick_signal" in candles
     assert "chart_breakout" in chart
+
+
+def test_find_indicators_recherche_atr_et_volume() -> None:
+    risk = {item["name"] for item in find_indicators("stop distance")}
+    volume = {item["name"] for item in find_indicators("volume")}
+
+    assert "atr_pct" in risk
+    assert "relative_volume" in volume
 
 
 def test_family_for_symbol_reconnait_forex_et_cac40() -> None:

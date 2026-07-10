@@ -317,10 +317,30 @@ sélection agent async, l'activation exacte pré-open, les ledgers par run, le
 fallback explicite et la composition sticky hors quota sont câblés. Le code est
 activé par défaut (`CASYS_NEWS_MACRO_ANALYST_ENABLED` et
 `CASYS_UNIVERSE_INTELLIGENCE_ENABLED`, valeur `0` pour couper). Un état live
-ancien ne matérialise ces artefacts qu'au prochain close avec daemon actif.
+ancien ne matérialise ces artefacts qu'au prochain close puis au prochain
+pré-open avec daemon actif.
 Restent le mandat enrichi au trader et, éventuellement, le retrieval historique
 après mesure. Ni la couverture news globale ni `last_regime.json` ne sont garantis
 complets aujourd'hui.
+
+**Cadence corrigée (2026-07-10).** La clôture ne fige plus qu'un parent
+quantitatif top 40 (`scope_phase=close`). À T-90, le pré-open crée un enfant final
+stable (`scope_phase=preopen`) en fusionnant tous les challengers qualifiés,
+notamment les news overnight, puis déclenche analyste et agent univers sur cet
+enfant uniquement. À T-15, la projection exacte est activée ; sinon le parent
+reste la source de la baseline et le fallback est tracé. La filiation
+`parent_candidate_scope_id`/`parent_close_at` est exposée dans les artefacts et le
+cockpit. Hystérésis et `dwell` restent exclusivement des responsabilités de
+clôture.
+
+**Contexte famille global (2026-07-10).** Les trois agents restent indépendants,
+mais reçoivent désormais le même `GlobalFamilyBoard` construit depuis les derniers
+scopes pré-open et briefs exacts TW/EU/US. Il compare les rangs radar intra-venue,
+la largeur, les challengers et les signaux analyste bornés. Sa doctrine est
+encodée dans l'artefact et le prompt : `comparative_context_not_capital_allocation`.
+Il n'alloue ni cash, ni slots, ni risque ; chaque agent univers demeure seul
+propriétaire de sa hotlist locale. Le board est append-only sur changement
+matériel et visible dans le cockpit avec couverture et fraîcheur.
 
 **Design de référence.**
 `docs/superpowers/specs/2026-07-09-universe-intelligence-pass-design.md`.

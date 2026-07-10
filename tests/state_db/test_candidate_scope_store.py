@@ -101,3 +101,22 @@ def test_append_does_not_leave_projection_tmp_files(tmp_path) -> None:
     store.append(_scope("TW", "scope-tw"))
 
     assert list((tmp_path / "candidate_scopes").glob("*.tmp")) == []
+
+
+def test_read_latest_preopen_survives_a_new_close_projection(tmp_path) -> None:
+    store = CandidateScopeStore(tmp_path / "candidate_scopes")
+    close = {**_scope("US", "scope-close"), "scope_phase": "close"}
+    preopen = {
+        **_scope("US", "scope-preopen", as_of="2026-07-10T12:00:00+00:00"),
+        "scope_phase": "preopen",
+    }
+    next_close = {
+        **_scope("US", "scope-next-close", as_of="2026-07-10T20:00:00+00:00"),
+        "scope_phase": "close",
+    }
+    store.append(close)
+    store.append(preopen)
+    store.append(next_close)
+
+    assert store.read_current("US") == next_close
+    assert store.read_latest("US", scope_phase="preopen") == preopen

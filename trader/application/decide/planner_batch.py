@@ -10,7 +10,7 @@ from typing import Callable
 
 import trader.agent.tools as agent_tools
 from trader.agent import client as codex_client
-from trader.agent.context import resolve_indicator_requests
+from trader.agent.context import build_symbol_structure, resolve_indicator_requests
 from trader.application.decide.tool_round import merge_domain_tools, run_one_round
 from trader.market import market_data as market
 from trader.planning.indicator_watch import summarize_watch
@@ -102,6 +102,8 @@ def build_symbol_facts(
     market_context_by_symbol: "dict[str, dict] | None" = None,
     last_review_by_symbol: "dict[str, dict] | None" = None,
     recent_decisions_by_symbol: "dict[str, list] | None" = None,
+    bars_by_symbol: "dict[str, list] | None" = None,
+    bar_timeframe_by_symbol: "dict[str, str] | None" = None,
 ) -> dict:
     """Construit les faits par-symbole réinjectés dans le payload de décision.
 
@@ -116,6 +118,8 @@ def build_symbol_facts(
         Contient recent_decisions si recent_decisions_by_symbol[sym] est non vide —
         les N dernières décisions authentiques POUSSÉES (anti-répétition, même sans
         position ouverte, là où last_llm_review ne couvre que les plans ouverts).
+        Contient structure si des barres sont fournies : ancres swing exactes,
+        fraîcheur/bar count, ATR normalisé et volume relatif compacts.
     """
     age = data_age_by_symbol.get(sym)
     facts: dict = {
@@ -133,6 +137,12 @@ def build_symbol_facts(
     recent = (recent_decisions_by_symbol or {}).get(sym)
     if recent:
         facts["recent_decisions"] = recent
+    bars = (bars_by_symbol or {}).get(sym)
+    if bars:
+        facts["structure"] = build_symbol_structure(
+            bars,
+            timeframe=(bar_timeframe_by_symbol or {}).get(sym),
+        )
     return facts
 
 
@@ -163,6 +173,7 @@ def batch_decide(
     learnings_recall_provider: Callable[[dict], dict] | None = None,
     indicator_request_resolver: Callable = resolve_indicator_requests,
     event_appender: Callable[..., None] | None = None,
+    bar_timeframe_by_symbol: dict[str, str] | None = None,
 ) -> tuple[dict[str, codex_client.Decision], int]:
     """Décide les symboles dus par chunks LLM bornés et parallélisables.
 
@@ -193,6 +204,8 @@ def batch_decide(
                 active_watches_by_symbol=active_watches_by_symbol,
                 market_context_by_symbol=market_contexts,
                 last_review_by_symbol=reviews,
+                bars_by_symbol=tradable_bars_by_symbol,
+                bar_timeframe_by_symbol=bar_timeframe_by_symbol,
             ),
         }
         for sym in decidable
@@ -412,6 +425,8 @@ def batch_decide(
                     active_watches_by_symbol=active_watches_by_symbol,
                     market_context_by_symbol=market_contexts,
                     last_review_by_symbol=reviews,
+                    bars_by_symbol=tradable_bars_by_symbol,
+                    bar_timeframe_by_symbol=bar_timeframe_by_symbol,
                 ),
                 "research": research,
                 # Sessions jetables : le 2e batch n'a pas l'historique du 1er ; on

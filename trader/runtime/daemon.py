@@ -1002,6 +1002,10 @@ def run_cycle(
     for sym in decidable:
         if sym not in analysis_bars_by_symbol and sym in daily_bars_by_symbol:
             analysis_bars_by_symbol[sym] = daily_bars_by_symbol[sym]
+    analysis_timeframe_by_symbol = {
+        sym: runtime_interval if sym in tradable_bars_by_symbol else COCKPIT_DAILY_INTERVAL
+        for sym in analysis_bars_by_symbol
+    }
     # §13.4 — les symboles dont resolve_indicator_requests peut servir un REQUEST_CONTEXT
     # = ceux qui ont des barres (runtime non-stale + daily des stale-analysables). Sans
     # ça, un stale qui demande du contexte sur lui-même reçoit un research vide.
@@ -1075,6 +1079,8 @@ def run_cycle(
                     market_context_by_symbol=execution_eligibility,
                     last_review_by_symbol=_last_review,
                     recent_decisions_by_symbol=_recent_decisions,
+                    bars_by_symbol=analysis_bars_by_symbol,
+                    bar_timeframe_by_symbol=analysis_timeframe_by_symbol,
                 ),
             }
             for sym in decidable
@@ -1153,6 +1159,7 @@ def run_cycle(
             learnings_recall_provider=_recall_provider,
             indicator_request_resolver=resolve_indicator_requests,
             event_appender=_append_event,
+            bar_timeframe_by_symbol=analysis_timeframe_by_symbol,
         )
     if armed_decisions:
         decisions_by_symbol = {**decisions_by_symbol, **armed_decisions}

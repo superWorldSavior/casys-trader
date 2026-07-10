@@ -23,18 +23,22 @@ Les rôles ne se confondent jamais :
 Flux cible canonique :
 
 ```text
-clôture venue -> radar top 40 + scout fresh-news
-  -> pool candidat immuable (`candidate_scope_id`)
+clôture venue -> radar top 40
+  -> parent quantitatif immuable (`scope_phase=close`)
+
+pré-open T-90 -> radar top 40 + scout fresh-news, y compris overnight
+  -> enfant final immuable (`scope_phase=preopen`, parent close tracé)
 
 pool candidat + news/macro
   -> analyste macro/news async
   -> brief sourcé portant le même `candidate_scope_id`
 
 pool candidat + brief + régime disponible + sticky de contexte
+  + GlobalFamilyBoard comparatif non allocateur
   -> agent univers async
   -> projection préparée pour ce scope exact
 
-pré-open venue -> active la projection ou la baseline avec fallback observable
+pré-open T-15 -> active la projection ou la baseline avec fallback observable
   -> hotlist choisie (<= 25 non-sticky)
 
 hotlist choisie + sticky
@@ -104,9 +108,11 @@ compactes. Le run qui l'a produit est conservé dans
 
 ## 3. Analyste macro/news — digestion de la situation
 
-Après la rotation, `NewsMacroAnalysisRunner` soumet un job asynchrone
-single-flight. Le daemon continue son cycle ; un second job ne peut pas se
-superposer et le mode `--once` ne lance pas le thread.
+Après la création du scope final pré-open, `NewsMacroAnalysisRunner` soumet un job
+asynchrone single-flight. Il ignore explicitement le parent `scope_phase=close` :
+les news publiées dans la soirée sont donc disponibles avant de produire le brief.
+Le daemon continue son cycle ; un second job ne peut pas se superposer et le mode
+`--once` ne lance pas le thread.
 
 L'analyste reçoit, par venue :
 
@@ -152,7 +158,7 @@ contexte. Le scout propose des candidats ; l'analyste décrit la situation ;
 
 État runtime actuel :
 
-- après la clôture, le prompt univers reçoit les candidats, l'évidence
+- au pré-open, le prompt univers reçoit les candidats du scope final, l'évidence
   `fresh_news`, les sticky de contexte, le régime disponible et une projection
   bornée du brief courant ;
 - le brief n'est accepté que si son `candidate_scope_id` correspond exactement au
@@ -178,7 +184,8 @@ contexte. Le scout propose des candidats ; l'analyste décrit la situation ;
 - briefs : `state/news_briefs/*.jsonl` ;
 - run scout : `state/news_challenger_runs/*.jsonl` + cache latest par venue ;
 - scopes immuables : `state/candidate_scopes/*.jsonl` + projection
-  `current-<venue>.json` ;
+  `current-<venue>.json`, avec `scope_phase`, `parent_candidate_scope_id` et
+  `parent_close_at` ;
 - runs agent : `state/universe_runs/*.jsonl` + cache latest par venue ;
 - sélection préparée exacte :
   `state/universe_prepared/<sha256(candidate_scope_id)>.json` ;
@@ -188,6 +195,9 @@ contexte. Le scout propose des candidats ; l'analyste décrit la situation ;
 - index FTS dérivé : `state/situation_memory.db` ;
 - projection opérateur `universe_pipeline` dans le read model et panneau cockpit
   par venue, séparant résultat agent et activation/fallback effectif.
+- board famille cross-venue append-only :
+  `state/global_family_boards/*.jsonl` + `current.json`, référencé par chaque run
+  agent et affiché comme `context only` dans le cockpit.
 
 ### Deux ledgers de décision, deux propriétaires
 

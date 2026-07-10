@@ -43,7 +43,14 @@ class FakeAgent:
         )
 
 
-def _write_scope_and_brief(state_dir, *, venue: str, symbols: list[str], family: str) -> str:
+def _write_scope_and_brief(
+    state_dir,
+    *,
+    venue: str,
+    symbols: list[str],
+    family: str,
+    scope_phase: str | None = None,
+) -> str:
     candidates = [
         {
             "symbol": symbol,
@@ -57,8 +64,7 @@ def _write_scope_and_brief(state_dir, *, venue: str, symbols: list[str], family:
     baseline = symbols[:1]
     scope_as_of = "2026-07-10T20:00:00+00:00"
     scope_id = candidate_scope_id(venue, candidates, baseline, scope_as_of)
-    CandidateScopeStore(state_dir / "candidate_scopes").append(
-        {
+    scope_record = {
             "schema_version": 1,
             "candidate_scope_id": scope_id,
             "candidate_run_ids": [f"candidate-{venue}"],
@@ -68,7 +74,9 @@ def _write_scope_and_brief(state_dir, *, venue: str, symbols: list[str], family:
             "default_hotlist": baseline,
             "sticky_context_at_close": [],
         }
-    )
+    if scope_phase is not None:
+        scope_record["scope_phase"] = scope_phase
+    CandidateScopeStore(state_dir / "candidate_scopes").append(scope_record)
     brief = NewsMacroBrief.from_mapping(
         {
             "brief_id": f"brief-{venue}",
@@ -169,10 +177,19 @@ def test_tick_prepares_three_independent_venue_runs_with_briefs_and_families(tmp
 
     assert [item["venue"] for item in result["prepared"]] == ["TW", "EU", "US"]
     assert len(agent.requests) == 3
+    board_rows = (
+        state_dir / "global_family_boards" / "2026-07-10.jsonl"
+    ).read_text(encoding="utf-8").splitlines()
+    assert len(board_rows) == 1
     for request in agent.requests:
         assert request.candidate_scope_id == scopes[request.venue]
         assert request.retrieval_status == "not_enabled"
         assert request.retrieval_refs == ()
+        assert request.global_family_board["status"] == "complete"
+        assert request.global_family_board["role"] == (
+            "comparative_context_not_capital_allocation"
+        )
+        assert set(request.global_family_board["venues"]) == {"TW", "EU", "US"}
         context = request.situation_context.to_dict()
         assert context["status"] == "active"
         assert context["coverage"]["status"] == "partial"
@@ -200,6 +217,38 @@ def test_tick_prepares_three_independent_venue_runs_with_briefs_and_families(tmp
         assert prepared["family_snapshot"][request.candidates[-1]["family"]][
             "regime_status"
         ] == "observed"
+        assert prepared["global_family_board"]["board_id"] == (
+            request.global_family_board["board_id"]
+        )
+
+
+def test_tick_universe_intelligence_waits_for_preopen_child_scope(tmp_path) -> None:
+    state_dir = tmp_path / "state"
+    config_dir = tmp_path / "config"
+    state_dir.mkdir()
+    config_dir.mkdir()
+    _write_scope_and_brief(
+        state_dir,
+        venue="US",
+        symbols=["AAPL", "MSFT"],
+        family="us_mega_tech",
+        scope_phase="close",
+    )
+    agent = FakeAgent()
+
+    result = universe_intelligence_runtime.tick_universe_intelligence(
+        config_dir=config_dir,
+        state_dir=state_dir,
+        loop_now=NOW,
+        agent=agent,
+        venues=("US",),
+    )
+
+    assert agent.requests == []
+    assert result["prepared"] == []
+    assert result["skipped"] == [
+        {"venue": "US", "reason": "awaiting_preopen_scope"}
+    ]
 
 
 def test_tick_records_brief_missing_once_without_calling_agent(tmp_path) -> None:
@@ -310,6 +359,37 @@ def test_tick_never_appends_success_when_prepared_write_fails(tmp_path) -> None:
     assert store.read_latest("US")["status"] == "error"
     assert store.read_latest("US")["error_code"] == "prepared_write_error"
     assert store.read_prepared(scope_id) is None
+
+
+def test_family_board_persistence_failure_does_not_block_preparation(tmp_path) -> None:
+    state_dir = tmp_path / "state"
+    config_dir = tmp_path / "config"
+    state_dir.mkdir()
+    config_dir.mkdir()
+    scope_id = _write_scope_and_brief(
+        state_dir,
+        venue="US",
+        symbols=["AAPL", "MSFT"],
+        family="us_mega_tech",
+    )
+
+    class BrokenBoardStore:
+        def append_if_changed(self, _record):
+            raise OSError("board disk unavailable")
+
+    result = universe_intelligence_runtime.tick_universe_intelligence(
+        config_dir=config_dir,
+        state_dir=state_dir,
+        loop_now=NOW,
+        agent=FakeAgent(),
+        family_board_store=BrokenBoardStore(),
+        venues=("US",),
+    )
+
+    assert result["prepared"][0]["candidate_scope_id"] == scope_id
+    prepared = UniverseRunStore(state_dir / "universe_runs").read_prepared(scope_id)
+    assert prepared["status"] == "success"
+    assert prepared["global_family_board"]["ref"]["persistence_status"] == "error"
 
 
 def test_market_context_drops_stale_regime_values_but_keeps_status(tmp_path) -> None:

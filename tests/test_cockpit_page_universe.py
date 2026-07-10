@@ -295,6 +295,8 @@ def test_universe_pipeline_panel_separates_agent_success_from_activation_fallbac
                 "scope": {
                     "status": "ready",
                     "id_short": "scope-123",
+                    "phase": "preopen",
+                    "parent_scope_id_short": "parent-122",
                     "candidate_count": 42,
                     "challenger_count": 2,
                 },
@@ -338,6 +340,7 @@ def test_universe_pipeline_panel_separates_agent_success_from_activation_fallbac
     rendered = _render(build_universe_pipeline_panel(state))
 
     assert "US" in rendered
+    assert "scope ready #scope-123 · preopen #parent-122" in rendered
     assert "agent success" in rendered
     assert "active fallback" in rendered
     assert "prepared_scope_mismatch" in rendered
@@ -383,6 +386,27 @@ def test_universe_pipeline_panel_exposes_radar_shadow_without_implying_activatio
     assert "short offset 168/186" in rendered
     assert "bench 21/60" in rendered
     assert "effect none" in rendered
+
+
+def test_universe_pipeline_panel_exposes_global_family_board_as_context_only() -> None:
+    state = {
+        "global_family_board": {
+            "board_id_short": "board-123",
+            "status": "partial",
+            "coverage": {
+                "scope_venues": ["TW", "EU", "US"],
+                "active_brief_venues": ["EU", "US"],
+            },
+        }
+    }
+
+    rendered = _render(build_universe_pipeline_panel(state))
+
+    assert "GFB" in rendered
+    assert "partial #board-123" in rendered
+    assert "scopes 3/3" in rendered
+    assert "briefs 2/3" in rendered
+    assert "context only" in rendered
 
 
 # ---------------------------------------------------------------------------

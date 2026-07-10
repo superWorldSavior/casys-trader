@@ -19,8 +19,13 @@ from trader.application.universe import (
     build_universe_composition_request,
     compose_universe,
 )
-from trader.domain.universe import project_brief_to_universe_context
+from trader.domain.universe import (
+    UniverseSituationContext,
+    build_global_family_board,
+    project_brief_to_universe_context,
+)
 from trader.infrastructure.state_db.candidate_scope_store import CandidateScopeStore
+from trader.infrastructure.state_db.global_family_board_store import GlobalFamilyBoardStore
 from trader.infrastructure.state_db.situation_brief_store import NewsMacroBriefStore
 from trader.infrastructure.state_db.universe_run_store import UniverseRunStore
 from trader.runtime.protocols import LoggerLike
@@ -46,6 +51,7 @@ def tick_universe_intelligence(
     scope_store: CandidateScopeStore | None = None,
     brief_store: NewsMacroBriefStore | None = None,
     run_store: UniverseRunStore | None = None,
+    family_board_store: GlobalFamilyBoardStore | None = None,
     venues: Iterable[str] = VENUES,
     stop_requested: Callable[[], bool] | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
@@ -66,7 +72,17 @@ def tick_universe_intelligence(
     scopes = scope_store or CandidateScopeStore(state_path / "candidate_scopes")
     briefs = brief_store or NewsMacroBriefStore(state_path / "news_briefs")
     runs = run_store or UniverseRunStore(state_path / "universe_runs")
+    family_boards = family_board_store or GlobalFamilyBoardStore(
+        state_path / "global_family_boards"
+    )
     market_context = _load_market_context(state_path / "last_regime.json", now=now)
+    global_family_board, family_board_ref = _prepare_global_family_board(
+        scopes=scopes,
+        briefs=briefs,
+        store=family_boards,
+        now=now,
+        log=log,
+    )
     prepared: list[dict[str, Any]] = []
     waiting: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []
@@ -80,6 +96,9 @@ def tick_universe_intelligence(
         scope = scopes.read_current(venue)
         if scope is None:
             skipped.append({"venue": venue, "reason": "candidate_scope_missing"})
+            continue
+        if str(scope.get("scope_phase") or "").strip().lower() == "close":
+            skipped.append({"venue": venue, "reason": "awaiting_preopen_scope"})
             continue
         scope_id = str(scope.get("candidate_scope_id") or "").strip()
         candidates = tuple(
@@ -130,6 +149,7 @@ def tick_universe_intelligence(
                 sticky=sticky,
                 market_context=market_context,
                 situation_context=situation_context,
+                global_family_board=global_family_board,
             )
         except Exception as exc:
             record = _base_run_record(
@@ -143,6 +163,10 @@ def tick_universe_intelligence(
                     "status": "invalid",
                     "error_code": "invalid_universe_request",
                     "error_message": str(exc)[:500],
+                    "global_family_board": _family_board_observability(
+                        global_family_board,
+                        family_board_ref,
+                    ),
                 }
             )
             runs.append(record)
@@ -160,6 +184,10 @@ def tick_universe_intelligence(
                     "status": "invalid",
                     "error_code": "candidate_scope_integrity_mismatch",
                     "computed_candidate_scope_id": request.candidate_scope_id,
+                    "global_family_board": _family_board_observability(
+                        global_family_board,
+                        family_board_ref,
+                    ),
                 }
             )
             runs.append(record)
@@ -229,6 +257,10 @@ def tick_universe_intelligence(
                 ),
                 "market_context": dict(request.market_context),
                 "family_snapshot": dict(request.family_snapshot),
+                "global_family_board": _family_board_observability(
+                    global_family_board,
+                    family_board_ref,
+                ),
                 "situation_context_hash": _request_signature(situation_context.to_dict()),
                 "situation_point_count": situation_context.point_count,
                 "situation_truncated": situation_context.truncated,
@@ -280,6 +312,7 @@ def tick_universe_intelligence(
                     "venue": venue,
                     "candidate_scope_id": scope_id,
                     "agent_run_id": record["agent_run_id"],
+                    "global_family_board_id": global_family_board.get("board_id"),
                 }
             )
             continue
@@ -303,6 +336,88 @@ def tick_universe_intelligence(
     if errors:
         log.warning("universe intelligence errors: %s", errors)
     return {"prepared": prepared, "waiting": waiting, "skipped": skipped, "errors": errors}
+
+
+def _prepare_global_family_board(
+    *,
+    scopes: CandidateScopeStore,
+    briefs: NewsMacroBriefStore,
+    store: GlobalFamilyBoardStore,
+    now: datetime,
+    log: LoggerLike,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    board_scopes: dict[str, Mapping[str, Any]] = {}
+    situations: dict[str, UniverseSituationContext] = {}
+    for venue in VENUES:
+        try:
+            scope = scopes.read_latest(venue, scope_phase="preopen")
+            if scope is None:
+                current = scopes.read_current(venue)
+                if current is not None and not str(current.get("scope_phase") or "").strip():
+                    scope = current
+        except Exception:  # noqa: BLE001 - board absence never blocks local preparation
+            scope = None
+        if scope is None:
+            continue
+        board_scopes[venue] = scope
+        candidates = tuple(
+            dict(item)
+            for item in scope.get("candidates") or ()
+            if isinstance(item, Mapping) and item.get("symbol")
+        )
+        brief = briefs.read_latest(venue, at=now)
+        if brief is None:
+            situations[venue] = UniverseSituationContext.not_available(
+                candidate_count=len(candidates)
+            )
+            continue
+        refs = brief.input_refs if isinstance(brief.input_refs, dict) else {}
+        if refs.get("candidate_scope_id") != scope.get("candidate_scope_id"):
+            situations[venue] = UniverseSituationContext.not_available(
+                candidate_count=len(candidates)
+            )
+            continue
+        situations[venue] = project_brief_to_universe_context(
+            brief,
+            venue=venue,
+            candidate_symbols=(item["symbol"] for item in candidates),
+            active_at=now,
+            coverage_metadata=_coverage_metadata(refs.get("coverage")),
+        )
+
+    board = build_global_family_board(
+        as_of=now.isoformat(),
+        scopes=board_scopes,
+        situations=situations,
+    )
+    try:
+        stored, ref, changed = store.append_if_changed(board)
+    except Exception as exc:  # noqa: BLE001 - derived observability is fail-open
+        log.warning("global family board persistence failed: %s", exc)
+        return board, {
+            "board_id": board.get("board_id"),
+            "status": board.get("status"),
+            "persistence_status": "error",
+            "persistence_error": exc.__class__.__name__,
+        }
+    return stored, {
+        **ref,
+        "persistence_status": "appended" if changed else "unchanged",
+    }
+
+
+def _family_board_observability(
+    board: Mapping[str, Any],
+    ref: Mapping[str, Any],
+) -> dict[str, Any]:
+    coverage = board.get("coverage")
+    return {
+        "board_id": board.get("board_id"),
+        "status": board.get("status"),
+        "role": board.get("role"),
+        "coverage": dict(coverage) if isinstance(coverage, Mapping) else {},
+        "ref": dict(ref),
+    }
 
 
 class UniverseIntelligenceRunner:
@@ -427,6 +542,8 @@ def _base_run_record(
         "venue": str(scope.get("venue") or ""),
         "as_of": now.isoformat(),
         "scope_as_of": scope.get("as_of"),
+        "scope_phase": scope.get("scope_phase") or "legacy",
+        "parent_candidate_scope_id": scope.get("parent_candidate_scope_id"),
         "brief_ref": brief_ref,
         "brief_status": "active" if brief is not None else "missing",
         "valid_until": brief.valid_until if brief is not None else None,

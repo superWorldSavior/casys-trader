@@ -10,6 +10,7 @@ from trader.market import market_data as market
 from trader.market.features import (
     DEFAULT_INDICATORS,
     build_indicator_snapshot,
+    compute_indicator_values,
     swing_high,
     swing_low,
 )
@@ -66,10 +67,65 @@ _CROSS_ASSET_INDICATORS = {"relative_strength", "spread_zscore"}
 # 24 et 48). Donner la distance résolue ICI évite que l'agent borne min/max_pct
 # à l'aveugle et génère des warnings hard_stop_*_pct inutiles.
 _SWING_WINDOWS = (24, 48)
+_STRUCTURE_ATR_WINDOW = 14
+_STRUCTURE_VOLUME_WINDOW = 20
 
 
 def _compact_price(value: float | None) -> float | None:
     return None if value is None else round(float(value), 6)
+
+
+def _bar_value(bar: object, name: str) -> object | None:
+    if isinstance(bar, dict):
+        return bar.get(name)
+    return getattr(bar, name, None)
+
+
+def build_symbol_structure(
+    bars: Iterable[object],
+    *,
+    price: float | None = None,
+    timeframe: str | None = None,
+) -> dict:
+    """Compact, exact structure facts for one symbol.
+
+    This is pushed only for symbols being decided and reused by indicator-tool
+    results. It gives the agent exact anchors for stop/R/Fibonacci arithmetic
+    without inflating every row of the global cockpit.
+    """
+    selected = list(bars)
+    if not selected:
+        return {}
+    last = selected[-1]
+    last_close = _bar_value(last, "close")
+    try:
+        resolved_price = float(price if price is not None else last_close)
+    except (TypeError, ValueError):
+        resolved_price = None
+    if resolved_price is not None and (not math.isfinite(resolved_price) or resolved_price <= 0):
+        resolved_price = None
+    atr = compute_indicator_values(
+        selected,
+        names=["atr_pct"],
+        window=_STRUCTURE_ATR_WINDOW,
+    )["atr_pct"]
+    relative_volume = compute_indicator_values(
+        selected,
+        names=["relative_volume"],
+        window=_STRUCTURE_VOLUME_WINDOW,
+    )["relative_volume"]
+    structure = {
+        "timeframe": timeframe,
+        "bar_as_of": None if _bar_value(last, "ts") is None else str(_bar_value(last, "ts")),
+        "bars_available": len(selected),
+        "price": _compact_price(resolved_price),
+        "atr_pct_14": atr,
+        "relative_volume_20": relative_volume,
+    }
+    for window in _SWING_WINDOWS:
+        structure[f"swing_low_{window}"] = _compact_price(swing_low(selected, window))
+        structure[f"swing_high_{window}"] = _compact_price(swing_high(selected, window))
+    return structure
 
 
 def _swing_distances_pct(
@@ -376,6 +432,10 @@ def resolve_indicator_requests(
             window=temporal["window"],
         )
         item = snapshot[symbol]
+        structure = build_symbol_structure(
+            symbol_bars,
+            timeframe=temporal["timeframe"],
+        )
         resolved.append(
             {
                 "symbol": symbol,
@@ -389,6 +449,7 @@ def resolve_indicator_requests(
                 "returned_indicator_count": len(requested_names),
                 "indicators_truncated": request_indicators_truncated,
                 "indicators": item["indicators"],
+                "structure": structure,
             }
         )
 

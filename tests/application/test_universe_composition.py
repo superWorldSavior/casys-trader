@@ -33,6 +33,11 @@ def _request(*, baseline=("SAP.DE",), sticky=("SIE.DE",)):
         sticky=sticky,
         market_context={"regime_families": {"eu_tech": {"dir": "up", "frac": 0.7}}},
         situation_context=UniverseSituationContext.not_available(candidate_count=2),
+        global_family_board={
+            "board_id": "global-family-board-1",
+            "role": "comparative_context_not_capital_allocation",
+            "status": "partial",
+        },
     )
 
 
@@ -55,6 +60,10 @@ def test_request_enriches_candidates_builds_snapshot_and_disables_retrieval() ->
     assert request.family_snapshot["eu_industrials"]["regime_status"] == "missing"
     assert request.retrieval_refs == ()
     assert request.retrieval_status == "not_enabled"
+    assert request.global_family_board["board_id"] == "global-family-board-1"
+    assert request.to_dict()["global_family_board"]["role"] == (
+        "comparative_context_not_capital_allocation"
+    )
 
 
 def test_request_rejects_baseline_over_25_or_outside_pool_or_sticky() -> None:

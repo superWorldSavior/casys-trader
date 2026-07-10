@@ -71,6 +71,13 @@ def test_resolve_indicator_requests_normalise_et_charge_timeframe_4h() -> None:
     assert result["requests"][0]["lookback"] == "1mo"
     assert result["requests"][0]["window"] == 96
     assert result["requests"][0]["indicators"]["return"] is not None
+    structure = result["requests"][0]["structure"]
+    assert structure["timeframe"] == "4h"
+    assert structure["bar_as_of"] == "t11"
+    assert structure["bars_available"] == 12
+    assert structure["price"] == 111.0
+    assert structure["swing_low_24"] == 99.0
+    assert structure["swing_high_24"] == 112.0
 
 
 def test_resolve_indicator_requests_accepte_les_abreviations_du_cockpit() -> None:

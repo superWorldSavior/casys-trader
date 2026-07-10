@@ -13,6 +13,7 @@ approval_policy = "never"
 # Ne PAS remettre danger-full-access : ça désactiverait le seatbelt.
 sandbox_mode = "workspace-write"
 service_tier = "default"
+personality = "pragmatic"
 
 [notice]
 hide_full_access_warning = true

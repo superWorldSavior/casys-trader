@@ -585,7 +585,7 @@ def test_tick_bootstrap_updates_due_venues_and_writes_active_universe(tmp_path):
     }
 
 
-def test_tick_injects_news_challenger_provider_into_due_venue_close(tmp_path):
+def test_tick_keeps_due_venue_close_scope_quantitative(tmp_path):
     config_dir = tmp_path / "cfg"
     state_dir = tmp_path / "state"
     config_dir.mkdir()
@@ -619,9 +619,165 @@ def test_tick_injects_news_challenger_provider_into_due_venue_close(tmp_path):
     )
 
     candidates = load_venue_state(state_dir)["venues"]["US"]["candidates"]
-    assert len(candidates) == 41
-    assert candidates[-1]["symbol"] == symbols[40]
-    assert candidates[-1]["fresh_news"]["source_refs"] == ["u-us-40"]
+    assert len(candidates) == 40
+    assert all(candidate["candidate_source"] == "radar" for candidate in candidates)
+    assert load_venue_state(state_dir)["venues"]["US"]["scope_phase"] == "close"
+
+
+def test_tick_preopen_creates_stable_child_with_overnight_news_challenger(tmp_path):
+    config_dir = tmp_path / "cfg"
+    state_dir = tmp_path / "state"
+    config_dir.mkdir()
+    _write_tick_config_with_preopen(config_dir)
+    symbols = [f"US{i:02d}" for i in range(41)]
+    rank_obj = {
+        "ranked": [_item(symbol, 50.0 - index) for index, symbol in enumerate(symbols)],
+        "gap_adverse": frozenset(),
+        "ineligible": {},
+        "components_by_symbol": {},
+    }
+    parent = update_venue_ranking(
+        empty_venue_state(),
+        "US",
+        rank_obj["ranked"],
+        cap_per_venue=5,
+        delta=0.0,
+        dwell_days=1,
+        emergency_floor=-1.0,
+        as_of="2026-06-15T20:00:00+00:00",
+    )
+    parent_scope_id = parent["venues"]["US"]["candidate_scope_id"]
+    parent["venues"].update(
+        {
+            "TW": {"last_close_at": "2026-06-16T05:30:00+00:00"},
+            "EU": {"last_close_at": "2026-06-15T15:30:00+00:00"},
+            "FX": {"last_close_at": "2026-06-15T22:00:00+00:00"},
+        }
+    )
+    save_venue_state(state_dir, parent)
+
+    calls = []
+
+    def news_challenger_fn(**kwargs):
+        calls.append(kwargs)
+        if len(calls) > 1:
+            # Le scout ne réémet pas les refs déjà vues par un brief. Le scope
+            # doit néanmoins retenir leur évidence jusqu'au TTL, même dans le top 40.
+            return []
+        return [
+            {
+                "symbol": symbols[40],
+                "candidate_source": "fresh_news",
+                "fresh_news": {
+                    "source_refs": ["overnight-us-40"],
+                    "valid_until": "2026-06-16T15:00:00+00:00",
+                },
+            },
+            {
+                "symbol": symbols[0],
+                "candidate_source": "fresh_news",
+                "fresh_news": {
+                    "source_refs": ["overnight-us-00"],
+                    "valid_until": "2026-06-16T15:00:00+00:00",
+                },
+            },
+        ]
+
+    observed = []
+
+    def observer(record):
+        observed.append(record)
+        return {"candidate_scope_id": record["candidate_scope_id"]}
+
+    first = tick(
+        config_dir,
+        state_dir,
+        "2026-06-16T12:30:00+00:00",
+        rank_fn=lambda: rank_obj,
+        sticky_fn=lambda: set(),
+        news_challenger_fn=news_challenger_fn,
+        candidate_scope_observer=observer,
+    )
+    first_scope = load_venue_state(state_dir)["venues"]["US"]
+    second = tick(
+        config_dir,
+        state_dir,
+        "2026-06-16T12:45:00+00:00",
+        rank_fn=lambda: rank_obj,
+        sticky_fn=lambda: set(),
+        news_challenger_fn=news_challenger_fn,
+        candidate_scope_observer=observer,
+    )
+    second_scope = load_venue_state(state_dir)["venues"]["US"]
+
+    assert first["dues"] == []
+    assert second["dues"] == []
+    assert len(calls) == 2
+    assert len(observed) == 1
+    assert first_scope["scope_phase"] == "preopen"
+    assert first_scope["parent_candidate_scope_id"] == parent_scope_id
+    assert first_scope["parent_close_at"] == "2026-06-15T20:00:00+00:00"
+    assert len(first_scope["candidates"]) == 41
+    assert first_scope["candidates"][-1]["symbol"] == symbols[40]
+    assert first_scope["candidates"][-1]["fresh_news"]["source_refs"] == [
+        "overnight-us-40"
+    ]
+    assert first_scope["candidates"][0]["fresh_news"]["source_refs"] == [
+        "overnight-us-00"
+    ]
+    assert first_scope["candidate_scope_id"] == second_scope["candidate_scope_id"]
+    assert first_scope["dwell"] == second_scope["dwell"]
+
+
+def test_production_scope_prepares_at_t90_but_activates_only_at_t15(tmp_path):
+    config_dir = tmp_path / "cfg"
+    state_dir = tmp_path / "state"
+    config_dir.mkdir()
+    state_dir.mkdir()
+    _write_tick_config_with_override(config_dir, override_enabled=True)
+    state = json.loads(_make_preopen_state())
+    state["venues"]["TW"]["candidate_scope_id"] = "legacy-close-tw"
+    save_venue_state(state_dir, state)
+    prepared_calls = []
+
+    def observer(record):
+        return {"candidate_scope_id": record["candidate_scope_id"]}
+
+    def prepared_universe_fn(**kwargs):
+        prepared_calls.append(kwargs)
+        return {
+            "status": "success",
+            "agent_run_id": "agent-tw-t15",
+            "selected_hotlist": ["2330.TW"],
+        }
+
+    tick(
+        config_dir,
+        state_dir,
+        "2026-06-16T00:30:00+00:00",
+        rank_fn=lambda: _tick_rank_obj(),
+        sticky_fn=lambda: set(),
+        prepared_universe_fn=prepared_universe_fn,
+        candidate_scope_observer=observer,
+    )
+    prepared_scope = load_venue_state(state_dir)["venues"]["TW"]
+    assert prepared_scope["scope_phase"] == "preopen"
+    assert prepared_calls == []
+
+    tick(
+        config_dir,
+        state_dir,
+        "2026-06-16T00:50:00+00:00",
+        rank_fn=lambda: _tick_rank_obj(),
+        sticky_fn=lambda: set(),
+        prepared_universe_fn=prepared_universe_fn,
+        candidate_scope_observer=observer,
+    )
+
+    assert len(prepared_calls) == 1
+    assert prepared_calls[0]["candidate_scope_id"] == prepared_scope[
+        "candidate_scope_id"
+    ]
 
 
 def test_tick_collects_sticky_before_due_rankings_and_keeps_it_outside_quota(tmp_path):

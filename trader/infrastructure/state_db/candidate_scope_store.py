@@ -52,14 +52,28 @@ class CandidateScopeStore:
     def read_current(self, venue: str) -> dict[str, Any] | None:
         """Return the current valid projection, falling back to canonical JSONL."""
 
+        return self.read_latest(venue)
+
+    def read_latest(
+        self,
+        venue: str,
+        *,
+        scope_phase: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Return the newest scope, optionally restricted to one phase."""
+
         venue_key = _required_text(venue, field="venue")
+        phase = str(scope_phase or "").strip().lower() or None
         payload = _read_json_object(self.current_path_for_venue(venue_key))
-        if _is_scope_for_venue(payload, venue_key):
+        if _is_scope_for_venue(payload, venue_key) and _matches_phase(payload, phase):
             return payload
 
         for path in sorted(self.base_dir.glob("????-??-??.jsonl"), reverse=True):
             for candidate in reversed(_read_jsonl_objects(path)):
-                if _is_scope_for_venue(candidate, venue_key):
+                if _is_scope_for_venue(candidate, venue_key) and _matches_phase(
+                    candidate,
+                    phase,
+                ):
                     return candidate
         return None
 
@@ -138,3 +152,9 @@ def _is_scope_for_venue(payload: dict[str, Any] | None, venue: str) -> bool:
     if payload is None or str(payload.get("venue") or "").strip() != venue:
         return False
     return bool(str(payload.get("candidate_scope_id") or "").strip())
+
+
+def _matches_phase(payload: Mapping[str, Any] | None, phase: str | None) -> bool:
+    if phase is None:
+        return True
+    return str((payload or {}).get("scope_phase") or "").strip().lower() == phase

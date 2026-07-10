@@ -1,7 +1,8 @@
 # Universe intelligence pass — hotlist enrichie, mandat et contexte symbole
 
 > **Statut : 🛠 ACTIF — sélection d'univers livrée, mandat enrichi à poursuivre.**
-> Depuis le 2026-07-10 : pool `40 radar + challengers`, briefs exact-scope,
+> Depuis le 2026-07-10 : parent close top 40, enfant pré-open
+> `40 radar + challengers` incluant l'overnight, briefs exact-scope,
 > préparation async par venue, sélection propre de l'agent (`<=25` non-sticky),
 > activation pré-open, fallback explicite, sticky hors quota et observabilité par
 > run sont codés. Restent le `UniverseMandate` enrichi, sa projection au trader,
@@ -116,8 +117,8 @@ couper séparément l'analyste (`CASYS_NEWS_MACRO_ANALYST_ENABLED=0`) et la
 préparation univers (`CASYS_UNIVERSE_INTELLIGENCE_ENABLED=0`) sans bloquer la
 rotation déterministe. Les nouveaux artefacts sont événementiels : sur un état
 live ancien, ils n'apparaissent qu'avec un daemon actif, à la prochaine clôture
-de chaque venue, puis lors des runs async associés. Il n'y a pas de backfill
-automatique du scope courant.
+de chaque venue puis dans sa fenêtre pré-open, lors des runs async associés. Il
+n'y a pas de backfill automatique du scope courant.
 
 ### 4.1 Sources d'information de la passe univers
 
@@ -655,9 +656,12 @@ réduire `trader/market/rotation` à des adapters/facades jusqu'à extinction.
 
 ## 14. Décision de cadence et questions ouvertes
 
-**Cadence tranchée** : un scope et une préparation séparés pour chaque venue
-`TW`, `EU`, `US`; calcul async après la clôture, activation exacte au pré-open de
-la venue. Il n'existe pas de décision cross-venue unique.
+**Cadence tranchée** : pour chaque venue `TW`, `EU`, `US`, la clôture fige un
+parent quantitatif ; T-90 crée l'enfant final news-aware et déclenche les deux
+passes async ; T-15 active la projection exacte. Il n'existe pas de décision
+cross-venue unique. Le `GlobalFamilyBoard` d'observation comparative TW/EU/US est
+livré : les trois agents le consomment, mais il n'est volontairement pas un
+allocateur de capital.
 
 1. Quelle rétention pour les ledgers scout/univers ? Les rejets scout restent
    agrégés ; seuls les candidats retenus gardent leurs références détaillées.
@@ -670,6 +674,9 @@ la venue. Il n'existe pas de décision cross-venue unique.
 5. La surface cockpit minimale `scope → scout → brief → agent → activation` est
    livrée ; restent les postures détaillées, raisons de rejet et timeline du
    mandat enrichi.
+6. Le `GlobalFamilyBoard` append-only est livré avec rangs intra-venue, couverture,
+   fraîcheur, observations bornées et doctrine `context not allocation` ; une
+   allocation portefeuille cross-venue reste explicitement hors de son mandat.
 
 ## 15. Issue map suggérée
 

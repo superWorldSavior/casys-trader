@@ -10,6 +10,7 @@ from trader.domain.universe.intelligence import (
     enrich_candidates_with_family,
     project_brief_to_universe_context,
 )
+from trader.domain.universe.global_family_board import build_global_family_board
 from trader.domain.universe.news_challengers import (
     NewsChallenger,
     NewsChallengerEvidence,
@@ -26,6 +27,7 @@ __all__ = [
     "UNCLASSIFIED_FAMILY",
     "UniverseSituationContext",
     "build_family_snapshot",
+    "build_global_family_board",
     "candidate_scope_id",
     "enrich_candidates_with_family",
     "project_brief_to_universe_context",

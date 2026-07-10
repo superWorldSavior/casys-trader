@@ -7,6 +7,7 @@ import os
 import signal
 import shutil
 import subprocess
+import tempfile
 import time
 from dataclasses import dataclass, is_dataclass, replace
 from typing import Callable
@@ -64,6 +65,35 @@ def _log_acpx_call(
 _AGENT_EXEC_ENV = "CASYS_AGENT_EXEC"
 _AGENT_EXEC_CWD_ENV = "CASYS_AGENT_EXEC_CWD"
 _AGENT_EXEC_TRUE = {"1", "true", "yes", "on"}
+_RUNTIME_AGENT_INSTRUCTIONS = """# Casys Trader Decision Runtime
+
+This directory is the isolated scratch for automated trading decisions.
+Normal trading decisions, including HOLD or stale-data outcomes, are not repository incident investigations.
+Do not inspect filesystem content or search the parent repository during a trading decision.
+Use native tools only for deterministic numerical calculations from facts supplied in the prompt or tool results.
+Do not modify files. The final response must remain the requested pure JSON object.
+"""
+
+
+def _ensure_runtime_agent_instructions(scratch_dir: str) -> None:
+    """Install nested instructions so parent repo AGENTS.md does not cause tool noise."""
+    path = os.path.join(scratch_dir, "AGENTS.md")
+    try:
+        with open(path, encoding="utf-8") as fh:
+            if fh.read() == _RUNTIME_AGENT_INSTRUCTIONS:
+                return
+    except OSError:
+        pass
+    fd, temp_path = tempfile.mkstemp(prefix=".AGENTS.", dir=scratch_dir, text=True)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(_RUNTIME_AGENT_INSTRUCTIONS)
+        os.replace(temp_path, path)
+    finally:
+        try:
+            os.unlink(temp_path)
+        except FileNotFoundError:
+            pass
 
 
 def agent_exec_enabled() -> bool:
@@ -113,6 +143,7 @@ def agent_exec_scratch_dir() -> str:
     else:
         base = os.path.join(home_real, "calc-scratch")
     os.makedirs(base, exist_ok=True)
+    _ensure_runtime_agent_instructions(base)
     return base
 
 

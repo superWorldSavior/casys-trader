@@ -34,6 +34,11 @@ pattern consolidateur (`trader/agent/learnings/consolidator.py`) et news-feed
 > manquante. Les news symboles viennent du corpus local partiel et le payload LLM
 > est borné par venue (`80` articles max, pas 80 candidats) pour éviter les
 > timeouts et préserver un digest quotidien fiable.
+>
+> Mise à jour cadence 2026-07-10 : le runner ignore le parent quantitatif de
+> clôture et attend l'enfant final créé à T-90 du pré-open. Le brief couvre donc
+> les challengers et news overnight connus avant l'ouverture, puis l'agent univers
+> consomme exactement ce même `candidate_scope_id`.
 
 ## 1. Périmètre
 

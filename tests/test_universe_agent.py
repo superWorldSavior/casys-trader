@@ -98,6 +98,21 @@ def _request():
         sticky=("SIE.DE",),
         market_context={"regime_families": {"eu_tech": {"dir": "up", "frac": 0.7}}},
         situation_context=situation,
+        global_family_board={
+            "board_id": "board-global-1",
+            "status": "complete",
+            "role": "comparative_context_not_capital_allocation",
+            "venues": {
+                "US": {
+                    "families": {
+                        "us_tech": {
+                            "radar_rank_within_venue": 1,
+                            "situation_status": "observed",
+                        }
+                    }
+                }
+            },
+        },
     )
 
 
@@ -116,6 +131,9 @@ def test_prompt_says_agent_composes_full_hotlist_and_includes_all_context_layers
     assert "SAP raises cloud guidance" in prompt
     assert "retrieval_status" in prompt and "not_enabled" in prompt
     assert "explique chaque symbole retenu" in prompt
+    assert "global_family_board" in prompt
+    assert "us_tech" in prompt
+    assert "jamais comme quota" in prompt
     assert "input_refs" not in prompt
     assert '"news_items":' not in prompt
 

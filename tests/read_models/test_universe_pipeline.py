@@ -115,6 +115,9 @@ def test_pipeline_summarizes_scope_scout_brief_counts_and_short_ids(tmp_path: Pa
         {
             "venue": "EU",
             "candidate_scope_id": scope_id,
+            "scope_phase": "preopen",
+            "parent_candidate_scope_id": "candidate_scope:v1:EU:parent-close-scope",
+            "parent_close_at": "2026-07-09T15:30:00+00:00",
             "as_of": "2026-07-10T02:00:00+00:00",
             "candidate_run_ids": ["news:EU:1234567890abcdef"],
             "candidates": [
@@ -163,6 +166,9 @@ def test_pipeline_summarizes_scope_scout_brief_counts_and_short_ids(tmp_path: Pa
     assert pipeline["scope"]["candidate_count"] == 2
     assert pipeline["scope"]["challenger_count"] == 1
     assert pipeline["scope"]["id_short"] != scope_id
+    assert pipeline["scope"]["phase"] == "preopen"
+    assert pipeline["scope"]["parent_scope_id_short"]
+    assert pipeline["scope"]["parent_close_at"] == "2026-07-09T15:30:00+00:00"
     assert pipeline["scout"]["challenger_count"] == 1
     assert pipeline["scout"]["coverage"]["eligible_items"] == 5
     assert pipeline["brief"]["scope_match"] is True
@@ -209,3 +215,26 @@ def test_runtime_state_always_exposes_all_venue_pipeline_entries(tmp_path: Path)
 
     assert tuple(state["universe_pipeline"]) == ("TW", "EU", "US")
     assert state["universe_pipeline"]["TW"]["scope"]["status"] == "pending"
+    assert state["global_family_board"] == {}
+
+
+def test_runtime_state_exposes_current_global_family_board(tmp_path: Path) -> None:
+    board = {
+        "board_id": "global_family_board:v1:1234567890abcdef",
+        "as_of": "2026-07-10T12:00:00+00:00",
+        "status": "partial",
+        "role": "comparative_context_not_capital_allocation",
+        "coverage": {"scope_venues": ["EU", "US"]},
+        "venues": {},
+    }
+    _write_json(tmp_path / "global_family_boards" / "current.json", board)
+
+    state = load_runtime_state(
+        state_dir=tmp_path,
+        current_report_path=tmp_path / "missing-current.json",
+        last_report_path=tmp_path / "missing-last.json",
+        status_path=tmp_path / "missing-status.json",
+        config_dir=str(tmp_path),
+    )
+
+    assert state["global_family_board"] == board

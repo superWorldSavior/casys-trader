@@ -7,8 +7,8 @@
 Le LLM décideur peut **pull** du contexte supplémentaire via des outils
 **lecture-seule**, en émettant `{"tool_calls":[...]}` dans sa réponse (protocole
 JSON dans le prompt, PAS les outils natifs de codex — la décision tourne avec
-`--allowed-tools ""`). Le daemon exécute, réinjecte les résultats, et le LLM
-statue.
+`--allowed-tools ""` par défaut ; l'`exec` natif optionnel reste une capacité
+séparée). Le daemon exécute, réinjecte les résultats, et le LLM statue.
 
 En mode `CASYS_AGENT_TOOLS_ENABLED=1`, le contrat final visible peut aussi être
 un langage **tools par symbole** : chaque symbole rend `calls`, et ces calls sont
@@ -35,6 +35,9 @@ Chaque outil = un `ToolSpec(name, validate_args, handler)` enregistré dans
 Le catalogue fini est la borne naturelle ; l'agent n'a pas à découper une recherche
 multi-indicateurs en plusieurs appels. Les bornes techniques portent sur le nombre
 de tool calls et de requêtes de données, pas sur quatre ou six indicateurs arbitraires.
+Le résultat porte aussi un bloc `structure` : prix, vraie date de la dernière
+barre, nombre de barres, swings exacts 24/48, `atr_pct_14` et
+`relative_volume_20`.
 
 ### Calcul natif en cage (`exec`)
 

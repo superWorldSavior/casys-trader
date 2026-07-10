@@ -23,6 +23,9 @@ def build_universe_prompt(request: UniverseCompositionRequest) -> str:
         "Utilise explicitement le contexte GLOBAL/zones, toutes les familles, les "
         "situations symbole, le régime et le snapshot famille; explique chaque symbole retenu "
         "et les arbitrages importants entre signaux. N'invente aucune information absente.\n"
+        "Le global_family_board compare les opportunités famille entre TW/EU/US. "
+        "Utilise-le comme contexte relatif, jamais comme quota de places, allocation de capital "
+        "ou instruction de copier la sélection d'une autre venue.\n"
         "Retourne uniquement un objet JSON valide, jamais un simple add/remove, avec ce schéma:\n"
         '{"selected_hotlist":["SYMBOL"],"summary":"...",'
         '"family_postures":{"family":"..."},'

@@ -45,9 +45,14 @@ Résout une demande de contexte (`REQUEST_CONTEXT` ou `get_indicator_context`) :
 quand l'agent veut un autre horizon, une autre fenêtre ou les indicateurs absents
 du cockpit compact, cette fonction les calcule et les réinjecte au passage suivant.
 Par défaut, **tous les indicateurs valides demandés** sont retournés : le catalogue
-gouverné (14 indicateurs) est déjà la borne naturelle. Le nombre de requêtes/tool
+gouverné (16 indicateurs) est déjà la borne naturelle. Le nombre de requêtes/tool
 calls reste borné pour maîtriser les fetchs ; un éventuel cap opérateur explicite
 sur les indicateurs est signalé par `indicators_truncated`, jamais silencieux.
+
+Chaque résultat contient aussi `structure` avec la timeframe réellement demandée,
+`bar_as_of`, `bars_available`, le prix, les swings exacts 24/48, `atr_pct_14` et
+`relative_volume_20`. L'agent peut donc faire ses calculs de niveau/R/Fibonacci
+sans reconstruire les ancres à partir de distances compactes.
 
 ## Faits par symbole
 
@@ -63,6 +68,7 @@ concerné :
 | `wake_reasons` | raisons de réveil sans condition déclenchée, notamment `watch_expired` et `armed_plan_expired` |
 | `execution`, `planning` | éligibilité marché/exécution si disponible |
 | `last_llm_review`, `recent_decisions` | mémoire courte anti-répétition |
+| `structure` | seulement pour le symbole décidé : timeframe des barres, fraîcheur/compte, prix, swings exacts 24/48, ATR normalisé et volume relatif |
 
 ## Plans et veilles — 3 niveaux
 

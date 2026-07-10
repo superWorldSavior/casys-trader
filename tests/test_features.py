@@ -47,6 +47,35 @@ def test_compute_indicator_values_calcule_indicateurs_deterministes() -> None:
     assert values["autocorrelation"] is not None
 
 
+def test_compute_indicator_values_calcule_atr_normalise_et_volume_relatif() -> None:
+    bars = [
+        _bar("t1", 100.0, high=101.0, low=99.0, volume=100.0),
+        _bar("t2", 102.0, high=103.0, low=101.0, volume=100.0),
+        _bar("t3", 101.0, high=102.0, low=100.0, volume=300.0),
+    ]
+
+    values = compute_indicator_values(
+        bars,
+        names=["atr_pct", "relative_volume"],
+        window=3,
+    )
+
+    assert values["atr_pct"] == round((2.0 + 3.0 + 2.0) / 3.0 / 101.0, 6)
+    assert values["relative_volume"] == 3.0
+
+
+def test_relative_volume_et_atr_retournent_none_sans_base_valide() -> None:
+    one_bar = [_bar("t1", 100.0, volume=100.0)]
+    zero_baseline = [
+        _bar("t1", 100.0, volume=0.0),
+        _bar("t2", 101.0, volume=200.0),
+    ]
+
+    assert compute_indicator_values(one_bar, names=["relative_volume"], window=20)["relative_volume"] is None
+    assert compute_indicator_values([], names=["atr_pct"], window=14)["atr_pct"] is None
+    assert compute_indicator_values(zero_baseline, names=["relative_volume"], window=20)["relative_volume"] is None
+
+
 def test_build_indicator_snapshot_compare_les_familles() -> None:
     bars_by_symbol = {
         "SPY": [_bar("t1", 100.0), _bar("t2", 102.0), _bar("t3", 104.0)],
