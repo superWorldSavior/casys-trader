@@ -53,7 +53,10 @@ from trader.reporting.read_models.decision_filters import (
     _group_into_ledger_rows,
     _is_risk_row,
 )
-from trader.reporting.read_models.runtime_state import _safe_float, _safe_list_of_dicts
+from trader.support.coercion import (
+    dict_list as _safe_list_of_dicts,
+    finite_float as _safe_float,
+)
 
 UTC = timezone.utc
 

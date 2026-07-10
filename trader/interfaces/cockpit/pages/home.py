@@ -34,6 +34,7 @@ from trader.interfaces.ui.palette import (
     CASYS_MUTED,
     CASYS_SUCCESS,
 )
+from trader.support.coercion import dict_list, finite_float
 
 UTC = timezone.utc
 
@@ -195,7 +196,7 @@ def build_agent_now(state: dict, *, now: datetime) -> Text | None:
         text.append(f"{done}/{total}", style=CASYS_MUTED)
 
     # dernière décision connue
-    recent = f._safe_list_of_dicts(state.get("recent_decisions"))
+    recent = dict_list(state.get("recent_decisions"))
     if recent:
         last = recent[-1]
         text.append("  │  ", style=CASYS_HAIRLINE)
@@ -219,7 +220,7 @@ def build_today(state: dict, *, now: datetime, limit: int = 3) -> RenderableType
     floor = now.replace(hour=0, minute=0, second=0, microsecond=0)
     rows = [
         r
-        for r in f._safe_list_of_dicts(state.get("recent_decisions"))
+        for r in dict_list(state.get("recent_decisions"))
         if (ts := f.parse_ts(r.get("cycle_ts") or r.get("ts"))) is not None and ts >= floor
     ]
     if not rows:
@@ -237,7 +238,7 @@ def build_today(state: dict, *, now: datetime, limit: int = 3) -> RenderableType
         for r in fills[-limit:]:
             action = str(r.get("action") or "").upper()
             act_style = CASYS_SUCCESS if action == "BUY" else CASYS_ERROR if action == "SELL" else CASYS_DIM
-            price = f._safe_float(r.get("price"), default=None)
+            price = finite_float(r.get("price"), default=None)
             grid.add_row(
                 Text(f.hhmm(r.get("cycle_ts") or r.get("ts")), style=CASYS_FAINT),
                 Text(str(r.get("symbol") or "—"), style=f"bold {CASYS_FG}"),

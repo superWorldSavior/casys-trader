@@ -19,7 +19,10 @@ from trader.interfaces.ui.palette import (
     CASYS_METER_EMPTY,
 )
 from trader.market import fx
-from trader.reporting.read_models.runtime_state import _safe_float, _safe_list_of_dicts
+from trader.support.coercion import (
+    dict_list as _safe_list_of_dicts,
+    finite_float as _safe_float,
+)
 
 
 def safe_dict(value: object) -> dict:

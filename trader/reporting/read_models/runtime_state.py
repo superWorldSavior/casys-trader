@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import math
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
@@ -14,6 +13,10 @@ import yaml
 from trader.planning.indicator_watch import is_armed_plan as _is_armed_plan
 from trader.reporting.read_models.universe_pipeline import (
     load_universe_pipeline as _load_universe_pipeline_safe,
+)
+from trader.support.coercion import (
+    dict_list as _safe_list_of_dicts,
+    finite_float as _safe_float,
 )
 from trader.support.config.risk import (
     DEFAULT_MIN_TRADE_CONFIDENCE,
@@ -43,21 +46,6 @@ def load_state(path: str | Path) -> dict | None:
         return json.loads(Path(path).read_text(encoding="utf-8"))
     except Exception:
         return None
-
-
-def _safe_float(value: Any, default: float | None = 0.0) -> float | None:
-    """Convertit en float fini, sinon retourne ``default``."""
-    try:
-        result = float(value)
-    except (TypeError, ValueError):
-        return default
-    return result if math.isfinite(result) else default
-
-
-def _safe_list_of_dicts(value: Any) -> list[dict]:
-    if not isinstance(value, list):
-        return []
-    return [item for item in value if isinstance(item, dict)]
 
 
 def _format_datetime(value: Any) -> str:

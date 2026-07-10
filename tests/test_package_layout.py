@@ -1629,6 +1629,51 @@ def test_cockpit_universe_projection_is_canonical_and_textual_free() -> None:
     assert page._venue_of_safe is venue_of_safe
 
 
+def test_cockpit_uses_support_coercion_instead_of_private_reporting_helpers() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    cockpit_dir = repo_root / "trader" / "interfaces" / "cockpit"
+    coercion_path = repo_root / "trader" / "support" / "coercion.py"
+    runtime_state_path = (
+        repo_root / "trader" / "reporting" / "read_models" / "runtime_state.py"
+    )
+
+    assert coercion_path.exists()
+    violations: list[str] = []
+    for path in sorted(cockpit_dir.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.ImportFrom):
+                continue
+            if node.module != "trader.reporting.read_models.runtime_state":
+                continue
+            private_names = [
+                alias.name for alias in node.names if alias.name.startswith("_safe_")
+            ]
+            if private_names:
+                violations.append(
+                    f"{path.relative_to(repo_root)}: {', '.join(private_names)}"
+                )
+    assert violations == []
+
+    runtime_tree = ast.parse(
+        runtime_state_path.read_text(encoding="utf-8"),
+        filename=str(runtime_state_path),
+    )
+    runtime_definitions = {
+        node.name
+        for node in runtime_tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    assert "_safe_float" not in runtime_definitions
+    assert "_safe_list_of_dicts" not in runtime_definitions
+
+    from trader.reporting.read_models import runtime_state
+    from trader.support.coercion import dict_list, finite_float
+
+    assert runtime_state._safe_float is finite_float
+    assert runtime_state._safe_list_of_dicts is dict_list
+
+
 def test_operator_interface_legacy_packages_are_virtual() -> None:
     trader_dir = Path(__file__).resolve().parents[1] / "trader"
 

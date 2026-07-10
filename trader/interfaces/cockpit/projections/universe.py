@@ -7,9 +7,9 @@ from typing import NamedTuple
 
 from trader.domain.universe.user_overrides import UserOverrides
 from trader.interfaces.cockpit import format as f
-from trader.reporting.read_models.runtime_state import (
-    _safe_float,
-    _safe_list_of_dicts,
+from trader.support.coercion import (
+    dict_list as _safe_list_of_dicts,
+    finite_float as _safe_float,
 )
 
 
