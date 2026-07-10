@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Literal
 
+from trader.domain.company import CompanyIntelligenceBrief
 from trader.domain.semantic.catalog import family_for_symbol
 from trader.domain.situation import NewsMacroBrief, SituationPoint
 
@@ -23,6 +24,105 @@ DEFAULT_MAX_SITUATION_TEXT_CHARS = 6_000
 UNCLASSIFIED_FAMILY = "unclassified"
 
 SituationStatus = Literal["active", "not_available", "inactive", "venue_mismatch"]
+CompanyContextStatus = Literal[
+    "fresh",
+    "partial",
+    "stale",
+    "missing",
+    "unsupported",
+    "identity_mismatch",
+]
+
+
+@dataclass(frozen=True)
+class UniverseCompanyContext:
+    """Bounded per-candidate projection of durable company research."""
+
+    mode: str
+    symbols: Mapping[str, Mapping[str, Any]]
+    coverage: Mapping[str, int]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "mode": self.mode,
+            "symbols": _json_copy(dict(self.symbols)),
+            "coverage": dict(self.coverage),
+        }
+
+
+def project_company_briefs_to_universe_context(
+    briefs_by_symbol: Mapping[str, CompanyIntelligenceBrief | None],
+    *,
+    candidate_symbols: Iterable[str],
+    active_at: datetime | str,
+    mode: str = "active",
+) -> UniverseCompanyContext:
+    """Keep one compact entry for every candidate, including missing briefs."""
+
+    normalized_mode = str(mode or "observe").strip().lower()
+    if normalized_mode not in {"observe", "active"}:
+        normalized_mode = "observe"
+    entries: dict[str, Mapping[str, Any]] = {}
+    counts = {
+        "fresh": 0,
+        "partial": 0,
+        "stale": 0,
+        "missing": 0,
+        "unsupported": 0,
+        "identity_mismatch": 0,
+    }
+    for raw_symbol in candidate_symbols:
+        symbol = str(raw_symbol or "").strip()
+        if not symbol or symbol in entries:
+            continue
+        brief = briefs_by_symbol.get(symbol)
+        entry = _project_company_brief(symbol, brief, active_at=active_at)
+        status = str(entry["status"])
+        counts[status] += 1
+        entries[symbol] = entry
+    return UniverseCompanyContext(mode=normalized_mode, symbols=entries, coverage=counts)
+
+
+def _project_company_brief(
+    symbol: str,
+    brief: CompanyIntelligenceBrief | None,
+    *,
+    active_at: datetime | str,
+) -> Mapping[str, Any]:
+    if brief is None:
+        return {"status": "missing", "brief_ref": None}
+    if brief.symbol != symbol:
+        return {"status": "identity_mismatch", "brief_ref": None}
+    coverage_status = str(brief.coverage.get("status") or "partial")
+    freshness = brief.freshness_status(active_at)
+    if coverage_status == "unsupported":
+        status: CompanyContextStatus = "unsupported"
+    elif freshness == "stale":
+        status = "stale"
+    elif freshness in {"mixed", "missing", "unknown"} or coverage_status != "full":
+        status = "partial"
+    else:
+        status = "fresh"
+
+    drivers = [point.point for point in brief.company_thesis.pillars[:2]]
+    if len(drivers) < 2:
+        drivers.extend(point.point for point in brief.catalysts[: 2 - len(drivers)])
+    summary = brief.company_thesis.summary or brief.business.summary
+    return {
+        "status": status,
+        "brief_ref": brief.ref(),
+        "as_of": brief.as_of,
+        "freshness": freshness,
+        "company_thesis_status": brief.company_thesis.status,
+        "selection_view": brief.selection_view.to_dict(),
+        "security_readiness": brief.security_readiness,
+        "summary": summary[:600],
+        "drivers": drivers[:2],
+        "catalysts": [point.point for point in brief.catalysts[:2]],
+        "risks": [point.point for point in brief.risks[:2]],
+        "coverage": dict(brief.coverage),
+        "source_refs": list(brief.source_refs[:8]),
+    }
 
 
 @dataclass(frozen=True)

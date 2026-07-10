@@ -37,7 +37,13 @@ def shutdown_runtime_resources(
     disconnect_quietly: DisconnectFn,
     release_pid_file: ReleasePidFileFn,
     logger: LoggerLike,
+    company_intelligence_runner: Stoppable | None = None,
 ) -> None:
+    _stop_pool(
+        company_intelligence_runner,
+        message="[company_intelligence] runtime arrêté",
+        logger=logger,
+    )
     _stop_pool(
         universe_intelligence_runner,
         message="[universe_intelligence] runner arrêté",

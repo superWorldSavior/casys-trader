@@ -145,6 +145,7 @@ def tick(
     override_fn=None,
     prepared_universe_fn=None,
     candidate_scope_observer=None,
+    universe_activation_observer=None,
     radar_score_audit_observer=None,
     market_context=None,
     news_challenger_fn=None,
@@ -160,6 +161,8 @@ def tick(
         candidate_scope_observer: callback best-effort appelé pour chaque parent
             de clôture et chaque enfant final pré-open à persister hors
             ``venue_state``.
+        universe_activation_observer: projection best-effort du mandat réellement
+            activé; une préparation seule ne lui est jamais transmise comme active.
         radar_score_audit_observer: callback best-effort qui persiste le comparatif
             score courant vs shadow. Sa sortie ne participe jamais à la sélection.
         market_context: dict optionnel transmis au payload override (v1 : regime_families).
@@ -313,6 +316,7 @@ def tick(
             ][: params.cap_m]
 
             final_hotlist = default_hotlist  # fail-safe
+            prepared = None
             fallback_used = False
             fallback_reason = None
             agent_run_id = None
@@ -321,7 +325,6 @@ def tick(
             rejected: list[dict] = []
 
             if prepared_universe_fn is not None:
-                prepared = None
                 if venue_meta.get("scope_phase") == "close":
                     # Le parent reste un fallback quantitatif valide, mais ne
                     # doit jamais être pris pour une préparation intelligente.
@@ -406,6 +409,26 @@ def tick(
                     for candidate in candidates
                 )
             ]
+            activation_observation_status = "not_configured"
+            activation_observation_ref = None
+            activation_observation_error = None
+            if universe_activation_observer is not None:
+                try:
+                    activation_observation_ref = universe_activation_observer(
+                        {
+                            "venue": venue,
+                            "candidate_scope_id": candidate_scope_id,
+                            "as_of": now_iso,
+                            "selected_hotlist": list(final_hotlist),
+                            "agent_run_id": agent_run_id,
+                            "fallback_used": fallback_used,
+                            "fallback_reason": fallback_reason,
+                        }
+                    )
+                    activation_observation_status = "persisted"
+                except Exception as exc:  # noqa: BLE001 - mandate context never gates activation
+                    activation_observation_status = "error"
+                    activation_observation_error = exc.__class__.__name__
             attempt_token = ":".join(
                 (
                     candidate_scope_id or "missing-scope",
@@ -456,6 +479,9 @@ def tick(
                 venue_entry["last_universe_activation_status"] = (
                     "fallback" if fallback_used else "success"
                 )
+                venue_entry["last_universe_mandate_observation_status"] = activation_observation_status
+                venue_entry["last_universe_mandate_observation_ref"] = activation_observation_ref
+                venue_entry["last_universe_mandate_observation_error"] = activation_observation_error
                 if not fallback_used:
                     # A pending/missing/error fallback is an attempt, not a
                     # terminal activation: a prepared run arriving later in the

@@ -7,15 +7,16 @@ import json
 import logging
 import os
 import threading
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
 
 from trader.application.analyst import NewsMacroAnalysisRequest, run_news_macro_analysis
 from trader.domain.semantic.catalog import family_for_symbol
-from trader.domain.universe import candidate_scope_id
+from trader.domain.universe import candidate_scope_id, project_company_briefs_to_universe_context
 from trader.infrastructure.state_db.candidate_scope_store import CandidateScopeStore
+from trader.infrastructure.state_db.company_intelligence_store import CompanyIntelligenceStore
 from trader.infrastructure.state_db.situation_brief_store import NewsMacroBriefStore
 from trader.infrastructure.state_db.situation_memory_store import SituationMemoryStore
 from trader.market import macro_calendar
@@ -47,6 +48,7 @@ def tick_news_macro_analysis(
     analyst: object | None = None,
     brief_store: NewsMacroBriefStore | None = None,
     situation_store: SituationMemoryStore | None = None,
+    company_store: CompanyIntelligenceStore | None = None,
     scope_store: CandidateScopeStore | None = None,
     venues: Iterable[str] = VENUES,
     stop_requested: Callable[[], bool] | None = None,
@@ -62,6 +64,7 @@ def tick_news_macro_analysis(
     store = brief_store or NewsMacroBriefStore(Path(state_dir) / "news_briefs")
     memory = situation_store
     scopes = scope_store or CandidateScopeStore(Path(state_dir) / "candidate_scopes")
+    companies = company_store or CompanyIntelligenceStore(Path(state_dir) / "company_intelligence")
     status_path = Path(state_dir) / "news_macro_analysis_status.json"
     status = _load_status(status_path)
     state_path = Path(state_dir)
@@ -108,6 +111,22 @@ def tick_news_macro_analysis(
             news_items=venue_news,
             global_news_items=venue_global_news,
         )
+        company_anchor_symbols = _company_anchor_symbols(
+            candidate_records=candidate_records,
+            venue_news=venue_news,
+        )
+        company_context = project_company_briefs_to_universe_context(
+            companies.read_current_many(company_anchor_symbols),
+            candidate_symbols=company_anchor_symbols,
+            active_at=now,
+            mode="active",
+        )
+        company_anchors = _company_news_anchors(company_context.to_dict().get("symbols") or {})
+        company_brief_refs = {
+            symbol: dict(anchor["brief_ref"])
+            for symbol, anchor in company_anchors.items()
+            if isinstance(anchor.get("brief_ref"), Mapping)
+        }
         if not venue_news and not venue_global_news and not macro_next and not macro_series:
             skipped.append({"venue": venue, "reason": "no_inputs"})
             continue
@@ -132,6 +151,7 @@ def tick_news_macro_analysis(
                 global_news_items=venue_global_news,
                 macro_series=macro_series,
             ),
+            "company_brief_refs": company_brief_refs,
         }
         signature = _input_signature(
             venue=venue,
@@ -147,7 +167,11 @@ def tick_news_macro_analysis(
                     {"venue": venue, "reason": "active_brief_same_scope_and_inputs"}
                 )
                 continue
-            if _success_refresh_cooldown_active(venue_status, now=now):
+            company_refs_changed = _company_brief_refs_changed(
+                venue_status,
+                company_brief_refs,
+            )
+            if not company_refs_changed and _success_refresh_cooldown_active(venue_status, now=now):
                 skipped.append(
                     {"venue": venue, "reason": "active_brief_changed_inputs_cooldown"}
                 )
@@ -166,6 +190,7 @@ def tick_news_macro_analysis(
             macro_series=macro_series,
             candidate_symbols=candidate_symbols,
             family_context=family_context,
+            company_anchors=company_anchors,
             input_refs=input_refs,
         )
         if analyst is None:
@@ -185,6 +210,7 @@ def tick_news_macro_analysis(
                 "last_success_at": now.isoformat(),
                 "last_input_signature": signature,
                 "last_brief_ref": result.brief_ref,
+                "last_company_brief_refs": company_brief_refs,
                 "last_failure_at": None,
                 "last_error": None,
             }
@@ -195,6 +221,7 @@ def tick_news_macro_analysis(
                 **(status.get(venue) if isinstance(status.get(venue), dict) else {}),
                 "last_failure_at": now.isoformat(),
                 "last_input_signature": signature,
+                "last_company_brief_refs": company_brief_refs,
                 "last_error": {
                     "code": result.error_code,
                     "message": result.error_message,
@@ -612,6 +639,53 @@ def _brief_matches_candidate_scope(brief: Any, scope_id: str) -> bool:
 
 def _candidate_symbols(candidate_records: Iterable[dict]) -> list[str]:
     return _unique_nonempty(str(item.get("symbol") or "").strip() for item in candidate_records)
+
+
+def _company_anchor_symbols(
+    *,
+    candidate_records: Iterable[dict],
+    venue_news: Iterable[dict],
+) -> tuple[str, ...]:
+    symbols = [str(item.get("symbol") or "").strip() for item in venue_news]
+    symbols.extend(
+        str(candidate.get("symbol") or "").strip()
+        for candidate in candidate_records
+        if isinstance(candidate.get("fresh_news"), Mapping)
+    )
+    return tuple(_unique_nonempty(symbols))
+
+
+def _company_news_anchors(raw_symbols: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
+    anchors: dict[str, dict[str, Any]] = {}
+    for raw_symbol, raw_entry in raw_symbols.items():
+        symbol = str(raw_symbol or "").strip()
+        entry = dict(raw_entry) if isinstance(raw_entry, Mapping) else {}
+        brief_ref = entry.get("brief_ref")
+        if not symbol or not isinstance(brief_ref, Mapping):
+            continue
+        brief_id = str(brief_ref.get("brief_id") or "").strip()
+        if not brief_id:
+            continue
+        anchors[symbol] = {
+            "anchor_ref": f"company_brief:{symbol}:{brief_id}",
+            "brief_ref": dict(brief_ref),
+            "status": entry.get("status"),
+            "company_thesis_status": entry.get("company_thesis_status"),
+            "summary": entry.get("summary"),
+            "drivers": list(entry.get("drivers") or ())[:2],
+            "catalysts": list(entry.get("catalysts") or ())[:2],
+            "risks": list(entry.get("risks") or ())[:2],
+            "selection_view": dict(entry.get("selection_view") or {}),
+            "security_readiness": entry.get("security_readiness"),
+        }
+    return anchors
+
+
+def _company_brief_refs_changed(raw_status: Any, current: Mapping[str, Any]) -> bool:
+    if not isinstance(raw_status, Mapping):
+        return bool(current)
+    previous = raw_status.get("last_company_brief_refs")
+    return dict(previous) != dict(current) if isinstance(previous, Mapping) else bool(current)
 
 
 def _filter_news_for_venue(

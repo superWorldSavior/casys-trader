@@ -11,13 +11,16 @@ from trader.domain.universe.intelligence import (
     DEFAULT_MAX_SITUATION_POINTS,
     DEFAULT_MAX_SITUATION_TEXT_CHARS,
     UNCLASSIFIED_FAMILY,
+    UniverseCompanyContext,
     UniverseSituationContext,
     build_family_snapshot,
     candidate_scope_id,
     enrich_candidates_with_family,
     project_brief_to_universe_context,
+    project_company_briefs_to_universe_context,
 )
 from trader.domain.universe.global_family_board import build_global_family_board
+from trader.domain.universe.mandate import SymbolMandate, UniverseMandate
 from trader.domain.universe.news_challengers import (
     NewsChallenger,
     NewsChallengerEvidence,
@@ -44,8 +47,11 @@ __all__ = [
     "NewsChallengerEvidence",
     "NewsChallengerSelection",
     "RADAR_CANDIDATES_TOP",
+    "SymbolMandate",
     "UNCLASSIFIED_FAMILY",
+    "UniverseCompanyContext",
     "UniverseSituationContext",
+    "UniverseMandate",
     "UserOverrides",
     "apply_hysteresis",
     "apply_override",
@@ -60,6 +66,7 @@ __all__ = [
     "emergency_exits",
     "enrich_candidates_with_family",
     "project_brief_to_universe_context",
+    "project_company_briefs_to_universe_context",
     "merge_news_challengers",
     "retained_news_challengers",
     "select_news_challengers",

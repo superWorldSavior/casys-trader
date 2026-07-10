@@ -6,6 +6,7 @@ __all__ = [
     "cycle_dispatch",
     "cycle_finalization",
     "cycle_reporting",
+    "company_intelligence_runtime",
     "data_source_runtime",
     "daemon_bootstrap",
     "daemon",
@@ -18,5 +19,6 @@ __all__ = [
     "pid_file",
     "queue_runtime",
     "runtime_shutdown",
+    "trader_research_context",
     "universe_intelligence_runtime",
 ]

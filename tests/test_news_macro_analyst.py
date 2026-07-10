@@ -20,6 +20,14 @@ def test_news_macro_prompt_contains_bounded_contract() -> None:
             news_items=({"uuid": "u1", "title": "Markets fall", "publisher": "Reuters"},),
             macro_next=({"event": "FOMC", "in_h": 12},),
             candidate_symbols=("TSM",),
+            company_anchors={
+                "TSM": {
+                    "anchor_ref": "company_brief:TSM:brief-1",
+                    "brief_ref": {"brief_id": "brief-1"},
+                    "company_thesis_status": "intact",
+                    "summary": "AI demand remains the central pillar.",
+                }
+            },
         )
     )
 
@@ -30,6 +38,9 @@ def test_news_macro_prompt_contains_bounded_contract() -> None:
     assert "direction" in prompt
     assert "source_refs" in prompt
     assert "Reuters" in prompt
+    assert "AI demand remains the central pillar" in prompt
+    assert "company_brief:TSM:brief-1" in prompt
+    assert "confirme, infirme ou change" in prompt
 
 
 def test_news_macro_prompt_contains_global_macro_and_family_context() -> None:

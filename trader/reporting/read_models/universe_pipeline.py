@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import sqlite3
 from pathlib import Path
 from typing import Any
 
@@ -259,7 +260,13 @@ def _brief_pipeline_entry(
     }
 
 
-def _agent_pipeline_entry(*, venue: str, projection: dict[str, Any] | None, projection_status: str) -> dict[str, Any]:
+def _agent_pipeline_entry(
+    *,
+    venue: str,
+    projection: dict[str, Any] | None,
+    projection_status: str,
+    company_queue: dict[str, int],
+) -> dict[str, Any]:
     if projection is not None and str(projection.get("venue") or "").upper() != venue:
         projection = None
         projection_status = "unavailable"
@@ -271,6 +278,8 @@ def _agent_pipeline_entry(*, venue: str, projection: dict[str, Any] | None, proj
             "hotlist_count": 0,
             "challenger_count": 0,
             "coverage": {},
+            "company_context_coverage": {},
+            "company_queue": company_queue,
         }
     run_id = str(projection.get("agent_run_id") or "").strip() or None
     hotlist = _safe_string_list(projection.get("selected_hotlist"))
@@ -293,6 +302,17 @@ def _agent_pipeline_entry(*, venue: str, projection: dict[str, Any] | None, proj
         "challenger_count": len(challengers),
         "selected_challengers": challengers,
         "coverage": dict(coverage) if isinstance(coverage, dict) else {},
+        "company_context_mode": projection.get("company_context_mode"),
+        "company_context_coverage": (
+            dict(projection.get("company_context_coverage"))
+            if isinstance(projection.get("company_context_coverage"), dict)
+            else {}
+        ),
+        "selected_with_company_context": len(_safe_string_list(projection.get("selected_with_company_context"))),
+        "selected_without_company_context": len(
+            _safe_string_list(projection.get("selected_without_company_context"))
+        ),
+        "company_queue": company_queue,
     }
 
 
@@ -302,7 +322,10 @@ def _activation_pipeline_entry(
     ledger_row: dict[str, Any] | None,
     ledger_status: str,
     venue_entry: dict[str, Any],
+    mandate_projection: dict[str, Any] | None,
 ) -> dict[str, Any]:
+    mandate_status = str((mandate_projection or {}).get("status") or "pending")
+    mandate_id = (mandate_projection or {}).get("mandate_id")
     if ledger_row is not None:
         overrides = ledger_row.get("overrides")
         overrides = overrides if isinstance(overrides, dict) else {}
@@ -331,6 +354,9 @@ def _activation_pipeline_entry(
             "selected_hotlist": list(hotlist) if isinstance(hotlist, list) else [],
             "challenger_count": (len(challengers) if isinstance(challengers, list) else 0),
             "selected_challengers": (list(challengers) if isinstance(challengers, list) else []),
+            "mandate_status": mandate_status,
+            "mandate_id": mandate_id,
+            "mandate_id_short": _short_pipeline_id(mandate_id),
         }
 
     venue_has_activation = bool(
@@ -356,6 +382,9 @@ def _activation_pipeline_entry(
             "selected_hotlist": list(hotlist) if isinstance(hotlist, list) else [],
             "challenger_count": 0,
             "selected_challengers": [],
+            "mandate_status": mandate_status,
+            "mandate_id": mandate_id,
+            "mandate_id_short": _short_pipeline_id(mandate_id),
         }
 
     return {
@@ -373,7 +402,30 @@ def _activation_pipeline_entry(
         "selected_hotlist": [],
         "challenger_count": 0,
         "selected_challengers": [],
+        "mandate_status": mandate_status,
+        "mandate_id": mandate_id,
+        "mandate_id_short": _short_pipeline_id(mandate_id),
     }
+
+
+def _company_queue_counts(path: Path) -> dict[str, int]:
+    if not path.exists():
+        return {"pending": 0, "running": 0, "dead": 0}
+    try:
+        connection = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        try:
+            rows = connection.execute(
+                "SELECT status, COUNT(*) FROM tasks WHERE kind='company_micro' GROUP BY status"
+            ).fetchall()
+        finally:
+            connection.close()
+    except (OSError, sqlite3.Error):
+        return {"pending": 0, "running": 0, "dead": 0}
+    counts = {"pending": 0, "running": 0, "dead": 0}
+    for status, count in rows:
+        if status in counts:
+            counts[str(status)] = max(0, int(count))
+    return counts
 
 
 def load_universe_pipeline(state_dir: Path, venue_state: dict[str, Any]) -> dict[str, dict]:
@@ -382,6 +434,7 @@ def load_universe_pipeline(state_dir: Path, venue_state: dict[str, Any]) -> dict
     venues_state = venue_state.get("venues") if isinstance(venue_state, dict) else {}
     venues_state = venues_state if isinstance(venues_state, dict) else {}
     activations, ledger_status = _latest_activations_by_venue_safe(state_dir / "rotation_ledger.jsonl")
+    company_queue = _company_queue_counts(state_dir / "company_research_tasks.db")
     pipeline: dict[str, dict] = {}
     for venue in _UNIVERSE_PIPELINE_VENUES:
         venue_entry = venues_state.get(venue)
@@ -394,6 +447,9 @@ def load_universe_pipeline(state_dir: Path, venue_state: dict[str, Any]) -> dict
         )
         brief_raw, brief_projection_status = _read_projection_safe(state_dir / "news_briefs" / f"latest-{venue}.jsonl")
         agent_raw, agent_projection_status = _read_projection_safe(state_dir / "universe_runs" / f"latest-{venue}.json")
+        mandate_raw, _mandate_projection_status = _read_projection_safe(
+            state_dir / "universe_mandates" / "active" / "venues" / f"{venue}.json"
+        )
         scope = _scope_pipeline_entry(
             venue=venue,
             projection=scope_raw,
@@ -418,12 +474,14 @@ def load_universe_pipeline(state_dir: Path, venue_state: dict[str, Any]) -> dict
                 venue=venue,
                 projection=agent_raw,
                 projection_status=agent_projection_status,
+                company_queue=company_queue,
             ),
             "activation": _activation_pipeline_entry(
                 venue=venue,
                 ledger_row=activations.get(venue),
                 ledger_status=ledger_status,
                 venue_entry=venue_entry,
+                mandate_projection=mandate_raw,
             ),
         }
     return pipeline

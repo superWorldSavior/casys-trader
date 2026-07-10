@@ -22,6 +22,7 @@ StatusWriter: TypeAlias = Callable[..., None]
 EventAppender: TypeAlias = Callable[..., None]
 NewsSnapshotProvider: TypeAlias = Callable[[str, datetime], ReportPayload]
 BriefRefProvider: TypeAlias = Callable[[str, datetime], dict[str, str] | None]
+ResearchSliceProvider: TypeAlias = Callable[[str], dict[str, Any] | None]
 MergeGateFeedback: TypeAlias = Callable[[object, object, object], str | None]
 
 
@@ -138,6 +139,8 @@ class DecisionRecorder:
     merge_gate_feedback: MergeGateFeedback | None = None
     model_calls_used_getter: Callable[[], int] = lambda: 0
     agent_trace_path: Path | None = None
+    company_context_provider: ResearchSliceProvider | None = None
+    mandate_context_provider: ResearchSliceProvider | None = None
 
     def record(self, decision_entry: DecisionEntry) -> None:
         symbol = str(decision_entry["symbol"])
@@ -158,6 +161,22 @@ class DecisionRecorder:
             brief_ref = self.brief_ref_provider(symbol, self.now)
             if brief_ref is not None:
                 decision_entry["news"] = {**news, "brief_ref": brief_ref}
+
+        if self.company_context_provider is not None:
+            company_context = self.company_context_provider(symbol)
+            if isinstance(company_context, dict):
+                company_ref = company_context.get("brief_ref")
+                decision_entry["company_context_status"] = company_context.get("status")
+                decision_entry["company_brief_refs"] = (
+                    [dict(company_ref)] if isinstance(company_ref, dict) else []
+                )
+        if self.mandate_context_provider is not None:
+            mandate_context = self.mandate_context_provider(symbol)
+            if isinstance(mandate_context, dict):
+                mandate_ref = mandate_context.get("mandate_ref")
+                decision_entry["mandate_ref"] = (
+                    dict(mandate_ref) if isinstance(mandate_ref, dict) else None
+                )
 
         if self.merge_gate_feedback is not None:
             note = self.merge_gate_feedback(

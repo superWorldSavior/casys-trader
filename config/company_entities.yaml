@@ -1,0 +1,7 @@
+# Exceptions d'identité uniquement. Ne pas stocker de faits de recherche ici.
+#
+# Exemple :
+# SAP.DE:
+#   lei: 529900D6BF99LW9R2E68
+#   filings_xbrl_entity_id: 529900D6BF99LW9R2E68
+{}

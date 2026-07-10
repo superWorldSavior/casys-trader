@@ -17,6 +17,7 @@ BuildMarketContextFn = Callable[[object], object]
 BuildNewsChallengerFn = Callable[..., object]
 BuildPreparedUniverseFn = Callable[[Path], object]
 BuildCandidateScopeObserverFn = Callable[[Path], object]
+BuildUniverseActivationObserverFn = Callable[[Path], object]
 BuildRadarScoreAuditObserverFn = Callable[[Path], object]
 RotationTickFn = Callable[..., object]
 PositionsFn = Callable[[], dict]
@@ -129,6 +130,34 @@ def build_candidate_scope_observer(state_dir: str | Path) -> Callable[[dict], No
     return _observe
 
 
+def build_universe_activation_observer(state_dir: str | Path) -> Callable[[dict], dict]:
+    """Activate only the mandate slice selected by the synchronous venue path."""
+
+    from trader.infrastructure.state_db.universe_mandate_store import UniverseMandateStore
+
+    store = UniverseMandateStore(Path(state_dir) / "universe_mandates")
+
+    def _observe(record: dict) -> dict:
+        payload = store.activate(
+            venue=str(record.get("venue") or ""),
+            candidate_scope_id=str(record.get("candidate_scope_id") or ""),
+            as_of=str(record.get("as_of") or ""),
+            selected_symbols=record.get("selected_hotlist") or (),
+            fallback_reason=(
+                str(record.get("fallback_reason") or "fallback")
+                if record.get("fallback_used")
+                else None
+            ),
+        )
+        return {
+            "mandate_id": payload.get("mandate_id"),
+            "candidate_scope_id": payload.get("candidate_scope_id"),
+            "status": payload.get("status"),
+        }
+
+    return _observe
+
+
 def build_radar_score_audit_observer(state_dir: str | Path) -> Callable[[dict], dict]:
     """Persist the shadow score audit without affecting rotation selection."""
 
@@ -210,6 +239,7 @@ def tick_market_rotation(
     build_news_challenger_fn: BuildNewsChallengerFn | None = None,
     build_prepared_universe_provider_fn: BuildPreparedUniverseFn | None = None,
     build_candidate_scope_observer_fn: BuildCandidateScopeObserverFn | None = None,
+    build_universe_activation_observer_fn: BuildUniverseActivationObserverFn | None = None,
     build_radar_score_audit_observer_fn: BuildRadarScoreAuditObserverFn | None = None,
     rotation_tick_fn: RotationTickFn | None = None,
 ) -> None:
@@ -244,6 +274,9 @@ def tick_market_rotation(
         if build_candidate_scope_observer_fn is None:
             build_candidate_scope_observer_fn = build_candidate_scope_observer
         candidate_scope_observer = build_candidate_scope_observer_fn(state_dir)
+        if build_universe_activation_observer_fn is None:
+            build_universe_activation_observer_fn = build_universe_activation_observer
+        universe_activation_observer = build_universe_activation_observer_fn(state_dir)
         if build_radar_score_audit_observer_fn is None:
             build_radar_score_audit_observer_fn = build_radar_score_audit_observer
         radar_score_audit_observer = build_radar_score_audit_observer_fn(state_dir)
@@ -268,6 +301,7 @@ def tick_market_rotation(
             override_fn=override_fn,
             prepared_universe_fn=prepared_universe_fn,
             candidate_scope_observer=candidate_scope_observer,
+            universe_activation_observer=universe_activation_observer,
             radar_score_audit_observer=radar_score_audit_observer,
             sticky_fn=build_sticky_fn(state_dir),
             market_context=market_context,

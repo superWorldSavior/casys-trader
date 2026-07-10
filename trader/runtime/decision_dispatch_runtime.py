@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Callable, Iterator
 
@@ -59,6 +59,8 @@ class DecisionDispatchRequest:
     opening_intents: frozenset[str] | set[str]
     model_call_counter: ModelCallCounter
     now_fn: Callable[[], float]
+    company_context_by_symbol: dict[str, dict] = field(default_factory=dict)
+    mandate_context_by_symbol: dict[str, dict] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -139,6 +141,8 @@ def dispatch_decisions(
         indicator_request_resolver=request.indicator_request_resolver,
         event_appender=request.event_appender,
         bar_timeframe_by_symbol=request.analysis_timeframe_by_symbol,
+        company_context_by_symbol=request.company_context_by_symbol,
+        mandate_context_by_symbol=request.mandate_context_by_symbol,
     )
     request.model_call_counter.used = model_calls_used
     return DecisionDispatchResult(
@@ -185,6 +189,8 @@ def _dispatch_via_queue(
                 recent_decisions_by_symbol=recent,
                 bars_by_symbol=request.analysis_bars_by_symbol,
                 bar_timeframe_by_symbol=request.analysis_timeframe_by_symbol,
+                company_context_by_symbol=request.company_context_by_symbol,
+                mandate_context_by_symbol=request.mandate_context_by_symbol,
             ),
         }
         for symbol in request.decidable

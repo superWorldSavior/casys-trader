@@ -12,6 +12,7 @@ from trader.domain.universe import candidate_scope_id
 from trader.infrastructure.state_db.candidate_scope_store import CandidateScopeStore
 from trader.infrastructure.state_db.situation_brief_store import NewsMacroBriefStore
 from trader.infrastructure.state_db.universe_run_store import UniverseRunStore
+from trader.infrastructure.state_db.universe_mandate_store import UniverseMandateStore
 from trader.runtime import universe_intelligence_runtime
 
 
@@ -197,6 +198,8 @@ def test_tick_prepares_three_independent_venue_runs_with_briefs_and_families(tmp
         assert "GLOBAL" in context["zones"]
         assert "OUTSIDE" not in context["symbols"]
         assert "input_refs" not in json.dumps(context)
+        assert request.company_context.mode == "active"
+        assert request.company_context.coverage["missing"] == 2
 
         prepared = UniverseRunStore(state_dir / "universe_runs").read_prepared(
             request.candidate_scope_id
@@ -220,6 +223,15 @@ def test_tick_prepares_three_independent_venue_runs_with_briefs_and_families(tmp
         assert prepared["global_family_board"]["board_id"] == (
             request.global_family_board["board_id"]
         )
+        assert prepared["company_context_mode"] == "active"
+        assert prepared["company_context_coverage"]["missing"] == 2
+        mandate = UniverseMandateStore(state_dir / "universe_mandates").read_prepared(
+            request.candidate_scope_id
+        )
+        assert mandate is not None
+        assert mandate["status"] == "prepared"
+        assert list(mandate["symbols"]) == [request.candidate_symbols[-1]]
+        assert mandate["symbols"][request.candidate_symbols[-1]]["why_selected"]
 
 
 def test_tick_universe_intelligence_waits_for_preopen_child_scope(tmp_path) -> None:

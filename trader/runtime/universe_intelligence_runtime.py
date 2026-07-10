@@ -14,20 +14,27 @@ from pathlib import Path
 from typing import Any, Callable
 from uuid import uuid4
 
+import yaml
+
 from trader.application.universe import (
     UniverseCompositionAgent,
     build_universe_composition_request,
     compose_universe,
 )
 from trader.domain.universe import (
+    SymbolMandate,
     UniverseSituationContext,
+    UniverseMandate,
     build_global_family_board,
+    project_company_briefs_to_universe_context,
     project_brief_to_universe_context,
 )
 from trader.infrastructure.state_db.candidate_scope_store import CandidateScopeStore
+from trader.infrastructure.state_db.company_intelligence_store import CompanyIntelligenceStore
 from trader.infrastructure.state_db.global_family_board_store import GlobalFamilyBoardStore
 from trader.infrastructure.state_db.situation_brief_store import NewsMacroBriefStore
 from trader.infrastructure.state_db.universe_run_store import UniverseRunStore
+from trader.infrastructure.state_db.universe_mandate_store import UniverseMandateStore
 from trader.runtime.protocols import LoggerLike
 
 VENUES = ("TW", "EU", "US")
@@ -52,12 +59,13 @@ def tick_universe_intelligence(
     brief_store: NewsMacroBriefStore | None = None,
     run_store: UniverseRunStore | None = None,
     family_board_store: GlobalFamilyBoardStore | None = None,
+    company_store: CompanyIntelligenceStore | None = None,
+    mandate_store: UniverseMandateStore | None = None,
     venues: Iterable[str] = VENUES,
     stop_requested: Callable[[], bool] | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
     """Prepare exact per-scope selections outside the synchronous daemon path."""
 
-    del config_dir  # Reserved for the future universe-agent model/profile config.
     if os.getenv("CASYS_UNIVERSE_INTELLIGENCE_ENABLED", "1") == "0":
         return {
             "prepared": [],
@@ -75,6 +83,9 @@ def tick_universe_intelligence(
     family_boards = family_board_store or GlobalFamilyBoardStore(
         state_path / "global_family_boards"
     )
+    companies = company_store or CompanyIntelligenceStore(state_path / "company_intelligence")
+    mandates = mandate_store or UniverseMandateStore(state_path / "universe_mandates")
+    company_context_mode = _company_context_mode(Path(config_dir))
     market_context = _load_market_context(state_path / "last_regime.json", now=now)
     global_family_board, family_board_ref = _prepare_global_family_board(
         scopes=scopes,
@@ -140,6 +151,20 @@ def tick_universe_intelligence(
             active_at=now,
             coverage_metadata=coverage_metadata,
         )
+        candidate_symbols = tuple(item["symbol"] for item in candidates)
+        company_context = project_company_briefs_to_universe_context(
+            companies.read_current_many(candidate_symbols),
+            candidate_symbols=candidate_symbols,
+            active_at=now,
+            mode=company_context_mode,
+        )
+        company_context_payload = company_context.to_dict()
+        company_context_hash = _request_signature(company_context_payload)
+        company_brief_refs = {
+            symbol: dict(entry["brief_ref"])
+            for symbol, entry in company_context.symbols.items()
+            if isinstance(entry.get("brief_ref"), Mapping)
+        }
         try:
             request = build_universe_composition_request(
                 venue=venue,
@@ -149,6 +174,7 @@ def tick_universe_intelligence(
                 sticky=sticky,
                 market_context=market_context,
                 situation_context=situation_context,
+                company_context=company_context,
                 global_family_board=global_family_board,
             )
         except Exception as exc:
@@ -265,6 +291,10 @@ def tick_universe_intelligence(
                 "situation_point_count": situation_context.point_count,
                 "situation_truncated": situation_context.truncated,
                 "coverage": dict(situation_context.coverage),
+                "company_context_mode": company_context.mode,
+                "company_context_hash": company_context_hash,
+                "company_brief_refs_by_symbol": company_brief_refs,
+                "company_context_coverage": dict(company_context.coverage),
                 "agent_provider": result.agent_provider,
                 "agent_model": result.agent_model,
                 "agent_provider_fallback_reason": result.agent_provider_fallback_reason,
@@ -279,12 +309,32 @@ def tick_universe_intelligence(
                     "summary": decision.summary,
                     "family_postures": dict(decision.family_postures),
                     "symbol_rationales": dict(decision.symbol_rationales),
+                    "symbol_mandates": dict(decision.symbol_mandates),
                     "contract_version": decision.contract_version,
                     "selected_challengers": _selected_challengers(candidates, selected),
                     "add": [symbol for symbol in selected if symbol not in baseline],
                     "remove": [symbol for symbol in baseline if symbol not in selected],
+                    "selected_with_company_context": [
+                        symbol for symbol in selected if symbol in company_brief_refs
+                    ],
+                    "selected_without_company_context": [
+                        symbol for symbol in selected if symbol not in company_brief_refs
+                    ],
                 }
             )
+            try:
+                prepared_mandate = _build_prepared_mandate(
+                    request=request,
+                    decision=decision,
+                    record=record,
+                    valid_until=brief.valid_until,
+                )
+                record["mandate_prepared_ref"] = mandates.write_prepared(prepared_mandate)
+            except Exception as exc:  # noqa: BLE001 - selection remains usable without trader context
+                record["mandate_prepared_error"] = {
+                    "code": exc.__class__.__name__,
+                    "message": str(exc)[:300],
+                }
             try:
                 # The reconstructible projection is written first: a canonical
                 # success must never claim readiness when no activation file exists.
@@ -572,6 +622,17 @@ def _coverage_metadata(raw: Any) -> dict[str, Any]:
     }
 
 
+def _company_context_mode(config_dir: Path) -> str:
+    if os.getenv("CASYS_UNIVERSE_COMPANY_CONTEXT_ENABLED", "1") == "0":
+        return "observe"
+    try:
+        payload = yaml.safe_load((config_dir / "company_intelligence.yaml").read_text(encoding="utf-8")) or {}
+    except (OSError, yaml.YAMLError):
+        payload = {}
+    mode = str(payload.get("universe_company_context_mode") or "active").strip().lower()
+    return mode if mode in {"observe", "active"} else "observe"
+
+
 def _load_market_context(path: Path, *, now: datetime) -> dict[str, Any]:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
@@ -660,6 +721,49 @@ def _selected_challengers(candidates: tuple[dict[str, Any], ...], selected: list
         for candidate in candidates
         if candidate.get("symbol") in selected_set and candidate.get("fresh_news")
     ]
+
+
+def _build_prepared_mandate(
+    *,
+    request: Any,
+    decision: Any,
+    record: Mapping[str, Any],
+    valid_until: str | None,
+) -> UniverseMandate:
+    family_by_symbol = {
+        str(candidate.get("symbol") or ""): str(candidate.get("family") or "")
+        for candidate in request.candidates
+    }
+    symbols: dict[str, SymbolMandate] = {}
+    for symbol in decision.selected_hotlist:
+        supplied = decision.symbol_mandates.get(symbol) if isinstance(decision.symbol_mandates, Mapping) else None
+        raw = dict(supplied) if isinstance(supplied, Mapping) else {}
+        family = family_by_symbol.get(symbol, "")
+        company_context = request.company_context.symbols.get(symbol)
+        company_entry = dict(company_context) if isinstance(company_context, Mapping) else {}
+        raw.update(
+            {
+                "why_selected": raw.get("why_selected") or decision.symbol_rationales.get(symbol, ""),
+                "family_context": request.family_snapshot.get(family, {}),
+                "company_context": company_entry,
+                "company_brief_ref": company_entry.get("brief_ref") or {},
+                "confidence": (company_entry.get("selection_view") or {}).get("confidence", "unknown")
+                if isinstance(company_entry.get("selection_view"), Mapping)
+                else "unknown",
+            }
+        )
+        symbols[symbol] = SymbolMandate.from_mapping(symbol, raw)
+    agent_run_id = str(record.get("agent_run_id") or "")
+    return UniverseMandate(
+        mandate_id=f"universe-mandate:v1:{_request_signature([request.candidate_scope_id, agent_run_id])}",
+        candidate_scope_id=request.candidate_scope_id,
+        venue=request.venue,
+        agent_run_id=agent_run_id,
+        as_of=str(record.get("as_of") or request.as_of),
+        valid_until=valid_until,
+        status="prepared",
+        symbols=symbols,
+    )
 
 
 def _ensure_utc(value: datetime) -> datetime:

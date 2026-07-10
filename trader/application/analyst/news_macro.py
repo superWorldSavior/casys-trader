@@ -20,6 +20,8 @@ class NewsMacroAnalysisRequest:
     # Upstream shortlist (radar top 40 + qualified challengers), never the hotlist.
     candidate_symbols: tuple[str, ...] = ()
     family_context: dict[str, dict] | None = None
+    # Compact durable company anchors for symbols touched by current news.
+    company_anchors: dict[str, dict] | None = None
     input_refs: dict | None = None
 
 

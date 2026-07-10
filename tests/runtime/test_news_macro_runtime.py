@@ -5,8 +5,10 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from trader.domain.situation import NewsMacroBrief
+from trader.domain.company import CompanyIntelligenceBrief
 from trader.domain.universe import candidate_scope_id
 from trader.infrastructure.state_db.candidate_scope_store import CandidateScopeStore
+from trader.infrastructure.state_db.company_intelligence_store import CompanyIntelligenceStore
 from trader.infrastructure.state_db.situation_memory_store import SituationMemoryStore
 from trader.runtime import news_macro_runtime
 
@@ -139,6 +141,30 @@ def _write_candidate_scope(
 
 def _write_venue_state(state_dir) -> None:
     _write_candidate_scope(state_dir)
+
+
+def _write_company_brief(state_dir, *, signature: str) -> None:
+    brief = CompanyIntelligenceBrief.from_mapping(
+        {
+            "symbol": "AIR.PA",
+            "as_of": "2026-07-09T08:30:00+00:00",
+            "input_signature": signature,
+            "depth": "screen",
+            "issuer_identity": {"issuer_name": "Airbus", "identity_status": "verified"},
+            "coverage": {"status": "partial"},
+            "business": {
+                "summary": "Commercial aerospace leader.",
+                "source_refs": [f"company:{signature}"],
+                "freshness": {"freshness": "fresh"},
+            },
+            "company_thesis": {"status": "intact", "summary": f"Thesis {signature}"},
+            "selection_view": {"posture": "neutral", "confidence": "medium"},
+            "security_readiness": "conditional",
+            "source_refs": [f"company:{signature}"],
+        }
+    )
+    assert brief is not None
+    CompanyIntelligenceStore(state_dir / "company_intelligence").append(brief)
 
 
 def test_tick_news_macro_analysis_writes_jsonl_and_indexes_memory(tmp_path) -> None:
@@ -314,6 +340,41 @@ def test_tick_news_macro_analysis_refreshes_changed_inputs_after_cooldown(tmp_pa
         "u-air-1",
         "u-air-2",
     }
+
+
+def test_new_company_brief_bypasses_ordinary_news_refresh_cooldown(tmp_path) -> None:
+    state_dir = tmp_path / "state"
+    config_dir = tmp_path / "config"
+    state_dir.mkdir()
+    config_dir.mkdir()
+    now = datetime(2026, 7, 9, 9, 0, tzinfo=timezone.utc)
+    _write_venue_state(state_dir)
+    _write_jsonl(
+        state_dir / "news_items" / "2026-07-09.jsonl",
+        [{"uuid": "u-air-1", "symbol": "AIR.PA", "title": "Airbus note"}],
+    )
+    _write_company_brief(state_dir, signature="sig-1")
+    analyst = FakeAnalyst()
+    news_macro_runtime.tick_news_macro_analysis(
+        config_dir=config_dir,
+        state_dir=state_dir,
+        loop_now=now,
+        analyst=analyst,
+        venues=("EU",),
+    )
+    _write_company_brief(state_dir, signature="sig-2")
+
+    refreshed = news_macro_runtime.tick_news_macro_analysis(
+        config_dir=config_dir,
+        state_dir=state_dir,
+        loop_now=now + timedelta(hours=1),
+        analyst=analyst,
+        venues=("EU",),
+    )
+
+    assert refreshed["triggered"][0]["venue"] == "EU"
+    assert len(analyst.requests) == 2
+    assert analyst.requests[1].company_anchors["AIR.PA"]["brief_ref"]["input_signature"] == "sig-2"
 
 
 def test_tick_news_macro_analysis_reads_scope_store_when_venue_state_is_absent(tmp_path) -> None:

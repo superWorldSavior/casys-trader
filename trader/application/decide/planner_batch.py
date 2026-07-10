@@ -104,6 +104,8 @@ def build_symbol_facts(
     recent_decisions_by_symbol: "dict[str, list] | None" = None,
     bars_by_symbol: "dict[str, list] | None" = None,
     bar_timeframe_by_symbol: "dict[str, str] | None" = None,
+    company_context_by_symbol: "dict[str, dict] | None" = None,
+    mandate_context_by_symbol: "dict[str, dict] | None" = None,
 ) -> dict:
     """Construit les faits par-symbole réinjectés dans le payload de décision.
 
@@ -143,6 +145,12 @@ def build_symbol_facts(
             bars,
             timeframe=(bar_timeframe_by_symbol or {}).get(sym),
         )
+    company_context = (company_context_by_symbol or {}).get(sym)
+    if company_context:
+        facts["company_intelligence"] = company_context
+    mandate_context = (mandate_context_by_symbol or {}).get(sym)
+    if mandate_context:
+        facts["universe_mandate"] = mandate_context
     return facts
 
 
@@ -174,6 +182,8 @@ def batch_decide(
     indicator_request_resolver: Callable = resolve_indicator_requests,
     event_appender: Callable[..., None] | None = None,
     bar_timeframe_by_symbol: dict[str, str] | None = None,
+    company_context_by_symbol: dict[str, dict] | None = None,
+    mandate_context_by_symbol: dict[str, dict] | None = None,
 ) -> tuple[dict[str, codex_client.Decision], int]:
     """Décide les symboles dus par chunks LLM bornés et parallélisables.
 
@@ -206,6 +216,8 @@ def batch_decide(
                 last_review_by_symbol=reviews,
                 bars_by_symbol=tradable_bars_by_symbol,
                 bar_timeframe_by_symbol=bar_timeframe_by_symbol,
+                company_context_by_symbol=company_context_by_symbol,
+                mandate_context_by_symbol=mandate_context_by_symbol,
             ),
         }
         for sym in decidable

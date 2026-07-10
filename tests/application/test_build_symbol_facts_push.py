@@ -68,3 +68,23 @@ def test_pousse_structure_exacte_seulement_pour_le_symbole_decide():
     assert structure["swing_high_24"] == 107.0
     assert structure["atr_pct_14"] is not None
     assert structure["relative_volume_20"] == 5.0 / 2.5
+
+
+def test_pousse_uniquement_les_contextes_recherche_du_symbole_decide():
+    facts = build_symbol_facts(
+        "AAPL",
+        **_base(
+            company_context_by_symbol={
+                "AAPL": {"brief_ref": {"brief_id": "aapl-1"}},
+                "MSFT": {"brief_ref": {"brief_id": "msft-1"}},
+            },
+            mandate_context_by_symbol={
+                "AAPL": {"mandate_ref": {"mandate_id": "mandate-aapl"}},
+                "MSFT": {"mandate_ref": {"mandate_id": "mandate-msft"}},
+            },
+        ),
+    )
+
+    assert facts["company_intelligence"]["brief_ref"]["brief_id"] == "aapl-1"
+    assert facts["universe_mandate"]["mandate_ref"]["mandate_id"] == "mandate-aapl"
+    assert "MSFT" not in str(facts)

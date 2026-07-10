@@ -90,6 +90,7 @@ from trader.runtime import (
     cycle_dispatch,
     cycle_reporting,
     cycle_scheduling,
+    company_intelligence_runtime,
     data_source_runtime,
     daemon_bootstrap,
     decision_dispatch_runtime,
@@ -98,6 +99,7 @@ from trader.runtime import (
     queue_runtime,
     runtime_shutdown,
     universe_intelligence_runtime,
+    trader_research_context,
     worker_cycle_context as worker_cycle_context_runtime,
 )
 from trader.runtime.cycle_process_state import CycleProcessState
@@ -728,6 +730,16 @@ def run_cycle(
     _write_current_report(report)
     mandate_txt, memory_txt = mem.read_mandate(), mem.read_memory()
     model_call_counter = decision_dispatch_runtime.ModelCallCounter()
+    held_symbols = {holding.symbol for holding in snap.holdings if holding.quantity}
+    company_context_by_symbol, mandate_context_by_symbol = (
+        trader_research_context.load_trader_research_context(
+            config_dir=ROOT / "config",
+            state_dir=STATE_DIR,
+            symbols=symbols_to_decide,
+            active_at=now,
+            held_symbols=held_symbols,
+        )
+    )
 
     # Calendrier macro : calculé UNE fois par cycle (pas par symbole) — best-effort.
     # Attribution-first : n'entre PAS dans le contexte LLM (même mécanique que news).
@@ -757,13 +769,14 @@ def run_cycle(
         merge_gate_feedback=confidence_feedback.merge_gate_feedback,
         model_calls_used_getter=lambda: model_call_counter.used,
         agent_trace_path=STATE_DIR / "agent_trace.log",
+        company_context_provider=lambda symbol: company_context_by_symbol.get(symbol),
+        mandate_context_provider=lambda symbol: mandate_context_by_symbol.get(symbol),
     )
     record_decision = recorder.record
 
     if sched is not None:
         cycle_scheduling.ensure_default_wake(sched, now=now, default_wake_minutes=default_wake_minutes)
 
-    held_symbols = {holding.symbol for holding in snap.holdings if holding.quantity}
     has_armed_triggers = any(
         str(trigger.get("on_trigger")) == "EXECUTE_ORDER"
         and isinstance(trigger.get("order"), dict)
@@ -901,6 +914,8 @@ def run_cycle(
             opening_intents=_OPENING_INTENTS,
             model_call_counter=model_call_counter,
             now_fn=time.time,
+            company_context_by_symbol=company_context_by_symbol,
+            mandate_context_by_symbol=mandate_context_by_symbol,
         ),
         resolve_decision_for_routing=_resolve_decision_for_execution_routing,
         execute_decision=_execute_one_cycle_decision,
@@ -1305,6 +1320,27 @@ def main(
     _universe_intelligence_runner = (
         universe_intelligence_runtime.UniverseIntelligenceRunner()
     )
+    _company_intelligence_runner = company_intelligence_runtime.CompanyIntelligenceRuntime(
+        config_dir=ROOT / "config",
+        state_dir=STATE_DIR,
+        logger=log,
+        on_brief_written=lambda _event: _universe_intelligence_runner.trigger(
+            config_dir=ROOT / "config",
+            state_dir=STATE_DIR,
+            loop_now=datetime.now(timezone.utc),
+            logger=log,
+        ),
+    )
+    _company_intelligence_runner.trigger(
+        scope="current",
+        depth="screen",
+        trigger="daemon_boot",
+    )
+    _company_intelligence_runner.trigger(
+        scope="active",
+        depth="deep",
+        trigger="daemon_boot_deep",
+    )
 
     _data_sources_cfg = ROOT / "config" / "data_sources.yaml"
     _data_source_config = data_source_runtime.load_data_source_config(
@@ -1495,6 +1531,18 @@ def main(
                         loop_now=loop_now,
                         logger=log,
                     )
+                    _company_intelligence_runner.trigger(
+                        scope="current",
+                        depth="screen",
+                        trigger="post_cycle",
+                        as_of=loop_now,
+                    )
+                    _company_intelligence_runner.trigger(
+                        scope="active",
+                        depth="deep",
+                        trigger="selected_deep",
+                        as_of=loop_now,
+                    )
                     _universe_intelligence_runner.trigger(
                         config_dir=ROOT / "config",
                         state_dir=STATE_DIR,
@@ -1550,6 +1598,7 @@ def main(
         # None (-> unavailable) plutôt qu'une source déconnectée.
         _ds_handle.set(None)
         runtime_shutdown.shutdown_runtime_resources(
+            company_intelligence_runner=_company_intelligence_runner,
             universe_intelligence_runner=_universe_intelligence_runner,
             news_macro_runner=_news_macro_runner,
             decide_pool=_decide_pool,

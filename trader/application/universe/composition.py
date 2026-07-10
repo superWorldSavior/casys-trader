@@ -8,10 +8,12 @@ from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol, runtime_checkable
 
 from trader.domain.universe import (
+    UniverseCompanyContext,
     UniverseSituationContext,
     build_family_snapshot,
     candidate_scope_id,
     enrich_candidates_with_family,
+    project_company_briefs_to_universe_context,
 )
 
 HOTLIST_CAP = 25
@@ -31,6 +33,7 @@ class UniverseCompositionRequest:
     market_context: dict[str, Any]
     situation_context: UniverseSituationContext
     family_snapshot: dict[str, dict[str, Any]]
+    company_context: UniverseCompanyContext
     global_family_board: dict[str, Any] = field(default_factory=dict)
     retrieval_refs: tuple[str, ...] = ()
     retrieval_status: str = "not_enabled"
@@ -40,7 +43,7 @@ class UniverseCompositionRequest:
         return tuple(candidate["symbol"] for candidate in self.candidates)
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload = {
             "venue": self.venue,
             "as_of": self.as_of,
             "candidate_scope_id": self.candidate_scope_id,
@@ -54,6 +57,9 @@ class UniverseCompositionRequest:
             "retrieval_refs": list(self.retrieval_refs),
             "retrieval_status": self.retrieval_status,
         }
+        if self.company_context.mode == "active":
+            payload["company_context"] = self.company_context.to_dict()
+        return payload
 
 
 @dataclass(frozen=True)
@@ -65,6 +71,7 @@ class UniverseAgentDecision:
     family_postures: dict[str, str]
     symbol_rationales: dict[str, str]
     contract_version: str
+    symbol_mandates: dict[str, dict[str, Any]] = field(default_factory=dict)
     provider: str | None = None
     model: str | None = None
     provider_fallback_reason: str | None = None
@@ -100,6 +107,7 @@ def build_universe_composition_request(
     sticky: Iterable[str],
     market_context: Mapping[str, Any] | None,
     situation_context: UniverseSituationContext,
+    company_context: UniverseCompanyContext | None = None,
     global_family_board: Mapping[str, Any] | None = None,
     retrieval_refs: Iterable[str] = (),
     retrieval_status: str = "not_enabled",
@@ -148,6 +156,14 @@ def build_universe_composition_request(
         raise ValueError("global_family_board_role_invalid")
 
     snapshot = build_family_snapshot(enriched, normalized_baseline, normalized_sticky)
+    normalized_company_context = company_context or project_company_briefs_to_universe_context(
+        {},
+        candidate_symbols=candidate_symbols,
+        active_at=normalized_as_of,
+        mode="observe",
+    )
+    if set(normalized_company_context.symbols) != set(candidate_symbols):
+        raise ValueError("company_context_candidate_mismatch")
     normalized_market_context = dict(market_context or {})
     regime_families = normalized_market_context.get("regime_families")
     if not isinstance(regime_families, Mapping):
@@ -182,6 +198,7 @@ def build_universe_composition_request(
         market_context=_json_copy(normalized_market_context),
         situation_context=situation_context,
         family_snapshot=snapshot,
+        company_context=normalized_company_context,
         global_family_board=_json_copy(normalized_global_family_board),
         retrieval_refs=normalized_retrieval_refs,
         retrieval_status=normalized_retrieval_status,
@@ -214,8 +231,20 @@ def validate_universe_decision(
 
     if not str(decision.summary or "").strip():
         errors.append("summary_required")
-    if decision.contract_version != "universe.v1":
+    if decision.contract_version not in {"universe.v1", "universe.v2"}:
         errors.append("unsupported_contract_version")
+
+    if decision.contract_version == "universe.v2":
+        mandates = decision.symbol_mandates if isinstance(decision.symbol_mandates, Mapping) else {}
+        for symbol in selected:
+            mandate = mandates.get(symbol)
+            if not isinstance(mandate, Mapping):
+                errors.append(f"missing_symbol_mandate:{symbol}")
+                continue
+            if not str(mandate.get("why_selected") or "").strip():
+                errors.append(f"missing_mandate_why_selected:{symbol}")
+        for symbol in sorted(set(mandates) - set(selected)):
+            errors.append(f"mandate_outside_selection:{symbol}")
 
     if not isinstance(decision.symbol_rationales, Mapping):
         errors.append("symbol_rationales_not_mapping")

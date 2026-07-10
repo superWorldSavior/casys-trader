@@ -17,6 +17,7 @@ def _news_macro_disabled_by_default(monkeypatch):
 
     monkeypatch.setenv("CASYS_NEWS_MACRO_ANALYST_ENABLED", "0")
     monkeypatch.setenv("CASYS_UNIVERSE_INTELLIGENCE_ENABLED", "0")
+    monkeypatch.setenv("CASYS_COMPANY_MICRO_ANALYST_ENABLED", "0")
 
 
 @pytest.fixture(autouse=True)

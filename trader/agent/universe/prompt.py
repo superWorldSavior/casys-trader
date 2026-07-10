@@ -21,7 +21,8 @@ def build_universe_prompt(request: UniverseCompositionRequest) -> str:
         "Choisis entre 1 et 25 symboles non-sticky, uniquement dans candidates. "
         "Les sticky seront ajoutés après ta sélection et ne consomment aucune place.\n"
         "Utilise explicitement le contexte GLOBAL/zones, toutes les familles, les "
-        "situations symbole, le régime et le snapshot famille; explique chaque symbole retenu "
+        "situations symbole, le contexte entreprise quand il est fourni, le régime et le "
+        "snapshot famille; explique chaque symbole retenu "
         "et les arbitrages importants entre signaux. N'invente aucune information absente.\n"
         "Le global_family_board compare les opportunités famille entre TW/EU/US. "
         "Utilise-le comme contexte relatif, jamais comme quota de places, allocation de capital "
@@ -29,9 +30,13 @@ def build_universe_prompt(request: UniverseCompositionRequest) -> str:
         "Retourne uniquement un objet JSON valide, jamais un simple add/remove, avec ce schéma:\n"
         '{"selected_hotlist":["SYMBOL"],"summary":"...",'
         '"family_postures":{"family":"..."},'
-        '"symbol_rationales":{"SYMBOL":"..."}}\n'
+        '"symbol_rationales":{"SYMBOL":"..."},'
+        '"symbol_mandates":{"SYMBOL":{"why_selected":"...","role":"...",'
+        '"posture":"...","allowed_sides":["long","short"]}}}\n'
         "Contraintes: selected_hotlist non vide, 25 maximum, aucun sticky, aucun symbole "
-        "hors candidates; une rationale non vide pour chaque symbole sélectionné.\n"
+        "hors candidates; une rationale et un symbol_mandate non vides pour chaque symbole "
+        "sélectionné. Un mandat est un contexte de surveillance, jamais un ordre: aucun qty, "
+        "stop, sizing ou obligation de trader.\n"
         "JSON d'entrée borné:\n"
         f"{json.dumps(payload, ensure_ascii=False, sort_keys=True)}"
     )
@@ -69,6 +74,9 @@ def parse_universe_completion(
         )
         if mapping_error:
             return None, mapping_error
+        mandates, mandate_error = _symbol_mandates(payload.get("symbol_mandates"))
+        if mandate_error:
+            return None, mandate_error
         summary = str(payload.get("summary") or "").strip()
         return (
             UniverseAgentDecision(
@@ -76,7 +84,8 @@ def parse_universe_completion(
                 summary=summary,
                 family_postures=family_postures or {},
                 symbol_rationales=rationales or {},
-                contract_version="universe.v1",
+                contract_version="universe.v2" if "symbol_mandates" in payload else "universe.v1",
+                symbol_mandates=mandates or {},
             ),
             None,
         )
@@ -141,6 +150,31 @@ def _extract_last_json_object(text: str) -> tuple[dict[str, Any] | None, str | N
     if candidate is not None:
         return candidate, None
     return None, first_error
+
+
+def _symbol_mandates(value: Any) -> tuple[dict[str, dict[str, Any]] | None, str | None]:
+    if value is None:
+        return {}, None
+    if not isinstance(value, Mapping):
+        return None, "symbol_mandates_not_mapping"
+    forbidden = {"order", "orders", "qty", "quantity", "stop", "sizing", "size", "risk_pct"}
+    result: dict[str, dict[str, Any]] = {}
+    for raw_symbol, raw_mandate in value.items():
+        symbol = str(raw_symbol or "").strip()
+        if not symbol or not isinstance(raw_mandate, Mapping):
+            return None, "invalid_symbol_mandate"
+        if forbidden.intersection(str(key).strip().lower() for key in raw_mandate):
+            return None, f"forbidden_symbol_mandate_field:{symbol}"
+        allowed_sides = raw_mandate.get("allowed_sides") or ()
+        if not isinstance(allowed_sides, list) or any(side not in {"long", "short"} for side in allowed_sides):
+            return None, f"invalid_allowed_sides:{symbol}"
+        result[symbol] = {
+            "why_selected": str(raw_mandate.get("why_selected") or "").strip()[:500],
+            "role": str(raw_mandate.get("role") or "monitor").strip()[:80],
+            "posture": str(raw_mandate.get("posture") or "neutral").strip()[:120],
+            "allowed_sides": list(dict.fromkeys(allowed_sides)),
+        }
+    return result, None
 
 
 def _looks_like_universe_payload(payload: Mapping[str, Any]) -> bool:

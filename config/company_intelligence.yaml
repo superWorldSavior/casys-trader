@@ -1,0 +1,19 @@
+enabled: true
+
+# Concurrence de recherche uniquement. Elle ne tronque jamais le pool candidat.
+research_concurrency: 2
+source_probe_hours: 24
+screen_review_days: 30
+failure_backoff_hours: 6
+
+providers:
+  US: [sec_edgar, local_company_news, yfinance]
+  TW: [finmind_mops, local_company_news, yfinance]
+  EU: [esef, local_company_news, yfinance]
+
+universe_company_context_mode: active
+trader_company_context_mode: observe
+
+projection:
+  summary_chars_per_symbol: 240
+  max_points_per_symbol: 5

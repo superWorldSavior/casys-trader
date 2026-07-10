@@ -373,6 +373,33 @@ def build_universe_pipeline_panel(state: dict) -> RenderableType:
         if error_code:
             agent_line.append(f" · {error_code}", style=CASYS_WARNING)
 
+        micro_coverage = f.safe_dict(agent.get("company_context_coverage"))
+        company_queue = f.safe_dict(agent.get("company_queue"))
+        micro_line = Text()
+        micro_line.append("micro ", style=CASYS_FAINT)
+        micro_mode = str(agent.get("company_context_mode") or "pending")
+        micro_line.append(micro_mode, style=_pipeline_status_style(micro_mode))
+        if micro_coverage:
+            covered = sum(
+                _pipeline_count(micro_coverage, key)
+                for key in ("fresh", "partial", "stale")
+            )
+            total = covered + sum(
+                _pipeline_count(micro_coverage, key)
+                for key in ("missing", "unsupported", "identity_mismatch")
+            )
+            micro_line.append(
+                f" · cov {covered}/{total} · stale {_pipeline_count(micro_coverage, 'stale')}",
+                style=CASYS_MUTED,
+            )
+        if any(_pipeline_count(company_queue, key) for key in ("pending", "running", "dead")):
+            micro_line.append(
+                f" · q {_pipeline_count(company_queue, 'pending')}/"
+                f"{_pipeline_count(company_queue, 'running')}/"
+                f"{_pipeline_count(company_queue, 'dead')}",
+                style=CASYS_DIM,
+            )
+
         activation_line = Text()
         activation_line.append("active ", style=CASYS_FAINT)
         activation_line.append(activation_status, style=_pipeline_status_style(activation_status))
@@ -385,10 +412,15 @@ def build_universe_pipeline_panel(state: dict) -> RenderableType:
         fallback_reason = str(activation.get("fallback_reason") or "").strip()
         if fallback_reason:
             activation_line.append(f" · {fallback_reason}", style=CASYS_ERROR)
+        mandate_status = str(activation.get("mandate_status") or "pending")
+        if mandate_status != "pending":
+            activation_line.append(f" · mandate {mandate_status}", style=CASYS_MUTED)
+            activation_line.append(_pipeline_id(activation, "mandate_id_short"), style=CASYS_DIM)
 
         grid.add_row(label, scope_line)
         grid.add_row(Text(""), scout_line)
         grid.add_row(Text(""), brief_line)
+        grid.add_row(Text(""), micro_line)
         grid.add_row(Text(""), agent_line)
         grid.add_row(Text(""), activation_line)
         if venue_index < len(_VENUE_ORDER) - 1:

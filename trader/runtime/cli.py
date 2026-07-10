@@ -12,6 +12,7 @@ from trader.support.metadata import code_version
 from trader.market import market_data as market
 from trader.market.features import DEFAULT_INDICATORS, build_indicator_snapshot, compute_indicator_values
 from trader.runtime import daemon, ledger_rotation
+from trader.runtime.company_intelligence_runtime import CompanyIntelligenceRuntime
 from trader.domain.semantic.catalog import FAMILIES, describe_semantic_layer, find_indicators, list_indicators, normalize_temporal_query
 from trader.reporting.audit import decision_quality as decision_audit
 from trader.reporting.bench import decision_bench
@@ -67,6 +68,40 @@ def _read_state_json(filename: str) -> object | None:
     if not path.exists():
         return None
     return json.loads(path.read_text())
+
+
+def _cmd_company_intelligence_refresh(args: argparse.Namespace) -> int:
+    runtime = CompanyIntelligenceRuntime(
+        config_dir=daemon.ROOT / "config",
+        state_dir=daemon.STATE_DIR,
+    )
+    try:
+        result = runtime.refresh(
+            symbols=tuple(args.symbol or ()),
+            scope=args.scope,
+            depth=args.depth,
+            trigger="manual_cli",
+            wait=bool(args.wait),
+            wait_timeout_s=float(args.wait_timeout_s),
+        )
+    finally:
+        runtime.stop()
+    _print_json(result)
+    return 0 if not result.get("errors") else 1
+
+
+def _cmd_company_intelligence_status(args: argparse.Namespace) -> int:
+    del args
+    runtime = CompanyIntelligenceRuntime(
+        config_dir=daemon.ROOT / "config",
+        state_dir=daemon.STATE_DIR,
+    )
+    try:
+        result = runtime.status()
+    finally:
+        runtime.stop()
+    _print_json(result)
+    return 0
 
 
 def _read_broker_state() -> object | None:
@@ -883,6 +918,21 @@ def build_parser() -> argparse.ArgumentParser:
     status = sub.add_parser("status", help="état courant du daemon")
     status.add_argument("--json", action="store_true")
     status.set_defaults(func=_cmd_status)
+
+    company = sub.add_parser(
+        "company-intelligence",
+        help="recherche fondamentale longitudinale par symbole",
+    )
+    company_sub = company.add_subparsers(dest="company_intelligence_command", required=True)
+    company_refresh = company_sub.add_parser("refresh", help="collecte et analyse le scope entreprise")
+    company_refresh.add_argument("--scope", default="current", choices=("current", "active"))
+    company_refresh.add_argument("--symbol", action="append", default=[])
+    company_refresh.add_argument("--depth", default="screen", choices=("screen", "deep"))
+    company_refresh.add_argument("--wait", action="store_true")
+    company_refresh.add_argument("--wait-timeout-s", type=float, default=600.0)
+    company_refresh.set_defaults(func=_cmd_company_intelligence_refresh)
+    company_status = company_sub.add_parser("status", help="état de la file et derniers runs")
+    company_status.set_defaults(func=_cmd_company_intelligence_status)
 
     dashboards = sub.add_parser("dashboards", help="dashboards HTML/PNG locaux")
     dashboards_sub = dashboards.add_subparsers(dest="dashboards_command", required=True)
