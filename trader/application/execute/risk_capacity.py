@@ -6,7 +6,7 @@ import math
 from typing import Callable
 
 from trader.execution.protocols import Broker
-from trader.execution.risk import RiskLimits
+from trader.domain.risk import RiskLimits
 
 
 def gross_exposure(

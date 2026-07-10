@@ -23,7 +23,7 @@ import trader.application.record.decision_entries as decision_entries
 import trader.application.record.decision_watches as decision_watches
 import trader.application.record.plan_review as plan_review
 from trader.execution import portfolio
-from trader.execution.risk import RiskGate
+from trader.domain.execution.risk_gate import RiskGate
 import trader.market.execution_eligibility as execution_eligibility_service
 from trader.market import market_data as market
 import trader.market.volatility as reference_volatility_service

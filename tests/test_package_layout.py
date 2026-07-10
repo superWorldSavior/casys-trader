@@ -413,6 +413,7 @@ def test_contract_value_types_are_domain_canonical_with_public_facades() -> None
     trader_dir = repo_root / "trader"
     domain_paths = [
         trader_dir / "domain" / "decisions.py",
+        trader_dir / "domain" / "execution" / "risk_gate.py",
         trader_dir / "domain" / "strategy_language.py",
         trader_dir / "domain" / "risk.py",
     ]
@@ -427,12 +428,15 @@ def test_contract_value_types_are_domain_canonical_with_public_facades() -> None
         trader_dir / "agent" / "protocol" / "strategy_language.py"
     ).read_text(encoding="utf-8")
     execution_risk_source = (trader_dir / "execution" / "risk.py").read_text(encoding="utf-8")
+    assert "class RiskGate" not in execution_risk_source
+    assert "from trader.domain.execution.risk_gate import RiskGate" in execution_risk_source
     assert "from trader.domain.risk import RiskLimits" in execution_risk_source
     assert "from trader.domain.risk import Verdict" in execution_risk_source
 
     import trader.agent.protocol.strategy_language as strategy_facade
     import trader.agent.protocol.types as types_facade
     import trader.domain.decisions as domain_decisions
+    import trader.domain.execution.risk_gate as domain_risk_gate
     import trader.domain.risk as domain_risk
     import trader.domain.strategy_language as domain_strategy
     import trader.execution.risk as execution_risk
@@ -445,7 +449,8 @@ def test_contract_value_types_are_domain_canonical_with_public_facades() -> None
     assert strategy_facade.compile_strategy_call is domain_strategy.compile_strategy_call
     assert execution_risk.RiskLimits is domain_risk.RiskLimits
     assert execution_risk.Verdict is domain_risk.Verdict
-    assert execution_risk.RiskGate.__module__ == "trader.execution.risk"
+    assert execution_risk.RiskGate is domain_risk_gate.RiskGate
+    assert domain_risk_gate.RiskGate.__module__ == "trader.domain.execution.risk_gate"
 
     decision = domain_decisions.Decision.hold("SPY", "wait")
     assert is_dataclass(decision)
@@ -2391,6 +2396,7 @@ def test_legacy_flat_module_imports_remain_compatible() -> None:
     from trader.cockpit import CockpitApp
     from trader import decision_ledger
     from trader.domain.decisions import Decision as DomainDecision
+    from trader.domain.execution.risk_gate import RiskGate as DomainRiskGate
     from trader.indicator_watch import WATCH_VALID_OPERATORS
     from trader.risk import RiskGate
     from trader.tui import build_view
@@ -2409,7 +2415,8 @@ def test_legacy_flat_module_imports_remain_compatible() -> None:
     assert decision_ledger.__name__ == "trader.reporting.decision_ledger"
     assert CockpitApp.__module__ == "trader.interfaces.cockpit.app"
     assert ">" in WATCH_VALID_OPERATORS
-    assert RiskGate.__module__ == "trader.execution.risk"
+    assert RiskGate is DomainRiskGate
+    assert RiskGate.__module__ == "trader.domain.execution.risk_gate"
     assert build_view.__module__ == "trader.interfaces.ui.panels.dashboard"
 
 
