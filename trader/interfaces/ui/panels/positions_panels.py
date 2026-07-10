@@ -10,6 +10,7 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
+from trader.domain.execution.fill_accounting import POSITION_EPSILON
 from trader.interfaces.ui.palette import PALETTE_DARK, Palette
 from trader.interfaces.ui.panels.common import (
     _fmt_fee_cost,
@@ -62,7 +63,14 @@ def _build_positions_panel(
     pos_table.add_column("PnL %", justify="right")
     pos_table.add_column("Stop", justify="right", no_wrap=True)
 
-    for h in holdings:
+    visible_holdings = [
+        holding
+        for holding in holdings
+        if abs(_safe_float(holding.get("quantity"), default=0.0) or 0.0)
+        > POSITION_EPSILON
+    ]
+
+    for h in visible_holdings:
         symbol = str(h.get("symbol", "?"))
         ccy = fx.currency_for(symbol)
         qty = _safe_float(h.get("quantity"), default=0.0) or 0.0
@@ -133,7 +141,7 @@ def _build_positions_panel(
             stop_cell,
         )
 
-    if not holdings:
+    if not visible_holdings:
         pos_table.add_row("—", "—", "—", "—", "—", "—", "—")
 
     return Panel(

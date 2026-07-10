@@ -313,6 +313,30 @@ def test_build_view_affiche_le_capital_non_engage_plutot_que_le_produit_des_shor
     assert "$115,000.00" not in output
 
 
+def test_positions_panel_masque_les_residus_de_cloture_a_valeur_nulle() -> None:
+    holdings = [
+        {
+            "symbol": "AAPL",
+            "quantity": 2.0,
+            "avg_price": 100.0,
+            "last_price": 101.0,
+            "unrealized_pnl": 2.0,
+        },
+        {
+            "symbol": "ZERO_DUST",
+            "quantity": -3.761549294267752e-9,
+            "avg_price": 296.73,
+            "last_price": 291.91,
+            "unrealized_pnl": 0.0,
+        },
+    ]
+
+    output = _render_plain(_build_positions_panel(holdings))
+
+    assert "AAPL" in output
+    assert "ZERO_DUST" not in output
+
+
 def test_attribution_affiche_le_realise_net_avec_frais_et_brut_secondaires() -> None:
     attribution = {
         "realized_pnl": 42.50,

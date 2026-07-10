@@ -173,6 +173,22 @@ class TestParite:
         assert "2330.TW" not in sim.positions()
         assert "2330.TW" not in sqlite.positions()
 
+    def test_position_poussiere_d_une_cloture_arrondie_comme_zero(self, tmp_path: Path) -> None:
+        """Une clôture à 8 décimales ne laisse pas une ligne à $0 dans le TUI."""
+        sim = _make_sim_broker(tmp_path / "sim")
+        _, sqlite = _make_sqlite_broker(tmp_path / "sq")
+        orders = [
+            (Order("IBM", "SELL", 32.06701335376155), 296.73, "t1", 1.0),
+            (Order("IBM", "BUY", 32.06701335), 298.17, "t2", 1.0),
+        ]
+
+        for order, price, ts, fx_rate in orders:
+            sim.submit(order, price, ts, dry_run=False, fx_rate=fx_rate)
+            sqlite.submit(order, price, ts, dry_run=False, fx_rate=fx_rate)
+
+        assert "IBM" not in sim.positions()
+        assert "IBM" not in sqlite.positions()
+
     def test_parity_with_fx_rate(self, tmp_path: Path) -> None:
         """Parité sur un symbole TWD (fx_rate != 1.0)."""
         sim = _make_sim_broker(tmp_path / "sim")

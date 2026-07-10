@@ -702,6 +702,36 @@ def test_project_portfolio_positions_splits_long_and_short_exposure():
     assert projection.unrealized_total == 5.0
 
 
+def test_project_portfolio_positions_masque_les_residus_de_cloture_a_valeur_nulle():
+    from trader.interfaces.cockpit.projections.portfolio import (
+        project_portfolio_positions,
+    )
+
+    state = {
+        "portfolio": {
+            "holdings": [
+                {
+                    "symbol": "AAPL",
+                    "quantity": 2.0,
+                    "last_price": 100.0,
+                    "fx_rate": 1.0,
+                },
+                {
+                    "symbol": "ZERO_DUST",
+                    "quantity": -4.557080046652118e-9,
+                    "last_price": 260.3,
+                    "fx_rate": 0.1036,
+                },
+            ]
+        }
+    }
+
+    projection = project_portfolio_positions(state)
+
+    assert [row.symbol for row in projection.rows] == ["AAPL"]
+    assert projection.gross == 200.0
+
+
 # ---------------------------------------------------------------------------
 # Widget — Textual async tests
 # ---------------------------------------------------------------------------

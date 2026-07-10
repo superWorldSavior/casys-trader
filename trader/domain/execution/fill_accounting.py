@@ -5,7 +5,9 @@ from __future__ import annotations
 from trader.domain.contracts import Commission, Order
 from trader.domain.market import fx
 
-POSITION_EPSILON = 1e-9
+# Les closes venant de l'agent sont normalisés à 8 décimales. Un seuil plus fin
+# laisse donc des reliquats (ex. 3.8e-9 action) apparaître comme positions à $0.
+POSITION_EPSILON = 1e-8
 
 
 def compute_fill_effect(

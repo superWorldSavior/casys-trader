@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 
+from trader.domain.execution.fill_accounting import POSITION_EPSILON
 from trader.interfaces.cockpit import format as f
 from trader.interfaces.cockpit.aggregates import attention_items, open_venue_set
 from trader.planning.indicator_watch import is_armed_plan as _is_armed_plan
@@ -242,7 +243,12 @@ def next_to_fire(state: dict, *, now: datetime, limit: int = 6) -> list[FireItem
 
 def positions_by_pnl(state: dict) -> list[dict]:
     holdings = _safe_list_of_dicts(f.safe_dict(state.get("portfolio")).get("holdings"))
-    return sorted(holdings, key=lambda h: abs(f.holding_pnl(h)), reverse=True)
+    material_holdings = [
+        holding
+        for holding in holdings
+        if abs(f.holding_quantity(holding)) > POSITION_EPSILON
+    ]
+    return sorted(material_holdings, key=lambda h: abs(f.holding_pnl(h)), reverse=True)
 
 
 @dataclass(frozen=True)
