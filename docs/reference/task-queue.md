@@ -178,6 +178,14 @@ et la récupération historique, mais ne sont plus un mode du daemon.
   worker renouvelle via heartbeat après l'ouverture de session puis après chaque
   appel modèle. REQUEST_CONTEXT legacy reste désactivé (le tool round moderne est
   la voie de recherche de contexte). Fin du mode dégradé Lot A.
+- Avant enqueue, `application/decide/context_projection.py` transforme le
+  snapshot global en `decision_focus_v1` : risque exact de la cible, briefing
+  local Univers/micro/news, radar borné, résumés globaux et détail via outils.
+  Le snapshot source n'est jamais muté et chaque tâche reçoit sa propre vue.
+- Le premier appel de chaque session ACP transporte cette vue complète. Les tours
+  suivants de la même session transportent uniquement les nouveaux
+  `tool_results`. Si le runner change de backend, sa nouvelle session repart du
+  prompt complet avant toute continuation delta.
 
 ### Services tool-round grain-1
 
@@ -187,13 +195,15 @@ et la récupération historique, mais ne sont plus un mode du daemon.
 | Service | Rôle |
 |---|---|
 | `get_bars` | wrapper indirect vers la data source courante, sans capture d'objet runtime |
-| `worker_cycle_context` | handle unique du contexte de cycle publié atomiquement pour les workers |
+| `worker_cycle_context` | handle unique des plans, inputs de validation et attribution complète du cycle |
 
 Le daemon possède le contexte partagé via `WorkerCycleContextHandle`. À chaque
 cycle, `run_cycle` définit `cycle_id = now.isoformat()`, construit
-`WorkerCycleContext(cycle_id, as_of, open_plans, exit_validation)` puis le publie
-en une fois. Le payload `decide` transporte ce `cycle_id`; `decide_one` fabrique
-les closures `get_active_plans` et `strategy_exit` bornées à ce cycle.
+`WorkerCycleContext(cycle_id, as_of, open_plans, exit_validation)` puis le publie.
+Après les sorties mécaniques de début de cycle, l'attribution est calculée et
+ajoutée atomiquement au même snapshot. Le payload `decide` transporte ce
+`cycle_id`; `decide_one` fabrique les closures `get_active_plans`,
+`get_attribution` et `strategy_exit` bornées à ce cycle.
 
 Le handler `get_active_plans` lit `OpenPlansSnapshot.rows` : sa portée est
 globale, puis `symbol` filtre si demandé. Si un worker lent demande un cycle qui

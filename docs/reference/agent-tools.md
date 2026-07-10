@@ -229,11 +229,11 @@ rejeté ou hors budget (le LLM voit ce qui s'est passé).
 
 ## Comportement observé
 
-Usage réel **rare** (~0 à ce jour) : le prompt dit « si le cockpit suffit, rends
-directement le contrat final », et le push est complet → l'agent pull peu. C'est
-**by-design** (escape hatch pour cas limites), pas un dead-path : le mécanisme
-frère `context_request` s'exerce, le câblage est vérifié vivant. Cf. discussion
-paradigme push-complet dans le registre / analyses.
+Le push queue est désormais focalisé (`decision_focus_v1`) : le trader reçoit la
+cible, ses pairs/positions/anomalies et les agrégats utiles, puis pull le détail
+qui peut changer son plan. Les outils ne sont donc plus un simple escape hatch
+d'un dump complet. Leur usage reste optionnel et tracé dans
+`runtime.tool_rounds` / `runtime.tool_calls`.
 
 ## Voir aussi
 - [Scheduler / watches](wake-scheduler.md) · [RAG / learnings](learnings-rag.md) · [reporting](reporting.md) · Architecture §10.

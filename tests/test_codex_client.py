@@ -655,6 +655,57 @@ def test_build_batch_prompt_avec_flag_expose_le_catalogue():
     assert "get_indicator_context" in prompt
 
 
+def test_session_followup_prompt_ne_repete_que_le_delta_outils():
+    prompt = codex_client.build_session_followup_prompt(
+        symbols_payload=[
+            {
+                "symbol": "SPY",
+                "structure": {"price": 100.0},
+                "tool_results": [{"id": "c1", "tool": "get_freshness", "ok": True}],
+            }
+        ],
+        allow_tool_calls=True,
+    )
+
+    assert '"symbol":"SPY"' in prompt
+    assert '"tool":"get_freshness"' in prompt
+    assert '"structure"' not in prompt
+    assert "mandat" in prompt.lower()
+    assert '"tool_calls"' in prompt
+    assert '"decisions"' in prompt
+
+
+def test_decide_batch_session_followup_transporte_un_prompt_court():
+    captured: list[str] = []
+
+    def complete_fn(prompt: str, _timeout_s: int) -> LlmCompletion:
+        captured.append(prompt)
+        return LlmCompletion(
+            provider="test",
+            model="test",
+            text=(
+                '{"decisions":[{"symbol":"SPY","confidence":0.5,'
+                '"rationale":"wait","decision_reason_code":"NO_EDGE","calls":[]}]}'
+            ),
+        )
+
+    result = codex_client.decide_batch(
+        symbols=["SPY"],
+        mandate="M" * 10_000,
+        memory="L" * 10_000,
+        shared_context={"huge": "X" * 10_000},
+        per_symbol={"SPY": {"tool_results": [{"id": "c1", "ok": True}]}},
+        allow_tool_calls=True,
+        session_followup=True,
+        complete_fn=complete_fn,
+    )
+
+    assert result["SPY"].action == "HOLD"
+    assert len(captured[0]) < 1_000
+    assert "M" * 100 not in captured[0]
+    assert "X" * 100 not in captured[0]
+
+
 def test_build_batch_prompt_queue_tool_calls_ne_mentionne_pas_request_context():
     prompt = codex_client.build_batch_prompt(
         mandate="m", memory="mem", shared_context={}, symbols_payload=[{"symbol": "2330.TW"}],

@@ -89,6 +89,7 @@ def _tool_context_from_facts(
     now: datetime,
     indicator_resolver,
     learnings_recall_provider,
+    attribution=None,
     open_plans_provider=None,
     open_plans_as_of_provider=None,
 ) -> "agent_tools.ToolContext":
@@ -98,7 +99,8 @@ def _tool_context_from_facts(
     ``data_age_m`` (int arrondi) → ``data_age_by_symbol`` (float) ;
     ``execution``/``planning`` → ``market_context_by_symbol[symbol]`` ;
     ``active_watches`` → ``active_watches_by_symbol[symbol]``.
-    ``attribution`` vient du contexte partagé, comme en batch.
+    ``attribution`` peut venir du snapshot complet hors prompt publié pour les
+    workers ; fallback sur le contexte partagé pour la compatibilité batch/tests.
     """
     age = facts.get("data_age_m")
     market_ctx = {k: facts[k] for k in ("execution", "planning") if k in facts}
@@ -108,7 +110,7 @@ def _tool_context_from_facts(
         data_age_by_symbol={} if age is None else {symbol: float(age)},
         market_context_by_symbol={symbol: market_ctx} if market_ctx else {},
         active_watches_by_symbol={symbol: list(facts.get("active_watches") or [])},
-        attribution=shared_context.get("attribution"),
+        attribution=attribution if attribution is not None else shared_context.get("attribution"),
         # recent_decisions poussé dans les facts ; get_position_risk retiré (issue #4).
         indicator_resolver=indicator_resolver,
         learnings_recall_provider=learnings_recall_provider,
@@ -135,6 +137,29 @@ def _open_plans_as_of_provider_for_cycle(
     if handle is None:
         return None
     return lambda: handle.get_open_plans_as_of(cycle_id)
+
+
+def _attribution_for_cycle(
+    tool_services: ToolRoundServices,
+    cycle_id: str | None,
+    shared_context: dict,
+) -> dict | None:
+    """Prefer the full worker snapshot over the prompt's focused projection."""
+
+    handle = tool_services.worker_cycle_context
+    if handle is None or not hasattr(handle, "get_attribution"):
+        value = shared_context.get("attribution")
+        return value if isinstance(value, dict) else None
+    try:
+        value = handle.get_attribution(cycle_id)
+    except RuntimeError:
+        # Une tache d'un cycle remplace conserve le resume transporte dans son
+        # payload, sans lire par erreur le snapshot complet du cycle suivant.
+        value = None
+    if value:
+        return value
+    fallback = shared_context.get("attribution")
+    return fallback if isinstance(fallback, dict) else None
 
 
 def _action_validator_for_cycle(
@@ -238,18 +263,22 @@ def decide_one(
                 now=(now_fn or (lambda: datetime.now(timezone.utc)))(),
                 indicator_resolver=resolver,
                 learnings_recall_provider=tool_services.learnings_recall_provider,
+                attribution=_attribution_for_cycle(tool_services, cycle_id, shared_context),
                 open_plans_provider=_open_plans_provider_for_cycle(tool_services, cycle_id),
                 open_plans_as_of_provider=_open_plans_as_of_provider_for_cycle(tool_services, cycle_id),
             )
             tool_limits = tool_services.tool_limits()
             action_validator = _action_validator_for_cycle(tool_services, cycle_id)
             def _resolve(session):
+                session_calls = 0
                 if heartbeat is not None:
                     heartbeat()
 
                 def _session_call_model(per_symbol: dict, *, allow_tool_calls: bool):
-                    nonlocal calls_made
+                    nonlocal calls_made, session_calls
+                    session_followup = session_calls > 0
                     calls_made += 1
+                    session_calls += 1
                     return codex_client.decide_batch(
                         symbols=[symbol],
                         mandate=mandate,
@@ -263,6 +292,7 @@ def decide_one(
                         complete_fn=llm.session_complete_fn(
                             session, call_ctx={"task_id": task_id, "symbol": symbol}
                         ),
+                        session_followup=session_followup,
                         max_tool_calls_per_symbol=tool_limits.max_calls_per_symbol,
                         max_rounds=None,
                     )

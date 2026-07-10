@@ -37,6 +37,7 @@ import time as _time
 from typing import Callable, Iterator
 
 from trader.agent.protocol.types import Decision
+from trader.application.decide.context_projection import project_shared_context_for_symbol
 
 log = logging.getLogger("trader.application.queue_dispatch")
 
@@ -82,11 +83,12 @@ def _enqueue_decide_tasks(
     task_ids: dict[str, int] = {}
     enqueue_skipped_syms: set[str] = set()
     for sym in decidable:
+        prompt_context = project_shared_context_for_symbol(shared_context, symbol=sym)
         payload = {
             "symbol": sym,
             "mandate": mandate,
             "memory": memory,
-            "shared_context": shared_context,
+            "shared_context": prompt_context,
             "per_symbol_facts": symbol_facts_by_sym.get(sym, {}),
             "decision_timeout_s": decision_timeout_s,
             "agent_tools_enabled": agent_tools_enabled,

@@ -17,6 +17,12 @@ _WATCH_INDICATOR_ENUM = "|".join(DEFAULT_INDICATORS)
 _WATCH_OPERATOR_ENUM = "|".join(WATCH_VALID_OPERATORS)
 _REASON_CODE_ENUM = decision_reason.reason_code_enum_text()
 
+
+def _prompt_json(value: object) -> str:
+    """JSON compact pour le transport LLM, sans changer le contrat semantique."""
+
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
 _OUTPUT_CONTRACT = (
     "Réponds UNIQUEMENT par un objet JSON valide, sans texte autour, de la forme:\n"
     '{"symbol":"<SYM>","confidence":<0..1>,"rationale":"<court>",'
@@ -70,13 +76,13 @@ _DECISION_GUIDANCE = (
     "# Tes plans déjà en place\n"
     "Tu as 3 niveaux de contexte plans/veilles. Niveau détail local : `active_watches` "
     "(fourni par symbole) liste les veilles et plans armés ACTIFS du symbole "
-    "décidé : id, kind, intent, conditions, expiration. Niveau résumé global : "
-    "`context.active_plans_summary` liste tous les plans/veilles armés actifs "
-    "du portefeuille en compact (symbol, id, kind, intent), sans conditions ; "
-    "utilise-le comme garde anti-doublon/OCO avant d'empiler. Niveau détail global : "
+    "décidé : id, kind, intent, conditions, expiration. Niveau résumé focalisé : "
+    "`context.active_plans_summary` donne les compteurs globaux et les plans du "
+    "symbole décidé ; utilise-le comme garde anti-doublon/OCO avant d'empiler. "
+    "Niveau détail global : "
     "l'outil `get_active_plans` donne à la demande le détail complet des "
     "TradePlans ouverts en portée globale. N'appelle `get_active_plans` QUE si "
-    "le résumé global (`active_plans_summary`) et ta vue locale ne suffisent pas "
+    "le résumé focalisé (`active_plans_summary`) et ta vue locale ne suffisent pas "
     "— p.ex. pour lire le détail d'un plan sur un AUTRE symbole. Sinon, n'y "
     "recours pas. Pour abandonner un plan, utilise "
     "`cancel_watch` avec son `id`. Corriger un plan = l'annuler (`cancel_watch`) "
@@ -123,8 +129,18 @@ _DECISION_GUIDANCE = (
     "Calibration par bucket de confidence (`by_confidence`) et coût par raison de "
     "sortie (`by_exit_reason`), chacun avec `total_gross_pnl`/`total_commission`. "
     "Si tes calls confiants perdent ou si une raison de sortie te coûte cher, "
-    "ajuste ta thèse et écris-le dans `learning`. `context.learnings` te rappelle "
+    "ajuste ta thèse et utilise `record_learning` quand un apprentissage nouveau "
+    "mérite d'être conservé. `context.learnings` te rappelle "
     "tes notes précédentes avec leur issue.\n\n"
+    "# Compétence, situation et expérience\n"
+    "`context.learnings.global` et `guardrails` sont des principes transversaux : "
+    "ils disent comment trader, jamais ce qui se passe maintenant sur un titre. "
+    "La situation fraîche du symbole vient de `company_intelligence` et "
+    "`universe_mandate` dans ses faits locaux. Pour comparer le setup courant à "
+    "des expériences passées, utilise `recall_learnings` avec un petit query ciblé "
+    "par symbole, famille et setup ; les résultats sont pondérés par leurs outcomes. "
+    "N'appelle pas ce recall mécaniquement sur un réveil sans enjeu et ne traite "
+    "jamais une expérience historique comme une actualité du symbole.\n\n"
     "# Frais de transaction\n"
     "Chaque trade paie une commission à l'entrée ET à la sortie. Le cockpit donne "
     "par symbole `be_ref_bps` (break-even aller-retour en points de base : "
@@ -230,7 +246,7 @@ def build_prompt(*, mandate: str, memory: str, context: dict, allow_context_requ
         f"{_decision_guidance(allow_context_request=allow_context_request)}"
         f"{_exec_guidance()}"
         f"{_indicator_watch_vocabulary()}"
-        f"# Contexte marché et portefeuille (JSON)\n{json.dumps(context, ensure_ascii=False)}\n\n"
+        f"# Contexte marché et portefeuille (JSON)\n{_prompt_json(context)}\n\n"
         f"# Contrat de sortie\n{output_contract}\n"
     )
 
@@ -574,7 +590,7 @@ _TOOL_CATALOG = (
     "Après la tournée tu recevras `tool_results` par symbole et tu DEVRAS rendre le contrat final\n"
     "(toute nouvelle tournée sera bloquée en HOLD).\n"
     "NB : get_indicator_context est la voie moderne de REQUEST_CONTEXT (les deux marchent) —\n"
-    "préfère la tournée d'outils, qui te donne AUSSI plans/risque/attribution/mémoire en un tour.\n\n"
+    "préfère la tournée d'outils, qui te donne AUSSI plans/attribution/mémoire en un tour.\n\n"
 )
 
 
@@ -620,9 +636,9 @@ def _tool_catalog(
         return catalog
     return catalog.replace(
         "NB : get_indicator_context est la voie moderne de REQUEST_CONTEXT (les deux marchent) —\n"
-        "préfère la tournée d'outils, qui te donne AUSSI plans/risque/attribution/mémoire en un tour.\n\n",
+        "préfère la tournée d'outils, qui te donne AUSSI plans/attribution/mémoire en un tour.\n\n",
         "NB : pour compléter le cockpit, utilise get_indicator_context via `tool_calls` ;\n"
-        "la tournée d'outils te donne AUSSI plans/risque/attribution/mémoire en un tour.\n\n",
+        "la tournée d'outils te donne AUSSI plans/attribution/mémoire en un tour.\n\n",
     )
 
 
@@ -648,7 +664,7 @@ def build_batch_prompt(
         "Tu es le PLANIFICATEUR d'un système de trading paper : tu conçois des "
         "scénarios — entrées armées, veilles, plans de sortie — que le daemon "
         "exécute mécaniquement ; tu n'opères pas le marché en continu. Le contexte "
-        "PARTAGÉ (cockpit de tout l'univers, portefeuille, KPI, attribution, "
+        "PARTAGÉ (cockpit/radar cross-asset, portefeuille, KPI, attribution, "
         "learnings) est donné UNE fois ; rends une décision pour CHAQUE symbole "
         "de la liste.\n\n"
         f"# Mandat\n{mandate}\n\n"
@@ -657,7 +673,46 @@ def build_batch_prompt(
         f"{_exec_guidance()}"
         f"{_indicator_watch_vocabulary()}"
         f"{_tool_catalog(allow_context_request=allow_context_request, max_tool_calls_per_symbol=max_tool_calls_per_symbol, max_rounds=max_rounds) if allow_tool_calls else ''}"
-        f"# Contexte partagé (JSON)\n{json.dumps(shared_context, ensure_ascii=False)}\n\n"
-        f"# Symboles à décider (JSON)\n{json.dumps(symbols_payload, ensure_ascii=False)}\n\n"
+        f"# Contexte partagé (JSON)\n{_prompt_json(shared_context)}\n\n"
+        f"# Symboles à décider (JSON)\n{_prompt_json(symbols_payload)}\n\n"
         f"# Contrat de sortie\n{contract}\n"
+    )
+
+
+def build_session_followup_prompt(
+    *,
+    symbols_payload: list[dict],
+    allow_tool_calls: bool,
+) -> str:
+    """Delta court pour une session ACP qui possede deja le prompt complet.
+
+    La session conserve mandat, contexte, catalogue et contrat du premier tour.
+    Répéter ces blocs à chaque résultat outil gonflerait l'historique et diluerait
+    la correction ; seuls les nouveaux ``tool_results`` sont donc réinjectés.
+    """
+
+    delta = [
+        {
+            "symbol": item.get("symbol"),
+            "tool_results": list(item.get("tool_results") or []),
+        }
+        for item in symbols_payload
+    ]
+    if allow_tool_calls:
+        instruction = (
+            'Tu peux soit demander un nouveau {"tool_calls":[...]} si un fait '
+            'matériel manque encore, soit rendre {"decisions":[...]} selon le '
+            "contrat initial dès que le contexte suffit."
+        )
+    else:
+        instruction = (
+            'Tour final : aucun nouveau "tool_calls" n\'est accepté. Rends '
+            'uniquement {"decisions":[...]} selon le contrat initial.'
+        )
+    return (
+        "Suite de la MÊME décision dans la session ACP courante. Le mandat, le "
+        "contexte partagé, les faits de base, le catalogue et le contrat du "
+        "premier message restent en vigueur. Ne repars pas de zéro.\n\n"
+        f"# Nouveaux résultats (JSON)\n{_prompt_json(delta)}\n\n"
+        f"{instruction}\n"
     )

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 
 class CycleContextUnavailable(RuntimeError):
@@ -27,6 +27,7 @@ class WorkerCycleContext:
     as_of: str
     open_plans: OpenPlansSnapshot
     exit_validation: ExitValidationInputs
+    attribution: dict = field(default_factory=dict)
 
 
 class WorkerCycleContextHandle:
@@ -37,6 +38,12 @@ class WorkerCycleContextHandle:
 
     def publish(self, context: WorkerCycleContext) -> None:
         self._current = context
+
+    def publish_attribution(self, *, cycle_id: str, attribution: dict) -> None:
+        """Atomically enrich the current cycle after start-of-cycle exits settle."""
+
+        context = self.current_for_cycle(cycle_id)
+        self._current = replace(context, attribution=dict(attribution))
 
     def current(self) -> WorkerCycleContext | None:
         return self._current
@@ -67,6 +74,12 @@ class WorkerCycleContextHandle:
     def get_open_plans_as_of(self, cycle_id: str | None = None) -> str | None:
         context = self._context(cycle_id)
         return None if context is None else context.as_of
+
+    def get_attribution(self, cycle_id: str | None = None) -> dict:
+        context = self._context(cycle_id)
+        if context is None:
+            return {}
+        return dict(context.attribution)
 
     def get_exit_validation_bars(self, symbol: str, cycle_id: str | None = None) -> list | None:
         context = self._context(cycle_id)

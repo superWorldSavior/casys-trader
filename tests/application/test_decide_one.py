@@ -365,6 +365,7 @@ def _published_cycle_context(
     raw_plans: tuple[object, ...] = (),
     bars_by_symbol: dict[str, list] | None = None,
     prices_by_symbol: dict[str, float] | None = None,
+    attribution: dict | None = None,
 ) -> WorkerCycleContextHandle:
     handle = WorkerCycleContextHandle()
     handle.publish(
@@ -376,6 +377,7 @@ def _published_cycle_context(
                 bars_by_symbol=bars_by_symbol or {},
                 prices_by_symbol=prices_by_symbol or {},
             ),
+            attribution=attribution or {},
         )
     )
     return handle
@@ -420,8 +422,52 @@ def test_tool_round_puis_decision_au_tour_2_sort_tot():
     assert client.calls[1]["allow_tool_calls"] is True     # l'agent décide librement au tour 2
     assert all(c["allow_context_request"] is False for c in client.calls)  # Q4 : pas de legacy
     assert all(c["max_tool_calls_per_symbol"] == 8 for c in client.calls)
+    assert [c["session_followup"] for c in client.calls] == [False, True]
     assert client.calls[1]["per_symbol"][SYMBOL]["tool_results"]  # résultats réinjectés
     assert decision.domain_tools["tool_rounds"] == 1       # traces mergées (persistance)
+
+
+def test_fallback_session_recommence_par_un_prompt_complet():
+    """Un nouveau backend ne doit jamais hériter d'un delta sans son cockpit."""
+
+    failure = llm.LlmFailure(
+        provider="terra",
+        model="gpt-5.6-terra",
+        code="rate_limited",
+        message="retry elsewhere",
+        retryable=True,
+    )
+
+    class FallbackClient:
+        def __init__(self):
+            self.calls: list[dict] = []
+            self.responses = [
+                _tool_request(),
+                llm.SessionProviderDown(failure),
+                {SYMBOL: _ok_decision("HOLD")},
+            ]
+
+        def decide_batch(self, *, symbols, **kwargs):
+            self.calls.append({"symbols": list(symbols), **kwargs})
+            response = self.responses.pop(0)
+            if isinstance(response, Exception):
+                raise response
+            return response
+
+    client = FallbackClient()
+    backends = [_FakeSessionBackend(), _FakeSessionBackend()]
+
+    decision, calls = decide_one(
+        **{**_BASE_KWARGS, "agent_tools_enabled": True},
+        codex_client=client,
+        tool_services=_services(),
+        session_backends=backends,
+        task_id="fallback:AAPL",
+    )
+
+    assert decision.action == "HOLD"
+    assert calls == 3
+    assert [call["session_followup"] for call in client.calls] == [False, True, False]
 
 
 def test_tool_context_recoit_open_plans_du_worker_cycle_context():
@@ -448,6 +494,69 @@ def test_tool_context_recoit_open_plans_du_worker_cycle_context():
     assert calls == 2
     assert tool_result["ok"] is True
     assert [row["symbol"] for row in tool_result["result"]["rows"]] == [SYMBOL, "MSFT"]
+
+
+def test_tool_context_recoit_attribution_complete_hors_prompt() -> None:
+    client = _SeqClient([
+        BatchToolCallRequest(
+            calls=[{"id": "c1", "tool": "get_attribution", "args": {"scope": "summary"}}]
+        ),
+        {SYMBOL: _ok_decision("HOLD")},
+    ])
+    handle = _published_cycle_context(
+        cycle_id="cycle-1",
+        attribution={"n_closed_trades": 9, "realized_pnl": 123.0},
+    )
+
+    decision, calls = decide_one(
+        **{
+            **_BASE_KWARGS,
+            "agent_tools_enabled": True,
+            "shared_context": {"attribution": {"n_closed_trades": 1}},
+        },
+        codex_client=client,
+        tool_services=_services(worker_cycle_context=handle),
+        cycle_id="cycle-1",
+        session_backends=_session_backends(),
+        task_id="t",
+    )
+
+    tool_result = client.calls[1]["per_symbol"][SYMBOL]["tool_results"][0]
+    assert decision.action == "HOLD"
+    assert calls == 2
+    assert tool_result["result"] == {
+        "summary": {"n_closed_trades": 9, "realized_pnl": 123.0}
+    }
+
+
+def test_attribution_cycle_mismatch_retombe_sur_le_resume_du_payload() -> None:
+    client = _SeqClient([
+        BatchToolCallRequest(
+            calls=[{"id": "c1", "tool": "get_attribution", "args": {"scope": "summary"}}]
+        ),
+        {SYMBOL: _ok_decision("HOLD")},
+    ])
+    handle = _published_cycle_context(
+        cycle_id="cycle-2",
+        attribution={"n_closed_trades": 99},
+    )
+
+    decision, _ = decide_one(
+        **{
+            **_BASE_KWARGS,
+            "agent_tools_enabled": True,
+            "shared_context": {"attribution": {"n_closed_trades": 3}},
+        },
+        codex_client=client,
+        tool_services=_services(worker_cycle_context=handle),
+        cycle_id="cycle-1",
+        session_backends=_session_backends(),
+        task_id="t",
+    )
+
+    tool_result = client.calls[1]["per_symbol"][SYMBOL]["tool_results"][0]
+    assert decision.action == "HOLD"
+    assert tool_result["result"] == {"summary": {"n_closed_trades": 3}}
 
 
 def test_get_active_plans_cycle_mismatch_devient_tool_error_sans_lire_le_cycle_courant():

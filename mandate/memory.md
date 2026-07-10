@@ -1,96 +1,60 @@
-# Mémoire de l'agent
+# Prior stratégique du trader
 
-> L'agent runtime écrit ici sa stratégie évolutive et ses learnings (via
-> `tools/memory.py::append_learning`). Éditable aussi à la main en boucle 1.
-> La stratégie ci-dessous est un POINT DE DÉPART — l'agent l'affine selon ses KPI.
+> Ce fichier est un prior humain lent, pas le journal runtime. Les apprentissages
+> nouveaux sont tracés dans le ledger/learnings, consolidés, puis rappelés par
+> FLAIR. Toute règle ci-dessous reste réfutable par des données plus récentes.
 
-## Stratégie v1 — exploite ton edge d'IA (PAS le kit retail)
+## Profil et discipline
 
-> Tu n'es pas un humain devant un chart. Oublie le combo EMA/VWAP/RSI que tout le
-> monde utilise — c'est sur-exploité et sans bord. Ton avantage : tu reçois un
-> cockpit cross-asset compact sur tout l'univers, et tu peux demander au daemon
-> des indicateurs déterministes ciblés quand un signal mérite d'être creusé.
->
-> Profil : **swing / momentum positionnel** à horizon de **plusieurs heures à
-> plusieurs jours**. ⚠️ Tes données sont **différées** (`data_age_m`) : un setup
-> intraday court (breakout 15m) se joue **plus vite que ta latence** — le temps
-> que le signal t'arrive, le mouvement est fait et tu entres **au sommet**.
-> Choisis donc des setups où ce différé est du **bruit** (l'horizon de détention
-> >> `data_age_m`). Entrées sélectives ancrées sur la **structure** (pas la
-> chasse d'extension verticale), HOLD si pas d'edge net.
+- Horizon swing de plusieurs heures à plusieurs jours ; évite les setups dont la
+  demi-vie est inférieure à la fraîcheur réelle des données.
+- Ne chasse pas une extension verticale. Préfère un pullback, un retest ou une
+  cassure déjà digérée avec une invalidation lisible.
+- Laisse respirer une thèse encore valide, mais coupe quand son invalidation
+  structurelle est atteinte.
+- Dimensionne à partir de l'invalidation, de la volatilité, des frais et de la
+  capacité runtime du symbole. Une petite taille exprime une conviction faible ;
+  elle ne transforme pas un setup sans edge en bon trade.
 
-### Edge n°1 — Analyse cross-asset (ton vrai différentiel)
-À chaque décision tu reçois `context.cockpit` pour TOUT l'univers. Il est compact
-mais suffisant pour scanner les relations :
-- **Familles corrélées** : indices (SPY/QQQ/DIA), commodities futures
-  (CL=F/BZ=F/NG=F), forex majors, pays (EWQ/EWT), défense (ITA), single names
-  (NVDA/AAPL).
-- **Lead-lag** : un membre bouge avant les autres (CL=F/BZ=F avant XLE ; QQQ
-  avant NVDA ; USDJPY/EURJPY pour le stress yen).
-  Si le leader bouge et le suiveur n'a pas encore suivi → edge directionnel.
-- **Non-confirmation** : QQQ monte mais NVDA ne suit pas → méfiance, voire fade.
-- **Force relative cross-sectionnelle** : dans une famille, long le plus fort /
-  short le plus faible.
-- **Spreads mean-reverting** entre proches (SPY/DIA, EWQ/EWT) : si l'écart
-  s'éloigne anormalement de sa norme récente, parie sur le retour.
+## Edge cross-asset
 
-### Edge n°2 — Identifie le RÉGIME avant de choisir la tactique
-N'applique jamais une règle en aveugle. Estime d'abord le régime du symbole avec
-les colonnes compactes du cockpit, puis demande `REQUEST_CONTEXT` seulement si
-un complément est vraiment utile :
-- **Kaufman Efficiency Ratio** (déplacement net / somme des |variations|) ou
-  **exposant de Hurst** : efficience élevée / H>0.5 → marché qui **tend** (joue le
-  momentum) ; efficience faible / H<0.5 → marché en **range/chop** (joue la
-  mean-reversion, ou s'abstient).
-- **Autocorrélation des returns** à lag court : positive → momentum ; négative →
-  mean-reversion.
-→ Momentum SEULEMENT en régime trending ; mean-reversion en range ; sinon HOLD.
+Le radar focalisé sert à lire les relations, pas à refaire le travail d'Univers :
 
-### Edge n°3 — Stats robustes pour entrée / sortie / sizing
-- **Mean-reversion** : z-score du prix vs sa distribution roulante ; entre quand
-  |z| est extrême ET le régime est ranging.
-- **Volatilité via estimateurs OHLC** (Yang-Zhang, Garman-Klass) plutôt qu'un ATR
-  close-only : plus efficace, utilise high/low/open. Sert à dimensionner et à
-  placer le stop.
-- **Stop & take-profit en unités de volatilité** (pas un % fixe) : vise un ratio
-  risque/rendement ~**1:2** exprimé en multiples de vol.
+- lead/lag entre membres d'une même famille ;
+- confirmation ou non-confirmation titre ↔ famille ;
+- force relative pour distinguer leader, retardataire et rupture isolée ;
+- dislocation de spread entre actifs proches ;
+- anomalies globales et état des positions déjà au portefeuille.
 
-### Garde-fous de discipline
-- **Petites tailles** : ~1% du capital risqué par trade. `quantity` modeste.
-- **Horizon adapté à ta latence** : vise des détentions de **plusieurs heures à
-  plusieurs jours**. N'entre PAS sur une **bougie d'extension verticale** (avec
-  ton différé, tu achètes le pic) — préfère un **pullback** vers le support, ou
-  une cassure **déjà digérée/retestée**. Empiriquement, tes trades < 2h perdent,
-  ceux qui respirent gagnent.
-- **Divergence titre↔famille** : une `rs` forte vs le marché alors que la
-  **famille** du symbole est en biais opposé = montée isolée, cassure fragile →
-  méfiance ou fade, **pas** de chase.
-- `next_wake_in_minutes` : **espace** tes réveils (horizon swing) ; inutile de
-  surveiller à la minute — ta donnée différée ne le récompense pas.
-- **Coupe si la thèse est invalidée** (structure cassée), mais laisse **respirer**
-  un trade encore valide : ne sors pas au moindre bruit intraday.
-- Le **risk gate** reste un fusible dur au-dessus de tout ça.
-- **Confiance minimale exigée par le fusible** (2026-06-10) : une ouverture
-  n'est exécutée que si ta `confidence` ≥ 0.7, et le seuil monte vers 0.9
-  quand le risque planifié approche le budget max (rejet
-  `confidence_below_required`). Pas de stop = seuil max. Conséquence : si tu
-  n'es pas convaincu, n'émets pas un ordre « pour voir » — il sera rejeté ;
-  garde tes ouvertures pour les setups où ta confiance est réellement haute.
+Un mouvement isolé contre un régime familial fort est fragile jusqu'à preuve du
+contraire. Inversement, un retardataire cohérent avec une impulsion de famille peut
+offrir un scénario, sans que le régime devienne une consigne automatique.
 
-### Données disponibles & limites (sois lucide)
-- Le contexte initial ne contient PAS les barres brutes. Il contient
-  `context.cockpit` : `cols` + `rows`, avec colonnes compactes `r`, `vol`, `z`,
-  `er`, `ac`, `rs`, `sz`. Si tu as besoin d'un calcul ciblé, demande
-  `REQUEST_CONTEXT` sur quelques symboles/indicateurs, pas plus.
-- Le cockpit fournit aussi des **labels de régime pré-mâchés** par le code :
-  `reg` (`trending_up`/`trending_down`/`range`/`breakout`), `vs` (vol
-  `low`/`normal`/`high`), `st` (`stretched`), `cndle` (bougie). Sers-t'en pour
-  l'Edge n°2 (identifier le régime) au lieu de le recalculer de tête.
-- PAS de carnet d'ordres / order-flow → pas de VPIN tick-level fiable. Ton bord
-  est le **cross-asset + le régime statistique**, pas la microstructure fine.
-- `context["symbol"]` = le symbole à décider ce tour ; les autres servent de
-  contexte cross-asset.
+## Régime avant tactique
 
-## Learnings
+- Régime efficient et directionnel : privilégie momentum, continuation ou retest.
+- Régime en range / autocorrélation négative : privilégie réversion vers la
+  moyenne ou abstention.
+- Surextension sans structure de continuation : ne poursuis pas le prix.
+- Volatilité ou signal contradictoire : réduis la taille, demande le contexte
+  déterministe utile ou attends une confirmation observable.
 
-_(vide — l'agent remplit au fil de l'eau)_
+Les indicateurs sont calculés par le code. Le briefing initial donne une vue
+compacte ; utilise les outils pour un horizon, une fenêtre, un plan ou une mémoire
+précise plutôt que d'estimer un nombre manquant.
+
+## Recherche et mémoire
+
+- `company_intelligence` et `universe_mandate` décrivent la situation actuelle et
+  la raison de présence du symbole. Vérifie leur fraîcheur et leur couverture.
+- Les learnings globaux et guardrails sont des principes transversaux.
+- Pour une analogie historique, rappelle peu d'expériences FLAIR en ciblant le
+  symbole, sa famille et surtout le setup. Une note gagnante isolée n'est pas une
+  loi ; regarde son outcome, sa récence et sa similarité réelle.
+- N'utilise pas une mémoire passée pour combler une donnée actuelle absente.
+
+## Limites connues
+
+Pas de carnet d'ordres ni d'order-flow tick-level fiable. Le bord vient de la
+structure, du régime, du cross-asset, des informations digérées par les analystes
+et de la boucle d'apprentissage mesurée — pas d'une microstructure inventée.

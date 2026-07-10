@@ -59,6 +59,7 @@ from trader.agent.protocol.prompts import (
     _indicator_watch_vocabulary as _indicator_watch_vocabulary,
     _symbol_calls_final_contract as _symbol_calls_final_contract,
     build_batch_prompt as build_batch_prompt,
+    build_session_followup_prompt as build_session_followup_prompt,
     build_prompt as build_prompt,
 )
 from trader.agent.protocol.types import (
@@ -157,27 +158,39 @@ def decide_batch(
     use_symbol_calls_contract: bool = False,
     max_tool_calls_per_symbol: int = 3,
     max_rounds: int | None = 1,
+    session_followup: bool = False,
     llm_router: llm.LlmRouter | None = None,
     complete_fn: Callable[[str, int], llm.LlmCompletion | llm.LlmFailure] | None = None,
 ) -> dict[str, Decision | ContextResearchRequest] | BatchToolCallRequest:
     """UN seul appel modèle pour TOUS les symboles dus : le contexte partagé n'est
     envoyé qu'une fois (vs N fois en mode par-symbole). Isolation per-élément +
     tout échec -> HOLD. Retourne un dict symbole -> Decision|ContextResearchRequest,
-    ou un BatchToolCallRequest si le LLM demande une tournée d'outils (flag actif)."""
+    ou un BatchToolCallRequest si le LLM demande une tournée d'outils (flag actif).
+
+    ``session_followup`` est réservé à une session ACP déjà initialisée par ce
+    même appel logique : il transporte uniquement les nouveaux ``tool_results``.
+    Un nouveau backend/fallback doit toujours recommencer avec ``False``.
+    """
     if not symbols:
         return {}
     payload = [{"symbol": sym, **(per_symbol.get(sym) or {})} for sym in symbols]
-    prompt = build_batch_prompt(
-        mandate=mandate,
-        memory=memory,
-        shared_context=shared_context,
-        symbols_payload=payload,
-        allow_context_request=allow_context_request,
-        allow_tool_calls=allow_tool_calls,
-        use_symbol_calls_contract=use_symbol_calls_contract,
-        max_tool_calls_per_symbol=max_tool_calls_per_symbol,
-        max_rounds=max_rounds,
-    )
+    if session_followup:
+        prompt = build_session_followup_prompt(
+            symbols_payload=payload,
+            allow_tool_calls=allow_tool_calls,
+        )
+    else:
+        prompt = build_batch_prompt(
+            mandate=mandate,
+            memory=memory,
+            shared_context=shared_context,
+            symbols_payload=payload,
+            allow_context_request=allow_context_request,
+            allow_tool_calls=allow_tool_calls,
+            use_symbol_calls_contract=use_symbol_calls_contract,
+            max_tool_calls_per_symbol=max_tool_calls_per_symbol,
+            max_rounds=max_rounds,
+        )
     if complete_fn is not None:
         completion = complete_fn(prompt, timeout_s)
     else:

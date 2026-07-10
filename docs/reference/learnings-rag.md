@@ -56,8 +56,12 @@ n'existe pas encore au moment de l'appel outil.
 
 ## Consolidateur — `agent/learnings/consolidator`
 `ConsolidatedLearningsStore` : consolide les notes brutes en synthèses
-(`select_new_raw` depuis un watermark, `normalize_consolidated`). Réinjecté au
-contexte LLM (continuité de mémoire longue).
+(`select_new_raw` depuis un watermark, `normalize_consolidated`). En queue, la
+projection pousse seulement les principes `global` et les guardrails ; les slots
+`by_symbol` restent hors prompt et l'expérience ciblée passe par FLAIR.
+
+MemRL n'est pas encore actif : `q_value` est réservé dans le schéma, mais aucun
+updater ni ranking MemRL ne tourne en production.
 
 ## Invariant
 Le `.db` est reconstructible depuis les archives ; ne jamais le traiter comme

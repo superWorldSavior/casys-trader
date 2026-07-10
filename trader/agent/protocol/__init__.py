@@ -20,6 +20,7 @@ from trader.agent.protocol.types import (
 
 _LAZY_EXPORTS = {
     "build_batch_prompt": "trader.agent.protocol.prompts",
+    "build_session_followup_prompt": "trader.agent.protocol.prompts",
     "build_prompt": "trader.agent.protocol.prompts",
     "parse_batch": "trader.agent.protocol.parsing",
     "parse_batch_or_tool_calls": "trader.agent.protocol.parsing",
@@ -35,6 +36,7 @@ __all__ = [
     "IndicatorRequest",
     "Intent",
     "build_batch_prompt",
+    "build_session_followup_prompt",
     "build_prompt",
     "parse_batch",
     "parse_batch_or_tool_calls",

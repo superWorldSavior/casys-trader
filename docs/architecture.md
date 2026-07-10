@@ -70,6 +70,7 @@ les utilisaient :
 | `trader/application/execute/cycle_decision.py` | Application d'une décision symbole pendant un cycle | contient `execute_one_cycle_decision`, `DecisionExecutionContext` et `DecisionExecutionState` ; le daemon réexporte `_execute_one_cycle_decision` comme alias de compatibilité |
 | `trader/application/exit/armed_plans.py` | Résolution applicative des triggers `EXECUTE_ORDER` en décisions armées ou réveils planificateur | contrats `Protocol` locaux pour position/volatilité ; le daemon conserve logs et événements |
 | `trader/application/decide/planner_batch.py` | Batch LLM, budget modèle, tournée d'outils, REQUEST_CONTEXT | appelé via `daemon._batch_decide()` |
+| `trader/application/decide/context_projection.py` | Projection queue `decision_focus_v1` : cible/risque/recherche locale, radar borné et résumés pull-ready | appliquée par `queue_dispatch` sans muter le snapshot de cycle |
 | `trader/application/cycle/market_snapshot.py` | Barres runtime/daily/exit, fraîcheur, FX, eligibility, tradable maps | retourne `MarketSnapshot`, le daemon l'unpack |
 | `trader/application/record/decision_entries.py` | Construction pure des entrées décision runtime avant persistance | source `llm`/`infra`/`armed_plan`, traces d'outils et raisons HOLD sans side effects |
 | `trader/application/record/decision_watches.py` | Préparation pure des `indicator_watch` demandées par une décision | le daemon garde logging et application scheduler |
@@ -259,6 +260,8 @@ run_cycle()                                     [trader/runtime/daemon.py]
     │
     ├─ build_market_cockpit() → shared_context   [trader/agent/context.py]
     │    (cockpit compact, KPIs, attribution, regime_families, learnings)
+    ├─ queue: project_shared_context_for_symbol()
+    │    (cible + pairs/positions/anomalies ; détails via tools)
     │
     ├─ Gate de pertinence (relevance_gate)  ──── D7 étage A
     │    └─ quiet? → HOLD sans LLM (quiet_gate)
@@ -726,8 +729,10 @@ query?}` sert un hybride facettes → FTS5+cosine → RRF → outcome×decay
 
 La table `recalls` trace quelles notes ont servi quelle décision
 (note_ids × decision_id) — c'est le flux qui alimentera MemRL (Q-value) et le
-bench A/B `decision_bench`. Le push linéaire des 15 slots consolidés reste en
-place tant que la mesure n'a pas tranché.
+bench A/B `decision_bench`. En queue `decision_focus_v1`, seuls les guardrails
+et learnings globaux consolidés restent poussés ; les anciens slots
+`by_symbol` sont remplacés par le recall FLAIR à la demande. MemRL n'est pas
+encore actif.
 
 ## 12. Gestion des données — rotation et archives (2026-07-02)
 

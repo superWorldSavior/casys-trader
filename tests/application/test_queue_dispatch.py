@@ -297,6 +297,56 @@ def test_enqueue_decide_payload_contient_cycle_id() -> None:
     ]
 
 
+def test_enqueue_decide_projette_le_contexte_global_par_symbole() -> None:
+    class CaptureLedger:
+        def __init__(self) -> None:
+            self.payloads: list[dict] = []
+
+        def delete_stale_decide(self, *, current_cycle_id: str, now_ms: int) -> int:
+            return 0
+
+        def enqueue(self, *, payload=None, **_kwargs):
+            self.payloads.append(json.loads(payload))
+            return len(self.payloads)
+
+    ledger = CaptureLedger()
+    shared = {
+        "risk_capacity": {
+            "gross_remaining_usd": 10_000.0,
+            "per_symbol": {
+                "SPY": {"max_buy_qty": 4.0},
+                "QQQ": {"max_buy_qty": 2.0},
+            },
+        },
+        "active_plans_summary": [
+            {"symbol": "SPY", "id": "p1", "kind": "armed"},
+            {"symbol": "QQQ", "id": "p2", "kind": "wake"},
+        ],
+    }
+
+    queue_dispatch_mod._enqueue_decide_tasks(
+        ledger=ledger,
+        decidable=["SPY", "QQQ"],
+        mandate="mandate",
+        memory="memory",
+        shared_context=shared,
+        symbol_facts_by_sym={"SPY": {}, "QQQ": {}},
+        decision_timeout_s=60,
+        agent_tools_enabled=True,
+        cycle_id="cycle-1",
+        now_fn=lambda: 1.0,
+        symbols_universe=["SPY", "QQQ"],
+    )
+
+    spy, qqq = (payload["shared_context"] for payload in ledger.payloads)
+    assert set(spy["risk_capacity"]["per_symbol"]) == {"SPY"}
+    assert set(qqq["risk_capacity"]["per_symbol"]) == {"QQQ"}
+    assert spy["active_plans_summary"]["total"] == 2
+    assert spy["active_plans_summary"]["target"][0]["id"] == "p1"
+    assert qqq["active_plans_summary"]["target"][0]["id"] == "p2"
+    assert shared["risk_capacity"]["per_symbol"]["QQQ"]["max_buy_qty"] == 2.0
+
+
 # ---------------------------------------------------------------------------
 # Tests ledger — méthodes ajoutées
 # ---------------------------------------------------------------------------

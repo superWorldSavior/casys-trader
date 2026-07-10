@@ -9,11 +9,12 @@ des veilles, catalogue d'outils) est dans le texte du prompt ; la réponse est d
 **JSON strict** parsé et validé. Le transport (`agent/llm`, `agent/client`) est
 séparé.
 
-## Le prompt batch — `build_batch_prompt(...)`
+## Le prompt canonique — `build_batch_prompt(...)`
 
-Un seul appel modèle pour tout l'univers dû. Le **contexte partagé** (cockpit,
-portefeuille, KPI, attribution, learnings) est envoyé **UNE fois**, puis la liste
-des symboles à décider. Ordre d'assemblage :
+Le builder sert deux transports. Le batch legacy envoie un contexte partagé par
+lot. La queue de production appelle le même contrat pour un symbole, après
+projection `decision_focus_v1` : elle pousse la cible et un radar borné, puis
+laisse les détails derrière les outils. Ordre d'assemblage :
 
 1. Cadrage **PLANIFICATEUR** : « tu conçois des scénarios (entrées armées, veilles,
    plans de sortie) que le daemon exécute mécaniquement ; tu n'opères pas le marché
@@ -50,6 +51,12 @@ Le chemin moderne de recherche de contexte passe par les tool rounds read-only
 (`get_indicator_context`, `get_active_plans`, etc.). Le chemin single-symbol garde
 encore `REQUEST_CONTEXT` en compatibilité parser, mais le batch/queue runtime expose
 la grammaire `calls`.
+
+En queue, le premier message d'une session ACP contient ce contrat et le contexte
+focalisé complet. Les continuations de la même session ne renvoient que le delta
+`tool_results` du dernier tour. En cas de fallback vers un nouveau backend, le
+premier message redevient complet : un delta n'est jamais envoyé à une session qui
+n'a pas reçu le cockpit.
 
 ### Feedback pré-exécution `strategy_exit`
 

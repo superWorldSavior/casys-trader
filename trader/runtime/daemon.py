@@ -654,6 +654,11 @@ def run_cycle(
             risk_cfg, confidence_gate_enabled=gate.limits.confidence_gate_enabled
         ),
     )
+    if worker_cycle_context is not None:
+        worker_cycle_context.publish_attribution(
+            cycle_id=cycle_id,
+            attribution=attribution_payload,
+        )
     meta_performance_payload = meta_performance.compute_meta_performance(STATE_DIR)
     base_context = _build_base_context(
         cycle_id=cycle_id,

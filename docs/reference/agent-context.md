@@ -1,16 +1,39 @@
 # Référence — Contexte agent (le cockpit envoyé au LLM)
 
 > **Type** : Reference (Diátaxis).
-> **Code** : `trader/agent/context` · **Rôle** : construit le contexte compact + la recherche d'indicateurs à la demande pour l'agent.
+> **Code** : `trader/agent/context`, `trader/application/decide/context_projection` · **Rôle** : construit le contexte de cycle, puis sa projection focalisée + la recherche à la demande.
 
 `build_market_cockpit` construit le dict **`cockpit`** — **une clé** du
 `shared_context`. Le `shared_context` complet est assemblé dans `runtime/daemon`
 (il ajoute `now`, `now_human`, `market_clocks`, `portfolio`,
 `risk_limits`/`risk_capacity`, `kpis`, `attribution`, `meta_performance`,
 `learnings`, `regime_families`, `semantic`, `stale_market_data`,
-`active_plans_summary`).
-Ce contexte est injecté **une fois** dans le prompt batch (cf.
-[llm-contract](llm-contract.md)) : faits calculés par le code, pas de prose (AX).
+`active_plans_summary`). En batch legacy, ce contexte est injecté une fois par
+lot. En queue grain-symbole (production),
+`project_shared_context_for_symbol(...)` le réduit avant enqueue : faits calculés
+par le code, pas de prose (AX).
+
+## Projection queue `decision_focus_v1`
+
+Le trader ne refait pas le travail d'Univers. Le prompt queue suit trois niveaux :
+
+| Niveau | Contenu |
+|---|---|
+| Push obligatoire | recherche micro/news + mandat Univers du symbole, structure, fraîcheur/session, triggers, risque exact, plans locaux, portefeuille et guardrails |
+| Résumé | radar borné, pairs de famille, positions, anomalies globales, régimes, KPI/attribution et compteurs de plans |
+| Pull | indicateurs, plans détaillés, attribution complète et expériences FLAIR via les domain tools |
+
+Le radar contient au plus 32 lignes compactes : cible, sept pairs au plus,
+positions du portefeuille, highlights globaux, puis anomalies par score. Le bloc
+`focus` conserve les colonnes complètes pour la cible et ses pairs retenus. La
+capacité `risk_capacity.per_symbol` ne garde que la cible ; les agrégats gross,
+equity et limites restent globaux.
+
+Cette projection ne supprime aucune capacité analytique :
+`get_indicator_context` calcule les détails absents ; `get_active_plans` lit le
+snapshot complet du cycle ; `get_attribution` lit l'attribution complète conservée
+hors prompt dans `WorkerCycleContextHandle` ; `recall_learnings` interroge
+`learnings.db`.
 
 ## `portfolio` — cash ledger vs cash libre
 
@@ -35,9 +58,9 @@ séparément par symbole (`per_symbol_payload`).
   (0–1, ex. 5 % = `0.05` — direct compatible `min_pct`/`max_pct` des stops).
 - `_family_code(value)` — code famille compact.
 
-C'est la **source du « push complet »** : si le cockpit suffit, l'agent décide
-directement sans pull (cf. [agent-tools](agent-tools.md) — usage outils rare
-by-design).
+C'est la source du snapshot global. En queue, seule sa projection focalisée est
+poussée ; si elle suffit, l'agent décide directement, sinon il pull le complément
+précis (cf. [agent-tools](agent-tools.md)).
 
 ## `resolve_indicator_requests(...)`
 
@@ -69,6 +92,8 @@ concerné :
 | `execution`, `planning` | éligibilité marché/exécution si disponible |
 | `last_llm_review`, `recent_decisions` | mémoire courte anti-répétition |
 | `structure` | seulement pour le symbole décidé : timeframe des barres, fraîcheur/compte, prix, swings exacts 24/48, ATR normalisé et volume relatif |
+| `company_intelligence` | tranche fraîche micro/news du symbole, avec couverture et autorité de recherche |
+| `universe_mandate` | raison de sélection et posture émises par Univers, sans autorité d'exécution |
 
 ## Plans et veilles — 3 niveaux
 
@@ -77,12 +102,21 @@ Le contexte plans/watches est volontairement étagé :
 | Niveau | Champ / outil | Portée | Contenu |
 |---|---|---|---|
 | Détail local | `per_symbol[sym].active_watches` | symbole décidé seulement | veilles et plans armés actifs du symbole, avec conditions et expiration |
-| Résumé global | `shared_context.active_plans_summary` | portefeuille | résumé compact construit par `runtime/daemon._global_plans_summary` : `symbol`, `id`, `kind` (`armed`/`wake`) et `intent` si disponible, sans conditions |
+| Résumé focalisé | `shared_context.active_plans_summary` | cible + compteurs portefeuille | total, nombre de symboles, compteurs par kind et plans compacts du symbole courant |
 | Détail global | `get_active_plans` | portefeuille, à la demande | vrais `TradePlan` ouverts sérialisés, retour `{rows, as_of}` ; `symbol` filtre mais ne limite pas au symbole courant |
 
-Le résumé global sert surtout d'anti-doublon/OCO avant d'empiler des scénarios.
-L'outil `get_active_plans` ne sert que si le détail local et ce résumé global ne
+Le résumé focalisé sert surtout d'anti-doublon/OCO avant d'empiler des scénarios.
+L'outil `get_active_plans` ne sert que si le détail local et ce résumé ne
 suffisent pas.
+
+## Learnings : compétence, situation, expérience
+
+- `learnings.global` + `guardrails` restent poussés : compétence générale lente.
+- `company_intelligence` + `universe_mandate` portent la situation courante du nom.
+- Les anciens slots `learnings.by_symbol` ne sont plus poussés en queue : une
+  expérience historique n'est pas une situation actuelle.
+- `recall_learnings` rend à la demande les expériences pertinentes du RAG FLAIR,
+  pondérées par outcome. MemRL n'est pas encore actif (`q_value` réservé).
 
 `indicator_triggers` dit "une condition s'est réalisée". `wake_reasons` dit
 "le scheduler t'a réveillé pour réviser un état", par exemple parce que le TTL

@@ -62,7 +62,7 @@ def test_prompts_documentent_les_trois_niveaux_plans_watches() -> None:
     assert "context.active_plans_summary" in prompts._DECISION_GUIDANCE
     assert "get_active_plans" in prompts._DECISION_GUIDANCE
     assert "détail local" in prompts._DECISION_GUIDANCE
-    assert "résumé global" in prompts._DECISION_GUIDANCE
+    assert "résumé focalisé" in prompts._DECISION_GUIDANCE
     assert "détail global" in prompts._DECISION_GUIDANCE
     assert "N'appelle `get_active_plans` QUE si" in prompts._DECISION_GUIDANCE
     assert "ta vue locale ne suffisent pas" in prompts._DECISION_GUIDANCE
@@ -427,6 +427,44 @@ def test_get_attribution_scope_summary_et_symbol():
     result2, _ = agent_tools.execute_tool_call(
         AgentToolCall(id="c2", tool="get_attribution", args={"scope": "symbol", "symbol": "2330.TW"}), ctx)
     assert result2.result == {"rows": [{"symbol": "2330.TW", "n": 2}]}
+
+
+def test_get_attribution_supporte_le_schema_reel_du_read_model():
+    ctx = ToolContext(
+        now=datetime(2026, 7, 2, 10, 0, tzinfo=UTC),
+        allowed_symbols=frozenset({"2330.TW"}),
+        attribution={
+            "n_closed_trades": 3,
+            "realized_pnl": 42.0,
+            "win_rate": 2 / 3,
+            "recent_trips": [
+                {"symbol": "2330.TW", "pnl": 12.0},
+                {"symbol": "SPY", "pnl": 30.0},
+            ],
+        },
+    )
+
+    summary, _ = agent_tools.execute_tool_call(
+        AgentToolCall(id="c1", tool="get_attribution", args={"scope": "summary"}),
+        ctx,
+    )
+    assert summary.result == {
+        "summary": {
+            "n_closed_trades": 3,
+            "realized_pnl": 42.0,
+            "win_rate": 2 / 3,
+        }
+    }
+
+    symbol_rows, _ = agent_tools.execute_tool_call(
+        AgentToolCall(
+            id="c2",
+            tool="get_attribution",
+            args={"scope": "symbol", "symbol": "2330.TW"},
+        ),
+        ctx,
+    )
+    assert symbol_rows.result == {"rows": [{"symbol": "2330.TW", "pnl": 12.0}]}
 
 
 def test_get_attribution_scope_invalide():
