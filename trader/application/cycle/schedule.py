@@ -10,7 +10,9 @@ import logging
 from datetime import datetime, timezone
 from typing import Callable
 
-from trader.domain.planning.scheduling import stale_backoff_wake_minutes
+from trader.domain.planning.scheduling import (
+    stale_backoff_wake_minutes as stale_backoff_wake_minutes,
+)
 from trader.planning.protocols import SchedulerLike
 
 EventAppender = Callable[..., None]

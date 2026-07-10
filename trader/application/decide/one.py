@@ -24,7 +24,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 
 from trader.agent import llm
 import trader.agent.tools as agent_tools
@@ -32,6 +32,9 @@ from trader.agent.context import build_indicator_resolver
 from trader.agent.protocol.types import Decision
 from trader.application.decide.tool_round import resolve_symbol_decision
 from trader.infrastructure.queue.worker import RetryableError
+
+if TYPE_CHECKING:
+    from trader.application.exit.exit_update import ExitUpdateValidation
 
 log = logging.getLogger("trader.application.decide.one")
 

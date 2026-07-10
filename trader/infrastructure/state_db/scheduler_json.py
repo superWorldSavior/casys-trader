@@ -15,10 +15,10 @@ from pathlib import Path
 from typing import Iterable
 
 from trader.domain.planning.scheduling import (
-    STALE_BACKOFF_BASE_MULTIPLIER,
-    STALE_BACKOFF_MAX_MINUTES,
+    STALE_BACKOFF_BASE_MULTIPLIER as STALE_BACKOFF_BASE_MULTIPLIER,
+    STALE_BACKOFF_MAX_MINUTES as STALE_BACKOFF_MAX_MINUTES,
     STALE_BACKOFF_MAX_STREAK,
-    stale_backoff_wake_minutes,
+    stale_backoff_wake_minutes as stale_backoff_wake_minutes,
 )
 
 

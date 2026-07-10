@@ -15,7 +15,6 @@ from trader.agent.protocol.llm_schema import (
     LlmBatchToolCallsPayload,
     LlmContextRequestPayload,
     LlmDecisionPayload,
-    LlmIndicatorRequestPayload,
     LlmSymbolCallsPayload,
 )
 from trader.agent.protocol.types import (
