@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from collections.abc import Mapping
 from typing import Protocol
 
 
@@ -43,6 +44,7 @@ def persist_last_llm_review(
     symbol: str,
     now: datetime,
     decision: DecisionLike,
+    decision_id: str | None = None,
 ) -> None:
     """Persist the latest real LLM review on matching open plans."""
     if not (decision.llm_provider or decision.llm_model):
@@ -54,6 +56,7 @@ def persist_last_llm_review(
         "intent": decision.intent,
         "llm_provider": decision.llm_provider,
         "llm_model": decision.llm_model,
+        **({"decision_id": decision_id} if decision_id else {}),
     }
     for plan in plan_store.open_plans():
         if plan.symbol == symbol:
@@ -71,3 +74,24 @@ def last_review_by_symbol(
         if plan.symbol in wanted and plan.last_llm_review:
             out[plan.symbol] = plan.last_llm_review
     return out
+
+
+def annotate_learning_feedback(
+    reviews_by_symbol: Mapping[str, dict],
+    feedback_by_decision_id: Mapping[str, Mapping[str, object]] | None,
+) -> dict[str, dict]:
+    """Attach outcome feedback while keeping only compact cockpit-facing fields."""
+
+    result: dict[str, dict] = {}
+    for symbol, review in reviews_by_symbol.items():
+        copied = dict(review)
+        decision_id = str(copied.pop("decision_id", "") or "")
+        feedback = (feedback_by_decision_id or {}).get(decision_id)
+        if isinstance(feedback, Mapping):
+            compact = {"status": str(feedback.get("status") or "pending")}
+            for field in ("verdict", "forward_return", "outcome_score"):
+                if feedback.get(field) is not None:
+                    compact[field] = feedback[field]
+            copied["feedback"] = compact
+        result[symbol] = copied
+    return result

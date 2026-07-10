@@ -280,9 +280,9 @@ permettent ensuite de relier sélection, usage et outcome.
   FTS5 dérivé et reconstructible.
 - `SituationMemoryStore.search()` existe, mais aucun agent runtime ne l'appelle
   encore : ce n'est donc pas un RAG actif de bout en bout.
-- Le RAG `learnings.db` est une pile différente. Le trader reçoit au plus deux
-  expériences automatiquement et peut approfondir via `recall_learnings` lorsque
-  les agent-tools sont actifs.
+- Le RAG `learnings.db` est une pile différente. Le trader l'interroge via
+  `recall_learnings` lorsqu'une analogie historique est utile; aucune expérience
+  n'est poussée automatiquement dans le cockpit.
 - **FLAIR** (pas FLARE) pondère les learnings selon leurs outcomes. Dans la
   mémoire de situation, `outcome_score` reste actuellement neutre.
 - MemRL est actif sur cette pile **learnings** : les recalls sont reliés aux

@@ -96,7 +96,7 @@ def build_decision_row(
     indicator_watch = _as_dict(decision.get("indicator_watch"))
     return {
         "schema_version": SCHEMA_VERSION,
-        "decision_id": _decision_id(cycle_ts, sequence, symbol),
+        "decision_id": str(decision.get("decision_id") or _decision_id(cycle_ts, sequence, symbol)),
         "cycle_ts": cycle_ts,
         "sequence": sequence,
         "source": source,
@@ -120,6 +120,11 @@ def build_decision_row(
         "llm_fallback_reason": decision.get("llm_fallback_reason"),
         "llm_error": decision.get("llm_error"),
         "learning": decision.get("learning"),
+        "applied_learning_ids": [
+            rule_id
+            for rule_id in _as_list(decision.get("applied_learning_ids"))
+            if isinstance(rule_id, str)
+        ],
         "thesis": decision.get("thesis") if isinstance(decision.get("thesis"), dict) else None,
         "decision": original_decision,
         "market_snapshot": {
@@ -161,7 +166,6 @@ def build_decision_row(
             "tool_rounds": decision.get("tool_rounds"),
             "tool_calls": decision.get("tool_calls"),
             "tool_normalizations": decision.get("tool_normalizations"),
-            "automatic_recall": decision.get("automatic_recall"),
             "cancel_watch_results": decision.get("cancel_watch_results"),
         },
         "news": _as_dict(decision.get("news")),

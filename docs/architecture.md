@@ -724,15 +724,15 @@ du daemon (ou `learnings_ingest` manuellement) maintient `state/learnings.db`
 (SQLite dérivé, reconstructible : notes +
 facettes + FTS5 + embeddings OpenAI pré-calculés) → scoring FLAIR normalisé
 par symbole (lift vs base rate + shrinkage bayésien ; verdicts issus du
-forward via `decision_quality`) → un push automatique sert au plus deux notes
-symbole/famille et l'outil `recall_learnings{symbol?|family?|query?}` approfondit
-via un hybride facettes → FTS5+cosine → RRF → FLAIR+decay+MemRL
+forward via `decision_quality`) → l'outil
+`recall_learnings{symbol?|family?|query?}` approfondit à la demande via un
+hybride facettes → FTS5+cosine → RRF → FLAIR+decay+MemRL
 (~2-8 ms local, +~3 s max si embed de query OpenAI, dégradation FTS sinon).
 
 La table `recalls` trace quelles notes ont servi quelle décision. Après maturité,
 le worker applique `Q ← Q + 0.1 × (reward − Q)` ; `q_updates` shrinke son poids
 dans le ranking. En queue `decision_focus_v1`, les anciens slots permanents
-`by_symbol` restent supprimés : `flair_experience` est un retrieval épisodique
+`by_symbol` restent supprimés : `recall_learnings` est un retrieval épisodique
 borné, complété à la demande par l'outil.
 
 ## 12. Gestion des données — rotation et archives (2026-07-02)

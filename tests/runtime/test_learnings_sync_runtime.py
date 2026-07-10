@@ -146,6 +146,58 @@ def test_sync_applique_la_reward_memrl_aux_notes_rappelees(tmp_path) -> None:
     assert (verdict, reward) == ("WIN", 1.0)
 
 
+def test_opening_learning_stays_pending_until_its_lot_is_fully_closed(tmp_path) -> None:
+    state_dir = tmp_path / "state"
+    started = datetime(2026, 7, 1, 10, tzinfo=UTC)
+    decision_id = "2026-07-01T10:00:00+00:00|0|SPY"
+    _write_jsonl(
+        state_dir / "learnings.jsonl",
+        [{
+            "decision_id": decision_id,
+            "ts": started.isoformat(),
+            "symbol": "SPY",
+            "action": "BUY",
+            "intent": "OPEN_LONG",
+            "executed": True,
+            "note": "breakout entry",
+        }],
+    )
+    _write_jsonl(
+        state_dir / "model_performance.jsonl",
+        [
+            {"ts": started.isoformat(), "symbol": "SPY", "action": "BUY", "quantity": 10, "price": 100, "commission": 1, "fx_rate": 1, "decision_id": decision_id},
+            {"ts": (started + timedelta(days=1)).isoformat(), "symbol": "SPY", "action": "SELL", "quantity": 4, "price": 110, "commission": 0.4, "fx_rate": 1, "decision_id": "exit-1"},
+        ],
+    )
+
+    first = run_learning_sync(
+        state_dir=state_dir,
+        now=started + timedelta(days=3),
+        get_bars=lambda *_args, **_kwargs: _bars(started, final=130.0),
+        include_outcomes=True,
+        apply_bootstrap=False,
+        api_key="",
+    )
+    assert first["outcomes"]["notes_updated"] == 0
+
+    with (state_dir / "model_performance.jsonl").open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps({"ts": (started + timedelta(days=2)).isoformat(), "symbol": "SPY", "action": "SELL", "quantity": 6, "price": 105, "commission": 0.6, "fx_rate": 1, "decision_id": "exit-2"}) + "\n")
+    second = run_learning_sync(
+        state_dir=state_dir,
+        now=started + timedelta(days=4),
+        get_bars=lambda *_args, **_kwargs: _bars(started, final=130.0),
+        include_outcomes=True,
+        apply_bootstrap=False,
+        api_key="",
+    )
+    assert second["outcomes"]["notes_updated"] == 1
+    conn = sqlite3.connect(state_dir / "learnings.db")
+    verdict, net_return = conn.execute("SELECT verdict, forward_return FROM notes").fetchone()
+    conn.close()
+    assert verdict == "WIN"
+    assert net_return == pytest.approx(0.068)
+
+
 def test_runner_enchaine_les_micro_batches_sans_nouveau_trigger(tmp_path) -> None:
     calls: list[bool] = []
 

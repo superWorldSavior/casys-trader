@@ -44,6 +44,9 @@ class Decision:
     llm_model: str | None = None
     llm_fallback_reason: str | None = None
     llm_error: str | None = None
+    # Règles globales explicitement citées par le LLM. Le runtime les recoupe
+    # ensuite avec celles effectivement présentes dans le prompt courant.
+    applied_learning_ids: list[str] = field(default_factory=list)
     # L1 — sizing en risque : % d'equity à risquer sur ce trade.
     # Présent = qty=0.0 est un placeholder ; le daemon dérive la qty depuis
     # risk_pct_target * equity / (stop_distance * fx_rate).

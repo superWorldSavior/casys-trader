@@ -40,6 +40,7 @@ def build_execute_queue_plan_payload(
     llm_model: str | None,
     llm_fallback_reason: str | None,
     llm_confidence: float | None,
+    entry_decision_id: str | None = None,
 ) -> ExecuteQueuePlanPayload:
     """Prepare the queue UoW payload without enqueuing or mutating stores."""
     symbol_to_close = symbol if intent in {"CLOSE", "FLIP", "SCALE_IN"} else None
@@ -61,6 +62,7 @@ def build_execute_queue_plan_payload(
             llm_model=llm_model,
             llm_fallback_reason=llm_fallback_reason,
             llm_confidence=llm_confidence,
+            entry_decision_id=entry_decision_id,
         )
         return ExecuteQueuePlanPayload(plan_to_upsert=plan.model_dump(), symbol_to_close=symbol_to_close)
 
@@ -88,6 +90,7 @@ def build_execute_queue_plan_payload(
             llm_model=llm_model,
             llm_fallback_reason=llm_fallback_reason,
             llm_confidence=llm_confidence,
+            entry_decision_id=entry_decision_id,
         )
         previous_plan = _open_plan_for_symbol(plan_reader, symbol)
         if previous_plan is not None and previous_plan.last_llm_review is not None:
@@ -116,6 +119,7 @@ def build_execute_queue_plan_payload(
             llm_model=llm_model,
             llm_fallback_reason=llm_fallback_reason,
             llm_confidence=llm_confidence,
+            entry_decision_id=entry_decision_id,
         )
         return ExecuteQueuePlanPayload(plan_to_upsert=plan.model_dump(), symbol_to_close=symbol_to_close)
 
@@ -137,6 +141,7 @@ def _build_plan(
     llm_model: str | None,
     llm_fallback_reason: str | None,
     llm_confidence: float | None,
+    entry_decision_id: str | None,
 ) -> TradePlan:
     plan = create_trade_plan_from_order(
         symbol=symbol,
@@ -155,6 +160,7 @@ def _build_plan(
         update={
             "entry_thesis": rationale,
             "entry_context": copy.deepcopy(dict(entry_context or {})),
+            "entry_decision_id": entry_decision_id,
         }
     )
 

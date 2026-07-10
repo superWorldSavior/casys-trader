@@ -56,10 +56,10 @@ re-empiler les bacs.
 
 ## Ce que le cadre tranche
 
-- **③ n'est jamais stocké comme règle permanente par symbole.** Un retrieval
-  automatique très borné (2 notes, symbole puis famille) est admis au moment de
-  décider ; le détail reste pull via `recall_learnings`. Attribution et MemRL
-  travaillent ensuite en coulisse.
+- **③ n'est jamais stocké comme règle permanente par symbole.** Le détail reste
+  pull via `recall_learnings`; FLAIR et MemRL travaillent ensuite en coulisse
+  pour curer les règles globales plutôt que pousser une expérience historique
+  au réveil d'un symbole.
 - **① reste** (le `global` = compétence générale ; guardrails ; mandat).
 - **Le `by_symbol` disparaît** du contexte : c'était ③ déguisé en ② — une « règle de trading par
   nom » qui n'existe pas. (`raw_recent` idem : ni ciblé, ni un état.)

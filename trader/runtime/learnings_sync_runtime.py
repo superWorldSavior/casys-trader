@@ -16,6 +16,11 @@ from backtest.decision_quality import BAND, classify, forward_return
 from trader.agent.learnings import embeddings as embeddings_mod
 from trader.infrastructure.state_db.learnings_store import LearningsStore
 from trader.runtime import ledger_rotation
+from trader.runtime.learning_outcomes import (
+    realised_entry_outcomes,
+    realised_verdict,
+    requires_realised_trade,
+)
 from trader.runtime.protocols import LoggerLike
 
 
@@ -135,6 +140,35 @@ def _fetch_bars_by_symbol(
     return bars_by_symbol, errors
 
 
+def _is_legacy_decision_id(row: Mapping[str, object]) -> bool:
+    """Legacy rows predate a durable decision id and keep fixed-horizon FLAIR."""
+
+    return str(row.get("decision_id") or "").startswith("synth:")
+
+
+def _outcome_for_row(
+    row: Mapping[str, object],
+    *,
+    bars: list,
+    now: datetime,
+    realised_returns: Mapping[str, float],
+) -> dict[str, object] | None:
+    """Resolve an opening only after its lot closes; score every other row at 1d/4h."""
+
+    if requires_realised_trade(dict(row)) and not _is_legacy_decision_id(row):
+        net_return = realised_returns.get(str(row.get("decision_id") or ""))
+        if net_return is None:
+            # A live lot has no expiry: it remains deliberately pending.
+            return None
+        verdict, reward = realised_verdict(net_return)
+        return {
+            "verdict": verdict,
+            "reward": reward,
+            "forward_return": net_return,
+        }
+    return score_outcome(row, bars, now=now)
+
+
 def _refresh_outcomes(
     store: LearningsStore,
     *,
@@ -153,28 +187,41 @@ def _refresh_outcomes(
     # l'instant où la trace ``recalls`` a été persistée (une trace peut être
     # restaurée/importée après coup).
     pending_recall_ids = store.pending_recall_decision_ids(limit=limit)
+    pending_global_rule_ids = store.pending_global_rule_decision_ids(limit=limit)
 
     decision_rows = ledger_rotation.read_rows_with_archive(
         state_dir / "decisions.jsonl",
         state_dir / "archive",
     )
+    pending_decision_ids = set(pending_recall_ids) | set(pending_global_rule_ids)
     decisions_by_id = {
         str(row.get("decision_id")): row
         for row in decision_rows
-        if row.get("decision_id") in set(pending_recall_ids)
+        if row.get("decision_id") in pending_decision_ids
     }
-    recall_rows = [decisions_by_id[decision_id] for decision_id in pending_recall_ids if decision_id in decisions_by_id]
+    delayed_rows = [
+        decisions_by_id[decision_id]
+        for decision_id in pending_decision_ids
+        if decision_id in decisions_by_id
+    ]
     mature_rows = [
         row
-        for row in [*pending_notes, *recall_rows]
+        for row in [*pending_notes, *delayed_rows]
         if (ts := _parse_ts(row.get("ts") or row.get("cycle_ts"))) is not None
         and _utc(now) - ts >= MIN_OUTCOME_AGE
+        and not (requires_realised_trade(dict(row)) and not _is_legacy_decision_id(row))
     ]
     bars_by_symbol, errors = _fetch_bars_by_symbol(mature_rows, now=now, get_bars=get_bars)
+    realised_returns = realised_entry_outcomes(state_dir)
 
     note_updates: list[dict] = []
     for row in pending_notes:
-        outcome = score_outcome(row, bars_by_symbol.get(str(row.get("symbol") or ""), []), now=now)
+        outcome = _outcome_for_row(
+            row,
+            bars=bars_by_symbol.get(str(row.get("symbol") or ""), []),
+            now=now,
+            realised_returns=realised_returns,
+        )
         if outcome is not None:
             note_updates.append({"id": row["id"], **outcome})
     notes_updated = store.update_note_outcomes(note_updates)
@@ -185,7 +232,12 @@ def _refresh_outcomes(
         row = decisions_by_id.get(decision_id)
         if row is None:
             continue
-        outcome = score_outcome(row, bars_by_symbol.get(str(row.get("symbol") or ""), []), now=now)
+        outcome = _outcome_for_row(
+            row,
+            bars=bars_by_symbol.get(str(row.get("symbol") or ""), []),
+            now=now,
+            realised_returns=realised_returns,
+        )
         if outcome is None:
             continue
         applied = store.apply_recall_outcome(
@@ -199,13 +251,41 @@ def _refresh_outcomes(
         recalls_updated += int(applied["recalls_updated"])
         q_values_updated += int(applied["notes_updated"])
 
+    global_rule_citations_updated = 0
+    global_rule_q_values_updated = 0
+    for decision_id in pending_global_rule_ids:
+        row = decisions_by_id.get(decision_id)
+        if row is None:
+            continue
+        outcome = _outcome_for_row(
+            row,
+            bars=bars_by_symbol.get(str(row.get("symbol") or ""), []),
+            now=now,
+            realised_returns=realised_returns,
+        )
+        if outcome is None:
+            continue
+        applied = store.apply_global_rule_outcome(
+            decision_id=decision_id,
+            verdict=str(outcome["verdict"]),
+            reward=outcome["reward"],  # type: ignore[arg-type]
+            forward_return=outcome["forward_return"],  # type: ignore[arg-type]
+            evaluated_at=_utc(now).isoformat(),
+            alpha=memrl_alpha,
+        )
+        global_rule_citations_updated += int(applied["citations_updated"])
+        global_rule_q_values_updated += int(applied["rules_updated"])
+
     scoring = store.compute_outcome_scores() if notes_updated else {"scored": 0, "base_rates": {}}
     return {
         "pending_notes": len(pending_notes),
         "pending_recalls": len(pending_recall_ids),
+        "pending_global_rule_citations": len(pending_global_rule_ids),
         "notes_updated": notes_updated,
         "recalls_updated": recalls_updated,
         "q_values_updated": q_values_updated,
+        "global_rule_citations_updated": global_rule_citations_updated,
+        "global_rule_q_values_updated": global_rule_q_values_updated,
         "scored": int(scoring.get("scored") or 0),
         "errors": errors,
     }
@@ -272,6 +352,7 @@ def run_learning_sync(
             and (
                 int(outcomes.get("notes_updated") or 0) >= outcome_batch_size
                 or int(outcomes.get("recalls_updated") or 0) >= outcome_batch_size
+                or int(outcomes.get("global_rule_citations_updated") or 0) >= outcome_batch_size
             )
         )
         return {

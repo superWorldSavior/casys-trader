@@ -1042,3 +1042,170 @@ def test_search_query_vide_equivaut_a_pas_de_query(tmp_path) -> None:
     with_empty = store.search(symbol="SPY", text_query="")
     without = store.search(symbol="SPY")
     assert len(with_empty) == len(without) == 1
+
+
+# ---------------------------------------------------------------------------
+# Outcome-weighted curation + global-rule MemRL
+# ---------------------------------------------------------------------------
+
+
+def test_curation_revisions_preservent_un_feedback_arrive_pendant_la_consolidation(
+    tmp_path: Path,
+) -> None:
+    store = LearningsStore(tmp_path / "learnings.db")
+    jsonl = tmp_path / "note.jsonl"
+    _write_jsonl(jsonl, [{
+        "ts": "2026-07-10T10:00:00+00:00",
+        "symbol": "SPY",
+        "note": "Attendre une confirmation avant de renforcer.",
+        "action": "HOLD",
+        "intent": "HOLD",
+        "executed": False,
+        "decision_id": "curation-decision",
+    }])
+    store.ingest_jsonl(jsonl, source="runtime")
+
+    assert store.curation_counts()["new"] == 1
+    snapshot = store.select_curation_candidates()
+    assert len(snapshot) == 1
+    assert snapshot[0]["status"] == "pending"
+    assert {"note_id", "decision_id", "text", "family", "intent", "executed"} <= set(snapshot[0])
+
+    # The outcome arrives while the consolidator still holds revision 1.
+    assert store.update_note_outcomes([{
+        "id": snapshot[0]["id"],
+        "verdict": "WIN",
+        "forward_return": 0.02,
+    }]) == 1
+    assert store.mark_curation_candidates_curated(snapshot) == 1
+    counts = store.curation_counts()
+    assert counts["new"] == 0
+    assert counts["feedback"] == 1
+
+    refreshed = store.select_curation_candidates()
+    assert refreshed[0]["status"] == "evaluated"
+    assert store.mark_curation_candidates_curated(refreshed) == 1
+    assert store.curation_counts()["changed"] == 0
+
+    feedback = store.feedback_by_decision_ids(["curation-decision"])
+    assert feedback["curation-decision"]["status"] == "evaluated"
+    assert feedback["curation-decision"]["verdict"] == "WIN"
+    assert feedback["curation-decision"]["forward_return"] == pytest.approx(0.02)
+
+
+def test_curation_candidates_are_diverse_and_bounded_by_tranche(tmp_path: Path) -> None:
+    rows: list[dict] = []
+    verdicts: list[dict] = []
+    for symbol, verdict, prefix in (
+        ("AAA", "WIN", "a"),
+        ("CCC", "WIN", "c"),
+        ("BBB", "LOSS", "b"),
+        ("DDD", "LOSS", "d"),
+    ):
+        for index in range(3):
+            decision_id = f"{prefix}-{index}"
+            rows.append({
+                "ts": f"2026-07-0{index + 1}T10:00:00+00:00",
+                "symbol": symbol,
+                "note": f"{symbol} learning {index}",
+                "action": "BUY",
+                "intent": "OPEN_LONG",
+                "executed": True,
+                "decision_id": decision_id,
+            })
+            verdicts.append({
+                "decision_id": decision_id,
+                "verdict": verdict,
+                "forward_return": 0.03 if verdict == "WIN" else -0.03,
+            })
+
+    store = LearningsStore(tmp_path / "learnings.db")
+    jsonl = tmp_path / "diverse.jsonl"
+    _write_jsonl(jsonl, rows)
+    store.ingest_jsonl(jsonl, source="runtime")
+    store.update_note_outcomes([
+        {"id": row[0], "verdict": verdict["verdict"], "forward_return": verdict["forward_return"]}
+        for verdict in verdicts
+        for row in [store._conn.execute(
+            "SELECT id FROM notes WHERE decision_id=?", (verdict["decision_id"],)
+        ).fetchone()]
+    ])
+    store.compute_outcome_scores()
+    # Ack the first pass so the next call is purely the historical pool.
+    store.mark_curation_candidates_curated(store.select_curation_candidates())
+
+    candidates = store.select_curation_candidates(
+        recent_limit=0,
+        positive_limit=4,
+        counterexample_limit=4,
+        max_per_symbol=2,
+    )
+    assert len(candidates) == 8
+    counts: dict[str, int] = {}
+    for candidate in candidates:
+        counts[candidate["symbol"]] = counts.get(candidate["symbol"], 0) + 1
+        assert candidate["status"] == "evaluated"
+        assert {"verdict", "forward_return", "outcome_score", "q_value", "q_updates"} <= set(candidate)
+    assert counts == {"AAA": 2, "CCC": 2, "BBB": 2, "DDD": 2}
+
+
+def test_global_rule_memrl_is_idempotent_and_keeps_retired_rule_history(tmp_path: Path) -> None:
+    store = LearningsStore(tmp_path / "learnings.db")
+    synced = store.sync_global_rules(["rule-breakout", "rule-risk"], ts="2026-07-10T00:00:00+00:00")
+    assert synced == {"created": 2, "reactivated": 0, "retired": 0, "active": 2}
+    assert store.record_global_rule_citation(
+        decision_id="decision-with-rules",
+        rule_ids=["rule-breakout", "rule-risk"],
+        ts="2026-07-10T01:00:00+00:00",
+    )
+    assert store.pending_global_rule_decision_ids() == ["decision-with-rules"]
+
+    first = store.apply_global_rule_outcome(
+        decision_id="decision-with-rules",
+        verdict="WIN",
+        reward=1.0,
+        forward_return=0.02,
+        evaluated_at="2026-07-11T01:00:00+00:00",
+    )
+    second = store.apply_global_rule_outcome(
+        decision_id="decision-with-rules",
+        verdict="LOSS",
+        reward=-1.0,
+        forward_return=-0.02,
+        evaluated_at="2026-07-12T01:00:00+00:00",
+    )
+    assert first == {
+        "citations_updated": 1,
+        "rules_updated": 2,
+        "rule_ids": ["rule-breakout", "rule-risk"],
+    }
+    assert second == {"citations_updated": 0, "rules_updated": 0, "rule_ids": []}
+    assert store.global_rule_scores()["rule-breakout"]["q_value"] == pytest.approx(0.1)
+    assert store.global_rule_scores()["rule-risk"]["q_updates"] == 1
+
+    store.sync_global_rules(["rule-breakout"], ts="2026-07-12T02:00:00+00:00")
+    scores = store.global_rule_scores()
+    assert scores["rule-risk"]["active"] is False
+    assert scores["rule-risk"]["q_value"] == pytest.approx(0.1)
+    with pytest.raises(ValueError, match="inactive or unknown"):
+        store.record_global_rule_citation(
+            decision_id="invalid-citation",
+            rule_ids=["rule-risk"],
+        )
+
+
+def test_schema_migrates_curation_and_global_rule_tables_additively(tmp_path: Path) -> None:
+    db_path = tmp_path / "legacy.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute("CREATE TABLE notes (id INTEGER PRIMARY KEY, note TEXT, q_value REAL)")
+    conn.execute(
+        "CREATE TABLE recalls (id INTEGER PRIMARY KEY, decision_id TEXT, note_ids TEXT, ts TEXT)"
+    )
+    conn.commit()
+    conn.close()
+
+    store = LearningsStore(db_path)
+    note_columns = {row[1] for row in store._conn.execute("PRAGMA table_info(notes)")}
+    tables = {row[0] for row in store._conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    assert {"curation_revision", "curated_revision", "curation_updated_at"} <= note_columns
+    assert {"global_rules", "global_rule_citations"} <= tables

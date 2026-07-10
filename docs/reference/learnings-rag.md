@@ -50,13 +50,12 @@ manuel de reconstruction/backfill.
 Client OpenAI minimal (`embed_texts`), modèle `text-embedding-3-small`. Fail-safe.
 Les vecteurs sont **pré-calculés** et stockés en BLOB dans `notes.embedding`.
 
-## Recall (RAG) — push borné + outil `recall_learnings`
+## Recall (RAG) — outil `recall_learnings`
 
-Chaque décision LLM reçoit automatiquement au plus **deux** expériences :
-recherche facettée du symbole, puis fallback de famille. Ce petit push local ne
-fait aucun appel d'embedding et ne remplace jamais la situation fraîche du titre.
-L'agent peut ensuite appeler `recall_learnings` pour une analogie de setup plus
-précise. La recherche (`store.search`) est **hybride** :
+L'expérience historique reste **pull-only** : l'agent appelle
+`recall_learnings` pour une analogie de setup précise. Elle n'est jamais poussée
+automatiquement dans le cockpit, et ne remplace jamais la situation fraîche du
+titre. La recherche (`store.search`) est **hybride** :
 FTS5 BM25 (mots-clés) **+** cosinus vectoriel (si un embedding de la requête est
 fourni), fusionnés par **Reciprocal Rank Fusion** (k=60), puis re-scorés :
 
@@ -69,8 +68,8 @@ final_score  = rrf + outcome_score + freshness
 `outcome_score` est **additionné** (pas un multiplicateur), et une décroissance de
 **fraîcheur** pénalise les notes anciennes. Latence typique 2-8 ms.
 
-**Le tracing dans `recalls` est fait POST-décision**, pour le push automatique
-comme pour l'outil : `decision_recorder` extrait les `note_ids` de la trace et
+**Le tracing dans `recalls` est fait POST-décision** pour les seuls appels
+explicites à l'outil : `decision_recorder` extrait les `note_ids` de la trace et
 appelle `store.record_recall`. Les décisions synthétiques sans appel modèle ne
 créent pas cette attribution.
 
@@ -89,10 +88,40 @@ Q. La contribution de Q au ranking est shrinkée par `q_updates` : une expérien
 ne devient donc pas dominante après un seul outcome.
 
 ## Consolidateur — `agent/learnings/consolidator`
-`ConsolidatedLearningsStore` : consolide les notes brutes en synthèses
-(`select_new_raw` depuis un watermark, `normalize_consolidated`). En queue, la
-projection pousse seulement les principes `global` et les guardrails ; les slots
-`by_symbol` restent hors prompt et l'expérience ciblée passe par FLAIR.
+`ConsolidatedLearningsStore` conserve au plus dix règles globales. Le
+consolidateur reçoit un pool borné : 50 learnings nouveaux/modifiés, 15
+confirmations FLAIR historiques et 15 contre-exemples, chacun avec son feedback
+(`pending` ou verdict, rendement, score FLAIR et Q de note). Il ne produit pas
+de règle par symbole.
+
+Chaque règle persistée contient `rule_id`, `note`, `robustness`,
+`evidence_note_ids` et un résumé d'évidence calculé par le code. Une règle
+retenue/reformulée garde son ID ; une nouvelle règle le laisse vide et reçoit un
+ID stable après validation. Une provenance qui n'appartient pas au pool, ou un
+ID de règle inventé, invalide la consolidation. `high` requiert trois preuves
+évaluées, plus de WIN que de LOSS et une reward moyenne positive.
+
+Le cockpit ne reçoit que `{rule_id, note, robustness}` avec les guardrails. Les
+fichiers historiques `by_symbol` restent lisibles pour compatibilité, mais toute
+nouvelle consolidation écrit ce slot vide. Les règles globales citées via
+`applied_learning_ids` ont leur MemRL séparé des notes rappelées par l'outil :
+seules les règles réellement citées reçoivent l'outcome différé de la décision.
+
+### Ingestion et outcomes
+
+`record_learning` conserve son learning brut dans le JSONL puis l'ingère
+immédiatement dans SQLite avec son vrai `decision_id` et un feedback `pending`;
+la vectorisation reste best-effort en arrière-plan. Une entrée (`OPEN_LONG`,
+`OPEN_SHORT`, `SCALE_IN`, ou nouvelle jambe d'un `FLIP`) n'est évaluée qu'après
+la clôture complète de son lot FIFO, sorties partielles et commissions incluses.
+`HOLD`, ordre bloqué, `CLOSE` et `REDUCE` conservent le jugement contrefactuel
+à 1 jour, avec fallback 4 heures. Les anciennes notes à identifiant synthétique
+restent sur ce dernier horizon fixe.
+
+Une consolidation est due à 50 nouvelles notes, 10 feedbacks modifiés, ou au
+rattrapage quotidien d'un changement en attente. Les révisions exactes envoyées
+au modèle ne sont marquées curées qu'après une écriture réussie : un échec ne
+perd donc ni une note ni un outcome arrivé pendant l'appel.
 
 ## Invariant
 Le `.db` est reconstructible depuis les archives ; ne jamais le traiter comme

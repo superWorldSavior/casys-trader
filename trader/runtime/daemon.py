@@ -661,6 +661,20 @@ def run_cycle(
             attribution=attribution_payload,
         )
     meta_performance_payload = meta_performance.compute_meta_performance(STATE_DIR)
+    if _recall_store is not None:
+        try:
+            # Make the rules actually projected into this cycle citeable.  This
+            # also migrates legacy global rules to their stable IDs lazily.
+            _recall_store.sync_global_rules(
+                [
+                    str(rule["rule_id"])
+                    for rule in consolidated_learnings_store.read().get("global", [])
+                    if isinstance(rule, dict) and rule.get("rule_id")
+                ],
+                ts=cycle_id,
+            )
+        except Exception as exc:  # noqa: BLE001 - global MemRL is advisory
+            log.warning("global learning rule sync failed: %s", exc)
     base_context = _build_base_context(
         cycle_id=cycle_id,
         now=now,
@@ -778,6 +792,15 @@ def run_cycle(
         agent_trace_path=STATE_DIR / "agent_trace.log",
         company_context_provider=lambda symbol: company_context_by_symbol.get(symbol),
         mandate_context_provider=lambda symbol: mandate_context_by_symbol.get(symbol),
+        learning_ingester=(
+            (
+                lambda: _recall_store.ingest_jsonl(
+                    STATE_DIR / "learnings.jsonl", source="runtime"
+                )
+            )
+            if _recall_store is not None
+            else None
+        ),
     )
     record_decision = recorder.record
 
@@ -876,6 +899,9 @@ def run_cycle(
         queue_execute_enabled=queue_execute_enabled,
         execute_ledger=execute_ledger,
         record_decision=record_decision,
+        decision_id_for_symbol=lambda symbol: decision_ledger._decision_id(
+            str(report["ts"]), len(report["decisions"]), symbol
+        ),
         rate_for_symbol=_rate,
         append_event=_append_event,
         append_model_performance=_append_model_performance,
@@ -923,6 +949,11 @@ def run_cycle(
             now_fn=time.time,
             company_context_by_symbol=company_context_by_symbol,
             mandate_context_by_symbol=mandate_context_by_symbol,
+            learning_feedback_provider=(
+                _recall_store.feedback_by_decision_ids
+                if _recall_store is not None
+                else None
+            ),
         ),
         resolve_decision_for_routing=_resolve_decision_for_execution_routing,
         execute_decision=_execute_one_cycle_decision,
@@ -1095,6 +1126,7 @@ def run_cycle(
             attribution=attribution_payload,
             meta_performance=meta_performance_payload,
             consolidate=consolidator.maybe_consolidate,
+            curation_provider=_recall_store,
         ),
         gross_rejection_cache=process_state.last_gross_rejections,
         summarize_gross_rejections=summarize_gross_rejections,

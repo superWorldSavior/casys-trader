@@ -4,6 +4,7 @@ from trader.runtime import daemon
 from trader.agent.client import Decision
 from trader.market.market_data import Bar, MarketError
 from trader.agent.learnings.raw_store import RawLearningsStore
+from trader.agent.learnings.consolidation_stores import stable_rule_id
 from trader.planning.scheduler import Scheduler
 
 
@@ -161,7 +162,7 @@ def test_run_cycle_passe_le_filtre_regime_a_lattribution(
     }
 
 
-def test_run_cycle_reinjecte_les_learnings_recents_dans_le_contexte(
+def test_run_cycle_ne_reinjecte_pas_les_learnings_bruts_dans_le_contexte(
     monkeypatch,
     tmp_path,
     patch_batch,
@@ -191,7 +192,7 @@ def test_run_cycle_reinjecte_les_learnings_recents_dans_le_contexte(
 
     assert contexts
     learnings = contexts[0]["learnings"]
-    assert [item["note"] for item in learnings] == ["cassure ratee au dernier reveil"]
+    assert learnings == {"global": []}
 
 
 def test_run_cycle_injecte_les_learnings_consolides_scope_aware(
@@ -235,8 +236,14 @@ def test_run_cycle_injecte_les_learnings_consolides_scope_aware(
     daemon.run_cycle(dry_run=True, now=now, symbols_filter=["SPY"], sched=sched, data_source=data_source)
 
     learnings = contexts[0]["learnings"]
-    assert learnings["global"] == [{"note": "z seul ne suffit pas"}]
-    assert learnings["by_symbol"] == {"SPY": [{"note": "SPY reste range"}]}
+    assert learnings["global"] == [
+        {
+            "rule_id": stable_rule_id("z seul ne suffit pas"),
+            "note": "z seul ne suffit pas",
+            "robustness": "low",
+        }
+    ]
+    assert "by_symbol" not in learnings
     # D6 : plus de bruts réinjectés quand un consolidé existe
     assert "raw_recent" not in learnings
 

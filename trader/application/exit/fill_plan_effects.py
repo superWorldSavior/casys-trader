@@ -51,6 +51,7 @@ def apply_filled_plan_effects(
     queue_execute_enabled: bool,
     entry_thesis: str,
     entry_context: dict,
+    entry_decision_id: str | None = None,
 ) -> None:
     """Apply trade-plan mutations and decision-entry snapshots after a fill."""
     if intent in {"CLOSE", "FLIP"} and not queue_execute_enabled:
@@ -115,7 +116,12 @@ def apply_filled_plan_effects(
         llm_fallback_reason=llm_fallback_reason,
         llm_confidence=llm_confidence,
     )
-    plan = plan.model_copy(update=entry_meta)
+    plan = plan.model_copy(
+        update={
+            **entry_meta,
+            **({"entry_decision_id": entry_decision_id} if entry_decision_id else {}),
+        }
+    )
     if add_previous_plan is not None and add_previous_plan.last_llm_review is not None:
         plan = plan.model_copy(update={"last_llm_review": copy.deepcopy(add_previous_plan.last_llm_review)})
     if not queue_execute_enabled:

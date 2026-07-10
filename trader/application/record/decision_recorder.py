@@ -24,6 +24,7 @@ NewsSnapshotProvider: TypeAlias = Callable[[str, datetime], ReportPayload]
 BriefRefProvider: TypeAlias = Callable[[str, datetime], dict[str, str] | None]
 ResearchSliceProvider: TypeAlias = Callable[[str], dict[str, Any] | None]
 MergeGateFeedback: TypeAlias = Callable[[object, object, object], str | None]
+LearningIngester: TypeAlias = Callable[[], None]
 
 
 def _entry_price(decision_entry: DecisionEntry, report: ReportPayload, symbol: str) -> float | None:
@@ -84,11 +85,11 @@ def _agent_trace_lines(decision_entry: DecisionEntry, cycle_ts: str) -> list[str
             f"tools={len(tool_calls)} rounds={decision_entry.get('tool_rounds', 0)}"
         )
     ]
-    automatic_recall = decision_entry.get("automatic_recall")
-    if isinstance(automatic_recall, dict):
+    applied_learning_ids = decision_entry.get("applied_learning_ids")
+    if isinstance(applied_learning_ids, list) and applied_learning_ids:
         lines.append(
-            f"[agent-memory] ts={cycle_ts} symbol={symbol} kind=flair_experience "
-            f"detail={_compact_json(automatic_recall)}"
+            f"[agent-learning] ts={cycle_ts} symbol={symbol} kind=global_rules "
+            f"rule_ids={_compact_json(applied_learning_ids)}"
         )
     lines.extend(
         (
@@ -124,6 +125,15 @@ class RecallRecorder(Protocol):
     def record_recall(self, *, decision_id: str, note_ids: list[int]) -> None:
         ...
 
+    def record_global_rule_citation(
+        self,
+        *,
+        decision_id: str,
+        rule_ids: list[str],
+        ts: str | None = None,
+    ) -> bool:
+        ...
+
 
 @dataclass
 class DecisionRecorder:
@@ -147,9 +157,17 @@ class DecisionRecorder:
     agent_trace_path: Path | None = None
     company_context_provider: ResearchSliceProvider | None = None
     mandate_context_provider: ResearchSliceProvider | None = None
+    learning_ingester: LearningIngester | None = None
 
     def record(self, decision_entry: DecisionEntry) -> None:
         symbol = str(decision_entry["symbol"])
+        sequence = len(self.report["decisions"])
+        cycle_ts = str(self.report.get("ts") or "")
+        decision_id = str(
+            decision_entry.get("decision_id")
+            or decision_ledger._decision_id(cycle_ts, sequence, symbol)
+        )
+        decision_entry["decision_id"] = decision_id
         price = _entry_price(decision_entry, self.report, symbol)
         if price is not None:
             decision_entry["price"] = price
@@ -195,14 +213,22 @@ class DecisionRecorder:
                     symbol=symbol,
                     note=note,
                     now=self.now,
+                    decision_id=decision_id,
                     action=decision_entry.get("action"),
                     intent=decision_entry.get("intent"),
                     executed=decision_entry.get("executed"),
                     reason=decision_entry.get("reason"),
                     dry_run=self.dry_run,
                 )
+                # Store the raw note in the derived RAG immediately as pending.
+                # Vector enrichment / FLAIR remain background best-effort work,
+                # but a subsequent explicit recall can already find it via FTS.
+                if decision_entry["learning_recorded"] and self.learning_ingester is not None:
+                    try:
+                        self.learning_ingester()
+                    except Exception as exc:  # noqa: BLE001 - never delay a decision record
+                        log.warning("learning immediate ingest failed: %s", exc)
 
-        sequence = len(self.report["decisions"])
         self.report["decisions"].append(decision_entry)
         self.report["model_calls_used"] = self.model_calls_used_getter()
         self.refresh_report_portfolio()
@@ -253,22 +279,10 @@ class DecisionRecorder:
         symbol = str(decision_entry.get("symbol") or "")
         if not cycle_ts or not symbol:
             return
-        decision_id = decision_ledger._decision_id(cycle_ts, sequence, symbol)
-        automatic_recall = decision_entry.get("automatic_recall")
-        if isinstance(automatic_recall, dict):
-            note_ids = [
-                note_id
-                for note_id in automatic_recall.get("note_ids", [])
-                if isinstance(note_id, int)
-            ]
-            if note_ids:
-                try:
-                    self.recall_store.record_recall(
-                        decision_id=decision_id,
-                        note_ids=note_ids,
-                    )
-                except Exception as exc:  # noqa: BLE001
-                    log.warning("record automatic recall failed: %s", exc)
+        decision_id = str(
+            decision_entry.get("decision_id")
+            or decision_ledger._decision_id(cycle_ts, sequence, symbol)
+        )
         for tool_call in decision_entry.get("tool_calls") or []:
             if tool_call.get("tool") != "recall_learnings" or tool_call.get("outcome") != "ok":
                 continue
@@ -283,3 +297,19 @@ class DecisionRecorder:
                 self.recall_store.record_recall(decision_id=decision_id, note_ids=note_ids)
             except Exception as exc:  # noqa: BLE001
                 log.warning("record_recall failed: %s", exc)
+
+        rule_ids = decision_entry.get("applied_learning_ids")
+        record_citation = getattr(self.recall_store, "record_global_rule_citation", None)
+        if not isinstance(rule_ids, list) or not callable(record_citation):
+            return
+        citations = [rule_id for rule_id in rule_ids if isinstance(rule_id, str)]
+        if not citations:
+            return
+        try:
+            record_citation(
+                decision_id=decision_id,
+                rule_ids=citations,
+                ts=cycle_ts,
+            )
+        except Exception as exc:  # noqa: BLE001 - citations never impede a trade
+            log.warning("record_global_rule_citation failed: %s", exc)

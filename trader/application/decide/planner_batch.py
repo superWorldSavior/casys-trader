@@ -11,10 +11,7 @@ from typing import Callable
 import trader.agent.tools as agent_tools
 from trader.agent import client as codex_client
 from trader.agent.context import build_symbol_structure, resolve_indicator_requests
-from trader.application.decide.learning_context import (
-    attach_auto_recall_trace,
-    build_auto_learning_recall,
-)
+from trader.application.decide.learning_context import filter_applied_learning_ids
 from trader.application.decide.tool_round import merge_domain_tools, run_one_round
 from trader.market import market_data as market
 from trader.planning.indicator_watch import summarize_watch
@@ -177,6 +174,7 @@ def batch_decide(
     wake_reasons_by_symbol: dict[str, list[dict]] | None = None,
     sched: SchedulerLike | None = None,
     last_review_by_symbol: dict[str, dict] | None = None,
+    recent_decisions_by_symbol: dict[str, list] | None = None,
     market_context_by_symbol: dict[str, dict] | None = None,
     decision_timeout_s: int = 900,
     decision_batch_size: int = DEFAULT_DECISION_BATCH_SIZE,
@@ -204,20 +202,9 @@ def batch_decide(
     active_watches_by_symbol = _active_watch_summaries_by_symbol(sched=sched, symbols=decidable, now=now)
 
     reviews = last_review_by_symbol or {}
+    recent = recent_decisions_by_symbol or {}
     market_contexts = market_context_by_symbol or {}
     wake_reasons = wake_reasons_by_symbol or {}
-    auto_recall_by_symbol = {
-        sym: recall
-        for sym in decidable
-        if (
-            recall := build_auto_learning_recall(
-                learnings_recall_provider,
-                symbol=sym,
-            )
-        )
-        is not None
-    }
-
     per_symbol = {
         sym: {
             "indicator_triggers": triggers_by_symbol.get(sym, []),
@@ -229,15 +216,11 @@ def batch_decide(
                 active_watches_by_symbol=active_watches_by_symbol,
                 market_context_by_symbol=market_contexts,
                 last_review_by_symbol=reviews,
+                recent_decisions_by_symbol=recent,
                 bars_by_symbol=tradable_bars_by_symbol,
                 bar_timeframe_by_symbol=bar_timeframe_by_symbol,
                 company_context_by_symbol=company_context_by_symbol,
                 mandate_context_by_symbol=mandate_context_by_symbol,
-            ),
-            **(
-                {"flair_experience": auto_recall_by_symbol[sym]}
-                if sym in auto_recall_by_symbol
-                else {}
             ),
         }
         for sym in decidable
@@ -457,6 +440,7 @@ def batch_decide(
                     active_watches_by_symbol=active_watches_by_symbol,
                     market_context_by_symbol=market_contexts,
                     last_review_by_symbol=reviews,
+                    recent_decisions_by_symbol=recent,
                     bars_by_symbol=tradable_bars_by_symbol,
                     bar_timeframe_by_symbol=bar_timeframe_by_symbol,
                 ),
@@ -464,11 +448,6 @@ def batch_decide(
                 # Sessions jetables : le 2e batch n'a pas l'historique du 1er ; on
                 # repasse la rationale de la demande pour reprendre le raisonnement.
                 "prior_rationale": req.rationale,
-                **(
-                    {"flair_experience": auto_recall_by_symbol[sym]}
-                    if sym in auto_recall_by_symbol
-                    else {}
-                ),
             }
         responses2, calls2, skipped_context_symbols = _decide_chunks(
             symbols=list(need),
@@ -494,11 +473,7 @@ def batch_decide(
             decisions[sym] = replace(decision, context_request=context_requests[sym])
 
     decisions = {
-        sym: (
-            attach_auto_recall_trace(decision, auto_recall_by_symbol.get(sym))
-            if decision.llm_provider or decision.llm_model
-            else decision
-        )
+        sym: filter_applied_learning_ids(decision, shared_context=shared_context)
         for sym, decision in decisions.items()
     }
     return decisions, calls

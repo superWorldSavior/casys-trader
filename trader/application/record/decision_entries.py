@@ -35,9 +35,6 @@ def runtime_tool_audit_fields(domain_tools: dict | None) -> dict:
     normalizations = tools.get("normalizations")
     if normalizations is not None:
         fields["tool_normalizations"] = normalizations
-    automatic_recall = tools.get("automatic_recall")
-    if automatic_recall is not None:
-        fields["automatic_recall"] = automatic_recall
     return fields
 
 
@@ -83,6 +80,7 @@ def build_decision_entry(
         "llm_fallback_reason": decision.llm_fallback_reason,
         "llm_error": decision.llm_error,
         "learning": decision.learning,
+        "applied_learning_ids": list(decision.applied_learning_ids),
         "thesis": decision.thesis,
         "risk_pct_target": decision.risk_pct_target,
         "trade_plan_created": False,

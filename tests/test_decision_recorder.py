@@ -224,17 +224,13 @@ def test_decision_recorder_writes_agent_trace_to_separate_file(tmp_path, caplog)
         "tool_calls": [
             {
                 "id": "SPY:0",
-                "tool": "set_next_wake",
-                "args": {"minutes": 30},
+                "tool": "recall_learnings",
+                "args": {"symbol": "SPY", "query": "breakout"},
                 "outcome": "ok",
-                "detail": {"requested": 30},
+                "detail": {"note_ids": [42, 43]},
             }
         ],
-        "automatic_recall": {
-            "note_ids": [42, 43],
-            "mode": "automatic_push",
-            "symbol": "SPY",
-        },
+        "applied_learning_ids": ["rule-breakout"],
         "next_wake_in_minutes": 30,
         "next_wake_requested": 30,
     })
@@ -246,12 +242,12 @@ def test_decision_recorder_writes_agent_trace_to_separate_file(tmp_path, caplog)
         "executed=False tools=1 rounds=0"
     )
     assert trace_lines[1].startswith(
-        "[agent-memory] ts=2026-07-02T10:00:00+00:00 symbol=SPY "
-        "kind=flair_experience detail="
+        "[agent-learning] ts=2026-07-02T10:00:00+00:00 symbol=SPY "
+        'kind=global_rules rule_ids=["rule-breakout"]'
     )
     assert trace_lines[2] == (
         "[agent-tool] ts=2026-07-02T10:00:00+00:00 symbol=SPY id=SPY:0 "
-        'tool=set_next_wake outcome=applied args={"minutes":30} detail={"requested":30}'
+        'tool=recall_learnings outcome=ok args={"query":"breakout","symbol":"SPY"} detail={"note_ids":[42,43]}'
     )
     assert recall_store.calls == [
         {

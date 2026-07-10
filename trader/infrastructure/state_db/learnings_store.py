@@ -56,6 +56,12 @@ CREATE TABLE IF NOT EXISTS notes (
     outcome_score   REAL,       -- FLAIR v1
     q_value         REAL,       -- MemRL (phase ③)
     q_updates       INTEGER NOT NULL DEFAULT 0,
+    -- A note is eligible for curation when curation_revision > curated_revision.
+    -- The snapshot revision is recorded rather than a timestamp so an outcome
+    -- arriving while the consolidator is running cannot be accidentally lost.
+    curation_revision INTEGER NOT NULL DEFAULT 1,
+    curated_revision  INTEGER NOT NULL DEFAULT 0,
+    curation_updated_at TEXT,
     embedding       BLOB        -- OpenAI float32 LE, pré-calculé batch
 )
 """
@@ -108,6 +114,39 @@ CREATE TABLE IF NOT EXISTS recalls (
 )
 """
 
+# The global-rule space is intentionally separate from ``notes``.  Note Q-values
+# answer "was this explicitly recalled historical experience useful?" while a
+# rule Q-value answers "did the trader say this displayed global rule mattered?".
+_DDL_GLOBAL_RULES = """
+CREATE TABLE IF NOT EXISTS global_rules (
+    rule_id     TEXT PRIMARY KEY,
+    q_value     REAL NOT NULL DEFAULT 0,
+    q_updates   INTEGER NOT NULL DEFAULT 0,
+    active      INTEGER NOT NULL DEFAULT 1,
+    created_at  TEXT,
+    retired_at  TEXT,
+    updated_at  TEXT
+)
+"""
+
+_DDL_GLOBAL_RULE_CITATIONS = """
+CREATE TABLE IF NOT EXISTS global_rule_citations (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    decision_id     TEXT NOT NULL UNIQUE,
+    rule_ids        TEXT NOT NULL, -- JSON array, at most 3 stable rule IDs
+    ts              TEXT NOT NULL,
+    verdict         TEXT,
+    reward          REAL,
+    forward_return  REAL,
+    evaluated_at    TEXT
+)
+"""
+
+_INDEX_GLOBAL_RULE_CITATIONS_PENDING = """
+CREATE INDEX IF NOT EXISTS global_rule_citations_pending
+    ON global_rule_citations(evaluated_at, ts)
+"""
+
 
 def _open_db(db_path: str | Path) -> sqlite3.Connection:
     """Ouvre (ou crée) la base, active WAL, retourne la connexion."""
@@ -126,7 +165,13 @@ def _create_schema(conn: sqlite3.Connection) -> None:
     conn.execute(_TRIGGER_AD)
     conn.execute(_TRIGGER_AU)
     conn.execute(_DDL_RECALLS)
+    conn.execute(_DDL_GLOBAL_RULES)
+    conn.execute(_DDL_GLOBAL_RULE_CITATIONS)
+    conn.execute(_INDEX_GLOBAL_RULE_CITATIONS_PENDING)
     _ensure_column(conn, "notes", "q_updates", "INTEGER NOT NULL DEFAULT 0")
+    _ensure_column(conn, "notes", "curation_revision", "INTEGER NOT NULL DEFAULT 1")
+    _ensure_column(conn, "notes", "curated_revision", "INTEGER NOT NULL DEFAULT 0")
+    _ensure_column(conn, "notes", "curation_updated_at", "TEXT")
     _ensure_column(conn, "recalls", "verdict", "TEXT")
     _ensure_column(conn, "recalls", "reward", "REAL")
     _ensure_column(conn, "recalls", "forward_return", "REAL")
@@ -184,6 +229,45 @@ class LearningsStore:
                 "SELECT COUNT(*) FROM notes WHERE embedding IS NULL"
             ).fetchone()
         return int(row[0])
+
+    def feedback_by_decision_ids(self, decision_ids: list[str]) -> dict[str, dict]:
+        """Return chronological FLAIR feedback keyed by source decision ID.
+
+        This is intentionally a lookup, not a ranking API: callers use it to
+        annotate ``last_llm_review`` and ``recent_decisions`` without changing
+        their chronological order.
+        """
+
+        unique_ids = list(dict.fromkeys(str(item) for item in decision_ids if item))
+        if not unique_ids:
+            return {}
+        result: dict[str, dict] = {}
+        with self._lock:
+            # SQLite's bound-variable maximum is commonly 999.  The cockpit
+            # sends only a handful, but chunking keeps this store API general.
+            for start in range(0, len(unique_ids), 900):
+                chunk = unique_ids[start:start + 900]
+                placeholders = ", ".join("?" for _ in chunk)
+                rows = self._conn.execute(
+                    f"""
+                    SELECT decision_id, verdict, forward_return, outcome_score,
+                           q_value, q_updates
+                    FROM notes
+                    WHERE decision_id IN ({placeholders})
+                    """,
+                    chunk,
+                ).fetchall()
+                for row in rows:
+                    verdict = row["verdict"]
+                    result[str(row["decision_id"])] = {
+                        "status": "pending" if verdict is None else "evaluated",
+                        "verdict": verdict,
+                        "forward_return": row["forward_return"],
+                        "outcome_score": row["outcome_score"],
+                        "q_value": row["q_value"],
+                        "q_updates": int(row["q_updates"] or 0),
+                    }
+        return result
 
     def close(self) -> None:
         """Ferme explicitement la connexion des workers courts."""
@@ -257,6 +341,7 @@ class LearningsStore:
                     "concepts": concepts,
                     "source": source,
                     "valid_from": ts,
+                    "curation_updated_at": ts or datetime.now(timezone.utc).isoformat(),
                 })
 
         with self._lock:
@@ -266,11 +351,11 @@ class LearningsStore:
                     INSERT OR IGNORE INTO notes (
                         decision_id, ts, symbol, family, venue,
                         action, intent, executed, reason, note,
-                        concepts, source, valid_from
+                        concepts, source, valid_from, curation_updated_at
                     ) VALUES (
                         :decision_id, :ts, :symbol, :family, :venue,
                         :action, :intent, :executed, :reason, :note,
-                        :concepts, :source, :valid_from
+                        :concepts, :source, :valid_from, :curation_updated_at
                     )
                     """,
                     params,
@@ -308,6 +393,7 @@ class LearningsStore:
         learnings = data.get("learnings", [])
 
         updated = 0
+        changed_at = datetime.now(timezone.utc).isoformat()
         with self._lock:
             for item in learnings:
                 decision_id = item.get("decision_id")
@@ -318,14 +404,21 @@ class LearningsStore:
                     f"""
                     UPDATE notes
                        SET verdict        = :verdict,
-                           forward_return = :forward_return
+                           forward_return = :forward_return,
+                           curation_revision = curation_revision + 1,
+                           curation_updated_at = :changed_at
                      WHERE decision_id = :decision_id
                      {missing_clause}
+                       AND (
+                           verdict IS NOT :verdict
+                           OR forward_return IS NOT :forward_return
+                       )
                     """,
                     {
                         "decision_id": str(decision_id),
                         "verdict": item.get("verdict"),
                         "forward_return": item.get("forward_return"),
+                        "changed_at": changed_at,
                     },
                 )
                 if cursor.rowcount > 0:
@@ -358,11 +451,18 @@ class LearningsStore:
 
             result = self._outcome_scorer(rows, shrinkage_k=shrinkage_k)
             scores = result.get("scores", {})
+            changed_at = datetime.now(timezone.utc).isoformat()
 
             for note_id, outcome_score in scores.items():
                 self._conn.execute(
-                    "UPDATE notes SET outcome_score = :score WHERE id = :id",
-                    {"score": outcome_score, "id": note_id},
+                    """
+                    UPDATE notes
+                    SET outcome_score = :score,
+                        curation_revision = curation_revision + 1,
+                        curation_updated_at = :changed_at
+                    WHERE id = :id AND outcome_score IS NOT :score
+                    """,
+                    {"score": outcome_score, "id": note_id, "changed_at": changed_at},
                 )
 
             self._conn.commit()
@@ -370,6 +470,182 @@ class LearningsStore:
             "scored": result.get("scored", 0),
             "base_rates": result.get("base_rates", {}),
         }
+
+    # ------------------------------------------------------------------
+    # Curation / consolidation candidates
+    # ------------------------------------------------------------------
+
+    def curation_counts(self) -> dict:
+        """Return the pending curation work split by first-pass vs feedback.
+
+        A note begins at revision 1 / curated revision 0.  Any later FLAIR or
+        note-MemRL update increments ``curation_revision``.  The distinction is
+        deliberately revision based rather than timestamp based: a failed
+        consolidation cannot lose an outcome which arrived while its LLM call
+        was in flight.
+        """
+
+        with self._lock:
+            row = self._conn.execute(
+                """
+                SELECT
+                    COALESCE(SUM(CASE
+                        WHEN curation_revision > curated_revision
+                         AND curated_revision = 0 THEN 1 ELSE 0 END), 0) AS new_count,
+                    COALESCE(SUM(CASE
+                        WHEN curation_revision > curated_revision
+                         AND curated_revision > 0 THEN 1 ELSE 0 END), 0) AS feedback_count,
+                    MIN(CASE WHEN curation_revision > curated_revision
+                        THEN COALESCE(curation_updated_at, ts) END) AS oldest_changed_at
+                FROM notes
+                """
+            ).fetchone()
+        new_count = int(row["new_count"] or 0)
+        feedback_count = int(row["feedback_count"] or 0)
+        return {
+            "new": new_count,
+            "feedback": feedback_count,
+            "changed": new_count + feedback_count,
+            "oldest_changed_at": row["oldest_changed_at"],
+        }
+
+    def select_curation_candidates(
+        self,
+        *,
+        recent_limit: int = 50,
+        positive_limit: int = 15,
+        counterexample_limit: int = 15,
+        max_per_symbol: int = 5,
+    ) -> list[dict]:
+        """Select a bounded, diversified, outcome-aware curation pool.
+
+        The first tranche is work which changed since a successful
+        consolidation, including pending notes.  It is followed by the best
+        successful historical confirmations and strongest losses.  A note is
+        emitted only once and no symbol can dominate the pool.  Every selected
+        row includes the snapshot ``curation_revision`` that must later be
+        passed to :meth:`mark_curation_candidates_curated` after a successful
+        consolidation.
+        """
+
+        recent_limit = max(0, int(recent_limit))
+        positive_limit = max(0, int(positive_limit))
+        counterexample_limit = max(0, int(counterexample_limit))
+        max_per_symbol = max(1, int(max_per_symbol))
+        pool_limit = recent_limit + positive_limit + counterexample_limit
+        if pool_limit == 0:
+            return []
+
+        fields = """
+            id, decision_id, ts, symbol, family, action, intent, executed,
+            note, verdict, forward_return, outcome_score, q_value, q_updates,
+            curation_revision, curated_revision
+        """
+        with self._lock:
+            changed = self._conn.execute(
+                f"""
+                SELECT {fields}
+                FROM notes
+                WHERE curation_revision > curated_revision
+                ORDER BY ts DESC, id DESC
+                """
+            ).fetchall()
+            positives = self._conn.execute(
+                f"""
+                SELECT {fields}
+                FROM notes
+                WHERE verdict = 'WIN'
+                ORDER BY
+                    (outcome_score IS NULL) ASC,
+                    outcome_score DESC,
+                    (forward_return IS NULL) ASC,
+                    forward_return DESC,
+                    q_value DESC,
+                    ts DESC,
+                    id DESC
+                """
+            ).fetchall()
+            counterexamples = self._conn.execute(
+                f"""
+                SELECT {fields}
+                FROM notes
+                WHERE verdict = 'LOSS'
+                ORDER BY
+                    (outcome_score IS NULL) ASC,
+                    outcome_score ASC,
+                    (forward_return IS NULL) ASC,
+                    forward_return ASC,
+                    q_value ASC,
+                    ts DESC,
+                    id DESC
+                """
+            ).fetchall()
+
+        selected: list[dict] = []
+        selected_ids: set[int] = set()
+        per_symbol: dict[str, int] = {}
+
+        def add(rows: list[sqlite3.Row], allowance: int) -> None:
+            added = 0
+            for raw in rows:
+                if len(selected) >= pool_limit or added >= allowance:
+                    return
+                note_id = int(raw["id"])
+                if note_id in selected_ids:
+                    continue
+                symbol_key = str(raw["symbol"] or "__unknown__")
+                if per_symbol.get(symbol_key, 0) >= max_per_symbol:
+                    continue
+                row = dict(raw)
+                verdict = row.get("verdict")
+                row.update(
+                    {
+                        "note_id": note_id,
+                        "text": row.get("note") or "",
+                        "status": "pending" if verdict is None else "evaluated",
+                    }
+                )
+                selected.append(row)
+                selected_ids.add(note_id)
+                per_symbol[symbol_key] = per_symbol.get(symbol_key, 0) + 1
+                added += 1
+
+        add(changed, recent_limit)
+        add(positives, positive_limit)
+        add(counterexamples, counterexample_limit)
+        return selected
+
+    def mark_curation_candidates_curated(self, candidates: list[dict]) -> int:
+        """Acknowledge exactly the candidate revisions sent to a successful LLM.
+
+        ``candidates`` must be the dictionaries returned by
+        :meth:`select_curation_candidates`.  Advancing only to their snapshot
+        revision preserves a newer feedback update for the next attempt.
+        """
+
+        snapshots: dict[int, int] = {}
+        for candidate in candidates:
+            try:
+                note_id = int(candidate.get("note_id", candidate.get("id")))
+                revision = int(candidate["curation_revision"])
+            except (AttributeError, KeyError, TypeError, ValueError) as exc:
+                raise ValueError("invalid curation candidate snapshot") from exc
+            snapshots[note_id] = max(snapshots.get(note_id, 0), revision)
+
+        updated = 0
+        with self._lock:
+            for note_id, revision in snapshots.items():
+                cursor = self._conn.execute(
+                    """
+                    UPDATE notes
+                    SET curated_revision = ?
+                    WHERE id = ? AND curated_revision < ?
+                    """,
+                    (revision, note_id, revision),
+                )
+                updated += max(int(cursor.rowcount), 0)
+            self._conn.commit()
+        return updated
 
     # ------------------------------------------------------------------
     # Embeddings
@@ -629,7 +905,9 @@ class LearningsStore:
 
         with self._lock:
             sql = """
-                SELECT id, decision_id, ts, symbol, action, executed, note
+                SELECT id, decision_id, ts, symbol, family, action, intent,
+                       executed, note, verdict, forward_return, outcome_score,
+                       q_value, q_updates
                 FROM notes
                 WHERE verdict IS NULL
             """
@@ -646,15 +924,21 @@ class LearningsStore:
         """Persist mature FLAIR outcomes by note id."""
 
         updated = 0
+        changed_at = datetime.now(timezone.utc).isoformat()
         with self._lock:
             for row in rows:
+                verdict = row.get("verdict")
+                if verdict is None:
+                    continue
                 cursor = self._conn.execute(
                     """
                     UPDATE notes
-                    SET verdict = ?, forward_return = ?
+                    SET verdict = ?, forward_return = ?,
+                        curation_revision = curation_revision + 1,
+                        curation_updated_at = ?
                     WHERE id = ? AND verdict IS NULL
                     """,
-                    (row.get("verdict"), row.get("forward_return"), row.get("id")),
+                    (verdict, row.get("forward_return"), changed_at, row.get("id")),
                 )
                 updated += max(int(cursor.rowcount), 0)
             self._conn.commit()
@@ -736,8 +1020,14 @@ class LearningsStore:
                 old_q = float(row["q_value"] or 0.0)
                 new_q = old_q + learning_rate * (float(reward) - old_q)
                 cursor = self._conn.execute(
-                    "UPDATE notes SET q_value=?, q_updates=q_updates+1 WHERE id=?",
-                    (new_q, note_id),
+                    """
+                    UPDATE notes
+                    SET q_value=?, q_updates=q_updates+1,
+                        curation_revision=curation_revision+1,
+                        curation_updated_at=?
+                    WHERE id=?
+                    """,
+                    (new_q, datetime.now(timezone.utc).isoformat(), note_id),
                 )
                 notes_updated += max(int(cursor.rowcount), 0)
             self._conn.commit()
@@ -745,4 +1035,242 @@ class LearningsStore:
             "recalls_updated": len(recall_rows),
             "notes_updated": notes_updated,
             "note_ids": sorted(note_ids),
+        }
+
+    # ------------------------------------------------------------------
+    # MemRL for displayed global rules (a separate space from note recall)
+    # ------------------------------------------------------------------
+
+    def sync_global_rules(
+        self,
+        active_rule_ids: list[str],
+        *,
+        ts: str | None = None,
+    ) -> dict:
+        """Synchronize the citable global-rule set without deleting history.
+
+        A later consolidation calls this with its ten current stable IDs.  Rules
+        absent from the set become inactive (and cannot be newly cited), but
+        their existing Q history remains available for audit and delayed
+        outcomes of already-recorded citations can still update it.
+        """
+
+        rule_ids = list(dict.fromkeys(str(rule_id).strip() for rule_id in active_rule_ids if str(rule_id).strip()))
+        changed_at = ts or datetime.now(timezone.utc).isoformat()
+        with self._lock:
+            existing = {
+                str(row["rule_id"]): int(row["active"] or 0)
+                for row in self._conn.execute("SELECT rule_id, active FROM global_rules")
+            }
+            for rule_id in rule_ids:
+                self._conn.execute(
+                    """
+                    INSERT INTO global_rules (rule_id, active, created_at, updated_at)
+                    VALUES (?, 1, ?, ?)
+                    ON CONFLICT(rule_id) DO UPDATE SET
+                        active=1,
+                        retired_at=NULL,
+                        updated_at=excluded.updated_at
+                    """,
+                    (rule_id, changed_at, changed_at),
+                )
+
+            if rule_ids:
+                placeholders = ", ".join("?" for _ in rule_ids)
+                cursor = self._conn.execute(
+                    f"""
+                    UPDATE global_rules
+                    SET active=0, retired_at=?, updated_at=?
+                    WHERE active=1 AND rule_id NOT IN ({placeholders})
+                    """,
+                    (changed_at, changed_at, *rule_ids),
+                )
+            else:
+                cursor = self._conn.execute(
+                    """
+                    UPDATE global_rules
+                    SET active=0, retired_at=?, updated_at=?
+                    WHERE active=1
+                    """,
+                    (changed_at, changed_at),
+                )
+            retired = max(int(cursor.rowcount), 0)
+            self._conn.commit()
+        return {
+            "created": sum(rule_id not in existing for rule_id in rule_ids),
+            "reactivated": sum(existing.get(rule_id) == 0 for rule_id in rule_ids),
+            "retired": retired,
+            "active": len(rule_ids),
+        }
+
+    def global_rule_scores(
+        self,
+        rule_ids: list[str] | None = None,
+        *,
+        active_only: bool = False,
+    ) -> dict[str, dict]:
+        """Return stable global-rule MemRL scores, including retired audit rows."""
+
+        clauses: list[str] = []
+        params: list[object] = []
+        if active_only:
+            clauses.append("active=1")
+        if rule_ids is not None:
+            cleaned = list(dict.fromkeys(str(rule_id).strip() for rule_id in rule_ids if str(rule_id).strip()))
+            if not cleaned:
+                return {}
+            clauses.append("rule_id IN (" + ", ".join("?" for _ in cleaned) + ")")
+            params.extend(cleaned)
+        where = " WHERE " + " AND ".join(clauses) if clauses else ""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT rule_id, q_value, q_updates, active, created_at, retired_at, updated_at "
+                "FROM global_rules" + where + " ORDER BY rule_id",
+                tuple(params),
+            ).fetchall()
+        return {
+            str(row["rule_id"]): {
+                "q_value": float(row["q_value"] or 0.0),
+                "q_updates": int(row["q_updates"] or 0),
+                "active": bool(row["active"]),
+                "created_at": row["created_at"],
+                "retired_at": row["retired_at"],
+                "updated_at": row["updated_at"],
+            }
+            for row in rows
+        }
+
+    def record_global_rule_citation(
+        self,
+        *,
+        decision_id: str,
+        rule_ids: list[str],
+        ts: str | None = None,
+    ) -> bool:
+        """Record the rules an LLM says actually affected one decision.
+
+        The store rejects invented, inactive, duplicate, or over-limit IDs.
+        Prompt-level validation remains necessary, but this provides a durable
+        last line of defence before a rule can accrue MemRL credit.
+        """
+
+        cleaned = [str(rule_id).strip() for rule_id in rule_ids if str(rule_id).strip()]
+        if not decision_id:
+            raise ValueError("decision_id is required for a global rule citation")
+        if not cleaned or len(cleaned) > 3 or len(set(cleaned)) != len(cleaned):
+            raise ValueError("global rule citations require one to three distinct rule IDs")
+        citation_ts = ts or datetime.now(timezone.utc).isoformat()
+        with self._lock:
+            placeholders = ", ".join("?" for _ in cleaned)
+            active_rows = self._conn.execute(
+                f"SELECT rule_id FROM global_rules WHERE active=1 AND rule_id IN ({placeholders})",
+                tuple(cleaned),
+            ).fetchall()
+            active_ids = {str(row["rule_id"]) for row in active_rows}
+            if active_ids != set(cleaned):
+                unknown = sorted(set(cleaned) - active_ids)
+                raise ValueError(f"cannot cite inactive or unknown global rules: {unknown}")
+            cursor = self._conn.execute(
+                """
+                INSERT INTO global_rule_citations (decision_id, rule_ids, ts)
+                VALUES (?, ?, ?)
+                ON CONFLICT(decision_id) DO NOTHING
+                """,
+                (str(decision_id), json.dumps(cleaned), citation_ts),
+            )
+            self._conn.commit()
+        return bool(cursor.rowcount)
+
+    def pending_global_rule_decision_ids(
+        self,
+        *,
+        mature_before: str | None = None,
+        limit: int = 64,
+    ) -> list[str]:
+        """Return cited decisions whose delayed global-rule reward is pending."""
+
+        with self._lock:
+            sql = """
+                SELECT decision_id
+                FROM global_rule_citations
+                WHERE evaluated_at IS NULL
+            """
+            params: list[object] = []
+            if mature_before is not None:
+                sql += " AND ts <= ?"
+                params.append(mature_before)
+            sql += " ORDER BY ts DESC, id DESC LIMIT ?"
+            params.append(max(0, int(limit)))
+            rows = self._conn.execute(sql, tuple(params)).fetchall()
+        return [str(row["decision_id"]) for row in rows]
+
+    def apply_global_rule_outcome(
+        self,
+        *,
+        decision_id: str,
+        verdict: str,
+        reward: float | None,
+        forward_return: float | None,
+        evaluated_at: str,
+        alpha: float = 0.1,
+    ) -> dict:
+        """Apply one idempotent delayed reward to explicitly cited global rules."""
+
+        learning_rate = min(max(float(alpha), 0.0), 1.0)
+        with self._lock:
+            citation = self._conn.execute(
+                """
+                SELECT id, rule_ids
+                FROM global_rule_citations
+                WHERE decision_id=? AND evaluated_at IS NULL
+                """,
+                (decision_id,),
+            ).fetchone()
+            if citation is None:
+                return {"citations_updated": 0, "rules_updated": 0, "rule_ids": []}
+            try:
+                rule_ids = json.loads(citation["rule_ids"] or "[]")
+            except json.JSONDecodeError:
+                rule_ids = []
+            rule_ids = sorted({str(rule_id) for rule_id in rule_ids if str(rule_id).strip()})
+            self._conn.execute(
+                """
+                UPDATE global_rule_citations
+                SET verdict=?, reward=?, forward_return=?, evaluated_at=?
+                WHERE id=? AND evaluated_at IS NULL
+                """,
+                (
+                    verdict,
+                    None if reward is None else float(reward),
+                    forward_return,
+                    evaluated_at,
+                    citation["id"],
+                ),
+            )
+
+            rules_updated = 0
+            if reward is not None:
+                for rule_id in rule_ids:
+                    row = self._conn.execute(
+                        "SELECT q_value FROM global_rules WHERE rule_id=?",
+                        (rule_id,),
+                    ).fetchone()
+                    if row is None:
+                        continue
+                    old_q = float(row["q_value"] or 0.0)
+                    new_q = old_q + learning_rate * (float(reward) - old_q)
+                    cursor = self._conn.execute(
+                        """
+                        UPDATE global_rules
+                        SET q_value=?, q_updates=q_updates+1, updated_at=?
+                        WHERE rule_id=?
+                        """,
+                        (new_q, datetime.now(timezone.utc).isoformat(), rule_id),
+                    )
+                    rules_updated += max(int(cursor.rowcount), 0)
+            self._conn.commit()
+        return {
+            "citations_updated": 1,
+            "rules_updated": rules_updated,
+            "rule_ids": rule_ids,
         }

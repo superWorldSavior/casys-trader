@@ -1,91 +1,86 @@
-"""Automatic, bounded FLAIR context for one decision symbol."""
+"""Pure validation of global-learning citations returned by the trading LLM."""
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import replace
 
 from trader.agent.protocol.types import Decision
-from trader.domain.semantic.catalog import family_for_symbol
 
 
-AUTO_RECALL_LIMIT = 2
+MAX_APPLIED_LEARNING_IDS = 3
 
 
-def build_auto_learning_recall(
-    provider: Callable[[dict], dict] | None,
-    *,
-    symbol: str,
-    limit: int = AUTO_RECALL_LIMIT,
-) -> dict | None:
-    """Return symbol-first, then family fallback experiences without embedding calls."""
+def allowed_global_learning_ids(shared_context: Mapping[str, object] | None) -> frozenset[str]:
+    """Extract the stable rule ids exposed in ``context.learnings.global``.
 
-    if provider is None or limit <= 0:
-        return None
-    selected: list[dict] = []
-    seen: set[int] = set()
+    The LLM may only cite rules that were actually present in its current prompt.
+    Malformed, legacy consolidated payloads simply expose no citeable rule rather
+    than making a decision fail.
+    """
 
-    def add_rows(payload: object) -> None:
-        if not isinstance(payload, Mapping):
-            return
-        for row in payload.get("rows") or []:
-            if not isinstance(row, Mapping):
-                continue
-            note_id = row.get("id")
-            if not isinstance(note_id, int) or note_id in seen:
-                continue
-            seen.add(note_id)
-            selected.append(dict(row))
-            if len(selected) >= limit:
-                return
-
-    try:
-        add_rows(provider({"symbol": symbol, "limit": limit}))
-        family = family_for_symbol(symbol)
-        if len(selected) < limit and family:
-            add_rows(provider({"family": family, "limit": limit - len(selected)}))
-    except Exception:  # noqa: BLE001 - recall is optional and never blocks a decision
-        return None
-    if not selected:
-        return None
-    return {
-        "scope": "automatic_symbol_then_family",
-        "symbol": symbol,
-        "family": family_for_symbol(symbol),
-        "rows": selected[:limit],
-        "details_via_tool": "recall_learnings",
-    }
-
-
-def attach_auto_recall_trace(decision: Decision, recall: dict | None) -> Decision:
-    """Attach automatic note ids without pretending the model called a tool."""
-
-    if not isinstance(recall, Mapping):
-        return decision
-    note_ids = [
-        row.get("id")
-        for row in recall.get("rows") or []
-        if isinstance(row, Mapping) and isinstance(row.get("id"), int)
-    ]
-    if not note_ids:
-        return decision
-    current = dict(decision.domain_tools) if isinstance(decision.domain_tools, dict) else {}
-    return replace(
-        decision,
-        domain_tools={
-            **current,
-            "automatic_recall": {
-                "note_ids": note_ids,
-                "mode": "automatic_push",
-                "symbol": decision.symbol,
-                "family": recall.get("family"),
-            },
-        },
+    if not isinstance(shared_context, Mapping):
+        return frozenset()
+    learnings = shared_context.get("learnings")
+    if not isinstance(learnings, Mapping):
+        return frozenset()
+    global_rules = learnings.get("global")
+    if not isinstance(global_rules, list):
+        return frozenset()
+    return frozenset(
+        rule_id
+        for item in global_rules
+        if isinstance(item, Mapping)
+        and isinstance((rule_id := item.get("rule_id")), str)
+        and (rule_id := rule_id.strip())
     )
 
 
+def normalize_applied_learning_ids(
+    raw_ids: object,
+    *,
+    allowed_ids: Iterable[str],
+    limit: int = MAX_APPLIED_LEARNING_IDS,
+) -> list[str]:
+    """Keep ordered, unique citations that were available in the prompt."""
+
+    if not isinstance(raw_ids, list) or limit <= 0:
+        return []
+    allowed = {str(rule_id).strip() for rule_id in allowed_ids if str(rule_id).strip()}
+    selected: list[str] = []
+    seen: set[str] = set()
+    for raw_id in raw_ids:
+        if not isinstance(raw_id, str):
+            continue
+        rule_id = raw_id.strip()
+        if not rule_id or rule_id in seen or rule_id not in allowed:
+            continue
+        seen.add(rule_id)
+        selected.append(rule_id)
+        if len(selected) >= limit:
+            break
+    return selected
+
+
+def filter_applied_learning_ids(
+    decision: Decision,
+    *,
+    shared_context: Mapping[str, object] | None,
+) -> Decision:
+    """Return a decision with only globally exposed learning citations."""
+
+    valid_ids = normalize_applied_learning_ids(
+        decision.applied_learning_ids,
+        allowed_ids=allowed_global_learning_ids(shared_context),
+    )
+    if valid_ids == decision.applied_learning_ids:
+        return decision
+    return replace(decision, applied_learning_ids=valid_ids)
+
+
 __all__ = [
-    "AUTO_RECALL_LIMIT",
-    "attach_auto_recall_trace",
-    "build_auto_learning_recall",
+    "MAX_APPLIED_LEARNING_IDS",
+    "allowed_global_learning_ids",
+    "filter_applied_learning_ids",
+    "normalize_applied_learning_ids",
 ]

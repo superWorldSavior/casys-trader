@@ -222,6 +222,7 @@ def apply_planned_exits(
                     intent="PLANNED_EXIT",
                     exit_reason=evaluation.signal.reason,
                     source_plan_id=plan.id,
+                    entry_decision_id=plan.entry_decision_id,
                     quantity=clamped_quantity,
                     price=effective_fill_price,
                     commission=fill.commission,

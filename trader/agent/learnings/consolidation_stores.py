@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from hashlib import sha256
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -13,6 +14,20 @@ log = logging.getLogger("trader.agent.learnings.consolidator")
 
 DEFAULT_MAX_GLOBAL = 10
 DEFAULT_MAX_BY_SYMBOL = 5
+VALID_ROBUSTNESS = frozenset({"pending", "low", "high"})
+
+
+def stable_rule_id(note: str) -> str:
+    """Return the deterministic id used to migrate legacy global rules.
+
+    IDs created by the consolidator for genuinely new rules are also derived from
+    the rule text.  A retained or reformulated rule must instead carry its
+    existing ID in the LLM output; this helper only provides the safe fallback
+    for legacy files and new, unlabelled rules.
+    """
+
+    normalized = " ".join(str(note).lower().split())
+    return f"rule_{sha256(normalized.encode('utf-8')).hexdigest()[:16]}"
 
 
 def empty_consolidated() -> dict:
@@ -25,11 +40,87 @@ def _normalize_entry(item: Any) -> dict | None:
     note = str(item.get("note") or "").strip()
     if not note:
         return None
-    entry = {"note": note}
-    robustness = str(item.get("robustness") or "").strip()
-    if robustness:
-        entry["robustness"] = robustness
+    explicit_rule_id = str(item.get("rule_id") or "").strip()
+    rule_id = explicit_rule_id or stable_rule_id(note)
+    robustness = str(item.get("robustness") or "").strip().lower()
+    # Legacy rules have neither provenance nor a measured robustness.  They are
+    # still readable, but must not masquerade as a validated rule.
+    if robustness not in VALID_ROBUSTNESS:
+        robustness = "low"
+    # A legacy rule has no stable provenance.  It remains usable after the
+    # migration, but is never presented as a high-confidence conclusion until
+    # the outcome-weighted consolidator has sourced it again.
+    if not explicit_rule_id:
+        robustness = "low"
+
+    evidence_note_ids: list[str] = []
+    raw_evidence_ids = item.get("evidence_note_ids")
+    if isinstance(raw_evidence_ids, list):
+        for raw_id in raw_evidence_ids:
+            evidence_id = str(raw_id).strip()
+            if evidence_id and evidence_id not in evidence_note_ids:
+                evidence_note_ids.append(evidence_id)
+
+    entry = {
+        "rule_id": rule_id,
+        "note": note,
+        "robustness": robustness,
+        "evidence_note_ids": evidence_note_ids,
+        "evidence_summary": _normalize_evidence_summary(item.get("evidence_summary")),
+    }
     return entry
+
+
+def _migrate_legacy_global_rules(payload: dict) -> bool:
+    """Persist stable IDs without retiring legacy ``by_symbol`` entries yet."""
+
+    raw_global = payload.get("global")
+    if not isinstance(raw_global, list):
+        return False
+    changed = False
+    for item in raw_global:
+        if not isinstance(item, dict):
+            continue
+        note = str(item.get("note") or "").strip()
+        if not note or str(item.get("rule_id") or "").strip():
+            continue
+        item["rule_id"] = stable_rule_id(note)
+        # Old rules did not carry evidence; force an honest provisional status.
+        item["robustness"] = "low"
+        item.setdefault("evidence_note_ids", [])
+        changed = True
+    return changed
+
+
+def _normalize_evidence_summary(value: Any) -> dict:
+    """Keep only the machine-owned evidence summary shape.
+
+    Values are calculated by the consolidator before the payload is persisted.
+    This normalizer makes historical files safe to read and deliberately drops
+    any extra model-authored prose/fields.
+    """
+
+    raw = value if isinstance(value, dict) else {}
+
+    def count(name: str) -> int:
+        try:
+            return max(0, int(raw.get(name, 0)))
+        except (TypeError, ValueError):
+            return 0
+
+    reward = raw.get("mean_reward")
+    try:
+        mean_reward = float(reward) if reward is not None else None
+    except (TypeError, ValueError):
+        mean_reward = None
+    return {
+        "evaluated": count("evaluated"),
+        "pending": count("pending"),
+        "wins": count("wins"),
+        "losses": count("losses"),
+        "neutrals": count("neutrals"),
+        "mean_reward": mean_reward,
+    }
 
 
 def _normalize_entries(items: Any, *, limit: int) -> list[dict]:
@@ -84,6 +175,15 @@ class ConsolidatedLearningsStore:
             payload = json.loads(self.path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
             return empty_consolidated()
+        if isinstance(payload, dict) and _migrate_legacy_global_rules(payload):
+            # This narrow migration deliberately preserves legacy by_symbol
+            # data.  It is cleared only by the next successful consolidation.
+            try:
+                tmp = self.path.with_suffix(self.path.suffix + ".tmp")
+                tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+                os.replace(tmp, self.path)
+            except OSError as exc:
+                log.warning("migration des rule_ids non ecrite %s (%s)", self.path, exc)
         normalized = normalize_consolidated(payload, watermark=payload.get("watermark"))
         return normalized or empty_consolidated()
 
@@ -91,6 +191,10 @@ class ConsolidatedLearningsStore:
         normalized = normalize_consolidated(payload, watermark=watermark)
         if normalized is None:
             raise ValueError("invalid consolidated learnings payload")
+        # `by_symbol` remains readable in legacy files, but every newly written
+        # consolidated payload retires it.  Situation/continuity belongs in the
+        # decision context, not in a stale per-symbol learning digest.
+        normalized["by_symbol"] = {}
         self._archive_replaced(replaced_by_watermark=normalized.get("watermark"))
         self.path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self.path.with_suffix(self.path.suffix + ".tmp")

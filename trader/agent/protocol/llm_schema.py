@@ -62,6 +62,7 @@ class LlmDecisionPayload(_LlmBaseModel):
     cancel_watch_ids: list[str] = Field(default_factory=list)
     next_wake_in_minutes: float | None = None
     learning: Any | None = None
+    applied_learning_ids: list[str] = Field(default_factory=list)
     exit_update: dict | None = None
     reduce_fraction_internal: Any | None = Field(default=None, alias="_reduce_fraction")
 
@@ -93,6 +94,25 @@ class LlmDecisionPayload(_LlmBaseModel):
         if not isinstance(value, list):
             return []
         return [str(wid) for wid in value if isinstance(wid, str)]
+
+    @field_validator("applied_learning_ids", mode="before")
+    @classmethod
+    def _applied_learning_ids(cls, value: Any) -> list[str]:
+        if not isinstance(value, list):
+            return []
+        selected: list[str] = []
+        seen: set[str] = set()
+        for raw_id in value:
+            if not isinstance(raw_id, str):
+                continue
+            rule_id = raw_id.strip()
+            if not rule_id or rule_id in seen:
+                continue
+            seen.add(rule_id)
+            selected.append(rule_id)
+            if len(selected) >= 3:
+                break
+        return selected
 
     @model_validator(mode="after")
     def _validate_action_and_relative_quantity(self) -> "LlmDecisionPayload":
@@ -129,6 +149,7 @@ class LlmDecisionPayload(_LlmBaseModel):
             "cancel_watch_ids": self.cancel_watch_ids,
             "next_wake_in_minutes": self.next_wake_in_minutes,
             "learning": self.learning,
+            "applied_learning_ids": self.applied_learning_ids,
             "exit_update": self.exit_update,
         }
         if self.reduce_fraction_internal is not None:
@@ -169,6 +190,7 @@ class LlmSymbolCallsPayload(_LlmBaseModel):
     confidence: float = 0.0
     rationale: str = ""
     decision_reason_code: Any | None = None
+    applied_learning_ids: list[str] = Field(default_factory=list)
 
     @model_validator(mode="before")
     @classmethod
@@ -196,12 +218,18 @@ class LlmSymbolCallsPayload(_LlmBaseModel):
     def _rationale(cls, value: Any) -> str:
         return str(value or "")
 
+    @field_validator("applied_learning_ids", mode="before")
+    @classmethod
+    def _applied_learning_ids(cls, value: Any) -> list[str]:
+        return LlmDecisionPayload._applied_learning_ids(value)
+
     def to_legacy_dict(self) -> dict[str, Any]:
         return {
             "calls": [call.to_legacy_dict() for call in self.calls],
             "confidence": self.confidence,
             "rationale": self.rationale,
             "decision_reason_code": self.decision_reason_code,
+            "applied_learning_ids": self.applied_learning_ids,
         }
 
 

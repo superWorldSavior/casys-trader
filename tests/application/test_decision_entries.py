@@ -65,6 +65,7 @@ def test_build_decision_entry_preserves_llm_metadata_and_tool_audit() -> None:
         "llm_fallback_reason": "none",
         "llm_error": None,
         "learning": "note",
+        "applied_learning_ids": [],
         "thesis": {"setup": "breakout"},
         "risk_pct_target": 0.01,
         "trade_plan_created": False,
@@ -107,16 +108,16 @@ def test_build_decision_entry_marks_armed_plan_without_model_call() -> None:
     assert entry["data_source"] == "yfinance"
 
 
-def test_runtime_tool_audit_fields_keeps_shape_for_non_dict_and_normalizations() -> None:
+def test_runtime_tool_audit_fields_keeps_shape_without_automatic_recall() -> None:
     assert runtime_tool_audit_fields(None) == {"tool_rounds": None, "tool_calls": None}
     assert runtime_tool_audit_fields({"tool_rounds": 2, "tool_calls": [], "normalizations": []}) == {
         "tool_rounds": 2,
         "tool_calls": [],
         "tool_normalizations": [],
     }
-    assert runtime_tool_audit_fields(
+    assert "automatic_recall" not in runtime_tool_audit_fields(
         {"automatic_recall": {"note_ids": [1, 2], "mode": "automatic_push"}}
-    )["automatic_recall"] == {"note_ids": [1, 2], "mode": "automatic_push"}
+    )
 
 
 def test_hold_reason_for_decision_distinguishes_infra_and_domain_noops() -> None:

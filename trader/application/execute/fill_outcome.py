@@ -21,6 +21,7 @@ def llm_exit_reason_for_intent(intent: str | None) -> str | None:
 def build_fill_accounting(
     *,
     fill: Fill,
+    decision_id: str | None = None,
     symbol: str,
     action: str,
     intent: str | None,
@@ -54,6 +55,8 @@ def build_fill_accounting(
         "cash": cash,
         "position_quantity": position_quantity,
     }
+    if decision_id:
+        payload["decision_id"] = decision_id
     exit_reason = llm_exit_reason_for_intent(intent)
     if exit_reason is not None:
         payload["exit_reason"] = exit_reason

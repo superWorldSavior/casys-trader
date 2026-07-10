@@ -98,6 +98,64 @@ def test_batch_dispatch_uses_application_planner_and_updates_shared_counter() ->
     assert captured["bar_timeframe_by_symbol"] == {"SPY": "15m"}
 
 
+def test_batch_cockpit_keeps_recent_continuity_and_annotates_feedback_without_recall() -> None:
+    captured: dict[str, object] = {}
+
+    def load_last_review(_store, _symbols):
+        return {"SPY": {"decision_id": "review-id", "verdict": "intact"}}
+
+    def load_recent(_store, *, symbols):
+        assert symbols == ["SPY"]
+        return {"SPY": [{"decision_id": "recent-id", "action": "HOLD"}]}
+
+    def batch_decider(**kwargs):
+        captured.update(kwargs)
+        return {"SPY": Decision.hold("SPY", "wait")}, 1
+
+    dispatch_decisions(
+        _request(
+            learning_feedback_provider=lambda ids: {
+                decision_id: {
+                    "status": "evaluated",
+                    "verdict": "WIN",
+                    "forward_return": 0.01,
+                    "outcome_score": 0.2,
+                }
+                for decision_id in ids
+            },
+        ),
+        resolve_decision_for_routing=lambda **_kwargs: None,
+        execute_decision=lambda **_kwargs: None,
+        batch_decider=batch_decider,
+        last_review_loader=load_last_review,
+        recent_decisions_loader=load_recent,
+    )
+
+    assert captured["last_review_by_symbol"] == {
+        "SPY": {
+            "verdict": "intact",
+            "feedback": {
+                "status": "evaluated",
+                "verdict": "WIN",
+                "forward_return": 0.01,
+                "outcome_score": 0.2,
+            },
+        }
+    }
+    assert captured["recent_decisions_by_symbol"] == {
+        "SPY": [{
+            "decision_id": "recent-id",
+            "action": "HOLD",
+            "feedback": {
+                "status": "evaluated",
+                "verdict": "WIN",
+                "forward_return": 0.01,
+                "outcome_score": 0.2,
+            },
+        }]
+    }
+
+
 def test_queue_dispatch_streams_reducers_and_buffers_openings() -> None:
     reduce_decision = Decision(
         symbol="REDUCE",
@@ -216,7 +274,7 @@ def test_queue_dispatch_streams_reducers_and_buffers_openings() -> None:
     ]
 
 
-def test_queue_dispatch_injecte_et_trace_le_recall_automatique() -> None:
+def test_queue_dispatch_ne_pousse_pas_le_recall_automatique_et_filtre_les_regles() -> None:
     decision = Decision(
         symbol="SPY",
         action="HOLD",
@@ -226,6 +284,7 @@ def test_queue_dispatch_injecte_et_trace_le_recall_automatique() -> None:
         intent="HOLD",
         llm_provider="acpx",
         llm_model="terra",
+        applied_learning_ids=["rule-1", "invented", "rule-1", "rule-2"],
     )
     captured: dict = {}
 
@@ -237,8 +296,13 @@ def test_queue_dispatch_injecte_et_trace_le_recall_automatique() -> None:
         _request(
             queue_decide_enabled=True,
             task_ledger=object(),
-            learnings_recall_provider=lambda _args: {
-                "rows": [{"id": 42, "note": "ancien breakout", "q_value": 0.4}]
+            shared_context={
+                "learnings": {
+                    "global": [
+                        {"rule_id": "rule-1", "note": "one"},
+                        {"rule_id": "rule-2", "note": "two"},
+                    ]
+                }
             },
         ),
         resolve_decision_for_routing=lambda **kwargs: kwargs["decision"],
@@ -250,7 +314,6 @@ def test_queue_dispatch_injecte_et_trace_le_recall_automatique() -> None:
         symbol_facts_builder=lambda _symbol, **_kwargs: {},
     )
 
-    assert captured["flair_experience"]["rows"][0]["id"] == 42
-    trace = result.decisions_by_symbol["SPY"].domain_tools["automatic_recall"]
-    assert trace["note_ids"] == [42]
-    assert trace["mode"] == "automatic_push"
+    assert "flair_experience" not in captured
+    assert result.decisions_by_symbol["SPY"].domain_tools is None
+    assert result.decisions_by_symbol["SPY"].applied_learning_ids == ["rule-1", "rule-2"]

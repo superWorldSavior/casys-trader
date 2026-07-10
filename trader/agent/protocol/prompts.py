@@ -28,6 +28,8 @@ _OUTPUT_CONTRACT = (
     '{"symbol":"<SYM>","confidence":<0..1>,"rationale":"<court>",'
     f'"decision_reason_code":"{_REASON_CODE_ENUM}","calls":[<tool_call>,...]}}\n'
     "`calls: []` signifie HOLD explicite pour ce symbole.\n"
+    "Optionnel : `applied_learning_ids:[\"<rule_id>\",...]` cite au plus trois "
+    "règles de `context.learnings.global` qui ont réellement pesé sur cette décision.\n"
     "Grammaire Pine-like JSON officielle: `strategy_entry`, `strategy_exit`, "
     "`strategy_close`, `set_next_wake`, `propose_indicator_watch`, "
     "`cancel_watch`, `record_learning`. Pense à ces calls comme à un MCP JSON "
@@ -136,11 +138,11 @@ _DECISION_GUIDANCE = (
     "`context.learnings.global` et `guardrails` sont des principes transversaux : "
     "ils disent comment trader, jamais ce qui se passe maintenant sur un titre. "
     "La situation fraîche du symbole vient de `company_intelligence` et "
-    "`universe_mandate` dans ses faits locaux. `flair_experience` contient au plus "
-    "deux expériences historiques automatiquement rappelées par symbole puis famille, "
-    "pondérées par leurs outcomes et, quand disponible, leur Q-value MemRL. Pour une "
-    "analogie de setup plus précise, approfondis avec `recall_learnings` et un petit "
-    "query ciblé par symbole, famille et setup. "
+    "`universe_mandate` dans ses faits locaux. Si une règle globale a réellement "
+    "pesé sur ta décision, cite son `rule_id` dans `applied_learning_ids` (au plus "
+    "trois IDs présents dans le contexte) ; ne cite jamais une règle simplement "
+    "visible. Pour une analogie de setup plus précise, approfondis avec "
+    "`recall_learnings` et un petit query ciblé par symbole, famille et setup. "
     "N'appelle pas ce recall mécaniquement sur un réveil sans enjeu et ne traite "
     "jamais une expérience historique comme une actualité du symbole.\n\n"
     "# Frais de transaction\n"
@@ -259,7 +261,9 @@ _BATCH_FINAL_CONTRACT = (
     'Chaque <obj>: {"symbol":"<SYM>","confidence":<0..1>,"rationale":"<court>",'
     f'"decision_reason_code":"{_REASON_CODE_ENUM}","calls":[<tool_call>,...]}}\n'
     "`calls: []` signifie HOLD explicite. Utilise la grammaire Pine-like JSON "
-    "`strategy_entry` / `strategy_exit` / `strategy_close` pour les décisions de trading."
+    "`strategy_entry` / `strategy_exit` / `strategy_close` pour les décisions de trading. "
+    "Optionnel : `applied_learning_ids` contient au plus trois `rule_id` réellement "
+    "utilisés, présents dans `context.learnings.global`."
 )
 
 _SYMBOL_CALLS_FINAL_CONTRACT = (
@@ -268,7 +272,9 @@ _SYMBOL_CALLS_FINAL_CONTRACT = (
     'Chaque <obj>: {"symbol":"<SYM>","confidence":<0..1>,"rationale":"<court>",'
     f'"decision_reason_code":"{_REASON_CODE_ENUM}","calls":[<tool_call>,...]}}\n'
     "`calls: []` signifie HOLD explicite pour ce symbole. Ne mélange pas `calls` "
-    "avec les anciens champs métier.\n"
+    "avec les anciens champs métier. `applied_learning_ids` est optionnel : au plus "
+    "trois `rule_id` de `context.learnings.global` qui ont réellement pesé sur ta "
+    "décision.\n"
     "Action tools finaux autorisés par symbole:\n"
     "Grammaire Pine-like JSON officielle: position intent = changer l'exposition; "
     "exit rule = règle attachée à une position ouverte; "

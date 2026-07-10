@@ -81,6 +81,9 @@ class DecisionExecutionContext:
     execute_ledger: object
     record_decision: Callable[[dict], None]
     rate_for_symbol: Callable[[str], float]
+    # Compatibility fallback for application-level callers; the daemon always
+    # supplies the stable ledger identity reserved before execution.
+    decision_id_for_symbol: Callable[[str], str] = lambda symbol: symbol
     append_event: Callable[..., None] = _noop_event
     append_model_performance: Callable[..., None] = _noop_model_performance
     logger: logging.Logger = logging.getLogger("casys-trader")
@@ -157,6 +160,9 @@ def execute_one_cycle_decision(
         armed_plan_order=ctx.armed_plan_orders.get(sym),
         runtime_data_source=ctx.runtime_data_source_by_sym.get(sym),
     )
+    # La même identité suit le learning, le ledger et les fills associés. Elle
+    # est réservée avant tout side effect d'exécution.
+    entry["decision_id"] = ctx.decision_id_for_symbol(sym)
     if sym in ctx.prices:
         entry["price"] = ctx.prices[sym]
     decision_source = str(entry["decision_source"])
@@ -166,6 +172,7 @@ def execute_one_cycle_decision(
             symbol=sym,
             now=ctx.now,
             decision=decision,
+            decision_id=str(entry["decision_id"]),
         )
 
     reference_volatility: float | None = None
@@ -471,6 +478,7 @@ def execute_one_cycle_decision(
             llm_model=decision.llm_model,
             llm_fallback_reason=decision.llm_fallback_reason,
             llm_confidence=decision.confidence,
+            entry_decision_id=str(entry["decision_id"]),
         )
         _exec_outcome = execute_queue_dispatch.dispatch_execute_order_via_queue(
             ledger=ctx.execute_ledger,
@@ -526,6 +534,7 @@ def execute_one_cycle_decision(
             final_position = ctx.broker.positions().get(sym)
             fill_accounting = fill_outcome.build_fill_accounting(
                 fill=fill,
+                decision_id=str(entry["decision_id"]),
                 symbol=sym,
                 action=decision.action,
                 intent=decision.intent,
@@ -570,6 +579,7 @@ def execute_one_cycle_decision(
                 queue_execute_enabled=ctx.queue_execute_enabled,
                 entry_thesis=decision.rationale,
                 entry_context=plan_entry_context,
+                entry_decision_id=str(entry["decision_id"]),
             )
         if fill is not None and decision.intent in _OPENING_INTENTS:
             post_entry_wake = market.freshness_budget_minutes(ctx.runtime_interval, grace_minutes=0.0)

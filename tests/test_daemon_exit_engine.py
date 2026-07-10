@@ -529,6 +529,7 @@ def test_run_cycle_persiste_last_llm_review_sur_position_ouverte(
         "intent": "HOLD",
         "llm_provider": "acpx",
         "llm_model": "gpt-5.5/medium",
+        "decision_id": "2026-06-05T12:15:00+00:00|0|SPY",
     }
 
 

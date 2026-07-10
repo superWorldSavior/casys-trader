@@ -8,10 +8,7 @@ from typing import Callable, Iterator
 
 from trader.agent.protocol.types import Decision
 from trader.application.decide import planner_batch, queue_dispatch, recent_decisions
-from trader.application.decide.learning_context import (
-    attach_auto_recall_trace,
-    build_auto_learning_recall,
-)
+from trader.application.decide.learning_context import filter_applied_learning_ids
 from trader.application.execute.cycle_decision import DecisionExecutionState
 from trader.application.record import plan_review
 from trader.planning.protocols import SchedulerLike
@@ -65,6 +62,7 @@ class DecisionDispatchRequest:
     now_fn: Callable[[], float]
     company_context_by_symbol: dict[str, dict] = field(default_factory=dict)
     mandate_context_by_symbol: dict[str, dict] = field(default_factory=dict)
+    learning_feedback_provider: Callable[[list[str]], dict[str, dict]] | None = None
 
 
 @dataclass(frozen=True)
@@ -116,6 +114,18 @@ def dispatch_decisions(
         )
 
     decide_batch = batch_decider or planner_batch.batch_decide
+    last_review = load_last_review(request.plan_store, request.decidable)
+    recent = _load_recent_decisions(
+        recent_decisions_loader or recent_decisions.recent_decisions_by_symbol,
+        store=request.decision_ledger_store,
+        symbols=request.decidable,
+    )
+    feedback = _feedback_for_context(
+        request.learning_feedback_provider,
+        _decision_ids_for_context(last_review, recent),
+    )
+    last_review = plan_review.annotate_learning_feedback(last_review, feedback)
+    recent = recent_decisions.annotate_learning_feedback(recent, feedback)
     decisions_by_symbol, model_calls_used = decide_batch(
         decidable=request.decidable,
         mandate=request.mandate,
@@ -133,9 +143,8 @@ def dispatch_decisions(
         now=request.now,
         data_age_by_symbol=request.data_age_by_symbol,
         sched=request.scheduler,
-        last_review_by_symbol=load_last_review(
-            request.plan_store, request.decidable
-        ),
+        last_review_by_symbol=last_review,
+        recent_decisions_by_symbol=recent,
         market_context_by_symbol=request.execution_eligibility,
         decision_timeout_s=request.decision_timeout_s,
         decision_batch_size=request.decision_batch_size,
@@ -148,6 +157,13 @@ def dispatch_decisions(
         company_context_by_symbol=request.company_context_by_symbol,
         mandate_context_by_symbol=request.mandate_context_by_symbol,
     )
+    decisions_by_symbol = {
+        symbol: filter_applied_learning_ids(
+            decision,
+            shared_context=request.shared_context,
+        )
+        for symbol, decision in decisions_by_symbol.items()
+    }
     request.model_call_counter.used = model_calls_used
     return DecisionDispatchResult(
         decisions_by_symbol=decisions_by_symbol,
@@ -170,26 +186,22 @@ def _dispatch_via_queue(
     symbol_facts_builder: Callable[..., dict],
 ) -> DecisionDispatchResult:
     last_review = last_review_loader(request.plan_store, request.decidable)
-    recent = recent_decisions_loader(
-        request.decision_ledger_store,
+    recent = _load_recent_decisions(
+        recent_decisions_loader,
+        store=request.decision_ledger_store,
         symbols=request.decidable,
     )
+    feedback = _feedback_for_context(
+        request.learning_feedback_provider,
+        _decision_ids_for_context(last_review, recent),
+    )
+    last_review = plan_review.annotate_learning_feedback(last_review, feedback)
+    recent = recent_decisions.annotate_learning_feedback(recent, feedback)
     active_watches = active_watches_builder(
         sched=request.scheduler,
         symbols=request.decidable,
         now=request.now,
     )
-    auto_recall_by_symbol = {
-        symbol: recall
-        for symbol in request.decidable
-        if (
-            recall := build_auto_learning_recall(
-                request.learnings_recall_provider,
-                symbol=symbol,
-            )
-        )
-        is not None
-    }
     symbol_facts_by_symbol = {
         symbol: {
             "indicator_triggers": request.triggers_by_symbol.get(symbol, []),
@@ -206,11 +218,6 @@ def _dispatch_via_queue(
                 bar_timeframe_by_symbol=request.analysis_timeframe_by_symbol,
                 company_context_by_symbol=request.company_context_by_symbol,
                 mandate_context_by_symbol=request.mandate_context_by_symbol,
-            ),
-            **(
-                {"flair_experience": auto_recall_by_symbol[symbol]}
-                if symbol in auto_recall_by_symbol
-                else {}
             ),
         }
         for symbol in request.decidable
@@ -241,17 +248,13 @@ def _dispatch_via_queue(
             undecided_symbols.add(symbol)
             continue
         request.model_call_counter.used += calls
-        traced_decision = (
-            attach_auto_recall_trace(
-                decision,
-                auto_recall_by_symbol.get(symbol),
-            )
-            if decision.llm_provider or decision.llm_model
-            else decision
+        filtered_decision = filter_applied_learning_ids(
+            decision,
+            shared_context=request.shared_context,
         )
         routed_decision = resolve_decision_for_routing(
             symbol=symbol,
-            decision=traced_decision,
+            decision=filtered_decision,
             broker=request.broker,
         )
         decisions_by_symbol[symbol] = routed_decision
@@ -277,6 +280,52 @@ def _dispatch_via_queue(
         streamed_decision_symbols=streamed_decision_symbols,
         execution_state=execution_state,
     )
+
+
+def _decision_ids_for_context(
+    last_review_by_symbol: dict[str, dict],
+    recent_by_symbol: dict[str, list[dict]],
+) -> list[str]:
+    ids = [
+        str(review.get("decision_id"))
+        for review in last_review_by_symbol.values()
+        if review.get("decision_id")
+    ]
+    ids.extend(
+        str(row.get("decision_id"))
+        for rows in recent_by_symbol.values()
+        for row in rows
+        if row.get("decision_id")
+    )
+    return list(dict.fromkeys(ids))
+
+
+def _feedback_for_context(
+    provider: Callable[[list[str]], dict[str, dict]] | None,
+    decision_ids: list[str],
+) -> dict[str, dict]:
+    if provider is None or not decision_ids:
+        return {}
+    try:
+        payload = provider(decision_ids)
+    except Exception:  # noqa: BLE001 - cockpit feedback is advisory only
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _load_recent_decisions(
+    loader: Callable[..., dict[str, list]],
+    *,
+    store: object,
+    symbols: list[str],
+) -> dict[str, list]:
+    """Recent-decision context is advisory; retain legacy batch adapters without a ledger."""
+
+    try:
+        payload = loader(store, symbols=symbols)
+    except (AttributeError, OSError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
 
 
 __all__ = [

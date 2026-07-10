@@ -179,6 +179,7 @@ def _decision_from_dict(data: dict | LlmDecisionPayload, symbol: str) -> Decisio
         indicator_watch=_optional_dict(data, "indicator_watch"),
         cancel_watch_ids=_cancel_watch_ids(data),
         learning=_normalize_learning(data.get("learning")),
+        applied_learning_ids=list(data.get("applied_learning_ids") or []),
         decision_reason_code=_decision_reason_code(data),
         exit_update=_optional_dict(data, "exit_update"),
         resolve_from_position=resolve_from_position,
@@ -343,6 +344,7 @@ def _decision_from_symbol_calls(data: dict | LlmSymbolCallsPayload, symbol: str)
         "rationale": str(data.get("rationale") or ""),
         "intent": "HOLD",
         "decision_reason_code": _decision_reason_code(data),
+        "applied_learning_ids": list(data.get("applied_learning_ids") or []),
     }
     traces: list[dict] = []
     cancel_ids: list[str] = []

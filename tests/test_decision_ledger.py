@@ -69,6 +69,15 @@ def test_build_decision_row_normalise_une_decision_pour_audit() -> None:
     assert row["labels"] == {}
 
 
+def test_build_decision_row_preserves_global_learning_citations() -> None:
+    decision = _decision()
+    decision["applied_learning_ids"] = ["rule-breakout", "rule-fees", 42]
+
+    row = decision_ledger.build_decision_row(_report([decision]), decision, sequence=0)
+
+    assert row["applied_learning_ids"] == ["rule-breakout", "rule-fees"]
+
+
 def test_build_decision_row_propage_les_rejets_indicator_watch() -> None:
     """La ligne d'audit conserve l'intention indicator_watch et ses rejets."""
     decision = _decision()

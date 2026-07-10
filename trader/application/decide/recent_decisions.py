@@ -7,6 +7,8 @@ délibéré) — anti-répétition + cohérence, même sans position. Le row du 
 """
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 _MAX_RATIONALE_LEN = 200
 _MAX_FLAGS = 5
 DEFAULT_LIMIT = 3
@@ -46,6 +48,29 @@ def recent_decisions_by_symbol(
     }
 
 
+def annotate_learning_feedback(
+    decisions_by_symbol: Mapping[str, list[dict]],
+    feedback_by_decision_id: Mapping[str, Mapping[str, object]] | None,
+) -> dict[str, list[dict]]:
+    """Attach feedback without changing the chronological recent-decision feed."""
+
+    if not feedback_by_decision_id:
+        return {symbol: [dict(row) for row in rows] for symbol, rows in decisions_by_symbol.items()}
+    result: dict[str, list[dict]] = {}
+    for symbol, rows in decisions_by_symbol.items():
+        enriched: list[dict] = []
+        for row in rows:
+            copied = dict(row)
+            decision_id = str(copied.get("decision_id") or "")
+            feedback = feedback_by_decision_id.get(decision_id)
+            compact_feedback = _compact_feedback(feedback)
+            if compact_feedback is not None:
+                copied["feedback"] = compact_feedback
+            enriched.append(copied)
+        result[symbol] = enriched
+    return result
+
+
 def _is_synthetic_hold(row: dict) -> bool:
     """HOLD synthétique = erreur LLM absorbée en HOLD infra (`llm_error` renseigné).
 
@@ -60,6 +85,7 @@ def _compact(row: dict) -> dict:
     if isinstance(rationale, str) and len(rationale) > _MAX_RATIONALE_LEN:
         rationale = rationale[:_MAX_RATIONALE_LEN] + "…"
     compact = {
+        "decision_id": row.get("decision_id"),
         "cycle_ts": row.get("cycle_ts"),
         "action": row.get("action"),
         "intent": row.get("intent"),
@@ -77,6 +103,17 @@ def _compact(row: dict) -> dict:
         if flags:
             compact["flags"] = flags
     return compact
+
+
+def _compact_feedback(value: Mapping[str, object] | None) -> dict | None:
+    if not isinstance(value, Mapping):
+        return None
+    status = str(value.get("status") or "pending")
+    feedback = {"status": status}
+    for field in ("verdict", "forward_return", "outcome_score"):
+        if value.get(field) is not None:
+            feedback[field] = value[field]
+    return feedback
 
 
 def _runtime(row: dict) -> dict:

@@ -36,6 +36,7 @@ class LearningConsolidationRequest:
     attribution: Mapping[str, object] | None
     meta_performance: Mapping[str, object] | None
     consolidate: LearningConsolidator
+    curation_provider: object | None = None
 
 
 def _default_logger() -> logging.Logger:
@@ -45,23 +46,24 @@ def _default_logger() -> logging.Logger:
 def run_learning_consolidation(
     request: LearningConsolidationRequest,
     *,
+    now: datetime,
     report: dict,
     write_current_report: ReportWriter,
     append_event: EventAppender,
 ) -> dict:
-    result = dict(
-        request.consolidate(
-            request.raw_store,
-            request.consolidated_store,
-            threshold=request.threshold,
-            acpx_bin=request.acpx_bin,
-            acpx_agent=request.acpx_agent,
-            model=request.model,
-            timeout_s=request.timeout_s,
-            attribution=request.attribution,
-            meta_performance=request.meta_performance,
-        )
-    )
+    kwargs: dict[str, object] = {
+        "threshold": request.threshold,
+        "acpx_bin": request.acpx_bin,
+        "acpx_agent": request.acpx_agent,
+        "model": request.model,
+        "timeout_s": request.timeout_s,
+        "attribution": request.attribution,
+        "meta_performance": request.meta_performance,
+    }
+    if request.curation_provider is not None:
+        kwargs["curation_provider"] = request.curation_provider
+        kwargs["now"] = now
+    result = dict(request.consolidate(request.raw_store, request.consolidated_store, **kwargs))
     if result.get("triggered"):
         report["learning_consolidation"] = result
         write_current_report(report)
@@ -120,6 +122,7 @@ def finalize_cycle(
     if learning is not None:
         run_learning_consolidation(
             learning,
+            now=now,
             report=report,
             write_current_report=write_current_report,
             append_event=append_event,
