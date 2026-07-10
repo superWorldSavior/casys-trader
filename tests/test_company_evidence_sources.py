@@ -1,3 +1,7 @@
+import gzip
+import json
+
+from trader.infrastructure.market_sources.company import http as company_http
 from trader.infrastructure.market_sources.company import (
     CompositeCompanyEvidenceProvider,
     EsefCompanyEvidenceProvider,
@@ -9,6 +13,32 @@ from trader.infrastructure.market_sources.company import (
 
 
 AS_OF = "2026-07-10T08:00:00+00:00"
+
+
+class _HttpResponse:
+    def __init__(self, payload: bytes, *, content_encoding: str = "") -> None:
+        self._payload = payload
+        self.headers = {"Content-Encoding": content_encoding}
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return None
+
+    def read(self) -> bytes:
+        return self._payload
+
+
+def test_fetch_json_decodes_gzip_response(monkeypatch) -> None:
+    body = gzip.compress(json.dumps({"ok": True}).encode("utf-8"))
+    monkeypatch.setattr(
+        company_http,
+        "urlopen",
+        lambda request, timeout: _HttpResponse(body, content_encoding="gzip"),
+    )
+
+    assert company_http.fetch_json("https://example.test/data.json") == {"ok": True}
 
 
 class _Series:
