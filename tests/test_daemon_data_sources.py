@@ -246,7 +246,6 @@ class TestDaemonDataSourcesConfig:
                 execute=daemon.queue_runtime.ExecuteQueueRuntime(enabled=True),
             )
 
-        monkeypatch.setenv("CASYS_STATE_BACKEND", "sqlite")
         monkeypatch.setenv("CASYS_QUEUE_DECIDE_ENABLED", "1")
         monkeypatch.setenv("CASYS_QUEUE_EXECUTE_ENABLED", "1")
         monkeypatch.setenv("CASYS_AGENT_TOOLS_ENABLED", "1")

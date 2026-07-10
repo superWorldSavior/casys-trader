@@ -12,10 +12,11 @@
   anti-doublon PID). Startup : rotation des ledgers + log `[config] …
   agent_tools=True`. Code committé propre (traçabilité `code_version` saine).
 - **Orchestration = file durable SQLite (task-ledger — ACTIVÉE en paper 04/07)** :
-  état en `state/casys.db` (`CASYS_STATE_BACKEND=sqlite`), `decide` et `execute`
+  état canonique en `state/casys.db`, `decide` et `execute`
   routés par la file (`CASYS_QUEUE_DECIDE_ENABLED` / `CASYS_QUEUE_EXECUTE_ENABLED`,
-  outbox transactionnel), sonde `[state-compare]` par cycle = `identical=True`. Les
-  chemins synchrones restent en fallback (flags off) jusqu'au gommage. Réf :
+  outbox transactionnel). L'ancien compare JSON/SQLite n'est plus exécuté par cycle :
+  les JSON sont figés et le diagnostic reste manuel. Les chemins synchrones restent
+  en fallback (flags off) jusqu'à leur gommage. Réf :
   `docs/reference/task-queue.md`. ⚠️ Vrai trafic decide/execute à observer à la
   réouverture des marchés (week-end `due=0`).
 - **Transport LLM** : fork `Casys-AI/acpx#casys-patches` via `TRADER_ACPX_BIN`
@@ -94,8 +95,8 @@
 
 1. **File durable — observation + gommage** : observer le vrai trafic
    decide/execute-via-file à la réouverture (redémarrage lundi charge `market_clocks`
-   + `parallelism=5`), puis gommer l'ancien mode (fallbacks synchrones + double-write
-   JSON + sonde shadow ; 5 étapes gated, lecteurs JSON d'abord).
+   + `parallelism=5`), puis gommer les deux fallbacks synchrones. La bascule SQLite,
+   le double-write, le compare automatique et la sonde shadow sont déjà soldés.
 2. **Mandat univers enrichi** — projeter au trader la tranche symbole, la mesurer
    en mode observe, puis compiler les règles enforceables séparément du RiskGate.
 3. **Exploiter l'observabilité livrée** — read model du funnel scope → brief →

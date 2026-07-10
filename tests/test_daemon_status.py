@@ -617,7 +617,7 @@ def test_main_supprime_pid_file_au_shutdown_propre(monkeypatch, tmp_path) -> Non
 
 
 def test_main_delegue_le_bootstrap_state_au_runtime_module(monkeypatch, tmp_path) -> None:
-    """main() garde env/CLI, daemon_bootstrap possède rotation ledger + state backend."""
+    """daemon_bootstrap possède la rotation et l'amorçage SQLite canonique."""
     from trader.runtime import daemon_bootstrap
 
     _write_runtime_config(tmp_path)
@@ -633,7 +633,6 @@ def test_main_delegue_le_bootstrap_state_au_runtime_module(monkeypatch, tmp_path
             archive_dir=state_dir / "archive",
         )
 
-    monkeypatch.setenv("CASYS_STATE_BACKEND", "sqlite")
     monkeypatch.setattr(daemon.daemon_bootstrap, "bootstrap_runtime_state", bootstrap_runtime_state)
 
     daemon.main(["--once"], now_fn=lambda: fixed_now)
@@ -642,7 +641,7 @@ def test_main_delegue_le_bootstrap_state_au_runtime_module(monkeypatch, tmp_path
     call = captured[0]
     assert call["state_dir"] == state_dir
     assert call["config_dir"] == tmp_path / "config"
-    assert call["state_backend"] == "sqlite"
+    assert "state_backend" not in call
     assert isinstance(call["commission_model"], IbkrCommissionModel)
     assert call["now"] == fixed_now
     assert call["logger"] is daemon.log
@@ -687,7 +686,6 @@ def test_main_transmet_les_flags_queue_au_bootstrap_runtime(monkeypatch, tmp_pat
 
     monkeypatch.setenv("CASYS_QUEUE_DECIDE_ENABLED", "1")
     monkeypatch.setenv("CASYS_QUEUE_EXECUTE_ENABLED", "1")
-    monkeypatch.setenv("CASYS_STATE_BACKEND", "sqlite")
     monkeypatch.setattr(daemon, "bootstrap_state_backend", lambda **_kwargs: None)
     monkeypatch.setattr(daemon, "make_scheduler", lambda *, state_dir, backend: Scheduler(state_dir / "scheduler.json"))
     monkeypatch.setattr(daemon.queue_runtime, "start_queue_runtimes", start_queue_runtimes)

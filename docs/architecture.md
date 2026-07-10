@@ -121,7 +121,7 @@ les utilisaient :
 | `trader/infrastructure/queue/order_handler.py` | Adaptateur payload queue → `Order`/`TradePlan` → unit of work SQLite atomique | `application.execute.order_handler` reste une façade historique sans logique |
 | `trader/infrastructure/brokers/commission_models.py` | Adaptateurs de tarification paper (`none`, approximation IBKR) et résolution du modèle configuré | les contrats restent dans le domaine ; `execution.commission` et `execution.broker` réexportent les noms historiques |
 | `trader/infrastructure/files/` | Adaptateurs atomiques pour `universe.yaml`, `venue_state.json` et rétention du cache radar | verrouillage `flock`, YAML/JSON/tempfiles et purge restent hors domaine/application |
-| `trader/infrastructure/state_db/` | Backend SQLite de l'état paper, broker store, outbox et stores append-only/projections de briefs, scopes candidats et runs univers | source durable quand `CASYS_STATE_BACKEND=sqlite` ; les stores JSONL de situation/univers restent indépendants du backend paper ; compat virtuelle : `trader.state_db.*` |
+| `trader/infrastructure/state_db/` | Backend SQLite canonique de l'état paper, broker store, outbox et stores append-only/projections de briefs, scopes candidats et runs univers | `state/casys.db` est la source durable sans flag de backend ; les stores JSONL de situation/univers restent indépendants du backend paper ; compat virtuelle : `trader.state_db.*` |
 | `trader/market/rotation/` | Orchestration/façades de rotation par venue : scheduling, activation pré-open et ledger | politiques dans `domain/universe`, transitions dans `application/universe`, I/O dans `infrastructure/files` ; compat virtuelle : `trader.rotation.*`, `trader.rotation_*` |
 | `trader/support/` | Helpers support stables : config (`pool`, `portfolio`), metadata git/code version, process env | compat virtuelle : `trader.config.*`, `trader.metadata.*`, `trader.system.*` |
 | `trader/support/coercion.py` | Coercition sans dépendance des nombres finis et listes de dictionnaires | partagée par reporting et cockpit ; `runtime_state` conserve les deux aliases privés historiques |
@@ -131,7 +131,7 @@ les utilisaient :
 | `trader/runtime/cycle_dispatch.py` | Adaptateur runtime d'appel `run_cycle()` : porte le paquet de paramètres CLI/env/queue/consolidation et le forwarde depuis `daemon.main()` | évite deux appels `run_cycle(...)` dupliqués dans `main()` et garde le contrat runtime testable |
 | `trader/runtime/decision_dispatch_runtime.py` | Adaptateur de sélection batch/queue, construction des faits queue et streaming des décisions réductrices vers l'exécuteur injecté | garde les stores/ledgers opaques, ne dépend pas de l'infrastructure et laisse les use cases de décision sous `application/decide/` |
 | `trader/runtime/cycle_reporting.py` | Adaptateur runtime de persistance post-cycle : `last_report.json` + `history.jsonl`, avec règle no-due active-only | garde les writes de reporting hors de la boucle `main()` et centralise la condition "cycle actif" |
-| `trader/runtime/cycle_finalization.py` | Adaptateur runtime de fin de cycle : consolidation learnings, collecte macro best-effort, cache feedback gross, probes `shadow_queue` et `state_compare` | garde les side effects observabilité/mémoire hors du coeur décisionnel ; contrats `Protocol` locaux pour les dépendances injectées |
+| `trader/runtime/cycle_finalization.py` | Adaptateur runtime de fin de cycle : consolidation learnings, collecte macro best-effort et cache feedback gross | garde les side effects mémoire hors du coeur décisionnel ; contrats `Protocol` locaux pour les dépendances injectées |
 | `trader/runtime/daemon_bootstrap.py` | Adaptateur runtime de démarrage : rotation mensuelle des ledgers, bootstrap du backend état, chargement cash initial et construction scheduler | garde les side effects de boot hors de `daemon.main()` avec factories injectées pour préserver les tests runtime |
 | `trader/runtime/agent_cycle_context.py` | Projection bornée des plans et assemblage du contexte agent d'un cycle | concentre les lectures KPI/learnings/régime et garde `daemon.run_cycle()` sur l'orchestration ; les anciens helpers daemon restent des alias |
 | `trader/runtime/cycle_process_state.py` | État mutable inter-cycle strictement local au process (`last_llm_at`, feedback gross) | explicite le reset au restart et évite les globals métier dispersés dans le daemon |
@@ -283,8 +283,8 @@ run_cycle()                                     [trader/runtime/daemon.py]
 
 Fin de cycle, après les décisions : `cycle_finalization.finalize_cycle()`
 consolide les learnings si le seuil est atteint, lance la collecte macro
-best-effort, mémorise les rejets gross pour le cycle suivant, puis exécute les
-probes `shadow_queue`/`state_compare` sans jamais influencer la décision courante.
+best-effort et mémorise les rejets gross pour le cycle suivant. Le comparateur
+historique JSON/SQLite reste une commande manuelle et n'appartient plus au cycle.
 
 ---
 

@@ -809,9 +809,8 @@ class TestMakeScheduler:
         with pytest.raises(ValueError, match="inconnu"):
             make_scheduler(state_dir=tmp_path, backend="bogus")
 
-    def test_make_scheduler_default_is_json(self, tmp_path: Path) -> None:
+    def test_make_scheduler_default_is_sqlite(self, tmp_path: Path) -> None:
         from trader.state_db.broker_factory import make_scheduler
-        from trader.planning.scheduler import Scheduler
 
         sched = make_scheduler(state_dir=tmp_path)
-        assert isinstance(sched, Scheduler)
+        assert isinstance(sched, SqliteScheduler)

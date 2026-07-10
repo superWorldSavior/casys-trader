@@ -5,12 +5,11 @@ Couverture :
     - backend="sqlite" avec broker.json existant → SqliteBroker, état migré
     - backend="sqlite" sans broker.json + starting_cash=50000 → cash==50000
     - backend="bogus" → ValueError
-    - défaut absent de l'env (comportement json si CASYS_STATE_BACKEND non posé)
+    - défaut SQLite canonique
 """
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 
 import pytest
@@ -146,22 +145,18 @@ def test_make_broker_unknown_backend_raises(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Test 5 — non-régression : défaut "json" si env absent
+# Test 5 — défaut SQLite canonique
 # ---------------------------------------------------------------------------
 
 
-def test_make_broker_default_is_json_when_env_absent(tmp_path: Path, monkeypatch) -> None:
-    """Sans CASYS_STATE_BACKEND dans l'env, le défaut 'json' est utilisé → SimBroker."""
-    monkeypatch.delenv("CASYS_STATE_BACKEND", raising=False)
-
-    backend = os.getenv("CASYS_STATE_BACKEND", "json")
+def test_make_broker_default_is_sqlite(tmp_path: Path) -> None:
+    """Sans argument backend, le store canonique SQLite est utilisé."""
     broker = make_broker(
         state_dir=tmp_path,
         starting_cash=100_000.0,
         commission_model=_NO_COMMISSION,
-        backend=backend,
     )
-    assert isinstance(broker, SimBroker)
+    assert isinstance(broker, SqliteBroker)
 
 
 # ---------------------------------------------------------------------------

@@ -114,6 +114,7 @@ from trader.execution.broker import (
 )
 from trader.execution.protocols import CommissionModel
 from trader.infrastructure.state_db.broker_factory import (
+    CANONICAL_STATE_BACKEND,
     bootstrap_state_backend,
     make_broker,
     make_scheduler,
@@ -449,11 +450,11 @@ def run_cycle(
         state_dir=STATE_DIR,
         starting_cash=starting_equity,
         commission_model=commission_model,
-        backend=os.getenv("CASYS_STATE_BACKEND", "sqlite"),
+        backend=CANONICAL_STATE_BACKEND,
     )
     plan_store = make_trade_plan_store(
         state_dir=STATE_DIR,
-        backend=os.getenv("CASYS_STATE_BACKEND", "sqlite"),
+        backend=CANONICAL_STATE_BACKEND,
     )
     _cycle_raw_open_plans: tuple[object, ...] = ()
     _cycle_open_plan_rows: tuple[dict, ...] = ()
@@ -1077,8 +1078,6 @@ def run_cycle(
         state_dir=STATE_DIR,
         now=now,
         report=report,
-        decidable_symbols=list(decidable),
-        decided_symbols=list(decisions_by_symbol.keys()),
         learning=cycle_finalization.LearningConsolidationRequest(
             raw_store=learnings_store,
             consolidated_store=consolidated_learnings_store,
@@ -1094,7 +1093,6 @@ def run_cycle(
         gross_rejection_cache=process_state.last_gross_rejections,
         summarize_gross_rejections=summarize_gross_rejections,
         collect_macro=macro_series.maybe_collect,
-        state_backend=os.getenv("CASYS_STATE_BACKEND", "sqlite"),
         write_current_report=_write_current_report,
         append_event=_append_event,
         logger=log,
@@ -1248,12 +1246,10 @@ def main(
         return 1
 
     # Bootstrap ordonné AVANT toute lecture d'état ou rotation runtime :
-    # rotation mensuelle JSONL, bootstrap SQLite/shadows, puis scheduler.
-    _state_backend = os.getenv("CASYS_STATE_BACKEND", "sqlite")
+    # rotation mensuelle JSONL, bootstrap SQLite canonique, puis scheduler.
     _runtime_state = daemon_bootstrap.bootstrap_runtime_state(
         state_dir=STATE_DIR,
         config_dir=ROOT / "config",
-        state_backend=_state_backend,
         commission_model=commission_model,
         now=now(),
         logger=log,
@@ -1304,7 +1300,7 @@ def main(
         default_decision_batch_size=DEFAULT_DECISION_BATCH_SIZE,
         codex_client=codex_client,
         execute_enabled_raw=_env_int("CASYS_QUEUE_EXECUTE_ENABLED", 0) == 1,
-        state_backend=_state_backend,
+        state_backend=CANONICAL_STATE_BACKEND,
         commission_model=commission_model,
         decision_timeout_s=args.decision_timeout_s,
         decide_tool_services=_decide_tool_services,
@@ -1454,10 +1450,12 @@ def main(
                     now=loop_now,
                 )
                 bootstrap = False
-                state_backend = os.getenv("CASYS_STATE_BACKEND", "sqlite")
                 protection_cycle_due = bool(
                     not due_symbols
-                    and _has_open_trade_plans(state_dir=STATE_DIR, backend=state_backend)
+                    and _has_open_trade_plans(
+                        state_dir=STATE_DIR,
+                        backend=CANONICAL_STATE_BACKEND,
+                    )
                 )
                 cycle_context = cycle_dispatch.RunCycleRuntimeContext(
                     dry_run=dry_run,

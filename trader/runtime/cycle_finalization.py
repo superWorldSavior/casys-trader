@@ -19,10 +19,6 @@ class MacroCollector(Protocol):
     def __call__(self, state_dir: Path, now: datetime) -> Mapping[str, object]: ...
 
 
-class StateComparator(Protocol):
-    def __call__(self, state_dir: Path) -> Mapping[str, object]: ...
-
-
 ReportWriter = Callable[[dict], None]
 EventAppender = Callable[..., None]
 GrossRejectionSummarizer = Callable[[Sequence[Mapping[str, object]]], dict | None]
@@ -44,12 +40,6 @@ class LearningConsolidationRequest:
 
 def _default_logger() -> logging.Logger:
     return logging.getLogger("casys-trader")
-
-
-def default_state_comparator(state_dir: Path) -> Mapping[str, object]:
-    from trader.infrastructure.state_db.compare import compare_backends
-
-    return compare_backends(state_dir)
 
 
 def run_learning_consolidation(
@@ -113,63 +103,18 @@ def remember_gross_rejections(
     return summary
 
 
-def compare_state_backend(
-    *,
-    state_dir: Path,
-    now: datetime,
-    backend: str,
-    compare_backends: StateComparator | None = None,
-    logger: LoggerLike | None = None,
-) -> dict | None:
-    if backend.lower() != "sqlite":
-        return None
-
-    log = logger or _default_logger()
-    compare = compare_backends or default_state_comparator
-    try:
-        result = dict(compare(state_dir))
-        broker = result.get("broker", {})
-        scheduler = result.get("scheduler", {})
-        broker_map = broker if isinstance(broker, Mapping) else {}
-        scheduler_map = scheduler if isinstance(scheduler, Mapping) else {}
-        cash = broker_map.get("cash", {})
-        cash_map = cash if isinstance(cash, Mapping) else {}
-        log.info(
-            "[state-compare] cycle=%s identical=%s cash=%s positions=%d "
-            "plans=%d wakes=%d watches=%d stale=%d",
-            now.isoformat(),
-            result.get("identical"),
-            cash_map.get("identical"),
-            len(broker_map.get("positions_diff") or []),
-            len((result.get("trade_plans", {}) or {}).get("diff") or []),
-            len(scheduler_map.get("wakes_diff") or []),
-            len(scheduler_map.get("watches_diff") or []),
-            len(scheduler_map.get("stale_diff") or []),
-        )
-        if not result.get("identical"):
-            log.warning("[state-compare] DIVERGENCE cycle=%s détail=%s", now.isoformat(), result)
-        return result
-    except Exception as exc:  # noqa: BLE001 - observation only
-        log.warning("[state-compare] échec: %s", exc)
-        return None
-
-
 def finalize_cycle(
     *,
     state_dir: Path,
     now: datetime,
     report: dict,
-    decidable_symbols: Sequence[str],
-    decided_symbols: Sequence[str],
     learning: LearningConsolidationRequest | None,
     gross_rejection_cache: MutableMapping[str, dict | None],
     summarize_gross_rejections: GrossRejectionSummarizer,
     collect_macro: MacroCollector,
-    state_backend: str,
     write_current_report: ReportWriter,
     append_event: EventAppender,
     logger: LoggerLike | None = None,
-    compare_backends: StateComparator | None = None,
 ) -> None:
     log = logger or _default_logger()
     if learning is not None:
@@ -186,11 +131,4 @@ def finalize_cycle(
         decisions=report["decisions"],
         gross_rejection_cache=gross_rejection_cache,
         summarize_gross_rejections=summarize_gross_rejections,
-    )
-    compare_state_backend(
-        state_dir=state_dir,
-        now=now,
-        backend=state_backend,
-        compare_backends=compare_backends,
-        logger=log,
     )

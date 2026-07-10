@@ -1,13 +1,13 @@
-"""Factories d'état — sélection du backend via CASYS_STATE_BACKEND.
+"""Factories d'état paper — SQLite canonique, adaptateurs JSON explicites.
 
 Factories disponibles :
-    make_broker            → SimBroker (json) ou SqliteBroker (sqlite)
+    make_broker            → SqliteBroker (défaut) ou SimBroker (json explicite)
     make_trade_plan_store  → SqliteTradePlanStore (sqlite)
-    make_scheduler         → Scheduler (json) ou SqliteScheduler (sqlite)
+    make_scheduler         → SqliteScheduler (défaut) ou Scheduler (json explicite)
 
 Valeurs backend acceptées (insensibles à la casse) :
-    "json"   (défaut) → broker/scheduler JSON ; plans JSON supprimés.
-    "sqlite"          → stores SQLite (migration one-shot idempotente au boot).
+    "sqlite" (défaut) → stores SQLite (migration one-shot idempotente au boot).
+    "json"             → broker/scheduler legacy explicites ; plans JSON supprimés.
 
 Usage (daemon.py) ::
 
@@ -17,15 +17,15 @@ Usage (daemon.py) ::
         state_dir=STATE_DIR,
         starting_cash=starting_equity,
         commission_model=commission_model,
-        backend=os.getenv("CASYS_STATE_BACKEND", "json"),
+        backend="sqlite",
     )
     plan_store = make_trade_plan_store(
         state_dir=STATE_DIR,
-        backend=os.getenv("CASYS_STATE_BACKEND", "json"),
+        backend="sqlite",
     )
     sched = make_scheduler(
         state_dir=STATE_DIR,
-        backend=os.getenv("CASYS_STATE_BACKEND", "json"),
+        backend="sqlite",
     )
 
 Les valeurs inconnues lèvent ValueError explicite (AX : fast-fail, machine-readable).
@@ -40,6 +40,7 @@ from trader.infrastructure.state_db.sim_broker import SimBroker
 log = logging.getLogger(__name__)
 
 _VALID_BACKENDS = ("json", "sqlite")
+CANONICAL_STATE_BACKEND = "sqlite"
 
 
 def bootstrap_state_backend(
@@ -47,7 +48,7 @@ def bootstrap_state_backend(
     state_dir: Path,
     starting_cash: float,
     commission_model,
-    backend: str = "json",
+    backend: str = CANONICAL_STATE_BACKEND,
 ) -> None:
     """Amorce ordonné du backend SQLite : migrations + import JSON.
 
@@ -65,7 +66,7 @@ def bootstrap_state_backend(
         state_dir:        répertoire d'état (ex. ROOT / "state").
         starting_cash:    cash initial si aucun état broker n'existe.
         commission_model: CommissionModel injecté dans SqliteBroker.
-        backend:          "json" (défaut, no-op) ou "sqlite".
+        backend:          "sqlite" (défaut) ou "json" explicite (no-op).
     """
     state_dir = Path(state_dir)
     if backend.lower() != "sqlite":
@@ -102,7 +103,7 @@ def make_broker(
     state_dir: Path,
     starting_cash: float,
     commission_model,
-    backend: str = "json",
+    backend: str = CANONICAL_STATE_BACKEND,
 ):
     """Construit et retourne un Broker (SimBroker ou SqliteBroker) selon *backend*.
 
@@ -110,7 +111,7 @@ def make_broker(
         state_dir:        répertoire d'état (ex. ROOT / "state").
         starting_cash:    cash initial si aucun état n'existe.
         commission_model: CommissionModel à injecter.
-        backend:          "json" (défaut) ou "sqlite". Toute autre valeur → ValueError.
+        backend:          "sqlite" (défaut) ou "json" explicite. Toute autre valeur → ValueError.
 
     Returns:
         SimBroker  si backend == "json".
@@ -143,7 +144,7 @@ def make_broker(
         return SqliteBroker(db, commission_model=commission_model)
 
     raise ValueError(
-        f"CASYS_STATE_BACKEND inconnu : {backend!r}. Valeurs acceptées : {_VALID_BACKENDS}"
+        f"backend d'état inconnu : {backend!r}. Valeurs acceptées : {_VALID_BACKENDS}"
     )
 
 
@@ -169,7 +170,7 @@ def make_trade_plan_store(
 
     if backend == "json":
         raise NotImplementedError(
-            "trade plan JSON backend supprimé; utiliser CASYS_STATE_BACKEND=sqlite"
+            "trade plan JSON backend supprimé; utiliser le backend sqlite"
         )
 
     if backend == "sqlite":
@@ -188,20 +189,20 @@ def make_trade_plan_store(
         return SqliteTradePlanStore(db)
 
     raise ValueError(
-        f"CASYS_STATE_BACKEND inconnu : {backend!r}. Valeurs acceptées : {_VALID_BACKENDS}"
+        f"backend d'état inconnu : {backend!r}. Valeurs acceptées : {_VALID_BACKENDS}"
     )
 
 
 def make_scheduler(
     *,
     state_dir: Path,
-    backend: str = "json",
+    backend: str = CANONICAL_STATE_BACKEND,
 ):
     """Construit et retourne un Scheduler (Scheduler ou SqliteScheduler) selon *backend*.
 
     Args:
         state_dir: répertoire d'état (ex. ROOT / "state").
-        backend:   "json" (défaut) ou "sqlite". Toute autre valeur → ValueError.
+        backend:   "sqlite" (défaut) ou "json" explicite. Toute autre valeur → ValueError.
 
     Returns:
         Scheduler        si backend == "json".
@@ -237,5 +238,5 @@ def make_scheduler(
         return SqliteScheduler(db)
 
     raise ValueError(
-        f"CASYS_STATE_BACKEND inconnu : {backend!r}. Valeurs acceptées : {_VALID_BACKENDS}"
+        f"backend d'état inconnu : {backend!r}. Valeurs acceptées : {_VALID_BACKENDS}"
     )

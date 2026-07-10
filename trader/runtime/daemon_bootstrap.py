@@ -13,6 +13,7 @@ from trader.runtime import ledger_rotation
 from trader.runtime.protocols import LoggerLike
 from trader.support.config.portfolio import load_starting_cash
 from trader.infrastructure.state_db.broker_factory import (
+    CANONICAL_STATE_BACKEND,
     bootstrap_state_backend,
     make_scheduler,
 )
@@ -38,7 +39,6 @@ def bootstrap_runtime_state(
     *,
     state_dir: Path,
     config_dir: Path,
-    state_backend: str,
     commission_model: object,
     now: datetime,
     logger: LoggerLike | None = None,
@@ -75,7 +75,10 @@ def bootstrap_runtime_state(
         state_dir=state_dir,
         starting_cash=load_starting_cash_fn(config_dir),
         commission_model=commission_model,
-        backend=state_backend,
+        backend=CANONICAL_STATE_BACKEND,
     )
-    scheduler = make_scheduler_fn(state_dir=state_dir, backend=state_backend)
+    scheduler = make_scheduler_fn(
+        state_dir=state_dir,
+        backend=CANONICAL_STATE_BACKEND,
+    )
     return RuntimeStateBootstrap(scheduler=scheduler, archive_dir=archive_dir)

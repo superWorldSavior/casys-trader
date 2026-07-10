@@ -331,7 +331,6 @@ def test_run_cycle_transmet_les_flags_de_finalisation_cycle(
     def finalize_cycle(**kwargs):
         captured.append(kwargs)
 
-    monkeypatch.setenv("CASYS_STATE_BACKEND", "sqlite")
     monkeypatch.setattr(daemon, "ROOT", tmp_path)
     monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
     monkeypatch.setattr(daemon.cycle_finalization, "finalize_cycle", finalize_cycle)
@@ -351,9 +350,9 @@ def test_run_cycle_transmet_les_flags_de_finalisation_cycle(
     call = captured[0]
     assert call["state_dir"] == state_dir
     assert "shadow_queue_enabled" not in call
-    assert call["state_backend"] == "sqlite"
-    assert call["decidable_symbols"] == ["SPY"]
-    assert call["decided_symbols"] == ["SPY"]
+    assert "state_backend" not in call
+    assert "decidable_symbols" not in call
+    assert "decided_symbols" not in call
     assert call["gross_rejection_cache"] is process_state.last_gross_rejections
     assert call["summarize_gross_rejections"] is daemon.summarize_gross_rejections
     assert call["collect_macro"] is daemon.macro_series.maybe_collect
@@ -379,7 +378,6 @@ def test_run_cycle_utilise_le_process_state_injecte_pour_le_feedback_gross(
     def finalize_cycle(**kwargs):
         captured.append(kwargs)
 
-    monkeypatch.setenv("CASYS_STATE_BACKEND", "sqlite")
     monkeypatch.setattr(daemon, "ROOT", tmp_path)
     monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
     monkeypatch.setattr(daemon.cycle_finalization, "finalize_cycle", finalize_cycle)

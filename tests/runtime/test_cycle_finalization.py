@@ -36,7 +36,6 @@ def test_finalize_cycle_runs_runtime_side_effects_in_order(tmp_path: Path) -> No
     consolidated_store = SimpleNamespace(path=state_dir / "learnings_consolidated.json")
     learning_calls: list[dict] = []
     macro_calls: list[tuple[Path, datetime]] = []
-    compare_calls: list[Path] = []
     write_calls: list[dict] = []
     events: list[tuple[str, dict]] = []
     cache: dict[str, dict | None] = {}
@@ -56,15 +55,6 @@ def test_finalize_cycle_runs_runtime_side_effects_in_order(tmp_path: Path) -> No
         macro_calls.append((state_dir_arg, now_arg))
         return {"triggered": True, "collected": 2, "skipped": 1, "errors": 0}
 
-    def compare_state(state_dir_arg: Path) -> dict:
-        compare_calls.append(state_dir_arg)
-        return {
-            "identical": False,
-            "broker": {"cash": {"identical": True}, "positions_diff": ["AAPL"]},
-            "trade_plans": {"diff": []},
-            "scheduler": {"wakes_diff": [], "watches_diff": ["AAPL"], "stale_diff": []},
-        }
-
     def summarize(decisions: list[dict]) -> dict | None:
         return {"symbols": [item["symbol"] for item in decisions]}
 
@@ -72,8 +62,6 @@ def test_finalize_cycle_runs_runtime_side_effects_in_order(tmp_path: Path) -> No
         state_dir=state_dir,
         now=now,
         report=report,
-        decidable_symbols=["AAPL", "MSFT"],
-        decided_symbols=["AAPL"],
         learning=cycle_finalization.LearningConsolidationRequest(
             raw_store=raw_store,
             consolidated_store=consolidated_store,
@@ -89,8 +77,6 @@ def test_finalize_cycle_runs_runtime_side_effects_in_order(tmp_path: Path) -> No
         gross_rejection_cache=cache,
         summarize_gross_rejections=summarize,
         collect_macro=collect_macro,
-        state_backend="sqlite",
-        compare_backends=compare_state,
         write_current_report=write_calls.append,
         append_event=lambda event, **payload: events.append((event, payload)),
         logger=logger,
@@ -114,8 +100,7 @@ def test_finalize_cycle_runs_runtime_side_effects_in_order(tmp_path: Path) -> No
     assert events == [("learning_consolidated", {"triggered": True, "new_raw_count": 3, "summary": "ok"})]
     assert macro_calls == [(state_dir, now)]
     assert cache == {str(state_dir): {"symbols": ["AAPL", "MSFT"]}}
-    assert compare_calls == [state_dir]
-    assert any(args[0] == "[state-compare] DIVERGENCE cycle=%s détail=%s" for args in logger.warnings)
+    assert logger.warnings == []
 
 
 def test_finalize_cycle_skips_report_write_when_learning_not_triggered(tmp_path: Path) -> None:
@@ -127,8 +112,6 @@ def test_finalize_cycle_skips_report_write_when_learning_not_triggered(tmp_path:
         state_dir=tmp_path,
         now=datetime(2026, 7, 5, tzinfo=timezone.utc),
         report=report,
-        decidable_symbols=[],
-        decided_symbols=[],
         learning=cycle_finalization.LearningConsolidationRequest(
             raw_store=object(),
             consolidated_store=object(),
@@ -144,8 +127,6 @@ def test_finalize_cycle_skips_report_write_when_learning_not_triggered(tmp_path:
         gross_rejection_cache={},
         summarize_gross_rejections=lambda _decisions: None,
         collect_macro=lambda _state_dir, _now: {"triggered": False},
-        state_backend="json",
-        compare_backends=lambda _state_dir: {"identical": True},
         write_current_report=writes.append,
         append_event=lambda event, **payload: events.append((event, payload)),
         logger=RecordingLogger(),
@@ -156,32 +137,24 @@ def test_finalize_cycle_skips_report_write_when_learning_not_triggered(tmp_path:
     assert events == []
 
 
-def test_finalize_cycle_keeps_optional_probes_best_effort(tmp_path: Path) -> None:
+def test_finalize_cycle_keeps_macro_collection_best_effort(tmp_path: Path) -> None:
     logger = RecordingLogger()
     report = {"decisions": []}
 
     def raise_macro(_state_dir: Path, _now: datetime) -> dict:
         raise RuntimeError("macro down")
 
-    def raise_compare(_state_dir: Path) -> dict:
-        raise RuntimeError("compare down")
-
     cycle_finalization.finalize_cycle(
         state_dir=tmp_path,
         now=datetime(2026, 7, 5, tzinfo=timezone.utc),
         report=report,
-        decidable_symbols=["AAPL"],
-        decided_symbols=[],
         learning=None,
         gross_rejection_cache={},
         summarize_gross_rejections=lambda _decisions: None,
         collect_macro=raise_macro,
-        state_backend="sqlite",
-        compare_backends=raise_compare,
         write_current_report=lambda _report: None,
         append_event=lambda _event, **_payload: None,
         logger=logger,
     )
 
-    messages = [args[0] for args in logger.warnings]
-    assert "[state-compare] échec: %s" in messages
+    assert logger.warnings == []

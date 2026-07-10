@@ -126,7 +126,7 @@ def compare_backends(state_dir: str | Path) -> dict:
     if not db_path.exists():
         raise RuntimeError(
             f"compare: casys.db absent ou non initialisé — "
-            f"lancer le daemon en CASYS_STATE_BACKEND=sqlite d'abord ({db_path})"
+            f"lancer le daemon pour initialiser SQLite d'abord ({db_path})"
         )
 
     # Ouvrir la DB en lecture (le fichier existe, pas de création)
@@ -146,7 +146,7 @@ def compare_backends(state_dir: str | Path) -> dict:
     if missing:
         raise RuntimeError(
             f"compare: casys.db absent ou non initialisé — "
-            f"lancer le daemon en CASYS_STATE_BACKEND=sqlite d'abord "
+            f"lancer le daemon pour initialiser SQLite d'abord "
             f"(sentinels manquants: {sorted(missing)})"
         )
 

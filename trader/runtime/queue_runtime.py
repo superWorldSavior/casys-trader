@@ -247,7 +247,7 @@ def start_execute_queue(
     log = logger or _default_logger()
     enabled = enabled_raw and state_backend.lower() == "sqlite"
     if enabled_raw and not enabled:
-        log.warning("[queue_execute] CASYS_QUEUE_EXECUTE_ENABLED=1 ignoré — requiert CASYS_STATE_BACKEND=sqlite")
+        log.warning("[queue_execute] activation ignorée — requiert le backend sqlite")
     if not enabled:
         return ExecuteQueueRuntime(enabled=False)
 

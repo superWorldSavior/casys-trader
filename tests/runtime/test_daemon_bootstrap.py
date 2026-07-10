@@ -53,7 +53,6 @@ def test_bootstrap_runtime_state_rotates_bootstraps_then_builds_scheduler(tmp_pa
     result = daemon_bootstrap.bootstrap_runtime_state(
         state_dir=tmp_path / "state",
         config_dir=tmp_path / "config",
-        state_backend="sqlite",
         commission_model=commission_model,
         now=NOW,
         logger=logger,
@@ -108,7 +107,6 @@ def test_bootstrap_runtime_state_swallows_rotation_errors(tmp_path: Path) -> Non
     result = daemon_bootstrap.bootstrap_runtime_state(
         state_dir=tmp_path / "state",
         config_dir=tmp_path / "config",
-        state_backend="json",
         commission_model=object(),
         now=NOW,
         logger=logger,

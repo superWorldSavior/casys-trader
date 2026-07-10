@@ -443,7 +443,7 @@ def test_start_execute_queue_requires_sqlite_backend(tmp_path: Path) -> None:
     assert runtime.pool is None
     assert FakeLedger.instances == []
     assert logger.warnings == [
-        ("[queue_execute] CASYS_QUEUE_EXECUTE_ENABLED=1 ignoré — requiert CASYS_STATE_BACKEND=sqlite",)
+        ("[queue_execute] activation ignorée — requiert le backend sqlite",)
     ]
 
 

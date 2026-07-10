@@ -2,7 +2,7 @@
 
 > **Type** : Reference (Diátaxis).
 > **Code** : primitives `infrastructure/queue/ledger`, `infrastructure/queue/pools`, `infrastructure/queue/worker` ; dispatchers `application/decide/queue_dispatch` + `application/execute/queue_dispatch`, payload plans `application/execute/queue_plan` ; bootstrap runtime `runtime/queue_runtime` + `runtime/data_source_runtime`, orchestration `runtime/daemon`, handlers `application/decide/handler` + `application/execute/order_handler`, backend `infrastructure/state_db/*` (outbox). Les anciens imports `trader.queue.*` et `trader.state_db.*` restent compatibles via alias virtuels.
-> **Statut** : ✅ **Phase 3 ACTIVÉE en paper (2026-07-04)** — les 3 flags on (`CASYS_STATE_BACKEND=sqlite`, `CASYS_QUEUE_DECIDE_ENABLED`, `CASYS_QUEUE_EXECUTE_ENABLED`), migration d'état validée, `[state-compare] identical=True`. Les chemins synchrones historiques restent présents comme fallback (flags off) jusqu'au gommage strangler. Voir la section « Pipeline » ci-dessous.
+> **Statut** : ✅ **File durable ACTIVÉE en paper** — SQLite est l'état paper canonique, sans flag de backend. `CASYS_QUEUE_DECIDE_ENABLED` et `CASYS_QUEUE_EXECUTE_ENABLED` restent les deux commutateurs opérationnels des chemins queue. Le comparateur JSON/SQLite a été retiré du cycle le 2026-07-10 ; les anciens JSON sont figés et ne constituent plus une vérité runtime.
 > **Rôle** : file durable qui découple la production des tâches de leur traitement (durabilité, reprise, idempotence, backpressure).
 
 ## `TaskLedger` (`infrastructure/queue/ledger`)
@@ -139,15 +139,18 @@ Répartition runtime :
   resource pools, worker pools, handlers et stack SQLite partagée de
   `execute_order`.
 
-### Backend d'état — `CASYS_STATE_BACKEND` (`json` | `sqlite`)
+### Backend d'état — SQLite canonique
 
-- `json` (défaut historique) : `SimBroker` / `TradePlanStore` / `Scheduler` sur fichiers.
-- `sqlite` : mêmes API, état unifié dans `state/casys.db` (WAL). Migration one-shot
-  **idempotente** au boot (`bootstrap_state_backend`) : import des JSON existants +
-  sentinels `state_imports` (anti-résurrection d'un état déjà migré) + régénération
-  des **shadows JSON**. Le shadow (double-write JSON après chaque mutation) est un
-  filet transitoire pour les lecteurs hors-store encore branchés sur les fichiers
-  (cockpit/TUI/CLI/stats/rotation). Prérequis de l'outbox execute.
+Le daemon utilise toujours `state/casys.db` (WAL) pour le broker, les plans, le
+scheduler et l'outbox. Il ne lit plus `CASYS_STATE_BACKEND` : un retour runtime à
+`json` serait incohérent puisque le store de plans JSON a été supprimé.
+
+`bootstrap_state_backend` conserve l'import one-shot **idempotent** des anciens
+JSON, protégé par les sentinels `state_imports`, afin d'amorcer une base neuve ou
+un environnement de test. Les fichiers `broker.json`, `trade_plans.json` et
+`scheduler.json` ne sont plus régénérés ni double-écrits après la bascule. Les
+adaptateurs broker/scheduler JSON restent appelables explicitement pour les tests
+et la récupération historique, mais ne sont plus un mode du daemon.
 
 ### Étage `decide` — `CASYS_QUEUE_DECIDE_ENABLED`
 
@@ -225,8 +228,8 @@ Frontière de validation :
   la même tx** (`complete_in_tx`) → aucune perte de fill au crash. Fencing (`SELECT
   status/token` avant submit) → aucun double-fill au rejeu. `dead`/timeout →
   **fail-closed** (`executed=False`, jamais loggé « ok »). `dedup_key`
-  `exec:{cycle}:{sym}:{intent}`. Si `CASYS_STATE_BACKEND != sqlite`, le flag est
-  ignoré avec warning (broker/plan/ledger doivent partager la même `casys.db`).
+  `exec:{cycle}:{sym}:{intent}`. Broker, plan et ledger partagent toujours la même
+  `casys.db` canonique.
 
 ### Orchestration decide → execute (streaming, sous itération libre)
 
@@ -252,33 +255,30 @@ lent. À la place :
 
 ### Observabilité
 
-- **`[state-compare]`** (fin de cycle, sous sqlite) : `compare_backends` compare
-  `casys.db` ↔ shadows JSON et logge `identical=… cash=… positions=N plans=N wakes=N
-  watches=N stale=N`. `identical=True` = zéro dérive ; toute divergence part en
-  warning avec le détail. **C'est le filet de la bascule.**
 - Logs `[queue_dispatch]` (producteur : `symbols/decided/undecided/skipped`),
   `[queue_decide]` / `[queue_execute]` (pools), `[queue.ledger]` / `[queue.worker]`.
-- **Sonde `[shadow-queue]`** (`CASYS_SHADOW_QUEUE_ENABLED`) : **OBSOLÈTE** — elle
-  drainait un handler no-op dans `shadow_queue.db` pour valider la mécanique *avant*
-  bascule. Désactivée (=0) depuis l'activation de la vraie file ; à retirer au gommage.
+- Le comparateur historique reste disponible **uniquement à la demande** avec
+  `python -m trader.infrastructure.state_db.compare state`. Comme les JSON sont
+  figés, une divergence après la bascule est attendue et ne doit pas être utilisée
+  comme alarme de santé. Le daemon ne lance plus cette lecture à chaque cycle.
+- La sonde no-op `shadow_queue.db` et son flag `CASYS_SHADOW_QUEUE_ENABLED` ont été
+  retirés du runtime et de la configuration paper. Le module historique n'est pas
+  invoqué par le daemon.
 
-### Activation / rollback
+### Activation / rollback opérationnel
 
-Chaque flag est un strangler **réversible**. Rollback = repasser le(s) flag(s) à
-`0`/`json` dans `.env` puis **redémarrer** le daemon (`load_dotenv` est lu au boot,
-`daemon.py` `main()`). Le double-write shadow JSON garde l'état JSON à jour en
-parallèle du SQLite → retour arrière sans perte d'état.
+Les flags `CASYS_QUEUE_DECIDE_ENABLED` et `CASYS_QUEUE_EXECUTE_ENABLED` peuvent
+encore sélectionner leurs chemins synchrones de secours après redémarrage. Il
+n'existe plus de rollback de l'état vers JSON : sauvegarde, restauration et
+diagnostic doivent porter sur `state/casys.db`.
 
-### État (2026-07-04) et gommage strangler à venir
+### État (2026-07-10) et gommage restant
 
-- **Activé en paper**, migration validée, `[state-compare] identical=True`. Le vrai
-  trafic `decide`/`execute` via file s'observe à la réouverture des marchés (un boot
-  frais week-end donne `due=0`).
-- **Gommage** (dette, **gated par validation**, ordre contraint) : (1) migrer les
-  ~10 lecteurs JSON hors-store → SQLite ; (2) retirer le double-write + basculer le
-  défaut `sqlite` ; (3) retirer le fallback `decide` synchrone ; (4) retirer le
-  fallback `execute` synchrone ; (5) retirer la sonde shadow. Les lecteurs d'abord :
-  ils bloquent le retrait du double-write.
+- **Bascule état terminée** : SQLite est le défaut des factories et l'unique backend
+  du daemon ; double-write, comparaison automatique et flags backend/shadow retirés.
+- **Gommage restant** : observer puis retirer séparément les fallbacks synchrones
+  `decide` et `execute`. Leurs deux flags restent donc intentionnellement présents
+  jusqu'à validation de ces suppressions.
 
 ## Voir aussi
 

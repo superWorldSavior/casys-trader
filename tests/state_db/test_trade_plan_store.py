@@ -597,7 +597,7 @@ class TestMakeTradePlanStore:
     def test_unknown_backend_raises_value_error(self, tmp_path: Path) -> None:
         from trader.state_db.broker_factory import make_trade_plan_store
 
-        with pytest.raises(ValueError, match="CASYS_STATE_BACKEND inconnu"):
+        with pytest.raises(ValueError, match="backend d'état inconnu"):
             make_trade_plan_store(state_dir=tmp_path, backend="bogus")
 
     def test_sqlite_store_functional(self, tmp_path: Path) -> None:
