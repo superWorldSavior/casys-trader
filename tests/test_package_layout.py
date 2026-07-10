@@ -1439,6 +1439,40 @@ def test_legacy_agent_packages_are_virtual_compatibility_layers(monkeypatch) -> 
     assert core._compat_probe is sentinel
 
 
+def test_universe_pipeline_read_model_is_canonical_runtime_state_dependency() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    read_models_dir = repo_root / "trader" / "reporting" / "read_models"
+    canonical_path = read_models_dir / "universe_pipeline.py"
+    assembler_path = read_models_dir / "runtime_state.py"
+
+    assert canonical_path.exists()
+
+    assembler_tree = ast.parse(
+        assembler_path.read_text(encoding="utf-8"), filename=str(assembler_path)
+    )
+    assembler_definitions = {
+        node.name
+        for node in ast.walk(assembler_tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    assert assembler_definitions.isdisjoint(
+        {
+            "_read_projection_safe",
+            "_latest_activations_by_venue_safe",
+            "_scope_pipeline_entry",
+            "_scout_pipeline_entry",
+            "_brief_pipeline_entry",
+            "_agent_pipeline_entry",
+            "_activation_pipeline_entry",
+        }
+    )
+
+    from trader.reporting.read_models import runtime_state
+    from trader.reporting.read_models.universe_pipeline import load_universe_pipeline
+
+    assert runtime_state._load_universe_pipeline_safe is load_universe_pipeline
+
+
 def test_support_and_read_model_legacy_packages_are_virtual() -> None:
     trader_dir = Path(__file__).resolve().parents[1] / "trader"
 

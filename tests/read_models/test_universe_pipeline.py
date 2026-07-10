@@ -4,8 +4,11 @@ import json
 from pathlib import Path
 
 from trader.reporting.read_models.runtime_state import (
-    _load_universe_pipeline_safe,
-    load_runtime_state,
+    _load_universe_pipeline_safe as _legacy_load_universe_pipeline_safe,
+)
+from trader.reporting.read_models.runtime_state import load_runtime_state
+from trader.reporting.read_models.universe_pipeline import (
+    load_universe_pipeline as _load_universe_pipeline_safe,
 )
 
 
@@ -37,6 +40,10 @@ def _activation(
             "fallback_reason": fallback_reason,
         },
     }
+
+
+def test_runtime_state_preserves_the_historical_pipeline_import() -> None:
+    assert _legacy_load_universe_pipeline_safe is _load_universe_pipeline_safe
 
 
 def test_pipeline_uses_latest_activation_independently_for_each_venue(tmp_path: Path) -> None:
