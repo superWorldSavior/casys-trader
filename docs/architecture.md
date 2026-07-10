@@ -103,6 +103,7 @@ les utilisaient :
 | `trader/agent/tools/` | Package des outils domaine lecture seule | `registry.TOOL_REGISTRY` assemble les 7 outils read-only exposés au LLM |
 | `trader/agent/learnings/` | Buffer brut JSONL, sélection pure, store SQLite recall, embeddings, consolidateur | mémoire machine de l'agent ; `trader.learnings.*` reste virtuel |
 | `trader/domain/` | Primitives neutres (`Bar`, `MarketError`, `Side`), vocabulaire partagé des `decision_reason_code` et catalogue sémantique gouverné (`domain/semantic/`) | évite que `market`/`planning`/`agent` importent `tools` ou `reporting` pour accéder à un vocabulaire métier |
+| `trader/domain/llm.py` | Valeurs `LlmCompletion`/`LlmFailure`, port `LlmBackend` et politique pure de fallback `LlmRouter` | `agent.llm` conserve la factory d'environnement et réexporte le contrat historique |
 | `trader/domain/universe/selection.py` | Politiques pures de hotlist : hystérésis, sorties d'urgence, sticky hors quota, override borné et composition de l'univers actif | `trader.market.rotation` conserve la façade historique |
 | `trader/domain/universe/candidate_scope.py` | Composition pure du pool top radar + challengers news, rétention TTL et références des runs candidats | consommé par l'adaptateur `market/rotation/venues.py` |
 | `trader/domain/universe/user_overrides.py` | Modèle et politique purs pin/ban/sticky de l'univers opérateur | la lecture/écriture YAML vit dans l'adaptateur filesystem ; `market.rotation.user_overrides` reste une façade |

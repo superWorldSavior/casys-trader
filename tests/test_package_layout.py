@@ -436,6 +436,31 @@ def test_contract_value_types_are_domain_canonical_with_public_facades() -> None
     assert _domain_import_violations(domain_paths, repo_root) == []
 
 
+def test_llm_router_and_backend_port_are_domain_canonical() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    domain_path = repo_root / "trader" / "domain" / "llm.py"
+    facade_path = repo_root / "trader" / "agent" / "llm.py"
+
+    assert _domain_import_violations([domain_path], repo_root) == []
+    facade_tree = ast.parse(
+        facade_path.read_text(encoding="utf-8"),
+        filename=str(facade_path),
+    )
+    facade_classes = {
+        node.name
+        for node in facade_tree.body
+        if isinstance(node, ast.ClassDef)
+    }
+    assert {"LlmBackend", "LlmRouter"}.isdisjoint(facade_classes)
+
+    from trader.agent.llm import LlmBackend as facade_backend
+    from trader.agent.llm import LlmRouter as facade_router
+    from trader.domain.llm import LlmBackend, LlmRouter
+
+    assert facade_backend is LlmBackend
+    assert facade_router is LlmRouter
+
+
 def test_min_trade_confidence_reader_has_single_config_source(monkeypatch, tmp_path) -> None:
     repo_root = Path(__file__).resolve().parents[1]
     risk_source = (repo_root / "trader" / "execution" / "risk.py").read_text(encoding="utf-8")
@@ -1891,7 +1916,7 @@ def test_legacy_flat_module_imports_remain_compatible() -> None:
     assert legacy_embeddings.__name__ == "trader.agent.learnings.embeddings"
     assert legacy_fx.__name__ == "trader.market.fx"
     assert legacy_learnings_store.__name__ == "trader.agent.learnings.store"
-    assert legacy_llm.LlmRouter.__module__ == "trader.agent.llm"
+    assert legacy_llm.LlmRouter.__module__ == "trader.domain.llm"
     assert legacy_palette.__name__ == "trader.interfaces.ui.palette"
     assert legacy_schedule.__name__ == "trader.market.rotation.schedule"
     assert legacy_stats.compute_live_kpis.__module__ == "trader.reporting.stats"

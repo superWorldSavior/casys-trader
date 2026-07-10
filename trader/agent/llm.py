@@ -10,11 +10,14 @@ from __future__ import annotations
 
 import importlib
 import os
-from dataclasses import replace
 from pathlib import Path
-from typing import Protocol
 
-from trader.domain.llm import LlmCompletion, LlmFailure
+from trader.domain.llm import (
+    LlmBackend as LlmBackend,
+    LlmCompletion,
+    LlmFailure,
+    LlmRouter as LlmRouter,
+)
 
 DEFAULT_SPARK_MODEL = "gpt-5.6-sol"
 DEFAULT_SPARK_FALLBACK_MODEL = "gpt-5.3-codex-spark"
@@ -24,47 +27,6 @@ DEFAULT_CONSOLIDATOR_OLLAMA_MODEL = "glm-5.1:cloud"
 DEFAULT_ENV_PATH = Path(__file__).resolve().parents[2] / ".env"
 DEFAULT_RUNTIME_SESSION_LABEL = "casys-trader:runtime-brain"
 DEFAULT_CONSOLIDATOR_SESSION_LABEL = "casys-trader:learning-consolidator"
-
-
-class LlmBackend(Protocol):
-    provider: str
-    model: str
-
-    def complete(self, prompt: str, *, timeout_s: int) -> LlmCompletion | LlmFailure:
-        ...
-
-
-class LlmRouter:
-    def __init__(self, backends: list[LlmBackend]) -> None:
-        self.backends = backends
-
-    def complete(self, prompt: str, *, timeout_s: int) -> LlmCompletion | LlmFailure:
-        fallback_reason: str | None = None
-        last_failure: LlmFailure | None = None
-        for index, backend in enumerate(self.backends):
-            result = backend.complete(prompt, timeout_s=timeout_s)
-            if isinstance(result, LlmCompletion):
-                if fallback_reason and result.fallback_reason is None:
-                    return replace(result, fallback_reason=fallback_reason)
-                return result
-
-            failure = result
-            last_failure = failure
-            has_next = index < len(self.backends) - 1
-            if has_next and failure.retryable:
-                fallback_reason = failure.fallback_reason or f"{failure.provider}:{failure.code}"
-                continue
-            if fallback_reason and failure.fallback_reason is None:
-                return replace(failure, fallback_reason=fallback_reason)
-            return failure
-
-        return last_failure or LlmFailure(
-            provider="none",
-            model="none",
-            code="no_backend",
-            message="aucun backend LLM configuré",
-            retryable=False,
-        )
 
 
 def load_dotenv(path: str | Path | None = DEFAULT_ENV_PATH, *, override: bool = False) -> None:

@@ -59,7 +59,7 @@ def test_router_fallback_sur_echec_retryable() -> None:
 
 
 def test_llm_backends_sont_des_exports_facade_depuis_infrastructure() -> None:
-    assert LlmRouter.__module__ == "trader.agent.llm"
+    assert LlmRouter.__module__ == "trader.domain.llm"
     assert LlmCompletion.__module__ == "trader.domain.llm"
     assert LlmFailure.__module__ == "trader.domain.llm"
     assert llm.LlmCompletion is LlmCompletion
