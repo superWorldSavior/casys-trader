@@ -143,6 +143,20 @@ def test_tp_label_round_prices():
     assert "→" in label
 
 
+def test_page_exit_plan_helpers_are_canonical_projection_aliases():
+    from trader.interfaces.cockpit.pages import plans as page
+    from trader.interfaces.cockpit.projections import plans as projection
+
+    assert page._price_fmt is projection.format_price
+    assert page._stop_pct is projection.stop_pct
+    assert page._tp_label is projection.take_profit_label
+    assert (
+        page._exit_update_rejected_symbols
+        is projection.exit_update_rejected_symbols
+    )
+    assert page._stop_distance_sort_key is projection.stop_distance_sort_key
+
+
 # ---------------------------------------------------------------------------
 # exit update rejected detection
 # ---------------------------------------------------------------------------
@@ -466,6 +480,61 @@ def test_build_exit_plans_no_last_price_falls_back_to_entry():
     rendered = _render(build_exit_plans(state, now=NOW))
     assert "NOPR" in rendered
     assert "95" in rendered  # stop price visible
+
+
+def test_project_exit_plans_composes_ordered_semantic_rows():
+    from trader.interfaces.cockpit.projections.plans import project_exit_plans
+
+    state = {
+        "trade_plans": [
+            {
+                "symbol": "FAR",
+                "side": "LONG",
+                "remaining_quantity": 10,
+                "entry_price": 100.0,
+                "hard_stop_price": 90.0,
+                "last_llm_review": {"ts": "2026-07-06T01:30:00+00:00"},
+            },
+            {
+                "symbol": "CLOSE",
+                "side": "SHORT",
+                "remaining_quantity": 4,
+                "entry_price": 100.0,
+                "hard_stop_price": 102.0,
+                "take_profits": [{"price": 95.0}],
+                "trailing_stop": {"trail_pct": 2.0},
+            },
+        ],
+        "prices": {"FAR": 100.0, "CLOSE": 100.0},
+        "recent_decisions": [
+            {
+                "symbol": "CLOSE",
+                "cycle_ts": "2026-07-06T02:00:00+00:00",
+                "runtime": {
+                    "tool_calls": [
+                        {"tool": "strategy_exit", "outcome": "rejected"}
+                    ]
+                },
+            }
+        ],
+    }
+
+    projection = project_exit_plans(state)
+
+    assert [row.symbol for row in projection.rows] == ["CLOSE", "FAR"]
+    assert projection.rejected_symbols == frozenset({"CLOSE"})
+    close, far = projection.rows
+    assert close.side == "S"
+    assert close.stop_left_pct == 2.0
+    assert close.stop_entry_risk_pct == 2.0
+    assert close.take_profit_label == "95"
+    assert close.protect_label == "trail 2%"
+    assert close.review_kind == "rejected"
+    assert close.exit_update_rejected is True
+    assert close.stop_is_near is True
+    assert far.review_label == "✓ 01:30"
+    assert far.review_kind == "reviewed"
+    assert far.stop_is_near is False
 
 
 # ---------------------------------------------------------------------------

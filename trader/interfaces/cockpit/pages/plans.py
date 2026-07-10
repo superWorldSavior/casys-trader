@@ -24,6 +24,15 @@ from trader.interfaces.cockpit.derive import (
     plain_watches,
 )
 from trader.interfaces.cockpit.pages._shared import ResizeRefresh, PANEL_CSS, rows_available
+from trader.interfaces.cockpit.projections.plans import (
+    exit_update_rejected_symbols as _exit_update_rejected_symbols,  # noqa: F401 - historical page export
+    format_price as _price_fmt,  # noqa: F401 - historical page export
+    project_exit_plans,
+    reviewed_status,
+    stop_distance_sort_key as _stop_distance_sort_key,  # noqa: F401 - historical page export
+    stop_pct as _stop_pct,  # noqa: F401 - historical page export
+    take_profit_label as _tp_label,  # noqa: F401 - historical page export
+)
 from trader.interfaces.ui.palette import (
     CASYS_ACCENT,
     CASYS_DIM,
@@ -51,78 +60,21 @@ _SELL_CHIP = f"bold {CASYS_ERROR} on #2d1e19"
 # ---------------------------------------------------------------------------
 
 
-def _price_fmt(value: float | None) -> str:
-    """Format prix : entier si valeur ronde, 2 décimales sinon."""
-    if value is None:
-        return "—"
-    if value == round(value):
-        return f.fmt_compact(value, decimals=0)
-    return f.fmt_compact(value, decimals=2)
-
-
-def _stop_pct(plan: dict, ref: float | None) -> float | None:
-    """Position du stop vs prix en % brut — délègue à format.stop_distance_pct."""
-    return f.stop_distance_pct(plan, ref)
-
-
-def _tp_label(plan: dict) -> str:
-    """TAKE-PROFIT : 'p1 → p2' / 'p1' / '—' selon les TPs du plan."""
-    tps = [
-        _safe_float(tp.get("price"), default=None)
-        for tp in _safe_list_of_dicts(plan.get("take_profits"))
-    ]
-    prices = [p for p in tps if p is not None]
-    if not prices:
-        return "—"
-    if len(prices) == 1:
-        return _price_fmt(prices[0])
-    return f"{_price_fmt(prices[0])} → {_price_fmt(prices[1])}"
-
-
-def _exit_update_rejected_symbols(state: dict) -> set[str]:
-    """Symboles dont la dernière tentative exit_update enregistrée a été rejetée.
-
-    Lit state["recent_decisions"] et cherche le tool_call le plus récent
-    (par cycle_ts) avec tool=="strategy_exit" par symbole.
-    """
-    latest: dict[str, tuple[str, str]] = {}  # sym → (cycle_ts, outcome)
-    for row in _safe_list_of_dicts(state.get("recent_decisions")):
-        sym = str(row.get("symbol") or "")
-        if not sym:
-            continue
-        cycle_ts = str(row.get("cycle_ts") or row.get("ts") or "")
-        runtime = f.safe_dict(row.get("runtime"))
-        for call in _safe_list_of_dicts(runtime.get("tool_calls")):
-            if str(call.get("tool") or "") != "strategy_exit":
-                continue
-            outcome = str(call.get("outcome") or "")
-            existing = latest.get(sym)
-            if existing is None or cycle_ts >= existing[0]:
-                latest[sym] = (cycle_ts, outcome)
-    return {sym for sym, (_, outcome) in latest.items() if outcome == "rejected"}
-
-
 def _reviewed_cell(plan: dict, exit_update_rejected: set[str]) -> tuple[str, str]:
     """(label, style) pour la colonne REVIEWED.
 
     Priorité : exit_update_rejected > last_llm_review > absent.
     """
-    sym = str(plan.get("symbol") or "")
-    if sym in exit_update_rejected:
-        return "▲ exit update rejected", CASYS_WARNING
-    review = f.safe_dict(plan.get("last_llm_review"))
-    ts = review.get("ts")
-    if ts:
-        return f"✓ {f.hhmm(ts)}", CASYS_SUCCESS
-    return "—", CASYS_FAINT
+    label, kind = reviewed_status(plan, exit_update_rejected)
+    return label, _review_style(kind)
 
 
-def _stop_distance_sort_key(plan: dict, state: dict) -> float:
-    """Clé de tri : distance absolue au stop (la plus courte = la plus vulnérable en premier)."""
-    sym = str(plan.get("symbol") or "")
-    ref = f.price_for_symbol(state, sym) or _safe_float(plan.get("entry_price"), default=None)
-    pct = _stop_pct(plan, ref)
-    return abs(pct) if pct is not None else 999.0
+def _review_style(kind: str) -> str:
+    return {
+        "rejected": CASYS_WARNING,
+        "reviewed": CASYS_SUCCESS,
+        "none": CASYS_FAINT,
+    }[kind]
 
 
 # ---------------------------------------------------------------------------
@@ -212,16 +164,14 @@ def build_armed(state: dict, *, now: datetime, limit: int | None = None) -> Rend
 
 def build_exit_plans(state: dict, *, now: datetime) -> RenderableType:
     """EXIT PLANS triés par distance au stop (la plus courte d'abord)."""
-    plans = _safe_list_of_dicts(state.get("trade_plans"))
-    exit_update_rejected = _exit_update_rejected_symbols(state)
+    del now
+    projection = project_exit_plans(state)
 
-    if not plans:
+    if not projection.rows:
         return Text(
             "no exit plans — every position needs a stop",
             style=f"italic {CASYS_FAINT}",
         )
-
-    plans_sorted = sorted(plans, key=lambda p: _stop_distance_sort_key(p, state))
 
     grid = Table.grid(padding=(0, 1))
     grid.add_column(no_wrap=True, width=9)              # SYM
@@ -245,55 +195,41 @@ def build_exit_plans(state: dict, *, now: datetime) -> RenderableType:
         Text("REVIEWED", style=CASYS_FAINT),
     )
 
-    for plan in plans_sorted:
-        sym = str(plan.get("symbol") or "—")
-        side = str(plan.get("side") or "LONG").upper()
-        side_char = "S" if side == "SHORT" else "L"
-        side_style = CASYS_ERROR if side_char == "S" else CASYS_SUCCESS
-
-        qty = _safe_float(
-            plan.get("remaining_quantity") or plan.get("quantity"), default=None
-        )
-        entry = _safe_float(plan.get("entry_price"), default=None)
-
-        # STOP : prix, distance restante, puis risque initial depuis l'entrée.
-        ref = f.price_for_symbol(state, sym) or entry
-        left_pct = f.stop_left_pct(plan, ref)
-        entry_risk_pct = f.stop_entry_risk_pct(plan)
-        rejected = sym in exit_update_rejected
-        pct_style = CASYS_ERROR if rejected else CASYS_DIM
+    for row in projection.rows:
+        side_style = CASYS_ERROR if row.side == "S" else CASYS_SUCCESS
+        pct_style = CASYS_ERROR if row.exit_update_rejected else CASYS_DIM
 
         stop_text = Text()
-        stop_raw = _safe_float(plan.get("hard_stop_price"), default=None)
-        if stop_raw is not None:
-            stop_text.append(_price_fmt(stop_raw), style=CASYS_MUTED)
-            if left_pct is not None:
-                stop_text.append(f" left {left_pct:.1f}%", style=pct_style)
-            if entry_risk_pct is not None:
-                stop_text.append(f" entry {entry_risk_pct:.1f}%", style=CASYS_FAINT)
+        if row.stop_price is not None:
+            stop_text.append(_price_fmt(row.stop_price), style=CASYS_MUTED)
+            if row.stop_left_pct is not None:
+                stop_text.append(f" left {row.stop_left_pct:.1f}%", style=pct_style)
+            if row.stop_entry_risk_pct is not None:
+                stop_text.append(
+                    f" entry {row.stop_entry_risk_pct:.1f}%",
+                    style=CASYS_FAINT,
+                )
         else:
             stop_text.append("—", style=CASYS_DIM)
 
-        # TAKE-PROFIT
-        tp = _tp_label(plan)
-        tp_style = CASYS_DIM
-
-        # PROTECT
-        protect = f.protect_label(plan)
-        protect_style = CASYS_MUTED if protect != "—" else CASYS_DIM
-
-        # REVIEWED
-        rev_label, rev_style = _reviewed_cell(plan, exit_update_rejected)
+        protect_style = (
+            CASYS_MUTED if row.protect_label != "—" else CASYS_DIM
+        )
+        review_style = _review_style(row.review_kind)
 
         grid.add_row(
-            Text(sym, style=f"bold {CASYS_FG}"),
-            Text(side_char, style=side_style),
-            Text(f"{qty:g}" if qty is not None else "—", style=CASYS_MUTED, justify="right"),
-            Text(_price_fmt(entry), style=CASYS_DIM, justify="right"),
+            Text(row.symbol, style=f"bold {CASYS_FG}"),
+            Text(row.side, style=side_style),
+            Text(
+                f"{row.quantity:g}" if row.quantity is not None else "—",
+                style=CASYS_MUTED,
+                justify="right",
+            ),
+            Text(_price_fmt(row.entry_price), style=CASYS_DIM, justify="right"),
             stop_text,
-            Text(tp, style=tp_style),
-            Text(protect, style=protect_style),
-            Text(rev_label, style=rev_style),
+            Text(row.take_profit_label, style=CASYS_DIM),
+            Text(row.protect_label, style=protect_style),
+            Text(row.review_label, style=review_style),
         )
 
     footnote = Text()
@@ -311,13 +247,12 @@ def build_exit_plans_compact(
     Le détail complet (ENTRY/QTY/PROTECT/REVIEWED) reste dans le drill-down
     symbole (Enter). Trié par distance au stop, la plus courte d'abord.
     """
-    plans = _safe_list_of_dicts(state.get("trade_plans"))
-    if not plans:
+    del now
+    projection = project_exit_plans(state)
+    if not projection.rows:
         return Text("no exit plans — every position needs a stop", style=f"italic {CASYS_FAINT}")
 
-    exit_update_rejected = _exit_update_rejected_symbols(state)
-    plans_sorted = sorted(plans, key=lambda p: _stop_distance_sort_key(p, state))
-    shown = plans_sorted if limit is None else plans_sorted[:limit]
+    shown = projection.rows if limit is None else projection.rows[:limit]
 
     grid = Table.grid(padding=(0, 1))
     grid.add_column(no_wrap=True, width=9)   # SYM
@@ -325,34 +260,39 @@ def build_exit_plans_compact(
     grid.add_column(no_wrap=True, width=7, justify="right")  # stop %
     grid.add_column(no_wrap=True)            # tp · badge
 
-    for plan in shown:
-        sym = str(plan.get("symbol") or "—")
-        side = str(plan.get("side") or "LONG").upper()
-        side_char = "S" if side == "SHORT" else "L"
-        side_style = CASYS_ERROR if side_char == "S" else CASYS_SUCCESS
-
-        ref = f.price_for_symbol(state, sym) or _safe_float(plan.get("entry_price"), default=None)
-        left_pct = f.stop_left_pct(plan, ref)
-        rejected = sym in exit_update_rejected
-        stop_str = f"{left_pct:.1f}%" if left_pct is not None else "—"
-        stop_style = CASYS_ERROR if (rejected or (left_pct is not None and abs(left_pct) <= 3.0)) else CASYS_DIM
-
-        rev_label, rev_style = _reviewed_cell(plan, exit_update_rejected)
+    for row in shown:
+        side_style = CASYS_ERROR if row.side == "S" else CASYS_SUCCESS
+        stop_str = (
+            f"{row.stop_left_pct:.1f}%"
+            if row.stop_left_pct is not None
+            else "—"
+        )
+        stop_style = (
+            CASYS_ERROR
+            if row.exit_update_rejected or row.stop_is_near
+            else CASYS_DIM
+        )
+        review_style = _review_style(row.review_kind)
         tail = Text()
-        tail.append(_tp_label(plan), style=CASYS_DIM)
+        tail.append(row.take_profit_label, style=CASYS_DIM)
         tail.append("  ", style=CASYS_DIM)
-        tail.append(rev_label, style=rev_style)
+        tail.append(row.review_label, style=review_style)
 
         grid.add_row(
-            Text(sym, style=f"bold {CASYS_FG}"),
-            Text(side_char, style=side_style),
+            Text(row.symbol, style=f"bold {CASYS_FG}"),
+            Text(row.side, style=side_style),
             Text(stop_str, style=stop_style, justify="right"),
             tail,
         )
 
     parts: list[RenderableType] = [grid]
-    if limit is not None and len(plans_sorted) > limit:
-        parts.append(Text(f"+ {len(plans_sorted) - limit} more — enter for detail", style=CASYS_FAINT))
+    if limit is not None and len(projection.rows) > limit:
+        parts.append(
+            Text(
+                f"+ {len(projection.rows) - limit} more — enter for detail",
+                style=CASYS_FAINT,
+            )
+        )
     return Group(*parts)
 
 

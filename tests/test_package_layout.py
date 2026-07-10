@@ -1743,6 +1743,63 @@ def test_cockpit_portfolio_projection_is_canonical_and_textual_free() -> None:
     assert page.build_positions_rows is projection.build_positions_rows
 
 
+def test_cockpit_exit_plan_projection_is_canonical_and_textual_free() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    cockpit_dir = repo_root / "trader" / "interfaces" / "cockpit"
+    projection_path = cockpit_dir / "projections" / "plans.py"
+    page_path = cockpit_dir / "pages" / "plans.py"
+
+    assert projection_path.exists()
+    projection_source = projection_path.read_text(encoding="utf-8")
+    assert "textual" not in projection_source
+    assert "rich." not in projection_source
+
+    page_source = page_path.read_text(encoding="utf-8")
+    page_tree = ast.parse(page_source, filename=str(page_path))
+    page_definitions = {
+        node.name
+        for node in ast.walk(page_tree)
+        if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    assert page_definitions.isdisjoint(
+        {
+            "ExitPlanRow",
+            "ExitPlansProjection",
+            "_exit_update_rejected_symbols",
+            "_price_fmt",
+            "_stop_distance_sort_key",
+            "_stop_pct",
+            "_tp_label",
+        }
+    )
+
+    for function_name in ("build_exit_plans", "build_exit_plans_compact"):
+        builder = next(
+            node
+            for node in page_tree.body
+            if isinstance(node, ast.FunctionDef) and node.name == function_name
+        )
+        calls = {
+            node.func.id
+            for node in ast.walk(builder)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        }
+        assert "project_exit_plans" in calls
+        assert "_safe_float" not in calls
+
+    from trader.interfaces.cockpit.pages import plans as page
+    from trader.interfaces.cockpit.projections import plans as projection
+
+    assert page._price_fmt is projection.format_price
+    assert page._stop_pct is projection.stop_pct
+    assert page._tp_label is projection.take_profit_label
+    assert (
+        page._exit_update_rejected_symbols
+        is projection.exit_update_rejected_symbols
+    )
+    assert page._stop_distance_sort_key is projection.stop_distance_sort_key
+
+
 def test_cockpit_format_is_rich_free_and_meter_renderer_is_explicit() -> None:
     repo_root = Path(__file__).resolve().parents[1]
     cockpit_dir = repo_root / "trader" / "interfaces" / "cockpit"
