@@ -1763,8 +1763,14 @@ def test_cockpit_exit_plan_projection_is_canonical_and_textual_free() -> None:
     }
     assert page_definitions.isdisjoint(
         {
+            "ActiveWatchRow",
+            "ActiveWatchesProjection",
+            "ArmedOrderRow",
+            "ArmedOrdersProjection",
             "ExitPlanRow",
             "ExitPlansProjection",
+            "ExitWatchRow",
+            "ExitWatchesProjection",
             "_exit_update_rejected_symbols",
             "_price_fmt",
             "_stop_distance_sort_key",
@@ -1798,6 +1804,37 @@ def test_cockpit_exit_plan_projection_is_canonical_and_textual_free() -> None:
         is projection.exit_update_rejected_symbols
     )
     assert page._stop_distance_sort_key is projection.stop_distance_sort_key
+
+    builders_to_projection = {
+        "build_armed": "project_armed_orders",
+        "build_watches": "project_active_watches",
+        "build_exit_watches": "project_exit_watches",
+    }
+    for function_name, projection_name in builders_to_projection.items():
+        builder = next(
+            node
+            for node in page_tree.body
+            if isinstance(node, ast.FunctionDef) and node.name == function_name
+        )
+        calls = {
+            node.func.id
+            for node in ast.walk(builder)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        }
+        assert projection_name in calls
+    assert "armed_watches" not in page_source
+    assert "plain_watches" not in page_source
+
+    decisions_path = cockpit_dir / "pages" / "decisions.py"
+    decisions_source = decisions_path.read_text(encoding="utf-8")
+    assert "state.get('armed_plans')" not in decisions_source
+    for projection_name in (
+        "project_active_watches",
+        "project_armed_orders",
+        "project_exit_plans",
+        "project_exit_watches",
+    ):
+        assert projection_name in decisions_source
 
 
 def test_cockpit_format_is_rich_free_and_meter_renderer_is_explicit() -> None:

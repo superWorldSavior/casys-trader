@@ -18,16 +18,19 @@ from textual.containers import Vertical, VerticalScroll
 from textual.widgets import Static
 
 from trader.interfaces.cockpit import format as f
-from trader.interfaces.cockpit.derive import (
-    armed_watches,
-    next_to_fire,
-    plain_watches,
-)
+from trader.interfaces.cockpit.derive import next_to_fire
 from trader.interfaces.cockpit.pages._shared import ResizeRefresh, PANEL_CSS, rows_available
 from trader.interfaces.cockpit.projections.plans import (
+    ActiveWatchesProjection,
+    ArmedOrdersProjection,
+    ExitPlansProjection,
+    ExitWatchesProjection,
     exit_update_rejected_symbols as _exit_update_rejected_symbols,  # noqa: F401 - historical page export
     format_price as _price_fmt,  # noqa: F401 - historical page export
+    project_active_watches,
+    project_armed_orders,
     project_exit_plans,
+    project_exit_watches,
     reviewed_status,
     stop_distance_sort_key as _stop_distance_sort_key,  # noqa: F401 - historical page export
     stop_pct as _stop_pct,  # noqa: F401 - historical page export
@@ -43,11 +46,6 @@ from trader.interfaces.ui.palette import (
     CASYS_SUCCESS,
     CASYS_WARNING,
 )
-from trader.support.coercion import (
-    dict_list as _safe_list_of_dicts,
-    finite_float as _safe_float,
-)
-
 UTC = timezone.utc
 
 # Chips action (fonds teintés)
@@ -82,7 +80,13 @@ def _review_style(kind: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def build_armed(state: dict, *, now: datetime, limit: int | None = None) -> RenderableType:
+def build_armed(
+    state: dict,
+    *,
+    now: datetime,
+    limit: int | None = None,
+    projection: ArmedOrdersProjection | None = None,
+) -> RenderableType:
     """Panneau ARMED : 1 ligne par EXECUTE_ORDER watch + footnote.
 
     ``limit`` est calculé dans update_state via rows_available — adapter à la
@@ -93,8 +97,8 @@ def build_armed(state: dict, *, now: datetime, limit: int | None = None) -> Rend
         " — the risk gate still applies",
         style=CASYS_FAINT,
     )
-    armed = armed_watches(state)
-    if not armed:
+    projected = projection or project_armed_orders(state, now=now)
+    if not projected.rows:
         return Group(
             Text(
                 "nothing armed — entries wait as EXECUTE_ORDER watches",
@@ -104,54 +108,38 @@ def build_armed(state: dict, *, now: datetime, limit: int | None = None) -> Rend
             footnote,
         )
 
-    total = len(armed)
-    shown = armed[:limit] if limit is not None else armed
+    total = len(projected.rows)
+    shown = projected.rows[:limit] if limit is not None else projected.rows
     rows: list[RenderableType] = []
-    for watch in shown:
-        sym = str(watch.get("symbol") or "—")
-        order = f.safe_dict(watch.get("order"))
-        action = str(order.get("action") or order.get("intent") or "ORDER").upper()
-        qty = _safe_float(order.get("qty"), default=None)
-        chip_style = _BUY_CHIP if action == "BUY" else _SELL_CHIP
-
-        conditions = _safe_list_of_dicts(watch.get("conditions"))
-        logic = str(watch.get("logic") or "and")
-        stop_price = f.armed_stop_price(watch)
-        ref = f.price_for_symbol(state, sym)
-        cd = f.countdown(watch.get("expires_at"), now=now)
-
+    for row in shown:
+        chip_style = _BUY_CHIP if row.action == "BUY" else _SELL_CHIP
         line = Text()
-        line.append(f"{sym:<9}", style=f"bold {CASYS_FG}")
-        qty_str = f" {qty:g}" if qty is not None else ""
-        line.append(f" {action}{qty_str} ", style=chip_style)
+        line.append(f"{row.symbol:<9}", style=f"bold {CASYS_FG}")
+        qty_str = f" {row.quantity:g}" if row.quantity is not None else ""
+        line.append(f" {row.action}{qty_str} ", style=chip_style)
         line.append("  ")
 
-        # Conditions
-        if conditions:
+        if row.conditions:
             line.append("if ", style=CASYS_DIM)
-            for i, cond in enumerate(conditions[:3]):  # max 3 conditions affichées
-                if i > 0:
-                    line.append(f" {logic} ", style=CASYS_FAINT)
-                indicator = str(cond.get("indicator") or "?")
-                op_str = str(cond.get("op") or "?")
-                value = cond.get("value")
-                timeframe = str(cond.get("timeframe") or cond.get("interval") or "?")
-                line.append(f"{indicator} {op_str} {value} @{timeframe}", style=CASYS_MUTED)
-            if len(conditions) > 3:
-                line.append(f" +{len(conditions) - 3}", style=CASYS_FAINT)
+            for index, condition in enumerate(row.conditions):
+                if index > 0:
+                    line.append(f" {row.logic} ", style=CASYS_FAINT)
+                line.append(condition, style=CASYS_MUTED)
+            if row.extra_condition_count:
+                line.append(f" +{row.extra_condition_count}", style=CASYS_FAINT)
 
-        # Stop attaché
-        if stop_price is not None:
+        if row.stop_price is not None:
             line.append("   stop attached ", style=CASYS_DIM)
-            line.append(_price_fmt(stop_price), style=CASYS_DIM)
-            if ref:
-                pct_val = (stop_price - ref) / ref * 100.0
-                line.append(f" ({pct_val:+.1f}%)", style=CASYS_DIM)
+            line.append(_price_fmt(row.stop_price), style=CASYS_DIM)
+            if row.stop_distance_pct is not None:
+                line.append(
+                    f" ({row.stop_distance_pct:+.1f}%)",
+                    style=CASYS_DIM,
+                )
 
-        # Expiration
-        if cd not in ("—", "expired"):
+        if row.countdown not in ("—", "expired"):
             line.append("   expires ", style=CASYS_DIM)
-            line.append(cd, style=CASYS_ACCENT)
+            line.append(row.countdown, style=CASYS_ACCENT)
 
         rows.append(line)
 
@@ -162,12 +150,17 @@ def build_armed(state: dict, *, now: datetime, limit: int | None = None) -> Rend
     return Group(*rows)
 
 
-def build_exit_plans(state: dict, *, now: datetime) -> RenderableType:
+def build_exit_plans(
+    state: dict,
+    *,
+    now: datetime,
+    projection: ExitPlansProjection | None = None,
+) -> RenderableType:
     """EXIT PLANS triés par distance au stop (la plus courte d'abord)."""
     del now
-    projection = project_exit_plans(state)
+    projected = projection or project_exit_plans(state)
 
-    if not projection.rows:
+    if not projected.rows:
         return Text(
             "no exit plans — every position needs a stop",
             style=f"italic {CASYS_FAINT}",
@@ -195,7 +188,7 @@ def build_exit_plans(state: dict, *, now: datetime) -> RenderableType:
         Text("REVIEWED", style=CASYS_FAINT),
     )
 
-    for row in projection.rows:
+    for row in projected.rows:
         side_style = CASYS_ERROR if row.side == "S" else CASYS_SUCCESS
         pct_style = CASYS_ERROR if row.exit_update_rejected else CASYS_DIM
 
@@ -240,7 +233,11 @@ def build_exit_plans(state: dict, *, now: datetime) -> RenderableType:
 
 
 def build_exit_plans_compact(
-    state: dict, *, now: datetime, limit: int | None = None
+    state: dict,
+    *,
+    now: datetime,
+    limit: int | None = None,
+    projection: ExitPlansProjection | None = None,
 ) -> RenderableType:
     """EXITS compact pour le playbook (colonne 46) : `sym side stop% · tp · badge`.
 
@@ -248,11 +245,11 @@ def build_exit_plans_compact(
     symbole (Enter). Trié par distance au stop, la plus courte d'abord.
     """
     del now
-    projection = project_exit_plans(state)
-    if not projection.rows:
+    projected = projection or project_exit_plans(state)
+    if not projected.rows:
         return Text("no exit plans — every position needs a stop", style=f"italic {CASYS_FAINT}")
 
-    shown = projection.rows if limit is None else projection.rows[:limit]
+    shown = projected.rows if limit is None else projected.rows[:limit]
 
     grid = Table.grid(padding=(0, 1))
     grid.add_column(no_wrap=True, width=9)   # SYM
@@ -286,39 +283,41 @@ def build_exit_plans_compact(
         )
 
     parts: list[RenderableType] = [grid]
-    if limit is not None and len(projection.rows) > limit:
+    if limit is not None and len(projected.rows) > limit:
         parts.append(
             Text(
-                f"+ {len(projection.rows) - limit} more — enter for detail",
+                f"+ {len(projected.rows) - limit} more — enter for detail",
                 style=CASYS_FAINT,
             )
         )
     return Group(*parts)
 
 
-def build_watches(state: dict, *, now: datetime, limit: int | None = None) -> RenderableType:
+def build_watches(
+    state: dict,
+    *,
+    now: datetime,
+    limit: int | None = None,
+    projection: ActiveWatchesProjection | None = None,
+) -> RenderableType:
     """Panneau WATCHES : veilles non-armées avec barre TTL.
 
     ``limit`` adaptatif via rows_available depuis update_state (reserved=1 footnote).
     """
-    watches = plain_watches(state)
-    active = [
-        w for w in watches
-        if (exp := f.parse_ts(w.get("expires_at"))) is not None and exp > now
-    ]
+    projected = projection or project_active_watches(state, now=now)
 
     footnote = Text(
         "bar = time left on TTL · expired watches vanish silently", style=CASYS_FAINT
     )
 
-    if not active:
+    if not projected.rows:
         return Group(
             Text("no active watches", style=f"italic {CASYS_FAINT}"),
             footnote,
         )
 
-    total = len(active)
-    shown = active[:limit] if limit is not None else active
+    total = len(projected.rows)
+    shown = projected.rows[:limit] if limit is not None else projected.rows
 
     grid = Table.grid(padding=(0, 1))
     grid.add_column(no_wrap=True, width=9)                    # SYM
@@ -326,20 +325,12 @@ def build_watches(state: dict, *, now: datetime, limit: int | None = None) -> Re
     grid.add_column(no_wrap=True, width=10)                   # TTL bar
     grid.add_column(no_wrap=True, width=5, justify="right")   # countdown
 
-    for watch in shown:
-        sym = str(watch.get("symbol") or "—")
-        cond = f.condition_summary(
-            watch.get("conditions"), watch.get("logic"), max_items=2, limit=32
-        )
-        fraction = f.ttl_fraction(watch, now=now)
-        bar = f.ttl_bar(fraction, width=8)
-        cd = f.countdown(watch.get("expires_at"), now=now)
-
+    for row in shown:
         grid.add_row(
-            Text(sym, style=f"bold {CASYS_FG}"),
-            Text(cond, style=CASYS_DIM),
-            Text(bar, style=CASYS_ACCENT),
-            Text(cd, style=CASYS_ACCENT),
+            Text(row.symbol, style=f"bold {CASYS_FG}"),
+            Text(row.condition_label, style=CASYS_DIM),
+            Text(f.ttl_bar(row.ttl_fraction, width=8), style=CASYS_ACCENT),
+            Text(row.countdown, style=CASYS_ACCENT),
         )
 
     parts: list[RenderableType] = [grid]
@@ -349,31 +340,24 @@ def build_watches(state: dict, *, now: datetime, limit: int | None = None) -> Re
     return Group(*parts)
 
 
-def build_exit_watches(state: dict, *, now: datetime, limit: int | None = None) -> RenderableType:
+def build_exit_watches(
+    state: dict,
+    *,
+    now: datetime,
+    limit: int | None = None,
+    projection: ExitWatchesProjection | None = None,
+) -> RenderableType:
     """EXIT WATCHES : exit_watch de chaque trade_plan (non expiré).
 
     ``limit`` adaptatif via rows_available depuis update_state.
     """
-    plans = _safe_list_of_dicts(state.get("trade_plans"))
+    projected = projection or project_exit_watches(state, now=now)
     lines: list[RenderableType] = []
-
-    for plan in plans:
-        exit_watch = f.safe_dict(plan.get("exit_watch"))
-        if not exit_watch:
-            continue
-        exp = f.parse_ts(exit_watch.get("expires_at"))
-        if exp is not None and exp <= now:
-            continue
-        sym = str(plan.get("symbol") or exit_watch.get("symbol") or "—")
-        cond = f.condition_summary(
-            exit_watch.get("conditions"), exit_watch.get("logic"), max_items=3, limit=38
-        )
-        cd = f.countdown(exit_watch.get("expires_at"), now=now)
-
+    for row in projected.rows:
         line = Text()
-        line.append(f"{sym:<9}", style=f"bold {CASYS_FG}")
-        line.append(f"{cond}", style=CASYS_DIM)
-        line.append(f"  {cd}", style=CASYS_ACCENT)
+        line.append(f"{row.symbol:<9}", style=f"bold {CASYS_FG}")
+        line.append(row.condition_label, style=CASYS_DIM)
+        line.append(f"  {row.countdown}", style=CASYS_ACCENT)
         lines.append(line)
 
     if not lines:
@@ -478,37 +462,43 @@ class PlansPage(ResizeRefresh, Static):
         """
         now = datetime.now(UTC)
         try:
-            armed = armed_watches(state)
+            armed_projection = project_armed_orders(state, now=now)
             panel = self.query_one("#armed-panel", VerticalScroll)
-            panel.border_title = f"ARMED — {len(armed)}" if armed else "ARMED — 0"
+            panel.border_title = f"ARMED — {len(armed_projection.rows)}"
             armed_limit = rows_available(panel, reserved=2, minimum=3)
             self.query_one("#armed-body", Static).update(
-                build_armed(state, now=now, limit=armed_limit)
+                build_armed(
+                    state,
+                    now=now,
+                    limit=armed_limit,
+                    projection=armed_projection,
+                )
             )
         except Exception:  # état partiel toléré
             pass
 
         try:
-            plans = _safe_list_of_dicts(state.get("trade_plans"))
+            exit_plans_projection = project_exit_plans(state)
             panel = self.query_one("#exit-plans-panel", VerticalScroll)
             panel.border_title = (
-                f"EXIT PLANS — {len(plans)} · sorted by stop distance"
-                if plans
+                f"EXIT PLANS — {len(exit_plans_projection.rows)} · sorted by stop distance"
+                if exit_plans_projection.rows
                 else "EXIT PLANS — sorted by stop distance"
             )
             self.query_one("#exit-plans-body", Static).update(
-                build_exit_plans(state, now=now)
+                build_exit_plans(
+                    state,
+                    now=now,
+                    projection=exit_plans_projection,
+                )
             )
         except Exception:
             pass
 
         try:
-            watches = plain_watches(state)
+            watches_projection = project_active_watches(state, now=now)
             panel = self.query_one("#watches-panel", VerticalScroll)
-            active_count = sum(
-                1 for w in watches
-                if (exp := f.parse_ts(w.get("expires_at"))) is not None and exp > now
-            )
+            active_count = len(watches_projection.rows)
             panel.border_title = (
                 f"WATCHES — {active_count} · wake the agent"
                 if active_count
@@ -516,7 +506,12 @@ class PlansPage(ResizeRefresh, Static):
             )
             watches_limit = rows_available(panel, reserved=1, minimum=3)
             self.query_one("#watches-body", Static).update(
-                build_watches(state, now=now, limit=watches_limit)
+                build_watches(
+                    state,
+                    now=now,
+                    limit=watches_limit,
+                    projection=watches_projection,
+                )
             )
         except Exception:
             pass
@@ -524,8 +519,14 @@ class PlansPage(ResizeRefresh, Static):
         try:
             ew_panel = self.query_one("#exit-watches-panel", VerticalScroll)
             ew_limit = rows_available(ew_panel, reserved=0, minimum=3)
+            exit_watches_projection = project_exit_watches(state, now=now)
             self.query_one("#exit-watches-body", Static).update(
-                build_exit_watches(state, now=now, limit=ew_limit)
+                build_exit_watches(
+                    state,
+                    now=now,
+                    limit=ew_limit,
+                    projection=exit_watches_projection,
+                )
             )
         except Exception:
             pass

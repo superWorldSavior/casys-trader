@@ -537,6 +537,105 @@ def test_project_exit_plans_composes_ordered_semantic_rows():
     assert far.stop_is_near is False
 
 
+def test_project_armed_orders_normalizes_conditions_stop_and_expiry():
+    from trader.interfaces.cockpit.projections.plans import project_armed_orders
+
+    state = {
+        "indicator_watches": [
+            {
+                "symbol": "ARM",
+                "on_trigger": "EXECUTE_ORDER",
+                "logic": "and",
+                "conditions": [
+                    {
+                        "indicator": f"c{index}",
+                        "op": ">=",
+                        "value": index,
+                        "timeframe": "1h",
+                    }
+                    for index in range(4)
+                ],
+                "expires_at": FUTURE,
+                "order": {
+                    "action": "BUY",
+                    "qty": 2,
+                    "exit_plan": {"hard_stop": {"price": 95.0}},
+                },
+            }
+        ],
+        "prices": {"ARM": 100.0},
+    }
+
+    projection = project_armed_orders(state, now=NOW)
+
+    assert len(projection.rows) == 1
+    row = projection.rows[0]
+    assert row.symbol == "ARM"
+    assert row.action == "BUY"
+    assert row.quantity == 2.0
+    assert row.conditions == (
+        "c0 >= 0 @1h",
+        "c1 >= 1 @1h",
+        "c2 >= 2 @1h",
+    )
+    assert row.extra_condition_count == 1
+    assert row.stop_price == 95.0
+    assert row.stop_distance_pct == -5.0
+    assert row.countdown == "6h00"
+
+
+def test_project_watch_rows_filter_expired_and_keep_exit_watch_without_ttl():
+    from trader.interfaces.cockpit.projections.plans import (
+        project_active_watches,
+        project_exit_watches,
+    )
+
+    state = {
+        "indicator_watches": [
+            {
+                "symbol": "ACTIVE",
+                "on_trigger": "WAKE",
+                "conditions": [
+                    {"indicator": "z", "op": "<=", "value": 1, "timeframe": "1h"}
+                ],
+                "created_at": "2026-07-06T00:00:00+00:00",
+                "expires_at": FUTURE,
+            },
+            {
+                "symbol": "EXPIRED",
+                "on_trigger": "WAKE",
+                "expires_at": "2026-07-06T01:00:00+00:00",
+            },
+        ],
+        "trade_plans": [
+            {
+                "symbol": "EXIT",
+                "exit_watch": {
+                    "conditions": [
+                        {
+                            "indicator": "breakout",
+                            "op": "<",
+                            "value": 0,
+                            "timeframe": "1h",
+                        }
+                    ]
+                },
+            }
+        ],
+    }
+
+    active = project_active_watches(state, now=NOW)
+    exits = project_exit_watches(state, now=NOW)
+
+    assert [row.symbol for row in active.rows] == ["ACTIVE"]
+    assert active.rows[0].condition_label == "z <= 1 @1h"
+    assert active.rows[0].ttl_fraction == 0.75
+    assert active.rows[0].countdown == "6h00"
+    assert [row.symbol for row in exits.rows] == ["EXIT"]
+    assert exits.rows[0].condition_label == "breakout < 0 @1h"
+    assert exits.rows[0].countdown == "—"
+
+
 # ---------------------------------------------------------------------------
 # build_watches
 # ---------------------------------------------------------------------------
@@ -878,16 +977,6 @@ async def test_playbook_update_state_with_full_data(tmp_path, monkeypatch):
     (tmp_path / "decisions.jsonl").write_text("{}\n", encoding="utf-8")
 
     state = {
-        "armed_plans": [
-            {
-                "symbol": "TEST",
-                "on_trigger": "EXECUTE_ORDER",
-                "expires_at": FUTURE,
-                "logic": "all",
-                "conditions": [{"indicator": "RS", "op": ">", "value": 50, "timeframe": "1h"}],
-                "order": {"action": "BUY", "qty": 5},
-            }
-        ],
         "indicator_watches": [
             {
                 "symbol": "TEST",

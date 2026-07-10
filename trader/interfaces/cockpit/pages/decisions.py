@@ -43,6 +43,12 @@ from trader.interfaces.cockpit.projections.decisions import (
     has_decision_detail as _has_detail,  # noqa: F401 - historical page helper
     project_decision_ledger,
 )
+from trader.interfaces.cockpit.projections.plans import (
+    project_active_watches,
+    project_armed_orders,
+    project_exit_plans,
+    project_exit_watches,
+)
 from trader.interfaces.ui.palette import (
     CASYS_ACCENT,
     CASYS_DIM,
@@ -709,29 +715,65 @@ class DecisionsPage(ResizeRefresh, Static):
         except Exception:
             pass
         now = datetime.now(UTC)
-        for panel_id, body_id, builder, kw in (
-            ("armed-panel", "armed-body", build_armed, {}),
-            ("exits-panel", "exits-body", build_exit_plans_compact, {"limit": None}),
-            ("playbook-watches-panel", "playbook-watches-body", build_watches, {}),
-            ("playbook-fire-panel", "playbook-fire-body", build_next_to_fire_plans, {}),
-        ):
-            try:
-                self.query_one(f"#{body_id}", Static).update(builder(state, now=now, **kw))
-            except Exception:
-                pass
-        # WATCHES du playbook fusionne veilles simples + exit watches
+
         try:
-            watches = build_watches(state, now=now)
-            exit_w = build_exit_watches(state, now=now)
-            self.query_one("#playbook-watches-body", Static).update(Group(watches, Text(""), exit_w))
+            armed_projection = project_armed_orders(state, now=now)
+            self.query_one("#armed-body", Static).update(
+                build_armed(
+                    state,
+                    now=now,
+                    projection=armed_projection,
+                )
+            )
+            self.query_one("#armed-panel").border_title = (
+                f"ARMED — {len(armed_projection.rows)}"
+            )
         except Exception:
             pass
-        # Titres dynamiques
-        for panel_id, title in (
-            ("armed-panel", f"ARMED — {len(_safe_list_of_dicts(state.get('armed_plans')))}"),
-            ("exits-panel", f"EXITS — {len(_safe_list_of_dicts(state.get('trade_plans')))} · by stop distance"),
-        ):
-            try:
-                self.query_one(f"#{panel_id}").border_title = title
-            except Exception:
-                pass
+
+        try:
+            exit_plans_projection = project_exit_plans(state)
+            self.query_one("#exits-body", Static).update(
+                build_exit_plans_compact(
+                    state,
+                    now=now,
+                    limit=None,
+                    projection=exit_plans_projection,
+                )
+            )
+            self.query_one("#exits-panel").border_title = (
+                f"EXITS — {len(exit_plans_projection.rows)} · by stop distance"
+            )
+        except Exception:
+            pass
+
+        try:
+            active_watches_projection = project_active_watches(state, now=now)
+            exit_watches_projection = project_exit_watches(state, now=now)
+            watches = build_watches(
+                state,
+                now=now,
+                projection=active_watches_projection,
+            )
+            exit_watches = build_exit_watches(
+                state,
+                now=now,
+                projection=exit_watches_projection,
+            )
+            self.query_one("#playbook-watches-body", Static).update(
+                Group(watches, Text(""), exit_watches)
+            )
+            active_count = len(active_watches_projection.rows)
+            exit_count = len(exit_watches_projection.rows)
+            self.query_one("#playbook-watches-panel").border_title = (
+                f"WATCHES — {active_count} + {exit_count} exits"
+            )
+        except Exception:
+            pass
+
+        try:
+            self.query_one("#playbook-fire-body", Static).update(
+                build_next_to_fire_plans(state, now=now)
+            )
+        except Exception:
+            pass

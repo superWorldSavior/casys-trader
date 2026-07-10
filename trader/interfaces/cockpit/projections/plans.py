@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Literal
 
 from trader.interfaces.cockpit import format as f
+from trader.interfaces.cockpit.derive import armed_watches, plain_watches
 from trader.support.coercion import dict_list, finite_float
 
 ReviewKind = Literal["rejected", "reviewed", "none"]
@@ -36,6 +38,51 @@ class ExitPlansProjection:
 
     rows: list[ExitPlanRow]
     rejected_symbols: frozenset[str]
+
+
+@dataclass(frozen=True)
+class ArmedOrderRow:
+    """Semantic data for one armed execute-order watch."""
+
+    symbol: str
+    action: str
+    quantity: float | None
+    conditions: tuple[str, ...]
+    logic: str
+    extra_condition_count: int
+    stop_price: float | None
+    stop_distance_pct: float | None
+    countdown: str
+
+
+@dataclass(frozen=True)
+class ArmedOrdersProjection:
+    rows: list[ArmedOrderRow]
+
+
+@dataclass(frozen=True)
+class ActiveWatchRow:
+    symbol: str
+    condition_label: str
+    ttl_fraction: float
+    countdown: str
+
+
+@dataclass(frozen=True)
+class ActiveWatchesProjection:
+    rows: list[ActiveWatchRow]
+
+
+@dataclass(frozen=True)
+class ExitWatchRow:
+    symbol: str
+    condition_label: str
+    countdown: str
+
+
+@dataclass(frozen=True)
+class ExitWatchesProjection:
+    rows: list[ExitWatchRow]
 
 
 def format_price(value: float | None) -> str:
@@ -169,13 +216,127 @@ def project_exit_plans(state: dict) -> ExitPlansProjection:
     return ExitPlansProjection(rows=rows, rejected_symbols=rejected_symbols)
 
 
+def project_armed_orders(
+    state: dict,
+    *,
+    now: datetime,
+) -> ArmedOrdersProjection:
+    """Project armed execute-order watches without presentation objects."""
+
+    rows: list[ArmedOrderRow] = []
+    for watch in armed_watches(state):
+        symbol = str(watch.get("symbol") or "—")
+        order = f.safe_dict(watch.get("order"))
+        action = str(
+            order.get("action") or order.get("intent") or "ORDER"
+        ).upper()
+        conditions = dict_list(watch.get("conditions"))
+        stop_price = f.armed_stop_price(watch)
+        reference = f.price_for_symbol(state, symbol)
+        stop_distance = (
+            (stop_price - reference) / reference * 100.0
+            if stop_price is not None and reference
+            else None
+        )
+        condition_labels = tuple(
+            f"{condition.get('indicator') or '?'} "
+            f"{condition.get('op') or '?'} "
+            f"{condition.get('value')} "
+            f"@{condition.get('timeframe') or condition.get('interval') or '?'}"
+            for condition in conditions[:3]
+        )
+        rows.append(
+            ArmedOrderRow(
+                symbol=symbol,
+                action=action,
+                quantity=finite_float(order.get("qty"), default=None),
+                conditions=condition_labels,
+                logic=str(watch.get("logic") or "and"),
+                extra_condition_count=max(0, len(conditions) - 3),
+                stop_price=stop_price,
+                stop_distance_pct=stop_distance,
+                countdown=f.countdown(watch.get("expires_at"), now=now),
+            )
+        )
+    return ArmedOrdersProjection(rows=rows)
+
+
+def project_active_watches(
+    state: dict,
+    *,
+    now: datetime,
+) -> ActiveWatchesProjection:
+    """Project non-armed watches that still have a valid future TTL."""
+
+    rows: list[ActiveWatchRow] = []
+    for watch in plain_watches(state):
+        expires_at = f.parse_ts(watch.get("expires_at"))
+        if expires_at is None or expires_at <= now:
+            continue
+        rows.append(
+            ActiveWatchRow(
+                symbol=str(watch.get("symbol") or "—"),
+                condition_label=f.condition_summary(
+                    watch.get("conditions"),
+                    watch.get("logic"),
+                    max_items=2,
+                    limit=32,
+                ),
+                ttl_fraction=f.ttl_fraction(watch, now=now),
+                countdown=f.countdown(expires_at, now=now),
+            )
+        )
+    return ActiveWatchesProjection(rows=rows)
+
+
+def project_exit_watches(
+    state: dict,
+    *,
+    now: datetime,
+) -> ExitWatchesProjection:
+    """Project non-expired exit watches embedded in trade plans."""
+
+    rows: list[ExitWatchRow] = []
+    for plan in dict_list(state.get("trade_plans")):
+        exit_watch = f.safe_dict(plan.get("exit_watch"))
+        if not exit_watch:
+            continue
+        expires_at = f.parse_ts(exit_watch.get("expires_at"))
+        if expires_at is not None and expires_at <= now:
+            continue
+        rows.append(
+            ExitWatchRow(
+                symbol=str(
+                    plan.get("symbol") or exit_watch.get("symbol") or "—"
+                ),
+                condition_label=f.condition_summary(
+                    exit_watch.get("conditions"),
+                    exit_watch.get("logic"),
+                    max_items=3,
+                    limit=38,
+                ),
+                countdown=f.countdown(expires_at, now=now),
+            )
+        )
+    return ExitWatchesProjection(rows=rows)
+
+
 __all__ = [
+    "ActiveWatchRow",
+    "ActiveWatchesProjection",
+    "ArmedOrderRow",
+    "ArmedOrdersProjection",
     "ExitPlanRow",
     "ExitPlansProjection",
+    "ExitWatchRow",
+    "ExitWatchesProjection",
     "ReviewKind",
     "exit_update_rejected_symbols",
     "format_price",
+    "project_active_watches",
+    "project_armed_orders",
     "project_exit_plans",
+    "project_exit_watches",
     "reviewed_status",
     "stop_distance_sort_key",
     "stop_pct",
