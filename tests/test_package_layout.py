@@ -48,19 +48,21 @@ def _domain_import_violations(paths: list[Path], repo_root: Path) -> list[str]:
     return violations
 
 
-def test_market_rotation_layer_has_no_high_level_dependencies() -> None:
+def test_market_rotation_pure_modules_have_no_high_level_dependencies() -> None:
     rotation_dir = Path(__file__).resolve().parents[1] / "trader" / "market" / "rotation"
-    forbidden_fragments = (
-        "trader.execution",
-        "trader.infrastructure",
-        "trader.agent",
-    )
+    adapter_facades = {"core.py", "user_overrides.py", "venues.py"}
 
     violations: list[str] = []
     for source_path in sorted(rotation_dir.rglob("*.py")):
         if "__pycache__" in source_path.parts:
             continue
         source = source_path.read_text(encoding="utf-8")
+        forbidden_fragments = ["trader.execution", "trader.agent"]
+        if source_path.name in adapter_facades:
+            source = source.replace("trader.infrastructure.files", "")
+            forbidden_fragments.append("trader.infrastructure")
+        else:
+            forbidden_fragments.append("trader.infrastructure")
         for fragment in forbidden_fragments:
             if fragment in source:
                 violations.append(f"{source_path.relative_to(rotation_dir)}: {fragment}")
@@ -304,13 +306,14 @@ def test_infrastructure_backends_are_nested_under_infrastructure() -> None:
 
     assert infrastructure_dir.exists()
     assert sorted(path.name for path in infrastructure_dir.iterdir() if path.is_dir() and path.name != "__pycache__") == [
+        "files",
         "llm",
         "market_sources",
         "queue",
         "state_db",
     ]
 
-    for old_top_level_name in ("llm", "market_sources", "queue", "state_db"):
+    for old_top_level_name in ("files", "llm", "market_sources", "queue", "state_db"):
         assert not _has_python_sources(trader_dir / old_top_level_name)
 
 
@@ -710,6 +713,64 @@ def test_universe_rotation_policies_are_canonical_domain_and_application_modules
     assert legacy_validate_prepared_hotlist is validate_prepared_hotlist
     assert legacy_refresh_preopen_candidate_scope is refresh_preopen_candidate_scope
     assert legacy_update_venue_ranking is update_venue_ranking
+
+
+def test_universe_filesystem_adapters_are_canonical_with_rotation_facades() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    domain_path = repo_root / "trader" / "domain" / "universe" / "user_overrides.py"
+    files_dir = repo_root / "trader" / "infrastructure" / "files"
+    legacy_path = repo_root / "trader" / "market" / "rotation" / "user_overrides.py"
+
+    assert _domain_import_violations([domain_path], repo_root) == []
+    for adapter_name in ("radar_cache.py", "universe_config.py", "venue_state.py"):
+        adapter_source = (files_dir / adapter_name).read_text(encoding="utf-8")
+        assert "trader.market.rotation" not in adapter_source
+
+    legacy_tree = ast.parse(
+        legacy_path.read_text(encoding="utf-8"),
+        filename=str(legacy_path),
+    )
+    assert not any(isinstance(node, (ast.ClassDef, ast.FunctionDef)) for node in legacy_tree.body)
+
+    from trader.domain.universe.user_overrides import (
+        UserOverrides,
+        apply_user_overrides,
+    )
+    from trader.infrastructure.files.radar_cache import purge_old_radar_cache
+    from trader.infrastructure.files.universe_config import (
+        UniverseWriteError,
+        load_user_overrides,
+        write_universe_atomic,
+        write_universe_if_changed,
+    )
+    from trader.infrastructure.files.venue_state import load_venue_state
+    from trader.market.rotation import UniverseWriteError as legacy_write_error
+    from trader.market.rotation import write_universe_atomic as legacy_write_universe
+    from trader.market.rotation.user_overrides import (
+        UserOverrides as legacy_user_overrides,
+    )
+    from trader.market.rotation.user_overrides import (
+        apply_user_overrides as legacy_apply_user_overrides,
+    )
+    from trader.market.rotation.user_overrides import (
+        load_user_overrides as legacy_load_user_overrides,
+    )
+    from trader.market.rotation.venues import (
+        _purge_old_radar_cache as legacy_purge_old_radar_cache,
+    )
+    from trader.market.rotation.venues import load_venue_state as legacy_load_venue_state
+    from trader.market.rotation.venues import (
+        write_universe_if_changed as legacy_write_universe_if_changed,
+    )
+
+    assert legacy_user_overrides is UserOverrides
+    assert legacy_apply_user_overrides is apply_user_overrides
+    assert legacy_load_user_overrides is load_user_overrides
+    assert legacy_write_error is UniverseWriteError
+    assert legacy_write_universe is write_universe_atomic
+    assert legacy_load_venue_state is load_venue_state
+    assert legacy_purge_old_radar_cache is purge_old_radar_cache
+    assert legacy_write_universe_if_changed is write_universe_if_changed
 
 
 def test_daemon_delegates_watch_schedule_glue_to_runtime_adapter() -> None:

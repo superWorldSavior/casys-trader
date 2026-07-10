@@ -32,6 +32,10 @@ from trader.domain.universe.selection import (
     emergency_exits,
     sticky_symbols,
 )
+from trader.domain.universe.user_overrides import (
+    UserOverrides,
+    apply_user_overrides,
+)
 
 __all__ = [
     "DEFAULT_MAX_SITUATION_POINTS",
@@ -42,8 +46,10 @@ __all__ = [
     "RADAR_CANDIDATES_TOP",
     "UNCLASSIFIED_FAMILY",
     "UniverseSituationContext",
+    "UserOverrides",
     "apply_hysteresis",
     "apply_override",
+    "apply_user_overrides",
     "build_family_snapshot",
     "build_global_family_board",
     "candidate_scope_id",

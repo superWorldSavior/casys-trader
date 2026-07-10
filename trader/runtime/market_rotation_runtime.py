@@ -309,7 +309,7 @@ def load_effective_universe(universe_path, state_dir) -> list:
     pas réécrit le fichier ; une position ouverte bannie reste gérée. Jamais
     d'exception.
     """
-    from trader.market.rotation.user_overrides import effective_universe_symbols
+    from trader.infrastructure.files.universe_config import effective_universe_symbols
 
     try:
         sticky = build_sticky_fn(state_dir)()

@@ -2,13 +2,8 @@
 
 from __future__ import annotations
 
-import json
-import os
-import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
-
-import yaml
 
 from trader.application.universe import (
     refresh_preopen_candidate_scope,
@@ -20,8 +15,19 @@ from trader.domain.universe.selection import (
     apply_override,
     compose_active_universe,
 )
-from trader.market.rotation import write_universe_atomic
-from trader.market.rotation.user_overrides import apply_user_overrides, load_user_overrides
+from trader.domain.universe.user_overrides import apply_user_overrides
+from trader.infrastructure.files.radar_cache import (
+    purge_old_radar_cache as _purge_old_radar_cache,
+)
+from trader.infrastructure.files.universe_config import (
+    load_user_overrides,
+    write_universe_if_changed,
+)
+from trader.infrastructure.files.venue_state import (
+    empty_venue_state as empty_venue_state,
+    load_venue_state,
+    save_venue_state,
+)
 from trader.market.rotation.ledger import log_rotation
 from trader.market.rotation.schedule import (
     analyzable_venues,
@@ -36,98 +42,6 @@ from trader.market.radar_config import load_radar_params
 # défaut), mais la hotlist agent n'est activée qu'à l'approche du gong. Cela
 # laisse aux deux runners async le temps de produire brief puis sélection.
 UNIVERSE_ACTIVATION_WINDOW_MINUTES = 15
-
-# Rétention des fichiers radar_cache (en jours). Fichiers YYYY-MM-DD.json plus vieux = purgés.
-RADAR_CACHE_RETENTION_DAYS = 30
-
-
-def _purge_old_radar_cache(cache_dir: Path, now_iso: str) -> None:
-    """Supprime les fichiers radar_cache/YYYY-MM-DD.json de plus de RADAR_CACHE_RETENTION_DAYS jours.
-
-    Les noms non conformes au pattern exact (YYYY-MM-DD.json) sont ignorés (non purgés).
-    """
-    if not cache_dir.is_dir():
-        return
-    try:
-        now_date = datetime.fromisoformat(now_iso[:10])
-    except ValueError:
-        return
-    for f in cache_dir.glob("*.json"):
-        stem = f.stem  # YYYY-MM-DD
-        if len(stem) != 10 or stem[4] != "-" or stem[7] != "-":
-            continue
-        try:
-            file_date = datetime.strptime(stem, "%Y-%m-%d")
-        except ValueError:
-            continue
-        age_days = (now_date - file_date).days
-        if age_days > RADAR_CACHE_RETENTION_DAYS:
-            try:
-                f.unlink()
-            except OSError:
-                pass
-
-
-def empty_venue_state() -> dict:
-    """Return an empty per-venue rotation state."""
-    return {"venues": {}}
-
-
-def load_venue_state(state_dir) -> dict:
-    """Load per-venue state, returning an empty state if unavailable."""
-    path = Path(state_dir) / "venue_state.json"
-    try:
-        with path.open("r", encoding="utf-8") as fh:
-            state = json.load(fh)
-    except Exception:
-        return empty_venue_state()
-
-    if not isinstance(state, dict):
-        return empty_venue_state()
-    if not isinstance(state.get("venues"), dict):
-        return empty_venue_state()
-    return state
-
-
-def save_venue_state(state_dir, state) -> None:
-    """Persist per-venue state as indented JSON."""
-    directory = Path(state_dir)
-    directory.mkdir(parents=True, exist_ok=True)
-    path = directory / "venue_state.json"
-    fd, tmp_path = tempfile.mkstemp(dir=directory)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            json.dump(state, fh, indent=2, sort_keys=True)
-            fh.write("\n")
-        os.replace(tmp_path, path)
-    except Exception:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        raise
-
-
-def write_universe_if_changed(path, symbols) -> bool:
-    """Write universe symbols only when the non-empty symbol set changes."""
-    if not symbols:
-        return False
-
-    universe_path = Path(path)
-    current_symbols = []
-    try:
-        data = yaml.safe_load(universe_path.read_text(encoding="utf-8"))
-        if isinstance(data, dict):
-            current_symbols = data.get("symbols") or []
-    except Exception:
-        current_symbols = []
-
-    if set(symbols) == set(current_symbols):
-        return False
-
-    write_universe_atomic(str(universe_path), symbols)
-    return True
-
 
 def run_venue_close(
     state,

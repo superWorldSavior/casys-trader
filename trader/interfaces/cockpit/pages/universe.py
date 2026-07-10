@@ -42,8 +42,8 @@ from trader.interfaces.ui.palette import (
     CASYS_SUCCESS,
     CASYS_WARNING,
 )
-from trader.market.rotation.user_overrides import (
-    UserOverrides,
+from trader.domain.universe.user_overrides import UserOverrides
+from trader.infrastructure.files.universe_config import (
     ban_symbol,
     clear_override,
     load_user_overrides,

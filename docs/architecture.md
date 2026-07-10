@@ -104,12 +104,14 @@ les utilisaient :
 | `trader/domain/` | Primitives neutres (`Bar`, `MarketError`, `Side`), vocabulaire partagé des `decision_reason_code` et catalogue sémantique gouverné (`domain/semantic/`) | évite que `market`/`planning`/`agent` importent `tools` ou `reporting` pour accéder à un vocabulaire métier |
 | `trader/domain/universe/selection.py` | Politiques pures de hotlist : hystérésis, sorties d'urgence, sticky hors quota, override borné et composition de l'univers actif | `trader.market.rotation` conserve la façade historique |
 | `trader/domain/universe/candidate_scope.py` | Composition pure du pool top radar + challengers news, rétention TTL et références des runs candidats | consommé par l'adaptateur `market/rotation/venues.py` |
+| `trader/domain/universe/user_overrides.py` | Modèle et politique purs pin/ban/sticky de l'univers opérateur | la lecture/écriture YAML vit dans l'adaptateur filesystem ; `market.rotation.user_overrides` reste une façade |
 | `trader/planning/` | Plans de trade, scheduler de réveils, veilles, exit engine, gate de pertinence | compat : `trader.trade_plan`, `trader.indicator_watch`, `trader.exit_engine`, `trader.relevance_gate`, `trader.scheduling.scheduler`, `trader.tools.scheduler` |
 | `trader/execution/` | Contrats `Order`/`Fill`, ports `Broker`/`CommissionModel`, broker paper, commissions, RiskGate, projection portefeuille | contrats/ports : `trader.execution.contracts`, `trader.execution.protocols`; compat virtuelle : `trader.tools.execution`, `trader.tools.portfolio`, `trader.risk` |
 | `trader/market/` | Port `DataSource`, adaptateurs yfinance/IB/composite, fraîcheur, indicateurs, FX, news, macro, radar, régime, priorisation gross exposure | port : `trader.market.protocols.DataSource`; compat virtuelle : `trader.tools.market`, `trader.tools.data_source`, `trader.tools.ib_source`, `trader.tools.news_feed`, `trader.fx`, `trader.features`, etc. |
 | `trader/infrastructure/queue/` | File de tâches durable, workers, pools, backpressure | backend technique utilisé par le runtime queue-on ; compat virtuelle : `trader.queue.*` |
+| `trader/infrastructure/files/` | Adaptateurs atomiques pour `universe.yaml`, `venue_state.json` et rétention du cache radar | verrouillage `flock`, YAML/JSON/tempfiles et purge restent hors domaine/application |
 | `trader/infrastructure/state_db/` | Backend SQLite de l'état paper, broker store, outbox et stores append-only/projections de briefs, scopes candidats et runs univers | source durable quand `CASYS_STATE_BACKEND=sqlite` ; les stores JSONL de situation/univers restent indépendants du backend paper ; compat virtuelle : `trader.state_db.*` |
-| `trader/market/rotation/` | Adaptateurs/façades de rotation par venue : scheduling, I/O état/config, activation pré-open et ledger | les politiques de hotlist/pool vivent dans `domain/universe`, la validation agent dans `application/universe` ; compat virtuelle : `trader.rotation.*`, `trader.rotation_*` |
+| `trader/market/rotation/` | Orchestration/façades de rotation par venue : scheduling, activation pré-open et ledger | politiques dans `domain/universe`, transitions dans `application/universe`, I/O dans `infrastructure/files` ; compat virtuelle : `trader.rotation.*`, `trader.rotation_*` |
 | `trader/support/` | Helpers support stables : config (`pool`, `portfolio`), metadata git/code version, process env | compat virtuelle : `trader.config.*`, `trader.metadata.*`, `trader.system.*` |
 | `trader/reporting/` | Façades attribution/audit/bench/ledger/stats/tool usage/meta-performance, read models, renderers, protocols colocalisés | analyse/rendu ex-post ; `reporting.decision_reason`, `reporting.attribution`, `reporting.decision_audit`, `reporting.decision_bench`, `reporting.decision_ledger`, `reporting.meta_performance`, `reporting.stats` et `reporting.tool_usage` gardent les façades de compatibilité/rendu ; les ports partagés vivent sous `reporting/{audit,bench,ledger,read_models}/protocols.py` |
 | `trader/interfaces/cli/` | Entry points CLI canoniques (`stats`, `attribution`, `tool_usage`, `tui`) | compat virtuelle : `python -m trader.commands.stats`, `python -m trader.stats`, etc. |
@@ -145,10 +147,10 @@ mais ses packages ne sont pas tous du même niveau :
 
 | Niveau | Packages | Règle pratique |
 |---|---|---|
-| Composition runtime | `runtime/`, `interfaces/cli/`, alias legacy `trader.daemon`/`trader.cli` | peut assembler les dépendances et déclencher les side effects |
+| Composition runtime | `runtime/`, `interfaces/cli/`, adaptateurs transitoires `market/rotation/{core,venues,user_overrides}.py`, alias legacy `trader.daemon`/`trader.cli` | peut assembler les dépendances et déclencher les side effects ; les trois adaptateurs rotation ne peuvent viser que `infrastructure/files` |
 | Services applicatifs | `application/` | orchestre un cas d'usage testable sans être l'entrypoint process |
-| Infrastructure technique | `infrastructure/queue/`, `infrastructure/state_db/` | backends durables et mécaniques ; pas de logique de décision métier |
-| Capacités métier | `market/`, `planning/`, `execution/`, `market/rotation/`, `agent/` (`protocol/`, `tools/`, `learnings/`) | porte la logique du domaine et ne dépend pas de `runtime/` |
+| Infrastructure technique | `infrastructure/files/`, `infrastructure/queue/`, `infrastructure/state_db/` | backends durables et mécaniques ; pas de logique de décision métier |
+| Capacités métier | `market/`, `planning/`, `execution/`, modules purs de `market/rotation/`, `agent/` (`protocol/`, `tools/`, `learnings/`) | porte la logique du domaine et ne dépend pas de `runtime/` ni de l'infrastructure |
 | Primitives transverses | `domain/`, `domain/semantic/`, `support/` | types/catalogues/helpers stables, sans dépendance montante |
 | Read models et surfaces | `reporting/`, `reporting/read_models/`, `interfaces/ui/`, `interfaces/cockpit/` | lit l'état produit par le runtime, ne décide pas à sa place |
 | Compatibilité legacy | alias virtuels de `trader/__init__.py` | délègue vers le canonique ; aucun nouvel import interne ne doit viser ici |
@@ -476,7 +478,9 @@ session. Les politiques pures de sélection et de pool candidat vivent désormai
 dans `trader/domain/universe/selection.py` et
 `trader/domain/universe/candidate_scope.py` ; la revalidation de la sortie agent
 vit dans `trader/application/universe/activation.py`, et les transitions de
-scope dans `trader/application/universe/scope_rotation.py`.
+scope dans `trader/application/universe/scope_rotation.py`. La persistance de
+`venue_state.json`, `universe.yaml` et du cache radar est isolée sous
+`trader/infrastructure/files/`.
 
 Univers actif composé à chaque cycle :
 `sticky_all ∪ union(hot-lists des marchés OUVERTS à l'instant t)`
