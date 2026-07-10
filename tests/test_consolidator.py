@@ -116,7 +116,7 @@ def test_build_consolidator_router_modele_defaut_acpx_annonce(monkeypatch) -> No
 
     backend = router.backends[0]
     assert backend.provider == "consolidator"
-    assert backend.model == "gpt-5.5"
+    assert backend.model == "gpt-5.6-sol"
 
 
 def test_maybe_consolidate_ecrit_le_consolide_et_avance_le_watermark(tmp_path) -> None:
