@@ -31,7 +31,7 @@ import trader.agent.tools as agent_tools
 from trader.agent.context import build_indicator_resolver
 from trader.agent.protocol.types import Decision
 from trader.application.decide.tool_round import resolve_symbol_decision
-from trader.infrastructure.queue.worker import RetryableError
+from trader.application.queue.contracts import RetryableError
 
 if TYPE_CHECKING:
     from trader.application.exit.exit_update import ExitUpdateValidation

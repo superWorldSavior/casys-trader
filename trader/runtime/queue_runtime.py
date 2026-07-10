@@ -50,7 +50,7 @@ def _default_make_decide_handler(
 
 
 def _default_make_execute_order_handler(**kwargs: object) -> object:
-    from trader.application.execute.order_handler import make_execute_order_handler
+    from trader.infrastructure.queue.order_handler import make_execute_order_handler
 
     return make_execute_order_handler(**kwargs)
 

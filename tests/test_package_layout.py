@@ -88,9 +88,38 @@ def test_application_package_has_only_canonical_subpackages() -> None:
         "exit",
         "migration",
         "portfolio",
+        "queue",
         "record",
         "universe",
     }
+
+
+def test_application_does_not_import_infrastructure_outside_compatibility_facades() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    application_dir = repo_root / "trader" / "application"
+    compatibility_facades = {
+        Path("execute/order_handler.py"),
+    }
+    violations: list[str] = []
+
+    for source_path in sorted(application_dir.rglob("*.py")):
+        if "__pycache__" in source_path.parts:
+            continue
+        relative_path = source_path.relative_to(application_dir)
+        if relative_path in compatibility_facades:
+            continue
+        tree = ast.parse(source_path.read_text(encoding="utf-8"), filename=str(source_path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and (node.module or "").startswith(
+                "trader.infrastructure"
+            ):
+                violations.append(f"{relative_path}: from {node.module} import ...")
+            elif isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name.startswith("trader.infrastructure"):
+                        violations.append(f"{relative_path}: import {alias.name}")
+
+    assert violations == []
 
 
 def test_application_analyst_modules_are_nested_without_legacy_shims() -> None:
@@ -932,11 +961,12 @@ def test_infrastructure_imports_stale_backoff_policy_from_domain_not_scheduler_f
     assert violations == []
 
 
-def test_execute_order_handler_uses_domain_trade_plan_validation() -> None:
+def test_execute_order_handler_is_infrastructure_canonical_with_application_facade() -> None:
     repo_root = Path(__file__).resolve().parents[1]
-    module_path = repo_root / "trader" / "application" / "execute" / "order_handler.py"
-    source = module_path.read_text(encoding="utf-8")
-    tree = ast.parse(source, filename=str(module_path))
+    facade_path = repo_root / "trader" / "application" / "execute" / "order_handler.py"
+    adapter_path = repo_root / "trader" / "infrastructure" / "queue" / "order_handler.py"
+    source = adapter_path.read_text(encoding="utf-8")
+    tree = ast.parse(source, filename=str(adapter_path))
 
     forbidden = "trader.planning.trade_plan"
     violations: list[str] = []
@@ -947,7 +977,33 @@ def test_execute_order_handler_uses_domain_trade_plan_validation() -> None:
             violations.extend(f"import {alias.name}" for alias in node.names if alias.name == forbidden)
 
     assert "trade_plan_from_dict" not in source
+    assert "from trader.domain.trade_plan import TradePlan" in source
     assert violations == []
+
+    facade_tree = ast.parse(
+        facade_path.read_text(encoding="utf-8"),
+        filename=str(facade_path),
+    )
+    assert not any(
+        isinstance(node, (ast.ClassDef, ast.FunctionDef))
+        for node in facade_tree.body
+    )
+
+    from trader.application.execute.order_handler import (
+        make_execute_order_handler as legacy_make_execute_order_handler,
+    )
+    from trader.infrastructure.queue.order_handler import make_execute_order_handler
+
+    assert legacy_make_execute_order_handler is make_execute_order_handler
+
+
+def test_retryable_error_is_application_contract_with_worker_facade() -> None:
+    from trader.application.queue.contracts import RetryableError
+    from trader.infrastructure.queue.worker import RetryableError as worker_retryable_error
+    from trader.queue.worker import RetryableError as legacy_retryable_error
+
+    assert worker_retryable_error is RetryableError
+    assert legacy_retryable_error is RetryableError
 
 
 def test_migrations_own_legacy_trade_plan_decoder() -> None:

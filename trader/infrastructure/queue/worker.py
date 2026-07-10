@@ -21,23 +21,9 @@ import logging
 import time
 from typing import Callable
 
+from trader.application.queue.contracts import RetryableError as RetryableError
+
 log = logging.getLogger(__name__)
-
-
-
-class RetryableError(Exception):
-    """Le handler signale un échec transitoire → requeue avec backoff.
-
-    Paramètre ``is_overload`` : True seulement si l'erreur est due à une
-    saturation de la ressource externe (ex. rate-limit, queue pleine).
-    Laisser False pour les erreurs transitoires sans rapport avec la charge
-    (ex. timeout réseau, erreur HTTP 503 ponctuelle) — cela évite de baisser
-    la limite AIMD pour des raisons non-liées à la capacité.
-    """
-
-    def __init__(self, *args, is_overload: bool = False):
-        super().__init__(*args)
-        self.is_overload = is_overload
 
 
 class Worker:
