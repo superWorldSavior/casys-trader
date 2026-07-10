@@ -149,8 +149,10 @@ Les erreurs ACPX retryables du consolidateur, y compris `Internal error` quand
 le fournisseur primaire n'a plus de crédit, passent sur ce fallback sans muter
 le store consolidé tant qu'aucun JSON valide n'est reçu.
 
-Décision pure : `--allowed-tools ""` + `--no-terminal` côté acpx (aucun outil, le
-brain ne fait que raisonner sur le contexte fourni). `exec` = session jetable
+Décision pure par défaut : `--allowed-tools ""` + `--no-terminal` côté acpx. En
+opt-in, `CASYS_AGENT_EXEC=1` autorise les outils natifs dans un scratch en cage
+(réseau coupé, écriture hors repo) pour les calculs déterministes ad hoc ; la
+réponse finale reste un JSON pur. Chaque session est jetable
 → isolation/idempotence (aucun appel ne contamine le suivant) ; l'état évolutif de
 l'agent est externalisé — `mandate/memory.md` (boucle 1) et
 `state/learnings.jsonl` (boucle 2, machine) — et repassé dans le prompt. Contrat
@@ -164,9 +166,12 @@ Le LLM ne calcule pas les indicateurs "de tête". Le code expose une semantic
 layer locale (pattern GeoNexus, sans MCP) : catalogue gouverné + calculs
 déterministes + CLI JSON. Le prompt runtime reste compact : le daemon envoie un
 `context.cockpit` sous forme `cols` + `rows` (`r`, `vol`, `z`, `er`, `ac`, `rs`,
-`sz`) et pas les barres brutes. Si le modèle veut creuser, il renvoie
-`REQUEST_CONTEXT`; le daemon calcule les indicateurs bornés localement puis
-ré-appelle Codex une seule fois pour la décision finale.
+`sz`) et pas les barres brutes. Si le modèle veut creuser, il appelle
+`get_indicator_context` (ou renvoie le legacy `REQUEST_CONTEXT`) ; le daemon
+calcule localement tous les indicateurs gouvernés demandés, puis reprend la
+décision. Le catalogue fini (14 indicateurs) est la borne naturelle ; seuls les
+tool calls/fetchs restent bornés. Un cap opérateur explicite plus bas reste
+possible et sa troncature est signalée dans le résultat.
 
 Le catalogue inclut aussi des signaux de chandeliers japonais et d'analyse
 chartiste sous forme numérique compacte : `candlestick_signal`,

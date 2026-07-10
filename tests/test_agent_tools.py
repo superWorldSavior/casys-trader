@@ -8,6 +8,7 @@ from trader import agent_tools  # noqa: F401 — utilisé dans les tâches 2+
 from trader.agent.tools.core import _MAX_RAW_CALLS, _SCRUB_ID_LEN
 from trader.agent.tools.indicators import _MAX_INDICATOR_MATCHES
 from trader.agent.tools.registry import TOOL_REGISTRY
+from trader.market.features import DEFAULT_INDICATORS
 from trader.agent.tools import (
     AgentToolCall,
     AgentToolTrace,
@@ -131,6 +132,7 @@ def test_agent_tools_package_all_reste_une_api_publique_compacte():
 
     assert _MAX_PLAN_ROWS == 20
     assert _validate_get_indicator_context({"symbol": "AAA", "indicators": ["rsi14"]}) is None
+    assert _validate_get_indicator_context({"symbol": "AAA", "indicators": DEFAULT_INDICATORS}) is None
     assert _validate_get_active_plans({"symbol": "AAA", "limit": 1}) is None
     assert callable(_handle_get_freshness)
 

@@ -294,11 +294,18 @@ def resolve_indicator_requests(
     cached_interval: str = "1h",
     cached_lookback: str = "5d",
 ) -> dict:
-    """Resolve LLM-requested indicator lookups with hard bounds."""
+    """Resolve indicator lookups with request-count bounds.
+
+    The governed indicator catalog is finite. By default callers pass its full
+    size as ``max_indicators`` so every valid requested indicator is returned.
+    An explicit lower operator cap remains supported and is reported honestly
+    instead of silently dropping indicators.
+    """
     known = set(DEFAULT_INDICATORS)
     all_requests = list(raw_requests)
     limited_requests = all_requests[:max_requests]
     resolved: list[dict] = []
+    indicators_truncated = False
     get_bars = market_get_bars or market.get_bars
 
     for request in limited_requests:
@@ -306,10 +313,15 @@ def resolve_indicator_requests(
         if symbol not in symbols:
             continue
         requested_names = []
+        seen_names: set[str] = set()
         for name in getattr(request, "indicators", []):
             canonical_name = INDICATOR_ALIASES.get(str(name), str(name))
-            if canonical_name in known:
+            if canonical_name in known and canonical_name not in seen_names:
                 requested_names.append(canonical_name)
+                seen_names.add(canonical_name)
+        requested_indicator_count = len(requested_names)
+        request_indicators_truncated = requested_indicator_count > max_indicators
+        indicators_truncated = indicators_truncated or request_indicators_truncated
         requested_names = requested_names[:max_indicators]
         if not requested_names:
             requested_names = DEFAULT_INDICATORS[:max_indicators]
@@ -373,6 +385,9 @@ def resolve_indicator_requests(
                 "lookback": temporal["lookback"],
                 "window": temporal["window"],
                 "as_of": temporal["as_of"],
+                "requested_indicator_count": requested_indicator_count,
+                "returned_indicator_count": len(requested_names),
+                "indicators_truncated": request_indicators_truncated,
                 "indicators": item["indicators"],
             }
         )
@@ -381,7 +396,7 @@ def resolve_indicator_requests(
         "mode": "bounded_indicator_research",
         "max_requests": max_requests,
         "max_indicators_per_request": max_indicators,
-        "truncated": len(all_requests) > max_requests,
+        "truncated": len(all_requests) > max_requests or indicators_truncated,
         "requests": resolved,
     }
 

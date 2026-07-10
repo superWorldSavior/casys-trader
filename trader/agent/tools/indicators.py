@@ -5,7 +5,6 @@ from __future__ import annotations
 from trader.agent.tools.core import AgentToolCall, ToolContext, ToolSpec
 from trader.domain.semantic import catalog as semantic_catalog
 
-_MAX_INDICATORS_PER_CALL = 6
 _MAX_INDICATOR_MATCHES = 12
 
 
@@ -15,8 +14,6 @@ def _validate_get_indicator_context(args: dict) -> str | None:
     indicators = args.get("indicators")
     if not isinstance(indicators, list) or not indicators or not all(isinstance(i, str) for i in indicators):
         return "indicators: liste non vide de str requise"
-    if len(indicators) > _MAX_INDICATORS_PER_CALL:
-        return f"indicators: {_MAX_INDICATORS_PER_CALL} max"
     window = args.get("window")
     if window is not None and (not isinstance(window, int) or window < 1):
         return "window: entier >= 1 ou absent"

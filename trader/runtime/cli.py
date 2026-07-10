@@ -853,7 +853,12 @@ def build_parser() -> argparse.ArgumentParser:
     daemon_parser.add_argument("--min-wake-minutes", type=float, default=5.0)
     daemon_parser.add_argument("--max-wake-minutes", type=float, default=240.0)
     daemon_parser.add_argument("--max-context-requests-per-symbol", type=int, default=2)
-    daemon_parser.add_argument("--max-indicators-per-request", type=int, default=4)
+    daemon_parser.add_argument(
+        "--max-indicators-per-request",
+        type=int,
+        default=len(DEFAULT_INDICATORS),
+        help="cap opérateur optionnel ; par défaut tout le catalogue d'indicateurs est retourné",
+    )
     daemon_parser.add_argument(
         "--max-model-calls-per-cycle",
         type=int,

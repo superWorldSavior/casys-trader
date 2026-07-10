@@ -3,7 +3,7 @@
 > **Type** : Reference (Diátaxis).
 > **Code** : `ops/codex-home/config.toml` (versionné) · propagation `trader/agent/llm.py::load_dotenv` → `trader/support/system/process_env.py::sanitized_runtime_env` → subprocess `acpx` → pont `codex-acp` (`acpx src/acp/auth-env.ts::buildAgentEnvironment`).
 > **Statut** : ✅ **Actif en paper (2026-07-06, main dabc85b)** — `.env CODEX_HOME=…/ops/codex-home`.
-> **Rôle** : donner au daemon un environnement Codex **nu** (0 plugin, 0 skill, 0 MCP) pour des sessions de décision **déterministes** au contrat JSON strict, isolées de l'environnement de dev partagé.
+> **Rôle** : donner au daemon un environnement Codex **nu** (0 plugin, 0 skill, 0 MCP) pour des sessions de décision **déterministes** au contrat JSON strict, isolées de l'environnement de dev partagé, avec un `exec` optionnel confiné dans un scratch hors repo.
 
 ## Le problème (ce qui a motivé l'isolation)
 
@@ -69,6 +69,20 @@ pont à partir de `{ ...process.env }` (fichier `src/acp/auth-env.ts`,
 `CODEX_HOME` — ce que `sanitized_runtime_env()` assure (elle ne filtre que les
 préfixes `MALLOC_` et le `PATH`, pas `CODEX_HOME`).
 
+### Exec natif optionnel
+
+`CASYS_AGENT_EXEC=1` autorise les outils natifs Codex (shell/Python) pour les
+calculs ad hoc. Le runtime impose alors comme cwd
+`ops/codex-home/calc-scratch/` et refuse de s'ouvrir si `CODEX_HOME` n'est pas
+absolu ou si le scratch en sort. Avec `sandbox_mode = "workspace-write"`, le
+réseau reste coupé et les écritures sont confinées à ce scratch gitignoré. Sans
+le flag, le contrat historique sans outil natif reste inchangé.
+
+Cette capacité sert au raisonnement numérique, pas à exécuter directement un
+ordre : la sortie finale reste du JSON pur, puis le daemon valide et exécute via
+ses domain tools et le `RiskGate`. Un script libre ne devient pas non plus une
+watch persistante ; les watches restent dans le vocabulaire sémantique gouverné.
+
 ## Mise en place / reproduction
 
 ```bash
@@ -77,7 +91,9 @@ préfixes `MALLOC_` et le `PATH`, pas `CODEX_HOME`).
 ln -sf ~/.codex/auth.json ops/codex-home/auth.json
 # 3. Pointer le daemon dessus (chemin ABSOLU) dans .env :
 echo 'CODEX_HOME=/chemin/absolu/vers/casys-trader/ops/codex-home' >> .env
-# 4. Redémarrer le daemon (cf. docs/how-to/run-the-daemon.md) pour recharger .env.
+# 4. Optionnel : activer les calculs natifs en cage :
+echo 'CASYS_AGENT_EXEC=1' >> .env
+# 5. Redémarrer le daemon (cf. docs/how-to/run-the-daemon.md) pour recharger .env.
 ```
 
 Le `.env.example` documente la variable.

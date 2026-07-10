@@ -1,7 +1,7 @@
 # Référence — Contexte agent (le cockpit envoyé au LLM)
 
 > **Type** : Reference (Diátaxis).
-> **Code** : `trader/agent/context` · **Rôle** : construit le contexte compact + la recherche d'indicateurs bornée pour l'agent.
+> **Code** : `trader/agent/context` · **Rôle** : construit le contexte compact + la recherche d'indicateurs à la demande pour l'agent.
 
 `build_market_cockpit` construit le dict **`cockpit`** — **une clé** du
 `shared_context`. Le `shared_context` complet est assemblé dans `runtime/daemon`
@@ -23,7 +23,9 @@ Pour dimensionner une nouvelle ouverture, l'agent lit surtout
 
 ## `build_market_cockpit(...)`
 
-Construit le `cockpit` : par symbole, prix, indicateurs **15m + daily**, régime,
+Construit le `cockpit` : par symbole, prix, les 7 indicateurs numériques cœur
+(`return`, `volatility`, `z_score`, `efficiency_ratio`, `autocorrelation`,
+`relative_strength`, `spread_zscore`) en **15m + daily**, régime,
 signaux HTF, distances swing, frais, **devise/fx/budgets** — compacté
 (`_compact_price`, arrondis). ⚠️ **`data_age_m` et `session` ne viennent PAS d'ici** :
 ils sont calculés par `application/decide/planner_batch._symbol_facts()` et injectés
@@ -39,10 +41,13 @@ by-design).
 
 ## `resolve_indicator_requests(...)`
 
-Résout une **demande de contexte bornée** (`REQUEST_CONTEXT`) : quand l'agent
-demande des indicateurs supplémentaires, cette fonction les calcule dans les limites
-(`max_requests`, `max_indicators`) et les réinjecte au 2e passage de décision. Borné
-pour maîtriser le coût (cf. `application/decide/planner_batch`).
+Résout une demande de contexte (`REQUEST_CONTEXT` ou `get_indicator_context`) :
+quand l'agent veut un autre horizon, une autre fenêtre ou les indicateurs absents
+du cockpit compact, cette fonction les calcule et les réinjecte au passage suivant.
+Par défaut, **tous les indicateurs valides demandés** sont retournés : le catalogue
+gouverné (14 indicateurs) est déjà la borne naturelle. Le nombre de requêtes/tool
+calls reste borné pour maîtriser les fetchs ; un éventuel cap opérateur explicite
+sur les indicateurs est signalé par `indicators_truncated`, jamais silencieux.
 
 ## Faits par symbole
 

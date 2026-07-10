@@ -507,7 +507,7 @@ def run_cycle(
     min_wake_minutes: float | None = None,
     max_wake_minutes: float | None = None,
     max_context_requests_per_symbol: int = 2,
-    max_indicators_per_request: int = 4,
+    max_indicators_per_request: int = len(DEFAULT_INDICATORS),
     max_model_calls_per_cycle: int = 25,
     max_market_data_age_minutes: float = DEFAULT_MAX_MARKET_DATA_AGE_MINUTES,
     runtime_interval: str = DEFAULT_RUNTIME_INTERVAL,
@@ -1339,7 +1339,12 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--min-wake-minutes", type=float, default=None, help="borne basse optionnelle du réveil agent (défaut: aucune)")
     parser.add_argument("--max-wake-minutes", type=float, default=None, help="borne haute optionnelle du réveil agent (défaut: aucune — l'agent est autonome)")
     parser.add_argument("--max-context-requests-per-symbol", type=int, default=2, help="nombre max de requêtes indicateurs par symbole")
-    parser.add_argument("--max-indicators-per-request", type=int, default=4, help="nombre max d'indicateurs par requête")
+    parser.add_argument(
+        "--max-indicators-per-request",
+        type=int,
+        default=len(DEFAULT_INDICATORS),
+        help="cap opérateur optionnel ; par défaut tout le catalogue d'indicateurs est retourné",
+    )
     parser.add_argument(
         "--max-model-calls-per-cycle",
         type=int,

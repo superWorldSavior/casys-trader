@@ -1,5 +1,6 @@
 from trader.agent.context import resolve_indicator_requests
 from trader.agent.client import IndicatorRequest
+from trader.market.features import DEFAULT_INDICATORS
 from trader.market.market_data import Bar
 
 
@@ -118,3 +119,49 @@ def test_resolve_indicator_requests_charge_les_pairs_pour_relative_strength_4h()
 
     assert calls == [("SPY", "1mo", "4h"), ("QQQ", "1mo", "4h"), ("DIA", "1mo", "4h")]
     assert result["requests"][0]["indicators"]["relative_strength"] > 0.04
+
+
+def test_resolve_indicator_requests_retourne_tout_le_catalogue_par_defaut() -> None:
+    bars = [_bar(index, 100.0 + index) for index in range(120)]
+
+    result = resolve_indicator_requests(
+        [
+            IndicatorRequest(
+                symbol="SPY",
+                indicators=list(DEFAULT_INDICATORS),
+                timeframe="1h",
+                lookback="5d",
+                window=48,
+            )
+        ],
+        {"SPY": bars},
+        symbols=["SPY"],
+        max_requests=1,
+        max_indicators=len(DEFAULT_INDICATORS),
+    )
+
+    request = result["requests"][0]
+    assert set(request["indicators"]) == set(DEFAULT_INDICATORS)
+    assert request["requested_indicator_count"] == len(DEFAULT_INDICATORS)
+    assert request["returned_indicator_count"] == len(DEFAULT_INDICATORS)
+    assert request["indicators_truncated"] is False
+    assert result["truncated"] is False
+
+
+def test_resolve_indicator_requests_signale_un_cap_operateur_explicite() -> None:
+    bars = [_bar(index, 100.0 + index) for index in range(24)]
+
+    result = resolve_indicator_requests(
+        [IndicatorRequest(symbol="SPY", indicators=["return", "z_score"], timeframe="1h")],
+        {"SPY": bars},
+        symbols=["SPY"],
+        max_requests=1,
+        max_indicators=1,
+    )
+
+    request = result["requests"][0]
+    assert set(request["indicators"]) == {"return"}
+    assert request["requested_indicator_count"] == 2
+    assert request["returned_indicator_count"] == 1
+    assert request["indicators_truncated"] is True
+    assert result["truncated"] is True

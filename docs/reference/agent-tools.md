@@ -31,6 +31,23 @@ acceptés en compat cachée, mais ne sont pas exposés dans ce contrat.
 Chaque outil = un `ToolSpec(name, validate_args, handler)` enregistré dans
 `TOOL_REGISTRY` (`agent/tools/registry`).
 
+`get_indicator_context` renvoie par défaut tous les indicateurs gouvernés demandés.
+Le catalogue fini est la borne naturelle ; l'agent n'a pas à découper une recherche
+multi-indicateurs en plusieurs appels. Les bornes techniques portent sur le nombre
+de tool calls et de requêtes de données, pas sur quatre ou six indicateurs arbitraires.
+
+### Calcul natif en cage (`exec`)
+
+Quand `CASYS_AGENT_EXEC=1`, le transport Codex expose aussi shell/Python dans le
+scratch du `CODEX_HOME` isolé : réseau coupé et écritures confinées hors du repo.
+Ce n'est pas un domain tool et cela ne contourne ni le `RiskGate`, ni le contrat
+de décision : l'agent peut s'en servir pour un calcul déterministe ad hoc
+(corrélation, distance à un niveau, retracements de Fibonacci à partir d'ancres
+connues), mais sa réponse finale reste du JSON pur et l'exécution de l'ordre reste
+daemon-owned. Un calcul libre n'est pas automatiquement une condition de watch
+persistante ; une logique récurrente doit être exprimée avec le catalogue gouverné
+ou promue dans la semantic layer pour rester rejouable et auditable.
+
 ### `get_active_plans`
 
 `get_active_plans{symbol?, limit?}` retourne toujours un objet
