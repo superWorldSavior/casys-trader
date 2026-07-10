@@ -48,7 +48,6 @@ from trader.application.cycle import (
 )
 from trader.application.record import (
     decision_entries,
-    plan_review,
     confidence_feedback,
     gross_feedback,
 )
@@ -93,6 +92,7 @@ from trader.runtime import (
     cycle_scheduling,
     data_source_runtime,
     daemon_bootstrap,
+    decision_dispatch_runtime,
     market_rotation_runtime,
     news_macro_runtime,
     queue_runtime,
@@ -727,7 +727,7 @@ def run_cycle(
 
     _write_current_report(report)
     mandate_txt, memory_txt = mem.read_mandate(), mem.read_memory()
-    model_calls_used = 0
+    model_call_counter = decision_dispatch_runtime.ModelCallCounter()
 
     # Calendrier macro : calculé UNE fois par cycle (pas par symbole) — best-effort.
     # Attribution-first : n'entre PAS dans le contexte LLM (même mécanique que news).
@@ -755,7 +755,7 @@ def run_cycle(
         ),
         recall_store=_recall_store,
         merge_gate_feedback=confidence_feedback.merge_gate_feedback,
-        model_calls_used_getter=lambda: model_calls_used,
+        model_calls_used_getter=lambda: model_call_counter.used,
         agent_trace_path=STATE_DIR / "agent_trace.log",
     )
     record_decision = recorder.record
@@ -829,14 +829,6 @@ def run_cycle(
     analysis_bars_by_symbol = prepared_scope.analysis_bars_by_symbol
     analysis_timeframe_by_symbol = prepared_scope.analysis_timeframe_by_symbol
     analysis_symbols = prepared_scope.analysis_symbols
-    # undecided_symbols : symboles non décidés en mode queue (skippés dead/budget).
-    # Ils sont EXCLUS du fallback HOLD synthétique
-    # ci-dessous (FIX 2). En mode batch, reste vide (comportement inchangé).
-    undecided_symbols: set[str] = set()
-    decisions_by_symbol: dict[str, codex_client.Decision] = {}
-    streamed_decision_symbols: set[str] = set()
-    buffered_opening_symbols: set[str] = set()
-
     execution_state = DecisionExecutionState(snap=snap, gross=gross)
     execution_ctx = DecisionExecutionContext(
         now=now,
@@ -870,116 +862,56 @@ def run_cycle(
         logger=log,
     )
 
-    if queue_decide_enabled and task_ledger is not None:
-        # Mode file : enfile 1 tâche par symbole et collecte via polling.
-        # Le pool DecidePool tourne en arrière-plan (démarré dans main()).
-        from trader.application.decide.planner_batch import (
-            build_symbol_facts,
-        )
-        from trader.application.decide.queue_dispatch import iter_decide_results_via_queue
-        from trader.application.decide.recent_decisions import recent_decisions_by_symbol
-        _last_review = plan_review.last_review_by_symbol(plan_store, decidable)
-        # Push anti-répétition : N dernières décisions authentiques par symbole (même
-        # sans position ouverte, là où _last_review ne couvre que les plans ouverts).
-        # Une seule lecture du ledger, groupée.
-        _recent_decisions = recent_decisions_by_symbol(decision_ledger_store, symbols=decidable)
-        _active_watches = planner_batch._active_watch_summaries_by_symbol(
-            sched=sched, symbols=decidable, now=now,
-        )
-        symbol_facts_by_sym = {
-            sym: {
-                "indicator_triggers": triggers_by_symbol.get(sym, []),
-                "wake_reasons": wake_reasons_by_symbol.get(sym, []),
-                **build_symbol_facts(
-                    sym,
-                    data_age_by_symbol=data_age_by_symbol,
-                    now=now,
-                    active_watches_by_symbol=_active_watches,
-                    market_context_by_symbol=execution_eligibility,
-                    last_review_by_symbol=_last_review,
-                    recent_decisions_by_symbol=_recent_decisions,
-                    bars_by_symbol=analysis_bars_by_symbol,
-                    bar_timeframe_by_symbol=analysis_timeframe_by_symbol,
-                ),
-            }
-            for sym in decidable
-        }
-        # Mode queue : l'admission n'est pas capée par appels ; l'itérateur rend
-        # chaque symbole dès son état terminal, ResourcePools/AIMD borne la pression provider.
-        stream_index_by_symbol = {
-            sym: index
-            for index, sym in enumerate(symbols_to_decide, start=1)
-        }
-        for sym, decision, calls in iter_decide_results_via_queue(
-            ledger=task_ledger,
-            decidable=decidable,
-            mandate=mandate_txt,
-            memory=memory_txt,
-            shared_context=base_context,
-            symbol_facts_by_sym=symbol_facts_by_sym,
-            decision_timeout_s=decision_timeout_s,
-            agent_tools_enabled=agent_tools_enabled,
-            cycle_id=cycle_id,
-            now_fn=time.time,
-            # Univers d'analyse du cycle → resolver d'indicateurs du tour d'outils
-            # (filtre dur + paires cross-asset, spec §5 W5).
-            symbols_universe=analysis_symbols,
-        ):
-            if decision is None:
-                undecided_symbols.add(sym)
-                continue
-            model_calls_used += calls
-            routed_decision = _resolve_decision_for_execution_routing(
-                symbol=sym,
-                decision=decision,
-                broker=broker,
-            )
-            decisions_by_symbol[sym] = routed_decision
-            if routed_decision.intent in _OPENING_INTENTS:
-                buffered_opening_symbols.add(sym)
-                continue
-
-            execution_state = _execute_one_cycle_decision(
-                sym=sym,
-                index=stream_index_by_symbol.get(sym, len(streamed_decision_symbols) + 1),
-                total=len(symbols_to_decide),
-                decision=routed_decision,
-                state=execution_state,
-                ctx=execution_ctx,
-            )
-            snap = execution_state.snap
-            gross = execution_state.gross
-            streamed_decision_symbols.add(sym)
-    else:
-        # Mode batch classique — comportement STRICTEMENT inchangé (flag off).
-        decisions_by_symbol, model_calls_used = planner_batch.batch_decide(
+    dispatch_result = decision_dispatch_runtime.dispatch_decisions(
+        decision_dispatch_runtime.DecisionDispatchRequest(
+            queue_decide_enabled=queue_decide_enabled,
+            task_ledger=task_ledger,
             decidable=decidable,
             mandate=mandate_txt,
             memory=memory_txt,
             shared_context=base_context,
             triggers_by_symbol=triggers_by_symbol,
             wake_reasons_by_symbol=wake_reasons_by_symbol,
-            tradable_bars_by_symbol=analysis_bars_by_symbol,
-            tradable_symbols=analysis_symbols,
+            analysis_bars_by_symbol=analysis_bars_by_symbol,
+            analysis_timeframe_by_symbol=analysis_timeframe_by_symbol,
+            analysis_symbols=analysis_symbols,
+            data_age_by_symbol=data_age_by_symbol,
+            execution_eligibility=execution_eligibility,
+            now=now,
+            scheduler=sched,
+            plan_store=plan_store,
+            decision_ledger_store=decision_ledger_store,
+            decision_timeout_s=decision_timeout_s,
+            agent_tools_enabled=agent_tools_enabled,
+            cycle_id=cycle_id,
+            symbols_to_decide=symbols_to_decide,
+            broker=broker,
+            execution_state=execution_state,
+            execution_context=execution_ctx,
             runtime_interval=runtime_interval,
             runtime_lookback=runtime_lookback,
             max_context_requests_per_symbol=max_context_requests_per_symbol,
             max_indicators_per_request=max_indicators_per_request,
             max_model_calls=max_model_calls_per_cycle,
-            now=now,
-            data_age_by_symbol=data_age_by_symbol,
-            sched=sched,
-            last_review_by_symbol=plan_review.last_review_by_symbol(plan_store, decidable),
-            market_context_by_symbol=execution_eligibility,
-            decision_timeout_s=decision_timeout_s,
             decision_batch_size=decision_batch_size,
             decision_batch_parallelism=decision_batch_parallelism,
-            agent_tools_enabled=agent_tools_enabled,
             learnings_recall_provider=_recall_provider,
             indicator_request_resolver=resolve_indicator_requests,
             event_appender=_append_event,
-            bar_timeframe_by_symbol=analysis_timeframe_by_symbol,
-        )
+            opening_intents=_OPENING_INTENTS,
+            model_call_counter=model_call_counter,
+            now_fn=time.time,
+        ),
+        resolve_decision_for_routing=_resolve_decision_for_execution_routing,
+        execute_decision=_execute_one_cycle_decision,
+    )
+    decisions_by_symbol = dispatch_result.decisions_by_symbol
+    model_calls_used = dispatch_result.model_calls_used
+    undecided_symbols = dispatch_result.undecided_symbols
+    streamed_decision_symbols = dispatch_result.streamed_decision_symbols
+    execution_state = dispatch_result.execution_state
+    snap = execution_state.snap
+    gross = execution_state.gross
     if armed_decisions:
         decisions_by_symbol = {**decisions_by_symbol, **armed_decisions}
     # "[decide]" : commun batch/queue (E7 — le libellé [batch] mentait en mode queue).

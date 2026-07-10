@@ -953,6 +953,22 @@ def test_daemon_delegates_execute_queue_dispatch_to_application_service() -> Non
     assert violations == []
 
 
+def test_daemon_delegates_decision_dispatch_to_runtime_adapter() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    daemon_path = repo_root / "trader" / "runtime" / "daemon.py"
+    adapter_path = repo_root / "trader" / "runtime" / "decision_dispatch_runtime.py"
+
+    assert adapter_path.exists()
+    adapter_source = adapter_path.read_text(encoding="utf-8")
+    assert "trader.infrastructure" not in adapter_source
+
+    daemon_source = daemon_path.read_text(encoding="utf-8")
+    assert "decision_dispatch_runtime.dispatch_decisions" in daemon_source
+    assert "iter_decide_results_via_queue" not in daemon_source
+    assert "planner_batch.batch_decide" not in daemon_source
+    assert "build_symbol_facts" not in daemon_source
+
+
 def test_daemon_delegates_queue_pool_bootstrap_to_runtime_adapter() -> None:
     repo_root = Path(__file__).resolve().parents[1]
     daemon_path = repo_root / "trader" / "runtime" / "daemon.py"
