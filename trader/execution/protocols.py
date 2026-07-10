@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from trader.execution.contracts import Commission, Fill, Order, Position
+from trader.domain.contracts import Commission, Fill, Order, Position
 
 __all__ = ["Broker", "CommissionModel"]
 

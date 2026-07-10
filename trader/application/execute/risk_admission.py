@@ -7,7 +7,7 @@ from typing import Protocol, cast
 
 import trader.application.execute.order_admission as order_admission
 from trader.domain.orders import Side
-from trader.execution.contracts import Order
+from trader.domain.contracts import Order
 
 _PURE_OPEN_INTENTS = {"OPEN_LONG", "OPEN_SHORT"}
 _RISK_GUARDED_OPENING_INTENTS = {"OPEN_LONG", "OPEN_SHORT", "SCALE_IN"}

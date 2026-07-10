@@ -8,7 +8,7 @@ import time as _time
 from dataclasses import dataclass
 from typing import Callable, Literal
 
-from trader.execution.contracts import Fill
+from trader.domain.contracts import Fill
 
 log = logging.getLogger("trader.application.execute.queue_dispatch")
 

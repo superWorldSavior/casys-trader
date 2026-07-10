@@ -10,13 +10,10 @@ from __future__ import annotations
 
 import logging
 
+from trader.domain.contracts import Commission, Fill, Order, Position
+from trader.domain.execution.fill_accounting import POSITION_EPSILON, compute_fill_effect
+from trader.infrastructure.brokers.commission_models import NoCommissionModel
 from trader.infrastructure.state_db.connection import StateDb
-from trader.execution.contracts import Commission, Fill, Order, Position
-from trader.execution.commission import (
-    NoCommissionModel,
-    POSITION_EPSILON,
-    compute_fill_effect,
-)
 
 log = logging.getLogger(__name__)
 

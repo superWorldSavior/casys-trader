@@ -6,7 +6,7 @@ import copy
 from typing import Protocol
 
 from trader.application.exit.planned_exits import plan_snapshot
-from trader.execution.contracts import Position
+from trader.domain.contracts import Position
 from trader.planning.trade_plan import TradePlan, create_trade_plan, create_trade_plan_from_order
 
 OPENING_INTENTS = {"OPEN_LONG", "OPEN_SHORT", "FLIP", "SCALE_IN"}

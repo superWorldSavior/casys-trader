@@ -7,7 +7,7 @@ import time
 from typing import TYPE_CHECKING, Callable
 
 from trader.domain.trade_plan import TradePlan
-from trader.execution.contracts import Order
+from trader.domain.contracts import Order
 from trader.infrastructure.state_db.unit_of_work import execute_order_unit
 
 if TYPE_CHECKING:

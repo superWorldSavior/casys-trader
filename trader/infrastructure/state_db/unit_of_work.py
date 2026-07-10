@@ -21,7 +21,7 @@ if TYPE_CHECKING:
     from trader.infrastructure.state_db.broker_store import SqliteBroker
     from trader.infrastructure.state_db.trade_plan_store import SqliteTradePlanStore
     from trader.infrastructure.queue.ledger import TaskLedger
-    from trader.execution.contracts import Fill, Order
+    from trader.domain.contracts import Fill, Order
     from trader.domain.trade_plan import TradePlan
 
 log = logging.getLogger(__name__)

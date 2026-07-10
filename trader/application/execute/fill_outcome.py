@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from trader.execution.contracts import Fill
+from trader.domain.contracts import Fill
 
 
 @dataclass(frozen=True)

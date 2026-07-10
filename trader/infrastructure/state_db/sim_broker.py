@@ -6,13 +6,10 @@ import json
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-from trader.execution.commission import (
-    NoCommissionModel,
-    POSITION_EPSILON,
-    compute_fill_effect,
-)
-from trader.execution.contracts import Fill, Order, Position
+from trader.domain.contracts import Fill, Order, Position
+from trader.domain.execution.fill_accounting import POSITION_EPSILON, compute_fill_effect
 from trader.execution.protocols import CommissionModel
+from trader.infrastructure.brokers.commission_models import NoCommissionModel
 
 
 @dataclass

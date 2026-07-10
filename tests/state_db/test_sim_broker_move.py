@@ -31,17 +31,31 @@ def test_sim_broker_lives_in_state_db_with_execution_broker_facade() -> None:
     assert facade.__all__ == BROKER_FACADE_EXPORTS
 
 
-def test_commission_logic_lives_in_execution_commission_with_broker_facade() -> None:
+def test_commission_responsibilities_are_canonical_with_execution_facades() -> None:
+    from trader.application.execute.fee_estimate import round_trip_cost
+    from trader.domain.execution.fill_accounting import compute_fill_effect
     from trader.execution import broker as facade
     from trader.execution.commission import (
+        IbkrCommissionModel as facade_ibkr_model,
+        NoCommissionModel as facade_no_model,
+        commission_model_from_name as facade_model_factory,
+        compute_fill_effect as facade_fill_effect,
+        round_trip_cost as facade_round_trip_cost,
+    )
+    from trader.infrastructure.brokers.commission_models import (
         IbkrCommissionModel,
         NoCommissionModel,
         commission_model_from_name,
-        compute_fill_effect,
-        round_trip_cost,
     )
 
-    assert IbkrCommissionModel.__module__ == "trader.execution.commission"
+    assert IbkrCommissionModel.__module__ == "trader.infrastructure.brokers.commission_models"
+    assert compute_fill_effect.__module__ == "trader.domain.execution.fill_accounting"
+    assert round_trip_cost.__module__ == "trader.application.execute.fee_estimate"
+    assert facade_ibkr_model is IbkrCommissionModel
+    assert facade_no_model is NoCommissionModel
+    assert facade_model_factory is commission_model_from_name
+    assert facade_fill_effect is compute_fill_effect
+    assert facade_round_trip_cost is round_trip_cost
     assert facade.IbkrCommissionModel is IbkrCommissionModel
     assert facade.NoCommissionModel is NoCommissionModel
     assert facade.commission_model_from_name is commission_model_from_name
@@ -74,7 +88,8 @@ def test_broker_factory_imports_json_broker_from_infrastructure_top_level() -> N
 def test_commission_and_sim_broker_do_not_import_runtime_or_application() -> None:
     repo_root = Path(__file__).resolve().parents[2]
     checked_modules = [
-        repo_root / "trader" / "execution" / "commission.py",
+        repo_root / "trader" / "domain" / "execution" / "fill_accounting.py",
+        repo_root / "trader" / "infrastructure" / "brokers" / "commission_models.py",
         repo_root / "trader" / "infrastructure" / "state_db" / "sim_broker.py",
     ]
     forbidden_prefixes = (

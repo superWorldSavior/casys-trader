@@ -361,6 +361,7 @@ def test_infrastructure_backends_are_nested_under_infrastructure() -> None:
 
     assert infrastructure_dir.exists()
     assert sorted(path.name for path in infrastructure_dir.iterdir() if path.is_dir() and path.name != "__pycache__") == [
+        "brokers",
         "files",
         "llm",
         "market_sources",
@@ -465,6 +466,32 @@ def test_contract_value_types_are_domain_canonical_with_public_facades() -> None
     assert replace(decision, confidence=0.5).confidence == 0.5
 
     assert _domain_import_violations(domain_paths, repo_root) == []
+
+
+def test_execution_commission_module_is_a_compatibility_facade() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    facade_path = repo_root / "trader" / "execution" / "commission.py"
+    facade_tree = ast.parse(
+        facade_path.read_text(encoding="utf-8"),
+        filename=str(facade_path),
+    )
+
+    assert not any(isinstance(node, (ast.ClassDef, ast.FunctionDef)) for node in facade_tree.body)
+
+    from trader.application.execute.fee_estimate import round_trip_cost
+    from trader.domain.execution.fill_accounting import compute_fill_effect
+    from trader.execution import commission as facade
+    from trader.infrastructure.brokers.commission_models import (
+        IbkrCommissionModel,
+        NoCommissionModel,
+        commission_model_from_name,
+    )
+
+    assert facade.IbkrCommissionModel is IbkrCommissionModel
+    assert facade.NoCommissionModel is NoCommissionModel
+    assert facade.commission_model_from_name is commission_model_from_name
+    assert facade.compute_fill_effect is compute_fill_effect
+    assert facade.round_trip_cost is round_trip_cost
 
 
 def test_llm_router_and_backend_port_are_domain_canonical() -> None:
@@ -3066,11 +3093,11 @@ def test_execution_broker_imports_are_canonical_with_tools_compatibility() -> No
         SimBroker,
     )
     from trader.domain.orders import Side as CanonicalSide
-    from trader.execution.contracts import Commission as CanonicalCommission
-    from trader.execution.contracts import CommissionModelName as CanonicalCommissionModelName
-    from trader.execution.contracts import Fill as CanonicalFill
-    from trader.execution.contracts import Order as CanonicalOrder
-    from trader.execution.contracts import Position as CanonicalPosition
+    from trader.domain.contracts import Commission as CanonicalCommission
+    from trader.domain.contracts import CommissionModelName as CanonicalCommissionModelName
+    from trader.domain.contracts import Fill as CanonicalFill
+    from trader.domain.contracts import Order as CanonicalOrder
+    from trader.domain.contracts import Position as CanonicalPosition
     from trader.execution.protocols import Broker as CanonicalBroker
     from trader.execution.protocols import CommissionModel as CanonicalCommissionModel
     from trader.tools.execution import Broker as LegacyBroker

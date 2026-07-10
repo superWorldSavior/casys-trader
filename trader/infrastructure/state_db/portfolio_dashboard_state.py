@@ -10,7 +10,7 @@ import duckdb
 
 from trader.domain.portfolio.allocation import PositionLike
 from trader.domain.semantic import catalog
-from trader.execution.contracts import Fill
+from trader.domain.contracts import Fill
 from trader.infrastructure.state_db.broker_store import SqliteBroker
 from trader.infrastructure.state_db.connection import open_state_db
 
