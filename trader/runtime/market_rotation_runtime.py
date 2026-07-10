@@ -17,6 +17,7 @@ BuildMarketContextFn = Callable[[object], object]
 BuildNewsChallengerFn = Callable[..., object]
 BuildPreparedUniverseFn = Callable[[Path], object]
 BuildCandidateScopeObserverFn = Callable[[Path], object]
+BuildRadarScoreAuditObserverFn = Callable[[Path], object]
 RotationTickFn = Callable[..., object]
 PositionsFn = Callable[[], dict]
 PlansFn = Callable[[], list]
@@ -128,6 +129,23 @@ def build_candidate_scope_observer(state_dir: str | Path) -> Callable[[dict], No
     return _observe
 
 
+def build_radar_score_audit_observer(state_dir: str | Path) -> Callable[[dict], dict]:
+    """Persist the shadow score audit without affecting rotation selection."""
+
+    from trader.infrastructure.state_db.shadow import write_json_atomic
+
+    target = Path(state_dir) / "radar_score_audit.json"
+
+    def _observe(record: dict) -> dict[str, str]:
+        write_json_atomic(target, record)
+        return {
+            "path": target.name,
+            "input_signature": str(record.get("input_signature") or ""),
+        }
+
+    return _observe
+
+
 def build_prepared_universe_fn(state_dir: str | Path) -> Callable[..., dict]:
     """Read an exact prepared agent selection for synchronous pre-open activation."""
 
@@ -192,6 +210,7 @@ def tick_market_rotation(
     build_news_challenger_fn: BuildNewsChallengerFn | None = None,
     build_prepared_universe_provider_fn: BuildPreparedUniverseFn | None = None,
     build_candidate_scope_observer_fn: BuildCandidateScopeObserverFn | None = None,
+    build_radar_score_audit_observer_fn: BuildRadarScoreAuditObserverFn | None = None,
     rotation_tick_fn: RotationTickFn | None = None,
 ) -> None:
     """Run the best-effort D10 market rotation tick for daemon.main()."""
@@ -225,6 +244,9 @@ def tick_market_rotation(
         if build_candidate_scope_observer_fn is None:
             build_candidate_scope_observer_fn = build_candidate_scope_observer
         candidate_scope_observer = build_candidate_scope_observer_fn(state_dir)
+        if build_radar_score_audit_observer_fn is None:
+            build_radar_score_audit_observer_fn = build_radar_score_audit_observer
+        radar_score_audit_observer = build_radar_score_audit_observer_fn(state_dir)
 
         market_context = _load_cached_market_context(
             state_dir / "last_regime.json",
@@ -246,6 +268,7 @@ def tick_market_rotation(
             override_fn=override_fn,
             prepared_universe_fn=prepared_universe_fn,
             candidate_scope_observer=candidate_scope_observer,
+            radar_score_audit_observer=radar_score_audit_observer,
             sticky_fn=build_sticky_fn(state_dir),
             market_context=market_context,
             news_challenger_fn=news_challenger_fn,

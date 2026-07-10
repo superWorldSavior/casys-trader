@@ -2,4 +2,4 @@
 
 from __future__ import annotations
 
-__all__ = ["decision_bench", "protocols"]
+__all__ = ["decision_bench", "protocols", "radar_score"]

@@ -359,6 +359,32 @@ def test_universe_pipeline_panel_renders_missing_artifacts_as_pending() -> None:
     assert rendered.count("pipeline pending") == 3
 
 
+def test_universe_pipeline_panel_exposes_radar_shadow_without_implying_activation() -> None:
+    state = {
+        "radar_score_audit": {
+            "status": "shadow_only",
+            "selection_effect": "none",
+            "global_component_balance": {
+                "median_trend_share": 0.822,
+                "short_relative_strength_offset_count": 168,
+                "short_count": 186,
+            },
+        },
+        "radar_score_bench": {
+            "status": "insufficient_history",
+            "coverage": {"unique_snapshot_count": 21},
+        },
+    }
+
+    rendered = _render(build_universe_pipeline_panel(state))
+
+    assert "shadow only" in rendered
+    assert "trend 82%" in rendered
+    assert "short offset 168/186" in rendered
+    assert "bench 21/60" in rendered
+    assert "effect none" in rendered
+
+
 # ---------------------------------------------------------------------------
 # Pure builders — build_symbol_rows
 # ---------------------------------------------------------------------------

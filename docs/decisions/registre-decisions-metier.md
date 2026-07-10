@@ -128,6 +128,17 @@ S'appuie sur D2 (`family_regime`, biais par univers — le radar en est le frèr
 > formulation de propriété finale « défaut + override ». Le radar déterministe,
 > l'hystérésis, la baseline backtestable et le fail-safe de D9 restent valides.
 
+> **Addendum calibration shadow 2026-07-10.** Audit du cache courant sur 412
+> symboles éligibles : contribution trend médiane `0,2072`, force relative
+> `0,0420`, soit 82,2 % de part trend médiane ; bonus amplitude médian 1,66 %.
+> Sur 186 signaux short, 168 sous-performent leur benchmark et la formule legacy
+> fait alors de la force relative un offset positif du score short. Décision :
+> ne pas modifier la production à l'aveugle. `balanced_percentile_v1` est ajouté
+> en shadow 50/50 par venue, amplitude eligibility-only, avec artefact live et
+> bench walk-forward. Premier replay : 21 snapshots uniques seulement, résultats
+> mixtes selon venue/horizon ; statut `insufficient_history`, aucune bascule
+> recommandée. Seuil minimal d'examen : 60 snapshots, sans activation automatique.
+
 ---
 
 ## D10 — Hot-lists par marché : univers actif selon les marchés ouverts  🛠 implémenté (2026-06-15)

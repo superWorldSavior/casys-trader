@@ -248,6 +248,7 @@ def tick(
     override_fn=None,
     prepared_universe_fn=None,
     candidate_scope_observer=None,
+    radar_score_audit_observer=None,
     market_context=None,
     news_challenger_fn=None,
 ) -> dict:
@@ -261,6 +262,8 @@ def tick(
             chemin daemon. Quand présent, il remplace l'appel LLM synchrone.
         candidate_scope_observer: callback best-effort appelé après chaque close
             avec le snapshot candidat immuable à persister hors ``venue_state``.
+        radar_score_audit_observer: callback best-effort qui persiste le comparatif
+            score courant vs shadow. Sa sortie ne participe jamais à la sélection.
         market_context: dict optionnel transmis au payload override (v1 : regime_families).
     """
     config_path = Path(config_dir)
@@ -285,6 +288,28 @@ def tick(
 
             scan_fn = build_rank_fn(config_dir, fetch_fn=_fetch, as_of=now_iso)
         rank_obj = scan_fn()
+        score_audit_status = "not_available"
+        score_audit_ref = None
+        score_audit_error = None
+        if radar_score_audit_observer is not None and isinstance(
+            rank_obj.get("score_audit"), dict
+        ):
+            try:
+                score_audit_ref = radar_score_audit_observer(rank_obj["score_audit"])
+                score_audit_status = "persisted"
+            except Exception as exc:  # noqa: BLE001 - audit never gates rotation
+                score_audit_status = "error"
+                score_audit_error = exc.__class__.__name__
+        state = {
+            **state,
+            "radar_score_audit_observation": {
+                "status": score_audit_status,
+                "as_of": now_iso,
+                "ref": score_audit_ref,
+                "error": score_audit_error,
+                "selection_effect": "none",
+            },
+        }
         if rank_fn is None:
             _purge_old_radar_cache(Path(state_dir) / "radar_cache", now_iso)
         for venue in dues:

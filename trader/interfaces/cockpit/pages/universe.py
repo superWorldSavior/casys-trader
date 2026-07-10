@@ -385,9 +385,38 @@ def build_universe_pipeline_panel(state: dict) -> RenderableType:
     """Current per-venue scope → brief → agent → activation lineage. PUR."""
 
     pipeline = f.safe_dict(state.get("universe_pipeline"))
+    score_audit = f.safe_dict(state.get("radar_score_audit"))
+    score_bench = f.safe_dict(state.get("radar_score_bench"))
     grid = Table.grid(padding=(0, 1))
     grid.add_column(no_wrap=True, width=4)
     grid.add_column()
+
+    component_balance = f.safe_dict(score_audit.get("global_component_balance"))
+    if score_audit:
+        trend_share = _safe_float(component_balance.get("median_trend_share"), default=None)
+        short_offsets = int(
+            _safe_float(component_balance.get("short_relative_strength_offset_count"), default=0)
+            or 0
+        )
+        short_count = int(_safe_float(component_balance.get("short_count"), default=0) or 0)
+        unique_snapshots = int(
+            _safe_float(
+                f.safe_dict(score_bench.get("coverage")).get("unique_snapshot_count"),
+                default=0,
+            )
+            or 0
+        )
+        radar_line = Text()
+        radar_line.append("shadow only", style=CASYS_WARNING)
+        if trend_share is not None:
+            radar_line.append(f" · trend {trend_share:.0%}", style=CASYS_MUTED)
+        if short_count:
+            radar_line.append(f" · short offset {short_offsets}/{short_count}", style=CASYS_MUTED)
+        if unique_snapshots:
+            radar_line.append(f" · bench {unique_snapshots}/60", style=CASYS_DIM)
+        radar_line.append(" · effect none", style=CASYS_SUCCESS)
+        grid.add_row(Text("RAD", style=f"bold {CASYS_FG}"), radar_line)
+        grid.add_row(Text(""), Text("·", style=CASYS_FAINT))
 
     for venue_index, venue in enumerate(_VENUE_ORDER):
         entry = f.safe_dict(pipeline.get(venue))

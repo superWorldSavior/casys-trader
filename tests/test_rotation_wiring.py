@@ -315,6 +315,10 @@ class TestBuildRankFnGapAdverse:
 
         assert "gap_adverse" in result
         assert isinstance(result["gap_adverse"], frozenset)
+        assert result["score_audit"]["status"] == "shadow_only"
+        assert result["score_audit"]["selection_effect"] == "none"
+        assert result["score_audit"]["production_score_version"] == "legacy_raw_v1"
+        assert result["score_audit"]["shadow_score_version"] == "balanced_percentile_v1"
 
 
 # ---------------------------------------------------------------------------

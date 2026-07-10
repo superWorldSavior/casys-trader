@@ -99,6 +99,7 @@ def test_tick_market_rotation_passes_override_and_cached_market_context(tmp_path
     assert calls[1]["tick_kwargs"]["override_fn"] is override
     assert calls[1]["tick_kwargs"]["prepared_universe_fn"] is None
     assert callable(calls[1]["tick_kwargs"]["candidate_scope_observer"])
+    assert callable(calls[1]["tick_kwargs"]["radar_score_audit_observer"])
     assert callable(calls[1]["tick_kwargs"]["sticky_fn"])
     assert calls[1]["tick_kwargs"]["market_context"] is market_context
     assert calls[1]["tick_kwargs"]["news_challenger_fn"] is news_challenger_fn
@@ -146,6 +147,23 @@ def test_tick_market_rotation_uses_prepared_provider_by_default_and_persists_sco
         (state_dir / "candidate_scopes" / "current-US.json").read_text(encoding="utf-8")
     )
     assert current["candidate_scope_id"] == "scope-us-1"
+
+
+def test_radar_score_audit_observer_writes_atomic_shadow_artifact(tmp_path) -> None:
+    observer = market_rotation_runtime.build_radar_score_audit_observer(tmp_path)
+
+    ref = observer(
+        {
+            "schema_version": 1,
+            "status": "shadow_only",
+            "selection_effect": "none",
+            "input_signature": "abc123",
+        }
+    )
+
+    payload = json.loads((tmp_path / "radar_score_audit.json").read_text(encoding="utf-8"))
+    assert payload["selection_effect"] == "none"
+    assert ref == {"path": "radar_score_audit.json", "input_signature": "abc123"}
 
 
 def test_prepared_provider_distinguishes_missing_scope_brief_pending_and_success(tmp_path) -> None:

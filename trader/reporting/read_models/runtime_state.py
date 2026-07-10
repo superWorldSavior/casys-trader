@@ -964,6 +964,8 @@ def load_runtime_state(
     starting_cash = _load_starting_cash_safe(_effective_config_dir)
     venue_state, open_venues_list, sessions = _load_venue_open_state_safe(state_dir_path, _effective_config_dir)
     universe_pipeline = _load_universe_pipeline_safe(state_dir_path, venue_state)
+    radar_score_audit = load_state(state_dir_path / "radar_score_audit.json")
+    radar_score_bench = load_state(state_dir_path / "radar_score_bench.json")
     universe_symbols = _load_universe_symbols_safe(_effective_config_dir)
     company_map = _load_company_names(_effective_config_dir)
     return {
@@ -993,6 +995,8 @@ def load_runtime_state(
         "recent_trips": recent_trips,
         "venue_state": venue_state,
         "universe_pipeline": universe_pipeline,
+        "radar_score_audit": radar_score_audit if isinstance(radar_score_audit, dict) else {},
+        "radar_score_bench": radar_score_bench if isinstance(radar_score_bench, dict) else {},
         "open_venues_list": open_venues_list,
         "sessions": sessions,
         "universe_symbols": universe_symbols,

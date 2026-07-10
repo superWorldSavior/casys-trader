@@ -188,6 +188,7 @@ def build_rank_fn(
     from trader.support.config.pool import load_pool
     from trader.market.radar_config import load_radar_params, load_conviction
     from trader.market.radar import scan_and_rank, daily_components
+    from trader.market.radar_shadow import build_score_audit
     from trader.market.radar_data import fetch_daily
     from trader.domain.semantic.catalog import FAMILIES, family_for_symbol
 
@@ -216,11 +217,15 @@ def build_rank_fn(
             score_window=params.score_window_bars,
         )
         components = {s: daily_components(s, b, params) for s, b in bars.items()}
+        tilt_by_symbol = {
+            symbol: conviction.get(family_for_symbol(symbol), 0.0)
+            for symbol in components
+        }
         scan = scan_and_rank(
             bars,
             indicators_fn=lambda s, b: components[s],
             benchmark_ret_for=bench_ret,
-            tilt_for=lambda s: conviction.get(family_for_symbol(s), 0.0),
+            tilt_for=lambda s: tilt_by_symbol.get(s, 0.0),
             hard_exclusions=set(pool.hard_exclusions),
             atr_floor=params.atr_floor,
             amplitude_cap=params.amplitude_cap,
@@ -232,6 +237,16 @@ def build_rank_fn(
             "ranked": scan["ranked"],
             "ineligible": scan["ineligible"],
             "components_by_symbol": components,
+            "score_audit": build_score_audit(
+                as_of=as_of,
+                current_ranked=scan["ranked"],
+                components_by_symbol=components,
+                benchmark_return_by_symbol=bench_ret,
+                tilt_by_symbol=tilt_by_symbol,
+                venue_for=venue_of,
+                family_for=family_for_symbol,
+                params=params,
+            ),
             "gap_adverse": compute_gap_adverse(
                 bars, scan["ranked"], gap_threshold=params.gap_threshold
             ),

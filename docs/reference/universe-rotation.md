@@ -66,6 +66,52 @@ Cette borne est distincte de `cap_m` :
 - `radar.yaml:cap_m = 25` borne uniquement la hotlist non-sticky ;
 - aucun cap global ne tronque les challengers qualifiés.
 
+### 1.1 Audit shadow du score
+
+Le score de production historique reste `legacy_raw_v1` :
+
+```text
+direction = signe(return)
+trend = efficiency_ratio * direction
+relative_strength = (return - benchmark_return) * direction
+score = (w_trend * trend + w_rs * relative_strength)
+        * bonus_amplitude * tilt_famille
+```
+
+Les poids égaux ne rendent pas les composantes comparables : leurs échelles
+brutes diffèrent. De plus, pour un short qui sous-performe son benchmark,
+`relative_strength` devient positif et réduit la magnitude négative du trend au
+lieu de la renforcer. Ce comportement est désormais mesuré explicitement ; il
+n'est pas corrigé silencieusement dans la sélection live.
+
+`balanced_percentile_v1` tourne en **shadow uniquement** : dans chaque venue,
+l'efficacité de tendance et la force relative alignée avec la direction sont
+converties en percentiles puis combinées à 50/50. L'amplitude conserve son rôle
+d'éligibilité mais n'est plus récompensée dans ce contrefactuel. Le classement
+actif continue à lire exclusivement `ranked` produit par `legacy_raw_v1`.
+
+Observabilité :
+
+- `state/radar_score_audit.json` : dernier comparatif live, équilibre des
+  composantes, anomalie short, overlap et concentration du top 40 ;
+- `state/radar_score_bench.json` : replay walk-forward des caches, rendements
+  directionnels bruts à 1/3/5 sessions, hit-rate, turnover et concentration ;
+- `venue_state.radar_score_audit_observation.selection_effect = "none"` : preuve
+  que l'écriture shadow n'a aucune autorité sur la rotation.
+
+Rejouer le bench sans téléchargement :
+
+```bash
+uv run python -m trader.reporting.bench.radar_score \
+  --config-dir config \
+  --cache-dir state/radar_cache \
+  --output state/radar_score_bench.json
+```
+
+Le bench refuse de recommander automatiquement une bascule. Moins de 60
+snapshots uniques reste `insufficient_history`; les rendements sont des proxies
+close-to-close bruts, sans coûts ni sizing.
+
 ## 2. Scout fresh-news — challengers hors top 40
 
 Le scout lit les news locales récentes, attribue chaque titre directement à un
@@ -200,6 +246,11 @@ Le pipeline conserve cinq surfaces complémentaires :
   relue au pré-open ;
 - `state/rotation_ledger.jsonl` : activation, sélection finale, sticky,
   `fallback_used` et `fallback_reason`.
+
+L'audit radar ajoute deux surfaces sans effet décisionnel :
+`state/radar_score_audit.json` pour le shadow live et
+`state/radar_score_bench.json` pour le replay offline. Une erreur d'écriture de
+l'audit est enregistrée mais ne bloque ni le scope candidat ni la baseline.
 
 Le RAG n'appartient pas au scout et ne compose pas la hotlist. Si la mémoire de
 situation est activée en retrieval, elle sera un input historique de l'agent

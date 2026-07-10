@@ -2100,3 +2100,68 @@ def test_purge_old_radar_cache_supprime_les_anciens(tmp_path) -> None:
     assert recent_file.exists(), "Le fichier 29j doit être conservé"
     assert today_file.exists(), "Le fichier du jour doit être conservé"
     assert noise_file.exists(), "Le fichier au nom non-conforme doit être conservé"
+
+
+def test_tick_persists_score_audit_without_using_it_for_selection(tmp_path) -> None:
+    config_dir = tmp_path / "config"
+    state_dir = tmp_path / "state"
+    config_dir.mkdir()
+    state_dir.mkdir()
+    _write_tick_config(config_dir)
+    observed: list[dict] = []
+    rank_obj = _tick_rank_obj()
+    rank_obj["score_audit"] = {
+        "status": "shadow_only",
+        "selection_effect": "none",
+        "input_signature": "score-input-1",
+        "venues": {},
+    }
+
+    result = tick(
+        str(config_dir),
+        str(state_dir),
+        "2026-06-16T01:30:00+00:00",
+        rank_fn=lambda: rank_obj,
+        sticky_fn=lambda: set(),
+        radar_score_audit_observer=lambda payload: observed.append(payload)
+        or {"input_signature": payload["input_signature"]},
+    )
+
+    assert observed == [rank_obj["score_audit"]]
+    assert "2330.TW" in result["final"]
+    saved = load_venue_state(state_dir)
+    assert saved["radar_score_audit_observation"] == {
+        "status": "persisted",
+        "as_of": "2026-06-16T01:30:00+00:00",
+        "ref": {"input_signature": "score-input-1"},
+        "error": None,
+        "selection_effect": "none",
+    }
+
+
+def test_tick_score_audit_failure_never_blocks_rotation(tmp_path) -> None:
+    config_dir = tmp_path / "config"
+    state_dir = tmp_path / "state"
+    config_dir.mkdir()
+    state_dir.mkdir()
+    _write_tick_config(config_dir)
+    rank_obj = _tick_rank_obj()
+    rank_obj["score_audit"] = {"status": "shadow_only", "selection_effect": "none"}
+
+    def broken_observer(_payload):
+        raise OSError("audit disk unavailable")
+
+    result = tick(
+        str(config_dir),
+        str(state_dir),
+        "2026-06-16T01:30:00+00:00",
+        rank_fn=lambda: rank_obj,
+        sticky_fn=lambda: set(),
+        radar_score_audit_observer=broken_observer,
+    )
+
+    assert "2330.TW" in result["final"]
+    observation = load_venue_state(state_dir)["radar_score_audit_observation"]
+    assert observation["status"] == "error"
+    assert observation["error"] == "OSError"
+    assert observation["selection_effect"] == "none"

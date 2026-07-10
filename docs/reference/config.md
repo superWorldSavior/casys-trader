@@ -40,6 +40,14 @@ Dans `radar.yaml` : `cap_m` (25 non-sticky maximum dans la hotlist),
 (horizon du score ≠ dwell). Le pool candidat amont reste distinct : top 40 radar
 ainsi que tous les challengers fresh-news qualifiés.
 
+`w_trend`, `w_rs` et `w_amp` pilotent encore exclusivement le score de
+production `legacy_raw_v1`. Des valeurs identiques ne signifient pas une
+influence identique, car les composantes ne partagent pas la même échelle. Le
+score `balanced_percentile_v1` est volontairement non configurable et shadow :
+percentiles par venue, 50 % trend, 50 % force relative alignée, amplitude comme
+filtre d'éligibilité uniquement. Il écrit son audit mais ne modifie ni le top 40,
+ni le `candidate_scope_id`, ni la hotlist.
+
 Kill switches runtime D15, activés par défaut :
 
 - `CASYS_NEWS_MACRO_ANALYST_ENABLED=0` désactive la production async des briefs ;
