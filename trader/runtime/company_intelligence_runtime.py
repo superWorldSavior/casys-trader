@@ -148,6 +148,7 @@ class CompanyIntelligenceRuntime:
         logger: LoggerLike | None = None,
         on_brief_written: Callable[[dict[str, Any]], None] | None = None,
         now_fn: Callable[[], float] = time.time,
+        start_workers: bool = True,
     ) -> None:
         self.config_dir = Path(config_dir)
         self.state_dir = Path(state_dir)
@@ -177,7 +178,8 @@ class CompanyIntelligenceRuntime:
         self._scan_thread: threading.Thread | None = None
         self._pending_scan: dict[str, Any] | None = None
         self._stopping = False
-        if self.enabled:
+        self._workers_started = bool(self.enabled and start_workers)
+        if self._workers_started:
             self.pool.start()
 
     def trigger(self, **kwargs: Any) -> dict[str, Any]:
@@ -288,7 +290,7 @@ class CompanyIntelligenceRuntime:
             thread = self._scan_thread
         if thread is not None and thread is not threading.current_thread():
             thread.join(timeout=1.0)
-        if self.enabled:
+        if self._workers_started:
             self.pool.stop(timeout_s=1.0)
 
     def _scan_loop(self, *, initial_kwargs: dict[str, Any]) -> None:

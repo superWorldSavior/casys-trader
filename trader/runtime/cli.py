@@ -95,6 +95,7 @@ def _cmd_company_intelligence_status(args: argparse.Namespace) -> int:
     runtime = CompanyIntelligenceRuntime(
         config_dir=daemon.ROOT / "config",
         state_dir=daemon.STATE_DIR,
+        start_workers=False,
     )
     try:
         result = runtime.status()

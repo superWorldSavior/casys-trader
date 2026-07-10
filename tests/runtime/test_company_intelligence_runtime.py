@@ -126,3 +126,23 @@ def test_discover_current_scope_keeps_candidates_sticky_and_active_universe(tmp_
     assert symbols == ("CAND", "STICKY", "ACTIVE")
     assert metadata["candidate_scope_ids"] == ["scope-us"]
     assert metadata["fallback"] is False
+
+
+def test_status_only_runtime_does_not_start_queue_workers(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("CASYS_COMPANY_MICRO_ANALYST_ENABLED", "1")
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    (config_dir / "company_intelligence.yaml").write_text("enabled: true\n")
+
+    runtime = CompanyIntelligenceRuntime(
+        config_dir=config_dir,
+        state_dir=tmp_path / "state",
+        provider=_Provider(),
+        analyst=_Analyst(),
+        start_workers=False,
+    )
+    try:
+        assert runtime.status()["enabled"] is True
+        assert runtime.pool._threads == []
+    finally:
+        runtime.stop()
