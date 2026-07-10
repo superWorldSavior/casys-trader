@@ -80,20 +80,13 @@ def build_view(
     # ------------------------------------------------------------------
     # Panel header — équité, cash, rendement, mode
     # ------------------------------------------------------------------
-    cash_ledger = _safe_float(portfolio.get("cash_ledger") or portfolio.get("cash"), default=None)
-    if cash_ledger is None:
-        cash_ledger = _safe_float(kpis.get("cash"), default=0.0) or 0.0
-    cash = _safe_float(portfolio.get("cash_available"), default=None)
-    if cash is None:
-        short_exposure = sum(
-            _holding_notional_usd(h)
-            for h in holdings
-            if (_safe_float(h.get("quantity"), default=0.0) or 0.0) < 0.0
-        )
-        cash = cash_ledger - short_exposure
     equity = _safe_float(portfolio.get("equity"), default=None)
     if equity is None:
         equity = _safe_float(kpis.get("equity"), default=0.0) or 0.0
+    gross_exposure = _safe_float(portfolio.get("gross_exposure_usd"), default=None)
+    if gross_exposure is None:
+        gross_exposure = sum(_holding_notional_usd(holding) for holding in holdings)
+    capital_uncommitted = max(0.0, equity - gross_exposure)
     ret_pct = _safe_float(portfolio.get("total_return_pct"), default=None)
     if ret_pct is None:
         total_return = _safe_float(kpis.get("total_return"), default=0.0) or 0.0
@@ -144,8 +137,8 @@ def build_view(
         ("Équité $ : ", "bold"),
         (f"${equity:,.2f}", f"bold {palette['kpi_default']}"),
         (f"  {inline_curve}   " if inline_curve else "   ", palette["kpi_default"]),
-        ("Cash libre $ : ", "bold"),
-        (f"${cash:,.2f}   ", palette["kpi_default"]),
+        ("Capital non engagé $ : ", "bold"),
+        (f"${capital_uncommitted:,.2f}   ", palette["kpi_default"]),
         ("Rendement : ", "bold"),
         (f"{ret_pct:+.2f}%   ", ret_style),
         ("PnL latent USD : ", "bold"),

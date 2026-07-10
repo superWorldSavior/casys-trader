@@ -129,9 +129,9 @@ def test_build_view_avec_etat_complet_retourne_un_renderable() -> None:
     assert "AAPL" in output
     assert "TSLA" in output
     assert "Équité $" in output
-    assert "Cash libre $" in output
+    assert "Capital non engagé $" in output
     assert "$102,500.00" in output
-    assert "$85,000.00" in output
+    assert "$99,600.00" in output
     assert "PnL latent USD" in output
     assert "-50.00" in output
     assert "deciding_symbol" in output
@@ -286,7 +286,7 @@ def test_build_view_total_latent_utilise_le_net_et_detaille_les_frais() -> None:
     assert "dont frais -3.00" in output
 
 
-def test_build_view_affiche_cash_disponible_quand_present() -> None:
+def test_build_view_affiche_le_capital_non_engage_plutot_que_le_produit_des_shorts() -> None:
     state = {
         **_FULL_STATE,
         "portfolio": {
@@ -307,8 +307,9 @@ def test_build_view_affiche_cash_disponible_quand_present() -> None:
 
     output = _render_plain(build_view(state), width=220)
 
-    assert "Cash libre $" in output
-    assert "$101,000.00" in output
+    assert "Capital non engagé $" in output
+    assert "$88,500.00" in output
+    assert "$101,000.00" not in output
     assert "$115,000.00" not in output
 
 
