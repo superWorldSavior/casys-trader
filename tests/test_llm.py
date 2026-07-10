@@ -1,6 +1,7 @@
 import json
 import subprocess
 from dataclasses import dataclass
+from pathlib import Path
 
 import pytest
 
@@ -951,6 +952,49 @@ def test_run_one_shot_nettoie_l_environnement_runtime_pollue(monkeypatch) -> Non
     assert "MallocStackLoggingNoCompact" not in env
     assert env["TRADER_OLLAMA_MODEL"] == "nemotron-3-ultra:cloud"
     assert env["PATH"] == "/opt/homebrew/bin:/usr/bin"
+
+
+def test_run_one_shot_impose_le_profil_app_xhigh(monkeypatch) -> None:
+    monkeypatch.delenv("CODEX_HOME", raising=False)
+    captured = {}
+
+    class FakePopen:
+        pid = 4242
+        returncode = 0
+
+        def __init__(self, command, **kwargs):
+            captured.update(kwargs)
+
+        def communicate(self, timeout=None):
+            return "OK", ""
+
+    monkeypatch.setattr("trader.infrastructure.llm.acpx_backend.subprocess.Popen", FakePopen)
+    monkeypatch.setattr("trader.infrastructure.llm.acpx_backend._terminate_process_group", lambda _pid: None)
+
+    result = _run_one_shot_command(["acpx", "exec", "prompt"], timeout_s=12)
+
+    assert result.returncode == 0
+    codex_home = Path(captured["env"]["CODEX_HOME"])
+    assert codex_home == Path(__file__).resolve().parents[1] / "ops" / "codex-home"
+    assert 'model_reasoning_effort = "xhigh"' in (codex_home / "config.toml").read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("model", ["gpt-5.6-sol", "gpt-5.6-terra"])
+def test_acpx_refuse_un_profil_ultra_quel_que_soit_le_modele(monkeypatch, tmp_path, model) -> None:
+    codex_home = tmp_path / "codex-home"
+    codex_home.mkdir()
+    (codex_home / "config.toml").write_text(
+        f'model = "{model}"\nmodel_reasoning_effort = "ultra"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    monkeypatch.setattr("trader.infrastructure.llm.acpx_backend.shutil.which", lambda _bin: "/usr/local/bin/acpx")
+
+    result = AcpxBackend(model=model).complete("prompt", timeout_s=12)
+
+    assert isinstance(result, LlmFailure)
+    assert "appel ACPX refusé" in result.message
+    assert "xhigh" in result.message
 
 
 def test_run_one_shot_ne_sonde_plus_les_ponts_codex_acp(monkeypatch) -> None:

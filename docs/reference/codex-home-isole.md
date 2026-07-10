@@ -3,7 +3,7 @@
 > **Type** : Reference (Diátaxis).
 > **Code** : `ops/codex-home/config.toml` (versionné) · propagation `trader/agent/llm.py::load_dotenv` → `trader/support/system/process_env.py::sanitized_runtime_env` → subprocess `acpx` → pont `codex-acp` (`acpx src/acp/auth-env.ts::buildAgentEnvironment`).
 > **Statut** : ✅ **Actif en paper (2026-07-06, main dabc85b)** — `.env CODEX_HOME=…/ops/codex-home`.
-> **Rôle** : donner au daemon un environnement Codex **nu** (0 plugin, 0 skill, 0 MCP) pour des sessions de décision **déterministes** au contrat JSON strict, isolées de l'environnement de dev partagé, avec un `exec` optionnel confiné dans un scratch hors repo.
+> **Rôle** : donner à tous les appels ACPX de l'app un environnement Codex **nu** (0 plugin, 0 skill, 0 MCP) et imposer `model_reasoning_effort = "xhigh"` quel que soit le modèle, pour des sessions de décision **déterministes** au contrat JSON strict, isolées de l'environnement de dev partagé, avec un `exec` optionnel confiné dans un scratch hors repo.
 
 ## Le problème (ce qui a motivé l'isolation)
 
@@ -37,8 +37,10 @@ les **plugins/skills** restants, pour le daemon uniquement.)
 ## La solution
 
 Un **`CODEX_HOME` dédié**, versionné dans `ops/codex-home/`, avec un
-`config.toml` **nu**. Le daemon le désigne via `.env`, et il se propage jusqu'au
-pont sans aucune modification d'`acpx`.
+`config.toml` **nu**. Le daemon le désigne via `.env`. Pour les commandes de
+l'app lancées hors daemon, notamment `decisions bench`, le transport retombe
+sur ce même répertoire versionné. Avant chaque subprocess, il lit le TOML et
+refuse l'appel si `model_reasoning_effort` n'est pas exactement `"xhigh"`.
 
 ### Structure `ops/codex-home/`
 
@@ -65,9 +67,10 @@ Le `.gitignore` local (`ops/codex-home/.gitignore`) garantit qu'on ne versionne
 
 Le point-clé qui rend le fix **facile** : `acpx` construit l'environnement du
 pont à partir de `{ ...process.env }` (fichier `src/acp/auth-env.ts`,
-`buildAgentEnvironment`). Il suffit donc que le process `acpx` parent porte
-`CODEX_HOME` — ce que `sanitized_runtime_env()` assure (elle ne filtre que les
-préfixes `MALLOC_` et le `PATH`, pas `CODEX_HOME`).
+`buildAgentEnvironment`). `_run_one_shot_command()` résout et valide donc le
+profil de l'app, force ce `CODEX_HOME` dans l'environnement enfant, puis
+`sanitized_runtime_env()` retire seulement le bruit système. Un profil `ultra`,
+`medium` ou sans effort explicite échoue avant même de lancer `acpx`.
 
 ### Exec natif optionnel
 

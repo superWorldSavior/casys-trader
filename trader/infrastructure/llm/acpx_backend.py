@@ -9,7 +9,9 @@ import shutil
 import subprocess
 import tempfile
 import time
+import tomllib
 from dataclasses import dataclass, is_dataclass, replace
+from pathlib import Path
 from typing import Callable
 
 from trader.domain.llm import LlmCompletion, LlmFailure
@@ -22,12 +24,38 @@ log = logging.getLogger(__name__)
 # without asking the agent facade to import infrastructure while it is still loading.
 _DEFAULT_ACPX_MODEL = "gpt-5.6-sol"
 _DEFAULT_RUNTIME_SESSION_LABEL = "casys-trader:runtime-brain"
+_DEFAULT_ACPX_CODEX_HOME = Path(__file__).resolve().parents[3] / "ops" / "codex-home"
+_REQUIRED_ACPX_REASONING_EFFORT = "xhigh"
 
 # Plafond par-appel du subprocess acpx, DÉCOUPLÉ du budget-décision (lease).
 # Un appel LLM normal fait 30-90s ; un tour figé (provider muet après
 # task_started, cf incident AMCR 2026-07-06) resterait pendu jusqu'au budget
 # total. Ce cap coupe l'appel individuel bien avant, sans toucher au lease.
 _DEFAULT_PER_CALL_TIMEOUT_CAP_S = 150
+
+
+def _validated_acpx_codex_home() -> Path:
+    """Resolve the app-owned Codex profile and reject non-xhigh ACPX calls."""
+
+    configured = os.getenv("CODEX_HOME", "").strip()
+    codex_home = Path(configured).expanduser() if configured else _DEFAULT_ACPX_CODEX_HOME
+    if not codex_home.is_absolute():
+        raise RuntimeError(f"CODEX_HOME ACPX doit être absolu : {str(codex_home)!r}")
+
+    config_path = codex_home / "config.toml"
+    try:
+        config = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        raise RuntimeError(f"profil ACPX illisible : {config_path}: {exc}") from exc
+
+    effort = str(config.get("model_reasoning_effort") or "").strip().lower()
+    if effort != _REQUIRED_ACPX_REASONING_EFFORT:
+        raise RuntimeError(
+            "appel ACPX refusé : "
+            f"{config_path} configure model_reasoning_effort={effort or 'absent'!r}, "
+            f"attendu={_REQUIRED_ACPX_REASONING_EFFORT!r}"
+        )
+    return codex_home
 
 
 def _per_call_timeout_cap_s() -> int:
@@ -292,13 +320,15 @@ def _terminate_process_group(pgid: int, *, grace_s: float = 2.0) -> None:
 def _run_one_shot_command(
     command: list[str], *, timeout_s: int, on_pid: Callable[[int], None] | None = None
 ) -> subprocess.CompletedProcess[str]:
+    child_env = dict(os.environ)
+    child_env["CODEX_HOME"] = str(_validated_acpx_codex_home())
     proc = subprocess.Popen(
         command,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
         start_new_session=os.name == "posix",
-        env=sanitized_runtime_env(),
+        env=sanitized_runtime_env(child_env),
     )
     if on_pid is not None:
         on_pid(proc.pid)
