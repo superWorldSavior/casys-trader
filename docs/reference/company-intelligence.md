@@ -34,6 +34,16 @@ Pour toutes les venues, l'archive locale `state/news_items` ajoute les nouvelles
 entreprise récentes déjà collectées. Elle ne lance aucun nouveau scan web et
 reste strictement filtrée par symbole.
 
+Pour SEC EDGAR, ajouter dans `.env` un contact réel, puis redémarrer le daemon :
+
+```dotenv
+CASYS_SEC_USER_AGENT=Casys Trader admin@example.com
+```
+
+Ce flux public ne demande ni clé API ni token EDGAR Next. Le User-Agent sert à
+identifier l'automatisation et doit contenir une adresse à laquelle la SEC peut
+contacter l'opérateur.
+
 Une panne de provider est isolée et enregistrée dans la couverture ; elle
 n'efface pas les autres sources. L'identité, la période, le type d'évidence et
 les `source_refs` sont conservés. Les documents bruts ne sont jamais injectés
