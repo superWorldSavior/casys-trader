@@ -171,12 +171,37 @@ def test_application_cycle_modules_are_nested_without_legacy_shims() -> None:
         application_dir,
         "cycle",
         [
+            "decision_scope",
             "schedule",
             "infra_holds",
             "market_snapshot",
             "watch_scanner",
         ],
     )
+
+
+def test_cycle_decision_scope_is_application_canonical_and_daemon_delegates() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    service_path = repo_root / "trader" / "application" / "cycle" / "decision_scope.py"
+    daemon_path = repo_root / "trader" / "runtime" / "daemon.py"
+
+    service_source = service_path.read_text(encoding="utf-8")
+    assert "trader.runtime" not in service_source
+    assert "trader.infrastructure" not in service_source
+    assert "trader.market" not in service_source
+
+    daemon_source = daemon_path.read_text(encoding="utf-8")
+    assert "decision_scope.prepare_decision_scope" in daemon_source
+    assert "armed_plans.resolve_armed_plan_triggers" not in daemon_source
+    assert "infra_holds.quiet_gate_decisions" not in daemon_source
+
+    daemon_tree = ast.parse(daemon_source, filename=str(daemon_path))
+    daemon_definitions = {
+        node.name
+        for node in ast.walk(daemon_tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    assert "_analysis_eligible" not in daemon_definitions
 
 
 def test_market_execution_eligibility_is_canonical_domain_module_with_market_facade() -> None:

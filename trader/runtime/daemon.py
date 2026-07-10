@@ -40,9 +40,9 @@ from trader.application.execute import (
 from trader.application.exit import (
     planned_exits as planned_exits_service,
     exit_bars as exit_bars_service,
-    armed_plans,
 )
 from trader.application.cycle import (
+    decision_scope,
     infra_holds,
     market_snapshot,
 )
@@ -763,44 +763,40 @@ def run_cycle(
     if sched is not None:
         cycle_scheduling.ensure_default_wake(sched, now=now, default_wake_minutes=default_wake_minutes)
 
-    # §13.4 — décidables : runtime frais avec prix (exécution possible) OU planning
-    # autorisé (daily valide → analyse swing même runtime stale) OU position ouverte
-    # (toujours relire la thèse). Les stale-analysables passent ensuite par le MÊME
-    # gate de pertinence (anti-déluge) ; seuls les stale non-analysables retombent
-    # sur le HOLD synthétique + backoff plus bas.
-    held_symbols = {h.symbol for h in snap.holdings if h.quantity}
-
-    def _analysis_eligible(sym: str) -> bool:
-        planning = (execution_eligibility.get(sym) or {}).get("planning") or {}
-        return bool(planning.get("enabled")) or sym in held_symbols
-
-    # Un prix runtime (même vieux) est REQUIS pour entrer dans le batch : sans prix,
-    # la boucle finale ne peut pas traiter le symbole (il retombe sur le HOLD stale).
-    # Cela évite une décision LLM fantôme jetée plus bas (gap silencieux).
-    decidable = [
-        s
-        for s in symbols_to_decide
-        if s in prices and (s not in stale_market_data or _analysis_eligible(s))
-    ]
-
-    # Plans armés (D7 étage B) : un trigger EXECUTE_ORDER s'exécute SANS appel
-    # LLM — le scénario a été validé à l'armement, le gate de risque déterministe
-    # reste le fusible à l'exécution. Annulation si le prix au déclenchement a
-    # déjà franchi le hard_stop (position instantanément stoppable) ou si stale.
-    _has_armed_triggers = any(
-        str(trigger.get("on_trigger")) == "EXECUTE_ORDER" and isinstance(trigger.get("order"), dict)
+    held_symbols = {holding.symbol for holding in snap.holdings if holding.quantity}
+    has_armed_triggers = any(
+        str(trigger.get("on_trigger")) == "EXECUTE_ORDER"
+        and isinstance(trigger.get("order"), dict)
         for trigger in indicator_triggers
     )
-    armed_resolution = armed_plans.resolve_armed_plan_triggers(
-        indicator_triggers=indicator_triggers,
-        symbols_to_decide=symbols_to_decide,
-        prices=prices,
-        stale_market_data=stale_market_data,
-        positions=broker.positions() if _has_armed_triggers else {},
-        cockpit=cockpit,
-        tradable_bars_by_symbol=tradable_bars_by_symbol,
-        reference_volatility_for_symbol=reference_volatility_service.reference_volatility_for_symbol,
+    prepared_scope = decision_scope.prepare_decision_scope(
+        decision_scope.DecisionScopeRequest(
+            symbols_to_decide=symbols_to_decide,
+            prices=prices,
+            stale_market_data=stale_market_data,
+            execution_eligibility=execution_eligibility,
+            held_symbols=held_symbols,
+            indicator_triggers=indicator_triggers,
+            positions=broker.positions() if has_armed_triggers else {},
+            cockpit=cockpit,
+            tradable_bars_by_symbol=tradable_bars_by_symbol,
+            daily_bars_by_symbol=daily_bars_by_symbol,
+            now=now,
+            state_key=str(STATE_DIR),
+            last_llm_at=process_state.last_llm_at,
+            regime_families=base_context["regime_families"],
+            active_families=active_families,
+            wake_source=sched,
+            triggers_by_symbol=triggers_by_symbol,
+            runtime_data_source_by_sym=runtime_data_source_by_sym,
+            runtime_interval=runtime_interval,
+            daily_interval=COCKPIT_DAILY_INTERVAL,
+            reference_volatility_for_symbol=(
+                reference_volatility_service.reference_volatility_for_symbol
+            ),
+        )
     )
+    armed_resolution = prepared_scope.armed_resolution
     for progress in armed_resolution.progress_logs:
         _log_cycle_progress(progress.message, *progress.args)
     for event in armed_resolution.events:
@@ -811,36 +807,18 @@ def run_cycle(
     armed_plan_orders = armed_resolution.plan_orders
     stale_armed_plans = armed_resolution.stale_plans
     armed_reference_volatilities = armed_resolution.reference_volatilities
-    # les symboles armés ont déjà leur décision : pas d'appel LLM, pas de
-    # relevance_gate. Le RiskGate déterministe reste appliqué plus bas.
-    decidable = [s for s in decidable if s not in armed_decisions]
 
-    # Gate de pertinence (D7 étage A) : ne soumettre au LLM que les réveils
-    # demandés par l'agent, les événements, ou la revue périodique garantie.
-    # Le polling par défaut sur symbole calme ne consomme pas d'appel modèle.
-    quiet_gate = infra_holds.quiet_gate_decisions(
-        symbols=decidable,
-        now=now,
-        state_key=str(STATE_DIR),
-        last_llm_at=process_state.last_llm_at,
-        cockpit=cockpit,
-        regime_families=base_context["regime_families"],
-        active_families=active_families,
-        wake_source=sched,
-        triggers_by_symbol=triggers_by_symbol,
-        held_symbols=held_symbols,
-        runtime_data_source_by_sym=runtime_data_source_by_sym,
-    )
+    quiet_gate = prepared_scope.quiet_gate
     gated_symbols = quiet_gate.gated_symbols
     if gated_symbols:
         _log_cycle_progress("[gate] quiet symbols=%s (pas d'appel LLM)", gated_symbols)
         for entry in quiet_gate.entries:
-            # Pas de wake par symbole : le gated retombe sur le polling par
-            # défaut (un wake posé ici se ferait passer pour un wake agent).
             record_decision(entry)
-    decidable = quiet_gate.kept_symbols
 
-    _log_cycle_progress("[batch] deciding symbols=%d/%d", len(decidable), len(symbols_to_decide))
+    decidable = prepared_scope.decidable
+    _log_cycle_progress(
+        "[batch] deciding symbols=%d/%d", len(decidable), len(symbols_to_decide)
+    )
     _write_status(
         "deciding_batch",
         current_symbol=None,
@@ -848,20 +826,9 @@ def run_cycle(
         symbols_total=len(symbols_to_decide),
         batch_size=len(decidable),
     )
-    # §13.4 — barres pour le batch : runtime des non-stale + DAILY des stale-analysables,
-    # sinon le LLM analyserait un symbole stale sans aucune barre exploitable.
-    analysis_bars_by_symbol = dict(tradable_bars_by_symbol)
-    for sym in decidable:
-        if sym not in analysis_bars_by_symbol and sym in daily_bars_by_symbol:
-            analysis_bars_by_symbol[sym] = daily_bars_by_symbol[sym]
-    analysis_timeframe_by_symbol = {
-        sym: runtime_interval if sym in tradable_bars_by_symbol else COCKPIT_DAILY_INTERVAL
-        for sym in analysis_bars_by_symbol
-    }
-    # §13.4 — les symboles dont resolve_indicator_requests peut servir un REQUEST_CONTEXT
-    # = ceux qui ont des barres (runtime non-stale + daily des stale-analysables). Sans
-    # ça, un stale qui demande du contexte sur lui-même reçoit un research vide.
-    analysis_symbols = sorted(analysis_bars_by_symbol)
+    analysis_bars_by_symbol = prepared_scope.analysis_bars_by_symbol
+    analysis_timeframe_by_symbol = prepared_scope.analysis_timeframe_by_symbol
+    analysis_symbols = prepared_scope.analysis_symbols
     # undecided_symbols : symboles non décidés en mode queue (skippés dead/budget).
     # Ils sont EXCLUS du fallback HOLD synthétique
     # ci-dessous (FIX 2). En mode batch, reste vide (comportement inchangé).
