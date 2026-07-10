@@ -1,6 +1,7 @@
-"""format — formatage pur pour les pages du cockpit « casys » (UI anglaise).
+"""format — helpers sémantiques purs du cockpit « casys » (UI anglaise).
 
-Fonctions PURES (valeur → str/Text), aucune I/O, aucun import Textual.
+Fonctions PURES (valeur → str/nombre), aucune I/O, aucun import Rich/Textual.
+``conf_meter`` reste un wrapper historique paresseux vers le renderer canonique.
 Conventions du design « Decision Journal » :
 
 - countdowns : ``3h58`` / ``14m`` / ``expired`` ; préfixe ``in `` via kwarg.
@@ -12,12 +13,6 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from rich.text import Text
-
-from trader.interfaces.ui.palette import (
-    CASYS_ACCENT,
-    CASYS_METER_EMPTY,
-)
 from trader.market import fx
 from trader.support.coercion import (
     dict_list as _safe_list_of_dicts,
@@ -159,19 +154,12 @@ def ttl_fraction(watch: dict, *, now: datetime) -> float:
 # ---------------------------------------------------------------------------
 
 
-def conf_meter(confidence: object, *, width: int = 10) -> Text:
-    """Meter ▮▮▮▮ accent/vide + score ("0.72")."""
-    number = _safe_float(confidence, default=None)
-    text = Text()
-    if number is None:
-        text.append("▮" * width, style=CASYS_METER_EMPTY)
-        text.append("  —")
-        return text
-    filled = max(0, min(width, round(number * width)))
-    text.append("▮" * filled, style=CASYS_ACCENT)
-    text.append("▮" * (width - filled), style=CASYS_METER_EMPTY)
-    text.append(f"  {number:.2f}")
-    return text
+def conf_meter(confidence: object, *, width: int = 10) -> object:
+    """Compatibility wrapper for the canonical Rich confidence renderer."""
+
+    from trader.interfaces.cockpit.renderers.meters import confidence_meter
+
+    return confidence_meter(confidence, width=width)
 
 
 def bar(value: float, total: float, *, width: int = 8) -> str:

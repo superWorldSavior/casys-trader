@@ -83,9 +83,13 @@ def test_countdown_formats():
 
 
 def test_conf_meter_fills_by_confidence():
+    from trader.interfaces.cockpit.renderers.meters import confidence_meter
+
     rendered = _render(f.conf_meter(0.72))
+    canonical = _render(confidence_meter(0.72))
     assert rendered.count("▮") == 10
     assert "0.72" in rendered
+    assert rendered == canonical
 
 
 def test_ttl_fraction_bounds():

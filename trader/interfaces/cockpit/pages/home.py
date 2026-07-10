@@ -24,6 +24,7 @@ from trader.interfaces.cockpit.derive import (
     positions_by_pnl,
 )
 from trader.interfaces.cockpit.pages._shared import ResizeRefresh, PANEL_CSS, build_equity_chart, rows_available
+from trader.interfaces.cockpit.renderers.meters import confidence_meter
 from trader.interfaces.ui.palette import (
     CASYS_ACCENT,
     CASYS_DIM,
@@ -80,7 +81,7 @@ def build_journal(state: dict, *, now: datetime, limit: int = 8) -> RenderableTy
         header.append("  ")
         header.append_text(_action_chip(entry.action))
         header.append("  ")
-        header.append_text(f.conf_meter(entry.confidence))
+        header.append_text(confidence_meter(entry.confidence))
         parts.append(header)
         if entry.rationale:
             parts.append(Text(entry.rationale, style=CASYS_MUTED))

@@ -1743,6 +1743,28 @@ def test_cockpit_portfolio_projection_is_canonical_and_textual_free() -> None:
     assert page.build_positions_rows is projection.build_positions_rows
 
 
+def test_cockpit_format_is_rich_free_and_meter_renderer_is_explicit() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    cockpit_dir = repo_root / "trader" / "interfaces" / "cockpit"
+    format_path = cockpit_dir / "format.py"
+    meter_path = cockpit_dir / "renderers" / "meters.py"
+    home_path = cockpit_dir / "pages" / "home.py"
+
+    assert meter_path.exists()
+    format_source = format_path.read_text(encoding="utf-8")
+    assert "from rich" not in format_source
+    assert "interfaces.ui.palette" not in format_source
+
+    home_source = home_path.read_text(encoding="utf-8")
+    assert "from trader.interfaces.cockpit.renderers.meters import confidence_meter" in home_source
+    assert "f.conf_meter" not in home_source
+
+    from trader.interfaces.cockpit import format as cockpit_format
+    from trader.interfaces.cockpit.renderers.meters import confidence_meter
+
+    assert cockpit_format.conf_meter(0.5).plain == confidence_meter(0.5).plain
+
+
 def test_cockpit_uses_support_coercion_instead_of_private_reporting_helpers() -> None:
     repo_root = Path(__file__).resolve().parents[1]
     cockpit_dir = repo_root / "trader" / "interfaces" / "cockpit"
