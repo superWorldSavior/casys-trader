@@ -25,6 +25,7 @@ from trader.interfaces.cockpit.pages.universe import (
     build_overrides_panel,
     build_rotation_panel,
     build_symbol_rows,
+    build_universe_pipeline_panel,
 )
 from trader.market.rotation.user_overrides import (
     UserOverrides,
@@ -220,7 +221,7 @@ def test_hot_set_panel_renders_bars() -> None:
 
 
 def test_hot_set_panel_max_5_items() -> None:
-    """Le hot-set est limité à 5 entrées."""
+    """L'aperçu du hot-set est limité à 5 entrées, pas le hot-set métier."""
     syms = [f"SYM{i}.TW" for i in range(8)]
     state = {
         "universe_symbols": syms,
@@ -248,9 +249,11 @@ def test_rotation_panel_basic() -> None:
     """Affiche l'explainer + 'next refresh'."""
     state = _minimal_state()
     rendered = _render(build_rotation_panel(state, now=NOW))
-    assert "radar" in rendered
+    assert "heuristic" in rendered
+    assert "universe agent" in rendered
     assert "hot-set" in rendered
-    assert "5 slots" in rendered
+    assert "preview shows up to 5" in rendered
+    assert "5 slots" not in rendered
     assert "next refresh" in rendered
 
 
@@ -278,6 +281,82 @@ def test_rotation_panel_no_changes() -> None:
     last_rot = {"default_hot_set": ["A.TW"], "final_hot_set": ["A.TW"]}
     rendered = _render(build_rotation_panel(_minimal_state(), now=NOW, last_rotation=last_rot))
     assert "no changes" in rendered
+
+
+# ---------------------------------------------------------------------------
+# Pure builder — build_universe_pipeline_panel
+# ---------------------------------------------------------------------------
+
+
+def test_universe_pipeline_panel_separates_agent_success_from_activation_fallback() -> None:
+    state = {
+        "universe_pipeline": {
+            "US": {
+                "scope": {
+                    "status": "ready",
+                    "id_short": "scope-123",
+                    "candidate_count": 42,
+                    "challenger_count": 2,
+                },
+                "scout": {
+                    "status": "success",
+                    "id_short": "scout-123",
+                    "challenger_count": 2,
+                    "coverage": {"eligible_items": 18},
+                },
+                "brief": {
+                    "status": "ready",
+                    "id_short": "brief-123",
+                    "scope_match": True,
+                    "point_count": 11,
+                    "coverage": {
+                        "status": "partial",
+                        "candidate_count": 42,
+                        "candidates_with_news": 7,
+                    },
+                },
+                "agent": {
+                    "status": "success",
+                    "id_short": "agent-123",
+                    "hotlist_count": 25,
+                    "challenger_count": 2,
+                    "provider": "acpx-claude-sonnet",
+                    "model": "sonnet",
+                    "provider_fallback_reason": "acpx:quota",
+                },
+                "activation": {
+                    "status": "fallback",
+                    "agent_run_id_short": "agent-123",
+                    "fallback_reason": "prepared_scope_mismatch",
+                    "hotlist_count": 24,
+                    "challenger_count": 0,
+                },
+            }
+        }
+    }
+
+    rendered = _render(build_universe_pipeline_panel(state))
+
+    assert "US" in rendered
+    assert "agent success" in rendered
+    assert "active fallback" in rendered
+    assert "prepared_scope_mismatch" in rendered
+    assert "25 hot / 2 ch" in rendered
+    assert "acpx-claude-sonnet/sonnet" in rendered
+    assert "backend fallback acpx:quota" in rendered
+    assert "24 hot / 0 ch" in rendered
+    assert "exact" in rendered
+    assert "cov partial" in rendered
+    assert "7/42" in rendered
+
+
+def test_universe_pipeline_panel_renders_missing_artifacts_as_pending() -> None:
+    rendered = _render(build_universe_pipeline_panel({}))
+
+    assert "TPE" in rendered
+    assert "EU" in rendered
+    assert "US" in rendered
+    assert rendered.count("pipeline pending") == 3
 
 
 # ---------------------------------------------------------------------------
@@ -577,6 +656,7 @@ async def test_universe_page_panneaux_droits_existent(tmp_path: Path, monkeypatc
     async with app.run_test(size=(220, 60)) as pilot:
         await pilot.press("6")
         await pilot.pause()
+        assert app.query_one("#pipeline-body") is not None
         assert app.query_one("#rotation-body") is not None
         assert app.query_one("#hotset-body") is not None
         assert app.query_one("#overrides-body") is not None

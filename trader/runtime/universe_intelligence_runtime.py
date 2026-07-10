@@ -1,0 +1,549 @@
+"""Asynchronous preparation of per-venue universe-agent selections."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import logging
+import os
+import threading
+import time
+from collections.abc import Iterable, Mapping
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Any, Callable
+from uuid import uuid4
+
+from trader.application.universe import (
+    UniverseCompositionAgent,
+    build_universe_composition_request,
+    compose_universe,
+)
+from trader.domain.universe import project_brief_to_universe_context
+from trader.infrastructure.state_db.candidate_scope_store import CandidateScopeStore
+from trader.infrastructure.state_db.situation_brief_store import NewsMacroBriefStore
+from trader.infrastructure.state_db.universe_run_store import UniverseRunStore
+from trader.runtime.protocols import LoggerLike
+
+VENUES = ("TW", "EU", "US")
+DEFAULT_FAILURE_BACKOFF_MINUTES = 30
+DEFAULT_PREPARED_WRITE_BACKOFF_MINUTES = 1
+DEFAULT_REGIME_MAX_AGE_HOURS = 96
+DEFAULT_ASYNC_STOP_TIMEOUT_S = 1.0
+
+
+def _default_logger() -> logging.Logger:
+    return logging.getLogger("casys-trader")
+
+
+def tick_universe_intelligence(
+    *,
+    config_dir: Path,
+    state_dir: Path,
+    loop_now: datetime,
+    logger: LoggerLike | None = None,
+    agent: UniverseCompositionAgent | None = None,
+    scope_store: CandidateScopeStore | None = None,
+    brief_store: NewsMacroBriefStore | None = None,
+    run_store: UniverseRunStore | None = None,
+    venues: Iterable[str] = VENUES,
+    stop_requested: Callable[[], bool] | None = None,
+) -> dict[str, list[dict[str, Any]]]:
+    """Prepare exact per-scope selections outside the synchronous daemon path."""
+
+    del config_dir  # Reserved for the future universe-agent model/profile config.
+    if os.getenv("CASYS_UNIVERSE_INTELLIGENCE_ENABLED", "1") == "0":
+        return {
+            "prepared": [],
+            "waiting": [],
+            "skipped": [{"reason": "disabled"}],
+            "errors": [],
+        }
+
+    log = logger or _default_logger()
+    now = _ensure_utc(loop_now)
+    state_path = Path(state_dir)
+    scopes = scope_store or CandidateScopeStore(state_path / "candidate_scopes")
+    briefs = brief_store or NewsMacroBriefStore(state_path / "news_briefs")
+    runs = run_store or UniverseRunStore(state_path / "universe_runs")
+    market_context = _load_market_context(state_path / "last_regime.json", now=now)
+    prepared: list[dict[str, Any]] = []
+    waiting: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
+
+    for raw_venue in venues:
+        if stop_requested is not None and stop_requested():
+            skipped.append({"reason": "stopping"})
+            break
+        venue = str(raw_venue).strip().upper()
+        scope = scopes.read_current(venue)
+        if scope is None:
+            skipped.append({"venue": venue, "reason": "candidate_scope_missing"})
+            continue
+        scope_id = str(scope.get("candidate_scope_id") or "").strip()
+        candidates = tuple(
+            dict(item)
+            for item in scope.get("candidates") or []
+            if isinstance(item, Mapping) and item.get("symbol")
+        )
+        baseline = tuple(str(symbol).strip() for symbol in scope.get("default_hotlist") or ())
+        sticky = tuple(str(symbol).strip() for symbol in scope.get("sticky_context_at_close") or ())
+        brief = briefs.read_latest(venue, at=now)
+        if brief is None:
+            _record_waiting_once(
+                runs,
+                scope=scope,
+                now=now,
+                reason="brief_missing",
+                waiting=waiting,
+                skipped=skipped,
+            )
+            continue
+        input_refs = brief.input_refs if isinstance(brief.input_refs, dict) else {}
+        if input_refs.get("candidate_scope_id") != scope_id:
+            _record_waiting_once(
+                runs,
+                scope=scope,
+                now=now,
+                reason="brief_scope_mismatch",
+                waiting=waiting,
+                skipped=skipped,
+                brief_ref=brief.ref(date=brief.as_of[:10]),
+            )
+            continue
+
+        coverage_metadata = _coverage_metadata(input_refs.get("coverage"))
+        situation_context = project_brief_to_universe_context(
+            brief,
+            venue=venue,
+            candidate_symbols=(item["symbol"] for item in candidates),
+            active_at=now,
+            coverage_metadata=coverage_metadata,
+        )
+        try:
+            request = build_universe_composition_request(
+                venue=venue,
+                as_of=str(scope.get("as_of") or ""),
+                candidates=candidates,
+                baseline=baseline,
+                sticky=sticky,
+                market_context=market_context,
+                situation_context=situation_context,
+            )
+        except Exception as exc:
+            record = _base_run_record(
+                scope=scope,
+                now=now,
+                brief=brief,
+                input_signature=None,
+            )
+            record.update(
+                {
+                    "status": "invalid",
+                    "error_code": "invalid_universe_request",
+                    "error_message": str(exc)[:500],
+                }
+            )
+            runs.append(record)
+            errors.append({"venue": venue, "reason": "invalid_universe_request"})
+            continue
+        if request.candidate_scope_id != scope_id:
+            record = _base_run_record(
+                scope=scope,
+                now=now,
+                brief=brief,
+                input_signature=None,
+            )
+            record.update(
+                {
+                    "status": "invalid",
+                    "error_code": "candidate_scope_integrity_mismatch",
+                    "computed_candidate_scope_id": request.candidate_scope_id,
+                }
+            )
+            runs.append(record)
+            errors.append({"venue": venue, "reason": "candidate_scope_integrity_mismatch"})
+            continue
+
+        input_signature = _request_signature(request.to_dict())
+        latest = runs.read_latest(venue)
+        if _same_success(latest, input_signature):
+            exact_prepared = runs.read_prepared(scope_id)
+            if _same_success(exact_prepared, input_signature):
+                skipped.append({"venue": venue, "reason": "already_prepared"})
+                continue
+            try:
+                runs.write_prepared(scope_id, latest)
+            except Exception as exc:  # noqa: BLE001 - projection failure is observable/retryable
+                repair_error = {
+                    **latest,
+                    "as_of": now.isoformat(),
+                    "status": "error",
+                    "error_code": "prepared_write_error",
+                    "error_message": str(exc)[:500],
+                    "source_agent_run_id": latest.get("agent_run_id"),
+                }
+                runs.append(repair_error)
+                errors.append({"venue": venue, "reason": "prepared_write_error"})
+            else:
+                prepared.append(
+                    {
+                        "venue": venue,
+                        "candidate_scope_id": scope_id,
+                        "agent_run_id": latest.get("agent_run_id"),
+                        "repaired": True,
+                    }
+                )
+            continue
+        if _failure_backoff_active(latest, input_signature=input_signature, now=now):
+            skipped.append({"venue": venue, "reason": "failure_backoff"})
+            continue
+
+        if agent is None:
+            from trader.agent.universe import LlmUniverseAgent
+
+            agent = LlmUniverseAgent()
+        started = time.monotonic()
+        result = compose_universe(request, agent=agent)
+        latency_ms = max(0, round((time.monotonic() - started) * 1000))
+        record = _base_run_record(
+            scope=scope,
+            now=now,
+            brief=brief,
+            input_signature=input_signature,
+        )
+        record.update(
+            {
+                "agent_run_id": f"universe:{venue}:{now.isoformat()}:{uuid4().hex[:12]}",
+                "status": result.status,
+                "latency_ms": latency_ms,
+                "fallback_used": False,
+                "retrieval_status": request.retrieval_status,
+                "retrieval_refs": list(request.retrieval_refs),
+                "request_payload_hash": _request_signature(request.to_dict()),
+                "market_context_status": (
+                    str(request.market_context.get("status") or "present")
+                    if request.market_context
+                    else "missing"
+                ),
+                "market_context": dict(request.market_context),
+                "family_snapshot": dict(request.family_snapshot),
+                "situation_context_hash": _request_signature(situation_context.to_dict()),
+                "situation_point_count": situation_context.point_count,
+                "situation_truncated": situation_context.truncated,
+                "coverage": dict(situation_context.coverage),
+                "agent_provider": result.agent_provider,
+                "agent_model": result.agent_model,
+                "agent_provider_fallback_reason": result.agent_provider_fallback_reason,
+            }
+        )
+        if result.status == "success" and result.decision is not None:
+            decision = result.decision
+            selected = list(decision.selected_hotlist)
+            record.update(
+                {
+                    "selected_hotlist": selected,
+                    "summary": decision.summary,
+                    "family_postures": dict(decision.family_postures),
+                    "symbol_rationales": dict(decision.symbol_rationales),
+                    "contract_version": decision.contract_version,
+                    "selected_challengers": _selected_challengers(candidates, selected),
+                    "add": [symbol for symbol in selected if symbol not in baseline],
+                    "remove": [symbol for symbol in baseline if symbol not in selected],
+                }
+            )
+            try:
+                # The reconstructible projection is written first: a canonical
+                # success must never claim readiness when no activation file exists.
+                runs.write_prepared(scope_id, record)
+            except Exception as exc:  # noqa: BLE001 - explicit retryable run status
+                record.update(
+                    {
+                        "status": "error",
+                        "error_code": "prepared_write_error",
+                        "error_message": str(exc)[:500],
+                    }
+                )
+                runs.append(record)
+                errors.append(
+                    {
+                        "venue": venue,
+                        "reason": "prepared_write_error",
+                        "agent_run_id": record["agent_run_id"],
+                    }
+                )
+                continue
+            runs.append(record)
+            prepared.append(
+                {
+                    "venue": venue,
+                    "candidate_scope_id": scope_id,
+                    "agent_run_id": record["agent_run_id"],
+                }
+            )
+            continue
+
+        record.update(
+            {
+                "validation_errors": list(result.validation_errors),
+                "error_code": result.error_code,
+                "error_message": result.error_message,
+            }
+        )
+        runs.append(record)
+        errors.append(
+            {
+                "venue": venue,
+                "reason": result.error_code or result.status,
+                "agent_run_id": record["agent_run_id"],
+            }
+        )
+
+    if errors:
+        log.warning("universe intelligence errors: %s", errors)
+    return {"prepared": prepared, "waiting": waiting, "skipped": skipped, "errors": errors}
+
+
+class UniverseIntelligenceRunner:
+    """Coalescing single-worker runner; triggers received in-flight are not lost."""
+
+    def __init__(
+        self,
+        *,
+        tick_fn: Callable[..., dict[str, list[dict[str, Any]]]] = tick_universe_intelligence,
+        stop_timeout_s: float = DEFAULT_ASYNC_STOP_TIMEOUT_S,
+    ) -> None:
+        self._tick_fn = tick_fn
+        self._stop_timeout_s = max(0.0, float(stop_timeout_s))
+        self._lock = threading.Lock()
+        self._stop_event = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._pending_kwargs: dict[str, Any] | None = None
+        self._stopping = False
+
+    def trigger(self, **kwargs: Any) -> dict[str, Any]:
+        if os.getenv("CASYS_UNIVERSE_INTELLIGENCE_ENABLED", "1") == "0":
+            return {"triggered": False, "reason": "disabled"}
+        with self._lock:
+            if self._stopping:
+                return {"triggered": False, "reason": "stopping"}
+            if self._thread is not None:
+                self._pending_kwargs = dict(kwargs)
+                return {"triggered": False, "reason": "queued_latest"}
+            thread = threading.Thread(
+                target=self._run,
+                kwargs={"initial_kwargs": dict(kwargs)},
+                daemon=True,
+                name="universe-intelligence",
+            )
+            self._thread = thread
+            try:
+                thread.start()
+            except Exception:
+                self._thread = None
+                raise
+        return {"triggered": True, "_thread": thread}
+
+    def _run(self, *, initial_kwargs: dict[str, Any]) -> None:
+        kwargs = initial_kwargs
+        while True:
+            logger = kwargs.get("logger") or _default_logger()
+            try:
+                self._tick_fn(**kwargs, stop_requested=self._stop_event.is_set)
+            except Exception as exc:  # noqa: BLE001 - background work is best-effort
+                logger.warning("universe intelligence background failure: %s", exc)
+            with self._lock:
+                if self._stopping or self._pending_kwargs is None:
+                    if self._thread is threading.current_thread():
+                        self._thread = None
+                    return
+                kwargs = self._pending_kwargs
+                self._pending_kwargs = None
+
+    def stop(self) -> None:
+        with self._lock:
+            self._stopping = True
+            self._pending_kwargs = None
+            self._stop_event.set()
+            thread = self._thread
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=self._stop_timeout_s)
+
+
+def _record_waiting_once(
+    runs: UniverseRunStore,
+    *,
+    scope: Mapping[str, Any],
+    now: datetime,
+    reason: str,
+    waiting: list[dict[str, Any]],
+    skipped: list[dict[str, Any]],
+    brief_ref: Mapping[str, str] | None = None,
+) -> None:
+    venue = str(scope.get("venue") or "").strip()
+    scope_id = str(scope.get("candidate_scope_id") or "").strip()
+    latest = runs.read_latest(venue)
+    if (
+        latest is not None
+        and latest.get("candidate_scope_id") == scope_id
+        and latest.get("status") == "waiting_brief"
+        and latest.get("error_code") == reason
+    ):
+        skipped.append({"venue": venue, "reason": f"{reason}_already_recorded"})
+        return
+    record = _base_run_record(
+        scope=scope,
+        now=now,
+        brief=None,
+        input_signature=None,
+    )
+    record.update(
+        {
+            "status": "waiting_brief",
+            "error_code": reason,
+            "brief_ref": dict(brief_ref) if brief_ref else None,
+            "fallback_used": False,
+            "retrieval_status": "not_enabled",
+            "retrieval_refs": [],
+        }
+    )
+    runs.append(record)
+    waiting.append({"venue": venue, "reason": reason})
+
+
+def _base_run_record(
+    *,
+    scope: Mapping[str, Any],
+    now: datetime,
+    brief: Any,
+    input_signature: str | None,
+) -> dict[str, Any]:
+    brief_ref = brief.ref(date=brief.as_of[:10]) if brief is not None else None
+    return {
+        "schema_version": 1,
+        "candidate_scope_id": str(scope.get("candidate_scope_id") or ""),
+        "candidate_run_ids": list(scope.get("candidate_run_ids") or []),
+        "venue": str(scope.get("venue") or ""),
+        "as_of": now.isoformat(),
+        "scope_as_of": scope.get("as_of"),
+        "brief_ref": brief_ref,
+        "brief_status": "active" if brief is not None else "missing",
+        "valid_until": brief.valid_until if brief is not None else None,
+        "input_signature": input_signature,
+        "candidate_count": len(scope.get("candidates") or []),
+        "baseline": list(scope.get("default_hotlist") or []),
+        "sticky_context": list(scope.get("sticky_context_at_close") or []),
+    }
+
+
+def _coverage_metadata(raw: Any) -> dict[str, Any]:
+    coverage = dict(raw) if isinstance(raw, Mapping) else {}
+    stale_labels = coverage.get("macro_series_stale_labels")
+    macro_count = int(coverage.get("macro_series_count") or 0)
+    return {
+        "candidate_count": coverage.get("candidate_count"),
+        "candidates_with_news": coverage.get("candidates_with_news"),
+        "news_items_injected": coverage.get("news_items_injected"),
+        "news_cap_hit": coverage.get("news_cap_reached"),
+        "global_headlines": coverage.get("global_headlines_status"),
+        "macro_series": (
+            "stale"
+            if isinstance(stale_labels, list) and stale_labels
+            else "present" if macro_count else "missing"
+        ),
+    }
+
+
+def _load_market_context(path: Path, *, now: datetime) -> dict[str, Any]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    if isinstance(payload.get("regime_families"), Mapping):
+        context = dict(payload)
+    elif isinstance(payload.get("family_bias"), Mapping):
+        context = {
+            "schema_version": 0,
+            "status": "legacy_family_bias",
+            "regime_families": dict(payload["family_bias"]),
+        }
+    else:
+        context = {
+            "schema_version": 0,
+            "status": "legacy_unversioned",
+            "regime_families": dict(payload),
+        }
+    as_of = _parse_datetime(context.get("as_of"))
+    if as_of is not None and now - as_of > timedelta(hours=DEFAULT_REGIME_MAX_AGE_HOURS):
+        return {
+            "schema_version": context.get("schema_version"),
+            "status": "stale",
+            "as_of": context.get("as_of"),
+            "coverage": context.get("coverage") or {},
+            "regime_families": {},
+        }
+    if not context.get("status"):
+        coverage = context.get("coverage")
+        coverage_status = coverage.get("status") if isinstance(coverage, Mapping) else None
+        context["status"] = coverage_status or (
+            "partial" if context.get("regime_families") else "missing"
+        )
+    return context
+
+
+def _parse_datetime(value: Any) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed.astimezone(timezone.utc) if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
+
+
+def _request_signature(payload: Any) -> str:
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _same_success(raw: Any, input_signature: str) -> bool:
+    return bool(
+        isinstance(raw, Mapping)
+        and raw.get("input_signature") == input_signature
+        and raw.get("status") == "success"
+    )
+
+
+def _failure_backoff_active(raw: Any, *, input_signature: str, now: datetime) -> bool:
+    if not isinstance(raw, Mapping) or raw.get("input_signature") != input_signature:
+        return False
+    if raw.get("status") not in {"invalid", "error"}:
+        return False
+    try:
+        failed_at = datetime.fromisoformat(str(raw.get("as_of") or "").replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if failed_at.tzinfo is None:
+        failed_at = failed_at.replace(tzinfo=timezone.utc)
+    backoff_minutes = (
+        DEFAULT_PREPARED_WRITE_BACKOFF_MINUTES
+        if raw.get("error_code") == "prepared_write_error"
+        else DEFAULT_FAILURE_BACKOFF_MINUTES
+    )
+    return now - failed_at < timedelta(minutes=backoff_minutes)
+
+
+def _selected_challengers(candidates: tuple[dict[str, Any], ...], selected: list[str]) -> list[str]:
+    selected_set = set(selected)
+    return [
+        str(candidate["symbol"])
+        for candidate in candidates
+        if candidate.get("symbol") in selected_set and candidate.get("fresh_news")
+    ]
+
+
+def _ensure_utc(value: datetime) -> datetime:
+    return value.astimezone(timezone.utc) if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)

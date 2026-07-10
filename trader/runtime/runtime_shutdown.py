@@ -27,6 +27,8 @@ def _stop_pool(pool: Stoppable | None, *, message: str, logger: LoggerLike) -> N
 
 def shutdown_runtime_resources(
     *,
+    universe_intelligence_runner: Stoppable | None,
+    news_macro_runner: Stoppable | None,
     decide_pool: Stoppable | None,
     execute_pool: Stoppable | None,
     data_source: object | None,
@@ -36,6 +38,12 @@ def shutdown_runtime_resources(
     release_pid_file: ReleasePidFileFn,
     logger: LoggerLike,
 ) -> None:
+    _stop_pool(
+        universe_intelligence_runner,
+        message="[universe_intelligence] runner arrêté",
+        logger=logger,
+    )
+    _stop_pool(news_macro_runner, message="[news_macro] runner arrêté", logger=logger)
     _stop_pool(decide_pool, message="[queue_decide] pool arrêté", logger=logger)
     _stop_pool(execute_pool, message="[queue_execute] pool arrêté", logger=logger)
     if data_source is not None:

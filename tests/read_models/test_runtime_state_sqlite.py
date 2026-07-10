@@ -8,8 +8,10 @@ from trader.infrastructure.state_db.broker_store import SqliteBroker
 from trader.infrastructure.state_db.connection import open_state_db
 from trader.infrastructure.state_db.migrations import import_broker_from_json, import_scheduler_from_json
 from trader.infrastructure.state_db.scheduler_store import SqliteScheduler
+from trader.infrastructure.queue.ledger import TaskLedger
 from trader.reporting.read_models.runtime_state import (
     _load_fills_safe,
+    _load_queue_worker_activity_safe,
     _load_scheduler_data_safe,
     _load_scheduler_wakes_safe,
 )
@@ -80,3 +82,47 @@ def test_scheduler_read_models_read_sqlite_when_db_exists_without_json(tmp_path:
     assert streaks == {"SPY": 2}
     assert default_next_wake == "2026-06-10T12:00:00+00:00"
     assert symbol_wakes == {"SPY": "2026-06-10T11:30:00+00:00"}
+
+
+def test_queue_worker_activity_reads_running_decide_workers(tmp_path: Path) -> None:
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    ledger = TaskLedger(state_dir / "task_ledger.db")
+    now_ms = 1_000
+    first = ledger.enqueue(
+        kind="decide",
+        priority=0,
+        scheduled_at_ms=now_ms,
+        now_ms=now_ms,
+        partition_key="SPY",
+        resource="acpx",
+    )
+    second = ledger.enqueue(
+        kind="decide",
+        priority=0,
+        scheduled_at_ms=now_ms,
+        now_ms=now_ms,
+        partition_key="QQQ",
+        resource="acpx",
+    )
+    ledger.enqueue(
+        kind="decide",
+        priority=0,
+        scheduled_at_ms=now_ms,
+        now_ms=now_ms,
+        partition_key="IWM",
+        resource="acpx",
+    )
+
+    assert first is not None
+    assert second is not None
+    ledger.claim(worker_id="w1", token="t1", now_ms=now_ms, lease_ms=60_000, free_resources=["acpx"])
+    ledger.claim(worker_id="w2", token="t2", now_ms=now_ms, lease_ms=60_000, free_resources=["acpx"])
+
+    activity = _load_queue_worker_activity_safe(state_dir / "task_ledger.db")
+
+    assert activity == {
+        "active_workers": 2,
+        "running_tasks": 2,
+        "pending_tasks": 1,
+    }

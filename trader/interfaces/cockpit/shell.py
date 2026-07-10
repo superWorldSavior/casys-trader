@@ -24,7 +24,7 @@ from trader.interfaces.cockpit.derive import (
     RailVitals,
     cycle_progress,
     equity_snapshot,
-    llm_calls_label,
+    workers_activity_label,
 )
 from trader.interfaces.cockpit import format as f
 from trader.interfaces.ui.palette import (
@@ -161,7 +161,7 @@ def _kpi_cell(label: str, value: Text) -> Text:
 
 
 # Ordre de drop quand la largeur manque (EQUITY et NEXT WAKE toujours gardés).
-_KPI_DROP_ORDER = ("llm", "cycle", "unrealized", "cash free")
+_KPI_DROP_ORDER = ("workers", "cycle", "unrealized", "cash free")
 
 
 def _next_scheduler_wake(state: dict, *, now: datetime) -> datetime | None:
@@ -177,7 +177,7 @@ def _next_scheduler_wake(state: dict, *, now: datetime) -> datetime | None:
 
 
 def build_kpi_band(state: dict, *, now: datetime, width: int | None = None) -> Table:
-    """Bande KPI : EQUITY · CASH FREE · UNREALIZED · CYCLE · NEXT WAKE · LLM.
+    """Bande KPI : EQUITY · CASH FREE · UNREALIZED · CYCLE · NEXT WAKE · WORKERS.
 
     ``width`` (colonnes disponibles) : en dessous de ~19 cols par cellule,
     les cellules les moins critiques sont retirées (ordre _KPI_DROP_ORDER).
@@ -212,7 +212,7 @@ def build_kpi_band(state: dict, *, now: datetime, width: int | None = None) -> T
         style=CASYS_ACCENT,
     )
 
-    llm_value = Text(llm_calls_label(state), style=CASYS_MUTED)
+    workers_value = Text(workers_activity_label(state), style=CASYS_MUTED)
 
     cells: list[tuple[str, Text]] = [
         ("equity", equity_value),
@@ -220,7 +220,7 @@ def build_kpi_band(state: dict, *, now: datetime, width: int | None = None) -> T
         ("unrealized", unrealized_value),
         ("cycle", cycle_value),
         ("next wake", wake_value),
-        ("llm", llm_value),
+        ("workers", workers_value),
     ]
     if width:
         keep = max(2, min(6, width // 19))

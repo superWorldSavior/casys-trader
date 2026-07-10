@@ -28,6 +28,18 @@ class TestBuildMarketContextFromRegime:
         ctx = build_market_context_from_regime({})
         assert ctx is None
 
+    def test_preserve_typed_regime_snapshot_envelope(self):
+        from trader.market.rotation.wiring import build_market_context_from_regime
+
+        snapshot = {
+            "schema_version": 1,
+            "as_of": "2026-07-10T09:00:00+00:00",
+            "coverage": {"status": "partial", "basis": "active_tradable_universe"},
+            "regime_families": {"semis": {"dir": "up", "frac": 0.8}},
+        }
+
+        assert build_market_context_from_regime(snapshot) == snapshot
+
     def test_retourne_none_si_aucun_bias(self):
         """Contrat narrow : None si regime vide (pas d'info à transmettre)."""
         from trader.market.rotation.wiring import build_market_context_from_regime

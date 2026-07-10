@@ -57,7 +57,7 @@ from trader.reporting.read_models.runtime_state import _safe_float, _safe_list_o
 
 _VENUE_ORDER = ["TW", "EU", "US"]
 _VENUE_DISPLAY = {"TW": "TPE", "EU": "EU", "US": "US", "FX": "FX"}
-_HOTSET_SIZE = 5
+_HOTSET_PREVIEW_LIMIT = 5
 _PREVIEW_ROWS = 8  # fallback quand la hauteur est inconnue (premier rendu)
 
 # Colonnes normales (largeur ≤ 110)
@@ -314,7 +314,7 @@ def build_overrides_panel(overrides: UserOverrides) -> RenderableType:
 
 
 def build_hot_set_panel(state: dict) -> RenderableType:
-    """Panneau HOT-SET — 5 · radar score. PUR."""
+    """Panneau HOT-SET — aperçu borné, pas capacité métier. PUR."""
     venue_state_raw = f.safe_dict(state.get("venue_state"))
     venues_raw = f.safe_dict(venue_state_raw.get("venues"))
 
@@ -330,7 +330,7 @@ def build_hot_set_panel(state: dict) -> RenderableType:
                 candidates.append((sym, score))
 
     candidates.sort(key=lambda x: -x[1])
-    top = candidates[:_HOTSET_SIZE]
+    top = candidates[:_HOTSET_PREVIEW_LIMIT]
 
     if not top:
         return Text("no active hot-set", style=f"italic {CASYS_FAINT}")
@@ -350,6 +350,143 @@ def build_hot_set_panel(state: dict) -> RenderableType:
             bar,
             Text(f"{score:.2f}", style=CASYS_MUTED),
         )
+    return grid
+
+
+def _pipeline_status_style(status: str) -> str:
+    if status in {"ready", "success", "activated", "available"}:
+        return CASYS_SUCCESS
+    if status in {"fallback", "scope_mismatch", "error", "invalid", "unavailable"}:
+        return CASYS_ERROR
+    if status in {"waiting_brief", "degraded", "pending"}:
+        return CASYS_WARNING
+    return CASYS_MUTED
+
+
+def _pipeline_id(component: dict, key: str = "id_short") -> str:
+    value = str(component.get(key) or "").strip()
+    return f" #{value}" if value else ""
+
+
+def _pipeline_count(component: dict, key: str) -> int:
+    return max(0, int(_safe_float(component.get(key), default=0.0) or 0.0))
+
+
+def _pipeline_coverage_label(coverage: dict) -> str:
+    status = str(coverage.get("status") or "—")
+    covered = _safe_float(coverage.get("candidates_with_news"), default=None)
+    total = _safe_float(coverage.get("candidate_count"), default=None)
+    if covered is not None and total is not None:
+        return f"{status} {max(0, int(covered))}/{max(0, int(total))}"
+    return status
+
+
+def build_universe_pipeline_panel(state: dict) -> RenderableType:
+    """Current per-venue scope → brief → agent → activation lineage. PUR."""
+
+    pipeline = f.safe_dict(state.get("universe_pipeline"))
+    grid = Table.grid(padding=(0, 1))
+    grid.add_column(no_wrap=True, width=4)
+    grid.add_column()
+
+    for venue_index, venue in enumerate(_VENUE_ORDER):
+        entry = f.safe_dict(pipeline.get(venue))
+        scope = f.safe_dict(entry.get("scope"))
+        scout = f.safe_dict(entry.get("scout"))
+        brief = f.safe_dict(entry.get("brief"))
+        agent = f.safe_dict(entry.get("agent"))
+        activation = f.safe_dict(entry.get("activation"))
+
+        scope_status = str(scope.get("status") or "pending")
+        scout_status = str(scout.get("status") or "pending")
+        brief_status = str(brief.get("status") or "pending")
+        agent_status = str(agent.get("status") or "pending")
+        activation_status = str(activation.get("status") or "pending")
+        statuses = (scope_status, scout_status, brief_status, agent_status, activation_status)
+        label = Text(_VENUE_DISPLAY.get(venue, venue), style=f"bold {CASYS_FG}")
+        if all(status == "pending" for status in statuses):
+            grid.add_row(label, Text("pipeline pending", style=CASYS_WARNING))
+            if venue_index < len(_VENUE_ORDER) - 1:
+                grid.add_row(Text(""), Text("·", style=CASYS_FAINT))
+            continue
+
+        scope_line = Text()
+        scope_line.append("scope ", style=CASYS_FAINT)
+        scope_line.append(scope_status, style=_pipeline_status_style(scope_status))
+        if scope_status == "ready":
+            scope_line.append(_pipeline_id(scope), style=CASYS_DIM)
+        if _pipeline_count(scope, "candidate_count"):
+            scope_line.append(
+                f" · {_pipeline_count(scope, 'candidate_count')} cand"
+                f" / {_pipeline_count(scope, 'challenger_count')} ch",
+                style=CASYS_MUTED,
+            )
+
+        scout_coverage = f.safe_dict(scout.get("coverage"))
+        scout_line = Text()
+        scout_line.append("scout ", style=CASYS_FAINT)
+        scout_line.append(scout_status, style=_pipeline_status_style(scout_status))
+        if scout_status not in {"pending", "unavailable"}:
+            scout_line.append(_pipeline_id(scout), style=CASYS_DIM)
+            scout_line.append(
+                f" · {_pipeline_count(scout, 'challenger_count')} ch"
+                f" · {_pipeline_count(scout_coverage, 'eligible_items')} elig",
+                style=CASYS_MUTED,
+            )
+
+        brief_line = Text()
+        brief_line.append("brief ", style=CASYS_FAINT)
+        brief_line.append(brief_status, style=_pipeline_status_style(brief_status))
+        brief_line.append(_pipeline_id(brief), style=CASYS_DIM)
+        if brief_status not in {"pending", "unavailable"}:
+            exact = brief.get("scope_match")
+            exact_label = "exact" if exact is True else ("mismatch" if exact is False else "unlinked")
+            coverage_status = _pipeline_coverage_label(f.safe_dict(brief.get("coverage")))
+            brief_line.append(
+                f" · {exact_label} · {_pipeline_count(brief, 'point_count')} pts · cov {coverage_status}",
+                style=CASYS_MUTED,
+            )
+
+        agent_line = Text()
+        agent_line.append("agent ", style=CASYS_FAINT)
+        agent_line.append(agent_status, style=_pipeline_status_style(agent_status))
+        agent_line.append(_pipeline_id(agent), style=CASYS_DIM)
+        agent_line.append(
+            f" · {_pipeline_count(agent, 'hotlist_count')} hot / {_pipeline_count(agent, 'challenger_count')} ch",
+            style=CASYS_MUTED,
+        )
+        provider = str(agent.get("provider") or "").strip()
+        model = str(agent.get("model") or "").strip()
+        if provider or model:
+            agent_line.append(f" · {provider or '—'}/{model or '—'}", style=CASYS_DIM)
+        provider_fallback = str(agent.get("provider_fallback_reason") or "").strip()
+        if provider_fallback:
+            agent_line.append(f" · backend fallback {provider_fallback}", style=CASYS_WARNING)
+        error_code = str(agent.get("error_code") or "").strip()
+        if error_code:
+            agent_line.append(f" · {error_code}", style=CASYS_WARNING)
+
+        activation_line = Text()
+        activation_line.append("active ", style=CASYS_FAINT)
+        activation_line.append(activation_status, style=_pipeline_status_style(activation_status))
+        activation_line.append(
+            f" · {_pipeline_count(activation, 'hotlist_count')} hot"
+            f" / {_pipeline_count(activation, 'challenger_count')} ch",
+            style=CASYS_MUTED,
+        )
+        activation_line.append(_pipeline_id(activation, "agent_run_id_short"), style=CASYS_DIM)
+        fallback_reason = str(activation.get("fallback_reason") or "").strip()
+        if fallback_reason:
+            activation_line.append(f" · {fallback_reason}", style=CASYS_ERROR)
+
+        grid.add_row(label, scope_line)
+        grid.add_row(Text(""), scout_line)
+        grid.add_row(Text(""), brief_line)
+        grid.add_row(Text(""), agent_line)
+        grid.add_row(Text(""), activation_line)
+        if venue_index < len(_VENUE_ORDER) - 1:
+            grid.add_row(Text(""), Text("·", style=CASYS_FAINT))
+
     return grid
 
 
@@ -385,11 +522,10 @@ def build_rotation_panel(
     """Panneau ROTATION — automatic. PUR (last_rotation injecté depuis update_state)."""
     explainer = Text()
     explainer.append(
-        "the radar scores the pool at each venue open and fills the hot-set — ",
+        "the heuristic prepares candidates; the universe agent selects the hot-set — ",
         style=CASYS_MUTED,
     )
-    explainer.append(f"{_HOTSET_SIZE} slots", style=CASYS_FG)
-    explainer.append(", minus pins", style=CASYS_MUTED)
+    explainer.append(f"preview shows up to {_HOTSET_PREVIEW_LIMIT}", style=CASYS_FG)
 
     sessions = f.safe_dict(state.get("sessions"))
     grid = Table.grid(padding=(0, 1))
@@ -662,6 +798,7 @@ class UniversePage(ResizeRefresh, Static):
     UniversePage #universe-right {
         height: 100%;
     }
+    UniversePage #pipeline-panel { height: auto; margin-bottom: 1; }
     UniversePage #rotation-panel { height: auto; margin-bottom: 1; }
     UniversePage #hotset-panel   { height: auto; margin-bottom: 1; }
     UniversePage #overrides-panel { height: auto; }
@@ -685,11 +822,14 @@ class UniversePage(ResizeRefresh, Static):
             panel.border_title = f"UNIVERSE — {0} symbols · 0 venues"
             yield SymbolTable(id="universe-table")
         with Vertical(id="universe-right", classes="right-col"):
+            with VerticalScroll(id="pipeline-panel", classes="casys-panel") as pipeline:
+                pipeline.border_title = "PIPELINE — scope › brief › agent › active"
+                yield Static(id="pipeline-body")
             with VerticalScroll(id="rotation-panel", classes="casys-panel") as rot:
                 rot.border_title = "ROTATION — automatic"
                 yield Static(id="rotation-body")
             with VerticalScroll(id="hotset-panel", classes="casys-panel") as hs:
-                hs.border_title = f"HOT-SET — {_HOTSET_SIZE} · radar score"
+                hs.border_title = f"HOT-SET — preview up to {_HOTSET_PREVIEW_LIMIT}"
                 yield Static(id="hotset-body")
             with VerticalScroll(id="overrides-panel", classes="casys-panel") as ov:
                 ov.border_title = "OVERRIDES — yours"
@@ -830,6 +970,10 @@ class UniversePage(ResizeRefresh, Static):
             last_rotation = None
 
         # Panneaux droits
+        try:
+            self.query_one("#pipeline-body", Static).update(build_universe_pipeline_panel(state))
+        except Exception:
+            pass
         try:
             self.query_one("#rotation-body", Static).update(
                 build_rotation_panel(state, now=now, last_rotation=last_rotation)

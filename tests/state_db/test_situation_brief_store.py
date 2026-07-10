@@ -1,54 +1,80 @@
 import json
+from datetime import datetime, timezone
 
 from trader.domain.situation import NewsMacroBrief
 from trader.infrastructure.state_db.situation_brief_store import NewsMacroBriefStore
 
 
-def _brief(point: str, *, as_of: str = "2026-07-09T07:00:00+00:00") -> NewsMacroBrief:
+def _brief(
+    point: str,
+    *,
+    venue: str = "EU",
+    as_of: str = "2026-07-09T07:00:00+00:00",
+    valid_until: str = "2026-07-10T07:00:00+00:00",
+) -> NewsMacroBrief:
     payload = {
+        "brief_id": f"{as_of}|{venue}",
+        "venue": venue,
         "as_of": as_of,
-        "valid_until": "2026-07-10T07:00:00+00:00",
-        "zones": {"US": [{"point": point, "sources": ["uuid-1"], "severity": "watch"}]},
+        "valid_until": valid_until,
+        "zones": {"EU": [{"point": point, "sources": ["uuid-1"], "severity": "watch"}]},
     }
     brief = NewsMacroBrief.from_mapping(payload)
     assert brief is not None
     return brief
 
 
-def test_news_macro_brief_store_write_read_and_ref(tmp_path) -> None:
+def test_news_macro_brief_store_appends_jsonl_and_latest_ref(tmp_path) -> None:
     store = NewsMacroBriefStore(tmp_path / "news_briefs")
-    brief = _brief("Fed repricing pressure")
+    brief = _brief("ECB repricing pressure")
 
-    store.write(brief)
+    ref = store.append(brief)
 
-    saved = store.read("2026-07-09")
-    assert saved == brief
-    assert store.active_ref("2026-07-09") == {
+    day_file = tmp_path / "news_briefs" / "2026-07-09.jsonl"
+    latest_file = tmp_path / "news_briefs" / "latest-EU.jsonl"
+    day_rows = [json.loads(line) for line in day_file.read_text(encoding="utf-8").splitlines()]
+    latest_rows = [json.loads(line) for line in latest_file.read_text(encoding="utf-8").splitlines()]
+
+    assert len(day_rows) == 1
+    assert len(latest_rows) == 1
+    assert day_rows[0]["venue"] == "EU"
+    assert latest_rows[0]["brief_id"] == brief.brief_id
+    assert store.read("2026-07-09", venue="EU") == brief
+    assert ref == {
         "date": "2026-07-09",
+        "venue": "EU",
+        "brief_id": "2026-07-09T07:00:00+00:00|EU",
         "as_of": "2026-07-09T07:00:00+00:00",
     }
 
 
-def test_news_macro_brief_store_archives_replaced_payload(tmp_path) -> None:
+def test_news_macro_brief_store_never_replaces_canonical_jsonl(tmp_path) -> None:
     store = NewsMacroBriefStore(tmp_path / "news_briefs")
 
-    store.write(_brief("first"))
-    store.write(_brief("second"))
+    first = _brief("first")
+    second = _brief("second", as_of="2026-07-09T08:00:00+00:00")
+    store.append(first)
+    store.append(second)
 
-    history = tmp_path / "news_briefs-history.jsonl"
-    rows = [json.loads(line) for line in history.read_text(encoding="utf-8").splitlines()]
-    assert len(rows) == 1
-    assert rows[0]["path"] == "2026-07-09.json"
-    assert rows[0]["payload"]["zones"]["US"][0]["point"] == "first"
-    assert rows[0]["replaced_by"] == {
+    rows = [
+        json.loads(line)
+        for line in (tmp_path / "news_briefs" / "2026-07-09.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    latest = store.read_latest("EU")
+
+    assert [row["zones"]["EU"][0]["point"] for row in rows] == ["first", "second"]
+    assert latest == second
+    assert store.active_ref("EU", at=datetime(2026, 7, 9, 8, 30, tzinfo=timezone.utc)) == {
         "date": "2026-07-09",
-        "as_of": "2026-07-09T07:00:00+00:00",
+        "venue": "EU",
+        "brief_id": "2026-07-09T08:00:00+00:00|EU",
+        "as_of": "2026-07-09T08:00:00+00:00",
     }
 
 
-def test_news_macro_brief_store_returns_none_for_corrupt_payload(tmp_path) -> None:
+def test_news_macro_brief_store_returns_none_for_corrupt_jsonl_lines(tmp_path) -> None:
     base = tmp_path / "news_briefs"
     base.mkdir()
-    (base / "2026-07-09.json").write_text("{bad json", encoding="utf-8")
+    (base / "2026-07-09.jsonl").write_text("{bad json\n[]\n", encoding="utf-8")
 
     assert NewsMacroBriefStore(base).read("2026-07-09") is None

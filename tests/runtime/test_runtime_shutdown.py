@@ -32,6 +32,8 @@ def test_shutdown_runtime_resources_stops_pools_disconnects_and_releases_pid() -
     releases: list[tuple[Path, int]] = []
 
     runtime_shutdown.shutdown_runtime_resources(
+        universe_intelligence_runner=FakePool(calls, "universe"),
+        news_macro_runner=FakePool(calls, "news_macro"),
         decide_pool=FakePool(calls, "decide"),
         execute_pool=FakePool(calls, "execute"),
         data_source=data_source,
@@ -42,9 +44,14 @@ def test_shutdown_runtime_resources_stops_pools_disconnects_and_releases_pid() -
         logger=logger,
     )
 
-    assert calls == ["decide", "execute", "disconnect"]
+    assert calls == ["universe", "news_macro", "decide", "execute", "disconnect"]
     assert releases == [(Path("daemon.pid"), 4242)]
-    assert logger.infos == [("[queue_decide] pool arrêté",), ("[queue_execute] pool arrêté",)]
+    assert logger.infos == [
+        ("[universe_intelligence] runner arrêté",),
+        ("[news_macro] runner arrêté",),
+        ("[queue_decide] pool arrêté",),
+        ("[queue_execute] pool arrêté",),
+    ]
 
 
 def test_shutdown_runtime_resources_best_effort_continues_after_errors() -> None:
@@ -56,6 +63,8 @@ def test_shutdown_runtime_resources_best_effort_continues_after_errors() -> None
         raise RuntimeError("release boom")
 
     runtime_shutdown.shutdown_runtime_resources(
+        universe_intelligence_runner=FakePool(calls, "universe", raises=True),
+        news_macro_runner=FakePool(calls, "news_macro", raises=True),
         decide_pool=FakePool(calls, "decide", raises=True),
         execute_pool=FakePool(calls, "execute"),
         data_source=object(),
@@ -66,5 +75,5 @@ def test_shutdown_runtime_resources_best_effort_continues_after_errors() -> None
         logger=FakeLogger(),
     )
 
-    assert calls == ["decide", "execute", "disconnect"]
+    assert calls == ["universe", "news_macro", "decide", "execute", "disconnect"]
     assert releases == [(Path("daemon.pid"), 4242)]

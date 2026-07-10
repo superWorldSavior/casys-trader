@@ -5,6 +5,7 @@ from trader.application.analyst.news_macro import (
     NewsMacroAnalysisResult,
     NewsMacroAnalyst,
     NewsMacroBriefRepository,
+    SituationMemoryRepository,
     run_news_macro_analysis,
 )
 
@@ -13,5 +14,6 @@ __all__ = [
     "NewsMacroAnalysisResult",
     "NewsMacroAnalyst",
     "NewsMacroBriefRepository",
+    "SituationMemoryRepository",
     "run_news_macro_analysis",
 ]

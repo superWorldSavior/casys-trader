@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
@@ -14,6 +14,9 @@ from trader.runtime.protocols import LoggerLike
 LoadRadarParamsFn = Callable[[Path], object]
 BuildOverrideFn = Callable[[], object]
 BuildMarketContextFn = Callable[[object], object]
+BuildNewsChallengerFn = Callable[..., object]
+BuildPreparedUniverseFn = Callable[[Path], object]
+BuildCandidateScopeObserverFn = Callable[[Path], object]
 RotationTickFn = Callable[..., object]
 PositionsFn = Callable[[], dict]
 PlansFn = Callable[[], list]
@@ -112,6 +115,71 @@ def build_llm_override_fn(
     return make_llm_override_fn(_complete, timeout_s=timeout_s)
 
 
+def build_candidate_scope_observer(state_dir: str | Path) -> Callable[[dict], None]:
+    """Persist immutable close snapshots without coupling rotation to storage."""
+
+    from trader.infrastructure.state_db.candidate_scope_store import CandidateScopeStore
+
+    store = CandidateScopeStore(Path(state_dir) / "candidate_scopes")
+
+    def _observe(record: dict) -> dict[str, str]:
+        return store.append(record)
+
+    return _observe
+
+
+def build_prepared_universe_fn(state_dir: str | Path) -> Callable[..., dict]:
+    """Read an exact prepared agent selection for synchronous pre-open activation."""
+
+    from trader.infrastructure.state_db.situation_brief_store import NewsMacroBriefStore
+    from trader.infrastructure.state_db.universe_run_store import UniverseRunStore
+
+    state_path = Path(state_dir)
+    run_store = UniverseRunStore(state_path / "universe_runs")
+    brief_store = NewsMacroBriefStore(state_path / "news_briefs")
+
+    def _prepared(*, venue: str, candidate_scope_id: str, as_of: str, **_kwargs: Any) -> dict:
+        if not candidate_scope_id:
+            return {"status": "missing", "reason": "candidate_scope_missing"}
+        record = run_store.read_prepared(candidate_scope_id)
+        if record is not None:
+            valid_until = _parse_datetime(record.get("valid_until"))
+            activation_at = _parse_datetime(as_of)
+            if valid_until is not None and activation_at is not None and activation_at >= valid_until:
+                return {"status": "expired", "reason": "prepared_expired"}
+            return record
+
+        latest_run = run_store.read_latest(venue)
+        if latest_run is not None and latest_run.get("candidate_scope_id") == candidate_scope_id:
+            status = str(latest_run.get("status") or "").strip()
+            if status and status != "success":
+                reason = str(latest_run.get("error_code") or status).strip()
+                return {
+                    "status": status,
+                    "reason": f"agent_{reason}",
+                    "agent_run_id": latest_run.get("agent_run_id"),
+                    "brief_ref": latest_run.get("brief_ref"),
+                }
+
+        brief = brief_store.read_latest(venue, at=as_of)
+        if brief is None:
+            return {"status": "missing", "reason": "brief_missing"}
+        refs = brief.input_refs if isinstance(brief.input_refs, dict) else {}
+        if refs.get("candidate_scope_id") != candidate_scope_id:
+            return {"status": "missing", "reason": "brief_scope_mismatch"}
+        return {"status": "pending", "reason": "prepare_pending"}
+
+    return _prepared
+
+
+def _parse_datetime(value: object) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
+
+
 def tick_market_rotation(
     *,
     config_dir: Path,
@@ -121,6 +189,9 @@ def tick_market_rotation(
     load_radar_params_fn: LoadRadarParamsFn | None = None,
     build_override_fn: BuildOverrideFn | None = None,
     build_market_context_from_regime_fn: BuildMarketContextFn | None = None,
+    build_news_challenger_fn: BuildNewsChallengerFn | None = None,
+    build_prepared_universe_provider_fn: BuildPreparedUniverseFn | None = None,
+    build_candidate_scope_observer_fn: BuildCandidateScopeObserverFn | None = None,
     rotation_tick_fn: RotationTickFn | None = None,
 ) -> None:
     """Run the best-effort D10 market rotation tick for daemon.main()."""
@@ -134,25 +205,50 @@ def tick_market_rotation(
             from trader.market.rotation.wiring import (
                 build_market_context_from_regime as build_market_context_from_regime_fn,
             )
+        if build_news_challenger_fn is None:
+            from trader.runtime.news_challenger_runtime import (
+                build_news_challenger_fn as build_news_challenger_fn,
+            )
 
         radar_params = load_radar_params_fn(config_dir)
         override_fn = None
+        prepared_universe_fn = None
         if radar_params.override_enabled:
-            if build_override_fn is None:
-                build_override_fn = build_llm_override_fn
-            override_fn = build_override_fn()
+            if build_override_fn is not None:
+                # Explicit injection keeps CLI/tests and emergency compatibility.
+                override_fn = build_override_fn()
+            else:
+                if build_prepared_universe_provider_fn is None:
+                    build_prepared_universe_provider_fn = build_prepared_universe_fn
+                prepared_universe_fn = build_prepared_universe_provider_fn(state_dir)
+
+        if build_candidate_scope_observer_fn is None:
+            build_candidate_scope_observer_fn = build_candidate_scope_observer
+        candidate_scope_observer = build_candidate_scope_observer_fn(state_dir)
 
         market_context = _load_cached_market_context(
             state_dir / "last_regime.json",
             build_market_context_from_regime_fn=build_market_context_from_regime_fn,
         )
+        try:
+            news_challenger_fn = build_news_challenger_fn(
+                config_dir=config_dir,
+                state_dir=state_dir,
+                as_of=loop_now,
+            )
+        except Exception as exc:  # noqa: BLE001 - scout is advisory, rotation is mandatory
+            news_challenger_fn = None
+            log.warning("news challenger provider indisponible: %s", exc)
         rotation_tick_fn(
             config_dir,
             state_dir,
             loop_now.isoformat(),
             override_fn=override_fn,
+            prepared_universe_fn=prepared_universe_fn,
+            candidate_scope_observer=candidate_scope_observer,
             sticky_fn=build_sticky_fn(state_dir),
             market_context=market_context,
+            news_challenger_fn=news_challenger_fn,
         )
     except Exception:  # noqa: BLE001 - rotation must never bring down the daemon
         log.exception("rotation tick (D10) échouée")

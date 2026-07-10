@@ -31,11 +31,11 @@
 | Sujet | Page | Source principale |
 |---|---|---|
 | Configuration | [`config.md`](config.md) | `config/*.yaml`, `support/config` |
-| Univers, radar, rotation | [`universe-rotation.md`](universe-rotation.md) | `market/rotation`, `market/radar*` |
+| Univers, radar, challengers, agent univers | [`universe-rotation.md`](universe-rotation.md) | `market/rotation`, `market/radar*`, `domain/universe` |
 | Régime | [`regime.md`](regime.md) | `domain/market/regime`, `domain/market/family_regime` |
 | FX | [`fx.md`](fx.md) | `domain/market/fx`, `infrastructure/market_sources/fx_rates` |
-| News | [`news.md`](news.md) | `infrastructure/market_sources/news_feed` |
-| Macro | [`macro.md`](macro.md) | `market/macro_*` |
+| News, scout challengers, analyste | [`news.md`](news.md) | `infrastructure/market_sources/news_feed`, `runtime/news_*` |
+| Macro | [`macro.md`](macro.md) | `market/macro_*`, `runtime/news_macro_runtime` |
 
 ## Surfaces opérateur
 

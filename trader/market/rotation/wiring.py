@@ -258,6 +258,14 @@ def build_market_context_from_regime(
     """
     if not family_bias:
         return None
+    if isinstance(family_bias.get("regime_families"), dict):
+        return dict(family_bias)
+    if isinstance(family_bias.get("family_bias"), dict):
+        return {
+            "schema_version": 0,
+            "status": "legacy_family_bias",
+            "regime_families": dict(family_bias["family_bias"]),
+        }
     return {"regime_families": dict(family_bias)}
 
 

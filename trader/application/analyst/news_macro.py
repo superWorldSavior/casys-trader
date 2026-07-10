@@ -12,9 +12,15 @@ from trader.domain.situation import NewsMacroBrief
 class NewsMacroAnalysisRequest:
     as_of: str
     valid_until: str
+    venue: str = "GLOBAL"
     news_items: tuple[dict, ...] = ()
+    global_news_items: tuple[dict, ...] = ()
     macro_next: tuple[dict, ...] = ()
+    macro_series: tuple[dict, ...] = ()
+    # Upstream shortlist (radar top 40 + qualified challengers), never the hotlist.
     candidate_symbols: tuple[str, ...] = ()
+    family_context: dict[str, dict] | None = None
+    input_refs: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -34,7 +40,13 @@ class NewsMacroAnalyst(Protocol):
 
 @runtime_checkable
 class NewsMacroBriefRepository(Protocol):
-    def write(self, brief: NewsMacroBrief, *, date: str | None = None) -> None:
+    def append(self, brief: NewsMacroBrief, *, date: str | None = None) -> dict[str, str]:
+        ...
+
+
+@runtime_checkable
+class SituationMemoryRepository(Protocol):
+    def ingest_brief(self, brief: NewsMacroBrief) -> dict:
         ...
 
 
@@ -43,13 +55,14 @@ def run_news_macro_analysis(
     *,
     analyst: NewsMacroAnalyst,
     repository: NewsMacroBriefRepository,
+    situation_repository: SituationMemoryRepository | None = None,
     date: str | None = None,
 ) -> NewsMacroAnalysisResult:
     """Run the analyst best-effort and persist the resulting brief."""
 
     try:
         brief = analyst.analyze(request)
-        repository.write(brief, date=date)
+        brief_ref = repository.append(brief, date=date)
     except Exception as exc:
         return NewsMacroAnalysisResult(
             triggered=True,
@@ -57,9 +70,13 @@ def run_news_macro_analysis(
             error_code=exc.__class__.__name__,
             error_message=str(exc)[:500],
         )
-    date_key = date or brief.as_of[:10]
+    if situation_repository is not None:
+        try:
+            situation_repository.ingest_brief(brief)
+        except Exception:  # noqa: BLE001 - derived index, JSONL brief remains canonical
+            pass
     return NewsMacroAnalysisResult(
         triggered=True,
         written=True,
-        brief_ref=brief.ref(date=date_key),
+        brief_ref=brief_ref,
     )

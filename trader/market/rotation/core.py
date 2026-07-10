@@ -84,17 +84,16 @@ def compose_final(
     sticky: set[str],
     cap_m: int,
 ) -> tuple[list[str], str | None]:
-    """Compose la liste finale : sticky hors quota + non-sticky dans le quota restant.
+    """Compose la liste finale : jusqu'à ``cap_m`` choisis + tous les sticky.
 
     Returns:
-        (final_list, alert) où alert vaut 'sticky_over_cap' si len(sticky) > cap_m.
+        ``(final_list, None)``. Les sticky sont réellement hors quota et ne
+        produisent donc pas d'alerte quand ils portent le total au-delà de
+        ``cap_m``.
     """
-    alert: str | None = "sticky_over_cap" if len(sticky) > cap_m else None
-    free = max(0, cap_m - len(sticky))
-
     # sticky triés alphabétiquement pour ordre déterministe, puis non-sticky
     sticky_sorted = sorted(sticky)
-    from_default = [s for s in default_hot if s not in sticky][:free]
+    from_default = [s for s in default_hot if s not in sticky][:cap_m]
 
     # Déduplication ordre préservé
     seen: set[str] = set()
@@ -104,7 +103,7 @@ def compose_final(
             seen.add(s)
             final.append(s)
 
-    return final, alert
+    return final, None
 
 
 def sticky_symbols(
@@ -131,6 +130,7 @@ def apply_override(
 
     Rejets machine-readable :
     - retrait d'un s in sticky → {"symbol": s, "reason": "sticky_protected"}
+    - ajout d'un s in sticky → {"symbol": s, "reason": "already_sticky"}
     - ajout d'un s not in pool → {"symbol": s, "reason": "out_of_pool"}
     - ajout dépassant free_slots → {"symbol": s, "reason": "cap_exceeded"}
 
@@ -150,13 +150,16 @@ def apply_override(
 
     # Appliquer les ajouts
     for s in add:
-        if s not in pool:
+        if s in sticky:
+            rejections.append({"symbol": s, "reason": "already_sticky"})
+        elif s not in pool:
             rejections.append({"symbol": s, "reason": "out_of_pool"})
+        elif s in result:
+            continue
         elif len(result) >= free_slots:
             rejections.append({"symbol": s, "reason": "cap_exceeded"})
         else:
-            if s not in result:
-                result.append(s)
+            result.append(s)
 
     return result, rejections
 
@@ -305,11 +308,11 @@ def run(
             "written": False,
         }
 
-    # 2. sticky (hors quota) + slots libres
+    # 2. sticky réellement hors quota : cap_m porte uniquement sur les choisis.
     sticky = sticky_fn()
-    free_slots = max(0, cap_m - len(sticky))
+    free_slots = cap_m
 
-    # 3. hystérésis sur les NON-sticky uniquement, cap = free_slots
+    # 3. hystérésis sur les NON-sticky uniquement, cap = cap_m
     ranked_ns = [r for r in ranked if r["symbol"] not in sticky]
     current_ns = {s for s in state["current_hot_set"] if s not in sticky}
     default_hot = apply_hysteresis(

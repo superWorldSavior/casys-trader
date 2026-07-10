@@ -16,7 +16,7 @@ from typing import Protocol
 
 from trader.domain.llm import LlmCompletion, LlmFailure
 
-DEFAULT_SPARK_MODEL = "gpt-5.5"
+DEFAULT_SPARK_MODEL = "gpt-5.6-sol"
 DEFAULT_SPARK_FALLBACK_MODEL = "gpt-5.3-codex-spark"
 DEFAULT_OLLAMA_BASE_URL = "https://ollama.com/v1"
 DEFAULT_OLLAMA_MODEL = "nemotron-3-nano:30b-cloud"
@@ -116,6 +116,8 @@ def _default_acpx_session_label(provider: str) -> str | None:
 def _env_session_label(provider: str) -> str | None:
     if provider == "consolidator":
         return _env("TRADER_CONSOLIDATOR_ACPX_SESSION_LABEL", "TRADER_ACPX_SESSION_LABEL")
+    if provider == "universe":
+        return _env("TRADER_UNIVERSE_ACPX_SESSION_LABEL", "TRADER_ACPX_SESSION_LABEL")
     return _env("TRADER_ACPX_SESSION_LABEL")
 
 
@@ -136,7 +138,11 @@ def build_default_router_from_env(
     # TRADER_ACPX_BIN prime sur le paramètre pour le provider de trading — mais PAS
     # pour le consolidateur dont le binaire est résolu en amont via
     # TRADER_CONSOLIDATOR_ACPX_BIN (les deux binaires sont indépendants selon .env.example).
-    acpx_bin_env = os.getenv("TRADER_ACPX_BIN")
+    acpx_bin_env = (
+        os.getenv("TRADER_UNIVERSE_ACPX_BIN") or os.getenv("TRADER_ACPX_BIN")
+        if acpx_provider == "universe"
+        else os.getenv("TRADER_ACPX_BIN")
+    )
     if acpx_bin_env and acpx_provider != "consolidator":
         acpx_bin = acpx_bin_env
     session_label = (
@@ -156,9 +162,8 @@ def build_default_router_from_env(
     ]
 
     if acpx_provider != "consolidator":
-        # Fallback de trade : Sonnet via `acpx claude` (le primary gpt-5.5 est épuisé ;
-        # Sonnet exploite l'exploration là où spark restait inerte — backtest 2026-06-25,
-        # 4 trades vs 1). Quand gpt-5.5 revient, il reprend la main en primary.
+        # Fallback de trade : Sonnet via `acpx claude`, conservé comme second tier
+        # pour les échecs retryables du primary Codex.
         # TRADER_SPARK_FALLBACK_MODEL surcharge le modèle ("" = désactive le tier).
         if "TRADER_SPARK_FALLBACK_MODEL" in os.environ:
             resolved_fallback = os.environ["TRADER_SPARK_FALLBACK_MODEL"]

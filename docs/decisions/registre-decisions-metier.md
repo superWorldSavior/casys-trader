@@ -124,6 +124,10 @@ S'appuie sur D2 (`family_regime`, biais par univers — le radar en est le frèr
 **Points ouverts.** Calibration (forme additive/multiplicative du score, gestion signe long/short, fenêtres, `atr_floor`, plafond amplitude, Δ, K, seuils de sortie d'urgence, benchmarks par venue) ; sizing corrélation-aware (réserve, hors scope du design) ; implémentation (plan à dérouler via `writing-plans`).
 **Implémenté (2026-06-15).** Mécanisme complet sur `main` : radar (`trader/radar.py`, `radar_data.py`), rotation (`rotation.py`, `rotation_state.py`, `rotation_ledger.py`, `rotation_bench.py`, `rotation_wiring.py`, `rotation_collectors.py`), gate daemon (`rotation_daemon.py` câblé dans la boucle), configs (`pool.yaml` étendu ~43 symboles dont 30 valeurs TW sectorisées, `radar.yaml`, `conviction.yaml`, `sessions.yaml`, `portfolio.yaml`). Override LLM branché (`override_enabled`, fail-safe). Run réel validé (fetch yahoo 42 symboles → hot-set écrit). 2ᵉ review Codex (cœur) : 7 findings corrigés. ~1128 tests verts.
 
+> **Addendum 2026-07-10 :** D15 supersède uniquement le cap paper 50 et la
+> formulation de propriété finale « défaut + override ». Le radar déterministe,
+> l'hystérésis, la baseline backtestable et le fail-safe de D9 restent valides.
+
 ---
 
 ## D10 — Hot-lists par marché : univers actif selon les marchés ouverts  🛠 implémenté (2026-06-15)
@@ -229,6 +233,10 @@ mesure). Le code conserve le comportement D7B actuel pour `EXECUTE_ORDER`.
 **Design.** livré (historique dans `git log`).
 **Statut.** 🛠 Implémenté 2026-06-17 (TDD, vérif Codex). Phase A `92f8e47` (fenêtre pré-open déterministe : `preopen_venues`/`analyzable_venues`, `tick` admet les fermés daily-valides). Phase B `47af2e6` (sélecteur LLM réactivé sur D10 : `candidates` top 50+scores+bias persistés, override pré-open 1×/venue/jour dans la shortlist, prompt sticky+régime, **baseline `default_hotlist` séparée de l'effectif `hotlist`** → ledger alpha non pollué, fail-safe). 1428 tests verts. `override_enabled` branché sur D10 (plus dormant). **Reste (follow-ups tracés, non bloquants)** : (1) le daemon ne persiste pas encore `last_regime.json` → `market_context=None` en prod v1 (sélecteur sticky-aware mais sans contexte régime tant que ce fichier n'est pas écrit) ; (2) chemin D9 legacy (`run_cli`/`maybe_rotate`) toujours mort, à nettoyer ; (3) `scores`/`dwell` décrivent la baseline déterministe (TUI « — » pour un symbole ajouté par override — cohérent avec la séparation). S'appuie sur D9, D10, et le design swing-watch (briques 0-4).
 
+> **Addendum 2026-07-10 :** D15 remplace le contrat `candidates top 50` et
+> précise que l'agent univers est le propriétaire décisionnel de la hotlist. Le
+> chemin swing-aware, le pré-open et l'encodage `add/remove` restent compatibles.
+
 ---
 
 ## D14 — Comptabilité en base USD + sizing en devise native (couche FX)  🛠 implémenté (2026-06-24)
@@ -240,3 +248,68 @@ mesure). Le code conserve le comportement D7B actuel pour `EXECUTE_ORDER`.
 **Rejeté.** Amputer l'univers à l'USD (jette la diversif TW/EU + rotation ; le sizing correct dissout déjà le problème de frais) ; veto frais / garde-fou min-notionnel (inutile une fois le sizing correct) ; convertir les bougies/indicateurs (corrompt les indicateurs).
 **Design/Plan.** livrés (historique dans `git log`).
 **Statut.** 🛠 Implémenté 2026-06-24 (SDD, un sous-agent + review spec/qualité par task, fixes re-revus). Branche `feat/fx-conversion-base-usd`. Modules `trader/fx.py` (pur) + `trader/fx_rates.py` (live+fallback) ; `Fill.fx_rate` + cash broker USD ; `RiskGate.check`/`max_quantity_at_risk`/`max_order_quantity_at_price` currency-correct ; câblage daemon (taux du cycle, `_rate`, propagation aux `broker.submit`, reject-not-clamp préservé) ; contexte agent estampillé `ccy`/`fx_usd`/`risk_budget_native`/`max_order_native` + prompt natif ; `attribution` P&L USD via `fx_rate` du fill ; `portfolio` valorise holdings/equity/gross en USD (corrige cockpit + gate + `pnl_pct`) ; cockpit/TUI en `$`, niveaux de prix restent natifs ; script `scripts/migrate_fx_cash.py` (dry-run par défaut, recalcul cash USD depuis les fills). Suite **1575 verts**. **Reste** : migration de l'état réel (dry-run à valider par Erwan avant `--commit`) ; follow-ups review finale (footgun `^FCHI` commission EUR sur indice mappé USD ; `backtest/engine.py` `_gross_exposure` fx-blind hors-scope ; fallback `1.0` silencieux sur devise de commission inconnue).
+
+---
+
+## D15 — Pool candidat news-aware et agent univers propriétaire de la hotlist  🛠 sélection implémentée (2026-07-10)
+
+**Contexte.** D9/D10/D13 ont historiquement fait porter plusieurs rôles aux mêmes
+artefacts (`candidates`, `default_hotlist`, `hotlist`, cap de surveillance) :
+scope cheap, baseline déterministe, sélection chaude et sticky. Il faut séparer
+la largeur d'analyse de la décision finale sans perdre le fallback backtestable.
+
+**Décision (Erwan, 2026-07-10).** Quatre contrats distincts :
+
+1. **Pool candidat par venue** = top 40 du ranking radar éligible + tous les
+   challengers fresh-news qualifiés. Aucun cap global ne retranche les
+   challengers. Une news contourne seulement l'heuristique top 40, jamais les
+   critères radar de données, liquidité ou exclusion. Chaque challenger garde
+   score, TTL, provenance et `source_refs`.
+2. **Brief analyste** = constat macro/news sourcé sur ce pool. L'analyste ne
+   construit pas la shortlist et n'émet aucun ajout/retrait de hotlist.
+3. **Hotlist** = au plus 25 symboles non-sticky choisis dans ce pool par
+   **l'agent univers, seul propriétaire décisionnel de la sélection chaude**.
+   L'encodage runtime actuel en `add/remove` contre une baseline reste une
+   compatibilité. La baseline déterministe est la référence de mesure et le
+   fallback explicite si l'agent échoue.
+4. **Univers actif** = hotlist choisie + tous les sticky, ajoutés ensuite hors
+   quota. Le seul statut sticky ne fait pas entrer un symbole dans le pool
+   candidat.
+
+**Observabilité.** Le snapshot `venue_state.json` ne suffit pas. Le runtime garde
+un ledger scout append-only (`candidate_run_id`, couverture partielle, compteurs
+de rejet, challengers et UUID), des scopes candidats immuables, puis un ledger
+agent univers séparé (`agent_run_id`, `candidate_scope_id`, `brief_ref`, baseline,
+sélection et statut). Une projection préparée exacte est activée au pré-open ; le
+ledger rotation garde les sticky et le fallback. Les jointures permettent de suivre
+`news -> challenger -> brief -> hotlist -> décision -> outcome` sans recopier le
+corpus brut.
+
+**Mémoire de situation.** Le chemin frais n'a pas besoin de RAG.
+`situation_memory.db` est aujourd'hui un index FTS5 dérivé des points de briefs,
+sans consommateur runtime, sans FLAIR situation actif et sans MemRL. Si le
+retrieval est promu, son premier consommateur est l'agent univers : il reçoit des
+situations historiques analogues comme contexte, mais le RAG ne construit ni le
+pool ni la hotlist. `learnings.db` reste une mémoire de trading distincte.
+
+**Supersession ciblée.** D15 supersède le cap paper 50 et la propriété nominale
+`défaut + add/remove` de D9, ainsi que le contrat `candidates top 50` de D13-B et
+la proposition de largeur/hotlist adaptative du design du 2026-07-05. Il conserve
+le ranking radar déterministe et éligible de D9, les venues de D10,
+`analyzable_venues` de D13-A, l'hystérésis, le fallback, le ledger
+baseline-versus-final et le principe sticky hors quota. Les décisions historiques
+ne sont pas réécrites.
+
+**État d'implémentation.** Le top 40, les challengers, l'analyste async, les
+briefs append-only liés au scope, la projection bornée au prompt univers, la
+sélection agent async, l'activation exacte pré-open, les ledgers par run, le
+fallback explicite et la composition sticky hors quota sont câblés. Le code est
+activé par défaut (`CASYS_NEWS_MACRO_ANALYST_ENABLED` et
+`CASYS_UNIVERSE_INTELLIGENCE_ENABLED`, valeur `0` pour couper). Un état live
+ancien ne matérialise ces artefacts qu'au prochain close avec daemon actif.
+Restent le mandat enrichi au trader et, éventuellement, le retrieval historique
+après mesure. Ni la couverture news globale ni `last_regime.json` ne sont garantis
+complets aujourd'hui.
+
+**Design de référence.**
+`docs/superpowers/specs/2026-07-09-universe-intelligence-pass-design.md`.

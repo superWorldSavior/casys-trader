@@ -19,7 +19,7 @@ def build_override_prompt(
     *,
     sticky: set[str] | frozenset[str] = frozenset(),
     market_context: dict[str, Any] | None = None,
-    max_candidates: int = 50,
+    max_candidates: int | None = None,
 ) -> str:
     """Construit un prompt FR demandant un override JSON du hot-set.
 
@@ -31,15 +31,15 @@ def build_override_prompt(
                 pas être retirés même si l'agent les liste dans ``remove``.
         market_context: contexte de marché optionnel. v1 consomme uniquement la clé
                 ``regime_families`` (dict famille → {dir, frac, ...}).
-        max_candidates: nombre maximum de candidats listés dans le prompt.
-
+        max_candidates: borne de compatibilité explicite. ``None`` transmet la
+                shortlist complète et constitue le comportement runtime.
     Returns:
         Prompt prêt à envoyer au LLM.
     """
-    candidates = ranked[:max_candidates]
+    candidates = ranked if max_candidates is None else ranked[: max(0, max_candidates)]
 
     lines_candidates = "\n".join(
-        f"  - {item['symbol']} | attractiveness={item['attractiveness']} | bias={item['bias']}"
+        _format_candidate_line(item)
         for item in candidates
     )
 
@@ -73,7 +73,8 @@ def build_override_prompt(
         f"Hot-set par défaut (logique déterministe) : {lines_default}\n"
         f"{sticky_section}"
         f"{market_section}\n"
-        f"Top {len(candidates)} candidats du radar :\n{lines_candidates}\n\n"
+        f"Shortlist candidate complète ({len(candidates)} symboles, radar + challengers) :\n"
+        f"{lines_candidates}\n\n"
         "Ta mission : proposer des ajustements parcimonieux au hot-set.\n"
         "- Ajoute uniquement un symbole décorrélé ou nettement supérieur.\n"
         "- Retire uniquement un symbole redondant ou clairement dominé.\n"
@@ -81,6 +82,37 @@ def build_override_prompt(
         'Réponds UNIQUEMENT en JSON, sans texte supplémentaire :\n'
         '{"add": [...], "remove": [...]}'
     )
+
+
+def _format_candidate_line(item: dict[str, Any]) -> str:
+    provenance = str(item.get("candidate_source") or item.get("provenance") or "radar")
+    role = "challenger" if provenance != "radar" else "radar"
+    line = (
+        f"  - {item['symbol']} | attractiveness={item['attractiveness']} | "
+        f"bias={item['bias']} | role={role} | provenance={provenance}"
+    )
+    fresh_news = item.get("fresh_news")
+    if not isinstance(fresh_news, dict):
+        return line
+
+    event_types = ",".join(str(value) for value in fresh_news.get("event_types") or [])
+    evidence = fresh_news.get("evidence") or []
+    first_evidence = evidence[0] if evidence and isinstance(evidence[0], dict) else {}
+    headline = _compact_prompt_text(first_evidence.get("title"), limit=180)
+    publisher = _compact_prompt_text(first_evidence.get("publisher"), limit=60)
+    return (
+        f"{line} | news_score={fresh_news.get('score', '?')} "
+        f"| latest_news={fresh_news.get('latest_published_at', '?')} "
+        f"| event_types={event_types or '?'} | headline={headline or '?'} "
+        f"| publisher={publisher or '?'}"
+    )
+
+
+def _compact_prompt_text(value: Any, *, limit: int) -> str:
+    compact = " ".join(str(value or "").split())
+    if len(compact) <= limit:
+        return compact
+    return compact[: max(0, limit - 1)].rstrip() + "…"
 
 
 def parse_override(text: str) -> dict[str, list[str]]:
@@ -129,7 +161,7 @@ def make_llm_override_fn(
     complete_fn: Callable[..., Any],
     *,
     timeout_s: int = 120,
-    max_candidates: int = 50,
+    max_candidates: int | None = None,
 ) -> Callable[[dict[str, Any]], dict[str, list[str]]]:
     """Fabrique une ``override_fn(payload)`` qui appelle le LLM injecté.
 
@@ -137,8 +169,8 @@ def make_llm_override_fn(
         complete_fn: callable ``(prompt, *, timeout_s) -> str | object``.
                      En prod, brancher sur ``LlmRouter.complete``.
         timeout_s: délai transmis à ``complete_fn``.
-        max_candidates: transmis à ``build_override_prompt``.
-
+        max_candidates: borne explicite de compatibilité ; ``None`` transmet
+                toute la shortlist au prompt.
     Returns:
         ``override_fn(payload)`` où ``payload = {"ranked": [...], "default_hot": [...]}``.
         Retourne ``{"add": [], "remove": []}`` en cas d'erreur (fail-safe).

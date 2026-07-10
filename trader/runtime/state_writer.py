@@ -9,6 +9,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
+from trader.infrastructure.state_db.shadow import write_json_atomic
+
 
 @dataclass(frozen=True)
 class RuntimeStateWriter:
@@ -17,8 +19,7 @@ class RuntimeStateWriter:
     pid_fn: Callable[[], int] = os.getpid
 
     def write_json_state(self, filename: str, payload: dict) -> None:
-        self.state_dir.mkdir(parents=True, exist_ok=True)
-        (self.state_dir / filename).write_text(json.dumps(payload, indent=2, ensure_ascii=False))
+        write_json_atomic(self.state_dir / filename, payload)
 
     def write_status(self, phase: str, **payload: object) -> None:
         self.write_json_state(

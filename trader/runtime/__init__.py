@@ -13,7 +13,10 @@ __all__ = [
     "ledger_rotation",
     "logging_setup",
     "market_rotation_runtime",
+    "news_challenger_runtime",
+    "news_macro_runtime",
     "pid_file",
     "queue_runtime",
     "runtime_shutdown",
+    "universe_intelligence_runtime",
 ]

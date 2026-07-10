@@ -1,4 +1,4 @@
-"""File-backed store for macro/news situation briefs."""
+"""File-backed append-only store for macro/news situation briefs."""
 
 from __future__ import annotations
 
@@ -12,66 +12,160 @@ from trader.domain.situation import NewsMacroBrief
 
 
 class NewsMacroBriefStore:
-    """Read/write `state/news_briefs/YYYY-MM-DD.json` with replacement history."""
+    """Read/write `state/news_briefs/YYYY-MM-DD.jsonl` plus latest JSONL caches."""
 
     def __init__(self, base_dir: str | Path, *, history_path: str | Path | None = None) -> None:
         self.base_dir = Path(base_dir)
-        self.history_path = (
-            Path(history_path)
-            if history_path is not None
-            else self.base_dir.parent / "news_briefs-history.jsonl"
-        )
+        # Kept for constructor compatibility with the old replacement-history store.
+        self.history_path = Path(history_path) if history_path is not None else None
 
     def path_for_date(self, date: str) -> Path:
-        return self.base_dir / f"{date}.json"
+        return self.base_dir / f"{date}.jsonl"
 
-    def read(self, date: str) -> NewsMacroBrief | None:
-        path = self.path_for_date(date)
-        if not path.exists():
-            return None
-        try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            return None
-        if not isinstance(payload, dict):
-            return None
-        return NewsMacroBrief.from_mapping(payload)
+    def latest_path_for_venue(self, venue: str) -> Path:
+        return self.base_dir / f"latest-{_safe_venue(venue)}.jsonl"
 
-    def write(self, brief: NewsMacroBrief, *, date: str | None = None) -> None:
+    def append(self, brief: NewsMacroBrief, *, date: str | None = None) -> dict[str, str]:
+        """Append one brief line and refresh the latest cache for its venue."""
+
         date_key = date or _date_from_as_of(brief.as_of)
         payload = brief.to_dict()
-        path = self.path_for_date(date_key)
-        self._archive_replaced(path, replaced_by=brief.ref(date=date_key))
+        line = json.dumps(payload, ensure_ascii=False, sort_keys=True)
         self.base_dir.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(path.suffix + ".tmp")
-        tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-        os.replace(tmp, path)
 
-    def active_ref(self, date: str) -> dict[str, str] | None:
-        brief = self.read(date)
+        with self.path_for_date(date_key).open("a", encoding="utf-8") as fh:
+            fh.write(line + "\n")
+
+        latest_path = self.latest_path_for_venue(brief.venue)
+        tmp = latest_path.with_suffix(latest_path.suffix + ".tmp")
+        tmp.write_text(line + "\n", encoding="utf-8")
+        os.replace(tmp, latest_path)
+        return brief.ref(date=date_key)
+
+    def write(self, brief: NewsMacroBrief, *, date: str | None = None) -> None:
+        """Compatibility façade: writes are append-only, never replacements."""
+
+        self.append(brief, date=date)
+
+    def read(self, date: str, *, venue: str | None = None) -> NewsMacroBrief | None:
+        """Return the latest valid-looking brief in a date JSONL file."""
+
+        for brief in reversed(list(self._iter_date(date))):
+            if venue is None or brief.venue == venue:
+                return brief
+        return None
+
+    def read_latest(
+        self,
+        venue: str,
+        *,
+        at: datetime | str | None = None,
+    ) -> NewsMacroBrief | None:
+        """Read the latest brief for a venue, falling back to date-file scan."""
+
+        latest = self._read_single_line(self.latest_path_for_venue(venue))
+        if latest is not None and latest.venue == venue and _is_active(latest, at):
+            return latest
+
+        for path in sorted(self.base_dir.glob("*.jsonl"), reverse=True):
+            if path.name.startswith("latest-"):
+                continue
+            for brief in reversed(list(self._iter_path(path))):
+                if brief.venue == venue and _is_active(brief, at):
+                    return brief
+        return None
+
+    def active_ref(
+        self,
+        date_or_venue: str,
+        *,
+        venue: str | None = None,
+        at: datetime | str | None = None,
+    ) -> dict[str, str] | None:
+        """Return a ref for the active brief.
+
+        Backward compatibility: ``active_ref("2026-07-09")`` returns the latest
+        brief on that date. New code should call ``active_ref("EU", at=now)``.
+        """
+
+        if venue is not None:
+            brief = self.read(date_or_venue, venue=venue)
+            return brief.ref(date=date_or_venue) if brief is not None else None
+
+        if _looks_like_date(date_or_venue):
+            brief = self.read(date_or_venue)
+            return brief.ref(date=date_or_venue) if brief is not None else None
+
+        brief = self.read_latest(date_or_venue, at=at)
         if brief is None:
             return None
-        return brief.ref(date=date)
+        return brief.ref(date=_date_from_as_of(brief.as_of))
 
-    def _archive_replaced(self, path: Path, *, replaced_by: dict[str, str]) -> None:
+    def _iter_date(self, date: str) -> list[NewsMacroBrief]:
+        return list(self._iter_path(self.path_for_date(date)))
+
+    def _iter_path(self, path: Path) -> list[NewsMacroBrief]:
         if not path.exists():
-            return
+            return []
+        briefs: list[NewsMacroBrief] = []
         try:
-            previous: Any = json.loads(path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            return
-        entry = {
-            "archived_at": datetime.now(timezone.utc).isoformat(),
-            "replaced_by": replaced_by,
-            "path": str(path.name),
-            "payload": previous,
-        }
-        self.history_path.parent.mkdir(parents=True, exist_ok=True)
-        with self.history_path.open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            return []
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                payload: Any = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(payload, dict):
+                continue
+            brief = NewsMacroBrief.from_mapping(payload)
+            if brief is not None:
+                briefs.append(brief)
+        return briefs
+
+    def _read_single_line(self, path: Path) -> NewsMacroBrief | None:
+        briefs = self._iter_path(path)
+        return briefs[-1] if briefs else None
 
 
 def _date_from_as_of(as_of: str) -> str:
     if len(as_of) >= 10 and as_of[4] == "-" and as_of[7] == "-":
         return as_of[:10]
     raise ValueError("brief.as_of must start with YYYY-MM-DD when date is omitted")
+
+
+def _safe_venue(venue: str) -> str:
+    return "".join(ch for ch in str(venue or "GLOBAL") if ch.isalnum() or ch in ("_", "-")) or "GLOBAL"
+
+
+def _looks_like_date(value: str) -> bool:
+    return len(value) == 10 and value[4] == "-" and value[7] == "-"
+
+
+def _parse_dt(value: datetime | str | None) -> datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
+
+
+def _is_active(brief: NewsMacroBrief, at: datetime | str | None) -> bool:
+    moment = _parse_dt(at)
+    if moment is None:
+        return True
+    start = _parse_dt(brief.as_of)
+    end = _parse_dt(brief.valid_until)
+    if start is not None and moment < start:
+        return False
+    if end is not None and moment >= end:
+        return False
+    return True

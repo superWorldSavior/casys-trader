@@ -19,6 +19,7 @@ from trader.interfaces.cockpit.derive import (
     journal_entries,
     next_to_fire,
     rail_vitals,
+    workers_activity_label,
 )
 from trader.interfaces.cockpit.first_run import FirstRunScreen, preflight_checks
 from trader.interfaces.cockpit.modals import ConfirmKill, ConfirmStop, HelpOverlay
@@ -142,6 +143,7 @@ def _state_sample() -> dict:
         },
         "starting_cash": 95000.0,
         "daemon_status": {"phase": "deciding", "decisions_done": 4, "symbols_total": 5, "model_calls_used": 4},
+        "queue_worker_activity": {"active_workers": 2, "running_tasks": 2, "pending_tasks": 7},
         "default_next_wake": "2026-07-06T02:15:28+00:00",
         "recent_decisions": [
             {
@@ -206,6 +208,11 @@ def test_health_alert_count_counts_stale_symbols():
     assert health_alert_count(_state_sample(), kill_active=False, now=NOW) >= 1
 
 
+def test_workers_activity_label_affiche_workers_actifs():
+    assert workers_activity_label(_state_sample()) == "2 active"
+    assert workers_activity_label({}) == "—"
+
+
 # ---------------------------------------------------------------------------
 # shell builders
 # ---------------------------------------------------------------------------
@@ -252,6 +259,9 @@ def test_kpi_band_contents():
     assert "+5.35%" in rendered
     assert "4/5" in rendered
     assert "in 14m" in rendered
+    assert "WORKERS" in rendered
+    assert "2 active" in rendered
+    assert "LLM" not in rendered
 
 
 def test_kpi_band_next_wake_uses_next_future_symbol_wake_when_global_expired():

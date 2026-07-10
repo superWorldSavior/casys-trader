@@ -23,7 +23,7 @@ re-empiler les bacs.
 | **Nature** | niveau (skill) | info + état | épisodique |
 | **Durée de vie** | lente | **périssable** | cumulative |
 | **Source** | mandat, guardrails, `global` | fil d'actu, macro, **analyste** | `learnings.db` + FLAIR |
-| **Injection** | push permanent (cadrage) | **push par symbole** | **coulisse** (nourrit ①, attribution, MemRL) |
+| **Injection** | push permanent (cadrage) | brief borné à l'agent univers, puis tranche utile par symbole | **coulisse** (nourrit ①, attribution, MemRL) |
 
 - **① Compétence** — « comment trader » est **transversal** : gérer un stop, lire un régime,
   reconnaître un setup ne dépend pas du symbole. Il n'existe pas de « manière de trader AAPL »,
@@ -47,7 +47,11 @@ re-empiler les bacs.
    **assume l'imperfection**, ce n'est pas à résoudre en amont. *Le code fournit les faits, le
    LLM tranche l'interprétation* (« code over instructions »).
 3. **Digestion.** Event chaud → digéré → fondu dans l'état. **L'analyste-news est le digesteur** :
-   il transforme le flux d'events bruts (②) en un narratif/état par nom.
+   il transforme le flux d'events bruts (②) en un narratif/état par nom. Il ne
+   sélectionne jamais le scope : le brief courant est consommé par l'agent
+   univers, qui compose lui-même la hotlist. Le brief et la sélection portent le
+   même `candidate_scope_id` ; aucun brief ancien n'est réutilisé sur un nouveau
+   scope.
 
 ## Ce que le cadre tranche
 
@@ -62,19 +66,28 @@ re-empiler les bacs.
 
 ## Existe / manque
 
-- **Existe** : ① (`global` + `mandate/guardrails.json` + mandat), ③ (`learnings.db` + FLAIR +
-  recall), ② **matière brute** (le fil d'actu persiste déjà les news ; collecte macro P1a en cours).
-- **Manque** : ② le **digesteur** (analyste-news) + le **push situation** par symbole (récupération
-  + pondération impact + injection dans le contexte du nom).
+- **Existe** : ① (`global` + `mandate/guardrails.json` + mandat), ③
+  (`learnings.db` + FLAIR + recall), ② matière brute (`news_items`, calendrier,
+  séries) et digesteur async (`news_briefs`).
+- **Existe comme dérivé dormant** : `situation_memory.db`, index FTS5 des points
+  de briefs. Sa méthode de recherche n'est encore appelée par aucun agent runtime ;
+  ce n'est donc pas un RAG de situation actif.
+- **Existe aussi** : scopes candidats immuables, ledgers challenger/univers,
+  projection préparée et activation pré-open avec fallback observable.
+- **Manque** : le mandat enrichi projeté au trader, son attribution/outcome, puis
+  éventuellement le retrieval de situations historiques par l'agent univers.
 
 ## Implication pour les chantiers
 
-1. **Prochain chantier concret = l'analyste-news (②)** — transformer le flux d'events en état
-   digéré par nom, puis le pousser. Pas le recall-push.
+1. **Chantier courant de ②** — exploiter les jointures scope → brief → run univers
+   → activation, puis projeter au trader seulement la tranche de mandat utile.
+   Pas de recall historique avant d'avoir mesuré ce chemin présent.
 2. **Nettoyage acté (③ → coulisse)** : retirer `by_symbol` + `raw_recent` du contexte, garder
    `global` + guardrails. Trivial, indépendant.
-3. **③ (recall/FLAIR/MemRL)** : reste vivant mais **en arrière-plan** (distillation du `global`,
-   attribution). Réactivable en push plus tard si le volume le justifie — non prioritaire.
+3. **③ (recall/FLAIR/MemRL)** : reste vivant mais **en arrière-plan**
+   (distillation du `global`, attribution). FLAIR reranke le RAG learnings ;
+   MemRL n'est pas encore implémenté. Pour ②, le futur retrieval vise d'abord
+   l'agent univers et ne devient jamais un décideur.
 
 ## Voir aussi
 

@@ -87,6 +87,7 @@ def test_application_package_has_only_canonical_subpackages() -> None:
         "migration",
         "portfolio",
         "record",
+        "universe",
     }
 
 

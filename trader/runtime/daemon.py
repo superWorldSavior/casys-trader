@@ -13,7 +13,6 @@ via fichier. Toute erreur Codex -> HOLD.
 from __future__ import annotations
 
 import argparse
-import copy
 import json
 import logging
 import math
@@ -37,15 +36,11 @@ from trader.application.decide import (
 )
 from trader.application.execute import (
     order_admission,
-    risk_admission,
+    queue_dispatch as execute_queue_dispatch,  # noqa: F401 - legacy daemon facade
     risk_capacity,
-    entry_context,
-    queue_dispatch as execute_queue_dispatch,
-    queue_plan,
 )
 from trader.application.exit import (
     planned_exits as planned_exits_service,
-    fill_plan_effects,
     exit_bars as exit_bars_service,
     armed_plans,
 )
@@ -55,7 +50,6 @@ from trader.application.cycle import (
 )
 from trader.application.record import (
     decision_entries,
-    decision_watches,
     plan_review,
     confidence_feedback,
     gross_feedback,
@@ -86,12 +80,9 @@ from trader.market.gross_priority import PriorityItem, gross_execution_order
 from trader.market.ib_source import IBDataSource, connect_ib
 from trader.market import news_feed
 from trader.planning.trade_plan import (
-    InvalidExitPlanError,
     TradePlan,
-    resolve_exit_plan,
-    validate_exit_plan,
 )
-from trader.planning.protocols import SchedulerLike, TradePlanStoreLike
+from trader.planning.protocols import SchedulerLike
 from trader.support.metadata import code_version
 from trader.reporting.read_models import attribution, live_kpis, meta_performance
 from trader.reporting.ledger import decision_ledger
@@ -103,8 +94,10 @@ from trader.runtime import (
     data_source_runtime,
     daemon_bootstrap,
     market_rotation_runtime,
+    news_macro_runtime,
     queue_runtime,
     runtime_shutdown,
+    universe_intelligence_runtime,
     worker_cycle_context as worker_cycle_context_runtime,
 )
 from trader.runtime.ib_attach import IBAttachBackoff
@@ -112,7 +105,7 @@ from trader.runtime.state_writer import RuntimeStateWriter
 from trader.execution import portfolio
 from trader.execution.contracts import Order
 from trader.execution.broker import (
-    SimBroker,
+    SimBroker as SimBroker,
     commission_model_from_name,
     round_trip_cost,
 )
@@ -833,6 +826,24 @@ def run_cycle(
         active_families=active_families,
         requestable_indicator_ids=DEFAULT_INDICATORS,
     )
+    try:
+        regime_families = base_context["regime_families"]
+        _runtime_state_writer().write_json_state(
+            "last_regime.json",
+            {
+                "schema_version": 1,
+                "as_of": cycle_id,
+                "coverage": {
+                    "status": "partial" if regime_families else "missing",
+                    "basis": "active_tradable_universe",
+                    "symbols_with_daily_bars": len(daily_bars_by_symbol),
+                    "family_count": len(regime_families),
+                },
+                "regime_families": regime_families,
+            },
+        )
+    except Exception as exc:  # noqa: BLE001 - advisory context must not break decisions
+        log.warning("family regime snapshot write failed: %s", exc)
 
     # Feedback léger du cycle précédent : si des ouvertures ont été recalées faute
     # de marge gross, on le signale à l'agent (marge partagée entre tous les
@@ -885,6 +896,11 @@ def run_cycle(
         news_snapshot=lambda symbol, now: news_feed.news_snapshot(symbol, now=now),
         macro_next=_cycle_macro_next,
         now=now,
+        brief_ref_provider=lambda symbol, now: news_macro_runtime.brief_ref_for_symbol(
+            state_dir=STATE_DIR,
+            symbol=symbol,
+            at=now,
+        ),
         recall_store=_recall_store,
         merge_gate_feedback=confidence_feedback.merge_gate_feedback,
         model_calls_used_getter=lambda: model_calls_used,
@@ -1522,6 +1538,10 @@ def main(
     _queue_execute_enabled = _queue_runtimes.execute.enabled
     _execute_ledger = _queue_runtimes.execute.ledger
     _execute_pool = _queue_runtimes.execute.pool
+    _news_macro_runner = news_macro_runtime.NewsMacroAnalysisRunner()
+    _universe_intelligence_runner = (
+        universe_intelligence_runtime.UniverseIntelligenceRunner()
+    )
 
     _data_sources_cfg = ROOT / "config" / "data_sources.yaml"
     _data_source_config = data_source_runtime.load_data_source_config(
@@ -1701,6 +1721,23 @@ def main(
                         wait = sched.seconds_until_wake(symbols)
                         sleep_seconds = min(wait, args.poll)
                         log.info("[sleep] next_check_in=%.0fs next_due_in=%.0fs", sleep_seconds, wait)
+                if not args.once:
+                    # Déclenché après le cycle afin que l'analyste voie aussi le
+                    # dernier snapshot macro collecté par la finalisation. Les
+                    # deux runners restent non bloquants et coalescent les
+                    # triggers reçus pendant un appel LLM.
+                    _news_macro_runner.trigger(
+                        config_dir=ROOT / "config",
+                        state_dir=STATE_DIR,
+                        loop_now=loop_now,
+                        logger=log,
+                    )
+                    _universe_intelligence_runner.trigger(
+                        config_dir=ROOT / "config",
+                        state_dir=STATE_DIR,
+                        loop_now=loop_now,
+                        logger=log,
+                    )
                 _adopt_data_source_state(data_source_runtime.detach_failed_ib(
                     _data_source_state,
                     _data_source_config,
@@ -1750,6 +1787,8 @@ def main(
         # None (-> unavailable) plutôt qu'une source déconnectée.
         _ds_handle.set(None)
         runtime_shutdown.shutdown_runtime_resources(
+            universe_intelligence_runner=_universe_intelligence_runner,
+            news_macro_runner=_news_macro_runner,
             decide_pool=_decide_pool,
             execute_pool=_execute_pool,
             data_source=data_source,

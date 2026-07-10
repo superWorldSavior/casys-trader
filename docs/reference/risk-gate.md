@@ -92,5 +92,5 @@ passent aussi par ce gate à l'exécution (cf. [décisions D7B/D11](../decisions
 
 ## Voir aussi
 
-- Décisions : D7B (plans armés), mode exploration basse-confiance (D15).
+- Décisions : D7B (plans armés), mode exploration basse-confiance.
 - [Architecture §3.7](../architecture.md) — validation & gates pré-exécution.

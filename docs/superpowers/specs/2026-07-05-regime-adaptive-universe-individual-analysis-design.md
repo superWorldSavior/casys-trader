@@ -1,5 +1,17 @@
 # Univers régime-adaptatif + analyse individuelle enrichie — design
 
+> **Statut courant — ⛔ SUPERSÉDÉ par D15 (2026-07-10).**
+> Ce document est conservé intégralement comme historique de conception. Sa
+> proposition de `cap_effective` faisant varier la largeur/hotlist entre un
+> plancher et un fusible, ainsi que son étiquette « D15 proposée », ne sont plus
+> normatives. Le contrat courant sépare désormais : pool candidat = top 40 radar
+> + tous les challengers fresh-news qualifiés ; hotlist = 25 non-sticky maximum,
+> propriété de l'agent univers ; sticky ajoutés ensuite hors quota.
+>
+> Les briques `last_regime` et analyse individuelle restent des pistes distinctes
+> de backlog : elles ne sont ni rejetées ni validées par D15. Le bloc ci-dessous
+> conserve le statut historique original du 2026-07-05.
+>
 > **Statut : 🧭 DESIGN — à valider avec Erwan (2026-07-05).** Cadré depuis
 > l'état réel du code (carto fichier:ligne au §3). Trois briques partageant un
 > **carburant commun** — le régime sectoriel D2 — débloqué par un fix trivial.

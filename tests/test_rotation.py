@@ -166,27 +166,24 @@ class TestStickySymbols:
 # ---------------------------------------------------------------------------
 
 class TestComposeFinal:
-    def test_sticky_over_cap_alert(self):
-        """3 sticky + cap_m=2 → tous présents + alert='sticky_over_cap'."""
+    def test_sticky_sont_tous_hors_quota(self):
+        """3 sticky + cap_m=2 → 2 choisis + les 3 sticky, sans alerte."""
         final, alert = compose_final(
             default_hot=["X", "Y"],
             sticky={"A", "B", "C"},
             cap_m=2,
         )
-        assert set(final) >= {"A", "B", "C"}
-        assert alert == "sticky_over_cap"
+        assert set(final) == {"A", "B", "C", "X", "Y"}
+        assert alert is None
 
-    def test_slot_libre_depuis_default(self):
-        """1 sticky + default [X,Y,Z] + cap_m=2 → {sticky, X}, alert=None."""
+    def test_cap_ne_porte_que_sur_default(self):
+        """1 sticky + default [X,Y,Z] + cap_m=2 → sticky + X,Y."""
         final, alert = compose_final(
             default_hot=["X", "Y", "Z"],
             sticky={"S"},
             cap_m=2,
         )
-        # 1 sticky + 1 slot libre → 1 élément de default_hot
-        assert "S" in final
-        assert len(final) == 2
-        assert final[len(final) - 1] == "X"  # premier de default_hot non-sticky
+        assert final == ["S", "X", "Y"]
         assert alert is None
 
     def test_pas_de_doublons(self):
@@ -244,6 +241,19 @@ class TestApplyOverride:
         )
         assert "A" in result
         assert {"symbol": "A", "reason": "sticky_protected"} in rejections
+
+    def test_add_sticky_est_un_noop_hors_quota(self):
+        result, rejections = apply_override(
+            default_hot=["A", "B"],
+            add=["S"],
+            remove=[],
+            pool={"A", "B", "S"},
+            sticky={"S"},
+            free_slots=2,
+        )
+
+        assert result == ["A", "B"]
+        assert rejections == [{"symbol": "S", "reason": "already_sticky"}]
 
     def test_add_depasse_free_slots_rejete(self):
         """Ajout qui dépasse free_slots → rejet cap_exceeded."""

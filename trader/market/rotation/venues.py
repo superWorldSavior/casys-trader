@@ -11,6 +11,7 @@ from pathlib import Path
 
 import yaml
 
+from trader.domain.universe import candidate_scope_id
 from trader.market.rotation import apply_hysteresis, apply_override, emergency_exits, write_universe_atomic
 from trader.market.rotation.user_overrides import apply_user_overrides, load_user_overrides
 from trader.market.rotation.ledger import log_rotation
@@ -23,8 +24,9 @@ from trader.market.rotation.schedule import (
 from trader.market.rotation.wiring import build_rank_fn, venue_of
 from trader.market.radar_config import load_radar_params
 
-# Top N candidats radar persistés par venue pour l'override LLM pré-open (configurable plus tard)
-OVERRIDE_CANDIDATES_TOP = 50
+# Baseline cheap du pool candidat. Les challengers news qualifiés sont ajoutés
+# hors de ce quota et le pool composé n'a pas de cap global.
+RADAR_CANDIDATES_TOP = 40
 
 # Rétention des fichiers radar_cache (en jours). Fichiers YYYY-MM-DD.json plus vieux = purgés.
 RADAR_CACHE_RETENTION_DAYS = 30
@@ -154,6 +156,8 @@ def run_venue_close(
     delta,
     dwell_days,
     emergency_floor,
+    sticky=frozenset(),
+    news_challenger_fn=None,
     as_of,
 ) -> dict:
     """Recompute one venue sleeve from a global radar ranking."""
@@ -167,6 +171,27 @@ def run_venue_close(
         for symbol in rank_obj.get("gap_adverse", frozenset())
         if venue_of(symbol) == venue
     )
+    radar_symbols = {
+        str(item.get("symbol") or "").strip()
+        for item in venue_ranked[:RADAR_CANDIDATES_TOP]
+        if item.get("symbol")
+    }
+    news_challengers = []
+    challenger_run_ids: list[str] = []
+    if news_challenger_fn is not None:
+        try:
+            news_challengers = news_challenger_fn(
+                venue=venue,
+                venue_ranked=venue_ranked,
+                radar_symbols=radar_symbols,
+            ) or []
+            run_ids_by_venue = getattr(news_challenger_fn, "candidate_run_ids", {})
+            if isinstance(run_ids_by_venue, dict):
+                run_id = str(run_ids_by_venue.get(venue) or "").strip()
+                if run_id:
+                    challenger_run_ids.append(run_id)
+        except Exception:  # noqa: BLE001 - advisory scout must not break rotation
+            news_challengers = []
     return update_venue_ranking(
         state,
         venue,
@@ -175,6 +200,9 @@ def run_venue_close(
         delta=delta,
         dwell_days=dwell_days,
         emergency_floor=emergency_floor,
+        sticky=sticky,
+        news_challengers=news_challengers,
+        observed_candidate_run_ids=challenger_run_ids,
         gap_adverse=gap_venue,
         as_of=as_of,
     )
@@ -218,7 +246,10 @@ def tick(
     sticky_fn=None,
     fx_cap=3,
     override_fn=None,
+    prepared_universe_fn=None,
+    candidate_scope_observer=None,
     market_context=None,
+    news_challenger_fn=None,
 ) -> dict:
     """Run one per-venue rotation cycle and reconcile the active universe.
 
@@ -226,12 +257,19 @@ def tick(
         override_fn: callable(payload) -> {"add": [...], "remove": [...]} injectée pour
             le test/prod. Si params.override_enabled=False, n'est JAMAIS appelée.
             Si None, pas d'override (rotation 100 % déterministe).
+        prepared_universe_fn: lecteur pur d'une sélection agent préparée hors du
+            chemin daemon. Quand présent, il remplace l'appel LLM synchrone.
+        candidate_scope_observer: callback best-effort appelé après chaque close
+            avec le snapshot candidat immuable à persister hors ``venue_state``.
         market_context: dict optionnel transmis au payload override (v1 : regime_families).
     """
     config_path = Path(config_dir)
     sessions = load_sessions(config_dir)
     params = load_radar_params(config_path)
     state = load_venue_state(state_dir)
+    # Sticky must be known before venue closes are recomputed: it is outside the
+    # hotlist quota and must not consume one of its slots even when top-ranked.
+    sticky = sticky_fn() if sticky_fn is not None else set()
 
     dues = due_venues(now_iso, state, sessions)
     if dues:
@@ -259,27 +297,51 @@ def tick(
                 delta=params.delta,
                 dwell_days=params.dwell_days,
                 emergency_floor=params.emergency_score,
+                sticky=sticky,
+                news_challenger_fn=news_challenger_fn,
                 as_of=now_iso,
             )
+            if candidate_scope_observer is not None:
+                observation_status = "persisted"
+                observation_ref = None
+                observation_error = None
+                try:
+                    venue_entry = state.get("venues", {}).get(venue, {})
+                    observation_ref = candidate_scope_observer(
+                        {"venue": venue, "as_of": now_iso, **dict(venue_entry)}
+                    )
+                except Exception as exc:  # noqa: BLE001 - rotation remains fail-safe
+                    observation_status = "error"
+                    observation_error = exc.__class__.__name__
+                venues = dict(state.get("venues", {}))
+                venue_entry = dict(venues.get(venue, {}))
+                venue_entry["candidate_scope_observation_status"] = observation_status
+                venue_entry["candidate_scope_observation_ref"] = observation_ref
+                venue_entry["candidate_scope_observation_error"] = observation_error
+                venues[venue] = venue_entry
+                state = {**state, "venues": venues}
         save_venue_state(state_dir, state)
 
     open_v = analyzable_venues(
         now_iso, sessions, preopen_window_minutes=params.preopen_window_minutes
     )
-    sticky = sticky_fn() if sticky_fn is not None else set()
-
-    # Hook override pré-open par venue (B3/B4)
-    # Un appel LLM max par venue par jour, seulement si override_enabled
-    if override_fn is not None and params.override_enabled:
+    # Activation pré-open par venue. Le chemin nominal lit une sélection déjà
+    # préparée hors boucle ; ``override_fn`` reste une compatibilité synchrone.
+    if (prepared_universe_fn is not None or override_fn is not None) and params.override_enabled:
         now_date = now_iso[:10]  # YYYY-MM-DD
         preopen_v = preopen_venues(now_iso, sessions, window_minutes=params.preopen_window_minutes)
         ledger_path = Path(state_dir) / "rotation_ledger.jsonl"
 
         for venue in preopen_v:
-            # Vérifier si l'override a déjà tourné aujourd'hui pour cette venue
             venue_meta = state.get("venues", {}).get(venue, {})
+            candidate_scope_id = str(venue_meta.get("candidate_scope_id") or "").strip()
+            if prepared_universe_fn is not None:
+                activation_key = candidate_scope_id or f"legacy:{venue}:{venue_meta.get('last_close_at', '')}"
+                if venue_meta.get("last_universe_activation_scope_id") == activation_key:
+                    continue
+            # Compat legacy : au plus un appel synchrone par venue/jour.
             last_override_at = venue_meta.get("last_override_at", "")
-            if last_override_at.startswith(now_date):
+            if prepared_universe_fn is None and last_override_at.startswith(now_date):
                 continue  # déjà traité aujourd'hui
 
             # Normalise bias : un venue_state.json legacy (candidats persistés avant
@@ -292,47 +354,158 @@ def tick(
                 continue  # venue jamais classée, pas de shortlist
 
             # Base de l'override = déterministe pur ; fallback "hotlist" pour migration
-            default_hotlist = list(venue_meta.get("default_hotlist", venue_meta.get("hotlist", [])))
             pool = {c["symbol"] for c in candidates}
-
-            payload = {
-                "ranked": candidates,
-                "default_hot": default_hotlist,
-                "sticky": sticky,
-                "market_context": market_context,
-            }
+            default_hotlist = [
+                symbol
+                for symbol in venue_meta.get("default_hotlist", venue_meta.get("hotlist", []))
+                if symbol in pool and symbol not in sticky
+            ][: params.cap_m]
 
             final_hotlist = default_hotlist  # fail-safe
-            try:
-                override_result = override_fn(payload) or {"add": [], "remove": []}
-                add = override_result.get("add", [])
-                remove = override_result.get("remove", [])
-                final_hotlist, _rejects = apply_override(
-                    default_hot=default_hotlist,
-                    add=add,
-                    remove=remove,
-                    pool=pool,
-                    sticky=sticky,
-                    free_slots=params.cap_m,
+            fallback_used = False
+            fallback_reason = None
+            agent_run_id = None
+            brief_ref = None
+            contract_version = None
+            rejected: list[dict] = []
+
+            if prepared_universe_fn is not None:
+                prepared = None
+                try:
+                    prepared = prepared_universe_fn(
+                        venue=venue,
+                        candidate_scope_id=candidate_scope_id,
+                        candidates=candidates,
+                        default_hot=default_hotlist,
+                        sticky=sticky,
+                        as_of=now_iso,
+                    )
+                except Exception:  # noqa: BLE001 - activation must remain fail-safe
+                    fallback_reason = "prepared_reader_error"
+                if isinstance(prepared, dict):
+                    agent_run_id = prepared.get("agent_run_id")
+                    brief_ref = prepared.get("brief_ref")
+                    contract_version = prepared.get("contract_version")
+                if isinstance(prepared, dict) and prepared.get("status") == "success":
+                    final_hotlist, rejected = _validate_prepared_hotlist(
+                        prepared.get("selected_hotlist"),
+                        pool=pool,
+                        sticky=sticky,
+                        cap=params.cap_m,
+                    )
+                    structural_rejects = [
+                        item
+                        for item in rejected
+                        if item.get("reason") != "sticky_outside_quota"
+                    ]
+                    if structural_rejects or not final_hotlist:
+                        fallback_reason = "prepared_invalid_selection"
+                        final_hotlist = default_hotlist
+                elif fallback_reason is None:
+                    fallback_reason = (
+                        str(prepared.get("reason") or prepared.get("status") or "prepare_missing")
+                        if isinstance(prepared, dict)
+                        else "prepare_missing"
+                    )
+                fallback_used = fallback_reason is not None
+            else:
+                payload = {
+                    "ranked": candidates,
+                    "default_hot": default_hotlist,
+                    "sticky": sticky,
+                    "market_context": market_context,
+                }
+                try:
+                    override_result = override_fn(payload) or {"add": [], "remove": []}
+                    add = override_result.get("add", [])
+                    remove = override_result.get("remove", [])
+                    final_hotlist, legacy_rejects = apply_override(
+                        default_hot=default_hotlist,
+                        add=add,
+                        remove=remove,
+                        pool=pool,
+                        sticky=sticky,
+                        free_slots=params.cap_m,
+                    )
+                    rejected = list(legacy_rejects)
+                    contract_version = "legacy_delta_v1"
+                except Exception:  # noqa: BLE001 — fail-safe : rotation jamais bloquée
+                    add = []
+                    remove = []
+                    fallback_used = True
+                    fallback_reason = "legacy_agent_error"
+
+            # Sticky is unioned into the active universe after hotlist selection
+            # and therefore never consumes a hotlist slot.
+            final_hotlist = [symbol for symbol in final_hotlist if symbol not in sticky][
+                : params.cap_m
+            ]
+            add = [symbol for symbol in final_hotlist if symbol not in default_hotlist]
+            remove = [symbol for symbol in default_hotlist if symbol not in final_hotlist]
+            selected_challengers = [
+                symbol
+                for symbol in final_hotlist
+                if any(
+                    candidate.get("symbol") == symbol and candidate.get("fresh_news")
+                    for candidate in candidates
                 )
+            ]
+            attempt_token = ":".join(
+                (
+                    candidate_scope_id or "missing-scope",
+                    str(agent_run_id or "no-agent-run"),
+                    str(fallback_reason or "success"),
+                )
+            )
+            if venue_meta.get("last_universe_attempt_token") != attempt_token:
                 log_rotation(
                     ledger_path,
                     as_of=now_iso,
                     default_hot=set(default_hotlist),
                     final_hot=set(final_hotlist),
                     sticky=sticky,
-                    overrides={"venue": venue, "add": add, "remove": remove},
-                    rejects={"rejects": _rejects},
-                    alerts=[],
+                    overrides={
+                        "venue": venue,
+                        "candidate_scope_id": candidate_scope_id or None,
+                        "agent_run_id": agent_run_id,
+                        "brief_ref": brief_ref,
+                        "contract_version": contract_version,
+                        "add": add,
+                        "remove": remove,
+                        "selected_hotlist": list(final_hotlist),
+                        "selected_challengers": selected_challengers,
+                        "fallback_used": fallback_used,
+                        "fallback_reason": fallback_reason,
+                    },
+                    rejects={"rejects": rejected},
+                    alerts=(
+                        [{"code": "universe_fallback", "reason": fallback_reason}]
+                        if fallback_used
+                        else []
+                    ),
                 )
-            except Exception:  # noqa: BLE001 — fail-safe : rotation jamais bloquée
-                pass  # final_hotlist = default_hotlist (conservé)
 
             # Persister la hotlist finale et last_override_at dans venue_state
             venues = dict(state.get("venues", {}))
             venue_entry = dict(venues.get(venue, {}))
             venue_entry["hotlist"] = final_hotlist
             venue_entry["last_override_at"] = now_iso
+            if prepared_universe_fn is not None:
+                venue_entry["last_universe_attempt_token"] = attempt_token
+                venue_entry["last_universe_attempt_at"] = now_iso
+                venue_entry["last_universe_agent_run_id"] = agent_run_id
+                venue_entry["last_universe_brief_ref"] = brief_ref
+                venue_entry["last_universe_fallback_used"] = fallback_used
+                venue_entry["last_universe_fallback_reason"] = fallback_reason
+                venue_entry["last_universe_activation_status"] = (
+                    "fallback" if fallback_used else "success"
+                )
+                if not fallback_used:
+                    # A pending/missing/error fallback is an attempt, not a
+                    # terminal activation: a prepared run arriving later in the
+                    # same pre-open window must still be activatable.
+                    venue_entry["last_universe_activation_scope_id"] = activation_key
+                    venue_entry["last_universe_activation_at"] = now_iso
             venues[venue] = venue_entry
             state = {**state, "venues": venues}
 
@@ -347,6 +520,34 @@ def tick(
     return {"dues": dues, "open": open_v, "final": final, "written": written}
 
 
+def _validate_prepared_hotlist(raw, *, pool: set[str], sticky: set[str], cap: int):
+    """Validate a full agent selection again at activation time."""
+
+    if not isinstance(raw, list):
+        return [], [{"reason": "selected_hotlist_not_list"}]
+    selected: list[str] = []
+    rejects: list[dict] = []
+    for value in raw:
+        if not isinstance(value, str) or not value.strip():
+            rejects.append({"symbol": value, "reason": "invalid_symbol"})
+            continue
+        symbol = value.strip()
+        if symbol in selected:
+            rejects.append({"symbol": symbol, "reason": "duplicate"})
+            continue
+        if symbol not in pool:
+            rejects.append({"symbol": symbol, "reason": "out_of_pool"})
+            continue
+        if symbol in sticky:
+            rejects.append({"symbol": symbol, "reason": "sticky_outside_quota"})
+            continue
+        if len(selected) >= cap:
+            rejects.append({"symbol": symbol, "reason": "cap_exceeded"})
+            continue
+        selected.append(symbol)
+    return selected, rejects
+
+
 def update_venue_ranking(
     state,
     venue,
@@ -356,18 +557,40 @@ def update_venue_ranking(
     delta,
     dwell_days,
     emergency_floor,
+    sticky=frozenset(),
+    news_challengers=(),
+    observed_candidate_run_ids=(),
     gap_adverse=frozenset(),
     as_of,
 ) -> dict:
     """Update one venue ranking while preserving other venue entries."""
     venues = state.get("venues", {})
     previous = venues.get(venue, {}) if isinstance(venues, dict) else {}
-    # Hystérésis depuis le déterministe pur ; fallback "hotlist" pour migration
-    old_hotlist = list(previous.get("default_hotlist", previous.get("hotlist", [])))
+    retained_challengers = _retained_news_challengers(
+        previous,
+        venue_ranked,
+        as_of=as_of,
+    )
+    combined_challengers = _merge_news_challengers(news_challengers, retained_challengers)
+    candidates = _compose_candidate_pool(venue_ranked, combined_challengers)
+    candidate_symbols = {candidate["symbol"] for candidate in candidates}
+    hotlist_ranked = [
+        item
+        for item in venue_ranked
+        if item.get("symbol") in candidate_symbols and item.get("symbol") not in sticky
+    ]
+
+    # Hystérésis depuis le déterministe pur ; fallback "hotlist" pour migration.
+    # Un ancien incumbent sorti du pool candidat ne peut pas survivre par inertie.
+    old_hotlist = [
+        symbol
+        for symbol in previous.get("default_hotlist", previous.get("hotlist", []))
+        if symbol in candidate_symbols and symbol not in sticky
+    ]
     old_dwell = dict(previous.get("dwell", {}))
 
     default_hot = apply_hysteresis(
-        venue_ranked,
+        hotlist_ranked,
         current=set(old_hotlist),
         dwell=old_dwell,
         cap_m=cap_per_venue,
@@ -376,33 +599,41 @@ def update_venue_ranking(
     )
     evicted = emergency_exits(
         set(default_hot),
-        venue_ranked,
+        hotlist_ranked,
         emergency_floor=emergency_floor,
         gap_adverse=gap_adverse,
     )
     hotlist = [symbol for symbol in default_hot if symbol not in evicted]
+    scope_id = candidate_scope_id(venue, candidates, hotlist, as_of)
+    candidate_run_id_values = {
+        str(run_id).strip()
+        for run_id in observed_candidate_run_ids
+        if str(run_id).strip()
+    }
+    candidate_run_id_values.update(
+        {
+            str(metadata.get("candidate_run_id") or "").strip()
+            for candidate in candidates
+            for metadata in [candidate.get("metadata")]
+            if isinstance(metadata, dict) and str(metadata.get("candidate_run_id") or "").strip()
+        }
+    )
+    candidate_run_ids = sorted(candidate_run_id_values)
 
     old_hot_set = set(old_hotlist)
     dwell = {
         symbol: old_dwell.get(symbol, 0) + 1 if symbol in old_hot_set else 1
         for symbol in hotlist
     }
-    ranked_scores = {item["symbol"]: item["attractiveness"] for item in venue_ranked}
+    ranked_scores = {item["symbol"]: item["attractiveness"] for item in hotlist_ranked}
     scores = {symbol: ranked_scores[symbol] for symbol in hotlist if symbol in ranked_scores}
 
     next_state = dict(state)
     next_venues = dict(venues) if isinstance(venues, dict) else {}
-    # bias inclus : build_override_prompt l'affiche au LLM (sens directionnel radar).
-    # Le droper casse le prompt prod (KeyError 'bias') → override jamais exécuté.
-    candidates = [
-        {
-            "symbol": item["symbol"],
-            "attractiveness": item["attractiveness"],
-            "bias": item.get("bias", "long"),
-        }
-        for item in venue_ranked[:OVERRIDE_CANDIDATES_TOP]
-    ]
     next_venues[venue] = {
+        "schema_version": 1,
+        "candidate_scope_id": scope_id,
+        "candidate_run_ids": candidate_run_ids,
         "candidates": candidates,
         # default_hotlist = déterministe pur (base hystérésis + ledger alpha)
         # hotlist = effectif (initialisé = default_hotlist ; override pré-open l'ajuste)
@@ -411,7 +642,130 @@ def update_venue_ranking(
         "scores": scores,
         "dwell": dwell,
         "last_close_at": as_of,
+        "sticky_context_at_close": sorted(sticky),
         "stale": False,
     }
     next_state["venues"] = next_venues
     return next_state
+
+
+def _compose_candidate_pool(venue_ranked, news_challengers) -> list[dict]:
+    """Compose top-40 radar plus every eligible news challenger, without a total cap."""
+
+    ranked_by_symbol = {
+        str(item.get("symbol") or "").strip(): item
+        for item in venue_ranked
+        if isinstance(item, dict) and item.get("symbol")
+    }
+    candidates: list[dict] = []
+    index_by_symbol: dict[str, int] = {}
+
+    def radar_candidate(item, *, source: str) -> dict:
+        return {
+            "symbol": item["symbol"],
+            "attractiveness": item["attractiveness"],
+            "bias": item.get("bias", "long"),
+            "candidate_source": source,
+            "candidate_sources": [source],
+        }
+
+    for item in venue_ranked[:RADAR_CANDIDATES_TOP]:
+        symbol = str(item.get("symbol") or "").strip()
+        if not symbol or symbol in index_by_symbol:
+            continue
+        index_by_symbol[symbol] = len(candidates)
+        candidates.append(radar_candidate(item, source="radar"))
+
+    for challenger in news_challengers:
+        if not isinstance(challenger, dict):
+            continue
+        symbol = str(challenger.get("symbol") or "").strip()
+        ranked_item = ranked_by_symbol.get(symbol)
+        if ranked_item is None:
+            # News can bypass the top-40 heuristic, never radar eligibility.
+            continue
+        provenance = {
+            key: value
+            for key, value in challenger.items()
+            if key not in {"symbol", "attractiveness", "bias", "candidate_sources"}
+        }
+        if symbol in index_by_symbol:
+            existing = candidates[index_by_symbol[symbol]]
+            primary_source = existing.get("candidate_source") or "fresh_news"
+            sources = list(existing.get("candidate_sources") or [existing.get("candidate_source")])
+            if "fresh_news" not in sources:
+                sources.append("fresh_news")
+            existing.update(provenance)
+            existing["candidate_source"] = primary_source
+            existing["candidate_sources"] = [source for source in sources if source]
+            continue
+        candidate = radar_candidate(ranked_item, source="fresh_news")
+        candidate.update(provenance)
+        candidate["candidate_source"] = "fresh_news"
+        candidate["candidate_sources"] = ["fresh_news"]
+        index_by_symbol[symbol] = len(candidates)
+        candidates.append(candidate)
+
+    return candidates
+
+
+def _merge_news_challengers(current, retained) -> list[dict]:
+    """Keep current selection order and append only non-refreshed retained symbols."""
+
+    merged: list[dict] = []
+    seen: set[str] = set()
+    for challenger in [*current, *retained]:
+        if not isinstance(challenger, dict):
+            continue
+        symbol = str(challenger.get("symbol") or "").strip()
+        if not symbol or symbol in seen:
+            continue
+        seen.add(symbol)
+        merged.append(challenger)
+    return merged
+
+
+def _retained_news_challengers(previous, venue_ranked, *, as_of) -> list[dict]:
+    """Retain unexpired prior challengers while they remain radar-eligible."""
+
+    moment = _parse_utc_datetime(as_of)
+    if moment is None:
+        return []
+    eligible_symbols = {
+        str(item.get("symbol") or "").strip()
+        for item in venue_ranked
+        if isinstance(item, dict) and item.get("symbol")
+    }
+    radar_symbols = {
+        str(item.get("symbol") or "").strip()
+        for item in venue_ranked[:RADAR_CANDIDATES_TOP]
+        if isinstance(item, dict) and item.get("symbol")
+    }
+    retained: list[dict] = []
+    for candidate in previous.get("candidates", []) if isinstance(previous, dict) else []:
+        if not isinstance(candidate, dict):
+            continue
+        sources = set(candidate.get("candidate_sources") or ())
+        if candidate.get("candidate_source"):
+            sources.add(candidate["candidate_source"])
+        if "fresh_news" not in sources:
+            continue
+        symbol = str(candidate.get("symbol") or "").strip()
+        if not symbol or symbol not in eligible_symbols or symbol in radar_symbols:
+            continue
+        fresh_news = candidate.get("fresh_news")
+        if not isinstance(fresh_news, dict):
+            continue
+        valid_until = _parse_utc_datetime(fresh_news.get("valid_until"))
+        if valid_until is None or valid_until <= moment:
+            continue
+        retained.append(candidate)
+    return retained
+
+
+def _parse_utc_datetime(value) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    return parsed.astimezone(timezone.utc) if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)

@@ -12,6 +12,14 @@ _DAEMON_MAIN_AGENT_EXEC_ENV_KEYS = ("CASYS_AGENT_EXEC", "CASYS_AGENT_EXEC_CWD", 
 
 
 @pytest.fixture(autouse=True)
+def _news_macro_disabled_by_default(monkeypatch):
+    """No test may accidentally launch real background ACPX agents."""
+
+    monkeypatch.setenv("CASYS_NEWS_MACRO_ANALYST_ENABLED", "0")
+    monkeypatch.setenv("CASYS_UNIVERSE_INTELLIGENCE_ENABLED", "0")
+
+
+@pytest.fixture(autouse=True)
 def _restore_daemon_main_agent_exec_env():
     """Restaure les clés agent-exec que daemon.main() peut charger depuis .env.
 

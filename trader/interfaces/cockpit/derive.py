@@ -71,7 +71,7 @@ def equity_snapshot(state: dict) -> EquitySnapshot:
 
 
 # ---------------------------------------------------------------------------
-# Cycle / LLM
+# Cycle / workers
 # ---------------------------------------------------------------------------
 
 
@@ -103,14 +103,16 @@ def cycle_progress(state: dict) -> CycleProgress:
     )
 
 
-def llm_calls_label(state: dict) -> str:
-    status = f.safe_dict(state.get("daemon_status"))
-    used = status.get("model_calls_used")
-    if used is None:
+def workers_activity_label(state: dict) -> str:
+    activity = f.safe_dict(state.get("queue_worker_activity"))
+    active = activity.get("active_workers")
+    if active is None:
         return "—"
-    limit = status.get("max_model_calls_per_cycle")
-    calls = f"{used} calls" if int(used) != 1 else "1 call"
-    return f"{used}/{limit} calls" if limit else calls
+    try:
+        active_int = int(active)
+    except (TypeError, ValueError):
+        return "—"
+    return f"{active_int} active"
 
 
 # ---------------------------------------------------------------------------

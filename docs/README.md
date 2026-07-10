@@ -88,17 +88,17 @@ Légende : ✅ couvert · 🟡 partiel / dispersé / potentiellement périmé ·
 |---|---|---|---|---|
 | Sources marché & fraîcheur | `runtime/data_source_runtime`, `infrastructure/market_sources/data_source`, `market/market_data`, `infrastructure/market_sources/ib_source` | ✅ | archi §1.1, §3.2 | — |
 | **Conversion FX** | `domain/market/fx`, `infrastructure/market_sources/fx_rates` | ✅ | **`reference/fx.md`** | chantier FX |
-| Fil d'actu (news) | `infrastructure/market_sources/news_feed` | ✅ | **`reference/news.md`** | — |
-| Macro | `market/macro_calendar`, `infrastructure/market_sources/macro_series` | ✅ | **`reference/macro.md`** | — |
+| News, challengers et analyste | `infrastructure/market_sources/news_feed`, `runtime/news_challenger_runtime`, `runtime/news_macro_runtime`, `agent/news_macro` | ✅ | **`reference/news.md`** | D15 |
+| Macro | `market/macro_calendar`, `infrastructure/market_sources/macro_series`, `runtime/news_macro_runtime` | ✅ | **`reference/macro.md`** | D15 |
 | Cycle de vie / rotation | `runtime/daemon_bootstrap`, `runtime/cycle_dispatch`, `runtime/cycle_reporting`, `runtime/runtime_shutdown`, `runtime/ledger_rotation`, `reporting/decision_ledger` | ✅ | archi §1.1, §12 | — |
 | État persistant | `runtime/daemon_bootstrap`, `state/*.jsonl`, `trade_plans.json`, `scheduler.json`, `infrastructure/state_db/*` | ✅ | archi §1.1, §8, `reference/task-queue.md` | — |
 
 ### Univers & régime
 | Sous-système | Package/module | Réf | Où | Décisions |
 |---|---|---|---|---|
-| Radar / rotation / hot-sets | `runtime/market_rotation_runtime`, `market/rotation/*` (core, venues, collectors, schedule, override, wiring) | ✅ | **`reference/universe-rotation.md`**, archi §1.1 | D9, D10, D13 |
+| Radar / rotation / challengers / hotlist | `runtime/market_rotation_runtime`, `runtime/news_challenger_runtime`, `market/rotation/*`, `domain/universe` | ✅ | **`reference/universe-rotation.md`**, archi §1.1 | D9, D10, D13, D15 |
 | Régime (marché + familial) | `domain/market/regime`, `domain/market/family_regime` | ✅ | **`reference/regime.md`** | D2 |
-| Config univers & portefeuille | `config/*.yaml`, `support/config/pool`, `support/config/portfolio` | ✅ | **`reference/config.md`** | D9/D10/D13 |
+| Config univers & portefeuille | `config/*.yaml`, `support/config/pool`, `support/config/portfolio` | ✅ | **`reference/config.md`** | D9/D10/D13/D15 |
 
 ### LLM & agent
 | Sous-système | Package/module | Réf | Où | Décisions |
@@ -109,6 +109,7 @@ Légende : ✅ couvert · 🟡 partiel / dispersé / potentiellement périmé ·
 | Contexte agent (cockpit) | `agent/context` | ✅ | **`reference/agent-context.md`** | — |
 | Outils domaine (read-only) | `agent/tools/` (9 handlers) | ✅ | **`reference/agent-tools.md`** | — |
 | Mémoire / recall / learnings (RAG) | `agent/learnings/` (store, consolidator, embeddings) | ✅ | **`reference/learnings-rag.md`** | — |
+| Mémoire de situation (index dérivé, retrieval non câblé) | `infrastructure/state_db/situation_memory_store` | 🟡 | **`reference/news.md`**, **`reference/agent-knowledge-architecture.md`** | D15 |
 | Couche sémantique | `domain/semantic/catalog` | ✅ | **`reference/semantic.md`** | — |
 
 ### Observabilité

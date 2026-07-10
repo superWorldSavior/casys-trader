@@ -453,6 +453,12 @@ def test_run_cycle_injecte_guardrails_et_regime_families(
     assert regime["indices"]["dir"] == "up"
     assert regime["indices"]["n"] == 2
     assert regime["indices"]["frac"] == 1.0
+    snapshot = _json.loads((state_dir / "last_regime.json").read_text(encoding="utf-8"))
+    assert snapshot["schema_version"] == 1
+    assert snapshot["as_of"] == now.isoformat()
+    assert snapshot["coverage"]["basis"] == "active_tradable_universe"
+    assert snapshot["coverage"]["status"] == "partial"
+    assert snapshot["regime_families"] == regime
 
 
 def test_run_cycle_calcule_regime_families_sur_daily_plutot_que_runtime(

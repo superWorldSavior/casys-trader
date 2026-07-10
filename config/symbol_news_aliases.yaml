@@ -1,0 +1,34 @@
+# Aliases explicites utilisés pour attribuer les titres de news à un émetteur.
+#
+# Le nom légal reste dans symbol_names.yaml. Ce fichier ne contient que les
+# marques, acronymes et tickers secondaires impossibles à dériver sans ambiguïté.
+# Un alias doit désigner un seul symbole du pool ; une collision est rejetée par
+# le sélecteur domaine au lieu de faire confiance au symbole interrogé chez Yahoo.
+
+2303.TW:
+  - UMC
+2317.TW:
+  - Hon Hai
+  - Foxconn
+  - FXCOF
+2330.TW:
+  - Taiwan Semiconductor
+  - TSMC
+2354.TW:
+  - Foxconn Technology
+2454.TW:
+  - MediaTek
+3711.TW:
+  - ASE Technology
+  - ASEH
+6505.TW:
+  - Formosa Petrochemical
+  - FPCC
+
+ASML.AS:
+  - ASML
+
+META:
+  - Meta
+MU:
+  - Micron

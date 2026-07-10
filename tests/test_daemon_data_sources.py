@@ -8,6 +8,8 @@ from trader.runtime import daemon
 from trader.runtime import cycle_dispatch
 from trader.runtime import data_source_runtime
 from trader.runtime import market_rotation_runtime
+from trader.runtime import news_macro_runtime
+from trader.runtime import universe_intelligence_runtime
 from trader.runtime.worker_cycle_context import WorkerCycleContextHandle
 from trader.market.market_data import Bar, MarketError
 from trader.planning.scheduler import Scheduler
@@ -128,14 +130,16 @@ class TestDaemonDataSourcesConfig:
         assert build_calls[0]["kwargs"]["host"] == "127.0.0.1"
         assert build_calls[0]["kwargs"]["port"] == 4002
 
-    def test_main_delegue_le_tick_rotation_au_runtime_module(
+    def test_main_once_ne_lance_pas_le_runner_news_macro_asynchrone(
         self, monkeypatch, tmp_path
     ):
-        """main() garde le cycle, le tick rotation/radar vit dans runtime/market_rotation_runtime."""
+        """Un daemon --once ne lance pas un thread LLM qu'il tuerait en sortant."""
         _write_runtime_config(tmp_path)
         state_dir = tmp_path / "state"
         now = datetime(2026, 6, 10, 12, 0, tzinfo=timezone.utc)
         rotation_calls: list[dict] = []
+        runner_calls: list[dict | str] = []
+        universe_runner_calls: list[dict | str] = []
 
         class FakeSource:
             def disconnect(self):
@@ -154,11 +158,38 @@ class TestDaemonDataSourcesConfig:
         def tick_market_rotation(**kwargs):
             rotation_calls.append(kwargs)
 
+        class FakeNewsMacroRunner:
+            def trigger(self, **kwargs):
+                runner_calls.append(kwargs)
+
+            def stop(self):
+                runner_calls.append("stop")
+
+        class FakeUniverseIntelligenceRunner:
+            def trigger(self, **kwargs):
+                universe_runner_calls.append(kwargs)
+
+            def stop(self):
+                universe_runner_calls.append("stop")
+
         monkeypatch.setattr(daemon, "ROOT", tmp_path)
         monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
         monkeypatch.setattr(daemon, "data_source_runtime", data_source_runtime, raising=False)
         monkeypatch.setattr(data_source_runtime, "build_data_source", build_data_source)
         monkeypatch.setattr(daemon, "market_rotation_runtime", market_rotation_runtime, raising=False)
+        monkeypatch.setattr(daemon, "news_macro_runtime", news_macro_runtime, raising=False)
+        monkeypatch.setattr(news_macro_runtime, "NewsMacroAnalysisRunner", FakeNewsMacroRunner)
+        monkeypatch.setattr(
+            daemon,
+            "universe_intelligence_runtime",
+            universe_intelligence_runtime,
+            raising=False,
+        )
+        monkeypatch.setattr(
+            universe_intelligence_runtime,
+            "UniverseIntelligenceRunner",
+            FakeUniverseIntelligenceRunner,
+        )
         monkeypatch.setattr(market_rotation_runtime, "tick_market_rotation", tick_market_rotation)
         monkeypatch.setattr(daemon, "run_cycle", run_cycle)
 
@@ -169,6 +200,8 @@ class TestDaemonDataSourcesConfig:
         assert rotation_calls[0]["state_dir"] == state_dir
         assert rotation_calls[0]["loop_now"] == now
         assert rotation_calls[0]["logger"] is daemon.log
+        assert runner_calls == ["stop"]
+        assert universe_runner_calls == ["stop"]
 
     def test_main_delegue_run_cycle_au_runtime_dispatcher(
         self, monkeypatch, tmp_path
@@ -261,12 +294,28 @@ class TestDaemonDataSourcesConfig:
         )
         dispatch_calls: list[dict] = []
         sleeps: list[float] = []
+        runner_calls: list[dict | str] = []
+        universe_runner_calls: list[dict | str] = []
 
         class FakeSource:
             def disconnect(self):
                 pass
 
         delegated_source = FakeSource()
+
+        class FakeNewsMacroRunner:
+            def trigger(self, **kwargs):
+                runner_calls.append(kwargs)
+
+            def stop(self):
+                runner_calls.append("stop")
+
+        class FakeUniverseIntelligenceRunner:
+            def trigger(self, **kwargs):
+                universe_runner_calls.append(kwargs)
+
+            def stop(self):
+                universe_runner_calls.append("stop")
 
         def build_data_source(_config, **_kwargs):
             return data_source_runtime.DataSourceState(
@@ -288,6 +337,19 @@ class TestDaemonDataSourcesConfig:
         monkeypatch.setattr(daemon, "data_source_runtime", data_source_runtime, raising=False)
         monkeypatch.setattr(data_source_runtime, "build_data_source", build_data_source)
         monkeypatch.setattr(daemon, "market_rotation_runtime", market_rotation_runtime, raising=False)
+        monkeypatch.setattr(daemon, "news_macro_runtime", news_macro_runtime, raising=False)
+        monkeypatch.setattr(news_macro_runtime, "NewsMacroAnalysisRunner", FakeNewsMacroRunner)
+        monkeypatch.setattr(
+            daemon,
+            "universe_intelligence_runtime",
+            universe_intelligence_runtime,
+            raising=False,
+        )
+        monkeypatch.setattr(
+            universe_intelligence_runtime,
+            "UniverseIntelligenceRunner",
+            FakeUniverseIntelligenceRunner,
+        )
         monkeypatch.setattr(market_rotation_runtime, "tick_market_rotation", lambda **_kwargs: None)
         monkeypatch.setattr(daemon, "cycle_dispatch", cycle_dispatch, raising=False)
         monkeypatch.setattr(cycle_dispatch, "dispatch_run_cycle", dispatch_run_cycle)
@@ -298,6 +360,16 @@ class TestDaemonDataSourcesConfig:
 
         assert dispatch_calls == []
         assert sleeps == [0.01]
+        assert len(runner_calls) == 2
+        assert runner_calls[0]["config_dir"] == tmp_path / "config"
+        assert runner_calls[0]["state_dir"] == state_dir
+        assert runner_calls[0]["loop_now"] == now
+        assert runner_calls[1] == "stop"
+        assert len(universe_runner_calls) == 2
+        assert universe_runner_calls[0]["config_dir"] == tmp_path / "config"
+        assert universe_runner_calls[0]["state_dir"] == state_dir
+        assert universe_runner_calls[0]["loop_now"] == now
+        assert universe_runner_calls[1] == "stop"
 
     def test_config_presente_construit_composite_et_passe_au_cycle(
         self, monkeypatch, tmp_path

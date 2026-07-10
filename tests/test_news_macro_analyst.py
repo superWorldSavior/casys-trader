@@ -1,7 +1,12 @@
 import json
 
 from trader.agent import llm
-from trader.agent.news_macro import LlmNewsMacroAnalyst, build_news_macro_prompt, parse_news_macro_completion
+from trader.agent.news_macro import (
+    DEFAULT_NEWS_MACRO_ANALYST_TIMEOUT_S,
+    LlmNewsMacroAnalyst,
+    build_news_macro_prompt,
+    parse_news_macro_completion,
+)
 from trader.application.analyst import NewsMacroAnalysisRequest
 
 
@@ -10,7 +15,9 @@ def test_news_macro_prompt_contains_bounded_contract() -> None:
         NewsMacroAnalysisRequest(
             as_of="2026-07-09T07:00:00+00:00",
             valid_until="2026-07-10T07:00:00+00:00",
-            news_items=({"uuid": "u1", "title": "Markets fall"},),
+            venue="US",
+            input_refs={"news_item_uuids": ["u1"]},
+            news_items=({"uuid": "u1", "title": "Markets fall", "publisher": "Reuters"},),
             macro_next=({"event": "FOMC", "in_h": 12},),
             candidate_symbols=("TSM",),
         )
@@ -20,6 +27,48 @@ def test_news_macro_prompt_contains_bounded_contract() -> None:
     assert "Markets fall" in prompt
     assert "FOMC" in prompt
     assert "TSM" in prompt
+    assert "direction" in prompt
+    assert "source_refs" in prompt
+    assert "Reuters" in prompt
+
+
+def test_news_macro_prompt_contains_global_macro_and_family_context() -> None:
+    prompt = build_news_macro_prompt(
+        NewsMacroAnalysisRequest(
+            as_of="2026-07-10T07:00:00+00:00",
+            valid_until="2026-07-11T07:00:00+00:00",
+            venue="EU",
+            global_news_items=(
+                {
+                    "uuid": "g-1",
+                    "title": "European defense spending debate intensifies",
+                    "regions": ["EU"],
+                },
+            ),
+            macro_series=(
+                {
+                    "label": "ecb_deposit_rate",
+                    "series_id": "ECB/FM/B.U2.EUR.4F.KR.DFR.LEV",
+                    "period": "2026-07-09",
+                    "value": 2.25,
+                },
+            ),
+            family_context={
+                "eu_industrials": {
+                    "candidate_symbols": ["AIR.PA"],
+                    "news_item_uuids": ["u-air"],
+                    "fresh_news_count": 1,
+                }
+            },
+        )
+    )
+
+    assert "global_news_items" in prompt
+    assert "European defense spending" in prompt
+    assert "macro_series" in prompt
+    assert "ecb_deposit_rate" in prompt
+    assert "family_context" in prompt
+    assert "eu_industrials" in prompt
 
 
 def test_parse_news_macro_completion_uses_last_json_object() -> None:
@@ -32,12 +81,44 @@ def test_parse_news_macro_completion_uses_last_json_object() -> None:
         "status avant JSON\n" + json.dumps(payload),
         as_of="2026-07-09T07:00:00+00:00",
         valid_until="2026-07-10T07:00:00+00:00",
+        venue="US",
+        input_refs={"news_item_uuids": ["u1"]},
     )
 
     assert error is None
     assert brief is not None
+    assert brief.venue == "US"
+    assert brief.input_refs == {"news_item_uuids": ["u1"]}
     assert brief.as_of == "2026-07-09T07:00:00+00:00"
-    assert brief.zones[0].points[0].sources == ("u1",)
+    assert brief.zones[0].points[0].sources == ()
+    assert brief.zones[0].points[0].source_refs == ("u1",)
+
+
+def test_parse_news_macro_completion_forces_authoritative_envelope() -> None:
+    brief, error = parse_news_macro_completion(
+        json.dumps(
+            {
+                "brief_id": "model-owned",
+                "venue": "TW",
+                "as_of": "tomorrow",
+                "valid_until": "forever",
+                "input_refs": {"news_item_count": 0},
+                "zones": {"US": [{"point": "Liquidity tightening"}]},
+            }
+        ),
+        as_of="2026-07-09T07:00:00+00:00",
+        valid_until="2026-07-10T07:00:00+00:00",
+        venue="US",
+        input_refs={"news_item_count": 4},
+    )
+
+    assert error is None
+    assert brief is not None
+    assert brief.brief_id == "2026-07-09T07:00:00+00:00|US"
+    assert brief.venue == "US"
+    assert brief.as_of == "2026-07-09T07:00:00+00:00"
+    assert brief.valid_until == "2026-07-10T07:00:00+00:00"
+    assert brief.input_refs == {"news_item_count": 4}
 
 
 def test_llm_news_macro_analyst_returns_parsed_brief() -> None:
@@ -49,7 +130,20 @@ def test_llm_news_macro_analyst_returns_parsed_brief() -> None:
                 model="stub",
                 text=json.dumps(
                     {
-                        "zones": {"US": [{"point": "Liquidity tightening"}]},
+                        "zones": {
+                            "US": [
+                                {
+                                    "point": "Liquidity tightening",
+                                    "source_refs": ["u1"],
+                                    "sources": ["Invented Wire"],
+                                },
+                                {
+                                    "point": "Unsourced model claim",
+                                    "source_refs": ["invented-ref"],
+                                    "sources": ["Invented Wire"],
+                                },
+                            ]
+                        },
                     }
                 ),
             )
@@ -59,7 +153,21 @@ def test_llm_news_macro_analyst_returns_parsed_brief() -> None:
         NewsMacroAnalysisRequest(
             as_of="2026-07-09T07:00:00+00:00",
             valid_until="2026-07-10T07:00:00+00:00",
+            venue="US",
+            news_items=({"uuid": "u1", "publisher": "Reuters", "title": "Rates rise"},),
         )
     )
 
     assert brief.zones[0].name == "US"
+    assert brief.venue == "US"
+    assert brief.zones[0].points[0].source_refs == ("u1",)
+    assert brief.zones[0].points[0].sources == ("Reuters",)
+    assert len(brief.zones[0].points) == 1
+    assert brief.input_refs["source_validation"] == {
+        "retained_points": 1,
+        "dropped_unsourced_points": 1,
+    }
+
+
+def test_news_macro_analyst_default_timeout_allows_digest_generation() -> None:
+    assert DEFAULT_NEWS_MACRO_ANALYST_TIMEOUT_S >= 180

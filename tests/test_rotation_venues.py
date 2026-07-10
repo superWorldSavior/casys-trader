@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from copy import deepcopy
 
 import yaml
@@ -245,6 +246,83 @@ def test_run_venue_close_filters_global_rank_to_requested_venue():
     )
 
     assert result["venues"]["TW"]["hotlist"] == ["8299.TWO", "2330.TW"]
+
+
+def test_run_venue_close_injects_news_challengers_from_full_eligible_venue_ranking():
+    venue_symbols = [f"{index:04d}.TW" for index in range(41)]
+    rank_obj = {
+        "ranked": [
+            *[
+                _item(symbol, 50.0 - index)
+                for index, symbol in enumerate(venue_symbols)
+            ],
+            _item("AAPL", 0.1),
+        ],
+        "gap_adverse": frozenset(),
+    }
+    calls = []
+
+    def news_challenger_fn(**kwargs):
+        calls.append(kwargs)
+        return [
+            {
+                "symbol": venue_symbols[40],
+                "candidate_source": "fresh_news",
+                "fresh_news": {"source_refs": ["u-41"]},
+            }
+        ]
+
+    result = run_venue_close(
+        empty_venue_state(),
+        "TW",
+        rank_obj,
+        cap_per_venue=5,
+        fx_cap=2,
+        delta=0.0,
+        dwell_days=1,
+        emergency_floor=0.0,
+        news_challenger_fn=news_challenger_fn,
+        as_of="2026-06-15T05:30:00+00:00",
+    )
+
+    assert len(calls) == 1
+    assert calls[0]["venue"] == "TW"
+    assert {item["symbol"] for item in calls[0]["venue_ranked"]} == set(venue_symbols)
+    assert calls[0]["radar_symbols"] == set(venue_symbols[:40])
+    challenger = result["venues"]["TW"]["candidates"][-1]
+    assert challenger["symbol"] == venue_symbols[40]
+    assert challenger["attractiveness"] == rank_obj["ranked"][40]["attractiveness"]
+    assert challenger["bias"] == "long"
+    assert challenger["fresh_news"]["source_refs"] == ["u-41"]
+
+
+def test_run_venue_close_keeps_scout_run_lineage_when_no_challenger_is_selected():
+    rank_obj = {
+        "ranked": [_item("2330.TW", 1.6)],
+        "gap_adverse": frozenset(),
+    }
+
+    def news_challenger_fn(**_kwargs):
+        return []
+
+    news_challenger_fn.candidate_run_ids = {"TW": "candidate-run-empty-tw"}
+
+    result = run_venue_close(
+        empty_venue_state(),
+        "TW",
+        rank_obj,
+        cap_per_venue=5,
+        fx_cap=2,
+        delta=0.0,
+        dwell_days=1,
+        emergency_floor=0.0,
+        news_challenger_fn=news_challenger_fn,
+        as_of="2026-06-15T05:30:00+00:00",
+    )
+
+    assert result["venues"]["TW"]["candidate_run_ids"] == [
+        "candidate-run-empty-tw"
+    ]
 
 
 def test_run_venue_close_uses_fx_cap_for_fx_and_action_cap_otherwise():
@@ -507,6 +585,83 @@ def test_tick_bootstrap_updates_due_venues_and_writes_active_universe(tmp_path):
     }
 
 
+def test_tick_injects_news_challenger_provider_into_due_venue_close(tmp_path):
+    config_dir = tmp_path / "cfg"
+    state_dir = tmp_path / "state"
+    config_dir.mkdir()
+    _write_tick_config(config_dir)
+    symbols = [f"US{i:02d}" for i in range(41)]
+    rank_obj = {
+        "ranked": [_item(symbol, 50.0 - index) for index, symbol in enumerate(symbols)],
+        "gap_adverse": frozenset(),
+        "ineligible": {},
+        "components_by_symbol": {},
+    }
+
+    def news_challenger_fn(**kwargs):
+        if kwargs["venue"] != "US":
+            return []
+        return [
+            {
+                "symbol": symbols[40],
+                "candidate_source": "fresh_news",
+                "fresh_news": {"source_refs": ["u-us-40"]},
+            }
+        ]
+
+    tick(
+        config_dir,
+        state_dir,
+        "2026-06-15T14:00:00+00:00",
+        rank_fn=lambda: rank_obj,
+        sticky_fn=lambda: set(),
+        news_challenger_fn=news_challenger_fn,
+    )
+
+    candidates = load_venue_state(state_dir)["venues"]["US"]["candidates"]
+    assert len(candidates) == 41
+    assert candidates[-1]["symbol"] == symbols[40]
+    assert candidates[-1]["fresh_news"]["source_refs"] == ["u-us-40"]
+
+
+def test_tick_collects_sticky_before_due_rankings_and_keeps_it_outside_quota(tmp_path):
+    config_dir = tmp_path / "cfg"
+    state_dir = tmp_path / "state"
+    config_dir.mkdir()
+    _write_tick_config(config_dir)
+    sticky_calls = 0
+
+    def sticky_fn():
+        nonlocal sticky_calls
+        sticky_calls += 1
+        return {"AAPL"}
+
+    rank_obj = {
+        "ranked": [
+            _item("AAPL", 7.0),
+            *[_item(f"US{i}", 6.0 - i) for i in range(6)],
+        ],
+        "gap_adverse": frozenset(),
+        "ineligible": {},
+        "components_by_symbol": {},
+    }
+
+    result = tick(
+        config_dir,
+        state_dir,
+        "2026-06-15T14:00:00+00:00",
+        rank_fn=lambda: rank_obj,
+        sticky_fn=sticky_fn,
+    )
+
+    us = load_venue_state(state_dir)["venues"]["US"]
+    assert sticky_calls == 1
+    assert us["hotlist"] == [f"US{i}" for i in range(5)]
+    assert "AAPL" in {candidate["symbol"] for candidate in us["candidates"]}
+    assert result["final"][0] == "AAPL"
+    assert set(us["hotlist"]) <= set(result["final"])
+
+
 def test_tick_keeps_sticky_symbol_when_its_market_is_closed(tmp_path):
     config_dir = tmp_path / "cfg"
     state_dir = tmp_path / "state"
@@ -525,6 +680,11 @@ def test_tick_keeps_sticky_symbol_when_its_market_is_closed(tmp_path):
     assert result["open"] == ["EU", "FX", "US"]
     assert result["final"][0] == "ZZZ.TW"
     assert "ZZZ.TW" in result["final"]
+    saved = load_venue_state(state_dir)
+    assert all(
+        "ZZZ.TW" not in {candidate["symbol"] for candidate in venue.get("candidates", [])}
+        for venue in saved["venues"].values()
+    )
 
 
 def test_tick_second_call_same_now_is_idempotent(tmp_path):
@@ -620,6 +780,36 @@ def test_tick_preopen_admet_la_hotlist_de_la_venue_fermee(tmp_path):
     written = yaml.safe_load((config_dir / "universe.yaml").read_text(encoding="utf-8"))["symbols"]
     assert "2330.TW" in written
     assert "2317.TW" in written
+
+
+def test_tick_makes_candidate_scope_observer_failure_visible(tmp_path):
+    config_dir = tmp_path / "cfg"
+    state_dir = tmp_path / "state"
+    config_dir.mkdir()
+    state_dir.mkdir()
+    _write_tick_config_with_preopen(config_dir)
+
+    def observer(record):
+        if record["venue"] == "TW":
+            raise OSError("scope disk unavailable")
+        return {"candidate_scope_id": record["candidate_scope_id"]}
+
+    tick(
+        config_dir,
+        state_dir,
+        "2026-06-15T20:00:00+00:00",
+        rank_fn=lambda: _tick_rank_obj(),
+        sticky_fn=lambda: set(),
+        candidate_scope_observer=observer,
+    )
+
+    saved = load_venue_state(state_dir)["venues"]
+    assert saved["TW"]["candidate_scope_observation_status"] == "error"
+    assert saved["TW"]["candidate_scope_observation_error"] == "OSError"
+    assert saved["US"]["candidate_scope_observation_status"] == "persisted"
+    assert saved["US"]["candidate_scope_observation_ref"] == {
+        "candidate_scope_id": saved["US"]["candidate_scope_id"]
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -718,6 +908,226 @@ def test_tick_override_preopen_appelle_override_fn_et_ajoute_symbole(tmp_path):
     assert len(calls) == 1, "override_fn doit être appelée une fois pour TW en pré-open"
     assert "2330.TW" in res["final"]
     assert "2454.TW" in res["final"]
+
+
+def test_tick_preopen_activates_full_prepared_selection_and_traces_agent_run(tmp_path):
+    config_dir = tmp_path / "cfg"
+    state_dir = tmp_path / "state"
+    config_dir.mkdir()
+    state_dir.mkdir()
+    _write_tick_config_with_override(config_dir, override_enabled=True)
+    state = json.loads(
+        _make_preopen_state(extra_candidates=[{"symbol": "2454.TW", "attractiveness": 1.5}])
+    )
+    state["venues"]["TW"]["candidate_scope_id"] = "scope-tw-1"
+    (state_dir / "venue_state.json").write_text(json.dumps(state), encoding="utf-8")
+    calls = []
+
+    def prepared_universe_fn(**kwargs):
+        calls.append(kwargs)
+        return {
+            "status": "success",
+            "agent_run_id": "agent-tw-1",
+            "candidate_scope_id": "scope-tw-1",
+            "brief_ref": {"venue": "TW", "brief_id": "brief-tw-1"},
+            "contract_version": "selected_hotlist_v2",
+            "selected_hotlist": ["2454.TW"],
+        }
+
+    result = tick(
+        config_dir,
+        state_dir,
+        "2026-06-16T00:30:00+00:00",
+        rank_fn=lambda: _tick_rank_obj(),
+        sticky_fn=lambda: set(),
+        prepared_universe_fn=prepared_universe_fn,
+    )
+
+    assert len(calls) == 1
+    assert calls[0]["venue"] == "TW"
+    assert calls[0]["candidate_scope_id"] == "scope-tw-1"
+    assert "2454.TW" in result["final"]
+    assert "2330.TW" not in result["final"]
+    saved = load_venue_state(state_dir)["venues"]["TW"]
+    assert saved["hotlist"] == ["2454.TW"]
+    assert saved["last_universe_agent_run_id"] == "agent-tw-1"
+    assert saved["last_universe_fallback_used"] is False
+    row = json.loads((state_dir / "rotation_ledger.jsonl").read_text().splitlines()[-1])
+    assert row["overrides"]["selected_hotlist"] == ["2454.TW"]
+    assert row["overrides"]["fallback_used"] is False
+    assert row["overrides"]["brief_ref"] == {"venue": "TW", "brief_id": "brief-tw-1"}
+
+
+def test_tick_preopen_prepared_missing_keeps_baseline_and_deduplicates_ledger(tmp_path):
+    config_dir = tmp_path / "cfg"
+    state_dir = tmp_path / "state"
+    config_dir.mkdir()
+    state_dir.mkdir()
+    _write_tick_config_with_override(config_dir, override_enabled=True)
+    state = json.loads(_make_preopen_state())
+    state["venues"]["TW"]["candidate_scope_id"] = "scope-tw-missing"
+    (state_dir / "venue_state.json").write_text(json.dumps(state), encoding="utf-8")
+    calls = []
+
+    def prepared_universe_fn(**kwargs):
+        calls.append(kwargs)
+        return {"status": "missing", "reason": "brief_missing"}
+
+    first = tick(
+        config_dir,
+        state_dir,
+        "2026-06-16T00:30:00+00:00",
+        rank_fn=lambda: _tick_rank_obj(),
+        sticky_fn=lambda: set(),
+        prepared_universe_fn=prepared_universe_fn,
+    )
+    second = tick(
+        config_dir,
+        state_dir,
+        "2026-06-16T00:45:00+00:00",
+        rank_fn=lambda: _tick_rank_obj(),
+        sticky_fn=lambda: set(),
+        prepared_universe_fn=prepared_universe_fn,
+    )
+
+    assert "2330.TW" in first["final"]
+    assert "2330.TW" in second["final"]
+    assert len(calls) == 2
+    saved = load_venue_state(state_dir)["venues"]["TW"]
+    assert saved["last_universe_fallback_used"] is True
+    assert saved["last_universe_fallback_reason"] == "brief_missing"
+    rows = (state_dir / "rotation_ledger.jsonl").read_text().splitlines()
+    assert len(rows) == 1
+    assert json.loads(rows[0])["alerts"] == [
+        {"code": "universe_fallback", "reason": "brief_missing"}
+    ]
+
+
+def test_tick_preopen_activates_a_prepared_run_that_arrives_after_pending_fallback(tmp_path):
+    config_dir = tmp_path / "cfg"
+    state_dir = tmp_path / "state"
+    config_dir.mkdir()
+    state_dir.mkdir()
+    _write_tick_config_with_override(config_dir, override_enabled=True)
+    state = json.loads(
+        _make_preopen_state(extra_candidates=[{"symbol": "2454.TW", "attractiveness": 1.5}])
+    )
+    state["venues"]["TW"]["candidate_scope_id"] = "scope-tw-late"
+    (state_dir / "venue_state.json").write_text(json.dumps(state), encoding="utf-8")
+    calls = 0
+
+    def prepared_universe_fn(**_kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return {"status": "pending", "reason": "prepare_pending"}
+        return {
+            "status": "success",
+            "agent_run_id": "agent-tw-late",
+            "brief_ref": {"venue": "TW", "brief_id": "brief-late"},
+            "contract_version": "universe.v1",
+            "selected_hotlist": ["2454.TW"],
+        }
+
+    first = tick(
+        config_dir,
+        state_dir,
+        "2026-06-16T00:30:00+00:00",
+        rank_fn=lambda: _tick_rank_obj(),
+        sticky_fn=lambda: set(),
+        prepared_universe_fn=prepared_universe_fn,
+    )
+    second = tick(
+        config_dir,
+        state_dir,
+        "2026-06-16T00:45:00+00:00",
+        rank_fn=lambda: _tick_rank_obj(),
+        sticky_fn=lambda: set(),
+        prepared_universe_fn=prepared_universe_fn,
+    )
+
+    assert "2330.TW" in first["final"]
+    assert "2454.TW" in second["final"]
+    saved = load_venue_state(state_dir)["venues"]["TW"]
+    assert saved["last_universe_activation_scope_id"] == "scope-tw-late"
+    assert saved["last_universe_activation_status"] == "success"
+    assert saved["last_universe_fallback_used"] is False
+    assert len((state_dir / "rotation_ledger.jsonl").read_text().splitlines()) == 2
+
+
+def test_tick_preopen_revalidates_prepared_selection_and_keeps_sticky_outside_quota(tmp_path):
+    config_dir = tmp_path / "cfg"
+    state_dir = tmp_path / "state"
+    config_dir.mkdir()
+    state_dir.mkdir()
+    _write_tick_config_with_override(config_dir, override_enabled=True)
+    state = json.loads(
+        _make_preopen_state(extra_candidates=[{"symbol": "2454.TW", "attractiveness": 1.5}])
+    )
+    state["venues"]["TW"]["candidate_scope_id"] = "scope-tw-sticky"
+    (state_dir / "venue_state.json").write_text(json.dumps(state), encoding="utf-8")
+
+    result = tick(
+        config_dir,
+        state_dir,
+        "2026-06-16T00:30:00+00:00",
+        rank_fn=lambda: _tick_rank_obj(),
+        sticky_fn=lambda: {"2330.TW"},
+        prepared_universe_fn=lambda **_kwargs: {
+            "status": "success",
+            "agent_run_id": "agent-tw-sticky",
+            "selected_hotlist": ["2330.TW", "2454.TW"],
+        },
+    )
+
+    assert "2330.TW" in result["final"]
+    assert "2454.TW" in result["final"]
+    saved = load_venue_state(state_dir)["venues"]["TW"]
+    assert saved["hotlist"] == ["2454.TW"]
+    row = json.loads((state_dir / "rotation_ledger.jsonl").read_text().splitlines()[-1])
+    assert {item["reason"] for item in row["rejects"]["rejects"]} == {
+        "sticky_outside_quota",
+    }
+    assert row["overrides"]["fallback_used"] is False
+
+
+def test_tick_preopen_structurally_invalid_prepared_selection_falls_back_wholly(tmp_path):
+    config_dir = tmp_path / "cfg"
+    state_dir = tmp_path / "state"
+    config_dir.mkdir()
+    state_dir.mkdir()
+    _write_tick_config_with_override(config_dir, override_enabled=True)
+    state = json.loads(
+        _make_preopen_state(extra_candidates=[{"symbol": "2454.TW", "attractiveness": 1.5}])
+    )
+    state["venues"]["TW"]["candidate_scope_id"] = "scope-tw-corrupt"
+    (state_dir / "venue_state.json").write_text(json.dumps(state), encoding="utf-8")
+
+    result = tick(
+        config_dir,
+        state_dir,
+        "2026-06-16T00:30:00+00:00",
+        rank_fn=lambda: _tick_rank_obj(),
+        sticky_fn=lambda: set(),
+        prepared_universe_fn=lambda **_kwargs: {
+            "status": "success",
+            "agent_run_id": "agent-tw-corrupt",
+            "selected_hotlist": ["2454.TW", "OUTSIDE", "2454.TW"],
+        },
+    )
+
+    assert "2330.TW" in result["final"]
+    assert "2454.TW" not in result["final"]
+    saved = load_venue_state(state_dir)["venues"]["TW"]
+    assert saved["last_universe_fallback_used"] is True
+    assert saved["last_universe_fallback_reason"] == "prepared_invalid_selection"
+    assert "last_universe_activation_scope_id" not in saved
+    row = json.loads((state_dir / "rotation_ledger.jsonl").read_text().splitlines()[-1])
+    assert row["overrides"]["fallback_used"] is True
+    assert {item["reason"] for item in row["rejects"]["rejects"]} == {
+        "out_of_pool",
+        "duplicate",
+    }
 
 
 def test_tick_override_preopen_chemin_prompt_reel(tmp_path):
@@ -1118,11 +1528,17 @@ def test_garde_fou_2_symbole_preopen_dans_univers_est_due_scheduler(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_update_venue_ranking_persiste_top50_candidats(tmp_path):
-    """Après update_venue_ranking avec 60 items, candidates a 50 entrées triées
-    avec les vrais scores (pas 0.0)."""
+def test_update_venue_ranking_persiste_top40_plus_tous_les_challengers_sans_cap():
     state = empty_venue_state()
     venue_ranked = [_item(f"SYM{i:02d}", 60.0 - i) for i in range(60)]
+    news_challengers = [
+        {
+            "symbol": f"SYM{i:02d}",
+            "candidate_source": "fresh_news",
+            "fresh_news": {"score": 90 - i, "source_refs": [f"u-{i}"]},
+        }
+        for i in range(40, 60)
+    ]
     as_of = "2026-06-17T05:30:00+00:00"
 
     result = update_venue_ranking(
@@ -1133,24 +1549,236 @@ def test_update_venue_ranking_persiste_top50_candidats(tmp_path):
         delta=0.0,
         dwell_days=1,
         emergency_floor=-1.0,
+        news_challengers=[*news_challengers, news_challengers[0]],
         as_of=as_of,
     )
 
     candidates = result["venues"]["TW"]["candidates"]
-    assert len(candidates) == 50, "top 50 attendu"
-    # tri desc par attractivité préservé
-    scores = [c["attractiveness"] for c in candidates]
-    assert scores == sorted(scores, reverse=True), "candidats doivent être triés desc"
-    # vrais scores (pas 0.0)
+    assert [candidate["symbol"] for candidate in candidates[:40]] == [
+        f"SYM{i:02d}" for i in range(40)
+    ]
+    assert [candidate["symbol"] for candidate in candidates[40:]] == [
+        f"SYM{i:02d}" for i in range(40, 60)
+    ]
+    assert len(candidates) == 60
+    assert len({candidate["symbol"] for candidate in candidates}) == 60
     assert all(c["attractiveness"] > 0 for c in candidates), "scores doivent être réels"
-    # bias persisté (sinon build_override_prompt lève KeyError en prod)
     assert all("bias" in c for c in candidates), "chaque candidat doit porter son bias"
-    # clés existantes inchangées
+    assert all(candidate["candidate_source"] == "radar" for candidate in candidates[:40])
+    assert all(candidate["candidate_source"] == "fresh_news" for candidate in candidates[40:])
+    assert candidates[40]["attractiveness"] == venue_ranked[40]["attractiveness"]
+    assert candidates[40]["fresh_news"]["source_refs"] == ["u-40"]
     assert "hotlist" in result["venues"]["TW"]
     assert "scores" in result["venues"]["TW"]
     assert "dwell" in result["venues"]["TW"]
+    assert result["venues"]["TW"]["candidate_scope_id"].startswith("candidate_scope:v1:TW:")
+    assert result["venues"]["TW"]["sticky_context_at_close"] == []
     assert result["venues"]["TW"]["last_close_at"] == as_of
     assert result["venues"]["TW"]["stale"] is False
+
+
+def test_update_venue_ranking_drops_incumbent_outside_composed_candidate_pool():
+    state = {
+        "venues": {
+            "US": {
+                "default_hotlist": ["SYM45"],
+                "hotlist": ["SYM45"],
+                "dwell": {"SYM45": 9},
+            }
+        }
+    }
+    venue_ranked = [_item(f"SYM{i:02d}", 60.0 - i) for i in range(60)]
+
+    result = update_venue_ranking(
+        state,
+        "US",
+        venue_ranked,
+        cap_per_venue=2,
+        delta=0.0,
+        dwell_days=1,
+        emergency_floor=-1.0,
+        as_of="2026-06-17T20:00:00+00:00",
+    )
+
+    us = result["venues"]["US"]
+    assert us["hotlist"] == ["SYM00", "SYM01"]
+    assert "SYM45" not in us["hotlist"]
+    assert set(us["hotlist"]) <= {candidate["symbol"] for candidate in us["candidates"]}
+
+
+def test_update_venue_ranking_keeps_ranked_sticky_outside_hotlist_quota():
+    venue_ranked = [_item("STICKY", 3.0), _item("A", 2.0), _item("B", 1.0)]
+
+    result = update_venue_ranking(
+        empty_venue_state(),
+        "US",
+        venue_ranked,
+        cap_per_venue=2,
+        delta=0.0,
+        dwell_days=1,
+        emergency_floor=-1.0,
+        sticky={"STICKY"},
+        as_of="2026-06-17T20:00:00+00:00",
+    )
+
+    us = result["venues"]["US"]
+    assert us["hotlist"] == ["A", "B"]
+    assert us["sticky_context_at_close"] == ["STICKY"]
+    assert "STICKY" in {candidate["symbol"] for candidate in us["candidates"]}
+    assert compose_active_universe(result, ["US"], sticky={"STICKY"}) == ["STICKY", "A", "B"]
+
+
+def test_update_venue_ranking_retains_unexpired_eligible_news_challenger():
+    venue_ranked = [_item(f"SYM{i:02d}", 60.0 - i) for i in range(60)]
+    state = {
+        "venues": {
+            "US": {
+                "candidates": [
+                    {
+                        "symbol": "SYM45",
+                        "attractiveness": 15.0,
+                        "bias": "long",
+                        "candidate_source": "fresh_news",
+                        "candidate_sources": ["fresh_news"],
+                        "fresh_news": {
+                            "valid_until": "2026-06-18T20:00:00+00:00",
+                            "source_refs": ["old-uuid"],
+                        },
+                    }
+                ],
+                "default_hotlist": [],
+                "hotlist": [],
+                "dwell": {},
+            }
+        }
+    }
+
+    result = update_venue_ranking(
+        state,
+        "US",
+        venue_ranked,
+        cap_per_venue=2,
+        delta=0.0,
+        dwell_days=1,
+        emergency_floor=-1.0,
+        as_of="2026-06-17T20:00:00+00:00",
+    )
+
+    challengers = [
+        candidate
+        for candidate in result["venues"]["US"]["candidates"]
+        if candidate["candidate_source"] == "fresh_news"
+    ]
+    assert [candidate["symbol"] for candidate in challengers] == ["SYM45"]
+    assert challengers[0]["fresh_news"]["source_refs"] == ["old-uuid"]
+    assert challengers[0]["attractiveness"] == venue_ranked[45]["attractiveness"]
+
+
+def test_update_venue_ranking_refreshes_retained_challenger_without_duplicate():
+    venue_ranked = [_item(f"SYM{i:02d}", 60.0 - i) for i in range(60)]
+    previous_candidate = {
+        "symbol": "SYM45",
+        "attractiveness": 15.0,
+        "bias": "long",
+        "candidate_source": "fresh_news",
+        "candidate_sources": ["fresh_news"],
+        "fresh_news": {
+            "valid_until": "2026-06-18T20:00:00+00:00",
+            "source_refs": ["old-uuid"],
+        },
+    }
+    state = {
+        "venues": {
+            "US": {
+                "candidates": [previous_candidate],
+                "default_hotlist": [],
+                "hotlist": [],
+                "dwell": {},
+            }
+        }
+    }
+    refreshed = {
+        "symbol": "SYM45",
+        "candidate_source": "fresh_news",
+        "fresh_news": {
+            "valid_until": "2026-06-20T20:00:00+00:00",
+            "source_refs": ["new-uuid"],
+        },
+    }
+
+    result = update_venue_ranking(
+        state,
+        "US",
+        venue_ranked,
+        cap_per_venue=2,
+        delta=0.0,
+        dwell_days=1,
+        emergency_floor=-1.0,
+        news_challengers=[refreshed],
+        as_of="2026-06-17T20:00:00+00:00",
+    )
+
+    matches = [
+        candidate
+        for candidate in result["venues"]["US"]["candidates"]
+        if candidate["symbol"] == "SYM45"
+    ]
+    assert len(matches) == 1
+    assert matches[0]["fresh_news"]["source_refs"] == ["new-uuid"]
+    assert matches[0]["fresh_news"]["valid_until"] == "2026-06-20T20:00:00+00:00"
+
+
+def test_update_venue_ranking_drops_expired_or_ineligible_retained_challenger():
+    previous_candidate = {
+        "symbol": "SYM45",
+        "attractiveness": 15.0,
+        "bias": "long",
+        "candidate_source": "fresh_news",
+        "candidate_sources": ["fresh_news"],
+        "fresh_news": {
+            "valid_until": "2026-06-17T20:00:00+00:00",
+            "source_refs": ["old-uuid"],
+        },
+    }
+    state = {
+        "venues": {
+            "US": {
+                "candidates": [previous_candidate],
+                "default_hotlist": [],
+                "hotlist": [],
+                "dwell": {},
+            }
+        }
+    }
+    full_ranking = [_item(f"SYM{i:02d}", 60.0 - i) for i in range(60)]
+
+    expired = update_venue_ranking(
+        state,
+        "US",
+        full_ranking,
+        cap_per_venue=2,
+        delta=0.0,
+        dwell_days=1,
+        emergency_floor=-1.0,
+        as_of="2026-06-17T20:00:00+00:00",
+    )
+    ineligible = update_venue_ranking(
+        state,
+        "US",
+        full_ranking[:40],
+        cap_per_venue=2,
+        delta=0.0,
+        dwell_days=1,
+        emergency_floor=-1.0,
+        as_of="2026-06-16T20:00:00+00:00",
+    )
+
+    assert "SYM45" not in {
+        candidate["symbol"] for candidate in expired["venues"]["US"]["candidates"]
+    }
+    assert "SYM45" not in {
+        candidate["symbol"] for candidate in ineligible["venues"]["US"]["candidates"]
+    }
 
 
 def test_override_rejette_add_hors_candidats(tmp_path):
@@ -1185,6 +1813,40 @@ def test_override_rejette_add_hors_candidats(tmp_path):
     assert "9999.TW" not in res["final"], "symbole hors candidats doit être rejeté out_of_pool"
     # 2330.TW (hotlist défaut) toujours présent
     assert "2330.TW" in res["final"]
+
+
+def test_preopen_migration_drops_default_hotlist_symbol_outside_candidate_pool(tmp_path):
+    import json
+
+    config_dir = tmp_path / "cfg"
+    state_dir = tmp_path / "state"
+    config_dir.mkdir()
+    state_dir.mkdir()
+    _write_tick_config_with_override(config_dir, override_enabled=True)
+    payload = json.loads(_make_preopen_state())
+    payload["venues"]["TW"]["default_hotlist"] = ["2330.TW", "9999.TW"]
+    payload["venues"]["TW"]["hotlist"] = ["2330.TW", "9999.TW"]
+    (state_dir / "venue_state.json").write_text(json.dumps(payload), encoding="utf-8")
+
+    tick(
+        str(config_dir),
+        str(state_dir),
+        "2026-06-16T00:30:00+00:00",
+        rank_fn=lambda: {
+            "ranked": [],
+            "gap_adverse": frozenset(),
+            "ineligible": {},
+            "components_by_symbol": {},
+        },
+        sticky_fn=lambda: set(),
+        override_fn=lambda _payload: {"add": [], "remove": []},
+    )
+
+    saved = load_venue_state(state_dir)["venues"]["TW"]
+    assert saved["hotlist"] == ["2330.TW"]
+    assert set(saved["hotlist"]) <= {
+        candidate["symbol"] for candidate in saved["candidates"]
+    }
 
 
 def test_override_accepte_add_dans_candidats_apres_remove(tmp_path):

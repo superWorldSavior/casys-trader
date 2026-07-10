@@ -31,6 +31,13 @@ class TestBuildOverridePrompt:
         prompt = build_override_prompt(ranked, ["AAPL"])
         assert "TSLA" in prompt
 
+    def test_default_includes_complete_candidate_pool(self):
+        symbols = [f"SYM{i:03d}" for i in range(100)]
+        prompt = build_override_prompt(self._ranked(symbols), ["SYM099"])
+
+        for symbol in symbols:
+            assert symbol in prompt
+
     def test_respects_max_candidates(self):
         symbols = [f"SYM{i:03d}" for i in range(100)]
         ranked = self._ranked(symbols)
@@ -58,6 +65,37 @@ class TestBuildOverridePrompt:
         assert "AAPL" in prompt
         # Au moins l'attractivité ou le bias doivent être mentionnés
         assert "0.9" in prompt or "LONG" in prompt
+
+    def test_includes_fresh_news_challenger_provenance_and_evidence(self):
+        prompt = build_override_prompt(
+            [
+                {
+                    "symbol": "SAP.DE",
+                    "attractiveness": 0.0,
+                    "bias": "neutral",
+                    "candidate_source": "fresh_news",
+                    "fresh_news": {
+                        "score": 91,
+                        "latest_published_at": "2026-07-10T08:00:00+00:00",
+                        "event_types": ["earnings_guidance"],
+                        "evidence": [
+                            {
+                                "title": "SAP raises full-year cloud guidance",
+                                "publisher": "Reuters",
+                            }
+                        ],
+                    },
+                }
+            ],
+            [],
+        )
+
+        assert "role=challenger" in prompt
+        assert "provenance=fresh_news" in prompt
+        assert "news_score=91" in prompt
+        assert "earnings_guidance" in prompt
+        assert "SAP raises full-year cloud guidance" in prompt
+        assert "Reuters" in prompt
 
 
 # ---------------------------------------------------------------------------
@@ -187,6 +225,7 @@ class TestMakeLlmOverrideFn:
         # Les 5 premiers doivent être présents
         for i in range(5):
             assert f"S{i}" in prompt
+        assert "S5 |" not in prompt
 
 
 # ---------------------------------------------------------------------------

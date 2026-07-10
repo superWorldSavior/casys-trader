@@ -95,7 +95,7 @@ les utilisaient :
 | `trader/application/execute/risk_capacity.py` | Contexte de capacité exposé à l'agent : gross exposure, plafonds buy/sell, quantités natives FX-aware | le daemon injecte le broker, les prix, les FX et la fonction devise |
 | `trader/application/record/tool_outcomes.py` | Finalisation des outcomes réels des action tools avant persistance des décisions | `reporting.tool_trace` réexporte l'ancien point de compatibilité |
 | `trader/application/cycle/watch_scanner.py` | Scan applicatif des indicator/exit watches : fetch des barres, évaluation, cooldown, retrait et réveil symbole | le daemon conserve l'émission d'événements/logs runtime |
-| `trader/agent/` | Contexte agent, mémoire mandat/stratégie, mémoire learnings/RAG, façade planner, transport LLM/acpx | compat virtuelle : `trader.agent_context`, `trader.codex_client`, `trader.llm`, `trader.tools.memory.Memory`, `trader.tools.memory.LearningsStore`, `trader.learnings.*`, `trader.learnings_store`, `trader.embeddings`, `trader.consolidator` |
+| `trader/agent/` | Contexte agent, analyste macro/news, agent univers, mémoire mandat/stratégie, mémoire learnings/RAG, façade planner, transport LLM/acpx | compat virtuelle : `trader.agent_context`, `trader.codex_client`, `trader.llm`, `trader.tools.memory.Memory`, `trader.tools.memory.LearningsStore`, `trader.learnings.*`, `trader.learnings_store`, `trader.embeddings`, `trader.consolidator` |
 | `trader/agent/protocol/` | Types, prompts, parsing du contrat LLM | utilisé par `trader/agent/client.py` |
 | `trader/agent/tools/` | Package des outils domaine lecture seule | `registry.TOOL_REGISTRY` assemble les 7 outils read-only exposés au LLM |
 | `trader/agent/learnings/` | Buffer brut JSONL, sélection pure, store SQLite recall, embeddings, consolidateur | mémoire machine de l'agent ; `trader.learnings.*` reste virtuel |
@@ -104,8 +104,8 @@ les utilisaient :
 | `trader/execution/` | Contrats `Order`/`Fill`, ports `Broker`/`CommissionModel`, broker paper, commissions, RiskGate, projection portefeuille | contrats/ports : `trader.execution.contracts`, `trader.execution.protocols`; compat virtuelle : `trader.tools.execution`, `trader.tools.portfolio`, `trader.risk` |
 | `trader/market/` | Port `DataSource`, adaptateurs yfinance/IB/composite, fraîcheur, indicateurs, FX, news, macro, radar, régime, priorisation gross exposure | port : `trader.market.protocols.DataSource`; compat virtuelle : `trader.tools.market`, `trader.tools.data_source`, `trader.tools.ib_source`, `trader.tools.news_feed`, `trader.fx`, `trader.features`, etc. |
 | `trader/infrastructure/queue/` | File de tâches durable, workers, pools, backpressure | backend technique utilisé par le runtime queue-on ; compat virtuelle : `trader.queue.*` |
-| `trader/infrastructure/state_db/` | Backend SQLite de l'état paper, broker store, outbox | source durable quand `CASYS_STATE_BACKEND=sqlite` ; compat virtuelle : `trader.state_db.*` |
-| `trader/market/rotation/` | Rotation d'univers, hot-sets par venue, schedule, override, ledger rotation | compat virtuelle : `trader.rotation.*`, `trader.rotation_*` |
+| `trader/infrastructure/state_db/` | Backend SQLite de l'état paper, broker store, outbox et stores append-only/projections de briefs, scopes candidats et runs univers | source durable quand `CASYS_STATE_BACKEND=sqlite` ; les stores JSONL de situation/univers restent indépendants du backend paper ; compat virtuelle : `trader.state_db.*` |
+| `trader/market/rotation/` | Rotation d'univers par venue, pool top 40 + challengers, baseline, activation pré-open exacte, sticky hors quota et ledger rotation | compat virtuelle : `trader.rotation.*`, `trader.rotation_*` |
 | `trader/support/` | Helpers support stables : config (`pool`, `portfolio`), metadata git/code version, process env | compat virtuelle : `trader.config.*`, `trader.metadata.*`, `trader.system.*` |
 | `trader/reporting/` | Façades attribution/audit/bench/ledger/stats/tool usage/meta-performance, read models, renderers, protocols colocalisés | analyse/rendu ex-post ; `reporting.decision_reason`, `reporting.attribution`, `reporting.decision_audit`, `reporting.decision_bench`, `reporting.decision_ledger`, `reporting.meta_performance`, `reporting.stats` et `reporting.tool_usage` gardent les façades de compatibilité/rendu ; les ports partagés vivent sous `reporting/{audit,bench,ledger,read_models}/protocols.py` |
 | `trader/interfaces/cli/` | Entry points CLI canoniques (`stats`, `attribution`, `tool_usage`, `tui`) | compat virtuelle : `python -m trader.commands.stats`, `python -m trader.stats`, etc. |
@@ -116,7 +116,9 @@ les utilisaient :
 | `trader/runtime/daemon_bootstrap.py` | Adaptateur runtime de démarrage : rotation mensuelle des ledgers, bootstrap du backend état, chargement cash initial et construction scheduler | garde les side effects de boot hors de `daemon.main()` avec factories injectées pour préserver les tests runtime |
 | `trader/runtime/queue_runtime.py` | Bootstrap runtime des pools `decide`/`execute_order` : flags, ledgers, pools, handlers et stack SQLite partagée | garde la queue canonique hors du bloc `main()` tout en laissant `run_cycle()` choisir le chemin queue/synchrone |
 | `trader/runtime/data_source_runtime.py` | Bootstrap et transitions runtime des sources de données : profil composite/direct, IB obligatoire ou dégradé paper, lazy attach et détachement sur échec connexion | garde l'orchestration réseau/adapter hors de `daemon.main()` avec dépendances injectées pour préserver les tests runtime |
-| `trader/runtime/market_rotation_runtime.py` | Adaptateur runtime du tick D10 : charge `radar.yaml`, construit l'override LLM si activé, injecte le cache `last_regime` et appelle `market.rotation.venues.tick()` en fail-safe | évite les imports rotation/radar inline dans `daemon.main()` tout en gardant le daemon propriétaire du cycle |
+| `trader/runtime/market_rotation_runtime.py` | Adaptateur runtime du tick D10/D15 : charge `radar.yaml`, persiste les scopes de clôture, relit les projections univers exactes, injecte le snapshot `last_regime` typé et appelle `market.rotation.venues.tick()` en fail-safe | l'ancien override synchrone reste une compatibilité ; le chemin prod active une préparation async au pré-open |
+| `trader/runtime/news_macro_runtime.py` | Runner async single-flight de briefs macro/news par venue et `candidate_scope_id` | best-effort, kill switch dédié, aucun blocage du cycle |
+| `trader/runtime/universe_intelligence_runtime.py` | Runner async coalescent de sélection hotlist par venue, projection bornée du brief et écriture d'une préparation exacte par scope | l'activation reste synchrone et déterministe au pré-open ; les erreurs sont observables et retombent sur la baseline |
 | `trader/runtime/runtime_shutdown.py` | Adaptateur runtime de shutdown best-effort : arrêt pools queue, disconnect data source, release pid file | garde le `finally` de `daemon.main()` court et préserve la règle "ne jamais bloquer la sortie" |
 | `trader/runtime/` | Daemon, CLI, logging, PID file, IB attach, rotation ledger, writers d'état fichier | compat virtuelle : `python -m trader.daemon`, `python -m trader.cli` |
 | `trader/reporting/audit/decision_quality.py` | Moteur d'audit ex-post des décisions depuis ledger + prix forward | `reporting.decision_audit` reste la façade historique ; `decision_bench`, `runtime.cli` et `read_models.meta_performance` lisent le moteur canonique |
@@ -543,8 +545,14 @@ Opérateurs valides : `>`, `>=`, `<`, `<=`, `==`, `!=`, `abs>`, `abs>=`, `abs<`,
 | `learnings.db` | `learnings_ingest` + daemon (`recalls`) | outil `recall_learnings` | Store SQLite dérivé : notes scorées par outcome (lift/symbole), embeddings, traces de recall |
 | `archive/*.jsonl.gz` | `trader/runtime/ledger_rotation.py` (démarrage daemon) | `read_rows_with_archive` (analyses) | Mois passés de decisions/events — rotation mensuelle crash-safe |
 | `archive/learnings-*.jsonl` | `RawLearningsStore`/`consolidator` | ingestion recall | Évincés + historique des consolidés — plus rien ne se jette |
-| `news_items/YYYY-MM-DD.jsonl` | `infrastructure/market_sources/news_feed` (P1a) | futur analyste-news | Items de news persistés (dédup uuid, purge 60 j) |
-| `macro_calendar.json` + `macro_series/` | `macro_calendar`/`macro_series` (P1a) | payload d'attribution | Dates FOMC/CPI + séries macro quotidiennes (DBnomics) |
+| `news_items/YYYY-MM-DD.jsonl` | `infrastructure/market_sources/news_feed` | scout + analyste-news | Items de news persistés (dédup uuid, purge 60 j), couverture symbole partielle |
+| `macro_calendar.json` + `macro_series/` | `macro_calendar`/`macro_series` | attribution + analyste-news | Dates fusionnées avec fallback versionné + séries macro quotidiennes (DBnomics), potentiellement absentes/stales |
+| `news_briefs/YYYY-MM-DD.jsonl` | `runtime/news_macro_runtime` | agent univers + index de situation | Briefs append-only par venue, sourcés et liés au `candidate_scope_id` exact |
+| `news_challenger_runs/YYYY-MM-DD.jsonl` | `runtime/news_challenger_runtime` | audit/replay | Couverture partielle, rejets agrégés, challengers et `candidate_run_id` |
+| `candidate_scopes/YYYY-MM-DD.jsonl` | rotation à la clôture | analyste + agent univers | Snapshot immuable du pool, baseline, sticky de contexte et identifiants de run |
+| `universe_runs/YYYY-MM-DD.jsonl` | `runtime/universe_intelligence_runtime` | audit + activation | Attente/erreur/succès, brief, couverture, sélection et `agent_run_id` |
+| `universe_prepared/<scope-hash>.json` | `UniverseRunStore` | activation pré-open | Projection atomique reconstructible pour un `candidate_scope_id` exact |
+| `situation_memory.db` | ingestion des briefs | aucun consommateur runtime actuellement | Index FTS5 dérivé ; retrieval de situation non activé |
 
 **Scheduler** (`state/scheduler.json`) : next_wake par symbole, indicator_watches,
 stale_streaks. Séparé de `broker.json`.
@@ -700,14 +708,30 @@ Doc : `docs/superpowers/specs/2026-07-02-agent-data-lifecycle.md`.
 - Sessions acpx (~/.acpx, 1,3 Go) : traité par patch de rétention NATIVE dans
   le fork (backlog), pas de prune côté casys.
 
-## 13. Collecte macro/news — P1a (en livraison 2026-07-02)
+## 13. Pipeline macro/news et sélection d'univers (livré 2026-07-10)
 
 Spec : `docs/superpowers/specs/2026-07-02-macro-analyste-news-spec.md` ;
 sources : `docs/superpowers/specs/2026-07-02-macro-data-sources.md`.
 Items de news persistés + calendrier FOMC/CPI (`macro_next` par décision) +
-séries macro quotidiennes via DBnomics (zéro clé). Tout attribution-first ;
-l'analyste-news (LLM offline, brief quotidien borné) viendra quand le stock
-aura ~2-3 semaines (P2), puis exposition en pull `get_macro_brief` (P3).
+séries macro quotidiennes via DBnomics (zéro clé). À chaque clôture de venue, la
+rotation persiste le pool `top 40 + challengers` sous un `candidate_scope_id`.
+L'analyste async produit le brief exact de ce scope ; l'agent univers async en
+consomme une projection bornée et prépare sa propre hotlist. Le pré-open active
+seulement la préparation du même scope, sinon la baseline avec une raison de
+fallback explicite. Les sticky sont ajoutés ensuite hors quota.
+
+Les deux runners sont activés par défaut et coupés séparément avec
+`CASYS_NEWS_MACRO_ANALYST_ENABLED=0` et
+`CASYS_UNIVERSE_INTELLIGENCE_ENABLED=0`. Ils sont fail-open et ne bloquent jamais
+le daemon. Un état live ancien ne crée pas ces artefacts rétroactivement : il faut
+un daemon actif et la prochaine clôture de chaque venue.
+
+La couverture reste déclarée partielle : news symboles limitées au corpus local,
+aucune source globale indépendante garantie, calendrier local/fallback et séries
+potentiellement stales. `state/last_regime.json` est désormais écrit atomiquement
+avec timestamp et couverture `active_tradable_universe`; il est ignoré après
+96 h. `situation_memory.db` indexe les briefs, mais aucun retrieval historique
+n'est activé ; il ne constitue jamais une source de vérité du présent.
 
 ---
 

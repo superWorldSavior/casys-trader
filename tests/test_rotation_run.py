@@ -71,6 +71,7 @@ def test_nominal_writes_universe_and_state(tmp_path):
     assert universe_path.exists(), "universe.yaml doit être écrit"
     content = yaml.safe_load(universe_path.read_text())
     assert "Z" in content["symbols"], "Z (sticky) doit figurer dans l'univers"
+    assert set(content["symbols"]) == {"A", "B", "Z"}
 
     ledger_path = state_dir / "rotation_ledger.jsonl"
     assert ledger_path.exists(), "rotation_ledger.jsonl doit exister"
@@ -443,8 +444,8 @@ def test_override_add_valid_pool_survives_final(tmp_path):
     assert "C" in result["final_hot_set"], "C ajouté via override valide doit être dans final"
 
 
-def test_cumul_alerts_override_ko_and_sticky_over_cap(tmp_path):
-    """override KO + sticky over-cap → les deux alertes présentes dans result."""
+def test_override_ko_nemet_pas_dalerte_de_cap_pour_les_sticky(tmp_path):
+    """Les sticky sont hors quota, même s'ils sont plus nombreux que cap_m."""
     config_dir = tmp_path / "config"
     state_dir = tmp_path / "state"
     config_dir.mkdir()
@@ -453,7 +454,6 @@ def test_cumul_alerts_override_ko_and_sticky_over_cap(tmp_path):
     def _failing_override(payload):
         raise RuntimeError("timeout")
 
-    # 3 stickies, cap_m=2 → sticky_over_cap
     result = run(
         config_dir=str(config_dir),
         state_dir=str(state_dir),
@@ -469,18 +469,19 @@ def test_cumul_alerts_override_ko_and_sticky_over_cap(tmp_path):
     )
 
     assert "override_unavailable" in result["alerts"], "override KO doit générer alert"
-    assert "sticky_over_cap" in result["alerts"], "sticky > cap doit générer alert"
+    assert "sticky_over_cap" not in result["alerts"]
+    assert set(result["final_hot_set"]) == {"A", "X", "Y", "Z"}
 
 
-def test_sticky_over_quota_non_sticky_count_le_cap_minus_sticky(tmp_path):
-    """sticky=k, cap_m=m → nb symboles non-sticky dans final ≤ max(0, m - k)."""
+def test_sticky_hors_quota_preserve_cap_non_sticky_complet(tmp_path):
+    """sticky=k, cap_m=m → jusqu'à m choisis plus tous les sticky."""
     config_dir = tmp_path / "config"
     state_dir = tmp_path / "state"
     config_dir.mkdir()
     state_dir.mkdir()
 
-    sticky_syms = {"X", "Y"}  # k=2
-    cap_m = 3  # m=3, donc max non-sticky = 1
+    sticky_syms = {"X", "Y"}
+    cap_m = 3
 
     result = run(
         config_dir=str(config_dir),
@@ -497,10 +498,9 @@ def test_sticky_over_quota_non_sticky_count_le_cap_minus_sticky(tmp_path):
     )
 
     non_sticky_in_final = [s for s in result["final_hot_set"] if s not in sticky_syms]
-    max_non_sticky = max(0, cap_m - len(sticky_syms))
-    assert len(non_sticky_in_final) <= max_non_sticky, (
-        f"Non-sticky dans final ({non_sticky_in_final}) dépasse la limite {max_non_sticky}"
-    )
+    assert set(non_sticky_in_final) == {"A", "B", "C"}
+    assert sticky_syms <= set(result["final_hot_set"])
+    assert len(result["final_hot_set"]) == cap_m + len(sticky_syms)
 
 
 # ---------------------------------------------------------------------------

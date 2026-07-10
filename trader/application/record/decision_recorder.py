@@ -21,6 +21,7 @@ ReportPayload: TypeAlias = dict[str, Any]
 StatusWriter: TypeAlias = Callable[..., None]
 EventAppender: TypeAlias = Callable[..., None]
 NewsSnapshotProvider: TypeAlias = Callable[[str, datetime], ReportPayload]
+BriefRefProvider: TypeAlias = Callable[[str, datetime], dict[str, str] | None]
 MergeGateFeedback: TypeAlias = Callable[[object, object, object], str | None]
 
 
@@ -132,6 +133,7 @@ class DecisionRecorder:
     news_snapshot: NewsSnapshotProvider
     macro_next: ReportPayload | None
     now: datetime
+    brief_ref_provider: BriefRefProvider | None = None
     recall_store: RecallRecorder | None = None
     merge_gate_feedback: MergeGateFeedback | None = None
     model_calls_used_getter: Callable[[], int] = lambda: 0
@@ -151,6 +153,11 @@ class DecisionRecorder:
         news = decision_entry.get("news")
         if isinstance(news, dict) and "macro_next" not in news:
             decision_entry["news"] = {**news, "macro_next": self.macro_next}
+            news = decision_entry["news"]
+        if isinstance(news, dict) and "brief_ref" not in news and self.brief_ref_provider is not None:
+            brief_ref = self.brief_ref_provider(symbol, self.now)
+            if brief_ref is not None:
+                decision_entry["news"] = {**news, "brief_ref": brief_ref}
 
         if self.merge_gate_feedback is not None:
             note = self.merge_gate_feedback(
