@@ -163,6 +163,37 @@ def test_freshness_no_age_in_stale_entry():
     assert "?" in rendered
 
 
+def test_health_symbols_by_venue_is_canonical_projection_alias():
+    from trader.interfaces.cockpit.pages import health as page
+    from trader.interfaces.cockpit.projections import health as projection
+
+    assert page._symbols_by_venue is projection.symbols_by_venue
+
+
+def test_project_freshness_orders_venues_and_stale_symbols_by_age():
+    from trader.interfaces.cockpit.projections.health import project_freshness
+
+    state = {
+        "universe_symbols": ["AAPL", "BN.PA", "2330.TW", "EURUSD=X"],
+        "stale_market_data": {
+            "AAPL": {"data_age_minutes": 120.0},
+            "2330.TW": {"data_age_minutes": 300.0},
+        },
+    }
+
+    projection = project_freshness(state)
+
+    assert [row.venue for row in projection.venues] == ["TW", "EU", "US"]
+    assert [row.display_name for row in projection.venues] == ["TPE", "EU", "US"]
+    assert projection.has_stale is True
+    assert [row.symbol for row in projection.stale_symbols] == [
+        "2330.TW",
+        "AAPL",
+    ]
+    assert projection.venues[0].max_age_minutes == 300.0
+    assert projection.venues[1].is_stale is False
+
+
 # ---------------------------------------------------------------------------
 # build_fx_rates
 # ---------------------------------------------------------------------------
@@ -255,6 +286,24 @@ def test_sources_empty_state_no_crash():
     """État vide → pas d'exception, IB gateway toujours affiché."""
     rendered = _render(build_sources({}, now=NOW))
     assert "IB gateway" in rendered
+
+
+def test_project_sources_uses_explicit_adapter_config_and_optional_macro():
+    from trader.interfaces.cockpit.projections.health import project_sources
+
+    projection = project_sources(
+        {"macro": {"next_fomc": "Jul 29"}},
+        ib_host="10.0.0.5",
+        ib_port="7496",
+        ib_client_id="42",
+    )
+
+    assert [(row.name, row.detail) for row in projection.rows] == [
+        ("IB gateway", "10.0.0.5:7496 · id 42"),
+        ("yfinance", "fallback"),
+        ("news", "yahoo"),
+        ("macro", "next FOMC Jul 29"),
+    ]
 
 
 # ---------------------------------------------------------------------------

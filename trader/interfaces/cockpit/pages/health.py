@@ -25,6 +25,13 @@ from trader.interfaces.cockpit import format as f
 from trader.interfaces.cockpit.pages._shared import PANEL_CSS, ResizeRefresh, rows_available
 # RISK GATE + MODEL ont déménagé ici (Rév. 3) — builders réutilisés depuis decisions
 from trader.interfaces.cockpit.pages.decisions import build_model_panel, build_risk_gate
+from trader.interfaces.cockpit.projections.health import (
+    VENUE_DISPLAY as _VENUE_DISPLAY,
+    VENUE_ORDER as _VENUE_ORDER,
+    project_freshness,
+    project_sources,
+    symbols_by_venue as _symbols_by_venue,
+)
 from trader.interfaces.ui.palette import (
     CASYS_DIM,
     CASYS_FAINT,
@@ -32,35 +39,12 @@ from trader.interfaces.ui.palette import (
     CASYS_SUCCESS,
     CASYS_WARNING,
 )
-from trader.market.rotation.wiring import venue_of
 from trader.support.coercion import (
     dict_list as _safe_list_of_dicts,
     finite_float as _safe_float,
 )
 
 UTC = timezone.utc
-
-_VENUE_DISPLAY: dict[str, str] = {"TW": "TPE", "EU": "EU", "US": "US"}
-_VENUE_ORDER: tuple[str, ...] = ("TW", "EU", "US")
-
-
-# ---------------------------------------------------------------------------
-# Helpers internes
-# ---------------------------------------------------------------------------
-
-
-def _symbols_by_venue(state: dict) -> dict[str, list[str]]:
-    """Regroupe universe_symbols par venue (hors paires FX)."""
-    by_venue: dict[str, list[str]] = {}
-    for sym in state.get("universe_symbols") or []:
-        try:
-            v = venue_of(str(sym))
-        except Exception:
-            v = "US"
-        if v != "FX":
-            by_venue.setdefault(v, []).append(str(sym))
-    return by_venue
-
 
 # ---------------------------------------------------------------------------
 # Builders purs
@@ -76,13 +60,10 @@ def build_freshness(
     de la place après les lignes de venue + la footnote, chaque symbole stale
     est listé individuellement trié par âge décroissant.
     """
-    stale_data = f.safe_dict(state.get("stale_market_data"))
-    by_venue = _symbols_by_venue(state)
+    del now
+    projection = project_freshness(state)
 
-    sorted_venues: list[str] = [v for v in _VENUE_ORDER if v in by_venue]
-    sorted_venues += sorted(v for v in by_venue if v not in _VENUE_ORDER)
-
-    if not sorted_venues:
+    if not projection.venues:
         return Text("no symbols in universe", style=f"italic {CASYS_FAINT}")
 
     grid = Table.grid(padding=(0, 1))
@@ -90,34 +71,23 @@ def build_freshness(
     grid.add_column(no_wrap=True, width=8)  # badge
     grid.add_column(no_wrap=True)           # detail
 
-    has_stale = False
-    stale_by_venue: dict[str, list[tuple[str, float | None]]] = {}
-
-    for venue in sorted_venues:
-        syms = by_venue.get(venue, [])
-        stale_syms = [s for s in syms if s in stale_data]
-        total = len(syms)
-        is_stale = bool(stale_syms)
-        display = _VENUE_DISPLAY.get(venue, venue)
-
-        if is_stale:
-            has_stale = True
+    for row in projection.venues:
+        if row.is_stale:
             badge = Text("▲ stale", style=CASYS_WARNING)
-            ages = [f.staleness_age_m(state, s) for s in stale_syms]
-            max_age = max((a for a in ages if a is not None), default=None)
-            age_str = f.age_m(max_age) if max_age is not None else "?"
-            detail = f"{total} symbols · {age_str} old"
+            age_str = (
+                f.age_m(row.max_age_minutes)
+                if row.max_age_minutes is not None
+                else "?"
+            )
+            detail = f"{row.symbol_count} symbols · {age_str} old"
             venue_style = CASYS_DIM
-            stale_by_venue[venue] = [
-                (s, f.staleness_age_m(state, s)) for s in stale_syms
-            ]
         else:
             badge = Text("● live", style=CASYS_SUCCESS)
-            detail = f"{total} symbols · fresh"
+            detail = f"{row.symbol_count} symbols · fresh"
             venue_style = CASYS_SUCCESS
 
         grid.add_row(
-            Text(display, style=venue_style),
+            Text(row.display_name, style=venue_style),
             badge,
             Text(detail, style=CASYS_DIM),
         )
@@ -125,30 +95,30 @@ def build_freshness(
     parts: list[RenderableType] = [grid]
 
     # Liste individuelle des symboles stales quand la hauteur le permet
-    if has_stale and stale_limit is not None:
-        used = len(sorted_venues) + 1  # lignes venue + footnote
+    if projection.has_stale and stale_limit is not None:
+        used = len(projection.venues) + 1  # lignes venue + footnote
         sym_budget = max(0, stale_limit - used)
         if sym_budget >= 1:
-            all_stale: list[tuple[str, float | None]] = []
-            for venue in sorted_venues:
-                all_stale.extend(stale_by_venue.get(venue, []))
-            all_stale.sort(key=lambda x: x[1] if x[1] is not None else 0.0, reverse=True)
-            shown_stale = all_stale[:sym_budget]
+            shown_stale = projection.stale_symbols[:sym_budget]
 
             sym_grid = Table.grid(padding=(0, 1))
             sym_grid.add_column(no_wrap=True, width=5)   # indent
             sym_grid.add_column(no_wrap=True, width=12)  # symbol
             sym_grid.add_column(no_wrap=True)            # age
-            for sym, age in shown_stale:
-                age_str = f.age_m(age) if age is not None else "?"
+            for stale_row in shown_stale:
+                age_str = (
+                    f.age_m(stale_row.age_minutes)
+                    if stale_row.age_minutes is not None
+                    else "?"
+                )
                 sym_grid.add_row(
                     Text(""),
-                    Text(sym, style=CASYS_FAINT),
+                    Text(stale_row.symbol, style=CASYS_FAINT),
                     Text(age_str, style=CASYS_WARNING),
                 )
             parts.append(sym_grid)
 
-    if has_stale:
+    if projection.has_stale:
         parts.append(
             Text(
                 "stale symbols are excluded from decisions and retry at session open."
@@ -189,41 +159,27 @@ def build_sources(state: dict, *, now: datetime) -> RenderableType:
     IB : lit CASYS_IB_HOST / CASYS_IB_PORT / CASYS_IB_CLIENT_ID (défauts 127.0.0.1 / 4002 / 17).
     macro : ligne affichée uniquement si state contient une clé macro.
     """
-    ib_host = os.getenv("CASYS_IB_HOST", "127.0.0.1")
-    ib_port = os.getenv("CASYS_IB_PORT", "4002")
-    ib_client = os.getenv("CASYS_IB_CLIENT_ID", "17")
+    del now
+    projection = project_sources(
+        state,
+        ib_host=os.getenv("CASYS_IB_HOST", "127.0.0.1"),
+        ib_port=os.getenv("CASYS_IB_PORT", "4002"),
+        ib_client_id=os.getenv("CASYS_IB_CLIENT_ID", "17"),
+    )
 
     grid = Table.grid(padding=(0, 1))
     grid.add_column(no_wrap=True, width=2)   # checkmark
     grid.add_column(no_wrap=True, width=11)  # nom source
     grid.add_column(no_wrap=True)            # détail
 
-    def _add(name: str, detail: str) -> None:
+    for row in projection.rows:
         # puce NEUTRE : la source est CONFIGURÉE — le cockpit n'a pas de
         # preuve de santé live (fast fail : ne pas afficher un ✓ non prouvé)
         grid.add_row(
             Text("·", style=CASYS_DIM),
-            Text(name, style=CASYS_MUTED),
-            Text(detail, style=CASYS_DIM),
+            Text(row.name, style=CASYS_MUTED),
+            Text(row.detail, style=CASYS_DIM),
         )
-
-    _add("IB gateway", f"{ib_host}:{ib_port} · id {ib_client}")
-    _add("yfinance", "fallback")
-    _add("news", "yahoo")
-
-    # macro — affiché uniquement si la donnée est présente dans le state
-    macro = (
-        state.get("macro")
-        or state.get("macro_data")
-        or state.get("macro_calendar")
-    )
-    if macro:
-        if isinstance(macro, dict):
-            next_fomc = macro.get("next_fomc") or macro.get("fomc_next")
-            detail = f"next FOMC {next_fomc}" if next_fomc else "available"
-        else:
-            detail = "available"
-        _add("macro", detail)
 
     return grid
 

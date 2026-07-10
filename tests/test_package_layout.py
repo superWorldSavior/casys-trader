@@ -1859,6 +1859,50 @@ def test_cockpit_format_is_rich_free_and_meter_renderer_is_explicit() -> None:
     assert cockpit_format.conf_meter(0.5).plain == confidence_meter(0.5).plain
 
 
+def test_cockpit_health_projection_is_canonical_and_textual_free() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    cockpit_dir = repo_root / "trader" / "interfaces" / "cockpit"
+    projection_path = cockpit_dir / "projections" / "health.py"
+    page_path = cockpit_dir / "pages" / "health.py"
+
+    assert projection_path.exists()
+    projection_source = projection_path.read_text(encoding="utf-8")
+    assert "textual" not in projection_source
+    assert "rich." not in projection_source
+    assert "os.getenv" not in projection_source
+
+    page_source = page_path.read_text(encoding="utf-8")
+    page_tree = ast.parse(page_source, filename=str(page_path))
+    page_definitions = {
+        node.name
+        for node in ast.walk(page_tree)
+        if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    assert "_symbols_by_venue" not in page_definitions
+
+    builders_to_projection = {
+        "build_freshness": "project_freshness",
+        "build_sources": "project_sources",
+    }
+    for function_name, projection_name in builders_to_projection.items():
+        builder = next(
+            node
+            for node in page_tree.body
+            if isinstance(node, ast.FunctionDef) and node.name == function_name
+        )
+        calls = {
+            node.func.id
+            for node in ast.walk(builder)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        }
+        assert projection_name in calls
+
+    from trader.interfaces.cockpit.pages import health as page
+    from trader.interfaces.cockpit.projections import health as projection
+
+    assert page._symbols_by_venue is projection.symbols_by_venue
+
+
 def test_cockpit_uses_support_coercion_instead_of_private_reporting_helpers() -> None:
     repo_root = Path(__file__).resolve().parents[1]
     cockpit_dir = repo_root / "trader" / "interfaces" / "cockpit"
