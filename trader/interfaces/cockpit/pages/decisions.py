@@ -37,6 +37,12 @@ from trader.interfaces.cockpit.pages.plans import (
     build_next_to_fire_plans,
     build_watches,
 )
+from trader.interfaces.cockpit.projections.decisions import (
+    build_ledger_rows,
+    format_confidence as _fmt_conf,
+    has_decision_detail as _has_detail,  # noqa: F401 - historical page helper
+    project_decision_ledger,
+)
 from trader.interfaces.ui.palette import (
     CASYS_ACCENT,
     CASYS_DIM,
@@ -47,12 +53,7 @@ from trader.interfaces.ui.palette import (
     CASYS_SUCCESS,
     CASYS_WARNING,
 )
-from trader.reporting.read_models.decision_filters import (
-    _count_filters,
-    _filter_rows,
-    _group_into_ledger_rows,
-    _is_risk_row,
-)
+from trader.reporting.read_models.decision_filters import is_risk_row as _is_risk_row
 from trader.support.coercion import (
     dict_list as _safe_list_of_dicts,
     finite_float as _safe_float,
@@ -84,28 +85,6 @@ def _load_risk_caps() -> dict:
 
 def _safe_str(value: object) -> str:
     return str(value or "")
-
-
-def _fmt_conf(conf: object) -> str:
-    """0.72 → ".72" · None → "—" · 1.0 → "1.0"."""
-    value = _safe_float(conf, default=None)
-    if value is None:
-        return "—"
-    if value >= 1.0:
-        return "1.0"
-    return f"{value:.2f}".lstrip("0") or ".00"
-
-
-def _has_detail(row: dict) -> bool:
-    """La ligne a un rationale ou des tool_calls à afficher."""
-    if str(row.get("rationale") or "").strip():
-        return True
-    runtime = f.safe_dict(row.get("runtime"))
-    decision_obj = f.safe_dict(row.get("decision"))
-    calls = _safe_list_of_dicts(
-        runtime.get("tool_calls") or decision_obj.get("tool_calls")
-    )
-    return bool(calls)
 
 
 # ---------------------------------------------------------------------------
@@ -429,87 +408,60 @@ def populate_ledger_table(
     Gestion jour-limite : quand la date change, l'heure UTC porte le préfixe
     du jour (ex. "Sat 22:31").
     """
+    del state, now  # compatibility parameters; projection is state-independent here
     table.clear()
     row_map: dict[str, dict] = {}
-    prev_date: str | None = None
 
-    for idx, row in enumerate(rows):
-        is_batch = bool(row.get("_is_batch_summary"))
-
-        cycle_ts = row.get("cycle_ts") or row.get("ts")
-        parsed = f.parse_ts(cycle_ts)
-
-        # Colonne UTC
-        if parsed:
-            date_str = parsed.strftime("%Y-%m-%d")
-            time_str = parsed.strftime("%H:%M")
-            if prev_date and date_str != prev_date:
-                utc_text = Text(f"{parsed.strftime('%a')} {time_str}", style=CASYS_DIM)
-            else:
-                utc_text = Text(time_str, style=CASYS_DIM)
-            prev_date = date_str
-        else:
-            utc_text = Text("—", style=CASYS_FAINT)
-
-        # Colonne SYM
-        symbol = str(row.get("symbol") or "—")
-        sym_text = (
-            Text(symbol, style=CASYS_FAINT) if is_batch
-            else Text(symbol, style=f"bold {CASYS_FG}")
+    for row in build_ledger_rows(rows):
+        utc_text = Text(
+            row.utc_text,
+            style=CASYS_FAINT if row.utc_text == "—" else CASYS_DIM,
         )
-
-        # Colonne ACT
-        action = str(row.get("action") or "").upper()
-        if is_batch:
-            act_text = Text("···", style=CASYS_FAINT)
-        elif action == "BUY":
-            act_text = Text("BUY", style=f"bold {CASYS_SUCCESS}")
-        elif action == "SELL":
-            act_text = Text("SELL", style=f"bold {CASYS_ERROR}")
-        elif action:
-            act_text = Text(action, style=CASYS_MUTED)
+        symbol_text = Text(
+            row.symbol,
+            style=CASYS_FAINT if row.is_batch else f"bold {CASYS_FG}",
+        )
+        if row.is_batch:
+            action_text = Text(row.action_text, style=CASYS_FAINT)
+            confidence_text = Text("", style=CASYS_FAINT)
+            source_text = Text(row.source_text, style=CASYS_FAINT)
+            effect_text = Text(row.effect_text, style=CASYS_FAINT)
         else:
-            act_text = Text("—", style=CASYS_FAINT)
-
-        # Colonne CONF
-        if is_batch:
-            conf_text = Text("", style=CASYS_FAINT)
-        else:
-            conf_text = Text(_fmt_conf(row.get("confidence")), style=CASYS_MUTED)
-
-        # Colonne SOURCE
-        if is_batch:
-            source_text = Text("heuristic", style=CASYS_FAINT)
-        else:
-            src = f.decision_source_label(row)
-            source_text = Text(src or "—", style=CASYS_DIM)
-
-        # Colonne EFFECT
-        if is_batch:
-            effect_text = Text(str(row.get("reason") or ""), style=CASYS_FAINT)
-        else:
-            effect, kind = f.decision_effect(row)
-            if kind == "fill":
-                effect_style = CASYS_ERROR if action == "SELL" else CASYS_SUCCESS
-            elif kind in ("watch", "plan", "wake"):
+            if row.action == "BUY":
+                action_style = f"bold {CASYS_SUCCESS}"
+            elif row.action == "SELL":
+                action_style = f"bold {CASYS_ERROR}"
+            elif row.action:
+                action_style = CASYS_MUTED
+            else:
+                action_style = CASYS_FAINT
+            action_text = Text(row.action_text, style=action_style)
+            confidence_text = Text(row.confidence_text, style=CASYS_MUTED)
+            source_text = Text(row.source_text, style=CASYS_DIM)
+            if row.effect_kind == "fill":
+                effect_style = (
+                    CASYS_ERROR if row.action == "SELL" else CASYS_SUCCESS
+                )
+            elif row.effect_kind in ("watch", "plan", "wake"):
                 effect_style = CASYS_ACCENT
-            elif kind == "risk":
+            elif row.effect_kind == "risk":
                 effect_style = CASYS_WARNING
             else:
                 effect_style = CASYS_DIM
-            has_det = _has_detail(row)
-            clipped = f.clip(effect, limit=44)
-            effect_text = Text(
-                f"{clipped} ▾" if has_det else clipped,
-                style=effect_style,
-            )
+            effect_text = Text(row.effect_text, style=effect_style)
 
-        row_key = f"{cycle_ts or ''}|{symbol}|{idx}"
-        cells = [utc_text, sym_text, act_text, conf_text, source_text, effect_text]
+        cells = [
+            utc_text,
+            symbol_text,
+            action_text,
+            confidence_text,
+            source_text,
+            effect_text,
+        ]
         if drop_source:
             cells.pop(4)
-        table.add_row(*cells, key=row_key)
-        row_map[row_key] = row
+        table.add_row(*cells, key=row.row_key)
+        row_map[row.row_key] = row.source_row
 
     return row_map
 
@@ -709,28 +661,33 @@ class DecisionsPage(ResizeRefresh, Static):
         try:
             state = self._last_state
             now = datetime.now(UTC)
-            all_rows = _safe_list_of_dicts(state.get("recent_decisions"))
-            counts = _count_filters(all_rows, state)
-            filtered = _filter_rows(all_rows, self._active_filter, state)
-            grouped = _group_into_ledger_rows(filtered)
+            ledger = project_decision_ledger(state, self._active_filter)
 
             self.query_one("#filter-chips-bar", Static).update(
-                build_filter_chips(counts, self._active_filter)
+                build_filter_chips(ledger.filter_counts, self._active_filter)
             )
 
             table = self.query_one("#ledger-table", DataTable)
             self._rebuild_columns()
             with preserve_cursor(table):
                 self._row_map = populate_ledger_table(
-                    table, grouped, state, now=now, drop_source=bool(self._drop_source)
+                    table,
+                    ledger.grouped_rows,
+                    state,
+                    now=now,
+                    drop_source=bool(self._drop_source),
                 )
 
-            total = len(all_rows)
+            total = len(ledger.all_rows)
             self.query_one("#ledger-panel").border_title = (
                 f"LEDGER — last 50 · {total} decisions"
             )
             self.query_one("#ledger-footer", Static).update(
-                build_ledger_footer(total, len(filtered), self._active_filter)
+                build_ledger_footer(
+                    total,
+                    len(ledger.filtered_rows),
+                    self._active_filter,
+                )
             )
 
             # Collapse le détail si le filtre change

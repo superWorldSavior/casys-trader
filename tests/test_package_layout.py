@@ -1629,6 +1629,70 @@ def test_cockpit_universe_projection_is_canonical_and_textual_free() -> None:
     assert page._venue_of_safe is venue_of_safe
 
 
+def test_cockpit_decision_projection_is_canonical_and_textual_free() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    cockpit_dir = repo_root / "trader" / "interfaces" / "cockpit"
+    projection_path = cockpit_dir / "projections" / "decisions.py"
+    page_path = cockpit_dir / "pages" / "decisions.py"
+
+    assert projection_path.exists()
+    projection_source = projection_path.read_text(encoding="utf-8")
+    assert "textual" not in projection_source
+    assert "rich." not in projection_source
+
+    page_source = page_path.read_text(encoding="utf-8")
+    page_tree = ast.parse(page_source, filename=str(page_path))
+    page_definitions = {
+        node.name
+        for node in ast.walk(page_tree)
+        if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    assert page_definitions.isdisjoint({"_fmt_conf", "_has_detail"})
+    assert "_count_filters" not in page_source
+    assert "_filter_rows" not in page_source
+    assert "_group_into_ledger_rows" not in page_source
+
+    populate = next(
+        node
+        for node in page_tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "populate_ledger_table"
+    )
+    populate_calls = {
+        node.func.id
+        for node in ast.walk(populate)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    assert "build_ledger_rows" in populate_calls
+
+    refresh = next(
+        node
+        for node in ast.walk(page_tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "_refresh_ledger"
+    )
+    refresh_calls = {
+        node.func.id
+        for node in ast.walk(refresh)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    assert "project_decision_ledger" in refresh_calls
+
+    from trader.interfaces.cockpit.pages import decisions as page
+    from trader.interfaces.cockpit.projections.decisions import (
+        format_confidence,
+        has_decision_detail,
+    )
+    from trader.reporting.read_models import decision_filters
+
+    assert page._fmt_conf is format_confidence
+    assert page._has_detail is has_decision_detail
+    assert decision_filters._count_filters is decision_filters.count_filters
+    assert decision_filters._filter_rows is decision_filters.filter_rows
+    assert (
+        decision_filters._group_into_ledger_rows
+        is decision_filters.group_into_ledger_rows
+    )
+
+
 def test_cockpit_uses_support_coercion_instead_of_private_reporting_helpers() -> None:
     repo_root = Path(__file__).resolve().parents[1]
     cockpit_dir = repo_root / "trader" / "interfaces" / "cockpit"

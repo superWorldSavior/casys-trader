@@ -7,17 +7,17 @@ def _safe_str(value: object) -> str:
     return str(value or "")
 
 
-def _is_risk_row(row: dict) -> bool:
+def is_risk_row(row: dict) -> bool:
     reason = _safe_str(row.get("reason"))
     return reason.startswith("risk:") or reason.startswith("blocked_")
 
 
-def _is_stale_row(state: dict, row: dict) -> bool:  # noqa: ARG001 - stable signature
+def is_stale_row(state: dict, row: dict) -> bool:  # noqa: ARG001 - stable signature
     """Stale is a property of the decision reason, not current market state."""
     return _safe_str(row.get("reason")).startswith("stale")
 
 
-def _is_batch_row(row: dict) -> bool:
+def is_batch_row(row: dict) -> bool:
     """Quiet infra HOLD row without an LLM call, eligible for batch grouping."""
     return (
         _safe_str(row.get("decision_source")) in ("infra", "infra_hold")
@@ -25,7 +25,7 @@ def _is_batch_row(row: dict) -> bool:
     )
 
 
-def _filter_rows(rows: list[dict], active_filter: str, state: dict) -> list[dict]:
+def filter_rows(rows: list[dict], active_filter: str, state: dict) -> list[dict]:
     if active_filter == "buy":
         return [row for row in rows if _safe_str(row.get("action")).upper() == "BUY"]
     if active_filter == "sell":
@@ -33,24 +33,24 @@ def _filter_rows(rows: list[dict], active_filter: str, state: dict) -> list[dict
     if active_filter == "hold":
         return [row for row in rows if _safe_str(row.get("action")).upper() == "HOLD"]
     if active_filter == "risk":
-        return [row for row in rows if _is_risk_row(row)]
+        return [row for row in rows if is_risk_row(row)]
     if active_filter == "stale":
-        return [row for row in rows if _is_stale_row(state, row)]
+        return [row for row in rows if is_stale_row(state, row)]
     return rows
 
 
-def _count_filters(rows: list[dict], state: dict) -> dict[str, int]:
+def count_filters(rows: list[dict], state: dict) -> dict[str, int]:
     return {
         "all": len(rows),
         "buy": sum(1 for row in rows if _safe_str(row.get("action")).upper() == "BUY"),
         "sell": sum(1 for row in rows if _safe_str(row.get("action")).upper() == "SELL"),
         "hold": sum(1 for row in rows if _safe_str(row.get("action")).upper() == "HOLD"),
-        "risk": sum(1 for row in rows if _is_risk_row(row)),
-        "stale": sum(1 for row in rows if _is_stale_row(state, row)),
+        "risk": sum(1 for row in rows if is_risk_row(row)),
+        "stale": sum(1 for row in rows if is_stale_row(state, row)),
     }
 
 
-def _group_into_ledger_rows(rows: list[dict]) -> list[dict]:
+def group_into_ledger_rows(rows: list[dict]) -> list[dict]:
     """Group consecutive infra hold rows from one cycle into one summary row."""
     if not rows:
         return []
@@ -59,7 +59,7 @@ def _group_into_ledger_rows(rows: list[dict]) -> list[dict]:
     i = 0
     while i < len(rows):
         row = rows[i]
-        if not _is_batch_row(row):
+        if not is_batch_row(row):
             result.append(row)
             i += 1
             continue
@@ -70,7 +70,7 @@ def _group_into_ledger_rows(rows: list[dict]) -> list[dict]:
         while j < len(rows):
             next_row = rows[j]
             next_ts = next_row.get("cycle_ts") or next_row.get("ts", "")
-            if _is_batch_row(next_row) and next_ts == cycle_ts:
+            if is_batch_row(next_row) and next_ts == cycle_ts:
                 batch.append(next_row)
                 j += 1
             else:
@@ -96,3 +96,22 @@ def _group_into_ledger_rows(rows: list[dict]) -> list[dict]:
         i = j
 
     return result
+
+
+# Historical private names remain import-compatible while consumers migrate.
+_count_filters = count_filters
+_filter_rows = filter_rows
+_group_into_ledger_rows = group_into_ledger_rows
+_is_batch_row = is_batch_row
+_is_risk_row = is_risk_row
+_is_stale_row = is_stale_row
+
+
+__all__ = [
+    "count_filters",
+    "filter_rows",
+    "group_into_ledger_rows",
+    "is_batch_row",
+    "is_risk_row",
+    "is_stale_row",
+]

@@ -20,8 +20,8 @@ from trader.cockpit import CockpitApp
 
 from trader.interfaces.cockpit.pages.decisions import (
     DecisionsPage,
-    _fmt_conf,
-    _has_detail,
+    _fmt_conf as legacy_fmt_conf,
+    _has_detail as legacy_has_detail,
     build_detail_panel,
     build_filter_chips,
     build_ledger_footer,
@@ -29,17 +29,28 @@ from trader.interfaces.cockpit.pages.decisions import (
     build_model_panel,
     build_risk_gate,
 )
+from trader.interfaces.cockpit.projections.decisions import (
+    build_ledger_rows,
+    format_confidence as _fmt_conf,
+    has_decision_detail as _has_detail,
+    project_decision_ledger,
+)
 from trader.reporting.read_models.decision_filters import (
-    _count_filters,
-    _filter_rows,
-    _group_into_ledger_rows,
-    _is_batch_row,
-    _is_risk_row,
-    _is_stale_row,
+    count_filters as _count_filters,
+    filter_rows as _filter_rows,
+    group_into_ledger_rows as _group_into_ledger_rows,
+    is_batch_row as _is_batch_row,
+    is_risk_row as _is_risk_row,
+    is_stale_row as _is_stale_row,
 )
 
 UTC = timezone.utc
 _NOW = datetime(2026, 7, 6, 2, 30, 0, tzinfo=UTC)
+
+
+def test_page_preserves_historical_decision_projection_helpers() -> None:
+    assert legacy_fmt_conf is _fmt_conf
+    assert legacy_has_detail is _has_detail
 
 
 # ---------------------------------------------------------------------------
@@ -288,6 +299,33 @@ def test_group_empty() -> None:
     assert _group_into_ledger_rows([]) == []
 
 
+def test_project_decision_ledger_composes_counts_filter_and_grouping() -> None:
+    cycle_ts = "2026-07-06T01:00:00+00:00"
+    quiet_rows = [
+        {
+            **_make_decision(f"QUIET{i}", "HOLD", cycle_ts=cycle_ts),
+            "decision_source": "infra",
+            "model_called": False,
+        }
+        for i in range(3)
+    ]
+    state = {
+        "recent_decisions": [
+            _make_decision("AAPL", "BUY"),
+            *quiet_rows,
+        ]
+    }
+
+    projection = project_decision_ledger(state, "hold")
+
+    assert len(projection.all_rows) == 4
+    assert projection.filter_counts["buy"] == 1
+    assert projection.filter_counts["hold"] == 3
+    assert projection.filtered_rows == quiet_rows
+    assert len(projection.grouped_rows) == 1
+    assert projection.grouped_rows[0]["_is_batch_summary"] is True
+
+
 # ---------------------------------------------------------------------------
 # build_filter_chips
 # ---------------------------------------------------------------------------
@@ -527,6 +565,31 @@ def test_has_detail_tool_calls() -> None:
 
 def test_has_detail_empty() -> None:
     assert _has_detail({"rationale": ""}) is False
+
+
+def test_build_ledger_rows_projects_day_boundary_and_detail_marker() -> None:
+    rows = [
+        _make_decision(
+            "AAPL",
+            "BUY",
+            rationale="breakout",
+            cycle_ts="2026-07-06T23:55:00+00:00",
+        ),
+        _make_decision(
+            "MSFT",
+            "SELL",
+            cycle_ts="2026-07-07T00:05:00+00:00",
+        ),
+    ]
+
+    projected = build_ledger_rows(rows)
+
+    assert projected[0].utc_text == "23:55"
+    assert projected[0].action_text == "BUY"
+    assert projected[0].effect_text.endswith("▾")
+    assert projected[0].has_detail is True
+    assert projected[1].utc_text == "Tue 00:05"
+    assert projected[1].action_text == "SELL"
 
 
 # ---------------------------------------------------------------------------
