@@ -122,6 +122,29 @@ def test_application_does_not_import_infrastructure_outside_compatibility_facade
     assert violations == []
 
 
+def test_application_does_not_import_reporting() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    application_dir = repo_root / "trader" / "application"
+    violations: list[str] = []
+
+    for source_path in sorted(application_dir.rglob("*.py")):
+        if "__pycache__" in source_path.parts:
+            continue
+        relative_path = source_path.relative_to(application_dir)
+        tree = ast.parse(source_path.read_text(encoding="utf-8"), filename=str(source_path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and (node.module or "").startswith(
+                "trader.reporting"
+            ):
+                violations.append(f"{relative_path}: from {node.module} import ...")
+            elif isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name.startswith("trader.reporting"):
+                        violations.append(f"{relative_path}: import {alias.name}")
+
+    assert violations == []
+
+
 def test_application_analyst_modules_are_nested_without_legacy_shims() -> None:
     application_dir = Path(__file__).resolve().parents[1] / "trader" / "application"
 
@@ -156,6 +179,7 @@ def test_application_record_modules_are_nested_without_legacy_shims() -> None:
         [
             "decision_recorder",
             "decision_entries",
+            "decision_ledger_rows",
             "decision_watches",
             "tool_outcomes",
             "plan_review",
@@ -2759,32 +2783,48 @@ def test_decision_bench_engine_is_bench_package_canonical() -> None:
     assert reporting_decision_bench.render_summary is bench_decision_bench.render_summary
 
 
-def test_decision_ledger_store_is_ledger_package_canonical() -> None:
+def test_decision_ledger_owners_and_reporting_facades_are_canonical() -> None:
+    from trader.application.record import decision_ledger_rows
+    from trader.domain import decision_identity
+    from trader.infrastructure.files import decision_ledger as infrastructure_decision_ledger
     from trader.reporting import decision_ledger as reporting_decision_ledger
     from trader.reporting.ledger import decision_ledger as ledger_decision_ledger
 
-    assert reporting_decision_ledger.DecisionLedgerStore is ledger_decision_ledger.DecisionLedgerStore
-    assert reporting_decision_ledger.build_decision_row is ledger_decision_ledger.build_decision_row
-    assert reporting_decision_ledger.build_legacy_event_row is ledger_decision_ledger.build_legacy_event_row
-    assert reporting_decision_ledger.seed_existing_reports is ledger_decision_ledger.seed_existing_reports
-    assert reporting_decision_ledger.seed_existing_events is ledger_decision_ledger.seed_existing_events
-    assert reporting_decision_ledger.backfill_code_versions is ledger_decision_ledger.backfill_code_versions
-    assert reporting_decision_ledger.DEFAULT_LEDGER_FILENAME is ledger_decision_ledger.DEFAULT_LEDGER_FILENAME
-    assert reporting_decision_ledger._decision_id is ledger_decision_ledger._decision_id
-    assert reporting_decision_ledger.code_version is ledger_decision_ledger.code_version
+    assert reporting_decision_ledger.DecisionLedgerStore is infrastructure_decision_ledger.DecisionLedgerStore
+    assert ledger_decision_ledger.DecisionLedgerStore is infrastructure_decision_ledger.DecisionLedgerStore
+    assert reporting_decision_ledger.build_decision_row is decision_ledger_rows.build_decision_row
+    assert ledger_decision_ledger.build_decision_row is decision_ledger_rows.build_decision_row
+    assert reporting_decision_ledger.build_legacy_event_row is infrastructure_decision_ledger.build_legacy_event_row
+    assert reporting_decision_ledger.seed_existing_reports is infrastructure_decision_ledger.seed_existing_reports
+    assert reporting_decision_ledger.seed_existing_events is infrastructure_decision_ledger.seed_existing_events
+    assert reporting_decision_ledger.backfill_code_versions is infrastructure_decision_ledger.backfill_code_versions
+    assert reporting_decision_ledger.DEFAULT_LEDGER_FILENAME is infrastructure_decision_ledger.DEFAULT_LEDGER_FILENAME
+    assert reporting_decision_ledger._decision_id is decision_identity.decision_id
+    assert ledger_decision_ledger._decision_id is decision_identity.decision_id
+    assert reporting_decision_ledger.code_version is infrastructure_decision_ledger.code_version
+    assert ledger_decision_ledger.code_version is infrastructure_decision_ledger.code_version
 
 
-def test_reporting_protocols_are_colocated_under_reporting() -> None:
+def test_protocols_are_colocated_with_their_consumers() -> None:
+    from trader.application.decide.recent_decisions import DecisionLedgerReader
+    from trader.application.record.decision_recorder import DecisionLedgerAppender
     from trader.reporting.audit.protocols import PriceHistoryLoader
     from trader.reporting.bench.protocols import BenchHistory, ModelBenchCompleter
-    from trader.reporting.ledger.protocols import DecisionLedgerAppender, DecisionLedgerReader
+    from trader.reporting.ledger.protocols import (
+        DecisionLedgerAppender as LegacyDecisionLedgerAppender,
+    )
+    from trader.reporting.ledger.protocols import (
+        DecisionLedgerReader as LegacyDecisionLedgerReader,
+    )
     from trader.reporting.read_models.protocols import DecisionQualityScorer
 
     assert PriceHistoryLoader.__module__ == "trader.reporting.audit.protocols"
     assert BenchHistory.__module__ == "trader.reporting.bench.protocols"
     assert ModelBenchCompleter.__module__ == "trader.reporting.bench.protocols"
-    assert DecisionLedgerAppender.__module__ == "trader.reporting.ledger.protocols"
-    assert DecisionLedgerReader.__module__ == "trader.reporting.ledger.protocols"
+    assert DecisionLedgerAppender.__module__ == "trader.application.record.decision_recorder"
+    assert DecisionLedgerReader.__module__ == "trader.application.decide.recent_decisions"
+    assert LegacyDecisionLedgerAppender is DecisionLedgerAppender
+    assert LegacyDecisionLedgerReader is DecisionLedgerReader
     assert DecisionQualityScorer.__module__ == "trader.reporting.read_models.protocols"
 
 

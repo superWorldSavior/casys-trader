@@ -78,9 +78,10 @@ from trader.market.gross_priority import PriorityItem, gross_execution_order
 from trader.market.ib_source import IBDataSource, connect_ib
 from trader.market import news_feed
 from trader.planning.protocols import SchedulerLike
+from trader.domain import decision_identity
+from trader.infrastructure.files import decision_ledger
 from trader.support.metadata import code_version
 from trader.reporting.read_models import attribution, meta_performance
-from trader.reporting.ledger import decision_ledger
 from trader.runtime.agent_cycle_context import (
     build_base_context as _build_base_context,
     global_plans_summary as _global_plans_summary,  # noqa: F401 - legacy daemon hook
@@ -899,7 +900,7 @@ def run_cycle(
         queue_execute_enabled=queue_execute_enabled,
         execute_ledger=execute_ledger,
         record_decision=record_decision,
-        decision_id_for_symbol=lambda symbol: decision_ledger._decision_id(
+        decision_id_for_symbol=lambda symbol: decision_identity.decision_id(
             str(report["ts"]), len(report["decisions"]), symbol
         ),
         rate_for_symbol=_rate,

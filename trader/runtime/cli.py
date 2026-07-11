@@ -17,8 +17,8 @@ from trader.domain.semantic.catalog import FAMILIES, describe_semantic_layer, fi
 from trader.reporting.audit import decision_quality as decision_audit
 from trader.reporting.bench import decision_bench
 from trader.reporting import attribution
-from trader.reporting.ledger import decision_ledger
 from trader.reporting.read_models import decision_flags
+from trader.infrastructure.files import decision_ledger
 
 _DAEMON_FLAGS = {
     "--live",

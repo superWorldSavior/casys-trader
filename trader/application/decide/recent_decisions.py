@@ -8,6 +8,7 @@ délibéré) — anti-répétition + cohérence, même sans position. Le row du 
 from __future__ import annotations
 
 from collections.abc import Mapping
+from typing import Protocol
 
 _MAX_RATIONALE_LEN = 200
 _MAX_FLAGS = 5
@@ -15,12 +16,15 @@ DEFAULT_LIMIT = 3
 _ORDER_ACTION_TOOLS = {"strategy_entry", "strategy_close"}
 
 
-class _LedgerReadStore:  # Protocol minimal (évite le couplage au store concret)
-    def read_all(self, *, symbol: str | None = None, limit: int | None = None) -> list[dict]: ...
+class DecisionLedgerReader(Protocol):
+    """Read port required by the recent-decision projection."""
+
+    def read_all(self, *, symbol: str | None = None, limit: int | None = None) -> list[dict]:
+        ...
 
 
 def recent_decisions_by_symbol(
-    store: _LedgerReadStore,
+    store: DecisionLedgerReader,
     *,
     symbols: list[str],
     limit: int = DEFAULT_LIMIT,

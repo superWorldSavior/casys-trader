@@ -1,4 +1,4 @@
-"""Decision ledger write-side reporting stores."""
+"""Compatibility facades for the historical reporting-ledger imports."""
 
 from __future__ import annotations
 

@@ -1,7 +1,7 @@
-"""Decision ledger reporting facade.
+"""Historical decision-ledger facade.
 
-Moteur canonique : `trader.reporting.ledger.decision_ledger`.
-Ce module garde la compatibilité d'import historique.
+The write-side implementation lives outside reporting; this module preserves
+the public import surface without owning runtime persistence.
 """
 
 from __future__ import annotations
@@ -18,11 +18,12 @@ from trader.reporting.ledger.decision_ledger import (
     backfill_code_versions,
     build_decision_row,
     build_legacy_event_row,
+    decision_id,
     seed_existing_events,
     seed_existing_reports,
 )
 
-_decision_id = _decision_ledger._decision_id
+_decision_id = decision_id
 code_version = _decision_ledger.code_version
 
 __all__ = [
@@ -37,6 +38,7 @@ __all__ = [
     "build_decision_row",
     "build_legacy_event_row",
     "code_version",
+    "decision_id",
     "seed_existing_events",
     "seed_existing_reports",
 ]

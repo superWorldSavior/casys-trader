@@ -10,9 +10,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Protocol, TypeAlias
 
+from trader.application.record.decision_ledger_rows import build_decision_row
 from trader.application.record.tool_outcomes import finalize_action_tool_outcomes
-from trader.reporting.ledger import decision_ledger
-from trader.reporting.ledger.protocols import DecisionLedgerAppender
+from trader.domain import decision_identity
 
 log = logging.getLogger("trader.application.decision_recorder")
 
@@ -121,6 +121,13 @@ class LearningAppender(Protocol):
         ...
 
 
+class DecisionLedgerAppender(Protocol):
+    """Write port required by the decision-recording use case."""
+
+    def append(self, row: dict) -> object:
+        ...
+
+
 class RecallRecorder(Protocol):
     def record_recall(self, *, decision_id: str, note_ids: list[int]) -> None:
         ...
@@ -165,7 +172,7 @@ class DecisionRecorder:
         cycle_ts = str(self.report.get("ts") or "")
         decision_id = str(
             decision_entry.get("decision_id")
-            or decision_ledger._decision_id(cycle_ts, sequence, symbol)
+            or decision_identity.decision_id(cycle_ts, sequence, symbol)
         )
         decision_entry["decision_id"] = decision_id
         price = _entry_price(decision_entry, self.report, symbol)
@@ -233,7 +240,7 @@ class DecisionRecorder:
         self.report["model_calls_used"] = self.model_calls_used_getter()
         self.refresh_report_portfolio()
 
-        row = decision_ledger.build_decision_row(
+        row = build_decision_row(
             self.report,
             decision_entry,
             sequence=sequence,
@@ -281,7 +288,7 @@ class DecisionRecorder:
             return
         decision_id = str(
             decision_entry.get("decision_id")
-            or decision_ledger._decision_id(cycle_ts, sequence, symbol)
+            or decision_identity.decision_id(cycle_ts, sequence, symbol)
         )
         for tool_call in decision_entry.get("tool_calls") or []:
             if tool_call.get("tool") != "recall_learnings" or tool_call.get("outcome") != "ok":

@@ -1,17 +1,8 @@
-"""Protocols for decision-ledger reporting collaborators."""
+"""Compatibility aliases for decision-ledger consumer-owned ports."""
 
 from __future__ import annotations
 
-from typing import Protocol
+from trader.application.decide.recent_decisions import DecisionLedgerReader
+from trader.application.record.decision_recorder import DecisionLedgerAppender
 
 __all__ = ["DecisionLedgerAppender", "DecisionLedgerReader"]
-
-
-class DecisionLedgerReader(Protocol):
-    def read_all(self, *, symbol: str | None = None, limit: int | None = None) -> list[dict]:
-        ...
-
-
-class DecisionLedgerAppender(Protocol):
-    def append(self, row: dict) -> object:
-        ...

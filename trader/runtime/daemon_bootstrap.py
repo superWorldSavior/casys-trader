@@ -8,7 +8,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
-from trader.reporting.ledger import decision_ledger
+from trader.infrastructure.files import decision_ledger
 from trader.runtime import ledger_rotation
 from trader.runtime.protocols import LoggerLike
 from trader.support.config.portfolio import load_starting_cash
