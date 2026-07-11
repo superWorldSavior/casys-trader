@@ -7,7 +7,8 @@ from typing import Any, Mapping, Protocol
 
 from trader.domain.decisions import Decision
 from trader.domain.planning.armed_order import armed_order_price_coherent
-from trader.planning.trade_plan import InvalidExitPlanError, resolve_exit_plan
+from trader.domain.planning.exit_plan_spec import InvalidExitPlanError
+from trader.domain.planning.trade_plan import resolve_exit_plan
 
 
 class PositionLike(Protocol):

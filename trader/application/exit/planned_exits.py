@@ -14,7 +14,7 @@ from trader.application.execute.order_admission import clamp_exit_quantity as de
 from trader.application.portfolio import snapshot as portfolio
 from trader.domain.contracts import Order
 from trader.planning.exit_engine import ExitEvaluation, evaluate_plan
-from trader.planning.trade_plan import TradePlan
+from trader.domain.trade_plan import TradePlan
 
 ModelPerformanceAppender = Callable[..., None]
 RateFn = Callable[[str], float]

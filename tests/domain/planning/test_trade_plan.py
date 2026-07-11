@@ -2,9 +2,9 @@ from datetime import datetime, timezone
 
 import pytest
 
-import trader.planning.exit_engine as exit_engine
-from trader.market.market_data import Bar
-from trader.planning.trade_plan import (
+import trader.domain.planning.exit_engine as exit_engine
+from trader.domain.market_data import Bar
+from trader.domain.planning.trade_plan import (
     InvalidExitPlanError,
     TradePlan,
     create_trade_plan,

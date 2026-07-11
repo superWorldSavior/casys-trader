@@ -6,7 +6,7 @@ import math
 from dataclasses import replace
 
 from trader.domain.decisions import Action, Decision
-from trader.planning.trade_plan import InvalidExitPlanError, normalize_exit_plan
+from trader.domain.planning.exit_plan_spec import InvalidExitPlanError, normalize_exit_plan
 
 VALID_INTENTS = {"OPEN_LONG", "OPEN_SHORT", "REDUCE", "CLOSE", "FLIP", "HOLD", "SCALE_IN"}
 ACTION_INTENTS = {

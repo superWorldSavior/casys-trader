@@ -668,6 +668,7 @@ def test_pure_planning_calculations_are_nested_under_domain_with_facades() -> No
         "indicator_watch.py",
         "relevance_gate.py",
         "scheduling.py",
+        "trade_plan.py",
         "watch_evaluator.py",
         "watches.py",
     }
@@ -679,6 +680,7 @@ def test_pure_planning_calculations_are_nested_under_domain_with_facades() -> No
         "exit_plan_spec",
         "indicator_watch",
         "relevance_gate",
+        "trade_plan",
         "watch_evaluator",
     ):
         facade_path = trader_dir / "planning" / f"{module_name}.py"
@@ -692,6 +694,7 @@ def test_pure_planning_calculations_are_nested_under_domain_with_facades() -> No
     import trader.domain.planning.indicator_watch as domain_indicator_watch
     import trader.domain.planning.relevance_gate as domain_relevance_gate
     import trader.domain.planning.scheduling as domain_scheduling
+    import trader.domain.planning.trade_plan as domain_trade_plan
     import trader.domain.planning.watch_evaluator as domain_watch_evaluator
     import trader.domain.planning.watches as domain_watches
     import trader.application.cycle.schedule as cycle_schedule
@@ -701,6 +704,7 @@ def test_pure_planning_calculations_are_nested_under_domain_with_facades() -> No
     import trader.planning.indicator_watch as planning_indicator_watch
     import trader.planning.relevance_gate as planning_relevance_gate
     import trader.planning.scheduler as planning_scheduler
+    import trader.planning.trade_plan as planning_trade_plan
     import trader.planning.watch_evaluator as planning_watch_evaluator
     from trader.planning.indicator_watch import is_armed_plan
 
@@ -714,6 +718,8 @@ def test_pure_planning_calculations_are_nested_under_domain_with_facades() -> No
     assert planning_scheduler.STALE_BACKOFF_MAX_MINUTES == domain_scheduling.STALE_BACKOFF_MAX_MINUTES
     assert planning_scheduler.STALE_BACKOFF_MAX_STREAK == domain_scheduling.STALE_BACKOFF_MAX_STREAK
     assert planning_watch_evaluator.evaluate_indicator_watches is domain_watch_evaluator.evaluate_indicator_watches
+    assert planning_trade_plan.create_trade_plan is domain_trade_plan.create_trade_plan
+    assert planning_trade_plan.resolve_exit_plan is domain_trade_plan.resolve_exit_plan
     assert cycle_schedule.stale_backoff_wake_minutes is domain_scheduling.stale_backoff_wake_minutes
     assert is_armed_plan is domain_watches.is_armed_plan
 
@@ -750,11 +756,16 @@ def test_application_and_backtest_use_canonical_domain_watch_policy() -> None:
     forbidden_modules = {
         "trader.planning.armed_order",
         "trader.planning.indicator_watch",
+        "trader.planning.trade_plan",
         "trader.planning.watch_evaluator",
     }
     violations: list[str] = []
 
-    for source_root in (repo_root / "trader" / "application", repo_root / "backtest"):
+    for source_root in (
+        repo_root / "trader" / "application",
+        repo_root / "trader" / "runtime",
+        repo_root / "backtest",
+    ):
         for source_path in sorted(source_root.rglob("*.py")):
             tree = ast.parse(source_path.read_text(encoding="utf-8"), filename=str(source_path))
             for node in ast.walk(tree):

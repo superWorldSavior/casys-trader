@@ -23,8 +23,9 @@ from trader.domain.planning.indicator_watch import (
     evaluate_indicator_watches,
     is_armed_plan,
 )
+from trader.domain.planning.exit_plan_spec import InvalidExitPlanError
+from trader.domain.planning.trade_plan import create_trade_plan_from_order
 from trader.market import market_data as market
-from trader.planning.trade_plan import InvalidExitPlanError, create_trade_plan_from_order
 
 __all__ = ["PlanReplayResult", "replay_armed_plan"]
 

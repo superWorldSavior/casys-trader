@@ -7,7 +7,8 @@ from dataclasses import dataclass
 from typing import Mapping, Protocol
 
 import trader.application.execute.order_admission as order_admission
-from trader.planning.trade_plan import TradePlan, create_trade_plan_from_order
+from trader.domain.planning.trade_plan import create_trade_plan_from_order
+from trader.domain.trade_plan import TradePlan
 
 
 class OpenPlanReader(Protocol):

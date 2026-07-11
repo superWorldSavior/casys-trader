@@ -467,7 +467,7 @@ ici avant tout.
 
 ## 5. Stops & résolution — `resolve_exit_plan`
 
-`trade_plan.resolve_exit_plan()` (`trader/planning/trade_plan.py`) — résout une **intention
+`trade_plan.resolve_exit_plan()` (`trader/domain/planning/trade_plan.py`) — résout une **intention
 paramétrique** en prix absolu. Types supportés :
 
 | Type `hard_stop` | Description | Résolution |

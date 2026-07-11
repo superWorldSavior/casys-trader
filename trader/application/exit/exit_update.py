@@ -6,11 +6,9 @@ import copy
 from dataclasses import dataclass
 from typing import Protocol
 
-from trader.planning.trade_plan import (
-    InvalidExitPlanError,
-    TradePlan,
-    apply_exit_update,
-)
+from trader.domain.planning.exit_plan_spec import InvalidExitPlanError
+from trader.domain.planning.trade_plan import apply_exit_update
+from trader.domain.trade_plan import TradePlan
 
 
 class TradePlanStoreLike(Protocol):

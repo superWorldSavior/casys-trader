@@ -24,11 +24,12 @@ import trader.application.record.decision_watches as decision_watches
 import trader.application.record.plan_review as plan_review
 from trader.application.portfolio import snapshot as portfolio
 from trader.domain.execution.risk_gate import RiskGate
+from trader.domain.planning.exit_plan_spec import InvalidExitPlanError, validate_exit_plan
+from trader.domain.planning.trade_plan import resolve_exit_plan
 import trader.market.execution_eligibility as execution_eligibility_service
 from trader.market import market_data as market
 import trader.market.volatility as reference_volatility_service
 from trader.planning.protocols import SchedulerLike
-from trader.planning.trade_plan import InvalidExitPlanError, resolve_exit_plan, validate_exit_plan
 
 _OPENING_INTENTS = {"OPEN_LONG", "OPEN_SHORT", "FLIP", "SCALE_IN"}
 _PURE_OPEN_INTENTS = {"OPEN_LONG", "OPEN_SHORT"}

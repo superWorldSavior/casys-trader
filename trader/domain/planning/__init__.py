@@ -7,6 +7,7 @@ __all__ = [
     "indicator_watch",
     "relevance_gate",
     "scheduling",
+    "trade_plan",
     "watch_evaluator",
     "watches",
 ]
