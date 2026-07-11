@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import threading
 from collections.abc import Callable, Mapping
@@ -14,6 +15,7 @@ from backtest.data import HistoryStore
 from backtest.decision_quality import BAND, classify, forward_return
 
 from trader.agent.learnings import embeddings as embeddings_mod
+from trader.domain.execution.fill_accounting import POSITION_EPSILON
 from trader.infrastructure.state_db.learnings_store import LearningsStore
 from trader.runtime import ledger_rotation
 from trader.runtime.learning_outcomes import (
@@ -81,13 +83,59 @@ def _outcome(value: str, forward_value: float | None) -> dict[str, object]:
     return {"verdict": "UNKNOWN", "reward": None, "forward_return": None}
 
 
+def _decision_quality_action(row: Mapping[str, object]) -> str | None:
+    """Return the directional action represented by the decision.
+
+    A HOLD maintains the exposure captured in the decision ledger's durable
+    portfolio snapshot.  Missing or malformed snapshots must not silently turn
+    a held position into the historical "flat HOLD" interpretation.
+    """
+
+    action = str(row.get("action") or "HOLD").upper()
+    if action != "HOLD":
+        return action
+
+    snapshot = row.get("portfolio_snapshot")
+    if not isinstance(snapshot, Mapping):
+        return None
+    holdings = snapshot.get("holdings")
+    if not isinstance(holdings, list):
+        return None
+
+    symbol = str(row.get("symbol") or "").strip().upper()
+    quantity = 0.0
+    for holding in holdings:
+        if not isinstance(holding, Mapping):
+            return None
+        holding_symbol = holding.get("symbol")
+        if holding_symbol is None:
+            return None
+        if str(holding_symbol).strip().upper() != symbol:
+            continue
+        try:
+            parsed_quantity = float(holding.get("quantity"))
+        except (TypeError, ValueError):
+            return None
+        if not math.isfinite(parsed_quantity):
+            return None
+        quantity += parsed_quantity
+
+    if quantity > POSITION_EPSILON:
+        return "BUY"
+    if quantity < -POSITION_EPSILON:
+        return "SELL"
+    return "HOLD"
+
+
 def score_outcome(row: Mapping[str, object], bars: list, *, now: datetime) -> dict[str, object] | None:
     """Score one mature note/decision with the canonical 1d, then 4h fallback."""
 
     ts = _parse_ts(row.get("ts") or row.get("cycle_ts"))
     symbol = str(row.get("symbol") or "")
-    action = str(row.get("action") or "HOLD").upper()
     if ts is None or not symbol or _utc(now) - ts < MIN_OUTCOME_AGE:
+        return None
+    action = _decision_quality_action(row)
+    if action is None:
         return None
 
     history = HistoryStore.from_bars({symbol: list(bars)})

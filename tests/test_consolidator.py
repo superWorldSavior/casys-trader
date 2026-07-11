@@ -1037,6 +1037,40 @@ def _candidate(
     }
 
 
+def test_global_rule_robustness_uses_win_reward_not_signed_market_return() -> None:
+    evidence = [
+        {
+            "feedback": {
+                "verdict": "WIN",
+                "forward_return": -0.02,
+            }
+        }
+        for _ in range(3)
+    ]
+
+    summary = consolidator._candidate_evidence_summary(evidence)
+
+    assert summary["mean_reward"] == 1.0
+    assert consolidator._resolved_robustness("high", summary) == "high"
+
+
+def test_global_rule_robustness_uses_loss_reward_not_positive_market_return() -> None:
+    evidence = [
+        {
+            "feedback": {
+                "verdict": "LOSS",
+                "forward_return": 0.02,
+            }
+        }
+        for _ in range(3)
+    ]
+
+    summary = consolidator._candidate_evidence_summary(evidence)
+
+    assert summary["mean_reward"] == -1.0
+    assert consolidator._resolved_robustness("high", summary) == "low"
+
+
 def test_build_curation_candidates_borne_recent_confirmations_et_contreexemples() -> None:
     recent = [
         _raw(f"2026-07-10T10:{idx:02d}:00+00:00", symbol=f"R{idx}", note=f"recent {idx}")
@@ -1167,7 +1201,7 @@ def test_consolidation_sources_rules_and_preserves_existing_id(tmp_path) -> None
         "wins": 3,
         "losses": 0,
         "neutrals": 0,
-        "mean_reward": 0.02,
+        "mean_reward": 1.0,
     }
     assert rule["robustness"] == "high"
     assert marked and marked[0][1] == "2026-07-10T10:00:00+00:00"

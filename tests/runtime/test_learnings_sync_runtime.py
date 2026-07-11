@@ -58,6 +58,102 @@ def test_score_outcome_utilise_1d_puis_mappe_la_reward() -> None:
     assert result["forward_return"] == pytest.approx(0.03)
 
 
+def test_score_outcome_hold_long_evalue_le_maintien_de_l_exposition() -> None:
+    started = datetime(2026, 7, 1, 10, tzinfo=UTC)
+    result = score_outcome(
+        {
+            "cycle_ts": started.isoformat(),
+            "symbol": "SPY",
+            "action": "HOLD",
+            "portfolio_snapshot": {
+                "holdings": [{"symbol": "SPY", "quantity": 10.0}],
+            },
+        },
+        _bars(started, final=103.0),
+        now=started + timedelta(days=2),
+    )
+
+    assert result == {
+        "verdict": "WIN",
+        "reward": 1.0,
+        "forward_return": pytest.approx(0.03),
+    }
+
+
+def test_score_outcome_hold_short_evalue_le_maintien_de_l_exposition() -> None:
+    started = datetime(2026, 7, 1, 10, tzinfo=UTC)
+    result = score_outcome(
+        {
+            "cycle_ts": started.isoformat(),
+            "symbol": "SPY",
+            "action": "HOLD",
+            "portfolio_snapshot": {
+                "holdings": [{"symbol": "SPY", "quantity": -10.0}],
+            },
+        },
+        _bars(started, final=97.0),
+        now=started + timedelta(days=2),
+    )
+
+    assert result == {
+        "verdict": "WIN",
+        "reward": 1.0,
+        "forward_return": pytest.approx(-0.03),
+    }
+
+
+def test_score_outcome_hold_flat_garde_le_jugement_d_opportunite() -> None:
+    started = datetime(2026, 7, 1, 10, tzinfo=UTC)
+    result = score_outcome(
+        {
+            "cycle_ts": started.isoformat(),
+            "symbol": "SPY",
+            "action": "HOLD",
+            "portfolio_snapshot": {
+                "holdings": [{"symbol": "QQQ", "quantity": 5.0}],
+            },
+        },
+        _bars(started, final=103.0),
+        now=started + timedelta(days=2),
+    )
+
+    assert result == {
+        "verdict": "LOSS",
+        "reward": -1.0,
+        "forward_return": pytest.approx(0.03),
+    }
+
+
+@pytest.mark.parametrize(
+    "snapshot_fields",
+    [
+        {},
+        {"portfolio_snapshot": {}},
+        {"portfolio_snapshot": {"holdings": [{}]}},
+        {
+            "portfolio_snapshot": {
+                "holdings": [{"symbol": "SPY", "quantity": "invalid"}],
+            },
+        },
+    ],
+)
+def test_score_outcome_hold_sans_snapshot_fiable_reste_pending(
+    snapshot_fields: dict,
+) -> None:
+    started = datetime(2026, 7, 1, 10, tzinfo=UTC)
+
+    assert score_outcome(
+        {
+            "cycle_ts": started.isoformat(),
+            "symbol": "SPY",
+            "action": "HOLD",
+            **snapshot_fields,
+        },
+        _bars(started, final=103.0),
+        now=started + timedelta(days=4),
+    ) is None
+
+
 def test_sync_ingere_vectorise_et_score_les_nouvelles_notes(tmp_path) -> None:
     state_dir = tmp_path / "state"
     started = datetime(2026, 7, 1, 10, tzinfo=UTC)

@@ -1194,6 +1194,28 @@ def test_global_rule_memrl_is_idempotent_and_keeps_retired_rule_history(tmp_path
         )
 
 
+def test_global_rule_lifecycle_does_not_follow_a_regressing_business_watermark(tmp_path: Path) -> None:
+    store = LearningsStore(tmp_path / "learnings.db")
+    created_clock = datetime(2026, 7, 12, 12, tzinfo=timezone.utc)
+    regressed_clock = datetime(2026, 7, 11, 12, tzinfo=timezone.utc)
+
+    store.sync_global_rules(
+        ["rule-short-win"],
+        ts="2026-07-10T00:00:00+00:00",
+        now=created_clock,
+    )
+    store.sync_global_rules(
+        [],
+        ts="2026-07-09T00:00:00+00:00",
+        now=regressed_clock,
+    )
+
+    lifecycle = store.global_rule_scores()["rule-short-win"]
+    assert lifecycle["created_at"] == created_clock.isoformat()
+    assert lifecycle["retired_at"] == created_clock.isoformat()
+    assert lifecycle["updated_at"] == created_clock.isoformat()
+
+
 def test_schema_migrates_curation_and_global_rule_tables_additively(tmp_path: Path) -> None:
     db_path = tmp_path / "legacy.db"
     conn = sqlite3.connect(db_path)

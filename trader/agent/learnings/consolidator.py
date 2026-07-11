@@ -468,7 +468,11 @@ def _candidate_evidence_summary(evidence_rows: list[dict]) -> dict:
             summary["pending"] += 1
         reward = _as_float(feedback.get("reward"))
         if reward is None:
-            reward = _as_float(feedback.get("forward_return"))
+            reward = {
+                "WIN": 1.0,
+                "LOSS": -1.0,
+                "NEUTRAL": 0.0,
+            }.get(verdict)
         if reward is not None:
             rewards.append(reward)
     if rewards:
@@ -708,7 +712,6 @@ def _sync_active_global_rules(
     provider: object | None,
     *,
     consolidated: dict,
-    watermark: str | None,
 ) -> dict | None:
     """Mirror active stable rule IDs into the optional MemRL rule store."""
 
@@ -719,7 +722,7 @@ def _sync_active_global_rules(
         return None
     rule_ids = [str(rule["rule_id"]) for rule in consolidated.get("global", [])]
     try:
-        result = sync(rule_ids, ts=watermark)
+        result = sync(rule_ids)
     except Exception as exc:  # pragma: no cover - defensive integration seam
         log.warning("unable to synchronize active global rules (%s)", exc)
         return None
@@ -1091,7 +1094,6 @@ def maybe_consolidate(
         global_rule_sync = _sync_active_global_rules(
             curation_provider,
             consolidated=consolidated,
-            watermark=watermark,
         )
         candidates = build_curation_candidates(new_raw, candidate_rows=resolved_candidate_rows)
         result["curated_candidate_count"] = _mark_candidates_curated(

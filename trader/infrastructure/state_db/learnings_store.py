@@ -192,6 +192,25 @@ def _ensure_column(
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}")
 
 
+def _utc_lifecycle_clock(now: datetime | None) -> datetime:
+    resolved = now or datetime.now(timezone.utc)
+    if resolved.tzinfo is None:
+        raise ValueError("global-rule lifecycle clock must be timezone-aware")
+    return resolved.astimezone(timezone.utc)
+
+
+def _parse_lifecycle_ts(value: object) -> datetime | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
 class LearningsStore:
     """Store SQLite des learnings outcome-weighted.
 
@@ -1046,6 +1065,7 @@ class LearningsStore:
         active_rule_ids: list[str],
         *,
         ts: str | None = None,
+        now: datetime | None = None,
     ) -> dict:
         """Synchronize the citable global-rule set without deleting history.
 
@@ -1053,15 +1073,30 @@ class LearningsStore:
         absent from the set become inactive (and cannot be newly cited), but
         their existing Q history remains available for audit and delayed
         outcomes of already-recorded citations can still update it.
+
+        ``ts`` is retained as a compatibility input for callers that used to
+        pass a business watermark.  It never controls lifecycle timestamps;
+        those use a non-decreasing UTC wall clock, optionally injected via
+        ``now`` for deterministic tests.
         """
 
         rule_ids = list(dict.fromkeys(str(rule_id).strip() for rule_id in active_rule_ids if str(rule_id).strip()))
-        changed_at = ts or datetime.now(timezone.utc).isoformat()
+        _ = ts
+        lifecycle_clock = _utc_lifecycle_clock(now)
         with self._lock:
-            existing = {
-                str(row["rule_id"]): int(row["active"] or 0)
-                for row in self._conn.execute("SELECT rule_id, active FROM global_rules")
-            }
+            existing_rows = self._conn.execute(
+                "SELECT rule_id, active, created_at, retired_at, updated_at FROM global_rules"
+            ).fetchall()
+            existing = {str(row["rule_id"]): int(row["active"] or 0) for row in existing_rows}
+            previous_clocks = [
+                parsed
+                for row in existing_rows
+                for column in ("created_at", "retired_at", "updated_at")
+                if (parsed := _parse_lifecycle_ts(row[column])) is not None
+            ]
+            if previous_clocks:
+                lifecycle_clock = max(lifecycle_clock, max(previous_clocks))
+            changed_at = lifecycle_clock.isoformat()
             for rule_id in rule_ids:
                 self._conn.execute(
                     """
