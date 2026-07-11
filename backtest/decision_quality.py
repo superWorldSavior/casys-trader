@@ -9,12 +9,12 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from trader.ledger_rotation import read_rows_with_archive
 from trader.domain.learnings.scoring import (
     SIGNIFICANT_RETURN_BAND,
     classify_decision_quality,
 )
 from trader.domain.market_data import Bar
+from trader.runtime.ledger_rotation import read_rows_with_archive
 
 from .data import DataError, HistoryStore
 

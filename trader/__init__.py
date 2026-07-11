@@ -38,7 +38,6 @@ _COMPAT_MODULES = {
     "ib_attach": "trader.runtime.ib_attach",
     "indicator_watch": "trader.planning.indicator_watch",
     "learnings_store": "trader.agent.learnings.store",
-    "ledger_rotation": "trader.runtime.ledger_rotation",
     "llm": "trader.agent.llm",
     "logging_setup": "trader.runtime.logging_setup",
     "macro_calendar": "trader.market.macro_calendar",

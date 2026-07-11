@@ -338,6 +338,67 @@ def test_only_legacy_compat_modules_are_flat_files() -> None:
     assert flat_files == ["__init__.py"]
 
 
+def test_internal_sources_do_not_import_virtual_flat_compat_modules() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    trader_init = repo_root / "trader" / "__init__.py"
+    init_tree = ast.parse(
+        trader_init.read_text(encoding="utf-8"),
+        filename=str(trader_init),
+    )
+    compat_assignment = next(
+        node
+        for node in init_tree.body
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Name) and target.id == "_COMPAT_MODULES"
+            for target in node.targets
+        )
+    )
+    compat_modules = set(ast.literal_eval(compat_assignment.value))
+    assert "ledger_rotation" not in compat_modules
+
+    violations: list[str] = []
+    checked_roots = (
+        repo_root / "trader",
+        repo_root / "backtest",
+        repo_root / "scripts",
+    )
+    for checked_root in checked_roots:
+        for path in sorted(checked_root.rglob("*.py")):
+            # This file owns the virtual aliases. Tests are intentionally outside
+            # checked_roots because they also prove the remaining public shims.
+            if path == trader_init or "__pycache__" in path.parts:
+                continue
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            relative_path = path.relative_to(repo_root)
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    for alias in node.names:
+                        parts = alias.name.split(".")
+                        if len(parts) >= 2 and parts[0] == "trader" and parts[1] in compat_modules:
+                            violations.append(
+                                f"{relative_path}:{node.lineno}: import {alias.name}"
+                            )
+                elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+                    if node.module == "trader":
+                        for alias in node.names:
+                            if alias.name in compat_modules:
+                                violations.append(
+                                    f"{relative_path}:{node.lineno}: "
+                                    f"from trader import {alias.name}"
+                                )
+                        continue
+                    parts = node.module.split(".")
+                    if len(parts) >= 2 and parts[0] == "trader" and parts[1] in compat_modules:
+                        violations.append(
+                            f"{relative_path}:{node.lineno}: from {node.module} import ..."
+                        )
+
+    # Command strings such as ``python -m trader.daemon`` are deliberate public
+    # entrypoints and are not imports, so this AST-only guard leaves them intact.
+    assert violations == []
+
+
 def test_top_level_packages_have_declared_architecture_roles() -> None:
     trader_dir = Path(__file__).resolve().parents[1] / "trader"
 
