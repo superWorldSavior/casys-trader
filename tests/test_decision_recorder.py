@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 
 from trader.reporting.ledger import decision_ledger
 from trader.application.record.decision_recorder import DecisionRecorder
+from trader.runtime.agent_trace_runtime import build_agent_trace_appender
 
 
 class FakeLearnings:
@@ -204,7 +205,7 @@ def test_decision_recorder_writes_agent_trace_to_separate_file(tmp_path, caplog)
         macro_next=None,
         now=datetime(2026, 7, 2, 10, 0, tzinfo=timezone.utc),
         recall_store=recall_store,
-        agent_trace_path=state_dir / "agent_trace.log",
+        agent_trace_appender=build_agent_trace_appender(state_dir / "agent_trace.log"),
     )
 
     recorder.record({

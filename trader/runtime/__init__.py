@@ -1,6 +1,7 @@
 """Runtime entrypoints and process helpers."""
 
 __all__ = [
+    "agent_trace_runtime",
     "cli",
     "consolidation_inputs",
     "cycle_dispatch",

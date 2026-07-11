@@ -89,6 +89,7 @@ from trader.runtime.agent_cycle_context import (
     plan_to_context_dict as _plan_to_context_dict,
 )
 from trader.runtime import (
+    agent_trace_runtime,
     cycle_finalization,
     cycle_dispatch,
     cycle_reporting,
@@ -789,7 +790,9 @@ def run_cycle(
         recall_store=_recall_store,
         merge_gate_feedback=confidence_feedback.merge_gate_feedback,
         model_calls_used_getter=lambda: model_call_counter.used,
-        agent_trace_path=STATE_DIR / "agent_trace.log",
+        agent_trace_appender=agent_trace_runtime.build_agent_trace_appender(
+            STATE_DIR / "agent_trace.log"
+        ),
         company_context_provider=lambda symbol: company_context_by_symbol.get(symbol),
         mandate_context_provider=lambda symbol: mandate_context_by_symbol.get(symbol),
         learning_ingester=(

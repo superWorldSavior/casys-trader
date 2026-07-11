@@ -76,7 +76,7 @@ les utilisaient :
 | `trader/application/record/decision_entries.py` | Construction pure des entrées décision runtime avant persistance | source `llm`/`infra`/`armed_plan`, traces d'outils et raisons HOLD sans side effects |
 | `trader/application/record/decision_ledger_rows.py` | Projection pure d'une entrée décision et du rapport de cycle vers la ligne d'audit versionnée | aucun I/O ; le port d'append reste colocalisé dans `decision_recorder.py` |
 | `trader/application/record/decision_watches.py` | Préparation pure des `indicator_watch` demandées par une décision | le daemon garde logging et application scheduler |
-| `trader/application/record/decision_recorder.py` | Enrichissement décision, ledger, report, status, event, recall traces | source durable : `state/decisions.jsonl` |
+| `trader/application/record/decision_recorder.py` | Enrichissement décision, ledger, report, status, event, recall traces | l'écriture humaine `agent_trace.log` est injectée par `runtime/agent_trace_runtime.py` |
 | `trader/application/cycle/schedule.py` | Politique applicative de réveil : bornes explicites, backoff stale, due symbols, veilles et événements de réveil | le daemon garde des wrappers privés de compatibilité |
 | `trader/agent/protocol/strategy_language.py` | Compilateur du langage agent Pine-like canonique (`strategy_entry`/`strategy_exit`/`strategy_close`) | `parsing.py` consomme ses primitives ; les anciens action tools sont rejetés |
 | `trader/application/record/confidence_feedback.py` | Feedback persistant des rejets de gate confiance vers les learnings de l'agent | le daemon conserve le wrapper privé historique |

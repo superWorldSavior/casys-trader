@@ -212,6 +212,19 @@ def test_market_snapshot_uses_local_fx_provider_not_runtime_configuration() -> N
     assert "config_dir:" not in source
 
 
+def test_decision_recorder_injects_agent_trace_appender() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    recorder_path = repo_root / "trader" / "application" / "record" / "decision_recorder.py"
+    runtime_path = repo_root / "trader" / "runtime" / "agent_trace_runtime.py"
+    source = recorder_path.read_text(encoding="utf-8")
+
+    assert runtime_path.exists()
+    assert "AgentTraceAppender" in source
+    assert "agent_trace_appender" in source
+    assert "agent_trace_path" not in source
+    assert "from pathlib import Path" not in source
+
+
 def test_application_analyst_modules_are_nested_without_legacy_shims() -> None:
     application_dir = Path(__file__).resolve().parents[1] / "trader" / "application"
 
