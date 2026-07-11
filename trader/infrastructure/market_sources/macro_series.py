@@ -19,6 +19,8 @@ Séries versionnées (v1) — identifiants vérifiés DBnomics 2026-07-02 :
   ECB/FM/B.U2.EUR.4F.KR.DFR.LEV Taux de dépôt BCE (journalier)
   Eurostat/prc_hicp_midx/M.I15.CP00.EA20  HICP zone euro (mensuel)
   BLS/ln/LNS14000000             Taux de chômage US (mensuel)
+  IMF/PCPS/M.W00.POILBRE.USD     Pétrole Brent USD (mensuel, vérifié 2026-07-11)
+  IMF/PCPS/M.W00.PGOLD.USD       Or USD (mensuel, vérifié 2026-07-11)
 
 Note ECB : DBnomics/ECB peut avoir un décalage de quelques jours vs la BCE
 (publication officielle → agrégation DBnomics). L'important est le mécanisme :
@@ -75,6 +77,15 @@ SERIES: tuple[dict, ...] = (
     {
         "id": "BLS/ln/LNS14000000",
         "label": "unemployment_rate_us",
+    },
+    # Commodités internationales — identifiants vérifiés en live DBnomics 2026-07-11.
+    {
+        "id": "IMF/PCPS/M.W00.POILBRE.USD",
+        "label": "brent_crude_usd",
+    },
+    {
+        "id": "IMF/PCPS/M.W00.PGOLD.USD",
+        "label": "gold_usd",
     },
 )
 
