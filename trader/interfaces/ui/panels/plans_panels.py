@@ -8,10 +8,10 @@ from rich.console import Group, RenderableType
 from rich.panel import Panel
 from rich.text import Text
 
+from trader.domain.market import fx
+from trader.domain.planning.watches import is_armed_plan as _is_armed_plan
 from trader.interfaces.ui.palette import PALETTE_DARK, Palette
 from trader.interfaces.ui.panels.common import _expire_relative, _market_badge
-from trader.market import fx
-from trader.planning.indicator_watch import is_armed_plan as _is_armed_plan
 from trader.reporting.read_models.runtime_state import (
     UTC,
     _safe_float,

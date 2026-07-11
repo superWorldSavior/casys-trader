@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from trader.market import fx
+from trader.domain.market import fx
 from trader.support.coercion import (
     dict_list as _safe_list_of_dicts,
     finite_float as _safe_float,

@@ -25,7 +25,7 @@ from trader.interfaces.ui.panels.common import (
     _market_badge,
     _truncate,
 )
-from trader.market import fx
+from trader.domain.market import fx
 from trader.reporting.read_models.runtime_state import (
     UTC,
     _safe_float,

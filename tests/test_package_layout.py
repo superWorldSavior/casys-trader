@@ -888,6 +888,23 @@ def test_application_uses_canonical_domain_relevance_and_session_policy() -> Non
     assert "trader.market import market_data as market" not in planner_batch
 
 
+def test_internal_ui_and_bench_use_domain_policies_not_compatibility_facades() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    expected_imports = {
+        "trader/interfaces/cockpit/derive.py": "from trader.domain.planning.watches import is_armed_plan",
+        "trader/interfaces/cockpit/format.py": "from trader.domain.market import fx",
+        "trader/interfaces/ui/panels/plans_panels.py": "from trader.domain.planning.watches import is_armed_plan",
+        "trader/interfaces/ui/panels/positions_panels.py": "from trader.domain.market import fx",
+        "trader/interfaces/ui/panels/watches_panels.py": "from trader.domain.planning.watches import is_armed_plan",
+        "trader/reporting/bench/decision_bench.py": "from trader.domain.market import family_regime",
+    }
+
+    for relative_path, expected_import in expected_imports.items():
+        source = (repo_root / relative_path).read_text(encoding="utf-8")
+        assert expected_import in source
+        assert "from trader.planning.indicator_watch import is_armed_plan" not in source
+
+
 def test_scheduler_json_backend_is_nested_under_state_db_with_planning_facade() -> None:
     trader_dir = Path(__file__).resolve().parents[1] / "trader"
     facade_path = trader_dir / "planning" / "scheduler.py"

@@ -10,9 +10,9 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 from trader.domain.execution.fill_accounting import POSITION_EPSILON
+from trader.domain.planning.watches import is_armed_plan as _is_armed_plan
 from trader.interfaces.cockpit import format as f
 from trader.interfaces.cockpit.aggregates import attention_items, open_venue_set
-from trader.planning.indicator_watch import is_armed_plan as _is_armed_plan
 from trader.support.coercion import (
     dict_list as _safe_list_of_dicts,
     finite_float as _safe_float,

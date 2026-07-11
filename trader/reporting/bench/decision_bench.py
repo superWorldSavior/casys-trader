@@ -13,7 +13,7 @@ from typing import Any
 
 from trader.agent import llm
 from trader.agent.context import build_market_cockpit
-from trader.market import family_regime
+from trader.domain.market import family_regime
 from trader.reporting.audit import decision_quality as decision_audit
 from trader.reporting.bench.protocols import BenchHistory, ModelBenchCompleter
 
