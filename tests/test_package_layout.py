@@ -873,6 +873,21 @@ def test_application_runtime_and_backtest_use_canonical_pure_market_modules() ->
     assert violations == []
 
 
+def test_application_uses_canonical_domain_relevance_and_session_policy() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    infra_holds = (repo_root / "trader" / "application" / "cycle" / "infra_holds.py").read_text(
+        encoding="utf-8"
+    )
+    planner_batch = (repo_root / "trader" / "application" / "decide" / "planner_batch.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert "from trader.domain.planning import relevance_gate" in infra_holds
+    assert "trader.planning import relevance_gate" not in infra_holds
+    assert "from trader.domain.market import sessions as market" in planner_batch
+    assert "trader.market import market_data as market" not in planner_batch
+
+
 def test_scheduler_json_backend_is_nested_under_state_db_with_planning_facade() -> None:
     trader_dir = Path(__file__).resolve().parents[1] / "trader"
     facade_path = trader_dir / "planning" / "scheduler.py"

@@ -14,7 +14,7 @@ from trader.application.decide.learning_context import filter_applied_learning_i
 from trader.application.decide.protocols import DecisionBatchPlanner
 from trader.application.decide.tool_round import merge_domain_tools, run_one_round
 from trader.domain.decisions import BatchToolCallRequest, ContextResearchRequest, Decision
-from trader.market import market_data as market
+from trader.domain.market import sessions as market
 from trader.domain.planning.indicator_watch import summarize_watch
 from trader.planning.protocols import SchedulerLike
 

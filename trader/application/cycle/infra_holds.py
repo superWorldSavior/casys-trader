@@ -7,7 +7,7 @@ from datetime import datetime
 from typing import Any, Mapping, Protocol
 
 from trader.application.cycle.schedule import stale_backoff_wake_minutes
-from trader.planning import relevance_gate
+from trader.domain.planning import relevance_gate
 
 
 class SymbolWakeSource(Protocol):
