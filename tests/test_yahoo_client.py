@@ -17,14 +17,30 @@ from trader.infrastructure.market_sources import market_data_yf as mdy
 from trader.infrastructure.market_sources import yahoo_client as yc
 
 
-def _v8(timestamps, opens, highs, lows, closes, volumes, *, error=None, tz="Europe/Paris"):
+def _v8(
+    timestamps,
+    opens,
+    highs,
+    lows,
+    closes,
+    volumes,
+    *,
+    adjcloses=None,
+    error=None,
+    tz="Europe/Paris",
+):
+    indicators = {
+        "quote": [{
+            "open": opens, "high": highs, "low": lows,
+            "close": closes, "volume": volumes,
+        }],
+    }
+    if adjcloses is not None:
+        indicators["adjclose"] = [{"adjclose": adjcloses}]
     result = None if error else [{
         "timestamp": timestamps,
         "meta": {"exchangeTimezoneName": tz},
-        "indicators": {"quote": [{
-            "open": opens, "high": highs, "low": lows,
-            "close": closes, "volume": volumes,
-        }]},
+        "indicators": indicators,
     }]
     return json.dumps({"chart": {"error": error, "result": result}})
 
@@ -75,6 +91,71 @@ def test_short_parallel_array_yields_nan_not_indexerror():
     body = _v8([1, 2], [10, 11], [10, 11], [10, 11], [10, 11], [100])
     bars = yc.fetch_ohlc("X", "5d", "1h", http_get=lambda url: body)
     assert math.isnan(bars[1].volume)
+
+
+def test_auto_adjust_matches_yfinance_ohlc_formula_and_keeps_volume():
+    body = _v8(
+        [1, 2],
+        [100.0, 110.0],
+        [120.0, 130.0],
+        [90.0, 100.0],
+        [100.0, 120.0],
+        [1_000, 2_000],
+        adjcloses=[50.0, 120.0],
+    )
+
+    bars = yc.fetch_ohlc(
+        "X",
+        "1mo",
+        "1d",
+        auto_adjust=True,
+        http_get=lambda url: body,
+    )
+
+    assert bars[0].open == 50.0
+    assert bars[0].high == 60.0
+    assert bars[0].low == 45.0
+    assert bars[0].close == 50.0
+    assert bars[0].volume == 1_000.0
+    assert bars[1].open == 110.0
+    assert bars[1].close == 120.0
+    assert bars[1].volume == 2_000.0
+
+
+def test_auto_adjust_defaults_to_raw_close_when_adjclose_series_is_absent():
+    body = _v8([1], [10.0], [11.0], [9.0], [10.5], [100])
+
+    (bar,) = yc.fetch_ohlc(
+        "X",
+        "1mo",
+        "1d",
+        auto_adjust=True,
+        http_get=lambda url: body,
+    )
+
+    assert bar.open == 10.0
+    assert bar.high == 11.0
+    assert bar.low == 9.0
+    assert bar.close == 10.5
+
+
+def test_auto_adjust_is_opt_in_and_default_stays_raw():
+    body = _v8(
+        [1],
+        [100.0],
+        [120.0],
+        [90.0],
+        [100.0],
+        [1_000],
+        adjcloses=[50.0],
+    )
+
+    (bar,) = yc.fetch_ohlc("X", "1mo", "1d", http_get=lambda url: body)
+
+    assert bar.open == 100.0
+    assert bar.high == 120.0
+    assert bar.low == 90.0
+    assert bar.close == 100.0
 
 
 def test_chart_error_raises_fetch_failed():

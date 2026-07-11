@@ -1,13 +1,21 @@
-"""Couche data daily du radar : fetch injecte et controle de couverture."""
+"""Couche data daily du radar : Yahoo direct, fetch injecté et couverture."""
 
 from __future__ import annotations
 
 import json
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime
 from pathlib import Path
 
 from trader.domain.market_data import Bar
+from trader.infrastructure.market_sources.yahoo_client import fetch_ohlc
+
+
+DEFAULT_YAHOO_WORKERS = 8
+_DAILY_LOOKBACK = "1mo"
+_DAILY_INTERVAL = "1d"
 
 
 class CoverageError(RuntimeError):
@@ -36,8 +44,9 @@ def download_daily_batch(
     download_fn: Callable[[list[str]], object] | None = None,
     chunk_size: int = 100,
     max_retries: int = 3,
+    max_workers: int = DEFAULT_YAHOO_WORKERS,
 ) -> dict[str, list[Bar]]:
-    """Telecharge les barres daily par chunks, puis cache le resultat par as_of."""
+    """Télécharge les barres daily par chunks, puis cache le résultat par as_of."""
     cache_dir = Path(cache_dir)
     cache_path = cache_dir / f"{as_of}.json"
     if cache_path.exists():
@@ -47,16 +56,24 @@ def download_daily_batch(
         raise ValueError("chunk_size_must_be_positive")
     if max_retries <= 0:
         raise ValueError("max_retries_must_be_positive")
+    if max_workers <= 0:
+        raise ValueError("max_workers_must_be_positive")
 
-    downloader = download_fn or _download_yfinance
     bars_by_symbol: dict[str, list[Bar]] = {}
     for start in range(0, len(symbols), chunk_size):
         chunk = symbols[start : start + chunk_size]
-        raw = _download_chunk_with_retry(
-            chunk,
-            download_fn=downloader,
-            max_retries=max_retries,
-        )
+        if download_fn is None:
+            raw = _download_yahoo_direct(
+                chunk,
+                max_retries=max_retries,
+                max_workers=max_workers,
+            )
+        else:
+            raw = _download_chunk_with_retry(
+                chunk,
+                download_fn=download_fn,
+                max_retries=max_retries,
+            )
         for symbol, rows in _normalise_download_output(raw, chunk).items():
             bars = [_row_to_bar(row) for row in rows]
             if bars:
@@ -89,15 +106,81 @@ def _download_chunk_with_retry(
     raise last_exc
 
 
-def _download_yfinance(symbols: list[str]) -> object:
-    import yfinance as yf
+def _download_yahoo_direct(
+    symbols: list[str],
+    *,
+    max_retries: int,
+    max_workers: int,
+    fetch_fn: Callable[..., object] = fetch_ohlc,
+) -> dict[str, list[Bar]]:
+    """Fetch Yahoo v8 per symbol with bounded concurrency and isolated failures."""
 
-    return yf.download(
-        symbols,
-        interval="1d",
-        auto_adjust=True,
-        group_by="ticker",
-        threads=True,
+    if not symbols:
+        return {}
+
+    def _fetch_one(symbol: str) -> list[Bar]:
+        rows = _fetch_symbol_with_retry(
+            symbol,
+            fetch_fn=fetch_fn,
+            max_retries=max_retries,
+        )
+        return [_normalise_direct_daily_bar(row) for row in rows]
+
+    resolved: dict[str, list[Bar]] = {}
+    worker_count = min(max_workers, len(symbols))
+    with ThreadPoolExecutor(
+        max_workers=worker_count,
+        thread_name_prefix="radar-yahoo",
+    ) as executor:
+        future_by_symbol = {
+            executor.submit(_fetch_one, symbol): symbol for symbol in symbols
+        }
+        for future in as_completed(future_by_symbol):
+            symbol = future_by_symbol[future]
+            try:
+                bars = future.result()
+            except Exception:  # noqa: BLE001 - one malformed ticker stays isolated
+                continue
+            if bars:
+                resolved[symbol] = bars
+
+    return {symbol: resolved[symbol] for symbol in symbols if symbol in resolved}
+
+
+def _fetch_symbol_with_retry(
+    symbol: str,
+    *,
+    fetch_fn: Callable[..., object],
+    max_retries: int,
+) -> list[object]:
+    for attempt in range(max_retries):
+        try:
+            rows = fetch_fn(
+                symbol,
+                _DAILY_LOOKBACK,
+                _DAILY_INTERVAL,
+                auto_adjust=True,
+            )
+            return list(rows) if isinstance(rows, Iterable) else []
+        except Exception:  # noqa: BLE001 - external boundary, isolated per symbol
+            if attempt + 1 == max_retries:
+                return []
+            time.sleep(min(0.25, 0.05 * (2**attempt)))
+    return []
+
+
+def _normalise_direct_daily_bar(row: object) -> Bar:
+    """Keep the historical yfinance cache timestamp: local date at naive midnight."""
+
+    bar = _row_to_bar(row)
+    parsed = datetime.fromisoformat(bar.ts.replace("Z", "+00:00"))
+    return Bar(
+        ts=f"{parsed.date().isoformat()}T00:00:00",
+        open=bar.open,
+        high=bar.high,
+        low=bar.low,
+        close=bar.close,
+        volume=bar.volume,
     )
 
 
