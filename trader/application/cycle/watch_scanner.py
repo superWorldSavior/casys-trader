@@ -6,13 +6,14 @@ import logging
 from datetime import datetime, timezone
 from typing import Callable, Protocol
 
-from trader.market import market_data as market
+from trader.domain.market_data import MarketError
 from trader.planning.indicator_watch import evaluate_indicator_watches, watch_market_requests
 from trader.planning.protocols import SchedulerLike
+from trader.market.protocols import DataSource
 
 log = logging.getLogger("trader.application.watch_scanner")
 
-MarketErrorClassifier = Callable[[market.MarketError], bool]
+MarketErrorClassifier = Callable[[MarketError], bool]
 WarningLogger = Callable[[str, object, object, object], None]
 
 
@@ -30,7 +31,7 @@ class TradePlanStoreLike(Protocol):
     def upsert(self, plan: TradePlanLike) -> None: ...
 
 
-def _default_connection_error(_: market.MarketError) -> bool:
+def _default_connection_error(_: MarketError) -> bool:
     return False
 
 
@@ -53,7 +54,7 @@ def scan_indicator_watches(
     *,
     sched: SchedulerLike,
     now: datetime,
-    data_source: object,
+    data_source: DataSource,
     is_connection_market_error: MarketErrorClassifier = _default_connection_error,
     log_warning: WarningLogger | None = None,
 ) -> list[dict]:
@@ -67,7 +68,7 @@ def scan_indicator_watches(
     for symbol, interval, lookback in watch_market_requests(watches, universe_symbols=symbols):
         try:
             bars_by_key[(symbol, interval)] = data_source.get_bars(symbol, lookback=lookback, interval=interval)
-        except market.MarketError as exc:
+        except MarketError as exc:
             if is_connection_market_error(exc):
                 raise
             warning("indicator_watch data unavailable %s/%s: %s", symbol, interval, exc.code)
@@ -87,7 +88,7 @@ def scan_exit_watches(
     now: datetime,
     dry_run: bool,
     bars_interval: str,
-    data_source: object,
+    data_source: DataSource,
     is_connection_market_error: MarketErrorClassifier = _default_connection_error,
     log_warning: WarningLogger | None = None,
 ) -> list[dict]:
@@ -118,7 +119,7 @@ def scan_exit_watches(
             continue
         try:
             bars_by_key[key] = data_source.get_bars(symbol, lookback=lookback, interval=interval)
-        except market.MarketError as exc:
+        except MarketError as exc:
             if is_connection_market_error(exc):
                 raise
             warning("exit_watch data unavailable %s/%s: %s", symbol, interval, exc.code)

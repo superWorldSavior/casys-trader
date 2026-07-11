@@ -159,6 +159,17 @@ def test_application_imports_decision_contracts_from_domain() -> None:
     assert violations == []
 
 
+def test_watch_scanner_depends_on_market_port_and_domain_error() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    source_path = repo_root / "trader" / "application" / "cycle" / "watch_scanner.py"
+    source = source_path.read_text(encoding="utf-8")
+
+    assert "from trader.domain.market_data import MarketError" in source
+    assert "from trader.market.protocols import DataSource" in source
+    assert "from trader.market import market_data" not in source
+    assert "data_source: object" not in source
+
+
 def test_application_analyst_modules_are_nested_without_legacy_shims() -> None:
     application_dir = Path(__file__).resolve().parents[1] / "trader" / "application"
 
