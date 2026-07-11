@@ -93,7 +93,8 @@ passent par **providers** ; `describe_data`/`find_indicators` sont **purs** (cat
 Principe (validé avec Erwan) : **on ne trimballe pas les données dans le payload** ; on
 distingue **ressources-singletons** (créées une fois au boot, partagées) et **services-factory**
 (construits au boot au-dessus des singletons), exactement comme `make_execute_order_handler`
-reçoit déjà `db`/`broker`/`plan_store` (`execute_order_handler.py:47-52`).
+reçoit déjà `db`/`broker`/`plan_store`
+(`infrastructure/queue/order_handler.py`).
 
 Le `ToolContext` du worker se compose de **deux sources** :
 
@@ -208,7 +209,7 @@ borner la concurrence des fetchs, **agnostique à la source** (yahoo remplaçabl
    `unavailable`). ⚠️ à défaut, **réordonner le boot** pour construire `data_source` avant le pool.
 3. **`decide_handler.py` / `make_decide_handler`** — accepter `indicator_resolver` +
    `learnings_recall_provider`, comme `make_execute_order_handler` reçoit ses stores
-   (`execute_order_handler.py:47`).
+   (`infrastructure/queue/order_handler.py`).
 4. **`daemon.py` (~2402-2424)** — construire les services au boot (getter data_source,
    `build_indicator_resolver`, `build_recall_provider` avec `now_fn` **dynamique** — ⚠️
    `learnings_recall.py:37,53,78` fige `now`) et les passer à `_make_handler`.

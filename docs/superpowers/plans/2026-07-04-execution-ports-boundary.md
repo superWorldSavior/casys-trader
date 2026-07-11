@@ -54,7 +54,7 @@ Import the canonical names back into `trader.execution.broker` so existing impor
 **Files:**
 - Modify: `trader/execution/portfolio.py`
 - Modify: `trader/execution/risk.py`
-- Modify: `trader/application/execute_order_handler.py`
+- Modify: `trader/infrastructure/queue/order_handler.py`
 - Modify: `trader/state_db/unit_of_work.py`
 - Modify: `trader/state_db/broker_store.py`
 - Modify: `trader/runtime/daemon.py`
@@ -81,8 +81,8 @@ Update the architecture map to mention execution contracts/ports separately from
 - [ ] **Step 2: Run targeted verification**
 
 Run:
-- `uv run pytest -q tests/test_package_layout.py tests/test_execution.py tests/test_portfolio.py tests/test_risk.py tests/application/test_execute_order_handler.py tests/application/test_execute_via_queue.py tests/state_db/test_sqlite_broker.py tests/state_db/test_unit_of_work.py`
-- `uv run ruff check trader/execution/contracts.py trader/execution/ports.py trader/execution/broker.py trader/execution/portfolio.py trader/execution/risk.py trader/application/execute_order_handler.py trader/state_db/unit_of_work.py trader/state_db/broker_store.py trader/runtime/daemon.py backtest/engine.py backtest/__main__.py tests/test_package_layout.py`
+- `uv run pytest -q tests/test_package_layout.py tests/test_execution.py tests/test_portfolio.py tests/test_risk.py tests/infrastructure/queue/test_order_handler.py tests/application/test_execute_via_queue.py tests/state_db/test_sqlite_broker.py tests/state_db/test_unit_of_work.py`
+- `uv run ruff check trader/execution/contracts.py trader/execution/ports.py trader/execution/broker.py trader/execution/portfolio.py trader/execution/risk.py trader/infrastructure/queue/order_handler.py trader/state_db/unit_of_work.py trader/state_db/broker_store.py trader/runtime/daemon.py backtest/engine.py backtest/__main__.py tests/test_package_layout.py`
 - `git diff --check`
 
 ### Task 5: Review And Merge

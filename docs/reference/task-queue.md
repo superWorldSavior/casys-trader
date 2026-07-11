@@ -1,7 +1,7 @@
 # Référence — File de tâches durable (task-ledger)
 
 > **Type** : Reference (Diátaxis).
-> **Code** : primitives `infrastructure/queue/ledger`, `infrastructure/queue/pools`, `infrastructure/queue/worker` ; dispatchers `application/decide/queue_dispatch` + `application/execute/queue_dispatch`, payload plans `application/execute/queue_plan` ; bootstrap runtime `runtime/queue_runtime` + `runtime/data_source_runtime`, orchestration `runtime/daemon`, handlers `application/decide/handler` + `application/execute/order_handler`, backend `infrastructure/state_db/*` (outbox). Les anciens imports `trader.queue.*` et `trader.state_db.*` restent compatibles via alias virtuels.
+> **Code** : primitives `infrastructure/queue/ledger`, `infrastructure/queue/pools`, `infrastructure/queue/worker` ; dispatchers `application/decide/queue_dispatch` + `application/execute/queue_dispatch`, payload plans `application/execute/queue_plan` ; bootstrap runtime `runtime/queue_runtime` + `runtime/data_source_runtime`, orchestration `runtime/daemon`, handlers `application/decide/handler` + `infrastructure/queue/order_handler`, backend `infrastructure/state_db/*` (outbox). Les anciens imports `trader.queue.*` et `trader.state_db.*` restent compatibles via alias virtuels.
 > **Statut** : ✅ **File durable ACTIVÉE en paper** — SQLite est l'état paper canonique, sans flag de backend. `CASYS_QUEUE_DECIDE_ENABLED` et `CASYS_QUEUE_EXECUTE_ENABLED` restent les deux commutateurs opérationnels des chemins queue. Le comparateur JSON/SQLite a été retiré du cycle le 2026-07-10 ; les anciens JSON sont figés et ne constituent plus une vérité runtime.
 > **Rôle** : file durable qui découple la production des tâches de leur traitement (durabilité, reprise, idempotence, backpressure).
 

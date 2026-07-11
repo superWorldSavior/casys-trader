@@ -84,7 +84,7 @@ garantie même sous plusieurs `execute_order`.
   Générique (sert decide ET execute_order — mêmes primitives Worker/ResourcePools).
 - `trader/application/decide_one.py` : handler `decide` — prompt 1-symbole (extrait de
   `decide_batch`), acpx, `Decision`. Réutilise le contexte `per_symbol`.
-- `trader/application/execute_order_handler.py` : handler `execute_order` — revalidation
+- `trader/infrastructure/queue/order_handler.py` : adaptateur du handler `execute_order` — revalidation
   (`order_admission` finale + checks cash/prix `daemon.py:2477/2606`) + `SimBroker.submit` +
   plan + `done` en 1 tx.
 - `trader/application/queue_dispatch.py` : producteur + collecte dans `run_cycle` (enfile,

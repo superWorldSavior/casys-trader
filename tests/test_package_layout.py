@@ -94,20 +94,15 @@ def test_application_package_has_only_canonical_subpackages() -> None:
     }
 
 
-def test_application_does_not_import_infrastructure_outside_compatibility_facades() -> None:
+def test_application_does_not_import_infrastructure() -> None:
     repo_root = Path(__file__).resolve().parents[1]
     application_dir = repo_root / "trader" / "application"
-    compatibility_facades = {
-        Path("execute/order_handler.py"),
-    }
     violations: list[str] = []
 
     for source_path in sorted(application_dir.rglob("*.py")):
         if "__pycache__" in source_path.parts:
             continue
         relative_path = source_path.relative_to(application_dir)
-        if relative_path in compatibility_facades:
-            continue
         tree = ast.parse(source_path.read_text(encoding="utf-8"), filename=str(source_path))
         for node in ast.walk(tree):
             if isinstance(node, ast.ImportFrom) and (node.module or "").startswith(
@@ -325,7 +320,6 @@ def test_application_execute_modules_are_nested_without_legacy_shims() -> None:
             "entry_context",
             "queue_dispatch",
             "queue_plan",
-            "order_handler",
         ],
     )
 
@@ -1101,7 +1095,6 @@ def test_daemon_delegates_queue_pool_bootstrap_to_runtime_adapter() -> None:
     tree = ast.parse(source, filename=str(daemon_path))
     forbidden_modules = {
         "trader.application.decide.handler",
-        "trader.application.execute.order_handler",
         "trader.infrastructure.queue.decide_pool",
         "trader.infrastructure.queue.ledger",
         "trader.infrastructure.queue.pools",
@@ -1185,10 +1178,13 @@ def test_infrastructure_imports_stale_backoff_policy_from_domain_not_scheduler_f
     assert violations == []
 
 
-def test_execute_order_handler_is_infrastructure_canonical_with_application_facade() -> None:
+def test_execute_order_handler_lives_only_in_infrastructure() -> None:
     repo_root = Path(__file__).resolve().parents[1]
     facade_path = repo_root / "trader" / "application" / "execute" / "order_handler.py"
     adapter_path = repo_root / "trader" / "infrastructure" / "queue" / "order_handler.py"
+    assert not facade_path.exists()
+    assert adapter_path.exists()
+
     source = adapter_path.read_text(encoding="utf-8")
     tree = ast.parse(source, filename=str(adapter_path))
 
@@ -1203,22 +1199,6 @@ def test_execute_order_handler_is_infrastructure_canonical_with_application_faca
     assert "trade_plan_from_dict" not in source
     assert "from trader.domain.trade_plan import TradePlan" in source
     assert violations == []
-
-    facade_tree = ast.parse(
-        facade_path.read_text(encoding="utf-8"),
-        filename=str(facade_path),
-    )
-    assert not any(
-        isinstance(node, (ast.ClassDef, ast.FunctionDef))
-        for node in facade_tree.body
-    )
-
-    from trader.application.execute.order_handler import (
-        make_execute_order_handler as legacy_make_execute_order_handler,
-    )
-    from trader.infrastructure.queue.order_handler import make_execute_order_handler
-
-    assert legacy_make_execute_order_handler is make_execute_order_handler
 
 
 def test_retryable_error_is_application_contract_with_worker_facade() -> None:
