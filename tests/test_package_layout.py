@@ -3407,6 +3407,34 @@ def test_application_uses_execution_contracts_and_ports_instead_of_broker_adapte
     assert violations == []
 
 
+def test_internal_code_does_not_import_execution_compatibility_facades() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    trader_dir = repo_root / "trader"
+    compatibility_dir = trader_dir / "execution"
+    forbidden_prefix = "trader.execution"
+    violations: list[str] = []
+
+    for root in (trader_dir, repo_root / "backtest", repo_root / "scripts"):
+        for path in sorted(root.rglob("*.py")):
+            if path == trader_dir / "__init__.py" or compatibility_dir in path.parents:
+                continue
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            relative_path = path.relative_to(repo_root)
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ImportFrom) and node.module and (
+                    node.module == forbidden_prefix or node.module.startswith(f"{forbidden_prefix}.")
+                ):
+                    violations.append(f"{relative_path}:{node.lineno}: from {node.module} import ...")
+                elif isinstance(node, ast.Import):
+                    violations.extend(
+                        f"{relative_path}:{node.lineno}: import {alias.name}"
+                        for alias in node.names
+                        if alias.name == forbidden_prefix or alias.name.startswith(f"{forbidden_prefix}.")
+                    )
+
+    assert violations == []
+
+
 def test_portfolio_imports_are_canonical_with_tools_compatibility() -> None:
     repo_root = Path(__file__).resolve().parents[1]
     facade_path = repo_root / "trader" / "execution" / "portfolio.py"

@@ -21,7 +21,7 @@ import yaml
 
 from trader.agent import client as codex_client
 from trader.agent import memory as agent_memory
-from trader.execution.broker import commission_model_from_name
+from trader.infrastructure.brokers.commission_models import commission_model_from_name
 
 from .data import DataError, HistoryStore
 from .engine import run_backtest

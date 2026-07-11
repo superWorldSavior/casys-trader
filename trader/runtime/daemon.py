@@ -59,7 +59,8 @@ from trader.application.execute.cycle_decision import (
     _RELATIVE_ORDER_INTENTS,
     execute_one_cycle_decision as _execute_one_cycle_decision,
 )
-from trader.execution.risk import RiskGate, RiskLimits
+from trader.domain.execution.risk_gate import RiskGate
+from trader.domain.risk import RiskLimits
 from trader.agent.learnings import consolidator
 from trader.agent.learnings import raw_store as raw_learnings
 from trader.agent.learnings import store as recall_store_mod
@@ -108,14 +109,11 @@ from trader.runtime import (
 from trader.runtime.cycle_process_state import CycleProcessState
 from trader.runtime.ib_attach import IBAttachBackoff
 from trader.runtime.state_writer import RuntimeStateWriter
-from trader.execution import portfolio
-from trader.execution.contracts import Order
-from trader.execution.broker import (
-    SimBroker as SimBroker,
-    commission_model_from_name,
-    round_trip_cost,
-)
-from trader.execution.protocols import CommissionModel
+from trader.application.portfolio import snapshot as portfolio
+from trader.application.execute.fee_estimate import round_trip_cost
+from trader.application.execute.protocols import CommissionModel
+from trader.domain.contracts import Order
+from trader.infrastructure.brokers.commission_models import commission_model_from_name
 from trader.infrastructure.state_db.broker_factory import (
     CANONICAL_STATE_BACKEND,
     bootstrap_state_backend,

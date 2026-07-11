@@ -11,11 +11,12 @@ from dataclasses import asdict, dataclass, is_dataclass
 from pathlib import Path
 from typing import Callable, Literal, Protocol, cast
 
-from trader.agent.client import Decision
-from trader.execution.broker import SimBroker
-from trader.execution.contracts import Order, Position
-from trader.execution.protocols import CommissionModel
-from trader.execution.risk import RiskGate, RiskLimits
+from trader.application.execute.protocols import CommissionModel
+from trader.domain.decisions import Decision
+from trader.domain.execution.risk_gate import RiskGate
+from trader.domain.contracts import Order, Position
+from trader.domain.risk import RiskLimits
+from trader.infrastructure.state_db.sim_broker import SimBroker
 
 
 class HistoryLike(Protocol):

@@ -53,7 +53,7 @@ def build_positions_fn(state_dir: str | Path) -> PositionsFn:
             # json shadow in sqlite mode or with the wrong default cash.
             if not (state_dir / "broker.json").exists():
                 return {}
-            from trader.execution.broker import SimBroker
+            from trader.infrastructure.state_db.sim_broker import SimBroker
 
             return SimBroker(state_dir / "broker.json").positions()
         except Exception:  # noqa: BLE001 - sticky state is advisory/fail-safe
