@@ -66,6 +66,25 @@ def test_request_enriches_candidates_builds_snapshot_and_disables_retrieval() ->
     )
 
 
+def test_request_keeps_a_global_situation_digest_for_prompt_injection() -> None:
+    request = build_universe_composition_request(
+        venue="EU",
+        as_of="2026-07-10T15:30:00+00:00",
+        candidates=({"symbol": "SAP.DE", "attractiveness": 0.8, "bias": "long"},),
+        baseline=("SAP.DE",),
+        sticky=(),
+        market_context={},
+        situation_context=UniverseSituationContext.not_available(candidate_count=1),
+        global_situation_digest={"as_of": "2026-07-10T15:00:00+00:00", "regime": "mixed"},
+    )
+
+    assert request.global_situation_digest == {
+        "as_of": "2026-07-10T15:00:00+00:00",
+        "regime": "mixed",
+    }
+    assert request.to_dict()["global_situation_digest"] == request.global_situation_digest
+
+
 def test_request_rejects_baseline_over_25_or_outside_pool_or_sticky() -> None:
     candidates = tuple(
         {"symbol": f"SYM{i}", "attractiveness": 1.0, "bias": "long"}

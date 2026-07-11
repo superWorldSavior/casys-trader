@@ -35,6 +35,7 @@ class UniverseCompositionRequest:
     family_snapshot: dict[str, dict[str, Any]]
     company_context: UniverseCompanyContext
     global_family_board: dict[str, Any] = field(default_factory=dict)
+    global_situation_digest: dict[str, Any] = field(default_factory=dict)
     retrieval_refs: tuple[str, ...] = ()
     retrieval_status: str = "not_enabled"
 
@@ -54,6 +55,7 @@ class UniverseCompositionRequest:
             "situation_context": self.situation_context.to_dict(),
             "family_snapshot": _json_copy(self.family_snapshot),
             "global_family_board": _json_copy(self.global_family_board),
+            "global_situation_digest": _json_copy(self.global_situation_digest),
             "retrieval_refs": list(self.retrieval_refs),
             "retrieval_status": self.retrieval_status,
         }
@@ -110,6 +112,7 @@ def build_universe_composition_request(
     situation_context: UniverseSituationContext,
     company_context: UniverseCompanyContext | None = None,
     global_family_board: Mapping[str, Any] | None = None,
+    global_situation_digest: Mapping[str, Any] | None = None,
     retrieval_refs: Iterable[str] = (),
     retrieval_status: str = "not_enabled",
 ) -> UniverseCompositionRequest:
@@ -155,6 +158,11 @@ def build_universe_composition_request(
         "role"
     ) != "comparative_context_not_capital_allocation":
         raise ValueError("global_family_board_role_invalid")
+    normalized_global_situation_digest = dict(global_situation_digest or {})
+    if normalized_global_situation_digest and not str(
+        normalized_global_situation_digest.get("as_of") or ""
+    ).strip():
+        raise ValueError("global_situation_digest_as_of_required")
 
     snapshot = build_family_snapshot(enriched, normalized_baseline, normalized_sticky)
     normalized_company_context = company_context or project_company_briefs_to_universe_context(
@@ -201,6 +209,7 @@ def build_universe_composition_request(
         family_snapshot=snapshot,
         company_context=normalized_company_context,
         global_family_board=_json_copy(normalized_global_family_board),
+        global_situation_digest=_json_copy(normalized_global_situation_digest),
         retrieval_refs=normalized_retrieval_refs,
         retrieval_status=normalized_retrieval_status,
     )

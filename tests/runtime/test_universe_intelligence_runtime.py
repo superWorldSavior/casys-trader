@@ -232,6 +232,11 @@ def test_tick_prepares_three_independent_venue_runs_with_briefs_and_families(tmp
         state_dir / "global_family_boards" / "2026-07-10.jsonl"
     ).read_text(encoding="utf-8").splitlines()
     assert len(board_rows) == 1
+    digest_rows = (
+        state_dir / "global_situation_digests" / "2026-07-10.jsonl"
+    ).read_text(encoding="utf-8").splitlines()
+    assert len(digest_rows) == 1
+    assert len({json.dumps(request.global_situation_digest, sort_keys=True) for request in agent.requests}) == 1
     for request in agent.requests:
         assert request.candidate_scope_id == scopes[request.venue]
         assert request.retrieval_status == "not_enabled"
@@ -241,6 +246,7 @@ def test_tick_prepares_three_independent_venue_runs_with_briefs_and_families(tmp
             "comparative_context_not_capital_allocation"
         )
         assert set(request.global_family_board["venues"]) == {"TW", "EU", "US"}
+        assert request.global_situation_digest["coverage"]["venues_seen"] == ["EU", "TW", "US"]
         context = request.situation_context.to_dict()
         assert context["status"] == "active"
         assert context["coverage"]["status"] == "partial"
@@ -272,6 +278,9 @@ def test_tick_prepares_three_independent_venue_runs_with_briefs_and_families(tmp
         ] == "observed"
         assert prepared["global_family_board"]["board_id"] == (
             request.global_family_board["board_id"]
+        )
+        assert prepared["global_situation_digest"]["digest_id"] == (
+            request.global_situation_digest["digest_id"]
         )
         assert prepared["company_context_mode"] == "active"
         assert prepared["company_context_coverage"]["missing"] == 2

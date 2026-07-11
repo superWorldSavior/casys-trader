@@ -29,9 +29,11 @@ from trader.domain.universe import (
     project_company_briefs_to_universe_context,
     project_brief_to_universe_context,
 )
+from trader.domain.situation import build_global_situation_digest
 from trader.infrastructure.state_db.candidate_scope_store import CandidateScopeStore
 from trader.infrastructure.state_db.company_intelligence_store import CompanyIntelligenceStore
 from trader.infrastructure.state_db.global_family_board_store import GlobalFamilyBoardStore
+from trader.infrastructure.state_db.global_situation_digest_store import GlobalSituationDigestStore
 from trader.infrastructure.state_db.situation_brief_store import NewsMacroBriefStore
 from trader.infrastructure.state_db.universe_run_store import UniverseRunStore
 from trader.infrastructure.state_db.universe_mandate_store import UniverseMandateStore
@@ -59,6 +61,7 @@ def tick_universe_intelligence(
     brief_store: NewsMacroBriefStore | None = None,
     run_store: UniverseRunStore | None = None,
     family_board_store: GlobalFamilyBoardStore | None = None,
+    global_situation_store: GlobalSituationDigestStore | None = None,
     company_store: CompanyIntelligenceStore | None = None,
     mandate_store: UniverseMandateStore | None = None,
     venues: Iterable[str] = VENUES,
@@ -83,6 +86,9 @@ def tick_universe_intelligence(
     family_boards = family_board_store or GlobalFamilyBoardStore(
         state_path / "global_family_boards"
     )
+    global_situations = global_situation_store or GlobalSituationDigestStore(
+        state_path / "global_situation_digests"
+    )
     companies = company_store or CompanyIntelligenceStore(state_path / "company_intelligence")
     mandates = mandate_store or UniverseMandateStore(state_path / "universe_mandates")
     company_context_mode = _company_context_mode(Path(config_dir))
@@ -91,6 +97,12 @@ def tick_universe_intelligence(
         scopes=scopes,
         briefs=briefs,
         store=family_boards,
+        now=now,
+        log=log,
+    )
+    global_situation_digest, global_situation_ref = _prepare_global_situation_digest(
+        briefs=briefs,
+        store=global_situations,
         now=now,
         log=log,
     )
@@ -176,6 +188,7 @@ def tick_universe_intelligence(
                 situation_context=situation_context,
                 company_context=company_context,
                 global_family_board=global_family_board,
+                global_situation_digest=global_situation_digest,
             )
         except Exception as exc:
             record = _base_run_record(
@@ -287,6 +300,7 @@ def tick_universe_intelligence(
                     global_family_board,
                     family_board_ref,
                 ),
+                "global_situation_digest": global_situation_ref,
                 "situation_context_hash": _request_signature(situation_context.to_dict()),
                 "situation_point_count": situation_context.point_count,
                 "situation_truncated": situation_context.truncated,
@@ -454,6 +468,28 @@ def _prepare_global_family_board(
         **ref,
         "persistence_status": "appended" if changed else "unchanged",
     }
+
+
+def _prepare_global_situation_digest(
+    *,
+    briefs: NewsMacroBriefStore,
+    store: GlobalSituationDigestStore,
+    now: datetime,
+    log: LoggerLike,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    regional_briefs = {
+        venue: brief
+        for venue in VENUES
+        if (brief := briefs.read_latest(venue, at=now)) is not None
+    }
+    digest_as_of = max((brief.as_of for brief in regional_briefs.values()), default=now.isoformat())
+    digest = build_global_situation_digest(regional_briefs, as_of=digest_as_of).to_dict()
+    try:
+        stored, ref, changed = store.append_if_changed(digest)
+    except Exception as exc:  # noqa: BLE001 - digest observability must not block universe work
+        log.warning("global situation digest persistence failed: %s", exc)
+        return digest, {"status": "error", "persistence_error": exc.__class__.__name__}
+    return stored, {**ref, "persistence_status": "appended" if changed else "unchanged"}
 
 
 def _family_board_observability(
