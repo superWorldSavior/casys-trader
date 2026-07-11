@@ -161,6 +161,7 @@ def test_application_record_modules_are_nested_without_legacy_shims() -> None:
             "plan_review",
             "confidence_feedback",
             "gross_feedback",
+            "learning_outcomes",
         ],
     )
 

@@ -4,25 +4,22 @@ from __future__ import annotations
 
 import json
 import logging
-import math
 import os
 import threading
 from collections.abc import Callable, Mapping
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 
-from backtest.data import HistoryStore
-from backtest.decision_quality import BAND, classify, forward_return
-
 from trader.agent.learnings import embeddings as embeddings_mod
-from trader.domain.execution.fill_accounting import POSITION_EPSILON
+from trader.application.record.learning_outcomes import (
+    MIN_OUTCOME_AGE,
+    outcome_for_row,
+    realised_entry_outcomes,
+    uses_realised_outcome,
+)
+from trader.infrastructure.files.model_performance_jsonl import JsonlModelPerformanceReader
 from trader.infrastructure.state_db.learnings_store import LearningsStore
 from trader.runtime import ledger_rotation
-from trader.runtime.learning_outcomes import (
-    realised_entry_outcomes,
-    realised_verdict,
-    requires_realised_trade,
-)
 from trader.runtime.protocols import LoggerLike
 
 
@@ -30,12 +27,6 @@ DEFAULT_EMBEDDING_BATCH_SIZE = 64
 DEFAULT_OUTCOME_BATCH_SIZE = 128
 DEFAULT_OUTCOME_INTERVAL_S = 3600.0
 DEFAULT_MEMRL_ALPHA = 0.1
-MIN_OUTCOME_AGE = timedelta(days=1)
-UNKNOWN_OUTCOME_AGE = timedelta(days=3)
-
-_WIN_CLASSES = {"gagnant", "bonne_prudence"}
-_LOSS_CLASSES = {"perdant", "opportunite_manquee"}
-_NEUTRAL_CLASSES = {"neutre", "justifie"}
 
 
 def _utc(value: datetime) -> datetime:
@@ -73,84 +64,6 @@ def source_fingerprint(state_dir: Path) -> tuple[tuple[str, int, int], ...]:
     return tuple(rows)
 
 
-def _outcome(value: str, forward_value: float | None) -> dict[str, object]:
-    if value in _WIN_CLASSES:
-        return {"verdict": "WIN", "reward": 1.0, "forward_return": forward_value}
-    if value in _LOSS_CLASSES:
-        return {"verdict": "LOSS", "reward": -1.0, "forward_return": forward_value}
-    if value in _NEUTRAL_CLASSES:
-        return {"verdict": "NEUTRAL", "reward": 0.0, "forward_return": forward_value}
-    return {"verdict": "UNKNOWN", "reward": None, "forward_return": None}
-
-
-def _decision_quality_action(row: Mapping[str, object]) -> str | None:
-    """Return the directional action represented by the decision.
-
-    A HOLD maintains the exposure captured in the decision ledger's durable
-    portfolio snapshot.  Missing or malformed snapshots must not silently turn
-    a held position into the historical "flat HOLD" interpretation.
-    """
-
-    action = str(row.get("action") or "HOLD").upper()
-    if action != "HOLD":
-        return action
-
-    snapshot = row.get("portfolio_snapshot")
-    if not isinstance(snapshot, Mapping):
-        return None
-    holdings = snapshot.get("holdings")
-    if not isinstance(holdings, list):
-        return None
-
-    symbol = str(row.get("symbol") or "").strip().upper()
-    quantity = 0.0
-    for holding in holdings:
-        if not isinstance(holding, Mapping):
-            return None
-        holding_symbol = holding.get("symbol")
-        if holding_symbol is None:
-            return None
-        if str(holding_symbol).strip().upper() != symbol:
-            continue
-        try:
-            parsed_quantity = float(holding.get("quantity"))
-        except (TypeError, ValueError):
-            return None
-        if not math.isfinite(parsed_quantity):
-            return None
-        quantity += parsed_quantity
-
-    if quantity > POSITION_EPSILON:
-        return "BUY"
-    if quantity < -POSITION_EPSILON:
-        return "SELL"
-    return "HOLD"
-
-
-def score_outcome(row: Mapping[str, object], bars: list, *, now: datetime) -> dict[str, object] | None:
-    """Score one mature note/decision with the canonical 1d, then 4h fallback."""
-
-    ts = _parse_ts(row.get("ts") or row.get("cycle_ts"))
-    symbol = str(row.get("symbol") or "")
-    if ts is None or not symbol or _utc(now) - ts < MIN_OUTCOME_AGE:
-        return None
-    action = _decision_quality_action(row)
-    if action is None:
-        return None
-
-    history = HistoryStore.from_bars({symbol: list(bars)})
-    ts_iso = ts.isoformat()
-    one_day = forward_return(history, symbol, ts_iso, timedelta(days=1))
-    if one_day is not None:
-        return _outcome(classify(action, one_day, BAND), one_day)
-    four_hours = forward_return(history, symbol, ts_iso, timedelta(hours=4))
-    if four_hours is not None:
-        return _outcome(classify(action, four_hours, BAND), four_hours)
-    if bars and _utc(now) - ts >= UNKNOWN_OUTCOME_AGE:
-        return _outcome("non_evaluable", None)
-    return None
-
-
 def _lookback_for(rows: list[Mapping[str, object]], *, now: datetime) -> str:
     timestamps = [parsed for row in rows if (parsed := _parse_ts(row.get("ts") or row.get("cycle_ts")))]
     if not timestamps:
@@ -186,35 +99,6 @@ def _fetch_bars_by_symbol(
         except Exception as exc:  # noqa: BLE001 - background outcome scoring is fail-open
             errors.append({"symbol": symbol, "code": type(exc).__name__})
     return bars_by_symbol, errors
-
-
-def _is_legacy_decision_id(row: Mapping[str, object]) -> bool:
-    """Legacy rows predate a durable decision id and keep fixed-horizon FLAIR."""
-
-    return str(row.get("decision_id") or "").startswith("synth:")
-
-
-def _outcome_for_row(
-    row: Mapping[str, object],
-    *,
-    bars: list,
-    now: datetime,
-    realised_returns: Mapping[str, float],
-) -> dict[str, object] | None:
-    """Resolve an opening only after its lot closes; score every other row at 1d/4h."""
-
-    if requires_realised_trade(dict(row)) and not _is_legacy_decision_id(row):
-        net_return = realised_returns.get(str(row.get("decision_id") or ""))
-        if net_return is None:
-            # A live lot has no expiry: it remains deliberately pending.
-            return None
-        verdict, reward = realised_verdict(net_return)
-        return {
-            "verdict": verdict,
-            "reward": reward,
-            "forward_return": net_return,
-        }
-    return score_outcome(row, bars, now=now)
 
 
 def _refresh_outcomes(
@@ -257,14 +141,16 @@ def _refresh_outcomes(
         for row in [*pending_notes, *delayed_rows]
         if (ts := _parse_ts(row.get("ts") or row.get("cycle_ts"))) is not None
         and _utc(now) - ts >= MIN_OUTCOME_AGE
-        and not (requires_realised_trade(dict(row)) and not _is_legacy_decision_id(row))
+        and not uses_realised_outcome(row)
     ]
     bars_by_symbol, errors = _fetch_bars_by_symbol(mature_rows, now=now, get_bars=get_bars)
-    realised_returns = realised_entry_outcomes(state_dir)
+    realised_returns = realised_entry_outcomes(
+        JsonlModelPerformanceReader(state_dir / "model_performance.jsonl")
+    )
 
     note_updates: list[dict] = []
     for row in pending_notes:
-        outcome = _outcome_for_row(
+        outcome = outcome_for_row(
             row,
             bars=bars_by_symbol.get(str(row.get("symbol") or ""), []),
             now=now,
@@ -280,7 +166,7 @@ def _refresh_outcomes(
         row = decisions_by_id.get(decision_id)
         if row is None:
             continue
-        outcome = _outcome_for_row(
+        outcome = outcome_for_row(
             row,
             bars=bars_by_symbol.get(str(row.get("symbol") or ""), []),
             now=now,
@@ -305,7 +191,7 @@ def _refresh_outcomes(
         row = decisions_by_id.get(decision_id)
         if row is None:
             continue
-        outcome = _outcome_for_row(
+        outcome = outcome_for_row(
             row,
             bars=bars_by_symbol.get(str(row.get("symbol") or ""), []),
             now=now,
@@ -556,6 +442,5 @@ class LearningSyncRunner:
 __all__ = [
     "LearningSyncRunner",
     "run_learning_sync",
-    "score_outcome",
     "source_fingerprint",
 ]

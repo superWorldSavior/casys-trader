@@ -8,7 +8,49 @@ from collections import defaultdict
 from collections.abc import Iterable, Mapping
 from typing import Any
 
-__all__ = ["apply_shrinkage", "compute_lift", "compute_outcome_scores"]
+SIGNIFICANT_RETURN_BAND = 0.005
+
+__all__ = [
+    "SIGNIFICANT_RETURN_BAND",
+    "apply_shrinkage",
+    "classify_decision_quality",
+    "compute_lift",
+    "compute_outcome_scores",
+]
+
+
+def classify_decision_quality(
+    action: str,
+    forward_return: float | None,
+    band: float = SIGNIFICANT_RETURN_BAND,
+) -> str:
+    """Classify one directional decision against a significant-return band."""
+    if forward_return is None:
+        return "non_evaluable"
+
+    normalized = action.upper()
+    if normalized == "BUY":
+        if forward_return > band:
+            return "gagnant"
+        if forward_return < -band:
+            return "perdant"
+        return "neutre"
+
+    if normalized == "SELL":
+        if forward_return < -band:
+            return "gagnant"
+        if forward_return > band:
+            return "perdant"
+        return "neutre"
+
+    if normalized == "HOLD":
+        if forward_return > band:
+            return "opportunite_manquee"
+        if forward_return < -band:
+            return "bonne_prudence"
+        return "justifie"
+
+    return "inconnu"
 
 
 def _field(row: Mapping[str, Any], key: str) -> Any:

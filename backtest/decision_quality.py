@@ -10,12 +10,16 @@ from pathlib import Path
 from typing import Any
 
 from trader.ledger_rotation import read_rows_with_archive
+from trader.domain.learnings.scoring import (
+    SIGNIFICANT_RETURN_BAND,
+    classify_decision_quality,
+)
 from trader.domain.market_data import Bar
 
 from .data import DataError, HistoryStore
 
 HORIZONS = (("4h", timedelta(hours=4)), ("1d", timedelta(days=1)))
-BAND = 0.005
+BAND = SIGNIFICANT_RETURN_BAND
 JUDGEABLE_REASONS = {"hold", "ok"}
 STATE_DIR = Path("state")
 
@@ -42,32 +46,7 @@ class AggregateResult(list[dict]):
 
 def classify(action: str, forward_return: float | None, band: float) -> str:
     """Classe une décision selon le rendement forward et la bande significative."""
-    if forward_return is None:
-        return "non_evaluable"
-
-    normalized = action.upper()
-    if normalized == "BUY":
-        if forward_return > band:
-            return "gagnant"
-        if forward_return < -band:
-            return "perdant"
-        return "neutre"
-
-    if normalized == "SELL":
-        if forward_return < -band:
-            return "gagnant"
-        if forward_return > band:
-            return "perdant"
-        return "neutre"
-
-    if normalized == "HOLD":
-        if forward_return > band:
-            return "opportunite_manquee"
-        if forward_return < -band:
-            return "bonne_prudence"
-        return "justifie"
-
-    return "inconnu"
+    return classify_decision_quality(action, forward_return, band)
 
 
 def forward_return(history: HistoryStore, symbol: str, ts: str, horizon: timedelta) -> float | None:
