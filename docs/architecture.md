@@ -357,7 +357,7 @@ ou revue périodique garantie (4 h). Sinon → `quiet_gate` (HOLD sans appel).
 
 Les `indicator_watch` à `on_trigger: EXECUTE_ORDER` acceptent côté agent un
 `order` Pine-like (`direction`, `qty`, `confidence`, `exit`). À l'armement,
-`planning/indicator_watch.py` le compile en ordre interne
+`domain/planning/indicator_watch.py` le compile en ordre interne
 (`intent`, `qty`, `confidence`, `exit_plan`). Au déclenchement,
 `trader/application/exit/armed_plans.py` résout le cas d'usage et le daemon émet les
 logs/événements retournés :
@@ -534,7 +534,7 @@ Override LLM : l'agent peut ajouter/retirer des symboles avec raison loggée
 
 > Source canonique des invariants runtime : [`reference/wake-scheduler.md`](reference/wake-scheduler.md).
 
-`trader/planning/indicator_watch.py` — cube `symbol × indicator × timeframe × op × value`.
+`trader/domain/planning/indicator_watch.py` — cube `symbol × indicator × timeframe × op × value`.
 
 Trois modes de déclenchement :
 
@@ -553,9 +553,9 @@ déclenchées arrivent au LLM via `context.indicator_triggers`; les expirations 
 arrivent via `context.wake_reasons` (`watch_expired` / `armed_plan_expired`).
 
 **INVARIANT ATOMIQUE** : une seule condition rejetée → toute la veille est rejetée
-(jamais de watch amputée). `trader/planning/indicator_watch.py`
+(jamais de watch amputée). `trader/domain/planning/indicator_watch.py`
 
-TTL max des plans armés : 240 min (aligné sur la revue périodique garantie). `trader/planning/indicator_watch.py`
+TTL max des plans armés : 240 min (aligné sur la revue périodique garantie). `trader/domain/planning/indicator_watch.py`
 
 **exit_watch** : veille attachée à un `TradePlan` ouvert — déclenche `WAKE` quand
 une condition technique se réalise post-entrée (ex. `z_score > 1`). Cooldown

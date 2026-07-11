@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from trader.planning.exit_engine import evaluate_plan
-from trader.planning.indicator_watch import (
+from trader.domain.planning.indicator_watch import (
     armed_order_price_coherent,
     evaluate_indicator_watches,
     is_armed_plan,

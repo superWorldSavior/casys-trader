@@ -662,42 +662,58 @@ def test_pure_planning_calculations_are_nested_under_domain_with_facades() -> No
 
     expected_modules = {
         "__init__.py",
+        "armed_order.py",
         "exit_engine.py",
         "exit_plan_spec.py",
+        "indicator_watch.py",
         "relevance_gate.py",
         "scheduling.py",
+        "watch_evaluator.py",
         "watches.py",
     }
     assert {path.name for path in domain_planning_dir.glob("*.py")} == expected_modules
 
-    for module_name in ("exit_engine", "exit_plan_spec", "relevance_gate"):
+    for module_name in (
+        "armed_order",
+        "exit_engine",
+        "exit_plan_spec",
+        "indicator_watch",
+        "relevance_gate",
+        "watch_evaluator",
+    ):
         facade_path = trader_dir / "planning" / f"{module_name}.py"
         assert facade_path.exists()
         source = facade_path.read_text(encoding="utf-8")
-        assert f"from trader.domain.planning.{module_name} import *" in source
+        assert f"from trader.domain.planning import {module_name}" in source
 
-    indicator_watch_source = (trader_dir / "planning" / "indicator_watch.py").read_text(encoding="utf-8")
-    assert "from trader.domain.planning.watches import is_armed_plan" in indicator_watch_source
-
+    import trader.domain.planning.armed_order as domain_armed_order
     import trader.domain.planning.exit_engine as domain_exit_engine
     import trader.domain.planning.exit_plan_spec as domain_exit_plan_spec
+    import trader.domain.planning.indicator_watch as domain_indicator_watch
     import trader.domain.planning.relevance_gate as domain_relevance_gate
     import trader.domain.planning.scheduling as domain_scheduling
+    import trader.domain.planning.watch_evaluator as domain_watch_evaluator
     import trader.domain.planning.watches as domain_watches
     import trader.application.cycle.schedule as cycle_schedule
+    import trader.planning.armed_order as planning_armed_order
     import trader.planning.exit_engine as planning_exit_engine
     import trader.planning.exit_plan_spec as planning_exit_plan_spec
+    import trader.planning.indicator_watch as planning_indicator_watch
     import trader.planning.relevance_gate as planning_relevance_gate
     import trader.planning.scheduler as planning_scheduler
+    import trader.planning.watch_evaluator as planning_watch_evaluator
     from trader.planning.indicator_watch import is_armed_plan
 
+    assert planning_armed_order.normalize_armed_order is domain_armed_order.normalize_armed_order
     assert planning_exit_engine.evaluate_plan is domain_exit_engine.evaluate_plan
     assert planning_relevance_gate.symbol_needs_llm is domain_relevance_gate.symbol_needs_llm
     assert planning_exit_plan_spec.normalize_exit_plan is domain_exit_plan_spec.normalize_exit_plan
     assert planning_exit_plan_spec._positive_float is domain_exit_plan_spec._positive_float
+    assert planning_indicator_watch.build_indicator_watch is domain_indicator_watch.build_indicator_watch
     assert planning_scheduler.STALE_BACKOFF_BASE_MULTIPLIER == domain_scheduling.STALE_BACKOFF_BASE_MULTIPLIER
     assert planning_scheduler.STALE_BACKOFF_MAX_MINUTES == domain_scheduling.STALE_BACKOFF_MAX_MINUTES
     assert planning_scheduler.STALE_BACKOFF_MAX_STREAK == domain_scheduling.STALE_BACKOFF_MAX_STREAK
+    assert planning_watch_evaluator.evaluate_indicator_watches is domain_watch_evaluator.evaluate_indicator_watches
     assert cycle_schedule.stale_backoff_wake_minutes is domain_scheduling.stale_backoff_wake_minutes
     assert is_armed_plan is domain_watches.is_armed_plan
 
@@ -725,6 +741,33 @@ def test_pure_planning_calculations_are_nested_under_domain_with_facades() -> No
                 for alias in node.names:
                     if alias.name.startswith(forbidden_prefixes):
                         violations.append(f"{rel_path}: import {alias.name}")
+
+    assert violations == []
+
+
+def test_application_and_backtest_use_canonical_domain_watch_policy() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    forbidden_modules = {
+        "trader.planning.armed_order",
+        "trader.planning.indicator_watch",
+        "trader.planning.watch_evaluator",
+    }
+    violations: list[str] = []
+
+    for source_root in (repo_root / "trader" / "application", repo_root / "backtest"):
+        for source_path in sorted(source_root.rglob("*.py")):
+            tree = ast.parse(source_path.read_text(encoding="utf-8"), filename=str(source_path))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ImportFrom) and node.module in forbidden_modules:
+                    violations.append(
+                        f"{source_path.relative_to(repo_root)}:{node.lineno}: from {node.module} import ..."
+                    )
+                elif isinstance(node, ast.Import):
+                    violations.extend(
+                        f"{source_path.relative_to(repo_root)}:{node.lineno}: import {alias.name}"
+                        for alias in node.names
+                        if alias.name in forbidden_modules
+                    )
 
     assert violations == []
 

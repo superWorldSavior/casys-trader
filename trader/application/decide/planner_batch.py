@@ -14,7 +14,7 @@ from trader.agent.context import build_symbol_structure, resolve_indicator_reque
 from trader.application.decide.learning_context import filter_applied_learning_ids
 from trader.application.decide.tool_round import merge_domain_tools, run_one_round
 from trader.market import market_data as market
-from trader.planning.indicator_watch import summarize_watch
+from trader.domain.planning.indicator_watch import summarize_watch
 from trader.planning.protocols import SchedulerLike
 
 log = logging.getLogger("trader.application.planner_batch")

@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from typing import Callable, Protocol
 
 from trader.domain.market_data import MarketError
-from trader.planning.indicator_watch import evaluate_indicator_watches, watch_market_requests
+from trader.domain.planning.indicator_watch import evaluate_indicator_watches, watch_market_requests
 from trader.planning.protocols import SchedulerLike
 from trader.market.protocols import DataSource
 

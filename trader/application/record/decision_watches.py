@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 
-from trader.planning.indicator_watch import build_indicator_watch
+from trader.domain.planning.indicator_watch import build_indicator_watch
 
 
 @dataclass(frozen=True)
