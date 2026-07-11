@@ -519,7 +519,7 @@ def run_cycle(
         max_market_data_age_minutes=max_market_data_age_minutes,
         runtime_interval=runtime_interval,
         runtime_lookback=runtime_lookback,
-        config_dir=ROOT / "config",
+        fx_rate_provider=data_source_runtime.build_fx_rate_provider(config_dir=ROOT / "config"),
         plan_store=plan_store,
         scheduler=sched,
         daily_lookback=COCKPIT_DAILY_LOOKBACK,

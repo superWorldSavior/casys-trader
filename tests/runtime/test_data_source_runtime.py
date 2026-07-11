@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from trader.market import market_data as market
+from trader.domain.market_data import Bar
 from trader.runtime import data_source_runtime
 
 
@@ -63,6 +64,24 @@ class FakeBackoff:
         return self.due_result
 
 
+class FxDataSource:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str, str]] = []
+
+    def get_bars(self, symbol: str, lookback: str, interval: str) -> list[Bar]:
+        self.calls.append((symbol, lookback, interval))
+        return [
+            Bar(
+                ts="2026-07-05T00:00:00+00:00",
+                open=32.0,
+                high=32.0,
+                low=32.0,
+                close=32.0,
+                volume=1.0,
+            )
+        ]
+
+
 def _config(*, profile: str = "paper") -> data_source_runtime.DataSourceRuntimeConfig:
     return data_source_runtime.DataSourceRuntimeConfig(
         use_composite=True,
@@ -75,6 +94,20 @@ def test_data_source_runtime_ne_contient_pas_les_snapshots_de_cycle() -> None:
     assert hasattr(data_source_runtime, "DataSourceHandle")
     assert not hasattr(data_source_runtime, "PlanSnapshotHandle")
     assert not hasattr(data_source_runtime, "ExitValidationSnapshotHandle")
+
+
+def test_fx_rate_provider_binds_runtime_config_and_fetches_through_source(tmp_path: Path) -> None:
+    (tmp_path / "fx.yaml").write_text(
+        "TWD:\n  yahoo: TWD=X\n  invert: true\n  fallback: 0.031\n",
+        encoding="utf-8",
+    )
+    source = FxDataSource()
+    provider = data_source_runtime.build_fx_rate_provider(config_dir=tmp_path)
+
+    rates = provider(["2330.TW"], data_source=source)
+
+    assert rates == {"USD": 1.0, "TWD": pytest.approx(1 / 32.0)}
+    assert source.calls == [("TWD=X", "2d", "1d")]
 
 
 def test_load_data_source_config_absent_skips_parser(tmp_path: Path) -> None:

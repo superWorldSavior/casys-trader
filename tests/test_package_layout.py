@@ -201,6 +201,17 @@ def test_watch_scanner_depends_on_market_port_and_domain_error() -> None:
     assert "data_source: object" not in source
 
 
+def test_market_snapshot_uses_local_fx_provider_not_runtime_configuration() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    source_path = repo_root / "trader" / "application" / "cycle" / "market_snapshot.py"
+    source = source_path.read_text(encoding="utf-8")
+
+    assert "class FxRateProvider(Protocol):" in source
+    assert "from pathlib import Path" not in source
+    assert "trader.market.fx_rates" not in source
+    assert "config_dir:" not in source
+
+
 def test_application_analyst_modules_are_nested_without_legacy_shims() -> None:
     application_dir = Path(__file__).resolve().parents[1] / "trader" / "application"
 

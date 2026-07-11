@@ -313,6 +313,9 @@ L'univers actif est généré par la rotation (D9/D10) à chaque cycle :
 
 `trader/application/cycle/market_snapshot.py` construit le snapshot du cycle :
 barres 15m / 5j (runtime décisionnel) + barres 1j / 1y (cockpit daily).
+Le snapshot reçoit un `FxRateProvider` local : la politique de cycle consomme les
+taux, tandis que le runtime résout `fx.yaml` et le fetch FX via
+`trader/runtime/data_source_runtime.py`.
 `market.assess_freshness()` est le garde « marché live » : une dernière barre trop
 vieille (> 40 min par défaut) → `stale_market_data` → le symbole
 est exclu du tradable et reçoit un backoff exponentiel (`trader/runtime/daemon.py`).

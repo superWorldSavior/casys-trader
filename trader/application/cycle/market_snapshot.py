@@ -5,14 +5,12 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import datetime
-from pathlib import Path
-from typing import Callable, Protocol, runtime_checkable
+from typing import Callable, Collection, Protocol, runtime_checkable
 
 from trader.domain.market import fx
 from trader.domain.market import sessions as market
 from trader.domain.market.execution_eligibility import build_execution_eligibility
 from trader.domain.market_data import MarketError
-from trader.market import fx_rates
 from trader.market.protocols import DataSource
 
 log = logging.getLogger("trader.application.market_snapshot")
@@ -75,6 +73,22 @@ class ExitBarsFetcher(Protocol):
         ...
 
 
+class FxRateProvider(Protocol):
+    """Resolve native-currency rates for the symbols present in this cycle.
+
+    The cycle owns when rates are needed; the runtime owns configuration and
+    market-source I/O needed to resolve them.
+    """
+
+    def __call__(
+        self,
+        symbols: Collection[str],
+        *,
+        data_source: DataSource,
+    ) -> dict[str, float]:
+        ...
+
+
 def _default_connection_error(_: MarketError) -> bool:
     return False
 
@@ -119,7 +133,7 @@ def build_market_snapshot(
     max_market_data_age_minutes: float,
     runtime_interval: str,
     runtime_lookback: str,
-    config_dir: str | Path,
+    fx_rate_provider: FxRateProvider,
     plan_store: object | None,
     scheduler: object | None = None,
     daily_lookback: str = DEFAULT_DAILY_LOOKBACK,
@@ -170,27 +184,13 @@ def build_market_snapshot(
     if stale_market_data:
         log.debug("[market] stale symbols=%s", sorted(stale_market_data))
 
-    fx_cfg: dict = {}
-    fx_yaml_path = Path(config_dir) / "fx.yaml"
-    if fx_yaml_path.exists():
-        try:
-            fx_cfg = fx_rates.load_fx_config(fx_yaml_path)
-        except Exception as exc:  # noqa: BLE001 - malformed FX config degrades to USD fallback
-            log.warning("fx.yaml illisible (%s), dégradation USD fallback", exc)
-
-    def fx_fetch(yahoo_symbol: str) -> float | None:
-        try:
-            bars = data_source.get_bars(yahoo_symbol, lookback="2d", interval="1d")
-            return bars[-1].close if bars else None
-        except Exception:  # noqa: BLE001 - FX fetch must not break the cycle
-            return None
-
     try:
-        fx_rate_by_ccy: dict[str, float] = fx_rates.rates_for_symbols(
-            prices.keys(), fetcher=fx_fetch, config=fx_cfg
+        fx_rate_by_ccy = fx_rate_provider(
+            prices.keys(),
+            data_source=data_source,
         )
-    except Exception as exc:  # noqa: BLE001 - unknown currency degrades to USD fallback
-        log.warning("fx rates fetch échoué (%s), dégradation USD fallback", exc)
+    except Exception as exc:  # noqa: BLE001 - provider failure must not break the cycle
+        log.warning("fx rate provider échoué (%s), dégradation USD fallback", exc)
         fx_rate_by_ccy = {fx.BASE_CCY: 1.0}
 
     if scheduler is not None:

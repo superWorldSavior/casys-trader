@@ -841,7 +841,7 @@ class TestDaemonDecisionDataSourceField:
     ):
         """F5 : décision HOLD stale doit aussi contenir 'data_source'."""
         from trader.planning.scheduler import Scheduler
-        from trader.market.market_data import Freshness
+        from trader.domain.market.sessions import Freshness
 
         _write_runtime_config(tmp_path)
         state_dir = tmp_path / "state"
@@ -856,7 +856,7 @@ class TestDaemonDecisionDataSourceField:
                 return "yfinance"
 
         # Forcer assess_freshness à retourner stale pour le fetch runtime
-        import trader.market.market_data as market_mod
+        from trader.domain.market import sessions as market_mod
 
         def fake_assess_stale(bars, *, now, max_age_minutes):
             return Freshness(False, "too_old", 9999.0)
@@ -909,7 +909,7 @@ class TestDaemonCompositeF6AllStale:
         Avant F6, CompositeDataSource levait all_sources_failed sur all-stale, et
         le daemon swallowait l'exception → le symbole disparaissait sans trace.
         """
-        from trader.market.market_data import Freshness
+        from trader.domain.market.sessions import Freshness
         from trader.market.data_source import CompositeDataSource
 
         _write_runtime_config(tmp_path)
@@ -929,7 +929,7 @@ class TestDaemonCompositeF6AllStale:
         )
 
         # Forcer assess_freshness à dire stale pour toutes les barres
-        import trader.market.market_data as market_mod
+        from trader.domain.market import sessions as market_mod
         monkeypatch.setattr(
             market_mod,
             "assess_freshness",

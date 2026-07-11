@@ -12,7 +12,7 @@ from typing import Callable
 
 import yaml
 
-from trader.market import fx
+from trader.domain.market import fx
 
 logger = logging.getLogger(__name__)
 

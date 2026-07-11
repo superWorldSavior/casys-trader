@@ -6,8 +6,10 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Callable, Protocol
+from typing import Callable, Collection, Protocol
 
+from trader.domain.market import fx
+from trader.infrastructure.market_sources import fx_rates
 from trader.market import market_data as market
 from trader.market.data_source import (
     CompositeDataSource,
@@ -16,6 +18,7 @@ from trader.market.data_source import (
     parse_data_sources_config,
 )
 from trader.market.ib_source import IBDataSource, connect_ib
+from trader.market.protocols import DataSource
 from trader.runtime.ib_attach import IBAttachBackoff
 from trader.runtime.protocols import LoggerLike
 
@@ -67,6 +70,59 @@ class DataSourceHandle:
 
     def get(self) -> object | None:
         return self._current
+
+
+def resolve_fx_rates(
+    symbols: Collection[str],
+    *,
+    data_source: DataSource,
+    config_dir: str | Path,
+    logger: LoggerLike | None = None,
+) -> dict[str, float]:
+    """Resolve cycle FX rates through runtime configuration and market I/O."""
+    log = logger or _default_logger()
+    fx_config: dict = {}
+    fx_yaml_path = Path(config_dir) / "fx.yaml"
+    if fx_yaml_path.exists():
+        try:
+            fx_config = fx_rates.load_fx_config(fx_yaml_path)
+        except Exception as exc:  # noqa: BLE001 - malformed config degrades to USD fallback
+            log.warning("fx.yaml illisible (%s), dégradation USD fallback", exc)
+
+    def fetch_close(yahoo_symbol: str) -> float | None:
+        try:
+            bars = data_source.get_bars(yahoo_symbol, lookback="2d", interval="1d")
+            return bars[-1].close if bars else None
+        except Exception:  # noqa: BLE001 - FX fetch must not break the cycle
+            return None
+
+    try:
+        return fx_rates.rates_for_symbols(symbols, fetcher=fetch_close, config=fx_config)
+    except Exception as exc:  # noqa: BLE001 - unknown currency degrades to USD fallback
+        log.warning("fx rates fetch échoué (%s), dégradation USD fallback", exc)
+        return {fx.BASE_CCY: 1.0}
+
+
+def build_fx_rate_provider(
+    *,
+    config_dir: str | Path,
+    logger: LoggerLike | None = None,
+) -> Callable[..., dict[str, float]]:
+    """Bind runtime FX configuration for injection into a cycle snapshot."""
+
+    def provide(
+        symbols: Collection[str],
+        *,
+        data_source: DataSource,
+    ) -> dict[str, float]:
+        return resolve_fx_rates(
+            symbols,
+            data_source=data_source,
+            config_dir=config_dir,
+            logger=logger,
+        )
+
+    return provide
 
 
 def _default_logger() -> logging.Logger:

@@ -43,7 +43,12 @@ class FakeScheduler:
         self.reset.append(symbol)
 
 
-def test_market_snapshot_returns_prices_and_sources(tmp_path):
+def _fx_rate_provider(_symbols, *, data_source) -> dict[str, float]:
+    del data_source
+    return {"USD": 1.0}
+
+
+def test_market_snapshot_returns_prices_and_sources():
     source = FakeSource()
 
     snapshot = build_market_snapshot(
@@ -53,7 +58,7 @@ def test_market_snapshot_returns_prices_and_sources(tmp_path):
         max_market_data_age_minutes=40.0,
         runtime_interval="15m",
         runtime_lookback="5d",
-        config_dir=tmp_path,
+        fx_rate_provider=_fx_rate_provider,
         plan_store=None,
     )
 
@@ -63,7 +68,7 @@ def test_market_snapshot_returns_prices_and_sources(tmp_path):
     assert snapshot.runtime_data_source_by_symbol == {"SPY": "runtime"}
 
 
-def test_market_snapshot_marks_stale_runtime_data(tmp_path):
+def test_market_snapshot_marks_stale_runtime_data():
     class StaleSource(FakeSource):
         def get_bars(self, symbol: str, lookback: str, interval: str) -> list[Bar]:
             self.calls.append((symbol, lookback, interval))
@@ -79,7 +84,7 @@ def test_market_snapshot_marks_stale_runtime_data(tmp_path):
         max_market_data_age_minutes=40.0,
         runtime_interval="15m",
         runtime_lookback="5d",
-        config_dir=tmp_path,
+        fx_rate_provider=_fx_rate_provider,
         plan_store=None,
     )
 
@@ -89,7 +94,7 @@ def test_market_snapshot_marks_stale_runtime_data(tmp_path):
     assert snapshot.tradable_symbols == []
 
 
-def test_market_snapshot_resets_scheduler_only_for_fresh_symbols(tmp_path):
+def test_market_snapshot_resets_scheduler_only_for_fresh_symbols():
     class MixedSource(FakeSource):
         def get_bars(self, symbol: str, lookback: str, interval: str) -> list[Bar]:
             self.calls.append((symbol, lookback, interval))
@@ -108,7 +113,7 @@ def test_market_snapshot_resets_scheduler_only_for_fresh_symbols(tmp_path):
         max_market_data_age_minutes=40.0,
         runtime_interval="15m",
         runtime_lookback="5d",
-        config_dir=tmp_path,
+        fx_rate_provider=_fx_rate_provider,
         plan_store=None,
         scheduler=sched,
     )
@@ -116,12 +121,13 @@ def test_market_snapshot_resets_scheduler_only_for_fresh_symbols(tmp_path):
     assert sched.reset == ["FRESH"]
 
 
-def test_market_snapshot_captures_runtime_source_before_daily_and_fx(tmp_path):
-    (tmp_path / "fx.yaml").write_text(
-        "TWD:\n  yahoo: TWD=X\n  fallback: 0.031\n",
-        encoding="utf-8",
-    )
+def test_market_snapshot_captures_runtime_source_and_requests_fx_rates():
     source = FakeSource()
+    fx_calls: list[tuple[list[str], object]] = []
+
+    def fx_rate_provider(symbols, *, data_source) -> dict[str, float]:
+        fx_calls.append((list(symbols), data_source))
+        return {"USD": 1.0, "TWD": 0.031}
 
     snapshot = build_market_snapshot(
         symbols=["2330.TW"],
@@ -130,16 +136,17 @@ def test_market_snapshot_captures_runtime_source_before_daily_and_fx(tmp_path):
         max_market_data_age_minutes=40.0,
         runtime_interval="15m",
         runtime_lookback="5d",
-        config_dir=tmp_path,
+        fx_rate_provider=fx_rate_provider,
         plan_store=None,
     )
 
     assert snapshot.runtime_data_source_by_symbol == {"2330.TW": "runtime"}
-    assert snapshot.fx_rate_by_ccy["TWD"] == 100.0
-    assert snapshot.rate_for_symbol("2330.TW") == 100.0
+    assert snapshot.fx_rate_by_ccy["TWD"] == 0.031
+    assert snapshot.rate_for_symbol("2330.TW") == 0.031
+    assert fx_calls == [(["2330.TW"], source)]
     assert source.calls[0] == ("2330.TW", "5d", "15m")
     assert ("2330.TW", "1y", "1d") in source.calls
-    assert ("TWD=X", "2d", "1d") in source.calls
+    assert ("TWD=X", "2d", "1d") not in source.calls
 
 
 def test_market_snapshot_rate_lookup_is_derived_method_not_captured_field() -> None:
