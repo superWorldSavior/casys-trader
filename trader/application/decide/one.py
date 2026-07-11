@@ -30,6 +30,7 @@ from trader.agent import llm
 import trader.agent.tools as agent_tools
 from trader.agent.context import build_indicator_resolver
 from trader.domain.decisions import Decision
+from trader.application.decide.protocols import DecisionBatchPlanner
 from trader.application.decide.tool_round import resolve_symbol_decision
 from trader.application.queue.contracts import RetryableError
 
@@ -182,7 +183,7 @@ def decide_one(
     per_symbol_facts: dict,
     decision_timeout_s: int,
     agent_tools_enabled: bool,
-    codex_client,
+    codex_client: DecisionBatchPlanner,
     tool_services: ToolRoundServices | None = None,
     symbols_universe: list[str] | None = None,
     cycle_id: str | None = None,

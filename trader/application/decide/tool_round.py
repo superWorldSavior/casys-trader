@@ -15,7 +15,7 @@ from dataclasses import replace
 from typing import Callable
 
 import trader.agent.tools as agent_tools
-from trader.agent import client as codex_client
+from trader.domain.decisions import BatchToolCallRequest, ContextResearchRequest, Decision
 
 
 def run_one_round(request, *, context, limits=None) -> tuple[list[dict], dict]:
@@ -111,7 +111,7 @@ def resolve_symbol_decision(
     heartbeat: Callable[[], object] | None = None,
     action_validator: Callable | None = None,
     max_action_corrections: int = 2,
-) -> "codex_client.Decision":
+) -> Decision:
     """Orchestration grain-1 du tour d'outils : round(s) + tour final + merge des traces.
 
     Équivalent mono-symbole de l'orchestration batch (`planner_batch.py:326-394`),
@@ -160,7 +160,7 @@ def resolve_symbol_decision(
     for _ in range(max_rounds):
         resp = call_model(per_symbol, allow_tool_calls=True)
         _heartbeat()
-        if not isinstance(resp, codex_client.BatchToolCallRequest):
+        if not isinstance(resp, BatchToolCallRequest):
             decision = _decision_of(resp, symbol)
             if (
                 action_validator is not None
@@ -198,35 +198,35 @@ def resolve_symbol_decision(
     # Budget de tournées épuisé → tour final, outils interdits (le LLM DOIT décider).
     resp_final = call_model(per_symbol, allow_tool_calls=False)
     _heartbeat()
-    if isinstance(resp_final, codex_client.BatchToolCallRequest):
+    if isinstance(resp_final, BatchToolCallRequest):
         # Défense en profondeur (design §6.2) : une 2e tournée au tour final est bloquée.
-        return _finalize(codex_client.Decision.hold(symbol, "tool_loop_blocked"), accumulated_traces, rounds_done)
+        return _finalize(Decision.hold(symbol, "tool_loop_blocked"), accumulated_traces, rounds_done)
     final_decision = _decision_of(resp_final, symbol)
     if (
         final_decision.llm_error == "tool_loop"
         and final_decision.action == "HOLD"
         and final_decision.rationale == "tool_loop_blocked"
     ):
-        final_decision = codex_client.Decision.hold(symbol, "tool_loop_blocked")
+        final_decision = Decision.hold(symbol, "tool_loop_blocked")
     return _finalize(final_decision, accumulated_traces, rounds_done)
 
 
-def _decision_of(resp, symbol: str) -> "codex_client.Decision":
+def _decision_of(resp, symbol: str) -> Decision:
     """Extrait la Decision du symbole d'une réponse LLM (dict batch ou Decision nue)."""
-    if isinstance(resp, codex_client.Decision):
+    if isinstance(resp, Decision):
         return resp
     if isinstance(resp, dict):
         candidate = resp.get(symbol)
-        if isinstance(candidate, codex_client.Decision):
+        if isinstance(candidate, Decision):
             return candidate
-        if isinstance(candidate, codex_client.ContextResearchRequest):
+        if isinstance(candidate, ContextResearchRequest):
             # Ne devrait pas arriver (allow_context_request=False en queue) ; rendre le
             # cas explicite plutôt que de le masquer en "missing_in_batch" (review R4).
-            return codex_client.Decision.hold(symbol, "unexpected_context_request")
-    return codex_client.Decision.hold(symbol, "missing_in_batch")
+            return Decision.hold(symbol, "unexpected_context_request")
+    return Decision.hold(symbol, "missing_in_batch")
 
 
-def _finalize(decision: "codex_client.Decision", traces: list[dict], rounds: int) -> "codex_client.Decision":
+def _finalize(decision: Decision, traces: list[dict], rounds: int) -> Decision:
     """Attache les traces d'outils au `domain_tools` de la décision dès qu'un round a eu lieu.
 
     Conditionné sur `rounds` (pas sur `traces`) pour rester fidèle au batch : un round qui

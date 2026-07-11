@@ -43,6 +43,7 @@ _COMMON = dict(
 def _batch_decide(**kwargs):
     kwargs.setdefault("indicator_request_resolver", daemon.resolve_indicator_requests)
     kwargs.setdefault("event_appender", daemon._append_event)
+    kwargs.setdefault("decision_planner", daemon.codex_client)
     return planner_batch.batch_decide(**kwargs)
 
 
@@ -1358,9 +1359,10 @@ def test_batch_decide_loggue_le_decoupage_des_chunks(monkeypatch, caplog) -> Non
     def fake_batch(*, symbols, **kwargs):
         return {sym: Decision.hold(sym, "x") for sym in symbols}
 
-    monkeypatch.setattr(planner_batch.codex_client, "decide_batch", fake_batch)
+    monkeypatch.setattr(daemon.codex_client, "decide_batch", fake_batch)
 
     planner_batch.batch_decide(
+        decision_planner=daemon.codex_client,
         decidable=["A", "B", "C"],
         max_model_calls=2,
         decision_batch_size=2,

@@ -35,13 +35,14 @@ from dataclasses import asdict
 from typing import Callable
 
 from trader.application.decide.one import ToolRoundServices, decide_one
+from trader.application.decide.protocols import DecisionBatchPlanner
 
 log = logging.getLogger("trader.application.decide.handler")
 
 
 def make_decide_handler(
     *,
-    codex_client,
+    codex_client: DecisionBatchPlanner,
     tool_services: "ToolRoundServices | None" = None,
     session_backends: list | None = None,
 ) -> Callable[..., "str | None"]:

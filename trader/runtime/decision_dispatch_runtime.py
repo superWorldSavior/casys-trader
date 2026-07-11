@@ -6,7 +6,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Callable, Iterator
 
-from trader.agent.protocol.types import Decision
+from trader.agent import client as codex_client
+from trader.domain.decisions import Decision
 from trader.application.decide import planner_batch, queue_dispatch, recent_decisions
 from trader.application.decide.learning_context import filter_applied_learning_ids
 from trader.application.execute.cycle_decision import DecisionExecutionState
@@ -113,7 +114,14 @@ def dispatch_decisions(
             ),
         )
 
-    decide_batch = batch_decider or planner_batch.batch_decide
+    if batch_decider is None:
+        def decide_batch(**kwargs: object) -> tuple[dict[str, Decision], int]:
+            return planner_batch.batch_decide(
+                decision_planner=codex_client,
+                **kwargs,
+            )
+    else:
+        decide_batch = batch_decider
     last_review = load_last_review(request.plan_store, request.decidable)
     recent = _load_recent_decisions(
         recent_decisions_loader or recent_decisions.recent_decisions_by_symbol,

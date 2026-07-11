@@ -43,6 +43,7 @@ def _hold(sym):
 def _batch_decide(**kwargs):
     kwargs.setdefault("indicator_request_resolver", daemon.resolve_indicator_requests)
     kwargs.setdefault("event_appender", daemon._append_event)
+    kwargs.setdefault("decision_planner", daemon.codex_client)
     return planner_batch.batch_decide(**kwargs)
 
 

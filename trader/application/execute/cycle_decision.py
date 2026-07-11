@@ -8,7 +8,6 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Callable
 
-from trader.agent import client as codex_client
 import trader.application.cycle.schedule as cycle_schedule
 import trader.application.execute.entry_context as entry_context
 import trader.application.execute.queue_dispatch as execute_queue_dispatch
@@ -29,6 +28,7 @@ from trader.domain.market import volatility as reference_volatility_service
 from trader.domain.market.execution_eligibility import execution_blocked_reason
 from trader.domain.planning.exit_plan_spec import InvalidExitPlanError, validate_exit_plan
 from trader.domain.planning.trade_plan import resolve_exit_plan
+from trader.domain.decisions import Decision
 from trader.planning.protocols import SchedulerLike
 
 _OPENING_INTENTS = {"OPEN_LONG", "OPEN_SHORT", "FLIP", "SCALE_IN"}
@@ -105,7 +105,7 @@ def execute_one_cycle_decision(
     sym: str,
     index: int,
     total: int,
-    decision: codex_client.Decision,
+    decision: Decision,
     state: DecisionExecutionState,
     ctx: DecisionExecutionContext,
 ) -> DecisionExecutionState:

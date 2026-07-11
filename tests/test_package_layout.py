@@ -159,6 +159,37 @@ def test_application_imports_decision_contracts_from_domain() -> None:
     assert violations == []
 
 
+def test_decide_application_uses_local_planner_protocol_not_agent_client() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    decide_dir = repo_root / "trader" / "application" / "decide"
+    protocol_path = decide_dir / "protocols.py"
+
+    assert protocol_path.exists()
+    protocol_source = protocol_path.read_text(encoding="utf-8")
+    assert "class DecisionBatchPlanner(Protocol):" in protocol_source
+    assert "trader.agent" not in protocol_source
+
+    violations: list[str] = []
+    for source_path in sorted((repo_root / "trader" / "application").rglob("*.py")):
+        tree = ast.parse(source_path.read_text(encoding="utf-8"), filename=str(source_path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module in {
+                "trader.agent.client",
+                "trader.agent.protocol.types",
+            }:
+                violations.append(
+                    f"{source_path.relative_to(repo_root)}:{node.lineno}: from {node.module} import ..."
+                )
+            elif isinstance(node, ast.Import):
+                violations.extend(
+                    f"{source_path.relative_to(repo_root)}:{node.lineno}: import {alias.name}"
+                    for alias in node.names
+                    if alias.name in {"trader.agent.client", "trader.agent.protocol.types"}
+                )
+
+    assert violations == []
+
+
 def test_watch_scanner_depends_on_market_port_and_domain_error() -> None:
     repo_root = Path(__file__).resolve().parents[1]
     source_path = repo_root / "trader" / "application" / "cycle" / "watch_scanner.py"
@@ -288,6 +319,7 @@ def test_application_decide_modules_are_nested_without_legacy_shims() -> None:
         "decide",
         [
             "planner_batch",
+            "protocols",
             "one",
             "handler",
             "tool_round",

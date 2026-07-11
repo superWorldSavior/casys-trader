@@ -9,10 +9,11 @@ from datetime import datetime
 from typing import Callable
 
 import trader.agent.tools as agent_tools
-from trader.agent import client as codex_client
 from trader.agent.context import build_symbol_structure, resolve_indicator_requests
 from trader.application.decide.learning_context import filter_applied_learning_ids
+from trader.application.decide.protocols import DecisionBatchPlanner
 from trader.application.decide.tool_round import merge_domain_tools, run_one_round
+from trader.domain.decisions import BatchToolCallRequest, ContextResearchRequest, Decision
 from trader.market import market_data as market
 from trader.domain.planning.indicator_watch import summarize_watch
 from trader.planning.protocols import SchedulerLike
@@ -24,7 +25,7 @@ DEFAULT_DECISION_BATCH_PARALLELISM = 3
 
 
 def _context_request_summary(
-    req: codex_client.ContextResearchRequest,
+    req: ContextResearchRequest,
     *,
     resolved: int,
 ) -> dict:
@@ -59,7 +60,7 @@ def _active_watch_summaries_by_symbol(
 
 
 def _run_tool_round(
-    request: codex_client.BatchToolCallRequest,
+    request: BatchToolCallRequest,
     *,
     chunk: list[str],
     now: datetime,
@@ -186,7 +187,8 @@ def batch_decide(
     bar_timeframe_by_symbol: dict[str, str] | None = None,
     company_context_by_symbol: dict[str, dict] | None = None,
     mandate_context_by_symbol: dict[str, dict] | None = None,
-) -> tuple[dict[str, codex_client.Decision], int]:
+    decision_planner: DecisionBatchPlanner,
+) -> tuple[dict[str, Decision], int]:
     """Décide les symboles dus par chunks LLM bornés et parallélisables.
 
     Chaque chunk consomme un appel modèle et respecte `max_model_calls`. Les
@@ -198,7 +200,7 @@ def batch_decide(
     if not decidable:
         return {}, 0
     if max_model_calls < 1:
-        return {sym: codex_client.Decision.hold(sym, "model_call_budget_exhausted") for sym in decidable}, 0
+        return {sym: Decision.hold(sym, "model_call_budget_exhausted") for sym in decidable}, 0
     active_watches_by_symbol = _active_watch_summaries_by_symbol(sched=sched, symbols=decidable, now=now)
 
     reviews = last_review_by_symbol or {}
@@ -277,7 +279,7 @@ def batch_decide(
             tour final — tout en absorbant les erreurs (design §11, §4).
             """
             try:
-                resp = codex_client.decide_batch(
+                resp = decision_planner.decide_batch(
                     symbols=chunk,
                     mandate=mandate,
                     memory=memory,
@@ -291,13 +293,13 @@ def batch_decide(
             except Exception as exc:  # noqa: BLE001
                 return (
                     {
-                        sym: codex_client.Decision.hold(sym, f"llm_failed:batch_exception:{type(exc).__name__}")
+                        sym: Decision.hold(sym, f"llm_failed:batch_exception:{type(exc).__name__}")
                         for sym in chunk
                     },
                     1,
                 )
 
-            if not (agent_tools_enabled and isinstance(resp, codex_client.BatchToolCallRequest)):
+            if not (agent_tools_enabled and isinstance(resp, BatchToolCallRequest)):
                 # Comportement historique : réponse décision directe.
                 return resp, 1
 
@@ -325,7 +327,7 @@ def batch_decide(
 
             # Tour final : le LLM DOIT décider — plus de tool_calls acceptés.
             try:
-                resp2 = codex_client.decide_batch(
+                resp2 = decision_planner.decide_batch(
                     symbols=chunk,
                     mandate=mandate,
                     memory=memory,
@@ -339,7 +341,7 @@ def batch_decide(
             except Exception as exc:  # noqa: BLE001
                 return (
                     {
-                        sym: codex_client.Decision.hold(sym, f"llm_failed:batch_exception:{type(exc).__name__}")
+                        sym: Decision.hold(sym, f"llm_failed:batch_exception:{type(exc).__name__}")
                         for sym in chunk
                     },
                     2,
@@ -348,17 +350,17 @@ def batch_decide(
             # Deuxième tournée d'outils au tour final → blocage HOLD (design §6.2).
             # Défense en profondeur : le parser (allow_tool_calls=False → parse_batch)
             # protège déjà en amont ; ce guard couvre un futur refactor.
-            if isinstance(resp2, codex_client.BatchToolCallRequest):
+            if isinstance(resp2, BatchToolCallRequest):
                 return (
-                    {sym: codex_client.Decision.hold(sym, "tool_loop_blocked") for sym in chunk},
+                    {sym: Decision.hold(sym, "tool_loop_blocked") for sym in chunk},
                     2,
                 )
 
             # Attacher les traces d'outils à chaque décision pour persistance ledger.
             final_decisions: dict[str, object] = {}
             for sym in chunk:
-                decision = resp2.get(sym, codex_client.Decision.hold(sym, "missing_in_batch"))
-                if isinstance(decision, codex_client.Decision):
+                decision = resp2.get(sym, Decision.hold(sym, "missing_in_batch"))
+                if isinstance(decision, Decision):
                     sym_traces = agent_tools.calls_for_symbol(trace_calls, sym)
                     decision = replace(
                         decision,
@@ -393,21 +395,21 @@ def batch_decide(
         allow_context_request=True,
         budget=max_model_calls,
     )
-    decisions: dict[str, codex_client.Decision] = {}
-    need: dict[str, codex_client.ContextResearchRequest] = {}
+    decisions: dict[str, Decision] = {}
+    need: dict[str, ContextResearchRequest] = {}
     for sym, resp in responses.items():
-        if isinstance(resp, codex_client.ContextResearchRequest):
+        if isinstance(resp, ContextResearchRequest):
             need[sym] = resp
         else:
             decisions[sym] = resp
     for sym in skipped_symbols:
-        decisions[sym] = codex_client.Decision.hold(sym, "model_call_budget_exhausted")
+        decisions[sym] = Decision.hold(sym, "model_call_budget_exhausted")
 
     if need and calls >= max_model_calls:
         # Budget épuisé : pas de 2e batch pour résoudre les demandes de contexte.
         for sym, req in need.items():
             decisions[sym] = replace(
-                codex_client.Decision.hold(sym, "model_call_budget_exhausted_after_context"),
+                Decision.hold(sym, "model_call_budget_exhausted_after_context"),
                 context_request=_context_request_summary(req, resolved=0),
             )
         need = {}
@@ -458,7 +460,7 @@ def batch_decide(
         calls += calls2
         for sym in skipped_context_symbols:
             decisions[sym] = replace(
-                codex_client.Decision.hold(sym, "model_call_budget_exhausted_after_context"),
+                Decision.hold(sym, "model_call_budget_exhausted_after_context"),
                 context_request=context_requests[sym],
             )
         for sym in need:
@@ -467,8 +469,8 @@ def batch_decide(
             resp2 = responses2.get(sym)
             decision = (
                 resp2
-                if isinstance(resp2, codex_client.Decision)
-                else codex_client.Decision.hold(sym, "context_loop_blocked")
+                if isinstance(resp2, Decision)
+                else Decision.hold(sym, "context_loop_blocked")
             )
             decisions[sym] = replace(decision, context_request=context_requests[sym])
 

@@ -70,6 +70,7 @@ les utilisaient :
 | `trader/application/execute/cycle_decision.py` | Application d'une décision symbole pendant un cycle | contient `execute_one_cycle_decision`, `DecisionExecutionContext` et `DecisionExecutionState` ; le daemon réexporte `_execute_one_cycle_decision` comme alias de compatibilité |
 | `trader/application/exit/armed_plans.py` | Résolution applicative des triggers `EXECUTE_ORDER` en décisions armées ou réveils planificateur | contrats `Protocol` locaux pour position/volatilité ; le daemon conserve logs et événements |
 | `trader/application/decide/planner_batch.py` | Batch LLM, budget modèle, tournée d'outils, REQUEST_CONTEXT | appelé via `daemon._batch_decide()` |
+| `trader/application/decide/protocols.py` | Contrat local `DecisionBatchPlanner` des chemins batch/queue | runtime injecte l'implémentation `agent.client`; prompts/parsing restent dans `agent/` |
 | `trader/application/decide/context_projection.py` | Projection queue `decision_focus_v1` : cible/risque/recherche locale, radar borné et résumés pull-ready | appliquée par `queue_dispatch` sans muter le snapshot de cycle |
 | `trader/application/cycle/market_snapshot.py` | Barres runtime/daily/exit, fraîcheur, FX, eligibility, tradable maps | retourne `MarketSnapshot`, le daemon l'unpack |
 | `trader/application/record/decision_entries.py` | Construction pure des entrées décision runtime avant persistance | source `llm`/`infra`/`armed_plan`, traces d'outils et raisons HOLD sans side effects |
