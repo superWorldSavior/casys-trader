@@ -159,9 +159,10 @@ class _PointEntry:
     section_order: int
     point_order: int
     point: SituationPoint
+    is_global: bool = False
 
     @property
-    def priority(self) -> tuple[int, int, str, int, int, str, str]:
+    def priority(self) -> tuple[int, int, int, str, int, int, str, str]:
         severity_score = {"risk": 300, "watch": 100, "info": 0}.get(
             self.point.severity,
             0,
@@ -175,6 +176,7 @@ class _PointEntry:
             0,
         )
         return (
+            0 if self.is_global else 1,
             -(severity_score + signal_score),
             -section_score,
             self.venue,
@@ -362,8 +364,14 @@ def build_global_situation_digest(
     *,
     as_of: str,
     max_points: int = DEFAULT_MAX_DIGEST_POINTS,
+    global_brief: NewsMacroBrief | None = None,
 ) -> GlobalSituationDigest:
-    """Aggregate salient, sourced regional observations into one global digest."""
+    """Aggregate salient, sourced regional observations into one global digest.
+
+    When *global_brief* is provided its points are ranked first (regardless of
+    severity/signal), filling the cap before any regional point is considered.
+    Regional briefs complement the remaining slots.
+    """
 
     point_limit = min(DEFAULT_MAX_DIGEST_POINTS, max(0, int(max_points)))
     brief_items = [
@@ -380,6 +388,22 @@ def build_global_situation_digest(
         if venue not in venues_seen:
             venues_seen.append(venue)
         entries.extend(_brief_entries(venue, brief))
+
+    if global_brief is not None:
+        global_venue = _clean_text(global_brief.venue) or "GLOBAL"
+        global_entries = [
+            _PointEntry(
+                venue=e.venue,
+                section_type=e.section_type,
+                section_name=e.section_name,
+                section_order=e.section_order,
+                point_order=e.point_order,
+                point=e.point,
+                is_global=True,
+            )
+            for e in _brief_entries(global_venue, global_brief)
+        ]
+        entries = global_entries + entries
 
     selected: list[SituationPoint] = []
     for entry in sorted(entries, key=lambda item: item.priority):

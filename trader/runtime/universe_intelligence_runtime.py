@@ -549,9 +549,20 @@ def _prepare_global_situation_digest(
     }
     if not regional_briefs:
         return {}, {"status": "unavailable", "persistence_status": "skipped"}
+
+    global_brief = None
+    try:
+        global_brief = briefs.read_latest("GLOBAL", at=now)
+    except Exception as exc:  # noqa: BLE001 - global brief is advisory, never blocks digest
+        log.warning("global brief read failed: %s", exc)
+
     digest_as_of = max((brief.as_of for brief in regional_briefs.values()), default=now.isoformat())
     digest = {
-        **build_global_situation_digest(regional_briefs, as_of=digest_as_of).to_dict(),
+        **build_global_situation_digest(
+            regional_briefs,
+            as_of=digest_as_of,
+            global_brief=global_brief,
+        ).to_dict(),
         "status": "complete" if len(regional_briefs) == len(VENUES) else "partial",
         "valid_until": min(
             (brief.valid_until for brief in regional_briefs.values() if brief.valid_until),

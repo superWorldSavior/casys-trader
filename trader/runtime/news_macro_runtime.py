@@ -33,6 +33,7 @@ DEFAULT_MAX_GLOBAL_NEWS_ITEMS = 120
 DEFAULT_MAX_MACRO_SERIES = 30
 DEFAULT_MACRO_SERIES_STALE_DAYS = 90
 DEFAULT_ASYNC_STOP_TIMEOUT_S = 1.0
+DEFAULT_MAX_GDELT_EVENTS = 60
 
 
 def _default_logger() -> logging.Logger:
@@ -230,6 +231,84 @@ def tick_news_macro_analysis(
             status_dirty = True
             errors.append({"venue": venue, "code": result.error_code, "message": result.error_message})
 
+    # ------------------------------------------------------------------
+    # Passe GLOBAL — brief macro/géopolitique international sans scope régional
+    # ------------------------------------------------------------------
+    if os.getenv("CASYS_NEWS_MACRO_GLOBAL_ENABLED", "1") != "0":
+        geopolitical_events = tuple(_read_recent_gdelt_events(state_path, now=now))
+        if not global_news_items and not macro_series and not macro_next and not geopolitical_events:
+            skipped.append({"venue": "GLOBAL", "reason": "no_inputs"})
+        else:
+            global_input_refs: dict[str, Any] = {
+                "global_news_uuids": _news_uuids(tuple(global_news_items)),
+                "global_news_count": len(global_news_items),
+                "macro_series_labels": [str(item.get("label")) for item in macro_series if item.get("label")],
+                "geopolitical_event_count": len(geopolitical_events),
+                "geopolitical_event_urls": [
+                    str(ev.get("url") or "")
+                    for ev in geopolitical_events
+                    if ev.get("url")
+                ][:60],
+            }
+            global_signature = _input_signature(
+                venue="GLOBAL",
+                macro_next=macro_next,
+                macro_series=macro_series,
+                input_refs=global_input_refs,
+            )
+            global_status = status.get("GLOBAL")
+            if _last_success_matches_signature(global_status, global_signature):
+                skipped.append({"venue": "GLOBAL", "reason": "active_brief_same_inputs"})
+            elif _backoff_active(global_status, signature=global_signature, now=now):
+                skipped.append({"venue": "GLOBAL", "reason": "failure_backoff"})
+            elif store.read_latest("GLOBAL", at=now) is not None and _success_refresh_cooldown_active(global_status, now=now):
+                skipped.append({"venue": "GLOBAL", "reason": "active_brief_changed_inputs_cooldown"})
+            else:
+                global_request = NewsMacroAnalysisRequest(
+                    as_of=now.isoformat(),
+                    valid_until=(now + timedelta(hours=DEFAULT_VALID_HOURS)).isoformat(),
+                    venue="GLOBAL",
+                    global_news_items=tuple(global_news_items),
+                    macro_next=macro_next,
+                    macro_series=macro_series,
+                    geopolitical_events=geopolitical_events,
+                    input_refs=global_input_refs,
+                )
+                if analyst is None:
+                    from trader.agent.news_macro import LlmNewsMacroAnalyst
+
+                    analyst = LlmNewsMacroAnalyst()
+                if memory is None:
+                    memory = SituationMemoryStore(Path(state_dir) / "situation_memory.db")
+                global_result = run_news_macro_analysis(
+                    global_request,
+                    analyst=analyst,  # type: ignore[arg-type]
+                    repository=store,
+                    situation_repository=memory,
+                )
+                if global_result.written:
+                    status["GLOBAL"] = {
+                        "last_success_at": now.isoformat(),
+                        "last_input_signature": global_signature,
+                        "last_brief_ref": global_result.brief_ref,
+                        "last_failure_at": None,
+                        "last_error": None,
+                    }
+                    status_dirty = True
+                    triggered.append({"venue": "GLOBAL", "brief_ref": global_result.brief_ref})
+                else:
+                    status["GLOBAL"] = {
+                        **(status.get("GLOBAL") if isinstance(status.get("GLOBAL"), dict) else {}),
+                        "last_failure_at": now.isoformat(),
+                        "last_input_signature": global_signature,
+                        "last_error": {
+                            "code": global_result.error_code,
+                            "message": global_result.error_message,
+                        },
+                    }
+                    status_dirty = True
+                    errors.append({"venue": "GLOBAL", "code": global_result.error_code, "message": global_result.error_message})
+
     if status_dirty:
         _write_status(status_path, status)
     if errors:
@@ -345,6 +424,42 @@ def _read_recent_global_news_items(state_dir: Path, *, now: datetime) -> list[di
             )
         )
     return _dedupe_rows_by_uuid(rows)[:DEFAULT_MAX_GLOBAL_NEWS_ITEMS]
+
+
+def _read_recent_gdelt_events(state_dir: Path, *, now: datetime) -> list[dict]:
+    """Lit state/gdelt/events.jsonl et retourne les événements récents bornés.
+
+    Best-effort — jamais d'exception. Cap DEFAULT_MAX_GDELT_EVENTS, triés par
+    ts_collected décroissant (les plus récents en tête).
+    """
+    path = Path(state_dir) / "gdelt" / "events.jsonl"
+    if not path.exists():
+        return []
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    rows: list[dict] = []
+    seen_urls: set[str] = set()
+    for line in reversed(lines):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(row, dict):
+            continue
+        url = str(row.get("url") or "").strip()
+        if url:
+            if url in seen_urls:
+                continue
+            seen_urls.add(url)
+        rows.append(row)
+        if len(rows) >= DEFAULT_MAX_GDELT_EVENTS:
+            break
+    return rows
 
 
 def _read_recent_jsonl_items(

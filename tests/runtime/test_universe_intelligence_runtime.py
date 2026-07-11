@@ -7,11 +7,14 @@ from types import SimpleNamespace
 
 import pytest
 
+import logging
+
 from trader.application.universe import UniverseAgentDecision
 from trader.domain.situation import NewsMacroBrief
 from trader.domain.universe import candidate_scope_id
 from trader.domain.universe.global_posture import GlobalUniversePosture
 from trader.infrastructure.state_db.candidate_scope_store import CandidateScopeStore
+from trader.infrastructure.state_db.global_situation_digest_store import GlobalSituationDigestStore
 from trader.infrastructure.state_db.situation_brief_store import NewsMacroBriefStore
 from trader.infrastructure.state_db.universe_run_store import UniverseRunStore
 from trader.infrastructure.state_db.universe_mandate_store import UniverseMandateStore
@@ -698,6 +701,94 @@ def test_tick_rejects_brief_for_another_candidate_scope(tmp_path) -> None:
     assert result["waiting"] == [{"venue": "US", "reason": "brief_scope_mismatch"}]
     assert agent.requests == []
     assert UniverseRunStore(state_dir / "universe_runs").read_prepared(scope_id) is None
+
+
+def test_prepare_global_situation_digest_reads_global_brief_and_prioritises_it(tmp_path) -> None:
+    """When a GLOBAL brief exists it is read and its points appear first in the digest."""
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    briefs = NewsMacroBriefStore(state_dir / "news_briefs")
+
+    regional = NewsMacroBrief.from_mapping({
+        "brief_id": "brief-US",
+        "venue": "US",
+        "as_of": "2026-07-10T20:01:00+00:00",
+        "valid_until": "2026-07-11T16:01:00+00:00",
+        "alerts": [{
+            "point": "US regional alert.",
+            "sources": ["Reuters"],
+            "source_refs": ["us-ref"],
+            "severity": "risk",
+            "signal": "event",
+        }],
+    })
+    assert regional is not None
+    briefs.append(regional)
+
+    global_brief = NewsMacroBrief.from_mapping({
+        "brief_id": "brief-GLOBAL",
+        "venue": "GLOBAL",
+        "as_of": "2026-07-10T19:00:00+00:00",
+        "valid_until": "2026-07-11T16:01:00+00:00",
+        "alerts": [{
+            "point": "Global macro cross-asset signal.",
+            "sources": ["Reuters"],
+            "source_refs": ["global-ref"],
+            "severity": "info",
+            "signal": "weak",
+        }],
+    })
+    assert global_brief is not None
+    briefs.append(global_brief)
+
+    store = GlobalSituationDigestStore(state_dir / "global_situation_digests")
+    digest, ref = universe_intelligence_runtime._prepare_global_situation_digest(
+        briefs=briefs,
+        store=store,
+        now=NOW,
+        log=logging.getLogger("test"),
+    )
+
+    assert digest
+    assert ref.get("persistence_status") == "appended"
+    point_texts = [p["point"] for p in digest.get("points", [])]
+    assert "Global macro cross-asset signal." in point_texts
+    # Global point must be ranked first despite lower severity/signal than regional
+    assert digest["points"][0]["point"] == "Global macro cross-asset signal."
+
+
+def test_prepare_global_situation_digest_is_fail_open_when_global_brief_absent(tmp_path) -> None:
+    """No GLOBAL brief → digest is produced normally with regional points only."""
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    briefs = NewsMacroBriefStore(state_dir / "news_briefs")
+
+    regional = NewsMacroBrief.from_mapping({
+        "brief_id": "brief-EU",
+        "venue": "EU",
+        "as_of": "2026-07-10T20:01:00+00:00",
+        "valid_until": "2026-07-11T16:01:00+00:00",
+        "alerts": [{
+            "point": "EU regional alert.",
+            "sources": ["Reuters"],
+            "source_refs": ["eu-ref"],
+        }],
+    })
+    assert regional is not None
+    briefs.append(regional)
+
+    store = GlobalSituationDigestStore(state_dir / "global_situation_digests")
+    digest, ref = universe_intelligence_runtime._prepare_global_situation_digest(
+        briefs=briefs,
+        store=store,
+        now=NOW,
+        log=logging.getLogger("test"),
+    )
+
+    assert digest
+    assert ref.get("persistence_status") == "appended"
+    point_texts = [p["point"] for p in digest.get("points", [])]
+    assert "EU regional alert." in point_texts
 
 
 def test_runner_is_non_blocking_and_coalesces_latest_trigger() -> None:

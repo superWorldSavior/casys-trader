@@ -128,6 +128,76 @@ def test_build_global_digest_is_deterministic() -> None:
     assert first.regime == "risk_off"
 
 
+def test_global_brief_points_are_prioritised_over_regional() -> None:
+    """Global brief points appear before regional ones regardless of severity/signal."""
+    global_point = _point(
+        "Global cross-asset shift to risk-off.",
+        severity="info",
+        signal="weak",
+        source_ref="global-ref",
+    )
+    regional_point = _point(
+        "Regional risk event with maximum severity.",
+        severity="risk",
+        signal="event",
+        source_ref="regional-ref",
+    )
+    global_brief = _brief("GLOBAL", alerts=(global_point,))
+    regional_briefs = {"EU": _brief("EU", alerts=(regional_point,))}
+
+    digest = build_global_situation_digest(
+        regional_briefs,
+        as_of="2026-07-11T09:00:00+00:00",
+        global_brief=global_brief,
+    )
+
+    assert len(digest.points) == 2
+    assert digest.points[0] == global_point
+    assert digest.points[1] == regional_point
+
+
+def test_global_brief_cap_is_respected_and_displaces_regional_overflow() -> None:
+    """When global brief fills the cap, excess regional points are excluded."""
+    global_points = tuple(
+        _point(f"Global point {i}.", source_ref=f"g{i}")
+        for i in range(4)
+    )
+    regional_point = _point("Regional point.", source_ref="r0")
+
+    global_brief = _brief("GLOBAL", alerts=global_points)
+    regional_briefs = {"US": _brief("US", alerts=(regional_point,))}
+
+    digest = build_global_situation_digest(
+        regional_briefs,
+        as_of="2026-07-11T09:00:00+00:00",
+        global_brief=global_brief,
+        max_points=3,
+    )
+
+    assert len(digest.points) == 3
+    assert regional_point not in digest.points
+    assert all(p in global_points for p in digest.points)
+
+
+def test_without_global_brief_regional_behavior_is_byte_identical() -> None:
+    """global_brief=None produces the exact same result as omitting the argument."""
+    regional_briefs = {
+        "US": _brief(
+            "US",
+            alerts=(_point("US alert.", severity="watch", signal="strong", source_ref="us"),),
+        )
+    }
+
+    without = build_global_situation_digest(regional_briefs, as_of="2026-07-11T09:00:00+00:00")
+    with_none = build_global_situation_digest(
+        regional_briefs,
+        as_of="2026-07-11T09:00:00+00:00",
+        global_brief=None,
+    )
+
+    assert without == with_none
+
+
 def test_global_digest_unknown_enums_and_round_trip_are_stable() -> None:
     digest = GlobalSituationDigest.from_mapping(
         {

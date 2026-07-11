@@ -15,9 +15,15 @@ from trader.runtime import news_macro_runtime
 
 @pytest.fixture(autouse=True)
 def _news_macro_disabled_by_default(monkeypatch):
-    """Override the suite default only for explicit news-macro runtime tests."""
+    """Override the suite default only for explicit news-macro runtime tests.
+
+    Global pass is disabled here so existing tests that assert exact ``skipped``
+    lists keep passing; individual tests that exercise the GLOBAL pass call
+    monkeypatch.setenv("CASYS_NEWS_MACRO_GLOBAL_ENABLED", "1") themselves.
+    """
 
     monkeypatch.setenv("CASYS_NEWS_MACRO_ANALYST_ENABLED", "1")
+    monkeypatch.setenv("CASYS_NEWS_MACRO_GLOBAL_ENABLED", "0")
 
 
 class FakeAnalyst:
@@ -708,3 +714,245 @@ def test_tick_news_macro_analysis_backs_off_same_failed_signature(tmp_path) -> N
     assert first["errors"][0]["code"] == "RuntimeError"
     assert second["skipped"] == [{"venue": "EU", "reason": "failure_backoff"}]
     assert analyst.calls == 1
+
+
+# ---------------------------------------------------------------------------
+# Passe GLOBAL
+# ---------------------------------------------------------------------------
+
+
+class GlobalFakeAnalyst:
+    """Analyste factice acceptant les requêtes GLOBAL (candidate_symbols vide)."""
+
+    def __init__(self) -> None:
+        self.requests = []
+
+    def analyze(self, request):
+        self.requests.append(request)
+        brief = NewsMacroBrief.from_mapping(
+            {
+                "brief_id": f"{request.as_of}|{request.venue}",
+                "venue": request.venue,
+                "as_of": request.as_of,
+                "valid_until": request.valid_until,
+                "input_refs": request.input_refs or {},
+                "zones": {
+                    request.venue: [
+                        {
+                            "point": "Geopolitical risk elevated",
+                            "sources": [],
+                            "symbols": [],
+                            "direction": "risk_off",
+                        }
+                    ]
+                },
+            }
+        )
+        assert brief is not None
+        return brief
+
+
+def _write_gdelt_events(state_dir, events) -> None:
+    path = state_dir / "gdelt" / "events.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("".join(json.dumps(ev) + "\n" for ev in events), encoding="utf-8")
+
+
+def test_global_pass_produces_brief_with_gdelt_and_global_news(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("CASYS_NEWS_MACRO_GLOBAL_ENABLED", "1")
+    state_dir = tmp_path / "state"
+    config_dir = tmp_path / "config"
+    state_dir.mkdir()
+    config_dir.mkdir()
+    now = datetime(2026, 7, 10, 9, 0, tzinfo=timezone.utc)
+    _write_jsonl(
+        state_dir / "macro_headlines" / "2026-07-10.jsonl",
+        [{"uuid": "g-1", "title": "US yields spike", "regions": ["GLOBAL"]}],
+    )
+    _write_gdelt_events(
+        state_dir,
+        [
+            {
+                "ts_collected": "2026-07-10T08:00:00+00:00",
+                "url": "https://reuters.com/a",
+                "title": "Trade war escalates",
+                "seendate": "20260710T080000Z",
+                "domain": "reuters.com",
+                "sourcecountry": "US",
+                "language": "English",
+            }
+        ],
+    )
+    analyst = GlobalFakeAnalyst()
+
+    result = news_macro_runtime.tick_news_macro_analysis(
+        config_dir=config_dir,
+        state_dir=state_dir,
+        loop_now=now,
+        analyst=analyst,
+        venues=(),  # pas de boucle régionale
+    )
+
+    assert result["triggered"][0]["venue"] == "GLOBAL"
+    assert len(analyst.requests) == 1
+    req = analyst.requests[0]
+    assert req.venue == "GLOBAL"
+    assert len(req.geopolitical_events) == 1
+    assert req.geopolitical_events[0]["url"] == "https://reuters.com/a"
+    assert req.geopolitical_events[0]["title"] == "Trade war escalates"
+    assert len(req.global_news_items) == 1
+    assert req.global_news_items[0]["uuid"] == "g-1"
+    assert req.input_refs["geopolitical_event_count"] == 1
+    assert req.input_refs["global_news_uuids"] == ["g-1"]
+
+
+def test_global_pass_skips_no_inputs(tmp_path, monkeypatch) -> None:
+    """Skip no_inputs quand global_news, macro_series, gdelt et macro_next tous vides.
+
+    On utilise une date après tous les événements DEFAULT_CALENDAR (FOMC 2026)
+    pour garantir que macro_next soit vide sans dépendre de la liste codée en dur.
+    """
+    monkeypatch.setenv("CASYS_NEWS_MACRO_GLOBAL_ENABLED", "1")
+    state_dir = tmp_path / "state"
+    config_dir = tmp_path / "config"
+    state_dir.mkdir()
+    config_dir.mkdir()
+    # Dépasse tous les événements FOMC 2026 (le dernier est 2026-12-09) → macro_next vide.
+    now = datetime(2027, 1, 1, 9, 0, tzinfo=timezone.utc)
+    analyst = GlobalFakeAnalyst()
+
+    result = news_macro_runtime.tick_news_macro_analysis(
+        config_dir=config_dir,
+        state_dir=state_dir,
+        loop_now=now,
+        analyst=analyst,
+        venues=(),
+    )
+
+    assert result["triggered"] == []
+    assert any(s["venue"] == "GLOBAL" and s["reason"] == "no_inputs" for s in result["skipped"])
+    assert analyst.requests == []
+
+
+def test_global_pass_dedup_same_inputs(tmp_path, monkeypatch) -> None:
+    """Deuxième tick avec mêmes inputs → skip, pas de second appel analyste."""
+    monkeypatch.setenv("CASYS_NEWS_MACRO_GLOBAL_ENABLED", "1")
+    state_dir = tmp_path / "state"
+    config_dir = tmp_path / "config"
+    state_dir.mkdir()
+    config_dir.mkdir()
+    now = datetime(2026, 7, 10, 9, 0, tzinfo=timezone.utc)
+    _write_jsonl(
+        state_dir / "macro_headlines" / "2026-07-10.jsonl",
+        [{"uuid": "g-2", "title": "ECB holds rates", "regions": ["GLOBAL"]}],
+    )
+    _write_gdelt_events(
+        state_dir,
+        [
+            {
+                "ts_collected": "2026-07-10T07:00:00+00:00",
+                "url": "https://ft.com/b",
+                "title": "Sanctions widened",
+                "seendate": "20260710T070000Z",
+                "domain": "ft.com",
+                "sourcecountry": "GB",
+                "language": "English",
+            }
+        ],
+    )
+    analyst = GlobalFakeAnalyst()
+
+    first = news_macro_runtime.tick_news_macro_analysis(
+        config_dir=config_dir,
+        state_dir=state_dir,
+        loop_now=now,
+        analyst=analyst,
+        venues=(),
+    )
+    second = news_macro_runtime.tick_news_macro_analysis(
+        config_dir=config_dir,
+        state_dir=state_dir,
+        loop_now=now,
+        analyst=analyst,
+        venues=(),
+    )
+
+    assert first["triggered"][0]["venue"] == "GLOBAL"
+    assert len(analyst.requests) == 1, "deuxième tick doit être dédupliqué"
+    assert any(s.get("venue") == "GLOBAL" and s.get("reason") == "active_brief_same_inputs" for s in second["skipped"])
+
+
+def test_read_recent_gdelt_events_reads_and_caps(tmp_path) -> None:
+    """_read_recent_gdelt_events lit les events et respecte le cap."""
+    state_dir = tmp_path / "state"
+    events = [
+        {
+            "ts_collected": f"2026-07-10T0{i}:00:00+00:00",
+            "url": f"https://example.com/{i}",
+            "title": f"Event {i}",
+            "seendate": f"2026070{i}T000000Z",
+            "domain": "example.com",
+            "sourcecountry": "US",
+            "language": "English",
+        }
+        for i in range(5)
+    ]
+    _write_gdelt_events(state_dir, events)
+    now = datetime(2026, 7, 10, 10, 0, tzinfo=timezone.utc)
+
+    result = news_macro_runtime._read_recent_gdelt_events(state_dir, now=now)
+
+    assert len(result) == 5
+    # Les plus récents en tête (reversed lines → event 4 en premier)
+    assert result[0]["url"] == "https://example.com/4"
+    assert result[-1]["url"] == "https://example.com/0"
+
+
+def test_read_recent_gdelt_events_caps_at_max(tmp_path) -> None:
+    state_dir = tmp_path / "state"
+    events = [
+        {"ts_collected": "2026-07-10T09:00:00+00:00", "url": f"https://x.com/{i}", "title": f"E{i}"}
+        for i in range(80)
+    ]
+    _write_gdelt_events(state_dir, events)
+    now = datetime(2026, 7, 10, 10, 0, tzinfo=timezone.utc)
+
+    result = news_macro_runtime._read_recent_gdelt_events(state_dir, now=now)
+
+    assert len(result) == news_macro_runtime.DEFAULT_MAX_GDELT_EVENTS
+
+
+def test_read_recent_gdelt_events_missing_file(tmp_path) -> None:
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    now = datetime(2026, 7, 10, 10, 0, tzinfo=timezone.utc)
+
+    result = news_macro_runtime._read_recent_gdelt_events(state_dir, now=now)
+
+    assert result == []
+
+
+def test_global_pass_disabled_by_env(tmp_path, monkeypatch) -> None:
+    """CASYS_NEWS_MACRO_GLOBAL_ENABLED=0 → pas de passe GLOBAL."""
+    monkeypatch.setenv("CASYS_NEWS_MACRO_GLOBAL_ENABLED", "0")
+    state_dir = tmp_path / "state"
+    config_dir = tmp_path / "config"
+    state_dir.mkdir()
+    config_dir.mkdir()
+    now = datetime(2026, 7, 10, 9, 0, tzinfo=timezone.utc)
+    _write_jsonl(
+        state_dir / "macro_headlines" / "2026-07-10.jsonl",
+        [{"uuid": "g-x", "title": "Global macro note", "regions": ["GLOBAL"]}],
+    )
+    analyst = GlobalFakeAnalyst()
+
+    result = news_macro_runtime.tick_news_macro_analysis(
+        config_dir=config_dir,
+        state_dir=state_dir,
+        loop_now=now,
+        analyst=analyst,
+        venues=(),
+    )
+
+    assert analyst.requests == []
+    assert not any(t.get("venue") == "GLOBAL" for t in result["triggered"])
