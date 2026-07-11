@@ -2,9 +2,9 @@
 # Ce ne sont PAS les règles de stratégie de l'agent : ce sont les bornes externes
 # qui empêchent un bug de tout casser. Valeurs prudentes par défaut (paper).
 
-max_position_value: 10000      # $ max par position (~10% equity : diversification paper)
+max_position_value: 50000      # $ max par position (profil paper agentic permissif)
 max_gross_exposure: 100000     # $ max exposition brute totale
-max_order_value: 10000         # $ max par ordre unique
+max_order_value: 50000         # $ max par ordre unique (profil paper agentic permissif)
 max_risk_per_trade_pct: 0.01   # 1% du capital risqué par trade (distance au stop), SI un stop existe
 min_equity: 50000              # plancher : sous ce seuil, plus aucun ordre
 
