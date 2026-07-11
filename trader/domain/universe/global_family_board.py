@@ -23,6 +23,7 @@ def build_global_family_board(
     as_of: str,
     scopes: Mapping[str, Mapping[str, Any]],
     situations: Mapping[str, UniverseSituationContext],
+    global_situation_digest_ref: Mapping[str, Any] | None = None,
     expected_venues: Iterable[str] = DEFAULT_EXPECTED_VENUES,
     max_observations_per_family: int = DEFAULT_MAX_OBSERVATIONS_PER_FAMILY,
 ) -> dict[str, Any]:
@@ -137,6 +138,11 @@ def build_global_family_board(
             "expired_scope_venues": expired_scope_venues,
         },
         "venues": venue_payloads,
+        "global_situation_digest_ref": {
+            key: str(value)
+            for key, value in (global_situation_digest_ref or {}).items()
+            if key in {"digest_id", "as_of", "status"} and str(value).strip()
+        },
     }
     board_id = _board_id(material)
     return {**material, "board_id": board_id, "as_of": str(as_of or "").strip()}

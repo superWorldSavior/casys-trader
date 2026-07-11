@@ -138,6 +138,7 @@ def test_prompt_says_agent_composes_full_hotlist_and_includes_all_context_layers
     assert "retrieval_status" in prompt and "not_enabled" in prompt
     assert "explique chaque symbole retenu" in prompt
     assert "global_family_board" in prompt
+    assert "global_situation_digest" in prompt
     assert "us_tech" in prompt
     assert "jamais comme quota" in prompt
     assert "input_refs" not in prompt

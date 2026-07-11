@@ -93,18 +93,19 @@ def tick_universe_intelligence(
     mandates = mandate_store or UniverseMandateStore(state_path / "universe_mandates")
     company_context_mode = _company_context_mode(Path(config_dir))
     market_context = _load_market_context(state_path / "last_regime.json", now=now)
+    global_situation_digest, global_situation_ref = _prepare_global_situation_digest(
+        briefs=briefs,
+        store=global_situations,
+        now=now,
+        log=log,
+    )
     global_family_board, family_board_ref = _prepare_global_family_board(
         scopes=scopes,
         briefs=briefs,
         store=family_boards,
         now=now,
         log=log,
-    )
-    global_situation_digest, global_situation_ref = _prepare_global_situation_digest(
-        briefs=briefs,
-        store=global_situations,
-        now=now,
-        log=log,
+        global_situation_ref=global_situation_ref,
     )
     prepared: list[dict[str, Any]] = []
     waiting: list[dict[str, Any]] = []
@@ -409,6 +410,7 @@ def _prepare_global_family_board(
     store: GlobalFamilyBoardStore,
     now: datetime,
     log: LoggerLike,
+    global_situation_ref: Mapping[str, Any],
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     board_scopes: dict[str, Mapping[str, Any]] = {}
     situations: dict[str, UniverseSituationContext] = {}
@@ -453,6 +455,7 @@ def _prepare_global_family_board(
         as_of=now.isoformat(),
         scopes=board_scopes,
         situations=situations,
+        global_situation_digest_ref=global_situation_ref,
     )
     try:
         stored, ref, changed = store.append_if_changed(board)
@@ -482,8 +485,17 @@ def _prepare_global_situation_digest(
         for venue in VENUES
         if (brief := briefs.read_latest(venue, at=now)) is not None
     }
+    if not regional_briefs:
+        return {}, {"status": "unavailable", "persistence_status": "skipped"}
     digest_as_of = max((brief.as_of for brief in regional_briefs.values()), default=now.isoformat())
-    digest = build_global_situation_digest(regional_briefs, as_of=digest_as_of).to_dict()
+    digest = {
+        **build_global_situation_digest(regional_briefs, as_of=digest_as_of).to_dict(),
+        "status": "complete" if len(regional_briefs) == len(VENUES) else "partial",
+        "valid_until": min(
+            (brief.valid_until for brief in regional_briefs.values() if brief.valid_until),
+            default=None,
+        ),
+    }
     try:
         stored, ref, changed = store.append_if_changed(digest)
     except Exception as exc:  # noqa: BLE001 - digest observability must not block universe work

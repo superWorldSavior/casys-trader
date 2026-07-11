@@ -247,6 +247,9 @@ def test_tick_prepares_three_independent_venue_runs_with_briefs_and_families(tmp
         )
         assert set(request.global_family_board["venues"]) == {"TW", "EU", "US"}
         assert request.global_situation_digest["coverage"]["venues_seen"] == ["EU", "TW", "US"]
+        assert request.global_family_board["global_situation_digest_ref"]["digest_id"] == (
+            request.global_situation_digest["digest_id"]
+        )
         context = request.situation_context.to_dict()
         assert context["status"] == "active"
         assert context["coverage"]["status"] == "partial"
