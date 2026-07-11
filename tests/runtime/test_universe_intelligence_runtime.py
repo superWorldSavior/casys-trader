@@ -345,6 +345,107 @@ def test_tick_prepares_three_independent_venue_runs_with_briefs_and_families(tmp
         assert mandate["symbols"][request.candidate_symbols[-1]]["why_selected"]
 
 
+def test_tick_uses_gated_tool_loop_with_existing_company_store(tmp_path, monkeypatch) -> None:
+    state_dir = tmp_path / "state"
+    config_dir = tmp_path / "config"
+    state_dir.mkdir()
+    config_dir.mkdir()
+    _write_scope_and_brief(
+        state_dir,
+        venue="EU",
+        symbols=["SAP.DE"],
+        family="eu_tech",
+    )
+    companies = universe_intelligence_runtime.CompanyIntelligenceStore(
+        state_dir / "company_intelligence"
+    )
+    router = object()
+    captured = {}
+
+    monkeypatch.setenv("CASYS_UNIVERSE_TOOL_ROUNDS", "2")
+    monkeypatch.setattr(
+        universe_intelligence_runtime,
+        "build_universe_router_from_env",
+        lambda: router,
+    )
+
+    def compose_with_tools(request, *, router, intelligence_store, max_rounds, timeout_s):
+        captured.update(
+            {
+                "request": request,
+                "router": router,
+                "intelligence_store": intelligence_store,
+                "max_rounds": max_rounds,
+                "timeout_s": timeout_s,
+            }
+        )
+        return UniverseAgentDecision(
+            selected_hotlist=("SAP.DE",),
+            summary="Prefer SAP after exact company review.",
+            family_postures={"eu_tech": "constructive"},
+            symbol_rationales={"SAP.DE": "Best evidence."},
+            contract_version="universe.v1",
+            provider="test-provider",
+            model="test-model",
+        )
+
+    monkeypatch.setattr(
+        universe_intelligence_runtime,
+        "compose_with_tool_loop",
+        compose_with_tools,
+    )
+
+    result = universe_intelligence_runtime.tick_universe_intelligence(
+        config_dir=config_dir,
+        state_dir=state_dir,
+        loop_now=NOW,
+        company_store=companies,
+        venues=("EU",),
+    )
+
+    assert result["prepared"][0]["venue"] == "EU"
+    assert captured["router"] is router
+    assert captured["intelligence_store"] is companies
+    assert captured["max_rounds"] == 2
+    assert captured["timeout_s"] == 120
+
+
+def test_tick_keeps_existing_agent_path_when_tool_rounds_are_off(tmp_path, monkeypatch) -> None:
+    state_dir = tmp_path / "state"
+    config_dir = tmp_path / "config"
+    state_dir.mkdir()
+    config_dir.mkdir()
+    _write_scope_and_brief(
+        state_dir,
+        venue="EU",
+        symbols=["SAP.DE"],
+        family="eu_tech",
+    )
+    fake_agent = FakeAgent()
+
+    monkeypatch.delenv("CASYS_UNIVERSE_TOOL_ROUNDS", raising=False)
+    monkeypatch.setattr(
+        universe_intelligence_runtime,
+        "LlmUniverseAgent",
+        lambda: fake_agent,
+    )
+    monkeypatch.setattr(
+        universe_intelligence_runtime,
+        "compose_with_tool_loop",
+        lambda *args, **kwargs: pytest.fail("tool loop must stay off by default"),
+    )
+
+    result = universe_intelligence_runtime.tick_universe_intelligence(
+        config_dir=config_dir,
+        state_dir=state_dir,
+        loop_now=NOW,
+        venues=("EU",),
+    )
+
+    assert result["prepared"][0]["venue"] == "EU"
+    assert len(fake_agent.requests) == 1
+
+
 def test_global_posture_agent_failure_is_fail_open(tmp_path, caplog) -> None:
     state_dir = tmp_path / "state"
     config_dir = tmp_path / "config"

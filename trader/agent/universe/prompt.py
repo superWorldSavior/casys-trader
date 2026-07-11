@@ -9,10 +9,11 @@ from typing import Any
 from trader.application.universe import UniverseAgentDecision, UniverseCompositionRequest
 
 
-def build_universe_prompt(request: UniverseCompositionRequest) -> str:
+def build_universe_prompt(request: UniverseCompositionRequest, *, allow_tools: bool = False) -> str:
     """Render the complete bounded venue request for the universe agent."""
 
     payload = request.to_dict()
+    tool_block = _UNIVERSE_TOOL_BLOCK if allow_tools else ""
     return (
         "Tu es l'agent univers de Casys Trader.\n"
         "Ta responsabilité exclusive: compose toi-même la hotlist complète "
@@ -32,6 +33,7 @@ def build_universe_prompt(request: UniverseCompositionRequest) -> str:
         "global_universe_posture est la posture cross-région déjà décidée en amont (venues et "
         "familles à privilégier/déprioriser, gross/net global) : respecte-la comme cadre "
         "stratégique de cette passe, sans la recopier ni la contredire sans raison locale forte.\n"
+        f"{tool_block}"
         "Retourne uniquement un objet JSON valide, jamais un simple add/remove, avec ce schéma:\n"
         '{"selected_hotlist":["SYMBOL"],"summary":"...",'
         '"family_postures":{"family":"..."},'
@@ -53,6 +55,33 @@ def build_universe_prompt(request: UniverseCompositionRequest) -> str:
         "stop, sizing ou obligation de trader.\n"
         "JSON d'entrée borné:\n"
         f"{json.dumps(payload, ensure_ascii=False, sort_keys=True)}"
+    )
+
+
+_UNIVERSE_TOOL_BLOCK = (
+    "Avant de composer, tu peux approfondir quelques dossiers micro. Pour cela, réponds "
+    "UNIQUEMENT par des appels d'outil ce tour-ci (aucune hotlist):\n"
+    '{"tool_calls":[{"id":"c1","tool":"get_company_briefs","args":{"symbols":["SYMBOL"],'
+    '"sections":["thesis","catalysts","risks"],"max_chars":1200}}]}\n'
+    "get_company_briefs retourne les sections demandées pour 1 à 10 candidats de cette venue. "
+    "Utilise-le pour 5 à 10 dossiers prometteurs ou ambigus au maximum, puis, quand tu as assez "
+    "d'information, réponds directement avec le JSON de hotlist final (sans tool_calls).\n"
+)
+
+
+def build_universe_followup_prompt(
+    request: UniverseCompositionRequest,
+    *,
+    tool_results: list[dict[str, Any]],
+) -> str:
+    """Re-inject bounded tool results and ask for more tools or the final hotlist."""
+
+    payload = {"tool_results": tool_results}
+    return (
+        "Résultats des outils demandés (get_company_briefs), pour cette venue:\n"
+        f"{json.dumps(payload, ensure_ascii=False, sort_keys=True)}\n"
+        "Tu peux demander d'autres briefs via un nouveau tool_calls, ou composer maintenant la "
+        "hotlist finale (JSON, sans tool_calls) en suivant exactement le schéma initial.\n"
     )
 
 

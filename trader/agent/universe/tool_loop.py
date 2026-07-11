@@ -1,0 +1,120 @@
+"""Bounded multi-turn tool loop for universe composition."""
+
+from __future__ import annotations
+
+import json
+from dataclasses import replace
+from types import SimpleNamespace
+from typing import Any
+
+from trader.agent import llm
+from trader.agent.tools.core import ToolRoundLimits, execute_tool_round, results_prompt_payload
+from trader.agent.universe.agent import UniverseAgentError, UniverseAgentPayloadError
+from trader.agent.universe.prompt import (
+    build_universe_followup_prompt,
+    build_universe_prompt,
+    parse_universe_completion,
+)
+from trader.agent.universe.tools import make_get_company_briefs_spec
+from trader.application.universe import UniverseAgentDecision, UniverseCompositionRequest
+
+_ALLOWED_TOOLS = frozenset({"get_company_briefs"})
+
+
+def _extract_tool_calls(text: str) -> list[dict[str, Any]] | None:
+    decoder = json.JSONDecoder()
+    for index, char in enumerate(text):
+        if char != "{":
+            continue
+        try:
+            payload, _end = decoder.raw_decode(text[index:])
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        calls = payload.get("tool_calls")
+        if isinstance(calls, list) and calls:
+            return calls
+    return None
+
+
+def _raise_failure(completion: llm.LlmFailure) -> None:
+    raise UniverseAgentError(
+        completion.code,
+        completion.message,
+        provider=completion.provider,
+        model=completion.model,
+        provider_fallback_reason=completion.fallback_reason,
+    )
+
+
+def _parse_final(
+    completion: llm.LlmCompletion,
+    *,
+    baseline: tuple[str, ...],
+) -> UniverseAgentDecision:
+    decision, error = parse_universe_completion(completion.text, baseline=baseline)
+    if decision is None:
+        raise UniverseAgentPayloadError(
+            error or "invalid_agent_response",
+            provider=completion.provider,
+            model=completion.model,
+            provider_fallback_reason=completion.fallback_reason,
+        )
+    if decision.contract_version not in {"universe.v1", "universe.v2"}:
+        raise UniverseAgentPayloadError(
+            "legacy_contract_not_allowed_for_universe_agent",
+            provider=completion.provider,
+            model=completion.model,
+            provider_fallback_reason=completion.fallback_reason,
+        )
+    return replace(
+        decision,
+        provider=completion.provider,
+        model=completion.model,
+        provider_fallback_reason=completion.fallback_reason,
+    )
+
+
+def compose_with_tool_loop(
+    request: UniverseCompositionRequest,
+    *,
+    router: llm.LlmRouter,
+    intelligence_store: Any,
+    max_rounds: int = 3,
+    timeout_s: int = 120,
+) -> UniverseAgentDecision:
+    registry = {"get_company_briefs": make_get_company_briefs_spec(intelligence_store)}
+    context = SimpleNamespace(intelligence_store=intelligence_store)
+    accumulated: list[dict[str, Any]] = []
+    prompt = build_universe_prompt(request, allow_tools=True)
+
+    for _ in range(max(0, int(max_rounds))):
+        completion = router.complete(prompt, timeout_s=timeout_s)
+        if isinstance(completion, llm.LlmFailure):
+            _raise_failure(completion)
+        tool_calls = _extract_tool_calls(completion.text)
+        if tool_calls is None:
+            return _parse_final(completion, baseline=request.baseline)
+        results, _traces = execute_tool_round(
+            tool_calls,
+            context=context,
+            limits=ToolRoundLimits(max_total_calls=10, max_calls_per_symbol=3),
+            allowed_tools=_ALLOWED_TOOLS,
+            registry=registry,
+        )
+        accumulated.extend(results_prompt_payload(results))
+        prompt = build_universe_followup_prompt(request, tool_results=accumulated)
+
+    if accumulated:
+        prompt = build_universe_followup_prompt(request, tool_results=accumulated)
+        prompt += "Budget d'outils épuisé: retourne maintenant uniquement la hotlist finale, sans tool_calls.\n"
+    else:
+        prompt = build_universe_prompt(request, allow_tools=False)
+    completion = router.complete(prompt, timeout_s=timeout_s)
+    if isinstance(completion, llm.LlmFailure):
+        _raise_failure(completion)
+    return _parse_final(completion, baseline=request.baseline)
+
+
+__all__ = ["compose_with_tool_loop"]

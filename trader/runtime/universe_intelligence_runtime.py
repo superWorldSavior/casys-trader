@@ -18,13 +18,20 @@ import yaml
 
 from trader.application.universe import (
     UniverseCompositionAgent,
+    UniverseCompositionRequest,
     build_universe_composition_request,
     compose_universe,
+)
+from trader.agent.universe.agent import (
+    DEFAULT_UNIVERSE_AGENT_TIMEOUT_S,
+    LlmUniverseAgent,
+    build_universe_router_from_env,
 )
 from trader.agent.universe.global_posture_agent import (
     GlobalUniversePostureRequest,
     LlmGlobalPostureAgent,
 )
+from trader.agent.universe.tool_loop import compose_with_tool_loop
 from trader.domain.universe import (
     SymbolMandate,
     UniverseSituationContext,
@@ -54,6 +61,29 @@ DEFAULT_ASYNC_STOP_TIMEOUT_S = 1.0
 
 def _default_logger() -> logging.Logger:
     return logging.getLogger("casys-trader")
+
+
+class _ToolLoopUniverseAgent:
+    def __init__(self, *, router: Any, intelligence_store: Any, max_rounds: int) -> None:
+        self._router = router
+        self._intelligence_store = intelligence_store
+        self._max_rounds = max_rounds
+
+    def compose(self, request: UniverseCompositionRequest):
+        return compose_with_tool_loop(
+            request,
+            router=self._router,
+            intelligence_store=self._intelligence_store,
+            max_rounds=self._max_rounds,
+            timeout_s=DEFAULT_UNIVERSE_AGENT_TIMEOUT_S,
+        )
+
+
+def _universe_tool_rounds() -> int:
+    try:
+        return max(0, int(os.getenv("CASYS_UNIVERSE_TOOL_ROUNDS", "0")))
+    except ValueError:
+        return 0
 
 
 def tick_universe_intelligence(
@@ -294,9 +324,15 @@ def tick_universe_intelligence(
             continue
 
         if agent is None:
-            from trader.agent.universe import LlmUniverseAgent
-
-            agent = LlmUniverseAgent()
+            tool_rounds = _universe_tool_rounds()
+            if tool_rounds > 0:
+                agent = _ToolLoopUniverseAgent(
+                    router=build_universe_router_from_env(),
+                    intelligence_store=companies,
+                    max_rounds=tool_rounds,
+                )
+            else:
+                agent = LlmUniverseAgent()
         started = time.monotonic()
         result = compose_universe(request, agent=agent)
         latency_ms = max(0, round((time.monotonic() - started) * 1000))
