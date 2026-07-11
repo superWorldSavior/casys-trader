@@ -49,6 +49,7 @@ def _dispatch(ledger: _FakeLedger, **overrides):
         "dry_run": False,
         "plan_to_upsert": None,
         "symbol_to_close": None,
+        "symbol_to_sync_quantity": None,
         "cycle_id": "2026-07-05T08:00:00+00:00",
         "intent": "OPEN_LONG",
         "budget_s": 1.0,
@@ -77,6 +78,33 @@ def test_execute_queue_dispatch_done_returns_fill_and_enqueues_stable_payload() 
     assert payload["order"] == {"symbol": "AAPL", "side": "BUY", "quantity": 5.0, "rationale": "test"}
     assert payload["price"] == 100.0
     assert payload["dry_run"] is False
+
+
+def test_execute_queue_dispatch_serializes_reduce_quantity_sync() -> None:
+    fill = Fill(
+        symbol="AAPL",
+        side="SELL",
+        quantity=2.0,
+        price=100.0,
+        ts="2026-07-05T08:00:00+00:00",
+    )
+    ledger = _FakeLedger(
+        task_results=[
+            {"id": 7, "status": "done", "result": json.dumps(fill.model_dump())}
+        ]
+    )
+
+    outcome = _dispatch(
+        ledger,
+        side="SELL",
+        quantity=2.0,
+        intent="REDUCE",
+        symbol_to_sync_quantity="AAPL",
+    )
+
+    assert outcome.fill == fill
+    payload = json.loads(ledger.enqueued[0]["payload"])
+    assert payload["symbol_to_sync_quantity"] == "AAPL"
 
 
 def test_execute_queue_dispatch_dead_maps_fail_closed_reason() -> None:

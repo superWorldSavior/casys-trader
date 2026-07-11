@@ -20,6 +20,7 @@ import pytest
 
 from trader.application.execute.order_handler import make_execute_order_handler
 from trader.application.execute.queue_dispatch import dispatch_execute_order_via_queue
+from trader.execution.broker import Order
 from trader.planning.trade_plan import TradePlan
 from trader.queue.decide_pool import DecidePool
 from trader.queue.ledger import TaskLedger
@@ -107,6 +108,7 @@ def _enqueue_order(
     dry_run: bool = False,
     plan_to_upsert: dict | None = None,
     symbol_to_close: str | None = None,
+    symbol_to_sync_quantity: str | None = None,
 ) -> int:
     """Enfile une tâche execute_order et retourne son task_id."""
     payload = json.dumps({
@@ -117,6 +119,7 @@ def _enqueue_order(
         "dry_run": dry_run,
         "plan_to_upsert": plan_to_upsert,
         "symbol_to_close": symbol_to_close,
+        "symbol_to_sync_quantity": symbol_to_sync_quantity,
     })
     now_ms = int(time.time() * 1000)
     tid = ledger.enqueue(
@@ -217,6 +220,44 @@ class TestExecuteViaQueue:
             assert task["status"] == "done"
             # Plan AAPL fermé
             assert plan_store.open_plans() == []
+        finally:
+            pool.stop(timeout_s=2.0)
+
+    def test_reduce_syncs_plan_quantity_atomically_with_fill(self, tmp_path: Path) -> None:
+        """REDUCE rescale le plan depuis la position post-fill dans l'UoW."""
+        db, broker, plan_store, ledger = _make_stack(tmp_path)
+        broker.submit(
+            Order("AAPL", "BUY", 10.0),
+            150.0,
+            "2026-07-04T07:00:00+00:00",
+            dry_run=False,
+        )
+        plan_store.upsert(_simple_plan("AAPL-reduce"))
+
+        handler = make_execute_order_handler(
+            db=db,
+            broker=broker,
+            plan_store=plan_store,
+            ledger=ledger,
+        )
+        pool = _make_pool(ledger, handler)
+
+        pool.start()
+        try:
+            tid = _enqueue_order(
+                ledger,
+                side="SELL",
+                quantity=4.0,
+                symbol_to_sync_quantity="AAPL",
+            )
+            task = _poll_done(ledger, tid)
+
+            assert task is not None
+            assert task["status"] == "done"
+            assert broker.positions()["AAPL"].quantity == pytest.approx(6.0)
+            plans = plan_store.open_plans()
+            assert len(plans) == 1
+            assert plans[0].remaining_quantity == pytest.approx(6.0)
         finally:
             pool.stop(timeout_s=2.0)
 

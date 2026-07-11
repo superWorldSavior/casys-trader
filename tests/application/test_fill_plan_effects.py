@@ -117,6 +117,18 @@ def test_apply_filled_plan_effects_syncs_reduce_remaining_quantity() -> None:
     assert store.synced_quantities == [("SPY", 1.25)]
 
 
+def test_apply_filled_plan_effects_queue_reduce_does_not_resync_after_uow() -> None:
+    _, store = _apply(
+        intent="REDUCE",
+        action="SELL",
+        runtime_exit_plan=None,
+        queue_execute_enabled=True,
+        broker=_Broker({"SPY": Position("SPY", quantity=1.25, avg_price=100.0)}),
+    )
+
+    assert store.synced_quantities == []
+
+
 def test_apply_filled_plan_effects_creates_open_plan_and_entry_snapshot() -> None:
     entry, store = _apply()
 

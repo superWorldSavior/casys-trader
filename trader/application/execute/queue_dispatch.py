@@ -47,6 +47,7 @@ def dispatch_execute_order_via_queue(
     dry_run: bool,
     plan_to_upsert: dict | None,
     symbol_to_close: str | None,
+    symbol_to_sync_quantity: str | None = None,
     cycle_id: str,
     intent: str,
     budget_s: float,
@@ -73,6 +74,7 @@ def dispatch_execute_order_via_queue(
             "dry_run": dry_run,
             "plan_to_upsert": plan_to_upsert,
             "symbol_to_close": symbol_to_close,
+            "symbol_to_sync_quantity": symbol_to_sync_quantity,
         }
     )
     now_ms = int(now_fn() * 1000)

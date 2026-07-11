@@ -242,6 +242,37 @@ class TestHappyPath:
         row = db.query_one("SELECT status FROM tasks WHERE id=?", (task_id,))
         assert row["status"] == "done"
 
+    def test_execute_reduce_syncs_post_fill_plan_quantity(self, tmp_path: Path) -> None:
+        """REDUCE atomise fill, quantité de plan post-fill et task done."""
+        db, broker, plan_store, ledger = _make_stack(tmp_path)
+        broker.submit(Order("AAPL", "BUY", 10.0), 150.0, "t0", dry_run=False)
+        plan_store.upsert(_simple_plan("AAPL-reduce"))
+        task_id, token = _enqueue_and_claim(ledger, dedup="ex-reduce")
+
+        fill = execute_order_unit(
+            db=db,
+            broker=broker,
+            plan_store=plan_store,
+            ledger=ledger,
+            order=Order("AAPL", "SELL", 4.0),
+            price=155.0,
+            ts="t1",
+            fx_rate=1.0,
+            dry_run=False,
+            symbol_to_sync_quantity="AAPL",
+            task_id=task_id,
+            token=token,
+            now_ms=2,
+        )
+
+        assert fill is not None
+        assert broker.positions()["AAPL"].quantity == pytest.approx(6.0)
+        plans = plan_store.open_plans()
+        assert len(plans) == 1
+        assert plans[0].remaining_quantity == pytest.approx(6.0)
+        row = db.query_one("SELECT status FROM tasks WHERE id=?", (task_id,))
+        assert row["status"] == "done"
+
     def test_execute_order_dry_run_no_writes(self, tmp_path: Path) -> None:
         """dry_run=True : aucune écriture dans broker NI plan, task quand même complétée.
 
@@ -362,6 +393,53 @@ class TestAtomicite:
         # Plan non inséré (rollback)
         assert plan_store.open_plans() == []
         # Task non done
+        row = db.query_one("SELECT status FROM tasks WHERE id=?", (task_id,))
+        assert row["status"] == "running"
+
+    def test_exception_in_reduce_sync_rolls_back_fill_plan_and_ledger(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """Une panne après le rescale REDUCE rollbacke toute l'UoW."""
+        db, broker, plan_store, ledger = _make_stack(tmp_path)
+        broker.submit(Order("AAPL", "BUY", 10.0), 150.0, "t0", dry_run=False)
+        plan_store.upsert(_simple_plan("AAPL-reduce-rollback"))
+        task_id, token = _enqueue_and_claim(ledger, dedup="reduce-rollback")
+        cash_before = broker.cash()
+        original_sync = plan_store.sync_symbol_quantity_in_tx
+
+        def _failing_sync_in_tx(cur, symbol, remaining_quantity):
+            original_sync(cur, symbol, remaining_quantity)
+            raise RuntimeError("injected reduce sync failure")
+
+        monkeypatch.setattr(
+            plan_store,
+            "sync_symbol_quantity_in_tx",
+            _failing_sync_in_tx,
+        )
+
+        with pytest.raises(RuntimeError, match="injected reduce sync failure"):
+            execute_order_unit(
+                db=db,
+                broker=broker,
+                plan_store=plan_store,
+                ledger=ledger,
+                order=Order("AAPL", "SELL", 4.0),
+                price=155.0,
+                ts="t1",
+                fx_rate=1.0,
+                dry_run=False,
+                symbol_to_sync_quantity="AAPL",
+                task_id=task_id,
+                token=token,
+                now_ms=2,
+            )
+
+        assert broker.cash() == pytest.approx(cash_before)
+        assert broker.positions()["AAPL"].quantity == pytest.approx(10.0)
+        assert len(db.query_all("SELECT * FROM broker_fills")) == 1
+        plans = plan_store.open_plans()
+        assert len(plans) == 1
+        assert plans[0].remaining_quantity == pytest.approx(10.0)
         row = db.query_one("SELECT status FROM tasks WHERE id=?", (task_id,))
         assert row["status"] == "running"
 

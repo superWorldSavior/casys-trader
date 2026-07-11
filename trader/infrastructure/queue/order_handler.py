@@ -42,6 +42,9 @@ def make_execute_order_handler(
             else None
         )
         symbol_to_close: str | None = payload.get("symbol_to_close") or None
+        symbol_to_sync_quantity: str | None = (
+            payload.get("symbol_to_sync_quantity") or None
+        )
 
         execute_order_unit(
             db=db,
@@ -55,6 +58,7 @@ def make_execute_order_handler(
             dry_run=bool(payload.get("dry_run", False)),
             plan_to_upsert=plan_to_upsert,
             symbol_to_close=symbol_to_close,
+            symbol_to_sync_quantity=symbol_to_sync_quantity,
             task_id=task["id"],
             token=task["claim_token"],
             now_ms=int(now_fn() * 1000),

@@ -57,6 +57,7 @@ def test_build_execute_queue_plan_payload_open_long_builds_plan_to_upsert() -> N
     payload = _payload()
 
     assert payload.symbol_to_close is None
+    assert payload.symbol_to_sync_quantity is None
     assert payload.plan_to_upsert is not None
     plan = payload.plan_to_upsert
     assert plan["symbol"] == "SPY"
@@ -76,6 +77,20 @@ def test_build_execute_queue_plan_payload_close_only_closes_existing_symbol() ->
     payload = _payload(intent="CLOSE", action="SELL", runtime_exit_plan=None, entry_context=None)
 
     assert payload.symbol_to_close == "SPY"
+    assert payload.symbol_to_sync_quantity is None
+    assert payload.plan_to_upsert is None
+
+
+def test_build_execute_queue_plan_payload_reduce_syncs_post_fill_quantity() -> None:
+    payload = _payload(
+        intent="REDUCE",
+        action="SELL",
+        runtime_exit_plan=None,
+        entry_context=None,
+    )
+
+    assert payload.symbol_to_close is None
+    assert payload.symbol_to_sync_quantity == "SPY"
     assert payload.plan_to_upsert is None
 
 

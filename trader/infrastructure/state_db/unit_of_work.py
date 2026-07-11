@@ -16,6 +16,8 @@ import json
 import logging
 from typing import TYPE_CHECKING
 
+from trader.domain.execution.fill_accounting import POSITION_EPSILON
+
 if TYPE_CHECKING:
     from trader.infrastructure.state_db.connection import StateDb
     from trader.infrastructure.state_db.broker_store import SqliteBroker
@@ -40,6 +42,7 @@ def execute_order_unit(
     dry_run: bool,
     plan_to_upsert: "TradePlan | None" = None,
     symbol_to_close: str | None = None,
+    symbol_to_sync_quantity: str | None = None,
     task_id: int,
     token: str,
     now_ms: int,
@@ -50,9 +53,10 @@ def execute_order_unit(
       0. Fence early — SELECT status/claim_token ; lève si task non-running ou
          token mismatch (ROLLBACK total, rien écrit).
       1. submit_in_tx  — écrit positions/cash/fill (no-op si dry_run=True).
-      2. plan          — close_symbol_in_tx ET/OU upsert_in_tx (si fourni,
-         uniquement si dry_run=False). Les deux peuvent coexister (FLIP :
-         ferme l'ancien plan PUIS ouvre le nouveau dans la même transaction).
+      2. plan          — close_symbol_in_tx, upsert_in_tx et/ou
+         sync_symbol_quantity_in_tx (si fournis, uniquement si dry_run=False).
+         La synchronisation utilise la position broker post-fill lue dans cette
+         même transaction.
       3. complete_in_tx — passe la tâche à 'done' ; vérifie retour=True.
 
     Si N'IMPORTE quelle étape lève → ROLLBACK complet de la transaction.
@@ -78,6 +82,9 @@ def execute_order_unit(
                          (FLIP : les deux s'appliquent, close avant upsert).
         symbol_to_close: Symbole dont fermer tous les plans ouverts (uniquement
                          si dry_run=False). Compatible avec plan_to_upsert.
+        symbol_to_sync_quantity: Symbole dont resynchroniser la quantité de plan
+                                 depuis la position broker post-fill. Utilisé par
+                                 REDUCE et appliqué dans cette même transaction.
         task_id:         ID de la tâche ledger à compléter.
         token:           Token de fencing de la tâche (claim_token attendu).
         now_ms:          Timestamp courant en epoch ms (injecté pour déterminisme).
@@ -144,6 +151,21 @@ def execute_order_unit(
             # Étape 2b — upsert (si fourni) — s'applique APRÈS le close pour FLIP
             if plan_to_upsert is not None:
                 plan_store.upsert_in_tx(cur, plan_to_upsert)
+            # Étape 2c — REDUCE : rescale le plan depuis la position post-fill.
+            if symbol_to_sync_quantity is not None:
+                position_row = cur.execute(
+                    "SELECT quantity FROM broker_positions"
+                    " WHERE symbol=? AND ABS(quantity) > ?",
+                    (symbol_to_sync_quantity, POSITION_EPSILON),
+                ).fetchone()
+                remaining_quantity = (
+                    0.0 if position_row is None else abs(float(position_row["quantity"]))
+                )
+                plan_store.sync_symbol_quantity_in_tx(
+                    cur,
+                    symbol_to_sync_quantity,
+                    remaining_quantity,
+                )
 
         # Étape 3 — ledger (toujours, même en dry_run).
         # FIX 1 — Fill atomique : sérialise le fill ET passe-le à complete_in_tx

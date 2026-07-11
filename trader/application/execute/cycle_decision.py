@@ -492,6 +492,7 @@ def execute_one_cycle_decision(
             dry_run=ctx.dry_run,
             plan_to_upsert=_exec_plan_payload.plan_to_upsert,
             symbol_to_close=_exec_plan_payload.symbol_to_close,
+            symbol_to_sync_quantity=_exec_plan_payload.symbol_to_sync_quantity,
             cycle_id=ctx.now.isoformat(),
             intent=decision.intent,
             budget_s=_EXECUTE_POLL_BUDGET_S,

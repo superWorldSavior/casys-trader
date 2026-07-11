@@ -267,49 +267,66 @@ class SqliteTradePlanStore:
 
         Porte fidèlement la logique de trade_plan.py:1045-1079.
         """
-        if remaining_quantity <= 0:
-            self.close_symbol(symbol)
-            return
-
         with self._db.transaction() as cur:
-            rows = cur.execute(
-                "SELECT * FROM trade_plans WHERE symbol=? ORDER BY seq",
-                (symbol,),
-            ).fetchall()
-
-            symbol_plans = [row_to_plan(r) for r in rows]
-            total_remaining = sum(p.remaining_quantity for p in symbol_plans)
-
-            if total_remaining <= 0:
-                cur.execute("DELETE FROM trade_plans WHERE symbol=?", (symbol,))
-            else:
-                ratio = remaining_quantity / total_remaining
-                for row, plan in zip(rows, symbol_plans):
-                    new_remaining = round(plan.remaining_quantity * ratio, 8)
-                    if new_remaining <= 0:
-                        cur.execute("DELETE FROM trade_plans WHERE id=?", (plan.id,))
-                        continue
-                    # Rescale TP non remplis ; remplis conservés tels quels
-                    take_profits = [
-                        tp
-                        if tp.name in plan.filled_take_profits
-                        else tp.model_copy(update={"quantity": round(tp.quantity * ratio, 8)})
-                        for tp in plan.take_profits
-                    ]
-                    updated = plan.model_copy(
-                        update={
-                            "remaining_quantity": new_remaining,
-                            "take_profits": take_profits,
-                        }
-                    )
-                    cols = plan_to_columns(updated, int(row["seq"]))
-                    cur.execute(
-                        "UPDATE trade_plans"
-                        " SET remaining_quantity=?, take_profits_json=?"
-                        " WHERE id=?",
-                        (cols["remaining_quantity"], cols["take_profits_json"], plan.id),
-                    )
+            self.sync_symbol_quantity_in_tx(cur, symbol, remaining_quantity)
 
         log.debug(
             "[state_db] sync_symbol_quantity %s remaining=%.4f", symbol, remaining_quantity
+        )
+
+    def sync_symbol_quantity_in_tx(
+        self, cur, symbol: str, remaining_quantity: float
+    ) -> None:
+        """Variante transactionnelle de ``sync_symbol_quantity``.
+
+        N'ouvre PAS de transaction. Cette primitive permet à l'UoW d'exécution
+        d'atomiser le fill REDUCE et la resynchronisation du plan.
+        """
+        if remaining_quantity <= 0:
+            self.close_symbol_in_tx(cur, symbol)
+            return
+
+        rows = cur.execute(
+            "SELECT * FROM trade_plans WHERE symbol=? ORDER BY seq",
+            (symbol,),
+        ).fetchall()
+
+        symbol_plans = [row_to_plan(r) for r in rows]
+        total_remaining = sum(p.remaining_quantity for p in symbol_plans)
+
+        if total_remaining <= 0:
+            cur.execute("DELETE FROM trade_plans WHERE symbol=?", (symbol,))
+            return
+
+        ratio = remaining_quantity / total_remaining
+        for row, plan in zip(rows, symbol_plans):
+            new_remaining = round(plan.remaining_quantity * ratio, 8)
+            if new_remaining <= 0:
+                cur.execute("DELETE FROM trade_plans WHERE id=?", (plan.id,))
+                continue
+            # Rescale TP non remplis ; remplis conservés tels quels
+            take_profits = [
+                tp
+                if tp.name in plan.filled_take_profits
+                else tp.model_copy(update={"quantity": round(tp.quantity * ratio, 8)})
+                for tp in plan.take_profits
+            ]
+            updated = plan.model_copy(
+                update={
+                    "remaining_quantity": new_remaining,
+                    "take_profits": take_profits,
+                }
+            )
+            cols = plan_to_columns(updated, int(row["seq"]))
+            cur.execute(
+                "UPDATE trade_plans"
+                " SET remaining_quantity=?, take_profits_json=?"
+                " WHERE id=?",
+                (cols["remaining_quantity"], cols["take_profits_json"], plan.id),
+            )
+
+        log.debug(
+            "[state_db] sync_symbol_quantity_in_tx %s remaining=%.4f",
+            symbol,
+            remaining_quantity,
         )

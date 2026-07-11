@@ -19,6 +19,7 @@ class OpenPlanReader(Protocol):
 class ExecuteQueuePlanPayload:
     plan_to_upsert: dict | None
     symbol_to_close: str | None
+    symbol_to_sync_quantity: str | None = None
 
 
 def build_execute_queue_plan_payload(
@@ -44,8 +45,13 @@ def build_execute_queue_plan_payload(
 ) -> ExecuteQueuePlanPayload:
     """Prepare the queue UoW payload without enqueuing or mutating stores."""
     symbol_to_close = symbol if intent in {"CLOSE", "FLIP", "SCALE_IN"} else None
+    symbol_to_sync_quantity = symbol if intent == "REDUCE" else None
     if not runtime_exit_plan:
-        return ExecuteQueuePlanPayload(plan_to_upsert=None, symbol_to_close=symbol_to_close)
+        return ExecuteQueuePlanPayload(
+            plan_to_upsert=None,
+            symbol_to_close=symbol_to_close,
+            symbol_to_sync_quantity=symbol_to_sync_quantity,
+        )
 
     if intent in {"OPEN_LONG", "OPEN_SHORT"}:
         plan = _build_plan(
@@ -64,7 +70,11 @@ def build_execute_queue_plan_payload(
             llm_confidence=llm_confidence,
             entry_decision_id=entry_decision_id,
         )
-        return ExecuteQueuePlanPayload(plan_to_upsert=plan.model_dump(), symbol_to_close=symbol_to_close)
+        return ExecuteQueuePlanPayload(
+            plan_to_upsert=plan.model_dump(),
+            symbol_to_close=symbol_to_close,
+            symbol_to_sync_quantity=symbol_to_sync_quantity,
+        )
 
     if intent == "SCALE_IN":
         total_quantity, avg_price = order_admission.projected_scale_in_risk_basis(
@@ -75,7 +85,11 @@ def build_execute_queue_plan_payload(
             position_avg_price=position_avg_price,
         )
         if total_quantity <= 0:
-            return ExecuteQueuePlanPayload(plan_to_upsert=None, symbol_to_close=symbol_to_close)
+            return ExecuteQueuePlanPayload(
+                plan_to_upsert=None,
+                symbol_to_close=symbol_to_close,
+                symbol_to_sync_quantity=symbol_to_sync_quantity,
+            )
         plan = _build_plan(
             symbol=symbol,
             action=action,
@@ -95,7 +109,11 @@ def build_execute_queue_plan_payload(
         previous_plan = _open_plan_for_symbol(plan_reader, symbol)
         if previous_plan is not None and previous_plan.last_llm_review is not None:
             plan = plan.model_copy(update={"last_llm_review": copy.deepcopy(previous_plan.last_llm_review)})
-        return ExecuteQueuePlanPayload(plan_to_upsert=plan.model_dump(), symbol_to_close=symbol_to_close)
+        return ExecuteQueuePlanPayload(
+            plan_to_upsert=plan.model_dump(),
+            symbol_to_close=symbol_to_close,
+            symbol_to_sync_quantity=symbol_to_sync_quantity,
+        )
 
     if intent == "FLIP":
         open_quantity = order_admission.flip_open_quantity(
@@ -104,7 +122,11 @@ def build_execute_queue_plan_payload(
             position_quantity=position_quantity,
         )
         if open_quantity <= 0:
-            return ExecuteQueuePlanPayload(plan_to_upsert=None, symbol_to_close=symbol_to_close)
+            return ExecuteQueuePlanPayload(
+                plan_to_upsert=None,
+                symbol_to_close=symbol_to_close,
+                symbol_to_sync_quantity=symbol_to_sync_quantity,
+            )
         plan = _build_plan(
             symbol=symbol,
             action=action,
@@ -121,9 +143,17 @@ def build_execute_queue_plan_payload(
             llm_confidence=llm_confidence,
             entry_decision_id=entry_decision_id,
         )
-        return ExecuteQueuePlanPayload(plan_to_upsert=plan.model_dump(), symbol_to_close=symbol_to_close)
+        return ExecuteQueuePlanPayload(
+            plan_to_upsert=plan.model_dump(),
+            symbol_to_close=symbol_to_close,
+            symbol_to_sync_quantity=symbol_to_sync_quantity,
+        )
 
-    return ExecuteQueuePlanPayload(plan_to_upsert=None, symbol_to_close=symbol_to_close)
+    return ExecuteQueuePlanPayload(
+        plan_to_upsert=None,
+        symbol_to_close=symbol_to_close,
+        symbol_to_sync_quantity=symbol_to_sync_quantity,
+    )
 
 
 def _build_plan(

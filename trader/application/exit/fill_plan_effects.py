@@ -57,7 +57,7 @@ def apply_filled_plan_effects(
     if intent in {"CLOSE", "FLIP"} and not queue_execute_enabled:
         plan_store.close_symbol(symbol)
 
-    if intent == "REDUCE":
+    if intent == "REDUCE" and not queue_execute_enabled:
         final_position = broker.positions().get(symbol)
         plan_store.sync_symbol_quantity(
             symbol,
