@@ -1445,6 +1445,10 @@ def test_daemon_delegates_data_source_bootstrap_to_runtime_adapter() -> None:
     assert "data_source_runtime.build_data_source" in source
     assert "data_source_runtime.maybe_attach_ib" in source
     assert "data_source_runtime.detach_failed_ib" in source
+    assert "from trader.market.data_source import" not in source
+    assert "from trader.market.ib_source import" not in source
+    assert "from trader.infrastructure.market_sources.data_source import" in source
+    assert "from trader.infrastructure.market_sources.ib_source import" in source
 
     tree = ast.parse(source, filename=str(daemon_path))
     forbidden_calls = {
@@ -1461,6 +1465,18 @@ def test_daemon_delegates_data_source_bootstrap_to_runtime_adapter() -> None:
             violations.append(f"{node.func.id}(...)")
 
     assert violations == []
+
+
+def test_data_source_runtime_uses_infrastructure_market_source_adapters() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    source = (repo_root / "trader" / "runtime" / "data_source_runtime.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert "from trader.market.data_source import" not in source
+    assert "from trader.market.ib_source import" not in source
+    assert "from trader.infrastructure.market_sources.data_source import" in source
+    assert "from trader.infrastructure.market_sources.ib_source import" in source
 
 
 def test_daemon_delegates_market_rotation_tick_to_runtime_adapter() -> None:

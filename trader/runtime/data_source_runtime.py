@@ -10,14 +10,14 @@ from typing import Callable, Collection, Protocol
 
 from trader.domain.market import fx
 from trader.infrastructure.market_sources import fx_rates
-from trader.market import market_data as market
-from trader.market.data_source import (
+from trader.infrastructure.market_sources.data_source import (
     CompositeDataSource,
     ThrottledDataSource,
     YFinanceDataSource,
     parse_data_sources_config,
 )
-from trader.market.ib_source import IBDataSource, connect_ib
+from trader.infrastructure.market_sources.ib_source import IBDataSource, connect_ib
+from trader.market import market_data as market
 from trader.market.protocols import DataSource
 from trader.runtime.ib_attach import IBAttachBackoff
 from trader.runtime.protocols import LoggerLike

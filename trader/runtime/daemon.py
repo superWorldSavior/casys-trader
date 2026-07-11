@@ -68,15 +68,15 @@ from trader.agent.learnings import store as recall_store_mod
 from trader.market import family_regime, fx, macro_calendar, macro_series  # noqa: F401
 from trader.market import market_data as market
 from trader.market import volatility as reference_volatility_service
-from trader.market.data_source import (
+from trader.domain.market.features import DEFAULT_INDICATORS
+from trader.domain.market.gross_priority import PriorityItem, gross_execution_order
+from trader.infrastructure.market_sources.data_source import (
     CompositeDataSource,
     YFinanceDataSource,
     make_indirect_get_bars,
     parse_data_sources_config,
 )
-from trader.domain.market.features import DEFAULT_INDICATORS
-from trader.domain.market.gross_priority import PriorityItem, gross_execution_order
-from trader.market.ib_source import IBDataSource, connect_ib
+from trader.infrastructure.market_sources.ib_source import IBDataSource, connect_ib
 from trader.market import news_feed
 from trader.planning.protocols import SchedulerLike
 from trader.domain import decision_identity
