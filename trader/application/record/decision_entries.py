@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from trader.agent.protocol.types import Decision
+from trader.domain.decisions import Decision
 
 
 INFRA_HOLD_REASONS = frozenset(

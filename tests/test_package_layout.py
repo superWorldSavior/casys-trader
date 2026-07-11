@@ -140,6 +140,25 @@ def test_application_does_not_import_reporting() -> None:
     assert violations == []
 
 
+def test_application_imports_decision_contracts_from_domain() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    application_dir = repo_root / "trader" / "application"
+    violations: list[str] = []
+
+    for source_path in sorted(application_dir.rglob("*.py")):
+        if "__pycache__" in source_path.parts:
+            continue
+        tree = ast.parse(source_path.read_text(encoding="utf-8"), filename=str(source_path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module == "trader.agent.protocol.types":
+                violations.append(
+                    f"{source_path.relative_to(application_dir)}:{node.lineno}: "
+                    "import decision contracts from trader.domain.decisions"
+                )
+
+    assert violations == []
+
+
 def test_application_analyst_modules_are_nested_without_legacy_shims() -> None:
     application_dir = Path(__file__).resolve().parents[1] / "trader" / "application"
 

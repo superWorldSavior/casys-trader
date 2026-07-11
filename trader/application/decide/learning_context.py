@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from dataclasses import replace
 
-from trader.agent.protocol.types import Decision
+from trader.domain.decisions import Decision
 
 
 MAX_APPLIED_LEARNING_IDS = 3

@@ -36,7 +36,7 @@ import logging
 import time as _time
 from typing import Callable, Iterator
 
-from trader.agent.protocol.types import Decision
+from trader.domain.decisions import Decision
 from trader.application.decide.context_projection import project_shared_context_for_symbol
 
 log = logging.getLogger("trader.application.queue_dispatch")

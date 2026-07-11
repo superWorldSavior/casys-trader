@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 from dataclasses import replace
 
-from trader.agent.protocol.types import Action, Decision
+from trader.domain.decisions import Action, Decision
 from trader.planning.trade_plan import InvalidExitPlanError, normalize_exit_plan
 
 VALID_INTENTS = {"OPEN_LONG", "OPEN_SHORT", "REDUCE", "CLOSE", "FLIP", "HOLD", "SCALE_IN"}
