@@ -85,6 +85,6 @@ def test_pousse_uniquement_les_contextes_recherche_du_symbole_decide():
         ),
     )
 
-    assert facts["company_intelligence"]["brief_ref"]["brief_id"] == "aapl-1"
+    assert facts["company_intelligence_delta"]["brief_ref"]["brief_id"] == "aapl-1"
     assert facts["universe_mandate"]["mandate_ref"]["mandate_id"] == "mandate-aapl"
     assert "MSFT" not in str(facts)

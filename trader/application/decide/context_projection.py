@@ -172,8 +172,9 @@ def _project_learnings(raw: object) -> object:
         return raw
     projected = dict(raw)
     # Les anciens slots par symbole sont une mémoire épisodique poussée sans
-    # retrieval. La situation fraîche vient désormais de company_intelligence /
-    # universe_mandate ; l'expérience ciblée reste accessible via FLAIR.
+    # retrieval. La situation micro de référence vient du mandat Univers ; seul un
+    # company_intelligence_delta plus frais est poussé. L'expérience ciblée reste
+    # accessible via FLAIR.
     projected.pop("by_symbol", None)
     projected["scope"] = {
         "experience": "pull_only_outcome_weighted",

@@ -21,9 +21,11 @@ un retest dont l'horizon rend ce différé négligeable.
 - **Univers** choisit en amont les symboles actifs à partir de la shortlist, du
   brief macro/news et de l'intelligence micro. Le trader ne reconstruit pas la
   hotlist et n'élargit pas son scope pendant une décision.
-- Les projections `company_intelligence` et `universe_mandate` sont du contexte
-  de recherche, pas des ordres. Le trader peut les confirmer ou les contredire
-  avec le marché et reste seul auteur de la décision de trading.
+- `universe_mandate.symbol_mandate.company_context` est le micro figé avec le
+  mandat. `company_intelligence_delta`, présent seulement si un brief plus récent
+  existe, le complète sans le dupliquer. Ce sont des contextes de recherche, pas
+  des ordres : le trader peut les confirmer ou les contredire avec le marché et
+  reste seul auteur de la décision de trading.
 - Le trader est un **planificateur**, pas un opérateur continu : il choisit entre
   agir maintenant, poser une veille, armer un scénario mécanique, gérer une
   position ou attendre. Le daemon exécute ensuite les actions validées.

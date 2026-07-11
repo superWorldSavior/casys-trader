@@ -1,4 +1,6 @@
-from trader.domain.company import CompanyIntelligenceBrief
+from dataclasses import replace
+
+from trader.domain.company import CompanyIntelligenceBrief, SourcedCompanyPoint
 from trader.domain.universe import project_company_briefs_to_universe_context
 
 
@@ -65,7 +67,51 @@ def test_projection_keeps_every_candidate_and_bounds_details() -> None:
         "identity_mismatch": 0,
     }
     assert context.symbols["MISS"] == {"status": "missing", "brief_ref": None}
-    assert context.symbols["EXM"]["drivers"] == ["Recurring growth", "Margin durability"]
+    assert context.symbols["EXM"]["drivers"] == [
+        "Recurring growth",
+        "Margin durability",
+        "This third point is bounded out",
+    ]
+
+
+def test_projection_applies_configured_micro_caps() -> None:
+    points = tuple(SourcedCompanyPoint(point=f"Point {index}", source_refs=()) for index in range(8))
+    brief = _brief()
+    capped_brief = replace(
+        brief,
+        company_thesis=replace(brief.company_thesis, summary="x" * 500, pillars=points),
+        catalysts=points,
+        risks=points,
+        source_refs=tuple(f"source:{index}" for index in range(8)),
+    )
+
+    context = project_company_briefs_to_universe_context(
+        {"EXM": capped_brief},
+        candidate_symbols=("EXM",),
+        active_at="2026-07-10T09:00:00+00:00",
+    )
+    projected = context.symbols["EXM"]
+
+    assert projected["summary"] == "x" * 240
+    assert projected["source_refs"] == ["source:0", "source:1", "source:2", "source:3", "source:4"]
+    assert len(projected["drivers"]) == 5
+    assert len(projected["catalysts"]) == 5
+    assert len(projected["risks"]) == 5
+
+
+def test_projection_never_backfills_drivers_from_catalysts() -> None:
+    brief = _brief()
+    no_pillars = replace(brief, company_thesis=replace(brief.company_thesis, pillars=()))
+
+    context = project_company_briefs_to_universe_context(
+        {"EXM": no_pillars},
+        candidate_symbols=("EXM",),
+        active_at="2026-07-10T09:00:00+00:00",
+    )
+    projected = context.symbols["EXM"]
+
+    assert projected["drivers"] == []
+    assert projected["drivers"] != projected["catalysts"]
 
 
 def test_projection_marks_expired_sections_stale() -> None:

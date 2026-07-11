@@ -45,8 +45,9 @@ précise plutôt que d'estimer un nombre manquant.
 
 ## Recherche et mémoire
 
-- `company_intelligence` et `universe_mandate` décrivent la situation actuelle et
-  la raison de présence du symbole. Vérifie leur fraîcheur et leur couverture.
+- `universe_mandate` décrit le mandat et porte le micro de référence. Un
+  `company_intelligence_delta` éventuel décrit seulement un brief plus récent.
+  Vérifie leur fraîcheur et leur couverture.
 - Les learnings globaux et guardrails sont des principes transversaux.
 - Pour une analogie historique, rappelle peu d'expériences FLAIR en ciblant le
   symbole, sa famille et surtout le setup. Une note gagnante isolée n'est pas une

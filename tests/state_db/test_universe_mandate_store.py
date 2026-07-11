@@ -21,6 +21,8 @@ def _prepared(scope: str = "scope-1") -> UniverseMandate:
                 company_brief_ref={"brief_id": "brief-1"},
             )
         },
+        family_postures={"us_growth": "favored"},
+        portfolio_posture={"gross_mode": "cautious", "net_bias": "neutral"},
     )
 
 
@@ -41,6 +43,13 @@ def test_prepared_mandate_is_invisible_until_activation(tmp_path) -> None:
     assert store.active_slice_for_symbol("EXM")["symbol_mandate"]["why_selected"] == (
         "Best supported candidate."
     )
+    assert active["family_postures"] == {"us_growth": "favored"}
+    assert active["portfolio_posture"] == {"gross_mode": "cautious", "net_bias": "neutral"}
+    assert store.active_slice_for_symbol("EXM")["family_postures"] == {"us_growth": "favored"}
+    assert store.active_slice_for_symbol("EXM")["portfolio_posture"] == {
+        "gross_mode": "cautious",
+        "net_bias": "neutral",
+    }
 
 
 def test_fallback_activation_does_not_invent_agent_rationale(tmp_path) -> None:

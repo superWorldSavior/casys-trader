@@ -9,6 +9,7 @@ from trader.agent.universe import (
     DEFAULT_UNIVERSE_AGENT_MODEL,
     LlmUniverseAgent,
     UniverseAgentError,
+    UniverseAgentPayloadError,
     build_universe_router_from_env,
     build_universe_prompt,
     parse_universe_completion,
@@ -171,6 +172,33 @@ def test_parse_full_contract_and_legacy_add_remove() -> None:
     assert legacy.symbol_rationales == {"ASML.AS": "Selected by legacy add/remove compatibility contract."}
 
 
+def test_parse_portfolio_posture_is_bounded_and_advisory() -> None:
+    decision, error = parse_universe_completion(
+        json.dumps(
+            {
+                "selected_hotlist": ["SAP.DE"],
+                "summary": "Keep SAP.",
+                "family_postures": {"eu_tech": "favored"},
+                "portfolio_posture": {
+                    "gross_mode": "cautious",
+                    "net_bias": "long",
+                    "notes": ["Avoid adding correlated exposure."] * 8,
+                },
+                "symbol_rationales": {"SAP.DE": "Strongest evidence."},
+            }
+        ),
+        baseline=("SAP.DE",),
+    )
+
+    assert error is None
+    assert decision is not None
+    assert decision.portfolio_posture == {
+        "gross_mode": "cautious",
+        "net_bias": "long",
+        "notes": ["Avoid adding correlated exposure."] * 5,
+    }
+
+
 def test_parse_prefixed_full_contract_keeps_outer_object_not_nested_mappings() -> None:
     decision, error = parse_universe_completion(
         "result:\n"
@@ -267,6 +295,52 @@ def test_llm_universe_agent_returns_decision_and_classifies_failures() -> None:
     with pytest.raises(UniverseAgentError, match="too slow") as exc_info:
         LlmUniverseAgent(FailedRouter()).compose(request)
     assert exc_info.value.code == "timeout"
+
+
+def test_llm_universe_agent_accepts_v2_symbol_mandates() -> None:
+    class V2Router:
+        def complete(self, _prompt: str, *, timeout_s: int):
+            return llm.LlmCompletion(
+                provider="test",
+                model="stub",
+                text=json.dumps(
+                    {
+                        "selected_hotlist": ["SAP.DE"],
+                        "summary": "Keep the strongest candidate.",
+                        "family_postures": {"eu_tech": "constructive"},
+                        "symbol_rationales": {"SAP.DE": "Best combined evidence."},
+                        "symbol_mandates": {
+                            "SAP.DE": {
+                                "why_selected": "Best combined evidence.",
+                                "role": "core_candidate",
+                                "posture": "constructive",
+                                "allowed_sides": ["long"],
+                            }
+                        },
+                    }
+                ),
+            )
+
+    decision = LlmUniverseAgent(V2Router()).compose(_request())
+
+    assert decision.contract_version == "universe.v2"
+    assert decision.symbol_mandates
+
+
+def test_llm_universe_agent_rejects_legacy_add_remove_contract() -> None:
+    class LegacyRouter:
+        def complete(self, _prompt: str, *, timeout_s: int):
+            return llm.LlmCompletion(
+                provider="test",
+                model="stub",
+                text='{"add":["ASML.AS"],"remove":["SAP.DE"]}',
+            )
+
+    with pytest.raises(
+        UniverseAgentPayloadError,
+        match="legacy_contract_not_allowed_for_universe_agent",
+    ):
+        LlmUniverseAgent(LegacyRouter()).compose(_request())
 
 
 def test_universe_router_uses_a_distinct_role_profile(monkeypatch) -> None:

@@ -30,9 +30,18 @@ def build_universe_prompt(request: UniverseCompositionRequest) -> str:
         "Retourne uniquement un objet JSON valide, jamais un simple add/remove, avec ce schéma:\n"
         '{"selected_hotlist":["SYMBOL"],"summary":"...",'
         '"family_postures":{"family":"..."},'
+        '"portfolio_posture":{"gross_mode":"normal|cautious|risk_off",'
+        '"net_bias":"long|short|neutral","notes":["..."]},'
         '"symbol_rationales":{"SYMBOL":"..."},'
         '"symbol_mandates":{"SYMBOL":{"why_selected":"...","role":"...",'
-        '"posture":"...","allowed_sides":["long","short"]}}}\n'
+        '"posture":"...","directional_view":"long_bias|short_bias|two_sided|neutral",'
+        '"allowed_sides":["long","short"],'
+        '"portfolio_context":{"exposure_note":"...","risk_notes":["..."]}}}}\n'
+        "directional_view = ta vue directionnelle sur le symbole (advisory). "
+        "portfolio_posture = posture agrégée de cette venue (advisory), jamais une allocation; "
+        "ce n'est pas la future posture globale cross-région. "
+        "portfolio_context = enveloppe d'exposition advisory (note d'exposition + risques "
+        "portefeuille), jamais une quantité ni un ordre; omets-la si tu n'as rien à dire.\n"
         "Contraintes: selected_hotlist non vide, 25 maximum, aucun sticky, aucun symbole "
         "hors candidates; une rationale et un symbol_mandate non vides pour chaque symbole "
         "sélectionné. Un mandat est un contexte de surveillance, jamais un ordre: aucun qty, "
@@ -77,6 +86,9 @@ def parse_universe_completion(
         mandates, mandate_error = _symbol_mandates(payload.get("symbol_mandates"))
         if mandate_error:
             return None, mandate_error
+        portfolio_posture, posture_error = _portfolio_posture(payload.get("portfolio_posture"))
+        if posture_error:
+            return None, posture_error
         summary = str(payload.get("summary") or "").strip()
         return (
             UniverseAgentDecision(
@@ -86,6 +98,7 @@ def parse_universe_completion(
                 symbol_rationales=rationales or {},
                 contract_version="universe.v2" if "symbol_mandates" in payload else "universe.v1",
                 symbol_mandates=mandates or {},
+                portfolio_posture=portfolio_posture or {},
             ),
             None,
         )
@@ -168,13 +181,59 @@ def _symbol_mandates(value: Any) -> tuple[dict[str, dict[str, Any]] | None, str 
         allowed_sides = raw_mandate.get("allowed_sides") or ()
         if not isinstance(allowed_sides, list) or any(side not in {"long", "short"} for side in allowed_sides):
             return None, f"invalid_allowed_sides:{symbol}"
+        directional_view = str(raw_mandate.get("directional_view") or "neutral").strip().lower()
+        if directional_view not in {"long_bias", "short_bias", "two_sided", "neutral"}:
+            directional_view = "neutral"
         result[symbol] = {
             "why_selected": str(raw_mandate.get("why_selected") or "").strip()[:500],
             "role": str(raw_mandate.get("role") or "monitor").strip()[:80],
             "posture": str(raw_mandate.get("posture") or "neutral").strip()[:120],
+            "directional_view": directional_view,
             "allowed_sides": list(dict.fromkeys(allowed_sides)),
+            "portfolio_context": _portfolio_context(raw_mandate.get("portfolio_context")),
         }
     return result, None
+
+
+def _portfolio_context(value: Any) -> dict[str, Any]:
+    """Bounded, advisory exposure envelope — never an order or a quantity."""
+
+    if not isinstance(value, Mapping):
+        return {}
+    risk_notes = value.get("risk_notes") or []
+    notes = (
+        [str(note).strip()[:160] for note in risk_notes if str(note).strip()][:5]
+        if isinstance(risk_notes, list)
+        else []
+    )
+    exposure_note = str(value.get("exposure_note") or "").strip()[:240]
+    if not exposure_note and not notes:
+        return {}
+    result: dict[str, Any] = {}
+    if exposure_note:
+        result["exposure_note"] = exposure_note
+    if notes:
+        result["risk_notes"] = notes
+    return result
+
+
+def _portfolio_posture(value: Any) -> tuple[dict[str, Any] | None, str | None]:
+    """Normalize the venue-level advisory posture without accepting allocations."""
+    if value is None:
+        return {}, None
+    if not isinstance(value, Mapping):
+        return None, "portfolio_posture_not_object"
+    gross_mode = str(value.get("gross_mode") or "normal").strip().lower()
+    if gross_mode not in {"normal", "cautious", "risk_off"}:
+        return None, "invalid_portfolio_posture_gross_mode"
+    net_bias = str(value.get("net_bias") or "neutral").strip().lower()
+    if net_bias not in {"long", "short", "neutral"}:
+        return None, "invalid_portfolio_posture_net_bias"
+    raw_notes = value.get("notes") or []
+    if not isinstance(raw_notes, list):
+        return None, "portfolio_posture_notes_not_list"
+    notes = [str(note).strip()[:160] for note in raw_notes if str(note).strip()][:5]
+    return {"gross_mode": gross_mode, "net_bias": net_bias, "notes": notes}, None
 
 
 def _looks_like_universe_payload(payload: Mapping[str, Any]) -> bool:

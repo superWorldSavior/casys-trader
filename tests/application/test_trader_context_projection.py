@@ -155,7 +155,7 @@ def test_prompt_focalise_reste_sous_un_budget_de_70k(monkeypatch) -> None:
     shared["cockpit"] = _cockpit(symbol_count=100)
     focused = project_shared_context_for_symbol(shared, symbol="TARGET")
     facts = {
-        "company_intelligence": {"summary": "micro/news " * 180},
+        "company_intelligence_delta": {"summary": "micro/news " * 180},
         "universe_mandate": {"why_selected": "leader de famille"},
         "structure": {"price": 100.0, "swing_low_24": 95.0},
     }

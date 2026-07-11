@@ -55,6 +55,11 @@ def build_company_micro_prompt(request: CompanyMicroAnalysisRequest) -> str:
         "selection_view.posture vaut supports_selection|neutral|argues_against|insufficient_evidence; "
         "c'est un avis de surveillance, jamais selected=true ni BUY/SELL.\n"
         "Schéma point: {point, source_refs, evidence_label, confidence: high|medium|low, period?, horizon?}.\n"
+        "Schéma company_thesis: {status, summary, pillars, confirming_evidence, disconfirming_evidence, "
+        "kill_criteria, next_proof_points}. summary est une CHAÎNE de prose (1 à 3 phrases résumant la "
+        "thèse), jamais un objet point. pillars, confirming_evidence, disconfirming_evidence, kill_criteria "
+        "et next_proof_points sont des tableaux d'objets point. Place chaque assertion sourcée dans "
+        "pillars[], jamais dans summary.\n"
         "JSON d'entrée:\n"
         f"{json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)}"
     )

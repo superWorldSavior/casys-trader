@@ -744,7 +744,14 @@ def _build_prepared_mandate(
         raw.update(
             {
                 "why_selected": raw.get("why_selected") or decision.symbol_rationales.get(symbol, ""),
-                "family_context": request.family_snapshot.get(family, {}),
+                "family_context": {
+                    "family": family,
+                    "posture": (
+                        decision.family_postures.get(family, "")
+                        if isinstance(decision.family_postures, Mapping)
+                        else ""
+                    ),
+                },
                 "company_context": company_entry,
                 "company_brief_ref": company_entry.get("brief_ref") or {},
                 "confidence": (company_entry.get("selection_view") or {}).get("confidence", "unknown")
@@ -763,6 +770,16 @@ def _build_prepared_mandate(
         valid_until=valid_until,
         status="prepared",
         symbols=symbols,
+        family_postures=(
+            dict(decision.family_postures)
+            if isinstance(decision.family_postures, Mapping)
+            else {}
+        ),
+        portfolio_posture=(
+            dict(getattr(decision, "portfolio_posture", None))
+            if isinstance(getattr(decision, "portfolio_posture", None), Mapping)
+            else None
+        ),
     )
 
 

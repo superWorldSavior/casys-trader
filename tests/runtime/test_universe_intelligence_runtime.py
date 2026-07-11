@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import threading
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 import pytest
 
@@ -134,6 +135,55 @@ def _write_scope_and_brief(
     assert brief is not None
     NewsMacroBriefStore(state_dir / "news_briefs").append(brief)
     return scope_id
+
+
+def test_build_prepared_mandate_preserves_decided_family_and_symbol_contexts() -> None:
+    request = SimpleNamespace(
+        candidates=({"symbol": "AIR.PA", "family": "defense_aero_eu"},),
+        family_snapshot={"defense_aero_eu": {"regime_status": "observed"}},
+        company_context=SimpleNamespace(symbols={"AIR.PA": {}}),
+        candidate_scope_id="scope-eu",
+        venue="EU",
+        as_of="2026-07-11T08:00:00+00:00",
+    )
+    decision = SimpleNamespace(
+        selected_hotlist=("AIR.PA",),
+        family_postures={"defense_aero_eu": "favored"},
+        symbol_mandates={
+            "AIR.PA": {
+                "why_selected": "Defense demand remains supportive.",
+                "role": "core_candidate",
+                "posture": "constructive",
+                "directional_view": "long_bias",
+                "portfolio_context": {"exposure_note": "Keep sector exposure bounded."},
+            }
+        },
+        symbol_rationales={},
+        portfolio_posture={"gross_mode": "cautious", "net_bias": "neutral", "notes": ["Risk"]},
+    )
+
+    mandate = universe_intelligence_runtime._build_prepared_mandate(
+        request=request,
+        decision=decision,
+        record={"agent_run_id": "run-eu", "as_of": request.as_of},
+        valid_until="2026-07-12T08:00:00+00:00",
+    )
+
+    symbol_mandate = mandate.symbols["AIR.PA"]
+    assert mandate.family_postures["defense_aero_eu"] == "favored"
+    assert symbol_mandate.family_context == {
+        "family": "defense_aero_eu",
+        "posture": "favored",
+    }
+    assert symbol_mandate.directional_view == "long_bias"
+    assert symbol_mandate.portfolio_context == {
+        "exposure_note": "Keep sector exposure bounded."
+    }
+    assert mandate.portfolio_posture == {
+        "gross_mode": "cautious",
+        "net_bias": "neutral",
+        "notes": ["Risk"],
+    }
 
 
 def test_tick_prepares_three_independent_venue_runs_with_briefs_and_families(tmp_path) -> None:

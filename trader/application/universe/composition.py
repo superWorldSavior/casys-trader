@@ -75,6 +75,7 @@ class UniverseAgentDecision:
     provider: str | None = None
     model: str | None = None
     provider_fallback_reason: str | None = None
+    portfolio_posture: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

@@ -71,6 +71,16 @@ class UniverseMandateStore:
             mandate_id = str(prepared.get("mandate_id") or "")
             agent_run_id = str(prepared.get("agent_run_id") or "")
             valid_until = prepared.get("valid_until")
+            family_postures = (
+                dict(prepared.get("family_postures"))
+                if isinstance(prepared.get("family_postures"), Mapping)
+                else {}
+            )
+            portfolio_posture = (
+                dict(prepared.get("portfolio_posture"))
+                if isinstance(prepared.get("portfolio_posture"), Mapping)
+                else None
+            )
         else:
             symbol_mandates = {
                 symbol: {
@@ -90,6 +100,8 @@ class UniverseMandateStore:
             mandate_id = f"universe-mandate:fallback:{_digest(f'{venue}:{candidate_scope_id}:{as_of}') }"
             agent_run_id = ""
             valid_until = None
+            family_postures = {}
+            portfolio_posture = None
         payload = {
             "schema_version": 1,
             "mandate_id": mandate_id,
@@ -101,6 +113,8 @@ class UniverseMandateStore:
             "status": status,
             "symbols": symbol_mandates,
             "fallback_reason": fallback_reason,
+            "family_postures": family_postures,
+            "portfolio_posture": portfolio_posture,
         }
         with self._lock:
             previous = _read_mapping(self.active_venue_path(venue)) or {}
@@ -112,6 +126,8 @@ class UniverseMandateStore:
                     {
                         "mandate_ref": _ref(payload),
                         "symbol_mandate": mandate,
+                        "family_postures": family_postures,
+                        "portfolio_posture": portfolio_posture,
                     },
                 )
             for symbol in previous_symbols - set(symbol_mandates):
@@ -132,7 +148,20 @@ class UniverseMandateStore:
         ref = payload.get("mandate_ref") if isinstance(payload, Mapping) else None
         if not isinstance(mandate, Mapping) or mandate.get("symbol") != symbol or not isinstance(ref, Mapping):
             return None
-        return {"mandate_ref": dict(ref), "symbol_mandate": dict(mandate)}
+        return {
+            "mandate_ref": dict(ref),
+            "symbol_mandate": dict(mandate),
+            "family_postures": (
+                dict(payload.get("family_postures"))
+                if isinstance(payload.get("family_postures"), Mapping)
+                else {}
+            ),
+            "portfolio_posture": (
+                dict(payload.get("portfolio_posture"))
+                if isinstance(payload.get("portfolio_posture"), Mapping)
+                else None
+            ),
+        }
 
     def _append_history(self, payload: Mapping[str, Any]) -> None:
         self.base_dir.mkdir(parents=True, exist_ok=True)

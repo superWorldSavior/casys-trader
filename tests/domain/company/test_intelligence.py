@@ -122,6 +122,26 @@ def test_brief_forces_authoritative_envelope_and_filters_unknown_sources() -> No
     assert "selected_hotlist" not in filtered.to_dict()
 
 
+def test_company_thesis_summary_uses_point_when_llm_returns_a_mapping() -> None:
+    payload = _brief_payload()
+    payload["company_thesis"]["summary"] = {
+        "point": "The normalized thesis summary.",
+        "source_refs": ["fixture:SAP.DE:2026Q2"],
+    }
+
+    brief = CompanyIntelligenceBrief.from_mapping(payload)
+
+    assert brief is not None
+    assert brief.company_thesis.summary == "The normalized thesis summary."
+    assert "{'point':" not in brief.company_thesis.summary
+
+    payload["company_thesis"]["summary"] = "The regular thesis summary."
+    regular_brief = CompanyIntelligenceBrief.from_mapping(payload)
+
+    assert regular_brief is not None
+    assert regular_brief.company_thesis.summary == "The regular thesis summary."
+
+
 def test_brief_freshness_is_evaluated_per_section() -> None:
     brief = CompanyIntelligenceBrief.from_mapping(_brief_payload())
     assert brief is not None

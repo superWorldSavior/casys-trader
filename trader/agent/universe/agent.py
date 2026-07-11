@@ -108,7 +108,7 @@ class LlmUniverseAgent:
                 model=completion.model,
                 provider_fallback_reason=completion.fallback_reason,
             )
-        if decision.contract_version != "universe.v1":
+        if decision.contract_version not in {"universe.v1", "universe.v2"}:
             raise UniverseAgentPayloadError(
                 "legacy_contract_not_allowed_for_universe_agent",
                 provider=completion.provider,

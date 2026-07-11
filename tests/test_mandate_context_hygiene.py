@@ -24,8 +24,9 @@ def test_mandat_separe_competence_situation_et_experience() -> None:
     mandate = (ROOT / "mandate" / "mandate.md").read_text(encoding="utf-8")
     memory = (ROOT / "mandate" / "memory.md").read_text(encoding="utf-8")
 
-    assert "company_intelligence" in mandate
+    assert "company_intelligence_delta" in mandate
     assert "universe_mandate" in mandate
+    assert "company_intelligence_delta" in memory
     assert "FLAIR" in mandate
     assert "prior humain lent" in memory
     assert "pas le journal runtime" in memory

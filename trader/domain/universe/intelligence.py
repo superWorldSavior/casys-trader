@@ -21,6 +21,9 @@ from trader.domain.situation import NewsMacroBrief, SituationPoint
 
 DEFAULT_MAX_SITUATION_POINTS = 48
 DEFAULT_MAX_SITUATION_TEXT_CHARS = 6_000
+# Keep these domain defaults aligned with config/company_intelligence.yaml.
+DEFAULT_SUMMARY_MAX_CHARS = 240
+DEFAULT_MAX_POINTS = 5
 UNCLASSIFIED_FAMILY = "unclassified"
 
 SituationStatus = Literal["active", "not_available", "inactive", "venue_mismatch"]
@@ -104,24 +107,23 @@ def _project_company_brief(
     else:
         status = "fresh"
 
-    drivers = [point.point for point in brief.company_thesis.pillars[:2]]
-    if len(drivers) < 2:
-        drivers.extend(point.point for point in brief.catalysts[: 2 - len(drivers)])
+    drivers = [point.point for point in brief.company_thesis.pillars[:DEFAULT_MAX_POINTS]]
     summary = brief.company_thesis.summary or brief.business.summary
     return {
         "status": status,
         "brief_ref": brief.ref(),
         "as_of": brief.as_of,
+        "input_signature": brief.input_signature,
         "freshness": freshness,
         "company_thesis_status": brief.company_thesis.status,
         "selection_view": brief.selection_view.to_dict(),
         "security_readiness": brief.security_readiness,
-        "summary": summary[:600],
-        "drivers": drivers[:2],
-        "catalysts": [point.point for point in brief.catalysts[:2]],
-        "risks": [point.point for point in brief.risks[:2]],
+        "summary": summary[:DEFAULT_SUMMARY_MAX_CHARS],
+        "drivers": drivers,
+        "catalysts": [point.point for point in brief.catalysts[:DEFAULT_MAX_POINTS]],
+        "risks": [point.point for point in brief.risks[:DEFAULT_MAX_POINTS]],
         "coverage": dict(brief.coverage),
-        "source_refs": list(brief.source_refs[:8]),
+        "source_refs": list(brief.source_refs[:DEFAULT_MAX_POINTS]),
     }
 
 

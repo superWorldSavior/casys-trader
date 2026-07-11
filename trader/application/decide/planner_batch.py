@@ -149,7 +149,7 @@ def build_symbol_facts(
         )
     company_context = (company_context_by_symbol or {}).get(sym)
     if company_context:
-        facts["company_intelligence"] = company_context
+        facts["company_intelligence_delta"] = company_context
     mandate_context = (mandate_context_by_symbol or {}).get(sym)
     if mandate_context:
         facts["universe_mandate"] = mandate_context

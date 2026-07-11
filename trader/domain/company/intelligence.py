@@ -79,6 +79,14 @@ def _clean_text(value: Any, *, max_chars: int | None = None) -> str:
     return text
 
 
+def _clean_thesis_summary(value: Any) -> str:
+    if isinstance(value, Mapping):
+        value = value.get("point", "")
+    elif isinstance(value, list) and value and all(isinstance(item, Mapping) for item in value):
+        value = value[0].get("point", "")
+    return _clean_text(value, max_chars=MAX_SUMMARY_CHARS)
+
+
 def _clean_string_tuple(value: Any, *, limit: int) -> tuple[str, ...]:
     if not isinstance(value, (list, tuple, set)):
         return ()
@@ -454,7 +462,7 @@ class CompanyThesis:
             status = "untested"
         return cls(
             status=status,  # type: ignore[arg-type]
-            summary=_clean_text(payload.get("summary"), max_chars=MAX_SUMMARY_CHARS),
+            summary=_clean_thesis_summary(payload.get("summary")),
             pillars=_points(payload.get("pillars")),
             confirming_evidence=_points(payload.get("confirming_evidence")),
             disconfirming_evidence=_points(payload.get("disconfirming_evidence")),
