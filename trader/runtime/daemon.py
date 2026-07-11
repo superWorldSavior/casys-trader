@@ -66,6 +66,7 @@ from trader.agent.learnings import consolidator
 from trader.agent.learnings import raw_store as raw_learnings
 from trader.agent.learnings import store as recall_store_mod
 from trader.market import family_regime, fx, macro_calendar, macro_series  # noqa: F401
+from trader.infrastructure.market_sources import gdelt
 from trader.market import market_data as market
 from trader.market import volatility as reference_volatility_service
 from trader.domain.market.features import DEFAULT_INDICATORS
@@ -1134,6 +1135,7 @@ def run_cycle(
         gross_rejection_cache=process_state.last_gross_rejections,
         summarize_gross_rejections=summarize_gross_rejections,
         collect_macro=macro_series.maybe_collect,
+        collect_gdelt=gdelt.maybe_collect,
         write_current_report=_write_current_report,
         append_event=_append_event,
         logger=log,

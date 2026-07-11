@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -29,7 +30,12 @@ GDELT_BASE = "https://api.gdeltproject.org/api/v2/doc/doc"
 DEFAULT_TIMEOUT_S = 15
 DEFAULT_MAX_RECORDS = 75
 DEFAULT_TIMESPAN = "1d"
+COLLECT_COOLDOWN_H = 20
+MARKER_FILE = ".last_collect"
 _MAX_TITLE_CHARS = 300
+
+_collect_lock = threading.Lock()
+_collect_in_progress: bool = False
 
 # Query GDELT cadrée géopolitique / macro internationale. Paramétrable via l'argument
 # ``query`` de collect_daily ; cette constante reste la valeur versionnée v1.
@@ -154,4 +160,72 @@ def collect_daily(
     return {"collected": collected, "skipped": skipped, "errors": 0}
 
 
-__all__ = ["collect_daily", "DEFAULT_QUERY", "GDELT_BASE"]
+# ---------------------------------------------------------------------------
+# Déclenchement best-effort — thread daemon fire-and-forget (pattern macro_series)
+# ---------------------------------------------------------------------------
+
+
+def _read_last_collect(marker: Path) -> datetime | None:
+    try:
+        raw = marker.read_text("utf-8").strip()
+        return datetime.fromisoformat(raw.replace("Z", "+00:00")).astimezone(timezone.utc)
+    except (OSError, ValueError):
+        return None
+
+
+def _write_last_collect(marker: Path, now_utc: datetime) -> None:
+    try:
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(now_utc.isoformat(), encoding="utf-8")
+    except OSError as exc:
+        log.warning("gdelt: écriture marqueur échouée : %s", exc)
+
+
+def maybe_collect(
+    state_dir: Path,
+    now: datetime,
+    *,
+    get_json: Callable[[str], dict] | None = None,
+    timeout_s: int = DEFAULT_TIMEOUT_S,
+    cooldown_h: float = COLLECT_COOLDOWN_H,
+) -> dict:
+    """Lance collect_daily dans un thread daemon fire-and-forget si cooldown dépassé.
+
+    Retourne immédiatement — le cycle n'est jamais bloqué. Marqueur posé au lancement
+    du thread ; verrou module pour un seul thread à la fois. Best-effort total.
+    """
+    global _collect_in_progress
+
+    gdelt_dir = Path(state_dir) / "gdelt"
+    marker = gdelt_dir / MARKER_FILE
+    now_utc = now.astimezone(timezone.utc) if now.tzinfo else now.replace(tzinfo=timezone.utc)
+
+    last = _read_last_collect(marker)
+    if last is not None:
+        elapsed_h = (now_utc - last).total_seconds() / 3600.0
+        if elapsed_h < cooldown_h:
+            return {"triggered": False, "reason": "cooldown", "elapsed_h": round(elapsed_h, 2)}
+
+    with _collect_lock:
+        if _collect_in_progress:
+            return {"triggered": False, "reason": "in_progress"}
+        _collect_in_progress = True
+
+    _write_last_collect(marker, now_utc)
+
+    def _run() -> None:
+        global _collect_in_progress
+        try:
+            collect_daily(state_dir, now, get_json=get_json, timeout_s=timeout_s)
+        except Exception as exc:  # noqa: BLE001 — best-effort total, jamais de remontée
+            log.warning("gdelt: échec inattendu collect_daily : %s", exc)
+        finally:
+            with _collect_lock:
+                _collect_in_progress = False
+
+    thread = threading.Thread(target=_run, daemon=True, name="gdelt-collect")
+    thread.start()
+    return {"triggered": True, "_thread": thread}
+
+
+__all__ = ["collect_daily", "maybe_collect", "DEFAULT_QUERY", "GDELT_BASE"]

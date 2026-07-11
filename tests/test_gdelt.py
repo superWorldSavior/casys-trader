@@ -80,3 +80,20 @@ def test_title_is_bounded(tmp_path):
     gdelt.collect_daily(tmp_path, _NOW, get_json=lambda url: resp)
     row = json.loads((tmp_path / "gdelt" / "events.jsonl").read_text("utf-8").strip())
     assert len(row["title"]) == 300
+
+
+def test_maybe_collect_respects_cooldown(tmp_path):
+    marker = tmp_path / "gdelt" / gdelt.MARKER_FILE
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text(_NOW.isoformat(), encoding="utf-8")
+    result = gdelt.maybe_collect(tmp_path, _NOW, get_json=lambda url: _fake_response())
+    assert result["triggered"] is False
+    assert result["reason"] == "cooldown"
+
+
+def test_maybe_collect_triggers_and_writes(tmp_path):
+    result = gdelt.maybe_collect(tmp_path, _NOW, get_json=lambda url: _fake_response())
+    assert result["triggered"] is True
+    result["_thread"].join(timeout=5)
+    lines = (tmp_path / "gdelt" / "events.jsonl").read_text("utf-8").strip().splitlines()
+    assert len(lines) == 2
