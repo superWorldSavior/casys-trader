@@ -65,11 +65,11 @@ Le trader peut le contredire si la structure locale ne confirme pas.
 - **Push** : projection compacte par candidat, bornée par
   `config/company_intelligence.yaml` (`summary_chars_per_symbol`, `max_points_per_symbol`)
   via `CompanyContextProjectionLimits` (`trader/runtime/company_context_config.py`).
-- **Pull** (gated) : outil `get_company_briefs(symbols, sections, max_chars)`
+- **Pull** : outil `get_company_briefs(symbols, sections, max_chars)`
   (`trader/agent/universe/tools.py`) dans une boucle multi-tours
   (`compose_with_tool_loop`, `trader/agent/universe/tool_loop.py`) réutilisant
-  `execute_tool_round`. Activé par `CASYS_UNIVERSE_TOOL_ROUNDS` (défaut `0` = OFF,
-  comportement historique byte-identique).
+  `execute_tool_round`. **Comportement par défaut** de l'agent univers (self-limiting :
+  un seul tour si l'agent ne demande aucun brief), borné par le backstop interne.
 - **Trader** : reçoit `company_intelligence` (micro frais, source unique) + le mandat
   (jugement). Le `company_context` figé est **retiré** du mandat injecté au trader
   (dédup) — `load_trader_research_context`.
@@ -88,11 +88,11 @@ Le trader peut le contredire si la structure locale ne confirme pas.
 Les productions globales (digest, posture) sont **fail-open** : une erreur agent/persistance
 n'interrompt pas le cycle (artefact vide + statut observable).
 
-## 6. Flags
+## 6. Activation
 
-| Flag | Défaut | Effet |
-|---|---|---|
-| `CASYS_UNIVERSE_TOOL_ROUNDS` | `0` (OFF) | `>0` active le tool loop micro (pull `get_company_briefs`) de l'agent régional |
-
-La posture globale (`_prepare_global_universe_posture`) est active à chaque cycle
-(fail-open) ; la basculer en opt-in gated est trivial si on veut l'observer d'abord.
+**Aucun flag d'activation** : tous ces comportements sont actifs par défaut — c'est le
+comportement du système, pas une option. Le tool loop micro est borné par un **backstop
+interne** (`_TOOL_LOOP_BACKSTOP = 8` dans `tool_loop.py`) — un fusible anti-boucle, pas
+un réglage. La posture globale est produite à chaque cycle (fail-open). Seuls subsistent
+des kill-switches d'urgence hérités, tous **ON par défaut**
+(`CASYS_UNIVERSE_INTELLIGENCE_ENABLED`, `CASYS_NEWS_MACRO_GLOBAL_ENABLED`).

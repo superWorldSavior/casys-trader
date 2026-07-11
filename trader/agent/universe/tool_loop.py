@@ -19,6 +19,10 @@ from trader.agent.universe.tools import make_get_company_briefs_spec
 from trader.application.universe import UniverseAgentDecision, UniverseCompositionRequest
 
 _ALLOWED_TOOLS = frozenset({"get_company_briefs"})
+# Fusible anti-boucle-infinie, PAS un réglage : l'agent fait autant de pulls micro
+# qu'il veut jusqu'à ce plafond haut (jamais atteint en usage normal). Analogue au
+# SESSION_ROUND_BACKSTOP du trader.
+_TOOL_LOOP_BACKSTOP = 8
 
 
 def _extract_tool_calls(text: str) -> list[dict[str, Any]] | None:
@@ -81,7 +85,7 @@ def compose_with_tool_loop(
     *,
     router: llm.LlmRouter,
     intelligence_store: Any,
-    max_rounds: int = 3,
+    max_rounds: int = _TOOL_LOOP_BACKSTOP,
     timeout_s: int = 120,
 ) -> UniverseAgentDecision:
     registry = {"get_company_briefs": make_get_company_briefs_spec(intelligence_store)}
