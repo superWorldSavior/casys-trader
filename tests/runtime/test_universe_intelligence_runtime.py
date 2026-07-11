@@ -10,6 +10,7 @@ import pytest
 from trader.application.universe import UniverseAgentDecision
 from trader.domain.situation import NewsMacroBrief
 from trader.domain.universe import candidate_scope_id
+from trader.domain.universe.global_posture import GlobalUniversePosture
 from trader.infrastructure.state_db.candidate_scope_store import CandidateScopeStore
 from trader.infrastructure.state_db.situation_brief_store import NewsMacroBriefStore
 from trader.infrastructure.state_db.universe_run_store import UniverseRunStore
@@ -23,6 +24,11 @@ NOW = datetime(2026, 7, 10, 20, 5, tzinfo=timezone.utc)
 @pytest.fixture(autouse=True)
 def _universe_intelligence_enabled(monkeypatch):
     monkeypatch.setenv("CASYS_UNIVERSE_INTELLIGENCE_ENABLED", "1")
+    monkeypatch.setattr(
+        universe_intelligence_runtime,
+        "LlmGlobalPostureAgent",
+        FakePostureAgent,
+    )
 
 
 class FakeAgent:
@@ -45,6 +51,22 @@ class FakeAgent:
         )
 
 
+class FakePostureAgent:
+    def __init__(self) -> None:
+        self.requests = []
+
+    def compose(self, request):
+        self.requests.append(request)
+        return GlobalUniversePosture(
+            as_of=request.as_of,
+            venue_posture={venue: "selective" for venue in request.venues},
+            family_priority={"favored": ("us_mega_tech",)},
+            gross_mode="cautious",
+            net_bias="long",
+            rationale="Prefer the strongest global family while keeping gross bounded.",
+        )
+
+
 def _write_scope_and_brief(
     state_dir,
     *,
@@ -52,6 +74,7 @@ def _write_scope_and_brief(
     symbols: list[str],
     family: str,
     scope_phase: str | None = None,
+    sticky: tuple[str, ...] = (),
 ) -> str:
     candidates = [
         {
@@ -74,7 +97,7 @@ def _write_scope_and_brief(
             "as_of": scope_as_of,
             "candidates": candidates,
             "default_hotlist": baseline,
-            "sticky_context_at_close": [],
+            "sticky_context_at_close": list(sticky),
         }
     if scope_phase is not None:
         scope_record["scope_phase"] = scope_phase
@@ -193,13 +216,25 @@ def test_tick_prepares_three_independent_venue_runs_with_briefs_and_families(tmp
     config_dir.mkdir()
     scopes = {
         "TW": _write_scope_and_brief(
-            state_dir, venue="TW", symbols=["2330.TW", "2454.TW"], family="semis_tw"
+            state_dir,
+            venue="TW",
+            symbols=["2330.TW", "2454.TW"],
+            family="semis_tw",
+            sticky=("1101.TW",),
         ),
         "EU": _write_scope_and_brief(
-            state_dir, venue="EU", symbols=["AIR.PA", "SAP.DE"], family="eu_industrials"
+            state_dir,
+            venue="EU",
+            symbols=["AIR.PA", "SAP.DE"],
+            family="eu_industrials",
+            sticky=("SIE.DE",),
         ),
         "US": _write_scope_and_brief(
-            state_dir, venue="US", symbols=["AAPL", "MSFT"], family="us_mega_tech"
+            state_dir,
+            venue="US",
+            symbols=["AAPL", "MSFT"],
+            family="us_mega_tech",
+            sticky=("SIE.DE", "NVDA"),
         ),
     }
     (state_dir / "last_regime.json").write_text(
@@ -218,16 +253,21 @@ def test_tick_prepares_three_independent_venue_runs_with_briefs_and_families(tmp
         encoding="utf-8",
     )
     agent = FakeAgent()
+    posture_agent = FakePostureAgent()
 
     result = universe_intelligence_runtime.tick_universe_intelligence(
         config_dir=config_dir,
         state_dir=state_dir,
         loop_now=NOW,
         agent=agent,
+        posture_agent=posture_agent,
     )
 
     assert [item["venue"] for item in result["prepared"]] == ["TW", "EU", "US"]
     assert len(agent.requests) == 3
+    assert len(posture_agent.requests) == 1
+    assert posture_agent.requests[0].sticky == ("1101.TW", "NVDA", "SIE.DE")
+    assert posture_agent.requests[0].venues == ("TW", "EU", "US")
     board_rows = (
         state_dir / "global_family_boards" / "2026-07-10.jsonl"
     ).read_text(encoding="utf-8").splitlines()
@@ -236,6 +276,10 @@ def test_tick_prepares_three_independent_venue_runs_with_briefs_and_families(tmp
         state_dir / "global_situation_digests" / "2026-07-10.jsonl"
     ).read_text(encoding="utf-8").splitlines()
     assert len(digest_rows) == 1
+    posture_rows = (
+        state_dir / "global_universe_postures" / "2026-07-10.jsonl"
+    ).read_text(encoding="utf-8").splitlines()
+    assert len(posture_rows) == 1
     assert len({json.dumps(request.global_situation_digest, sort_keys=True) for request in agent.requests}) == 1
     for request in agent.requests:
         assert request.candidate_scope_id == scopes[request.venue]
@@ -250,6 +294,8 @@ def test_tick_prepares_three_independent_venue_runs_with_briefs_and_families(tmp
         assert request.global_family_board["global_situation_digest_ref"]["digest_id"] == (
             request.global_situation_digest["digest_id"]
         )
+        assert request.global_universe_posture["gross_mode"] == "cautious"
+        assert request.to_dict()["global_universe_posture"] == request.global_universe_posture
         context = request.situation_context.to_dict()
         assert context["status"] == "active"
         assert context["coverage"]["status"] == "partial"
@@ -285,6 +331,9 @@ def test_tick_prepares_three_independent_venue_runs_with_briefs_and_families(tmp
         assert prepared["global_situation_digest"]["digest_id"] == (
             request.global_situation_digest["digest_id"]
         )
+        assert prepared["global_universe_posture"]["posture_id"] == (
+            request.global_universe_posture["posture_id"]
+        )
         assert prepared["company_context_mode"] == "active"
         assert prepared["company_context_coverage"]["missing"] == 2
         mandate = UniverseMandateStore(state_dir / "universe_mandates").read_prepared(
@@ -294,6 +343,42 @@ def test_tick_prepares_three_independent_venue_runs_with_briefs_and_families(tmp
         assert mandate["status"] == "prepared"
         assert list(mandate["symbols"]) == [request.candidate_symbols[-1]]
         assert mandate["symbols"][request.candidate_symbols[-1]]["why_selected"]
+
+
+def test_global_posture_agent_failure_is_fail_open(tmp_path, caplog) -> None:
+    state_dir = tmp_path / "state"
+    config_dir = tmp_path / "config"
+    state_dir.mkdir()
+    config_dir.mkdir()
+    scope_id = _write_scope_and_brief(
+        state_dir,
+        venue="US",
+        symbols=["AAPL", "MSFT"],
+        family="us_mega_tech",
+    )
+    agent = FakeAgent()
+
+    class FailingPostureAgent:
+        def compose(self, _request):
+            raise RuntimeError("posture unavailable")
+
+    result = universe_intelligence_runtime.tick_universe_intelligence(
+        config_dir=config_dir,
+        state_dir=state_dir,
+        loop_now=NOW,
+        agent=agent,
+        posture_agent=FailingPostureAgent(),
+        venues=("US",),
+    )
+
+    assert result["prepared"][0]["candidate_scope_id"] == scope_id
+    assert len(agent.requests) == 1
+    assert agent.requests[0].global_universe_posture == {}
+    prepared = UniverseRunStore(state_dir / "universe_runs").read_prepared(scope_id)
+    assert prepared["status"] == "success"
+    assert prepared["global_universe_posture"]["status"] == "error"
+    assert prepared["global_universe_posture"]["error"] == "RuntimeError"
+    assert "global universe posture preparation failed" in caplog.text
 
 
 def test_tick_universe_intelligence_waits_for_preopen_child_scope(tmp_path) -> None:

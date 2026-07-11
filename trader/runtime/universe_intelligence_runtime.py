@@ -21,6 +21,10 @@ from trader.application.universe import (
     build_universe_composition_request,
     compose_universe,
 )
+from trader.agent.universe.global_posture_agent import (
+    GlobalUniversePostureRequest,
+    LlmGlobalPostureAgent,
+)
 from trader.domain.universe import (
     SymbolMandate,
     UniverseSituationContext,
@@ -34,6 +38,7 @@ from trader.infrastructure.state_db.candidate_scope_store import CandidateScopeS
 from trader.infrastructure.state_db.company_intelligence_store import CompanyIntelligenceStore
 from trader.infrastructure.state_db.global_family_board_store import GlobalFamilyBoardStore
 from trader.infrastructure.state_db.global_situation_digest_store import GlobalSituationDigestStore
+from trader.infrastructure.state_db.global_universe_posture_store import GlobalUniversePostureStore
 from trader.infrastructure.state_db.situation_brief_store import NewsMacroBriefStore
 from trader.infrastructure.state_db.universe_run_store import UniverseRunStore
 from trader.infrastructure.state_db.universe_mandate_store import UniverseMandateStore
@@ -63,6 +68,8 @@ def tick_universe_intelligence(
     run_store: UniverseRunStore | None = None,
     family_board_store: GlobalFamilyBoardStore | None = None,
     global_situation_store: GlobalSituationDigestStore | None = None,
+    posture_store: GlobalUniversePostureStore | None = None,
+    posture_agent: Any | None = None,
     company_store: CompanyIntelligenceStore | None = None,
     mandate_store: UniverseMandateStore | None = None,
     venues: Iterable[str] = VENUES,
@@ -90,6 +97,9 @@ def tick_universe_intelligence(
     global_situations = global_situation_store or GlobalSituationDigestStore(
         state_path / "global_situation_digests"
     )
+    postures = posture_store or GlobalUniversePostureStore(
+        state_path / "global_universe_postures"
+    )
     companies = company_store or CompanyIntelligenceStore(state_path / "company_intelligence")
     mandates = mandate_store or UniverseMandateStore(state_path / "universe_mandates")
     company_context_mode = _company_context_mode(Path(config_dir))
@@ -108,6 +118,17 @@ def tick_universe_intelligence(
         now=now,
         log=log,
         global_situation_ref=global_situation_ref,
+    )
+    global_universe_posture, global_universe_posture_ref = (
+        _prepare_global_universe_posture(
+            scopes=scopes,
+            store=postures,
+            now=now,
+            log=log,
+            global_family_board=global_family_board,
+            global_situation_digest=global_situation_digest,
+            agent=posture_agent,
+        )
     )
     prepared: list[dict[str, Any]] = []
     waiting: list[dict[str, Any]] = []
@@ -193,6 +214,7 @@ def tick_universe_intelligence(
                 company_context=company_context,
                 global_family_board=global_family_board,
                 global_situation_digest=global_situation_digest,
+                global_universe_posture=global_universe_posture,
             )
         except Exception as exc:
             record = _base_run_record(
@@ -305,6 +327,7 @@ def tick_universe_intelligence(
                     family_board_ref,
                 ),
                 "global_situation_digest": global_situation_ref,
+                "global_universe_posture": global_universe_posture_ref,
                 "situation_context_hash": _request_signature(situation_context.to_dict()),
                 "situation_point_count": situation_context.point_count,
                 "situation_truncated": situation_context.truncated,
@@ -505,6 +528,53 @@ def _prepare_global_situation_digest(
         log.warning("global situation digest persistence failed: %s", exc)
         return digest, {"status": "error", "persistence_error": exc.__class__.__name__}
     return stored, {**ref, "persistence_status": "appended" if changed else "unchanged"}
+
+
+def _prepare_global_universe_posture(
+    *,
+    scopes: CandidateScopeStore,
+    store: GlobalUniversePostureStore,
+    now: datetime,
+    log: LoggerLike,
+    global_family_board: Mapping[str, Any],
+    global_situation_digest: Mapping[str, Any],
+    agent: Any | None = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    try:
+        sticky: set[str] = set()
+        for venue in VENUES:
+            scope = scopes.read_latest(venue, scope_phase="preopen")
+            if scope is None:
+                current = scopes.read_current(venue)
+                if current is not None and not str(current.get("scope_phase") or "").strip():
+                    scope = current
+            if scope is not None:
+                sticky.update(
+                    str(symbol).strip()
+                    for symbol in scope.get("sticky_context_at_close") or ()
+                    if str(symbol).strip()
+                )
+        request = GlobalUniversePostureRequest(
+            as_of=now.isoformat(),
+            global_family_board=global_family_board,
+            global_situation_digest=global_situation_digest,
+            sticky=tuple(sorted(sticky)),
+            venues=VENUES,
+        )
+        posture = (agent or LlmGlobalPostureAgent()).compose(request)
+        posture_dict = posture.to_dict()
+        stored, ref, changed = store.append_if_changed(posture)
+    except Exception as exc:  # noqa: BLE001 - global posture is advisory and fail-open
+        log.warning("global universe posture preparation failed: %s", exc)
+        return {}, {
+            "status": "error",
+            "persistence_status": "skipped",
+            "error": exc.__class__.__name__,
+        }
+    return stored or posture_dict, {
+        **ref,
+        "persistence_status": "appended" if changed else "unchanged",
+    }
 
 
 def _family_board_observability(

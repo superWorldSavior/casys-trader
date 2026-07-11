@@ -29,6 +29,9 @@ def build_universe_prompt(request: UniverseCompositionRequest) -> str:
         "ou instruction de copier la sélection d'une autre venue.\n"
         "global_situation_digest est le fait macro commun cross-région ; distingue-le du "
         "brief régional (spécifique à cette venue) et du board (comparaison de familles).\n"
+        "global_universe_posture est la posture cross-région déjà décidée en amont (venues et "
+        "familles à privilégier/déprioriser, gross/net global) : respecte-la comme cadre "
+        "stratégique de cette passe, sans la recopier ni la contredire sans raison locale forte.\n"
         "Retourne uniquement un objet JSON valide, jamais un simple add/remove, avec ce schéma:\n"
         '{"selected_hotlist":["SYMBOL"],"summary":"...",'
         '"family_postures":{"family":"..."},'

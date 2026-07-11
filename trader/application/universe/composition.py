@@ -36,6 +36,7 @@ class UniverseCompositionRequest:
     company_context: UniverseCompanyContext
     global_family_board: dict[str, Any] = field(default_factory=dict)
     global_situation_digest: dict[str, Any] = field(default_factory=dict)
+    global_universe_posture: dict[str, Any] = field(default_factory=dict)
     retrieval_refs: tuple[str, ...] = ()
     retrieval_status: str = "not_enabled"
 
@@ -56,6 +57,7 @@ class UniverseCompositionRequest:
             "family_snapshot": _json_copy(self.family_snapshot),
             "global_family_board": _json_copy(self.global_family_board),
             "global_situation_digest": _json_copy(self.global_situation_digest),
+            "global_universe_posture": _json_copy(self.global_universe_posture),
             "retrieval_refs": list(self.retrieval_refs),
             "retrieval_status": self.retrieval_status,
         }
@@ -113,6 +115,7 @@ def build_universe_composition_request(
     company_context: UniverseCompanyContext | None = None,
     global_family_board: Mapping[str, Any] | None = None,
     global_situation_digest: Mapping[str, Any] | None = None,
+    global_universe_posture: Mapping[str, Any] | None = None,
     retrieval_refs: Iterable[str] = (),
     retrieval_status: str = "not_enabled",
 ) -> UniverseCompositionRequest:
@@ -163,6 +166,7 @@ def build_universe_composition_request(
         normalized_global_situation_digest.get("as_of") or ""
     ).strip():
         raise ValueError("global_situation_digest_as_of_required")
+    normalized_global_universe_posture = dict(global_universe_posture or {})
 
     snapshot = build_family_snapshot(enriched, normalized_baseline, normalized_sticky)
     normalized_company_context = company_context or project_company_briefs_to_universe_context(
@@ -210,6 +214,7 @@ def build_universe_composition_request(
         company_context=normalized_company_context,
         global_family_board=_json_copy(normalized_global_family_board),
         global_situation_digest=_json_copy(normalized_global_situation_digest),
+        global_universe_posture=_json_copy(normalized_global_universe_posture),
         retrieval_refs=normalized_retrieval_refs,
         retrieval_status=normalized_retrieval_status,
     )
