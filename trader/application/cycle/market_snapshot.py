@@ -8,9 +8,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable, Protocol, runtime_checkable
 
-from trader.market.execution_eligibility import build_execution_eligibility
-from trader.market import fx, fx_rates
-from trader.market import market_data as market
+from trader.domain.market import fx
+from trader.domain.market import sessions as market
+from trader.domain.market.execution_eligibility import build_execution_eligibility
+from trader.domain.market_data import MarketError
+from trader.market import fx_rates
 from trader.market.protocols import DataSource
 
 log = logging.getLogger("trader.application.market_snapshot")
@@ -73,7 +75,7 @@ class ExitBarsFetcher(Protocol):
         ...
 
 
-def _default_connection_error(_: market.MarketError) -> bool:
+def _default_connection_error(_: MarketError) -> bool:
     return False
 
 
@@ -122,7 +124,7 @@ def build_market_snapshot(
     scheduler: object | None = None,
     daily_lookback: str = DEFAULT_DAILY_LOOKBACK,
     daily_interval: str = DEFAULT_DAILY_INTERVAL,
-    is_connection_market_error: Callable[[market.MarketError], bool] = _default_connection_error,
+    is_connection_market_error: Callable[[MarketError], bool] = _default_connection_error,
     execution_eligibility_builder: ExecutionEligibilityBuilder | None = None,
     exit_bars_fetcher: ExitBarsFetcher | None = None,
 ) -> MarketSnapshot:
@@ -140,7 +142,7 @@ def build_market_snapshot(
     for sym in symbols:
         try:
             bars = data_source.get_bars(sym, lookback=runtime_lookback, interval=runtime_interval)
-        except market.MarketError as exc:
+        except MarketError as exc:
             if is_connection_market_error(exc):
                 raise
             log.warning("données indisponibles %s: %s", sym, exc.code)
@@ -216,7 +218,7 @@ def build_market_snapshot(
                 lookback=daily_lookback,
                 interval=daily_interval,
             )
-        except market.MarketError as exc:
+        except MarketError as exc:
             if is_connection_market_error(exc):
                 raise
             log.warning("daily data unavailable %s: %s", sym, exc.code)

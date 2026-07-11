@@ -10,8 +10,8 @@ from typing import Callable
 from trader.agent.learnings import consolidator
 from trader.application.execute import risk_capacity
 from trader.domain.risk import RiskLimits
-from trader.market import family_regime, fx
-from trader.market import market_data as market
+from trader.domain.market import family_regime, fx
+from trader.domain.market import sessions as market
 from trader.domain.planning.indicator_watch import is_armed_plan
 from trader.planning.protocols import SchedulerLike
 from trader.domain.trade_plan import TradePlan

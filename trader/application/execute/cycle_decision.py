@@ -24,11 +24,11 @@ import trader.application.record.decision_watches as decision_watches
 import trader.application.record.plan_review as plan_review
 from trader.application.portfolio import snapshot as portfolio
 from trader.domain.execution.risk_gate import RiskGate
+from trader.domain.market import sessions as market
+from trader.domain.market import volatility as reference_volatility_service
+from trader.domain.market.execution_eligibility import execution_blocked_reason
 from trader.domain.planning.exit_plan_spec import InvalidExitPlanError, validate_exit_plan
 from trader.domain.planning.trade_plan import resolve_exit_plan
-import trader.market.execution_eligibility as execution_eligibility_service
-from trader.market import market_data as market
-import trader.market.volatility as reference_volatility_service
 from trader.planning.protocols import SchedulerLike
 
 _OPENING_INTENTS = {"OPEN_LONG", "OPEN_SHORT", "FLIP", "SCALE_IN"}
@@ -252,7 +252,7 @@ def execute_one_cycle_decision(
         ctx.record_decision({**entry, "executed": False, "reason": invalid_intent})
         return state
 
-    execution_blocked = execution_eligibility_service.execution_blocked_reason(
+    execution_blocked = execution_blocked_reason(
         ctx.execution_eligibility,
         sym,
         fail_closed=decision.intent in _OPENING_INTENTS,

@@ -60,12 +60,12 @@ from trader.application.execute.cycle_decision import (
     execute_one_cycle_decision as _execute_one_cycle_decision,
 )
 from trader.domain.execution.risk_gate import RiskGate
+from trader.domain.market import execution_eligibility as execution_eligibility_service
 from trader.domain.risk import RiskLimits
 from trader.agent.learnings import consolidator
 from trader.agent.learnings import raw_store as raw_learnings
 from trader.agent.learnings import store as recall_store_mod
 from trader.market import family_regime, fx, macro_calendar, macro_series  # noqa: F401
-from trader.market import execution_eligibility as execution_eligibility_service
 from trader.market import market_data as market
 from trader.market import volatility as reference_volatility_service
 from trader.market.data_source import (
@@ -74,8 +74,8 @@ from trader.market.data_source import (
     make_indirect_get_bars,
     parse_data_sources_config,
 )
-from trader.market.features import DEFAULT_INDICATORS
-from trader.market.gross_priority import PriorityItem, gross_execution_order
+from trader.domain.market.features import DEFAULT_INDICATORS
+from trader.domain.market.gross_priority import PriorityItem, gross_execution_order
 from trader.market.ib_source import IBDataSource, connect_ib
 from trader.market import news_feed
 from trader.planning.protocols import SchedulerLike
@@ -114,6 +114,7 @@ from trader.application.execute.fee_estimate import round_trip_cost
 from trader.application.execute.protocols import CommissionModel
 from trader.domain.contracts import Order
 from trader.infrastructure.brokers.commission_models import commission_model_from_name
+from trader.infrastructure.state_db.sim_broker import SimBroker as SimBroker  # noqa: F401 - legacy test seam
 from trader.infrastructure.state_db.broker_factory import (
     CANONICAL_STATE_BACKEND,
     bootstrap_state_backend,

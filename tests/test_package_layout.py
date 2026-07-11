@@ -783,6 +783,40 @@ def test_application_and_backtest_use_canonical_domain_watch_policy() -> None:
     assert violations == []
 
 
+def test_application_runtime_and_backtest_use_canonical_pure_market_modules() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    forbidden_modules = {
+        "trader.market.execution_eligibility",
+        "trader.market.family_regime",
+        "trader.market.features",
+        "trader.market.fx",
+        "trader.market.gross_priority",
+        "trader.market.volatility",
+    }
+    violations: list[str] = []
+
+    for source_root in (
+        repo_root / "trader" / "application",
+        repo_root / "trader" / "runtime",
+        repo_root / "backtest",
+    ):
+        for source_path in sorted(source_root.rglob("*.py")):
+            tree = ast.parse(source_path.read_text(encoding="utf-8"), filename=str(source_path))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ImportFrom) and node.module in forbidden_modules:
+                    violations.append(
+                        f"{source_path.relative_to(repo_root)}:{node.lineno}: from {node.module} import ..."
+                    )
+                elif isinstance(node, ast.Import):
+                    violations.extend(
+                        f"{source_path.relative_to(repo_root)}:{node.lineno}: import {alias.name}"
+                        for alias in node.names
+                        if alias.name in forbidden_modules
+                    )
+
+    assert violations == []
+
+
 def test_scheduler_json_backend_is_nested_under_state_db_with_planning_facade() -> None:
     trader_dir = Path(__file__).resolve().parents[1] / "trader"
     facade_path = trader_dir / "planning" / "scheduler.py"

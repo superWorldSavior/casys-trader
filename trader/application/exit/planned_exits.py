@@ -6,14 +6,14 @@ from datetime import datetime
 from typing import Callable, Protocol
 
 from trader.planning.protocols import TradePlanStoreLike
-from trader.market.execution_eligibility import (
+from trader.domain.market.execution_eligibility import (
     execution_blocked_reason as default_execution_blocked_reason,
 )
 from trader.application.exit.exit_bars import exit_bar_extremes
 from trader.application.execute.order_admission import clamp_exit_quantity as default_clamp_exit_quantity
 from trader.application.portfolio import snapshot as portfolio
 from trader.domain.contracts import Order
-from trader.planning.exit_engine import ExitEvaluation, evaluate_plan
+from trader.domain.planning.exit_engine import ExitEvaluation, evaluate_plan
 from trader.domain.trade_plan import TradePlan
 
 ModelPerformanceAppender = Callable[..., None]

@@ -7,7 +7,7 @@ import math
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from trader.market import market_data as market
+from trader.domain.market import sessions as market
 
 DEFAULT_EXIT_INTERVAL = "5m"
 DEFAULT_EXIT_LOOKBACK = "1d"

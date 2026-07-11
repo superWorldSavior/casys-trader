@@ -10,8 +10,8 @@ import yaml
 
 from trader.support.metadata import code_version
 from trader.infrastructure.files import decision_ledger, ledger_rotation
+from trader.domain.market.features import DEFAULT_INDICATORS, build_indicator_snapshot, compute_indicator_values
 from trader.market import market_data as market
-from trader.market.features import DEFAULT_INDICATORS, build_indicator_snapshot, compute_indicator_values
 from trader.runtime import daemon
 from trader.runtime.company_intelligence_runtime import CompanyIntelligenceRuntime
 from trader.domain.semantic.catalog import FAMILIES, describe_semantic_layer, find_indicators, list_indicators, normalize_temporal_query
