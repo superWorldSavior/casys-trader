@@ -1,7 +1,7 @@
 from dataclasses import replace
 
 from trader.domain.company import CompanyIntelligenceBrief, SourcedCompanyPoint
-from trader.domain.universe import project_company_briefs_to_universe_context
+from trader.domain.universe import CompanyContextProjectionLimits, project_company_briefs_to_universe_context
 
 
 def _brief(symbol: str = "EXM") -> CompanyIntelligenceBrief:
@@ -97,6 +97,29 @@ def test_projection_applies_configured_micro_caps() -> None:
     assert len(projected["drivers"]) == 5
     assert len(projected["catalysts"]) == 5
     assert len(projected["risks"]) == 5
+
+
+def test_projection_applies_explicit_non_default_limits() -> None:
+    points = tuple(SourcedCompanyPoint(point=f"Point {index}", source_refs=()) for index in range(4))
+    brief = _brief()
+    capped_brief = replace(
+        brief,
+        company_thesis=replace(brief.company_thesis, summary="x" * 100, pillars=points),
+        catalysts=points,
+        risks=points,
+        source_refs=("a", "b", "c", "d"),
+    )
+
+    context = project_company_briefs_to_universe_context(
+        {"EXM": capped_brief},
+        candidate_symbols=("EXM",),
+        active_at="2026-07-10T09:00:00+00:00",
+        limits=CompanyContextProjectionLimits(summary_chars_per_symbol=17, max_points_per_symbol=2),
+    )
+
+    assert context.symbols["EXM"]["summary"] == "x" * 17
+    assert context.symbols["EXM"]["drivers"] == ["Point 0", "Point 1"]
+    assert context.symbols["EXM"]["source_refs"] == ["a", "b"]
 
 
 def test_projection_never_backfills_drivers_from_catalysts() -> None:

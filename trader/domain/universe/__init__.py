@@ -8,6 +8,7 @@ from trader.domain.universe.candidate_scope import (
     retained_news_challengers,
 )
 from trader.domain.universe.intelligence import (
+    CompanyContextProjectionLimits,
     DEFAULT_MAX_SITUATION_POINTS,
     DEFAULT_MAX_SITUATION_TEXT_CHARS,
     UNCLASSIFIED_FAMILY,
@@ -43,6 +44,7 @@ from trader.domain.universe.user_overrides import (
 __all__ = [
     "DEFAULT_MAX_SITUATION_POINTS",
     "DEFAULT_MAX_SITUATION_TEXT_CHARS",
+    "CompanyContextProjectionLimits",
     "NewsChallenger",
     "NewsChallengerEvidence",
     "NewsChallengerSelection",

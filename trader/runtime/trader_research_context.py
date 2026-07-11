@@ -12,6 +12,7 @@ import yaml
 from trader.domain.universe import project_company_briefs_to_universe_context
 from trader.infrastructure.state_db.company_intelligence_store import CompanyIntelligenceStore
 from trader.infrastructure.state_db.universe_mandate_store import UniverseMandateStore
+from trader.runtime.company_context_config import load_company_context_projection_limits
 
 
 def load_trader_research_context(
@@ -32,11 +33,13 @@ def load_trader_research_context(
     companies = company_store or CompanyIntelligenceStore(state_path / "company_intelligence")
     mandates = mandate_store or UniverseMandateStore(state_path / "universe_mandates")
     mode = _trader_context_mode(Path(config_dir))
+    limits = load_company_context_projection_limits(config_dir)
     projected = project_company_briefs_to_universe_context(
         companies.read_current_many(selected),
         candidate_symbols=selected,
         active_at=active_at,
         mode="active",
+        limits=limits,
     )
     company_by_symbol: dict[str, dict[str, Any]] = {}
     mandate_by_symbol: dict[str, dict[str, Any]] = {}

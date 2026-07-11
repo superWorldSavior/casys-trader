@@ -21,7 +21,6 @@ from trader.domain.situation import NewsMacroBrief, SituationPoint
 
 DEFAULT_MAX_SITUATION_POINTS = 48
 DEFAULT_MAX_SITUATION_TEXT_CHARS = 6_000
-# Keep these domain defaults aligned with config/company_intelligence.yaml.
 DEFAULT_SUMMARY_MAX_CHARS = 240
 DEFAULT_MAX_POINTS = 5
 UNCLASSIFIED_FAMILY = "unclassified"
@@ -35,6 +34,20 @@ CompanyContextStatus = Literal[
     "unsupported",
     "identity_mismatch",
 ]
+
+
+@dataclass(frozen=True)
+class CompanyContextProjectionLimits:
+    """Bounded caps for a compact company card supplied to an agent."""
+
+    summary_chars_per_symbol: int = DEFAULT_SUMMARY_MAX_CHARS
+    max_points_per_symbol: int = DEFAULT_MAX_POINTS
+
+    def normalized(self) -> "CompanyContextProjectionLimits":
+        return CompanyContextProjectionLimits(
+            summary_chars_per_symbol=max(1, min(2_000, int(self.summary_chars_per_symbol))),
+            max_points_per_symbol=max(1, min(20, int(self.max_points_per_symbol))),
+        )
 
 
 @dataclass(frozen=True)
@@ -59,12 +72,14 @@ def project_company_briefs_to_universe_context(
     candidate_symbols: Iterable[str],
     active_at: datetime | str,
     mode: str = "active",
+    limits: CompanyContextProjectionLimits | None = None,
 ) -> UniverseCompanyContext:
     """Keep one compact entry for every candidate, including missing briefs."""
 
     normalized_mode = str(mode or "observe").strip().lower()
     if normalized_mode not in {"observe", "active"}:
         normalized_mode = "observe"
+    projection_limits = (limits or CompanyContextProjectionLimits()).normalized()
     entries: dict[str, Mapping[str, Any]] = {}
     counts = {
         "fresh": 0,
@@ -79,7 +94,12 @@ def project_company_briefs_to_universe_context(
         if not symbol or symbol in entries:
             continue
         brief = briefs_by_symbol.get(symbol)
-        entry = _project_company_brief(symbol, brief, active_at=active_at)
+        entry = _project_company_brief(
+            symbol,
+            brief,
+            active_at=active_at,
+            limits=projection_limits,
+        )
         status = str(entry["status"])
         counts[status] += 1
         entries[symbol] = entry
@@ -91,6 +111,7 @@ def _project_company_brief(
     brief: CompanyIntelligenceBrief | None,
     *,
     active_at: datetime | str,
+    limits: CompanyContextProjectionLimits,
 ) -> Mapping[str, Any]:
     if brief is None:
         return {"status": "missing", "brief_ref": None}
@@ -107,7 +128,7 @@ def _project_company_brief(
     else:
         status = "fresh"
 
-    drivers = [point.point for point in brief.company_thesis.pillars[:DEFAULT_MAX_POINTS]]
+    drivers = [point.point for point in brief.company_thesis.pillars[: limits.max_points_per_symbol]]
     summary = brief.company_thesis.summary or brief.business.summary
     return {
         "status": status,
@@ -118,12 +139,12 @@ def _project_company_brief(
         "company_thesis_status": brief.company_thesis.status,
         "selection_view": brief.selection_view.to_dict(),
         "security_readiness": brief.security_readiness,
-        "summary": summary[:DEFAULT_SUMMARY_MAX_CHARS],
+        "summary": summary[: limits.summary_chars_per_symbol],
         "drivers": drivers,
-        "catalysts": [point.point for point in brief.catalysts[:DEFAULT_MAX_POINTS]],
-        "risks": [point.point for point in brief.risks[:DEFAULT_MAX_POINTS]],
+        "catalysts": [point.point for point in brief.catalysts[: limits.max_points_per_symbol]],
+        "risks": [point.point for point in brief.risks[: limits.max_points_per_symbol]],
         "coverage": dict(brief.coverage),
-        "source_refs": list(brief.source_refs[:DEFAULT_MAX_POINTS]),
+        "source_refs": list(brief.source_refs[: limits.max_points_per_symbol]),
     }
 
 

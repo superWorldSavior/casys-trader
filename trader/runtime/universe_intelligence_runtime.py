@@ -38,6 +38,7 @@ from trader.infrastructure.state_db.situation_brief_store import NewsMacroBriefS
 from trader.infrastructure.state_db.universe_run_store import UniverseRunStore
 from trader.infrastructure.state_db.universe_mandate_store import UniverseMandateStore
 from trader.runtime.protocols import LoggerLike
+from trader.runtime.company_context_config import load_company_context_projection_limits
 
 VENUES = ("TW", "EU", "US")
 DEFAULT_FAILURE_BACKOFF_MINUTES = 30
@@ -92,6 +93,7 @@ def tick_universe_intelligence(
     companies = company_store or CompanyIntelligenceStore(state_path / "company_intelligence")
     mandates = mandate_store or UniverseMandateStore(state_path / "universe_mandates")
     company_context_mode = _company_context_mode(Path(config_dir))
+    company_context_limits = load_company_context_projection_limits(config_dir)
     market_context = _load_market_context(state_path / "last_regime.json", now=now)
     global_situation_digest, global_situation_ref = _prepare_global_situation_digest(
         briefs=briefs,
@@ -170,6 +172,7 @@ def tick_universe_intelligence(
             candidate_symbols=candidate_symbols,
             active_at=now,
             mode=company_context_mode,
+            limits=company_context_limits,
         )
         company_context_payload = company_context.to_dict()
         company_context_hash = _request_signature(company_context_payload)
