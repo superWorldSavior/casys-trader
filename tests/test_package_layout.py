@@ -1347,6 +1347,36 @@ def test_daemon_delegates_state_bootstrap_to_runtime_adapter() -> None:
     assert violations == []
 
 
+def test_ledger_rotation_filesystem_adapter_lives_in_infrastructure() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    infrastructure_adapter = repo_root / "trader" / "infrastructure" / "files" / "ledger_rotation.py"
+    runtime_adapter = repo_root / "trader" / "runtime" / "ledger_rotation.py"
+    runtime_init = repo_root / "trader" / "runtime" / "__init__.py"
+
+    assert infrastructure_adapter.exists()
+    assert not runtime_adapter.exists()
+    assert '"ledger_rotation"' not in runtime_init.read_text(encoding="utf-8")
+
+    violations: list[str] = []
+    for source_root in (repo_root / "trader", repo_root / "backtest", repo_root / "scripts"):
+        for path in sorted(source_root.rglob("*.py")):
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            relative_path = path.relative_to(repo_root)
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ImportFrom):
+                    imports_runtime_module = node.module == "trader.runtime.ledger_rotation"
+                    imports_runtime_export = node.module == "trader.runtime" and any(
+                        alias.name == "ledger_rotation" for alias in node.names
+                    )
+                    if imports_runtime_module or imports_runtime_export:
+                        violations.append(f"{relative_path}:{node.lineno}: legacy runtime import")
+                elif isinstance(node, ast.Import):
+                    if any(alias.name == "trader.runtime.ledger_rotation" for alias in node.names):
+                        violations.append(f"{relative_path}:{node.lineno}: legacy runtime import")
+
+    assert violations == []
+
+
 def test_daemon_delegates_run_cycle_call_to_runtime_dispatcher() -> None:
     repo_root = Path(__file__).resolve().parents[1]
     daemon_path = repo_root / "trader" / "runtime" / "daemon.py"

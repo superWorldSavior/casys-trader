@@ -18,8 +18,8 @@ from trader.application.record.learning_outcomes import (
     uses_realised_outcome,
 )
 from trader.infrastructure.files.model_performance_jsonl import JsonlModelPerformanceReader
+from trader.infrastructure.files import ledger_rotation
 from trader.infrastructure.state_db.learnings_store import LearningsStore
-from trader.runtime import ledger_rotation
 from trader.runtime.protocols import LoggerLike
 
 

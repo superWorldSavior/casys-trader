@@ -1,4 +1,4 @@
-"""Rotation mensuelle gzip des fichiers JSONL de ledger (decisions + events).
+"""Adaptateur fichier pour la rotation gzip des ledgers JSONL.
 
 D-c — rotation transparente pour le daemon (exécutée au démarrage, pas en cours
 de run). Les lecteurs d'analyse lisent archives + fichier vif via

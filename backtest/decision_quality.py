@@ -14,7 +14,7 @@ from trader.domain.learnings.scoring import (
     classify_decision_quality,
 )
 from trader.domain.market_data import Bar
-from trader.runtime.ledger_rotation import read_rows_with_archive
+from trader.infrastructure.files.ledger_rotation import read_rows_with_archive
 
 from .data import DataError, HistoryStore
 

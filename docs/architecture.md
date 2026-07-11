@@ -585,7 +585,7 @@ Opérateurs valides : `>`, `>=`, `<`, `<=`, `==`, `!=`, `abs>`, `abs>=`, `abs<`,
 | `learnings.jsonl` | `record_decision()` | `trader/agent/learnings/consolidator.py` | Notes runtime de l'agent (bornées) |
 | `learnings_consolidated.json` | `trader/agent/learnings/consolidator.py` | `trader/runtime/daemon.py` (contexte LLM) | Patterns consolidés (≤ seuil bruts → consolidation) |
 | `learnings.db` | worker `learnings_sync` + `learnings_ingest` manuel | push borné + outil `recall_learnings` | Store SQLite dérivé : embeddings, FLAIR, traces/rewards et Q-values MemRL |
-| `archive/*.jsonl.gz` | `trader/runtime/ledger_rotation.py` (démarrage daemon) | `read_rows_with_archive` (analyses) | Mois passés de decisions/events — rotation mensuelle crash-safe |
+| `archive/*.jsonl.gz` | `trader/infrastructure/files/ledger_rotation.py` (appelé au démarrage daemon) | `read_rows_with_archive` (analyses) | Mois passés de decisions/events — rotation mensuelle crash-safe |
 | `archive/learnings-*.jsonl` | `RawLearningsStore`/`consolidator` | ingestion recall | Évincés + historique des consolidés — plus rien ne se jette |
 | `news_items/YYYY-MM-DD.jsonl` | `infrastructure/market_sources/news_feed` | scout + analyste-news | Items de news persistés (dédup uuid, purge 60 j), couverture symbole partielle |
 | `macro_calendar.json` + `macro_series/` | `macro_calendar`/`macro_series` | attribution + analyste-news | Dates fusionnées avec fallback versionné + séries macro quotidiennes (DBnomics), potentiellement absentes/stales |
@@ -742,7 +742,7 @@ borné, complété à la demande par l'outil.
 
 Doc : `docs/superpowers/specs/2026-07-02-agent-data-lifecycle.md`.
 
-- **Rotation mensuelle** (`ledger_rotation`, au démarrage du daemon) :
+- **Rotation mensuelle** (`infrastructure/files/ledger_rotation`, au démarrage du daemon) :
   decisions/events des mois passés → `state/archive/<stem>-YYYY-MM.jsonl.gz`.
   Crash-safe : réécriture atomique de l'archive (fusion + dédup decision_id +
   validation par relecture) avant `os.replace` du vif ; archive corrompue →

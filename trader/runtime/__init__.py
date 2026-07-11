@@ -11,7 +11,6 @@ __all__ = [
     "daemon_bootstrap",
     "daemon",
     "ib_attach",
-    "ledger_rotation",
     "logging_setup",
     "market_rotation_runtime",
     "news_challenger_runtime",

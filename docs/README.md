@@ -90,7 +90,7 @@ Légende : ✅ couvert · 🟡 partiel / dispersé / potentiellement périmé ·
 | **Conversion FX** | `domain/market/fx`, `infrastructure/market_sources/fx_rates` | ✅ | **`reference/fx.md`** | chantier FX |
 | News, challengers et analyste | `infrastructure/market_sources/news_feed`, `runtime/news_challenger_runtime`, `runtime/news_macro_runtime`, `agent/news_macro` | ✅ | **`reference/news.md`** | D15 |
 | Macro | `market/macro_calendar`, `infrastructure/market_sources/macro_series`, `runtime/news_macro_runtime` | ✅ | **`reference/macro.md`** | D15 |
-| Cycle de vie / rotation | `runtime/daemon_bootstrap`, `runtime/cycle_dispatch`, `runtime/cycle_reporting`, `runtime/runtime_shutdown`, `runtime/ledger_rotation`, `reporting/decision_ledger` | ✅ | archi §1.1, §12 | — |
+| Cycle de vie / rotation | `runtime/daemon_bootstrap`, `runtime/cycle_dispatch`, `runtime/cycle_reporting`, `runtime/runtime_shutdown`, `infrastructure/files/ledger_rotation`, `infrastructure/files/decision_ledger` | ✅ | archi §1.1, §12 | — |
 | État persistant | `runtime/daemon_bootstrap`, `state/*.jsonl`, `trade_plans.json`, `scheduler.json`, `infrastructure/state_db/*` | ✅ | archi §1.1, §8, `reference/task-queue.md` | — |
 
 ### Univers & régime
