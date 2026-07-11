@@ -17,6 +17,8 @@ class NewsMacroAnalysisRequest:
     global_news_items: tuple[dict, ...] = ()
     macro_next: tuple[dict, ...] = ()
     macro_series: tuple[dict, ...] = ()
+    # GDELT geopolitical events — alimentés seulement pour la passe GLOBAL.
+    geopolitical_events: tuple[dict, ...] = ()
     # Upstream shortlist (radar top 40 + qualified challengers), never the hotlist.
     candidate_symbols: tuple[str, ...] = ()
     family_context: dict[str, dict] | None = None

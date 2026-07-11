@@ -25,6 +25,11 @@ def build_news_macro_source_catalog(request: NewsMacroAnalysisRequest) -> dict[s
         label = str(item.get("label") or "").strip()
         if label:
             catalog[f"macro_series:{label}"] = f"DBnomics · {label.replace('_', ' ')}"
+    for item in request.geopolitical_events:
+        ref = str(item.get("url") or "").strip()
+        if ref:
+            country = str(item.get("sourcecountry") or "").strip()
+            catalog[ref] = f"GDELT · {country}" if country else "GDELT"
     for item in request.macro_next:
         event = str(item.get("event") or "").strip()
         at = str(item.get("at") or "").strip()
@@ -64,6 +69,7 @@ def build_news_macro_prompt(request: NewsMacroAnalysisRequest) -> str:
         "global_news_items": list(request.global_news_items),
         "macro_next": list(request.macro_next),
         "macro_series": list(request.macro_series),
+        "geopolitical_events": list(request.geopolitical_events),
         "candidate_symbols": list(request.candidate_symbols),
         "family_context": request.family_context or {},
         "company_anchors": request.company_anchors or {},
@@ -82,6 +88,11 @@ def build_news_macro_prompt(request: NewsMacroAnalysisRequest) -> str:
         "Les company_anchors sont des ancres micro durables: utilise-les seulement "
         "pour dire si une news confirme, infirme ou change une these existante. "
         "Ne modifie jamais ces ancres et ne les traite pas comme un ordre.\n"
+        "geopolitical_events (GDELT) et global_news_items decrivent la situation "
+        "geopolitique et macro internationale. En portee GLOBAL (venue=GLOBAL), "
+        "privilegie des zones et alertes transverses: banques centrales, taux, USD, "
+        "commodites (petrole, or), tensions, sanctions, conflits, elections; distingue "
+        "signal faible/fort et direction risk_on/risk_off. N'invente aucune donnee absente.\n"
         "Schema point: {point, sources, source_refs, symbols, severity: info|watch|risk, "
         "signal: weak|strong|event, direction?: bullish|bearish|risk_on|risk_off|neutral|mixed, horizon?}.\n"
         "JSON d'entree:\n"
