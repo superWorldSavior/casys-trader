@@ -16,6 +16,23 @@ DEFAULT_COMPANY_MICRO_TIMEOUT_S = 240
 DEFAULT_COMPANY_MICRO_MODEL = llm.DEFAULT_ANALYST_MODEL
 
 
+def _default_timeout_s() -> int:
+    """Timeout analyste micro (secondes), env ``TRADER_COMPANY_MICRO_TIMEOUT_S``.
+
+    Aligné sur les knobs modèle/agent du même module : le paramètre explicite
+    prime toujours, l'env ne remplace que le défaut. Utile pour les modèles
+    lents type kimi-code/k3 qui dépassent le défaut de 240s sur les gros
+    evidence packs.
+    """
+    raw = os.getenv("TRADER_COMPANY_MICRO_TIMEOUT_S")
+    if raw is None:
+        return DEFAULT_COMPANY_MICRO_TIMEOUT_S
+    try:
+        return max(int(raw), 1)
+    except ValueError:
+        return DEFAULT_COMPANY_MICRO_TIMEOUT_S
+
+
 class CompanyMicroAnalystError(RuntimeError):
     def __init__(
         self,
@@ -57,10 +74,10 @@ class LlmCompanyMicroAnalyst:
         self,
         router: llm.LlmRouter | None = None,
         *,
-        timeout_s: int = DEFAULT_COMPANY_MICRO_TIMEOUT_S,
+        timeout_s: int | None = None,
     ) -> None:
         self._router = router or build_company_micro_router_from_env()
-        self._timeout_s = int(timeout_s)
+        self._timeout_s = int(timeout_s) if timeout_s is not None else _default_timeout_s()
 
     def analyze(self, request: CompanyMicroAnalysisRequest) -> CompanyIntelligenceBrief:
         completion = self._router.complete(

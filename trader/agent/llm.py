@@ -111,6 +111,15 @@ def build_default_router_from_env(
     )
     if acpx_bin_env and acpx_provider != "consolidator":
         acpx_bin = acpx_bin_env
+    # Knobs env du brain trader, alignés sur le pattern des agents analystes
+    # (TRADER_UNIVERSE_*, TRADER_COMPANY_MICRO_*, TRADER_CONSOLIDATOR_*).
+    # Restreints au profil trader par défaut (provider "acpx" au modèle défaut)
+    # pour ne pas fuiter vers les rôles analystes qui partagent ce builder avec
+    # un autre modèle explicite (rotation, universe). L'agent explicite prime
+    # toujours ; TRADER_MODEL ne remplace que le défaut, jamais un choix caller.
+    if acpx_provider == "acpx" and spark_model == DEFAULT_SPARK_MODEL:
+        acpx_agent = acpx_agent or _clean_optional(os.getenv("TRADER_ACPX_AGENT"))
+        spark_model = _clean_optional(os.getenv("TRADER_MODEL")) or spark_model
     session_label = (
         _clean_optional(acpx_session_label)
         or _env_session_label(acpx_provider)

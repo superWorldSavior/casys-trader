@@ -1279,12 +1279,67 @@ def test_build_default_router_from_env_labelle_le_brain_runtime(monkeypatch) -> 
     assert backend.session_label == "casys-trader:runtime-brain"
 
 
+def test_build_default_router_from_env_knobs_env_du_brain_trader(monkeypatch) -> None:
+    """TRADER_ACPX_AGENT/TRADER_MODEL reconfigurent le profil trader par défaut."""
+    monkeypatch.delenv("TRADER_OLLAMA_API_KEY", raising=False)
+    monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
+    monkeypatch.setenv("TRADER_ACPX_AGENT", "kimi")
+    monkeypatch.setenv("TRADER_MODEL", "kimi-code/kimi-for-coding")
+
+    router = build_default_router_from_env(env_path=None)
+
+    backend = router.backends[0]
+    assert isinstance(backend, AcpxBackend)
+    assert backend.provider == "acpx"
+    assert backend.agent == "kimi"
+    assert backend.model == "kimi-code/kimi-for-coding"
+
+
+def test_build_default_router_from_env_choix_explicite_immune_aux_knobs_trader(monkeypatch) -> None:
+    """Un modèle/agent explicite (ex. rotation, universe) n'est pas écrasé par les knobs."""
+    monkeypatch.delenv("TRADER_OLLAMA_API_KEY", raising=False)
+    monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
+    monkeypatch.setenv("TRADER_ACPX_AGENT", "kimi")
+    monkeypatch.setenv("TRADER_MODEL", "kimi-code/kimi-for-coding")
+
+    router = build_default_router_from_env(env_path=None, spark_model="gpt-5.6-sol")
+
+    backend = router.backends[0]
+    assert backend.agent is None
+    assert backend.model == "gpt-5.6-sol"
+
+    router = build_default_router_from_env(env_path=None, spark_model="gpt-5.5", acpx_agent="codex")
+
+    backend = router.backends[0]
+    assert backend.agent == "codex"
+    assert backend.model == "gpt-5.5"
+
+
+def test_build_default_router_from_env_knobs_trader_ne_fuitent_pas_vers_universe(monkeypatch) -> None:
+    """Le provider universe garde ses knobs dédiés, sans hériter des knobs trader."""
+    monkeypatch.delenv("TRADER_OLLAMA_API_KEY", raising=False)
+    monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
+    monkeypatch.setenv("TRADER_ACPX_AGENT", "kimi")
+    monkeypatch.setenv("TRADER_MODEL", "kimi-code/kimi-for-coding")
+
+    router = build_default_router_from_env(
+        env_path=None, acpx_provider="universe", spark_model="gpt-5.6-sol"
+    )
+
+    backend = router.backends[0]
+    assert backend.provider == "universe"
+    assert backend.agent is None
+    assert backend.model == "gpt-5.6-sol"
+
+
 def test_build_default_router_from_env_configure_acpx_puis_ollama(monkeypatch) -> None:
     monkeypatch.setenv("TRADER_OLLAMA_API_KEY", "secret")
     monkeypatch.setenv("TRADER_OLLAMA_MODEL", "nemotron-3-nano:30b-cloud")
     monkeypatch.delenv("TRADER_SPARK_FALLBACK_MODEL", raising=False)
+    monkeypatch.delenv("TRADER_ACPX_AGENT", raising=False)
+    monkeypatch.delenv("TRADER_MODEL", raising=False)
 
-    router = build_default_router_from_env()
+    router = build_default_router_from_env(env_path=None)
 
     assert [backend.provider for backend in router.backends] == ["acpx", "acpx-claude-sonnet", "ollama-cloud"]
     assert router.backends[0].model == "gpt-5.6-terra"
@@ -1327,6 +1382,8 @@ def test_trade_router_3_tiers_dans_lordre(monkeypatch) -> None:
     """Router de trade = acpx → acpx-claude-sonnet → ollama-cloud (3 tiers)."""
     monkeypatch.setenv("TRADER_OLLAMA_API_KEY", "secret")
     monkeypatch.delenv("TRADER_SPARK_FALLBACK_MODEL", raising=False)
+    monkeypatch.delenv("TRADER_ACPX_AGENT", raising=False)
+    monkeypatch.delenv("TRADER_MODEL", raising=False)
 
     router = build_default_router_from_env(env_path=None)
 

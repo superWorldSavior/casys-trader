@@ -1,7 +1,12 @@
 import json
 
 from trader.agent import llm
-from trader.agent.company_micro import DEFAULT_COMPANY_MICRO_MODEL, LlmCompanyMicroAnalyst, build_company_micro_prompt
+from trader.agent.company_micro import (
+    DEFAULT_COMPANY_MICRO_MODEL,
+    DEFAULT_COMPANY_MICRO_TIMEOUT_S,
+    LlmCompanyMicroAnalyst,
+    build_company_micro_prompt,
+)
 from trader.agent.company_micro.prompt import parse_company_micro_completion
 from trader.application.analyst.company_micro import CompanyMicroAnalysisRequest
 from trader.domain.company import CompanyEvidenceItem, CompanyEvidenceSnapshot, IssuerIdentity
@@ -110,3 +115,28 @@ def test_llm_analyst_filters_untrusted_refs_and_degrades_unsourced_view() -> Non
     assert brief.business.summary == ""
     assert brief.selection_view.posture == "insufficient_evidence"
     assert brief.security_readiness == "not_decision_grade"
+
+
+def test_llm_analyst_timeout_suit_lenv_company_micro(monkeypatch) -> None:
+    """TRADER_COMPANY_MICRO_TIMEOUT_S ne remplace que le défaut ; l'explicite prime."""
+    seen: list[int] = []
+
+    class Router:
+        def complete(self, prompt: str, *, timeout_s: int):
+            seen.append(timeout_s)
+            return llm.LlmCompletion(provider="fake", model="fake-model", text=_completion())
+
+    monkeypatch.delenv("TRADER_COMPANY_MICRO_TIMEOUT_S", raising=False)
+    LlmCompanyMicroAnalyst(router=Router()).analyze(_request())
+    assert seen[-1] == DEFAULT_COMPANY_MICRO_TIMEOUT_S
+
+    monkeypatch.setenv("TRADER_COMPANY_MICRO_TIMEOUT_S", "600")
+    LlmCompanyMicroAnalyst(router=Router()).analyze(_request())
+    assert seen[-1] == 600
+
+    LlmCompanyMicroAnalyst(router=Router(), timeout_s=120).analyze(_request())
+    assert seen[-1] == 120
+
+    monkeypatch.setenv("TRADER_COMPANY_MICRO_TIMEOUT_S", "pas-un-nombre")
+    LlmCompanyMicroAnalyst(router=Router()).analyze(_request())
+    assert seen[-1] == DEFAULT_COMPANY_MICRO_TIMEOUT_S

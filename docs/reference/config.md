@@ -59,6 +59,11 @@ et peut être réglé avec `TRADER_UNIVERSE_MODEL`,
 `TRADER_UNIVERSE_ACPX_AGENT`, `TRADER_UNIVERSE_ACPX_BIN` et
 `TRADER_UNIVERSE_ACPX_SESSION_LABEL`.
 
+Le brain trader (décideur par symbole) se règle de la même façon avec
+`TRADER_MODEL` et `TRADER_ACPX_AGENT` — ces knobs ne s'appliquent qu'au profil
+trader par défaut, jamais aux rôles analystes (rotation, universe) qui partagent
+le même builder avec un modèle explicite.
+
 Dans les deux cas, la rotation reste fail-open et utilise sa baseline
 déterministe. Réactiver le code ne backfill pas un ancien état : il faut un daemon
 actif et attendre la prochaine clôture puis le prochain pré-open de chaque venue
