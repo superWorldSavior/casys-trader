@@ -99,6 +99,30 @@ def merge_domain_tools(*, decision_domain_tools: dict | None, runtime_payload: d
     return merged
 
 
+def _first_rejected_action(
+    decision: Decision,
+    *,
+    symbol: str,
+    action_validator: Callable | None,
+    watch_validator: Callable | None,
+) -> tuple[str, object] | None:
+    """Première action que le daemon refuserait d'appliquer, `(outil, erreur)`.
+
+    Les deux juges sont ceux de l'application (`validate_exit_update`,
+    `build_indicator_watch`) : juger ici avec une autre règle ferait corriger
+    l'agent sur un verdict que le daemon ne rendrait pas.
+    """
+    if action_validator is not None and decision.exit_update is not None:
+        validation = action_validator(symbol, decision.exit_update)
+        if not validation.would_apply:
+            return ("strategy_exit", validation.reason)
+    if watch_validator is not None and decision.indicator_watch is not None:
+        rejections = watch_validator(symbol, decision.indicator_watch)
+        if rejections:
+            return ("propose_indicator_watch", rejections)
+    return None
+
+
 def resolve_symbol_decision(
     *,
     symbol: str,
@@ -110,6 +134,7 @@ def resolve_symbol_decision(
     reinject: str = "cumul",
     heartbeat: Callable[[], object] | None = None,
     action_validator: Callable | None = None,
+    watch_validator: Callable | None = None,
     max_action_corrections: int = 2,
 ) -> Decision:
     """Orchestration grain-1 du tour d'outils : round(s) + tour final + merge des traces.
@@ -135,6 +160,14 @@ def resolve_symbol_decision(
         `>1` = mécanique multi-tour (politique « approfondie » reste hors périmètre, cf #1).
     tool_limits:
         `ToolRoundLimits` optionnel transmis à chaque round.
+    action_validator:
+        `(symbol, exit_update) -> ExitUpdateValidation` — dry-run de `strategy_exit`.
+    watch_validator:
+        `(symbol, indicator_watch) -> list[rejection]` — dry-run de
+        `propose_indicator_watch` (liste vide = la veille serait créée).
+    max_action_corrections:
+        Budget de corrections en session, PARTAGÉ par les deux validateurs : une
+        décision qui rate sortie et veille ne consomme pas deux fois le quota.
 
     Returns
     -------
@@ -162,20 +195,22 @@ def resolve_symbol_decision(
         _heartbeat()
         if not isinstance(resp, BatchToolCallRequest):
             decision = _decision_of(resp, symbol)
-            if (
-                action_validator is not None
-                and decision.exit_update is not None
-                and correction_attempts < max_action_corrections
-            ):
-                validation = action_validator(symbol, decision.exit_update)
-                if not validation.would_apply:
+            if correction_attempts < max_action_corrections:
+                rejection = _first_rejected_action(
+                    decision,
+                    symbol=symbol,
+                    action_validator=action_validator,
+                    watch_validator=watch_validator,
+                )
+                if rejection is not None:
                     correction_attempts += 1
+                    tool, error = rejection
                     feedback = [
                         {
-                            "id": f"validation:strategy_exit:{symbol}:{correction_attempts}",
-                            "tool": "strategy_exit",
+                            "id": f"validation:{tool}:{symbol}:{correction_attempts}",
+                            "tool": tool,
                             "ok": False,
-                            "error": validation.reason,
+                            "error": error,
                         }
                     ]
                     per_symbol = {symbol: {**base_facts, "tool_results": feedback}}

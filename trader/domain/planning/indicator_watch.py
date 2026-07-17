@@ -41,6 +41,7 @@ WATCH_REJECT_MISSING_THRESHOLD = "missing_threshold"
 WATCH_REJECT_INVALID_ARMED_ORDER = "invalid_armed_order"
 WATCH_REJECT_NON_FINITE_THRESHOLD = "non_finite_threshold"
 WATCH_REJECT_UNKNOWN_LABEL = "unknown_indicator_label"
+WATCH_REJECT_NO_CONDITIONS = "no_conditions"
 
 _ABS_OPS: dict[str, Callable[[float, float], bool]] = {
     "abs>": operator.gt,
@@ -140,6 +141,22 @@ def _normalize_on_trigger(raw: object) -> str:
     on_trigger = str(raw or "WAKE").upper()
     on_trigger = _ON_TRIGGER_ALIASES.get(on_trigger, on_trigger)
     return on_trigger if on_trigger in _ON_TRIGGERS else "WAKE"
+
+
+def _no_conditions_rejection(raw: dict) -> dict:
+    """Rejet lisible par l'agent : ce qu'il a envoyé, ce qui est attendu.
+
+    `received_keys` sert le diagnostic des formes voisines mais fausses
+    (`condition` au singulier, prédicat étalé au premier niveau) que le contrat
+    ne lit pas — seuls `conditions` et `when` sont des porteurs de conditions.
+    """
+    return {
+        "reason": WATCH_REJECT_NO_CONDITIONS,
+        "indicator": None,
+        "raw_value": None,
+        "received_keys": sorted(str(key) for key in raw),
+        "expected": "conditions:[{indicator,op,value,interval,window}]",
+    }
 
 
 def _condition_from_raw(raw: object, *, owner_symbol: str) -> tuple[dict | None, dict | None]:
@@ -259,6 +276,11 @@ def build_indicator_watch(
     raw_conditions = raw.get("conditions") or raw.get("when") or []
     if isinstance(raw_conditions, dict):
         raw_conditions = [raw_conditions]
+    if not raw_conditions:
+        # Sans ce rejet, une veille dont aucune condition n'est lisible (`condition`
+        # au singulier, prédicat à plat…) repartait en `IndicatorWatchResult(None, [])` :
+        # muette. L'agent ne pouvait pas se corriger — il ignorait l'échec.
+        return IndicatorWatchResult(None, [_no_conditions_rejection(raw)])
     conditions = []
     rejections = []
     for item in list(raw_conditions):

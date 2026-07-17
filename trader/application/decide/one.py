@@ -174,6 +174,22 @@ def _action_validator_for_cycle(
     return tool_services.action_validator_factory(cycle_id)
 
 
+def _watch_validator(now_fn: Callable[[], datetime] | None) -> Callable[[str, dict], list[dict]]:
+    """Dry-run de `propose_indicator_watch` avec le juge de l'application.
+
+    Aucune dépendance d'infra à injecter, contrairement à `action_validator` :
+    `build_indicator_watch` est pur (raw + symbole + `now`), d'où la construction
+    ici plutôt qu'un élargissement de `ToolRoundServices`.
+    """
+    from trader.domain.planning.indicator_watch import build_indicator_watch
+
+    def validate(symbol: str, raw_watch: dict) -> list[dict]:
+        now = (now_fn or (lambda: datetime.now(timezone.utc)))()
+        return build_indicator_watch(raw_watch, owner_symbol=symbol, now=now).rejections
+
+    return validate
+
+
 def decide_one(
     *,
     symbol: str,
@@ -308,6 +324,7 @@ def decide_one(
                     tool_limits=tool_limits,
                     heartbeat=heartbeat,
                     action_validator=action_validator,
+                    watch_validator=_watch_validator(now_fn),
                 )
 
             decision = llm.run_with_session_fallback(

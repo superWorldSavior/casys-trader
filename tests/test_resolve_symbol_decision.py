@@ -53,6 +53,18 @@ def _exit_update_decision(rationale: str, marker: str) -> Decision:
     )
 
 
+def _watch_decision(rationale: str, raw_watch: dict) -> Decision:
+    return Decision(
+        symbol="AAPL",
+        action="HOLD",
+        quantity=0.0,
+        confidence=0.6,
+        rationale=rationale,
+        intent="HOLD",
+        indicator_watch=raw_watch,
+    )
+
+
 def test_decision_directe_sans_round() -> None:
     decision = Decision.hold("AAPL", "direct")
     call_model, log = _seq_call_model([{"AAPL": decision}])
@@ -352,6 +364,208 @@ def test_exit_update_sans_action_validator_ne_reboucle_pas() -> None:
 
     assert result is decision
     assert log == [True]
+
+
+def test_watch_rejete_reinjecte_feedback_et_reboucle() -> None:
+    captured: list[dict] = []
+    responses = [
+        {"AAPL": _watch_decision("invalid", {"condition": {"indicator": "z_score"}})},
+        {"AAPL": Decision.hold("AAPL", "corrected")},
+    ]
+    it = iter(responses)
+
+    def call_model(per_symbol, *, allow_tool_calls):
+        captured.append(dict(per_symbol["AAPL"]))
+        return next(it)
+
+    def watch_validator(symbol: str, raw_watch: dict):
+        return [{"reason": "no_conditions", "expected": "conditions:[...]"}]
+
+    result = resolve_symbol_decision(
+        symbol="AAPL",
+        base_facts={"base_marker": "kept"},
+        tool_context=_ctx(),
+        call_model=call_model,
+        watch_validator=watch_validator,
+        max_rounds=3,
+    )
+
+    assert result.rationale == "corrected"
+    assert captured[1] == {
+        "base_marker": "kept",
+        "tool_results": [
+            {
+                "id": "validation:propose_indicator_watch:AAPL:1",
+                "tool": "propose_indicator_watch",
+                "ok": False,
+                "error": [{"reason": "no_conditions", "expected": "conditions:[...]"}],
+            }
+        ],
+    }
+
+
+def test_watch_rejetee_par_le_vrai_juge_du_domaine() -> None:
+    """Le feedback porte le verdict de `build_indicator_watch`, pas d'un stub.
+
+    Args réels d'un call kimi rejeté le 2026-07-17 (`condition` au singulier) :
+    ce test tombe si le contrat du domaine et celui du prompt divergent.
+    """
+    from trader.application.decide.one import _watch_validator
+
+    kimi_args = {
+        "symbol": "AAPL",
+        "kind": "indicator_watch",
+        "ttl_minutes": 240,
+        "condition": {"indicator": "z_score", "op": "<=", "value": -0.5, "interval": "15m"},
+    }
+    corrected = Decision.hold("AAPL", "corrected")
+    responses = [{"AAPL": _watch_decision("kimi shape", kimi_args)}, {"AAPL": corrected}]
+    it = iter(responses)
+    captured: list[dict] = []
+
+    def call_model(per_symbol, *, allow_tool_calls):
+        captured.append(dict(per_symbol["AAPL"]))
+        return next(it)
+
+    result = resolve_symbol_decision(
+        symbol="AAPL",
+        base_facts={},
+        tool_context=_ctx(),
+        call_model=call_model,
+        watch_validator=_watch_validator(lambda: datetime(2026, 7, 17, tzinfo=timezone.utc)),
+        max_rounds=3,
+    )
+
+    assert result is corrected
+    error = captured[1]["tool_results"][0]["error"]
+    assert error[0]["reason"] == "no_conditions"
+    assert error[0]["expected"] == "conditions:[{indicator,op,value,interval,window}]"
+    # L'agent doit voir la clé fautive qu'il a envoyée pour se corriger.
+    assert "condition" in error[0]["received_keys"]
+
+
+def test_watch_valide_ne_reboucle_pas() -> None:
+    from trader.application.decide.one import _watch_validator
+
+    valide = {
+        "symbol": "AAPL",
+        "ttl_minutes": 240,
+        "conditions": [{"indicator": "z_score", "op": "<=", "value": -0.5, "interval": "15m", "window": 48}],
+    }
+    decision = _watch_decision("armed", valide)
+    call_model, log = _seq_call_model([{"AAPL": decision}])
+
+    result = resolve_symbol_decision(
+        symbol="AAPL",
+        base_facts={},
+        tool_context=_ctx(),
+        call_model=call_model,
+        watch_validator=_watch_validator(lambda: datetime(2026, 7, 17, tzinfo=timezone.utc)),
+        max_rounds=3,
+    )
+
+    assert result is decision
+    assert log == [True]
+
+
+def test_watch_sans_validator_ne_reboucle_pas() -> None:
+    decision = _watch_decision("unchecked", {"condition": {"indicator": "z_score"}})
+    call_model, log = _seq_call_model([{"AAPL": decision}])
+
+    result = resolve_symbol_decision(symbol="AAPL", base_facts={}, tool_context=_ctx(), call_model=call_model)
+
+    assert result is decision
+    assert log == [True]
+
+
+def _exit_and_watch_decision(rationale: str) -> Decision:
+    """Décision fautive sur les DEUX axes : sortie et veille."""
+    return Decision(
+        symbol="AAPL",
+        action="HOLD",
+        quantity=0.0,
+        confidence=0.6,
+        rationale=rationale,
+        intent="HOLD",
+        exit_update={"hard_stop": {"mode": "structural"}},
+        indicator_watch={"condition": {"indicator": "z_score"}},
+    )
+
+
+def test_budget_de_corrections_partage_entre_exit_et_watch() -> None:
+    """Une sortie ET une veille fautives ne doublent pas le quota de tours.
+
+    Budget=2 : sans partage, les deux validateurs offriraient 4 corrections.
+    """
+    third = _exit_and_watch_decision("still invalid")
+    responses = [
+        {"AAPL": _exit_and_watch_decision("invalid 1")},
+        {"AAPL": _exit_and_watch_decision("invalid 2")},
+        {"AAPL": third},
+    ]
+    it = iter(responses)
+    captured: list[dict] = []
+    watch_seen: list[dict] = []
+
+    def call_model(per_symbol, *, allow_tool_calls):
+        captured.append(dict(per_symbol["AAPL"]))
+        return next(it)
+
+    def action_validator(symbol: str, exit_update: dict):
+        return SimpleNamespace(would_apply=False, reason="resolve_failed:x")
+
+    def watch_validator(symbol: str, raw_watch: dict):
+        watch_seen.append(raw_watch)
+        return [{"reason": "no_conditions"}]
+
+    result = resolve_symbol_decision(
+        symbol="AAPL",
+        base_facts={},
+        tool_context=_ctx(),
+        call_model=call_model,
+        action_validator=action_validator,
+        watch_validator=watch_validator,
+        max_rounds=5,
+        max_action_corrections=2,
+    )
+
+    assert result is third
+    assert len(captured) == 3
+    # exit_update est jugé en premier et rejette : le budget part sur lui, la veille
+    # n'est pas re-jugée dans le même tour (une correction = un motif à la fois).
+    assert watch_seen == []
+    assert captured[1]["tool_results"][0]["tool"] == "strategy_exit"
+
+
+def test_watch_juge_quand_exit_update_passe() -> None:
+    """Veille fautive alors que la sortie est valide : le budget va bien à la veille."""
+    corrected = Decision.hold("AAPL", "corrected")
+    responses = [{"AAPL": _exit_and_watch_decision("watch invalide")}, {"AAPL": corrected}]
+    it = iter(responses)
+    captured: list[dict] = []
+
+    def call_model(per_symbol, *, allow_tool_calls):
+        captured.append(dict(per_symbol["AAPL"]))
+        return next(it)
+
+    def action_validator(symbol: str, exit_update: dict):
+        return SimpleNamespace(would_apply=True, reason=None)
+
+    def watch_validator(symbol: str, raw_watch: dict):
+        return [{"reason": "no_conditions"}]
+
+    result = resolve_symbol_decision(
+        symbol="AAPL",
+        base_facts={},
+        tool_context=_ctx(),
+        call_model=call_model,
+        action_validator=action_validator,
+        watch_validator=watch_validator,
+        max_rounds=3,
+    )
+
+    assert result is corrected
+    assert captured[1]["tool_results"][0]["tool"] == "propose_indicator_watch"
 
 
 def test_max_rounds_invalide_leve_valueerror() -> None:

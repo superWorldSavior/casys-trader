@@ -41,8 +41,15 @@ _OUTPUT_CONTRACT = (
     "- strategy_exit{id?, limit?, stop?, qty_percent?, trail?, trail_offset?, protect?, "
     "exit_watch?, max_hold_minutes?} = patcher la règle de sortie d'une position ouverte.\n"
     "- strategy_close{id?, qty?, qty_percent?} = sortie marché immédiate position-aware.\n"
-    "- set_next_wake{minutes|on|when}, propose_indicator_watch{...}, cancel_watch{id|ids|watch_ids}, "
-    "record_learning{note} couvrent respectivement réveil, plan armé, annulation et mémoire.\n"
+    "- propose_indicator_watch{id?, conditions:[{symbol?, "
+    f'indicator:"{_WATCH_INDICATOR_ENUM}", op:"{_WATCH_OPERATOR_ENUM}", value:<num>, '
+    'interval?:"15m|30m|1h|4h|1d", window?:<int>, as_of?:"latest"}], logic?:"all|any", '
+    "ttl_minutes?:<int>, on_trigger?:\"WAKE|EXECUTE_ORDER\", order?:{direction, qty?, risk_pct?, exit?}} "
+    "= veille ou plan armé. `conditions` est une LISTE, même pour une seule condition : "
+    "un `condition` au singulier, ou un prédicat étalé au premier niveau du call, "
+    "ne sont PAS lus et la veille est rejetée.\n"
+    "- set_next_wake{minutes|on|when}, cancel_watch{id|ids|watch_ids}, "
+    "record_learning{note} couvrent respectivement réveil, annulation et mémoire.\n"
 )
 
 _COMPACT_OUTPUT_CONTRACT = (
@@ -600,6 +607,10 @@ _TOOL_CATALOG = (
     "Si tool_results contient un strategy_exit avec ok:false, c'est un retour de validation pré-exécution : "
     "corrige dans ta réponse suivante (stop en prix absolu au lieu de structural, ou retire la contrainte non résolvable). "
     "Tu n'as PAS besoin de redemander le plan, il est déjà dans ton contexte.\n"
+    "Si tool_results contient un propose_indicator_watch avec ok:false, ta veille a été REJETÉE et "
+    "aucun ordre n'est armé : `error` porte le motif (`reason`), les clés que tu as envoyées "
+    "(`received_keys`) et la forme attendue (`expected`). Repose l'appel corrigé dans ta réponse "
+    "suivante — le plus souvent en remettant les conditions dans une LISTE `conditions:[{...}]`.\n"
     "Après la tournée tu recevras `tool_results` par symbole et tu DEVRAS rendre le contrat final\n"
     "(toute nouvelle tournée sera bloquée en HOLD).\n"
     "NB : get_indicator_context est la voie moderne de REQUEST_CONTEXT (les deux marchent) —\n"
