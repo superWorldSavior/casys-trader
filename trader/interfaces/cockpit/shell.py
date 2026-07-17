@@ -245,6 +245,7 @@ _FOOTER_CONTEXT: dict[str, tuple[tuple[str, str], ...]] = {
     "logs": (("c", "cycles"), ("f", "follow"), ("F", "classes"), ("/", "regex")),
     "universe": (("p", "pin"), ("b", "ban"), ("u", "undo override")),
     "settings": (("enter", "edit"), ("w", "write"), ("r", "revert")),
+    "reports": (("j/k", "navigate"), ("r", "refresh")),
 }
 
 

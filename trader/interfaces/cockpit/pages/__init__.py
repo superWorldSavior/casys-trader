@@ -19,7 +19,8 @@ class PageSpec:
     widget_id: str
 
 
-# Révision 3 : Plans fusionnée dans Decisions (playbook à droite) → 7 pages.
+# Révision 3 : Plans fusionnée dans Decisions (playbook à droite).
+# Reports ajoutée ensuite (galerie des rapports LLM) → 8 pages.
 PAGES: tuple[PageSpec, ...] = (
     PageSpec("home", 1, "home", "home-page"),
     PageSpec("portfolio", 2, "portfolio", "portfolio-page"),
@@ -28,6 +29,7 @@ PAGES: tuple[PageSpec, ...] = (
     PageSpec("logs", 5, "logs", "logs-page"),
     PageSpec("universe", 6, "universe", "universe-page"),
     PageSpec("settings", 7, "settings", "settings-page"),
+    PageSpec("reports", 8, "reports", "reports-page"),
 )
 
 PAGE_BY_KEY = {page.key: page for page in PAGES}

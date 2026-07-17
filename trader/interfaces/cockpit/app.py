@@ -4,7 +4,7 @@ Shell :
     Screen = Horizontal( NavRail 17 cols │ Vertical( KpiBand · page · Footer ) )
 
 8 pages (1 module = 1 page, voir ``pages/``) : home (Decision Journal),
-portfolio, decisions, plans, health, logs, universe, settings.
+portfolio, decisions, health, logs, universe, settings, reports.
 
 Pattern superviseur inchangé : le daemon reste un process indépendant qui
 survit à la fermeture du cockpit (start ``s`` / stop ``x`` / kill ``k``).
@@ -53,6 +53,7 @@ from trader.interfaces.cockpit.pages.health import HealthPage
 from trader.interfaces.cockpit.pages.home import HomePage
 from trader.interfaces.cockpit.pages.logs import AgentTracePane, LogsPage, LogsPane
 from trader.interfaces.cockpit.pages.portfolio import PortfolioPage
+from trader.interfaces.cockpit.pages.reports_gallery import ReportsPage
 from trader.interfaces.cockpit.pages.settings import SettingsPage
 from trader.interfaces.cockpit.pages.universe import UniversePage
 from trader.interfaces.cockpit.shell import (
@@ -105,6 +106,7 @@ _PAGE_WIDGETS = {
     "logs": LogsPage,
     "universe": UniversePage,
     "settings": SettingsPage,
+    "reports": ReportsPage,
 }
 
 _NAV_ITEMS = tuple(NavItem(key=p.key, number=p.number, label=p.label) for p in PAGES)
@@ -173,6 +175,8 @@ class CockpitApp(App):
     Screen.-compact PortfolioPage #positions-panel { width: 100%; }
     Screen.-compact UniversePage #universe-left { width: 100%; }
     Screen.-compact DecisionsPage #ledger-section { width: 100%; }
+    Screen.-compact ReportsPage #reports-list-panel { width: 100%; }
+    Screen.-compact ReportsPage #reports-detail { display: none; }
     Screen.-compact SettingsPage { layout: vertical; }
     Screen.-compact HealthPage { layout: vertical; }
     Screen.-compact LogsPage { layout: vertical; }
