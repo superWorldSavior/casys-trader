@@ -5,12 +5,24 @@ from __future__ import annotations
 import fcntl
 import json
 import threading
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
 from trader.domain.company import CompanyIntelligenceBrief
 from trader.infrastructure.state_db.fundamental_item_store import symbol_storage_key
 from trader.infrastructure.state_db.shadow import write_json_atomic
+
+
+def _brief_as_of_ts(brief: CompanyIntelligenceBrief) -> float:
+    """Sortable timestamp of a brief's as_of; -inf when unparseable/absent."""
+    try:
+        parsed = datetime.fromisoformat(str(brief.as_of).replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return float("-inf")
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.timestamp()
 
 
 class CompanyIntelligenceStore:
@@ -63,6 +75,20 @@ class CompanyIntelligenceStore:
         *,
         depth: str = "screen",
     ) -> CompanyIntelligenceBrief | None:
+        # "preferred" resolves the one brief a symbol should have: normally a
+        # symbol is analyzed at a single depth (universe -> deep, candidate ->
+        # screen). When both coexist (a symbol entering or LEAVING the universe),
+        # serve the most recent, deep on a tie — so a symbol that left the
+        # universe stops serving its now-stale deep brief once its screen brief
+        # refreshes. Mirrors the cockpit's _pick_brief ordering.
+        if depth == "preferred":
+            deep = self.read_current(symbol, depth="deep")
+            screen = self.read_current(symbol, depth="screen")
+            if deep is None:
+                return screen
+            if screen is None:
+                return deep
+            return screen if _brief_as_of_ts(screen) > _brief_as_of_ts(deep) else deep
         envelope = self._read_current_envelope(symbol)
         raw = (envelope.get("briefs") or {}).get(depth)
         if not isinstance(raw, dict):

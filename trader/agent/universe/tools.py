@@ -110,7 +110,7 @@ def make_get_company_briefs_spec(intelligence_store: Any) -> ToolSpec:
         symbols = [symbol.strip() for symbol in call.args["symbols"]]
         sections = list(call.args.get("sections", _ALLOWED_SECTIONS))
         max_chars = int(call.args.get("max_chars", _DEFAULT_MAX_CHARS))
-        briefs = store.read_current_many(symbols, depth="screen")
+        briefs = store.read_current_many(symbols, depth="preferred")
         rows: list[dict[str, Any]] = []
         for symbol in symbols:
             brief = briefs.get(symbol)

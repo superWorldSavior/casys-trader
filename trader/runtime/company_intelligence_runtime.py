@@ -182,14 +182,19 @@ def discover_company_symbols(
             "fallback": False,
             "active_universe_count": len(active_symbols),
         }
-    resolved.extend(active_symbols)
-    normalized = _unique_symbols(resolved)
+    # Screen = candidats/sticky HORS univers uniquement. Les symboles d'univers
+    # sont analysés (en priorité) par le scope "active"/deep — les inclure ici
+    # dupliquerait l'analyse (même evidence, même prompt). Les lecteurs résolvent
+    # le bon brief via depth="preferred" (deep pour un membre d'univers).
+    active_set = set(active_symbols)
+    normalized = tuple(symbol for symbol in _unique_symbols(resolved) if symbol not in active_set)
     return normalized, {
         "scope": "current",
         "candidate_scope_ids": scope_ids,
         "fallback": not bool(scope_ids),
         "candidate_coverage_pending": not bool(scope_ids),
         "active_universe_count": len(active_symbols),
+        "screen_excludes_active": True,
     }
 
 

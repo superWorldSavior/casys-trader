@@ -42,12 +42,14 @@ class FakeStore:
     def read_current_many(self, symbols, *, depth="screen"):
         requested = list(symbols)
         self.calls.append(requested)
+        # A real store resolves "preferred" to a concrete stored depth.
+        resolved_depth = "screen" if depth == "preferred" else depth
         brief = CompanyIntelligenceBrief.from_mapping(
             {
                 "symbol": "SAP.DE",
                 "as_of": "2026-07-10T01:00:00+00:00",
                 "input_signature": "sig-1",
-                "depth": depth,
+                "depth": resolved_depth,
                 "company_thesis": {"status": "intact", "summary": "Cloud transition remains sound."},
                 "selection_view": {"posture": "supports_selection", "confidence": "medium"},
                 "security_readiness": "conditional",

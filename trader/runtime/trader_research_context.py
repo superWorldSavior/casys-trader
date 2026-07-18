@@ -35,7 +35,7 @@ def load_trader_research_context(
     mode = _trader_context_mode(Path(config_dir))
     limits = load_company_context_projection_limits(config_dir)
     projected = project_company_briefs_to_universe_context(
-        companies.read_current_many(selected),
+        companies.read_current_many(selected, depth="preferred"),
         candidate_symbols=selected,
         active_at=active_at,
         mode="active",

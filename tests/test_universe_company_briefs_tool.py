@@ -65,7 +65,7 @@ def test_get_company_briefs_projects_only_requested_sections_and_bounds_them() -
 
     payload = spec.handler(call, SimpleNamespace(intelligence_store=store))
 
-    assert store.calls == [(["SAP.DE", "MISS"], "screen")]
+    assert store.calls == [(["SAP.DE", "MISS"], "preferred")]
     assert payload["rows"][1] == {"symbol": "MISS", "error": "not_found"}
     row = payload["rows"][0]
     assert row["symbol"] == "SAP.DE"

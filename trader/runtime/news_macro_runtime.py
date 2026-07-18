@@ -117,7 +117,7 @@ def tick_news_macro_analysis(
             venue_news=venue_news,
         )
         company_context = project_company_briefs_to_universe_context(
-            companies.read_current_many(company_anchor_symbols),
+            companies.read_current_many(company_anchor_symbols, depth="preferred"),
             candidate_symbols=company_anchor_symbols,
             active_at=now,
             mode="active",

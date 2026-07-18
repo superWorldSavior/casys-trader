@@ -7,10 +7,15 @@ from trader.infrastructure.state_db.company_intelligence_store import CompanyInt
 from trader.infrastructure.state_db.fundamental_item_store import FundamentalItemStore
 
 
-def _brief(*, signature: str = "sig-1", depth: str = "screen") -> CompanyIntelligenceBrief:
+def _brief(
+    *,
+    signature: str = "sig-1",
+    depth: str = "screen",
+    as_of: str = "2026-07-10T01:00:00+00:00",
+) -> CompanyIntelligenceBrief:
     payload = {
         "symbol": "SAP.DE",
-        "as_of": "2026-07-10T01:00:00+00:00",
+        "as_of": as_of,
         "input_signature": signature,
         "depth": depth,
         "issuer_identity": {"issuer_name": "SAP SE", "identity_status": "verified"},
@@ -74,6 +79,35 @@ def test_company_store_keeps_versions_and_current_depths(tmp_path) -> None:
     assert store.read_current("SAP.DE", depth="screen").input_signature == "sig-2"
     assert store.read_current("SAP.DE", depth="deep").input_signature == "sig-deep"
     assert len(store.read_history("SAP.DE")) == 3
+
+
+def test_read_current_preferred_prefers_deep_then_screen(tmp_path) -> None:
+    store = CompanyIntelligenceStore(tmp_path / "company_intelligence")
+
+    # screen only -> preferred returns the screen brief
+    store.append(_brief(signature="sig-screen", depth="screen"))
+    assert store.read_current("SAP.DE", depth="preferred").input_signature == "sig-screen"
+
+    # both exist at the SAME as_of -> preferred returns deep (tie goes to deep)
+    store.append(_brief(signature="sig-deep", depth="deep"))
+    assert store.read_current("SAP.DE", depth="preferred").input_signature == "sig-deep"
+
+
+def test_read_current_preferred_prefers_fresher_screen_after_universe_exit(tmp_path) -> None:
+    """A symbol that left the universe keeps a stale deep brief; once its screen
+    brief refreshes, preferred must serve the fresher screen, not the stale deep."""
+    store = CompanyIntelligenceStore(tmp_path / "company_intelligence")
+    store.append(_brief(signature="sig-deep-old", depth="deep", as_of="2026-07-10T01:00:00+00:00"))
+    store.append(_brief(signature="sig-screen-new", depth="screen", as_of="2026-07-12T01:00:00+00:00"))
+    assert store.read_current("SAP.DE", depth="preferred").input_signature == "sig-screen-new"
+
+
+def test_read_current_preferred_reads_deep_only_symbol_and_none_when_absent(tmp_path) -> None:
+    store = CompanyIntelligenceStore(tmp_path / "company_intelligence")
+    store.append(_brief(signature="sig-deep", depth="deep"))
+    # a universe member has only a deep brief; a screen-default reader still sees it
+    assert store.read_current("SAP.DE", depth="preferred").input_signature == "sig-deep"
+    assert store.read_current("MISSING.XX", depth="preferred") is None
 
 
 def test_company_store_rebuilds_corrupt_current_projection(tmp_path) -> None:

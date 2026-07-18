@@ -151,11 +151,13 @@ def test_refresh_uses_dedicated_ledger_and_deduplicates_unchanged_evidence(tmp_p
         runtime.stop()
 
 
-def test_discover_current_scope_keeps_candidates_sticky_and_active_universe(tmp_path) -> None:
+def test_discover_current_scope_excludes_active_universe(tmp_path) -> None:
+    """Screen = candidats/sticky HORS univers ; les membres d'univers (ici ACTIVE,
+    et le candidat DUP qui est aussi dans l'univers) sont couverts par le deep."""
     config_dir = tmp_path / "config"
     state_dir = tmp_path / "state"
     config_dir.mkdir()
-    (config_dir / "universe.yaml").write_text("symbols: [ACTIVE]\n")
+    (config_dir / "universe.yaml").write_text("symbols: [ACTIVE, DUP]\n")
     from trader.infrastructure.state_db.candidate_scope_store import CandidateScopeStore
 
     CandidateScopeStore(state_dir / "candidate_scopes").append(
@@ -163,16 +165,32 @@ def test_discover_current_scope_keeps_candidates_sticky_and_active_universe(tmp_
             "candidate_scope_id": "scope-us",
             "venue": "US",
             "as_of": "2026-07-10T08:00:00+00:00",
-            "candidates": [{"symbol": "CAND"}],
+            "candidates": [{"symbol": "CAND"}, {"symbol": "DUP"}],
             "sticky_context_at_close": ["STICKY"],
         }
     )
 
     symbols, metadata = discover_company_symbols(config_dir=config_dir, state_dir=state_dir)
 
-    assert symbols == ("CAND", "STICKY", "ACTIVE")
+    # ACTIVE (univers) et DUP (candidat AUSSI dans l'univers) sont exclus du screen.
+    assert symbols == ("CAND", "STICKY")
     assert metadata["candidate_scope_ids"] == ["scope-us"]
     assert metadata["fallback"] is False
+    assert metadata["screen_excludes_active"] is True
+
+
+def test_discover_active_scope_returns_universe(tmp_path) -> None:
+    config_dir = tmp_path / "config"
+    state_dir = tmp_path / "state"
+    config_dir.mkdir()
+    (config_dir / "universe.yaml").write_text("symbols: [ACTIVE, DUP]\n")
+
+    symbols, metadata = discover_company_symbols(
+        config_dir=config_dir, state_dir=state_dir, scope="active"
+    )
+
+    assert set(symbols) == {"ACTIVE", "DUP"}
+    assert metadata["scope"] == "active"
 
 
 def test_status_only_runtime_does_not_start_queue_workers(tmp_path, monkeypatch) -> None:

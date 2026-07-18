@@ -233,7 +233,7 @@ def tick_universe_intelligence(
         )
         candidate_symbols = tuple(item["symbol"] for item in candidates)
         company_context = project_company_briefs_to_universe_context(
-            companies.read_current_many(candidate_symbols),
+            companies.read_current_many(candidate_symbols, depth="preferred"),
             candidate_symbols=candidate_symbols,
             active_at=now,
             mode=company_context_mode,
