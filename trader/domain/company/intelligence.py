@@ -221,6 +221,47 @@ class CompanyEvidenceItem:
         }
 
 
+def _evidence_signature_payload(
+    symbol: str, items: Iterable["CompanyEvidenceItem"]
+) -> dict[str, Any]:
+    """Stable dedup payload for the evidence signature.
+
+    Only the symbol and the normalized *hard-fundamental* items are signed:
+
+    - ``identity`` (verified/unverified, resolved issuer name) and ``coverage``
+      (partial/full status, provider_errors) are excluded: they drift with
+      provider resolution and rate-limits, which would re-trigger the analysis
+      without any real change.
+    - ``company_news`` items are excluded: a fresh news headline is not a
+      fundamental change and must not force an immediate re-analysis. News is
+      still shipped to the analyst and picked up by the once-per-day digest
+      (paced by the runtime cooldown); only new financials/profile/earnings
+      (which DO change this signature) trigger an out-of-band re-analysis.
+
+    Both ``build`` and ``from_mapping`` call this so their signatures never diverge.
+    Items are sorted so the signature is independent of provider emission order.
+    """
+    signed = [
+        {
+            "provider": item.provider,
+            "kind": item.kind,
+            "content_hash": item.content_hash,
+            "period_end": item.period_end,
+        }
+        for item in items
+        if item.kind != "company_news"
+    ]
+    signed.sort(
+        key=lambda entry: (
+            str(entry["provider"] or ""),
+            str(entry["kind"] or ""),
+            str(entry["period_end"] or ""),
+            str(entry["content_hash"] or ""),
+        )
+    )
+    return {"symbol": symbol, "items": signed}
+
+
 @dataclass(frozen=True)
 class CompanyEvidenceSnapshot:
     symbol: str
@@ -242,29 +283,15 @@ class CompanyEvidenceSnapshot:
     ) -> "CompanyEvidenceSnapshot":
         normalized_symbol = _clean_text(symbol)
         normalized_items = tuple(item for item in items if item.symbol == normalized_symbol)
-        payload = {
-            "symbol": normalized_symbol,
-            "identity": identity.to_dict(),
-            # A source probe timestamp or provider-local item id must not force
-            # a new analysis when the normalized evidence itself is unchanged.
-            "items": [
-                {
-                    "provider": item.provider,
-                    "kind": item.kind,
-                    "content_hash": item.content_hash,
-                    "period_end": item.period_end,
-                }
-                for item in normalized_items
-            ],
-            "coverage": dict(coverage or {}),
-        }
         return cls(
             symbol=normalized_symbol,
             as_of=_clean_text(as_of),
             identity=identity,
             items=normalized_items,
             coverage=dict(coverage or {}),
-            input_signature=build_company_input_signature(payload),
+            input_signature=build_company_input_signature(
+                _evidence_signature_payload(normalized_symbol, normalized_items)
+            ),
         )
 
     @classmethod
@@ -282,20 +309,7 @@ class CompanyEvidenceSnapshot:
         )
         coverage = _clean_mapping(raw.get("coverage"))
         signature = _clean_text(raw.get("input_signature")) or build_company_input_signature(
-            {
-                "symbol": symbol,
-                "identity": identity.to_dict(),
-                "items": [
-                    {
-                        "provider": item.provider,
-                        "kind": item.kind,
-                        "content_hash": item.content_hash,
-                        "period_end": item.period_end,
-                    }
-                    for item in items
-                ],
-                "coverage": coverage,
-            }
+            _evidence_signature_payload(symbol, items)
         )
         return cls(symbol, as_of, identity, items, coverage, signature)
 

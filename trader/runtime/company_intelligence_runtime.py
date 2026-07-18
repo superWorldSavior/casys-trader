@@ -9,7 +9,7 @@ import threading
 import time
 from collections.abc import Iterable, Mapping
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
 
@@ -33,6 +33,8 @@ from trader.infrastructure.state_db.candidate_scope_store import CandidateScopeS
 from trader.infrastructure.state_db.company_analysis_run_store import CompanyAnalysisRunStore
 from trader.infrastructure.state_db.company_intelligence_store import CompanyIntelligenceStore
 from trader.infrastructure.state_db.fundamental_item_store import FundamentalItemStore
+from trader.market.radar_config import load_radar_params
+from trader.market.rotation.schedule import load_sessions, preopen_venues
 from trader.market.rotation.wiring import venue_of
 from trader.runtime.protocols import LoggerLike
 
@@ -41,6 +43,63 @@ COMPANY_RESOURCE = "company-research"
 VENUES = ("TW", "EU", "US")
 DEFAULT_CONCURRENCY = 2
 DEFAULT_WAIT_TIMEOUT_S = 600.0
+# Fundamental analysis is event-driven: new financials/profile/earnings (which
+# change the evidence signature) re-analyze immediately; otherwise a company is
+# re-analyzed at most once per this cooldown, to digest accumulated news without
+# re-running on every intraday headline.
+DEFAULT_REFRESH_COOLDOWN_HOURS = 24.0
+
+
+def _refresh_cooldown_hours() -> float:
+    raw = os.getenv("CASYS_COMPANY_MICRO_REFRESH_COOLDOWN_HOURS")
+    if raw is None:
+        return DEFAULT_REFRESH_COOLDOWN_HOURS
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return DEFAULT_REFRESH_COOLDOWN_HOURS
+    return value if value >= 0 else DEFAULT_REFRESH_COOLDOWN_HOURS
+
+
+def _parse_utc(value: Any) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    # Always return UTC (the name promises it): a stored as_of may carry a local
+    # offset, and callers must be free to compare .date()/.hour safely.
+    return parsed.astimezone(timezone.utc) if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
+
+
+def decide_company_refresh(
+    *,
+    now: datetime,
+    last_as_of: str | None,
+    venue_in_preopen: bool,
+    cooldown: timedelta,
+    preopen_window: timedelta,
+) -> tuple[bool, str]:
+    """Whether an unchanged-fundamentals company must be re-analyzed now.
+
+    Mirrors the global-posture cadence (``decide_global_posture_refresh``):
+    refresh once inside the symbol's venue pre-open window — so the brief is
+    fresh at the gong — plus a cooldown floor; otherwise reuse. New
+    financials/profile/earnings change the evidence signature upstream and
+    bypass this entirely (immediate re-analysis). Pure and deterministic.
+    """
+    if not last_as_of:
+        return True, "bootstrap"
+    last = _parse_utc(last_as_of)
+    if last is None:
+        return True, "no_as_of"
+    age = now - last
+    if venue_in_preopen and age >= preopen_window:
+        return True, "preopen"
+    if cooldown > timedelta(0) and age >= cooldown:
+        return True, "cooldown"
+    return False, "fresh"
 
 
 def _default_logger() -> logging.Logger:
@@ -155,6 +214,7 @@ class CompanyIntelligenceRuntime:
         self.log = logger or _default_logger()
         self.enabled = _enabled(self.config_dir)
         self.concurrency = max(1, int(concurrency or _configured_concurrency(self.config_dir)))
+        self.refresh_cooldown_hours = _refresh_cooldown_hours()
         self.provider = provider
         self.analyst = analyst
         self.on_brief_written = on_brief_written
@@ -318,6 +378,16 @@ class CompanyIntelligenceRuntime:
         candidate_scope_ids: tuple[str, ...],
     ) -> dict[str, list[dict[str, Any]]]:
         provider = self._provider()
+        # Cadence: an unchanged-fundamentals company is re-analyzed once in its
+        # venue pre-open window (fresh brief at the gong) plus a cooldown floor.
+        # config_dir points at <root>/config; load_sessions wants the root.
+        radar = load_radar_params(self.config_dir)
+        sessions = load_sessions(str(self.config_dir.parent))
+        preopen_now = set(
+            preopen_venues(as_of.isoformat(), sessions, window_minutes=radar.preopen_window_minutes)
+        )
+        preopen_window = timedelta(minutes=radar.preopen_window_minutes)
+        cooldown = timedelta(hours=self.refresh_cooldown_hours)
         enqueued: list[dict[str, Any]] = []
         skipped: list[dict[str, Any]] = []
         errors: list[dict[str, Any]] = []
@@ -346,17 +416,30 @@ class CompanyIntelligenceRuntime:
                 self.evidence_store.append_many(evidence.items)
                 current = self.brief_store.read_current(symbol, depth=depth)
                 if current is not None and current.input_signature == evidence.input_signature:
-                    skipped.append({"symbol": symbol, "reason": "unchanged_evidence", "brief_ref": current.ref()})
-                    self._record_run(
-                        symbol=symbol,
-                        as_of=as_of.isoformat(),
-                        status="unchanged",
-                        trigger=trigger,
-                        depth=depth,
-                        input_signature=evidence.input_signature,
-                        brief_ref=current.ref(),
+                    # Fundamentals unchanged (news alone no longer move the
+                    # signature). Re-analyze only to keep the brief fresh at the
+                    # venue gong, or once per cooldown; otherwise reuse.
+                    due, reason = decide_company_refresh(
+                        now=as_of,
+                        last_as_of=current.as_of,
+                        venue_in_preopen=venue_of(symbol) in preopen_now,
+                        cooldown=cooldown,
+                        preopen_window=preopen_window,
                     )
-                    continue
+                    if not due:
+                        skipped.append(
+                            {"symbol": symbol, "reason": f"unchanged:{reason}", "brief_ref": current.ref()}
+                        )
+                        self._record_run(
+                            symbol=symbol,
+                            as_of=as_of.isoformat(),
+                            status="unchanged",
+                            trigger=trigger,
+                            depth=depth,
+                            input_signature=evidence.input_signature,
+                            brief_ref=current.ref(),
+                        )
+                        continue
                 payload = {
                     "symbol": symbol,
                     "as_of": as_of.isoformat(),
@@ -370,7 +453,7 @@ class CompanyIntelligenceRuntime:
                     priority=_priority(symbol=symbol, evidence=evidence, trigger=trigger, depth=depth),
                     scheduled_at_ms=self._now_ms(),
                     now_ms=self._now_ms(),
-                    dedup_key=f"{symbol}:{evidence.input_signature}:{depth}",
+                    dedup_key=f"{symbol}:{evidence.input_signature}:{depth}:{as_of.date().isoformat()}",
                     partition_key=symbol,
                     resource=COMPANY_RESOURCE,
                     payload=json.dumps(payload, ensure_ascii=False, sort_keys=True),

@@ -137,6 +137,9 @@ def test_retryable_provider_error_se_limite_aux_rate_limits_et_quotas() -> None:
 def test_acpx_backend_timeout_est_retryable_et_cape_par_appel(monkeypatch) -> None:
     """Un timeout d'appel est TRANSITOIRE → retryable (incident AMCR 2026-07-06),
     et le subprocess est tué au cap par-appel (150s) et non au budget total (900s)."""
+    # Le cap par-appel lit CASYS_ACPX_CALL_TIMEOUT_S ; l'isoler d'un .env chargé
+    # par un autre test de la suite (sinon le cap observé n'est plus 150).
+    monkeypatch.delenv("CASYS_ACPX_CALL_TIMEOUT_S", raising=False)
     monkeypatch.setattr("trader.infrastructure.llm.acpx_backend.shutil.which", lambda _bin: "/usr/local/bin/acpx")
     monkeypatch.setattr("trader.infrastructure.llm.acpx_backend._terminate_process_group", lambda _pid: None)
 

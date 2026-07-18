@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -446,6 +446,46 @@ def test_global_posture_agent_failure_is_fail_open(tmp_path, caplog) -> None:
     assert "global universe posture preparation failed" in caplog.text
 
 
+def test_global_posture_store_read_failure_does_not_abort_tick(tmp_path) -> None:
+    """A posture store read failure must only skip the (advisory) posture, never
+    abort the surrounding venue preparation (Finding 1 — fail-open restored)."""
+    state_dir = tmp_path / "state"
+    config_dir = tmp_path / "config"
+    state_dir.mkdir()
+    config_dir.mkdir()
+    scope_id = _write_scope_and_brief(
+        state_dir, venue="US", symbols=["AAPL", "MSFT"], family="us_mega_tech"
+    )
+    agent = FakeAgent()
+
+    class BrokenPostureStore:
+        def read_current(self):
+            raise OSError("posture store unavailable")
+
+        def append_if_changed(self, _posture):  # pragma: no cover - must not run
+            raise AssertionError("append must not be reached when read fails")
+
+    result = universe_intelligence_runtime.tick_universe_intelligence(
+        config_dir=config_dir,
+        state_dir=state_dir,
+        loop_now=NOW,
+        agent=agent,
+        posture_store=BrokenPostureStore(),
+        venues=("US",),
+    )
+
+    assert result["prepared"][0]["candidate_scope_id"] == scope_id
+    prepared = UniverseRunStore(state_dir / "universe_runs").read_prepared(scope_id)
+    assert prepared["global_universe_posture"]["status"] == "error"
+
+
+def test_decide_refresh_cooldown_zero_never_forces_refresh() -> None:
+    old = _posture_current((NOW - timedelta(days=3)).isoformat())
+    assert universe_intelligence_runtime.decide_global_posture_refresh(
+        now=NOW, current=old, preopen_now=(), cooldown=timedelta(0), preopen_window=_WINDOW
+    ) == (False, "fresh")
+
+
 def test_tick_universe_intelligence_waits_for_preopen_child_scope(tmp_path) -> None:
     state_dir = tmp_path / "state"
     config_dir = tmp_path / "config"
@@ -750,6 +790,80 @@ def test_prepare_global_situation_digest_is_fail_open_when_global_brief_absent(t
     assert ref.get("persistence_status") == "appended"
     point_texts = [p["point"] for p in digest.get("points", [])]
     assert "EU regional alert." in point_texts
+
+
+_COOLDOWN = timedelta(hours=4)
+_WINDOW = timedelta(minutes=90)
+
+
+def _posture_current(as_of: str) -> dict:
+    return {
+        "posture_id": "global_universe_posture:v1:deadbeef",
+        "as_of": as_of,
+        "gross_mode": "cautious",
+        "net_bias": "long",
+    }
+
+
+def test_decide_refresh_bootstrap_when_no_current() -> None:
+    assert universe_intelligence_runtime.decide_global_posture_refresh(
+        now=NOW, current=None, preopen_now=(), cooldown=_COOLDOWN, preopen_window=_WINDOW
+    ) == (True, "bootstrap")
+
+
+def test_decide_refresh_skips_when_fresh_and_no_preopen() -> None:
+    current = _posture_current((NOW - timedelta(minutes=10)).isoformat())
+    assert universe_intelligence_runtime.decide_global_posture_refresh(
+        now=NOW, current=current, preopen_now=(), cooldown=_COOLDOWN, preopen_window=_WINDOW
+    ) == (False, "fresh")
+
+
+def test_decide_refresh_on_cooldown_elapsed() -> None:
+    current = _posture_current((NOW - timedelta(hours=5)).isoformat())
+    assert universe_intelligence_runtime.decide_global_posture_refresh(
+        now=NOW, current=current, preopen_now=(), cooldown=_COOLDOWN, preopen_window=_WINDOW
+    ) == (True, "cooldown")
+
+
+def test_decide_refresh_forced_once_per_preopen_window() -> None:
+    # Posture prepared 2h ago (> 90min window) with a venue entering pre-open.
+    stale = _posture_current((NOW - timedelta(hours=2)).isoformat())
+    assert universe_intelligence_runtime.decide_global_posture_refresh(
+        now=NOW, current=stale, preopen_now=("EU",), cooldown=_COOLDOWN, preopen_window=_WINDOW
+    ) == (True, "preopen:EU")
+    # Once refreshed inside the window, a still-recent posture is not recomputed.
+    recent = _posture_current((NOW - timedelta(minutes=10)).isoformat())
+    assert universe_intelligence_runtime.decide_global_posture_refresh(
+        now=NOW, current=recent, preopen_now=("EU",), cooldown=_COOLDOWN, preopen_window=_WINDOW
+    ) == (False, "fresh")
+
+
+def test_tick_reuses_global_posture_within_cooldown_without_recalling_agent(tmp_path) -> None:
+    state_dir = tmp_path / "state"
+    config_dir = tmp_path / "config"
+    state_dir.mkdir()
+    config_dir.mkdir()
+    _write_scope_and_brief(
+        state_dir, venue="US", symbols=["AAPL", "MSFT"], family="us_mega_tech"
+    )
+    posture_agent = FakePostureAgent()
+
+    universe_intelligence_runtime.tick_universe_intelligence(
+        config_dir=config_dir, state_dir=state_dir, loop_now=NOW,
+        agent=FakeAgent(), posture_agent=posture_agent, venues=("US",),
+    )
+    universe_intelligence_runtime.tick_universe_intelligence(
+        config_dir=config_dir, state_dir=state_dir, loop_now=NOW,
+        agent=FakeAgent(), posture_agent=posture_agent, venues=("US",),
+    )
+
+    # NOW (Fri 20:05 UTC) has no venue in pre-open: the second tick reuses the
+    # fresh posture instead of issuing a second LLM call.
+    assert len(posture_agent.requests) == 1
+    posture_rows = (
+        state_dir / "global_universe_postures" / "2026-07-10.jsonl"
+    ).read_text(encoding="utf-8").splitlines()
+    assert len(posture_rows) == 1
 
 
 def test_runner_is_non_blocking_and_coalesces_latest_trigger() -> None:

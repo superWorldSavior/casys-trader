@@ -1,7 +1,52 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from trader.domain.company import CompanyEvidenceItem, CompanyEvidenceSnapshot, CompanyIntelligenceBrief, IssuerIdentity
-from trader.runtime.company_intelligence_runtime import CompanyIntelligenceRuntime, discover_company_symbols
+from trader.runtime.company_intelligence_runtime import (
+    CompanyIntelligenceRuntime,
+    decide_company_refresh,
+    discover_company_symbols,
+)
+
+
+_CD_NOW = datetime(2026, 7, 10, 12, 30, tzinfo=timezone.utc)  # inside US pre-open (12:00-13:30)
+_CD_COOLDOWN = timedelta(hours=24)
+_CD_WINDOW = timedelta(minutes=90)
+
+
+def test_decide_company_refresh_bootstrap_when_no_brief() -> None:
+    assert decide_company_refresh(
+        now=_CD_NOW, last_as_of=None, venue_in_preopen=False,
+        cooldown=_CD_COOLDOWN, preopen_window=_CD_WINDOW,
+    ) == (True, "bootstrap")
+
+
+def test_decide_company_refresh_preopen_forces_once_then_reuses() -> None:
+    stale = (_CD_NOW - timedelta(hours=3)).isoformat()
+    assert decide_company_refresh(
+        now=_CD_NOW, last_as_of=stale, venue_in_preopen=True,
+        cooldown=_CD_COOLDOWN, preopen_window=_CD_WINDOW,
+    ) == (True, "preopen")
+    fresh = (_CD_NOW - timedelta(minutes=10)).isoformat()
+    assert decide_company_refresh(
+        now=_CD_NOW, last_as_of=fresh, venue_in_preopen=True,
+        cooldown=_CD_COOLDOWN, preopen_window=_CD_WINDOW,
+    ) == (False, "fresh")
+
+
+def test_decide_company_refresh_cooldown_floor_outside_preopen() -> None:
+    old = (_CD_NOW - timedelta(hours=25)).isoformat()
+    assert decide_company_refresh(
+        now=_CD_NOW, last_as_of=old, venue_in_preopen=False,
+        cooldown=_CD_COOLDOWN, preopen_window=_CD_WINDOW,
+    ) == (True, "cooldown")
+
+
+def test_decide_company_refresh_reuses_when_fresh_and_not_preopen() -> None:
+    recent = (_CD_NOW - timedelta(hours=2)).isoformat()
+    assert decide_company_refresh(
+        now=_CD_NOW, last_as_of=recent, venue_in_preopen=False,
+        cooldown=_CD_COOLDOWN, preopen_window=_CD_WINDOW,
+    ) == (False, "fresh")
 
 
 def _evidence(symbol: str, as_of: str) -> CompanyEvidenceSnapshot:
@@ -95,7 +140,9 @@ def test_refresh_uses_dedicated_ledger_and_deduplicates_unchanged_evidence(tmp_p
         assert first["wait"]["completed"] is True
         assert first["wait"]["statuses"] == {str(first["enqueued"][0]["task_id"]): "done"}
         assert second["enqueued"] == []
-        assert second["skipped"][0]["reason"] == "unchanged_evidence"
+        # 09:00 UTC: unchanged fundamentals, no venue in pre-open, within the
+        # cooldown floor -> reuse the brief instead of re-analyzing.
+        assert second["skipped"][0]["reason"] == "unchanged:fresh"
         assert runtime.brief_store.read_current("EXM") is not None
         assert runtime.status()["queue"]["done"] == 1
         assert written[0]["symbol"] == "EXM"

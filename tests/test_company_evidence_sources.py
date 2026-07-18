@@ -192,7 +192,10 @@ def test_composite_isolates_provider_errors_and_preserves_remaining_evidence() -
     assert snapshot.coverage["provider_errors"] == ["Broken:RuntimeError"]
 
 
-def test_local_company_news_is_symbol_scoped_and_changes_fingerprint(tmp_path) -> None:
+def test_local_company_news_is_symbol_scoped_and_does_not_move_signature(tmp_path) -> None:
+    """News are collected into the evidence but excluded from the dedup
+    signature: a fresh headline must NOT re-trigger the fundamental analysis —
+    it is picked up by the once-per-day pre-open digest instead."""
     path = tmp_path / "2026-07-10.jsonl"
     path.write_text(
         '\n'.join(
@@ -214,4 +217,7 @@ def test_local_company_news_is_symbol_scoped_and_changes_fingerprint(tmp_path) -
 
     assert first is not None and second is not None
     assert "OTHER" not in str(second.items[0].payload)
-    assert first.input_signature != second.input_signature
+    # The news item content itself changed (new headline was collected)...
+    assert first.items[0].content_hash != second.items[0].content_hash
+    # ...but the dedup signature is unchanged: news do not drive re-analysis.
+    assert first.input_signature == second.input_signature

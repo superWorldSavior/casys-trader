@@ -35,6 +35,13 @@ class YFinanceCompanyEvidenceProvider:
             identity_status="verified" if info.get("longName") or info.get("shortName") else "unverified",
         )
         items: list[CompanyEvidenceItem] = []
+        # Only stable, fundamental profile fields. Price-derived valuation fields
+        # (marketCap, enterpriseValue, averageVolume, trailingPE, forwardPE,
+        # priceToBook) are deliberately excluded: they drift with every intraday
+        # tick, which would flip the evidence content_hash and thus the dedup
+        # input_signature on every cycle, re-triggering the fundamental analysis
+        # in a loop. The micro analyst judges company quality, not stock
+        # valuation, so it does not need them.
         profile_payload = {
             key: info.get(key)
             for key in (
@@ -44,15 +51,9 @@ class YFinanceCompanyEvidenceProvider:
                 "country",
                 "website",
                 "longBusinessSummary",
-                "marketCap",
-                "enterpriseValue",
                 "sharesOutstanding",
                 "floatShares",
-                "averageVolume",
                 "beta",
-                "trailingPE",
-                "forwardPE",
-                "priceToBook",
             )
             if info.get(key) is not None
         }

@@ -108,6 +108,60 @@ def test_evidence_snapshot_is_stable_and_symbol_scoped() -> None:
     assert rebuilt.source_catalog() == {"fixture:SAP.DE:2026Q2": "Fixture filing"}
 
 
+def test_signature_ignores_identity_resolution_and_coverage() -> None:
+    """A yfinance rate-limit (partial coverage, unverified identity) must NOT
+    flip the dedup signature when the underlying evidence items are unchanged."""
+    items = [_evidence()]
+    verified = CompanyEvidenceSnapshot.build(
+        symbol="SAP.DE",
+        as_of="2026-07-09T00:00:00+00:00",
+        identity=IssuerIdentity("SAP SE", exchange="XETRA", identity_status="verified"),
+        items=items,
+        coverage={"status": "full", "item_count": 5},
+    )
+    degraded = CompanyEvidenceSnapshot.build(
+        symbol="SAP.DE",
+        as_of="2026-07-09T09:00:00+00:00",  # later probe, same fundamentals
+        identity=IssuerIdentity("SAP.DE", identity_status="unverified"),
+        items=items,
+        coverage={"status": "partial", "provider_errors": ["YFRateLimitError"]},
+    )
+    assert verified.input_signature == degraded.input_signature
+
+
+def test_signature_changes_when_item_content_changes() -> None:
+    base = CompanyEvidenceSnapshot.build(
+        symbol="SAP.DE",
+        as_of="2026-07-09T00:00:00+00:00",
+        identity=IssuerIdentity("SAP SE"),
+        items=[_evidence()],
+        coverage={},
+    )
+    changed_item = CompanyEvidenceItem.from_mapping(
+        {
+            "item_id": "provider:SAP.DE:2026Q2",
+            "symbol": "SAP.DE",
+            "provider": "fixture",
+            "kind": "financial_statement",
+            "source_ref": "fixture:SAP.DE:2026Q2",
+            "source_name": "Fixture filing",
+            "as_of": "2026-07-09T00:00:00+00:00",
+            "period_end": "2026-06-30",
+            "currency": "EUR",
+            "payload": {"revenue": 200.0},
+        }
+    )
+    assert changed_item is not None
+    changed = CompanyEvidenceSnapshot.build(
+        symbol="SAP.DE",
+        as_of="2026-07-09T00:00:00+00:00",
+        identity=IssuerIdentity("SAP SE"),
+        items=[changed_item],
+        coverage={},
+    )
+    assert base.input_signature != changed.input_signature
+
+
 def test_brief_forces_authoritative_envelope_and_filters_unknown_sources() -> None:
     brief = CompanyIntelligenceBrief.from_mapping(_brief_payload())
     assert brief is not None

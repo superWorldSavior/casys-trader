@@ -40,6 +40,8 @@ from trader.domain.universe import (
     project_brief_to_universe_context,
 )
 from trader.domain.situation import build_global_situation_digest
+from trader.market.radar_config import load_radar_params
+from trader.market.rotation.schedule import load_sessions, preopen_venues
 from trader.infrastructure.state_db.candidate_scope_store import CandidateScopeStore
 from trader.infrastructure.state_db.company_intelligence_store import CompanyIntelligenceStore
 from trader.infrastructure.state_db.global_family_board_store import GlobalFamilyBoardStore
@@ -56,6 +58,10 @@ DEFAULT_FAILURE_BACKOFF_MINUTES = 30
 DEFAULT_PREPARED_WRITE_BACKOFF_MINUTES = 1
 DEFAULT_REGIME_MAX_AGE_HOURS = 96
 DEFAULT_ASYNC_STOP_TIMEOUT_S = 1.0
+# Cadence of the advisory global universe posture: at most one LLM recompute per
+# pre-open window (freshness before each venue gong) and one per cooldown
+# otherwise. Anything more is wasted tokens (the posture barely moves intraday).
+DEFAULT_POSTURE_REFRESH_COOLDOWN_HOURS = 4.0
 
 
 def _default_logger() -> logging.Logger:
@@ -146,6 +152,15 @@ def tick_universe_intelligence(
         log=log,
         global_situation_ref=global_situation_ref,
     )
+    # Cadence de la posture globale : fraîche avant chaque gong (venues en
+    # pré-open), sinon au plus une fois par cooldown. `config_dir` pointe sur
+    # ``<root>/config`` (cf. load_radar_params ci-dessus) ; load_sessions attend
+    # la racine et rajoute lui-même ``config/sessions.yaml``.
+    sessions = load_sessions(str(Path(config_dir).parent))
+    preopen_window_minutes = load_radar_params(Path(config_dir)).preopen_window_minutes
+    preopen_now = preopen_venues(
+        now.isoformat(), sessions, window_minutes=preopen_window_minutes
+    )
     global_universe_posture, global_universe_posture_ref = (
         _prepare_global_universe_posture(
             scopes=scopes,
@@ -155,6 +170,8 @@ def tick_universe_intelligence(
             global_family_board=global_family_board,
             global_situation_digest=global_situation_digest,
             agent=posture_agent,
+            preopen_now=preopen_now,
+            preopen_window_minutes=preopen_window_minutes,
         )
     )
     prepared: list[dict[str, Any]] = []
@@ -569,6 +586,48 @@ def _prepare_global_situation_digest(
     return stored, {**ref, "persistence_status": "appended" if changed else "unchanged"}
 
 
+def _posture_cooldown_hours() -> float:
+    raw = os.getenv("CASYS_POSTURE_REFRESH_COOLDOWN_HOURS")
+    if raw is None:
+        return DEFAULT_POSTURE_REFRESH_COOLDOWN_HOURS
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return DEFAULT_POSTURE_REFRESH_COOLDOWN_HOURS
+    # value == 0 is a valid "disable cooldown" opt-in (pre-open refresh only),
+    # symmetric with _refresh_cooldown_hours; only a negative typo falls back.
+    return value if value >= 0 else DEFAULT_POSTURE_REFRESH_COOLDOWN_HOURS
+
+
+def decide_global_posture_refresh(
+    *,
+    now: datetime,
+    current: Mapping[str, Any] | None,
+    preopen_now: Iterable[str],
+    cooldown: timedelta,
+    preopen_window: timedelta,
+) -> tuple[bool, str]:
+    """Decide whether the advisory global posture must be recomputed (LLM call).
+
+    Pure and deterministic (``now`` injected). Stateless beyond the stored
+    posture ``as_of``: because a refresh resets ``as_of`` to inside the current
+    pre-open window, the pre-open branch fires at most once per window, and the
+    cooldown branch at most once per ``cooldown`` otherwise.
+    """
+    if current is None:
+        return True, "bootstrap"
+    last = _parse_datetime(current.get("as_of"))
+    if last is None:
+        return True, "no_as_of"
+    age = now - last
+    preopen = sorted({str(venue).strip() for venue in preopen_now if str(venue).strip()})
+    if preopen and age >= preopen_window:
+        return True, "preopen:" + ",".join(preopen)
+    if cooldown > timedelta(0) and age >= cooldown:
+        return True, "cooldown"
+    return False, "fresh"
+
+
 def _prepare_global_universe_posture(
     *,
     scopes: CandidateScopeStore,
@@ -578,8 +637,38 @@ def _prepare_global_universe_posture(
     global_family_board: Mapping[str, Any],
     global_situation_digest: Mapping[str, Any],
     agent: Any | None = None,
+    preopen_now: Iterable[str] = (),
+    preopen_window_minutes: int = 90,
+    cooldown_hours: float | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
+    # The whole body is fail-open (advisory posture): a store read failure must
+    # only skip the posture, never abort the surrounding universe tick.
     try:
+        current = store.read_current()
+        cooldown = timedelta(
+            hours=cooldown_hours if cooldown_hours is not None else _posture_cooldown_hours()
+        )
+        refresh, reason = decide_global_posture_refresh(
+            now=now,
+            current=current,
+            preopen_now=preopen_now,
+            cooldown=cooldown,
+            preopen_window=timedelta(minutes=max(0, int(preopen_window_minutes))),
+        )
+        if not refresh and current is not None:
+            log.info(
+                "global universe posture reuse (reason=%s as_of=%s)",
+                reason,
+                current.get("as_of"),
+            )
+            return current, {
+                "posture_id": str(current.get("posture_id") or ""),
+                "as_of": str(current.get("as_of") or ""),
+                "gross_mode": str(current.get("gross_mode") or ""),
+                "net_bias": str(current.get("net_bias") or ""),
+                "persistence_status": "reused",
+                "refresh_reason": reason,
+            }
         sticky: set[str] = set()
         for venue in VENUES:
             scope = scopes.read_latest(venue, scope_phase="preopen")
@@ -613,6 +702,7 @@ def _prepare_global_universe_posture(
     return stored or posture_dict, {
         **ref,
         "persistence_status": "appended" if changed else "unchanged",
+        "refresh_reason": reason,
     }
 
 
