@@ -195,6 +195,16 @@ def _acpx_agent_part(agent: str | None) -> list[str]:
     return [] if not agent or agent == "default" else [agent]
 
 
+def _acpx_session_admin_flags(acpx_bin: str) -> list[str]:
+    """Flags for commands which must resolve an existing cwd-scoped session."""
+
+    flags = [acpx_bin, "--format", "quiet"]
+    if agent_exec_enabled():
+        flags += ["--cwd", agent_exec_scratch_dir()]
+    flags += ["--no-terminal", "--non-interactive-permissions", "deny"]
+    return flags
+
+
 def build_acpx_session_new_command(
     name: str,
     *,
@@ -239,12 +249,7 @@ def build_acpx_session_close_command(
     agent: str | None = None,
 ) -> list[str]:
     return [
-        acpx_bin,
-        "--format",
-        "quiet",
-        "--no-terminal",
-        "--non-interactive-permissions",
-        "deny",
+        *_acpx_session_admin_flags(acpx_bin),
         *_acpx_agent_part(agent),
         "sessions",
         "close",
@@ -263,12 +268,7 @@ def build_acpx_session_config_command(
     """Set one ACP option on an already-open named session."""
 
     return [
-        acpx_bin,
-        "--format",
-        "quiet",
-        "--no-terminal",
-        "--non-interactive-permissions",
-        "deny",
+        *_acpx_session_admin_flags(acpx_bin),
         *_acpx_agent_part(agent),
         "set",
         key,

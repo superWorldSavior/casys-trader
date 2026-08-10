@@ -1264,6 +1264,28 @@ def test_build_acpx_session_config_command_applique_une_option() -> None:
     ]
 
 
+def test_session_admin_commands_conservent_le_cwd_de_la_session_agent_exec(monkeypatch) -> None:
+    monkeypatch.setenv("CASYS_AGENT_EXEC", "1")
+    monkeypatch.setattr(
+        "trader.infrastructure.llm.acpx_backend.agent_exec_scratch_dir",
+        lambda: "/tmp/casys-trader-test-scratch",
+    )
+
+    config_cmd = llm.build_acpx_session_config_command(
+        "casys-trader:runtime-brain:0",
+        key="reasoning_effort",
+        value="medium",
+        acpx_bin="acpx",
+    )
+    close_cmd = llm.build_acpx_session_close_command(
+        "casys-trader:runtime-brain:0",
+        acpx_bin="acpx",
+    )
+
+    assert config_cmd[3:5] == ["--cwd", "/tmp/casys-trader-test-scratch"]
+    assert close_cmd[3:5] == ["--cwd", "/tmp/casys-trader-test-scratch"]
+
+
 def test_build_acpx_session_commands_peuvent_cibler_un_agent_dedie() -> None:
     new_cmd = llm.build_acpx_session_new_command(
         "casys-trader:runtime-brain:0",
