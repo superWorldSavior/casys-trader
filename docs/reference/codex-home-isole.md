@@ -3,7 +3,25 @@
 > **Type** : Reference (Diátaxis).
 > **Code** : `ops/codex-home/config.toml` (versionné) · propagation `trader/agent/llm.py::load_dotenv` → `trader/support/system/process_env.py::sanitized_runtime_env` → subprocess `acpx` → pont `codex-acp` (`acpx src/acp/auth-env.ts::buildAgentEnvironment`).
 > **Statut** : ✅ **Actif en paper (2026-07-06, main dabc85b)** — `.env CODEX_HOME=…/ops/codex-home`.
-> **Rôle** : donner à tous les appels ACPX de l'app un environnement Codex **nu** (0 plugin, 0 skill, 0 MCP) et imposer `model_reasoning_effort = "xhigh"` quel que soit le modèle, pour des sessions de décision **déterministes** au contrat JSON strict, isolées de l'environnement de dev partagé, avec un `exec` optionnel confiné dans un scratch hors repo.
+> **Rôle** : donner à tous les appels ACPX de l'app un environnement Codex **nu** (0 plugin, 0 skill, 0 MCP), avec un défaut Sol low commun et un effort du brain configurable par session, pour des décisions **déterministes** au contrat JSON strict.
+
+## Un seul profil, effort du brain par session
+
+Tous les rôles Codex partagent `ops/codex-home`, configuré en `gpt-5.6-sol`
+avec `model_reasoning_effort = "low"`. Le brain choisit son modèle via
+`TRADER_MODEL` et son effort via `TRADER_REASONING_EFFORT`.
+
+Le trader ne réimplémente pas l'effort. Après la création de la session, il
+appelle le mécanisme ACP natif avant le premier prompt :
+
+```bash
+acpx sessions new casys-trader:runtime-brain:0 --model gpt-5.6-luna
+acpx set reasoning_effort medium --session casys-trader:runtime-brain:0
+acpx prompt --session casys-trader:runtime-brain:0 '<prompt>'
+```
+
+La configuration opérationnelle est donc : brain Luna medium ; consolidateur,
+univers, micro société et macro/news Sol low ; un seul CODEX_HOME.
 
 ## Le problème (ce qui a motivé l'isolation)
 
@@ -36,11 +54,13 @@ les **plugins/skills** restants, pour le daemon uniquement.)
 
 ## La solution
 
-Un **`CODEX_HOME` dédié**, versionné dans `ops/codex-home/`, avec un
+Un **`CODEX_HOME` dédié et unique**, versionné dans `ops/codex-home/`, avec un
 `config.toml` **nu**. Le daemon le désigne via `.env`. Pour les commandes de
 l'app lancées hors daemon, notamment `decisions bench`, le transport retombe
 sur ce même répertoire versionné. Avant chaque subprocess, il lit le TOML et
-refuse l'appel si `model_reasoning_effort` n'est pas exactement `"xhigh"`.
+refuse l'appel si son défaut `model_reasoning_effort` n'est pas exactement
+`"low"`. L'override medium du brain est ensuite validé par le pont ACP sur la
+session.
 
 ### Structure `ops/codex-home/`
 

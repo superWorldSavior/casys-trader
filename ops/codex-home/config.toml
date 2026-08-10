@@ -1,10 +1,10 @@
-# CODEX_HOME isolé pour le daemon casys-trader.
+# CODEX_HOME Codex unique du daemon casys-trader — défaut Sol low.
 # But : sessions de décision propres et déterministes — AUCUN plugin, skill
 # (superpowers) ni MCP. Ils polluaient le contrat de sortie JSON (prose
 # "j'utilise la compétence superpowers..." -> parse_error) et alourdissaient
 # le bootstrap. Auth partagée via symlink auth.json.
-model = "gpt-5.6-terra"
-model_reasoning_effort = "xhigh"
+model = "gpt-5.6-sol"
+model_reasoning_effort = "low"
 approval_policy = "never"
 # Cage OS pour l'exécution de code par l'agent (opt-in CASYS_AGENT_EXEC) :
 # workspace-write = réseau COUPÉ + écriture confinée au cwd (un scratch jetable,
