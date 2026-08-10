@@ -122,6 +122,62 @@ def test_format_event_line_decision_executed(monkeypatch):
     assert line.markup_class == EventClass.DECISION_EXECUTED
 
 
+def test_format_learning_catch_up_reports_curated_candidates() -> None:
+    line = format_event_line(
+        {
+            "event": "learning_consolidated",
+            "new_raw_count": 0,
+            "written": True,
+            "curation_due": "new_threshold",
+            "curated_candidate_count": 50,
+        }
+    )
+
+    assert "learnings catch-up — 50 candidates curated → written" in line.text
+    assert "0 raw" not in line.text
+
+
+def test_format_learning_feedback_refresh_is_not_called_catch_up() -> None:
+    line = format_event_line(
+        {
+            "event": "learning_consolidated",
+            "new_raw_count": 0,
+            "written": True,
+            "curation_due": "feedback_threshold",
+            "curated_candidate_count": 10,
+        }
+    )
+
+    assert "learnings feedback refresh — 10 candidates curated → written" in line.text
+
+
+def test_format_learning_failure_is_not_called_consolidated() -> None:
+    line = format_event_line(
+        {
+            "event": "learning_consolidated",
+            "new_raw_count": 0,
+            "written": False,
+            "error_code": "invalid_payload",
+        }
+    )
+
+    assert "learnings consolidation failed — invalid_payload" in line.text
+
+
+def test_format_learning_raw_consolidation_keeps_existing_label() -> None:
+    line = format_event_line(
+        {
+            "event": "learning_consolidated",
+            "new_raw_count": 5,
+            "written": True,
+            "curation_due": "new_threshold",
+            "curated_candidate_count": 58,
+        }
+    )
+
+    assert "learnings consolidated — 5 raw → written" in line.text
+
+
 def test_format_event_line_cycle_started():
     ev = {
         "ts": "2026-06-10T09:00:00+00:00",
