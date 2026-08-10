@@ -26,6 +26,16 @@ NON_REVIEW_RATIONALES = frozenset(
 )
 
 
+def has_exploitable_llm_rationale(*, rationale: object, llm_error: object) -> bool:
+    """Whether a model response contains a usable, non-synthetic rationale."""
+    if llm_error or not isinstance(rationale, str):
+        return False
+    rationale_text = rationale.strip()
+    if not rationale_text or rationale_text in NON_REVIEW_RATIONALES:
+        return False
+    return not rationale_text.startswith(("batch_bad_output:", "codex_bad_output:", "llm_failed:"))
+
+
 def runtime_tool_audit_fields(domain_tools: dict | None) -> dict:
     tools = domain_tools if isinstance(domain_tools, dict) else {}
     fields = {
@@ -105,11 +115,7 @@ def counts_as_llm_review(decision: Decision) -> bool:
     """True only when the model produced a real exploitable review decision."""
     if not (decision.llm_provider or decision.llm_model):
         return False
-    if decision.llm_error:
-        return False
-    rationale = str(decision.rationale or "")
-    if rationale in NON_REVIEW_RATIONALES:
-        return False
-    if rationale.startswith(("batch_bad_output:", "codex_bad_output:", "llm_failed:")):
-        return False
-    return True
+    return has_exploitable_llm_rationale(
+        rationale=decision.rationale,
+        llm_error=decision.llm_error,
+    )

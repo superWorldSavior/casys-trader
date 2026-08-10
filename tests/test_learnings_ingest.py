@@ -139,6 +139,7 @@ def test_main_no_embeddings_counts_corrects(tmp_path: Path) -> None:
     _, report = _run_main(["--state-dir", str(state_dir), "--no-embeddings"])
 
     assert report["ingest"]["ledger_backfill"]["inserted"] == 2
+    assert report["ingest"]["rationale_backfill"]["inserted"] == 0
     assert report["ingest"]["evicted"]["inserted"] == 1
     assert report["ingest"]["runtime"]["inserted"] == 1
     assert report["total_notes"] == 4
@@ -175,7 +176,7 @@ def test_main_sources_absentes_ne_plante_pas(tmp_path: Path) -> None:
     _, report = _run_main(["--state-dir", str(state_dir), "--no-embeddings"])
 
     assert report["total_notes"] == 0
-    for source_key in ("ledger_backfill", "evicted", "runtime"):
+    for source_key in ("ledger_backfill", "rationale_backfill", "evicted", "runtime"):
         assert report["ingest"][source_key]["inserted"] == 0
 
 
@@ -194,7 +195,7 @@ def test_main_idempotent(tmp_path: Path) -> None:
     # Premier run : tout inséré
     assert r1["total_notes"] == 4
     # Deuxième run : rien inséré
-    for source_key in ("ledger_backfill", "evicted", "runtime"):
+    for source_key in ("ledger_backfill", "rationale_backfill", "evicted", "runtime"):
         assert r2["ingest"][source_key]["inserted"] == 0, (
             f"Idempotence violée pour {source_key}"
         )

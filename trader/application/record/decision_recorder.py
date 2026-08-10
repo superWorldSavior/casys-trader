@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Protocol, TypeAlias
 
+from trader.application.record.decision_entries import has_exploitable_llm_rationale
 from trader.application.record.decision_ledger_rows import build_decision_row
 from trader.application.record.tool_outcomes import finalize_action_tool_outcomes
 from trader.domain import decision_identity
@@ -38,6 +39,44 @@ def _entry_price(decision_entry: DecisionEntry, report: ReportPayload, symbol: s
         return float(raw)
     except (TypeError, ValueError):
         return None
+
+
+def _text(value: object) -> str | None:
+    """Return a non-empty normalized text field without coercing malformed input."""
+    if not isinstance(value, str):
+        return None
+    value = value.strip()
+    return value or None
+
+
+def _is_llm_rationale_candidate(decision_entry: DecisionEntry) -> bool:
+    """Gate automatic capture to actual, usable LLM decisions only."""
+    return (
+        decision_entry.get("decision_source") == "llm"
+        and decision_entry.get("model_called") is True
+        and has_exploitable_llm_rationale(
+            rationale=decision_entry.get("rationale"),
+            llm_error=decision_entry.get("llm_error"),
+        )
+    )
+
+
+def candidate_learning_note(
+    decision_entry: DecisionEntry,
+) -> tuple[str | None, str | None, str | None]:
+    """Build the one deduplicable candidate note for a recorded decision.
+
+    A real LLM rationale is the canonical experience.  An optional explicit
+    ``record_learning`` annotation is retained in the same note because the
+    derived store keys notes by ``decision_id``.
+    """
+    annotation = _text(decision_entry.get("learning"))
+    rationale = _text(decision_entry.get("rationale"))
+    if not _is_llm_rationale_candidate(decision_entry):
+        return None, None, None
+    if annotation and annotation != rationale:
+        return f"{rationale}\n[annotation explicite] {annotation}", rationale, annotation
+    return rationale, rationale, annotation
 
 
 class LearningAppender(Protocol):
@@ -136,32 +175,40 @@ class DecisionRecorder:
                     dict(mandate_ref) if isinstance(mandate_ref, dict) else None
                 )
 
-        if self.merge_gate_feedback is not None:
-            note = self.merge_gate_feedback(
+        note, rationale, annotation = candidate_learning_note(decision_entry)
+        if note and self.merge_gate_feedback is not None:
+            merged_note = self.merge_gate_feedback(
                 decision_entry.get("reason"),
                 decision_entry.get("context"),
-                decision_entry.get("learning"),
+                note,
             )
-            if note:
-                decision_entry["learning_recorded"] = self.learnings_store.append(
-                    symbol=symbol,
-                    note=note,
-                    now=self.now,
-                    decision_id=decision_id,
-                    action=decision_entry.get("action"),
-                    intent=decision_entry.get("intent"),
-                    executed=decision_entry.get("executed"),
-                    reason=decision_entry.get("reason"),
-                    dry_run=self.dry_run,
-                )
-                # Store the raw note in the derived RAG immediately as pending.
-                # Vector enrichment / FLAIR remain background best-effort work,
-                # but a subsequent explicit recall can already find it via FTS.
-                if decision_entry["learning_recorded"] and self.learning_ingester is not None:
-                    try:
-                        self.learning_ingester()
-                    except Exception as exc:  # noqa: BLE001 - never delay a decision record
-                        log.warning("learning immediate ingest failed: %s", exc)
+            note = _text(merged_note) or note
+        if note:
+            learning_extra: dict[str, object] = {}
+            if rationale is not None:
+                learning_extra["rationale"] = rationale
+            if annotation is not None:
+                learning_extra["learning_annotation"] = annotation
+            decision_entry["learning_recorded"] = self.learnings_store.append(
+                symbol=symbol,
+                note=note,
+                now=self.now,
+                decision_id=decision_id,
+                action=decision_entry.get("action"),
+                intent=decision_entry.get("intent"),
+                executed=decision_entry.get("executed"),
+                reason=decision_entry.get("reason"),
+                dry_run=self.dry_run,
+                **learning_extra,
+            )
+            # Store the raw note in the derived RAG immediately as pending.
+            # Vector enrichment / FLAIR remain background best-effort work,
+            # but a subsequent explicit recall can already find it via FTS.
+            if decision_entry["learning_recorded"] and self.learning_ingester is not None:
+                try:
+                    self.learning_ingester()
+                except Exception as exc:  # noqa: BLE001 - never delay a decision record
+                    log.warning("learning immediate ingest failed: %s", exc)
 
         self.report["decisions"].append(decision_entry)
         self.report["model_calls_used"] = self.model_calls_used_getter()

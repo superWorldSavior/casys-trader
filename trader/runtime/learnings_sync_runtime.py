@@ -47,6 +47,11 @@ def _source_paths(state_dir: Path) -> tuple[tuple[Path, str, str], ...]:
     archive = state_dir / "archive"
     return (
         (archive / "learnings-from-ledger.jsonl", "ledger_backfill", "ledger-backfill"),
+        (
+            archive / "rationale-experiences.jsonl",
+            "rationale_backfill",
+            "llm-rationale-backfill",
+        ),
         (archive / "learnings-evicted.jsonl", "evicted", "runtime"),
         (state_dir / "learnings.jsonl", "runtime", "runtime"),
     )
@@ -69,7 +74,13 @@ def _lookback_for(rows: list[Mapping[str, object]], *, now: datetime) -> str:
     if not timestamps:
         return "5d"
     days = int((_utc(now) - min(timestamps)).total_seconds() // 86400) + 3
-    return f"{min(max(days, 5), 30)}d"
+    if days <= 30:
+        return f"{max(days, 5)}d"
+    if days <= 90:
+        return "3mo"
+    if days <= 180:
+        return "6mo"
+    return "1y"
 
 
 def _fetch_bars_by_symbol(
@@ -125,20 +136,34 @@ def _refresh_outcomes(
         state_dir / "decisions.jsonl",
         state_dir / "archive",
     )
-    pending_decision_ids = set(pending_recall_ids) | set(pending_global_rule_ids)
+    pending_note_decision_ids = {
+        str(row.get("decision_id"))
+        for row in pending_notes
+        if row.get("decision_id")
+    }
+    delayed_decision_ids = set(pending_recall_ids) | set(pending_global_rule_ids)
+    pending_decision_ids = pending_note_decision_ids | delayed_decision_ids
     decisions_by_id = {
         str(row.get("decision_id")): row
         for row in decision_rows
         if row.get("decision_id") in pending_decision_ids
     }
+    outcome_rows_by_note_id = {
+        row["id"]: {
+            **row,
+            **decisions_by_id.get(str(row.get("decision_id")), {}),
+            "id": row["id"],
+        }
+        for row in pending_notes
+    }
     delayed_rows = [
         decisions_by_id[decision_id]
-        for decision_id in pending_decision_ids
+        for decision_id in delayed_decision_ids
         if decision_id in decisions_by_id
     ]
     mature_rows = [
         row
-        for row in [*pending_notes, *delayed_rows]
+        for row in [*outcome_rows_by_note_id.values(), *delayed_rows]
         if (ts := _parse_ts(row.get("ts") or row.get("cycle_ts"))) is not None
         and _utc(now) - ts >= MIN_OUTCOME_AGE
         and not uses_realised_outcome(row)
@@ -150,9 +175,10 @@ def _refresh_outcomes(
 
     note_updates: list[dict] = []
     for row in pending_notes:
+        outcome_row = outcome_rows_by_note_id[row["id"]]
         outcome = outcome_for_row(
-            row,
-            bars=bars_by_symbol.get(str(row.get("symbol") or ""), []),
+            outcome_row,
+            bars=bars_by_symbol.get(str(outcome_row.get("symbol") or ""), []),
             now=now,
             realised_returns=realised_returns,
         )
@@ -282,10 +308,12 @@ def run_learning_sync(
             )
         more_outcomes = bool(
             isinstance(outcomes, dict)
-            and not outcomes.get("errors")
+            and int(outcomes.get("pending_notes") or 0) >= outcome_batch_size
+            and int(outcomes.get("notes_updated") or 0) > 0
+        ) or bool(
+            isinstance(outcomes, dict)
             and (
-                int(outcomes.get("notes_updated") or 0) >= outcome_batch_size
-                or int(outcomes.get("recalls_updated") or 0) >= outcome_batch_size
+                int(outcomes.get("recalls_updated") or 0) >= outcome_batch_size
                 or int(outcomes.get("global_rule_citations_updated") or 0) >= outcome_batch_size
             )
         )

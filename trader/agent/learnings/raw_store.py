@@ -51,13 +51,18 @@ class RawLearningsStore:
         return rows
 
     def append(self, *, symbol: str, note: str, now: datetime | None = None, **extra: object) -> bool:
-        """Append one note, returning False for empty notes or disabled buffers."""
+        """Append one note, returning False for empty, disabled, or duplicate entries."""
         note = note.strip()
         if not note or self.max_entries <= 0:
             return False
         now = now or datetime.now(timezone.utc)
         row = {"ts": now.isoformat(), "symbol": symbol, "note": note, **extra}
         rows = self._read_rows()
+        decision_id = row.get("decision_id")
+        if isinstance(decision_id, str) and decision_id and any(
+            existing.get("decision_id") == decision_id for existing in rows
+        ):
+            return False
         rows.append(row)
         evicted = rows[: -self.max_entries] if len(rows) > self.max_entries else []
         rows = rows[-self.max_entries :]
