@@ -60,6 +60,19 @@ def test_append_renvoie_true_si_ecrit_false_si_vide(tmp_path) -> None:
     assert store.append(symbol="SPY", note="   ") is False
 
 
+def test_append_est_idempotent_par_decision_id(tmp_path) -> None:
+    store = RawLearningsStore(tmp_path / "learnings.jsonl")
+
+    assert store.append(symbol="SPY", note="rationale", decision_id="decision-1") is True
+    assert store.append(symbol="SPY", note="rationale retry", decision_id="decision-1") is False
+
+    rows = store.all()
+    assert len(rows) == 1
+    assert rows[0]["symbol"] == "SPY"
+    assert rows[0]["note"] == "rationale"
+    assert rows[0]["decision_id"] == "decision-1"
+
+
 def test_append_ignore_une_note_vide(tmp_path) -> None:
     store = RawLearningsStore(tmp_path / "learnings.jsonl")
     store.append(symbol="SPY", note="   ")

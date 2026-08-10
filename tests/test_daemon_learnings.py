@@ -52,6 +52,8 @@ def test_run_cycle_ecrit_le_learning_emis_par_lagent(monkeypatch, tmp_path, patc
             rationale="range",
             intent="HOLD",
             learning="le range SPY tient depuis 3 reveils",
+            llm_provider="acpx",
+            llm_model="gpt-5.5",
         )
 
     monkeypatch.setattr(daemon, "ROOT", tmp_path)
@@ -62,7 +64,9 @@ def test_run_cycle_ecrit_le_learning_emis_par_lagent(monkeypatch, tmp_path, patc
     daemon.run_cycle(dry_run=True, now=now, symbols_filter=["SPY"], sched=sched, data_source=data_source)
 
     recent = RawLearningsStore(state_dir / "learnings.jsonl").recent()
-    assert [item["note"] for item in recent] == ["le range SPY tient depuis 3 reveils"]
+    assert [item["note"] for item in recent] == [
+        "range\n[annotation explicite] le range SPY tient depuis 3 reveils"
+    ]
     assert recent[0]["symbol"] == "SPY"
     # Le learning porte le résultat de la décision (pour juger les bons choix).
     assert recent[0]["reason"] == "hold"

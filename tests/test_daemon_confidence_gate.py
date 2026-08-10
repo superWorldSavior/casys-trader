@@ -155,6 +155,8 @@ def test_run_cycle_rejet_confiance_injecte_le_feedback_dans_les_learnings(
         intent="OPEN_LONG",
         exit_plan={"hard_stop": {"type": "price", "price": 95.0}},
         learning="je tente un long sur cassure",
+        llm_provider="acpx",
+        llm_model="gpt-5.5",
     )
 
     def fake_batch_decide(**kwargs):

@@ -1,6 +1,8 @@
 import json
 from datetime import datetime, timezone
 
+import pytest
+
 from trader.reporting.ledger import decision_ledger
 from trader.application.record.decision_recorder import DecisionRecorder
 from trader.runtime.agent_trace_runtime import build_agent_trace_appender
@@ -21,6 +23,35 @@ class FakeRecallStore:
 
     def record_recall(self, *, decision_id, note_ids):
         self.calls.append({"decision_id": decision_id, "note_ids": note_ids})
+
+
+def _learning_recorder(tmp_path, *, learnings, learning_ingester=None) -> DecisionRecorder:
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    report = {
+        "ts": "2026-07-02T10:00:00+00:00",
+        "decisions": [],
+        "model_calls_used": 0,
+        "prices": {"SPY": 100.0},
+        "symbols_due": ["SPY"],
+        "portfolio": {"equity": 100000.0},
+    }
+    return DecisionRecorder(
+        report=report,
+        dry_run=True,
+        symbols_total=1,
+        max_model_calls_per_cycle=25,
+        learnings_store=learnings,
+        decision_ledger_store=decision_ledger.DecisionLedgerStore(state_dir / "decisions.jsonl"),
+        refresh_report_portfolio=lambda: None,
+        write_current_report=lambda _payload: None,
+        write_status=lambda _phase, **_payload: None,
+        append_event=lambda _event, **_payload: None,
+        news_snapshot=lambda _symbol, _now: {"coverage": "none"},
+        macro_next=None,
+        now=datetime(2026, 7, 2, 10, 0, tzinfo=timezone.utc),
+        learning_ingester=learning_ingester,
+    )
 
 
 def test_decision_recorder_appends_report_ledger_status_and_event(tmp_path):
@@ -258,3 +289,103 @@ def test_decision_recorder_writes_agent_trace_to_separate_file(tmp_path, caplog)
     ]
     assert not any("[agent]" in record.getMessage() for record in caplog.records)
     assert not any("[agent-tool]" in record.getMessage() for record in caplog.records)
+
+
+def test_decision_recorder_captures_real_llm_rationale_without_explicit_learning(tmp_path) -> None:
+    learnings = FakeLearnings()
+    ingests: list[str] = []
+    recorder = _learning_recorder(
+        tmp_path,
+        learnings=learnings,
+        learning_ingester=lambda: ingests.append("ingested"),
+    )
+    entry = {
+        "symbol": "SPY",
+        "action": "HOLD",
+        "qty": 0.0,
+        "confidence": 0.52,
+        "rationale": "Le momentum reste insuffisant pour une entrée propre.",
+        "intent": "HOLD",
+        "executed": False,
+        "reason": "hold",
+        "decision_source": "llm",
+        "model_called": True,
+        "llm_error": None,
+    }
+
+    recorder.record(entry)
+
+    assert len(learnings.rows) == 1
+    recorded = learnings.rows[0]
+    assert recorded["note"] == "Le momentum reste insuffisant pour une entrée propre."
+    assert recorded["rationale"] == "Le momentum reste insuffisant pour une entrée propre."
+    assert recorded["decision_id"] == "2026-07-02T10:00:00+00:00|0|SPY"
+    assert "learning_annotation" not in recorded
+    assert entry["learning_recorded"] == {"appended": True, "note": recorded["note"]}
+    assert ingests == ["ingested"]
+
+
+def test_decision_recorder_keeps_record_learning_as_annotation_of_llm_rationale(tmp_path) -> None:
+    learnings = FakeLearnings()
+    recorder = _learning_recorder(tmp_path, learnings=learnings)
+    entry = {
+        "symbol": "SPY",
+        "action": "HOLD",
+        "qty": 0.0,
+        "confidence": 0.52,
+        "rationale": "Le momentum reste insuffisant pour une entrée propre.",
+        "intent": "HOLD",
+        "executed": False,
+        "reason": "hold",
+        "decision_source": "llm",
+        "model_called": True,
+        "llm_error": None,
+        "learning": "Attendre une clôture au-dessus de la résistance.",
+    }
+
+    recorder.record(entry)
+
+    assert len(learnings.rows) == 1
+    recorded = learnings.rows[0]
+    assert recorded["note"] == (
+        "Le momentum reste insuffisant pour une entrée propre.\n"
+        "[annotation explicite] Attendre une clôture au-dessus de la résistance."
+    )
+    assert recorded["learning_annotation"] == "Attendre une clôture au-dessus de la résistance."
+    assert entry["learning"] == "Attendre une clôture au-dessus de la résistance."
+
+
+@pytest.mark.parametrize(
+    "updates",
+    [
+        {"decision_source": "infra", "model_called": False},
+        {"decision_source": "armed_plan", "model_called": False},
+        {"decision_source": "llm", "model_called": False},
+        {"decision_source": "infra", "model_called": True},
+        {"llm_error": "bad_output"},
+        {"rationale": "codex_bad_output: invalid contract"},
+        {"rationale": "   "},
+    ],
+)
+def test_decision_recorder_excludes_non_llm_or_synthetic_rationales(tmp_path, updates: dict) -> None:
+    learnings = FakeLearnings()
+    recorder = _learning_recorder(tmp_path, learnings=learnings)
+    entry = {
+        "symbol": "SPY",
+        "action": "HOLD",
+        "qty": 0.0,
+        "confidence": 0.52,
+        "rationale": "Le momentum reste insuffisant pour une entrée propre.",
+        "intent": "HOLD",
+        "executed": False,
+        "reason": "hold",
+        "decision_source": "llm",
+        "model_called": True,
+        "llm_error": None,
+        "learning": "Cette annotation ne doit pas contourner le filtre.",
+        **updates,
+    }
+
+    recorder.record(entry)
+
+    assert learnings.rows == []

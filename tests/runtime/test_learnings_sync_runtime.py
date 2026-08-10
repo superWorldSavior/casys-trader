@@ -11,6 +11,7 @@ from trader.domain.market_data import Bar
 from trader.infrastructure.state_db.learnings_store import LearningsStore
 from trader.runtime.learnings_sync_runtime import (
     LearningSyncRunner,
+    _lookback_for,
     run_learning_sync,
 )
 
@@ -41,6 +42,15 @@ def _bars(start: datetime, *, initial: float = 100.0, final: float = 102.0) -> l
 def _write_jsonl(path, rows: list[dict]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+
+
+def test_historical_outcome_lookback_uses_provider_supported_windows() -> None:
+    now = datetime(2026, 8, 10, tzinfo=UTC)
+
+    assert _lookback_for([], now=now) == "5d"
+    assert _lookback_for([{"ts": (now - timedelta(days=20)).isoformat()}], now=now) == "23d"
+    assert _lookback_for([{"ts": (now - timedelta(days=31)).isoformat()}], now=now) == "3mo"
+    assert _lookback_for([{"ts": (now - timedelta(days=120)).isoformat()}], now=now) == "6mo"
 
 
 def test_sync_ingere_vectorise_et_score_les_nouvelles_notes(tmp_path) -> None:
@@ -181,6 +191,98 @@ def test_opening_learning_stays_pending_until_its_lot_is_fully_closed(tmp_path) 
     conn.close()
     assert verdict == "WIN"
     assert net_return == pytest.approx(0.068)
+
+
+def test_sync_continues_after_partial_batch_blocked_by_open_position(tmp_path) -> None:
+    state_dir = tmp_path / "state"
+    started = datetime(2026, 7, 1, 10, tzinfo=UTC)
+    open_decision_id = "2026-07-01T11:00:00+00:00|0|OPEN"
+    scored_decision_id = "2026-07-01T10:00:00+00:00|0|SCORED"
+    _write_jsonl(
+        state_dir / "learnings.jsonl",
+        [
+            {
+                "decision_id": open_decision_id,
+                "ts": (started + timedelta(hours=1)).isoformat(),
+                "symbol": "OPEN",
+                "action": "BUY",
+                "intent": "OPEN_LONG",
+                "executed": True,
+                "note": "position encore ouverte",
+            },
+            {
+                "decision_id": scored_decision_id,
+                "ts": started.isoformat(),
+                "symbol": "SCORED",
+                "action": "BUY",
+                "note": "decision evaluable",
+            },
+        ],
+    )
+
+    result = run_learning_sync(
+        state_dir=state_dir,
+        now=started + timedelta(days=2),
+        get_bars=lambda symbol, **_kwargs: _bars(
+            started + (timedelta(hours=1) if symbol == "OPEN" else timedelta()),
+            final=103.0,
+        ),
+        include_outcomes=True,
+        apply_bootstrap=False,
+        api_key="",
+        outcome_batch_size=2,
+    )
+
+    assert result["outcomes"]["pending_notes"] == 2
+    assert result["outcomes"]["notes_updated"] == 1
+    assert result["more_outcomes"] is True
+    assert result["more_work"] is True
+
+
+def test_sync_scores_hold_candidate_with_portfolio_snapshot_from_ledger(tmp_path) -> None:
+    state_dir = tmp_path / "state"
+    started = datetime(2026, 7, 1, 10, tzinfo=UTC)
+    decision_id = "2026-07-01T10:00:00+00:00|0|SPY"
+    _write_jsonl(
+        state_dir / "learnings.jsonl",
+        [{
+            "decision_id": decision_id,
+            "ts": started.isoformat(),
+            "symbol": "SPY",
+            "action": "HOLD",
+            "intent": "HOLD",
+            "executed": False,
+            "note": "Attendre la confirmation du breakout.",
+        }],
+    )
+    _write_jsonl(
+        state_dir / "decisions.jsonl",
+        [{
+            "decision_id": decision_id,
+            "cycle_ts": started.isoformat(),
+            "symbol": "SPY",
+            "action": "HOLD",
+            "intent": "HOLD",
+            "executed": False,
+            "portfolio_snapshot": {"holdings": [{"symbol": "SPY", "quantity": 10.0}]},
+        }],
+    )
+
+    result = run_learning_sync(
+        state_dir=state_dir,
+        now=started + timedelta(days=2),
+        get_bars=lambda *_args, **_kwargs: _bars(started, final=103.0),
+        include_outcomes=True,
+        apply_bootstrap=False,
+        api_key="",
+    )
+
+    assert result["outcomes"]["notes_updated"] == 1
+    conn = sqlite3.connect(state_dir / "learnings.db")
+    verdict, forward_return = conn.execute("SELECT verdict, forward_return FROM notes").fetchone()
+    conn.close()
+    assert verdict == "WIN"
+    assert forward_return == pytest.approx(0.03)
 
 
 def test_runner_enchaine_les_micro_batches_sans_nouveau_trigger(tmp_path) -> None:

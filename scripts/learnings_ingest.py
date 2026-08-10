@@ -33,7 +33,7 @@ ROOT = Path(__file__).resolve().parent.parent
 def main(argv: list[str] | None = None) -> int:
     """Point d'entrée CLI importable pour les tests.
 
-    Charge le .env, ingère les 3 sources JSONL, applique les verdicts FLAIR,
+    Charge le .env, ingère les 4 sources JSONL, applique les verdicts FLAIR,
     calcule les outcome_scores, optionnellement backfille les embeddings.
     Affiche le bilan en JSON sur stdout.
 
@@ -79,11 +79,17 @@ def main(argv: list[str] | None = None) -> int:
         ledger_jsonl, source="ledger-backfill"
     )
 
-    # Source 2 : learnings évincés du buffer vif
+    # Source 2 : expériences reconstruites depuis les rationales LLM du ledger
+    rationale_jsonl = archive_dir / "rationale-experiences.jsonl"
+    ingest_results["rationale_backfill"] = store.ingest_jsonl(
+        rationale_jsonl, source="llm-rationale-backfill"
+    )
+
+    # Source 3 : learnings évincés du buffer vif
     evicted_jsonl = archive_dir / "learnings-evicted.jsonl"
     ingest_results["evicted"] = store.ingest_jsonl(evicted_jsonl, source="runtime")
 
-    # Source 3 : buffer vif courant
+    # Source 4 : buffer vif courant
     runtime_jsonl = state_dir / "learnings.jsonl"
     ingest_results["runtime"] = store.ingest_jsonl(runtime_jsonl, source="runtime")
 

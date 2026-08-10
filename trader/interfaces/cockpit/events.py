@@ -196,10 +196,24 @@ def _format_event_line_inner(event: dict[str, Any]) -> EventLine:
         text = f"{ts} ⚑ armed order cancelled — {symbol} [{reason or '?'}]"
 
     elif event_type == "learning_consolidated":
-        n = event.get("new_raw_count", "?")
+        raw_count = event.get("new_raw_count", "?")
         written = event.get("written", False)
         written_str = " → written" if written else ""
-        text = f"{ts} ◇ learnings consolidated — {n} raw{written_str}"
+        error_code = str(event.get("error_code") or "").strip()
+        curation_due = str(event.get("curation_due") or "").strip()
+        curated_count = event.get("curated_candidate_count")
+        if error_code:
+            text = f"{ts} ◇ learnings consolidation failed — {error_code}"
+        elif raw_count == 0 and curation_due:
+            phase = "feedback refresh" if curation_due == "feedback_threshold" else "catch-up"
+            work = (
+                f"{curated_count} candidates curated"
+                if curated_count is not None
+                else curation_due.replace("_", " ")
+            )
+            text = f"{ts} ◇ learnings {phase} — {work}{written_str}"
+        else:
+            text = f"{ts} ◇ learnings consolidated — {raw_count} raw{written_str}"
 
     else:
         extra_keys = [k for k in event if k not in ("ts", "event")][:3]
