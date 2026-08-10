@@ -406,6 +406,69 @@ def test_acpx_backend_open_session_cree_une_session_neuve_et_retourne_un_objet(m
     ]
 
 
+def test_acpx_backend_applique_l_effort_sur_la_session_avant_le_prompt(monkeypatch) -> None:
+    monkeypatch.setattr("trader.infrastructure.llm.acpx_backend.shutil.which", lambda _bin: "/usr/local/bin/acpx")
+    calls = []
+
+    def fake_run(command, *, timeout_s, on_pid=None):
+        calls.append((command, timeout_s))
+        return subprocess.CompletedProcess(args=command, returncode=0, stdout="ok", stderr="")
+
+    monkeypatch.setattr("trader.infrastructure.llm.acpx_backend._run_one_shot_command", fake_run)
+    backend = AcpxBackend(
+        provider="acpx",
+        model="gpt-5.6-luna",
+        acpx_bin="acpx",
+        reasoning_effort="medium",
+    )
+
+    session = backend.open_session("casys-trader:runtime-brain:0", timeout_s=30)
+
+    assert isinstance(session, llm.AcpxSession)
+    assert calls[1] == (
+        [
+            "acpx",
+            "--format",
+            "quiet",
+            "--no-terminal",
+            "--non-interactive-permissions",
+            "deny",
+            "set",
+            "reasoning_effort",
+            "medium",
+            "--session",
+            "casys-trader:runtime-brain:0",
+        ],
+        45,
+    )
+
+
+def test_acpx_backend_complete_avec_effort_utilise_une_session_temporaire(monkeypatch) -> None:
+    monkeypatch.setattr("trader.infrastructure.llm.acpx_backend.shutil.which", lambda _bin: "/usr/local/bin/acpx")
+    calls: list[list[str]] = []
+
+    def fake_run(command, *, timeout_s, on_pid=None):
+        calls.append(command)
+        return subprocess.CompletedProcess(args=command, returncode=0, stdout="ok", stderr="")
+
+    monkeypatch.setattr("trader.infrastructure.llm.acpx_backend._run_one_shot_command", fake_run)
+    backend = AcpxBackend(
+        provider="acpx",
+        model="gpt-5.6-luna",
+        acpx_bin="acpx",
+        session_label="casys-trader:runtime-brain",
+        reasoning_effort="medium",
+    )
+
+    result = backend.complete("analyse", timeout_s=30)
+
+    assert isinstance(result, llm.LlmCompletion)
+    assert ["sessions", "new"] == calls[0][-4:-2]
+    assert calls[1][-5:-2] == ["set", "reasoning_effort", "medium"]
+    assert "prompt" in calls[2]
+    assert calls[3][-3:-1] == ["sessions", "close"]
+
+
 def test_acpx_backend_open_session_retourne_l_echec_si_new_echoue(monkeypatch) -> None:
     monkeypatch.setattr("trader.infrastructure.llm.acpx_backend.shutil.which", lambda _bin: "/usr/local/bin/acpx")
 
@@ -954,7 +1017,7 @@ def test_run_one_shot_nettoie_l_environnement_runtime_pollue(monkeypatch) -> Non
     assert env["PATH"] == "/opt/homebrew/bin:/usr/bin"
 
 
-def test_run_one_shot_impose_le_profil_app_xhigh(monkeypatch) -> None:
+def test_run_one_shot_impose_le_profil_app_low(monkeypatch) -> None:
     monkeypatch.delenv("CODEX_HOME", raising=False)
     captured = {}
 
@@ -976,7 +1039,7 @@ def test_run_one_shot_impose_le_profil_app_xhigh(monkeypatch) -> None:
     assert result.returncode == 0
     codex_home = Path(captured["env"]["CODEX_HOME"])
     assert codex_home == Path(__file__).resolve().parents[1] / "ops" / "codex-home"
-    assert 'model_reasoning_effort = "xhigh"' in (codex_home / "config.toml").read_text(encoding="utf-8")
+    assert 'model_reasoning_effort = "low"' in (codex_home / "config.toml").read_text(encoding="utf-8")
 
 
 @pytest.mark.parametrize("model", ["gpt-5.6-sol", "gpt-5.6-terra"])
@@ -994,7 +1057,7 @@ def test_acpx_refuse_un_profil_ultra_quel_que_soit_le_modele(monkeypatch, tmp_pa
 
     assert isinstance(result, LlmFailure)
     assert "appel ACPX refusé" in result.message
-    assert "xhigh" in result.message
+    assert "low" in result.message
 
 
 def test_run_one_shot_ne_sonde_plus_les_ponts_codex_acp(monkeypatch) -> None:
@@ -1178,6 +1241,51 @@ def test_build_acpx_session_close_command_ferme_une_session_nommee() -> None:
     ]
 
 
+def test_build_acpx_session_config_command_applique_une_option() -> None:
+    cmd = llm.build_acpx_session_config_command(
+        "casys-trader:runtime-brain:0",
+        key="reasoning_effort",
+        value="medium",
+        acpx_bin="acpx",
+    )
+
+    assert cmd == [
+        "acpx",
+        "--format",
+        "quiet",
+        "--no-terminal",
+        "--non-interactive-permissions",
+        "deny",
+        "set",
+        "reasoning_effort",
+        "medium",
+        "--session",
+        "casys-trader:runtime-brain:0",
+    ]
+
+
+def test_session_admin_commands_conservent_le_cwd_de_la_session_agent_exec(monkeypatch) -> None:
+    monkeypatch.setenv("CASYS_AGENT_EXEC", "1")
+    monkeypatch.setattr(
+        "trader.infrastructure.llm.acpx_backend.agent_exec_scratch_dir",
+        lambda: "/tmp/casys-trader-test-scratch",
+    )
+
+    config_cmd = llm.build_acpx_session_config_command(
+        "casys-trader:runtime-brain:0",
+        key="reasoning_effort",
+        value="medium",
+        acpx_bin="acpx",
+    )
+    close_cmd = llm.build_acpx_session_close_command(
+        "casys-trader:runtime-brain:0",
+        acpx_bin="acpx",
+    )
+
+    assert config_cmd[3:5] == ["--cwd", "/tmp/casys-trader-test-scratch"]
+    assert close_cmd[3:5] == ["--cwd", "/tmp/casys-trader-test-scratch"]
+
+
 def test_build_acpx_session_commands_peuvent_cibler_un_agent_dedie() -> None:
     new_cmd = llm.build_acpx_session_new_command(
         "casys-trader:runtime-brain:0",
@@ -1285,6 +1393,7 @@ def test_build_default_router_from_env_knobs_env_du_brain_trader(monkeypatch) ->
     monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
     monkeypatch.setenv("TRADER_ACPX_AGENT", "kimi")
     monkeypatch.setenv("TRADER_MODEL", "kimi-code/kimi-for-coding")
+    monkeypatch.setenv("TRADER_REASONING_EFFORT", "medium")
 
     router = build_default_router_from_env(env_path=None)
 
@@ -1293,6 +1402,7 @@ def test_build_default_router_from_env_knobs_env_du_brain_trader(monkeypatch) ->
     assert backend.provider == "acpx"
     assert backend.agent == "kimi"
     assert backend.model == "kimi-code/kimi-for-coding"
+    assert backend.reasoning_effort == "medium"
 
 
 def test_build_default_router_from_env_choix_explicite_immune_aux_knobs_trader(monkeypatch) -> None:
@@ -1301,12 +1411,14 @@ def test_build_default_router_from_env_choix_explicite_immune_aux_knobs_trader(m
     monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
     monkeypatch.setenv("TRADER_ACPX_AGENT", "kimi")
     monkeypatch.setenv("TRADER_MODEL", "kimi-code/kimi-for-coding")
+    monkeypatch.setenv("TRADER_REASONING_EFFORT", "medium")
 
     router = build_default_router_from_env(env_path=None, spark_model="gpt-5.6-sol")
 
     backend = router.backends[0]
     assert backend.agent is None
     assert backend.model == "gpt-5.6-sol"
+    assert backend.reasoning_effort is None
 
     router = build_default_router_from_env(env_path=None, spark_model="gpt-5.5", acpx_agent="codex")
 

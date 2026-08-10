@@ -8,7 +8,12 @@ import pytest
 from trader.runtime import daemon
 
 
-_DAEMON_MAIN_AGENT_EXEC_ENV_KEYS = ("CASYS_AGENT_EXEC", "CASYS_AGENT_EXEC_CWD", "CODEX_HOME")
+_DAEMON_MAIN_AGENT_EXEC_ENV_KEYS = (
+    "CASYS_AGENT_EXEC",
+    "CASYS_AGENT_EXEC_CWD",
+    "CODEX_HOME",
+    "TRADER_REASONING_EFFORT",
+)
 
 
 @pytest.fixture(autouse=True)

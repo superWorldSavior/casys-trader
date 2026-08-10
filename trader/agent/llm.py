@@ -117,9 +117,15 @@ def build_default_router_from_env(
     # pour ne pas fuiter vers les rôles analystes qui partagent ce builder avec
     # un autre modèle explicite (rotation, universe). L'agent explicite prime
     # toujours ; TRADER_MODEL ne remplace que le défaut, jamais un choix caller.
-    if acpx_provider == "acpx" and spark_model == DEFAULT_SPARK_MODEL:
+    is_runtime_brain = acpx_provider == "acpx" and spark_model == DEFAULT_SPARK_MODEL
+    if is_runtime_brain:
         acpx_agent = acpx_agent or _clean_optional(os.getenv("TRADER_ACPX_AGENT"))
         spark_model = _clean_optional(os.getenv("TRADER_MODEL")) or spark_model
+    reasoning_effort = (
+        _clean_optional(os.getenv("TRADER_REASONING_EFFORT"))
+        if is_runtime_brain
+        else None
+    )
     session_label = (
         _clean_optional(acpx_session_label)
         or _env_session_label(acpx_provider)
@@ -133,6 +139,7 @@ def build_default_router_from_env(
             acpx_bin=acpx_bin,
             agent=acpx_agent,
             session_label=session_label,
+            reasoning_effort=reasoning_effort,
         )
     ]
 
@@ -195,6 +202,7 @@ _LAZY_EXPORT_MODULES = {
     "SessionProviderDown": "trader.infrastructure.llm.acpx_backend",
     "build_acpx_command": "trader.infrastructure.llm.acpx_backend",
     "build_acpx_session_close_command": "trader.infrastructure.llm.acpx_backend",
+    "build_acpx_session_config_command": "trader.infrastructure.llm.acpx_backend",
     "build_acpx_session_new_command": "trader.infrastructure.llm.acpx_backend",
     "build_acpx_session_prompt_command": "trader.infrastructure.llm.acpx_backend",
     "run_with_session_fallback": "trader.infrastructure.llm.acpx_backend",

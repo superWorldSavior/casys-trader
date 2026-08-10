@@ -25,7 +25,7 @@ log = logging.getLogger(__name__)
 _DEFAULT_ACPX_MODEL = "gpt-5.6-terra"
 _DEFAULT_RUNTIME_SESSION_LABEL = "casys-trader:runtime-brain"
 _DEFAULT_ACPX_CODEX_HOME = Path(__file__).resolve().parents[3] / "ops" / "codex-home"
-_REQUIRED_ACPX_REASONING_EFFORT = "xhigh"
+_REQUIRED_ACPX_REASONING_EFFORT = "low"
 
 # Plafond par-appel du subprocess acpx, DÉCOUPLÉ du budget-décision (lease).
 # Un appel LLM normal fait 30-90s ; un tour figé (provider muet après
@@ -35,7 +35,7 @@ _DEFAULT_PER_CALL_TIMEOUT_CAP_S = 150
 
 
 def _validated_acpx_codex_home() -> Path:
-    """Resolve the app-owned Codex profile and reject non-xhigh ACPX calls."""
+    """Resolve the app-owned Codex profile and reject non-low defaults."""
 
     configured = os.getenv("CODEX_HOME", "").strip()
     codex_home = Path(configured).expanduser() if configured else _DEFAULT_ACPX_CODEX_HOME
@@ -195,6 +195,16 @@ def _acpx_agent_part(agent: str | None) -> list[str]:
     return [] if not agent or agent == "default" else [agent]
 
 
+def _acpx_session_admin_flags(acpx_bin: str) -> list[str]:
+    """Flags for commands which must resolve an existing cwd-scoped session."""
+
+    flags = [acpx_bin, "--format", "quiet"]
+    if agent_exec_enabled():
+        flags += ["--cwd", agent_exec_scratch_dir()]
+    flags += ["--no-terminal", "--non-interactive-permissions", "deny"]
+    return flags
+
+
 def build_acpx_session_new_command(
     name: str,
     *,
@@ -239,15 +249,31 @@ def build_acpx_session_close_command(
     agent: str | None = None,
 ) -> list[str]:
     return [
-        acpx_bin,
-        "--format",
-        "quiet",
-        "--no-terminal",
-        "--non-interactive-permissions",
-        "deny",
+        *_acpx_session_admin_flags(acpx_bin),
         *_acpx_agent_part(agent),
         "sessions",
         "close",
+        name,
+    ]
+
+
+def build_acpx_session_config_command(
+    name: str,
+    *,
+    key: str,
+    value: str,
+    acpx_bin: str,
+    agent: str | None = None,
+) -> list[str]:
+    """Set one ACP option on an already-open named session."""
+
+    return [
+        *_acpx_session_admin_flags(acpx_bin),
+        *_acpx_agent_part(agent),
+        "set",
+        key,
+        value,
+        "--session",
         name,
     ]
 
@@ -575,6 +601,7 @@ class AcpxBackend:
     acpx_bin: str = "acpx"
     agent: str | None = None
     session_label: str | None = _DEFAULT_RUNTIME_SESSION_LABEL
+    reasoning_effort: str | None = None
 
     def open_session(self, name: str, *, timeout_s: int) -> AcpxSession | LlmFailure:
         res = _run_and_parse(
@@ -594,15 +621,46 @@ class AcpxBackend:
         if not isinstance(res, LlmCompletion):
             return res
 
-        return AcpxSession(
+        session = AcpxSession(
             provider=self.provider,
             model=self.model,
             acpx_bin=self.acpx_bin,
             name=name,
             agent=self.agent,
         )
+        effort = _clean_optional(self.reasoning_effort)
+        if effort is not None:
+            configured = _run_and_parse(
+                build_acpx_session_config_command(
+                    name,
+                    key="reasoning_effort",
+                    value=effort,
+                    acpx_bin=self.acpx_bin,
+                    agent=self.agent,
+                ),
+                provider=self.provider,
+                model=self.model,
+                acpx_bin=self.acpx_bin,
+                timeout_s=min(timeout_s, 30),
+                call_ctx={"session": name},
+            )
+            if not isinstance(configured, LlmCompletion):
+                session.close()
+                return configured
+        return session
 
     def complete(self, prompt: str, *, timeout_s: int) -> LlmCompletion | LlmFailure:
+        if self.reasoning_effort:
+            session = self.open_session(
+                f"{self.session_label or self.provider}:oneshot:{time.time_ns()}",
+                timeout_s=min(timeout_s, 30),
+            )
+            if isinstance(session, LlmFailure):
+                return session
+            try:
+                return session.send(prompt, timeout_s=timeout_s)
+            finally:
+                session.close()
         return _run_and_parse(
             build_acpx_command(
                 prompt,
@@ -626,6 +684,7 @@ __all__ = [
     "SessionProviderDown",
     "build_acpx_command",
     "build_acpx_session_close_command",
+    "build_acpx_session_config_command",
     "build_acpx_session_new_command",
     "build_acpx_session_prompt_command",
     "run_with_session_fallback",
