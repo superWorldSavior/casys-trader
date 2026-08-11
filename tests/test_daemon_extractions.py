@@ -41,12 +41,12 @@ def test_build_base_context_preserve_payload_and_evaluation_order(monkeypatch, t
     gate_limits = SimpleNamespace(max_risk_per_trade_pct=0.03, max_order_value=12_000.0)
 
     monkeypatch.setattr(
-        daemon.market,
+        agent_cycle_context.market,
         "human_clock",
         lambda received_now: calls.append("human_clock") or f"human:{received_now.isoformat()}",
     )
     monkeypatch.setattr(
-        daemon.market,
+        agent_cycle_context.market,
         "market_clocks",
         lambda received_now, received_symbols: calls.append("market_clocks")
         or {"symbols": list(received_symbols)},

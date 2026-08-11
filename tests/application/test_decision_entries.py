@@ -168,6 +168,21 @@ def test_counts_as_llm_review_requires_real_model_decision_without_failure() -> 
                 symbol="SPY",
                 action="HOLD",
                 quantity=0.0,
+                confidence=0.4,
+                rationale="attente",
+                intent="HOLD",
+                llm_provider="acpx",
+                llm_error="",
+            )
+        )
+        is True
+    )
+    assert (
+        counts_as_llm_review(
+            Decision(
+                symbol="SPY",
+                action="HOLD",
+                quantity=0.0,
                 confidence=0.0,
                 rationale="llm_failed:acpx:timeout",
                 intent="HOLD",

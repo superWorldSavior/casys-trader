@@ -5,6 +5,34 @@ import pytest
 from trader.execution.broker import IbkrCommissionModel, Order, SimBroker
 
 
+def test_sim_broker_persists_causal_links_without_null_keys_for_legacy_fills(tmp_path) -> None:
+    state = tmp_path / "broker.json"
+    broker = SimBroker(state, starting_cash=100_000.0)
+
+    legacy_fill = broker.submit(Order("MSFT", "BUY", 1.0), 100.0, "t1", dry_run=False)
+    linked_fill = broker.submit(
+        Order(
+            "AAPL",
+            "BUY",
+            1.0,
+            process_instance_id="instance-1",
+            attempt_id="attempt-1",
+            decision_id="decision-1",
+        ),
+        100.0,
+        "t2",
+        dry_run=False,
+    )
+
+    assert legacy_fill is not None
+    assert "process_instance_id" not in legacy_fill.model_dump()
+    assert linked_fill is not None
+    assert linked_fill.decision_id == "decision-1"
+    fills = json.loads(state.read_text())["fills"]
+    assert "attempt_id" not in fills[0]
+    assert fills[1]["attempt_id"] == "attempt-1"
+
+
 def test_sim_broker_enregistre_avg_price_sur_ouverture_short(tmp_path) -> None:
     broker = SimBroker(tmp_path / "broker.json", starting_cash=100_000)
 

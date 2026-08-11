@@ -1,0 +1,85 @@
+# KIMI_CODE_HOME isolé pour le daemon casys-trader — pendant kimi de
+# `ops/codex-home`. But identique : des sessions de décision propres et
+# déterministes, découplées du CLI kimi personnel (`~/.kimi-code`), dont le
+# `default_model`, l'effort de raisonnement et les MCP changent au gré des
+# sessions de dev.
+#
+# Branché par `KIMI_CODE_HOME` (posé par le preset `ops/model-presets/kimi.env`).
+# kimi-code résout son home ainsi : $KIMI_CODE_HOME, sinon ~/.kimi-code.
+#
+# Auth partagée par symlink, comme `auth.json` sous ops/codex-home — non
+# versionnée (cf .gitignore). À recréer sur une machine neuve :
+#   ln -sfn ~/.kimi-code/credentials ops/kimi-home/credentials
+#   ln -sfn ~/.kimi-code/oauth       ops/kimi-home/oauth
+#
+# LIMITE CONNUE (mesurée 2026-08-08) : ce profil n'isole PAS les skills. kimi
+# auto-découvre ~/.claude/skills et ~/.codex/skills depuis $HOME, hors de tout
+# KIMI_CODE_HOME, et les injecte dans le system prompt. Sous le mode par défaut
+# du transport (`--allowed-tools ""`) elles ne sont pas invocables — c'est du
+# contexte mort, pas un levier d'action.
+
+# Filet, pas le levier : le transport passe toujours `--model` explicitement
+# (trader/infrastructure/llm/acpx_backend.py). Ce défaut ne sert que si un appel
+# arrivait sans modèle.
+default_model = "kimi-code/k3-256k"
+
+# L'effort N'EST PAS passable par appel : le pont l'expose comme un config
+# option ACP distinct (`thinking`, valeurs low|high|max) et acpx ne transmet que
+# model/allowedTools/maxTurns/systemPrompt en one-shot. Le seul levier pour un
+# appel `exec` est donc ce fichier → un effort = un KIMI_CODE_HOME, exactement
+# comme `model_reasoning_effort` = un CODEX_HOME côté Codex.
+[thinking]
+enabled = true
+effort = "high"
+
+[services.moonshot_search]
+base_url = "https://api.kimi.com/coding/v1/search"
+api_key = ""
+
+[services.moonshot_search.oauth]
+storage = "file"
+key = "oauth/kimi-code"
+
+[services.moonshot_fetch]
+base_url = "https://api.kimi.com/coding/v1/fetch"
+api_key = ""
+
+[services.moonshot_fetch.oauth]
+storage = "file"
+key = "oauth/kimi-code"
+
+[providers."managed:kimi-code"]
+type = "kimi"
+api_key = ""
+base_url = "https://api.kimi.com/coding/v1"
+
+[providers."managed:kimi-code".oauth]
+storage = "file"
+key = "oauth/kimi-code"
+
+# Catalogue figé plutôt que rafraîchi au boot : les model ids que le preset
+# nomme doivent exister sans dépendre d'un appel réseau au démarrage.
+[models."kimi-code/kimi-for-coding"]
+provider = "managed:kimi-code"
+model = "kimi-for-coding"
+max_context_size = 262144
+capabilities = [ "thinking", "always_thinking", "image_in", "video_in", "tool_use" ]
+display_name = "K2.7 Coding"
+
+[models."kimi-code/k3"]
+provider = "managed:kimi-code"
+model = "k3"
+max_context_size = 1048576
+capabilities = [ "thinking", "always_thinking", "image_in", "video_in", "tool_use" ]
+support_efforts = [ "low", "high", "max" ]
+default_effort = "high"
+display_name = "K3"
+
+[models."kimi-code/k3-256k"]
+provider = "managed:kimi-code"
+model = "k3-256k"
+max_context_size = 262144
+capabilities = [ "thinking", "always_thinking", "image_in", "tool_use" ]
+support_efforts = [ "low", "high", "max" ]
+default_effort = "high"
+display_name = "K3-256k"

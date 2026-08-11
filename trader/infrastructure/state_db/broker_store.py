@@ -6,6 +6,7 @@ avant l'instanciation — pas de starting_cash ici.
 
 Logging : [state_db] (getLogger(__name__), %-style).
 """
+
 from __future__ import annotations
 
 import logging
@@ -42,16 +43,13 @@ class SqliteBroker:
         """Retourne le cash courant depuis broker_state."""
         row = self._db.query_one("SELECT cash FROM broker_state WHERE id=1")
         if row is None:
-            raise RuntimeError(
-                "broker_state absent — appeler import_broker_from_json avant SqliteBroker"
-            )
+            raise RuntimeError("broker_state absent — appeler import_broker_from_json avant SqliteBroker")
         return float(row["cash"])
 
     def positions(self) -> dict[str, Position]:
         """Retourne les positions non-nulles (filtre aussi la poussière float)."""
         rows = self._db.query_all(
-            "SELECT symbol, quantity, avg_price"
-            " FROM broker_positions WHERE ABS(quantity) > ?",
+            "SELECT symbol, quantity, avg_price FROM broker_positions WHERE ABS(quantity) > ?",
             (POSITION_EPSILON,),
         )
         return {
@@ -67,23 +65,28 @@ class SqliteBroker:
         """Retourne les fills dans le format ``broker.json`` historique."""
         rows = self._db.query_all(
             "SELECT symbol, side, quantity, price, ts,"
-            " commission, commission_currency, commission_model, fx_rate"
+            " commission, commission_currency, commission_model, fx_rate,"
+            " process_instance_id, attempt_id, decision_id"
             " FROM broker_fills ORDER BY seq"
         )
-        return [
-            {
-                "symbol": r["symbol"],
-                "side": r["side"],
-                "quantity": r["quantity"],
-                "price": r["price"],
-                "ts": r["ts"],
-                "commission": r["commission"],
-                "commission_currency": r["commission_currency"],
-                "commission_model": r["commission_model"],
-                "fx_rate": r["fx_rate"],
+        fills: list[dict] = []
+        for row in rows:
+            fill = {
+                "symbol": row["symbol"],
+                "side": row["side"],
+                "quantity": row["quantity"],
+                "price": row["price"],
+                "ts": row["ts"],
+                "commission": row["commission"],
+                "commission_currency": row["commission_currency"],
+                "commission_model": row["commission_model"],
+                "fx_rate": row["fx_rate"],
             }
-            for r in rows
-        ]
+            fill.update(
+                {key: row[key] for key in ("process_instance_id", "attempt_id", "decision_id") if row[key] is not None}
+            )
+            fills.append(fill)
+        return fills
 
     def submit(
         self,
@@ -147,6 +150,9 @@ class SqliteBroker:
             commission_currency=commission.currency,
             commission_model=commission.model,
             fx_rate=fx_rate,
+            process_instance_id=order.process_instance_id,
+            attempt_id=order.attempt_id,
+            decision_id=order.decision_id,
         )
 
         if dry_run:
@@ -169,8 +175,7 @@ class SqliteBroker:
         )
 
         log.debug(
-            "[state_db] submit_in_tx %s %s qty=%.4f price=%.4f"
-            " new_qty=%.4f cash_delta_usd=%.4f",
+            "[state_db] submit_in_tx %s %s qty=%.4f price=%.4f new_qty=%.4f cash_delta_usd=%.4f",
             order.side,
             order.symbol,
             order.quantity,
@@ -189,22 +194,33 @@ class SqliteBroker:
             "UPDATE broker_state SET cash = cash - ? WHERE id = 1",
             (cash_delta_total,),
         )
-        cur.execute(
-            "INSERT INTO broker_fills"
-            "(symbol, side, quantity, price, ts,"
-            " commission, commission_currency, commission_model, fx_rate)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                fill.symbol,
-                fill.side,
-                fill.quantity,
-                fill.price,
-                fill.ts,
-                fill.commission,
-                fill.commission_currency,
-                fill.commission_model,
-                fill.fx_rate,
-            ),
+        fill_values = (
+            fill.symbol,
+            fill.side,
+            fill.quantity,
+            fill.price,
+            fill.ts,
+            fill.commission,
+            fill.commission_currency,
+            fill.commission_model,
+            fill.fx_rate,
         )
+        if all(value is None for value in (fill.process_instance_id, fill.attempt_id, fill.decision_id)):
+            cur.execute(
+                "INSERT INTO broker_fills"
+                "(symbol, side, quantity, price, ts,"
+                " commission, commission_currency, commission_model, fx_rate)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                fill_values,
+            )
+        else:
+            cur.execute(
+                "INSERT INTO broker_fills"
+                "(symbol, side, quantity, price, ts,"
+                " commission, commission_currency, commission_model, fx_rate,"
+                " process_instance_id, attempt_id, decision_id)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (*fill_values, fill.process_instance_id, fill.attempt_id, fill.decision_id),
+            )
 
         return fill

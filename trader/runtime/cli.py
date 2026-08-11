@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from datetime import datetime, timezone
 from typing import Sequence
 
 import yaml
@@ -12,7 +13,7 @@ from trader.support.metadata import code_version
 from trader.infrastructure.files import decision_ledger, ledger_rotation
 from trader.domain.market.features import DEFAULT_INDICATORS, build_indicator_snapshot, compute_indicator_values
 from trader.market import market_data as market
-from trader.runtime import daemon
+from trader.runtime import daemon, news_macro_runtime
 from trader.runtime.company_intelligence_runtime import CompanyIntelligenceRuntime
 from trader.domain.semantic.catalog import FAMILIES, describe_semantic_layer, find_indicators, list_indicators, normalize_temporal_query
 from trader.reporting.audit import decision_quality as decision_audit
@@ -103,6 +104,30 @@ def _cmd_company_intelligence_status(args: argparse.Namespace) -> int:
         runtime.stop()
     _print_json(result)
     return 0
+
+
+def _cmd_news_macro_refresh(args: argparse.Namespace) -> int:
+    selected_venues = (
+        (*news_macro_runtime.VENUES, "GLOBAL")
+        if args.all
+        else tuple(dict.fromkeys(args.venue or ()))
+    )
+    regional_venues = tuple(venue for venue in selected_venues if venue != "GLOBAL")
+    result = news_macro_runtime.tick_news_macro_analysis(
+        config_dir=daemon.ROOT / "config",
+        state_dir=daemon.STATE_DIR,
+        loop_now=datetime.now(timezone.utc),
+        venues=regional_venues,
+        include_global="GLOBAL" in selected_venues,
+        force=bool(args.force),
+    )
+    payload = {
+        "requested_venues": list(selected_venues),
+        "force": bool(args.force),
+        **result,
+    }
+    _print_json(payload)
+    return 0 if not result.get("errors") else 1
 
 
 def _read_broker_state() -> object | None:
@@ -919,6 +944,24 @@ def build_parser() -> argparse.ArgumentParser:
     status = sub.add_parser("status", help="état courant du daemon")
     status.add_argument("--json", action="store_true")
     status.set_defaults(func=_cmd_status)
+
+    news_macro = sub.add_parser("news-macro", help="briefs macro/news par marché")
+    news_macro_sub = news_macro.add_subparsers(dest="news_macro_command", required=True)
+    news_macro_refresh = news_macro_sub.add_parser("refresh", help="lance immédiatement un point macro/news")
+    venue_group = news_macro_refresh.add_mutually_exclusive_group(required=True)
+    venue_group.add_argument(
+        "--venue",
+        action="append",
+        choices=(*news_macro_runtime.VENUES, "GLOBAL"),
+        help="marché ciblé ; option répétable",
+    )
+    venue_group.add_argument("--all", action="store_true", help="cible TW, EU, US et GLOBAL")
+    news_macro_refresh.add_argument(
+        "--force",
+        action="store_true",
+        help="ignore fraîcheur, cooldown et backoff d'échec",
+    )
+    news_macro_refresh.set_defaults(func=_cmd_news_macro_refresh)
 
     company = sub.add_parser(
         "company-intelligence",

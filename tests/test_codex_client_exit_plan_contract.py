@@ -524,7 +524,9 @@ def test_symbol_calls_contract_expose_une_grammaire_trading_canonique() -> None:
     assert "strategy_exit = exit rule" in prompt
     assert "strategy_close = sortie marché immédiate" in prompt
     assert "set_next_wake = review wake" in prompt
-    assert "propose_indicator_watch = armed plan" in prompt
+    assert "propose_indicator_watch = veille ou plan armé" in prompt
+    assert "avec WAKE ou WAKE_WITH_ORDER_INTENT, le LLM est reconsulté" in prompt
+    assert "avec EXECUTE_ORDER + order valide" in prompt
     assert "strategy.exit Pine" in prompt
     assert "même sens = renforcement" in prompt
     assert "sens opposé = retournement" in prompt
@@ -542,6 +544,15 @@ def test_symbol_calls_contract_laisse_l_agent_pull_au_premier_tour() -> None:
     assert 'Réponds UNIQUEMENT par {"decisions"' not in prompt
     assert '"tool_calls"' in prompt  # le pull reste offert
     assert "premier tour" in prompt.lower()  # clause explicite du choix
+    assert "EXACTEMENT une des deux formes JSON" in prompt
+    assert "jamais les deux ensemble" in prompt
+
+
+def test_symbol_calls_contract_montre_l_enveloppe_action_exacte() -> None:
+    prompt = _symbol_calls_final_prompt_from_decide_batch()
+
+    assert 'Chaque `<tool_call>` a exactement la forme {"tool":"<nom>","args":{...}}' in prompt
+    assert '{"tool":"strategy_close","args":{"qty_percent":25}}' in prompt
 
 
 def test_symbol_calls_contract_documente_l2_position_aware() -> None:

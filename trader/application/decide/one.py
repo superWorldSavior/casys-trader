@@ -30,6 +30,7 @@ from trader.agent import llm
 import trader.agent.tools as agent_tools
 from trader.agent.context import build_indicator_resolver
 from trader.domain.decisions import Decision
+from trader.application.decide.context_projection import project_symbol_facts_for_prompt
 from trader.application.decide.protocols import DecisionBatchPlanner
 from trader.application.decide.tool_round import resolve_symbol_decision
 from trader.application.queue.contracts import RetryableError
@@ -247,6 +248,7 @@ def decide_one(
         Autre erreur transitoire (timeout, nonzero_exit, bad_output, exception).
     """
     calls_made = 0
+    prompt_facts = project_symbol_facts_for_prompt(per_symbol_facts, symbol=symbol)
 
     def _call_model(per_symbol: dict, *, allow_tool_calls: bool):
         nonlocal calls_made
@@ -316,7 +318,7 @@ def decide_one(
 
                 return resolve_symbol_decision(
                     symbol=symbol,
-                    base_facts=per_symbol_facts,
+                    base_facts=prompt_facts,
                     tool_context=context,
                     call_model=_session_call_model,
                     max_rounds=SESSION_ROUND_BACKSTOP,
@@ -340,7 +342,7 @@ def decide_one(
                 )
         else:
             # Mode dégradé historique : un seul appel, aucun outil.
-            responses = _call_model({symbol: per_symbol_facts}, allow_tool_calls=False)
+            responses = _call_model({symbol: prompt_facts}, allow_tool_calls=False)
             # decide_batch retourne toujours un dict quand allow_tool_calls=False.
             # Guard défensif : si le contrat change, ne pas masquer silencieusement.
             if not isinstance(responses, dict):

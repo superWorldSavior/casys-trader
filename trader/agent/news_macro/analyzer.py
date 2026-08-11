@@ -93,7 +93,24 @@ class LlmNewsMacroAnalyst:
                 provider=completion.provider,
                 model=completion.model,
             )
-        return _with_readable_sources(brief, request)
+        sourced_brief = _with_readable_sources(brief, request)
+        if not _has_sourced_points(sourced_brief):
+            raise NewsMacroAnalystError(
+                "empty_after_source_validation",
+                "macro/news analyst returned no point backed by the source catalog",
+                provider=completion.provider,
+                model=completion.model,
+            )
+        return sourced_brief
+
+
+def _has_sourced_points(brief: NewsMacroBrief) -> bool:
+    return bool(
+        brief.alerts
+        or any(section.points for section in brief.zones)
+        or any(section.points for section in brief.families)
+        or any(section.points for section in brief.symbols)
+    )
 
 
 def _with_readable_sources(

@@ -143,6 +143,28 @@ def _str_list(raw: object) -> list[str]:
     return [str(value) for value in raw if str(value).strip()] if isinstance(raw, list) else []
 
 
+def _append_failure_warning(parts: list[RenderableType], payload: dict) -> None:
+    latest = f.safe_dict(payload.get("latest_failure"))
+    failure = latest if latest else payload if payload.get("status") in {"error", "invalid"} else {}
+    if not failure:
+        return
+    error = str(failure.get("error_code") or failure.get("status") or "unknown").strip()
+    message = str(failure.get("error_message") or "").strip()
+    attempt = failure.get("retry_attempt") or failure.get("attempt")
+    next_retry_at = str(failure.get("next_retry_at") or failure.get("next_at") or "").strip()
+    detail = f"dernier essai en échec : {error}"
+    if attempt:
+        detail += f" (tentative {attempt})"
+    if next_retry_at:
+        detail += f" · nouvelle tentative {_ts_label(next_retry_at)}"
+    elif failure.get("retry_delay_seconds") == 0:
+        detail += " · tentatives automatiques épuisées"
+    parts.append(Text(""))
+    parts.append(Text(detail, style=f"bold {CASYS_WARNING}"))
+    if message:
+        parts.append(Text(message, style=CASYS_DIM))
+
+
 # ---------------------------------------------------------------------------
 # Builders de détail — un par kind
 # ---------------------------------------------------------------------------
@@ -157,6 +179,7 @@ def _build_global_detail(item: ReportItem, *, now: datetime) -> RenderableType:
     header.append(" — posture d'univers", style=CASYS_MUTED)
     parts.append(header)
     parts.append(_meta_line(payload, now=now))
+    _append_failure_warning(parts, payload)
     parts.append(Text(""))
 
     postures = f.safe_dict(payload.get("venue_posture"))
@@ -263,6 +286,7 @@ def _build_macro_detail(item: ReportItem, *, now: datetime) -> RenderableType:
         header.append(f"  ·  {brief_id}", style=CASYS_FAINT)
     parts.append(header)
     parts.append(_meta_line(payload, now=now))
+    _append_failure_warning(parts, payload)
     parts.append(Text(""))
 
     for title, key in (("ZONES", "zones"), ("FAMILIES", "families"), ("SYMBOLS", "symbols")):
@@ -306,6 +330,8 @@ def _build_regional_detail(item: ReportItem, *, now: datetime) -> RenderableType
 
     parts: list[RenderableType] = [header]
     parts.append(_meta_line(payload, now=now, show_valid_until=False))
+
+    _append_failure_warning(parts, payload)
 
     summary = str(payload.get("summary") or "").strip()
     if summary:
@@ -373,6 +399,7 @@ def _build_micro_detail(item: ReportItem, *, now: datetime) -> RenderableType:
         header.append("]", style=CASYS_FAINT)
     parts.append(header)
     parts.append(_meta_line(payload, now=now, show_valid_until=False))
+    _append_failure_warning(parts, payload)
 
     thesis = f.safe_dict(payload.get("company_thesis"))
     status = str(thesis.get("status") or "").strip()

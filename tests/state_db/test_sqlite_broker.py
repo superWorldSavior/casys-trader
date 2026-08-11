@@ -6,6 +6,7 @@ Couvre :
   - Rollback transactionnel (exception mid-submit → état inchangé)
   - Shadow JSON (broker.json = miroir des tables après submit)
 """
+
 from __future__ import annotations
 
 from contextlib import contextmanager
@@ -44,10 +45,7 @@ def _make_sqlite_broker(
 
 def _positions_approx(positions: dict) -> dict:
     """Convertit les positions en dict serialisable pour comparaison approchée."""
-    return {
-        sym: {"quantity": pos.quantity, "avg_price": pos.avg_price}
-        for sym, pos in positions.items()
-    }
+    return {sym: {"quantity": pos.quantity, "avg_price": pos.avg_price} for sym, pos in positions.items()}
 
 
 def _assert_brokers_equal(sim: SimBroker, sqlite: SqliteBroker) -> None:
@@ -67,12 +65,12 @@ def _assert_brokers_equal(sim: SimBroker, sqlite: SqliteBroker) -> None:
 
 # Séquence de référence : open long, add, reduce, reverse, add short, close
 _SEQUENCE: list[tuple[Order, float, str, float]] = [
-    (Order("AAPL", "BUY", 10.0), 150.0, "t1", 1.0),   # open long 10 @ 150
-    (Order("AAPL", "BUY", 5.0), 155.0, "t2", 1.0),    # add 5 → 15 long
-    (Order("AAPL", "SELL", 3.0), 158.0, "t3", 1.0),   # reduce → 12 long
+    (Order("AAPL", "BUY", 10.0), 150.0, "t1", 1.0),  # open long 10 @ 150
+    (Order("AAPL", "BUY", 5.0), 155.0, "t2", 1.0),  # add 5 → 15 long
+    (Order("AAPL", "SELL", 3.0), 158.0, "t3", 1.0),  # reduce → 12 long
     (Order("AAPL", "SELL", 15.0), 160.0, "t4", 1.0),  # reverse: -3 short
-    (Order("AAPL", "SELL", 2.0), 162.0, "t5", 1.0),   # add short → -5
-    (Order("AAPL", "BUY", 5.0), 155.0, "t6", 1.0),    # close short → 0
+    (Order("AAPL", "SELL", 2.0), 162.0, "t5", 1.0),  # add short → -5
+    (Order("AAPL", "BUY", 5.0), 155.0, "t6", 1.0),  # close short → 0
 ]
 
 
@@ -129,6 +127,26 @@ class TestParite:
                 "fx_rate": 1.0,
             },
         ]
+
+    def test_causal_links_flow_from_order_to_fill_and_sqlite_row(self, tmp_path: Path) -> None:
+        db, sqlite = _make_sqlite_broker(tmp_path / "sq")
+        order = Order(
+            "AAPL",
+            "BUY",
+            10.0,
+            process_instance_id="instance-1",
+            attempt_id="attempt-1",
+            decision_id="decision-1",
+        )
+
+        fill = sqlite.submit(order, 150.0, "t1", dry_run=False)
+
+        assert fill is not None
+        assert fill.model_dump()["process_instance_id"] == "instance-1"
+        assert sqlite.fills()[0]["attempt_id"] == "attempt-1"
+        row = db.query_one("SELECT * FROM broker_fills WHERE symbol='AAPL'")
+        assert row is not None
+        assert row["decision_id"] == "decision-1"
 
     def test_position_zero_not_in_positions_api(self, tmp_path: Path) -> None:
         """positions() filtre les q==0 (même comportement que SimBroker)."""
@@ -207,9 +225,7 @@ class TestParite:
             starting_cash=100_000.0,
             commission_model=model,
         )
-        _, sqlite = _make_sqlite_broker(
-            tmp_path / "sq", commission_model=model
-        )
+        _, sqlite = _make_sqlite_broker(tmp_path / "sq", commission_model=model)
 
         order = Order("USO", "SELL", 35.0)
         sim.submit(order, 127.70, "t1", dry_run=False)
@@ -320,9 +336,7 @@ class TestTransactionRollback:
         @contextmanager
         def failing_transaction():
             with original_transaction() as cur:
-                wrapper = _CountingCursor(
-                    cur, fail_after=1, err_msg="simulated mid-transaction failure"
-                )
+                wrapper = _CountingCursor(cur, fail_after=1, err_msg="simulated mid-transaction failure")
                 yield wrapper
 
         monkeypatch.setattr(db, "transaction", failing_transaction)
@@ -454,9 +468,7 @@ class TestPariteSupplementaire:
             starting_cash=100_000.0,
             commission_model=model,
         )
-        _, sqlite = _make_sqlite_broker(
-            tmp_path / "sq", commission_model=model
-        )
+        _, sqlite = _make_sqlite_broker(tmp_path / "sq", commission_model=model)
 
         # 2379.TW : prix en TWD, fx_rate = 0.031 (TWD→USD)
         order = Order("2379.TW", "BUY", 100.0)
@@ -472,9 +484,7 @@ class TestPariteSupplementaire:
             starting_cash=100_000.0,
             commission_model=model,
         )
-        _, sqlite = _make_sqlite_broker(
-            tmp_path / "sq", commission_model=model
-        )
+        _, sqlite = _make_sqlite_broker(tmp_path / "sq", commission_model=model)
 
         # Symbole EU, prix en EUR, fx_rate ~1.08 (EUR→USD)
         order = Order("AIR.PA", "BUY", 5.0)

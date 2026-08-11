@@ -17,8 +17,10 @@ Rétro-compat decide/shadow : pour ces handlers, ``complete`` retourne ``True``
 """
 from __future__ import annotations
 
+import json
 import logging
 import time
+from collections.abc import Mapping
 from typing import Callable
 
 from trader.application.queue.contracts import RetryableError as RetryableError
@@ -26,9 +28,23 @@ from trader.application.queue.contracts import RetryableError as RetryableError
 log = logging.getLogger(__name__)
 
 
+def _task_symbol(task: Mapping) -> str:
+    """Return a payload symbol when one is available, otherwise a log sentinel."""
+
+    try:
+        payload = json.loads(str(task.get("payload") or ""))
+    except (TypeError, ValueError):
+        return "-"
+    if not isinstance(payload, Mapping):
+        return "-"
+    symbol = str(payload.get("symbol") or "").strip()
+    return symbol or "-"
+
+
 class Worker:
     def __init__(self, ledger, pools, handlers, worker_id,
                  lease_ms=1_800_000, backoff_base_ms=1000,
+                 backoff_max_ms: int | None = None,
                  now_fn: Callable[[], float] = time.time):
         self._ledger = ledger
         self._pools = pools
@@ -36,6 +52,7 @@ class Worker:
         self._id = worker_id
         self._lease_ms = lease_ms
         self._backoff_base_ms = backoff_base_ms
+        self._backoff_max_ms = backoff_max_ms
         self._now_fn = now_fn
 
     def run_once(self, *, now_ms, token) -> bool:
@@ -89,19 +106,47 @@ class Worker:
                 self._pools.on_success(resource)
         except RetryableError as exc:
             finish_now_ms = int(self._now_fn() * 1000)
-            log.warning("[queue.worker] retryable fail id=%s: %s", task["id"], exc)
             if resource and exc.is_overload:
                 self._pools.on_overload(resource)
-            self._ledger.fail(task_id=task["id"], token=token, now_ms=finish_now_ms,
-                              error=str(exc), retryable=True,
-                              backoff_base_ms=self._backoff_base_ms)
+            outcome = self._ledger.fail(
+                task_id=task["id"],
+                token=token,
+                now_ms=finish_now_ms,
+                error=str(exc),
+                retryable=True,
+                backoff_base_ms=self._backoff_base_ms,
+                backoff_max_ms=self._backoff_max_ms,
+            )
+            log.warning(
+                "[queue.worker] retryable fail kind=%s symbol=%s id=%s attempt=%s outcome=%s error=%s",
+                task.get("kind") or "-",
+                _task_symbol(task),
+                task["id"],
+                task.get("attempts") or "-",
+                outcome,
+                " ".join(str(exc).split())[:500] or "-",
+            )
         except Exception as exc:  # noqa: BLE001 — frontière handler
             finish_now_ms = int(self._now_fn() * 1000)
-            log.warning("[queue.worker] fatal fail id=%s: %s", task["id"],
-                        f"{type(exc).__name__}: {exc}")
-            self._ledger.fail(task_id=task["id"], token=token, now_ms=finish_now_ms,
-                              error=f"{type(exc).__name__}: {exc}",
-                              retryable=False, backoff_base_ms=self._backoff_base_ms)
+            error = f"{type(exc).__name__}: {exc}"
+            outcome = self._ledger.fail(
+                task_id=task["id"],
+                token=token,
+                now_ms=finish_now_ms,
+                error=error,
+                retryable=False,
+                backoff_base_ms=self._backoff_base_ms,
+                backoff_max_ms=self._backoff_max_ms,
+            )
+            log.warning(
+                "[queue.worker] fatal fail kind=%s symbol=%s id=%s attempt=%s outcome=%s error=%s",
+                task.get("kind") or "-",
+                _task_symbol(task),
+                task["id"],
+                task.get("attempts") or "-",
+                outcome,
+                " ".join(error.split())[:500] or "-",
+            )
         finally:
             if resource:
                 self._pools.release(resource)

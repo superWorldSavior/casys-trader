@@ -97,6 +97,31 @@ def _as_of(raw: object) -> str | None:
     return text or None
 
 
+def _latest_failure(raw: object) -> dict | None:
+    """Project current and legacy failure envelopes into one UI shape."""
+
+    if not isinstance(raw, dict):
+        return None
+    nested = raw.get("latest_failure")
+    if isinstance(nested, dict):
+        return dict(nested)
+    if raw.get("status") in {"error", "invalid"}:
+        return dict(raw)
+    failed_at = str(raw.get("last_failure_at") or "").strip()
+    error = raw.get("last_error")
+    if not failed_at or not isinstance(error, dict):
+        return None
+    return {
+        "failed_at": failed_at,
+        "error_code": str(error.get("code") or "unknown"),
+        "error_message": str(error.get("message") or ""),
+    }
+
+
+def _with_latest_failure(payload: dict, failure: dict | None) -> dict:
+    return {**payload, "latest_failure": failure} if failure is not None else payload
+
+
 def _venue_suffix(path: Path, *, suffix: str) -> str:
     """``latest-EU.jsonl`` → ``EU`` (venue = filename suffix)."""
 
@@ -127,10 +152,14 @@ def _history_count(state_dir: Path, as_of: object) -> int | None:
 
 def _collect_global(state_dir: Path, *, company_names: dict[str, str]) -> list[ReportItem]:
     payload = _read_json(state_dir / "global_universe_postures" / "current.json")
-    if payload is None:
+    failure = _latest_failure(
+        _read_json(state_dir / "global_universe_postures" / "latest_failure.json")
+    )
+    if payload is None and failure is None:
         return []
+    payload = _with_latest_failure(payload or dict(failure or {}), failure if payload else None)
     count = _history_count(state_dir, payload.get("as_of"))
-    if count is not None:
+    if count is not None and payload.get("status") not in {"error", "invalid"}:
         payload["history_count"] = count
     return [
         ReportItem(
@@ -146,19 +175,28 @@ def _collect_global(state_dir: Path, *, company_names: dict[str, str]) -> list[R
 
 def _collect_macro(state_dir: Path, *, company_names: dict[str, str]) -> list[ReportItem]:
     items: list[ReportItem] = []
+    payloads: dict[str, dict] = {}
     for path in sorted((state_dir / "news_briefs").glob("latest-*.jsonl")):
         venue = _venue_suffix(path, suffix=".jsonl")
-        if not venue:
-            continue
         payload = _read_jsonl_first(path)
-        if payload is None:
-            continue
+        if venue and payload is not None:
+            payloads[venue] = payload
+
+    status = _read_json(state_dir / "news_macro_analysis_status.json") or {}
+    failures = {
+        str(venue).strip(): failure
+        for venue, raw in status.items()
+        if str(venue).strip() and (failure := _latest_failure(raw)) is not None
+    }
+    for venue in sorted(set(payloads) | set(failures)):
+        base_payload = payloads[venue] if venue in payloads else dict(failures[venue])
+        payload = _with_latest_failure(base_payload, failures.get(venue))
         items.append(
             ReportItem(
                 kind="macro",
                 key=f"macro:{venue}",
                 label=venue,
-                as_of=_as_of(payload.get("as_of")),
+                as_of=_as_of(payload.get("as_of") or payload.get("failed_at")),
                 depth=None,
                 payload=payload,
             )
@@ -218,6 +256,15 @@ def _pick_brief(envelope: dict) -> tuple[dict | None, str | None]:
 
 def _collect_micro(state_dir: Path, *, company_names: dict[str, str]) -> list[ReportItem]:
     items: list[ReportItem] = []
+    failures: dict[str, dict] = {}
+    for path in sorted((state_dir / "company_analysis_runs" / "latest").glob("*.json")):
+        run = _read_json(path)
+        symbol = str((run or {}).get("symbol") or "").strip()
+        failure = _latest_failure(run)
+        if symbol and failure is not None:
+            failures[symbol] = failure
+
+    seen: set[str] = set()
     for path in sorted((state_dir / "company_intelligence" / "current").glob("*.json")):
         envelope = _read_json(path)
         if envelope is None:
@@ -228,6 +275,8 @@ def _collect_micro(state_dir: Path, *, company_names: dict[str, str]) -> list[Re
         brief, depth = _pick_brief(envelope)
         if brief is None:
             continue
+        seen.add(symbol)
+        brief = _with_latest_failure(brief, failures.get(symbol))
         name = str(company_names.get(symbol) or "").strip()
         label = f"{symbol} — {name}" if name else symbol
         items.append(
@@ -238,6 +287,19 @@ def _collect_micro(state_dir: Path, *, company_names: dict[str, str]) -> list[Re
                 as_of=_as_of(brief.get("as_of")),
                 depth=depth,
                 payload=brief,
+            )
+        )
+    for symbol in sorted(set(failures) - seen):
+        failure = failures[symbol]
+        name = str(company_names.get(symbol) or "").strip()
+        items.append(
+            ReportItem(
+                kind="micro",
+                key=f"micro:{symbol}",
+                label=f"{symbol} — {name}" if name else symbol,
+                as_of=_as_of(failure.get("as_of") or failure.get("failed_at")),
+                depth=str(failure.get("depth") or "") or None,
+                payload=failure,
             )
         )
     return items

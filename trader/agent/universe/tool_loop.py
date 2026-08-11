@@ -13,6 +13,7 @@ from trader.agent.universe.agent import UniverseAgentError, UniverseAgentPayload
 from trader.agent.universe.prompt import (
     build_universe_followup_prompt,
     build_universe_prompt,
+    build_universe_repair_prompt,
     parse_universe_completion,
 )
 from trader.agent.universe.tools import make_get_company_briefs_spec
@@ -80,6 +81,34 @@ def _parse_final(
     )
 
 
+def _parse_final_with_repair(
+    completion: llm.LlmCompletion,
+    *,
+    request: UniverseCompositionRequest,
+    router: llm.LlmRouter,
+    timeout_s: int,
+    tool_results: list[dict[str, Any]],
+) -> UniverseAgentDecision:
+    """Retry once only when the final payload is structurally invalid."""
+
+    try:
+        return _parse_final(completion, baseline=request.baseline)
+    except UniverseAgentPayloadError as exc:
+        if "legacy_contract_not_allowed" in str(exc):
+            raise
+        repair_prompt = build_universe_repair_prompt(
+            request,
+            invalid_response=completion.text,
+            parse_error=str(exc),
+            tool_results=tool_results,
+            company_context_index=True,
+        )
+        repaired = router.complete(repair_prompt, timeout_s=timeout_s)
+        if isinstance(repaired, llm.LlmFailure):
+            _raise_failure(repaired)
+        return _parse_final(repaired, baseline=request.baseline)
+
+
 def compose_with_tool_loop(
     request: UniverseCompositionRequest,
     *,
@@ -99,7 +128,13 @@ def compose_with_tool_loop(
             _raise_failure(completion)
         tool_calls = _extract_tool_calls(completion.text)
         if tool_calls is None:
-            return _parse_final(completion, baseline=request.baseline)
+            return _parse_final_with_repair(
+                completion,
+                request=request,
+                router=router,
+                timeout_s=timeout_s,
+                tool_results=accumulated,
+            )
         results, _traces = execute_tool_round(
             tool_calls,
             context=context,
@@ -111,14 +146,23 @@ def compose_with_tool_loop(
         prompt = build_universe_followup_prompt(request, tool_results=accumulated)
 
     if accumulated:
-        prompt = build_universe_followup_prompt(request, tool_results=accumulated)
-        prompt += "Budget d'outils épuisé: retourne maintenant uniquement la hotlist finale, sans tool_calls.\n"
+        prompt = build_universe_followup_prompt(
+            request,
+            tool_results=accumulated,
+            allow_tools=False,
+        )
     else:
         prompt = build_universe_prompt(request, allow_tools=False)
     completion = router.complete(prompt, timeout_s=timeout_s)
     if isinstance(completion, llm.LlmFailure):
         _raise_failure(completion)
-    return _parse_final(completion, baseline=request.baseline)
+    return _parse_final_with_repair(
+        completion,
+        request=request,
+        router=router,
+        timeout_s=timeout_s,
+        tool_results=accumulated,
+    )
 
 
 __all__ = ["compose_with_tool_loop"]

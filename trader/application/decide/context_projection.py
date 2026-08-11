@@ -49,6 +49,17 @@ RADAR_COLUMNS = (
 
 _PEER_SCORE_COLUMNS = ("r", "z", "rs", "sz", "r_d", "z_d", "rs_d", "sz_d")
 
+_ATTRIBUTION_SUMMARY_KEYS = (
+    "n_closed_trades",
+    "realized_pnl",
+    "realized_gross_pnl",
+    "total_commissions",
+    "win_rate",
+    "avg_pnl",
+    "avg_holding_minutes",
+    "regime",
+)
+
 
 def project_shared_context_for_symbol(shared_context: dict, *, symbol: str) -> dict:
     """Return a prompt-safe view of one cycle for one decision symbol.
@@ -67,6 +78,9 @@ def project_shared_context_for_symbol(shared_context: dict, *, symbol: str) -> d
         shared_context.get("active_plans_summary"), symbol
     )
     projected["attribution"] = _project_attribution(shared_context.get("attribution"), symbol)
+    projected["stale_market_data"] = _project_stale_market_data(
+        shared_context.get("stale_market_data"), symbol
+    )
     projected["kpis"] = _project_kpis(shared_context.get("kpis"))
     projected["learnings"] = _project_learnings(shared_context.get("learnings"))
     projected["cockpit"] = _project_cockpit(
@@ -122,7 +136,7 @@ def _project_active_plans(raw: object, symbol: str) -> object:
 def _project_attribution(raw: object, symbol: str) -> object:
     if not isinstance(raw, Mapping):
         return raw
-    projected = dict(raw)
+    projected = {key: raw[key] for key in _ATTRIBUTION_SUMMARY_KEYS if key in raw}
     recent = raw.get("recent_trips")
     if isinstance(recent, list):
         projected["recent_trips"] = [
@@ -139,8 +153,58 @@ def _project_attribution(raw: object, symbol: str) -> object:
         ]
     projected["scope"] = {
         "recent_trips": "target_only",
+        "breakdowns": "pull_only",
         "full_via_tool": "get_attribution",
     }
+    return projected
+
+
+def _project_stale_market_data(raw: object, symbol: str) -> object:
+    if not isinstance(raw, Mapping):
+        return raw
+    target = raw.get(symbol)
+    return {symbol: dict(target)} if isinstance(target, Mapping) else {}
+
+
+def project_symbol_facts_for_prompt(facts: dict, *, symbol: str) -> dict:
+    """Remove cross-universe mandate detail that does not concern ``symbol``.
+
+    The full facts stay available to local domain tools. Only the model-facing
+    copy is narrowed, and the caller's payload is never mutated.
+    """
+
+    if not facts:
+        return {}
+    projected = dict(facts)
+    raw_mandate = facts.get("universe_mandate")
+    if not isinstance(raw_mandate, Mapping):
+        return projected
+
+    mandate = dict(raw_mandate)
+    symbol_mandate = raw_mandate.get("symbol_mandate")
+    if not isinstance(symbol_mandate, Mapping):
+        projected["universe_mandate"] = mandate
+        return projected
+    mandate_symbol = str(symbol_mandate.get("symbol") or symbol)
+    if mandate_symbol != symbol:
+        projected["universe_mandate"] = mandate
+        return projected
+
+    family_context = symbol_mandate.get("family_context")
+    family = (
+        str(family_context.get("family") or "")
+        if isinstance(family_context, Mapping)
+        else ""
+    )
+    family_postures = raw_mandate.get("family_postures")
+    if family and isinstance(family_postures, Mapping):
+        target_posture = family_postures.get(family)
+        mandate["family_postures"] = (
+            {family: dict(target_posture)}
+            if isinstance(target_posture, Mapping)
+            else ({family: target_posture} if target_posture is not None else {})
+        )
+    projected["universe_mandate"] = mandate
     return projected
 
 
@@ -347,4 +411,5 @@ __all__ = [
     "MAX_RADAR_ROWS",
     "RADAR_COLUMNS",
     "project_shared_context_for_symbol",
+    "project_symbol_facts_for_prompt",
 ]

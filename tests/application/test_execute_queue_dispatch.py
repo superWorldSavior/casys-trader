@@ -88,11 +88,7 @@ def test_execute_queue_dispatch_serializes_reduce_quantity_sync() -> None:
         price=100.0,
         ts="2026-07-05T08:00:00+00:00",
     )
-    ledger = _FakeLedger(
-        task_results=[
-            {"id": 7, "status": "done", "result": json.dumps(fill.model_dump())}
-        ]
-    )
+    ledger = _FakeLedger(task_results=[{"id": 7, "status": "done", "result": json.dumps(fill.model_dump())}])
 
     outcome = _dispatch(
         ledger,
@@ -105,6 +101,66 @@ def test_execute_queue_dispatch_serializes_reduce_quantity_sync() -> None:
     assert outcome.fill == fill
     payload = json.loads(ledger.enqueued[0]["payload"])
     assert payload["symbol_to_sync_quantity"] == "AAPL"
+
+
+def test_execute_queue_dispatch_preserves_causal_links_and_verifies_matching_fill() -> None:
+    fill = Fill(
+        symbol="AAPL",
+        side="BUY",
+        quantity=5.0,
+        price=100.0,
+        ts="2026-07-05T08:00:00+00:00",
+        process_instance_id="instance-1",
+        attempt_id="attempt-1",
+        decision_id="decision-1",
+    )
+    ledger = _FakeLedger(task_results=[{"id": 7, "status": "done", "result": json.dumps(fill.model_dump())}])
+
+    outcome = _dispatch(
+        ledger,
+        process_instance_id="instance-1",
+        attempt_id="attempt-1",
+        decision_id="decision-1",
+    )
+
+    assert outcome.fill == fill
+    assert outcome.reason is None
+    assert outcome.verified is True
+    payload = json.loads(ledger.enqueued[0]["payload"])
+    assert payload["order"] == {
+        "symbol": "AAPL",
+        "side": "BUY",
+        "quantity": 5.0,
+        "rationale": "test",
+        "process_instance_id": "instance-1",
+        "attempt_id": "attempt-1",
+        "decision_id": "decision-1",
+    }
+
+
+def test_execute_queue_dispatch_rejects_mismatched_fill_correlation() -> None:
+    fill = Fill(
+        symbol="MSFT",
+        side="BUY",
+        quantity=5.0,
+        price=100.0,
+        ts="2026-07-05T08:00:00+00:00",
+        process_instance_id="instance-1",
+        attempt_id="attempt-1",
+        decision_id="decision-1",
+    )
+    ledger = _FakeLedger(task_results=[{"id": 7, "status": "done", "result": json.dumps(fill.model_dump())}])
+
+    outcome = _dispatch(
+        ledger,
+        process_instance_id="instance-1",
+        attempt_id="attempt-1",
+        decision_id="decision-1",
+    )
+
+    assert outcome.fill is None
+    assert outcome.reason == "queue_execute_fill_symbol_mismatch"
+    assert outcome.verified is False
 
 
 def test_execute_queue_dispatch_dead_maps_fail_closed_reason() -> None:
@@ -138,9 +194,7 @@ def test_execute_queue_dispatch_timeout_maps_fail_closed_reason() -> None:
     assert outcome.late_execution_risk is False
     assert outcome.fill is None
     assert outcome.abandoned is True
-    assert ledger.abandoned == [
-        {"task_id": 7, "now_ms": 10200, "error": "queue_execute_timeout"}
-    ]
+    assert ledger.abandoned == [{"task_id": 7, "now_ms": 10200, "error": "queue_execute_timeout"}]
 
 
 def test_execute_queue_dispatch_timeout_race_reloads_done_task_after_failed_abandon() -> None:

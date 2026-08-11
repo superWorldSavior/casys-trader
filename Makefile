@@ -1,6 +1,6 @@
 # casys-trader — raccourcis. Lance `make` (ou `make help`) pour la liste.
 .DEFAULT_GOAL := help
-.PHONY: help watch live once test logs live-logs dash dash-portfolio dash-decisions dash-list
+.PHONY: help watch live once test logs live-logs dash dash-portfolio dash-decisions dash-list macro models model-preset
 
 help:  ## Affiche cette aide
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -34,6 +34,10 @@ dash-decisions:  ## Régénère seulement les dashboards décisions
 dash-list:  ## Liste les dashboards locaux et leurs URLs
 	uv run casys-trader dashboards list
 
+MARKET ?= TW
+macro:  ## Lance un point macro ciblé — MARKET="TW US GLOBAL" [FORCE=1] ou ALL=1
+	uv run casys-trader news-macro refresh $(if $(ALL),--all,$(foreach venue,$(MARKET),--venue $(venue))) $(if $(FORCE),--force,)
+
 test:  ## Lance toute la suite de tests
 	uv run pytest -q
 
@@ -47,3 +51,9 @@ fork-acpx-build:  ## Construit le fork acpx local (active la rétention native d
 
 learnings-ingest:  ## Ingestion/scoring/embeddings du store de recall (state/learnings.db)
 	uv run python scripts/learnings_ingest.py
+
+models:  ## Jeu de modèles LLM actif (les 5 rôles) et preset courant
+	uv run python scripts/model_preset.py show
+
+model-preset:  ## Bascule de preset modèles — dry-run ; PRESET=<nom> [WRITE=1]. Redémarrer le daemon après.
+	uv run python scripts/model_preset.py apply $(PRESET) $(if $(WRITE),--write,)

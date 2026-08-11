@@ -79,6 +79,29 @@ def _default_acpx_session_label(provider: str) -> str | None:
     return None
 
 
+# Profil Codex par rôle, conservé comme frontière d'isolation. La configuration
+# active pointe tous les rôles sur le même CODEX_HOME low ; le brain applique
+# son effort medium via l'option ACP de sa session.
+# Absent → `CODEX_HOME` global (résolu par le transport), comportement historique.
+_ROLE_CODEX_HOME_ENV = {
+    "acpx": "TRADER_CODEX_HOME",
+    "consolidator": "TRADER_CONSOLIDATOR_CODEX_HOME",
+    "universe": "TRADER_UNIVERSE_CODEX_HOME",
+    "company-micro": "TRADER_COMPANY_MICRO_CODEX_HOME",
+}
+
+
+def _env_codex_home(provider: str) -> str | None:
+    """Profil Codex du rôle, ou None pour retomber sur le ``CODEX_HOME`` global.
+
+    L'analyste macro/news partage volontairement le profil du consolidateur
+    (il partage déjà son agent et son binaire, cf. ``news_macro.analyzer``).
+    """
+
+    name = _ROLE_CODEX_HOME_ENV.get(provider)
+    return _clean_optional(os.getenv(name)) if name else None
+
+
 def _env_session_label(provider: str) -> str | None:
     if provider == "consolidator":
         return _env("TRADER_CONSOLIDATOR_ACPX_SESSION_LABEL", "TRADER_ACPX_SESSION_LABEL")
@@ -121,15 +144,17 @@ def build_default_router_from_env(
     if is_runtime_brain:
         acpx_agent = acpx_agent or _clean_optional(os.getenv("TRADER_ACPX_AGENT"))
         spark_model = _clean_optional(os.getenv("TRADER_MODEL")) or spark_model
-    reasoning_effort = (
-        _clean_optional(os.getenv("TRADER_REASONING_EFFORT"))
-        if is_runtime_brain
-        else None
-    )
     session_label = (
         _clean_optional(acpx_session_label)
         or _env_session_label(acpx_provider)
         or _default_acpx_session_label(acpx_provider)
+    )
+
+    codex_home = _env_codex_home(acpx_provider)
+    reasoning_effort = (
+        _clean_optional(os.getenv("TRADER_REASONING_EFFORT"))
+        if is_runtime_brain
+        else None
     )
 
     backends: list[LlmBackend] = [
@@ -139,6 +164,7 @@ def build_default_router_from_env(
             acpx_bin=acpx_bin,
             agent=acpx_agent,
             session_label=session_label,
+            codex_home=codex_home,
             reasoning_effort=reasoning_effort,
         )
     ]
@@ -159,6 +185,7 @@ def build_default_router_from_env(
                     acpx_bin=acpx_bin,
                     agent="claude",
                     session_label=session_label,
+                    codex_home=codex_home,
                 )
             )
 

@@ -10,11 +10,13 @@ import pytest
 import logging
 
 from trader.application.universe import UniverseAgentDecision
+from trader.domain.company import CompanyIntelligenceBrief
 from trader.domain.situation import NewsMacroBrief
 from trader.domain.universe import candidate_scope_id
 from trader.domain.universe.global_posture import GlobalUniversePosture
 from trader.infrastructure.state_db.candidate_scope_store import CandidateScopeStore
 from trader.infrastructure.state_db.global_situation_digest_store import GlobalSituationDigestStore
+from trader.infrastructure.state_db.global_universe_posture_store import GlobalUniversePostureStore
 from trader.infrastructure.state_db.situation_brief_store import NewsMacroBriefStore
 from trader.infrastructure.state_db.universe_run_store import UniverseRunStore
 from trader.infrastructure.state_db.universe_mandate_store import UniverseMandateStore
@@ -68,6 +70,15 @@ class FakePostureAgent:
             net_bias="long",
             rationale="Prefer the strongest global family while keeping gross bounded.",
         )
+
+
+class FailingAgent:
+    def __init__(self) -> None:
+        self.requests = []
+
+    def compose(self, request):
+        self.requests.append(request)
+        raise TimeoutError("model deadline exceeded")
 
 
 def _write_scope_and_brief(
@@ -161,6 +172,44 @@ def _write_scope_and_brief(
     assert brief is not None
     NewsMacroBriefStore(state_dir / "news_briefs").append(brief)
     return scope_id
+
+
+def _write_company_brief(state_dir, *, symbol: str, input_signature: str) -> dict[str, str]:
+    brief = CompanyIntelligenceBrief.from_mapping(
+        {
+            "symbol": symbol,
+            "as_of": "2026-07-10T20:04:00+00:00",
+            "input_signature": input_signature,
+            "depth": "screen",
+            "issuer_identity": {
+                "issuer_name": symbol,
+                "identity_status": "verified",
+            },
+            "coverage": {"status": "partial"},
+            "business": {
+                "summary": f"Business context for {symbol}",
+                "source_refs": [f"source:{symbol}"],
+                "freshness": {"freshness": "fresh"},
+            },
+            "company_thesis": {
+                "status": "intact",
+                "summary": f"Thesis for {symbol}",
+            },
+            "selection_view": {
+                "posture": "supports_selection",
+                "confidence": "medium",
+                "reasons": ["Fresh company evidence"],
+            },
+            "security_readiness": "conditional",
+            "source_refs": [f"source:{symbol}"],
+        }
+    )
+    assert brief is not None
+    ref, written = universe_intelligence_runtime.CompanyIntelligenceStore(
+        state_dir / "company_intelligence"
+    ).append(brief)
+    assert written is True
+    return ref
 
 
 def test_build_prepared_mandate_preserves_decided_family_and_symbol_contexts() -> None:
@@ -479,6 +528,163 @@ def test_global_posture_store_read_failure_does_not_abort_tick(tmp_path) -> None
     assert prepared["global_universe_posture"]["status"] == "error"
 
 
+def test_global_posture_failure_backoff_preserves_current_and_ignores_input_churn(
+    tmp_path, caplog
+) -> None:
+    caplog.set_level(logging.INFO, logger="casys-trader")
+    scopes = CandidateScopeStore(tmp_path / "candidate_scopes")
+    store = GlobalUniversePostureStore(tmp_path / "global_universe_postures")
+    current, _, _ = store.append_if_changed(
+        GlobalUniversePosture(
+            as_of=(NOW - timedelta(hours=5)).isoformat(),
+            venue_posture={"TW": "watch", "EU": "selective", "US": "favor"},
+            gross_mode="cautious",
+            net_bias="long",
+            rationale="Last usable global posture.",
+        )
+    )
+
+    class FailingPostureAgent:
+        def __init__(self) -> None:
+            self.requests = []
+
+        def compose(self, request):
+            self.requests.append(request)
+            raise TimeoutError("model deadline exceeded")
+
+    agent = FailingPostureAgent()
+
+    first, first_ref = universe_intelligence_runtime._prepare_global_universe_posture(
+        scopes=scopes,
+        store=store,
+        now=NOW,
+        log=logging.getLogger("casys-trader"),
+        global_family_board={"board_id": "board-before"},
+        global_situation_digest={"digest_id": "digest-before"},
+        agent=agent,
+        cooldown_hours=4,
+    )
+
+    failure = store.read_latest_failure()
+    assert first == current
+    assert first_ref["status"] == "error"
+    assert first_ref["persistence_status"] == "failure_recorded"
+    assert store.read_current() == current
+    assert failure is not None
+    assert failure["current_posture_id"] == current["posture_id"]
+    assert failure["retry_attempt"] == 1
+    assert failure["retry_delay_seconds"] == 30 * 60
+
+    deferred, deferred_ref = universe_intelligence_runtime._prepare_global_universe_posture(
+        scopes=scopes,
+        store=store,
+        now=NOW + timedelta(minutes=1),
+        log=logging.getLogger("casys-trader"),
+        global_family_board={"board_id": "board-changed"},
+        global_situation_digest={"digest_id": "digest-changed"},
+        agent=agent,
+        cooldown_hours=4,
+    )
+
+    assert deferred == current
+    assert deferred_ref["status"] == "deferred"
+    assert deferred_ref["refresh_reason"] == "failure_backoff"
+    assert deferred_ref["retry_attempt"] == 1
+    assert len(agent.requests) == 1
+    assert store.read_latest_failure() == failure
+    assert "global posture retry scheduled attempt=1 delay_s=1800" in caplog.text
+    assert "global posture retry deferred attempt=1 delay_s=1800" in caplog.text
+
+
+def test_global_posture_failure_backoff_is_exponential_and_bounded(tmp_path) -> None:
+    scopes = CandidateScopeStore(tmp_path / "candidate_scopes")
+    store = GlobalUniversePostureStore(tmp_path / "global_universe_postures")
+
+    class FailingPostureAgent:
+        def __init__(self) -> None:
+            self.requests = []
+
+        def compose(self, request):
+            self.requests.append(request)
+            raise RuntimeError("posture unavailable")
+
+    agent = FailingPostureAgent()
+    attempt_at = NOW
+    expected_minutes = (30, 60, 120, 240, 360, 360)
+    for attempt, delay_minutes in enumerate(expected_minutes, start=1):
+        posture, ref = universe_intelligence_runtime._prepare_global_universe_posture(
+            scopes=scopes,
+            store=store,
+            now=attempt_at,
+            log=logging.getLogger("casys-trader"),
+            global_family_board={"board_id": f"board-{attempt}"},
+            global_situation_digest={"digest_id": f"digest-{attempt}"},
+            agent=agent,
+            cooldown_hours=4,
+        )
+
+        failure = store.read_latest_failure()
+        assert posture == {}
+        assert ref["status"] == "error"
+        assert failure is not None
+        assert failure["retry_attempt"] == attempt
+        assert failure["retry_delay_seconds"] == delay_minutes * 60
+        assert failure["next_retry_at"] == (
+            attempt_at + timedelta(minutes=delay_minutes)
+        ).isoformat()
+        attempt_at += timedelta(minutes=delay_minutes)
+
+    assert len(agent.requests) == len(expected_minutes)
+
+
+def test_global_posture_success_clears_failure_and_resets_retry_sequence(tmp_path) -> None:
+    scopes = CandidateScopeStore(tmp_path / "candidate_scopes")
+    store = GlobalUniversePostureStore(tmp_path / "global_universe_postures")
+
+    class FailingPostureAgent:
+        def compose(self, _request):
+            raise RuntimeError("posture unavailable")
+
+    common = {
+        "scopes": scopes,
+        "store": store,
+        "log": logging.getLogger("casys-trader"),
+        "global_family_board": {"board_id": "board-1"},
+        "global_situation_digest": {"digest_id": "digest-1"},
+        "cooldown_hours": 4,
+    }
+    universe_intelligence_runtime._prepare_global_universe_posture(
+        **common,
+        now=NOW,
+        agent=FailingPostureAgent(),
+    )
+    assert store.read_latest_failure()["retry_attempt"] == 1
+
+    recovered_at = NOW + timedelta(minutes=30)
+    recovered, recovered_ref = universe_intelligence_runtime._prepare_global_universe_posture(
+        **common,
+        now=recovered_at,
+        agent=FakePostureAgent(),
+    )
+
+    assert recovered_ref["persistence_status"] == "appended"
+    assert store.read_current() == recovered
+    assert store.read_latest_failure() is None
+
+    after_success, after_success_ref = universe_intelligence_runtime._prepare_global_universe_posture(
+        **common,
+        now=recovered_at + timedelta(hours=4, minutes=1),
+        agent=FailingPostureAgent(),
+    )
+
+    failure = store.read_latest_failure()
+    assert after_success == recovered
+    assert after_success_ref["status"] == "error"
+    assert failure is not None
+    assert failure["retry_attempt"] == 1
+    assert failure["current_posture_id"] == recovered["posture_id"]
+
+
 def test_decide_refresh_cooldown_zero_never_forces_refresh() -> None:
     old = _posture_current((NOW - timedelta(days=3)).isoformat())
     assert universe_intelligence_runtime.decide_global_posture_refresh(
@@ -592,6 +798,130 @@ def test_tick_repairs_a_missing_prepared_projection_without_recalling_agent(tmp_
     assert store.read_prepared(scope_id)["status"] == "success"
 
 
+def test_micro_refresh_is_venue_explicit_and_keeps_exact_company_provenance(tmp_path) -> None:
+    state_dir = tmp_path / "state"
+    config_dir = tmp_path / "config"
+    state_dir.mkdir()
+    config_dir.mkdir()
+    scope_id = _write_scope_and_brief(
+        state_dir,
+        venue="EU",
+        symbols=["AIR.PA", "SAP.DE"],
+        family="eu_industrials",
+    )
+    agent = FakeAgent()
+
+    universe_intelligence_runtime.tick_universe_intelligence(
+        config_dir=config_dir,
+        state_dir=state_dir,
+        loop_now=NOW,
+        agent=agent,
+        venues=("EU",),
+    )
+    first = UniverseRunStore(state_dir / "universe_runs").read_latest("EU")
+    company_ref = _write_company_brief(
+        state_dir,
+        symbol="SAP.DE",
+        input_signature="company-sap-v2",
+    )
+
+    ordinary = universe_intelligence_runtime.tick_universe_intelligence(
+        config_dir=config_dir,
+        state_dir=state_dir,
+        loop_now=NOW + timedelta(minutes=1),
+        agent=agent,
+        venues=("EU",),
+    )
+    assert len(agent.requests) == 1
+    assert ordinary["skipped"] == [{"venue": "EU", "reason": "already_prepared"}]
+
+    refreshed = universe_intelligence_runtime.tick_universe_intelligence(
+        config_dir=config_dir,
+        state_dir=state_dir,
+        loop_now=NOW + timedelta(minutes=2),
+        agent=agent,
+        venues=("EU",),
+        refresh_venues=("EU",),
+    )
+
+    assert refreshed["prepared"][0]["candidate_scope_id"] == scope_id
+    assert len(agent.requests) == 2
+    latest = UniverseRunStore(state_dir / "universe_runs").read_latest("EU")
+    assert latest["refresh_reason"] == "company_brief_wave"
+    assert latest["request_payload_hash"] != first["request_payload_hash"]
+    assert latest["company_context_hash"] != first["company_context_hash"]
+    assert latest["company_brief_refs_by_symbol"]["SAP.DE"] == company_ref
+
+
+def test_exact_activated_scope_is_terminal_even_for_force(tmp_path) -> None:
+    state_dir = tmp_path / "state"
+    config_dir = tmp_path / "config"
+    state_dir.mkdir()
+    config_dir.mkdir()
+    scope_id = _write_scope_and_brief(
+        state_dir,
+        venue="TW",
+        symbols=["2330.TW", "2454.TW"],
+        family="semis_tw",
+    )
+    (state_dir / "venue_state.json").write_text(
+        json.dumps(
+            {
+                "venues": {
+                    "TW": {
+                        "candidate_scope_id": scope_id,
+                        "last_universe_activation_scope_id": scope_id,
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    agent = FakeAgent()
+    posture_agent = FakePostureAgent()
+
+    result = universe_intelligence_runtime.tick_universe_intelligence(
+        config_dir=config_dir,
+        state_dir=state_dir,
+        loop_now=NOW,
+        agent=agent,
+        posture_agent=posture_agent,
+        venues=("TW",),
+        refresh_venues=("TW",),
+        force=True,
+    )
+
+    assert result["skipped"] == [
+        {
+            "venue": "TW",
+            "candidate_scope_id": scope_id,
+            "reason": "scope_already_activated",
+        }
+    ]
+    assert agent.requests == []
+    assert posture_agent.requests == []
+
+
+def test_refresh_signature_derives_from_legacy_success_record() -> None:
+    refresh_signature = universe_intelligence_runtime._universe_refresh_signature(
+        venue="EU",
+        scope_id="scope-eu",
+        brief_id="brief-eu",
+    )
+    legacy = {
+        "status": "success",
+        "venue": "EU",
+        "candidate_scope_id": "scope-eu",
+        "brief_ref": {"brief_id": "brief-eu"},
+    }
+
+    assert "refresh_signature" not in legacy
+    assert universe_intelligence_runtime._same_refresh_success(
+        legacy,
+        refresh_signature,
+    )
+
+
 def test_tick_never_appends_success_when_prepared_write_fails(tmp_path) -> None:
     state_dir = tmp_path / "state"
     config_dir = tmp_path / "config"
@@ -623,6 +953,155 @@ def test_tick_never_appends_success_when_prepared_write_fails(tmp_path) -> None:
     assert store.read_latest("US")["status"] == "error"
     assert store.read_latest("US")["error_code"] == "prepared_write_error"
     assert store.read_prepared(scope_id) is None
+
+
+def test_prepared_projection_repair_uses_exponential_backoff(tmp_path) -> None:
+    state_dir = tmp_path / "state"
+    config_dir = tmp_path / "config"
+    state_dir.mkdir()
+    config_dir.mkdir()
+    scope_id = _write_scope_and_brief(
+        state_dir,
+        venue="EU",
+        symbols=["AIR.PA", "SAP.DE"],
+        family="eu_industrials",
+    )
+    agent = FakeAgent()
+    universe_intelligence_runtime.tick_universe_intelligence(
+        config_dir=config_dir,
+        state_dir=state_dir,
+        loop_now=NOW,
+        agent=agent,
+        venues=("EU",),
+    )
+    normal_store = UniverseRunStore(state_dir / "universe_runs")
+    normal_store.prepared_path_for_scope(scope_id).unlink()
+
+    class FailingPreparedStore(UniverseRunStore):
+        writes = 0
+
+        def write_prepared(self, scope_id, record):
+            self.writes += 1
+            raise OSError("disk full")
+
+    store = FailingPreparedStore(state_dir / "universe_runs")
+    first = universe_intelligence_runtime.tick_universe_intelligence(
+        config_dir=config_dir,
+        state_dir=state_dir,
+        loop_now=NOW,
+        agent=agent,
+        run_store=store,
+        venues=("EU",),
+    )
+    assert first["errors"][0]["reason"] == "prepared_write_error"
+    assert store.read_latest("EU")["latest_failure"]["retry_attempt"] == 1
+    assert store.read_latest("EU")["latest_failure"]["retry_delay_seconds"] == 60
+
+    deferred = universe_intelligence_runtime.tick_universe_intelligence(
+        config_dir=config_dir,
+        state_dir=state_dir,
+        loop_now=NOW + timedelta(seconds=30),
+        agent=agent,
+        run_store=store,
+        venues=("EU",),
+    )
+    assert deferred["skipped"][0]["reason"] == "failure_backoff"
+    assert store.writes == 1
+
+    universe_intelligence_runtime.tick_universe_intelligence(
+        config_dir=config_dir,
+        state_dir=state_dir,
+        loop_now=NOW + timedelta(seconds=61),
+        agent=agent,
+        run_store=store,
+        venues=("EU",),
+    )
+    latest_failure = store.read_latest("EU")["latest_failure"]
+    assert store.writes == 2
+    assert latest_failure["retry_attempt"] == 2
+    assert latest_failure["retry_delay_seconds"] == 2 * 60
+    assert "latest_failure" not in latest_failure
+    assert len(agent.requests) == 1
+
+
+def test_failure_backoff_is_exponential_and_stable_for_one_scope_brief(tmp_path, caplog) -> None:
+    caplog.set_level(logging.INFO, logger="casys-trader")
+    state_dir = tmp_path / "state"
+    config_dir = tmp_path / "config"
+    state_dir.mkdir()
+    config_dir.mkdir()
+    _write_scope_and_brief(
+        state_dir, venue="EU", symbols=["AIR.PA", "SAP.DE"], family="eu_industrials"
+    )
+    agent = FailingAgent()
+
+    first = universe_intelligence_runtime.tick_universe_intelligence(
+        config_dir=config_dir, state_dir=state_dir, loop_now=NOW, agent=agent, venues=("EU",)
+    )
+    assert first["errors"][0]["reason"] == "TimeoutError"
+    latest = UniverseRunStore(state_dir / "universe_runs").read_latest("EU")
+    assert latest["retry_attempt"] == 1
+    assert latest["retry_delay_seconds"] == 30 * 60
+    assert latest["next_retry_at"] == (NOW + timedelta(minutes=30)).isoformat()
+
+    deferred = universe_intelligence_runtime.tick_universe_intelligence(
+        config_dir=config_dir,
+        state_dir=state_dir,
+        loop_now=NOW + timedelta(minutes=1),
+        agent=agent,
+        venues=("EU",),
+    )
+    assert len(agent.requests) == 1
+    assert deferred["skipped"][0]["reason"] == "failure_backoff"
+    assert deferred["skipped"][0]["attempt"] == 1
+
+    universe_intelligence_runtime.tick_universe_intelligence(
+        config_dir=config_dir,
+        state_dir=state_dir,
+        loop_now=NOW + timedelta(minutes=31),
+        agent=agent,
+        venues=("EU",),
+    )
+    assert len(agent.requests) == 2
+    latest = UniverseRunStore(state_dir / "universe_runs").read_latest("EU")
+    assert latest["retry_attempt"] == 2
+    assert latest["retry_delay_seconds"] == 60 * 60
+    assert "universe retry scheduled venue=EU" in caplog.text
+    assert "universe retry deferred venue=EU" in caplog.text
+
+
+def test_material_signature_ignores_timestamps_but_retry_lineage_is_scope_brief_bound() -> None:
+    original = {
+        "as_of": "2026-07-10T20:00:00+00:00",
+        "market_context": {"as_of": "2026-07-10T19:00:00+00:00", "status": "partial"},
+        "candidates": [{"symbol": "AIR.PA", "attractiveness": 0.8}],
+    }
+    timestamp_only = {
+        **original,
+        "as_of": "2026-07-10T20:02:00+00:00",
+        "market_context": {"as_of": "2026-07-10T19:02:00+00:00", "status": "partial"},
+    }
+    material_change = {
+        **timestamp_only,
+        "market_context": {"as_of": "2026-07-10T19:02:00+00:00", "status": "stale"},
+    }
+
+    assert universe_intelligence_runtime._material_request_signature(original) == (
+        universe_intelligence_runtime._material_request_signature(timestamp_only)
+    )
+    assert universe_intelligence_runtime._material_request_signature(original) != (
+        universe_intelligence_runtime._material_request_signature(material_change)
+    )
+    assert universe_intelligence_runtime._retry_lineage_key(
+        venue="EU", scope_id="scope-1", brief=SimpleNamespace(brief_id="brief-1")
+    ) == universe_intelligence_runtime._retry_lineage_key(
+        venue="EU", scope_id="scope-1", brief=SimpleNamespace(brief_id="brief-1")
+    )
+    assert universe_intelligence_runtime._retry_lineage_key(
+        venue="EU", scope_id="scope-1", brief=SimpleNamespace(brief_id="brief-1")
+    ) != universe_intelligence_runtime._retry_lineage_key(
+        venue="EU", scope_id="scope-2", brief=SimpleNamespace(brief_id="brief-1")
+    )
 
 
 def test_family_board_persistence_failure_does_not_block_preparation(tmp_path) -> None:
@@ -866,7 +1345,8 @@ def test_tick_reuses_global_posture_within_cooldown_without_recalling_agent(tmp_
     assert len(posture_rows) == 1
 
 
-def test_runner_is_non_blocking_and_coalesces_latest_trigger() -> None:
+def test_runner_is_non_blocking_and_coalesces_latest_trigger(caplog) -> None:
+    caplog.set_level(logging.INFO, logger="casys-trader")
     started = threading.Event()
     release = threading.Event()
     calls = []
@@ -890,4 +1370,119 @@ def test_runner_is_non_blocking_and_coalesces_latest_trigger() -> None:
     release.set()
     first["_thread"].join(timeout=2.0)
     assert calls == ["first", "second"]
+    assert "universe trigger coalesced pending_replaced=False" in caplog.text
     runner.stop()
+
+
+def test_runner_keeps_post_cycle_immediate_and_merges_delayed_micro_venues() -> None:
+    calls = []
+    two_calls = threading.Event()
+
+    def tick_fn(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 2:
+            two_calls.set()
+        return {"prepared": [], "waiting": [], "skipped": [], "errors": []}
+
+    runner = universe_intelligence_runtime.UniverseIntelligenceRunner(
+        tick_fn=tick_fn,
+        stop_timeout_s=0.1,
+    )
+    first = runner.trigger(
+        delay_s=0.05,
+        loop_now="micro-eu",
+        venues=("EU",),
+        refresh_venues=("EU",),
+    )
+    runner.trigger(
+        delay_s=0.05,
+        loop_now="micro-tw",
+        venues=("TW",),
+        refresh_venues=("TW",),
+    )
+    runner.trigger(
+        loop_now="post-cycle",
+        venues=universe_intelligence_runtime.VENUES,
+    )
+
+    assert two_calls.wait(timeout=1.0)
+    first["_thread"].join(timeout=1.0)
+    assert [call["loop_now"] for call in calls] == ["post-cycle", "micro-tw"]
+    assert calls[0]["venues"] == universe_intelligence_runtime.VENUES
+    assert "refresh_venues" not in calls[0]
+    assert calls[1]["venues"] == ("TW", "EU")
+    assert calls[1]["refresh_venues"] == ("TW", "EU")
+    runner.stop()
+
+
+def test_runner_extends_trailing_deadline_without_waiting_for_real_debounce() -> None:
+    clock = [10.0]
+    runner = universe_intelligence_runtime.UniverseIntelligenceRunner(
+        tick_fn=lambda **_kwargs: {
+            "prepared": [],
+            "waiting": [],
+            "skipped": [],
+            "errors": [],
+        },
+        stop_timeout_s=0.1,
+        monotonic_fn=lambda: clock[0],
+    )
+    runner.trigger(
+        delay_s=120.0,
+        venues=("EU",),
+        refresh_venues=("EU",),
+    )
+    first_deadline = runner._delayed_deadline
+    clock[0] = 25.0
+    runner.trigger(
+        delay_s=120.0,
+        venues=("TW",),
+        refresh_venues=("TW",),
+    )
+
+    assert first_deadline == 130.0
+    assert runner._delayed_deadline == 145.0
+    assert runner._delayed_kwargs["venues"] == ("TW", "EU")
+    assert runner._delayed_kwargs["refresh_venues"] == ("TW", "EU")
+    runner.stop()
+
+
+def test_company_brief_refresh_routes_only_supported_symbol_venue(tmp_path) -> None:
+    calls: list[dict] = []
+
+    class Runner:
+        def trigger(self, **kwargs):
+            calls.append(kwargs)
+            return {"triggered": True}
+
+    runner = Runner()
+    routed = universe_intelligence_runtime.trigger_company_brief_refresh(
+        {"symbol": "2330.TW"},
+        runner=runner,
+        config_dir=tmp_path / "config",
+        state_dir=tmp_path / "state",
+        loop_now=NOW,
+        delay_s=12.0,
+    )
+    fx = universe_intelligence_runtime.trigger_company_brief_refresh(
+        {"symbol": "EURUSD=X"},
+        runner=runner,
+        config_dir=tmp_path / "config",
+        state_dir=tmp_path / "state",
+        loop_now=NOW,
+    )
+    missing = universe_intelligence_runtime.trigger_company_brief_refresh(
+        {},
+        runner=runner,
+        config_dir=tmp_path / "config",
+        state_dir=tmp_path / "state",
+        loop_now=NOW,
+    )
+
+    assert routed == {"triggered": True}
+    assert calls[0]["venues"] == ("TW",)
+    assert calls[0]["refresh_venues"] == ("TW",)
+    assert calls[0]["delay_s"] == 12.0
+    assert fx == {"triggered": False, "reason": "unsupported_venue", "venue": "FX"}
+    assert missing == {"triggered": False, "reason": "symbol_missing"}
+    assert len(calls) == 1

@@ -2,4 +2,5 @@
 
 __all__ = [
     "code_version",
+    "governance_version",
 ]

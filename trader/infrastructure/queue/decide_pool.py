@@ -48,6 +48,9 @@ class DecidePool:
         Durée du bail en ms (défaut 30 min).
     backoff_base_ms:
         Base du backoff exponentiel sur retry (ms, défaut 1000).
+    backoff_max_ms:
+        Plafond optionnel du backoff exponentiel (ms). ``None`` conserve le
+        comportement historique non borné.
     """
 
     def __init__(
@@ -60,6 +63,7 @@ class DecidePool:
         now_fn: Callable[[], float],
         lease_ms: int = 1_800_000,
         backoff_base_ms: int = 1000,
+        backoff_max_ms: int | None = None,
     ):
         self._ledger = ledger
         self._pools = pools
@@ -68,6 +72,7 @@ class DecidePool:
         self._now_fn = now_fn
         self._lease_ms = lease_ms
         self._backoff_base_ms = backoff_base_ms
+        self._backoff_max_ms = backoff_max_ms
         self._stop_event = threading.Event()
         self._threads: list[threading.Thread] = []
 
@@ -153,6 +158,7 @@ class DecidePool:
             worker_id=worker_id,
             lease_ms=self._lease_ms,
             backoff_base_ms=self._backoff_base_ms,
+            backoff_max_ms=self._backoff_max_ms,
             now_fn=self._now_fn,
         )
         log.debug("[decide_pool] worker started id=%s", worker_id)

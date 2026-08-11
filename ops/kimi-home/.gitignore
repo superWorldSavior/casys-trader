@@ -1,0 +1,6 @@
+# KIMI_CODE_HOME isolé du daemon : on ne versionne QUE config.toml.
+# Tout le reste (auth secret + runtime généré par kimi-code : sessions, caches,
+# sqlite, logs, skills, telemetry, device_id, updates…) est ignoré.
+*
+!.gitignore
+!config.toml

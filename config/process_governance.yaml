@@ -1,0 +1,90 @@
+schema_version: 1
+
+process:
+  id: casys-trader.paper-decision-cycle
+  version: "0.1"
+  name: Casys Trader paper decision and planning cycle
+
+runtime_binding:
+  status: integrated
+  note: >-
+    The daemon enables the process-evidence pilot by default after claiming its
+    PID and bootstrapping state. It attaches the versioned governance identity
+    to admitted process instances and durable decision records.
+
+instance_contract:
+  trigger: >-
+    A symbol or open position becomes due because of a scheduled wake, an event,
+    an indicator watch, an armed plan, or bootstrap.
+  work_object: A due symbol or open position requiring a paper outcome across one or more attempts.
+  instance_key: process_instance_id
+  process_instance_id: >-
+    Stable identity assigned to the work object and reused across attempts while
+    that process instance remains open.
+  runtime_run_id: >-
+    Fixed identity of one daemon process, created after the runtime has claimed
+    its PID; one daemon run may serve several process instances and attempts.
+  attempt_id: >-
+    Identity of one cycle or recovery attempt; it changes whenever an open
+    process instance is attempted again.
+
+boundary:
+  start: The due work object and its observable decision context are available.
+  result: >-
+    A decision is durably recorded and each requested paper effect is either
+    observed, deterministically rejected, or placed in recovery.
+  end: A terminal outcome is supported by the evidence required below.
+  excluded:
+    - Universe selection and rotation
+    - Macro, news, and company research production
+    - Backtesting and strategy development
+    - Inter-instance learning review and process evolution
+
+accountability:
+  status: assigned
+  role: Casys Trader Process Owner
+  holder: Erwan Lee Pesle
+  accepted_on: "2026-08-09"
+
+completion_contract:
+  terminal_outcomes:
+    completed:
+      predicate: >-
+        The decision is durably recorded and every requested effect has either
+        been observed in its authoritative store or deterministically rejected.
+      authoritative_state: Decision ledger plus scheduler, plan store, and paper broker as applicable.
+      required_evidence:
+        - Correlated decision record
+        - Read-back of every requested scheduler, plan, admission, or broker effect
+    failed:
+      predicate: >-
+        The instance cannot produce its boundary result, no committing effect
+        remains possible, and the failure is durably recorded.
+      authoritative_state: Correlated process receipt and the authoritative stores touched before failure.
+      required_evidence:
+        - Correlated failure record
+        - Evidence that no unresolved committing effect remains
+    escalated:
+      predicate: >-
+        Control has been transferred to a named human role and that role has
+        acknowledged responsibility for the unresolved instance.
+      authoritative_state: Acknowledged control-transfer record.
+      required_evidence:
+        - Correlated escalation request
+        - Acknowledgement by the receiving human role
+    cancelled:
+      predicate: >-
+        The trigger or work object was explicitly invalidated before a committing
+        effect and cancellation was durably recorded.
+      authoritative_state: Correlated process receipt and authoritative execution state.
+      required_evidence:
+        - Correlated cancellation record
+        - Evidence that no committing effect occurred or remains possible
+
+  non_terminal_states:
+    recovery_required:
+      predicate: >-
+        A committing effect is failed, partial, late, or unknown and therefore
+        cannot yet satisfy any terminal predicate.
+      authoritative_state: Correlated execution task and paper broker state.
+      required_action: Reconcile the task and broker state before deciding completion, failure, or escalation.

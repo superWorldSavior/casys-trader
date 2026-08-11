@@ -64,6 +64,7 @@ class DecisionDispatchRequest:
     company_context_by_symbol: dict[str, dict] = field(default_factory=dict)
     mandate_context_by_symbol: dict[str, dict] = field(default_factory=dict)
     learning_feedback_provider: Callable[[list[str]], dict[str, dict]] | None = None
+    process_identity_by_symbol: dict[str, dict[str, str]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -251,6 +252,7 @@ def _dispatch_via_queue(
         cycle_id=request.cycle_id,
         now_fn=request.now_fn,
         symbols_universe=request.analysis_symbols,
+        process_identity_by_symbol=request.process_identity_by_symbol,
     ):
         if decision is None:
             undecided_symbols.add(symbol)

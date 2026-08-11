@@ -78,6 +78,41 @@ def test_build_decision_row_preserves_global_learning_citations() -> None:
     assert row["applied_learning_ids"] == ["rule-breakout", "rule-fees"]
 
 
+def test_build_decision_row_exposes_pilot_correlation_only_when_supplied() -> None:
+    decision = _decision()
+    decision.update(
+        {
+            "decision_id": "decision-1",
+            "process_instance_id": "instance-1",
+            "attempt_id": "attempt-1",
+            "runtime_run_id": "decision-runtime-1",
+        }
+    )
+    report = _report([decision])
+    report["runtime_run_id"] = "report-runtime-ignored"
+    report["governance_version"] = {"process_version": "0.1", "bundle_sha256": "abc"}
+
+    row = decision_ledger.build_decision_row(report, decision, sequence=0)
+
+    assert row["process"] == {
+        "process_instance_id": "instance-1",
+        "attempt_id": "attempt-1",
+        "runtime_run_id": "decision-runtime-1",
+        "decision_id": "decision-1",
+        "governance_version": {"process_version": "0.1", "bundle_sha256": "abc"},
+    }
+    fallback = _report([_decision()])
+    fallback["runtime_run_id"] = "report-runtime-1"
+    assert decision_ledger.build_decision_row(fallback, _decision(), sequence=0)["process"] == {
+        "process_instance_id": None,
+        "attempt_id": None,
+        "runtime_run_id": "report-runtime-1",
+        "decision_id": "2026-06-08T12:15:21+00:00|0|SPY",
+        "governance_version": None,
+    }
+    assert "process" not in decision_ledger.build_decision_row(_report(), _decision(), sequence=0)
+
+
 def test_build_decision_row_propage_les_rejets_indicator_watch() -> None:
     """La ligne d'audit conserve l'intention indicator_watch et ses rejets."""
     decision = _decision()
@@ -261,6 +296,28 @@ def test_decision_ledger_append_est_idempotent(tmp_path) -> None:
     assert rows[0]["decision_id"] == row["decision_id"]
 
 
+def test_decision_ledger_relit_une_decision_exacte_depuis_le_disque(tmp_path) -> None:
+    path = tmp_path / "decisions.jsonl"
+    writer = decision_ledger.DecisionLedgerStore(path)
+    first = decision_ledger.build_decision_row(
+        _report([_decision("SPY")]),
+        _decision("SPY"),
+        sequence=0,
+    )
+    second = decision_ledger.build_decision_row(
+        _report([_decision("QQQ")]),
+        _decision("QQQ"),
+        sequence=1,
+    )
+    writer.append(first)
+    writer.append(second)
+
+    reader = decision_ledger.DecisionLedgerStore(path)
+
+    assert reader.read_by_decision_id(first["decision_id"]) == first
+    assert reader.read_by_decision_id("missing") is None
+
+
 def test_seed_existing_reports_recupere_last_et_current_sans_doublons(tmp_path) -> None:
     state_dir = tmp_path / "state"
     state_dir.mkdir()
@@ -401,8 +458,13 @@ def _simple_report():
 
 
 def test_build_decision_row_includes_news_when_present():
-    news = {"earnings_in_h": 24.0, "news_coverage": "ok",
-            "news_count": 2, "source": "yahoo", "asof": "2026-06-23T12:00:00+00:00"}
+    news = {
+        "earnings_in_h": 24.0,
+        "news_coverage": "ok",
+        "news_count": 2,
+        "source": "yahoo",
+        "asof": "2026-06-23T12:00:00+00:00",
+    }
     decision = {"symbol": "ACA.PA", "action": "HOLD", "news": news}
     row = decision_ledger.build_decision_row(_simple_report(), decision, sequence=0)
     assert row["news"] == news

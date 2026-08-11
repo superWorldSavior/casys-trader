@@ -2,6 +2,7 @@
 
 import logging
 import os
+from types import SimpleNamespace
 
 import pytest
 
@@ -23,6 +24,17 @@ def _news_macro_disabled_by_default(monkeypatch):
     monkeypatch.setenv("CASYS_NEWS_MACRO_ANALYST_ENABLED", "0")
     monkeypatch.setenv("CASYS_UNIVERSE_INTELLIGENCE_ENABLED", "0")
     monkeypatch.setenv("CASYS_COMPANY_MICRO_ANALYST_ENABLED", "0")
+
+
+@pytest.fixture(autouse=True)
+def _background_market_collectors_disabled_by_default(monkeypatch):
+    """No daemon test may leak real network collector threads into later tests."""
+
+    def disabled(*_args, **_kwargs):
+        return {"triggered": False, "reason": "disabled_in_tests"}
+
+    monkeypatch.setattr(daemon, "macro_series", SimpleNamespace(maybe_collect=disabled))
+    monkeypatch.setattr(daemon, "gdelt", SimpleNamespace(maybe_collect=disabled))
 
 
 @pytest.fixture(autouse=True)

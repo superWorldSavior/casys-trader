@@ -77,6 +77,38 @@ def test_latest_projections_are_isolated_for_three_venues(tmp_path) -> None:
     assert {venue: store.read_latest(venue) for venue in expected} == expected
 
 
+def test_error_keeps_last_success_projection_and_exposes_latest_failure(tmp_path) -> None:
+    store = UniverseRunStore(tmp_path / "universe_runs")
+    success = _run("EU", "scope-eu", "success", agent_run_id="run-success")
+    failure = {
+        **_run(
+            "EU",
+            "scope-eu",
+            "error",
+            as_of="2026-07-10T06:30:00+00:00",
+            agent_run_id="run-error",
+        ),
+        "error_code": "TimeoutError",
+        "retry_attempt": 1,
+        "next_retry_at": "2026-07-10T07:00:00+00:00",
+    }
+
+    store.append(success)
+    store.append(failure)
+
+    assert store.read_latest("EU") == {**success, "latest_failure": failure}
+    rows = [
+        json.loads(line)
+        for line in (tmp_path / "universe_runs" / "2026-07-10.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    assert rows == [success, failure]
+
+    store.append({**success, "as_of": "2026-07-10T07:01:00+00:00", "agent_run_id": "run-recovered"})
+    assert "latest_failure" not in store.read_latest("EU")
+
+
 def test_read_latest_falls_back_to_canonical_when_projection_is_corrupt(tmp_path) -> None:
     store = UniverseRunStore(tmp_path / "universe_runs")
     record = _run("EU", "scope-eu", "error")

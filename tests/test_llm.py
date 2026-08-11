@@ -17,6 +17,8 @@ from trader.agent.llm import (
     _looks_retryable_provider_error,
     _run_one_shot_command,
 )
+from trader.infrastructure.llm.acpx_backend import _validated_acpx_codex_home
+from trader.infrastructure.llm.acpx_backend import _validated_acpx_kimi_home
 
 
 class StubBackend:
@@ -137,6 +139,9 @@ def test_retryable_provider_error_se_limite_aux_rate_limits_et_quotas() -> None:
 def test_acpx_backend_timeout_est_retryable_et_cape_par_appel(monkeypatch) -> None:
     """Un timeout d'appel est TRANSITOIRE → retryable (incident AMCR 2026-07-06),
     et le subprocess est tué au cap par-appel (150s) et non au budget total (900s)."""
+    # Le cap par-appel lit CASYS_ACPX_CALL_TIMEOUT_S ; l'isoler d'un .env chargé
+    # par un autre test de la suite (sinon le cap observé n'est plus 150).
+    monkeypatch.delenv("CASYS_ACPX_CALL_TIMEOUT_S", raising=False)
     # Le cap par-appel lit CASYS_ACPX_CALL_TIMEOUT_S ; l'isoler d'un .env chargé
     # par un autre test de la suite (sinon le cap observé n'est plus 150).
     monkeypatch.delenv("CASYS_ACPX_CALL_TIMEOUT_S", raising=False)
@@ -315,7 +320,7 @@ def test_acpx_session_send_retourne_une_completion_sur_stdout(monkeypatch) -> No
     monkeypatch.setattr("trader.infrastructure.llm.acpx_backend.shutil.which", lambda _bin: "/usr/local/bin/acpx")
     calls = []
 
-    def fake_run(command, *, timeout_s, on_pid=None):
+    def fake_run(command, *, timeout_s, on_pid=None, codex_home=None, agent=None):
         calls.append((command, timeout_s))
         return subprocess.CompletedProcess(
             args=command,
@@ -368,7 +373,7 @@ def test_acpx_backend_open_session_cree_une_session_neuve_et_retourne_un_objet(m
     monkeypatch.setattr("trader.infrastructure.llm.acpx_backend.shutil.which", lambda _bin: "/usr/local/bin/acpx")
     calls = []
 
-    def fake_run(command, *, timeout_s, on_pid=None):
+    def fake_run(command, *, timeout_s, on_pid=None, codex_home=None, agent=None):
         calls.append((command, timeout_s))
         return subprocess.CompletedProcess(args=command, returncode=0, stdout="", stderr="")
 
@@ -413,9 +418,9 @@ def test_acpx_backend_applique_l_effort_sur_la_session_avant_le_prompt(monkeypat
     monkeypatch.setattr("trader.infrastructure.llm.acpx_backend.shutil.which", lambda _bin: "/usr/local/bin/acpx")
     calls = []
 
-    def fake_run(command, *, timeout_s, on_pid=None):
+    def fake_run(command, *, timeout_s, on_pid=None, codex_home=None, agent=None):
         calls.append((command, timeout_s))
-        return subprocess.CompletedProcess(args=command, returncode=0, stdout="ok", stderr="")
+        return subprocess.CompletedProcess(args=command, returncode=0, stdout="medium", stderr="")
 
     monkeypatch.setattr("trader.infrastructure.llm.acpx_backend._run_one_shot_command", fake_run)
     backend = AcpxBackend(
@@ -425,9 +430,9 @@ def test_acpx_backend_applique_l_effort_sur_la_session_avant_le_prompt(monkeypat
         reasoning_effort="medium",
     )
 
-    session = backend.open_session("casys-trader:runtime-brain:0", timeout_s=30)
+    result = backend.open_session("casys-trader:runtime-brain:0", timeout_s=30)
 
-    assert isinstance(session, llm.AcpxSession)
+    assert isinstance(result, llm.AcpxSession)
     assert calls[1] == (
         [
             "acpx",
@@ -446,36 +451,10 @@ def test_acpx_backend_applique_l_effort_sur_la_session_avant_le_prompt(monkeypat
     )
 
 
-def test_acpx_backend_complete_avec_effort_utilise_une_session_temporaire(monkeypatch) -> None:
-    monkeypatch.setattr("trader.infrastructure.llm.acpx_backend.shutil.which", lambda _bin: "/usr/local/bin/acpx")
-    calls: list[list[str]] = []
-
-    def fake_run(command, *, timeout_s, on_pid=None):
-        calls.append(command)
-        return subprocess.CompletedProcess(args=command, returncode=0, stdout="ok", stderr="")
-
-    monkeypatch.setattr("trader.infrastructure.llm.acpx_backend._run_one_shot_command", fake_run)
-    backend = AcpxBackend(
-        provider="acpx",
-        model="gpt-5.6-luna",
-        acpx_bin="acpx",
-        session_label="casys-trader:runtime-brain",
-        reasoning_effort="medium",
-    )
-
-    result = backend.complete("analyse", timeout_s=30)
-
-    assert isinstance(result, llm.LlmCompletion)
-    assert ["sessions", "new"] == calls[0][-4:-2]
-    assert calls[1][-5:-2] == ["set", "reasoning_effort", "medium"]
-    assert "prompt" in calls[2]
-    assert calls[3][-3:-1] == ["sessions", "close"]
-
-
 def test_acpx_backend_open_session_retourne_l_echec_si_new_echoue(monkeypatch) -> None:
     monkeypatch.setattr("trader.infrastructure.llm.acpx_backend.shutil.which", lambda _bin: "/usr/local/bin/acpx")
 
-    def fake_run(command, *, timeout_s, on_pid=None):
+    def fake_run(command, *, timeout_s, on_pid=None, codex_home=None, agent=None):
         return subprocess.CompletedProcess(
             args=command,
             returncode=1,
@@ -500,7 +479,7 @@ def test_acpx_backend_agent_claude_est_porte_par_session_new_et_prompt(monkeypat
     monkeypatch.setattr("trader.infrastructure.llm.acpx_backend.shutil.which", lambda _bin: "/usr/local/bin/acpx")
     calls = []
 
-    def fake_run(command, *, timeout_s, on_pid=None):
+    def fake_run(command, *, timeout_s, on_pid=None, codex_home=None, agent=None):
         calls.append((command, timeout_s))
         return subprocess.CompletedProcess(args=command, returncode=0, stdout="ok", stderr="")
 
@@ -527,7 +506,7 @@ def test_acpx_backend_agent_claude_est_porte_par_session_new_et_prompt(monkeypat
 def test_acpx_session_close_envoie_la_commande_de_fermeture(monkeypatch) -> None:
     calls = []
 
-    def fake_run(command, *, timeout_s, on_pid=None):
+    def fake_run(command, *, timeout_s, on_pid=None, codex_home=None, agent=None):
         calls.append(command)
         return subprocess.CompletedProcess(args=command, returncode=0, stdout="", stderr="")
 
@@ -558,7 +537,7 @@ def test_acpx_session_close_envoie_la_commande_de_fermeture(monkeypatch) -> None
 
 
 def test_acpx_session_close_logge_un_warning_sans_lever(monkeypatch, caplog) -> None:
-    def fake_run(command, *, timeout_s, on_pid=None):
+    def fake_run(command, *, timeout_s, on_pid=None, codex_home=None, agent=None):
         raise RuntimeError("acpx close failed")
 
     monkeypatch.setattr("trader.infrastructure.llm.acpx_backend._run_one_shot_command", fake_run)
@@ -580,7 +559,7 @@ def test_acpx_session_close_logge_un_warning_sans_lever(monkeypatch, caplog) -> 
 def test_acpx_session_close_peut_etre_appele_deux_fois_sans_lever(monkeypatch) -> None:
     calls = []
 
-    def fake_run(command, *, timeout_s, on_pid=None):
+    def fake_run(command, *, timeout_s, on_pid=None, codex_home=None, agent=None):
         calls.append(command)
         if len(calls) == 2:
             raise RuntimeError("already closed")
@@ -1045,22 +1024,186 @@ def test_run_one_shot_impose_le_profil_app_low(monkeypatch) -> None:
     assert 'model_reasoning_effort = "low"' in (codex_home / "config.toml").read_text(encoding="utf-8")
 
 
-@pytest.mark.parametrize("model", ["gpt-5.6-sol", "gpt-5.6-terra"])
-def test_acpx_refuse_un_profil_ultra_quel_que_soit_le_modele(monkeypatch, tmp_path, model) -> None:
+@pytest.mark.parametrize("effort", ["medium", "high", "max", "xhigh", "ultra"])
+def test_acpx_refuse_un_profil_hors_des_efforts_autorises(monkeypatch, tmp_path, effort) -> None:
+    """La garde reste fail-close : seul le profil low actif passe au boot."""
+
     codex_home = tmp_path / "codex-home"
     codex_home.mkdir()
     (codex_home / "config.toml").write_text(
-        f'model = "{model}"\nmodel_reasoning_effort = "ultra"\n',
+        f'model = "gpt-5.6-terra"\nmodel_reasoning_effort = "{effort}"\n',
         encoding="utf-8",
     )
     monkeypatch.setenv("CODEX_HOME", str(codex_home))
     monkeypatch.setattr("trader.infrastructure.llm.acpx_backend.shutil.which", lambda _bin: "/usr/local/bin/acpx")
 
-    result = AcpxBackend(model=model).complete("prompt", timeout_s=12)
+    result = AcpxBackend(model="gpt-5.6-terra").complete("prompt", timeout_s=12)
 
     assert isinstance(result, LlmFailure)
     assert "appel ACPX refusé" in result.message
-    assert "low" in result.message
+    assert effort in result.message
+
+
+@pytest.mark.parametrize("effort", ["low"])
+def test_acpx_accepte_les_efforts_explicites_autorises(monkeypatch, tmp_path, effort) -> None:
+    codex_home = tmp_path / "codex-home"
+    codex_home.mkdir()
+    (codex_home / "config.toml").write_text(
+        f'model = "gpt-5.6-terra"\nmodel_reasoning_effort = "{effort}"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+
+    assert _validated_acpx_codex_home() == codex_home
+
+
+def test_codex_home_du_backend_prime_sur_l_env(monkeypatch, tmp_path) -> None:
+    """Un profil explicitement demandé prime toujours sur le profil global."""
+
+    low_home = tmp_path / "codex-home-low"
+    low_home.mkdir()
+    (low_home / "config.toml").write_text(
+        'model = "gpt-5.6-sol"\nmodel_reasoning_effort = "low"\n', encoding="utf-8"
+    )
+    global_home = tmp_path / "codex-home"
+    global_home.mkdir()
+    (global_home / "config.toml").write_text(
+        'model = "gpt-5.6-sol"\nmodel_reasoning_effort = "low"\n', encoding="utf-8"
+    )
+    monkeypatch.setenv("CODEX_HOME", str(global_home))
+    captured = {}
+
+    class FakePopen:
+        pid = 4242
+        returncode = 0
+
+        def __init__(self, command, **kwargs):
+            captured.update(kwargs)
+
+        def communicate(self, timeout=None):
+            return "OK", ""
+
+    monkeypatch.setattr("trader.infrastructure.llm.acpx_backend.subprocess.Popen", FakePopen)
+    monkeypatch.setattr("trader.infrastructure.llm.acpx_backend._terminate_process_group", lambda _pid: None)
+
+    _run_one_shot_command(["acpx", "exec", "prompt"], timeout_s=12, codex_home=str(low_home))
+
+    assert Path(captured["env"]["CODEX_HOME"]) == low_home
+
+
+def _fake_popen_capturant(monkeypatch, captured: dict):
+    class FakePopen:
+        pid = 4242
+        returncode = 0
+
+        def __init__(self, command, **kwargs):
+            captured.update(kwargs)
+
+        def communicate(self, timeout=None):
+            return "OK", ""
+
+    monkeypatch.setattr("trader.infrastructure.llm.acpx_backend.subprocess.Popen", FakePopen)
+    monkeypatch.setattr("trader.infrastructure.llm.acpx_backend._terminate_process_group", lambda _pid: None)
+
+
+def _profil_codex_valide(tmp_path, monkeypatch):
+    home = tmp_path / "codex-home"
+    home.mkdir()
+    (home / "config.toml").write_text(
+        'model = "gpt-5.6-sol"\nmodel_reasoning_effort = "low"\n', encoding="utf-8"
+    )
+    monkeypatch.setenv("CODEX_HOME", str(home))
+    return home
+
+
+def test_kimi_home_absent_retombe_sur_le_profil_de_l_app(monkeypatch) -> None:
+    """Jamais ~/.kimi-code : sans la var, le défaut est le profil versionné.
+
+    C'est l'invariant qui compte — un ``KIMI_CODE_HOME`` manquant ferait sinon
+    tourner le daemon sur le CLI personnel EN SILENCE (modèle et effort de la
+    machine du dev, pas ceux de l'app).
+    """
+
+    monkeypatch.delenv("KIMI_CODE_HOME", raising=False)
+
+    resolved = _validated_acpx_kimi_home()
+
+    assert resolved.name == "kimi-home"
+    assert resolved.parent.name == "ops"
+    assert resolved != Path.home() / ".kimi-code"
+
+
+@pytest.mark.parametrize("effort", ["low", "medium", ""])
+def test_kimi_effort_faible_est_refuse(monkeypatch, tmp_path, effort) -> None:
+    kimi_home = tmp_path / "kimi-home"
+    kimi_home.mkdir()
+    body = f'[thinking]\neffort = "{effort}"\n' if effort else "[thinking]\nenabled = true\n"
+    (kimi_home / "config.toml").write_text(body, encoding="utf-8")
+    monkeypatch.setenv("KIMI_CODE_HOME", str(kimi_home))
+
+    with pytest.raises(RuntimeError, match="appel ACPX refusé"):
+        _validated_acpx_kimi_home()
+
+
+@pytest.mark.parametrize("effort", ["high", "max"])
+def test_kimi_accepte_les_deux_crans_hauts(monkeypatch, tmp_path, effort) -> None:
+    kimi_home = tmp_path / "kimi-home"
+    kimi_home.mkdir()
+    (kimi_home / "config.toml").write_text(
+        f'[thinking]\neffort = "{effort}"\n', encoding="utf-8"
+    )
+    monkeypatch.setenv("KIMI_CODE_HOME", str(kimi_home))
+
+    assert _validated_acpx_kimi_home() == kimi_home
+
+
+def test_kimi_home_illisible_est_refuse(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("KIMI_CODE_HOME", str(tmp_path / "profil-inexistant"))
+
+    with pytest.raises(RuntimeError, match="profil ACPX kimi illisible"):
+        _validated_acpx_kimi_home()
+
+
+def test_agent_kimi_pose_son_profil_dans_le_subprocess(monkeypatch, tmp_path) -> None:
+    """Le profil validé est celui de l'agent RÉELLEMENT lancé, pas juste Codex."""
+
+    _profil_codex_valide(tmp_path, monkeypatch)
+    kimi_home = tmp_path / "kimi-home"
+    kimi_home.mkdir()
+    (kimi_home / "config.toml").write_text('[thinking]\neffort = "high"\n', encoding="utf-8")
+    monkeypatch.setenv("KIMI_CODE_HOME", str(kimi_home))
+    captured: dict = {}
+    _fake_popen_capturant(monkeypatch, captured)
+
+    _run_one_shot_command(["acpx", "kimi", "exec", "prompt"], timeout_s=12, agent="kimi")
+
+    assert Path(captured["env"]["KIMI_CODE_HOME"]) == kimi_home
+
+
+def test_agent_kimi_avec_profil_invalide_refuse_avant_le_subprocess(monkeypatch, tmp_path) -> None:
+    _profil_codex_valide(tmp_path, monkeypatch)
+    monkeypatch.setenv("KIMI_CODE_HOME", str(tmp_path / "profil-inexistant"))
+
+    def jamais_lance(*_args, **_kwargs):
+        raise AssertionError("le subprocess ne doit pas démarrer sur un profil kimi invalide")
+
+    monkeypatch.setattr("trader.infrastructure.llm.acpx_backend.subprocess.Popen", jamais_lance)
+
+    with pytest.raises(RuntimeError, match="profil ACPX kimi illisible"):
+        _run_one_shot_command(["acpx", "kimi", "exec", "prompt"], timeout_s=12, agent="kimi")
+
+
+def test_agent_codex_n_impose_pas_le_profil_kimi(monkeypatch, tmp_path) -> None:
+    """La garde kimi ne doit pas s'armer sous codex."""
+
+    _profil_codex_valide(tmp_path, monkeypatch)
+    monkeypatch.setenv("KIMI_CODE_HOME", str(tmp_path / "profil-inexistant"))
+    captured: dict = {}
+    _fake_popen_capturant(monkeypatch, captured)
+
+    result = _run_one_shot_command(["acpx", "codex", "exec", "prompt"], timeout_s=12, agent="codex")
+
+    assert result.returncode == 0
 
 
 def test_run_one_shot_ne_sonde_plus_les_ponts_codex_acp(monkeypatch) -> None:
@@ -1271,7 +1414,7 @@ def test_session_admin_commands_conservent_le_cwd_de_la_session_agent_exec(monke
     monkeypatch.setenv("CASYS_AGENT_EXEC", "1")
     monkeypatch.setattr(
         "trader.infrastructure.llm.acpx_backend.agent_exec_scratch_dir",
-        lambda: "/tmp/casys-trader-test-scratch",
+        lambda _codex_home=None: "/tmp/casys-trader-test-scratch",
     )
 
     config_cmd = llm.build_acpx_session_config_command(
@@ -1414,14 +1557,12 @@ def test_build_default_router_from_env_choix_explicite_immune_aux_knobs_trader(m
     monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
     monkeypatch.setenv("TRADER_ACPX_AGENT", "kimi")
     monkeypatch.setenv("TRADER_MODEL", "kimi-code/kimi-for-coding")
-    monkeypatch.setenv("TRADER_REASONING_EFFORT", "medium")
 
     router = build_default_router_from_env(env_path=None, spark_model="gpt-5.6-sol")
 
     backend = router.backends[0]
     assert backend.agent is None
     assert backend.model == "gpt-5.6-sol"
-    assert backend.reasoning_effort is None
 
     router = build_default_router_from_env(env_path=None, spark_model="gpt-5.5", acpx_agent="codex")
 
@@ -1445,6 +1586,36 @@ def test_build_default_router_from_env_knobs_trader_ne_fuitent_pas_vers_universe
     assert backend.provider == "universe"
     assert backend.agent is None
     assert backend.model == "gpt-5.6-sol"
+
+
+def test_build_default_router_from_env_partage_le_profil_codex(monkeypatch) -> None:
+    """Le preset actif partage un seul CODEX_HOME entre tous les rôles."""
+
+    monkeypatch.delenv("TRADER_OLLAMA_API_KEY", raising=False)
+    monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
+    monkeypatch.setenv("TRADER_CODEX_HOME", "/profiles/shared")
+    monkeypatch.setenv("TRADER_UNIVERSE_CODEX_HOME", "/profiles/shared")
+
+    brain = build_default_router_from_env(env_path=None).backends[0]
+    universe = build_default_router_from_env(
+        env_path=None, acpx_provider="universe", spark_model="gpt-5.6-terra"
+    ).backends[0]
+
+    assert brain.codex_home == "/profiles/shared"
+    assert universe.codex_home == "/profiles/shared"
+
+
+def test_build_default_router_from_env_profil_codex_absent_reste_global(monkeypatch) -> None:
+    """Sans var par rôle : None → le transport retombe sur CODEX_HOME (historique)."""
+
+    monkeypatch.delenv("TRADER_OLLAMA_API_KEY", raising=False)
+    monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
+    for name in ("TRADER_CODEX_HOME", "TRADER_UNIVERSE_CODEX_HOME"):
+        monkeypatch.delenv(name, raising=False)
+
+    router = build_default_router_from_env(env_path=None)
+
+    assert all(getattr(backend, "codex_home", None) is None for backend in router.backends)
 
 
 def test_build_default_router_from_env_configure_acpx_puis_ollama(monkeypatch) -> None:

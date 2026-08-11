@@ -10,6 +10,7 @@ Couvre le chemin complet bout-en-bout :
 
 AX §11 Test-First Invariants : atomicité est l'invariant prioritaire.
 """
+
 from __future__ import annotations
 
 import json
@@ -109,18 +110,35 @@ def _enqueue_order(
     plan_to_upsert: dict | None = None,
     symbol_to_close: str | None = None,
     symbol_to_sync_quantity: str | None = None,
+    process_instance_id: str | None = None,
+    attempt_id: str | None = None,
+    decision_id: str | None = None,
 ) -> int:
     """Enfile une tâche execute_order et retourne son task_id."""
-    payload = json.dumps({
-        "order": {"symbol": symbol, "side": side, "quantity": quantity, "rationale": "test"},
-        "price": price,
-        "ts": ts,
-        "fx_rate": fx_rate,
-        "dry_run": dry_run,
-        "plan_to_upsert": plan_to_upsert,
-        "symbol_to_close": symbol_to_close,
-        "symbol_to_sync_quantity": symbol_to_sync_quantity,
-    })
+    order_payload = {"symbol": symbol, "side": side, "quantity": quantity, "rationale": "test"}
+    order_payload.update(
+        {
+            key: value
+            for key, value in {
+                "process_instance_id": process_instance_id,
+                "attempt_id": attempt_id,
+                "decision_id": decision_id,
+            }.items()
+            if value is not None
+        }
+    )
+    payload = json.dumps(
+        {
+            "order": order_payload,
+            "price": price,
+            "ts": ts,
+            "fx_rate": fx_rate,
+            "dry_run": dry_run,
+            "plan_to_upsert": plan_to_upsert,
+            "symbol_to_close": symbol_to_close,
+            "symbol_to_sync_quantity": symbol_to_sync_quantity,
+        }
+    )
     now_ms = int(time.time() * 1000)
     tid = ledger.enqueue(
         kind="execute_order",
@@ -198,6 +216,31 @@ class TestExecuteViaQueue:
             plans = plan_store.open_plans()
             assert len(plans) == 1
             assert plans[0].id == "AAPL-via-queue"
+        finally:
+            pool.stop(timeout_s=2.0)
+
+    def test_causal_links_survive_queue_execution_and_persist_in_db(self, tmp_path: Path) -> None:
+        db, broker, plan_store, ledger = _make_stack(tmp_path)
+        handler = make_execute_order_handler(db=db, broker=broker, plan_store=plan_store, ledger=ledger)
+        pool = _make_pool(ledger, handler)
+
+        pool.start()
+        try:
+            tid = _enqueue_order(
+                ledger,
+                process_instance_id="instance-1",
+                attempt_id="attempt-1",
+                decision_id="decision-1",
+            )
+            task = _poll_done(ledger, tid)
+
+            assert task is not None
+            assert task["status"] == "done"
+            assert json.loads(task["result"])["process_instance_id"] == "instance-1"
+            row = db.query_one("SELECT * FROM broker_fills WHERE symbol='AAPL'")
+            assert row is not None
+            assert row["attempt_id"] == "attempt-1"
+            assert row["decision_id"] == "decision-1"
         finally:
             pool.stop(timeout_s=2.0)
 
@@ -313,15 +356,17 @@ class TestAtomicite:
                 now_ms=now_ms,
                 resource="portfolio",
                 max_attempts=1,
-                payload=json.dumps({
-                    "order": {"symbol": "AAPL", "side": "BUY", "quantity": 10.0, "rationale": ""},
-                    "price": 150.0,
-                    "ts": "2026-07-04T08:00:00+00:00",
-                    "fx_rate": 1.0,
-                    "dry_run": False,
-                    "plan_to_upsert": None,
-                    "symbol_to_close": None,
-                }),
+                payload=json.dumps(
+                    {
+                        "order": {"symbol": "AAPL", "side": "BUY", "quantity": 10.0, "rationale": ""},
+                        "price": 150.0,
+                        "ts": "2026-07-04T08:00:00+00:00",
+                        "fx_rate": 1.0,
+                        "dry_run": False,
+                        "plan_to_upsert": None,
+                        "symbol_to_close": None,
+                    }
+                ),
             )
             assert tid is not None
 
@@ -374,15 +419,17 @@ class TestFailClosed:
                 now_ms=now_ms,
                 resource="portfolio",
                 max_attempts=1,  # → dead immédiatement
-                payload=json.dumps({
-                    "order": {"symbol": "AAPL", "side": "BUY", "quantity": 10.0, "rationale": ""},
-                    "price": 150.0,
-                    "ts": "2026-07-04T08:00:00+00:00",
-                    "fx_rate": 1.0,
-                    "dry_run": False,
-                    "plan_to_upsert": None,
-                    "symbol_to_close": None,
-                }),
+                payload=json.dumps(
+                    {
+                        "order": {"symbol": "AAPL", "side": "BUY", "quantity": 10.0, "rationale": ""},
+                        "price": 150.0,
+                        "ts": "2026-07-04T08:00:00+00:00",
+                        "fx_rate": 1.0,
+                        "dry_run": False,
+                        "plan_to_upsert": None,
+                        "symbol_to_close": None,
+                    }
+                ),
             )
             assert tid is not None
 
@@ -441,15 +488,17 @@ class TestFailClosed:
             scheduled_at_ms=now_ms,
             now_ms=now_ms,
             resource="portfolio",
-            payload=json.dumps({
-                "order": {"symbol": "AAPL", "side": "BUY", "quantity": 1.0, "rationale": ""},
-                "price": 100.0,
-                "ts": "2026-07-04T08:00:00+00:00",
-                "fx_rate": 1.0,
-                "dry_run": False,
-                "plan_to_upsert": None,
-                "symbol_to_close": None,
-            }),
+            payload=json.dumps(
+                {
+                    "order": {"symbol": "AAPL", "side": "BUY", "quantity": 1.0, "rationale": ""},
+                    "price": 100.0,
+                    "ts": "2026-07-04T08:00:00+00:00",
+                    "fx_rate": 1.0,
+                    "dry_run": False,
+                    "plan_to_upsert": None,
+                    "symbol_to_close": None,
+                }
+            ),
         )
         assert tid is not None
 
@@ -480,6 +529,7 @@ class TestFailClosed:
         if _exec_result:  # None → branche ignorée, fill reste None
             try:
                 from trader.execution.broker import Fill as _Fill  # noqa: PLC0415
+
                 fill = _Fill(**json.loads(_exec_result))
             except Exception:  # noqa: BLE001
                 pass
@@ -589,7 +639,7 @@ class TestAddAtomique:
                 ledger,
                 side="BUY",
                 quantity=5.0,
-                symbol_to_close="AAPL",      # ferme l'ancien plan
+                symbol_to_close="AAPL",  # ferme l'ancien plan
                 plan_to_upsert=new_plan.model_dump(),  # ouvre le nouveau plan
             )
             task = _poll_done(ledger, tid)
@@ -603,15 +653,11 @@ class TestAddAtomique:
             # Ancien plan fermé, nouveau plan présent — ATOMICITÉ
             plans = plan_store.open_plans()
             assert len(plans) == 1, f"exactement 1 plan attendu, got {len(plans)}"
-            assert plans[0].id == "AAPL-new-add", (
-                f"nouveau plan attendu 'AAPL-new-add', got {plans[0].id}"
-            )
+            assert plans[0].id == "AAPL-new-add", f"nouveau plan attendu 'AAPL-new-add', got {plans[0].id}"
         finally:
             pool.stop(timeout_s=2.0)
 
-    def test_add_uow_exception_rolls_back_close_and_upsert(
-        self, tmp_path: Path, monkeypatch
-    ) -> None:
+    def test_add_uow_exception_rolls_back_close_and_upsert(self, tmp_path: Path, monkeypatch) -> None:
         """SCALE_IN via queue : exception sur upsert → rollback du close aussi (atomicité)."""
         db, broker, plan_store, ledger = _make_stack(tmp_path)
 
@@ -640,15 +686,17 @@ class TestAddAtomique:
                 now_ms=now_ms,
                 resource="portfolio",
                 max_attempts=1,  # dead immédiatement
-                payload=json.dumps({
-                    "order": {"symbol": "AAPL", "side": "BUY", "quantity": 5.0, "rationale": ""},
-                    "price": 150.0,
-                    "ts": "2026-07-04T08:00:00+00:00",
-                    "fx_rate": 1.0,
-                    "dry_run": False,
-                    "symbol_to_close": "AAPL",
-                    "plan_to_upsert": new_plan.model_dump(),
-                }),
+                payload=json.dumps(
+                    {
+                        "order": {"symbol": "AAPL", "side": "BUY", "quantity": 5.0, "rationale": ""},
+                        "price": 150.0,
+                        "ts": "2026-07-04T08:00:00+00:00",
+                        "fx_rate": 1.0,
+                        "dry_run": False,
+                        "symbol_to_close": "AAPL",
+                        "plan_to_upsert": new_plan.model_dump(),
+                    }
+                ),
             )
             assert tid is not None
 
@@ -677,15 +725,17 @@ class TestDedupKey:
         """Même dedup_key → le 2e enqueue retourne None (idempotent)."""
         db, broker, plan_store, ledger = _make_stack(tmp_path)
 
-        payload = json.dumps({
-            "order": {"symbol": "AAPL", "side": "BUY", "quantity": 10.0, "rationale": ""},
-            "price": 150.0,
-            "ts": "2026-07-04T08:00:00+00:00",
-            "fx_rate": 1.0,
-            "dry_run": False,
-            "plan_to_upsert": None,
-            "symbol_to_close": None,
-        })
+        payload = json.dumps(
+            {
+                "order": {"symbol": "AAPL", "side": "BUY", "quantity": 10.0, "rationale": ""},
+                "price": 150.0,
+                "ts": "2026-07-04T08:00:00+00:00",
+                "fx_rate": 1.0,
+                "dry_run": False,
+                "plan_to_upsert": None,
+                "symbol_to_close": None,
+            }
+        )
         now_ms = int(time.time() * 1000)
         dedup = "exec:2026-07-04T10:00:00+00:00:AAPL:OPEN_LONG"
 

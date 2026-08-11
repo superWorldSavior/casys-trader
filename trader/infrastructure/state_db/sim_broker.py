@@ -57,6 +57,9 @@ class SimBroker:
             commission_currency=commission.currency,
             commission_model=commission.model,
             fx_rate=fx_rate,
+            process_instance_id=order.process_instance_id,
+            attempt_id=order.attempt_id,
+            decision_id=order.decision_id,
         )
         if dry_run:
             return None  # intention loggée par l'appelant, état non muté
@@ -80,9 +83,7 @@ class SimBroker:
 
     def positions(self) -> dict[str, Position]:
         return {
-            s: Position(**p)
-            for s, p in self._state.positions.items()
-            if abs(float(p["quantity"])) > POSITION_EPSILON
+            s: Position(**p) for s, p in self._state.positions.items() if abs(float(p["quantity"])) > POSITION_EPSILON
         }
 
     def cash(self) -> float:

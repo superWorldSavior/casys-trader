@@ -348,6 +348,73 @@ def test_detail_regional_empty_payload_explicit_state() -> None:
     assert "clôtures/pre-open" in text
 
 
+def test_detail_regional_keeps_last_success_visible_and_warns_on_newer_failure() -> None:
+    text = _all_text(
+        build_report_detail(
+            _regional_item(
+                {
+                    "summary": "rotation into semis",
+                    "selected_hotlist": ["3443.TW"],
+                    "as_of": "2026-07-17T05:30:00+00:00",
+                    "status": "success",
+                    "latest_failure": {
+                        "status": "error",
+                        "error_code": "TimeoutError",
+                        "error_message": "model deadline exceeded",
+                        "retry_attempt": 2,
+                        "next_retry_at": "2026-07-17T06:30:00+00:00",
+                    },
+                }
+            ),
+            now=NOW,
+        )
+    )
+
+    assert "rotation into semis" in text
+    assert "dernier essai en échec : TimeoutError (tentative 2)" in text
+    assert "model deadline exceeded" in text
+
+
+def test_failure_warning_is_shared_by_global_macro_and_micro_reports() -> None:
+    failure = {
+        "error_code": "ProviderUnavailable",
+        "error_message": "model endpoint unavailable",
+        "retry_attempt": 2,
+        "next_retry_at": "2026-07-17T08:00:00+00:00",
+    }
+    items = [
+        _global_item({**_global_item().payload, "latest_failure": failure}),
+        _macro_item({**_macro_payload(), "latest_failure": failure}),
+        _micro_item({**_micro_item().payload, "latest_failure": failure}),
+    ]
+
+    for item in items:
+        text = _all_text(build_report_detail(item, now=NOW))
+        assert "dernier essai en échec : ProviderUnavailable (tentative 2)" in text
+        assert "nouvelle tentative 2026-07-17 08:00" in text
+        assert "model endpoint unavailable" in text
+
+
+def test_micro_terminal_failure_says_automatic_retries_are_exhausted() -> None:
+    text = _all_text(
+        build_report_detail(
+            _micro_item(
+                {
+                    **_micro_item().payload,
+                    "latest_failure": {
+                        "error_code": "CompanyMicroAnalystError",
+                        "retry_attempt": 6,
+                        "retry_delay_seconds": 0,
+                    },
+                }
+            ),
+            now=NOW,
+        )
+    )
+
+    assert "tentatives automatiques épuisées" in text
+
+
 # ---------------------------------------------------------------------------
 # build_report_detail — micro
 # ---------------------------------------------------------------------------

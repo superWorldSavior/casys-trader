@@ -39,6 +39,16 @@ class Order(_FrozenContract):
     side: Side
     quantity: float
     rationale: str = ""
+    # Optional causal links deliberately live at the edge of the contract so
+    # existing positional construction and legacy payloads remain unchanged.
+    process_instance_id: str | None = None
+    attempt_id: str | None = None
+    decision_id: str | None = None
+
+    def model_dump(self, **kwargs):  # type: ignore[override]
+        """Keep the historical order JSON shape unless causal links are present."""
+        kwargs.setdefault("exclude_none", True)
+        return super().model_dump(**kwargs)
 
 
 class Fill(_FrozenContract):
@@ -51,6 +61,14 @@ class Fill(_FrozenContract):
     commission_currency: str = "USD"
     commission_model: str = "none"
     fx_rate: float = 1.0
+    process_instance_id: str | None = None
+    attempt_id: str | None = None
+    decision_id: str | None = None
+
+    def model_dump(self, **kwargs):  # type: ignore[override]
+        """Keep the historical fill JSON shape unless causal links are present."""
+        kwargs.setdefault("exclude_none", True)
+        return super().model_dump(**kwargs)
 
 
 class Commission(_FrozenContract):

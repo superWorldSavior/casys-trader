@@ -90,6 +90,12 @@ def test_compose_with_tool_loop_executes_tool_between_two_completions() -> None:
     assert len(router.prompts) == 2
     assert "tool_results" in router.prompts[1]
     assert "Cloud transition remains sound" in router.prompts[1]
+    # LlmRouter.complete est stateless : le tour suivant doit reprendre le
+    # contexte, les candidats et le contrat final, pas seulement le résultat.
+    assert '"candidates"' in router.prompts[1]
+    assert "SAP.DE" in router.prompts[1]
+    assert "selected_hotlist" in router.prompts[1]
+    assert "get_company_briefs" in router.prompts[1]
 
 
 def test_compose_with_tool_loop_accepts_direct_final_completion() -> None:
@@ -104,6 +110,20 @@ def test_compose_with_tool_loop_accepts_direct_final_completion() -> None:
     assert store.calls == []
     assert len(router.prompts) == 1
     assert "tool_calls" in router.prompts[0]
+
+
+def test_compose_with_tool_loop_repairs_one_invalid_final_payload() -> None:
+    router = SequencedRouter(["{\"selected_hotlist\":[\"SAP.DE\"]", _final_text()])
+
+    decision = compose_with_tool_loop(
+        _request(), router=router, intelligence_store=FakeStore(), max_rounds=3, timeout_s=17
+    )
+
+    assert decision.selected_hotlist == ("SAP.DE",)
+    assert len(router.prompts) == 2
+    assert "Correction bornée de la sortie précédente" in router.prompts[1]
+    assert '"parse_error":"invalid_json"' in router.prompts[1]
+    assert "Aucun nouvel outil n'est accepté" in router.prompts[1]
 
 
 def test_compose_with_tool_loop_forces_final_turn_after_budget_is_exhausted() -> None:
@@ -129,6 +149,8 @@ def test_compose_with_tool_loop_forces_final_turn_after_budget_is_exhausted() ->
     assert len(router.prompts) == 3
     assert "hotlist finale" in router.prompts[-1]
     assert "tool_results" in router.prompts[-1]
+    assert "Aucun nouvel appel d'outil n'est accepté" in router.prompts[-1]
+    assert "selected_hotlist" in router.prompts[-1]
 
 
 def test_compose_with_tool_loop_rejects_legacy_contract() -> None:

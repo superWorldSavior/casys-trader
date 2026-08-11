@@ -158,6 +158,28 @@ def test_collect_ignores_non_dict_json(tmp_path: Path) -> None:
     assert collect_report_items(tmp_path) == []
 
 
+def test_collect_regional_keeps_success_payload_when_latest_attempt_failed(tmp_path: Path) -> None:
+    _write_json(
+        tmp_path / "universe_runs" / "latest-EU.json",
+        {
+            **_regional_payload("2026-07-17T05:30:00+00:00"),
+            "status": "success",
+            "latest_failure": {
+                "status": "error",
+                "error_code": "TimeoutError",
+                "retry_attempt": 1,
+            },
+        },
+    )
+
+    items = collect_report_items(tmp_path)
+
+    assert len(items) == 1
+    assert items[0].kind == "regional"
+    assert items[0].payload["summary"] == "rotation into semis"
+    assert items[0].payload["latest_failure"]["error_code"] == "TimeoutError"
+
+
 # ---------------------------------------------------------------------------
 # Collecte — global
 # ---------------------------------------------------------------------------
@@ -193,6 +215,41 @@ def test_collect_global_no_history_count_without_ledger(tmp_path: Path) -> None:
     assert "history_count" not in items[0].payload
 
 
+def test_collect_global_keeps_success_and_attaches_latest_failure(tmp_path: Path) -> None:
+    _write_json(tmp_path / "global_universe_postures" / "current.json", _global_payload())
+    _write_json(
+        tmp_path / "global_universe_postures" / "latest_failure.json",
+        {
+            "status": "error",
+            "as_of": "2026-07-17T07:00:00+00:00",
+            "error_code": "TimeoutError",
+            "retry_attempt": 2,
+            "next_retry_at": "2026-07-17T08:00:00+00:00",
+        },
+    )
+
+    item = collect_report_items(tmp_path)[0]
+
+    assert item.payload["rationale"] == "breadth improving"
+    assert item.payload["latest_failure"]["error_code"] == "TimeoutError"
+
+
+def test_collect_global_bootstrap_failure_is_visible_without_success(tmp_path: Path) -> None:
+    _write_json(
+        tmp_path / "global_universe_postures" / "latest_failure.json",
+        {
+            "status": "error",
+            "as_of": "2026-07-17T07:00:00+00:00",
+            "error_code": "ProviderUnavailable",
+        },
+    )
+
+    items = collect_report_items(tmp_path)
+
+    assert [item.key for item in items] == ["global:current"]
+    assert items[0].payload["error_code"] == "ProviderUnavailable"
+
+
 # ---------------------------------------------------------------------------
 # Collecte — macro / regional
 # ---------------------------------------------------------------------------
@@ -214,6 +271,31 @@ def test_collect_macro_skips_corrupted_file_keeps_valid(tmp_path: Path) -> None:
     _write_jsonl(tmp_path / "news_briefs" / "latest-TW.jsonl", [_macro_payload("TW", "2026-07-17T01:00:00+00:00")])
     items = collect_report_items(tmp_path)
     assert [item.key for item in items] == ["macro:TW"]
+
+
+def test_collect_macro_keeps_success_and_attaches_status_failure(tmp_path: Path) -> None:
+    _write_jsonl(
+        tmp_path / "news_briefs" / "latest-EU.jsonl",
+        [_macro_payload("EU", "2026-07-17T05:00:00+00:00")],
+    )
+    _write_json(
+        tmp_path / "news_macro_analysis_status.json",
+        {
+            "EU": {
+                "latest_failure": {
+                    "failed_at": "2026-07-17T06:00:00+00:00",
+                    "error_code": "NewsMacroAnalystError",
+                    "error_message": "provider unavailable",
+                    "retry_attempt": 1,
+                }
+            }
+        },
+    )
+
+    item = collect_report_items(tmp_path)[0]
+
+    assert item.payload["brief_id"] == "brief-EU"
+    assert item.payload["latest_failure"]["error_message"] == "provider unavailable"
 
 
 def test_collect_regional_missing_dir_is_normal(tmp_path: Path) -> None:
@@ -313,6 +395,36 @@ def test_collect_micro_sorted_by_as_of_desc(tmp_path: Path) -> None:
     )
     items = collect_report_items(tmp_path)
     assert [item.key for item in items] == ["micro:ASML", "micro:AAPL"]
+
+
+def test_collect_micro_keeps_brief_and_attaches_run_failure(tmp_path: Path) -> None:
+    _write_json(
+        tmp_path / "company_intelligence" / "current" / "aapl.json",
+        _micro_envelope(
+            "AAPL",
+            {"screen": _micro_brief("AAPL", "2026-07-17T05:00:00+00:00", "screen")},
+        ),
+    )
+    _write_json(
+        tmp_path / "company_analysis_runs" / "latest" / "aapl.json",
+        {
+            "symbol": "AAPL",
+            "status": "success",
+            "latest_failure": {
+                "symbol": "AAPL",
+                "status": "error",
+                "as_of": "2026-07-17T06:00:00+00:00",
+                "error_code": "CompanyMicroAnalystError",
+                "retry_attempt": 3,
+                "next_retry_at": "2026-07-17T08:00:00+00:00",
+            },
+        },
+    )
+
+    item = collect_report_items(tmp_path)[0]
+
+    assert item.payload["brief_id"] == "AAPL-screen"
+    assert item.payload["latest_failure"]["retry_attempt"] == 3
 
 
 # ---------------------------------------------------------------------------

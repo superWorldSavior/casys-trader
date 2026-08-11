@@ -44,7 +44,13 @@ class UniverseRunStore:
         return self.prepared_dir / f"{digest}.json"
 
     def append(self, record: Mapping[str, Any], *, date: str | None = None) -> dict[str, str]:
-        """Append any run status and atomically refresh the venue's latest run."""
+        """Append every attempt and refresh a usable venue projection.
+
+        A transient error must not replace the last successful regional report:
+        the gallery keeps rendering that report and receives the newest failure
+        as ``latest_failure`` for an explicit warning.  When no success exists,
+        the error itself remains the projection so it is still observable.
+        """
 
         payload = _validated_run(record)
         date_key = _record_date(payload, explicit=date)
@@ -54,7 +60,16 @@ class UniverseRunStore:
             self.base_dir.mkdir(parents=True, exist_ok=True)
             with self.path_for_date(date_key).open("a", encoding="utf-8") as fh:
                 fh.write(line + "\n")
-            write_json_atomic(self.latest_path_for_venue(payload["venue"]), payload)
+            latest_path = self.latest_path_for_venue(payload["venue"])
+            latest = _read_json_object(latest_path)
+            if payload["status"] in {"error", "invalid"} and _is_success_for_venue(
+                latest, payload["venue"]
+            ):
+                write_json_atomic(latest_path, {**latest, "latest_failure": payload})
+            else:
+                # A success clears a former failure marker and therefore resets
+                # the persisted retry lineage in the readable projection.
+                write_json_atomic(latest_path, payload)
 
         ref = {
             "date": date_key,
@@ -181,3 +196,7 @@ def _is_run_for_venue(payload: dict[str, Any] | None, venue: str) -> bool:
     if payload is None or str(payload.get("venue") or "").strip() != venue:
         return False
     return bool(str(payload.get("candidate_scope_id") or "").strip())
+
+
+def _is_success_for_venue(payload: dict[str, Any] | None, venue: str) -> bool:
+    return _is_run_for_venue(payload, venue) and payload.get("status") == "success"

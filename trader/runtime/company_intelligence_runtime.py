@@ -43,6 +43,13 @@ COMPANY_RESOURCE = "company-research"
 VENUES = ("TW", "EU", "US")
 DEFAULT_CONCURRENCY = 2
 DEFAULT_WAIT_TIMEOUT_S = 600.0
+# A company micro report is advisory and its provider can be slow or
+# temporarily unavailable. Keep retries sparse enough not to hammer ACPX or a
+# source outage: six total calls spread over 30 min, 1 h, 2 h, 4 h and 6 h.
+# This intentionally matches the 30 min -> 6 h bounded regional-report policy.
+COMPANY_TASK_MAX_ATTEMPTS = 6
+COMPANY_RETRY_BACKOFF_BASE_MS = 30 * 60 * 1000
+COMPANY_RETRY_BACKOFF_MAX_MS = 6 * 60 * 60 * 1000
 # Fundamental analysis is event-driven: new financials/profile/earnings (which
 # change the evidence signature) re-analyze immediately; otherwise a company is
 # re-analyzed at most once per this cooldown, to digest accumulated news without
@@ -71,6 +78,80 @@ def _parse_utc(value: Any) -> datetime | None:
     # Always return UTC (the name promises it): a stored as_of may carry a local
     # offset, and callers must be free to compare .date()/.hour safely.
     return parsed.astimezone(timezone.utc) if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
+
+
+def _is_successful_company_run(value: Mapping[str, Any]) -> bool:
+    """Whether a run projection still points to a usable company brief."""
+
+    return str(value.get("status") or "").strip() in {"success", "unchanged"}
+
+
+def _latest_company_failure(value: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Read a nested failure without mistaking its retained success for failure."""
+
+    nested = value.get("latest_failure")
+    candidate = nested if isinstance(nested, Mapping) else value
+    if str(candidate.get("status") or "").strip() != "error":
+        return None
+    return dict(candidate)
+
+
+def _company_failure_retry_metadata(task: Mapping[str, Any], *, now_ms: int) -> dict[str, Any]:
+    """Mirror the durable queue schedule in a failure record for read models.
+
+    The ledger remains the source of truth (and writes the exact schedule just
+    after the handler returns). This copies the same deterministic policy into
+    the append-only report record so a future gallery can show the current
+    failure without rediscovering queue internals.
+    """
+
+    try:
+        attempt = max(1, int(task.get("attempts") or 1))
+    except (TypeError, ValueError):
+        attempt = 1
+    try:
+        max_attempts = max(1, int(task.get("max_attempts") or COMPANY_TASK_MAX_ATTEMPTS))
+    except (TypeError, ValueError):
+        max_attempts = COMPANY_TASK_MAX_ATTEMPTS
+    if attempt >= max_attempts:
+        return {
+            "queue_attempt": attempt,
+            "queue_max_attempts": max_attempts,
+            "retry_attempt": attempt,
+            "retry_delay_seconds": 0,
+            "next_retry_at": None,
+        }
+    delay_ms = min(
+        COMPANY_RETRY_BACKOFF_BASE_MS * (2 ** max(0, attempt - 1)),
+        COMPANY_RETRY_BACKOFF_MAX_MS,
+    )
+    return {
+        "queue_attempt": attempt,
+        "queue_max_attempts": max_attempts,
+        "retry_attempt": attempt,
+        "retry_delay_seconds": delay_ms // 1000,
+        "next_retry_at": datetime.fromtimestamp(
+            (int(now_ms) + delay_ms) / 1000,
+            tz=timezone.utc,
+        ).isoformat(),
+    }
+
+
+def _company_run_id(
+    *,
+    symbol: str,
+    as_of: str,
+    input_signature: str,
+    task_id: int | None,
+    attempt: int | None,
+) -> str:
+    """Give retries distinct append-only IDs while preserving the old prefix."""
+
+    base = f"company:{symbol}:{as_of}:{input_signature[:12]}"
+    if task_id is None:
+        return base
+    attempt_text = str(attempt) if attempt is not None else "-"
+    return f"{base}:task-{task_id}:attempt-{attempt_text}"
 
 
 def decide_company_refresh(
@@ -236,7 +317,8 @@ class CompanyIntelligenceRuntime:
             num_workers=self.concurrency,
             now_fn=self.now_fn,
             lease_ms=600_000,
-            backoff_base_ms=10_000,
+            backoff_base_ms=COMPANY_RETRY_BACKOFF_BASE_MS,
+            backoff_max_ms=COMPANY_RETRY_BACKOFF_MAX_MS,
         )
         self._lock = threading.Lock()
         self._stop_event = threading.Event()
@@ -336,8 +418,8 @@ class CompanyIntelligenceRuntime:
                     continue
                 if isinstance(payload, dict):
                     latest_runs.append(payload)
-        successes = [row for row in latest_runs if row.get("status") in {"success", "unchanged"}]
-        failures = [row for row in latest_runs if row.get("status") == "error"]
+        successes = [row for row in latest_runs if _is_successful_company_run(row)]
+        failures = [failure for row in latest_runs if (failure := _latest_company_failure(row)) is not None]
         return {
             "enabled": self.enabled,
             "ledger": str(self.ledger.path),
@@ -435,15 +517,12 @@ class CompanyIntelligenceRuntime:
                         skipped.append(
                             {"symbol": symbol, "reason": f"unchanged:{reason}", "brief_ref": current.ref()}
                         )
-                        self._record_run(
-                            symbol=symbol,
-                            as_of=as_of.isoformat(),
-                            status="unchanged",
-                            trigger=trigger,
-                            depth=depth,
-                            input_signature=evidence.input_signature,
-                            brief_ref=current.ref(),
-                        )
+                        # This is a scanner observation, not an LLM attempt.
+                        # Persisting one row per unchanged symbol and daemon
+                        # tick created tens of thousands of no-op run rows and
+                        # could replace the projection holding a real failure.
+                        # The returned ``skipped`` entry keeps the useful live
+                        # status while the durable run history stays attempt-led.
                         continue
                 payload = {
                     "symbol": symbol,
@@ -462,7 +541,7 @@ class CompanyIntelligenceRuntime:
                     partition_key=symbol,
                     resource=COMPANY_RESOURCE,
                     payload=json.dumps(payload, ensure_ascii=False, sort_keys=True),
-                    max_attempts=3,
+                    max_attempts=COMPANY_TASK_MAX_ATTEMPTS,
                 )
                 if task_id is None:
                     skipped.append({"symbol": symbol, "reason": "already_queued_or_analyzed"})
@@ -501,6 +580,7 @@ class CompanyIntelligenceRuntime:
             )
             latency_ms = max(0, round((time.monotonic() - started) * 1000))
             if result.error_code:
+                retry = _company_failure_retry_metadata(task, now_ms=self._now_ms())
                 self._record_run(
                     symbol=evidence.symbol,
                     as_of=request.as_of,
@@ -510,18 +590,29 @@ class CompanyIntelligenceRuntime:
                     input_signature=evidence.input_signature,
                     error={"code": result.error_code, "message": result.error_message},
                     latency_ms=latency_ms,
+                    queue_task_id=task.get("id"),
+                    written=False,
+                    **retry,
                 )
                 raise RetryableError(f"{result.error_code}: {result.error_message}")
-            status = "success" if result.written else "unchanged"
+            task_status = "success" if result.written else "unchanged"
+            # A completed analyst call is a real recovery even when the
+            # repository already owns an equivalent brief. Record it as a
+            # successful run with ``written=False`` so it clears a preceding
+            # latest_failure without pretending a new brief was emitted.
             self._record_run(
                 symbol=evidence.symbol,
                 as_of=request.as_of,
-                status=status,
+                status="success",
                 trigger=request.trigger,
                 depth=request.depth,
                 input_signature=evidence.input_signature,
                 brief_ref=result.brief_ref,
                 latency_ms=latency_ms,
+                queue_task_id=task.get("id"),
+                queue_attempt=task.get("attempts"),
+                queue_max_attempts=task.get("max_attempts"),
+                written=result.written,
             )
             heartbeat()
             if result.written and self.on_brief_written is not None:
@@ -532,7 +623,7 @@ class CompanyIntelligenceRuntime:
                 except Exception:  # noqa: BLE001 - downstream retrigger is advisory
                     self.log.warning("company brief downstream retrigger failed for %s", evidence.symbol)
             return json.dumps(
-                {"status": status, "symbol": evidence.symbol, "brief_ref": result.brief_ref},
+                {"status": task_status, "symbol": evidence.symbol, "brief_ref": result.brief_ref},
                 ensure_ascii=False,
                 sort_keys=True,
             )
@@ -548,6 +639,10 @@ class CompanyIntelligenceRuntime:
                 depth="screen",
                 input_signature="unknown",
                 error={"code": exc.__class__.__name__, "message": str(exc)[:500]},
+                queue_task_id=task.get("id"),
+                queue_attempt=task.get("attempts"),
+                queue_max_attempts=task.get("max_attempts"),
+                written=False,
             )
             raise
 
@@ -563,11 +658,27 @@ class CompanyIntelligenceRuntime:
         brief_ref: Mapping[str, Any] | None = None,
         error: Mapping[str, Any] | None = None,
         latency_ms: int | None = None,
+        queue_task_id: int | None = None,
+        queue_attempt: int | None = None,
+        queue_max_attempts: int | None = None,
+        retry_attempt: int | None = None,
+        retry_delay_seconds: int | None = None,
+        next_retry_at: str | None = None,
+        written: bool | None = None,
     ) -> None:
+        error_payload = dict(error or {})
+        error_code = str(error_payload.get("code") or "").strip() or None
+        error_message = str(error_payload.get("message") or "").strip() or None
         self.run_store.append(
             {
-                "schema_version": 1,
-                "run_id": f"company:{symbol}:{as_of}:{input_signature[:12]}",
+                "schema_version": 2,
+                "run_id": _company_run_id(
+                    symbol=symbol,
+                    as_of=as_of,
+                    input_signature=input_signature,
+                    task_id=queue_task_id,
+                    attempt=queue_attempt,
+                ),
                 "symbol": symbol,
                 "venue": venue_of(symbol),
                 "as_of": as_of,
@@ -576,8 +687,17 @@ class CompanyIntelligenceRuntime:
                 "depth": depth,
                 "input_signature": input_signature,
                 "brief_ref": dict(brief_ref or {}),
-                "error": dict(error or {}),
+                "error": error_payload,
+                "error_code": error_code,
+                "error_message": error_message,
                 "latency_ms": latency_ms,
+                "queue_task_id": queue_task_id,
+                "queue_attempt": queue_attempt,
+                "queue_max_attempts": queue_max_attempts,
+                "retry_attempt": retry_attempt,
+                "retry_delay_seconds": retry_delay_seconds,
+                "next_retry_at": next_retry_at,
+                "written": written,
                 "agent_provider": getattr(self._analyst_or_none(), "provider", None),
                 "agent_model": getattr(self._analyst_or_none(), "model", None),
             }

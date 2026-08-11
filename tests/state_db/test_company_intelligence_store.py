@@ -160,3 +160,75 @@ def test_company_analysis_run_store_appends_and_refreshes_latest(tmp_path) -> No
     assert ref["run_id"] == "company-run-1"
     assert store.read_latest("SAP.DE")["brief_ref"]["symbol"] == "SAP.DE"
     assert len(store.path_for_date("2026-07-10").read_text().splitlines()) == 1
+
+
+def test_company_analysis_run_store_keeps_success_and_exposes_failure_until_recovery(tmp_path) -> None:
+    store = CompanyAnalysisRunStore(tmp_path / "company_analysis_runs")
+    success = {
+        "run_id": "company-run-success",
+        "symbol": "SAP.DE",
+        "as_of": "2026-07-10T02:00:00+00:00",
+        "status": "success",
+        "depth": "screen",
+        "input_signature": "sig-1",
+        "brief_ref": _brief().ref(),
+    }
+    failure = {
+        "run_id": "company-run-error",
+        "symbol": "SAP.DE",
+        "as_of": "2026-07-10T02:30:00+00:00",
+        "status": "error",
+        "depth": "screen",
+        "input_signature": "sig-2",
+        "error_code": "timeout",
+        "error_message": "provider unavailable",
+        "retry_attempt": 1,
+        "retry_delay_seconds": 1800,
+        "next_retry_at": "2026-07-10T03:00:00+00:00",
+    }
+
+    store.append(success)
+    store.append(failure)
+
+    assert store.read_latest("SAP.DE") == {**success, "latest_failure": failure}
+
+    recovered = {
+        **success,
+        "run_id": "company-run-recovered",
+        "as_of": "2026-07-10T03:01:00+00:00",
+        "input_signature": "sig-2",
+    }
+    store.append(recovered)
+
+    assert store.read_latest("SAP.DE") == recovered
+    rows = [
+        json.loads(line)
+        for line in store.path_for_date("2026-07-10").read_text(encoding="utf-8").splitlines()
+    ]
+    assert [row["status"] for row in rows] == ["success", "error", "success"]
+
+
+def test_company_analysis_run_store_deduplicates_repeated_unchanged_observations(tmp_path) -> None:
+    store = CompanyAnalysisRunStore(tmp_path / "company_analysis_runs")
+    success = {
+        "run_id": "company-run-success",
+        "symbol": "SAP.DE",
+        "as_of": "2026-07-10T02:00:00+00:00",
+        "status": "success",
+        "depth": "screen",
+        "input_signature": "sig-1",
+        "brief_ref": _brief().ref(),
+    }
+    unchanged = {
+        **success,
+        "run_id": "company-observation-1",
+        "as_of": "2026-07-10T03:00:00+00:00",
+        "status": "unchanged",
+    }
+
+    store.append(success)
+    store.append(unchanged)
+    store.append({**unchanged, "as_of": "2026-07-10T04:00:00+00:00"})
+
+    assert store.read_latest("SAP.DE") == success
+    assert len(store.path_for_date("2026-07-10").read_text(encoding="utf-8").splitlines()) == 1

@@ -17,12 +17,15 @@ from dataclasses import asdict
 from datetime import datetime, timezone
 
 from trader.agent.protocol.types import Decision
+from trader.application.decide import handler as decide_handler_module
 from trader.application.decide.handler import make_decide_handler
+from trader.application.queue.contracts import RetryableError
 import trader.application.decide.queue_dispatch as queue_dispatch_mod
 from trader.application.decide.queue_dispatch import dispatch_decide_via_queue
 from trader.queue.decide_pool import DecidePool
 from trader.queue.ledger import TaskLedger
 from trader.queue.pools import ResourcePools
+from trader.queue.worker import Worker
 
 
 # ---------------------------------------------------------------------------
@@ -280,6 +283,14 @@ def test_enqueue_decide_payload_contient_cycle_id() -> None:
         cycle_id="2026-07-07T09:00:00+08:00",
         now_fn=lambda: 1.0,
         symbols_universe=["SPY"],
+        process_identity_by_symbol={
+            "SPY": {
+                "process_instance_id": "instance-SPY",
+                "attempt_id": "attempt-SPY",
+                "runtime_run_id": "runtime-1",
+                "governance_version": {"bundle_sha256": "not-copied-to-each-task"},
+            }
+        },
     )
 
     assert ledger.payloads == [
@@ -293,8 +304,67 @@ def test_enqueue_decide_payload_contient_cycle_id() -> None:
             "agent_tools_enabled": True,
             "symbols_universe": ["SPY"],
             "cycle_id": "2026-07-07T09:00:00+08:00",
+            "process": {
+                "process_instance_id": "instance-SPY",
+                "attempt_id": "attempt-SPY",
+                "runtime_run_id": "runtime-1",
+            },
         }
     ]
+
+
+def test_retry_keeps_process_payload_and_handler_echoes_it(tmp_path, monkeypatch) -> None:
+    """Une retry Worker garde le même lien APE jusque dans son résultat durable."""
+    process = {
+        "process_instance_id": "instance-SPY",
+        "attempt_id": "attempt-SPY",
+        "runtime_run_id": "runtime-1",
+    }
+    outcomes = [RetryableError("temporary transport failure"), (_ok_decision("SPY"), 1)]
+
+    def flaky_decide_one(**_kwargs):
+        outcome = outcomes.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    monkeypatch.setattr(decide_handler_module, "decide_one", flaky_decide_one)
+    ledger = TaskLedger(tmp_path / "task_ledger.db")
+    task_id = ledger.enqueue(
+        kind="decide",
+        priority=0,
+        scheduled_at_ms=1_000,
+        now_ms=1_000,
+        dedup_key="cycle-1:SPY",
+        partition_key="SPY",
+        resource="acpx",
+        payload=json.dumps({**_base_payload("SPY"), "process": process}),
+    )
+    assert task_id is not None
+    clock = [1.0]
+    worker = Worker(
+        ledger,
+        ResourcePools({"acpx": 1}),
+        {"decide": make_decide_handler(codex_client=object())},
+        worker_id="retry-worker",
+        now_fn=lambda: clock[0],
+    )
+
+    assert worker.run_once(now_ms=1_000, token="first") is True
+    retry_task = ledger.get(task_id)
+    assert retry_task is not None
+    assert retry_task["status"] == "pending"
+    assert retry_task["attempts"] == 1
+    assert json.loads(retry_task["payload"])["process"] == process
+
+    clock[0] = 2.0
+    assert worker.run_once(now_ms=int(retry_task["scheduled_at"]), token="second") is True
+    done_task = ledger.get(task_id)
+    assert done_task is not None
+    assert done_task["status"] == "done"
+    assert done_task["attempts"] == 2
+    assert json.loads(done_task["payload"])["process"] == process
+    assert json.loads(done_task["result"])["process"] == process
 
 
 def test_enqueue_decide_projette_le_contexte_global_par_symbole() -> None:

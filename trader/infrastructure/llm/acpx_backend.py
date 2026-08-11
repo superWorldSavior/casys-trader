@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import signal
@@ -25,7 +26,16 @@ log = logging.getLogger(__name__)
 _DEFAULT_ACPX_MODEL = "gpt-5.6-terra"
 _DEFAULT_RUNTIME_SESSION_LABEL = "casys-trader:runtime-brain"
 _DEFAULT_ACPX_CODEX_HOME = Path(__file__).resolve().parents[3] / "ops" / "codex-home"
-_REQUIRED_ACPX_REASONING_EFFORT = "low"
+# Le profil unique de l'app reste fail-close sur son défaut Sol low. Le brain
+# Luna passe ensuite à medium sur SA session via `session/set_config_option` ;
+# l'effort n'est donc plus encodé dans un second CODEX_HOME.
+_ALLOWED_ACPX_REASONING_EFFORTS = ("low",)
+
+# Pendant kimi : profil versionné de l'app + les deux crans d'effort hauts que
+# le pont accepte (low|high|max). Même règle que côté Codex — un profil = un
+# effort — pour la même raison : l'effort n'est pas passable par appel.
+_DEFAULT_ACPX_KIMI_HOME = Path(__file__).resolve().parents[3] / "ops" / "kimi-home"
+_ALLOWED_ACPX_KIMI_EFFORTS = ("high", "max")
 
 # Plafond par-appel du subprocess acpx, DÉCOUPLÉ du budget-décision (lease).
 # Un appel LLM normal fait 30-90s ; un tour figé (provider muet après
@@ -33,11 +43,28 @@ _REQUIRED_ACPX_REASONING_EFFORT = "low"
 # total. Ce cap coupe l'appel individuel bien avant, sans toucher au lease.
 _DEFAULT_PER_CALL_TIMEOUT_CAP_S = 150
 
+_DISABLED_RUNTIME_CODEX_FEATURES = (
+    "apps",
+    "multi_agent",
+    "plugin_sharing",
+    "plugins",
+    "recommended_plugins",
+    "remote_plugin",
+    "skill_mcp_dependency_install",
+    "skill_search",
+)
 
-def _validated_acpx_codex_home() -> Path:
-    """Resolve the app-owned Codex profile and reject non-low defaults."""
 
-    configured = os.getenv("CODEX_HOME", "").strip()
+def _validated_acpx_codex_home(codex_home: str | None = None) -> Path:
+    """Resolve the app-owned Codex profile and reject low-effort ACPX calls.
+
+    ``codex_home`` — profil demandé par l'appelant (un rôle peut avoir le sien,
+    c'est ce qui donne un effort par rôle). Absent → ``CODEX_HOME``, puis le
+    profil versionné par défaut.
+    """
+
+    requested = str(codex_home or "").strip()
+    configured = requested or os.getenv("CODEX_HOME", "").strip()
     codex_home = Path(configured).expanduser() if configured else _DEFAULT_ACPX_CODEX_HOME
     if not codex_home.is_absolute():
         raise RuntimeError(f"CODEX_HOME ACPX doit être absolu : {str(codex_home)!r}")
@@ -49,13 +76,121 @@ def _validated_acpx_codex_home() -> Path:
         raise RuntimeError(f"profil ACPX illisible : {config_path}: {exc}") from exc
 
     effort = str(config.get("model_reasoning_effort") or "").strip().lower()
-    if effort != _REQUIRED_ACPX_REASONING_EFFORT:
+    if effort not in _ALLOWED_ACPX_REASONING_EFFORTS:
         raise RuntimeError(
             "appel ACPX refusé : "
             f"{config_path} configure model_reasoning_effort={effort or 'absent'!r}, "
-            f"attendu={_REQUIRED_ACPX_REASONING_EFFORT!r}"
+            f"attendu parmi {list(_ALLOWED_ACPX_REASONING_EFFORTS)!r}"
         )
     return codex_home
+
+
+def _runtime_skill_files(codex_home: Path) -> list[Path]:
+    """List every skill Codex may discover for the isolated runtime.
+
+    Codex 0.147 materialises system skills under ``CODEX_HOME`` and also
+    discovers the user-level ``~/.agents/skills`` tree. An empty config.toml is
+    therefore no longer equivalent to a skill-free prompt. Include the main
+    Codex system catalogue as a name source too, so a newly bundled system skill
+    is denied on the first daemon process after a CLI upgrade.
+    """
+
+    roots = (
+        codex_home / "skills",
+        Path.home() / ".agents" / "skills",
+    )
+    discovered: set[Path] = set()
+    for root in roots:
+        if not root.is_dir():
+            continue
+        discovered.update(path.resolve() for path in root.rglob("SKILL.md") if path.is_file())
+
+    global_system = Path.home() / ".codex" / "skills" / ".system"
+    if global_system.is_dir():
+        for source in global_system.glob("*/SKILL.md"):
+            discovered.add(
+                (codex_home / "skills" / ".system" / source.parent.name / "SKILL.md").resolve()
+            )
+    return sorted(discovered, key=str)
+
+
+def _isolated_codex_config(codex_home: Path) -> str:
+    """Build the per-process codex-acp config that keeps the brain prompt bare.
+
+    ``CODEX_CONFIG`` is consumed by ``codex-acp`` and merged into every session
+    start. We preserve unrelated adapter overrides but own the feature and skill
+    gates: the trading runtime must not inherit apps, plugins or skills from the
+    interactive developer environment.
+    """
+
+    payload: dict = {}
+    inherited = os.getenv("CODEX_CONFIG", "").strip()
+    if inherited:
+        try:
+            candidate = json.loads(inherited)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"CODEX_CONFIG ACPX invalide : {exc}") from exc
+        if not isinstance(candidate, dict):
+            raise RuntimeError("CODEX_CONFIG ACPX doit être un objet JSON")
+        payload.update(candidate)
+
+    existing_features = payload.get("features")
+    features = dict(existing_features) if isinstance(existing_features, dict) else {}
+    features.update({name: False for name in _DISABLED_RUNTIME_CODEX_FEATURES})
+    payload["features"] = features
+    payload["agents"] = {"enabled": False}
+    # Do not inherit the repository's engineering AGENTS.md stack into a market
+    # decision. Keep only the small runtime contract, injected at developer
+    # priority, and disable project-doc discovery for this process.
+    payload["developer_instructions"] = _RUNTIME_AGENT_INSTRUCTIONS
+    payload["project_doc_max_bytes"] = 0
+    payload["skills"] = {
+        "config": [
+            {"path": str(path), "enabled": False}
+            for path in _runtime_skill_files(codex_home)
+        ]
+    }
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+
+
+def _is_kimi_agent(agent: str | None) -> bool:
+    return str(agent or "").strip().lower() == "kimi"
+
+
+def _validated_acpx_kimi_home(kimi_home: str | None = None) -> Path:
+    """Resolve the app-owned kimi profile and reject low-effort ACPX calls.
+
+    Pendant strict de :func:`_validated_acpx_codex_home` pour l'agent kimi, qui
+    ne lit jamais le profil Codex. Sans cette garde, un ``KIMI_CODE_HOME``
+    manquant fait retomber kimi sur ``~/.kimi-code`` EN SILENCE : le daemon
+    tournerait avec le modèle et l'effort du CLI personnel sans rien signaler.
+    Le défaut est donc le profil versionné de l'app, jamais le home utilisateur.
+
+    L'effort kimi n'est pas passable par appel (le pont l'expose comme un config
+    option ACP ``thinking`` qu'acpx ne transmet pas en one-shot) : il vient du
+    ``[thinking] effort`` du profil → un effort = un KIMI_CODE_HOME.
+    """
+
+    requested = str(kimi_home or "").strip()
+    configured = requested or os.getenv("KIMI_CODE_HOME", "").strip()
+    home = Path(configured).expanduser() if configured else _DEFAULT_ACPX_KIMI_HOME
+    if not home.is_absolute():
+        raise RuntimeError(f"KIMI_CODE_HOME ACPX doit être absolu : {str(home)!r}")
+
+    config_path = home / "config.toml"
+    try:
+        config = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        raise RuntimeError(f"profil ACPX kimi illisible : {config_path}: {exc}") from exc
+
+    effort = str((config.get("thinking") or {}).get("effort") or "").strip().lower()
+    if effort not in _ALLOWED_ACPX_KIMI_EFFORTS:
+        raise RuntimeError(
+            "appel ACPX refusé : "
+            f"{config_path} configure [thinking] effort={effort or 'absent'!r}, "
+            f"attendu parmi {list(_ALLOWED_ACPX_KIMI_EFFORTS)!r}"
+        )
+    return home
 
 
 def _per_call_timeout_cap_s() -> int:
@@ -137,8 +272,12 @@ def agent_exec_enabled() -> bool:
     return os.getenv(_AGENT_EXEC_ENV, "").strip().lower() in _AGENT_EXEC_TRUE
 
 
-def agent_exec_scratch_dir() -> str:
+def agent_exec_scratch_dir(codex_home: str | None = None) -> str:
     """Workspace inscriptible pour l'exec en cage — JAMAIS le repo. Fail-close.
+
+    ``codex_home`` — profil du rôle appelant : le scratch vit SOUS le profil qui
+    porte la cage, sinon un rôle en profil ``low`` écrirait dans le scratch du
+    profil ``medium`` (hors de sa propre racine inscriptible).
 
     En workspace-write, l'unique racine inscriptible est le cwd : il doit donc
     être un dossier jetable sous CODEX_HOME (runtime isolé, gitignoré).
@@ -152,7 +291,7 @@ def agent_exec_scratch_dir() -> str:
     ``CASYS_AGENT_EXEC_CWD`` (override) doit résoudre SOUS CODEX_HOME (realpath),
     sinon rejet : impossible de pointer le workspace inscriptible vers le repo.
     """
-    codex_home = os.getenv("CODEX_HOME", "").strip()
+    codex_home = str(codex_home or "").strip() or os.getenv("CODEX_HOME", "").strip()
     if not codex_home or not os.path.isabs(codex_home):
         raise RuntimeError(
             f"{_AGENT_EXEC_ENV}=1 exige un CODEX_HOME absolu : c'est lui qui porte "
@@ -175,14 +314,16 @@ def agent_exec_scratch_dir() -> str:
     return base
 
 
-def _acpx_global_flags(acpx_bin: str, *, model: str, timeout_s: int) -> list[str]:
+def _acpx_global_flags(
+    acpx_bin: str, *, model: str, timeout_s: int, codex_home: str | None = None
+) -> list[str]:
     flags = [acpx_bin, "--format", "quiet"]
     if agent_exec_enabled():
         # Outils natifs activés (exec/python), cage = seatbelt workspace-write du
         # CODEX_HOME. Le cwd scratch fixe la seule racine inscriptible hors repo.
         # --approve-all : la frontière de sécurité est le sandbox OS, pas l'ACP
         # (validé end-to-end : write-hors-cwd + réseau bloqués sous cette config).
-        flags += ["--approve-all", "--cwd", agent_exec_scratch_dir(), "--no-terminal"]
+        flags += ["--approve-all", "--cwd", agent_exec_scratch_dir(codex_home), "--no-terminal"]
     else:
         # Défaut : zéro outil natif → contrat de sortie JSON pur-texte préservé
         # (ordre des flags byte-identique à l'historique, aucune régression).
@@ -195,12 +336,14 @@ def _acpx_agent_part(agent: str | None) -> list[str]:
     return [] if not agent or agent == "default" else [agent]
 
 
-def _acpx_session_admin_flags(acpx_bin: str) -> list[str]:
+def _acpx_session_admin_flags(
+    acpx_bin: str, *, codex_home: str | None = None
+) -> list[str]:
     """Flags for commands which must resolve an existing cwd-scoped session."""
 
     flags = [acpx_bin, "--format", "quiet"]
     if agent_exec_enabled():
-        flags += ["--cwd", agent_exec_scratch_dir()]
+        flags += ["--cwd", agent_exec_scratch_dir(codex_home)]
     flags += ["--no-terminal", "--non-interactive-permissions", "deny"]
     return flags
 
@@ -212,9 +355,10 @@ def build_acpx_session_new_command(
     model: str,
     timeout_s: int,
     agent: str | None = None,
+    codex_home: str | None = None,
 ) -> list[str]:
     return [
-        *_acpx_global_flags(acpx_bin, model=model, timeout_s=timeout_s),
+        *_acpx_global_flags(acpx_bin, model=model, timeout_s=timeout_s, codex_home=codex_home),
         *_acpx_agent_part(agent),
         "sessions",
         "new",
@@ -231,9 +375,10 @@ def build_acpx_session_prompt_command(
     model: str,
     timeout_s: int,
     agent: str | None = None,
+    codex_home: str | None = None,
 ) -> list[str]:
     return [
-        *_acpx_global_flags(acpx_bin, model=model, timeout_s=timeout_s),
+        *_acpx_global_flags(acpx_bin, model=model, timeout_s=timeout_s, codex_home=codex_home),
         *_acpx_agent_part(agent),
         "prompt",
         "-s",
@@ -247,9 +392,10 @@ def build_acpx_session_close_command(
     *,
     acpx_bin: str,
     agent: str | None = None,
+    codex_home: str | None = None,
 ) -> list[str]:
     return [
-        *_acpx_session_admin_flags(acpx_bin),
+        *_acpx_session_admin_flags(acpx_bin, codex_home=codex_home),
         *_acpx_agent_part(agent),
         "sessions",
         "close",
@@ -264,11 +410,11 @@ def build_acpx_session_config_command(
     value: str,
     acpx_bin: str,
     agent: str | None = None,
+    codex_home: str | None = None,
 ) -> list[str]:
-    """Set one ACP option on an already-open named session."""
-
+    """Set one advertised ACP config option on an already-open session."""
     return [
-        *_acpx_session_admin_flags(acpx_bin),
+        *_acpx_session_admin_flags(acpx_bin, codex_home=codex_home),
         *_acpx_agent_part(agent),
         "set",
         key,
@@ -286,10 +432,11 @@ def build_acpx_command(
     timeout_s: int,
     agent: str | None = None,
     session_label: str | None = None,
+    codex_home: str | None = None,
 ) -> list[str]:
     labeled_prompt = _label_prompt(prompt, session_label=session_label)
     return [
-        *_acpx_global_flags(acpx_bin, model=model, timeout_s=timeout_s),
+        *_acpx_global_flags(acpx_bin, model=model, timeout_s=timeout_s, codex_home=codex_home),
         *_acpx_agent_part(agent),
         "exec",
         labeled_prompt,
@@ -344,10 +491,27 @@ def _terminate_process_group(pgid: int, *, grace_s: float = 2.0) -> None:
 
 
 def _run_one_shot_command(
-    command: list[str], *, timeout_s: int, on_pid: Callable[[int], None] | None = None
+    command: list[str],
+    *,
+    timeout_s: int,
+    on_pid: Callable[[int], None] | None = None,
+    codex_home: str | None = None,
+    agent: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     child_env = dict(os.environ)
-    child_env["CODEX_HOME"] = str(_validated_acpx_codex_home())
+    resolved_codex_home = _validated_acpx_codex_home(codex_home)
+    child_env["CODEX_HOME"] = str(resolved_codex_home)
+    # Un CODEX_HOME vide ne suffit plus à isoler les prompts : Codex installe
+    # ses skills système et découvre aussi ~/.agents/skills. Le pont codex-acp
+    # applique ce layer à chaque nouvelle session, sans changer HOME (ACPX garde
+    # donc son stockage et son cache habituels).
+    child_env["CODEX_CONFIG"] = _isolated_codex_config(resolved_codex_home)
+    # Le profil de l'agent RÉELLEMENT lancé doit être validé, pas seulement
+    # celui de Codex : kimi ne lit jamais CODEX_HOME. Fail-close symétrique —
+    # profil absent/illisible/effort faible => refus AVANT le subprocess, jamais
+    # un repli muet sur ~/.kimi-code.
+    if _is_kimi_agent(agent):
+        child_env["KIMI_CODE_HOME"] = str(_validated_acpx_kimi_home())
     proc = subprocess.Popen(
         command,
         stdout=subprocess.PIPE,
@@ -390,6 +554,8 @@ def _run_and_parse(
     acpx_bin: str,
     timeout_s: int,
     call_ctx: dict | None = None,
+    codex_home: str | None = None,
+    agent: str | None = None,
 ) -> LlmCompletion | LlmFailure:
     ctx = call_ctx or {}
     session = ctx.get("session")
@@ -423,6 +589,8 @@ def _run_and_parse(
             command,
             timeout_s=budget_s + 15,
             on_pid=lambda p: pid_holder.__setitem__("pid", p),
+            codex_home=codex_home,
+            agent=agent,
         )
     except subprocess.TimeoutExpired:
         _log_acpx_call(
@@ -502,6 +670,7 @@ class AcpxSession:
     acpx_bin: str
     name: str
     agent: str | None = None
+    codex_home: str | None = None
 
     def send(
         self, prompt: str, *, timeout_s: int, call_ctx: dict | None = None
@@ -514,12 +683,15 @@ class AcpxSession:
                 model=self.model,
                 timeout_s=timeout_s,
                 agent=self.agent,
+                codex_home=self.codex_home,
             ),
             provider=self.provider,
             model=self.model,
             acpx_bin=self.acpx_bin,
             timeout_s=timeout_s,
             call_ctx={**(call_ctx or {}), "session": self.name},
+            codex_home=self.codex_home,
+            agent=self.agent,
         )
 
     def close(self) -> None:
@@ -529,8 +701,11 @@ class AcpxSession:
                     self.name,
                     acpx_bin=self.acpx_bin,
                     agent=self.agent,
+                    codex_home=self.codex_home,
                 ),
                 timeout_s=15,
+                codex_home=self.codex_home,
+                agent=self.agent,
             )
         except Exception as exc:  # noqa: BLE001 - fermeture best-effort, jamais bloquante
             log.warning("[acpx_session] close failed name=%s: %s", self.name, exc)
@@ -601,6 +776,12 @@ class AcpxBackend:
     acpx_bin: str = "acpx"
     agent: str | None = None
     session_label: str | None = _DEFAULT_RUNTIME_SESSION_LABEL
+    # Profil Codex du rôle — c'est lui qui porte le `model_reasoning_effort`.
+    # None = profil global `CODEX_HOME` (comportement historique).
+    codex_home: str | None = None
+    # Option ACP appliquée après `sessions new`. Contrairement au défaut du
+    # CODEX_HOME, elle est propre à la session et permet Luna medium + Sol low
+    # avec un seul profil de l'app.
     reasoning_effort: str | None = None
 
     def open_session(self, name: str, *, timeout_s: int) -> AcpxSession | LlmFailure:
@@ -611,12 +792,15 @@ class AcpxBackend:
                 model=self.model,
                 timeout_s=timeout_s,
                 agent=self.agent,
+                codex_home=self.codex_home,
             ),
             provider=self.provider,
             model=self.model,
             acpx_bin=self.acpx_bin,
             timeout_s=timeout_s,
             call_ctx={"session": name},
+            codex_home=self.codex_home,
+            agent=self.agent,
         )
         if not isinstance(res, LlmCompletion):
             return res
@@ -627,9 +811,10 @@ class AcpxBackend:
             acpx_bin=self.acpx_bin,
             name=name,
             agent=self.agent,
+            codex_home=self.codex_home,
         )
-        effort = _clean_optional(self.reasoning_effort)
-        if effort is not None:
+        effort = str(self.reasoning_effort or "").strip().lower()
+        if effort:
             configured = _run_and_parse(
                 build_acpx_session_config_command(
                     name,
@@ -637,12 +822,15 @@ class AcpxBackend:
                     value=effort,
                     acpx_bin=self.acpx_bin,
                     agent=self.agent,
+                    codex_home=self.codex_home,
                 ),
                 provider=self.provider,
                 model=self.model,
                 acpx_bin=self.acpx_bin,
                 timeout_s=min(timeout_s, 30),
                 call_ctx={"session": name},
+                codex_home=self.codex_home,
+                agent=self.agent,
             )
             if not isinstance(configured, LlmCompletion):
                 session.close()
@@ -669,12 +857,15 @@ class AcpxBackend:
                 timeout_s=timeout_s,
                 agent=self.agent,
                 session_label=self.session_label,
+                codex_home=self.codex_home,
             ),
             provider=self.provider,
             model=self.model,
             acpx_bin=self.acpx_bin,
             timeout_s=timeout_s,
             call_ctx={"session": self.session_label},
+            codex_home=self.codex_home,
+            agent=self.agent,
         )
 
 

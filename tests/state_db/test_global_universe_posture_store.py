@@ -53,3 +53,37 @@ def test_store_appends_only_material_global_universe_posture_changes(tmp_path) -
         second["posture_id"],
     ]
     assert store.read_current() == second
+
+
+def test_store_keeps_latest_failure_separate_from_current_and_clears_it_on_success(tmp_path) -> None:
+    store = GlobalUniversePostureStore(tmp_path / "global_universe_postures")
+    current, _, _ = store.append_if_changed(_posture("2026-07-11T08:00:00+00:00"))
+    failure = store.append_failure(
+        {
+            "as_of": "2026-07-11T12:00:00+00:00",
+            "status": "error",
+            "error_code": "TimeoutError",
+            "error_message": "model deadline exceeded",
+            "retry_lineage": "global-posture:current:previous",
+            "retry_attempt": 2,
+            "retry_delay_seconds": 3600,
+            "next_retry_at": "2026-07-11T13:00:00+00:00",
+        }
+    )
+
+    assert store.read_current() == current
+    assert store.read_latest_failure() == failure
+    assert json.loads(store.latest_failure_path.read_text(encoding="utf-8")) == failure
+    assert [
+        json.loads(line)
+        for line in store.failure_path_for_date("2026-07-11").read_text(encoding="utf-8").splitlines()
+    ] == [failure]
+
+    refreshed, _, changed = store.append_if_changed(
+        _posture("2026-07-11T12:30:00+00:00", gross_mode="risk_off")
+    )
+
+    assert changed is True
+    assert store.read_current() == refreshed
+    assert store.read_latest_failure() is None
+    assert store.latest_failure_path.exists() is False

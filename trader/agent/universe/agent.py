@@ -7,7 +7,11 @@ from dataclasses import replace
 from pathlib import Path
 
 from trader.agent import llm
-from trader.agent.universe.prompt import build_universe_prompt, parse_universe_completion
+from trader.agent.universe.prompt import (
+    build_universe_prompt,
+    build_universe_repair_prompt,
+    parse_universe_completion,
+)
 from trader.application.universe import UniverseAgentDecision, UniverseCompositionRequest
 
 DEFAULT_UNIVERSE_AGENT_TIMEOUT_S = 120
@@ -102,12 +106,29 @@ class LlmUniverseAgent:
             )
         decision, error = parse_universe_completion(completion.text, baseline=request.baseline)
         if decision is None:
-            raise UniverseAgentPayloadError(
-                error or "invalid_agent_response",
-                provider=completion.provider,
-                model=completion.model,
-                provider_fallback_reason=completion.fallback_reason,
+            repair = build_universe_repair_prompt(
+                request,
+                invalid_response=completion.text,
+                parse_error=error or "invalid_agent_response",
+                company_context_index=False,
             )
+            completion = self._router.complete(repair, timeout_s=self._timeout_s)
+            if isinstance(completion, llm.LlmFailure):
+                raise UniverseAgentError(
+                    completion.code,
+                    completion.message,
+                    provider=completion.provider,
+                    model=completion.model,
+                    provider_fallback_reason=completion.fallback_reason,
+                )
+            decision, error = parse_universe_completion(completion.text, baseline=request.baseline)
+            if decision is None:
+                raise UniverseAgentPayloadError(
+                    error or "invalid_agent_response",
+                    provider=completion.provider,
+                    model=completion.model,
+                    provider_fallback_reason=completion.fallback_reason,
+                )
         if decision.contract_version not in {"universe.v1", "universe.v2"}:
             raise UniverseAgentPayloadError(
                 "legacy_contract_not_allowed_for_universe_agent",

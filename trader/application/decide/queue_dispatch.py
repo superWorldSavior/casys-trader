@@ -13,7 +13,12 @@ Contrat du payload task (JSON) — aligné sur decide_handler.make_decide_handle
       "shared_context":      dict,
       "per_symbol_facts":    dict,   # pré-construit par l'appelant (build_symbol_facts)
       "decision_timeout_s":  int,
-      "agent_tools_enabled": bool
+      "agent_tools_enabled": bool,
+      "process": {
+        "process_instance_id": str,
+        "attempt_id": str,
+        "runtime_run_id": str
+      }?                              # corrélation APE observationnelle
     }
 
 AX §8 (Structured Outputs) : aucun spinner, retour machine-readable.
@@ -34,6 +39,7 @@ from __future__ import annotations
 import json
 import logging
 import time as _time
+from collections.abc import Mapping
 from typing import Callable, Iterator
 
 from trader.domain.decisions import Decision
@@ -45,6 +51,33 @@ log = logging.getLogger("trader.application.queue_dispatch")
 # Petit devant la latence LLM (>10s) ; évite le spin sans retarder la réponse.
 _POLL_SLEEP_S: float = 0.1
 _POLL_SLEEP_MAX_S: float = 0.5
+_PROCESS_CORRELATION_FIELDS = (
+    "process_instance_id",
+    "attempt_id",
+    "runtime_run_id",
+)
+
+
+def _process_fields_for_task(
+    process_identity_by_symbol: Mapping[str, Mapping[str, object]] | None,
+    symbol: str,
+) -> dict[str, str]:
+    """Project only the stable APE IDs into a durable decide task payload.
+
+    Governance versioning remains on the process event and durable decision
+    record. Repeating the full bundle in every queue payload would add mutable
+    operational context without improving the task-to-instance join.
+    """
+    if process_identity_by_symbol is None:
+        return {}
+    candidate = process_identity_by_symbol.get(symbol)
+    if not isinstance(candidate, Mapping):
+        return {}
+    return {
+        field: value.strip()
+        for field in _PROCESS_CORRELATION_FIELDS
+        if isinstance((value := candidate.get(field)), str) and value.strip()
+    }
 
 
 def _enqueue_decide_tasks(
@@ -60,6 +93,7 @@ def _enqueue_decide_tasks(
     cycle_id: str,
     now_fn: Callable[[], float],
     symbols_universe: list[str] | None = None,
+    process_identity_by_symbol: Mapping[str, Mapping[str, object]] | None = None,
 ) -> tuple[dict[str, int], set[str]]:
     """Purge les stale puis enfile une tâche decide par symbole admissible."""
     now_ms = int(now_fn() * 1000)
@@ -95,6 +129,9 @@ def _enqueue_decide_tasks(
             "symbols_universe": symbols_universe or [],
             "cycle_id": cycle_id,
         }
+        process = _process_fields_for_task(process_identity_by_symbol, sym)
+        if process:
+            payload["process"] = process
         dedup_key = f"{cycle_id}:{sym}"
         tid = ledger.enqueue(
             kind="decide",
@@ -148,6 +185,7 @@ def iter_decide_results_via_queue(
     cycle_id: str,
     now_fn: Callable[[], float],
     symbols_universe: list[str] | None = None,
+    process_identity_by_symbol: Mapping[str, Mapping[str, object]] | None = None,
 ) -> Iterator[tuple[str, Decision | None, int]]:
     """Yield les résultats de décisions dès que leur tâche atteint un terminal.
 
@@ -168,6 +206,7 @@ def iter_decide_results_via_queue(
         cycle_id=cycle_id,
         now_fn=now_fn,
         symbols_universe=symbols_universe,
+        process_identity_by_symbol=process_identity_by_symbol,
     )
 
     # -----------------------------------------------------------------------
@@ -280,6 +319,7 @@ def dispatch_decide_via_queue(
     cycle_id: str,
     now_fn: Callable[[], float],
     symbols_universe: list[str] | None = None,
+    process_identity_by_symbol: Mapping[str, Mapping[str, object]] | None = None,
 ) -> tuple[dict[str, Decision], int, set[str]]:
     """Enfile les décisions grain-symbole et collecte les résultats via polling.
 
@@ -298,6 +338,9 @@ def dispatch_decide_via_queue(
         Plafond de l'appel LLM interne (passé dans le payload).
     agent_tools_enabled:
         Transmis au handler (use_symbol_calls_contract).
+    process_identity_by_symbol:
+        IDs APE par symbole, ajoutés au payload durable de la tâche. Le bundle
+        de gouvernance reste dans l'événement de processus et la décision.
     cycle_id:
         Identifiant unique du cycle courant (ex. ``now.isoformat()``).
         Préfixe les dedup_keys : ``{cycle_id}:{sym}``.
@@ -334,6 +377,7 @@ def dispatch_decide_via_queue(
         cycle_id=cycle_id,
         now_fn=now_fn,
         symbols_universe=symbols_universe,
+        process_identity_by_symbol=process_identity_by_symbol,
     ):
         if decision is None:
             skipped_syms.add(sym)

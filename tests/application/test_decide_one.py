@@ -195,6 +195,33 @@ def test_appel_client_per_symbol_contient_facts():
     assert client.calls[0]["per_symbol"] == {SYMBOL: facts}
 
 
+def test_appel_client_projette_les_postures_univers_hors_cible():
+    facts = {
+        "universe_mandate": {
+            "symbol_mandate": {
+                "symbol": SYMBOL,
+                "family_context": {"family": "tech"},
+            },
+            "family_postures": {
+                "tech": {"posture": "constructive"},
+                "energy": {"posture": "defensive"},
+            },
+        }
+    }
+    client = _FakeClient({SYMBOL: _ok_decision()})
+
+    decide_one(
+        **{**_BASE_KWARGS, "per_symbol_facts": facts},
+        codex_client=client,
+    )
+
+    sent = client.calls[0]["per_symbol"][SYMBOL]
+    assert sent["universe_mandate"]["family_postures"] == {
+        "tech": {"posture": "constructive"}
+    }
+    assert set(facts["universe_mandate"]["family_postures"]) == {"tech", "energy"}
+
+
 # ---------------------------------------------------------------------------
 # Erreurs de parsing (FIX 1) — parse_batch réel + decide_one
 #

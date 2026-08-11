@@ -35,16 +35,15 @@ def make_execute_order_handler(
             side=order_raw["side"],
             quantity=float(order_raw["quantity"]),
             rationale=str(order_raw.get("rationale", "")),
+            process_instance_id=order_raw.get("process_instance_id"),
+            attempt_id=order_raw.get("attempt_id"),
+            decision_id=order_raw.get("decision_id"),
         )
         plan_to_upsert = (
-            TradePlan.model_validate(payload["plan_to_upsert"])
-            if payload.get("plan_to_upsert") is not None
-            else None
+            TradePlan.model_validate(payload["plan_to_upsert"]) if payload.get("plan_to_upsert") is not None else None
         )
         symbol_to_close: str | None = payload.get("symbol_to_close") or None
-        symbol_to_sync_quantity: str | None = (
-            payload.get("symbol_to_sync_quantity") or None
-        )
+        symbol_to_sync_quantity: str | None = payload.get("symbol_to_sync_quantity") or None
 
         execute_order_unit(
             db=db,

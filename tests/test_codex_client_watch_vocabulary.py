@@ -3,8 +3,9 @@
 pas rejeter sur le format (cf rejet réel GC=F : `er`/`ac` au lieu de
 `efficiency_ratio`/`autocorrelation`, opérateur `eq` inexistant)."""
 
+from trader.agent import client as codex_client
 from trader.agent.client import build_batch_prompt, build_prompt
-from trader.domain.semantic.catalog import INDICATOR_COLUMNS, INDICATOR_LABEL_VALUES
+from trader.domain.semantic.catalog import INDICATOR_COLUMNS, INDICATOR_LABEL_VALUES, TIMEFRAMES
 from trader.market.features import DEFAULT_INDICATORS
 from trader.planning.indicator_watch import WATCH_VALID_OPERATORS
 
@@ -75,10 +76,37 @@ def test_single_request_context_contract_liste_les_indicateurs_canoniques_valide
         assert indicator in contract, f"indicateur REQUEST_CONTEXT single manquant: {indicator}"
 
 
-def test_batch_prompt_n_expose_plus_request_context_inline() -> None:
+def test_batch_prompt_legacy_expose_request_context_inline_exact() -> None:
     prompt = _batch_prompt()
-    assert '"action": "REQUEST_CONTEXT"' not in prompt
-    assert '"action":"REQUEST_CONTEXT"' not in prompt
+    assert '"action":"REQUEST_CONTEXT"' in prompt
+    assert f'"timeframe":"{"|".join(TIMEFRAMES)}"' in prompt
+
+
+def test_watch_et_wake_exposent_tous_les_timeframes_gouvernes() -> None:
+    prompt = _batch_prompt()
+    enum = "|".join(TIMEFRAMES)
+
+    assert f'interval:"{enum}"' in prompt
+    assert f'"interval":"{enum}"' in prompt
+
+
+def test_watch_documente_ttl_optionnel_et_ordre_arme_strict() -> None:
+    prompt = _batch_prompt()
+    armed_contract = codex_client._indicator_watch_vocabulary()
+
+    assert "`ttl_minutes` est optionnel (défaut 60 minutes)" in prompt
+    assert '"qty":<number>' in prompt
+    assert "stop, qty>0 et confidence sont requis" in prompt
+    assert "risk_pct?" not in armed_contract[armed_contract.index("# Plans armés"):]
+
+
+def test_distances_structurelles_gardent_unites_et_semantique() -> None:
+    prompt = _batch_prompt()
+
+    assert "sl24/sl48" in prompt and "sh24/sh48" in prompt
+    assert "en fraction du prix (0.03 = 3 %)" in prompt
+    assert "sous swing_low pour un long" in prompt
+    assert "au-dessus de swing_high pour un short" in prompt
 
 
 def test_guidance_decrit_request_context_avec_indicators_pluriel() -> None:

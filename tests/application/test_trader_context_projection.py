@@ -9,6 +9,7 @@ from trader.application.decide.context_projection import (
     MAX_FOCUS_ROWS,
     MAX_RADAR_ROWS,
     project_shared_context_for_symbol,
+    project_symbol_facts_for_prompt,
 )
 
 
@@ -77,6 +78,10 @@ def _shared_context() -> dict:
             {"symbol": symbol, "id": f"plan-{symbol}", "kind": "armed", "intent": "long"}
             for symbol in symbols[:30]
         ],
+        "stale_market_data": {
+            symbol: {"stale_reason": "too_old", "data_age_minutes": 400 + index}
+            for index, symbol in enumerate(symbols[:20])
+        },
         "attribution": {
             "n_closed_trades": 40,
             "realized_pnl": 123.0,
@@ -118,6 +123,9 @@ def test_projection_focalise_le_push_sans_muter_le_snapshot() -> None:
         {"symbol": "TARGET", "id": "plan-TARGET", "kind": "armed", "intent": "long"}
     ]
     assert {row["symbol"] for row in projected["attribution"]["recent_trips"]} == {"TARGET"}
+    assert "by_confidence" not in projected["attribution"]
+    assert "by_exit_reason" not in projected["attribution"]
+    assert set(projected["stale_market_data"]) == {"TARGET"}
     assert "positions" not in projected["kpis"]
     assert projected["kpis"]["positions_count"] == 20
     assert "symbols" not in projected["kpis"]["model_performance"][0]
@@ -148,7 +156,31 @@ def test_projection_laisse_un_contexte_vide_vide() -> None:
     assert project_shared_context_for_symbol({}, symbol="TARGET") == {}
 
 
-def test_prompt_focalise_reste_sous_un_budget_de_70k(monkeypatch) -> None:
+def test_projection_du_mandat_univers_ne_garde_que_la_famille_cible() -> None:
+    facts = {
+        "universe_mandate": {
+            "symbol_mandate": {
+                "symbol": "TARGET",
+                "family_context": {"family": "focus"},
+            },
+            "family_postures": {
+                "focus": {"posture": "constructive"},
+                "unrelated": {"posture": "defensive", "brief": "x" * 2_000},
+            },
+        },
+        "structure": {"price": 100.0},
+    }
+    before = deepcopy(facts)
+
+    projected = project_symbol_facts_for_prompt(facts, symbol="TARGET")
+
+    assert facts == before
+    assert projected["universe_mandate"]["family_postures"] == {
+        "focus": {"posture": "constructive"}
+    }
+
+
+def test_prompt_focalise_reste_sous_un_budget_de_60k(monkeypatch) -> None:
     monkeypatch.setenv("CASYS_AGENT_EXEC", "1")
     root = Path(__file__).resolve().parents[2]
     shared = _shared_context()
@@ -172,5 +204,5 @@ def test_prompt_focalise_reste_sous_un_budget_de_70k(monkeypatch) -> None:
         max_rounds=None,
     )
 
-    assert len(prompt) < 70_000
+    assert len(prompt) < 60_000
     assert '"decision_context_scope":{"version":"decision_focus_v1"' in prompt

@@ -27,7 +27,7 @@ from trader.domain.market import sessions as market
 from trader.domain.market import volatility as reference_volatility_service
 from trader.domain.market.execution_eligibility import execution_blocked_reason
 from trader.domain.planning.exit_plan_spec import InvalidExitPlanError, validate_exit_plan
-from trader.domain.planning.trade_plan import resolve_exit_plan
+from trader.domain.planning.trade_plan import apply_exit_update, resolve_exit_plan
 from trader.domain.decisions import Decision
 from trader.planning.protocols import SchedulerLike
 
@@ -85,6 +85,7 @@ class DecisionExecutionContext:
     # Compatibility fallback for application-level callers; the daemon always
     # supplies the stable ledger identity reserved before execution.
     decision_id_for_symbol: Callable[[str], str] = lambda symbol: symbol
+    process_identity_for_symbol: Callable[[str], dict[str, str]] = lambda _symbol: {}
     append_event: Callable[..., None] = _noop_event
     append_model_performance: Callable[..., None] = _noop_model_performance
     logger: logging.Logger = logging.getLogger("casys-trader")
@@ -98,6 +99,126 @@ def _capture_exit_plan_trace(entry: dict, trace: dict) -> None:
     warnings = hard_stop.get("warnings") if isinstance(hard_stop, dict) else None
     if isinstance(warnings, list) and warnings:
         entry["exit_plan_warnings"] = copy.deepcopy(warnings)
+
+
+def _capture_plan_effect_readback(*, entry: dict, plan_store: object, symbol: str) -> None:
+    """Attach a semantic plan-store receipt after a plan mutation."""
+    try:
+        plans = [plan for plan in plan_store.open_plans() if plan.symbol == symbol]
+    except Exception as exc:  # noqa: BLE001 - missing proof must stay explicit
+        entry["plan_effect"] = {"status": "unavailable", "error": type(exc).__name__}
+        return
+    observed_plans = [fill_plan_effects.plan_snapshot(plan) for plan in plans]
+    effect = {
+        "status": "unverified",
+        "open_plans": [
+            {
+                "plan_id": plan.id,
+                "entry_decision_id": plan.entry_decision_id,
+                "remaining_quantity": plan.remaining_quantity,
+            }
+            for plan in plans
+        ],
+    }
+    expectation = entry.get("plan_receipt_expectation")
+    if not isinstance(expectation, dict):
+        return _set_plan_effect(entry, effect)
+    effect["expected_mutation"] = copy.deepcopy(expectation)
+    kind = expectation.get("kind")
+    if kind == "upsert" and isinstance(expectation.get("plan"), dict):
+        expected_plan = expectation["plan"]
+        effect["expected_plan"] = copy.deepcopy(expected_plan)
+        matched = next((plan for plan in observed_plans if plan == expected_plan), None)
+        if matched is None:
+            effect["status"] = "mismatch"
+            effect["reason"] = "plan_receipt_mismatch"
+            return _set_plan_effect(entry, effect)
+        effect["observed_plan"] = matched
+        effect["status"] = "verified"
+        return _set_plan_effect(entry, effect)
+    if kind == "no_open_plans":
+        effect["expected_open_plan_count"] = 0
+        if plans:
+            effect["status"] = "mismatch"
+            effect["reason"] = "plan_receipt_mismatch"
+        else:
+            effect["status"] = "verified"
+        return _set_plan_effect(entry, effect)
+    if kind == "remaining_quantity":
+        expected_quantity = expectation.get("quantity")
+        effect["expected_remaining_quantity"] = expected_quantity
+        if expected_quantity == 0 and not plans:
+            effect["status"] = "verified"
+            return _set_plan_effect(entry, effect)
+        if (
+            isinstance(expected_quantity, (int, float))
+            and len(plans) == 1
+            and plans[0].remaining_quantity == float(expected_quantity)
+        ):
+            effect["status"] = "verified"
+        else:
+            effect["status"] = "mismatch"
+            effect["reason"] = "plan_receipt_mismatch"
+        return _set_plan_effect(entry, effect)
+    if kind in {"unchanged", "exact_plans"} and isinstance(expectation.get("plans"), list):
+        expected_plans = expectation["plans"]
+        effect["expected_plans"] = copy.deepcopy(expected_plans)
+        effect["observed_plans"] = copy.deepcopy(observed_plans)
+        if observed_plans == expected_plans:
+            effect["status"] = "verified"
+        else:
+            effect["status"] = "mismatch"
+            effect["reason"] = "plan_receipt_mismatch"
+        return _set_plan_effect(entry, effect)
+    if kind == "last_llm_review" and isinstance(expectation.get("review"), dict):
+        expected_review = expectation["review"]
+        observed_reviews = [
+            {
+                "plan_id": plan.id,
+                "last_llm_review": copy.deepcopy(plan.last_llm_review),
+            }
+            for plan in plans
+        ]
+        effect["expected_last_llm_review"] = copy.deepcopy(expected_review)
+        effect["observed_last_llm_reviews"] = observed_reviews
+        if plans and all(plan.last_llm_review == expected_review for plan in plans):
+            effect["status"] = "verified"
+        else:
+            effect["status"] = "mismatch"
+            effect["reason"] = "plan_receipt_mismatch"
+        return _set_plan_effect(entry, effect)
+    _set_plan_effect(entry, effect)
+
+
+def _set_plan_effect(entry: dict, effect: dict) -> None:
+    entry["plan_effect"] = effect
+    entry.setdefault("plan_effects", []).append(copy.deepcopy(effect))
+
+
+def _set_plan_receipt_expectation(entry: dict, *, kind: str, **payload: object) -> None:
+    entry["plan_receipt_expectation"] = {"kind": kind, **payload}
+
+
+def _expected_exit_update_plan_snapshot(
+    *,
+    plan_store: object,
+    symbol: str,
+    exit_update: dict,
+    bars: list | None,
+    current_price: float | None,
+) -> dict | None:
+    """Derive the pure expected post-update snapshot before the store mutation."""
+    try:
+        plan = next(plan for plan in plan_store.open_plans() if plan.symbol == symbol)
+        expected = apply_exit_update(
+            plan,
+            exit_update,
+            bars=bars,
+            reference_price=current_price,
+        )
+    except (InvalidExitPlanError, StopIteration, ValueError):
+        return None
+    return fill_plan_effects.plan_snapshot(expected)
 
 
 def execute_one_cycle_decision(
@@ -164,17 +285,43 @@ def execute_one_cycle_decision(
     # La même identité suit le learning, le ledger et les fills associés. Elle
     # est réservée avant tout side effect d'exécution.
     entry["decision_id"] = ctx.decision_id_for_symbol(sym)
+    process_identity = dict(ctx.process_identity_for_symbol(sym))
+    entry.update(process_identity)
+
+    def record_outcome(payload: dict) -> None:
+        if "admission_status" not in payload:
+            if payload.get("action") == "HOLD":
+                payload["admission_status"] = "not_required"
+            elif payload.get("queue_task_id") is not None or payload.get("reason") == "ok":
+                payload["admission_status"] = "admitted"
+            elif payload.get("executed") is False:
+                payload["admission_status"] = "rejected"
+        ctx.record_decision(payload)
+
     if sym in ctx.prices:
         entry["price"] = ctx.prices[sym]
     decision_source = str(entry["decision_source"])
     if decision_source == "llm" and sym in ctx.held_symbols and decision_entries.counts_as_llm_review(decision):
-        plan_review.persist_last_llm_review(
+        persisted_review = plan_review.persist_last_llm_review(
             plan_store=ctx.plan_store,
             symbol=sym,
             now=ctx.now,
             decision=decision,
             decision_id=str(entry["decision_id"]),
         )
+        if persisted_review is not None:
+            entry["plan_review_recorded"] = True
+            _set_plan_receipt_expectation(
+                entry,
+                kind="last_llm_review",
+                review=persisted_review,
+                reason="last_llm_review_persisted",
+            )
+            _capture_plan_effect_readback(
+                entry=entry,
+                plan_store=ctx.plan_store,
+                symbol=sym,
+            )
 
     reference_volatility: float | None = None
     runtime_exit_plan = decision.exit_plan
@@ -212,21 +359,36 @@ def execute_one_cycle_decision(
     def apply_default_schedule_after_blocked() -> None:
         if ctx.sched is not None:
             ctx.sched.clear_symbol_next_wake(sym)
+        entry["schedule_effect"] = cycle_schedule.read_schedule_effect(
+            ctx.sched,
+            sym=sym,
+            now=ctx.now,
+            expected_next_wake=None,
+        )
 
-    if (
-        decision.action in {"BUY", "SELL"}
-        and effective_quantity == 0
-        and decision.risk_pct_target is None
-    ):
+    if decision.action in {"BUY", "SELL"} and effective_quantity == 0 and decision.risk_pct_target is None:
         _log_cycle_progress("[decision %d/%d] %s blocked zero_quantity_order", index, total, sym)
         apply_default_schedule_after_blocked()
-        ctx.record_decision({**entry, "executed": False, "reason": "zero_quantity_order"})
+        record_outcome({**entry, "executed": False, "reason": "zero_quantity_order"})
         return state
 
     if decision.action == "HOLD" or (effective_quantity == 0 and decision.risk_pct_target is None):
         apply_decision_schedule()
         if decision.exit_update:
-            exit_update_service.apply_exit_update_to_open_plan(
+            try:
+                plans_before_exit_update = [
+                    fill_plan_effects.plan_snapshot(plan) for plan in ctx.plan_store.open_plans() if plan.symbol == sym
+                ]
+            except Exception:  # noqa: BLE001 - absence de preuve reste explicite
+                plans_before_exit_update = None
+            expected_exit_plan = _expected_exit_update_plan_snapshot(
+                plan_store=ctx.plan_store,
+                symbol=sym,
+                exit_update=decision.exit_update,
+                bars=ctx.tradable_bars_by_symbol.get(sym),
+                current_price=ctx.prices.get(sym),
+            )
+            exit_update_result = exit_update_service.apply_exit_update_to_open_plan(
                 plan_store=ctx.plan_store,
                 symbol=sym,
                 exit_update=decision.exit_update,
@@ -234,11 +396,31 @@ def execute_one_cycle_decision(
                 entry=entry,
                 current_price=ctx.prices.get(sym),
             )
+            if expected_exit_plan is not None:
+                _set_plan_receipt_expectation(
+                    entry,
+                    kind="upsert",
+                    plan=expected_exit_plan,
+                )
+            elif exit_update_result.reason == "no_open_plan":
+                _set_plan_receipt_expectation(entry, kind="no_open_plans")
+            elif plans_before_exit_update is not None:
+                _set_plan_receipt_expectation(
+                    entry,
+                    kind="unchanged",
+                    plans=plans_before_exit_update,
+                    reason=exit_update_result.reason,
+                )
+            _capture_plan_effect_readback(
+                entry=entry,
+                plan_store=ctx.plan_store,
+                symbol=sym,
+            )
         hold_reason = decision_entries.hold_reason_for_decision(
             decision_source=decision_source,
             rationale=decision.rationale,
         )
-        ctx.record_decision({**entry, "executed": False, "reason": hold_reason})
+        record_outcome({**entry, "executed": False, "reason": hold_reason})
         return state
 
     invalid_intent = order_admission.invalid_intent_reason(
@@ -249,7 +431,7 @@ def execute_one_cycle_decision(
     if invalid_intent is not None:
         _log_cycle_progress("[decision %d/%d] %s blocked %s", index, total, sym, invalid_intent)
         apply_default_schedule_after_blocked()
-        ctx.record_decision({**entry, "executed": False, "reason": invalid_intent})
+        record_outcome({**entry, "executed": False, "reason": invalid_intent})
         return state
 
     execution_blocked = execution_blocked_reason(
@@ -258,11 +440,9 @@ def execute_one_cycle_decision(
         fail_closed=decision.intent in _OPENING_INTENTS,
     )
     if execution_blocked is not None:
-        _log_cycle_progress(
-            "[execution] %s ordre bloqué (%s) — watch/wake conservés", sym, execution_blocked
-        )
+        _log_cycle_progress("[execution] %s ordre bloqué (%s) — watch/wake conservés", sym, execution_blocked)
         apply_decision_schedule()
-        ctx.record_decision({**entry, "executed": False, "reason": execution_blocked})
+        record_outcome({**entry, "executed": False, "reason": execution_blocked})
         return state
 
     if runtime_exit_plan and decision.intent in _OPENING_INTENTS:
@@ -310,7 +490,7 @@ def execute_one_cycle_decision(
                 exc,
             )
             apply_default_schedule_after_blocked()
-            ctx.record_decision({**entry, "executed": False, "reason": f"invalid_exit_plan:{exc}"})
+            record_outcome({**entry, "executed": False, "reason": f"invalid_exit_plan:{exc}"})
             return state
         hard_stop_price = order_admission.hard_stop_price(runtime_exit_plan)
         if (
@@ -330,7 +510,7 @@ def execute_one_cycle_decision(
                 sym,
             )
             apply_default_schedule_after_blocked()
-            ctx.record_decision({**entry, "executed": False, "reason": "invalid_exit_plan:hard_stop_wrong_side"})
+            record_outcome({**entry, "executed": False, "reason": "invalid_exit_plan:hard_stop_wrong_side"})
             return state
 
     pos = ctx.broker.positions().get(sym)
@@ -343,7 +523,7 @@ def execute_one_cycle_decision(
     if exit_block_reason is not None:
         _log_cycle_progress("[decision %d/%d] %s blocked %s", index, total, sym, exit_block_reason)
         apply_default_schedule_after_blocked()
-        ctx.record_decision({**entry, "executed": False, "reason": exit_block_reason})
+        record_outcome({**entry, "executed": False, "reason": exit_block_reason})
         return state
     if clamped_quantity != effective_quantity:
         entry.setdefault("requested_qty", effective_quantity)
@@ -352,7 +532,7 @@ def execute_one_cycle_decision(
     if effective_quantity == 0 and decision.risk_pct_target is None:
         _log_cycle_progress("[decision %d/%d] %s hold zero_exit_quantity", index, total, sym)
         apply_default_schedule_after_blocked()
-        ctx.record_decision({**entry, "executed": False, "reason": "zero_exit_quantity"})
+        record_outcome({**entry, "executed": False, "reason": "zero_exit_quantity"})
         return state
 
     risk_outcome = risk_admission.assess_risk_admission(
@@ -412,7 +592,7 @@ def execute_one_cycle_decision(
         blocked_entry = {**entry, "executed": False, "reason": reason}
         if risk_outcome.context is not None:
             blocked_entry["context"] = risk_outcome.context
-        ctx.record_decision(blocked_entry)
+        record_outcome(blocked_entry)
         return state
 
     final_risk_outcome = risk_admission.assess_final_risk_gate(
@@ -440,7 +620,7 @@ def execute_one_cycle_decision(
             round(ctx.prices[sym], 6),
         )
         apply_default_schedule_after_blocked()
-        ctx.record_decision(
+        record_outcome(
             {
                 **entry,
                 "executed": False,
@@ -449,6 +629,15 @@ def execute_one_cycle_decision(
             }
         )
         return state
+
+    if process_identity:
+        order = order.model_copy(
+            update={
+                "process_instance_id": process_identity.get("process_instance_id"),
+                "attempt_id": process_identity.get("attempt_id"),
+                "decision_id": str(entry["decision_id"]),
+            }
+        )
 
     if ctx.queue_execute_enabled and ctx.execute_ledger is not None:
         _exec_entry_context = None
@@ -497,6 +686,9 @@ def execute_one_cycle_decision(
             cycle_id=ctx.now.isoformat(),
             intent=decision.intent,
             budget_s=_EXECUTE_POLL_BUDGET_S,
+            process_instance_id=process_identity.get("process_instance_id"),
+            attempt_id=process_identity.get("attempt_id"),
+            decision_id=(str(entry["decision_id"]) if process_identity else None),
         )
         entry.update(
             {
@@ -504,6 +696,7 @@ def execute_one_cycle_decision(
                 "queue_terminal": _exec_outcome.terminal,
                 "queue_late_execution_risk": _exec_outcome.late_execution_risk,
                 "queue_abandoned": _exec_outcome.abandoned,
+                "queue_fill_verified": _exec_outcome.verified,
             }
         )
         if _exec_outcome.reason is not None:
@@ -512,7 +705,16 @@ def execute_one_cycle_decision(
                 if _exec_outcome.terminal == "timeout":
                     state.opening_batch_timed_out = True
             apply_default_schedule_after_blocked()
-            ctx.record_decision({**entry, "executed": False, "reason": _exec_outcome.reason})
+            entry["effect_status"] = (
+                "unknown"
+                if _exec_outcome.late_execution_risk
+                or "no_fill" in _exec_outcome.reason
+                or "mismatch" in _exec_outcome.reason
+                else "not_applied"
+            )
+            if entry["effect_status"] == "unknown":
+                entry["process_state"] = "recovery_required"
+            record_outcome({**entry, "executed": False, "reason": _exec_outcome.reason})
             return state
         fill = _exec_outcome.fill
     else:
@@ -523,6 +725,52 @@ def execute_one_cycle_decision(
             dry_run=ctx.dry_run,
             fx_rate=ctx.rate_for_symbol(sym),
         )
+    if fill is None and not ctx.dry_run:
+        apply_default_schedule_after_blocked()
+        entry.update(
+            {
+                "effect_status": "unknown",
+                "process_state": "recovery_required",
+            }
+        )
+        record_outcome(
+            {
+                **entry,
+                "executed": False,
+                "reason": "broker_fill_missing",
+                "price": ctx.prices[sym],
+            }
+        )
+        return state
+    if fill is not None and (
+        fill.symbol != sym
+        or (
+            process_identity
+            and any(
+                (
+                    fill.process_instance_id != process_identity.get("process_instance_id"),
+                    fill.attempt_id != process_identity.get("attempt_id"),
+                    fill.decision_id != str(entry["decision_id"]),
+                )
+            )
+        )
+    ):
+        apply_default_schedule_after_blocked()
+        entry.update(
+            {
+                "effect_status": "unknown",
+                "process_state": "recovery_required",
+            }
+        )
+        record_outcome(
+            {
+                **entry,
+                "executed": False,
+                "reason": "broker_fill_correlation_mismatch",
+                "price": ctx.prices[sym],
+            }
+        )
+        return state
     if not ctx.dry_run:
         state.gross = risk_capacity.gross_exposure(ctx.broker, ctx.prices, rate_of=ctx.rate_for_symbol)
         if fill is not None:
@@ -552,6 +800,21 @@ def execute_one_cycle_decision(
             )
             ctx.append_model_performance(**fill_accounting.model_performance)
             entry.update(fill_accounting.entry_updates)
+            entry["effect_status"] = "verified"
+            entry["effect_refs"] = {
+                "broker_fill": {
+                    "symbol": fill.symbol,
+                    "process_instance_id": fill.process_instance_id,
+                    "attempt_id": fill.attempt_id,
+                    "decision_id": fill.decision_id,
+                    "ts": fill.ts,
+                },
+                "portfolio_readback": {
+                    "cash": latest.cash,
+                    "equity": latest.equity,
+                    "position_quantity": (0.0 if final_position is None else final_position.quantity),
+                },
+            }
             plan_entry_context: dict = {}
             if runtime_exit_plan and decision.intent in _OPENING_INTENTS:
                 _entry_age = ctx.data_age_by_symbol.get(sym)
@@ -583,6 +846,27 @@ def execute_one_cycle_decision(
                 entry_context=plan_entry_context,
                 entry_decision_id=str(entry["decision_id"]),
             )
+            if entry.get("trade_plan_created") and isinstance(entry.get("trade_plan"), dict):
+                _set_plan_receipt_expectation(
+                    entry,
+                    kind="upsert",
+                    plan=copy.deepcopy(entry.get("trade_plan")),
+                )
+            elif decision.intent in {"CLOSE", "FLIP"}:
+                _set_plan_receipt_expectation(entry, kind="no_open_plans")
+            elif decision.intent == "REDUCE":
+                final_position = ctx.broker.positions().get(sym)
+                expected_remaining_quantity = 0.0 if final_position is None else abs(final_position.quantity)
+                _set_plan_receipt_expectation(
+                    entry,
+                    kind="remaining_quantity",
+                    quantity=expected_remaining_quantity,
+                )
+            _capture_plan_effect_readback(
+                entry=entry,
+                plan_store=ctx.plan_store,
+                symbol=sym,
+            )
         if fill is not None and decision.intent in _OPENING_INTENTS:
             post_entry_wake = market.freshness_budget_minutes(ctx.runtime_interval, grace_minutes=0.0)
             if next_wake_in_minutes is None or next_wake_in_minutes > post_entry_wake:
@@ -599,5 +883,8 @@ def execute_one_cycle_decision(
         entry["trade_plan_created"],
     )
     apply_decision_schedule()
-    ctx.record_decision({**entry, "executed": not ctx.dry_run, "reason": "ok", "price": ctx.prices[sym]})
+    if ctx.dry_run:
+        entry["effect_status"] = "not_applied_dry_run"
+        entry["execution_mode"] = "dry_run"
+    record_outcome({**entry, "executed": not ctx.dry_run, "reason": "ok", "price": ctx.prices[sym]})
     return state

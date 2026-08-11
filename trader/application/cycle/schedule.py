@@ -16,6 +16,7 @@ from trader.domain.planning.scheduling import (
 from trader.planning.protocols import SchedulerLike
 
 EventAppender = Callable[..., None]
+_UNSET = object()
 
 
 def bounded_wake_minutes(value: float, *, minimum: float | None = None, maximum: float | None = None) -> float:
@@ -108,6 +109,65 @@ def _noop_event_appender(_event: str, **_payload: object) -> None:
     return None
 
 
+def read_schedule_effect(
+    sched: SchedulerLike | None,
+    *,
+    sym: str,
+    now: datetime,
+    expected_next_wake: str | None | object = _UNSET,
+    expected_active_watch_ids: set[str] | None = None,
+    expected_absent_watch_ids: set[str] | None = None,
+) -> dict:
+    """Read and compare authoritative scheduler state after a mutation."""
+    if sched is None:
+        return {"status": "not_applicable", "reason": "scheduler_unavailable"}
+    try:
+        persisted_wake = sched.next_wake(sym)
+        persisted_watches = [
+            watch for watch in sched.active_indicator_watches(now=now) if str(watch.get("symbol") or "") == sym
+        ]
+        has_symbol_wake = getattr(sched, "has_symbol_wake", None)
+        persisted_symbol_wake = bool(has_symbol_wake(sym)) if callable(has_symbol_wake) else None
+    except Exception as exc:  # noqa: BLE001 - missing proof must stay explicit
+        return {"status": "unavailable", "error": type(exc).__name__}
+    effect = {
+        "status": "unverified",
+        "next_wake": persisted_wake.isoformat() if persisted_wake is not None else None,
+        "active_watch_ids": sorted(str(watch.get("id")) for watch in persisted_watches if watch.get("id")),
+    }
+    if expected_next_wake is _UNSET:
+        return effect
+
+    actual_wake = effect["next_wake"]
+    expected_wake = _canonical_wake(expected_next_wake)
+    expected_ids = expected_active_watch_ids or set()
+    absent_ids = expected_absent_watch_ids or set()
+    observed_ids = set(effect["active_watch_ids"])
+    wake_matches = (
+        persisted_symbol_wake is False
+        if expected_wake is None
+        else persisted_symbol_wake is True and actual_wake == expected_wake
+    )
+    matches = wake_matches and expected_ids <= observed_ids and absent_ids.isdisjoint(observed_ids)
+    if matches:
+        effect["status"] = "verified"
+        return effect
+    effect["status"] = "mismatch"
+    effect["reason"] = "schedule_receipt_mismatch"
+    return effect
+
+
+def _canonical_wake(value: str | None | object) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise TypeError("expected_next_wake must be an ISO string or None")
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc).isoformat()
+
+
 def apply_decision_schedule(
     *,
     sched: SchedulerLike | None,
@@ -122,6 +182,12 @@ def apply_decision_schedule(
     logger: logging.Logger | None = None,
 ) -> None:
     if sched is None:
+        entry["schedule_effect"] = read_schedule_effect(
+            sched,
+            sym=sym,
+            now=now,
+            expected_next_wake=None,
+        )
         return
     event_appender = append_event or _noop_event_appender
     watch_logger = logger or logging.getLogger("casys-trader")
@@ -176,11 +242,29 @@ def apply_decision_schedule(
 
     if next_wake_iso is not None:
         sched.set_symbol_next_wake(sym, next_wake_iso)
+        expected_next_wake = next_wake_iso
     elif next_wake_in_minutes is not None:
-        sched.set_symbol_next_wake_in(sym, minutes=next_wake_in_minutes, now=now)
+        expected_next_wake = sched.set_symbol_next_wake_in(
+            sym,
+            minutes=next_wake_in_minutes,
+            now=now,
+        )
     else:
         watch_wake_iso = earliest_active_watch_expiry_iso(sched, sym, now=now)
         if watch_wake_iso is not None:
             sched.set_symbol_next_wake(sym, watch_wake_iso)
+            expected_next_wake = watch_wake_iso
         else:
             sched.clear_symbol_next_wake(sym)
+            expected_next_wake = None
+
+    entry["schedule_effect"] = read_schedule_effect(
+        sched,
+        sym=sym,
+        now=now,
+        expected_next_wake=expected_next_wake,
+        expected_active_watch_ids=(
+            {str(pending_indicator_watch["id"])} if pending_indicator_watch is not None else set()
+        ),
+        expected_absent_watch_ids={result["watch_id"] for result in cancel_results if result["outcome"] == "cancelled"},
+    )

@@ -72,7 +72,7 @@ from trader.agent.protocol.types import (
 )
 
 # Modèle du brain runtime. Son choix reste distinct des analystes spécialisés ;
-# l'effort est imposé à xhigh par le CODEX_HOME de l'app.
+# l'effort du brain peut être fixé par session ACP (actuellement Luna medium).
 DEFAULT_MODEL = llm.DEFAULT_TRADER_MODEL
 
 

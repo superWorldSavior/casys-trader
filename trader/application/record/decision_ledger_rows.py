@@ -44,6 +44,27 @@ def _optional_bool(value: Any) -> bool | None:
     return None
 
 
+def _optional_text(value: Any) -> str | None:
+    return value if isinstance(value, str) and value else None
+
+
+def _process_projection(report: dict, decision: dict, *, resolved_decision_id: str) -> dict | None:
+    """Expose pilot correlation only when the runtime actually supplied it."""
+    process_instance_id = _optional_text(decision.get("process_instance_id") or report.get("process_instance_id"))
+    attempt_id = _optional_text(decision.get("attempt_id") or report.get("attempt_id"))
+    runtime_run_id = _optional_text(decision.get("runtime_run_id") or report.get("runtime_run_id"))
+    governance_version = _as_dict(decision.get("governance_version")) or _as_dict(report.get("governance_version"))
+    if process_instance_id is None and attempt_id is None and runtime_run_id is None and not governance_version:
+        return None
+    return {
+        "process_instance_id": process_instance_id,
+        "attempt_id": attempt_id,
+        "runtime_run_id": runtime_run_id,
+        "decision_id": resolved_decision_id,
+        "governance_version": governance_version or None,
+    }
+
+
 def build_decision_row(
     report: dict,
     decision: dict,
@@ -65,20 +86,15 @@ def build_decision_row(
         price = _optional_float(prices.get(symbol))
 
     original_decision = dict(decision)
-    reason_code = decision_reason.infer_reason_code(
-        {**decision, "decision": original_decision}
-    )
+    reason_code = decision_reason.infer_reason_code({**decision, "decision": original_decision})
     code_version = (
-        _as_dict(decision.get("code_version"))
-        or _as_dict(report.get("code_version"))
-        or dict(UNKNOWN_CODE_VERSION)
+        _as_dict(decision.get("code_version")) or _as_dict(report.get("code_version")) or dict(UNKNOWN_CODE_VERSION)
     )
     indicator_watch = _as_dict(decision.get("indicator_watch"))
-    return {
+    resolved_decision_id = str(decision.get("decision_id") or decision_id(cycle_ts, sequence, symbol))
+    row = {
         "schema_version": SCHEMA_VERSION,
-        "decision_id": str(
-            decision.get("decision_id") or decision_id(cycle_ts, sequence, symbol)
-        ),
+        "decision_id": resolved_decision_id,
         "cycle_ts": cycle_ts,
         "sequence": sequence,
         "source": source,
@@ -103,9 +119,7 @@ def build_decision_row(
         "llm_error": decision.get("llm_error"),
         "learning": decision.get("learning"),
         "applied_learning_ids": [
-            rule_id
-            for rule_id in _as_list(decision.get("applied_learning_ids"))
-            if isinstance(rule_id, str)
+            rule_id for rule_id in _as_list(decision.get("applied_learning_ids")) if isinstance(rule_id, str)
         ],
         "thesis": decision.get("thesis") if isinstance(decision.get("thesis"), dict) else None,
         "decision": original_decision,
@@ -153,3 +167,7 @@ def build_decision_row(
         "news": _as_dict(decision.get("news")),
         "labels": {},
     }
+    process = _process_projection(report, decision, resolved_decision_id=resolved_decision_id)
+    if process is not None:
+        row["process"] = process
+    return row

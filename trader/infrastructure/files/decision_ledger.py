@@ -65,6 +65,16 @@ class DecisionLedgerStore:
             rows = rows[-limit:]
         return rows
 
+    def read_by_decision_id(self, decision_id: str) -> dict | None:
+        """Reread one durable row by its exact decision identity."""
+        wanted = str(decision_id).strip()
+        if not wanted:
+            return None
+        return next(
+            (row for row in reversed(self._read_rows()) if str(row.get("decision_id") or "") == wanted),
+            None,
+        )
+
     def append(self, row: dict) -> bool:
         decision_id = str(row.get("decision_id") or "")
         if not decision_id:

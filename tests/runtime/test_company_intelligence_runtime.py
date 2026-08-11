@@ -1,5 +1,9 @@
+import json
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
+from trader.application.queue.contracts import RetryableError
 from trader.domain.company import CompanyEvidenceItem, CompanyEvidenceSnapshot, CompanyIntelligenceBrief, IssuerIdentity
 from trader.runtime.company_intelligence_runtime import (
     CompanyIntelligenceRuntime,
@@ -147,6 +151,82 @@ def test_refresh_uses_dedicated_ledger_and_deduplicates_unchanged_evidence(tmp_p
         assert runtime.status()["queue"]["done"] == 1
         assert written[0]["symbol"] == "EXM"
         assert runtime.ledger.path == state_dir / "company_research_tasks.db"
+        assert runtime.ledger.get(first["enqueued"][0]["task_id"])["max_attempts"] == 6
+        # The second pass is a scanner-only unchanged observation: its useful
+        # status stays in ``skipped`` and does not add an attempt record.
+        run_path = runtime.run_store.path_for_date("2026-07-10")
+        assert len(run_path.read_text(encoding="utf-8").splitlines()) == 1
+    finally:
+        runtime.stop()
+
+
+def test_company_task_failure_preserves_last_success_until_a_real_recovery(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("CASYS_COMPANY_MICRO_ANALYST_ENABLED", "1")
+    config_dir = tmp_path / "config"
+    state_dir = tmp_path / "state"
+    config_dir.mkdir()
+    as_of = datetime(2026, 7, 10, 8, tzinfo=timezone.utc)
+    runtime = CompanyIntelligenceRuntime(
+        config_dir=config_dir,
+        state_dir=state_dir,
+        provider=_Provider(),
+        analyst=_Analyst(),
+        start_workers=False,
+        now_fn=lambda: as_of.timestamp(),
+    )
+    evidence = _evidence("EXM", as_of.isoformat())
+
+    def task(task_id: int, attempt: int) -> dict:
+        return {
+            "id": task_id,
+            "attempts": attempt,
+            "max_attempts": 6,
+            "payload": json.dumps(
+                {
+                    "symbol": "EXM",
+                    "as_of": as_of.isoformat(),
+                    "depth": "screen",
+                    "trigger": "scheduled",
+                    "evidence": evidence.to_dict(),
+                }
+            ),
+        }
+
+    try:
+        runtime._handle_task(task(1, 1), heartbeat=lambda: True)
+        success = runtime.run_store.read_latest("EXM")
+        assert success is not None
+        assert success["status"] == "success"
+        assert success["written"] is True
+
+        class BrokenAnalyst:
+            def analyze(self, request):
+                raise RuntimeError("provider unavailable")
+
+        runtime.analyst = BrokenAnalyst()
+        with pytest.raises(RetryableError, match="RuntimeError: provider unavailable"):
+            runtime._handle_task(task(2, 1), heartbeat=lambda: True)
+
+        failed = runtime.run_store.read_latest("EXM")
+        assert failed is not None
+        assert failed["status"] == "success"
+        assert failed["brief_ref"] == success["brief_ref"]
+        assert failed["latest_failure"]["error_code"] == "RuntimeError"
+        assert failed["latest_failure"]["retry_attempt"] == 1
+        assert failed["latest_failure"]["retry_delay_seconds"] == 30 * 60
+        status = runtime.status()
+        assert status["latest_success"]["brief_ref"] == success["brief_ref"]
+        assert status["latest_failure"]["error_code"] == "RuntimeError"
+
+        # The repeated brief is not written again, but the completed analyst
+        # call is still a real recovery and must clear latest_failure.
+        runtime.analyst = _Analyst()
+        assert json.loads(runtime._handle_task(task(3, 2), heartbeat=lambda: True))["status"] == "unchanged"
+        recovered = runtime.run_store.read_latest("EXM")
+        assert recovered is not None
+        assert recovered["status"] == "success"
+        assert recovered["written"] is False
+        assert "latest_failure" not in recovered
     finally:
         runtime.stop()
 

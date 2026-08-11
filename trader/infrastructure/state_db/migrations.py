@@ -1,4 +1,4 @@
-"""Migrations SQLite pour les stores d'état (broker, plans, scheduler).
+"""Migrations SQLite pour les stores d'état (broker, plans, scheduler, processus).
 
 Contient :
 - BROKER_MIGRATION : schéma broker v1 (broker_state, broker_positions, broker_fills)
@@ -7,7 +7,9 @@ Contient :
 - import_trade_plans_from_json : migration one-shot idempotente depuis trade_plans.json
 - SCHEDULER_MIGRATION : schéma scheduler v3 (4 tables + 2 index)
 - import_scheduler_from_json : migration one-shot idempotente depuis scheduler.json
+- PROCESS_TRACE_MIGRATION : schéma append-only v4 des événements de processus
 """
+
 from __future__ import annotations
 
 import json
@@ -27,10 +29,7 @@ log = logging.getLogger(__name__)
 # Sentinel d'import — partagé par les 3 imports
 # ---------------------------------------------------------------------------
 
-_STATE_IMPORTS_DDL = (
-    "CREATE TABLE IF NOT EXISTS state_imports"
-    "(store TEXT PRIMARY KEY, imported_at TEXT)"
-)
+_STATE_IMPORTS_DDL = "CREATE TABLE IF NOT EXISTS state_imports(store TEXT PRIMARY KEY, imported_at TEXT)"
 
 
 def _ensure_state_imports(db: StateDb) -> None:
@@ -84,6 +83,46 @@ BROKER_MIGRATION: tuple[int, list[str]] = (
 )
 
 
+# ---------------------------------------------------------------------------
+# Trace de processus — migration v4
+# ---------------------------------------------------------------------------
+
+PROCESS_TRACE_MIGRATION: tuple[int, list[str]] = (
+    4,
+    [
+        """CREATE TABLE process_events (
+            seq                 INTEGER PRIMARY KEY AUTOINCREMENT,
+            event_id            TEXT NOT NULL UNIQUE,
+            process_type        TEXT NOT NULL,
+            process_version     TEXT NOT NULL,
+            process_instance_id TEXT NOT NULL,
+            attempt_id          TEXT,
+            runtime_run_id      TEXT NOT NULL,
+            work_object_type    TEXT NOT NULL,
+            work_object_key     TEXT NOT NULL,
+            event_type          TEXT NOT NULL,
+            ts                  TEXT NOT NULL,
+            caused_by_json      TEXT NOT NULL DEFAULT '[]',
+            terminal_result     TEXT,
+            outcome_code        TEXT,
+            effect_status       TEXT,
+            effect_refs_json    TEXT NOT NULL DEFAULT '[]',
+            version_pins_json   TEXT
+        )""",
+        """CREATE INDEX idx_process_events_instance
+            ON process_events(process_instance_id, seq)""",
+        """CREATE INDEX idx_process_events_work
+            ON process_events(process_type, work_object_type, work_object_key, seq)""",
+        "ALTER TABLE broker_fills ADD COLUMN process_instance_id TEXT",
+        "ALTER TABLE broker_fills ADD COLUMN attempt_id TEXT",
+        "ALTER TABLE broker_fills ADD COLUMN decision_id TEXT",
+        """CREATE UNIQUE INDEX uniq_broker_fill_process_instance
+            ON broker_fills(process_instance_id)
+            WHERE process_instance_id IS NOT NULL""",
+    ],
+)
+
+
 def import_broker_from_json(
     db: StateDb,
     json_path: Path,
@@ -92,7 +131,7 @@ def import_broker_from_json(
 ) -> None:
     """Migration one-shot idempotente : importe broker.json dans les tables SQLite.
 
-    - Applique BROKER_MIGRATION (idempotent).
+    - Applique BROKER_MIGRATION puis PROCESS_TRACE_MIGRATION (idempotent).
     - Si broker_state n'est pas vide : skip (déjà migré), pas de log.
     - Si le JSON existe : backup horodaté (isoformat UTC sans ':'), puis import en
       une transaction (broker_state + positions + fills, defaults patchés sur anciens
@@ -100,7 +139,9 @@ def import_broker_from_json(
     - Si le JSON n'existe pas : broker neuf → insert broker_state(id=1, cash=starting_cash)
       dans une transaction.
     """
-    db.apply_migrations([BROKER_MIGRATION])
+    # La v4 doit être tentée avant le sentinel d'import : une base déjà importée
+    # doit tout de même recevoir les colonnes de corrélation et process_events.
+    db.apply_migrations([BROKER_MIGRATION, PROCESS_TRACE_MIGRATION])
     _ensure_state_imports(db)
 
     # Idempotence via sentinel dédié (pas le contenu de la table métier)
@@ -122,16 +163,16 @@ def import_broker_from_json(
             cur.execute("INSERT INTO broker_state(id, cash) VALUES (1, ?)", (cash,))
             for pos in positions:
                 cur.execute(
-                    "INSERT INTO broker_positions(symbol, quantity, avg_price)"
-                    " VALUES (?, ?, ?)",
+                    "INSERT INTO broker_positions(symbol, quantity, avg_price) VALUES (?, ?, ?)",
                     (pos["symbol"], pos["quantity"], pos["avg_price"]),
                 )
             for fill in fills:
                 cur.execute(
                     "INSERT INTO broker_fills"
                     "(symbol, side, quantity, price, ts,"
-                    " commission, commission_currency, commission_model, fx_rate)"
-                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    " commission, commission_currency, commission_model, fx_rate,"
+                    " process_instance_id, attempt_id, decision_id)"
+                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         fill.get("symbol"),
                         fill.get("side"),
@@ -142,6 +183,9 @@ def import_broker_from_json(
                         fill.get("commission_currency", "USD"),
                         fill.get("commission_model", "none"),
                         fill.get("fx_rate", 1.0),
+                        fill.get("process_instance_id"),
+                        fill.get("attempt_id"),
+                        fill.get("decision_id"),
                     ),
                 )
             _mark_imported(cur, "broker")
@@ -219,9 +263,7 @@ def _tp_from_legacy_dict(raw: dict) -> TakeProfit:
 
 def _plan_from_legacy_dict(raw: dict) -> TradePlan:
     raw_reference_volatility = raw.get("reference_volatility")
-    reference_volatility = (
-        None if raw_reference_volatility is None else float(raw_reference_volatility)
-    )
+    reference_volatility = None if raw_reference_volatility is None else float(raw_reference_volatility)
     if reference_volatility is not None and not math.isfinite(reference_volatility):
         reference_volatility = None
 
@@ -250,9 +292,7 @@ def _plan_from_legacy_dict(raw: dict) -> TradePlan:
             "close_fraction": float(raw_protection.get("close_fraction", 1.0 / 3.0)),
             "move_stop_to": move_stop_to,
             "min_hold_minutes": float(raw_protection.get("min_hold_minutes", 10.0)),
-            "lock_r": (
-                None if raw_protection.get("lock_r") is None else float(raw_protection["lock_r"])
-            ),
+            "lock_r": (None if raw_protection.get("lock_r") is None else float(raw_protection["lock_r"])),
             "triggered": bool(raw_protection.get("triggered", False)),
         }
 
@@ -276,24 +316,12 @@ def _plan_from_legacy_dict(raw: dict) -> TradePlan:
         exit_watch=(dict(raw["exit_watch"]) if isinstance(raw.get("exit_watch"), dict) else None),
         llm_provider=None if raw.get("llm_provider") is None else str(raw["llm_provider"]),
         llm_model=None if raw.get("llm_model") is None else str(raw["llm_model"]),
-        llm_fallback_reason=(
-            None
-            if raw.get("llm_fallback_reason") is None
-            else str(raw["llm_fallback_reason"])
-        ),
+        llm_fallback_reason=(None if raw.get("llm_fallback_reason") is None else str(raw["llm_fallback_reason"])),
         llm_confidence=None if raw.get("llm_confidence") is None else float(raw["llm_confidence"]),
-        last_llm_review=(
-            dict(raw["last_llm_review"])
-            if isinstance(raw.get("last_llm_review"), dict)
-            else None
-        ),
+        last_llm_review=(dict(raw["last_llm_review"]) if isinstance(raw.get("last_llm_review"), dict) else None),
         entry_thesis=None if raw.get("entry_thesis") is None else str(raw["entry_thesis"]),
-        entry_decision_id=(
-            None if raw.get("entry_decision_id") is None else str(raw["entry_decision_id"])
-        ),
-        entry_context=(
-            dict(raw["entry_context"]) if isinstance(raw.get("entry_context"), dict) else None
-        ),
+        entry_decision_id=(None if raw.get("entry_decision_id") is None else str(raw["entry_decision_id"])),
+        entry_context=(dict(raw["entry_context"]) if isinstance(raw.get("entry_context"), dict) else None),
     )
 
 

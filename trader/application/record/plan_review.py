@@ -45,10 +45,10 @@ def persist_last_llm_review(
     now: datetime,
     decision: DecisionLike,
     decision_id: str | None = None,
-) -> None:
+) -> dict | None:
     """Persist the latest real LLM review on matching open plans."""
     if not (decision.llm_provider or decision.llm_model):
-        return
+        return None
     review = {
         "ts": now.astimezone(timezone.utc).isoformat(),
         "verdict": llm_review_verdict(decision.intent),
@@ -58,9 +58,12 @@ def persist_last_llm_review(
         "llm_model": decision.llm_model,
         **({"decision_id": decision_id} if decision_id else {}),
     }
+    persisted = False
     for plan in plan_store.open_plans():
         if plan.symbol == symbol:
             plan_store.upsert(plan.model_copy(update={"last_llm_review": review}))
+            persisted = True
+    return dict(review) if persisted else None
 
 
 def last_review_by_symbol(

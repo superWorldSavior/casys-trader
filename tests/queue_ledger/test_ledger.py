@@ -1,3 +1,4 @@
+import logging
 import sqlite3
 from trader.queue.ledger import TaskLedger
 
@@ -154,6 +155,75 @@ def test_fail_retryable_backoff_then_dead(tmp_path):
     assert status2 == "dead"                    # plus de tentative disponible
 
 
+def test_fail_retryable_backoff_is_bounded_and_logs_company_context(tmp_path, caplog):
+    """Micro reports retry at 30m/1h/2h/4h/6h, then become terminal on call 6."""
+    led = TaskLedger(tmp_path / "q.db")
+    task_id = led.enqueue(
+        kind="company_micro",
+        priority=5,
+        scheduled_at_ms=0,
+        now_ms=0,
+        dedup_key="company-sap",
+        partition_key="SAP.DE",
+        resource="company-research",
+        payload='{"symbol":"SAP.DE"}',
+        max_attempts=6,
+    )
+    assert task_id is not None
+    now_ms = 1_700_000_000_000
+    expected_delays = [30, 60, 120, 240, 360]
+
+    def claim_company(now: int):
+        return led.claim(
+            worker_id="w",
+            token="tok",
+            now_ms=now,
+            lease_ms=1000,
+            free_resources=["company-research"],
+        )
+
+    with caplog.at_level(logging.WARNING, logger="trader.infrastructure.queue.ledger"):
+        for attempt, delay_minutes in enumerate(expected_delays, start=1):
+            task = claim_company(now_ms)
+            assert task is not None
+            assert task["attempts"] == attempt
+            assert led.fail(
+                task_id=task_id,
+                token="tok",
+                now_ms=now_ms,
+                error="provider unavailable",
+                retryable=True,
+                backoff_base_ms=30 * 60 * 1000,
+                backoff_max_ms=6 * 60 * 60 * 1000,
+            ) == "pending"
+            row = led.get(task_id)
+            assert row is not None
+            assert row["scheduled_at"] == now_ms + delay_minutes * 60 * 1000
+            now_ms = row["scheduled_at"]
+
+        final = claim_company(now_ms)
+        assert final is not None
+        assert final["attempts"] == 6
+        assert led.fail(
+            task_id=task_id,
+            token="tok",
+            now_ms=now_ms,
+            error="provider unavailable",
+            retryable=True,
+            backoff_base_ms=30 * 60 * 1000,
+            backoff_max_ms=6 * 60 * 60 * 1000,
+        ) == "dead"
+
+    messages = caplog.messages
+    retry_line = next(message for message in messages if "attempt=5/6" in message)
+    assert "kind=company_micro" in retry_line
+    assert "symbol=SAP.DE" in retry_line
+    assert "delay_s=21600" in retry_line
+    assert "next_at=2023-" in retry_line
+    assert "error=provider unavailable" in retry_line
+    assert any("dead kind=company_micro symbol=SAP.DE" in message for message in messages)
+
+
 def test_abandon_marks_active_task_dead_and_clears_claim(tmp_path):
     led = TaskLedger(tmp_path / "q.db")
     tid = led.enqueue(kind="execute_order", priority=0, scheduled_at_ms=0, now_ms=0,
@@ -267,6 +337,39 @@ def test_heartbeat_extends_lease_and_boot_recovery(tmp_path):
             led._conn.execute("SELECT id, status FROM tasks")}
     assert rows[alive["id"]] == "running"
     assert rows[stuck["id"]] == "pending"
+
+
+def test_recover_on_boot_terminalizes_legacy_pending_task_with_exhausted_attempts(tmp_path):
+    """A pre-fix impossible pending task is retained but no longer stays inert."""
+    led = TaskLedger(tmp_path / "q.db")
+    task_id = led.enqueue(
+        kind="company_micro",
+        priority=5,
+        scheduled_at_ms=0,
+        now_ms=0,
+        dedup_key="legacy-company-sap",
+        partition_key="SAP.DE",
+        payload='{"symbol":"SAP.DE"}',
+        max_attempts=3,
+    )
+    assert task_id is not None
+    # Simulate a legacy database state created before boot recovery enforced
+    # the same attempts invariant already used by claim().
+    led._conn.execute(
+        "UPDATE tasks SET status='pending', attempts=3, error='provider unavailable' WHERE id=?",
+        (task_id,),
+    )
+    led._conn.commit()
+
+    assert led.recover_on_boot(now_ms=1_000) == 0
+
+    row = led.get(task_id)
+    assert row is not None
+    assert row["status"] == "dead"
+    assert row["attempts"] == 3
+    assert row["max_attempts"] == 3
+    assert row["error"] == "provider unavailable"
+    assert led._conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 1
 
 
 # ---------------------------------------------------------------------------

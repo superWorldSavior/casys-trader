@@ -42,6 +42,7 @@ from trader.domain.universe import (
 from trader.domain.situation import build_global_situation_digest
 from trader.market.radar_config import load_radar_params
 from trader.market.rotation.schedule import load_sessions, preopen_venues
+from trader.market.rotation.wiring import venue_of
 from trader.infrastructure.state_db.candidate_scope_store import CandidateScopeStore
 from trader.infrastructure.state_db.company_intelligence_store import CompanyIntelligenceStore
 from trader.infrastructure.state_db.global_family_board_store import GlobalFamilyBoardStore
@@ -50,18 +51,34 @@ from trader.infrastructure.state_db.global_universe_posture_store import GlobalU
 from trader.infrastructure.state_db.situation_brief_store import NewsMacroBriefStore
 from trader.infrastructure.state_db.universe_run_store import UniverseRunStore
 from trader.infrastructure.state_db.universe_mandate_store import UniverseMandateStore
+from trader.infrastructure.files.venue_state import load_venue_state
 from trader.runtime.protocols import LoggerLike
 from trader.runtime.company_context_config import load_company_context_projection_limits
 
 VENUES = ("TW", "EU", "US")
+# Retry delays are deliberately long enough to prevent an unavailable model
+# from being called for every daemon tick, while retaining a short repair path
+# for a local prepared-projection write failure.
 DEFAULT_FAILURE_BACKOFF_MINUTES = 30
+DEFAULT_FAILURE_BACKOFF_MAX_MINUTES = 360
 DEFAULT_PREPARED_WRITE_BACKOFF_MINUTES = 1
+DEFAULT_PREPARED_WRITE_BACKOFF_MAX_MINUTES = 30
 DEFAULT_REGIME_MAX_AGE_HOURS = 96
 DEFAULT_ASYNC_STOP_TIMEOUT_S = 1.0
 # Cadence of the advisory global universe posture: at most one LLM recompute per
 # pre-open window (freshness before each venue gong) and one per cooldown
 # otherwise. Anything more is wasted tokens (the posture barely moves intraday).
 DEFAULT_POSTURE_REFRESH_COOLDOWN_HOURS = 4.0
+# A failed advisory posture refresh must not turn every universe trigger into
+# another LLM call. These intervals are intentionally independent from the
+# regional-run retry values, even though their current policy is identical.
+DEFAULT_GLOBAL_POSTURE_FAILURE_BACKOFF_MINUTES = 30
+DEFAULT_GLOBAL_POSTURE_FAILURE_BACKOFF_MAX_MINUTES = 360
+# Company briefs are produced by a small worker pool and therefore tend to land
+# in waves.  The daemon feeds those events to the coalescing runner with this
+# trailing-edge delay so one regional composition sees the latest whole wave
+# instead of recalling the model once per company.
+DEFAULT_COMPANY_BRIEF_DEBOUNCE_SECONDS = 120.0
 
 
 def _default_logger() -> logging.Logger:
@@ -106,6 +123,8 @@ def tick_universe_intelligence(
     company_store: CompanyIntelligenceStore | None = None,
     mandate_store: UniverseMandateStore | None = None,
     venues: Iterable[str] = VENUES,
+    refresh_venues: Iterable[str] = (),
+    force: bool = False,
     stop_requested: Callable[[], bool] | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
     """Prepare exact per-scope selections outside the synchronous daemon path."""
@@ -135,6 +154,49 @@ def tick_universe_intelligence(
     )
     companies = company_store or CompanyIntelligenceStore(state_path / "company_intelligence")
     mandates = mandate_store or UniverseMandateStore(state_path / "universe_mandates")
+    requested_venues = tuple(dict.fromkeys(str(item).strip().upper() for item in venues))
+    explicit_refresh_venues = {
+        str(item).strip().upper() for item in refresh_venues if str(item).strip()
+    }
+    activation_state = load_venue_state(state_path)
+    activation_skips: list[dict[str, Any]] = []
+    runnable_venues: list[str] = []
+    for venue in requested_venues:
+        scope = scopes.read_current(venue)
+        scope_id = str((scope or {}).get("candidate_scope_id") or "").strip()
+        if (
+            scope_id
+            and _scope_already_activated(
+                activation_state,
+                venue=venue,
+                candidate_scope_id=scope_id,
+            )
+        ):
+            activation_skips.append(
+                {
+                    "venue": venue,
+                    "candidate_scope_id": scope_id,
+                    "reason": "scope_already_activated",
+                }
+            )
+            (log.info if venue in explicit_refresh_venues else log.debug)(
+                "universe refresh skipped venue=%s scope=%s reason=scope_already_activated",
+                venue,
+                scope_id,
+            )
+            continue
+        runnable_venues.append(venue)
+
+    # In particular, a late micro callback for an already activated venue must
+    # not incidentally refresh the global posture before discovering that the
+    # regional run itself is terminal.
+    if not runnable_venues:
+        return {
+            "prepared": [],
+            "waiting": [],
+            "skipped": activation_skips,
+            "errors": [],
+        }
     company_context_mode = _company_context_mode(Path(config_dir))
     company_context_limits = load_company_context_projection_limits(config_dir)
     market_context = _load_market_context(state_path / "last_regime.json", now=now)
@@ -176,10 +238,10 @@ def tick_universe_intelligence(
     )
     prepared: list[dict[str, Any]] = []
     waiting: list[dict[str, Any]] = []
-    skipped: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = list(activation_skips)
     errors: list[dict[str, Any]] = []
 
-    for raw_venue in venues:
+    for raw_venue in runnable_venues:
         if stop_requested is not None and stop_requested():
             skipped.append({"reason": "stopping"})
             break
@@ -192,6 +254,26 @@ def tick_universe_intelligence(
             skipped.append({"venue": venue, "reason": "awaiting_preopen_scope"})
             continue
         scope_id = str(scope.get("candidate_scope_id") or "").strip()
+        # Activation can race the background runner. Re-read the projection at
+        # the last cheap boundary before building the regional request.
+        if _scope_already_activated(
+            load_venue_state(state_path),
+            venue=venue,
+            candidate_scope_id=scope_id,
+        ):
+            skipped.append(
+                {
+                    "venue": venue,
+                    "candidate_scope_id": scope_id,
+                    "reason": "scope_already_activated",
+                }
+            )
+            (log.info if venue in explicit_refresh_venues else log.debug)(
+                "universe refresh skipped venue=%s scope=%s reason=scope_already_activated",
+                venue,
+                scope_id,
+            )
+            continue
         candidates = tuple(
             dict(item)
             for item in scope.get("candidates") or []
@@ -303,25 +385,74 @@ def tick_universe_intelligence(
             errors.append({"venue": venue, "reason": "candidate_scope_integrity_mismatch"})
             continue
 
-        input_signature = _request_signature(request.to_dict())
+        request_payload = request.to_dict()
+        # ``as_of`` values are observability/freshness metadata, not a change
+        # in the decision evidence by themselves.  Keeping them in the retry
+        # key made every daemon tick look novel and bypass the failure guard.
+        input_signature = _material_request_signature(request_payload)
+        refresh_signature = _universe_refresh_signature(
+            venue=venue,
+            scope_id=scope_id,
+            brief_id=str(getattr(brief, "brief_id", "") or ""),
+        )
+        retry_lineage = _retry_lineage_key(venue=venue, scope_id=scope_id, brief=brief)
         latest = runs.read_latest(venue)
-        if _same_success(latest, input_signature):
+        refresh_requested = venue in explicit_refresh_venues
+        # Full input hashes remain the exact provenance of each real call, but
+        # volatile market/company payloads no longer define the ordinary
+        # scheduling epoch. A new scope or regional brief runs automatically;
+        # a company wave must arrive through the explicit, venue-bound refresh
+        # event emitted by the daemon.
+        reuse_latest = not force and (
+            _same_success(latest, input_signature)
+            or (
+                not refresh_requested
+                and _same_refresh_success(latest, refresh_signature)
+            )
+        )
+        if reuse_latest:
             exact_prepared = runs.read_prepared(scope_id)
-            if _same_success(exact_prepared, input_signature):
+            if _same_persisted_success(exact_prepared, latest):
                 skipped.append({"venue": venue, "reason": "already_prepared"})
+                continue
+            latest_failure = _latest_failure(latest)
+            repair_backoff = _failure_backoff(latest, retry_lineage=retry_lineage, now=now)
+            if (
+                latest_failure is not None
+                and latest_failure.get("error_code") == "prepared_write_error"
+                and repair_backoff is not None
+            ):
+                skipped.append(
+                    {
+                        "venue": venue,
+                        "reason": "failure_backoff",
+                        "attempt": repair_backoff["attempt"],
+                        "delay_seconds": repair_backoff["delay_seconds"],
+                        "next_retry_at": repair_backoff["next_retry_at"],
+                    }
+                )
+                _log_retry_deferred(
+                    log,
+                    venue=venue,
+                    scope_id=scope_id,
+                    backoff=repair_backoff,
+                )
                 continue
             try:
                 runs.write_prepared(scope_id, latest)
             except Exception as exc:  # noqa: BLE001 - projection failure is observable/retryable
                 repair_error = {
-                    **latest,
+                    **{key: value for key, value in latest.items() if key != "latest_failure"},
                     "as_of": now.isoformat(),
                     "status": "error",
                     "error_code": "prepared_write_error",
                     "error_message": str(exc)[:500],
                     "source_agent_run_id": latest.get("agent_run_id"),
+                    "retry_lineage": retry_lineage,
                 }
+                _set_failure_retry_metadata(repair_error, latest=latest, now=now)
                 runs.append(repair_error)
+                _log_failure_retry(log, repair_error)
                 errors.append({"venue": venue, "reason": "prepared_write_error"})
             else:
                 prepared.append(
@@ -333,8 +464,49 @@ def tick_universe_intelligence(
                     }
                 )
             continue
-        if _failure_backoff_active(latest, input_signature=input_signature, now=now):
-            skipped.append({"venue": venue, "reason": "failure_backoff"})
+        backoff = (
+            None
+            if force
+            else _failure_backoff(latest, retry_lineage=retry_lineage, now=now)
+        )
+        if backoff is not None:
+            skipped.append(
+                {
+                    "venue": venue,
+                    "reason": "failure_backoff",
+                    "attempt": backoff["attempt"],
+                    "delay_seconds": backoff["delay_seconds"],
+                    "next_retry_at": backoff["next_retry_at"],
+                }
+            )
+            _log_retry_deferred(
+                log,
+                venue=venue,
+                scope_id=scope_id,
+                backoff=backoff,
+            )
+            continue
+
+        # A successful activation may have happened while global/company
+        # context was being prepared above. Never begin an automatic regional
+        # call for that now-terminal scope.
+        if _scope_already_activated(
+            load_venue_state(state_path),
+            venue=venue,
+            candidate_scope_id=scope_id,
+        ):
+            skipped.append(
+                {
+                    "venue": venue,
+                    "candidate_scope_id": scope_id,
+                    "reason": "scope_already_activated",
+                }
+            )
+            (log.info if venue in explicit_refresh_venues else log.debug)(
+                "universe refresh skipped venue=%s scope=%s reason=scope_already_activated",
+                venue,
+                scope_id,
+            )
             continue
 
         if agent is None:
@@ -351,6 +523,15 @@ def tick_universe_intelligence(
             brief=brief,
             input_signature=input_signature,
         )
+        record["retry_lineage"] = retry_lineage
+        record["refresh_signature"] = refresh_signature
+        record["refresh_reason"] = (
+            "explicit_force"
+            if force
+            else "company_brief_wave"
+            if refresh_requested
+            else "scope_or_brief_changed"
+        )
         record.update(
             {
                 "agent_run_id": f"universe:{venue}:{now.isoformat()}:{uuid4().hex[:12]}",
@@ -359,7 +540,7 @@ def tick_universe_intelligence(
                 "fallback_used": False,
                 "retrieval_status": request.retrieval_status,
                 "retrieval_refs": list(request.retrieval_refs),
-                "request_payload_hash": _request_signature(request.to_dict()),
+                "request_payload_hash": _request_signature(request_payload),
                 "market_context_status": (
                     str(request.market_context.get("status") or "present")
                     if request.market_context
@@ -433,7 +614,9 @@ def tick_universe_intelligence(
                         "error_message": str(exc)[:500],
                     }
                 )
+                _set_failure_retry_metadata(record, latest=latest, now=now)
                 runs.append(record)
+                _log_failure_retry(log, record)
                 errors.append(
                     {
                         "venue": venue,
@@ -460,7 +643,9 @@ def tick_universe_intelligence(
                 "error_message": result.error_message,
             }
         )
+        _set_failure_retry_metadata(record, latest=latest, now=now)
         runs.append(record)
+        _log_failure_retry(log, record)
         errors.append(
             {
                 "venue": venue,
@@ -628,6 +813,124 @@ def decide_global_posture_refresh(
     return False, "fresh"
 
 
+def _global_posture_ref(current: Mapping[str, Any] | None) -> dict[str, str]:
+    return {
+        "posture_id": str((current or {}).get("posture_id") or ""),
+        "as_of": str((current or {}).get("as_of") or ""),
+        "gross_mode": str((current or {}).get("gross_mode") or ""),
+        "net_bias": str((current or {}).get("net_bias") or ""),
+    }
+
+
+def _global_posture_retry_lineage(current: Mapping[str, Any] | None) -> str:
+    """Return the retry epoch for one successful posture generation.
+
+    Board and digest inputs legitimately move while an LLM/provider is down.
+    They must not create a fresh retry budget, so the lineage deliberately uses
+    only the last successfully persisted posture (or the stable bootstrap
+    epoch).  A newly persisted success clears the marker and changes the epoch.
+    """
+
+    posture_id = str((current or {}).get("posture_id") or "").strip()
+    return f"global-posture:current:{posture_id}" if posture_id else "global-posture:bootstrap"
+
+
+def _global_posture_retry_attempt(value: Any) -> int:
+    try:
+        return max(1, int(value))
+    except (TypeError, ValueError):
+        return 1
+
+
+def _global_posture_retry_delay_seconds(attempt: int) -> int:
+    bounded_attempt = min(_global_posture_retry_attempt(attempt), 5)
+    minutes = min(
+        DEFAULT_GLOBAL_POSTURE_FAILURE_BACKOFF_MINUTES * (2 ** (bounded_attempt - 1)),
+        DEFAULT_GLOBAL_POSTURE_FAILURE_BACKOFF_MAX_MINUTES,
+    )
+    return minutes * 60
+
+
+def _global_posture_failure_backoff(
+    failure: Mapping[str, Any] | None,
+    *,
+    retry_lineage: str,
+    now: datetime,
+) -> dict[str, Any] | None:
+    """Return the active persisted retry gate for the current success epoch."""
+
+    if not isinstance(failure, Mapping) or failure.get("retry_lineage") != retry_lineage:
+        return None
+    attempt = _global_posture_retry_attempt(failure.get("retry_attempt"))
+    delay_seconds = _global_posture_retry_delay_seconds(attempt)
+    retry_at = _parse_datetime(failure.get("next_retry_at"))
+    if retry_at is None:
+        failed_at = _parse_datetime(failure.get("as_of"))
+        if failed_at is None:
+            return None
+        retry_at = failed_at + timedelta(seconds=delay_seconds)
+    if now >= retry_at:
+        return None
+    return {
+        "attempt": attempt,
+        "delay_seconds": delay_seconds,
+        "next_retry_at": retry_at.isoformat(),
+        "error": str(failure.get("error_code") or failure.get("status") or "unknown"),
+    }
+
+
+def _global_posture_failure_record(
+    *,
+    current: Mapping[str, Any] | None,
+    previous_failure: Mapping[str, Any] | None,
+    now: datetime,
+    refresh_reason: str | None,
+    error: Exception,
+) -> dict[str, Any]:
+    retry_lineage = _global_posture_retry_lineage(current)
+    same_lineage = (
+        isinstance(previous_failure, Mapping)
+        and previous_failure.get("retry_lineage") == retry_lineage
+    )
+    previous_attempt = _global_posture_retry_attempt(
+        previous_failure.get("retry_attempt") if isinstance(previous_failure, Mapping) else None
+    )
+    attempt = previous_attempt + 1 if same_lineage else 1
+    delay_seconds = _global_posture_retry_delay_seconds(attempt)
+    return {
+        "as_of": now.isoformat(),
+        "status": "error",
+        "error_code": error.__class__.__name__,
+        "error_message": str(error)[:500],
+        "refresh_reason": refresh_reason or "unknown",
+        "current_posture_id": str((current or {}).get("posture_id") or ""),
+        "retry_lineage": retry_lineage,
+        "retry_attempt": attempt,
+        "retry_delay_seconds": delay_seconds,
+        "next_retry_at": (now + timedelta(seconds=delay_seconds)).isoformat(),
+    }
+
+
+def _log_global_posture_retry_scheduled(log: LoggerLike, failure: Mapping[str, Any]) -> None:
+    log.warning(
+        "global posture retry scheduled attempt=%s delay_s=%s next_at=%s error=%s",
+        failure.get("retry_attempt"),
+        failure.get("retry_delay_seconds"),
+        failure.get("next_retry_at"),
+        failure.get("error_code") or failure.get("status"),
+    )
+
+
+def _log_global_posture_retry_deferred(log: LoggerLike, backoff: Mapping[str, Any]) -> None:
+    log.info(
+        "global posture retry deferred attempt=%s delay_s=%s next_at=%s error=%s",
+        backoff.get("attempt"),
+        backoff.get("delay_seconds"),
+        backoff.get("next_retry_at"),
+        backoff.get("error"),
+    )
+
+
 def _prepare_global_universe_posture(
     *,
     scopes: CandidateScopeStore,
@@ -643,6 +946,8 @@ def _prepare_global_universe_posture(
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     # The whole body is fail-open (advisory posture): a store read failure must
     # only skip the posture, never abort the surrounding universe tick.
+    current: dict[str, Any] | None = None
+    reason: str | None = None
     try:
         current = store.read_current()
         cooldown = timedelta(
@@ -669,13 +974,31 @@ def _prepare_global_universe_posture(
                 "persistence_status": "reused",
                 "refresh_reason": reason,
             }
+        previous_failure = store.read_latest_failure()
+        backoff = _global_posture_failure_backoff(
+            previous_failure,
+            retry_lineage=_global_posture_retry_lineage(current),
+            now=now,
+        )
+        if backoff is not None:
+            _log_global_posture_retry_deferred(log, backoff)
+            return dict(current or {}), {
+                **_global_posture_ref(current),
+                "status": "deferred",
+                "persistence_status": "reused" if current is not None else "not_available",
+                "refresh_reason": "failure_backoff",
+                "retry_attempt": backoff["attempt"],
+                "retry_delay_seconds": backoff["delay_seconds"],
+                "next_retry_at": backoff["next_retry_at"],
+                "error": backoff["error"],
+            }
         sticky: set[str] = set()
         for venue in VENUES:
             scope = scopes.read_latest(venue, scope_phase="preopen")
             if scope is None:
-                current = scopes.read_current(venue)
-                if current is not None and not str(current.get("scope_phase") or "").strip():
-                    scope = current
+                scope_current = scopes.read_current(venue)
+                if scope_current is not None and not str(scope_current.get("scope_phase") or "").strip():
+                    scope = scope_current
             if scope is not None:
                 sticky.update(
                     str(symbol).strip()
@@ -693,11 +1016,37 @@ def _prepare_global_universe_posture(
         posture_dict = posture.to_dict()
         stored, ref, changed = store.append_if_changed(posture)
     except Exception as exc:  # noqa: BLE001 - global posture is advisory and fail-open
+        failure: dict[str, Any] | None = None
+        failure_persistence_status = "skipped"
+        try:
+            failure = _global_posture_failure_record(
+                current=current,
+                previous_failure=store.read_latest_failure(),
+                now=now,
+                refresh_reason=reason,
+                error=exc,
+            )
+            store.append_failure(failure)
+        except Exception as failure_exc:  # noqa: BLE001 - preserve fail-open even when state is down
+            log.warning("global universe posture failure persistence failed: %s", failure_exc)
+        else:
+            failure_persistence_status = "failure_recorded"
+            _log_global_posture_retry_scheduled(log, failure)
         log.warning("global universe posture preparation failed: %s", exc)
-        return {}, {
+        return dict(current or {}), {
+            **_global_posture_ref(current),
             "status": "error",
-            "persistence_status": "skipped",
+            "persistence_status": failure_persistence_status,
             "error": exc.__class__.__name__,
+            **(
+                {
+                    "retry_attempt": failure["retry_attempt"],
+                    "retry_delay_seconds": failure["retry_delay_seconds"],
+                    "next_retry_at": failure["next_retry_at"],
+                }
+                if failure is not None and failure_persistence_status == "failure_recorded"
+                else {}
+            ),
         }
     return stored or posture_dict, {
         **ref,
@@ -721,34 +1070,65 @@ def _family_board_observability(
 
 
 class UniverseIntelligenceRunner:
-    """Coalescing single-worker runner; triggers received in-flight are not lost."""
+    """Single worker with separate immediate and trailing-edge trigger batches.
+
+    Scheduled daemon ticks stay immediate. Company-brief events use ``delay_s``
+    and are merged by venue until the wave goes quiet; an intervening scheduled
+    tick does not consume or shorten that delayed batch.
+    """
 
     def __init__(
         self,
         *,
         tick_fn: Callable[..., dict[str, list[dict[str, Any]]]] = tick_universe_intelligence,
         stop_timeout_s: float = DEFAULT_ASYNC_STOP_TIMEOUT_S,
+        monotonic_fn: Callable[[], float] = time.monotonic,
     ) -> None:
         self._tick_fn = tick_fn
         self._stop_timeout_s = max(0.0, float(stop_timeout_s))
+        self._monotonic = monotonic_fn
         self._lock = threading.Lock()
         self._stop_event = threading.Event()
+        self._wake_event = threading.Event()
         self._thread: threading.Thread | None = None
-        self._pending_kwargs: dict[str, Any] | None = None
+        self._ready_kwargs: dict[str, Any] | None = None
+        self._delayed_kwargs: dict[str, Any] | None = None
+        self._delayed_deadline = 0.0
         self._stopping = False
 
-    def trigger(self, **kwargs: Any) -> dict[str, Any]:
+    def trigger(self, *, delay_s: float = 0.0, **kwargs: Any) -> dict[str, Any]:
         if os.getenv("CASYS_UNIVERSE_INTELLIGENCE_ENABLED", "1") == "0":
             return {"triggered": False, "reason": "disabled"}
+        delay = max(0.0, float(delay_s))
         with self._lock:
             if self._stopping:
                 return {"triggered": False, "reason": "stopping"}
+            if delay > 0:
+                replaced_pending = self._delayed_kwargs is not None
+                self._delayed_kwargs = _merge_trigger_kwargs(
+                    self._delayed_kwargs,
+                    kwargs,
+                )
+                # Trailing edge: each brief in the same wave extends the quiet
+                # period, while immediate post-cycle work stays in its own slot.
+                self._delayed_deadline = self._monotonic() + delay
+                queue_kind = "debounced"
+            else:
+                replaced_pending = self._ready_kwargs is not None
+                self._ready_kwargs = _merge_trigger_kwargs(self._ready_kwargs, kwargs)
+                queue_kind = "immediate"
+            self._wake_event.set()
             if self._thread is not None:
-                self._pending_kwargs = dict(kwargs)
+                logger = kwargs.get("logger") or _default_logger()
+                logger.info(
+                    "universe trigger coalesced pending_replaced=%s kind=%s venues=%s",
+                    replaced_pending,
+                    queue_kind,
+                    tuple(kwargs.get("venues") or VENUES),
+                )
                 return {"triggered": False, "reason": "queued_latest"}
             thread = threading.Thread(
                 target=self._run,
-                kwargs={"initial_kwargs": dict(kwargs)},
                 daemon=True,
                 name="universe-intelligence",
             )
@@ -760,30 +1140,122 @@ class UniverseIntelligenceRunner:
                 raise
         return {"triggered": True, "_thread": thread}
 
-    def _run(self, *, initial_kwargs: dict[str, Any]) -> None:
-        kwargs = initial_kwargs
+    def _run(self) -> None:
         while True:
+            kwargs: dict[str, Any] | None = None
+            wait_s: float | None = None
+            with self._lock:
+                if self._stopping:
+                    if self._thread is threading.current_thread():
+                        self._thread = None
+                    return
+                now = self._monotonic()
+                if self._delayed_kwargs is not None and now >= self._delayed_deadline:
+                    kwargs = self._delayed_kwargs
+                    self._delayed_kwargs = None
+                    self._delayed_deadline = 0.0
+                elif self._ready_kwargs is not None:
+                    kwargs = self._ready_kwargs
+                    self._ready_kwargs = None
+                elif self._delayed_kwargs is not None:
+                    wait_s = max(0.0, self._delayed_deadline - now)
+                    self._wake_event.clear()
+                else:
+                    if self._thread is threading.current_thread():
+                        self._thread = None
+                    return
+
+            if kwargs is None:
+                self._wake_event.wait(timeout=wait_s)
+                continue
             logger = kwargs.get("logger") or _default_logger()
             try:
                 self._tick_fn(**kwargs, stop_requested=self._stop_event.is_set)
             except Exception as exc:  # noqa: BLE001 - background work is best-effort
                 logger.warning("universe intelligence background failure: %s", exc)
-            with self._lock:
-                if self._stopping or self._pending_kwargs is None:
-                    if self._thread is threading.current_thread():
-                        self._thread = None
-                    return
-                kwargs = self._pending_kwargs
-                self._pending_kwargs = None
 
     def stop(self) -> None:
         with self._lock:
             self._stopping = True
-            self._pending_kwargs = None
+            self._ready_kwargs = None
+            self._delayed_kwargs = None
+            self._delayed_deadline = 0.0
             self._stop_event.set()
+            self._wake_event.set()
             thread = self._thread
         if thread is not None and thread is not threading.current_thread():
             thread.join(timeout=self._stop_timeout_s)
+
+
+def trigger_company_brief_refresh(
+    event: Mapping[str, Any],
+    *,
+    runner: UniverseIntelligenceRunner,
+    config_dir: Path,
+    state_dir: Path,
+    loop_now: datetime,
+    logger: LoggerLike | None = None,
+    delay_s: float = DEFAULT_COMPANY_BRIEF_DEBOUNCE_SECONDS,
+) -> dict[str, Any]:
+    """Route one written company brief to its regional trailing-edge batch."""
+
+    log = logger or _default_logger()
+    symbol = str(event.get("symbol") or "").strip()
+    if not symbol:
+        log.warning("company brief universe refresh ignored: symbol missing")
+        return {"triggered": False, "reason": "symbol_missing"}
+    venue = venue_of(symbol)
+    if venue not in VENUES:
+        log.info(
+            "company brief universe refresh ignored symbol=%s venue=%s",
+            symbol,
+            venue,
+        )
+        return {"triggered": False, "reason": "unsupported_venue", "venue": venue}
+    return runner.trigger(
+        config_dir=config_dir,
+        state_dir=state_dir,
+        loop_now=loop_now,
+        logger=log,
+        venues=(venue,),
+        refresh_venues=(venue,),
+        delay_s=delay_s,
+    )
+
+
+def _merge_trigger_kwargs(
+    current: Mapping[str, Any] | None,
+    incoming: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Keep latest runtime context while unioning every affected venue."""
+
+    if current is None:
+        return dict(incoming)
+    merged = {**dict(current), **dict(incoming)}
+    if "venues" in current or "venues" in incoming:
+        merged["venues"] = _ordered_venue_union(
+            current.get("venues", VENUES),
+            incoming.get("venues", VENUES),
+        )
+    if "refresh_venues" in current or "refresh_venues" in incoming:
+        merged["refresh_venues"] = _ordered_venue_union(
+            current.get("refresh_venues", ()),
+            incoming.get("refresh_venues", ()),
+        )
+    if "force" in current or "force" in incoming:
+        merged["force"] = bool(current.get("force")) or bool(incoming.get("force"))
+    return merged
+
+
+def _ordered_venue_union(*raw_groups: Any) -> tuple[str, ...]:
+    values: set[str] = set()
+    for raw in raw_groups:
+        items = (raw,) if isinstance(raw, str) else raw or ()
+        values.update(str(item).strip().upper() for item in items if str(item).strip())
+    return tuple(
+        [venue for venue in VENUES if venue in values]
+        + sorted(values.difference(VENUES))
+    )
 
 
 def _record_waiting_once(
@@ -835,11 +1307,14 @@ def _base_run_record(
     input_signature: str | None,
 ) -> dict[str, Any]:
     brief_ref = brief.ref(date=brief.as_of[:10]) if brief is not None else None
+    venue = str(scope.get("venue") or "")
+    scope_id = str(scope.get("candidate_scope_id") or "")
+    brief_id = str(getattr(brief, "brief_id", "") or "")
     return {
         "schema_version": 1,
-        "candidate_scope_id": str(scope.get("candidate_scope_id") or ""),
+        "candidate_scope_id": scope_id,
         "candidate_run_ids": list(scope.get("candidate_run_ids") or []),
-        "venue": str(scope.get("venue") or ""),
+        "venue": venue,
         "as_of": now.isoformat(),
         "scope_as_of": scope.get("as_of"),
         "scope_phase": scope.get("scope_phase") or "legacy",
@@ -848,6 +1323,15 @@ def _base_run_record(
         "brief_status": "active" if brief is not None else "missing",
         "valid_until": brief.valid_until if brief is not None else None,
         "input_signature": input_signature,
+        "refresh_signature": (
+            _universe_refresh_signature(
+                venue=venue,
+                scope_id=scope_id,
+                brief_id=brief_id,
+            )
+            if brief_id
+            else None
+        ),
         "candidate_count": len(scope.get("candidates") or []),
         "baseline": list(scope.get("default_hotlist") or []),
         "sticky_context": list(scope.get("sticky_context_at_close") or []),
@@ -937,6 +1421,130 @@ def _request_signature(payload: Any) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def _scope_already_activated(
+    state: Mapping[str, Any],
+    *,
+    venue: str,
+    candidate_scope_id: str,
+) -> bool:
+    """Match the exact terminal activation recorded by market rotation.
+
+    ``last_universe_activation_scope_id`` is written only for a successful
+    prepared activation. A fallback attempt intentionally remains eligible for
+    a later preparation inside the same pre-open window.
+    """
+
+    venues = state.get("venues") if isinstance(state, Mapping) else None
+    venue_state = venues.get(venue) if isinstance(venues, Mapping) else None
+    return bool(
+        candidate_scope_id
+        and isinstance(venue_state, Mapping)
+        and str(venue_state.get("last_universe_activation_scope_id") or "").strip()
+        == candidate_scope_id
+    )
+
+
+def _universe_refresh_signature(*, venue: str, scope_id: str, brief_id: str) -> str:
+    """Stable scheduling epoch, separate from exact consumed-input provenance."""
+
+    return _request_signature(
+        {
+            "venue": str(venue).strip().upper(),
+            "candidate_scope_id": str(scope_id).strip(),
+            "brief_id": str(brief_id).strip(),
+        }
+    )
+
+
+def _stored_refresh_signature(raw: Any) -> str | None:
+    """Read the new key or derive it from legacy success records."""
+
+    if not isinstance(raw, Mapping):
+        return None
+    explicit = str(raw.get("refresh_signature") or "").strip()
+    if explicit:
+        return explicit
+    brief_ref = raw.get("brief_ref")
+    brief_id = (
+        str(brief_ref.get("brief_id") or "").strip()
+        if isinstance(brief_ref, Mapping)
+        else ""
+    )
+    venue = str(raw.get("venue") or "").strip()
+    scope_id = str(raw.get("candidate_scope_id") or "").strip()
+    if not venue or not scope_id or not brief_id:
+        return None
+    return _universe_refresh_signature(
+        venue=venue,
+        scope_id=scope_id,
+        brief_id=brief_id,
+    )
+
+
+def _same_refresh_success(raw: Any, refresh_signature: str) -> bool:
+    return bool(
+        isinstance(raw, Mapping)
+        and raw.get("status") == "success"
+        and _stored_refresh_signature(raw) == refresh_signature
+    )
+
+
+def _same_persisted_success(prepared: Any, latest: Any) -> bool:
+    """Whether the exact prepared projection already points to latest success."""
+
+    if not isinstance(prepared, Mapping) or not isinstance(latest, Mapping):
+        return False
+    if prepared.get("status") != "success" or latest.get("status") != "success":
+        return False
+    if prepared.get("candidate_scope_id") != latest.get("candidate_scope_id"):
+        return False
+    latest_run_id = str(latest.get("agent_run_id") or "").strip()
+    if latest_run_id:
+        return str(prepared.get("agent_run_id") or "").strip() == latest_run_id
+    return bool(
+        latest.get("input_signature")
+        and prepared.get("input_signature") == latest.get("input_signature")
+    )
+
+
+_NON_MATERIAL_TEMPORAL_FIELDS = frozenset(
+    {
+        "as_of",
+        "valid_until",
+        "created_at",
+        "updated_at",
+        "generated_at",
+        "refreshed_at",
+    }
+)
+
+
+def _material_request_signature(payload: Any) -> str:
+    """Hash decision evidence while excluding temporal freshness metadata only.
+
+    All non-temporal fields, including coverage statuses, source references,
+    candidate scores, and context IDs, remain part of the key.  A genuine
+    context change therefore resets the retry sequence without timestamps
+    turning every otherwise identical daemon tick into a new request.
+    """
+
+    return _request_signature(_without_non_material_timestamps(payload))
+
+
+def _without_non_material_timestamps(payload: Any) -> Any:
+    if isinstance(payload, Mapping):
+        return {
+            str(key): _without_non_material_timestamps(value)
+            for key, value in payload.items()
+            if str(key) not in _NON_MATERIAL_TEMPORAL_FIELDS
+        }
+    if isinstance(payload, list):
+        return [_without_non_material_timestamps(value) for value in payload]
+    if isinstance(payload, tuple):
+        return tuple(_without_non_material_timestamps(value) for value in payload)
+    return payload
+
+
 def _same_success(raw: Any, input_signature: str) -> bool:
     return bool(
         isinstance(raw, Mapping)
@@ -945,23 +1553,116 @@ def _same_success(raw: Any, input_signature: str) -> bool:
     )
 
 
-def _failure_backoff_active(raw: Any, *, input_signature: str, now: datetime) -> bool:
-    if not isinstance(raw, Mapping) or raw.get("input_signature") != input_signature:
-        return False
-    if raw.get("status") not in {"invalid", "error"}:
-        return False
-    try:
-        failed_at = datetime.fromisoformat(str(raw.get("as_of") or "").replace("Z", "+00:00"))
-    except ValueError:
-        return False
-    if failed_at.tzinfo is None:
-        failed_at = failed_at.replace(tzinfo=timezone.utc)
-    backoff_minutes = (
-        DEFAULT_PREPARED_WRITE_BACKOFF_MINUTES
-        if raw.get("error_code") == "prepared_write_error"
-        else DEFAULT_FAILURE_BACKOFF_MINUTES
+def _failure_backoff(raw: Any, *, retry_lineage: str, now: datetime) -> dict[str, Any] | None:
+    """Return persisted retry state for the same scope-and-brief retry lineage."""
+
+    failure = _latest_failure(raw)
+    if failure is None or failure.get("retry_lineage") != retry_lineage:
+        return None
+    attempt = max(1, int(failure.get("retry_attempt") or 1))
+    delay_seconds = max(
+        1,
+        int(
+            failure.get("retry_delay_seconds")
+            or _failure_delay_seconds(attempt, error_code=failure.get("error_code"))
+        ),
     )
-    return now - failed_at < timedelta(minutes=backoff_minutes)
+    retry_at = _parse_datetime(failure.get("next_retry_at"))
+    if retry_at is None:
+        failed_at = _parse_datetime(failure.get("as_of"))
+        if failed_at is None:
+            return None
+        retry_at = failed_at + timedelta(seconds=delay_seconds)
+    if now >= retry_at:
+        return None
+    return {
+        "attempt": attempt,
+        "delay_seconds": delay_seconds,
+        "next_retry_at": retry_at.isoformat(),
+        "error": str(failure.get("error_code") or failure.get("status") or "unknown"),
+    }
+
+
+def _latest_failure(raw: Any) -> Mapping[str, Any] | None:
+    if not isinstance(raw, Mapping):
+        return None
+    nested = raw.get("latest_failure")
+    candidate: Mapping[str, Any] = nested if isinstance(nested, Mapping) else raw
+    return candidate if candidate.get("status") in {"invalid", "error"} else None
+
+
+def _failure_delay_seconds(attempt: int, *, error_code: Any) -> int:
+    prepared_write = error_code == "prepared_write_error"
+    base_minutes = (
+        DEFAULT_PREPARED_WRITE_BACKOFF_MINUTES if prepared_write else DEFAULT_FAILURE_BACKOFF_MINUTES
+    )
+    max_minutes = (
+        DEFAULT_PREPARED_WRITE_BACKOFF_MAX_MINUTES if prepared_write else DEFAULT_FAILURE_BACKOFF_MAX_MINUTES
+    )
+    return min(base_minutes * (2 ** max(0, attempt - 1)), max_minutes) * 60
+
+
+def _set_failure_retry_metadata(
+    record: dict[str, Any], *, latest: Mapping[str, Any] | None, now: datetime
+) -> None:
+    """Persist the bounded exponential retry schedule alongside an error run."""
+
+    previous = _latest_failure(latest)
+    same_retry_lineage = (
+        previous is not None and previous.get("retry_lineage") == record.get("retry_lineage")
+    )
+    attempt = max(1, int(previous.get("retry_attempt") or 1) + 1) if same_retry_lineage else 1
+    delay_seconds = _failure_delay_seconds(attempt, error_code=record.get("error_code"))
+    record.update(
+        {
+            "retry_attempt": attempt,
+            "retry_delay_seconds": delay_seconds,
+            "next_retry_at": (now + timedelta(seconds=delay_seconds)).isoformat(),
+        }
+    )
+
+
+def _log_failure_retry(log: LoggerLike, record: Mapping[str, Any]) -> None:
+    log.warning(
+        "universe retry scheduled venue=%s scope=%s attempt=%s delay_s=%s next_at=%s error=%s",
+        record.get("venue"),
+        record.get("candidate_scope_id"),
+        record.get("retry_attempt"),
+        record.get("retry_delay_seconds"),
+        record.get("next_retry_at"),
+        record.get("error_code") or record.get("status"),
+    )
+
+
+def _log_retry_deferred(
+    log: LoggerLike,
+    *,
+    venue: str,
+    scope_id: str,
+    backoff: Mapping[str, Any],
+) -> None:
+    log.info(
+        "universe retry deferred venue=%s scope=%s attempt=%s delay_s=%s next_at=%s error=%s",
+        venue,
+        scope_id,
+        backoff.get("attempt"),
+        backoff.get("delay_seconds"),
+        backoff.get("next_retry_at"),
+        backoff.get("error"),
+    )
+
+
+def _retry_lineage_key(*, venue: str, scope_id: str, brief: Any) -> str:
+    """Stable retry epoch, intentionally independent of fast-changing contexts.
+
+    Company-card and market-context refreshes may legitimately alter the
+    material input while a run is failing.  They must invalidate a success but
+    not reset the failure budget: only a new candidate scope or macro brief
+    starts a new retry lineage.
+    """
+
+    brief_id = str(getattr(brief, "brief_id", "") or "").strip()
+    return _request_signature({"venue": venue, "candidate_scope_id": scope_id, "brief_id": brief_id})
 
 
 def _selected_challengers(candidates: tuple[dict[str, Any], ...], selected: list[str]) -> list[str]:

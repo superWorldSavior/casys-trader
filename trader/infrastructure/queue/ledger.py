@@ -5,9 +5,12 @@ shadow/tests). Temps injecté (now_ms) pour déterminisme. Timestamps = epoch ms
 """
 from __future__ import annotations
 
+import json
 import logging
 import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any, Mapping
 
 from trader.infrastructure.state_db.connection import StateDb
 
@@ -44,6 +47,42 @@ _DDL = [
   ON tasks(kind, partition_key)
   WHERE status IN ('pending','running') AND partition_key IS NOT NULL""",
 ]
+
+
+def _retry_delay_ms(*, base_ms: int, attempt: int, max_ms: int | None) -> int:
+    """Return a non-negative exponential retry delay, optionally capped."""
+
+    delay = max(0, int(base_ms)) * (2 ** max(0, int(attempt) - 1))
+    if max_ms is not None:
+        delay = min(delay, max(0, int(max_ms)))
+    return delay
+
+
+def _payload_symbol(payload: Any) -> str:
+    """Best-effort symbol extraction for queue observability only.
+
+    The durable ledger stays business-agnostic: arbitrary payloads remain valid.
+    When a JSON payload happens to carry a top-level ``symbol``, it makes the
+    normal daemon log actionable without making that field part of the queue
+    schema or contract.
+    """
+
+    try:
+        decoded = json.loads(str(payload or ""))
+    except (TypeError, ValueError):
+        return "-"
+    if not isinstance(decoded, Mapping):
+        return "-"
+    symbol = str(decoded.get("symbol") or "").strip()
+    return symbol or "-"
+
+
+def _utc_iso_ms(value: int) -> str:
+    return datetime.fromtimestamp(int(value) / 1000, tz=timezone.utc).isoformat()
+
+
+def _one_line(value: Any) -> str:
+    return " ".join(str(value or "").split())[:500] or "-"
 
 
 class TaskLedger:
@@ -217,33 +256,62 @@ class TaskLedger:
         ).rowcount
         return n == 1
 
-    def fail(self, *, task_id, token, now_ms, error, retryable, backoff_base_ms):
+    def fail(
+        self,
+        *,
+        task_id,
+        token,
+        now_ms,
+        error,
+        retryable,
+        backoff_base_ms,
+        backoff_max_ms: int | None = None,
+    ):
         """Signale l'échec d'une tâche et applique la politique de retry.
 
         Si ``retryable=True`` et ``attempts < max_attempts`` : replanifie en
-        'pending' avec délai ``backoff_base_ms * 2^(attempts-1)``.
+        'pending' avec délai ``backoff_base_ms * 2^(attempts-1)``, borné par
+        ``backoff_max_ms`` lorsqu'il est fourni.
         Sinon : passe en 'dead'. Gardé par fencing token (``claim_token``).
         Retourne ``'pending'`` (retry), ``'dead'`` (épuisé) ou ``'stale'``
         (token inconnu — sans effet).
         """
         with self._db.transaction() as cur:
             row = cur.execute(
-                "SELECT attempts, max_attempts FROM tasks WHERE id=? AND claim_token=?",
+                "SELECT kind, payload, attempts, max_attempts FROM tasks WHERE id=? AND claim_token=?",
                 (task_id, token),
             ).fetchone()
             if row is None:
                 return "stale"
-            attempts, max_attempts = row["attempts"], row["max_attempts"]
+            kind = str(row["kind"] or "-")
+            symbol = _payload_symbol(row["payload"])
+            attempts, max_attempts = int(row["attempts"]), int(row["max_attempts"])
+            safe_error = _one_line(error)
             if retryable and attempts < max_attempts:
-                next_at = now_ms + backoff_base_ms * (2 ** (attempts - 1))
+                delay_ms = _retry_delay_ms(
+                    base_ms=backoff_base_ms,
+                    attempt=attempts,
+                    max_ms=backoff_max_ms,
+                )
+                next_at = int(now_ms) + delay_ms
                 cur.execute(
                     """UPDATE tasks SET status='pending', error=?, scheduled_at=?,
                            claim_token=NULL, claimed_by=NULL, lease_expires_at=NULL,
                            updated_at=? WHERE id=?""",
                     (error, next_at, now_ms, task_id),
                 )
-                log.warning("[queue.ledger] retry id=%s attempts=%s scheduled=%s",
-                            task_id, attempts, next_at)
+                log.warning(
+                    "[queue.ledger] retry kind=%s symbol=%s id=%s attempt=%s/%s "
+                    "delay_s=%s next_at=%s error=%s",
+                    kind,
+                    symbol,
+                    task_id,
+                    attempts,
+                    max_attempts,
+                    delay_ms // 1000,
+                    _utc_iso_ms(next_at),
+                    safe_error,
+                )
                 return "pending"
             cur.execute(
                 """UPDATE tasks
@@ -252,7 +320,16 @@ class TaskLedger:
                    WHERE id=?""",
                 (error, now_ms, task_id),
             )
-            log.warning("[queue.ledger] dead id=%s error=%s", task_id, error)
+            log.warning(
+                "[queue.ledger] dead kind=%s symbol=%s id=%s attempt=%s/%s "
+                "delay_s=0 next_at=- error=%s",
+                kind,
+                symbol,
+                task_id,
+                attempts,
+                max_attempts,
+                safe_error,
+            )
             return "dead"
 
     def abandon(self, *, task_id: int, now_ms: int, error: str) -> bool:
@@ -361,18 +438,41 @@ class TaskLedger:
             return n
 
     def recover_on_boot(self, *, now_ms):
-        """Remet en 'pending' les tâches 'running' dont le bail a expiré.
+        """Recover expired leases and terminalize exhausted pending tasks.
 
         À appeler au démarrage du daemon pour reprendre les tâches orphelines
-        d'un crash précédent. Retourne le nombre de tâches réactivées (int).
+        d'un crash précédent. Les tâches qui étaient déjà ``pending`` avec
+        ``attempts >= max_attempts`` étaient inclaimables et restaient
+        indéfiniment visibles comme pending : elles sont désormais marquées
+        ``dead`` sans supprimer la ligne ni son erreur historique.
+
+        Retourne le nombre de tâches réactivées depuis ``running`` (int), pour
+        conserver le contrat historique de la méthode.
         """
         with self._db.transaction() as cur:
-            n = cur.execute(
+            repending = cur.execute(
                 """UPDATE tasks SET status='pending', claim_token=NULL,
                        claimed_by=NULL, lease_expires_at=NULL, updated_at=?
                    WHERE status='running' AND lease_expires_at < ?""",
                 (now_ms, now_ms),
             ).rowcount
-            if n > 0:
-                log.info("[queue.ledger] recover_on_boot repending=%d", n)
-            return n
+            terminalized = cur.execute(
+                """UPDATE tasks
+                   SET status='dead',
+                       error=CASE
+                           WHEN error IS NULL OR TRIM(error) = ''
+                               THEN 'retry_attempts_exhausted_on_boot'
+                           ELSE error
+                       END,
+                       claim_token=NULL, claimed_by=NULL, lease_expires_at=NULL,
+                       updated_at=?
+                   WHERE status='pending' AND attempts >= max_attempts""",
+                (now_ms,),
+            ).rowcount
+            if repending > 0 or terminalized > 0:
+                log.info(
+                    "[queue.ledger] recover_on_boot repending=%d terminalized=%d",
+                    repending,
+                    terminalized,
+                )
+            return repending

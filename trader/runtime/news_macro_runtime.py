@@ -26,7 +26,14 @@ from trader.runtime.protocols import LoggerLike
 VENUES = ("TW", "EU", "US")
 DEFAULT_LOOKBACK_DAYS = 1
 DEFAULT_VALID_HOURS = 20
-DEFAULT_FAILURE_BACKOFF_HOURS = 6
+# A failed macro report must never turn a four-minute daemon cadence into a
+# four-minute model retry.  Keep this in step with the universe-composition
+# retry ladder: 30 / 60 / 120 / 240 / 360 minutes.
+DEFAULT_FAILURE_BACKOFF_MINUTES = 30
+DEFAULT_FAILURE_BACKOFF_MAX_MINUTES = 360
+# Kept as a compatibility alias for callers which used the former fixed
+# six-hour guard.  Runtime retry decisions use the minute constants above.
+DEFAULT_FAILURE_BACKOFF_HOURS = DEFAULT_FAILURE_BACKOFF_MAX_MINUTES // 60
 DEFAULT_SUCCESS_REFRESH_COOLDOWN_HOURS = 4
 DEFAULT_MAX_VENUE_NEWS_ITEMS = 80
 DEFAULT_MAX_GLOBAL_NEWS_ITEMS = 120
@@ -52,9 +59,17 @@ def tick_news_macro_analysis(
     company_store: CompanyIntelligenceStore | None = None,
     scope_store: CandidateScopeStore | None = None,
     venues: Iterable[str] = VENUES,
+    include_global: bool | None = None,
+    force: bool = False,
     stop_requested: Callable[[], bool] | None = None,
 ) -> dict[str, list[dict]]:
-    """Run due macro/news analyst briefs, best-effort and never blocking trading."""
+    """Run macro/news analyst briefs, best-effort and never blocking trading.
+
+    ``include_global`` keeps the historical environment-driven behaviour when
+    omitted. Manual callers can set it explicitly to target regional venues
+    without also launching the GLOBAL pass. ``force`` bypasses only freshness,
+    cooldown and failure-backoff gates; input and scope validation still apply.
+    """
 
     del config_dir  # reserved for future source config; keep signature aligned with rotation tick
     log = logger or _default_logger()
@@ -154,33 +169,52 @@ def tick_news_macro_analysis(
             ),
             "company_brief_refs": company_brief_refs,
         }
-        signature = _input_signature(
+        success_signature = _input_signature(
             venue=venue,
             macro_next=macro_next,
             macro_series=macro_series,
             input_refs=input_refs,
         )
+        retry_lineage = _regional_retry_lineage_key(
+            venue=venue,
+            candidate_scope_id=scope_id,
+        )
         active_brief = store.read_latest(venue, at=now)
-        if _brief_matches_candidate_scope(active_brief, scope_id):
-            venue_status = status.get(venue)
-            if _last_success_matches_signature(venue_status, signature):
-                skipped.append(
-                    {"venue": venue, "reason": "active_brief_same_scope_and_inputs"}
+        venue_status = status.get(venue)
+        active_success_matches = (
+            not force
+            and _brief_matches_candidate_scope(active_brief, scope_id)
+            and _last_success_matches_signature(venue_status, success_signature)
+        )
+        if active_success_matches:
+            skipped.append({"venue": venue, "reason": "active_brief_same_scope_and_inputs"})
+            continue
+        if not force:
+            backoff = _failure_backoff(
+                venue_status,
+                retry_lineage=retry_lineage,
+                now=now,
+            )
+            if backoff is not None:
+                skipped.append(_failure_backoff_skip(venue=venue, backoff=backoff))
+                _log_retry_deferred(
+                    log,
+                    venue=venue,
+                    scope_id=scope_id,
+                    backoff=backoff,
                 )
                 continue
-            company_refs_changed = _company_brief_refs_changed(
-                venue_status,
-                company_brief_refs,
-            )
-            if not company_refs_changed and _success_refresh_cooldown_active(venue_status, now=now):
+        if not force and _brief_matches_candidate_scope(active_brief, scope_id):
+            # Company briefs remain material inputs (and their exact refs stay
+            # in ``input_refs``), but they must not become an out-of-band
+            # scheduler for the regional macro analyst.  The next scheduled
+            # refresh will consume the newest refs; only an explicit force or
+            # a new candidate scope may bypass this success cooldown.
+            if _success_refresh_cooldown_active(venue_status, now=now):
                 skipped.append(
                     {"venue": venue, "reason": "active_brief_changed_inputs_cooldown"}
                 )
                 continue
-        if _backoff_active(status.get(venue), signature=signature, now=now):
-            skipped.append({"venue": venue, "reason": "failure_backoff"})
-            continue
-
         request = NewsMacroAnalysisRequest(
             as_of=now.isoformat(),
             valid_until=(now + timedelta(hours=DEFAULT_VALID_HOURS)).isoformat(),
@@ -207,34 +241,44 @@ def tick_news_macro_analysis(
             situation_repository=memory,
         )
         if result.written:
-            status[venue] = {
-                "last_success_at": now.isoformat(),
-                "last_input_signature": signature,
-                "last_brief_ref": result.brief_ref,
-                "last_company_brief_refs": company_brief_refs,
-                "last_failure_at": None,
-                "last_error": None,
-            }
+            status[venue] = _success_status(
+                existing=venue_status,
+                now=now,
+                success_signature=success_signature,
+                brief_ref=result.brief_ref,
+                company_brief_refs=company_brief_refs,
+            )
             status_dirty = True
             triggered.append({"venue": venue, "brief_ref": result.brief_ref})
         else:
-            status[venue] = {
-                **(status.get(venue) if isinstance(status.get(venue), dict) else {}),
-                "last_failure_at": now.isoformat(),
-                "last_input_signature": signature,
-                "last_company_brief_refs": company_brief_refs,
-                "last_error": {
-                    "code": result.error_code,
-                    "message": result.error_message,
-                },
-            }
+            failure_status = _failure_status(
+                existing=venue_status,
+                now=now,
+                retry_lineage=retry_lineage,
+                input_signature=success_signature,
+                error_code=result.error_code,
+                error_message=result.error_message,
+            )
+            status[venue] = failure_status
             status_dirty = True
-            errors.append({"venue": venue, "code": result.error_code, "message": result.error_message})
+            failure = _latest_failure(failure_status) or {}
+            _log_failure_retry(log, venue=venue, scope_id=scope_id, failure=failure)
+            errors.append(
+                _failure_error_result(
+                    venue=venue,
+                    error_code=result.error_code,
+                    error_message=result.error_message,
+                    failure=failure,
+                )
+            )
 
     # ------------------------------------------------------------------
     # Passe GLOBAL — brief macro/géopolitique international sans scope régional
     # ------------------------------------------------------------------
-    if os.getenv("CASYS_NEWS_MACRO_GLOBAL_ENABLED", "1") != "0":
+    global_enabled = os.getenv("CASYS_NEWS_MACRO_GLOBAL_ENABLED", "1") != "0"
+    if include_global is not None:
+        global_enabled = global_enabled and include_global
+    if global_enabled:
         geopolitical_events = tuple(_read_recent_gdelt_events(state_path, now=now))
         if not global_news_items and not macro_series and not macro_next and not geopolitical_events:
             skipped.append({"venue": "GLOBAL", "reason": "no_inputs"})
@@ -250,64 +294,99 @@ def tick_news_macro_analysis(
                     if ev.get("url")
                 ][:60],
             }
-            global_signature = _input_signature(
+            global_success_signature = _input_signature(
                 venue="GLOBAL",
                 macro_next=macro_next,
                 macro_series=macro_series,
                 input_refs=global_input_refs,
             )
             global_status = status.get("GLOBAL")
-            if _last_success_matches_signature(global_status, global_signature):
+            global_retry_lineage = _global_retry_lineage_key(
+                last_brief_ref=(
+                    global_status.get("last_brief_ref")
+                    if isinstance(global_status, Mapping)
+                    else None
+                )
+            )
+            if not force and _last_success_matches_signature(global_status, global_success_signature):
                 skipped.append({"venue": "GLOBAL", "reason": "active_brief_same_inputs"})
-            elif _backoff_active(global_status, signature=global_signature, now=now):
-                skipped.append({"venue": "GLOBAL", "reason": "failure_backoff"})
-            elif store.read_latest("GLOBAL", at=now) is not None and _success_refresh_cooldown_active(global_status, now=now):
-                skipped.append({"venue": "GLOBAL", "reason": "active_brief_changed_inputs_cooldown"})
             else:
-                global_request = NewsMacroAnalysisRequest(
-                    as_of=now.isoformat(),
-                    valid_until=(now + timedelta(hours=DEFAULT_VALID_HOURS)).isoformat(),
-                    venue="GLOBAL",
-                    global_news_items=tuple(global_news_items),
-                    macro_next=macro_next,
-                    macro_series=macro_series,
-                    geopolitical_events=geopolitical_events,
-                    input_refs=global_input_refs,
+                backoff = (
+                    _failure_backoff(
+                        global_status,
+                        retry_lineage=global_retry_lineage,
+                        now=now,
+                    )
+                    if not force
+                    else None
                 )
-                if analyst is None:
-                    from trader.agent.news_macro import LlmNewsMacroAnalyst
-
-                    analyst = LlmNewsMacroAnalyst()
-                if memory is None:
-                    memory = SituationMemoryStore(Path(state_dir) / "situation_memory.db")
-                global_result = run_news_macro_analysis(
-                    global_request,
-                    analyst=analyst,  # type: ignore[arg-type]
-                    repository=store,
-                    situation_repository=memory,
-                )
-                if global_result.written:
-                    status["GLOBAL"] = {
-                        "last_success_at": now.isoformat(),
-                        "last_input_signature": global_signature,
-                        "last_brief_ref": global_result.brief_ref,
-                        "last_failure_at": None,
-                        "last_error": None,
-                    }
-                    status_dirty = True
-                    triggered.append({"venue": "GLOBAL", "brief_ref": global_result.brief_ref})
+                if backoff is not None:
+                    skipped.append(_failure_backoff_skip(venue="GLOBAL", backoff=backoff))
+                    _log_retry_deferred(
+                        log,
+                        venue="GLOBAL",
+                        scope_id="GLOBAL",
+                        backoff=backoff,
+                    )
+                elif (
+                    not force
+                    and store.read_latest("GLOBAL", at=now) is not None
+                    and _success_refresh_cooldown_active(global_status, now=now)
+                ):
+                    skipped.append({"venue": "GLOBAL", "reason": "active_brief_changed_inputs_cooldown"})
                 else:
-                    status["GLOBAL"] = {
-                        **(status.get("GLOBAL") if isinstance(status.get("GLOBAL"), dict) else {}),
-                        "last_failure_at": now.isoformat(),
-                        "last_input_signature": global_signature,
-                        "last_error": {
-                            "code": global_result.error_code,
-                            "message": global_result.error_message,
-                        },
-                    }
-                    status_dirty = True
-                    errors.append({"venue": "GLOBAL", "code": global_result.error_code, "message": global_result.error_message})
+                    global_request = NewsMacroAnalysisRequest(
+                        as_of=now.isoformat(),
+                        valid_until=(now + timedelta(hours=DEFAULT_VALID_HOURS)).isoformat(),
+                        venue="GLOBAL",
+                        global_news_items=tuple(global_news_items),
+                        macro_next=macro_next,
+                        macro_series=macro_series,
+                        geopolitical_events=geopolitical_events,
+                        input_refs=global_input_refs,
+                    )
+                    if analyst is None:
+                        from trader.agent.news_macro import LlmNewsMacroAnalyst
+
+                        analyst = LlmNewsMacroAnalyst()
+                    if memory is None:
+                        memory = SituationMemoryStore(Path(state_dir) / "situation_memory.db")
+                    global_result = run_news_macro_analysis(
+                        global_request,
+                        analyst=analyst,  # type: ignore[arg-type]
+                        repository=store,
+                        situation_repository=memory,
+                    )
+                    if global_result.written:
+                        status["GLOBAL"] = _success_status(
+                            existing=global_status,
+                            now=now,
+                            success_signature=global_success_signature,
+                            brief_ref=global_result.brief_ref,
+                        )
+                        status_dirty = True
+                        triggered.append({"venue": "GLOBAL", "brief_ref": global_result.brief_ref})
+                    else:
+                        failure_status = _failure_status(
+                            existing=global_status,
+                            now=now,
+                            retry_lineage=global_retry_lineage,
+                            input_signature=global_success_signature,
+                            error_code=global_result.error_code,
+                            error_message=global_result.error_message,
+                        )
+                        status["GLOBAL"] = failure_status
+                        status_dirty = True
+                        failure = _latest_failure(failure_status) or {}
+                        _log_failure_retry(log, venue="GLOBAL", scope_id="GLOBAL", failure=failure)
+                        errors.append(
+                            _failure_error_result(
+                                venue="GLOBAL",
+                                error_code=global_result.error_code,
+                                error_message=global_result.error_message,
+                                failure=failure,
+                            )
+                        )
 
     if status_dirty:
         _write_status(status_path, status)
@@ -342,7 +421,14 @@ class NewsMacroAnalysisRunner:
             if self._stopping:
                 return {"triggered": False, "reason": "stopping"}
             if self._thread is not None:
+                replaced_pending = self._pending_kwargs is not None
                 self._pending_kwargs = dict(kwargs)
+                logger = kwargs.get("logger") or _default_logger()
+                logger.info(
+                    "news macro trigger coalesced pending_replaced=%s venues=%s",
+                    replaced_pending,
+                    tuple(kwargs.get("venues") or VENUES),
+                )
                 return {"triggered": False, "reason": "queued_latest"}
             thread = threading.Thread(
                 target=self._run,
@@ -796,13 +882,6 @@ def _company_news_anchors(raw_symbols: Mapping[str, Any]) -> dict[str, dict[str,
     return anchors
 
 
-def _company_brief_refs_changed(raw_status: Any, current: Mapping[str, Any]) -> bool:
-    if not isinstance(raw_status, Mapping):
-        return bool(current)
-    previous = raw_status.get("last_company_brief_refs")
-    return dict(previous) != dict(current) if isinstance(previous, Mapping) else bool(current)
-
-
 def _filter_news_for_venue(
     news_items: list[dict],
     *,
@@ -1010,6 +1089,14 @@ def _input_signature(
     macro_series: tuple[dict, ...],
     input_refs: dict,
 ) -> str:
+    """Fingerprint material evidence used to deduplicate a successful brief.
+
+    Freshness timestamps are useful in the prompt and persisted brief, but do
+    not by themselves make a new piece of evidence.  Keeping them out of the
+    success signature also prevents a harmless collector refresh from masking
+    a last successful brief as stale.
+    """
+
     payload = {
         "venue": venue,
         # ``in_h`` changes every loop without new information. Only stable event
@@ -1021,47 +1108,388 @@ def _input_signature(
         "macro_series": list(macro_series),
         "input_refs": input_refs,
     }
-    blob = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    return _request_signature(_without_non_material_timestamps(payload))
+
+
+_NON_MATERIAL_TEMPORAL_FIELDS = frozenset(
+    {
+        "as_of",
+        "valid_until",
+        "created_at",
+        "updated_at",
+        "modified_at",
+        "generated_at",
+        "refreshed_at",
+        "fetched_at",
+        "retrieved_at",
+        "ingested_at",
+        "collected_at",
+        "observed_at",
+        "received_at",
+        "processed_at",
+        "checked_at",
+        "last_checked_at",
+        "last_modified_at",
+        "ts_collected",
+        "seendate",
+        "timestamp",
+        "timestamp_ms",
+    }
+)
+def _request_signature(payload: Any) -> str:
+    blob = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
     return hashlib.sha256(blob).hexdigest()
+
+
+def _without_non_material_timestamps(payload: Any) -> Any:
+    if isinstance(payload, Mapping):
+        return {
+            str(key): _without_non_material_timestamps(value)
+            for key, value in payload.items()
+            if not _is_non_material_temporal_field(str(key))
+        }
+    if isinstance(payload, list):
+        return [_without_non_material_timestamps(value) for value in payload]
+    if isinstance(payload, tuple):
+        return tuple(_without_non_material_timestamps(value) for value in payload)
+    if isinstance(payload, set):
+        return sorted(_without_non_material_timestamps(value) for value in payload)
+    return payload
+
+
+def _is_non_material_temporal_field(key: str) -> bool:
+    lowered = key.lower()
+    return lowered in _NON_MATERIAL_TEMPORAL_FIELDS or lowered.endswith("_as_of")
+
+
+def _regional_retry_lineage_key(*, venue: str, candidate_scope_id: str) -> str:
+    """Return a retry epoch bound only to the regional candidate scope.
+
+    News, company cards and macro series can update while a model is down.
+    Those updates must invalidate a successful brief, but cannot reset the
+    failure budget until the candidate scope genuinely changes.
+    """
+
+    return _request_signature(
+        {
+            "kind": "regional",
+            "venue": str(venue).upper(),
+            "candidate_scope_id": str(candidate_scope_id),
+        }
+    )
+
+
+def _global_retry_lineage_key(*, last_brief_ref: Any) -> str:
+    """Return the GLOBAL retry epoch anchored to the last successful brief.
+
+    Global news and macro collectors can update continuously while the model is
+    unavailable.  They remain material for success deduplication, but never
+    reset a failing retry sequence.  Only a newly persisted GLOBAL brief starts
+    a new epoch; before the first success all failures share ``bootstrap``.
+    ``force`` may bypass the active backoff gate, but does not fabricate a
+    successful epoch.
+    """
+
+    brief_id = ""
+    if isinstance(last_brief_ref, Mapping):
+        brief_id = str(last_brief_ref.get("brief_id") or "").strip()
+    return _request_signature(
+        {
+            "kind": "global",
+            "venue": "GLOBAL",
+            "last_success_brief_id": brief_id or "bootstrap",
+        }
+    )
 
 
 def _last_success_matches_signature(raw: Any, signature: str) -> bool:
     return bool(
-        isinstance(raw, dict)
+        isinstance(raw, Mapping)
         and raw.get("last_success_at")
-        and raw.get("last_input_signature") == signature
+        and _last_success_signature(raw) == signature
     )
 
 
+def _last_success_signature(raw: Mapping[str, Any]) -> Any:
+    # ``last_input_signature`` was the old mixed success/failure field.  Read
+    # it for existing successful state files, while all new writes use the
+    # unambiguous key.  Old failure records overwrote it, so never mistake their
+    # failed input for a successful brief signature.
+    explicit = raw.get("last_success_input_signature")
+    if explicit:
+        return explicit
+    if raw.get("last_failure_at"):
+        return None
+    return raw.get("last_input_signature")
+
+
 def _success_refresh_cooldown_active(raw: Any, *, now: datetime) -> bool:
-    if not isinstance(raw, dict) or not raw.get("last_success_at"):
+    if not isinstance(raw, Mapping) or not raw.get("last_success_at"):
         return False
-    try:
-        last_success = datetime.fromisoformat(
-            str(raw["last_success_at"]).replace("Z", "+00:00")
-        )
-    except ValueError:
+    last_success = _parse_datetime(raw.get("last_success_at"))
+    if last_success is None:
         return False
-    if last_success.tzinfo is None:
-        last_success = last_success.replace(tzinfo=timezone.utc)
     return now - last_success < timedelta(hours=DEFAULT_SUCCESS_REFRESH_COOLDOWN_HOURS)
 
 
-def _backoff_active(raw: Any, *, signature: str, now: datetime) -> bool:
-    if not isinstance(raw, dict):
-        return False
-    if raw.get("last_input_signature") != signature:
-        return False
-    failure_at_raw = raw.get("last_failure_at")
-    if not failure_at_raw:
-        return False
+def _failure_backoff(
+    raw: Any,
+    *,
+    retry_lineage: str,
+    now: datetime,
+) -> dict[str, Any] | None:
+    """Return active persisted backoff for exactly one retry lineage."""
+
+    failure = _latest_failure(raw)
+    if failure is None or failure.get("retry_lineage") != retry_lineage:
+        return None
+    attempt = _positive_int(failure.get("retry_attempt") or failure.get("attempt"), default=1)
+    delay_seconds = _positive_int(
+        failure.get("retry_delay_seconds") or failure.get("delay_seconds"),
+        default=_failure_delay_seconds(attempt),
+    )
+    retry_at = _parse_datetime(failure.get("next_retry_at") or failure.get("next_at"))
+    if retry_at is None:
+        failed_at = _parse_datetime(
+            failure.get("failed_at") or failure.get("last_failure_at") or failure.get("at")
+        )
+        if failed_at is None:
+            return None
+        retry_at = failed_at + timedelta(seconds=delay_seconds)
+    if now >= retry_at:
+        return None
+    return {
+        "attempt": attempt,
+        "delay_seconds": delay_seconds,
+        "next_retry_at": retry_at.isoformat(),
+        "error": _failure_error_code(failure),
+    }
+
+
+def _failure_delay_seconds(attempt: int) -> int:
+    minutes = min(
+        DEFAULT_FAILURE_BACKOFF_MINUTES * (2 ** max(0, attempt - 1)),
+        DEFAULT_FAILURE_BACKOFF_MAX_MINUTES,
+    )
+    return minutes * 60
+
+
+def _success_status(
+    *,
+    existing: Any,
+    now: datetime,
+    success_signature: str,
+    brief_ref: Mapping[str, Any] | None,
+    company_brief_refs: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Persist success and clear only this venue's latest failure."""
+
+    status = dict(existing) if isinstance(existing, Mapping) else {}
+    status.update(
+        {
+            "last_success_at": now.isoformat(),
+            "last_success_input_signature": success_signature,
+            # Backward-compatible read field for previously persisted status.
+            "last_input_signature": success_signature,
+            "last_brief_ref": dict(brief_ref) if isinstance(brief_ref, Mapping) else brief_ref,
+            "last_failure_at": None,
+            "last_error": None,
+            "last_attempt_input_signature": success_signature,
+            "retry_lineage": None,
+            "latest_failure": None,
+        }
+    )
+    if company_brief_refs is None:
+        status.pop("last_company_brief_refs", None)
+    else:
+        status["last_company_brief_refs"] = dict(company_brief_refs)
+    return status
+
+
+def _failure_status(
+    *,
+    existing: Any,
+    now: datetime,
+    retry_lineage: str,
+    input_signature: str,
+    error_code: str | None,
+    error_message: str | None,
+) -> dict[str, Any]:
+    """Persist an exponentially scheduled failure without replacing success."""
+
+    previous_status = dict(existing) if isinstance(existing, Mapping) else {}
+    status = dict(previous_status)
+    if (
+        status.get("last_success_at")
+        and not status.get("last_success_input_signature")
+        and not status.get("last_failure_at")
+    ):
+        legacy_success_signature = status.get("last_input_signature")
+        if legacy_success_signature:
+            status["last_success_input_signature"] = legacy_success_signature
+
+    previous = _latest_failure(previous_status)
+    same_lineage = previous is not None and previous.get("retry_lineage") == retry_lineage
+    previous_attempt = (
+        _positive_int(
+            previous.get("retry_attempt") or previous.get("attempt"),
+            default=1,
+        )
+        if same_lineage and previous is not None
+        else 0
+    )
+    attempt = previous_attempt + 1 if same_lineage else 1
+    delay_seconds = _failure_delay_seconds(attempt)
+    failed_at = now.isoformat()
+    code = str(error_code or "analysis_not_written")
+    message = str(error_message or "")[:500]
+    next_retry_at = (now + timedelta(seconds=delay_seconds)).isoformat()
+    failure = {
+        "failed_at": failed_at,
+        "input_signature": input_signature,
+        "retry_lineage": retry_lineage,
+        "retry_attempt": attempt,
+        "retry_delay_seconds": delay_seconds,
+        "next_retry_at": next_retry_at,
+        "error_code": code,
+        "error_message": message,
+        # Readable aliases make the status directly useful to simple clients.
+        "attempt": attempt,
+        "delay_seconds": delay_seconds,
+        "next_at": next_retry_at,
+        "error": {"code": code, "message": message},
+    }
+    status.update(
+        {
+            "last_failure_at": failed_at,
+            "last_error": {"code": code, "message": message},
+            "last_attempt_input_signature": input_signature,
+            "retry_lineage": retry_lineage,
+            "latest_failure": failure,
+        }
+    )
+    return status
+
+
+def _latest_failure(raw: Any) -> dict[str, Any] | None:
+    if not isinstance(raw, Mapping):
+        return None
+    nested = raw.get("latest_failure")
+    if isinstance(nested, Mapping):
+        return dict(nested)
+    # Make failures already persisted by the previous fixed-backoff release
+    # readable in the gallery.  They do not get a lineage retroactively, so
+    # they cannot accidentally block a new retry epoch.
+    failed_at = raw.get("last_failure_at")
+    error = raw.get("last_error")
+    if not failed_at or not isinstance(error, Mapping):
+        return None
+    code = str(error.get("code") or "analysis_not_written")
+    message = str(error.get("message") or "")
+    return {
+        "failed_at": str(failed_at),
+        "error_code": code,
+        "error_message": message,
+        "error": {"code": code, "message": message},
+    }
+
+
+def _failure_backoff_skip(*, venue: str, backoff: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "venue": venue,
+        "reason": "failure_backoff",
+        "attempt": backoff.get("attempt"),
+        "delay_seconds": backoff.get("delay_seconds"),
+        "next_retry_at": backoff.get("next_retry_at"),
+        "error": backoff.get("error"),
+    }
+
+
+def _failure_error_result(
+    *,
+    venue: str,
+    error_code: str | None,
+    error_message: str | None,
+    failure: Mapping[str, Any],
+) -> dict[str, Any]:
+    return {
+        "venue": venue,
+        "code": str(error_code or "analysis_not_written"),
+        "message": str(error_message or ""),
+        "attempt": failure.get("retry_attempt") or failure.get("attempt"),
+        "delay_seconds": failure.get("retry_delay_seconds") or failure.get("delay_seconds"),
+        "next_retry_at": failure.get("next_retry_at") or failure.get("next_at"),
+    }
+
+
+def _log_failure_retry(
+    log: LoggerLike,
+    *,
+    venue: str,
+    scope_id: str,
+    failure: Mapping[str, Any],
+) -> None:
+    log.warning(
+        "news macro retry scheduled venue=%s scope=%s attempt=%s delay_s=%s next_at=%s error=%s",
+        venue,
+        scope_id,
+        failure.get("retry_attempt") or failure.get("attempt"),
+        failure.get("retry_delay_seconds") or failure.get("delay_seconds"),
+        failure.get("next_retry_at") or failure.get("next_at"),
+        _failure_error_code(failure),
+    )
+
+
+def _log_retry_deferred(
+    log: LoggerLike,
+    *,
+    venue: str,
+    scope_id: str,
+    backoff: Mapping[str, Any],
+) -> None:
+    log.info(
+        "news macro retry deferred venue=%s scope=%s attempt=%s delay_s=%s next_at=%s error=%s",
+        venue,
+        scope_id,
+        backoff.get("attempt"),
+        backoff.get("delay_seconds"),
+        backoff.get("next_retry_at"),
+        backoff.get("error"),
+    )
+
+
+def _failure_error_code(failure: Mapping[str, Any]) -> str:
+    error = failure.get("error")
+    if isinstance(error, Mapping) and error.get("code"):
+        return str(error["code"])
+    return str(failure.get("error_code") or "unknown")
+
+
+def _positive_int(raw: Any, *, default: int) -> int:
     try:
-        failure_at = datetime.fromisoformat(str(failure_at_raw).replace("Z", "+00:00"))
-    except ValueError:
-        return False
-    if failure_at.tzinfo is None:
-        failure_at = failure_at.replace(tzinfo=timezone.utc)
-    return now - failure_at < timedelta(hours=DEFAULT_FAILURE_BACKOFF_HOURS)
+        return max(1, int(raw))
+    except (TypeError, ValueError):
+        return default
+
+
+def _parse_datetime(raw: Any) -> datetime | None:
+    try:
+        value = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    return value.astimezone(timezone.utc) if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+
+
+def latest_failure_for_venue(*, state_dir: Path, venue: str) -> dict[str, Any] | None:
+    """Read one macro failure projection without importing cockpit/UI code."""
+
+    status = _load_status(Path(state_dir) / "news_macro_analysis_status.json")
+    return _latest_failure(status.get(str(venue).upper()))
 
 
 def _load_status(path: Path) -> dict[str, Any]:

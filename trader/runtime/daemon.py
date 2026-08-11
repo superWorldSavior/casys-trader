@@ -45,6 +45,7 @@ from trader.application.cycle import (
     decision_scope,
     infra_holds,
     market_snapshot,
+    schedule as cycle_schedule,
 )
 from trader.application.record import (
     decision_entries,
@@ -81,6 +82,7 @@ from trader.infrastructure.market_sources.ib_source import IBDataSource, connect
 from trader.market import news_feed
 from trader.planning.protocols import SchedulerLike
 from trader.domain import decision_identity
+from trader.domain.process_trace import new_runtime_run_id
 from trader.infrastructure.files import decision_ledger
 from trader.support.metadata import code_version
 from trader.reporting.read_models import attribution, meta_performance
@@ -110,6 +112,7 @@ from trader.runtime import (
 )
 from trader.runtime.cycle_process_state import CycleProcessState
 from trader.runtime.ib_attach import IBAttachBackoff
+from trader.runtime.process_pilot import ProcessPilot, build_process_pilot
 from trader.runtime.state_writer import RuntimeStateWriter
 from trader.application.portfolio import snapshot as portfolio
 from trader.application.execute.fee_estimate import round_trip_cost
@@ -125,7 +128,8 @@ from trader.infrastructure.state_db.broker_factory import (
     make_trade_plan_store,
 )
 
-ROOT = Path(__file__).resolve().parents[2]
+_SOURCE_ROOT = Path(__file__).resolve().parents[2]
+ROOT = _SOURCE_ROOT
 STATE_DIR = ROOT / "state"
 
 log = logging.getLogger("casys-trader")
@@ -355,6 +359,158 @@ def _build_recall_provider(
     )
 
 
+def _process_causes_by_symbol(
+    symbols: list[str],
+    *,
+    triggers_by_symbol: dict[str, list[dict]],
+    wake_reasons_by_symbol: dict[str, list[dict]],
+) -> dict[str, list[dict]]:
+    """Project the observable wake evidence attached to each admitted symbol."""
+    causes_by_symbol: dict[str, list[dict]] = {}
+    for symbol in symbols:
+        causes: list[dict] = []
+        for cause_type, items in (
+            ("indicator_trigger", triggers_by_symbol.get(symbol, [])),
+            ("wake_reason", wake_reasons_by_symbol.get(symbol, [])),
+        ):
+            for item in items:
+                causes.append(
+                    {
+                        "type": cause_type,
+                        **{
+                            field: item[field]
+                            for field in ("reason", "watch_id", "on_trigger", "observed_at")
+                            if item.get(field) is not None
+                        },
+                    }
+                )
+        causes_by_symbol[symbol] = causes or [{"type": "scheduled_due"}]
+    return causes_by_symbol
+
+
+def _decision_readback(
+    *,
+    decision_ledger_store: object,
+    decision_entry: dict,
+) -> dict:
+    """Reread and compare the exact durable decision row, fail closed."""
+    symbol = str(decision_entry.get("symbol") or "")
+    decision_id = str(decision_entry.get("decision_id") or "")
+    expected_process = {
+        "process_instance_id": decision_entry.get("process_instance_id"),
+        "attempt_id": decision_entry.get("attempt_id"),
+        "runtime_run_id": decision_entry.get("runtime_run_id"),
+    }
+    expected = {
+        "symbol": symbol,
+        "decision_id": decision_id,
+        "process_decision_id": decision_id,
+        **expected_process,
+    }
+    try:
+        durable_row = decision_ledger_store.read_by_decision_id(decision_id)
+    except Exception as exc:  # noqa: BLE001 - missing closure proof must stay explicit
+        log.warning("decision ledger readback failed decision_id=%s: %s", decision_id, exc)
+        return {"status": "unavailable", **expected, "error": type(exc).__name__}
+
+    durable_process = durable_row.get("process") if isinstance(durable_row, dict) else None
+    observed = {
+        "symbol": durable_row.get("symbol") if isinstance(durable_row, dict) else None,
+        "decision_id": durable_row.get("decision_id") if isinstance(durable_row, dict) else None,
+        "process_decision_id": (durable_process.get("decision_id") if isinstance(durable_process, dict) else None),
+        "process_instance_id": (
+            durable_process.get("process_instance_id") if isinstance(durable_process, dict) else None
+        ),
+        "attempt_id": durable_process.get("attempt_id") if isinstance(durable_process, dict) else None,
+        "runtime_run_id": (durable_process.get("runtime_run_id") if isinstance(durable_process, dict) else None),
+    }
+    if observed == expected:
+        return {"status": "verified", **expected}
+    return {"status": "mismatch", **expected, "observed": observed}
+
+
+def _admit_governed_symbols(
+    *,
+    process_pilot: ProcessPilot,
+    symbols: list[str],
+    triggers_by_symbol: dict[str, list[dict]],
+    wake_reasons_by_symbol: dict[str, list[dict]],
+) -> list[str]:
+    """Attach process evidence without changing the trader dispatch scope.
+
+    The pilot is observational.  Recovery metadata may affect how its trace is
+    eventually closed, but it must never suppress a due symbol or an LLM call.
+    Business idempotency and execution reconciliation remain owned by the
+    durable decision/execute queues and broker stores.
+    """
+    process_pilot.admit_many(
+        symbols,
+        causes_by_symbol=_process_causes_by_symbol(
+            symbols,
+            triggers_by_symbol=triggers_by_symbol,
+            wake_reasons_by_symbol=wake_reasons_by_symbol,
+        ),
+    )
+    return list(symbols)
+
+
+def _queue_process_identity_by_symbol(
+    *,
+    process_pilot: ProcessPilot | None,
+    symbols: list[str],
+) -> dict[str, dict[str, str]]:
+    """Return the small immutable join key needed by asynchronous decide tasks.
+
+    This is strictly observational: missing or malformed pilot metadata is not
+    a dispatch gate. The full governance bundle remains on the process event
+    and durable decision record rather than being copied into every task.
+    """
+    if process_pilot is None:
+        return {}
+    fields = ("process_instance_id", "attempt_id", "runtime_run_id")
+    identities: dict[str, dict[str, str]] = {}
+    for symbol in symbols:
+        try:
+            candidate = process_pilot.decision_fields(symbol)
+        except Exception as exc:  # noqa: BLE001 - pilot evidence must not block dispatch
+            log.warning("process pilot identity unavailable symbol=%s: %s", symbol, exc)
+            continue
+        identity = {
+            field: value.strip()
+            for field in fields
+            if isinstance((value := candidate.get(field)), str) and value.strip()
+        }
+        if identity:
+            identities[symbol] = identity
+    return identities
+
+
+def _build_governed_record_decision(
+    *,
+    process_pilot: ProcessPilot,
+    decision_ledger_store: object,
+    record_decision: Callable[[dict], None],
+    settled_symbols: set[str],
+) -> Callable[[dict], None]:
+    """Correlate, persist, reread, then finish one governed process attempt."""
+
+    def record(decision_entry: dict) -> None:
+        symbol = str(decision_entry["symbol"])
+        decision_entry.update(process_pilot.decision_fields(symbol))
+        if decision_entry.get("action") == "HOLD":
+            decision_entry.setdefault("admission_status", "not_required")
+            decision_entry.setdefault("effect_status", "not_applied")
+        record_decision(decision_entry)
+        decision_entry["decision_readback"] = _decision_readback(
+            decision_ledger_store=decision_ledger_store,
+            decision_entry=decision_entry,
+        )
+        process_pilot.finish_decision(symbol, decision_entry)
+        settled_symbols.add(symbol)
+
+    return record
+
+
 def run_cycle(
     *,
     dry_run: bool,
@@ -390,6 +546,7 @@ def run_cycle(
     execute_ledger=None,  # TaskLedger | None (casys.db — partagé broker/plan/ledger)
     worker_cycle_context: object | None = None,
     process_state: CycleProcessState | None = None,
+    process_pilot: ProcessPilot | None = None,
 ) -> dict:
     """Exécute UN cycle. Retourne un rapport structuré (machine-readable)."""
     process_state = process_state or _DEFAULT_CYCLE_PROCESS_STATE
@@ -571,6 +728,8 @@ def run_cycle(
     if stale_market_data:
         _log_cycle_progress("[market] stale symbols=%s", sorted(stale_market_data))
 
+    # Planned exits are a separate deterministic protection mechanism and are
+    # explicitly outside the per-symbol decision-process boundary admitted below.
     planned_exits = planned_exits_service.apply_planned_exits(
         broker=broker,
         plan_store=plan_store,
@@ -615,6 +774,17 @@ def run_cycle(
             triggers_by_symbol.setdefault(symbol, []).append(trigger)
             if symbol in symbols and symbol not in symbols_to_decide:
                 symbols_to_decide.append(symbol)
+
+    admitted_process_symbols: set[str] = set()
+    settled_process_symbols: set[str] = set()
+    if process_pilot is not None:
+        admitted_process_symbols = set(symbols_to_decide)
+        symbols_to_decide = _admit_governed_symbols(
+            process_pilot=process_pilot,
+            symbols=symbols_to_decide,
+            triggers_by_symbol=triggers_by_symbol,
+            wake_reasons_by_symbol=wake_reasons_by_symbol,
+        )
 
     snap = portfolio.snapshot(broker, lambda s: prices.get(s, 0.0), starting_equity, fx_rate_of=_rate)
     gross = sum(abs(h.market_value) for h in snap.holdings)
@@ -807,6 +977,13 @@ def run_cycle(
         ),
     )
     record_decision = recorder.record
+    if process_pilot is not None:
+        record_decision = _build_governed_record_decision(
+            process_pilot=process_pilot,
+            decision_ledger_store=decision_ledger_store,
+            record_decision=record_decision,
+            settled_symbols=settled_process_symbols,
+        )
 
     if sched is not None:
         cycle_scheduling.ensure_default_wake(sched, now=now, default_wake_minutes=default_wake_minutes)
@@ -860,6 +1037,12 @@ def run_cycle(
     if gated_symbols:
         _log_cycle_progress("[gate] quiet symbols=%s (pas d'appel LLM)", gated_symbols)
         for entry in quiet_gate.entries:
+            entry["schedule_effect"] = cycle_schedule.read_schedule_effect(
+                sched,
+                sym=str(entry["symbol"]),
+                now=now,
+                expected_next_wake=None,
+            )
             record_decision(entry)
 
     decidable = prepared_scope.decidable
@@ -905,6 +1088,9 @@ def run_cycle(
         record_decision=record_decision,
         decision_id_for_symbol=lambda symbol: decision_identity.decision_id(
             str(report["ts"]), len(report["decisions"]), symbol
+        ),
+        process_identity_for_symbol=(
+            process_pilot.decision_fields if process_pilot is not None else lambda _symbol: {}
         ),
         rate_for_symbol=_rate,
         append_event=_append_event,
@@ -957,6 +1143,10 @@ def run_cycle(
                 _recall_store.feedback_by_decision_ids
                 if _recall_store is not None
                 else None
+            ),
+            process_identity_by_symbol=_queue_process_identity_by_symbol(
+                process_pilot=process_pilot,
+                symbols=decidable,
             ),
         ),
         resolve_decision_for_routing=_resolve_decision_for_execution_routing,
@@ -1018,9 +1208,20 @@ def run_cycle(
             )
             wake_minutes = stale_hold.wake_minutes
             new_streak = stale_hold.new_streak
+            expected_stale_wake = None
             if sched is not None:
                 sched.set_stale_streak(sym, new_streak)
-                sched.set_symbol_next_wake_in(sym, minutes=wake_minutes, now=now)
+                expected_stale_wake = sched.set_symbol_next_wake_in(
+                    sym,
+                    minutes=wake_minutes,
+                    now=now,
+                )
+            schedule_effect = cycle_schedule.read_schedule_effect(
+                sched,
+                sym=sym,
+                now=now,
+                expected_next_wake=expected_stale_wake,
+            )
 
             if stale_hold.entry is not None:
                 _log_cycle_progress(
@@ -1033,6 +1234,7 @@ def run_cycle(
                     stale_data.get("data_age_minutes"),
                     wake_minutes,
                 )
+                stale_hold.entry["schedule_effect"] = schedule_effect
                 record_decision(stale_hold.entry)
             else:
                 _log_cycle_progress(
@@ -1046,9 +1248,26 @@ def run_cycle(
                 )
                 if stale_hold.event is not None:
                     _append_event(stale_hold.event.name, **stale_hold.event.payload)
+                if process_pilot is not None:
+                    process_pilot.defer(
+                        sym,
+                        outcome_code="stale_backoff",
+                        effect_status=("verified" if schedule_effect.get("status") == "verified" else "unknown"),
+                        effect_refs=(
+                            {
+                                "type": "schedule_readback",
+                                "symbol": sym,
+                                **schedule_effect,
+                            },
+                        ),
+                    )
+                    settled_process_symbols.add(sym)
             continue
         if sym not in prices:
             _log_cycle_progress("[decision %d/%d] %s skipped no_price", index, len(symbols_to_decide), sym)
+            if process_pilot is not None:
+                process_pilot.defer(sym, outcome_code="no_price")
+                settled_process_symbols.add(sym)
             continue
 
         decision = decisions_by_symbol.get(sym)
@@ -1067,6 +1286,9 @@ def run_cycle(
                 index, len(symbols_to_decide), sym,
             )
             _append_event("queue_decide_deferred", symbol=sym, cycle_id=cycle_id)
+            if process_pilot is not None:
+                process_pilot.defer(sym, outcome_code="queue_decide_deferred")
+                settled_process_symbols.add(sym)
             continue
 
         decision = decision or codex_client.Decision.hold(sym, "no_decision_in_batch")
@@ -1093,6 +1315,10 @@ def run_cycle(
             process_state.last_llm_at[(str(STATE_DIR), sym)] = now
 
     report["model_calls_used"] = model_calls_used
+    if process_pilot is not None:
+        for symbol in sorted(admitted_process_symbols - settled_process_symbols):
+            process_pilot.defer(symbol, outcome_code="cycle_completed_without_decision")
+            settled_process_symbols.add(symbol)
     refresh_report_portfolio()
     _write_current_report(report)
     if model_call_limit_for_status is None:
@@ -1300,6 +1526,12 @@ def main(
         make_scheduler_fn=make_scheduler,
     )
     sched = _runtime_state.scheduler
+    process_pilot = build_process_pilot(
+        repo_root=_SOURCE_ROOT,
+        state_dir=STATE_DIR,
+        runtime_run_id=new_runtime_run_id(),
+        clock=now,
+    )
     log.info("daemon démarré (dry_run=%s, once=%s)", dry_run, args.once)
     log.info(
         "[config] decision_batch_parallelism=%d batch_size=%d batch_max_model_calls=%d queue_call_cap=none decision_timeout_s=%d agent_tools=%s",
@@ -1314,7 +1546,11 @@ def main(
     cycle_run = run_cycle
 
     def _run_cycle_with_process_state(**kwargs):
-        return cycle_run(**kwargs, process_state=process_state)
+        return cycle_run(
+            **kwargs,
+            process_state=process_state,
+            process_pilot=process_pilot,
+        )
 
     # Ref partagée vers le data_source courant : les workers de file la lisent via
     # make_indirect_get_bars(handle.get) — jamais de capture de l'objet (remplacé en run).
@@ -1364,16 +1600,22 @@ def main(
     _universe_intelligence_runner = (
         universe_intelligence_runtime.UniverseIntelligenceRunner()
     )
-    _company_intelligence_runner = company_intelligence_runtime.CompanyIntelligenceRuntime(
-        config_dir=ROOT / "config",
-        state_dir=STATE_DIR,
-        logger=log,
-        on_brief_written=lambda _event: _universe_intelligence_runner.trigger(
+
+    def _on_company_brief_written(event: dict) -> None:
+        universe_intelligence_runtime.trigger_company_brief_refresh(
+            event,
+            runner=_universe_intelligence_runner,
             config_dir=ROOT / "config",
             state_dir=STATE_DIR,
             loop_now=datetime.now(timezone.utc),
             logger=log,
-        ),
+        )
+
+    _company_intelligence_runner = company_intelligence_runtime.CompanyIntelligenceRuntime(
+        config_dir=ROOT / "config",
+        state_dir=STATE_DIR,
+        logger=log,
+        on_brief_written=_on_company_brief_written,
     )
     _company_intelligence_runner.trigger(
         scope="current",
@@ -1594,6 +1836,7 @@ def main(
                         state_dir=STATE_DIR,
                         loop_now=loop_now,
                         logger=log,
+                        venues=universe_intelligence_runtime.VENUES,
                     )
                     _learning_sync_runner.trigger(reason="post_cycle")
                 _adopt_data_source_state(data_source_runtime.detach_failed_ib(

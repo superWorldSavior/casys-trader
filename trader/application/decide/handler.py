@@ -12,13 +12,18 @@ Format exact du payload (JSON encodé dans task["payload"]) :
       "agent_tools_enabled": bool,         # True → use_symbol_calls_contract=True (+ tools si services)
       "cycle_id":            str,          # identifiant du cycle publiant les snapshots worker
       "symbols_universe":    list[str]?    # univers du cycle (resolver d'indicateurs, optionnel)
+      "process": {                         # corrélation APE optionnelle, observationnelle
+        "process_instance_id": str,
+        "attempt_id": str,
+        "runtime_run_id": str
+      }
     }
 
 La brique productrice (queue_dispatch) DOIT produire exactement ce format.
 
 Format du résultat (task.result) — ENVELOPPE depuis T4 :
 
-    {"decision": {...asdict(Decision)...}, "model_calls": int}
+    {"decision": {...asdict(Decision)...}, "model_calls": int, "process": {...}?}
 
 ``model_calls`` = appels LLM réellement consommés (1 sans round, 2+ avec tour
 d'outils) — consommé par queue_dispatch pour l'observabilité. Le lecteur
@@ -89,7 +94,21 @@ def make_decide_handler(
             heartbeat=heartbeat,
         )
 
-        result_json = json.dumps({"decision": asdict(decision), "model_calls": model_calls})
+        result = {"decision": asdict(decision), "model_calls": model_calls}
+        # The durable task already carries the correlation through a Worker
+        # retry. Echo it into the result so task/result can be joined to the
+        # decision ledger without timestamp or symbol inference. It is never
+        # added to the Decision dataclass and never gates a decision.
+        process = payload.get("process")
+        if isinstance(process, dict):
+            result_process = {
+                field: value
+                for field in ("process_instance_id", "attempt_id", "runtime_run_id")
+                if isinstance((value := process.get(field)), str) and value
+            }
+            if result_process:
+                result["process"] = result_process
+        result_json = json.dumps(result)
         log.debug(
             "[decide_handler] done symbol=%s action=%s calls=%d task_id=%s",
             symbol, decision.action, model_calls, task.get("id"),

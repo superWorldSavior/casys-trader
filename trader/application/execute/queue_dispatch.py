@@ -32,6 +32,7 @@ class ExecuteQueueOutcome:
     raw_result: str | None = None
     late_execution_risk: bool = False
     abandoned: bool = False
+    verified: bool = False
 
 
 def dispatch_execute_order_via_queue(
@@ -51,6 +52,9 @@ def dispatch_execute_order_via_queue(
     cycle_id: str,
     intent: str,
     budget_s: float,
+    process_instance_id: str | None = None,
+    attempt_id: str | None = None,
+    decision_id: str | None = None,
     now_fn: Callable[[], float] = _time.time,
     sleep_fn: Callable[[float], None] = _time.sleep,
 ) -> ExecuteQueueOutcome:
@@ -60,14 +64,21 @@ def dispatch_execute_order_via_queue(
     dead/not_found/timeout/enqueue failure/no-fill never become executed=True.
     ``dry_run`` tasks may complete with no fill.
     """
+    order_payload = {
+        "symbol": symbol,
+        "side": side,
+        "quantity": quantity,
+        "rationale": rationale,
+    }
+    correlations = {
+        "process_instance_id": process_instance_id,
+        "attempt_id": attempt_id,
+        "decision_id": decision_id,
+    }
+    order_payload.update({key: value for key, value in correlations.items() if value is not None})
     payload = json.dumps(
         {
-            "order": {
-                "symbol": symbol,
-                "side": side,
-                "quantity": quantity,
-                "rationale": rationale,
-            },
+            "order": order_payload,
             "price": price,
             "ts": ts,
             "fx_rate": fx_rate,
@@ -101,6 +112,7 @@ def dispatch_execute_order_via_queue(
     terminal: ExecuteQueueTerminal = "timeout"
     raw_result: str | None = None
     fill: Fill | None = None
+    correlation_reason: str | None = None
 
     while now_fn() < deadline:
         task = ledger.get(task_id)
@@ -111,7 +123,11 @@ def dispatch_execute_order_via_queue(
 
         status = task.get("status")
         if status == "done":
-            raw_result, fill = _read_fill_result(task, symbol=symbol)
+            raw_result, fill, correlation_reason = _read_fill_result(
+                task,
+                symbol=symbol,
+                **correlations,
+            )
             terminal = "done"
             break
         if status == "dead":
@@ -147,8 +163,7 @@ def dispatch_execute_order_via_queue(
                 )
         if abandoned:
             log.warning(
-                "[queue_execute] FAIL-CLOSED sym=%s — budget expiré, tâche id=%s abandonnée "
-                "avant soumission tardive",
+                "[queue_execute] FAIL-CLOSED sym=%s — budget expiré, tâche id=%s abandonnée avant soumission tardive",
                 symbol,
                 task_id,
             )
@@ -159,7 +174,11 @@ def dispatch_execute_order_via_queue(
                 refreshed = None
                 log.error("[queue_execute] reload après abandon échoué sym=%s id=%s: %s", symbol, task_id, exc)
             if refreshed is not None and refreshed.get("status") == "done":
-                raw_result, fill = _read_fill_result(refreshed, symbol=symbol)
+                raw_result, fill, correlation_reason = _read_fill_result(
+                    refreshed,
+                    symbol=symbol,
+                    **correlations,
+                )
                 terminal = "done"
                 log.warning(
                     "[queue_execute] timeout race résolue sym=%s id=%s — tâche devenue done "
@@ -177,7 +196,7 @@ def dispatch_execute_order_via_queue(
                     task_id,
                     status,
                 )
-    reason = _fail_closed_reason(terminal=terminal, fill=fill, dry_run=dry_run)
+    reason = correlation_reason or _fail_closed_reason(terminal=terminal, fill=fill, dry_run=dry_run)
     late_execution_risk = terminal == "timeout" and not abandoned
     if reason == "queue_execute_no_fill":
         log.error(
@@ -196,10 +215,18 @@ def dispatch_execute_order_via_queue(
         raw_result=raw_result,
         late_execution_risk=late_execution_risk,
         abandoned=abandoned,
+        verified=(terminal == "done" and fill is not None and reason is None and not dry_run),
     )
 
 
-def _read_fill_result(task: dict, *, symbol: str) -> tuple[str | None, Fill | None]:
+def _read_fill_result(
+    task: dict,
+    *,
+    symbol: str,
+    process_instance_id: str | None = None,
+    attempt_id: str | None = None,
+    decision_id: str | None = None,
+) -> tuple[str | None, Fill | None, str | None]:
     raw_value = task.get("result")
     raw_result = raw_value if isinstance(raw_value, str) else None
     fill = None
@@ -208,7 +235,27 @@ def _read_fill_result(task: dict, *, symbol: str) -> tuple[str | None, Fill | No
             fill = Fill(**json.loads(raw_result))
         except Exception as exc:  # noqa: BLE001
             log.warning("[queue_execute] désérialisation fill sym=%s: %s", symbol, exc)
-    return raw_result, fill
+    if fill is None:
+        return raw_result, None, None
+
+    expected = {
+        "symbol": symbol,
+        "process_instance_id": process_instance_id,
+        "attempt_id": attempt_id,
+        "decision_id": decision_id,
+    }
+    for field, value in expected.items():
+        if getattr(fill, field) != value:
+            reason = f"queue_execute_fill_{field}_mismatch"
+            log.error(
+                "[queue_execute] FAIL-CLOSED sym=%s — fill %s mismatch expected=%r actual=%r",
+                symbol,
+                field,
+                value,
+                getattr(fill, field),
+            )
+            return raw_result, None, reason
+    return raw_result, fill, None
 
 
 def _fail_closed_reason(*, terminal: ExecuteQueueTerminal, fill: Fill | None, dry_run: bool) -> str | None:
