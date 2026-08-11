@@ -1,7 +1,9 @@
 # Architecture — casys-trader
 
+> **Type** : Explanation (Diátaxis).
 > Ce document décrit l'architecture technique du daemon de trading paper piloté par LLM.
-> **Généré par analyse statique du code — à re-vérifier si l'architecture évolue.**
+> **État courant consolidé le 2026-08-11 — le code et les références canoniques
+> priment sur les plans historiques.**
 >
 > **⚡ Migration CLEAN ARCHITECTURE livrée le 2026-07-08** (~32 commits). La structure est alignée sur :
 > - **`domain/`** = cœur PUR (zéro I/O) : types (Pydantic + dataclasses) + calculs. Packages :
@@ -80,7 +82,7 @@ les utilisaient :
 | `trader/application/cycle/schedule.py` | Politique applicative de réveil : bornes explicites, backoff stale, due symbols, veilles et événements de réveil | le daemon garde des wrappers privés de compatibilité |
 | `trader/agent/protocol/strategy_language.py` | Compilateur du langage agent Pine-like canonique (`strategy_entry`/`strategy_exit`/`strategy_close`) | `parsing.py` consomme ses primitives ; les anciens action tools sont rejetés |
 | `trader/application/record/confidence_feedback.py` | Feedback persistant des rejets de gate confiance vers les learnings de l'agent | le daemon conserve le wrapper privé historique |
-| `trader/application/execution_eligibility.py` | Classification execution/planning par symbole et raison de blocage d'exécution | utilisé par `market_snapshot` et wrappers privés du daemon |
+| `trader/domain/market/execution_eligibility.py` | Classification pure execution/planning par symbole et raison de blocage d'exécution | utilisée par `market_snapshot`, les sorties et le daemon |
 | `trader/application/execute/entry_context.py` | Construction pure du snapshot durable `entry_context` attaché aux TradePlans | utilisé par le chemin direct post-fill et le payload execute queue |
 | `trader/application/execute/queue_dispatch.py` | Producteur/collecteur applicatif des tâches `execute_order` en mode queue : payload, dedup, polling, décodage fill et raisons fail-closed | le daemon garde l'enregistrement de décision |
 | `trader/application/execute/queue_plan.py` | Préparation pure du payload atomique `plan_to_upsert` / `symbol_to_close` pour le mode execute queue | contrat `Protocol` local pour lire les plans ouverts ; le daemon fournit le contexte runtime |
@@ -90,12 +92,12 @@ les utilisaient :
 | `trader/application/record/gross_feedback.py` | Feedback applicatif des ouvertures rejetées par le plafond gross exposure | le daemon garde un wrapper public historique |
 | `trader/application/cycle/decision_scope.py` | Use case de préparation du scope décisionnel : éligibilité analyse, résolution des plans armés, quiet gate et couverture des barres runtime/daily | dépendances injectées par contrats locaux ; le daemon garde broker, logs, events et recorder |
 | `trader/application/cycle/infra_holds.py` | Construction applicative des HOLD infra (`quiet_gate`, `stale_market_data`) sans appel modèle | contrats `Protocol` locaux pour wakes/clamp session ; le daemon garde scheduler, log et persistance |
-| `trader/application/learnings_recall.py` | Provider applicatif de recall mémoire : cache embeddings, timeout court, fallback FTS | contrats `Protocol` pour store et embedder |
+| `trader/agent/learnings/recall_provider.py` | Provider de recall mémoire : cache embeddings, timeout court, fallback FTS | injecté dans les domain tools par la composition runtime |
 | `trader/application/execute/order_admission.py` | Helpers purs d'admission : intent, résolution position-aware, clamp sortie, stop, risk metrics | réutilisé par `risk_admission`, `planned_exits` et les payloads queue |
 | `trader/application/execute/risk_admission.py` | Admission risque : sizing `risk_pct`, métriques d'entrée, plafond par trade, gate de confiance et `RiskGate.check()` final | contrats `Protocol` locaux pour le gate ; le daemon garde logging, recorder, broker et scheduling |
 | `trader/application/exit/planned_exits.py` | Exécution applicative déterministe des sorties planifiées : évaluation des plans ouverts, clamp sortie, garde d'exécution, mutation broker/plan-store et payload performance | le daemon conserve `_apply_planned_exits()` et `_plan_snapshot()` comme wrappers privés |
 | `trader/application/record/plan_review.py` | Persistance et réinjection du dernier verdict LLM sur les plans ouverts | le daemon conserve les wrappers privés historiques |
-| `trader/application/reference_volatility.py` | Calcul de volatilité de référence pour résoudre stops/trailings en multiples de volatilité | le daemon conserve les wrappers privés monkeypatchables |
+| `trader/domain/market/volatility.py` | Calcul pur de volatilité de référence pour résoudre stops/trailings en multiples de volatilité | consommé par les cas d'usage d'exécution ; façade historique sous `market/` |
 | `trader/application/execute/risk_capacity.py` | Contexte de capacité exposé à l'agent : gross exposure, plafonds buy/sell, quantités natives FX-aware | le daemon injecte le broker, les prix, les FX et la fonction devise |
 | `trader/application/execute/fee_estimate.py` | Projection d'un modèle de commission en coût aller-retour et seuil de rentabilité décisionnel | contrat local `CommissionCalculator` ; aucune dépendance vers un broker concret |
 | `trader/application/execute/protocols.py` | Ports `Broker` et `CommissionModel` requis par les cas d'usage d'exécution | implémentés par les adaptateurs paper ; `execution.protocols` garde les alias publics historiques |
@@ -111,6 +113,7 @@ les utilisaient :
 | `trader/agent/learnings/` | Buffer brut JSONL, sélection pure, store SQLite recall, embeddings, consolidateur | mémoire machine de l'agent ; `trader.learnings.*` reste virtuel |
 | `trader/domain/` | Primitives neutres (`Bar`, `MarketError`, `Side`), identité durable des décisions, vocabulaire partagé des `decision_reason_code` et catalogue sémantique gouverné (`domain/semantic/`) | évite que `market`/`planning`/`agent` importent `tools` ou `reporting` pour accéder à un vocabulaire métier |
 | `trader/domain/decision_identity.py` | Construction de l'identité stable `cycle_ts|sequence|symbol` partagée par ledger, plans et learnings | pure, sans connaissance du format JSONL ni du runtime |
+| `trader/domain/process_trace.py` | Identités et événements immuables du processus paper (`process_instance_id`, `attempt_id`, `runtime_run_id`) | couche de preuve pure, sans autorité de dispatch |
 | `trader/domain/llm.py` | Valeurs `LlmCompletion`/`LlmFailure`, port `LlmBackend` et politique pure de fallback `LlmRouter` | `agent.llm` conserve la factory d'environnement et réexporte le contrat historique |
 | `trader/domain/execution/risk_gate.py` | Politique pure de dernière barrière : sizing maximal, gate de confiance et validation des bornes d'exposition | `execution.risk` reste une façade de compatibilité et conserve seulement le branchement config historique |
 | `trader/domain/execution/fill_accounting.py` | Comptabilité pure d'un fill : nouvelle position, prix moyen et débit cash USD frais inclus | consommée directement par les adaptateurs paper SQLite/JSON ; `execution.commission` garde l'alias historique |
@@ -127,6 +130,7 @@ les utilisaient :
 | `trader/infrastructure/files/` | Adaptateurs atomiques pour `universe.yaml`, `venue_state.json`, le ledger décision JSONL et la rétention du cache radar | verrouillage `flock`, YAML/JSON/tempfiles et purge restent hors domaine/application |
 | `trader/infrastructure/files/decision_ledger.py` | Store append-only `decisions.jsonl`, déduplication, remplacement atomique et migrations opérateur seed/backfill | implémente les ports consommateurs de l'application ; importe la projection pure, jamais l'inverse |
 | `trader/infrastructure/state_db/` | Backend SQLite canonique de l'état paper, broker store, outbox et stores append-only/projections de briefs, scopes candidats et runs univers | `state/casys.db` est la source durable sans flag de backend ; les stores JSONL de situation/univers restent indépendants du backend paper ; compat virtuelle : `trader.state_db.*` |
+| `trader/infrastructure/state_db/process_event_store.py` | Journal append-only des admissions, tentatives, effets et clôtures | replay identique idempotent, conflit de contenu fail-closed |
 | `trader/market/rotation/` | Orchestration/façades de rotation par venue : scheduling, activation pré-open et ledger | politiques dans `domain/universe`, transitions dans `application/universe`, I/O dans `infrastructure/files` ; compat virtuelle : `trader.rotation.*`, `trader.rotation_*` |
 | `trader/support/` | Helpers support stables : config (`pool`, `portfolio`), metadata git/code version, process env | compat virtuelle : `trader.config.*`, `trader.metadata.*`, `trader.system.*` |
 | `trader/support/coercion.py` | Coercition sans dépendance des nombres finis et listes de dictionnaires | partagée par reporting et cockpit ; `runtime_state` conserve les deux aliases privés historiques |
@@ -145,6 +149,9 @@ les utilisaient :
 | `trader/runtime/market_rotation_runtime.py` | Adaptateur runtime du tick D10/D15 : charge `radar.yaml`, persiste les parents close et enfants finaux pré-open, relit les projections univers exactes, injecte le snapshot `last_regime` typé et appelle `market.rotation.venues.tick()` en fail-safe | l'ancien override synchrone reste une compatibilité ; le chemin prod prépare à T-90 et active à T-15 |
 | `trader/runtime/news_macro_runtime.py` | Runner async single-flight de briefs macro/news par venue et `candidate_scope_id` | best-effort, kill switch dédié, aucun blocage du cycle |
 | `trader/runtime/universe_intelligence_runtime.py` | Runner async coalescent de sélection hotlist par venue, projection bornée du brief et écriture d'une préparation exacte par scope | l'activation reste synchrone et déterministe au pré-open ; les erreurs sont observables et retombent sur la baseline |
+| `trader/runtime/company_intelligence_runtime.py` | File et workers async d'analyse fondamentale longitudinale par symbole | six tentatives bornées ; seule une écriture de brief déclenche la propagation aval |
+| `trader/runtime/learnings_sync_runtime.py` | Ingestion, embeddings, FLAIR et MemRL en arrière-plan | single-flight, reconstructible et fail-open |
+| `trader/runtime/process_lifecycle.py` + `process_pilot.py` | Corrélation observationnelle du symbole dû jusqu'aux readbacks décision/scheduler/plan/fill | ne retire jamais un symbole et ne décide jamais d'appeler le LLM |
 | `trader/runtime/runtime_shutdown.py` | Adaptateur runtime de shutdown best-effort : arrêt pools queue, disconnect data source, release pid file | garde le `finally` de `daemon.main()` court et préserve la règle "ne jamais bloquer la sortie" |
 | `trader/runtime/` | Daemon, CLI, logging, PID file, IB attach, rotation ledger, writers d'état fichier | compat virtuelle : `python -m trader.daemon`, `python -m trader.cli` |
 | `trader/reporting/audit/decision_quality.py` | Moteur d'audit ex-post des décisions depuis ledger + prix forward | `reporting.decision_audit` reste la façade historique ; `decision_bench`, `runtime.cli` et `read_models.meta_performance` lisent le moteur canonique |
@@ -160,6 +167,7 @@ les utilisaient :
 | `trader/reporting/read_models/tool_usage.py` | Projection ex-post des traces d'outils et de leur qualité forward depuis le ledger décision | `reporting.tool_usage` rend le rapport ; `interfaces.cli.tool_usage` possède la CLI |
 | `trader/reporting/renderers/` | Rendus opérateur des projections reporting (`live_kpis`, `tool_usage`) | `reporting.stats` et `reporting.tool_usage` restent les façades historiques ; les CLI importent projection + renderer canoniques |
 | `trader/interfaces/cockpit/projections/` | Projections UI pures et tolérantes, sans Rich/Textual, consommées par les pages cockpit | la page univers réexporte temporairement sa projection historique et ne recalcule plus les lignes dans le renderer DataTable |
+| `trader/interfaces/cockpit/projections/reports.py` | Galerie read-only des rapports global, macro, régional et micro | conserve le dernier succès visible et projette séparément `latest_failure`/retry |
 | `trader/interfaces/cockpit/projections/decisions.py` | Projection du ledger cockpit : filtres/comptages/groupement et cellules sémantiques prêtes au rendu | la page décisions garde Rich/Textual et réexporte ses helpers historiques ; les filtres canoniques publics vivent dans `reporting/read_models/decision_filters.py` |
 | `trader/interfaces/cockpit/projections/portfolio.py` | Projection typée des positions, stops et agrégats gross/net/P&L du cockpit | la page portfolio ne refait plus les calculs dans le widget et réexporte les helpers historiques |
 | `trader/interfaces/cockpit/projections/plans.py` | Projections typées du playbook : exit plans ordonnés, ordres armés, watches actives et exit watches | les rendus complet/compact et leurs compteurs partagent les mêmes projections ; la page réexporte les helpers historiques |
@@ -261,6 +269,8 @@ run_cycle()                                     [trader/runtime/daemon.py]
     │
     ├─ _scan_exit_watches()                       réveil depuis exit_watch
     ├─ _scan_indicator_watches()                  réveil depuis sched watches
+    ├─ ProcessPilot.admit_many(symboles dus)
+    │    └─ même liste de symboles + IDs instance/attempt/run ; aucun gate métier
     │
     ├─ build_market_cockpit() → shared_context   [trader/agent/context.py]
     │    (cockpit compact, KPIs, attribution, regime_families, learnings)
@@ -273,25 +283,27 @@ run_cycle()                                     [trader/runtime/daemon.py]
     ├─ Plans armés (EXECUTE_ORDER) ─────────────  D7 étage B
     │    └─ resolve_exit_plan() sur vol fraîche → exécution SANS LLM
     │
-    ├─ planner_batch.batch_decide() ─ 1 appel LLM pour tous les symboles dus
-    │    └─ codex_client.decide_batch()
-    │         ├─ AcpxBackend (acpx --format quiet exec)
-    │         └─ round-trip optionnel REQUEST_CONTEXT (indicateurs à la demande)
+    ├─ queue decide ─ 1 tâche durable par symbole
+    │    └─ session ACP persistante pendant la décision
+    │         ├─ modèle + effort du rôle depuis le preset
+    │         └─ tournées d'outils read-only jusqu'à décision ou backstop
     │
     └─ Pour chaque décision :
          ├─ order_admission helpers / exit_plan
          ├─ resolve_exit_plan() (direct OPEN_LONG/SHORT) ─── unification D11
          ├─ RiskGate.check_confidence() + RiskGate.check()
-         ├─ SimBroker.submit() → fill
-         ├─ create_trade_plan() → TradePlanStore
+         ├─ SqliteBroker.submit() ou UoW execute_order → fill corrélé
+         ├─ accounting/performance + effets plan éventuels → stores SQLite/JSONL
+         ├─ _apply_decision_schedule() + readback → Scheduler
          ├─ DecisionRecorder.record() → decisions.jsonl + current_report/status
-         └─ _apply_decision_schedule() → Scheduler (next_wake, indicator_watch)
+         └─ readback décision corrélé → instance_closed ou recovery_required
 ```
 
 Fin de cycle, après les décisions : `cycle_finalization.finalize_cycle()`
-consolide les learnings si le seuil est atteint, lance la collecte macro
-best-effort et mémorise les rejets gross pour le cycle suivant. Le comparateur
-historique JSON/SQLite reste une commande manuelle et n'appartient plus au cycle.
+consolide les learnings si le seuil brut, le seuil de feedback ou le rattrapage
+quotidien est dû, lance la collecte macro best-effort et mémorise les rejets
+gross pour le cycle suivant. Le comparateur historique JSON/SQLite reste une
+commande manuelle et n'appartient plus au cycle.
 
 ---
 
@@ -304,10 +316,11 @@ historique JSON/SQLite reste une commande manuelle et n'appartient plus au cycle
 sélectionne les symboles dont le `next_wake` est passé. En mode `--once`/`--bootstrap` :
 tout l'univers.
 
-L'univers actif est généré par la rotation (D9/D10) à chaque cycle :
-`trader/market/rotation/daemon.py` appelle `compose_active_universe(now)` qui compose
-`sticky_all ∪ union(hot-lists des marchés ouverts)` et écrit
-`config/universe.yaml` si le contenu change (`trader/runtime/daemon.py`).
+À chaque tour externe, `runtime/market_rotation_runtime.py` évalue les gates de
+clôture et de pré-open. Il ne recalcule un scope ou n'active une préparation que
+si la fenêtre le demande. Le cycle décisionnel relit ensuite l'univers effectif,
+composé comme `sticky_all ∪ union(hot-lists des marchés ouverts)`, depuis
+`config/universe.yaml` ; le fichier n'est réécrit que lorsque cet ensemble change.
 
 ### 3.2 Chargement des barres & fraîcheur
 
@@ -372,22 +385,24 @@ logs/événements retournés :
 
 Le scénario validé crée une `Decision` directement, sans appel LLM.
 
-### 3.6 Appel LLM batch — `planner_batch.batch_decide()`
+### 3.6 Dispatch LLM — queue grain-symbole et compatibilité batch
 
-Un seul appel `codex_client.decide_batch()` pour tous les symboles dus & frais.
-`daemon._batch_decide()` est un wrapper de compatibilité vers
-`trader/application/decide/planner_batch.py`. Le contexte partagé est envoyé une fois
-(économie D7).
+Le chemin paper courant enfile une tâche `decide` durable par symbole dû et
+frais. Chaque worker ouvre une session ACP, conserve cette session pendant les
+tournées d'outils, puis ferme la tâche sur une décision ou un état terminal. Les
+symboles progressent indépendamment ; `model_calls_used` reste une métrique, pas
+un budget d'admission. Voir [file durable](reference/task-queue.md).
 
-Round-trip `REQUEST_CONTEXT` optionnel : si le LLM demande des indicateurs
-supplémentaires (`ContextResearchRequest`), `resolve_indicator_requests()` les calcule
-à partir des barres déjà en mémoire et lance un 2e batch sans ré-appeler Codex une
-3e fois. Budget : `max_model_calls_per_cycle` (défaut 25) en mode batch legacy
-uniquement ; le mode queue/free-iteration n'a pas de cap d'appels et expose seulement
-`model_calls_used` comme métrique. `trader/runtime/daemon.py`
+Quand `CASYS_QUEUE_DECIDE_ENABLED=0`, le chemin de compatibilité
+`planner_batch.batch_decide()` groupe encore les symboles dans des appels batch.
+Il garde son round-trip `REQUEST_CONTEXT` et son budget
+`max_model_calls_per_cycle`; ces deux bornes ne décrivent pas la queue
+free-iteration.
 
-Transport : `AcpxBackend.complete()` (`trader/agent/llm.py`) → `acpx --format quiet --allowed-tools "" --no-terminal exec [prompt]`.
-Sessions jetables (isolation/idempotence). Fallback : `OpenAICompatibleBackend` (Ollama) si `TRADER_OLLAMA_API_KEY` défini.
+Le transport concret vit dans `infrastructure/llm/`. Le routeur tente le primary
+configuré, peut essayer le fallback ACPX du brain s'il est activé, puis le backend
+OpenAI-compatible optionnel. La décision persiste toujours le provider, le modèle
+et la raison de fallback réellement observés.
 
 ### 3.7 Validation & gates pré-exécution
 
@@ -415,25 +430,33 @@ quantité ouverte d'un reverse, et métriques de risque d'entrée. L'admission
 risque des ouvertures vit dans `trader/application/execute/risk_admission.py` : sizing
 `risk_pct`, métriques `risk_unbounded_no_stop`/`risk_pct`, plafond
 `max_risk_per_trade_pct`, gate de confiance et `RiskGate.check()` final via des
-`Protocol` locaux. Le daemon conserve l'ordre exact des side effects :
-scheduling, recorder, broker, trade plans et performance model.
+`Protocol` locaux. Après admission, le daemon conserve l'ordre causal des
+effets : broker, accounting/performance et plans éventuels, scheduling avec
+readback, enregistrement de la décision, puis relecture du ledger et clôture du
+processus gouverné.
 
 ### 3.8 Exécution et persistance
 
-`SimBroker.submit()` → `Fill`. Post-fill :
-- `_append_model_performance()` → `RuntimeStateWriter.append_model_performance()` → `state/model_performance.jsonl`
-- `create_trade_plan()` → `TradePlanStore` (`state/trade_plans.json`)
-- `DecisionRecorder.record()` → `decision_ledger_store.append()` →
-  `state/decisions.jsonl`
-- `_apply_decision_schedule()` → Scheduler (next_wake, indicator_watch créée/annulée)
-- `_write_current_report()` → `RuntimeStateWriter.write_current_report()` → `state/current_report.json`
+Le chemin synchrone appelle `SqliteBroker.submit()` ; le chemin queue exécute
+broker, plan et complétion de tâche dans une même transaction SQLite. Dans les
+deux cas, l'ordre observable est :
+
+- un `Fill` persisté déclenche `_append_model_performance()` vers
+  `state/model_performance.jsonl`, puis les effets de plan dans
+  `SqliteTradePlanStore` ;
+- `_apply_decision_schedule()` écrit puis relit `SqliteScheduler` dans
+  `state/casys.db` (`next_wake`, indicator watch créée/annulée) ;
+- `DecisionRecorder.record()` append la décision dans `state/decisions.jsonl`
+  et met à jour `state/current_report.json` ;
+- le wrapper gouverné relit enfin la décision par `decision_id` avant
+  `instance_closed`, ou conserve `recovery_required` si les preuves divergent.
 
 ---
 
 ## 4. Les chemins de sortie
 
-Trois chemins distincts. Voir `docs/analysis/comportement-sorties.md` pour le détail
-chiffré et les analyses P&L par raison.
+Trois chemins distincts. La référence [exécution](reference/execution.md) décrit
+les admissions, le broker et la persistance communs.
 
 ### 4.1 Sortie automatique — exit_engine
 
@@ -492,7 +515,7 @@ clamped, reference_volatility…) persisté dans l'événement `armed_plan_resol
 **Unification direct/armé (commit `a5c04df`)** : les entrées directes
 `OPEN_LONG`/`OPEN_SHORT` passent désormais par le même resolver que les armés.
 Seul cas non couvert : un `hard_stop` de type `price` absolu trop serré fourni
-directement par le LLM (voir `docs/analysis/comportement-sorties.md` §4).
+directement par le LLM (voir [exécution](reference/execution.md)).
 
 ---
 
@@ -516,7 +539,8 @@ scope dans `trader/application/universe/scope_rotation.py`. La persistance de
 `venue_state.json`, `universe.yaml` et du cache radar est isolée sous
 `trader/infrastructure/files/`.
 
-Univers actif composé à chaque cycle :
+Univers actif relu à chaque cycle, et recomposé par le tick rotation seulement
+quand une transition de session le justifie :
 `sticky_all ∪ union(hot-lists des marchés OUVERTS à l'instant t)`
 *(La `sleeve_24/5` figurait au design D10 mais n'est pas implémentée — forex/commodity retirés, pool 100 % actions.)*
 
@@ -580,61 +604,74 @@ Opérateurs valides : `>`, `>=`, `<`, `<=`, `==`, `!=`, `abs>`, `abs>=`, `abs<`,
 | `decisions.jsonl` | `DecisionRecorder` via `infrastructure/files/decision_ledger.py` | attribution, CLI, cockpit | Une ligne par décision (action, intent, qty, confidence, rationale, executed, reason…) |
 | `model_performance.jsonl` | `RuntimeStateWriter.append_model_performance()` via wrapper daemon | `trader/reporting/read_models/attribution.py` | Une ligne par fill (entrée + sortie) — base des round-trips |
 | `decision_audit.json` | `trader/runtime/cli.py decisions audit` | `trader/reporting/read_models/meta_performance.py`, CLI status, decision bench | Audit ex-post enrichi des décisions — base du contexte méta-performance |
-| `broker.json` | `SimBroker` | `trader/runtime/daemon.py` (reload à chaque cycle) | Positions paper + historique fills |
-| `trade_plans.json` | `TradePlanStore` | `trader/planning/exit_engine.py`, `trader/runtime/daemon.py` | Plans ouverts (hard_stop_price, TPs, trailing, watermarks…) |
+| `casys.db` | stores SQLite paper | daemon, workers, cockpit/read models | Source canonique : cash/positions/fills, plans, scheduler, outbox et `process_events` ; les anciens `broker.json`/`trade_plans.json`/`scheduler.json` sont figés ou lus seulement en compatibilité |
+| `task_ledger.db` | file `decide` | pool decide + diagnostics | tâches LLM par symbole, baux, résultats et retries |
+| `company_research_tasks.db` | runtime company-micro | workers micro + CLI status | file séparée d'analyse entreprise, six tentatives bornées |
 | `events.jsonl` | `RuntimeStateWriter.append_event()` via wrapper daemon | monitoring / debug | Événements runtime (cycle_started, armed_plan_resolved, watch_triggered…) |
 | `history.jsonl` | `RuntimeStateWriter.append_cycle_history()` via wrapper daemon | CLI status | Résumé par cycle (equity, n_executed) |
 | `daemon_status.json` | `RuntimeStateWriter.write_status()` via wrapper daemon | cockpit TUI, CLI | Phase courante, PID, decisions_done |
 | `current_report.json` | `RuntimeStateWriter.write_current_report()` via wrapper daemon | cockpit TUI | Rapport complet du cycle en cours |
-| `learnings.jsonl` | `record_decision()` | `trader/agent/learnings/consolidator.py` | Notes runtime de l'agent (bornées) |
-| `learnings_consolidated.json` | `trader/agent/learnings/consolidator.py` | `trader/runtime/daemon.py` (contexte LLM) | Patterns consolidés (≤ seuil bruts → consolidation) |
-| `learnings.db` | worker `learnings_sync` + `learnings_ingest` manuel | push borné + outil `recall_learnings` | Store SQLite dérivé : embeddings, FLAIR, traces/rewards et Q-values MemRL |
+| `learnings.jsonl` | `DecisionRecorder` | consolidateur + sync recall | Expériences LLM runtime, une note dédupliquée par `decision_id` |
+| `learnings_consolidated.json` | `trader/agent/learnings/consolidator.py` | `trader/runtime/daemon.py` (contexte LLM) | Règles globales consolidées lorsque le seuil ou une curation est dû |
+| `learnings.db` | worker `learnings_sync` + `learnings_ingest` manuel | outil `recall_learnings`, scoring et pool du consolidateur | Store SQLite dérivé : embeddings, FLAIR, traces/rewards et Q-values MemRL ; les notes détaillées ne sont pas poussées d'office au prompt |
+| `learnings_sync_status.json` / `learnings_consolidation_status.json` | workers learnings | Health, opérateur | dernier sync, embeddings pending/erreur, outcomes et échec de consolidation |
 | `archive/*.jsonl.gz` | `trader/infrastructure/files/ledger_rotation.py` (appelé au démarrage daemon) | `read_rows_with_archive` (analyses) | Mois passés de decisions/events — rotation mensuelle crash-safe |
-| `archive/learnings-*.jsonl` | `RawLearningsStore`/`consolidator` | ingestion recall | Évincés + historique des consolidés — plus rien ne se jette |
+| `archive/learnings-*.jsonl` + `archive/rationale-experiences.jsonl` | `RawLearningsStore`, consolidateur, backfill rationale | ingestion recall | Évincés, historiques et expériences LLM reconstruites — plus rien ne se jette |
 | `news_items/YYYY-MM-DD.jsonl` | `infrastructure/market_sources/news_feed` | scout + analyste-news | Items de news persistés (dédup uuid, purge 60 j), couverture symbole partielle |
 | `macro_calendar.json` + `macro_series/` | `macro_calendar`/`macro_series` | attribution + analyste-news | Dates fusionnées avec fallback versionné + séries macro quotidiennes (DBnomics), potentiellement absentes/stales |
+| `gdelt/events.jsonl` | collecteur GDELT fail-soft | passe macro/news `GLOBAL` | événements géopolitiques quotidiens, sans autorité de trading |
 | `news_briefs/YYYY-MM-DD.jsonl` | `runtime/news_macro_runtime` | agent univers + index de situation | Briefs append-only par venue, sourcés et liés au `candidate_scope_id` exact |
+| `news_macro_analysis_status.json` | runtime macro/news | galerie Reports + opérateur | dernier succès et `latest_failure`/retry par venue et GLOBAL |
 | `news_challenger_runs/YYYY-MM-DD.jsonl` | `runtime/news_challenger_runtime` | audit/replay | Couverture partielle, rejets agrégés, challengers et `candidate_run_id` |
 | `candidate_scopes/YYYY-MM-DD.jsonl` | rotation close + pré-open | analyste + agent univers | Parent quantitatif close puis enfant final pré-open immuables, avec filiation, pool, baseline, sticky et identifiants de run |
 | `global_family_boards/YYYY-MM-DD.jsonl` | `runtime/universe_intelligence_runtime` | trois agents univers + cockpit | Comparaison dérivée des familles TW/EU/US, appendue sur changement matériel ; contexte uniquement, aucune autorité d'allocation |
 | `universe_runs/YYYY-MM-DD.jsonl` | `runtime/universe_intelligence_runtime` | audit + activation | Attente/erreur/succès, brief, couverture, sélection et `agent_run_id` |
 | `universe_prepared/<scope-hash>.json` | `UniverseRunStore` | activation pré-open | Projection atomique reconstructible pour un `candidate_scope_id` exact |
+| `company_intelligence/` + `company_analysis_runs/` | runtime company-micro | analystes aval + Reports | briefs par symbole et historique des tentatives ; projection dernier succès + dernière panne |
+| `global_universe_postures/` | runtime Univers | trois passes régionales + Reports | posture courante, historique et ledger séparé des échecs/retries |
 | `situation_memory.db` | ingestion des briefs | aucun consommateur runtime actuellement | Index FTS5 dérivé ; retrieval de situation non activé |
 
-**Scheduler** (`state/scheduler.json`) : next_wake par symbole, indicator_watches,
-stale_streaks. Séparé de `broker.json`.
+Le scheduler, les plans et le broker partagent `casys.db`, mais restent des stores
+logiquement séparés. Les artefacts JSONL de décision, recherche et reporting
+restent append-only ou reconstructibles selon leur contrat propre.
 
 ---
 
 ## 9. Intégration LLM / acpx
 
-### 9.1 Transport — `trader/agent/llm.py`
+### 9.1 Routage — `trader/agent/llm.py`
 
-`AcpxBackend` (`trader/agent/llm.py`) : invoque `acpx --format quiet --allowed-tools "" --no-terminal --non-interactive-permissions deny --model <m> exec [prompt]`.
+`agent/llm.py` choisit les modèles et construit le `LlmRouter`; les adaptateurs
+I/O vivent dans `infrastructure/llm/`. Le primary brain est défini par le preset
+actif. Le preset Codex courant demande `gpt-5.6-luna` avec effort `medium` ; les
+quatre rôles consolidateur, Univers, company-micro et macro/news demandent
+`gpt-5.6-sol` avec l'effort `low` du profil partagé.
 
-Prompt labellisé `[casys-trader:runtime-brain]` pour nommage des sessions acpx.
-Session jetable (`exec`) — pas d'état partagé entre cycles.
+Sur un échec retryable du brain, le routeur peut essayer Sonnet via ACPX, sauf si
+`TRADER_SPARK_FALLBACK_MODEL` est explicitement vide, puis Ollama cloud si sa clé
+est configurée. Le fallback est une politique de disponibilité : le provider et
+le modèle effectivement utilisés restent persistés dans les runs/décisions.
 
-`LlmRouter` cascade sur `OpenAICompatibleBackend` (Ollama cloud) si `acpx` échoue
-avec un code retryable (rate-limit, quota). `trader/agent/llm.py`
+### 9.2 Sessions ACP et isolation — `infrastructure/llm/acpx_backend.py`
 
-Modèle courant : `gpt-5.5/medium` (Codex Spark, faible latence). `trader/agent/llm.py`
+Le mode queue ouvre une session ACP par tâche symbole, la conserve pendant ses
+tournées d'outils, puis la ferme. `AcpxBackend.open_session()` exécute
+`sessions new`; pour le brain, il applique ensuite
+`acpx set reasoning_effort medium` avant le premier prompt. Un échec de cette
+configuration ferme la session et remonte comme échec de backend : l'effort ne
+retombe pas silencieusement sur le défaut.
 
-**Fork acpx (2026-07-02)** : le runtime et le consolidateur pointent vers le
-fork `Casys-AI/acpx` (branche `casys-patches`) via `TRADER_ACPX_BIN` /
-`TRADER_CONSOLIDATOR_ACPX_BIN` (`.env`) — 2 patchs : erreurs quiet structurées
-sur stderr (fini les exit=1 muets) et bridges jamais orphelins (shutdown
-bridge-first sur signal). Le canon npm reste le binaire global de la machine.
-Rebuild après rebase : `make fork-acpx-build`. Les 2 branches `fix/*` du fork
-sont prêtes pour des PRs upstream.
+Tous les rôles Codex partagent un seul `ops/codex-home` nu, Sol low. Le transport
+valide ce profil en fail-close et injecte un `CODEX_CONFIG` par subprocess qui
+désactive apps, plugins, MCP, skills système et instructions d'ingénierie du
+dépôt. Les outils métier restent exécutés par le daemon via sa registry Python ;
+ils ne sont pas des outils natifs ACPX. L'exec natif optionnel est confiné au
+scratch du profil et ne devient jamais une autorité d'ordre.
 
-### 9.2 Reap des ponts orphelins — `_reap_orphan_bridges`
-
-`trader/agent/llm.py` — les processus `codex-acp` (bridge acpx↔codex) démarrés via `setsid`
-échappent au `killpg` et survivent à la fin de l'appel. Fix : snapshot `ps` avant
-l'appel, diff après, SIGKILL sur les PIDs nouveaux dont le `cwd` correspond au
-projet. Déclenché via `_run_one_shot_command.finally`. Cf post-incident
-`memory/casys-trader-acpx-bridge-pileup.md`.
+Chaque appel est borné par le minimum du timeout demandé et de
+`CASYS_ACPX_CALL_TIMEOUT_S` (cap transport par défaut 150 s). Voir
+[CODEX_HOME isolé](reference/codex-home-isole.md) et
+[presets de modèles](reference/model-presets.md).
 
 ### 9.3 `trader/agent/client.py` — façade transport, protocole séparé
 
@@ -671,7 +708,7 @@ dans leurs modules propriétaires.
 
 Le LLM reçoit UN prompt et peut répondre soit le contrat final, soit
 `{"tool_calls": [...]}`. En batch legacy, une seule tournée read-only est offerte
-avant décision finale. En queue grain-1, `application.tool_round.resolve_symbol_decision`
+avant décision finale. En queue grain-1, `application.decide.tool_round.resolve_symbol_decision`
 peut enchaîner des rounds dans une session acpx persistante, puis force une
 décision finale au backstop. Les outils ne passent PAS par acpx
 (`--allowed-tools` reste `""`) : le daemon/worker parse, valide contre
@@ -726,8 +763,11 @@ pour cette tranche.
 
 Design : `docs/superpowers/specs/2026-07-02-learnings-recall-design.md`.
 
-Chaîne : les learnings ne se jettent plus (archives §8) → le worker best-effort
-du daemon (ou `learnings_ingest` manuellement) maintient `state/learnings.db`
+Chaîne : chaque vraie décision LLM fournit automatiquement sa rationale comme
+expérience, tandis qu'un éventuel `record_learning` devient une annotation de la
+même note ; les HOLD infra, erreurs modèle et rationales synthétiques sont
+exclus. Les notes ne se jettent plus (archives §8) → le worker best-effort du
+daemon (ou `learnings_ingest` manuellement) maintient `state/learnings.db`
 (SQLite dérivé, reconstructible : notes +
 facettes + FTS5 + embeddings OpenAI pré-calculés) → scoring FLAIR normalisé
 par symbole (lift vs base rate + shrinkage bayésien ; verdicts issus du
@@ -741,6 +781,13 @@ le worker applique `Q ← Q + 0.1 × (reward − Q)` ; `q_updates` shrinke son p
 dans le ranking. En queue `decision_focus_v1`, les anciens slots permanents
 `by_symbol` restent supprimés : `recall_learnings` est un retrieval épisodique
 borné, complété à la demande par l'outil.
+
+Le store brut et SQLite dédupliquent par `decision_id`. Le rattrapage historique
+écrit `archive/rationale-experiences.jsonl`, puis le sync rejoint la décision
+originale avant de scorer l'outcome — notamment pour récupérer le snapshot
+portefeuille nécessaire aux HOLD. L'ingestion FTS est immédiate ; embeddings et
+outcomes restent asynchrones et fail-open. Voir
+[référence learnings](reference/learnings-rag.md).
 
 ## 12. Gestion des données — rotation et archives (2026-07-02)
 
@@ -758,12 +805,14 @@ Doc : `docs/superpowers/specs/2026-07-02-agent-data-lifecycle.md`.
 - Sessions acpx (~/.acpx, 1,3 Go) : traité par patch de rétention NATIVE dans
   le fork (backlog), pas de prune côté casys.
 
-## 13. Pipeline macro/news et sélection d'univers (livré 2026-07-10)
+## 13. Pipeline d'intelligence global → régional → symbole
 
 Spec : `docs/superpowers/specs/2026-07-02-macro-analyste-news-spec.md` ;
 sources : `docs/superpowers/specs/2026-07-02-macro-data-sources.md`.
-Items de news persistés + calendrier FOMC/CPI (`macro_next` par décision) +
-séries macro quotidiennes via DBnomics (zéro clé). À chaque clôture de venue, la
+Items de news persistés + événements géopolitiques GDELT + calendrier FOMC
+versionné (`macro_next` par décision) + séries macro quotidiennes via DBnomics
+(zéro clé). CPI, NFP et BCE ne sont présents que si
+`state/macro_calendar.json` est alimenté hors de ce runtime. À chaque clôture de venue, la
 rotation persiste un parent quantitatif top 40. À T-90 du pré-open, elle fusionne
 les challengers, notamment overnight, et persiste un enfant final lié au parent.
 L'analyste async produit le brief exact de cet enfant ; l'agent univers async en
@@ -778,13 +827,61 @@ Les deux runners sont activés par défaut et coupés séparément avec
 le daemon. Un état live ancien ne crée pas ces artefacts rétroactivement : il faut
 un daemon actif, la prochaine clôture puis le prochain pré-open de chaque venue.
 
+Quatre niveaux de rapports restent séparés par leur autorité et leur cadence :
+
+- **micro société** : changement d'évidence, pré-open ou cooldown 24 h ; file
+  durable à six tentatives, 30 min → 6 h ;
+- **macro/news régional et GLOBAL** : nouveau scope, `--force` ou nouvelles
+  entrées après cooldown 4 h ; retry 30 min → 6 h ;
+- **posture globale** : bootstrap, fenêtre pré-open ou cooldown 4 h ; même
+  backoff ;
+- **Univers régional** : nouveau scope/brief ou vague micro explicite avant
+  activation ; après activation réussie du scope, aucun refresh automatique.
+
+Un échec ne remplace jamais le dernier rapport utilisable : les projections
+gardent le succès et exposent `latest_failure` séparément. Les échecs retryables
+ajoutent `next_retry_at` ; les invalidités ou états terminaux restent visibles
+sans échéance. La galerie Reports est un lecteur tolérant de ces artefacts, pas
+un orchestrateur.
+
 La couverture reste déclarée partielle : news symboles limitées au corpus local,
-aucune source globale indépendante garantie, calendrier local/fallback et séries
-potentiellement stales. `state/last_regime.json` est désormais écrit atomiquement
+GDELT non exhaustif, calendrier local/fallback et séries potentiellement stales.
+`state/last_regime.json` est désormais écrit atomiquement
 avec timestamp et couverture `active_tradable_universe`; il est ignoré après
 96 h. `situation_memory.db` indexe les briefs, mais aucun retrieval historique
 n'est activé ; il ne constitue jamais une source de vérité du présent.
 
 ---
 
-*Doutes / points à valider humainement listés dans le résumé de livraison.*
+Les détails opératoires vivent dans
+[le how-to rapports](how-to/refresh-and-diagnose-reports.md) ; les contrats de
+scope, signatures et retries vivent dans les pages `reference/`.
+
+## 14. Pilote de processus : observer sans décider
+
+Le pilote APE ne forme pas une troisième boucle métier. Il superpose une chaîne
+de preuve au cycle symbole existant :
+
+```text
+symbole dû
+  → instance / tentative versionnées
+  → tâche decide corrélée
+  → décision persistée puis relue
+  → effets scheduler / plan / broker relus
+  → completed, sinon tentative ouverte ou recovery_required
+```
+
+Cette couche est volontairement **observationnelle** : la liste admise ressort
+inchangée, l'absence d'identité dans un payload best-effort ne bloque pas le LLM,
+et les pipelines Univers/macro/micro/learnings restent hors de sa frontière.
+Son intérêt est ailleurs : empêcher qu'une décision en mémoire ou un ordre
+soumis soit confondu avec un effet durable réellement observé.
+
+Le `process_instance_id` reste stable tant que l'objet de travail est ouvert ;
+`attempt_id` change à chaque reprise et `runtime_run_id` à chaque daemon. Le
+bundle de gouvernance est calculé sur une allowlist sans secrets. La fermeture
+terminale exige des readbacks corrélés dans les stores autoritatifs. Une preuve
+d'effet inconnue laisse l'instance en `recovery_required`; le protocole de
+clôture après récupération causale n'est pas encore implémenté, donc le runtime
+préfère garder l'instance ouverte. Voir
+[gouvernance du processus](reference/process-governance.md).

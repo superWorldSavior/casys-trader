@@ -78,6 +78,26 @@ défaut `ibkr`). Les frais rendent le P&L **net** (cf. conscience-frais, `be_ref
 Les nouveaux imports internes visent directement le propriétaire indiqué dans
 le tableau ci-dessus.
 
+## Corrélation causale ordre → fill
+
+Quand le pilote de processus est présent, le runtime ajoute à l'`Order` les
+champs optionnels `process_instance_id`, `attempt_id` et `decision_id` après le
+risk gate final. Le chemin direct et la tâche durable `execute_order` conservent
+ces trois champs. `SqliteBroker` les recopie sur le `Fill` et dans
+`broker_fills` au sein de la même transaction que les mutations de cash et de
+position.
+
+Au retour, le runtime compare le `symbol` et les trois identités du fill à la
+décision courante. Un fill absent, ou un fill portant une autre corrélation, ne
+peut pas produire `executed=true` : l'effet devient `unknown` et l'instance
+reste en `recovery_required`. Un fill valide alimente au contraire les
+`effect_refs` `broker_fill` et `portfolio_readback` de la décision.
+
+En dry-run, aucun fill durable n'est attendu ; la non-application est attestée
+par un reçu explicite `execution_mode=dry_run`. Les champs étant optionnels et
+omis lorsqu'ils valent `None`, les ordres et fills historiques conservent leur
+forme JSON.
+
 ## Portefeuille
 
 `domain/portfolio/snapshot.py` porte `Holding`, `Snapshot` et leurs agrégats purs.
@@ -89,4 +109,6 @@ le tableau ci-dessus.
 mais ne portent plus de logique.
 
 ## Voir aussi
-- [Risk gate](risk-gate.md) (fusible en amont) · [FX](fx.md) · [reporting](reporting.md).
+- [Gouvernance du processus](process-governance.md) (preuve de bout en bout) ·
+  [Risk gate](risk-gate.md) (fusible en amont) · [FX](fx.md) ·
+  [reporting](reporting.md).

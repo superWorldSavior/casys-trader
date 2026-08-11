@@ -6,8 +6,8 @@
 
 | Document | Rôle |
 |---|---|
-| [`registre-decisions-metier.md`](registre-decisions-metier.md) | Source de vérité des décisions D1..D14, avec contexte et arbitrages |
-| [`../decisions-business.md`](../decisions-business.md) | Synthèse lisible du registre et des implications métier |
+| [`registre-decisions-metier.md`](registre-decisions-metier.md) | Source de vérité historique des décisions D1..D15, avec contexte et arbitrages |
+| [`../decisions-business.md`](../decisions-business.md) | Guide de lecture, supersessions et liens vers le comportement courant |
 
 Règle : ne pas réécrire l'histoire d'une décision. Si le comportement évolue,
 ajouter une nouvelle décision ou mettre à jour la page `reference/` concernée.

@@ -1,6 +1,10 @@
 # Pipeline agentique Univers → Trader (référence)
 
-État livré au 2026-07-11. Design d'origine :
+> **Type** : Reference (Diátaxis).
+> **Code** : `runtime/universe_intelligence_runtime`, `domain/universe`,
+> `agent/universe`, `application/universe`.
+
+État courant. Design d'origine :
 `docs/superpowers/specs/2026-07-11-universe-mandate-consolidation-design.md`.
 
 Ce document décrit la chaîne de décision **telle qu'implémentée** et les **gardes**
@@ -33,6 +37,8 @@ l'ordre d'exécution des venues.
 Orchestration : `trader/runtime/universe_intelligence_runtime.py`
 (`tick_universe_intelligence` → `_prepare_global_situation_digest` →
 `_prepare_global_family_board` → `_prepare_global_universe_posture` → boucle venues).
+La posture est **unique par refresh**, pas recalculée à chaque tick : bootstrap,
+fenêtre pré-open ou cooldown de 4 h, avec backoff d'échec borné à 6 h.
 
 ## 2. Les deux niveaux de l'agent Univers
 
@@ -93,6 +99,12 @@ n'interrompt pas le cycle (artefact vide + statut observable).
 **Aucun flag d'activation** : tous ces comportements sont actifs par défaut — c'est le
 comportement du système, pas une option. Le tool loop micro est borné par un **backstop
 interne** (`_TOOL_LOOP_BACKSTOP = 8` dans `tool_loop.py`) — un fusible anti-boucle, pas
-un réglage. La posture globale est produite à chaque cycle (fail-open). Seuls subsistent
+un réglage. La posture globale est évaluée par le runner mais ne rappelle le
+modèle qu'au bootstrap, au pré-open éligible ou après son cooldown de 4 h ; un
+échec suit 30/60/120/240/360 min et conserve le dernier succès. Seuls subsistent
 des kill-switches d'urgence hérités, tous **ON par défaut**
 (`CASYS_UNIVERSE_INTELLIGENCE_ENABLED`, `CASYS_NEWS_MACRO_GLOBAL_ENABLED`).
+
+Un scope régional déjà activé avec succès est terminal : ni une nouvelle donnée
+micro, ni `force` ne recomposent son mandat actif. Voir
+[gestion d'univers](universe-rotation.md) pour les signatures et les retries.

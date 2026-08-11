@@ -2,8 +2,9 @@
 
 > **Type** : Reference (Diátaxis).
 > **Code** : `trader/planning/scheduler.py`, `trader/application/cycle/schedule.py`,
-> `trader/application/cycle/watch_scanner.py`, `trader/runtime/cycle_scheduling.py`
-> **État** : `state/scheduler.json`
+> `trader/application/cycle/watch_scanner.py`, `trader/runtime/cycle_scheduling.py`,
+> `trader/infrastructure/state_db/scheduler_store.py`
+> **État canonique** : tables `scheduler_*` de `state/casys.db`
 > **Rôle** : source canonique des timers, réveils par symbole, veilles
 > indicateur, plans armés et backoff stale.
 
@@ -13,15 +14,19 @@ source de vérité une fois le comportement livré.
 
 ## État persistant
 
-`state/scheduler.json` stocke des **timestamps absolus**, pas des compteurs
-process :
+`SqliteScheduler` stocke des **timestamps absolus**, pas des compteurs process,
+dans les tables de `state/casys.db` :
 
-| Champ | Sens |
+| Table / valeur | Sens |
 |---|---|
-| `default_next_wake` | réveil global par défaut |
-| `symbols` | overrides de réveil par symbole (`symbol -> ISO datetime`) |
-| `indicator_watches` | watches actives, indexées par `watch_id` |
-| `stale_streaks` | streaks de données stale, pour backoff exponentiel |
+| `scheduler_meta.default_next_wake` | réveil global par défaut |
+| `scheduler_symbol_wake` | overrides de réveil par symbole (`symbol -> ISO datetime`) |
+| `scheduler_watches` | watches actives, indexées par `id` / `watch_id` |
+| `scheduler_stale_streaks` | streaks de données stale, pour backoff exponentiel |
+
+`state/scheduler.json` est un artefact historique importé une fois lors du
+bootstrap d'une base neuve. Le daemon ne le régénère plus et il ne faut pas
+l'utiliser pour diagnostiquer le scheduler live.
 
 Le temps continue donc de passer quand l'app est éteinte. Au redémarrage normal,
 un symbole dont le timestamp est déjà passé redevient dû ; `--bootstrap` /
@@ -130,7 +135,7 @@ Surveiller :
 
 | Surface | Ce qu'elle montre |
 |---|---|
-| `state/scheduler.json` | timers, wakes par symbole, watches et streaks stale |
+| tables `scheduler_*` de `state/casys.db` | timers, wakes par symbole, watches et streaks stale |
 | `state/events.jsonl` | `indicator_watch_created`, `armed_plan_created`, `indicator_watch_triggered`, `indicator_watch_expired`, `armed_plan_expired`, `exit_watch_triggered` |
 | `state/daemon_status.json` | phase courante et prochain sommeil estimé |
 | `state/daemon_console.log` | lignes `[watch]`, `[indicator_watch]`, `[exit_watch]`, `[cycle]` |

@@ -113,7 +113,7 @@ Action tools acceptés :
 | `set_next_wake` | `next_wake_in_minutes` | planifie la **reconsultation** du symbole : `{minutes}` (timer), `{on: session_open\|macro_event\|pre_earnings}` (événement calendaire) ou `{when:<condition>}` (réveil-sur-indicateur, compilé en `WAKE`) |
 | `propose_indicator_watch` | `indicator_watch` | pose une veille/plan armé via le scheduler (`WAKE` = réveil de reconsultation ; `EXECUTE_ORDER` = **plan armé** exécuté sans reconsulter) |
 | `cancel_watch` | `id` / `ids` / `watch_ids` | annule seulement les veilles possédées par le symbole |
-| `record_learning` | `learning` | borne et persiste une note runtime |
+| `record_learning` | `learning` | ajoute une annotation bornée à la rationale de la même expérience LLM ; il ne crée pas une seconde note |
 
 **Grammaire Pine-like JSON officielle** :
 

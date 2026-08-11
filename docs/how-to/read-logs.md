@@ -20,7 +20,7 @@ Skin Gonzo config : `~/.config/gonzo/config.yml` (`skin: gruvbox` = sombre lisib
 > **Historique vs live** : Gonzo (et le cockpit) chargent tout le fichier → tu vois
 > le **scrollback** (vieux logs) en plus du live. Après un changement de niveau,
 > les vieilles lignes restent visibles plus haut. Pour repartir propre : archiver
-> le log (cf. [run-the-daemon](run-the-daemon.md#relancer)).
+> le log (cf. [run-the-daemon](run-the-daemon.md#relancer-le-daemon)).
 
 ## Niveaux de log — `CASYS_LOG_LEVEL`
 
@@ -44,10 +44,24 @@ CASYS_LOG_LEVEL=DEBUG   # dans .env, puis relancer le daemon
 | `[config] decision_batch_parallelism=… ` | config au démarrage (vérifiable) |
 | `[cycle] start/completed decisions=N executed=N` | bornes de cycle |
 | `[market] loaded ok=N / stale symbols=[…]` | chargement marché (résumé) |
-| `[batch] deciding/decided model_calls=N` | appels LLM du batch |
+| `[batch] deciding symbols=…` puis `[decide] decided=… model_calls=…` | départ du lot puis bilan des appels LLM |
 | `[decision …] SYM result action=BUY/SELL …` | **trade** (HOLD → DEBUG) |
 | `[watch] armée / annulée / expirée SYM …` | gestion de veilles (visible même en HOLD) |
 | `[armed_plan] … réveil planificateur` | plan armé annulé par un garde-fou |
+| `[queue.ledger] retry/dead kind=… symbol=… attempt=… delay_s=… next_at=… error=…` | retry durable générique ou tentatives épuisées |
+| `news macro retry scheduled/deferred venue=… attempt=… delay_s=… next_at=…` | nouvelle tentative d'un brief macro/news, ou attente normale du backoff |
+| `universe retry scheduled/deferred venue=…` | nouvelle tentative du rapport régional Univers |
+| `global posture retry scheduled/deferred …` | nouvelle tentative de la posture globale |
+| `[learnings_sync] notes=… embedded=… outcomes=…` | ingestion/vectorisation/scoring best-effort terminés |
+
+`scheduled` est émis au moment de l'échec ; `deferred` signifie qu'un tick
+ultérieur a respecté `next_at`. Ces lignes sont normales et empêchent justement
+les appels LLM de s'enchaîner en boucle. Pour company-micro, la paire
+`[queue.ledger]` / `[queue.worker]` porte le symbole et le statut `pending|dead`.
+
+Un événement learnings avec zéro nouvelle note brute peut être un
+`feedback refresh` ou un `catch-up` quotidien : lire `curated_candidate_count` et
+`curation_due`. Un no-op non dû n'écrit aucun événement de consolidation.
 
 ## Events structurés (`events.jsonl`)
 
@@ -57,4 +71,6 @@ notables : `indicator_watch_created/triggered/expired`,
 `context_resolved`, `cycle_started/completed`.
 
 ## Voir aussi
-- [Lancer le daemon](run-the-daemon.md) · Architecture §10.1 (logging).
+- [Lancer le daemon](run-the-daemon.md) ·
+  [Diagnostiquer les rapports](refresh-and-diagnose-reports.md) ·
+  [Maintenir les learnings](maintain-learnings.md) · Architecture §10.1 (logging).

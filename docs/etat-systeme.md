@@ -1,119 +1,119 @@
 # État du système — casys-trader
 
-> Document vivant : mis à jour à chaque évolution majeure. Détail des
-> mécanismes dans `docs/architecture.md` ; décisions métier dans
-> `docs/decisions/registre-decisions-metier.md`.
+> **Type** : instantané vivant. Cette page dit ce qui a été vérifié sur le
+> runtime et résume le socle actuel ; les contrats détaillés restent dans les
+> pages de référence.
 
-**Dernière mise à jour : 2026-07-10**
+**Dernière vérification : 2026-08-11, 11:55 Asia/Taipei (03:55 UTC).**
 
-## Ce qui tourne
+## État observé
 
-- **Daemon** `trader.daemon --live` (paper), supervisé (`cockpit_supervisor`,
-  anti-doublon PID). Startup : rotation des ledgers + log `[config] …
-  agent_tools=True`. Code committé propre (traçabilité `code_version` saine).
-- **Orchestration = file durable SQLite (task-ledger — ACTIVÉE en paper 04/07)** :
-  état canonique en `state/casys.db`, `decide` et `execute`
-  routés par la file (`CASYS_QUEUE_DECIDE_ENABLED` / `CASYS_QUEUE_EXECUTE_ENABLED`,
-  outbox transactionnel). L'ancien compare JSON/SQLite n'est plus exécuté par cycle :
-  les JSON sont figés et le diagnostic reste manuel. Les chemins synchrones restent
-  en fallback (flags off) jusqu'à leur gommage. Réf :
-  `docs/reference/task-queue.md`. ⚠️ Vrai trafic decide/execute à observer à la
-  réouverture des marchés (week-end `due=0`).
-- **Transport LLM** : fork `Casys-AI/acpx#casys-patches` via `TRADER_ACPX_BIN`
-  (erreurs quiet structurées, bridges jamais orphelins) ; modèle gpt-5.5 →
-  fallback sonnet → ollama-cloud ; `parallelism=5` (backpressure AIMD ; monté depuis
-  le bridage historique à 1, test observé lundi).
-  ⚠️ Vérification en attente : preuve par process que le fork sert les appels
-  (poll `ps` sur `…/acpx/dist/cli.js` pendant un batch actif).
-- **Cockpit TUI** + gonzo sur les logs.
-
-## Capacités de l'agent (brain runtime)
-
-- **Cockpit compact poussé** (faits code-calculés) + **7 outils en pull**
-  (flag actif) : fraîcheur, plans armés, attribution, cube d'indicateurs,
-  découverte sémantique ×2, et **`recall_learnings`** — sa mémoire pondérée
-  par les résultats réels
-  (2 091 notes scorées, win rate historique 34 %, dispersion 3-100 % par
-  symbole). Une tournée max, tout tracé.
-- **Outils d'action LIVRÉS + LIVE en paper** (Phase 6) :
-  grammaire Pine-like JSON publique `strategy_entry`, `strategy_exit`,
-  `strategy_close`, plus `set_next_wake`, `propose_indicator_watch`,
-  `cancel_watch`, `record_learning` — le daemon reste seul exécuteur
-  (compilation interne vers Decision/exit-plan/RiskGate inchangée). Réf :
-  `docs/reference/agent-tools.md`.
-- **Horodatage** : `now_human` (jour + heure UTC) + `market_clocks` (heure locale
-  de chaque place, tri ouest→est) — lève l'ambiguïté jour/session, y compris piloté
-  depuis Taiwan (cf. `docs/reference/agent-context.md`).
-- Décision finale = JSON gaté (exécution/exit-plan/RiskGate inchangés).
-
-## Données et mémoire
-
-- **Ledger** : vif = mois courant (~16 Mo), mois passés en
-  `state/archive/*.jsonl.gz` (rotation crash-safe, validée Codex, artefacts
-  prod vérifiés sains — 19 105 decision_id uniques, zéro doublon).
-- **Learnings** : plus rien ne se jette (évincés + historique des consolidés
-  archivés ; backfill historique 1 867 notes). Store de recall
-  `state/learnings.db` (dérivé, reconstructible).
-- **Pipeline univers news-aware** : le radar fournit les 40 premiers éligibles,
-  le scout ajoute tous les challengers fresh-news qualifiés, puis l'agent univers
-  compose au plus 25 non-sticky ; les sticky sont ajoutés ensuite hors quota.
-  La baseline déterministe reste le fallback.
-- **Analyste macro/news** : runner LLM async single-worker coalescent, briefs par venue dans
-  `state/news_briefs/*.jsonl`, sourcés par noms lisibles et références stables.
-  Il ne sélectionne aucun symbole. Son brief, lié au `candidate_scope_id` exact,
-  est projeté de façon bornée au runner async de l'agent univers ; la sélection
-  préparée est activée au pré-open ou remplacée par la baseline avec raison
-  observable.
-- **Observabilité univers** : `candidate_scopes`, `news_challenger_runs`,
-  `universe_runs`, projection exacte dans `universe_prepared` et activation dans
-  `rotation_ledger`. Les runs distinguent attente de brief, mismatch, erreur,
-  succès et fallback. Le cockpit assemble ces artefacts par venue dans
-  `scope → scout → brief → agent → activation`, sans confondre succès agent et
-  activation effective.
-- **Régime famille pour l'univers** : `last_regime.json` est maintenant un
-  snapshot atomique, horodaté et TTLé, avec couverture explicitement limitée à
-  l'univers tradable actif. Les familles candidates sans régime sont marquées
-  manquantes, jamais supposées neutres.
-- **Mémoire de situation** : `state/situation_memory.db` indexe les points de
-  briefs en FTS5, mais aucun runtime ne recherche encore dedans. Le futur RAG de
-  situation sera un input de l'agent univers, pas le décideur de la hotlist.
-- **Activation live** : analyste et agent univers sont activés par défaut, avec
-  kill switches séparés. Un état ancien ne se remplit pas rétroactivement : le
-  daemon doit être actif et chaque venue doit atteindre sa prochaine clôture.
-
-## Mesures en cours (les données décident)
-
-| Mesure | Où | Échéance |
+| Surface | Observation | Portée de la preuve |
 |---|---|---|
-| Usage des outils / du recall par l'agent | `runtime.tool_calls`, table `recalls` | continu, premier bilan ~J+2 |
-| Veto earnings (collecte saine, inter-saison confirmée) | `scripts/news_attribution_measure.py` | **mi-août** (saison Q2, viser n≥30/bucket) |
-| Efficacité du recall vs push linéaire | `decision_bench` A/B (phase ④) | quand `recalls` a du volume |
-| Funnel challenger → hotlist → outcome | ledgers scout/scope/univers/rotation + décisions/fills | après matérialisation de runs live |
-| CPU `deciding_batch` post-cache | observation | immédiat |
+| Daemon paper | Le processus supervisé `python -m trader.daemon --live` est vivant. `state/daemon_status.json` indiquait `cycle_started`, sans symbole dû ni appel modèle dans ce cycle à l'instant de lecture. | Échantillon ponctuel : la phase change au fil du cycle. Voir [lancer le daemon](how-to/run-the-daemon.md). |
+| Code servi | Le dernier rapport runtime identifie la branche `main`, commit `f95c25dbd1ec`, avec un worktree non propre. | Le commit est la base chargée ; les modifications locales en cours ne sont pas attestées comme servies. |
+| Modèles demandés | `make models` retourne le preset `codex-luna-medium` : brain `gpt-5.6-luna` avec effort `medium`, consolidateur, univers, micro et macro en `gpt-5.6-sol` avec leur profil commun `low`. | C'est la configuration demandée par l'environnement. Voir [presets de modèles](reference/model-presets.md). |
+| Modèle réellement observé | Une décision durable du 2026-08-11 à 03:40 UTC porte `model_called=true`, `decision_source=llm`, provider `acpx`, modèle `gpt-5.6-luna`, sans fallback. | Cela prouve le brain pour cet appel, pas le modèle servi par tous les rôles ni les appels futurs. |
+| Gouvernance du cycle | Les dernières décisions portent `process_instance_id`, `attempt_id`, `runtime_run_id`, `decision_id` et l'empreinte du bundle de gouvernance. | Le pilote est intégré à ce run et produit la corrélation attendue. Voir [gouvernance du processus](reference/process-governance.md). |
+| Learnings | `state/learnings_sync_status.json` indiquait `status=ok`, aucune vectorisation en attente et aucune erreur d'embedding. | État du dernier rattrapage `post_cycle`, pas une promesse sur le prochain fournisseur d'embeddings. Voir [maintenir les learnings](how-to/maintain-learnings.md). |
+| Briefs macro/news | Les quatre portées `GLOBAL`, `EU`, `US` et `TW` avaient chacune un dernier succès et aucune `latest_failure` au moment du contrôle. | Santé ponctuelle du runner macro/news uniquement. Voir [rafraîchir les rapports](how-to/refresh-and-diagnose-reports.md). |
+| Rapports Univers régionaux | EU et US conservaient un dernier succès sans panne récente. TW conservait son dernier succès ainsi qu'une tentative ultérieure `nonzero_exit` dans `latest_failure`. | Le dernier succès reste affichable pendant le retry ; succès projeté et dernière tentative sont deux faits distincts. |
 
-## Chantiers à venir (priorités)
+## Socle actuel
 
-1. **File durable — observation + gommage** : observer le vrai trafic
-   decide/execute-via-file à la réouverture (redémarrage lundi charge `market_clocks`
-   + `parallelism=5`), puis gommer les deux fallbacks synchrones. La bascule SQLite,
-   le double-write, le compare automatique et la sonde shadow sont déjà soldés.
-2. **Mandat univers enrichi** — projeter au trader la tranche symbole, la mesurer
-   en mode observe, puis compiler les règles enforceables séparément du RiskGate.
-3. **Exploiter l'observabilité livrée** — read model du funnel scope → brief →
-   run univers → activation → décision/outcome ; mesurer avant tout retrieval de
-   `situation_memory.db`.
-4. **Calibrer MemRL learnings** — le reward différé et le ranking shrinké sont
-   actifs ; observer le volume de `recalls`, la distribution des Q-values et le
-   bench. MemRL situation attend toujours ses propres traces retrieval/reward.
-5. **Patch rétention sessions acpx** (fork) — règle les 1,3 Go de ~/.acpx.
-6. PRs upstream acpx (2 branches `fix/*` prêtes) ; EODHD ~60 €/mois si le
-   calendrier earnings EU/TW prospectif manque à l'analyste.
+### Cycle, état et exécution
 
-## Process de dev (rappels)
+- Le daemon est l'unique orchestrateur live paper. Le supervisor protège le
+  PID et refuse les doublons.
+- `state/casys.db` porte l'état SQLite canonique. Les décisions et ordres
+  passent par les files durables `decide` et `execute`, actives dans
+  l'environnement observé ; les JSON/JSONL servent de ledgers ou de
+  projections selon le domaine.
+- Le scheduler, les plans, le `RiskGate` et le broker paper restent
+  déterministes autour de la décision LLM. Les retries de file sont bornés et
+  passent en `dead` lorsque leur budget est épuisé.
+- Le pilote de processus est observationnel : il ajoute identités, version de
+  gouvernance et preuves de readback. Il ne retire aucun symbole dû et ne
+  décide pas si le LLM doit être appelé.
 
-- Sous-agents Claude pour le travail (défaut Fable pour le code), **Codex en
-  cross-check final pour TOUT lot touchant la prod** (leçon du 02/07 — la
-  passe de rattrapage a trouvé un CRITICAL sur la rotation), sessions acpx
-  nommées et fermées après usage.
-- `make check` (ruff + 1 800+ tests) ; jamais de « vert » sans exit code lu.
-- Restart daemon : fenêtre inter-cycle (`phase=cycle_completed`), SIGINT.
+Références : [architecture](architecture.md), [file de tâches](reference/task-queue.md),
+[exécution](reference/execution.md), [RiskGate](reference/risk-gate.md) et
+[gouvernance du processus](reference/process-governance.md).
+
+### Brain et outils
+
+- Le brain reçoit un contexte compact puis peut appeler les outils de domaine
+  autorisés pour obtenir des faits ou proposer des actions structurées. Le
+  daemon garde la validation et l'exécution finales.
+- Les outils métier sont enregistrés dans le runtime Python ; l'isolation du
+  profil Codex ou l'absence d'outils natifs dans le transport ACP ne les
+  supprime pas.
+- `model_called=false` désigne une décision synthétique d'infrastructure ; une
+  ligne `HOLD` ne suffit donc jamais à prouver un appel LLM.
+
+Références : [outils de l'agent](reference/agent-tools.md),
+[contrat LLM](reference/llm-contract.md), [contexte agent](reference/agent-context.md)
+et [profil Codex isolé](reference/codex-home-isole.md).
+
+### Learnings
+
+- Les rationales des vraies décisions LLM sont capturées automatiquement ;
+  `record_learning` reste une annotation volontaire, pas la seule source de
+  mémoire.
+- Le store dérivé ingère les rationales, notes runtime, notes évincées et
+  historique consolidé. La recherche FTS est disponible immédiatement ; les
+  embeddings sont rattrapés en arrière-plan.
+- Les outcomes différés scorent les notes quand ils deviennent disponibles et
+  la consolidation produit des règles réinjectables. Le tout reste
+  reconstructible depuis les sources durables.
+
+Référence : [learnings et RAG](reference/learnings-rag.md).
+
+### Intelligence et univers
+
+- Les analyses micro société alimentent les rapports régionaux ; un nouveau
+  brief micro ne relance le régional que si la signature d'entrée projetée a
+  réellement changé.
+- Les briefs macro/news `GLOBAL`, `EU`, `US` et `TW`, les runs Univers régionaux
+  et la posture globale conservent séparément dernier succès, dernier échec et
+  lignée de retry. Les cadences, cooldowns et backoffs sont bornés et visibles
+  dans les logs normaux.
+- La rotation d'univers relie scope candidat, challengers news, brief régional,
+  proposition LLM préparée puis activation. L'activation reste distincte du
+  succès de génération.
+- Le cockpit projette santé, logs, décisions, univers, configuration et galerie
+  de rapports sans devenir une nouvelle source de vérité.
+
+Références : [intelligence société](reference/company-intelligence.md),
+[macro et news](reference/macro.md), [pipeline univers](reference/universe-trader-pipeline.md),
+[rotation d'univers](reference/universe-rotation.md) et [cockpit](reference/cockpit.md).
+
+## Limites connues
+
+- `state/situation_memory.db` existe comme index de points de briefs, mais le
+  runtime ne fait pas encore de retrieval de cette mémoire pour décider.
+- Une instance de processus en `recovery_required` conserve ses références
+  causales, mais la clôture après réconciliation n'est pas encore implémentée ;
+  aucun succès terminal ne doit être inféré d'un effet inconnu.
+- Un preset affiché par `make models` décrit la demande. Seule une trace
+  durable `model_called=true` avec provider/modèle prouve ce qui a réellement
+  servi un appel.
+- Cette page vieillit par définition. Pour un diagnostic, relire les artefacts
+  live plutôt que recopier les observations ci-dessus.
+
+## Contrôle opérateur
+
+```bash
+uv run casys-trader status --json
+make models
+ps -p "$(tr -d '[:space:]' < state/daemon.pid)" -o pid=,etime=,stat=,command=
+jq '{phase,ts,current_symbol,symbols_due,model_calls_used}' state/daemon_status.json
+jq '{status,reason,as_of,embeddings_pending,embedding_error}' state/learnings_sync_status.json
+jq 'to_entries | map({venue:.key,last_success_at:.value.last_success_at,latest_failure:.value.latest_failure})' state/news_macro_analysis_status.json
+```
+
+Pour l'exploitation quotidienne : [lire les logs](how-to/read-logs.md),
+[lancer le daemon](how-to/run-the-daemon.md),
+[gérer les modèles](how-to/manage-model-presets.md),
+[maintenir les learnings](how-to/maintain-learnings.md) et
+[diagnostiquer les rapports](how-to/refresh-and-diagnose-reports.md).

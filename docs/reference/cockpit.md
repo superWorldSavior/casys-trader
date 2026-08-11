@@ -34,12 +34,12 @@ Palette Rich : `PALETTE_CASYS` + constantes `CASYS_*` (`interfaces/ui/palette.py
 |---|---|---|---|
 | 1 | home | JOURNAL (raisonnement de l'agent : rationale, chip action, meter confiance, effet) · EQUITY · POSITIONS · NEXT TO FIRE | `enter` inspect |
 | 2 | portfolio | table positions complète (side, P&L, stop, fraîcheur data) · EXPOSURE · FX → USD · CLOSED TRADES | `o` tri |
-| 3 | decisions | ledger 24h (chips de filtre, expansion : rationale + audit tool_calls ✓/✗) · MIX · RISK GATE · MODEL | `b/s/h` filtre |
-| 4 | plans | ARMED (ordres armés) · EXIT PLANS (stop/TP/protect/reviewed) · WATCHES (barres TTL) | |
-| 5 | health | fraîcheur par venue · FX · sources · LLM · learnings · univers — cible du badge `▲N` | |
-| 6 | logs | EVENTS (`events.jsonl`, chips par classe, cycles masqués par défaut) · AGENT TRACE | `c f F /` |
-| 7 | universe | table par venue (hot/pool/⚚ pinned/✕ banned, décision, wake, data) · ROTATION · HOT-SET · OVERRIDES | `p b u` |
-| 8 | settings | panels par fichier yaml, labels d'effet (applies now / next cycle / next rotation / restart required / locked), écriture atomique explicite | `enter w r` |
+| 3 | decisions | ledger 24h (chips de filtre, expansion : rationale + audit tool_calls ✓/✗) · playbook plans/veilles · MIX · RISK GATE · MODEL | `b/s/h` filtre |
+| 4 | health | fraîcheur par venue · FX · sources · LLM · learnings · univers — cible du badge `▲N` | |
+| 5 | logs | EVENTS (`events.jsonl`, chips par classe, cycles masqués par défaut) · AGENT TRACE | `c f F /` |
+| 6 | universe | table par venue (hot/pool/⚚ pinned/✕ banned, décision, wake, data) · ROTATION · HOT-SET · OVERRIDES | `p b u` |
+| 7 | settings | panels par fichier yaml, labels d'effet (applies now / next cycle / next rotation / restart required / locked), écriture atomique explicite | `enter w r` |
+| 8 | reports | galerie LLM : global → macro → régional → micro, liste à gauche et rapport sourcé à droite | `r` rescan |
 
 Contrat d'une page : widget avec `update_state(state: dict) -> None` (pull pur,
 jamais d'exception) + **builders purs** `(state, now) → renderable` testables
@@ -68,11 +68,19 @@ Rien ne démarre sans `s`.
 
 Assemble l'état pour l'UI par **lectures tolérantes** (jamais de `raise`) des
 fichiers `state/` : `current_report.json`/`last_report.json`,
-`daemon_status.json`, `history.jsonl`, `decisions.jsonl`, `scheduler.json`
-(watches + `default_next_wake` + `symbol_wakes`), `trade_plans.json`,
-`venue_state.json`. Les events `events.jsonl` sont lus séparément par
+`daemon_status.json`, `history.jsonl`, `decisions.jsonl`, `venue_state.json` et
+les projections de learnings/univers. Plans, scheduler et fills sont lus dans
+`casys.db` lorsqu'il existe ; les anciens JSON ne servent que de compatibilité
+pour fixtures/états historiques. Les events `events.jsonl` sont lus séparément par
 `interfaces/cockpit/events.py` (glyphes : `·` hold, `▲/▼` fills, `✗` risk,
 `⚑` watch, `◇` learning, `▶/■` cycles).
+
+La page Reports ne passe pas par ce snapshot global. Sa projection read-only
+scanne les artefacts de rapports dans un worker UI : posture globale, briefs
+macro, runs régionaux et briefs micro. Un succès reste affiché lorsqu'une
+tentative ultérieure échoue ; `latest_failure` ajoute l'erreur, le numéro de
+tentative et, lorsqu'un retry est planifié, sa prochaine échéance. Les fichiers
+absents ou corrompus sont ignorés, jamais transformés en décision runtime.
 
 ## Supervision du daemon
 
@@ -86,4 +94,6 @@ le daemon est vivant). Détail dans [run-the-daemon](../how-to/run-the-daemon.md
 overlay d'aide, SVG + PNG.
 
 ## Voir aussi
-- [How-to : lancer le daemon](../how-to/run-the-daemon.md) · [reporting](reporting.md).
+- [How-to : lancer le daemon](../how-to/run-the-daemon.md) ·
+  [diagnostiquer les rapports](../how-to/refresh-and-diagnose-reports.md) ·
+  [reporting](reporting.md).

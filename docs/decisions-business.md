@@ -1,215 +1,77 @@
-# Décisions métier — casys-trader
+# Décisions métier — guide de lecture
 
-> Ce document synthétise la logique métier et les décisions de design du système.
-> **Généré par analyse du code et du registre — à re-vérifier si l'architecture évolue.**
-> Source de vérité pour les décisions : `docs/decisions/registre-decisions-metier.md`.
+> **Type** : Explanation / carte des décisions (Diátaxis).
+> **Source historique autoritative** :
+> [`decisions/registre-decisions-metier.md`](decisions/registre-decisions-metier.md).
+> **Comportement actuel** : pages [`reference/`](reference/README.md) et code.
 
----
+Cette page explique comment lire les décisions D1 à D15 sans transformer leur
+contexte historique en documentation runtime. Les chiffres, modèles, chemins de
+modules et états d'implémentation consignés dans le registre restent datés du
+jour de la décision. Lorsqu'un détail a évolué, la page Reference du sous-système
+prime.
 
-## 1. Philosophie
+## Doctrine qui reste structurante
 
-### 1.1 Planificateur, pas opérateur continu
+1. **Le LLM planifie, le daemon possède les effets.** L'agent produit des
+   décisions, plans et veilles structurés. Le code calcule les faits, applique
+   les gates, persiste les effets et relit les preuves.
+2. **Le risque est déterministe.** Une décision LLM, un plan armé ou une sortie
+   planifiée repasse par les contrôles d'exécution et de portefeuille appropriés.
+3. **L'univers est une surveillance active.** Radar et news construisent un pool
+   candidat ; l'agent Univers choisit la hotlist régionale ; les sticky sont
+   ajoutés hors quota ; le trader conserve timing, taille et exécution.
+4. **La comptabilité est en USD, les prix restent natifs.** Les conversions
+   servent au sizing, aux limites et au reporting, jamais à déformer les barres
+   ou niveaux de marché.
+5. **L'expérience est évaluée, pas injectée en bloc.** Les rationales LLM et
+   notes sont scorées après résultat ; les règles globales consolidées sont
+   poussées, les expériences détaillées sont rappelées à la demande.
 
-Le LLM n'est pas un trader « actif » qui regarde le marché en continu. Il est un
-**planificateur** : il conçoit des scénarios d'entrée armés (conditions + sens + taille
-+ stop) que le daemon exécute mécaniquement au déclenchement — sans re-appel modèle.
-Une exception est en discussion avec D12 pour les ouvertures swing planifiées, mais
-elle n'est pas validée ni implémentée.
+## Carte D1 à D15
 
-Conséquences :
-- Les réveils LLM sont rares et événementiels (position ouverte, trigger, régime fort).
-  `relevance_gate.py` filtre le bruit (~99 % de HOLD sur polling pur → évités).
-- Le LLM produit des artefacts vérifiables (`indicator_watch`, `exit_plan`), pas des
-  intentions en prose — format machine-validable, rejouable, auditable.
-- Le gate de risque déterministe (`RiskGate`) reste le **seul fusible** à l'exécution,
-  même pour les plans armés.
-
-### 1.2 Sessions stateless
-
-Chaque appel LLM est une session jetable (`acpx exec`). L'état évolutif de l'agent
-est externalisé : `mandate/mandate.md` (boucle humaine) + `state/learnings.jsonl`
-(machine). L'agent ne se souvient de rien entre deux cycles sauf ce qui lui est
-réinjecté dans le contexte.
-
-### 1.3 Faits calculés par le code, pas déduits par le LLM
-
-Le code calcule et injecte : âge des données (`data_age_m`), état de la séance
-(`session`), indicateurs techniques, biais de régime, attributions P&L. Le LLM
-reçoit des faits bruts et décide — il ne calcule pas. Principe AX « faits injectés
-par le code, prose minimale ».
-
-### 1.4 Minimiser les réveils LLM
-
-Cible : ~20 appels LLM / 24 h (contre ~92 avant D7). Leviers :
-- D7A — gate de pertinence en code (quiet_gate sur polling calme)
-- D7B — plans armés exécutés sans re-appel
-- Batch 1-appel/cycle (tous symboles dus en un prompt partagé)
-
----
-
-## 2. Gates
-
-### 2.1 Fraîcheur des données
-
-Garde « marché live » : la dernière barre 15m doit dater de moins de 40 min
-(`DEFAULT_MAX_MARKET_DATA_AGE_MINUTES = 40`, `daemon.py:86`). Dépassé →
-`stale_market_data` → exclusion du tradable + backoff exponentiel du réveil
-(2× par défaut, cap 120 min). Un symbole stale ne reçoit jamais d'ordre.
-
-### 2.2 Confiance et budget de risque
-
-`RiskGate.check_confidence()` (`risk.py`) reste disponible quand
-`confidence_gate_enabled=true` :
-
-```
-required = min_trade_confidence + (full_risk_confidence − min_trade_confidence)
-           × clamp(planned_risk_pct / max_risk_per_trade_pct, 0, 1)
-```
-
-Défauts : `min_trade_confidence = 0.7`, `full_risk_confidence = 0.9`,
-`max_risk_per_trade_pct = 1 %`.
-
-En profil exploration, `confidence_gate_enabled=false` : la confiance est
-persistée pour calibration, pas utilisée pour bloquer. De même,
-`max_risk_per_trade_pct` produit un `risk_warnings` si dépassé, sans refuser
-l'ordre ; les plafonds notionnels restent les fusibles.
-
-### 2.3 Hard stop manquant
-
-En profil exploration, `require_hard_stop=false` : une ouverture avec `qty`
-explicite peut passer sans hard_stop, bornée par les plafonds notionnels. Un
-`risk_pct` sans `qty` garde besoin d'un hard_stop, car la quantité ne peut pas
-être dérivée sans distance de risque.
-
-### 2.4 Garde wrong-side stop
-
-Si le `hard_stop` est du mauvais côté du prix d'entrée → rejet
-`invalid_exit_plan:hard_stop_wrong_side`. `daemon.py:1886`
-
-### 2.5 Garde données stale au déclenchement (plans armés)
-
-Au déclenchement d'un `EXECUTE_ORDER` : si le symbole est `stale` → annulation
-`armed_plan_cancelled:stale` + réveil planificateur (jamais d'exécution en aveugle).
-`daemon.py:1544`
-
-### 2.6 RiskGate — limites nominales
-
-`risk.yaml` : `max_position_value`, `max_gross_exposure`, `max_order_value`,
-`min_equity`. Tout ordre dépassant ces bornes est rejeté ou clampé
-(`order_value_exceeded` → clamp sur `max_order_value` pour les ouvertures).
-
----
-
-## 3. Décisions D1..D12 — synthèse
-
-Source de vérité : `docs/decisions/registre-decisions-metier.md`.
-
-| # | Titre | Statut | Intention business |
-|---|---|---|---|
-| **D1** | Métrique audit `missed` ≠ `bad` | 🛠 implémenté | Sépare les opportunités ratées (HOLD pendant un move) des vrais trades perdants. `bad% réel = 1 %`. |
-| **D2** | Biais régime cross-asset par famille thématique | 🛠 implémenté | Le code calcule la synthèse directionnelle par univers (défense, énergie, semis…) et l'injecte comme **signal d'opportunité**, pas un garde-fou. `trader/family_regime.py` |
-| **D3** | Réveil sur cluster d'univers | ✅ validé (principe) | Quand ≥ 2 symboles d'un même univers bougent ensemble → réveiller l'agent hors planning. Non encore implémenté. |
-| **D4** | RVOL + ATR expansion au cockpit | ✅ validé | Injecter par symbole : RVOL et ATR expansion — signatures à edge (+0,27 %/trade, 55 % win). Non encore implémenté. |
-| **D5** | Flux news + LLM qualifiant la surprise | 💬 en discussion | ~80 % des moves sans signal technique préalable = news/macro. Flux temps réel (Polygon/Benzinga) + LLM. Coût/latence à arbitrer. |
-| **D6** | Boucle de learnings auto-renforçante | 🛠 étapes 1-2 | Guardrails humains séparés (`mandate/guardrails.json`). Prompt consolidation : cap ≤ 5 abstentions, priorité entrées, seuil robustesse ≥ 3 occurrences. Les bruts ne sont plus réinjectés quand un consolidé existe. |
-| **D7** | LLM planificateur actif | 🛠 étages A+B | **A** — gate de pertinence code (`relevance_gate.py`). **B** — plans armés `EXECUTE_ORDER` exécutés sans LLM. Cible : ~10-20 appels/jour. |
-| **D8** | Backtest deux étages : replay mécanique + forward | ✅ validé | Étage 1 = mesure a posteriori des plans armés (taux déclenchement, P&L, stops). Étage 2 = qualité des scénarios en forward (attend données réelles). |
-| **D9** | Veille deux niveaux : radar + rotation hot-set | 🛠 implémenté | Tier 1 radar daily 0-LLM (~283 symboles). Tier 2 hot-path 15m sur hot-set dynamique (cap M=25, par venue). Score = efficacité_tendance × force_relative × amplitude. Volatilité récompensée. |
-| **D10** | Hot-lists par marché | 🛠 implémenté | Une hot-list par venue (TW/EU/US). Univers actif = `sticky_all ∪ union(marchés ouverts)`. Classement intra-venue. Sticky hors quota, hors logique ouverture. *(La `sleeve_24/5` figurait au design D10 mais n'est pas implémentée — forex/commodity retirés, pool 100 % actions.)* |
-| **D11** | Stops adaptatifs : intention paramétrique résolue au tir | ✅+🛠 Ph1-2 | Late-binding : `hard_stop` armé exprimé en `volatility_multiple`/`percent`/`structural` (ancres chartistes), résolu en prix absolu au **déclenchement** sur vol fraîche. Unifié avec les entrées directes. |
-| **D12** | Préflight LLM des ouvertures swing planifiées | 💬 en discussion | Proposition conditionnelle : cross-session / gap d'ouverture / plan âgé / `requires_preflight` → relire la thèse avant RiskGate. Ne modifie pas D7B tant qu'Erwan ne l'a pas validée. |
-
----
-
-## 4. Frais & break-even
-
-Modèle de frais IBKR simulé (`execution/broker.py`, `CommissionModel`). Le break-even
-en bps (`be_ref_bps`) et le coût aller-retour (`rtrip_bps`) pour un ordre de référence
-= `max_order_value` sont injectés dans le cockpit — l'agent peut comparer l'amplitude
-attendue au coût avant de scalper.
-
-⚠️ P&L paper < 2026-06-13 = **brut** (frais = 0). La conscience-frais a été livrée
-le 2026-06-13 (commit `390a3ea`). Les statistiques mélangeant avant/après peuvent
-donner un biais favorable.
-
-Les P&L dans `model_performance.jsonl` sont en **devise locale** (BP.L = pences, CHF,
-USD…). `reporting/attribution.py` additionne sans conversion → à reconvertir avant de comparer.
-
----
-
-## 5. Attribution
-
-`trader/reporting/attribution.py` — calcule des round-trips (entrée + sortie appariés) et
-produit `by_exit_reason`, `by_confidence_bin`, coût moyen par trade.
-
-Injecté dans `base_context["attribution"]` à chaque cycle : l'agent voit sa propre
-performance et calibre ses décisions.
-
-`attribution_since` (configurable dans `regime.yaml`) filtre les trades : la valeur
-courante est **`2026-06-10`** — les trades clôturés **avant le 10/06 sont exclus** des
-statistiques d'attribution vues par l'agent. Cette frontière correspond à la mise en
-place du gate confiance×risque (commit `dffb6d1`). Les KPI du cockpit et les
-round-trips ne reflètent donc **pas** les pertes antérieures (CL=F 09/06, exit_plans
-invalides 05-08/06).
-
-**Tagging des sorties LLM** : avant commit `17bfb62` (2026-06-15), les sorties
-`CLOSE` n'avaient pas de tag `exit_reason` → elles apparaissent comme `"close"`
-(intent brut) dans les stats. Les occurrences de `"close"` + `"llm_exit"` sont
-les **mêmes** sorties LLM (artefact temporel, pas deux chemins concurrents).
-Voir `docs/analysis/comportement-sorties.md` §2.
-
----
-
-## 6. Consolidation des learnings
-
-`trader/consolidator.py` — quand `learnings.jsonl` dépasse
-`DEFAULT_CONSOLIDATION_THRESHOLD` entrées brutes, un appel au consolidateur (acpx,
-modèle séparé `glm-5.1:cloud`) produit `learnings_consolidated.json`.
-
-Prompt de consolidation (D6 étape 1) :
-- Cap ≤ 5 règles d'abstention dans le global consolidé
-- Priorité aux patterns d'entrée sur les règles d'interdiction
-- Seuil de robustesse : ≥ 3 occurrences
-
-`guardrails.json` (invariants humains, immuable) est injecté séparément — guidance
-au LLM : « guardrails = invariants, patterns = remettables en question ».
-
-Les bruts ne sont plus réinjectés quand un consolidé existe (évite
-l'auto-renforcement des HOLD). `consolidator.py:build_context_learnings`
-
----
-
-## 7. Post-mortems
-
-| Fichier | Statut | Résumé |
+| Décision | Sujet | Lecture actuelle |
 |---|---|---|
-| `docs/postmortems/2026-06-08-exit-plans-invalides.md` | ✅ Résolu | 7 rejets `exit_plan` invalides (05-08/06) : contrat exit_plan non exposé au LLM → corrigé `a3357d5`. Zéro récidive. |
-| `docs/postmortems/2026-06-09-short-clf-hard-stop.md` | ✅ Résolu | CL=F short confiance 0.58, stop 1R, −101 $ : trade pris à l'extrême baissier. A conduit au gate confiance×risque (`dffb6d1`). |
-| `docs/postmortems/2026-06-15-stops-figes-armes-open-eu.md` | ✅ Résolu | CFR.SW + ASML.AS (−95 €) : stops absolu figés à l'armement pré-open EU, trop serrés au tir (~0.84×/1.26× vol). Corrigé par D11 (late-binding). |
+| D1 | Séparer une opportunité manquée d'un mauvais trade | Le vocabulaire d'audit reste distinct ; voir [reporting](reference/reporting.md). |
+| D2 | Régime cross-asset par famille | Signal de contexte, jamais autorité d'ordre ; voir [régime](reference/regime.md). |
+| D3 | Réveil sur cluster de famille | Principe validé historiquement ; le registre porte ses points ouverts. |
+| D4 | RVOL et expansion ATR dans le contexte | Principe validé ; le contexte courant est décrit dans [agent-context](reference/agent-context.md) et [agent-tools](reference/agent-tools.md). |
+| D5 | News et qualification de surprise | La proposition temps réel initiale reste historique ; le pipeline best-effort livré relève surtout de D15 et de [news](reference/news.md). |
+| D6 | Boucle de learnings auto-renforçante | L'implémentation a depuis évolué vers capture automatique, FLAIR, MemRL, recall et curation ; voir [learnings](reference/learnings-rag.md). |
+| D7 | LLM planificateur plutôt qu'opérateur de polling | Réveils, quiet gate, plans armés et file grain-symbole sont actifs ; voir [scheduler](reference/wake-scheduler.md) et [queue](reference/task-queue.md). |
+| D8 | Replay mécanique puis évaluation forward | Décision de mesure, sans confondre replay et vérité live ; voir le [how-to mesure](how-to/measure-and-replay.md). |
+| D9 | Radar large et rotation du hot-set | Le radar et la baseline déterministe restent ; D15 remplace le cap et la propriété finale de la hotlist. |
+| D10 | Hotlists par venue et univers actif | TW/EU/US sont composées selon les sessions, avec sticky hors quota ; voir [rotation](reference/universe-rotation.md). |
+| D11 | Stops adaptatifs résolus au tir | Les intentions paramétriques et leur validation actuelle sont dans [exécution](reference/execution.md) et [outils agent](reference/agent-tools.md). |
+| D12 | Préflight LLM des plans swing | Non retenu en l'absence de mesure démontrant sa nécessité ; le plan armé reste mécanique et gaté. |
+| D13 | Surveillance swing-aware et sélection Univers | Le pré-open et l'analyse des venues fermées restent ; D15 remplace l'ancien contrat de candidats et d'override. |
+| D14 | Comptabilité USD et sizing natif | Actif ; voir [FX](reference/fx.md) et [exécution](reference/execution.md). |
+| D15 | Pool news-aware et agent Univers propriétaire de la hotlist | Contrat courant du pipeline régional ; voir [rotation](reference/universe-rotation.md), [news](reference/news.md) et [pipeline Univers → Trader](reference/universe-trader-pipeline.md). |
 
----
+## Supersessions à connaître
 
-## 8. Points ouverts connus (backlog post-MVP)
+- D15 ne supprime pas D9/D10/D13 : il conserve radar, baseline, venues,
+  pré-open, hystérésis et sticky, mais remplace les anciens caps et la propriété
+  nominale « défaut + override » de la hotlist.
+- D12 documente une option explicitement écartée tant qu'une mesure ne justifie
+  pas sa réouverture.
+- Les étapes techniques décrites en D6 sont un jalon historique. Elles ne
+  décrivent plus à elles seules le store de recall ni la consolidation courante.
+- Les volumes d'appels et coûts cités dans D7 sont des données de motivation,
+  pas un budget runtime actuel.
 
-- **Unification direct/armé complète** : les entrées directes `OPEN_LONG`/`OPEN_SHORT`
-  passent désormais par `resolve_exit_plan`, mais un stop absolu `type:"price"` trop
-  serré fourni directement par le LLM n'est pas recalibré. Recommandation : forcer
-  le relatif en direct.
-- **FLIP sans stop** : `FLIP` n'est pas bloqué par `missing_hard_stop`
-  (`daemon.py:1934`) — **à corriger** (backlog, pas un choix intentionnel confirmé
-  par analyse Codex).
-- **`last_llm_at` volatile** : réinitialisé au restart → le gate de revue périodique
-  déclenche une revue globale après redémarrage (délibéré, mais consomme du budget).
-- **Debounce gate régime** : un régime fort persistant re-déclenche ~30 min — reliquat
-  de coût non éliminé.
-- **Rationale de sortie LLM** : `Decision.rationale` est dans `decisions.jsonl` mais
-  pas dans `model_performance.jsonl` → invisible pour l'attribution. Propagation
-  simple à faire (`exit_rationale`). Voir `docs/analysis/comportement-sorties.md` §5.
-- **D3** (réveil cluster univers), **D4** (RVOL/ATR cockpit), **D6 étapes 3-4**
-  (missed_moves contrafactuels, by_symbol scopé) : validés, non implémentés.
-- **DST / fériés / demi-séances** : heures de session UTC codées manuellement dans
-  `config/sessions.yaml`. À terme : `timezone` + `valid_from/to` + jours fermés.
+## Où vérifier le comportement aujourd'hui
 
----
+| Question | Référence courante |
+|---|---|
+| Quand l'agent est-il réveillé ? | [Scheduler, réveils et watches](reference/wake-scheduler.md) |
+| Comment décide-t-il et utilise-t-il ses outils ? | [File durable](reference/task-queue.md), [outils agent](reference/agent-tools.md) |
+| Qui choisit les symboles ? | [Rotation d'univers](reference/universe-rotation.md) |
+| Comment Univers influence-t-il le trader ? | [Pipeline Univers → Trader](reference/universe-trader-pipeline.md) |
+| Quelles barrières s'appliquent aux ordres ? | [Risk gate](reference/risk-gate.md), [exécution](reference/execution.md) |
+| Comment l'expérience devient-elle un learning ? | [Learnings & RAG](reference/learnings-rag.md) |
+| Où se trouve la preuve décision → effet ? | [Gouvernance du processus](reference/process-governance.md), [reporting](reference/reporting.md) |
 
-*Doutes / points à valider humainement listés dans le résumé de livraison.*
+Pour modifier une orientation produit, ajouter ou amender explicitement une
+décision dans le registre. Pour corriger un détail d'implémentation, mettre à
+jour la page Reference correspondante sans réécrire l'histoire.

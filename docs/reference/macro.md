@@ -11,15 +11,16 @@ macro/news. Elles ne sélectionnent aucun symbole et ne composent aucune hotlist
 
 ## Calendrier — `market/macro_calendar`
 
-Événements macro datés (FOMC, CPP/CPI, NFP, BCE). Le daemon lit
-`state/macro_calendar.json` (produit par un **script offline**) et le **fusionne
-avec des constantes versionnées** (les dates FOMC de l'année sont connues ~1 an à
-l'avance).
+Événements macro datés. Le daemon charge `state/macro_calendar.json` lorsqu'il
+existe, puis le **fusionne avec des constantes FOMC versionnées**.
 
 - **FOMC** : statement publié à **18:00Z** le 2ᵉ jour de la réunion (réunion à 2
   jours). Source : federalreserve.gov. (Attention fuseau : jan/déc en EST → 19:00Z,
   cf. fix daemon.)
-- Scraper **trimestriel** → `state/macro_calendar.json` pour CPI/NFP/BCE/FOMC N+1.
+- Le dépôt ne fournit actuellement ni générateur ni cadence de rafraîchissement
+  pour `state/macro_calendar.json`. La couverture CPI, NFP ou BCE dépend donc
+  d'un fichier local alimenté hors de ce runtime ; sans lui, seul le fallback
+  FOMC versionné est garanti.
 - Exposé au contexte via `macro_next` (prochain événement macro).
 
 ## Séries — `infrastructure/market_sources/macro_series`
@@ -51,14 +52,30 @@ ou appartenant à un autre scope n'est jamais recyclé silencieusement.
 La collecte et l'analyse sont best-effort : une panne macro ou analyste ne bloque
 jamais le cycle de trading ni la rotation.
 
+Il n'existe pas de cadence murale indépendante du daemon : le runner réévalue
+son éligibilité après chaque cycle, en single-flight. Pour un scope et des
+inputs matériels identiques, le succès est réutilisé sans nouvel appel. Si les
+inputs changent sur le même scope, le cooldown de succès de 4 h doit être
+écoulé ; un nouveau `candidate_scope_id` ou un appel manuel `--force` peut
+lancer immédiatement. Le brief reste valide 20 h, mais ce TTL ne signifie pas
+« un appel toutes les 20 h ».
+
+Les échecs régionaux et GLOBAL suivent 30, 60, 120, 240 puis 360 minutes de
+backoff, plafonné ensuite à 6 h. La lignée de retry régionale est stable par
+venue + scope ; la lignée GLOBAL reste ancrée au dernier succès (ou au bootstrap),
+donc des collecteurs qui bougent pendant une panne ne remettent pas le compteur
+à zéro. `state/news_macro_analysis_status.json` conserve, par venue, le dernier
+succès et un `latest_failure` séparé avec tentative, délai et `next_retry_at`.
+
 La couverture macro/news n'est pas présentée comme complète :
 
 - le calendrier fusionne le fichier local avec des constantes versionnées de
   fallback ;
 - certaines séries peuvent être absentes ou stales ;
-- les headlines globales ne sont disponibles que si un producteur local a écrit
-  `macro_headlines` ou `global_news_items` ; aucune source globale indépendante
-  n'est garantie aujourd'hui ;
+- les headlines globales complémentaires restent optionnelles dans
+  `macro_headlines` / `global_news_items` ; le daemon collecte aussi chaque jour,
+  en fail-soft et sans clé, des événements géopolitiques GDELT dans
+  `state/gdelt/events.jsonl` pour la passe `GLOBAL` ;
 - la couverture news symbole dépend du corpus local effectivement collecté.
 
 Le brief expose ces limites dans `input_refs.coverage`. Le contexte régime
@@ -74,8 +91,21 @@ actif et une clôture doit d'abord matérialiser le scope de la venue. La prépa
 univers possède son switch séparé,
 `CASYS_UNIVERSE_INTELLIGENCE_ENABLED=0`.
 
+La CLI cible les venues sans modifier la sélection Univers :
+
+```bash
+uv run casys-trader news-macro refresh --venue TW --venue EU
+uv run casys-trader news-macro refresh --all
+uv run casys-trader news-macro refresh --venue TW --force
+```
+
+`--force` ignore fraîcheur, cooldown et backoff d'analyse, mais jamais la
+validation des scopes et des inputs. Il ne force pas une recomposition Univers
+et ne peut pas rouvrir un scope déjà activé.
+
 ## Voir aussi
 
 - [Config](config.md) (`data_sources.yaml`, `sessions.yaml`)
 - [News, challengers et analyste](news.md)
 - [Gestion d'univers](universe-rotation.md)
+- [How-to : rafraîchir et diagnostiquer les rapports](../how-to/refresh-and-diagnose-reports.md)

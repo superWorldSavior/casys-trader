@@ -1,57 +1,64 @@
-# Thème casys-glass — évocation Liquid Glass
+# How-to — Configurer le rendu du cockpit dans le terminal
 
-Le thème `casys-glass` donne au cockpit un rendu sombre avec tuiles semi-transparentes et
-bordures arrondies colorées. L'effet « verre dépoli » est porté par le terminal (blur de
-fenêtre) — le cockpit lui-même fournit le fond charbon (`#141617`) et les calques alpha.
+> **Type** : How-to (Diátaxis) — procédure d'affichage locale.
+> **Cockpit** : thème unique `casys`, sombre et ambre.
 
-## Activer
+Le cockpit n'a plus de sélecteur de thème runtime. Il enregistre uniquement le
+thème Textual `casys` et utilise `PALETTE_CASYS` pour ses rendus. La touche `d`
+ne change donc rien ; `t` masque ou réaffiche la colonne secondaire sur les
+écrans compacts.
 
-Appuyer sur `d` depuis l'écran principal. Le cycle est :
+La transparence et le flou éventuels appartiennent au **terminal**, pas au
+trader. Ils modifient tout le fond de la fenêtre et n'ont aucun effet sur les
+décisions, les logs ou le daemon.
 
-```
-casys-ink  →  casys-glass  →  casys-salmon  →  (retour ink)
-             (ce thème)
-```
-
-## Configurer le blur terminal
+## Régler le terminal, si souhaité
 
 ### iTerm2
 
-1. Préférences → Profils → Window
-2. **Transparency** : ~15 %
-3. **Blur** : activer, rayon ~20
+Dans **Settings → Profiles → Window** :
+
+1. régler `Transparency` autour de 10 à 15 % ;
+2. activer `Blur` si le compositor le permet ;
+3. garder un contraste suffisant pour les états rouge/vert et le texte gris.
 
 ### Ghostty
 
-Ajouter dans `~/.config/ghostty/config` :
+Dans `~/.config/ghostty/config` :
 
-```
-background-opacity = 0.85
+```ini
+background-opacity = 0.88
 background-blur-radius = 20
 ```
 
-### Alacritty / autres
+Relancer ou recharger Ghostty après modification.
+
+### Alacritty
+
+Dans sa configuration YAML :
 
 ```yaml
 window:
   opacity: 0.88
 ```
 
-(Le blur dépend du compositor système — sur macOS avec `yabai` ou Aerospace, le fond du bureau transparaît.)
+Alacritty applique l'opacité ; le flou dépend du système et du compositor.
 
-## Lancer le cockpit
+## Lancer et vérifier
 
 ```bash
-make watch        # daemon + cockpit
-# ou
-uv run python -m trader.cockpit
+make watch
 ```
 
-## Notes
+`make watch` lance le cockpit uniquement. Depuis le preflight ou le cockpit,
+appuyer sur `s` pour lancer le daemon supervisé. Pour l'exploitation détachée,
+voir [Lancer / relancer / arrêter le daemon](run-the-daemon.md).
 
-- En l'absence de blur terminal, le thème ressemble à `casys-ink` avec un fond légèrement
-  plus sombre (`#141617` vs `#1d2021`).
-- La palette Rich (couleurs des tableaux, statuts) est identique à `casys-ink` : `PALETTE_INK`.
-- Les sélecteurs CSS conditionnels `.glass HomePane #home-*` et `.glass #home-flux` appliquent
-  `background: #1d2021 35%` et `border: round #8ec07c 40%` sur les tuiles de la home.
-- En thème glass, le fond de l'app est transparent : l'opacité/blur réglés dans le terminal traversent réellement.
+Vérifier les huit pages avec les touches `1` à `8`, puis `?` pour la liste des
+raccourcis. Si les contrastes deviennent insuffisants, remonter l'opacité du
+terminal : il n'existe volontairement pas de palette alternative dans l'app.
+
+## Voir aussi
+
+- [Référence Cockpit](../reference/cockpit.md)
+- [Lire les logs](read-logs.md)

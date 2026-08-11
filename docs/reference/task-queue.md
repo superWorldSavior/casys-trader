@@ -45,9 +45,9 @@ timestamps = epoch ms (int).
 | `enqueue(*, kind, priority, scheduled_at_ms, now_ms, dedup_key, …)` | Insère en `pending`. Idempotent : `ON CONFLICT(dedup_key) DO NOTHING` → retourne `int(id)` ou `None` sur conflit. |
 | `claim(*, worker_id, token, now_ms, lease_ms, free_resources)` | Transaction `BEGIN IMMEDIATE`. Sélectionne la tâche `pending` la plus prioritaire (`priority ASC, scheduled_at ASC, id ASC`) avec `scheduled_at ≤ now_ms`, `attempts < max_attempts`, ressource dans `free_resources` (ou NULL), et `partition_key` sans tâche `running` concurrente. Passe en `running`, pose `claim_token` et `lease_expires_at`. Retourne `dict` ou `None`. |
 | `complete(*, task_id, token, now_ms, result)` | Passe en `done`, efface le claim. Gardé par fencing token (`claim_token` + `status='running'`). Retourne `True` si modifié. |
-| `fail(*, task_id, token, now_ms, error, retryable, backoff_base_ms)` | Gardé par fencing token. Si `retryable=True` et `attempts < max_attempts` : repasse en `pending` avec `scheduled_at = now_ms + backoff_base_ms × 2^(attempts-1)`. Sinon : `dead`. Retourne `'pending'`, `'dead'` ou `'stale'` (token inconnu — sans effet). |
+| `fail(*, task_id, token, now_ms, error, retryable, backoff_base_ms, backoff_max_ms=None)` | Gardé par fencing token. Si `retryable=True` et `attempts < max_attempts` : repasse en `pending` avec `scheduled_at = now_ms + min(base × 2^(attempts-1), max)` lorsqu'un plafond est fourni. Sinon : `dead`. Retourne `'pending'`, `'dead'` ou `'stale'` (token inconnu — sans effet). |
 | `heartbeat(*, task_id, token, now_ms, lease_ms)` | Prolonge `lease_expires_at`. Gardé par fencing token. Retourne `True` si renouvelé. |
-| `recover_on_boot(*, now_ms)` | Repasse en `pending` les tâches `running` dont `lease_expires_at < now_ms` (orphelines d'un crash). Retourne le nombre de tâches réactivées. |
+| `recover_on_boot(*, now_ms)` | Repasse en `pending` les tâches `running` dont le bail a expiré et marque `dead` les anciennes lignes `pending` ayant déjà épuisé `max_attempts`. Retourne, pour compatibilité, le seul nombre de tâches réactivées. |
 | `release_claim(*, task_id, token, now_ms)` | Annule un claim **sans consommer de tentative** (`attempts = MAX(0, attempts-1)`) — pour les resource-miss. Remet en `pending`, ne touche pas `scheduled_at`. Retourne `True` si modifié. |
 
 ## `ResourcePools` (`infrastructure/queue/pools`)
@@ -120,8 +120,8 @@ poser pour les timeouts réseau ponctuels.
 - **≤ 1 running par `partition_key`** : garanti à la fois par le claim SQL et par l'index `uniq_running_partition` (défense en profondeur).
 - **Fencing token** : `complete`/`fail`/`heartbeat` échouent en silence sur token périmé.
 - **Resource-aware claim** : un claim ne passe jamais sur une ressource sans slot libre.
-- **Retry + backoff exponentiel** : `scheduled_at = now + base × 2^(attempts-1)` jusqu'à `max_attempts` → `dead`.
-- **Reprise au boot** : `recover_on_boot` remet en `pending` les `running` à bail expiré (orphelins d'un crash précédent).
+- **Retry + backoff exponentiel bornable** : `scheduled_at = now + min(base × 2^(attempts-1), max)` lorsqu'un cap est configuré, jusqu'à `max_attempts` → `dead`.
+- **Reprise au boot** : `recover_on_boot` remet en `pending` les `running` à bail expiré et terminalise en `dead` les `pending` déjà épuisées ; aucune ligne n'est effacée.
 - **Unclaim neutre** : `release_claim` sur resource-miss ne consomme pas de tentative ni n'applique de backoff.
 
 ## Pipeline `decide` / `execute` via la file (Phase 3)
@@ -163,7 +163,7 @@ et la récupération historique, mais ne sont plus un mode du daemon.
   workers = `CASYS_DECISION_BATCH_PARALLELISM` (même flag, sens différent du mode
   batch). `CASYS_DECISION_BATCH_SIZE` est **sans objet** en queue (grain-symbole) —
   warning au boot. **Tour d'outils / session free-iteration** : avec
-  `CASYS_AGENT_TOOLS` actif, le handler ouvre une session acpx persistante et
+  `CASYS_AGENT_TOOLS_ENABLED` actif, le handler ouvre une session acpx persistante et
   l'agent demande autant de tournées d'outils que nécessaire, puis décide dès qu'il
   a assez de contexte (`get_indicator_context`, `get_active_plans`,
   `recall_learnings`, `get_freshness` — 8 calls/symbole/round). Le code garde
@@ -182,6 +182,12 @@ et la récupération historique, mais ne sont plus un mode du daemon.
   snapshot global en `decision_focus_v1` : risque exact de la cible, briefing
   local Univers/micro/news, radar borné, résumés globaux et détail via outils.
   Le snapshot source n'est jamais muté et chaque tâche reçoit sa propre vue.
+- Si le pilote de processus a admis le symbole, le payload durable contient un
+  objet `process` réduit à `process_instance_id`, `attempt_id` et
+  `runtime_run_id`. Le handler le recopie dans le résultat, y compris après un
+  retry du Worker ; le runtime rattache ainsi la décision au ledger sans
+  inférence par timestamp. Cette métadonnée est observationnelle : absente ou
+  malformée, elle ne retire pas le symbole et ne bloque pas l'appel LLM.
 - Le premier appel de chaque session ACP transporte cette vue complète. Les tours
   suivants de la même session transportent uniquement les nouveaux
   `tool_results`. Si le runner change de backend, sa nouvelle session repart du
@@ -227,12 +233,14 @@ Frontière de validation :
   réinjecte un `tool_results` `{tool:"strategy_exit", ok:false, error:<reason>}`
   dans la même session, jusqu'à 2 corrections avant fall-through.
 
-### Étage `execute` — `CASYS_QUEUE_EXECUTE_ENABLED` (exige `sqlite`)
+### Étage `execute` — `CASYS_QUEUE_EXECUTE_ENABLED`
 
-- off : `SimBroker.submit` synchrone dans `run_cycle`, inchangé.
+- off : `SqliteBroker.submit` synchrone dans `run_cycle` ; l'état reste dans
+  `casys.db`.
 - on : `run_cycle` assemble le contexte runtime, délègue la préparation du payload
-  atomique `plan_to_upsert` / `symbol_to_close` à `application.execute_queue_plan`,
-  puis délègue à `application.execute_queue_dispatch`, qui enfile **1 tâche `execute_order`** par
+  atomique `plan_to_upsert` / `symbol_to_close` à
+  `application/execute/queue_plan.py`, puis délègue à
+  `application/execute/queue_dispatch.py`, qui enfile **1 tâche `execute_order`** par
   ordre retenu (`resource=portfolio`, sérialisé). Le worker exécute **submit +
   plan + `done` dans UNE transaction SQLite** (outbox, `execute_order_unit`). Le Fill est écrit **dans
   la même tx** (`complete_in_tx`) → aucune perte de fill au crash. Fencing (`SELECT
@@ -240,6 +248,11 @@ Frontière de validation :
   **fail-closed** (`executed=False`, jamais loggé « ok »). `dedup_key`
   `exec:{cycle}:{sym}:{intent}`. Broker, plan et ledger partagent toujours la même
   `casys.db` canonique.
+- Après le risk gate, l'ordre transporte `process_instance_id`, `attempt_id` et
+  `decision_id` lorsqu'ils existent. Le chemin direct comme le handler queue les
+  recopient dans le fill SQLite. Le runtime exige un readback exact du symbole et
+  de ces identités avant de déclarer l'effet exécuté ; fill absent ou mal corrélé
+  reste fail-closed et place la preuve en `recovery_required`.
 
 ### Orchestration decide → execute (streaming, sous itération libre)
 
@@ -296,3 +309,4 @@ diagnostic doivent porter sur `state/casys.db`.
 - Conception Phase 3 (decide + execute via file, flags) : [`../superpowers/specs/2026-07-04-phase3-decide-execute-via-file-design.md`](../superpowers/specs/2026-07-04-phase3-decide-execute-via-file-design.md)
 - Contexte agent (`now_human`, `market_clocks`) : [`agent-context.md`](agent-context.md)
 - Registre de décisions : [`../decisions/registre-decisions-metier.md`](../decisions/registre-decisions-metier.md)
+- Gouvernance et corrélation de processus : [`process-governance.md`](process-governance.md)

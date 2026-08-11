@@ -160,6 +160,23 @@ retirable, le contexte de marché
 **lorsqu'il est disponible**, et la projection bornée du brief macro/news. Il
 compose la hotlist effective hors de la boucle synchrone du daemon.
 
+Les nouveaux briefs micro sont propagés par venue et coalescés par vague. Ils
+peuvent provoquer une nouvelle préparation du même scope avant son activation,
+afin que le run suivant consomme les références les plus récentes. Dès que le
+`candidate_scope_id` exact est activé avec succès, ce scope devient terminal pour
+les refreshs automatiques : un changement ultérieur de contexte micro ou marché
+reste tracé pour les passes futures, sans recomposer le mandat actif.
+
+Le runner sépare deux identités : `input_signature` garde le hash matériel
+complet de la requête réellement envoyée, pour la provenance ;
+`refresh_signature` ne contient que venue + `candidate_scope_id` + `brief_id`,
+pour décider si un nouveau passage ordinaire est dû. Les timestamps, le marché
+et les micros volatils ne créent donc pas seuls un nouvel epoch de scheduling.
+Une vague micro explicite peut demander un refresh de sa venue avant activation ;
+les venues reçues sont fusionnées pendant le debounce trailing de 120 s. Le gate
+`scope_already_activated` est plus fort que `force` : il n'existe pas de
+recomposition du mandat actif au sein du même scope.
+
 Le contrat nominal rend la liste complète :
 
 ```json
@@ -242,6 +259,8 @@ final `top 40 + challengers overnight`, sans réappliquer hystérésis ni incré
 aucun nouveau scope n'est appendu. Les runners préparent cet enfant hors boucle.
 Dans les 15 dernières minutes, seule la projection portant son
 `candidate_scope_id` exact peut être activée, de manière idempotente.
+Une activation en fallback `pending`/`missing` n'est pas terminale : une
+projection réussie arrivée plus tard dans cette même fenêtre reste activable.
 `analyzable_venues()` expose les venues ouvertes ou dans la fenêtre pré-open.
 Pendant le chevauchement EU/US, l'univers actif prend l'union des hotlists
 concernées ; les sticky d'une venue fermée restent présents.
@@ -279,6 +298,27 @@ Un nouveau board n'est appendu que si scopes, briefs ou contenu famille ont
 matériellement changé ; chaque run univers conserve son `board_id`, sa couverture
 et la référence de persistance.
 
+### Échecs et retries
+
+Un échec de l'agent régional suit 30, 60, 120, 240 puis 360 minutes de
+backoff. Une erreur d'écriture de la projection préparée, moins coûteuse à
+réparer, suit 1, 2, 4, 8, 16 puis 30 minutes. La lignée reste liée à venue +
+scope + brief et n'est pas réinitialisée par un contexte company ou marché qui
+change pendant la panne.
+
+La posture globale est recalculée au bootstrap, au début d'une fenêtre pré-open
+si la précédente est plus ancienne que cette fenêtre, puis au cooldown de 4 h.
+Elle utilise le même backoff d'échec 30 → 360 minutes, ancré au dernier
+`posture_id` réussi. Son `current.json` n'est jamais remplacé par une panne : les
+tentatives restent dans `global_universe_postures/failures/*.jsonl` et la
+dernière dans `latest_failure.json`.
+
+De même, `universe_runs/latest-<venue>.json` conserve le dernier succès utilisable
+et imbrique la dernière erreur sous `latest_failure`. Les logs
+`universe retry scheduled` et `global posture retry scheduled` sont émis en
+WARNING ; leurs variantes `deferred` sont en INFO. Ils portent tentative,
+délai, `next_at` et erreur.
+
 L'audit radar ajoute deux surfaces sans effet décisionnel :
 `state/radar_score_audit.json` pour le shadow live et
 `state/radar_score_bench.json` pour le replay offline. Une erreur d'écriture de
@@ -315,5 +355,7 @@ capacité métier de 25.
 
 - [News, challengers et analyste](news.md)
 - [Architecture de connaissance](agent-knowledge-architecture.md)
+- [Pipeline Univers → Trader](universe-trader-pipeline.md)
+- [How-to : rafraîchir et diagnostiquer les rapports](../how-to/refresh-and-diagnose-reports.md)
 - [Spec agent univers](../superpowers/specs/2026-07-09-universe-intelligence-pass-design.md)
 - [Registre des décisions métier](../decisions/registre-decisions-metier.md)

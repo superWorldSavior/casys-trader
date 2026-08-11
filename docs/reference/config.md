@@ -24,7 +24,10 @@ leur propre page de référence, liés ci-dessous.
 | `ib_contracts.yaml` | mapping symbole → contrat IB | `contracts` | `infrastructure/market_sources/ib_source` |
 | `symbol_names.yaml` | libellés d'affichage | (par symbole) | `reporting/read_models/runtime_state` (`_load_company_names`) |
 | `symbol_news_aliases.yaml` | alias d'entités pour l'attribution challenger | alias par symbole | `runtime/news_challenger_runtime` |
+| `company_entities.yaml` | identités officielles des entreprises, notamment LEI EU | entité/venue/identifiants | `infrastructure/market_sources/company` |
+| `company_intelligence.yaml` | bornes et modes de projection micro | concurrence, caps, modes Univers/trader | `runtime/company_intelligence_runtime`, `runtime/company_context_config` |
 | `conviction.yaml` | tilt de conviction **par famille** | (par famille) | `market/radar_config` (`load_conviction`) → `market/rotation/wiring` |
+| `process_governance.yaml` | contrat de preuve du cycle paper | frontière, identités, accountability, résultats terminaux | `support/metadata/governance_version`, `runtime/process_pilot` |
 
 ## Flags de comportement notables
 
@@ -48,23 +51,25 @@ percentiles par venue, 50 % trend, 50 % force relative alignée, amplitude comme
 filtre d'éligibilité uniquement. Il écrit son audit mais ne modifie ni le top 40,
 ni le `candidate_scope_id`, ni la hotlist.
 
-Kill switches runtime D15, activés par défaut :
+Les deux runners D15 sont actifs par défaut. Leurs kill switches sont :
 
 - `CASYS_NEWS_MACRO_ANALYST_ENABLED=0` désactive la production async des briefs ;
 - `CASYS_UNIVERSE_INTELLIGENCE_ENABLED=0` désactive la préparation async de la
   hotlist par l'agent univers.
 
-Le profil LLM univers est séparé du brain symbole (`casys-trader:universe-agent`)
-et peut être réglé avec `TRADER_UNIVERSE_MODEL`,
-`TRADER_UNIVERSE_ACPX_AGENT`, `TRADER_UNIVERSE_ACPX_BIN` et
-`TRADER_UNIVERSE_ACPX_SESSION_LABEL`.
+Les modèles ne vivent pas dans `config/*.yaml`. Les cinq rôles sont réglés dans
+le bloc géré du `.env`, produit depuis `ops/model-presets/*.env`. Le preset Codex
+courant utilise un unique `ops/codex-home` nu : brain Luna medium par override de
+session ACP, consolidateur/Univers/micro/macro Sol low. Ne pas éditer les dix
+variables à la main : voir [presets de modèles](model-presets.md) et le
+[how-to opérateur](../how-to/manage-model-presets.md).
 
-Le brain trader (décideur par symbole) se règle de la même façon avec
-`TRADER_MODEL` et `TRADER_ACPX_AGENT` — ces knobs ne s'appliquent qu'au profil
-trader par défaut, jamais aux rôles analystes (rotation, universe) qui partagent
-le même builder avec un modèle explicite.
+`config/process_governance.yaml` n'est pas un réglage de stratégie. C'est le
+contrat versionné du pilote de preuve ; sa modification change le bundle de
+gouvernance et ne peut pas être adoptée silencieusement par une instance encore
+ouverte. Voir [gouvernance et provenance](process-governance.md).
 
-Dans les deux cas, la rotation reste fail-open et utilise sa baseline
+Quand l'un des runners D15 est coupé ou échoue, la rotation reste fail-open et utilise sa baseline
 déterministe. Réactiver le code ne backfill pas un ancien état : il faut un daemon
 actif et attendre la prochaine clôture puis le prochain pré-open de chaque venue
 pour matérialiser le parent, le scope final, le brief et le run correspondants.
@@ -76,4 +81,6 @@ daily-valides) : même fichier, deux sens. Réconcilié par D13 (`analyzable_ven
 Cf. registre D9/D10/D13/D15.
 
 ## Voir aussi
-- [risk-gate](risk-gate.md), [fx](fx.md) · registre D9/D10/D13/D15 (univers/rotation).
+- [risk-gate](risk-gate.md), [fx](fx.md),
+  [company intelligence](company-intelligence.md),
+  [presets modèles](model-presets.md) · registre D9/D10/D13/D15 (univers/rotation).

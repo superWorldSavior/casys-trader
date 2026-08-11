@@ -4,9 +4,10 @@ Point d'entrée de la doc. Deux choses ici : **où vit chaque type de doc**
 (cadre Diátaxis) et **la carte de couverture** (quel sous-système est
 documenté, où, et quels trous restent).
 
-> Statut carte : **v4 — 2026-07-08**, alignée sur la migration clean architecture (domain/ pur, adaptateurs → infrastructure/, façades, protocols.py) — puis le refacto capability-based
-> (packages `trader/<capacité>/`). Les `🟡`/`❌` sont un backlog priorisé ;
-> corriger une ligne = ouvrir la doc citée.
+> Statut carte : **v5 — 2026-08-11**, vérifiée contre le runtime courant :
+> SQLite canonique, queue grain-symbole, pilote de preuve, profils LLM,
+> learnings automatiques et pipeline de rapports global/macro/régional/micro.
+> Les `🟡`/`❌` sont un backlog priorisé ; corriger une ligne = ouvrir la doc citée.
 
 ---
 
@@ -14,12 +15,18 @@ documenté, où, et quels trous restent).
 
 | Quadrant | Dossier | Contenu | Question |
 |---|---|---|---|
-| **Reference** | [`docs/reference/`](reference/README.md) | Ce que fait chaque sous-système **aujourd'hui** : comportement, invariants, garde-fous, codes | « comment ça marche *maintenant* ? » |
-| **Explanation** | `docs/architecture.md` | Le cycle de bout en bout, le pourquoi | « pourquoi comme ça ? » |
-| **How-to** | [`docs/how-to/`](how-to/README.md) | Runbooks : déployer, relancer, mesurer, lire les logs | « comment je fais X ? » |
-| **Décisions (ADR)** | [`docs/decisions/`](decisions/README.md) | Journal D1-D14, datées, immuables | « quelle décision, pourquoi ? » |
-| **Postmortems** | [`docs/postmortems/`](postmortems/README.md) | Incidents + fix | « qu'est-ce qui a cassé ? » |
-| **Specs / plans** | [`docs/superpowers/`](superpowers/README.md) | Intention de conception au moment T | « comment on l'a conçu ? » |
+| **Tutorials** | [`docs/tutorials/`](tutorials/README.md) | Parcours guidés pour apprendre sur un état paper | « accompagne-moi pour comprendre » |
+| **How-to** | [`docs/how-to/`](how-to/README.md) | Runbooks : relancer, mesurer, maintenir, diagnostiquer | « comment je fais X ? » |
+| **Reference** | [`docs/reference/`](reference/README.md) | Comportement actuel, invariants, garde-fous et formats | « comment ça marche maintenant ? » |
+| **Explanation** | [`architecture.md`](architecture.md), [`decisions-business.md`](decisions-business.md) | Vue d'ensemble, raisons et relations entre concepts | « pourquoi est-ce conçu ainsi ? » |
+
+Documents complémentaires, hors des quatre quadrants :
+
+| Registre | Dossier | Rôle |
+|---|---|---|
+| **Décisions (ADR)** | [`docs/decisions/`](decisions/README.md) | Journal D1-D15 daté, à ne pas réécrire comme une référence runtime |
+| **Postmortems** | [`docs/postmortems/`](postmortems/README.md) | Incidents, causes et corrections |
+| **Specs / plans** | [`docs/superpowers/`](superpowers/README.md) | Intention de conception au moment T |
 
 ### Règles de consolidation
 
@@ -36,10 +43,11 @@ documenté, où, et quels trous restent).
   après livraison, consolider le comportement dans `reference/` et garder le
   plan comme trace de chantier.
 
-`architecture.md` (§1-13) couvre l'explication du **cœur runtime**. Les sujets
+`architecture.md` (§1-14) couvre l'explication du **cœur runtime**. Les sujets
 transverses ou fréquemment diagnostiqués ont une page `reference/` dédiée.
 
 Index de dossiers : [`reference`](reference/README.md), [`how-to`](how-to/README.md),
+[`tutorials`](tutorials/README.md),
 [`decisions`](decisions/README.md), [`postmortems`](postmortems/README.md),
 [`superpowers`](superpowers/README.md).
 
@@ -63,12 +71,13 @@ Légende : ✅ couvert · 🟡 partiel / dispersé / potentiellement périmé ·
 |---|---|---|---|---|
 | Orchestration du cycle | `runtime/daemon` | ✅ | archi §2-3 | D7 |
 | Sélection des dus / veilles | `planning/scheduler`, `planning/indicator_watch` | ✅ | **`reference/wake-scheduler.md`**, archi §3.1, §7 | D7, D9, D10 |
-| Batch LLM / planificateur | `application/decide/planner_batch` | ✅ | archi §3.6 | D7 |
+| Décision LLM grain-symbole / compat batch | `application/decide`, `runtime/decision_dispatch_runtime`, `infrastructure/queue` | ✅ | archi §2, §3.6 ; **`reference/task-queue.md`** | D7 |
 | Contexte marché (snapshot) | `application/cycle/market_snapshot` | ✅ | archi §3.2-3.3 | — |
 | Enregistrement décision | `application/record/decision_recorder` | ✅ | archi §3.8, §8 | — |
 | Finalisation fin de cycle | `runtime/cycle_finalization` | ✅ | archi §1.1, §2 ; `reference/task-queue.md` | queue paper activée |
 | Gate de pertinence (coût) | `planning/relevance_gate` | ✅ | archi §3.4 | D7A |
 | **File de tâches durable** | `runtime/queue_runtime`, `infrastructure/queue/*` (ledger, pools, worker), `application/{queue_dispatch,execute_queue_dispatch,execute_queue_plan}` | ✅ | **`reference/task-queue.md`** | queue paper activée |
+| **Pilote de preuve du processus** | `domain/process_trace`, `runtime/process_*`, `state_db/process_event_store` | ✅ | **`reference/process-governance.md`**, archi §14 | observationnel |
 
 ### Actions & exécution
 | Sous-système | Package/module | Réf | Où | Décisions |
@@ -91,23 +100,26 @@ Légende : ✅ couvert · 🟡 partiel / dispersé / potentiellement périmé ·
 | News, challengers et analyste | `infrastructure/market_sources/news_feed`, `runtime/news_challenger_runtime`, `runtime/news_macro_runtime`, `agent/news_macro` | ✅ | **`reference/news.md`** | D15 |
 | Macro | `market/macro_calendar`, `infrastructure/market_sources/macro_series`, `runtime/news_macro_runtime` | ✅ | **`reference/macro.md`** | D15 |
 | Cycle de vie / rotation | `runtime/daemon_bootstrap`, `runtime/cycle_dispatch`, `runtime/cycle_reporting`, `runtime/runtime_shutdown`, `infrastructure/files/ledger_rotation`, `infrastructure/files/decision_ledger` | ✅ | archi §1.1, §12 | — |
-| État persistant | `runtime/daemon_bootstrap`, `state/*.jsonl`, `trade_plans.json`, `scheduler.json`, `infrastructure/state_db/*` | ✅ | archi §1.1, §8, `reference/task-queue.md` | — |
+| Intelligence entreprise | `runtime/company_intelligence_runtime`, `infrastructure/market_sources/company`, `state_db/company_*` | ✅ | **`reference/company-intelligence.md`** | advisory |
+| État persistant | `runtime/daemon_bootstrap`, `state/casys.db`, files/ledgers spécialisés, `infrastructure/state_db/*` | ✅ | archi §1.1, §8, `reference/task-queue.md` | SQLite paper canonique |
 
 ### Univers & régime
 | Sous-système | Package/module | Réf | Où | Décisions |
 |---|---|---|---|---|
 | Radar / rotation / challengers / hotlist | `runtime/market_rotation_runtime`, `runtime/news_challenger_runtime`, `market/rotation/*`, `domain/universe` | ✅ | **`reference/universe-rotation.md`**, archi §1.1 | D9, D10, D13, D15 |
+| Pipeline global/régional → Trader | `runtime/universe_intelligence_runtime`, `domain/universe/mandate`, `agent/universe` | ✅ | **`reference/universe-trader-pipeline.md`**, archi §13 | advisory + activation exacte |
 | Régime (marché + familial) | `domain/market/regime`, `domain/market/family_regime` | ✅ | **`reference/regime.md`** | D2 |
 | Config univers & portefeuille | `config/*.yaml`, `support/config/pool`, `support/config/portfolio` | ✅ | **`reference/config.md`** | D9/D10/D13/D15 |
 
 ### LLM & agent
 | Sous-système | Package/module | Réf | Où | Décisions |
 |---|---|---|---|---|
-| Transport LLM / acpx | `agent/llm`, `agent/client` | ✅ | archi §9.1-9.2 | — |
+| Transport LLM / acpx | `agent/llm`, `infrastructure/llm/acpx_backend`, `agent/client` | ✅ | archi §9.1-9.2 ; **`reference/codex-home-isole.md`** | — |
+| Presets des cinq rôles | `scripts/model_preset.py`, `ops/model-presets`, `ops/codex-home` | ✅ | **`reference/model-presets.md`** | brain Luna medium, analystes Sol low |
 | Contrat / protocole (prompts + mandat) | `agent/protocol/` (types, prompts, parsing), `mandate/` | ✅ | **`reference/llm-contract.md`** | — |
 | Vocabulaire des raisons de décision | `domain/decision_reason` | ✅ | **`reference/reporting.md`** | — |
 | Contexte agent (cockpit) | `agent/context` | ✅ | **`reference/agent-context.md`** | — |
-| Outils domaine (read-only) | `agent/tools/` (9 handlers) | ✅ | **`reference/agent-tools.md`** | — |
+| Outils domaine et langage d'action | `agent/tools/` (7 outils read-only) + compilateur d'action | ✅ | **`reference/agent-tools.md`** | — |
 | Mémoire / recall / learnings (RAG) | `agent/learnings/` (store, consolidator, embeddings) | ✅ | **`reference/learnings-rag.md`** | — |
 | Mémoire de situation (index dérivé, retrieval non câblé) | `infrastructure/state_db/situation_memory_store` | 🟡 | **`reference/news.md`**, **`reference/agent-knowledge-architecture.md`** | D15 |
 | Couche sémantique | `domain/semantic/catalog` | ✅ | **`reference/semantic.md`** | — |
@@ -115,7 +127,7 @@ Légende : ✅ couvert · 🟡 partiel / dispersé / potentiellement périmé ·
 ### Observabilité
 | Sous-système | Package/module | Réf | Où | Décisions |
 |---|---|---|---|---|
-| Cockpit TUI | `interfaces/cockpit/` (app, supervisor, events), `interfaces/ui/`, `reporting/read_models/runtime_state` | ✅ | **`reference/cockpit.md`** | — |
+| Cockpit TUI + galerie Reports | `interfaces/cockpit/` (app, supervisor, events, reports), `interfaces/ui/`, `reporting/read_models/runtime_state` | ✅ | **`reference/cockpit.md`** | lecture seule des rapports |
 | Attribution / performance | `reporting/` (attribution, meta_performance, decision_audit, decision_bench, decision_ledger, stats, tool_usage) + `reporting/audit/decision_quality` + `reporting/bench/decision_bench` + `reporting/ledger/decision_ledger` + `reporting/read_models/{attribution,live_kpis,meta_performance,tool_usage}` + `reporting/renderers/{live_kpis,tool_usage}` | ✅ | **`reference/reporting.md`** | — |
 | Commandes opérateur | `interfaces/cli/` + alias virtuels legacy `trader.commands.*`, `trader.stats`, `trader.attribution`, `trader.tool_usage`, `trader.tui` | ✅ | archi §1.1, **`reference/reporting.md`** | — |
 | Logging | `runtime/logging_setup` (`CASYS_LOG_LEVEL`, museler ib_async) | ✅ | archi §10.1 | — |
@@ -125,12 +137,15 @@ Légende : ✅ couvert · 🟡 partiel / dispersé / potentiellement périmé ·
 |---|---|---|
 | Déployer / relancer / arrêter le daemon (superviseur, SIGINT hors-batch) | ✅ | `how-to/run-the-daemon.md` |
 | Lire les logs (Gonzo `make logs`, `CASYS_LOG_LEVEL=DEBUG`, Dstl8.Lite) | ✅ | `how-to/read-logs.md` |
+| Changer/vérifier les modèles et le profil isolé | ✅ | `how-to/manage-model-presets.md` |
+| Maintenir les learnings, embeddings, FLAIR/MemRL | ✅ | `how-to/maintain-learnings.md` |
+| Rafraîchir et diagnostiquer les quatre niveaux de rapports | ✅ | `how-to/refresh-and-diagnose-reports.md` |
 | Mesurer (`measure_d7.py`) & rejouer des plans (`plan_replay`) | ✅ | `how-to/measure-and-replay.md` |
 | Configurer l'apparence cockpit terminal | ✅ | `how-to/cockpit-glass.md` |
 
 ---
 
-## Backlog v2 — vidé ✅ (2026-07-03)
+## Maintenance de la couverture
 
 Les 5 trous prioritaires identifiés à la v2 sont comblés :
 
@@ -140,13 +155,17 @@ Les 5 trous prioritaires identifiés à la v2 sont comblés :
 4. ~~Cockpit & attribution~~ ✅ [`cockpit`](reference/cockpit.md) · [`reporting`](reference/reporting.md)
 5. ~~Config univers/portefeuille~~ ✅ [`reference/config.md`](reference/config.md)
 
-**Couverture complète ✅ (2026-07-03, consolidée v3 le 2026-07-06)** — tous les
-sous-systèmes de la carte ont désormais une page `reference/` **fact-checkée**
-(18 pages reference + index ; 4 how-to + index). Nouveaux sous-systèmes documentés depuis la v2 :
-`infrastructure/queue/*` (file de tâches durable branchée au daemon en paper) et
-`planning/scheduler` / `planning/indicator_watch` (réveils, watches, plans armés).
+La consolidation v5 compte **23 pages Reference + index**, **7 How-to + index**
+et **1 tutoriel + index**. Elle ajoute notamment la gouvernance/provenance du cycle, les presets
+des cinq rôles, company intelligence, le pipeline Univers → Trader, la galerie
+Reports et les procédures de maintenance correspondantes. Elle ne transforme
+pas les specs/plans historiques en vérité courante et ne prétend pas que les
+snapshots de `etat-systeme.md` restent vrais sans vérification live.
+
 Maintenir : quand un module change, mettre à jour sa page (lire code → éditer →
-re-fact-check si substantiel).
+re-fact-check si substantiel). Les seules lignes volontairement `🟡` sont les
+capacités non encore branchées de bout en bout, comme le retrieval de mémoire de
+situation.
 
 Méthode : lire le code → écrire la page `reference/` (comportement/invariants/codes)
 → passer la ligne ✅ dans la carte. Un fact-check Codex de chaque réf vs le code

@@ -3,8 +3,9 @@
 > **Type** : How-to (Diátaxis) — procédure orientée tâche.
 > **Superviseur** : `trader/interfaces/cockpit/supervisor.py` · **State** : `state/daemon.pid`, `state/daemon_status.json`, `state/daemon_console.log`
 
-Le daemon est un **process indépendant** (PPID=1) qui survit au cockpit. Le
-superviseur gère lock, anti-doublon, rotation du log, détachement.
+Lorsqu'il est lancé par le superviseur, le daemon devient un **process détaché**
+qui survit au cockpit. Le superviseur gère lock, anti-doublon, rotation du log
+et détachement. `make live` reste volontairement au premier plan pour le dev.
 
 ## Démarrer
 
@@ -23,50 +24,58 @@ tue PAS le daemon.
 
 Le superviseur envoie **SIGINT** (jamais SIGKILL) après vérification d'identité :
 
-```python
+```bash
+uv run python -c 'from pathlib import Path; from trader.interfaces.cockpit.supervisor import stop_daemon; print(stop_daemon(pid_file=Path("state/daemon.pid"), status_file=Path("state/daemon_status.json")))'
+```
+
+Un résultat `stopped=True, reason='sigint_sent'` confirme l'envoi du signal,
+pas encore la fin effective du processus.
+
+Ou depuis le cockpit (`make watch`) : `x` arrête le daemon avec confirmation ;
+`q` propose soit de quitter seulement le cockpit, soit d'arrêter puis quitter.
+
+## Arrêt pendant une décision
+
+Le chemin queue courant arrête proprement ses pools et conserve les tâches
+durables ; un travail non terminé sera repris selon son bail et son backoff. Le
+mode batch legacy peut encore attendre ses appels LLM en vol jusqu'au timeout.
+Dans les deux cas, utiliser le superviseur puis attendre que son état vital ne
+soit plus `alive`, au lieu de tuer le PID :
+
+```bash
+uv run python - <<'PY'
 from pathlib import Path
-from trader.interfaces.cockpit.supervisor import stop_daemon
-stop_daemon(pid_file=Path("state/daemon.pid"), status_file=Path("state/daemon_status.json"))
+from time import monotonic, sleep
+
+from trader.interfaces.cockpit.supervisor import daemon_vital_state, stop_daemon
+
+pid_file = Path("state/daemon.pid")
+status_file = Path("state/daemon_status.json")
+result = stop_daemon(pid_file=pid_file, status_file=status_file)
+print(result)
+if not result.stopped and result.reason not in {"no_daemon", "pid_dead"}:
+    raise SystemExit(f"arrêt refusé: {result.reason}")
+
+deadline = monotonic() + 300
+while daemon_vital_state(status_file).status == "alive" and monotonic() < deadline:
+    sleep(0.5)
+vital = daemon_vital_state(status_file)
+print(vital)
+if vital.status == "alive":
+    raise SystemExit("daemon encore vivant après 300 s; ne pas relancer")
+PY
 ```
 
-Ou depuis le cockpit (`make watch`) : touche d'arrêt / quit avec confirmation.
+Ne lancer le nouveau daemon qu'après cette confirmation. Le superviseur vérifie
+l'identité du process et envoie SIGINT, jamais SIGKILL.
 
-## ⚠️ Piège : SIGINT pendant un batch de décision
-
-Si le daemon est en phase `deciding_batch` (`ThreadPoolExecutor` + `proc.communicate`),
-**le SIGINT ne l'interrompt PAS** — `shutdown(wait=True)` attend la fin des appels
-LLM en vol (jusqu'à `decision_timeout_s`, défaut 900 s). Le daemon meurt en ~1-2 s
-seulement quand il est **hors batch** (pause inter-cycle, phase ≠ `deciding_batch`).
-En paper local, `.env` peut réduire ce plafond via `CASYS_DECISION_TIMEOUT_S`
-(240 s au 2026-07-06) pour éviter qu'un appel `acpx` silencieux immobilise un cycle.
-
-**Restart robuste** : envoyer SIGINT, puis boucler tant que vivant en re-signalant
-dès que `phase != "deciding_batch"` (le main thread est alors en `sleep`,
-immédiatement interruptible) :
-
-```python
-import os, time, signal, json
-old = int(open("state/daemon.pid").read())
-alive = lambda p: (os.kill(p, 0) or True) if _try(p) else False  # os.kill(p,0) → OSError si mort
-# stop_daemon(...) puis :
-for _ in range(240):
-    if not _alive(old): break
-    if json.load(open("state/daemon_status.json"))["phase"] != "deciding_batch":
-        os.kill(old, signal.SIGINT)
-    time.sleep(1)
-# puis launch_daemon(...)
-```
-
-## Relancer (appliquer un changement de code / .env)
+## Relancer le daemon
 
 Le daemon lit le code + le `.env` **au démarrage** (cf. `CASYS_DECISION_BATCH_PARALLELISM`,
-`CASYS_LOG_LEVEL`). Pour appliquer un changement : **stop → launch** via le superviseur.
+`CASYS_LOG_LEVEL`). Après le stop vérifié ci-dessus, relancer via le superviseur :
 
-```python
-from pathlib import Path
-from trader.interfaces.cockpit.supervisor import launch_daemon
-launch_daemon(pid_file=Path("state/daemon.pid"), log_file=Path("state/daemon_console.log"),
-              root=Path("."), status_file=Path("state/daemon_status.json"))
+```bash
+make live-logs
 ```
 
 `launch_daemon` **rotate le log** au-delà de `MAX_LOG_SIZE_BYTES` (5 Mo) et refuse
@@ -76,12 +85,19 @@ un second daemon (`already_running`). Pour un **log vierge** : archiver
 ## Vérifier que ça tourne
 
 ```bash
-cat state/daemon.pid | xargs ps -o pid,etime,stat -p        # process vivant ?
-grep '\[config\]' state/daemon_console.log | tail -1        # config au démarrage (parallelism, etc.)
+pid=$(tr -d '[:space:]' < state/daemon.pid)
+ps -o pid,ppid,etime,stat,command -p "$pid"                 # process vivant ?
+uv run casys-trader status --json                           # phase et état runtime
+grep '\[config\]' state/daemon_console.log | tail -1        # config au démarrage
 ```
 
 `daemon_vital_state(status_file)` (superviseur) donne l'état vital (pid + identité).
+`code_version` prouve le code servi, pas le modèle : vérifier les modèles demandés
+avec `make models`, puis le provider/modèle réellement persisté dans les derniers
+runs ou décisions.
 
 ## Voir aussi
 - [Lire les logs](read-logs.md) · [Mesurer / replay](measure-and-replay.md)
+- [Changer les modèles](manage-model-presets.md) ·
+  [Diagnostiquer les rapports](refresh-and-diagnose-reports.md)
 - Architecture §8 (état persistant), §9 (LLM/acpx).

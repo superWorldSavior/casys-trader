@@ -1,7 +1,7 @@
 # Référence — Architecture de connaissance de l'agent
 
 > **Type** : Reference (Diátaxis) — cadre stable.
-> **Date** : 2026-07-04.
+> **État vérifié** : 2026-08-11.
 > **Rôle** : ranger toute connaissance de l'agent par sa **nature** (delta vs niveau,
 > général vs par-nom, périssable vs stable), **pas** par son système technique. Boussole
 > des chantiers learnings / macro / news / recall.
@@ -32,8 +32,8 @@ re-empiler les bacs.
   catalyseurs. C'est la matière réellement spécifique-symbole.
 - **③ Expérience** — la mémoire des trades passés, pondérée par le résultat (FLAIR) et
   par l'utilité de ses rappels (MemRL). Elle n'est jamais une règle permanente
-  par nom : le runtime en récupère au plus deux, d'abord sur le symbole puis sur
-  sa famille, au moment précis de décider.
+  par nom : l'agent la demande explicitement avec `recall_learnings`, qui rend
+  jusqu'à huit notes classées par appel, au moment précis de décider.
 
 ## Les 3 lois transverses
 
@@ -74,21 +74,24 @@ re-empiler les bacs.
   de briefs. Sa méthode de recherche n'est encore appelée par aucun agent runtime ;
   ce n'est donc pas un RAG de situation actif.
 - **Existe aussi** : scopes candidats immuables, ledgers challenger/univers,
-  projection préparée et activation pré-open avec fallback observable.
-- **Manque** : le mandat enrichi projeté au trader, son attribution/outcome, puis
+  projection préparée, activation pré-open avec fallback observable, et tranche
+  de mandat active projetée par symbole au trader. La décision conserve son
+  `mandate_ref` pour l'audit.
+- **Manque encore** : une attribution/outcome explicite du mandat Univers, puis
   éventuellement le retrieval de situations historiques par l'agent univers.
 
 ## Implication pour les chantiers
 
-1. **Chantier courant de ②** — exploiter les jointures scope → brief → run univers
-   → activation, puis projeter au trader seulement la tranche de mandat utile.
-   Pas de recall historique avant d'avoir mesuré ce chemin présent.
+1. **Chemin courant de ②** — les jointures scope → brief → run univers →
+   activation sont persistées, puis seule la tranche de mandat utile est
+   projetée au trader. Mesurer ce chemin présent avant d'activer un recall de
+   situation historique.
 2. **Nettoyage acté (③ → coulisse)** : retirer `by_symbol` + `raw_recent` du contexte, garder
    `global` + guardrails. Trivial, indépendant.
 3. **③ (recall/FLAIR/MemRL)** : maintenance et attribution restent en
-   **arrière-plan** ; deux expériences maximum entrent dans le cockpit symbole.
-   FLAIR et MemRL rerankent le RAG learnings. Pour ②, le futur retrieval vise
-   d'abord l'agent univers et ne devient jamais un décideur.
+   **arrière-plan** ; `recall_learnings` rend au plus huit expériences par appel
+   explicite. FLAIR et MemRL rerankent le RAG learnings. Pour ②, le futur
+   retrieval vise d'abord l'agent univers et ne devient jamais un décideur.
 
 ## Voir aussi
 

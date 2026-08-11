@@ -1,6 +1,6 @@
-# Company intelligence
+# Référence — Company intelligence
 
-> **Type** : référence opérateur.
+> **Type** : Reference (Diátaxis).
 > **Statut** : implémenté le 2026-07-10, fail-open et sans autorité de trading.
 
 ## Chaîne de données
@@ -56,15 +56,49 @@ ledgers `decide` et `execute` :
 
 - `kind=company_micro` ;
 - `partition_key=symbol` ;
-- `dedup_key=symbol:input_signature:depth` ;
+- `dedup_key=symbol:input_signature:depth:date` ;
 - ressource `company-research`, concurrence configurée par
   `research_concurrency` ;
 - retries/backoff et statuts `pending/running/done/dead` du `TaskLedger`.
 
 La collecte et l'analyse sont lancées dans des threads de fond. Le daemon ne
-les attend jamais. Un nouveau brief retrigger/coalesce la préparation Univers.
-Au boot et après chaque cycle, le scope courant regroupe candidats persistés,
-sticky et univers actif ; aucun nombre maximal de candidats n'est appliqué.
+les attend jamais. Au boot et après chaque cycle, le scope courant regroupe
+candidats persistés, sticky et univers actif ; aucun nombre maximal de
+candidats n'est appliqué.
+
+Une analyse déjà exploitable est rafraîchie au plus toutes les 24 h. Un nouveau
+snapshot fondamental, profil ou événement earnings la rend immédiatement due ;
+les news seules ne changent pas cette signature fondamentale. La fenêtre
+pré-open rend également le brief éligible. Une simple sonde inchangée est
+retournée dans `skipped` mais n'écrit plus une ligne durable à chaque tick.
+
+Une tâche a six tentatives totales. Après les échecs 1 à 5, la file planifie
+respectivement 30 min, 1 h, 2 h, 4 h puis 6 h ; le sixième échec passe en
+`dead`. Chaque tentative matérielle reste appendue dans
+`state/company_analysis_runs/`. La projection `latest` conserve le dernier
+succès utilisable et ajoute la panne courante sous `latest_failure` avec
+tentative, délai et `next_retry_at` ; un succès ultérieur efface ce marqueur.
+
+### Politique de propagation courante
+
+Dans le daemon, un nouveau brief micro écrit par son worker signale uniquement
+sa venue de cotation (`TW`, `EU` ou `US`). Les signaux d'une même vague sont
+coalescés par un debounce trailing de 120 s avant une éventuelle nouvelle
+préparation Univers ; ils ne réveillent pas les deux autres rapports régionaux.
+Le runtime construit par la CLI n'installe pas ce callback : un refresh manuel
+écrit bien le brief partagé, mais la CLI seule ne déclenche aucun passage
+Univers. Le brief sera consommé lors d'un passage autrement éligible, par
+exemple un nouveau scope ou brief macro, ou une préparation pas encore faite.
+Cette nouvelle préparation n'est autorisée que tant que le
+`candidate_scope_id` courant n'a pas été activé. Après l'activation réussie du
+scope exact, les nouveaux micros restent disponibles comme provenance et pour
+le prochain scope, mais ne recomposent ni la hotlist ni le mandat actifs.
+
+Le rapport macro/news régional conserve lui aussi les références micro exactes,
+sans faire de chaque brief entreprise un déclencheur immédiat. Il consomme les
+derniers micros au prochain refresh éligible après le cooldown de succès de 4 h,
+lors d'un refresh manuel `--force`, ou immédiatement lorsqu'un nouveau scope
+candidat exige un brief exact-scope.
 
 Kill switch : `CASYS_COMPANY_MICRO_ANALYST_ENABLED=0`.
 
@@ -98,9 +132,15 @@ signale `candidate_coverage_pending=true`.
 
 `config/company_intelligence.yaml` contrôle la concurrence et les modes
 `universe_company_context_mode` / `trader_company_context_mode`. Le cockpit
-Univers expose la couverture micro, les statuts de queue et le mandat activé.
+Univers expose la couverture micro, les statuts de queue et le mandat activé ;
+la page Reports montre le dernier brief et, séparément, la dernière panne.
 Chaque run Univers fige le hash, les compteurs et les références de briefs
 consommées. Chaque décision persiste `company_brief_refs` et `mandate_ref`.
 
 L'API ESEF utilisée est l'endpoint public `/api/filings` avec filtre d'entité ;
 les LEI ne sont jamais devinés et doivent être déclarés explicitement.
+
+## Voir aussi
+
+- [How-to : rafraîchir et diagnostiquer les rapports](../how-to/refresh-and-diagnose-reports.md)
+- [News et analyste macro](news.md) · [gestion d'univers](universe-rotation.md)

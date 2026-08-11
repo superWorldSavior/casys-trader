@@ -1,27 +1,33 @@
 # Référence — CODEX_HOME isolé du daemon
 
 > **Type** : Reference (Diátaxis).
-> **Code** : `ops/codex-home/config.toml` (versionné) · propagation `trader/agent/llm.py::load_dotenv` → `trader/support/system/process_env.py::sanitized_runtime_env` → subprocess `acpx` → pont `codex-acp` (`acpx src/acp/auth-env.ts::buildAgentEnvironment`).
-> **Statut** : ✅ **Actif en paper (2026-07-06, main dabc85b)** — `.env CODEX_HOME=…/ops/codex-home`.
-> **Rôle** : donner à tous les appels ACPX de l'app un environnement Codex **nu** (0 plugin, 0 skill, 0 MCP), avec un défaut Sol low commun et un effort du brain configurable par session, pour des décisions **déterministes** au contrat JSON strict.
+> **Code** : profil versionné `ops/codex-home` · propagation `trader/agent/llm.py::load_dotenv` → `trader/support/system/process_env.py::sanitized_runtime_env` → subprocess `acpx` → pont `codex-acp` (`acpx src/acp/auth-env.ts::buildAgentEnvironment`).
+> **Statut** : ✅ **Actif en paper** — profil Codex unique `low` depuis le 2026-08-10 ; effort du brain surchargé par session.
+> **Rôle** : donner à tous les appels ACPX de l'app un environnement Codex **nu** (0 plugin, 0 skill, 0 MCP) et imposer un effort de raisonnement **explicite** quel que soit le modèle, pour des sessions de décision **déterministes** au contrat JSON strict, isolées de l'environnement de dev partagé, avec un `exec` optionnel confiné dans un scratch hors repo.
 
-## Un seul profil, effort du brain par session
+## Un profil, effort du brain par session
 
-Tous les rôles Codex partagent `ops/codex-home`, configuré en `gpt-5.6-sol`
-avec `model_reasoning_effort = "low"`. Le brain choisit son modèle via
-`TRADER_MODEL` et son effort via `TRADER_REASONING_EFFORT`.
+Tous les rôles partagent un seul profil nu, `ops/codex-home`, dont le défaut est
+`gpt-5.6-sol` avec `model_reasoning_effort = "low"`.
 
-Le trader ne réimplémente pas l'effort. Après la création de la session, il
-appelle le mécanisme ACP natif avant le premier prompt :
+Le modèle se choisit avec l'option `--model` existante d'acpx. Pour le brain,
+l'effort se règle ensuite sur la session ACP existante :
 
 ```bash
-acpx sessions new casys-trader:runtime-brain:0 --model gpt-5.6-luna
+acpx --model gpt-5.6-luna sessions new -s casys-trader:runtime-brain:0
 acpx set reasoning_effort medium --session casys-trader:runtime-brain:0
 acpx prompt --session casys-trader:runtime-brain:0 '<prompt>'
 ```
 
-La configuration opérationnelle est donc : brain Luna medium ; consolidateur,
-univers, micro société et macro/news Sol low ; un seul CODEX_HOME.
+Le trader ne réimplémente pas l'effort : `AcpxBackend.open_session()` appelle
+simplement `acpx set` entre la création de session et le premier prompt. La
+configuration active est donc : brain `gpt-5.6-luna` medium ; consolidateur,
+univers, micro société et macro/news `gpt-5.6-sol` low ; un seul CODEX_HOME.
+
+La garde du profil reste **fail-close** : `ops/codex-home/config.toml` doit porter
+explicitement l'effort par défaut `low`, sinon l'appel est refusé avant le
+subprocess. L'override medium du brain est lui validé par le pont ACP sur la
+session.
 
 ## Le problème (ce qui a motivé l'isolation)
 
@@ -58,15 +64,28 @@ Un **`CODEX_HOME` dédié et unique**, versionné dans `ops/codex-home/`, avec u
 `config.toml` **nu**. Le daemon le désigne via `.env`. Pour les commandes de
 l'app lancées hors daemon, notamment `decisions bench`, le transport retombe
 sur ce même répertoire versionné. Avant chaque subprocess, il lit le TOML et
-refuse l'appel si son défaut `model_reasoning_effort` n'est pas exactement
-`"low"`. L'override medium du brain est ensuite validé par le pont ACP sur la
-session.
+refuse l'appel si `model_reasoning_effort` n'est pas `low` (cf. section
+précédente).
+
+Depuis Codex CLI 0.147, un `config.toml` nu ne garantit plus à lui seul un prompt
+nu : Codex matérialise ses skills système sous `CODEX_HOME` et découvre aussi
+`~/.agents/skills`. Le transport construit donc un `CODEX_CONFIG` par processus
+(`acpx_backend._isolated_codex_config`) qui désactive apps/plugins, les agents
+collaborateurs et chaque `SKILL.md` découvert. Sur la version runtime épinglée
+Codex CLI 0.147, le test `debug prompt-input` montre que l'override effectif doit
+viser le chemin exact du fichier `SKILL.md` (le dossier seul ne le désactive pas).
+Il fixe aussi
+`project_doc_max_bytes = 0` et réinjecte les
+seules instructions courtes du runtime à priorité developer, afin que les
+`AGENTS.md` d'ingénierie du dépôt n'entrent pas dans une décision marché. Le
+`HOME` du subprocess reste inchangé : le stockage de sessions et le cache ACPX
+continuent de fonctionner normalement.
 
 ### Structure `ops/codex-home/`
 
 | Fichier | Rôle | Suivi git |
 | --- | --- | --- |
-| `config.toml` | Config nue : `model`, `approval_policy`, `sandbox_mode`, **0 `[plugins.*]`**, **0 `[marketplaces.*]`**, **0 MCP** | ✅ versionné |
+| `config.toml` | Base nue : `model`, `approval_policy`, `sandbox_mode`, **0 `[plugins.*]`**, **0 `[marketplaces.*]`**, **0 MCP** ; les gates skills/plugins effectifs viennent du `CODEX_CONFIG` runtime | ✅ versionné |
 | `auth.json` | Symlink → `~/.codex/auth.json` (auth OpenAI partagée, pas de re-login) | ❌ gitignoré (secret + spécifique machine) |
 | `sessions/`, `history/`, `tmp/` | Rollouts générés par le daemon | ❌ gitignoré |
 
@@ -85,12 +104,14 @@ Le `.gitignore` local (`ops/codex-home/.gitignore`) garantit qu'on ne versionne
                                 └─> pont codex-acp → codex lit $CODEX_HOME/config.toml
 ```
 
-Le point-clé qui rend le fix **facile** : `acpx` construit l'environnement du
+Le point-clé qui rend l'isolation **simple** : `acpx` construit l'environnement du
 pont à partir de `{ ...process.env }` (fichier `src/acp/auth-env.ts`,
 `buildAgentEnvironment`). `_run_one_shot_command()` résout et valide donc le
 profil de l'app, force ce `CODEX_HOME` dans l'environnement enfant, puis
-`sanitized_runtime_env()` retire seulement le bruit système. Un profil `ultra`,
-`medium` ou sans effort explicite échoue avant même de lancer `acpx`.
+`sanitized_runtime_env()` retire seulement le bruit système. Un profil dont le
+défaut n'est pas `low` échoue avant même de lancer `acpx`. Le brain applique
+ensuite `reasoning_effort=medium` via la commande de session ACP documentée plus
+haut.
 
 ### Exec natif optionnel
 

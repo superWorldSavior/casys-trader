@@ -15,7 +15,9 @@ Le reporting est **ex-post et lecture-seule**, chacun sur sa source :
 lit `decision_audit.json`. Les anciens modules `reporting.decision_ledger` et
 `reporting.ledger.decision_ledger` ne sont plus des write-sides : ce sont des
 façades de compatibilité vers la projection applicative et l'adaptateur JSONL.
-Rien de canonique sous `reporting/` n'est dans le hot-path de décision.
+Ces read models peuvent alimenter le contexte de décision (KPI, attribution,
+méta-performance), mais restent strictement en lecture : aucun module sous
+`reporting/` n'admet un ordre, ne mute le portefeuille ni ne clôt un processus.
 
 ## Modules
 
@@ -45,6 +47,46 @@ et `python -m trader.tool_usage`, ainsi que `python -m trader.commands.*`,
 restent supportés via les alias virtuels de `trader/__init__.py`, mais ils
 délèguent aux modules canoniques de `trader/interfaces/cli/`.
 
+## Projection de corrélation du processus
+
+`application.record.decision_ledger_rows.build_decision_row()` ajoute un objet
+`process` seulement si le runtime a fourni une identité ou une version de
+gouvernance :
+
+```json
+{
+  "process": {
+    "process_instance_id": "…",
+    "attempt_id": "…",
+    "runtime_run_id": "…",
+    "decision_id": "…",
+    "governance_version": {"bundle_sha256": "…"}
+  }
+}
+```
+
+Le `decision_id` projeté est l'identité durable résolue de la ligne. Le
+`governance_version` contient aussi, dans le runtime intégré, la liste des
+artefacts allowlistés et leurs empreintes. La décision originale reste sous
+`decision`, avec les effets et readbacks déjà produits avant son écriture ; le
+`decision_readback` est créé ensuite par la relecture de cette ligne.
+
+Le daemon relit cette ligne durable avant toute clôture du processus et compare
+exactement le symbole, le `decision_id` et les trois IDs de processus. Les
+jointures d'audit disponibles sont donc :
+
+| Source | Clé de jointure | Vérité portée |
+|---|---|---|
+| `decisions.jsonl` | `decision_id` + objet `process` | décision, version de gouvernance, reçus déclarés |
+| `process_events` dans `casys.db` | `process_instance_id`, `attempt_id`, `decision_id` dans les `effect_refs` | lifecycle append-only et résultat terminal éventuel |
+| `broker_fills` dans `casys.db` | `process_instance_id`, `attempt_id`, `decision_id` | effet paper effectivement persisté |
+
+Le reporting reste lecture-seule : il peut projeter ces liens, mais il ne doit
+ni inférer un `completed` depuis une décision seule, ni réparer ou clore une
+instance. Le résultat terminal autoritatif est l'événement
+`process_events` portant `event_type=instance_closed` ; en son absence,
+l'instance demeure ouverte.
+
 ## Codes de raison de décision (`domain.decision_reason`)
 
 Enum stable (15 codes, `trader/domain/decision_reason.py`) posé sur chaque
@@ -59,4 +101,7 @@ infra d'un HOLD authored par le LLM).
 les imports internes doivent viser `trader.domain.decision_reason`.
 
 ## Voir aussi
-- [Cockpit](cockpit.md) (consomme `stats`, `attribution`) · Architecture §11 (recall).
+- [Gouvernance du processus](process-governance.md) (identités, preuves et
+  clôture) · [Exécution](execution.md) (propagation ordre/fill) ·
+  [Cockpit](cockpit.md) (consomme `stats`, `attribution`) · Architecture §11
+  (recall).

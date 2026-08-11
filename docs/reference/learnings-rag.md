@@ -33,7 +33,8 @@ Shrinkage bayésien : à faible volume, l'`outcome_score` est tiré vers 0 (prud
 `LearningSyncRunner` tourne en arrière-plan après les cycles, en single-flight :
 
 1. ingestion idempotente de `learnings-from-ledger.jsonl`,
-   `learnings-evicted.jsonl` et `learnings.jsonl` ;
+   `rationale-experiences.jsonl`, `learnings-evicted.jsonl` et
+   `learnings.jsonl` ;
    le bootstrap historique ne remplit que les verdicts encore absents ;
 2. embeddings manquants en micro-lots de 64 ;
 3. outcomes matures, à 1 jour avec fallback 4 heures, en lots de 128 ;
@@ -107,25 +108,51 @@ nouvelle consolidation écrit ce slot vide. Les règles globales citées via
 `applied_learning_ids` ont leur MemRL séparé des notes rappelées par l'outil :
 seules les règles réellement citées reçoivent l'outcome différé de la décision.
 
-### Ingestion et outcomes
+### Capture, ingestion et outcomes
 
-`record_learning` conserve son learning brut dans le JSONL puis l'ingère
-immédiatement dans SQLite avec son vrai `decision_id` et un feedback `pending`;
-la vectorisation reste best-effort en arrière-plan. Une entrée (`OPEN_LONG`,
-`OPEN_SHORT`, `SCALE_IN`, ou nouvelle jambe d'un `FLIP`) n'est évaluée qu'après
-la clôture complète de son lot FIFO, sorties partielles et commissions incluses.
-`HOLD`, ordre bloqué, `CLOSE` et `REDUCE` conservent le jugement contrefactuel
-à 1 jour, avec fallback 4 heures. Les anciennes notes à identifiant synthétique
-restent sur ce dernier horizon fixe.
+Chaque décision réellement écrite par le LLM devient automatiquement une
+expérience lorsque les trois conditions suivantes sont vraies :
+
+- `decision_source=llm` et `model_called=true` ;
+- la rationale est non vide et exploitable ;
+- aucun `llm_error` ne signale une réponse invalide.
+
+Les `HOLD` synthétiques d'infrastructure, les décisions sans appel modèle et les
+rationales de fallback ne créent donc pas de note. `record_learning` reste
+offert à l'agent, mais il n'ouvre pas une deuxième mémoire : son texte est une
+annotation optionnelle fusionnée à la rationale de la même décision. Il n'existe
+qu'une note par `decision_id`, dédupliquée dès le JSONL brut puis dans SQLite.
+
+La note est ingérée immédiatement dans `learnings.db` avec un feedback
+`pending`, donc rappelable par FTS sans attendre l'embedding. La vectorisation,
+FLAIR et MemRL restent best-effort en arrière-plan. Le rattrapage historique lit
+le ledger décisions, applique le même filtre et écrit les expériences absentes
+dans `state/archive/rationale-experiences.jsonl` ; il est dry-run par défaut.
+
+Une entrée (`OPEN_LONG`, `OPEN_SHORT`, `SCALE_IN`, ou nouvelle jambe d'un
+`FLIP`) n'est évaluée qu'après la clôture complète de son lot FIFO, sorties
+partielles et commissions incluses. `HOLD`, ordre bloqué, `CLOSE` et `REDUCE`
+conservent le jugement contrefactuel à 1 jour, avec fallback 4 heures. Pour les
+notes aplaties, le worker rejoint le `decision_id` au ledger avant le scoring :
+il retrouve ainsi le `portfolio_snapshot` requis pour juger correctement un
+`HOLD`. Les anciennes notes à identifiant synthétique restent sur l'horizon fixe.
 
 Une consolidation est due à 50 nouvelles notes, 10 feedbacks modifiés, ou au
 rattrapage quotidien d'un changement en attente. Les révisions exactes envoyées
 au modèle ne sont marquées curées qu'après une écriture réussie : un échec ne
 perd donc ni une note ni un outcome arrivé pendant l'appel.
 
+Un événement avec `new_raw_count=0` n'est pas nécessairement vide : il peut
+correspondre à un `feedback refresh` ou à un `daily catch-up` qui recure un pool
+de candidats existants après évolution de leurs outcomes. Le libellé opérateur
+doit être lu avec `curation_due` et `curated_candidate_count`, pas avec le seul
+compteur de notes brutes.
+
 ## Invariant
 Le `.db` est reconstructible depuis les archives ; ne jamais le traiter comme
 source de vérité canonique (ce sont les JSONL). Cf. Architecture §11.
 
 ## Voir aussi
-- [Domain tools](agent-tools.md) (`recall_learnings`) · [reporting](reporting.md) (perf).
+- [How-to maintenance](../how-to/maintain-learnings.md) ·
+  [Domain tools](agent-tools.md) (`recall_learnings`) ·
+  [reporting](reporting.md) (perf).

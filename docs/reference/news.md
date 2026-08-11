@@ -73,12 +73,14 @@ La couverture est actuellement **partielle** : l'archive est alimentée quand le
 cycle enregistre une décision et demande son snapshot news. Un symbole non
 interrogé ne doit jamais être interprété comme `no_news`.
 
-Il n'existe pas encore de source news globale indépendante garantie. L'analyste
-lit `state/macro_headlines/` ou `state/global_news_items/` seulement si un
-producteur local les a déposés ; sinon la couverture globale vaut explicitement
-`missing`. De même, les dates macro peuvent provenir des constantes versionnées
-et du fichier calendrier local de fallback. Ces limites apparaissent dans la
-couverture du brief.
+Les flux globaux complémentaires `state/macro_headlines/` et
+`state/global_news_items/` restent optionnels. En revanche, le daemon collecte
+désormais en fail-soft une source globale indépendante sans clé : GDELT DOC 2.0,
+au plus une fois par 20 h, dans `state/gdelt/events.jsonl`. Ces événements
+géopolitiques alimentent la passe `GLOBAL`; ils ne prouvent pas une couverture
+exhaustive de l'actualité. Les dates macro peuvent aussi provenir des constantes
+versionnées et du calendrier local de fallback. Ces limites restent explicites
+dans la couverture du brief.
 
 ## 2. Scout fresh-news — construction des challengers
 
@@ -139,10 +141,19 @@ renvoie aucun `add/remove` et ne modifie jamais le pool, la hotlist ou
 `universe.yaml`.
 
 Un brief garde un TTL de 20 h, sans geler les inputs pendant 20 h : une signature
-matérielle différente (nouvelles UUID, série ou événement macro) provoque un
-refresh après un cooldown de succès de 4 h. Le champ mobile `in_h` ne compte pas
-comme nouvelle information. Le runner coalesce le dernier trigger reçu pendant
-un appel LLM.
+matérielle différente (nouvelles UUID, série, événement macro ou référence micro)
+est consommée au prochain refresh éligible après un cooldown de succès de 4 h.
+Un nouveau `candidate_scope_id` et un appel manuel `--force` contournent ce
+cooldown ; un nouveau brief micro, à lui seul, ne le contourne plus. Le champ
+mobile `in_h` ne compte pas comme nouvelle information. Le runner coalesce le
+dernier trigger reçu pendant un appel LLM.
+
+Après un échec, les passes régionales et `GLOBAL` sont replanifiées avec un
+backoff 30, 60, 120, 240 puis 360 minutes. Leur lignée de retry ignore les
+timestamps et collectes volatiles : une panne persistante ne récupère pas un
+nouveau budget à chaque cycle. `state/news_macro_analysis_status.json` garde le
+dernier succès et sa `latest_failure` séparée ; la galerie Reports peut ainsi
+montrer le rapport utilisable tout en signalant tentative et prochain retry.
 
 `input_refs` porte aussi le `candidate_scope_id` exact et une couverture
 explicite : nombre de candidats, candidats avec news, articles injectés, cap
@@ -166,6 +177,8 @@ contexte. Le scout propose des candidats ; l'analyste décrit la situation ;
   les `input_refs` bruts ;
 - le runner est async, single-worker et coalesce le dernier trigger pendant un
   run ; il ne bloque jamais le polling du daemon ;
+- une vague de nouveaux briefs micro ne cible que la venue de leurs symboles et
+  peut actualiser sa préparation uniquement avant l'activation du scope exact ;
 - une réussite écrit une projection préparée indexée par le hash du scope ;
 - au pré-open, la sortie est revalidée contre pool, sticky, cap et TTL ;
 - en cas d'absence, mismatch, invalidité, expiration ou erreur agent, la baseline
@@ -173,6 +186,8 @@ contexte. Le scout propose des candidats ; l'analyste décrit la situation ;
 - un fallback `pending`/`missing` reste une tentative : il est dédupliqué dans le
   ledger, mais une projection arrivée plus tard dans la même fenêtre peut encore
   être activée ; seule une activation agent réussie clôt le scope ;
+- une fois cette activation réussie, les changements micro ou marché ultérieurs
+  ne relancent plus automatiquement l'agent Univers pour ce scope ;
 - tous les sticky sont ajoutés **après** la sélection et ne consomment aucune des
   25 places.
 
@@ -182,6 +197,8 @@ contexte. Le scout propose des candidats ; l'analyste décrit la situation ;
 
 - news brutes : `state/news_items/*.jsonl` ;
 - briefs : `state/news_briefs/*.jsonl` ;
+- événements globaux GDELT : `state/gdelt/events.jsonl` ;
+- statut analyste/retry : `state/news_macro_analysis_status.json` ;
 - run scout : `state/news_challenger_runs/*.jsonl` + cache latest par venue ;
 - scopes immuables : `state/candidate_scopes/*.jsonl` + projection
   `current-<venue>.json`, avec `scope_phase`, `parent_candidate_scope_id` et
@@ -327,5 +344,6 @@ Ordre de promotion restant :
 - [Architecture de connaissance](agent-knowledge-architecture.md)
 - [Learnings & RAG](learnings-rag.md)
 - [Données macro](macro.md)
+- [How-to : rafraîchir et diagnostiquer les rapports](../how-to/refresh-and-diagnose-reports.md)
 - [Spec analyste macro/news](../superpowers/specs/2026-07-02-macro-analyste-news-spec.md)
 - [Spec agent univers](../superpowers/specs/2026-07-09-universe-intelligence-pass-design.md)
