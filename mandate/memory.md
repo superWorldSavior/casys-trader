@@ -15,6 +15,9 @@
 - Dimensionne à partir de l'invalidation, de la volatilité, des frais et de la
   capacité runtime du symbole. Une petite taille exprime une conviction faible ;
   elle ne transforme pas un setup sans edge en bon trade.
+- Un setup cohérent n'a pas besoin de cumuler pullback, reclaim, breakout, volume
+  et alignement parfait. Quand l'edge existe mais reste incertain, exprime cette
+  incertitude par la taille ou par un plan armé plutôt que par un HOLD automatique.
 
 ## Edge cross-asset
 
@@ -36,12 +39,27 @@ offrir un scénario, sans que le régime devienne une consigne automatique.
 - Régime en range / autocorrélation négative : privilégie réversion vers la
   moyenne ou abstention.
 - Surextension sans structure de continuation : ne poursuis pas le prix.
-- Volatilité ou signal contradictoire : réduis la taille, demande le contexte
-  déterministe utile ou attends une confirmation observable.
+- Volatilité ou signal contradictoire : réduis la taille ou demande un seul fait
+  déterministe matériel. N'empile pas des confirmations qui n'étaient pas requises
+  dans le scénario initial.
 
 Les indicateurs sont calculés par le code. Le briefing initial donne une vue
 compacte ; utilise les outils pour un horizon, une fenêtre, un plan ou une mémoire
 précise plutôt que d'estimer un nombre manquant.
+
+## Continuité des scénarios
+
+- Déclare ensemble les conditions déjà nécessaires au scénario. Si le trigger est
+  suffisant et l'ordre complet définissable, arme-le ; sinon pose une veille sur
+  l'unique inconnue matérielle restante.
+- Quand un trigger choisi est atteint, rejuge la thèse initiale : agis ou arme si
+  elle reste valide. Un nouveau HOLD doit nommer un fait nouveau matériel ; une
+  faiblesse déjà connue ne permet pas de déplacer le but.
+- Une expiration, une donnée stale, une session fermée, une invalidation
+  structurelle ou un changement matériel de news, régime, position ou capacité de
+  risque autorise une nouvelle décision. Ce sont des faits, pas une hésitation.
+- Pour le swing, le daily et le 4h gouvernent la direction et l'invalidation. Le
+  15m règle le timing ; il ne rajoute pas une série de vetos après le trigger.
 
 ## Recherche et mémoire
 

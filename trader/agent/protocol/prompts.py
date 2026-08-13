@@ -48,8 +48,13 @@ _DATA_BOUNDARY = (
 _OUTPUT_CONTRACT = (
     "Réponds UNIQUEMENT par un objet JSON valide, sans texte autour, de la forme:\n"
     '{"symbol":"<SYM>","confidence":<0..1>,"rationale":"<court>",'
+    '"opportunity_side":<"long"|"short"|null>,'
     f'"decision_reason_code":"{_REASON_CODE_ENUM}","calls":[<tool_call>,...]}}\n'
     "`calls: []` signifie HOLD explicite pour ce symbole.\n"
+    "`opportunity_side` décrit la direction de l'opportunité précise évaluée, même "
+    "si elle est refusée ou différée : `long`, `short`, ou `null` seulement s'il "
+    "n'existe réellement aucune thèse directionnelle. Ce champ sert uniquement à "
+    "l'audit ex-post et ne déclenche aucune exécution.\n"
     'Chaque `<tool_call>` a exactement la forme {"tool":"<nom>","args":{...}}.\n'
     "Optionnel : `applied_learning_ids:[\"<rule_id>\",...]` cite au plus trois "
     "règles de `context.learnings.global` qui ont réellement pesé sur cette décision.\n"
@@ -110,6 +115,29 @@ _DECISION_GUIDANCE = (
     "la décision. "
     "Corriger = annuler l'ancien `id` avec `cancel_watch` et reposer le "
     "plan à jour avec `propose_indicator_watch` dans la même décision.\n\n"
+    "# Continuité des scénarios et coût de l'inaction\n"
+    "`recent_decisions` contient tes décisions authentiques récentes, de la plus "
+    "récente à la plus ancienne. `indicator_triggers` signifie qu'une condition "
+    "précédemment choisie a réellement matché ; `matched.actual` donne la valeur "
+    "observée. `wake_reasons` décrit un réveil sans match, notamment une expiration : "
+    "une watch expirée impose une réévaluation fraîche, pas une entrée automatique. "
+    "Un trigger WAKE ouvre une relecture du scénario initial, ce n'est pas un ordre. "
+    "Lors de cette relecture, n'endurcis pas le critère parce que tu doutes : si la "
+    "thèse et le trigger choisis restent valides, agis ou arme le scénario. Pour "
+    "différer ou annuler, cite dans `rationale` un fait nouveau matériel apparu depuis "
+    "la décision : invalidation structurelle, news ou régime nouveau, position ou "
+    "capacité de risque changée, session fermée, données stale, ou "
+    "`execution.enabled=false`. Un fait déjà connu au moment du plan — même range, "
+    "faible efficience ou absence de breakout — n'est pas un fait nouveau et ne "
+    "justifie pas d'ajouter une confirmation.\n"
+    "Déclare dès la création toutes les conditions déjà jugées nécessaires, dans la "
+    "même watch. Si elles suffisent à décider et que l'ordre complet est définissable, "
+    "utilise `EXECUTE_ORDER`; sinon utilise WAKE pour l'unique inconnue matérielle "
+    "restante. Ne construis pas après coup une chaîne pullback puis reclaim puis "
+    "breakout puis volume. Évalue symétriquement action et inaction : HOLD n'est pas "
+    "le choix par défaut et possède un coût d'opportunité. Un setup cohérent avec edge "
+    "positif peut s'exprimer par une taille réduite ou un plan armé ; une petite taille "
+    "ne sauve jamais un setup sans edge.\n\n"
     "# Semantic layer\n"
     "Les indicateurs fiables sont calculés par le code. Le prompt expose "
     "`context.cockpit` (compact, sans barres brutes). Si ce cockpit ne suffit pas, "
@@ -164,7 +192,11 @@ _DECISION_GUIDANCE = (
     "# Contexte compact\n"
     "Pas de barres brutes. `rs=force relative courte` sert au timing ; "
     "`rs_d=force relative daily`, à la thèse swing/divergence. Les requêtes suivent "
-    "`symbol × indicators × timeframe × lookback × window × as_of` (`4h` supporté).\n\n"
+    "`symbol × indicators × timeframe × lookback × window × as_of` (`4h` supporté). "
+    "Pour ce mandat swing, le daily et le 4h gouvernent direction, thèse et "
+    "invalidation ; le 15m règle le timing d'entrée. Le 15m ne devient pas un veto "
+    "permanent ni une nouvelle confirmation après que le trigger choisi a matché, "
+    "sauf fait nouveau qui invalide réellement la thèse ou empêche l'exécution.\n\n"
 )
 
 
@@ -242,7 +274,10 @@ _BATCH_FINAL_CONTRACT = (
     'Réponds UNIQUEMENT par {"decisions": [ <obj>, ... ]} avec EXACTEMENT une entrée '
     "par symbole listé.\n"
     'Chaque <obj>: {"symbol":"<SYM>","confidence":<0..1>,"rationale":"<court>",'
+    '"opportunity_side":<"long"|"short"|null>,'
     f'"decision_reason_code":"{_REASON_CODE_ENUM}","calls":[<tool_call>,...]}}\n'
+    "`opportunity_side` sert uniquement à l'audit ex-post : direction de "
+    "l'opportunité précise évaluée, ou `null` sans thèse directionnelle. "
     "`calls: []` signifie HOLD explicite. Utilise la grammaire Pine-like JSON "
     "`strategy_entry` / `strategy_exit` / `strategy_close` pour les décisions de trading. "
     "Optionnel : `applied_learning_ids` contient au plus trois `rule_id` réellement "
@@ -253,7 +288,10 @@ _SYMBOL_CALLS_FINAL_CONTRACT = (
     'Le contrat final: {"decisions": [ <obj>, ... ]} avec EXACTEMENT une entrée '
     "par symbole listé.\n"
     'Chaque <obj>: {"symbol":"<SYM>","confidence":<0..1>,"rationale":"<court>",'
+    '"opportunity_side":<"long"|"short"|null>,'
     f'"decision_reason_code":"{_REASON_CODE_ENUM}","calls":[<tool_call>,...]}}\n'
+    "`opportunity_side` est la direction de l'opportunité précise évaluée; `null` "
+    "seulement sans thèse directionnelle. Ce champ d'audit n'exécute rien. "
     "`calls: []` = HOLD explicite. `applied_learning_ids` est optionnel: au plus "
     "trois `rule_id` réellement appliqués.\n"
     'Chaque `<tool_call>` a exactement la forme {"tool":"<nom>","args":{...}}. '

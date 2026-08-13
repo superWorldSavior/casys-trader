@@ -116,6 +116,8 @@ def test_non_finite_or_invalid_fills_are_ignored() -> None:
 def test_realised_verdict_uses_shared_significant_return_band() -> None:
     assert realised_verdict(0.006) == ("WIN", 1.0)
     assert realised_verdict(-0.006) == ("LOSS", -1.0)
+    assert realised_verdict(0.005) == ("WIN", 1.0)
+    assert realised_verdict(-0.005) == ("LOSS", -1.0)
     assert realised_verdict(0.001) == ("NEUTRAL", 0.0)
 
 
@@ -153,13 +155,11 @@ def test_score_outcome_uses_one_day_then_maps_reward() -> None:
         "forward_return": pytest.approx(0.03),
     }
 
-
 @pytest.mark.parametrize(
     ("quantity", "final", "verdict", "forward_return"),
     [
         (10.0, 103.0, "WIN", 0.03),
         (-10.0, 97.0, "WIN", -0.03),
-        (0.0, 103.0, "LOSS", 0.03),
     ],
 )
 def test_score_outcome_hold_reflects_portfolio_exposure(
@@ -198,10 +198,12 @@ def test_score_outcome_hold_reflects_portfolio_exposure(
         {"portfolio_snapshot": {"holdings": [{"symbol": "SPY", "quantity": "invalid"}]}},
     ],
 )
-def test_score_outcome_hold_without_reliable_snapshot_stays_pending(snapshot_fields: dict) -> None:
+def test_score_outcome_directionless_hold_material_move_is_unknown(
+    snapshot_fields: dict,
+) -> None:
     started = datetime(2026, 7, 1, 10, tzinfo=UTC)
 
-    assert score_outcome(
+    result = score_outcome(
         {
             "cycle_ts": started.isoformat(),
             "symbol": "SPY",
@@ -210,4 +212,143 @@ def test_score_outcome_hold_without_reliable_snapshot_stays_pending(snapshot_fie
         },
         _bars(started, final=103.0),
         now=started + timedelta(days=4),
-    ) is None
+    )
+
+    assert result == {
+        "verdict": "UNKNOWN",
+        "reward": None,
+        "forward_return": pytest.approx(0.03),
+    }
+
+
+def test_score_outcome_directionless_hold_quiet_market_is_neutral() -> None:
+    started = datetime(2026, 7, 1, 10, tzinfo=UTC)
+
+    result = score_outcome(
+        {
+            "cycle_ts": started.isoformat(),
+            "symbol": "SPY",
+            "action": "HOLD",
+            "portfolio_snapshot": {"holdings": []},
+        },
+        _bars(started, final=100.3),
+        now=started + timedelta(days=2),
+    )
+
+    assert result == {
+        "verdict": "NEUTRAL",
+        "reward": 0.0,
+        "forward_return": pytest.approx(0.003),
+    }
+
+
+@pytest.mark.parametrize(
+    ("opportunity_side", "final", "verdict", "reward"),
+    [
+        ("long", 103.0, "LOSS", -1.0),
+        ("long", 97.0, "WIN", 1.0),
+        ("short", 97.0, "LOSS", -1.0),
+        ("short", 103.0, "WIN", 1.0),
+    ],
+)
+def test_score_outcome_directional_hold_scores_missed_or_prudence(
+    opportunity_side: str,
+    final: float,
+    verdict: str,
+    reward: float,
+) -> None:
+    started = datetime(2026, 7, 1, 10, tzinfo=UTC)
+
+    result = score_outcome(
+        {
+            "cycle_ts": started.isoformat(),
+            "symbol": "SPY",
+            "action": "HOLD",
+            "opportunity_side": opportunity_side,
+        },
+        _bars(started, final=final),
+        now=started + timedelta(days=2),
+    )
+
+    assert result == {
+        "verdict": verdict,
+        "reward": reward,
+        "forward_return": pytest.approx(final / 100.0 - 1.0),
+    }
+
+
+@pytest.mark.parametrize(
+    "decision_fields",
+    [
+        {"decision_source": "infra"},
+        {"decision_reason_code": "DATA_STALE"},
+        {"decision_reason_code": "MARKET_CLOSED"},
+        {"runtime": {"indicator_watch_order": {"action": "BUY"}}},
+    ],
+)
+def test_score_outcome_unscoreable_hold_is_unknown(decision_fields: dict) -> None:
+    started = datetime(2026, 7, 1, 10, tzinfo=UTC)
+
+    result = score_outcome(
+        {
+            "cycle_ts": started.isoformat(),
+            "symbol": "SPY",
+            "action": "HOLD",
+            **decision_fields,
+        },
+        _bars(started, final=103.0),
+        now=started + timedelta(days=2),
+    )
+
+    assert result == {
+        "verdict": "UNKNOWN",
+        "reward": None,
+        "forward_return": pytest.approx(0.03),
+    }
+
+
+def test_score_outcome_uses_first_bar_at_or_after_horizon() -> None:
+    started = datetime(2026, 7, 3, 16, tzinfo=UTC)
+    bars = [
+        _bar(started, 100.0),
+        _bar(started + timedelta(days=3), 103.0),
+    ]
+
+    result = score_outcome(
+        {"cycle_ts": started.isoformat(), "symbol": "SPY", "action": "BUY"},
+        bars,
+        now=started + timedelta(days=4),
+    )
+
+    assert result == {
+        "verdict": "WIN",
+        "reward": 1.0,
+        "forward_return": pytest.approx(0.03),
+    }
+
+
+def test_score_outcome_compares_offset_bars_as_utc_datetimes() -> None:
+    started = datetime(2026, 7, 1, 13, 30, tzinfo=UTC)
+    market_tz = timezone(timedelta(hours=-4))
+    bars = [
+        _bar(datetime(2026, 7, 1, 9, 29, tzinfo=market_tz), 100.0),
+        # Après la décision : cette barre ne doit pas devenir le prix d'entrée.
+        _bar(datetime(2026, 7, 1, 9, 31, tzinfo=market_tz), 150.0),
+        # Juste avant l'horizon 1d.
+        _bar(datetime(2026, 7, 2, 9, 29, tzinfo=market_tz), 102.0),
+        # Première barre à/après l'horizon 1d.
+        _bar(datetime(2026, 7, 2, 9, 31, tzinfo=market_tz), 103.0),
+        _bar(datetime(2026, 7, 2, 10, 0, tzinfo=market_tz), 104.0),
+    ]
+
+    result = score_outcome(
+        {"cycle_ts": started.isoformat(), "symbol": "SPY", "action": "BUY"},
+        bars,
+        now=started + timedelta(days=2),
+    )
+
+    assert result == {
+        "verdict": "WIN",
+        "reward": 1.0,
+        "forward_return": pytest.approx(0.03),
+    }

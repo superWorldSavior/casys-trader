@@ -42,6 +42,7 @@ WATCH_REJECT_INVALID_ARMED_ORDER = "invalid_armed_order"
 WATCH_REJECT_NON_FINITE_THRESHOLD = "non_finite_threshold"
 WATCH_REJECT_UNKNOWN_LABEL = "unknown_indicator_label"
 WATCH_REJECT_NO_CONDITIONS = "no_conditions"
+WATCH_SUMMARY_RATIONALE_MAX_LENGTH = 240
 
 _ABS_OPS: dict[str, Callable[[float, float], bool]] = {
     "abs>": operator.gt,
@@ -235,13 +236,46 @@ def _summarize_watch_conditions(conditions: object) -> list[dict]:
         if not isinstance(condition, dict):
             continue
         summary = {
+            "symbol": condition.get("symbol"),
             "indicator": condition.get("indicator"),
             "op": condition.get("op"),
             "value": condition.get("value"),
             "timeframe": condition.get("timeframe") or condition.get("interval"),
+            "source_interval": condition.get("source_interval"),
+            "lookback": condition.get("lookback"),
+            "window": condition.get("window"),
+            "as_of": condition.get("as_of"),
         }
         summaries.append({key: value for key, value in summary.items() if value is not None})
     return summaries
+
+
+def _bounded_watch_summary_rationale(value: object) -> str:
+    rationale = str(value)
+    return (
+        rationale
+        if len(rationale) <= WATCH_SUMMARY_RATIONALE_MAX_LENGTH
+        else rationale[:WATCH_SUMMARY_RATIONALE_MAX_LENGTH] + "…"
+    )
+
+
+def _summarize_watch_order(watch: dict) -> dict | None:
+    if str(watch.get("on_trigger")) not in {"EXECUTE_ORDER", "WAKE_WITH_ORDER_INTENT"}:
+        return None
+    raw_order = watch.get("order")
+    if not isinstance(raw_order, dict):
+        return None
+    order = {
+        "intent": raw_order.get("intent"),
+        "action": raw_order.get("action"),
+        "qty": raw_order.get("qty", raw_order.get("quantity")),
+        "confidence": raw_order.get("confidence"),
+        "exit_plan": raw_order.get("exit_plan"),
+    }
+    compact = {key: value for key, value in order.items() if value is not None}
+    if raw_order.get("rationale") is not None:
+        compact["rationale"] = _bounded_watch_summary_rationale(raw_order["rationale"])
+    return compact or None
 
 
 def summarize_watch(watch: dict) -> dict:
@@ -251,10 +285,19 @@ def summarize_watch(watch: dict) -> dict:
     if watch.get("id") is not None:
         summary["id"] = watch.get("id")
     summary["kind"] = "armed" if armed else "wake"
-    if armed:
-        order = watch.get("order")
-        if isinstance(order, dict) and order.get("intent") is not None:
-            summary["intent"] = order.get("intent")
+    for field in ("on_trigger", "created_at"):
+        if watch.get(field) is not None:
+            summary[field] = watch.get(field)
+    rationale = watch.get("rationale")
+    if rationale is not None:
+        summary["rationale"] = _bounded_watch_summary_rationale(rationale)
+    order = _summarize_watch_order(watch)
+    if order is not None:
+        summary["order"] = order
+        if order.get("intent") is not None:
+            # Compatibility with the pre-existing compact projection. Keep
+            # this scalar while exposing the fuller order contract alongside.
+            summary["intent"] = order["intent"]
     if watch.get("expires_at") is not None:
         summary["expires_at"] = watch.get("expires_at")
     if watch.get("logic") is not None:

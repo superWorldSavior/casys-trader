@@ -353,6 +353,7 @@ def test_cli_decisions_stats_affiche_n_et_pourcentages_par_commit(monkeypatch, t
     (state_dir / "decision_audit.json").write_text(
         json.dumps(
             {
+                "benchmark_semantics_version": 2,
                 "metrics": {
                     "1h": {
                         "total": 12,
@@ -536,6 +537,7 @@ def test_cli_decisions_bench_dry_run_preview_les_cases(monkeypatch, tmp_path, ca
                         "cycle_ts": "2026-06-12T01:00:00+00:00",
                         "symbol": "SPY",
                         "action": "HOLD",
+                        "opportunity_side": "long",
                         "intent": "HOLD",
                         "confidence": 0.9,
                         "rationale": "range",
@@ -596,6 +598,7 @@ def test_cli_decisions_bench_offset_choisit_le_batch_suivant(monkeypatch, tmp_pa
                 "cycle_ts": f"2026-06-12T0{idx + 1}:00:00+00:00",
                 "symbol": "SPY",
                 "action": "HOLD",
+                "opportunity_side": "long",
                 "price": 100.0,
                 "audits": {
                     "4h": {
@@ -655,6 +658,7 @@ def test_cli_decisions_bench_dry_run_reconstruit_le_contexte(monkeypatch, tmp_pa
                         "cycle_ts": "2026-06-12T01:00:00+00:00",
                         "symbol": "NG=F",
                         "action": "HOLD",
+                        "opportunity_side": "long",
                         "price": 100.0,
                         "portfolio_snapshot": {"cash": 100000.0, "equity": 100000.0},
                         "market_snapshot": {"stale_market_data": None},

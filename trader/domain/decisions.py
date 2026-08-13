@@ -7,6 +7,7 @@ from typing import Any, Literal
 
 Action = Literal["BUY", "SELL", "HOLD"]
 Intent = Literal["OPEN_LONG", "OPEN_SHORT", "REDUCE", "CLOSE", "FLIP", "HOLD", "SCALE_IN"]
+OpportunitySide = Literal["long", "short"]
 
 __all__ = [
     "Action",
@@ -15,6 +16,7 @@ __all__ = [
     "Decision",
     "IndicatorRequest",
     "Intent",
+    "OpportunitySide",
 ]
 
 
@@ -25,6 +27,7 @@ class Decision:
     quantity: float  # nombre d'unités ; ignoré si HOLD
     confidence: float  # 0..1
     rationale: str
+    opportunity_side: OpportunitySide | None = None  # direction de l'opportunité évaluée, même si HOLD
     next_wake_in_minutes: float | None = None  # override du timer pour CE symbole (relatif)
     next_wake_event: str | None = None  # réveil calendaire : "session_open" | "pre_earnings" | "macro_event"
     intent: Intent | None = None

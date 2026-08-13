@@ -14,6 +14,7 @@ import sqlite3
 from pathlib import Path
 
 from trader.agent.learnings.store import LearningsStore
+from trader.domain.decision_benchmark import BENCHMARK_SEMANTICS_VERSION
 
 
 # ---------------------------------------------------------------------------
@@ -107,7 +108,8 @@ def test_schema_colonnes_notes(tmp_path: Path) -> None:
         "id", "decision_id", "ts", "symbol", "family", "venue",
         "action", "intent", "executed", "reason", "note", "concepts",
         "source", "valid_from", "valid_until", "superseded_by",
-        "verdict", "forward_return", "outcome_score", "q_value", "embedding",
+        "verdict", "forward_return", "outcome_score", "outcome_semantics_version",
+        "q_value", "embedding",
     }
     assert expected.issubset(cols), f"Colonnes manquantes : {expected - cols}"
 
@@ -127,6 +129,7 @@ def test_schema_recalls_colonnes(tmp_path: Path) -> None:
         "reward",
         "forward_return",
         "evaluated_at",
+        "outcome_semantics_version",
     }.issubset(cols)
 
 
@@ -145,7 +148,13 @@ def test_schema_migre_les_colonnes_memrl_additives(tmp_path: Path) -> None:
     recalls_cols = {row[1] for row in store._conn.execute("PRAGMA table_info(recalls)")}
 
     assert "q_updates" in notes_cols
-    assert {"verdict", "reward", "forward_return", "evaluated_at"} <= recalls_cols
+    assert {
+        "verdict",
+        "reward",
+        "forward_return",
+        "evaluated_at",
+        "outcome_semantics_version",
+    } <= recalls_cols
 
 
 def test_count_initial_zero(tmp_path: Path) -> None:
@@ -383,6 +392,7 @@ def _make_bootstrap_json(path: Path, verdicts: dict) -> None:
     ]
     report = {
         "generated_at": "2026-07-02T00:00:00+00:00",
+        "outcome_semantics_version": BENCHMARK_SEMANTICS_VERSION,
         "params": {},
         "counts": {},
         "unavailable_symbols": [],
@@ -466,7 +476,12 @@ def test_apply_verdicts_only_missing_necrase_pas_un_outcome_live(tmp_path: Path)
     store = LearningsStore(tmp_path / "learnings.db")
     store.ingest_jsonl(jsonl, source="test")
     store._conn.execute(
-        "UPDATE notes SET verdict='LOSS', forward_return=-0.02"
+        """
+        UPDATE notes
+        SET verdict='LOSS', forward_return=-0.02,
+            outcome_semantics_version=?
+        """,
+        (BENCHMARK_SEMANTICS_VERSION,),
     )
     store._conn.commit()
     bootstrap = tmp_path / "bootstrap.json"
@@ -1231,3 +1246,246 @@ def test_schema_migrates_curation_and_global_rule_tables_additively(tmp_path: Pa
     tables = {row[0] for row in store._conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     assert {"curation_revision", "curated_revision", "curation_updated_at"} <= note_columns
     assert {"global_rules", "global_rule_citations"} <= tables
+
+
+def test_benchmark_v2_migration_invalidates_derived_feedback_once(tmp_path: Path) -> None:
+    db_path = tmp_path / "legacy-v1.db"
+    jsonl = tmp_path / "legacy-v1.jsonl"
+    _write_jsonl(jsonl, [_ROWS[2]])
+    store = LearningsStore(db_path)
+    store.ingest_jsonl(jsonl, source="runtime")
+    note_id = int(store._conn.execute("SELECT id FROM notes").fetchone()[0])
+    store.update_note_outcomes([{
+        "id": note_id,
+        "verdict": "WIN",
+        "forward_return": 0.05,
+    }])
+    store.record_recall(decision_id="legacy-recall", note_ids=[note_id])
+    store.apply_recall_outcome(
+        decision_id="legacy-recall",
+        verdict="WIN",
+        reward=1.0,
+        forward_return=0.03,
+        evaluated_at="2026-07-10T00:00:00+00:00",
+    )
+    store.sync_global_rules(["legacy-rule"], ts="2026-07-09T00:00:00+00:00")
+    store.record_global_rule_citation(
+        decision_id="legacy-citation",
+        rule_ids=["legacy-rule"],
+        ts="2026-07-09T01:00:00+00:00",
+    )
+    store.apply_global_rule_outcome(
+        decision_id="legacy-citation",
+        verdict="LOSS",
+        reward=-1.0,
+        forward_return=-0.04,
+        evaluated_at="2026-07-10T01:00:00+00:00",
+    )
+    store._conn.execute(
+        """
+        UPDATE notes
+        SET outcome_score=0.4, q_value=0.7, q_updates=9,
+            outcome_semantics_version=1,
+            curated_revision=curation_revision
+        """
+    )
+    store._conn.execute("UPDATE recalls SET outcome_semantics_version=1")
+    store._conn.execute(
+        "UPDATE global_rule_citations SET outcome_semantics_version=1"
+    )
+    store._conn.execute(
+        "UPDATE global_rules SET q_value=-0.6, q_updates=8"
+    )
+    revision_before = int(
+        store._conn.execute("SELECT curation_revision FROM notes").fetchone()[0]
+    )
+    store._conn.execute(
+        "DELETE FROM learnings_metadata WHERE key='outcome_semantics_version'"
+    )
+    store._conn.commit()
+    store.close()
+
+    migrated = LearningsStore(db_path)
+    note = migrated._conn.execute(
+        """
+        SELECT verdict, forward_return, outcome_score,
+               outcome_semantics_version, q_value, q_updates,
+               curation_revision, curated_revision
+        FROM notes
+        """
+    ).fetchone()
+    recall = migrated._conn.execute(
+        """
+        SELECT verdict, reward, forward_return, evaluated_at,
+               outcome_semantics_version
+        FROM recalls
+        """
+    ).fetchone()
+    citation = migrated._conn.execute(
+        """
+        SELECT verdict, reward, forward_return, evaluated_at,
+               outcome_semantics_version
+        FROM global_rule_citations
+        """
+    ).fetchone()
+
+    assert tuple(note) == (
+        None,
+        0.05,
+        None,
+        None,
+        0.0,
+        0,
+        revision_before + 1,
+        revision_before + 1,
+    )
+    assert tuple(recall) == (None, None, None, None, None)
+    assert tuple(citation) == (None, None, None, None, None)
+    assert migrated.global_rule_scores()["legacy-rule"]["q_value"] == 0.0
+    assert migrated.global_rule_scores()["legacy-rule"]["q_updates"] == 0
+    assert migrated.pending_recall_decision_ids() == ["legacy-recall"]
+    assert migrated.pending_global_rule_decision_ids() == ["legacy-citation"]
+    assert migrated.feedback_by_decision_ids([_ROWS[2]["decision_id"]]) == {
+        _ROWS[2]["decision_id"]: {
+            "status": "pending",
+            "verdict": None,
+            "forward_return": None,
+            "outcome_score": None,
+            "q_value": 0.0,
+            "q_updates": 0,
+        }
+    }
+    assert migrated.curation_counts()["changed"] == 0
+    assert migrated.select_curation_candidates() == []
+
+    fresh_jsonl = tmp_path / "fresh-after-migration.jsonl"
+    fresh_row = {
+        **_ROWS[0],
+        "decision_id": "fresh-after-v2-migration",
+        "ts": "2026-07-11T00:00:00+00:00",
+    }
+    _write_jsonl(fresh_jsonl, [fresh_row])
+    migrated.ingest_jsonl(fresh_jsonl, source="runtime")
+    assert migrated.curation_counts() == {
+        "new": 1,
+        "feedback": 0,
+        "changed": 1,
+        "oldest_changed_at": fresh_row["ts"],
+    }
+    assert [
+        candidate["decision_id"]
+        for candidate in migrated.select_curation_candidates()
+    ] == ["fresh-after-v2-migration"]
+    migrated.close()
+
+    reopened = LearningsStore(db_path)
+    assert reopened._conn.execute(
+        "SELECT curation_revision FROM notes"
+    ).fetchone()[0] == revision_before + 1
+
+
+def test_fresh_store_is_marked_v2_without_resetting_later_ingestion(tmp_path: Path) -> None:
+    db_path = tmp_path / "fresh.db"
+    store = LearningsStore(db_path)
+    jsonl = tmp_path / "fresh.jsonl"
+    _write_jsonl(jsonl, [_ROWS[0]])
+    store.ingest_jsonl(jsonl, source="runtime")
+    store.close()
+
+    reopened = LearningsStore(db_path)
+    row = reopened._conn.execute(
+        "SELECT curation_revision, outcome_semantics_version FROM notes"
+    ).fetchone()
+    marker = reopened._conn.execute(
+        "SELECT value FROM learnings_metadata WHERE key='outcome_semantics_version'"
+    ).fetchone()[0]
+
+    assert tuple(row) == (1, None)
+    assert marker == str(BENCHMARK_SEMANTICS_VERSION)
+
+
+def test_apply_verdicts_rejects_legacy_bootstrap(tmp_path: Path) -> None:
+    store = LearningsStore(tmp_path / "learnings.db")
+    jsonl = tmp_path / "note.jsonl"
+    _write_jsonl(jsonl, [_ROWS[0]])
+    store.ingest_jsonl(jsonl, source="runtime")
+    bootstrap = tmp_path / "legacy-bootstrap.json"
+    bootstrap.write_text(
+        json.dumps({
+            "learnings": [{
+                "decision_id": _ROWS[0]["decision_id"],
+                "verdict": "WIN",
+                "forward_return": 0.04,
+            }]
+        }),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="outcome_semantics_version"):
+        store.apply_verdicts(bootstrap)
+
+    assert store.feedback_by_decision_ids([_ROWS[0]["decision_id"]])[
+        _ROWS[0]["decision_id"]
+    ]["status"] == "pending"
+
+
+def test_legacy_feedback_is_pending_and_not_a_historical_positive(tmp_path: Path) -> None:
+    rows = [
+        {**_ROWS[2], "decision_id": "legacy-positive", "symbol": "OLD"},
+        {**_ROWS[2], "decision_id": "v2-positive", "symbol": "NEW"},
+    ]
+    jsonl = tmp_path / "mixed.jsonl"
+    _write_jsonl(jsonl, rows)
+    store = LearningsStore(tmp_path / "mixed.db")
+    store.ingest_jsonl(jsonl, source="runtime")
+    ids = {
+        row[0]: row[1]
+        for row in store._conn.execute("SELECT decision_id, id FROM notes")
+    }
+    store.update_note_outcomes([
+        {"id": ids["legacy-positive"], "verdict": "WIN", "forward_return": 0.09},
+        {"id": ids["v2-positive"], "verdict": "WIN", "forward_return": 0.03},
+    ])
+    store._conn.execute(
+        """
+        UPDATE notes
+        SET outcome_semantics_version=1
+        WHERE decision_id='legacy-positive'
+        """
+    )
+    store._conn.commit()
+    store.mark_curation_candidates_curated(store.select_curation_candidates())
+
+    candidates = store.select_curation_candidates(
+        recent_limit=0,
+        positive_limit=10,
+        counterexample_limit=0,
+    )
+    feedback = store.feedback_by_decision_ids(["legacy-positive"])
+
+    assert [row["decision_id"] for row in candidates] == ["v2-positive"]
+    assert feedback["legacy-positive"]["status"] == "pending"
+    assert feedback["legacy-positive"]["verdict"] is None
+
+
+def test_pending_memrl_replay_is_chronological_after_v2_reset(tmp_path: Path) -> None:
+    store = LearningsStore(tmp_path / "chronological.db")
+    store.record_recall(decision_id="recall-old", note_ids=[])
+    store.record_recall(decision_id="recall-new", note_ids=[])
+    store.sync_global_rules(["rule"], ts="2026-07-01T00:00:00+00:00")
+    store.record_global_rule_citation(
+        decision_id="citation-new",
+        rule_ids=["rule"],
+        ts="2026-07-03T00:00:00+00:00",
+    )
+    store.record_global_rule_citation(
+        decision_id="citation-old",
+        rule_ids=["rule"],
+        ts="2026-07-02T00:00:00+00:00",
+    )
+
+    assert store.pending_recall_decision_ids() == ["recall-old", "recall-new"]
+    assert store.pending_global_rule_decision_ids() == [
+        "citation-old",
+        "citation-new",
+    ]

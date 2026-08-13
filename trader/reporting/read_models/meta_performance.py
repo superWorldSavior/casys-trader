@@ -46,9 +46,12 @@ def _pct_metric(metrics: dict, key: str) -> float | None:
 def _hold_reason_row(reason_code: str, metrics: dict) -> dict:
     return {
         "reason_code": reason_code,
+        "total": int(metrics.get("total") or 0),
         "known": int(metrics.get("known") or 0),
+        "unknown": int(metrics.get("unknown") or 0),
         "good": int(metrics.get("good") or 0),
         "missed": int(metrics.get("missed") or 0),
+        "coverage_pct": _pct_metric(metrics, "coverage_pct"),
         "good_known_pct": _pct_metric(metrics, "good_known_pct"),
         "missed_known_pct": _pct_metric(metrics, "missed_known_pct"),
     }
@@ -84,9 +87,12 @@ def _horizon_payload(audit: dict, horizon: str, *, top_n: int) -> dict:
     hold_rows = [
         _hold_reason_row(str(reason_code), reason_metrics)
         for reason_code, reason_metrics in (hold_metrics or {}).items()
-        if int(reason_metrics.get("known") or 0) > 0
+        if int(reason_metrics.get("total") or 0) > 0
     ]
-    hold_rows.sort(key=lambda row: (row.get("missed_known_pct") or 0.0, row["known"]), reverse=True)
+    hold_rows.sort(
+        key=lambda row: (row.get("missed_known_pct") or 0.0, row["known"], row["total"]),
+        reverse=True,
+    )
 
     trade_rows: list[dict] = []
     for action in ("BUY", "SELL"):
@@ -126,7 +132,11 @@ def compute_meta_performance(
     audit, error_code = _read_audit(state_dir)
     if audit is None:
         return {"available": False, "reason": error_code}
-    if "metrics_by_reason" not in audit and isinstance(audit.get("rows"), list):
+    if (
+        audit.get("benchmark_semantics_version")
+        != decision_audit.BENCHMARK_SEMANTICS_VERSION
+        or "metrics_by_reason" not in audit
+    ) and isinstance(audit.get("rows"), list):
         audit = decision_audit.refresh_audit_payload(audit)
     available_horizons = [horizon for horizon in horizons if horizon in (audit.get("horizons") or [])]
     return {

@@ -126,6 +126,8 @@ def test_prompt_demande_un_reason_code_structure() -> None:
     assert "decision_reason_code" in prompt
     assert "WAITING_PULLBACK" in prompt
     assert "POST_LOSS_CAUTION" in prompt
+    assert "opportunity_side" in prompt
+    assert "champ d'audit" in prompt
 
 
 def test_prompt_ne_pousse_pas_un_max_hold_par_defaut() -> None:
@@ -479,6 +481,29 @@ def test_parse_decision_accepte_un_reason_code_structure() -> None:
     )
 
     assert decision.decision_reason_code == "WAITING_PULLBACK"
+
+
+def test_parse_decision_conserve_opportunity_side_sur_un_hold() -> None:
+    decision = parse_decision(
+        '{"symbol":"SPY","confidence":0.6,"rationale":"attendre le pullback",'
+        '"opportunity_side":"long","decision_reason_code":"WAITING_PULLBACK","calls":[]}',
+        "SPY",
+    )
+
+    assert decision.action == "HOLD"
+    assert decision.opportunity_side == "long"
+
+
+def test_parse_decision_rejette_opportunity_side_ambigu() -> None:
+    decision = parse_decision(
+        '{"symbol":"SPY","confidence":0.6,"rationale":"attendre",'
+        '"opportunity_side":"both","decision_reason_code":"NO_EDGE","calls":[]}',
+        "SPY",
+    )
+
+    assert decision.action == "HOLD"
+    assert decision.llm_error == "parse_error:invalid_payload"
+    assert "opportunity_side" in decision.rationale
 
 
 def test_parse_decision_reason_code_inconnu_devient_unknown() -> None:

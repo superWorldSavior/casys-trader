@@ -21,6 +21,7 @@ INLINE_DECISION_FIELDS = frozenset(
 )
 RELATIVE_ORDER_INTENTS = frozenset({"CLOSE", "REDUCE", "FLIP", "SCALE_IN"})
 DECISION_ACTIONS = frozenset({"BUY", "SELL", "HOLD"})
+OPPORTUNITY_SIDES = frozenset({"long", "short"})
 
 
 def _coerce_float(value: Any, field_name: str) -> float:
@@ -55,6 +56,7 @@ class LlmDecisionPayload(_LlmBaseModel):
     quantity: float
     confidence: float
     rationale: Any
+    opportunity_side: str | None = None
     decision_reason_code: Any | None = None
     intent: str | None = None
     exit_plan: dict | None = None
@@ -82,6 +84,16 @@ class LlmDecisionPayload(_LlmBaseModel):
         if value is None:
             return None
         return str(value).upper()
+
+    @field_validator("opportunity_side", mode="before")
+    @classmethod
+    def _opportunity_side(cls, value: Any) -> str | None:
+        if value is None:
+            return None
+        side = str(value).strip().lower()
+        if side not in OPPORTUNITY_SIDES:
+            raise ValueError("opportunity_side must be long, short, or null")
+        return side
 
     @field_validator("exit_plan", "indicator_watch", "exit_update", mode="before")
     @classmethod
@@ -142,6 +154,7 @@ class LlmDecisionPayload(_LlmBaseModel):
             "quantity": self.quantity,
             "confidence": self.confidence,
             "rationale": self.rationale,
+            "opportunity_side": self.opportunity_side,
             "decision_reason_code": self.decision_reason_code,
             "intent": self.intent,
             "exit_plan": self.exit_plan,
@@ -189,6 +202,7 @@ class LlmSymbolCallsPayload(_LlmBaseModel):
     calls: list[LlmSymbolToolCallPayload]
     confidence: float = 0.0
     rationale: str = ""
+    opportunity_side: str | None = None
     decision_reason_code: Any | None = None
     applied_learning_ids: list[str] = Field(default_factory=list)
 
@@ -218,6 +232,11 @@ class LlmSymbolCallsPayload(_LlmBaseModel):
     def _rationale(cls, value: Any) -> str:
         return str(value or "")
 
+    @field_validator("opportunity_side", mode="before")
+    @classmethod
+    def _opportunity_side(cls, value: Any) -> str | None:
+        return LlmDecisionPayload._opportunity_side(value)
+
     @field_validator("applied_learning_ids", mode="before")
     @classmethod
     def _applied_learning_ids(cls, value: Any) -> list[str]:
@@ -228,6 +247,7 @@ class LlmSymbolCallsPayload(_LlmBaseModel):
             "calls": [call.to_legacy_dict() for call in self.calls],
             "confidence": self.confidence,
             "rationale": self.rationale,
+            "opportunity_side": self.opportunity_side,
             "decision_reason_code": self.decision_reason_code,
             "applied_learning_ids": self.applied_learning_ids,
         }

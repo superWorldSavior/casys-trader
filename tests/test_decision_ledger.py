@@ -168,6 +168,17 @@ def test_build_decision_row_propage_le_reason_code_structure() -> None:
     assert row["decision"]["decision_reason_code"] == "WAITING_PULLBACK"
 
 
+def test_build_decision_row_propage_opportunity_side() -> None:
+    decision = _decision()
+    decision["opportunity_side"] = "short"
+    report = _report([decision])
+
+    row = decision_ledger.build_decision_row(report, decision, sequence=0, source="daemon")
+
+    assert row["opportunity_side"] == "short"
+    assert row["decision"]["opportunity_side"] == "short"
+
+
 def test_build_decision_row_propage_context_request_et_next_wake_requested() -> None:
     """La ligne d'audit garde les primitives de trace sans blob redondant."""
     decision = _decision()

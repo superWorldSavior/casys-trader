@@ -43,10 +43,19 @@ def test_cycle_schedule_applies_watch_then_expiry_wake(tmp_path) -> None:
     watch = {
         "id": "AIR.PA:w1",
         "symbol": "AIR.PA",
+        "created_at": "2026-07-02T10:00:00+00:00",
         "expires_at": "2026-07-02T13:00:00+00:00",
         "logic": "all",
         "on_trigger": "EXECUTE_ORDER",
+        "rationale": "Entrer seulement après confirmation du retour horaire.",
         "conditions": [{"indicator": "return", "op": ">", "value": 0.01, "timeframe": "1h"}],
+        "order": {
+            "intent": "OPEN_LONG",
+            "action": "BUY",
+            "qty": 2.0,
+            "confidence": 0.72,
+            "exit_plan": {"hard_stop": {"type": "price", "price": 155.0}},
+        },
     }
 
     cycle_schedule.apply_decision_schedule(
@@ -72,6 +81,9 @@ def test_cycle_schedule_applies_watch_then_expiry_wake(tmp_path) -> None:
         )
     ]
     assert entry["indicator_watch_created"] is True
+    assert entry["indicator_watch"] == watch
+    assert entry["indicator_watch"] is not watch
+    assert entry["indicator_watch"]["order"] is not watch["order"]
     assert sched.next_wake("AIR.PA") == datetime(2026, 7, 2, 13, 0, tzinfo=timezone.utc)
     assert entry["schedule_effect"] == {
         "status": "verified",

@@ -1,5 +1,15 @@
 """Tests — recent_decisions_by_symbol (issue #4, push) : groupage, filtre, compactage."""
+import json
+from dataclasses import replace
+from datetime import datetime, timezone
+
+from trader.agent.protocol.parsing import parse_decision
+from trader.application.cycle.schedule import apply_decision_schedule
 from trader.application.decide.recent_decisions import recent_decisions_by_symbol
+from trader.application.record.decision_entries import build_decision_entry
+from trader.application.record.decision_ledger_rows import build_decision_row
+from trader.domain.planning.indicator_watch import build_indicator_watch
+from trader.planning.scheduler import Scheduler
 
 
 class _FakeStore:
@@ -55,6 +65,217 @@ def test_exclut_hold_synthetiques_sans_manger_le_budget():
     out = recent_decisions_by_symbol(store, symbols=["AAPL"], limit=2)
 
     assert [r["action"] for r in out["AAPL"]] == ["SELL", "BUY"]
+
+
+def test_exclut_hold_infra_sans_evincer_effet_plan_arme():
+    store = _FakeStore([
+        _row("AAPL", "HOLD", decision_source="llm", model_called=True),
+        _row(
+            "AAPL",
+            "HOLD",
+            rationale="quiet_gate",
+            decision_source="infra",
+            model_called=False,
+        ),
+        _row(
+            "AAPL",
+            "HOLD",
+            rationale="armed_plan:AAPL:breakout",
+            decision_source="armed_plan",
+            source="armed_plan",
+            model_called=False,
+        ),
+    ])
+
+    out = recent_decisions_by_symbol(store, symbols=["AAPL"], limit=2)
+
+    assert [r["decision_reason_code"] for r in out["AAPL"]] == [
+        "LLM_SIGNAL",
+        "LLM_SIGNAL",
+    ]
+    assert [r["rationale"] for r in out["AAPL"]] == [
+        "armed_plan:AAPL:breakout",
+        "ok",
+    ]
+
+
+def test_exclut_hold_infra_legacy_identifie_uniquement_par_reason():
+    store = _FakeStore([
+        _row("AAPL", "BUY"),
+        _row(
+            "AAPL",
+            "HOLD",
+            rationale="fallback historique",
+            reason="stale_market_data",
+            decision_source=None,
+            model_called=None,
+            llm_error=None,
+        ),
+        _row("AAPL", "SELL"),
+    ])
+
+    out = recent_decisions_by_symbol(store, symbols=["AAPL"], limit=2)
+
+    assert [row["action"] for row in out["AAPL"]] == ["SELL", "BUY"]
+
+
+def test_conserve_direction_et_resume_watch_pour_continuite():
+    store = _FakeStore([
+        _row(
+            "NOC",
+            "HOLD",
+            executed=False,
+            opportunity_side="long",
+            decision={
+                "opportunity_side": "long",
+                "indicator_watch": {
+                    "id": "NOC:reclaim",
+                    "on_trigger": "WAKE",
+                    "created_at": "2026-08-13T13:50:01+00:00",
+                    "expires_at": "2026-08-13T17:50:01+00:00",
+                    "logic": "all",
+                    "rationale": "Attendre le reclaim avant d'évaluer le long.",
+                    "conditions": [
+                        {
+                            "indicator": "z_score",
+                            "op": ">=",
+                            "value": 0.2,
+                            "timeframe": "15m",
+                        }
+                    ],
+                },
+            },
+        )
+    ])
+
+    recent = recent_decisions_by_symbol(store, symbols=["NOC"])["NOC"][0]
+
+    assert recent["opportunity_side"] == "long"
+    assert recent["indicator_watch"] == {
+        "id": "NOC:reclaim",
+        "kind": "wake",
+        "on_trigger": "WAKE",
+        "created_at": "2026-08-13T13:50:01+00:00",
+        "rationale": "Attendre le reclaim avant d'évaluer le long.",
+        "expires_at": "2026-08-13T17:50:01+00:00",
+        "logic": "all",
+        "conditions": [
+            {
+                "indicator": "z_score",
+                "op": ">=",
+                "value": 0.2,
+                "timeframe": "15m",
+            }
+        ],
+    }
+
+
+def test_continuite_watch_de_la_reponse_modele_au_prochain_prompt(tmp_path):
+    now = datetime(2026, 7, 2, 10, 0, tzinfo=timezone.utc)
+    raw_decision = {
+        "symbol": "AIR.PA",
+        "confidence": 0.72,
+        "rationale": "Attendre le reclaim horaire avant l'entree.",
+        "opportunity_side": "long",
+        "decision_reason_code": "WATCH_ARMED",
+        "calls": [
+            {
+                "tool": "propose_indicator_watch",
+                "args": {
+                    "logic": "all",
+                    "ttl_minutes": 180,
+                    "on_trigger": "EXECUTE_ORDER",
+                    "conditions": [
+                        {
+                            "symbol": "AIR.PA",
+                            "indicator": "return",
+                            "op": ">",
+                            "value": 0.01,
+                            "interval": "1h",
+                            "window": 24,
+                            "as_of": "latest",
+                        }
+                    ],
+                    "order": {
+                        "direction": "long",
+                        "qty": 2,
+                        "confidence": 0.72,
+                        "exit": {"stop": {"type": "price", "price": 155.0}},
+                        "rationale": "Executer ce plan si le reclaim arrive.",
+                    },
+                },
+            }
+        ],
+    }
+    decision = replace(
+        parse_decision(json.dumps(raw_decision), "AIR.PA"),
+        llm_provider="openai",
+        llm_model="luna",
+    )
+    built = build_indicator_watch(decision.indicator_watch, owner_symbol="AIR.PA", now=now)
+    assert built.watch is not None
+    entry = build_decision_entry(
+        symbol="AIR.PA",
+        decision=decision,
+        effective_quantity=0.0,
+        next_wake_in_minutes=None,
+        next_wake_event_iso=None,
+        armed_plan_id=None,
+        armed_plan_order=None,
+        runtime_data_source="test",
+    )
+    entry.update({"executed": False, "reason": "hold"})
+    apply_decision_schedule(
+        sched=Scheduler(tmp_path / "scheduler.json"),
+        sym="AIR.PA",
+        now=now,
+        next_wake_in_minutes=None,
+        cancel_watch_ids=[],
+        pending_indicator_watch=built.watch,
+        entry=entry,
+    )
+    row = build_decision_row(
+        {
+            "ts": now.isoformat(),
+            "dry_run": False,
+            "symbols_due": ["AIR.PA"],
+            "prices": {"AIR.PA": 160.0},
+            "portfolio": {"cash": 100_000.0, "equity": 100_000.0},
+            "stale_market_data": {},
+            "model_calls_used": 1,
+        },
+        entry,
+        sequence=0,
+    )
+
+    watch = recent_decisions_by_symbol(_FakeStore([row]), symbols=["AIR.PA"])["AIR.PA"][0][
+        "indicator_watch"
+    ]
+
+    assert watch["created_at"] == "2026-07-02T10:00:00+00:00"
+    assert watch["rationale"] == "Attendre le reclaim horaire avant l'entree."
+    assert watch["conditions"] == [
+        {
+            "symbol": "AIR.PA",
+            "indicator": "return",
+            "op": ">",
+            "value": 0.01,
+            "timeframe": "1h",
+            "source_interval": "1h",
+            "lookback": "5d",
+            "window": 24,
+            "as_of": "latest",
+        }
+    ]
+    assert watch["intent"] == "OPEN_LONG"
+    assert watch["order"] == {
+        "intent": "OPEN_LONG",
+        "action": "BUY",
+        "qty": 2.0,
+        "confidence": 0.72,
+        "exit_plan": {"hard_stop": {"type": "price", "price": 155.0}},
+        "rationale": "Executer ce plan si le reclaim arrive.",
+    }
 
 
 def test_symbole_sans_decision_est_omis():

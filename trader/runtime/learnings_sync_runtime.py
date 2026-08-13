@@ -274,13 +274,19 @@ def run_learning_sync(
             for path, key, source in _source_paths(root)
         }
         verdicts_updated = 0
+        bootstrap_error = None
         if apply_bootstrap:
-            verdicts_updated = store.apply_verdicts(
-                root / "archive" / "learnings-outcome-bootstrap.json",
-                only_missing=True,
-            )
-            if verdicts_updated:
-                store.compute_outcome_scores()
+            try:
+                verdicts_updated = store.apply_verdicts(
+                    root / "archive" / "learnings-outcome-bootstrap.json",
+                    only_missing=True,
+                )
+                if verdicts_updated:
+                    store.compute_outcome_scores()
+            except (json.JSONDecodeError, ValueError) as exc:
+                # An old bootstrap must never re-introduce pre-v2 HOLD labels.
+                # Live replay below remains authoritative and best-effort.
+                bootstrap_error = f"{type(exc).__name__}:{exc}"
 
         embeddings_backfilled = 0
         embedding_error = None
@@ -321,6 +327,7 @@ def run_learning_sync(
             "as_of": _utc(now).isoformat(),
             "ingest": ingest,
             "verdicts_updated": verdicts_updated,
+            "bootstrap_error": bootstrap_error,
             "embeddings_backfilled": embeddings_backfilled,
             "embeddings_pending": embeddings_pending,
             "embedding_error": embedding_error,

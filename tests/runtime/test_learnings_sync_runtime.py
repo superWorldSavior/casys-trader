@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 import numpy as np
 import pytest
 
+from trader.domain.decision_benchmark import BENCHMARK_SEMANTICS_VERSION
 from trader.domain.market_data import Bar
 from trader.infrastructure.state_db.learnings_store import LearningsStore
 from trader.runtime.learnings_sync_runtime import (
@@ -283,6 +284,130 @@ def test_sync_scores_hold_candidate_with_portfolio_snapshot_from_ledger(tmp_path
     conn.close()
     assert verdict == "WIN"
     assert forward_return == pytest.approx(0.03)
+
+
+def test_v2_migration_replays_executed_opening_from_realised_lot(tmp_path) -> None:
+    state_dir = tmp_path / "state"
+    started = datetime(2026, 7, 1, 10, tzinfo=UTC)
+    decision_id = "2026-07-01T10:00:00+00:00|0|SPY"
+    learning = {
+        "decision_id": decision_id,
+        "ts": started.isoformat(),
+        "symbol": "SPY",
+        "action": "BUY",
+        "intent": "OPEN_LONG",
+        "executed": True,
+        "note": "opening to replay",
+    }
+    _write_jsonl(state_dir / "learnings.jsonl", [learning])
+    _write_jsonl(
+        state_dir / "decisions.jsonl",
+        [{**learning, "cycle_ts": learning["ts"]}],
+    )
+    _write_jsonl(
+        state_dir / "model_performance.jsonl",
+        [
+            {
+                "ts": started.isoformat(),
+                "symbol": "SPY",
+                "action": "BUY",
+                "quantity": 10,
+                "price": 100,
+                "commission": 1,
+                "fx_rate": 1,
+                "decision_id": decision_id,
+            },
+            {
+                "ts": (started + timedelta(days=1)).isoformat(),
+                "symbol": "SPY",
+                "action": "SELL",
+                "quantity": 10,
+                "price": 110,
+                "commission": 1,
+                "fx_rate": 1,
+                "decision_id": "exit",
+            },
+        ],
+    )
+    store = LearningsStore(state_dir / "learnings.db")
+    store.ingest_jsonl(state_dir / "learnings.jsonl", source="runtime")
+    note_id = store._conn.execute("SELECT id FROM notes").fetchone()[0]
+    store.update_note_outcomes([{
+        "id": note_id,
+        "verdict": "LOSS",
+        "forward_return": -0.05,
+    }])
+    store._conn.execute("UPDATE notes SET outcome_semantics_version=1")
+    store._conn.execute(
+        "DELETE FROM learnings_metadata WHERE key='outcome_semantics_version'"
+    )
+    store._conn.commit()
+    store.close()
+
+    result = run_learning_sync(
+        state_dir=state_dir,
+        now=started + timedelta(days=3),
+        get_bars=None,
+        include_outcomes=True,
+        apply_bootstrap=False,
+        api_key="",
+    )
+
+    conn = sqlite3.connect(state_dir / "learnings.db")
+    row = conn.execute(
+        """
+        SELECT verdict, forward_return, outcome_semantics_version
+        FROM notes
+        """
+    ).fetchone()
+    conn.close()
+    assert result["outcomes"]["notes_updated"] == 1
+    assert row[0] == "WIN"
+    assert row[1] == pytest.approx(0.098)
+    assert row[2] == BENCHMARK_SEMANTICS_VERSION
+
+
+def test_sync_rejects_legacy_bootstrap_without_blocking_live_maintenance(tmp_path) -> None:
+    state_dir = tmp_path / "state"
+    started = datetime(2026, 7, 1, 10, tzinfo=UTC)
+    _write_jsonl(
+        state_dir / "learnings.jsonl",
+        [{
+            "decision_id": "pending",
+            "ts": started.isoformat(),
+            "symbol": "SPY",
+            "action": "BUY",
+            "note": "pending",
+        }],
+    )
+    bootstrap = state_dir / "archive" / "learnings-outcome-bootstrap.json"
+    bootstrap.parent.mkdir(parents=True, exist_ok=True)
+    bootstrap.write_text(
+        json.dumps({
+            "learnings": [{
+                "decision_id": "pending",
+                "verdict": "WIN",
+                "forward_return": 0.03,
+            }]
+        }),
+        encoding="utf-8",
+    )
+
+    result = run_learning_sync(
+        state_dir=state_dir,
+        now=started + timedelta(days=2),
+        get_bars=None,
+        include_outcomes=False,
+        apply_bootstrap=True,
+        api_key="",
+    )
+
+    assert result["verdicts_updated"] == 0
+    assert str(result["bootstrap_error"]).startswith("ValueError:")
+    conn = sqlite3.connect(state_dir / "learnings.db")
+    row = conn.execute("SELECT verdict FROM notes").fetchone()
+    conn.close()
+    assert row[0] is None
 
 
 def test_runner_enchaine_les_micro_batches_sans_nouveau_trigger(tmp_path) -> None:

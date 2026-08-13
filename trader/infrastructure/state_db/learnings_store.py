@@ -21,6 +21,7 @@ from pathlib import Path
 import numpy as np
 
 from trader.domain.learnings.scoring import compute_outcome_scores as default_outcome_scorer
+from trader.domain.decision_benchmark import BENCHMARK_SEMANTICS_VERSION
 from trader.domain.semantic.catalog import family_for_symbol
 
 __all__ = ["LearningsStore"]
@@ -54,6 +55,7 @@ CREATE TABLE IF NOT EXISTS notes (
     verdict         TEXT,       -- WIN | LOSS | NEUTRAL | UNKNOWN
     forward_return  REAL,
     outcome_score   REAL,       -- FLAIR v1
+    outcome_semantics_version INTEGER,
     q_value         REAL,       -- MemRL (phase ③)
     q_updates       INTEGER NOT NULL DEFAULT 0,
     -- A note is eligible for curation when curation_revision > curated_revision.
@@ -110,7 +112,8 @@ CREATE TABLE IF NOT EXISTS recalls (
     verdict     TEXT,
     reward      REAL,
     forward_return REAL,
-    evaluated_at TEXT
+    evaluated_at TEXT,
+    outcome_semantics_version INTEGER
 )
 """
 
@@ -138,9 +141,20 @@ CREATE TABLE IF NOT EXISTS global_rule_citations (
     verdict         TEXT,
     reward          REAL,
     forward_return  REAL,
-    evaluated_at    TEXT
+    evaluated_at    TEXT,
+    outcome_semantics_version INTEGER
 )
 """
+
+_DDL_METADATA = """
+CREATE TABLE IF NOT EXISTS learnings_metadata (
+    key         TEXT PRIMARY KEY,
+    value       TEXT NOT NULL,
+    updated_at  TEXT NOT NULL
+)
+"""
+
+_OUTCOME_SEMANTICS_METADATA_KEY = "outcome_semantics_version"
 
 _INDEX_GLOBAL_RULE_CITATIONS_PENDING = """
 CREATE INDEX IF NOT EXISTS global_rule_citations_pending
@@ -159,6 +173,19 @@ def _open_db(db_path: str | Path) -> sqlite3.Connection:
 
 def _create_schema(conn: sqlite3.Connection) -> None:
     """Crée le schéma complet si absent (idempotent grâce aux CREATE IF NOT EXISTS)."""
+
+    existing_tables = {
+        str(row[0])
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        )
+    }
+    had_persisted_state = any(
+        conn.execute(f"SELECT EXISTS(SELECT 1 FROM {table} LIMIT 1)").fetchone()[0]
+        for table in ("notes", "recalls", "global_rules", "global_rule_citations")
+        if table in existing_tables
+    )
+
     conn.execute(_DDL_NOTES)
     conn.execute(_DDL_NOTES_FTS)
     conn.execute(_TRIGGER_AI)
@@ -167,16 +194,29 @@ def _create_schema(conn: sqlite3.Connection) -> None:
     conn.execute(_DDL_RECALLS)
     conn.execute(_DDL_GLOBAL_RULES)
     conn.execute(_DDL_GLOBAL_RULE_CITATIONS)
+    conn.execute(_DDL_METADATA)
     conn.execute(_INDEX_GLOBAL_RULE_CITATIONS_PENDING)
     _ensure_column(conn, "notes", "q_updates", "INTEGER NOT NULL DEFAULT 0")
     _ensure_column(conn, "notes", "curation_revision", "INTEGER NOT NULL DEFAULT 1")
     _ensure_column(conn, "notes", "curated_revision", "INTEGER NOT NULL DEFAULT 0")
     _ensure_column(conn, "notes", "curation_updated_at", "TEXT")
+    _ensure_column(conn, "notes", "outcome_semantics_version", "INTEGER")
     _ensure_column(conn, "recalls", "verdict", "TEXT")
     _ensure_column(conn, "recalls", "reward", "REAL")
     _ensure_column(conn, "recalls", "forward_return", "REAL")
     _ensure_column(conn, "recalls", "evaluated_at", "TEXT")
+    _ensure_column(conn, "recalls", "outcome_semantics_version", "INTEGER")
+    _ensure_column(
+        conn,
+        "global_rule_citations",
+        "outcome_semantics_version",
+        "INTEGER",
+    )
     conn.commit()
+    _migrate_benchmark_semantics(
+        conn,
+        had_persisted_state=bool(had_persisted_state),
+    )
 
 
 def _ensure_column(
@@ -190,6 +230,93 @@ def _ensure_column(
     columns = {str(row[1]) for row in conn.execute(f"PRAGMA table_info({table})")}
     if column not in columns:
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}")
+
+
+def _migrate_benchmark_semantics(
+    conn: sqlite3.Connection,
+    *,
+    had_persisted_state: bool,
+) -> None:
+    """Invalidate v1-derived feedback once, then let runtime replay it as v2.
+
+    The SQLite store is reconstructible.  We deliberately keep source notes,
+    recalls and citations, but remove every verdict/score/reward derived under
+    the old HOLD semantics.  A metadata marker makes the reset idempotent even
+    when several short-lived workers reopen the same database.
+    """
+
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        current = conn.execute(
+            "SELECT value FROM learnings_metadata WHERE key=?",
+            (_OUTCOME_SEMANTICS_METADATA_KEY,),
+        ).fetchone()
+        if current is not None and str(current[0]) == str(BENCHMARK_SEMANTICS_VERSION):
+            conn.commit()
+            return
+
+        changed_at = datetime.now(timezone.utc).isoformat()
+        if had_persisted_state:
+            conn.execute(
+                """
+                UPDATE notes
+                SET verdict=NULL,
+                    outcome_score=NULL,
+                    outcome_semantics_version=NULL,
+                    q_value=0,
+                    q_updates=0,
+                    curation_revision=MAX(curation_revision, curated_revision)+1,
+                    curated_revision=MAX(curation_revision, curated_revision)+1,
+                    curation_updated_at=?
+                """,
+                (changed_at,),
+            )
+            conn.execute(
+                """
+                UPDATE recalls
+                SET verdict=NULL,
+                    reward=NULL,
+                    forward_return=NULL,
+                    evaluated_at=NULL,
+                    outcome_semantics_version=NULL
+                """
+            )
+            conn.execute(
+                """
+                UPDATE global_rule_citations
+                SET verdict=NULL,
+                    reward=NULL,
+                    forward_return=NULL,
+                    evaluated_at=NULL,
+                    outcome_semantics_version=NULL
+                """
+            )
+            conn.execute(
+                """
+                UPDATE global_rules
+                SET q_value=0, q_updates=0, updated_at=?
+                """,
+                (changed_at,),
+            )
+
+        conn.execute(
+            """
+            INSERT INTO learnings_metadata (key, value, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(key) DO UPDATE SET
+                value=excluded.value,
+                updated_at=excluded.updated_at
+            """,
+            (
+                _OUTCOME_SEMANTICS_METADATA_KEY,
+                str(BENCHMARK_SEMANTICS_VERSION),
+                changed_at,
+            ),
+        )
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
 
 
 def _utc_lifecycle_clock(now: datetime | None) -> datetime:
@@ -270,19 +397,23 @@ class LearningsStore:
                 rows = self._conn.execute(
                     f"""
                     SELECT decision_id, verdict, forward_return, outcome_score,
-                           q_value, q_updates
+                           outcome_semantics_version, q_value, q_updates
                     FROM notes
                     WHERE decision_id IN ({placeholders})
                     """,
                     chunk,
                 ).fetchall()
                 for row in rows:
-                    verdict = row["verdict"]
+                    trusted = (
+                        row["outcome_semantics_version"]
+                        == BENCHMARK_SEMANTICS_VERSION
+                    )
+                    verdict = row["verdict"] if trusted else None
                     result[str(row["decision_id"])] = {
                         "status": "pending" if verdict is None else "evaluated",
                         "verdict": verdict,
-                        "forward_return": row["forward_return"],
-                        "outcome_score": row["outcome_score"],
+                        "forward_return": row["forward_return"] if trusted else None,
+                        "outcome_score": row["outcome_score"] if trusted else None,
                         "q_value": row["q_value"],
                         "q_updates": int(row["q_updates"] or 0),
                     }
@@ -409,6 +540,11 @@ class LearningsStore:
             return 0
 
         data = json.loads(bootstrap_json.read_text(encoding="utf-8"))
+        if data.get("outcome_semantics_version") != BENCHMARK_SEMANTICS_VERSION:
+            raise ValueError(
+                "bootstrap outcome_semantics_version does not match "
+                f"benchmark semantics v{BENCHMARK_SEMANTICS_VERSION}"
+            )
         learnings = data.get("learnings", [])
 
         updated = 0
@@ -418,12 +554,18 @@ class LearningsStore:
                 decision_id = item.get("decision_id")
                 if not decision_id:
                     continue
-                missing_clause = " AND verdict IS NULL" if only_missing else ""
+                missing_clause = (
+                    " AND (verdict IS NULL OR outcome_semantics_version IS NOT "
+                    ":semantics_version)"
+                    if only_missing
+                    else ""
+                )
                 cursor = self._conn.execute(
                     f"""
                     UPDATE notes
                        SET verdict        = :verdict,
                            forward_return = :forward_return,
+                           outcome_semantics_version = :semantics_version,
                            curation_revision = curation_revision + 1,
                            curation_updated_at = :changed_at
                      WHERE decision_id = :decision_id
@@ -431,12 +573,14 @@ class LearningsStore:
                        AND (
                            verdict IS NOT :verdict
                            OR forward_return IS NOT :forward_return
+                           OR outcome_semantics_version IS NOT :semantics_version
                        )
                     """,
                     {
                         "decision_id": str(decision_id),
                         "verdict": item.get("verdict"),
                         "forward_return": item.get("forward_return"),
+                        "semantics_version": BENCHMARK_SEMANTICS_VERSION,
                         "changed_at": changed_at,
                     },
                 )
@@ -462,7 +606,13 @@ class LearningsStore:
         with self._lock:
             # Charger toutes les notes avec un verdict posé
             rows = self._conn.execute(
-                "SELECT id, symbol, family, verdict FROM notes WHERE verdict IS NOT NULL"
+                """
+                SELECT id, symbol, family, verdict
+                FROM notes
+                WHERE verdict IS NOT NULL
+                  AND outcome_semantics_version = ?
+                """,
+                (BENCHMARK_SEMANTICS_VERSION,),
             ).fetchall()
 
             if not rows:
@@ -501,20 +651,31 @@ class LearningsStore:
         note-MemRL update increments ``curation_revision``.  The distinction is
         deliberately revision based rather than timestamp based: a failed
         consolidation cannot lose an outcome which arrived while its LLM call
-        was in flight.
+        was in flight.  A semantics migration acknowledges its reset revision,
+        so legacy pending rows stay out of curation until their v2 replay.  A
+        genuinely new, never-curated pending note remains eligible.
         """
 
         with self._lock:
             row = self._conn.execute(
-                """
+                f"""
                 SELECT
                     COALESCE(SUM(CASE
                         WHEN curation_revision > curated_revision
+                         AND (
+                            outcome_semantics_version = {BENCHMARK_SEMANTICS_VERSION}
+                            OR curated_revision = 0
+                         )
                          AND curated_revision = 0 THEN 1 ELSE 0 END), 0) AS new_count,
                     COALESCE(SUM(CASE
                         WHEN curation_revision > curated_revision
+                         AND outcome_semantics_version = {BENCHMARK_SEMANTICS_VERSION}
                          AND curated_revision > 0 THEN 1 ELSE 0 END), 0) AS feedback_count,
                     MIN(CASE WHEN curation_revision > curated_revision
+                         AND (
+                            outcome_semantics_version = {BENCHMARK_SEMANTICS_VERSION}
+                            OR curated_revision = 0
+                         )
                         THEN COALESCE(curation_updated_at, ts) END) AS oldest_changed_at
                 FROM notes
                 """
@@ -558,7 +719,7 @@ class LearningsStore:
         fields = """
             id, decision_id, ts, symbol, family, action, intent, executed,
             note, verdict, forward_return, outcome_score, q_value, q_updates,
-            curation_revision, curated_revision
+            outcome_semantics_version, curation_revision, curated_revision
         """
         with self._lock:
             changed = self._conn.execute(
@@ -566,6 +727,10 @@ class LearningsStore:
                 SELECT {fields}
                 FROM notes
                 WHERE curation_revision > curated_revision
+                  AND (
+                    outcome_semantics_version = {BENCHMARK_SEMANTICS_VERSION}
+                    OR curated_revision = 0
+                  )
                 ORDER BY ts DESC, id DESC
                 """
             ).fetchall()
@@ -574,6 +739,7 @@ class LearningsStore:
                 SELECT {fields}
                 FROM notes
                 WHERE verdict = 'WIN'
+                  AND outcome_semantics_version = {BENCHMARK_SEMANTICS_VERSION}
                 ORDER BY
                     (outcome_score IS NULL) ASC,
                     outcome_score DESC,
@@ -589,6 +755,7 @@ class LearningsStore:
                 SELECT {fields}
                 FROM notes
                 WHERE verdict = 'LOSS'
+                  AND outcome_semantics_version = {BENCHMARK_SEMANTICS_VERSION}
                 ORDER BY
                     (outcome_score IS NULL) ASC,
                     outcome_score ASC,
@@ -616,7 +783,19 @@ class LearningsStore:
                 if per_symbol.get(symbol_key, 0) >= max_per_symbol:
                     continue
                 row = dict(raw)
-                verdict = row.get("verdict")
+                trusted = (
+                    row.get("outcome_semantics_version")
+                    == BENCHMARK_SEMANTICS_VERSION
+                )
+                verdict = row.get("verdict") if trusted else None
+                if not trusted:
+                    row.update(
+                        {
+                            "verdict": None,
+                            "forward_return": None,
+                            "outcome_score": None,
+                        }
+                    )
                 row.update(
                     {
                         "note_id": note_id,
@@ -920,17 +1099,18 @@ class LearningsStore:
         mature_before: str | None = None,
         limit: int = 64,
     ) -> list[dict]:
-        """Return notes whose original decision has not received a verdict yet."""
+        """Return notes needing a v2 verdict, including evaluated legacy rows."""
 
         with self._lock:
             sql = """
                 SELECT id, decision_id, ts, symbol, family, action, intent,
                        executed, note, verdict, forward_return, outcome_score,
-                       q_value, q_updates
+                       outcome_semantics_version, q_value, q_updates
                 FROM notes
-                WHERE verdict IS NULL
+                WHERE (verdict IS NULL
+                   OR outcome_semantics_version IS NOT ?)
             """
-            params: list[object] = []
+            params: list[object] = [BENCHMARK_SEMANTICS_VERSION]
             if mature_before is not None:
                 sql += " AND ts <= ?"
                 params.append(mature_before)
@@ -953,11 +1133,20 @@ class LearningsStore:
                     """
                     UPDATE notes
                     SET verdict = ?, forward_return = ?,
+                        outcome_semantics_version = ?,
                         curation_revision = curation_revision + 1,
                         curation_updated_at = ?
-                    WHERE id = ? AND verdict IS NULL
+                    WHERE id = ?
+                      AND (verdict IS NULL OR outcome_semantics_version IS NOT ?)
                     """,
-                    (verdict, row.get("forward_return"), changed_at, row.get("id")),
+                    (
+                        verdict,
+                        row.get("forward_return"),
+                        BENCHMARK_SEMANTICS_VERSION,
+                        changed_at,
+                        row.get("id"),
+                        BENCHMARK_SEMANTICS_VERSION,
+                    ),
                 )
                 updated += max(int(cursor.rowcount), 0)
             self._conn.commit()
@@ -975,13 +1164,16 @@ class LearningsStore:
             sql = """
                 SELECT decision_id, MIN(id) AS first_id
                 FROM recalls
-                WHERE evaluated_at IS NULL AND decision_id IS NOT NULL
+                WHERE (evaluated_at IS NULL OR outcome_semantics_version IS NOT ?)
+                  AND decision_id IS NOT NULL
             """
-            params: list[object] = []
+            params: list[object] = [BENCHMARK_SEMANTICS_VERSION]
             if mature_before is not None:
                 sql += " AND ts <= ?"
                 params.append(mature_before)
-            sql += " GROUP BY decision_id ORDER BY first_id DESC LIMIT ?"
+            # Replay oldest first: EMA updates must leave the newest evidence
+            # with the greatest weight after a semantics reset.
+            sql += " GROUP BY decision_id ORDER BY first_id ASC LIMIT ?"
             params.append(max(0, int(limit)))
             rows = self._conn.execute(sql, tuple(params)).fetchall()
         return [str(row["decision_id"]) for row in rows if row["decision_id"]]
@@ -1002,8 +1194,13 @@ class LearningsStore:
         note_ids: set[int] = set()
         with self._lock:
             recall_rows = self._conn.execute(
-                "SELECT id, note_ids FROM recalls WHERE decision_id=? AND evaluated_at IS NULL",
-                (decision_id,),
+                """
+                SELECT id, note_ids
+                FROM recalls
+                WHERE decision_id=?
+                  AND (evaluated_at IS NULL OR outcome_semantics_version IS NOT ?)
+                """,
+                (decision_id, BENCHMARK_SEMANTICS_VERSION),
             ).fetchall()
             for recall_row in recall_rows:
                 try:
@@ -1016,15 +1213,19 @@ class LearningsStore:
                 self._conn.execute(
                     """
                     UPDATE recalls
-                    SET verdict=?, reward=?, forward_return=?, evaluated_at=?
-                    WHERE decision_id=? AND evaluated_at IS NULL
+                    SET verdict=?, reward=?, forward_return=?, evaluated_at=?,
+                        outcome_semantics_version=?
+                    WHERE decision_id=?
+                      AND (evaluated_at IS NULL OR outcome_semantics_version IS NOT ?)
                     """,
                     (
                         verdict,
                         None if reward is None else float(reward),
                         forward_return,
                         evaluated_at,
+                        BENCHMARK_SEMANTICS_VERSION,
                         decision_id,
+                        BENCHMARK_SEMANTICS_VERSION,
                     ),
                 )
 
@@ -1228,13 +1429,16 @@ class LearningsStore:
             sql = """
                 SELECT decision_id
                 FROM global_rule_citations
-                WHERE evaluated_at IS NULL
+                WHERE (evaluated_at IS NULL
+                   OR outcome_semantics_version IS NOT ?)
             """
-            params: list[object] = []
+            params: list[object] = [BENCHMARK_SEMANTICS_VERSION]
             if mature_before is not None:
                 sql += " AND ts <= ?"
                 params.append(mature_before)
-            sql += " ORDER BY ts DESC, id DESC LIMIT ?"
+            # Replay oldest first for the same EMA chronology guarantee as
+            # recalled-note rewards.
+            sql += " ORDER BY ts ASC, id ASC LIMIT ?"
             params.append(max(0, int(limit)))
             rows = self._conn.execute(sql, tuple(params)).fetchall()
         return [str(row["decision_id"]) for row in rows]
@@ -1257,9 +1461,10 @@ class LearningsStore:
                 """
                 SELECT id, rule_ids
                 FROM global_rule_citations
-                WHERE decision_id=? AND evaluated_at IS NULL
+                WHERE decision_id=?
+                  AND (evaluated_at IS NULL OR outcome_semantics_version IS NOT ?)
                 """,
-                (decision_id,),
+                (decision_id, BENCHMARK_SEMANTICS_VERSION),
             ).fetchone()
             if citation is None:
                 return {"citations_updated": 0, "rules_updated": 0, "rule_ids": []}
@@ -1271,15 +1476,19 @@ class LearningsStore:
             self._conn.execute(
                 """
                 UPDATE global_rule_citations
-                SET verdict=?, reward=?, forward_return=?, evaluated_at=?
-                WHERE id=? AND evaluated_at IS NULL
+                SET verdict=?, reward=?, forward_return=?, evaluated_at=?,
+                    outcome_semantics_version=?
+                WHERE id=?
+                  AND (evaluated_at IS NULL OR outcome_semantics_version IS NOT ?)
                 """,
                 (
                     verdict,
                     None if reward is None else float(reward),
                     forward_return,
                     evaluated_at,
+                    BENCHMARK_SEMANTICS_VERSION,
                     citation["id"],
+                    BENCHMARK_SEMANTICS_VERSION,
                 ),
             )
 

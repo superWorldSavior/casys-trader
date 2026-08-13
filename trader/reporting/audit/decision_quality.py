@@ -7,6 +7,13 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from trader.domain import decision_reason
+from trader.domain.decision_benchmark import (
+    BENCHMARK_SEMANTICS_VERSION,
+    _MACHINE_REASONS as _MACHINE_REASONS,
+    _verdict as _verdict,
+    decision_benchmark_context as decision_benchmark_context,
+    decision_verdict,
+)
 from trader.reporting.audit.protocols import PriceHistoryLoader
 
 
@@ -67,45 +74,6 @@ def _price_at_or_after(prices: list[tuple[datetime, float]], ts: datetime) -> fl
     return None
 
 
-# Abstentions produites par l'infra (gate de pertinence D7, données périmées,
-# batch sans décision, budget LLM épuisé) : pas des décisions agent — exclues
-# des stats de qualité (verdict "machine"). Le critère canonique est désormais
-# `decision_source == "infra"` (posé par le daemon) ; cette liste de `reason`
-# reste un fallback pour les lignes ledger legacy écrites avant ce champ — elle
-# doit donc inclure TOUTES les raisons infra connues (cf daemon `_INFRA_HOLD_REASONS`).
-_MACHINE_REASONS = {
-    "quiet_gate",
-    "stale_market_data",
-    "no_decision_in_batch",
-    "model_call_budget_exhausted",
-    "model_call_budget_exhausted_after_context",
-}
-
-
-def _verdict(action: Any, future_return_pct: float | None, threshold_pct: float) -> str:
-    if future_return_pct is None:
-        return "unknown"
-    action_text = str(action or "").upper()
-    if action_text == "BUY":
-        if future_return_pct >= threshold_pct:
-            return "good"
-        if future_return_pct <= -threshold_pct:
-            return "bad"
-        return "neutral"
-    if action_text == "SELL":
-        if future_return_pct <= -threshold_pct:
-            return "good"
-        if future_return_pct >= threshold_pct:
-            return "bad"
-        return "neutral"
-    if action_text == "HOLD":
-        # Une abstention ne peut pas être un trade « raté » : si le marché bouge
-        # au-delà du seuil pendant un HOLD, c'est une opportunité laissée passer
-        # (« missed »), pas un échec directionnel comme un BUY qui s'effondre.
-        return "good" if abs(future_return_pct) < threshold_pct else "missed"
-    return "unknown"
-
-
 def decision_commit_key(row: dict) -> str:
     version = row.get("code_version")
     if not isinstance(version, dict):
@@ -155,6 +123,7 @@ def _counter_metrics(counts: Counter) -> dict:
 def summarize_audited_rows(rows: list[dict], horizons: list[str]) -> dict:
     summary: dict[str, Counter] = {horizon: Counter() for horizon in horizons}
     summary_by_commit: dict[str, dict[str, Counter]] = {horizon: {} for horizon in horizons}
+    summary_by_basis: dict[str, dict[str, Counter]] = {horizon: {} for horizon in horizons}
     summary_by_reason: dict[str, dict[str, dict[str, Counter]]] = {
         horizon: {} for horizon in horizons
     }
@@ -172,8 +141,10 @@ def summarize_audited_rows(rows: list[dict], horizons: list[str]) -> dict:
             if not isinstance(entry, dict):
                 continue
             verdict = str(entry.get("verdict") or "unknown")
+            basis = str(entry.get("benchmark_basis") or "legacy")
             summary[horizon][verdict] += 1
             summary_by_commit[horizon].setdefault(commit_key, Counter())[verdict] += 1
+            summary_by_basis[horizon].setdefault(basis, Counter())[verdict] += 1
             reason_by_action = summary_by_reason[horizon].setdefault(action, {})
             reason_by_action.setdefault(reason_code, Counter())[verdict] += 1
     return {
@@ -195,6 +166,20 @@ def summarize_audited_rows(rows: list[dict], horizons: list[str]) -> dict:
                 for commit, counts in commits.items()
             }
             for horizon, commits in summary_by_commit.items()
+        },
+        "summary_by_basis": {
+            horizon: {
+                basis: dict(counts)
+                for basis, counts in bases.items()
+            }
+            for horizon, bases in summary_by_basis.items()
+        },
+        "metrics_by_basis": {
+            horizon: {
+                basis: _counter_metrics(counts)
+                for basis, counts in bases.items()
+            }
+            for horizon, bases in summary_by_basis.items()
         },
         "summary_by_reason": {
             horizon: {
@@ -227,6 +212,10 @@ def refresh_audit_payload(
     include_missing_ledger_rows: bool = False,
 ) -> dict:
     horizons = [str(horizon) for horizon in payload.get("horizons", [])]
+    try:
+        threshold_pct = float(payload.get("threshold_pct") or 0.5)
+    except (TypeError, ValueError):
+        threshold_pct = 0.5
     versions_by_id = {
         row.get("decision_id"): row.get("code_version")
         for row in ledger_rows or []
@@ -243,6 +232,29 @@ def refresh_audit_payload(
         if isinstance(version, dict):
             refreshed["code_version"] = dict(version)
         refreshed["decision_commit_key"] = decision_commit_key(refreshed)
+        audits = refreshed.get("audits")
+        if isinstance(audits, dict):
+            migrated_audits: dict[str, dict] = {}
+            for horizon, raw_entry in audits.items():
+                if not isinstance(raw_entry, dict):
+                    continue
+                entry = dict(raw_entry)
+                try:
+                    future_return_pct = (
+                        None
+                        if entry.get("future_return_pct") is None
+                        else float(entry["future_return_pct"])
+                    )
+                except (TypeError, ValueError):
+                    future_return_pct = None
+                verdict, benchmark_context = decision_verdict(
+                    refreshed,
+                    future_return_pct,
+                    threshold_pct,
+                )
+                entry.update({"verdict": verdict, **benchmark_context})
+                migrated_audits[str(horizon)] = entry
+            refreshed["audits"] = migrated_audits
         rows.append(refreshed)
     if include_missing_ledger_rows:
         for ledger_row in ledger_rows or []:
@@ -250,20 +262,23 @@ def refresh_audit_payload(
             if decision_id in seen_ids:
                 continue
             missing = dict(ledger_row)
-            missing["audits"] = {
-                horizon: {
+            missing_audits: dict[str, dict] = {}
+            for horizon in horizons:
+                verdict, benchmark_context = decision_verdict(missing, None, threshold_pct)
+                missing_audits[horizon] = {
                     "entry_price": missing.get("price"),
                     "future_price": None,
                     "future_return_pct": None,
-                    "verdict": "unknown",
+                    "verdict": verdict,
+                    **benchmark_context,
                 }
-                for horizon in horizons
-            }
+            missing["audits"] = missing_audits
             missing["decision_commit_key"] = decision_commit_key(missing)
             rows.append(missing)
             seen_ids.add(decision_id)
 
     refreshed_payload = dict(payload)
+    refreshed_payload["benchmark_semantics_version"] = BENCHMARK_SEMANTICS_VERSION
     refreshed_payload["rows"] = rows
     if audit_code_version is not None:
         refreshed_payload["audit_code_version"] = audit_code_version
@@ -306,18 +321,13 @@ def audit_rows(
             future_return_pct = None
             if entry_price not in {None, 0} and future_price is not None:
                 future_return_pct = round(((future_price - entry_price) / entry_price) * 100.0, 6)
-            if (
-                str(row.get("decision_source") or "") == "infra"
-                or str(row.get("reason") or "") in _MACHINE_REASONS
-            ):
-                verdict = "machine"
-            else:
-                verdict = _verdict(row.get("action"), future_return_pct, threshold_pct)
+            verdict, benchmark_context = decision_verdict(row, future_return_pct, threshold_pct)
             audits[horizon] = {
                 "entry_price": entry_price,
                 "future_price": future_price,
                 "future_return_pct": future_return_pct,
                 "verdict": verdict,
+                **benchmark_context,
             }
 
         audited = dict(row)
@@ -327,6 +337,7 @@ def audit_rows(
         audited_rows.append(audited)
 
     payload = {
+        "benchmark_semantics_version": BENCHMARK_SEMANTICS_VERSION,
         "threshold_pct": threshold_pct,
         "horizons": horizons,
         "audit_code_version": audit_code_version,

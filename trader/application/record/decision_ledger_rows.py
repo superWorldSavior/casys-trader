@@ -105,6 +105,7 @@ def build_decision_row(
         "qty": _optional_float(decision.get("qty")),
         "confidence": _optional_float(decision.get("confidence")),
         "rationale": decision.get("rationale"),
+        "opportunity_side": decision.get("opportunity_side"),
         "next_wake_in_minutes": _optional_float(decision.get("next_wake_in_minutes")),
         "executed": decision.get("executed"),
         "reason": decision.get("reason"),

@@ -137,6 +137,45 @@ def test_le_prompt_cadre_le_role_de_planificateur() -> None:
     assert "tu es le planificateur" in low or "tu es un planificateur" in low
 
 
+def test_guidance_interdit_de_deplacer_le_but_apres_un_trigger() -> None:
+    prompt = _batch_prompt()
+
+    assert "`indicator_triggers` signifie qu'une condition" in prompt
+    assert "`matched.actual` donne la valeur observée" in prompt
+    assert "Un trigger WAKE ouvre une relecture" in prompt
+    assert "fait nouveau matériel" in prompt
+    assert "Un fait déjà connu au moment du plan" in prompt
+    assert "chaîne pullback puis reclaim puis breakout puis volume" in prompt
+
+
+def test_guidance_distingue_trigger_et_expiration_sans_affaiblir_les_gates() -> None:
+    prompt = _batch_prompt()
+
+    assert "`wake_reasons` décrit un réveil sans match" in prompt
+    assert "une watch expirée impose une réévaluation fraîche" in prompt
+    assert "pas une entrée automatique" in prompt
+    assert "`execution.enabled=false`" in prompt
+    assert "données stale" in prompt
+
+
+def test_guidance_symetrise_action_et_inaction() -> None:
+    prompt = _batch_prompt()
+
+    assert "Évalue symétriquement action et inaction" in prompt
+    assert "HOLD n'est pas le choix par défaut" in prompt
+    assert "coût d'opportunité" in prompt
+    assert "taille réduite ou un plan armé" in prompt
+    assert "une petite taille ne sauve jamais un setup sans edge" in prompt
+
+
+def test_guidance_swing_fait_primer_daily_4h_sur_timing_15m() -> None:
+    prompt = _batch_prompt()
+
+    assert "le daily et le 4h gouvernent direction, thèse et invalidation" in prompt
+    assert "le 15m règle le timing d'entrée" in prompt
+    assert "Le 15m ne devient pas un veto permanent" in prompt
+
+
 def test_batch_prompt_indique_value_toujours_numerique() -> None:
     """Le prompt doit préciser que `value` est TOUJOURS un nombre fini."""
     prompt = _batch_prompt()

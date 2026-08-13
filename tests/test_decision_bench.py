@@ -141,6 +141,92 @@ def test_run_bench_score_une_reponse_modele_sans_exposer_le_futur() -> None:
     assert model["reviews"][0]["original_verdict"] == "missed"
 
 
+def test_score_modele_ne_transforme_pas_un_hold_sans_direction_en_missed() -> None:
+    audit = {
+        "threshold_pct": 0.5,
+        "horizons": ["4h"],
+        "rows": [_row("d1", action="BUY", future_return_pct=1.0, verdict="good")],
+    }
+    cases = decision_bench.select_cases(
+        audit,
+        horizon="4h",
+        limit=1,
+        verdicts={"good"},
+    )
+    response = json.dumps(
+        {
+            "reviews": [
+                {
+                    "decision_id": "d1",
+                    "action": "HOLD",
+                    "opportunity_side": None,
+                    "confidence": 0.8,
+                    "rationale": "pas de direction déclarée",
+                }
+            ]
+        }
+    )
+
+    reviews, summary = decision_bench.score_model_reviews(cases, response, threshold_pct=0.5)
+
+    assert reviews[0]["candidate_verdict"] == "unknown"
+    assert summary["unknown"] == 1
+    assert summary["scored"] == 0
+    assert summary["coverage_pct"] == 0.0
+
+
+def test_score_modele_mesure_un_hold_directionnel_long_ou_short() -> None:
+    audit = {
+        "threshold_pct": 0.5,
+        "horizons": ["4h"],
+        "rows": [
+            _row("d1", action="BUY", future_return_pct=1.0, verdict="good"),
+            _row("d2", action="BUY", future_return_pct=1.0, verdict="good"),
+        ],
+    }
+    cases = decision_bench.select_cases(
+        audit,
+        horizon="4h",
+        limit=2,
+        verdicts={"good"},
+    )
+    response = json.dumps(
+        {
+            "reviews": [
+                {
+                    "decision_id": "d1",
+                    "action": "HOLD",
+                    "opportunity_side": "long",
+                    "confidence": 0.7,
+                    "rationale": "long refusé",
+                },
+                {
+                    "decision_id": "d2",
+                    "action": "HOLD",
+                    "opportunity_side": "short",
+                    "confidence": 0.7,
+                    "rationale": "short refusé",
+                },
+            ]
+        }
+    )
+
+    reviews, summary = decision_bench.score_model_reviews(cases, response, threshold_pct=0.5)
+
+    assert [row["candidate_verdict"] for row in reviews] == ["missed", "good"]
+    assert [row["candidate_opportunity_side"] for row in reviews] == ["long", "short"]
+    assert summary["missed"] == 1
+    assert summary["good"] == 1
+    assert summary["coverage_pct"] == 100.0
+
+
+def test_prompt_bench_demande_la_direction_de_l_opportunite() -> None:
+    prompt = decision_bench.build_prompt([], horizon="4h", threshold_pct=0.5)
+
+    assert '"opportunity_side":"long|short|null"' in prompt
+    assert "Pour HOLD, `opportunity_side` nomme la thèse précise refusée" in prompt
+
+
 def test_reconstruct_case_contexts_utilise_uniquement_les_bars_asof() -> None:
     audit = {
         "threshold_pct": 0.5,

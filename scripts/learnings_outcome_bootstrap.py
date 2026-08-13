@@ -1,8 +1,8 @@
 """Bootstrap des outcome_scores FLAIR pour les learnings historiques.
 
-Algorithme V1 (1 learning = 1 decision_id = 1 apparition) :
+Algorithme FLAIR (1 learning = 1 decision_id = 1 apparition) :
   outcome_score = (nb_wins - nb_losses) / nb_apparitions
-  → pour V1 : WIN = +1, LOSS = -1, NEUTRAL = 0, UNKNOWN = non évalué.
+  → WIN = +1, LOSS = -1, NEUTRAL = 0, UNKNOWN = non évalué.
 
 Sources :
   - state/archive/learnings-from-ledger.jsonl (1 867 learnings archivés)
@@ -10,14 +10,14 @@ Sources :
 
 Join : chaque learning porte un decision_id → jointure avec l'archive des
 décisions (state/archive/decisions-*.jsonl.gz + state/decisions.jsonl).
-Score via forward_return aux horizons 4h et 1d (même paramétrage que
-backtest/decision_quality.py), verdict primaire = 1d (fallback 4h).
+Score via le benchmark directionnel v2 aux horizons 4h et 1d,
+verdict primaire = 1d (fallback 4h si le prix futur manque).
 
-Mapping verdict :
-  gagnant / bonne_prudence → WIN
-  perdant / opportunite_manquee → LOSS
-  neutre / justifie → NEUTRAL
-  non_evaluable / inconnu → UNKNOWN
+Mapping feedback :
+  good directionnel → WIN
+  bad / missed → LOSS
+  neutral ou HOLD calme → NEUTRAL
+  unknown / machine → UNKNOWN
 
 Usage :
   uv run python scripts/learnings_outcome_bootstrap.py [--verbose]
@@ -34,6 +34,10 @@ from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from trader.application.record.learning_outcomes import forward_return, learning_outcome_for_return
+from trader.domain.decision_benchmark import BENCHMARK_SEMANTICS_VERSION, decision_verdict
+from trader.domain.learnings.scoring import SIGNIFICANT_RETURN_BAND
+
 ROOT = Path(__file__).resolve().parent.parent
 STATE = ROOT / "state"
 ARCHIVE = STATE / "archive"
@@ -47,12 +51,7 @@ NOTE_TRUNC = 120
 # Horizons identiques à backtest/decision_quality.py
 _HORIZONS = (("4h", timedelta(hours=4)), ("1d", timedelta(days=1)))
 _PRIMARY_HORIZON = "1d"
-_BAND = 0.005
-
-# Verdicts positifs / négatifs au sens FLAIR
-_WIN_VERDICTS = {"gagnant", "bonne_prudence"}
-_LOSS_VERDICTS = {"perdant", "opportunite_manquee"}
-_NEUTRAL_VERDICTS = {"neutre", "justifie"}
+_BAND = SIGNIFICANT_RETURN_BAND
 
 log = logging.getLogger(__name__)
 
@@ -150,26 +149,11 @@ def _build_ts_symbol_index(decisions: dict[str, dict]) -> dict[tuple[str, str], 
 # ---------------------------------------------------------------------------
 
 
-def _classify_raw(action: str, forward_ret: float | None) -> str:
-    from backtest.decision_quality import classify  # noqa: PLC0415
-
-    return classify(action, forward_ret, _BAND)
-
-
-def _verdict(classify_result: str) -> str:
-    if classify_result in _WIN_VERDICTS:
-        return "WIN"
-    if classify_result in _LOSS_VERDICTS:
-        return "LOSS"
-    if classify_result in _NEUTRAL_VERDICTS:
-        return "NEUTRAL"
-    return "UNKNOWN"
-
-
 def _forward_return(history: object, symbol: str, ts: str, horizon: timedelta) -> float | None:
-    from backtest.decision_quality import forward_return  # noqa: PLC0415
+    """Rendement vers la première barre disponible à/après l'horizon."""
 
-    return forward_return(history, symbol, ts, horizon)  # type: ignore[arg-type]
+    bars_by_symbol = getattr(history, "_bars_by_symbol", {})
+    return forward_return(bars_by_symbol.get(symbol, ()), ts, horizon)
 
 
 def score_learning(
@@ -181,8 +165,9 @@ def score_learning(
     ts = str(learning.get("ts") or "")
     symbol = str(learning.get("symbol") or "")
     note_raw = str(learning.get("note") or "")
-    action = str((decision or learning).get("action") or learning.get("action") or "HOLD").upper()
-    executed = bool(learning.get("executed", False))
+    scoring_row = {**learning, **(decision or {})}
+    action = str(scoring_row.get("action") or "HOLD").upper()
+    executed = bool(scoring_row.get("executed", False))
     decision_id = str(learning.get("decision_id") or (decision or {}).get("decision_id") or "")
 
     # Utilise le cycle_ts de la décision si disponible (plus précis que le ts du learning)
@@ -190,27 +175,32 @@ def score_learning(
 
     fr: dict[str, float | None] = {}
     cl: dict[str, str] = {}
+    outcomes: dict[str, dict[str, object]] = {}
     for label, delta in _HORIZONS:
         fr[label] = _forward_return(history, symbol, score_ts, delta)
-        cl[label] = _classify_raw(action, fr[label])
+        cl[label], _context = decision_verdict(scoring_row, fr[label], _BAND)
+        outcomes[label] = learning_outcome_for_return(scoring_row, fr[label])
 
-    # Verdict primaire = 1d ; fallback 4h si non_evaluable
+    # Verdict primaire = 1d ; fallback 4h uniquement si le rendement 1d manque.
+    primary_label = _PRIMARY_HORIZON
     primary_classify = cl[_PRIMARY_HORIZON]
     primary_fr = fr[_PRIMARY_HORIZON]
-    if primary_classify == "non_evaluable":
+    if primary_fr is None:
         # fallback au premier autre horizon
-        other_label = next(lbl for lbl, _ in _HORIZONS if lbl != _PRIMARY_HORIZON)
-        primary_classify = cl[other_label]
-        primary_fr = fr[other_label]
+        primary_label = next(lbl for lbl, _ in _HORIZONS if lbl != _PRIMARY_HORIZON)
+        primary_classify = cl[primary_label]
+        primary_fr = fr[primary_label]
+    primary_outcome = outcomes[primary_label]
 
     return {
+        "benchmark_semantics_version": BENCHMARK_SEMANTICS_VERSION,
         "decision_id": decision_id,
         "ts": ts,
         "symbol": symbol,
         "note": note_raw[:NOTE_TRUNC],
         "action": action,
         "executed": executed,
-        "verdict": _verdict(primary_classify),
+        "verdict": primary_outcome["verdict"],
         "classify_primary": primary_classify,
         "forward_return": round(primary_fr, 6) if primary_fr is not None else None,
         "classify_4h": cl["4h"],
@@ -426,8 +416,10 @@ def main() -> int:  # noqa: C901
 
     # 7. Construire le document de sortie
     report = {
+        "outcome_semantics_version": BENCHMARK_SEMANTICS_VERSION,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "params": {
+            "benchmark_semantics_version": BENCHMARK_SEMANTICS_VERSION,
             "horizons": [lbl for lbl, _ in _HORIZONS],
             "primary_horizon": _PRIMARY_HORIZON,
             "band": _BAND,

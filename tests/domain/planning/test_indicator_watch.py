@@ -40,23 +40,55 @@ def test_summarize_watch_resume_un_plan_arme() -> None:
         "logic": "all",
         "conditions": [
             {
+                "symbol": "SPY",
                 "indicator": "z_score",
                 "op": ">=",
                 "value": 1.8,
                 "timeframe": "15m",
+                "source_interval": "15m",
+                "lookback": "5d",
                 "window": 32,
+                "as_of": "latest",
             }
         ],
-        "order": {"intent": "OPEN_LONG", "qty": 10},
+        "order": {
+            "intent": "OPEN_LONG",
+            "action": "BUY",
+            "qty": 10,
+            "confidence": 0.78,
+            "exit_plan": {"hard_stop": {"type": "price", "price": 510.0}},
+            "rationale": "x" * 500,
+        },
     }
 
     assert summary_fn(watch) == {
         "id": "armed-1",
         "kind": "armed",
+        "on_trigger": "EXECUTE_ORDER",
         "intent": "OPEN_LONG",
+        "order": {
+            "intent": "OPEN_LONG",
+            "action": "BUY",
+            "qty": 10,
+            "confidence": 0.78,
+            "exit_plan": {"hard_stop": {"type": "price", "price": 510.0}},
+            "rationale": "x" * 240 + "…",
+        },
         "expires_at": "2026-06-05T14:00:00+00:00",
         "logic": "all",
-        "conditions": [{"indicator": "z_score", "op": ">=", "value": 1.8, "timeframe": "15m"}],
+        "conditions": [
+            {
+                "symbol": "SPY",
+                "indicator": "z_score",
+                "op": ">=",
+                "value": 1.8,
+                "timeframe": "15m",
+                "source_interval": "15m",
+                "lookback": "5d",
+                "window": 32,
+                "as_of": "latest",
+            }
+        ],
     }
 
 
@@ -80,8 +112,51 @@ def test_summarize_watch_resume_une_veille() -> None:
     assert indicator_watch_mod.summarize_watch(watch) == {
         "id": "wake-1",
         "kind": "wake",
+        "on_trigger": "WAKE",
         "expires_at": "2026-06-05T13:00:00+00:00",
-        "conditions": [{"indicator": "return", "op": "<", "value": -0.02, "timeframe": "1h"}],
+        "conditions": [
+            {
+                "indicator": "return",
+                "op": "<",
+                "value": -0.02,
+                "timeframe": "1h",
+                "source_interval": "1h",
+            }
+        ],
+    }
+
+
+def test_summarize_watch_conserve_order_de_wake_with_order_intent() -> None:
+    watch = {
+        "id": "intent-1",
+        "symbol": "QQQ",
+        "on_trigger": "WAKE_WITH_ORDER_INTENT",
+        "conditions": [],
+        "order": {
+            "intent": "OPEN_SHORT",
+            "action": "SELL",
+            "qty": 3,
+            "confidence": 0.64,
+            "exit_plan": {"hard_stop": {"type": "price", "price": 610.0}},
+            "rationale": "Revalider le spread avant l'ordre.",
+            "internal_debug": "not exposed",
+        },
+    }
+
+    assert indicator_watch_mod.summarize_watch(watch) == {
+        "id": "intent-1",
+        "kind": "wake",
+        "on_trigger": "WAKE_WITH_ORDER_INTENT",
+        "intent": "OPEN_SHORT",
+        "order": {
+            "intent": "OPEN_SHORT",
+            "action": "SELL",
+            "qty": 3,
+            "confidence": 0.64,
+            "exit_plan": {"hard_stop": {"type": "price", "price": 610.0}},
+            "rationale": "Revalider le spread avant l'ordre.",
+        },
+        "conditions": [],
     }
 
 
@@ -110,8 +185,43 @@ def test_summarize_watch_est_defensif_sans_order_ni_conditions() -> None:
     assert indicator_watch_mod.summarize_watch(watch) == {
         "id": "partial-1",
         "kind": "wake",
+        "on_trigger": "EXECUTE_ORDER",
         "conditions": [],
     }
+
+
+def test_summarize_watch_conserve_origine_et_intention() -> None:
+    watch = {
+        "id": "NOC:reclaim",
+        "symbol": "NOC",
+        "on_trigger": "WAKE",
+        "created_at": "2026-08-13T13:50:01+00:00",
+        "rationale": "Attendre le reclaim avant d'évaluer le long.",
+        "conditions": [],
+    }
+
+    assert indicator_watch_mod.summarize_watch(watch) == {
+        "id": "NOC:reclaim",
+        "kind": "wake",
+        "on_trigger": "WAKE",
+        "created_at": "2026-08-13T13:50:01+00:00",
+        "rationale": "Attendre le reclaim avant d'évaluer le long.",
+        "conditions": [],
+    }
+
+
+def test_summarize_watch_borne_la_rationale() -> None:
+    summary = indicator_watch_mod.summarize_watch(
+        {
+            "id": "NOC:long-rationale",
+            "on_trigger": "WAKE",
+            "rationale": "x" * 500,
+            "conditions": [],
+        }
+    )
+
+    assert summary["rationale"] == "x" * 240 + "…"
+    assert len(summary["rationale"]) == 241
 
 
 def test_normalize_indicator_watch_borne_et_persiste_une_combinaison_multi_timeframe() -> None:

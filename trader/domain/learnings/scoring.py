@@ -44,11 +44,10 @@ def classify_decision_quality(
         return "neutre"
 
     if normalized == "HOLD":
-        if forward_return > band:
-            return "opportunite_manquee"
-        if forward_return < -band:
-            return "bonne_prudence"
-        return "justifie"
+        # Cette API action-only ne connaît pas le sens de l'opportunité. Un
+        # mouvement matériel ne permet donc de conclure ni « raté » ni
+        # « prudence ». Les HOLD directionnels passent par decision_benchmark.
+        return "justifie" if abs(forward_return) < band else "inconnu"
 
     return "inconnu"
 

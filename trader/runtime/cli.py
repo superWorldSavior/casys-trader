@@ -580,6 +580,8 @@ def _load_decision_audit() -> dict:
         raise SystemExit(f"invalid decision audit: {audit_path}") from exc
     if not isinstance(payload, dict):
         raise SystemExit(f"invalid decision audit: {audit_path}")
+    if payload.get("benchmark_semantics_version") != decision_audit.BENCHMARK_SEMANTICS_VERSION:
+        payload = decision_audit.refresh_audit_payload(payload)
     return payload
 
 

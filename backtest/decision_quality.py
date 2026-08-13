@@ -13,6 +13,10 @@ from trader.domain.learnings.scoring import (
     SIGNIFICANT_RETURN_BAND,
     classify_decision_quality,
 )
+from trader.domain.decision_benchmark import (
+    BENCHMARK_SEMANTICS_VERSION,
+    decision_verdict,
+)
 from trader.domain.market_data import Bar
 from trader.infrastructure.files.ledger_rotation import read_rows_with_archive
 
@@ -21,11 +25,12 @@ from .data import DataError, HistoryStore
 HORIZONS = (("4h", timedelta(hours=4)), ("1d", timedelta(days=1)))
 BAND = SIGNIFICANT_RETURN_BAND
 JUDGEABLE_REASONS = {"hold", "ok"}
+SCORABLE_VERDICTS = {"good", "bad", "neutral", "missed"}
 STATE_DIR = Path("state")
 
 CAVEAT = (
     "Caveat : fenêtre courte + week-end => beaucoup de non-évaluables ; "
-    "l'analyse HOLD suppose l'agent à plat (vrai ici : 0 position réelle)."
+    "un HOLD sans direction explicite reste inconnu si le mouvement est matériel."
 )
 
 
@@ -45,7 +50,11 @@ class AggregateResult(list[dict]):
 
 
 def classify(action: str, forward_return: float | None, band: float) -> str:
-    """Classe une décision selon le rendement forward et la bande significative."""
+    """Conserve l'API historique action-only pour les appelants externes.
+
+    Le bench du ledger passe par :func:`decision_verdict`, car une action HOLD
+    seule ne permet pas de savoir si l'opportunité refusée était long ou short.
+    """
     return classify_decision_quality(action, forward_return, band)
 
 
@@ -69,6 +78,7 @@ def score_decisions(decisions: list[dict], history: HistoryStore, band: float) -
         fallback_reason = decision.get("llm_fallback_reason")
         for horizon_label, horizon in HORIZONS:
             rendement = forward_return(history, symbol, cycle_ts, horizon)
+            verdict, benchmark_context = decision_verdict(decision, rendement, band)
             rows.append(
                 {
                     "decision_id": decision.get("decision_id"),
@@ -80,7 +90,10 @@ def score_decisions(decisions: list[dict], history: HistoryStore, band: float) -
                     "horizon": horizon_label,
                     "forward_return": rendement,
                     "evaluable": rendement is not None,
-                    "verdict": classify(action, rendement, band),
+                    "scorable": verdict in SCORABLE_VERDICTS,
+                    "verdict": verdict,
+                    "benchmark_semantics_version": BENCHMARK_SEMANTICS_VERSION,
+                    **benchmark_context,
                 }
             )
     return rows
@@ -97,17 +110,19 @@ def aggregate(rows: list[dict]) -> AggregateResult:
     for action, horizon in sorted(grouped, key=_aggregate_sort_key):
         group = grouped[(action, horizon)]
         evaluables = [row for row in group if row["evaluable"]]
+        scorables = [row for row in group if _is_scorable(row)]
         returns = [float(row["forward_return"]) for row in evaluables]
         buckets = dict(sorted(Counter(str(row["verdict"]) for row in group).items()))
         n_evaluable = len(evaluables)
+        n_scorable = len(scorables)
 
         hit_rate = None
-        if action in {"BUY", "SELL"} and n_evaluable:
-            hit_rate = buckets.get("gagnant", 0) / n_evaluable
+        if action in {"BUY", "SELL"} and n_scorable:
+            hit_rate = buckets.get("good", 0) / n_scorable
 
         frileux_rate = None
-        if action == "HOLD" and n_evaluable:
-            frileux_rate = buckets.get("opportunite_manquee", 0) / n_evaluable
+        if action == "HOLD" and n_scorable:
+            frileux_rate = buckets.get("missed", 0) / n_scorable
 
         result.append(
             {
@@ -116,6 +131,11 @@ def aggregate(rows: list[dict]) -> AggregateResult:
                 "n_total": len(group),
                 "n_evaluable": n_evaluable,
                 "n_non_evaluable": len(group) - n_evaluable,
+                "n_scorable": n_scorable,
+                "n_unscorable": len(group) - n_scorable,
+                "n_unknown": buckets.get("unknown", 0),
+                "n_machine": buckets.get("machine", 0),
+                "coverage_pct": _coverage_pct(n_scorable, len(group)),
                 "mean_forward_return": (sum(returns) / n_evaluable) if n_evaluable else None,
                 "buckets": buckets,
                 "hit_rate": hit_rate,
@@ -123,6 +143,20 @@ def aggregate(rows: list[dict]) -> AggregateResult:
             }
         )
     return AggregateResult(result, _aggregate_by_provider(rows))
+
+
+def _is_scorable(row: dict[str, Any]) -> bool:
+    """Tolère les anciennes lignes sans champ ``scorable`` explicite."""
+    value = row.get("scorable")
+    if isinstance(value, bool):
+        return value
+    return str(row.get("verdict") or "") in SCORABLE_VERDICTS
+
+
+def _coverage_pct(n_scorable: int, n_total: int) -> float | None:
+    if n_total <= 0:
+        return None
+    return round((n_scorable / n_total) * 100.0, 2)
 
 
 def _aggregate_by_provider(rows: list[dict]) -> list[dict]:
@@ -136,9 +170,12 @@ def _aggregate_by_provider(rows: list[dict]) -> list[dict]:
     for provider in sorted(grouped):
         group = grouped[provider]
         evaluables = [row for row in group if row["evaluable"]]
+        scorables = [row for row in group if _is_scorable(row)]
         returns = [float(row["forward_return"]) for row in evaluables]
         actions = Counter(str(row["action"]).upper() for row in group)
+        buckets = dict(sorted(Counter(str(row["verdict"]) for row in group).items()))
         n_evaluable = len(evaluables)
+        n_scorable = len(scorables)
 
         result.append(
             {
@@ -146,8 +183,14 @@ def _aggregate_by_provider(rows: list[dict]) -> list[dict]:
                 "n_total": len(group),
                 "n_evaluable": n_evaluable,
                 "n_non_evaluable": len(group) - n_evaluable,
+                "n_scorable": n_scorable,
+                "n_unscorable": len(group) - n_scorable,
+                "n_unknown": buckets.get("unknown", 0),
+                "n_machine": buckets.get("machine", 0),
+                "coverage_pct": _coverage_pct(n_scorable, len(group)),
                 "mean_forward_return": (sum(returns) / n_evaluable) if n_evaluable else None,
                 "actions": {action: actions.get(action, 0) for action in ("BUY", "HOLD", "SELL")},
+                "buckets": buckets,
             }
         )
     return result
@@ -258,8 +301,9 @@ def _render_cli(report: dict[str, Any]) -> str:
             f"lignes scorées: {report['counts']['rows']}"
         ),
         "",
-        f"{'Action':<6} {'Hz':<3} {'Taux':<14} {'Mean fwd':>10} {'Eval':>6} {'Non-éval':>9}  Buckets",
-        "-" * 78,
+        f"{'Action':<6} {'Hz':<3} {'Taux':<14} {'Mean fwd':>10} {'Score':>6} {'Couv.':>7} "
+        f"{'Eval':>6} {'Non-éval':>9}  Buckets",
+        "-" * 94,
     ]
 
     for item in report["aggregate"]:
@@ -267,7 +311,8 @@ def _render_cli(report: dict[str, Any]) -> str:
         rate_label, rate = _display_rate(item)
         lines.append(
             f"{action:<6} {item['horizon']:<3} {rate_label:<7} {_format_rate(rate):>6} "
-            f"{_format_pct(item['mean_forward_return']):>10} {item['n_evaluable']:>6} "
+            f"{_format_pct(item['mean_forward_return']):>10} {item['n_scorable']:>6} "
+            f"{_format_percentage(item['coverage_pct']):>7} {item['n_evaluable']:>6} "
             f"{item['n_non_evaluable']:>9}  {_format_buckets(item['buckets'])}"
         )
 
@@ -278,13 +323,14 @@ def _render_cli(report: dict[str, Any]) -> str:
         [
             "",
             "Par provider",
-            f"{'Provider':<16} {'n':>5} {'Éval':>5} {'Mean fwd':>10}  Mix actions",
-            "-" * 62,
+            f"{'Provider':<16} {'n':>5} {'Score':>5} {'Couv.':>7} {'Mean fwd':>10}  Mix actions",
+            "-" * 76,
         ]
     )
     for item in report["by_provider"]:
         lines.append(
-            f"{item['provider']:<16} {item['n_total']:>5} {item['n_evaluable']:>5} "
+            f"{item['provider']:<16} {item['n_total']:>5} {item['n_scorable']:>5} "
+            f"{_format_percentage(item['coverage_pct']):>7} "
             f"{_format_pct(item['mean_forward_return']):>10}  {_format_actions(item['actions'])}"
         )
     if not report["by_provider"]:
@@ -322,6 +368,13 @@ def _format_rate(value: float | None) -> str:
     return f"{value * 100:.1f}%"
 
 
+def _format_percentage(value: float | None) -> str:
+    """Formate un pourcentage déjà exprimé sur l'échelle 0–100."""
+    if value is None:
+        return "n/a"
+    return f"{value:.1f}%"
+
+
 def _format_pct(value: float | None) -> str:
     """Formate un rendement optionnel en pourcentage signé."""
     if value is None:
@@ -355,6 +408,7 @@ def _build_report(args: argparse.Namespace) -> dict[str, Any]:
     output_path = STATE_DIR / "last_decision_quality.json"
     return {
         "params": {
+            "benchmark_semantics_version": BENCHMARK_SEMANTICS_VERSION,
             "band": args.band,
             "interval": args.interval,
             "days_buffer": args.days_buffer,
@@ -367,6 +421,11 @@ def _build_report(args: argparse.Namespace) -> dict[str, Any]:
             "ledger": len(data["ledger_rows"]),
             "judgeable": len(data["judgeable"]),
             "rows": len(rows),
+            "scorable": sum(1 for row in rows if _is_scorable(row)),
+            "coverage_pct": _coverage_pct(
+                sum(1 for row in rows if _is_scorable(row)),
+                len(rows),
+            ),
         },
         "symbols": data["symbols"],
         "unavailable_symbols": data["unavailable_symbols"],

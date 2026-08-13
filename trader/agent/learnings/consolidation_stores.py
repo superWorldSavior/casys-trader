@@ -10,6 +10,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from trader.domain.decision_benchmark import BENCHMARK_SEMANTICS_VERSION
+
 log = logging.getLogger("trader.agent.learnings.consolidator")
 
 DEFAULT_MAX_GLOBAL = 10
@@ -31,10 +33,15 @@ def stable_rule_id(note: str) -> str:
 
 
 def empty_consolidated() -> dict:
-    return {"watermark": None, "global": [], "by_symbol": {}}
+    return {
+        "outcome_semantics_version": BENCHMARK_SEMANTICS_VERSION,
+        "watermark": None,
+        "global": [],
+        "by_symbol": {},
+    }
 
 
-def _normalize_entry(item: Any) -> dict | None:
+def _normalize_entry(item: Any, *, trusted_outcome_semantics: bool) -> dict | None:
     if not isinstance(item, dict):
         return None
     note = str(item.get("note") or "").strip()
@@ -51,6 +58,12 @@ def _normalize_entry(item: Any) -> dict | None:
     # migration, but is never presented as a high-confidence conclusion until
     # the outcome-weighted consolidator has sourced it again.
     if not explicit_rule_id:
+        robustness = "low"
+    # Rules scored before the benchmark-v2 correction may have promoted an
+    # abstention simply because the market later fell.  Keep the useful text
+    # and provenance, but fail closed on confidence until a v2 consolidation
+    # evaluates the evidence again.
+    if not trusted_outcome_semantics:
         robustness = "low"
 
     evidence_note_ids: list[str] = []
@@ -123,12 +136,20 @@ def _normalize_evidence_summary(value: Any) -> dict:
     }
 
 
-def _normalize_entries(items: Any, *, limit: int) -> list[dict]:
+def _normalize_entries(
+    items: Any,
+    *,
+    limit: int,
+    trusted_outcome_semantics: bool,
+) -> list[dict]:
     if not isinstance(items, list):
         return []
     entries: list[dict] = []
     for item in items:
-        entry = _normalize_entry(item)
+        entry = _normalize_entry(
+            item,
+            trusted_outcome_semantics=trusted_outcome_semantics,
+        )
         if entry is not None:
             entries.append(entry)
         if len(entries) >= limit:
@@ -143,18 +164,35 @@ def normalize_consolidated(payload: Any, *, watermark: str | None) -> dict | Non
     if not isinstance(by_symbol_raw, dict):
         return None
 
+    raw_semantics_version = payload.get("outcome_semantics_version")
+    semantics_version = (
+        raw_semantics_version
+        if isinstance(raw_semantics_version, int) and not isinstance(raw_semantics_version, bool)
+        else None
+    )
+    trusted_outcome_semantics = semantics_version == BENCHMARK_SEMANTICS_VERSION
+
     by_symbol: dict[str, list[dict]] = {}
     for raw_symbol, items in by_symbol_raw.items():
         symbol = str(raw_symbol).strip()
         if not symbol:
             continue
-        entries = _normalize_entries(items, limit=DEFAULT_MAX_BY_SYMBOL)
+        entries = _normalize_entries(
+            items,
+            limit=DEFAULT_MAX_BY_SYMBOL,
+            trusted_outcome_semantics=trusted_outcome_semantics,
+        )
         if entries:
             by_symbol[symbol] = entries
 
     return {
+        "outcome_semantics_version": semantics_version,
         "watermark": watermark,
-        "global": _normalize_entries(payload.get("global", []), limit=DEFAULT_MAX_GLOBAL),
+        "global": _normalize_entries(
+            payload.get("global", []),
+            limit=DEFAULT_MAX_GLOBAL,
+            trusted_outcome_semantics=trusted_outcome_semantics,
+        ),
         "by_symbol": by_symbol,
     }
 

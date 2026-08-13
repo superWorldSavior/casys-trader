@@ -173,6 +173,7 @@ def _decision_from_dict(data: dict | LlmDecisionPayload, symbol: str) -> Decisio
         quantity=quantity,
         confidence=float(data["confidence"]),
         rationale=str(data["rationale"]),
+        opportunity_side=data.get("opportunity_side"),
         next_wake_in_minutes=_optional_float(data, "next_wake_in_minutes"),
         intent=intent,  # type: ignore[arg-type]
         exit_plan=_optional_dict(data, "exit_plan"),
@@ -342,6 +343,7 @@ def _decision_from_symbol_calls(data: dict | LlmSymbolCallsPayload, symbol: str)
         "quantity": 0.0,
         "confidence": float(data.get("confidence") or 0.0),
         "rationale": str(data.get("rationale") or ""),
+        "opportunity_side": data.get("opportunity_side"),
         "intent": "HOLD",
         "decision_reason_code": _decision_reason_code(data),
         "applied_learning_ids": list(data.get("applied_learning_ids") or []),
@@ -505,6 +507,12 @@ def _decision_from_symbol_calls(data: dict | LlmSymbolCallsPayload, symbol: str)
         if public_exit_tool_used and public_position_tool is not None:
             raise ValueError(f"strategy_exit_conflicts_with_{public_position_tool}")
         raise ValueError("strategy_exit_conflicts_with_position_order")
+    indicator_watch = decision.get("indicator_watch")
+    if isinstance(indicator_watch, dict) and "rationale" not in indicator_watch:
+        # La watch survivra à la session LLM puis reviendra comme trigger. Garder
+        # l'intention formulée au niveau décision empêche ce rappel de repartir
+        # sans le pourquoi du seuil, tout en respectant une rationale watch explicite.
+        indicator_watch["rationale"] = decision["rationale"]
     resolve_from_position = decision.pop("_resolve_from_position", False)
     reduce_fraction_val = decision.get("_reduce_fraction")
     parsed = _decision_from_dict(decision, symbol)

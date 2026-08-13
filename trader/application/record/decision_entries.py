@@ -76,6 +76,7 @@ def build_decision_entry(
         **({"armed_plan_order": armed_plan_order} if armed_plan_order is not None else {}),
         "confidence": decision.confidence,
         "rationale": decision.rationale,
+        "opportunity_side": decision.opportunity_side,
         "next_wake_in_minutes": next_wake_in_minutes,
         "next_wake_requested": decision.next_wake_in_minutes,
         "next_wake_event": decision.next_wake_event,

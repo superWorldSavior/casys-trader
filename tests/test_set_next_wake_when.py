@@ -35,12 +35,12 @@ _VALID_CONDITION = {
 }
 
 
-def _parse_calls(calls: list, symbol: str = _SYMBOL) -> Decision:
+def _parse_calls(calls: list, symbol: str = _SYMBOL, rationale: str = "test") -> Decision:
     """Construit une décision minimale avec les tool calls fournis."""
     data = {
         "symbol": symbol,
         "confidence": 0.5,
-        "rationale": "test",
+        "rationale": rationale,
         "decision_reason_code": "HOLD_NO_SIGNAL",
         "calls": calls,
     }
@@ -84,6 +84,35 @@ def test_wake_when_condition_wrapped_in_list() -> None:
     assert isinstance(conditions, list)
     assert len(conditions) == 1
     assert conditions[0] == _VALID_CONDITION
+
+
+def test_wake_when_copie_la_rationale_de_decision() -> None:
+    d = _parse_calls(
+        [{"tool": "set_next_wake", "args": {"when": _VALID_CONDITION}}],
+        rationale="Rejuger seulement après reclaim.",
+    )
+
+    assert d.indicator_watch is not None
+    assert d.indicator_watch["rationale"] == "Rejuger seulement après reclaim."
+
+
+def test_propose_watch_preserve_sa_rationale_explicite() -> None:
+    d = _parse_calls(
+        [
+            {
+                "tool": "propose_indicator_watch",
+                "args": {
+                    "on_trigger": "WAKE",
+                    "conditions": [_VALID_CONDITION],
+                    "rationale": "Intention locale explicite.",
+                },
+            }
+        ],
+        rationale="Rationale top-level.",
+    )
+
+    assert d.indicator_watch is not None
+    assert d.indicator_watch["rationale"] == "Intention locale explicite."
 
 
 def test_wake_when_no_wake_minutes() -> None:

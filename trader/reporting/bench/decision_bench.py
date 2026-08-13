@@ -204,7 +204,9 @@ def build_prompt(cases: list[dict], *, horizon: str, threshold_pct: float) -> st
         "ne cherche pas à deviner des prix, donne seulement ton action.\n\n"
         "Réponds UNIQUEMENT par un objet JSON valide au format:\n"
         '{"reviews":[{"decision_id":"<id>","action":"BUY|SELL|HOLD","confidence":0.0,'
-        '"rationale":"court"}]}\n\n'
+        '"opportunity_side":"long|short|null","rationale":"court"}]}\n'
+        "Pour HOLD, `opportunity_side` nomme la thèse précise refusée (`long` ou "
+        "`short`), ou vaut null s'il n'existe réellement aucune thèse directionnelle.\n\n"
         f"# Cas\n{json.dumps(prompt_cases, ensure_ascii=False, sort_keys=True)}\n"
     )
 
@@ -392,10 +394,25 @@ def _reviews_by_id(text: str) -> dict[str, dict]:
     return result
 
 
-def _candidate_verdict(action: str, future_return_pct: float | None, threshold_pct: float) -> str:
-    if future_return_pct is None:
-        return "unknown"
-    return decision_audit._verdict(action, future_return_pct, threshold_pct)  # noqa: SLF001
+def _candidate_verdict(
+    case: dict,
+    action: str,
+    opportunity_side: str | None,
+    future_return_pct: float | None,
+    threshold_pct: float,
+) -> str:
+    candidate_row = {
+        "action": action,
+        "symbol": case.get("symbol"),
+        "opportunity_side": opportunity_side,
+        "portfolio_snapshot": (case.get("case") or {}).get("portfolio_snapshot") or {},
+    }
+    verdict, _ = decision_audit.decision_verdict(
+        candidate_row,
+        future_return_pct,
+        threshold_pct,
+    )
+    return verdict
 
 
 def score_model_reviews(cases: list[dict], response_text: str, *, threshold_pct: float) -> tuple[list[dict], dict]:
@@ -410,6 +427,7 @@ def score_model_reviews(cases: list[dict], response_text: str, *, threshold_pct:
         "bad": 0,
         "neutral": 0,
         "missed": 0,
+        "unknown": 0,
         "same_as_original": 0,
     }
     confidences: list[float] = []
@@ -422,6 +440,12 @@ def score_model_reviews(cases: list[dict], response_text: str, *, threshold_pct:
             continue
         counts["parsed"] += 1
         action = str(review.get("action") or "").upper()
+        raw_opportunity_side = review.get("opportunity_side")
+        opportunity_side = (
+            str(raw_opportunity_side).strip().lower()
+            if raw_opportunity_side is not None
+            else None
+        )
         confidence = _finite_float(review.get("confidence"))
         if confidence is not None:
             confidences.append(confidence)
@@ -435,9 +459,26 @@ def score_model_reviews(cases: list[dict], response_text: str, *, threshold_pct:
                 }
             )
             continue
+        if opportunity_side not in {None, "long", "short"}:
+            counts["invalid"] += 1
+            rows.append(
+                {
+                    "decision_id": case.get("decision_id"),
+                    "candidate_action": action,
+                    "candidate_opportunity_side": opportunity_side,
+                    "error": "invalid_opportunity_side",
+                }
+            )
+            continue
         audit = case["audit"]
         future_return_pct = _finite_float(audit.get("future_return_pct"))
-        verdict = _candidate_verdict(action, future_return_pct, threshold_pct)
+        verdict = _candidate_verdict(
+            case,
+            action,
+            opportunity_side,
+            future_return_pct,
+            threshold_pct,
+        )
         if verdict in counts:
             counts[verdict] += 1
         original_action = str(case.get("original_action") or "").upper()
@@ -452,6 +493,7 @@ def score_model_reviews(cases: list[dict], response_text: str, *, threshold_pct:
                 "original_action": original_action,
                 "original_verdict": audit.get("verdict"),
                 "candidate_action": action,
+                "candidate_opportunity_side": opportunity_side,
                 "candidate_verdict": verdict,
                 "confidence": confidence,
                 "same_as_original": same,
@@ -459,9 +501,13 @@ def score_model_reviews(cases: list[dict], response_text: str, *, threshold_pct:
             }
         )
 
-    denominator = max(1, counts["parsed"] - counts["invalid"])
+    valid = counts["parsed"] - counts["invalid"]
+    scored = counts["good"] + counts["bad"] + counts["neutral"] + counts["missed"]
+    denominator = max(1, scored)
     summary = {
         **counts,
+        "scored": scored,
+        "coverage_pct": round(scored / max(1, valid) * 100.0, 2),
         "good_pct": round(counts["good"] / denominator * 100.0, 2),
         "bad_pct": round(counts["bad"] / denominator * 100.0, 2),
         "missed_pct": round(counts["missed"] / denominator * 100.0, 2),

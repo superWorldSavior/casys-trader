@@ -10,10 +10,19 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Protocol
 
+from trader.domain.planning.indicator_watch import summarize_watch
+
 _MAX_RATIONALE_LEN = 200
 _MAX_FLAGS = 5
 DEFAULT_LIMIT = 3
 _ORDER_ACTION_TOOLS = {"strategy_entry", "strategy_close"}
+_SYNTHETIC_HOLD_REASONS = {
+    "quiet_gate",
+    "stale_market_data",
+    "no_decision_in_batch",
+    "model_call_budget_exhausted",
+    "model_call_budget_exhausted_after_context",
+}
 
 
 class DecisionLedgerReader(Protocol):
@@ -76,12 +85,45 @@ def annotate_learning_feedback(
 
 
 def _is_synthetic_hold(row: dict) -> bool:
-    """HOLD synthétique = erreur LLM absorbée en HOLD infra (`llm_error` renseigné).
+    """Exclut uniquement les HOLD synthétiques, jamais un effet de plan armé.
 
-    Bruit à exclure : ce n'est pas une décision authentique de l'agent — le piège
-    « synthetic infra HOLD » du CLAUDE.md. Une vraie décision a `llm_error is None`.
+    Les lignes récentes exposent explicitement ``decision_source=infra`` et
+    ``model_called=false``. Les anciennes lignes d'erreur n'avaient parfois que
+    ``llm_error`` ; ce dernier reste donc un fallback de compatibilité. Un plan
+    armé est au contraire une décision authentique prise plus tôt par l'agent :
+    son effet doit rester visible même si aucun modèle n'est appelé au trigger.
     """
-    return row.get("llm_error") is not None
+    if str(row.get("action") or "").upper() != "HOLD":
+        return False
+    decision_source = str(row.get("decision_source") or "").lower()
+    if decision_source == "armed_plan" or str(row.get("source") or "").lower() == "armed_plan":
+        return False
+    return (
+        decision_source == "infra"
+        or row.get("model_called") is False
+        or row.get("llm_error") is not None
+        or str(row.get("reason") or "").strip().lower() in _SYNTHETIC_HOLD_REASONS
+    )
+
+
+def _nested_decision(row: dict) -> dict:
+    decision = row.get("decision")
+    return decision if isinstance(decision, dict) else {}
+
+
+def _opportunity_side(row: dict) -> object | None:
+    if row.get("opportunity_side") is not None:
+        return row.get("opportunity_side")
+    return _nested_decision(row).get("opportunity_side")
+
+
+def _indicator_watch_summary(row: dict) -> dict | None:
+    watch = row.get("indicator_watch")
+    if not isinstance(watch, dict):
+        watch = _nested_decision(row).get("indicator_watch")
+    if not isinstance(watch, dict) or not watch:
+        return None
+    return summarize_watch(watch)
 
 
 def _compact(row: dict) -> dict:
@@ -94,11 +136,15 @@ def _compact(row: dict) -> dict:
         "action": row.get("action"),
         "intent": row.get("intent"),
         "confidence": row.get("confidence"),
+        "opportunity_side": _opportunity_side(row),
         "decision_reason_code": row.get("decision_reason_code"),
         "executed": row.get("executed"),
         "reason": row.get("reason"),
         "rationale": rationale,
     }
+    watch_summary = _indicator_watch_summary(row)
+    if watch_summary is not None:
+        compact["indicator_watch"] = watch_summary
     if not row.get("executed"):
         context = _decision_context(row)
         if context is not None:

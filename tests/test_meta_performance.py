@@ -7,7 +7,7 @@ from trader.reporting.read_models import meta_performance
 
 
 def _row(symbol: str, action: str, reason_code: str) -> dict:
-    return {
+    row = {
         "decision_id": f"2026-06-08T10:00:00+00:00|0|{symbol}",
         "cycle_ts": "2026-06-08T10:00:00+00:00",
         "symbol": symbol,
@@ -15,6 +15,9 @@ def _row(symbol: str, action: str, reason_code: str) -> dict:
         "price": 100.0,
         "decision_reason_code": reason_code,
     }
+    if action == "HOLD" and reason_code == "WAITING_PULLBACK":
+        row["opportunity_side"] = "long"
+    return row
 
 
 def test_compute_meta_performance_resume_les_hold_missed_par_reason(tmp_path) -> None:
@@ -49,6 +52,7 @@ def test_compute_meta_performance_resume_les_hold_missed_par_reason(tmp_path) ->
     hold_rows = {row["reason_code"]: row for row in payload["horizons"]["1h"]["hold_quality_by_reason"]}
     assert hold_rows["WAITING_PULLBACK"]["missed_known_pct"] == 100.0
     assert hold_rows["NO_EDGE"]["good_known_pct"] == 100.0
+    assert hold_rows["WAITING_PULLBACK"]["coverage_pct"] == 100.0
     trade_rows = payload["horizons"]["1h"]["trade_quality_by_reason"]
     assert trade_rows == [
         {
@@ -104,7 +108,7 @@ def test_compute_meta_performance_signale_schema_audit_invalide(tmp_path) -> Non
     assert payload == {"available": False, "reason": "decision_audit_invalid_schema"}
 
 
-def test_compute_meta_performance_recalcule_les_anciens_audits_sans_reason_metrics(tmp_path) -> None:
+def test_compute_meta_performance_migre_les_anciens_audits_directionless(tmp_path) -> None:
     audit = {
         "threshold_pct": 0.5,
         "horizons": ["1h"],
@@ -135,11 +139,14 @@ def test_compute_meta_performance_recalcule_les_anciens_audits_sans_reason_metri
     assert payload["horizons"]["1h"]["hold_quality_by_reason"] == [
         {
             "reason_code": "WAITING_PULLBACK",
-            "known": 1,
+            "total": 1,
+            "known": 0,
+            "unknown": 1,
             "good": 0,
-            "missed": 1,
-            "good_known_pct": 0.0,
-            "missed_known_pct": 100.0,
+            "missed": 0,
+            "coverage_pct": 0.0,
+            "good_known_pct": None,
+            "missed_known_pct": None,
         }
     ]
 

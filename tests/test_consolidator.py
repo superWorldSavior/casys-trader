@@ -1,11 +1,12 @@
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from trader.agent import llm
 from trader.agent.learnings import consolidator
 from trader.agent.learnings import consolidation_prompt, consolidation_stores
 from trader.agent.learnings.raw_store import RawLearningsStore
+from trader.domain.decision_benchmark import BENCHMARK_SEMANTICS_VERSION
 from trader.infrastructure.state_db.learnings_store import LearningsStore
 from trader.runtime import consolidation_inputs
 
@@ -14,6 +15,13 @@ def test_default_state_dir_reste_la_racine_repo_apres_move_agent_learnings() -> 
     repo_root = Path(__file__).resolve().parents[1]
 
     assert consolidator._default_state_dir() == repo_root / "state"
+
+
+def test_empty_consolidated_annonce_le_benchmark_v2() -> None:
+    assert (
+        consolidator.empty_consolidated()["outcome_semantics_version"]
+        == BENCHMARK_SEMANTICS_VERSION
+    )
 
 
 def test_consolidator_ne_depend_pas_execution_ni_reporting() -> None:
@@ -62,6 +70,60 @@ def test_consolidated_store_valide_et_borne_la_sortie(tmp_path) -> None:
     assert len(saved["global"]) == 10
     assert saved["by_symbol"] == {}
     assert all("rule_id" in rule for rule in saved["global"])
+
+
+def test_consolidated_legacy_downgrades_high_without_laundering_version(tmp_path) -> None:
+    path = tmp_path / "learnings_consolidated.json"
+    path.write_text(
+        json.dumps(
+            {
+                "watermark": "2026-06-08T11:00:00+00:00",
+                "global": [
+                    {
+                        "rule_id": "rule_legacy",
+                        "note": "Attendre encore une confirmation.",
+                        "robustness": "high",
+                        "evidence_note_ids": ["old-note"],
+                    }
+                ],
+                "by_symbol": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+    store = consolidator.ConsolidatedLearningsStore(path)
+
+    saved = store.read()
+
+    assert saved["outcome_semantics_version"] is None
+    assert saved["global"][0]["robustness"] == "low"
+    assert consolidator.project_global_rules(saved)[0]["robustness"] == "low"
+    assert "outcome_semantics_version" not in json.loads(path.read_text(encoding="utf-8"))
+
+
+def test_consolidated_v2_preserves_high_confidence_roundtrip(tmp_path) -> None:
+    store = consolidator.ConsolidatedLearningsStore(tmp_path / "learnings_consolidated.json")
+    payload = {
+        "outcome_semantics_version": BENCHMARK_SEMANTICS_VERSION,
+        "global": [
+            {
+                "rule_id": "rule_v2",
+                "note": "Agir quand le déclencheur convenu est atteint.",
+                "robustness": "high",
+                "evidence_note_ids": ["v2-note-1", "v2-note-2", "v2-note-3"],
+            }
+        ],
+        "by_symbol": {},
+    }
+
+    store.write(payload, watermark="2026-06-08T12:00:00+00:00")
+    saved = store.read()
+
+    assert saved["outcome_semantics_version"] == BENCHMARK_SEMANTICS_VERSION
+    assert saved["global"][0]["robustness"] == "high"
+    assert consolidator.project_global_rules(saved)[0]["robustness"] == "high"
+    on_disk = json.loads(store.path.read_text(encoding="utf-8"))
+    assert on_disk["outcome_semantics_version"] == BENCHMARK_SEMANTICS_VERSION
 
 
 def test_maybe_consolidate_attend_le_seuil(tmp_path) -> None:
@@ -144,6 +206,7 @@ def test_maybe_consolidate_ecrit_le_consolide_et_avance_le_watermark(tmp_path) -
     saved = consolidated_store.read()
 
     assert result == {"triggered": True, "new_raw_count": 2, "written": True}
+    assert saved["outcome_semantics_version"] == BENCHMARK_SEMANTICS_VERSION
     assert saved["watermark"] == "2026-06-08T10:30:00+00:00"
     assert saved["global"][0]["note"] == "Ne pas trader z seul; exiger ER+AC."
     assert saved["by_symbol"] == {}
@@ -1309,3 +1372,66 @@ def test_consolidation_supports_concrete_learnings_store_provider(tmp_path) -> N
     rule_id = consolidated_store.read()["global"][0]["rule_id"]
     assert recall_store.global_rule_scores([rule_id], active_only=True)[rule_id]["active"] is True
     recall_store.close()
+
+
+def test_v2_migration_pending_rows_do_not_consolidate_before_replay(tmp_path) -> None:
+    raw_store = RawLearningsStore(tmp_path / "learnings.jsonl", max_entries=200)
+    consolidated_store = consolidator.ConsolidatedLearningsStore(
+        tmp_path / "learnings_consolidated.json"
+    )
+    now = datetime(2026, 7, 10, 10, tzinfo=timezone.utc)
+    raw_store.append(symbol="SPY", note="ancienne règle v1", now=now)
+
+    recall_store = LearningsStore(tmp_path / "learnings.db")
+    recall_store.ingest_jsonl(raw_store.path, source="runtime")
+    note_id = int(recall_store._conn.execute("SELECT id FROM notes").fetchone()[0])
+    recall_store.update_note_outcomes(
+        [{"id": note_id, "verdict": "WIN", "forward_return": 0.04}]
+    )
+    recall_store.mark_curation_candidates_curated(
+        recall_store.select_curation_candidates()
+    )
+    recall_store._conn.execute(
+        "UPDATE notes SET outcome_semantics_version=1"
+    )
+    recall_store._conn.execute(
+        "DELETE FROM learnings_metadata WHERE key='outcome_semantics_version'"
+    )
+    recall_store._conn.commit()
+    recall_store.close()
+
+    consolidated_store.write(
+        {
+            "outcome_semantics_version": BENCHMARK_SEMANTICS_VERSION,
+            "global": [{"note": "règle globale existante", "robustness": "low"}],
+            "by_symbol": {},
+        },
+        watermark=now.isoformat(),
+    )
+    before = consolidated_store.read()
+    migrated_store = LearningsStore(tmp_path / "learnings.db")
+
+    class Router:
+        def complete(self, prompt: str, *, timeout_s: int):
+            raise AssertionError("migration-pending evidence must not reach the consolidator")
+
+    result = consolidator.maybe_consolidate(
+        raw_store,
+        consolidated_store,
+        threshold=1,
+        curation_provider=migrated_store,
+        llm_router=Router(),
+        now=now + timedelta(days=7),
+    )
+
+    assert result == {"triggered": False, "new_raw_count": 0}
+    assert consolidated_store.read() == before
+    assert migrated_store.curation_counts()["changed"] == 0
+    assert migrated_store.select_curation_candidates() == []
+
+    migrated_store.update_note_outcomes(
+        [{"id": note_id, "verdict": "LOSS", "forward_return": -0.04}]
+    )
+    assert migrated_store.curation_counts()["feedback"] == 1
+    assert migrated_store.select_curation_candidates()[0]["verdict"] == "LOSS"
+    migrated_store.close()

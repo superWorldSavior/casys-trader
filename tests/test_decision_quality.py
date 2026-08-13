@@ -26,8 +26,8 @@ def _bar(ts: str, close: float) -> Bar:
         ("SELL", 0.006, "perdant"),
         ("SELL", -0.004, "neutre"),
         ("SELL", None, "non_evaluable"),
-        ("HOLD", 0.006, "opportunite_manquee"),
-        ("HOLD", -0.006, "bonne_prudence"),
+        ("HOLD", 0.006, "inconnu"),
+        ("HOLD", -0.006, "inconnu"),
         ("HOLD", 0.004, "justifie"),
         ("HOLD", None, "non_evaluable"),
     ],
@@ -106,10 +106,7 @@ def test_score_from_ledger_renvoie_les_rows_scorables_et_la_fenetre(monkeypatch,
     ledger.write_text(
         "\n".join(
             [
-                (
-                    '{"decision_id":"d1","cycle_ts":"2026-01-01T10:00:00",'
-                    '"symbol":"SPY","action":"BUY","reason":"ok"}'
-                ),
+                ('{"decision_id":"d1","cycle_ts":"2026-01-01T10:00:00","symbol":"SPY","action":"BUY","reason":"ok"}'),
                 (
                     '{"decision_id":"d2","cycle_ts":"2026-01-02T10:00:00",'
                     '"symbol":"QQQ","action":"HOLD","reason":"stale_market_data"}'
@@ -150,7 +147,13 @@ def test_score_from_ledger_renvoie_les_rows_scorables_et_la_fenetre(monkeypatch,
 
 def test_score_decisions_et_aggregate_comptent_buckets_taux_et_non_evaluables() -> None:
     decisions = [
-        {"cycle_ts": "2026-01-01T10:00:00", "symbol": "UP", "action": "HOLD", "reason": "hold"},
+        {
+            "cycle_ts": "2026-01-01T10:00:00",
+            "symbol": "UP",
+            "action": "HOLD",
+            "opportunity_side": "long",
+            "reason": "hold",
+        },
         {"cycle_ts": "2026-01-01T10:00:00", "symbol": "FLAT", "action": "HOLD", "reason": "hold"},
         {"cycle_ts": "2026-01-01T10:00:00", "symbol": "BUYWIN", "action": "BUY", "reason": "ok"},
         {"cycle_ts": "2026-01-01T10:00:00", "symbol": "MISSING", "action": "SELL", "reason": "ok"},
@@ -170,21 +173,127 @@ def test_score_decisions_et_aggregate_comptent_buckets_taux_et_non_evaluables() 
     assert hold_4h["n_total"] == 2
     assert hold_4h["n_evaluable"] == 2
     assert hold_4h["n_non_evaluable"] == 0
-    assert hold_4h["buckets"] == {"opportunite_manquee": 1, "justifie": 1}
-    assert hold_4h["frileux_rate"] == pytest.approx(0.5)
+    assert hold_4h["n_scorable"] == 2
+    assert hold_4h["n_unscorable"] == 0
+    assert hold_4h["n_unknown"] == 0
+    assert hold_4h["coverage_pct"] == 100.0
+    assert hold_4h["buckets"] == {"good": 1, "missed": 1}
+    assert hold_4h["frileux_rate"] == 0.5
     assert hold_4h["hit_rate"] is None
 
     buy_4h = stats[("BUY", "4h")]
-    assert buy_4h["buckets"] == {"gagnant": 1}
+    assert buy_4h["buckets"] == {"good": 1}
+    assert buy_4h["n_scorable"] == 1
+    assert buy_4h["coverage_pct"] == 100.0
     assert buy_4h["hit_rate"] == pytest.approx(1.0)
     assert buy_4h["frileux_rate"] is None
 
     sell_4h = stats[("SELL", "4h")]
     assert sell_4h["n_evaluable"] == 0
     assert sell_4h["n_non_evaluable"] == 1
+    assert sell_4h["n_scorable"] == 0
+    assert sell_4h["coverage_pct"] == 0.0
     assert sell_4h["mean_forward_return"] is None
-    assert sell_4h["buckets"] == {"non_evaluable": 1}
+    assert sell_4h["buckets"] == {"unknown": 1}
     assert sell_4h["hit_rate"] is None
+
+
+def test_score_decisions_mesure_les_hold_long_et_short_selon_le_sens_refuse() -> None:
+    decisions = [
+        {
+            "decision_id": "long-missed",
+            "cycle_ts": "2026-01-01T10:00:00",
+            "symbol": "LONG_UP",
+            "action": "HOLD",
+            "opportunity_side": "long",
+            "reason": "hold",
+        },
+        {
+            "decision_id": "long-good",
+            "cycle_ts": "2026-01-01T10:00:00",
+            "symbol": "LONG_DOWN",
+            "action": "HOLD",
+            "opportunity_side": "long",
+            "reason": "hold",
+        },
+        {
+            "decision_id": "short-missed",
+            "cycle_ts": "2026-01-01T10:00:00",
+            "symbol": "SHORT_DOWN",
+            "action": "HOLD",
+            "opportunity_side": "short",
+            "reason": "hold",
+        },
+        {
+            "decision_id": "short-good",
+            "cycle_ts": "2026-01-01T10:00:00",
+            "symbol": "SHORT_UP",
+            "action": "HOLD",
+            "opportunity_side": "short",
+            "reason": "hold",
+        },
+    ]
+    store = HistoryStore.from_bars(
+        {
+            "LONG_UP": [_bar("2026-01-01T10:00:00", 100.0), _bar("2026-01-01T14:00:00", 101.0)],
+            "LONG_DOWN": [_bar("2026-01-01T10:00:00", 100.0), _bar("2026-01-01T14:00:00", 99.0)],
+            "SHORT_DOWN": [_bar("2026-01-01T10:00:00", 100.0), _bar("2026-01-01T14:00:00", 99.0)],
+            "SHORT_UP": [_bar("2026-01-01T10:00:00", 100.0), _bar("2026-01-01T14:00:00", 101.0)],
+        }
+    )
+
+    rows = [row for row in score_decisions(decisions, store, band=0.005) if row["horizon"] == "4h"]
+
+    assert [row["verdict"] for row in rows] == ["missed", "good", "missed", "good"]
+    assert [row["benchmark_basis"] for row in rows] == [
+        "intended_long",
+        "intended_long",
+        "intended_short",
+        "intended_short",
+    ]
+    assert [row["intended_action"] for row in rows] == ["BUY", "BUY", "SELL", "SELL"]
+    assert all(row["scorable"] for row in rows)
+
+
+def test_aggregate_expose_la_coverage_des_hold_sans_direction() -> None:
+    decisions = [
+        {
+            "cycle_ts": "2026-01-01T10:00:00",
+            "symbol": "MATERIAL",
+            "action": "HOLD",
+            "reason": "hold",
+        },
+        {
+            "cycle_ts": "2026-01-01T10:00:00",
+            "symbol": "QUIET",
+            "action": "HOLD",
+            "reason": "hold",
+        },
+    ]
+    store = HistoryStore.from_bars(
+        {
+            "MATERIAL": [
+                _bar("2026-01-01T10:00:00", 100.0),
+                _bar("2026-01-01T14:00:00", 101.0),
+            ],
+            "QUIET": [
+                _bar("2026-01-01T10:00:00", 100.0),
+                _bar("2026-01-01T14:00:00", 100.2),
+            ],
+        }
+    )
+
+    rows = score_decisions(decisions, store, band=0.005)
+    stats = {(row["action"], row["horizon"]): row for row in aggregate(rows)["aggregate"]}
+    hold_4h = stats[("HOLD", "4h")]
+
+    assert hold_4h["buckets"] == {"good": 1, "unknown": 1}
+    assert hold_4h["n_evaluable"] == 2
+    assert hold_4h["n_scorable"] == 1
+    assert hold_4h["n_unscorable"] == 1
+    assert hold_4h["n_unknown"] == 1
+    assert hold_4h["coverage_pct"] == 50.0
+    assert hold_4h["frileux_rate"] == 0.0
 
 
 def test_aggregate_croise_les_metriques_par_provider() -> None:
@@ -237,11 +346,19 @@ def test_aggregate_croise_les_metriques_par_provider() -> None:
     assert by_provider["spark"]["n_total"] == 4
     assert by_provider["spark"]["n_evaluable"] == 4
     assert by_provider["spark"]["n_non_evaluable"] == 0
+    assert by_provider["spark"]["n_scorable"] == 2
+    assert by_provider["spark"]["n_unscorable"] == 2
+    assert by_provider["spark"]["n_unknown"] == 2
+    assert by_provider["spark"]["coverage_pct"] == 50.0
+    assert by_provider["spark"]["buckets"] == {"good": 2, "unknown": 2}
     assert by_provider["spark"]["mean_forward_return"] == pytest.approx((0.02 + 0.04 - 0.01 - 0.02) / 4)
     assert by_provider["spark"]["actions"] == {"BUY": 2, "HOLD": 2, "SELL": 0}
 
     assert by_provider["ollama-cloud"]["n_total"] == 2
     assert by_provider["ollama-cloud"]["n_evaluable"] == 2
     assert by_provider["ollama-cloud"]["n_non_evaluable"] == 0
+    assert by_provider["ollama-cloud"]["n_scorable"] == 2
+    assert by_provider["ollama-cloud"]["coverage_pct"] == 100.0
+    assert by_provider["ollama-cloud"]["buckets"] == {"good": 2}
     assert by_provider["ollama-cloud"]["mean_forward_return"] == pytest.approx((-0.05 - 0.10) / 2)
     assert by_provider["ollama-cloud"]["actions"] == {"BUY": 0, "HOLD": 0, "SELL": 2}

@@ -29,6 +29,7 @@ from trader.agent.learnings.consolidation_stores import (
 )
 from trader.agent.learnings.selection import _parse_ts, pending_raw_count, select_new_raw
 from trader.agent.learnings.raw_store import RawLearningsStore
+from trader.domain.decision_benchmark import BENCHMARK_SEMANTICS_VERSION
 
 log = logging.getLogger(__name__)
 
@@ -581,7 +582,11 @@ def _finalize_consolidated_payload(
         )
         used_ids.add(rule_id)
 
-    return {"global": finalized, "by_symbol": {}}, None
+    return {
+        "outcome_semantics_version": BENCHMARK_SEMANTICS_VERSION,
+        "global": finalized,
+        "by_symbol": {},
+    }, None
 
 
 def _call_curation_provider(

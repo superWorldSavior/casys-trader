@@ -3,28 +3,21 @@
 from __future__ import annotations
 
 import math
-from bisect import bisect_right
+from bisect import bisect_left, bisect_right
 from collections import deque
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Protocol
 
-from trader.domain.learnings.scoring import (
-    SIGNIFICANT_RETURN_BAND,
-    classify_decision_quality,
-)
-from trader.domain.execution.fill_accounting import POSITION_EPSILON
+from trader.domain.decision_benchmark import decision_verdict
+from trader.domain.learnings.scoring import SIGNIFICANT_RETURN_BAND
 from trader.domain.market_data import Bar
 
 MIN_OUTCOME_AGE = timedelta(days=1)
 UNKNOWN_OUTCOME_AGE = timedelta(days=3)
 OPENING_INTENTS = frozenset({"OPEN_LONG", "OPEN_SHORT", "SCALE_IN", "FLIP"})
 _FLAT_EPSILON = 1e-9
-
-_WIN_CLASSES = {"gagnant", "bonne_prudence"}
-_LOSS_CLASSES = {"perdant", "opportunite_manquee"}
-_NEUTRAL_CLASSES = {"neutre", "justifie"}
 
 
 class ModelPerformanceRows(Protocol):
@@ -134,9 +127,9 @@ def realised_entry_outcomes(reader: ModelPerformanceRows) -> dict[str, float]:
 
 
 def realised_verdict(net_return: float) -> tuple[str, float]:
-    if net_return > SIGNIFICANT_RETURN_BAND:
+    if net_return >= SIGNIFICANT_RETURN_BAND:
         return "WIN", 1.0
-    if net_return < -SIGNIFICANT_RETURN_BAND:
+    if net_return <= -SIGNIFICANT_RETURN_BAND:
         return "LOSS", -1.0
     return "NEUTRAL", 0.0
 
@@ -145,62 +138,60 @@ def requires_realised_trade(row: Mapping[str, object]) -> bool:
     return bool(row.get("executed")) and str(row.get("intent") or "") in OPENING_INTENTS
 
 
-def _decision_quality_action(row: Mapping[str, object]) -> str | None:
-    action = str(row.get("action") or "HOLD").upper()
-    if action != "HOLD":
-        return action
+def forward_return(bars: Sequence[Bar], ts: str, horizon: timedelta) -> float | None:
+    """Return from the as-of close to the first bar at/after ``horizon``.
 
-    snapshot = row.get("portfolio_snapshot")
-    if not isinstance(snapshot, Mapping):
+    ISO strings cannot be sorted chronologically when their UTC offsets differ.
+    Normalising both the decision and bar timestamps also keeps the bisect
+    comparisons aware and deterministic around market-local offsets.
+    """
+
+    decision_ts = _parse_ts(ts)
+    if decision_ts is None:
         return None
-    holdings = snapshot.get("holdings")
-    if not isinstance(holdings, list):
+    dated_bars = [
+        (bar_ts, bar)
+        for bar in bars
+        if (bar_ts := _parse_ts(bar.ts)) is not None
+    ]
+    dated_bars.sort(key=lambda item: item[0])
+    timestamps = [bar_ts for bar_ts, _bar in dated_bars]
+    i0 = bisect_right(timestamps, decision_ts) - 1
+    target = decision_ts + horizon
+    ih = bisect_left(timestamps, target)
+    if i0 < 0 or ih >= len(dated_bars) or ih <= i0:
         return None
-
-    symbol = str(row.get("symbol") or "").strip().upper()
-    quantity = 0.0
-    for holding in holdings:
-        if not isinstance(holding, Mapping) or holding.get("symbol") is None:
-            return None
-        if str(holding["symbol"]).strip().upper() != symbol:
-            continue
-        try:
-            parsed_quantity = float(holding.get("quantity"))
-        except (TypeError, ValueError):
-            return None
-        if not math.isfinite(parsed_quantity):
-            return None
-        quantity += parsed_quantity
-
-    if quantity > POSITION_EPSILON:
-        return "BUY"
-    if quantity < -POSITION_EPSILON:
-        return "SELL"
-    return "HOLD"
-
-
-def _forward_return(bars: Sequence[Bar], ts: str, horizon: timedelta) -> float | None:
-    ordered = sorted(bars, key=lambda bar: bar.ts)
-    timestamps = [bar.ts for bar in ordered]
-    i0 = bisect_right(timestamps, ts) - 1
-    target = (datetime.fromisoformat(ts) + horizon).isoformat()
-    ih = bisect_right(timestamps, target) - 1
-    if i0 < 0 or ih <= i0:
-        return None
-    initial = ordered[i0].close
+    initial = dated_bars[i0][1].close
     if initial == 0.0:
         return None
-    return ordered[ih].close / initial - 1.0
+    return dated_bars[ih][1].close / initial - 1.0
 
 
-def _outcome(value: str, forward_value: float | None) -> dict[str, object]:
-    if value in _WIN_CLASSES:
+def learning_outcome_for_return(
+    row: Mapping[str, object],
+    forward_value: float | None,
+) -> dict[str, object]:
+    """Map benchmark-v2 quality to the deliberately conservative learning reward."""
+
+    value, _context = decision_verdict(row, forward_value, SIGNIFICANT_RETURN_BAND)
+    if value == "good":
+        # Un HOLD dans le bruit est correct pour l'audit, mais il ne prouve pas
+        # qu'une règle d'abstention mérite une reward positive. Le garder neutre
+        # évite de recréer un cliquet vers l'inaction.
+        if (
+            str(row.get("action") or "").upper() == "HOLD"
+            and forward_value is not None
+            and abs(forward_value) < SIGNIFICANT_RETURN_BAND
+        ):
+            return {"verdict": "NEUTRAL", "reward": 0.0, "forward_return": forward_value}
         return {"verdict": "WIN", "reward": 1.0, "forward_return": forward_value}
-    if value in _LOSS_CLASSES:
+    if value in {"bad", "missed"}:
         return {"verdict": "LOSS", "reward": -1.0, "forward_return": forward_value}
-    if value in _NEUTRAL_CLASSES:
+    if value == "neutral":
         return {"verdict": "NEUTRAL", "reward": 0.0, "forward_return": forward_value}
-    return {"verdict": "UNKNOWN", "reward": None, "forward_return": None}
+    # Conserver le rendement observé permet de réévaluer plus tard une ligne
+    # devenue directionnelle sans recharger l'historique prix.
+    return {"verdict": "UNKNOWN", "reward": None, "forward_return": forward_value}
 
 
 def score_outcome(
@@ -214,19 +205,16 @@ def score_outcome(
     symbol = str(row.get("symbol") or "")
     if ts is None or not symbol or _utc(now) - ts < MIN_OUTCOME_AGE:
         return None
-    action = _decision_quality_action(row)
-    if action is None:
-        return None
 
     ts_iso = ts.isoformat()
-    one_day = _forward_return(bars, ts_iso, timedelta(days=1))
+    one_day = forward_return(bars, ts_iso, timedelta(days=1))
     if one_day is not None:
-        return _outcome(classify_decision_quality(action, one_day), one_day)
-    four_hours = _forward_return(bars, ts_iso, timedelta(hours=4))
+        return learning_outcome_for_return(row, one_day)
+    four_hours = forward_return(bars, ts_iso, timedelta(hours=4))
     if four_hours is not None:
-        return _outcome(classify_decision_quality(action, four_hours), four_hours)
+        return learning_outcome_for_return(row, four_hours)
     if bars and _utc(now) - ts >= UNKNOWN_OUTCOME_AGE:
-        return _outcome("non_evaluable", None)
+        return learning_outcome_for_return(row, None)
     return None
 
 
@@ -262,6 +250,8 @@ __all__ = [
     "MIN_OUTCOME_AGE",
     "ModelPerformanceRows",
     "OPENING_INTENTS",
+    "forward_return",
+    "learning_outcome_for_return",
     "outcome_for_row",
     "realised_entry_outcomes",
     "realised_verdict",

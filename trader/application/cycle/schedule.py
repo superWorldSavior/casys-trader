@@ -6,6 +6,7 @@ small scheduling decisions that can be tested without booting the runtime loop.
 
 from __future__ import annotations
 
+import copy
 import logging
 from datetime import datetime, timezone
 from typing import Callable
@@ -230,15 +231,10 @@ def apply_decision_schedule(
             pending_indicator_watch.get("expires_at"),
         )
         entry["indicator_watch_created"] = True
-        entry["indicator_watch"] = {
-            "id": pending_indicator_watch["id"],
-            "expires_at": pending_indicator_watch["expires_at"],
-            "logic": pending_indicator_watch["logic"],
-            "on_trigger": pending_indicator_watch["on_trigger"],
-            "conditions": pending_indicator_watch["conditions"],
-        }
-        if "order" in pending_indicator_watch:
-            entry["indicator_watch"]["order"] = pending_indicator_watch["order"]
+        # The decision ledger is also the continuity input for the next model
+        # call.  Keep the exact normalized watch instead of rebuilding a lossy
+        # projection that drops its creation time, rationale or future fields.
+        entry["indicator_watch"] = copy.deepcopy(pending_indicator_watch)
 
     if next_wake_iso is not None:
         sched.set_symbol_next_wake(sym, next_wake_iso)
