@@ -76,9 +76,40 @@ def test_preset_grok_substitue_grok_home(env_file) -> None:
     text = env_file.read_text(encoding="utf-8")
     assert "${REPO}" not in text
     assert f"GROK_HOME={model_preset.REPO_ROOT}/ops/grok-home" in text
+    assert f"TRADER_GROK_HOME={model_preset.REPO_ROOT}/ops/grok-home" in text
+    assert f"TRADER_CONSOLIDATOR_GROK_HOME={model_preset.REPO_ROOT}/ops/grok-home" in text
     assert "TRADER_ACPX_AGENT=grok-build" in text
     assert "TRADER_MODEL=grok-4.6" in text
     assert "TRADER_REASONING_EFFORT=" not in text
+
+
+def test_preset_grok_brain_low_analystes_medium(env_file) -> None:
+    _apply("grok", write=True)
+
+    text = env_file.read_text(encoding="utf-8")
+    root = model_preset.REPO_ROOT
+    assert "${REPO}" not in text
+    assert f"TRADER_GROK_HOME={root}/ops/grok-home" in text
+    assert f"TRADER_CONSOLIDATOR_GROK_HOME={root}/ops/grok-home-medium" in text
+    assert f"TRADER_UNIVERSE_GROK_HOME={root}/ops/grok-home-medium" in text
+    assert f"TRADER_COMPANY_MICRO_GROK_HOME={root}/ops/grok-home-medium" in text
+    assert "TRADER_ACPX_AGENT=grok-build" in text
+    assert "TRADER_MODEL=grok-4.6" in text
+    assert "TRADER_REASONING_EFFORT=" not in text
+    assert "KIMI_CODE_HOME=" not in text
+
+
+def test_bascule_kimi_vers_grok_retire_kimi_et_pose_les_homes(env_file) -> None:
+    _apply("kimi", write=True)
+    assert "KIMI_CODE_HOME=" in env_file.read_text(encoding="utf-8")
+
+    _apply("grok", write=True)
+
+    text = env_file.read_text(encoding="utf-8")
+    assert "KIMI_CODE_HOME=" not in text
+    assert "casys:model-preset=grok" in text
+    assert "TRADER_GROK_HOME=" in text
+    assert "grok-home-medium" in text
 
 
 def test_apply_est_idempotent(env_file) -> None:

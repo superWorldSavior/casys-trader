@@ -1,0 +1,4 @@
+# GROK_HOME isolé : on ne versionne QUE config.toml.
+*
+!.gitignore
+!config.toml

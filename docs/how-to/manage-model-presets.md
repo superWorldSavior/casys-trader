@@ -32,7 +32,7 @@ preset utilise un daemon déjà lancé.
 Le dry-run est le comportement par défaut :
 
 ```bash
-make model-preset PRESET=codex-luna-medium
+make model-preset PRESET=grok
 ```
 
 Vérifier les valeurs ajoutées, modifiées et retirées. Le script retire aussi les
@@ -42,7 +42,7 @@ haut dans le `.env` gagnerait silencieusement au chargement.
 ## 3. Appliquer
 
 ```bash
-make model-preset PRESET=codex-luna-medium WRITE=1
+make model-preset PRESET=grok WRITE=1
 make models
 ```
 

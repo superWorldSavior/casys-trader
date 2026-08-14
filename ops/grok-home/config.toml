@@ -2,7 +2,8 @@
 # `ops/codex-home` / `ops/kimi-home`. Découplé du CLI personnel `~/.grok`
 # (défaut TUI grok-4.6 / xhigh + marketplace / skills).
 #
-# Branché par `GROK_HOME` (preset `ops/model-presets/grok-4.6-low.env`).
+# Branché par `TRADER_GROK_HOME` (preset `ops/model-presets/grok.env`,
+# cran trading) et par `GROK_HOME` (preset `grok-4.6-low`, tout low).
 # Auth : ln -sfn ~/.grok/auth.json ops/grok-home/auth.json
 #
 # L'effort N'EST PAS passable par appel ACP. Un effort = un GROK_HOME.

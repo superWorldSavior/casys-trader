@@ -49,7 +49,8 @@ l'écriture, afin que les profils isolés restent versionnables.
 | --- | --- | --- |
 | `codex-luna-medium` | `gpt-5.6-luna` **medium** | `gpt-5.6-sol` **low** |
 | `kimi` | `kimi-code/kimi-for-coding` **high** | `kimi-code/k3-256k` **high** (micro : `kimi-for-coding`) |
-| `grok-4.6-low` | `grok-4.6` **low** | `grok-4.6` **low** (effort de profil partagé) |
+| `grok` | `grok-4.6` **low** (`ops/grok-home`) | `grok-4.6` **medium** (`ops/grok-home-medium`) |
+| `grok-4.6-low` | `grok-4.6` **low** | `grok-4.6` **low** (benches / debug) |
 
 Le preset Codex utilise un seul `ops/codex-home` low. Pour le brain seulement,
 le runtime appelle le mécanisme natif `acpx set reasoning_effort medium` sur la
@@ -67,13 +68,18 @@ Une seule var ici, pas une par rôle : les 5 rôles partagent `high`.
 (262 144 vs 1 048 576) ; le préfixe `kimi-code/` est le model id annoncé par le
 pont, pas un chemin.
 
-Le preset `grok-4.6-low` pose `GROK_HOME=${REPO}/ops/grok-home` et
-`TRADER_ACPX_AGENT=grok-build` (`grok agent stdio`). L'auth est le login
-`grok.com` déjà en cache (symlink `ops/grok-home/auth.json`), pas une clé API.
+Le switch officiel `grok` pose `TRADER_GROK_HOME=${REPO}/ops/grok-home`
+(low, cran trading) et `TRADER_*_GROK_HOME=${REPO}/ops/grok-home-medium`
+pour consolidateur / univers / micro. Macro/news partage le profil du
+consolidateur (provider `consolidator`). `GROK_HOME` global = fallback
+benches / transport sans rôle (low). Agent : `grok-build` (`grok agent
+stdio`). L'auth est le login `grok.com` déjà en cache (symlink
+`ops/grok-home{,-medium}/auth.json`), pas une clé API.
 `acpx grok-build set reasoning_effort` est rejeté (ACP `-32601`, mesuré le
-2026-08-14) : l'effort vit dans `[models] default_reasoning_effort` du profil.
-Les 5 rôles partagent donc `low`. Le défaut TUI `~/.grok` (xhigh +
-marketplace) n'est jamais le repli.
+2026-08-14) : l'effort vit dans `[models] default_reasoning_effort` du
+profil. Un effort = un `GROK_HOME`. Le défaut TUI `~/.grok` (xhigh +
+marketplace) n'est jamais le repli. `grok-4.6-low` garde les 5 rôles en
+low pour les benches.
 
 Prix API (août 2026) : `grok-4.6` et `grok-4.5` sont à **$2 / $6** le million,
 contre **$0.20 / $1.20** pour Luna. Le CLI n'annonce que ces deux modèles :
@@ -118,8 +124,9 @@ le quota SuperGrok, pas la facture API.
 - **Le preset grok n'a pas de var `CODEX_HOME`** : Grok ne lit pas le profil
   Codex. La garde du transport s'applique quand même à tous les appels acpx —
   le `CODEX_HOME` global du `.env` doit rester un profil valide. `ops/grok-home`
-  n'est pas versionné en entier : recréer le symlink
-  `auth.json` → `~/.grok/auth.json` sur une machine neuve.
+  et `ops/grok-home-medium` ne sont pas versionnés en entier : recréer le
+  symlink `auth.json` → `~/.grok/auth.json` dans **les deux** homes sur une
+  machine neuve.
 
 ## Voir aussi
 

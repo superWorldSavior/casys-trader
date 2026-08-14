@@ -1,0 +1,30 @@
+# GROK_HOME isolé — effort medium. Preset `grok` : consolidateur / univers /
+# micro / macro. L'effort n'est PAS passable par appel ACP.
+# Auth : ln -sfn ~/.grok/auth.json ops/grok-home-medium/auth.json
+
+[models]
+default = "grok-4.6"
+default_reasoning_effort = "medium"
+
+[compat.claude]
+skills = false
+mcps = false
+hooks = false
+
+[compat.cursor]
+skills = false
+mcps = false
+hooks = false
+
+[features]
+telemetry = false
+lsp_tools = false
+codebase_indexing = false
+
+[marketplace]
+default_skills_installs_purged = true
+official_marketplace_auto_installed = true
+
+[[marketplace.sources]]
+name = "xAI Official"
+git = "https://github.com/xai-org/plugin-marketplace.git"

@@ -212,7 +212,9 @@ def _validated_acpx_grok_home(grok_home: str | None = None) -> Path:
     défaut est donc le profil versionné de l'app, jamais le home utilisateur.
 
     L'effort Grok n'est pas passable par appel ACP : il vient de
-    ``[models] default_reasoning_effort``.
+    ``[models] default_reasoning_effort``. ``grok_home`` — profil demandé
+    par le rôle (brain low vs analystes medium). Absent → ``GROK_HOME``,
+    puis le profil versionné par défaut.
     """
 
     requested = str(grok_home or "").strip()
@@ -542,6 +544,7 @@ def _run_one_shot_command(
     timeout_s: int,
     on_pid: Callable[[int], None] | None = None,
     codex_home: str | None = None,
+    grok_home: str | None = None,
     agent: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     child_env = dict(os.environ)
@@ -559,7 +562,7 @@ def _run_one_shot_command(
     if _is_kimi_agent(agent):
         child_env["KIMI_CODE_HOME"] = str(_validated_acpx_kimi_home())
     if _is_grok_agent(agent):
-        child_env["GROK_HOME"] = str(_validated_acpx_grok_home())
+        child_env["GROK_HOME"] = str(_validated_acpx_grok_home(grok_home))
     proc = subprocess.Popen(
         command,
         stdout=subprocess.PIPE,
@@ -603,6 +606,7 @@ def _run_and_parse(
     timeout_s: int,
     call_ctx: dict | None = None,
     codex_home: str | None = None,
+    grok_home: str | None = None,
     agent: str | None = None,
 ) -> LlmCompletion | LlmFailure:
     ctx = call_ctx or {}
@@ -638,6 +642,7 @@ def _run_and_parse(
             timeout_s=budget_s + 15,
             on_pid=lambda p: pid_holder.__setitem__("pid", p),
             codex_home=codex_home,
+            grok_home=grok_home,
             agent=agent,
         )
     except subprocess.TimeoutExpired:
@@ -719,6 +724,7 @@ class AcpxSession:
     name: str
     agent: str | None = None
     codex_home: str | None = None
+    grok_home: str | None = None
 
     def send(
         self, prompt: str, *, timeout_s: int, call_ctx: dict | None = None
@@ -739,6 +745,7 @@ class AcpxSession:
             timeout_s=timeout_s,
             call_ctx={**(call_ctx or {}), "session": self.name},
             codex_home=self.codex_home,
+            grok_home=self.grok_home,
             agent=self.agent,
         )
 
@@ -753,6 +760,7 @@ class AcpxSession:
                 ),
                 timeout_s=15,
                 codex_home=self.codex_home,
+                grok_home=self.grok_home,
                 agent=self.agent,
             )
         except Exception as exc:  # noqa: BLE001 - fermeture best-effort, jamais bloquante
@@ -827,9 +835,12 @@ class AcpxBackend:
     # Profil Codex du rôle — c'est lui qui porte le `model_reasoning_effort`.
     # None = profil global `CODEX_HOME` (comportement historique).
     codex_home: str | None = None
+    # Profil Grok du rôle — c'est lui qui porte `default_reasoning_effort`.
+    # None = profil global `GROK_HOME`, puis ops/grok-home (transport).
+    grok_home: str | None = None
     # Option ACP appliquée après `sessions new`. Contrairement au défaut du
     # CODEX_HOME, elle est propre à la session et permet Luna medium + Sol low
-    # avec un seul profil de l'app.
+    # avec un seul profil de l'app. Inopérant sous Grok (ACP -32601).
     reasoning_effort: str | None = None
 
     def open_session(self, name: str, *, timeout_s: int) -> AcpxSession | LlmFailure:
@@ -848,6 +859,7 @@ class AcpxBackend:
             timeout_s=timeout_s,
             call_ctx={"session": name},
             codex_home=self.codex_home,
+            grok_home=self.grok_home,
             agent=self.agent,
         )
         if not isinstance(res, LlmCompletion):
@@ -860,6 +872,7 @@ class AcpxBackend:
             name=name,
             agent=self.agent,
             codex_home=self.codex_home,
+            grok_home=self.grok_home,
         )
         effort = str(self.reasoning_effort or "").strip().lower()
         if effort:
@@ -878,6 +891,7 @@ class AcpxBackend:
                 timeout_s=min(timeout_s, 30),
                 call_ctx={"session": name},
                 codex_home=self.codex_home,
+                grok_home=self.grok_home,
                 agent=self.agent,
             )
             if not isinstance(configured, LlmCompletion):
@@ -913,6 +927,7 @@ class AcpxBackend:
             timeout_s=timeout_s,
             call_ctx={"session": self.session_label},
             codex_home=self.codex_home,
+            grok_home=self.grok_home,
             agent=self.agent,
         )
 

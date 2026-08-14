@@ -321,7 +321,7 @@ def test_acpx_session_send_retourne_une_completion_sur_stdout(monkeypatch) -> No
     monkeypatch.setattr("trader.infrastructure.llm.acpx_backend.shutil.which", lambda _bin: "/usr/local/bin/acpx")
     calls = []
 
-    def fake_run(command, *, timeout_s, on_pid=None, codex_home=None, agent=None):
+    def fake_run(command, *, timeout_s, on_pid=None, codex_home=None, grok_home=None, agent=None):
         calls.append((command, timeout_s))
         return subprocess.CompletedProcess(
             args=command,
@@ -374,7 +374,7 @@ def test_acpx_backend_open_session_cree_une_session_neuve_et_retourne_un_objet(m
     monkeypatch.setattr("trader.infrastructure.llm.acpx_backend.shutil.which", lambda _bin: "/usr/local/bin/acpx")
     calls = []
 
-    def fake_run(command, *, timeout_s, on_pid=None, codex_home=None, agent=None):
+    def fake_run(command, *, timeout_s, on_pid=None, codex_home=None, grok_home=None, agent=None):
         calls.append((command, timeout_s))
         return subprocess.CompletedProcess(args=command, returncode=0, stdout="", stderr="")
 
@@ -419,7 +419,7 @@ def test_acpx_backend_applique_l_effort_sur_la_session_avant_le_prompt(monkeypat
     monkeypatch.setattr("trader.infrastructure.llm.acpx_backend.shutil.which", lambda _bin: "/usr/local/bin/acpx")
     calls = []
 
-    def fake_run(command, *, timeout_s, on_pid=None, codex_home=None, agent=None):
+    def fake_run(command, *, timeout_s, on_pid=None, codex_home=None, grok_home=None, agent=None):
         calls.append((command, timeout_s))
         return subprocess.CompletedProcess(args=command, returncode=0, stdout="medium", stderr="")
 
@@ -455,7 +455,7 @@ def test_acpx_backend_applique_l_effort_sur_la_session_avant_le_prompt(monkeypat
 def test_acpx_backend_open_session_retourne_l_echec_si_new_echoue(monkeypatch) -> None:
     monkeypatch.setattr("trader.infrastructure.llm.acpx_backend.shutil.which", lambda _bin: "/usr/local/bin/acpx")
 
-    def fake_run(command, *, timeout_s, on_pid=None, codex_home=None, agent=None):
+    def fake_run(command, *, timeout_s, on_pid=None, codex_home=None, grok_home=None, agent=None):
         return subprocess.CompletedProcess(
             args=command,
             returncode=1,
@@ -480,7 +480,7 @@ def test_acpx_backend_agent_claude_est_porte_par_session_new_et_prompt(monkeypat
     monkeypatch.setattr("trader.infrastructure.llm.acpx_backend.shutil.which", lambda _bin: "/usr/local/bin/acpx")
     calls = []
 
-    def fake_run(command, *, timeout_s, on_pid=None, codex_home=None, agent=None):
+    def fake_run(command, *, timeout_s, on_pid=None, codex_home=None, grok_home=None, agent=None):
         calls.append((command, timeout_s))
         return subprocess.CompletedProcess(args=command, returncode=0, stdout="ok", stderr="")
 
@@ -507,7 +507,7 @@ def test_acpx_backend_agent_claude_est_porte_par_session_new_et_prompt(monkeypat
 def test_acpx_session_close_envoie_la_commande_de_fermeture(monkeypatch) -> None:
     calls = []
 
-    def fake_run(command, *, timeout_s, on_pid=None, codex_home=None, agent=None):
+    def fake_run(command, *, timeout_s, on_pid=None, codex_home=None, grok_home=None, agent=None):
         calls.append(command)
         return subprocess.CompletedProcess(args=command, returncode=0, stdout="", stderr="")
 
@@ -538,7 +538,7 @@ def test_acpx_session_close_envoie_la_commande_de_fermeture(monkeypatch) -> None
 
 
 def test_acpx_session_close_logge_un_warning_sans_lever(monkeypatch, caplog) -> None:
-    def fake_run(command, *, timeout_s, on_pid=None, codex_home=None, agent=None):
+    def fake_run(command, *, timeout_s, on_pid=None, codex_home=None, grok_home=None, agent=None):
         raise RuntimeError("acpx close failed")
 
     monkeypatch.setattr("trader.infrastructure.llm.acpx_backend._run_one_shot_command", fake_run)
@@ -560,7 +560,7 @@ def test_acpx_session_close_logge_un_warning_sans_lever(monkeypatch, caplog) -> 
 def test_acpx_session_close_peut_etre_appele_deux_fois_sans_lever(monkeypatch) -> None:
     calls = []
 
-    def fake_run(command, *, timeout_s, on_pid=None, codex_home=None, agent=None):
+    def fake_run(command, *, timeout_s, on_pid=None, codex_home=None, grok_home=None, agent=None):
         calls.append(command)
         if len(calls) == 2:
             raise RuntimeError("already closed")
@@ -1240,6 +1240,34 @@ def test_grok_accepte_les_efforts_annonces(monkeypatch, tmp_path, effort) -> Non
     assert _validated_acpx_grok_home() == grok_home
 
 
+def test_grok_home_du_backend_prime_sur_l_env(monkeypatch, tmp_path) -> None:
+    """Un GROK_HOME de rôle prime toujours sur le profil global."""
+
+    _profil_codex_valide(tmp_path, monkeypatch)
+    role_home = tmp_path / "grok-home-medium"
+    role_home.mkdir()
+    (role_home / "config.toml").write_text(
+        "[models]\ndefault_reasoning_effort = \"medium\"\n", encoding="utf-8"
+    )
+    global_home = tmp_path / "grok-home"
+    global_home.mkdir()
+    (global_home / "config.toml").write_text(
+        "[models]\ndefault_reasoning_effort = \"low\"\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("GROK_HOME", str(global_home))
+    captured: dict = {}
+    _fake_popen_capturant(monkeypatch, captured)
+
+    _run_one_shot_command(
+        ["acpx", "grok-build", "exec", "prompt"],
+        timeout_s=12,
+        agent="grok-build",
+        grok_home=str(role_home),
+    )
+
+    assert Path(captured["env"]["GROK_HOME"]) == role_home
+
+
 def test_agent_grok_pose_son_profil_dans_le_subprocess(monkeypatch, tmp_path) -> None:
     _profil_codex_valide(tmp_path, monkeypatch)
     grok_home = tmp_path / "grok-home"
@@ -1670,6 +1698,51 @@ def test_build_default_router_from_env_partage_le_profil_codex(monkeypatch) -> N
 
     assert brain.codex_home == "/profiles/shared"
     assert universe.codex_home == "/profiles/shared"
+
+
+def test_build_default_router_from_env_separe_les_profils_grok(monkeypatch) -> None:
+    """Preset grok : brain low, analystes medium — deux GROK_HOME distincts."""
+
+    monkeypatch.delenv("TRADER_OLLAMA_API_KEY", raising=False)
+    monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
+    monkeypatch.setenv("TRADER_GROK_HOME", "/profiles/grok-low")
+    monkeypatch.setenv("TRADER_CONSOLIDATOR_GROK_HOME", "/profiles/grok-medium")
+    monkeypatch.setenv("TRADER_UNIVERSE_GROK_HOME", "/profiles/grok-medium")
+    monkeypatch.setenv("TRADER_COMPANY_MICRO_GROK_HOME", "/profiles/grok-medium")
+
+    brain = build_default_router_from_env(env_path=None).backends[0]
+    universe = build_default_router_from_env(
+        env_path=None, acpx_provider="universe", spark_model="grok-4.6"
+    ).backends[0]
+    consolidator = build_default_router_from_env(
+        env_path=None, acpx_provider="consolidator", spark_model="grok-4.6"
+    ).backends[0]
+    micro = build_default_router_from_env(
+        env_path=None, acpx_provider="company-micro", spark_model="grok-4.6"
+    ).backends[0]
+
+    assert brain.grok_home == "/profiles/grok-low"
+    assert universe.grok_home == "/profiles/grok-medium"
+    assert consolidator.grok_home == "/profiles/grok-medium"
+    assert micro.grok_home == "/profiles/grok-medium"
+
+
+def test_build_default_router_from_env_profil_grok_absent_reste_global(monkeypatch) -> None:
+    """Sans var par rôle : None → le transport retombe sur GROK_HOME (historique)."""
+
+    monkeypatch.delenv("TRADER_OLLAMA_API_KEY", raising=False)
+    monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
+    for name in (
+        "TRADER_GROK_HOME",
+        "TRADER_CONSOLIDATOR_GROK_HOME",
+        "TRADER_UNIVERSE_GROK_HOME",
+        "TRADER_COMPANY_MICRO_GROK_HOME",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    router = build_default_router_from_env(env_path=None)
+
+    assert all(getattr(backend, "grok_home", None) is None for backend in router.backends)
 
 
 def test_build_default_router_from_env_profil_codex_absent_reste_global(monkeypatch) -> None:

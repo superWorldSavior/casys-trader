@@ -90,6 +90,17 @@ _ROLE_CODEX_HOME_ENV = {
     "company-micro": "TRADER_COMPANY_MICRO_CODEX_HOME",
 }
 
+# Profil Grok par rôle. L'effort Grok n'est PAS passable par appel ACP
+# (`session/set_config_option` → -32601) : un effort = un GROK_HOME.
+# Brain → ops/grok-home (low) ; analystes → ops/grok-home-medium.
+# Absent → `GROK_HOME` global, puis ops/grok-home (transport).
+_ROLE_GROK_HOME_ENV = {
+    "acpx": "TRADER_GROK_HOME",
+    "consolidator": "TRADER_CONSOLIDATOR_GROK_HOME",
+    "universe": "TRADER_UNIVERSE_GROK_HOME",
+    "company-micro": "TRADER_COMPANY_MICRO_GROK_HOME",
+}
+
 
 def _env_codex_home(provider: str) -> str | None:
     """Profil Codex du rôle, ou None pour retomber sur le ``CODEX_HOME`` global.
@@ -99,6 +110,16 @@ def _env_codex_home(provider: str) -> str | None:
     """
 
     name = _ROLE_CODEX_HOME_ENV.get(provider)
+    return _clean_optional(os.getenv(name)) if name else None
+
+
+def _env_grok_home(provider: str) -> str | None:
+    """Profil Grok du rôle, ou None pour retomber sur le ``GROK_HOME`` global.
+
+    Même partage macro/news → consolidateur que ``_env_codex_home``.
+    """
+
+    name = _ROLE_GROK_HOME_ENV.get(provider)
     return _clean_optional(os.getenv(name)) if name else None
 
 
@@ -151,6 +172,7 @@ def build_default_router_from_env(
     )
 
     codex_home = _env_codex_home(acpx_provider)
+    grok_home = _env_grok_home(acpx_provider)
     reasoning_effort = (
         _clean_optional(os.getenv("TRADER_REASONING_EFFORT"))
         if is_runtime_brain
@@ -165,6 +187,7 @@ def build_default_router_from_env(
             agent=acpx_agent,
             session_label=session_label,
             codex_home=codex_home,
+            grok_home=grok_home,
             reasoning_effort=reasoning_effort,
         )
     ]
@@ -186,6 +209,7 @@ def build_default_router_from_env(
                     agent="claude",
                     session_label=session_label,
                     codex_home=codex_home,
+                    grok_home=grok_home,
                 )
             )
 
