@@ -94,7 +94,9 @@ def test_watch_documente_ttl_optionnel_et_ordre_arme_strict() -> None:
     prompt = _batch_prompt()
     armed_contract = codex_client._indicator_watch_vocabulary()
 
-    assert "`ttl_minutes` est optionnel (défaut 60 minutes)" in prompt
+    assert "`ttl_minutes` est optionnel (défaut 240 minutes (4 h))" in prompt
+    assert "thèse overnight" in prompt
+    assert "ttl_minutes` explicitement (max 1440)" in prompt
     assert '"qty":<number>' in prompt
     assert "stop, qty>0 et confidence sont requis" in prompt
     assert "risk_pct?" not in armed_contract[armed_contract.index("# Plans armés"):]

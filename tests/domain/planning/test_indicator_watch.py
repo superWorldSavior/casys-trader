@@ -1,7 +1,9 @@
 from datetime import datetime, timezone
 
 from trader.domain.planning import indicator_watch as indicator_watch_mod
+from trader.domain.planning.armed_order import ARMED_ORDER_MAX_TTL_MINUTES
 from trader.domain.planning.indicator_watch import (
+    DEFAULT_WATCH_TTL_MINUTES,
     WATCH_REJECT_INVALID_OPERATOR,
     WATCH_REJECT_MISSING_THRESHOLD,
     WATCH_REJECT_NON_FINITE_THRESHOLD,
@@ -610,6 +612,49 @@ def test_execute_order_ttl_borne_a_la_revue_periodique() -> None:
     )
     expires_wake = datetime.fromisoformat(wake.watch["expires_at"])
     assert expires_wake - now == timedelta(minutes=600)
+
+
+def test_omitted_ttl_minutes_defaults_to_240_and_execute_order_still_caps() -> None:
+    from datetime import timedelta
+
+    now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
+    assert DEFAULT_WATCH_TTL_MINUTES == 240.0
+    assert ARMED_ORDER_MAX_TTL_MINUTES == 240.0
+
+    omitted = {
+        "conditions": [
+            {"indicator": "return", "op": ">", "value": 0.01, "interval": "1h", "window": 5}
+        ]
+    }
+    wake = build_indicator_watch(omitted, owner_symbol="SPY", now=now)
+    assert wake.watch is not None
+    assert datetime.fromisoformat(wake.watch["expires_at"]) - now == timedelta(
+        minutes=DEFAULT_WATCH_TTL_MINUTES
+    )
+
+    armed_omitted = build_indicator_watch(
+        {
+            "on_trigger": "EXECUTE_ORDER",
+            "conditions": [
+                {"indicator": "z_score", "op": "abs>", "value": 2.0, "interval": "15m", "window": 32}
+            ],
+            "order": _valid_order(),
+        },
+        owner_symbol="CL=F",
+        now=now,
+    )
+    assert armed_omitted.watch is not None
+    assert armed_omitted.watch["on_trigger"] == "EXECUTE_ORDER"
+    assert datetime.fromisoformat(armed_omitted.watch["expires_at"]) - now == timedelta(
+        minutes=ARMED_ORDER_MAX_TTL_MINUTES
+    )
+
+    armed_long = build_indicator_watch(
+        _armed_raw(_valid_order(), ttl_minutes=600), owner_symbol="CL=F", now=now
+    )
+    assert datetime.fromisoformat(armed_long.watch["expires_at"]) - now == timedelta(
+        minutes=ARMED_ORDER_MAX_TTL_MINUTES
+    )
 
 
 # --- Phase 2 : normalisation op-aware des labels ---

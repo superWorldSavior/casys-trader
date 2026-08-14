@@ -85,7 +85,7 @@ def test_symbol_row_divide_by_zero_guard() -> None:
 
 
 def test_symbol_row_no_fx_dict_defaults_usd() -> None:
-    """Sans fx_rate_by_ccy (None), tout est traité comme USD (rate=1.0)."""
+    """Sans fx_rate_by_ccy (None), un symbole USD reste à 1.0."""
     bars = {"AAPL": _fake_bars(close=200.0)}
     cockpit = build_market_cockpit(
         bars,
@@ -101,3 +101,22 @@ def test_symbol_row_no_fx_dict_defaults_usd() -> None:
     assert aapl["fx_usd"] == pytest.approx(1.0)
     assert aapl["risk_budget_native"] == pytest.approx(200.0)  # 0.02 * 10_000 / 1.0
     assert aapl["max_order_native"] == pytest.approx(2_000.0)
+
+
+def test_symbol_row_missing_non_usd_rate_is_not_stamped_one() -> None:
+    """Taux TWD manquant : fx_usd=None, jamais un faux 1.0."""
+    bars = {"2379.TW": _fake_bars(close=829.0)}
+    cockpit = build_market_cockpit(
+        bars,
+        symbols=["2379.TW"],
+        prices={"2379.TW": 829.0},
+        fx_rate_by_ccy={"USD": 1.0},
+        equity_usd=100_000.0,
+        risk_pct=0.01,
+        max_order_value=10_000.0,
+    )
+    tw = _row_as_dict(cockpit, "2379.TW")
+    assert tw["ccy"] == "TWD"
+    assert tw["fx_usd"] is None
+    assert tw["risk_budget_native"] == pytest.approx(0.0)
+    assert tw["max_order_native"] == pytest.approx(0.0)

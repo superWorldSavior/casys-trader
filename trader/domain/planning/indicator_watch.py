@@ -55,6 +55,7 @@ _ABS_OPS: dict[str, Callable[[float, float], bool]] = {
 # (source de vérité unique). Le prompt s'en sert pour ne pas proposer à l'agent
 # une notation qui sera rejetée (cf rejet réel `op="eq"`).
 WATCH_VALID_OPERATORS: tuple[str, ...] = tuple(_OPS) + tuple(_ABS_OPS)
+DEFAULT_WATCH_TTL_MINUTES = 240.0
 
 
 class IndicatorWatchResult(NamedTuple):
@@ -344,7 +345,7 @@ def build_indicator_watch(
 
     ttl = _bounded_float(
         raw.get("ttl_minutes", raw.get("duration_minutes", raw.get("expires_in_minutes"))),
-        default=60.0,
+        default=DEFAULT_WATCH_TTL_MINUTES,
         minimum=1.0,
         maximum=max_ttl_minutes,
     )

@@ -544,8 +544,9 @@ def _indicator_watch_vocabulary() -> str:
         f"{label_mapping}\n"
         "Watch minimale: `conditions:[{symbol,indicator,op,value,"
         f'interval:"{_TIMEFRAME_ENUM}",window,as_of:"latest"}}]`; '
-        "`ttl_minutes` est optionnel (défaut 60 minutes) mais "
-        "conseillé pour rendre l'horizon explicite. Hors vocabulaire = rejet.\n"
+        "`ttl_minutes` est optionnel (défaut 240 minutes (4 h)) mais "
+        "conseillé pour rendre l'horizon explicite. Une thèse overnight doit "
+        "poser `ttl_minutes` explicitement (max 1440). Hors vocabulaire = rejet.\n"
         "`exit_watch` emploie la même grammaire de conditions et réveille toujours "
         "le LLM ; il ne ferme jamais la position directement.\n"
         "# Plans armés (EXECUTE_ORDER)\n"

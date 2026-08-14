@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Callable, Collection, Protocol, runtime_checkable
@@ -17,6 +18,15 @@ log = logging.getLogger("trader.application.market_snapshot")
 
 DEFAULT_DAILY_LOOKBACK = "1y"
 DEFAULT_DAILY_INTERVAL = "1d"
+
+
+class MissingFxRate(ValueError):
+    """Taux FX manquant ou invalide pour une devise non-base."""
+
+    def __init__(self, symbol: str, ccy: str) -> None:
+        self.symbol = symbol
+        self.ccy = ccy
+        super().__init__(f"missing fx rate for {symbol} ({ccy})")
 
 
 @dataclass(frozen=True)
@@ -35,8 +45,21 @@ class MarketSnapshot:
     exit_bars_by_symbol: dict[str, list]
     exit_intervals_by_symbol: dict[str, str]
 
+    def try_rate_for_symbol(self, symbol: str) -> float | None:
+        """USD/base → 1.0. Devise manquante ou taux invalide → None (jamais 1.0)."""
+        ccy = fx.currency_for(symbol)
+        if ccy == fx.BASE_CCY:
+            return 1.0
+        rate = self.fx_rate_by_ccy.get(ccy)
+        if rate is None or not math.isfinite(rate) or rate <= 0:
+            return None
+        return rate
+
     def rate_for_symbol(self, symbol: str) -> float:
-        return self.fx_rate_by_ccy.get(fx.currency_for(symbol), 1.0)
+        rate = self.try_rate_for_symbol(symbol)
+        if rate is None:
+            raise MissingFxRate(symbol=symbol, ccy=fx.currency_for(symbol))
+        return rate
 
 
 @runtime_checkable
@@ -192,6 +215,14 @@ def build_market_snapshot(
     except Exception as exc:  # noqa: BLE001 - provider failure must not break the cycle
         log.warning("fx rate provider échoué (%s), dégradation USD fallback", exc)
         fx_rate_by_ccy = {fx.BASE_CCY: 1.0}
+
+    for symbol in symbols:
+        ccy = fx.currency_for(symbol)
+        if ccy == fx.BASE_CCY or ccy in fx_rate_by_ccy:
+            continue
+        if symbol not in stale_market_data:
+            stale_market_data[symbol] = {"stale_reason": "missing_fx_rate"}
+            log.error("fx %s : taux %s manquant — symbole non-tradable", symbol, ccy)
 
     if scheduler is not None:
         for sym in symbols:

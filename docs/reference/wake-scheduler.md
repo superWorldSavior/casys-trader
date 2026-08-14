@@ -67,7 +67,10 @@ la main pour redire HOLD, poser un plan, annuler une veille ou proposer un ordre
 
 Une `indicator_watch` est une question posée au marché :
 `symbol x indicator x timeframe x op x value`, avec `logic=all|any` et un
-`ttl_minutes`.
+`ttl_minutes`. Si le modèle omet `ttl_minutes`, le défaut est 240 minutes
+(4 h). Une thèse overnight doit poser `ttl_minutes` explicitement
+(max 1440). Les plans `EXECUTE_ORDER` restent plafonnés à
+`ARMED_ORDER_MAX_TTL_MINUTES` (240 minutes, D12).
 
 Invariants runtime :
 
@@ -79,6 +82,11 @@ Invariants runtime :
 - le daemon scanne les watches à chaque poll sans appel LLM ;
 - si une watch `WAKE` se déclenche, elle est retirée, un event
   `indicator_watch_triggered` est persisté et le symbole reçoit `next_wake = now` ;
+- si une watch `EXECUTE_ORDER` se déclenche, le symbole est réveillé **sans**
+  retirer la veille ; elle n'est consommée qu'après admit (gates execution+risk
+  passés, **avant** submit/queue) ou un cancel terminal (conflit, position,
+  exit unresolved, stop incohérent). `execution.enabled=false` / stale
+  **conservent** le plan ;
 - si une watch `WAKE` expire, elle est retirée et le symbole reçoit aussi
   `next_wake = now`, pour que l'agent décide quoi faire du scénario périmé.
 

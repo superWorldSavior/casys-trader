@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import copy
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import json
 import math
 import os
@@ -13,12 +13,15 @@ from typing import Any
 
 from trader.agent import llm
 from trader.agent.context import build_market_cockpit
+from trader.agent.protocol.prompts import _SYMBOL_CALLS_FINAL_CONTRACT
 from trader.domain.market import family_regime
 from trader.reporting.audit import decision_quality as decision_audit
 from trader.reporting.bench.protocols import BenchHistory, ModelBenchCompleter
 
 VALID_ACTIONS = {"BUY", "SELL", "HOLD"}
+VALID_CONTRACTS = {"reviews", "production"}
 DEFAULT_VERDICTS = {"good", "bad", "missed", "neutral"}
+AUDIT_STALE_AFTER_DAYS = 7
 DEFAULT_BENCH_MODELS = [
     "acpx:gpt-5.3-codex-spark",
     "acpx:gpt-5.5",
@@ -83,7 +86,9 @@ def parse_model_specs(raw_specs: list[str] | str | None) -> list[ModelSpec]:
             provider = "acpx"
         if provider == "ollama":
             provider = "ollama-cloud"
-        if provider not in {"acpx", "ollama-cloud"}:
+        if provider == "grok":
+            provider = "grok-build"
+        if provider not in {"acpx", "ollama-cloud", "grok-build"}:
             raise ValueError(f"unsupported bench provider: {provider}")
         if not model:
             raise ValueError(f"missing model in spec {item!r}")
@@ -97,6 +102,13 @@ def parse_verdicts(raw: str | None) -> set[str]:
     if not raw:
         return set(DEFAULT_VERDICTS)
     return {item.strip() for item in raw.split(",") if item.strip()}
+
+
+def parse_contract(raw: str | None) -> str:
+    contract = str(raw or "reviews").strip().lower()
+    if contract not in VALID_CONTRACTS:
+        raise ValueError(f"contract must be reviews or production, got {raw!r}")
+    return contract
 
 
 def _audit_for(row: dict, horizon: str) -> dict | None:
@@ -192,8 +204,33 @@ def select_cases(
     return cases
 
 
-def build_prompt(cases: list[dict], *, horizon: str, threshold_pct: float) -> str:
+def build_prompt(
+    cases: list[dict],
+    *,
+    horizon: str,
+    threshold_pct: float,
+    contract: str = "reviews",
+) -> str:
+    contract = parse_contract(contract)
     prompt_cases = [case["case"] for case in cases]
+    cases_json = json.dumps(prompt_cases, ensure_ascii=False, sort_keys=True)
+    if contract == "production":
+        return (
+            "Tu es un planificateur de trading en bench hors-ligne.\n"
+            "Tu reçois des décisions historiques telles qu'elles étaient connues à l'instant T. "
+            "Les données futures sont volontairement masquées.\n"
+            "Pour chaque cas, rends la décision live que tu aurais prise à l'instant T "
+            "avec le contrat planner Pine-like (`calls`), pas un avis BUY/SELL/HOLD.\n"
+            f"L'évaluation locale utilisera ensuite l'horizon {horizon} et un seuil de {threshold_pct:.4f}% ; "
+            "ne cherche pas à deviner des prix.\n\n"
+            "Réponds UNIQUEMENT par un objet JSON valide au format:\n"
+            '{"decisions":[{"decision_id":"<id>","symbol":"<SYM>","confidence":0.0,'
+            '"rationale":"court","opportunity_side":"long|short|null",'
+            '"decision_reason_code":"<code>","calls":[...] }]}\n'
+            "Inclus `decision_id` de chaque cas. `calls: []` = HOLD explicite.\n\n"
+            f"# Contrat de sortie\n{_SYMBOL_CALLS_FINAL_CONTRACT}\n\n"
+            f"# Cas\n{cases_json}\n"
+        )
     return (
         "Tu es un planificateur de trading en bench hors-ligne.\n"
         "Tu reçois des décisions historiques telles qu'elles étaient connues à l'instant T. "
@@ -207,7 +244,7 @@ def build_prompt(cases: list[dict], *, horizon: str, threshold_pct: float) -> st
         '"opportunity_side":"long|short|null","rationale":"court"}]}\n'
         "Pour HOLD, `opportunity_side` nomme la thèse précise refusée (`long` ou "
         "`short`), ou vaut null s'il n'existe réellement aucune thèse directionnelle.\n\n"
-        f"# Cas\n{json.dumps(prompt_cases, ensure_ascii=False, sort_keys=True)}\n"
+        f"# Cas\n{cases_json}\n"
     )
 
 
@@ -379,19 +416,104 @@ def _extract_json_object(text: str) -> dict:
     return payload
 
 
+def _action_from_production_calls(calls: Any) -> str:
+    """Mappe le contrat live vers BUY/SELL/HOLD.
+
+    `strategy_close` → SELL (exit), y compris couverture d'un short.
+    Veilles (`set_next_wake`, `propose_indicator_watch` WAKE) → HOLD.
+    """
+    if calls is None:
+        return "HOLD"
+    if not isinstance(calls, list):
+        return ""
+    entry_action: str | None = None
+    execute_action: str | None = None
+    saw_close = False
+    for raw in calls:
+        if not isinstance(raw, dict):
+            continue
+        tool = str(raw.get("tool") or "").strip()
+        args = raw.get("args") if isinstance(raw.get("args"), dict) else {}
+        if tool == "strategy_entry" and entry_action is None:
+            direction = str(args.get("direction") or "").strip().lower()
+            if direction == "long":
+                entry_action = "BUY"
+            elif direction == "short":
+                entry_action = "SELL"
+        elif tool == "propose_indicator_watch" and execute_action is None:
+            on_trigger = str(args.get("on_trigger") or "").strip().upper()
+            if on_trigger == "EXECUTE_ORDER":
+                order = args.get("order") if isinstance(args.get("order"), dict) else {}
+                direction = str(order.get("direction") or "").strip().lower()
+                if direction == "long":
+                    execute_action = "BUY"
+                elif direction == "short":
+                    execute_action = "SELL"
+        elif tool == "strategy_close":
+            saw_close = True
+    if entry_action:
+        return entry_action
+    if execute_action:
+        return execute_action
+    if saw_close:
+        return "SELL"
+    return "HOLD"
+
+
+def _review_from_production_decision(item: dict) -> dict:
+    return {
+        "decision_id": item.get("decision_id"),
+        "action": _action_from_production_calls(item.get("calls")),
+        "confidence": item.get("confidence"),
+        "opportunity_side": item.get("opportunity_side"),
+        "rationale": item.get("rationale"),
+    }
+
+
 def _reviews_by_id(text: str) -> dict[str, dict]:
     payload = _extract_json_object(text)
     reviews = payload.get("reviews")
-    if not isinstance(reviews, list):
-        raise ValueError("JSON object must contain a reviews array")
+    decisions = payload.get("decisions")
+    if isinstance(reviews, list):
+        items = reviews
+        as_review = None
+    elif isinstance(decisions, list):
+        items = decisions
+        as_review = _review_from_production_decision
+    else:
+        raise ValueError("JSON object must contain a reviews or decisions array")
     result: dict[str, dict] = {}
-    for item in reviews:
+    for item in items:
         if not isinstance(item, dict):
             continue
-        decision_id = item.get("decision_id")
+        review = as_review(item) if as_review is not None else item
+        decision_id = review.get("decision_id")
         if decision_id:
-            result[str(decision_id)] = item
+            result[str(decision_id)] = review
     return result
+
+
+def audit_freshness(audit_payload: dict, *, now: datetime | None = None) -> dict:
+    clock = now or datetime.now(timezone.utc)
+    if clock.tzinfo is None:
+        clock = clock.replace(tzinfo=timezone.utc)
+    newest: datetime | None = None
+    newest_raw: Any = None
+    for row in audit_payload.get("rows") or []:
+        if not isinstance(row, dict):
+            continue
+        parsed = _parse_case_datetime(row.get("cycle_ts"))
+        if parsed is None:
+            continue
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        if newest is None or parsed > newest:
+            newest = parsed
+            newest_raw = row.get("cycle_ts")
+    if newest is None:
+        return {"audit_stale": False, "audit_as_of": None}
+    stale = newest < (clock - timedelta(days=AUDIT_STALE_AFTER_DAYS))
+    return {"audit_stale": stale, "audit_as_of": newest_raw}
 
 
 def _candidate_verdict(
@@ -548,6 +670,13 @@ def complete_model(spec: ModelSpec, prompt: str, timeout_s: int) -> ModelComplet
             model=spec.model,
             session_label="casys-trader:decision-bench",
         )
+    elif spec.provider == "grok-build":
+        backend = llm.AcpxBackend(
+            provider="grok-build",
+            model=spec.model,
+            agent="grok-build",
+            session_label="casys-trader:decision-bench",
+        )
     else:
         backend = _ollama_backend(spec)
     if isinstance(backend, ModelBenchFailure):
@@ -583,6 +712,7 @@ def run_bench(
     timeout_s: int,
     symbol: str | None = None,
     include_original: bool = True,
+    contract: str = "reviews",
     context_history: BenchHistory | None = None,
     context_symbols: list[str] | None = None,
     context_interval: str = "15m",
@@ -590,7 +720,9 @@ def run_bench(
     cockpit_window: int = 48,
     context_metadata: dict | None = None,
     complete: CompleteFn = complete_model,
+    now: datetime | None = None,
 ) -> dict:
+    contract = parse_contract(contract)
     threshold_pct = float(audit_payload.get("threshold_pct") or 0.5)
     cases = select_cases(
         audit_payload,
@@ -610,7 +742,7 @@ def run_bench(
         cockpit_window=cockpit_window,
         context_metadata=context_metadata,
     )
-    prompt = build_prompt(cases, horizon=horizon, threshold_pct=threshold_pct)
+    prompt = build_prompt(cases, horizon=horizon, threshold_pct=threshold_pct, contract=contract)
     results = []
     for spec in models:
         completion = complete(spec, prompt, timeout_s)
@@ -663,10 +795,12 @@ def run_bench(
         "offset": offset,
         "verdicts": sorted(verdicts),
         "include_original": include_original,
+        "contract": contract,
         "context_reconstruction": context_reconstruction,
         "cases": cases,
         "prompt": prompt,
         "models": results,
+        **audit_freshness(audit_payload, now=now),
     }
 
 
@@ -680,13 +814,16 @@ def dry_run_payload(
     verdicts: set[str],
     symbol: str | None = None,
     include_original: bool = True,
+    contract: str = "reviews",
     context_history: Any | None = None,
     context_symbols: list[str] | None = None,
     context_interval: str = "15m",
     context_lookback_bars: int = 160,
     cockpit_window: int = 48,
     context_metadata: dict | None = None,
+    now: datetime | None = None,
 ) -> dict:
+    contract = parse_contract(contract)
     threshold_pct = float(audit_payload.get("threshold_pct") or 0.5)
     cases = select_cases(
         audit_payload,
@@ -714,10 +851,12 @@ def dry_run_payload(
         "offset": offset,
         "verdicts": sorted(verdicts),
         "include_original": include_original,
+        "contract": contract,
         "context_reconstruction": context_reconstruction,
         "models": [{"provider": spec.provider, "model": spec.model} for spec in models],
         "cases": cases,
-        "prompt": build_prompt(cases, horizon=horizon, threshold_pct=threshold_pct),
+        "prompt": build_prompt(cases, horizon=horizon, threshold_pct=threshold_pct, contract=contract),
+        **audit_freshness(audit_payload, now=now),
     }
 
 

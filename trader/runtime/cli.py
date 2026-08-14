@@ -787,6 +787,10 @@ def _cmd_decisions_bench(args: argparse.Namespace) -> int:
             "context_metadata": context_metadata,
         }
 
+    try:
+        contract = decision_bench.parse_contract(args.contract)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
     if args.dry_run:
         payload = decision_bench.dry_run_payload(
             audit,
@@ -797,6 +801,7 @@ def _cmd_decisions_bench(args: argparse.Namespace) -> int:
             verdicts=verdicts,
             symbol=args.symbol,
             include_original=include_original,
+            contract=contract,
             **context_kwargs,
         )
     else:
@@ -810,6 +815,7 @@ def _cmd_decisions_bench(args: argparse.Namespace) -> int:
             timeout_s=args.timeout_s,
             symbol=args.symbol,
             include_original=include_original,
+            contract=contract,
             **context_kwargs,
         )
 
@@ -820,16 +826,23 @@ def _cmd_decisions_bench(args: argparse.Namespace) -> int:
 
     if args.json:
         _print_json(payload)
-    elif args.dry_run:
-        print(
-            f"Decision bench dry-run horizon={payload['horizon']} "
-            f"cases={len(payload['cases'])} models={len(payload['models'])}"
-        )
-        print(f"Prompt chars: {len(payload['prompt'])}")
-        print(f"Rapport complet: {output_path}")
     else:
-        print(decision_bench.render_summary(payload))
-        print(f"Rapport complet: {output_path}")
+        if payload.get("audit_stale"):
+            print(
+                "Attention: decision_audit.json est périmé "
+                f"(as_of={payload.get('audit_as_of')}, > {decision_bench.AUDIT_STALE_AFTER_DAYS} jours). "
+                "Rafraîchir avec `casys-trader decisions audit` — ne pas régénérer à la main le fichier."
+            )
+        if args.dry_run:
+            print(
+                f"Decision bench dry-run horizon={payload['horizon']} "
+                f"cases={len(payload['cases'])} models={len(payload['models'])}"
+            )
+            print(f"Prompt chars: {len(payload['prompt'])}")
+            print(f"Rapport complet: {output_path}")
+        else:
+            print(decision_bench.render_summary(payload))
+            print(f"Rapport complet: {output_path}")
     return 0
 
 
@@ -1074,6 +1087,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     decisions_bench.add_argument("--verdicts", default="good,bad,missed,neutral")
     decisions_bench.add_argument("--timeout-s", type=int, default=120)
+    decisions_bench.add_argument(
+        "--contract",
+        choices=("reviews", "production"),
+        default="reviews",
+        help="reviews = avis BUY/SELL/HOLD (défaut sûr); production = contrat live Pine-like",
+    )
     decisions_bench.add_argument("--hide-original", action="store_true")
     decisions_bench.add_argument("--reconstruct-context", action="store_true")
     decisions_bench.add_argument(

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Mapping, Protocol
 
 from trader.domain.decisions import Decision
@@ -47,11 +47,22 @@ class ArmedPlanResolution:
     reference_volatilities: dict[str, float | None]
     events: list[ArmedPlanEvent]
     progress_logs: list[ArmedPlanProgressLog]
+    consume_watch_ids: list[str] = field(default_factory=list)
 
 
 _CONFLICT_LOG = "[armed_plan] %s conflit (%d plans d\u00e9clench\u00e9s) \u2014 r\u00e9veil planificateur"
 _CANCEL_LOG = "[armed_plan] %s %s plan=%s \u2014 r\u00e9veil planificateur"
 _TRIGGERED_LOG = "[armed_plan] %s d\u00e9clench\u00e9 plan=%s \u2014 ex\u00e9cution sans LLM"
+_TERMINAL_CANCEL_REASONS = {
+    "armed_plan_cancelled:position_exists",
+    "armed_plan_cancelled:stop_incoherent",
+}
+
+
+def _is_terminal_cancel(reason: str) -> bool:
+    return reason in _TERMINAL_CANCEL_REASONS or reason.startswith(
+        "armed_plan_cancelled:exit_unresolved"
+    )
 
 
 def resolve_armed_plan_triggers(
@@ -73,6 +84,7 @@ def resolve_armed_plan_triggers(
     reference_volatilities_by_symbol: dict[str, float | None] = {}
     events: list[ArmedPlanEvent] = []
     progress_logs: list[ArmedPlanProgressLog] = []
+    consume_watch_ids: list[str] = []
 
     armed_by_symbol: dict[str, list[dict]] = {}
     for trigger in indicator_triggers:
@@ -84,6 +96,7 @@ def resolve_armed_plan_triggers(
         plan_ids = [str(trigger.get("watch_id") or "") for trigger in armed_by_symbol[symbol]]
         progress_logs.append(ArmedPlanProgressLog(_CONFLICT_LOG, (symbol, len(plan_ids))))
         events.append(ArmedPlanEvent("armed_plan_conflict", {"symbol": symbol, "plan_ids": plan_ids}))
+        consume_watch_ids.extend(plan_id for plan_id in plan_ids if plan_id)
         for trigger in armed_by_symbol[symbol]:
             trigger["armed_conflict"] = True
 
@@ -156,6 +169,8 @@ def resolve_armed_plan_triggers(
             trigger["armed_cancelled"] = cancel_reason
             if cancel_reason == "armed_plan_cancelled:stale":
                 stale_plans_by_symbol[symbol] = {"id": plan_id, "order": dict(order)}
+            elif _is_terminal_cancel(cancel_reason) and plan_id:
+                consume_watch_ids.append(plan_id)
             continue
 
         decisions[symbol] = Decision(
@@ -180,4 +195,5 @@ def resolve_armed_plan_triggers(
         reference_volatilities=reference_volatilities_by_symbol,
         events=events,
         progress_logs=progress_logs,
+        consume_watch_ids=consume_watch_ids,
     )

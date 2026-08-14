@@ -1,7 +1,13 @@
 from dataclasses import fields
 from datetime import datetime, timezone
 
-from trader.application.cycle.market_snapshot import MarketSnapshot, build_market_snapshot
+import pytest
+
+from trader.application.cycle.market_snapshot import (
+    MarketSnapshot,
+    MissingFxRate,
+    build_market_snapshot,
+)
 from trader.market.market_data import Bar
 
 
@@ -153,3 +159,98 @@ def test_market_snapshot_rate_lookup_is_derived_method_not_captured_field() -> N
     field_names = {field.name for field in fields(MarketSnapshot)}
 
     assert "rate_for_symbol" not in field_names
+
+
+def test_market_snapshot_missing_twd_rate_is_not_tradable_and_raises() -> None:
+    """2330.TW sans taux TWD : non-tradable (missing_fx_rate) et rate_for_symbol lève."""
+
+    def usd_only_provider(_symbols, *, data_source) -> dict[str, float]:
+        del data_source
+        return {"USD": 1.0}
+
+    snapshot = build_market_snapshot(
+        symbols=["2330.TW", "SPY"],
+        data_source=FakeSource(),
+        now=NOW,
+        max_market_data_age_minutes=40.0,
+        runtime_interval="15m",
+        runtime_lookback="5d",
+        fx_rate_provider=usd_only_provider,
+        plan_store=None,
+    )
+
+    assert "2330.TW" in snapshot.stale_market_data
+    assert snapshot.stale_market_data["2330.TW"]["stale_reason"] == "missing_fx_rate"
+    assert "2330.TW" not in snapshot.tradable_symbols
+    assert "2330.TW" not in snapshot.tradable_prices
+    assert "2330.TW" not in snapshot.tradable_bars_by_symbol
+    assert "SPY" in snapshot.tradable_symbols
+    assert snapshot.rate_for_symbol("SPY") == 1.0
+    with pytest.raises(MissingFxRate) as excinfo:
+        snapshot.rate_for_symbol("2330.TW")
+    assert excinfo.value.symbol == "2330.TW"
+    assert excinfo.value.ccy == "TWD"
+
+
+def test_market_snapshot_provider_exception_marks_non_usd_missing_fx() -> None:
+    def boom(_symbols, *, data_source) -> dict[str, float]:
+        del data_source
+        raise RuntimeError("fx provider down")
+
+    snapshot = build_market_snapshot(
+        symbols=["2330.TW"],
+        data_source=FakeSource(),
+        now=NOW,
+        max_market_data_age_minutes=40.0,
+        runtime_interval="15m",
+        runtime_lookback="5d",
+        fx_rate_provider=boom,
+        plan_store=None,
+    )
+
+    assert snapshot.fx_rate_by_ccy == {"USD": 1.0}
+    assert snapshot.stale_market_data["2330.TW"]["stale_reason"] == "missing_fx_rate"
+    assert snapshot.tradable_symbols == []
+    with pytest.raises(MissingFxRate):
+        snapshot.rate_for_symbol("2330.TW")
+
+
+def test_market_snapshot_rate_for_symbol_rejects_non_finite_or_non_positive() -> None:
+    def bad_twd(_symbols, *, data_source) -> dict[str, float]:
+        del data_source
+        return {"USD": 1.0, "TWD": 0.0}
+
+    snapshot = build_market_snapshot(
+        symbols=["2330.TW"],
+        data_source=FakeSource(),
+        now=NOW,
+        max_market_data_age_minutes=40.0,
+        runtime_interval="15m",
+        runtime_lookback="5d",
+        fx_rate_provider=bad_twd,
+        plan_store=None,
+    )
+
+    with pytest.raises(MissingFxRate) as excinfo:
+        snapshot.rate_for_symbol("2330.TW")
+    assert excinfo.value.ccy == "TWD"
+
+
+def test_try_rate_for_symbol_returns_none_instead_of_raising() -> None:
+    def usd_only_provider(_symbols, *, data_source) -> dict[str, float]:
+        del data_source
+        return {"USD": 1.0}
+
+    snapshot = build_market_snapshot(
+        symbols=["2330.TW", "SPY"],
+        data_source=FakeSource(),
+        now=NOW,
+        max_market_data_age_minutes=40.0,
+        runtime_interval="15m",
+        runtime_lookback="5d",
+        fx_rate_provider=usd_only_provider,
+        plan_store=None,
+    )
+
+    assert snapshot.try_rate_for_symbol("SPY") == 1.0
+    assert snapshot.try_rate_for_symbol("2330.TW") is None

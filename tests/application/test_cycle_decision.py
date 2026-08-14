@@ -351,3 +351,257 @@ def test_rejected_exit_update_proves_existing_plan_unchanged() -> None:
     assert records[0]["plan_effect"]["status"] == "verified"
     assert records[0]["plan_effect"]["expected_mutation"]["kind"] == "unchanged"
     assert records[0]["plan_effect"]["expected_plans"] == records[0]["plan_effect"]["observed_plans"]
+
+
+class _RecordingSched:
+    def __init__(self, watches: list[dict] | None = None) -> None:
+        self.watches = {str(watch["id"]): dict(watch) for watch in (watches or [])}
+        self.removed: list[str] = []
+        self._wakes: dict[str, datetime] = {}
+
+    def remove_indicator_watch(self, watch_id: str) -> None:
+        self.removed.append(watch_id)
+        self.watches.pop(watch_id, None)
+
+    def active_indicator_watches(self, now=None) -> list[dict]:
+        del now
+        return list(self.watches.values())
+
+    def set_symbol_next_wake(self, symbol: str, when_iso: str) -> None:
+        self._wakes[symbol] = datetime.fromisoformat(when_iso)
+
+    def clear_symbol_next_wake(self, symbol: str) -> None:
+        self._wakes.pop(symbol, None)
+
+    def next_wake(self, symbol: str | None = None):
+        if symbol is None:
+            return None
+        return self._wakes.get(symbol)
+
+    def has_symbol_wake(self, symbol: str) -> bool:
+        return symbol in self._wakes
+
+
+class _ApprovingGate:
+    limits = SimpleNamespace(max_risk_per_trade_pct=0.01)
+
+    def max_quantity_at_risk(self, *_args, **_kwargs) -> float:
+        return 1_000.0
+
+    def check_confidence(self, *_args, **_kwargs):
+        return SimpleNamespace(approved=True, code="ok", context="")
+
+    def check(self, *_args, **_kwargs):
+        return SimpleNamespace(approved=True, code="ok", context="")
+
+
+class _DryRunBroker:
+    def positions(self):
+        return {}
+
+    def submit(self, *_args, **_kwargs):
+        return None
+
+
+def _armed_buy() -> Decision:
+    return Decision(
+        symbol="SPY",
+        action="BUY",
+        quantity=1.0,
+        confidence=0.95,
+        rationale="armed admit",
+        intent="OPEN_LONG",
+        exit_plan={"hard_stop": {"type": "price", "price": 95.0}},
+    )
+
+
+def test_execution_blocked_keeps_armed_execute_order_watch() -> None:
+    watch_id = "SPY:abc123"
+    sched = _RecordingSched(
+        [
+            {
+                "id": watch_id,
+                "symbol": "SPY",
+                "on_trigger": "EXECUTE_ORDER",
+                "expires_at": "2026-06-15T18:00:00+00:00",
+            }
+        ]
+    )
+    ctx, records = _context(
+        sched=sched,
+        broker=_DryRunBroker(),
+        gate=_ApprovingGate(),
+        require_hard_stop=False,
+        armed_plan_ids={"SPY": watch_id},
+        execution_eligibility={
+            "SPY": {"execution": {"enabled": False, "reason": "session_closed"}}
+        },
+    )
+    state = DecisionExecutionState(snap=SimpleNamespace(equity=100_000.0), gross=0.0)
+
+    execute_one_cycle_decision(
+        sym="SPY",
+        index=1,
+        total=1,
+        decision=_armed_buy(),
+        state=state,
+        ctx=ctx,
+    )
+
+    assert records[0]["reason"] == "execution:session_closed"
+    assert records[0]["executed"] is False
+    assert sched.removed == []
+    assert watch_id in sched.watches
+
+
+def test_successful_armed_admit_removes_execute_order_watch() -> None:
+    watch_id = "SPY:abc123"
+    sched = _RecordingSched(
+        [
+            {
+                "id": watch_id,
+                "symbol": "SPY",
+                "on_trigger": "EXECUTE_ORDER",
+                "expires_at": "2026-06-15T18:00:00+00:00",
+            }
+        ]
+    )
+    ctx, records = _context(
+        sched=sched,
+        broker=_DryRunBroker(),
+        gate=_ApprovingGate(),
+        require_hard_stop=False,
+        dry_run=True,
+        armed_plan_ids={"SPY": watch_id},
+        execution_eligibility={
+            "SPY": {"execution": {"enabled": True, "reason": "tradable"}}
+        },
+    )
+    state = DecisionExecutionState(snap=SimpleNamespace(equity=100_000.0), gross=0.0)
+
+    execute_one_cycle_decision(
+        sym="SPY",
+        index=1,
+        total=1,
+        decision=_armed_buy(),
+        state=state,
+        ctx=ctx,
+    )
+
+    assert records[0]["reason"] == "ok"
+    assert records[0]["executed"] is False
+    assert records[0]["execution_mode"] == "dry_run"
+    assert sched.removed == [watch_id]
+    assert watch_id not in sched.watches
+
+
+def test_armed_watch_consumed_before_queue_dispatch_even_if_queue_fails() -> None:
+    """Un timeout file ne doit pas laisser le plan armé se re-déclencher."""
+    watch_id = "SPY:abc123"
+    sched = _RecordingSched(
+        [
+            {
+                "id": watch_id,
+                "symbol": "SPY",
+                "on_trigger": "EXECUTE_ORDER",
+                "expires_at": "2026-06-15T18:00:00+00:00",
+            }
+        ]
+    )
+
+    class _FailingLedger:
+        pass
+
+    ctx, records = _context(
+        sched=sched,
+        broker=_DryRunBroker(),
+        gate=_ApprovingGate(),
+        require_hard_stop=False,
+        dry_run=True,
+        queue_execute_enabled=True,
+        execute_ledger=_FailingLedger(),
+        armed_plan_ids={"SPY": watch_id},
+        execution_eligibility={
+            "SPY": {"execution": {"enabled": True, "reason": "tradable"}}
+        },
+    )
+    state = DecisionExecutionState(snap=SimpleNamespace(equity=100_000.0), gross=0.0)
+
+    import trader.application.execute.queue_dispatch as execute_queue_dispatch
+
+    original = execute_queue_dispatch.dispatch_execute_order_via_queue
+
+    def _timeout_dispatch(**kwargs):
+        assert watch_id in sched.removed
+        return SimpleNamespace(
+            task_id="exec-1",
+            terminal="timeout",
+            late_execution_risk=True,
+            abandoned=False,
+            verified=False,
+            reason="queue_timeout",
+            fill=None,
+        )
+
+    execute_queue_dispatch.dispatch_execute_order_via_queue = _timeout_dispatch
+    try:
+        execute_one_cycle_decision(
+            sym="SPY",
+            index=1,
+            total=1,
+            decision=_armed_buy(),
+            state=state,
+            ctx=ctx,
+        )
+    finally:
+        execute_queue_dispatch.dispatch_execute_order_via_queue = original
+
+    assert records[0]["reason"] == "queue_timeout"
+    assert sched.removed == [watch_id]
+    assert watch_id not in sched.watches
+
+
+def test_missing_fx_rate_blocks_order_and_keeps_armed_watch() -> None:
+    from trader.application.cycle.market_snapshot import MissingFxRate
+
+    watch_id = "SPY:abc123"
+    sched = _RecordingSched(
+        [
+            {
+                "id": watch_id,
+                "symbol": "SPY",
+                "on_trigger": "EXECUTE_ORDER",
+                "expires_at": "2026-06-15T18:00:00+00:00",
+            }
+        ]
+    )
+
+    def _raise(symbol: str) -> float:
+        raise MissingFxRate(symbol=symbol, ccy="USD")
+
+    ctx, records = _context(
+        sched=sched,
+        broker=_DryRunBroker(),
+        gate=_ApprovingGate(),
+        require_hard_stop=False,
+        rate_for_symbol=_raise,
+        armed_plan_ids={"SPY": watch_id},
+        execution_eligibility={
+            "SPY": {"execution": {"enabled": True, "reason": "tradable"}}
+        },
+    )
+    state = DecisionExecutionState(snap=SimpleNamespace(equity=100_000.0), gross=0.0)
+
+    execute_one_cycle_decision(
+        sym="SPY",
+        index=1,
+        total=1,
+        decision=_armed_buy(),
+        state=state,
+        ctx=ctx,
+    )
+
+    assert records[0]["reason"] == "missing_fx_rate"
+    assert records[0]["executed"] is False
+    assert sched.removed == []
+    assert watch_id in sched.watches

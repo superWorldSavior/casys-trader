@@ -56,6 +56,30 @@ Il n'existe pas encore de commande qui charge automatiquement un plan depuis
 `state/` et télécharge ses barres. Pour une analyse réelle, préparer ces deux
 entrées dans un script ponctuel sans modifier le ledger.
 
+## Rafraîchir l'audit et bencher le contrat live
+
+Le bench lit `state/decision_audit.json`. Ce fichier peut faire ~100 Mo : ne
+pas le régénérer à la main. S'il est périmé (plus récente `cycle_ts` > 7 jours),
+`casys-trader decisions bench` pose `audit_stale=true` + `audit_as_of` et
+avertit sur la sortie humaine.
+
+```bash
+casys-trader decisions audit --horizons 1h,4h,1d --threshold-pct 0.5
+```
+
+Le contrat par défaut du bench reste `reviews` (avis BUY/SELL/HOLD). Pour
+mesurer le contrat planner live (`strategy_entry` / `calls`), passer
+`--contract production` :
+
+```bash
+casys-trader decisions bench --horizon 4h --limit 10 --dry-run --contract production
+```
+
+Le score interne reste BUY/SELL/HOLD. Mapping production : `strategy_entry`
+long→BUY, short→SELL ; `strategy_close`→SELL (exit, y compris couverture) ;
+`calls: []` / `set_next_wake` / `propose_indicator_watch` WAKE→HOLD ;
+`propose_indicator_watch` EXECUTE_ORDER + `order.direction` long/short→BUY/SELL.
+
 ## Quand utiliser quoi
 
 | Question | Outil |
@@ -63,6 +87,8 @@ entrées dans un script ponctuel sans modifier le ledger.
 | « Mon changement a-t-il réduit les appels LLM ? » | `measure_d7.py --since <redeploy>` |
 | « Les scénarios armés de l'agent étaient-ils bons ? » | API `replay_armed_plan(watch, bars)` |
 | « Combien de plans armés ont tiré / expiré ? » | `measure_d7.py` + events `armed_plan_*` |
+| « L'audit décisions est-il à jour pour le bench ? » | `casys-trader decisions audit` |
+| « Un autre modèle aurait-il mieux fait, contrat live ? » | `casys-trader decisions bench --contract production` |
 
 ## Voir aussi
 - [Lire les logs](read-logs.md) · registre décisions D7, D8, D12.

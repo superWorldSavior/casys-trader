@@ -67,7 +67,7 @@ def test_currency_for_european_venues():
 
 def test_every_mapped_currency_is_configured_in_fx_yaml():
     """Invariant : toute devise produite par currency_for (hors USD) doit avoir
-    une entrée dans config/fx.yaml — sinon fallback silencieux à 1.0."""
+    une entrée dans config/fx.yaml — sinon la clé est omise (fail-closed, plus de 1.0)."""
     import yaml
     from pathlib import Path
     cfg = yaml.safe_load(Path("config/fx.yaml").read_text())

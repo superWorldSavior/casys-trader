@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import Callable, Protocol
 
 from trader.domain.contracts import Position
@@ -12,6 +13,23 @@ class PortfolioReader(Protocol):
     def positions(self) -> dict[str, Position]: ...
 
     def cash(self) -> float: ...
+
+
+def _holding_fx_rate(
+    fx_rate_of: Callable[[str], float] | None,
+    symbol: str,
+) -> float:
+    if fx_rate_of is None:
+        return 1.0
+    try:
+        rate = fx_rate_of(symbol)
+    except Exception as exc:  # noqa: BLE001 — valuation must not crash the cycle
+        if exc.__class__.__name__ != "MissingFxRate":
+            raise
+        return 0.0
+    if not isinstance(rate, (int, float)) or not math.isfinite(rate) or rate <= 0.0:
+        return 0.0
+    return float(rate)
 
 
 def snapshot(
@@ -27,7 +45,7 @@ def snapshot(
             quantity=position.quantity,
             avg_price=position.avg_price,
             last_price=safe_last_price(price_of(position.symbol), position.avg_price),
-            fx_rate=fx_rate_of(position.symbol) if fx_rate_of is not None else 1.0,
+            fx_rate=_holding_fx_rate(fx_rate_of, position.symbol),
         )
         for position in broker.positions().values()
     ]

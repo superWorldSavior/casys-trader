@@ -45,8 +45,8 @@ def rates_for_symbols(symbols, *, fetcher: Fetcher, config: dict) -> dict[str, f
     """Résout les taux FX pour l'ensemble des devises présentes dans `symbols`.
 
     Résilience par devise : une devise inconnue ou en erreur ne bloque pas les
-    autres. Priorité : fetch live → fallback statique → 1.0 (avec WARNING loud
-    si la devise est absente de fx.yaml).
+    autres. Priorité : fetch live → fallback statique configuré. Une devise
+    absente de fx.yaml est omise (fail-closed) — jamais ``rates[ccy] = 1.0``.
     """
     currencies = {fx.currency_for(s) for s in symbols}
     rates: dict[str, float] = {fx.BASE_CCY: 1.0}
@@ -55,11 +55,10 @@ def rates_for_symbols(symbols, *, fetcher: Fetcher, config: dict) -> dict[str, f
             continue
         spec = config.get(ccy)
         if spec is None:
-            logger.warning(
-                "fx %s : devise non configurée dans fx.yaml — taux forcé à 1.0 (CONVERSION INCORRECTE)",
+            logger.error(
+                "fx %s : devise non configurée dans fx.yaml — clé omise (fail-closed, pas de 1.0)",
                 ccy,
             )
-            rates[ccy] = 1.0
             continue
         rate = None
         exc_info: Exception | None = None

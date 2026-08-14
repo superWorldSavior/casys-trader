@@ -75,7 +75,8 @@ def scan_indicator_watches(
 
     triggered = evaluate_indicator_watches(watches, bars_by_key, now=now)
     for event in triggered:
-        sched.remove_indicator_watch(str(event["watch_id"]))
+        if str(event.get("on_trigger")) != "EXECUTE_ORDER":
+            sched.remove_indicator_watch(str(event["watch_id"]))
         sched.set_symbol_next_wake(str(event["symbol"]), now.isoformat())
     return triggered
 

@@ -61,8 +61,8 @@ def test_fallback_on_nan_close(tmp_path):
     assert rates["TWD"] == pytest.approx(0.031)
 
 
-def test_unconfigured_currency_warns_and_falls_back(tmp_path, caplog):
-    """Une devise absente de fx.yaml doit logguer un WARNING et utiliser 1.0 (pas lever)."""
+def test_unconfigured_currency_omits_key(tmp_path, caplog):
+    """Une devise absente de fx.yaml doit logguer et omettre la clé — jamais 1.0."""
     import logging
     p = tmp_path / "fx_no_twd.yaml"
     p.write_text(textwrap.dedent("""
@@ -83,14 +83,14 @@ def test_unconfigured_currency_warns_and_falls_back(tmp_path, caplog):
     finally:
         trader_lg.propagate = orig_propagate
 
-    assert rates["TWD"] == 1.0, "devise non configurée → fallback 1.0"
+    assert "TWD" not in rates, "devise non configurée → clé absente (fail-closed, pas 1.0)"
     assert rates["USD"] == 1.0
-    assert any("TWD" in m for m in caplog.messages), "WARNING attendu pour devise non configurée"
+    assert any("TWD" in m for m in caplog.messages), "WARNING/ERROR attendu pour devise non configurée"
 
 
 def test_per_currency_resilience(tmp_path):
-    """Un mix : EUR live OK, TWD fallback statique, GBP non configuré → 1.0 + warning.
-    Les trois coexistent ; une devise en erreur ne bloque pas les autres.
+    """Un mix : EUR live OK, TWD fallback statique, GBP non configuré → clé GBP absente.
+    Une devise manquante ne bloque pas les autres ; le fallback configuré (0.031) reste valide.
     """
     p = tmp_path / "fx_partial.yaml"
     p.write_text(textwrap.dedent("""
@@ -123,8 +123,8 @@ def test_per_currency_resilience(tmp_path):
 
     assert rates["USD"] == 1.0
     assert rates["EUR"] == pytest.approx(1.09)      # live
-    assert rates["TWD"] == pytest.approx(0.031)     # fallback statique
-    assert rates["GBP"] == 1.0                      # non configuré → 1.0 avec WARNING
+    assert rates["TWD"] == pytest.approx(0.031)     # fallback statique configuré
+    assert "GBP" not in rates, "non configuré → clé absente, jamais 1.0 silencieux"
 
 
 def test_load_fx_config_rejects_missing_keys(tmp_path):

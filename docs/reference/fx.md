@@ -49,7 +49,9 @@ Résout les taux pour **toutes les devises** présentes dans `symbols`. USD = 1.
 1. **Fetch live** (yfinance, paire du `config`, `invert` si besoin).
 2. **Fallback statique** (`config[ccy].fallback`) — avec `WARNING` (« fetch échoué/None,
    fallback statique X »).
-3. **`1.0`** en dernier recours (devise sans config) — avec `WARNING` loud.
+3. Devise **absente de `fx.yaml`** : clé **omise** (fail-closed, jamais `1.0`).
+   `MarketSnapshot.rate_for_symbol` lève `MissingFxRate` ; le symbole est
+   `stale_reason=missing_fx_rate` et sort de `tradable_*`.
 
 ### `load_fx_config(path)`
 Charge `config/fx.yaml`. Clés requises par devise : `yahoo` (paire à fetch) +

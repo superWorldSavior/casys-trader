@@ -12,12 +12,22 @@ from trader.domain.risk import RiskLimits
 def gross_exposure(
     broker: Broker,
     prices: dict[str, float],
-    rate_of: Callable[[str], float] | None = None,
+    rate_of: Callable[[str], float | None] | None = None,
 ) -> float:
-    return sum(
-        abs(pos.quantity * prices.get(symbol, 0.0) * (rate_of(symbol) if rate_of else 1.0))
-        for symbol, pos in broker.positions().items()
-    )
+    """USD notional of open positions.
+
+    A missing/invalid FX rate on a live position is fail-closed: return +inf so
+    new opens cannot sneak through an understated gross. Never substitute 1.0.
+    """
+    total = 0.0
+    for symbol, pos in broker.positions().items():
+        if not pos.quantity:
+            continue
+        rate = 1.0 if rate_of is None else rate_of(symbol)
+        if rate is None or not math.isfinite(rate) or rate <= 0.0:
+            return math.inf
+        total += abs(pos.quantity * prices.get(symbol, 0.0) * rate)
+    return total
 
 
 def finite_positive(value: float | None) -> bool:
@@ -70,7 +80,7 @@ def risk_capacity_context(
     gross_exposure: float,
     limits: RiskLimits,
     equity: float,
-    rate_of: Callable[[str], float],
+    rate_of: Callable[[str], float | None],
     currency_of: Callable[[str], str],
 ) -> dict:
     """Expose advisory sizing caps before the final RiskGate check."""
@@ -78,7 +88,12 @@ def risk_capacity_context(
     per_symbol: dict[str, dict] = {}
     for symbol in symbols:
         price = prices.get(symbol)
-        rate = rate_of(symbol)
+        try:
+            rate = rate_of(symbol)
+        except Exception as exc:  # noqa: BLE001 — fold must not crash the cycle
+            if exc.__class__.__name__ != "MissingFxRate":
+                raise
+            rate = None
         ccy = currency_of(symbol)
         if not finite_positive(price) or not finite_positive(rate):
             per_symbol[symbol] = {

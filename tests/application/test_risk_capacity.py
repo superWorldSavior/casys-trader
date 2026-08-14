@@ -58,3 +58,54 @@ def test_gross_exposure_keeps_legacy_native_mode_without_rate(tmp_path) -> None:
     )
 
     assert risk_capacity.gross_exposure(broker, {"2379.TW": 820.0}) == 82_000.0
+
+
+def test_gross_exposure_missing_fx_on_live_position_is_infinite(tmp_path) -> None:
+    import math
+
+    from trader.application.execute import risk_capacity
+
+    broker = SimBroker(tmp_path / "broker.json", starting_cash=100_000.0)
+    broker.submit(
+        Order("2379.TW", "BUY", 100.0),
+        800.0,
+        "2026-06-24T09:00:00+00:00",
+        dry_run=False,
+    )
+
+    assert math.isinf(
+        risk_capacity.gross_exposure(
+            broker, {"2379.TW": 820.0}, rate_of=lambda _symbol: None
+        )
+    )
+
+
+def test_risk_capacity_context_swallows_missing_fx_rate(tmp_path) -> None:
+    from trader.application.cycle.market_snapshot import MissingFxRate
+    from trader.application.execute import risk_capacity
+
+    broker = SimBroker(tmp_path / "broker.json", starting_cash=100_000.0)
+    limits = RiskLimits(
+        max_order_value=10_000.0,
+        max_risk_per_trade_pct=0.01,
+        max_position_value=30_000.0,
+        max_gross_exposure=100_000.0,
+        min_equity=50_000.0,
+    )
+
+    def boom(symbol: str) -> float:
+        raise MissingFxRate(symbol=symbol, ccy="TWD")
+
+    context = risk_capacity.risk_capacity_context(
+        symbols=["2379.TW"],
+        prices={"2379.TW": 820.0},
+        broker=broker,
+        gross_exposure=0.0,
+        limits=limits,
+        equity=100_000.0,
+        rate_of=boom,
+        currency_of=lambda _symbol: "TWD",
+    )
+
+    assert context["per_symbol"]["2379.TW"]["max_buy_qty"] == 0.0
+    assert context["per_symbol"]["2379.TW"]["fx_usd"] is None

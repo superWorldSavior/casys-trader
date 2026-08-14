@@ -21,6 +21,7 @@ import trader.application.exit.fill_plan_effects as fill_plan_effects
 import trader.application.record.decision_entries as decision_entries
 import trader.application.record.decision_watches as decision_watches
 import trader.application.record.plan_review as plan_review
+from trader.application.cycle.market_snapshot import MissingFxRate
 from trader.application.portfolio import snapshot as portfolio
 from trader.domain.execution.risk_gate import RiskGate
 from trader.domain.market import sessions as market
@@ -36,6 +37,13 @@ _PURE_OPEN_INTENTS = {"OPEN_LONG", "OPEN_SHORT"}
 _RISK_GUARDED_OPENING_INTENTS = {"OPEN_LONG", "OPEN_SHORT", "SCALE_IN"}
 _RELATIVE_ORDER_INTENTS = order_admission.RELATIVE_ORDER_INTENTS
 _EXECUTE_POLL_BUDGET_S: float = 10.0
+
+
+def _fx_rate_or_none(rate_for_symbol: Callable[[str], float], symbol: str) -> float | None:
+    try:
+        return rate_for_symbol(symbol)
+    except MissingFxRate:
+        return None
 
 
 def _noop_event(_event: str, **_payload: object) -> None:
@@ -445,6 +453,13 @@ def execute_one_cycle_decision(
         record_outcome({**entry, "executed": False, "reason": execution_blocked})
         return state
 
+    fx_rate = _fx_rate_or_none(ctx.rate_for_symbol, sym)
+    if fx_rate is None:
+        _log_cycle_progress("[execution] %s ordre bloqué (missing_fx_rate) — watch/wake conservés", sym)
+        apply_decision_schedule()
+        record_outcome({**entry, "executed": False, "reason": "missing_fx_rate"})
+        return state
+
     if runtime_exit_plan and decision.intent in _OPENING_INTENTS:
         if sym in ctx.armed_reference_volatilities:
             reference_volatility = ctx.armed_reference_volatilities[sym]
@@ -548,7 +563,7 @@ def execute_one_cycle_decision(
             position_quantity=0.0 if pos is None else pos.quantity,
             position_avg_price=0.0 if pos is None else pos.avg_price,
             require_hard_stop=ctx.require_hard_stop,
-            fx_rate=ctx.rate_for_symbol(sym),
+            fx_rate=fx_rate,
         ),
         gate=ctx.gate,
     )
@@ -606,7 +621,7 @@ def execute_one_cycle_decision(
             position_quantity=0.0 if pos is None else pos.quantity,
             gross_exposure=state.gross,
             equity=state.snap.equity,
-            fx_rate=ctx.rate_for_symbol(sym),
+            fx_rate=fx_rate,
         ),
         gate=ctx.gate,
     )
@@ -638,6 +653,12 @@ def execute_one_cycle_decision(
                 "decision_id": str(entry["decision_id"]),
             }
         )
+
+    # Admis (gates execution + risk passés) : consommer avant submit/queue
+    # pour ne pas re-déclencher le même EXECUTE_ORDER si la file timeout.
+    armed_watch_id = ctx.armed_plan_ids.get(sym)
+    if ctx.sched is not None and armed_watch_id:
+        ctx.sched.remove_indicator_watch(armed_watch_id)
 
     if ctx.queue_execute_enabled and ctx.execute_ledger is not None:
         _exec_entry_context = None
@@ -678,7 +699,7 @@ def execute_one_cycle_decision(
             rationale=decision.rationale,
             price=ctx.prices[sym],
             ts=ctx.now.isoformat(),
-            fx_rate=ctx.rate_for_symbol(sym),
+            fx_rate=fx_rate,
             dry_run=ctx.dry_run,
             plan_to_upsert=_exec_plan_payload.plan_to_upsert,
             symbol_to_close=_exec_plan_payload.symbol_to_close,
@@ -723,7 +744,7 @@ def execute_one_cycle_decision(
             ctx.prices[sym],
             ctx.now.isoformat(),
             dry_run=ctx.dry_run,
-            fx_rate=ctx.rate_for_symbol(sym),
+            fx_rate=fx_rate,
         )
     if fill is None and not ctx.dry_run:
         apply_default_schedule_after_blocked()
@@ -772,7 +793,11 @@ def execute_one_cycle_decision(
         )
         return state
     if not ctx.dry_run:
-        state.gross = risk_capacity.gross_exposure(ctx.broker, ctx.prices, rate_of=ctx.rate_for_symbol)
+        state.gross = risk_capacity.gross_exposure(
+            ctx.broker,
+            ctx.prices,
+            rate_of=lambda symbol: _fx_rate_or_none(ctx.rate_for_symbol, symbol),
+        )
         if fill is not None:
             latest = portfolio.snapshot(
                 ctx.broker,

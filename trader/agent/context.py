@@ -283,7 +283,10 @@ def build_market_cockpit(
         # Les valeurs d'analyse (p, indicateurs, swings) restent en devise native —
         # seuls risk_budget_native et max_order_native sont des montants convertis.
         ccy = _fx.currency_for(symbol)
-        rate = (fx_rate_by_ccy or {}).get(ccy, 1.0)
+        if ccy == _fx.BASE_CCY:
+            rate: float | None = (fx_rate_by_ccy or {}).get(ccy, 1.0)
+        else:
+            rate = (fx_rate_by_ccy or {}).get(ccy)
         row += [
             ccy,
             rate,

@@ -37,6 +37,7 @@ from trader.application.execute import (
     order_admission,
     queue_dispatch as execute_queue_dispatch,  # noqa: F401 - legacy daemon facade
 )
+import trader.application.execute.risk_capacity as risk_capacity
 from trader.application.exit import (
     planned_exits as planned_exits_service,
     exit_bars as exit_bars_service,
@@ -787,7 +788,11 @@ def run_cycle(
         )
 
     snap = portfolio.snapshot(broker, lambda s: prices.get(s, 0.0), starting_equity, fx_rate_of=_rate)
-    gross = sum(abs(h.market_value) for h in snap.holdings)
+    # Folds must not crash on MissingFxRate; a live position without FX
+    # fail-closes to +inf so new opens cannot understate gross.
+    gross = risk_capacity.gross_exposure(
+        broker, prices, rate_of=snapshot.try_rate_for_symbol
+    )
     portfolio_fee_estimator = _build_portfolio_fee_estimator(commission_model)
 
     active_families = family_regime.families_for_universe(tradable_symbols)
@@ -1021,6 +1026,9 @@ def run_cycle(
         )
     )
     armed_resolution = prepared_scope.armed_resolution
+    if sched is not None:
+        for watch_id in armed_resolution.consume_watch_ids:
+            sched.remove_indicator_watch(watch_id)
     for progress in armed_resolution.progress_logs:
         _log_cycle_progress(progress.message, *progress.args)
     for event in armed_resolution.events:

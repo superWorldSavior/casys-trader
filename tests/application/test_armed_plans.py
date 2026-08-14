@@ -76,6 +76,7 @@ def test_resolve_armed_plan_triggers_builds_decision_and_resolved_event() -> Non
     assert result.events[0].payload["plan_id"] == "SPY:abc123"
     assert result.events[0].payload["trace"]["hard_stop"]["resolved_price"] == pytest.approx(97.0)
     assert result.events[0].payload["exit_plan"]["hard_stop"]["price"] == pytest.approx(97.0)
+    assert result.consume_watch_ids == []
 
 
 def test_resolve_armed_plan_triggers_marks_conflicts_for_planner_review() -> None:
@@ -106,6 +107,7 @@ def test_resolve_armed_plan_triggers_marks_conflicts_for_planner_review() -> Non
         "[armed_plan] %s conflit (%d plans d\u00e9clench\u00e9s) \u2014 r\u00e9veil planificateur"
     )
     assert result.progress_logs[0].args == ("SPY", 2)
+    assert result.consume_watch_ids == ["SPY:abc123", "SPY:def456"]
 
 
 def test_resolve_armed_plan_triggers_records_stale_cancelled_plan() -> None:
@@ -136,3 +138,27 @@ def test_resolve_armed_plan_triggers_records_stale_cancelled_plan() -> None:
             },
         )
     ]
+    assert result.consume_watch_ids == []
+
+
+class _OpenPosition:
+    quantity = 5.0
+
+
+def test_resolve_armed_plan_triggers_consumes_watch_on_position_exists() -> None:
+    trigger = _armed_trigger()
+
+    result = resolve_armed_plan_triggers(
+        indicator_triggers=[trigger],
+        symbols_to_decide=["SPY"],
+        prices={"SPY": 100.0},
+        stale_market_data={},
+        positions={"SPY": _OpenPosition()},
+        cockpit={},
+        tradable_bars_by_symbol={},
+        reference_volatility_for_symbol=lambda *args, **kwargs: None,
+    )
+
+    assert result.decisions == {}
+    assert trigger["armed_cancelled"] == "armed_plan_cancelled:position_exists"
+    assert result.consume_watch_ids == ["SPY:abc123"]
