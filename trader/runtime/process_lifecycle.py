@@ -73,11 +73,20 @@ class ProcessLifecycle:
             work_object_key=work_object_key,
         )
         open_instance = latest is not None and latest.event_type != "instance_closed"
+        history: list[ProcessEvent] = []
         recovery_required = False
         prior_effect_refs: tuple[dict[str, Any], ...] = ()
         if open_instance:
-            self._validate_open_version(latest)
             history = self._store.read_instance(latest.process_instance_id)
+            try:
+                self._validate_open_version(latest)
+            except OpenProcessVersionMismatch:
+                if not self._can_supersede_without_effect(latest, history):
+                    raise
+                self._close_superseded_instance(latest)
+                open_instance = False
+
+        if open_instance:
             unresolved = next(
                 (
                     event
@@ -97,6 +106,9 @@ class ProcessLifecycle:
             recovery_required = unresolved is not None and bool(unresolved.effect_refs)
             if unresolved is not None:
                 prior_effect_refs = unresolved.effect_refs
+
+        if open_instance:
+            assert latest is not None
             identity = ProcessIdentity(
                 process_instance_id=latest.process_instance_id,
                 attempt_id=new_attempt_id(),
@@ -251,6 +263,46 @@ class ProcessLifecycle:
                 effect_refs=effect_refs,
                 version_pins=context.version_pins,
             )
+        )
+
+    def _can_supersede_without_effect(
+        self,
+        latest: ProcessEvent,
+        history: Sequence[ProcessEvent],
+    ) -> bool:
+        """Allow a new bundle only after explicitly cancelling inert old work."""
+
+        if not _bundle_sha256(latest.version_pins) or not _bundle_sha256(self._version_pins):
+            return False
+        return bool(history) and all(
+            event.terminal_result is None
+            and event.outcome_code != "recovery_required"
+            and event.effect_status in {None, "not_applied", "not_applied_dry_run"}
+            and not event.effect_refs
+            for event in history
+        )
+
+    def _close_superseded_instance(self, latest: ProcessEvent) -> None:
+        """Record an explicit terminal event before admitting the new bundle."""
+
+        context = ProcessAttemptContext(
+            identity=ProcessIdentity(
+                process_instance_id=latest.process_instance_id,
+                attempt_id=latest.attempt_id or new_attempt_id(),
+                runtime_run_id=self._runtime_run_id,
+            ),
+            process_type=latest.process_type,
+            process_version=latest.process_version,
+            work_object_type=latest.work_object_type,
+            work_object_key=latest.work_object_key,
+            version_pins=dict(latest.version_pins or {}),
+        )
+        self._append(
+            context,
+            event_type="instance_closed",
+            terminal_result="cancelled",
+            outcome_code="governance_version_superseded",
+            effect_status="not_applied",
         )
 
 

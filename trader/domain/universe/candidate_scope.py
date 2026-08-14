@@ -92,19 +92,51 @@ def merge_news_challengers(
     current: list[dict[str, Any]],
     retained: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Keep current selection order and append non-refreshed retained symbols."""
+    """Keep one fresh-news challenger per symbol without regressing evidence.
+
+    The scout deliberately skips references already injected into the latest
+    macro brief.  When the bounded macro catalog causes it to fall back to an
+    older article for the same symbol, that fallback must not replace a newer
+    still-valid challenger retained from the prior scope.  Otherwise only the
+    ``source_refs`` churn, but it still produces a new candidate scope and an
+    unnecessary macro-analysis run.
+    """
 
     merged: list[dict[str, Any]] = []
-    seen: set[str] = set()
+    index_by_symbol: dict[str, int] = {}
     for challenger in [*current, *retained]:
         if not isinstance(challenger, dict):
             continue
         symbol = str(challenger.get("symbol") or "").strip()
-        if not symbol or symbol in seen:
+        if not symbol:
             continue
-        seen.add(symbol)
-        merged.append(challenger)
+        existing_index = index_by_symbol.get(symbol)
+        if existing_index is None:
+            index_by_symbol[symbol] = len(merged)
+            merged.append(challenger)
+            continue
+        if _is_newer_challenger(challenger, merged[existing_index]):
+            merged[existing_index] = challenger
     return merged
+
+
+def _is_newer_challenger(candidate: dict[str, Any], existing: dict[str, Any]) -> bool:
+    """Return whether ``candidate`` has strictly newer usable news evidence.
+
+    Unknown timestamps retain the historical first-wins behavior.  This keeps
+    malformed advisory payloads from displacing a valid retained challenger.
+    """
+
+    candidate_at = _challenger_latest_published_at(candidate)
+    existing_at = _challenger_latest_published_at(existing)
+    return candidate_at is not None and existing_at is not None and candidate_at > existing_at
+
+
+def _challenger_latest_published_at(challenger: dict[str, Any]) -> datetime | None:
+    fresh_news = challenger.get("fresh_news")
+    if not isinstance(fresh_news, dict):
+        return None
+    return _parse_utc_datetime(fresh_news.get("latest_published_at"))
 
 
 def retained_news_challengers(

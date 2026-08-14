@@ -213,9 +213,45 @@ def test_incomplete_dry_run_receipt_stays_open_without_claiming_unknown_effect(
     assert latest.effect_status == "not_applied_dry_run"
 
 
-def test_open_instance_cannot_silently_change_governance_bundle(tmp_path: Path) -> None:
+def test_no_effect_open_instance_is_explicitly_superseded_on_bundle_change(tmp_path: Path) -> None:
     lifecycle, store = _lifecycle(tmp_path, bundle="bundle-1")
-    lifecycle.admit_or_resume("AAPL")
+    first = lifecycle.admit_or_resume("AAPL")
+    lifecycle.defer(first, outcome_code="queue_decide_deferred")
+    changed, _ = _lifecycle(
+        tmp_path,
+        bundle="bundle-2",
+        runtime_run_id="runtime-2",
+        store=store,
+    )
+
+    admitted = changed.admit_or_resume("AAPL")
+
+    assert admitted.identity.process_instance_id != first.identity.process_instance_id
+    old_events = store.read_instance(first.identity.process_instance_id)
+    assert old_events[-1].event_type == "instance_closed"
+    assert old_events[-1].terminal_result == "cancelled"
+    assert old_events[-1].outcome_code == "governance_version_superseded"
+    assert old_events[-1].effect_status == "not_applied"
+    assert old_events[-1].effect_refs == ()
+    assert old_events[-1].version_pins == {"bundle_sha256": "bundle-1"}
+    new_events = store.read_instance(admitted.identity.process_instance_id)
+    assert [event.event_type for event in new_events] == ["instance_admitted"]
+    assert new_events[0].version_pins == {"bundle_sha256": "bundle-2"}
+
+
+def test_effectful_open_instance_still_rejects_bundle_change(tmp_path: Path) -> None:
+    lifecycle, store = _lifecycle(tmp_path, bundle="bundle-1")
+    first = lifecycle.admit_or_resume("AAPL")
+    lifecycle.finish_from_decision(
+        first,
+        _decision(
+            first,
+            reason="queue_execute_timeout",
+            effect_status="unknown",
+            queue_task_id=42,
+        ),
+        closure_evidence_complete=False,
+    )
     changed, _ = _lifecycle(
         tmp_path,
         bundle="bundle-2",

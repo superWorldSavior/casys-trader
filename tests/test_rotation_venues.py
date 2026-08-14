@@ -624,7 +624,7 @@ def test_tick_keeps_due_venue_close_scope_quantitative(tmp_path):
     assert load_venue_state(state_dir)["venues"]["US"]["scope_phase"] == "close"
 
 
-def test_tick_preopen_creates_stable_child_with_overnight_news_challenger(tmp_path):
+def test_tick_preopen_keeps_newer_retained_challenger_when_scout_falls_back_to_older_ref(tmp_path):
     config_dir = tmp_path / "cfg"
     state_dir = tmp_path / "state"
     config_dir.mkdir()
@@ -661,15 +661,27 @@ def test_tick_preopen_creates_stable_child_with_overnight_news_challenger(tmp_pa
     def news_challenger_fn(**kwargs):
         calls.append(kwargs)
         if len(calls) > 1:
-            # Le scout ne réémet pas les refs déjà vues par un brief. Le scope
-            # doit néanmoins retenir leur évidence jusqu'au TTL, même dans le top 40.
-            return []
+            # Le catalogue macro borné peut masquer la ref la plus récente et
+            # faire réapparaître une source plus vieille du même symbole. Cela
+            # ne doit pas créer un nouveau scope ni un nouveau brief macro.
+            return [
+                {
+                    "symbol": symbols[40],
+                    "candidate_source": "fresh_news",
+                    "fresh_news": {
+                        "source_refs": ["overnight-us-40-older"],
+                        "latest_published_at": "2026-06-16T11:00:00+00:00",
+                        "valid_until": "2026-06-16T15:00:00+00:00",
+                    },
+                }
+            ]
         return [
             {
                 "symbol": symbols[40],
                 "candidate_source": "fresh_news",
                 "fresh_news": {
-                    "source_refs": ["overnight-us-40"],
+                    "source_refs": ["overnight-us-40-newer"],
+                    "latest_published_at": "2026-06-16T12:00:00+00:00",
                     "valid_until": "2026-06-16T15:00:00+00:00",
                 },
             },
@@ -678,6 +690,7 @@ def test_tick_preopen_creates_stable_child_with_overnight_news_challenger(tmp_pa
                 "candidate_source": "fresh_news",
                 "fresh_news": {
                     "source_refs": ["overnight-us-00"],
+                    "latest_published_at": "2026-06-16T12:00:00+00:00",
                     "valid_until": "2026-06-16T15:00:00+00:00",
                 },
             },
@@ -720,12 +733,15 @@ def test_tick_preopen_creates_stable_child_with_overnight_news_challenger(tmp_pa
     assert len(first_scope["candidates"]) == 41
     assert first_scope["candidates"][-1]["symbol"] == symbols[40]
     assert first_scope["candidates"][-1]["fresh_news"]["source_refs"] == [
-        "overnight-us-40"
+        "overnight-us-40-newer"
     ]
     assert first_scope["candidates"][0]["fresh_news"]["source_refs"] == [
         "overnight-us-00"
     ]
     assert first_scope["candidate_scope_id"] == second_scope["candidate_scope_id"]
+    assert second_scope["candidates"][-1]["fresh_news"]["source_refs"] == [
+        "overnight-us-40-newer"
+    ]
     assert first_scope["dwell"] == second_scope["dwell"]
 
 
