@@ -1013,6 +1013,7 @@ def run_cycle(
             now=now,
             state_key=str(STATE_DIR),
             last_llm_at=process_state.last_llm_at,
+            last_wake_reasons=process_state.last_wake_reasons,
             regime_families=base_context["regime_families"],
             active_families=active_families,
             wake_source=sched,
@@ -1321,6 +1322,9 @@ def run_cycle(
         decision = decisions_by_symbol.get(sym)
         if decision is not None and decision_entries.counts_as_llm_review(decision):
             process_state.last_llm_at[(str(STATE_DIR), sym)] = now
+            process_state.last_wake_reasons[(str(STATE_DIR), sym)] = (
+                quiet_gate.persistent_reasons.get(sym, ())
+            )
 
     report["model_calls_used"] = model_calls_used
     if process_pilot is not None:

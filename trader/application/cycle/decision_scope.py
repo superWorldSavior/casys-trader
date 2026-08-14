@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Mapping, Protocol
+from typing import Mapping, Protocol, Sequence
 
 from trader.application.cycle import infra_holds
 from trader.application.exit import armed_plans
@@ -40,6 +40,7 @@ class QuietGate(Protocol):
         triggers_by_symbol: Mapping[str, list],
         held_symbols: set[str],
         runtime_data_source_by_sym: Mapping[str, object],
+        last_wake_reasons: Mapping[tuple[str, str], Sequence[str]] | None = None,
     ) -> infra_holds.QuietGateResult: ...
 
 
@@ -66,6 +67,7 @@ class DecisionScopeRequest:
     runtime_interval: str
     daily_interval: str
     reference_volatility_for_symbol: armed_plans.ReferenceVolatilityProvider
+    last_wake_reasons: Mapping[tuple[str, str], Sequence[str]] | None = None
 
 
 @dataclass(frozen=True)
@@ -122,6 +124,7 @@ def prepare_decision_scope(
         now=request.now,
         state_key=request.state_key,
         last_llm_at=request.last_llm_at,
+        last_wake_reasons=request.last_wake_reasons,
         cockpit=request.cockpit,
         regime_families=request.regime_families,
         active_families=request.active_families,

@@ -111,6 +111,28 @@ def parse_contract(raw: str | None) -> str:
     return contract
 
 
+def parse_batch_size(raw: object, *, n_cases: int) -> int:
+    """Cases per model call. Default 1. ``0`` = all cases in one prompt (legacy)."""
+    if raw is None:
+        return 1
+    try:
+        size = int(raw)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"batch_size must be an int, got {raw!r}") from exc
+    if size == 0:
+        return max(1, int(n_cases) or 1)
+    if size < 0:
+        raise ValueError(f"batch_size must be >= 0, got {size}")
+    return size
+
+
+def _case_batches(cases: list[dict], batch_size: int) -> list[list[dict]]:
+    size = parse_batch_size(batch_size, n_cases=len(cases))
+    if not cases:
+        return []
+    return [cases[index : index + size] for index in range(0, len(cases), size)]
+
+
 def _audit_for(row: dict, horizon: str) -> dict | None:
     audits = row.get("audits")
     if not isinstance(audits, dict):
@@ -623,10 +645,14 @@ def score_model_reviews(cases: list[dict], response_text: str, *, threshold_pct:
             }
         )
 
+    return rows, _summary_from_counts(counts, confidences)
+
+
+def _summary_from_counts(counts: dict[str, int], confidences: list[float]) -> dict:
     valid = counts["parsed"] - counts["invalid"]
     scored = counts["good"] + counts["bad"] + counts["neutral"] + counts["missed"]
     denominator = max(1, scored)
-    summary = {
+    return {
         **counts,
         "scored": scored,
         "coverage_pct": round(scored / max(1, valid) * 100.0, 2),
@@ -636,7 +662,32 @@ def score_model_reviews(cases: list[dict], response_text: str, *, threshold_pct:
         "same_as_original_pct": round(counts["same_as_original"] / max(1, counts["parsed"]) * 100.0, 2),
         "avg_confidence": (sum(confidences) / len(confidences)) if confidences else None,
     }
-    return rows, summary
+
+
+def _merge_scored_reviews(chunk_results: list[tuple[list[dict], dict]]) -> tuple[list[dict], dict]:
+    reviews: list[dict] = []
+    counts = {
+        "total": 0,
+        "parsed": 0,
+        "missing": 0,
+        "invalid": 0,
+        "good": 0,
+        "bad": 0,
+        "neutral": 0,
+        "missed": 0,
+        "unknown": 0,
+        "same_as_original": 0,
+    }
+    confidences: list[float] = []
+    for chunk_reviews, chunk_summary in chunk_results:
+        reviews.extend(chunk_reviews)
+        for key in counts:
+            counts[key] += int(chunk_summary.get(key) or 0)
+        for review in chunk_reviews:
+            confidence = _finite_float(review.get("confidence"))
+            if confidence is not None:
+                confidences.append(confidence)
+    return reviews, _summary_from_counts(counts, confidences)
 
 
 def _ollama_backend(spec: ModelSpec) -> llm.OpenAICompatibleBackend | ModelBenchFailure:
@@ -713,6 +764,7 @@ def run_bench(
     symbol: str | None = None,
     include_original: bool = True,
     contract: str = "reviews",
+    batch_size: int | None = None,
     context_history: BenchHistory | None = None,
     context_symbols: list[str] | None = None,
     context_interval: str = "15m",
@@ -742,39 +794,37 @@ def run_bench(
         cockpit_window=cockpit_window,
         context_metadata=context_metadata,
     )
-    prompt = build_prompt(cases, horizon=horizon, threshold_pct=threshold_pct, contract=contract)
+    batches = _case_batches(cases, parse_batch_size(batch_size, n_cases=len(cases)))
+    first_prompt = (
+        build_prompt(batches[0], horizon=horizon, threshold_pct=threshold_pct, contract=contract)
+        if batches
+        else build_prompt([], horizon=horizon, threshold_pct=threshold_pct, contract=contract)
+    )
     results = []
     for spec in models:
-        completion = complete(spec, prompt, timeout_s)
-        model_row: dict[str, Any] = {
-            "provider": completion.provider,
-            "model": completion.model,
-            "latency_s": completion.latency_s,
-        }
-        if isinstance(completion, ModelBenchFailure):
-            model_row["failure"] = {
-                "code": completion.code,
-                "message": completion.message,
-            }
-            model_row["summary"] = {
-                "total": len(cases),
-                "parsed": 0,
-                "missing": len(cases),
-                "invalid": 0,
-                "good": 0,
-                "bad": 0,
-                "neutral": 0,
-                "missed": 0,
-            }
-            model_row["reviews"] = []
-        else:
+        chunk_scores: list[tuple[list[dict], dict]] = []
+        latencies: list[float] = []
+        failure: dict[str, str] | None = None
+        raw_text = ""
+        for chunk in batches or [[]]:
+            prompt = build_prompt(chunk, horizon=horizon, threshold_pct=threshold_pct, contract=contract)
+            completion = complete(spec, prompt, timeout_s)
+            latencies.append(float(completion.latency_s))
+            if isinstance(completion, ModelBenchFailure):
+                failure = {"code": completion.code, "message": completion.message}
+                break
             try:
-                reviews, summary = score_model_reviews(cases, completion.text, threshold_pct=threshold_pct)
-                model_row["summary"] = summary
-                model_row["reviews"] = reviews
+                chunk_scores.append(
+                    score_model_reviews(chunk, completion.text, threshold_pct=threshold_pct)
+                )
             except Exception as exc:  # noqa: BLE001
-                model_row["failure"] = {"code": "parse_failed", "message": str(exc)}
-                model_row["summary"] = {
+                failure = {"code": "parse_failed", "message": str(exc)}
+                raw_text = completion.text[:2000]
+                break
+        reviews, summary = _merge_scored_reviews(chunk_scores) if chunk_scores else (
+            [],
+            _summary_from_counts(
+                {
                     "total": len(cases),
                     "parsed": 0,
                     "missing": len(cases),
@@ -783,9 +833,27 @@ def run_bench(
                     "bad": 0,
                     "neutral": 0,
                     "missed": 0,
-                }
-                model_row["raw_text"] = completion.text[:2000]
-                model_row["reviews"] = []
+                    "unknown": 0,
+                    "same_as_original": 0,
+                },
+                [],
+            ),
+        )
+        if failure is not None:
+            summary["total"] = len(cases)
+            summary["missing"] = max(summary["missing"], len(cases) - summary["parsed"])
+        model_row: dict[str, Any] = {
+            "provider": spec.provider,
+            "model": spec.model,
+            "latency_s": round(sum(latencies), 3),
+            "n_calls": len(latencies),
+            "summary": summary,
+            "reviews": reviews,
+        }
+        if failure is not None:
+            model_row["failure"] = failure
+            if raw_text:
+                model_row["raw_text"] = raw_text
         results.append(model_row)
 
     return {
@@ -796,9 +864,11 @@ def run_bench(
         "verdicts": sorted(verdicts),
         "include_original": include_original,
         "contract": contract,
+        "batch_size": parse_batch_size(batch_size, n_cases=len(cases)),
+        "n_calls": len(batches),
         "context_reconstruction": context_reconstruction,
         "cases": cases,
-        "prompt": prompt,
+        "prompt": first_prompt,
         "models": results,
         **audit_freshness(audit_payload, now=now),
     }
@@ -815,6 +885,7 @@ def dry_run_payload(
     symbol: str | None = None,
     include_original: bool = True,
     contract: str = "reviews",
+    batch_size: int | None = None,
     context_history: Any | None = None,
     context_symbols: list[str] | None = None,
     context_interval: str = "15m",
@@ -843,6 +914,9 @@ def dry_run_payload(
         cockpit_window=cockpit_window,
         context_metadata=context_metadata,
     )
+    resolved_batch = parse_batch_size(batch_size, n_cases=len(cases))
+    batches = _case_batches(cases, resolved_batch)
+    first = batches[0] if batches else []
     return {
         "dry_run": True,
         "horizon": horizon,
@@ -852,10 +926,12 @@ def dry_run_payload(
         "verdicts": sorted(verdicts),
         "include_original": include_original,
         "contract": contract,
+        "batch_size": resolved_batch,
+        "n_calls": len(batches),
         "context_reconstruction": context_reconstruction,
         "models": [{"provider": spec.provider, "model": spec.model} for spec in models],
         "cases": cases,
-        "prompt": build_prompt(cases, horizon=horizon, threshold_pct=threshold_pct, contract=contract),
+        "prompt": build_prompt(first, horizon=horizon, threshold_pct=threshold_pct, contract=contract),
         **audit_freshness(audit_payload, now=now),
     }
 

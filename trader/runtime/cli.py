@@ -802,6 +802,7 @@ def _cmd_decisions_bench(args: argparse.Namespace) -> int:
             symbol=args.symbol,
             include_original=include_original,
             contract=contract,
+            batch_size=args.batch_size,
             **context_kwargs,
         )
     else:
@@ -816,6 +817,7 @@ def _cmd_decisions_bench(args: argparse.Namespace) -> int:
             symbol=args.symbol,
             include_original=include_original,
             contract=contract,
+            batch_size=args.batch_size,
             **context_kwargs,
         )
 
@@ -1092,6 +1094,12 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("reviews", "production"),
         default="reviews",
         help="reviews = avis BUY/SELL/HOLD (défaut sûr); production = contrat live Pine-like",
+    )
+    decisions_bench.add_argument(
+        "--batch-size",
+        type=int,
+        default=1,
+        help="cas par appel modèle (défaut 1; 0 = un seul prompt pour tout le lot)",
     )
     decisions_bench.add_argument("--hide-original", action="store_true")
     decisions_bench.add_argument("--reconstruct-context", action="store_true")

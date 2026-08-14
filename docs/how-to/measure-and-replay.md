@@ -75,6 +75,9 @@ mesurer le contrat planner live (`strategy_entry` / `calls`), passer
 casys-trader decisions bench --horizon 4h --limit 10 --dry-run --contract production
 ```
 
+`--batch-size` vaut **1** : un appel modèle par décision. L'ancien défaut
+(tout le lot dans un seul prompt) se redemande avec `--batch-size 0`.
+
 Le score interne reste BUY/SELL/HOLD. Mapping production : `strategy_entry`
 long→BUY, short→SELL ; `strategy_close`→SELL (exit, y compris couverture) ;
 `calls: []` / `set_next_wake` / `propose_indicator_watch` WAKE→HOLD ;

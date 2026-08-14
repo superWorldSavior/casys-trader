@@ -239,9 +239,11 @@ def test_cycle_process_state_uses_independent_mutable_defaults() -> None:
     second = daemon.CycleProcessState()
 
     first.last_llm_at[("/state", "SPY")] = "seen"
+    first.last_wake_reasons[("/state", "SPY")] = ("regime",)
     first.last_gross_rejections["/state"] = {"symbols": ["SPY"]}
 
     assert second.last_llm_at == {}
+    assert second.last_wake_reasons == {}
     assert second.last_gross_rejections == {}
 
 

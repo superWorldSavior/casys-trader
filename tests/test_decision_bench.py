@@ -584,10 +584,74 @@ def test_run_bench_score_une_reponse_production() -> None:
     assert payload["models"][0]["reviews"][0]["candidate_verdict"] == "good"
 
 
+def test_parse_batch_size_default_is_one_call_per_case() -> None:
+    assert decision_bench.parse_batch_size(None, n_cases=100) == 1
+    assert decision_bench.parse_batch_size(1, n_cases=100) == 1
+    assert decision_bench.parse_batch_size(0, n_cases=100) == 100
+
+
+def test_run_bench_batch_size_one_fait_un_appel_par_cas() -> None:
+    audit = {
+        "threshold_pct": 0.5,
+        "horizons": ["4h"],
+        "rows": [
+            _row("d1", action="HOLD", future_return_pct=1.0, verdict="missed"),
+            _row("d2", action="BUY", future_return_pct=-1.0, verdict="bad"),
+        ],
+    }
+    prompts: list[str] = []
+
+    def fake_complete(model, prompt, timeout_s):
+        prompts.append(prompt)
+        decision_id = "d1" if "d1" in prompt else "d2"
+        action = "HOLD" if decision_id == "d1" else "SELL"
+        return decision_bench.ModelCompletion(
+            provider=model.provider,
+            model=model.model,
+            text=json.dumps(
+                {
+                    "decisions": [
+                        {
+                            "decision_id": decision_id,
+                            "symbol": "SPY",
+                            "confidence": 0.5,
+                            "rationale": "un cas",
+                            "opportunity_side": "long",
+                            "calls": [],
+                        }
+                    ]
+                }
+            ),
+            latency_s=0.01,
+        )
+
+    payload = decision_bench.run_bench(
+        audit,
+        models=[decision_bench.ModelSpec(provider="acpx", model="m")],
+        horizon="4h",
+        limit=2,
+        verdicts={"missed", "bad"},
+        timeout_s=5,
+        contract="production",
+        batch_size=1,
+        complete=fake_complete,
+        now=datetime(2026, 6, 13, tzinfo=timezone.utc),
+    )
+
+    assert payload["batch_size"] == 1
+    assert payload["n_calls"] == 2
+    assert len(prompts) == 2
+    assert "d1" in prompts[0] and "d2" not in prompts[0]
+    assert "d2" in prompts[1] and "d1" not in prompts[1]
+    assert payload["models"][0]["n_calls"] == 2
+    assert len(payload["models"][0]["reviews"]) == 2
+
+
 def test_cli_decisions_bench_contract_default_reviews() -> None:
     args = cli.build_parser().parse_args(["decisions", "bench"])
 
     assert args.contract == "reviews"
+    assert args.batch_size == 1
 
 
 def _write_bench_audit(state_dir, *, cycle_ts: str = "2026-06-12T01:00:00+00:00") -> None:

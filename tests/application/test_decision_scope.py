@@ -102,6 +102,11 @@ def test_prepare_decision_scope_composes_armed_and_quiet_gates_before_bar_scope(
             kept_symbols=["FRESH", "STALE", "HELD"],
             gated_symbols=["QUIET"],
             entries=[{"symbol": "QUIET", "reason": "quiet_gate"}],
+            reasons={
+                "FRESH": "periodic_review",
+                "STALE": "periodic_review",
+                "HELD": "position",
+            },
         )
 
     request = _request(
@@ -159,6 +164,11 @@ def test_prepare_decision_scope_composes_armed_and_quiet_gates_before_bar_scope(
     assert result.decidable == ["FRESH", "STALE", "HELD"]
     assert result.armed_resolution is armed_resolution
     assert result.quiet_gate.gated_symbols == ["QUIET"]
+    assert result.quiet_gate.reasons == {
+        "FRESH": "periodic_review",
+        "STALE": "periodic_review",
+        "HELD": "position",
+    }
     assert result.analysis_bars_by_symbol == {
         "FRESH": ["fresh-runtime"],
         "ARMED": ["armed-runtime"],
@@ -168,3 +178,26 @@ def test_prepare_decision_scope_composes_armed_and_quiet_gates_before_bar_scope(
     }
     assert result.analysis_timeframe_by_symbol["ARMED"] == "15m"
     assert result.analysis_timeframe_by_symbol["STALE"] == "1d"
+
+
+def test_prepare_decision_scope_forwards_last_wake_reasons_to_quiet_gate() -> None:
+    captured: dict[str, object] = {}
+    last_wake = {("/state", "FRESH"): ("regime",)}
+
+    def quiet_gate(**kwargs):
+        captured["last_wake_reasons"] = kwargs.get("last_wake_reasons")
+        return QuietGateResult(
+            kept_symbols=["FRESH"],
+            gated_symbols=[],
+            entries=[],
+            reasons={"FRESH": "regime"},
+            persistent_reasons={"FRESH": ("regime",)},
+        )
+
+    result = prepare_decision_scope(
+        _request(last_wake_reasons=last_wake),
+        quiet_gate=quiet_gate,
+    )
+
+    assert captured["last_wake_reasons"] is last_wake
+    assert result.decidable == ["FRESH"]

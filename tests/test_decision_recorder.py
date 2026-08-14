@@ -315,14 +315,10 @@ def test_decision_recorder_captures_real_llm_rationale_without_explicit_learning
 
     recorder.record(entry)
 
-    assert len(learnings.rows) == 1
-    recorded = learnings.rows[0]
-    assert recorded["note"] == "Le momentum reste insuffisant pour une entrée propre."
-    assert recorded["rationale"] == "Le momentum reste insuffisant pour une entrée propre."
-    assert recorded["decision_id"] == "2026-07-02T10:00:00+00:00|0|SPY"
-    assert "learning_annotation" not in recorded
-    assert entry["learning_recorded"] == {"appended": True, "note": recorded["note"]}
-    assert ingests == ["ingested"]
+    # D6: HOLD LLM authentique sans opportunity_side ni annotation → pas d'ingest.
+    assert learnings.rows == []
+    assert "learning_recorded" not in entry
+    assert ingests == []
 
 
 def test_decision_recorder_keeps_record_learning_as_annotation_of_llm_rationale(tmp_path) -> None:
@@ -389,3 +385,87 @@ def test_decision_recorder_excludes_non_llm_or_synthetic_rationales(tmp_path, up
     recorder.record(entry)
 
     assert learnings.rows == []
+
+
+def test_decision_recorder_ingests_hold_llm_with_opportunity_side_long(tmp_path) -> None:
+    learnings = FakeLearnings()
+    recorder = _learning_recorder(tmp_path, learnings=learnings)
+    entry = {
+        "symbol": "SPY",
+        "action": "HOLD",
+        "qty": 0.0,
+        "confidence": 0.52,
+        "rationale": "Thèse long refusée : le pullback n'est pas assez profond.",
+        "intent": "HOLD",
+        "executed": False,
+        "reason": "hold",
+        "decision_source": "llm",
+        "model_called": True,
+        "llm_error": None,
+        "opportunity_side": "long",
+    }
+
+    recorder.record(entry)
+
+    assert len(learnings.rows) == 1
+    recorded = learnings.rows[0]
+    assert recorded["note"] == "Thèse long refusée : le pullback n'est pas assez profond."
+    assert recorded["rationale"] == "Thèse long refusée : le pullback n'est pas assez profond."
+    assert recorded["decision_id"] == "2026-07-02T10:00:00+00:00|0|SPY"
+    assert "learning_annotation" not in recorded
+    assert entry["learning_recorded"] == {"appended": True, "note": recorded["note"]}
+
+
+def test_decision_recorder_ingests_hold_llm_with_explicit_learning(tmp_path) -> None:
+    learnings = FakeLearnings()
+    recorder = _learning_recorder(tmp_path, learnings=learnings)
+    entry = {
+        "symbol": "SPY",
+        "action": "HOLD",
+        "qty": 0.0,
+        "confidence": 0.52,
+        "rationale": "Le momentum reste insuffisant pour une entrée propre.",
+        "intent": "HOLD",
+        "executed": False,
+        "reason": "hold",
+        "decision_source": "llm",
+        "model_called": True,
+        "llm_error": None,
+        "learning": "Attendre une clôture au-dessus de la résistance.",
+    }
+
+    recorder.record(entry)
+
+    assert len(learnings.rows) == 1
+    assert learnings.rows[0]["note"] == (
+        "Le momentum reste insuffisant pour une entrée propre.\n"
+        "[annotation explicite] Attendre une clôture au-dessus de la résistance."
+    )
+
+
+def test_decision_recorder_ingests_buy_llm_without_opportunity_side(tmp_path) -> None:
+    learnings = FakeLearnings()
+    recorder = _learning_recorder(tmp_path, learnings=learnings)
+    entry = {
+        "symbol": "SPY",
+        "action": "BUY",
+        "qty": 1.0,
+        "confidence": 0.71,
+        "rationale": "Cassure propre au-dessus de la résistance.",
+        "intent": "OPEN_LONG",
+        "executed": True,
+        "reason": "breakout",
+        "decision_source": "llm",
+        "model_called": True,
+        "llm_error": None,
+    }
+
+    recorder.record(entry)
+
+    assert len(learnings.rows) == 1
+    recorded = learnings.rows[0]
+    assert recorded["note"] == "Cassure propre au-dessus de la résistance."
+    assert recorded["rationale"] == "Cassure propre au-dessus de la résistance."
+    assert recorded["action"] == "BUY"
+    assert recorded["intent"] == "OPEN_LONG"
+    assert "learning_annotation" not in recorded

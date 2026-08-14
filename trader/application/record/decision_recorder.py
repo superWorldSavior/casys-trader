@@ -49,6 +49,21 @@ def _text(value: object) -> str | None:
     return value or None
 
 
+_TRADE_ACTIONS = frozenset(
+    {
+        "BUY",
+        "SELL",
+        "OPEN_LONG",
+        "OPEN_SHORT",
+        "FLIP",
+        "SCALE_IN",
+        "CLOSE",
+        "REDUCE",
+    }
+)
+_REFUSED_THESIS_SIDES = frozenset({"long", "short"})
+
+
 def _is_llm_rationale_candidate(decision_entry: DecisionEntry) -> bool:
     """Gate automatic capture to actual, usable LLM decisions only."""
     return (
@@ -61,6 +76,22 @@ def _is_llm_rationale_candidate(decision_entry: DecisionEntry) -> bool:
     )
 
 
+def _refused_opportunity_side(decision_entry: DecisionEntry) -> bool:
+    raw = decision_entry.get("opportunity_side")
+    if not isinstance(raw, str):
+        return False
+    return raw.strip().lower() in _REFUSED_THESIS_SIDES
+
+
+def _is_undirected_hold(decision_entry: DecisionEntry) -> bool:
+    """True for a HOLD that is not also a trade action/intent."""
+    action = decision_entry.get("action")
+    intent = decision_entry.get("intent")
+    if action in _TRADE_ACTIONS or intent in _TRADE_ACTIONS:
+        return False
+    return action == "HOLD" or intent == "HOLD"
+
+
 def candidate_learning_note(
     decision_entry: DecisionEntry,
 ) -> tuple[str | None, str | None, str | None]:
@@ -69,10 +100,18 @@ def candidate_learning_note(
     A real LLM rationale is the canonical experience.  An optional explicit
     ``record_learning`` annotation is retained in the same note because the
     derived store keys notes by ``decision_id``.
+
+    D6: ingesting every authentic LLM HOLD feeds an abstention spiral. A HOLD
+    is captured only when it names a refused thesis (``opportunity_side``
+    long/short) or carries an explicit learning annotation.
     """
     annotation = _text(decision_entry.get("learning"))
     rationale = _text(decision_entry.get("rationale"))
     if not _is_llm_rationale_candidate(decision_entry):
+        return None, None, None
+    if _is_undirected_hold(decision_entry) and not annotation and not _refused_opportunity_side(
+        decision_entry
+    ):
         return None, None, None
     if annotation and annotation != rationale:
         return f"{rationale}\n[annotation explicite] {annotation}", rationale, annotation

@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Mapping, Protocol
+from typing import Any, Mapping, Protocol, Sequence
 
 from trader.application.cycle.schedule import stale_backoff_wake_minutes
 from trader.domain.planning import relevance_gate
@@ -23,6 +23,8 @@ class QuietGateResult:
     kept_symbols: list[str]
     gated_symbols: list[str]
     entries: list[dict]
+    reasons: dict[str, str]
+    persistent_reasons: dict[str, tuple[str, ...]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -52,31 +54,46 @@ def quiet_gate_decisions(
     triggers_by_symbol: Mapping[str, list],
     held_symbols: set[str],
     runtime_data_source_by_sym: Mapping[str, object],
+    last_wake_reasons: Mapping[tuple[str, str], Sequence[str]] | None = None,
 ) -> QuietGateResult:
     """Split decidable symbols into LLM-needed and quiet infra-HOLD entries."""
     activity = relevance_gate.cockpit_activity(cockpit)
     strong_families = {family for family, bias in regime_families.items() if (bias.get("frac") or 0.0) >= 0.70}
     family_of = {member: family for family, members in active_families.items() for member in members}
     agent_wakes = wake_source.symbols_with_wake() if wake_source is not None else set()
+    wake_reasons = last_wake_reasons or {}
 
     gated_symbols: list[str] = []
     kept_symbols: list[str] = []
     entries: list[dict] = []
+    reasons: dict[str, str] = {}
+    persistent_reasons: dict[str, tuple[str, ...]] = {}
     for symbol in symbols:
-        last_seen = last_llm_at.get((state_key, symbol))
+        key = (state_key, symbol)
+        last_seen = last_llm_at.get(key)
         hours = None if last_seen is None else (now - last_seen).total_seconds() / 3600.0
         activity_for_symbol = activity.get(symbol) or {}
-        needed, _gate_reason = relevance_gate.symbol_needs_llm(
+        family_regime_strong = family_of.get(symbol) in strong_families
+        needed, gate_reason = relevance_gate.symbol_needs_llm(
             agent_requested_wake=symbol in agent_wakes,
             has_trigger=bool(triggers_by_symbol.get(symbol)),
             has_position=symbol in held_symbols,
-            family_regime_strong=family_of.get(symbol) in strong_families,
+            family_regime_strong=family_regime_strong,
             stretched=activity_for_symbol.get("stretched"),
+            aligned=activity_for_symbol.get("aligned"),
             sig=activity_for_symbol.get("sig"),
             hours_since_last_llm=hours,
+            last_wake_reasons=wake_reasons.get(key),
         )
         if needed:
             kept_symbols.append(symbol)
+            reasons[symbol] = gate_reason
+            persistent_reasons[symbol] = relevance_gate.persistent_wake_reasons(
+                family_regime_strong=family_regime_strong,
+                stretched=activity_for_symbol.get("stretched"),
+                aligned=activity_for_symbol.get("aligned"),
+                sig=activity_for_symbol.get("sig"),
+            )
             continue
 
         gated_symbols.append(symbol)
@@ -103,6 +120,8 @@ def quiet_gate_decisions(
         kept_symbols=kept_symbols,
         gated_symbols=gated_symbols,
         entries=entries,
+        reasons=reasons,
+        persistent_reasons=persistent_reasons,
     )
 
 
