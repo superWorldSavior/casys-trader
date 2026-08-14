@@ -1,0 +1,36 @@
+# GROK_HOME isolé pour le daemon casys-trader — pendant Grok de
+# `ops/codex-home` / `ops/kimi-home`. Découplé du CLI personnel `~/.grok`
+# (défaut TUI grok-4.6 / xhigh + marketplace / skills).
+#
+# Branché par `GROK_HOME` (preset `ops/model-presets/grok-4.6-low.env`).
+# Auth : ln -sfn ~/.grok/auth.json ops/grok-home/auth.json
+#
+# L'effort N'EST PAS passable par appel ACP. Un effort = un GROK_HOME.
+# `low` = le cran le plus proche de Luna (rapide, un peu de raisonnement).
+
+[models]
+default = "grok-4.6"
+default_reasoning_effort = "low"
+
+[compat.claude]
+skills = false
+mcps = false
+hooks = false
+
+[compat.cursor]
+skills = false
+mcps = false
+hooks = false
+
+[features]
+telemetry = false
+lsp_tools = false
+codebase_indexing = false
+
+[marketplace]
+default_skills_installs_purged = true
+official_marketplace_auto_installed = true
+
+[[marketplace.sources]]
+name = "xAI Official"
+git = "https://github.com/xai-org/plugin-marketplace.git"

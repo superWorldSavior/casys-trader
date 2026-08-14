@@ -1,0 +1,6 @@
+# GROK_HOME isolé du daemon : on ne versionne QUE config.toml.
+# Tout le reste (auth secret + runtime généré par grok : sessions, caches,
+# logs, marketplace, models_cache…) est ignoré.
+*
+!.gitignore
+!config.toml

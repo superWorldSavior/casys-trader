@@ -70,6 +70,17 @@ def test_repo_est_substitue_en_chemin_absolu(env_file) -> None:
     assert f"KIMI_CODE_HOME={model_preset.REPO_ROOT}/ops/kimi-home" in text
 
 
+def test_preset_grok_substitue_grok_home(env_file) -> None:
+    _apply("grok-4.6-low", write=True)
+
+    text = env_file.read_text(encoding="utf-8")
+    assert "${REPO}" not in text
+    assert f"GROK_HOME={model_preset.REPO_ROOT}/ops/grok-home" in text
+    assert "TRADER_ACPX_AGENT=grok-build" in text
+    assert "TRADER_MODEL=grok-4.6" in text
+    assert "TRADER_REASONING_EFFORT=" not in text
+
+
 def test_apply_est_idempotent(env_file) -> None:
     _apply("codex-luna-medium", write=True)
     once = env_file.read_text(encoding="utf-8")

@@ -37,6 +37,12 @@ _ALLOWED_ACPX_REASONING_EFFORTS = ("low",)
 _DEFAULT_ACPX_KIMI_HOME = Path(__file__).resolve().parents[3] / "ops" / "kimi-home"
 _ALLOWED_ACPX_KIMI_EFFORTS = ("high", "max")
 
+# Pendant Grok Build : profil versionné de l'app. L'effort n'est pas passable
+# par appel (`session/set_config_option` → ACP -32601, mesuré 2026-08-14).
+# Un profil = un effort, comme kimi. Jamais de repli muet sur ~/.grok.
+_DEFAULT_ACPX_GROK_HOME = Path(__file__).resolve().parents[3] / "ops" / "grok-home"
+_ALLOWED_ACPX_GROK_EFFORTS = ("low", "medium", "high", "xhigh")
+
 # Plafond par-appel du subprocess acpx, DÉCOUPLÉ du budget-décision (lease).
 # Un appel LLM normal fait 30-90s ; un tour figé (provider muet après
 # task_started, cf incident AMCR 2026-07-06) resterait pendu jusqu'au budget
@@ -157,6 +163,10 @@ def _is_kimi_agent(agent: str | None) -> bool:
     return str(agent or "").strip().lower() == "kimi"
 
 
+def _is_grok_agent(agent: str | None) -> bool:
+    return str(agent or "").strip().lower() in {"grok", "grok-build"}
+
+
 def _validated_acpx_kimi_home(kimi_home: str | None = None) -> Path:
     """Resolve the app-owned kimi profile and reject low-effort ACPX calls.
 
@@ -189,6 +199,42 @@ def _validated_acpx_kimi_home(kimi_home: str | None = None) -> Path:
             "appel ACPX refusé : "
             f"{config_path} configure [thinking] effort={effort or 'absent'!r}, "
             f"attendu parmi {list(_ALLOWED_ACPX_KIMI_EFFORTS)!r}"
+        )
+    return home
+
+
+def _validated_acpx_grok_home(grok_home: str | None = None) -> Path:
+    """Resolve the app-owned Grok profile and reject an unreadable home.
+
+    Pendant de :func:`_validated_acpx_kimi_home`. Sans cette garde, un
+    ``GROK_HOME`` manquant fait retomber Grok sur ``~/.grok`` EN SILENCE : le
+    daemon hériterait du défaut TUI (grok-4.6 / xhigh + marketplace). Le
+    défaut est donc le profil versionné de l'app, jamais le home utilisateur.
+
+    L'effort Grok n'est pas passable par appel ACP : il vient de
+    ``[models] default_reasoning_effort``.
+    """
+
+    requested = str(grok_home or "").strip()
+    configured = requested or os.getenv("GROK_HOME", "").strip()
+    home = Path(configured).expanduser() if configured else _DEFAULT_ACPX_GROK_HOME
+    if not home.is_absolute():
+        raise RuntimeError(f"GROK_HOME ACPX doit être absolu : {str(home)!r}")
+
+    config_path = home / "config.toml"
+    try:
+        config = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        raise RuntimeError(f"profil ACPX grok illisible : {config_path}: {exc}") from exc
+
+    models = config.get("models") if isinstance(config.get("models"), dict) else {}
+    effort = str((models or {}).get("default_reasoning_effort") or "").strip().lower()
+    if effort not in _ALLOWED_ACPX_GROK_EFFORTS:
+        raise RuntimeError(
+            "appel ACPX refusé : "
+            f"{config_path} configure [models] default_reasoning_effort="
+            f"{effort or 'absent'!r}, attendu parmi "
+            f"{list(_ALLOWED_ACPX_GROK_EFFORTS)!r}"
         )
     return home
 
@@ -512,6 +558,8 @@ def _run_one_shot_command(
     # un repli muet sur ~/.kimi-code.
     if _is_kimi_agent(agent):
         child_env["KIMI_CODE_HOME"] = str(_validated_acpx_kimi_home())
+    if _is_grok_agent(agent):
+        child_env["GROK_HOME"] = str(_validated_acpx_grok_home())
     proc = subprocess.Popen(
         command,
         stdout=subprocess.PIPE,

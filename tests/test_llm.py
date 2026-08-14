@@ -18,6 +18,7 @@ from trader.agent.llm import (
     _run_one_shot_command,
 )
 from trader.infrastructure.llm.acpx_backend import _validated_acpx_codex_home
+from trader.infrastructure.llm.acpx_backend import _validated_acpx_grok_home
 from trader.infrastructure.llm.acpx_backend import _validated_acpx_kimi_home
 
 
@@ -1204,6 +1205,72 @@ def test_agent_codex_n_impose_pas_le_profil_kimi(monkeypatch, tmp_path) -> None:
     result = _run_one_shot_command(["acpx", "codex", "exec", "prompt"], timeout_s=12, agent="codex")
 
     assert result.returncode == 0
+
+
+def test_grok_home_absent_retombe_sur_le_profil_de_l_app(monkeypatch) -> None:
+    monkeypatch.delenv("GROK_HOME", raising=False)
+
+    resolved = _validated_acpx_grok_home()
+
+    assert resolved.name == "grok-home"
+    assert resolved.parent.name == "ops"
+    assert resolved != Path.home() / ".grok"
+
+
+def test_grok_effort_absent_est_refuse(monkeypatch, tmp_path) -> None:
+    grok_home = tmp_path / "grok-home"
+    grok_home.mkdir()
+    (grok_home / "config.toml").write_text("[models]\ndefault = \"grok-4.6\"\n", encoding="utf-8")
+    monkeypatch.setenv("GROK_HOME", str(grok_home))
+
+    with pytest.raises(RuntimeError, match="appel ACPX refusé"):
+        _validated_acpx_grok_home()
+
+
+@pytest.mark.parametrize("effort", ["low", "medium", "high", "xhigh"])
+def test_grok_accepte_les_efforts_annonces(monkeypatch, tmp_path, effort) -> None:
+    grok_home = tmp_path / "grok-home"
+    grok_home.mkdir()
+    (grok_home / "config.toml").write_text(
+        f"[models]\ndefault_reasoning_effort = \"{effort}\"\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("GROK_HOME", str(grok_home))
+
+    assert _validated_acpx_grok_home() == grok_home
+
+
+def test_agent_grok_pose_son_profil_dans_le_subprocess(monkeypatch, tmp_path) -> None:
+    _profil_codex_valide(tmp_path, monkeypatch)
+    grok_home = tmp_path / "grok-home"
+    grok_home.mkdir()
+    (grok_home / "config.toml").write_text(
+        "[models]\ndefault_reasoning_effort = \"medium\"\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("GROK_HOME", str(grok_home))
+    captured: dict = {}
+    _fake_popen_capturant(monkeypatch, captured)
+
+    _run_one_shot_command(
+        ["acpx", "grok-build", "exec", "prompt"], timeout_s=12, agent="grok-build"
+    )
+
+    assert Path(captured["env"]["GROK_HOME"]) == grok_home
+
+
+def test_agent_grok_avec_profil_invalide_refuse_avant_le_subprocess(monkeypatch, tmp_path) -> None:
+    _profil_codex_valide(tmp_path, monkeypatch)
+    monkeypatch.setenv("GROK_HOME", str(tmp_path / "profil-inexistant"))
+
+    def jamais_lance(*_args, **_kwargs):
+        raise AssertionError("le subprocess ne doit pas démarrer sur un profil grok invalide")
+
+    monkeypatch.setattr("trader.infrastructure.llm.acpx_backend.subprocess.Popen", jamais_lance)
+
+    with pytest.raises(RuntimeError, match="profil ACPX grok illisible"):
+        _run_one_shot_command(
+            ["acpx", "grok-build", "exec", "prompt"], timeout_s=12, agent="grok-build"
+        )
 
 
 def test_run_one_shot_ne_sonde_plus_les_ponts_codex_acp(monkeypatch) -> None:

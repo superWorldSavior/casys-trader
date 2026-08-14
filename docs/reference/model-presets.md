@@ -49,6 +49,7 @@ l'écriture, afin que les profils isolés restent versionnables.
 | --- | --- | --- |
 | `codex-luna-medium` | `gpt-5.6-luna` **medium** | `gpt-5.6-sol` **low** |
 | `kimi` | `kimi-code/kimi-for-coding` **high** | `kimi-code/k3-256k` **high** (micro : `kimi-for-coding`) |
+| `grok-4.6-low` | `grok-4.6` **low** | `grok-4.6` **low** (effort de profil partagé) |
 
 Le preset Codex utilise un seul `ops/codex-home` low. Pour le brain seulement,
 le runtime appelle le mécanisme natif `acpx set reasoning_effort medium` sur la
@@ -65,6 +66,21 @@ Une seule var ici, pas une par rôle : les 5 rôles partagent `high`.
 `kimi-code/k3-256k` et `kimi-code/k3` sont le même modèle à deux fenêtres près
 (262 144 vs 1 048 576) ; le préfixe `kimi-code/` est le model id annoncé par le
 pont, pas un chemin.
+
+Le preset `grok-4.6-low` pose `GROK_HOME=${REPO}/ops/grok-home` et
+`TRADER_ACPX_AGENT=grok-build` (`grok agent stdio`). L'auth est le login
+`grok.com` déjà en cache (symlink `ops/grok-home/auth.json`), pas une clé API.
+`acpx grok-build set reasoning_effort` est rejeté (ACP `-32601`, mesuré le
+2026-08-14) : l'effort vit dans `[models] default_reasoning_effort` du profil.
+Les 5 rôles partagent donc `low`. Le défaut TUI `~/.grok` (xhigh +
+marketplace) n'est jamais le repli.
+
+Prix API (août 2026) : `grok-4.6` et `grok-4.5` sont à **$2 / $6** le million,
+contre **$0.20 / $1.20** pour Luna. Le CLI n'annonce que ces deux modèles :
+pas d'équivalent prix Luna. On garde **4.6** (meilleur, même prix que 4.5) et
+on baisse l'effort à `low` — le cran xAI pour un agent rapide, un peu de
+raisonnement, plus proche de Luna medium en usage. Via acpx le compteur est
+le quota SuperGrok, pas la facture API.
 
 ## Pièges
 
@@ -99,6 +115,11 @@ pont, pas un chemin.
   tout `KIMI_CODE_HOME`, et les injecte dans le system prompt. Sous le mode par
   défaut du transport (`--allowed-tools ""`) elles ne sont pas invocables — du
   contexte mort, pas un levier d'action.
+- **Le preset grok n'a pas de var `CODEX_HOME`** : Grok ne lit pas le profil
+  Codex. La garde du transport s'applique quand même à tous les appels acpx —
+  le `CODEX_HOME` global du `.env` doit rester un profil valide. `ops/grok-home`
+  n'est pas versionné en entier : recréer le symlink
+  `auth.json` → `~/.grok/auth.json` sur une machine neuve.
 
 ## Voir aussi
 
