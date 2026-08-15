@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import json
 import os
-import tempfile
 import threading
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
+
+from trader.infrastructure.state_db.shadow import write_json_atomic
 
 
 class NewsChallengerRunStore:
@@ -42,7 +43,7 @@ class NewsChallengerRunStore:
                 if needs_separator:
                     fh.write("\n")
                 fh.write(line + "\n")
-            _write_json_atomic(self.latest_path_for_venue(venue), payload)
+            write_json_atomic(self.latest_path_for_venue(venue), payload)
 
     def read_latest(self, venue: str) -> dict[str, Any] | None:
         """Read a venue cache, falling back to corruption-tolerant archive scan."""
@@ -69,29 +70,6 @@ def _date_from_as_of(value: Any) -> str:
 def _safe_venue(venue: str) -> str:
     safe = "".join(char for char in str(venue) if char.isalnum() or char in ("_", "-"))
     return safe or "UNKNOWN"
-
-
-def _write_json_atomic(path: Path, payload: Mapping[str, Any]) -> None:
-    fd, tmp_name = tempfile.mkstemp(
-        prefix=f".{path.name}.",
-        suffix=".tmp",
-        dir=path.parent,
-    )
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            json.dump(dict(payload), fh, ensure_ascii=False, indent=2, sort_keys=True)
-            fh.write("\n")
-        os.replace(tmp_name, path)
-    except Exception:
-        try:
-            os.close(fd)
-        except OSError:
-            pass
-        try:
-            os.unlink(tmp_name)
-        except OSError:
-            pass
-        raise
 
 
 def _read_json_object(path: Path) -> dict[str, Any] | None:

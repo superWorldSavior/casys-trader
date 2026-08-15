@@ -1,3 +1,7 @@
+import sqlite3
+
+import pytest
+
 from trader.domain.situation import NewsMacroBrief
 from trader.infrastructure.state_db.situation_memory_store import SituationMemoryStore
 
@@ -77,3 +81,44 @@ def test_situation_memory_search_hyphen_ne_plante_pas(tmp_path) -> None:
     rows = store.search(query="risk-off cyclicals", venue="EU")
     assert len(rows) == 1
     assert rows[0]["brief_id"] == "2026-07-09T07:00:00+00:00|EU"
+
+
+def test_situation_memory_search_empty_operators_and_ticker(tmp_path) -> None:
+    store = SituationMemoryStore(tmp_path / "situation_memory.db")
+    store.ingest_brief(_brief())
+
+    assert store.search(query="") == store.search()
+    assert store.search(query="AND OR NOT") == []
+    assert store.search(query="INGA.AS") == []
+
+
+def test_ingest_commit_failure_rolls_back_and_connection_stays_usable(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = SituationMemoryStore(tmp_path / "situation_memory.db")
+    brief = _brief()
+    real_conn = store._conn
+
+    class _FailingCommit:
+        def commit(self) -> None:
+            raise sqlite3.OperationalError("database is locked")
+
+        def __getattr__(self, name: str):
+            return getattr(real_conn, name)
+
+    monkeypatch.setattr(store, "_conn", _FailingCommit())
+    with pytest.raises(sqlite3.OperationalError, match="database is locked"):
+        store.ingest_brief(brief)
+    monkeypatch.undo()
+
+    assert store.count() == 0
+    result = store.ingest_brief(brief)
+    assert result == {"inserted": 2, "skipped": 0}
+    assert store.count() == 2
+
+
+def test_situation_memory_close_est_idempotent(tmp_path) -> None:
+    store = SituationMemoryStore(tmp_path / "situation_memory.db")
+    store.ingest_brief(_brief())
+    store.close()
+    store.close()

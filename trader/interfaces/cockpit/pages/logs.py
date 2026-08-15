@@ -7,6 +7,7 @@ invisibles : l'état des filtres est toujours affiché.
 
 from __future__ import annotations
 
+import logging
 import re
 from collections import deque
 from pathlib import Path
@@ -33,6 +34,8 @@ from trader.interfaces.ui.palette import (
     PALETTE_CASYS,
     Palette,
 )
+
+logger = logging.getLogger(__name__)
 
 _MAX_EVENT_LINES = 500
 
@@ -383,8 +386,8 @@ class LogsPage(Static):
         try:
             self.query_one("#events-panel", LogsPane).poll_events(events_path)
         except Exception:
-            pass
+            logger.debug("%s update error", "logs events", exc_info=True)
         try:
             self.query_one("#agent-trace-panel", AgentTracePane).poll_trace(trace_path)
         except Exception:
-            pass
+            logger.debug("%s update error", "logs agent trace", exc_info=True)

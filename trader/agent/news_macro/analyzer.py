@@ -29,11 +29,13 @@ class NewsMacroAnalystError(RuntimeError):
         *,
         provider: str | None = None,
         model: str | None = None,
+        provider_fallback_reason: str | None = None,
     ) -> None:
         super().__init__(message)
         self.code = code
         self.provider = provider
         self.model = model
+        self.provider_fallback_reason = provider_fallback_reason
 
 
 def _timeout_from_env() -> int:
@@ -54,6 +56,7 @@ def build_news_macro_router_from_env(
     acpx_bin: str | None = None,
     acpx_agent: str | None = None,
     model: str | None = None,
+    session_label: str | None = None,
 ) -> llm.LlmRouter:
     """Build the bounded analyst router using the consolidator-style profile."""
 
@@ -61,6 +64,11 @@ def build_news_macro_router_from_env(
     resolved_bin = acpx_bin or os.getenv("TRADER_NEWS_MACRO_ACPX_BIN") or os.getenv("TRADER_CONSOLIDATOR_ACPX_BIN") or "acpx"
     resolved_agent = acpx_agent or os.getenv("TRADER_NEWS_MACRO_ACPX_AGENT") or os.getenv("TRADER_CONSOLIDATOR_ACPX_AGENT")
     resolved_model = model or os.getenv("TRADER_NEWS_MACRO_MODEL") or DEFAULT_NEWS_MACRO_ANALYST_MODEL
+    resolved_label = (
+        session_label
+        or os.getenv("TRADER_NEWS_MACRO_ACPX_SESSION_LABEL")
+        or DEFAULT_NEWS_MACRO_ANALYST_SESSION_LABEL
+    )
     return llm.build_default_router_from_env(
         env_path=None,
         acpx_bin=resolved_bin,
@@ -68,7 +76,7 @@ def build_news_macro_router_from_env(
         spark_fallback_model=None,
         acpx_provider="consolidator",
         acpx_agent=resolved_agent,
-        acpx_session_label=DEFAULT_NEWS_MACRO_ANALYST_SESSION_LABEL,
+        acpx_session_label=resolved_label,
     )
 
 
@@ -91,6 +99,7 @@ class LlmNewsMacroAnalyst:
                 completion.message,
                 provider=completion.provider,
                 model=completion.model,
+                provider_fallback_reason=completion.fallback_reason,
             )
         brief, error = parse_news_macro_completion(
             completion.text,
@@ -105,6 +114,7 @@ class LlmNewsMacroAnalyst:
                 error or "macro/news analyst returned invalid payload",
                 provider=completion.provider,
                 model=completion.model,
+                provider_fallback_reason=completion.fallback_reason,
             )
         sourced_brief = _with_readable_sources(brief, request)
         if not _has_sourced_points(sourced_brief):
@@ -113,6 +123,7 @@ class LlmNewsMacroAnalyst:
                 "macro/news analyst returned no point backed by the source catalog",
                 provider=completion.provider,
                 model=completion.model,
+                provider_fallback_reason=completion.fallback_reason,
             )
         return sourced_brief
 

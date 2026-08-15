@@ -17,6 +17,7 @@ rescan throttlé (>60 s) depuis ``update_state``, rescan immédiat quand
 
 from __future__ import annotations
 
+import logging
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -53,6 +54,8 @@ from trader.interfaces.ui.palette import (
     CASYS_WARNING,
 )
 from trader.support.coercion import finite_float as _safe_float
+
+logger = logging.getLogger(__name__)
 
 _MACRO_POINT_LIMIT = 12
 _MICRO_LIST_LIMIT = 6
@@ -566,7 +569,7 @@ class ReportsPage(ResizeRefresh, Static):
             if stale or new_names:
                 self._start_scan()
         except Exception:
-            pass
+            logger.debug("%s update error", "reports gallery", exc_info=True)
 
     # ------------------------------------------------------------------
     # Scan disque (worker thread — jamais sur le thread UI)

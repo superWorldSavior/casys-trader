@@ -15,7 +15,32 @@ from textual.message import Message
 from textual.widgets import DataTable
 
 from trader.interfaces.ui.palette import CASYS_ACCENT, CASYS_FAINT
-from trader.interfaces.ui.rich_panels import sparkline
+from trader.support.coercion import finite_float as _safe_float
+
+_SPARK_BLOCKS = "▁▂▃▄▅▆▇█"
+
+
+def sparkline(values: list[float]) -> str:
+    """Mini-courbe unicode à 8 niveaux. Retourne "" si aucune valeur valide."""
+    clean = [_safe_float(value, default=None) for value in values]
+    clean_values = [value for value in clean if value is not None]
+    if not clean_values:
+        return ""
+
+    low = min(clean_values)
+    high = max(clean_values)
+    if high == low:
+        return "▄" * len(clean_values)
+
+    span = high - low
+    last_index = len(_SPARK_BLOCKS) - 1
+    blocks: list[str] = []
+    for value in clean_values:
+        index = int(round((value - low) / span * last_index))
+        index = max(0, min(last_index, index))
+        blocks.append(_SPARK_BLOCKS[index])
+    return "".join(blocks)
+
 
 # CSS commun d'un panneau casys : une seule couleur de bordure, l'identité
 # vient du titre (bold accent). À inclure dans le DEFAULT_CSS des pages via

@@ -216,8 +216,8 @@ def tick_universe_intelligence(
     )
     # Cadence de la posture globale : fraîche avant chaque gong (venues en
     # pré-open), sinon au plus une fois par cooldown. `config_dir` pointe sur
-    # ``<root>/config`` (cf. load_radar_params ci-dessus) ; load_sessions attend
-    # la racine et rajoute lui-même ``config/sessions.yaml``.
+    # ``<root>/config`` (cf. load_radar_params ci-dessus). `load_sessions(root_dir)`
+    # attend la racine du repo et concatène lui-même ``config/sessions.yaml``.
     sessions = load_sessions(str(Path(config_dir).parent))
     preopen_window_minutes = load_radar_params(Path(config_dir)).preopen_window_minutes
     preopen_now = preopen_venues(

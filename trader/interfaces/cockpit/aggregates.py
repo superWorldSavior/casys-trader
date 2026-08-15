@@ -8,25 +8,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
+from trader.interfaces.cockpit.format import parse_ts
 from trader.support.coercion import (
     dict_list as _safe_list_of_dicts,
     finite_float as _safe_float,
 )
 
 UTC = timezone.utc
-
-
-def parse_ts(raw: object) -> datetime | None:
-    """ISO 8601 (suffixe Z accepté) → datetime UTC-aware, sinon None."""
-    text = str(raw or "").strip()
-    if not text:
-        return None
-    candidate = f"{text[:-1]}+00:00" if text.endswith("Z") else text
-    try:
-        parsed = datetime.fromisoformat(candidate)
-    except ValueError:
-        return None
-    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
 
 
 def decision_status(row: dict) -> str:

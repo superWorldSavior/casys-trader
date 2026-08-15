@@ -15,6 +15,10 @@ from trader.agent.universe import (
     build_universe_prompt,
     parse_universe_completion,
 )
+from trader.agent.universe.global_posture_agent import (
+    GlobalUniversePostureRequest,
+    LlmGlobalPostureAgent,
+)
 from trader.application.universe import build_universe_composition_request
 from trader.domain.universe import UniverseCompanyContext, UniverseSituationContext
 
@@ -468,3 +472,67 @@ def test_universe_router_uses_a_distinct_role_profile(monkeypatch) -> None:
         "acpx_agent": "codex",
         "acpx_session_label": "casys-trader:universe-agent",
     }
+
+
+def _global_posture_request() -> GlobalUniversePostureRequest:
+    return GlobalUniversePostureRequest(
+        as_of="2026-07-11T08:00:00+00:00",
+        venues=("TW", "EU", "US"),
+        sticky=("SAP.DE",),
+        global_situation_digest={
+            "regime": "mixed",
+            "points": [{"point": "US breadth leads while Europe is selective."}],
+        },
+        global_family_board={
+            "role": "comparative_context_not_capital_allocation",
+            "venues": {
+                "US": {"families": {"us_semis": {"score": 0.82}}},
+                "EU": {"families": {"eu_industrials": {"score": 0.56}}},
+            },
+        },
+    )
+
+
+def test_llm_global_posture_agent_repairs_once_on_malformed_first_completion() -> None:
+    class RepairRouter:
+        def __init__(self) -> None:
+            self.prompts: list[str] = []
+
+        def complete(self, prompt: str, *, timeout_s: int):
+            assert timeout_s == 7
+            self.prompts.append(prompt)
+            if len(self.prompts) == 1:
+                return llm.LlmCompletion(
+                    provider="test",
+                    model="stub",
+                    text='{"venue_posture":{"US":"favor"',
+                )
+            return llm.LlmCompletion(
+                provider="test",
+                model="stub",
+                text=json.dumps(
+                    {
+                        "venue_posture": {
+                            "TW": "watch",
+                            "EU": "selective",
+                            "US": "favor",
+                        },
+                        "family_priority": {
+                            "favored": ["us_semis"],
+                            "deprioritized": ["eu_industrials"],
+                        },
+                        "gross_mode": "cautious",
+                        "net_bias": "long",
+                        "rationale": "US families have the clearest breadth.",
+                    }
+                ),
+            )
+
+    router = RepairRouter()
+    posture = LlmGlobalPostureAgent(router, timeout_s=7).compose(_global_posture_request())
+
+    assert posture.venue_posture == {"TW": "watch", "EU": "selective", "US": "favor"}
+    assert posture.gross_mode == "cautious"
+    assert len(router.prompts) == 2
+    assert "mode GLOBAL" in router.prompts[1]
+    assert "Correction bornée de la sortie précédente" in router.prompts[1]

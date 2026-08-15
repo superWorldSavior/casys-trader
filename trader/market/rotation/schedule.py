@@ -4,6 +4,7 @@ Le temps est TOUJOURS passé en argument (ISO 8601 UTC) — jamais d'horloge int
 """
 from __future__ import annotations
 
+import logging
 import os
 from datetime import datetime, timedelta, timezone
 
@@ -15,13 +16,21 @@ _DEFAULT_SESSIONS: dict[str, SessionHours] = {
     "US": {"open": "13:30", "close": "20:00"},
 }
 
+log = logging.getLogger("trader.market.rotation.schedule")
+_MISSING_SESSIONS_YAML_WARNED = False
 
-def load_sessions(config_dir: str) -> dict[str, SessionHours]:
-    """Lit config/sessions.yaml (venue → {"open": "HH:MM", "close": "HH:MM"}).
 
-    Retourne le défaut si le fichier est absent ou illisible.
+def load_sessions(root_dir: str) -> dict[str, SessionHours]:
+    """Lit ``<root_dir>/config/sessions.yaml`` (venue → {"open": "HH:MM", "close": "HH:MM"}).
+
+    ``root_dir`` est la racine du dépôt, pas le répertoire ``config/`` : cette
+    fonction concatène elle-même ``config/sessions.yaml``. Retourne le défaut
+    hardcodé si le fichier est absent ou illisible.
     """
-    path = os.path.join(config_dir, "config", "sessions.yaml")
+    path = os.path.join(root_dir, "config", "sessions.yaml")
+    if not os.path.isfile(path):
+        _warn_missing_sessions_yaml_once(root_dir)
+        return dict(_DEFAULT_SESSIONS)
     try:
         import yaml  # type: ignore[import-untyped]
 
@@ -44,6 +53,17 @@ def load_sessions(config_dir: str) -> dict[str, SessionHours]:
         return dict(_DEFAULT_SESSIONS)
     except Exception:
         return dict(_DEFAULT_SESSIONS)
+
+
+def _warn_missing_sessions_yaml_once(root_dir: str) -> None:
+    global _MISSING_SESSIONS_YAML_WARNED
+    if _MISSING_SESSIONS_YAML_WARNED:
+        return
+    _MISSING_SESSIONS_YAML_WARNED = True
+    log.warning(
+        "config/sessions.yaml absent under root_dir=%s; using hardcoded default sessions",
+        root_dir,
+    )
 
 
 def _close_dt(date: datetime, hhmm: str) -> datetime:

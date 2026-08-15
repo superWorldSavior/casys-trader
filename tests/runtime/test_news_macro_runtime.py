@@ -227,6 +227,56 @@ def test_tick_news_macro_analysis_writes_jsonl_and_indexes_memory(tmp_path) -> N
     assert SituationMemoryStore(state_dir / "situation_memory.db").count() == 1
 
 
+def test_tick_closes_owned_situation_memory_store(tmp_path, monkeypatch) -> None:
+    state_dir = tmp_path / "state"
+    config_dir = tmp_path / "config"
+    state_dir.mkdir()
+    config_dir.mkdir()
+    _write_venue_state(state_dir)
+    _write_jsonl(
+        state_dir / "news_items" / "2026-07-09.jsonl",
+        [{"uuid": "u-eu", "symbol": "AIR.PA", "title": "Airbus demand warning"}],
+    )
+    closed: list[bool] = []
+    original_close = SituationMemoryStore.close
+
+    def spy_close(self):
+        closed.append(True)
+        return original_close(self)
+
+    monkeypatch.setattr(SituationMemoryStore, "close", spy_close)
+    news_macro_runtime.tick_news_macro_analysis(
+        config_dir=config_dir,
+        state_dir=state_dir,
+        loop_now=datetime(2026, 7, 9, 9, 0, tzinfo=timezone.utc),
+        analyst=FakeAnalyst(),
+        venues=("EU",),
+    )
+    assert closed == [True]
+
+
+def test_tick_does_not_close_injected_situation_memory_store(tmp_path) -> None:
+    state_dir = tmp_path / "state"
+    config_dir = tmp_path / "config"
+    state_dir.mkdir()
+    config_dir.mkdir()
+    _write_venue_state(state_dir)
+    _write_jsonl(
+        state_dir / "news_items" / "2026-07-09.jsonl",
+        [{"uuid": "u-eu", "symbol": "AIR.PA", "title": "Airbus demand warning"}],
+    )
+    memory = SituationMemoryStore(state_dir / "situation_memory.db")
+    news_macro_runtime.tick_news_macro_analysis(
+        config_dir=config_dir,
+        state_dir=state_dir,
+        loop_now=datetime(2026, 7, 9, 9, 0, tzinfo=timezone.utc),
+        analyst=FakeAnalyst(),
+        venues=("EU",),
+        situation_store=memory,
+    )
+    assert memory.count() == 1
+
+
 def test_tick_news_macro_analysis_waits_for_preopen_child_scope(tmp_path) -> None:
     state_dir = tmp_path / "state"
     config_dir = tmp_path / "config"

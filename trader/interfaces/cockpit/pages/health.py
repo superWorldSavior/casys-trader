@@ -11,6 +11,7 @@ Le widget HealthPage appelle tous les builders dans update_state().
 
 from __future__ import annotations
 
+import logging
 import os
 from datetime import datetime, timezone
 
@@ -42,6 +43,7 @@ from trader.interfaces.ui.palette import (
     CASYS_WARNING,
 )
 UTC = timezone.utc
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Builders purs
@@ -329,29 +331,29 @@ class HealthPage(ResizeRefresh, Static):
                 build_freshness(state, now=now, stale_limit=freshness_limit)
             )
         except Exception:
-            pass
+            logger.debug("%s update error", "health freshness", exc_info=True)
         try:
             self.query_one("#fx-body", Static).update(build_fx_rates(state, now=now))
         except Exception:
-            pass
+            logger.debug("%s update error", "health fx", exc_info=True)
         try:
             self.query_one("#sources-body", Static).update(
                 build_sources(state, now=now)
             )
         except Exception:
-            pass
+            logger.debug("%s update error", "health sources", exc_info=True)
         try:
             self.query_one("#llm-body", Static).update(build_llm(state, now=now))
         except Exception:
-            pass
+            logger.debug("%s update error", "health llm", exc_info=True)
         try:
             self.query_one("#risk-body", Static).update(build_risk_gate(state))
         except Exception:
-            pass
+            logger.debug("%s update error", "health risk", exc_info=True)
         try:
             self.query_one("#model-body", Static).update(build_model_panel(state))
         except Exception:
-            pass
+            logger.debug("%s update error", "health model", exc_info=True)
         try:
             learnings_panel = self.query_one("#learnings-h-panel", VerticalScroll)
             learnings_limit = rows_available(learnings_panel, reserved=1, minimum=3)
@@ -359,10 +361,10 @@ class HealthPage(ResizeRefresh, Static):
                 build_learnings(state, now=now, limit=learnings_limit)
             )
         except Exception:
-            pass
+            logger.debug("%s update error", "health learnings", exc_info=True)
         try:
             self.query_one("#universe-h-body", Static).update(
                 build_universe(state, now=now)
             )
         except Exception:
-            pass
+            logger.debug("%s update error", "health universe", exc_info=True)

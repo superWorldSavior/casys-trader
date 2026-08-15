@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import threading
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +14,8 @@ from trader.domain.situation import NewsMacroBrief, SituationPoint, SituationSec
 from trader.infrastructure.state_db.fts_query import sanitize_fts5_query
 
 __all__ = ["SituationMemoryStore"]
+
+log = logging.getLogger(__name__)
 
 _PRAGMAS = [
     "PRAGMA journal_mode=WAL;",
@@ -80,6 +84,11 @@ END
 """
 
 
+def _is_fts5_query_error(exc: BaseException) -> bool:
+    message = str(exc).lower()
+    return "fts5:" in message or "syntax error" in message or "no such column" in message
+
+
 def _open_db(db_path: str | Path) -> sqlite3.Connection:
     conn = sqlite3.connect(str(db_path), check_same_thread=False)
     conn.row_factory = sqlite3.Row
@@ -110,6 +119,30 @@ class SituationMemoryStore:
         self._conn = _open_db(self._db_path)
         _create_schema(self._conn)
 
+    @contextmanager
+    def _commit_or_rollback(self):
+        try:
+            yield
+            self._conn.commit()
+        except Exception:
+            self._conn.rollback()
+            raise
+
+    def close(self) -> None:
+        """Checkpoint WAL and close the connection. Idempotent."""
+
+        with self._lock:
+            if self._conn is None:
+                return
+            try:
+                self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            except Exception:
+                pass
+            try:
+                self._conn.close()
+            finally:
+                self._conn = None
+
     def count(self) -> int:
         with self._lock:
             row = self._conn.execute("SELECT COUNT(*) FROM situation_notes").fetchone()
@@ -121,7 +154,7 @@ class SituationMemoryStore:
         rows = list(_rows_for_brief(brief))
         inserted = 0
         skipped = 0
-        with self._lock:
+        with self._lock, self._commit_or_rollback():
             for row in rows:
                 cursor = self._conn.execute(
                     """
@@ -143,7 +176,6 @@ class SituationMemoryStore:
                     inserted += 1
                 else:
                     skipped += 1
-            self._conn.commit()
         return {"inserted": inserted, "skipped": skipped}
 
     def search(
@@ -194,7 +226,10 @@ class SituationMemoryStore:
                             """,
                             {**params, "query": fts_query},
                         ).fetchall()
-                    except sqlite3.OperationalError:
+                    except sqlite3.OperationalError as exc:
+                        if not _is_fts5_query_error(exc):
+                            raise
+                        log.debug("situation memory FTS query rejected: %s", exc)
                         rows = []
             else:
                 rows = self._conn.execute(

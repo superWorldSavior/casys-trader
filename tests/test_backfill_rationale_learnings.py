@@ -43,7 +43,14 @@ def test_build_backfill_rows_filters_and_deduplicates(tmp_path: Path) -> None:
     _write_jsonl(
         state_dir / "decisions.jsonl",
         [
-            _decision("eligible", cycle_ts="2026-07-11T10:00:00+00:00"),
+            # HOLD dirigé (opportunity_side nommé) : ingéré depuis c838ee1.
+            _decision(
+                "eligible",
+                cycle_ts="2026-07-11T10:00:00+00:00",
+                opportunity_side="long",
+            ),
+            # HOLD nu, sans thèse refusée ni annotation : plus jamais ingéré.
+            _decision("undirected", cycle_ts="2026-07-11T10:30:00+00:00"),
             _decision(
                 "annotated",
                 cycle_ts="2026-07-11T11:00:00+00:00",
@@ -61,8 +68,17 @@ def test_build_backfill_rows_filters_and_deduplicates(tmp_path: Path) -> None:
                 llm_error="bad_output",
             ),
             _decision("old", cycle_ts="2026-07-10T10:00:00+00:00"),
-            _decision("already-there", cycle_ts="2026-07-11T14:00:00+00:00"),
-            _decision("legacy-backfill", cycle_ts="2026-07-11T15:00:00+00:00"),
+            # Dirigés eux aussi : ils doivent atteindre le test de déduplication.
+            _decision(
+                "already-there",
+                cycle_ts="2026-07-11T14:00:00+00:00",
+                opportunity_side="long",
+            ),
+            _decision(
+                "legacy-backfill",
+                cycle_ts="2026-07-11T15:00:00+00:00",
+                opportunity_side="short",
+            ),
         ],
     )
     _write_jsonl(output, [{"decision_id": "already-there", "note": "existing"}])
@@ -84,7 +100,8 @@ def test_build_backfill_rows_filters_and_deduplicates(tmp_path: Path) -> None:
         "[annotation explicite] Ne pas poursuivre une extension verticale."
     )
     assert counters["selected"] == 2
-    assert counters["ineligible"] == 2
+    # infra + errored + le HOLD non dirigé
+    assert counters["ineligible"] == 3
     assert counters["before_or_at_watermark"] == 1
     assert counters["duplicate_decision_id"] == 2
 
@@ -94,7 +111,13 @@ def test_main_is_dry_run_by_default_and_apply_is_idempotent(tmp_path: Path, caps
     output = state_dir / "archive" / "rationale-experiences.jsonl"
     _write_jsonl(
         state_dir / "decisions.jsonl",
-        [_decision("eligible", cycle_ts="2026-07-11T10:00:00+00:00")],
+        [
+            _decision(
+                "eligible",
+                cycle_ts="2026-07-11T10:00:00+00:00",
+                opportunity_side="long",
+            )
+        ],
     )
     args = [
         "--state-dir",

@@ -15,6 +15,7 @@ from trader.agent.universe.agent import (
 )
 from trader.agent.universe.global_posture_prompt import (
     build_global_posture_prompt,
+    build_global_posture_repair_prompt,
     parse_global_posture_completion,
 )
 from trader.domain.universe.global_posture import GlobalUniversePosture
@@ -62,12 +63,32 @@ class LlmGlobalPostureAgent:
             )
         posture, error = parse_global_posture_completion(completion.text)
         if posture is None:
-            raise UniverseAgentPayloadError(
-                error or "invalid_global_posture_response",
-                provider=completion.provider,
-                model=completion.model,
-                provider_fallback_reason=completion.fallback_reason,
+            repair = build_global_posture_repair_prompt(
+                global_family_board=request.global_family_board,
+                global_situation_digest=request.global_situation_digest,
+                sticky=request.sticky,
+                venues=request.venues,
+                as_of=request.as_of,
+                invalid_response=completion.text,
+                parse_error=error or "invalid_global_posture_response",
             )
+            completion = self._router.complete(repair, timeout_s=self._timeout_s)
+            if isinstance(completion, llm.LlmFailure):
+                raise UniverseAgentError(
+                    completion.code,
+                    completion.message,
+                    provider=completion.provider,
+                    model=completion.model,
+                    provider_fallback_reason=completion.fallback_reason,
+                )
+            posture, error = parse_global_posture_completion(completion.text)
+            if posture is None:
+                raise UniverseAgentPayloadError(
+                    error or "invalid_global_posture_response",
+                    provider=completion.provider,
+                    model=completion.model,
+                    provider_fallback_reason=completion.fallback_reason,
+                )
         if not posture.as_of:
             as_of = str(request.as_of or "").strip()
             if not as_of:

@@ -436,6 +436,33 @@ def test_build_risk_gate_booleans_formatted() -> None:
     assert "off" in rendered
 
 
+def test_load_risk_caps_rereads_only_when_mtime_changes(tmp_path, monkeypatch) -> None:
+    """Cache module-level : même mtime → pas de relire ; mtime changé → relit."""
+    import os
+
+    from trader.interfaces.cockpit.pages import decisions as decisions_mod
+
+    risk_file = tmp_path / "risk.yaml"
+    risk_file.write_text("max_order_value: 1\n", encoding="utf-8")
+    monkeypatch.setattr(decisions_mod, "_RISK_YAML", risk_file)
+    monkeypatch.setattr(decisions_mod, "_RISK_CAPS_MTIME", None)
+    monkeypatch.setattr(decisions_mod, "_RISK_CAPS_CACHE", {})
+
+    first = decisions_mod._load_risk_caps()
+    assert first["max_order_value"] == 1
+    cached_mtime = decisions_mod._RISK_CAPS_MTIME
+    assert cached_mtime is not None
+
+    risk_file.write_text("max_order_value: 999\n", encoding="utf-8")
+    os.utime(risk_file, (cached_mtime, cached_mtime))
+    cached = decisions_mod._load_risk_caps()
+    assert cached["max_order_value"] == 1
+
+    os.utime(risk_file, (cached_mtime + 5, cached_mtime + 5))
+    refreshed = decisions_mod._load_risk_caps()
+    assert refreshed["max_order_value"] == 999
+
+
 # ---------------------------------------------------------------------------
 # build_model_panel
 # ---------------------------------------------------------------------------

@@ -8,6 +8,7 @@ Builders PURS séparés du widget : (state, now) → renderable.
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 
 from rich.console import Group, RenderableType
@@ -47,6 +48,7 @@ from trader.interfaces.ui.palette import (
     CASYS_WARNING,
 )
 UTC = timezone.utc
+logger = logging.getLogger(__name__)
 
 # Chips action (fonds teintés)
 _BUY_CHIP = f"bold {CASYS_SUCCESS} on #272c20"
@@ -475,7 +477,7 @@ class PlansPage(ResizeRefresh, Static):
                 )
             )
         except Exception:  # état partiel toléré
-            pass
+            logger.debug("%s update error", "plans armed", exc_info=True)
 
         try:
             exit_plans_projection = project_exit_plans(state)
@@ -493,7 +495,7 @@ class PlansPage(ResizeRefresh, Static):
                 )
             )
         except Exception:
-            pass
+            logger.debug("%s update error", "plans exit plans", exc_info=True)
 
         try:
             watches_projection = project_active_watches(state, now=now)
@@ -514,7 +516,7 @@ class PlansPage(ResizeRefresh, Static):
                 )
             )
         except Exception:
-            pass
+            logger.debug("%s update error", "plans watches", exc_info=True)
 
         try:
             ew_panel = self.query_one("#exit-watches-panel", VerticalScroll)
@@ -529,7 +531,7 @@ class PlansPage(ResizeRefresh, Static):
                 )
             )
         except Exception:
-            pass
+            logger.debug("%s update error", "plans exit watches", exc_info=True)
 
         try:
             fire_panel = self.query_one("#fire-panel", VerticalScroll)
@@ -538,4 +540,4 @@ class PlansPage(ResizeRefresh, Static):
                 build_next_to_fire_plans(state, now=now, limit=fire_limit)
             )
         except Exception:
-            pass
+            logger.debug("%s update error", "plans next to fire", exc_info=True)

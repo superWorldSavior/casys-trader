@@ -2337,3 +2337,20 @@ def test_tick_score_audit_failure_never_blocks_rotation(tmp_path) -> None:
     assert observation["status"] == "error"
     assert observation["error"] == "OSError"
     assert observation["selection_effect"] == "none"
+
+
+def test_load_sessions_warns_once_when_sessions_yaml_absent(tmp_path, caplog):
+    import logging
+
+    import trader.market.rotation.schedule as schedule
+
+    schedule._MISSING_SESSIONS_YAML_WARNED = False
+    with caplog.at_level(logging.WARNING, logger="trader.market.rotation.schedule"):
+        first = schedule.load_sessions(str(tmp_path))
+        second = schedule.load_sessions(str(tmp_path))
+
+    assert first == schedule._DEFAULT_SESSIONS
+    assert second == schedule._DEFAULT_SESSIONS
+    warnings = [record for record in caplog.records if "sessions.yaml" in record.getMessage()]
+    assert len(warnings) == 1
+    assert "hardcoded default sessions" in warnings[0].getMessage()

@@ -8,6 +8,7 @@ Builders PURS : (state[, now]) → renderable, sans I/O, sans horloge implicite.
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 
 from rich.console import Group, RenderableType
@@ -44,6 +45,7 @@ from trader.support.coercion import (
 )
 
 UTC = timezone.utc
+logger = logging.getLogger(__name__)
 
 _SORT_LABELS = ("by |P&L|", "by value", "by %")
 _N_SORT_MODES = 3
@@ -451,15 +453,15 @@ class PortfolioPage(ResizeRefresh, Static):
         try:
             self._refresh_positions(state)
         except Exception:
-            pass
+            logger.debug("%s update error", "portfolio positions", exc_info=True)
         try:
             self.query_one("#exposure-body", Static).update(build_exposure(state))
         except Exception:
-            pass
+            logger.debug("%s update error", "portfolio exposure", exc_info=True)
         try:
             self.query_one("#fx-body", Static).update(build_fx(state, now=now))
         except Exception:
-            pass
+            logger.debug("%s update error", "portfolio fx", exc_info=True)
         try:
             closed_panel = self.query_one("#closed-panel", VerticalScroll)
             _limit = rows_available(closed_panel, reserved=3, minimum=4)
@@ -469,7 +471,7 @@ class PortfolioPage(ResizeRefresh, Static):
                 build_closed_trades(state, now=now, limit=_limit, wide=_wide)
             )
         except Exception:
-            pass
+            logger.debug("%s update error", "portfolio closed trades", exc_info=True)
 
     def action_cycle_sort(self) -> None:
         """Cycle: |P&L| → value → % → |P&L|"""
@@ -478,4 +480,4 @@ class PortfolioPage(ResizeRefresh, Static):
             try:
                 self._refresh_positions(self._last_state)
             except Exception:
-                pass
+                logger.debug("%s update error", "portfolio cycle sort", exc_info=True)

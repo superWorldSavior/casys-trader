@@ -16,6 +16,7 @@ Adaptations vs mockup §3.2 :
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -66,6 +67,7 @@ from trader.support.coercion import (
 )
 
 UTC = timezone.utc
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Risk caps — lecture tolérante de config/risk.yaml
@@ -73,15 +75,32 @@ UTC = timezone.utc
 
 _REPO_ROOT = Path(__file__).resolve().parents[4]
 _RISK_YAML = _REPO_ROOT / "config" / "risk.yaml"
+_RISK_CAPS_MTIME: float | None = None
+_RISK_CAPS_CACHE: dict = {}
 
 
 def _load_risk_caps() -> dict:
-    """Lit config/risk.yaml de manière tolérante ; retourne {} en cas d'erreur."""
+    """Lit config/risk.yaml de manière tolérante ; retourne {} en cas d'erreur.
+
+    Cache module-level invalidé par mtime — ``make edit-risk`` relit au prochain tick.
+    """
+    global _RISK_CAPS_MTIME, _RISK_CAPS_CACHE
+    try:
+        mtime = _RISK_YAML.stat().st_mtime
+    except OSError:
+        _RISK_CAPS_MTIME = None
+        _RISK_CAPS_CACHE = {}
+        return {}
+    if _RISK_CAPS_MTIME == mtime:
+        return _RISK_CAPS_CACHE
     try:
         data = yaml.safe_load(_RISK_YAML.read_text(encoding="utf-8"))
-        return data if isinstance(data, dict) else {}
+        caps = data if isinstance(data, dict) else {}
     except Exception:
-        return {}
+        caps = {}
+    _RISK_CAPS_MTIME = mtime
+    _RISK_CAPS_CACHE = caps
+    return caps
 
 
 # ---------------------------------------------------------------------------
@@ -636,7 +655,7 @@ class DecisionsPage(ResizeRefresh, Static):
             title = f"DETAIL — {sym}" if sym and sym != "—" else "DETAIL"
             self.query_one("#detail-scroll").border_title = title
         except Exception:
-            pass
+            logger.debug("%s update error", "decisions detail", exc_info=True)
 
     # ------------------------------------------------------------------
     # Actions filtre
@@ -701,7 +720,7 @@ class DecisionsPage(ResizeRefresh, Static):
             self._expanded_key = None
             self.query_one("#detail-scroll").display = False
         except Exception:
-            pass
+            logger.debug("%s update error", "decisions ledger", exc_info=True)
 
     # ------------------------------------------------------------------
     # Contrat public
@@ -713,7 +732,7 @@ class DecisionsPage(ResizeRefresh, Static):
             self._last_state = state
             self._refresh_ledger()
         except Exception:
-            pass
+            logger.debug("%s update error", "decisions ledger", exc_info=True)
         now = datetime.now(UTC)
 
         try:
@@ -729,7 +748,7 @@ class DecisionsPage(ResizeRefresh, Static):
                 f"ARMED — {len(armed_projection.rows)}"
             )
         except Exception:
-            pass
+            logger.debug("%s update error", "decisions armed", exc_info=True)
 
         try:
             exit_plans_projection = project_exit_plans(state)
@@ -745,7 +764,7 @@ class DecisionsPage(ResizeRefresh, Static):
                 f"EXITS — {len(exit_plans_projection.rows)} · by stop distance"
             )
         except Exception:
-            pass
+            logger.debug("%s update error", "decisions exits", exc_info=True)
 
         try:
             active_watches_projection = project_active_watches(state, now=now)
@@ -769,11 +788,11 @@ class DecisionsPage(ResizeRefresh, Static):
                 f"WATCHES — {active_count} + {exit_count} exits"
             )
         except Exception:
-            pass
+            logger.debug("%s update error", "decisions watches", exc_info=True)
 
         try:
             self.query_one("#playbook-fire-body", Static).update(
                 build_next_to_fire_plans(state, now=now)
             )
         except Exception:
-            pass
+            logger.debug("%s update error", "decisions next to fire", exc_info=True)

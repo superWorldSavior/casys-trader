@@ -27,6 +27,7 @@ def test_decision_status_priorites():
 
 def test_parse_ts_z_et_naif_et_invalide():
     from trader.cockpit.aggregates import parse_ts
+    from trader.interfaces.cockpit.format import parse_ts as format_parse_ts
 
     aware = parse_ts("2026-07-03T11:59:00Z")
     assert aware is not None and aware.tzinfo is not None
@@ -35,6 +36,17 @@ def test_parse_ts_z_et_naif_et_invalide():
     assert parse_ts("") is None
     assert parse_ts("pas-une-date") is None
     assert parse_ts(None) is None
+    assert parse_ts is format_parse_ts
+
+
+def test_parse_ts_convertit_offset_non_utc():
+    from trader.cockpit.aggregates import parse_ts
+
+    paris = parse_ts("2026-07-03T14:00:00+02:00")
+    assert paris is not None
+    assert paris.tzinfo == UTC
+    assert paris.hour == 12
+    assert paris.minute == 0
 
 
 def test_select_decision_rows_priorise_exec():

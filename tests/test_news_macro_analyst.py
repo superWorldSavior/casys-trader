@@ -351,6 +351,58 @@ def test_news_macro_timeout_env_remplace_le_defaut(monkeypatch) -> None:
     assert _timeout_from_env() == 600
 
 
+def test_news_macro_analyst_error_preserves_provider_fallback_reason() -> None:
+    class FailedRouter:
+        def complete(self, _prompt: str, *, timeout_s: int):
+            return llm.LlmFailure(
+                provider="test",
+                model="stub",
+                code="timeout",
+                message="too slow",
+                retryable=True,
+                fallback_reason="primary:quota",
+            )
+
+    with pytest.raises(NewsMacroAnalystError, match="too slow") as raised:
+        LlmNewsMacroAnalyst(FailedRouter(), timeout_s=1).analyze(
+            NewsMacroAnalysisRequest(
+                as_of="2026-07-09T07:00:00+00:00",
+                valid_until="2026-07-10T07:00:00+00:00",
+                venue="US",
+                news_items=({"uuid": "u1", "publisher": "Reuters", "title": "Rates rise"},),
+            )
+        )
+
+    assert raised.value.code == "timeout"
+    assert raised.value.provider == "test"
+    assert raised.value.model == "stub"
+    assert raised.value.provider_fallback_reason == "primary:quota"
+
+
+def test_news_macro_router_session_label_lit_lenv(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def build_router(**kwargs):
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(llm, "build_default_router_from_env", build_router)
+    monkeypatch.delenv("TRADER_NEWS_MACRO_ACPX_SESSION_LABEL", raising=False)
+
+    from trader.agent.news_macro.analyzer import (
+        DEFAULT_NEWS_MACRO_ANALYST_SESSION_LABEL,
+        build_news_macro_router_from_env,
+    )
+
+    build_news_macro_router_from_env(env_path=None)
+    assert captured["acpx_session_label"] == DEFAULT_NEWS_MACRO_ANALYST_SESSION_LABEL
+
+    monkeypatch.setenv("TRADER_NEWS_MACRO_ACPX_SESSION_LABEL", "casys-trader:custom-macro")
+    captured.clear()
+    build_news_macro_router_from_env(env_path=None)
+    assert captured["acpx_session_label"] == "casys-trader:custom-macro"
+
+
 def test_news_macro_router_charge_le_dotenv_avant_les_knobs(tmp_path, monkeypatch) -> None:
     monkeypatch.delenv("TRADER_NEWS_MACRO_ACPX_AGENT", raising=False)
     monkeypatch.delenv("TRADER_NEWS_MACRO_MODEL", raising=False)

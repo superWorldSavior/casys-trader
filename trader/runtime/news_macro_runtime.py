@@ -388,11 +388,15 @@ def tick_news_macro_analysis(
                             )
                         )
 
-    if status_dirty:
-        _write_status(status_path, status)
-    if errors:
-        log.warning("news macro analyst errors: %s", errors)
-    return {"triggered": triggered, "skipped": skipped, "errors": errors}
+    try:
+        if status_dirty:
+            _write_status(status_path, status)
+        if errors:
+            log.warning("news macro analyst errors: %s", errors)
+        return {"triggered": triggered, "skipped": skipped, "errors": errors}
+    finally:
+        if situation_store is None and memory is not None:
+            memory.close()
 
 
 class NewsMacroAnalysisRunner:

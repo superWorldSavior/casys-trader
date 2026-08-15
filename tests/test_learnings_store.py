@@ -13,6 +13,8 @@ import json
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 from trader.agent.learnings.store import LearningsStore
 from trader.domain.decision_benchmark import BENCHMARK_SEMANTICS_VERSION
 
@@ -249,6 +251,32 @@ def test_ingest_fichier_absent_renvoie_zero(tmp_path: Path) -> None:
     store = LearningsStore(tmp_path / "learnings.db")
     result = store.ingest_jsonl(tmp_path / "absent.jsonl", source="test")
     assert result == {"inserted": 0, "skipped": 0}
+
+
+def test_ingest_commit_failure_rolls_back_and_connection_stays_usable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    jsonl = tmp_path / "test.jsonl"
+    _write_jsonl(jsonl, _ROWS)
+    store = LearningsStore(tmp_path / "learnings.db")
+    real_conn = store._conn
+
+    class _FailingCommit:
+        def commit(self) -> None:
+            raise sqlite3.OperationalError("database is locked")
+
+        def __getattr__(self, name: str):
+            return getattr(real_conn, name)
+
+    monkeypatch.setattr(store, "_conn", _FailingCommit())
+    with pytest.raises(sqlite3.OperationalError, match="database is locked"):
+        store.ingest_jsonl(jsonl, source="test")
+    monkeypatch.undo()
+
+    assert store.count() == 0
+    result = store.ingest_jsonl(jsonl, source="test")
+    assert result == {"inserted": 3, "skipped": 0}
+    assert store.count() == 3
 
 
 # ---------------------------------------------------------------------------

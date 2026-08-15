@@ -16,6 +16,24 @@ _DAEMON_MAIN_AGENT_EXEC_ENV_KEYS = (
     "TRADER_REASONING_EFFORT",
 )
 
+# Les builders d'analystes appellent load_dotenv() : sans neutralisation, un test
+# qui en instancie un injecte le .env de la machine dans os.environ, et un test
+# ultérieur lisant un timeout hérite de la valeur locale au lieu du défaut code.
+_ANALYST_TIMEOUT_ENV_KEYS = (
+    "TRADER_UNIVERSE_TIMEOUT_S",
+    "TRADER_GLOBAL_POSTURE_TIMEOUT_S",
+    "TRADER_NEWS_MACRO_TIMEOUT_S",
+    "TRADER_COMPANY_MICRO_TIMEOUT_S",
+)
+
+
+@pytest.fixture(autouse=True)
+def _analyst_timeouts_use_code_defaults(monkeypatch):
+    """Les timeouts analystes viennent du code, jamais du .env de la machine."""
+
+    for key in _ANALYST_TIMEOUT_ENV_KEYS:
+        monkeypatch.delenv(key, raising=False)
+
 
 @pytest.fixture(autouse=True)
 def _news_macro_disabled_by_default(monkeypatch):

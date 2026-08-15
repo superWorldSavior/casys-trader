@@ -15,6 +15,7 @@ Write path    : p pin · b ban · u undo override → user_overrides.py (atomiqu
 from __future__ import annotations
 
 import json
+import logging
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -57,6 +58,8 @@ from trader.support.coercion import (
     dict_list as _safe_list_of_dicts,
     finite_float as _safe_float,
 )
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Constantes locales
@@ -828,6 +831,7 @@ class UniversePage(ResizeRefresh, Static):
         try:
             overrides = load_user_overrides(self._universe_path())
         except Exception:
+            logger.debug("%s update error", "universe overrides load", exc_info=True)
             overrides = UserOverrides()
 
         # Titre panneau gauche
@@ -840,7 +844,7 @@ class UniversePage(ResizeRefresh, Static):
             left = self.query_one("#universe-left", VerticalScroll)
             left.border_title = f"UNIVERSE — {n_sym} symbols · {len(active_venues)} venues"
         except Exception:
-            pass
+            logger.debug("%s update error", "universe left title", exc_info=True)
 
         # Table — colonnes + limites adaptatives
         try:
@@ -860,34 +864,35 @@ class UniversePage(ResizeRefresh, Static):
                     name_col_width=name_col_width,
                 )
         except Exception:
-            pass
+            logger.debug("%s update error", "universe table", exc_info=True)
 
         # Ledger last rotation (I/O tolérant)
         try:
             root = Path(getattr(self.app, "_root", Path.cwd()))
             last_rotation = _read_last_rotation(root / "state" / "rotation_ledger.jsonl")
         except Exception:
+            logger.debug("%s update error", "universe last rotation", exc_info=True)
             last_rotation = None
 
         # Panneaux droits
         try:
             self.query_one("#pipeline-body", Static).update(build_universe_pipeline_panel(state))
         except Exception:
-            pass
+            logger.debug("%s update error", "universe pipeline", exc_info=True)
         try:
             self.query_one("#rotation-body", Static).update(
                 build_rotation_panel(state, now=now, last_rotation=last_rotation)
             )
         except Exception:
-            pass
+            logger.debug("%s update error", "universe rotation", exc_info=True)
         try:
             self.query_one("#hotset-body", Static).update(build_hot_set_panel(state))
         except Exception:
-            pass
+            logger.debug("%s update error", "universe hotset", exc_info=True)
         try:
             self.query_one("#overrides-body", Static).update(build_overrides_panel(overrides))
         except Exception:
-            pass
+            logger.debug("%s update error", "universe overrides", exc_info=True)
 
     # ------------------------------------------------------------------
     # Write path — p / b / u
@@ -920,11 +925,12 @@ class UniversePage(ResizeRefresh, Static):
         try:
             overrides = load_user_overrides(self._universe_path())
         except Exception:
+            logger.debug("%s update error", "universe overrides reload", exc_info=True)
             overrides = UserOverrides()
         try:
             self.query_one("#overrides-body", Static).update(build_overrides_panel(overrides))
         except Exception:
-            pass
+            logger.debug("%s update error", "universe overrides render", exc_info=True)
         # Re-render la table pour refléter le nouvel état pin/ban
         if self._last_state is not None:
             try:
@@ -942,7 +948,7 @@ class UniversePage(ResizeRefresh, Static):
                         name_col_width=self._active_name_col_width,
                     )
             except Exception:
-                pass
+                logger.debug("%s update error", "universe table after override", exc_info=True)
 
     def _apply_override(self, verb: str, write_fn, symbol: str) -> None:
         """Écrit l'override et donne un feedback EXPLICITE (succès comme échec)."""

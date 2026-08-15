@@ -27,6 +27,7 @@ documentant l'écart.
 
 from __future__ import annotations
 
+import logging
 import os
 import tempfile
 from dataclasses import dataclass
@@ -51,6 +52,8 @@ from trader.interfaces.ui.palette import (
     CASYS_MUTED,
     CASYS_WARNING,
 )
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Chemins — patchables dans les tests.
@@ -561,7 +564,7 @@ class SettingsPage(ResizeRefresh, Static):
             self._reload_config()
             self._render_all()
         except Exception:
-            pass
+            logger.debug("%s update error", "settings", exc_info=True)
 
     # ── Config I/O ────────────────────────────────────────────────────────
 
@@ -593,7 +596,7 @@ class SettingsPage(ResizeRefresh, Static):
         try:
             self.query_one(selector, Static).update(renderable)
         except Exception:
-            pass
+            logger.debug("%s update error", selector, exc_info=True)
 
     def _refresh_pending_banner(self) -> None:
         try:
@@ -606,7 +609,7 @@ class SettingsPage(ResizeRefresh, Static):
                 banner.update(Text(""))
                 banner.display = False
         except Exception:
-            pass
+            logger.debug("%s update error", "settings pending banner", exc_info=True)
 
     # ── Key handling ──────────────────────────────────────────────────────
 

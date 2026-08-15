@@ -11,10 +11,12 @@ Le .db est un DÉRIVÉ reconstructible — les JSONL d'archives restent canoniqu
 from __future__ import annotations
 
 import json
+import logging
 import math
 import sqlite3
 import threading
 from collections.abc import Callable
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -26,6 +28,8 @@ from trader.domain.semantic.catalog import family_for_symbol
 from trader.infrastructure.state_db.fts_query import sanitize_fts5_query
 
 __all__ = ["LearningsStore"]
+
+log = logging.getLogger(__name__)
 
 # Mode WAL : lecture concurrente daemon + écriture record_recall sans blocage.
 _PRAGMAS = [
@@ -320,6 +324,11 @@ def _migrate_benchmark_semantics(
         raise
 
 
+def _is_fts5_query_error(exc: BaseException) -> bool:
+    message = str(exc).lower()
+    return "fts5:" in message or "syntax error" in message or "no such column" in message
+
+
 def _utc_lifecycle_clock(now: datetime | None) -> datetime:
     resolved = now or datetime.now(timezone.utc)
     if resolved.tzinfo is None:
@@ -426,6 +435,15 @@ class LearningsStore:
         with self._lock:
             self._conn.close()
 
+    @contextmanager
+    def _commit_or_rollback(self):
+        try:
+            yield
+            self._conn.commit()
+        except Exception:
+            self._conn.rollback()
+            raise
+
     # ------------------------------------------------------------------
     # Ingestion
     # ------------------------------------------------------------------
@@ -495,7 +513,7 @@ class LearningsStore:
                     "curation_updated_at": ts or datetime.now(timezone.utc).isoformat(),
                 })
 
-        with self._lock:
+        with self._lock, self._commit_or_rollback():
             for params in rows_to_insert:
                 cursor = self._conn.execute(
                     """
@@ -515,7 +533,6 @@ class LearningsStore:
                     inserted += 1
                 else:
                     skipped += 1
-            self._conn.commit()
         return {"inserted": inserted, "skipped": skipped}
 
     # ------------------------------------------------------------------
@@ -550,7 +567,7 @@ class LearningsStore:
 
         updated = 0
         changed_at = datetime.now(timezone.utc).isoformat()
-        with self._lock:
+        with self._lock, self._commit_or_rollback():
             for item in learnings:
                 decision_id = item.get("decision_id")
                 if not decision_id:
@@ -587,8 +604,6 @@ class LearningsStore:
                 )
                 if cursor.rowcount > 0:
                     updated += 1
-
-            self._conn.commit()
         return updated
 
     def compute_outcome_scores(self, *, shrinkage_k: float = 5.0) -> dict:
@@ -604,7 +619,7 @@ class LearningsStore:
 
         Retourne ``{"scored": n, "base_rates": {sym: rate, ...}}``.
         """
-        with self._lock:
+        with self._lock, self._commit_or_rollback():
             # Charger toutes les notes avec un verdict posé
             rows = self._conn.execute(
                 """
@@ -634,8 +649,6 @@ class LearningsStore:
                     """,
                     {"score": outcome_score, "id": note_id, "changed_at": changed_at},
                 )
-
-            self._conn.commit()
         return {
             "scored": result.get("scored", 0),
             "base_rates": result.get("base_rates", {}),
@@ -832,7 +845,7 @@ class LearningsStore:
             snapshots[note_id] = max(snapshots.get(note_id, 0), revision)
 
         updated = 0
-        with self._lock:
+        with self._lock, self._commit_or_rollback():
             for note_id, revision in snapshots.items():
                 cursor = self._conn.execute(
                     """
@@ -843,7 +856,6 @@ class LearningsStore:
                     (revision, note_id, revision),
                 )
                 updated += max(int(cursor.rowcount), 0)
-            self._conn.commit()
         return updated
 
     # ------------------------------------------------------------------
@@ -883,13 +895,12 @@ class LearningsStore:
         # L'appel réseau sort du verrou pour ne pas bloquer les readers.
         blobs = embedder(texts)
 
-        with self._lock:
+        with self._lock, self._commit_or_rollback():
             for note_id, blob in zip(ids, blobs):
                 self._conn.execute(
                     "UPDATE notes SET embedding = ? WHERE id = ?",
                     (blob, note_id),
                 )
-            self._conn.commit()
         return len(ids)
 
     # ------------------------------------------------------------------
@@ -985,8 +996,10 @@ class LearningsStore:
                         """,
                         {**params, "text_query": fts_query},
                     ).fetchall()
-                except sqlite3.OperationalError:
-                    # Query encore illégale après quoting → pas de crash outil.
+                except sqlite3.OperationalError as exc:
+                    if not _is_fts5_query_error(exc):
+                        raise
+                    log.debug("learnings FTS query rejected: %s", exc)
                     fts_rows = []
                 fts_ranked = [r[0] for r in fts_rows if r[0] in candidate_ids]
 
@@ -1092,12 +1105,11 @@ class LearningsStore:
         Écrit une ligne dans ``recalls(decision_id, note_ids JSON, ts ISO)`` .
         """
         ts = datetime.now(timezone.utc).isoformat()
-        with self._lock:
+        with self._lock, self._commit_or_rollback():
             self._conn.execute(
                 "INSERT INTO recalls (decision_id, note_ids, ts) VALUES (?, ?, ?)",
                 (decision_id, json.dumps(note_ids), ts),
             )
-            self._conn.commit()
 
     def pending_outcome_notes(
         self,
@@ -1130,7 +1142,7 @@ class LearningsStore:
 
         updated = 0
         changed_at = datetime.now(timezone.utc).isoformat()
-        with self._lock:
+        with self._lock, self._commit_or_rollback():
             for row in rows:
                 verdict = row.get("verdict")
                 if verdict is None:
@@ -1155,7 +1167,6 @@ class LearningsStore:
                     ),
                 )
                 updated += max(int(cursor.rowcount), 0)
-            self._conn.commit()
         return updated
 
     def pending_recall_decision_ids(
@@ -1198,7 +1209,7 @@ class LearningsStore:
 
         learning_rate = min(max(float(alpha), 0.0), 1.0)
         note_ids: set[int] = set()
-        with self._lock:
+        with self._lock, self._commit_or_rollback():
             recall_rows = self._conn.execute(
                 """
                 SELECT id, note_ids
@@ -1256,7 +1267,6 @@ class LearningsStore:
                     (new_q, datetime.now(timezone.utc).isoformat(), note_id),
                 )
                 notes_updated += max(int(cursor.rowcount), 0)
-            self._conn.commit()
         return {
             "recalls_updated": len(recall_rows),
             "notes_updated": notes_updated,
@@ -1290,7 +1300,7 @@ class LearningsStore:
         rule_ids = list(dict.fromkeys(str(rule_id).strip() for rule_id in active_rule_ids if str(rule_id).strip()))
         _ = ts
         lifecycle_clock = _utc_lifecycle_clock(now)
-        with self._lock:
+        with self._lock, self._commit_or_rollback():
             existing_rows = self._conn.execute(
                 "SELECT rule_id, active, created_at, retired_at, updated_at FROM global_rules"
             ).fetchall()
@@ -1337,7 +1347,6 @@ class LearningsStore:
                     (changed_at, changed_at),
                 )
             retired = max(int(cursor.rowcount), 0)
-            self._conn.commit()
         return {
             "created": sum(rule_id not in existing for rule_id in rule_ids),
             "reactivated": sum(existing.get(rule_id) == 0 for rule_id in rule_ids),
@@ -1402,7 +1411,7 @@ class LearningsStore:
         if not cleaned or len(cleaned) > 3 or len(set(cleaned)) != len(cleaned):
             raise ValueError("global rule citations require one to three distinct rule IDs")
         citation_ts = ts or datetime.now(timezone.utc).isoformat()
-        with self._lock:
+        with self._lock, self._commit_or_rollback():
             placeholders = ", ".join("?" for _ in cleaned)
             active_rows = self._conn.execute(
                 f"SELECT rule_id FROM global_rules WHERE active=1 AND rule_id IN ({placeholders})",
@@ -1420,7 +1429,6 @@ class LearningsStore:
                 """,
                 (str(decision_id), json.dumps(cleaned), citation_ts),
             )
-            self._conn.commit()
         return bool(cursor.rowcount)
 
     def pending_global_rule_decision_ids(
@@ -1462,7 +1470,7 @@ class LearningsStore:
         """Apply one idempotent delayed reward to explicitly cited global rules."""
 
         learning_rate = min(max(float(alpha), 0.0), 1.0)
-        with self._lock:
+        with self._lock, self._commit_or_rollback():
             citation = self._conn.execute(
                 """
                 SELECT id, rule_ids
@@ -1518,7 +1526,6 @@ class LearningsStore:
                         (new_q, datetime.now(timezone.utc).isoformat(), rule_id),
                     )
                     rules_updated += max(int(cursor.rowcount), 0)
-            self._conn.commit()
         return {
             "citations_updated": 1,
             "rules_updated": rules_updated,
