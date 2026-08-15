@@ -1,6 +1,6 @@
 # casys-trader — raccourcis. Lance `make` (ou `make help`) pour la liste.
 .DEFAULT_GOAL := help
-.PHONY: help watch live once test logs live-logs dash dash-portfolio dash-decisions dash-list macro models model-preset
+.PHONY: help watch live once test logs live-logs dash dash-portfolio dash-decisions dash-list macro models model-preset storage-report storage-archive
 
 help:  ## Affiche cette aide
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -57,3 +57,9 @@ models:  ## Jeu de modèles LLM actif (les 5 rôles) et preset courant
 
 model-preset:  ## Bascule de preset modèles — dry-run ; PRESET=<nom> [WRITE=1]. Redémarrer le daemon après.
 	uv run python scripts/model_preset.py apply $(PRESET) $(if $(WRITE),--write,)
+
+storage-report:  ## Stockage agents : ce qui serait archivé/purgé (simulation, n'écrit rien)
+	uv run python -m scripts.archive_agent_storage --older-than $(or $(DAYS),7)
+
+storage-archive:  ## Archive les sessions agents en tar.zst (~50x) et purge les logs codex. DAYS=7 par défaut.
+	uv run python -m scripts.archive_agent_storage --older-than $(or $(DAYS),7) --apply
