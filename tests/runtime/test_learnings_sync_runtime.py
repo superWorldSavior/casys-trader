@@ -83,6 +83,7 @@ def test_sync_ingere_vectorise_et_score_les_nouvelles_notes(tmp_path) -> None:
     assert result["ingest"]["runtime"]["inserted"] == 1
     assert result["embeddings_backfilled"] == 1
     assert result["outcomes"]["notes_updated"] == 1
+    assert result["outcomes"]["universe_selections"]["evaluated"] == 0
     conn = sqlite3.connect(state_dir / "learnings.db")
     row = conn.execute("SELECT verdict, forward_return, embedding FROM notes").fetchone()
     conn.close()

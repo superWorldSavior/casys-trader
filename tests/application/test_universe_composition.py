@@ -85,6 +85,40 @@ def test_request_keeps_a_global_situation_digest_for_prompt_injection() -> None:
     assert request.to_dict()["global_situation_digest"] == request.global_situation_digest
 
 
+def test_request_injecte_un_selection_feedback_comparatif() -> None:
+    request = build_universe_composition_request(
+        venue="EU",
+        as_of="2026-07-10T15:30:00+00:00",
+        candidates=({"symbol": "SAP.DE", "attractiveness": 0.8, "bias": "long"},),
+        baseline=("SAP.DE",),
+        sticky=(),
+        market_context={},
+        situation_context=UniverseSituationContext.not_available(candidate_count=1),
+        selection_feedback={
+            "role": "comparative_context_not_hotlist",
+            "status": "observed",
+            "families": [{"family": "eu_tech", "utility": "helps", "n": 8}],
+        },
+    )
+
+    assert request.selection_feedback["status"] == "observed"
+    assert request.to_dict()["selection_feedback"]["families"][0]["family"] == "eu_tech"
+
+
+def test_request_refuse_un_selection_feedback_qui_choisirait_la_hotlist() -> None:
+    with pytest.raises(ValueError, match="selection_feedback_role_invalid"):
+        build_universe_composition_request(
+            venue="EU",
+            as_of="2026-07-10T15:30:00+00:00",
+            candidates=({"symbol": "SAP.DE", "attractiveness": 0.8, "bias": "long"},),
+            baseline=("SAP.DE",),
+            sticky=(),
+            market_context={},
+            situation_context=UniverseSituationContext.not_available(candidate_count=1),
+            selection_feedback={"role": "pick_hotlist", "families": []},
+        )
+
+
 def test_request_keeps_a_global_universe_posture_for_prompt_injection() -> None:
     request = build_universe_composition_request(
         venue="EU",

@@ -100,6 +100,28 @@ def plan_to_context_dict(plan: TradePlan) -> dict:
     }
 
 
+def _build_learnings_context(
+    consolidated_learnings_store: object,
+    learnings_store: object,
+    *,
+    max_learnings_in_context: int,
+    root: Path,
+    recall_store: object | None,
+) -> dict:
+    consolidated = consolidated_learnings_store.read()
+    kwargs: dict = {
+        "raw_recent": learnings_store.recent(limit=max_learnings_in_context),
+        "guardrails": consolidator.load_guardrails(root / "mandate" / "guardrails.json"),
+    }
+    reader = getattr(recall_store, "global_rule_scores", None) if recall_store is not None else None
+    if callable(reader):
+        try:
+            kwargs["rule_scores"] = reader(active_only=True)
+        except Exception as exc:  # noqa: BLE001 - MemRL on the prompt is advisory
+            log.warning("global rule citation scores unread (%s)", exc)
+    return consolidator.build_context_learnings(consolidated, **kwargs)
+
+
 def build_base_context(
     *,
     cycle_id: str,
@@ -129,6 +151,7 @@ def build_base_context(
     daily_bars_by_symbol: dict,
     active_families: object,
     requestable_indicator_ids: object,
+    recall_store: object | None = None,
 ) -> dict:
     """Assemble the complete payload exposed to the decision agent."""
 
@@ -157,12 +180,12 @@ def build_base_context(
         "kpis": live_kpis.compute_live_kpis(state_dir),
         "attribution": attribution_payload,
         "meta_performance": meta_performance_payload,
-        "learnings": consolidator.build_context_learnings(
-            consolidated_learnings_store.read(),
-            raw_recent=learnings_store.recent(limit=max_learnings_in_context),
-            guardrails=consolidator.load_guardrails(
-                root / "mandate" / "guardrails.json"
-            ),
+        "learnings": _build_learnings_context(
+            consolidated_learnings_store,
+            learnings_store,
+            max_learnings_in_context=max_learnings_in_context,
+            root=root,
+            recall_store=recall_store,
         ),
         "regime_families": family_regime.compute_family_bias(
             {

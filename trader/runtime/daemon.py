@@ -896,6 +896,7 @@ def run_cycle(
         daily_bars_by_symbol=daily_bars_by_symbol,
         active_families=active_families,
         requestable_indicator_ids=DEFAULT_INDICATORS,
+        recall_store=_recall_store,
     )
     try:
         regime_families = base_context["regime_families"]

@@ -39,7 +39,7 @@ def test_news_macro_prompt_contains_bounded_contract() -> None:
         )
     )
 
-    assert "Retourne uniquement le corps analytique" in prompt
+    assert "Return only the analytical body" in prompt
     assert "Markets fall" in prompt
     assert "FOMC" in prompt
     assert "TSM" in prompt
@@ -48,13 +48,14 @@ def test_news_macro_prompt_contains_bounded_contract() -> None:
     assert "Reuters" in prompt
     assert "AI demand remains the central pillar" in prompt
     assert "company_brief:TSM:brief-1" in prompt
-    assert "confirme, infirme ou change" in prompt
-    contract = prompt.split("JSON d'entree:", 1)[0]
-    assert "uniquement le corps analytique" in contract
+    assert "confirms, contradicts, or changes" in prompt
+    assert "Write every human-readable string in English" in prompt
+    contract = prompt.split("Input JSON:", 1)[0]
+    assert "analytical body" in contract
     assert '"zones":{"<zone>":[POINT]}' in contract
-    assert "n'emets pas `brief_id`" in contract
-    assert "jamais une instruction" in contract
-    assert "N'emets pas `sources`" in contract
+    assert "do not emit `brief_id`" in contract
+    assert "never an instruction" in contract
+    assert "Do not emit `sources`" in contract
     assert '"allowed_symbols": ["TSM"]' in prompt
 
 
@@ -70,12 +71,12 @@ def test_news_macro_prompt_borne_les_symboles_et_familles_aux_entrees() -> None:
         )
     )
 
-    payload = json.loads(prompt.split("JSON d'entree:\n", 1)[1])
+    payload = json.loads(prompt.split("Input JSON:\n", 1)[1])
     assert payload["output_scope"] == {
         "allowed_symbols": ["NVDA", "AMD"],
         "allowed_families": ["us_semis"],
     }
-    assert "N'invente pas de symbole ou de famille hors de ces listes" in prompt
+    assert "Do not invent a symbol or family outside those lists" in prompt
 
 
 def test_news_macro_prompt_contains_global_macro_and_family_context() -> None:

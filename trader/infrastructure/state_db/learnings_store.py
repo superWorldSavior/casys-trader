@@ -703,6 +703,36 @@ class LearningsStore:
             "oldest_changed_at": row["oldest_changed_at"],
         }
 
+    def pending_curation_snapshots(self) -> list[dict]:
+        """All notes whose current revision has not been acknowledged yet.
+
+        The consolidator snapshots this set *before* the LLM call, then marks
+        exactly those revisions after a successful write. Leftovers of the
+        snapshot are considered seen; a newer in-flight outcome stays pending.
+        """
+
+        with self._lock:
+            rows = self._conn.execute(
+                f"""
+                SELECT id, curation_revision
+                FROM notes
+                WHERE curation_revision > curated_revision
+                  AND (
+                    outcome_semantics_version = {BENCHMARK_SEMANTICS_VERSION}
+                    OR curated_revision = 0
+                  )
+                ORDER BY id
+                """
+            ).fetchall()
+        return [
+            {
+                "id": int(row["id"]),
+                "note_id": int(row["id"]),
+                "curation_revision": int(row["curation_revision"] or 0),
+            }
+            for row in rows
+        ]
+
     def select_curation_candidates(
         self,
         *,

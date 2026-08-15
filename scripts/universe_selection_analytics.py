@@ -24,50 +24,12 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parent.parent
 
+from trader.application.universe.selection_attribution import (
+    iter_mandate_payloads,
+    load_mandate_selections,
+)
+
 __all__ = ["iter_mandate_payloads", "load_mandate_selections", "main"]
-
-
-def iter_mandate_payloads(state_dir: Path):
-    """Yield mandate snapshots without loading the 20+ Mo history into memory."""
-    history = state_dir / "universe_mandates" / "history.jsonl"
-    if history.is_file():
-        with history.open(encoding="utf-8") as handle:
-            for raw in handle:
-                line = raw.strip()
-                if not line:
-                    continue
-                try:
-                    payload = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if isinstance(payload, dict):
-                    yield payload
-        return
-    venues = state_dir / "universe_mandates" / "active" / "venues"
-    if not venues.is_dir():
-        return
-    for path in sorted(venues.glob("*.json")):
-        try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            continue
-        if isinstance(payload, dict):
-            yield payload
-
-
-def load_mandate_selections(state_dir: Path) -> list[Any]:
-    from trader.application.universe.selection_attribution import selections_from_mandate_payload
-
-    selections: list[Any] = []
-    seen: set[tuple[str, str, str]] = set()
-    for payload in iter_mandate_payloads(state_dir):
-        for selection in selections_from_mandate_payload(payload):
-            key = (selection.mandate_id, selection.symbol, selection.as_of)
-            if key in seen:
-                continue
-            seen.add(key)
-            selections.append(selection)
-    return selections
 
 
 def build_script_data_source():

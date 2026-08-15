@@ -57,8 +57,8 @@ def test_commande_analytics_imprime_json(tmp_path: Path, capsys) -> None:
     assert "defense_aero_eu" in families
     assert "us_auto" in families
     assert "by_venue" in payload and "by_role" in payload
-    assert payload["pays"]["families"] == ["defense_aero_eu"]
-    assert payload["decoit"]["families"] == ["us_auto"]
+    assert payload["pays"]["families"] == []
+    assert payload["decoit"]["families"] == []
 
 
 def test_commande_evaluate_juge_via_datasource(tmp_path: Path, capsys, monkeypatch) -> None:
@@ -109,4 +109,4 @@ def test_commande_evaluate_juge_via_datasource(tmp_path: Path, capsys, monkeypat
     payload = json.loads(capsys.readouterr().out)
     assert payload["n_evaluated_this_run"] == 1
     assert payload["n_gagnant"] == 1
-    assert payload["pays"]["families"] == ["defense_aero_eu"]
+    assert payload["pays"]["families"] == []

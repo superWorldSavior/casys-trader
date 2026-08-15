@@ -811,6 +811,7 @@ def test_prompt_consolidation_injecte_lattribution_et_les_consigne_qualite() -> 
     assert payload["attribution"] == attribution
     assert "robustness" in prompt
     assert "3 occurrences" in prompt
+    assert "q_updates` >= 10" in prompt or "memrl.q_updates" in prompt
     assert "P&L cohérent" in prompt
     assert "preuves suffisantes et distinctes" in prompt
     assert "AU MOINS 3 règles `global`" in prompt
@@ -1435,3 +1436,303 @@ def test_v2_migration_pending_rows_do_not_consolidate_before_replay(tmp_path) ->
     assert migrated_store.curation_counts()["feedback"] == 1
     assert migrated_store.select_curation_candidates()[0]["verdict"] == "LOSS"
     migrated_store.close()
+
+
+def test_unlabeled_same_normalized_note_reuses_current_rule_id(tmp_path) -> None:
+    raw_store = RawLearningsStore(tmp_path / "learnings.jsonl", max_entries=200)
+    consolidated_store = consolidator.ConsolidatedLearningsStore(
+        tmp_path / "learnings_consolidated.json"
+    )
+    existing_id = "rule_keep_me"
+    consolidated_store.write(
+        {
+            "global": [
+                {
+                    "rule_id": existing_id,
+                    "note": "Ne pas chasser un breakout étiré.",
+                    "robustness": "low",
+                    "evidence_note_ids": [],
+                }
+            ]
+        },
+        watermark="2026-07-09T10:00:00+00:00",
+    )
+    raw_store.append(symbol="SPY", note="fresh", now=datetime(2026, 7, 10, 10, tzinfo=timezone.utc))
+
+    class Router:
+        def complete(self, prompt: str, *, timeout_s: int):
+            return llm.LlmCompletion(
+                provider="test",
+                model="stub",
+                text=json.dumps(
+                    {
+                        "global": [
+                            {
+                                "note": "ne pas  chasser un breakout étiré.",
+                                "evidence_note_ids": ["note-1"],
+                            }
+                        ]
+                    }
+                ),
+            )
+
+    result = consolidator.maybe_consolidate(
+        raw_store,
+        consolidated_store,
+        threshold=1,
+        candidate_rows=[_candidate("note-1")],
+        llm_router=Router(),
+    )
+
+    assert result["written"] is True
+    assert consolidated_store.read()["global"][0]["rule_id"] == existing_id
+
+
+def test_young_omitted_rule_is_restored_within_grace(tmp_path) -> None:
+    raw_store = RawLearningsStore(tmp_path / "learnings.jsonl", max_entries=200)
+    consolidated_store = consolidator.ConsolidatedLearningsStore(
+        tmp_path / "learnings_consolidated.json"
+    )
+    young_id = "rule_young"
+    consolidated_store.write(
+        {
+            "global": [
+                {
+                    "rule_id": young_id,
+                    "note": "Règle encore trop jeune pour mourir.",
+                    "robustness": "low",
+                    "evidence_note_ids": [],
+                }
+            ]
+        },
+        watermark="2026-07-12T10:00:00+00:00",
+    )
+    raw_store.append(symbol="SPY", note="fresh", now=datetime(2026, 7, 13, 10, tzinfo=timezone.utc))
+    now = datetime(2026, 7, 13, 12, tzinfo=timezone.utc)
+
+    class Provider:
+        def select_candidates(self, *, current: dict, new_raw: list[dict]) -> list[dict]:
+            return [_candidate("note-1")]
+
+        def global_rule_scores(self, rule_ids=None, *, active_only=False):
+            return {
+                young_id: {
+                    "q_value": 0.0,
+                    "q_updates": 0,
+                    "created_at": "2026-07-12T10:00:00+00:00",
+                }
+            }
+
+        def mark_candidates_curated(self, *, candidate_ids, watermark=None) -> int:
+            return len(candidate_ids)
+
+    class Router:
+        def complete(self, prompt: str, *, timeout_s: int):
+            return llm.LlmCompletion(
+                provider="test",
+                model="stub",
+                text=json.dumps(
+                    {
+                        "global": [
+                            {
+                                "note": "Tout autre texte, nouvelle règle.",
+                                "evidence_note_ids": ["note-1"],
+                            }
+                        ]
+                    }
+                ),
+            )
+
+    result = consolidator.maybe_consolidate(
+        raw_store,
+        consolidated_store,
+        threshold=1,
+        curation_provider=Provider(),
+        llm_router=Router(),
+        now=now,
+    )
+    ids = {rule["rule_id"] for rule in consolidated_store.read()["global"]}
+
+    assert result["written"] is True
+    assert young_id in ids
+    assert len(ids) == 2
+
+
+def test_measured_omitted_rule_evicts_an_unlabeled_newcomer(tmp_path) -> None:
+    raw_store = RawLearningsStore(tmp_path / "learnings.jsonl", max_entries=200)
+    consolidated_store = consolidator.ConsolidatedLearningsStore(
+        tmp_path / "learnings_consolidated.json"
+    )
+    measured_id = "rule_measured"
+    consolidated_store.write(
+        {
+            "global": [
+                {
+                    "rule_id": measured_id,
+                    "note": "Règle déjà jugée par les citations.",
+                    "robustness": "high",
+                    "evidence_note_ids": [],
+                }
+            ]
+        },
+        watermark="2026-07-01T10:00:00+00:00",
+    )
+    raw_store.append(symbol="SPY", note="fresh", now=datetime(2026, 7, 13, 10, tzinfo=timezone.utc))
+
+    class Provider:
+        def select_candidates(self, *, current: dict, new_raw: list[dict]) -> list[dict]:
+            return [_candidate(f"note-{idx}") for idx in range(10)]
+
+        def global_rule_scores(self, rule_ids=None, *, active_only=False):
+            return {
+                measured_id: {
+                    "q_value": -0.3,
+                    "q_updates": 12,
+                    "created_at": "2026-07-01T10:00:00+00:00",
+                }
+            }
+
+        def mark_candidates_curated(self, *, candidate_ids, watermark=None) -> int:
+            return len(candidate_ids)
+
+    class Router:
+        def complete(self, prompt: str, *, timeout_s: int):
+            return llm.LlmCompletion(
+                provider="test",
+                model="stub",
+                text=json.dumps(
+                    {
+                        "global": [
+                            {
+                                "note": f"Nouvelle règle {idx}",
+                                "evidence_note_ids": [f"note-{idx}"],
+                            }
+                            for idx in range(10)
+                        ]
+                    }
+                ),
+            )
+
+    result = consolidator.maybe_consolidate(
+        raw_store,
+        consolidated_store,
+        threshold=1,
+        curation_provider=Provider(),
+        llm_router=Router(),
+        now=datetime(2026, 8, 1, tzinfo=timezone.utc),
+    )
+    rules = consolidated_store.read()["global"]
+    ids = [rule["rule_id"] for rule in rules]
+
+    assert result["written"] is True
+    assert measured_id in ids
+    assert len(ids) == consolidator.DEFAULT_MAX_GLOBAL
+
+
+def test_citation_utility_reste_independant_de_robustness() -> None:
+    assert consolidator.citation_utility(q_value=-0.34, q_updates=35) == "hurts"
+    assert consolidator.citation_utility(q_value=0.18, q_updates=30) == "helps"
+    assert consolidator.citation_utility(q_value=-0.34, q_updates=2) == "unknown"
+
+    unmeasured = consolidator.build_context_learnings(
+        {
+            "watermark": "2026-07-10T00:00:00+00:00",
+            "global": [
+                {
+                    "rule_id": "rule_new",
+                    "note": "pas encore jugée",
+                    "robustness": "low",
+                }
+            ],
+        },
+        raw_recent=[],
+        rule_scores={"rule_new": {"q_value": 0.0, "q_updates": 2}},
+    )
+    assert "citation_utility" not in unmeasured["global"][0]
+
+    context = consolidator.build_context_learnings(
+        {
+            "watermark": "2026-07-10T00:00:00+00:00",
+            "global": [
+                {
+                    "rule_id": "rule_hurt",
+                    "note": "plan de sortie trop loin",
+                    "robustness": "low",
+                }
+            ],
+        },
+        raw_recent=[],
+        rule_scores={"rule_hurt": {"q_value": -0.34, "q_updates": 35}},
+    )
+    assert context["global"][0]["robustness"] == "low"
+    assert context["global"][0]["citation_utility"] == "hurts"
+
+
+def test_successful_consolidation_acknowledges_leftover_feedback(tmp_path) -> None:
+    raw_store = RawLearningsStore(tmp_path / "learnings.jsonl", max_entries=200)
+    consolidated_store = consolidator.ConsolidatedLearningsStore(
+        tmp_path / "learnings_consolidated.json"
+    )
+    now = datetime(2026, 7, 10, 10, tzinfo=timezone.utc)
+    recall_store = LearningsStore(tmp_path / "learnings.db")
+    rows = []
+    for idx in range(12):
+        rows.append(
+            {
+                "ts": now.isoformat(),
+                "symbol": f"S{idx}",
+                "note": f"note leftover {idx}",
+                "action": "HOLD",
+                "intent": "HOLD",
+                "executed": False,
+                "decision_id": f"leftover-{idx}",
+            }
+        )
+        raw_store.append(
+            symbol=f"S{idx}",
+            note=f"note leftover {idx}",
+            now=now,
+        )
+    jsonl = tmp_path / "leftover.jsonl"
+    jsonl.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+    recall_store.ingest_jsonl(jsonl, source="runtime")
+    note_ids = [int(row[0]) for row in recall_store._conn.execute("SELECT id FROM notes").fetchall()]
+    recall_store.mark_curation_candidates_curated(recall_store.select_curation_candidates())
+    recall_store.update_note_outcomes(
+        [{"id": note_id, "verdict": "WIN", "forward_return": 0.02} for note_id in note_ids]
+    )
+    assert recall_store.curation_counts()["feedback"] == 12
+
+    class Router:
+        def complete(self, prompt: str, *, timeout_s: int):
+            payload = json.loads(prompt.rsplit("\n\n", 1)[1])
+            note_id = payload["curation_candidates"][0]["id"]
+            return llm.LlmCompletion(
+                provider="test",
+                model="stub",
+                text=json.dumps(
+                    {
+                        "global": [
+                            {
+                                "note": "une seule règle extraite",
+                                "evidence_note_ids": [note_id],
+                            }
+                        ]
+                    }
+                ),
+            )
+
+    result = consolidator.maybe_consolidate(
+        raw_store,
+        consolidated_store,
+        threshold=50,
+        curation_provider=recall_store,
+        llm_router=Router(),
+        now=now,
+    )
+    counts = recall_store.curation_counts()
+    recall_store.close()
+
+    assert result["written"] is True
+    assert counts["feedback"] == 0
+    assert counts["changed"] == 0

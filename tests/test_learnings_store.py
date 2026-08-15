@@ -1207,6 +1207,52 @@ def test_curation_revisions_preservent_un_feedback_arrive_pendant_la_consolidati
     assert feedback["curation-decision"]["forward_return"] == pytest.approx(0.02)
 
 
+def test_pending_curation_snapshots_marquent_le_leftover_sans_manger_linflight(
+    tmp_path: Path,
+) -> None:
+    store = LearningsStore(tmp_path / "learnings.db")
+    jsonl = tmp_path / "two.jsonl"
+    _write_jsonl(
+        jsonl,
+        [
+            {
+                "ts": "2026-07-10T10:00:00+00:00",
+                "symbol": "AAA",
+                "note": "leftover",
+                "action": "HOLD",
+                "intent": "HOLD",
+                "executed": False,
+                "decision_id": "snap-a",
+            },
+            {
+                "ts": "2026-07-10T10:00:00+00:00",
+                "symbol": "BBB",
+                "note": "inflight",
+                "action": "HOLD",
+                "intent": "HOLD",
+                "executed": False,
+                "decision_id": "snap-b",
+            },
+        ],
+    )
+    store.ingest_jsonl(jsonl, source="runtime")
+    snapshot = store.pending_curation_snapshots()
+    assert len(snapshot) == 2
+    inflight_id = next(
+        int(row["id"])
+        for row in store._conn.execute("SELECT id, decision_id FROM notes")
+        if row["decision_id"] == "snap-b"
+    )
+    assert store.update_note_outcomes(
+        [{"id": inflight_id, "verdict": "WIN", "forward_return": 0.02}]
+    ) == 1
+    assert store.mark_curation_candidates_curated(snapshot) == 2
+    counts = store.curation_counts()
+    assert counts["new"] == 0
+    assert counts["feedback"] == 1
+    store.close()
+
+
 def test_curation_candidates_are_diverse_and_bounded_by_tranche(tmp_path: Path) -> None:
     rows: list[dict] = []
     verdicts: list[dict] = []

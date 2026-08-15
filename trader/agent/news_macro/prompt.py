@@ -7,7 +7,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from trader.agent.protocol.json_utils import extract_json_object
-from trader.agent.protocol.prompts import DATA_BOUNDARY_ANALYST
+from trader.agent.protocol.prompts import DATA_BOUNDARY_ANALYST_EN
 from trader.application.analyst import NewsMacroAnalysisRequest
 from trader.domain.situation import NewsMacroBrief
 
@@ -93,37 +93,41 @@ def build_news_macro_prompt(request: NewsMacroAnalysisRequest) -> str:
         },
     }
     return (
-        "Tu es l'analyste macro/news de Casys Trader.\n"
-        "Lis uniquement le JSON fourni. Distille les signaux forts/faibles utiles "
-        "pour la selection d'univers et le contexte de trading.\n"
-        f"{DATA_BOUNDARY_ANALYST}"
-        "Retourne uniquement le corps analytique sous forme d'un objet JSON valide. "
-        "Le code injecte l'enveloppe d'audit: n'emets pas `brief_id`, `venue`, `as_of`, "
-        "`valid_until` ni `input_refs`.\n"
-        "Schema exact: "
-        '{"zones":{"<zone>":[POINT]},"families":{"<famille>":[POINT]},'
-        '"symbols":{"<symbole>":[POINT]},"alerts":[POINT]}. '
-        "`zones`, `families` et `symbols` sont des objets (mapping) dont chaque valeur "
-        "est une liste; `alerts` est une liste. Utilise un objet ou une liste vide si "
-        "aucun fait ne justifie la section.\n"
+        "You are the Casys Trader macro/news analyst.\n"
+        "Read only the provided JSON. Distill the strong/weak signals useful for "
+        "universe selection and trading context.\n"
+        f"{DATA_BOUNDARY_ANALYST_EN}"
+        "Return only the analytical body as a valid JSON object. "
+        "Code injects the audit envelope: do not emit `brief_id`, `venue`, `as_of`, "
+        "`valid_until`, or `input_refs`.\n"
+        "Write every human-readable string in English: `point` prose and `horizon`. "
+        "Do not write French. Prefer parseable horizons: session, short term, weeks, "
+        "months, quarters, an ISO date, or `until 21 Aug 2026`.\n"
+        "Exact schema: "
+        '{"zones":{"<zone>":[POINT]},"families":{"<family>":[POINT]},'
+        '"symbols":{"<symbol>":[POINT]},"alerts":[POINT]}. '
+        "`zones`, `families`, and `symbols` are objects (mappings) whose values "
+        "are lists; `alerts` is a list. Use an empty object or list if no fact "
+        "justifies the section.\n"
         "POINT = {point, source_refs, symbols, severity: info|watch|risk, "
         "signal: weak|strong|event, direction?: bullish|bearish|risk_on|risk_off|neutral|mixed, "
-        "horizon?}. Chaque point doit citer au moins une cle exacte de `source_catalog` "
-        "dans `source_refs`. N'emets pas `sources`: les noms lisibles sont derives par le code.\n"
-        "Contraintes: <=5 points par zone, <=3 par famille/symbole, <=8 alerts, "
-        "point <=200 caracteres. Les cles de `symbols` et tout symbole dans POINT.symbols "
-        "doivent appartenir a `output_scope.allowed_symbols`; les cles de `families` "
-        "doivent appartenir a `output_scope.allowed_families`. N'invente pas de symbole "
-        "ou de famille hors de ces listes.\n"
-        "Les company_anchors sont des ancres micro durables: utilise-les seulement "
-        "pour dire si une news confirme, infirme ou change une these existante. "
-        "Ne modifie jamais ces ancres et ne les traite pas comme un ordre.\n"
-        "geopolitical_events (GDELT) et global_news_items decrivent la situation "
-        "geopolitique et macro internationale. En portee GLOBAL (venue=GLOBAL), "
-        "privilegie des zones et alertes transverses: banques centrales, taux, USD, "
-        "commodites (petrole, or), tensions, sanctions, conflits, elections; distingue "
-        "signal faible/fort et direction risk_on/risk_off. N'invente aucune donnee absente.\n"
-        "JSON d'entree:\n"
+        "horizon?}. Each point must cite at least one exact `source_catalog` key "
+        "in `source_refs`. Do not emit `sources`: readable names are derived by code.\n"
+        "Limits: <=5 points per zone, <=3 per family/symbol, <=8 alerts, "
+        "point <=200 characters. Keys of `symbols` and every ticker in POINT.symbols "
+        "must belong to `output_scope.allowed_symbols`; keys of `families` "
+        "must belong to `output_scope.allowed_families`. Do not invent a symbol "
+        "or family outside those lists.\n"
+        "company_anchors are durable micro anchors: use them only to say whether "
+        "a news item confirms, contradicts, or changes an existing thesis. "
+        "Never modify those anchors and never treat them as an order.\n"
+        "geopolitical_events (GDELT) and global_news_items describe the "
+        "international geopolitical and macro situation. On GLOBAL scope "
+        "(venue=GLOBAL), privilege cross-cutting zones and alerts: central banks, "
+        "rates, USD, commodities (oil, gold), tensions, sanctions, conflicts, "
+        "elections; distinguish weak/strong signal and risk_on/risk_off direction. "
+        "Do not invent any fact that is not in the input.\n"
+        "Input JSON:\n"
         f"{json.dumps(payload, ensure_ascii=False, sort_keys=True)}"
     )
 

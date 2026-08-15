@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import os
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from datetime import datetime, timedelta, timezone
 from importlib import import_module
 from pathlib import Path
@@ -49,6 +49,12 @@ DEFAULT_MAX_CURATION_CANDIDATES = (
 )
 DEFAULT_FEEDBACK_CONSOLIDATION_THRESHOLD = 10
 DEFAULT_CURATION_CATCH_UP_AGE = timedelta(days=1)
+DEFAULT_RULE_GRACE_AGE = timedelta(days=3)
+DEFAULT_RULE_MEASURED_UPDATES = 10
+CITATION_UTILITY_UNKNOWN = "unknown"
+CITATION_UTILITY_HELPS = "helps"
+CITATION_UTILITY_HURTS = "hurts"
+CITATION_UTILITY_NEUTRAL = "neutral"
 # A soft cap prevents one very chatty symbol from consuming the whole curation
 # prompt.  It is relaxed only if no other candidates remain, so small universes
 # still make progress.
@@ -127,6 +133,7 @@ def build_context_learnings(
     *,
     raw_recent: list[dict],
     guardrails: list[dict] | None = None,
+    rule_scores: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> dict:
     """Contexte learnings injecté à l'agent (D6 du registre).
 
@@ -135,29 +142,70 @@ def build_context_learnings(
     jamais injectés : la continuité symbole est déjà fournie par
     ``last_llm_review``/``recent_decisions`` et l'exploration historique passe
     seulement par l'outil ``recall_learnings``.
+    ``rule_scores`` attache le MemRL des citations (``citation_utility``) sans
+    changer ``robustness``, qui reste le juge FLAIR des preuves sourcées.
     """
     del raw_recent  # compatibility parameter; intentionally never prompt-facing
     normalized = normalize_consolidated(consolidated, watermark=consolidated.get("watermark"))
-    context: dict = {"global": project_global_rules(normalized or empty_consolidated())}
+    context: dict = {
+        "global": project_global_rules(
+            normalized or empty_consolidated(),
+            rule_scores=rule_scores,
+        )
+    }
     if guardrails:
         context["guardrails"] = guardrails
     return context
 
 
-def project_global_rules(consolidated: dict) -> list[dict]:
+def project_global_rules(
+    consolidated: dict,
+    *,
+    rule_scores: Mapping[str, Mapping[str, Any]] | None = None,
+) -> list[dict]:
     """Expose only the compact, citeable global-rule contract to a trader."""
 
     normalized = normalize_consolidated(consolidated, watermark=consolidated.get("watermark"))
     if normalized is None:
         return []
-    return [
-        {
-            "rule_id": rule["rule_id"],
+    scores = rule_scores if isinstance(rule_scores, Mapping) else {}
+    projected: list[dict] = []
+    for rule in normalized["global"]:
+        rule_id = str(rule["rule_id"])
+        entry = {
+            "rule_id": rule_id,
             "note": rule["note"],
             "robustness": rule["robustness"],
         }
-        for rule in normalized["global"]
-    ]
+        score = scores.get(rule_id)
+        if isinstance(score, Mapping):
+            utility = citation_utility(
+                q_value=float(score.get("q_value") or 0.0),
+                q_updates=_nonnegative_int(score.get("q_updates")),
+            )
+            if utility != CITATION_UTILITY_UNKNOWN:
+                entry["citation_utility"] = utility
+        projected.append(entry)
+    return projected
+
+
+def citation_utility(
+    *,
+    q_value: float,
+    q_updates: int,
+    min_updates: int = DEFAULT_RULE_MEASURED_UPDATES,
+) -> str:
+    """MemRL of explicit citations. Independent of FLAIR ``robustness``."""
+
+    updates = _nonnegative_int(q_updates)
+    if updates < min_updates:
+        return CITATION_UTILITY_UNKNOWN
+    shrunk = float(q_value) * updates / (updates + 5.0)
+    if shrunk > 0.0:
+        return CITATION_UTILITY_HELPS
+    if shrunk < 0.0:
+        return CITATION_UTILITY_HURTS
+    return CITATION_UTILITY_NEUTRAL
 
 
 def _as_float(value: object) -> float | None:
@@ -508,12 +556,82 @@ def _new_rule_id(note: str, *, used_ids: set[str]) -> str:
     return f"{candidate}_{suffix}"
 
 
+def _normalize_rule_note(note: object) -> str:
+    return " ".join(str(note or "").lower().split())
+
+
+def _current_note_ids(current_global: list[dict]) -> dict[str, str]:
+    """Map normalized current notes onto their live rule ids."""
+
+    by_note: dict[str, str] = {}
+    for rule in current_global:
+        rule_id = str(rule.get("rule_id") or "").strip()
+        note_key = _normalize_rule_note(rule.get("note"))
+        if rule_id and note_key and note_key not in by_note:
+            by_note[note_key] = rule_id
+    return by_note
+
+
+def _should_keep_omitted_rule(rule: Mapping[str, Any], *, now: datetime) -> bool:
+    """Keep a dropped current rule until it is old enough and still unmeasured."""
+
+    memrl = rule.get("memrl") if isinstance(rule.get("memrl"), Mapping) else {}
+    if _nonnegative_int(memrl.get("q_updates")) >= DEFAULT_RULE_MEASURED_UPDATES:
+        return True
+    created = _parse_ts(memrl.get("created_at"))
+    return created is not None and now - created < DEFAULT_RULE_GRACE_AGE
+
+
+def _strip_memrl(rule: Mapping[str, Any]) -> dict:
+    return {key: value for key, value in rule.items() if key != "memrl"}
+
+
+def _restore_omitted_current_rules(
+    finalized: list[dict],
+    current_global: list[dict],
+    *,
+    existing_ids: set[str],
+    now: datetime,
+) -> list[dict]:
+    """Re-attach young or measured current rules the model dropped."""
+
+    kept_ids = {str(rule["rule_id"]) for rule in finalized}
+    omitted = [
+        rule
+        for rule in current_global
+        if str(rule.get("rule_id") or "") not in kept_ids
+        and _should_keep_omitted_rule(rule, now=now)
+    ]
+    if not omitted:
+        return finalized
+
+    restored = list(finalized)
+    for rule in omitted:
+        if len(restored) < DEFAULT_MAX_GLOBAL:
+            restored.append(_strip_memrl(rule))
+            continue
+        evict_at = next(
+            (
+                index
+                for index, item in enumerate(restored)
+                if str(item.get("rule_id") or "") not in existing_ids
+            ),
+            None,
+        )
+        if evict_at is None:
+            break
+        restored.pop(evict_at)
+        restored.append(_strip_memrl(rule))
+    return restored[:DEFAULT_MAX_GLOBAL]
+
+
 def _finalize_consolidated_payload(
     payload: dict,
     *,
     current: dict,
     candidates: list[dict],
     require_evidence: bool,
+    now: datetime | None = None,
 ) -> tuple[dict | None, dict | None]:
     """Validate model output and attach all machine-owned rule metadata."""
 
@@ -521,6 +639,12 @@ def _finalize_consolidated_payload(
     if not isinstance(raw_global, list):
         return None, _failure_payload("invalid_payload", "global must be a list")
 
+    clock = now or datetime.now(timezone.utc)
+    current_global = [
+        rule
+        for rule in current.get("global", [])
+        if isinstance(rule, dict) and rule.get("rule_id")
+    ]
     normalized_current = normalize_consolidated(
         current, watermark=current.get("watermark")
     ) or empty_consolidated()
@@ -529,6 +653,7 @@ def _finalize_consolidated_payload(
         for rule in normalized_current["global"]
         if rule.get("rule_id")
     }
+    current_by_note = _current_note_ids(normalized_current["global"])
     allowed_evidence = {str(candidate["id"]): candidate for candidate in candidates}
     used_ids: set[str] = set()
     finalized: list[dict] = []
@@ -546,7 +671,11 @@ def _finalize_consolidated_payload(
                 "invalid_payload",
                 f"unknown rule_id {supplied_id!r}; new rules must omit rule_id",
             )
-        rule_id = supplied_id or _new_rule_id(note, used_ids=used_ids | existing_ids)
+        inherited_id = current_by_note.get(_normalize_rule_note(note), "")
+        if not supplied_id and inherited_id and inherited_id not in used_ids:
+            rule_id = inherited_id
+        else:
+            rule_id = supplied_id or _new_rule_id(note, used_ids=used_ids | existing_ids)
         if rule_id in used_ids:
             return None, _failure_payload("invalid_payload", f"duplicate rule_id {rule_id!r}")
 
@@ -582,9 +711,15 @@ def _finalize_consolidated_payload(
         )
         used_ids.add(rule_id)
 
+    restored = _restore_omitted_current_rules(
+        finalized,
+        current_global,
+        existing_ids=existing_ids,
+        now=clock,
+    )
     return {
         "outcome_semantics_version": BENCHMARK_SEMANTICS_VERSION,
-        "global": finalized,
+        "global": restored,
         "by_symbol": {},
     }, None
 
@@ -619,6 +754,24 @@ def _call_curation_provider(
         rows = selector()
     if not isinstance(rows, list) or not all(isinstance(row, dict) for row in rows):
         raise TypeError("curation_provider must return list[dict]")
+    return rows
+
+
+def _pending_curation_snapshots(provider: object | None) -> list[dict] | None:
+    """Capture every pending note revision before the LLM call starts."""
+
+    if provider is None:
+        return None
+    snapshot = getattr(provider, "pending_curation_snapshots", None)
+    if not callable(snapshot):
+        return None
+    try:
+        rows = snapshot()
+    except Exception as exc:  # pragma: no cover - advisory store seam
+        log.warning("unable to snapshot pending curation notes (%s)", exc)
+        return None
+    if not isinstance(rows, list) or not all(isinstance(row, dict) for row in rows):
+        return None
     return rows
 
 
@@ -767,6 +920,7 @@ def _with_global_rule_memrl(current: dict, provider: object | None) -> dict:
                 "q_value": q_value,
                 "q_updates": q_updates,
                 "shrunk_q": q_value * q_updates / (q_updates + 5.0),
+                "created_at": score.get("created_at"),
             }
         rules.append(copied)
     return {**current, "global": rules}
@@ -877,6 +1031,7 @@ def _consolidate_payload_with_error(
     model: str | None = None,
     timeout_s: int = DEFAULT_CONSOLIDATOR_TIMEOUT_S,
     max_attempts: int = 3,
+    now: datetime | None = None,
 ) -> tuple[dict | None, dict | None]:
     router = llm_router or build_consolidator_router_from_env(
         acpx_bin=acpx_bin,
@@ -922,6 +1077,7 @@ def _consolidate_payload_with_error(
                     current=current,
                     candidates=candidates,
                     require_evidence=require_evidence,
+                    now=now,
                 )
                 if finalized is not None:
                     normalized = normalize_consolidated(finalized, watermark=current.get("watermark"))
@@ -956,6 +1112,7 @@ def consolidate_payload(
     model: str | None = None,
     timeout_s: int = DEFAULT_CONSOLIDATOR_TIMEOUT_S,
     max_attempts: int = 3,
+    now: datetime | None = None,
 ) -> dict | None:
     consolidated, _error = _consolidate_payload_with_error(
         current,
@@ -970,6 +1127,7 @@ def consolidate_payload(
         model=model,
         timeout_s=timeout_s,
         max_attempts=max_attempts,
+        now=now,
     )
     return consolidated
 
@@ -1042,6 +1200,7 @@ def maybe_consolidate(
                 "last_error_code": last_failure.get("error_code"),
             }
 
+    pending_snapshot = _pending_curation_snapshots(curation_provider)
     resolved_candidate_rows = candidate_rows
     if resolved_candidate_rows is None and curation_provider is not None:
         try:
@@ -1074,6 +1233,7 @@ def maybe_consolidate(
         model=model,
         timeout_s=timeout_s,
         max_attempts=max_attempts,
+        now=now,
     )
     if consolidated is None:
         error = error or _failure_payload("unknown", "unknown consolidation failure")
@@ -1101,10 +1261,11 @@ def maybe_consolidate(
             consolidated=consolidated,
         )
         candidates = build_curation_candidates(new_raw, candidate_rows=resolved_candidate_rows)
+        mark_rows = pending_snapshot if pending_snapshot else candidates
         result["curated_candidate_count"] = _mark_candidates_curated(
             curation_provider,
-            candidates=candidates,
-            source_rows=resolved_candidate_rows,
+            candidates=mark_rows,
+            source_rows=pending_snapshot if pending_snapshot else resolved_candidate_rows,
             watermark=watermark,
         )
         if global_rule_sync is not None:

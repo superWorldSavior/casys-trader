@@ -39,6 +39,7 @@ class UniverseCompositionRequest:
     global_universe_posture: dict[str, Any] = field(default_factory=dict)
     retrieval_refs: tuple[str, ...] = ()
     retrieval_status: str = "not_enabled"
+    selection_feedback: dict[str, Any] = field(default_factory=dict)
 
     @property
     def candidate_symbols(self) -> tuple[str, ...]:
@@ -63,6 +64,8 @@ class UniverseCompositionRequest:
         }
         if self.company_context.mode == "active":
             payload["company_context"] = self.company_context.to_dict()
+        if self.selection_feedback:
+            payload["selection_feedback"] = _json_copy(self.selection_feedback)
         return payload
 
 
@@ -118,6 +121,7 @@ def build_universe_composition_request(
     global_universe_posture: Mapping[str, Any] | None = None,
     retrieval_refs: Iterable[str] = (),
     retrieval_status: str = "not_enabled",
+    selection_feedback: Mapping[str, Any] | None = None,
 ) -> UniverseCompositionRequest:
     """Normalize and validate one venue request before any agent call."""
 
@@ -156,6 +160,11 @@ def build_universe_composition_request(
         raise ValueError("retrieval_refs_must_be_empty_when_not_enabled")
     if normalized_retrieval_status != "not_enabled":
         raise ValueError("retrieval_status_not_supported")
+    normalized_selection_feedback = dict(selection_feedback or {})
+    if normalized_selection_feedback and normalized_selection_feedback.get(
+        "role"
+    ) != "comparative_context_not_hotlist":
+        raise ValueError("selection_feedback_role_invalid")
     normalized_global_family_board = dict(global_family_board or {})
     if normalized_global_family_board and normalized_global_family_board.get(
         "role"
@@ -217,6 +226,7 @@ def build_universe_composition_request(
         global_universe_posture=_json_copy(normalized_global_universe_posture),
         retrieval_refs=normalized_retrieval_refs,
         retrieval_status=normalized_retrieval_status,
+        selection_feedback=normalized_selection_feedback,
     )
 
 

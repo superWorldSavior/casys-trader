@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import json
 from collections import defaultdict
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Protocol
 
 from trader.domain.market_data import MarketError
@@ -22,16 +24,24 @@ from trader.market.protocols import DataSource
 
 DEFAULT_BAR_INTERVAL = "1d"
 DEFAULT_BAR_LOOKBACK = "1y"
+MIN_FEEDBACK_N = 5
+SELECTION_FEEDBACK_ROLE = "comparative_context_not_hotlist"
 
 __all__ = [
     "DEFAULT_BAR_INTERVAL",
     "DEFAULT_BAR_LOOKBACK",
+    "MIN_FEEDBACK_N",
+    "SELECTION_FEEDBACK_ROLE",
     "EvaluatedSelection",
     "SelectionOutcomeStore",
     "UniverseSelection",
     "evaluate_selection",
     "evaluate_selections",
+    "iter_mandate_payloads",
+    "load_mandate_selections",
     "persist_and_score",
+    "refresh_selection_outcomes",
+    "selection_feedback_digest",
     "selections_from_mandate_payload",
     "summarize_outcomes",
 ]
@@ -283,12 +293,21 @@ def _group_summary(rows: Sequence[Mapping[str, Any]], key: str) -> list[dict[str
     return summaries
 
 
-def _split_pays_decoit(groups: Sequence[Mapping[str, Any]], key: str) -> dict[str, list[str]]:
+def _directional_n(item: Mapping[str, Any]) -> int:
+    return int(item.get("n_gagnant") or 0) + int(item.get("n_perdant") or 0)
+
+
+def _split_pays_decoit(
+    groups: Sequence[Mapping[str, Any]],
+    key: str,
+    *,
+    min_n: int = MIN_FEEDBACK_N,
+) -> dict[str, list[str]]:
     pays: list[str] = []
     decoit: list[str] = []
     for item in groups:
         name = str(item.get(key) or "")
-        if not name:
+        if not name or _directional_n(item) < min_n:
             continue
         score = item.get("mean_flair_score")
         win_rate = item.get("win_rate")
@@ -301,6 +320,161 @@ def _split_pays_decoit(groups: Sequence[Mapping[str, Any]], key: str) -> dict[st
         elif win_rate is not None and win_rate < 0.5:
             decoit.append(name)
     return {"pays": pays, "decoit": decoit}
+
+
+def _group_utility(item: Mapping[str, Any]) -> str:
+    score = item.get("mean_flair_score")
+    if score is not None and float(score) > 0.0:
+        return "helps"
+    if score is not None and float(score) < 0.0:
+        return "hurts"
+    win_rate = item.get("win_rate")
+    if win_rate is not None and float(win_rate) > 0.5:
+        return "helps"
+    if win_rate is not None and float(win_rate) < 0.5:
+        return "hurts"
+    return "neutral"
+
+
+def _feedback_rows(
+    groups: Sequence[Mapping[str, Any]],
+    key: str,
+    *,
+    min_n: int,
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for item in groups:
+        name = str(item.get(key) or "")
+        directional = _directional_n(item)
+        if not name or directional < min_n:
+            continue
+        rows.append(
+            {
+                key: name,
+                "n": directional,
+                "win_rate": item.get("win_rate"),
+                "mean_flair_score": item.get("mean_flair_score"),
+                "utility": _group_utility(item),
+            }
+        )
+    return rows
+
+
+def selection_feedback_digest(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    venue: str | None = None,
+    min_n: int = MIN_FEEDBACK_N,
+) -> dict[str, Any]:
+    """Compact market-as-judge digest for the universe agent. Never a hotlist."""
+
+    scoped = [
+        row
+        for row in rows
+        if venue is None or str(row.get("venue") or "").strip().upper() == str(venue).strip().upper()
+    ]
+    summary = summarize_outcomes(scoped)
+    families = _feedback_rows(summary["by_family"], "family", min_n=min_n)
+    roles = _feedback_rows(summary["by_role"], "role", min_n=min_n)
+    directional = int(summary["n_gagnant"]) + int(summary["n_perdant"])
+    return {
+        "role": SELECTION_FEEDBACK_ROLE,
+        "status": "observed" if families or roles else "insufficient",
+        "horizon_sessions": summary.get("horizon_sessions"),
+        "min_n": min_n,
+        "n_evaluated": directional,
+        "n_non_evaluable": int(summary["n_non_evaluable"]),
+        "families": families,
+        "roles": roles,
+    }
+
+
+def iter_mandate_payloads(state_dir: str | Path):
+    """Yield mandate snapshots without loading the full history into memory."""
+
+    root = Path(state_dir)
+    history = root / "universe_mandates" / "history.jsonl"
+    if history.is_file():
+        with history.open(encoding="utf-8") as handle:
+            for raw in handle:
+                line = raw.strip()
+                if not line:
+                    continue
+                try:
+                    payload = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(payload, dict):
+                    yield payload
+        return
+    venues = root / "universe_mandates" / "active" / "venues"
+    if not venues.is_dir():
+        return
+    for path in sorted(venues.glob("*.json")):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if isinstance(payload, dict):
+            yield payload
+
+
+def load_mandate_selections(state_dir: str | Path) -> list[UniverseSelection]:
+    selections: list[UniverseSelection] = []
+    seen: set[tuple[str, str, str]] = set()
+    for payload in iter_mandate_payloads(state_dir):
+        for selection in selections_from_mandate_payload(payload):
+            key = (selection.mandate_id, selection.symbol, selection.as_of)
+            if key in seen:
+                continue
+            seen.add(key)
+            selections.append(selection)
+    return selections
+
+
+def refresh_selection_outcomes(
+    state_dir: str | Path,
+    data_source: DataSource,
+    *,
+    horizon_sessions: int = DEFAULT_FORWARD_SESSIONS,
+    limit: int = 128,
+    shrinkage_k: float = DEFAULT_SHRINKAGE_K,
+) -> dict[str, Any]:
+    """Score a bounded batch of still-unjudged mandate selections. Fail-open caller."""
+
+    from trader.infrastructure.state_db.universe_selection_store import (
+        try_open_universe_selection_store,
+    )
+
+    store = try_open_universe_selection_store(state_dir)
+    existing = {
+        (
+            str(row.get("mandate_id") or ""),
+            str(row.get("symbol") or ""),
+            str(row.get("as_of") or ""),
+            int(row.get("horizon_sessions") or 0),
+        )
+        for row in store.load_outcomes()
+    }
+    pending: list[UniverseSelection] = []
+    for selection in load_mandate_selections(state_dir):
+        key = (selection.mandate_id, selection.symbol, selection.as_of, int(horizon_sessions))
+        if key in existing:
+            continue
+        pending.append(selection)
+        if len(pending) >= max(0, int(limit)):
+            break
+    evaluated = evaluate_selections(
+        pending,
+        data_source,
+        horizon_sessions=horizon_sessions,
+    )
+    persist_and_score(store, evaluated, shrinkage_k=shrinkage_k)
+    return {
+        "pending": len(pending),
+        "evaluated": len(evaluated),
+        "stored": store.count(),
+    }
 
 
 def summarize_outcomes(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:

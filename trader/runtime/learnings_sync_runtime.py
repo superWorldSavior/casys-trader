@@ -251,6 +251,30 @@ def _refresh_outcomes(
     }
 
 
+def _refresh_universe_selections(
+    state_dir: Path,
+    *,
+    get_bars: Callable[..., list] | None,
+    limit: int,
+) -> dict[str, object]:
+    """Score mandate selections with the same market judge. Never raise."""
+
+    if get_bars is None:
+        return {"pending": 0, "evaluated": 0, "stored": 0, "skipped": "data_source_unavailable"}
+    try:
+        from trader.application.universe.selection_attribution import (
+            refresh_selection_outcomes,
+        )
+
+        class _Bars:
+            def get_bars(self, symbol: str, lookback: str, interval: str):
+                return list(get_bars(symbol, lookback, interval))
+
+        return refresh_selection_outcomes(state_dir, _Bars(), limit=limit)
+    except Exception as exc:  # noqa: BLE001 - universe FLAIR is advisory
+        return {"pending": 0, "evaluated": 0, "stored": 0, "error": f"{type(exc).__name__}:{exc}"}
+
+
 def run_learning_sync(
     *,
     state_dir: str | Path,
@@ -311,6 +335,11 @@ def run_learning_sync(
                 get_bars=get_bars,
                 limit=outcome_batch_size,
                 memrl_alpha=memrl_alpha,
+            )
+            outcomes["universe_selections"] = _refresh_universe_selections(
+                root,
+                get_bars=get_bars,
+                limit=outcome_batch_size,
             )
         more_outcomes = bool(
             isinstance(outcomes, dict)

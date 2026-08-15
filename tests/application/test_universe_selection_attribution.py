@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from trader.application.universe.selection_attribution import (
+    MIN_FEEDBACK_N,
     UniverseSelection,
     evaluate_selection,
     evaluate_selections,
+    selection_feedback_digest,
     selections_from_mandate_payload,
     summarize_outcomes,
 )
@@ -115,7 +117,7 @@ def test_selections_from_active_slice_and_full_mandate() -> None:
     assert full_rows == slice_rows
 
 
-def test_summarize_outcomes_separe_pays_et_decoit() -> None:
+def test_summarize_outcomes_ignore_les_groupes_sous_le_plancher() -> None:
     summary = summarize_outcomes(
         [
             {
@@ -138,7 +140,96 @@ def test_summarize_outcomes_separe_pays_et_decoit() -> None:
             },
         ]
     )
-    assert summary["pays"]["families"] == ["alpha"]
-    assert summary["decoit"]["families"] == ["beta"]
+    assert summary["pays"]["families"] == []
+    assert summary["decoit"]["families"] == []
     assert summary["n_gagnant"] == 1
     assert summary["n_perdant"] == 1
+    assert {item["family"] for item in summary["by_family"]} == {"alpha", "beta"}
+
+
+def test_summarize_outcomes_separe_pays_et_decoit_au_plancher() -> None:
+    rows = [
+        {
+            "family": "alpha",
+            "venue": "EU",
+            "role": "core_candidate",
+            "verdict": "gagnant",
+            "forward_return": 0.02,
+            "flair_score": 0.08,
+            "horizon_sessions": 5,
+        }
+        for _ in range(MIN_FEEDBACK_N)
+    ] + [
+        {
+            "family": "beta",
+            "venue": "US",
+            "role": "watch_only",
+            "verdict": "perdant",
+            "forward_return": -0.03,
+            "flair_score": -0.08,
+            "horizon_sessions": 5,
+        }
+        for _ in range(MIN_FEEDBACK_N)
+    ]
+    summary = summarize_outcomes(rows)
+    assert summary["pays"]["families"] == ["alpha"]
+    assert summary["decoit"]["families"] == ["beta"]
+
+
+def test_selection_feedback_digest_reste_comparatif_et_filtre_la_venue() -> None:
+    rows = [
+        {
+            "family": "eu_tech",
+            "venue": "EU",
+            "role": "core_candidate",
+            "verdict": "gagnant",
+            "forward_return": 0.02,
+            "flair_score": 0.08,
+            "horizon_sessions": 5,
+        }
+        for _ in range(MIN_FEEDBACK_N)
+    ] + [
+        {
+            "family": "us_auto",
+            "venue": "US",
+            "role": "watch_only",
+            "verdict": "perdant",
+            "forward_return": -0.03,
+            "flair_score": -0.08,
+            "horizon_sessions": 5,
+        }
+        for _ in range(MIN_FEEDBACK_N)
+    ]
+    digest = selection_feedback_digest(rows, venue="EU")
+    assert digest["role"] == "comparative_context_not_hotlist"
+    assert digest["status"] == "observed"
+    assert digest["families"] == [
+        {
+            "family": "eu_tech",
+            "n": MIN_FEEDBACK_N,
+            "win_rate": 1.0,
+            "mean_flair_score": 0.08,
+            "utility": "helps",
+        }
+    ]
+    assert digest["roles"][0]["role"] == "core_candidate"
+    assert "us_auto" not in {item["family"] for item in digest["families"]}
+
+
+def test_selection_feedback_digest_insuffisant_sous_le_plancher() -> None:
+    digest = selection_feedback_digest(
+        [
+            {
+                "family": "eu_tech",
+                "venue": "EU",
+                "role": "core_candidate",
+                "verdict": "gagnant",
+                "flair_score": 0.08,
+                "horizon_sessions": 5,
+            }
+        ],
+        venue="EU",
+    )
+    assert digest["status"] == "insufficient"
+    assert digest["families"] == []
+    assert digest["n_evaluated"] == 1

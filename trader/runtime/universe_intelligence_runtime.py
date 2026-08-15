@@ -349,6 +349,7 @@ def tick_universe_intelligence(
                 global_family_board=global_family_board,
                 global_situation_digest=global_situation_digest,
                 global_universe_posture=global_universe_posture,
+                selection_feedback=_selection_feedback_for_venue(state_path, venue),
             )
         except Exception as exc:
             record = _base_run_record(
@@ -1344,6 +1345,28 @@ def _base_run_record(
         "baseline": list(scope.get("default_hotlist") or []),
         "sticky_context": list(scope.get("sticky_context_at_close") or []),
     }
+
+
+def _selection_feedback_for_venue(state_dir: Path, venue: str) -> dict[str, Any]:
+    """Market-as-judge digest for this venue. Empty when the sample is still noise."""
+
+    try:
+        from trader.application.universe.selection_attribution import (
+            selection_feedback_digest,
+        )
+        from trader.infrastructure.state_db.universe_selection_store import (
+            try_open_universe_selection_store,
+        )
+
+        digest = selection_feedback_digest(
+            try_open_universe_selection_store(state_dir).load_outcomes(),
+            venue=venue,
+        )
+    except Exception:
+        return {}
+    if digest.get("status") != "observed":
+        return {}
+    return digest
 
 
 def _coverage_metadata(raw: Any) -> dict[str, Any]:
