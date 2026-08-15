@@ -1,5 +1,6 @@
 import json
 
+from trader.application.record.decision_ledger_rows import decision_row_mandate_ref
 from trader.reporting.ledger import decision_ledger
 
 
@@ -70,6 +71,43 @@ def test_build_decision_row_normalise_une_decision_pour_audit() -> None:
     }
     assert row["portfolio_snapshot"]["equity"] == 100000.0
     assert row["labels"] == {}
+    assert row["mandate_ref"] is None
+
+
+def test_build_decision_row_expose_mandate_ref_a_la_racine() -> None:
+    decision = _decision()
+    mandate_ref = {
+        "mandate_id": "universe-mandate:eu-1",
+        "venue": "EU",
+        "status": "active",
+        "as_of": "2026-07-11T08:00:00+00:00",
+    }
+    decision["mandate_ref"] = mandate_ref
+
+    row = decision_ledger.build_decision_row(_report([decision]), decision, sequence=0)
+
+    assert row["mandate_ref"] == mandate_ref
+    assert row["schema_version"] == 1
+
+
+def test_build_decision_row_mandate_ref_none_quand_absent() -> None:
+    decision = _decision()
+    row = decision_ledger.build_decision_row(_report([decision]), decision, sequence=0)
+    assert row["mandate_ref"] is None
+
+
+def test_ancienne_ligne_sans_mandate_ref_reste_lisible() -> None:
+    old_row = {
+        "schema_version": 1,
+        "decision_id": "2026-06-08T12:15:21+00:00|0|SPY",
+        "symbol": "SPY",
+        "action": "HOLD",
+        "decision": {"symbol": "SPY", "mandate_ref": {"mandate_id": "legacy"}},
+    }
+    assert "mandate_ref" not in old_row
+    assert decision_row_mandate_ref(old_row) is None
+    assert old_row["schema_version"] == 1
+    assert old_row["decision"]["mandate_ref"]["mandate_id"] == "legacy"
 
 
 def test_build_decision_row_preserves_global_learning_citations() -> None:

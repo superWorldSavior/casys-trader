@@ -8,6 +8,8 @@ from typing import Any
 from trader.domain import decision_reason
 from trader.domain.decision_identity import decision_id
 
+# Additive optional fields (thesis, mandate_ref, …) stay on this version.
+# Readers must tolerate a missing key on historical rows.
 SCHEMA_VERSION = 1
 UNKNOWN_CODE_VERSION = {
     "schema_version": 1,
@@ -24,6 +26,7 @@ __all__ = [
     "UNKNOWN_CODE_VERSION",
     "build_decision_row",
     "collect_session_by_symbol",
+    "decision_row_mandate_ref",
 ]
 
 
@@ -61,6 +64,17 @@ def _optional_int(value: Any) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def _optional_mandate_ref(value: Any) -> dict | None:
+    return dict(value) if isinstance(value, dict) else None
+
+
+def decision_row_mandate_ref(row: Any) -> dict | None:
+    """Read root-level ``mandate_ref``; missing or non-dict values are ``None``."""
+    if not isinstance(row, dict):
+        return None
+    return _optional_mandate_ref(row.get("mandate_ref"))
 
 
 def collect_session_by_symbol(
@@ -171,6 +185,7 @@ def build_decision_row(
             rule_id for rule_id in _as_list(decision.get("applied_learning_ids")) if isinstance(rule_id, str)
         ],
         "thesis": decision.get("thesis") if isinstance(decision.get("thesis"), dict) else None,
+        "mandate_ref": _optional_mandate_ref(decision.get("mandate_ref")),
         "decision": original_decision,
         "market_snapshot": {
             "price": price,

@@ -9,6 +9,7 @@ Contient :
 - import_scheduler_from_json : migration one-shot idempotente depuis scheduler.json
 - PROCESS_TRACE_MIGRATION : schéma append-only v4 des événements de processus
 - LLM_GATE_MIGRATION : cadence last_llm_at du gate de pertinence (v5)
+- UNIVERSE_SELECTION_MIGRATION : attribution des sélections d'univers (v6)
 """
 
 from __future__ import annotations
@@ -545,6 +546,33 @@ LLM_GATE_MIGRATION: tuple[int, list[str]] = (
             symbol    TEXT NOT NULL,
             last_at   TEXT NOT NULL,
             PRIMARY KEY (state_dir, symbol)
+        )""",
+    ],
+)
+
+
+# ---------------------------------------------------------------------------
+# Attribution des sélections d'univers — migration v6
+# ---------------------------------------------------------------------------
+
+UNIVERSE_SELECTION_MIGRATION: tuple[int, list[str]] = (
+    6,
+    [
+        """CREATE TABLE universe_selection_outcomes (
+            id               INTEGER PRIMARY KEY AUTOINCREMENT,
+            mandate_id       TEXT NOT NULL,
+            symbol           TEXT NOT NULL,
+            family           TEXT NOT NULL DEFAULT '',
+            role             TEXT NOT NULL DEFAULT '',
+            allowed_sides    TEXT NOT NULL,
+            as_of            TEXT NOT NULL,
+            venue            TEXT NOT NULL DEFAULT '',
+            horizon_sessions INTEGER NOT NULL,
+            forward_return   REAL,
+            verdict          TEXT NOT NULL,
+            flair_score      REAL,
+            evaluated_at     TEXT NOT NULL,
+            UNIQUE (mandate_id, symbol, as_of, horizon_sessions)
         )""",
     ],
 )
