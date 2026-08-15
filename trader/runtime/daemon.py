@@ -172,6 +172,23 @@ DEFAULT_DECISION_BATCH_SIZE = planner_batch.DEFAULT_DECISION_BATCH_SIZE
 DEFAULT_DECISION_BATCH_PARALLELISM = planner_batch.DEFAULT_DECISION_BATCH_PARALLELISM
 
 _DEFAULT_CYCLE_PROCESS_STATE = CycleProcessState()
+
+
+def _llm_gate_store():
+    """Retourne le store SQLite de cadence LLM, ou None hors backend sqlite."""
+    from trader.infrastructure.state_db.llm_gate_store import try_open_llm_gate_store
+
+    return try_open_llm_gate_store(STATE_DIR, CANONICAL_STATE_BACKEND)
+
+
+def _hydrate_last_llm_at(process_state: CycleProcessState) -> None:
+    """Recharge ``last_llm_at`` depuis casys.db (no-op si backend != sqlite)."""
+    store = _llm_gate_store()
+    if store is None:
+        return
+    process_state.last_llm_at.update(store.load_all())
+
+
 # Intervalle fin pour les checks de sortie (stop/TP/trailing).
 # Fetché uniquement pour les symboles ayant un plan ouvert.
 EXIT_CHECK_INTERVAL = "5m"
@@ -1317,12 +1334,15 @@ def run_cycle(
     # décision n'a pas été reportée par le stop de batch d'ouvertures. Les
     # ouvertures différées doivent rester périodic_review au cycle suivant, pas
     # quiet_gate pendant 4h.
+    llm_gate_store = _llm_gate_store()
     for sym in decidable:
         if sym in execution_state.deferred_opening_symbols:
             continue
         decision = decisions_by_symbol.get(sym)
         if decision is not None and decision_entries.counts_as_llm_review(decision):
             process_state.last_llm_at[(str(STATE_DIR), sym)] = now
+            if llm_gate_store is not None:
+                llm_gate_store.record(str(STATE_DIR), sym, now)
             process_state.last_wake_reasons[(str(STATE_DIR), sym)] = (
                 quiet_gate.persistent_reasons.get(sym, ())
             )
@@ -1564,6 +1584,7 @@ def main(
     )
     bootstrap = args.bootstrap_all
     process_state = _DEFAULT_CYCLE_PROCESS_STATE
+    _hydrate_last_llm_at(process_state)
     cycle_run = run_cycle
 
     def _run_cycle_with_process_state(**kwargs):

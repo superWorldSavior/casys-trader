@@ -8,6 +8,7 @@ Contient :
 - SCHEDULER_MIGRATION : schéma scheduler v3 (4 tables + 2 index)
 - import_scheduler_from_json : migration one-shot idempotente depuis scheduler.json
 - PROCESS_TRACE_MIGRATION : schéma append-only v4 des événements de processus
+- LLM_GATE_MIGRATION : cadence last_llm_at du gate de pertinence (v5)
 """
 
 from __future__ import annotations
@@ -530,3 +531,20 @@ def import_scheduler_from_json(db: StateDb, json_path: Path) -> None:
         len(symbols),
         len(indicator_watches),
     )
+
+
+# ---------------------------------------------------------------------------
+# Gate LLM — migration v5 (cadence last_llm_at persistée)
+# ---------------------------------------------------------------------------
+
+LLM_GATE_MIGRATION: tuple[int, list[str]] = (
+    5,
+    [
+        """CREATE TABLE llm_gate_last_seen (
+            state_dir TEXT NOT NULL,
+            symbol    TEXT NOT NULL,
+            last_at   TEXT NOT NULL,
+            PRIMARY KEY (state_dir, symbol)
+        )""",
+    ],
+)
