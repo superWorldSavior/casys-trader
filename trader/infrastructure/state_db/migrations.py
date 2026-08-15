@@ -10,6 +10,8 @@ Contient :
 - PROCESS_TRACE_MIGRATION : schéma append-only v4 des événements de processus
 - LLM_GATE_MIGRATION : cadence last_llm_at du gate de pertinence (v5)
 - UNIVERSE_SELECTION_MIGRATION : attribution des sélections d'univers (v6)
+- SITUATION_MEMORY_OUTCOME_MIGRATION : verdict FLAIR des notes de situation
+  (espace de version local à situation_memory.db, pas le flux casys.db)
 """
 
 from __future__ import annotations
@@ -574,5 +576,26 @@ UNIVERSE_SELECTION_MIGRATION: tuple[int, list[str]] = (
             evaluated_at     TEXT NOT NULL,
             UNIQUE (mandate_id, symbol, as_of, horizon_sessions)
         )""",
+    ],
+)
+
+
+# ---------------------------------------------------------------------------
+# Attribution des notes de situation — situation_memory.db seulement
+# ---------------------------------------------------------------------------
+
+SITUATION_MEMORY_OUTCOME_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("verdict", "TEXT"),
+    ("horizon_sessions", "INTEGER"),
+    ("forward_return", "REAL"),
+    ("evaluated_at", "TEXT"),
+    ("coverage_n", "INTEGER"),
+)
+
+SITUATION_MEMORY_OUTCOME_MIGRATION: tuple[int, list[str]] = (
+    1,
+    [
+        f"ALTER TABLE situation_notes ADD COLUMN {name} {decl}"
+        for name, decl in SITUATION_MEMORY_OUTCOME_COLUMNS
     ],
 )

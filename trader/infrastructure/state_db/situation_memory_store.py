@@ -7,11 +7,13 @@ import logging
 import sqlite3
 import threading
 from contextlib import contextmanager
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
 from trader.domain.situation import NewsMacroBrief, SituationPoint, SituationSection
 from trader.infrastructure.state_db.fts_query import sanitize_fts5_query
+from trader.infrastructure.state_db.migrations import SITUATION_MEMORY_OUTCOME_COLUMNS
 
 __all__ = ["SituationMemoryStore"]
 
@@ -97,11 +99,23 @@ def _open_db(db_path: str | Path) -> sqlite3.Connection:
     return conn
 
 
+_NOTE_COLUMNS = """
+    id, brief_id, as_of, venue, section_type, section_name, symbols,
+    direction, horizon, outcome_score, q_value, verdict, horizon_sessions,
+    forward_return, evaluated_at, coverage_n
+"""
+
+
 def _create_schema(conn: sqlite3.Connection) -> None:
     conn.execute(_DDL_NOTES)
     columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(situation_notes)")}
     if "source_names" not in columns:
         conn.execute("ALTER TABLE situation_notes ADD COLUMN source_names TEXT")
+        columns.add("source_names")
+    for name, decl in SITUATION_MEMORY_OUTCOME_COLUMNS:
+        if name not in columns:
+            conn.execute(f"ALTER TABLE situation_notes ADD COLUMN {name} {decl}")
+            columns.add(name)
     conn.execute(_DDL_FTS)
     conn.execute(_TRIGGER_AI)
     conn.execute(_TRIGGER_AD)
@@ -244,6 +258,64 @@ class SituationMemoryStore:
                 ).fetchall()
         return [_row_to_result(row) for row in rows]
 
+    def load_notes(self) -> list[dict[str, Any]]:
+        """Load notes for scoring without the embedding blob."""
+        with self._lock:
+            rows = self._conn.execute(
+                f"SELECT {_NOTE_COLUMNS} FROM situation_notes ORDER BY id"
+            ).fetchall()
+        return [_row_to_outcome(row) for row in rows]
+
+    def load_outcomes(self) -> list[dict[str, Any]]:
+        """Load notes that have already received a verdict."""
+        with self._lock:
+            rows = self._conn.execute(
+                f"""
+                SELECT {_NOTE_COLUMNS}
+                  FROM situation_notes
+                 WHERE evaluated_at IS NOT NULL
+                 ORDER BY id
+                """
+            ).fetchall()
+        return [_row_to_outcome(row) for row in rows]
+
+    def apply_outcomes(self, rows: Sequence[Mapping[str, Any]]) -> None:
+        """Update verdict fields in place. Idempotent by note id."""
+        if not rows:
+            return
+        with self._lock, self._commit_or_rollback():
+            for row in rows:
+                self._conn.execute(
+                    """
+                    UPDATE situation_notes
+                       SET verdict = :verdict,
+                           horizon_sessions = :horizon_sessions,
+                           forward_return = :forward_return,
+                           evaluated_at = :evaluated_at,
+                           coverage_n = :coverage_n
+                     WHERE id = :id
+                    """,
+                    {
+                        "id": int(row["id"]),
+                        "verdict": str(row.get("verdict") or ""),
+                        "horizon_sessions": row.get("horizon_sessions"),
+                        "forward_return": row.get("forward_return"),
+                        "evaluated_at": str(row.get("evaluated_at") or ""),
+                        "coverage_n": row.get("coverage_n"),
+                    },
+                )
+
+    def update_outcome_scores(self, scores: Mapping[int, float]) -> None:
+        """Write FLAIR ``outcome_score`` values. Leaves ``q_value`` untouched."""
+        if not scores:
+            return
+        with self._lock, self._commit_or_rollback():
+            for note_id, score in scores.items():
+                self._conn.execute(
+                    "UPDATE situation_notes SET outcome_score = ? WHERE id = ?",
+                    (float(score), int(note_id)),
+                )
+
 
 def _rows_for_brief(brief: NewsMacroBrief) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
@@ -328,4 +400,37 @@ def _row_to_result(row: sqlite3.Row) -> dict[str, Any]:
         "horizon": row["horizon"],
         "outcome_score": row["outcome_score"],
         "q_value": row["q_value"],
+        "verdict": _optional(row, "verdict"),
+        "horizon_sessions": _optional(row, "horizon_sessions"),
+        "forward_return": _optional(row, "forward_return"),
+        "evaluated_at": _optional(row, "evaluated_at"),
+        "coverage_n": _optional(row, "coverage_n"),
+    }
+
+
+def _optional(row: sqlite3.Row, key: str) -> Any:
+    try:
+        return row[key]
+    except (IndexError, KeyError):
+        return None
+
+
+def _row_to_outcome(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "id": int(row["id"]),
+        "brief_id": row["brief_id"],
+        "as_of": row["as_of"],
+        "venue": row["venue"] or "",
+        "section_type": row["section_type"] or "",
+        "section_name": row["section_name"] or "",
+        "symbols": row["symbols"],
+        "direction": row["direction"],
+        "horizon": row["horizon"],
+        "outcome_score": None if row["outcome_score"] is None else float(row["outcome_score"]),
+        "q_value": row["q_value"],
+        "verdict": row["verdict"],
+        "horizon_sessions": row["horizon_sessions"],
+        "forward_return": None if row["forward_return"] is None else float(row["forward_return"]),
+        "evaluated_at": row["evaluated_at"],
+        "coverage_n": row["coverage_n"],
     }

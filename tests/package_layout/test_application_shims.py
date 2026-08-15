@@ -178,6 +178,7 @@ def test_application_analyst_modules_are_nested_without_legacy_shims() -> None:
         [
             "company_micro",
             "news_macro",
+            "situation_attribution",
         ],
     )
 

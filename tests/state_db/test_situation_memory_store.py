@@ -122,3 +122,28 @@ def test_situation_memory_close_est_idempotent(tmp_path) -> None:
     store.ingest_brief(_brief())
     store.close()
     store.close()
+
+
+def test_apply_outcomes_est_idempotent_et_ne_touche_pas_q_value(tmp_path) -> None:
+    store = SituationMemoryStore(tmp_path / "situation_memory.db")
+    store.ingest_brief(_brief())
+    note_id = store.load_notes()[0]["id"]
+    payload = {
+        "id": note_id,
+        "verdict": "gagnant",
+        "horizon_sessions": 5,
+        "forward_return": 0.02,
+        "evaluated_at": "2026-01-10T00:00:00+00:00",
+        "coverage_n": 3,
+    }
+    store.apply_outcomes([payload])
+    store.apply_outcomes([payload])
+    store.update_outcome_scores({note_id: 0.08})
+
+    assert store.count() == 2
+    rows = store.load_outcomes()
+    assert len(rows) == 1
+    assert rows[0]["verdict"] == "gagnant"
+    assert rows[0]["horizon_sessions"] == 5
+    assert rows[0]["outcome_score"] == 0.08
+    assert rows[0]["q_value"] is None
