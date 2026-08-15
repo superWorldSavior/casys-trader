@@ -64,6 +64,9 @@ def test_build_decision_row_normalise_une_decision_pour_audit() -> None:
         "stale_market_data": None,
         "symbols_due": ["SPY", "QQQ"],
         "model_calls_used": 1,
+        "since_open_m": None,
+        "to_close_m": None,
+        "venue": None,
     }
     assert row["portfolio_snapshot"]["equity"] == 100000.0
     assert row["labels"] == {}

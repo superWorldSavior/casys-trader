@@ -4,7 +4,9 @@ from datetime import datetime, timezone
 import pytest
 
 from trader.reporting.ledger import decision_ledger
+from trader.application.record.decision_ledger_rows import collect_session_by_symbol
 from trader.application.record.decision_recorder import DecisionRecorder
+from trader.domain.market.sessions import session_snapshot
 from trader.runtime.agent_trace_runtime import build_agent_trace_appender
 
 
@@ -154,6 +156,108 @@ def test_decision_recorder_reads_model_calls_used_when_recording(tmp_path):
     assert persisted_report["model_calls_used"] == 7
     assert rows[0]["market_snapshot"]["model_calls_used"] == 7
     assert statuses[-1]["model_calls_used"] == 7
+
+
+def test_decision_recorder_persists_since_open_for_armed_plan_during_session(tmp_path):
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    now = datetime(2026, 6, 15, 14, 30, tzinfo=timezone.utc)
+    expected = session_snapshot("SPY", now=now)
+    report = {
+        "ts": now.isoformat(),
+        "decisions": [],
+        "model_calls_used": 0,
+        "prices": {"SPY": 532.12},
+        "symbols_due": ["SPY"],
+        "portfolio": {"equity": 100000.0},
+        "session_by_symbol": collect_session_by_symbol(
+            ["SPY"],
+            snapshot=lambda symbol: session_snapshot(symbol, now=now),
+        ),
+    }
+    recorder = DecisionRecorder(
+        report=report,
+        dry_run=True,
+        symbols_total=1,
+        max_model_calls_per_cycle=25,
+        learnings_store=FakeLearnings(),
+        decision_ledger_store=decision_ledger.DecisionLedgerStore(state_dir / "decisions.jsonl"),
+        refresh_report_portfolio=lambda: None,
+        write_current_report=lambda _payload: None,
+        write_status=lambda _phase, **_payload: None,
+        append_event=lambda _event, **_payload: None,
+        news_snapshot=lambda _symbol, _now: {"coverage": "none"},
+        macro_next=None,
+        now=now,
+    )
+
+    recorder.record({
+        "symbol": "SPY",
+        "action": "BUY",
+        "qty": 10.0,
+        "confidence": 0.7,
+        "rationale": "armed_plan:w1 — breakout",
+        "intent": "OPEN_LONG",
+        "executed": True,
+        "reason": "ok",
+        "decision_source": "armed_plan",
+        "armed_plan_id": "w1",
+        "armed_plan_order": {"intent": "OPEN_LONG", "action": "BUY", "qty": 10.0},
+    })
+
+    rows = [json.loads(line) for line in (state_dir / "decisions.jsonl").read_text().splitlines()]
+    assert rows[0]["source"] == "armed_plan"
+    assert rows[0]["market_snapshot"]["since_open_m"] == expected["since_open_m"]
+    assert isinstance(rows[0]["market_snapshot"]["since_open_m"], int)
+    assert rows[0]["market_snapshot"]["to_close_m"] == expected["to_close_m"]
+
+
+def test_decision_recorder_persists_none_since_open_outside_session(tmp_path):
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    now = datetime(2026, 6, 15, 12, 0, tzinfo=timezone.utc)
+    report = {
+        "ts": now.isoformat(),
+        "decisions": [],
+        "model_calls_used": 0,
+        "prices": {"SPY": 532.12},
+        "symbols_due": ["SPY"],
+        "portfolio": {"equity": 100000.0},
+        "session_by_symbol": collect_session_by_symbol(
+            ["SPY"],
+            snapshot=lambda symbol: session_snapshot(symbol, now=now),
+        ),
+    }
+    recorder = DecisionRecorder(
+        report=report,
+        dry_run=True,
+        symbols_total=1,
+        max_model_calls_per_cycle=25,
+        learnings_store=FakeLearnings(),
+        decision_ledger_store=decision_ledger.DecisionLedgerStore(state_dir / "decisions.jsonl"),
+        refresh_report_portfolio=lambda: None,
+        write_current_report=lambda _payload: None,
+        write_status=lambda _phase, **_payload: None,
+        append_event=lambda _event, **_payload: None,
+        news_snapshot=lambda _symbol, _now: {"coverage": "none"},
+        macro_next=None,
+        now=now,
+    )
+
+    recorder.record({
+        "symbol": "SPY",
+        "action": "HOLD",
+        "qty": 0.0,
+        "confidence": 0.0,
+        "rationale": "quiet_gate",
+        "intent": "HOLD",
+        "executed": False,
+        "reason": "quiet_gate",
+    })
+
+    rows = [json.loads(line) for line in (state_dir / "decisions.jsonl").read_text().splitlines()]
+    assert rows[0]["market_snapshot"]["since_open_m"] is None
+    assert rows[0]["market_snapshot"]["to_close_m"] is None
 
 
 def test_decision_recorder_adds_active_brief_ref_to_news_payload(tmp_path):

@@ -54,6 +54,7 @@ from trader.application.record import (
     confidence_feedback,
     gross_feedback,
 )
+from trader.application.record.decision_ledger_rows import collect_session_by_symbol
 from trader.application.record.decision_recorder import DecisionRecorder
 from trader.application.execute.cycle_decision import (
     DecisionExecutionContext,
@@ -936,6 +937,10 @@ def run_cycle(
         "prices": {s: round(p, 4) for s, p in prices.items()},
         "stale_market_data": stale_market_data,
         "fx_rates": fx_rate_by_ccy,
+        "session_by_symbol": collect_session_by_symbol(
+            symbols_to_decide,
+            snapshot=lambda symbol: market.session_snapshot(symbol, now=now),
+        ),
         "model_calls_used": 0,
     }
 

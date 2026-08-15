@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable, Iterable
 from typing import Any
 
 from trader.domain import decision_reason
@@ -18,7 +19,12 @@ UNKNOWN_CODE_VERSION = {
     "git_dirty_files": [],
 }
 
-__all__ = ["SCHEMA_VERSION", "UNKNOWN_CODE_VERSION", "build_decision_row"]
+__all__ = [
+    "SCHEMA_VERSION",
+    "UNKNOWN_CODE_VERSION",
+    "build_decision_row",
+    "collect_session_by_symbol",
+]
 
 
 def _as_dict(value: Any) -> dict:
@@ -46,6 +52,48 @@ def _optional_bool(value: Any) -> bool | None:
 
 def _optional_text(value: Any) -> str | None:
     return value if isinstance(value, str) and value else None
+
+
+def _optional_int(value: Any) -> int | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def collect_session_by_symbol(
+    symbols: Iterable[str],
+    *,
+    snapshot: Callable[[str], Any],
+) -> dict[str, dict]:
+    """Copy already-computed session snapshots onto the cycle report.
+
+    Observability only: a snapshot failure omits that symbol instead of
+    raising, so the order path never depends on this collection.
+    """
+    collected: dict[str, dict] = {}
+    for symbol in symbols:
+        name = str(symbol)
+        if not name:
+            continue
+        try:
+            value = snapshot(name)
+        except Exception:  # noqa: BLE001 - observability must never block an order
+            continue
+        if isinstance(value, dict):
+            collected[name] = value
+    return collected
+
+
+def _session_window_fields(report: dict, symbol: str) -> dict[str, int | str | None]:
+    session = _as_dict(_as_dict(report.get("session_by_symbol")).get(symbol))
+    return {
+        "since_open_m": _optional_int(session.get("since_open_m")),
+        "to_close_m": _optional_int(session.get("to_close_m")),
+        "venue": _optional_text(session.get("venue")),
+    }
 
 
 def _process_projection(report: dict, decision: dict, *, resolved_decision_id: str) -> dict | None:
@@ -129,6 +177,7 @@ def build_decision_row(
             "stale_market_data": stale_market_data.get(symbol),
             "symbols_due": _as_list(report.get("symbols_due")),
             "model_calls_used": report.get("model_calls_used"),
+            **_session_window_fields(report, symbol),
         },
         "portfolio_snapshot": _as_dict(report.get("portfolio")),
         "runtime": {
