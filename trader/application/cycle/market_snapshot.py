@@ -221,7 +221,15 @@ def build_market_snapshot(
         if ccy == fx.BASE_CCY or ccy in fx_rate_by_ccy:
             continue
         if symbol not in stale_market_data:
-            stale_market_data[symbol] = {"stale_reason": "missing_fx_rate"}
+            # data_age explicite : un hold missing_fx_rate doit rester
+            # discernable d'un hold no_data en post-mortem.
+            bars = bars_by_symbol.get(symbol) or []
+            stale_market_data[symbol] = {
+                "stale_reason": "missing_fx_rate",
+                "fx_ccy": ccy,
+                "last_bar_ts": str(bars[-1].ts) if bars else None,
+                "data_age_minutes": data_age_by_symbol.get(symbol),
+            }
             log.error("fx %s : taux %s manquant — symbole non-tradable", symbol, ccy)
 
     if scheduler is not None:

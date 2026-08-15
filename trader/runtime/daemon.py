@@ -17,6 +17,7 @@ import json
 import logging
 import math
 import os
+import signal
 import sqlite3
 import time
 from datetime import datetime, timezone
@@ -1525,6 +1526,14 @@ def main(
     if not claim_pid_file(pid_file=_pid_file, pid=os.getpid()):
         log.error("daemon déjà vivant (pid file %s) — refus de démarrer un doublon", _pid_file)
         return 1
+
+    # SIGTERM (systemd stop, kill) doit dérouler le finally comme le SIGINT du
+    # superviseur : sans handler Python termine net — pools non joints, WAL non
+    # flushé, pid file jamais libéré.
+    def _sigterm_to_exit(signum: int, frame: object) -> None:  # noqa: ARG001
+        raise SystemExit(143)
+
+    signal.signal(signal.SIGTERM, _sigterm_to_exit)
 
     # Bootstrap ordonné AVANT toute lecture d'état ou rotation runtime :
     # rotation mensuelle JSONL, bootstrap SQLite canonique, puis scheduler.

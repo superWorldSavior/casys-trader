@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+from collections import OrderedDict
 from collections.abc import Callable
 from datetime import datetime
 from typing import Protocol
@@ -11,6 +12,8 @@ from typing import Protocol
 from trader.agent.learnings import embeddings as embeddings_mod
 
 log = logging.getLogger("trader.agent.learnings.recall_provider")
+
+_EMBED_CACHE_MAX = 512
 
 
 class RecallSearchStore(Protocol):
@@ -55,7 +58,9 @@ def build_recall_provider(
     else:
         selected_embedder = embedder
     warning = log.warning if log_warning is None else log_warning
-    embed_cache: dict[str, bytes] = {}
+    # Borné LRU : le provider peut vivre tout le run du daemon et chaque query
+    # LLM unique ajoute ~6 Ko — sans borne le cache croît sans limite.
+    embed_cache: OrderedDict[str, bytes] = OrderedDict()
 
     def provider(args: dict) -> dict:
         query = args.get("query")
@@ -64,6 +69,7 @@ def build_recall_provider(
             query_key = str(query)
             if query_key in embed_cache:
                 query_vec = embed_cache[query_key]
+                embed_cache.move_to_end(query_key)
             else:
                 api_key = env_get("OPENAI_API_KEY")
                 if api_key:
@@ -78,6 +84,8 @@ def build_recall_provider(
                         query_vec = None
                     if query_vec is not None:
                         embed_cache[query_key] = query_vec
+                        if len(embed_cache) > _EMBED_CACHE_MAX:
+                            embed_cache.popitem(last=False)
 
         limit = min(int(args.get("limit") or 5), 8)
         rows = store.search(

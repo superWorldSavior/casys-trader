@@ -13,6 +13,7 @@ dependencies = [
     "textual>=8.2.7",
     "exchange-calendars>=4.13.2",
     "pydantic>=2.0",
+    "numpy>=1.26",
     "duckdb>=1.5.4",
     "matplotlib>=3.11.0",
     "squarify>=0.4.4",

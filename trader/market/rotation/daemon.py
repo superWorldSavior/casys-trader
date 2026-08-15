@@ -1,10 +1,9 @@
-"""Gate de rotation intégrée au daemon : déclenche run_cli aux clôtures de session.
+"""Gate de rotation D9 legacy — AUCUN appelant de production.
 
-Pas de cron externe : le daemon (`make live`) appelle `maybe_rotate()` à chaque tour de
-boucle, juste avant de relire `universe.yaml`. Si une clôture de session de marché est due
-depuis la dernière rotation (état persisté `rotation_state.json`), il recalcule le hot-set ;
-sinon il ne fait rien. Robuste aux extinctions : au redémarrage, une clôture passée non
-couverte déclenche le rattrapage.
+Le daemon ne passe plus par ici : la rotation vivante est `tick_market_rotation`
+(D10, `trader/runtime/market_rotation_runtime.py`), déclenchée par venue. Ce module
+n'est conservé que pour les shims de compat (`trader/__init__.py`) et ses tests ;
+sa suppression est planifiée avec le gommage strangler des shims.
 """
 from __future__ import annotations
 
