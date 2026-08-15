@@ -95,9 +95,9 @@ def test_scan_indicator_watches_emits_runtime_events_and_progress(tmp_path) -> N
         now=now,
         data_source=_DataSource(
             [
-                Bar(ts="t1", open=100.0, high=101.0, low=99.0, close=100.0, volume=1000.0),
-                Bar(ts="t2", open=103.0, high=104.0, low=102.0, close=103.0, volume=1000.0),
-                Bar(ts="t3", open=110.0, high=111.0, low=109.0, close=110.0, volume=1000.0),
+                Bar(ts="2026-06-05T11:30:00+00:00", open=100.0, high=101.0, low=99.0, close=100.0, volume=1000.0),
+                Bar(ts="2026-06-05T11:45:00+00:00", open=103.0, high=104.0, low=102.0, close=103.0, volume=1000.0),
+                Bar(ts="2026-06-05T12:00:00+00:00", open=110.0, high=111.0, low=109.0, close=110.0, volume=1000.0),
             ]
         ),
         is_connection_market_error=lambda exc: False,

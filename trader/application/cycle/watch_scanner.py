@@ -6,6 +6,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Callable, Protocol
 
+from trader.domain.market import sessions as market
 from trader.domain.market_data import MarketError
 from trader.domain.planning.indicator_watch import evaluate_indicator_watches, watch_market_requests
 from trader.planning.protocols import SchedulerLike
@@ -33,6 +34,36 @@ class TradePlanStoreLike(Protocol):
 
 def _default_connection_error(_: MarketError) -> bool:
     return False
+
+
+def _usable_watch_bars(
+    bars: list,
+    *,
+    symbol: str,
+    interval: str,
+    now: datetime,
+    kind: str,
+) -> list | None:
+    """Return fetched bars if fresh enough to evaluate, else None (treat as absent)."""
+    if not bars:
+        return bars
+    freshness = market.assess_freshness(
+        bars,
+        now=now,
+        max_age_minutes=market.freshness_budget_minutes(interval),
+    )
+    if freshness.fresh:
+        return bars
+    age = None if freshness.age_minutes is None else round(freshness.age_minutes, 1)
+    log.debug(
+        "%s bars stale %s/%s reason=%s age=%s",
+        kind,
+        symbol,
+        interval,
+        freshness.reason,
+        age,
+    )
+    return None
 
 
 def exit_watch_cooldown_elapsed(watch: dict, *, now: datetime) -> bool:
@@ -67,11 +98,22 @@ def scan_indicator_watches(
     bars_by_key: dict[tuple[str, str], list] = {}
     for symbol, interval, lookback in watch_market_requests(watches, universe_symbols=symbols):
         try:
-            bars_by_key[(symbol, interval)] = data_source.get_bars(symbol, lookback=lookback, interval=interval)
+            bars = data_source.get_bars(symbol, lookback=lookback, interval=interval)
         except MarketError as exc:
             if is_connection_market_error(exc):
                 raise
             warning("indicator_watch data unavailable %s/%s: %s", symbol, interval, exc.code)
+            continue
+        usable = _usable_watch_bars(
+            bars,
+            symbol=symbol,
+            interval=interval,
+            now=now,
+            kind="indicator_watch",
+        )
+        if usable is None:
+            continue
+        bars_by_key[(symbol, interval)] = usable
 
     triggered = evaluate_indicator_watches(watches, bars_by_key, now=now)
     for event in triggered:
@@ -119,11 +161,22 @@ def scan_exit_watches(
         if key in bars_by_key:
             continue
         try:
-            bars_by_key[key] = data_source.get_bars(symbol, lookback=lookback, interval=interval)
+            bars = data_source.get_bars(symbol, lookback=lookback, interval=interval)
         except MarketError as exc:
             if is_connection_market_error(exc):
                 raise
             warning("exit_watch data unavailable %s/%s: %s", symbol, interval, exc.code)
+            continue
+        usable = _usable_watch_bars(
+            bars,
+            symbol=symbol,
+            interval=interval,
+            now=now,
+            kind="exit_watch",
+        )
+        if usable is None:
+            continue
+        bars_by_key[key] = usable
 
     triggered = evaluate_indicator_watches(watches, bars_by_key, now=now)
     enriched: list[dict] = []

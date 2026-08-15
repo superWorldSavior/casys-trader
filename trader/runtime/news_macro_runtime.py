@@ -22,15 +22,23 @@ from trader.infrastructure.state_db.situation_memory_store import SituationMemor
 from trader.market import macro_calendar
 from trader.market.rotation.wiring import venue_of
 from trader.runtime.protocols import LoggerLike
+from trader.runtime._retry_policy import (
+    DEFAULT_FAILURE_BACKOFF_MAX_MINUTES,
+    DEFAULT_FAILURE_BACKOFF_MINUTES,
+    ensure_utc as _ensure_utc,
+    failure_backoff as _shared_failure_backoff,
+    failure_delay_seconds as _shared_failure_delay_seconds,
+    latest_failure as _shared_latest_failure,
+    parse_datetime as _parse_datetime,
+    positive_int as _positive_int,
+)
 
 VENUES = ("TW", "EU", "US")
 DEFAULT_LOOKBACK_DAYS = 1
 DEFAULT_VALID_HOURS = 20
 # A failed macro report must never turn a four-minute daemon cadence into a
 # four-minute model retry.  Keep this in step with the universe-composition
-# retry ladder: 30 / 60 / 120 / 240 / 360 minutes.
-DEFAULT_FAILURE_BACKOFF_MINUTES = 30
-DEFAULT_FAILURE_BACKOFF_MAX_MINUTES = 360
+# retry ladder: 30 / 60 / 120 / 240 / 360 minutes (see ``_retry_policy``).
 # Kept as a compatibility alias for callers which used the former fixed
 # six-hour guard.  Runtime retry decisions use the minute constants above.
 DEFAULT_FAILURE_BACKOFF_HOURS = DEFAULT_FAILURE_BACKOFF_MAX_MINUTES // 60
@@ -487,10 +495,6 @@ def brief_ref_for_symbol(
 
     store = brief_store or NewsMacroBriefStore(Path(state_dir) / "news_briefs")
     return store.active_ref(venue_of(symbol), at=at)
-
-
-def _ensure_utc(value: datetime) -> datetime:
-    return value.astimezone(timezone.utc) if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
 
 
 def _read_recent_news_items(base_dir: Path, *, now: datetime, lookback_days: int = DEFAULT_LOOKBACK_DAYS) -> list[dict]:
@@ -1249,38 +1253,22 @@ def _failure_backoff(
 ) -> dict[str, Any] | None:
     """Return active persisted backoff for exactly one retry lineage."""
 
-    failure = _latest_failure(raw)
-    if failure is None or failure.get("retry_lineage") != retry_lineage:
-        return None
-    attempt = _positive_int(failure.get("retry_attempt") or failure.get("attempt"), default=1)
-    delay_seconds = _positive_int(
-        failure.get("retry_delay_seconds") or failure.get("delay_seconds"),
-        default=_failure_delay_seconds(attempt),
+    return _shared_failure_backoff(
+        raw,
+        retry_lineage=retry_lineage,
+        now=now,
+        legacy_aliases=True,
+        base_minutes=DEFAULT_FAILURE_BACKOFF_MINUTES,
+        max_minutes=DEFAULT_FAILURE_BACKOFF_MAX_MINUTES,
     )
-    retry_at = _parse_datetime(failure.get("next_retry_at") or failure.get("next_at"))
-    if retry_at is None:
-        failed_at = _parse_datetime(
-            failure.get("failed_at") or failure.get("last_failure_at") or failure.get("at")
-        )
-        if failed_at is None:
-            return None
-        retry_at = failed_at + timedelta(seconds=delay_seconds)
-    if now >= retry_at:
-        return None
-    return {
-        "attempt": attempt,
-        "delay_seconds": delay_seconds,
-        "next_retry_at": retry_at.isoformat(),
-        "error": _failure_error_code(failure),
-    }
 
 
 def _failure_delay_seconds(attempt: int) -> int:
-    minutes = min(
-        DEFAULT_FAILURE_BACKOFF_MINUTES * (2 ** max(0, attempt - 1)),
-        DEFAULT_FAILURE_BACKOFF_MAX_MINUTES,
+    return _shared_failure_delay_seconds(
+        attempt,
+        base_minutes=DEFAULT_FAILURE_BACKOFF_MINUTES,
+        max_minutes=DEFAULT_FAILURE_BACKOFF_MAX_MINUTES,
     )
-    return minutes * 60
 
 
 def _success_status(
@@ -1381,26 +1369,12 @@ def _failure_status(
 
 
 def _latest_failure(raw: Any) -> dict[str, Any] | None:
-    if not isinstance(raw, Mapping):
-        return None
-    nested = raw.get("latest_failure")
-    if isinstance(nested, Mapping):
-        return dict(nested)
-    # Make failures already persisted by the previous fixed-backoff release
-    # readable in the gallery.  They do not get a lineage retroactively, so
-    # they cannot accidentally block a new retry epoch.
-    failed_at = raw.get("last_failure_at")
-    error = raw.get("last_error")
-    if not failed_at or not isinstance(error, Mapping):
-        return None
-    code = str(error.get("code") or "analysis_not_written")
-    message = str(error.get("message") or "")
-    return {
-        "failed_at": str(failed_at),
-        "error_code": code,
-        "error_message": message,
-        "error": {"code": code, "message": message},
-    }
+    # Nested ``latest_failure`` is returned as-is (no status filter).  Root
+    # ``last_failure_at`` / ``last_error`` remain readable for the previous
+    # fixed-backoff release; they have no lineage, so they cannot block a
+    # new retry epoch.
+    failure = _shared_latest_failure(raw, legacy_aliases=True)
+    return dict(failure) if failure is not None else None
 
 
 def _failure_backoff_skip(*, venue: str, backoff: Mapping[str, Any]) -> dict[str, Any]:
@@ -1472,21 +1446,6 @@ def _failure_error_code(failure: Mapping[str, Any]) -> str:
     if isinstance(error, Mapping) and error.get("code"):
         return str(error["code"])
     return str(failure.get("error_code") or "unknown")
-
-
-def _positive_int(raw: Any, *, default: int) -> int:
-    try:
-        return max(1, int(raw))
-    except (TypeError, ValueError):
-        return default
-
-
-def _parse_datetime(raw: Any) -> datetime | None:
-    try:
-        value = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
-    except (TypeError, ValueError):
-        return None
-    return value.astimezone(timezone.utc) if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
 
 
 def latest_failure_for_venue(*, state_dir: Path, venue: str) -> dict[str, Any] | None:

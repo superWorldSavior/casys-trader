@@ -23,6 +23,7 @@ from trader.agent.protocol.types import (
     Decision,
     IndicatorRequest,
 )
+from trader.agent.protocol.json_utils import extract_json_object
 from trader.agent.protocol.strategy_language import compile_strategy_call
 
 _DECISION_KEYS = {"symbol", "action", "quantity", "confidence", "rationale", "decision_reason_code"}
@@ -70,11 +71,10 @@ def _normalize_learning(value: object) -> str | None:
 
 def _extract_json(text: str) -> dict:
     """Récupère le 1er objet JSON du texte (Codex peut entourer de prose)."""
-    start = text.find("{")
-    end = text.rfind("}")
-    if start == -1 or end == -1 or end < start:
+    payload = extract_json_object(text, last=False)
+    if payload is None:
         raise ValueError("aucun objet JSON trouvé")
-    return json.loads(text[start : end + 1])
+    return payload
 
 
 def _format_validation_error(error: ValidationError) -> str:

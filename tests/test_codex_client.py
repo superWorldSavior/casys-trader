@@ -412,6 +412,20 @@ def test_parse_decision_json_partiel_devient_hold_parse_error() -> None:
     assert "invalid_json" in decision.rationale
 
 
+def test_parse_decision_tolere_une_accolade_parasite_apres_le_json() -> None:
+    decision = parse_decision(
+        "Voici la décision retenue\n"
+        '{"symbol":"SPY","action":"BUY","quantity":10,"confidence":0.8,'
+        '"rationale":"breakout"}\n'
+        "}",
+        "SPY",
+    )
+
+    assert decision.action == "BUY"
+    assert decision.quantity == 10.0
+    assert decision.llm_error is None
+
+
 def test_parse_decision_accepte_le_contrat_single_calls() -> None:
     decision = parse_decision(
         '{"symbol":"SPY","confidence":0.8,"rationale":"breakout",'

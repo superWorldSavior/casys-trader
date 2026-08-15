@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from trader.market.market_data import Bar, MarketError
 from trader.planning.trade_plan import TradePlan, create_trade_plan
@@ -48,30 +48,57 @@ class _PlanStore:
         self.upserts.append(plan)
 
 
+def _return_bars(last_ts: str, *, closes: tuple[float, ...] = (100.0, 103.0, 110.0)) -> list[Bar]:
+    last = datetime.fromisoformat(last_ts)
+    if last.tzinfo is None:
+        last = last.replace(tzinfo=timezone.utc)
+    bars: list[Bar] = []
+    for index, close in enumerate(closes):
+        ts = last - timedelta(minutes=15 * (len(closes) - 1 - index))
+        bars.append(
+            Bar(
+                ts=ts.isoformat(),
+                open=close,
+                high=close + 1.0,
+                low=close - 1.0,
+                close=close,
+                volume=1000.0,
+            )
+        )
+    return bars
+
+
 def _arm_return_watch(
     sched: Scheduler,
     *,
     on_trigger: str = "WAKE",
     order: dict | None = None,
+    interval: str = "15m",
+    extra_conditions: list[dict] | None = None,
+    created_at: str = "2026-06-05T12:00:00+00:00",
+    expires_at: str = "2026-06-05T13:00:00+00:00",
 ) -> None:
+    conditions: list[dict] = [
+        {
+            "symbol": "SPY",
+            "indicator": "return",
+            "op": ">",
+            "value": 0.05,
+            "interval": interval,
+            "lookback": "5d",
+            "window": 3,
+        }
+    ]
+    if extra_conditions:
+        conditions.extend(extra_conditions)
     watch: dict[str, object] = {
         "id": "spy-watch",
         "symbol": "SPY",
-        "created_at": "2026-06-05T12:00:00+00:00",
-        "expires_at": "2026-06-05T13:00:00+00:00",
+        "created_at": created_at,
+        "expires_at": expires_at,
         "logic": "all",
         "on_trigger": on_trigger,
-        "conditions": [
-            {
-                "symbol": "SPY",
-                "indicator": "return",
-                "op": ">",
-                "value": 0.05,
-                "interval": "15m",
-                "lookback": "5d",
-                "window": 3,
-            }
-        ],
+        "conditions": conditions,
     }
     if order is not None:
         watch["order"] = order
@@ -119,13 +146,7 @@ def test_scan_indicator_watches_triggers_and_wakes_symbol(tmp_path) -> None:
     sched = Scheduler(tmp_path / "scheduler.json")
     now = datetime(2026, 6, 5, 12, 10, tzinfo=timezone.utc)
     _arm_return_watch(sched)
-    data_source = _DataSource(
-        [
-            Bar(ts="t1", open=100.0, high=101.0, low=99.0, close=100.0, volume=1000.0),
-            Bar(ts="t2", open=103.0, high=104.0, low=102.0, close=103.0, volume=1000.0),
-            Bar(ts="t3", open=110.0, high=111.0, low=109.0, close=110.0, volume=1000.0),
-        ]
-    )
+    data_source = _DataSource(_return_bars("2026-06-05T12:00:00+00:00"))
 
     triggered = scan_indicator_watches(["SPY"], sched=sched, now=now, data_source=data_source)
 
@@ -151,13 +172,7 @@ def test_scan_indicator_watches_keeps_execute_order_watch_after_trigger(tmp_path
             "exit_plan": {"hard_stop": {"type": "price", "price": 95.0}},
         },
     )
-    data_source = _DataSource(
-        [
-            Bar(ts="t1", open=100.0, high=101.0, low=99.0, close=100.0, volume=1000.0),
-            Bar(ts="t2", open=103.0, high=104.0, low=102.0, close=103.0, volume=1000.0),
-            Bar(ts="t3", open=110.0, high=111.0, low=109.0, close=110.0, volume=1000.0),
-        ]
-    )
+    data_source = _DataSource(_return_bars("2026-06-05T12:00:00+00:00"))
 
     triggered = scan_indicator_watches(["SPY"], sched=sched, now=now, data_source=data_source)
 
@@ -209,6 +224,110 @@ def test_scan_indicator_watches_reraises_connection_market_errors(tmp_path) -> N
             data_source=_FailingDataSource(MarketError("ib_connect_failed", "IB down")),
             is_connection_market_error=lambda exc: True,
         )
+
+
+def test_scan_indicator_watches_stale_1h_does_not_match_even_if_15m_fresh(tmp_path) -> None:
+    from trader.application.cycle.watch_scanner import scan_indicator_watches
+
+    sched = Scheduler(tmp_path / "scheduler.json")
+    now = datetime(2026, 6, 8, 13, 5, tzinfo=timezone.utc)
+    _arm_return_watch(
+        sched,
+        interval="1h",
+        created_at="2026-06-05T20:00:00+00:00",
+        expires_at="2026-06-08T20:00:00+00:00",
+    )
+    data_source = _RoutedDataSource(
+        {
+            ("SPY", "5d", "1h"): _return_bars("2026-06-05T20:00:00+00:00"),
+            ("SPY", "5d", "15m"): _return_bars("2026-06-08T13:00:00+00:00"),
+        }
+    )
+
+    triggered = scan_indicator_watches(["SPY"], sched=sched, now=now, data_source=data_source)
+
+    assert triggered == []
+    assert data_source.calls == [("SPY", "5d", "1h")]
+    assert [watch["id"] for watch in sched.active_indicator_watches(now=now)] == ["spy-watch"]
+    assert sched.next_wake("SPY") is None
+
+
+def test_scan_indicator_watches_fresh_1h_still_matches(tmp_path) -> None:
+    from trader.application.cycle.watch_scanner import scan_indicator_watches
+
+    sched = Scheduler(tmp_path / "scheduler.json")
+    now = datetime(2026, 6, 8, 13, 5, tzinfo=timezone.utc)
+    _arm_return_watch(
+        sched,
+        interval="1h",
+        created_at="2026-06-05T20:00:00+00:00",
+        expires_at="2026-06-08T20:00:00+00:00",
+    )
+    data_source = _DataSource(_return_bars("2026-06-08T13:00:00+00:00"))
+
+    triggered = scan_indicator_watches(["SPY"], sched=sched, now=now, data_source=data_source)
+
+    assert [event["symbol"] for event in triggered] == ["SPY"]
+    assert data_source.calls == [("SPY", "5d", "1h")]
+    assert sched.active_indicator_watches(now=now) == []
+    assert sched.next_wake("SPY") == now
+
+
+def test_scan_indicator_watches_absent_bars_unchanged(tmp_path) -> None:
+    from trader.application.cycle.watch_scanner import scan_indicator_watches
+
+    sched = Scheduler(tmp_path / "scheduler.json")
+    now = datetime(2026, 6, 8, 13, 5, tzinfo=timezone.utc)
+    _arm_return_watch(
+        sched,
+        interval="1h",
+        created_at="2026-06-05T20:00:00+00:00",
+        expires_at="2026-06-08T20:00:00+00:00",
+    )
+    data_source = _DataSource([])
+
+    triggered = scan_indicator_watches(["SPY"], sched=sched, now=now, data_source=data_source)
+
+    assert triggered == []
+    assert data_source.calls == [("SPY", "5d", "1h")]
+    assert [watch["id"] for watch in sched.active_indicator_watches(now=now)] == ["spy-watch"]
+    assert sched.next_wake("SPY") is None
+
+
+def test_scan_indicator_watches_stale_condition_keeps_watch_atomic(tmp_path) -> None:
+    from trader.application.cycle.watch_scanner import scan_indicator_watches
+
+    sched = Scheduler(tmp_path / "scheduler.json")
+    now = datetime(2026, 6, 8, 13, 5, tzinfo=timezone.utc)
+    _arm_return_watch(
+        sched,
+        interval="15m",
+        extra_conditions=[
+            {
+                "symbol": "SPY",
+                "indicator": "return",
+                "op": ">",
+                "value": 0.05,
+                "interval": "1h",
+                "lookback": "5d",
+                "window": 3,
+            }
+        ],
+        created_at="2026-06-05T20:00:00+00:00",
+        expires_at="2026-06-08T20:00:00+00:00",
+    )
+    data_source = _RoutedDataSource(
+        {
+            ("SPY", "5d", "15m"): _return_bars("2026-06-08T13:00:00+00:00"),
+            ("SPY", "5d", "1h"): _return_bars("2026-06-05T20:00:00+00:00"),
+        }
+    )
+
+    triggered = scan_indicator_watches(["SPY"], sched=sched, now=now, data_source=data_source)
+
+    assert triggered == []
+    assert set(data_source.calls) == {("SPY", "5d", "15m"), ("SPY", "5d", "1h")}
+    assert [watch["id"] for watch in sched.active_indicator_watches(now=now)] == ["spy-watch"]
 
 
 def test_scan_exit_watches_reuses_runtime_bars_and_persists_cooldown() -> None:
@@ -293,12 +412,7 @@ def test_scan_exit_watches_fetches_missing_timeframe() -> None:
 
     now = datetime(2026, 6, 5, 12, 10, tzinfo=timezone.utc)
     plan_store = _PlanStore([_exit_watch_plan(interval="1h")])
-    bars = [
-        Bar(ts="t1", open=100.0, high=101.0, low=99.0, close=100.0, volume=1000.0),
-        Bar(ts="t2", open=103.0, high=104.0, low=102.0, close=103.0, volume=1000.0),
-        Bar(ts="t3", open=110.0, high=111.0, low=109.0, close=110.0, volume=1000.0),
-    ]
-    data_source = _RoutedDataSource({("SPY", "5d", "1h"): bars})
+    data_source = _RoutedDataSource({("SPY", "5d", "1h"): _return_bars("2026-06-05T12:00:00+00:00")})
 
     triggered = scan_exit_watches(
         plan_store=plan_store,

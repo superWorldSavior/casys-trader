@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from trader.runtime import daemon
 from trader.runtime import cycle_scheduling
@@ -221,9 +221,9 @@ def test_scan_indicator_watches_reveille_le_symbole_declenche(monkeypatch, tmp_p
 
     monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
     data_source = make_data_source(lambda symbol, lookback, interval: [
-        Bar(ts="t1", open=100.0, high=101.0, low=99.0, close=100.0, volume=1000.0),
-        Bar(ts="t2", open=103.0, high=104.0, low=102.0, close=103.0, volume=1000.0),
-        Bar(ts="t3", open=110.0, high=111.0, low=109.0, close=110.0, volume=1000.0),
+        Bar(ts="2026-06-05T11:30:00+00:00", open=100.0, high=101.0, low=99.0, close=100.0, volume=1000.0),
+        Bar(ts="2026-06-05T11:45:00+00:00", open=103.0, high=104.0, low=102.0, close=103.0, volume=1000.0),
+        Bar(ts="2026-06-05T12:00:00+00:00", open=110.0, high=111.0, low=109.0, close=110.0, volume=1000.0),
     ])
 
     triggered = _scan_indicator_watches(["SPY"], sched=sched, now=now, data_source=data_source)
@@ -297,7 +297,14 @@ def test_scan_indicator_watches_charge_les_pairs_cross_asset(monkeypatch, tmp_pa
         calls.append(symbol)
         closes = [100.0, 100.0, 110.0] if symbol == "SPY" else [100.0, 100.0, 100.0]
         return [
-            Bar(ts=f"t{index}", open=close, high=close + 1.0, low=close - 1.0, close=close, volume=1000.0)
+            Bar(
+                ts=(now - timedelta(minutes=15 * (len(closes) - 1 - index))).isoformat(),
+                open=close,
+                high=close + 1.0,
+                low=close - 1.0,
+                close=close,
+                volume=1000.0,
+            )
             for index, close in enumerate(closes)
         ]
 

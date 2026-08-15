@@ -9,7 +9,7 @@ import os
 import threading
 import time
 from collections.abc import Iterable, Mapping
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable
 from uuid import uuid4
@@ -54,13 +54,21 @@ from trader.infrastructure.state_db.universe_mandate_store import UniverseMandat
 from trader.infrastructure.files.venue_state import load_venue_state
 from trader.runtime.protocols import LoggerLike
 from trader.runtime.company_context_config import load_company_context_projection_limits
+from trader.runtime._retry_policy import (
+    DEFAULT_FAILURE_BACKOFF_MAX_MINUTES,
+    DEFAULT_FAILURE_BACKOFF_MINUTES,
+    ensure_utc as _ensure_utc,
+    failure_backoff as _shared_failure_backoff,
+    failure_delay_seconds as _shared_failure_delay_seconds,
+    latest_failure as _latest_failure,
+    parse_datetime as _parse_datetime,
+)
 
 VENUES = ("TW", "EU", "US")
 # Retry delays are deliberately long enough to prevent an unavailable model
 # from being called for every daemon tick, while retaining a short repair path
-# for a local prepared-projection write failure.
-DEFAULT_FAILURE_BACKOFF_MINUTES = 30
-DEFAULT_FAILURE_BACKOFF_MAX_MINUTES = 360
+# for a local prepared-projection write failure.  The shared 30/360 ladder lives
+# in ``trader.runtime._retry_policy``.
 DEFAULT_PREPARED_WRITE_BACKOFF_MINUTES = 1
 DEFAULT_PREPARED_WRITE_BACKOFF_MAX_MINUTES = 30
 DEFAULT_REGIME_MAX_AGE_HOURS = 96
@@ -1406,16 +1414,6 @@ def _load_market_context(path: Path, *, now: datetime) -> dict[str, Any]:
     return context
 
 
-def _parse_datetime(value: Any) -> datetime | None:
-    if not value:
-        return None
-    try:
-        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    return parsed.astimezone(timezone.utc) if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
-
-
 def _request_signature(payload: Any) -> str:
     encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
@@ -1556,50 +1554,26 @@ def _same_success(raw: Any, input_signature: str) -> bool:
 def _failure_backoff(raw: Any, *, retry_lineage: str, now: datetime) -> dict[str, Any] | None:
     """Return persisted retry state for the same scope-and-brief retry lineage."""
 
-    failure = _latest_failure(raw)
-    if failure is None or failure.get("retry_lineage") != retry_lineage:
-        return None
-    attempt = max(1, int(failure.get("retry_attempt") or 1))
-    delay_seconds = max(
-        1,
-        int(
-            failure.get("retry_delay_seconds")
-            or _failure_delay_seconds(attempt, error_code=failure.get("error_code"))
-        ),
+    return _shared_failure_backoff(
+        raw,
+        retry_lineage=retry_lineage,
+        now=now,
+        base_minutes=DEFAULT_FAILURE_BACKOFF_MINUTES,
+        max_minutes=DEFAULT_FAILURE_BACKOFF_MAX_MINUTES,
+        prepared_write_base_minutes=DEFAULT_PREPARED_WRITE_BACKOFF_MINUTES,
+        prepared_write_max_minutes=DEFAULT_PREPARED_WRITE_BACKOFF_MAX_MINUTES,
     )
-    retry_at = _parse_datetime(failure.get("next_retry_at"))
-    if retry_at is None:
-        failed_at = _parse_datetime(failure.get("as_of"))
-        if failed_at is None:
-            return None
-        retry_at = failed_at + timedelta(seconds=delay_seconds)
-    if now >= retry_at:
-        return None
-    return {
-        "attempt": attempt,
-        "delay_seconds": delay_seconds,
-        "next_retry_at": retry_at.isoformat(),
-        "error": str(failure.get("error_code") or failure.get("status") or "unknown"),
-    }
-
-
-def _latest_failure(raw: Any) -> Mapping[str, Any] | None:
-    if not isinstance(raw, Mapping):
-        return None
-    nested = raw.get("latest_failure")
-    candidate: Mapping[str, Any] = nested if isinstance(nested, Mapping) else raw
-    return candidate if candidate.get("status") in {"invalid", "error"} else None
 
 
 def _failure_delay_seconds(attempt: int, *, error_code: Any) -> int:
-    prepared_write = error_code == "prepared_write_error"
-    base_minutes = (
-        DEFAULT_PREPARED_WRITE_BACKOFF_MINUTES if prepared_write else DEFAULT_FAILURE_BACKOFF_MINUTES
+    return _shared_failure_delay_seconds(
+        attempt,
+        error_code=error_code,
+        base_minutes=DEFAULT_FAILURE_BACKOFF_MINUTES,
+        max_minutes=DEFAULT_FAILURE_BACKOFF_MAX_MINUTES,
+        prepared_write_base_minutes=DEFAULT_PREPARED_WRITE_BACKOFF_MINUTES,
+        prepared_write_max_minutes=DEFAULT_PREPARED_WRITE_BACKOFF_MAX_MINUTES,
     )
-    max_minutes = (
-        DEFAULT_PREPARED_WRITE_BACKOFF_MAX_MINUTES if prepared_write else DEFAULT_FAILURE_BACKOFF_MAX_MINUTES
-    )
-    return min(base_minutes * (2 ** max(0, attempt - 1)), max_minutes) * 60
 
 
 def _set_failure_retry_metadata(
@@ -1734,5 +1708,4 @@ def _build_prepared_mandate(
     )
 
 
-def _ensure_utc(value: datetime) -> datetime:
-    return value.astimezone(timezone.utc) if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+
