@@ -13,27 +13,12 @@ from trader.runtime import universe_intelligence_runtime
 from trader.runtime.worker_cycle_context import WorkerCycleContextHandle
 from trader.market.market_data import Bar, MarketError
 from trader.planning.scheduler import Scheduler
+from tests.conftest import write_runtime_config as _write_runtime_config
 
 
 # ---------------------------------------------------------------------------
 # Helpers partagés
 # ---------------------------------------------------------------------------
-
-def _write_runtime_config(root) -> None:
-    (root / "config").mkdir(exist_ok=True)
-    (root / "mandate").mkdir(exist_ok=True)
-    (root / "config" / "universe.yaml").write_text(
-        "starting_cash: 100000\nsymbols:\n  - SPY\n"
-    )
-    (root / "config" / "risk.yaml").write_text(
-        "max_position_value: 20000\n"
-        "max_gross_exposure: 100000\n"
-        "max_order_value: 10000\n"
-        "min_equity: 50000\n"
-    )
-    (root / "mandate" / "mandate.md").write_text("# Mandat\n")
-    (root / "mandate" / "memory.md").write_text("# Memoire\n")
-
 
 def _write_data_sources_config(root, profile: str = "paper") -> None:
     """Crée config/data_sources.yaml minimal dans root."""

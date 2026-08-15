@@ -16,6 +16,7 @@ from trader.market.market_data import Bar
 from trader.agent.learnings.raw_store import RawLearningsStore
 from trader.planning.scheduler import Scheduler
 from trader.domain.trade_plan import TradePlan
+from tests.conftest import write_runtime_config as _write_runtime_config
 
 
 def _open_plans(state_dir):
@@ -37,28 +38,6 @@ def _open_plans(state_dir):
     return [TradePlan.model_validate(item) for item in raw.get("plans", [])]
 
 
-def _write_runtime_config(root) -> None:
-    (root / "config").mkdir()
-    (root / "mandate").mkdir()
-    (root / "config" / "universe.yaml").write_text(
-        "starting_cash: 100000\nsymbols:\n  - SPY\n"
-    )
-    # risk.yaml sans les clés confidence → défauts 0.7/0.9 appliqués
-    (root / "config" / "risk.yaml").write_text(
-        "\n".join(
-            [
-                "max_position_value: 20000",
-                "max_gross_exposure: 100000",
-                "max_order_value: 10000",
-                "max_risk_per_trade_pct: 0.01",
-                "min_equity: 50000",
-            ]
-        )
-    )
-    (root / "mandate" / "mandate.md").write_text("# Mandat\n")
-    (root / "mandate" / "memory.md").write_text("# Memoire\n")
-
-
 def _open_long_decision(confidence: float) -> Decision:
     """Décision OPEN_LONG avec un hard stop qui génère un risk_pct non nul."""
     return Decision(
@@ -76,7 +55,7 @@ def test_run_cycle_rejette_ouverture_confidence_insuffisante(
     monkeypatch, tmp_path, make_data_source
 ) -> None:
     """Confidence 0.58 avec un risque calculé → rejeté confidence_below_required."""
-    _write_runtime_config(tmp_path)
+    _write_runtime_config(tmp_path, max_risk_per_trade_pct=0.01)
     state_dir = tmp_path / "state"
     now = datetime(2026, 6, 5, 14, 30, tzinfo=timezone.utc)  # vendredi, 10:30 ET, session US ouverte
 
@@ -142,7 +121,7 @@ def test_run_cycle_rejet_confiance_injecte_le_feedback_dans_les_learnings(
 ) -> None:
     """Intégration : un rejet de confiance laisse à l'agent le seuil exact raté
     dans ses learnings relus au prochain réveil (pas juste un échec silencieux)."""
-    _write_runtime_config(tmp_path)
+    _write_runtime_config(tmp_path, max_risk_per_trade_pct=0.01)
     state_dir = tmp_path / "state"
     now = datetime(2026, 6, 5, 14, 30, tzinfo=timezone.utc)  # vendredi, séance US ouverte
 
@@ -191,7 +170,7 @@ def test_run_cycle_approuve_ouverture_confidence_suffisante(
     monkeypatch, tmp_path, make_data_source
 ) -> None:
     """Confidence 0.95 avec le même risque → approuvé (dry_run, donc executed=False mais reason=ok)."""
-    _write_runtime_config(tmp_path)
+    _write_runtime_config(tmp_path, max_risk_per_trade_pct=0.01)
     state_dir = tmp_path / "state"
     now = datetime(2026, 6, 5, 14, 30, tzinfo=timezone.utc)  # vendredi, 10:30 ET, session US ouverte
 
@@ -226,7 +205,7 @@ def test_run_cycle_rejette_ouverture_sans_hard_stop(
     monkeypatch, tmp_path, make_data_source
 ) -> None:
     """Guardrail D6 déterministe : ouverture sans hard_stop → rejet, même à confiance max."""
-    _write_runtime_config(tmp_path)
+    _write_runtime_config(tmp_path, max_risk_per_trade_pct=0.01)
     state_dir = tmp_path / "state"
     now = datetime(2026, 6, 5, 14, 30, tzinfo=timezone.utc)  # vendredi, 10:30 ET, session US ouverte
 
@@ -287,7 +266,7 @@ def test_run_cycle_gate_confiance_off_laisse_passer_confiance_basse(
 ) -> None:
     """confidence_gate_enabled=false → ouverture (avec stop) à confiance ridicule
     n'est PLUS rejetée pour la confiance."""
-    _write_runtime_config(tmp_path)
+    _write_runtime_config(tmp_path, max_risk_per_trade_pct=0.01)
     _enable_exploration(tmp_path)
     state_dir = tmp_path / "state"
     now = datetime(2026, 6, 5, 14, 30, tzinfo=timezone.utc)
@@ -320,7 +299,7 @@ def test_run_cycle_require_hard_stop_false_laisse_passer_sans_stop(
 ) -> None:
     """require_hard_stop=false → ouverture SANS hard_stop n'est plus rejetée
     missing_hard_stop ; bornée par les seuls fusibles notionnels."""
-    _write_runtime_config(tmp_path)
+    _write_runtime_config(tmp_path, max_risk_per_trade_pct=0.01)
     _enable_exploration(tmp_path)
     state_dir = tmp_path / "state"
     now = datetime(2026, 6, 5, 14, 30, tzinfo=timezone.utc)
@@ -376,7 +355,7 @@ def test_run_cycle_ouverture_enrichit_le_tradeplan_avec_le_contexte_d_entree(
 ) -> None:
     """§13.7 — au fill d'ouverture, le TradePlan capture la thèse (rationale) et le
     contexte d'entrée (prix, runtime interval, data age, session, daily as-of)."""
-    _write_runtime_config(tmp_path)
+    _write_runtime_config(tmp_path, max_risk_per_trade_pct=0.01)
     state_dir = tmp_path / "state"
     now = datetime(2026, 6, 5, 14, 30, tzinfo=timezone.utc)  # vendredi, séance US ouverte
     decision = _open_long_decision(confidence=0.95)

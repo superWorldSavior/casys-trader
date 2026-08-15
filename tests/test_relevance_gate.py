@@ -215,9 +215,6 @@ def test_cockpit_activity_tolere_cockpit_degrade() -> None:
 # --- intégration daemon ---
 
 
-from conftest import write_runtime_config as _runtime_config  # noqa: E402
-
-
 def _flat_bars_factory(now_iso: str):
     from trader.market.market_data import Bar
 
@@ -231,7 +228,7 @@ def _flat_bars_factory(now_iso: str):
 
 
 def test_run_cycle_gate_le_polling_calme_sans_appel_llm(
-    monkeypatch, tmp_path, patch_batch, make_data_source
+    monkeypatch, tmp_path, patch_batch, make_data_source, write_runtime_config
 ) -> None:
     from datetime import datetime, timezone
 
@@ -239,7 +236,7 @@ def test_run_cycle_gate_le_polling_calme_sans_appel_llm(
     from trader.agent.client import Decision
     from trader.planning.scheduler import Scheduler
 
-    _runtime_config(tmp_path)
+    write_runtime_config(tmp_path)
     state_dir = tmp_path / "state"
     now = datetime(2026, 6, 11, 12, 0, tzinfo=timezone.utc)
 
@@ -275,7 +272,7 @@ def test_run_cycle_gate_le_polling_calme_sans_appel_llm(
 
 
 def test_run_cycle_honore_le_reveil_demande_par_l_agent(
-    monkeypatch, tmp_path, patch_batch, make_data_source
+    monkeypatch, tmp_path, patch_batch, make_data_source, write_runtime_config
 ) -> None:
     from datetime import datetime, timezone
 
@@ -283,7 +280,7 @@ def test_run_cycle_honore_le_reveil_demande_par_l_agent(
     from trader.agent.client import Decision
     from trader.planning.scheduler import Scheduler
 
-    _runtime_config(tmp_path)
+    write_runtime_config(tmp_path)
     state_dir = tmp_path / "state"
     now = datetime(2026, 6, 11, 12, 0, tzinfo=timezone.utc)
 
@@ -318,7 +315,7 @@ def test_run_cycle_honore_le_reveil_demande_par_l_agent(
 
 
 def test_run_cycle_ne_marque_pas_un_echec_llm_comme_revue_periodique(
-    monkeypatch, tmp_path, patch_batch, make_data_source
+    monkeypatch, tmp_path, patch_batch, make_data_source, write_runtime_config
 ) -> None:
     from datetime import datetime, timezone
 
@@ -326,7 +323,7 @@ def test_run_cycle_ne_marque_pas_un_echec_llm_comme_revue_periodique(
     from trader.agent.client import Decision
     from trader.planning.scheduler import Scheduler
 
-    _runtime_config(tmp_path)
+    write_runtime_config(tmp_path)
     state_dir = tmp_path / "state"
     now = datetime(2026, 6, 11, 12, 0, tzinfo=timezone.utc)
 
@@ -364,7 +361,7 @@ def test_run_cycle_ne_marque_pas_un_echec_llm_comme_revue_periodique(
 
 
 def test_run_cycle_stocke_la_raison_de_reveil_sur_revue_llm(
-    monkeypatch, tmp_path, patch_batch, make_data_source
+    monkeypatch, tmp_path, patch_batch, make_data_source, write_runtime_config
 ) -> None:
     from datetime import datetime, timezone
 
@@ -372,7 +369,7 @@ def test_run_cycle_stocke_la_raison_de_reveil_sur_revue_llm(
     from trader.agent.client import Decision
     from trader.planning.scheduler import Scheduler
 
-    _runtime_config(tmp_path)
+    write_runtime_config(tmp_path)
     state_dir = tmp_path / "state"
     now = datetime(2026, 6, 11, 12, 0, tzinfo=timezone.utc)
 

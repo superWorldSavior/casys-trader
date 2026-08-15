@@ -10,26 +10,7 @@ from trader.agent.client import Decision
 from trader.market.market_data import Bar, MarketError
 from trader.planning.trade_plan import TakeProfit, TradePlan
 from trader.planning.scheduler import Scheduler
-
-
-def _write_runtime_config(root) -> None:
-    (root / "config").mkdir()
-    (root / "mandate").mkdir()
-    (root / "config" / "universe.yaml").write_text(
-        "starting_cash: 100000\nsymbols:\n  - SPY\n  - QQQ\n"
-    )
-    (root / "config" / "risk.yaml").write_text(
-        "\n".join(
-            [
-                "max_position_value: 20000",
-                "max_gross_exposure: 100000",
-                "max_order_value: 10000",
-                "min_equity: 50000",
-            ]
-        )
-    )
-    (root / "mandate" / "mandate.md").write_text("# Mandat\n")
-    (root / "mandate" / "memory.md").write_text("# Memoire\n")
+from tests.conftest import write_runtime_config as _write_runtime_config
 
 
 def _seed_trade_plan(state_dir, plan: TradePlan) -> None:
@@ -96,7 +77,7 @@ def test_run_cycle_injecte_toujours_active_plans_summary_sched_none(
     patch_batch,
     make_data_source,
 ) -> None:
-    _write_runtime_config(tmp_path)
+    _write_runtime_config(tmp_path, symbols=("SPY", "QQQ"))
     state_dir = tmp_path / "state"
     now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
     contexts: list[dict] = []
@@ -135,7 +116,7 @@ def test_run_cycle_met_a_jour_le_snapshot_des_plans_ouverts(
     patch_batch,
     make_data_source,
 ) -> None:
-    _write_runtime_config(tmp_path)
+    _write_runtime_config(tmp_path, symbols=("SPY", "QQQ"))
     state_dir = tmp_path / "state"
     now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
     plan = TradePlan(
@@ -269,7 +250,7 @@ def test_run_cycle_utilise_la_source_injectee_sans_appeler_market_get_bars(
     patch_batch,
     make_data_source,
 ) -> None:
-    _write_runtime_config(tmp_path)
+    _write_runtime_config(tmp_path, symbols=("SPY", "QQQ"))
     state_dir = tmp_path / "state"
     sched = Scheduler(state_dir / "scheduler.json")
     now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
@@ -302,7 +283,7 @@ def test_run_cycle_utilise_la_source_injectee_sans_appeler_market_get_bars(
 
 
 def test_run_cycle_injecte_un_cockpit_compact_sans_barres(monkeypatch, tmp_path, patch_batch, make_data_source) -> None:
-    _write_runtime_config(tmp_path)
+    _write_runtime_config(tmp_path, symbols=("SPY", "QQQ"))
     state_dir = tmp_path / "state"
     sched = Scheduler(state_dir / "scheduler.json")
     now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
@@ -348,7 +329,7 @@ def test_run_cycle_resout_une_requete_indicateurs_bornee_avant_decision_finale(
     patch_batch,
     make_data_source,
 ) -> None:
-    _write_runtime_config(tmp_path)
+    _write_runtime_config(tmp_path, symbols=("SPY", "QQQ"))
     state_dir = tmp_path / "state"
     sched = Scheduler(state_dir / "scheduler.json")
     now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
@@ -408,7 +389,7 @@ def test_run_cycle_resout_une_requete_indicateurs_bornee_avant_decision_finale(
 
 
 def test_run_cycle_daily_bars_echouees_ne_bloquent_pas_le_cockpit(monkeypatch, tmp_path, patch_batch, make_data_source) -> None:
-    _write_runtime_config(tmp_path)
+    _write_runtime_config(tmp_path, symbols=("SPY", "QQQ"))
     state_dir = tmp_path / "state"
     sched = Scheduler(state_dir / "scheduler.json")
     now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
@@ -455,7 +436,7 @@ def test_run_cycle_daily_bars_echouees_ne_bloquent_pas_le_cockpit(monkeypatch, t
 
 
 def test_run_cycle_daily_bars_stale_sont_ignorees_pour_le_cockpit(monkeypatch, tmp_path, patch_batch, make_data_source) -> None:
-    _write_runtime_config(tmp_path)
+    _write_runtime_config(tmp_path, symbols=("SPY", "QQQ"))
     state_dir = tmp_path / "state"
     sched = Scheduler(state_dir / "scheduler.json")
     now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
@@ -515,7 +496,7 @@ def test_run_cycle_marque_les_decisions_llm_comme_model_called(
     patch_batch,
     make_data_source,
 ) -> None:
-    _write_runtime_config(tmp_path)
+    _write_runtime_config(tmp_path, symbols=("SPY", "QQQ"))
     state_dir = tmp_path / "state"
     now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
 
@@ -566,7 +547,7 @@ def test_run_cycle_marque_no_decision_in_batch_comme_hold_infra_specifique(
     tmp_path,
     make_data_source,
 ) -> None:
-    _write_runtime_config(tmp_path)
+    _write_runtime_config(tmp_path, symbols=("SPY", "QQQ"))
     state_dir = tmp_path / "state"
     now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
 

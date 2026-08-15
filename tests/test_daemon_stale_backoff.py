@@ -7,6 +7,7 @@ from trader.agent.client import Decision
 from trader.runtime import daemon
 from trader.runtime import cycle_scheduling
 from trader.planning.scheduler import Scheduler, STALE_BACKOFF_MAX_MINUTES, STALE_BACKOFF_MAX_STREAK
+from tests.conftest import write_runtime_config as _write_runtime_config
 
 
 def test_backoff_wake_premier_stale_est_egal_au_defaut(tmp_path) -> None:
@@ -40,24 +41,6 @@ def test_backoff_wake_cap_avec_defaut_petit(tmp_path) -> None:
 
 
 # ── helpers communs ──────────────────────────────────────────────────────────
-
-def _write_runtime_config(root) -> None:
-    (root / "config").mkdir(exist_ok=True)
-    (root / "mandate").mkdir(exist_ok=True)
-    (root / "config" / "universe.yaml").write_text(
-        "starting_cash: 100000\nsymbols:\n  - SPY\n"
-    )
-    (root / "config" / "risk.yaml").write_text(
-        "\n".join([
-            "max_position_value: 20000",
-            "max_gross_exposure: 100000",
-            "max_order_value: 10000",
-            "min_equity: 50000",
-        ])
-    )
-    (root / "mandate" / "mandate.md").write_text("# Mandat\n")
-    (root / "mandate" / "memory.md").write_text("# Memoire\n")
-
 
 def _make_stale_source(now, age_minutes=90.0):
     """Retourne une data source TOUT stale : runtime trop vieux ET daily d'une séance

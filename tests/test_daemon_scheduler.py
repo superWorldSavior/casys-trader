@@ -5,6 +5,7 @@ from trader.runtime import cycle_scheduling
 from trader.agent.client import Decision
 from trader.market.market_data import Bar
 from trader.planning.scheduler import Scheduler
+from tests.conftest import write_runtime_config as _write_runtime_config
 
 
 def _scan_indicator_watches(symbols: list[str], *, sched, now, data_source) -> list[dict]:
@@ -20,28 +21,8 @@ def _scan_indicator_watches(symbols: list[str], *, sched, now, data_source) -> l
     )
 
 
-def _write_runtime_config(root) -> None:
-    (root / "config").mkdir()
-    (root / "mandate").mkdir()
-    (root / "config" / "universe.yaml").write_text(
-        "starting_cash: 100000\nsymbols:\n  - SPY\n  - QQQ\n"
-    )
-    (root / "config" / "risk.yaml").write_text(
-        "\n".join(
-            [
-                "max_position_value: 20000",
-                "max_gross_exposure: 100000",
-                "max_order_value: 10000",
-                "min_equity: 50000",
-            ]
-        )
-    )
-    (root / "mandate" / "mandate.md").write_text("# Mandat\n")
-    (root / "mandate" / "memory.md").write_text("# Memoire\n")
-
-
 def test_run_cycle_planifie_uniquement_les_symboles_traites(monkeypatch, tmp_path, patch_batch, make_data_source) -> None:
-    _write_runtime_config(tmp_path)
+    _write_runtime_config(tmp_path, symbols=("SPY", "QQQ"))
     state_dir = tmp_path / "state"
     sched = Scheduler(state_dir / "scheduler.json")
     now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
@@ -83,7 +64,7 @@ def test_run_cycle_utilise_le_timer_global_par_defaut_si_agent_ne_modifie_pas(
     patch_batch,
     make_data_source,
 ) -> None:
-    _write_runtime_config(tmp_path)
+    _write_runtime_config(tmp_path, symbols=("SPY", "QQQ"))
     state_dir = tmp_path / "state"
     sched = Scheduler(state_dir / "scheduler.json")
     now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
@@ -117,7 +98,7 @@ def test_run_cycle_retire_un_override_symbole_expire_si_agent_ne_le_renouvelle_p
     patch_batch,
     make_data_source,
 ) -> None:
-    _write_runtime_config(tmp_path)
+    _write_runtime_config(tmp_path, symbols=("SPY", "QQQ"))
     state_dir = tmp_path / "state"
     sched = Scheduler(state_dir / "scheduler.json")
     sched.set_next_wake("2026-06-05T12:30:00+00:00")
@@ -158,7 +139,7 @@ def test_select_due_symbols_peut_forcer_un_bootstrap_explicitement(tmp_path) -> 
 
 
 def test_run_cycle_persiste_une_indicator_watch_de_decision(monkeypatch, tmp_path, patch_batch, make_data_source) -> None:
-    _write_runtime_config(tmp_path)
+    _write_runtime_config(tmp_path, symbols=("SPY", "QQQ"))
     state_dir = tmp_path / "state"
     sched = Scheduler(state_dir / "scheduler.json")
     now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
@@ -320,7 +301,7 @@ def test_scan_indicator_watches_charge_les_pairs_cross_asset(monkeypatch, tmp_pa
 
 
 def test_run_cycle_injecte_les_indicator_triggers_dans_le_contexte(monkeypatch, tmp_path, patch_batch, make_data_source) -> None:
-    _write_runtime_config(tmp_path)
+    _write_runtime_config(tmp_path, symbols=("SPY", "QQQ"))
     state_dir = tmp_path / "state"
     sched = Scheduler(state_dir / "scheduler.json")
     now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
@@ -359,7 +340,7 @@ def test_run_cycle_injecte_les_indicator_triggers_dans_le_contexte(monkeypatch, 
 
 
 def test_run_cycle_injecte_les_wake_reasons_dans_le_contexte(monkeypatch, tmp_path, patch_batch, make_data_source) -> None:
-    _write_runtime_config(tmp_path)
+    _write_runtime_config(tmp_path, symbols=("SPY", "QQQ"))
     state_dir = tmp_path / "state"
     sched = Scheduler(state_dir / "scheduler.json")
     now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)

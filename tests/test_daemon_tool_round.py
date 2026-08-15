@@ -506,11 +506,9 @@ def test_build_recall_provider_no_query_no_embedder(tmp_path):
     assert "rows" in result
 
 
-def test_run_cycle_record_recall_apres_tool_round(monkeypatch, tmp_path, make_data_source):
+def test_run_cycle_record_recall_apres_tool_round(monkeypatch, tmp_path, make_data_source, write_runtime_config):
     """run_cycle: après une tournée recall_learnings ok, record_recall est tracé dans le store."""
     from trader.agent.learnings import store as recall_mod
-    from tests.conftest import write_runtime_config
-
     write_runtime_config(tmp_path, symbols=["SPY"])
     state_dir = tmp_path / "state"
     state_dir.mkdir(parents=True, exist_ok=True)
@@ -581,13 +579,11 @@ def test_run_cycle_record_recall_apres_tool_round(monkeypatch, tmp_path, make_da
 # ---------------------------------------------------------------------------
 
 
-def test_run_cycle_recall_db_corrompu_ne_leve_pas(monkeypatch, tmp_path, make_data_source):
+def test_run_cycle_recall_db_corrompu_ne_leve_pas(monkeypatch, tmp_path, make_data_source, write_runtime_config):
     """Finding 1 : db corrompu → run_cycle ne lève pas, outil recall répond unavailable.
 
     Le flag _RECALL_STORE_FAILED est réinitialisé pour isoler ce test.
     """
-    from tests.conftest import write_runtime_config
-
     write_runtime_config(tmp_path, symbols=["SPY"])
     state_dir = tmp_path / "state"
     state_dir.mkdir(parents=True, exist_ok=True)

@@ -23,6 +23,7 @@ from trader.market.market_data import Bar
 from trader.planning.scheduler import Scheduler
 from trader.planning.trade_plan import create_trade_plan
 from tests.plan_store_fakes import MemoryTradePlanStore
+from tests.conftest import write_runtime_config as _write_runtime_config
 
 _COMMON = dict(
     mandate="",
@@ -55,25 +56,6 @@ def _apply_decision_schedule(**kwargs) -> None:
 
 def test_planner_batch_module_expose_batch_decide() -> None:
     assert callable(planner_batch.batch_decide)
-
-
-def _write_runtime_config(root, *, symbols=("SPY",)) -> None:
-    (root / "config").mkdir()
-    (root / "mandate").mkdir()
-    symbols_yaml = "".join(f"  - {symbol}\n" for symbol in symbols)
-    (root / "config" / "universe.yaml").write_text(f"starting_cash: 100000\nsymbols:\n{symbols_yaml}")
-    (root / "config" / "risk.yaml").write_text(
-        "\n".join(
-            [
-                "max_position_value: 20000",
-                "max_gross_exposure: 100000",
-                "max_order_value: 10000",
-                "min_equity: 50000",
-            ]
-        )
-    )
-    (root / "mandate" / "mandate.md").write_text("# Mandat\n")
-    (root / "mandate" / "memory.md").write_text("# Memoire\n")
 
 
 def _broker_positions(state_dir):

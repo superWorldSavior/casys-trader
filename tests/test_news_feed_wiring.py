@@ -42,7 +42,7 @@ def _flat_bars_factory(now_iso: str):
     return factory
 
 
-def test_quiet_gate_decision_has_news_key(monkeypatch, tmp_path, patch_batch, make_data_source):
+def test_quiet_gate_decision_has_news_key(monkeypatch, tmp_path, patch_batch, make_data_source, write_runtime_config):
     """Fix B : les décisions quiet_gate (chemins infra) doivent avoir une clé 'news'.
 
     Avant le fix, `entry["news"]` n'était ajouté qu'APRÈS le batch LLM (~l.2062),
@@ -53,8 +53,6 @@ def test_quiet_gate_decision_has_news_key(monkeypatch, tmp_path, patch_batch, ma
     from trader.runtime import daemon
     from trader.market import news_feed as nf
     from trader.planning.scheduler import Scheduler
-    from conftest import write_runtime_config
-
     write_runtime_config(tmp_path, symbols=("SPY",))
     state_dir = tmp_path / "state"
     now = datetime(2026, 6, 23, 12, 0, tzinfo=timezone.utc)
@@ -107,7 +105,7 @@ def test_quiet_gate_decision_has_news_key(monkeypatch, tmp_path, patch_batch, ma
 # ---------------------------------------------------------------------------
 
 
-def test_payload_decision_contient_macro_next(monkeypatch, tmp_path, patch_batch, make_data_source):
+def test_payload_decision_contient_macro_next(monkeypatch, tmp_path, patch_batch, make_data_source, write_runtime_config):
     """Le payload news de chaque décision contient la clé 'macro_next' (spec §2.2).
 
     macro_next est calculé UNE fois par cycle (pas par symbole) et n'est PAS
@@ -117,8 +115,6 @@ def test_payload_decision_contient_macro_next(monkeypatch, tmp_path, patch_batch
     from trader.runtime import daemon
     from trader.market import news_feed as nf
     from trader.planning.scheduler import Scheduler
-    from conftest import write_runtime_config
-
     write_runtime_config(tmp_path, symbols=("SPY",))
     state_dir = tmp_path / "state"
     now = datetime(2026, 7, 29, 12, 0, tzinfo=timezone.utc)

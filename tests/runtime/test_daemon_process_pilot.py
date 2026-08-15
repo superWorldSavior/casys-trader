@@ -9,17 +9,7 @@ from trader.market.market_data import Bar
 from trader.planning.scheduler import Scheduler
 from trader.runtime import daemon
 from trader.runtime.cycle_process_state import CycleProcessState
-
-
-def _write_runtime_config(root) -> None:
-    (root / "config").mkdir(exist_ok=True)
-    (root / "mandate").mkdir(exist_ok=True)
-    (root / "config" / "universe.yaml").write_text("starting_cash: 100000\nsymbols:\n  - SPY\n")
-    (root / "config" / "risk.yaml").write_text(
-        "max_position_value: 20000\nmax_gross_exposure: 100000\nmax_order_value: 10000\nmin_equity: 50000\n"
-    )
-    (root / "mandate" / "mandate.md").write_text("# Mandate\n")
-    (root / "mandate" / "memory.md").write_text("# Memory\n")
+from tests.conftest import write_runtime_config as _write_runtime_config
 
 
 class _FreshDataSource:

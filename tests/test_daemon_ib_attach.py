@@ -5,24 +5,7 @@ import pytest
 from trader.runtime import daemon
 from trader.market import market_data as market_mod
 from trader.market.market_data import Bar, Freshness, MarketError
-
-
-def _write_runtime_config(root) -> None:
-    (root / "config").mkdir()
-    (root / "mandate").mkdir()
-    (root / "config" / "universe.yaml").write_text("starting_cash: 100000\nsymbols:\n  - SPY\n")
-    (root / "config" / "risk.yaml").write_text(
-        "\n".join(
-            [
-                "max_position_value: 20000",
-                "max_gross_exposure: 100000",
-                "max_order_value: 10000",
-                "min_equity: 50000",
-            ]
-        )
-    )
-    (root / "mandate" / "mandate.md").write_text("# Mandat\n")
-    (root / "mandate" / "memory.md").write_text("# Memoire\n")
+from tests.conftest import write_runtime_config as _write_runtime_config
 
 
 def _write_data_sources_config(root, *, profile: str = "paper") -> None:

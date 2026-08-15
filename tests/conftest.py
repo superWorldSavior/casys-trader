@@ -137,21 +137,59 @@ def patch_batch(monkeypatch):
     return install
 
 
-def write_runtime_config(root, *, symbols=("SPY",)) -> None:
+def write_runtime_config(
+    root,
+    *,
+    symbols=("SPY",),
+    starting_cash: float | int = 100_000,
+    max_position_value: float | int = 20_000,
+    max_gross_exposure: float | int = 100_000,
+    max_order_value: float | int = 10_000,
+    min_equity: float | int = 50_000,
+    max_risk_per_trade_pct: float | None = None,
+    extra_risk: dict[str, object] | None = None,
+    write_mandate: bool = True,
+    write_memory: bool = True,
+    write_fx: bool = False,
+    mandate_text: str = "# Mandat\n",
+    memory_text: str = "# Memoire\n",
+) -> None:
     """Harnais runtime minimal (config + mandate) partagé par les tests daemon.
 
-    Évite les copies par fichier de test : tout champ ajouté à risk.yaml ou
-    mandate/ se fait ICI une seule fois.
+    Factory paramétrée : univers, seuils de risque, clés de risque additionnelles,
+    présence mandate/memory, et fx.yaml optionnel. Tout champ ajouté à risk.yaml
+    ou mandate/ se fait ICI une seule fois.
     """
     (root / "config").mkdir(exist_ok=True)
     (root / "mandate").mkdir(exist_ok=True)
     symbols_yaml = "".join(f"  - {s}\n" for s in symbols)
     (root / "config" / "universe.yaml").write_text(
-        f"starting_cash: 100000\nsymbols:\n{symbols_yaml}"
+        f"starting_cash: {starting_cash}\nsymbols:\n{symbols_yaml}"
     )
-    (root / "config" / "risk.yaml").write_text(
-        "max_position_value: 20000\nmax_gross_exposure: 100000\n"
-        "max_order_value: 10000\nmin_equity: 50000\n"
-    )
-    (root / "mandate" / "mandate.md").write_text("# Mandat\n")
-    (root / "mandate" / "memory.md").write_text("# Memoire\n")
+    risk_lines = [
+        f"max_position_value: {max_position_value}",
+        f"max_gross_exposure: {max_gross_exposure}",
+        f"max_order_value: {max_order_value}",
+    ]
+    if max_risk_per_trade_pct is not None:
+        risk_lines.append(f"max_risk_per_trade_pct: {max_risk_per_trade_pct}")
+    if extra_risk:
+        for key, value in extra_risk.items():
+            risk_lines.append(f"{key}: {value}")
+    risk_lines.append(f"min_equity: {min_equity}")
+    (root / "config" / "risk.yaml").write_text("\n".join(risk_lines) + "\n")
+    if write_fx:
+        (root / "config" / "fx.yaml").write_text(
+            "TWD:\n  yahoo: TWD=X\n  invert: true\n  fallback: 0.031\n"
+            "EUR:\n  yahoo: EURUSD=X\n  invert: false\n  fallback: 1.08\n"
+        )
+    if write_mandate:
+        (root / "mandate" / "mandate.md").write_text(mandate_text)
+    if write_memory:
+        (root / "mandate" / "memory.md").write_text(memory_text)
+
+
+@pytest.fixture(name="write_runtime_config")
+def _write_runtime_config_fixture():
+    """Expose la factory en injection pytest (évite `from conftest import ...`)."""
+    return write_runtime_config

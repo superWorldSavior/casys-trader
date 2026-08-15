@@ -6,26 +6,7 @@ from trader.market.market_data import Bar, MarketError
 from trader.agent.learnings.raw_store import RawLearningsStore
 from trader.agent.learnings.consolidation_stores import stable_rule_id
 from trader.planning.scheduler import Scheduler
-
-
-def _write_runtime_config(root) -> None:
-    (root / "config").mkdir()
-    (root / "mandate").mkdir()
-    (root / "config" / "universe.yaml").write_text(
-        "starting_cash: 100000\nsymbols:\n  - SPY\n  - QQQ\n"
-    )
-    (root / "config" / "risk.yaml").write_text(
-        "\n".join(
-            [
-                "max_position_value: 20000",
-                "max_gross_exposure: 100000",
-                "max_order_value: 10000",
-                "min_equity: 50000",
-            ]
-        )
-    )
-    (root / "mandate" / "mandate.md").write_text("# Mandat\n")
-    (root / "mandate" / "memory.md").write_text("# Memoire\n")
+from tests.conftest import write_runtime_config as _write_runtime_config
 
 
 def _bars(symbol: str, lookback: str, interval: str) -> list[Bar]:
@@ -38,7 +19,7 @@ def _bars(symbol: str, lookback: str, interval: str) -> list[Bar]:
 
 
 def test_run_cycle_ecrit_le_learning_emis_par_lagent(monkeypatch, tmp_path, patch_batch, make_data_source) -> None:
-    _write_runtime_config(tmp_path)
+    _write_runtime_config(tmp_path, symbols=("SPY", "QQQ"))
     state_dir = tmp_path / "state"
     sched = Scheduler(state_dir / "scheduler.json")
     now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
@@ -76,7 +57,7 @@ def test_run_cycle_ecrit_le_learning_emis_par_lagent(monkeypatch, tmp_path, patc
 def test_run_cycle_injecte_lattribution_dans_le_contexte(monkeypatch, tmp_path, patch_batch, make_data_source) -> None:
     import json as _json
 
-    _write_runtime_config(tmp_path)
+    _write_runtime_config(tmp_path, symbols=("SPY", "QQQ"))
     state_dir = tmp_path / "state"
     state_dir.mkdir(parents=True, exist_ok=True)
     sched = Scheduler(state_dir / "scheduler.json")
@@ -118,7 +99,7 @@ def test_run_cycle_passe_le_filtre_regime_a_lattribution(
 ) -> None:
     import json as _json
 
-    _write_runtime_config(tmp_path)
+    _write_runtime_config(tmp_path, symbols=("SPY", "QQQ"))
     (tmp_path / "config" / "regime.yaml").write_text(
         "attribution_since: 2026-06-10\nexclude_symbols: [CL=F, GC=F]\n",
         encoding="utf-8",
@@ -172,7 +153,7 @@ def test_run_cycle_ne_reinjecte_pas_les_learnings_bruts_dans_le_contexte(
     patch_batch,
     make_data_source,
 ) -> None:
-    _write_runtime_config(tmp_path)
+    _write_runtime_config(tmp_path, symbols=("SPY", "QQQ"))
     state_dir = tmp_path / "state"
     sched = Scheduler(state_dir / "scheduler.json")
     now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
@@ -207,7 +188,7 @@ def test_run_cycle_injecte_les_learnings_consolides_scope_aware(
 ) -> None:
     import json as _json
 
-    _write_runtime_config(tmp_path)
+    _write_runtime_config(tmp_path, symbols=("SPY", "QQQ"))
     state_dir = tmp_path / "state"
     state_dir.mkdir(parents=True, exist_ok=True)
     sched = Scheduler(state_dir / "scheduler.json")
@@ -258,7 +239,7 @@ def test_run_cycle_declenche_le_consolidateur_en_fin_de_cycle(
     patch_batch,
     make_data_source,
 ) -> None:
-    _write_runtime_config(tmp_path)
+    _write_runtime_config(tmp_path, symbols=("SPY", "QQQ"))
     state_dir = tmp_path / "state"
     sched = Scheduler(state_dir / "scheduler.json")
     now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
@@ -329,7 +310,7 @@ def test_run_cycle_transmet_les_flags_de_finalisation_cycle(
     patch_batch,
     make_data_source,
 ) -> None:
-    _write_runtime_config(tmp_path)
+    _write_runtime_config(tmp_path, symbols=("SPY", "QQQ"))
     state_dir = tmp_path / "state"
     sched = Scheduler(state_dir / "scheduler.json")
     now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
@@ -376,7 +357,7 @@ def test_run_cycle_utilise_le_process_state_injecte_pour_le_feedback_gross(
     patch_batch,
     make_data_source,
 ) -> None:
-    _write_runtime_config(tmp_path)
+    _write_runtime_config(tmp_path, symbols=("SPY", "QQQ"))
     state_dir = tmp_path / "state"
     sched = Scheduler(state_dir / "scheduler.json")
     now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
@@ -416,7 +397,7 @@ def test_run_cycle_injecte_guardrails_et_regime_families(
 ) -> None:
     import json as _json
 
-    _write_runtime_config(tmp_path)
+    _write_runtime_config(tmp_path, symbols=("SPY", "QQQ"))
     (tmp_path / "mandate" / "guardrails.json").write_text(
         _json.dumps([{"note": "Toute ouverture s'accompagne d'un exit_plan avec stop."}]),
         encoding="utf-8",
@@ -476,7 +457,7 @@ def test_run_cycle_calcule_regime_families_sur_daily_plutot_que_runtime(
     patch_batch,
     make_data_source,
 ) -> None:
-    _write_runtime_config(tmp_path)
+    _write_runtime_config(tmp_path, symbols=("SPY", "QQQ"))
     state_dir = tmp_path / "state"
     sched = Scheduler(state_dir / "scheduler.json")
     now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
@@ -539,7 +520,7 @@ def test_run_cycle_omet_regime_families_si_daily_indisponible_sans_fallback_intr
     patch_batch,
     make_data_source,
 ) -> None:
-    _write_runtime_config(tmp_path)
+    _write_runtime_config(tmp_path, symbols=("SPY", "QQQ"))
     state_dir = tmp_path / "state"
     sched = Scheduler(state_dir / "scheduler.json")
     now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)

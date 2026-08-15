@@ -7,26 +7,7 @@ from trader.agent.client import Decision
 from trader.execution.broker import IbkrCommissionModel, SimBroker
 from trader.market.market_data import Bar
 from trader.planning.scheduler import Scheduler
-
-
-def _write_runtime_config(root) -> None:
-    (root / "config").mkdir()
-    (root / "mandate").mkdir()
-    (root / "config" / "universe.yaml").write_text(
-        "starting_cash: 100000\nsymbols:\n  - SPY\n  - QQQ\n"
-    )
-    (root / "config" / "risk.yaml").write_text(
-        "\n".join(
-            [
-                "max_position_value: 20000",
-                "max_gross_exposure: 100000",
-                "max_order_value: 10000",
-                "min_equity: 50000",
-            ]
-        )
-    )
-    (root / "mandate" / "mandate.md").write_text("# Mandat\n")
-    (root / "mandate" / "memory.md").write_text("# Memoire\n")
+from tests.conftest import write_runtime_config as _write_runtime_config
 
 
 def _broker_positions(state_dir):
@@ -50,7 +31,7 @@ def _broker_fills(state_dir):
 
 
 def test_run_cycle_ecrit_un_statut_et_un_rapport_courant(monkeypatch, tmp_path, patch_batch, make_data_source) -> None:
-    _write_runtime_config(tmp_path)
+    _write_runtime_config(tmp_path, symbols=("SPY", "QQQ"))
     state_dir = tmp_path / "state"
     now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
 
@@ -84,7 +65,7 @@ def test_run_cycle_ecrit_un_statut_et_un_rapport_courant(monkeypatch, tmp_path, 
 
 
 def test_run_cycle_ecrit_la_decision_dans_le_ledger(monkeypatch, tmp_path, patch_batch, make_data_source) -> None:
-    _write_runtime_config(tmp_path)
+    _write_runtime_config(tmp_path, symbols=("SPY", "QQQ"))
     state_dir = tmp_path / "state"
     now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
 
@@ -128,7 +109,7 @@ def test_run_cycle_ecrit_la_decision_dans_le_ledger(monkeypatch, tmp_path, patch
 
 
 def test_run_cycle_loggue_la_progression_console(monkeypatch, tmp_path, caplog, patch_batch, make_data_source) -> None:
-    _write_runtime_config(tmp_path)
+    _write_runtime_config(tmp_path, symbols=("SPY", "QQQ"))
     state_dir = tmp_path / "state"
     now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
     caplog.set_level(logging.DEBUG, logger="casys-trader")
@@ -164,7 +145,7 @@ def test_run_cycle_loggue_la_progression_console(monkeypatch, tmp_path, caplog, 
 
 
 def test_run_cycle_historise_la_perf_par_modele_sur_fill(monkeypatch, tmp_path, patch_batch, make_data_source) -> None:
-    _write_runtime_config(tmp_path)
+    _write_runtime_config(tmp_path, symbols=("SPY", "QQQ"))
     state_dir = tmp_path / "state"
     # 14:30 UTC = 10:30 ET — session US régulière ouverte (13:30–20:00 UTC en EDT)
     now = datetime(2026, 6, 5, 14, 30, tzinfo=timezone.utc)
@@ -210,7 +191,7 @@ def test_run_cycle_historise_la_perf_par_modele_sur_fill(monkeypatch, tmp_path, 
 
 
 def test_run_cycle_loggue_les_commissions_du_fill(monkeypatch, tmp_path, patch_batch, make_data_source) -> None:
-    _write_runtime_config(tmp_path)
+    _write_runtime_config(tmp_path, symbols=("SPY", "QQQ"))
     state_dir = tmp_path / "state"
     # 14:30 UTC = 10:30 ET — session US régulière ouverte (13:30–20:00 UTC en EDT)
     now = datetime(2026, 6, 5, 14, 30, tzinfo=timezone.utc)
@@ -257,7 +238,7 @@ def test_run_cycle_report_portefeuille_expose_le_pnl_latent_net_avec_commissions
     patch_batch,
     make_data_source,
 ) -> None:
-    _write_runtime_config(tmp_path)
+    _write_runtime_config(tmp_path, symbols=("SPY", "QQQ"))
     state_dir = tmp_path / "state"
     # 14:30 UTC = 10:30 ET — session US régulière ouverte (13:30–20:00 UTC en EDT)
     now = datetime(2026, 6, 5, 14, 30, tzinfo=timezone.utc)
@@ -300,7 +281,7 @@ def test_run_cycle_report_portefeuille_expose_le_pnl_latent_net_avec_commissions
 
 
 def test_run_cycle_bloque_decision_sur_donnees_marche_perimees(monkeypatch, tmp_path, patch_batch, make_data_source) -> None:
-    _write_runtime_config(tmp_path)
+    _write_runtime_config(tmp_path, symbols=("SPY", "QQQ"))
     state_dir = tmp_path / "state"
     now = datetime(2026, 6, 5, 16, 0, tzinfo=timezone.utc)
     stale_ts = (now - timedelta(hours=2)).isoformat()
@@ -378,7 +359,7 @@ def test_run_cycle_queue_execute_fail_closed_reason_from_dispatcher(
     patch_batch,
     make_data_source,
 ) -> None:
-    _write_runtime_config(tmp_path)
+    _write_runtime_config(tmp_path, symbols=("SPY", "QQQ"))
     state_dir = tmp_path / "state"
     now = datetime(2026, 6, 5, 14, 30, tzinfo=timezone.utc)
     captured: dict = {}
@@ -455,7 +436,7 @@ def test_run_cycle_garde_tradable_une_barre_horaire_de_59_minutes(
     patch_batch,
     make_data_source,
 ) -> None:
-    _write_runtime_config(tmp_path)
+    _write_runtime_config(tmp_path, symbols=("SPY", "QQQ"))
     state_dir = tmp_path / "state"
     now = datetime(2026, 6, 5, 8, 59, tzinfo=timezone.utc)
     codex_calls = 0
@@ -521,7 +502,7 @@ def test_run_cycle_garde_tradable_une_barre_horaire_de_59_minutes(
 def test_run_cycle_status_contient_pid(monkeypatch, tmp_path, patch_batch, make_data_source) -> None:
     """_write_status inclut le champ 'pid' (os.getpid()) dans chaque battement."""
     import os
-    _write_runtime_config(tmp_path)
+    _write_runtime_config(tmp_path, symbols=("SPY", "QQQ"))
     state_dir = tmp_path / "state"
     now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
 
@@ -571,7 +552,7 @@ def test_main_ecrit_pid_file_au_demarrage(monkeypatch, tmp_path) -> None:
     Rapide : connect_ib lève MarketError immédiatement, time.sleep=no-op.
     """
     import os
-    _write_runtime_config(tmp_path)
+    _write_runtime_config(tmp_path, symbols=("SPY", "QQQ"))
     state_dir = tmp_path / "state"
     _fast_main_patches(monkeypatch, tmp_path, state_dir)
 
@@ -604,7 +585,7 @@ def test_main_supprime_pid_file_au_shutdown_propre(monkeypatch, tmp_path) -> Non
 
     Rapide : connect_ib lève MarketError → --once → break → finally → pid supprimé.
     """
-    _write_runtime_config(tmp_path)
+    _write_runtime_config(tmp_path, symbols=("SPY", "QQQ"))
     state_dir = tmp_path / "state"
     _fast_main_patches(monkeypatch, tmp_path, state_dir)
 
@@ -620,7 +601,7 @@ def test_main_delegue_le_bootstrap_state_au_runtime_module(monkeypatch, tmp_path
     """daemon_bootstrap possède la rotation et l'amorçage SQLite canonique."""
     from trader.runtime import daemon_bootstrap
 
-    _write_runtime_config(tmp_path)
+    _write_runtime_config(tmp_path, symbols=("SPY", "QQQ"))
     state_dir = tmp_path / "state"
     fixed_now = datetime(2026, 7, 5, 10, 0, tzinfo=timezone.utc)
     _fast_main_patches(monkeypatch, tmp_path, state_dir)
@@ -656,7 +637,7 @@ def test_main_transmet_les_flags_queue_au_bootstrap_runtime(monkeypatch, tmp_pat
     """main() garde la lecture env/CLI, queue_runtime possède la construction concrète."""
     from trader.runtime import queue_runtime
 
-    _write_runtime_config(tmp_path)
+    _write_runtime_config(tmp_path, symbols=("SPY", "QQQ"))
     state_dir = tmp_path / "state"
     _fast_main_patches(monkeypatch, tmp_path, state_dir)
     captured: list[dict] = []

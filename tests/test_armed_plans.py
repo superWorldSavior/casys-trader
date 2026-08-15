@@ -13,9 +13,6 @@ from trader.market.market_data import Bar
 from trader.planning.scheduler import Scheduler
 
 
-from conftest import write_runtime_config as _runtime_config  # noqa: E402
-
-
 def _open_plans(state_dir):
     db_path = state_dir / "casys.db"
     if db_path.exists():
@@ -109,10 +106,11 @@ def _run(
     patch_batch,
     make_data_source,
     trigger,
+    write_runtime_config,
     *,
     bars_factory=None,
 ) -> tuple[dict, list]:
-    _runtime_config(tmp_path)
+    write_runtime_config(tmp_path)
     state_dir = tmp_path / "state"
     # 2026-06-05 (vendredi) à 14:30 UTC = 10:30 ET → séance US régulière ouverte
     now = datetime(2026, 6, 5, 14, 30, tzinfo=timezone.utc)
@@ -138,10 +136,10 @@ def _run(
     return report, llm_calls
 
 
-def test_plan_arme_execute_sans_appel_llm(monkeypatch, tmp_path, patch_batch, make_data_source) -> None:
+def test_plan_arme_execute_sans_appel_llm(monkeypatch, tmp_path, patch_batch, make_data_source, write_runtime_config) -> None:
     # prix 100, stop 95 (LONG) : cohérent -> exécution directe
     report, llm_calls = _run(
-        monkeypatch, tmp_path, patch_batch, make_data_source, _armed_trigger(stop_price=95.0)
+        monkeypatch, tmp_path, patch_batch, make_data_source, _armed_trigger(stop_price=95.0), write_runtime_config
     )
 
     assert llm_calls == []  # zéro appel modèle
@@ -157,7 +155,7 @@ def test_plan_arme_execute_sans_appel_llm(monkeypatch, tmp_path, patch_batch, ma
 
 
 def test_plan_arme_resout_hard_stop_volatilite_au_tir(
-    monkeypatch, tmp_path, patch_batch, make_data_source
+    monkeypatch, tmp_path, patch_batch, make_data_source, write_runtime_config
 ) -> None:
     fresh_vol_calls: list[dict] = []
 
@@ -181,7 +179,7 @@ def test_plan_arme_resout_hard_stop_volatilite_au_tir(
         exit_plan={"hard_stop": {"type": "volatility_multiple", "multiple": 1.5}},
     )
 
-    report, llm_calls = _run(monkeypatch, tmp_path, patch_batch, make_data_source, trigger)
+    report, llm_calls = _run(monkeypatch, tmp_path, patch_batch, make_data_source, trigger, write_runtime_config)
 
     assert llm_calls == []
     entry = report["decisions"][0]
@@ -206,7 +204,7 @@ def test_plan_arme_resout_hard_stop_volatilite_au_tir(
 
 
 def test_plan_arme_resout_hard_stop_structural_sur_barres_fraiches(
-    monkeypatch, tmp_path, patch_batch, make_data_source
+    monkeypatch, tmp_path, patch_batch, make_data_source, write_runtime_config
 ) -> None:
     trigger = _armed_trigger(
         exit_plan={
@@ -225,6 +223,7 @@ def test_plan_arme_resout_hard_stop_structural_sur_barres_fraiches(
         patch_batch,
         make_data_source,
         trigger,
+        write_runtime_config,
         bars_factory=_bars_with_lows(
             "2026-06-05T14:25:00+00:00",
             [90.0, 96.0, 94.0, 97.0],
@@ -247,7 +246,7 @@ def test_plan_arme_resout_hard_stop_structural_sur_barres_fraiches(
 
 
 def test_plan_arme_structural_sans_barres_au_tir_est_annule(
-    monkeypatch, tmp_path, patch_batch, make_data_source
+    monkeypatch, tmp_path, patch_batch, make_data_source, write_runtime_config
 ) -> None:
     def remove_fresh_bars(symbol, *, entry_price, cockpit, tradable_bars_by_symbol):
         tradable_bars_by_symbol.pop(symbol, None)
@@ -262,7 +261,7 @@ def test_plan_arme_structural_sans_barres_au_tir_est_annule(
         exit_plan={"hard_stop": {"type": "structural", "anchor": "swing_low", "window": 3}},
     )
 
-    report, llm_calls = _run(monkeypatch, tmp_path, patch_batch, make_data_source, trigger)
+    report, llm_calls = _run(monkeypatch, tmp_path, patch_batch, make_data_source, trigger, write_runtime_config)
 
     assert llm_calls == ["SPY"]
     assert report["decisions"][0]["executed"] is False
@@ -285,7 +284,7 @@ def test_plan_arme_structural_sans_barres_au_tir_est_annule(
 
 
 def test_plan_arme_persiste_take_profit_risk_multiple_resolu(
-    monkeypatch, tmp_path, patch_batch, make_data_source
+    monkeypatch, tmp_path, patch_batch, make_data_source, write_runtime_config
 ) -> None:
     trigger = _armed_trigger(
         exit_plan={
@@ -294,7 +293,7 @@ def test_plan_arme_persiste_take_profit_risk_multiple_resolu(
         },
     )
 
-    report, llm_calls = _run(monkeypatch, tmp_path, patch_batch, make_data_source, trigger)
+    report, llm_calls = _run(monkeypatch, tmp_path, patch_batch, make_data_source, trigger, write_runtime_config)
 
     assert llm_calls == []
     assert report["decisions"][0]["executed"] is True
@@ -307,7 +306,7 @@ def test_plan_arme_persiste_take_profit_risk_multiple_resolu(
 
 
 def test_plan_arme_annule_si_volatilite_indisponible_au_tir(
-    monkeypatch, tmp_path, patch_batch, make_data_source
+    monkeypatch, tmp_path, patch_batch, make_data_source, write_runtime_config
 ) -> None:
     monkeypatch.setattr(
         daemon.reference_volatility_service,
@@ -318,7 +317,7 @@ def test_plan_arme_annule_si_volatilite_indisponible_au_tir(
         exit_plan={"hard_stop": {"type": "volatility_multiple", "multiple": 1.5}},
     )
 
-    report, llm_calls = _run(monkeypatch, tmp_path, patch_batch, make_data_source, trigger)
+    report, llm_calls = _run(monkeypatch, tmp_path, patch_batch, make_data_source, trigger, write_runtime_config)
 
     assert llm_calls == ["SPY"]
     entry = report["decisions"][0]
@@ -330,13 +329,13 @@ def test_plan_arme_annule_si_volatilite_indisponible_au_tir(
 
 
 def test_plan_arme_incoherent_avec_le_stop_reveille_le_planificateur(
-    monkeypatch, tmp_path, patch_batch, make_data_source
+    monkeypatch, tmp_path, patch_batch, make_data_source, write_runtime_config
 ) -> None:
     # prix 100, stop 105 (LONG) : le prix a DÉJÀ franchi le stop -> pas d'exécution
     # aveugle ; le scénario est invalidé, donc on réveille le LLM AVEC le contexte
     # d'annulation pour qu'il re-décide (re-armer autrement, ou laisser).
     report, llm_calls = _run(
-        monkeypatch, tmp_path, patch_batch, make_data_source, _armed_trigger(stop_price=105.0)
+        monkeypatch, tmp_path, patch_batch, make_data_source, _armed_trigger(stop_price=105.0), write_runtime_config
     )
 
     assert llm_calls == ["SPY"]  # un appel : le planificateur est informé
@@ -350,12 +349,12 @@ def test_plan_arme_incoherent_avec_le_stop_reveille_le_planificateur(
 
 
 def test_plan_arme_trop_risque_trace_warning_puis_fusible_notionnel(
-    monkeypatch, tmp_path, patch_batch, make_data_source
+    monkeypatch, tmp_path, patch_batch, make_data_source, write_runtime_config
 ) -> None:
     # qty énorme : le budget risque est seulement tracé ; le plafond notionnel refuse.
     trigger = _armed_trigger(stop_price=95.0)
     trigger["order"]["qty"] = 5_000.0  # 5000 × 5 de stop_distance = 25000 >> 1% equity
-    report, llm_calls = _run(monkeypatch, tmp_path, patch_batch, make_data_source, trigger)
+    report, llm_calls = _run(monkeypatch, tmp_path, patch_batch, make_data_source, trigger, write_runtime_config)
 
     assert llm_calls == []
     entry = report["decisions"][0]
@@ -368,13 +367,13 @@ def test_plan_arme_trop_risque_trace_warning_puis_fusible_notionnel(
 
 
 def test_plan_arme_sur_position_existante_reveille_le_planificateur(
-    monkeypatch, tmp_path, patch_batch, make_data_source
+    monkeypatch, tmp_path, patch_batch, make_data_source, write_runtime_config
 ) -> None:
     # une position existe déjà : pas d'exécution mécanique d'un plan d'OUVERTURE
     # potentiellement périmé — le planificateur re-décide (review Codex).
     from trader.execution.broker import Order
 
-    _runtime_config(tmp_path)
+    write_runtime_config(tmp_path)
     state_dir = tmp_path / "state"
     now = datetime(2026, 6, 11, 12, 0, tzinfo=timezone.utc)
     broker = SimBroker(state_dir / "broker.json", starting_cash=100_000)
@@ -406,12 +405,12 @@ def test_plan_arme_sur_position_existante_reveille_le_planificateur(
 
 
 def test_plan_arme_trace_sa_provenance_dans_le_ledger(
-    monkeypatch, tmp_path, patch_batch, make_data_source
+    monkeypatch, tmp_path, patch_batch, make_data_source, write_runtime_config
 ) -> None:
     import json as _json
 
     trigger = _armed_trigger(stop_price=95.0)
-    _run(monkeypatch, tmp_path, patch_batch, make_data_source, trigger)
+    _run(monkeypatch, tmp_path, patch_batch, make_data_source, trigger, write_runtime_config)
 
     rows = [
         _json.loads(line)
@@ -424,11 +423,11 @@ def test_plan_arme_trace_sa_provenance_dans_le_ledger(
 
 
 def test_plan_arme_declenche_stale_trace_l_ordre_dans_le_ledger_meme_si_backoff(
-    monkeypatch, tmp_path, patch_batch, make_data_source
+    monkeypatch, tmp_path, patch_batch, make_data_source, write_runtime_config
 ) -> None:
     import json as _json
 
-    _runtime_config(tmp_path)
+    write_runtime_config(tmp_path)
     state_dir = tmp_path / "state"
     now = datetime(2026, 6, 11, 12, 0, tzinfo=timezone.utc)
     sched = Scheduler(state_dir / "scheduler.json")
@@ -459,11 +458,11 @@ def test_plan_arme_declenche_stale_trace_l_ordre_dans_le_ledger_meme_si_backoff(
 
 
 def test_deux_plans_du_meme_symbole_au_meme_cycle_reveillent_le_planificateur(
-    monkeypatch, tmp_path, patch_batch, make_data_source
+    monkeypatch, tmp_path, patch_batch, make_data_source, write_runtime_config
 ) -> None:
     # scénarios alternatifs qui déclenchent ENSEMBLE = ambiguïté : on n'exécute
     # pas arbitrairement le dernier, on réveille le planificateur (D7, Erwan).
-    _runtime_config(tmp_path)
+    write_runtime_config(tmp_path)
     state_dir = tmp_path / "state"
     now = datetime(2026, 6, 11, 12, 0, tzinfo=timezone.utc)
 

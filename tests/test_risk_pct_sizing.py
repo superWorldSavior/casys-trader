@@ -21,6 +21,7 @@ from trader.application.execute.order_admission import qty_from_risk_pct
 from trader.runtime import daemon
 from trader.market.market_data import Bar
 from trader.planning.scheduler import Scheduler
+from tests.conftest import write_runtime_config as _write_runtime_config
 
 
 # ---------------------------------------------------------------------------
@@ -169,35 +170,6 @@ def test_qty_from_risk_pct_nan_inputs_return_zero() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _write_runtime_config(
-    root,
-    *,
-    max_risk_per_trade_pct: float = 0.01,
-    max_position_value: float = 20_000,
-    max_order_value: float = 10_000,
-) -> None:
-    (root / "config").mkdir(exist_ok=True)
-    (root / "mandate").mkdir(exist_ok=True)
-    (root / "config" / "universe.yaml").write_text(
-        "starting_cash: 100000\nsymbols:\n  - SPY\n"
-    )
-    (root / "config" / "risk.yaml").write_text(
-        "\n".join([
-            f"max_position_value: {max_position_value}",
-            "max_gross_exposure: 100000",
-            f"max_order_value: {max_order_value}",
-            f"max_risk_per_trade_pct: {max_risk_per_trade_pct}",
-            "min_equity: 50000",
-        ])
-    )
-    (root / "config" / "fx.yaml").write_text(
-        "TWD:\n  yahoo: TWD=X\n  invert: true\n  fallback: 0.031\n"
-        "EUR:\n  yahoo: EURUSD=X\n  invert: false\n  fallback: 1.08\n"
-    )
-    (root / "mandate" / "mandate.md").write_text("# Mandat\n")
-    (root / "mandate" / "memory.md").write_text("# Memoire\n")
-
-
 def _spy_bars(now: datetime):
     return [Bar(ts=now.isoformat(), open=100.0, high=101.0, low=99.0, close=100.0, volume=1000.0)]
 
@@ -209,7 +181,7 @@ def _spy_bars(now: datetime):
 
 def test_daemon_risk_pct_no_stop_rejected(monkeypatch, tmp_path, make_data_source) -> None:
     """risk_pct fourni mais exit sans hard_stop → rejected risk_sizing_needs_stop."""
-    _write_runtime_config(tmp_path)
+    _write_runtime_config(tmp_path, max_risk_per_trade_pct=0.01, write_fx=True)
     state_dir = tmp_path / "state"
     now = datetime(2026, 6, 5, 14, 30, tzinfo=timezone.utc)
 
@@ -261,7 +233,7 @@ def test_daemon_risk_pct_derives_qty_and_executes(monkeypatch, tmp_path, make_da
     max_order_value=10_000 → 100*100=10_000 (juste dans la borne)
     max_risk_per_trade_pct=0.01 → autorise jusqu'à 200 unités → 100 passe
     """
-    _write_runtime_config(tmp_path, max_risk_per_trade_pct=0.01)
+    _write_runtime_config(tmp_path, max_risk_per_trade_pct=0.01, write_fx=True)
     state_dir = tmp_path / "state"
     now = datetime(2026, 6, 5, 14, 30, tzinfo=timezone.utc)
 
@@ -324,6 +296,7 @@ def test_daemon_risk_pct_exceeds_max_risk_traced_without_blocking(monkeypatch, t
         max_risk_per_trade_pct=0.01,
         max_position_value=100_000,
         max_order_value=100_000,
+        write_fx=True,
     )
     state_dir = tmp_path / "state"
     now = datetime(2026, 6, 5, 14, 30, tzinfo=timezone.utc)

@@ -18,6 +18,7 @@ from trader.planning.exit_engine import ExitEvaluation, ExitSignal
 from trader.planning.scheduler import Scheduler
 from trader.planning.trade_plan import create_trade_plan, resolve_exit_plan
 from tests.plan_store_fakes import MemoryTradePlanStore
+from tests.conftest import write_runtime_config as _write_runtime_config
 
 
 def test_llm_exit_reason_for_model_performance_tague_uniquement_les_sorties() -> None:
@@ -26,34 +27,6 @@ def test_llm_exit_reason_for_model_performance_tague_uniquement_les_sorties() ->
     assert fill_outcome.llm_exit_reason_for_intent("FLIP") == "llm_exit"
     assert fill_outcome.llm_exit_reason_for_intent("OPEN_LONG") is None
     assert fill_outcome.llm_exit_reason_for_intent("OPEN_SHORT") is None
-
-
-def _write_runtime_config(
-    root,
-    *,
-    symbols: list[str] | None = None,
-    max_position_value: float = 20_000,
-    max_gross_exposure: float = 100_000,
-    max_order_value: float = 10_000,
-) -> None:
-    (root / "config").mkdir()
-    (root / "mandate").mkdir()
-    symbols = symbols or ["SPY"]
-    (root / "config" / "universe.yaml").write_text(
-        "starting_cash: 100000\nsymbols:\n" + "".join(f"  - {symbol}\n" for symbol in symbols)
-    )
-    (root / "config" / "risk.yaml").write_text(
-        "\n".join(
-            [
-                f"max_position_value: {max_position_value}",
-                f"max_gross_exposure: {max_gross_exposure}",
-                f"max_order_value: {max_order_value}",
-                "min_equity: 50000",
-            ]
-        )
-    )
-    (root / "mandate" / "mandate.md").write_text("# Mandat\n")
-    (root / "mandate" / "memory.md").write_text("# Memoire\n")
 
 
 def _open_sqlite_plans(state_dir):
