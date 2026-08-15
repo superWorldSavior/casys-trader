@@ -67,3 +67,13 @@ def test_situation_memory_searches_fts_and_filters(tmp_path) -> None:
     assert len(family_rows) == 1
     assert family_rows[0]["section_name"] == "eu_industrials"
     assert expired == []
+
+
+def test_situation_memory_search_hyphen_ne_plante_pas(tmp_path) -> None:
+    store = SituationMemoryStore(tmp_path / "situation_memory.db")
+    store.ingest_brief(_brief())
+
+    assert store.search(query="take-profit", venue="EU") == []
+    rows = store.search(query="risk-off cyclicals", venue="EU")
+    assert len(rows) == 1
+    assert rows[0]["brief_id"] == "2026-07-09T07:00:00+00:00|EU"

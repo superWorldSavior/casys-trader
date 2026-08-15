@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from trader.domain.situation import NewsMacroBrief, SituationPoint, SituationSection
+from trader.infrastructure.state_db.fts_query import sanitize_fts5_query
 
 __all__ = ["SituationMemoryStore"]
 
@@ -176,18 +177,25 @@ class SituationMemoryStore:
 
         where = " AND ".join(clauses)
         with self._lock:
+            fts_query = sanitize_fts5_query(query) if query else None
             if query:
-                rows = self._conn.execute(
-                    f"""
-                    SELECT n.*
-                    FROM situation_notes_fts
-                    JOIN situation_notes n ON n.id = situation_notes_fts.rowid
-                    WHERE situation_notes_fts MATCH :query AND {where}
-                    ORDER BY bm25(situation_notes_fts), n.as_of DESC, n.id DESC
-                    LIMIT :limit
-                    """,
-                    {**params, "query": query},
-                ).fetchall()
+                if not fts_query:
+                    rows = []
+                else:
+                    try:
+                        rows = self._conn.execute(
+                            f"""
+                            SELECT n.*
+                            FROM situation_notes_fts
+                            JOIN situation_notes n ON n.id = situation_notes_fts.rowid
+                            WHERE situation_notes_fts MATCH :query AND {where}
+                            ORDER BY bm25(situation_notes_fts), n.as_of DESC, n.id DESC
+                            LIMIT :limit
+                            """,
+                            {**params, "query": fts_query},
+                        ).fetchall()
+                    except sqlite3.OperationalError:
+                        rows = []
             else:
                 rows = self._conn.execute(
                     f"""

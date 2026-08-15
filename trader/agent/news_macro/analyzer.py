@@ -36,6 +36,18 @@ class NewsMacroAnalystError(RuntimeError):
         self.model = model
 
 
+def _timeout_from_env() -> int:
+    """Timeout analyste macro (secondes), env ``TRADER_NEWS_MACRO_TIMEOUT_S``."""
+
+    raw = os.getenv("TRADER_NEWS_MACRO_TIMEOUT_S")
+    if raw is None:
+        return DEFAULT_NEWS_MACRO_ANALYST_TIMEOUT_S
+    try:
+        return max(int(raw), 1)
+    except ValueError:
+        return DEFAULT_NEWS_MACRO_ANALYST_TIMEOUT_S
+
+
 def build_news_macro_router_from_env(
     *,
     env_path: str | Path | None = llm.DEFAULT_ENV_PATH,
@@ -45,11 +57,12 @@ def build_news_macro_router_from_env(
 ) -> llm.LlmRouter:
     """Build the bounded analyst router using the consolidator-style profile."""
 
+    llm.load_dotenv(env_path)
     resolved_bin = acpx_bin or os.getenv("TRADER_NEWS_MACRO_ACPX_BIN") or os.getenv("TRADER_CONSOLIDATOR_ACPX_BIN") or "acpx"
     resolved_agent = acpx_agent or os.getenv("TRADER_NEWS_MACRO_ACPX_AGENT") or os.getenv("TRADER_CONSOLIDATOR_ACPX_AGENT")
     resolved_model = model or os.getenv("TRADER_NEWS_MACRO_MODEL") or DEFAULT_NEWS_MACRO_ANALYST_MODEL
     return llm.build_default_router_from_env(
-        env_path=env_path,
+        env_path=None,
         acpx_bin=resolved_bin,
         spark_model=resolved_model,
         spark_fallback_model=None,
@@ -64,10 +77,10 @@ class LlmNewsMacroAnalyst:
         self,
         router: llm.LlmRouter | None = None,
         *,
-        timeout_s: int = DEFAULT_NEWS_MACRO_ANALYST_TIMEOUT_S,
+        timeout_s: int | None = None,
     ) -> None:
         self._router = router or build_news_macro_router_from_env()
-        self._timeout_s = timeout_s
+        self._timeout_s = int(timeout_s) if timeout_s is not None else _timeout_from_env()
 
     def analyze(self, request: NewsMacroAnalysisRequest) -> NewsMacroBrief:
         prompt = build_news_macro_prompt(request)

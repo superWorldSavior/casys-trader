@@ -177,7 +177,15 @@ def _extract_last_json_object(text: str) -> tuple[dict[str, Any] | None, str | N
 
 
 def _looks_like_news_macro_payload(payload: dict[str, Any]) -> bool:
+    # A POINT also has ``symbols``. After a prose prefix, scanning every ``{``
+    # would otherwise keep the last point and yield an empty brief.
     # Envelope-only nested objects are common inside an otherwise malformed
     # completion. Accepting ``as_of``/``valid_until`` here can therefore turn a
     # broken top-level report into a structurally valid but empty brief.
-    return any(key in payload for key in ("zones", "families", "symbols", "alerts"))
+    if isinstance(payload.get("zones"), dict) or isinstance(payload.get("families"), dict):
+        return True
+    # Top-level ``symbols`` is a mapping symbol -> [POINT]; inside a POINT it is
+    # a list of tickers. The dict check therefore cannot match a POINT.
+    if isinstance(payload.get("symbols"), dict):
+        return True
+    return isinstance(payload.get("alerts"), list)

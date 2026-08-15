@@ -23,8 +23,8 @@ from trader.application.universe import (
     compose_universe,
 )
 from trader.agent.universe.agent import (
-    DEFAULT_UNIVERSE_AGENT_TIMEOUT_S,
     build_universe_router_from_env,
+    universe_timeout_s,
 )
 from trader.agent.universe.global_posture_agent import (
     GlobalUniversePostureRequest,
@@ -102,7 +102,7 @@ class _ToolLoopUniverseAgent:
             request,
             router=self._router,
             intelligence_store=self._intelligence_store,
-            timeout_s=DEFAULT_UNIVERSE_AGENT_TIMEOUT_S,
+            timeout_s=universe_timeout_s(),
         )
 
 

@@ -23,6 +23,7 @@ import numpy as np
 from trader.domain.learnings.scoring import compute_outcome_scores as default_outcome_scorer
 from trader.domain.decision_benchmark import BENCHMARK_SEMANTICS_VERSION
 from trader.domain.semantic.catalog import family_for_symbol
+from trader.infrastructure.state_db.fts_query import sanitize_fts5_query
 
 __all__ = ["LearningsStore"]
 
@@ -971,17 +972,22 @@ class LearningsStore:
 
             # --- 2. Classement FTS5 (si text_query) ---
             fts_ranked: list[int] = []
-            if text_query:
-                fts_rows = self._conn.execute(
-                    f"""
-                    SELECT n.id
-                    FROM notes_fts
-                    JOIN notes n ON n.id = notes_fts.rowid
-                    WHERE notes_fts MATCH :text_query AND {fts_where}
-                    ORDER BY bm25(notes_fts)
-                    """,
-                    {**params, "text_query": text_query},
-                ).fetchall()
+            fts_query = sanitize_fts5_query(text_query) if text_query else None
+            if fts_query:
+                try:
+                    fts_rows = self._conn.execute(
+                        f"""
+                        SELECT n.id
+                        FROM notes_fts
+                        JOIN notes n ON n.id = notes_fts.rowid
+                        WHERE notes_fts MATCH :text_query AND {fts_where}
+                        ORDER BY bm25(notes_fts)
+                        """,
+                        {**params, "text_query": fts_query},
+                    ).fetchall()
+                except sqlite3.OperationalError:
+                    # Query encore illégale après quoting → pas de crash outil.
+                    fts_rows = []
                 fts_ranked = [r[0] for r in fts_rows if r[0] in candidate_ids]
 
         # --- 3. Classement cosine (si query_vec) — hors verrou (CPU-only) ---

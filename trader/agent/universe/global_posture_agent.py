@@ -8,10 +8,10 @@ from typing import Any
 
 from trader.agent import llm
 from trader.agent.universe.agent import (
-    DEFAULT_UNIVERSE_AGENT_TIMEOUT_S,
     UniverseAgentError,
     UniverseAgentPayloadError,
     build_universe_router_from_env,
+    universe_timeout_s,
 )
 from trader.agent.universe.global_posture_prompt import (
     build_global_posture_prompt,
@@ -38,10 +38,10 @@ class LlmGlobalPostureAgent:
         self,
         router: llm.LlmRouter | None = None,
         *,
-        timeout_s: int = DEFAULT_UNIVERSE_AGENT_TIMEOUT_S,
+        timeout_s: int | None = None,
     ) -> None:
         self._router = router or build_universe_router_from_env()
-        self._timeout_s = int(timeout_s)
+        self._timeout_s = universe_timeout_s(timeout_s)
 
     def compose(self, request: GlobalUniversePostureRequest) -> GlobalUniversePosture:
         prompt = build_global_posture_prompt(

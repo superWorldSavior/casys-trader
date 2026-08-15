@@ -8,6 +8,7 @@ from trader.agent.universe.agent import (
     UniverseAgentError,
     UniverseAgentPayloadError,
     build_universe_router_from_env,
+    universe_timeout_s,
 )
 from trader.agent.universe.prompt import build_universe_prompt, parse_universe_completion
 
@@ -19,6 +20,7 @@ __all__ = [
     "UniverseAgentError",
     "UniverseAgentPayloadError",
     "build_universe_router_from_env",
+    "universe_timeout_s",
     "build_universe_prompt",
     "parse_universe_completion",
 ]

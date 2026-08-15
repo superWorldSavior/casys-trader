@@ -1059,6 +1059,77 @@ def test_search_query_vide_equivaut_a_pas_de_query(tmp_path) -> None:
     assert len(with_empty) == len(without) == 1
 
 
+def test_search_query_take_profit_ne_plante_pas(tmp_path: Path) -> None:
+    """Incident CRM 2026-08-14 : `take-profit` → OperationalError no such column: profit."""
+    jsonl = tmp_path / "notes.jsonl"
+    _write_jsonl(jsonl, [
+        {
+            "ts": "2026-08-14T13:00:00+00:00",
+            "symbol": "CRM",
+            "note": "Long take-profit at highs after a stretched pullback retest.",
+            "decision_id": "crm-tp-1",
+        },
+        {
+            "ts": "2026-08-14T13:00:00+00:00",
+            "symbol": "CRM",
+            "note": "Dividende sans rapport.",
+            "decision_id": "crm-div-1",
+        },
+    ])
+    store = LearningsStore(tmp_path / "learnings.db")
+    store.ingest_jsonl(jsonl, source="test")
+    now = datetime(2026, 8, 14, 14, tzinfo=timezone.utc)
+    # Query de prod : AND strict, termes absents → 0 hit, mais plus de crash.
+    assert store.search(
+        symbol="CRM",
+        text_query="long take-profit at highs stretched pullback retest software us_tech",
+        now=now,
+    ) == []
+    results = store.search(symbol="CRM", text_query="take-profit pullback retest", now=now)
+    assert len(results) == 1
+    assert "take-profit" in results[0]["note"]
+
+
+def test_search_query_ticker_avec_point_ne_plante_pas(tmp_path: Path) -> None:
+    """Incident INGA.AS 2026-08-14 : `INGA.AS` → fts5 syntax error near \".\"."""
+    jsonl = tmp_path / "notes.jsonl"
+    _write_jsonl(jsonl, [
+        {
+            "ts": "2026-08-14T07:00:00+00:00",
+            "symbol": "INGA.AS",
+            "note": "INGA.AS eu_financials pullback reclaim after daily uptrend.",
+            "decision_id": "inga-1",
+        },
+    ])
+    store = LearningsStore(tmp_path / "learnings.db")
+    store.ingest_jsonl(jsonl, source="test")
+    now = datetime(2026, 8, 14, 8, tzinfo=timezone.utc)
+    assert store.search(
+        symbol="INGA.AS",
+        text_query="INGA.AS eu_financials pullback reclaim long after daily uptrend range 15m swing low",
+        now=now,
+    ) == []
+    results = store.search(
+        symbol="INGA.AS",
+        text_query="INGA.AS eu_financials pullback reclaim",
+        now=now,
+    )
+    assert len(results) == 1
+    assert "eu_financials" in results[0]["note"]
+
+
+def test_search_query_operateurs_seuls_ne_plante_pas(tmp_path: Path) -> None:
+    jsonl = tmp_path / "notes.jsonl"
+    _write_jsonl(jsonl, [
+        {"ts": "2026-08-14T07:00:00+00:00", "symbol": "SPY", "note": "note dividende", "decision_id": "d1"},
+    ])
+    store = LearningsStore(tmp_path / "learnings.db")
+    store.ingest_jsonl(jsonl, source="test")
+    now = datetime(2026, 8, 14, 8, tzinfo=timezone.utc)
+    assert store.search(symbol="SPY", text_query="---", now=now) == []
+    assert store.search(symbol="SPY", text_query="AND OR NOT", now=now) == []
+
+
 # ---------------------------------------------------------------------------
 # Outcome-weighted curation + global-rule MemRL
 # ---------------------------------------------------------------------------

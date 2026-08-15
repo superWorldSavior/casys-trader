@@ -23,6 +23,16 @@ def test_universe_keeps_its_analyst_model_default() -> None:
     assert DEFAULT_UNIVERSE_AGENT_MODEL == "gpt-5.6-sol"
 
 
+def test_universe_timeout_env_remplace_le_defaut(monkeypatch) -> None:
+    from trader.agent.universe.agent import DEFAULT_UNIVERSE_AGENT_TIMEOUT_S, universe_timeout_s
+
+    monkeypatch.delenv("TRADER_UNIVERSE_TIMEOUT_S", raising=False)
+    assert universe_timeout_s() == DEFAULT_UNIVERSE_AGENT_TIMEOUT_S
+    monkeypatch.setenv("TRADER_UNIVERSE_TIMEOUT_S", "600")
+    assert universe_timeout_s() == 600
+    assert universe_timeout_s(7) == 7
+
+
 def _request():
     situation = UniverseSituationContext(
         status="active",

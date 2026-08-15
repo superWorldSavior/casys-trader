@@ -19,6 +19,20 @@ DEFAULT_UNIVERSE_AGENT_MODEL = llm.DEFAULT_ANALYST_MODEL
 DEFAULT_UNIVERSE_AGENT_SESSION_LABEL = "casys-trader:universe-agent"
 
 
+def universe_timeout_s(explicit: int | None = None) -> int:
+    """Timeout agent univers (secondes), env ``TRADER_UNIVERSE_TIMEOUT_S``."""
+
+    if explicit is not None:
+        return max(int(explicit), 1)
+    raw = os.getenv("TRADER_UNIVERSE_TIMEOUT_S")
+    if raw is None:
+        return DEFAULT_UNIVERSE_AGENT_TIMEOUT_S
+    try:
+        return max(int(raw), 1)
+    except ValueError:
+        return DEFAULT_UNIVERSE_AGENT_TIMEOUT_S
+
+
 def build_universe_router_from_env(
     *,
     env_path: str | Path | None = llm.DEFAULT_ENV_PATH,
@@ -29,6 +43,7 @@ def build_universe_router_from_env(
 ) -> llm.LlmRouter:
     """Build an isolated universe-agent profile on the shared LLM transport."""
 
+    llm.load_dotenv(env_path)
     resolved_bin = acpx_bin or os.getenv("TRADER_UNIVERSE_ACPX_BIN") or "acpx"
     resolved_agent = acpx_agent or os.getenv("TRADER_UNIVERSE_ACPX_AGENT")
     resolved_model = model or os.getenv("TRADER_UNIVERSE_MODEL") or DEFAULT_UNIVERSE_AGENT_MODEL
@@ -38,7 +53,7 @@ def build_universe_router_from_env(
         or DEFAULT_UNIVERSE_AGENT_SESSION_LABEL
     )
     return llm.build_default_router_from_env(
-        env_path=env_path,
+        env_path=None,
         acpx_bin=resolved_bin,
         spark_model=resolved_model,
         acpx_provider="universe",
@@ -88,10 +103,10 @@ class LlmUniverseAgent:
         self,
         router: llm.LlmRouter | None = None,
         *,
-        timeout_s: int = DEFAULT_UNIVERSE_AGENT_TIMEOUT_S,
+        timeout_s: int | None = None,
     ) -> None:
         self._router = router or build_universe_router_from_env()
-        self._timeout_s = int(timeout_s)
+        self._timeout_s = universe_timeout_s(timeout_s)
 
     def compose(self, request: UniverseCompositionRequest) -> UniverseAgentDecision:
         prompt = build_universe_prompt(request)
