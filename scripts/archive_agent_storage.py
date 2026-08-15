@@ -37,6 +37,10 @@ from pathlib import Path
 DEFAULT_OLDER_THAN_DAYS = 7
 ZSTD_LEVEL = "19"
 
+# launchd/cron n'héritent pas du PATH interactif : résoudre l'exécutable
+# explicitement plutôt que d'échouer au milieu d'une archive.
+_ZSTD_FALLBACK_PATHS = ("/opt/homebrew/bin/zstd", "/usr/local/bin/zstd", "/usr/bin/zstd")
+
 ACPX_SESSIONS = Path.home() / ".acpx" / "sessions"
 REPO_ROOT = Path(__file__).resolve().parent.parent
 ARCHIVE_ROOT = Path.home() / ".acpx" / "archive"
@@ -45,6 +49,21 @@ CODEX_HOME = REPO_ROOT / "ops" / "codex-home"
 # Ne jamais archiver : l'index vivant et les verrous de sessions actives.
 PROTECTED_NAMES = {"index.json"}
 PROTECTED_SUFFIXES = {".lock", ".tmp"}
+
+
+def resolve_zstd() -> str:
+    """Chemin de l'exécutable zstd, ou RuntimeError explicite (AX #5, fast fail)."""
+
+    found = shutil.which("zstd")
+    if found:
+        return found
+    for candidate in _ZSTD_FALLBACK_PATHS:
+        if Path(candidate).is_file():
+            return candidate
+    raise RuntimeError(
+        "zstd introuvable (PATH et chemins connus). Installer avec `brew install zstd`, "
+        "ou ajouter son répertoire au PATH du job planifié."
+    )
 
 
 def _human(size: int) -> str:
@@ -97,6 +116,7 @@ def archive_month(paths: list[Path], destination: Path, *, apply: bool) -> dict:
     if not apply:
         return result
 
+    zstd = resolve_zstd()
     destination.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(dir=str(destination.parent)) as tmpdir:
         tar_path = Path(tmpdir) / "sessions.tar"
@@ -105,11 +125,11 @@ def archive_month(paths: list[Path], destination: Path, *, apply: bool) -> dict:
                 tar.add(path, arcname=path.name)
         staged = Path(tmpdir) / destination.name
         subprocess.run(
-            ["zstd", f"-{ZSTD_LEVEL}", "-T0", "-q", "-o", str(staged), str(tar_path)],
+            [zstd, f"-{ZSTD_LEVEL}", "-T0", "-q", "-o", str(staged), str(tar_path)],
             check=True,
         )
         # Preuve de lisibilité avant de toucher aux sources.
-        subprocess.run(["zstd", "-t", "-q", str(staged)], check=True)
+        subprocess.run([zstd, "-t", "-q", str(staged)], check=True)
         shutil.move(str(staged), str(destination))
 
     for path in paths:

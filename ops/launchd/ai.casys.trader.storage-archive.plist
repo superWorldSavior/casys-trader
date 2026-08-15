@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>ai.casys.trader.storage-archive</string>
+
+    <!-- uv en chemin absolu : launchd n'hérite pas du PATH du shell. -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/opt/homebrew/bin/uv</string>
+        <string>run</string>
+        <string>python</string>
+        <string>-m</string>
+        <string>scripts.archive_agent_storage</string>
+        <string>--older-than</string>
+        <string>7</string>
+        <string>--apply</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/erwanpesle/Documents/GitHub/casys-trader</string>
+
+    <!-- Dimanche 04:00 : hors séance sur toutes les places (EU/US/TW). -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Weekday</key>
+        <integer>0</integer>
+        <key>Hour</key>
+        <integer>4</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+
+    <!-- Rattrapage si la machine dormait à l'heure prévue. -->
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/erwanpesle/Documents/GitHub/casys-trader/state/logs/storage-archive.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/erwanpesle/Documents/GitHub/casys-trader/state/logs/storage-archive.err.log</string>
+
+    <key>ProcessType</key>
+    <string>Background</string>
+    <key>LowPriorityIO</key>
+    <true/>
+    <key>Nice</key>
+    <integer>10</integer>
+</dict>
+</plist>

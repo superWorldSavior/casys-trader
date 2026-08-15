@@ -1,6 +1,6 @@
 # casys-trader — raccourcis. Lance `make` (ou `make help`) pour la liste.
 .DEFAULT_GOAL := help
-.PHONY: help watch live once test logs live-logs dash dash-portfolio dash-decisions dash-list macro models model-preset storage-report storage-archive
+.PHONY: help watch live once test logs live-logs dash dash-portfolio dash-decisions dash-list macro models model-preset storage-report storage-archive storage-schedule storage-unschedule
 
 help:  ## Affiche cette aide
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -63,3 +63,14 @@ storage-report:  ## Stockage agents : ce qui serait archivé/purgé (simulation,
 
 storage-archive:  ## Archive les sessions agents en tar.zst (~50x) et purge les logs codex. DAYS=7 par défaut.
 	uv run python -m scripts.archive_agent_storage --older-than $(or $(DAYS),7) --apply
+
+storage-schedule:  ## Installe la rétention hebdo (LaunchAgent, dimanche 04:00)
+	plutil -lint ops/launchd/ai.casys.trader.storage-archive.plist
+	cp ops/launchd/ai.casys.trader.storage-archive.plist ~/Library/LaunchAgents/
+	-launchctl unload ~/Library/LaunchAgents/ai.casys.trader.storage-archive.plist 2>/dev/null
+	launchctl load ~/Library/LaunchAgents/ai.casys.trader.storage-archive.plist
+	launchctl list | grep casys.trader.storage
+
+storage-unschedule:  ## Désinstalle la rétention hebdo
+	-launchctl unload ~/Library/LaunchAgents/ai.casys.trader.storage-archive.plist
+	rm -f ~/Library/LaunchAgents/ai.casys.trader.storage-archive.plist
