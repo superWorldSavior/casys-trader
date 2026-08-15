@@ -214,8 +214,9 @@ def test_min_trade_confidence_reader_has_single_config_source(monkeypatch, tmp_p
     from trader.reporting.read_models import runtime_state
     from trader.support.config import risk as config_risk
 
-    assert "def read_min_trade_confidence" not in risk_source
-    assert execution_risk.read_min_trade_confidence is config_risk.read_min_trade_confidence
+    assert "read_min_trade_confidence" not in risk_source
+    assert not hasattr(execution_risk, "read_min_trade_confidence")
+    assert config_risk.read_min_trade_confidence is runtime_state.read_min_trade_confidence
 
     seen_paths: list[Path] = []
 
@@ -243,6 +244,7 @@ def test_pure_planning_calculations_are_nested_under_domain_with_facades() -> No
         "exit_engine.py",
         "exit_plan_spec.py",
         "indicator_watch.py",
+        "protocols.py",
         "relevance_gate.py",
         "scheduling.py",
         "trade_plan.py",
@@ -263,12 +265,14 @@ def test_pure_planning_calculations_are_nested_under_domain_with_facades() -> No
         facade_path = trader_dir / "planning" / f"{module_name}.py"
         assert facade_path.exists()
         source = facade_path.read_text(encoding="utf-8")
-        assert f"from trader.domain.planning import {module_name}" in source
+        assert f"from trader.domain.planning.{module_name} import" in source
+        assert "globals().update" not in source
 
     import trader.domain.planning.armed_order as domain_armed_order
     import trader.domain.planning.exit_engine as domain_exit_engine
     import trader.domain.planning.exit_plan_spec as domain_exit_plan_spec
     import trader.domain.planning.indicator_watch as domain_indicator_watch
+    import trader.domain.planning.protocols as domain_protocols
     import trader.domain.planning.relevance_gate as domain_relevance_gate
     import trader.domain.planning.scheduling as domain_scheduling
     import trader.domain.planning.trade_plan as domain_trade_plan
@@ -279,12 +283,17 @@ def test_pure_planning_calculations_are_nested_under_domain_with_facades() -> No
     import trader.planning.exit_engine as planning_exit_engine
     import trader.planning.exit_plan_spec as planning_exit_plan_spec
     import trader.planning.indicator_watch as planning_indicator_watch
+    import trader.planning.protocols as planning_protocols
     import trader.planning.relevance_gate as planning_relevance_gate
     import trader.planning.scheduler as planning_scheduler
     import trader.planning.trade_plan as planning_trade_plan
     import trader.planning.watch_evaluator as planning_watch_evaluator
     from trader.planning.indicator_watch import is_armed_plan
 
+    assert planning_protocols.SchedulerLike is domain_protocols.SchedulerLike
+    assert planning_protocols.TradePlanStoreLike is domain_protocols.TradePlanStoreLike
+    assert domain_protocols.SchedulerLike.__module__ == "trader.domain.planning.protocols"
+    assert domain_protocols.TradePlanStoreLike.__module__ == "trader.domain.planning.protocols"
     assert planning_armed_order.normalize_armed_order is domain_armed_order.normalize_armed_order
     assert planning_exit_engine.evaluate_plan is domain_exit_engine.evaluate_plan
     assert planning_relevance_gate.symbol_needs_llm is domain_relevance_gate.symbol_needs_llm

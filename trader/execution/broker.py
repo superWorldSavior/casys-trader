@@ -1,4 +1,10 @@
-"""Compatibility facade for execution broker imports."""
+"""Compatibility facade for execution broker imports.
+
+Dette assumée : ``SimBroker`` (impl SQLite/JSON) et ``IbkrCommissionModel``
+restent ré-exportés pour ``trader.tools.execution`` (``_TOOLS_COMPAT_EXPORTS``
+dans ``trader/__init__.py``, hors zone) et ~15 tests. La prod n'importe plus
+``trader.execution.*`` (``test_internal_code_does_not_import_execution_compatibility_facades``).
+"""
 
 from __future__ import annotations
 

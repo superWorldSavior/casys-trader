@@ -1,4 +1,8 @@
-"""Compatibility facade for commission and fill-accounting imports."""
+"""Compatibility facade for commission and fill-accounting imports.
+
+Dette assumée : ``IbkrCommissionModel`` (impl infra) reste ré-exporté pour
+``trader.tools.execution`` et les tests de layout / broker. Voir ``broker.py``.
+"""
 
 from trader.application.execute.fee_estimate import round_trip_cost as round_trip_cost
 from trader.domain.execution.fill_accounting import (

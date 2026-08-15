@@ -5,6 +5,7 @@ __all__ = [
     "exit_engine",
     "exit_plan_spec",
     "indicator_watch",
+    "protocols",
     "relevance_gate",
     "scheduling",
     "trade_plan",

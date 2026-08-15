@@ -3,13 +3,19 @@
 from __future__ import annotations
 
 import hashlib
-import json
-import threading
-from datetime import date as date_type
 from pathlib import Path
 from typing import Any, Mapping
 
-from trader.infrastructure.state_db.shadow import write_json_atomic
+from trader.infrastructure.state_db._jsonl_store import (
+    JsonlDayLedger,
+    calendar_date_from_as_of,
+    project_json,
+    read_json_object,
+    read_projection_or_scan,
+    required_text,
+    safe_filename_component,
+    validated_date,
+)
 
 
 class UniverseRunStore:
@@ -30,16 +36,16 @@ class UniverseRunStore:
         self.prepared_dir = (
             Path(prepared_dir) if prepared_dir is not None else self.base_dir.parent / "universe_prepared"
         )
-        self._write_lock = threading.RLock()
+        self._ledger = JsonlDayLedger(self.base_dir)
 
     def path_for_date(self, date: str) -> Path:
-        return self.base_dir / f"{_validated_date(date)}.jsonl"
+        return self._ledger.path_for_date(date)
 
     def latest_path_for_venue(self, venue: str) -> Path:
-        return self.base_dir / f"latest-{_safe_component(_required_text(venue, field='venue'))}.json"
+        return self.base_dir / f"latest-{safe_filename_component(required_text(venue, field='venue'))}.json"
 
     def prepared_path_for_scope(self, scope_id: str) -> Path:
-        exact_scope_id = _required_text(scope_id, field="scope_id")
+        exact_scope_id = required_text(scope_id, field="scope_id")
         digest = hashlib.sha256(exact_scope_id.encode("utf-8")).hexdigest()
         return self.prepared_dir / f"{digest}.json"
 
@@ -54,22 +60,19 @@ class UniverseRunStore:
 
         payload = _validated_run(record)
         date_key = _record_date(payload, explicit=date)
-        line = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+        latest_path = self.latest_path_for_venue(payload["venue"])
 
-        with self._write_lock:
-            self.base_dir.mkdir(parents=True, exist_ok=True)
-            with self.path_for_date(date_key).open("a", encoding="utf-8") as fh:
-                fh.write(line + "\n")
-            latest_path = self.latest_path_for_venue(payload["venue"])
-            latest = _read_json_object(latest_path)
+        with self._ledger.write_session() as session:
+            session.append(payload, date=date_key)
+            latest = read_json_object(latest_path)
             if payload["status"] in {"error", "invalid"} and _is_success_for_venue(
                 latest, payload["venue"]
             ):
-                write_json_atomic(latest_path, {**latest, "latest_failure": payload})
+                session.project_json(latest_path, {**latest, "latest_failure": payload})
             else:
                 # A success clears a former failure marker and therefore resets
                 # the persisted retry lineage in the readable projection.
-                write_json_atomic(latest_path, payload)
+                session.project_json(latest_path, payload)
 
         ref = {
             "date": date_key,
@@ -86,39 +89,35 @@ class UniverseRunStore:
     def read_latest(self, venue: str) -> dict[str, Any] | None:
         """Return the latest valid venue projection, with canonical fallback."""
 
-        venue_key = _required_text(venue, field="venue")
-        payload = _read_json_object(self.latest_path_for_venue(venue_key))
-        if _is_run_for_venue(payload, venue_key):
-            return payload
-
-        for path in sorted(self.base_dir.glob("????-??-??.jsonl"), reverse=True):
-            for candidate in reversed(_read_jsonl_objects(path)):
-                if _is_run_for_venue(candidate, venue_key):
-                    return candidate
-        return None
+        venue_key = required_text(venue, field="venue")
+        return read_projection_or_scan(
+            self.latest_path_for_venue(venue_key),
+            self.base_dir,
+            lambda payload: _is_run_for_venue(payload, venue_key),
+        )
 
     def write_prepared(self, scope_id: str, record: Mapping[str, Any]) -> dict[str, Any]:
         """Atomically write the prepared projection for one exact candidate scope."""
 
-        exact_scope_id = _required_text(scope_id, field="scope_id")
+        exact_scope_id = required_text(scope_id, field="scope_id")
         if not isinstance(record, Mapping):
             raise TypeError("prepared universe record must be a mapping")
         payload = dict(record)
-        record_scope_id = _required_text(
+        record_scope_id = required_text(
             payload.get("candidate_scope_id"), field="candidate_scope_id"
         )
         if record_scope_id != exact_scope_id:
             raise ValueError("prepared record candidate_scope_id does not match scope_id")
 
-        with self._write_lock:
-            write_json_atomic(self.prepared_path_for_scope(exact_scope_id), payload)
+        with self._ledger.write_session():
+            project_json(self.prepared_path_for_scope(exact_scope_id), payload)
         return payload
 
     def read_prepared(self, scope_id: str) -> dict[str, Any] | None:
         """Return a prepared record only when its embedded scope ID matches exactly."""
 
-        exact_scope_id = _required_text(scope_id, field="scope_id")
-        payload = _read_json_object(self.prepared_path_for_scope(exact_scope_id))
+        exact_scope_id = required_text(scope_id, field="scope_id")
+        payload = read_json_object(self.prepared_path_for_scope(exact_scope_id))
         if payload is None:
             return None
         embedded_scope_id = str(payload.get("candidate_scope_id") or "").strip()
@@ -130,66 +129,17 @@ def _validated_run(record: Mapping[str, Any]) -> dict[str, Any]:
         raise TypeError("universe run record must be a mapping")
     payload = dict(record)
     for field in ("candidate_scope_id", "venue", "as_of", "status"):
-        payload[field] = _required_text(payload.get(field), field=field)
+        payload[field] = required_text(payload.get(field), field=field)
     return payload
 
 
 def _record_date(record: Mapping[str, Any], *, explicit: str | None) -> str:
     if explicit is not None:
-        return _validated_date(explicit)
-    as_of = str(record["as_of"])
-    if len(as_of) < 10:
-        raise ValueError("record.as_of must start with YYYY-MM-DD when date is omitted")
-    return _validated_date(as_of[:10])
-
-
-def _validated_date(value: str) -> str:
-    text = str(value or "").strip()
-    try:
-        parsed = date_type.fromisoformat(text)
-    except ValueError as exc:
-        raise ValueError("date must be YYYY-MM-DD") from exc
-    if parsed.isoformat() != text:
-        raise ValueError("date must be YYYY-MM-DD")
-    return text
-
-
-def _required_text(value: Any, *, field: str) -> str:
-    text = str(value or "").strip()
-    if not text:
-        raise ValueError(f"{field} must be a non-empty string")
-    return text
-
-
-def _safe_component(value: str) -> str:
-    safe = "".join(ch for ch in value if ch.isalnum() or ch in ("_", "-"))
-    if not safe:
-        raise ValueError("value does not contain a safe filename component")
-    return safe
-
-
-def _read_json_object(path: Path) -> dict[str, Any] | None:
-    try:
-        payload: Any = json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return None
-    return payload if isinstance(payload, dict) else None
-
-
-def _read_jsonl_objects(path: Path) -> list[dict[str, Any]]:
-    try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return []
-    records: list[dict[str, Any]] = []
-    for line in lines:
-        try:
-            payload: Any = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(payload, dict):
-            records.append(payload)
-    return records
+        return validated_date(explicit)
+    return calendar_date_from_as_of(
+        record["as_of"],
+        empty_error="record.as_of must start with YYYY-MM-DD when date is omitted",
+    )
 
 
 def _is_run_for_venue(payload: dict[str, Any] | None, venue: str) -> bool:

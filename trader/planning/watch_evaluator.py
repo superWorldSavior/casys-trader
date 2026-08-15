@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-from trader.domain.planning import watch_evaluator as _domain_watch_evaluator
+from trader.domain.planning.watch_evaluator import (
+    build_indicator_snapshot,
+    compute_indicator_values,
+    evaluate_indicator_watches,
+)
 
-_exported_names = [
-    name for name in dir(_domain_watch_evaluator)
-    if not (name.startswith("__") and name.endswith("__"))
+__all__ = [
+    "build_indicator_snapshot",
+    "compute_indicator_values",
+    "evaluate_indicator_watches",
 ]
-globals().update({name: getattr(_domain_watch_evaluator, name) for name in _exported_names})
-__all__ = [name for name in _exported_names if not name.startswith("_")]
-
-del _exported_names
-del _domain_watch_evaluator

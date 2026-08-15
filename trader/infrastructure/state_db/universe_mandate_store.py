@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
-import fcntl
 import hashlib
-import json
 import threading
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 from trader.domain.universe import UniverseMandate
+from trader.infrastructure.state_db._jsonl_store import (
+    append_jsonl_line,
+    read_json_object,
+    safe_filename_component,
+)
 from trader.infrastructure.state_db.fundamental_item_store import symbol_storage_key
 from trader.infrastructure.state_db.shadow import write_json_atomic
 
@@ -29,7 +32,7 @@ class UniverseMandateStore:
         return self.prepared_dir / f"{_digest(candidate_scope_id)}.json"
 
     def active_venue_path(self, venue: str) -> Path:
-        return self.active_venue_dir / f"{_safe(venue)}.json"
+        return self.active_venue_dir / f"{safe_filename_component(venue or '', empty_error='venue must be non-empty')}.json"
 
     def active_symbol_path(self, symbol: str) -> Path:
         return self.active_symbol_dir / f"{symbol_storage_key(symbol)}.json"
@@ -44,7 +47,7 @@ class UniverseMandateStore:
         return _ref(payload)
 
     def read_prepared(self, candidate_scope_id: str) -> dict[str, Any] | None:
-        payload = _read_mapping(self.prepared_path(candidate_scope_id))
+        payload = read_json_object(self.prepared_path(candidate_scope_id))
         if payload is None or payload.get("candidate_scope_id") != candidate_scope_id:
             return None
         return payload
@@ -117,7 +120,7 @@ class UniverseMandateStore:
             "portfolio_posture": portfolio_posture,
         }
         with self._lock:
-            previous = _read_mapping(self.active_venue_path(venue)) or {}
+            previous = read_json_object(self.active_venue_path(venue)) or {}
             previous_symbols = set(previous.get("symbols") or ())
             write_json_atomic(self.active_venue_path(venue), payload)
             for symbol, mandate in symbol_mandates.items():
@@ -132,7 +135,7 @@ class UniverseMandateStore:
                 )
             for symbol in previous_symbols - set(symbol_mandates):
                 path = self.active_symbol_path(symbol)
-                current = _read_mapping(path)
+                current = read_json_object(path)
                 ref = current.get("mandate_ref") if isinstance(current, Mapping) else None
                 if isinstance(ref, Mapping) and ref.get("venue") == venue:
                     try:
@@ -143,7 +146,7 @@ class UniverseMandateStore:
         return payload
 
     def active_slice_for_symbol(self, symbol: str) -> dict[str, Any] | None:
-        payload = _read_mapping(self.active_symbol_path(symbol))
+        payload = read_json_object(self.active_symbol_path(symbol))
         mandate = payload.get("symbol_mandate") if isinstance(payload, Mapping) else None
         ref = payload.get("mandate_ref") if isinstance(payload, Mapping) else None
         if not isinstance(mandate, Mapping) or mandate.get("symbol") != symbol or not isinstance(ref, Mapping):
@@ -164,15 +167,7 @@ class UniverseMandateStore:
         }
 
     def _append_history(self, payload: Mapping[str, Any]) -> None:
-        self.base_dir.mkdir(parents=True, exist_ok=True)
-        line = json.dumps(dict(payload), ensure_ascii=False, sort_keys=True)
-        with self.history_path.open("a", encoding="utf-8") as handle:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-            try:
-                handle.write(line + "\n")
-                handle.flush()
-            finally:
-                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        append_jsonl_line(self.history_path, payload, flock=True)
 
 
 def _ref(payload: Mapping[str, Any]) -> dict[str, str]:
@@ -191,21 +186,6 @@ def _digest(value: str) -> str:
     if not text:
         raise ValueError("value must be non-empty")
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
-
-
-def _safe(value: str) -> str:
-    text = "".join(char for char in str(value or "") if char.isalnum() or char in {"-", "_"})
-    if not text:
-        raise ValueError("venue must be non-empty")
-    return text
-
-
-def _read_mapping(path: Path) -> dict[str, Any] | None:
-    try:
-        payload: Any = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
-    return payload if isinstance(payload, dict) else None
 
 
 __all__ = ["UniverseMandateStore"]

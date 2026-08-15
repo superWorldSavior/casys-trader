@@ -65,9 +65,13 @@ def test_scheduler_consumers_depend_on_schedulerlike_not_planning_scheduler_clas
 
 
 def test_schedulerlike_protocol_is_satisfied_by_json_and_sqlite_schedulers() -> None:
+    from trader.domain.planning.protocols import SchedulerLike
     from trader.infrastructure.state_db.scheduler_json import Scheduler
     from trader.infrastructure.state_db.scheduler_store import SqliteScheduler
-    from trader.planning.protocols import SchedulerLike
+    from trader.planning.protocols import SchedulerLike as FacadeSchedulerLike
+
+    assert FacadeSchedulerLike is SchedulerLike
+    assert SchedulerLike.__module__ == "trader.domain.planning.protocols"
 
     protocol_methods = {
         name
@@ -486,9 +490,12 @@ def test_shared_protocols_have_no_legacy_ports_modules() -> None:
 
 def test_planned_exits_uses_canonical_trade_plan_store_protocol() -> None:
     from trader.application.exit import planned_exits
-    from trader.planning.protocols import TradePlanStoreLike
+    from trader.domain.planning.protocols import TradePlanStoreLike
+    from trader.planning.protocols import TradePlanStoreLike as FacadeTradePlanStoreLike
 
     assert planned_exits.TradePlanStoreLike is TradePlanStoreLike
+    assert FacadeTradePlanStoreLike is TradePlanStoreLike
+    assert TradePlanStoreLike.__module__ == "trader.domain.planning.protocols"
 
     path = REPO_ROOT / "trader" / "application" / "exit" / "planned_exits.py"
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))

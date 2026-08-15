@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Callable, Protocol
 
-from trader.planning.protocols import TradePlanStoreLike
+from trader.domain.planning.protocols import TradePlanStoreLike
 from trader.domain.market.execution_eligibility import (
     execution_blocked_reason as default_execution_blocked_reason,
 )

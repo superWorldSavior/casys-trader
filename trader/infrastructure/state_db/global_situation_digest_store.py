@@ -4,11 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import json
-import threading
 from pathlib import Path
 from typing import Any, Mapping
 
-from trader.infrastructure.state_db.shadow import write_json_atomic
+from trader.infrastructure.state_db._jsonl_store import JsonlDayLedger, read_json_object
 
 
 class GlobalSituationDigestStore:
@@ -16,30 +15,26 @@ class GlobalSituationDigestStore:
 
     def __init__(self, base_dir: str | Path) -> None:
         self.base_dir = Path(base_dir)
-        self._write_lock = threading.RLock()
+        self._ledger = JsonlDayLedger(self.base_dir, validate_date=False)
 
     @property
     def current_path(self) -> Path:
         return self.base_dir / "current.json"
 
     def read_current(self) -> dict[str, Any] | None:
-        try:
-            payload = json.loads(self.current_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            return None
-        return payload if isinstance(payload, dict) and payload.get("digest_id") else None
+        payload = read_json_object(self.current_path)
+        return payload if payload is not None and payload.get("digest_id") else None
 
     def append_if_changed(self, digest: Mapping[str, Any]) -> tuple[dict[str, Any], dict[str, str], bool]:
         payload = _validated_digest(digest)
-        with self._write_lock:
-            current = self.read_current()
-            if current is not None and current.get("digest_id") == payload["digest_id"]:
-                return current, _ref(current), False
-            self.base_dir.mkdir(parents=True, exist_ok=True)
-            with (self.base_dir / f"{payload['as_of'][:10]}.jsonl").open("a", encoding="utf-8") as fh:
-                fh.write(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n")
-            write_json_atomic(self.current_path, payload)
-        return payload, _ref(payload), True
+        stored, changed = self._ledger.append_if_changed(
+            payload,
+            date=payload["as_of"][:10],
+            latest_path=self.current_path,
+            identity_field="digest_id",
+            read_current=self.read_current,
+        )
+        return stored, _ref(stored), changed
 
 
 def _validated_digest(digest: Mapping[str, Any]) -> dict[str, Any]:

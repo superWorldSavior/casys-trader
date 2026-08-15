@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from trader.domain.company import CompanyIntelligenceBrief
+from trader.infrastructure.state_db._jsonl_store import read_json_object
 from trader.infrastructure.state_db.fundamental_item_store import symbol_storage_key
 from trader.infrastructure.state_db.shadow import write_json_atomic
 
@@ -139,14 +140,10 @@ class CompanyIntelligenceStore:
         return latest
 
     def _read_current_envelope(self, symbol: str) -> dict[str, Any]:
-        try:
-            payload: Any = json.loads(self.current_path(symbol).read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+        payload = read_json_object(self.current_path(symbol))
+        if payload is None or payload.get("symbol") != symbol:
             return {"schema_version": 1, "symbol": symbol, "briefs": {}}
-        if not isinstance(payload, dict) or payload.get("symbol") != symbol:
-            return {"schema_version": 1, "symbol": symbol, "briefs": {}}
-        briefs = payload.get("briefs")
-        if not isinstance(briefs, dict):
+        if not isinstance(payload.get("briefs"), dict):
             payload["briefs"] = {}
         return payload
 

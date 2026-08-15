@@ -82,7 +82,7 @@ from trader.infrastructure.market_sources.data_source import (
 )
 from trader.infrastructure.market_sources.ib_source import IBDataSource, connect_ib
 from trader.market import news_feed
-from trader.planning.protocols import SchedulerLike
+from trader.domain.planning.protocols import SchedulerLike
 from trader.domain import decision_identity
 from trader.domain.process_trace import new_runtime_run_id
 from trader.infrastructure.files import decision_ledger

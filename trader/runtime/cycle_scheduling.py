@@ -11,7 +11,7 @@ from trader.application.cycle import (
     watch_scanner,
 )
 from trader.market import market_data as market
-from trader.planning.protocols import SchedulerLike
+from trader.domain.planning.protocols import SchedulerLike
 
 EventAppender = Callable[..., None]
 LogCallable = Callable[..., None]

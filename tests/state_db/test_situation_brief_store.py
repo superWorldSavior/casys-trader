@@ -78,3 +78,16 @@ def test_news_macro_brief_store_returns_none_for_corrupt_jsonl_lines(tmp_path) -
     (base / "2026-07-09.jsonl").write_text("{bad json\n[]\n", encoding="utf-8")
 
     assert NewsMacroBriefStore(base).read("2026-07-09") is None
+
+
+def test_news_macro_brief_latest_stays_single_jsonl_line_and_leaves_no_tmp(tmp_path) -> None:
+    store = NewsMacroBriefStore(tmp_path / "news_briefs")
+    store.append(_brief("atomic latest"))
+
+    latest = tmp_path / "news_briefs" / "latest-EU.jsonl"
+    text = latest.read_text(encoding="utf-8")
+    assert text.endswith("\n")
+    assert text.count("\n") == 1
+    assert "\n  " not in text
+    assert json.loads(text)["venue"] == "EU"
+    assert list((tmp_path / "news_briefs").glob("*.tmp")) == []

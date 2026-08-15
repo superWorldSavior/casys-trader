@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
-import json
-import os
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
 
 from trader.domain.situation import NewsMacroBrief
+from trader.infrastructure.state_db._jsonl_store import (
+    JsonlDayLedger,
+    loose_date_from_as_of,
+    read_jsonl_objects,
+    safe_filename_component,
+)
 
 
 class NewsMacroBriefStore:
@@ -18,9 +21,10 @@ class NewsMacroBriefStore:
         self.base_dir = Path(base_dir)
         # Kept for constructor compatibility with the old replacement-history store.
         self.history_path = Path(history_path) if history_path is not None else None
+        self._ledger = JsonlDayLedger(self.base_dir, validate_date=False)
 
     def path_for_date(self, date: str) -> Path:
-        return self.base_dir / f"{date}.jsonl"
+        return self._ledger.path_for_date(date)
 
     def latest_path_for_venue(self, venue: str) -> Path:
         return self.base_dir / f"latest-{_safe_venue(venue)}.jsonl"
@@ -28,18 +32,15 @@ class NewsMacroBriefStore:
     def append(self, brief: NewsMacroBrief, *, date: str | None = None) -> dict[str, str]:
         """Append one brief line and refresh the latest cache for its venue."""
 
-        date_key = date or _date_from_as_of(brief.as_of)
+        date_key = date or loose_date_from_as_of(
+            brief.as_of,
+            empty_error="brief.as_of must start with YYYY-MM-DD when date is omitted",
+            strip=False,
+        )
         payload = brief.to_dict()
-        line = json.dumps(payload, ensure_ascii=False, sort_keys=True)
-        self.base_dir.mkdir(parents=True, exist_ok=True)
-
-        with self.path_for_date(date_key).open("a", encoding="utf-8") as fh:
-            fh.write(line + "\n")
-
-        latest_path = self.latest_path_for_venue(brief.venue)
-        tmp = latest_path.with_suffix(latest_path.suffix + ".tmp")
-        tmp.write_text(line + "\n", encoding="utf-8")
-        os.replace(tmp, latest_path)
+        with self._ledger.write_session() as session:
+            session.append(payload, date=date_key)
+            session.project_jsonl(self.latest_path_for_venue(brief.venue), payload)
         return brief.ref(date=date_key)
 
     def write(self, brief: NewsMacroBrief, *, date: str | None = None) -> None:
@@ -99,29 +100,18 @@ class NewsMacroBriefStore:
         brief = self.read_latest(date_or_venue, at=at)
         if brief is None:
             return None
-        return brief.ref(date=_date_from_as_of(brief.as_of))
+        return brief.ref(date=loose_date_from_as_of(
+            brief.as_of,
+            empty_error="brief.as_of must start with YYYY-MM-DD when date is omitted",
+            strip=False,
+        ))
 
     def _iter_date(self, date: str) -> list[NewsMacroBrief]:
         return list(self._iter_path(self.path_for_date(date)))
 
     def _iter_path(self, path: Path) -> list[NewsMacroBrief]:
-        if not path.exists():
-            return []
         briefs: list[NewsMacroBrief] = []
-        try:
-            lines = path.read_text(encoding="utf-8").splitlines()
-        except OSError:
-            return []
-        for line in lines:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                payload: Any = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if not isinstance(payload, dict):
-                continue
+        for payload in read_jsonl_objects(path):
             brief = NewsMacroBrief.from_mapping(payload)
             if brief is not None:
                 briefs.append(brief)
@@ -132,14 +122,8 @@ class NewsMacroBriefStore:
         return briefs[-1] if briefs else None
 
 
-def _date_from_as_of(as_of: str) -> str:
-    if len(as_of) >= 10 and as_of[4] == "-" and as_of[7] == "-":
-        return as_of[:10]
-    raise ValueError("brief.as_of must start with YYYY-MM-DD when date is omitted")
-
-
 def _safe_venue(venue: str) -> str:
-    return "".join(ch for ch in str(venue or "GLOBAL") if ch.isalnum() or ch in ("_", "-")) or "GLOBAL"
+    return safe_filename_component(str(venue or "GLOBAL"), empty="GLOBAL")
 
 
 def _looks_like_date(value: str) -> bool:

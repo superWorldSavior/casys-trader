@@ -12,7 +12,7 @@ from trader.application.decide import planner_batch, queue_dispatch, recent_deci
 from trader.application.decide.learning_context import filter_applied_learning_ids
 from trader.application.execute.cycle_decision import DecisionExecutionState
 from trader.application.record import plan_review
-from trader.planning.protocols import SchedulerLike
+from trader.domain.planning.protocols import SchedulerLike
 
 
 @dataclass

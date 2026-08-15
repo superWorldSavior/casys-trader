@@ -14,7 +14,7 @@ from typing import Callable
 from trader.domain.planning.scheduling import (
     stale_backoff_wake_minutes as stale_backoff_wake_minutes,
 )
-from trader.planning.protocols import SchedulerLike
+from trader.domain.planning.protocols import SchedulerLike
 
 EventAppender = Callable[..., None]
 _UNSET = object()

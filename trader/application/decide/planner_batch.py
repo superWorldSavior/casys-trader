@@ -16,7 +16,7 @@ from trader.application.decide.tool_round import merge_domain_tools, run_one_rou
 from trader.domain.decisions import BatchToolCallRequest, ContextResearchRequest, Decision
 from trader.domain.market import sessions as market
 from trader.domain.planning.indicator_watch import summarize_watch
-from trader.planning.protocols import SchedulerLike
+from trader.domain.planning.protocols import SchedulerLike
 
 log = logging.getLogger("trader.application.planner_batch")
 

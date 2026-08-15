@@ -9,7 +9,7 @@ from typing import Callable, Protocol
 from trader.domain.market import sessions as market
 from trader.domain.market_data import MarketError
 from trader.domain.planning.indicator_watch import evaluate_indicator_watches, watch_market_requests
-from trader.planning.protocols import SchedulerLike
+from trader.domain.planning.protocols import SchedulerLike
 from trader.market.protocols import DataSource
 
 log = logging.getLogger("trader.application.watch_scanner")

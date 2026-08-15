@@ -13,7 +13,7 @@ from trader.domain.risk import RiskLimits
 from trader.domain.market import family_regime, fx
 from trader.domain.market import sessions as market
 from trader.domain.planning.indicator_watch import is_armed_plan
-from trader.planning.protocols import SchedulerLike
+from trader.domain.planning.protocols import SchedulerLike
 from trader.domain.trade_plan import TradePlan
 from trader.reporting.read_models import live_kpis
 

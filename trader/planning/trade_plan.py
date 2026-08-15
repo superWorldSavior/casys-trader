@@ -3,14 +3,54 @@
 from __future__ import annotations
 
 from trader.domain.planning import trade_plan as _domain_trade_plan
+from trader.domain.planning.trade_plan import (
+    InvalidExitPlanError,
+    MoveStopTo,
+    PositionSide,
+    ProfitProtection,
+    STRUCTURAL_HARD_STOP_ANCHORS,
+    STRUCTURAL_HARD_STOP_LEVELS,
+    StructuralHardStopAnchor,
+    TakeProfit,
+    TradePlan,
+    TrailingStop,
+    TrailingStopTrailType,
+    apply_exit_update,
+    create_trade_plan,
+    create_trade_plan_from_order,
+    normalize_exit_plan,
+    normalize_indicator_watch,
+    resolve_exit_plan,
+    swing_high,
+    swing_low,
+    vwap,
+)
 from trader.domain.trade_plan import TRAILING_STOP_TRAIL_TYPES as TRAILING_STOP_TRAIL_TYPES
 
-_exported_names = [
-    name for name in dir(_domain_trade_plan)
-    if not (name.startswith("__") and name.endswith("__"))
+__all__ = [
+    "InvalidExitPlanError",
+    "MoveStopTo",
+    "PositionSide",
+    "ProfitProtection",
+    "STRUCTURAL_HARD_STOP_ANCHORS",
+    "STRUCTURAL_HARD_STOP_LEVELS",
+    "StructuralHardStopAnchor",
+    "TRAILING_STOP_TRAIL_TYPES",
+    "TakeProfit",
+    "TradePlan",
+    "TrailingStop",
+    "TrailingStopTrailType",
+    "apply_exit_update",
+    "create_trade_plan",
+    "create_trade_plan_from_order",
+    "normalize_exit_plan",
+    "normalize_indicator_watch",
+    "resolve_exit_plan",
+    "swing_high",
+    "swing_low",
+    "validate_exit_plan",
+    "vwap",
 ]
-globals().update({name: getattr(_domain_trade_plan, name) for name in _exported_names})
-__all__ = [name for name in _exported_names if not name.startswith("_")]
 
 
 def validate_exit_plan(
@@ -26,6 +66,3 @@ def validate_exit_plan(
         reference_volatility=reference_volatility,
         allow_unresolved=allow_unresolved,
     )
-
-
-del _exported_names

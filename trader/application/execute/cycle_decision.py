@@ -30,7 +30,7 @@ from trader.domain.market.execution_eligibility import execution_blocked_reason
 from trader.domain.planning.exit_plan_spec import InvalidExitPlanError, validate_exit_plan
 from trader.domain.planning.trade_plan import apply_exit_update, resolve_exit_plan
 from trader.domain.decisions import Decision
-from trader.planning.protocols import SchedulerLike
+from trader.domain.planning.protocols import SchedulerLike
 
 _OPENING_INTENTS = {"OPEN_LONG", "OPEN_SHORT", "FLIP", "SCALE_IN"}
 _PURE_OPEN_INTENTS = {"OPEN_LONG", "OPEN_SHORT"}
