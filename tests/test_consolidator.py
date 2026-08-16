@@ -5,6 +5,7 @@ from pathlib import Path
 from trader.agent import llm
 from trader.agent.learnings import consolidator
 from trader.agent.learnings import consolidation_prompt, consolidation_stores
+from trader.application.learnings import consolidate as app_consolidate
 from trader.agent.learnings.raw_store import RawLearningsStore
 from trader.domain.decision_benchmark import BENCHMARK_SEMANTICS_VERSION
 from trader.infrastructure.state_db.learnings_store import LearningsStore
@@ -1133,10 +1134,10 @@ def test_global_rule_robustness_uses_win_reward_not_signed_market_return() -> No
         for _ in range(3)
     ]
 
-    summary = consolidator._candidate_evidence_summary(evidence)
+    summary = app_consolidate._candidate_evidence_summary(evidence)
 
     assert summary["mean_reward"] == 1.0
-    assert consolidator._resolved_robustness("high", summary) == "high"
+    assert app_consolidate._resolved_robustness("high", summary) == "high"
 
 
 def test_global_rule_robustness_uses_loss_reward_not_positive_market_return() -> None:
@@ -1150,10 +1151,10 @@ def test_global_rule_robustness_uses_loss_reward_not_positive_market_return() ->
         for _ in range(3)
     ]
 
-    summary = consolidator._candidate_evidence_summary(evidence)
+    summary = app_consolidate._candidate_evidence_summary(evidence)
 
     assert summary["mean_reward"] == -1.0
-    assert consolidator._resolved_robustness("high", summary) == "low"
+    assert app_consolidate._resolved_robustness("high", summary) == "low"
 
 
 def test_build_curation_candidates_borne_recent_confirmations_et_contreexemples() -> None:

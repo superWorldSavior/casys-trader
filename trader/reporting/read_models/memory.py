@@ -12,6 +12,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+from trader.domain.learnings.scoring import citation_utility
+
 NOTE_EXCERPT_CHARS = 60
 _VERDICT_RANK = {"WIN": 0, "LOSS": 1, "NEUTRAL": 2, "UNKNOWN": 3}
 
@@ -180,8 +182,6 @@ def _excerpt(text: object, *, limit: int = NOTE_EXCERPT_CHARS) -> str:
 
 
 def _citation_utility(q_value: float, q_updates: int) -> str:
-    from trader.agent.learnings.consolidator import citation_utility
-
     return citation_utility(q_value=q_value, q_updates=q_updates)
 
 

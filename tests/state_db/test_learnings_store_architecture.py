@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import ast
 import inspect
+from pathlib import Path
 
 
 def test_agent_store_facade_reexports_infra_learnings_store() -> None:
@@ -34,6 +35,19 @@ def test_scoring_module_computes_flair_without_io() -> None:
     assert result["scores"][1] == (1.0 - 0.6) / 6.0
     assert result["scores"][2] == (0.0 - 0.6) / 6.0
     assert result["scores"][6] == 0.0
+
+
+def test_citation_utility_lives_in_domain_not_consolidator() -> None:
+    from trader.agent.learnings import consolidator
+    from trader.domain.learnings.scoring import citation_utility
+
+    assert consolidator.citation_utility is citation_utility
+    cockpit = (Path(__file__).resolve().parents[2] / "trader" / "interfaces" / "cockpit" / "projections" / "health.py").read_text(encoding="utf-8")
+    memory = (Path(__file__).resolve().parents[2] / "trader" / "reporting" / "read_models" / "memory.py").read_text(encoding="utf-8")
+    assert "from trader.domain.learnings.scoring import citation_utility" in cockpit
+    assert "from trader.domain.learnings.scoring import citation_utility" in memory
+    assert "from trader.agent.learnings.consolidator import citation_utility" not in cockpit
+    assert "from trader.agent.learnings.consolidator import citation_utility" not in memory
 
 
 def test_scoring_module_has_no_io_imports() -> None:

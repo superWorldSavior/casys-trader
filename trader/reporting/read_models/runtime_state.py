@@ -417,7 +417,7 @@ def _count_pending_learnings_safe(learnings_path: Path, consolidated_path: Path)
                     raw_rows.append(json.loads(line))
                 except Exception:
                     continue
-        from trader.agent.learnings.selection import pending_raw_count
+        from trader.domain.learnings.selection import pending_raw_count
 
         return pending_raw_count(raw_rows, watermark)
     except Exception:

@@ -1,7 +1,10 @@
-"""Pure FLAIR scoring for learning notes.
+"""Scoring FLAIR / MemRL des notes de learning.
 
-No database, filesystem, clock, network, or vector dependency belongs here.
+In : lignes de notes (id, symbol, family, verdict) ou stats Q d'une citation.
+Out : labels de qualité, lift, outcome_score, citation_utility.
+Invariant : déterministe, sans I/O ; citation_utility est indépendant de robustness.
 """
+
 from __future__ import annotations
 
 from collections import defaultdict
@@ -11,10 +14,20 @@ from typing import Any
 SIGNIFICANT_RETURN_BAND = 0.005
 MEMRL_MIN_UPDATES = 10
 
+CITATION_UTILITY_UNKNOWN = "unknown"
+CITATION_UTILITY_HELPS = "helps"
+CITATION_UTILITY_HURTS = "hurts"
+CITATION_UTILITY_NEUTRAL = "neutral"
+
 __all__ = [
+    "CITATION_UTILITY_HELPS",
+    "CITATION_UTILITY_HURTS",
+    "CITATION_UTILITY_NEUTRAL",
+    "CITATION_UTILITY_UNKNOWN",
     "MEMRL_MIN_UPDATES",
     "SIGNIFICANT_RETURN_BAND",
     "apply_shrinkage",
+    "citation_utility",
     "classify_decision_quality",
     "compute_lift",
     "compute_outcome_scores",
@@ -27,7 +40,7 @@ def classify_decision_quality(
     forward_return: float | None,
     band: float = SIGNIFICANT_RETURN_BAND,
 ) -> str:
-    """Classify one directional decision against a significant-return band."""
+    """BUY/SELL → gagnant|perdant|neutre ; HOLD → justifie|inconnu ; None → non_evaluable."""
     if forward_return is None:
         return "non_evaluable"
 
@@ -56,10 +69,12 @@ def classify_decision_quality(
 
 
 def _field(row: Mapping[str, Any], key: str) -> Any:
+    """Champ obligatoire ; KeyError si absent."""
     return row[key]
 
 
 def _base_rate(wins: int, losses: int, *, default: float = 0.5) -> float:
+    """wins / (wins+losses), ou ``default`` si aucun verdict signé."""
     total = wins + losses
     if total <= 0:
         return default
@@ -67,13 +82,13 @@ def _base_rate(wins: int, losses: int, *, default: float = 0.5) -> float:
 
 
 def compute_lift(*, verdict: str, base_rate: float) -> float:
-    """Return signed lift for a WIN/LOSS verdict against its base rate."""
+    """lift = 1−base_rate si WIN, sinon 0−base_rate."""
     win_indicator = 1.0 if verdict == "WIN" else 0.0
     return win_indicator - base_rate
 
 
 def apply_shrinkage(lift: float, *, shrinkage_k: float) -> float:
-    """Shrink a one-observation lift toward zero."""
+    """outcome_score = lift / (1 + shrinkage_k)."""
     return lift / (1.0 + shrinkage_k)
 
 
@@ -83,8 +98,34 @@ def is_known_harmful_utility(
     q_updates: int,
     min_updates: int = MEMRL_MIN_UPDATES,
 ) -> bool:
-    """True when MemRL is confident the memory hurts when served."""
+    """True si q_updates ≥ min_updates et q_value < 0 (Q brut, non shrinké)."""
     return int(q_updates) >= int(min_updates) and float(q_value) < 0.0
+
+
+def _nonnegative_int(value: object) -> int:
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def citation_utility(
+    *,
+    q_value: float,
+    q_updates: int,
+    min_updates: int = MEMRL_MIN_UPDATES,
+) -> str:
+    """helps|hurts|neutral|unknown d'après Q shrinké ; unknown si q_updates < min_updates."""
+
+    updates = _nonnegative_int(q_updates)
+    if updates < min_updates:
+        return CITATION_UTILITY_UNKNOWN
+    shrunk = float(q_value) * updates / (updates + 5.0)
+    if shrunk > 0.0:
+        return CITATION_UTILITY_HELPS
+    if shrunk < 0.0:
+        return CITATION_UTILITY_HURTS
+    return CITATION_UTILITY_NEUTRAL
 
 
 def compute_outcome_scores(
@@ -92,11 +133,11 @@ def compute_outcome_scores(
     *,
     shrinkage_k: float = 5.0,
 ) -> dict:
-    """Compute deterministic FLAIR scores for note rows.
+    """Score FLAIR déterministe : {scored, base_rates[symbol], scores[id]}.
 
-    Each row must provide ``id``, ``symbol``, ``family``, and ``verdict``.
-    Returns a persistence-agnostic payload:
-    ``{"scored": n, "base_rates": {symbol: rate}, "scores": {id: score}}``.
+    Chaque ligne exige ``id``, ``symbol``, ``family``, ``verdict``.
+    WIN/LOSS : lift vs base (symbole ≥5, sinon famille ≥5, sinon global), puis shrinkage.
+    Autres verdicts : score 0.
     """
     materialized = list(rows)
     if not materialized:

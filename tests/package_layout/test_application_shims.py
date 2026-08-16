@@ -22,6 +22,7 @@ def test_application_package_has_only_canonical_subpackages() -> None:
         "decide",
         "execute",
         "exit",
+        "learnings",
         "migration",
         "portfolio",
         "queue",
@@ -166,6 +167,30 @@ def test_decision_recorder_injects_agent_trace_appender() -> None:
     assert "agent_trace_appender" in source
     assert "agent_trace_path" not in source
     assert "from pathlib import Path" not in source
+
+
+
+def test_application_learnings_modules_are_nested_without_legacy_shims() -> None:
+    application_dir = REPO_ROOT / "trader" / "application"
+
+    _assert_application_submodule_layout(
+        application_dir,
+        "learnings",
+        [
+            "consolidate",
+            "context",
+            "protocols",
+        ],
+    )
+    protocols = (application_dir / "learnings" / "protocols.py").read_text(encoding="utf-8")
+    assert "class RawLearningsPort(Protocol):" in protocols
+    assert "class ConsolidatedLearningsPort(Protocol):" in protocols
+    assert "class ConsolidationStatusPort(Protocol):" in protocols
+    assert "class CurationPort(Protocol):" in protocols
+    assert "class LearningComposer(Protocol):" in protocols
+    assert "def compose(" in protocols
+    assert "trader.agent" not in protocols
+    assert "trader.infrastructure" not in protocols
 
 
 

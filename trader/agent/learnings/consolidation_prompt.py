@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 
-from trader.agent.learnings.consolidation_stores import DEFAULT_MAX_GLOBAL
+from trader.domain.learnings.consolidation import DEFAULT_MAX_GLOBAL
 
 
 def build_consolidation_prompt(

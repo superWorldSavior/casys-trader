@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
+from trader.domain.learnings.scoring import citation_utility
 from trader.interfaces.cockpit import format as f
 from trader.interfaces.cockpit.projections.universe import venue_of_safe
 from trader.support.coercion import dict_list, finite_float
@@ -319,8 +320,6 @@ def project_universe_health(state: dict) -> UniverseHealthProjection:
 
 
 def _count_rule_utilities(rules: list[dict]) -> tuple[int, int]:
-    from trader.agent.learnings.consolidator import citation_utility
-
     helps = 0
     hurts = 0
     for row in rules:
