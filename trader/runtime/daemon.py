@@ -114,6 +114,7 @@ from trader.runtime import (
     worker_cycle_context as worker_cycle_context_runtime,
 )
 from trader.runtime.cycle_process_state import CycleProcessState
+from trader.runtime.cycle_timings import attach_stage_timings, mark_end, mark_start, try_stage_clock
 from trader.runtime.ib_attach import IBAttachBackoff
 from trader.runtime.process_pilot import ProcessPilot, build_process_pilot
 from trader.runtime.state_writer import RuntimeStateWriter
@@ -691,6 +692,11 @@ def run_cycle(
         _write_status("halted", current_symbol=None, halted="kill_switch")
         return report
 
+    try:
+        stage_clock = try_stage_clock()
+    except Exception:
+        stage_clock = None
+    mark_start(stage_clock, "snapshot_ms")
     snapshot = market_snapshot.build_market_snapshot(
         symbols=symbols,
         data_source=data_source,
@@ -795,6 +801,8 @@ def run_cycle(
             if symbol in symbols and symbol not in symbols_to_decide:
                 symbols_to_decide.append(symbol)
 
+    mark_end(stage_clock, "snapshot_ms")
+    mark_start(stage_clock, "gate_scope_ms")
     admitted_process_symbols: set[str] = set()
     settled_process_symbols: set[str] = set()
     if process_pilot is not None:
@@ -1089,6 +1097,8 @@ def run_cycle(
         symbols_total=len(symbols_to_decide),
         batch_size=len(decidable),
     )
+    mark_end(stage_clock, "gate_scope_ms")
+    mark_start(stage_clock, "decide_ms")
     analysis_bars_by_symbol = prepared_scope.analysis_bars_by_symbol
     analysis_timeframe_by_symbol = prepared_scope.analysis_timeframe_by_symbol
     analysis_symbols = prepared_scope.analysis_symbols
@@ -1197,6 +1207,8 @@ def run_cycle(
     # "[decide]" : commun batch/queue (E7 — le libellé [batch] mentait en mode queue).
     _log_cycle_progress("[decide] decided=%d model_calls=%d", len(decisions_by_symbol), model_calls_used)
 
+    mark_end(stage_clock, "decide_ms")
+    mark_start(stage_clock, "risk_execute_ms")
     # Admission gross équitable sans clamp (spec 2026-06-30) : on réordonne
     # l'exécution — réducteurs d'abord (ils libèrent de la marge), puis ouvertures
     # par conviction décroissante — pour que le RiskGate arbitre au mérite plutôt
@@ -1336,6 +1348,8 @@ def run_cycle(
         snap = execution_state.snap
         gross = execution_state.gross
 
+    mark_end(stage_clock, "risk_execute_ms")
+    mark_start(stage_clock, "record_ms")
     # Revue effective seulement si le modèle a réellement statué ET si la
     # décision n'a pas été reportée par le stop de batch d'ouvertures. Les
     # ouvertures différées doivent rester périodic_review au cycle suivant, pas
@@ -1379,7 +1393,16 @@ def run_cycle(
         max_model_calls_per_cycle=model_call_limit_for_status,
         last_decision=report["decisions"][-1] if report["decisions"] else None,
     )
-    _append_event("cycle_completed", decisions_done=len(report["decisions"]), model_calls_used=model_calls_used)
+    mark_end(stage_clock, "record_ms")
+    completed_payload: dict[str, object] = {
+        "decisions_done": len(report["decisions"]),
+        "model_calls_used": model_calls_used,
+    }
+    try:
+        completed_payload = attach_stage_timings(completed_payload, stage_clock)
+    except Exception:
+        pass
+    _append_event("cycle_completed", **completed_payload)
     cycle_finalization.finalize_cycle(
         state_dir=STATE_DIR,
         now=now,
