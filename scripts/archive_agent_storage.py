@@ -6,7 +6,10 @@ Trois classes de données, trois traitements :
   études a posteriori, mais 46x compressibles en `tar.zst` grâce à la
   redondance inter-fichiers. On archive, on ne jette pas.
 - **logs applicatifs** (`ops/codex-home/logs_*.sqlite`) : traces INFO/TRACE du
-  process app-server. Aucune valeur post-exécution — purge sèche.
+  process app-server. Aucune valeur post-exécution — purge sèche. Avant la
+  purge, ``scripts.llm_cost`` extrait tout usage LLM trouvable (sqlite,
+  sessions acpx, homes grok, fallback ``[acpx_call]``) vers
+  ``state/archive/llm_usage/``.
 - **index et sessions récentes** : jamais touchés.
 
 `--dry-run` est le défaut : l'écriture exige `--apply` (AX #2, safe defaults).
@@ -145,6 +148,17 @@ def archive_month(paths: list[Path], destination: Path, *, apply: bool) -> dict:
     return result
 
 
+def _extract_llm_usage_before_purge() -> dict:
+    """Best-effort : un échec d'extraction ne doit pas bloquer l'archive."""
+
+    try:
+        from scripts.llm_cost import extract_and_append
+
+        return extract_and_append(repo_root=REPO_ROOT)
+    except Exception as exc:  # noqa: BLE001 - rétention fail-open sur l'observabilité
+        return {"error": str(exc), "appended": 0}
+
+
 def purge_codex_logs(home: Path, *, apply: bool) -> list[dict]:
     """Vide les tables de logs des bases `logs_*.sqlite` puis compacte."""
 
@@ -210,6 +224,10 @@ def main(argv: list[str] | None = None) -> int:
         "sessions": [],
         "logs": [],
     }
+
+    # Extraire les tokens AVANT l'archive des sessions et la purge sqlite.
+    # Additif et idempotent : on le fait aussi en dry-run (rien n'est détruit).
+    report["llm_usage"] = _extract_llm_usage_before_purge()
 
     if args.only != "logs":
         for month, paths in sorted(collect_stale_sessions(ACPX_SESSIONS, cutoff).items()):

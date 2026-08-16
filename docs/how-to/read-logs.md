@@ -70,6 +70,21 @@ notables : `indicator_watch_created/triggered/expired`,
 `armed_plan_created/resolved/cancelled/expired`, `watch_cancelled_by_agent`,
 `context_resolved`, `cycle_started/completed`.
 
+`cycle_completed` porte un champ additif `stage_timings_ms` (dict plat d'entiers) :
+`snapshot_ms`, `gate_scope_ms`, `decide_ms`, `risk_execute_ms`, `record_ms`,
+`total_ms`. Un échec de chronométrage omet le champ ; la décision ne change pas.
+
+Usage LLM / latence :
+
+```bash
+python -m scripts.llm_cost                 # extrait tokens → state/archive/llm_usage/YYYY-MM.jsonl
+python scripts/llm_usage.py cost           # jour×provider + p50/p95 des étages
+python scripts/llm_usage.py cost --price-per-mtok grok=3
+```
+
+Le job hebdo (`scripts.archive_agent_storage`) lance l'extraction **avant**
+d'archiver les sessions acpx et de purger `ops/codex-home/logs_*.sqlite`.
+
 ## Voir aussi
 - [Lancer le daemon](run-the-daemon.md) ·
   [Diagnostiquer les rapports](refresh-and-diagnose-reports.md) ·
