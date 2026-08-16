@@ -417,7 +417,9 @@ pending d'horizon immature, digest deux blocs (allocation / direction,
 `selector=agent` seulement) et commande analytics `bench` (agent vs baseline).
 Le premier rejugement complet a lieu au prochain sync daemon (purge `bench_v2`
 puis replay). Le digest allocation n'entre dans le prompt univers qu'une fois
-`min_n=5` atteint sur une base.
+`min_n=5` atteint. Grain venue d'abord (picks agent vs banc, et
+`vs_baseline` si la hotlist déterministe a aussi n≥5) ; familles/rôles
+ensuite. Les FLAIR agent et baseline restent des pools séparés.
 
 ---
 

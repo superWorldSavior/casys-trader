@@ -730,6 +730,45 @@ def _two_basis_feedback(
     return feedback
 
 
+def _venue_matches(row: Mapping[str, Any], venue: str | None) -> bool:
+    if venue is None:
+        return True
+    return str(row.get("venue") or "").strip().upper() == str(venue).strip().upper()
+
+
+def _venue_allocation_block(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    venue: str | None,
+    min_n: int,
+) -> dict[str, Any] | None:
+    """Venue-grain allocation for the agent, plus a standing baseline control."""
+    if venue is None:
+        return None
+    in_venue = [row for row in rows if _venue_matches(row, venue)]
+    agent_alloc = [
+        row
+        for row in in_venue
+        if _is_agent_selector(row) and _verdict_basis_of(row) == "allocation"
+    ]
+    block = _basis_block(agent_alloc, rate_key="beat_bench_rate", min_n=min_n)
+    if block is None:
+        return None
+    baseline_alloc = [
+        row
+        for row in in_venue
+        if not _is_agent_selector(row) and _verdict_basis_of(row) == "allocation"
+    ]
+    control = _basis_block(baseline_alloc, rate_key="beat_bench_rate", min_n=min_n)
+    if control is not None:
+        block["vs_baseline"] = {
+            "n": control["n"],
+            "beat_bench_rate": control["beat_bench_rate"],
+            "lift": float(block["beat_bench_rate"]) - float(control["beat_bench_rate"]),
+        }
+    return block
+
+
 def selection_feedback_digest(
     rows: Sequence[Mapping[str, Any]],
     *,
@@ -741,22 +780,19 @@ def selection_feedback_digest(
     scoped = [
         row
         for row in rows
-        if _is_agent_selector(row)
-        and (
-            venue is None
-            or str(row.get("venue") or "").strip().upper() == str(venue).strip().upper()
-        )
+        if _is_agent_selector(row) and _venue_matches(row, venue)
     ]
     families = _two_basis_feedback(scoped, "family", min_n=min_n)
     roles = _two_basis_feedback(scoped, "role", min_n=min_n)
+    allocation = _venue_allocation_block(rows, venue=venue, min_n=min_n)
     n_evaluated = sum(1 for row in scoped if row.get("verdict") in {"gagnant", "perdant"})
     n_non_evaluable = sum(1 for row in scoped if row.get("verdict") == "non_evaluable")
     horizons = sorted(
         {int(row["horizon_sessions"]) for row in scoped if row.get("horizon_sessions") is not None}
     )
-    return {
+    payload: dict[str, Any] = {
         "role": SELECTION_FEEDBACK_ROLE,
-        "status": "observed" if families or roles else "insufficient",
+        "status": "observed" if families or roles or allocation else "insufficient",
         "horizon_sessions": horizons[0] if len(horizons) == 1 else None,
         "min_n": min_n,
         "n_evaluated": n_evaluated,
@@ -764,6 +800,9 @@ def selection_feedback_digest(
         "families": families,
         "roles": roles,
     }
+    if allocation is not None:
+        payload["allocation"] = allocation
+    return payload
 
 
 def compare_selection_selectors(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:

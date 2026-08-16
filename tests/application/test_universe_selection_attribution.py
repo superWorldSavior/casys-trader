@@ -377,6 +377,104 @@ def test_selection_feedback_digest_ignore_le_baseline_et_min_n_par_base() -> Non
     assert digest["families"][0]["allocation"]["n"] == MIN_FEEDBACK_N
     assert "direction" not in digest["families"][0]
     assert digest["n_evaluated"] == MIN_FEEDBACK_N + (MIN_FEEDBACK_N - 1)
+    assert digest["allocation"]["n"] == MIN_FEEDBACK_N
+    assert digest["allocation"]["vs_baseline"]["n"] == MIN_FEEDBACK_N
+    assert digest["allocation"]["vs_baseline"]["lift"] == 0.0
+
+
+def test_digest_allocation_venue_parle_sans_min_n_famille() -> None:
+    rows = []
+    for family, n in (("eu_tech", 2), ("eu_industrials", 2), ("defense", 1)):
+        rows.extend(
+            {
+                "family": family,
+                "venue": "EU",
+                "role": "core_candidate",
+                "verdict": "gagnant",
+                "flair_score": 0.03,
+                "horizon_sessions": 5,
+                "verdict_basis": "allocation",
+                "selector": "agent",
+            }
+            for _ in range(n)
+        )
+    digest = selection_feedback_digest(rows, venue="EU")
+    assert digest["status"] == "observed"
+    assert digest["families"] == []
+    assert digest["allocation"]["n"] == MIN_FEEDBACK_N
+    assert digest["allocation"]["beat_bench_rate"] == 1.0
+    assert digest["allocation"]["utility"] == "helps"
+    assert "vs_baseline" not in digest["allocation"]
+
+
+def test_digest_vs_baseline_absent_si_controle_sous_le_plancher() -> None:
+    rows = [
+        *(
+            {
+                "family": "eu_tech",
+                "venue": "EU",
+                "role": "core_candidate",
+                "verdict": "gagnant",
+                "flair_score": 0.04,
+                "horizon_sessions": 5,
+                "verdict_basis": "allocation",
+                "selector": "agent",
+            }
+            for _ in range(MIN_FEEDBACK_N)
+        ),
+        {
+            "family": "eu_tech",
+            "venue": "EU",
+            "role": "fallback_selection",
+            "verdict": "perdant",
+            "flair_score": -0.02,
+            "horizon_sessions": 5,
+            "verdict_basis": "allocation",
+            "selector": "baseline_fallback",
+        },
+    ]
+    digest = selection_feedback_digest(rows, venue="EU")
+    assert digest["allocation"]["n"] == MIN_FEEDBACK_N
+    assert "vs_baseline" not in digest["allocation"]
+
+
+def test_digest_vs_baseline_est_un_lift_de_taux_pas_un_flair_mixe() -> None:
+    rows = [
+        *(
+            {
+                "family": "eu_tech",
+                "venue": "EU",
+                "role": "core_candidate",
+                "verdict": "gagnant" if index < 4 else "perdant",
+                "flair_score": 0.02 if index < 4 else -0.02,
+                "horizon_sessions": 5,
+                "verdict_basis": "allocation",
+                "selector": "agent",
+            }
+            for index in range(MIN_FEEDBACK_N)
+        ),
+        *(
+            {
+                "family": "eu_tech",
+                "venue": "EU",
+                "role": "fallback_selection",
+                "verdict": "perdant",
+                "flair_score": -0.01,
+                "horizon_sessions": 5,
+                "verdict_basis": "allocation",
+                "selector": "baseline_fallback",
+            }
+            for _ in range(MIN_FEEDBACK_N)
+        ),
+    ]
+    digest = selection_feedback_digest(rows, venue="EU")
+    assert digest["allocation"]["beat_bench_rate"] == 0.8
+    assert digest["allocation"]["vs_baseline"]["beat_bench_rate"] == 0.0
+    assert digest["allocation"]["vs_baseline"]["lift"] == 0.8
+    assert "mean_flair_score" not in digest["allocation"]["vs_baseline"]
+    dumped = str(digest)
+    assert "baseline_fallback" not in dumped
+    assert "direction_source" not in dumped
 
 
 def _mandate(

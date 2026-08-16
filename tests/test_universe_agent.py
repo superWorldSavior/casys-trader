@@ -159,6 +159,8 @@ def test_prompt_says_agent_composes_full_hotlist_and_includes_all_context_layers
     assert "plus d'opportunité que le banc" in prompt
     assert "appels directionnels sont-ils bons" in prompt
     assert "jamais une hotlist" in prompt
+    assert "vs_baseline" in prompt
+    assert "hotlist déterministe" in prompt
     assert "input_refs" not in prompt
     assert '"news_items":' not in prompt
 
