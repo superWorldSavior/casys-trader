@@ -9,13 +9,16 @@ from collections.abc import Iterable, Mapping
 from typing import Any
 
 SIGNIFICANT_RETURN_BAND = 0.005
+MEMRL_MIN_UPDATES = 10
 
 __all__ = [
+    "MEMRL_MIN_UPDATES",
     "SIGNIFICANT_RETURN_BAND",
     "apply_shrinkage",
     "classify_decision_quality",
     "compute_lift",
     "compute_outcome_scores",
+    "is_known_harmful_utility",
 ]
 
 
@@ -72,6 +75,16 @@ def compute_lift(*, verdict: str, base_rate: float) -> float:
 def apply_shrinkage(lift: float, *, shrinkage_k: float) -> float:
     """Shrink a one-observation lift toward zero."""
     return lift / (1.0 + shrinkage_k)
+
+
+def is_known_harmful_utility(
+    *,
+    q_value: float,
+    q_updates: int,
+    min_updates: int = MEMRL_MIN_UPDATES,
+) -> bool:
+    """True when MemRL is confident the memory hurts when served."""
+    return int(q_updates) >= int(min_updates) and float(q_value) < 0.0
 
 
 def compute_outcome_scores(

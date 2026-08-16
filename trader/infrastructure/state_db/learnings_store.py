@@ -22,7 +22,11 @@ from pathlib import Path
 
 import numpy as np
 
-from trader.domain.learnings.scoring import compute_outcome_scores as default_outcome_scorer
+from trader.domain.learnings.scoring import (
+    MEMRL_MIN_UPDATES,
+    compute_outcome_scores as default_outcome_scorer,
+    is_known_harmful_utility,
+)
 from trader.domain.decision_benchmark import BENCHMARK_SEMANTICS_VERSION
 from trader.domain.semantic.catalog import family_for_symbol
 from trader.infrastructure.state_db.fts_query import sanitize_fts5_query
@@ -959,6 +963,8 @@ class LearningsStore:
         4. Fusion RRF (k=60) des deux classements.
         4b. Si une query est fournie, restriction à l'union FTS ∪ cosine matchés.
         5. Score final = RRF + FLAIR + fraîcheur + Q-value MemRL shrinkée.
+           Notes with confident negative MemRL (q_value < 0 and
+           q_updates ≥ ``MEMRL_MIN_UPDATES``) are dropped, not re-ranked.
         6. Retourne les ``limit`` meilleurs résultats, note tronquée à 240 c.
         """
         if now is None:
@@ -1093,6 +1099,12 @@ class LearningsStore:
             freshness = math.exp(-age_days / tau_days) - 1.0
             q_value = float(row.get("q_value") or 0.0)
             q_updates = max(int(row.get("q_updates") or 0), 0)
+            if is_known_harmful_utility(
+                q_value=q_value,
+                q_updates=q_updates,
+                min_updates=MEMRL_MIN_UPDATES,
+            ):
+                continue
             q_confidence = q_updates / (q_updates + max(memrl_shrinkage_k, 1e-9))
             q_decay = math.exp(-age_days / tau_days)
             memrl_score = float(memrl_weight) * q_value * q_confidence * q_decay

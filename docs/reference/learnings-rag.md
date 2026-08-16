@@ -70,6 +70,10 @@ final_score  = rrf + outcome_score + freshness
                + 0.2 × q_value × q_confidence × exp(−age_j/τ)
 ```
 
+Notes à `q_value < 0` et `q_updates ≥ 10` (MemRL mesuré) sont **exclues**
+du top-k : on ne ressert pas du connu-nuisible. En dessous du seuil, le
+terme MemRL continue de départager (shrinkage).
+
 `outcome_score` est **additionné** (pas un multiplicateur), et une décroissance de
 **fraîcheur** pénalise les notes anciennes. Latence typique 2-8 ms.
 
