@@ -26,6 +26,7 @@
 | Contexte agent | [`agent-context.md`](agent-context.md) | `agent/context` |
 | Mémoire learnings / RAG | [`learnings-rag.md`](learnings-rag.md) | `agent/learnings`, `state/learnings*` |
 | Architecture de connaissance agent | [`agent-knowledge-architecture.md`](agent-knowledge-architecture.md) | cadre stable de connaissance |
+| Mémoire de situation (bac ②) | [`situation-memory.md`](situation-memory.md) | `state/situation_memory.db`, `state/news_briefs/` |
 | Couche sémantique | [`semantic.md`](semantic.md) | `domain/semantic`, indicateurs gouvernés |
 
 ## Marché, données & config

@@ -121,7 +121,7 @@ Légende : ✅ couvert · 🟡 partiel / dispersé / potentiellement périmé ·
 | Contexte agent (cockpit) | `agent/context` | ✅ | **`reference/agent-context.md`** | — |
 | Outils domaine et langage d'action | `agent/tools/` (7 outils read-only) + compilateur d'action | ✅ | **`reference/agent-tools.md`** | — |
 | Mémoire / recall / learnings (RAG) | `agent/learnings/` (store, consolidator, embeddings) | ✅ | **`reference/learnings-rag.md`** | — |
-| Mémoire de situation (index dérivé, retrieval non câblé) | `infrastructure/state_db/situation_memory_store` | 🟡 | **`reference/news.md`**, **`reference/agent-knowledge-architecture.md`** | D15 |
+| Mémoire de situation (index dérivé, scoring FLAIR actif, retrieval non câblé) | `infrastructure/state_db/situation_memory_store` | 🟡 | **`reference/situation-memory.md`**, **`reference/news.md`**, **`reference/agent-knowledge-architecture.md`** | D15 |
 | Couche sémantique | `domain/semantic/catalog` | ✅ | **`reference/semantic.md`** | — |
 
 ### Observabilité

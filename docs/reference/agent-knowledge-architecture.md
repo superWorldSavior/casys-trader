@@ -1,7 +1,7 @@
 # Référence — Architecture de connaissance de l'agent
 
 > **Type** : Reference (Diátaxis) — cadre stable.
-> **État vérifié** : 2026-08-11.
+> **État vérifié** : 2026-08-16.
 > **Rôle** : ranger toute connaissance de l'agent par sa **nature** (delta vs niveau,
 > général vs par-nom, périssable vs stable), **pas** par son système technique. Boussole
 > des chantiers learnings / macro / news / recall.
@@ -71,8 +71,11 @@ re-empiler les bacs.
   (`learnings.db` + FLAIR + recall), ② matière brute (`news_items`, calendrier,
   séries) et digesteur async (`news_briefs`).
 - **Existe comme dérivé dormant** : `situation_memory.db`, index FTS5 des points
-  de briefs. Sa méthode de recherche n'est encore appelée par aucun agent runtime ;
-  ce n'est donc pas un RAG de situation actif.
+  de briefs. Le scoring FLAIR est actif depuis `9fa7920` (`verdict` /
+  `outcome_score` via `scripts/situation_note_analytics.py evaluate`) ; le
+  retrieval n'est pas branché — aucun agent runtime n'appelle encore `search()`.
+  Ce n'est donc pas un RAG de situation actif. Voir
+  [`situation-memory.md`](situation-memory.md).
 - **Existe aussi** : scopes candidats immuables, ledgers challenger/univers,
   projection préparée, activation pré-open avec fallback observable, et tranche
   de mandat active projetée par symbole au trader. La décision conserve son
@@ -98,4 +101,5 @@ re-empiler les bacs.
 - Spec superseded : [`../superpowers/specs/2026-07-03-learnings-recall-push-design.md`](../superpowers/specs/2026-07-03-learnings-recall-push-design.md)
 - Contexte agent (le cockpit envoyé au LLM) : [`agent-context.md`](agent-context.md)
 - RAG des learnings : [`learnings-rag.md`](learnings-rag.md)
+- Mémoire de situation (bac ②) : [`situation-memory.md`](situation-memory.md)
 - Fil d'actu / news : [`news.md`](news.md) · Macro : [`macro.md`](macro.md)

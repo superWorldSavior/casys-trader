@@ -629,7 +629,7 @@ Opérateurs valides : `>`, `>=`, `<`, `<=`, `==`, `!=`, `abs>`, `abs>=`, `abs<`,
 | `universe_prepared/<scope-hash>.json` | `UniverseRunStore` | activation pré-open | Projection atomique reconstructible pour un `candidate_scope_id` exact |
 | `company_intelligence/` + `company_analysis_runs/` | runtime company-micro | analystes aval + Reports | briefs par symbole et historique des tentatives ; projection dernier succès + dernière panne |
 | `global_universe_postures/` | runtime Univers | trois passes régionales + Reports | posture courante, historique et ledger séparé des échecs/retries |
-| `situation_memory.db` | ingestion des briefs | aucun consommateur runtime actuellement | Index FTS5 dérivé ; retrieval de situation non activé |
+| `situation_memory.db` | ingestion des briefs ; scoring FLAIR opérateur | aucun consommateur runtime actuellement | Index FTS5 dérivé ; scoring FLAIR actif (`9fa7920`, `situation_note_analytics.py evaluate`) ; retrieval de situation non activé — [situation-memory](reference/situation-memory.md) |
 
 Le scheduler, les plans et le broker partagent `casys.db`, mais restent des stores
 logiquement séparés. Les artefacts JSONL de décision, recherche et reporting
@@ -848,8 +848,10 @@ La couverture reste déclarée partielle : news symboles limitées au corpus loc
 GDELT non exhaustif, calendrier local/fallback et séries potentiellement stales.
 `state/last_regime.json` est désormais écrit atomiquement
 avec timestamp et couverture `active_tradable_universe`; il est ignoré après
-96 h. `situation_memory.db` indexe les briefs, mais aucun retrieval historique
-n'est activé ; il ne constitue jamais une source de vérité du présent.
+96 h. `situation_memory.db` indexe les briefs et le scoring FLAIR y écrit
+`verdict`/`outcome_score` (`9fa7920`, script opérateur) ; aucun retrieval
+historique n'est activé. Il ne constitue jamais une source de vérité du
+présent. Voir [mémoire de situation](reference/situation-memory.md).
 
 ---
 

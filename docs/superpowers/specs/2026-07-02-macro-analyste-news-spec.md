@@ -338,6 +338,8 @@ producteur de shortlist ou de hotlist.
   runtime ne l'appelle encore : ce n'est pas un RAG actif de bout en bout.
 - L'ingestion de situation démarre avec `outcome_score=0.0`, `q_value=None` et
   sans embeddings exploités. Il n'y a donc ni FLAIR situation effectif ni MemRL.
+  (MAJ 2026-08-16 : FLAIR situation livré depuis 9fa7920 — voir
+  docs/reference/situation-memory.md.)
 - `learnings.db` est une pile métier différente et déjà active : recall hybride
   exposé au trader symbole, avec embeddings et reranking FLAIR par outcome.
 
