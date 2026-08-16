@@ -344,3 +344,65 @@ matériel et visible dans le cockpit avec couverture et fraîcheur.
 
 **Design de référence.**
 `docs/superpowers/specs/2026-07-09-universe-intelligence-pass-design.md`.
+
+---
+
+## D16 — Sélections univers jugées contre le banc : verdict à deux bases  ✅ validé (principe, 2026-08-16)
+
+**Contexte.** La boucle d'attribution des sélections d'univers (attribution
+`9fbc9ae`, digest → prompt `500cfdd`) ne juge que la promesse directionnelle
+(`allowed_sides` strictement long ou short). Mesuré au 2026-08-16 : 8 789
+lignes de sélection dans l'historique mandats (476 lignes, prepared + active +
+fallback confondus), **22 % directionnelles → 78 % `non_evaluable`**, digest
+quasi toujours `insufficient` — la boucle est câblée mais structurellement
+muette (le contrat du prompt pousse d'ailleurs `["long","short"]` même quand
+`directional_view` est tranché). De plus, 149/476 lignes `status=fallback`
+(baseline déterministe) sont jugées comme des choix d'agent, ce qui biaise le
+signal.
+
+**Décision (Erwan, 2026-08-16).** L'agent univers est un **allocateur
+d'attention** ; on le juge comme un allocateur, pas comme un prédicteur :
+
+1. **`verdict_basis=allocation`**, pour toutes les sélections : opportunité
+   (|forward return| 5 séances) du pick comparée à la **médiane du banc** — les
+   candidats du scope D15 non retenus, **hors sticky** (présents dans
+   `candidates[]` mais interdits à l'agent). Gagnant/perdant selon l'excès,
+   bande d'égalité = `SIGNIFICANT_RETURN_BAND`. Aucun seuil absolu de
+   réussite : le banc est sa propre baseline, et la comparaison intra-venue
+   neutralise les frais. Couverture structurelle : toute sélection devient
+   jugeable (résiduel `non_evaluable` si données/banc insuffisants).
+2. **`verdict_basis=direction`**, inchangé : les sélections directionnelles
+   restent jugées par le juge signé existant, déjà mutualisé à l'étage domaine
+   (`domain/learnings/scoring.py`) avec learnings et notes de situation.
+3. **FLAIR par base** (base rates séparés). Le base rate allocation ≈ 0,5 pour
+   un sélecteur aléatoire → le lift mesure directement le talent d'allocation.
+4. **`selector` agent vs baseline_fallback** séparés : le digest injecté au
+   prompt ne porte que sur l'agent ; le comparatif agent vs baseline
+   déterministe devient une requête analytics gratuite.
+5. **Sémantique versionnée** (pattern `outcome_semantics_version`, table
+   metadata dédiée dans casys.db) avec purge et **rejugement complet** —
+   possible car scopes persistés depuis le 2026-07-10 et mandats depuis le
+   2026-07-17.
+
+**Données.** 476/476 lignes de mandat portent `candidate_scope_id` ; scopes
+candidats immuables (~40 candidats/venue, top 40 radar) dans
+`state/candidate_scopes/` — le contrefactuel est déjà persisté, zéro mécanisme
+de capture à ajouter (dividende direct de l'observabilité décidée en D15).
+
+**Fact-check (grok-4.6, 2026-08-16) : GO-AVEC-CORRECTIFS**, intégrés à la
+spec : unité de jugement = activations seules (`active|fallback`, `prepared`
+exclu, rafales de fallback dédupliquées) ; sticky exclus du banc ; lecture de
+scope **par id** à créer (l'API actuelle ne lit que le dernier par venue) ;
+migration v7 par recréation de table (UNIQUE table-level non altérable en
+SQLite) ; horizons immatures jamais persistés (pending, sinon figés à jamais) ;
+métadonnée de sémantique dans casys.db.
+
+**Points ouverts.** `MIN_BENCH_EVALUATED` (8) à confirmer à la mesure ;
+dénominateurs réels (allocations distinctes après dédup) à publier ; inciter ou
+non l'agent à des `allowed_sides` directionnels quand sa vue est tranchée
+(décision séparée) ; juger la `default_hotlist` comme baseline virtuelle
+(option) ; inscrire `state/candidate_scopes/` dans la politique de rétention
+(le rejugement en dépend).
+
+**Design de référence.**
+`docs/superpowers/specs/2026-08-16-universe-selection-bench-verdict-design.md`.
