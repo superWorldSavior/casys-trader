@@ -223,6 +223,12 @@ def tick_news_macro_analysis(
                     {"venue": venue, "reason": "active_brief_changed_inputs_cooldown"}
                 )
                 continue
+        try:
+            situation_feedback = _situation_feedback_for_venue(
+                state_path, venue, store=memory
+            )
+        except Exception:  # noqa: BLE001 - digest must never block an analysis
+            situation_feedback = {}
         request = NewsMacroAnalysisRequest(
             as_of=now.isoformat(),
             valid_until=(now + timedelta(hours=DEFAULT_VALID_HOURS)).isoformat(),
@@ -235,6 +241,7 @@ def tick_news_macro_analysis(
             family_context=family_context,
             company_anchors=company_anchors,
             input_refs=input_refs,
+            situation_feedback=situation_feedback or None,
         )
         if analyst is None:
             from trader.agent.news_macro import LlmNewsMacroAnalyst
@@ -343,6 +350,12 @@ def tick_news_macro_analysis(
                 ):
                     skipped.append({"venue": "GLOBAL", "reason": "active_brief_changed_inputs_cooldown"})
                 else:
+                    try:
+                        global_feedback = _situation_feedback_for_venue(
+                            state_path, "GLOBAL", store=memory
+                        )
+                    except Exception:  # noqa: BLE001 - digest must never block an analysis
+                        global_feedback = {}
                     global_request = NewsMacroAnalysisRequest(
                         as_of=now.isoformat(),
                         valid_until=(now + timedelta(hours=DEFAULT_VALID_HOURS)).isoformat(),
@@ -352,6 +365,7 @@ def tick_news_macro_analysis(
                         macro_series=macro_series,
                         geopolitical_events=geopolitical_events,
                         input_refs=global_input_refs,
+                        situation_feedback=global_feedback or None,
                     )
                     if analyst is None:
                         from trader.agent.news_macro import LlmNewsMacroAnalyst
@@ -482,6 +496,38 @@ class NewsMacroAnalysisRunner:
             self._stop_event.set()
         if thread is not None and thread is not threading.current_thread():
             thread.join(timeout=self._stop_timeout_s)
+
+
+def _situation_feedback_for_venue(
+    state_dir: Path,
+    venue: str,
+    *,
+    store: SituationMemoryStore | None = None,
+) -> dict[str, Any]:
+    """Market-as-judge digest for this venue. Empty when the sample is still noise."""
+
+    source = store
+    close_after = False
+    try:
+        from trader.application.analyst.situation_attribution import (
+            situation_feedback_digest,
+        )
+
+        if source is None:
+            db_path = Path(state_dir) / "situation_memory.db"
+            if not db_path.is_file():
+                return {}
+            source = SituationMemoryStore(db_path)
+            close_after = True
+        digest = situation_feedback_digest(source.load_outcomes(), venue=venue)
+    except Exception:  # noqa: BLE001 - advisory context, never block analysis
+        return {}
+    finally:
+        if close_after and source is not None:
+            source.close()
+    if digest.get("status") != "observed":
+        return {}
+    return digest
 
 
 def brief_ref_for_symbol(

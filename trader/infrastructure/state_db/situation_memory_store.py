@@ -279,6 +279,22 @@ class SituationMemoryStore:
             ).fetchall()
         return [_row_to_outcome(row) for row in rows]
 
+    def load_pending_notes(self, *, limit: int | None = None) -> list[dict[str, Any]]:
+        """Load notes that have not yet received a verdict. Read-only."""
+        sql = f"""
+            SELECT {_NOTE_COLUMNS}
+              FROM situation_notes
+             WHERE evaluated_at IS NULL
+             ORDER BY id
+        """
+        params: dict[str, Any] = {}
+        if limit is not None:
+            sql += " LIMIT :limit"
+            params["limit"] = max(0, int(limit))
+        with self._lock:
+            rows = self._conn.execute(sql, params).fetchall()
+        return [_row_to_outcome(row) for row in rows]
+
     def apply_outcomes(self, rows: Sequence[Mapping[str, Any]]) -> None:
         """Update verdict fields in place. Idempotent by note id."""
         if not rows:

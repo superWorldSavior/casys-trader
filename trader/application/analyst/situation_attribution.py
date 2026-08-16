@@ -24,16 +24,22 @@ from trader.market.protocols import DataSource
 
 DEFAULT_BAR_INTERVAL = "1d"
 DEFAULT_BAR_LOOKBACK = "1y"
+MIN_FEEDBACK_N = 5
+SITUATION_FEEDBACK_ROLE = "comparative_context_not_directives"
 
 __all__ = [
     "DEFAULT_BAR_INTERVAL",
     "DEFAULT_BAR_LOOKBACK",
+    "MIN_FEEDBACK_N",
+    "SITUATION_FEEDBACK_ROLE",
     "EvaluatedNote",
     "SituationOutcomeStore",
     "evaluate_note",
     "evaluate_notes",
     "flair_identity",
     "persist_and_score",
+    "refresh_situation_outcomes",
+    "situation_feedback_digest",
     "summarize_outcomes",
 ]
 
@@ -57,11 +63,15 @@ class EvaluatedNote:
 class SituationOutcomeStore(Protocol):
     def load_notes(self) -> list[Mapping[str, Any]]: ...
 
+    def load_pending_notes(self, *, limit: int | None = None) -> list[Mapping[str, Any]]: ...
+
     def apply_outcomes(self, rows: Sequence[Mapping[str, Any]]) -> None: ...
 
     def load_outcomes(self) -> list[Mapping[str, Any]]: ...
 
     def update_outcome_scores(self, scores: Mapping[int, float]) -> None: ...
+
+    def count(self) -> int: ...
 
 
 def flair_identity(
@@ -318,6 +328,107 @@ def _with_derived(row: Mapping[str, Any]) -> dict[str, Any]:
         elif payload.get("section_type") == "symbol":
             payload["family"] = family_for_symbol(str(payload.get("section_name") or "")) or ""
     return payload
+
+
+def _directional_n(item: Mapping[str, Any]) -> int:
+    return int(item.get("n_gagnant") or 0) + int(item.get("n_perdant") or 0)
+
+
+def _group_utility(item: Mapping[str, Any]) -> str:
+    score = item.get("mean_outcome_score")
+    if score is not None and float(score) > 0.0:
+        return "helps"
+    if score is not None and float(score) < 0.0:
+        return "hurts"
+    win_rate = item.get("win_rate")
+    if win_rate is not None and float(win_rate) > 0.5:
+        return "helps"
+    if win_rate is not None and float(win_rate) < 0.5:
+        return "hurts"
+    return "neutral"
+
+
+def _feedback_rows(
+    groups: Sequence[Mapping[str, Any]],
+    key: str,
+    *,
+    min_n: int,
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for item in groups:
+        name = str(item.get(key) or "")
+        directional = _directional_n(item)
+        if not name or directional < min_n:
+            continue
+        rows.append(
+            {
+                key: name,
+                "n": directional,
+                "win_rate": item.get("win_rate"),
+                "mean_outcome_score": item.get("mean_outcome_score"),
+                "utility": _group_utility(item),
+            }
+        )
+    return rows
+
+
+def situation_feedback_digest(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    venue: str | None = None,
+    min_n: int = MIN_FEEDBACK_N,
+) -> dict[str, Any]:
+    """Compact market-as-judge digest for the news/macro analyst. Never directives."""
+
+    scoped = [
+        row
+        for row in rows
+        if venue is None or str(row.get("venue") or "").strip().upper() == str(venue).strip().upper()
+    ]
+    summary = summarize_outcomes(scoped)
+    directions = _feedback_rows(summary["by_direction"], "direction", min_n=min_n)
+    section_types = _feedback_rows(summary["by_section_type"], "section_type", min_n=min_n)
+    families = _feedback_rows(summary["by_family"], "family", min_n=min_n)
+    directional = int(summary["n_gagnant"]) + int(summary["n_perdant"])
+    return {
+        "role": SITUATION_FEEDBACK_ROLE,
+        "status": "observed" if directions or section_types or families else "insufficient",
+        "min_n": min_n,
+        "n_evaluated": directional,
+        "n_non_evaluable": int(summary["n_non_evaluable"]),
+        "directions": directions,
+        "section_types": section_types,
+        "families": families,
+    }
+
+
+def refresh_situation_outcomes(
+    store: SituationOutcomeStore,
+    data_source: DataSource,
+    *,
+    limit: int = 128,
+    shrinkage_k: float = DEFAULT_SHRINKAGE_K,
+    now: datetime | None = None,
+    families: Mapping[str, Sequence[str]] | None = None,
+    lookback: str = DEFAULT_BAR_LOOKBACK,
+    interval: str = DEFAULT_BAR_INTERVAL,
+) -> dict[str, Any]:
+    """Score a bounded batch of still-unjudged situation notes. Fail-open caller."""
+
+    pending = store.load_pending_notes(limit=max(0, int(limit)))
+    evaluated = evaluate_notes(
+        pending,
+        data_source,
+        lookback=lookback,
+        interval=interval,
+        families=families,
+    )
+    persist_and_score(store, evaluated, shrinkage_k=shrinkage_k, now=now)
+    return {
+        "pending": len(pending),
+        "evaluated": len(evaluated),
+        "stored": store.count(),
+    }
 
 
 def summarize_outcomes(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:

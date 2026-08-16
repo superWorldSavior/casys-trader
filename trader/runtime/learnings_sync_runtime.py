@@ -28,6 +28,8 @@ DEFAULT_OUTCOME_BATCH_SIZE = 128
 DEFAULT_OUTCOME_INTERVAL_S = 3600.0
 DEFAULT_MEMRL_ALPHA = 0.1
 
+log = logging.getLogger(__name__)
+
 
 def _utc(value: datetime) -> datetime:
     if value.tzinfo is None:
@@ -272,6 +274,45 @@ def _refresh_universe_selections(
 
         return refresh_selection_outcomes(state_dir, _Bars(), limit=limit)
     except Exception as exc:  # noqa: BLE001 - universe FLAIR is advisory
+        log.warning("[learnings_sync] universe selections failed: %s", exc)
+        return {"pending": 0, "evaluated": 0, "stored": 0, "error": f"{type(exc).__name__}:{exc}"}
+
+
+def _refresh_situation_notes(
+    state_dir: Path,
+    *,
+    get_bars: Callable[..., list] | None,
+    limit: int,
+    now: datetime | None = None,
+) -> dict[str, object]:
+    """Score pending situation notes with the same market judge. Never raise."""
+
+    if os.getenv("TRADER_SITUATION_OUTCOMES_ENABLED", "1") == "0":
+        return {"pending": 0, "evaluated": 0, "stored": 0, "skipped": "disabled"}
+    if get_bars is None:
+        return {"pending": 0, "evaluated": 0, "stored": 0, "skipped": "data_source_unavailable"}
+    db_path = state_dir / "situation_memory.db"
+    if not db_path.is_file():
+        return {"pending": 0, "evaluated": 0, "stored": 0, "skipped": "store_missing"}
+    try:
+        from trader.application.analyst.situation_attribution import (
+            refresh_situation_outcomes,
+        )
+        from trader.infrastructure.state_db.situation_memory_store import (
+            SituationMemoryStore,
+        )
+
+        class _Bars:
+            def get_bars(self, symbol: str, lookback: str, interval: str):
+                return list(get_bars(symbol, lookback, interval))
+
+        store = SituationMemoryStore(db_path)
+        try:
+            return refresh_situation_outcomes(store, _Bars(), limit=limit, now=now)
+        finally:
+            store.close()
+    except Exception as exc:  # noqa: BLE001 - situation FLAIR is advisory
+        log.warning("[learnings_sync] situation notes failed: %s", exc)
         return {"pending": 0, "evaluated": 0, "stored": 0, "error": f"{type(exc).__name__}:{exc}"}
 
 
@@ -340,6 +381,12 @@ def run_learning_sync(
                 root,
                 get_bars=get_bars,
                 limit=outcome_batch_size,
+            )
+            outcomes["situation_notes"] = _refresh_situation_notes(
+                root,
+                get_bars=get_bars,
+                limit=outcome_batch_size,
+                now=now,
             )
         more_outcomes = bool(
             isinstance(outcomes, dict)

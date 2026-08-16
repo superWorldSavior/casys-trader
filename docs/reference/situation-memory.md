@@ -25,9 +25,9 @@ durée de vie **périssable**. La source est le fil d'actu, la macro et
 **l'analyste** — pas le trader, pas l'agent univers.
 
 Le brief courant est déjà projeté dans le prompt univers. Cette page documente
-le **stockage** des points et leur **scoring marché** (FLAIR). Le retrieval
-runtime n'est pas branché : aucun consommateur n'injecte ces notes dans un
-prompt (voir [État dormant](#état-dormant)).
+le **stockage** des points, leur **scoring marché** (FLAIR) et le digest
+comparatif renvoyé à l'analyste. Le retrieval FTS des notes historiques
+n'est pas branché (voir [État dormant](#état-dormant)).
 
 ## Stores
 
@@ -151,14 +151,19 @@ ultérieur de ce panier, qu'un trade ait été pris ou non.
   `update_outcome_scores()` écrit `outcome_score` **sans toucher**
   `q_value` (`situation_memory_store.py:308-317`).
 
-### Déclenchement — manuel, pas le daemon
+### Déclenchement — script manuel + sync background fail-open
 
 ```text
 uv run python scripts/situation_note_analytics.py evaluate
 ```
 
-Aucun tick runtime n'appelle `evaluate_notes` / `persist_and_score`. Le
-daemon ingère les briefs ; le scoring marché est un script opérateur.
+Le script opérateur reste disponible. Le `LearningSyncRunner` appelle
+aussi `refresh_situation_outcomes()` dans `run_learning_sync()`
+(même `get_bars` throttlé que l'univers, batch
+`DEFAULT_OUTCOME_BATCH_SIZE`). Les notes immatures
+(`evaluate_note()` → `None`) ne sont pas figées. Opt-out :
+`TRADER_SITUATION_OUTCOMES_ENABLED=0`. Un échec de cette étape est
+loggé en warning et n'interrompt jamais le cycle.
 
 ## État dormant — à lire noir sur blanc
 
@@ -171,10 +176,12 @@ daemon ingère les briefs ; le scoring marché est un script opérateur.
    (`situation_memory_store.py:51`). L'ingestion l'insère à `NULL`
    (`situation_memory_store.py:347`). `update_outcome_scores()` ne la
    met pas à jour. MemRL situation n'est pas implémenté.
-3. **Les verdicts ne remontent pas au prompt de l'analyste.**
-   `build_news_macro_prompt()` n'injecte ni `verdict` ni
-   `outcome_score`. Le scoring sert la mesure, pas encore la
-   production du brief suivant.
+3. **Les verdicts remontent en digest comparatif, pas en liste de notes.**
+   `situation_feedback_digest()` agrège directions / `section_type` /
+   familles (`n>=5`) et le runtime l'injecte dans le prompt news/macro
+   sous `situation_feedback` (`role: comparative_context_not_directives`).
+   Champ omis si l'échantillon est insuffisant ou si le store est
+   indisponible. Jamais de liste de symboles ni de directive.
 
 `embedding` est dans le même état que `q_value` : prévu, jamais rempli.
 

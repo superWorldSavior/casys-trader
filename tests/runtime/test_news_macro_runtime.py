@@ -5,6 +5,10 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from trader.application.analyst.situation_attribution import (
+    EvaluatedNote,
+    persist_and_score,
+)
 from trader.domain.situation import NewsMacroBrief
 from trader.domain.company import CompanyIntelligenceBrief
 from trader.domain.universe import candidate_scope_id
@@ -275,6 +279,148 @@ def test_tick_does_not_close_injected_situation_memory_store(tmp_path) -> None:
         situation_store=memory,
     )
     assert memory.count() == 1
+
+
+def _seed_scored_family_notes(store: SituationMemoryStore, *, n: int, venue: str = "EU") -> None:
+    for idx in range(n):
+        as_of = f"2026-01-{idx + 1:02d}T08:00:00+00:00"
+        brief = NewsMacroBrief.from_mapping(
+            {
+                "brief_id": f"{as_of}|{venue}",
+                "venue": venue,
+                "as_of": as_of,
+                "valid_until": f"2026-01-{idx + 2:02d}T08:00:00+00:00",
+                "families": {
+                    "eu_industrials": [
+                        {
+                            "point": f"Industrial demand signal {idx}",
+                            "sources": ["Reuters"],
+                            "source_refs": [f"u-{idx}"],
+                            "symbols": ["AIR.PA"],
+                            "direction": "bullish",
+                            "horizon": "court terme",
+                        }
+                    ]
+                },
+            }
+        )
+        assert brief is not None
+        store.ingest_brief(brief)
+    persist_and_score(
+        store,
+        [
+            EvaluatedNote(
+                id=int(row["id"]),
+                section_type="family",
+                section_name="eu_industrials",
+                direction="bullish",
+                as_of=str(row["as_of"]),
+                venue=venue,
+                horizon_sessions=5,
+                forward_return=0.02,
+                coverage_n=2,
+                verdict="gagnant",
+                symbol="eu_industrials",
+                family="eu_industrials",
+            )
+            for row in store.load_notes()
+        ],
+        now=datetime(2026, 1, 10, tzinfo=timezone.utc),
+    )
+
+
+def test_tick_injecte_situation_feedback_quand_observe(tmp_path) -> None:
+    state_dir = tmp_path / "state"
+    config_dir = tmp_path / "config"
+    state_dir.mkdir()
+    config_dir.mkdir()
+    _write_venue_state(state_dir)
+    _write_jsonl(
+        state_dir / "news_items" / "2026-07-09.jsonl",
+        [{"uuid": "u-eu", "symbol": "AIR.PA", "title": "Airbus demand warning"}],
+    )
+    memory = SituationMemoryStore(state_dir / "situation_memory.db")
+    _seed_scored_family_notes(memory, n=5)
+    analyst = FakeAnalyst()
+
+    news_macro_runtime.tick_news_macro_analysis(
+        config_dir=config_dir,
+        state_dir=state_dir,
+        loop_now=datetime(2026, 7, 9, 9, 0, tzinfo=timezone.utc),
+        analyst=analyst,
+        venues=("EU",),
+        situation_store=memory,
+    )
+
+    feedback = analyst.requests[0].situation_feedback
+    assert feedback["status"] == "observed"
+    assert feedback["role"] == "comparative_context_not_directives"
+    assert feedback["directions"][0]["direction"] == "bullish"
+
+
+def test_tick_omet_situation_feedback_insuffisant(tmp_path) -> None:
+    state_dir = tmp_path / "state"
+    config_dir = tmp_path / "config"
+    state_dir.mkdir()
+    config_dir.mkdir()
+    _write_venue_state(state_dir)
+    _write_jsonl(
+        state_dir / "news_items" / "2026-07-09.jsonl",
+        [{"uuid": "u-eu", "symbol": "AIR.PA", "title": "Airbus demand warning"}],
+    )
+    memory = SituationMemoryStore(state_dir / "situation_memory.db")
+    _seed_scored_family_notes(memory, n=1)
+    analyst = FakeAnalyst()
+
+    news_macro_runtime.tick_news_macro_analysis(
+        config_dir=config_dir,
+        state_dir=state_dir,
+        loop_now=datetime(2026, 7, 9, 9, 0, tzinfo=timezone.utc),
+        analyst=analyst,
+        venues=("EU",),
+        situation_store=memory,
+    )
+
+    assert not analyst.requests[0].situation_feedback
+
+
+def test_tick_reste_fail_open_si_le_digest_situation_casse(tmp_path, monkeypatch) -> None:
+    state_dir = tmp_path / "state"
+    config_dir = tmp_path / "config"
+    state_dir.mkdir()
+    config_dir.mkdir()
+    _write_venue_state(state_dir)
+    _write_jsonl(
+        state_dir / "news_items" / "2026-07-09.jsonl",
+        [{"uuid": "u-eu", "symbol": "AIR.PA", "title": "Airbus demand warning"}],
+    )
+    monkeypatch.setattr(
+        news_macro_runtime,
+        "_situation_feedback_for_venue",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("digest down")),
+    )
+    analyst = FakeAnalyst()
+
+    result = news_macro_runtime.tick_news_macro_analysis(
+        config_dir=config_dir,
+        state_dir=state_dir,
+        loop_now=datetime(2026, 7, 9, 9, 0, tzinfo=timezone.utc),
+        analyst=analyst,
+        venues=("EU",),
+    )
+
+    assert result["triggered"]
+    assert analyst.requests[0].situation_feedback in (None, {})
+
+
+def test_situation_feedback_helper_est_fail_open(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(
+        SituationMemoryStore,
+        "load_outcomes",
+        lambda self: (_ for _ in ()).throw(RuntimeError("locked")),
+    )
+    store = SituationMemoryStore(tmp_path / "situation_memory.db")
+    assert news_macro_runtime._situation_feedback_for_venue(tmp_path, "EU", store=store) == {}
 
 
 def test_tick_news_macro_analysis_waits_for_preopen_child_scope(tmp_path) -> None:
