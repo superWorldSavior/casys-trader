@@ -435,6 +435,26 @@ def test_compute_memory_health_snapshot_compact_sans_coverage(tmp_path: Path) ->
     assert snapshot["n_evaluated_recalls"] == 4
     assert snapshot["sync_status"] == "ok"
     assert snapshot["sync_as_of"] == "2026-08-16T10:00:00+00:00"
+    assert snapshot["situation_available"] is True
+    assert snapshot["situation_n"] == 3
+    assert snapshot["situation_n_evaluated"] == 2
+    assert snapshot["situation_error"] is None
+
+
+def test_compute_memory_health_expose_lerreur_situation(tmp_path: Path) -> None:
+    state_dir = _seed_state_dir(tmp_path)
+    (state_dir / "learnings_sync_status.json").write_text(
+        json.dumps(
+            {
+                "status": "ok",
+                "as_of": "2026-08-16T10:00:00+00:00",
+                "outcomes": {"situation_notes": {"error": "RuntimeError:judge down"}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    snapshot = compute_memory_health(state_dir, now=NOW)
+    assert snapshot["situation_error"] == "RuntimeError:judge down"
     rule_ids = {row["rule_id"] for row in snapshot["active_rules"]}
     assert rule_ids == {"rule-helps", "rule-hurts", "rule-unknown", "rule-neutral"}
     assert "n_authentic_llm" not in snapshot

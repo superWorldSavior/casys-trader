@@ -107,6 +107,7 @@ class MemoryHealthProjection:
     n_hurts: int
     sync_label: str
     sync_is_error: bool
+    situation_label: str
 
 
 def symbols_by_venue(state: dict) -> dict[str, list[str]]:
@@ -378,6 +379,14 @@ def project_memory(state: dict, *, now: datetime) -> MemoryHealthProjection:
         age_label = f.age_m(age_minutes)
         sync_label = f"{age_label} ago" + (f" · {status}" if status else "")
 
+    sit_n = snapshot.get("situation_n")
+    sit_eval = snapshot.get("situation_n_evaluated")
+    if sit_n is None:
+        situation_label = "—"
+    else:
+        situation_label = f"{int(sit_eval or 0)}/{int(sit_n)}"
+    situation_error = str(snapshot.get("situation_error") or "").strip()
+
     return MemoryHealthProjection(
         available=store_available,
         missing_label="memory store unavailable",
@@ -389,7 +398,8 @@ def project_memory(state: dict, *, now: datetime) -> MemoryHealthProjection:
         n_helps=n_helps,
         n_hurts=n_hurts,
         sync_label=sync_label,
-        sync_is_error=status == "error",
+        sync_is_error=status == "error" or bool(situation_error),
+        situation_label=situation_label,
     )
 
 

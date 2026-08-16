@@ -511,6 +511,10 @@ def test_memory_compact_strip_shows_lift_and_rules():
             "sync_available": True,
             "sync_status": "ok",
             "sync_as_of": "2026-08-16T10:00:00+00:00",
+            "situation_available": True,
+            "situation_n": 16,
+            "situation_n_evaluated": 4,
+            "situation_error": None,
         }
     }
     now = datetime(2026, 8, 16, 10, 14, tzinfo=UTC)
@@ -520,6 +524,7 @@ def test_memory_compact_strip_shows_lift_and_rules():
     assert "1 helps · 1 hurts" in rendered
     assert "14m ago" in rendered
     assert "ok" in rendered
+    assert "4/16" in rendered
 
 
 def test_project_memory_classifies_rules_with_citation_utility():
@@ -550,6 +555,31 @@ def test_project_memory_classifies_rules_with_citation_utility():
     assert projection.n_helps == 1
     assert projection.n_hurts == 0
     assert "14m ago" in projection.sync_label
+    assert projection.situation_label == "—"
+    assert projection.sync_is_error is False
+
+
+def test_project_memory_signale_une_erreur_situation():
+    from trader.interfaces.cockpit.projections.health import project_memory
+
+    projection = project_memory(
+        {
+            "memory_health": {
+                "store_available": True,
+                "n_notes": 5,
+                "sync_available": True,
+                "sync_status": "ok",
+                "sync_as_of": "2026-08-16T10:00:00+00:00",
+                "situation_available": True,
+                "situation_n": 10,
+                "situation_n_evaluated": 0,
+                "situation_error": "RuntimeError:judge down",
+            }
+        },
+        now=datetime(2026, 8, 16, 10, 14, tzinfo=UTC),
+    )
+    assert projection.situation_label == "0/10"
+    assert projection.sync_is_error is True
 
 
 def test_learnings_default_still_3():

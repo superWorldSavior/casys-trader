@@ -621,6 +621,27 @@ def compute_memory_report(
     )
 
 
+def _situation_job_error(status_path: Path) -> str | None:
+    if not Path(status_path).is_file():
+        return None
+    try:
+        payload = json.loads(Path(status_path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    outcomes = payload.get("outcomes")
+    if not isinstance(outcomes, dict):
+        return None
+    situation = outcomes.get("situation_notes")
+    if not isinstance(situation, dict):
+        return None
+    error = situation.get("error")
+    if error in (None, ""):
+        return None
+    return str(error)
+
+
 def compute_memory_health(
     state_dir: Path,
     *,
@@ -641,6 +662,7 @@ def compute_memory_health(
             state_dir / "learnings_sync_status.json",
             now=now,
         )
+        situation = compute_situation_stats(state_dir / "situation_memory.db")
         return {
             "store_available": store.available,
             "n_notes": store.n_notes if store.available else None,
@@ -652,6 +674,10 @@ def compute_memory_health(
             "sync_available": health.available,
             "sync_status": health.status,
             "sync_as_of": health.as_of,
+            "situation_available": situation.available,
+            "situation_n": situation.n_notes if situation.available else None,
+            "situation_n_evaluated": situation.n_evaluated if situation.available else None,
+            "situation_error": _situation_job_error(state_dir / "learnings_sync_status.json"),
         }
     except Exception:
         return {
@@ -665,4 +691,8 @@ def compute_memory_health(
             "sync_available": False,
             "sync_status": None,
             "sync_as_of": None,
+            "situation_available": False,
+            "situation_n": None,
+            "situation_n_evaluated": None,
+            "situation_error": None,
         }

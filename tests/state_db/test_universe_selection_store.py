@@ -170,6 +170,43 @@ def test_v6_avec_lignes_devient_v7_direction_et_unique_deux_bases(tmp_path: Path
     assert allocation["bench_n"] == 8
 
 
+def test_try_open_ne_purge_pas_quand_la_metadata_manque(tmp_path: Path) -> None:
+    from trader.infrastructure.state_db.connection import close_all_state_dbs, open_state_db
+    from trader.infrastructure.state_db.universe_selection_store import (
+        try_open_universe_selection_store,
+    )
+
+    close_all_state_dbs()
+    db = open_state_db(tmp_path / "casys.db")
+    db.apply_migrations(list(UNIVERSE_SELECTION_MIGRATIONS))
+    store = UniverseSelectionStore(db)
+    store.upsert_outcomes(
+        [
+            {
+                "mandate_id": "m-1",
+                "symbol": "AAPL",
+                "family": "us_tech",
+                "role": "core",
+                "allowed_sides": ["long"],
+                "as_of": "2026-01-01T08:00:00+00:00",
+                "venue": "US",
+                "horizon_sessions": 5,
+                "forward_return": 0.02,
+                "verdict": "gagnant",
+                "evaluated_at": "2026-01-10T00:00:00+00:00",
+                "verdict_basis": "direction",
+            }
+        ]
+    )
+    assert store.count() == 1
+    assert store.selection_semantics_version() is None
+
+    reopened = try_open_universe_selection_store(tmp_path)
+    assert reopened.count() == 1
+    assert reopened.selection_semantics_version() is None
+    close_all_state_dbs()
+
+
 def test_semantics_bump_purge_les_outcomes_et_reste_idempotent(tmp_path: Path) -> None:
     store = _store(tmp_path)
     store.upsert_outcomes(

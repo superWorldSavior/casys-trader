@@ -469,10 +469,11 @@ l'agent d'aval. Cinq couches, du plus instrumenté au plus fermé :
    équipondéré du **catalogue**, pas l'univers du jour ; zones hors
    périmètre. Atterrissage : colonnes d'outcome + `outcome_score` FLAIR
    dans `situation_memory.db` (`situation_notes`) ; `q_value` reste
-   `NULL`. **Scoring opérateur**
-   (`scripts/situation_note_analytics.py evaluate`), **pas** le daemon.
-   Référence : `docs/reference/situation-memory.md`. MemRL situation non
-   implémenté (pas de retrieval ⇒ pas de reward à apprendre).
+   `NULL`. **Scoring live via le sync daemon** (`refresh_situation_outcomes`,
+   fail-open) ; le script `situation_note_analytics.py evaluate` reste un
+   secours opérateur. Référence : `docs/reference/situation-memory.md`.
+   MemRL situation non implémenté (pas de retrieval ⇒ pas de reward à
+   apprendre).
 
 4. **Fermeture FLAIR/MemRL — `500cfdd`.** Trois réinjections prompt, plus
    le socle qui les rend stables :
@@ -506,15 +507,14 @@ l'agent d'aval. Cinq couches, du plus instrumenté au plus fermé :
    Ce n'est pas une boucle marché : c'est la persistance du gate de
    pertinence.
 
-**Ce qui reboucle vs ce qui reste mort.** Rebouclent aujourd'hui : outcomes
-trader → `recent_decisions`/`last_llm_review` ; MemRL des citations →
-`citation_utility` (seuil 10) ; FLAIR sélections → digest univers
-(min_n=5). Restent de l'instrumentation : fenêtre de séance ; scores
-situation ; `mandate_ref` racine. Le verdict D16 (banc) n'est pas encore
-le juge live — D16 est validé en principe. (MAJ 2026-08-16 soir : dépassé
-le jour même — D16 implémenté lots 1-6, scores situation branchés au sync
-(P3) et `mandate_ref` croisé en analytics ; voir D16 et les commits du
-programme observabilité.)
+**Ce qui reboucle vs ce qui reste mort.** Rebouclent : outcomes trader →
+`recent_decisions`/`last_llm_review` ; MemRL des citations →
+`citation_utility` (seuil 10) ; FLAIR sélections D16 → digest univers
+(min_n=5, agent only, deux bases) ; notes de situation →
+`situation_feedback` dans le prompt analyste (min_n=5). Restent de
+l'instrumentation : fenêtre de séance (`since_open_m` pas encore analysé
+pour D11) ; retrieval FTS situation (aucun agent n'appelle `search()`) ;
+MemRL situation (`q_value`).
 
 **Données.** 11 exécutions `armed_plan` réelles sans `since_open_m` avant
 4cab3ea. `mandate_ref` déjà présent dans 1 532 / 2 653 lignes, mais
@@ -523,12 +523,8 @@ lignes, 22 % directionnelles). 9fa7920 : 2 184 / 2 347 horizons parsés ;
 1 016 notes structurellement scorables, 79 matures au 15/08. Suites
 vertes au fil des commits (4 276 → 4 326).
 
-**Points ouverts.** Backlog P3 du programme d'observabilité du 2026-08-16
-(boucles encore mortes) : (1) verdicts situation → prompt analyste
-(`build_news_macro_prompt` n'injecte ni `verdict` ni `outcome_score`) ;
-(2) `since_open_m` persisté mais **non analysé** — la mesure D11 n'a pas
-commencé ; (3) `mandate_ref` racine **non croisé** dans l'attribution
-(le juge lit `universe_mandates/history.jsonl`, pas les décisions
-trader). Reste aussi : MemRL situation (`q_value` jamais scorée) ;
-`last_wake_reasons` volatile ; implémentation du juge D16 (allocation
-contre le banc).
+**Points ouverts.** `since_open_m` persisté mais **non analysé** (mesure
+D11 pas commencée). Retrieval FTS situation toujours inactif. MemRL
+situation (`q_value`) jamais scorée. `last_wake_reasons` reste volatile.
+Le digest `direction` univers ne parle qu'une fois `min_n=5` atteint par
+famille × venue.

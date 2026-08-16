@@ -105,7 +105,7 @@ def test_ancienne_ligne_sans_mandate_ref_reste_lisible() -> None:
         "decision": {"symbol": "SPY", "mandate_ref": {"mandate_id": "legacy"}},
     }
     assert "mandate_ref" not in old_row
-    assert decision_row_mandate_ref(old_row) is None
+    assert decision_row_mandate_ref(old_row) == {"mandate_id": "legacy"}
     assert old_row["schema_version"] == 1
     assert old_row["decision"]["mandate_ref"]["mandate_id"] == "legacy"
 

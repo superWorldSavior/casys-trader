@@ -288,6 +288,10 @@ def build_memory(state: dict, *, now: datetime) -> RenderableType:
         Text(projection.rules_label, style=CASYS_MUTED),
     )
     grid.add_row(
+        Text("sit.", style=CASYS_FAINT),
+        Text(projection.situation_label, style=CASYS_MUTED),
+    )
+    grid.add_row(
         Text("sync", style=CASYS_FAINT),
         Text(projection.sync_label, style=sync_style),
     )

@@ -108,6 +108,7 @@ def run_evaluate(
     )
 
     store = _open_store(state_dir)
+    store.ensure_selection_semantics()
     source = data_source if data_source is not None else build_script_data_source()
     from trader.infrastructure.state_db.candidate_scope_store import CandidateScopeStore
 

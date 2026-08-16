@@ -201,14 +201,16 @@ class UniverseSelectionStore:
 
 
 def try_open_universe_selection_store(state_dir: str | Path) -> UniverseSelectionStore:
-    """Ouvre le store sur casys.db, applique v6+v7, et aligne la sémantique."""
+    """Open casys.db and apply v6+v7. Does not bump or purge semantics.
+
+    Readers (digest, ``summary``) must not wipe derived outcomes. The
+    rejudge path calls ``ensure_selection_semantics`` itself.
+    """
     from trader.infrastructure.state_db.connection import open_state_db
 
     db = open_state_db(Path(state_dir) / "casys.db")
     db.apply_migrations(list(UNIVERSE_SELECTION_MIGRATIONS))
-    store = UniverseSelectionStore(db)
-    store.ensure_selection_semantics()
-    return store
+    return UniverseSelectionStore(db)
 
 
 __all__ = ["UniverseSelectionStore", "try_open_universe_selection_store"]
