@@ -511,7 +511,10 @@ trader → `recent_decisions`/`last_llm_review` ; MemRL des citations →
 `citation_utility` (seuil 10) ; FLAIR sélections → digest univers
 (min_n=5). Restent de l'instrumentation : fenêtre de séance ; scores
 situation ; `mandate_ref` racine. Le verdict D16 (banc) n'est pas encore
-le juge live — D16 est validé en principe.
+le juge live — D16 est validé en principe. (MAJ 2026-08-16 soir : dépassé
+le jour même — D16 implémenté lots 1-6, scores situation branchés au sync
+(P3) et `mandate_ref` croisé en analytics ; voir D16 et les commits du
+programme observabilité.)
 
 **Données.** 11 exécutions `armed_plan` réelles sans `since_open_m` avant
 4cab3ea. `mandate_ref` déjà présent dans 1 532 / 2 653 lignes, mais
