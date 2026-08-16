@@ -210,6 +210,8 @@ def test_selection_feedback_digest_reste_comparatif_et_filtre_la_venue() -> None
             "forward_return": 0.02,
             "flair_score": 0.08,
             "horizon_sessions": 5,
+            "verdict_basis": "direction",
+            "selector": "agent",
         }
         for _ in range(MIN_FEEDBACK_N)
     ] + [
@@ -221,6 +223,8 @@ def test_selection_feedback_digest_reste_comparatif_et_filtre_la_venue() -> None
             "forward_return": -0.03,
             "flair_score": -0.08,
             "horizon_sessions": 5,
+            "verdict_basis": "direction",
+            "selector": "agent",
         }
         for _ in range(MIN_FEEDBACK_N)
     ]
@@ -230,13 +234,16 @@ def test_selection_feedback_digest_reste_comparatif_et_filtre_la_venue() -> None
     assert digest["families"] == [
         {
             "family": "eu_tech",
-            "n": MIN_FEEDBACK_N,
-            "win_rate": 1.0,
-            "mean_flair_score": 0.08,
-            "utility": "helps",
+            "direction": {
+                "n": MIN_FEEDBACK_N,
+                "win_rate": 1.0,
+                "mean_flair_score": 0.08,
+                "utility": "helps",
+            },
         }
     ]
     assert digest["roles"][0]["role"] == "core_candidate"
+    assert "allocation" not in digest["families"][0]
     assert "us_auto" not in {item["family"] for item in digest["families"]}
 
 
@@ -250,6 +257,8 @@ def test_selection_feedback_digest_insuffisant_sous_le_plancher() -> None:
                 "verdict": "gagnant",
                 "flair_score": 0.08,
                 "horizon_sessions": 5,
+                "verdict_basis": "direction",
+                "selector": "agent",
             }
         ],
         venue="EU",
@@ -257,6 +266,105 @@ def test_selection_feedback_digest_insuffisant_sous_le_plancher() -> None:
     assert digest["status"] == "insufficient"
     assert digest["families"] == []
     assert digest["n_evaluated"] == 1
+
+
+def test_selection_feedback_digest_deux_blocs_par_base() -> None:
+    rows = [
+        *(
+            {
+                "family": "energie",
+                "venue": "EU",
+                "role": "core_candidate",
+                "verdict": "gagnant",
+                "flair_score": 0.04,
+                "horizon_sessions": 5,
+                "verdict_basis": "allocation",
+                "selector": "agent",
+            }
+            for _ in range(MIN_FEEDBACK_N)
+        ),
+        *(
+            {
+                "family": "energie",
+                "venue": "EU",
+                "role": "core_candidate",
+                "verdict": "perdant",
+                "flair_score": -0.02,
+                "horizon_sessions": 5,
+                "verdict_basis": "direction",
+                "selector": "agent",
+            }
+            for _ in range(MIN_FEEDBACK_N)
+        ),
+    ]
+    digest = selection_feedback_digest(rows, venue="EU")
+    assert digest["status"] == "observed"
+    assert digest["families"] == [
+        {
+            "family": "energie",
+            "allocation": {
+                "n": MIN_FEEDBACK_N,
+                "beat_bench_rate": 1.0,
+                "mean_flair_score": 0.04,
+                "utility": "helps",
+            },
+            "direction": {
+                "n": MIN_FEEDBACK_N,
+                "win_rate": 0.0,
+                "mean_flair_score": -0.02,
+                "utility": "hurts",
+            },
+        }
+    ]
+
+
+def test_selection_feedback_digest_ignore_le_baseline_et_min_n_par_base() -> None:
+    rows = [
+        *(
+            {
+                "family": "energie",
+                "venue": "EU",
+                "role": "core_candidate",
+                "verdict": "gagnant",
+                "flair_score": 0.04,
+                "horizon_sessions": 5,
+                "verdict_basis": "allocation",
+                "selector": "agent",
+            }
+            for _ in range(MIN_FEEDBACK_N)
+        ),
+        *(
+            {
+                "family": "energie",
+                "venue": "EU",
+                "role": "core_candidate",
+                "verdict": "gagnant",
+                "flair_score": 0.04,
+                "horizon_sessions": 5,
+                "verdict_basis": "allocation",
+                "selector": "baseline_fallback",
+            }
+            for _ in range(MIN_FEEDBACK_N)
+        ),
+        *(
+            {
+                "family": "energie",
+                "venue": "EU",
+                "role": "core_candidate",
+                "verdict": "perdant",
+                "flair_score": -0.02,
+                "horizon_sessions": 5,
+                "verdict_basis": "direction",
+                "selector": "agent",
+            }
+            for _ in range(MIN_FEEDBACK_N - 1)
+        ),
+    ]
+    digest = selection_feedback_digest(rows, venue="EU")
+    assert digest["status"] == "observed"
+    assert digest["families"][0]["allocation"]["n"] == MIN_FEEDBACK_N
+    assert "direction" not in digest["families"][0]
+    assert digest["n_evaluated"] == MIN_FEEDBACK_N + (MIN_FEEDBACK_N - 1)
 
 
 def _mandate(

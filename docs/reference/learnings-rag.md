@@ -28,6 +28,10 @@ outcome_score   = lift / (1 + shrinkage_k)                       # n=1 en V1 →
 ```
 Shrinkage bayésien : à faible volume, l'`outcome_score` est tiré vers 0 (prudence).
 
+Le même moteur FLAIR note les sélections d'univers, **par base** (`allocation`
+contre le banc, `direction` signée) : voir
+[D16](../superpowers/specs/2026-08-16-universe-selection-bench-verdict-design.md).
+
 ### Maintenance automatique
 
 `LearningSyncRunner` tourne en arrière-plan après les cycles, en single-flight :
@@ -155,4 +159,5 @@ source de vérité canonique (ce sont les JSONL). Cf. Architecture §11.
 ## Voir aussi
 - [How-to maintenance](../how-to/maintain-learnings.md) ·
   [Domain tools](agent-tools.md) (`recall_learnings`) ·
-  [reporting](reporting.md) (perf).
+  [reporting](reporting.md) (perf) ·
+  [D16 sélections vs banc](../superpowers/specs/2026-08-16-universe-selection-bench-verdict-design.md).

@@ -59,6 +59,72 @@ def test_commande_analytics_imprime_json(tmp_path: Path, capsys) -> None:
     assert payload["decoit"]["families"] == []
 
 
+def test_commande_bench_compare_agent_et_baseline(tmp_path: Path, capsys) -> None:
+    store = try_open_universe_selection_store(tmp_path)
+    persist_and_score(
+        store,
+        [
+            EvaluatedSelection(
+                mandate_id="m-agent",
+                symbol="AIR.PA",
+                role="core_candidate",
+                allowed_sides=("long",),
+                as_of="2026-01-01T08:00:00+00:00",
+                venue="EU",
+                family="defense_aero_eu",
+                horizon_sessions=5,
+                forward_return=0.02,
+                verdict="gagnant",
+                verdict_basis="allocation",
+                selector="agent",
+            ),
+            EvaluatedSelection(
+                mandate_id="m-agent",
+                symbol="AIR.PA",
+                role="core_candidate",
+                allowed_sides=("long",),
+                as_of="2026-01-01T08:00:00+00:00",
+                venue="EU",
+                family="defense_aero_eu",
+                horizon_sessions=5,
+                forward_return=0.02,
+                verdict="perdant",
+                verdict_basis="direction",
+                selector="agent",
+            ),
+            EvaluatedSelection(
+                mandate_id="m-fb",
+                symbol="MC.PA",
+                role="fallback_selection",
+                allowed_sides=(),
+                as_of="2026-01-01T08:00:00+00:00",
+                venue="EU",
+                family="luxury",
+                horizon_sessions=5,
+                forward_return=0.01,
+                verdict="perdant",
+                verdict_basis="allocation",
+                selector="baseline_fallback",
+            ),
+        ],
+        now=datetime(2026, 1, 10, tzinfo=timezone.utc),
+    )
+
+    assert main(["bench", "--state-dir", str(tmp_path)]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["horizon_sessions"] == 5
+    agent_alloc = payload["selectors"]["agent"]["allocation"]
+    assert agent_alloc["n"] == 1
+    assert agent_alloc["beat_bench_rate"] == 1.0
+    assert agent_alloc["mean_flair_score"] is not None
+    assert payload["selectors"]["agent"]["direction"]["n"] == 1
+    assert payload["selectors"]["agent"]["direction"]["win_rate"] == 0.0
+    assert payload["selectors"]["baseline_fallback"]["allocation"]["n"] == 1
+    assert payload["selectors"]["baseline_fallback"]["allocation"]["beat_bench_rate"] == 0.0
+    assert payload["selectors"]["baseline_fallback"]["direction"]["n"] == 0
+    assert payload["selectors"]["baseline_fallback"]["direction"]["win_rate"] is None
+
+
 def test_commande_evaluate_juge_via_datasource(tmp_path: Path, capsys, monkeypatch) -> None:
     history = tmp_path / "universe_mandates" / "history.jsonl"
     history.parent.mkdir(parents=True)

@@ -7,7 +7,7 @@
 > `trader/runtime/universe_intelligence_runtime`.
 > **Config** : `pool.yaml`, `radar.yaml`, `symbol_news_aliases.yaml`,
 > `universe.yaml`.
-> **Décisions** : D9, D10, D13, D15.
+> **Décisions** : D9, D10, D13, D15, D16.
 
 L'univers live est composé en plusieurs étages. Le radar et le scout construisent
 un **pool candidat** ; l'analyste fournit un **brief** ; l'agent univers compose
@@ -291,6 +291,11 @@ Le pipeline conserve six surfaces complémentaires :
   relue au pré-open ;
 - `state/rotation_ledger.jsonl` : activation, sélection finale, sticky,
   `fallback_used` et `fallback_reason`.
+
+Les sélections activées (`active` / `fallback`) sont jugées a posteriori contre
+le banc du scope (verdict `allocation` + `direction` optionnel) ; le digest
+agent-only revient dans le prompt univers. Design :
+[D16 — verdict contre le banc](../superpowers/specs/2026-08-16-universe-selection-bench-verdict-design.md).
 
 Le contexte cross-venue ajoute
 `state/global_family_boards/YYYY-MM-DD.jsonl` et sa projection `current.json`.

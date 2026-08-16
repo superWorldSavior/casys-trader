@@ -42,6 +42,7 @@ __all__ = [
     "SelectionOutcomeStore",
     "SelectionOutcomeStoreOpener",
     "UniverseSelection",
+    "compare_selection_selectors",
     "evaluate_selection",
     "evaluate_selections",
     "iter_mandate_payloads",
@@ -642,28 +643,73 @@ def _group_utility(item: Mapping[str, Any]) -> str:
     return "neutral"
 
 
-def _feedback_rows(
-    groups: Sequence[Mapping[str, Any]],
+def _is_agent_selector(row: Mapping[str, Any]) -> bool:
+    selector = str(row.get("selector") or "").strip()
+    return selector in {"", "agent"}
+
+
+def _verdict_basis_of(row: Mapping[str, Any]) -> str:
+    basis = str(row.get("verdict_basis") or "").strip()
+    return basis or "direction"
+
+
+def _basis_block(
+    items: Sequence[Mapping[str, Any]],
+    *,
+    rate_key: str,
+    min_n: int,
+) -> dict[str, Any] | None:
+    n_gagnant = sum(1 for row in items if row.get("verdict") == "gagnant")
+    n_perdant = sum(1 for row in items if row.get("verdict") == "perdant")
+    decisive = n_gagnant + n_perdant
+    if decisive < min_n:
+        return None
+    rate = n_gagnant / decisive
+    scores = [float(row["flair_score"]) for row in items if row.get("flair_score") is not None]
+    mean_score = _mean(scores)
+    return {
+        "n": decisive,
+        rate_key: rate,
+        "mean_flair_score": mean_score,
+        "utility": _group_utility({"mean_flair_score": mean_score, "win_rate": rate}),
+    }
+
+
+def _two_basis_feedback(
+    rows: Sequence[Mapping[str, Any]],
     key: str,
     *,
     min_n: int,
 ) -> list[dict[str, Any]]:
-    rows: list[dict[str, Any]] = []
-    for item in groups:
-        name = str(item.get(key) or "")
-        directional = _directional_n(item)
-        if not name or directional < min_n:
+    groups: dict[str, dict[str, list[Mapping[str, Any]]]] = defaultdict(
+        lambda: {"allocation": [], "direction": []}
+    )
+    for row in rows:
+        name = str(row.get(key) or "")
+        basis = _verdict_basis_of(row)
+        if not name or basis not in {"allocation", "direction"}:
             continue
-        rows.append(
-            {
-                key: name,
-                "n": directional,
-                "win_rate": item.get("win_rate"),
-                "mean_flair_score": item.get("mean_flair_score"),
-                "utility": _group_utility(item),
-            }
+        groups[name][basis].append(row)
+    feedback: list[dict[str, Any]] = []
+    for name, by_basis in groups.items():
+        entry: dict[str, Any] = {key: name}
+        allocation = _basis_block(by_basis["allocation"], rate_key="beat_bench_rate", min_n=min_n)
+        direction = _basis_block(by_basis["direction"], rate_key="win_rate", min_n=min_n)
+        if allocation is not None:
+            entry["allocation"] = allocation
+        if direction is not None:
+            entry["direction"] = direction
+        if "allocation" in entry or "direction" in entry:
+            feedback.append(entry)
+    feedback.sort(
+        key=lambda item: (
+            item.get("allocation", {}).get("mean_flair_score") is None
+            and item.get("direction", {}).get("mean_flair_score") is None,
+            -(item.get("allocation", {}).get("mean_flair_score") or item.get("direction", {}).get("mean_flair_score") or 0.0),
+            str(item[key]),
         )
-    return rows
+    )
+    return feedback
 
 
 def selection_feedback_digest(
@@ -677,21 +723,64 @@ def selection_feedback_digest(
     scoped = [
         row
         for row in rows
-        if venue is None or str(row.get("venue") or "").strip().upper() == str(venue).strip().upper()
+        if _is_agent_selector(row)
+        and (
+            venue is None
+            or str(row.get("venue") or "").strip().upper() == str(venue).strip().upper()
+        )
     ]
-    summary = summarize_outcomes(scoped)
-    families = _feedback_rows(summary["by_family"], "family", min_n=min_n)
-    roles = _feedback_rows(summary["by_role"], "role", min_n=min_n)
-    directional = int(summary["n_gagnant"]) + int(summary["n_perdant"])
+    families = _two_basis_feedback(scoped, "family", min_n=min_n)
+    roles = _two_basis_feedback(scoped, "role", min_n=min_n)
+    n_evaluated = sum(1 for row in scoped if row.get("verdict") in {"gagnant", "perdant"})
+    n_non_evaluable = sum(1 for row in scoped if row.get("verdict") == "non_evaluable")
+    horizons = sorted(
+        {int(row["horizon_sessions"]) for row in scoped if row.get("horizon_sessions") is not None}
+    )
     return {
         "role": SELECTION_FEEDBACK_ROLE,
         "status": "observed" if families or roles else "insufficient",
-        "horizon_sessions": summary.get("horizon_sessions"),
+        "horizon_sessions": horizons[0] if len(horizons) == 1 else None,
         "min_n": min_n,
-        "n_evaluated": directional,
-        "n_non_evaluable": int(summary["n_non_evaluable"]),
+        "n_evaluated": n_evaluated,
+        "n_non_evaluable": n_non_evaluable,
         "families": families,
         "roles": roles,
+    }
+
+
+def compare_selection_selectors(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """Agent vs deterministic baseline, split by verdict basis. Analytics only."""
+
+    buckets: dict[str, dict[str, list[Mapping[str, Any]]]] = {
+        "agent": {"allocation": [], "direction": []},
+        "baseline_fallback": {"allocation": [], "direction": []},
+    }
+    for row in rows:
+        selector = str(row.get("selector") or "").strip() or "agent"
+        if selector not in buckets:
+            continue
+        basis = _verdict_basis_of(row)
+        if basis not in {"allocation", "direction"}:
+            continue
+        buckets[selector][basis].append(row)
+
+    def _rates(items: Sequence[Mapping[str, Any]], *, rate_key: str) -> dict[str, Any]:
+        n_gagnant = sum(1 for row in items if row.get("verdict") == "gagnant")
+        n_perdant = sum(1 for row in items if row.get("verdict") == "perdant")
+        decisive = n_gagnant + n_perdant
+        scores = [float(row["flair_score"]) for row in items if row.get("flair_score") is not None]
+        return {
+            "n": decisive,
+            rate_key: (n_gagnant / decisive) if decisive else None,
+            "mean_flair_score": _mean(scores),
+        }
+
+    return {
+        selector: {
+            "allocation": _rates(by_basis["allocation"], rate_key="beat_bench_rate"),
+            "direction": _rates(by_basis["direction"], rate_key="win_rate"),
+        }
+        for selector, by_basis in buckets.items()
     }
 
 

@@ -349,7 +349,7 @@ matériel et visible dans le cockpit avec couverture et fraîcheur.
 
 ---
 
-## D16 — Sélections univers jugées contre le banc : verdict à deux bases  ✅ validé (principe, 2026-08-16)
+## D16 — Sélections univers jugées contre le banc : verdict à deux bases  🛠 implémenté (2026-08-16)
 
 **Contexte.** La boucle d'attribution des sélections d'univers (attribution
 `9fbc9ae`, digest → prompt `500cfdd`) ne juge que la promesse directionnelle
@@ -408,6 +408,16 @@ non l'agent à des `allowed_sides` directionnels quand sa vue est tranchée
 
 **Design de référence.**
 `docs/superpowers/specs/2026-08-16-universe-selection-bench-verdict-design.md`.
+
+**État d'implémentation (2026-08-16).** Lots 1-6 livrés : juge allocation contre
+le banc (médiane, bande d'égalité, sticky exclus), unité de jugement
+`active|fallback` (prepared exclu, rafales dédupliquées), lecture de scope par
+id, store v7 (`bench_v2`) à clé unique élargie, refresh à deux bases avec
+pending d'horizon immature, digest deux blocs (allocation / direction,
+`selector=agent` seulement) et commande analytics `bench` (agent vs baseline).
+Le premier rejugement complet a lieu au prochain sync daemon (purge `bench_v2`
+puis replay). Le digest allocation n'entre dans le prompt univers qu'une fois
+`min_n=5` atteint sur une base.
 
 ---
 

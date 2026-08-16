@@ -6,10 +6,14 @@ Lit ``universe_selection_outcomes`` dans ``casys.db`` et répond en JSON (AX #3)
 
 Usage :
     uv run python scripts/universe_selection_analytics.py
+    uv run python scripts/universe_selection_analytics.py bench
     uv run python scripts/universe_selection_analytics.py evaluate
     uv run python scripts/universe_selection_analytics.py trader
     uv run python scripts/universe_selection_analytics.py trader --json
     uv run python scripts/universe_selection_analytics.py --state-dir PATH --horizon 5
+
+``bench`` compare ``selector=agent`` et ``selector=baseline_fallback`` par
+base (beat_bench_rate allocation, win_rate directionnel, n).
 
 ``evaluate`` juge les mandats de ``state/universe_mandates/history.jsonl`` via
 le port ``DataSource`` (YFinance par défaut), upsert les verdicts, recalcule
@@ -61,13 +65,31 @@ def _open_store(state_dir: Path):
     return try_open_universe_selection_store(state_dir)
 
 
-def run_summary(state_dir: Path, *, horizon: int | None) -> dict[str, Any]:
-    from trader.application.universe.selection_attribution import summarize_outcomes
-
+def _horizon_rows(state_dir: Path, *, horizon: int | None) -> list[dict[str, Any]]:
     rows = _open_store(state_dir).load_outcomes()
     if horizon is not None:
         rows = [row for row in rows if int(row.get("horizon_sessions") or 0) == horizon]
-    return summarize_outcomes(rows)
+    return rows
+
+
+def run_summary(state_dir: Path, *, horizon: int | None) -> dict[str, Any]:
+    from trader.application.universe.selection_attribution import summarize_outcomes
+
+    return summarize_outcomes(_horizon_rows(state_dir, horizon=horizon))
+
+
+def run_bench(state_dir: Path, *, horizon: int | None) -> dict[str, Any]:
+    from trader.application.universe.selection_attribution import compare_selection_selectors
+
+    rows = _horizon_rows(state_dir, horizon=horizon)
+    horizons = sorted(
+        {int(row["horizon_sessions"]) for row in rows if row.get("horizon_sessions") is not None}
+    )
+    return {
+        "horizon_sessions": horizons[0] if len(horizons) == 1 else None,
+        "horizons": horizons,
+        "selectors": compare_selection_selectors(rows),
+    }
 
 
 def run_evaluate(
@@ -341,9 +363,9 @@ def main(argv: list[str] | None = None) -> int:
         "command",
         nargs="?",
         default="summary",
-        choices=("summary", "evaluate", "trader"),
-        help="summary (défaut) lit le store ; evaluate juge puis résume ; "
-        "trader joint mandate_ref et round-trips.",
+        choices=("summary", "bench", "evaluate", "trader"),
+        help="summary (défaut) lit le store ; bench compare agent vs baseline ; "
+        "evaluate juge puis résume ; trader joint mandate_ref et round-trips.",
     )
     parser.add_argument(
         "--state-dir",
@@ -375,6 +397,8 @@ def main(argv: list[str] | None = None) -> int:
             interval=args.interval,
             shrinkage_k=args.shrinkage_k,
         )
+    elif args.command == "bench":
+        payload = run_bench(state_dir, horizon=args.horizon)
     elif args.command == "trader":
         payload = run_trader(state_dir)
         if not args.json:
