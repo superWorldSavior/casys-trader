@@ -1,6 +1,7 @@
 # Référence — Domain tools (la tournée d'outils du LLM)
 
 > **Type** : Reference (Diátaxis).
+> **État vérifié** : 2026-08-16.
 > **Code** : `trader/agent/tools/` · **Registry** : `agent/tools/registry.TOOL_REGISTRY`
 > **Activation** : `CASYS_AGENT_TOOLS_ENABLED=1` · **Historique du design** : voir `git log` (specs 2026-06-29 / 2026-07-03 supprimées une fois livrées, cette page fait foi)
 
@@ -146,9 +147,9 @@ s'il reste sous le prix courant ; symétriquement, un short doit garder le stop
 au-dessus du prix courant. En mode feedback pré-exécution, l'agent peut recevoir
 un `tool_results` `{tool:"strategy_exit", ok:false, error:<reason>}` de validation pré-exécution ;
 il doit alors corriger dans la même réponse (stop en prix absolu ou retrait de la
-contrainte non résolvable). Cette boucle ne concerne que `strategy_exit`, est
-bornée à 2 corrections, puis le runtime laisse la décision finale suivre le
-chemin normal. L'agent n'a pas besoin de redemander le plan : il est déjà dans
+contrainte non résolvable). Cette boucle concerne `strategy_exit` **et**
+`propose_indicator_watch` (`max_action_corrections=2`, quota partagé), puis le
+runtime laisse la décision finale suivre le chemin normal. L'agent n'a pas besoin de redemander le plan : il est déjà dans
 son contexte (`active_watches`, `active_plans_summary` ou `get_active_plans` si
 le détail global a été demandé).
 
@@ -203,8 +204,10 @@ déjà un OCO implicite : une fermeture totale rend caducs les autres ordres du 
 → **UNE tournée bornée** : chaque call rend TOUJOURS un `(result, trace)`, même
 rejeté ou hors budget (le LLM voit ce qui s'est passé).
 
-- **Bornes** : `ToolRoundLimits(max_total_calls=24, max_calls_per_symbol=3)`. Le cap
-  de la liste d'entrée est une constante module `_MAX_RAW_CALLS=32` (surplus tronqué
+- **Bornes** : `ToolRoundLimits(max_total_calls=24, max_calls_per_symbol=3)` par
+  défaut (batch). En queue grain-1, `ToolRoundServices` relève
+  `max_calls_per_symbol` à 8 (`trader/application/decide/one.py`). Le cap de la
+  liste d'entrée est une constante module `_MAX_RAW_CALLS=32` (surplus tronqué
   avec une trace sentinelle) — distinct des bornes ci-dessus.
 - **Validation** : `validate_tool_call` (nom autorisé + args) avant exécution ;
   rejet = trace `rejected:<reason>`.
@@ -217,8 +220,9 @@ rejeté ou hors budget (le LLM voit ce qui s'est passé).
   (`allow_tool_calls = agent_tools_enabled AND allow_context_request`), pas après
   un `REQUEST_CONTEXT` ni au tour final.
 - En queue grain-1, `resolve_symbol_decision` peut enchaîner des rounds dans une
-  session acpx persistante jusqu'à décision finale ; le backstop est technique,
-  pas un budget fonctionnel.
+  session acpx persistante jusqu'à décision finale ; le backstop technique est
+  `SESSION_ROUND_BACKSTOP=20` (`trader/application/decide/one.py`), pas un
+  budget fonctionnel.
 - En mode `use_symbol_calls_contract` (le langage `calls:[...]`), le contrat du
   **1er tour laisse le choix** à l'agent : émettre `{"tool_calls":[...]}` (pull
   read-only) OU rendre directement `{"decisions":[...]}` ; le tour final impose

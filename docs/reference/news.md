@@ -300,8 +300,11 @@ permettent ensuite de relier sélection, usage et outcome.
 - Le RAG `learnings.db` est une pile différente. Le trader l'interroge via
   `recall_learnings` lorsqu'une analogie historique est utile; aucune expérience
   n'est poussée automatiquement dans le cockpit.
-- **FLAIR** (pas FLARE) pondère les learnings selon leurs outcomes. Dans la
-  mémoire de situation, `outcome_score` reste actuellement neutre.
+- **FLAIR** (pas FLARE) pondère les learnings selon leurs outcomes. Sur la
+  mémoire de situation, le scoring marché est **actif** : `outcome_score`,
+  `verdict` et `forward_return` sont écrits dans `situation_notes` par le
+  script manuel `scripts/situation_note_analytics.py evaluate` (pas le
+  daemon). Voir [mémoire de situation](situation-memory.md).
 - MemRL est actif sur cette pile **learnings** : les recalls sont reliés aux
   outcomes différés et `q_value` contribue au ranking avec shrinkage.
 - MemRL n'est pas encore actif sur `situation_memory.db` ni chez l'agent Univers.
@@ -318,10 +321,12 @@ il ne choisit aucun symbole.
 
 FLAIR et MemRL ne remplacent pas le retrieval :
 
-- retrieval/FTS répond à « quelles situations passées sont pertinentes ? » ;
-- dans la future mémoire de situation, FLAIR répondra à « lesquelles ont été
-  confirmées par les outcomes ? » ;
-- pour la future mémoire de situation, MemRL répondra à « quels rappels ont
+- retrieval/FTS répond à « quelles situations passées sont pertinentes ? » —
+  `SituationMemoryStore.search()` existe, mais aucun agent runtime ne l'appelle ;
+- FLAIR situation est actif : il répond à « lesquelles ont été confirmées par
+  le marché ? » via le scoring manuel (voir
+  [mémoire de situation](situation-memory.md)) ;
+- MemRL situation n'est pas actif : il répondrait à « quels rappels ont
   réellement aidé les décisions de l'agent univers ? » une fois ses injections
   et récompenses tracées. Ce chemin est distinct du MemRL learnings déjà actif.
 
@@ -335,13 +340,14 @@ Ordre de promotion restant :
 2. relier ensuite ces références aux décisions et outcomes dans les read models ;
 3. mesurer les besoins de rappel et la qualité FTS ;
 4. seulement ensuite brancher la recherche sur l'agent univers ;
-5. activer FLAIR situation, puis MemRL, quand il existe assez d'outcomes et de
-   traces de retrieval pour les évaluer.
+5. activer MemRL situation quand il existe assez de traces de retrieval pour
+   l'évaluer (FLAIR situation est déjà livré).
 
 ## Voir aussi
 
 - [Gestion d'univers](universe-rotation.md)
 - [Architecture de connaissance](agent-knowledge-architecture.md)
+- [Mémoire de situation](situation-memory.md)
 - [Learnings & RAG](learnings-rag.md)
 - [Données macro](macro.md)
 - [How-to : rafraîchir et diagnostiquer les rapports](../how-to/refresh-and-diagnose-reports.md)
