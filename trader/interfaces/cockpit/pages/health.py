@@ -3,7 +3,7 @@
 Grille 3 colonnes égales (1fr · 1fr · 1fr) :
   Col 1 : DATA FRESHNESS · FX RATES
   Col 2 : SOURCES · LLM
-  Col 3 : LEARNINGS · UNIVERSE
+  Col 3 : LEARNINGS · MEMORY · UNIVERSE
 
 Builders purs : (state, *, now: datetime) → RenderableType.
 Le widget HealthPage appelle tous les builders dans update_state().
@@ -31,6 +31,7 @@ from trader.interfaces.cockpit.projections.health import (
     project_fx_rates,
     project_learnings,
     project_llm_health,
+    project_memory,
     project_sources,
     project_universe_health,
     symbols_by_venue as _symbols_by_venue,  # noqa: F401 - historical page export
@@ -254,13 +255,52 @@ def build_universe(state: dict, *, now: datetime) -> RenderableType:
     return grid
 
 
+def build_memory(state: dict, *, now: datetime) -> RenderableType:
+    """MEMORY : n notes · lift de recall · règles helps/hurts · âge du sync."""
+    projection = project_memory(state, now=now)
+    if not projection.available:
+        return Text(projection.missing_label, style=f"italic {CASYS_FAINT}")
+
+    if projection.lift_value is None:
+        lift_style = CASYS_MUTED
+    elif projection.lift_value > 0:
+        lift_style = CASYS_SUCCESS
+    elif projection.lift_value < 0:
+        lift_style = CASYS_WARNING
+    else:
+        lift_style = CASYS_MUTED
+    sync_style = CASYS_WARNING if projection.sync_is_error else CASYS_MUTED
+
+    grid = Table.grid(padding=(0, 1))
+    grid.add_column(no_wrap=True, width=11)
+    grid.add_column(no_wrap=True)
+
+    grid.add_row(
+        Text("notes", style=CASYS_FAINT),
+        Text(projection.notes_label, style=CASYS_MUTED),
+    )
+    grid.add_row(
+        Text("lift", style=CASYS_FAINT),
+        Text(f"{projection.lift_label}   {projection.useful_label}", style=lift_style),
+    )
+    grid.add_row(
+        Text("rules", style=CASYS_FAINT),
+        Text(projection.rules_label, style=CASYS_MUTED),
+    )
+    grid.add_row(
+        Text("sync", style=CASYS_FAINT),
+        Text(projection.sync_label, style=sync_style),
+    )
+    return grid
+
+
 # ---------------------------------------------------------------------------
 # Widget
 # ---------------------------------------------------------------------------
 
 
 class HealthPage(ResizeRefresh, Static):
-    """Page 5 — Health : fraîcheur des données, sources, LLM, learnings, univers."""
+    """Page 5 — Health : fraîcheur des données, sources, LLM, learnings, mémoire, univers."""
 
     DEFAULT_CSS = (
         PANEL_CSS
@@ -309,11 +349,14 @@ class HealthPage(ResizeRefresh, Static):
             with VerticalScroll(id="model-panel", classes="casys-panel") as p:
                 p.border_title = "MODEL"
                 yield Static(id="model-body")
-        # Colonne 3 — LEARNINGS · UNIVERSE
+        # Colonne 3 — LEARNINGS · MEMORY · UNIVERSE
         with Vertical(classes="health-col"):
             with VerticalScroll(id="learnings-h-panel", classes="casys-panel") as p:
                 p.border_title = "LEARNINGS"
                 yield Static(id="learnings-h-body")
+            with VerticalScroll(id="memory-h-panel", classes="casys-panel") as p:
+                p.border_title = "MEMORY"
+                yield Static(id="memory-h-body")
             with VerticalScroll(id="universe-h-panel", classes="casys-panel") as p:
                 p.border_title = "UNIVERSE"
                 yield Static(id="universe-h-body")
@@ -362,6 +405,12 @@ class HealthPage(ResizeRefresh, Static):
             )
         except Exception:
             logger.debug("%s update error", "health learnings", exc_info=True)
+        try:
+            self.query_one("#memory-h-body", Static).update(
+                build_memory(state, now=now)
+            )
+        except Exception:
+            logger.debug("%s update error", "health memory", exc_info=True)
         try:
             self.query_one("#universe-h-body", Static).update(
                 build_universe(state, now=now)

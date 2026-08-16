@@ -314,6 +314,7 @@ def test_cockpit_health_projection_is_canonical_and_textual_free() -> None:
         "build_fx_rates": "project_fx_rates",
         "build_learnings": "project_learnings",
         "build_llm": "project_llm_health",
+        "build_memory": "project_memory",
         "build_sources": "project_sources",
         "build_universe": "project_universe_health",
     }
