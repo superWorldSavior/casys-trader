@@ -168,7 +168,9 @@ def tick(
         market_context: dict optionnel transmis au payload override (v1 : regime_families).
     """
     config_path = Path(config_dir)
-    sessions = load_sessions(config_dir)
+    # load_sessions attend la racine du repo (il concatène config/sessions.yaml
+    # lui-même) ; config_dir est déjà <root>/config.
+    sessions = load_sessions(str(config_path.parent))
     params = load_radar_params(config_path)
     state = load_venue_state(state_dir)
     # Sticky must be known before venue closes are recomputed: it is outside the

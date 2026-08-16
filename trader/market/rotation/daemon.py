@@ -24,10 +24,13 @@ def maybe_rotate(
     Retourne True si une rotation a été tentée (succès ou échec loggé), False si aucune
     clôture n'était due depuis ``last_rotation_at``.
     """
+    from pathlib import Path
+
     from .schedule import load_sessions, rotation_due
     from .state import load_rotation_state
 
-    sessions = load_sessions(config_dir)
+    # load_sessions attend la racine du repo ; config_dir est <root>/config.
+    sessions = load_sessions(str(Path(config_dir).parent))
     state = load_rotation_state(state_dir)
     if not rotation_due(now_iso, state.get("last_rotation_at", ""), sessions):
         return False
