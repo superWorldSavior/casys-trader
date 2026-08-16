@@ -556,3 +556,31 @@ def test_sync_logge_les_erreurs_universe_et_situation(tmp_path, caplog, monkeypa
     assert "judge down" in caplog.text
     assert result["outcomes"]["universe_selections"]["error"].startswith("RuntimeError:")
     assert result["outcomes"]["situation_notes"]["error"].startswith("RuntimeError:")
+
+
+def test_sync_enchaine_si_le_batch_universe_est_plein(tmp_path, monkeypatch) -> None:
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    started = datetime(2026, 7, 1, 10, tzinfo=UTC)
+
+    monkeypatch.setattr(
+        "trader.application.universe.selection_attribution.refresh_selection_outcomes",
+        lambda *_args, **_kwargs: {"pending": 128, "evaluated": 4, "stored": 4},
+    )
+    monkeypatch.setattr(
+        "trader.application.analyst.situation_attribution.refresh_situation_outcomes",
+        lambda *_args, **_kwargs: {"pending": 0, "evaluated": 0, "stored": 0},
+    )
+
+    result = run_learning_sync(
+        state_dir=state_dir,
+        now=started,
+        get_bars=lambda *_args, **_kwargs: _bars(started, final=103.0),
+        include_outcomes=True,
+        apply_bootstrap=False,
+        api_key="",
+        outcome_batch_size=128,
+    )
+
+    assert result["more_outcomes"] is True
+    assert result["more_work"] is True

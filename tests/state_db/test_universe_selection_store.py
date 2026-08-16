@@ -251,3 +251,47 @@ def test_flair_persiste_lift_famille_gagnante_superieur(tmp_path: Path) -> None:
     beta = [row["flair_score"] for row in rows if row["family"] == "beta"]
     assert alpha and beta
     assert sum(alpha) / len(alpha) > sum(beta) / len(beta)
+
+
+def test_flair_baseline_ne_contamine_pas_les_scores_agent(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    now = datetime(2026, 1, 10, tzinfo=timezone.utc)
+    agent_losses = [
+        EvaluatedSelection(
+            mandate_id=f"m-agent-{index}",
+            symbol=f"AGT{index}",
+            role="core_candidate",
+            allowed_sides=("long",),
+            as_of="2026-01-01T08:00:00+00:00",
+            venue="EU",
+            family="eu_tech",
+            horizon_sessions=5,
+            forward_return=-0.02,
+            verdict="perdant",
+            verdict_basis="allocation",
+            selector="agent",
+        )
+        for index in range(3)
+    ]
+    baseline_wins = [
+        EvaluatedSelection(
+            mandate_id=f"m-fb-{index}",
+            symbol=f"FB{index}",
+            role="fallback_selection",
+            allowed_sides=(),
+            as_of="2026-01-01T08:00:00+00:00",
+            venue="EU",
+            family="eu_tech",
+            horizon_sessions=5,
+            forward_return=0.02,
+            verdict="gagnant",
+            verdict_basis="allocation",
+            selector="baseline_fallback",
+        )
+        for index in range(3)
+    ]
+    persist_and_score(store, agent_losses + baseline_wins, now=now)
+    rows = store.load_outcomes()
+    agent_scores = [row["flair_score"] for row in rows if row["selector"] == "agent"]
+    assert agent_scores
+    assert all(score == 0.0 for score in agent_scores)

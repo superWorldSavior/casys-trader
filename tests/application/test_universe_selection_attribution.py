@@ -6,10 +6,12 @@ import pytest
 
 from trader.application.universe.selection_attribution import (
     MIN_FEEDBACK_N,
+    EvaluatedSelection,
     UniverseSelection,
     evaluate_selection,
     evaluate_selections,
     load_mandate_selections,
+    persist_and_score,
     refresh_selection_outcomes,
     resolve_bench,
     selection_feedback_digest,
@@ -18,7 +20,7 @@ from trader.application.universe.selection_attribution import (
     summarize_outcomes,
 )
 from trader.domain.learnings.scoring import SIGNIFICANT_RETURN_BAND
-from trader.domain.market_data import Bar
+from trader.domain.market_data import Bar, MarketError
 from trader.domain.universe.selection_attribution import (
     MIN_BENCH_EVALUATED,
     SELECTION_SEMANTICS_VERSION,
@@ -37,6 +39,16 @@ class _FakeSource:
     def get_bars(self, symbol: str, lookback: str, interval: str) -> list[Bar]:
         self.calls.append((symbol, lookback, interval))
         return list(self.bars_by_symbol.get(symbol, []))
+
+
+class _ErrorSource:
+    def get_bars(self, symbol: str, lookback: str, interval: str) -> list[Bar]:
+        raise MarketError("fetch_failed", f"{symbol}: 429")
+
+
+class _ErrorSource:
+    def get_bars(self, symbol: str, lookback: str, interval: str) -> list[Bar]:
+        raise MarketError("fetch_failed", f"{symbol}: 429")
 
 
 def _selection(**overrides) -> UniverseSelection:
@@ -612,6 +624,107 @@ def test_pick_sans_barres_allocation_non_evaluable_definitive() -> None:
     rows = evaluate_selection(_selection(), [], horizon_sessions=5, bench_opportunities=[0.01] * MIN_BENCH_EVALUATED)
     assert [row.verdict_basis for row in rows] == ["allocation"]
     assert rows[0].verdict == "non_evaluable"
+
+
+def test_market_error_ne_persiste_pas_de_non_evaluable() -> None:
+    rows = evaluate_selections(
+        [_selection(candidate_scope_id="scope-eu")],
+        _ErrorSource(),
+        horizon_sessions=5,
+        scope_reader=_ScopeReader({"scope-eu": _fat_scope()}),
+    )
+    assert rows == []
+
+
+def test_refresh_reessaie_apres_market_error(tmp_path) -> None:
+    from trader.infrastructure.state_db.universe_selection_store import (
+        try_open_universe_selection_store,
+    )
+
+    history = tmp_path / "universe_mandates" / "history.jsonl"
+    history.parent.mkdir(parents=True)
+    history.write_text(
+        json.dumps(
+            _mandate(
+                status="active",
+                symbols=("AIR.PA",),
+                as_of="2026-01-01T08:00:00+00:00",
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    store = try_open_universe_selection_store(tmp_path)
+    first = refresh_selection_outcomes(
+        tmp_path,
+        _ErrorSource(),
+        store_opener=lambda _state_dir: store,
+        scope_store_opener=lambda _state_dir: _ScopeReader({}),
+    )
+    assert first["evaluated"] == 0
+    assert store.count() == 0
+    second = refresh_selection_outcomes(
+        tmp_path,
+        _FakeSource({"AIR.PA": _path_bars(100.0, 110.0)}),
+        store_opener=lambda _state_dir: store,
+        scope_store_opener=lambda _state_dir: _ScopeReader({}),
+    )
+    assert second["evaluated"] >= 1
+    assert store.count() >= 1
+    assert any(row["verdict_basis"] == "direction" for row in store.load_outcomes())
+
+
+def test_refresh_complete_la_direction_quand_allocation_existe(tmp_path) -> None:
+    from datetime import datetime, timezone
+
+    from trader.infrastructure.state_db.universe_selection_store import (
+        try_open_universe_selection_store,
+    )
+
+    history = tmp_path / "universe_mandates" / "history.jsonl"
+    history.parent.mkdir(parents=True)
+    history.write_text(
+        json.dumps(
+            _mandate(
+                status="active",
+                mandate_id="m-eu",
+                symbols=("AIR.PA",),
+                as_of="2026-01-01T08:00:00+00:00",
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    store = try_open_universe_selection_store(tmp_path)
+    persist_and_score(
+        store,
+        [
+            EvaluatedSelection(
+                mandate_id="m-eu",
+                symbol="AIR.PA",
+                role="core_candidate",
+                allowed_sides=("long",),
+                as_of="2026-01-01T08:00:00+00:00",
+                venue="EU",
+                family="defense_aero_eu",
+                horizon_sessions=5,
+                forward_return=0.02,
+                verdict="non_evaluable",
+                verdict_basis="allocation",
+                selector="agent",
+            )
+        ],
+        now=datetime(2026, 1, 10, tzinfo=timezone.utc),
+    )
+    assert {row["verdict_basis"] for row in store.load_outcomes()} == {"allocation"}
+    refresh_selection_outcomes(
+        tmp_path,
+        _FakeSource({"AIR.PA": _path_bars(100.0, 110.0)}),
+        store_opener=lambda _state_dir: store,
+        scope_store_opener=lambda _state_dir: _ScopeReader({}),
+    )
+    bases = {row["verdict_basis"] for row in store.load_outcomes()}
+    assert bases == {"allocation", "direction"}
 
 
 def test_allocation_gagne_contre_le_banc() -> None:

@@ -442,11 +442,16 @@ def evaluate_selections(
     materialized = list(selections)
     bars_by_symbol: dict[str, list[Any]] = {}
 
+    failed_symbols: set[str] = set()
+
     def bars_for(symbol: str) -> list[Any]:
+        if symbol in failed_symbols:
+            return []
         if symbol not in bars_by_symbol:
             try:
                 bars_by_symbol[symbol] = list(data_source.get_bars(symbol, lookback, interval))
             except MarketError:
+                failed_symbols.add(symbol)
                 bars_by_symbol[symbol] = []
         return bars_by_symbol[symbol]
 
@@ -472,6 +477,8 @@ def evaluate_selections(
         return scope
 
     for selection in materialized:
+        if selection.symbol in failed_symbols:
+            continue
         pick_bars = bars_for(selection.symbol)
         if _is_pending(pick_bars, selection.as_of, horizon_sessions):
             continue
@@ -542,11 +549,22 @@ def persist_and_score(
     if evaluated:
         store.upsert_outcomes([evaluated_to_row(item, evaluated_at=evaluated_at) for item in evaluated])
     rows = store.load_outcomes()
-    result = score_selection_outcomes(rows, shrinkage_k=shrinkage_k)
-    store.update_flair_scores(result.get("scores") or {})
+    scores: dict[int, float] = {}
+    base_rates: dict[str, dict] = {}
+    scored = 0
+    buckets: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
+    for row in rows:
+        bucket = "agent" if _is_agent_selector(row) else "baseline"
+        buckets[bucket].append(row)
+    for bucket, group in buckets.items():
+        result = score_selection_outcomes(group, shrinkage_k=shrinkage_k)
+        scores.update(result.get("scores") or {})
+        base_rates[bucket] = result.get("base_rates") or {}
+        scored += int(result.get("scored") or 0)
+    store.update_flair_scores(scores)
     return {
-        "scored": result.get("scored", 0),
-        "base_rates": result.get("base_rates", {}),
+        "scored": scored,
+        "base_rates": base_rates,
         "n_stored": len(rows),
     }
 
@@ -818,6 +836,13 @@ def load_mandate_selections(state_dir: str | Path) -> list[UniverseSelection]:
     return selections_from_mandate_payloads(iter_mandate_payloads(state_dir))
 
 
+def _needed_verdict_bases(selection: UniverseSelection) -> tuple[str, ...]:
+    bases = ["allocation"]
+    if directional_action(selection.allowed_sides) is not None:
+        bases.append("direction")
+    return tuple(bases)
+
+
 def refresh_selection_outcomes(
     state_dir: str | Path,
     data_source: DataSource,
@@ -839,13 +864,24 @@ def refresh_selection_outcomes(
             str(row.get("symbol") or ""),
             str(row.get("as_of") or ""),
             int(row.get("horizon_sessions") or 0),
+            str(row.get("verdict_basis") or "direction"),
         )
         for row in store.load_outcomes()
     }
     pending: list[UniverseSelection] = []
     for selection in load_mandate_selections(state_dir):
-        key = (selection.mandate_id, selection.symbol, selection.as_of, int(horizon_sessions))
-        if key in existing:
+        missing = any(
+            (
+                selection.mandate_id,
+                selection.symbol,
+                selection.as_of,
+                int(horizon_sessions),
+                basis,
+            )
+            not in existing
+            for basis in _needed_verdict_bases(selection)
+        )
+        if not missing:
             continue
         pending.append(selection)
         if len(pending) >= max(0, int(limit)):

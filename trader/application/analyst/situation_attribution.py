@@ -415,14 +415,23 @@ def refresh_situation_outcomes(
 ) -> dict[str, Any]:
     """Score a bounded batch of still-unjudged situation notes. Fail-open caller."""
 
-    pending = store.load_pending_notes(limit=max(0, int(limit)))
-    evaluated = evaluate_notes(
-        pending,
-        data_source,
-        lookback=lookback,
-        interval=interval,
-        families=families,
-    )
+    cap = max(0, int(limit))
+    pending = list(store.load_pending_notes())
+    evaluated: list[EvaluatedNote] = []
+    page = max(cap, 1)
+    for start in range(0, len(pending), page):
+        if cap == 0 or len(evaluated) >= cap:
+            break
+        judged = evaluate_notes(
+            pending[start : start + page],
+            data_source,
+            lookback=lookback,
+            interval=interval,
+            families=families,
+        )
+        evaluated.extend(judged)
+    if cap:
+        evaluated = evaluated[:cap]
     persist_and_score(store, evaluated, shrinkage_k=shrinkage_k, now=now)
     return {
         "pending": len(pending),
