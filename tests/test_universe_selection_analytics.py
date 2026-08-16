@@ -110,3 +110,184 @@ def test_commande_evaluate_juge_via_datasource(tmp_path: Path, capsys, monkeypat
     assert payload["n_evaluated_this_run"] == 1
     assert payload["n_gagnant"] == 1
     assert payload["pays"]["families"] == []
+
+
+def _write_jsonl(path: Path, rows: list[dict]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+
+
+def test_commande_trader_joint_mandate_ref_et_round_trips(tmp_path: Path, capsys) -> None:
+    _write_jsonl(
+        tmp_path / "decisions.jsonl",
+        [
+            {
+                "decision_id": "d-air",
+                "cycle_ts": "2026-06-05T10:00:00+00:00",
+                "symbol": "AIR.PA",
+                "action": "BUY",
+                "executed": True,
+                "mandate_ref": {
+                    "mandate_id": "m-eu",
+                    "venue": "EU",
+                    "as_of": "2026-06-05T08:00:00+00:00",
+                },
+            },
+            {
+                "decision_id": "d-spy",
+                "cycle_ts": "2026-06-05T10:00:00+00:00",
+                "symbol": "SPY",
+                "action": "BUY",
+                "executed": True,
+            },
+        ],
+    )
+    _write_jsonl(
+        tmp_path / "model_performance.jsonl",
+        [
+            {
+                "ts": "2026-06-05T10:00:00+00:00",
+                "symbol": "AIR.PA",
+                "action": "BUY",
+                "quantity": 10,
+                "price": 100.0,
+                "commission": 0,
+                "fx_rate": 1,
+                "decision_id": "d-air",
+            },
+            {
+                "ts": "2026-06-05T11:00:00+00:00",
+                "symbol": "AIR.PA",
+                "action": "SELL",
+                "quantity": 10,
+                "price": 110.0,
+                "commission": 0,
+                "fx_rate": 1,
+                "decision_id": "d-air-x",
+            },
+            {
+                "ts": "2026-06-05T10:00:00+00:00",
+                "symbol": "SPY",
+                "action": "BUY",
+                "quantity": 5,
+                "price": 200.0,
+                "commission": 0,
+                "fx_rate": 1,
+                "decision_id": "d-spy",
+            },
+            {
+                "ts": "2026-06-05T11:00:00+00:00",
+                "symbol": "SPY",
+                "action": "SELL",
+                "quantity": 5,
+                "price": 190.0,
+                "commission": 0,
+                "fx_rate": 1,
+                "decision_id": "d-spy-x",
+            },
+        ],
+    )
+    history = tmp_path / "universe_mandates" / "history.jsonl"
+    history.parent.mkdir(parents=True)
+    history.write_text(
+        json.dumps(
+            {
+                "mandate_id": "m-eu",
+                "venue": "EU",
+                "as_of": "2026-06-05T08:00:00+00:00",
+                "symbols": {
+                    "AIR.PA": {
+                        "symbol": "AIR.PA",
+                        "role": "core_candidate",
+                        "allowed_sides": ["long"],
+                        "family_context": {"family": "eu_industrials"},
+                    }
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    assert main(["trader", "--state-dir", str(tmp_path), "--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["with_mandate_ref"]["n"] == 1
+    assert payload["with_mandate_ref"]["win_rate"] == 1.0
+    assert payload["with_mandate_ref"]["net_pnl"] == 100.0
+    assert payload["without_mandate_ref"]["n"] == 1
+    assert payload["without_mandate_ref"]["win_rate"] == 0.0
+    assert payload["without_mandate_ref"]["net_pnl"] == -50.0
+    assert payload["by_family"] == [
+        {"family": "eu_industrials", "n": 1, "win_rate": 1.0, "net_pnl": 100.0}
+    ]
+    assert payload["by_role"] == [
+        {"role": "core_candidate", "n": 1, "win_rate": 1.0, "net_pnl": 100.0}
+    ]
+
+
+def test_commande_trader_sortie_lisible(tmp_path: Path, capsys) -> None:
+    _write_jsonl(
+        tmp_path / "decisions.jsonl",
+        [
+            {
+                "decision_id": "d-air",
+                "cycle_ts": "2026-06-05T10:00:00+00:00",
+                "symbol": "AIR.PA",
+                "action": "BUY",
+                "executed": True,
+                "mandate_ref": {"mandate_id": "m-eu", "venue": "EU"},
+            }
+        ],
+    )
+    _write_jsonl(
+        tmp_path / "model_performance.jsonl",
+        [
+            {
+                "ts": "2026-06-05T10:00:00+00:00",
+                "symbol": "AIR.PA",
+                "action": "BUY",
+                "quantity": 1,
+                "price": 100.0,
+                "commission": 0,
+                "fx_rate": 1,
+                "decision_id": "d-air",
+            },
+            {
+                "ts": "2026-06-05T11:00:00+00:00",
+                "symbol": "AIR.PA",
+                "action": "SELL",
+                "quantity": 1,
+                "price": 110.0,
+                "commission": 0,
+                "fx_rate": 1,
+                "decision_id": "d-air-x",
+            },
+        ],
+    )
+    history = tmp_path / "universe_mandates" / "history.jsonl"
+    history.parent.mkdir(parents=True)
+    history.write_text(
+        json.dumps(
+            {
+                "mandate_id": "m-eu",
+                "venue": "EU",
+                "as_of": "2026-06-05T08:00:00+00:00",
+                "symbols": {
+                    "AIR.PA": {
+                        "symbol": "AIR.PA",
+                        "role": "core_candidate",
+                        "family_context": {"family": "eu_industrials"},
+                    }
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    assert main(["trader", "--state-dir", str(tmp_path)]) == 0
+    out = capsys.readouterr().out
+    assert "mandate_ref" in out
+    assert "eu_industrials" in out
+    assert "core_candidate" in out
+    assert "10.00" in out

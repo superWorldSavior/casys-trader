@@ -147,3 +147,25 @@ def test_apply_outcomes_est_idempotent_et_ne_touche_pas_q_value(tmp_path) -> Non
     assert rows[0]["horizon_sessions"] == 5
     assert rows[0]["outcome_score"] == 0.08
     assert rows[0]["q_value"] is None
+
+
+def test_load_pending_notes_ignore_les_notes_deja_jugees(tmp_path) -> None:
+    store = SituationMemoryStore(tmp_path / "situation_memory.db")
+    store.ingest_brief(_brief())
+    first, second = store.load_notes()
+    store.apply_outcomes(
+        [
+            {
+                "id": first["id"],
+                "verdict": "gagnant",
+                "horizon_sessions": 5,
+                "forward_return": 0.02,
+                "evaluated_at": "2026-01-10T00:00:00+00:00",
+                "coverage_n": 1,
+            }
+        ]
+    )
+
+    pending = store.load_pending_notes(limit=8)
+    assert [row["id"] for row in pending] == [second["id"]]
+    assert store.load_pending_notes(limit=0) == []

@@ -25,6 +25,8 @@ class NewsMacroAnalysisRequest:
     # Compact durable company anchors for symbols touched by current news.
     company_anchors: dict[str, dict] | None = None
     input_refs: dict | None = None
+    # Market-as-judge digest of past notes. Omitted from the prompt when empty.
+    situation_feedback: dict | None = None
 
 
 @dataclass(frozen=True)

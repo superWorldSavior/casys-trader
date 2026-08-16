@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 from trader.application.analyst.situation_attribution import (
+    MIN_FEEDBACK_N,
+    SITUATION_FEEDBACK_ROLE,
     evaluate_note,
     evaluate_notes,
+    refresh_situation_outcomes,
+    situation_feedback_digest,
     summarize_outcomes,
 )
 from trader.domain.learnings.scoring import SIGNIFICANT_RETURN_BAND
@@ -125,3 +129,108 @@ def test_summarize_outcomes_separe_pays_et_decoit() -> None:
     assert summary["n_perdant"] == 1
     buckets = {item["horizon_bucket"] for item in summary["by_horizon"]}
     assert buckets == {"semaines", "court"}
+
+
+def _scored_row(**overrides) -> dict:
+    payload = {
+        "family": "eu_industrials",
+        "venue": "EU",
+        "direction": "bullish",
+        "section_type": "family",
+        "section_name": "eu_industrials",
+        "verdict": "gagnant",
+        "forward_return": 0.02,
+        "outcome_score": 0.08,
+        "horizon_sessions": 5,
+    }
+    payload.update(overrides)
+    return payload
+
+
+def test_situation_feedback_digest_reste_comparatif_et_filtre_la_venue() -> None:
+    rows = [
+        _scored_row()
+        for _ in range(MIN_FEEDBACK_N)
+    ] + [
+        _scored_row(
+            family="us_auto",
+            venue="US",
+            direction="bearish",
+            section_type="symbol",
+            section_name="TSLA",
+            verdict="perdant",
+            forward_return=-0.03,
+            outcome_score=-0.08,
+        )
+        for _ in range(MIN_FEEDBACK_N)
+    ]
+    digest = situation_feedback_digest(rows, venue="EU")
+    assert digest["role"] == SITUATION_FEEDBACK_ROLE
+    assert digest["status"] == "observed"
+    assert digest["directions"] == [
+        {
+            "direction": "bullish",
+            "n": MIN_FEEDBACK_N,
+            "win_rate": 1.0,
+            "mean_outcome_score": 0.08,
+            "utility": "helps",
+        }
+    ]
+    assert digest["section_types"][0]["section_type"] == "family"
+    assert digest["families"][0]["family"] == "eu_industrials"
+    assert "us_auto" not in {item["family"] for item in digest["families"]}
+    serialized = str(digest)
+    assert "TSLA" not in serialized
+    assert "AIR.PA" not in serialized
+
+
+def test_situation_feedback_digest_insuffisant_sous_le_plancher() -> None:
+    digest = situation_feedback_digest(
+        [_scored_row()],
+        venue="EU",
+    )
+    assert digest["status"] == "insufficient"
+    assert digest["directions"] == []
+    assert digest["section_types"] == []
+    assert digest["families"] == []
+    assert digest["n_evaluated"] == 1
+
+
+def test_refresh_ne_fige_pas_une_note_immature(tmp_path) -> None:
+    from trader.domain.situation import NewsMacroBrief
+    from trader.infrastructure.state_db.situation_memory_store import SituationMemoryStore
+
+    store = SituationMemoryStore(tmp_path / "situation_memory.db")
+    brief = NewsMacroBrief.from_mapping(
+        {
+            "brief_id": "2026-01-01T08:00:00+00:00|EU",
+            "venue": "EU",
+            "as_of": "2026-01-01T08:00:00+00:00",
+            "valid_until": "2026-01-02T08:00:00+00:00",
+            "families": {
+                "eu_industrials": [
+                    {
+                        "point": "Industrial complex still bid",
+                        "sources": ["Reuters"],
+                        "source_refs": ["u1"],
+                        "symbols": ["AIR.PA"],
+                        "direction": "bullish",
+                        "horizon": "1-10d",
+                    }
+                ]
+            },
+        }
+    )
+    assert brief is not None
+    store.ingest_brief(brief)
+
+    result = refresh_situation_outcomes(
+        store,
+        _FakeSource({"AIR.PA": _path_bars(100.0, 110.0)}),
+        families={"eu_industrials": ["AIR.PA"]},
+        limit=8,
+    )
+    assert result["pending"] == 1
+    assert result["evaluated"] == 0
+    assert store.load_outcomes() == []
+    assert store.load_pending_notes()[0]["verdict"] is None

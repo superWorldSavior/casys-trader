@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 from datetime import datetime, timedelta, timezone
 
@@ -9,7 +10,9 @@ import pytest
 
 from trader.domain.decision_benchmark import BENCHMARK_SEMANTICS_VERSION
 from trader.domain.market_data import Bar
+from trader.domain.situation import NewsMacroBrief
 from trader.infrastructure.state_db.learnings_store import LearningsStore
+from trader.infrastructure.state_db.situation_memory_store import SituationMemoryStore
 from trader.runtime.learnings_sync_runtime import (
     LearningSyncRunner,
     _lookback_for,
@@ -436,3 +439,120 @@ def test_runner_enchaine_les_micro_batches_sans_nouveau_trigger(tmp_path) -> Non
 
     assert calls == [True, False]
     assert runner.status()["running"] is False
+
+
+def _ingest_symbol_note(
+    state_dir,
+    *,
+    as_of: str,
+    horizon: str,
+    symbol: str = "SPY",
+    direction: str = "bullish",
+) -> None:
+    store = SituationMemoryStore(state_dir / "situation_memory.db")
+    brief = NewsMacroBrief.from_mapping(
+        {
+            "brief_id": f"{as_of}|US|{symbol}",
+            "venue": "US",
+            "as_of": as_of,
+            "valid_until": as_of,
+            "symbols": {
+                symbol: [
+                    {
+                        "point": f"{symbol} directional call",
+                        "sources": ["Reuters"],
+                        "source_refs": ["u1"],
+                        "symbols": [symbol],
+                        "direction": direction,
+                        "horizon": horizon,
+                    }
+                ]
+            },
+        }
+    )
+    assert brief is not None
+    store.ingest_brief(brief)
+    store.close()
+
+
+def test_sync_evalue_les_notes_situation_matures_sans_figer_les_immatures(tmp_path) -> None:
+    state_dir = tmp_path / "state"
+    started = datetime(2026, 7, 1, 10, tzinfo=UTC)
+    _ingest_symbol_note(state_dir, as_of=started.isoformat(), horizon="session", symbol="SPY")
+    _ingest_symbol_note(
+        state_dir,
+        as_of=(started + timedelta(minutes=1)).isoformat(),
+        horizon="weeks",
+        symbol="QQQ",
+    )
+
+    result = run_learning_sync(
+        state_dir=state_dir,
+        now=started + timedelta(days=2),
+        get_bars=lambda *_args, **_kwargs: _bars(started, final=103.0),
+        include_outcomes=True,
+        apply_bootstrap=False,
+        api_key="",
+    )
+
+    situation = result["outcomes"]["situation_notes"]
+    assert situation["pending"] == 2
+    assert situation["evaluated"] == 1
+    store = SituationMemoryStore(state_dir / "situation_memory.db")
+    by_symbol = {row["section_name"]: row for row in store.load_notes()}
+    assert by_symbol["SPY"]["verdict"] == "gagnant"
+    assert by_symbol["QQQ"]["verdict"] is None
+    assert by_symbol["QQQ"]["evaluated_at"] is None
+
+
+def test_sync_respecte_opt_out_situation_outcomes(tmp_path, monkeypatch) -> None:
+    state_dir = tmp_path / "state"
+    started = datetime(2026, 7, 1, 10, tzinfo=UTC)
+    _ingest_symbol_note(state_dir, as_of=started.isoformat(), horizon="session")
+    monkeypatch.setenv("TRADER_SITUATION_OUTCOMES_ENABLED", "0")
+
+    result = run_learning_sync(
+        state_dir=state_dir,
+        now=started + timedelta(days=2),
+        get_bars=lambda *_args, **_kwargs: _bars(started, final=103.0),
+        include_outcomes=True,
+        apply_bootstrap=False,
+        api_key="",
+    )
+
+    assert result["outcomes"]["situation_notes"]["skipped"] == "disabled"
+    store = SituationMemoryStore(state_dir / "situation_memory.db")
+    assert store.load_outcomes() == []
+
+
+def test_sync_logge_les_erreurs_universe_et_situation(tmp_path, caplog, monkeypatch) -> None:
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    SituationMemoryStore(state_dir / "situation_memory.db").close()
+    started = datetime(2026, 7, 1, 10, tzinfo=UTC)
+
+    def boom(*_args, **_kwargs):
+        raise RuntimeError("judge down")
+
+    monkeypatch.setattr(
+        "trader.application.universe.selection_attribution.refresh_selection_outcomes",
+        boom,
+    )
+    monkeypatch.setattr(
+        "trader.application.analyst.situation_attribution.refresh_situation_outcomes",
+        boom,
+    )
+    caplog.set_level(logging.WARNING)
+
+    result = run_learning_sync(
+        state_dir=state_dir,
+        now=started + timedelta(days=2),
+        get_bars=lambda *_args, **_kwargs: _bars(started, final=103.0),
+        include_outcomes=True,
+        apply_bootstrap=False,
+        api_key="",
+    )
+
+    assert "judge down" in caplog.text
+    assert result["outcomes"]["universe_selections"]["error"].startswith("RuntimeError:")
+    assert result["outcomes"]["situation_notes"]["error"].startswith("RuntimeError:")

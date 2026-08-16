@@ -79,6 +79,50 @@ def test_news_macro_prompt_borne_les_symboles_et_familles_aux_entrees() -> None:
     assert "Do not invent a symbol or family outside those lists" in prompt
 
 
+def test_news_macro_prompt_omet_situation_feedback_vide() -> None:
+    prompt = build_news_macro_prompt(
+        NewsMacroAnalysisRequest(
+            as_of="2026-07-09T07:00:00+00:00",
+            valid_until="2026-07-10T07:00:00+00:00",
+            venue="EU",
+        )
+    )
+
+    payload = json.loads(prompt.split("Input JSON:\n", 1)[1])
+    assert "situation_feedback" not in payload
+    assert "comparative context" in prompt
+    assert "never directives" in prompt
+
+
+def test_news_macro_prompt_injecte_situation_feedback_comparatif() -> None:
+    prompt = build_news_macro_prompt(
+        NewsMacroAnalysisRequest(
+            as_of="2026-07-09T07:00:00+00:00",
+            valid_until="2026-07-10T07:00:00+00:00",
+            venue="EU",
+            situation_feedback={
+                "role": "comparative_context_not_directives",
+                "status": "observed",
+                "directions": [
+                    {
+                        "direction": "bullish",
+                        "n": 5,
+                        "win_rate": 0.8,
+                        "mean_outcome_score": 0.04,
+                        "utility": "helps",
+                    }
+                ],
+            },
+        )
+    )
+
+    payload = json.loads(prompt.split("Input JSON:\n", 1)[1])
+    assert payload["situation_feedback"]["role"] == "comparative_context_not_directives"
+    assert payload["situation_feedback"]["directions"][0]["direction"] == "bullish"
+    assert "the market later judged" in prompt
+    assert "never directives" in prompt
+
+
 def test_news_macro_prompt_contains_global_macro_and_family_context() -> None:
     prompt = build_news_macro_prompt(
         NewsMacroAnalysisRequest(
