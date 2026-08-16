@@ -87,12 +87,15 @@ def run_evaluate(
 
     store = _open_store(state_dir)
     source = data_source if data_source is not None else build_script_data_source()
+    from trader.infrastructure.state_db.candidate_scope_store import CandidateScopeStore
+
     evaluated = evaluate_selections(
         load_mandate_selections(state_dir),
         source,
         horizon_sessions=horizon,
         lookback=lookback,
         interval=interval,
+        scope_reader=CandidateScopeStore(state_dir / "candidate_scopes"),
     )
     persist_and_score(store, evaluated, shrinkage_k=shrinkage_k)
     rows = [

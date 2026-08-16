@@ -8,15 +8,13 @@ from scripts.universe_selection_analytics import main
 from trader.application.universe.selection_attribution import EvaluatedSelection, persist_and_score
 from trader.domain.learnings.scoring import SIGNIFICANT_RETURN_BAND
 from trader.domain.market_data import Bar
-from trader.infrastructure.state_db.connection import StateDb
-from trader.infrastructure.state_db.migrations import UNIVERSE_SELECTION_MIGRATION
-from trader.infrastructure.state_db.universe_selection_store import UniverseSelectionStore
+from trader.infrastructure.state_db.universe_selection_store import (
+    try_open_universe_selection_store,
+)
 
 
 def test_commande_analytics_imprime_json(tmp_path: Path, capsys) -> None:
-    db = StateDb(tmp_path / "casys.db")
-    db.apply_migrations([UNIVERSE_SELECTION_MIGRATION])
-    store = UniverseSelectionStore(db)
+    store = try_open_universe_selection_store(tmp_path)
     persist_and_score(
         store,
         [
@@ -107,7 +105,7 @@ def test_commande_evaluate_juge_via_datasource(tmp_path: Path, capsys, monkeypat
     )
     assert main(["evaluate", "--state-dir", str(tmp_path)]) == 0
     payload = json.loads(capsys.readouterr().out)
-    assert payload["n_evaluated_this_run"] == 1
+    assert payload["n_evaluated_this_run"] == 2
     assert payload["n_gagnant"] == 1
     assert payload["pays"]["families"] == []
 

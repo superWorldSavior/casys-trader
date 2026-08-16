@@ -8,6 +8,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from statistics import median
 from typing import Any, Protocol
 
 from trader.domain.market_data import MarketError
@@ -15,9 +16,12 @@ from trader.domain.universe.intelligence import UNCLASSIFIED_FAMILY
 from trader.domain.universe.selection_attribution import (
     DEFAULT_FORWARD_SESSIONS,
     DEFAULT_SHRINKAGE_K,
+    classify_allocation_quality,
     classify_selection_quality,
     directional_action,
     forward_return_over_sessions,
+    has_as_of_session,
+    opportunity,
     score_selection_outcomes,
 )
 from trader.market.protocols import DataSource
@@ -33,6 +37,8 @@ __all__ = [
     "MIN_FEEDBACK_N",
     "SELECTION_FEEDBACK_ROLE",
     "EvaluatedSelection",
+    "CandidateScopeReader",
+    "CandidateScopeStoreOpener",
     "SelectionOutcomeStore",
     "SelectionOutcomeStoreOpener",
     "UniverseSelection",
@@ -79,6 +85,14 @@ class EvaluatedSelection:
     horizon_sessions: int
     forward_return: float | None
     verdict: str
+    verdict_basis: str = "direction"
+    selector: str = "agent"
+    candidate_scope_id: str = ""
+    opportunity: float | None = None
+    bench_median_opportunity: float | None = None
+    allocation_excess: float | None = None
+    bench_n: int | None = None
+    scope_missing: bool = False
 
 
 class SelectionOutcomeStore(Protocol):
@@ -90,9 +104,23 @@ class SelectionOutcomeStore(Protocol):
 
     def count(self) -> int: ...
 
+    def ensure_selection_semantics(self) -> str: ...
+
 
 class SelectionOutcomeStoreOpener(Protocol):
     def __call__(self, state_dir: str | Path) -> SelectionOutcomeStore: ...
+
+
+class CandidateScopeReader(Protocol):
+    def read_by_id(
+        self,
+        candidate_scope_id: str,
+        hint_date: str | None = None,
+    ) -> Mapping[str, Any] | None: ...
+
+
+class CandidateScopeStoreOpener(Protocol):
+    def __call__(self, state_dir: str | Path) -> CandidateScopeReader: ...
 
 
 def _allowed_sides(raw: object) -> tuple[str, ...]:
@@ -283,16 +311,23 @@ def resolve_bench(selection: UniverseSelection, scope: Mapping[str, Any]) -> lis
     return bench
 
 
-def evaluate_selection(
+def _is_pending(bars: Sequence[Any], as_of: str, horizon_sessions: int) -> bool:
+    return has_as_of_session(bars, as_of) and forward_return_over_sessions(bars, as_of, horizon_sessions) is None
+
+
+def _evaluated(
     selection: UniverseSelection,
-    bars: Sequence[Any],
     *,
-    horizon_sessions: int = DEFAULT_FORWARD_SESSIONS,
-) -> EvaluatedSelection | None:
-    """Judge one selection. Directional picks without a complete horizon are skipped."""
-    forward = forward_return_over_sessions(bars, selection.as_of, horizon_sessions)
-    if directional_action(selection.allowed_sides) is not None and forward is None:
-        return None
+    horizon_sessions: int,
+    forward_return: float | None,
+    verdict: str,
+    verdict_basis: str,
+    opportunity_value: float | None = None,
+    bench_median_opportunity: float | None = None,
+    allocation_excess: float | None = None,
+    bench_n: int | None = None,
+    scope_missing: bool = False,
+) -> EvaluatedSelection:
     return EvaluatedSelection(
         mandate_id=selection.mandate_id,
         symbol=selection.symbol,
@@ -302,9 +337,95 @@ def evaluate_selection(
         venue=selection.venue,
         family=selection.family,
         horizon_sessions=horizon_sessions,
-        forward_return=forward,
-        verdict=classify_selection_quality(selection.allowed_sides, forward),
+        forward_return=forward_return,
+        verdict=verdict,
+        verdict_basis=verdict_basis,
+        selector=selection.selector,
+        candidate_scope_id=selection.candidate_scope_id,
+        opportunity=opportunity_value,
+        bench_median_opportunity=bench_median_opportunity,
+        allocation_excess=allocation_excess,
+        bench_n=bench_n,
+        scope_missing=scope_missing,
     )
+
+
+def evaluate_selection(
+    selection: UniverseSelection,
+    bars: Sequence[Any],
+    *,
+    horizon_sessions: int = DEFAULT_FORWARD_SESSIONS,
+    bench_opportunities: Sequence[float | None] | None = None,
+    bench_unresolved: bool = False,
+) -> list[EvaluatedSelection]:
+    """Judge one selection on both bases. Empty means pending — do not persist."""
+    forward = forward_return_over_sessions(bars, selection.as_of, horizon_sessions)
+    if has_as_of_session(bars, selection.as_of) and forward is None:
+        return []
+    rows: list[EvaluatedSelection] = []
+    if directional_action(selection.allowed_sides) is not None and forward is not None:
+        rows.append(
+            _evaluated(
+                selection,
+                horizon_sessions=horizon_sessions,
+                forward_return=forward,
+                verdict=classify_selection_quality(selection.allowed_sides, forward),
+                verdict_basis="direction",
+            )
+        )
+    pick_opp = opportunity(forward)
+    if bench_unresolved:
+        rows.append(
+            _evaluated(
+                selection,
+                horizon_sessions=horizon_sessions,
+                forward_return=forward,
+                verdict="non_evaluable",
+                verdict_basis="allocation",
+                opportunity_value=pick_opp,
+                bench_n=0,
+                scope_missing=True,
+            )
+        )
+        return rows
+    bench = list(bench_opportunities or ())
+    evaluated_bench = [float(value) for value in bench if value is not None]
+    median_opp = float(median(evaluated_bench)) if evaluated_bench else None
+    excess = None if pick_opp is None or median_opp is None else pick_opp - median_opp
+    rows.append(
+        _evaluated(
+            selection,
+            horizon_sessions=horizon_sessions,
+            forward_return=forward,
+            verdict=classify_allocation_quality(pick_opp, bench),
+            verdict_basis="allocation",
+            opportunity_value=pick_opp,
+            bench_median_opportunity=median_opp,
+            allocation_excess=excess,
+            bench_n=len(evaluated_bench),
+        )
+    )
+    return rows
+
+
+def _candidate_symbols(scope: Mapping[str, Any]) -> list[str]:
+    sticky = {
+        str(symbol).strip()
+        for symbol in (scope.get("sticky_context_at_close") or ())
+        if str(symbol).strip()
+    }
+    symbols: list[str] = []
+    seen: set[str] = set()
+    for raw in scope.get("candidates") or ():
+        if isinstance(raw, Mapping):
+            symbol = str(raw.get("symbol") or "").strip()
+        else:
+            symbol = str(raw or "").strip()
+        if not symbol or symbol in sticky or symbol in seen:
+            continue
+        seen.add(symbol)
+        symbols.append(symbol)
+    return symbols
 
 
 def evaluate_selections(
@@ -314,24 +435,73 @@ def evaluate_selections(
     horizon_sessions: int = DEFAULT_FORWARD_SESSIONS,
     lookback: str = DEFAULT_BAR_LOOKBACK,
     interval: str = DEFAULT_BAR_INTERVAL,
+    scope_reader: CandidateScopeReader | None = None,
 ) -> list[EvaluatedSelection]:
     """Fetch bars once per symbol through ``DataSource`` and evaluate each selection."""
     materialized = list(selections)
     bars_by_symbol: dict[str, list[Any]] = {}
+
+    def bars_for(symbol: str) -> list[Any]:
+        if symbol not in bars_by_symbol:
+            try:
+                bars_by_symbol[symbol] = list(data_source.get_bars(symbol, lookback, interval))
+            except MarketError:
+                bars_by_symbol[symbol] = []
+        return bars_by_symbol[symbol]
+
     for symbol in dict.fromkeys(item.symbol for item in materialized):
-        try:
-            bars_by_symbol[symbol] = list(data_source.get_bars(symbol, lookback, interval))
-        except MarketError:
-            bars_by_symbol[symbol] = []
+        bars_for(symbol)
+
+    scope_cache: dict[str, Mapping[str, Any] | None] = {}
+    prefetched: set[str] = set()
     evaluated: list[EvaluatedSelection] = []
+
+    def load_scope(selection: UniverseSelection) -> Mapping[str, Any] | None:
+        scope_id = selection.candidate_scope_id
+        if not scope_id:
+            return None
+        if scope_id in scope_cache:
+            return scope_cache[scope_id]
+        if scope_reader is None:
+            scope_cache[scope_id] = None
+            return None
+        hint = selection.as_of[:10] if len(selection.as_of) >= 10 else None
+        scope = scope_reader.read_by_id(scope_id, hint_date=hint)
+        scope_cache[scope_id] = scope
+        return scope
+
     for selection in materialized:
-        item = evaluate_selection(
-            selection,
-            bars_by_symbol.get(selection.symbol, ()),
-            horizon_sessions=horizon_sessions,
+        pick_bars = bars_for(selection.symbol)
+        if _is_pending(pick_bars, selection.as_of, horizon_sessions):
+            continue
+        scope = load_scope(selection)
+        if scope is None:
+            evaluated.extend(
+                evaluate_selection(
+                    selection,
+                    pick_bars,
+                    horizon_sessions=horizon_sessions,
+                    bench_unresolved=True,
+                )
+            )
+            continue
+        scope_id = str(scope.get("candidate_scope_id") or selection.candidate_scope_id)
+        if scope_id not in prefetched:
+            for symbol in _candidate_symbols(scope):
+                bars_for(symbol)
+            prefetched.add(scope_id)
+        bench_opportunities = [
+            opportunity(forward_return_over_sessions(bars_for(symbol), selection.as_of, horizon_sessions))
+            for symbol in resolve_bench(selection, scope)
+        ]
+        evaluated.extend(
+            evaluate_selection(
+                selection,
+                pick_bars,
+                horizon_sessions=horizon_sessions,
+                bench_opportunities=bench_opportunities,
+            )
         )
-        if item is not None:
-            evaluated.append(item)
     return evaluated
 
 
@@ -348,6 +518,13 @@ def evaluated_to_row(item: EvaluatedSelection, *, evaluated_at: str) -> dict[str
         "forward_return": item.forward_return,
         "verdict": item.verdict,
         "evaluated_at": evaluated_at,
+        "verdict_basis": item.verdict_basis,
+        "candidate_scope_id": item.candidate_scope_id,
+        "selector": item.selector,
+        "opportunity": item.opportunity,
+        "bench_median_opportunity": item.bench_median_opportunity,
+        "allocation_excess": item.allocation_excess,
+        "bench_n": item.bench_n,
     }
 
 
@@ -557,6 +734,7 @@ def refresh_selection_outcomes(
     data_source: DataSource,
     *,
     store_opener: SelectionOutcomeStoreOpener,
+    scope_store_opener: CandidateScopeStoreOpener,
     horizon_sessions: int = DEFAULT_FORWARD_SESSIONS,
     limit: int = 128,
     shrinkage_k: float = DEFAULT_SHRINKAGE_K,
@@ -564,6 +742,8 @@ def refresh_selection_outcomes(
     """Score a bounded batch of still-unjudged mandate selections. Fail-open caller."""
 
     store = store_opener(state_dir)
+    semantics_version = store.ensure_selection_semantics()
+    scope_reader = scope_store_opener(state_dir)
     existing = {
         (
             str(row.get("mandate_id") or ""),
@@ -585,12 +765,15 @@ def refresh_selection_outcomes(
         pending,
         data_source,
         horizon_sessions=horizon_sessions,
+        scope_reader=scope_reader,
     )
     persist_and_score(store, evaluated, shrinkage_k=shrinkage_k)
     return {
         "pending": len(pending),
         "evaluated": len(evaluated),
         "stored": store.count(),
+        "bench_unresolved": sum(1 for item in evaluated if item.scope_missing),
+        "semantics_version": semantics_version,
     }
 
 

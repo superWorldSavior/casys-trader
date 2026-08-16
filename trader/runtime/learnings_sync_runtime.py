@@ -267,6 +267,7 @@ def _refresh_universe_selections(
         from trader.application.universe.selection_attribution import (
             refresh_selection_outcomes,
         )
+        from trader.infrastructure.state_db.candidate_scope_store import CandidateScopeStore
         from trader.infrastructure.state_db.universe_selection_store import (
             try_open_universe_selection_store,
         )
@@ -280,6 +281,7 @@ def _refresh_universe_selections(
             _Bars(),
             limit=limit,
             store_opener=try_open_universe_selection_store,
+            scope_store_opener=lambda root: CandidateScopeStore(Path(root) / "candidate_scopes"),
         )
     except Exception as exc:  # noqa: BLE001 - universe FLAIR is advisory
         log.warning("[learnings_sync] universe selections failed: %s", exc)

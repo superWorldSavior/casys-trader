@@ -10,6 +10,7 @@ Contient :
 - PROCESS_TRACE_MIGRATION : schéma append-only v4 des événements de processus
 - LLM_GATE_MIGRATION : cadence last_llm_at du gate de pertinence (v5)
 - UNIVERSE_SELECTION_MIGRATION : attribution des sélections d'univers (v6)
+- UNIVERSE_SELECTION_V7_MIGRATION : verdict à deux bases (recréation, ne mute pas v6)
 - SITUATION_MEMORY_OUTCOME_MIGRATION : verdict FLAIR des notes de situation
   (espace de version local à situation_memory.db, pas le flux casys.db)
 """
@@ -577,6 +578,62 @@ UNIVERSE_SELECTION_MIGRATION: tuple[int, list[str]] = (
             UNIQUE (mandate_id, symbol, as_of, horizon_sessions)
         )""",
     ],
+)
+
+
+# ---------------------------------------------------------------------------
+# Attribution des sélections d'univers — v7 (recréation, UNIQUE élargi)
+# ---------------------------------------------------------------------------
+
+UNIVERSE_SELECTION_V7_MIGRATION: tuple[int, list[str]] = (
+    7,
+    [
+        """CREATE TABLE universe_selection_outcomes_v7 (
+            id                        INTEGER PRIMARY KEY AUTOINCREMENT,
+            mandate_id                TEXT NOT NULL,
+            symbol                    TEXT NOT NULL,
+            family                    TEXT NOT NULL DEFAULT '',
+            role                      TEXT NOT NULL DEFAULT '',
+            allowed_sides             TEXT NOT NULL,
+            as_of                     TEXT NOT NULL,
+            venue                     TEXT NOT NULL DEFAULT '',
+            horizon_sessions          INTEGER NOT NULL,
+            forward_return            REAL,
+            verdict                   TEXT NOT NULL,
+            flair_score               REAL,
+            evaluated_at              TEXT NOT NULL,
+            verdict_basis             TEXT NOT NULL DEFAULT 'direction',
+            candidate_scope_id        TEXT,
+            selector                  TEXT,
+            opportunity               REAL,
+            bench_median_opportunity  REAL,
+            allocation_excess         REAL,
+            bench_n                   INTEGER,
+            UNIQUE (mandate_id, symbol, as_of, horizon_sessions, verdict_basis)
+        )""",
+        """INSERT INTO universe_selection_outcomes_v7 (
+            id, mandate_id, symbol, family, role, allowed_sides, as_of, venue,
+            horizon_sessions, forward_return, verdict, flair_score, evaluated_at,
+            verdict_basis
+        )
+        SELECT
+            id, mandate_id, symbol, family, role, allowed_sides, as_of, venue,
+            horizon_sessions, forward_return, verdict, flair_score, evaluated_at,
+            'direction'
+        FROM universe_selection_outcomes""",
+        "DROP TABLE universe_selection_outcomes",
+        "ALTER TABLE universe_selection_outcomes_v7 RENAME TO universe_selection_outcomes",
+        """CREATE TABLE universe_selection_metadata (
+            key        TEXT PRIMARY KEY,
+            value      TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )""",
+    ],
+)
+
+UNIVERSE_SELECTION_MIGRATIONS: tuple[tuple[int, list[str]], ...] = (
+    UNIVERSE_SELECTION_MIGRATION,
+    UNIVERSE_SELECTION_V7_MIGRATION,
 )
 
 

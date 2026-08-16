@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from trader.application.universe.selection_attribution import (
     MIN_FEEDBACK_N,
     UniverseSelection,
@@ -17,6 +19,10 @@ from trader.application.universe.selection_attribution import (
 )
 from trader.domain.learnings.scoring import SIGNIFICANT_RETURN_BAND
 from trader.domain.market_data import Bar
+from trader.domain.universe.selection_attribution import (
+    MIN_BENCH_EVALUATED,
+    SELECTION_SEMANTICS_VERSION,
+)
 
 
 def _bar(ts: str, close: float) -> Bar:
@@ -53,25 +59,35 @@ def _path_bars(start: float, end: float) -> list[Bar]:
     return bars
 
 
+def _direction(rows: list) -> object:
+    found = [row for row in rows if row.verdict_basis == "direction"]
+    assert len(found) == 1
+    return found[0]
+
+
+def _allocation(rows: list) -> object:
+    found = [row for row in rows if row.verdict_basis == "allocation"]
+    assert len(found) == 1
+    return found[0]
+
+
 def test_selection_long_haussiere_via_datasource_est_gagnante() -> None:
     start = 100.0
     end = start * (1.0 + SIGNIFICANT_RETURN_BAND + 0.002)
     source = _FakeSource({"AIR.PA": _path_bars(start, end)})
     evaluated = evaluate_selections([_selection()], source, horizon_sessions=5)
-    assert len(evaluated) == 1
-    assert evaluated[0].verdict == "gagnant"
+    assert _direction(evaluated).verdict == "gagnant"
     assert source.calls == [("AIR.PA", "1y", "1d")]
 
 
 def test_selection_long_baissiere_via_datasource_est_perdante() -> None:
     start = 100.0
     end = start * (1.0 - SIGNIFICANT_RETURN_BAND - 0.002)
-    item = evaluate_selection(_selection(), _path_bars(start, end), horizon_sessions=5)
-    assert item is not None
-    assert item.verdict == "perdant"
+    rows = evaluate_selection(_selection(), _path_bars(start, end), horizon_sessions=5)
+    assert _direction(rows).verdict == "perdant"
 
 
-def test_selection_non_directionnelle_est_non_evaluable() -> None:
+def test_selection_non_directionnelle_n_a_pas_de_ligne_direction() -> None:
     empty = evaluate_selection(
         _selection(allowed_sides=()),
         _path_bars(100.0, 110.0),
@@ -82,8 +98,10 @@ def test_selection_non_directionnelle_est_non_evaluable() -> None:
         _path_bars(100.0, 110.0),
         horizon_sessions=5,
     )
-    assert empty is not None and empty.verdict == "non_evaluable"
-    assert both is not None and both.verdict == "non_evaluable"
+    assert [row.verdict_basis for row in empty] == ["allocation"]
+    assert empty[0].verdict == "non_evaluable"
+    assert [row.verdict_basis for row in both] == ["allocation"]
+    assert both[0].verdict == "non_evaluable"
 
 
 def test_selections_from_active_slice_and_full_mandate() -> None:
@@ -427,11 +445,174 @@ def test_refresh_ouvre_le_store_par_injection(tmp_path) -> None:
         def count(self) -> int:
             return len(self.rows)
 
+        def ensure_selection_semantics(self) -> str:
+            return SELECTION_SEMANTICS_VERSION
+
+    class _Scopes:
+        def read_by_id(self, candidate_scope_id: str, hint_date: str | None = None):
+            return None
+
     store = _Store()
     source = _FakeSource({"AIR.PA": _path_bars(100.0, 110.0)})
-    result = refresh_selection_outcomes(tmp_path, source, store_opener=lambda _state_dir: store)
+    result = refresh_selection_outcomes(
+        tmp_path,
+        source,
+        store_opener=lambda _state_dir: store,
+        scope_store_opener=lambda _state_dir: _Scopes(),
+    )
     assert result["pending"] == 1
-    assert result["evaluated"] == 1
-    assert result["stored"] == 1
-    assert store.rows[0]["symbol"] == "AIR.PA"
-    assert store.rows[0]["verdict"] == "gagnant"
+    assert result["evaluated"] == 2
+    assert result["stored"] == 2
+    assert result["bench_unresolved"] == 1
+    assert result["semantics_version"] == SELECTION_SEMANTICS_VERSION
+    bases = {row["verdict_basis"]: row for row in store.rows}
+    assert bases["direction"]["verdict"] == "gagnant"
+    assert bases["allocation"]["verdict"] == "non_evaluable"
+    assert bases["direction"]["selector"] == "agent"
+
+
+class _ScopeReader:
+    def __init__(self, scopes: dict[str, dict | None]) -> None:
+        self.scopes = scopes
+        self.calls: list[tuple[str, str | None]] = []
+
+    def read_by_id(self, candidate_scope_id: str, hint_date: str | None = None):
+        self.calls.append((candidate_scope_id, hint_date))
+        return self.scopes.get(candidate_scope_id)
+
+
+def _fat_scope(*, pick: str = "AIR.PA", n: int = 10, sticky: tuple[str, ...] = ()) -> dict:
+    candidates = [{"symbol": pick}, *({"symbol": f"B{index}.PA"} for index in range(n))]
+    return {
+        "candidate_scope_id": "scope-eu",
+        "candidates": list(candidates),
+        "sticky_context_at_close": list(sticky),
+    }
+
+
+def test_horizon_immature_ne_persiste_aucune_base() -> None:
+    rows = evaluate_selection(
+        _selection(),
+        [_bar("2026-01-01T16:00:00+00:00", 100.0)],
+        horizon_sessions=5,
+        bench_opportunities=[0.01] * MIN_BENCH_EVALUATED,
+    )
+    assert rows == []
+
+
+def test_pick_sans_barres_allocation_non_evaluable_definitive() -> None:
+    rows = evaluate_selection(_selection(), [], horizon_sessions=5, bench_opportunities=[0.01] * MIN_BENCH_EVALUATED)
+    assert [row.verdict_basis for row in rows] == ["allocation"]
+    assert rows[0].verdict == "non_evaluable"
+
+
+def test_allocation_gagne_contre_le_banc() -> None:
+    bench = [0.01] * MIN_BENCH_EVALUATED
+    rows = evaluate_selection(
+        _selection(candidate_scope_id="scope-eu", selector="agent"),
+        _path_bars(100.0, 110.0),
+        horizon_sessions=5,
+        bench_opportunities=bench,
+    )
+    allocation = _allocation(rows)
+    assert _direction(rows).verdict == "gagnant"
+    assert allocation.verdict == "gagnant"
+    assert allocation.selector == "agent"
+    assert allocation.opportunity == pytest.approx(0.1)
+    assert allocation.bench_n == MIN_BENCH_EVALUATED
+    assert allocation.bench_median_opportunity == 0.01
+
+
+def test_scope_introuvable_compte_bench_unresolved() -> None:
+    selection = _selection(candidate_scope_id="scope-missing")
+    source = _FakeSource({"AIR.PA": _path_bars(100.0, 110.0)})
+    reader = _ScopeReader({})
+    rows = evaluate_selections([selection], source, horizon_sessions=5, scope_reader=reader)
+    assert reader.calls == [("scope-missing", "2026-01-01")]
+    assert _direction(rows).verdict == "gagnant"
+    assert _allocation(rows).verdict == "non_evaluable"
+    assert _allocation(rows).scope_missing is True
+
+
+def test_cache_opportunites_par_scope_ne_refetch_pas_le_banc() -> None:
+    scope = _fat_scope(n=MIN_BENCH_EVALUATED)
+    bench_symbols = [f"B{index}.PA" for index in range(MIN_BENCH_EVALUATED)]
+    bars = {"AIR.PA": _path_bars(100.0, 110.0), "MC.PA": _path_bars(100.0, 110.0)}
+    bars.update({symbol: _path_bars(100.0, 101.0) for symbol in bench_symbols})
+    source = _FakeSource(bars)
+    first = _selection(symbol="AIR.PA", candidate_scope_id="scope-eu", selected_symbols=("AIR.PA", "MC.PA"))
+    second = _selection(
+        mandate_id="m-2",
+        symbol="MC.PA",
+        candidate_scope_id="scope-eu",
+        selected_symbols=("AIR.PA", "MC.PA"),
+    )
+    rows = evaluate_selections(
+        [first, second],
+        source,
+        horizon_sessions=5,
+        scope_reader=_ScopeReader({"scope-eu": scope}),
+    )
+    fetched = [symbol for symbol, _lookback, _interval in source.calls]
+    assert fetched.count("AIR.PA") == 1
+    assert fetched.count("MC.PA") == 1
+    assert all(fetched.count(symbol) == 1 for symbol in bench_symbols)
+    allocations = [row for row in rows if row.verdict_basis == "allocation"]
+    assert len(allocations) == 2
+    assert all(row.verdict == "gagnant" for row in allocations)
+
+
+def test_refresh_pending_evaluated_bench_unresolved(tmp_path) -> None:
+    history = tmp_path / "universe_mandates" / "history.jsonl"
+    history.parent.mkdir(parents=True)
+    history.write_text(
+        json.dumps(
+            _mandate(
+                status="active",
+                symbols=("AIR.PA",),
+                as_of="2026-01-01T08:00:00+00:00",
+                scope_id="scope-eu",
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    class _Store:
+        def __init__(self) -> None:
+            self.rows: list[dict] = []
+
+        def upsert_outcomes(self, rows) -> None:
+            self.rows.extend(dict(row) for row in rows)
+
+        def load_outcomes(self) -> list[dict]:
+            return [{"id": index, **row} for index, row in enumerate(self.rows, start=1)]
+
+        def update_flair_scores(self, scores) -> None:
+            return None
+
+        def count(self) -> int:
+            return len(self.rows)
+
+        def ensure_selection_semantics(self) -> str:
+            return SELECTION_SEMANTICS_VERSION
+
+    scope = _fat_scope(n=MIN_BENCH_EVALUATED)
+    bench_symbols = [f"B{index}.PA" for index in range(MIN_BENCH_EVALUATED)]
+    source = _FakeSource(
+        {
+            "AIR.PA": _path_bars(100.0, 110.0),
+            **{symbol: _path_bars(100.0, 101.0) for symbol in bench_symbols},
+        }
+    )
+    result = refresh_selection_outcomes(
+        tmp_path,
+        source,
+        store_opener=lambda _state_dir: _Store(),
+        scope_store_opener=lambda _state_dir: _ScopeReader({"scope-eu": scope}),
+    )
+    assert result["pending"] == 1
+    assert result["evaluated"] == 2
+    assert result["stored"] == 2
+    assert result["bench_unresolved"] == 0
+    assert result["semantics_version"] == SELECTION_SEMANTICS_VERSION

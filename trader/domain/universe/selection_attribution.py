@@ -23,12 +23,16 @@ from trader.domain.market_data import Bar
 DEFAULT_FORWARD_SESSIONS = 5
 DEFAULT_SHRINKAGE_K = 5.0
 MIN_BENCH_EVALUATED = 8
+SELECTION_SEMANTICS_VERSION = "bench_v2"
+SELECTION_SEMANTICS_KEY = "selection_semantics_version"
 _DEFAULT_VERDICT_BASIS = "direction"
 
 __all__ = [
     "DEFAULT_FORWARD_SESSIONS",
     "DEFAULT_SHRINKAGE_K",
     "MIN_BENCH_EVALUATED",
+    "SELECTION_SEMANTICS_KEY",
+    "SELECTION_SEMANTICS_VERSION",
     "classify_allocation_quality",
     "classify_selection_quality",
     "directional_action",
