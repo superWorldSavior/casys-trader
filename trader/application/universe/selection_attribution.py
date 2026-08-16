@@ -34,6 +34,7 @@ __all__ = [
     "SELECTION_FEEDBACK_ROLE",
     "EvaluatedSelection",
     "SelectionOutcomeStore",
+    "SelectionOutcomeStoreOpener",
     "UniverseSelection",
     "evaluate_selection",
     "evaluate_selections",
@@ -41,10 +42,14 @@ __all__ = [
     "load_mandate_selections",
     "persist_and_score",
     "refresh_selection_outcomes",
+    "resolve_bench",
     "selection_feedback_digest",
     "selections_from_mandate_payload",
+    "selections_from_mandate_payloads",
     "summarize_outcomes",
 ]
+
+_JUDGED_STATUSES = frozenset({"active", "fallback"})
 
 
 @dataclass(frozen=True)
@@ -56,6 +61,10 @@ class UniverseSelection:
     as_of: str
     venue: str = ""
     family: str = UNCLASSIFIED_FAMILY
+    candidate_scope_id: str = ""
+    status: str = ""
+    selector: str = "agent"
+    selected_symbols: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -79,6 +88,12 @@ class SelectionOutcomeStore(Protocol):
 
     def update_flair_scores(self, scores: Mapping[int, float]) -> None: ...
 
+    def count(self) -> int: ...
+
+
+class SelectionOutcomeStoreOpener(Protocol):
+    def __call__(self, state_dir: str | Path) -> SelectionOutcomeStore: ...
+
 
 def _allowed_sides(raw: object) -> tuple[str, ...]:
     if not isinstance(raw, (list, tuple)):
@@ -97,6 +112,45 @@ def _family_of(symbol_mandate: Mapping[str, Any]) -> str:
     return UNCLASSIFIED_FAMILY
 
 
+def _mapping(value: object) -> Mapping[str, Any]:
+    return value if isinstance(value, Mapping) else {}
+
+
+def _payload_status(payload: Mapping[str, Any]) -> str:
+    status = str(payload.get("status") or "").strip().lower()
+    if status:
+        return status
+    return str(_mapping(payload.get("mandate_ref")).get("status") or "").strip().lower()
+
+
+def _payload_scope_id(payload: Mapping[str, Any]) -> str:
+    scope_id = str(payload.get("candidate_scope_id") or "").strip()
+    if scope_id:
+        return scope_id
+    return str(_mapping(payload.get("mandate_ref")).get("candidate_scope_id") or "").strip()
+
+
+def _payload_fallback_reason(payload: Mapping[str, Any]) -> object:
+    reason = payload.get("fallback_reason")
+    if reason not in (None, ""):
+        return reason
+    return _mapping(payload.get("mandate_ref")).get("fallback_reason")
+
+
+def _is_judged_status(status: str) -> bool:
+    # Live history 2026-08-16: 0/476 lines omit status. Missing status is a
+    # legacy activation (or an active slice), never a prepared proposal.
+    if not status:
+        return True
+    return status in _JUDGED_STATUSES
+
+
+def _selector_for(*, status: str, fallback_reason: object) -> str:
+    if status == "fallback" or fallback_reason not in (None, ""):
+        return "baseline_fallback"
+    return "agent"
+
+
 def _selection(
     *,
     mandate_id: str,
@@ -104,9 +158,14 @@ def _selection(
     symbol_mandate: Mapping[str, Any],
     as_of: str,
     venue: str,
+    candidate_scope_id: str = "",
+    status: str = "",
+    selector: str = "agent",
+    selected_symbols: tuple[str, ...] = (),
 ) -> UniverseSelection | None:
     if not mandate_id or not symbol or not as_of:
         return None
+    picks = selected_symbols or (symbol,)
     return UniverseSelection(
         mandate_id=mandate_id,
         symbol=symbol,
@@ -115,16 +174,32 @@ def _selection(
         as_of=as_of,
         venue=venue,
         family=_family_of(symbol_mandate),
+        candidate_scope_id=candidate_scope_id,
+        status=status,
+        selector=selector,
+        selected_symbols=picks,
     )
 
 
 def selections_from_mandate_payload(payload: Mapping[str, Any]) -> list[UniverseSelection]:
-    """Project one mandate snapshot (history line or active slice) into selections."""
+    """Project one judged mandate snapshot (history line or active slice)."""
+    status = _payload_status(payload)
+    if not _is_judged_status(status):
+        return []
+    scope_id = _payload_scope_id(payload)
+    selector = _selector_for(status=status, fallback_reason=_payload_fallback_reason(payload))
     symbols = payload.get("symbols")
     if isinstance(symbols, Mapping):
         mandate_id = str(payload.get("mandate_id") or "")
         as_of = str(payload.get("as_of") or "")
         venue = str(payload.get("venue") or "")
+        selected_symbols = tuple(
+            dict.fromkeys(
+                str(raw.get("symbol") or symbol).strip()
+                for symbol, raw in symbols.items()
+                if isinstance(raw, Mapping) and str(raw.get("symbol") or symbol).strip()
+            )
+        )
         out: list[UniverseSelection] = []
         for symbol, raw in symbols.items():
             if not isinstance(raw, Mapping):
@@ -135,12 +210,16 @@ def selections_from_mandate_payload(payload: Mapping[str, Any]) -> list[Universe
                 symbol_mandate=raw,
                 as_of=as_of,
                 venue=venue,
+                candidate_scope_id=scope_id,
+                status=status,
+                selector=selector,
+                selected_symbols=selected_symbols,
             )
             if item is not None:
                 out.append(item)
         return out
 
-    ref = payload.get("mandate_ref") if isinstance(payload.get("mandate_ref"), Mapping) else {}
+    ref = _mapping(payload.get("mandate_ref"))
     symbol_mandate = payload.get("symbol_mandate")
     if not isinstance(symbol_mandate, Mapping):
         return []
@@ -148,10 +227,60 @@ def selections_from_mandate_payload(payload: Mapping[str, Any]) -> list[Universe
         mandate_id=str(ref.get("mandate_id") or ""),
         symbol=str(symbol_mandate.get("symbol") or "").strip(),
         symbol_mandate=symbol_mandate,
-        as_of=str(ref.get("as_of") or ""),
-        venue=str(ref.get("venue") or ""),
+        as_of=str(ref.get("as_of") or payload.get("as_of") or ""),
+        venue=str(ref.get("venue") or payload.get("venue") or ""),
+        candidate_scope_id=scope_id,
+        status=status,
+        selector=selector,
     )
     return [item] if item is not None else []
+
+
+def selections_from_mandate_payloads(
+    payloads: Iterable[Mapping[str, Any]],
+) -> list[UniverseSelection]:
+    """Judge activations only; collapse fallback bursts by (scope, symbol)."""
+    out: list[UniverseSelection] = []
+    seen_agent: set[tuple[str, str, str]] = set()
+    seen_fallback: set[tuple[str, str]] = set()
+    for payload in payloads:
+        for selection in selections_from_mandate_payload(payload):
+            if selection.selector == "baseline_fallback":
+                key_fb = (selection.candidate_scope_id, selection.symbol)
+                if key_fb in seen_fallback:
+                    continue
+                seen_fallback.add(key_fb)
+            else:
+                key_ag = (selection.mandate_id, selection.symbol, selection.as_of)
+                if key_ag in seen_agent:
+                    continue
+                seen_agent.add(key_ag)
+            out.append(selection)
+    return out
+
+
+def resolve_bench(selection: UniverseSelection, scope: Mapping[str, Any]) -> list[str]:
+    """Candidates minus mandate picks minus sticky. Order follows ``scope.candidates``."""
+    picks = {str(symbol).strip() for symbol in selection.selected_symbols if str(symbol).strip()}
+    if selection.symbol.strip():
+        picks.add(selection.symbol.strip())
+    sticky = {
+        str(symbol).strip()
+        for symbol in (scope.get("sticky_context_at_close") or ())
+        if str(symbol).strip()
+    }
+    bench: list[str] = []
+    seen: set[str] = set()
+    for raw in scope.get("candidates") or ():
+        if isinstance(raw, Mapping):
+            symbol = str(raw.get("symbol") or "").strip()
+        else:
+            symbol = str(raw or "").strip()
+        if not symbol or symbol in picks or symbol in sticky or symbol in seen:
+            continue
+        seen.add(symbol)
+        bench.append(symbol)
+    return bench
 
 
 def evaluate_selection(
@@ -420,33 +549,21 @@ def iter_mandate_payloads(state_dir: str | Path):
 
 
 def load_mandate_selections(state_dir: str | Path) -> list[UniverseSelection]:
-    selections: list[UniverseSelection] = []
-    seen: set[tuple[str, str, str]] = set()
-    for payload in iter_mandate_payloads(state_dir):
-        for selection in selections_from_mandate_payload(payload):
-            key = (selection.mandate_id, selection.symbol, selection.as_of)
-            if key in seen:
-                continue
-            seen.add(key)
-            selections.append(selection)
-    return selections
+    return selections_from_mandate_payloads(iter_mandate_payloads(state_dir))
 
 
 def refresh_selection_outcomes(
     state_dir: str | Path,
     data_source: DataSource,
     *,
+    store_opener: SelectionOutcomeStoreOpener,
     horizon_sessions: int = DEFAULT_FORWARD_SESSIONS,
     limit: int = 128,
     shrinkage_k: float = DEFAULT_SHRINKAGE_K,
 ) -> dict[str, Any]:
     """Score a bounded batch of still-unjudged mandate selections. Fail-open caller."""
 
-    from trader.infrastructure.state_db.universe_selection_store import (
-        try_open_universe_selection_store,
-    )
-
-    store = try_open_universe_selection_store(state_dir)
+    store = store_opener(state_dir)
     existing = {
         (
             str(row.get("mandate_id") or ""),
