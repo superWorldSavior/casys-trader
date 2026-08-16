@@ -374,6 +374,23 @@ def _load_venue_open_state_safe(state_dir: Path, config_dir: str) -> tuple[dict,
         return {}, [], {}
 
 
+def _load_memory_health_safe(state_dir: Path) -> dict:
+    """Compact MEMORY snapshot. Never creates files, never raises."""
+    try:
+        from trader.reporting.read_models.memory import compute_memory_health
+
+        snapshot = compute_memory_health(state_dir)
+    except Exception:
+        return {
+            "store_available": False,
+            "n_notes": None,
+            "lift": None,
+            "active_rules": [],
+            "sync_available": False,
+        }
+    return snapshot if isinstance(snapshot, dict) else {}
+
+
 def _count_pending_learnings_safe(learnings_path: Path, consolidated_path: Path) -> int:
     """Compte les learnings bruts NON consolidés (postérieurs au watermark).
 
@@ -541,6 +558,7 @@ def load_runtime_state(
         state_dir_path / "learnings.jsonl",
         state_dir_path / "learnings_consolidated.json",
     )
+    memory_health = _load_memory_health_safe(state_dir_path)
     fills = _load_fills_safe(state_dir_path / "broker.json")
     recent_trips = _safe_list_of_dicts(attribution.get("recent_trips"))
     _effective_config_dir = config_dir if config_dir is not None else str(state_dir_path.parent)
@@ -577,6 +595,7 @@ def load_runtime_state(
         "consolidation_status": consolidation_status,
         "queue_worker_activity": queue_worker_activity,
         "learnings_pending_count": learnings_pending_count,
+        "memory_health": memory_health,
         "fills": fills,
         "recent_trips": recent_trips,
         "venue_state": venue_state,

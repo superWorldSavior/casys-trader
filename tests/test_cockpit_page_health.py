@@ -23,6 +23,7 @@ from trader.interfaces.cockpit.pages.health import (
     build_fx_rates,
     build_learnings,
     build_llm,
+    build_memory,
     build_sources,
     build_universe,
 )
@@ -489,6 +490,68 @@ def test_learnings_adaptive_limit_shows_more():
     assert "SYM5" not in rendered  # 6e note hors limite
 
 
+def test_memory_empty_state():
+    rendered = _render(build_memory({}, now=NOW))
+    assert "memory store unavailable" in rendered
+
+
+def test_memory_compact_strip_shows_lift_and_rules():
+    state = {
+        "memory_health": {
+            "store_available": True,
+            "n_notes": 5700,
+            "lift": -0.18,
+            "useful_rate": 1 / 3,
+            "base_rate": 0.51,
+            "active_rules": [
+                {"rule_id": "rule-helps", "q_value": 0.18, "q_updates": 30},
+                {"rule_id": "rule-hurts", "q_value": -0.34, "q_updates": 35},
+                {"rule_id": "rule-unknown", "q_value": 0.5, "q_updates": 2},
+            ],
+            "sync_available": True,
+            "sync_status": "ok",
+            "sync_as_of": "2026-08-16T10:00:00+00:00",
+        }
+    }
+    now = datetime(2026, 8, 16, 10, 14, tzinfo=UTC)
+    rendered = _render(build_memory(state, now=now))
+    assert "5700" in rendered
+    assert "−18.0 pp" in rendered or "-18.0 pp" in rendered
+    assert "1 helps · 1 hurts" in rendered
+    assert "14m ago" in rendered
+    assert "ok" in rendered
+
+
+def test_project_memory_classifies_rules_with_citation_utility():
+    from trader.interfaces.cockpit.projections.health import project_memory
+
+    projection = project_memory(
+        {
+            "memory_health": {
+                "store_available": True,
+                "n_notes": 5,
+                "lift": 0.12,
+                "useful_rate": 0.75,
+                "base_rate": 0.63,
+                "active_rules": [
+                    {"rule_id": "a", "q_value": 0.18, "q_updates": 30},
+                    {"rule_id": "b", "q_value": -0.34, "q_updates": 2},
+                ],
+                "sync_available": True,
+                "sync_status": "ok",
+                "sync_as_of": "2026-08-16T10:00:00+00:00",
+            }
+        },
+        now=datetime(2026, 8, 16, 10, 14, tzinfo=UTC),
+    )
+    assert projection.available is True
+    assert projection.notes_label == "5"
+    assert projection.lift_label == "+12.0 pp"
+    assert projection.n_helps == 1
+    assert projection.n_hurts == 0
+    assert "14m ago" in projection.sync_label
+
+
 def test_learnings_default_still_3():
     """Sans limit explicite, le défaut (3) s'applique."""
     state = {
@@ -684,6 +747,7 @@ async def test_health_page_mounts_with_all_panels(tmp_path, monkeypatch):
         assert app.query_one("#sources-panel", VerticalScroll) is not None
         assert app.query_one("#llm-panel", VerticalScroll) is not None
         assert app.query_one("#learnings-h-panel", VerticalScroll) is not None
+        assert app.query_one("#memory-h-panel", VerticalScroll) is not None
         assert app.query_one("#universe-h-panel", VerticalScroll) is not None
         assert app.query_one("#risk-panel", VerticalScroll) is not None
         assert app.query_one("#model-panel", VerticalScroll) is not None

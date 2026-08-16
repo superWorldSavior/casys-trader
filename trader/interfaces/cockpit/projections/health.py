@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
 from trader.interfaces.cockpit import format as f
 from trader.interfaces.cockpit.projections.universe import venue_of_safe
@@ -91,6 +92,21 @@ class UniverseHealthProjection:
     symbols_label: str
     hot_total: int
     hotset_label: str
+
+
+@dataclass(frozen=True)
+class MemoryHealthProjection:
+    available: bool
+    missing_label: str
+    notes_label: str
+    lift_value: float | None
+    lift_label: str
+    useful_label: str
+    rules_label: str
+    n_helps: int
+    n_hurts: int
+    sync_label: str
+    sync_is_error: bool
 
 
 def symbols_by_venue(state: dict) -> dict[str, list[str]]:
@@ -301,6 +317,82 @@ def project_universe_health(state: dict) -> UniverseHealthProjection:
     )
 
 
+def _count_rule_utilities(rules: list[dict]) -> tuple[int, int]:
+    from trader.agent.learnings.consolidator import citation_utility
+
+    helps = 0
+    hurts = 0
+    for row in rules:
+        utility = citation_utility(
+            q_value=float(row.get("q_value") or 0.0),
+            q_updates=int(row.get("q_updates") or 0),
+        )
+        if utility == "helps":
+            helps += 1
+        elif utility == "hurts":
+            hurts += 1
+    return helps, hurts
+
+
+def project_memory(state: dict, *, now: datetime) -> MemoryHealthProjection:
+    """Project the compact MEMORY health strip from the read-model snapshot."""
+
+    snapshot = f.safe_dict(state.get("memory_health"))
+    store_available = bool(snapshot.get("store_available"))
+    n_notes = snapshot.get("n_notes")
+    lift = finite_float(snapshot.get("lift"), default=None)
+    useful = finite_float(snapshot.get("useful_rate"), default=None)
+    base = finite_float(snapshot.get("base_rate"), default=None)
+    rules = [
+        row for row in dict_list(snapshot.get("active_rules")) if isinstance(row, dict)
+    ]
+    n_helps, n_hurts = _count_rule_utilities(rules) if store_available else (0, 0)
+
+    if lift is None:
+        lift_label = "—"
+    else:
+        lift_label = f"{lift * 100.0:+.1f} pp"
+
+    if useful is None and base is None:
+        useful_label = "—"
+    elif useful is None:
+        useful_label = f"base {base:.0%}" if base is not None else "—"
+    elif base is None:
+        useful_label = f"recall {useful:.0%}"
+    else:
+        useful_label = f"recall {useful:.0%} · base {base:.0%}"
+
+    notes_label = "—" if n_notes is None else str(int(n_notes))
+    rules_label = f"{n_helps} helps · {n_hurts} hurts" if store_available else "—"
+
+    as_of = snapshot.get("sync_as_of")
+    parsed = f.parse_ts(as_of)
+    status = str(snapshot.get("sync_status") or "").strip()
+    if not snapshot.get("sync_available"):
+        sync_label = "no sync yet"
+    elif parsed is None:
+        sync_label = status or "—"
+    else:
+        clock = now if now.tzinfo else now.replace(tzinfo=timezone.utc)
+        age_minutes = (clock - parsed).total_seconds() / 60.0
+        age_label = f.age_m(age_minutes)
+        sync_label = f"{age_label} ago" + (f" · {status}" if status else "")
+
+    return MemoryHealthProjection(
+        available=store_available,
+        missing_label="memory store unavailable",
+        notes_label=notes_label,
+        lift_value=lift,
+        lift_label=lift_label,
+        useful_label=useful_label,
+        rules_label=rules_label,
+        n_helps=n_helps,
+        n_hurts=n_hurts,
+        sync_label=sync_label,
+        sync_is_error=status == "error",
+    )
+
+
 __all__ = [
     "FreshnessProjection",
     "FxRateRow",
@@ -308,6 +400,7 @@ __all__ = [
     "LearningRow",
     "LearningsProjection",
     "LlmHealthProjection",
+    "MemoryHealthProjection",
     "SourceRow",
     "SourcesProjection",
     "StaleSymbolRow",
@@ -319,6 +412,7 @@ __all__ = [
     "project_fx_rates",
     "project_learnings",
     "project_llm_health",
+    "project_memory",
     "project_sources",
     "project_universe_health",
     "symbols_by_venue",

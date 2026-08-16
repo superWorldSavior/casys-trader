@@ -35,7 +35,7 @@ Palette Rich : `PALETTE_CASYS` + constantes `CASYS_*` (`interfaces/ui/palette.py
 | 1 | home | JOURNAL (raisonnement de l'agent : rationale, chip action, meter confiance, effet) · EQUITY · POSITIONS · NEXT TO FIRE | `enter` inspect |
 | 2 | portfolio | table positions complète (side, P&L, stop, fraîcheur data) · EXPOSURE · FX → USD · CLOSED TRADES | `o` tri |
 | 3 | decisions | ledger 24h (chips de filtre, expansion : rationale + audit tool_calls ✓/✗) · playbook plans/veilles · MIX · RISK GATE · MODEL | `b/s/h` filtre |
-| 4 | health | fraîcheur par venue · FX · sources · LLM · learnings · univers — cible du badge `▲N` | |
+| 4 | health | fraîcheur par venue · FX · sources · LLM · learnings · mémoire (lift) · univers — cible du badge `▲N` | |
 | 5 | logs | EVENTS (`events.jsonl`, chips par classe, cycles masqués par défaut) · AGENT TRACE | `c f F /` |
 | 6 | universe | table par venue (hot/pool/⚚ pinned/✕ banned, décision, wake, data) · ROTATION · HOT-SET · OVERRIDES | `p b u` |
 | 7 | settings | panels par fichier yaml, labels d'effet (applies now / next cycle / next rotation / restart required / locked), écriture atomique explicite | `enter w r` |
@@ -69,7 +69,9 @@ Rien ne démarre sans `s`.
 Assemble l'état pour l'UI par **lectures tolérantes** (jamais de `raise`) des
 fichiers `state/` : `current_report.json`/`last_report.json`,
 `daemon_status.json`, `history.jsonl`, `decisions.jsonl`, `venue_state.json` et
-les projections de learnings/univers. Plans, scheduler et fills sont lus dans
+les projections de learnings/univers. Le snapshot `memory_health` lit
+`learnings.db`, `situation_memory.db` et `learnings_sync_status.json` en
+read-only (aucun schéma créé). Plans, scheduler et fills sont lus dans
 `casys.db` lorsqu'il existe ; les anciens JSON ne servent que de compatibilité
 pour fixtures/états historiques. Les events `events.jsonl` sont lus séparément par
 `interfaces/cockpit/events.py` (glyphes : `·` hold, `▲/▼` fills, `✗` risk,
