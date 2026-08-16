@@ -7,8 +7,10 @@ moved up is a good selection even if no trade was taken.
 from __future__ import annotations
 
 from bisect import bisect_left, bisect_right
+from collections import defaultdict
 from collections.abc import Iterable, Mapping, Sequence
 from datetime import datetime, timezone
+from statistics import median
 from typing import Any
 
 from trader.domain.learnings.scoring import (
@@ -20,13 +22,19 @@ from trader.domain.market_data import Bar
 
 DEFAULT_FORWARD_SESSIONS = 5
 DEFAULT_SHRINKAGE_K = 5.0
+MIN_BENCH_EVALUATED = 8
+_DEFAULT_VERDICT_BASIS = "direction"
 
 __all__ = [
     "DEFAULT_FORWARD_SESSIONS",
     "DEFAULT_SHRINKAGE_K",
+    "MIN_BENCH_EVALUATED",
+    "classify_allocation_quality",
     "classify_selection_quality",
     "directional_action",
     "forward_return_over_sessions",
+    "has_as_of_session",
+    "opportunity",
     "score_selection_outcomes",
     "to_flair_verdict",
 ]
@@ -57,6 +65,31 @@ def directional_action(allowed_sides: Sequence[str] | None) -> str | None:
     return None
 
 
+def _dated_bars(bars: Sequence[Bar]) -> list[tuple[datetime, Bar]]:
+    dated = [(bar_ts, bar) for bar in bars if (bar_ts := _parse_ts(bar.ts)) is not None]
+    dated.sort(key=lambda item: item[0])
+    return dated
+
+
+def _anchor_index(dated: Sequence[tuple[datetime, Bar]], as_of_ts: datetime) -> int | None:
+    timestamps = [item[0] for item in dated]
+    start = bisect_right(timestamps, as_of_ts) - 1
+    if start < 0:
+        start = bisect_left(timestamps, as_of_ts)
+        if start >= len(dated):
+            return None
+    return start
+
+
+def has_as_of_session(bars: Sequence[Bar], as_of: str) -> bool:
+    """True when a dated session bar can anchor the as-of (horizon may still be open)."""
+    as_of_ts = _parse_ts(as_of)
+    if as_of_ts is None:
+        return False
+    dated = _dated_bars(bars)
+    return bool(dated) and _anchor_index(dated, as_of_ts) is not None
+
+
 def forward_return_over_sessions(
     bars: Sequence[Bar],
     as_of: str,
@@ -73,16 +106,12 @@ def forward_return_over_sessions(
     as_of_ts = _parse_ts(as_of)
     if as_of_ts is None:
         return None
-    dated = [(bar_ts, bar) for bar in bars if (bar_ts := _parse_ts(bar.ts)) is not None]
-    dated.sort(key=lambda item: item[0])
+    dated = _dated_bars(bars)
     if not dated:
         return None
-    timestamps = [item[0] for item in dated]
-    start = bisect_right(timestamps, as_of_ts) - 1
-    if start < 0:
-        start = bisect_left(timestamps, as_of_ts)
-        if start >= len(dated):
-            return None
+    start = _anchor_index(dated, as_of_ts)
+    if start is None:
+        return None
     end = start + horizon_sessions
     if end >= len(dated):
         return None
@@ -90,6 +119,32 @@ def forward_return_over_sessions(
     if initial == 0.0:
         return None
     return dated[end][1].close / initial - 1.0
+
+
+def opportunity(forward_return: float | None) -> float | None:
+    """Absolute move used as allocation opportunity, or ``None`` if unknown."""
+    if forward_return is None:
+        return None
+    return abs(float(forward_return))
+
+
+def classify_allocation_quality(
+    pick_opportunity: float | None,
+    bench_opportunities: Sequence[float | None],
+    band: float = SIGNIFICANT_RETURN_BAND,
+) -> str:
+    """Judge a pick against the bench median. Missing members are dropped, never zeroed."""
+    if pick_opportunity is None:
+        return "non_evaluable"
+    evaluated = [float(value) for value in bench_opportunities if value is not None]
+    if len(evaluated) < MIN_BENCH_EVALUATED:
+        return "non_evaluable"
+    excess = float(pick_opportunity) - float(median(evaluated))
+    if excess > band:
+        return "gagnant"
+    if excess < -band:
+        return "perdant"
+    return "neutre"
 
 
 def classify_selection_quality(
@@ -114,19 +169,35 @@ def to_flair_verdict(verdict: str) -> str:
     return verdict
 
 
+def _verdict_basis(row: Mapping[str, Any]) -> str:
+    basis = str(row.get("verdict_basis") or "").strip()
+    return basis or _DEFAULT_VERDICT_BASIS
+
+
 def score_selection_outcomes(
     rows: Iterable[Mapping[str, Any]],
     *,
     shrinkage_k: float = DEFAULT_SHRINKAGE_K,
 ) -> dict:
-    """Run persistence-agnostic FLAIR on already-judged selections."""
-    mapped = [
-        {
-            "id": int(row["id"]),
-            "symbol": row.get("symbol") or "",
-            "family": row.get("family") or "",
-            "verdict": to_flair_verdict(str(row.get("verdict") or "")),
-        }
-        for row in rows
-    ]
-    return compute_outcome_scores(mapped, shrinkage_k=shrinkage_k)
+    """Run FLAIR per ``verdict_basis`` so allocation and direction keep separate base rates."""
+    groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        groups[_verdict_basis(row)].append(
+            {
+                "id": int(row["id"]),
+                "symbol": row.get("symbol") or "",
+                "family": row.get("family") or "",
+                "verdict": to_flair_verdict(str(row.get("verdict") or "")),
+            }
+        )
+    if not groups:
+        return {"scored": 0, "base_rates": {}, "scores": {}}
+    scores: dict[int, float] = {}
+    base_rates: dict[str, dict[str, float]] = {}
+    scored = 0
+    for basis, mapped in groups.items():
+        result = compute_outcome_scores(mapped, shrinkage_k=shrinkage_k)
+        scores.update(result.get("scores") or {})
+        base_rates[basis] = dict(result.get("base_rates") or {})
+        scored += int(result.get("scored") or 0)
+    return {"scored": scored, "base_rates": base_rates, "scores": scores}

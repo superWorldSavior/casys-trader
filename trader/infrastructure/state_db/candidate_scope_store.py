@@ -8,6 +8,8 @@ from typing import Any, Mapping
 from trader.infrastructure.state_db._jsonl_store import (
     JsonlDayLedger,
     calendar_date_from_as_of,
+    find_newest_matching,
+    read_jsonl_objects,
     read_projection_or_scan,
     required_text,
     safe_filename_component,
@@ -70,6 +72,26 @@ class CandidateScopeStore:
             lambda payload: _is_scope_for_venue(payload, venue_key) and _matches_phase(payload, phase),
         )
 
+    def read_by_id(
+        self,
+        candidate_scope_id: str,
+        hint_date: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Load one immutable scope by id. Hint date first, then dated JSONL scan.
+
+        ``read_latest`` is the wrong join for historical attribution: a close
+        scope on J-1 is routinely activated on J.
+        """
+        scope_id = str(candidate_scope_id or "").strip()
+        if not scope_id:
+            return None
+        date_key = _hint_date_key(hint_date)
+        if date_key is not None:
+            for payload in reversed(read_jsonl_objects(self.path_for_date(date_key))):
+                if _is_scope_id(payload, scope_id):
+                    return payload
+        return find_newest_matching(self.base_dir, lambda payload: _is_scope_id(payload, scope_id))
+
 
 def _validated_scope(record: Mapping[str, Any]) -> dict[str, Any]:
     if not isinstance(record, Mapping):
@@ -90,6 +112,25 @@ def _record_date(record: Mapping[str, Any], *, explicit: str | None) -> str:
         record["as_of"],
         empty_error="record.as_of must start with YYYY-MM-DD when date is omitted",
     )
+
+
+def _hint_date_key(hint_date: str | None) -> str | None:
+    if hint_date is None:
+        return None
+    text = str(hint_date).strip()
+    if not text:
+        return None
+    candidate = text[:10] if len(text) >= 10 and text[4] == "-" and text[7] == "-" else text
+    try:
+        return validated_date(candidate)
+    except ValueError:
+        return None
+
+
+def _is_scope_id(payload: Mapping[str, Any] | None, candidate_scope_id: str) -> bool:
+    if payload is None:
+        return False
+    return str(payload.get("candidate_scope_id") or "").strip() == candidate_scope_id
 
 
 def _is_scope_for_venue(payload: dict[str, Any] | None, venue: str) -> bool:

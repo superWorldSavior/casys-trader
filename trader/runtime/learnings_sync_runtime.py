@@ -267,12 +267,20 @@ def _refresh_universe_selections(
         from trader.application.universe.selection_attribution import (
             refresh_selection_outcomes,
         )
+        from trader.infrastructure.state_db.universe_selection_store import (
+            try_open_universe_selection_store,
+        )
 
         class _Bars:
             def get_bars(self, symbol: str, lookback: str, interval: str):
                 return list(get_bars(symbol, lookback, interval))
 
-        return refresh_selection_outcomes(state_dir, _Bars(), limit=limit)
+        return refresh_selection_outcomes(
+            state_dir,
+            _Bars(),
+            limit=limit,
+            store_opener=try_open_universe_selection_store,
+        )
     except Exception as exc:  # noqa: BLE001 - universe FLAIR is advisory
         log.warning("[learnings_sync] universe selections failed: %s", exc)
         return {"pending": 0, "evaluated": 0, "stored": 0, "error": f"{type(exc).__name__}:{exc}"}

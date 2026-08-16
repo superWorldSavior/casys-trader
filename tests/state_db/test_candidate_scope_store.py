@@ -120,3 +120,31 @@ def test_read_latest_preopen_survives_a_new_close_projection(tmp_path) -> None:
 
     assert store.read_current("US") == next_close
     assert store.read_latest("US", scope_phase="preopen") == preopen
+
+
+def test_read_by_id_prefers_hint_date_then_scans_other_days(tmp_path) -> None:
+    store = CandidateScopeStore(tmp_path / "candidate_scopes")
+    close_j_minus_1 = _scope("EU", "scope-eu-close", as_of="2026-08-15T15:30:00+00:00")
+    other = _scope("US", "scope-us-other", as_of="2026-08-16T20:00:00+00:00")
+    store.append(close_j_minus_1, date="2026-08-15")
+    store.append(other, date="2026-08-16")
+
+    found = store.read_by_id("scope-eu-close", hint_date="2026-08-16")
+    hinted = store.read_by_id("scope-us-other", hint_date="2026-08-16")
+
+    assert found == close_j_minus_1
+    assert hinted == other
+    assert store.read_by_id("missing-scope", hint_date="2026-08-16") is None
+    assert store.read_by_id("") is None
+
+
+def test_read_by_id_uses_hint_file_before_a_newer_duplicate(tmp_path) -> None:
+    store = CandidateScopeStore(tmp_path / "candidate_scopes")
+    older = _scope("EU", "scope-dup", as_of="2026-08-15T15:30:00+00:00", label="close-j-1")
+    newer = _scope("EU", "scope-dup", as_of="2026-08-16T06:45:00+00:00", label="activation-j")
+    store.append(older, date="2026-08-15")
+    store.append(newer, date="2026-08-16")
+
+    assert store.read_by_id("scope-dup", hint_date="2026-08-15") == older
+    assert store.read_by_id("scope-dup", hint_date="2026-08-16T06:45:00+00:00") == newer
+    assert store.read_by_id("scope-dup") == newer

@@ -1,12 +1,18 @@
 from __future__ import annotations
 
+import json
+
 from trader.application.universe.selection_attribution import (
     MIN_FEEDBACK_N,
     UniverseSelection,
     evaluate_selection,
     evaluate_selections,
+    load_mandate_selections,
+    refresh_selection_outcomes,
+    resolve_bench,
     selection_feedback_digest,
     selections_from_mandate_payload,
+    selections_from_mandate_payloads,
     summarize_outcomes,
 )
 from trader.domain.learnings.scoring import SIGNIFICANT_RETURN_BAND
@@ -233,3 +239,199 @@ def test_selection_feedback_digest_insuffisant_sous_le_plancher() -> None:
     assert digest["status"] == "insufficient"
     assert digest["families"] == []
     assert digest["n_evaluated"] == 1
+
+
+def _mandate(
+    *,
+    status: str | None,
+    mandate_id: str = "m-eu",
+    scope_id: str = "scope-eu",
+    as_of: str = "2026-08-10T06:45:00+00:00",
+    symbols: tuple[str, ...] = ("AIR.PA", "MC.PA"),
+    fallback_reason: str | None = None,
+) -> dict:
+    payload: dict = {
+        "mandate_id": mandate_id,
+        "candidate_scope_id": scope_id,
+        "venue": "EU",
+        "as_of": as_of,
+        "symbols": {
+            symbol: {
+                "symbol": symbol,
+                "role": "core_candidate",
+                "allowed_sides": ["long"],
+                "family_context": {"family": "defense_aero_eu"},
+            }
+            for symbol in symbols
+        },
+        "fallback_reason": fallback_reason,
+    }
+    if status is not None:
+        payload["status"] = status
+    return payload
+
+
+def test_selections_extrait_scope_status_et_selector() -> None:
+    rows = selections_from_mandate_payload(_mandate(status="active"))
+    assert {row.symbol for row in rows} == {"AIR.PA", "MC.PA"}
+    assert all(row.candidate_scope_id == "scope-eu" for row in rows)
+    assert all(row.status == "active" for row in rows)
+    assert all(row.selector == "agent" for row in rows)
+    assert all(row.selected_symbols == ("AIR.PA", "MC.PA") for row in rows)
+
+
+def test_prepared_est_exclu_de_l_unite_de_jugement() -> None:
+    assert selections_from_mandate_payload(_mandate(status="prepared")) == []
+
+
+def test_fallback_est_tague_baseline_et_raison() -> None:
+    rows = selections_from_mandate_payload(
+        _mandate(status="fallback", fallback_reason="agent_brief_missing")
+    )
+    assert len(rows) == 2
+    assert all(row.selector == "baseline_fallback" for row in rows)
+    assert all(row.status == "fallback" for row in rows)
+
+
+def test_payload_sans_status_est_juge_comme_activation_legacy() -> None:
+    # Historique live 2026-08-16 : 0/476 lignes sans status. Les fixtures et
+    # slices actives sans champ restent des activations, jamais des prepared.
+    rows = selections_from_mandate_payload(_mandate(status=None))
+    assert [row.symbol for row in rows] == ["AIR.PA", "MC.PA"]
+    assert all(row.selector == "agent" for row in rows)
+
+
+def test_slice_active_lit_scope_et_status_depuis_mandate_ref() -> None:
+    rows = selections_from_mandate_payload(
+        {
+            "mandate_ref": {
+                "mandate_id": "m-eu",
+                "candidate_scope_id": "scope-eu",
+                "venue": "EU",
+                "as_of": "2026-08-10T06:45:00+00:00",
+                "status": "active",
+            },
+            "symbol_mandate": {
+                "symbol": "AIR.PA",
+                "role": "core_candidate",
+                "allowed_sides": ["long"],
+                "family_context": {"family": "defense_aero_eu"},
+            },
+        }
+    )
+    assert len(rows) == 1
+    assert rows[0].candidate_scope_id == "scope-eu"
+    assert rows[0].status == "active"
+    assert rows[0].selector == "agent"
+
+
+def test_rafale_fallback_dedup_par_scope_et_symbole() -> None:
+    burst = [
+        _mandate(
+            status="fallback",
+            mandate_id=f"universe-mandate:fallback:{index}",
+            as_of=f"2026-07-17T06:{45 + index:02d}:00+00:00",
+            fallback_reason="agent_brief_missing",
+        )
+        for index in range(3)
+    ]
+    rows = selections_from_mandate_payloads(burst)
+    assert sorted(row.symbol for row in rows) == ["AIR.PA", "MC.PA"]
+    assert all(row.selector == "baseline_fallback" for row in rows)
+
+
+def test_deux_activations_agent_du_meme_scope_restent_distinctes() -> None:
+    rows = selections_from_mandate_payloads(
+        [
+            _mandate(status="active", mandate_id="m-1", as_of="2026-08-10T06:45:00+00:00"),
+            _mandate(status="active", mandate_id="m-1", as_of="2026-08-11T06:45:00+00:00"),
+        ]
+    )
+    assert len(rows) == 4
+
+
+def test_load_mandate_selections_ignore_prepared(tmp_path) -> None:
+    history = tmp_path / "universe_mandates" / "history.jsonl"
+    history.parent.mkdir(parents=True)
+    history.write_text(
+        json.dumps(_mandate(status="prepared", mandate_id="m-prep"))
+        + "\n"
+        + json.dumps(_mandate(status="active", mandate_id="m-act", symbols=("AIR.PA",)))
+        + "\n",
+        encoding="utf-8",
+    )
+    rows = load_mandate_selections(tmp_path)
+    assert [row.symbol for row in rows] == ["AIR.PA"]
+    assert rows[0].status == "active"
+
+
+def test_resolve_bench_retire_picks_et_sticky() -> None:
+    selection = _selection(
+        symbol="AIR.PA",
+        candidate_scope_id="scope-eu",
+        selected_symbols=("AIR.PA", "MC.PA"),
+    )
+    bench = resolve_bench(
+        selection,
+        {
+            "candidates": [
+                {"symbol": "AIR.PA"},
+                {"symbol": "MC.PA"},
+                {"symbol": "OR.PA"},
+                {"symbol": "SAN.PA"},
+                {"symbol": "DBK.DE"},
+            ],
+            "sticky_context_at_close": ["DBK.DE", "MSFT"],
+        },
+    )
+    assert bench == ["OR.PA", "SAN.PA"]
+
+
+def test_resolve_bench_sans_sticky_ni_pick_garde_l_ordre_des_candidats() -> None:
+    bench = resolve_bench(
+        _selection(symbol="AIR.PA", selected_symbols=("AIR.PA",)),
+        {"candidates": [{"symbol": "OR.PA"}, {"symbol": "AIR.PA"}, {"symbol": "SAN.PA"}]},
+    )
+    assert bench == ["OR.PA", "SAN.PA"]
+
+
+def test_refresh_ouvre_le_store_par_injection(tmp_path) -> None:
+    history = tmp_path / "universe_mandates" / "history.jsonl"
+    history.parent.mkdir(parents=True)
+    history.write_text(
+        json.dumps(
+            _mandate(
+                status="active",
+                symbols=("AIR.PA",),
+                as_of="2026-01-01T08:00:00+00:00",
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    class _Store:
+        def __init__(self) -> None:
+            self.rows: list[dict] = []
+            self.scores: dict[int, float] = {}
+
+        def upsert_outcomes(self, rows) -> None:
+            self.rows.extend(dict(row) for row in rows)
+
+        def load_outcomes(self) -> list[dict]:
+            return [{"id": index, **row} for index, row in enumerate(self.rows, start=1)]
+
+        def update_flair_scores(self, scores) -> None:
+            self.scores = dict(scores)
+
+        def count(self) -> int:
+            return len(self.rows)
+
+    store = _Store()
+    source = _FakeSource({"AIR.PA": _path_bars(100.0, 110.0)})
+    result = refresh_selection_outcomes(tmp_path, source, store_opener=lambda _state_dir: store)
+    assert result["pending"] == 1
+    assert result["evaluated"] == 1
+    assert result["stored"] == 1
+    assert store.rows[0]["symbol"] == "AIR.PA"
+    assert store.rows[0]["verdict"] == "gagnant"
