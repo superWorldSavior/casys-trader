@@ -86,7 +86,7 @@ Mécanique : agent écrit un HOLD → consolidé en interdiction → relu → re
 **Arbitrage 1 tranché (Erwan, 2026-06-11) : exécution DIRECTE des plans armés, sans re-appel LLM.** Le LLM fait des ordres selon des scénarios mais n'exécute pas en direct ; il garde la main pour se réveiller et poser/ajuster ses plans. Le gate de risque déterministe reste le fusible.
 **Étage B implémenté (MVP, 2026-06-11, consultation Codex intégrée).** `on_trigger:"EXECUTE_ORDER"` sur les indicator_watch : le LLM arme un scénario complet (`order` = intent OPEN_*, qty, confidence, exit_plan avec hard_stop OBLIGATOIRE, rationale) ; au déclenchement le daemon exécute SANS re-appel via la boucle d'exécution normale (tous les gates de risque s'appliquent : missing_hard_stop, clamp 1 %, order_value, gross). Sécurités au déclenchement : si le prix a déjà franchi le stop, si une position existe déjà ou si les données sont stale → annulation + RÉVEIL du planificateur avec le contexte (événement `armed_plan_cancelled`). Contrat strict à l'armement (fast-fail) sinon dégradation en WAKE_WITH_ORDER_INTENT ; TTL max 4 h, aligné sur la revue périodique (corrigé par Erwan : un TTL court forçait des réveils de ré-armement, l'expiration étant silencieuse) ; provenance ledger `source="armed_plan"` + `armed_plan_id` ; `_LAST_LLM_AT` mis à jour seulement si le modèle a réellement statué. TDD : `tests/test_armed_plans.py` (5), `tests/test_indicator_watch.py` (+5), contrat agent exposé (vocabulaire + guidance).
 **Décision Erwan (2026-06-11) : PLUSIEURS scénarios par symbole.** Les plans armés sont des scénarios alternatifs (cassure haute → long / cassure basse → short) : ils coexistent sur un même symbole, un seul se réalisera (les autres s'annulent via position_exists ou expirent). Implémenté : le scheduler ne remplace plus les plans armés entre eux (les veilles simples gardent le remplacement) ; si plusieurs scénarios du même symbole déclenchent au même cycle → conflit, pas d'exécution arbitraire, réveil du planificateur (`armed_plan_conflict`). Rôle « planificateur » cadré explicitement dans le prompt (headers + échelle d'engagement en guidance) et dans le mandat.
-**Backlog post-MVP (findings Codex non bloquants).** Debounce du gate par raison/symbole (un régime fort persistant re-déclenche toutes les 30 min — principal reliquat de coût) ; persister `last_llm_at` (volatile → batch global à chaque restart) ; plafond GLOBAL de plans armés actifs ; dédup d'un scénario identique ré-armé ; `max_price_drift` numérique ; télémétrie complète (created/expired/blocked + âges).
+**Backlog post-MVP (findings Codex non bloquants).** Debounce du gate par raison/symbole (un régime fort persistant re-déclenche toutes les 30 min — principal reliquat de coût) ; persister `last_llm_at` (volatile → batch global à chaque restart) (MAJ 2026-08-16 : fermé par beb9e26 — voir D17) ; plafond GLOBAL de plans armés actifs ; dédup d'un scénario identique ré-armé ; `max_price_drift` numérique ; télémétrie complète (created/expired/blocked + âges).
 **Points ouverts.** (2) Budget d'appels cible/jour (~20 en cible d'observabilité). (3) Cadence des revues stratégiques (proposition : une par ouverture de session TW/EU/US). Mesurer A+B sur 24-48 h après restart.
 
 ---
@@ -298,10 +298,12 @@ corpus brut.
 
 **Mémoire de situation.** Le chemin frais n'a pas besoin de RAG.
 `situation_memory.db` est aujourd'hui un index FTS5 dérivé des points de briefs,
-sans consommateur runtime, sans FLAIR situation actif et sans MemRL. Si le
-retrieval est promu, son premier consommateur est l'agent univers : il reçoit des
-situations historiques analogues comme contexte, mais le RAG ne construit ni le
-pool ni la hotlist. `learnings.db` reste une mémoire de trading distincte.
+sans consommateur runtime, sans FLAIR situation actif et sans MemRL
+(MAJ 2026-08-16 : FLAIR situation livré depuis 9fa7920, MemRL toujours non
+actif — voir D17.). Si le retrieval est promu, son premier consommateur est
+l'agent univers : il reçoit des situations historiques analogues comme
+contexte, mais le RAG ne construit ni le pool ni la hotlist. `learnings.db`
+reste une mémoire de trading distincte.
 
 **Supersession ciblée.** D15 supersède le cap paper 50 et la propriété nominale
 `défaut + add/remove` de D9, ainsi que le contrat `candidates top 50` de D13-B et
@@ -406,3 +408,114 @@ non l'agent à des `allowed_sides` directionnels quand sa vue est tranchée
 
 **Design de référence.**
 `docs/superpowers/specs/2026-08-16-universe-selection-bench-verdict-design.md`.
+
+---
+
+## D17 — Boucles de feedback fermées : le marché note la mémoire, les sélections et les briefs  🛠 implémenté (rétrospectif, 2026-08-16)
+
+**Contexte.** Cinq commits du 15/08 ont fermé (ou rendu mesurables) des
+boucles de feedback sans entrée de registre. Avant eux : `last_llm_at`
+volatile (D7, restart = pic `periodic_review`) ; `since_open_m` calculé
+mais absent des `decisions.jsonl` (D11, hypothèse « open EU » injugeable) ;
+mandats univers jamais scorés ; 2 347 notes de situation à `outcome_score`
+figé 0,0 ; FLAIR/MemRL trader déjà en store (`learnings.db`) mais
+`citation_utility` et digest univers absents des prompts. Le marché peut
+désormais noter la mémoire, les sélections et les briefs — une partie
+seulement reboucle vers un agent.
+
+**Décision (constat d'implémentation, pas une nouvelle option).** Le marché
+juge l'artefact (sélection, note, règle citée, décision trader), pas
+l'agent d'aval. Cinq couches, du plus instrumenté au plus fermé :
+
+1. **Fenêtre de séance — `4cab3ea`.** Mesure : `since_open_m` / `to_close_m`
+   (+ `venue` si le snapshot en porte) dans
+   `market_snapshot` de chaque ligne `decisions.jsonl`, y compris
+   `armed_plan`. `None` reste légitime (hors séance, calendrier KO) et
+   n'est jamais remplacé par 0. Atterrissage : ledger uniquement
+   (`decision_ledger_rows.py`). **Instrumentation pure** : aucun gate, aucun
+   prompt. Rend enfin mesurable la condition de réouverture D11 (« fakeout
+   open EU », n=3, à filtrer avant toute garde).
+
+2. **Attribution des sélections — `9fbc9ae`.** Mesure : verdict
+   directionnel sur le **mouvement du symbole** (pas sur ce que le trader
+   en a fait) — `allowed_sides` long→BUY / short→SELL, juge partagé
+   `classify_decision_quality`, horizon 5 séances. Bidirectionnel ou vide
+   = `non_evaluable` (limite assumée ~78 % de l'historique). FLAIR
+   (`compute_outcome_scores`, shrinkage k=5) persisté dans
+   `casys.db.universe_selection_outcomes`. `mandate_ref` promu à la
+   **racine** des lignes de décision (déjà collecté, inexploitable en
+   requête tant qu'il restait dans `decision.*`). Script
+   `scripts/universe_selection_analytics.py`. **Ce lot ne parlait pas à
+   l'agent** (prompt univers inchangé). **Supersédé partiellement par D16**
+   (même jour, principe validé) : le verdict contre le banc
+   (`verdict_basis=allocation`) remplace le juge signé comme jugement
+   principal ; la base `direction` de 9fbc9ae est conservée, pas
+   abandonnée.
+
+3. **Notes de situation — `9fa7920`.** Mesure : chaque note (direction +
+   cible + horizon) contre le marché, pas le portefeuille. Parseur
+   d'horizon texte libre → séances cash (plafond 126 ; absent / illisible
+   = `non_evaluable`, **pas** de défaut 5 séances). Famille = panier
+   équipondéré du **catalogue**, pas l'univers du jour ; zones hors
+   périmètre. Atterrissage : colonnes d'outcome + `outcome_score` FLAIR
+   dans `situation_memory.db` (`situation_notes`) ; `q_value` reste
+   `NULL`. **Scoring opérateur**
+   (`scripts/situation_note_analytics.py evaluate`), **pas** le daemon.
+   Référence : `docs/reference/situation-memory.md`. MemRL situation non
+   implémenté (pas de retrieval ⇒ pas de reward à apprendre).
+
+4. **Fermeture FLAIR/MemRL — `500cfdd`.** Trois réinjections prompt, plus
+   le socle qui les rend stables :
+   - **Trader / `recent_decisions` + `last_llm_review`** : feedback FLAIR
+     (`status`, `verdict`, `forward_return`, `outcome_score`) annoté depuis
+     `learnings.db` par `decision_id` — le marché note les décisions
+     récentes dans le cockpit poussé.
+   - **Trader / règles globales** : `citation_utility`
+     (`helps`/`hurts`) attaché au `global` si `q_updates ≥ 10` (indépendant
+     de `robustness` FLAIR). En dessous du seuil : champ omis (`unknown`
+     n'est pas poussé).
+   - **Univers / `selection_feedback`** : digest comparatif
+     familles/rôles (min_n=5, `pays`/`decoit` ignorent les petits
+     groupes), rôle
+     `comparative_context_not_hotlist`. Poussé seulement si
+     `status=observed` ; sinon le prompt n'en voit rien.
+   - **Socle consolidateur** : snapshot pending avant l'appel LLM, grâce
+     3 jours, conservation des règles mesurées (`q_updates≥10`),
+     réutilisation d'ID si le texte normalisé est identique — sans ça le
+     MemRL des citations se réinitialisait à chaque leftover.
+   - Le sync FLAIR daemon (`learnings_sync_runtime`) évalue aussi les
+     mandats (plus seulement le script). Collateral : briefs
+     macro/news et micro société rédigés en anglais.
+
+5. **Cadence LLM — `beb9e26`.** Ferme le backlog D7 « persister
+   `last_llm_at` (volatile → batch global à chaque restart) ». Table
+   `llm_gate_last_seen` (casys.db, migration v5) : hydratation au boot,
+   upsert à chaque revue réelle. Backend ≠ sqlite → mémoire seule
+   préservée. **`last_wake_reasons` reste volatile** (debounce
+   régime/signal se réinitialise au restart — plus d'appels, pas moins).
+   Ce n'est pas une boucle marché : c'est la persistance du gate de
+   pertinence.
+
+**Ce qui reboucle vs ce qui reste mort.** Rebouclent aujourd'hui : outcomes
+trader → `recent_decisions`/`last_llm_review` ; MemRL des citations →
+`citation_utility` (seuil 10) ; FLAIR sélections → digest univers
+(min_n=5). Restent de l'instrumentation : fenêtre de séance ; scores
+situation ; `mandate_ref` racine. Le verdict D16 (banc) n'est pas encore
+le juge live — D16 est validé en principe.
+
+**Données.** 11 exécutions `armed_plan` réelles sans `since_open_m` avant
+4cab3ea. `mandate_ref` déjà présent dans 1 532 / 2 653 lignes, mais
+enterré. 9fbc9ae : ~78 % `non_evaluable` (reprise chiffrée en D16 : 8 789
+lignes, 22 % directionnelles). 9fa7920 : 2 184 / 2 347 horizons parsés ;
+1 016 notes structurellement scorables, 79 matures au 15/08. Suites
+vertes au fil des commits (4 276 → 4 326).
+
+**Points ouverts.** Backlog P3 du programme d'observabilité du 2026-08-16
+(boucles encore mortes) : (1) verdicts situation → prompt analyste
+(`build_news_macro_prompt` n'injecte ni `verdict` ni `outcome_score`) ;
+(2) `since_open_m` persisté mais **non analysé** — la mesure D11 n'a pas
+commencé ; (3) `mandate_ref` racine **non croisé** dans l'attribution
+(le juge lit `universe_mandates/history.jsonl`, pas les décisions
+trader). Reste aussi : MemRL situation (`q_value` jamais scorée) ;
+`last_wake_reasons` volatile ; implémentation du juge D16 (allocation
+contre le banc).
