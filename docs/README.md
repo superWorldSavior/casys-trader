@@ -57,7 +57,7 @@ Index de dossiers : [`reference`](reference/README.md), [`how-to`](how-to/README
 |---|---|---|
 | [`architecture.md`](architecture.md) | Explication bout-en-bout du cycle runtime | Code + pages `reference/` |
 | [`decisions-business.md`](decisions-business.md) | Synthèse lisible des décisions métier | [`decisions/registre-decisions-metier.md`](decisions/registre-decisions-metier.md) |
-| [`etat-systeme.md`](etat-systeme.md) | État vivant / snapshot opérateur | À vérifier contre `state/` et le process live avant décision |
+| `etat-systeme.md` (local, non versionné) | État vivant / snapshot opérateur | À vérifier contre `state/` et le process live avant décision |
 | [`README.md`](README.md) | Index Diátaxis + carte de couverture | Cette page |
 
 ---

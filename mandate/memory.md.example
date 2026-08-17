@@ -1,0 +1,7 @@
+# Strategy memory
+
+Copy this file to `mandate/memory.md` and edit it.
+
+Long-lived human priors (not the runtime learnings ledger under `state/`).
+Keep this refutable by newer measured outcomes. Do not paste live positions
+or P&L here.

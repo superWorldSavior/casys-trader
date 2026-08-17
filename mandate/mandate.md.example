@@ -1,0 +1,7 @@
+# Agent mandate
+
+Copy this file to `mandate/mandate.md` and edit it.
+
+This is the durable human-owned objective. The runtime reads it on every
+decision cycle. Keep paper-trading constraints and evaluation criteria here;
+do not put live positions, credentials, or run state in this file.

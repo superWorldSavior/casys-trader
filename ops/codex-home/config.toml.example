@@ -1,0 +1,18 @@
+# Isolated CODEX_HOME for casys-trader — default Sol low.
+# Copy to config.toml (not versioned). Goal: clean, deterministic decision
+# sessions — no plugins, skills, or MCP.
+#
+# After the first local run, Codex may add a [projects."$PWD"] trust_level
+# block. Keep that only in the local config.toml.
+model = "gpt-5.6-sol"
+model_reasoning_effort = "low"
+approval_policy = "never"
+# OS cage for agent code execution (opt-in CASYS_AGENT_EXEC):
+# workspace-write = network OFF + writes confined to cwd (throwaway scratch,
+# never the repo). Inert while exec is disabled. Do NOT set danger-full-access.
+sandbox_mode = "workspace-write"
+service_tier = "default"
+personality = "pragmatic"
+
+[notice]
+hide_full_access_warning = true

@@ -1,12 +1,53 @@
-# État runtime (broker, scheduler, rapports) — pas versionné
+# Live runtime (broker, scheduler, ledgers, DBs, reports, logs, HTML dashboards)
 /state/
+state_archive_*/
 KILL
-.env
-.env.bak
 
-# Univers courant — réécrit par la rotation à chaque tick (historique dans
-# state/rotation_ledger.jsonl) ; régénéré au premier tick si absent
+# Secrets / local env — never the real file
+.env
+.env.*
+!.env.example
+
+# Current tradable universe — rewritten every rotation tick
+# (history lives in state/rotation_ledger.jsonl)
 /config/universe.yaml
+/config/universe.yaml.lock
+
+# Personal mandate / strategy memory (copy from *.example)
+/mandate/mandate.md
+/mandate/memory.md
+
+# Operator live snapshot and incident writeups with run detail
+/docs/etat-systeme.md
+/docs/postmortems/*.md
+!/docs/postmortems/README.md
+
+# Machine-local launchd unit (copy from *.example)
+/ops/launchd/*.plist
+!/ops/launchd/*.plist.example
+
+# Isolated agent homes version only their templates; ignore generated runtime
+# (auth, sessions, caches, sqlite). See ops/*-home/.gitignore.
+**/auth.json
+
+# Defense in depth if a DB / broker dump / jsonl ledger is copied out of state/
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+broker.json
+*.jsonl
+
+# Local Grok CLI / benches (workflows + live bench cases)
+.grok/
+
+# Local IDE / agent scratch
+.claude/settings.local.json
+.claude/RESUME.md
+.claude/worktrees/
+.claude/checkpoints/
+.ruff_cache/
 
 # Python
 __pycache__/
@@ -15,11 +56,12 @@ __pycache__/
 .pytest_cache/
 *.egg-info/
 
-# Fichiers de travail locaux (prompts dumpés, scratch) — jamais versionnés
+# Local scratch (dumped prompts, etc.)
 /tmp/
+
+# Logs / generated HTML outside state/ (dashboards belong under state/)
+*.log
+*.html
 
 # OS
 .DS_Store
-
-# Archives d_état runtime (local, jamais versionné)
-state_archive_*/

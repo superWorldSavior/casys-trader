@@ -5,7 +5,7 @@
     <key>Label</key>
     <string>ai.casys.trader.storage-archive</string>
 
-    <!-- uv en chemin absolu : launchd n'hérite pas du PATH du shell. -->
+    <!-- uv as an absolute path: launchd does not inherit the shell PATH. -->
     <key>ProgramArguments</key>
     <array>
         <string>/opt/homebrew/bin/uv</string>
@@ -19,9 +19,9 @@
     </array>
 
     <key>WorkingDirectory</key>
-    <string>/Users/erwanpesle/Documents/GitHub/casys-trader</string>
+    <string>/ABSOLUTE/PATH/TO/casys-trader</string>
 
-    <!-- Dimanche 04:00 : hors séance sur toutes les places (EU/US/TW). -->
+    <!-- Sunday 04:00: outside the session on EU/US/TW venues. -->
     <key>StartCalendarInterval</key>
     <dict>
         <key>Weekday</key>
@@ -32,14 +32,13 @@
         <integer>0</integer>
     </dict>
 
-    <!-- Rattrapage si la machine dormait à l'heure prévue. -->
     <key>RunAtLoad</key>
     <false/>
 
     <key>StandardOutPath</key>
-    <string>/Users/erwanpesle/Documents/GitHub/casys-trader/state/logs/storage-archive.log</string>
+    <string>/ABSOLUTE/PATH/TO/casys-trader/state/logs/storage-archive.log</string>
     <key>StandardErrorPath</key>
-    <string>/Users/erwanpesle/Documents/GitHub/casys-trader/state/logs/storage-archive.err.log</string>
+    <string>/ABSOLUTE/PATH/TO/casys-trader/state/logs/storage-archive.err.log</string>
 
     <key>ProcessType</key>
     <string>Background</string>

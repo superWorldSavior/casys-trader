@@ -1,6 +1,7 @@
-# CODEX_HOME isolé du daemon : on ne versionne QUE config.toml.
+# CODEX_HOME isolé du daemon : on ne versionne QUE le template.
+# config.toml local peut contenir un chemin machine ([projects."$PWD"]).
 # Tout le reste (auth secret + runtime généré par codex : sessions, caches,
 # sqlite goals/logs/state, skills, shell_snapshots, installation_id…) est ignoré.
 *
 !.gitignore
-!config.toml
+!config.toml.example
