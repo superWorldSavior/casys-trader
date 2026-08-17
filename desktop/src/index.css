@@ -1,0 +1,60 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Schibsted Grotesk", "Segoe UI", sans-serif;
+  --font-mono: "IBM Plex Mono", "ui-monospace", monospace;
+
+  --color-ink: #0f0e0c;
+  --color-ink-raised: #14110e;
+  --color-panel: #1a1815;
+  --color-panel-hover: #211e19;
+  --color-line: #332c23;
+  --color-hairline: #26211b;
+  --color-fg: #f5f0ea;
+  --color-muted: #d5c3b5;
+  --color-dim: #8d8177;
+  --color-faint: #6b6157;
+  --color-accent: #ffb86f;
+  --color-accent-dim: #c48a4a;
+  --color-gain: #a5c98c;
+  --color-loss: #e87f66;
+  --color-warn: #e5c07b;
+  --color-meter: #3a332b;
+
+  --radius-sm: 0.25rem;
+  --radius-md: 0.4rem;
+  --radius-lg: 0.7rem;
+}
+
+html,
+body,
+#root {
+  min-height: 100%;
+  background: var(--color-ink);
+  color: var(--color-fg);
+}
+
+body {
+  margin: 0;
+  font-family: var(--font-sans);
+  font-feature-settings: "ss01", "tnum";
+  letter-spacing: -0.011em;
+  -webkit-font-smoothing: antialiased;
+}
+
+* {
+  border-color: var(--color-line);
+}
+
+::selection {
+  background: color-mix(in srgb, var(--color-accent) 35%, transparent);
+  color: var(--color-fg);
+}
+
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+.grain {
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.35'/%3E%3C/svg%3E");
+}
