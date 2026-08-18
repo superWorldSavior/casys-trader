@@ -13,14 +13,24 @@ Un verrou module (_collect_lock) garantit qu'un seul thread tourne à la fois.
 Les écritures du thread n'affectent que state/macro_series/* — aucun état
 partagé avec le cycle daemon.
 
-Séries versionnées (v1) — identifiants vérifiés DBnomics 2026-07-02 :
+Séries versionnées (v2) — identifiants vérifiés DBnomics 2026-08-18 :
   FED/H15/RIFSPFF_N.D            Fed funds effectif (quotidien)
-  BLS/cu/CUSR0000SA0             CPI US tous postes (mensuel)
+  IMF/CPI/M.US.PCPI_IX           CPI US tous postes (mensuel) — remplace BLS/cu/CUSR0000SA0
+                                  qui n'a plus rien après 2025-01 ; IMF donne ~6 mois de mieux.
+                                  Base IMF = 2010=100 (≈148) ≠ base BLS 1982-84 (≈319) ;
+                                  fichier propre cpi_us_imf.jsonl (l'ancien cpi_us_all_items.jsonl
+                                  reste sur disque, n'est plus alimenté).
   ECB/FM/B.U2.EUR.4F.KR.DFR.LEV Taux de dépôt BCE (journalier)
   Eurostat/prc_hicp_midx/M.I15.CP00.EA20  HICP zone euro (mensuel)
   BLS/ln/LNS14000000             Taux de chômage US (mensuel)
-  IMF/PCPS/M.W00.POILBRE.USD     Pétrole Brent USD (mensuel, vérifié 2026-07-11)
-  IMF/PCPS/M.W00.PGOLD.USD       Or USD (mensuel, vérifié 2026-07-11)
+                                  TODO: BLS connector delivers no data after 2025-01 on
+                                  DBnomics — no satisfactory replacement found ; keep as-is,
+                                  UI already displays the period gap honestly.
+
+Brent et Or (commodités) : IMF/PCPS est mort depuis 2025-07.
+  → remplacés par Yahoo Finance quotidien dans commodity_prices.py (BZ=F / GC=F).
+  → les fichiers brent_crude_usd.jsonl / gold_usd.jsonl restent inchangés.
+  → SERIES ne contient plus IMF/PCPS/M.W00.POILBRE.USD ni IMF/PCPS/M.W00.PGOLD.USD.
 
 Note ECB : DBnomics/ECB peut avoir un décalage de quelques jours vs la BCE
 (publication officielle → agrégation DBnomics). L'important est le mécanisme :
@@ -63,8 +73,11 @@ SERIES: tuple[dict, ...] = (
         "label": "fed_funds_effective",
     },
     {
-        "id": "BLS/cu/CUSR0000SA0",
-        "label": "cpi_us_all_items",
+        # Remplace BLS/cu/CUSR0000SA0 (mort après 2025-01).
+        # ATTENTION : base IMF = 2010=100 (≈148) ≠ base BLS 1982-84 (≈319).
+        # Fichier propre cpi_us_imf.jsonl pour éviter tout mélange de base.
+        "id": "IMF/CPI/M.US.PCPI_IX",
+        "label": "cpi_us_imf",
     },
     {
         "id": "ECB/FM/B.U2.EUR.4F.KR.DFR.LEV",
@@ -75,18 +88,14 @@ SERIES: tuple[dict, ...] = (
         "label": "hicp_euro_area",
     },
     {
+        # TODO sourcing: BLS connector delivers no data after 2025-01 on DBnomics;
+        # no satisfactory replacement found. UI displays the period gap honestly.
         "id": "BLS/ln/LNS14000000",
         "label": "unemployment_rate_us",
     },
-    # Commodités internationales — identifiants vérifiés en live DBnomics 2026-07-11.
-    {
-        "id": "IMF/PCPS/M.W00.POILBRE.USD",
-        "label": "brent_crude_usd",
-    },
-    {
-        "id": "IMF/PCPS/M.W00.PGOLD.USD",
-        "label": "gold_usd",
-    },
+    # Commodités Brent + Or : IMF/PCPS mort depuis 2025-07.
+    # Remplacés par Yahoo Finance quotidien dans commodity_prices.py (BZ=F / GC=F).
+    # Ces IDs sont retirés — commodity_prices.maybe_collect alimente les mêmes JSONL.
 )
 
 

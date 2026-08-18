@@ -115,6 +115,7 @@ def finalize_cycle(
     summarize_gross_rejections: GrossRejectionSummarizer,
     collect_macro: MacroCollector,
     collect_gdelt: MacroCollector | None = None,
+    collect_commodity: MacroCollector | None = None,
     write_current_report: ReportWriter,
     append_event: EventAppender,
     logger: LoggerLike | None = None,
@@ -133,6 +134,11 @@ def finalize_cycle(
     if collect_gdelt is not None:
         try:
             collect_gdelt(state_dir, now)
+        except Exception:  # noqa: BLE001 - best-effort total, never impacts the cycle
+            pass
+    if collect_commodity is not None:
+        try:
+            collect_commodity(state_dir, now)
         except Exception:  # noqa: BLE001 - best-effort total, never impacts the cycle
             pass
     remember_gross_rejections(
