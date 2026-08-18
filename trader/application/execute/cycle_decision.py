@@ -97,6 +97,8 @@ class DecisionExecutionContext:
     append_event: Callable[..., None] = _noop_event
     append_model_performance: Callable[..., None] = _noop_model_performance
     logger: logging.Logger = logging.getLogger("casys-trader")
+    trade_plan_evaluator_provider: Callable[[str], object | None] | None = None
+    reference_volatilities: dict[str, float | None] = field(default_factory=dict)
 
 
 def _capture_exit_plan_trace(entry: dict, trace: dict) -> None:
@@ -229,6 +231,31 @@ def _expected_exit_update_plan_snapshot(
     return fill_plan_effects.plan_snapshot(expected)
 
 
+def _entry_dimensions(decision: Decision, cockpit: dict) -> dict[str, str]:
+    thesis = decision.thesis if isinstance(decision.thesis, dict) else {}
+    regime = "unknown"
+    cols = cockpit.get("cols")
+    rows = cockpit.get("rows")
+    if isinstance(cols, list) and isinstance(rows, list) and "reg" in cols:
+        symbol_index = cols.index("s") if "s" in cols else 0
+        regime_index = cols.index("reg")
+        for row in rows:
+            if (
+                isinstance(row, list)
+                and len(row) > max(symbol_index, regime_index)
+                and str(row[symbol_index]) == decision.symbol
+            ):
+                regime = str(row[regime_index] or "unknown")
+                break
+    side = "long" if decision.action == "BUY" else "short"
+    return {
+        "setup": str(thesis.get("setup") or "unknown"),
+        "horizon": str(thesis.get("horizon") or "unknown"),
+        "side": side,
+        "regime": regime,
+    }
+
+
 def execute_one_cycle_decision(
     *,
     sym: str,
@@ -263,6 +290,20 @@ def execute_one_cycle_decision(
             maximum=ctx.max_wake_minutes,
         )
 
+    # Validate the agent-authored target before relative intents are expanded
+    # into broker order quantities. In particular, a FLIP target quantity must
+    # not be charged the existing position twice.
+    from trader.application.execute.trade_plan_evaluation import (
+        validate_decision_trade_evaluations,
+    )
+
+    evaluator = (
+        None
+        if ctx.trade_plan_evaluator_provider is None
+        else ctx.trade_plan_evaluator_provider(sym)
+    )
+    evaluation_validation = validate_decision_trade_evaluations(decision, evaluator)
+
     if decision.resolve_from_position or decision.intent in _RELATIVE_ORDER_INTENTS:
         raw_pos = ctx.broker.positions().get(sym)
         pos_qty = raw_pos.quantity if raw_pos is not None else 0.0
@@ -293,6 +334,8 @@ def execute_one_cycle_decision(
     # La même identité suit le learning, le ledger et les fills associés. Elle
     # est réservée avant tout side effect d'exécution.
     entry["decision_id"] = ctx.decision_id_for_symbol(sym)
+    if decision.intent in _OPENING_INTENTS:
+        entry["entry_dimensions"] = _entry_dimensions(decision, ctx.cockpit)
     process_identity = dict(ctx.process_identity_for_symbol(sym))
     entry.update(process_identity)
 
@@ -305,6 +348,22 @@ def execute_one_cycle_decision(
             elif payload.get("executed") is False:
                 payload["admission_status"] = "rejected"
         ctx.record_decision(payload)
+
+    if evaluation_validation.evaluation is not None:
+        entry["trade_plan_evaluation"] = (
+            evaluation_validation.evaluation.to_tool_payload()
+        )
+    if not evaluation_validation.approved:
+        entry["trade_evaluation_rejection"] = evaluation_validation.reason
+        record_outcome(
+            {
+                **entry,
+                "executed": False,
+                "reason": evaluation_validation.reason
+                or "trade_evaluation_invalid",
+            }
+        )
+        return state
 
     if sym in ctx.prices:
         entry["price"] = ctx.prices[sym]
@@ -463,6 +522,8 @@ def execute_one_cycle_decision(
     if runtime_exit_plan and decision.intent in _OPENING_INTENTS:
         if sym in ctx.armed_reference_volatilities:
             reference_volatility = ctx.armed_reference_volatilities[sym]
+        elif sym in ctx.reference_volatilities:
+            reference_volatility = ctx.reference_volatilities[sym]
         else:
             reference_volatility = reference_volatility_service.reference_volatility_for_symbol(
                 sym,

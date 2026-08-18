@@ -12,6 +12,8 @@ from trader.agent.tools.protocols import (
     LearningsRecallProvider,
     OpenPlansAsOfProvider,
     OpenPlansProvider,
+    TradePlanEvaluatorPort,
+    TradePlanEvaluatorProvider,
 )
 
 JsonObject: TypeAlias = dict[str, Any]
@@ -79,10 +81,15 @@ class ToolContext:
     market_context_by_symbol: Mapping[str, dict] = field(default_factory=dict)
     active_watches_by_symbol: Mapping[str, list] = field(default_factory=dict)
     attribution: Mapping[str, Any] | None = None
+    confidence_calibration: Mapping[str, Any] | None = None
     indicator_resolver: IndicatorResolver | None = None
     learnings_recall_provider: LearningsRecallProvider | None = None
     open_plans_provider: OpenPlansProvider | None = field(default=None)
     open_plans_as_of_provider: OpenPlansAsOfProvider | None = field(default=None)
+    trade_plan_evaluator: TradePlanEvaluatorPort | None = field(default=None)
+    trade_plan_evaluator_provider: TradePlanEvaluatorProvider | None = field(
+        default=None
+    )
 
 
 @dataclass(frozen=True)

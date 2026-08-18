@@ -403,6 +403,20 @@ class _DryRunBroker:
         return None
 
 
+def _armed_evaluator_provider(_symbol: str):
+    return SimpleNamespace(
+        evaluate=lambda _candidate: SimpleNamespace(
+            valid=True,
+            evaluation_id="tpe_trigger",
+            reasons=[],
+            to_tool_payload=lambda: {
+                "valid": True,
+                "evaluation_id": "tpe_trigger",
+            },
+        )
+    )
+
+
 def _armed_buy() -> Decision:
     return Decision(
         symbol="SPY",
@@ -412,7 +426,48 @@ def _armed_buy() -> Decision:
         rationale="armed admit",
         intent="OPEN_LONG",
         exit_plan={"hard_stop": {"type": "price", "price": 95.0}},
+        trade_evaluation_id="tpe_trigger",
     )
+
+
+def test_exposure_increase_never_reaches_broker_without_evaluation() -> None:
+    class CountingBroker(_DryRunBroker):
+        submitted = 0
+
+        def submit(self, *_args, **_kwargs):
+            self.submitted += 1
+
+    broker = CountingBroker()
+    ctx, records = _context(
+        broker=broker,
+        gate=_ApprovingGate(),
+        require_hard_stop=False,
+        execution_eligibility={
+            "SPY": {"execution": {"enabled": True, "reason": "tradable"}}
+        },
+    )
+
+    execute_one_cycle_decision(
+        sym="SPY",
+        index=1,
+        total=1,
+        decision=Decision(
+            symbol="SPY",
+            action="BUY",
+            quantity=1.0,
+            confidence=0.8,
+            rationale="unevaluated",
+            intent="OPEN_LONG",
+        ),
+        state=DecisionExecutionState(
+            snap=SimpleNamespace(equity=100_000.0),
+            gross=0.0,
+        ),
+        ctx=ctx,
+    )
+
+    assert broker.submitted == 0
+    assert records[0]["reason"] == "trade_evaluation_unavailable"
 
 
 def test_execution_blocked_keeps_armed_execute_order_watch() -> None:
@@ -432,6 +487,7 @@ def test_execution_blocked_keeps_armed_execute_order_watch() -> None:
         broker=_DryRunBroker(),
         gate=_ApprovingGate(),
         require_hard_stop=False,
+        trade_plan_evaluator_provider=_armed_evaluator_provider,
         armed_plan_ids={"SPY": watch_id},
         execution_eligibility={
             "SPY": {"execution": {"enabled": False, "reason": "session_closed"}}
@@ -471,6 +527,7 @@ def test_successful_armed_admit_removes_execute_order_watch() -> None:
         broker=_DryRunBroker(),
         gate=_ApprovingGate(),
         require_hard_stop=False,
+        trade_plan_evaluator_provider=_armed_evaluator_provider,
         dry_run=True,
         armed_plan_ids={"SPY": watch_id},
         execution_eligibility={
@@ -517,6 +574,7 @@ def test_armed_watch_consumed_before_queue_dispatch_even_if_queue_fails() -> Non
         broker=_DryRunBroker(),
         gate=_ApprovingGate(),
         require_hard_stop=False,
+        trade_plan_evaluator_provider=_armed_evaluator_provider,
         dry_run=True,
         queue_execute_enabled=True,
         execute_ledger=_FailingLedger(),
@@ -584,6 +642,7 @@ def test_missing_fx_rate_blocks_order_and_keeps_armed_watch() -> None:
         broker=_DryRunBroker(),
         gate=_ApprovingGate(),
         require_hard_stop=False,
+        trade_plan_evaluator_provider=_armed_evaluator_provider,
         rate_for_symbol=_raise,
         armed_plan_ids={"SPY": watch_id},
         execution_eligibility={

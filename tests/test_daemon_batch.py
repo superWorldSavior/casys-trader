@@ -14,10 +14,17 @@ from trader.runtime import cycle_scheduling
 from trader.runtime.worker_cycle_context import WorkerCycleContextHandle
 from trader.application.decide import planner_batch
 from trader.application.execute import order_admission
+from trader.application.execute.trade_plan_evaluation import (
+    TradePlanEvaluationContext,
+    TradePlanEvaluator,
+    candidate_from_decision,
+)
 from trader.application.record import plan_review
 from trader.agent.client import ContextResearchRequest, Decision, IndicatorRequest
 from trader.agent.protocol.parsing import parse_batch
 from trader.market import execution_eligibility as execution_eligibility_service
+from trader.domain.execution.risk_gate import RiskGate
+from trader.domain.risk import RiskLimits
 from trader.planning.indicator_watch import summarize_watch
 from trader.market.market_data import Bar
 from trader.planning.scheduler import Scheduler
@@ -56,6 +63,31 @@ def _apply_decision_schedule(**kwargs) -> None:
 
 def test_planner_batch_module_expose_batch_decide() -> None:
     assert callable(planner_batch.batch_decide)
+
+
+def test_batch_entry_reference_is_fail_closed() -> None:
+    evaluator = SimpleNamespace(
+        evaluate=lambda _candidate: SimpleNamespace(
+            valid=True,
+            evaluation_id="tpe_batch",
+            reasons=[],
+        )
+    )
+    missing = _open_long_decision("SPY", confidence=0.8)
+    valid = replace(missing, trade_evaluation_id="tpe_batch")
+
+    rejected = planner_batch._enforce_trade_evaluations(
+        {"SPY": missing},
+        evaluator_provider=lambda _symbol: evaluator,
+    )
+    accepted = planner_batch._enforce_trade_evaluations(
+        {"SPY": valid},
+        evaluator_provider=lambda _symbol: evaluator,
+    )
+
+    assert rejected["SPY"].action == "HOLD"
+    assert rejected["SPY"].rationale == "trade_evaluation_required"
+    assert accepted["SPY"].action == "BUY"
 
 
 def _broker_positions(state_dir):
@@ -124,6 +156,36 @@ def _open_long_decision(symbol: str, *, confidence: float, rationale: str | None
         intent="OPEN_LONG",
         exit_plan={"hard_stop": {"type": "price", "price": 95.0}},
     )
+
+
+def _evaluated_entry(decision: Decision, *, now: datetime) -> Decision:
+    evaluator = TradePlanEvaluator(
+        TradePlanEvaluationContext(
+            cycle_id=now.isoformat(),
+            as_of=now.isoformat(),
+            price=100.0,
+            fx_rate=1.0,
+            equity=100_000.0,
+            gross_exposure=0.0,
+            position_quantity=0.0,
+            position_avg_price=0.0,
+            require_hard_stop=False,
+            gate=RiskGate(
+                RiskLimits(
+                    max_position_value=50_000.0,
+                    max_gross_exposure=100_000.0,
+                    max_order_value=50_000.0,
+                    min_equity=50_000.0,
+                    confidence_gate_enabled=False,
+                )
+            ),
+        )
+    )
+    candidate = candidate_from_decision(decision)
+    assert candidate is not None
+    evaluation = evaluator.evaluate(candidate)
+    assert evaluation.evaluation_id is not None
+    return replace(decision, trade_evaluation_id=evaluation.evaluation_id)
 
 
 def _decision_entry_for_test(decision: Decision, *, price: float, executed: bool = True) -> dict:
@@ -389,8 +451,14 @@ def test_queue_execute_enqueues_buffered_openings_once_with_stable_dedup_key(
     state_dir = tmp_path / "state"
     now = datetime(2026, 6, 15, 14, 30, tzinfo=timezone.utc)
     ledger = _DryRunDoneExecuteLedger()
-    low_conf = _open_long_decision("LOW", confidence=0.91, rationale="weak open")
-    high_conf = _open_long_decision("HIGH", confidence=0.95, rationale="strong open")
+    low_conf = _evaluated_entry(
+        _open_long_decision("LOW", confidence=0.91, rationale="weak open"),
+        now=now,
+    )
+    high_conf = _evaluated_entry(
+        _open_long_decision("HIGH", confidence=0.95, rationale="strong open"),
+        now=now,
+    )
 
     monkeypatch.setattr(daemon, "ROOT", tmp_path)
     monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
@@ -429,9 +497,18 @@ def test_opening_execute_timeout_stops_remaining_buffered_openings_as_undecided(
     state_dir = tmp_path / "state"
     now = datetime(2026, 6, 15, 14, 30, tzinfo=timezone.utc)
     dispatched_symbols: list[str] = []
-    low_conf = _open_long_decision("LOW", confidence=0.91, rationale="weak open")
-    high_conf = _open_long_decision("HIGH", confidence=0.95, rationale="strong open")
-    mid_conf = _open_long_decision("MID", confidence=0.93, rationale="mid open")
+    low_conf = _evaluated_entry(
+        _open_long_decision("LOW", confidence=0.91, rationale="weak open"),
+        now=now,
+    )
+    high_conf = _evaluated_entry(
+        _open_long_decision("HIGH", confidence=0.95, rationale="strong open"),
+        now=now,
+    )
+    mid_conf = _evaluated_entry(
+        _open_long_decision("MID", confidence=0.93, rationale="mid open"),
+        now=now,
+    )
 
     def fake_dispatch(**kwargs):
         dispatched_symbols.append(kwargs["symbol"])
@@ -485,17 +562,26 @@ def test_openings_deferred_by_execute_timeout_are_redecided_next_cycle(
     sched = Scheduler(state_dir / "scheduler.json")
     decisions = {
         "LOW": replace(
-            _open_long_decision("LOW", confidence=0.91, rationale="weak open"),
+            _evaluated_entry(
+                _open_long_decision("LOW", confidence=0.91, rationale="weak open"),
+                now=now,
+            ),
             llm_provider="acpx",
             llm_model="gpt-5.5/medium",
         ),
         "HIGH": replace(
-            _open_long_decision("HIGH", confidence=0.95, rationale="strong open"),
+            _evaluated_entry(
+                _open_long_decision("HIGH", confidence=0.95, rationale="strong open"),
+                now=now,
+            ),
             llm_provider="acpx",
             llm_model="gpt-5.5/medium",
         ),
         "MID": replace(
-            _open_long_decision("MID", confidence=0.93, rationale="mid open"),
+            _evaluated_entry(
+                _open_long_decision("MID", confidence=0.93, rationale="mid open"),
+                now=now,
+            ),
             llm_provider="acpx",
             llm_model="gpt-5.5/medium",
         ),
@@ -739,6 +825,17 @@ def test_execute_one_cycle_decision_refreshes_state_snap_after_confirmed_fill(
         execute_ledger=None,
         record_decision=records.append,
         rate_for_symbol=lambda _symbol: 1.0,
+        trade_plan_evaluator_provider=lambda _symbol: SimpleNamespace(
+            evaluate=lambda _candidate: SimpleNamespace(
+                valid=True,
+                evaluation_id="tpe_snap",
+                reasons=[],
+                to_tool_payload=lambda: {
+                    "valid": True,
+                    "evaluation_id": "tpe_snap",
+                },
+            )
+        ),
     )
 
     new_state = daemon._execute_one_cycle_decision(
@@ -752,6 +849,7 @@ def test_execute_one_cycle_decision_refreshes_state_snap_after_confirmed_fill(
             confidence=0.95,
             rationale="snap refresh",
             intent="OPEN_LONG",
+            trade_evaluation_id="tpe_snap",
         ),
         state=state,
         ctx=ctx,

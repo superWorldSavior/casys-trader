@@ -1,7 +1,8 @@
 # Référence — Risk Gate
 
 > **Type** : Reference (Diátaxis) — ce que fait le composant *aujourd'hui*.
-> **Code** : `trader/execution/risk.py` · **Config** : `config/risk.yaml`
+> **Code** : `trader/domain/execution/risk_gate.py`, `trader/domain/risk.py`
+> · **Config** : `config/risk.yaml`
 > **Rôle** : fusible **déterministe** entre la décision du LLM et `broker.submit`.
 > Aucune stratégie ici — que des bornes dures. Dernier rempart avant un ordre réel.
 
@@ -9,6 +10,24 @@ Le gate est **séparé** du modèle : le LLM propose, `RiskGate` valide, le brok
 exécute. Un ordre approuvé par le LLM peut être **rejeté** par le gate ; un ordre
 rejeté ne part jamais. Le gate est aussi le filet du **mode exploration** (quand
 le gate de confiance côté agent est désactivé, les bornes dures restent).
+
+## Profil PAPER actif
+
+Le profil courant distingue explicitement information, admission optionnelle et
+fusibles durs :
+
+- toute augmentation d'exposition doit appeler `evaluate_trade_plan` ; l'agent
+  reçoit sizing, risque, capacité, frais, gain/perte nets, R:R, `p_break_even`,
+  EV, warnings et verdicts dry-run ;
+- l'EV est **advisory** : négative ou inconnue, elle ne rejette pas un ordre ;
+- `confidence_gate_enabled: false` : aucune confiance basse n'est rejetée ;
+- `require_hard_stop: false` : un hard stop n'est pas obligatoire en exploration ;
+- le `RiskGate.check()` final reste **toujours actif** avant le broker.
+
+Avec le `config/risk.yaml` courant, les fusibles actifs sont : **50 000 USD par
+ordre**, **50 000 USD par position**, **100 000 USD d'exposition brute** et
+**50 000 USD d'equity minimale**. L'évaluation préalable ne préautorise jamais
+l'ordre : ces contrôles sont rejoués sur les données d'exécution.
 
 ## Contrat
 
@@ -44,10 +63,11 @@ on doit toujours pouvoir **couper** une position, même si sa valeur dépasse la
 borne d'ouverture. Le contrôle nécessite : position opposée, taille ≤ position
 actuelle, et position projetée < position actuelle.
 
-## Gate de confiance — `check_confidence()` (séparé)
+## Gate de confiance — `check_confidence()` (séparé et actuellement désactivé)
 
-Rejette `confidence_below_required` quand la confiance de l'agent est sous le
-seuil requis. Le seuil **scale linéairement avec le risque planifié** :
+Quand `confidence_gate_enabled: true`, rejette `confidence_below_required` si la
+confiance de l'agent est sous le seuil requis. Le seuil **scale linéairement avec
+le risque planifié** :
 
 ```
 required = min_trade_confidence
@@ -78,6 +98,8 @@ Autrement dit : plus tu risques, plus tu dois être confiant.
 | `max_order_value` | $ max par ordre unique | — (requis) |
 | `min_equity` | plancher equity : sous ce seuil, zéro ordre | — (requis) |
 | `max_risk_per_trade_pct` | % equity risqué si le hard_stop saute | `0.01` |
+| `confidence_gate_enabled` | active le rejet déterministe de confiance basse | `false` dans le profil PAPER |
+| `require_hard_stop` | exige un hard stop pour augmenter l'exposition | `false` dans le profil PAPER |
 | `min_trade_confidence` | seuil confiance plancher (risque nul) | `0.7` |
 | `full_risk_confidence` | seuil confiance au risque max | `0.9` |
 

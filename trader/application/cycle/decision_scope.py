@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Mapping, Protocol, Sequence
+from typing import Callable, Mapping, Protocol, Sequence
 
 from trader.application.cycle import infra_holds
 from trader.application.exit import armed_plans
@@ -68,6 +68,7 @@ class DecisionScopeRequest:
     daily_interval: str
     reference_volatility_for_symbol: armed_plans.ReferenceVolatilityProvider
     last_wake_reasons: Mapping[tuple[str, str], Sequence[str]] | None = None
+    trade_plan_evaluator_provider: Callable[[str], object | None] | None = None
 
 
 @dataclass(frozen=True)
@@ -104,15 +105,22 @@ def prepare_decision_scope(
         )
     ]
 
+    armed_kwargs = {
+        "indicator_triggers": request.indicator_triggers,
+        "symbols_to_decide": request.symbols_to_decide,
+        "prices": request.prices,
+        "stale_market_data": request.stale_market_data,
+        "positions": request.positions,
+        "cockpit": request.cockpit,
+        "tradable_bars_by_symbol": request.tradable_bars_by_symbol,
+        "reference_volatility_for_symbol": request.reference_volatility_for_symbol,
+    }
+    if request.trade_plan_evaluator_provider is not None:
+        armed_kwargs["trade_plan_evaluator_provider"] = (
+            request.trade_plan_evaluator_provider
+        )
     armed_resolution = armed_plan_resolver(
-        indicator_triggers=request.indicator_triggers,
-        symbols_to_decide=request.symbols_to_decide,
-        prices=request.prices,
-        stale_market_data=request.stale_market_data,
-        positions=request.positions,
-        cockpit=request.cockpit,
-        tradable_bars_by_symbol=request.tradable_bars_by_symbol,
-        reference_volatility_for_symbol=request.reference_volatility_for_symbol,
+        **armed_kwargs,
     )
     llm_candidates = [
         symbol

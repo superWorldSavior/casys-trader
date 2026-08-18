@@ -21,6 +21,7 @@ from trader.market import fx
 from trader.execution.broker import Order, SimBroker
 from trader.market.market_data import Bar
 from trader.planning.scheduler import Scheduler
+from tests.conftest import evaluate_batch_test_decisions
 
 
 # ---------------------------------------------------------------------------
@@ -157,10 +158,11 @@ def test_run_cycle_rejette_quantite_native_sur_proposee(monkeypatch, tmp_path, m
     )
 
     def fake_batch_decide(**kwargs):
-        return {
+        decisions = {
             sym: decision if sym == "SPY" else Decision.hold(sym, "hold")
             for sym in kwargs["decidable"]
-        }, 1
+        }
+        return evaluate_batch_test_decisions(kwargs, decisions), 1
 
     monkeypatch.setattr(daemon, "ROOT", tmp_path)
     monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
@@ -256,7 +258,8 @@ def test_run_cycle_persiste_fx_rate_dans_model_performance_non_usd(
     )
 
     def fake_batch_decide(**kwargs):
-        return {sym: decision for sym in kwargs["decidable"]}, 1
+        decisions = {sym: decision for sym in kwargs["decidable"]}
+        return evaluate_batch_test_decisions(kwargs, decisions), 1
 
     monkeypatch.setattr(daemon, "ROOT", tmp_path)
     monkeypatch.setattr(daemon, "STATE_DIR", state_dir)

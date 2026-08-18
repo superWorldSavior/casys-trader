@@ -22,12 +22,31 @@ class ExitValidationInputs:
 
 
 @dataclass(frozen=True)
+class TradeEvaluationInputs:
+    prices_by_symbol: dict[str, float] = field(default_factory=dict)
+    fx_rates_by_symbol: dict[str, float] = field(default_factory=dict)
+    bars_by_symbol: dict[str, list] = field(default_factory=dict)
+    reference_volatility_by_symbol: dict[str, float | None] = field(
+        default_factory=dict
+    )
+    positions_by_symbol: dict[str, tuple[float, float]] = field(
+        default_factory=dict
+    )
+    equity: float = 0.0
+    gross_exposure: float = 0.0
+    require_hard_stop: bool = True
+    gate: object | None = None
+    commission_model: object | None = None
+
+
+@dataclass(frozen=True)
 class WorkerCycleContext:
     cycle_id: str
     as_of: str
     open_plans: OpenPlansSnapshot
     exit_validation: ExitValidationInputs
     attribution: dict = field(default_factory=dict)
+    trade_evaluation: TradeEvaluationInputs | None = None
 
 
 class WorkerCycleContextHandle:
@@ -44,6 +63,15 @@ class WorkerCycleContextHandle:
 
         context = self.current_for_cycle(cycle_id)
         self._current = replace(context, attribution=dict(attribution))
+
+    def publish_trade_evaluation(
+        self,
+        *,
+        cycle_id: str,
+        inputs: TradeEvaluationInputs,
+    ) -> None:
+        context = self.current_for_cycle(cycle_id)
+        self._current = replace(context, trade_evaluation=inputs)
 
     def current(self) -> WorkerCycleContext | None:
         return self._current
@@ -80,6 +108,13 @@ class WorkerCycleContextHandle:
         if context is None:
             return {}
         return dict(context.attribution)
+
+    def get_trade_evaluation_inputs(
+        self,
+        cycle_id: str | None = None,
+    ) -> TradeEvaluationInputs | None:
+        context = self._context(cycle_id)
+        return None if context is None else context.trade_evaluation
 
     def get_exit_validation_bars(self, symbol: str, cycle_id: str | None = None) -> list | None:
         context = self._context(cycle_id)

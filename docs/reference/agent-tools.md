@@ -17,7 +17,7 @@ compilés par le daemon vers les primitives internes (`Decision`, `exit_plan`,
 veille, réveil, learning) avant les gates existants. Les anciens champs restent
 acceptés en compat cachée, mais ne sont pas exposés dans ce contrat.
 
-## Les 7 outils read-only
+## Les 8 outils read-only
 
 | Outil | Module | Rôle |
 |---|---|---|
@@ -28,6 +28,7 @@ acceptés en compat cachée, mais ne sont pas exposés dans ce contrat.
 | `get_active_plans` | `plans` | détail complet TradePlans ouverts (portée globale) |
 | `get_attribution` | `attribution` | attribution d'un trade / round-trip |
 | `recall_learnings` | `learnings` | rappel sémantique de learnings (cf. [RAG](learnings-rag.md)) |
+| `evaluate_trade_plan` | `trade_plan_evaluation` | évalue déterministiquement sizing, gates, frais, payoff et EV d’une entrée |
 
 Chaque outil = un `ToolSpec(name, validate_args, handler)` enregistré dans
 `TOOL_REGISTRY` (`agent/tools/registry`).
@@ -67,6 +68,30 @@ Sans provider (fallback batch), le handler retombe sur `active_watches_by_symbol
 et rend des watches avec `as_of: null`. Ce mode est compatibilité/dégradé ; la
 référence opératoire est le provider global de plans ouverts.
 
+### `evaluate_trade_plan`
+
+`evaluate_trade_plan{symbol,direction,confidence,qty|risk_pct,exit,thesis?}`
+est obligatoire avant toute augmentation d'exposition. Il résout le stop et les
+cibles sur le snapshot atomique du cycle, dérive le sizing, rejoue
+`risk_admission` et le `RiskGate` en dry-run, puis calcule frais, perte/gain nets,
+R:R, `p_break_even` et EV.
+
+Le résultat distingue trois notions :
+
+- `valid` : candidat techniquement cohérent et empreinte calculable ;
+- `risk_approved` / `final_gate_approved` : admission courante, jamais une
+  préautorisation durable ;
+- `economics.status` : `positive`, `negative` ou `unknown`, toujours advisory.
+
+Le modèle recopie `evaluation_id` dans `strategy_entry.evaluation_id`. Une
+référence absente, modifiée ou issue d'un cycle remplacé déclenche un feedback
+corrigeable dans la même session puis un HOLD fail-closed. L'exécution recalcule
+l'empreinte et repasse les gates avant le broker. Un plan armé porte aussi cette
+référence et reçoit une nouvelle évaluation sur prix/barres frais au trigger.
+
+`get_attribution{scope:"calibration"}` expose le read model numérique complet.
+Seul son digest borné est poussé dans le contexte courant.
+
 ## Action tools finaux par symbole
 
 Format agent visible :
@@ -86,6 +111,7 @@ Format agent visible :
             "id": "long",
             "direction": "long",
             "qty": 20,
+            "evaluation_id": "tpe_…",
             "exit": {
               "id": "bracket",
               "limit": 78.5,
@@ -108,7 +134,7 @@ Action tools acceptés :
 
 | Tool | Remplace | Effet réel |
 |---|---|---|
-| `strategy_entry` | `direction` / `qty` ou `risk_pct` / `exit` | `position intent` Pine-like : `direction:"long|short"` ouvre si flat, renforce si même sens, retourne si sens opposé ; le daemon compile ensuite vers `action` / `intent` / `exit_plan` internes puis valide via RiskGate/broker. Options : `qty`, `risk_pct`, `exit`, `thesis` |
+| `strategy_entry` | `direction` / `qty` ou `risk_pct` / `exit` | `position intent` Pine-like : `direction:"long|short"` ouvre si flat, renforce si même sens, retourne si sens opposé ; `evaluation_id` rendu par `evaluate_trade_plan` est obligatoire. Le daemon compile puis revalide l'empreinte et les gates. Options : `qty`, `risk_pct`, `exit`, `thesis`, `evaluation_id` |
 | `strategy_exit` | plan de sortie / amendement de sortie | `exit rule` : patche le plan de sortie d'une position **déjà ouverte** (`limit`, `stop`, `trail`, `protect`, `exit_watch`) sans fermer/rouvrir ; rejet tracé si pas de plan ouvert. Peut coexister avec `calls:[]` (HOLD + gestion active) |
 | `strategy_close` | fermeture / réduction position-aware | sortie marché immédiate : sans taille ferme toute la position ; `qty_percent<100` réduit une fraction ; `qty` réduit une quantité absolue |
 | `set_next_wake` | `next_wake_in_minutes` | planifie la **reconsultation** du symbole : `{minutes}` (timer), `{on: session_open\|macro_event\|pre_earnings}` (événement calendaire) ou `{when:<condition>}` (réveil-sur-indicateur, compilé en `WAKE`) |
@@ -147,8 +173,9 @@ s'il reste sous le prix courant ; symétriquement, un short doit garder le stop
 au-dessus du prix courant. En mode feedback pré-exécution, l'agent peut recevoir
 un `tool_results` `{tool:"strategy_exit", ok:false, error:<reason>}` de validation pré-exécution ;
 il doit alors corriger dans la même réponse (stop en prix absolu ou retrait de la
-contrainte non résolvable). Cette boucle concerne `strategy_exit` **et**
-`propose_indicator_watch` (`max_action_corrections=2`, quota partagé), puis le
+contrainte non résolvable). Cette boucle concerne `strategy_entry`,
+`strategy_exit` **et** `propose_indicator_watch`
+(`max_action_corrections=2`, quota partagé), puis le
 runtime laisse la décision finale suivre le chemin normal. L'agent n'a pas besoin de redemander le plan : il est déjà dans
 son contexte (`active_watches`, `active_plans_summary` ou `get_active_plans` si
 le détail global a été demandé).

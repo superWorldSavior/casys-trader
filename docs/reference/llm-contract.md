@@ -47,6 +47,13 @@ La grammaire de trading publique est Pine-like JSON :
 Le parser compile ces calls vers les primitives internes `Decision`
 (`action`, `quantity`, `intent`, `exit_plan`, `exit_update`, veilles, learnings).
 
+`confidence` désigne précisément la probabilité que le round-trip finisse net
+positif avant invalidation/horizon, conditionnellement aux faits courants. Pour
+`OPEN_LONG`, `OPEN_SHORT`, `SCALE_IN` et la jambe ouvrante d'un `FLIP`, le modèle
+doit d'abord appeler `evaluate_trade_plan`, puis placer l'`evaluation_id` rendu
+dans `strategy_entry` sans modifier candidat, sizing, exit ou confiance. La même
+référence est requise dans l'ordre d'un plan armé.
+
 Le chemin moderne de recherche de contexte passe par les tool rounds read-only
 (`get_indicator_context`, `get_active_plans`, etc.). Le chemin single-symbol garde
 encore `REQUEST_CONTEXT` en compatibilité parser, mais le batch/queue runtime expose
@@ -58,23 +65,28 @@ focalisé complet. Les continuations de la même session ne renvoient que le del
 premier message redevient complet : un delta n'est jamais envoyé à une session qui
 n'a pas reçu le cockpit.
 
-### Feedback pré-exécution `strategy_exit`
+### Feedback pré-exécution des entrées et sorties
 
-En queue grain-1, un `strategy_exit` final est dry-run avant application. Si ce
-dry-run serait rejeté, le modèle reçoit dans la même session un
+En queue grain-1, `strategy_entry`, les ordres armés et `strategy_exit` sont
+dry-run avant application. Si la référence d'évaluation manque/ne correspond
+plus, ou si une sortie serait rejetée, le modèle reçoit dans la même session un
 `tool_results` d'action en erreur :
 
 ```json
 {"tool": "strategy_exit", "ok": false, "error": "<reason>"}
 ```
 
+Pour une entrée, le tool est `evaluate_trade_plan` et la raison vaut notamment
+`trade_evaluation_required`, `trade_evaluation_mismatch` ou
+`trade_evaluation_stale`.
+
 Ce feedback n'est pas une exécution partielle : c'est une validation
 pré-exécution. L'agent doit corriger sa réponse suivante (par exemple prix de
 stop absolu au lieu d'un stop structurel non résolvable) ou retirer la contrainte.
 Il n'a pas besoin de redemander le plan : le plan ouvert est déjà visible via le
 contexte local/global, et `get_active_plans` ne sert qu'à récupérer un détail
-global manquant. La boucle est bornée à 2 corrections ; `strategy_entry` et
-`strategy_close` restent validés par les gates daemon, hors de ce feedback.
+global manquant. La boucle est bornée à 2 corrections. `strategy_close` reste
+hors évaluation d'entrée ; toutes les décisions repassent leurs gates daemon.
 
 Parsé/validé par `agent/protocol/parsing` → toute réponse douteuse **dégrade en
 HOLD** (fail-safe, cf. `codex_client`).

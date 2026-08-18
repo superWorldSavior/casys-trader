@@ -9,6 +9,7 @@ from trader.domain.planning.exit_plan_spec import (
     normalize_exit_plan,
     validate_exit_plan,
 )
+from trader.domain.strategy_language import normalize_trade_thesis
 
 _ARMABLE_INTENTS = {"OPEN_LONG": "BUY", "OPEN_SHORT": "SELL"}
 
@@ -139,7 +140,13 @@ def _strategy_entry_armed_order(raw: dict) -> dict | None:
         args = dict(raw)
     if args is None:
         return None
-    for key in ("confidence", "rationale"):
+    for key in (
+        "confidence",
+        "rationale",
+        "thesis",
+        "evaluation_id",
+        "trade_evaluation_id",
+    ):
         if args.get(key) is None and raw.get(key) is not None:
             args[key] = raw[key]
     direction = str(args.get("direction") or args.get("side") or "").lower().replace("strategy.", "")
@@ -160,6 +167,9 @@ def _strategy_entry_armed_order(raw: dict) -> dict | None:
         "confidence": args.get("confidence"),
         "exit_plan": _pine_armed_exit_to_exit_plan(exit_raw),
         "rationale": args.get("rationale"),
+        "thesis": args.get("thesis"),
+        "trade_evaluation_id": args.get("evaluation_id")
+        or args.get("trade_evaluation_id"),
     }
 
 
@@ -191,13 +201,20 @@ def normalize_armed_order(raw: object) -> dict | None:
         return None
     if not math.isfinite(confidence) or not 0.0 <= confidence <= 1.0:
         return None
+    trade_evaluation_id = str(raw.get("trade_evaluation_id") or "").strip()
+    if not trade_evaluation_id:
+        return None
     order = {
         "intent": intent,
         "action": action,
         "qty": qty,
         "confidence": confidence,
         "exit_plan": exit_plan,
+        "trade_evaluation_id": trade_evaluation_id,
     }
+    thesis = normalize_trade_thesis(raw.get("thesis"))
+    if thesis is not None:
+        order["thesis"] = thesis
     if raw.get("rationale"):
         order["rationale"] = str(raw["rationale"])[:500]
     return order

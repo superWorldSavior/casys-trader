@@ -16,6 +16,7 @@ Cas couverts :
 from __future__ import annotations
 
 from dataclasses import replace
+from types import SimpleNamespace
 
 import pytest
 
@@ -452,6 +453,49 @@ def test_tool_round_puis_decision_au_tour_2_sort_tot():
     assert [c["session_followup"] for c in client.calls] == [False, True]
     assert client.calls[1]["per_symbol"][SYMBOL]["tool_results"]  # résultats réinjectés
     assert decision.domain_tools["tool_rounds"] == 1       # traces mergées (persistance)
+
+
+def test_missing_entry_evaluation_is_corrected_in_same_session():
+    class Evaluator:
+        def evaluate(self, _candidate):
+            return SimpleNamespace(
+                valid=True,
+                evaluation_id="tpe_expected",
+                reasons=[],
+                to_tool_payload=lambda: {
+                    "valid": True,
+                    "evaluation_id": "tpe_expected",
+                },
+            )
+
+    unevaluated = Decision(
+        symbol=SYMBOL,
+        action="BUY",
+        quantity=2.0,
+        confidence=0.8,
+        rationale="first attempt",
+        intent="OPEN_LONG",
+    )
+    corrected = replace(
+        unevaluated,
+        trade_evaluation_id="tpe_expected",
+    )
+    client = _SeqClient([{SYMBOL: unevaluated}, {SYMBOL: corrected}])
+
+    decision, calls = decide_one(
+        **{**_BASE_KWARGS, "agent_tools_enabled": True},
+        codex_client=client,
+        tool_services=_services(
+            trade_plan_evaluator_factory=lambda _cycle, _symbol: Evaluator()
+        ),
+        session_backends=_session_backends(),
+        task_id="evaluation-correction",
+    )
+
+    assert decision.trade_evaluation_id == "tpe_expected"
+    assert calls == 2
+    feedback = client.calls[1]["per_symbol"][SYMBOL]["tool_results"]
+    assert feedback[0]["error"]["reason"] == "trade_evaluation_required"
 
 
 def test_fallback_session_recommence_par_un_prompt_complet():

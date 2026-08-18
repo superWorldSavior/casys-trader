@@ -900,7 +900,10 @@ def test_run_cycle_rejette_open_long_si_hard_stop_est_du_mauvais_cote(
 
     decision = report["decisions"][0]
     assert decision["executed"] is False
-    assert decision["reason"] == "invalid_exit_plan:hard_stop_wrong_side"
+    assert (
+        decision["reason"]
+        == "trade_evaluation_invalid:hard_stop_wrong_side"
+    )
     assert _broker_positions(state_dir) == {}
 
 
@@ -1047,7 +1050,11 @@ def test_run_cycle_rejette_stop_direct_volatilite_si_volatilite_indisponible(
 
     decision = report["decisions"][0]
     assert decision["executed"] is False
-    assert decision["reason"] == "invalid_exit_plan:hard_stop_volatility_unavailable"
+    assert (
+        decision["reason"]
+        == "trade_evaluation_invalid:invalid_exit_plan:"
+        "hard_stop_volatility_unavailable"
+    )
     assert decision["reason"] != "risk:missing_hard_stop"
     assert "SPY" not in _broker_positions(state_dir)
 
@@ -1175,10 +1182,7 @@ def test_run_cycle_rejette_open_sans_hard_stop_meme_confiant(
 
     decision = report["decisions"][0]
     assert decision["executed"] is False
-    assert decision["reason"] == "risk:missing_hard_stop"
-    assert decision["risk_unbounded_no_stop"] is True
-    assert decision["risk_pct"] is None
-    assert decision["stop_distance"] is None
+    assert decision["reason"] == "trade_evaluation_invalid:hard_stop_required"
     assert "SPY" not in _broker_positions(state_dir)
 
 
@@ -1336,7 +1340,8 @@ def test_run_cycle_ne_clamp_pas_reverse_trop_gros(
             quantity=50.0,
             confidence=0.8,
             rationale="reverse trop gros",
-            intent="FLIP"),
+                intent="FLIP",
+                exit_plan={"hard_stop": {"type": "price", "price": 105.0}}),
     )
 
     report = daemon.run_cycle(
@@ -1477,7 +1482,7 @@ def test_run_cycle_add_sans_hard_stop_est_rejete(
     )
 
     decision = report["decisions"][0]
-    assert decision["reason"] == "risk:missing_hard_stop"
+    assert decision["reason"] == "trade_evaluation_invalid:hard_stop_required"
     assert decision["executed"] is False
     assert _broker_positions(state_dir)["SPY"].quantity == 10.0
 
@@ -1563,7 +1568,10 @@ def test_run_cycle_add_long_rejette_hard_stop_du_mauvais_cote(
     )
 
     decision = report["decisions"][0]
-    assert decision["reason"] == "invalid_exit_plan:hard_stop_wrong_side"
+    assert (
+        decision["reason"]
+        == "trade_evaluation_invalid:hard_stop_wrong_side"
+    )
     assert decision["executed"] is False
     assert _broker_positions(state_dir)["SPY"].quantity == 10.0
 
@@ -1953,7 +1961,9 @@ def test_run_cycle_rejette_un_exit_plan_invalide_avant_fill(monkeypatch, tmp_pat
     )
 
     assert report["decisions"][0]["executed"] is False
-    assert report["decisions"][0]["reason"].startswith("invalid_exit_plan")
+    assert report["decisions"][0]["reason"].startswith(
+        "trade_evaluation_invalid:"
+    )
     assert _broker_positions(state_dir) == {}
 
 
@@ -1996,7 +2006,9 @@ def test_run_cycle_ne_replanifie_pas_un_ordre_bloque(monkeypatch, tmp_path, patc
     )
 
     assert report["decisions"][0]["executed"] is False
-    assert report["decisions"][0]["reason"].startswith("invalid_exit_plan")
+    assert report["decisions"][0]["reason"].startswith(
+        "trade_evaluation_invalid:"
+    )
     assert report["decisions"][0]["indicator_watch_created"] is False
     assert sched.next_wake("SPY") == now + timedelta(minutes=30)
     assert sched.active_indicator_watches(now=now) == []

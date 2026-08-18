@@ -455,6 +455,7 @@ def _valid_order() -> dict:
         "confidence": 0.85,
         "exit_plan": {"hard_stop": {"type": "price", "price": 88.1}},
         "rationale": "cassure énergie",
+        "trade_evaluation_id": "tpe_arm",
     }
 
 
@@ -482,6 +483,7 @@ def test_execute_order_accepte_order_strategy_entry_pine_like() -> None:
         "confidence": 0.85,
         "exit": {"id": "bracket", "stop": {"type": "price", "price": 88.1}, "limit": 80.0},
         "rationale": "cassure énergie",
+        "evaluation_id": "tpe_arm",
     }
 
     result = build_indicator_watch(_armed_raw(pine_order), owner_symbol="CL=F", now=now)

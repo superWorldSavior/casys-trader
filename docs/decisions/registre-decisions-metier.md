@@ -530,3 +530,37 @@ D11 pas commencée). Retrieval FTS situation toujours inactif. MemRL
 situation (`q_value`) jamais scorée. `last_wake_reasons` reste volatile.
 Le digest `direction` univers ne parle qu'une fois `min_n=5` atteint par
 famille × venue.
+
+---
+
+## D18 — Évaluation déterministe obligatoire des entrées  🛠 implémenté (2026-08-18)
+**Contexte.** Le LLM pouvait auparavant produire un `strategy_entry` avant de
+voir le sizing résolu, les frais et l'économie nette du plan. La confidence gate
+scalaire est désactivée dans le profil paper et ne remplace pas cette preuve.
+
+**Décision.** Toute augmentation d'exposition (`OPEN_LONG`, `OPEN_SHORT`,
+`SCALE_IN`, jambe ouvrante d'un `FLIP`) doit référencer une
+`TradePlanEvaluation` du snapshot courant. L'agent appelle
+`evaluate_trade_plan`, observe sizing, stop/cibles, frais, perte/gain, R:R,
+`p_break_even`, EV et verdicts des gates, puis recopie l'`evaluation_id`. Le
+daemon revérifie l'empreinte et rejoue les gates avant le broker. Les plans armés
+portent la référence à l'armement et sont réévalués sur données fraîches au
+trigger.
+
+**Politique.** L'évaluation est obligatoire ; son économie reste advisory.
+`economics.status=negative|unknown` ne crée pas de hard gate. Seules absence,
+péremption, incohérence ou invalidité technique de la référence bloquent ce
+préflight. `risk_admission` et le RiskGate restent les autorités d'allocation et
+d'exécution. La confidence gate demeure un mécanisme indépendant, actuellement
+désactivé par `config/risk.yaml`.
+
+**Calibration.** `confidence` est la probabilité conditionnelle que le
+round-trip finisse net positif avant invalidation/horizon. Le read model joint
+fills et décisions par `decision_id`, conserve les dimensions d'entrée sans
+look-ahead (`unknown` pour l'historique incomplet), et expose cohortes, gap de
+calibration, P&L et incertitude. Seul un digest borné est poussé ; le détail est
+pull-only via `get_attribution{scope:"calibration"}`.
+
+**Points ouverts.** Un hard gate EV reste explicitement hors périmètre. Toute
+activation future demanderait une décision métier séparée et des seuils
+configurés, pas une réinterprétation silencieuse de D18.

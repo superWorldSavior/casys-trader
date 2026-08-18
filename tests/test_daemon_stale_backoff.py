@@ -623,6 +623,7 @@ def test_run_cycle_bloque_l_ordre_hors_session_meme_avec_donnees_fraiches(
         lambda **kwargs: Decision(
             symbol=kwargs["symbol"], action="BUY", quantity=10.0, confidence=0.9,
             rationale="open", intent="OPEN_LONG", llm_provider="acpx", llm_model="gpt-5.5/medium",
+                exit_plan={"hard_stop": {"type": "price", "price": 95.0}},
         )
     )
 
@@ -667,6 +668,7 @@ def test_run_cycle_ordre_bloque_hors_session_conserve_le_wake_du_llm(
             symbol=kwargs["symbol"], action="BUY", quantity=10.0, confidence=0.9,
             rationale="open", intent="OPEN_LONG", next_wake_in_minutes=90.0,
             llm_provider="acpx", llm_model="gpt-5.5/medium",
+                exit_plan={"hard_stop": {"type": "price", "price": 95.0}},
         )
     )
 

@@ -16,7 +16,10 @@ from trader.market.market_data import Bar
 from trader.agent.learnings.raw_store import RawLearningsStore
 from trader.planning.scheduler import Scheduler
 from trader.domain.trade_plan import TradePlan
-from tests.conftest import write_runtime_config as _write_runtime_config
+from tests.conftest import (
+    evaluate_batch_test_decisions,
+    write_runtime_config as _write_runtime_config,
+)
 
 
 def _open_plans(state_dir):
@@ -51,6 +54,14 @@ def _open_long_decision(confidence: float) -> Decision:
     )
 
 
+def _fake_batch_result(kwargs: dict, decision: Decision) -> tuple[dict, int]:
+    decisions = {
+        sym: decision if sym == "SPY" else Decision.hold(sym, "hold")
+        for sym in kwargs["decidable"]
+    }
+    return evaluate_batch_test_decisions(kwargs, decisions), 1
+
+
 def test_run_cycle_rejette_ouverture_confidence_insuffisante(
     monkeypatch, tmp_path, make_data_source
 ) -> None:
@@ -62,7 +73,7 @@ def test_run_cycle_rejette_ouverture_confidence_insuffisante(
     decision = _open_long_decision(confidence=0.58)
 
     def fake_batch_decide(**kwargs):
-        return {sym: decision if sym == "SPY" else Decision.hold(sym, "hold") for sym in kwargs["decidable"]}, 1
+        return _fake_batch_result(kwargs, decision)
 
     monkeypatch.setattr(daemon, "ROOT", tmp_path)
     monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
@@ -139,7 +150,7 @@ def test_run_cycle_rejet_confiance_injecte_le_feedback_dans_les_learnings(
     )
 
     def fake_batch_decide(**kwargs):
-        return {sym: decision if sym == "SPY" else Decision.hold(sym, "hold") for sym in kwargs["decidable"]}, 1
+        return _fake_batch_result(kwargs, decision)
 
     monkeypatch.setattr(daemon, "ROOT", tmp_path)
     monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
@@ -177,7 +188,7 @@ def test_run_cycle_approuve_ouverture_confidence_suffisante(
     decision = _open_long_decision(confidence=0.95)
 
     def fake_batch_decide(**kwargs):
-        return {sym: decision if sym == "SPY" else Decision.hold(sym, "hold") for sym in kwargs["decidable"]}, 1
+        return _fake_batch_result(kwargs, decision)
 
     monkeypatch.setattr(daemon, "ROOT", tmp_path)
     monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
@@ -220,7 +231,7 @@ def test_run_cycle_rejette_ouverture_sans_hard_stop(
     )
 
     def fake_batch_decide(**kwargs):
-        return {sym: decision if sym == "SPY" else Decision.hold(sym, "hold") for sym in kwargs["decidable"]}, 1
+        return _fake_batch_result(kwargs, decision)
 
     monkeypatch.setattr(daemon, "ROOT", tmp_path)
     monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
@@ -241,7 +252,10 @@ def test_run_cycle_rejette_ouverture_sans_hard_stop(
 
     decision_entry = report["decisions"][0]
     assert decision_entry["executed"] is False
-    assert decision_entry["reason"] == "risk:missing_hard_stop"
+    assert (
+        decision_entry["reason"]
+        == "trade_evaluation_invalid:hard_stop_required"
+    )
 
 
 def _enable_exploration(root) -> None:
@@ -273,7 +287,7 @@ def test_run_cycle_gate_confiance_off_laisse_passer_confiance_basse(
     decision = _open_long_decision(confidence=0.05)
 
     def fake_batch_decide(**kwargs):
-        return {sym: decision if sym == "SPY" else Decision.hold(sym, "hold") for sym in kwargs["decidable"]}, 1
+        return _fake_batch_result(kwargs, decision)
 
     monkeypatch.setattr(daemon, "ROOT", tmp_path)
     monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
@@ -309,7 +323,7 @@ def test_run_cycle_require_hard_stop_false_laisse_passer_sans_stop(
     )
 
     def fake_batch_decide(**kwargs):
-        return {sym: decision if sym == "SPY" else Decision.hold(sym, "hold") for sym in kwargs["decidable"]}, 1
+        return _fake_batch_result(kwargs, decision)
 
     monkeypatch.setattr(daemon, "ROOT", tmp_path)
     monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
@@ -361,7 +375,7 @@ def test_run_cycle_ouverture_enrichit_le_tradeplan_avec_le_contexte_d_entree(
     decision = _open_long_decision(confidence=0.95)
 
     def fake_batch_decide(**kwargs):
-        return {sym: decision if sym == "SPY" else Decision.hold(sym, "hold") for sym in kwargs["decidable"]}, 1
+        return _fake_batch_result(kwargs, decision)
 
     monkeypatch.setattr(daemon, "ROOT", tmp_path)
     monkeypatch.setattr(daemon, "STATE_DIR", state_dir)

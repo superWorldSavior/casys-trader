@@ -66,6 +66,7 @@ class LlmDecisionPayload(_LlmBaseModel):
     learning: Any | None = None
     applied_learning_ids: list[str] = Field(default_factory=list)
     exit_update: dict | None = None
+    trade_evaluation_id: str | None = None
     reduce_fraction_internal: Any | None = Field(default=None, alias="_reduce_fraction")
 
     @field_validator("quantity", "confidence", mode="before")
@@ -164,6 +165,7 @@ class LlmDecisionPayload(_LlmBaseModel):
             "learning": self.learning,
             "applied_learning_ids": self.applied_learning_ids,
             "exit_update": self.exit_update,
+            "trade_evaluation_id": self.trade_evaluation_id,
         }
         if self.reduce_fraction_internal is not None:
             data["_reduce_fraction"] = self.reduce_fraction_internal

@@ -159,6 +159,8 @@ def build_decision_row(
         _as_dict(decision.get("code_version")) or _as_dict(report.get("code_version")) or dict(UNKNOWN_CODE_VERSION)
     )
     indicator_watch = _as_dict(decision.get("indicator_watch"))
+    trade_evaluation = _as_dict(decision.get("trade_plan_evaluation"))
+    trade_economics = _as_dict(trade_evaluation.get("economics"))
     resolved_decision_id = str(decision.get("decision_id") or decision_id(cycle_ts, sequence, symbol))
     row = {
         "schema_version": SCHEMA_VERSION,
@@ -191,6 +193,21 @@ def build_decision_row(
             rule_id for rule_id in _as_list(decision.get("applied_learning_ids")) if isinstance(rule_id, str)
         ],
         "thesis": decision.get("thesis") if isinstance(decision.get("thesis"), dict) else None,
+        "entry_dimensions": (
+            dict(decision["entry_dimensions"])
+            if isinstance(decision.get("entry_dimensions"), dict)
+            else None
+        ),
+        "trade_evaluation_id": _optional_text(
+            decision.get("trade_evaluation_id")
+            or trade_evaluation.get("evaluation_id")
+        ),
+        "trade_evaluation_as_of": _optional_text(trade_evaluation.get("as_of")),
+        "trade_economics_status": _optional_text(trade_economics.get("status")),
+        "trade_evaluation_rejection": _optional_text(
+            decision.get("trade_evaluation_rejection")
+        ),
+        "trade_plan_evaluation": trade_evaluation or None,
         "mandate_ref": _optional_mandate_ref(decision.get("mandate_ref")),
         "decision": original_decision,
         "market_snapshot": {
@@ -234,6 +251,11 @@ def build_decision_row(
             "tool_calls": decision.get("tool_calls"),
             "tool_normalizations": decision.get("tool_normalizations"),
             "cancel_watch_results": decision.get("cancel_watch_results"),
+            "trade_evaluation_id": decision.get("trade_evaluation_id"),
+            "trade_plan_evaluation": trade_evaluation or None,
+            "trade_evaluation_rejection": decision.get(
+                "trade_evaluation_rejection"
+            ),
         },
         "news": _as_dict(decision.get("news")),
         "labels": {},

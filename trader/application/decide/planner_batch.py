@@ -70,6 +70,8 @@ def _run_tool_round(
     shared_context: dict,
     indicator_resolver: object,
     learnings_recall_provider: Callable[[dict], dict] | None = None,
+    trade_plan_evaluator_provider: Callable[[str], object | None] | None = None,
+    confidence_calibration: dict | None = None,
 ) -> tuple[list[dict], dict]:
     """Exécute UNE tournée d'outils bornée et retourne :
     - results_payload : liste compacte réinjectable dans le prompt du tour final
@@ -88,8 +90,10 @@ def _run_tool_round(
         market_context_by_symbol={s: v for s, v in market_contexts.items() if s in chunk_set},
         active_watches_by_symbol={s: v for s, v in active_watches_by_symbol.items() if s in chunk_set},
         attribution=shared_context.get("attribution"),
+        confidence_calibration=confidence_calibration,
         indicator_resolver=indicator_resolver,
         learnings_recall_provider=learnings_recall_provider,
+        trade_plan_evaluator_provider=trade_plan_evaluator_provider,
     )
     # Exécution + enrichissement note_ids factorisés (partagé avec le grain-1 queue).
     return run_one_round(request, context=context)
@@ -156,6 +160,47 @@ def build_symbol_facts(
     return facts
 
 
+def _enforce_trade_evaluations(
+    responses: object,
+    *,
+    evaluator_provider: Callable[[str], object | None] | None,
+) -> object:
+    if not isinstance(responses, dict):
+        return responses
+    from trader.application.execute.trade_plan_evaluation import (
+        validate_decision_trade_evaluations,
+    )
+
+    enforced: dict[str, object] = {}
+    for symbol, value in responses.items():
+        if not isinstance(value, Decision):
+            enforced[symbol] = value
+            continue
+        evaluator = (
+            None
+            if evaluator_provider is None
+            else evaluator_provider(str(symbol))
+        )
+        validation = validate_decision_trade_evaluations(value, evaluator)
+        if validation.approved:
+            enforced[symbol] = value
+            continue
+        enforced[symbol] = replace(
+            value,
+            action="HOLD",
+            quantity=0.0,
+            intent="HOLD",
+            rationale=validation.reason or "trade_evaluation_invalid",
+            indicator_watch=None,
+            next_wake_in_minutes=None,
+            next_wake_event=None,
+            resolve_from_position=False,
+            position_resolved=False,
+            reduce_fraction=None,
+        )
+    return enforced
+
+
 def batch_decide(
     *,
     decidable: list[str],
@@ -182,6 +227,8 @@ def batch_decide(
     decision_batch_parallelism: int = DEFAULT_DECISION_BATCH_PARALLELISM,
     agent_tools_enabled: bool = False,
     learnings_recall_provider: Callable[[dict], dict] | None = None,
+    trade_plan_evaluator_provider: Callable[[str], object | None] | None = None,
+    confidence_calibration: dict | None = None,
     indicator_request_resolver: Callable = resolve_indicator_requests,
     event_appender: Callable[..., None] | None = None,
     bar_timeframe_by_symbol: dict[str, str] | None = None,
@@ -301,7 +348,13 @@ def batch_decide(
 
             if not (agent_tools_enabled and isinstance(resp, BatchToolCallRequest)):
                 # Comportement historique : réponse décision directe.
-                return resp, 1
+                return (
+                    _enforce_trade_evaluations(
+                        resp,
+                        evaluator_provider=trade_plan_evaluator_provider,
+                    ),
+                    1,
+                )
 
             # --- Tournée d'outils (flag actif, LLM a demandé des outils) ---
             results_payload, runtime_payload = _run_tool_round(
@@ -314,6 +367,8 @@ def batch_decide(
                 shared_context=shared_context,
                 indicator_resolver=_indicator_resolver,
                 learnings_recall_provider=learnings_recall_provider,
+                trade_plan_evaluator_provider=trade_plan_evaluator_provider,
+                confidence_calibration=confidence_calibration,
             )
             # Enrichir le payload par-symbole avec les tool_results filtrés.
             # Un call sans symbole explicite (scope global) est réinjecté à tous.
@@ -371,7 +426,13 @@ def batch_decide(
                         ),
                     )
                 final_decisions[sym] = decision
-            return final_decisions, 2
+            return (
+                _enforce_trade_evaluations(
+                    final_decisions,
+                    evaluator_provider=trade_plan_evaluator_provider,
+                ),
+                2,
+            )
 
         responses_by_symbol: dict[str, object] = {}
         total_calls = 0

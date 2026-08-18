@@ -96,6 +96,7 @@ def _armed_trigger(
             "confidence": 0.9,
             "exit_plan": exit_plan or {"hard_stop": {"type": "price", "price": stop_price}},
             "rationale": "scénario breakout",
+            "trade_evaluation_id": "tpe_arm",
         },
     }
 

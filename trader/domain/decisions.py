@@ -54,6 +54,8 @@ class Decision:
     # Présent = qty=0.0 est un placeholder ; le daemon dérive la qty depuis
     # risk_pct_target * equity / (stop_distance * fx_rate).
     risk_pct_target: float | None = None
+    # Référence obligatoire de l'évaluation déterministe du candidat d'entrée.
+    trade_evaluation_id: str | None = None
 
     @staticmethod
     def hold(symbol: str, reason: str) -> "Decision":

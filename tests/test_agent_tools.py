@@ -429,6 +429,30 @@ def test_get_attribution_scope_summary_et_symbol():
     assert result2.result == {"rows": [{"symbol": "2330.TW", "n": 2}]}
 
 
+def test_get_attribution_exposes_calibration_only_on_pull():
+    calibration = {
+        "n": 3,
+        "cohorts": [{"level": "all", "n": 3, "win_rate": 2 / 3}],
+    }
+    ctx = ToolContext(
+        now=datetime(2026, 7, 2, 10, 0, tzinfo=UTC),
+        allowed_symbols=frozenset({"2330.TW"}),
+        attribution={},
+        confidence_calibration=calibration,
+    )
+
+    result, _ = agent_tools.execute_tool_call(
+        AgentToolCall(
+            id="calibration",
+            tool="get_attribution",
+            args={"scope": "calibration"},
+        ),
+        ctx,
+    )
+
+    assert result.result == calibration
+
+
 def test_get_attribution_supporte_le_schema_reel_du_read_model():
     ctx = ToolContext(
         now=datetime(2026, 7, 2, 10, 0, tzinfo=UTC),

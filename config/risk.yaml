@@ -9,6 +9,10 @@ max_risk_per_trade_pct: 0.01   # 1% du capital risqué par trade (distance au st
 min_equity: 50000              # plancher : sous ce seuil, plus aucun ordre
 
 # --- Mode exploration / calibration (PAPER uniquement) ---
+# Politique d'entrée lisible en un seul endroit :
+#   - TradePlanEvaluation : REQUIRED en code pour toute hausse d'exposition.
+#   - economics / EV : ADVISORY (une EV négative ne bloque pas).
+#   - confidence gate : seul interrupteur ci-dessous ; indépendant de l'EV.
 # Spec : docs/superpowers/specs/2026-06-24-exploration-basse-confiance-calibration-design.md
 # La confiance ne gate plus la taille : c'est une prédiction pure mesurée ex-post
 # (buckets by_confidence de l'attribution, non censurés). Un profil LIVE doit

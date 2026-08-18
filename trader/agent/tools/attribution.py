@@ -9,7 +9,13 @@ from __future__ import annotations
 
 from trader.agent.tools.core import AgentToolCall, ToolContext, ToolSpec
 
-_ATTRIBUTION_SCOPES = {"summary", "confidence", "exit_reason", "symbol"}
+_ATTRIBUTION_SCOPES = {
+    "summary",
+    "confidence",
+    "calibration",
+    "exit_reason",
+    "symbol",
+}
 _SUMMARY_KEYS = (
     "n_closed_trades",
     "realized_pnl",
@@ -31,9 +37,13 @@ def _validate_get_attribution(args: dict) -> str | None:
 
 
 def _handle_get_attribution(call: AgentToolCall, context: ToolContext) -> dict:
+    scope = call.args["scope"]
+    if scope == "calibration":
+        if context.confidence_calibration is None:
+            return {"error": "unavailable"}
+        return dict(context.confidence_calibration)
     if context.attribution is None:
         return {"error": "unavailable"}
-    scope = call.args["scope"]
     if scope == "summary":
         summary = context.attribution.get("summary")
         if not isinstance(summary, dict):

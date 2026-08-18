@@ -10,12 +10,14 @@ Couvre :
 """
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime, timezone
 
 import pytest
 
 from trader.agent.protocol.parsing import _decision_from_symbol_calls
 from trader.agent.protocol.types import Decision
+from trader.application.execute.trade_plan_evaluation import candidate_from_decision
 from trader.application.decide import planner_batch
 from trader.application.execute.order_admission import qty_from_risk_pct
 from trader.runtime import daemon
@@ -216,7 +218,10 @@ def test_daemon_risk_pct_no_stop_rejected(monkeypatch, tmp_path, make_data_sourc
     spy_dec = next((d for d in decisions if d["symbol"] == "SPY"), None)
     assert spy_dec is not None
     assert spy_dec.get("executed") is False
-    assert "risk_sizing_needs_stop" in (spy_dec.get("reason") or "")
+    assert (
+        spy_dec.get("reason")
+        == "trade_evaluation_invalid:hard_stop_required"
+    )
     assert spy_dec.get("risk_pct_target") == pytest.approx(0.005)
 
 
@@ -250,7 +255,15 @@ def test_daemon_risk_pct_derives_qty_and_executes(monkeypatch, tmp_path, make_da
     )
 
     def fake_batch_decide(**kwargs):
-        return {sym: decision if sym == "SPY" else Decision.hold(sym, "hold") for sym in kwargs["decidable"]}, 1
+        evaluator = kwargs["trade_plan_evaluator_provider"]("SPY")
+        candidate = candidate_from_decision(decision)
+        assert evaluator is not None and candidate is not None
+        evaluation = evaluator.evaluate(candidate)
+        evaluated = replace(
+            decision,
+            trade_evaluation_id=evaluation.evaluation_id,
+        )
+        return {sym: evaluated if sym == "SPY" else Decision.hold(sym, "hold") for sym in kwargs["decidable"]}, 1
 
     monkeypatch.setattr(daemon, "ROOT", tmp_path)
     monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
@@ -313,7 +326,15 @@ def test_daemon_risk_pct_exceeds_max_risk_traced_without_blocking(monkeypatch, t
     )
 
     def fake_batch_decide(**kwargs):
-        return {sym: decision if sym == "SPY" else Decision.hold(sym, "hold") for sym in kwargs["decidable"]}, 1
+        evaluator = kwargs["trade_plan_evaluator_provider"]("SPY")
+        candidate = candidate_from_decision(decision)
+        assert evaluator is not None and candidate is not None
+        evaluation = evaluator.evaluate(candidate)
+        evaluated = replace(
+            decision,
+            trade_evaluation_id=evaluation.evaluation_id,
+        )
+        return {sym: evaluated if sym == "SPY" else Decision.hold(sym, "hold") for sym in kwargs["decidable"]}, 1
 
     monkeypatch.setattr(daemon, "ROOT", tmp_path)
     monkeypatch.setattr(daemon, "STATE_DIR", state_dir)

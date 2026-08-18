@@ -20,6 +20,7 @@ from trader.support.coercion import (
 )
 from trader.support.config.risk import (
     DEFAULT_MIN_TRADE_CONFIDENCE,
+    read_attribution_min_entry_confidence,
     read_min_trade_confidence,
 )
 
@@ -111,7 +112,9 @@ def _compute_attribution_safe(state_dir: Path) -> dict:
 
         result = compute_attribution(
             state_dir,
-            min_entry_confidence=_read_min_trade_confidence_safe(),
+            min_entry_confidence=read_attribution_min_entry_confidence(
+                _ROOT / "config" / "risk.yaml"
+            ),
         )
     except Exception:
         return {}

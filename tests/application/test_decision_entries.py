@@ -70,6 +70,7 @@ def test_build_decision_entry_preserves_llm_metadata_and_tool_audit() -> None:
         "applied_learning_ids": [],
         "thesis": {"setup": "breakout"},
         "risk_pct_target": 0.01,
+        "trade_evaluation_id": None,
         "trade_plan_created": False,
         "indicator_watch_created": False,
         "indicator_watch_requested": False,

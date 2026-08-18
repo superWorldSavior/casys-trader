@@ -17,7 +17,8 @@ def test_round_trip_long_simple(tmp_path) -> None:
         tmp_path,
         [
             {"ts": "2026-06-05T10:00:00+00:00", "symbol": "SPY", "action": "BUY",
-             "quantity": 10, "price": 100.0, "confidence": 0.8, "intent": "OPEN_LONG"},
+             "quantity": 10, "price": 100.0, "confidence": 0.8, "intent": "OPEN_LONG",
+             "decision_id": "entry-spy"},
             {"ts": "2026-06-05T11:00:00+00:00", "symbol": "SPY", "action": "SELL",
              "quantity": 10, "price": 110.0, "confidence": 0.6, "intent": "CLOSE"},
         ],
@@ -35,6 +36,8 @@ def test_round_trip_long_simple(tmp_path) -> None:
     assert trip["commission"] == 0.0
     assert trip["pnl"] == 100.0
     assert trip["entry_confidence"] == 0.8
+    assert trip["entry_decision_id"] == "entry-spy"
+    assert trip["entry_decision_ids"] == ["entry-spy"]
     assert trip["holding_minutes"] == 60.0
 
 

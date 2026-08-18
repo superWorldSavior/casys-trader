@@ -70,6 +70,7 @@ les utilisaient :
 |---|---|---|
 | `trader/application/exit/exit_update.py` | Application fail-safe des mises à jour de plan ouvert compilées depuis `strategy_exit` | `ExitUpdateResult` décrit l'application persistante ; `validate_exit_update` est le dry-run pur utilisé par le worker |
 | `trader/application/execute/cycle_decision.py` | Application d'une décision symbole pendant un cycle | contient `execute_one_cycle_decision`, `DecisionExecutionContext` et `DecisionExecutionState` ; le daemon réexporte `_execute_one_cycle_decision` comme alias de compatibilité |
+| `trader/application/execute/trade_plan_evaluation.py` | Évaluation déterministe et sans side effect des augmentations d'exposition | empreinte cycle/as-of du candidat, économie nette advisory, dry-run des mêmes admissions ; référence revérifiée avant broker |
 | `trader/application/exit/armed_plans.py` | Résolution applicative des triggers `EXECUTE_ORDER` en décisions armées ou réveils planificateur | contrats `Protocol` locaux pour position/volatilité ; le daemon conserve logs et événements |
 | `trader/application/decide/planner_batch.py` | Batch LLM, budget modèle, tournée d'outils, REQUEST_CONTEXT | appelé via `daemon._batch_decide()` |
 | `trader/application/decide/protocols.py` | Contrat local `DecisionBatchPlanner` des chemins batch/queue | runtime injecte l'implémentation `agent.client`; prompts/parsing restent dans `agent/` |
@@ -77,6 +78,7 @@ les utilisaient :
 | `trader/application/cycle/market_snapshot.py` | Barres runtime/daily/exit, fraîcheur, FX, eligibility, tradable maps | retourne `MarketSnapshot`, le daemon l'unpack |
 | `trader/application/record/decision_entries.py` | Construction pure des entrées décision runtime avant persistance | source `llm`/`infra`/`armed_plan`, traces d'outils et raisons HOLD sans side effects |
 | `trader/application/record/decision_ledger_rows.py` | Projection pure d'une entrée décision et du rapport de cycle vers la ligne d'audit versionnée | aucun I/O ; le port d'append reste colocalisé dans `decision_recorder.py` |
+| `trader/reporting/read_models/confidence_calibration.py` | Calibration numérique des probabilités annoncées contre les round-trips nets réalisés | joint fills/décisions par `decision_id`, cohortes avec fallback et digest push borné ; détail pull-only |
 | `trader/application/record/decision_watches.py` | Préparation pure des `indicator_watch` demandées par une décision | le daemon garde logging et application scheduler |
 | `trader/application/record/decision_recorder.py` | Enrichissement décision, ledger, report, status, event, recall traces | l'écriture humaine `agent_trace.log` est injectée par `runtime/agent_trace_runtime.py` |
 | `trader/application/cycle/schedule.py` | Politique applicative de réveil : bornes explicites, backoff stale, due symbols, veilles et événements de réveil | le daemon garde des wrappers privés de compatibilité |
@@ -109,7 +111,7 @@ les utilisaient :
 | `trader/application/queue/contracts.py` | Contrat applicatif de requeue transitoire (`RetryableError`) | le worker durable l'importe et le réexporte ; la décision symbole ne dépend plus de l'infrastructure queue |
 | `trader/agent/` | Contexte agent, analyste macro/news, agent univers, mémoire mandat/stratégie, mémoire learnings/RAG, façade planner, transport LLM/acpx | compat virtuelle : `trader.agent_context`, `trader.codex_client`, `trader.llm`, `trader.tools.memory.Memory`, `trader.tools.memory.LearningsStore`, `trader.learnings.*`, `trader.learnings_store`, `trader.embeddings`, `trader.consolidator` |
 | `trader/agent/protocol/` | Types, prompts, parsing du contrat LLM | utilisé par `trader/agent/client.py` |
-| `trader/agent/tools/` | Package des outils domaine lecture seule | `registry.TOOL_REGISTRY` assemble les 7 outils read-only exposés au LLM |
+| `trader/agent/tools/` | Package des outils domaine lecture seule | `registry.TOOL_REGISTRY` assemble les 8 outils read-only exposés au LLM, dont `evaluate_trade_plan` |
 | `trader/agent/learnings/` | Buffer brut JSONL, sélection pure, store SQLite recall, embeddings, consolidateur | mémoire machine de l'agent ; `trader.learnings.*` reste virtuel |
 | `trader/domain/` | Primitives neutres (`Bar`, `MarketError`, `Side`), identité durable des décisions, vocabulaire partagé des `decision_reason_code` et catalogue sémantique gouverné (`domain/semantic/`) | évite que `market`/`planning`/`agent` importent `tools` ou `reporting` pour accéder à un vocabulaire métier |
 | `trader/domain/decision_identity.py` | Construction de l'identité stable `cycle_ts|sequence|symbol` partagée par ledger, plans et learnings | pure, sans connaissance du format JSONL ni du runtime |
@@ -285,13 +287,17 @@ run_cycle()                                     [trader/runtime/daemon.py]
     │
     ├─ queue decide ─ 1 tâche durable par symbole
     │    └─ session ACP persistante pendant la décision
-    │         ├─ modèle + effort du rôle depuis le preset
-    │         └─ tournées d'outils read-only jusqu'à décision ou backstop
+    │         ├─ prompt initial : cockpit, portefeuille, risk_limits, plans,
+    │         │  attribution/calibration, régime, learnings et fraîcheur
+    │         ├─ candidat d'exposition → evaluate_trade_plan
+    │         ├─ tool_result réinjecté : sizing, risque/capacité, stop/cibles,
+    │         │  frais, gain/perte nets, R:R, p_break_even, EV, gates, warnings
+    │         └─ décision finale portant l'evaluation_id inchangé
     │
     └─ Pour chaque décision :
-         ├─ order_admission helpers / exit_plan
-         ├─ resolve_exit_plan() (direct OPEN_LONG/SHORT) ─── unification D11
-         ├─ RiskGate.check_confidence() + RiskGate.check()
+         ├─ validation TradePlanEvaluation (référence/candidat/cycle)
+         ├─ order_admission helpers + resolve_exit_plan()
+         ├─ RiskGate.check_confidence() + RiskGate.check() rejoués
          ├─ SqliteBroker.submit() ou UoW execute_order → fill corrélé
          ├─ accounting/performance + effets plan éventuels → stores SQLite/JSONL
          ├─ _apply_decision_schedule() + readback → Scheduler
@@ -373,17 +379,20 @@ ou revue périodique garantie (4 h). Sinon → `quiet_gate` (HOLD sans appel).
 ### 3.5 Plans armés — exécution sans LLM (D7 étage B)
 
 Les `indicator_watch` à `on_trigger: EXECUTE_ORDER` acceptent côté agent un
-`order` Pine-like (`direction`, `qty`, `confidence`, `exit`). À l'armement,
+`order` Pine-like (`direction`, `qty`, `confidence`, `exit`, `evaluation_id`).
+L'évaluation est obligatoire dès l'armement. À l'armement,
 `domain/planning/indicator_watch.py` le compile en ordre interne
 (`intent`, `qty`, `confidence`, `exit_plan`). Au déclenchement,
 `trader/application/exit/armed_plans.py` résout le cas d'usage et le daemon émet les
 logs/événements retournés :
 1. `resolve_exit_plan()` — résolution late-binding du stop/TP sur vol fraîche (D11)
 2. `armed_order_price_coherent()` — vérif que le prix n'a pas déjà franchi le stop
-3. Si conflit multi-scénarios même symbole → réveil planificateur, pas d'exécution
-4. Si stale ou position déjà ouverte → annulation + réveil planificateur
+3. nouvelle `TradePlanEvaluation` sur prix/barres frais ; référence renouvelée
+4. si conflit multi-scénarios même symbole → réveil planificateur, pas d'exécution
+5. si stale, position déjà ouverte ou évaluation invalide → annulation + réveil
 
-Le scénario validé crée une `Decision` directement, sans appel LLM.
+Le scénario validé crée une `Decision` directement, sans appel LLM, puis repasse
+les gates canoniques juste avant le broker.
 
 ### 3.6 Dispatch LLM — queue grain-symbole et compatibilité batch
 
@@ -404,12 +413,38 @@ configuré, peut essayer le fallback ACPX du brain s'il est activé, puis le bac
 OpenAI-compatible optionnel. La décision persiste toujours le provider, le modèle
 et la raison de fallback réellement observés.
 
+#### Ce que reçoit le brain pendant une décision d'entrée
+
+Le premier message de la session contient les faits déjà calculés par le code :
+cockpit marché, portefeuille, limites de risque, capacité, plans actifs,
+attribution et digest de calibration, régimes, learnings, fraîcheur et état de
+session. Le modèle ne recalcule pas ces faits depuis de la prose.
+
+Lorsqu'il envisage `OPEN_LONG`, `OPEN_SHORT`, `SCALE_IN` ou la jambe ouvrante
+d'un `FLIP`, le brain appelle obligatoirement `evaluate_trade_plan`. Le résultat
+est réinjecté dans **la même session** sous forme de `tool_result` et contient :
+
+- l'identité du snapshot (`cycle_id`, `as_of`) et l'`evaluation_id` ;
+- le sizing effectif, la quantité exposée, le prix de risque, le `risk_pct`, la
+  quantité maximale par risque et la capacité maximale ;
+- le stop et les cibles résolus, ainsi que les warnings ;
+- `risk_approved`, `final_gate_approved` et `executable_by_gates` en dry-run ;
+- les frais, gain/perte bruts et nets, R:R net, `p_break_even` et EV ;
+- les raisons d'invalidité ou de rejet éventuelles.
+
+Le brain arbitre alors sa décision avec ces éléments et recopie
+l'`evaluation_id` sans changer taille, confiance ou plan de sortie. L'EV reste
+advisory. Cette réponse n'est jamais une préautorisation : le daemon revérifie
+l'empreinte et rejoue les gates avant le broker.
+
 ### 3.7 Validation & gates pré-exécution
 
 Pour chaque décision (`trader/runtime/daemon.py`) :
 
 | Vérification | Code rejet |
 |---|---|
+| Référence d'évaluation présente et courante | `trade_evaluation_required`, `trade_evaluation_mismatch`, `trade_evaluation_stale` |
+| Candidat techniquement évaluable | `trade_evaluation_invalid:*` |
 | Intent valide vs action | `invalid_intent` |
 | Exit_plan parsable | `invalid_exit_plan:*` |
 | `hard_stop` du bon côté | `invalid_exit_plan:hard_stop_wrong_side` |
@@ -419,7 +454,8 @@ Pour chaque décision (`trader/runtime/daemon.py`) :
 repères informatifs : le daemon trace des warnings, mais ne bloque pas l'ordre
 pour les faire respecter. `require_hard_stop` et `confidence_gate_enabled`
 peuvent encore être réactivés par configuration, mais le profil exploration les
-désactive.
+désactive. Une EV négative ou inconnue ne bloque pas non plus. Les fusibles
+notionnels et d'equity de `RiskGate.check()` restent toujours actifs.
 
 `resolve_exit_plan()` est appliqué aux entrées directes `OPEN_LONG`/`OPEN_SHORT`
 (unification avec les armés, D11).

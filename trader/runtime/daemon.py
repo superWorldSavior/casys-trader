@@ -71,8 +71,9 @@ from trader.agent.learnings import raw_store as raw_learnings
 from trader.agent.learnings import store as recall_store_mod
 from trader.market import family_regime, fx, macro_calendar, macro_series  # noqa: F401
 from trader.infrastructure.market_sources import gdelt
+from trader.infrastructure.market_sources import commodity_prices
 from trader.market import market_data as market
-from trader.market import volatility as reference_volatility_service
+from trader.domain.market import volatility as reference_volatility_service
 from trader.domain.market.features import DEFAULT_INDICATORS
 from trader.domain.market.gross_priority import PriorityItem, gross_execution_order
 from trader.infrastructure.market_sources.data_source import (
@@ -87,8 +88,13 @@ from trader.domain.planning.protocols import SchedulerLike
 from trader.domain import decision_identity
 from trader.domain.process_trace import new_runtime_run_id
 from trader.infrastructure.files import decision_ledger
+from trader.support.config.risk import attribution_min_entry_confidence
 from trader.support.metadata import code_version
-from trader.reporting.read_models import attribution, meta_performance
+from trader.reporting.read_models import (
+    attribution,
+    confidence_calibration,
+    meta_performance,
+)
 from trader.runtime.agent_cycle_context import (
     build_base_context as _build_base_context,
     global_plans_summary as _global_plans_summary,  # noqa: F401 - legacy daemon hook
@@ -344,15 +350,10 @@ def _resolve_decision_for_execution_routing(
 def _attribution_min_entry_confidence(
     risk_cfg: dict, *, confidence_gate_enabled: bool
 ) -> float | None:
-    """Seuil de censure de l'attribution par confiance d'entrée.
-
-    Gate confiance désactivé → None : aucune censure, les trips basse-confiance
-    entrent dans les buckets `by_confidence` (boucle de calibration). Gate actif →
-    `min_trade_confidence` (comportement live inchangé).
-    """
-    if not confidence_gate_enabled:
-        return None
-    return float(risk_cfg.get("min_trade_confidence", 0.7))
+    """Seuil de censure de l'attribution — même règle que TUI et consolidation."""
+    return attribution_min_entry_confidence(
+        risk_cfg, confidence_gate_enabled=confidence_gate_enabled
+    )
 
 
 def _build_recall_provider(
@@ -571,6 +572,10 @@ def run_cycle(
 ) -> dict:
     """Exécute UN cycle. Retourne un rapport structuré (machine-readable)."""
     process_state = process_state or _DEFAULT_CYCLE_PROCESS_STATE
+    worker_cycle_context = (
+        worker_cycle_context
+        or worker_cycle_context_runtime.WorkerCycleContextHandle()
+    )
     now = now or datetime.now(timezone.utc)
     cycle_id = now.isoformat()
     universe_cfg = _load_yaml(ROOT / "config" / "universe.yaml")
@@ -850,6 +855,73 @@ def run_cycle(
         risk_pct=float(gate.limits.max_risk_per_trade_pct),
         max_order_value=float(gate.limits.max_order_value),
     )
+    reference_volatility_by_symbol: dict[str, float | None] = {}
+    if worker_cycle_context is not None:
+        positions_for_evaluation = broker.positions()
+        reference_volatility_by_symbol = {
+            symbol: reference_volatility_service.reference_volatility_for_symbol(
+                symbol,
+                entry_price=tradable_prices[symbol],
+                cockpit=cockpit,
+                tradable_bars_by_symbol=tradable_bars_by_symbol,
+            )
+            for symbol in tradable_symbols
+            if symbol in tradable_prices
+        }
+        worker_cycle_context.publish_trade_evaluation(
+            cycle_id=cycle_id,
+            inputs=worker_cycle_context_runtime.TradeEvaluationInputs(
+                prices_by_symbol=dict(tradable_prices),
+                fx_rates_by_symbol={
+                    symbol: _rate(symbol)
+                    for symbol in tradable_symbols
+                    if symbol in tradable_prices
+                },
+                bars_by_symbol={
+                    symbol: list(tradable_bars_by_symbol.get(symbol, []))
+                    for symbol in tradable_symbols
+                },
+                reference_volatility_by_symbol=reference_volatility_by_symbol,
+                positions_by_symbol={
+                    symbol: (position.quantity, position.avg_price)
+                    for symbol, position in positions_for_evaluation.items()
+                },
+                equity=float(snap.equity),
+                gross_exposure=float(gross),
+                require_hard_stop=require_hard_stop,
+                gate=gate,
+                commission_model=commission_model,
+            ),
+        )
+    trade_plan_evaluator_cache: dict[str, object | None] = {}
+
+    def trade_plan_evaluator_for_symbol(symbol: str):
+        if symbol not in trade_plan_evaluator_cache:
+            trade_plan_evaluator_cache[symbol] = (
+                queue_runtime.trade_plan_evaluator_from_worker_context(
+                    worker_cycle_context,
+                    cycle_id=cycle_id,
+                    symbol=symbol,
+                )
+            )
+        return trade_plan_evaluator_cache[symbol]
+
+    def cycle_reference_volatility(
+        symbol: str,
+        *,
+        entry_price: float,
+        cockpit: dict,
+        tradable_bars_by_symbol: dict[str, list],
+    ) -> float | None:
+        if symbol in reference_volatility_by_symbol:
+            return reference_volatility_by_symbol[symbol]
+        return reference_volatility_service.reference_volatility_for_symbol(
+            symbol,
+            entry_price=entry_price,
+            cockpit=cockpit,
+            tradable_bars_by_symbol=tradable_bars_by_symbol,
+        )
+
     excluded_attribution_symbols = tuple(regime_cfg.get("exclude_symbols") or [])
     attribution_payload = attribution.compute_attribution(
         STATE_DIR,
@@ -859,10 +931,16 @@ def run_cycle(
             risk_cfg, confidence_gate_enabled=gate.limits.confidence_gate_enabled
         ),
     )
+    confidence_calibration_payload = (
+        confidence_calibration.build_confidence_calibration(STATE_DIR)
+    )
     if worker_cycle_context is not None:
         worker_cycle_context.publish_attribution(
             cycle_id=cycle_id,
-            attribution=attribution_payload,
+            attribution={
+                **attribution_payload,
+                "confidence_calibration": confidence_calibration_payload,
+            },
         )
     meta_performance_payload = meta_performance.compute_meta_performance(STATE_DIR)
     if _recall_store is not None:
@@ -905,6 +983,11 @@ def run_cycle(
         active_families=active_families,
         requestable_indicator_ids=DEFAULT_INDICATORS,
         recall_store=_recall_store,
+    )
+    base_context["confidence_calibration"] = (
+        confidence_calibration.compact_confidence_calibration(
+            confidence_calibration_payload
+        )
     )
     try:
         regime_families = base_context["regime_families"]
@@ -1053,9 +1136,8 @@ def run_cycle(
             runtime_data_source_by_sym=runtime_data_source_by_sym,
             runtime_interval=runtime_interval,
             daily_interval=COCKPIT_DAILY_INTERVAL,
-            reference_volatility_for_symbol=(
-                reference_volatility_service.reference_volatility_for_symbol
-            ),
+            reference_volatility_for_symbol=cycle_reference_volatility,
+            trade_plan_evaluator_provider=trade_plan_evaluator_for_symbol,
         )
     )
     armed_resolution = prepared_scope.armed_resolution
@@ -1139,6 +1221,8 @@ def run_cycle(
         append_event=_append_event,
         append_model_performance=_append_model_performance,
         logger=log,
+        trade_plan_evaluator_provider=trade_plan_evaluator_for_symbol,
+        reference_volatilities=reference_volatility_by_symbol,
     )
 
     dispatch_result = decision_dispatch_runtime.dispatch_decisions(
@@ -1191,6 +1275,8 @@ def run_cycle(
                 process_pilot=process_pilot,
                 symbols=decidable,
             ),
+            trade_plan_evaluator_provider=trade_plan_evaluator_for_symbol,
+            confidence_calibration=confidence_calibration_payload,
         ),
         resolve_decision_for_routing=_resolve_decision_for_execution_routing,
         execute_decision=_execute_one_cycle_decision,
@@ -1424,6 +1510,7 @@ def run_cycle(
         summarize_gross_rejections=summarize_gross_rejections,
         collect_macro=macro_series.maybe_collect,
         collect_gdelt=gdelt.maybe_collect,
+        collect_commodity=commodity_prices.maybe_collect,
         write_current_report=_write_current_report,
         append_event=_append_event,
         logger=log,

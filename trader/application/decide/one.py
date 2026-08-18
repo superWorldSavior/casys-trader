@@ -70,6 +70,7 @@ class ToolRoundServices:
     worker_cycle_context: object | None = None
     action_validator: Callable[[str, dict], "ExitUpdateValidation"] | None = None
     action_validator_factory: Callable[[str | None], Callable[[str, dict], "ExitUpdateValidation"] | None] | None = None
+    trade_plan_evaluator_factory: Callable[[str | None, str], object | None] | None = None
     # Bornes d'outils PAR round. Les 24/3 de ToolRoundLimits sont calibrés batch
     # (chunk de 5 symboles) ; en grain-1, 8 calls pour LE symbole décidé — les
     # outils s'exécutent localement, ce relèvement ne coûte aucun appel acpx.
@@ -94,6 +95,7 @@ def _tool_context_from_facts(
     attribution=None,
     open_plans_provider=None,
     open_plans_as_of_provider=None,
+    trade_plan_evaluator=None,
 ) -> "agent_tools.ToolContext":
     """Reconstruit le ToolContext mono-symbole depuis les snapshots du payload.
 
@@ -113,11 +115,17 @@ def _tool_context_from_facts(
         market_context_by_symbol={symbol: market_ctx} if market_ctx else {},
         active_watches_by_symbol={symbol: list(facts.get("active_watches") or [])},
         attribution=attribution if attribution is not None else shared_context.get("attribution"),
+        confidence_calibration=(
+            attribution.get("confidence_calibration")
+            if isinstance(attribution, dict)
+            else None
+        ),
         # recent_decisions poussé dans les facts ; get_position_risk retiré (issue #4).
         indicator_resolver=indicator_resolver,
         learnings_recall_provider=learnings_recall_provider,
         open_plans_provider=open_plans_provider,
         open_plans_as_of_provider=open_plans_as_of_provider,
+        trade_plan_evaluator=trade_plan_evaluator,
     )
 
 
@@ -175,6 +183,15 @@ def _action_validator_for_cycle(
     return tool_services.action_validator_factory(cycle_id)
 
 
+def _trade_plan_evaluator_for_cycle(
+    tool_services: ToolRoundServices,
+    cycle_id: str | None,
+    symbol: str,
+):
+    factory = tool_services.trade_plan_evaluator_factory
+    return None if factory is None else factory(cycle_id, symbol)
+
+
 def _watch_validator(now_fn: Callable[[], datetime] | None) -> Callable[[str, dict], list[dict]]:
     """Dry-run de `propose_indicator_watch` avec le juge de l'application.
 
@@ -187,6 +204,23 @@ def _watch_validator(now_fn: Callable[[], datetime] | None) -> Callable[[str, di
     def validate(symbol: str, raw_watch: dict) -> list[dict]:
         now = (now_fn or (lambda: datetime.now(timezone.utc)))()
         return build_indicator_watch(raw_watch, owner_symbol=symbol, now=now).rejections
+
+    return validate
+
+
+def _entry_validator(evaluator):
+    from trader.application.execute.trade_plan_evaluation import (
+        validate_decision_trade_evaluations,
+    )
+
+    def validate(_symbol: str, decision: Decision):
+        result = validate_decision_trade_evaluations(decision, evaluator)
+        if result.approved:
+            return None
+        payload = {"reason": result.reason}
+        if result.evaluation is not None:
+            payload["evaluation"] = result.evaluation.to_tool_payload()
+        return payload
 
     return validate
 
@@ -275,6 +309,11 @@ def decide_one(
                 max_requests=tool_services.max_context_requests_per_symbol,
                 max_indicators=tool_services.max_indicators_per_request,
             )
+            trade_plan_evaluator = _trade_plan_evaluator_for_cycle(
+                tool_services,
+                cycle_id,
+                symbol,
+            )
             context = _tool_context_from_facts(
                 symbol,
                 per_symbol_facts,
@@ -285,6 +324,7 @@ def decide_one(
                 attribution=_attribution_for_cycle(tool_services, cycle_id, shared_context),
                 open_plans_provider=_open_plans_provider_for_cycle(tool_services, cycle_id),
                 open_plans_as_of_provider=_open_plans_as_of_provider_for_cycle(tool_services, cycle_id),
+                trade_plan_evaluator=trade_plan_evaluator,
             )
             tool_limits = tool_services.tool_limits()
             action_validator = _action_validator_for_cycle(tool_services, cycle_id)
@@ -327,6 +367,9 @@ def decide_one(
                     heartbeat=heartbeat,
                     action_validator=action_validator,
                     watch_validator=_watch_validator(now_fn),
+                    entry_validator=_entry_validator(
+                        trade_plan_evaluator
+                    ),
                 )
 
             decision = llm.run_with_session_fallback(

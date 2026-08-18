@@ -4,9 +4,28 @@
 > **Code** : `application/execute`, `application/portfolio/snapshot`, `domain/execution`, `domain/market/gross_priority`, `infrastructure/brokers`, `infrastructure/state_db`
 > **Rôle** : le chemin d'un ordre approuvé jusqu'au fill, et la vue portefeuille.
 
-Après la décision LLM, un ordre passe par :
-admission intent/exit → admission risque + [risk gate](risk-gate.md) final →
-ordre d'exécution gross-fair → broker → portefeuille.
+Après la décision LLM, une augmentation d'exposition passe par :
+référence `TradePlanEvaluation` → admission intent/exit → admission risque +
+[risk gate](risk-gate.md) final → ordre d'exécution gross-fair → broker →
+portefeuille.
+
+## Évaluation déterministe préalable
+
+`application/execute/trade_plan_evaluation.py` compose les mêmes briques que
+l'exécution : résolution du plan de sortie, sizing, `risk_admission`, RiskGate,
+capacité, FX et commissions. Le tool `evaluate_trade_plan` rend une empreinte
+`evaluation_id` liée au cycle/as-of, prix/FX, candidat, sizing, exit et
+`confidence`.
+
+Cette étape est obligatoire pour `OPEN_LONG`, `OPEN_SHORT`, `SCALE_IN` et la
+jambe ouvrante d'un `FLIP`. Absence, empreinte modifiée, cycle remplacé ou
+évaluation techniquement invalide bloquent avant tout side effect. Une EV
+négative ou inconnue ne bloque pas : `economics.status` est advisory.
+
+L'évaluation ne préautorise jamais l'ordre. `risk_admission` et le RiskGate sont
+rejoués juste avant le broker. Pour un plan armé, ils sont observés à
+l'armement, puis l'évaluation et les gates sont recalculés avec les prix/barres
+frais au trigger.
 
 ## Admission intent/exit — `application/execute/order_admission` (helpers purs)
 

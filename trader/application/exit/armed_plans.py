@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Mapping, Protocol
+from typing import Any, Callable, Mapping, Protocol
 
+from trader.application.execute.trade_plan_evaluation import (
+    candidate_from_decision,
+)
 from trader.domain.decisions import Decision
 from trader.domain.planning.armed_order import armed_order_price_coherent
 from trader.domain.planning.exit_plan_spec import InvalidExitPlanError
@@ -62,7 +65,7 @@ _TERMINAL_CANCEL_REASONS = {
 def _is_terminal_cancel(reason: str) -> bool:
     return reason in _TERMINAL_CANCEL_REASONS or reason.startswith(
         "armed_plan_cancelled:exit_unresolved"
-    )
+    ) or reason.startswith("armed_plan_cancelled:trade_evaluation")
 
 
 def resolve_armed_plan_triggers(
@@ -75,6 +78,7 @@ def resolve_armed_plan_triggers(
     cockpit: dict,
     tradable_bars_by_symbol: dict[str, list],
     reference_volatility_for_symbol: ReferenceVolatilityProvider,
+    trade_plan_evaluator_provider: Callable[[str], object | None] | None = None,
 ) -> ArmedPlanResolution:
     """Resolve EXECUTE_ORDER triggers into deterministic decisions or planner wakeups."""
     decisions: dict[str, Decision] = {}
@@ -152,6 +156,67 @@ def resolve_armed_plan_triggers(
                     )
                     if not armed_order_price_coherent(order, price=prices[symbol]):
                         cancel_reason = "armed_plan_cancelled:stop_incoherent"
+                    elif not str(order.get("trade_evaluation_id") or "").strip():
+                        cancel_reason = (
+                            "armed_plan_cancelled:trade_evaluation_required"
+                        )
+                    else:
+                        evaluator = (
+                            None
+                            if trade_plan_evaluator_provider is None
+                            else trade_plan_evaluator_provider(symbol)
+                        )
+                        if evaluator is None:
+                            cancel_reason = (
+                                "armed_plan_cancelled:trade_evaluation_unavailable"
+                            )
+                        else:
+                            candidate_decision = Decision(
+                                symbol=symbol,
+                                action=str(order["action"]),  # type: ignore[arg-type]
+                                quantity=float(order["qty"]),
+                                confidence=float(order["confidence"]),
+                                rationale=str(order.get("rationale") or "armed_entry"),
+                                intent=str(order["intent"]),  # type: ignore[arg-type]
+                                exit_plan=order.get("exit_plan"),
+                                thesis=order.get("thesis"),
+                            )
+                            candidate = candidate_from_decision(candidate_decision)
+                            evaluation = (
+                                None
+                                if candidate is None
+                                else evaluator.evaluate(candidate)  # type: ignore[attr-defined]
+                            )
+                            if evaluation is None or not evaluation.valid:
+                                reason = (
+                                    "invalid"
+                                    if evaluation is None
+                                    else (
+                                        evaluation.reasons[0]
+                                        if evaluation.reasons
+                                        else "invalid"
+                                    )
+                                )
+                                cancel_reason = (
+                                    "armed_plan_cancelled:"
+                                    f"trade_evaluation_invalid:{reason}"
+                                )
+                            else:
+                                order = {
+                                    **order,
+                                    "trade_evaluation_id": evaluation.evaluation_id,
+                                }
+                                trigger["order"] = order
+                                events.append(
+                                    ArmedPlanEvent(
+                                        "armed_plan_trade_evaluated",
+                                        {
+                                            "symbol": symbol,
+                                            "plan_id": plan_id,
+                                            "evaluation": evaluation.to_tool_payload(),
+                                        },
+                                    )
+                                )
 
         if cancel_reason is not None:
             progress_logs.append(ArmedPlanProgressLog(_CANCEL_LOG, (symbol, cancel_reason, plan_id)))
@@ -182,6 +247,8 @@ def resolve_armed_plan_triggers(
             intent=str(order["intent"]),  # type: ignore[arg-type]
             exit_plan=order.get("exit_plan"),
             decision_reason_code="ARMED_PLAN",
+            thesis=order.get("thesis"),
+            trade_evaluation_id=str(order["trade_evaluation_id"]),
         )
         plan_ids_by_symbol[symbol] = plan_id
         plan_orders_by_symbol[symbol] = dict(order)

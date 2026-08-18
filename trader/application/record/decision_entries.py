@@ -94,6 +94,7 @@ def build_decision_entry(
         "applied_learning_ids": list(decision.applied_learning_ids),
         "thesis": decision.thesis,
         "risk_pct_target": decision.risk_pct_target,
+        "trade_evaluation_id": decision.trade_evaluation_id,
         "trade_plan_created": False,
         "indicator_watch_created": False,
         "indicator_watch_requested": bool(decision.indicator_watch),
@@ -105,6 +106,8 @@ def build_decision_entry(
 
 def hold_reason_for_decision(*, decision_source: str, rationale: str | None) -> str:
     rationale_text = str(rationale or "")
+    if rationale_text.startswith("trade_evaluation_"):
+        return rationale_text
     if decision_source == "infra" and rationale_text in INFRA_HOLD_REASONS:
         return rationale_text
     if rationale_text in DOMAIN_NOOP_HOLD_REASONS:

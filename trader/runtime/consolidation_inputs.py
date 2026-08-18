@@ -7,7 +7,7 @@ from typing import Sequence
 
 from trader.reporting.read_models import attribution as attribution_mod
 from trader.reporting.read_models import meta_performance as meta_performance_mod
-from trader.support.config.risk import read_min_trade_confidence
+from trader.support.config.risk import read_attribution_min_entry_confidence
 
 
 def build_consolidation_inputs(
@@ -21,7 +21,7 @@ def build_consolidation_inputs(
         state_dir,
         since=attribution_since,
         exclude_symbols=tuple(exclude_symbols),
-        min_entry_confidence=read_min_trade_confidence(risk_yaml_path),
+        min_entry_confidence=read_attribution_min_entry_confidence(risk_yaml_path),
     )
     meta = meta_performance_mod.compute_meta_performance(state_dir)
     return attr, meta

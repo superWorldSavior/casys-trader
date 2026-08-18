@@ -65,6 +65,8 @@ class DecisionDispatchRequest:
     mandate_context_by_symbol: dict[str, dict] = field(default_factory=dict)
     learning_feedback_provider: Callable[[list[str]], dict[str, dict]] | None = None
     process_identity_by_symbol: dict[str, dict[str, str]] = field(default_factory=dict)
+    trade_plan_evaluator_provider: Callable[[str], object | None] | None = None
+    confidence_calibration: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -160,6 +162,8 @@ def dispatch_decisions(
         decision_batch_parallelism=request.decision_batch_parallelism,
         agent_tools_enabled=request.agent_tools_enabled,
         learnings_recall_provider=request.learnings_recall_provider,
+        trade_plan_evaluator_provider=request.trade_plan_evaluator_provider,
+        confidence_calibration=request.confidence_calibration,
         indicator_request_resolver=request.indicator_request_resolver,
         event_appender=request.event_appender,
         bar_timeframe_by_symbol=request.analysis_timeframe_by_symbol,

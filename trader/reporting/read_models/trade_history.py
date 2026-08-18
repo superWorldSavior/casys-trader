@@ -49,6 +49,8 @@ class _OpenLeg:
         self._conf_qty = 0.0
         self.entry_fx_rate = 1.0
         self.entry_commission_currency = "USD"
+        self.entry_decision_ids: list[str] = []
+        self.position_cycle_id: str | None = None
 
     @property
     def entry_confidence(self) -> float | None:
@@ -64,6 +66,8 @@ class _OpenLeg:
         commission: float = 0.0,
         fx_rate: float = 1.0,
         commission_currency: str = "USD",
+        decision_id: str | None = None,
+        position_cycle_id: str | None = None,
     ) -> None:
         if self.qty == 0.0:
             self.entry_ts = ts
@@ -72,6 +76,8 @@ class _OpenLeg:
             self.commission = 0.0
             self.entry_fx_rate = fx_rate
             self.entry_commission_currency = commission_currency
+            self.entry_decision_ids = []
+            self.position_cycle_id = position_cycle_id
         new_qty = self.qty + added_qty
         self.avg_price = (
             self.avg_price * abs(self.qty) + price * abs(added_qty)
@@ -81,6 +87,8 @@ class _OpenLeg:
         if confidence is not None:
             self._conf_sum += confidence * abs(added_qty)
             self._conf_qty += abs(added_qty)
+        if decision_id and decision_id not in self.entry_decision_ids:
+            self.entry_decision_ids.append(decision_id)
 
     def scale_entry_weight(self, factor: float) -> None:
         self._conf_sum *= factor
@@ -103,6 +111,7 @@ def compute_round_trips(state_dir: Path) -> list[dict]:
     rows = _read_perf_rows(state_dir)
     rows.sort(key=lambda row: (str(row.get("symbol")), str(row.get("ts"))))
     legs: dict[str, _OpenLeg] = {}
+    cycle_numbers: dict[str, int] = {}
     trips: list[dict] = []
 
     for row in rows:
@@ -133,10 +142,15 @@ def compute_round_trips(state_dir: Path) -> list[dict]:
         row_commission_currency = str(
             row.get("commission_currency") or "USD"
         )
+        row_decision_id = str(row.get("decision_id") or "").strip() or None
         signed = qty if action == "BUY" else -qty
         leg = legs.setdefault(symbol, _OpenLeg())
 
         if abs(leg.qty) <= _FLAT_EPS or (leg.qty > 0) == (signed > 0):
+            position_cycle_id = None
+            if abs(leg.qty) <= _FLAT_EPS:
+                cycle_numbers[symbol] = cycle_numbers.get(symbol, 0) + 1
+                position_cycle_id = f"{symbol}:{cycle_numbers[symbol]}"
             leg.open_or_add(
                 added_qty=signed,
                 price=price,
@@ -145,6 +159,8 @@ def compute_round_trips(state_dir: Path) -> list[dict]:
                 commission=row_commission,
                 fx_rate=row_fx_rate,
                 commission_currency=row_commission_currency,
+                decision_id=row_decision_id,
+                position_cycle_id=position_cycle_id,
             )
             continue
 
@@ -179,6 +195,14 @@ def compute_round_trips(state_dir: Path) -> list[dict]:
                 "exit_reason": row.get("exit_reason")
                 or str(row.get("intent") or ""),
                 "source_plan_id": row.get("source_plan_id"),
+                "entry_decision_id": (
+                    leg.entry_decision_ids[0]
+                    if len(leg.entry_decision_ids) == 1
+                    else None
+                ),
+                "entry_decision_ids": list(leg.entry_decision_ids),
+                "position_cycle_id": leg.position_cycle_id,
+                "position_cycle_closed": closing_qty >= old_abs - _FLAT_EPS,
             }
         )
 
@@ -188,6 +212,7 @@ def compute_round_trips(state_dir: Path) -> list[dict]:
             legs[symbol] = _OpenLeg()
         elif remaining > _FLAT_EPS:
             fresh = _OpenLeg()
+            cycle_numbers[symbol] = cycle_numbers.get(symbol, 0) + 1
             fresh.open_or_add(
                 added_qty=entry_sign * -remaining,
                 price=price,
@@ -196,6 +221,8 @@ def compute_round_trips(state_dir: Path) -> list[dict]:
                 commission=max(row_commission - exit_commission, 0.0),
                 fx_rate=row_fx_rate,
                 commission_currency=row_commission_currency,
+                decision_id=row_decision_id,
+                position_cycle_id=f"{symbol}:{cycle_numbers[symbol]}",
             )
             legs[symbol] = fresh
         else:

@@ -105,6 +105,7 @@ def _first_rejected_action(
     symbol: str,
     action_validator: Callable | None,
     watch_validator: Callable | None,
+    entry_validator: Callable | None,
 ) -> tuple[str, object] | None:
     """Première action que le daemon refuserait d'appliquer, `(outil, erreur)`.
 
@@ -112,6 +113,10 @@ def _first_rejected_action(
     `build_indicator_watch`) : juger ici avec une autre règle ferait corriger
     l'agent sur un verdict que le daemon ne rendrait pas.
     """
+    if entry_validator is not None:
+        error = entry_validator(symbol, decision)
+        if error is not None:
+            return ("evaluate_trade_plan", error)
     if action_validator is not None and decision.exit_update is not None:
         validation = action_validator(symbol, decision.exit_update)
         if not validation.would_apply:
@@ -135,6 +140,7 @@ def resolve_symbol_decision(
     heartbeat: Callable[[], object] | None = None,
     action_validator: Callable | None = None,
     watch_validator: Callable | None = None,
+    entry_validator: Callable | None = None,
     max_action_corrections: int = 2,
 ) -> Decision:
     """Orchestration grain-1 du tour d'outils : round(s) + tour final + merge des traces.
@@ -201,6 +207,7 @@ def resolve_symbol_decision(
                     symbol=symbol,
                     action_validator=action_validator,
                     watch_validator=watch_validator,
+                    entry_validator=entry_validator,
                 )
                 if rejection is not None:
                     correction_attempts += 1
@@ -243,6 +250,15 @@ def resolve_symbol_decision(
         and final_decision.rationale == "tool_loop_blocked"
     ):
         final_decision = Decision.hold(symbol, "tool_loop_blocked")
+    if entry_validator is not None:
+        error = entry_validator(symbol, final_decision)
+        if error is not None:
+            reason = (
+                str(error.get("reason") or "trade_evaluation_invalid")
+                if isinstance(error, dict)
+                else str(error)
+            )
+            final_decision = Decision.hold(symbol, reason)
     return _finalize(final_decision, accumulated_traces, rounds_done)
 
 

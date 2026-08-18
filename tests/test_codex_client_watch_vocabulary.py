@@ -98,7 +98,7 @@ def test_watch_documente_ttl_optionnel_et_ordre_arme_strict() -> None:
     assert "thèse overnight" in prompt
     assert "ttl_minutes` explicitement (max 1440)" in prompt
     assert '"qty":<number>' in prompt
-    assert "stop, qty>0 et confidence sont requis" in prompt
+    assert "confidence et evaluation_id sont requis" in prompt
     assert "risk_pct?" not in armed_contract[armed_contract.index("# Plans armés"):]
 
 

@@ -74,6 +74,46 @@ def test_build_decision_row_normalise_une_decision_pour_audit() -> None:
     assert row["mandate_ref"] is None
 
 
+def test_decision_row_persists_trade_evaluation_audit_fields() -> None:
+    decision = {
+        **_decision(action="BUY"),
+        "intent": "OPEN_LONG",
+        "qty": 2.0,
+        "trade_evaluation_id": "tpe_audit",
+        "entry_dimensions": {
+            "setup": "breakout",
+            "horizon": "swing",
+            "side": "long",
+            "regime": "trend",
+        },
+        "trade_plan_evaluation": {
+            "evaluation_id": "tpe_audit",
+            "as_of": "2026-06-08T12:15:00+00:00",
+            "economics": {
+                "status": "positive",
+                "expected_value_usd": 12.5,
+                "p_break_even": 0.4,
+            },
+        },
+        "trade_evaluation_rejection": "trade_evaluation_stale",
+    }
+
+    row = decision_ledger.build_decision_row(
+        _report([decision]),
+        decision,
+        sequence=0,
+    )
+
+    assert row["trade_evaluation_id"] == "tpe_audit"
+    assert row["trade_evaluation_as_of"] == "2026-06-08T12:15:00+00:00"
+    assert row["trade_economics_status"] == "positive"
+    assert row["trade_evaluation_rejection"] == "trade_evaluation_stale"
+    assert row["entry_dimensions"]["regime"] == "trend"
+    assert row["runtime"]["trade_plan_evaluation"]["economics"][
+        "expected_value_usd"
+    ] == 12.5
+
+
 def test_build_decision_row_expose_mandate_ref_a_la_racine() -> None:
     decision = _decision()
     mandate_ref = {

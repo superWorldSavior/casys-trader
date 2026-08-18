@@ -201,6 +201,7 @@ def test_continuite_watch_de_la_reponse_modele_au_prochain_prompt(tmp_path):
                         "qty": 2,
                         "confidence": 0.72,
                         "exit": {"stop": {"type": "price", "price": 155.0}},
+                            "evaluation_id": "tpe_test",
                         "rationale": "Executer ce plan si le reclaim arrive.",
                     },
                 },

@@ -802,6 +802,62 @@ def test_load_runtime_state_inclut_recent_trips_depuis_attribution(tmp_path) -> 
     assert state["recent_trips"][0]["pnl"] == 5.0
 
 
+def test_load_runtime_state_recent_trips_suit_le_gate_confiance(
+    tmp_path, monkeypatch
+) -> None:
+    """Gate paper off → le TUI montre les clôtures basse-confiance, comme le daemon."""
+    import json as _json
+
+    from trader.reporting.read_models import runtime_state
+    from trader.tui import load_runtime_state
+
+    rows = [
+        {
+            "ts": "2026-08-17T18:20:00+00:00",
+            "symbol": "NOC",
+            "action": "BUY",
+            "quantity": 1,
+            "price": 100.0,
+            "confidence": 0.58,
+            "intent": "OPEN_LONG",
+        },
+        {
+            "ts": "2026-08-17T18:21:00+00:00",
+            "symbol": "NOC",
+            "action": "SELL",
+            "quantity": 1,
+            "price": 90.0,
+            "confidence": None,
+            "intent": "PLANNED_EXIT",
+            "exit_reason": "llm_exit",
+        },
+    ]
+    (tmp_path / "model_performance.jsonl").write_text(
+        "\n".join(_json.dumps(row) for row in rows) + "\n",
+        encoding="utf-8",
+    )
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    monkeypatch.setattr(runtime_state, "_ROOT", tmp_path)
+
+    (config_dir / "risk.yaml").write_text(
+        "min_trade_confidence: 0.7\nconfidence_gate_enabled: false\n",
+        encoding="utf-8",
+    )
+    shown = load_runtime_state(state_dir=tmp_path)
+    assert [trip["symbol"] for trip in shown["recent_trips"]] == ["NOC"]
+    assert shown["attribution"]["regime"]["min_entry_confidence"] is None
+
+    (config_dir / "risk.yaml").write_text(
+        "min_trade_confidence: 0.7\nconfidence_gate_enabled: true\n",
+        encoding="utf-8",
+    )
+    hidden = load_runtime_state(state_dir=tmp_path)
+    assert hidden["recent_trips"] == []
+    assert hidden["attribution"]["n_closed_trades"] == 0
+    assert hidden["attribution"]["regime"]["n_excluded_low_confidence"] == 1
+
+
 def test_load_runtime_state_expose_starting_cash_depuis_portfolio_config(tmp_path) -> None:
     import json as _json
 

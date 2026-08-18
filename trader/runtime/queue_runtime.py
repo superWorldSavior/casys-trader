@@ -291,6 +291,69 @@ def start_execute_queue(
     )
 
 
+def trade_plan_evaluator_from_worker_context(
+    worker_cycle_context: object,
+    *,
+    cycle_id: str | None,
+    symbol: str,
+):
+    """Build one evaluator from the atomically published cycle snapshot."""
+
+    from trader.application.execute.trade_plan_evaluation import (
+        TradePlanEvaluationContext,
+        TradePlanEvaluator,
+    )
+    from trader.runtime.worker_cycle_context import CycleContextUnavailable
+
+    try:
+        inputs = worker_cycle_context.get_trade_evaluation_inputs(cycle_id)
+    except CycleContextUnavailable:
+        return None
+    if (
+        inputs is None
+        or inputs.gate is None
+        or symbol not in inputs.prices_by_symbol
+        or symbol not in inputs.fx_rates_by_symbol
+    ):
+        return None
+    position_quantity, position_avg_price = inputs.positions_by_symbol.get(
+        symbol,
+        (0.0, 0.0),
+    )
+    gate = inputs.gate
+    max_quantity = None
+    max_quantity_at_price = getattr(
+        gate,
+        "max_order_quantity_at_price",
+        None,
+    )
+    if callable(max_quantity_at_price):
+        max_quantity = max_quantity_at_price(
+            inputs.prices_by_symbol[symbol],
+            fx_rate=inputs.fx_rates_by_symbol[symbol],
+        )
+    return TradePlanEvaluator(
+        TradePlanEvaluationContext(
+            cycle_id=str(cycle_id or ""),
+            as_of=str(cycle_id or ""),
+            price=inputs.prices_by_symbol[symbol],
+            fx_rate=inputs.fx_rates_by_symbol[symbol],
+            equity=inputs.equity,
+            gross_exposure=inputs.gross_exposure,
+            position_quantity=position_quantity,
+            position_avg_price=position_avg_price,
+            require_hard_stop=inputs.require_hard_stop,
+            gate=gate,
+            reference_volatility=(
+                inputs.reference_volatility_by_symbol.get(symbol)
+            ),
+            bars=tuple(inputs.bars_by_symbol.get(symbol, [])),
+            max_quantity=max_quantity,
+            commission_model=inputs.commission_model,
+        )
+    )
+
+
 def build_decide_tool_services(
     *,
     get_data_source: Callable[[], object],
@@ -337,6 +400,7 @@ def build_decide_tool_services(
         log.warning("[queue_decide] LearningsStore indisponible (%s) — recall désactivé", exc)
 
     action_validator_factory = None
+    trade_plan_evaluator_factory = None
     if worker_cycle_context is not None:
         def action_validator_factory(cycle_id: str | None):
             def action_validator(symbol: str, exit_update: dict) -> ExitUpdateValidation:
@@ -355,6 +419,16 @@ def build_decide_tool_services(
 
             return action_validator
 
+        def trade_plan_evaluator_factory(
+            cycle_id: str | None,
+            symbol: str,
+        ):
+            return trade_plan_evaluator_from_worker_context(
+                worker_cycle_context,
+                cycle_id=cycle_id,
+                symbol=symbol,
+            )
+
     return ToolRoundServices(
         get_bars=_get_bars,
         learnings_recall_provider=recall_provider,
@@ -362,6 +436,7 @@ def build_decide_tool_services(
         max_indicators_per_request=max_indicators_per_request,
         worker_cycle_context=worker_cycle_context,
         action_validator_factory=action_validator_factory,
+        trade_plan_evaluator_factory=trade_plan_evaluator_factory,
     )
 
 

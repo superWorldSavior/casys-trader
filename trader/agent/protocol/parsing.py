@@ -25,12 +25,13 @@ from trader.agent.protocol.types import (
 )
 from trader.agent.protocol.json_utils import extract_json_object
 from trader.agent.protocol.strategy_language import compile_strategy_call
+from trader.domain.strategy_language import (
+    normalize_trade_thesis as _canonical_trade_thesis,
+)
 
 _DECISION_KEYS = {"symbol", "action", "quantity", "confidence", "rationale", "decision_reason_code"}
 _INLINE_DECISION_FIELDS = set(INLINE_DECISION_FIELDS)
 MAX_LEARNING_CHARS = 1000  # borne la note pour ne pas faire exploser le prompt/store
-MAX_THESIS_FIELD_CHARS = 200  # borne chaque champ texte du thesis tag
-_THESIS_VALID_HORIZONS = frozenset({"intraday", "swing", "position"})
 _RELATIVE_ORDER_INTENTS = RELATIVE_ORDER_INTENTS
 
 
@@ -44,19 +45,13 @@ def _normalize_thesis(value: object) -> dict | None:
     - horizon : str dans {intraday, swing, position} (case-insensitive, normalisé lowercase)
     - un seul champ manquant → None
     """
-    if not isinstance(value, dict):
-        return None
-    setup = value.get("setup")
-    horizon = value.get("horizon")
-    invalidation = value.get("invalidation")
-    if not isinstance(setup, str) or not isinstance(horizon, str) or not isinstance(invalidation, str):
-        return None
-    setup = setup.strip()[:MAX_THESIS_FIELD_CHARS]
-    invalidation = invalidation.strip()[:MAX_THESIS_FIELD_CHARS]
-    horizon_norm = horizon.strip().lower()
-    if not setup or not invalidation or horizon_norm not in _THESIS_VALID_HORIZONS:
-        return None
-    return {"setup": setup, "horizon": horizon_norm, "invalidation": invalidation}
+    return _canonical_trade_thesis(value)
+
+
+def normalize_trade_thesis(value: object) -> dict | None:
+    """Public canonicalizer shared by evaluation tools and final parsing."""
+
+    return _normalize_thesis(value)
 
 
 def _normalize_learning(value: object) -> str | None:
@@ -185,6 +180,12 @@ def _decision_from_dict(data: dict | LlmDecisionPayload, symbol: str) -> Decisio
         exit_update=_optional_dict(data, "exit_update"),
         resolve_from_position=resolve_from_position,
         domain_tools=({"normalizations": normalizations} if normalizations else None),
+        trade_evaluation_id=(
+            str(data["trade_evaluation_id"])
+            if isinstance(data.get("trade_evaluation_id"), str)
+            and data["trade_evaluation_id"]
+            else None
+        ),
     )
 
 
@@ -317,6 +318,12 @@ def _compact_exit_plan(raw: object) -> dict | None:
     return out or None
 
 
+def compact_trade_exit_plan(raw: object) -> dict | None:
+    """Public canonicalizer shared by evaluation tools and final parsing."""
+
+    return _compact_exit_plan(raw)
+
+
 def _action_for_order_tool(args: dict) -> str:
     raw_action = args.get("side") or args.get("action")
     if raw_action is not None:
@@ -446,6 +453,15 @@ def _decision_from_symbol_calls(data: dict | LlmSymbolCallsPayload, symbol: str)
             decision["intent"] = intent
             decision["exit_plan"] = _compact_exit_plan(args.get("exit"))
             decision["thesis"] = _normalize_thesis(args.get("thesis"))
+            evaluation_id = args.get(
+                "trade_evaluation_id",
+                args.get("evaluation_id"),
+            )
+            decision["trade_evaluation_id"] = (
+                str(evaluation_id)
+                if isinstance(evaluation_id, str) and evaluation_id
+                else None
+            )
             if needs_position_resolve:
                 decision["_resolve_from_position"] = True
                 if reduce_fraction is not None:

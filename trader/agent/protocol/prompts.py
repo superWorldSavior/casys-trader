@@ -81,7 +81,7 @@ _OUTPUT_CONTRACT = (
     "inspiré de Pine Script : utilise ton intuition "
     "strategy.entry/strategy.exit/strategy.close, mais rends uniquement les appels "
     "JSON, jamais du code Pine Script.\n"
-    "- strategy_entry{id?, direction:\"long|short\", qty?, risk_pct?, exit?, thesis?} "
+    "- strategy_entry{id?, direction:\"long|short\", qty?, risk_pct?, exit?, thesis?, evaluation_id} "
     "= changer l'exposition ; même sens = renforcement, sens opposé = retournement.\n"
     "- strategy_exit{id?, limit?, stop?, qty_percent?, trail?, trail_offset?, protect?, "
     "exit_watch?, max_hold_minutes?} = patcher la règle de sortie d'une position ouverte.\n"
@@ -115,6 +115,11 @@ _COMPACT_OUTPUT_CONTRACT = (
 
 _DECISION_GUIDANCE = (
     "# Ton échelle d'engagement (du jugement immédiat au scénario délégué)\n"
+    "`confidence` est la probabilité que le round-trip finisse net positif avant "
+    "invalidation/horizon, conditionnellement aux faits courants. Pour toute "
+    "augmentation d'exposition, appelle d'abord `evaluate_trade_plan`, puis recopie "
+    "son `evaluation_id` sans modifier candidat, taille, exit ou confidence. "
+    "L'EV reste advisory ; les gates déterministes restent l'autorité.\n"
     "Choisis le niveau utile : 1) DÉCIDER maintenant (`strategy_entry`, "
     "`strategy_close`, `strategy_exit`) si l'edge est présent ; 2) VEILLER "
     "(`set_next_wake` ou `propose_indicator_watch` avec WAKE) pour re-juger sur "
@@ -325,7 +330,7 @@ _SYMBOL_CALLS_FINAL_CONTRACT = (
     "jamais du code Pine Script. Mapping: strategy_entry = position intent; "
     "strategy_exit = exit rule; strategy_close = sortie marché immédiate; "
     "set_next_wake = review wake; propose_indicator_watch = veille ou plan armé.\n"
-    "- strategy_entry{id?, direction:\"long|short\", qty?, risk_pct?, exit?, thesis?} : "
+    "- strategy_entry{id?, direction:\"long|short\", qty?, risk_pct?, exit?, thesis?, evaluation_id} : "
     "long→BUY, short→SELL; même sens = renforcement, sens opposé = retournement. "
     "Le daemon exécute et applique RiskGate. `risk_pct` sans `qty` dérive la taille "
     "depuis equity, distance_stop et fx_rate; réservé à une nouvelle entrée flat "
@@ -573,10 +578,11 @@ def _indicator_watch_vocabulary() -> str:
         '`on_trigger:"EXECUTE_ORDER"` arme une entrée exécutée sans re-appel modèle. '
         "`order` suit `strategy_entry`: "
         '{"direction":"long|short","qty":<number>,"confidence":<0..1>,'
+        '"evaluation_id":"<id rendu par evaluate_trade_plan>",'
         '"exit":{"stop":{"type":"price|percent|volatility_multiple|structural",...},'
         '"limit":<number?>},"rationale":"..."}. '
-        "Contrat strict: `exit.stop` peut être en prix OU relatif ; stop, qty>0 et "
-        "confidence sont requis, sinon WAKE_WITH_ORDER_INTENT. Schéma relatif: "
+        "Contrat strict: `exit.stop` peut être en prix OU relatif ; stop, qty>0, "
+        "confidence et evaluation_id sont requis, sinon WAKE_WITH_ORDER_INTENT. Schéma relatif: "
         '`stop` {type:"percent", percent:<0..1>, min_pct?, max_pct?} ou '
         '{type:"volatility_multiple", multiple:<requis, >0>, min_pct?, max_pct?} ou '
         '{type:"structural", anchor:"swing_low|swing_high|vwap", '
@@ -609,7 +615,8 @@ _TOOL_CATALOG = (
     "faire HOLD par défaut. Si aucune inconnue matérielle ne subsiste, décide directement : "
     "n'appelle jamais un outil de façon cérémonielle. Exemples : indicateur/timeframe manquant "
     "→ get_indicator_context ; conflit de plans global → get_active_plans ; analogie historique "
-    "→ recall_learnings ; bucket de performance → get_attribution. La fraîcheur cible est déjà "
+    "→ recall_learnings ; bucket de performance → get_attribution ; tout candidat "
+    "d'augmentation d'exposition → evaluate_trade_plan. La fraîcheur cible est déjà "
     "poussée : get_freshness n'est utile qu'en cas de contradiction.\n"
     "Si le cockpit suffit après ce contrôle, rends directement le contrat final. Sinon demande\n"
     "UNE tournée d'outils lecture-seule en répondant À LA PLACE du contrat final. "
@@ -622,13 +629,19 @@ _TOOL_CATALOG = (
     "Bornes : 3 appels max par symbole, 24 par lot. Outils :\n"
     "- get_freshness{symbols:[…]} : exécution/planification/âge des données par symbole\n"
     "- get_active_plans{symbol?,limit?} : détail complet TradePlans ouverts (portée globale)\n"
-    "- get_attribution{scope:summary|confidence|exit_reason|symbol, symbol?} : perf attribuée compacte\n"
+    "- get_attribution{scope:summary|confidence|calibration|exit_reason|symbol, symbol?} : perf attribuée et calibration numérique\n"
     "- describe_data{} : cube sémantique (timeframes/lookbacks valides, windows, indicateurs)\n"
     "- find_indicators{concept} : cherche des indicateurs par concept (momentum, volatilité, …)\n"
     "- get_indicator_context{symbol,indicators:[…],timeframe?,lookback?,window?,as_of?} : "
     "cube indicateurs ; tous les indicateurs gouvernés demandés sont rendus par défaut, "
     "inutile de les répartir entre plusieurs appels\n"
     "- recall_learnings{symbol?|family?|query?, limit?} : mémoire vérifiée — notes passées pondérées par leurs résultats réels\n"
+    "- evaluate_trade_plan{symbol,direction:\"long|short\",confidence,qty|risk_pct,exit,thesis?} : "
+    "évaluation déterministe obligatoire avant strategy_entry ou ordre armé ; renvoie "
+    "evaluation_id, sizing, frais, perte/gain, R:R, p_break_even et EV advisory\n"
+    "Si tool_results contient evaluate_trade_plan avec ok:false, la référence "
+    "d'entrée manque, ne correspond plus au candidat ou vient d'un cycle remplacé : "
+    "réévalue le candidat courant et recopie le nouvel evaluation_id.\n"
     "Si tool_results contient un strategy_exit avec ok:false, c'est un retour de validation pré-exécution : "
     "corrige dans ta réponse suivante (stop en prix absolu au lieu de structural, ou retire la contrainte non résolvable). "
     "Tu n'as PAS besoin de redemander le plan, il est déjà dans ton contexte.\n"

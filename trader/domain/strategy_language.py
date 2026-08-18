@@ -20,7 +20,11 @@ __all__ = [
     "StrategyDialect",
     "StrategyPrimitive",
     "compile_strategy_call",
+    "normalize_trade_thesis",
 ]
+
+_MAX_THESIS_FIELD_CHARS = 200
+_THESIS_VALID_HORIZONS = frozenset({"intraday", "swing", "position"})
 
 
 @dataclass(frozen=True)
@@ -30,6 +34,34 @@ class CompiledStrategyCall:
     args: dict
     dialect: StrategyDialect
     position_aware: bool = False
+
+
+def normalize_trade_thesis(value: object) -> dict | None:
+    """Canonicalize an optional setup/horizon/invalidation thesis tag."""
+
+    if not isinstance(value, dict):
+        return None
+    setup = value.get("setup")
+    horizon = value.get("horizon")
+    invalidation = value.get("invalidation")
+    if not isinstance(setup, str) or not isinstance(horizon, str):
+        return None
+    if not isinstance(invalidation, str):
+        return None
+    setup = setup.strip()[:_MAX_THESIS_FIELD_CHARS]
+    invalidation = invalidation.strip()[:_MAX_THESIS_FIELD_CHARS]
+    horizon_norm = horizon.strip().lower()
+    if (
+        not setup
+        or not invalidation
+        or horizon_norm not in _THESIS_VALID_HORIZONS
+    ):
+        return None
+    return {
+        "setup": setup,
+        "horizon": horizon_norm,
+        "invalidation": invalidation,
+    }
 
 
 def _pine_qty_percent_fraction(args: dict) -> float | None:
@@ -96,7 +128,14 @@ def _strategy_entry_args(args: dict) -> dict:
     else:
         raise ValueError("strategy_entry_direction_required")
     out: dict = {"intent": intent}
-    for key in ("qty", "quantity", "risk_pct", "thesis"):
+    for key in (
+        "qty",
+        "quantity",
+        "risk_pct",
+        "thesis",
+        "evaluation_id",
+        "trade_evaluation_id",
+    ):
         if args.get(key) is not None:
             out[key] = args[key]
     if args.get("exit") is not None:

@@ -111,12 +111,73 @@ def make_data_source():
     return FakeDataSource
 
 
+def evaluate_batch_test_decisions(kwargs: dict, decisions: dict) -> dict:
+    """Make fake batch outputs obey the production entry-evaluation contract."""
+
+    from dataclasses import replace
+
+    from trader.application.execute.trade_plan_evaluation import (
+        candidate_from_decision,
+    )
+    from trader.domain.decisions import Decision
+
+    provider = kwargs.get("trade_plan_evaluator_provider")
+    if provider is None:
+        return decisions
+    evaluated = {}
+    for symbol, value in decisions.items():
+        if isinstance(value, Decision) and value.trade_evaluation_id is None:
+            evaluator = provider(str(symbol))
+            candidate = candidate_from_decision(
+                value,
+                position_quantity=(
+                    None
+                    if evaluator is None
+                    else getattr(evaluator, "position_quantity", None)
+                ),
+            )
+            if candidate is not None and evaluator is not None:
+                evaluation = evaluator.evaluate(candidate)
+                if evaluation.valid and evaluation.evaluation_id:
+                    value = replace(
+                        value,
+                        trade_evaluation_id=evaluation.evaluation_id,
+                    )
+        evaluated[symbol] = value
+    return evaluated
+
+
 @pytest.fixture
 def patch_batch(monkeypatch):
     """Installe un fake `codex_client.decide_batch` à partir d'un fake per-symbole
     `decide(**kwargs)` (comme avant le passage au batch). Pour chaque symbole, on
     reconstruit le contexte (shared + per_symbol) et on appelle le fake, en
     préservant la séquence d'appels (utile pour le round-trip REQUEST_CONTEXT)."""
+
+    from trader.application.decide import planner_batch
+
+    original_enforce = planner_batch._enforce_trade_evaluations
+
+    def enforce_evaluated_test_decisions(
+        responses,
+        *,
+        evaluator_provider,
+    ):
+        if isinstance(responses, dict):
+            responses = evaluate_batch_test_decisions(
+                {"trade_plan_evaluator_provider": evaluator_provider},
+                responses,
+            )
+        return original_enforce(
+            responses,
+            evaluator_provider=evaluator_provider,
+        )
+
+    monkeypatch.setattr(
+        planner_batch,
+        "_enforce_trade_evaluations",
+        enforce_evaluated_test_decisions,
+    )
 
     def install(decide_fn):
         def decide_batch(*, symbols, mandate, memory, shared_context, per_symbol, allow_context_request=False, **_):
