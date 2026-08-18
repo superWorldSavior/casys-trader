@@ -1759,6 +1759,18 @@ def main(
         universe_intelligence_runtime.UniverseIntelligenceRunner()
     )
 
+    def _on_macro_briefs_written(events: tuple[dict, ...]) -> None:
+        universe_intelligence_runtime.trigger_regional_brief_refresh(
+            events,
+            runner=_universe_intelligence_runner,
+            config_dir=ROOT / "config",
+            state_dir=STATE_DIR,
+            loop_now=datetime.now(timezone.utc),
+            logger=log,
+        )
+
+    _news_macro_runner.on_briefs_written = _on_macro_briefs_written
+
     def _on_company_brief_written(event: dict) -> None:
         universe_intelligence_runtime.trigger_company_brief_refresh(
             event,
