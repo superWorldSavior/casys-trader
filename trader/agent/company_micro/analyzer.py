@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 import os
-from dataclasses import replace
 from pathlib import Path
 
 from trader.agent import llm
 from trader.agent.company_micro.prompt import build_company_micro_prompt, parse_company_micro_completion
 from trader.application.analyst.company_micro import CompanyMicroAnalysisRequest
-from trader.domain.company import CompanyIntelligenceBrief, SelectionView
+from trader.domain.company import CompanyIntelligenceBrief
 
 DEFAULT_COMPANY_MICRO_SESSION_LABEL = "casys-trader:company-micro-analyst"
 DEFAULT_COMPANY_MICRO_TIMEOUT_S = 240
@@ -100,15 +99,12 @@ class LlmCompanyMicroAnalyst:
                 model=completion.model,
             )
         restricted = brief.restrict_sources(request.evidence.source_catalog())
-        if not restricted.source_refs:
-            restricted = replace(
-                restricted,
-                selection_view=SelectionView(
-                    posture="insufficient_evidence",
-                    confidence="low",
-                    reasons=("No validated source reference survived parsing.",),
-                ),
-                security_readiness="not_decision_grade",
+        if request.evidence.source_catalog() and not restricted.source_refs:
+            raise CompanyMicroAnalystError(
+                "invalid_source_refs",
+                "company micro analyst returned no valid top-level source_refs",
+                provider=completion.provider,
+                model=completion.model,
             )
         return restricted
 

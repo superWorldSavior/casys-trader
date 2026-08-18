@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 from trader.agent import llm
 from trader.agent.company_micro import (
     DEFAULT_COMPANY_MICRO_MODEL,
@@ -7,6 +9,7 @@ from trader.agent.company_micro import (
     LlmCompanyMicroAnalyst,
     build_company_micro_prompt,
 )
+from trader.agent.company_micro.analyzer import CompanyMicroAnalystError
 from trader.agent.company_micro.prompt import parse_company_micro_completion
 from trader.application.analyst.company_micro import CompanyMicroAnalysisRequest
 from trader.domain.company import CompanyEvidenceItem, CompanyEvidenceSnapshot, IssuerIdentity
@@ -149,7 +152,44 @@ def test_parser_forces_symbol_signature_and_rejects_selection_authority() -> Non
     assert error == "forbidden_authority_fields:selected_hotlist"
 
 
-def test_llm_analyst_filters_untrusted_refs_and_degrades_unsourced_view() -> None:
+def test_parser_selects_complete_payload_from_grok_chatter() -> None:
+    request = _request()
+    completion = (
+        "I will calculate the financial ratios first.\n"
+        '{"confidence":"medium","posture":"neutral"}\n'
+        f"```json\n{_completion()}\n```\n"
+        "Analysis complete."
+    )
+
+    brief, error = parse_company_micro_completion(completion, request=request)
+
+    assert error is None
+    assert brief is not None
+    assert brief.source_refs == ("fixture:AAPL:10-Q",)
+    assert brief.business.summary == "Consumer hardware and services company."
+    assert brief.selection_view.posture == "supports_selection"
+
+
+def test_parser_rejects_incomplete_nested_payload() -> None:
+    request = _request()
+    completion = json.dumps(
+        {
+            "confidence": "low",
+            "posture": "insufficient_evidence",
+            "reasons": ["Nested selection view, not a company report."],
+        }
+    )
+
+    brief, error = parse_company_micro_completion(completion, request=request)
+
+    assert brief is None
+    assert error is not None
+    assert error.startswith("invalid_payload:missing_required_fields:")
+    assert "company_thesis" in error
+    assert "source_refs" in error
+
+
+def test_llm_analyst_rejects_untrusted_refs_instead_of_degrading_success() -> None:
     class Router:
         def complete(self, prompt: str, *, timeout_s: int):
             return llm.LlmCompletion(
@@ -158,12 +198,11 @@ def test_llm_analyst_filters_untrusted_refs_and_degrades_unsourced_view() -> Non
                 text=_completion(source_ref="invented:ref"),
             )
 
-    brief = LlmCompanyMicroAnalyst(router=Router()).analyze(_request())
+    with pytest.raises(CompanyMicroAnalystError) as raised:
+        LlmCompanyMicroAnalyst(router=Router()).analyze(_request())
 
-    assert brief.source_refs == ()
-    assert brief.business.summary == ""
-    assert brief.selection_view.posture == "insufficient_evidence"
-    assert brief.security_readiness == "not_decision_grade"
+    assert raised.value.code == "invalid_source_refs"
+    assert "no valid top-level source_refs" in str(raised.value)
 
 
 def test_llm_analyst_timeout_suit_lenv_company_micro(monkeypatch) -> None:

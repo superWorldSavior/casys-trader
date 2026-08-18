@@ -6,6 +6,7 @@ import json
 from collections.abc import Mapping
 from typing import Any
 
+from trader.agent.protocol.json_utils import extract_json_object
 from trader.application.analyst.company_micro import CompanyMicroAnalysisRequest
 from trader.domain.company import CompanyIntelligenceBrief, company_brief_id
 
@@ -26,6 +27,31 @@ FORBIDDEN_AUTHORITY_FIELDS = frozenset(
         "take_profit",
     }
 )
+
+_REQUIRED_OUTPUT_FIELDS = frozenset(
+    {
+        "business",
+        "financial_snapshot",
+        "earnings_and_guidance",
+        "company_thesis",
+        "catalysts",
+        "risks",
+        "open_questions",
+        "selection_view",
+        "security_readiness",
+        "source_refs",
+    }
+)
+_MAPPING_OUTPUT_FIELDS = frozenset(
+    {
+        "business",
+        "financial_snapshot",
+        "earnings_and_guidance",
+        "company_thesis",
+        "selection_view",
+    }
+)
+_LIST_OUTPUT_FIELDS = frozenset({"catalysts", "risks", "open_questions", "source_refs"})
 
 
 def build_company_micro_prompt(request: CompanyMicroAnalysisRequest) -> str:
@@ -122,6 +148,8 @@ def parse_company_micro_completion(
     forbidden = sorted(_find_forbidden_fields(payload))
     if forbidden:
         return None, f"forbidden_authority_fields:{','.join(forbidden)}"
+    if error := _company_micro_payload_error(payload):
+        return None, error
 
     payload["brief_id"] = company_brief_id(
         request.symbol,
@@ -154,25 +182,42 @@ def _find_forbidden_fields(value: Any) -> set[str]:
     return found
 
 
+def _looks_like_company_micro_payload(payload: Mapping[str, Any]) -> bool:
+    return _REQUIRED_OUTPUT_FIELDS.issubset(payload)
+
+
+def _company_micro_payload_error(payload: Mapping[str, Any]) -> str | None:
+    missing = sorted(_REQUIRED_OUTPUT_FIELDS - payload.keys())
+    if missing:
+        return f"invalid_payload:missing_required_fields:{','.join(missing)}"
+    invalid_mappings = sorted(
+        field for field in _MAPPING_OUTPUT_FIELDS if not isinstance(payload.get(field), Mapping)
+    )
+    if invalid_mappings:
+        return f"invalid_payload:expected_objects:{','.join(invalid_mappings)}"
+    invalid_lists = sorted(
+        field for field in _LIST_OUTPUT_FIELDS if not isinstance(payload.get(field), list)
+    )
+    if invalid_lists:
+        return f"invalid_payload:expected_arrays:{','.join(invalid_lists)}"
+    if not isinstance(payload.get("security_readiness"), str):
+        return "invalid_payload:expected_string:security_readiness"
+    return None
+
+
 def _extract_last_json_object(text: str) -> tuple[dict[str, Any] | None, str | None]:
     try:
         payload = json.loads(text)
-    except json.JSONDecodeError as exc:
+    except (json.JSONDecodeError, TypeError) as exc:
         first_error = str(exc)
     else:
         return (payload, None) if isinstance(payload, dict) else (None, "json_payload_not_object")
 
-    decoder = json.JSONDecoder()
-    candidate: dict[str, Any] | None = None
-    for index, char in enumerate(text):
-        if char != "{":
-            continue
-        try:
-            payload, _end = decoder.raw_decode(text[index:])
-        except json.JSONDecodeError:
-            continue
-        if isinstance(payload, dict):
-            candidate = payload
+    candidate = extract_json_object(
+        text,
+        predicate=_looks_like_company_micro_payload,
+        last=True,
+    )
     return (candidate, None) if candidate is not None else (None, first_error)
 
 
