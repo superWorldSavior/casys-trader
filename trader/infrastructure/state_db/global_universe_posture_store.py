@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 from trader.domain.universe.global_posture import GlobalUniversePosture
 from trader.infrastructure.state_db._jsonl_store import (
     JsonlDayLedger,
     calendar_date_from_as_of,
+    project_json,
     read_json_object,
     required_text,
 )
@@ -80,8 +82,13 @@ class GlobalUniversePostureStore:
     def append_if_changed(
         self,
         posture: GlobalUniversePosture,
+        *,
+        input_coverage: Mapping[str, Any] | None = None,
     ) -> tuple[dict[str, Any], dict[str, str], bool]:
         payload = _validated_posture(posture)
+        coverage = _normalise_input_coverage(input_coverage)
+        if coverage is not None:
+            payload["input_coverage"] = coverage
         stored, changed = self._ledger.append_if_changed(
             payload,
             date=payload["as_of"][:10],
@@ -91,7 +98,23 @@ class GlobalUniversePostureStore:
             on_unchanged=self._clear_latest_failure,
             after_write=self._clear_latest_failure,
         )
+        if not changed and coverage is not None and stored.get("input_coverage") != coverage:
+            stored = self.stamp_input_coverage(coverage) or stored
         return stored, _ref(stored), changed
+
+    def stamp_input_coverage(self, coverage: Mapping[str, Any]) -> dict[str, Any] | None:
+        """Update current projection metadata without appending a new posture."""
+
+        current = self.read_current()
+        if current is None:
+            return None
+        normalised = _normalise_input_coverage(coverage)
+        if normalised is None or current.get("input_coverage") == normalised:
+            return current
+        stamped = dict(current)
+        stamped["input_coverage"] = normalised
+        project_json(self.current_path, stamped)
+        return stamped
 
     def _clear_latest_failure(self) -> None:
         try:
@@ -143,6 +166,37 @@ def _ref(payload: Mapping[str, Any]) -> dict[str, str]:
         "gross_mode": str(payload.get("gross_mode") or ""),
         "net_bias": str(payload.get("net_bias") or ""),
     }
+
+
+def _normalise_input_coverage(value: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(value, Mapping):
+        return None
+    brief_ids = value.get("brief_ids")
+    ids = {
+        str(venue).strip().upper(): str(brief_id).strip()
+        for venue, brief_id in (brief_ids.items() if isinstance(brief_ids, Mapping) else ())
+        if str(venue).strip() and str(brief_id).strip()
+    }
+    return {
+        "active_brief_venues": _string_list(value.get("active_brief_venues")),
+        "missing_brief_venues": _string_list(value.get("missing_brief_venues")),
+        "brief_ids": dict(sorted(ids.items())),
+        "digest_id": str(value.get("digest_id") or "").strip(),
+    }
+
+
+def _string_list(value: Any) -> list[str]:
+    if not isinstance(value, (list, tuple)):
+        return []
+    items: list[str] = []
+    seen: set[str] = set()
+    for raw in value:
+        item = str(raw or "").strip().upper()
+        if not item or item in seen:
+            continue
+        items.append(item)
+        seen.add(item)
+    return items
 
 
 __all__ = ["GlobalUniversePostureStore"]

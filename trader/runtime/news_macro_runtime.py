@@ -429,6 +429,7 @@ class NewsMacroAnalysisRunner:
         *,
         tick_fn: Callable[..., dict[str, list[dict]]] = tick_news_macro_analysis,
         stop_timeout_s: float = DEFAULT_ASYNC_STOP_TIMEOUT_S,
+        on_briefs_written: Callable[[tuple[dict[str, Any], ...]], None] | None = None,
     ) -> None:
         self._tick_fn = tick_fn
         self._stop_timeout_s = max(0.0, float(stop_timeout_s))
@@ -437,6 +438,7 @@ class NewsMacroAnalysisRunner:
         self._thread: threading.Thread | None = None
         self._pending_kwargs: dict[str, Any] | None = None
         self._stopping = False
+        self.on_briefs_written = on_briefs_written
 
     def trigger(self, **kwargs: Any) -> dict[str, Any]:
         """Start one background tick and return without waiting for the LLM."""
@@ -474,10 +476,17 @@ class NewsMacroAnalysisRunner:
         kwargs = initial_kwargs
         while True:
             logger = kwargs.get("logger") or _default_logger()
+            result: dict[str, Any] | None = None
             try:
-                self._tick_fn(**kwargs, stop_requested=self._stop_event.is_set)
+                result = self._tick_fn(**kwargs, stop_requested=self._stop_event.is_set)
             except Exception as exc:  # noqa: BLE001 - background analysis is best-effort
                 logger.warning("news macro analyst background failure: %s", exc)
+            written = tuple(result.get("triggered") or ()) if isinstance(result, Mapping) else ()
+            if written and self.on_briefs_written is not None:
+                try:
+                    self.on_briefs_written(written)
+                except Exception as exc:  # noqa: BLE001 - callback must not kill the runner
+                    logger.warning("news macro brief callback failed: %s", exc)
             with self._lock:
                 if self._stopping or self._pending_kwargs is None:
                     if self._thread is threading.current_thread():

@@ -89,6 +89,8 @@ def _write_scope_and_brief(
     family: str,
     scope_phase: str | None = None,
     sticky: tuple[str, ...] = (),
+    write_brief: bool = True,
+    reuse_scope_id: str | None = None,
 ) -> str:
     candidates = [
         {
@@ -102,7 +104,7 @@ def _write_scope_and_brief(
     ]
     baseline = symbols[:1]
     scope_as_of = "2026-07-10T20:00:00+00:00"
-    scope_id = candidate_scope_id(venue, candidates, baseline, scope_as_of)
+    scope_id = reuse_scope_id or candidate_scope_id(venue, candidates, baseline, scope_as_of)
     scope_record = {
             "schema_version": 1,
             "candidate_scope_id": scope_id,
@@ -115,7 +117,10 @@ def _write_scope_and_brief(
         }
     if scope_phase is not None:
         scope_record["scope_phase"] = scope_phase
-    CandidateScopeStore(state_dir / "candidate_scopes").append(scope_record)
+    if reuse_scope_id is None:
+        CandidateScopeStore(state_dir / "candidate_scopes").append(scope_record)
+    if not write_brief:
+        return scope_id
     brief = NewsMacroBrief.from_mapping(
         {
             "brief_id": f"brief-{venue}",
@@ -668,7 +673,9 @@ def test_global_posture_success_clears_failure_and_resets_retry_sequence(tmp_pat
     )
 
     assert recovered_ref["persistence_status"] == "appended"
-    assert store.read_current() == recovered
+    stored = store.read_current()
+    assert universe_intelligence_runtime._consumer_posture(stored) == recovered
+    assert "input_coverage" in stored
     assert store.read_latest_failure() is None
 
     after_success, after_success_ref = universe_intelligence_runtime._prepare_global_universe_posture(
@@ -899,7 +906,23 @@ def test_exact_activated_scope_is_terminal_even_for_force(tmp_path) -> None:
         }
     ]
     assert agent.requests == []
-    assert posture_agent.requests == []
+    assert result["prepared"] == []
+    # Regional is terminal; the advisory posture can still bootstrap once.
+    assert len(posture_agent.requests) == 1
+
+    second = universe_intelligence_runtime.tick_universe_intelligence(
+        config_dir=config_dir,
+        state_dir=state_dir,
+        loop_now=NOW,
+        agent=agent,
+        posture_agent=posture_agent,
+        venues=("TW",),
+        refresh_venues=("TW",),
+        force=True,
+    )
+    assert second["skipped"] == result["skipped"]
+    assert agent.requests == []
+    assert len(posture_agent.requests) == 1
 
 
 def test_refresh_signature_derives_from_legacy_success_record() -> None:
@@ -1317,6 +1340,53 @@ def test_decide_refresh_forced_once_per_preopen_window() -> None:
     ) == (False, "fresh")
 
 
+def test_decide_refresh_when_matching_brief_arrives() -> None:
+    current = _posture_current((NOW - timedelta(minutes=10)).isoformat())
+    assert universe_intelligence_runtime.decide_global_posture_refresh(
+        now=NOW,
+        current=current,
+        preopen_now=("EU",),
+        cooldown=_COOLDOWN,
+        preopen_window=_WINDOW,
+        previous_coverage={"brief_ids": {"TW": "brief-tw"}, "digest_id": "digest-old"},
+        current_coverage={
+            "brief_ids": {"TW": "brief-tw", "EU": "brief-eu"},
+            "digest_id": "digest-new",
+            "missing_brief_venues": [],
+        },
+    ) == (True, "coverage_changed")
+
+
+def test_decide_refresh_does_not_fire_when_brief_disappears() -> None:
+    current = _posture_current((NOW - timedelta(hours=5)).isoformat())
+    assert universe_intelligence_runtime.decide_global_posture_refresh(
+        now=NOW,
+        current=current,
+        preopen_now=("EU",),
+        cooldown=_COOLDOWN,
+        preopen_window=_WINDOW,
+        previous_coverage={"brief_ids": {"TW": "brief-tw", "EU": "brief-eu"}, "digest_id": "d1"},
+        current_coverage={
+            "brief_ids": {"TW": "brief-tw"},
+            "digest_id": "d1",
+            "missing_brief_venues": ["EU"],
+        },
+    ) == (False, "awaiting_brief:EU")
+
+
+def test_decide_refresh_legacy_coverage_once_when_briefs_exist() -> None:
+    current = _posture_current((NOW - timedelta(minutes=10)).isoformat())
+    assert universe_intelligence_runtime.decide_global_posture_refresh(
+        now=NOW,
+        current=current,
+        preopen_now=(),
+        cooldown=_COOLDOWN,
+        preopen_window=_WINDOW,
+        previous_coverage=None,
+        current_coverage={"brief_ids": {"EU": "brief-eu"}, "digest_id": "digest-1"},
+    ) == (True, "coverage_changed")
+
+
 def test_tick_reuses_global_posture_within_cooldown_without_recalling_agent(tmp_path) -> None:
     state_dir = tmp_path / "state"
     config_dir = tmp_path / "config"
@@ -1343,6 +1413,129 @@ def test_tick_reuses_global_posture_within_cooldown_without_recalling_agent(tmp_
         state_dir / "global_universe_postures" / "2026-07-10.jsonl"
     ).read_text(encoding="utf-8").splitlines()
     assert len(posture_rows) == 1
+
+
+def test_tick_recalls_posture_when_missing_regional_brief_arrives(tmp_path) -> None:
+    state_dir = tmp_path / "state"
+    config_dir = tmp_path / "config"
+    state_dir.mkdir()
+    config_dir.mkdir()
+    _write_scope_and_brief(
+        state_dir, venue="US", symbols=["AAPL", "MSFT"], family="us_mega_tech"
+    )
+    eu_scope_id = _write_scope_and_brief(
+        state_dir,
+        venue="EU",
+        symbols=["AIR.PA", "SAP.DE"],
+        family="eu_industrials",
+        write_brief=False,
+    )
+    posture_agent = FakePostureAgent()
+
+    first = universe_intelligence_runtime.tick_universe_intelligence(
+        config_dir=config_dir,
+        state_dir=state_dir,
+        loop_now=NOW,
+        agent=FakeAgent(),
+        posture_agent=posture_agent,
+        venues=("US", "EU"),
+    )
+    assert first["waiting"] == [{"venue": "EU", "reason": "brief_missing"}]
+    assert len(posture_agent.requests) == 1
+
+    _write_scope_and_brief(
+        state_dir,
+        venue="EU",
+        symbols=["AIR.PA", "SAP.DE"],
+        family="eu_industrials",
+        reuse_scope_id=eu_scope_id,
+    )
+    universe_intelligence_runtime.tick_universe_intelligence(
+        config_dir=config_dir,
+        state_dir=state_dir,
+        loop_now=NOW,
+        agent=FakeAgent(),
+        posture_agent=posture_agent,
+        venues=("US", "EU"),
+    )
+
+    assert len(posture_agent.requests) == 2
+    current = GlobalUniversePostureStore(
+        state_dir / "global_universe_postures"
+    ).read_current()
+    assert current is not None
+    assert "EU" in (current.get("input_coverage") or {}).get("brief_ids", {})
+
+
+def test_tick_refreshes_posture_after_activation_when_brief_arrives(tmp_path) -> None:
+    state_dir = tmp_path / "state"
+    config_dir = tmp_path / "config"
+    state_dir.mkdir()
+    config_dir.mkdir()
+    us_scope = _write_scope_and_brief(
+        state_dir, venue="US", symbols=["AAPL", "MSFT"], family="us_mega_tech"
+    )
+    eu_scope = _write_scope_and_brief(
+        state_dir,
+        venue="EU",
+        symbols=["AIR.PA", "SAP.DE"],
+        family="eu_industrials",
+        write_brief=False,
+    )
+    (state_dir / "venue_state.json").write_text(
+        json.dumps(
+            {
+                "venues": {
+                    "US": {
+                        "candidate_scope_id": us_scope,
+                        "last_universe_activation_scope_id": us_scope,
+                    },
+                    "EU": {
+                        "candidate_scope_id": eu_scope,
+                        "last_universe_activation_scope_id": eu_scope,
+                    },
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    posture_agent = FakePostureAgent()
+    agent = FakeAgent()
+
+    first = universe_intelligence_runtime.tick_universe_intelligence(
+        config_dir=config_dir,
+        state_dir=state_dir,
+        loop_now=NOW,
+        agent=agent,
+        posture_agent=posture_agent,
+        venues=("US", "EU"),
+    )
+    assert first["prepared"] == []
+    assert len(posture_agent.requests) == 1
+
+    _write_scope_and_brief(
+        state_dir,
+        venue="EU",
+        symbols=["AIR.PA", "SAP.DE"],
+        family="eu_industrials",
+        reuse_scope_id=eu_scope,
+    )
+    second = universe_intelligence_runtime.tick_universe_intelligence(
+        config_dir=config_dir,
+        state_dir=state_dir,
+        loop_now=NOW,
+        agent=agent,
+        posture_agent=posture_agent,
+        venues=("US", "EU"),
+    )
+
+    assert second["prepared"] == []
+    assert agent.requests == []
+    assert len(posture_agent.requests) == 2
+    current = GlobalUniversePostureStore(
+        state_dir / "global_universe_postures"
+    ).read_current()
+    assert "EU" in (current or {}).get("input_coverage", {}).get("brief_ids", {})
 
 
 def test_runner_is_non_blocking_and_coalesces_latest_trigger(caplog) -> None:
@@ -1486,3 +1679,42 @@ def test_company_brief_refresh_routes_only_supported_symbol_venue(tmp_path) -> N
     assert fx == {"triggered": False, "reason": "unsupported_venue", "venue": "FX"}
     assert missing == {"triggered": False, "reason": "symbol_missing"}
     assert len(calls) == 1
+
+
+def test_regional_brief_refresh_wakes_supported_venues(tmp_path) -> None:
+    calls: list[dict] = []
+
+    class Runner:
+        def trigger(self, **kwargs):
+            calls.append(kwargs)
+            return {"triggered": True}
+
+    runner = Runner()
+    regional = universe_intelligence_runtime.trigger_regional_brief_refresh(
+        ({"venue": "EU", "brief_ref": {"brief_id": "brief-eu"}},),
+        runner=runner,
+        config_dir=tmp_path / "config",
+        state_dir=tmp_path / "state",
+        loop_now=NOW,
+    )
+    global_only = universe_intelligence_runtime.trigger_regional_brief_refresh(
+        ({"venue": "GLOBAL", "brief_ref": {"brief_id": "brief-global"}},),
+        runner=runner,
+        config_dir=tmp_path / "config",
+        state_dir=tmp_path / "state",
+        loop_now=NOW,
+    )
+    ignored = universe_intelligence_runtime.trigger_regional_brief_refresh(
+        ({"venue": "FX"},),
+        runner=runner,
+        config_dir=tmp_path / "config",
+        state_dir=tmp_path / "state",
+        loop_now=NOW,
+    )
+
+    assert regional == {"triggered": True}
+    assert global_only == {"triggered": True}
+    assert ignored == {"triggered": False, "reason": "no_supported_venue"}
+    assert calls[0]["venues"] == ("EU",)
+    assert calls[1]["venues"] == ("TW", "EU", "US")
+    assert len(calls) == 2

@@ -195,16 +195,11 @@ def tick_universe_intelligence(
             continue
         runnable_venues.append(venue)
 
-    # In particular, a late micro callback for an already activated venue must
-    # not incidentally refresh the global posture before discovering that the
-    # regional run itself is terminal.
-    if not runnable_venues:
-        return {
-            "prepared": [],
-            "waiting": [],
-            "skipped": activation_skips,
-            "errors": [],
-        }
+    # Digest / board / posture stay independent of regional activation.
+    # A late micro on an already-activated venue no longer skips them: the
+    # posture LLM is gated by coverage + cadence, so an unchanged board is a
+    # reuse, not another call. A regional brief that arrives after activation
+    # must still be allowed to refresh the advisory frame.
     company_context_mode = _company_context_mode(Path(config_dir))
     company_context_limits = load_company_context_projection_limits(config_dir)
     market_context = _load_market_context(state_path / "last_regime.json", now=now)
@@ -793,6 +788,91 @@ def _posture_cooldown_hours() -> float:
     return value if value >= 0 else DEFAULT_POSTURE_REFRESH_COOLDOWN_HOURS
 
 
+def posture_input_coverage(board: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Bounded evidence identity for the advisory global posture.
+
+    Presence and identity of matching regional briefs, plus the digest those
+    briefs produced. Observation text and radar ranks are excluded so ordinary
+    board rebuilds do not burn an LLM call.
+    """
+
+    payload = board if isinstance(board, Mapping) else {}
+    coverage = payload.get("coverage") if isinstance(payload.get("coverage"), Mapping) else {}
+    venues = payload.get("venues") if isinstance(payload.get("venues"), Mapping) else {}
+    brief_ids: dict[str, str] = {}
+    for venue, venue_payload in venues.items():
+        if not isinstance(venue_payload, Mapping):
+            continue
+        if str(venue_payload.get("brief_status") or "").strip() != "active":
+            continue
+        ref = venue_payload.get("brief_ref")
+        brief_id = str((ref or {}).get("brief_id") or "").strip() if isinstance(ref, Mapping) else ""
+        key = str(venue or "").strip().upper()
+        if key and brief_id:
+            brief_ids[key] = brief_id
+    digest_ref = payload.get("global_situation_digest_ref")
+    digest_id = ""
+    if isinstance(digest_ref, Mapping):
+        digest_id = str(digest_ref.get("digest_id") or "").strip()
+    return {
+        "active_brief_venues": [
+            str(item).strip().upper()
+            for item in (coverage.get("active_brief_venues") or ())
+            if str(item).strip()
+        ],
+        "missing_brief_venues": [
+            str(item).strip().upper()
+            for item in (coverage.get("missing_brief_venues") or ())
+            if str(item).strip()
+        ],
+        "brief_ids": dict(sorted(brief_ids.items())),
+        "digest_id": digest_id,
+    }
+
+
+def _consumer_posture(payload: Mapping[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(payload, Mapping):
+        return {}
+    clean = dict(payload)
+    clean.pop("input_coverage", None)
+    return clean
+
+
+def _coverage_brief_ids(coverage: Mapping[str, Any] | None) -> dict[str, str]:
+    raw = coverage.get("brief_ids") if isinstance(coverage, Mapping) else None
+    if not isinstance(raw, Mapping):
+        return {}
+    return {
+        str(venue).strip().upper(): str(brief_id).strip()
+        for venue, brief_id in raw.items()
+        if str(venue).strip() and str(brief_id).strip()
+    }
+
+
+def _coverage_requires_refresh(
+    previous: Mapping[str, Any] | None,
+    current: Mapping[str, Any] | None,
+) -> bool:
+    """Refresh when a matching brief appears or is replaced, never when it vanishes.
+
+    A new pre-open scope makes the previous brief look missing for a few
+    minutes while news-macro is still running. Treating that disappearance as
+    a refresh writes a lying "venue has no regional brief" posture.
+    """
+
+    if not isinstance(current, Mapping):
+        return False
+    current_ids = _coverage_brief_ids(current)
+    current_digest = str(current.get("digest_id") or "").strip()
+    if not isinstance(previous, Mapping):
+        return bool(current_ids) or bool(current_digest)
+    previous_ids = _coverage_brief_ids(previous)
+    if any(current_ids.get(venue) != previous_ids.get(venue) for venue in current_ids):
+        return True
+    previous_digest = str(previous.get("digest_id") or "").strip()
+    return bool(current_digest) and current_digest != previous_digest
+
+
 def decide_global_posture_refresh(
     *,
     now: datetime,
@@ -800,21 +880,39 @@ def decide_global_posture_refresh(
     preopen_now: Iterable[str],
     cooldown: timedelta,
     preopen_window: timedelta,
+    current_coverage: Mapping[str, Any] | None = None,
+    previous_coverage: Mapping[str, Any] | None = None,
 ) -> tuple[bool, str]:
     """Decide whether the advisory global posture must be recomputed (LLM call).
 
-    Pure and deterministic (``now`` injected). Stateless beyond the stored
-    posture ``as_of``: because a refresh resets ``as_of`` to inside the current
-    pre-open window, the pre-open branch fires at most once per window, and the
-    cooldown branch at most once per ``cooldown`` otherwise.
+    Pure and deterministic (``now`` injected). A new or replaced matching
+    regional brief is material evidence and wins over the time cadence. Time
+    gates (one refresh per pre-open window, then the cooldown) still apply
+    when coverage is unchanged. A pre-open venue whose matching brief is not
+    yet on the board does not get a time-based refresh: keep the last posture
+    until that brief lands.
     """
     if current is None:
         return True, "bootstrap"
+    if _coverage_requires_refresh(previous_coverage, current_coverage):
+        return True, "coverage_changed"
     last = _parse_datetime(current.get("as_of"))
     if last is None:
         return True, "no_as_of"
     age = now - last
     preopen = sorted({str(venue).strip() for venue in preopen_now if str(venue).strip()})
+    missing = {
+        str(item).strip().upper()
+        for item in (
+            (current_coverage or {}).get("missing_brief_venues") or ()
+            if isinstance(current_coverage, Mapping)
+            else ()
+        )
+        if str(item).strip()
+    }
+    awaiting = [venue for venue in preopen if venue in missing]
+    if awaiting:
+        return False, "awaiting_brief:" + ",".join(awaiting)
     if preopen and age >= preopen_window:
         return True, "preopen:" + ",".join(preopen)
     if cooldown > timedelta(0) and age >= cooldown:
@@ -957,6 +1055,7 @@ def _prepare_global_universe_posture(
     # only skip the posture, never abort the surrounding universe tick.
     current: dict[str, Any] | None = None
     reason: str | None = None
+    coverage = posture_input_coverage(global_family_board)
     try:
         current = store.read_current()
         cooldown = timedelta(
@@ -968,6 +1067,10 @@ def _prepare_global_universe_posture(
             preopen_now=preopen_now,
             cooldown=cooldown,
             preopen_window=timedelta(minutes=max(0, int(preopen_window_minutes))),
+            current_coverage=coverage,
+            previous_coverage=(
+                current.get("input_coverage") if isinstance(current, Mapping) else None
+            ),
         )
         if not refresh and current is not None:
             log.info(
@@ -975,7 +1078,7 @@ def _prepare_global_universe_posture(
                 reason,
                 current.get("as_of"),
             )
-            return current, {
+            return _consumer_posture(current), {
                 "posture_id": str(current.get("posture_id") or ""),
                 "as_of": str(current.get("as_of") or ""),
                 "gross_mode": str(current.get("gross_mode") or ""),
@@ -991,7 +1094,7 @@ def _prepare_global_universe_posture(
         )
         if backoff is not None:
             _log_global_posture_retry_deferred(log, backoff)
-            return dict(current or {}), {
+            return _consumer_posture(current), {
                 **_global_posture_ref(current),
                 "status": "deferred",
                 "persistence_status": "reused" if current is not None else "not_available",
@@ -1023,7 +1126,10 @@ def _prepare_global_universe_posture(
         )
         posture = (agent or LlmGlobalPostureAgent()).compose(request)
         posture_dict = posture.to_dict()
-        stored, ref, changed = store.append_if_changed(posture)
+        stored, ref, changed = store.append_if_changed(
+            posture,
+            input_coverage=coverage,
+        )
     except Exception as exc:  # noqa: BLE001 - global posture is advisory and fail-open
         failure: dict[str, Any] | None = None
         failure_persistence_status = "skipped"
@@ -1042,7 +1148,7 @@ def _prepare_global_universe_posture(
             failure_persistence_status = "failure_recorded"
             _log_global_posture_retry_scheduled(log, failure)
         log.warning("global universe posture preparation failed: %s", exc)
-        return dict(current or {}), {
+        return _consumer_posture(current), {
             **_global_posture_ref(current),
             "status": "error",
             "persistence_status": failure_persistence_status,
@@ -1057,7 +1163,7 @@ def _prepare_global_universe_posture(
                 else {}
             ),
         }
-    return stored or posture_dict, {
+    return _consumer_posture(stored or posture_dict), {
         **ref,
         "persistence_status": "appended" if changed else "unchanged",
         "refresh_reason": reason,
@@ -1194,6 +1300,44 @@ class UniverseIntelligenceRunner:
             thread = self._thread
         if thread is not None and thread is not threading.current_thread():
             thread.join(timeout=self._stop_timeout_s)
+
+
+def trigger_regional_brief_refresh(
+    events: Iterable[Mapping[str, Any]],
+    *,
+    runner: UniverseIntelligenceRunner,
+    config_dir: Path,
+    state_dir: Path,
+    loop_now: datetime,
+    logger: LoggerLike | None = None,
+) -> dict[str, Any]:
+    """Wake universe after a regional or GLOBAL macro brief is written.
+
+    Unlike company-brief waves, a regional brief is already the coalesced
+    venue artefact: trigger immediately so the family board and posture see
+    it before the next daemon poll.
+    """
+
+    log = logger or _default_logger()
+    rows = [event for event in events if isinstance(event, Mapping)]
+    regional = _ordered_venue_union(
+        str(event.get("venue") or "").strip().upper()
+        for event in rows
+        if str(event.get("venue") or "").strip().upper() in VENUES
+    )
+    has_global = any(
+        str(event.get("venue") or "").strip().upper() == "GLOBAL" for event in rows
+    )
+    if not regional and not has_global:
+        log.info("regional brief universe refresh ignored: no supported venue")
+        return {"triggered": False, "reason": "no_supported_venue"}
+    return runner.trigger(
+        config_dir=config_dir,
+        state_dir=state_dir,
+        loop_now=loop_now,
+        logger=log,
+        venues=regional or VENUES,
+    )
 
 
 def trigger_company_brief_refresh(

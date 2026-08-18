@@ -102,6 +102,32 @@ def test_news_macro_runner_is_non_blocking_single_flight_and_stoppable(caplog) -
     assert runner.trigger(state_dir="state") == {"triggered": False, "reason": "stopping"}
 
 
+def test_news_macro_runner_notifies_when_briefs_are_written() -> None:
+    seen: list[tuple] = []
+    started = threading.Event()
+
+    def tick_fn(**kwargs):
+        started.set()
+        return {
+            "triggered": [{"venue": "EU", "brief_ref": {"brief_id": "brief-eu"}}],
+            "skipped": [],
+            "errors": [],
+        }
+
+    runner = news_macro_runtime.NewsMacroAnalysisRunner(
+        tick_fn=tick_fn,
+        stop_timeout_s=0.1,
+        on_briefs_written=seen.append,
+    )
+    first = runner.trigger(state_dir="state", venues=("EU",))
+    assert first["triggered"] is True
+    first["_thread"].join(timeout=1.0)
+    runner.stop()
+
+    assert started.is_set()
+    assert seen == [({"venue": "EU", "brief_ref": {"brief_id": "brief-eu"}},)]
+
+
 def _write_jsonl(path, rows) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")

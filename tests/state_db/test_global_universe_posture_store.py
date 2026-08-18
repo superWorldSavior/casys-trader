@@ -55,6 +55,36 @@ def test_store_appends_only_material_global_universe_posture_changes(tmp_path) -
     assert store.read_current() == second
 
 
+def test_store_stamps_input_coverage_without_appending_identity(tmp_path) -> None:
+    store = GlobalUniversePostureStore(tmp_path / "global_universe_postures")
+    first, _, first_changed = store.append_if_changed(
+        _posture("2026-07-11T08:00:00+00:00"),
+        input_coverage={"brief_ids": {"TW": "brief-tw"}, "missing_brief_venues": ["EU"]},
+    )
+    same, _, same_changed = store.append_if_changed(
+        _posture("2026-07-11T08:00:00+00:00"),
+        input_coverage={
+            "brief_ids": {"TW": "brief-tw", "EU": "brief-eu"},
+            "missing_brief_venues": [],
+            "digest_id": "digest-1",
+        },
+    )
+
+    rows = [
+        json.loads(line)
+        for line in (tmp_path / "global_universe_postures" / "2026-07-11.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    assert first_changed is True
+    assert same_changed is False
+    assert first["posture_id"] == same["posture_id"]
+    assert same["input_coverage"]["brief_ids"] == {"EU": "brief-eu", "TW": "brief-tw"}
+    assert same["input_coverage"]["digest_id"] == "digest-1"
+    assert len(rows) == 1
+    assert store.read_current()["input_coverage"]["brief_ids"]["EU"] == "brief-eu"
+
+
 def test_store_keeps_latest_failure_separate_from_current_and_clears_it_on_success(tmp_path) -> None:
     store = GlobalUniversePostureStore(tmp_path / "global_universe_postures")
     current, _, _ = store.append_if_changed(_posture("2026-07-11T08:00:00+00:00"))
