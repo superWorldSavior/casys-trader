@@ -229,6 +229,50 @@ def test_prepared_provider_distinguishes_missing_scope_brief_pending_and_success
     )["selected_hotlist"] == ["AIR.PA"]
 
 
+def test_prepared_provider_does_not_activate_yesterday_hotlist_under_waiting_overlay(
+    tmp_path,
+) -> None:
+    from trader.infrastructure.state_db.universe_run_store import UniverseRunStore
+
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    provider = market_rotation_runtime.build_prepared_universe_fn(state_dir)
+    as_of = "2026-07-10T13:15:00+00:00"
+    store = UniverseRunStore(state_dir / "universe_runs")
+    yesterday = {
+        "status": "success",
+        "candidate_scope_id": "scope-yesterday",
+        "venue": "US",
+        "as_of": "2026-07-09T20:05:00+00:00",
+        "valid_until": "2026-07-10T20:00:00+00:00",
+        "selected_hotlist": ["AAPL", "MSFT"],
+    }
+    waiting = {
+        "status": "waiting_brief",
+        "candidate_scope_id": "scope-today",
+        "venue": "US",
+        "as_of": as_of,
+        "error_code": "brief_scope_mismatch",
+    }
+    store.append(yesterday)
+    store.write_prepared("scope-yesterday", yesterday)
+    store.append(waiting)
+
+    latest = store.read_latest("US")
+    assert latest["selected_hotlist"] == ["AAPL", "MSFT"]
+    assert latest["latest_waiting"]["candidate_scope_id"] == "scope-today"
+
+    result = provider(venue="US", candidate_scope_id="scope-today", as_of=as_of)
+    assert result.get("selected_hotlist") != ["AAPL", "MSFT"]
+    assert result["status"] in {"missing", "waiting_brief", "pending"}
+    assert result["reason"] in {
+        "brief_missing",
+        "brief_scope_mismatch",
+        "agent_brief_scope_mismatch",
+        "prepare_pending",
+    }
+
+
 def test_tick_market_rotation_ignores_invalid_cached_regime(tmp_path) -> None:
     config_dir = tmp_path / "config"
     state_dir = tmp_path / "state"

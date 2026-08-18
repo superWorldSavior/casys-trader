@@ -77,6 +77,51 @@ def test_latest_projections_are_isolated_for_three_venues(tmp_path) -> None:
     assert {venue: store.read_latest(venue) for venue in expected} == expected
 
 
+def test_waiting_brief_keeps_last_success_projection_and_exposes_latest_waiting(tmp_path) -> None:
+    store = UniverseRunStore(tmp_path / "universe_runs")
+    success = _run("US", "scope-yesterday", "success", agent_run_id="run-success")
+    waiting = {
+        **_run(
+            "US",
+            "scope-today",
+            "waiting_brief",
+            as_of="2026-07-10T12:07:00+00:00",
+        ),
+        "error_code": "brief_scope_mismatch",
+    }
+
+    store.append(success)
+    store.append(waiting)
+
+    assert store.read_latest("US") == {**success, "latest_waiting": waiting}
+    rows = [
+        json.loads(line)
+        for line in (tmp_path / "universe_runs" / "2026-07-10.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    assert rows == [success, waiting]
+
+    recovered = {**success, "as_of": "2026-07-10T12:20:00+00:00", "agent_run_id": "run-recovered"}
+    store.append(recovered)
+    latest = store.read_latest("US")
+    assert latest == recovered
+    assert "latest_waiting" not in latest
+    assert "latest_failure" not in latest
+
+
+def test_waiting_brief_without_prior_success_remains_the_projection(tmp_path) -> None:
+    store = UniverseRunStore(tmp_path / "universe_runs")
+    waiting = {
+        **_run("US", "scope-today", "waiting_brief"),
+        "error_code": "brief_missing",
+    }
+
+    store.append(waiting)
+
+    assert store.read_latest("US") == waiting
+
+
 def test_error_keeps_last_success_projection_and_exposes_latest_failure(tmp_path) -> None:
     store = UniverseRunStore(tmp_path / "universe_runs")
     success = _run("EU", "scope-eu", "success", agent_run_id="run-success")
@@ -107,6 +152,28 @@ def test_error_keeps_last_success_projection_and_exposes_latest_failure(tmp_path
 
     store.append({**success, "as_of": "2026-07-10T07:01:00+00:00", "agent_run_id": "run-recovered"})
     assert "latest_failure" not in store.read_latest("EU")
+
+
+def test_waiting_overlay_replaces_prior_failure_marker(tmp_path) -> None:
+    store = UniverseRunStore(tmp_path / "universe_runs")
+    success = _run("US", "scope-yesterday", "success")
+    failure = {
+        **_run("US", "scope-yesterday", "error", as_of="2026-07-10T06:30:00+00:00"),
+        "error_code": "TimeoutError",
+    }
+    waiting = {
+        **_run("US", "scope-today", "waiting_brief", as_of="2026-07-10T12:07:00+00:00"),
+        "error_code": "brief_scope_mismatch",
+    }
+
+    store.append(success)
+    store.append(failure)
+    store.append(waiting)
+
+    latest = store.read_latest("US")
+    assert latest["status"] == "success"
+    assert latest["latest_waiting"] == waiting
+    assert "latest_failure" not in latest
 
 
 def test_read_latest_falls_back_to_canonical_when_projection_is_corrupt(tmp_path) -> None:

@@ -1896,8 +1896,64 @@ def test_update_venue_ranking_refreshes_retained_challenger_without_duplicate():
         if candidate["symbol"] == "SYM45"
     ]
     assert len(matches) == 1
+    # No published_at on either side: retain wins (same rule as equal timestamps).
+    assert matches[0]["fresh_news"]["source_refs"] == ["old-uuid"]
+    assert matches[0]["fresh_news"]["valid_until"] == "2026-06-18T20:00:00+00:00"
+
+
+def test_update_venue_ranking_replaces_retained_when_current_is_strictly_newer():
+    venue_ranked = [_item(f"SYM{i:02d}", 60.0 - i) for i in range(60)]
+    previous_candidate = {
+        "symbol": "SYM45",
+        "attractiveness": 15.0,
+        "bias": "long",
+        "candidate_source": "fresh_news",
+        "candidate_sources": ["fresh_news"],
+        "fresh_news": {
+            "valid_until": "2026-06-18T20:00:00+00:00",
+            "latest_published_at": "2026-06-17T10:00:00+00:00",
+            "source_refs": ["old-uuid"],
+        },
+    }
+    state = {
+        "venues": {
+            "US": {
+                "candidates": [previous_candidate],
+                "default_hotlist": [],
+                "hotlist": [],
+                "dwell": {},
+            }
+        }
+    }
+    refreshed = {
+        "symbol": "SYM45",
+        "candidate_source": "fresh_news",
+        "fresh_news": {
+            "valid_until": "2026-06-20T20:00:00+00:00",
+            "latest_published_at": "2026-06-17T12:00:00+00:00",
+            "source_refs": ["new-uuid"],
+        },
+    }
+
+    result = update_venue_ranking(
+        state,
+        "US",
+        venue_ranked,
+        cap_per_venue=2,
+        delta=0.0,
+        dwell_days=1,
+        emergency_floor=-1.0,
+        news_challengers=[refreshed],
+        as_of="2026-06-17T20:00:00+00:00",
+    )
+
+    matches = [
+        candidate
+        for candidate in result["venues"]["US"]["candidates"]
+        if candidate["symbol"] == "SYM45"
+    ]
+    assert len(matches) == 1
     assert matches[0]["fresh_news"]["source_refs"] == ["new-uuid"]
-    assert matches[0]["fresh_news"]["valid_until"] == "2026-06-20T20:00:00+00:00"
 
 
 def test_update_venue_ranking_drops_expired_or_ineligible_retained_challenger():

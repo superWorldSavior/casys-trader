@@ -42,6 +42,7 @@ from trader.domain.universe import (
 from trader.domain.situation import build_global_situation_digest
 from trader.market.radar_config import load_radar_params
 from trader.market.rotation.schedule import load_sessions, preopen_venues
+from trader.market.rotation.venues import UNIVERSE_ACTIVATION_WINDOW_MINUTES
 from trader.market.rotation.wiring import venue_of
 from trader.infrastructure.state_db.candidate_scope_store import CandidateScopeStore
 from trader.infrastructure.state_db.company_intelligence_store import CompanyIntelligenceStore
@@ -49,7 +50,7 @@ from trader.infrastructure.state_db.global_family_board_store import GlobalFamil
 from trader.infrastructure.state_db.global_situation_digest_store import GlobalSituationDigestStore
 from trader.infrastructure.state_db.global_universe_posture_store import GlobalUniversePostureStore
 from trader.infrastructure.state_db.situation_brief_store import NewsMacroBriefStore
-from trader.infrastructure.state_db.universe_run_store import UniverseRunStore
+from trader.infrastructure.state_db.universe_run_store import UniverseRunStore, latest_waiting
 from trader.infrastructure.state_db.universe_mandate_store import UniverseMandateStore
 from trader.infrastructure.files.venue_state import load_venue_state
 from trader.runtime.protocols import LoggerLike
@@ -133,6 +134,7 @@ def tick_universe_intelligence(
     venues: Iterable[str] = VENUES,
     refresh_venues: Iterable[str] = (),
     force: bool = False,
+    news_macro_tick_fn: Callable[..., Any] | None = None,
     stop_requested: Callable[[], bool] | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
     """Prepare exact per-scope selections outside the synchronous daemon path."""
@@ -205,6 +207,7 @@ def tick_universe_intelligence(
     market_context = _load_market_context(state_path / "last_regime.json", now=now)
     global_situation_digest, global_situation_ref = _prepare_global_situation_digest(
         briefs=briefs,
+        scopes=scopes,
         store=global_situations,
         now=now,
         log=log,
@@ -225,6 +228,13 @@ def tick_universe_intelligence(
     preopen_window_minutes = load_radar_params(Path(config_dir)).preopen_window_minutes
     preopen_now = preopen_venues(
         now.isoformat(), sessions, window_minutes=preopen_window_minutes
+    )
+    activation_now = set(
+        preopen_venues(
+            now.isoformat(),
+            sessions,
+            window_minutes=UNIVERSE_ACTIVATION_WINDOW_MINUTES,
+        )
     )
     global_universe_posture, global_universe_posture_ref = (
         _prepare_global_universe_posture(
@@ -285,28 +295,56 @@ def tick_universe_intelligence(
         baseline = tuple(str(symbol).strip() for symbol in scope.get("default_hotlist") or ())
         sticky = tuple(str(symbol).strip() for symbol in scope.get("sticky_context_at_close") or ())
         brief = briefs.read_latest(venue, at=now)
-        if brief is None:
-            _record_waiting_once(
+        input_refs = brief.input_refs if brief is not None and isinstance(brief.input_refs, dict) else {}
+        brief_matches = brief is not None and input_refs.get("candidate_scope_id") == scope_id
+        if not brief_matches:
+            waiting_reason = "brief_missing" if brief is None else "brief_scope_mismatch"
+            brief_ref = brief.ref(date=brief.as_of[:10]) if brief is not None else None
+            if _should_last_chance_compose(
                 runs,
-                scope=scope,
-                now=now,
-                reason="brief_missing",
-                waiting=waiting,
-                skipped=skipped,
-            )
-            continue
-        input_refs = brief.input_refs if isinstance(brief.input_refs, dict) else {}
-        if input_refs.get("candidate_scope_id") != scope_id:
-            _record_waiting_once(
-                runs,
-                scope=scope,
-                now=now,
-                reason="brief_scope_mismatch",
-                waiting=waiting,
-                skipped=skipped,
-                brief_ref=brief.ref(date=brief.as_of[:10]),
-            )
-            continue
+                venue=venue,
+                scope_id=scope_id,
+                force=force,
+                activation_venues=activation_now,
+            ):
+                _run_matching_macro(
+                    config_dir=Path(config_dir),
+                    state_dir=state_path,
+                    now=now,
+                    venue=venue,
+                    news_macro_tick_fn=news_macro_tick_fn,
+                    log=log,
+                )
+                brief = briefs.read_latest(venue, at=now)
+                input_refs = (
+                    brief.input_refs if brief is not None and isinstance(brief.input_refs, dict) else {}
+                )
+                brief_matches = brief is not None and input_refs.get("candidate_scope_id") == scope_id
+                if not brief_matches:
+                    waiting_reason = "brief_missing" if brief is None else "brief_scope_mismatch"
+                    brief_ref = brief.ref(date=brief.as_of[:10]) if brief is not None else None
+                    _record_waiting_once(
+                        runs,
+                        scope=scope,
+                        now=now,
+                        reason=waiting_reason,
+                        waiting=waiting,
+                        skipped=skipped,
+                        brief_ref=brief_ref,
+                        extra={"last_chance_attempted": True},
+                    )
+                    continue
+            else:
+                _record_waiting_once(
+                    runs,
+                    scope=scope,
+                    now=now,
+                    reason=waiting_reason,
+                    waiting=waiting,
+                    skipped=skipped,
+                    brief_ref=brief_ref,
+                )
+                continue
 
         coverage_metadata = _coverage_metadata(input_refs.get("coverage"))
         situation_context = project_brief_to_universe_context(
@@ -675,14 +713,7 @@ def _prepare_global_family_board(
     board_scopes: dict[str, Mapping[str, Any]] = {}
     situations: dict[str, UniverseSituationContext] = {}
     for venue in VENUES:
-        try:
-            scope = scopes.read_latest(venue, scope_phase="preopen")
-            if scope is None:
-                current = scopes.read_current(venue)
-                if current is not None and not str(current.get("scope_phase") or "").strip():
-                    scope = current
-        except Exception:  # noqa: BLE001 - board absence never blocks local preparation
-            scope = None
+        scope = _read_board_scope(scopes, venue)
         if scope is None:
             continue
         board_scopes[venue] = scope
@@ -692,17 +723,12 @@ def _prepare_global_family_board(
             if isinstance(item, Mapping) and item.get("symbol")
         )
         brief = briefs.read_latest(venue, at=now)
-        if brief is None:
+        if brief is None or not _brief_matches_scope(brief, scope.get("candidate_scope_id")):
             situations[venue] = UniverseSituationContext.not_available(
                 candidate_count=len(candidates)
             )
             continue
         refs = brief.input_refs if isinstance(brief.input_refs, dict) else {}
-        if refs.get("candidate_scope_id") != scope.get("candidate_scope_id"):
-            situations[venue] = UniverseSituationContext.not_available(
-                candidate_count=len(candidates)
-            )
-            continue
         situations[venue] = project_brief_to_universe_context(
             brief,
             venue=venue,
@@ -733,18 +759,155 @@ def _prepare_global_family_board(
     }
 
 
+def _read_board_scope(scopes: CandidateScopeStore, venue: str) -> Mapping[str, Any] | None:
+    """Newest pre-open scope, else a current scope that has no phase yet."""
+
+    try:
+        scope = scopes.read_latest(venue, scope_phase="preopen")
+        if scope is None:
+            current = scopes.read_current(venue)
+            if current is not None and not str(current.get("scope_phase") or "").strip():
+                scope = current
+        return scope
+    except Exception:  # noqa: BLE001 - board/digest absence never blocks local preparation
+        return None
+
+
+def _brief_matches_scope(brief: Any, scope_id: object) -> bool:
+    refs = brief.input_refs if isinstance(getattr(brief, "input_refs", None), dict) else {}
+    return refs.get("candidate_scope_id") == scope_id
+
+
+def _brief_matches_current_scope(
+    scopes: CandidateScopeStore,
+    briefs: NewsMacroBriefStore,
+    venue: str,
+    now: datetime,
+) -> bool:
+    try:
+        scope = scopes.read_current(venue)
+    except Exception:  # noqa: BLE001 - a missing scope is a mismatch, not a crash
+        return False
+    if scope is None:
+        return False
+    brief = briefs.read_latest(venue, at=now)
+    return brief is not None and _brief_matches_scope(brief, scope.get("candidate_scope_id"))
+
+
+def _default_news_macro_tick(**kwargs: Any) -> Any:
+    from trader.runtime.news_macro_runtime import tick_news_macro_analysis
+
+    return tick_news_macro_analysis(**kwargs)
+
+
+def _run_matching_macro(
+    *,
+    config_dir: Path,
+    state_dir: Path,
+    now: datetime,
+    venue: str,
+    news_macro_tick_fn: Callable[..., Any] | None,
+    log: LoggerLike,
+) -> Any:
+    try:
+        return (news_macro_tick_fn or _default_news_macro_tick)(
+            config_dir=config_dir,
+            state_dir=state_dir,
+            loop_now=now,
+            venues=(venue,),
+            include_global=False,
+            force=True,
+        )
+    except Exception as exc:  # noqa: BLE001 - last-chance macro must not abort the venue
+        log.warning("matching macro refresh failed venue=%s: %s", venue, exc)
+        return {"errors": [{"venue": venue, "reason": exc.__class__.__name__}]}
+
+
+def _should_last_chance_compose(
+    runs: UniverseRunStore,
+    *,
+    venue: str,
+    scope_id: str,
+    force: bool,
+    activation_venues: Iterable[str],
+) -> bool:
+    if force or not scope_id or venue not in set(activation_venues):
+        return False
+    if runs.read_prepared(scope_id) is not None:
+        return False
+    waiting = latest_waiting(runs.read_latest(venue))
+    return not (
+        waiting is not None
+        and waiting.get("candidate_scope_id") == scope_id
+        and waiting.get("last_chance_attempted")
+    )
+
+
+def refresh_universe_intelligence(
+    *,
+    config_dir: Path,
+    state_dir: Path,
+    loop_now: datetime,
+    venues: Iterable[str] = VENUES,
+    force: bool = False,
+    refresh_macro: bool = True,
+    news_macro_tick_fn: Callable[..., Any] | None = None,
+    logger: LoggerLike | None = None,
+    **tick_kwargs: Any,
+) -> dict[str, Any]:
+    """Operator refresh: matching macro first when needed, then the regional tick."""
+
+    selected = tuple(dict.fromkeys(str(item).strip().upper() for item in venues if str(item).strip()))
+    now = _ensure_utc(loop_now)
+    state_path = Path(state_dir)
+    log = logger or _default_logger()
+    scopes = tick_kwargs.get("scope_store") or CandidateScopeStore(state_path / "candidate_scopes")
+    briefs = tick_kwargs.get("brief_store") or NewsMacroBriefStore(state_path / "news_briefs")
+    macro_refreshed: list[dict[str, Any]] = []
+    if force and refresh_macro:
+        for venue in selected:
+            if _brief_matches_current_scope(scopes, briefs, venue, now):
+                continue
+            result = _run_matching_macro(
+                config_dir=Path(config_dir),
+                state_dir=state_path,
+                now=now,
+                venue=venue,
+                news_macro_tick_fn=news_macro_tick_fn,
+                log=log,
+            )
+            payload = dict(result) if isinstance(result, Mapping) else {"result": result}
+            macro_refreshed.append({"venue": venue, **payload})
+    universe = tick_universe_intelligence(
+        config_dir=config_dir,
+        state_dir=state_dir,
+        loop_now=now,
+        venues=selected,
+        force=force,
+        news_macro_tick_fn=news_macro_tick_fn,
+        logger=log,
+        **tick_kwargs,
+    )
+    return {"macro_refreshed": macro_refreshed, **universe}
+
+
 def _prepare_global_situation_digest(
     *,
     briefs: NewsMacroBriefStore,
+    scopes: CandidateScopeStore,
     store: GlobalSituationDigestStore,
     now: datetime,
     log: LoggerLike,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    regional_briefs = {
-        venue: brief
-        for venue in VENUES
-        if (brief := briefs.read_latest(venue, at=now)) is not None
-    }
+    regional_briefs: dict[str, Any] = {}
+    for venue in VENUES:
+        brief = briefs.read_latest(venue, at=now)
+        if brief is None:
+            continue
+        scope = _read_board_scope(scopes, venue)
+        if scope is None or not _brief_matches_scope(brief, scope.get("candidate_scope_id")):
+            continue
+        regional_briefs[venue] = brief
     if not regional_briefs:
         return {}, {"status": "unavailable", "persistence_status": "skipped"}
 
@@ -873,6 +1036,23 @@ def _coverage_requires_refresh(
     return bool(current_digest) and current_digest != previous_digest
 
 
+def _coverage_digest_only_change(
+    previous: Mapping[str, Any] | None,
+    current: Mapping[str, Any] | None,
+) -> bool:
+    """True when only the digest identity moved, not a matching brief_id."""
+
+    if not isinstance(previous, Mapping) or not isinstance(current, Mapping):
+        return False
+    current_ids = _coverage_brief_ids(current)
+    previous_ids = _coverage_brief_ids(previous)
+    if any(current_ids.get(venue) != previous_ids.get(venue) for venue in current_ids):
+        return False
+    current_digest = str(current.get("digest_id") or "").strip()
+    previous_digest = str(previous.get("digest_id") or "").strip()
+    return bool(current_digest) and current_digest != previous_digest
+
+
 def decide_global_posture_refresh(
     *,
     now: datetime,
@@ -894,12 +1074,6 @@ def decide_global_posture_refresh(
     """
     if current is None:
         return True, "bootstrap"
-    if _coverage_requires_refresh(previous_coverage, current_coverage):
-        return True, "coverage_changed"
-    last = _parse_datetime(current.get("as_of"))
-    if last is None:
-        return True, "no_as_of"
-    age = now - last
     preopen = sorted({str(venue).strip() for venue in preopen_now if str(venue).strip()})
     missing = {
         str(item).strip().upper()
@@ -911,6 +1085,14 @@ def decide_global_posture_refresh(
         if str(item).strip()
     }
     awaiting = [venue for venue in preopen if venue in missing]
+    if _coverage_requires_refresh(previous_coverage, current_coverage):
+        if awaiting and _coverage_digest_only_change(previous_coverage, current_coverage):
+            return False, "awaiting_brief:" + ",".join(awaiting)
+        return True, "coverage_changed"
+    last = _parse_datetime(current.get("as_of"))
+    if last is None:
+        return True, "no_as_of"
+    age = now - last
     if awaiting:
         return False, "awaiting_brief:" + ",".join(awaiting)
     if preopen and age >= preopen_window:
@@ -1420,15 +1602,26 @@ def _record_waiting_once(
     waiting: list[dict[str, Any]],
     skipped: list[dict[str, Any]],
     brief_ref: Mapping[str, str] | None = None,
+    extra: Mapping[str, Any] | None = None,
 ) -> None:
     venue = str(scope.get("venue") or "").strip()
     scope_id = str(scope.get("candidate_scope_id") or "").strip()
-    latest = runs.read_latest(venue)
+    extras = dict(extra or {})
+    recorded = latest_waiting(runs.read_latest(venue))
     if (
-        latest is not None
-        and latest.get("candidate_scope_id") == scope_id
-        and latest.get("status") == "waiting_brief"
-        and latest.get("error_code") == reason
+        recorded is not None
+        and recorded.get("candidate_scope_id") == scope_id
+        and recorded.get("last_chance_attempted")
+        and "last_chance_attempted" not in extras
+    ):
+        extras["last_chance_attempted"] = True
+    same_waiting = (
+        recorded is not None
+        and recorded.get("candidate_scope_id") == scope_id
+        and recorded.get("error_code") == reason
+    )
+    if same_waiting and not (
+        extras.get("last_chance_attempted") and not recorded.get("last_chance_attempted")
     ):
         skipped.append({"venue": venue, "reason": f"{reason}_already_recorded"})
         return
@@ -1446,6 +1639,7 @@ def _record_waiting_once(
             "fallback_used": False,
             "retrieval_status": "not_enabled",
             "retrieval_refs": [],
+            **extras,
         }
     )
     runs.append(record)

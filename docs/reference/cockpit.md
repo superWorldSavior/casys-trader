@@ -81,7 +81,9 @@ La page Reports ne passe pas par ce snapshot global. Sa projection read-only
 scanne les artefacts de rapports dans un worker UI : posture globale, briefs
 macro, runs régionaux et briefs micro. Un succès reste affiché lorsqu'une
 tentative ultérieure échoue ; `latest_failure` ajoute l'erreur, le numéro de
-tentative et, lorsqu'un retry est planifié, sa prochaine échéance. Les fichiers
+tentative et, lorsqu'un retry est planifié, sa prochaine échéance. Une attente
+de brief régional (`waiting_brief`) s'affiche comme `latest_waiting` : bandeau
+d'attente, pas un rapport vide, corps = dernier succès s'il existe. Les fichiers
 absents ou corrompus sont ignorés, jamais transformés en décision runtime.
 
 ## Supervision du daemon

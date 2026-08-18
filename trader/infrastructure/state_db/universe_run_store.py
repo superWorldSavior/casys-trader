@@ -52,10 +52,12 @@ class UniverseRunStore:
     def append(self, record: Mapping[str, Any], *, date: str | None = None) -> dict[str, str]:
         """Append every attempt and refresh a usable venue projection.
 
-        A transient error must not replace the last successful regional report:
-        the gallery keeps rendering that report and receives the newest failure
-        as ``latest_failure`` for an explicit warning.  When no success exists,
-        the error itself remains the projection so it is still observable.
+        A transient error or brief wait must not replace the last successful
+        regional report: the gallery keeps rendering that report.  Failures
+        land under ``latest_failure``; ``waiting_brief`` lands under
+        ``latest_waiting`` so the two remain distinct in the UI and retry
+        policy.  When no success exists, the new record itself remains the
+        projection so it is still observable.
         """
 
         payload = _validated_run(record)
@@ -65,13 +67,17 @@ class UniverseRunStore:
         with self._ledger.write_session() as session:
             session.append(payload, date=date_key)
             latest = read_json_object(latest_path)
-            if payload["status"] in {"error", "invalid"} and _is_success_for_venue(
-                latest, payload["venue"]
-            ):
-                session.project_json(latest_path, {**latest, "latest_failure": payload})
+            overlay_key = _overlay_key(payload["status"])
+            if overlay_key is not None and _is_success_for_venue(latest, payload["venue"]):
+                retained = {
+                    key: value
+                    for key, value in latest.items()
+                    if key not in {"latest_failure", "latest_waiting"}
+                }
+                session.project_json(latest_path, {**retained, overlay_key: payload})
             else:
-                # A success clears a former failure marker and therefore resets
-                # the persisted retry lineage in the readable projection.
+                # A success clears former waiting/failure markers and therefore
+                # resets the persisted retry lineage in the readable projection.
                 session.project_json(latest_path, payload)
 
         ref = {
@@ -150,3 +156,24 @@ def _is_run_for_venue(payload: dict[str, Any] | None, venue: str) -> bool:
 
 def _is_success_for_venue(payload: dict[str, Any] | None, venue: str) -> bool:
     return _is_run_for_venue(payload, venue) and payload.get("status") == "success"
+
+
+def _overlay_key(status: str) -> str | None:
+    if status in {"error", "invalid"}:
+        return "latest_failure"
+    if status == "waiting_brief":
+        return "latest_waiting"
+    return None
+
+
+def latest_waiting(raw: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    """Return the waiting_brief record from a venue projection, if any."""
+
+    if not isinstance(raw, Mapping):
+        return None
+    if raw.get("status") == "waiting_brief":
+        return dict(raw)
+    nested = raw.get("latest_waiting")
+    if isinstance(nested, Mapping) and nested.get("status") == "waiting_brief":
+        return dict(nested)
+    return None

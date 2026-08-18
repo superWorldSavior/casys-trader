@@ -769,6 +769,62 @@ def test_tick_records_brief_missing_once_without_calling_agent(tmp_path) -> None
     assert json.loads(rows[0])["status"] == "waiting_brief"
 
 
+def test_tick_records_brief_missing_once_when_success_overlay_already_waiting(tmp_path) -> None:
+    state_dir = tmp_path / "state"
+    config_dir = tmp_path / "config"
+    state_dir.mkdir()
+    config_dir.mkdir()
+    candidates = [{"symbol": "AAPL", "attractiveness": 1.0, "bias": "long"}]
+    scope_id = candidate_scope_id("US", candidates, ["AAPL"], NOW.isoformat())
+    CandidateScopeStore(state_dir / "candidate_scopes").append(
+        {
+            "candidate_scope_id": scope_id,
+            "venue": "US",
+            "as_of": NOW.isoformat(),
+            "candidates": candidates,
+            "default_hotlist": ["AAPL"],
+        }
+    )
+    runs = UniverseRunStore(state_dir / "universe_runs")
+    runs.append(
+        {
+            "candidate_scope_id": "scope-yesterday",
+            "venue": "US",
+            "as_of": "2026-07-09T20:05:00+00:00",
+            "status": "success",
+            "summary": "Yesterday hotlist",
+            "selected_hotlist": ["MSFT"],
+        }
+    )
+    agent = FakeAgent()
+
+    first = universe_intelligence_runtime.tick_universe_intelligence(
+        config_dir=config_dir,
+        state_dir=state_dir,
+        loop_now=NOW,
+        agent=agent,
+        venues=("US",),
+    )
+    second = universe_intelligence_runtime.tick_universe_intelligence(
+        config_dir=config_dir,
+        state_dir=state_dir,
+        loop_now=NOW,
+        agent=agent,
+        venues=("US",),
+    )
+
+    latest = runs.read_latest("US")
+    assert first["waiting"] == [{"venue": "US", "reason": "brief_missing"}]
+    assert second["skipped"] == [{"venue": "US", "reason": "brief_missing_already_recorded"}]
+    assert agent.requests == []
+    assert latest["status"] == "success"
+    assert latest["selected_hotlist"] == ["MSFT"]
+    assert latest["latest_waiting"]["candidate_scope_id"] == scope_id
+    assert latest["latest_waiting"]["error_code"] == "brief_missing"
+    rows = (state_dir / "universe_runs" / "2026-07-10.jsonl").read_text().splitlines()
+    assert [json.loads(row)["status"] for row in rows] == ["waiting_brief"]
+
+
 def test_tick_repairs_a_missing_prepared_projection_without_recalling_agent(tmp_path) -> None:
     state_dir = tmp_path / "state"
     config_dir = tmp_path / "config"
@@ -1206,17 +1262,280 @@ def test_tick_rejects_brief_for_another_candidate_scope(tmp_path) -> None:
     assert UniverseRunStore(state_dir / "universe_runs").read_prepared(scope_id) is None
 
 
+ACTIVATION_NOW = datetime(2026, 7, 10, 13, 16, tzinfo=timezone.utc)
+
+
+def _mismatch_latest_brief(state_dir, venue: str = "US") -> None:
+    latest_path = state_dir / "news_briefs" / f"latest-{venue}.jsonl"
+    payload = json.loads(latest_path.read_text())
+    payload["input_refs"]["candidate_scope_id"] = "another-scope"
+    latest_path.write_text(json.dumps(payload) + "\n")
+
+
+def _restore_brief_scope(state_dir, scope_id: str, venue: str = "US") -> None:
+    latest_path = state_dir / "news_briefs" / f"latest-{venue}.jsonl"
+    payload = json.loads(latest_path.read_text())
+    payload["input_refs"]["candidate_scope_id"] = scope_id
+    latest_path.write_text(json.dumps(payload) + "\n")
+
+
+def _make_brief_active_at(state_dir, at: datetime, venue: str = "US") -> None:
+    latest_path = state_dir / "news_briefs" / f"latest-{venue}.jsonl"
+    payload = json.loads(latest_path.read_text())
+    payload["as_of"] = (at - timedelta(minutes=16)).isoformat()
+    payload["valid_until"] = (at + timedelta(hours=3)).isoformat()
+    latest_path.write_text(json.dumps(payload) + "\n")
+
+
+def test_refresh_force_chains_macro_then_composes_for_mismatched_brief(tmp_path) -> None:
+    state_dir = tmp_path / "state"
+    config_dir = tmp_path / "config"
+    state_dir.mkdir()
+    config_dir.mkdir()
+    scope_id = _write_scope_and_brief(
+        state_dir, venue="US", symbols=["AAPL", "MSFT"], family="us_mega_tech"
+    )
+    _mismatch_latest_brief(state_dir)
+    macro_calls: list[dict] = []
+    agent = FakeAgent()
+
+    def fake_macro(**kwargs):
+        macro_calls.append(kwargs)
+        _restore_brief_scope(state_dir, scope_id)
+        return {"triggered": [{"venue": "US"}]}
+
+    result = universe_intelligence_runtime.refresh_universe_intelligence(
+        config_dir=config_dir,
+        state_dir=state_dir,
+        loop_now=NOW,
+        venues=("US",),
+        force=True,
+        refresh_macro=True,
+        news_macro_tick_fn=fake_macro,
+        agent=agent,
+    )
+
+    assert macro_calls[0]["venues"] == ("US",)
+    assert macro_calls[0]["force"] is True
+    assert agent.requests
+    assert result["macro_refreshed"][0]["venue"] == "US"
+    assert UniverseRunStore(state_dir / "universe_runs").read_prepared(scope_id) is not None
+
+
+def test_refresh_force_no_macro_keeps_waiting_on_mismatched_brief(tmp_path) -> None:
+    state_dir = tmp_path / "state"
+    config_dir = tmp_path / "config"
+    state_dir.mkdir()
+    config_dir.mkdir()
+    scope_id = _write_scope_and_brief(
+        state_dir, venue="US", symbols=["AAPL", "MSFT"], family="us_mega_tech"
+    )
+    _mismatch_latest_brief(state_dir)
+    agent = FakeAgent()
+
+    def boom(**_kwargs):
+        raise AssertionError("macro should not run")
+
+    result = universe_intelligence_runtime.refresh_universe_intelligence(
+        config_dir=config_dir,
+        state_dir=state_dir,
+        loop_now=NOW,
+        venues=("US",),
+        force=True,
+        refresh_macro=False,
+        news_macro_tick_fn=boom,
+        agent=agent,
+    )
+
+    assert result["waiting"] == [{"venue": "US", "reason": "brief_scope_mismatch"}]
+    assert result["macro_refreshed"] == []
+    assert agent.requests == []
+    assert UniverseRunStore(state_dir / "universe_runs").read_prepared(scope_id) is None
+
+
+def test_refresh_force_skips_macro_when_brief_already_matches(tmp_path) -> None:
+    state_dir = tmp_path / "state"
+    config_dir = tmp_path / "config"
+    state_dir.mkdir()
+    config_dir.mkdir()
+    _write_scope_and_brief(
+        state_dir, venue="US", symbols=["AAPL", "MSFT"], family="us_mega_tech"
+    )
+    macro_calls: list[dict] = []
+    agent = FakeAgent()
+
+    def fake_macro(**kwargs):
+        macro_calls.append(kwargs)
+        return {"triggered": [{"venue": "US"}]}
+
+    result = universe_intelligence_runtime.refresh_universe_intelligence(
+        config_dir=config_dir,
+        state_dir=state_dir,
+        loop_now=NOW,
+        venues=("US",),
+        force=True,
+        refresh_macro=True,
+        news_macro_tick_fn=fake_macro,
+        agent=agent,
+    )
+
+    assert macro_calls == []
+    assert result["macro_refreshed"] == []
+    assert agent.requests
+    assert result["prepared"]
+
+
+def test_tick_last_chance_composes_in_activation_window_without_prepared(tmp_path) -> None:
+    state_dir = tmp_path / "state"
+    config_dir = tmp_path / "config"
+    state_dir.mkdir()
+    config_dir.mkdir()
+    scope_id = _write_scope_and_brief(
+        state_dir, venue="US", symbols=["AAPL", "MSFT"], family="us_mega_tech"
+    )
+    _make_brief_active_at(state_dir, ACTIVATION_NOW)
+    _mismatch_latest_brief(state_dir)
+    macro_calls: list[dict] = []
+    agent = FakeAgent()
+
+    def fake_macro(**kwargs):
+        macro_calls.append(kwargs)
+        _restore_brief_scope(state_dir, scope_id)
+        return {"triggered": [{"venue": "US"}]}
+
+    result = universe_intelligence_runtime.tick_universe_intelligence(
+        config_dir=config_dir,
+        state_dir=state_dir,
+        loop_now=ACTIVATION_NOW,
+        agent=agent,
+        venues=("US",),
+        news_macro_tick_fn=fake_macro,
+    )
+
+    assert macro_calls
+    assert agent.requests
+    assert result["prepared"]
+    assert UniverseRunStore(state_dir / "universe_runs").read_prepared(scope_id) is not None
+
+
+def test_tick_last_chance_is_attempted_once_when_macro_cannot_match(tmp_path) -> None:
+    state_dir = tmp_path / "state"
+    config_dir = tmp_path / "config"
+    state_dir.mkdir()
+    config_dir.mkdir()
+    scope_id = _write_scope_and_brief(
+        state_dir, venue="US", symbols=["AAPL", "MSFT"], family="us_mega_tech"
+    )
+    _make_brief_active_at(state_dir, ACTIVATION_NOW)
+    _mismatch_latest_brief(state_dir)
+    macro_calls: list[dict] = []
+    agent = FakeAgent()
+
+    def fake_macro(**kwargs):
+        macro_calls.append(kwargs)
+        return {"triggered": [{"venue": "US"}]}
+
+    first = universe_intelligence_runtime.tick_universe_intelligence(
+        config_dir=config_dir,
+        state_dir=state_dir,
+        loop_now=ACTIVATION_NOW,
+        agent=agent,
+        venues=("US",),
+        news_macro_tick_fn=fake_macro,
+    )
+    second = universe_intelligence_runtime.tick_universe_intelligence(
+        config_dir=config_dir,
+        state_dir=state_dir,
+        loop_now=ACTIVATION_NOW,
+        agent=agent,
+        venues=("US",),
+        news_macro_tick_fn=fake_macro,
+    )
+
+    assert len(macro_calls) == 1
+    assert first["waiting"] == [{"venue": "US", "reason": "brief_scope_mismatch"}]
+    assert second["skipped"] == [{"venue": "US", "reason": "brief_scope_mismatch_already_recorded"}]
+    assert agent.requests == []
+    latest = UniverseRunStore(state_dir / "universe_runs").read_latest("US")
+    waiting = latest.get("latest_waiting") or latest
+    assert waiting["last_chance_attempted"] is True
+    assert UniverseRunStore(state_dir / "universe_runs").read_prepared(scope_id) is None
+
+
+def test_tick_last_chance_stays_sticky_when_waiting_reason_changes(tmp_path) -> None:
+    state_dir = tmp_path / "state"
+    config_dir = tmp_path / "config"
+    state_dir.mkdir()
+    config_dir.mkdir()
+    scope_id = _write_scope_and_brief(
+        state_dir,
+        venue="US",
+        symbols=["AAPL", "MSFT"],
+        family="us_mega_tech",
+        write_brief=False,
+    )
+    macro_calls: list[dict] = []
+    agent = FakeAgent()
+
+    def fake_macro(**kwargs):
+        macro_calls.append(kwargs)
+        return {"triggered": [{"venue": "US"}]}
+
+    first = universe_intelligence_runtime.tick_universe_intelligence(
+        config_dir=config_dir,
+        state_dir=state_dir,
+        loop_now=ACTIVATION_NOW,
+        agent=agent,
+        venues=("US",),
+        news_macro_tick_fn=fake_macro,
+    )
+    _write_scope_and_brief(
+        state_dir,
+        venue="US",
+        symbols=["AAPL", "MSFT"],
+        family="us_mega_tech",
+        reuse_scope_id=scope_id,
+    )
+    _make_brief_active_at(state_dir, ACTIVATION_NOW)
+    _mismatch_latest_brief(state_dir)
+    second = universe_intelligence_runtime.tick_universe_intelligence(
+        config_dir=config_dir,
+        state_dir=state_dir,
+        loop_now=ACTIVATION_NOW,
+        agent=agent,
+        venues=("US",),
+        news_macro_tick_fn=fake_macro,
+    )
+
+    assert first["waiting"] == [{"venue": "US", "reason": "brief_missing"}]
+    assert second["waiting"] == [{"venue": "US", "reason": "brief_scope_mismatch"}]
+    assert len(macro_calls) == 1
+    assert agent.requests == []
+    waiting = UniverseRunStore(state_dir / "universe_runs").read_latest("US")
+    overlay = waiting.get("latest_waiting") or waiting
+    assert overlay["error_code"] == "brief_scope_mismatch"
+    assert overlay["last_chance_attempted"] is True
+
+
 def test_prepare_global_situation_digest_reads_global_brief_and_prioritises_it(tmp_path) -> None:
     """When a GLOBAL brief exists it is read and its points appear first in the digest."""
     state_dir = tmp_path / "state"
     state_dir.mkdir()
     briefs = NewsMacroBriefStore(state_dir / "news_briefs")
+    scope_id = _write_scope_and_brief(
+        state_dir,
+        venue="US",
+        symbols=["AAPL"],
+        family="us_mega_tech",
+        write_brief=False,
+    )
 
     regional = NewsMacroBrief.from_mapping({
         "brief_id": "brief-US",
         "venue": "US",
         "as_of": "2026-07-10T20:01:00+00:00",
         "valid_until": "2026-07-11T16:01:00+00:00",
+        "input_refs": {"candidate_scope_id": scope_id},
         "alerts": [{
             "point": "US regional alert.",
             "sources": ["Reuters"],
@@ -1247,6 +1566,7 @@ def test_prepare_global_situation_digest_reads_global_brief_and_prioritises_it(t
     store = GlobalSituationDigestStore(state_dir / "global_situation_digests")
     digest, ref = universe_intelligence_runtime._prepare_global_situation_digest(
         briefs=briefs,
+        scopes=CandidateScopeStore(state_dir / "candidate_scopes"),
         store=store,
         now=NOW,
         log=logging.getLogger("test"),
@@ -1265,12 +1585,20 @@ def test_prepare_global_situation_digest_is_fail_open_when_global_brief_absent(t
     state_dir = tmp_path / "state"
     state_dir.mkdir()
     briefs = NewsMacroBriefStore(state_dir / "news_briefs")
+    scope_id = _write_scope_and_brief(
+        state_dir,
+        venue="EU",
+        symbols=["AIR.PA"],
+        family="eu_industrials",
+        write_brief=False,
+    )
 
     regional = NewsMacroBrief.from_mapping({
         "brief_id": "brief-EU",
         "venue": "EU",
         "as_of": "2026-07-10T20:01:00+00:00",
         "valid_until": "2026-07-11T16:01:00+00:00",
+        "input_refs": {"candidate_scope_id": scope_id},
         "alerts": [{
             "point": "EU regional alert.",
             "sources": ["Reuters"],
@@ -1283,6 +1611,7 @@ def test_prepare_global_situation_digest_is_fail_open_when_global_brief_absent(t
     store = GlobalSituationDigestStore(state_dir / "global_situation_digests")
     digest, ref = universe_intelligence_runtime._prepare_global_situation_digest(
         briefs=briefs,
+        scopes=CandidateScopeStore(state_dir / "candidate_scopes"),
         store=store,
         now=NOW,
         log=logging.getLogger("test"),
@@ -1292,6 +1621,45 @@ def test_prepare_global_situation_digest_is_fail_open_when_global_brief_absent(t
     assert ref.get("persistence_status") == "appended"
     point_texts = [p["point"] for p in digest.get("points", [])]
     assert "EU regional alert." in point_texts
+
+
+def test_prepare_global_situation_digest_excludes_scope_mismatched_brief(tmp_path) -> None:
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    _write_scope_and_brief(
+        state_dir,
+        venue="US",
+        symbols=["AAPL"],
+        family="us_mega_tech",
+        write_brief=False,
+    )
+    briefs = NewsMacroBriefStore(state_dir / "news_briefs")
+    orphan = NewsMacroBrief.from_mapping({
+        "brief_id": "brief-US-old",
+        "venue": "US",
+        "as_of": "2026-07-10T20:01:00+00:00",
+        "valid_until": "2026-07-11T16:01:00+00:00",
+        "input_refs": {"candidate_scope_id": "scope-yesterday"},
+        "alerts": [{
+            "point": "Orphan US brief for yesterday's pack.",
+            "sources": ["Reuters"],
+            "source_refs": ["us-old"],
+        }],
+    })
+    assert orphan is not None
+    briefs.append(orphan)
+
+    digest, _ref = universe_intelligence_runtime._prepare_global_situation_digest(
+        briefs=briefs,
+        scopes=CandidateScopeStore(state_dir / "candidate_scopes"),
+        store=GlobalSituationDigestStore(state_dir / "global_situation_digests"),
+        now=NOW,
+        log=logging.getLogger("test"),
+    )
+
+    assert digest == {} or "US" not in (digest.get("coverage") or {}).get("venues_seen", [])
+    point_texts = [p["point"] for p in digest.get("points", [])]
+    assert "Orphan US brief for yesterday's pack." not in point_texts
 
 
 _COOLDOWN = timedelta(hours=4)
@@ -1372,6 +1740,40 @@ def test_decide_refresh_does_not_fire_when_brief_disappears() -> None:
             "missing_brief_venues": ["EU"],
         },
     ) == (False, "awaiting_brief:EU")
+
+
+def test_decide_refresh_digest_only_change_waits_for_preopen_brief() -> None:
+    current = _posture_current((NOW - timedelta(minutes=10)).isoformat())
+    assert universe_intelligence_runtime.decide_global_posture_refresh(
+        now=NOW,
+        current=current,
+        preopen_now=("US",),
+        cooldown=_COOLDOWN,
+        preopen_window=_WINDOW,
+        previous_coverage={"brief_ids": {"TW": "brief-tw"}, "digest_id": "digest-old"},
+        current_coverage={
+            "brief_ids": {"TW": "brief-tw"},
+            "digest_id": "digest-global-only",
+            "missing_brief_venues": ["US"],
+        },
+    ) == (False, "awaiting_brief:US")
+
+
+def test_decide_refresh_matching_brief_swap_wins_while_us_awaits() -> None:
+    current = _posture_current((NOW - timedelta(minutes=10)).isoformat())
+    assert universe_intelligence_runtime.decide_global_posture_refresh(
+        now=NOW,
+        current=current,
+        preopen_now=("US",),
+        cooldown=_COOLDOWN,
+        preopen_window=_WINDOW,
+        previous_coverage={"brief_ids": {"TW": "brief-tw-old"}, "digest_id": "digest-old"},
+        current_coverage={
+            "brief_ids": {"TW": "brief-tw-new"},
+            "digest_id": "digest-new",
+            "missing_brief_venues": ["US"],
+        },
+    ) == (True, "coverage_changed")
 
 
 def test_decide_refresh_legacy_coverage_once_when_briefs_exist() -> None:

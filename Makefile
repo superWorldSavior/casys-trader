@@ -1,6 +1,6 @@
 # casys-trader — raccourcis. Lance `make` (ou `make help`) pour la liste.
 .DEFAULT_GOAL := help
-.PHONY: help watch live once test logs live-logs dash dash-portfolio dash-decisions dash-list macro models model-preset storage-report storage-archive storage-schedule storage-unschedule desktop desktop-tauri
+.PHONY: help watch live once test logs live-logs dash dash-portfolio dash-decisions dash-list macro universe models model-preset storage-report storage-archive storage-schedule storage-unschedule desktop desktop-tauri
 
 help:  ## Affiche cette aide
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -43,6 +43,9 @@ dash-list:  ## Liste les dashboards locaux et leurs URLs
 MARKET ?= TW
 macro:  ## Lance un point macro ciblé — MARKET="TW US GLOBAL" [FORCE=1] ou ALL=1
 	uv run casys-trader news-macro refresh $(if $(ALL),--all,$(foreach venue,$(MARKET),--venue $(venue))) $(if $(FORCE),--force,)
+
+universe:  ## Compose la hotlist régionale — MARKET="TW US" [FORCE=1] ou ALL=1 ; FORCE enchaîne le macro du pack courant
+	uv run casys-trader universe refresh $(if $(ALL),--all,$(foreach venue,$(MARKET),--venue $(venue))) $(if $(FORCE),--force,)
 
 test:  ## Lance toute la suite de tests
 	uv run pytest -q

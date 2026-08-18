@@ -348,6 +348,58 @@ def test_detail_regional_empty_payload_explicit_state() -> None:
     assert "clôtures/pre-open" in text
 
 
+def test_detail_regional_waiting_brief_is_not_empty_placeholder() -> None:
+    text = _all_text(
+        build_report_detail(
+            _regional_item(
+                {
+                    "status": "waiting_brief",
+                    "error_code": "brief_scope_mismatch",
+                    "candidate_scope_id": "US:2026-07-10T12:07:00+00:00/abcdef123456",
+                    "as_of": "2026-07-17T12:07:00+00:00",
+                }
+            ),
+            now=NOW,
+        )
+    )
+
+    assert "pas encore de run régional" not in text
+    assert "waiting_brief" in text
+    assert "brief_scope_mismatch" in text
+    assert "pré-open courant en attente" in text
+    assert "dernier essai en échec" not in text
+
+
+def test_detail_regional_keeps_last_success_and_shows_waiting_banner() -> None:
+    text = _all_text(
+        build_report_detail(
+            _regional_item(
+                {
+                    "summary": "rotation into semis",
+                    "selected_hotlist": ["3443.TW"],
+                    "as_of": "2026-07-17T05:30:00+00:00",
+                    "status": "success",
+                    "candidate_scope_id": "TW:2026-07-17T05:30:00+00:00/aaaaaaaa1111",
+                    "latest_waiting": {
+                        "status": "waiting_brief",
+                        "error_code": "brief_missing",
+                        "candidate_scope_id": "TW:2026-07-17T06:00:00+00:00/bbbbbbbb2222",
+                    },
+                }
+            ),
+            now=NOW,
+        )
+    )
+
+    assert "rotation into semis" in text
+    assert "waiting_brief" in text
+    assert "brief_missing" in text
+    assert "pré-open courant en attente" in text
+    assert "génération précédente" in text
+    assert "dernier essai en échec" not in text
+    assert "as_of 2026-07-17 05:30" in text
+
+
 def test_detail_regional_keeps_last_success_visible_and_warns_on_newer_failure() -> None:
     text = _all_text(
         build_report_detail(

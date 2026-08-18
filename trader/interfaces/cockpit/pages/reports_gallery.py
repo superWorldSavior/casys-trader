@@ -43,6 +43,7 @@ from trader.interfaces.cockpit.projections.reports import (
     build_gallery_row,
     collect_report_items,
 )
+from trader.reporting.read_models.universe_pipeline import _short_pipeline_id
 from trader.interfaces.ui.palette import (
     CASYS_ACCENT,
     CASYS_DIM,
@@ -144,6 +145,58 @@ def _meta_line(payload: dict, *, now: datetime, show_valid_until: bool = True) -
 
 def _str_list(raw: object) -> list[str]:
     return [str(value) for value in raw if str(value).strip()] if isinstance(raw, list) else []
+
+
+def _pipeline_status_style(status: str) -> str:
+    if status in {"ready", "success", "activated", "available"}:
+        return CASYS_SUCCESS
+    if status in {"fallback", "scope_mismatch", "error", "invalid", "unavailable"}:
+        return CASYS_ERROR
+    if status in {"waiting_brief", "degraded", "pending"}:
+        return CASYS_WARNING
+    return CASYS_MUTED
+
+
+def _regional_waiting(payload: dict) -> dict:
+    nested = f.safe_dict(payload.get("latest_waiting"))
+    if nested.get("status") == "waiting_brief":
+        return nested
+    if payload.get("status") == "waiting_brief":
+        return payload
+    return {}
+
+
+def _append_waiting_banner(parts: list[RenderableType], waiting: dict) -> None:
+    error = str(waiting.get("error_code") or waiting.get("status") or "waiting_brief").strip()
+    parts.append(Text(""))
+    parts.append(
+        Text("pré-open courant en attente · pas un rapport vide", style=f"bold {CASYS_WARNING}")
+    )
+    parts.append(Text(error, style=CASYS_DIM))
+
+
+def _append_regional_scope_ids(parts: list[RenderableType], payload: dict, waiting: dict) -> None:
+    run_id = _short_pipeline_id(payload.get("candidate_scope_id"))
+    waiting_id = _short_pipeline_id(waiting.get("candidate_scope_id")) if waiting else None
+    brief_ref = f.safe_dict((waiting or payload).get("brief_ref"))
+    brief_id = _short_pipeline_id(brief_ref.get("candidate_scope_id") or brief_ref.get("brief_id"))
+    if not (run_id or waiting_id or brief_id):
+        return
+    line = Text()
+    chunks = [
+        (f"liste {run_id}", CASYS_FAINT) if run_id else None,
+        (f"brief {brief_id}", CASYS_FAINT) if brief_id else None,
+        (f"attente {waiting_id}", CASYS_WARNING) if waiting_id and waiting_id != run_id else None,
+    ]
+    first = True
+    for chunk in chunks:
+        if chunk is None:
+            continue
+        if not first:
+            line.append(" · ", style=CASYS_FAINT)
+        line.append(chunk[0], style=chunk[1])
+        first = False
+    parts.append(line)
 
 
 def _append_failure_warning(parts: list[RenderableType], payload: dict) -> None:
@@ -331,8 +384,22 @@ def _build_regional_detail(item: ReportItem, *, now: datetime) -> RenderableType
             ),
         )
 
+    waiting = _regional_waiting(payload)
+    display_status = str((waiting or payload).get("status") or "").strip()
     parts: list[RenderableType] = [header]
+    if display_status:
+        status_line = Text()
+        status_line.append(display_status, style=f"bold {_pipeline_status_style(display_status)}")
+        error_code = str((waiting or payload).get("error_code") or "").strip()
+        if error_code:
+            status_line.append(f"  ·  {error_code}", style=CASYS_DIM)
+        parts.append(status_line)
+    _append_regional_scope_ids(parts, payload, waiting)
     parts.append(_meta_line(payload, now=now, show_valid_until=False))
+    if waiting and payload.get("status") == "success":
+        parts.append(Text("génération précédente", style=CASYS_FAINT))
+    if waiting:
+        _append_waiting_banner(parts, waiting)
 
     _append_failure_warning(parts, payload)
 

@@ -13,7 +13,7 @@ from trader.support.metadata import code_version
 from trader.infrastructure.files import decision_ledger, ledger_rotation
 from trader.domain.market.features import DEFAULT_INDICATORS, build_indicator_snapshot, compute_indicator_values
 from trader.market import market_data as market
-from trader.runtime import daemon, news_macro_runtime
+from trader.runtime import daemon, news_macro_runtime, universe_intelligence_runtime
 from trader.runtime.company_intelligence_runtime import CompanyIntelligenceRuntime
 from trader.domain.semantic.catalog import FAMILIES, describe_semantic_layer, find_indicators, list_indicators, normalize_temporal_query
 from trader.reporting.audit import decision_quality as decision_audit
@@ -124,6 +124,30 @@ def _cmd_news_macro_refresh(args: argparse.Namespace) -> int:
     payload = {
         "requested_venues": list(selected_venues),
         "force": bool(args.force),
+        **result,
+    }
+    _print_json(payload)
+    return 0 if not result.get("errors") else 1
+
+
+def _cmd_universe_refresh(args: argparse.Namespace) -> int:
+    selected_venues = (
+        universe_intelligence_runtime.VENUES
+        if args.all
+        else tuple(dict.fromkeys(args.venue or ()))
+    )
+    result = universe_intelligence_runtime.refresh_universe_intelligence(
+        config_dir=daemon.ROOT / "config",
+        state_dir=daemon.STATE_DIR,
+        loop_now=datetime.now(timezone.utc),
+        venues=selected_venues,
+        force=bool(args.force),
+        refresh_macro=not bool(args.no_macro),
+    )
+    payload = {
+        "requested_venues": list(selected_venues),
+        "force": bool(args.force),
+        "refresh_macro": not bool(args.no_macro),
         **result,
     }
     _print_json(payload)
@@ -979,6 +1003,32 @@ def build_parser() -> argparse.ArgumentParser:
         help="ignore fraîcheur, cooldown et backoff d'échec",
     )
     news_macro_refresh.set_defaults(func=_cmd_news_macro_refresh)
+
+    universe = sub.add_parser("universe", help="composition régionale de la hotlist")
+    universe_sub = universe.add_subparsers(dest="universe_command", required=True)
+    universe_refresh = universe_sub.add_parser(
+        "refresh",
+        help="compose la hotlist du pack courant ; FORCE enchaîne le macro si le brief n'est pas le bon",
+    )
+    universe_venue = universe_refresh.add_mutually_exclusive_group(required=True)
+    universe_venue.add_argument(
+        "--venue",
+        action="append",
+        choices=universe_intelligence_runtime.VENUES,
+        help="marché ciblé ; option répétable",
+    )
+    universe_venue.add_argument("--all", action="store_true", help="cible TW, EU et US")
+    universe_refresh.add_argument(
+        "--force",
+        action="store_true",
+        help="ignore fraîcheur, cooldown et backoff ; enchaîne le macro du pack courant si besoin",
+    )
+    universe_refresh.add_argument(
+        "--no-macro",
+        action="store_true",
+        help="ne rafraîchit pas le brief ; un brief d'un autre pack laisse waiting_brief",
+    )
+    universe_refresh.set_defaults(func=_cmd_universe_refresh)
 
     company = sub.add_parser(
         "company-intelligence",

@@ -122,6 +122,19 @@ def _with_latest_failure(payload: dict, failure: dict | None) -> dict:
     return {**payload, "latest_failure": failure} if failure is not None else payload
 
 
+def _latest_waiting(raw: object) -> dict | None:
+    """Expose waiting_brief as ``latest_waiting`` whether it is root or nested."""
+
+    if not isinstance(raw, dict):
+        return None
+    nested = raw.get("latest_waiting")
+    if isinstance(nested, dict) and nested.get("status") == "waiting_brief":
+        return dict(nested)
+    if raw.get("status") == "waiting_brief":
+        return dict(raw)
+    return None
+
+
 def _venue_suffix(path: Path, *, suffix: str) -> str:
     """``latest-EU.jsonl`` → ``EU`` (venue = filename suffix)."""
 
@@ -214,6 +227,9 @@ def _collect_regional(state_dir: Path, *, company_names: dict[str, str]) -> list
         payload = _read_json(path)
         if payload is None:
             continue
+        waiting = _latest_waiting(payload)
+        if waiting is not None:
+            payload = {**payload, "latest_waiting": waiting}
         items.append(
             ReportItem(
                 kind="regional",

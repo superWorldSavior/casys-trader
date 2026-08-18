@@ -214,8 +214,14 @@ statut régime de chaque famille restent visibles séparément.
 ### 4.1 GlobalFamilyBoard — comparaison, jamais allocation
 
 Avant les trois passes agent, le runtime construit un board commun depuis le
-dernier enfant pré-open disponible de `TW`, `EU` et `US` et son brief exact. Pour
-chaque famille et chaque venue, il expose le rang radar **dans la venue**, les
+dernier enfant pré-open disponible de `TW`, `EU` et `US` et son brief du **même
+pack** (`input_refs.candidate_scope_id` = liste courante). Le digest global
+applique le même filtre : un brief écrit pour une liste précédente n'entre
+pas dans `venues_seen` et ne doit pas rappeler la posture. Un simple
+changement de `digest_id` (brief GLOBAL) pendant qu'une venue pré-open attend
+son brief matching reste `awaiting_brief` ; un vrai swap de brief matching
+(TW/EU) continue de gagner. Pour chaque famille et chaque venue, il expose le
+rang radar **dans la venue**, les
 comptes candidats/baseline/challengers, les biais, la fraîcheur du scope et au
 plus deux observations analyste bornées avec directions, signaux et sources.
 
@@ -319,10 +325,18 @@ tentatives restent dans `global_universe_postures/failures/*.jsonl` et la
 dernière dans `latest_failure.json`.
 
 De même, `universe_runs/latest-<venue>.json` conserve le dernier succès utilisable
-et imbrique la dernière erreur sous `latest_failure`. Les logs
+et imbrique la dernière erreur sous `latest_failure`. Une attente de brief
+(`waiting_brief`) s'imbrique sous `latest_waiting`, distincte de l'échec : pas
+de backoff 30→360 min, bandeau « pré-open en attente » dans Reports, corps =
+génération précédente. Les logs
 `universe retry scheduled` et `global posture retry scheduled` sont émis en
 WARNING ; leurs variantes `deferred` sont en INFO. Ils portent tentative,
 délai, `next_at` et erreur.
+
+Un recast pré-open sur +1 challenger est normal. Si la hotlist du pack courant
+manque, le runner tente une composition dans la fenêtre T-15 (brief du pack
+courant d'abord) ; à la main : `make universe MARKET=US FORCE=1`. T-15 n'active
+pas la hotlist d'hier.
 
 L'audit radar ajoute deux surfaces sans effet décisionnel :
 `state/radar_score_audit.json` pour le shadow live et

@@ -19,7 +19,9 @@ choisir une commande ou d'attendre le scheduler.
 
 Les projections `latest` conservent le dernier succès utilisable. Une tentative
 ultérieure en erreur apparaît sous `latest_failure` au lieu d'effacer le
-rapport. La posture globale garde sa panne séparément dans
+rapport. Une attente de brief (`waiting_brief`, `brief_missing` /
+`brief_scope_mismatch`) apparaît sous `latest_waiting` : ce n'est pas un échec
+retryable, ni un rapport vide. La posture globale garde sa panne séparément dans
 `state/global_universe_postures/latest_failure.json`.
 
 ## 2. Vérifier le daemon et les artefacts
@@ -42,17 +44,20 @@ tail -1 state/news_briefs/latest-TW.jsonl | \
 jq '{as_of,venue,status,candidate_scope_id,agent_run_id,
      agent_provider,agent_model,
      latest_failure:(.latest_failure | if . == null then null else
-       {error_code,error_message,retry_attempt,next_retry_at} end)}' \
+       {error_code,error_message,retry_attempt,next_retry_at} end),
+     latest_waiting:(.latest_waiting | if . == null then null else
+       {status,error_code,candidate_scope_id} end)}' \
   state/universe_runs/latest-TW.json
 
 jq '.venues.TW | {scope_phase,candidate_scope_id,
      last_universe_activation_scope_id}' state/venue_state.json
 ```
 
-Comparer le `candidate_scope_id` du run régional avec celui du scope et du
-brief macro. Un scope `close`, un brief absent ou un `brief_scope_mismatch`
-n'est pas un rapport vide : la préparation exacte du pré-open n'est pas encore
-disponible.
+Comparer le `candidate_scope_id` du run régional (ou de `latest_waiting`) avec
+celui du scope courant et celui tamponné sur le brief macro
+(`.input_refs.candidate_scope_id`). Un scope `close`, un brief absent ou un
+`brief_scope_mismatch` n'est pas un rapport vide : le dernier succès reste
+lisible, la préparation exacte du pré-open courant n'est pas encore disponible.
 
 Pour les micros et leur file durable :
 
@@ -129,12 +134,33 @@ construit son propre runtime sans ce callback : son brief reste dans le store et
 sera consommé lors du prochain passage Univers autrement éligible. La CLI seule
 ne déclenche pas ce passage.
 
-## 5. Laisser le daemon gouverner les rapports régional et global
+## 5. Forcer la hotlist régionale du pack courant
 
-Il n'existe pas de commande publique pour forcer directement ces deux agents.
-Le rapport régional exige un scope final pré-open et un brief du même scope. La
-posture globale est préparée par le même runner, selon sa fenêtre et son
-cooldown.
+Si le pré-open a recasté (un challenger est entré) et que le brief macro
+tamponne encore l'ancienne liste, l'agent régional reste en `waiting_brief`
+(`brief_scope_mismatch`). La galerie garde le dernier succès. Ce n'est pas une
+hotlist du pack courant.
+
+Composer maintenant la liste actuelle, pas celle d'hier :
+
+```bash
+make universe MARKET=US FORCE=1
+# équivalent
+uv run casys-trader universe refresh --venue US --force
+```
+
+`FORCE=1` ignore fraîcheur, cooldown et backoff. Par défaut il enchaîne d'abord
+le macro du **pack courant**, puis l'agent régional. Ne pas le boucler. Ne pas
+lancer cette commande pendant une passe Univers déjà visible dans les logs :
+CLI et daemon ne partagent pas le single-flight.
+
+`--no-macro` relance seulement l'agent. Si le brief n'est pas celui de la liste
+actuelle, le run reste `waiting_brief` : on ne compose pas une hotlist avec un
+brief écrit pour une autre liste.
+
+La posture globale reste gouvernée par le runner Univers (fenêtre pré-open et
+cooldown). Un changement de digest seul ne la rappelle pas tant qu'une venue
+pré-open attend encore son brief du bon pack.
 
 Une activation agent réussie rend le `candidate_scope_id` exact terminal : un
 nouveau micro arrivé après cette activation reste disponible pour le prochain

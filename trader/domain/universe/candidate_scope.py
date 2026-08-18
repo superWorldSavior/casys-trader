@@ -100,11 +100,14 @@ def merge_news_challengers(
     still-valid challenger retained from the prior scope.  Otherwise only the
     ``source_refs`` churn, but it still produces a new candidate scope and an
     unnecessary macro-analysis run.
+
+    Equal ``latest_published_at`` (or both timestamps unknown) keeps
+    ``retained``.  ``current`` replaces only when it is strictly newer.
     """
 
     merged: list[dict[str, Any]] = []
     index_by_symbol: dict[str, int] = {}
-    for challenger in [*current, *retained]:
+    for challenger in [*retained, *current]:
         if not isinstance(challenger, dict):
             continue
         symbol = str(challenger.get("symbol") or "").strip()

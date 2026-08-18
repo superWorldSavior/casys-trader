@@ -76,18 +76,24 @@ export function ReportsPage() {
             </p>
           ) : null}
           {detail.data?.error ? <p className="text-sm text-loss">Report not found.</p> : null}
-          <Block
-            title="Posture"
-            value={pick(payload, ["posture", "stance", "regime", "gross_mode", "net_bias"])}
-          />
-          <List
-            title="Points"
-            values={listish(payload, ["points", "key_points", "bullets", "takeaways", "family_priority", "venue_posture"])}
-          />
-          <Block
-            title="Brief"
-            value={pick(payload, ["brief", "summary", "thesis", "narrative", "text", "rationale"])}
-          />
+          {detail.data?.kind === "regional" ? (
+            <RegionalDetail payload={payload} />
+          ) : (
+            <>
+              <Block
+                title="Posture"
+                value={pick(payload, ["posture", "stance", "regime", "gross_mode", "net_bias"])}
+              />
+              <List
+                title="Points"
+                values={listish(payload, ["points", "key_points", "bullets", "takeaways", "family_priority", "venue_posture"])}
+              />
+              <Block
+                title="Brief"
+                value={pick(payload, ["brief", "summary", "thesis", "narrative", "text", "rationale"])}
+              />
+            </>
+          )}
           <details className="rounded-md border border-hairline px-3 py-2">
             <summary className="cursor-pointer font-mono text-[10px] uppercase tracking-[0.16em] text-faint">
               Raw payload
@@ -99,6 +105,54 @@ export function ReportsPage() {
         </CardBody>
       </Card>
     </div>
+  );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function RegionalDetail({ payload }: { payload: Record<string, unknown> }) {
+  const waiting =
+    isRecord(payload.latest_waiting) && payload.latest_waiting.status === "waiting_brief"
+      ? payload.latest_waiting
+      : payload.status === "waiting_brief"
+        ? payload
+        : null;
+  const status = String(waiting?.status ?? payload.status ?? "");
+  const errorCode = String(waiting?.error_code ?? payload.error_code ?? "");
+  const summary = typeof payload.summary === "string" ? payload.summary : null;
+  const previous = Boolean(waiting && payload.status === "success");
+  const postures = isRecord(payload.family_postures) ? payload.family_postures : {};
+  const hotlist = Array.isArray(payload.selected_hotlist)
+    ? payload.selected_hotlist.map((item) => String(item))
+    : [];
+
+  return (
+    <>
+      <div className="flex flex-wrap items-center gap-2">
+        {status ? <Badge>{status}</Badge> : null}
+        {errorCode ? <span className="font-mono text-[10px] text-faint">{errorCode}</span> : null}
+      </div>
+      {waiting ? (
+        <div className="rounded-lg border border-hairline bg-panel/55 px-3 py-2 text-xs text-muted">
+          {previous
+            ? "Current pre-open waiting · last success kept."
+            : "Current pre-open waiting · not an empty report."}
+        </div>
+      ) : null}
+      {previous ? (
+        <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-faint">Previous generation</p>
+      ) : null}
+      <Block title="Summary" value={summary} />
+      <List
+        title="Family postures"
+        values={Object.entries(postures).map(([name, value]) =>
+          typeof value === "string" ? `${name}: ${value}` : `${name}: ${JSON.stringify(value)}`,
+        )}
+      />
+      <List title="Hotlist" values={hotlist} />
+    </>
   );
 }
 

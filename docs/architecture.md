@@ -169,7 +169,7 @@ les utilisaient :
 | `trader/reporting/read_models/tool_usage.py` | Projection ex-post des traces d'outils et de leur qualité forward depuis le ledger décision | `reporting.tool_usage` rend le rapport ; `interfaces.cli.tool_usage` possède la CLI |
 | `trader/reporting/renderers/` | Rendus opérateur des projections reporting (`live_kpis`, `tool_usage`) | `reporting.stats` et `reporting.tool_usage` restent les façades historiques ; les CLI importent projection + renderer canoniques |
 | `trader/interfaces/cockpit/projections/` | Projections UI pures et tolérantes, sans Rich/Textual, consommées par les pages cockpit | la page univers réexporte temporairement sa projection historique et ne recalcule plus les lignes dans le renderer DataTable |
-| `trader/interfaces/cockpit/projections/reports.py` | Galerie read-only des rapports global, macro, régional et micro | conserve le dernier succès visible et projette séparément `latest_failure`/retry |
+| `trader/interfaces/cockpit/projections/reports.py` | Galerie read-only des rapports global, macro, régional et micro | conserve le dernier succès visible et projette séparément `latest_failure`/retry **ou** `latest_waiting` |
 | `trader/interfaces/cockpit/projections/decisions.py` | Projection du ledger cockpit : filtres/comptages/groupement et cellules sémantiques prêtes au rendu | la page décisions garde Rich/Textual et réexporte ses helpers historiques ; les filtres canoniques publics vivent dans `reporting/read_models/decision_filters.py` |
 | `trader/interfaces/cockpit/projections/portfolio.py` | Projection typée des positions, stops et agrégats gross/net/P&L du cockpit | la page portfolio ne refait plus les calculs dans le widget et réexporte les helpers historiques |
 | `trader/interfaces/cockpit/projections/plans.py` | Projections typées du playbook : exit plans ordonnés, ordres armés, watches actives et exit watches | les rendus complet/compact et leurs compteurs partagent les mêmes projections ; la page réexporte les helpers historiques |
@@ -875,10 +875,11 @@ Quatre niveaux de rapports restent séparés par leur autorité et leur cadence 
   activation ; après activation réussie du scope, aucun refresh automatique.
 
 Un échec ne remplace jamais le dernier rapport utilisable : les projections
-gardent le succès et exposent `latest_failure` séparément. Les échecs retryables
-ajoutent `next_retry_at` ; les invalidités ou états terminaux restent visibles
-sans échéance. La galerie Reports est un lecteur tolérant de ces artefacts, pas
-un orchestrateur.
+gardent le succès et exposent `latest_failure` séparément. Une attente de brief
+régional (`waiting_brief`) s'expose sous `latest_waiting`, sans backoff d'échec.
+Les échecs retryables ajoutent `next_retry_at` ; les invalidités ou états
+terminaux restent visibles sans échéance. La galerie Reports est un lecteur
+tolérant de ces artefacts, pas un orchestrateur.
 
 La couverture reste déclarée partielle : news symboles limitées au corpus local,
 GDELT non exhaustif, calendrier local/fallback et séries potentiellement stales.

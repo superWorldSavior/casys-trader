@@ -180,6 +180,31 @@ def test_collect_regional_keeps_success_payload_when_latest_attempt_failed(tmp_p
     assert items[0].payload["latest_failure"]["error_code"] == "TimeoutError"
 
 
+def test_collect_regional_exposes_latest_waiting_overlay(tmp_path: Path) -> None:
+    waiting = {
+        "status": "waiting_brief",
+        "error_code": "brief_scope_mismatch",
+        "candidate_scope_id": "scope-today",
+        "as_of": "2026-07-17T12:07:00+00:00",
+    }
+    _write_json(
+        tmp_path / "universe_runs" / "latest-US.json",
+        {
+            **_regional_payload("2026-07-17T05:30:00+00:00"),
+            "status": "success",
+            "candidate_scope_id": "scope-yesterday",
+            "latest_waiting": waiting,
+        },
+    )
+
+    items = collect_report_items(tmp_path)
+
+    assert len(items) == 1
+    assert items[0].payload["summary"] == "rotation into semis"
+    assert items[0].payload["latest_waiting"]["error_code"] == "brief_scope_mismatch"
+    assert items[0].payload["latest_waiting"]["candidate_scope_id"] == "scope-today"
+
+
 # ---------------------------------------------------------------------------
 # Collecte — global
 # ---------------------------------------------------------------------------
