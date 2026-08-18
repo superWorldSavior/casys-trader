@@ -85,6 +85,9 @@ class SituationPoint:
     signal: SignalStrength = "weak"
     horizon: str | None = None
     direction: Direction | None = None
+    # Marks operational/infrastructure noise (pipeline stalls, data gaps…).
+    # Filtered out by read-models before display; never a default True.
+    is_operational: bool = False
 
     @classmethod
     def from_mapping(cls, item: Mapping[str, Any]) -> "SituationPoint | None":
@@ -102,6 +105,9 @@ class SituationPoint:
         if direction not in _VALID_DIRECTIONS:
             direction = None
         sources, source_refs = _clean_sources(item)
+        # Strict bool: only Python True, "true", or "True" map to True.
+        raw_op = item.get("is_operational")
+        is_operational = raw_op is True or raw_op in ("true", "True")
         return cls(
             point=point,
             sources=sources,
@@ -111,6 +117,7 @@ class SituationPoint:
             signal=signal,  # type: ignore[arg-type]
             horizon=horizon,
             direction=direction,  # type: ignore[arg-type]
+            is_operational=is_operational,
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -126,6 +133,9 @@ class SituationPoint:
             payload["horizon"] = self.horizon
         if self.direction:
             payload["direction"] = self.direction
+        # is_operational only emitted when True — keeps historical payloads compact.
+        if self.is_operational:
+            payload["is_operational"] = True
         return payload
 
 

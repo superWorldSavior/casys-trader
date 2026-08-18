@@ -67,3 +67,58 @@ def test_news_macro_brief_normalise_sections_et_alerts() -> None:
 
 def test_news_macro_brief_requires_dates() -> None:
     assert NewsMacroBrief.from_mapping({"zones": {"US": [{"point": "x"}]}}) is None
+
+
+# ---------------------------------------------------------------------------
+# SituationPoint.is_operational — roundtrip from_mapping / to_dict
+# ---------------------------------------------------------------------------
+
+
+def test_situation_point_is_operational_true_bool() -> None:
+    """Python True → is_operational=True, sérialisé dans to_dict."""
+    point = SituationPoint.from_mapping({"point": "pipeline stall", "is_operational": True})
+    assert point is not None
+    assert point.is_operational is True
+    d = point.to_dict()
+    assert d["is_operational"] is True
+
+
+def test_situation_point_is_operational_true_string() -> None:
+    """String 'True' → is_operational=True (variante JSON)."""
+    point = SituationPoint.from_mapping({"point": "stall 2", "is_operational": "True"})
+    assert point is not None
+    assert point.is_operational is True
+    assert point.to_dict()["is_operational"] is True
+
+
+def test_situation_point_is_operational_true_lowercase_string() -> None:
+    """String 'true' → is_operational=True (variante JSON lowercase)."""
+    point = SituationPoint.from_mapping({"point": "stall 3", "is_operational": "true"})
+    assert point is not None
+    assert point.is_operational is True
+    assert point.to_dict()["is_operational"] is True
+
+
+def test_situation_point_is_operational_absent_not_serialized() -> None:
+    """Champ absent → is_operational=False, non sérialisé (rétro-compat payloads historiques)."""
+    point = SituationPoint.from_mapping({"point": "normal point"})
+    assert point is not None
+    assert point.is_operational is False
+    assert "is_operational" not in point.to_dict()
+
+
+def test_situation_point_is_operational_false_not_serialized() -> None:
+    """is_operational=False → non sérialisé."""
+    point = SituationPoint.from_mapping({"point": "normal 2", "is_operational": False})
+    assert point is not None
+    assert point.is_operational is False
+    assert "is_operational" not in point.to_dict()
+
+
+def test_situation_point_is_operational_other_values_false() -> None:
+    """Valeurs non-booléennes (1, 'yes', 'false') → False (strict bool)."""
+    for val in (1, "yes", "false", "FALSE", 0, None, "1"):
+        point = SituationPoint.from_mapping({"point": "x", "is_operational": val})
+        assert point is not None, f"from_mapping returned None pour val={val!r}"
+        assert point.is_operational is False, f"attendu False pour val={val!r}"
+        assert "is_operational" not in point.to_dict(), f"ne doit pas être sérialisé pour val={val!r}"

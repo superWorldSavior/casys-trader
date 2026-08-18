@@ -7,7 +7,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from trader.agent.protocol.json_utils import extract_json_object
-from trader.agent.protocol.prompts import DATA_BOUNDARY_ANALYST
+from trader.agent.protocol.prompts import DATA_BOUNDARY_ANALYST_EN
 from trader.application.universe import UniverseAgentDecision, UniverseCompositionRequest
 
 
@@ -61,7 +61,14 @@ def build_universe_prompt(
         "pas un modèle à copier), puis éventuellement les familles/rôles et tes "
         "appels directionnels sont-ils bons. C'est un contexte comparatif, "
         "jamais une hotlist, un quota, ni un ordre d'ajouter/retirer un symbole.\n"
-        f"{DATA_BOUNDARY_ANALYST}"
+        f"{DATA_BOUNDARY_ANALYST_EN}"
+        "Write all free-text output in English: complete sentences, readable by a retail investor. "
+        "Internal slugs (e.g. eu_healthcare, tw_ic_design) are valid as JSON keys but must not "
+        "appear in free-text prose. No raw scores, no desk jargon. "
+        "summary: 1–3 sentences on the overall selection logic. "
+        "symbol_rationales: 1 concrete sentence per symbol — name the specific setup or catalyst. "
+        "family_postures: 1 sentence per family on the directional stance. "
+        "symbol_mandates why_selected, role, and posture: plain English, no slugs in prose.\n"
         f"{company_index_guidance}"
         f"{tool_block}"
         f"{final_contract_intro}"

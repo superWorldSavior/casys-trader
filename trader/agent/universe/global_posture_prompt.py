@@ -13,7 +13,7 @@ from collections.abc import Iterable
 from typing import Any
 
 from trader.agent.protocol.json_utils import extract_json_object
-from trader.agent.protocol.prompts import DATA_BOUNDARY_ANALYST
+from trader.agent.protocol.prompts import DATA_BOUNDARY_ANALYST_EN
 from trader.domain.universe.global_posture import GlobalUniversePosture
 
 
@@ -41,7 +41,7 @@ def build_global_posture_prompt(
         "global et des engagements actuels (sticky).\n"
         "Cette posture est un CADRE advisory pour les passes régionales qui choisiront ensuite "
         "leurs symboles — jamais un quota de places, une allocation de capital, ni un ordre.\n"
-        f"{DATA_BOUNDARY_ANALYST}"
+        f"{DATA_BOUNDARY_ANALYST_EN}"
         "Retourne uniquement un objet JSON valide avec ce schéma:\n"
         '{"venue_posture":{"TW":"favor|selective|watch|avoid","EU":"...","US":"..."},'
         '"family_priority":{"favored":["famille"],"deprioritized":["famille"]},'
@@ -51,6 +51,14 @@ def build_global_posture_prompt(
         "privilégier ou déprioriser cross-région (bornées, celles du board). gross_mode et "
         "net_bias = ton inclinaison d'exposition globale (advisory). rationale = 1 à 3 phrases "
         "justifiant les arbitrages à partir des faits fournis; n'invente aucune donnée absente.\n"
+        "Write rationale in English: 1–3 complete sentences, grounded in the facts provided. "
+        "Name the venue or theme in plain words. Internal slugs (e.g. eu_healthcare, tw_ic_design) "
+        "are valid as JSON keys and in the structured fields (gross_mode, net_bias, venue_posture) "
+        "but must not appear in the rationale prose. "
+        "One concrete number is allowed when it carries the key information (e.g. 'up 2.4 pp'). "
+        "No desk jargon in the rationale prose (gross/net/risk_off only as plain words). "
+        "State the actual tension or opportunity — avoid filler phrases like "
+        "'mixed signals' or 'cautious stance warranted'.\n"
         "JSON d'entrée borné:\n"
         f"{json.dumps(payload, ensure_ascii=False, sort_keys=True)}"
     )
