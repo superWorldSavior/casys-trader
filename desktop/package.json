@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "vite --open",
     "build": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri"
@@ -20,8 +20,11 @@
     "@tanstack/react-table": "^9.1.2",
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-opener": "^2",
+    "@types/d3-geo": "^3.1.1",
+    "@types/topojson-client": "^3.1.5",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
+    "d3-geo": "^3.1.1",
     "date-fns": "^4.4.0",
     "lightweight-charts": "^5.2.1",
     "lucide-react": "^1.31.0",
@@ -29,7 +32,9 @@
     "react-dom": "^19.1.0",
     "recharts": "^3.10.1",
     "sonner": "^2.0.8",
-    "tailwind-merge": "^3.6.0"
+    "tailwind-merge": "^3.6.0",
+    "topojson-client": "^3.1.0",
+    "world-atlas": "^2.0.2"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.3.3",

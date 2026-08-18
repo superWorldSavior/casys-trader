@@ -40,21 +40,38 @@ export function ActivityChart({ report, recent }: Props) {
   }));
 
   return (
-    <ResponsiveContainer width="100%" height="100%">
+    <ResponsiveContainer width="100%" height="100%" minHeight={160}>
       <BarChart data={data} barCategoryGap={2}>
-        <CartesianGrid stroke="#26211b" vertical={false} />
-        <XAxis dataKey="label" tick={{ fill: "#6b6157", fontSize: 10, fontFamily: "IBM Plex Mono" }} interval={3} axisLine={false} tickLine={false} />
-        <YAxis allowDecimals={false} width={24} tick={{ fill: "#6b6157", fontSize: 10, fontFamily: "IBM Plex Mono" }} axisLine={false} tickLine={false} />
-        <Tooltip
-          cursor={{ fill: "#211e19" }}
-          contentStyle={{ background: "#1a1815", border: "1px solid #332c23", borderRadius: 8, fontSize: 12 }}
-          labelStyle={{ color: "#d5c3b5" }}
+        <CartesianGrid stroke="var(--color-hairline)" vertical={false} />
+        <XAxis
+          dataKey="label"
+          tick={{ fill: "var(--color-dim)", fontSize: 10, fontFamily: "IBM Plex Mono" }}
+          interval={3}
+          axisLine={false}
+          tickLine={false}
         />
-        <Bar dataKey="exec" stackId="a" fill="#a5c98c" />
-        <Bar dataKey="risk" stackId="a" fill="#e87f66" />
-        <Bar dataKey="stale" stackId="a" fill="#e5c07b" />
-        <Bar dataKey="quiet" stackId="a" fill="#6b6157" />
-        <Bar dataKey="hold" stackId="a" fill="#8d8177" radius={[2, 2, 0, 0]} />
+        <YAxis
+          allowDecimals={false}
+          width={24}
+          tick={{ fill: "var(--color-dim)", fontSize: 10, fontFamily: "IBM Plex Mono" }}
+          axisLine={false}
+          tickLine={false}
+        />
+        <Tooltip
+          cursor={{ fill: "var(--color-panel-hover)" }}
+          contentStyle={{
+            background: "var(--color-panel)",
+            border: "1px solid var(--color-line)",
+            borderRadius: 8,
+            fontSize: 12,
+          }}
+          labelStyle={{ color: "var(--color-muted)" }}
+        />
+        <Bar dataKey="exec" stackId="a" fill="var(--color-gain)" />
+        <Bar dataKey="risk" stackId="a" fill="var(--color-loss)" />
+        <Bar dataKey="stale" stackId="a" fill="var(--color-warn)" />
+        <Bar dataKey="quiet" stackId="a" fill="var(--color-faint)" />
+        <Bar dataKey="hold" stackId="a" fill="var(--color-dim)" radius={[2, 2, 0, 0]} />
       </BarChart>
     </ResponsiveContainer>
   );

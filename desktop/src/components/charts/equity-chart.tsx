@@ -1,85 +1,81 @@
-import { ColorType, createChart, AreaSeries, type IChartApi, type ISeriesApi, type UTCTimestamp } from "lightweight-charts";
-import { useEffect, useRef } from "react";
+import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import { formatDayTime } from "@/lib/format";
 import type { EquityPoint } from "@/lib/types";
-import { parseTs } from "@/lib/format";
+import { cn } from "@/lib/utils";
 
 type Props = {
   points: EquityPoint[];
   className?: string;
+  minHeight?: number;
 };
 
-export function EquityChart({ points, className }: Props) {
-  const hostRef = useRef<HTMLDivElement>(null);
-  const chartRef = useRef<IChartApi | null>(null);
-  const seriesRef = useRef<ISeriesApi<"Area"> | null>(null);
+export function EquityChart({ points, className, minHeight = 240 }: Props) {
+  if (!points.length) {
+    return <p className="px-2 py-8 text-center text-sm text-faint">No equity history yet</p>;
+  }
 
-  useEffect(() => {
-    const host = hostRef.current;
-    if (!host) return;
+  const values = points.map((point) => point.equity).filter((value) => Number.isFinite(value) && value > 0);
+  if (!values.length) {
+    return <p className="px-2 py-8 text-center text-sm text-faint">No equity history yet</p>;
+  }
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const pad = Math.max((max - min) * 0.08, 1);
 
-    const chart = createChart(host, {
-      autoSize: true,
-      layout: {
-        background: { type: ColorType.Solid, color: "transparent" },
-        textColor: "#8d8177",
-        fontFamily: "IBM Plex Mono, ui-monospace, monospace",
-        fontSize: 11,
-        attributionLogo: false,
-      },
-      grid: {
-        vertLines: { color: "#26211b" },
-        horzLines: { color: "#26211b" },
-      },
-      rightPriceScale: {
-        borderColor: "#332c23",
-        scaleMargins: { top: 0.12, bottom: 0.08 },
-      },
-      timeScale: {
-        borderColor: "#332c23",
-        timeVisible: true,
-        secondsVisible: false,
-      },
-      crosshair: {
-        vertLine: { color: "#ffb86f55", labelBackgroundColor: "#1a1815" },
-        horzLine: { color: "#ffb86f55", labelBackgroundColor: "#1a1815" },
-      },
-    });
-
-    const series = chart.addSeries(AreaSeries, {
-      lineColor: "#ffb86f",
-      topColor: "rgba(255, 184, 111, 0.28)",
-      bottomColor: "rgba(255, 184, 111, 0.02)",
-      lineWidth: 2,
-      priceLineVisible: false,
-    });
-
-    chartRef.current = chart;
-    seriesRef.current = series;
-    return () => {
-      chart.remove();
-      chartRef.current = null;
-      seriesRef.current = null;
-    };
-  }, []);
-
-  useEffect(() => {
-    const series = seriesRef.current;
-    const chart = chartRef.current;
-    if (!series || !chart) return;
-
-    const data = [];
-    let lastTime = 0;
-    for (const point of points) {
-      const date = parseTs(point.ts);
-      if (!date) continue;
-      let time = Math.floor(date.getTime() / 1000);
-      if (time <= lastTime) time = lastTime + 1;
-      lastTime = time;
-      data.push({ time: time as UTCTimestamp, value: point.equity });
-    }
-    series.setData(data);
-    chart.timeScale().fitContent();
-  }, [points]);
-
-  return <div ref={hostRef} className={className} />;
+  return (
+    <div className={cn("h-full w-full", className)} style={{ minHeight }}>
+      <ResponsiveContainer width="100%" height="100%" minHeight={minHeight}>
+        <AreaChart data={points} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+          <defs>
+            <linearGradient id="equityFill" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor="var(--color-accent)" stopOpacity={0.24} />
+              <stop offset="100%" stopColor="var(--color-accent)" stopOpacity={0} />
+            </linearGradient>
+          </defs>
+          <CartesianGrid stroke="var(--color-hairline)" vertical={false} />
+          <XAxis
+            dataKey="ts"
+            tickFormatter={(value) => formatDayTime(String(value))}
+            tick={{ fill: "var(--color-dim)", fontSize: 10, fontFamily: "IBM Plex Mono" }}
+            minTickGap={32}
+            axisLine={false}
+            tickLine={false}
+          />
+          <YAxis
+            domain={[min - pad, max + pad]}
+            tickFormatter={(value) =>
+              Number(value).toLocaleString("en-US", { maximumFractionDigits: 0 })
+            }
+            width={64}
+            tick={{ fill: "var(--color-dim)", fontSize: 10, fontFamily: "IBM Plex Mono" }}
+            axisLine={false}
+            tickLine={false}
+          />
+          <Tooltip
+            contentStyle={{
+              background: "var(--color-panel)",
+              border: "1px solid var(--color-line)",
+              borderRadius: 8,
+              fontSize: 12,
+              color: "var(--color-fg)",
+            }}
+            labelFormatter={(label) => formatDayTime(String(label))}
+            formatter={(value) =>
+              typeof value === "number"
+                ? [value.toLocaleString("en-US", { style: "currency", currency: "USD" }), "equity"]
+                : [value, "equity"]
+            }
+          />
+          <Area
+            type="monotone"
+            dataKey="equity"
+            stroke="var(--color-accent)"
+            strokeWidth={2}
+            fill="url(#equityFill)"
+            isAnimationActive={false}
+          />
+        </AreaChart>
+      </ResponsiveContainer>
+    </div>
+  );
 }

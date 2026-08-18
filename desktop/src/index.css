@@ -1,25 +1,25 @@
 @import "tailwindcss";
 
 @theme {
-  --font-sans: "Schibsted Grotesk", "Segoe UI", sans-serif;
+  --font-sans: "IBM Plex Sans", "Segoe UI", sans-serif;
   --font-mono: "IBM Plex Mono", "ui-monospace", monospace;
 
-  --color-ink: #0f0e0c;
-  --color-ink-raised: #14110e;
-  --color-panel: #1a1815;
-  --color-panel-hover: #211e19;
-  --color-line: #332c23;
-  --color-hairline: #26211b;
-  --color-fg: #f5f0ea;
-  --color-muted: #d5c3b5;
-  --color-dim: #8d8177;
-  --color-faint: #6b6157;
-  --color-accent: #ffb86f;
-  --color-accent-dim: #c48a4a;
-  --color-gain: #a5c98c;
-  --color-loss: #e87f66;
-  --color-warn: #e5c07b;
-  --color-meter: #3a332b;
+  --color-ink: #f4f7f9;
+  --color-ink-raised: #ffffff;
+  --color-panel: #ffffff;
+  --color-panel-hover: #edf3f6;
+  --color-line: #d5e0e6;
+  --color-hairline: #e7edf1;
+  --color-fg: #172b36;
+  --color-muted: #3f5663;
+  --color-dim: #536873;
+  --color-faint: #667984;
+  --color-accent: #176887;
+  --color-accent-dim: #3e8199;
+  --color-gain: #26735a;
+  --color-loss: #b45149;
+  --color-warn: #9a6a25;
+  --color-meter: #dbe5ea;
 
   --radius-sm: 0.25rem;
   --radius-md: 0.4rem;
@@ -56,5 +56,8 @@ body {
 }
 
 .grain {
-  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.35'/%3E%3C/svg%3E");
+  background-color: var(--color-ink);
+  background-image:
+    radial-gradient(circle at 12% -15%, rgb(23 104 135 / 7%), transparent 32rem),
+    linear-gradient(to bottom, rgb(255 255 255 / 38%), transparent 18rem);
 }

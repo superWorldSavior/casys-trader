@@ -1,7 +1,17 @@
 import { Cell, Pie, PieChart, ResponsiveContainer, Tooltip } from "recharts";
 import type { Holding } from "@/lib/types";
 
-const COLORS = ["#ffb86f", "#a5c98c", "#e5c07b", "#d5c3b5", "#e87f66", "#8d8177", "#c48a4a", "#6b6157"];
+// Palette dérivée des design tokens — opacités décroissantes de l'accent + gain/loss/warn/dim
+const PALETTE = [
+  "var(--color-accent)",
+  "var(--color-gain)",
+  "var(--color-accent-dim)",
+  "var(--color-warn)",
+  "var(--color-loss)",
+  "var(--color-dim)",
+  "var(--color-muted)",
+  "var(--color-faint)",
+];
 
 type Props = {
   holdings: Holding[];
@@ -21,11 +31,19 @@ export function ExposureChart({ holdings }: Props) {
   }
 
   return (
-    <ResponsiveContainer width="100%" height="100%">
+    <ResponsiveContainer width="100%" height="100%" minHeight={160}>
       <PieChart>
-        <Pie data={data} dataKey="value" nameKey="name" innerRadius={48} outerRadius={78} paddingAngle={2} stroke="#0f0e0c">
+        <Pie
+          data={data}
+          dataKey="value"
+          nameKey="name"
+          innerRadius={48}
+          outerRadius={78}
+          paddingAngle={2}
+          stroke="var(--color-panel)"
+        >
           {data.map((entry, index) => (
-            <Cell key={entry.name} fill={COLORS[index % COLORS.length]} />
+            <Cell key={entry.name} fill={PALETTE[index % PALETTE.length]} />
           ))}
         </Pie>
         <Tooltip
@@ -34,7 +52,13 @@ export function ExposureChart({ holdings }: Props) {
               ? value.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 })
               : value
           }
-          contentStyle={{ background: "#1a1815", border: "1px solid #332c23", borderRadius: 8, fontSize: 12 }}
+          contentStyle={{
+            background: "var(--color-panel)",
+            border: "1px solid var(--color-line)",
+            borderRadius: 8,
+            fontSize: 12,
+            color: "var(--color-fg)",
+          }}
         />
       </PieChart>
     </ResponsiveContainer>

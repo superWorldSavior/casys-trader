@@ -1,6 +1,6 @@
 # casys-trader — raccourcis. Lance `make` (ou `make help`) pour la liste.
 .DEFAULT_GOAL := help
-.PHONY: help watch live once test logs live-logs dash dash-portfolio dash-decisions dash-list macro models model-preset storage-report storage-archive storage-schedule storage-unschedule desktop
+.PHONY: help watch live once test logs live-logs dash dash-portfolio dash-decisions dash-list macro models model-preset storage-report storage-archive storage-schedule storage-unschedule desktop desktop-tauri
 
 help:  ## Affiche cette aide
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -9,7 +9,10 @@ help:  ## Affiche cette aide
 watch:  ## Salle de contrôle — voir et piloter le daemon (dashboard + logs + supervision)
 	uv run python -m trader.cockpit
 
-desktop:  ## Cockpit desktop read-only (Tauri + React)
+desktop:  ## Cockpit read-only dans le navigateur (http://127.0.0.1:1420)
+	cd desktop && npm run dev
+
+desktop-tauri:  ## Même UI dans une fenêtre Tauri (optionnel, peut figer)
 	cd desktop && npm run tauri dev
 
 live:  ## Moteur en PAPER réel (exécute les ordres simulés, écrit l'état)

@@ -1,0 +1,149 @@
+import { useMemo, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { Badge } from "@/components/ui/badge";
+import { Card, CardBody, CardHeader, CardTitle } from "@/components/ui/card";
+import { useReports } from "@/hooks/use-desk-api";
+import { readReport } from "@/lib/api";
+import { formatAgo } from "@/lib/format";
+import { cn } from "@/lib/utils";
+
+const KINDS = ["global", "macro", "regional", "micro"] as const;
+
+export function ReportsPage() {
+  const list = useReports();
+  const [key, setKey] = useState<string | null>(null);
+  const items = list.data?.items ?? [];
+  const selected = key ?? items[0]?.key ?? null;
+  const detail = useQuery({
+    queryKey: ["report", selected],
+    queryFn: () => readReport(selected ?? ""),
+    enabled: Boolean(selected),
+    staleTime: 30_000,
+  });
+  const grouped = useMemo(
+    () => KINDS.map((kind) => ({ kind, items: items.filter((item) => item.kind === kind) })),
+    [items],
+  );
+  const payload = detail.data?.payload ?? {};
+
+  return (
+    <div className="grid grid-cols-[320px_1fr] gap-4">
+      <Card className="max-h-[calc(100vh-8rem)] overflow-auto">
+        <CardHeader>
+          <CardTitle>Reports</CardTitle>
+          <span className="font-mono text-[10px] text-faint">{items.length}</span>
+        </CardHeader>
+        <CardBody className="space-y-4">
+          {list.error ? (
+            <p className="text-sm text-loss">{list.error instanceof Error ? list.error.message : String(list.error)}</p>
+          ) : null}
+          {grouped.map((group) => (
+            <div key={group.kind}>
+              <p className="mb-2 font-mono text-[10px] uppercase tracking-[0.16em] text-faint">{group.kind}</p>
+              <div className="space-y-1">
+                {group.items.map((item) => (
+                  <button
+                    key={item.key}
+                    type="button"
+                    onClick={() => setKey(item.key)}
+                    className={cn(
+                      "w-full rounded-md px-2 py-1.5 text-left hover:bg-panel-hover",
+                      selected === item.key && "bg-panel-hover",
+                    )}
+                  >
+                    <p className="text-sm font-medium">{item.label}</p>
+                    <p className="font-mono text-[10px] text-faint">
+                      {item.as_of ? formatAgo(item.as_of) : "—"}
+                      {item.depth ? ` · ${item.depth}` : ""}
+                    </p>
+                  </button>
+                ))}
+                {group.items.length === 0 ? <p className="text-xs text-faint">None</p> : null}
+              </div>
+            </div>
+          ))}
+        </CardBody>
+      </Card>
+      <Card className="min-h-[480px]">
+        <CardHeader>
+          <CardTitle>{detail.data?.label || "Report"}</CardTitle>
+          {detail.data?.kind ? <Badge>{detail.data.kind}</Badge> : null}
+        </CardHeader>
+        <CardBody className="space-y-4">
+          {detail.error ? (
+            <p className="text-sm text-loss">
+              {detail.error instanceof Error ? detail.error.message : String(detail.error)}
+            </p>
+          ) : null}
+          {detail.data?.error ? <p className="text-sm text-loss">Report not found.</p> : null}
+          <Block
+            title="Posture"
+            value={pick(payload, ["posture", "stance", "regime", "gross_mode", "net_bias"])}
+          />
+          <List
+            title="Points"
+            values={listish(payload, ["points", "key_points", "bullets", "takeaways", "family_priority", "venue_posture"])}
+          />
+          <Block
+            title="Brief"
+            value={pick(payload, ["brief", "summary", "thesis", "narrative", "text", "rationale"])}
+          />
+          <details className="rounded-md border border-hairline px-3 py-2">
+            <summary className="cursor-pointer font-mono text-[10px] uppercase tracking-[0.16em] text-faint">
+              Raw payload
+            </summary>
+            <pre className="mt-2 max-h-[360px] overflow-auto text-xs text-dim">
+              {JSON.stringify(payload, null, 2)}
+            </pre>
+          </details>
+        </CardBody>
+      </Card>
+    </div>
+  );
+}
+
+function pick(payload: Record<string, unknown>, keys: string[]): string | null {
+  for (const key of keys) {
+    const value = payload[key];
+    if (typeof value === "string" && value.trim()) return value;
+  }
+  return null;
+}
+
+function listish(payload: Record<string, unknown>, keys: string[]): string[] {
+  for (const key of keys) {
+    const value = payload[key];
+    if (Array.isArray(value)) {
+      return value.map((item) => (typeof item === "string" ? item : JSON.stringify(item))).filter(Boolean);
+    }
+    if (value && typeof value === "object") {
+      return Object.entries(value as Record<string, unknown>).map(([name, item]) =>
+        typeof item === "string" ? `${name}: ${item}` : `${name}: ${JSON.stringify(item)}`,
+      );
+    }
+  }
+  return [];
+}
+
+function Block({ title, value }: { title: string; value: string | null }) {
+  return (
+    <section>
+      <p className="mb-1 font-mono text-[10px] uppercase tracking-[0.16em] text-faint">{title}</p>
+      <p className="text-sm leading-relaxed text-muted">{value || "—"}</p>
+    </section>
+  );
+}
+
+function List({ title, values }: { title: string; values: string[] }) {
+  return (
+    <section>
+      <p className="mb-1 font-mono text-[10px] uppercase tracking-[0.16em] text-faint">{title}</p>
+      {values.length === 0 ? <p className="text-sm text-faint">—</p> : null}
+      <ul className="list-disc space-y-1 pl-5 text-sm text-muted">
+        {values.map((item) => (
+          <li key={item}>{item}</li>
+        ))}
+      </ul>
+    </section>
+  );
+}

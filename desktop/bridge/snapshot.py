@@ -7,6 +7,7 @@ Never writes. Never talks to the broker.
 from __future__ import annotations
 
 import json
+import math
 import os
 import sys
 from datetime import datetime, timezone
@@ -68,6 +69,19 @@ def _json_default(value: Any) -> Any:
     if isinstance(value, set):
         return sorted(value)
     return str(value)
+
+
+def _jsonable(value: Any) -> Any:
+    """JS JSON.parse rejects NaN/Infinity that Python json.dump emits by default."""
+    if isinstance(value, float) and (math.isnan(value) or math.isinf(value)):
+        return None
+    if isinstance(value, dict):
+        return {str(key): _jsonable(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_jsonable(item) for item in value]
+    if isinstance(value, tuple):
+        return [_jsonable(item) for item in value]
+    return value
 
 
 def _as_dict(value: Any) -> dict[str, Any]:
@@ -139,6 +153,8 @@ def _equity_series(state_dir: Path, *, max_points: int = 480) -> list[dict[str, 
         try:
             equity = float(row["equity"])
         except (TypeError, ValueError):
+            continue
+        if not math.isfinite(equity) or equity <= 0:
             continue
         points.append(
             {
@@ -219,11 +235,18 @@ def build_snapshot() -> dict[str, Any]:
         "attribution": {
             "recent_trips": _as_list(_as_dict(raw.get("attribution")).get("recent_trips"))[:12]
         },
+        "kill_active": (REPO_ROOT / "KILL").exists(),
     }
 
 
 def main() -> None:
-    json.dump(build_snapshot(), sys.stdout, default=_json_default, ensure_ascii=True)
+    json.dump(
+        _jsonable(build_snapshot()),
+        sys.stdout,
+        default=_json_default,
+        ensure_ascii=True,
+        allow_nan=False,
+    )
     sys.stdout.write("\n")
 
 
