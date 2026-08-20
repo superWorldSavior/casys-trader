@@ -75,7 +75,22 @@ def test_compute_live_kpis_retourne_toutes_les_cles_attendues(tmp_path: Path) ->
 
     kpis = compute_live_kpis(state_dir)
 
-    cles_attendues = {"equity", "cash", "total_return", "max_drawdown", "period_win_rate", "volatility", "sharpe", "num_trades", "n_positions", "positions", "model_performance"}
+    cles_attendues = {
+        "equity",
+        "cash",
+        "total_return",
+        "max_drawdown",
+        "period_win_rate",
+        "volatility",
+        "sharpe",
+        "num_trades",
+        "num_closed_position_cycles",
+        "num_fills",
+        "trade_count_grain",
+        "n_positions",
+        "positions",
+        "model_performance",
+    }
     assert set(kpis.keys()) == cles_attendues
 
 
@@ -126,8 +141,8 @@ def test_compute_live_kpis_positions_filtrees(tmp_path: Path) -> None:
     assert kpis["positions"][0]["symbol"] == "AAPL"
 
 
-def test_compute_live_kpis_num_trades_depuis_fills(tmp_path: Path) -> None:
-    """num_trades = nombre de fills dans broker.json."""
+def test_compute_live_kpis_distingue_cycles_clotures_et_fills(tmp_path: Path) -> None:
+    """Le headline compte les cycles; le diagnostic conserve les fills broker."""
     state_dir = _setup_state(
         tmp_path,
         history_rows=[
@@ -147,7 +162,10 @@ def test_compute_live_kpis_num_trades_depuis_fills(tmp_path: Path) -> None:
 
     kpis = compute_live_kpis(state_dir)
 
-    assert kpis["num_trades"] == 3
+    assert kpis["num_trades"] == 0
+    assert kpis["num_closed_position_cycles"] == 0
+    assert kpis["num_fills"] == 3
+    assert kpis["trade_count_grain"] == "flat_to_flat_position_cycle"
 
 
 def test_compute_live_kpis_agrege_la_perf_par_modele(tmp_path: Path) -> None:

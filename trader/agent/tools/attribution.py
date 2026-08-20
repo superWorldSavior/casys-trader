@@ -17,7 +17,11 @@ _ATTRIBUTION_SCOPES = {
     "symbol",
 }
 _SUMMARY_KEYS = (
+    "summary_grain",
+    "mechanism_grain",
     "n_closed_trades",
+    "n_closed_position_cycles",
+    "n_exit_legs",
     "realized_pnl",
     "realized_gross_pnl",
     "total_commissions",

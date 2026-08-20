@@ -41,6 +41,7 @@ class QuietGate(Protocol):
         held_symbols: set[str],
         runtime_data_source_by_sym: Mapping[str, object],
         last_wake_reasons: Mapping[tuple[str, str], Sequence[str]] | None = None,
+        last_wake_fingerprints: Mapping[tuple[str, str], Mapping[str, str]] | None = None,
     ) -> infra_holds.QuietGateResult: ...
 
 
@@ -68,6 +69,7 @@ class DecisionScopeRequest:
     daily_interval: str
     reference_volatility_for_symbol: armed_plans.ReferenceVolatilityProvider
     last_wake_reasons: Mapping[tuple[str, str], Sequence[str]] | None = None
+    last_wake_fingerprints: Mapping[tuple[str, str], Mapping[str, str]] | None = None
     trade_plan_evaluator_provider: Callable[[str], object | None] | None = None
 
 
@@ -133,6 +135,7 @@ def prepare_decision_scope(
         state_key=request.state_key,
         last_llm_at=request.last_llm_at,
         last_wake_reasons=request.last_wake_reasons,
+        last_wake_fingerprints=request.last_wake_fingerprints,
         cockpit=request.cockpit,
         regime_families=request.regime_families,
         active_families=request.active_families,

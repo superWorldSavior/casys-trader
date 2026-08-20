@@ -25,6 +25,7 @@ class QuietGateResult:
     entries: list[dict]
     reasons: dict[str, str]
     persistent_reasons: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    persistent_fingerprints: dict[str, dict[str, str]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -55,6 +56,7 @@ def quiet_gate_decisions(
     held_symbols: set[str],
     runtime_data_source_by_sym: Mapping[str, object],
     last_wake_reasons: Mapping[tuple[str, str], Sequence[str]] | None = None,
+    last_wake_fingerprints: Mapping[tuple[str, str], Mapping[str, str]] | None = None,
 ) -> QuietGateResult:
     """Split decidable symbols into LLM-needed and quiet infra-HOLD entries."""
     activity = relevance_gate.cockpit_activity(cockpit)
@@ -62,18 +64,38 @@ def quiet_gate_decisions(
     family_of = {member: family for family, members in active_families.items() for member in members}
     agent_wakes = wake_source.symbols_with_wake() if wake_source is not None else set()
     wake_reasons = last_wake_reasons or {}
+    wake_fingerprints = last_wake_fingerprints or {}
 
     gated_symbols: list[str] = []
     kept_symbols: list[str] = []
     entries: list[dict] = []
     reasons: dict[str, str] = {}
     persistent_reasons: dict[str, tuple[str, ...]] = {}
+    persistent_fingerprints: dict[str, dict[str, str]] = {}
     for symbol in symbols:
         key = (state_key, symbol)
         last_seen = last_llm_at.get(key)
         hours = None if last_seen is None else (now - last_seen).total_seconds() / 3600.0
         activity_for_symbol = activity.get(symbol) or {}
-        family_regime_strong = family_of.get(symbol) in strong_families
+        family = family_of.get(symbol)
+        family_regime_strong = family in strong_families
+        family_bias = regime_families.get(family) if family is not None else None
+        regime_direction = (
+            str(family_bias.get("dir") or "").strip().lower()
+            if isinstance(family_bias, Mapping)
+            else ""
+        )
+        family_regime_fingerprint = (
+            f"regime:{family}:{regime_direction}"
+            if family_regime_strong and regime_direction in {"up", "down"}
+            else None
+        )
+        current_fingerprints = relevance_gate.persistent_wake_fingerprints(
+            family_regime_fingerprint=family_regime_fingerprint,
+            stretched=activity_for_symbol.get("stretched"),
+            aligned=activity_for_symbol.get("aligned"),
+            sig=activity_for_symbol.get("sig"),
+        )
         needed, gate_reason = relevance_gate.symbol_needs_llm(
             agent_requested_wake=symbol in agent_wakes,
             has_trigger=bool(triggers_by_symbol.get(symbol)),
@@ -84,6 +106,8 @@ def quiet_gate_decisions(
             sig=activity_for_symbol.get("sig"),
             hours_since_last_llm=hours,
             last_wake_reasons=wake_reasons.get(key),
+            family_regime_fingerprint=family_regime_fingerprint,
+            last_wake_fingerprints=wake_fingerprints.get(key),
         )
         if needed:
             kept_symbols.append(symbol)
@@ -94,6 +118,7 @@ def quiet_gate_decisions(
                 aligned=activity_for_symbol.get("aligned"),
                 sig=activity_for_symbol.get("sig"),
             )
+            persistent_fingerprints[symbol] = current_fingerprints
             continue
 
         gated_symbols.append(symbol)
@@ -109,6 +134,11 @@ def quiet_gate_decisions(
                 "trade_plan_created": False,
                 "executed": False,
                 "reason": "quiet_gate",
+                **(
+                    {"relevance_gate_reason": gate_reason}
+                    if gate_reason != "quiet"
+                    else {}
+                ),
                 "decision_reason_code": "NO_EDGE",
                 "decision_source": "infra",
                 "model_called": False,
@@ -122,6 +152,7 @@ def quiet_gate_decisions(
         entries=entries,
         reasons=reasons,
         persistent_reasons=persistent_reasons,
+        persistent_fingerprints=persistent_fingerprints,
     )
 
 

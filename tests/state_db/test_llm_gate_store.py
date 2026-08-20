@@ -26,7 +26,13 @@ def _store(tmp_path: Path) -> LlmGateStore:
     return LlmGateStore(db)
 
 
-def _quiet_gate(last_llm_at, *, state_key: str, now: datetime = NOW):
+def _quiet_gate(
+    last_llm_at,
+    *,
+    state_key: str,
+    now: datetime = NOW,
+    held_symbols: set[str] | None = None,
+):
     return quiet_gate_decisions(
         symbols=["SPY", "QQQ"],
         now=now,
@@ -40,7 +46,7 @@ def _quiet_gate(last_llm_at, *, state_key: str, now: datetime = NOW):
         active_families={},
         wake_source=_WakeSource(),
         triggers_by_symbol={},
-        held_symbols=set(),
+        held_symbols=held_symbols or set(),
         runtime_data_source_by_sym={},
     )
 
@@ -86,3 +92,27 @@ def test_restart_does_not_treat_persisted_symbols_as_never_seen(tmp_path: Path) 
     cold_start = _quiet_gate(CycleProcessState().last_llm_at, state_key=state_dir)
     assert cold_start.kept_symbols == ["SPY", "QQQ"]
     assert cold_start.reasons == {"SPY": "periodic_review", "QQQ": "periodic_review"}
+
+
+def test_persisted_review_debounces_open_position_across_restart(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    state_dir = str(tmp_path / "state")
+    store.record(state_dir, "SPY", NOW - timedelta(hours=1))
+
+    restarted = CycleProcessState(last_llm_at=store.load_all())
+    recent = _quiet_gate(
+        restarted.last_llm_at,
+        state_key=state_dir,
+        held_symbols={"SPY"},
+    )
+    due = _quiet_gate(
+        restarted.last_llm_at,
+        state_key=state_dir,
+        now=NOW + timedelta(hours=1),
+        held_symbols={"SPY"},
+    )
+
+    assert recent.gated_symbols == ["SPY"]
+    assert recent.entries[0]["model_called"] is False
+    assert due.kept_symbols == ["SPY", "QQQ"]
+    assert due.reasons["SPY"] == "position"

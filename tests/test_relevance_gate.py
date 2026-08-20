@@ -26,9 +26,61 @@ def test_reveil_demande_par_l_agent_toujours_honore() -> None:
 
 def test_evenements_passent_le_gate() -> None:
     assert _needs(has_trigger=True) == (True, "trigger")
-    assert _needs(has_position=True) == (True, "position")
+    assert _needs(has_position=True, hours_since_last_llm=None) == (True, "position")
     assert _needs(family_regime_strong=True) == (True, "regime")
     assert _needs(sig=["1h:breakout_up"]) == (True, "signal")
+
+
+def test_position_ouverte_routiniere_est_debouncee_sous_deux_heures() -> None:
+    assert relevance_gate.POSITION_REVIEW_DEBOUNCE_HOURS == 2.0
+    assert _needs(
+        has_position=True,
+        hours_since_last_llm=1.99,
+    ) == (False, "position_debounce")
+
+
+def test_position_ouverte_est_revue_a_deux_heures_ou_si_jamais_vue() -> None:
+    assert _needs(
+        has_position=True,
+        hours_since_last_llm=2.0,
+    ) == (True, "position")
+    assert _needs(
+        has_position=True,
+        hours_since_last_llm=None,
+    ) == (True, "position")
+
+
+def test_nouveau_regime_ou_signal_htf_reveille_une_position_recente() -> None:
+    assert _needs(
+        has_position=True,
+        family_regime_strong=True,
+        hours_since_last_llm=0.5,
+    ) == (True, "regime")
+    assert _needs(
+        has_position=True,
+        sig=["1h:breakout_down"],
+        hours_since_last_llm=0.5,
+    ) == (True, "signal")
+
+
+def test_signal_persistant_ne_contourne_pas_le_debounce_position() -> None:
+    assert _needs(
+        has_position=True,
+        sig=["1h:breakout_down"],
+        last_wake_reasons=("signal",),
+        last_wake_fingerprints={"signal": "signal:1h:breakout_down"},
+        hours_since_last_llm=0.5,
+    ) == (False, "position_debounce")
+
+
+def test_inversion_signal_htf_bypasse_le_debounce_position() -> None:
+    assert _needs(
+        has_position=True,
+        sig=["1h:breakout_down"],
+        last_wake_reasons=("signal",),
+        last_wake_fingerprints={"signal": "signal:1h:breakout_up"},
+        hours_since_last_llm=0.5,
+    ) == (True, "signal")
 
 
 def test_signal_15m_seul_ne_reveille_pas() -> None:
@@ -70,13 +122,28 @@ def test_regime_debounced_sous_deux_heures() -> None:
     assert relevance_gate.SIGNAL_DEBOUNCE_HOURS == 2.0
     assert _needs(
         family_regime_strong=True,
+        family_regime_fingerprint="regime:us:up",
         last_wake_reasons=("regime",),
+        last_wake_fingerprints={"regime": "regime:us:up"},
         hours_since_last_llm=1.0,
     ) == (False, "quiet")
     assert _needs(
         family_regime_strong=True,
+        family_regime_fingerprint="regime:us:up",
         last_wake_reasons=("regime",),
+        last_wake_fingerprints={"regime": "regime:us:up"},
         hours_since_last_llm=2.0,
+    ) == (True, "regime")
+
+
+def test_inversion_regime_bypasse_le_debounce_position() -> None:
+    assert _needs(
+        has_position=True,
+        family_regime_strong=True,
+        family_regime_fingerprint="regime:us:down",
+        last_wake_reasons=("regime",),
+        last_wake_fingerprints={"regime": "regime:us:up"},
+        hours_since_last_llm=0.5,
     ) == (True, "regime")
 
 
@@ -84,17 +151,20 @@ def test_signal_htf_debounced_sous_deux_heures() -> None:
     assert _needs(
         sig=["1h:breakout_up"],
         last_wake_reasons=("signal",),
+        last_wake_fingerprints={"signal": "signal:1h:breakout_up"},
         hours_since_last_llm=1.0,
     ) == (False, "quiet")
     assert _needs(
         stretched=True,
         aligned=True,
         last_wake_reasons=("signal",),
+        last_wake_fingerprints={"signal": "signal:stretched-aligned"},
         hours_since_last_llm=1.5,
     ) == (False, "quiet")
     assert _needs(
         sig=["4h:breakout_up"],
         last_wake_reasons=("signal",),
+        last_wake_fingerprints={"signal": "signal:4h:breakout_up"},
         hours_since_last_llm=2.0,
     ) == (True, "signal")
 
@@ -108,8 +178,10 @@ def test_signal_apres_reveil_regime_n_est_pas_debounced() -> None:
     ) == (True, "signal")
     assert _needs(
         family_regime_strong=True,
+        family_regime_fingerprint="regime:us:up",
         sig=["1h:breakout_up"],
         last_wake_reasons=("regime",),
+        last_wake_fingerprints={"regime": "regime:us:up"},
         hours_since_last_llm=1.0,
     ) == (True, "signal")
 
@@ -117,20 +189,35 @@ def test_signal_apres_reveil_regime_n_est_pas_debounced() -> None:
 def test_regime_et_signal_persistants_restent_quiet() -> None:
     assert _needs(
         family_regime_strong=True,
+        family_regime_fingerprint="regime:us:up",
         sig=["1h:breakout_up"],
         last_wake_reasons=("regime", "signal"),
+        last_wake_fingerprints={
+            "regime": "regime:us:up",
+            "signal": "signal:1h:breakout_up",
+        },
         hours_since_last_llm=1.0,
     ) == (False, "quiet")
     assert _needs(
         family_regime_strong=True,
+        family_regime_fingerprint="regime:us:up",
         sig=["1h:breakout_up"],
         last_wake_reasons={"regime", "signal"},
+        last_wake_fingerprints={
+            "regime": "regime:us:up",
+            "signal": "signal:1h:breakout_up",
+        },
         hours_since_last_llm=1.5,
     ) == (False, "quiet")
     assert _needs(
         family_regime_strong=True,
+        family_regime_fingerprint="regime:us:up",
         sig=["1h:breakout_up"],
         last_wake_reasons=("regime", "signal"),
+        last_wake_fingerprints={
+            "regime": "regime:us:up",
+            "signal": "signal:1h:breakout_up",
+        },
         hours_since_last_llm=4.0,
     ) == (True, "regime")
 
@@ -162,22 +249,19 @@ def test_persistent_wake_reasons_seulement_regime_et_signal() -> None:
     ) == ()
 
 
-def test_agent_wake_trigger_position_jamais_debounced() -> None:
+def test_agent_wake_et_trigger_urgent_bypassent_le_debounce_position() -> None:
     assert _needs(
         agent_requested_wake=True,
+        has_position=True,
         last_wake_reasons=("agent_wake",),
         hours_since_last_llm=0.1,
     ) == (True, "agent_wake")
     assert _needs(
         has_trigger=True,
+        has_position=True,
         last_wake_reasons=("trigger",),
         hours_since_last_llm=0.1,
     ) == (True, "trigger")
-    assert _needs(
-        has_position=True,
-        last_wake_reasons=("position",),
-        hours_since_last_llm=0.1,
-    ) == (True, "position")
 
 
 def test_cockpit_activity_extrait_stretched_et_sig() -> None:
@@ -269,6 +353,219 @@ def test_run_cycle_gate_le_polling_calme_sans_appel_llm(
     assert batches == [] or all("SPY" not in b for b in batches)
     assert [d["reason"] for d in report["decisions"]] == ["quiet_gate"]
     assert report["decisions"][0]["executed"] is False
+
+
+def test_run_cycle_debounce_position_routiniere_puis_appelle_a_deux_heures(
+    monkeypatch, tmp_path, patch_batch, make_data_source, write_runtime_config
+) -> None:
+    from datetime import datetime, timedelta, timezone
+
+    from trader.agent.client import Decision
+    from trader.execution.broker import Order, SimBroker
+    from trader.planning.scheduler import Scheduler
+    from trader.runtime import daemon
+
+    write_runtime_config(tmp_path)
+    state_dir = tmp_path / "state"
+    now = datetime(2026, 6, 11, 14, 30, tzinfo=timezone.utc)
+    broker = SimBroker(state_dir / "broker.json", starting_cash=100_000)
+    broker.submit(Order("SPY", "BUY", 10.0), 100.0, now.isoformat(), dry_run=False)
+
+    monkeypatch.setattr(daemon, "ROOT", tmp_path)
+    monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+    process_state = daemon.CycleProcessState()
+    process_state.last_llm_at[(str(state_dir), "SPY")] = now - timedelta(hours=1)
+    data_source = make_data_source(_flat_bars_factory(now.isoformat()))
+    calls: list[str] = []
+
+    def decide(**kwargs):
+        calls.append(kwargs["symbol"])
+        return Decision(
+            symbol=kwargs["symbol"],
+            action="HOLD",
+            quantity=0.0,
+            confidence=0.8,
+            rationale="revue de position",
+            intent="HOLD",
+            llm_provider="acpx",
+            llm_model="gpt-5.5",
+        )
+
+    patch_batch(decide)
+    sched = Scheduler(state_dir / "scheduler.json")
+
+    recent_report = daemon.run_cycle(
+        dry_run=True,
+        now=now,
+        symbols_filter=["SPY"],
+        sched=sched,
+        data_source=data_source,
+        process_state=process_state,
+    )
+
+    assert calls == []
+    assert recent_report["decisions"][0]["reason"] == "quiet_gate"
+    assert recent_report["decisions"][0]["relevance_gate_reason"] == "position_debounce"
+    assert recent_report["decisions"][0]["model_called"] is False
+
+    due_at = now + timedelta(hours=1)
+    data_source = make_data_source(_flat_bars_factory(due_at.isoformat()))
+    due_report = daemon.run_cycle(
+        dry_run=True,
+        now=due_at,
+        symbols_filter=["SPY"],
+        sched=sched,
+        data_source=data_source,
+        process_state=process_state,
+    )
+
+    assert calls == ["SPY"]
+    assert due_report["decisions"][0]["model_called"] is True
+    assert process_state.last_llm_at[(str(state_dir), "SPY")] == due_at
+
+
+def test_run_cycle_inversion_htf_reveille_position_et_met_a_jour_empreinte(
+    monkeypatch, tmp_path, patch_batch, make_data_source, write_runtime_config
+) -> None:
+    from datetime import datetime, timedelta, timezone
+
+    from trader.agent.client import Decision
+    from trader.execution.broker import Order, SimBroker
+    from trader.planning.scheduler import Scheduler
+    from trader.runtime import daemon
+
+    write_runtime_config(tmp_path)
+    state_dir = tmp_path / "state"
+    now = datetime(2026, 6, 11, 14, 30, tzinfo=timezone.utc)
+    SimBroker(state_dir / "broker.json", starting_cash=100_000).submit(
+        Order("SPY", "BUY", 10.0),
+        100.0,
+        now.isoformat(),
+        dry_run=False,
+    )
+
+    monkeypatch.setattr(daemon, "ROOT", tmp_path)
+    monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+    monkeypatch.setattr(
+        daemon,
+        "build_market_cockpit",
+        lambda *args, **kwargs: {
+            "cols": ["s", "st", "sig"],
+            "rows": [["SPY", False, ["1h:breakout_down"]]],
+        },
+    )
+    process_state = daemon.CycleProcessState()
+    key = (str(state_dir), "SPY")
+    process_state.last_llm_at[key] = now - timedelta(minutes=30)
+    process_state.last_wake_reasons[key] = ("signal",)
+    process_state.last_wake_fingerprints[key] = {
+        "signal": "signal:1h:breakout_up"
+    }
+    calls: list[str] = []
+
+    def decide(**kwargs):
+        calls.append(kwargs["symbol"])
+        return Decision(
+            symbol=kwargs["symbol"],
+            action="HOLD",
+            quantity=0.0,
+            confidence=0.8,
+            rationale="inversion HTF revue",
+            intent="HOLD",
+            llm_provider="acpx",
+            llm_model="gpt-5.5",
+        )
+
+    patch_batch(decide)
+    report = daemon.run_cycle(
+        dry_run=True,
+        now=now,
+        symbols_filter=["SPY"],
+        sched=Scheduler(state_dir / "scheduler.json"),
+        data_source=make_data_source(_flat_bars_factory(now.isoformat())),
+        process_state=process_state,
+    )
+
+    assert calls == ["SPY"]
+    assert report["decisions"][0]["model_called"] is True
+    assert process_state.last_wake_fingerprints[key] == {
+        "signal": "signal:1h:breakout_down"
+    }
+
+
+def test_run_cycle_revue_post_entry_15m_bypasse_le_debounce_position(
+    monkeypatch, tmp_path, patch_batch, make_data_source, write_runtime_config
+) -> None:
+    from datetime import datetime, timedelta, timezone
+
+    from trader.agent.client import Decision
+    from trader.planning.scheduler import Scheduler
+    from trader.runtime import daemon
+
+    write_runtime_config(tmp_path)
+    state_dir = tmp_path / "state"
+    opened_at = datetime(2026, 6, 11, 14, 30, tzinfo=timezone.utc)
+    review_at = opened_at + timedelta(minutes=15)
+
+    monkeypatch.setattr(daemon, "ROOT", tmp_path)
+    monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+    process_state = daemon.CycleProcessState()
+    sched = Scheduler(state_dir / "scheduler.json")
+    data_source = make_data_source(_flat_bars_factory(opened_at.isoformat()))
+    calls: list[str] = []
+
+    def decide(**kwargs):
+        calls.append(kwargs["symbol"])
+        if len(calls) == 1:
+            return Decision(
+                symbol="SPY",
+                action="BUY",
+                quantity=10.0,
+                confidence=0.8,
+                rationale="entrée avec protection",
+                intent="OPEN_LONG",
+                exit_plan={"hard_stop": {"type": "price", "price": 95.0}},
+                llm_provider="acpx",
+                llm_model="gpt-5.5",
+            )
+        return Decision(
+            symbol="SPY",
+            action="HOLD",
+            quantity=0.0,
+            confidence=0.8,
+            rationale="thèse intacte après entrée",
+            intent="HOLD",
+            llm_provider="acpx",
+            llm_model="gpt-5.5",
+        )
+
+    patch_batch(decide)
+
+    opened = daemon.run_cycle(
+        dry_run=False,
+        now=opened_at,
+        symbols_filter=["SPY"],
+        sched=sched,
+        data_source=data_source,
+        process_state=process_state,
+    )
+
+    assert opened["decisions"][0]["post_entry_review_scheduled"] is True
+    assert sched.next_wake("SPY") == review_at
+    assert process_state.last_llm_at[(str(state_dir), "SPY")] == opened_at
+
+    reviewed = daemon.run_cycle(
+        dry_run=False,
+        now=review_at,
+        symbols_filter=["SPY"],
+        sched=sched,
+        data_source=data_source,
+        process_state=process_state,
+    )
+
+    assert calls == ["SPY", "SPY"]
+    assert reviewed["decisions"][0]["model_called"] is True
+    assert process_state.last_llm_at[(str(state_dir), "SPY")] == review_at
 
 
 def test_run_cycle_honore_le_reveil_demande_par_l_agent(

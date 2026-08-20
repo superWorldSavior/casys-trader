@@ -15,6 +15,7 @@ from trader.reporting.read_models.hard_stop_diagnostics import (
     select_hard_stop_symbols,
 )
 from trader.reporting.read_models.trade_history import (
+    aggregate_position_cycles,
     compute_round_trips,
     filter_regime_trips as _filter_regime_trips,
 )
@@ -77,48 +78,85 @@ def compute_attribution(
     exclude_symbols: tuple[str, ...] | frozenset[str] = (),
     min_entry_confidence: float | None = None,
 ) -> dict:
-    """Aggregate closed trades by confidence bucket and exit reason."""
+    """Aggregate completed position cycles while retaining exit-leg mechanics."""
 
-    trips = compute_round_trips(state_dir)
-    trips, regime = _filter_regime_trips(
-        trips,
+    exit_legs = compute_round_trips(state_dir)
+    position_cycles = aggregate_position_cycles(exit_legs)
+    position_cycles, regime = _filter_regime_trips(
+        position_cycles,
         since=since,
         exclude_symbols=exclude_symbols,
         min_entry_confidence=min_entry_confidence,
     )
-    overall = _aggregate(trips)
+    selected_cycle_keys = {
+        (str(cycle.get("symbol") or ""), str(cycle["position_cycle_id"]))
+        for cycle in position_cycles
+        if cycle.get("position_cycle_id")
+    }
+    completed_exit_legs = [
+        leg
+        for leg in exit_legs
+        if (
+            str(leg.get("symbol") or ""),
+            str(leg.get("position_cycle_id") or ""),
+        )
+        in selected_cycle_keys
+    ]
+    # Defensive compatibility for callers supplying/reconstructing legacy rows
+    # without cycle metadata.  Canonical fill reconstruction always supplies it.
+    legacy_legs = [leg for leg in exit_legs if not leg.get("position_cycle_id")]
+    if legacy_legs:
+        filtered_legacy, _ = _filter_regime_trips(
+            legacy_legs,
+            since=since,
+            exclude_symbols=exclude_symbols,
+            min_entry_confidence=min_entry_confidence,
+        )
+        completed_exit_legs.extend(filtered_legacy)
+
+    overall = _aggregate(position_cycles)
 
     by_confidence: list[dict] = []
     for name, _, _ in _CONFIDENCE_BUCKETS:
-        bucket_trips = [
-            trip
-            for trip in trips
-            if _bucket_for(trip["entry_confidence"]) == name
+        bucket_cycles = [
+            cycle
+            for cycle in position_cycles
+            if _bucket_for(cycle["entry_confidence"]) == name
         ]
-        if bucket_trips:
+        if bucket_cycles:
             by_confidence.append(
-                {"bucket": name, **_aggregate(bucket_trips)}
+                {"bucket": name, **_aggregate(bucket_cycles)}
             )
 
     by_exit_reason: list[dict] = []
     reasons = sorted(
-        {trip["exit_reason"] for trip in trips if trip["exit_reason"]}
+        {
+            leg["exit_reason"]
+            for leg in completed_exit_legs
+            if leg["exit_reason"]
+        }
     )
     for reason in reasons:
-        reason_trips = [
-            trip for trip in trips if trip["exit_reason"] == reason
+        reason_legs = [
+            leg
+            for leg in completed_exit_legs
+            if leg["exit_reason"] == reason
         ]
         by_exit_reason.append(
-            {"reason": reason, **_aggregate(reason_trips)}
+            {"reason": reason, **_aggregate(reason_legs)}
         )
 
     holding = [
-        trip["holding_minutes"]
-        for trip in trips
-        if trip["holding_minutes"] is not None
+        cycle["holding_minutes"]
+        for cycle in position_cycles
+        if cycle["holding_minutes"] is not None
     ]
     return {
+        "summary_grain": "flat_to_flat_position_cycle",
+        "mechanism_grain": "exit_leg",
         "n_closed_trades": overall["n"],
+        "n_closed_position_cycles": overall["n"],
+        "n_exit_legs": len(completed_exit_legs),
         "realized_pnl": overall["total_pnl"],
         "realized_gross_pnl": overall["total_gross_pnl"],
         "total_commissions": overall["total_commission"],
@@ -129,7 +167,8 @@ def compute_attribution(
         ),
         "by_confidence": by_confidence,
         "by_exit_reason": by_exit_reason,
-        "recent_trips": _recent_round_trips(trips),
+        "recent_trips": _recent_round_trips(position_cycles),
+        "recent_exit_legs": _recent_round_trips(completed_exit_legs),
         "regime": regime,
     }
 

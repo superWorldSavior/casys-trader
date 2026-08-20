@@ -83,7 +83,11 @@ def _shared_context() -> dict:
             for index, symbol in enumerate(symbols[:20])
         },
         "attribution": {
+            "summary_grain": "flat_to_flat_position_cycle",
+            "mechanism_grain": "exit_leg",
             "n_closed_trades": 40,
+            "n_closed_position_cycles": 40,
+            "n_exit_legs": 57,
             "realized_pnl": 123.0,
             "by_confidence": [{"bucket": "0.7-0.8", "n": 10}],
             "by_exit_reason": [{"reason": "stop", "n": 8}],
@@ -123,6 +127,10 @@ def test_projection_focalise_le_push_sans_muter_le_snapshot() -> None:
         {"symbol": "TARGET", "id": "plan-TARGET", "kind": "armed", "intent": "long"}
     ]
     assert {row["symbol"] for row in projected["attribution"]["recent_trips"]} == {"TARGET"}
+    assert projected["attribution"]["summary_grain"] == "flat_to_flat_position_cycle"
+    assert projected["attribution"]["mechanism_grain"] == "exit_leg"
+    assert projected["attribution"]["n_closed_position_cycles"] == 40
+    assert projected["attribution"]["n_exit_legs"] == 57
     assert "by_confidence" not in projected["attribution"]
     assert "by_exit_reason" not in projected["attribution"]
     assert set(projected["stale_market_data"]) == {"TARGET"}

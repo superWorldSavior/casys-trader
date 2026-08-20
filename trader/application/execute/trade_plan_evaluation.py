@@ -9,7 +9,10 @@ import math
 from typing import Any, Literal, Protocol
 
 from trader.application.execute import order_admission, risk_admission
-from trader.application.execute.fee_estimate import CommissionCalculator
+from trader.application.execute.fee_estimate import (
+    CommissionCalculator,
+    UNAVAILABLE_COMMISSION_MODELS,
+)
 from trader.domain.contracts import Order
 from trader.domain.decisions import Decision
 from trader.domain.planning.exit_plan_spec import InvalidExitPlanError
@@ -18,7 +21,6 @@ from trader.domain.planning.trade_plan import resolve_exit_plan
 TradeDirection = Literal["long", "short"]
 EconomicsStatus = Literal["positive", "negative", "unknown"]
 
-_UNKNOWN_COMMISSION_MODELS = {"ibkr_unknown", "ibkr_invalid_order"}
 _FRACTION_EPSILON = 1e-6
 
 
@@ -722,7 +724,7 @@ def _commission_usd(
     if model is None:
         return 0.0
     commission = model.calculate(order, price)
-    if commission.model in _UNKNOWN_COMMISSION_MODELS:
+    if commission.model in UNAVAILABLE_COMMISSION_MODELS:
         return None
     rate = 1.0 if commission.currency == "USD" else fx_rate
     return commission.amount * rate

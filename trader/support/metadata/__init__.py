@@ -2,5 +2,6 @@
 
 __all__ = [
     "code_version",
+    "experiment",
     "governance_version",
 ]

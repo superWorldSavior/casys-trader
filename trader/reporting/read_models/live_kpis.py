@@ -6,6 +6,10 @@ import json
 from pathlib import Path
 
 from backtest.metrics import Metrics, compute_metrics
+from trader.reporting.read_models.trade_history import (
+    aggregate_position_cycles,
+    compute_round_trips,
+)
 
 
 def compute_model_performance(state_dir: Path) -> list[dict]:
@@ -147,6 +151,7 @@ def compute_live_kpis(state_dir: Path) -> dict:
     ]
 
     metrics: Metrics = compute_metrics(equity_curve, fills, starting_equity)
+    completed_cycles = aggregate_position_cycles(compute_round_trips(state_dir))
 
     return {
         "equity": last_equity,
@@ -156,7 +161,12 @@ def compute_live_kpis(state_dir: Path) -> dict:
         "period_win_rate": metrics.period_win_rate,
         "volatility": metrics.volatility,
         "sharpe": metrics.sharpe,
-        "num_trades": metrics.num_trades,
+        # Compatibility key with corrected semantics: a trade is one completed
+        # flat-to-flat position cycle, not a broker fill.
+        "num_trades": len(completed_cycles),
+        "num_closed_position_cycles": len(completed_cycles),
+        "num_fills": metrics.num_trades,
+        "trade_count_grain": "flat_to_flat_position_cycle",
         "n_positions": len(positions_list),
         "positions": positions_list,
         "model_performance": compute_model_performance(state_dir),

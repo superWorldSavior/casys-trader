@@ -2,9 +2,10 @@
 
 Le LLM décideur était appelé par le planning pour constater l'absence
 d'événement (~92 appels/24 h, ~99 % HOLD). Ce module filtre les réveils
-PAR DÉFAUT (polling) sur symboles calmes ; il n'altère jamais :
+PAR DÉFAUT (polling) sur symboles calmes et cadence les revues routinières
+des positions ouvertes ; il n'altère jamais :
 - les réveils explicitement demandés par l'agent (autonomie de planification),
-- les événements (triggers, position ouverte, régime de famille fort, signaux HTF),
+- les triggers explicites (dont exit_watch),
 - la revue périodique garantie (l'agent revoit chaque symbole au moins toutes
   les ``max_quiet_hours``, et au premier réveil après un restart).
 
@@ -16,15 +17,18 @@ Fonctions pures : pas d'I/O, pas d'horloge.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 
 # Horizons thèse — même ordre que regime._HORIZON_PRIORITY hors 15m (timing).
 _HTF_SIG_PREFIXES = ("1d:", "4h:", "1h:")
 SIGNAL_DEBOUNCE_HOURS = 2.0
+POSITION_REVIEW_DEBOUNCE_HOURS = 2.0
 
 __all__ = [
+    "POSITION_REVIEW_DEBOUNCE_HOURS",
     "SIGNAL_DEBOUNCE_HOURS",
     "cockpit_activity",
+    "persistent_wake_fingerprints",
     "persistent_wake_reasons",
     "symbol_needs_llm",
 ]
@@ -58,6 +62,44 @@ def persistent_wake_reasons(
     return tuple(present)
 
 
+def _signal_fingerprint(
+    *, sig: list | None, stretched: bool | None, aligned: bool | None
+) -> str | None:
+    htf_tokens = sorted(
+        {
+            str(token).strip()
+            for token in (sig or [])
+            if str(token).strip().startswith(_HTF_SIG_PREFIXES)
+        }
+    )
+    if htf_tokens:
+        return "signal:" + "|".join(htf_tokens)
+    if stretched is True and aligned is True:
+        return "signal:stretched-aligned"
+    return None
+
+
+def persistent_wake_fingerprints(
+    *,
+    family_regime_fingerprint: str | None,
+    stretched: bool | None,
+    sig: list | None,
+    aligned: bool | None,
+) -> dict[str, str]:
+    """Identity of material reasons; missing identity deliberately fails open."""
+    fingerprints: dict[str, str] = {}
+    if family_regime_fingerprint:
+        fingerprints["regime"] = family_regime_fingerprint
+    signal_fingerprint = _signal_fingerprint(
+        sig=sig,
+        stretched=stretched,
+        aligned=aligned,
+    )
+    if signal_fingerprint:
+        fingerprints["signal"] = signal_fingerprint
+    return fingerprints
+
+
 def _as_wake_reason_set(last_wake_reasons: Iterable[str] | str | None) -> frozenset[str]:
     if last_wake_reasons is None:
         return frozenset()
@@ -70,11 +112,16 @@ def _debounced(
     last_wake_reasons: Iterable[str] | str | None,
     reason: str,
     hours_since_last_llm: float | None,
+    *,
+    current_fingerprint: str | None,
+    last_wake_fingerprints: Mapping[str, str] | None,
 ) -> bool:
     return (
         reason in _as_wake_reason_set(last_wake_reasons)
         and hours_since_last_llm is not None
         and hours_since_last_llm < SIGNAL_DEBOUNCE_HOURS
+        and current_fingerprint is not None
+        and (last_wake_fingerprints or {}).get(reason) == current_fingerprint
     )
 
 
@@ -90,11 +137,13 @@ def symbol_needs_llm(
     max_quiet_hours: float = 4.0,
     aligned: bool | None = None,
     last_wake_reasons: set[str] | tuple[str, ...] | list[str] | None = None,
+    family_regime_fingerprint: str | None = None,
+    last_wake_fingerprints: Mapping[str, str] | None = None,
 ) -> tuple[bool, str]:
     """(faut-il appeler le LLM pour ce symbole dû, raison).
 
     Raisons possibles : agent_wake, trigger, position, regime, signal,
-    periodic_review — et quiet (gate, pas d'appel).
+    periodic_review — et quiet/position_debounce (gate, pas d'appel).
     Debounce une raison persistante R ssi R est dans ``last_wake_reasons``
     et ``hours_since_last_llm < SIGNAL_DEBOUNCE_HOURS``.
     """
@@ -102,16 +151,38 @@ def symbol_needs_llm(
         return True, "agent_wake"
     if has_trigger:
         return True, "trigger"
+    current_fingerprints = persistent_wake_fingerprints(
+        family_regime_fingerprint=family_regime_fingerprint,
+        stretched=stretched,
+        sig=sig,
+        aligned=aligned,
+    )
+    position_debounced = False
     if has_position:
-        return True, "position"
+        if (
+            hours_since_last_llm is None
+            or hours_since_last_llm >= POSITION_REVIEW_DEBOUNCE_HOURS
+        ):
+            return True, "position"
+        position_debounced = True
     if family_regime_strong and not _debounced(
-        last_wake_reasons, "regime", hours_since_last_llm
+        last_wake_reasons,
+        "regime",
+        hours_since_last_llm,
+        current_fingerprint=current_fingerprints.get("regime"),
+        last_wake_fingerprints=last_wake_fingerprints,
     ):
         return True, "regime"
     if _htf_material(sig=sig, stretched=stretched, aligned=aligned) and not _debounced(
-        last_wake_reasons, "signal", hours_since_last_llm
+        last_wake_reasons,
+        "signal",
+        hours_since_last_llm,
+        current_fingerprint=current_fingerprints.get("signal"),
+        last_wake_fingerprints=last_wake_fingerprints,
     ):
         return True, "signal"
+    if position_debounced:
+        return False, "position_debounce"
     if hours_since_last_llm is None or hours_since_last_llm >= max_quiet_hours:
         return True, "periodic_review"
     return False, "quiet"

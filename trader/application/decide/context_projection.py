@@ -50,7 +50,11 @@ RADAR_COLUMNS = (
 _PEER_SCORE_COLUMNS = ("r", "z", "rs", "sz", "r_d", "z_d", "rs_d", "sz_d")
 
 _ATTRIBUTION_SUMMARY_KEYS = (
+    "summary_grain",
+    "mechanism_grain",
     "n_closed_trades",
+    "n_closed_position_cycles",
+    "n_exit_legs",
     "realized_pnl",
     "realized_gross_pnl",
     "total_commissions",

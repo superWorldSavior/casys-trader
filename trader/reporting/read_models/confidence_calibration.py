@@ -8,7 +8,10 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Iterable, Mapping
 
-from trader.reporting.read_models.trade_history import compute_round_trips
+from trader.reporting.read_models.trade_history import (
+    aggregate_position_cycles,
+    compute_round_trips,
+)
 
 _UNKNOWN = "unknown"
 _LEVELS = (
@@ -79,84 +82,6 @@ def _joined_dimensions(
     return result
 
 
-def _aggregate_position_cycles(
-    trips: Iterable[Mapping[str, object]],
-) -> list[dict]:
-    """Collapse partial exits into one completed flat-to-flat observation."""
-
-    grouped: dict[tuple[str, object], list[Mapping[str, object]]] = {}
-    for index, trip in enumerate(trips):
-        cycle_id = trip.get("position_cycle_id")
-        key = (
-            ("cycle", str(cycle_id))
-            if cycle_id
-            else ("trip", index)
-        )
-        grouped.setdefault(key, []).append(trip)
-
-    cycles: list[dict] = []
-    for (kind, _), rows in grouped.items():
-        if kind == "trip":
-            cycles.append(dict(rows[0]))
-            continue
-        if kind == "cycle" and not any(
-            row.get("position_cycle_closed") is True for row in rows
-        ):
-            continue
-        quantities = [
-            abs(float(row.get("quantity", 0.0)))
-            for row in rows
-            if isinstance(row.get("quantity"), (int, float))
-        ]
-        weighted_confidence = 0.0
-        confidence_weight = 0.0
-        decision_ids: list[str] = []
-        pnl = 0.0
-        for row in rows:
-            value = row.get("pnl")
-            if isinstance(value, (int, float)) and math.isfinite(float(value)):
-                pnl += float(value)
-            confidence = row.get("entry_confidence")
-            quantity = row.get("quantity")
-            if (
-                isinstance(confidence, (int, float))
-                and isinstance(quantity, (int, float))
-                and math.isfinite(float(confidence))
-                and math.isfinite(float(quantity))
-            ):
-                weight = abs(float(quantity))
-                weighted_confidence += float(confidence) * weight
-                confidence_weight += weight
-            ids = row.get("entry_decision_ids")
-            if isinstance(ids, list):
-                for decision_id in ids:
-                    parsed = str(decision_id)
-                    if parsed and parsed not in decision_ids:
-                        decision_ids.append(parsed)
-            elif row.get("entry_decision_id"):
-                parsed = str(row["entry_decision_id"])
-                if parsed not in decision_ids:
-                    decision_ids.append(parsed)
-        first = rows[0]
-        cycles.append(
-            {
-                "side": first.get("side"),
-                "quantity": sum(quantities),
-                "pnl": pnl,
-                "entry_confidence": (
-                    weighted_confidence / confidence_weight
-                    if confidence_weight > 0.0
-                    else None
-                ),
-                "entry_decision_id": (
-                    decision_ids[0] if len(decision_ids) == 1 else None
-                ),
-                "entry_decision_ids": decision_ids,
-            }
-        )
-    return cycles
-
-
 def _wilson_interval(wins: int, n: int, *, z: float = 1.96) -> list[float | None]:
     if n <= 0:
         return [None, None]
@@ -220,7 +145,7 @@ def build_confidence_calibration_from_rows(
         if row.get("decision_id")
     }
     observations: list[dict] = []
-    for trip in _aggregate_position_cycles(trips):
+    for trip in aggregate_position_cycles(trips):
         confidence = trip.get("entry_confidence")
         pnl = trip.get("pnl")
         if not isinstance(confidence, (int, float)) or not isinstance(

@@ -14,6 +14,7 @@ from trader.application.execute.cycle_decision import (
 )
 from trader.market.market_data import Bar
 from trader.planning.trade_plan import create_trade_plan
+from trader.support.metadata.experiment import build_experiment_context
 from tests.plan_store_fakes import MemoryTradePlanStore
 
 
@@ -363,6 +364,9 @@ class _RecordingSched:
         self.removed.append(watch_id)
         self.watches.pop(watch_id, None)
 
+    def set_symbol_indicator_watch(self, _symbol: str, watch: dict) -> None:
+        self.watches[str(watch["id"])] = dict(watch)
+
     def active_indicator_watches(self, now=None) -> list[dict]:
         del now
         return list(self.watches.values())
@@ -428,6 +432,105 @@ def _armed_buy() -> Decision:
         exit_plan={"hard_stop": {"type": "price", "price": 95.0}},
         trade_evaluation_id="tpe_trigger",
     )
+
+
+def _experiment_context() -> dict:
+    return build_experiment_context(
+        code_version={"git_commit": "a" * 40, "git_dirty": False},
+        model_preset="codex-luna-medium",
+        risk_policy={
+            "max_position_value": 50_000,
+            "max_gross_exposure": 100_000,
+            "max_order_value": 50_000,
+            "min_equity": 50_000,
+            "max_risk_per_trade_pct": 0.01,
+            "min_trade_confidence": 0.7,
+            "full_risk_confidence": 0.9,
+            "confidence_gate_enabled": False,
+            "require_hard_stop": False,
+        },
+        commission_model="ibkr",
+    )
+
+
+def test_armed_plan_inherits_origin_experiment_identity() -> None:
+    sched = _RecordingSched()
+    origin_ctx, origin_records = _context(
+        sched=sched,
+        experiment_context=_experiment_context(),
+        trade_plan_evaluator_provider=_armed_evaluator_provider,
+    )
+    state = DecisionExecutionState(
+        snap=SimpleNamespace(equity=100_000.0), gross=0.0
+    )
+    execute_one_cycle_decision(
+        sym="SPY",
+        index=1,
+        total=1,
+        decision=Decision(
+            symbol="SPY",
+            action="HOLD",
+            quantity=0.0,
+            confidence=0.8,
+            rationale="wait for breakout",
+            intent="HOLD",
+            llm_provider="acpx",
+            llm_model="gpt-5.6-luna",
+            indicator_watch={
+                "conditions": [
+                    {
+                        "indicator": "return",
+                        "op": ">=",
+                        "value": 0.01,
+                        "interval": "1h",
+                    }
+                ],
+                "on_trigger": "EXECUTE_ORDER",
+                "order": {
+                    "intent": "OPEN_LONG",
+                    "qty": 1.0,
+                    "confidence": 0.8,
+                    "exit_plan": {"hard_stop": 95.0},
+                    "trade_evaluation_id": "tpe_trigger",
+                },
+            },
+        ),
+        state=state,
+        ctx=origin_ctx,
+    )
+
+    origin_id = origin_records[0]["experiment_id"]
+    assert origin_id is not None
+    persisted_watch = next(iter(sched.watches.values()))
+    assert persisted_watch["order"]["experiment"]["experiment_id"] == origin_id
+
+    armed_ctx, armed_records = _context(
+        sched=sched,
+        broker=_DryRunBroker(),
+        gate=_ApprovingGate(),
+        require_hard_stop=False,
+        trade_plan_evaluator_provider=_armed_evaluator_provider,
+        armed_plan_ids={"SPY": str(persisted_watch["id"])},
+        armed_plan_orders={"SPY": persisted_watch["order"]},
+        execution_eligibility={
+            "SPY": {"execution": {"enabled": False, "reason": "session_closed"}}
+        },
+    )
+    execute_one_cycle_decision(
+        sym="SPY",
+        index=1,
+        total=1,
+        decision=_armed_buy(),
+        state=state,
+        ctx=armed_ctx,
+    )
+
+    assert armed_records[0]["experiment_id"] == origin_id
+    assert armed_records[0]["experiment"]["components"]["model"] == {
+        "provider": "acpx",
+        "model": "gpt-5.6-luna",
+        "preset": "codex-luna-medium",
+    }
 
 
 def test_exposure_increase_never_reaches_broker_without_evaluation() -> None:

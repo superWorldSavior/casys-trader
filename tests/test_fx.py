@@ -19,6 +19,13 @@ def test_currency_for_us_and_default():
     assert fx.currency_for("EURUSD=X") == "USD"
 
 
+def test_known_currency_distinguishes_mapped_market_from_usd_default():
+    assert fx.known_currency_for("ASML.AS") == "EUR"
+    assert fx.mapped_suffix_for("asml.as") == ".AS"
+    assert fx.known_currency_for("MSFT") is None
+    assert fx.mapped_suffix_for("MSFT") is None
+
+
 def test_currency_for_exact_match_symbols():
     assert fx.currency_for("^FCHI") == "EUR"
     assert fx.currency_for("^TWII") == "TWD"

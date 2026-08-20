@@ -20,6 +20,7 @@ import os
 import signal
 import sqlite3
 import time
+from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
@@ -90,6 +91,7 @@ from trader.domain.process_trace import new_runtime_run_id
 from trader.infrastructure.files import decision_ledger
 from trader.support.config.risk import attribution_min_entry_confidence
 from trader.support.metadata import code_version
+from trader.support.metadata import experiment as experiment_metadata
 from trader.reporting.read_models import (
     attribution,
     confidence_calibration,
@@ -125,7 +127,10 @@ from trader.runtime.ib_attach import IBAttachBackoff
 from trader.runtime.process_pilot import ProcessPilot, build_process_pilot
 from trader.runtime.state_writer import RuntimeStateWriter
 from trader.application.portfolio import snapshot as portfolio
-from trader.application.execute.fee_estimate import round_trip_cost
+from trader.application.execute.fee_estimate import (
+    UNAVAILABLE_COMMISSION_MODELS,
+    round_trip_cost,
+)
 from trader.application.execute.protocols import CommissionModel
 from trader.domain.contracts import Order
 from trader.infrastructure.brokers.commission_models import commission_model_from_name
@@ -268,7 +273,7 @@ def _build_portfolio_fee_estimator(
         if {
             entry.model,
             exit_.model,
-        } & {"ibkr_unknown", "ibkr_invalid_order"}:
+        } & UNAVAILABLE_COMMISSION_MODELS:
             return None
         return entry.amount + exit_.amount
 
@@ -653,6 +658,18 @@ def run_cycle(
     # (stop optionnel, position bornée par les seuls fusibles notionnels). Défaut
     # True = guardrail D6 préservé (live-safe). Voir spec exploration-basse-confiance.
     require_hard_stop = bool(risk_cfg.get("require_hard_stop", True))
+    runtime_code_version = code_version.current_code_version(ROOT)
+    runtime_experiment_context = experiment_metadata.build_experiment_context(
+        code_version=runtime_code_version,
+        model_preset=experiment_metadata.active_model_preset(ROOT / ".env"),
+        risk_policy={
+            **asdict(gate.limits),
+            "require_hard_stop": require_hard_stop,
+        },
+        commission_model=experiment_metadata.commission_model_identity(
+            commission_model
+        ),
+    )
     mem = agent_memory.Memory(ROOT / "mandate" / "mandate.md", ROOT / "mandate" / "memory.md")
     learnings_store = raw_learnings.RawLearningsStore(
         STATE_DIR / "learnings.jsonl",
@@ -838,7 +855,13 @@ def run_cycle(
         fee_ref_notional = float(risk_cfg.get("max_order_value", 10_000.0))
 
         def cockpit_fee_estimator(symbol: str, price: float | None) -> dict | None:
-            return round_trip_cost(commission_model, symbol, price, fee_ref_notional)
+            return round_trip_cost(
+                commission_model,
+                symbol,
+                price,
+                fee_ref_notional,
+                fx_rate=snapshot.try_rate_for_symbol(symbol),
+            )
 
     # Contexte cross-asset partagé : tout l'univers est visible à chaque décision
     # (l'edge de l'agent = relations entre symboles, pas un graphe isolé).
@@ -1018,7 +1041,8 @@ def run_cycle(
     report: dict = {
         "ts": cycle_id,
         "dry_run": dry_run,
-        "code_version": code_version.current_code_version(ROOT),
+        "code_version": runtime_code_version,
+        "experiment_context": runtime_experiment_context,
         "symbols_due": symbols_to_decide,
         "planned_exits": planned_exits,
         "exit_watch_triggers": exit_watch_triggers,
@@ -1129,6 +1153,7 @@ def run_cycle(
             state_key=str(STATE_DIR),
             last_llm_at=process_state.last_llm_at,
             last_wake_reasons=process_state.last_wake_reasons,
+            last_wake_fingerprints=process_state.last_wake_fingerprints,
             regime_families=base_context["regime_families"],
             active_families=active_families,
             wake_source=sched,
@@ -1223,6 +1248,7 @@ def run_cycle(
         logger=log,
         trade_plan_evaluator_provider=trade_plan_evaluator_for_symbol,
         reference_volatilities=reference_volatility_by_symbol,
+        experiment_context=runtime_experiment_context,
     )
 
     dispatch_result = decision_dispatch_runtime.dispatch_decisions(
@@ -1451,6 +1477,9 @@ def run_cycle(
                 llm_gate_store.record(str(STATE_DIR), sym, now)
             process_state.last_wake_reasons[(str(STATE_DIR), sym)] = (
                 quiet_gate.persistent_reasons.get(sym, ())
+            )
+            process_state.last_wake_fingerprints[(str(STATE_DIR), sym)] = dict(
+                quiet_gate.persistent_fingerprints.get(sym, {})
             )
 
     report["model_calls_used"] = model_calls_used

@@ -56,14 +56,14 @@ def test_quiet_gate_decisions_builds_infra_hold_entry_for_calm_symbol() -> None:
     ]
 
 
-def test_quiet_gate_decisions_keeps_agent_wake_and_position_symbols() -> None:
+def test_quiet_gate_decisions_keeps_agent_wake_and_due_position_symbols() -> None:
     result = quiet_gate_decisions(
         symbols=["SPY", "QQQ"],
         now=NOW,
         state_key="/tmp/state",
         last_llm_at={
             ("/tmp/state", "SPY"): NOW - timedelta(hours=1),
-            ("/tmp/state", "QQQ"): NOW - timedelta(hours=1),
+            ("/tmp/state", "QQQ"): NOW - timedelta(hours=2),
         },
         cockpit={"cols": ["s", "st", "sig"], "rows": [["SPY", False, []], ["QQQ", False, []]]},
         regime_families={},
@@ -78,6 +78,29 @@ def test_quiet_gate_decisions_keeps_agent_wake_and_position_symbols() -> None:
     assert result.gated_symbols == []
     assert result.reasons == {"SPY": "agent_wake", "QQQ": "position"}
     assert result.entries == []
+
+
+def test_quiet_gate_decisions_gates_recent_routine_position_review() -> None:
+    result = quiet_gate_decisions(
+        symbols=["SPY"],
+        now=NOW,
+        state_key="/tmp/state",
+        last_llm_at={("/tmp/state", "SPY"): NOW - timedelta(minutes=90)},
+        cockpit={},
+        regime_families={},
+        active_families={},
+        wake_source=WakeSourceStub(set()),
+        triggers_by_symbol={},
+        held_symbols={"SPY"},
+        runtime_data_source_by_sym={"SPY": "ib"},
+    )
+
+    assert result.kept_symbols == []
+    assert result.gated_symbols == ["SPY"]
+    assert result.reasons == {}
+    assert result.entries[0]["reason"] == "quiet_gate"
+    assert result.entries[0]["relevance_gate_reason"] == "position_debounce"
+    assert result.entries[0]["model_called"] is False
 
 
 def test_quiet_gate_decisions_keeps_periodic_review_on_first_seen_symbol() -> None:
@@ -175,8 +198,11 @@ def test_quiet_gate_debounces_persistent_regime_when_last_wake_reason_matches() 
         state_key="/tmp/state",
         last_llm_at={("/tmp/state", "SPY"): NOW - timedelta(hours=1)},
         last_wake_reasons={("/tmp/state", "SPY"): ("regime",)},
+        last_wake_fingerprints={
+            ("/tmp/state", "SPY"): {"regime": "regime:us:up"}
+        },
         cockpit={"cols": ["s", "st", "sig"], "rows": [["SPY", False, []]]},
-        regime_families={"us": {"frac": 0.80}},
+        regime_families={"us": {"dir": "up", "frac": 0.80}},
         active_families={"us": ["SPY"]},
         wake_source=WakeSourceStub(set()),
         triggers_by_symbol={},
@@ -220,8 +246,11 @@ def test_quiet_gate_debounces_persistent_regime_within_two_hours() -> None:
         state_key="/tmp/state",
         last_llm_at={("/tmp/state", "SPY"): NOW - timedelta(hours=1)},
         last_wake_reasons={("/tmp/state", "SPY"): ("regime",)},
+        last_wake_fingerprints={
+            ("/tmp/state", "SPY"): {"regime": "regime:us:up"}
+        },
         cockpit={"cols": ["s", "st", "sig"], "rows": [["SPY", False, []]]},
-        regime_families={"us": {"frac": 0.8}},
+        regime_families={"us": {"dir": "up", "frac": 0.8}},
         active_families={"us": ["SPY"]},
         wake_source=WakeSourceStub(set()),
         triggers_by_symbol={},
@@ -242,6 +271,9 @@ def test_quiet_gate_debounces_persistent_htf_signal_within_two_hours() -> None:
         state_key="/tmp/state",
         last_llm_at={("/tmp/state", "SPY"): NOW - timedelta(hours=1)},
         last_wake_reasons={("/tmp/state", "SPY"): ("signal",)},
+        last_wake_fingerprints={
+            ("/tmp/state", "SPY"): {"signal": "signal:1h:breakout_up"}
+        },
         cockpit={
             "cols": ["s", "st", "sig"],
             "rows": [["SPY", False, ["1h:breakout_up"]]],
@@ -266,11 +298,14 @@ def test_quiet_gate_new_htf_signal_after_regime_wake_still_keeps() -> None:
         state_key="/tmp/state",
         last_llm_at={("/tmp/state", "SPY"): NOW - timedelta(hours=1)},
         last_wake_reasons={("/tmp/state", "SPY"): ("regime",)},
+        last_wake_fingerprints={
+            ("/tmp/state", "SPY"): {"regime": "regime:us:up"}
+        },
         cockpit={
             "cols": ["s", "st", "sig"],
             "rows": [["SPY", False, ["4h:breakout_up"]]],
         },
-        regime_families={"us": {"frac": 0.8}},
+        regime_families={"us": {"dir": "up", "frac": 0.8}},
         active_families={"us": ["SPY"]},
         wake_source=WakeSourceStub(set()),
         triggers_by_symbol={},
@@ -282,6 +317,12 @@ def test_quiet_gate_new_htf_signal_after_regime_wake_still_keeps() -> None:
     assert result.gated_symbols == []
     assert result.reasons == {"SPY": "signal"}
     assert result.persistent_reasons == {"SPY": ("regime", "signal")}
+    assert result.persistent_fingerprints == {
+        "SPY": {
+            "regime": "regime:us:up",
+            "signal": "signal:4h:breakout_up",
+        }
+    }
 
 
 def test_quiet_gate_both_persistent_reasons_stay_quiet() -> None:
@@ -291,11 +332,17 @@ def test_quiet_gate_both_persistent_reasons_stay_quiet() -> None:
         state_key="/tmp/state",
         last_llm_at={("/tmp/state", "SPY"): NOW - timedelta(hours=1)},
         last_wake_reasons={("/tmp/state", "SPY"): ("regime", "signal")},
+        last_wake_fingerprints={
+            ("/tmp/state", "SPY"): {
+                "regime": "regime:us:up",
+                "signal": "signal:4h:breakout_up",
+            }
+        },
         cockpit={
             "cols": ["s", "st", "sig"],
             "rows": [["SPY", False, ["4h:breakout_up"]]],
         },
-        regime_families={"us": {"frac": 0.8}},
+        regime_families={"us": {"dir": "up", "frac": 0.8}},
         active_families={"us": ["SPY"]},
         wake_source=WakeSourceStub(set()),
         triggers_by_symbol={},
@@ -319,7 +366,7 @@ def test_quiet_gate_records_both_persistent_reasons_on_regime_keep() -> None:
             "cols": ["s", "st", "sig"],
             "rows": [["SPY", False, ["4h:breakout_up"]]],
         },
-        regime_families={"us": {"frac": 0.8}},
+        regime_families={"us": {"dir": "up", "frac": 0.8}},
         active_families={"us": ["SPY"]},
         wake_source=WakeSourceStub(set()),
         triggers_by_symbol={},
@@ -330,6 +377,59 @@ def test_quiet_gate_records_both_persistent_reasons_on_regime_keep() -> None:
     assert result.kept_symbols == ["SPY"]
     assert result.reasons == {"SPY": "regime"}
     assert result.persistent_reasons == {"SPY": ("regime", "signal")}
+    assert result.persistent_fingerprints == {
+        "SPY": {
+            "regime": "regime:us:up",
+            "signal": "signal:4h:breakout_up",
+        }
+    }
+
+
+def test_quiet_gate_position_reveille_sur_inversion_signal_htf() -> None:
+    key = ("/tmp/state", "SPY")
+    result = quiet_gate_decisions(
+        symbols=["SPY"],
+        now=NOW,
+        state_key="/tmp/state",
+        last_llm_at={key: NOW - timedelta(minutes=30)},
+        last_wake_reasons={key: ("signal",)},
+        last_wake_fingerprints={key: {"signal": "signal:1h:breakout_up"}},
+        cockpit={
+            "cols": ["s", "st", "sig"],
+            "rows": [["SPY", False, ["1h:breakout_down"]]],
+        },
+        regime_families={},
+        active_families={},
+        wake_source=WakeSourceStub(set()),
+        triggers_by_symbol={},
+        held_symbols={"SPY"},
+        runtime_data_source_by_sym={},
+    )
+
+    assert result.kept_symbols == ["SPY"]
+    assert result.reasons == {"SPY": "signal"}
+
+
+def test_quiet_gate_position_reveille_sur_inversion_regime() -> None:
+    key = ("/tmp/state", "SPY")
+    result = quiet_gate_decisions(
+        symbols=["SPY"],
+        now=NOW,
+        state_key="/tmp/state",
+        last_llm_at={key: NOW - timedelta(minutes=30)},
+        last_wake_reasons={key: ("regime",)},
+        last_wake_fingerprints={key: {"regime": "regime:us:up"}},
+        cockpit={"cols": ["s", "st", "sig"], "rows": [["SPY", False, []]]},
+        regime_families={"us": {"dir": "down", "frac": 0.8}},
+        active_families={"us": ["SPY"]},
+        wake_source=WakeSourceStub(set()),
+        triggers_by_symbol={},
+        held_symbols={"SPY"},
+        runtime_data_source_by_sym={},
+    )
+
+    assert result.kept_symbols == ["SPY"]
+    assert result.reasons == {"SPY": "regime"}
 
 
 def test_stale_market_hold_decision_records_first_stale_entry() -> None:

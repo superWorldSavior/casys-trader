@@ -85,6 +85,8 @@ def test_run_cycle_execute_les_sorties_planifiees_avant_codex(monkeypatch, tmp_p
 
     monkeypatch.setattr(daemon, "ROOT", tmp_path)
     monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+    process_state = daemon.CycleProcessState()
+    process_state.last_llm_at[(str(state_dir), "SPY")] = now - timedelta(minutes=15)
     data_source = make_data_source(lambda symbol, lookback, interval: [
         Bar(ts=now.isoformat(), open=106.0, high=107.0, low=105.0, close=106.0, volume=1000.0)
     ])
@@ -102,11 +104,14 @@ def test_run_cycle_execute_les_sorties_planifiees_avant_codex(monkeypatch, tmp_p
         symbols_filter=["SPY"],
         sched=Scheduler(state_dir / "scheduler.json"),
         data_source=data_source,
+        process_state=process_state,
     )
 
     assert report["planned_exits"][0]["reason"] == "take_profit:tp1"
     assert report["planned_exits"][0]["executed"] is True
-    assert codex_calls == 1
+    # La protection déterministe s'applique même si la revue LLM routinière de
+    # la position est encore sous cooldown.
+    assert codex_calls == 0
     assert _broker_positions(state_dir)["SPY"].quantity == 5.0
 
 
@@ -352,6 +357,8 @@ def test_run_cycle_exit_watch_reveille_agent_sans_sortie_auto(monkeypatch, tmp_p
 
     monkeypatch.setattr(daemon, "ROOT", tmp_path)
     monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+    process_state = daemon.CycleProcessState()
+    process_state.last_llm_at[(str(state_dir), "SPY")] = now - timedelta(minutes=15)
     data_source = make_data_source(lambda symbol, lookback, interval: [
         Bar(ts="2026-06-05T11:00:00+00:00", open=100.0, high=101.0, low=99.0, close=100.0, volume=1000.0),
         Bar(ts=now.isoformat(), open=98.0, high=99.0, low=97.0, close=98.0, volume=1000.0),
@@ -369,6 +376,7 @@ def test_run_cycle_exit_watch_reveille_agent_sans_sortie_auto(monkeypatch, tmp_p
         symbols_filter=[],
         sched=Scheduler(state_dir / "scheduler.json"),
         data_source=data_source,
+        process_state=process_state,
     )
 
     assert [decision["symbol"] for decision in report["decisions"]] == ["SPY"]

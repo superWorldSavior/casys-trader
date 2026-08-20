@@ -123,6 +123,82 @@ def test_reduction_partielle_emet_un_round_trip_et_garde_la_position(tmp_path) -
     assert trips[0]["pnl"] == 20.0
 
 
+def test_attribution_headline_is_one_completed_flat_to_flat_cycle(tmp_path) -> None:
+    _write_perf(
+        tmp_path,
+        [
+            {
+                "ts": "2026-06-09T10:00:00+00:00",
+                "symbol": "SPY",
+                "action": "BUY",
+                "quantity": 10,
+                "price": 100.0,
+                "confidence": 0.8,
+                "intent": "OPEN_LONG",
+            },
+            {
+                "ts": "2026-06-09T11:00:00+00:00",
+                "symbol": "SPY",
+                "action": "SELL",
+                "quantity": 4,
+                "price": 110.0,
+                "intent": "REDUCE",
+                "exit_reason": "take_profit",
+            },
+            {
+                "ts": "2026-06-10T12:00:00+00:00",
+                "symbol": "SPY",
+                "action": "SELL",
+                "quantity": 6,
+                "price": 90.0,
+                "intent": "CLOSE",
+                "exit_reason": "hard_stop",
+            },
+            # Realised partial exit from a still-open cycle: it must not leak
+            # into completed-cycle outcomes or their mechanism breakdown.
+            {
+                "ts": "2026-06-10T13:00:00+00:00",
+                "symbol": "QQQ",
+                "action": "BUY",
+                "quantity": 10,
+                "price": 200.0,
+                "confidence": 0.9,
+                "intent": "OPEN_LONG",
+            },
+            {
+                "ts": "2026-06-10T14:00:00+00:00",
+                "symbol": "QQQ",
+                "action": "SELL",
+                "quantity": 2,
+                "price": 210.0,
+                "intent": "REDUCE",
+                "exit_reason": "take_profit",
+            },
+        ],
+    )
+
+    attr = compute_attribution(tmp_path, since="2026-06-10")
+
+    assert attr["summary_grain"] == "flat_to_flat_position_cycle"
+    assert attr["mechanism_grain"] == "exit_leg"
+    assert attr["n_closed_trades"] == 1
+    assert attr["n_closed_position_cycles"] == 1
+    assert attr["n_exit_legs"] == 2
+    assert attr["realized_pnl"] == -20.0
+    assert attr["win_rate"] == 0.0
+    assert attr["avg_pnl"] == -20.0
+    assert attr["avg_holding_minutes"] == 1_560.0
+    assert attr["recent_trips"][0]["exit_leg_count"] == 2
+    assert attr["recent_trips"][0]["exit_reason"] == "hard_stop"
+    assert len(attr["recent_exit_legs"]) == 2
+
+    reasons = {row["reason"]: row for row in attr["by_exit_reason"]}
+    assert reasons["take_profit"]["n"] == 1
+    assert reasons["take_profit"]["total_pnl"] == 40.0
+    assert reasons["hard_stop"]["n"] == 1
+    assert reasons["hard_stop"]["total_pnl"] == -60.0
+
+
 def test_round_trip_propage_la_raison_de_sortie(tmp_path) -> None:
     _write_perf(
         tmp_path,

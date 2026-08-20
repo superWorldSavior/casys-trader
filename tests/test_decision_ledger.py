@@ -2,6 +2,7 @@ import json
 
 from trader.application.record.decision_ledger_rows import decision_row_mandate_ref
 from trader.reporting.ledger import decision_ledger
+from trader.support.metadata.experiment import build_experiment_context
 
 
 def _report(decisions: list[dict] | None = None) -> dict:
@@ -19,6 +20,22 @@ def _report(decisions: list[dict] | None = None) -> dict:
             "git_branch": "main",
             "git_dirty": False,
         },
+        "experiment_context": build_experiment_context(
+            code_version={"git_commit": "abcdef1234567890", "git_dirty": False},
+            model_preset="codex-luna-medium",
+            risk_policy={
+                "max_position_value": 50_000,
+                "max_gross_exposure": 100_000,
+                "max_order_value": 50_000,
+                "min_equity": 50_000,
+                "max_risk_per_trade_pct": 0.01,
+                "min_trade_confidence": 0.7,
+                "full_risk_confidence": 0.9,
+                "confidence_gate_enabled": False,
+                "require_hard_stop": False,
+            },
+            commission_model="ibkr",
+        ),
         "decisions": decisions or [],
     }
 
@@ -59,6 +76,20 @@ def test_build_decision_row_normalise_une_decision_pour_audit() -> None:
     assert row["reason"] == "hold"
     assert row["code_version"]["git_commit_short"] == "abcdef123456"
     assert row["code_version"]["git_branch"] == "main"
+    assert row["experiment_id"].startswith("exp:v1:")
+    assert row["experiment_components"]["model"] == {
+        "provider": "spark",
+        "model": "gpt-5.3-codex-spark/medium",
+        "preset": "codex-luna-medium",
+    }
+    assert row["experiment_components"]["execution"] == {
+        "commission_model": "ibkr"
+    }
+    assert row["experiment_status"] == {
+        "schema_version": 1,
+        "decision_grade": True,
+        "issues": [],
+    }
     assert row["decision"]["rationale"] == "range sans catalyseur"
     assert row["market_snapshot"] == {
         "price": 532.12,
@@ -72,6 +103,24 @@ def test_build_decision_row_normalise_une_decision_pour_audit() -> None:
     assert row["portfolio_snapshot"]["equity"] == 100000.0
     assert row["labels"] == {}
     assert row["mandate_ref"] is None
+
+
+def test_decision_experiment_is_stable_and_actual_model_splits_fallback() -> None:
+    report = _report()
+    primary = _decision()
+    same = _decision("QQQ")
+    fallback = {
+        **_decision("QQQ"),
+        "llm_provider": "acpx-claude-sonnet",
+        "llm_model": "sonnet",
+    }
+
+    first_row = decision_ledger.build_decision_row(report, primary, sequence=0)
+    same_row = decision_ledger.build_decision_row(report, same, sequence=1)
+    fallback_row = decision_ledger.build_decision_row(report, fallback, sequence=1)
+
+    assert first_row["experiment_id"] == same_row["experiment_id"]
+    assert fallback_row["experiment_id"] != first_row["experiment_id"]
 
 
 def test_decision_row_persists_trade_evaluation_audit_fields() -> None:

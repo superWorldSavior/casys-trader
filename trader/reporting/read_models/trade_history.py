@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+from collections.abc import Iterable, Mapping
 from datetime import date, datetime
 from pathlib import Path
 
@@ -106,7 +107,12 @@ def _as_non_negative_float(value: object) -> float:
 
 
 def compute_round_trips(state_dir: Path) -> list[dict]:
-    """Reconstruct closed trades from the append-only model-performance fills."""
+    """Reconstruct realised exit legs from append-only model-performance fills.
+
+    A partial exit is intentionally emitted immediately: callers that analyse
+    exit mechanisms need one observation per realised leg.  Headline outcome
+    metrics must collapse these rows with :func:`aggregate_position_cycles`.
+    """
 
     rows = _read_perf_rows(state_dir)
     rows.sort(key=lambda row: (str(row.get("symbol")), str(row.get("ts"))))
@@ -232,6 +238,147 @@ def compute_round_trips(state_dir: Path) -> list[dict]:
     return trips
 
 
+def _finite_float(value: object) -> float | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if math.isfinite(parsed) else None
+
+
+def _unique_text(rows: Iterable[Mapping[str, object]], key: str) -> list[str]:
+    values: list[str] = []
+    for row in rows:
+        raw = row.get(key)
+        candidates = raw if isinstance(raw, list) else [raw]
+        for candidate in candidates:
+            value = str(candidate or "").strip()
+            if value and value not in values:
+                values.append(value)
+    return values
+
+
+def aggregate_position_cycles(
+    trips: Iterable[Mapping[str, object]],
+) -> list[dict]:
+    """Collapse realised exit legs into completed flat-to-flat position cycles.
+
+    Rows carrying a ``position_cycle_id`` are emitted only once the position is
+    flat.  Legacy rows without that identifier remain standalone observations,
+    preserving backward compatibility with pre-cycle history and unit callers.
+    """
+
+    grouped: dict[tuple[str, str, str], list[Mapping[str, object]]] = {}
+    for index, trip in enumerate(trips):
+        cycle_id = str(trip.get("position_cycle_id") or "").strip()
+        if cycle_id:
+            key = ("cycle", str(trip.get("symbol") or ""), cycle_id)
+        else:
+            key = ("legacy_leg", "", str(index))
+        grouped.setdefault(key, []).append(trip)
+
+    cycles: list[dict] = []
+    for (kind, _, cycle_key), source_rows in grouped.items():
+        if kind == "legacy_leg":
+            legacy = dict(source_rows[0])
+            legacy.setdefault("position_cycle_closed", True)
+            legacy.setdefault("exit_leg_count", 1)
+            cycles.append(legacy)
+            continue
+        if kind == "cycle" and not any(
+            row.get("position_cycle_closed") is True for row in source_rows
+        ):
+            continue
+
+        rows = sorted(source_rows, key=lambda row: str(row.get("exit_ts") or ""))
+        first = rows[0]
+        last = rows[-1]
+        quantities = [
+            abs(quantity)
+            for row in rows
+            if (quantity := _finite_float(row.get("quantity"))) is not None
+        ]
+        total_quantity = sum(quantities)
+
+        def summed(field: str) -> float:
+            return sum(
+                parsed
+                for row in rows
+                if (parsed := _finite_float(row.get(field))) is not None
+            )
+
+        def quantity_weighted(field: str) -> float | None:
+            weighted = 0.0
+            weight = 0.0
+            for row in rows:
+                value = _finite_float(row.get(field))
+                quantity = _finite_float(row.get("quantity"))
+                if value is None or quantity is None:
+                    continue
+                row_weight = abs(quantity)
+                weighted += value * row_weight
+                weight += row_weight
+            return weighted / weight if weight > 0.0 else None
+
+        entry_decision_ids: list[str] = []
+        for row in rows:
+            raw_ids = row.get("entry_decision_ids")
+            candidates = raw_ids if isinstance(raw_ids, list) else []
+            if not candidates and row.get("entry_decision_id"):
+                candidates = [row["entry_decision_id"]]
+            for candidate in candidates:
+                decision_id = str(candidate or "").strip()
+                if decision_id and decision_id not in entry_decision_ids:
+                    entry_decision_ids.append(decision_id)
+
+        entry_ts = str(first.get("entry_ts") or "") or None
+        exit_ts = str(last.get("exit_ts") or "") or None
+        exit_reasons = _unique_text(rows, "exit_reason")
+        source_plan_ids = _unique_text(rows, "source_plan_id")
+        cycles.append(
+            {
+                "symbol": first.get("symbol"),
+                "side": first.get("side"),
+                "quantity": total_quantity,
+                "entry_price": quantity_weighted("entry_price"),
+                "exit_price": quantity_weighted("exit_price"),
+                "gross_pnl": summed("gross_pnl"),
+                "commission": summed("commission"),
+                "pnl": summed("pnl"),
+                "entry_ts": entry_ts,
+                "exit_ts": exit_ts,
+                "holding_minutes": (
+                    _holding_minutes(entry_ts, exit_ts)
+                    if entry_ts is not None and exit_ts is not None
+                    else None
+                ),
+                "entry_confidence": quantity_weighted("entry_confidence"),
+                # The final leg names what flattened the position.  All leg
+                # mechanisms remain explicit for attribution below.
+                "exit_reason": last.get("exit_reason"),
+                "exit_reasons": exit_reasons,
+                "source_plan_id": (
+                    source_plan_ids[0] if len(source_plan_ids) == 1 else None
+                ),
+                "source_plan_ids": source_plan_ids,
+                "entry_decision_id": (
+                    entry_decision_ids[0]
+                    if len(entry_decision_ids) == 1
+                    else None
+                ),
+                "entry_decision_ids": entry_decision_ids,
+                "position_cycle_id": (
+                    cycle_key if kind == "cycle" else first.get("position_cycle_id")
+                ),
+                "position_cycle_closed": True,
+                "exit_leg_count": len(rows),
+            }
+        )
+    return cycles
+
+
 def _parse_iso_date(value: str, *, field: str) -> date:
     raw = value.strip()
     try:
@@ -312,4 +459,8 @@ def filter_regime_trips(
     }
 
 
-__all__ = ["compute_round_trips", "filter_regime_trips"]
+__all__ = [
+    "aggregate_position_cycles",
+    "compute_round_trips",
+    "filter_regime_trips",
+]

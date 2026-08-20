@@ -48,7 +48,10 @@ def test_compute_live_kpis_read_model_projects_state_files(tmp_path: Path) -> No
 
     assert kpis["equity"] == 101_000.0
     assert kpis["cash"] == 95_000.0
-    assert kpis["num_trades"] == 1
+    assert kpis["num_trades"] == 0
+    assert kpis["num_closed_position_cycles"] == 0
+    assert kpis["num_fills"] == 1
+    assert kpis["trade_count_grain"] == "flat_to_flat_position_cycle"
     assert kpis["positions"] == [{"symbol": "SPY", "quantity": 5.0, "avg_price": 100.0}]
 
 
@@ -80,5 +83,59 @@ def test_compute_live_kpis_reads_broker_from_sqlite_when_db_exists(tmp_path: Pat
 
     assert not (state_dir / "broker.json").exists()
     assert kpis["cash"] == 99_500.0
-    assert kpis["num_trades"] == 1
+    assert kpis["num_trades"] == 0
+    assert kpis["num_closed_position_cycles"] == 0
+    assert kpis["num_fills"] == 1
     assert kpis["positions"] == [{"symbol": "SPY", "quantity": 5.0, "avg_price": 100.0}]
+
+
+def test_compute_live_kpis_counts_completed_position_cycles_not_fill_rows(
+    tmp_path: Path,
+) -> None:
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    (config_dir / "universe.yaml").write_text(
+        yaml.dump({"starting_cash": 100_000.0, "symbols": ["SPY"]}),
+        encoding="utf-8",
+    )
+    (state_dir / "model_performance.jsonl").write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "ts": "2026-01-01T10:00:00+00:00",
+                        "symbol": "SPY",
+                        "action": "BUY",
+                        "quantity": 10,
+                        "price": 100.0,
+                    }
+                ),
+                json.dumps(
+                    {
+                        "ts": "2026-01-01T11:00:00+00:00",
+                        "symbol": "SPY",
+                        "action": "SELL",
+                        "quantity": 4,
+                        "price": 105.0,
+                    }
+                ),
+                json.dumps(
+                    {
+                        "ts": "2026-01-01T12:00:00+00:00",
+                        "symbol": "SPY",
+                        "action": "SELL",
+                        "quantity": 6,
+                        "price": 95.0,
+                    }
+                ),
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    kpis = compute_live_kpis(state_dir)
+
+    assert kpis["num_trades"] == 1
+    assert kpis["num_closed_position_cycles"] == 1

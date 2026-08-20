@@ -7,6 +7,7 @@ from typing import Any
 
 from trader.domain import decision_reason
 from trader.domain.decision_identity import decision_id
+from trader.support.metadata import experiment as experiment_metadata
 
 # Additive optional fields (thesis, mandate_ref, …) stay on this version.
 # Readers must tolerate a missing key on historical rows.
@@ -18,6 +19,7 @@ UNKNOWN_CODE_VERSION = {
     "git_commit_short": None,
     "git_branch": None,
     "git_dirty": None,
+    "git_tracked_dirty": None,
     "git_dirty_files": [],
 }
 
@@ -158,6 +160,13 @@ def build_decision_row(
     code_version = (
         _as_dict(decision.get("code_version")) or _as_dict(report.get("code_version")) or dict(UNKNOWN_CODE_VERSION)
     )
+    resolved_experiment = experiment_metadata.inherited_experiment(
+        decision.get("experiment")
+    ) or experiment_metadata.decision_experiment(
+        _as_dict(report.get("experiment_context")),
+        provider=decision.get("llm_provider"),
+        model=decision.get("llm_model"),
+    )
     indicator_watch = _as_dict(decision.get("indicator_watch"))
     trade_evaluation = _as_dict(decision.get("trade_plan_evaluation"))
     trade_economics = _as_dict(trade_evaluation.get("economics"))
@@ -169,6 +178,13 @@ def build_decision_row(
         "sequence": sequence,
         "source": source,
         "code_version": code_version,
+        "experiment_id": resolved_experiment["experiment_id"],
+        "experiment_components": resolved_experiment["components"],
+        "experiment_status": {
+            "schema_version": resolved_experiment["schema_version"],
+            "decision_grade": resolved_experiment["decision_grade"],
+            "issues": resolved_experiment["issues"],
+        },
         "symbol": symbol,
         "action": decision.get("action"),
         "intent": decision.get("intent"),

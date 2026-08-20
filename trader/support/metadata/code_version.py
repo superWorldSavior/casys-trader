@@ -18,6 +18,7 @@ def unknown_code_version() -> dict[str, Any]:
         "git_commit_short": None,
         "git_branch": None,
         "git_dirty": None,
+        "git_tracked_dirty": None,
         "git_dirty_files": [],
     }
 
@@ -50,6 +51,9 @@ def current_code_version(repo_root: str | Path) -> dict[str, Any]:
         return unknown_code_version()
 
     dirty_files = [line for line in (status or "").splitlines() if line.strip()]
+    tracked_dirty_files = [
+        line for line in dirty_files if not line.startswith("?? ")
+    ]
     return {
         "schema_version": SCHEMA_VERSION,
         "source": "git",
@@ -58,6 +62,7 @@ def current_code_version(repo_root: str | Path) -> dict[str, Any]:
         "git_commit_date": commit_date,
         "git_branch": branch,
         "git_dirty": bool(dirty_files),
+        "git_tracked_dirty": bool(tracked_dirty_files),
         "git_dirty_files": dirty_files[:MAX_DIRTY_FILES],
     }
 
@@ -88,6 +93,7 @@ def historical_code_version(repo_root: str | Path, decision_ts: str, *, ref: str
         "git_commit_short": commit[:12],
         "git_branch": branch,
         "git_dirty": None,
+        "git_tracked_dirty": None,
         "git_dirty_files": [],
         "inference": {
             "method": "git_log_before_decision_ts",

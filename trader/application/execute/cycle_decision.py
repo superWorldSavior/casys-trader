@@ -31,6 +31,7 @@ from trader.domain.planning.exit_plan_spec import InvalidExitPlanError, validate
 from trader.domain.planning.trade_plan import apply_exit_update, resolve_exit_plan
 from trader.domain.decisions import Decision
 from trader.domain.planning.protocols import SchedulerLike
+from trader.support.metadata import experiment as experiment_metadata
 
 _OPENING_INTENTS = {"OPEN_LONG", "OPEN_SHORT", "FLIP", "SCALE_IN"}
 _PURE_OPEN_INTENTS = {"OPEN_LONG", "OPEN_SHORT"}
@@ -99,6 +100,7 @@ class DecisionExecutionContext:
     logger: logging.Logger = logging.getLogger("casys-trader")
     trade_plan_evaluator_provider: Callable[[str], object | None] | None = None
     reference_volatilities: dict[str, float | None] = field(default_factory=dict)
+    experiment_context: dict | None = None
 
 
 def _capture_exit_plan_trace(entry: dict, trace: dict) -> None:
@@ -331,6 +333,17 @@ def execute_one_cycle_decision(
         armed_plan_order=ctx.armed_plan_orders.get(sym),
         runtime_data_source=ctx.runtime_data_source_by_sym.get(sym),
     )
+    armed_order = ctx.armed_plan_orders.get(sym)
+    inherited = experiment_metadata.inherited_experiment(
+        armed_order.get("experiment") if isinstance(armed_order, dict) else None
+    )
+    decision_experiment = inherited or experiment_metadata.decision_experiment(
+        ctx.experiment_context,
+        provider=decision.llm_provider,
+        model=decision.llm_model,
+    )
+    entry["experiment_id"] = decision_experiment["experiment_id"]
+    entry["experiment"] = decision_experiment
     # La même identité suit le learning, le ledger et les fills associés. Elle
     # est réservée avant tout side effect d'exécution.
     entry["decision_id"] = ctx.decision_id_for_symbol(sym)
@@ -408,6 +421,15 @@ def execute_one_cycle_decision(
             [r["reason"] for r in watch_preparation.rejections],
         )
     pending_indicator_watch = watch_preparation.pending_watch
+    if (
+        pending_indicator_watch is not None
+        and decision_experiment["experiment_id"] is not None
+        and isinstance(pending_indicator_watch.get("order"), dict)
+    ):
+        pending_indicator_watch = copy.deepcopy(pending_indicator_watch)
+        pending_indicator_watch["order"]["experiment"] = copy.deepcopy(
+            decision_experiment
+        )
 
     def apply_decision_schedule() -> None:
         cycle_schedule.apply_decision_schedule(

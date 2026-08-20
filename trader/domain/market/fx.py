@@ -42,15 +42,40 @@ SUFFIX_CCY: dict[str, str] = {
 }
 
 
-def currency_for(symbol: str) -> str:
-    """Devise de cotation : table exacte SYMBOL_CCY puis suffixe SUFFIX_CCY. Défaut USD."""
+def mapped_suffix_for(symbol: str) -> str | None:
+    """Return the canonical listed-market suffix, when one is configured.
+
+    This is deliberately narrower than ``str.rsplit(".", 1)``: an unknown
+    dotted symbol is not silently promoted to a supported venue.  Consumers
+    such as commission adapters can therefore distinguish a known non-US
+    listing from the historical USD default used by :func:`currency_for`.
+    """
+
+    sym = (symbol or "").strip().upper()
+    return next(
+        (
+            suffix
+            for suffix in sorted(SUFFIX_CCY, key=len, reverse=True)
+            if sym.endswith(suffix)
+        ),
+        None,
+    )
+
+
+def known_currency_for(symbol: str) -> str | None:
+    """Return the quote currency only when the exact market is mapped."""
+
     sym = (symbol or "").strip().upper()
     if sym in SYMBOL_CCY:
         return SYMBOL_CCY[sym]
-    for suffix, ccy in SUFFIX_CCY.items():
-        if sym.endswith(suffix):
-            return ccy
-    return BASE_CCY
+    suffix = mapped_suffix_for(sym)
+    return SUFFIX_CCY.get(suffix) if suffix is not None else None
+
+
+def currency_for(symbol: str) -> str:
+    """Devise de cotation : mapping canonique, puis défaut USD historique."""
+
+    return known_currency_for(symbol) or BASE_CCY
 
 
 def to_usd(amount: float, ccy: str, rate: float) -> float:
