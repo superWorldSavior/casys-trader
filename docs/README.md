@@ -4,7 +4,7 @@ Point d'entrée de la doc. Deux choses ici : **où vit chaque type de doc**
 (cadre Diátaxis) et **la carte de couverture** (quel sous-système est
 documenté, où, et quels trous restent).
 
-> Statut carte : **v5 — 2026-08-11**, vérifiée contre le runtime courant :
+> Statut carte : **v6 — 2026-08-20**, vérifiée contre le runtime courant :
 > SQLite canonique, queue grain-symbole, pilote de preuve, profils LLM,
 > learnings automatiques et pipeline de rapports global/macro/régional/micro.
 > Les `🟡`/`❌` sont un backlog priorisé ; corriger une ligne = ouvrir la doc citée.
@@ -18,7 +18,7 @@ documenté, où, et quels trous restent).
 | **Tutorials** | [`docs/tutorials/`](tutorials/README.md) | Parcours guidés pour apprendre sur un état paper | « accompagne-moi pour comprendre » |
 | **How-to** | [`docs/how-to/`](how-to/README.md) | Runbooks : relancer, mesurer, maintenir, diagnostiquer | « comment je fais X ? » |
 | **Reference** | [`docs/reference/`](reference/README.md) | Comportement actuel, invariants, garde-fous et formats | « comment ça marche maintenant ? » |
-| **Explanation** | [`architecture.md`](architecture.md), [`decisions-business.md`](decisions-business.md) | Vue d'ensemble, raisons et relations entre concepts | « pourquoi est-ce conçu ainsi ? » |
+| **Explanation** | [`docs/explanation/`](explanation/README.md), façade [`architecture.md`](architecture.md), [`decisions-business.md`](decisions-business.md) | Vue d'ensemble, raisons et relations entre concepts | « pourquoi est-ce conçu ainsi ? » |
 
 Documents complémentaires, hors des quatre quadrants :
 
@@ -32,9 +32,8 @@ Documents complémentaires, hors des quatre quadrants :
 
 - `docs/reference/` porte la vérité runtime **canonique** : comportement actuel,
   invariants, champs d'état, codes et limites.
-- `docs/architecture.md` explique le cycle de bout en bout et renvoie aux pages
-  `reference/` pour les détails ; il ne doit plus devenir le seul endroit où vit
-  un sous-système.
+- `docs/explanation/` explique les relations et les choix. `architecture.md`
+  conserve seulement les anciens titres §1–14 comme façade de compatibilité.
 - `docs/how-to/` contient les procédures opérateur ; il lie vers `reference/`
   au lieu de recopier les invariants.
 - `docs/decisions/` est immuable : pourquoi on a tranché, pas une page runtime
@@ -43,10 +42,12 @@ Documents complémentaires, hors des quatre quadrants :
   après livraison, consolider le comportement dans `reference/` et garder le
   plan comme trace de chantier.
 
-`architecture.md` (§1-14) couvre l'explication du **cœur runtime**. Les sujets
-transverses ou fréquemment diagnostiqués ont une page `reference/` dédiée.
+Les pages `explanation/architecture/` couvrent l'explication du **cœur runtime** ;
+`architecture.md` garde les liens historiques §1–14. Les sujets fréquemment
+diagnostiqués ont une page `reference/` dédiée.
 
-Index de dossiers : [`reference`](reference/README.md), [`how-to`](how-to/README.md),
+Index de dossiers : [`explanation`](explanation/README.md),
+[`reference`](reference/README.md), [`how-to`](how-to/README.md),
 [`tutorials`](tutorials/README.md),
 [`decisions`](decisions/README.md), [`postmortems`](postmortems/README.md),
 [`superpowers`](superpowers/README.md).
@@ -55,7 +56,8 @@ Index de dossiers : [`reference`](reference/README.md), [`how-to`](how-to/README
 
 | Document | Rôle | Source de vérité |
 |---|---|---|
-| [`architecture.md`](architecture.md) | Explication bout-en-bout du cycle runtime | Code + pages `reference/` |
+| [`explanation/`](explanation/README.md) | Explications d'architecture découpées par sujet | Code + pages `reference/` |
+| [`architecture.md`](architecture.md) | Façade de compatibilité des sections §1–14 | `explanation/architecture/` |
 | [`decisions-business.md`](decisions-business.md) | Synthèse lisible des décisions métier | [`decisions/registre-decisions-metier.md`](decisions/registre-decisions-metier.md) |
 | `etat-systeme.md` (local, non versionné) | État vivant / snapshot opérateur | À vérifier contre `state/` et le process live avant décision |
 | [`README.md`](README.md) | Index Diátaxis + carte de couverture | Cette page |
@@ -76,7 +78,7 @@ Légende : ✅ couvert · 🟡 partiel / dispersé / potentiellement périmé ·
 | Enregistrement décision | `application/record/decision_recorder` | ✅ | archi §3.8, §8 | — |
 | Finalisation fin de cycle | `runtime/cycle_finalization` | ✅ | archi §1.1, §2 ; `reference/task-queue.md` | queue paper activée |
 | Gate de pertinence (coût) | `planning/relevance_gate` | ✅ | archi §3.4 | D7A |
-| **File de tâches durable** | `runtime/queue_runtime`, `infrastructure/queue/*` (ledger, pools, worker), `application/{queue_dispatch,execute_queue_dispatch,execute_queue_plan}` | ✅ | **`reference/task-queue.md`** | queue paper activée |
+| **File de tâches durable** | `runtime/queue_runtime`, `infrastructure/queue/*` (ledger, pools, worker), `application/decide/queue_dispatch`, `application/execute/{queue_dispatch,queue_plan}` ; handlers `application/decide/handler` et `infrastructure/queue/order_handler` | ✅ | **`reference/task-queue.md`** | queue paper activée |
 | **Pilote de preuve du processus** | `domain/process_trace`, `runtime/process_*`, `state_db/process_event_store` | ✅ | **`reference/process-governance.md`**, archi §14 | observationnel |
 
 ### Actions & exécution
@@ -107,7 +109,7 @@ Légende : ✅ couvert · 🟡 partiel / dispersé / potentiellement périmé ·
 | Sous-système | Package/module | Réf | Où | Décisions |
 |---|---|---|---|---|
 | Radar / rotation / challengers / hotlist | `runtime/market_rotation_runtime`, `runtime/news_challenger_runtime`, `market/rotation/*`, `domain/universe` | ✅ | **`reference/universe-rotation.md`**, archi §1.1 | D9, D10, D13, D15 |
-| Pipeline global/régional → Trader | `runtime/universe_intelligence_runtime`, `domain/universe/mandate`, `agent/universe` | ✅ | **`reference/universe-trader-pipeline.md`**, archi §13 | advisory + activation exacte |
+| Pipeline global/régional → Trader | `runtime/universe_intelligence_runtime`, `domain/universe/mandate`, `agent/universe` | ✅ | **`reference/universe-trader-pipeline.md`**, archi §13 | D16, activation exacte et feedback Univers |
 | Régime (marché + familial) | `domain/market/regime`, `domain/market/family_regime` | ✅ | **`reference/regime.md`** | D2 |
 | Config univers & portefeuille | `config/*.yaml`, `support/config/pool`, `support/config/portfolio` | ✅ | **`reference/config.md`** | D9/D10/D13/D15 |
 
@@ -155,12 +157,12 @@ Les 5 trous prioritaires identifiés à la v2 sont comblés :
 4. ~~Cockpit & attribution~~ ✅ [`cockpit`](reference/cockpit.md) · [`reporting`](reference/reporting.md)
 5. ~~Config univers/portefeuille~~ ✅ [`reference/config.md`](reference/config.md)
 
-La consolidation v5 compte **23 pages Reference + index**, **7 How-to + index**
-et **1 tutoriel + index**. Elle ajoute notamment la gouvernance/provenance du cycle, les presets
-des cinq rôles, company intelligence, le pipeline Univers → Trader, la galerie
-Reports et les procédures de maintenance correspondantes. Elle ne transforme
-pas les specs/plans historiques en vérité courante et ne prétend pas que les
-snapshots de `etat-systeme.md` restent vrais sans vérification live.
+La consolidation v6 compte **25 pages Reference (index compris)**, **8 pages
+How-to (index compris)**, **4 pages Tutorials (index compris)** et **6 pages
+Explanation (index compris)**. Elle ajoute le découpage d'architecture, les
+tutoriels de cycle paper et de chaîne Brain → Univers, sans transformer les
+specs/plans historiques en vérité courante ni prétendre que les snapshots de
+`etat-systeme.md` restent vrais sans vérification live.
 
 Maintenir : quand un module change, mettre à jour sa page (lire code → éditer →
 re-fact-check si substantiel). Les seules lignes volontairement `🟡` sont les

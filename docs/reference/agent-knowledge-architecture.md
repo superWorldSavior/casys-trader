@@ -1,7 +1,7 @@
 # Référence — Architecture de connaissance de l'agent
 
 > **Type** : Reference (Diátaxis) — cadre stable.
-> **État vérifié** : 2026-08-16.
+> **État vérifié** : 2026-08-20.
 > **Rôle** : ranger toute connaissance de l'agent par sa **nature** (delta vs niveau,
 > général vs par-nom, périssable vs stable), **pas** par son système technique. Boussole
 > des chantiers learnings / macro / news / recall.
@@ -70,18 +70,21 @@ re-empiler les bacs.
 - **Existe** : ① (`global` + `mandate/guardrails.json` + mandat), ③
   (`learnings.db` + FLAIR + recall), ② matière brute (`news_items`, calendrier,
   séries) et digesteur async (`news_briefs`).
-- **Existe comme dérivé dormant** : `situation_memory.db`, index FTS5 des points
-  de briefs. Le scoring FLAIR est actif depuis `9fa7920` (`verdict` /
-  `outcome_score` via `scripts/situation_note_analytics.py evaluate`) ; le
-  retrieval n'est pas branché — aucun agent runtime n'appelle encore `search()`.
-  Ce n'est donc pas un RAG de situation actif. Voir
+- **Existe comme dérivé sans retrieval** : `situation_memory.db`, index FTS5 des
+  points de briefs. Le scoring FLAIR est actif : le sync daemon appelle
+  `refresh_situation_outcomes()` en arrière-plan, fail-open ;
+  `scripts/situation_note_analytics.py evaluate` reste le secours opérateur.
+  Le retrieval n'est pas branché — aucun agent runtime n'appelle encore
+  `search()`. Ce n'est donc pas un RAG de situation actif. Voir
   [`situation-memory.md`](situation-memory.md).
 - **Existe aussi** : scopes candidats immuables, ledgers challenger/univers,
   projection préparée, activation pré-open avec fallback observable, et tranche
-  de mandat active projetée par symbole au trader. La décision conserve son
-  `mandate_ref` pour l'audit.
-- **Manque encore** : une attribution/outcome explicite du mandat Univers, puis
-  éventuellement le retrieval de situations historiques par l'agent univers.
+  de mandat active projetée par symbole au trader. D16 attribue désormais les
+  sélections Univers contre le banc du scope et réinjecte un digest agrégé,
+  agent-only, dans son prompt. La décision trader conserve son `mandate_ref`
+  pour l'audit.
+- **Manque encore** : le retrieval de situations historiques par l'agent Univers
+  et MemRL situation (`q_value`), pas l'attribution D16.
 
 ## Implication pour les chantiers
 

@@ -151,16 +151,16 @@ ultérieur de ce panier, qu'un trade ait été pris ou non.
   `update_outcome_scores()` écrit `outcome_score` **sans toucher**
   `q_value` (`situation_memory_store.py:308-317`).
 
-### Déclenchement — script manuel + sync background fail-open
+### Déclenchement — sync background fail-open + secours opérateur
 
 ```text
 uv run python scripts/situation_note_analytics.py evaluate
 ```
 
-Le script opérateur reste disponible. Le `LearningSyncRunner` appelle
-aussi `refresh_situation_outcomes()` dans `run_learning_sync()`
-(même `get_bars` throttlé que l'univers, batch
-`DEFAULT_OUTCOME_BATCH_SIZE`). Les notes immatures
+Le `LearningSyncRunner` appelle `refresh_situation_outcomes()` dans
+`run_learning_sync()` ; le script opérateur reste disponible en secours.
+Le daemon utilise le même `get_bars` throttlé que l'univers, batch
+`DEFAULT_OUTCOME_BATCH_SIZE`. Les notes immatures
 (`evaluate_note()` → `None`) ne sont pas figées. Opt-out :
 `TRADER_SITUATION_OUTCOMES_ENABLED=0`. Un échec de cette étape est
 loggé en warning et n'interrompt jamais le cycle.

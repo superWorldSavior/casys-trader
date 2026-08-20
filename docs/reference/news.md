@@ -303,8 +303,9 @@ permettent ensuite de relier sélection, usage et outcome.
 - **FLAIR** (pas FLARE) pondère les learnings selon leurs outcomes. Sur la
   mémoire de situation, le scoring marché est **actif** : `outcome_score`,
   `verdict` et `forward_return` sont écrits dans `situation_notes` par le
-  script manuel `scripts/situation_note_analytics.py evaluate` (pas le
-  daemon). Voir [mémoire de situation](situation-memory.md).
+  sync daemon, fail-open ; le script manuel
+  `scripts/situation_note_analytics.py evaluate` reste le secours opérateur.
+  Voir [mémoire de situation](situation-memory.md).
 - MemRL est actif sur cette pile **learnings** : les recalls sont reliés aux
   outcomes différés et `q_value` contribue au ranking avec shrinkage.
 - MemRL n'est pas encore actif sur `situation_memory.db` ni chez l'agent Univers.
@@ -324,7 +325,7 @@ FLAIR et MemRL ne remplacent pas le retrieval :
 - retrieval/FTS répond à « quelles situations passées sont pertinentes ? » —
   `SituationMemoryStore.search()` existe, mais aucun agent runtime ne l'appelle ;
 - FLAIR situation est actif : il répond à « lesquelles ont été confirmées par
-  le marché ? » via le scoring manuel (voir
+  le marché ? » via le scoring du sync daemon (voir
   [mémoire de situation](situation-memory.md)) ;
 - MemRL situation n'est pas actif : il répondrait à « quels rappels ont
   réellement aidé les décisions de l'agent univers ? » une fois ses injections
