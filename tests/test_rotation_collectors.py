@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -19,6 +20,33 @@ def _make_position(qty: float) -> SimpleNamespace:
 def _make_plan(symbol: str) -> SimpleNamespace:
     """Fake TradePlan avec un champ .symbol."""
     return SimpleNamespace(symbol=symbol)
+
+
+def _seed_sqlite_position(
+    state_dir: Path,
+    *,
+    symbol: str,
+    quantity: float,
+    price: float,
+) -> None:
+    """Crée une vraie position broker dans la base canonique."""
+    from trader.domain.contracts import Order
+    from trader.infrastructure.state_db.broker_store import SqliteBroker
+    from trader.infrastructure.state_db.connection import open_state_db
+    from trader.infrastructure.state_db.migrations import import_broker_from_json
+
+    db = open_state_db(state_dir / "casys.db")
+    import_broker_from_json(
+        db,
+        state_dir / "_absent_broker.json",
+        starting_cash=100_000.0,
+    )
+    SqliteBroker(db).submit(
+        Order(symbol, "BUY", quantity),
+        price,
+        "2026-08-20T00:00:00+00:00",
+        dry_run=False,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -91,6 +119,53 @@ class TestBuildPositionsFn:
 
         fn = build_positions_fn(tmp_path)
         assert callable(fn)
+
+    def test_lit_les_positions_reelles_depuis_sqlite(self, tmp_path: Path):
+        from trader.runtime.market_rotation_runtime import build_positions_fn
+
+        _seed_sqlite_position(
+            tmp_path,
+            symbol="2330.TW",
+            quantity=7.0,
+            price=2425.0,
+        )
+
+        positions = build_positions_fn(tmp_path)()
+
+        assert set(positions) == {"2330.TW"}
+        assert positions["2330.TW"].quantity == 7.0
+        assert positions["2330.TW"].avg_price == 2425.0
+
+    def test_sqlite_prime_sur_un_broker_json_contradictoire(self, tmp_path: Path):
+        from trader.runtime.market_rotation_runtime import build_positions_fn
+
+        _seed_sqlite_position(
+            tmp_path,
+            symbol="SQLITE",
+            quantity=3.0,
+            price=100.0,
+        )
+        (tmp_path / "broker.json").write_text(
+            json.dumps(
+                {
+                    "cash": 90_000.0,
+                    "positions": {
+                        "STALE": {
+                            "symbol": "STALE",
+                            "quantity": 99.0,
+                            "avg_price": 1.0,
+                        }
+                    },
+                    "fills": [],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        positions = build_positions_fn(tmp_path)()
+
+        assert set(positions) == {"SQLITE"}
+        assert positions["SQLITE"].quantity == 3.0
 
 
 class TestBuildPlansFn:

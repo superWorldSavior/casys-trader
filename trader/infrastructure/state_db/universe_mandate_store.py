@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import threading
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
@@ -145,23 +146,49 @@ class UniverseMandateStore:
             self._append_history(payload)
         return payload
 
-    def active_slice_for_symbol(self, symbol: str) -> dict[str, Any] | None:
+    def active_slice_for_symbol(
+        self,
+        symbol: str,
+        *,
+        active_at: datetime | str,
+    ) -> dict[str, Any] | None:
+        moment = _parse_datetime(active_at)
+        if moment is None:
+            return None
         payload = read_json_object(self.active_symbol_path(symbol))
         mandate = payload.get("symbol_mandate") if isinstance(payload, Mapping) else None
         ref = payload.get("mandate_ref") if isinstance(payload, Mapping) else None
         if not isinstance(mandate, Mapping) or mandate.get("symbol") != symbol or not isinstance(ref, Mapping):
             return None
+        venue = str(ref.get("venue") or "").strip()
+        if not venue:
+            return None
+        try:
+            active_venue = read_json_object(self.active_venue_path(venue))
+        except ValueError:
+            return None
+        if not isinstance(active_venue, Mapping) or not _matches_active_venue(ref, active_venue, symbol=symbol):
+            return None
+        valid_until = active_venue.get("valid_until")
+        if valid_until is not None:
+            expires_at = _parse_datetime(valid_until)
+            if expires_at is None or expires_at <= moment:
+                return None
+        active_symbols = active_venue.get("symbols")
+        active_mandate = active_symbols.get(symbol) if isinstance(active_symbols, Mapping) else None
+        if not isinstance(active_mandate, Mapping):
+            return None
         return {
-            "mandate_ref": dict(ref),
-            "symbol_mandate": dict(mandate),
+            "mandate_ref": _ref(active_venue),
+            "symbol_mandate": dict(active_mandate),
             "family_postures": (
-                dict(payload.get("family_postures"))
-                if isinstance(payload.get("family_postures"), Mapping)
+                dict(active_venue.get("family_postures"))
+                if isinstance(active_venue.get("family_postures"), Mapping)
                 else {}
             ),
             "portfolio_posture": (
-                dict(payload.get("portfolio_posture"))
-                if isinstance(payload.get("portfolio_posture"), Mapping)
+                dict(active_venue.get("portfolio_posture"))
+                if isinstance(active_venue.get("portfolio_posture"), Mapping)
                 else None
             ),
         }
@@ -186,6 +213,39 @@ def _digest(value: str) -> str:
     if not text:
         raise ValueError("value must be non-empty")
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _matches_active_venue(
+    ref: Mapping[str, Any],
+    active_venue: Mapping[str, Any] | None,
+    *,
+    symbol: str,
+) -> bool:
+    if not isinstance(active_venue, Mapping):
+        return False
+    for field in ("mandate_id", "candidate_scope_id", "venue"):
+        ref_value = str(ref.get(field) or "").strip()
+        if not ref_value or ref_value != str(active_venue.get(field) or "").strip():
+            return False
+    symbols = active_venue.get("symbols")
+    active_symbol = symbols.get(symbol) if isinstance(symbols, Mapping) else None
+    return isinstance(active_symbol, Mapping) and active_symbol.get("symbol") == symbol
+
+
+def _parse_datetime(value: object) -> datetime | None:
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        text = str(value or "").strip()
+        if not text:
+            return None
+        try:
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 __all__ = ["UniverseMandateStore"]

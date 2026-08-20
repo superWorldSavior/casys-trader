@@ -188,6 +188,50 @@ def test_context_pushes_bounded_micro_delta_only_when_newer_than_mandate(tmp_pat
     assert company["AAA"]["summary"] == "Thesis for AAA"
 
 
+def test_context_rejects_expired_universe_mandate(tmp_path) -> None:
+    config_dir = tmp_path / "config"
+    state_dir = tmp_path / "state"
+    config_dir.mkdir()
+    companies = CompanyIntelligenceStore(state_dir / "company_intelligence")
+    companies.append(_brief("AAA"))
+    mandates = UniverseMandateStore(state_dir / "universe_mandates")
+    mandates.write_prepared(
+        UniverseMandate(
+            mandate_id="mandate-expired",
+            candidate_scope_id="scope-expired",
+            venue="US",
+            agent_run_id="run-expired",
+            as_of="2026-07-10T08:00:00+00:00",
+            valid_until="2026-07-10T09:00:00+00:00",
+            status="prepared",
+            symbols={
+                "AAA": SymbolMandate(
+                    "AAA",
+                    "Selected AAA",
+                    "leader",
+                    "constructive",
+                ),
+            },
+        )
+    )
+    mandates.activate(
+        venue="US",
+        candidate_scope_id="scope-expired",
+        as_of="2026-07-10T08:30:00+00:00",
+        selected_symbols=("AAA",),
+    )
+
+    company, mandate = load_trader_research_context(
+        config_dir=config_dir,
+        state_dir=state_dir,
+        symbols=("AAA",),
+        active_at="2026-07-10T09:00:00+00:00",
+    )
+
+    assert mandate == {}
+    assert company["AAA"]["authority"] == "research_context_not_trade_instruction"
+
+
 def test_company_delta_requires_changed_or_newer_evidence_snapshot() -> None:
     current = {"as_of": "2026-07-10T08:00:00+00:00", "input_signature": "same"}
 

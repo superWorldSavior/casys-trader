@@ -45,7 +45,7 @@ def load_trader_research_context(
     mandate_by_symbol: dict[str, dict[str, Any]] = {}
     for symbol in selected:
         current_company = dict(projected.symbols[symbol])
-        active = mandates.active_slice_for_symbol(symbol)
+        active = mandates.active_slice_for_symbol(symbol, active_at=active_at)
         if active is not None:
             symbol_mandate = active.get("symbol_mandate")
             mandate_by_symbol[symbol] = {
